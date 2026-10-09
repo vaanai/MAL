@@ -43,10 +43,23 @@ class LiveOkTests(Case):
         for mode in (0o664, 0o646, 0o666, 0o620):
             self.make_live_ok(mode)
             self.assertEqual(h.live_ok_valid(), "live_ok_unsafe", oct(mode))
-        for mode in (0o644, 0o600, 0o400):
+        for mode in (0o600, 0o400, 0o640, 0o444, 0o755):  # exactly 0644: mal-live must be able to read it, and nobody else may write it
+            h.LIVE_OK_PATH.unlink(missing_ok=True)
             self.make_live_ok(0o644)
             os.chmod(h.LIVE_OK_PATH, mode)
-            self.assertIsNone(h.live_ok_valid(), oct(mode))
+            self.assertEqual(h.live_ok_valid(), "live_ok_unsafe", oct(mode))
+        self.make_live_ok(0o644)
+        self.assertIsNone(h.live_ok_valid())
+
+    def test_wrong_group_is_refused(self):
+        self.make_live_ok()
+        with mock.patch.object(h, "LIVE_OK_GID", os.getgid() + 1):
+            self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+
+    def test_the_sell_priorities_and_the_late_sell_floor_are_not_configurable(self):
+        for key, val in (("sell_priority_lamports", 55_000), ("escalated_priority_lamports", 150_000), ("late_sell_min_n", 1)):
+            with self.assertRaises(ValueError, msg=key):
+                h.H5Limits.from_config({key: val})  # not even at the default: the key does not exist in config
 
     def test_a_directory_instead_of_a_file_is_refused(self):
         h.LIVE_OK_PATH.mkdir()

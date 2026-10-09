@@ -271,19 +271,33 @@ class HaltRuleTests(Case):
             e.ex = e.build()  # the first day's median is persisted, a restart does not lose it
             e.clock.t += gap_days * 24 * 3_600_000
             self.feed(e, [336.5] * N, prefix="D")
+            self.assertEqual(e.ex.counters.halts, {}, gap_days)  # the second low day is still TODAY: only completed UTC days are counted
+            e.clock.t += 24 * 3_600_000
+            self.feed(e, [345.0], prefix="F")  # the next day's first pool completes it
             self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_337_twice"], gap_days)
             row = e.ledger("halt_latched")[0]
             self.assertEqual(row["medians"], [336.0, 336.5])
+
+    def test_a_transient_dip_today_does_not_count_toward_the_two_days(self):
+        e = self.env()
+        self.feed(e, [336.0] * N)  # one low day ...
+        e.clock.t += 24 * 3_600_000
+        self.feed(e, [330.0] * N, prefix="D")  # ... and today's running median dips under 337 (and under 335: that rule is today's own)
+        self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_335"])  # (the same-day rule); the two-day rule needs a completed second day
+        self.assertNotIn("boost_median_lt_337_twice", e.ex.counters.halts)
 
     def test_a_healthy_day_between_two_low_days_does_not_reset_and_two_healthy_days_do_not_halt(self):
         e = self.env()
         self.feed(e, [338.0] * N)
         e.clock.t += 24 * 3_600_000
         self.feed(e, [336.0] * N, prefix="D")
-        self.assertEqual(e.ex.counters.halts, {})  # 338 does not count; one day under 337
+        self.assertEqual(e.ex.counters.halts, {})  # 338 does not count; one low day, and it is not complete yet
         e.clock.t += 24 * 3_600_000
         self.feed(e, [336.9] * N, prefix="E")
-        self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_337_twice"])
+        self.assertEqual(e.ex.counters.halts, {})  # the first low day is complete, the second is today
+        e.clock.t += 24 * 3_600_000
+        self.feed(e, [345.0], prefix="G")
+        self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_337_twice"])  # both low days are complete now
 
     def test_a_pool_counts_once_a_day_however_often_it_is_reported(self):
         e = self.env()
@@ -395,11 +409,9 @@ class HaltRuleTests(Case):
         plan = h.exit_plan(S0, SPS, e.ex.h5).public()
         e.ex._note_sell_landing(MINT, plan, plan["late_slot"] + 9, False)
         self.assertIn("late_sells_gt_5pct", e.ex.counters.halts)
-        sub = self.tmp / "m"
-        sub.mkdir()
-        e2 = Env(sub, late_sell_min_n=10)
-        e2.ex._note_sell_landing(MINT, plan, plan["late_slot"] + 9, False)
-        self.assertEqual(e2.ex.counters.halts, {})
+        self.assertEqual(h.LATE_SELL_MIN_N, 1)  # a code constant: the config cannot raise it to loosen the halt
+        with self.assertRaises(ValueError):
+            h.H5Limits.from_config({"late_sell_min_n": 10})
 
     def test_a_late_sell_through_the_real_landing_path(self):
         e = self.env()

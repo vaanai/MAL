@@ -21,7 +21,7 @@ VENDORED = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "recor
 
 def shadow_trigger(clock: Clock, **kw) -> dict:
     """The vendored record (keys as Engine._fire writes them at ff31026) with the fixture pool's values and the fake clock's times."""
-    row = {**VENDORED["trigger"], "pool": POOL, "mint": MINT, "s0": S0, "slot": TRIG_SLOT, "sps": SPS, "s0_t_recv_ms": clock() - 100_000,
+    row = {**VENDORED["trigger"], "pool": POOL, "mint": MINT, "s0": S0, "slot": TRIG_SLOT, "sps": SPS, "s0_t_recv_ms": clock() - 101_600,
            "block_time": clock() // 1000, "t_recv_ms": clock() - 50, "t_detect_ms": clock(), "q_trigger_sol": Q / 1e9, "q_pv_post_sol": Q / 1e9,
            "q_fv_post_sol": Q / 1e9 + 0.001, "q_pv_pre_sol": Q / 1e9 + 0.2, "q_fv_pre_sol": Q / 1e9 + 0.2, "v_print": V, "v0": V,
            "base_pre": BASE0 - SOLD, "sell_token_raw": SOLD, "landing_slot_primary": TRIG_SLOT + 7, "landing_slot_binding": TRIG_SLOT + 10,

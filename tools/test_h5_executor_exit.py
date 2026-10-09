@@ -272,7 +272,7 @@ class MoneyLimitTests(Case):
 
     def test_config_clamps(self):
         l = h.H5Limits.from_config({"stake_lamports": 50_000_000, "max_open": 3, "max_attempts": 300, "entry_tolerance_bps": 3000,
-                                    "buy_priority_lamports": 150_000, "sell_priority_lamports": 150_000, "wallet_floor_lamports": 1})
+                                    "buy_priority_lamports": 150_000, "wallet_floor_lamports": 1})
         d = h.H5_DEFAULT
         self.assertEqual((l.stake_lamports, l.max_open, l.max_attempts, l.entry_tolerance_bps, l.buy_priority_lamports, l.sell_priority_lamports),
                          (d["stake_lamports"], d["max_open"], d["max_attempts"], d["entry_tolerance_bps"], d["buy_priority_lamports"], d["sell_priority_lamports"]))
@@ -361,7 +361,10 @@ class SlotRateTests(Case):
         e.fire(sps=old, trigger_slot=trig_slot, s0_slot=s0)
         self.assertEqual(len(e.rpc.sent), 1, e.refusals())
         e.land_buy(slot=trig_slot + 8)
-        s0_wall = T0 - 100_000
+        w = T0  # the chain's true s0 wall time: walk back until the chain's slot is s0 (it is not T0 - 100 s: the trigger print is a few slots old)
+        while e.rpc.slot_fn(w) > s0:
+            w -= 100
+        s0_wall = w
         self.run_to_first_sell(e, s0_wall + 340_000)
         self.assertEqual(len(e.rpc.sent), 2)
         sent_after_s0 = (e.ledger("sell_sent")[0]["sent_ms"] - s0_wall) / 1000.0
@@ -370,16 +373,16 @@ class SlotRateTests(Case):
     def test_the_exit_survives_the_400_to_200_ms_slot_switch(self):
         e, t = self.check_switch(0.4, 0.2)
         # in slots the exit would be reached 66 s early; the wall stage holds it to about 330 s after s0 (the rule's exit, less the 0.5 s lead)
-        self.assertTrue(326.0 <= t <= 331.0, t)
+        self.assertTrue(328.5 <= t <= 330.5, t)
         self.assertTrue(e.ledger("plan_recomputed"))  # the measured rate moved more than 1% from the plan's
 
     def test_the_exit_survives_a_200_to_400_ms_slot_switch(self):
         e, t = self.check_switch(0.2, 0.4)
-        self.assertTrue(326.0 <= t <= 331.0, t)  # in slots it would be 125 s late
+        self.assertTrue(328.5 <= t <= 330.5, t)  # in slots it would be 125 s late
 
     def test_an_unchanged_slot_rate_exits_where_the_slot_plan_says(self):
         e, t = self.check_switch(0.2, 0.2)
-        self.assertTrue(326.0 <= t <= 330.0, t)
+        self.assertTrue(328.5 <= t <= 330.5, t)
         self.assertEqual(e.ledger("plan_recomputed"), [])
 
 
