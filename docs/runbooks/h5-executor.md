@@ -566,6 +566,23 @@ Every creation or removal of `LIVE_OK` shows up under `malh5-liveok` (`sudo ause
 
 The key directory `/etc/mal-probe` already has Helm's watch from DEC-019; check with `sudo auditctl -l | grep -i mal-probe` and add `-w /etc/mal-probe -p rwa -k malprobe-key` only if it is missing (do not duplicate it). Expect a read event on the key file at each unit start: that is systemd's `LoadCredential`. Any other reader is a finding. The `malh5-state` rule logs every write by the executor too; keep it for the first days, then drop it if the volume is too high.
 
+## Daily synthetic-class audit (manager, DEC-024 Amendment 2 Clarification 1)
+
+From the first live day, once a day (after 00:30Z, for the UTC day that ended), the manager re-classifies every pool the executor made a buy decision on with the read-time procedure of EXP-024 Amendment 4 (B4), and compares it with the class the shadow recorded. A disagreement on any pool is a live halt under DEC-024 section 5.6. The tool prints counts only.
+
+- **Tool:** `tools/h5_synthetic_audit.py` (classifier: `tools/synthetic_class.py`). Public RPC only (`https://api.mainnet-beta.solana.com`, 0.5 s between calls, 3,000-call cap); Helius and keyed URLs are refused. It does not call `tools.pump_structure_monitor`; it imports its helpers. Do not start it before 2026-10-10T00Z in any mode that runs the monitor, and never run the monitor itself for this.
+- **Run it as a MiScusi job on `mal-fast-0`** (`miscusi_job_submit`, not resumable, `sh`, no bash-isms). The ledger is `mal-live` 0700, so the job reads it through `sudo` and pipes it straight into the tool's projection mode. Nothing is written to disk:
+
+  ```sh
+  cd "$HOME/MAL" && sudo -n /usr/bin/dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl | /data/mal/venv/bin/python -m tools.h5_synthetic_audit --ledger - --date "$(date -u -d yesterday +%F)"
+  ```
+
+  Use `.../dryrun/h5-ledger.jsonl` for a dry run. `--date` is the UTC day whose decisions are audited (the tool filters on the row's `ts_ms`).
+- **Fields read from the ledger** (decision rows only, `kind == "decision"`): `pool`, `mint`, `synthetic`, `synthetic_src`, `signature` are kept; `kind` and `ts_ms` are read to pick the rows and thrown away. No other field of any row is kept, printed or passed on (no fill, size, exit, price or P&L field, none of the nested objects). `--project-only` prints exactly the projection, for a look at what the audit sees. `signature` is OUR buy transaction's signature, used as B4's `before` anchor (the ledger carries no trigger-print signature). That window is a superset of B4's "before s0", so a pool with more than 1,000 signatures between its migrate transaction and our buy shows as `unclassified`, never as a disagreement.
+- **Output**, one line, these keys only: `{"date":"2026-10-12","n_pools":N,"n_disagree":N,"n_unclassified_now":N,"halt":false}`. No pool, mint, signature or per-pool class is printed, and the job log must not be post-processed to add one.
+- **Exit code 3 = `n_disagree > 0` = a live halt.** Tell the owner and Helm (the halt is the manager's call under section 5.6: `HALT` or `STOP` per "Stop, halt, status"), and do not look up which pool it was by joining the class to a fill or P&L. `n_unclassified_now > 0` is not a halt; if it is more than a few, check the RPC (rate limit) and rerun the next day. Exit 2 is a usage error or a refused RPC URL.
+- **A decision row that records no class** (`synthetic` absent, null or not a bool) counts as a disagreement for any pool B4 can classify: the executor refuses such triggers (`synthetic_unconfirmed`), so a buy on one is a bug. Rows only carry `synthetic` and `synthetic_src` on a build that has the executor's synthetic gate (DEC-024 Amendment 2, Clarification 1).
+
 ## Never
 
 - Never print, copy, paste or commit `/etc/mal-probe/probe-wallet.json`, `/etc/mal-probe-rpc/helius.env`, `/etc/mal-h5-watch/watch.env` or the Discord webhook, or their contents.
