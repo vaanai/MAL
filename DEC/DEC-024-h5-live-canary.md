@@ -200,6 +200,37 @@ Size above the canary is governed by DEC-018, DEC-019 and DEC-020, and by the ow
 
 EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 2026-10-10T00:00Z" was true when that amendment merged (2026-10-09T07:03Z, before this one). Its conclusion, that no Look 2-window outcome exists before 2026-10-16T00, still holds.
 
+## Amendment 2 (2026-10-09, the owner's decision; before any canary send, before any counted hour and before the official P2 run of the A3 monitor): synthetic-migration pools get no buy
+
+**The owner's decision.** The owner approved excluding synthetic pools from H5. The record is the MiScusi notebook entry `n_xtknDqL-ychBNg` (2026-10-09), as the manager relayed it; the author of this amendment did not open the entry. The read-side text is [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Amendment 4 (a population restriction, not a retune). This amendment is its live-side companion. Line numbers below are those of this file on main at `ecdc7af`.
+
+**Disclosure.** The program-upgrade review found synthetic migrations (a PostCompleteBuyEvent in the curve-completing transaction) on 0 of 61 graduations before the 2026-10-08T16:20Z redeploy and 12 of 61 after. The A3 monitor's `synthetic_share_high` read **6/19 = 0.316** at the daily run of 2026-10-09T07:11:06Z (job #445; halt line 0.35) and **7/19 = 0.368, a halt**, at one dry check at 07:38:11Z. The dry check used the unmerged pins of PR #517 and a scratch `--out`. It is not the P2 run, and it is disclosed in every amendment that touches the synthetic share. The rule's September evidence had 0 synthetic pools.
+
+**What changes**
+1. **One classifier, at decision time.** The executor and the shadow apply the same classifier as the read: `post_complete_buy_seen` (`tools/pump_structure_monitor.py:482-490`), on the PostCompleteBuyEvent discriminator alone, on the mint's CompleteEvent transaction (EXP-024 Amendment 4, item B1).
+   - **A synthetic pool gets no buy.** A pool that cannot be classified at decision time (the completing transaction cannot be found or read) gets no buy either. It fails closed, as the pick feed does in section 6.
+   - The shadow stops signalling synthetic and unclassifiable pools. Skips are logged with their reason and counted. Counts by class are structure fields, not outcomes (EXP-024 Amendment 4, item D1 bars joining class to any outcome before Look 2 is read).
+2. **The build's proof.** The build that carries this change carries:
+   - an **md5 decision-equivalence replay on 2026-09-20**, the day Amendment 1 item 3 used. The replay is decision-equivalent because September has 0 synthetic pools, so the classifier must remove nothing: the md5 of the trigger list must equal the frozen scorer's, as in Amendment 1 item 3;
+   - a **structure-only fixture** of post-upgrade synthetic completing transactions (recorded from public RPC, with no outcome or P&L), on which the classifier says synthetic, and of non-synthetic ones, on which it says not;
+   - a `reviewer` pass and quant-proof on the final head, as for the rest of section 8.
+3. **Section 5.6 (Structure), as amended.**
+   - **Until Helm installs and verifies that build, `synthetic_share_high` stays a live halt.** Section 5.6 and the A3 halt bar of section 3 read as written, so the canary does not start while the monitor shows it.
+   - **After that, `synthetic_share_high` is recorded and reported only.** It is no longer a live halt. The install is a pinned, root-owned install with the manifest and sha256 check of section 8. The manager records, in a dated line under this amendment, the instant Helm reports the install verified. The change takes effect at that instant and not before.
+   - **The other five A3 halt flags stay live halts:** `pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early` and `boost_budget_or_slices_changed`. So do the other items of section 5.6.
+4. **`program_changed` is a live halt for the canary.** Section 5.6 halts on "a changed pinned config or program data". The monitor's `program_changed` (programdata sha256 against the pins that PR #517 adds) is a WARN in the monitor and not one of its halt flags. For the canary it is a live halt all the same. This does not change EXP-024: its section 11 lists five flags, `program_changed` is not one, and a canary halt never stops, delays or changes Look 1 or Look 2 (section 6).
+5. **Section 7.** The scale-up condition "no live-halt rule (section 5) … has fired and is unresolved" reads with the amended section 5.6. Item 3 above removes `synthetic_share_high` from it only after the install.
+
+**Not re-run.** The stop-probability table of Amendment 1 item 4 used September's confirmation day counts, which have no synthetic pools. Excluding them lowers the number of trades by the synthetic share (about 0.20 to 0.37 on the readings above [inferred]). The table is not re-run here. Section 4 holds: a stop firing is not evidence about H5.
+
+**Unchanged:**
+- the limits in section 4, and the other halts in section 5 apart from item 3 above;
+- the seals in section 6, and the scale-up conditions in section 7 apart from item 5;
+- the owner override line;
+- every EXP-024 and EXP-022 rule. EXP-022 is not amended here; its synthetic handling needs its own amendment (EXP-022 Amendment 5, item 3).
+
+**Takes effect** on merge, with quant-proof's OK on its final head, before the official P2 run and before 2026-10-10T00:00Z. It starts no trade. `LIVE_OK` and the go to Helm stay separate acts.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). Still open: the trial's stake, open-position cap and stops at 1 SOL, in writing.
