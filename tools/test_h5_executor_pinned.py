@@ -649,3 +649,44 @@ def test_tree_check_is_the_probes_script_apart_from_its_header():
     a = [l for l in CHECK_TREE.read_text().splitlines() if not l.startswith("#")]
     b = [l for l in (FAST / "check-probe-exec-tree.sh").read_text().splitlines() if not l.startswith("#")]
     assert a == b and "not allowed as root" in CHECK_TREE.read_text()
+
+
+# --- runbook ---------------------------------------------------------------------------------------------------------------
+
+RUNBOOK = ROOT / "docs/runbooks/h5-executor.md"
+
+
+def test_runbook_has_the_ordered_steps_and_the_paths_the_code_uses():
+    t = RUNBOOK.read_text()
+    order = ["**Step 1. Stop and disable", "sudo systemctl stop mal-probe-executor", "sudo systemctl disable mal-probe-executor", "**Step 2.",
+             "install -d -m 0700 -o mal-live -g mal-live /var/lib/mal-live/h5", "**Step 3.", "**Step 4. Install.", "install-h5-executor-pinned.sh <FULL_SHA>",
+             "**Step 5. Hash check.", "**Step 6.", "**Step 7.", "**Step 8.", "**Step 9.", "**Step 10.", "**Step 11.", "## Going live (manager)",
+             "## Stop, halt, status", "## Daily check", "## Sell-and-close", "## Rollback", "## Auditd", "## Never", "## Not verified"]
+    idx = [t.index(s) for s in order]
+    assert idx == sorted(idx), [s for s, i in zip(order, idx) if i != sorted(idx)[idx.index(i)]]
+    for p in ("/var/lib/mal-live/h5/LIVE_OK", "/var/lib/mal-live/h5/STOP", "/var/lib/mal-live/h5/HALT", "/usr/local/lib/mal-h5-exec/current/h5-executor-live.json",
+              "/etc/systemd/system/mal-h5-executor.service.d/live.conf", "/etc/systemd/system/mal-h5-executor.service.d/10-shadow-feed.conf",
+              "/srv/mal-h5-shadow", "/etc/mal-probe-rpc/helius.env", "make-h5-manifest.sh", "h5-daily-check.py", "-w /usr/local/lib/mal-h5-exec -p wa"):
+        assert p in t, p
+    from tools import h5_executor
+
+    assert callable(h5_executor.live_ok_present) and h5_executor.EXP024_PART1  # the names the runbook relies on exist
+    assert json.loads((FAST / "h5-executor-live.json").read_text())["intents_file"] == "/srv/mal-h5-shadow"
+    assert t.index("**Step 1.") < t.index("**Step 4. Install.")  # the old unit is stopped and disabled before anything is installed
+
+
+def test_runbook_never_reads_a_key_or_env_file_and_flags_exist():
+    t = RUNBOOK.read_text()
+    assert not re.search(r"\b(cat|less|more|head|tail|strings|xxd|od|base64)\b[^\n]*(probe-wallet|helius\.env)", t)
+    assert "Never print, copy, paste or commit" in t and "Never run `tools.h5_executor`" in t
+    from tools import h5_sell_and_close as sc
+
+    section = t[t.index("## Sell-and-close"):t.index("## Rollback")]
+    help_src = Path(sc.__file__).read_text()
+    for flag in (set(re.findall(r"`(--[a-z-]+)", section)) - {"--clear-halt"}) | {"--mint", "--send"}:  # --clear-halt is the executor's
+        assert f'"{flag}"' in help_src, flag
+    daily = (FAST / "h5-daily-check.py").read_text()
+    assert '"--funded-sol"' in daily and '"--write-baseline"' in daily
+    ex = (ROOT / "tools/h5_executor.py").read_text()
+    for flag in ("--status", "--clear-halt", "--live", "--dry-run"):
+        assert f'"{flag}"' in ex, flag
