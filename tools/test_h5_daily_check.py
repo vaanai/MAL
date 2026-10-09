@@ -29,6 +29,8 @@ LIVE_EXEC = ("{ path=/usr/local/lib/mal-h5-exec/venv/bin/python ; argv[]=/usr/lo
              "/usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --live }")
 DRY_EXEC = LIVE_EXEC.replace("h5-executor-live.json --live", "h5-executor.json")
 UPTIME = 100_000.0
+PROBE_BASE = (FAST / "mal-probe-executor.service").read_text()
+PROBE_FRAGMENT = "/etc/systemd/system/mal-probe-executor.service"
 WSVC = (FAST / "mal-h5-watch.service").read_bytes()
 WTMR = (FAST / "mal-h5-watch.timer").read_bytes()
 WATCH_SVC, WATCH_TMR = dc.WATCH_FILES[0][0], dc.WATCH_FILES[1][0]
@@ -62,7 +64,13 @@ class FakeHost(dc.Host):
         self.h5_props["ActiveEnterTimestampMonotonic"] = str(int((UPTIME - 3600) * 1e6))  # the current run began an hour ago
         self.watch_props = {"LoadState": "loaded", "ActiveState": "active", "UnitFileState": "enabled", "FragmentPath": WATCH_TMR, "DropInPaths": ""}
         self.watch_svc = {"LoadState": "loaded", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "FragmentPath": WATCH_SVC, "DropInPaths": ""}
-        self.probe_props = {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "disabled", "DropInPaths": "", "LoadCredential": ""}
+        # systemd 255.4 (mal-fast-0) prints LoadCredential=[unprintable] for EVERY unit, credential or not: the fake models that, so a check that
+        # reads the `show` property sees a non-empty value on a clean unit. The unit text (`systemctl cat`) is what tells the truth.
+        self.probe_props = {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "disabled", "DropInPaths": "", "LoadCredential": "[unprintable]"}
+        self.probe_unit_text = PROBE_BASE  # the probe's dry-run base unit as the repo ships it: no LoadCredential
+        self.probe_dropin_text: dict[str, str] = {}  # drop-in path -> text, merged into `systemctl cat` after the fragment
+        self.cat_fail: dict[str, tuple[int, str]] = {}  # unit -> (rc, stdout) that `systemctl cat` answers instead of the unit text
+        self.argv_log: list[tuple[str, ...]] = []
         self.files.update({WATCH_SVC: WSVC, WATCH_TMR: WTMR, f"{dc.PINNED}/mal-h5-watch.service": WSVC, f"{dc.PINNED}/mal-h5-watch.timer": WTMR,
                            dc.WATCH_STATE: json.dumps({"ts": NOW - 120}).encode()})
         self.systemctl_rc = 0
@@ -105,9 +113,23 @@ class FakeHost(dc.Host):
     def newest_hourly(self, directory):
         return self.feed
 
+    def cat(self, unit):
+        """`systemctl cat`: the fragment, then every drop-in with its path as a comment header, as systemd prints them."""
+        if unit in self.cat_fail:
+            return self.cat_fail[unit]
+        if unit == f"{dc.PROBE_UNIT}.service":
+            if self.probe_props.get("LoadState") == "not-found":
+                return 1, ""  # "No files found for ...": nothing on stdout, exit 1
+            return 0, f"# {PROBE_FRAGMENT}\n{self.probe_unit_text}" + "".join(f"\n# {pth}\n{txt}" for pth, txt in self.probe_dropin_text.items())
+        assert unit == f"{dc.H5_UNIT}.service", unit
+        return 0, f"# {dc.UNIT_FILE}\n{self.files[dc.UNIT_FILE].decode()}" + "".join(f"\n# {pth}\n{self.files.get(pth, b'').decode()}" for pth in self.dropins)
+
     def systemctl(self, *argv):
+        self.argv_log.append(argv)
         if self.systemctl_rc:
             return self.systemctl_rc, ""
+        if argv[0] == "cat":
+            return self.cat(argv[1])
         if argv[0] == "list-unit-files":
             return 0, self.unit_files
         if argv[0] == "list-units":
@@ -576,9 +598,10 @@ def test_newest_hourly_ignores_the_status_file_and_the_error_log(tmp_path):
 def test_script_is_read_only_and_keyless():
     src = (FAST / "h5-daily-check.py").read_text()
     assert "/etc/mal-probe/" not in src and "probe-wallet" not in src and "load_keypair" not in src and "solders" not in src
-    assert "sendTransaction" not in src and "/usr/bin/cat" not in src and '"cat"' not in src
+    assert "sendTransaction" not in src and "/usr/bin/cat" not in src
+    assert src.count('"cat"') == 1 and 'host.systemctl("cat", unit, "--no-pager")' in src  # no file is ever cat'ed; `systemctl cat` is the one place, a read verb
     verbs = {l.split("systemctl(")[1].split(",")[0].strip('")').strip('"') for l in src.splitlines() if "host.systemctl(" in l}
-    assert verbs == {'"list-unit-files"', '"list-units"', '"show"'} or verbs == {"list-unit-files", "list-units", "show"}, verbs  # read verbs only
+    assert verbs == {"cat", "list-unit-files", "list-units", "show"}, verbs  # read verbs only
     assert set(re.findall(r'"(/usr/bin/[a-z]+)"', src)) == {"/usr/bin/true", "/usr/bin/stat", "/usr/bin/dd", "/usr/bin/systemctl"}  # nothing else is ever run
     assert src.count("self._sudo(") == 3  # sudo runs only these three calls, built from fixed paths
     assert 'self._sudo("/usr/bin/true")' in src and "self._sudo(*stat_argv(path))" in src and "self._sudo(*dd_argv(path))" in src
