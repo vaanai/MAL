@@ -52,7 +52,7 @@ Two of the candidates add something v1 does not have: C-LF a filter on new infor
   - on the 1,124 confirmation trades, 212 (18.861%) lost 30% or more of the stake (net, binding cell); their flat sum is -8.3027 SOL against a book total of +13.9990 SOL;
   - in the **paired unit** (0 where the filter skips), skipping all 212 at zero cost would add **7.387 pp** to the flat mean (the big-loser contribution, -7.387 pp of +12.455%). That is a **hindsight ceiling and not a filter**; no decision-time filter reaches it, and a real filter also removes winners.
   - The retained-set mean of +24.454% that MAP.md also prints is a per-trade mean on fewer trades. It is not the paired unit and is not used here.
-- **The switching bar against that ceiling.** The section 6 effect floor of +3.0 pp is about 40% of the 7.39 pp ceiling. A filter would have to capture two-fifths of the best case that nothing reaches.
+- **The switching bar against that ceiling.** The section 6 effect floor of +3.0 pp is about 40% of the 7.387 pp ceiling. A filter would have to capture two-fifths of the best case that nothing reaches.
 - **Not freezable until there is rule text and a REPORT.** Rule text TBD, from the running research at `/data/mal/hunt-1008/h5-lossfilter/`. As of this DEC the study has built no filter and joined no feature to an outcome (MAP.md section 0). The REPORT is an exploration write-up with the discovery and confirmation numbers and the `data/tries.jsonl` count, with quant-proof's OK.
 - **Limits on any C-LF rule:**
   - **features are computed in-process, with no RPC on the buy path** (DEC-024 Amendment 2, Clarification 1 keeps RPC off that path);
@@ -66,7 +66,7 @@ Two of the candidates add something v1 does not have: C-LF a filter on new infor
 ### 3(b). C-BX: exit tied to the observed BOOST end (parked)
 
 - **Do not freeze.** Quant-proof's review of 975d8db found it too thin to be worth a slot:
-  - it differs from v1 on only about **3.5% to 6.5% of trades** (the trades where BOOST had already ended at v1's exit, `h5-flows/VERIFY.md`, "NEW: the exit is a timing race"), and those trades **still returned +2.91%** (mean; VERIFY.md does not say whether pooled or per block). Its gain is at most about 1 pp [quant-proof];
+  - it differs from v1 on only about **3.5% to 6.5% of trades** (the trades where BOOST had already ended at v1's exit, `h5-flows/VERIFY.md`, "NEW: the exit is a timing race"), and those trades **still returned +2.91%** (mean; VERIFY.md does not say whether pooled or per block). Its gain is at most about 1 pp [inferred, per quant-proof's review];
   - the regime in which it would help, BOOST ending early, is the one in which DEC-024 section 5 item 1 halts the canary, and DEC-024 section 5 bars answering a halt with a retune.
 - **Candidate rule text, kept for the record, not frozen.** Same universe, trigger, entry and guard as v1. Sell when the BOOST vault's last slice is detected (cumulative spend reaches 0.999 x 17.585 SOL), or at s0 + round(330 s / sps), whichever comes first. If BOOST stops short of that line, the timer sells.
 - **Reopening** needs an amendment with a structure count of the early-ending share, and it counts in k (which is capped at 2).
@@ -82,9 +82,9 @@ Two of the candidates add something v1 does not have: C-LF a filter on new infor
   - So 35 is a test of whether trimming the top of the (30, 40] band helps. It has no supporting trend. The only reason is the mechanism [inferred]: with constant product and Q at least V, the loss floor on an entry is near 1 - (Q_exit / Q_entry)^2 (MAP.md section 4), about -81% at Q 40 and about -75% at Q 35 with the exit near the V floor of 17.6 SOL.
 - **The value is picked now, once, and no other value is tried.** This section is written without opening any October shadow, canary or tape outcome.
 - **Tries.** The Q\* grid is logged as **4 tries** ({35, 40, 50, 60}) in `data/tries.jsonl`.
-- **Numeric withdrawal rule, fixed now.** One exploration run, on explore-0814 only, at the 1.9 s binding leg (the frozen `s14_boostdip.py` with `DS=35`). **Withdraw C-Q35 if any of these holds:**
-  - the flat mean is **at most +11.593%** (v1's explore-0814 binding-leg flat mean, MAP.md section 3);
-  - the pressure mean is **at most +10.596%** (v1's);
+- **Numeric withdrawal rule, fixed now.** One exploration run, on explore-0814 only, at the 1.9 s binding leg and the **0.1 SOL stake**, with the frozen `s14_boostdip.py` (`DS=35`) **scored by the frozen `s15_score_dip.py`** (sha256 `b91febe61613c2e94792c627bd5bc0cbe54b52f6a7beb874f7af8ed9f3410e89`, EXP-024 section 2). The comparison rows are v1's rows in `h5-flows/REPORT.md` lines 43 and 44 (binding 1.9 s, 0.1 SOL, n = 1,702). **Withdraw C-Q35 if any of these holds:**
+  - the flat mean is **at most +11.593%** (`REPORT.md` line 43, the flat row, v1's explore-0814 mean);
+  - the pressure mean is **at most +10.596%** (`REPORT.md` line 44, the press row);
   - the trigger count is **below 851** (half of v1's 1,702).
 
   The confirmation look is report-only and **cannot rescue it**. A withdrawn C-Q35 is not replaced: no 30 and no 45.
@@ -162,7 +162,7 @@ All are decision-time fields, written on the trigger or `pool` record, never joi
 
 - **(a) Scope.** It covers outcomes under **any `rule_id` with a merged Freeze record**, for pools with s0 in `[2026-10-10T00, 2026-11-06T00)`. Readers are those of DEC-024 section 6 (the owner, Helm, the manager, builders, the watchdog and the daily check). The EXP-024 read tool is excluded and its inputs are unchanged.
 - **(b) Reach of the read's guard sentences.** EXP-024 section 3.1's sentence "never skipped, delayed, re-scoped or re-thresholded" and section 11 cover challenger outcomes, paired statistics and switches. None of them can skip, delay, re-scope or re-threshold a look.
-- **(c) Reports.** The Look 1 and Look 2 reports list the **live variant per UTC date**.
+- **(c) Reports.** The Look 1 and Look 2 reports state that challenger outcomes were **watched in real time and could have influenced the choice of live variant**, and list the **live variant per UTC date** alongside it.
 - **(d) Section 3's premise.** EXP-024 section 3 says the canary's sells "fall at s0 + 330 s or later, outside the rule's trigger window [0, 300] s". That premise fails for a live variant, whose exit may be earlier. **The conclusion still holds:** every variant trades only at or after v1's trigger print (C-LF is a subset of v1's triggers, and C-Q35 enters on the first print with Q at most 35 SOL, which is never earlier than v1's), so a variant's trade cannot create the first trigger on a pool.
 - **(e) Not outcome-blind.** It is written with v1's October aggregate outcomes in view (the declared observation), and says so. It is written before any challenger outcome exists.
 - **(f) `boost_done` never substitutes for the A3 monitor.** The A3 monitor's flags and its last-slice median (EXP-024 sections 10 and 11) stay the only inputs to the halts and to NOT_DECIDABLE.
@@ -195,7 +195,7 @@ These values are quant-proof's, from its review of 975d8db (they replace the ear
 7. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 5 (the DEC-021 §6(f) practice).
 
    ```
-   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no. Challenger's own gate numbers: n=<n>, dates=<d>, CI90 lower bound flat=<x> pressure=<y>, ex-top-3=<z>, cleared: yes|no.
+   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no. Challenger's own gate numbers: n=<n>, dates=<positive>/<total>, CI90 lower bound flat=<x> pressure=<y>, ex-top-3 flat=<z1> pressure=<z2>, cleared: yes|no.
    ```
 
    - The own gate numbers are those of the promotion gate for the challenger's own book (CLAUDE.md). **"cleared: no" means the switch rests on the override alone**, and the owner's line says so.
