@@ -490,7 +490,7 @@ class SealTests(Case):
         e = Env(d, oracle=oracle, **cfg)
         e.set_time(when)
         if marker:
-            (d / "FINAL_WRITTEN").write_text("")
+            Path(e.conf["final_marker_file"]).write_text("")
         return e
 
     def test_constants(self):
@@ -646,7 +646,7 @@ def no_key_in(tc: unittest.TestCase, kp: Keypair, root: Path, *texts: str) -> No
 
 class StartTests(Case):
     def cfg(self, **kw):
-        return {"state_dir": str(self.tmp / "state"), "live_ok_file": str(self.tmp / "LIVE_OK"), "end_ms": T0 + 86_400_000, **kw}
+        return {"state_dir": str(self.tmp / "state"), "end_ms": T0 + 86_400_000, **kw}
 
     def root(self, with_file=True) -> Path:
         r = self.tmp / "repo"
@@ -661,8 +661,9 @@ class StartTests(Case):
     def test_live_start_needs_live_ok_exp024_and_an_explicit_end(self):
         r = self.root()
         self.assertEqual(h.start_refusal(self.cfg(), r), "live_ok_missing")
-        (self.tmp / "LIVE_OK").write_text("")
+        self.make_live_ok()
         self.assertIsNone(h.start_refusal(self.cfg(), r))
+        self.assertEqual(h.start_refusal(self.cfg(halt_file="/tmp/elsewhere/HALT"), r), "config_path_override:halt_file")  # pinned in live
         self.assertEqual(h.start_refusal(self.cfg(end_ms=None), r), "end_ms_missing")
         self.assertEqual(h.start_refusal(self.cfg(), self.root(with_file=False)), "exp024_part1_missing")
 
@@ -679,10 +680,10 @@ class StartTests(Case):
         self.assertFalse(h.exp024_part1_present(r))
         self.assertEqual(h.EXP024_PART1, "EXP/EXP-024-h5-boostfloor-part1-prereg.md")
 
-    def test_live_ok_must_be_a_real_file(self):
-        self.assertFalse(h.live_ok_present(self.tmp / "LIVE_OK"))
-        (self.tmp / "LIVE_OK").mkdir()
-        self.assertFalse(h.live_ok_present(self.tmp / "LIVE_OK"))
+    def test_live_ok_is_pinned_to_etc_mal_h5(self):
+        src = Path(h.__file__).read_text()  # the shipped constants, read from source (the tests patch the module attributes)
+        self.assertIn('LIVE_OK_PATH = Path("/etc/mal-h5/LIVE_OK")', src)
+        self.assertIn("LIVE_OK_UID = 0", src)
 
     def run_live_main(self, e: Env, root: Path):
         cp = self.tmp / "c.json"
@@ -701,7 +702,7 @@ class StartTests(Case):
         rc, out, loaded = self.run_live_main(e, self.root())
         self.assertEqual((rc, "live_ok_missing" in out), (2, True))
         loaded.assert_not_called()
-        (self.tmp / "LIVE_OK").write_text("")
+        self.make_live_ok()
         rc, out, loaded = self.run_live_main(e, self.root(with_file=False))
         self.assertEqual((rc, "exp024_part1_missing" in out), (2, True))
         loaded.assert_not_called()

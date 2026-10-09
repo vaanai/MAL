@@ -80,6 +80,17 @@ def trig(clock: Clock, **kw) -> h.H5Trigger:
     return t
 
 
+class PathConf(dict):
+    """A config dict whose pinned paths read as the executor resolves them, without being keys (a live config must not carry them)."""
+
+    def __missing__(self, key):
+        sd = Path(self["state_dir"])
+        names = {"stop_file": sd / "STOP", "halt_file": sd / "HALT", "final_marker_file": sd / "FINAL_WRITTEN", "live_ok_file": h.LIVE_OK_PATH}
+        if key in names:
+            return str(names[key])
+        raise KeyError(key)
+
+
 class Env:
     """One executor in a temp dir. live=True builds a keyed executor (throwaway Keypair) with LIVE_OK and EXP-024 in place."""
 
@@ -91,11 +102,15 @@ class Env:
         (self.root / "EXP").mkdir(parents=True, exist_ok=True)
         if exp024:
             (self.root / h.EXP024_PART1).write_text("# EXP-024 Part 1 (test stub)\n")
-        self.conf = {"intents_file": str(tmp / "intents.jsonl"), "state_dir": str(tmp / "state"), "mode": "live" if live else "dryrun",
-                     "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), "live_ok_file": str(tmp / "LIVE_OK"),
-                     "final_marker_file": str(tmp / "FINAL_WRITTEN"), "poll_s": 5.0, **cfg}
-        if live and live_ok:
-            (tmp / "LIVE_OK").write_text("")
+        # A live config carries no STOP / HALT / LIVE_OK / FINAL_WRITTEN keys (they are pinned); PathConf lets a test read where they are.
+        self.conf = PathConf(intents_file=str(tmp / "intents.jsonl"), state_dir=str(tmp / "state"), mode="live" if live else "dryrun", poll_s=5.0)
+        self.conf.update(cfg)
+        if live:
+            if live_ok:
+                h.LIVE_OK_PATH.write_text("")  # the patched stand-in for /etc/mal-h5/LIVE_OK, "owned by root" (the test's own uid)
+                os.chmod(h.LIVE_OK_PATH, 0o644)
+            else:
+                h.LIVE_OK_PATH.unlink(missing_ok=True)
         self.kp = (Keypair.from_seed(seed) if seed else Keypair()) if live else None
         self.oracle = oracle
         self.ex = self.build()
@@ -209,9 +224,24 @@ class Case(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory()
         self.tmp = Path(self._td.name)
         self.addCleanup(self._td.cleanup)
+        # Stand-ins for the host: /etc/mal-h5 (root-owned there, owned by this test's uid here) and the probe's /var/lib/mal-live.
+        self.etc = self.tmp / "etc-mal-h5"
+        self.etc.mkdir()
+        os.chmod(self.etc, 0o755)
+        self.probe_dir = self.tmp / "probe-live-dir"
+        self.probe_dir.mkdir()
+        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (pe, "LIVE_DIR", self.probe_dir)):
+            patcher = mock.patch.object(target, attr, val)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def env(self, **kw) -> Env:
         return Env(self.tmp, **kw)
+
+    @staticmethod
+    def make_live_ok(mode: int = 0o644) -> None:
+        h.LIVE_OK_PATH.write_text("")
+        os.chmod(h.LIVE_OK_PATH, mode)  # (the umask must not decide whether it is group-writable)
 
 
 # --- limits and config ------------------------------------------------------------------------------------------------

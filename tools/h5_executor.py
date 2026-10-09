@@ -46,6 +46,7 @@ import json
 import math
 import os
 import re
+import stat
 import statistics
 import sys
 import time
@@ -76,6 +77,8 @@ HOLD_S = 330.0  # exit trigger at s0 + round(330 s / sps)
 RULE_TRIGGER_WINDOW_S = 300.0
 RULE_Q_MAX_LAMPORTS = 40 * 10**9  # trigger needs post-trade Q = quote + V <= 40 SOL
 SPS_MIN, SPS_MAX = 0.15, 0.6
+SPS_MIN_SPAN_S = 120.0  # the detector's sps window must span at least this (it can be ready after ~8 s; a bootstrap sps sets a wrong exit)
+BOOST_BUDGET_SOL, BOOST_DONE_FRAC = 17.585, 0.999  # the rule: BOOST spent < 0.999 x 17.585 SOL
 ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
 
@@ -270,6 +273,8 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
             return None, "bad_intent:slot_order"
         if row["q_lamports"] < row["v_lamports"]:
             return None, "bad_intent:q_below_v"
+        if "gap" in row and not isinstance(row["gap"], bool):
+            return None, "bad_intent:gap"
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
     return H5Trigger(mint, pool, row["s0_slot"], float(sps), row["trigger_slot"], row["q_lamports"], row["base_reserve"],
@@ -293,7 +298,20 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
         if not _is_int(base_pre) or not _is_int(tok) or tok <= 0:
             return None, "bad_intent:base"
         if not _is_int(v) or v <= 0:
-            return None, "bad_intent:v_print"  # #477 writes v_print null when the print had no V (v_missing): not tradable
+            return None, "bad_intent:v_print"
+        # #477 never writes v_print null: with no event V it uses the pool's v0 and sets v_missing true. Only a literal False is tradable.
+        if row.get("v_missing") is not False:
+            return None, "bad_intent:v_missing"
+        if not isinstance(row.get("gap"), bool):  # the key must be there and a bool; the default would be silent
+            return None, "bad_intent:gap"
+        if not _is_int(row.get("base_breaks")) or row["base_breaks"] != 0 or not _is_int(row.get("slot_regress")) or row["slot_regress"] != 0:
+            return None, "bad_intent:base_breaks"  # missed or reordered prints in this pool's book
+        span = row.get("sps_span_s")  # the detector's sps window; null only in a tape replay, which this executor never runs
+        if isinstance(span, bool) or not isinstance(span, (int, float)) or not math.isfinite(span) or span < SPS_MIN_SPAN_S:
+            return None, "bad_intent:sps_span"
+        spent = row.get("boost_spent_sol")  # the rule's BOOST-remaining condition, re-checked
+        if isinstance(spent, bool) or not isinstance(spent, (int, float)) or not math.isfinite(spent) or spent < 0 or spent >= BOOST_DONE_FRAC * BOOST_BUDGET_SOL:
+            return None, "bad_intent:boost_spent"
         return parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
                               "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
                               "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
@@ -432,6 +450,7 @@ class H5Counters:
     bvs_n: int = 0  # landed sells paired with their pool's BOOST last slice
     bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
+    tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
 
     def day(self, key: str) -> dict[str, Any]:
         d = self.days.setdefault(key, {"trades": 0, "realized": 0})
@@ -462,7 +481,7 @@ class H5Counters:
 def acquire_lock(path: Path) -> int:
     """Single instance: an exclusive non-blocking flock held for the life of the process (dry run and live share it)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)  # a symlink in its place is refused, not followed and truncated
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -500,9 +519,35 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def live_ok_present(path: str | Path) -> bool:
-    p = Path(path)
-    return p.is_file() and not p.is_symlink()
+LIVE_OK_PATH = Path("/etc/mal-h5/LIVE_OK")  # DEC-024 3: "The executor sends only while LIVE_OK exists. Helm creates it as root; the executor cannot."
+LIVE_OK_UID = 0  # (module constants so a test can stand in for root)
+PINNED_PATH_KEYS = ("stop_file", "halt_file", "live_ok_file", "final_marker_file")  # no config override in live
+
+
+def live_ok_valid() -> str | None:
+    """None when LIVE_OK is a regular file at the fixed path, not a symlink, owned by root, not group- or other-writable, in a directory that is
+    owned by root and not group- or other-writable; all by lstat and O_NOFOLLOW (the same inode is checked that is opened). The executor cannot
+    create it. 'live_ok_missing' when absent, 'live_ok_unsafe' for anything else."""
+    p = LIVE_OK_PATH
+    try:
+        dst, lst = os.lstat(p.parent), os.lstat(p)
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return "live_ok_missing"
+    except OSError:  # ELOOP for a symlink, EACCES, ENOTDIR ...
+        return "live_ok_unsafe"
+    try:
+        fst = os.fstat(fd)
+    finally:
+        os.close(fd)
+    ok = (stat.S_ISDIR(dst.st_mode) and dst.st_uid == LIVE_OK_UID and not dst.st_mode & 0o022
+          and stat.S_ISREG(lst.st_mode) and stat.S_ISREG(fst.st_mode) and (lst.st_dev, lst.st_ino) == (fst.st_dev, fst.st_ino)
+          and fst.st_uid == LIVE_OK_UID and not fst.st_mode & 0o022)
+    return None if ok else "live_ok_unsafe"
+
+
+def live_path_overrides(cfg: dict[str, Any]) -> list[str]:
+    return [k for k in PINNED_PATH_KEYS if k in cfg]
 
 
 def exp024_part1_present(root: Path) -> bool:
@@ -518,8 +563,11 @@ def exp024_part1_present(root: Path) -> bool:
 def start_refusal(cfg: dict[str, Any], root: Path | None = None) -> str | None:
     """The live start conditions, keyless. None = may start live."""
     root = root or repo_root()
-    if not live_ok_present(cfg_path(cfg, "live_ok_file", "LIVE_OK")):
-        return "live_ok_missing"
+    if live_path_overrides(cfg):
+        return "config_path_override:" + ",".join(live_path_overrides(cfg))  # STOP, HALT, LIVE_OK and FINAL_WRITTEN are pinned in live
+    why = live_ok_valid()
+    if why:
+        return why
     if not exp024_part1_present(root):
         return "exp024_part1_missing"
     if cfg.get("end_ms") is None:
@@ -531,13 +579,18 @@ def cfg_path(cfg: dict[str, Any], key: str, name: str) -> Path:
     return Path(cfg[key]) if cfg.get(key) else Path(cfg["state_dir"]) / name
 
 
+def run_path(cfg: dict[str, Any], key: str, name: str, live: bool) -> Path:
+    """STOP, HALT and FINAL_WRITTEN: <state_dir>/<name> in live with no override; a dry run may point them elsewhere."""
+    return Path(cfg["state_dir"]) / name if live else cfg_path(cfg, key, name)
+
+
 def build_probe_cfg(cfg: dict[str, Any], h5: H5Limits, run_mode: str) -> dict[str, Any]:
     """The cfg the probe base classes want. State, ledger and counters live in <state_dir>/<mode>/ so a dry run can never
     consume the live budget, and nothing is shared with the probe's own files under /var/lib/mal-live."""
     sd = Path(cfg["state_dir"]) / run_mode
     pc: dict[str, Any] = {
         "signals_dir": str(Path(cfg["intents_file"]).parent), "state_dir": str(sd), "fill_log": str(sd / "h5-ledger.jsonl"),
-        "stop_file": str(cfg_path(cfg, "stop_file", "STOP")), "halt_file": str(cfg_path(cfg, "halt_file", "HALT")),
+        "stop_file": str(run_path(cfg, "stop_file", "STOP", run_mode == LIVE)), "halt_file": str(run_path(cfg, "halt_file", "HALT", run_mode == LIVE)),
         "mode": LIVE, "book": "h5_boostfloor_v1", "commitment": cfg.get("commitment", "confirmed"), "poll_s": float(cfg.get("poll_s", 5.0)),
         "size_lamports": h5.stake_lamports, "priority_lamports": h5.buy_priority_lamports, "max_attempts": h5.max_attempts,
         "max_open": h5.max_open, "loss_cap_lamports": h5.total_loss_lamports, "max_days": h5.max_days,
@@ -586,7 +639,7 @@ class JsonlPickOracle:
             line = raw.decode("utf-8", "replace")
             m, f = _MINT_RE.findall(line), _PICK_RE.findall(line)
             if len(m) == 1 and len(f) == 1:
-                self._flags[m[0]] = f[0] == "true"
+                self._flags[m[0]] = self._flags.get(m[0], False) or f[0] == "true"  # a pick is sticky: a later pick:false row never undoes it
         self._off += end + 1
 
     def __call__(self, mint: str) -> bool:
@@ -618,16 +671,26 @@ def h5_precheck(probe_cfg: dict[str, Any], mode: str) -> list[str]:
                 raise PermissionError(f)
     except OSError:
         raise SystemExit("h5 precheck refused: the H5 state dir or its files cannot be read and written (fail closed)") from None
+    if mode == LIVE:
+        # Live only (a dry run as another user cannot read these): the probe's cross-check, kept. The wallet is shared with the decommissioned
+        # probe, so neither of its profiles may have a position open or in flight, and unreadable probe state fails closed.
+        for prof in pe.PROFILES:
+            try:
+                counts = pe._live_state_open(pe.state_path_for(pe.LIVE_DIR, LIVE, prof))
+            except BaseException:
+                raise SystemExit(f"h5 precheck refused: the probe's {prof} live state cannot be read (fail closed)") from None
+            if counts and any(counts):
+                raise SystemExit(f"h5 precheck refused: the probe's {prof} live state has {counts[0]} open and {counts[1]} pending position(s)")
     return []
 
 
 @contextlib.contextmanager
-def _h5_precheck_scope():
-    """probe_executor.Executor.__init__ calls the module-global profile_precheck. For the duration of H5Executor's construction (one
-    thread, restored in `finally`) that name is H5's own precheck. Nothing of the probe's is edited, and the probe's executor, which
-    never runs in this process, keeps its own."""
+def _h5_precheck_scope(run_mode: str):
+    """probe_executor.Executor.__init__ calls the module-global profile_precheck (always with mode "live"). For the duration of H5Executor's
+    construction (one thread, restored in `finally`) that name is H5's own precheck, told the real run mode. Nothing of the probe's is edited,
+    and the probe's executor, which never runs in this process, keeps its own."""
     orig = pe.profile_precheck
-    pe.profile_precheck = h5_precheck
+    pe.profile_precheck = lambda cfg, _mode: h5_precheck(cfg, run_mode)
     try:
         yield
     finally:
@@ -647,19 +710,22 @@ class H5Executor(pl.LiveExecutor):
         self.h5cfg = cfg
         self.root = root or repo_root()
         self.intents_path = Path(cfg["intents_file"])
+        if not self.dry_run and live_path_overrides(cfg):
+            raise SystemExit(f"live refused: {', '.join(live_path_overrides(cfg))} cannot be set in live (STOP, HALT, FINAL_WRITTEN are <state_dir>/ and "
+                             f"LIVE_OK is {LIVE_OK_PATH})")
         probe_cfg = build_probe_cfg(cfg, self.h5, self.run_mode)
         kp = keypair if keypair is not None else PublicOnly(Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER))
         sd = Path(probe_cfg["state_dir"])
         self.counters_path = sd / "h5-counters.json"
         h5_precheck(probe_cfg, self.run_mode)  # first, before any H5 file is touched
         pe.guard_live_state(self.run_mode, self.counters_path, sd / "h5-ledger.jsonl")  # deleting the counters cannot reset the limits
-        with _h5_precheck_scope():
+        with _h5_precheck_scope(self.run_mode):
             super().__init__(rpc, probe_cfg, kp, now_ms=now_ms)  # type: ignore[arg-type]
         self.fills = H5Ledger(sd / "h5-ledger.jsonl", self.run_mode)
         self.decisions = self.intents_path  # base-class messages name the file we actually tail
         self.counters = H5Counters.load(self.counters_path, self.run_mode)
-        self.live_ok_file = cfg_path(cfg, "live_ok_file", "LIVE_OK")
-        self.final_marker = cfg_path(cfg, "final_marker_file", "FINAL_WRITTEN")
+        self.final_marker = run_path(cfg, "final_marker_file", "FINAL_WRITTEN", not self.dry_run)
+        self._tail_path = Path(self.counters.tail_path) if self.counters.tail_path else None  # a restart drains the file it was reading first
         seal_end = int(cfg.get("seal_end_ms") or SEAL_END_DEFAULT_MS)
         self.seal_end_ms = max(seal_end, SEAL_END_DEFAULT_MS)  # config may extend the seal, never shorten it
         self.pick_oracle = pick_oracle
@@ -668,7 +734,7 @@ class H5Executor(pl.LiveExecutor):
         self.armed: dict[str, dict[str, Any]] = {}
         self.feed_gap = False
         self._gap_until_ms = 0
-        self._tail_path: Path | None = None
+        self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
         self._glob_path: Path | None = None
         self._glob_ms = 0
         self.trigger_variant = TRIGGER_VARIANT  # the traded rule is not a config value
@@ -684,7 +750,10 @@ class H5Executor(pl.LiveExecutor):
         self._seal_logged_ms = 0
         self.save()  # state and counters exist on disk before the first ledger row, so the anti-reset guards hold from the first start
         self.counters.save(self.counters_path)
-        self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user),
+        self.paths = {"state_dir": str(Path(cfg["state_dir"])), "stop": str(run_path(cfg, "stop_file", "STOP", not self.dry_run)),
+                      "halt": str(run_path(cfg, "halt_file", "HALT", not self.dry_run)), "final_marker": str(self.final_marker),
+                      "live_ok": str(LIVE_OK_PATH) if not self.dry_run else None, "intents": str(self.intents_path)}
+        self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
 
@@ -703,8 +772,9 @@ class H5Executor(pl.LiveExecutor):
         """Checked before every live buy send: LIVE_OK present and EXP-024 Part 1 in the deployed tree."""
         if self.dry_run:
             return None
-        if not live_ok_present(self.live_ok_file):
-            return "live_ok_missing"
+        why = live_ok_valid()  # fixed path, root-owned, re-checked by lstat / O_NOFOLLOW before every live buy send
+        if why:
+            return why
         if not exp024_part1_present(self.root):
             return "exp024_part1_missing"
         return None
@@ -784,6 +854,8 @@ class H5Executor(pl.LiveExecutor):
             return "sps_mismatch"
         if trg.q_lamports > RULE_Q_MAX_LAMPORTS:
             return "q_above_rule_max"
+        if trg.mint in self.no_sps_pools:
+            return "sps_skipped_pool"
         if trg.mint in self.state.open or trg.mint in self.state.pending or trg.mint in self.state.bought:
             return "already_bought"
         pend = sum(1 for p in self.state.pending.values() if p["kind"] == "buy")
@@ -1106,6 +1178,9 @@ class H5Executor(pl.LiveExecutor):
                 lines += chunk
             st.inode = None  # the new file is read from its start
         self._tail_path = path
+        if self.counters.tail_path != str(path):
+            self.counters.tail_path = str(path)
+            self.counters.save(self.counters_path)
         lines += tail_lines(path, st)
         seen = self.now_ms()
         if (st.started, st.offset, st.inode) != before:
@@ -1137,7 +1212,16 @@ class H5Executor(pl.LiveExecutor):
                     self._log("feed_gap", "", gap=True, kind_=row.get("kind"))
             elif rtype == "hb":
                 self.feed_last_ms = self.now_ms()
+            elif rtype == "skipped_no_sps":  # the detector could not time this pool: a later trigger on it is refused
+                if isinstance(row.get("mint"), str):
+                    self.no_sps_pools.add(row["mint"])
             elif rtype == "pool":  # per-pool close record: BOOST last-slice timing. The rule's own clock (slots x sps) first.
+                # Only a pool that ran its full horizon, with no feed gap, and whose BOOST identity is the vault PDA or the event authority
+                # (not the behavioural fallback) counts; a shutdown close, a gapped pool or a guessed BOOST wallet is ledgered and ignored.
+                if row.get("reason") != "horizon" or row.get("gap") is not False or row.get("boost_src") not in ("pda", "event_authority"):
+                    self._log("boost_row_ignored", str(row.get("mint") or ""), why="not_horizon_clean_pda", reason_=row.get("reason"),
+                              gap=row.get("gap"), boost_src=row.get("boost_src"))
+                    continue
                 for k in ("boost_last_slice_s", "boost_last_slice_s_blocktime", "boost_last_slice_s_recv"):
                     v = row.get(k)
                     if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -1620,7 +1704,7 @@ def status_report(cfg: dict[str, Any]) -> str:
     h5 = H5Limits.from_config(cfg)
     lines = [f"rule={RULE_ID} stake_sol={h5.stake_lamports / pe.LAMPORTS:.3f} max_open={h5.max_open}",
              f"stop_file={Path(cfg_path(cfg, 'stop_file', 'STOP')).exists()} halt_file={Path(cfg_path(cfg, 'halt_file', 'HALT')).exists()} "
-             f"live_ok={live_ok_present(cfg_path(cfg, 'live_ok_file', 'LIVE_OK'))} exp024_part1={exp024_part1_present(repo_root())}"]
+             f"live_ok={live_ok_valid() or 'valid'} ({LIVE_OK_PATH}) exp024_part1={exp024_part1_present(repo_root())}"]
     for mode in (DRYRUN, LIVE):
         sd = Path(cfg["state_dir"]) / mode
         sp = pe.state_path_for(sd, LIVE)
@@ -1713,7 +1797,7 @@ def main(argv: list[str] | None = None) -> int:
             rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(url, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
             ex = H5Executor(rpc, cfg, None, pick_oracle=oracle, rpc_label=url_label(url))
         shown = f" rpc={url_label(url)}" if url else ""
-        print(f"h5_executor mode={ex.run_mode} user={ex.user}{shown} limits={ex.h5}", flush=True)
+        print(f"h5_executor mode={ex.run_mode} user={ex.user}{shown} paths={ex.paths} limits={ex.h5}", flush=True)
         if args.once:
             ex.tick()
             return 0

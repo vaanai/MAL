@@ -16,24 +16,22 @@ from tools.test_h5_executor import Clock
 SOLD = 5_000_000_000  # tokens the triggering sell put into the pool (raw)
 
 
+VENDORED = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "records_ff31026.json").read_text())
+
+
 def shadow_trigger(clock: Clock, **kw) -> dict:
-    row = {
-        "type": "trigger", "variant": "pv", "pool": POOL, "mint": MINT, "s0": S0, "s0_t_recv_ms": clock() - 100_000, "slot": TRIG_SLOT,
-        "signature": "5" * 64, "t_since_s0_s": 100.0, "sps": SPS, "block_time": clock() // 1000, "t_recv_ms": clock() - 50, "t_recv": "x",
-        "t_detect_ms": clock(), "detect_lag_ms": 50, "q_trigger_sol": Q / 1e9, "q_pv_post_sol": Q / 1e9, "q_fv_post_sol": Q / 1e9 + 0.001,
-        "q_pv_pre_sol": Q / 1e9 + 0.2, "q_fv_pre_sol": Q / 1e9 + 0.2, "pv_fv_disagree_at_trigger": False, "real_quote_pre": 20_200_000_000,
-        "v_print": V, "v0": V, "base_pre": BASE0 - SOLD, "sell_token_raw": SOLD, "sell_user_out": 190_000_000, "boost_spent_sol": 4.0,
-        "boost_remaining_sol": 13.585, "boost_id": "B" * 44, "boost_src": "vault_pda", "boost_vault_remaining_sol": None,
-        "landing_slot_primary": TRIG_SLOT + 7, "landing_slot_binding": TRIG_SLOT + 10, "entry_slots": {"primary": 7, "binding": 10},
-        "exit_trigger_slot": S0 + 1650, "exit_landing_slot": S0 + 1653, "exit_lag_slots": 3, "prints_seen": 40, "chain_breaks": 0,
-        "base_breaks": 0, "slot_regress": 0, "sps_n": None, "sps_span_s": None, "gap": False, "gaps": [], "announced": True, "v_missing": False,
-    }
+    """The vendored record (keys as Engine._fire writes them at ff31026) with the fixture pool's values and the fake clock's times."""
+    row = {**VENDORED["trigger"], "pool": POOL, "mint": MINT, "s0": S0, "slot": TRIG_SLOT, "sps": SPS, "s0_t_recv_ms": clock() - 100_000,
+           "block_time": clock() // 1000, "t_recv_ms": clock() - 50, "t_detect_ms": clock(), "q_trigger_sol": Q / 1e9, "q_pv_post_sol": Q / 1e9,
+           "q_fv_post_sol": Q / 1e9 + 0.001, "q_pv_pre_sol": Q / 1e9 + 0.2, "q_fv_pre_sol": Q / 1e9 + 0.2, "v_print": V, "v0": V,
+           "base_pre": BASE0 - SOLD, "sell_token_raw": SOLD, "landing_slot_primary": TRIG_SLOT + 7, "landing_slot_binding": TRIG_SLOT + 10,
+           "exit_trigger_slot": S0 + 1650, "exit_landing_slot": S0 + 1653}
     return {**row, **kw}
 
 
 def pool_row(mint: str, **kw) -> dict:
-    row = {"type": "pool", "reason": "close", "pool": POOL, "mint": mint, "s0": S0, "boost_last_slice_s": 341.5,
-           "boost_last_slice_s_blocktime": 341.0, "boost_last_slice_s_recv": 342.0, "boost_last_slice_slot": S0 + 1707, "sealed": False}
+    """A pool close record as #477 writes it for a pool that ran its horizon with the vault PDA as BOOST."""
+    row = {**VENDORED["pool"], "pool": POOL, "mint": mint, "s0": S0, "boost_last_slice_slot": S0 + 1707}
     return {**row, **kw}
 
 
