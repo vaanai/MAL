@@ -252,6 +252,7 @@ class MoneyLimitTests(Case):
                 e.ex.state.open[f"o{i}"] = {"spend": stake}
             for i in range(pend):
                 e.ex.state.pending[f"p{i}"] = {"kind": "buy", "spend": stake}
+            e.ex._refresh_tier(e.clock())  # (the budget check does not read the tier file: handle_trigger does, once per trigger)
             e.ex.state.realized_lamports = realized
             self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop" if refused else None, (opens, pend, realized))
         # daily 0.08 SOL
@@ -261,12 +262,14 @@ class MoneyLimitTests(Case):
             e = Env(sub)
             for i in range(opens):
                 e.ex.state.open[f"o{i}"] = {"spend": stake}
+            e.ex._refresh_tier(e.clock())
             e.ex.counters.day(day)["realized"] = realized
             self.assertEqual(e.ex._budget_stop(e.clock()), "daily_loss_stop" if refused else None, (opens, realized))
 
     def test_a_failed_sells_extra_cost_counts_as_at_risk(self):
         e = self.env()
         e.ex.state.open["o"] = {"spend": 20_000_000, "extra_cost": 60_000}
+        e.ex._refresh_tier(e.clock())
         e.ex.state.realized_lamports = -79_940_000  # 79.94M + 20.06M open + 20M stake = 120M
         self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
 

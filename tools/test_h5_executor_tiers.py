@@ -337,6 +337,83 @@ class TotalStopSinceTierStartTests(TierCase):
         self.assertIsNone(self.stop_at(e, -499_999_999))
 
 
+class OneTierReadPerTriggerTests(TierCase):
+    """G2: the tier file is read ONCE per trigger. A rewrite between two reads (the reviewer's TOCTOU repros) cannot make the buy go out at a
+    tier that the earlier checks did not judge, and the T2 guard has a second line of defence in the build and in the signer."""
+
+    def test_one_read_per_trigger(self):
+        e = self.tier_env("T1")
+        with mock.patch.object(h, "read_tier", wraps=h.read_tier) as rt:
+            e.fire()
+        self.assertEqual((rt.call_count, e.refusals(), buy_args(e.sent()[0])[0]), (1, [], 100_000_000))
+
+    def test_a_t2_rewrite_mid_trigger_does_not_buy_at_t2_while_the_guard_is_off(self):
+        e = self.tier_env("T1")
+        orig = e.ex._hard_refusal
+
+        def hard_refusal(trg, now):
+            self.write_tier("T2\n")  # Helm writes T2 while this trigger is being handled
+            return orig(trg, now)
+
+        with mock.patch.object(h, "T2_IMPACT_OK", False), mock.patch.object(e.ex, "_hard_refusal", side_effect=hard_refusal):
+            e.fire()
+            self.assertEqual((e.ex.tier, e.refusals(), buy_args(e.sent()[0])[0]), ("T1", [], 100_000_000))  # the whole trigger was judged at T1
+            e.ex.state.bought.clear()
+            e.ex.state.pending.clear()
+            e.fire()  # the NEXT trigger reads T2, and T2 is refused while the guard is off
+        self.assertEqual((e.ex.tier, e.refusals(), len(e.rpc.sent)), ("T2", ["t2_impact_unchecked"], 1))
+
+    def test_a_step_down_mid_trigger_is_judged_at_one_tier(self):
+        e = self.tier_env("T1")
+        e.ex.state.open.update({"a": {}, "b": {}})  # T1 allows a third position, T0 would not
+        orig = e.ex._hard_refusal
+
+        def hard_refusal(trg, now):
+            r = orig(trg, now)  # max_open judged at T1 (3)
+            self.write_tier("T0\n")
+            return r
+
+        with mock.patch.object(e.ex, "_hard_refusal", side_effect=hard_refusal):
+            e.fire()
+        self.assertEqual((e.ex.tier, e.refusals(), buy_args(e.sent()[0])[0]), ("T1", [], 100_000_000))  # not a T1 max_open with a T0 stake
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.tier, "T0")  # the file is honoured at the next read
+
+    def test_live_buy_refuses_t2_again_if_the_guard_turns_off_after_the_first_check(self):
+        e = self.tier_env("T2")
+        orig = e.ex._static_for
+
+        def static_for(trg, now):
+            h.T2_IMPACT_OK = False  # the guard is read again in _live_buy: it must not trust the earlier check
+            return orig(trg, now)
+
+        self.addCleanup(setattr, h, "T2_IMPACT_OK", True)
+        with mock.patch.object(e.ex, "_static_for", side_effect=static_for):
+            e.fire()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["t2_impact_unchecked"], []))
+
+    def test_the_signer_cap_is_never_above_t1_while_t2_is_off(self):
+        e = self.tier_env("T1")
+        e.fire()
+        ps = e.ex.pool_cache[MINT][0]
+        bhash = e.ex.bh.get()[0]
+        e.ex.tier = "T2"  # a T2-sized message reaches the signer by some path that skipped both guards
+        msg = e.ex._buy_message(ps, e.ex.user, 1, bhash)
+        self.assertEqual(e.ex.h5.stake_lamports, 300_000_000)
+        with mock.patch.object(h, "T2_IMPACT_OK", False):
+            self.assertEqual(e.ex._signer_spend_cap(), 100_000_000)
+            with self.assertRaises(h.pl.UnsafeTx) as cm:
+                e.ex._sign(msg, ps, MINT, cap=e.ex.h5.buy_priority_lamports)
+            self.assertEqual(cm.exception.label, "unsafe_tx:spend_over_size")
+            e.ex.tier = "T0"  # and a lower tier keeps its own, smaller cap
+            self.assertEqual(e.ex._signer_spend_cap(), 20_000_000)
+        self.assertEqual(e.ex._signer_spend_cap(), 20_000_000)
+        e.ex.tier = "T2"
+        self.assertEqual(e.ex._signer_spend_cap(), 300_000_000)  # with the guard on, T2's stake is signable
+        sig, _b64 = e.ex._sign(msg, ps, MINT, cap=e.ex.h5.buy_priority_lamports)
+        self.assertTrue(sig)
+
+
 class AttemptsPerTierTests(TierCase):
     def attempt(self, e: Env, **kw) -> None:
         e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)

@@ -1002,7 +1002,8 @@ class H5Executor(pl.LiveExecutor):
         return "seal_pick" if picked else None
 
     def _budget_stop(self, now: int) -> str | None:
-        self._refresh_tier(now)
+        """The loss/count stops of the ACTIVE tier. It does not read the tier file: handle_trigger reads it once per trigger, so every check of one
+        trigger (max_open, the T2 guard, these stops, the stake) is judged with the same tier."""
         st, h5 = self.state, self.h5
         if self.counters.halts:
             return "halt_latched:" + ",".join(sorted(self.counters.halts))
@@ -1178,7 +1179,7 @@ class H5Executor(pl.LiveExecutor):
     @pe.critical
     def handle_trigger(self, trg: H5Trigger, seen_ms: int | None = None) -> None:
         now = self.now_ms()
-        self._refresh_tier(now)  # before every buy: the limits below are the active tier's
+        self._refresh_tier(now)  # the ONE read of the tier file for this trigger: the limits below are the active tier's, and nothing re-reads it
         why = self._hard_refusal(trg, now)
         if not why and self.tier == "T2" and not T2_IMPACT_OK:
             why = "t2_impact_unchecked"  # only reachable if T2_IMPACT_OK is set back to False (e.g. a live-fill impact finding): T2 is then refused again
@@ -1217,6 +1218,8 @@ class H5Executor(pl.LiveExecutor):
 
     def _live_buy(self, trg: H5Trigger, ps: tx.PoolState, terms: dict[str, Any], plan: ExitPlan, now: int, drift: float | None,
                   seen_ms: int | None) -> None:
+        if self.tier == "T2" and not T2_IMPACT_OK:  # the second line of defence (the first is in handle_trigger): never build a T2 buy while it is off
+            return self._refuse(trg, "t2_impact_unchecked")
         try:
             bhash, lvbh = self.bh.get()
             msg = self._buy_message(ps, self.user, terms["min_out"], bhash)
@@ -1310,12 +1313,17 @@ class H5Executor(pl.LiveExecutor):
         self.refresh_slot()
 
     # -- signing and sending (the only two places a key or the network is touched) ------------------------------------------
+    def _signer_spend_cap(self) -> int:
+        cap = self.h5.stake_lamports
+        return cap if T2_IMPACT_OK else min(cap, TIERS["T1"]["stake_lamports"])
+
     def _sign(self, msg: Message, ps: tx.PoolState, mint: str, cap: int | None = None) -> tuple[str, str]:
         if self.dry_run:
             raise RuntimeError("dry run cannot sign")
-        # (the spend cap is the ACTIVE tier's stake: the probe's own Limits clamps its size to 0.05 SOL, which would refuse every T1 and T2 buy)
+        # (the spend cap is the ACTIVE tier's stake: the probe's own Limits clamps its size to 0.05 SOL, which would refuse every T1 and T2 buy;
+        # while T2 is not allowed it is never above T1's stake, whatever tier the file said when the message was built)
         pl.validate_message(msg, ps, Pubkey.from_string(mint), self.user, cap if cap is not None else self.h5.escalated_priority_lamports,
-                            self.h5.stake_lamports)
+                            self._signer_spend_cap())
         t = VersionedTransaction(msg, [self._kp])
         raw = bytes(t)
         if len(raw) > tx.TX_SIZE_LIMIT:
