@@ -161,6 +161,13 @@ if [ -e "$H5_ETC/LIVE_OK" ] || [ -L "$H5_ETC/LIVE_OK" ]; then
   echo "refusing: $H5_ETC/LIVE_OK exists; remove it first and create it again only after this install's hash check" >&2
   exit 1
 fi
+# TIER (the scale ladder, content T0/T1/T2) is Helm's, like LIVE_OK: this script never creates, edits or removes it. An existing one must be a
+# regular file owned root:root with mode exactly 0644 (the executor ignores anything else and runs T0), so an install does not carry on over a
+# TIER it would reject. An absent TIER is fine (it means T0).
+if [ -L "$H5_ETC/TIER" ] || { [ -e "$H5_ETC/TIER" ] && { [ ! -f "$H5_ETC/TIER" ] || [ "$(/usr/bin/stat -c %u:%g:%a "$H5_ETC/TIER")" != "0:0:644" ]; }; }; then
+  echo "refusing: $H5_ETC/TIER exists but is not a regular file owned root:root with mode 0644 (not a symlink); fix it by hand, the installer never touches it" >&2
+  exit 1
+fi
 # A live drop-in from an earlier install would make this install's "keyless dry run" a live start (the drop-in hands over the key) held back
 # only by the closed gate. Move it away first (runbook step 1b); it is installed again from the new tree at step 9.
 if [ -e "$LIVE_DROPIN" ] || [ -L "$LIVE_DROPIN" ]; then

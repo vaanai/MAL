@@ -87,7 +87,7 @@ def collect(daily, host, env: dict[str, str], now: float, balance_fn=None) -> tu
     rep = daily.run_checks(args, host, lambda s: None, balance_fn, now)
     for name, msg in rep.alert_list:
         alerts[name] = f"{alerts[name]}; {msg}" if name in alerts else msg
-    obs: dict = {"facts": dict(rep.facts)}
+    obs: dict = {"facts": dict(rep.facts), "tier_changes": list(rep.facts.get("tier_changes") or [])}
     try:
         rc, out = host.systemctl("show", daily.H5_UNIT, "-p", "NRestarts", "--value", "--no-pager")
         obs["restarts"] = int(out.strip()) if rc == 0 else None
@@ -118,19 +118,26 @@ def decide(alerts: dict[str, str], obs: dict, state: dict, now: float) -> tuple[
     for name in active:
         if name not in alerts:
             lines.append(f"RESOLVED {name}")
+    marker = state.get("tier_change_ts") if isinstance(state.get("tier_change_ts"), (int, float)) else 0
+    newest = marker
+    for ts, old, new, problem in sorted(obs.get("tier_changes") or []):  # an event, posted once per ledger row
+        if ts > marker:
+            lines.append(f"EVENT tier_change {old or 'none'} -> {new or '?'}" + (f" (problem: {problem})" if problem else ""))
+            newest = max(newest, ts)
     prev_stop, stop = state.get("stop"), obs.get("stop")
     if stop is True and prev_stop is False:
         lines.append("EVENT STOP placed: new buys are stopped (open positions still exit on the timer)")
     elif stop is False and prev_stop is True:
         lines.append("EVENT STOP removed")
-    return lines, {"active": new_active, "restarts": r if isinstance(r, int) else prev_r, "stop": stop if isinstance(stop, bool) else prev_stop, "ts": now}
+    return lines, {"active": new_active, "restarts": r if isinstance(r, int) else prev_r, "stop": stop if isinstance(stop, bool) else prev_stop,
+                    "tier_change_ts": newest, "ts": now}
 
 
 def summary(obs: dict, n_alerts: int, n_lines: int) -> str:
     f = obs.get("facts") or {}
     age = f.get("feed_age_s")
     return (f"h5_watch: unit={f.get('unit', 'unknown')} active={f.get('active', 'unknown')} enabled={f.get('enabled', 'unknown')} "
-            f"feed_age={'unknown' if age is None else f'{age}s'} alerts={n_alerts} posted={n_lines}")
+            f"feed_age={'unknown' if age is None else f'{age}s'} tier={f.get('tier', 'unknown')} alerts={n_alerts} posted={n_lines}")
 
 
 def run(host, env: dict[str, str], post: Callable[[str, str], None], state_path: Path, now: float | None = None, balance_fn=None) -> int:

@@ -366,7 +366,7 @@ def test_installer_static_guards():
 
 def test_installer_uses_absolute_stat_and_clean_git_env():
     t = INSTALL.read_text()
-    assert t.count("/usr/bin/stat -c") == 5 and not re.search(r"(?<![/\w])stat -c", t)  # check_dir x2, /etc/mal-probe-rpc x2, /etc/mal-h5
+    assert t.count("/usr/bin/stat -c") == 6 and not re.search(r"(?<![/\w])stat -c", t)  # check_dir x2, /etc/mal-probe-rpc x2, /etc/mal-h5
     assert "GITENV=(env -i PATH=/usr/bin:/bin)" in t
     for ln in t.splitlines():
         if re.search(r"(^|[\s(\"])git\s", ln) and not ln.lstrip().startswith(("#", "[", "echo")):
@@ -377,7 +377,7 @@ def test_installer_checks_clone_state_then_manifest_then_units_then_preflight_th
     t = INSTALL.read_text()
     order = ["clone HEAD is not", "the clone is dirty", 'show "$COMMIT:$f"', "sha256 mismatch or missing manifest entry", "manifest verified",
              '--base "$TMP/$BASE_UNIT_SRC"', '--dropin "$TMP/$DROPIN_SRC"', '--watch-service "$TMP/$WATCH_SERVICE_SRC"', '--watch-timer "$TMP/$WATCH_TIMER_SRC"',
-             'stat -c %u:%g:%a "$RPC_DIR"', 'unit_stopped "$UNIT"', 'unit_stopped "$PROBE_UNIT"', "is-enabled", '"$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755"', '-e "$H5_ETC/LIVE_OK"', '-e "$LIVE_DROPIN"',
+             'stat -c %u:%g:%a "$RPC_DIR"', 'unit_stopped "$UNIT"', 'unit_stopped "$PROBE_UNIT"', "is-enabled", '"$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755"', '-e "$H5_ETC/LIVE_OK"', '-L "$H5_ETC/TIER"', '-e "$LIVE_DROPIN"',
              'install -d -m 0755 -o root -g root "$H5_ETC"', 'mv -T "$STAGE" "$DEST/$COMMIT"']
     idx = [t.index(s) for s in order]
     assert idx == sorted(idx), dict(zip(order, idx))
@@ -458,7 +458,7 @@ def installer_under_test(tmp_path: Path) -> str:
     return t
 
 
-def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, etc_mode="0:0:755"):
+def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, etc_mode="0:0:755", tier_mode="0:0:644"):
     """A throwaway clone, a PATH of fakes and a manifest. Returns (clone, env). /etc/mal-h5 is redirected to <tmp>/etc-mal-h5."""
     clone = tmp_path / "clone"
     (clone / "scripts/mal-fast").mkdir(parents=True)
@@ -479,7 +479,7 @@ def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, e
     fakes = {
         "id": '[ "$1" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"',
         "stat": (f'case "$2" in %a) echo {mode};; %u) echo 0;; '
-                 f'%u:%g:%a) case "$3" in */helius.env) echo 0:0:600;; */etc-mal-h5) echo {etc_mode};; *) echo 0:0:700;; esac;; '
+                 f'%u:%g:%a) case "$3" in */helius.env) echo 0:0:600;; */etc-mal-h5/TIER) echo {tier_mode};; */etc-mal-h5) echo {etc_mode};; *) echo 0:0:700;; esac;; '
                  '*) exec /usr/bin/stat "$@";; esac'),
         "find": "exit 0",
         "systemctl": systemctl,

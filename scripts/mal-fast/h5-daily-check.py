@@ -26,7 +26,7 @@ is never echoed into an alert. A failing `sudo -n` is an ALERT (sudo_unavailable
                 installed unit files differing from the pinned copies or any drop-in on them.
   STOPS/ALERTS  from the live ledger (window = --window-hours, default 6): executor budget stops (total_loss_stop, daily_loss_stop,
                 max_trades_day, max_attempts, max_days, end_instant, balance_floor), every `alert` row, s0_recv_late / s0_unverifiable (3 or
-                more), and triggers refused for the two #477 fields (the shadow job is not at #477 head fe7eb43 or later). The sealed stub
+                more), and triggers refused for the two #477 fields (the shadow job is not at #477 head 3dbe1de or later). The sealed stub
                 (bad_intent:suppressed) is expected and never an alert.
   UNIT FILES    the installed unit files equal the pinned copies; the drop-in list comes from systemd (DropInPaths) and may hold only live.conf
                 (equal to the pinned drop-in) and 10-shadow-feed.conf (passing check-h5-unit.py --shadow-feed).
@@ -65,6 +65,9 @@ WATCH_TIMER = "mal-h5-watch.timer"
 H5_DIR = "/var/lib/mal-live/h5"
 H5_ETC = "/etc/mal-h5"  # root:root 0755; holds LIVE_OK, which Helm creates (the executor cannot)
 LIVE_OK = f"{H5_ETC}/LIVE_OK"
+TIER_FILE = f"{H5_ETC}/TIER"  # root:root 0644, content exactly T0, T1 or T2; Helm edits it, the executor only reads it (missing or invalid means T0)
+TIERS = ("T0", "T1", "T2")
+TIER_UNAPPLIED_S = 900  # a valid tier file older than this that the executor has not followed
 PINNED = "/usr/local/lib/mal-h5-exec/current"
 UNIT_FILE = f"/etc/systemd/system/{H5_UNIT}.service"
 DROPIN_DIR = f"/etc/systemd/system/{H5_UNIT}.service.d"
@@ -107,10 +110,15 @@ BUDGET_STOPS = {
     "end_instant": "the configured end_ms has passed",
     "balance_floor": "the wallet is below the balance floor",
 }
+ALERT_MEANING = {
+    "tier_file_problem": "the TIER file failed the executor's checks (not a regular root:root 0644 file, or not exactly T0/T1/T2); it runs T0 meanwhile",
+    "tier_step_down_due": "a halt or loss stop above T0: the manager asks and Helm steps the tier down (runbook \"Step up / step down a tier\"); the executor never edits the file",
+    "s0_anchor_refusals": "several triggers refused on the s0 anchor in a short time",
+}
 NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"  # only names that look like names are ever printed from a file
 # Trigger refusals the executor ledgers as `skip` rows. Printing the reason NAMES is fine; they are fixed strings.
-S0_REFUSALS = ("s0_recv_late", "s0_unverifiable")
-NEW_FIELD_REFUSALS = ("bad_intent:s0_minus_announced_slots", "bad_intent:base_breaks_unresolved")  # the two fields from #477 head fe7eb43
+S0_REFUSALS = ("s0_recv_late", "s0_unverifiable", "s0_before_history")
+NEW_FIELD_REFUSALS = ("bad_intent:s0_minus_announced_slots", "bad_intent:base_breaks_unresolved_settled")  # the two fields the executor gates on (#477 head 3dbe1de)
 EXPECTED_REFUSALS = ("bad_intent:suppressed",)  # #477's sealed stub from 2026-10-16T01Z: a refusal by design, never an alert
 S0_REFUSAL_ALERT_N = 3
 SCHEMA_REFUSAL_ALERT_N = 5
@@ -521,8 +529,52 @@ def check_live_ok_gate(host: Host, rep: Report) -> bool:
     return present
 
 
+def check_tier_file(host: Host, rep: Report) -> tuple[str | None, float | None]:
+    """/etc/mal-h5/TIER: a regular file, not a symlink, owned root:root, mode exactly 0644, content exactly T0, T1 or T2 (Helm creates and edits
+    it; the executor only reads it and runs T0 when it is missing or invalid). Returns (tier, mtime) when it is valid, else (None, None)."""
+    if not host.exists(TIER_FILE) and not host.islink(TIER_FILE):
+        rep.info(f"{TIER_FILE} is absent: the executor runs T0 (Helm creates it with T0 at go-live)")
+        return None, None
+    owner = host.stat(TIER_FILE) or "?:?:?"
+    if host.islink(TIER_FILE) or owner != "root:root:644" or not host.is_regular(TIER_FILE):
+        rep.alert("h5_tier_file", f"{TIER_FILE} must be a regular file owned root:root with mode exactly 0644, no symlink (is {owner}); "
+                                  "the executor ignores it, runs T0 and alerts tier_file_problem")
+        return None, None
+    raw = host.read(TIER_FILE) or b""
+    text = raw[:64].decode("ascii", "replace").strip()
+    if text not in TIERS:
+        rep.alert("h5_tier_file", f"{TIER_FILE} does not hold exactly T0, T1 or T2: the executor runs T0 and alerts tier_file_problem")
+        return None, None
+    rep.ok(f"{TIER_FILE} says {text}")
+    return text, host.mtime(TIER_FILE)
+
+
+def report_tier(host: Host, rep: Report, tier_state, ledger: bytes | None, tier_file, unit: UnitInfo, now: float) -> None:
+    """The tier the executor is on (its counters' tier_state), the file's, and how many triggers it acted on in this tier."""
+    ts = tier_state if isinstance(tier_state, dict) else {}
+    ex = ts.get("tier") if ts.get("tier") in TIERS else None
+    since = ts.get("since_ms") if isinstance(ts.get("since_ms"), (int, float)) else None
+    n = ts.get("attempts") if isinstance(ts.get("attempts"), int) else None
+    if n is None and since is not None:  # the executor's own per-tier count if it keeps one, else the live ledger's decision rows since the tier began
+        n = 0
+        for line in (ledger or b"").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("kind") == "decision" and isinstance(row.get("ts_ms"), (int, float)) and row["ts_ms"] >= since:
+                n += 1
+    file_tier, file_mtime = tier_file if tier_file else (None, None)
+    rep.facts["tier"] = ex or file_tier or "unknown"
+    rep.info(f"tier: executor={ex or 'unknown'} file={file_tier or 'none'} since={time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(since / 1000)) if since else 'unknown'} "
+             f"trades_in_tier={n if n is not None else 'unknown'}")
+    if unit.running_live and file_tier and ex and file_tier != ex and file_mtime is not None and now - file_mtime > TIER_UNAPPLIED_S:
+        rep.alert("h5_tier_unapplied", f"the TIER file says {file_tier} since {int((now - file_mtime) // 60)} min but the running executor is on {ex}: it re-reads the file on every tick, "
+                                       "so it is not ticking or not reading /etc/mal-h5/TIER")
+
+
 def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env_file: str, unit: UnitInfo, live_ok: bool,
-                   balance_fn: Callable[[str, str], int] | None = None, public_rpc: bool = False) -> None:
+                   balance_fn: Callable[[str, str], int] | None = None, public_rpc: bool = False, tier_file=None, now: float = 0.0) -> None:
     st_dir = host.stat(H5_DIR)
     if st_dir is None:
         rep.info(f"{H5_DIR} does not exist yet")
@@ -556,6 +608,7 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
     if stuck:
         rep.alert("h5_stuck_position", f"{len(stuck)} stuck or abandoned position(s): root sell-and-close (docs/runbooks/h5-executor.md)")
     ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL)
+    report_tier(host, rep, counters.get("tier_state"), ledger, tier_file, unit, now)
     user = None
     for line in (ledger or b"").splitlines():
         if b'"kind":"start"' in line.replace(b" ", b""):
@@ -700,6 +753,7 @@ def check_refusals(host: Host, rep: Report, now: float, window_s: float = 6 * 36
     counts: Counter = Counter()
     alert_rows: Counter = Counter()
     decisions = 0
+    changes: list[tuple] = []
     for line in ledger.splitlines():
         try:
             row = json.loads(line)
@@ -709,12 +763,18 @@ def check_refusals(host: Host, rep: Report, now: float, window_s: float = 6 * 36
         if not isinstance(ts, (int, float)) or ts / 1000.0 < now - window_s:
             continue
         kind = row.get("kind")
-        if kind == "decision":
+        if kind == "tier_change":
+            changes.append((int(ts), *(row.get(k) if row.get(k) in TIERS else None for k in ("from_tier", "to_tier")),
+                            row["problem"] if isinstance(row.get("problem"), str) and re.match(NAME_RE, row["problem"]) else None))
+        elif kind == "decision":
             decisions += 1
         elif kind == "skip" and isinstance(row.get("reason"), str) and re.match(NAME_RE, row["reason"]):
             counts[row["reason"]] += 1
         elif kind == "alert" and isinstance(row.get("alert"), str) and re.match(NAME_RE, row["alert"]):
             alert_rows[row["alert"]] += 1
+    rep.facts["tier_changes"] = changes
+    for ts, old, new, problem in changes:
+        rep.info(f"tier_change {old or 'none'} -> {new or '?'} at {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(ts / 1000))}" + (f" (problem: {problem})" if problem else ""))
     if counts:
         rep.info(f"refusals in the last {hours} h ({decisions} decision(s)): " + ", ".join(f"{r} x{n}" for r, n in counts.most_common(8)))
     for reason, meaning in BUDGET_STOPS.items():
@@ -722,17 +782,18 @@ def check_refusals(host: Host, rep: Report, now: float, window_s: float = 6 * 36
             rep.alert(f"h5_budget_stop_{reason}", f"the executor refused {counts[reason]} trigger(s) in the last {hours} h on its budget stop {reason} ({meaning}): "
                                                  "new buys are stopped until it clears; open positions still exit")
     for what, n in alert_rows.most_common():
-        rep.alert(f"h5_executor_alert_{what}", f"the executor wrote {n} ALERT {what} row(s) in the last {hours} h (see the ledger and journalctl -u {H5_UNIT})")
+        rep.alert(f"h5_executor_alert_{what}", f"the executor wrote {n} ALERT {what} row(s) in the last {hours} h"
+                  + (f" ({ALERT_MEANING[what]})" if what in ALERT_MEANING else "") + f" (see the ledger and journalctl -u {H5_UNIT})")
     s0 = sum(counts[r] for r in S0_REFUSALS)
     if s0 >= S0_REFUSAL_ALERT_N:
-        rep.alert("h5_s0_refusals", f"{s0} trigger(s) refused as s0_recv_late or s0_unverifiable in {hours} h "
+        rep.alert("h5_s0_refusals", f"{s0} trigger(s) refused as s0_recv_late, s0_unverifiable or s0_before_history in {hours} h "
                                     f"({', '.join(f'{r} x{counts[r]}' for r in S0_REFUSALS if counts[r])}): the detector is backlogged or our slot history cannot verify s0")
     missing = {r: n for r, n in counts.items() if r.startswith("bad_intent:missing_")}
     new_fields = sum(counts[r] for r in NEW_FIELD_REFUSALS)
     if missing or (new_fields >= SCHEMA_REFUSAL_ALERT_N and decisions == 0):
         shown = ", ".join(f"{r} x{n}" for r, n in {**missing, **{r: counts[r] for r in NEW_FIELD_REFUSALS if counts[r]}}.items())
         rep.alert("h5_feed_schema", f"triggers are refused for the trigger fields ({shown}) and none was acted on: the shadow job is probably not running at "
-                                    "#477 head fe7eb43 or later (the head that writes s0_minus_announced_slots and base_breaks_unresolved)")
+                                    "#477 head 3dbe1de or later (the head that writes s0_minus_announced_slots and base_breaks_unresolved_settled)")
 
 
 def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] = print,
@@ -744,20 +805,22 @@ def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] 
     window_s = float(getattr(args, "window_hours", 6.0)) * 3600
     if not host.sudo_ok():
         rep.alert("sudo_unavailable", "sudo -n /usr/bin/true failed: the files in /var/lib/mal-live cannot be read, so the checks that need them cannot pass")
-    ctx: dict = {"unit": NO_UNIT, "live_ok": False}
+    ctx: dict = {"unit": NO_UNIT, "live_ok": False, "tier_file": None}
 
     def unit_step() -> None:
         ctx["unit"] = check_h5_unit(host, rep, checker)
 
     def gate_step() -> None:
         ctx["live_ok"] = check_live_ok_gate(host, rep)
+        ctx["tier_file"] = check_tier_file(host, rep)
 
     steps = [("probe_units", lambda: check_probe_units(host, rep))]
     if not args.skip_probe_state:
         steps.append(("probe_state", lambda: check_probe_state(host, rep, Path(args.baseline), args.write_baseline, args.expect_sha256,
                                                                getattr(args, "expect_dec020_sha256", None))))
     steps += [("h5_unit", unit_step), ("h5_gate", gate_step),
-              ("h5_state", lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc)),
+              ("h5_state", lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc,
+                                                       ctx["tier_file"], now)),
               ("h5_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now)),
               ("h5_watch", lambda: check_watch(host, rep, ctx["live_ok"], now)),
               ("h5_refusals", lambda: check_refusals(host, rep, now, window_s))]

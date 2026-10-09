@@ -174,7 +174,7 @@ def test_the_watch_survives_a_failing_restarts_call_and_prints_a_summary(tmp_pat
     p = Poster()
     assert watch_go(NoRestarts(), tmp_path / "s.json", p) == 0 and p.posts == []
     out = capsys.readouterr().out
-    assert "h5_watch: unit=mal-h5-executor active=active enabled=enabled feed_age=60s alerts=0 posted=0" in out
+    assert "h5_watch: unit=mal-h5-executor active=active enabled=enabled feed_age=60s tier=unknown alerts=0 posted=0" in out
     h = world()
     h.systemctl_rc = 1  # systemd does not answer: an alert is posted, and the summary says unknown rather than looking healthy
     p = Poster()
