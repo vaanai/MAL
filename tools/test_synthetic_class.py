@@ -330,3 +330,78 @@ def test_event_seen_any_from_a_tape_located_completing_tx_when_the_migrate_tx_ca
     rpc.txs.pop(c["migrate_sig"])
     out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"], tape_complete_sig=c["complete_sig"]))
     assert out["class"] == "unclassified" and out["reason"] == "tx_missing:migrate" and out["event_seen_any"] is True
+
+
+# ---- audit-only migrate fallback (not B4) -----------------------------------------------------------------------------
+
+UNKNOWN_BEFORE = "U" * 40 + "NKNOWNSIG"  # what a buy that never landed leaves behind: a signature the node does not have
+STUB = {"slot": 1, "meta": {"err": None, "logMessages": []}, "transaction": {"message": {"accountKeys": []}}}
+
+
+def test_audit_fallback_defaults_off_and_the_b4_read_path_is_unchanged():
+    import inspect
+
+    assert inspect.signature(sc.classify_pool).parameters["audit_fallback"].default is False
+    rpc, c = fake_for("synthetic_1")
+    out = sc.classify_pool(rpc, **args(c, before_sig=UNKNOWN_BEFORE))
+    assert out["class"] == "unclassified" and out["reason"] == "fetch_failed:signatures:pool:RpcError"  # B4: a pool search that fails is unclassified
+    assert [a for a, _ in rpc.sig_calls] == [c["pool"]]  # the curve was never searched without `before`
+    ok, c = fake_for("synthetic_1")
+    out = sc.classify_pool(ok, **args(c, before_sig=c["boundary_sig"]))
+    assert out["reason"] == "post_complete_buy_in_complete_tx" and "via_audit_fallback" not in out["reason"]
+    assert all("before" in o for _, o in ok.sig_calls)
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_audit_fallback_classifies_a_never_landed_anchor_like_the_b4_path(name):
+    ref_rpc, c = fake_for(name)
+    ref = sc.classify_pool(ref_rpc, **args(c, before_sig=c["boundary_sig"]))
+    rpc, c = fake_for(name)
+    out = sc.classify_pool(rpc, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True)
+    assert out["class"] == c["expect"] == ref["class"]
+    assert (out["migrate_sig"], out["complete_sig"], out["event_seen_any"]) == (ref["migrate_sig"], ref["complete_sig"], ref["event_seen_any"])
+    assert out["reason"] == ref["reason"] + ";via_audit_fallback"
+    curve_calls = [o for a, o in rpc.sig_calls if a == c["curve"]]
+    assert "before" not in curve_calls[0] and curve_calls[0]["limit"] == 1000  # the fallback: newest-first, no `before`
+    assert curve_calls[1]["before"] == c["migrate_sig"]  # then B4 resumes: the completing-tx search before the migrate sig
+
+
+def test_audit_fallback_takes_the_newest_tx_with_this_pools_createpool_and_this_mints_migration_event():
+    rpc, c = fake_for("non_synthetic_1")
+    other = CASES["non_synthetic_2"]  # a real migrate tx, for a different pool and mint
+    rpc.txs[other["migrate_sig"]] = FX["txs"][other["migrate_sig"]]
+    rpc.txs["stub_ok"] = copy.deepcopy(STUB)
+    failed = [_entry(f"failed{i}", err={"InstructionError": [0, "x"]}) for i in range(5)]
+    rpc.lists[c["curve"]] = failed + [_entry("stub_ok"), _entry(other["migrate_sig"]), _entry(c["migrate_sig"])] + c["curve_sigs"]
+    out = sc.classify_pool(rpc, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True)
+    assert out["class"] == "non_synthetic" and out["migrate_sig"] == c["migrate_sig"]
+    assert [s for s in rpc.tx_calls if s in ("stub_ok", other["migrate_sig"], c["migrate_sig"])][:3] == ["stub_ok", other["migrate_sig"], c["migrate_sig"]]
+    assert not [s for s in rpc.tx_calls if s.startswith("failed")]
+
+
+def test_audit_fallback_also_runs_when_the_pool_search_ends_at_the_cap_and_a_failed_fallback_keeps_both_reasons():
+    rpc, c = fake_for("non_synthetic_1")
+    newer = [_entry(f"trade{i}") for i in range(1200)]
+    rpc.lists[c["pool"]] = [_entry(c["boundary_sig"])] + newer + c["pool_sigs"]
+    rpc.txs.update({e["signature"]: copy.deepcopy(STUB) for e in newer})
+    out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"]), cap=1000, audit_fallback=True)
+    assert out["class"] == "non_synthetic" and out["migrate_sig"] == c["migrate_sig"] and out["reason"].endswith(";via_audit_fallback")
+    rpc2, c = fake_for("non_synthetic_1")
+    rpc2.txs["stub_ok"] = copy.deepcopy(STUB)
+    rpc2.lists[c["curve"]] = [_entry("stub_ok")]  # the curve holds no migrate tx either
+    out = sc.classify_pool(rpc2, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True)
+    assert out["class"] == "unclassified" and out["migrate_sig"] is None
+    assert out["reason"] == "fetch_failed:signatures:pool:RpcError;fallback:migrate_tx_not_found"
+
+
+def test_audit_fallback_respects_the_cap_and_a_missing_tx_in_its_walk_is_unclassified():
+    rpc, c = fake_for("synthetic_1")
+    junk = [_entry(f"junk{i}", err={"InstructionError": [0, "x"]}) for i in range(1500)]
+    rpc.lists[c["curve"]] = junk + [_entry(c["migrate_sig"])] + c["curve_sigs"]  # the migrate tx is 1500 signatures back
+    out = sc.classify_pool(rpc, **args(c, before_sig=UNKNOWN_BEFORE), cap=1000, page_size=400, audit_fallback=True)
+    assert out["class"] == "unclassified" and out["reason"].endswith("fallback:migrate_tx_not_found")
+    assert [o["limit"] for a, o in rpc.sig_calls if a == c["curve"]] == [400, 400, 200]
+    rpc2, c = fake_for("synthetic_1")
+    rpc2.lists[c["curve"]] = [_entry("not_in_the_node"), _entry(c["migrate_sig"])]
+    out = sc.classify_pool(rpc2, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True)
+    assert out["class"] == "unclassified" and out["reason"].endswith("fallback:tx_missing:migrate_fallback")

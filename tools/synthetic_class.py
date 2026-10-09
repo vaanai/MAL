@@ -31,7 +31,14 @@ own; none of their semantics is copied here.
 
 `event_seen_any` (audit use only; the formal read ignores it and applies B3 to `class` as written): True when a PostCompleteBuyEvent
 discriminator was seen in ANY transaction that was located and read here, so it can be True on an `unclassified` pool whose other
-transaction was unreadable. It is True for every `synthetic` pool and False for every `non_synthetic` one. The CreatePoolEvent decoder is `observe.trade_decode.decode_program_data`.
+transaction was unreadable. It is True for every `synthetic` pool and False for every `non_synthetic` one.
+
+`audit_fallback` (default False; the read path is B4 exactly and never sets it): AUDIT ONLY, not part of B4. When the pool-address search
+fails (any reason, including the node's -32020 for a `before` signature it does not know, as for a buy that never landed), the migrate
+tx is searched on the bonding-curve PDA instead: `getSignaturesForAddress(curve_pda)` newest-first with no `before`, up to `cap`
+signatures, taking the newest successful tx that carries the CreatePoolEvent for this pool AND the CompletePumpAmmMigrationEvent for
+this mint. B4 then continues unchanged from that migrate tx (completing-tx search, defining-event checks, class on both txs). A
+result that used it has `;via_audit_fallback` appended to its `reason`. The CreatePoolEvent decoder is `observe.trade_decode.decode_program_data`.
 """
 from __future__ import annotations
 
@@ -154,17 +161,9 @@ def _migrate_ok(tx: Mapping[str, Any] | None, mint: str, pool: str | None) -> bo
     return _carries_migration(blobs, mint)
 
 
-def _locate_migrate(rpc: Any, *, mint: str, pool: str, s0_sig: str | None, before_sig: str | None, tape_migrate_sig: str | None,
-                    cap: int, page_size: int) -> tuple[str, dict[str, Any]]:
-    if tape_migrate_sig:
-        tx = _fetch(rpc, tape_migrate_sig, "migrate")
-        if _migrate_ok(tx, mint, None):
-            return tape_migrate_sig, tx  # type: ignore[return-value]
-    if s0_sig:
-        tx = _fetch(rpc, s0_sig, "migrate")
-        if _migrate_ok(tx, mint, pool):
-            return s0_sig, tx  # type: ignore[return-value]
-    sigs = signatures_before(rpc, pool, s0_sig or before_sig, cap, page_size, "signatures:pool")
+def _search_pool_for_migrate(rpc: Any, *, mint: str, pool: str, anchor: str | None, cap: int, page_size: int) -> tuple[str, dict[str, Any]]:
+    """B4 item 1, third source: the oldest successful tx before `anchor` on the pool address that carries a CreatePoolEvent for the pool."""
+    sigs = signatures_before(rpc, pool, anchor, cap, page_size, "signatures:pool")
     for entry in reversed(sigs):  # oldest first: the first hit is the oldest successful tx with a CreatePoolEvent for the pool
         if entry.get("err") is not None:
             continue
@@ -176,6 +175,47 @@ def _locate_migrate(rpc: Any, *, mint: str, pool: str, s0_sig: str | None, befor
                 return entry["signature"], tx
             break  # the oldest CreatePool tx does not carry the mint's migration event: no source is left
     raise _Unclassified("migrate_tx_not_found")
+
+
+def _search_curve_for_migrate(rpc: Any, *, mint: str, pool: str, curve_pda: str, cap: int, page_size: int) -> tuple[str, dict[str, Any]]:
+    """AUDIT-ONLY fallback (not B4): the newest successful tx on the curve PDA, no `before`, that carries the CreatePoolEvent for this pool
+    AND the CompletePumpAmmMigrationEvent for this mint."""
+    sigs = signatures_before(rpc, curve_pda, None, cap, page_size, "signatures:curve_fallback")
+    for entry in sigs:  # newest first
+        if entry.get("err") is not None:
+            continue
+        tx = _fetch(rpc, entry["signature"], "migrate_fallback")
+        if tx is None:
+            raise _Unclassified("tx_missing:migrate_fallback")
+        if _succeeded(tx):
+            blobs = M.tx_event_blobs(tx)
+            if _carries_create_pool(blobs, pool) and _carries_migration(blobs, mint):
+                return entry["signature"], tx
+    raise _Unclassified("migrate_tx_not_found")
+
+
+def _locate_migrate(rpc: Any, *, mint: str, pool: str, curve_pda: str, s0_sig: str | None, before_sig: str | None, tape_migrate_sig: str | None,
+                    cap: int, page_size: int, audit_fallback: bool) -> tuple[str, dict[str, Any], bool]:
+    """(migrate sig, tx, whether the audit-only fallback found it)."""
+    if tape_migrate_sig:
+        tx = _fetch(rpc, tape_migrate_sig, "migrate")
+        if _migrate_ok(tx, mint, None):
+            return tape_migrate_sig, tx, False  # type: ignore[return-value]
+    if s0_sig:
+        tx = _fetch(rpc, s0_sig, "migrate")
+        if _migrate_ok(tx, mint, pool):
+            return s0_sig, tx, False  # type: ignore[return-value]
+    try:
+        sig, tx = _search_pool_for_migrate(rpc, mint=mint, pool=pool, anchor=s0_sig or before_sig, cap=cap, page_size=page_size)
+        return sig, tx, False
+    except _Unclassified as first:
+        if not audit_fallback:
+            raise
+        try:
+            sig, tx = _search_curve_for_migrate(rpc, mint=mint, pool=pool, curve_pda=curve_pda, cap=cap, page_size=page_size)
+        except _Unclassified as second:
+            raise _Unclassified(f"{first.reason};fallback:{second.reason}") from second
+        return sig, tx, True
 
 
 def _complete_ok(tx: Mapping[str, Any] | None, mint: str) -> bool:
@@ -217,6 +257,7 @@ def classify_pool(
     tape_complete_sig: str | None = None,
     cap: int = CAP_DEFAULT,
     page_size: int = PAGE_DEFAULT,
+    audit_fallback: bool = False,
 ) -> dict[str, Any]:
     """EXP-024 Am.4 B1/B4. Returns {"class": synthetic | non_synthetic | unclassified, "migrate_sig", "complete_sig", "reason"}.
 
@@ -224,16 +265,19 @@ def classify_pool(
     `RpcError` / `RpcUnreachable` / `CallBudgetExceeded`). `curve_pda` defaults to the PDA derived from `mint`. `s0_sig` is the pool's
     s0 print; `before_sig` stands in for it when only a later signature is known (a superset window: the migrate tx is older than
     both). With neither, the pool search starts from the newest signature, which only works for a young pool inside `cap`.
-    The tape signatures only locate; the class always comes from the transactions read here.
+    The tape signatures only locate; the class always comes from the transactions read here. `audit_fallback` is for the daily audit only
+    (module docstring); leave it False on the read path.
     """
     curve = curve_pda or curve_pda_for_mint(mint)
     migrate_sig: str | None = None
     complete_sig: str | None = None
     migrate_tx: Mapping[str, Any] | None = None
     seen_any = False
+    via_fallback = False
     try:
-        migrate_sig, migrate_tx = _locate_migrate(
-            rpc, mint=mint, pool=pool, s0_sig=s0_sig, before_sig=before_sig, tape_migrate_sig=tape_migrate_sig, cap=cap, page_size=page_size)
+        migrate_sig, migrate_tx, via_fallback = _locate_migrate(
+            rpc, mint=mint, pool=pool, curve_pda=curve, s0_sig=s0_sig, before_sig=before_sig, tape_migrate_sig=tape_migrate_sig,
+            cap=cap, page_size=page_size, audit_fallback=audit_fallback)
         seen_any = _pcb(migrate_tx, mint)
         complete_sig, complete_tx = _locate_complete(
             rpc, mint=mint, curve_pda=curve, migrate_sig=migrate_sig, migrate_tx=migrate_tx, tape_complete_sig=tape_complete_sig,
@@ -241,14 +285,15 @@ def classify_pool(
     except _Unclassified as exc:
         if migrate_tx is None and tape_complete_sig:  # no migrate tx, but a tape-located completing tx may still show the event
             seen_any = _tape_complete_shows_event(rpc, tape_complete_sig, mint)
-        return _result(CLASS_UNCLASSIFIED, migrate_sig, complete_sig, exc.reason, seen_any)
+        return _result(CLASS_UNCLASSIFIED, migrate_sig, complete_sig, exc.reason + (";via_audit_fallback" if via_fallback else ""), seen_any)
+    tag = ";via_audit_fallback" if via_fallback else ""
     same = complete_sig == migrate_sig  # the migrate tx also carried the CompleteEvent: one transaction to test
     in_migrate = seen_any
     in_complete = in_migrate if same else _pcb(complete_tx, mint)
     if in_migrate and in_complete:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_and_complete_tx" if same else "post_complete_buy_in_both_txs", True)
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, ("post_complete_buy_in_migrate_and_complete_tx" if same else "post_complete_buy_in_both_txs") + tag, True)
     if in_complete:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_complete_tx", True)
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_complete_tx" + tag, True)
     if in_migrate:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_tx", True)
-    return _result(CLASS_NON_SYNTHETIC, migrate_sig, complete_sig, "no_post_complete_buy", False)
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_tx" + tag, True)
+    return _result(CLASS_NON_SYNTHETIC, migrate_sig, complete_sig, "no_post_complete_buy" + tag, False)
