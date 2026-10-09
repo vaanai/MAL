@@ -104,7 +104,9 @@ SPS_MIN_SPAN_MS = 60_000  # ... and the two points compared must be at least thi
 HIST_KEEP_MS = 900_000
 REPLAN_TOLERANCE = 0.001  # an open plan is rebuilt when the measured slot rate is more than 0.1% from the plan's (3.3 s over 330 s is the limit)
 EARLY_TOLERANCE_MS = 1_000  # a slot-timed stage never fires more than this before its wall-clock time since s0
-S0_RECV_LATE_MS = 1_500  # a detector s0 receive time later than our own mapping of s0_slot by more than this is not believed: refuse
+S0_RECV_LATE_MS = 1_500  # an s0 that reached the detector later than the trigger print did, relative to the chain, by more than this: refuse
+S0_ANCHOR_REASONS = frozenset({"s0_recv_late", "s0_unverifiable", "s0_before_history"})
+S0_ANCHOR_ALERT_N = 3  # more than this many such refusals in an hour raises an `s0_anchor_refusals` alert
 SUPERSEDE_MS = 2_000  # a sell with no status this long after it was first sent is superseded by the next rung
 BUY_REBROADCAST_MS = 3_000  # a buy is rebroadcast for this long after the decision, then left to expire
 LATE_SELL_MIN_N = 1  # literal reading of "more than 5% of sells": judged from the first landed sell. A code constant, not config.
@@ -249,6 +251,7 @@ class H5Trigger:
     gap: bool = False  # the detector flagged this pool as having seen a feed gap
     s0_wall_ms: int | None = None  # wall clock at which the detector saw s0: the anchor of the 330 s exit if the slot rate moves
     block_time: int | None = None  # chain time (s) of the trigger print
+    trigger_recv_ms: int | None = None  # the detector's receive time of the trigger print: the feed's lag at this moment, for the s0 check
     base_breaks: int | None = None  # raw per-pool counts from the detector, ledgered (they count reorders too; base_breaks_unresolved decides)
     slot_regress: int | None = None
     base_breaks_unresolved: int | None = None
@@ -290,7 +293,8 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
         return None, f"bad_intent:missing_{exc.args[0]}"
     return H5Trigger(mint, pool, row["s0_slot"], float(sps), row["trigger_slot"], row["q_lamports"], row["base_reserve"],
                      row["v_lamports"], row["decision_ms"], bool(row.get("gap")),
-                     row["s0_wall_ms"] if _is_int(row.get("s0_wall_ms")) else None, row["block_time"] if _is_int(row.get("block_time")) else None), None
+                     row["s0_wall_ms"] if _is_int(row.get("s0_wall_ms")) else None, row["block_time"] if _is_int(row.get("block_time")) else None,
+                     row["trigger_recv_ms"] if _is_int(row.get("trigger_recv_ms")) else None), None
 
 
 def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | None, str | None]:
@@ -335,6 +339,7 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
         t, bad = parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
                                 "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
                                 "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
+                                "trigger_recv_ms": row.get("t_recv_ms"),
                                 "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
                                 "gap": row.get("gap")})
         if t is None:
@@ -779,6 +784,12 @@ class H5Executor(pl.LiveExecutor):
         self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
         self._bad_intent_ms: list[int] = []
         self._bad_intent_alert_ms = -BAD_INTENT_WINDOW_MS
+        self._anchor_refusal_ms: list[int] = []
+        self._anchor_alert_ms = -BAD_INTENT_WINDOW_MS
+        self._anchor_info: dict[str, Any] = {}
+        self._counts_hour: int | None = None
+        self._refusal_counts: dict[str, int] = {}
+        self._accepted_hour = 0
         self._glob_path: Path | None = None
         self._glob_ms = 0
         self.trigger_variant = TRIGGER_VARIANT  # the traded rule is not a config value
@@ -926,24 +937,53 @@ class H5Executor(pl.LiveExecutor):
             return "max_open"
         return None
 
-    def _s0_anchor(self, trg: H5Trigger) -> tuple[int | None, str | None]:
-        """(wall ms of s0, refusal). The exit is timed from s0, so its wall anchor is OUR OWN mapping of s0_slot through the getSlot history we
-        recorded, not the detector's word: a backlogged s0 print (received late) would otherwise delay the send, the escalation and the
-        deadline by the same lag. Where the history does not reach s0 (just after a start) the trigger print's block time less its distance from
-        s0 stands in (whole seconds, so coarse). If the detector claims s0 was received more than 1.5 s after that, the claim is false or the
-        feed was backlogged: refuse. With no claim to check and nothing to map from, the old estimate from the decision time is used."""
+    def _s0_anchor(self, trg: H5Trigger) -> tuple[int | None, str | None, dict[str, Any]]:
+        """(wall ms of s0, refusal, info for the ledger). The exit is timed from s0, so its wall anchor is OUR OWN mapping of s0_slot through the
+        getSlot history we recorded, not the detector's word. A history that does not reach s0 (the first ~300 s after a start) cannot anchor
+        it: refuse (`s0_before_history`); the whole-second block time is not used instead.
+        The detector's s0 receive time is only checked, and RELATIVE to the same feed: the shadow hears every print late by the feed's lag
+        (it listens at `confirmed`, we map `processed`: about 2.6 s at p10), so an absolute comparison refuses most live triggers. What a
+        backlogged s0 shows is an s0 that came in later, against the chain, than the trigger print did on the same feed:
+        (s0_recv - mapped(s0)) - (trigger_recv - mapped(trigger_slot)) > 1.5 s -> refuse (`s0_recv_late`)."""
+        info: dict[str, Any] = {"anchor_source": None}
         mapped = self.slots.wall_of_slot(trg.s0_slot, trg.sps)
-        if mapped is None and trg.block_time is not None:
-            mapped = trg.block_time * 1000 - int(round((trg.trigger_slot - trg.s0_slot) * trg.sps * 1000))
         if mapped is None:
-            if trg.s0_wall_ms is not None:
-                return None, "s0_unverifiable"
-            mapped = trg.decision_ms - int(round((trg.trigger_slot - trg.s0_slot) * trg.sps * 1000))
-        if trg.s0_wall_ms is not None and trg.s0_wall_ms - mapped > S0_RECV_LATE_MS:
-            return mapped, "s0_recv_late"
-        return mapped, None
+            return None, "s0_before_history", info
+        info["anchor_source"] = "own_getslot_history"
+        if trg.s0_wall_ms is not None:
+            trig_mapped = self.slots.wall_of_slot(trg.trigger_slot, trg.sps)
+            if trig_mapped is None or trg.trigger_recv_ms is None:
+                return mapped, "s0_unverifiable", info
+            s0_lag, trig_lag = trg.s0_wall_ms - mapped, trg.trigger_recv_ms - trig_mapped
+            info.update(s0_feed_lag_ms=s0_lag, trigger_feed_lag_ms=trig_lag, s0_relative_lag_ms=s0_lag - trig_lag)
+            if s0_lag - trig_lag > S0_RECV_LATE_MS:
+                return mapped, "s0_recv_late", info
+        return mapped, None, info
+
+    def _hour_roll(self, now: int) -> None:
+        """One `refusal_counts` ledger row per UTC hour: accepted and refused triggers and the refusals by reason (seal skips as one count)."""
+        hour = now // 3_600_000
+        if self._counts_hour is None:
+            self._counts_hour = hour
+        elif hour != self._counts_hour:
+            if self._refusal_counts or self._accepted_hour:
+                self._log("refusal_counts", "", hour_start_ms=self._counts_hour * 3_600_000, accepted=self._accepted_hour,
+                          refused=sum(self._refusal_counts.values()), by_reason=dict(sorted(self._refusal_counts.items())))
+            self._counts_hour, self._refusal_counts, self._accepted_hour = hour, {}, 0
+
+    def _count_refusal(self, reason: str) -> None:
+        now = self.now_ms()
+        self._hour_roll(now)
+        key = "seal_skip" if reason in SEAL_REASONS else reason
+        self._refusal_counts[key] = self._refusal_counts.get(key, 0) + 1
+        if reason in S0_ANCHOR_REASONS:  # these refuse most triggers when the anchor is wrong: more than 3 in an hour is an alert
+            self._anchor_refusal_ms = [t for t in self._anchor_refusal_ms if now - t < BAD_INTENT_WINDOW_MS] + [now]
+            if len(self._anchor_refusal_ms) > S0_ANCHOR_ALERT_N and now - self._anchor_alert_ms >= BAD_INTENT_WINDOW_MS:
+                self._anchor_alert_ms = now
+                self._alert("s0_anchor_refusals", "", count=len(self._anchor_refusal_ms), last_reason=reason)
 
     def _refuse(self, trg: H5Trigger, reason: str, **kw: Any) -> None:
+        self._count_refusal(reason)
         if reason in SEAL_REASONS:  # a count only: which mints the gate picked is never written down
             self.counters.seal_skips += 1
             self.counters.save(self.counters_path)
@@ -1031,7 +1071,7 @@ class H5Executor(pl.LiveExecutor):
                 drift = (snap.quote_priced / snap.base_reserve) / (trg.q_lamports / trg.base_reserve) - 1.0
                 if drift > self.h5.entry_tolerance_bps / 10_000.0:
                     return self._refuse(trg, "price_moved", drift_vs_trigger=drift)
-            s0_wall = self._s0_anchor(trg)[0]
+            s0_wall, _why, self._anchor_info = self._s0_anchor(trg)
             plan = exit_plan(trg.s0_slot, trg.sps, self.h5, s0_wall)
             if self.dry_run:
                 return self._dry_buy(trg, ps, terms, plan, now, would, drift)
@@ -1077,7 +1117,8 @@ class H5Executor(pl.LiveExecutor):
         self.save()
         if trg.mint not in st.pending:  # the kill switch fired between the gate and the send: nothing was sent
             return
-        self._log("decision", trg.mint, **trg.log_fields(), stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
+        self._count_accepted()
+        self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
                   fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(), signature=signature,
                   built_ms=t_built, sent_ms=p.get("first_send_ms"), ms_decision_to_send=(p["first_send_ms"] - trg.decision_ms) if p.get("first_send_ms") else None,
                   drift_vs_trigger=drift, priority_lamports=self.h5.buy_priority_lamports)
@@ -1110,7 +1151,8 @@ class H5Executor(pl.LiveExecutor):
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
-        self._log("decision", trg.mint, **trg.log_fields(), stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
+        self._count_accepted()
+        self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
                   min_out=terms["min_out"], fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(),
                   would_have_halted=would, live_validate_err=validate_err, sim_tokens=sim_tokens, drift_vs_trigger=drift,
                   err=res.get("err"), cu_used=res.get("unitsConsumed"), ms_decision_to_built=t_built - trg.decision_ms,
@@ -1219,11 +1261,16 @@ class H5Executor(pl.LiveExecutor):
         if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
             self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
 
+    def _count_accepted(self) -> None:
+        self._hour_roll(self.now_ms())
+        self._accepted_hour += 1
+
     def _bad_intent(self, row: dict[str, Any], why: str) -> None:
         """A trigger record that cannot be traded on. Ledgered; more than BAD_INTENT_ALERT_N in an hour is an alert (a schema change or a
         broken detector looks exactly like this: every trigger refused, nothing else wrong)."""
         now = self.now_ms()
         self._log("skip", str(row.get("mint") or ""), reason=why)
+        self._count_refusal(why)
         self._bad_intent_ms = [t for t in self._bad_intent_ms if now - t < BAD_INTENT_WINDOW_MS] + [now]
         if len(self._bad_intent_ms) > BAD_INTENT_ALERT_N and now - self._bad_intent_alert_ms >= BAD_INTENT_WINDOW_MS:
             self._bad_intent_alert_ms = now
@@ -1693,6 +1740,7 @@ class H5Executor(pl.LiveExecutor):
         super().prewarm()
         self.refresh_slot()  # our own slot-rate measurement needs observations whether or not a position is open
         now = self.now_ms()
+        self._hour_roll(now)  # the hourly refusal_counts row is written when the hour turns, triggers or not
         if not self.dry_run:
             v = self._balance()
             if v is not None:
@@ -1736,10 +1784,11 @@ class H5Executor(pl.LiveExecutor):
         self._log("sell_fee_booked", mint, fee_lamports=fee, why=why)
 
     def _poll_priors(self) -> None:
-        """One getSignatureStatuses call for the current signature and every superseded one of each pending sell. ANY status on any of them
-        (processed included) stops the timed supersede. A superseded sell that failed on chain has paid its fee: book it and drop it. One that
-        landed is the sell to resolve: swap it in, keep the replaced current signature in `prior` (its status and fee are still tracked), and
-        the base confirm loop then reads the new current signature."""
+        """One getSignatureStatuses call for the current signature and every superseded one of each pending sell. The timed supersede stops
+        only while some live signature shows a NON-ERROR status at processed or better (it landed). A superseded sell that failed on chain
+        has paid its fee: book it and drop it, without touching that flag. One that landed is the sell to resolve: swap it in (it has its
+        own non-error status), keep the replaced current signature in `prior` (its status and fee are still tracked), and the base confirm
+        loop then reads the new current signature."""
         items = []
         for m, p in self.state.pending.items():
             if p["kind"] == "sell":
@@ -1756,7 +1805,8 @@ class H5Executor(pl.LiveExecutor):
             p = self.state.pending.get(m)
             if not st or p is None:
                 continue
-            p.setdefault("status_seen_ms", now)
+            if st.get("err") is None:  # per signature: only a status that is not an error means a sell landed or is landing
+                p.setdefault("status_seen_ms", now)
             if cur or e["signature"] not in {x["signature"] for x in p.get("prior", [])}:
                 continue
             if st.get("err") is not None:
@@ -1767,6 +1817,7 @@ class H5Executor(pl.LiveExecutor):
                 p["prior"] = [x for x in p["prior"] if x["signature"] != e["signature"]] + [demoted]
                 p.update({k: e[k] for k in self._SELL_KEYS})
                 p.pop("confirm_seen_ms", None)
+                p["status_seen_ms"] = now  # the promoted signature's own non-error status
                 self._log("sell_superseded_landed", m, signature=e["signature"], level=e["h5"].get("level"))
         self.save()
 
@@ -1791,7 +1842,8 @@ class H5Executor(pl.LiveExecutor):
             self._log("sell_superseded_failed", mint, signature=p["signature"], promoted=p["prior"][-1]["signature"])
             newest = p["prior"].pop()
             p.update({k: newest[k] for k in self._SELL_KEYS})
-            p.pop("confirm_seen_ms", None)
+            p.pop("confirm_seen_ms", None)  # the flags belonged to the signature that just failed; the promoted one re-earns them from its own status
+            p.pop("status_seen_ms", None)
             self.save()
             return
         super()._resolve_landed(mint, p, st)

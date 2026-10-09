@@ -306,6 +306,7 @@ class TriggerFidelityTests(Case):
 
     def test_the_window_is_300_seconds_with_no_slack(self):
         e = self.env()
+        e.seed_clock(back_s=320)  # a history that reaches an s0 300 s back
         e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1501)  # 300.2 s after s0
         self.assertEqual(e.refusals(), ["outside_rule_window"])
         e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1500)  # exactly 300.0 s
