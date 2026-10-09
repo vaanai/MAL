@@ -53,7 +53,7 @@ def test_a_probe_drop_in_or_credential_is_an_alert(tmp_path):
     rc, out = go(h, tmp=tmp_path / "dropin")
     assert rc == 1 and "ALERT probe_live_dropin" in out and "/root/disabled" in out and "live.conf" in out
     h = FakeHost()
-    h.probe_props["LoadCredential"] = "probe-wallet:/etc/mal-probe/probe-wallet.json"
+    h.probe_unit_text += "LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json\n"  # the unit TEXT sets it; the `show` property proves nothing on systemd 255
     rc, out = go(h, tmp=tmp_path / "cred")
     assert rc == 1 and "ALERT probe_has_key" in out and "probe-wallet.json" not in out  # the alert says a credential is set, it does not echo it
 
