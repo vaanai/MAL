@@ -527,8 +527,6 @@ def test_tip_json_columns_exist_in_follower_rows():
     for key in ("venue", "mint", "trader", "side", "sol_lamports", "signature", "event_index"):
         assert key in trades[0], key
     assert trades[0]["venue"] in L.VENUES and trades[0]["side"] in ("buy", "sell")
-    tip = Path(__file__).parent  # not used; write rows to a temp dir below
-    del tip
 
 
 def test_follower_rows_roundtrip_through_the_adapter(tmp_path):
