@@ -482,9 +482,12 @@ Executor `alert` rows the daily check and the watchdog forward as `h5_executor_a
 | --- | --- |
 | `config_clamps_tier` | a config holds a tier-scaled limit (`stake_lamports`, `max_open`, `max_trades_per_day`, `daily_loss_lamports`, `total_loss_lamports`) below the active tier's table value, so that tier runs at the config's numbers. The shipped configs set none: someone edited a config. Fix the config in a reviewed sha; do not step the tier |
 | `shadow_schema_mismatch` | a shadow record lacks keys the executor requires; the triggers are refused as `bad_intent:missing_<key>`. The shadow job is not at #477 head `d3b69d0` or later: the manager restarts it on that head |
+| `shadow_synthetic_missing` | a shadow trigger record has no `synthetic` key: the shadow job is not on the head that classifies synthetic migrations (DEC-024 Amendment 2). Every trigger is refused as `synthetic_unconfirmed` until the manager restarts the shadow on that head. At most once per 10 minutes |
 | `trigger_pre_unlinked` | hourly, with a count: triggers were traded although their predecessor print may be missing. They are marked on the decision row and left out of the sim-match comparison; more than 15% of landed buys halts as `pre_unlinked_share` |
 | `tier_file_problem`, `tier_step_down_due` | see "Step up / step down a tier" |
 | `s0_anchor_refusals` | several triggers refused on the s0 anchor in a short time |
+
+The classifying shadow (DEC-024 Amendment 2) also writes `excluded` records for pools it kept out of H5 (synthetic migration, or unclassifiable). The executor only counts them: `--status` shows `excluded=<n> (synthetic:<n>,unclassified:<n>)`. There is no ledger row, no alert and no halt for them, so they never show in the daily check.
 
 Trigger refusals (`skip` rows with `reason=...`; a refusal costs a trade, not safety):
 
@@ -496,6 +499,8 @@ Trigger refusals (`skip` rows with `reason=...`; a refusal costs a trade, not sa
 | `bad_intent:s0_minus_announced_slots` | the pool's first print we call s0 came more than 2 slots after its CreatePool, or the field is missing or null |
 | `bad_intent:base_breaks_unresolved_settled` | the gate: the order-independent missed-print count over the settled prints is not 0, or the field is missing or null (an older #477 head) |
 | `bad_intent:missing_<key>` | a key the executor requires is absent from the shadow record (any of them, `base_breaks_unresolved` included): an older #477 head. The executor also alerts `shadow_schema_mismatch` (at most once per 10 minutes) |
+| `synthetic_unconfirmed` | the trigger's `synthetic` is not the literal `false`, or its `synthetic_src` is not exactly `rpc` (absent, null, true, a non-bool, or a `false` from `ws`, `pre_event_binary`, no source or junk): never a buy, in dry run and live. The ledger row is written once per pool and says what was seen (`synthetic_seen`, `synthetic_src_seen`); every one is counted (`--status`: `synthetic_unconfirmed=`). A healthy classifying shadow writes `excluded` instead of such a trigger, so any count above 0 is a stale or buggy shadow. An absent `synthetic` key also alerts `shadow_synthetic_missing`; a present wrong value, or a `false` from a source other than `rpc`, counts toward `bad_intent_rate` |
+| `excluded_pool` | the shadow wrote an `excluded` record for this pool or mint (synthetic, or unclassifiable) and a trigger for it arrived anyway: refused |
 | `bad_intent:suppressed` | #477's sealed stub from 2026-10-16T01Z: expected, never an alert |
 | other `bad_intent:*` (`v_missing`, `gap`, `sps_span`, `boost_spent`, ...) | data-quality refusals of one trigger, shown in the INFO line only |
 
@@ -565,6 +570,40 @@ Add `/etc/audit/rules.d/mal-h5.rules`, then `sudo augenrules --load` and `sudo a
 Every creation or removal of `LIVE_OK` shows up under `malh5-liveok` (`sudo ausearch -k malh5-liveok -i`). Expect exactly Helm's create, and any removal Helm or the manager did. Any other writer is a finding. There are no watches on systemd's prefix and top-level `.d` directories (an override meant for other `mal-*` units would also apply to this one): the daily check and the watchdog catch that through `DropInPaths` instead.
 
 The key directory `/etc/mal-probe` already has Helm's watch from DEC-019; check with `sudo auditctl -l | grep -i mal-probe` and add `-w /etc/mal-probe -p rwa -k malprobe-key` only if it is missing (do not duplicate it). Expect a read event on the key file at each unit start: that is systemd's `LoadCredential`. Any other reader is a finding. The `malh5-state` rule logs every write by the executor too; keep it for the first days, then drop it if the volume is too high.
+
+## Daily synthetic-class audit (manager, DEC-024 Amendment 2 Clarification 1)
+
+From the first live day, once a day (after 00:30Z, for the UTC day that ended), the manager re-classifies every pool the executor made a buy decision on with the read-time procedure of EXP-024 Amendment 4 (B4), and compares it with the class the shadow recorded. A disagreement on any pool is a live halt under DEC-024 section 5.6. The tool prints counts only.
+
+- **The first audited day must be on a build with the executor's synthetic gate (PR #519).** Decision rows carry `synthetic` and `synthetic_src` only on such a build. A row without a bool `synthetic` counts as a disagreement for any pool B4 can classify, by design: the executor must have refused that trigger. Do not audit a day from before that build and read the result as a halt on the code; read it as the wrong build.
+- **Tool:** `tools/h5_synthetic_audit.py` (classifier: `tools/synthetic_class.py`). Public RPC only: the default host `api.mainnet-beta.solana.com` is the only one allowed unless `--allow-rpc-host` names another public host; Helius and keyed URLs are always refused. At least 0.2 s between calls (default 0.5), at most 300 calls per pool for the pool-address search and 300 more for the audit-only fallback (the budget is reset just before the fallback, so a busy pool that spent the first is still classified), and a global cap of rows x 600 + 500 unless `--max-calls` says otherwise. It imports the monitor's helpers and never runs the monitor.
+- **Run it as a MiScusi job on `mal-fast-0`** (`miscusi_job_submit`, not resumable, `sh`). The ledger is `mal-live` 0700, so step 1 copies it with `sudo -n /usr/bin/dd`, redirected by the manager's own shell into a 0600 file (`umask 077`), and then projects that copy (`--out`, `--out-prev`) as the manager's own user, never as root; the copy is deleted at once; step 2 audits the projected files. There is no pipe, so `set -eu` sees `dd`'s own exit code and a failed `dd` stops the job before anything is projected. `--expect-ledger` is the second guard: an empty copy exits 4. For a few seconds the copy holds the whole ledger, every field, in a directory only the manager can open; the tool reads it, keeps five keys and writes nothing else. The manager has sudo on `mal-fast-0`, but this job uses only the `/usr/bin/dd iflag=nofollow status=none if=<path>` line that the daily check's allowlist already names; no working-tree Python runs as root.
+
+  ```sh
+  set -eu
+  cd "$HOME/MAL"
+  PY=/data/mal/venv/bin/python
+  DAY=$(date -u -d yesterday +%F)
+  umask 077
+  D=$(mktemp -d)
+  trap 'rm -rf "$D"' EXIT   # also removes the raw copy if any later command fails
+  # step 1a: root only runs dd, and the redirect is the manager's own, so set -e sees dd's exit code.
+  sudo -n /usr/bin/dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl > "$D/ledger.raw"
+  # step 1b: the projection (five keys per decision row, two 0600 files: DAY and the day before) runs as this user. Exit 4 if the copy is empty.
+  "$PY" -m tools.h5_synthetic_audit --ledger "$D/ledger.raw" --date "$DAY" --expect-ledger --out "$D/decisions.jsonl" --out-prev "$D/prev.jsonl"
+  rm -f "$D/ledger.raw"
+  # step 2: the audit of DAY, and the re-audit of the day before. An empty projected file is a day with no buys, so --no-expect-ledger.
+  "$PY" -m tools.h5_synthetic_audit --decisions "$D/decisions.jsonl" --prev-decisions "$D/prev.jsonl" --date "$DAY" --no-expect-ledger
+  ```
+
+  Use `.../dryrun/h5-ledger.jsonl` for a dry run. `--date` is the UTC day whose decisions are audited (step 1 filters on the row's `ts_ms`).
+- **Fields read from the ledger** (decision rows only, `kind == "decision"`): `pool`, `mint`, `synthetic`, `synthetic_src`, `signature` are kept; `kind` and `ts_ms` are read to pick the rows and thrown away. No other field of any row is kept, written or printed (no fill, size, exit, price or P&L field, none of the nested objects). The projected files have those five keys and nothing else; they are deleted when the job ends. `signature` is OUR buy transaction's signature, used as B4's `before` anchor (the ledger carries no trigger-print signature). That window is a superset of B4's "before s0". A pool with more than 1,000 signatures between its migrate transaction and our buy, or a buy that never landed (the node answers -32020 to its `before`), fails the pool-address search; the audit then uses its audit-only fallback, which is not part of B4: it searches the bonding-curve address newest-first, with no `before`, for the migrate transaction, and goes on as B4. A pool that is still unclassified after that is counted below.
+- **Output**, one line on stdout, these keys only: `{"date":"2026-10-12","n_pools":N,"n_disagree":N,"n_unclassified_now":N,"halt":false}`. `n_pools` counts the pools of DAY and of the re-audited day. No pool, mint, signature or per-pool class is printed. stderr has `n_lines_read`, the rows kept, and the unclassified pools counted by reason (the re-audited day's under `reaudit:`); no ids. The job log must not be post-processed to add one.
+- **Exit codes.**
+  - `3` = `n_disagree > 0` = a live halt. DEC-024 section 5 requires `STOP` (no new buys) at once on any halt, so place `STOP` first, per "Stop, halt, status", and then tell the owner and Helm. `STOP` is not the manager's call to delay. Whether to also place `HALT` (it freezes everything, sells included, while positions are open) is the manager's call. Do not look up which pool it was by joining the class to a fill or P&L.
+  - `5` = `n_unclassified_now > 0` and no disagreement: an alert, and the job shows as failed. There is no halt yet, and no rerun clears it. The same pools are re-audited by the next daily run (the previous-day look in step 2), and a pool that is still unclassified then counts as a disagreement: exit 3, `STOP`. Do not wave an exit 5 away.
+  - `4` = the ledger read was empty or failed (`"error":"no_ledger_lines"` or `"ledger_read_failed"` on stdout): not an all-clear, fix the read and rerun. `2` = a usage error or a refused RPC URL. `0` = no disagreement and nothing unclassified.
+- **What counts as a disagreement.** B4 classifies the pool and the shadow's class differs (a missing class differs from any); or B4 could not classify the pool but saw the PostCompleteBuyEvent in any readable located transaction (the other one is unreadable) and the shadow did not call it synthetic, that is, it called it plain or recorded no class (DEC-024 Amendment 2, Clarification 1; this case also counts in `n_unclassified_now`); or the pool is from the previous UTC day and is still unclassified on this second look.
 
 ## Never
 

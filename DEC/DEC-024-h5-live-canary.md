@@ -221,6 +221,32 @@ EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 20
 4. **`program_changed` is a live halt for the canary.** Section 5.6 halts on "a changed pinned config or program data". The monitor's `program_changed` (programdata sha256 against the pins that PR #517 adds) is a WARN in the monitor and not one of its halt flags. For the canary it is a live halt all the same. This does not change EXP-024: its section 11 lists five flags, `program_changed` is not one, and a canary halt never stops, delays or changes Look 1 or Look 2 (section 6).
 5. **Section 7.** The scale-up condition "no live-halt rule (section 5) … has fired and is unresolved" reads with the amended section 5.6. Item 3 above removes `synthetic_share_high` from it only after the install.
 
+**Clarification 1 (2026-10-09, before any canary send).**
+- **Who applies the classifier.** The shadow detector applies it at decision time. The executor applies the shadow's class: it acts on a trigger only if the record's `synthetic` field is exactly `false`, and refuses any other value, including an absent field (`synthetic_unconfirmed`), so it fails closed. It also refuses a trigger on a pool or mint the shadow has already marked `excluded`.
+  - The executor does not re-fetch the transactions itself. Doing so would put at least three RPC round trips on the buy path (PR #519, item 3).
+  - Every decision row records `synthetic` and `synthetic_src`, so any traded pool can be re-classified afterwards. From the first live day, a daily audit re-classifies every pool the executor sent a buy on, using EXP-024 Am.4 B4. It prints only the count of pools where the shadow's class disagrees with B4's, with no fill, size, exit or P&L field. A disagreement on any pool is a live halt under §5.6. A pool the shadow called plain on which B4 sees the PostCompleteBuyEvent in any readable located transaction counts as a disagreement, even if the other transaction is unreadable (added 2026-10-09 in PR #523, quant-proof OK on its final head). A pool the audit cannot classify is reported at once (alert), re-audited the next day, and counted as a disagreement if it is still unclassified then. The audit (never the formal read) may locate the migrate transaction on the curve PDA (newest successful transaction carrying both this pool's CreatePoolEvent and this mint's CompletePumpAmmMigrationEvent) when the pool-address search fails. The formal read's B4 is unchanged (added 2026-10-09 in PR #523, quant-proof OK on its final head).
+  - Item 1's "the executor and the shadow apply the same classifier" means this division of work.
+- **How the shadow locates the transactions live.** It uses the procedure of EXP-024 Amendment 4, Clarification 1 (B4), adapted to decision time:
+  - The shadow's PumpSwap-only subscription does not deliver the completing transaction in most synthetic cases. The structure measurement of 2026-10-09 found it delivered in 10 of 56.
+  - So the lookup starts at the pool's CreatePool notice. It calls `getSignaturesForAddress` on the curve PDA with a limit of at least 100, skipping failed transactions, then `getTransaction`, at `confirmed` commitment where the API allows. It tests event blobs extracted by the monitor's `tx_event_blobs` (`tools/pump_structure_monitor.py:411`), which reads both `Program data:` logs and emit_cpi inner instructions, and it applies the same check that each located transaction carries its defining event (EXP-024 Am.4 B4). It retries with backoff until the pool is classified or its trigger arrives.
+  - A pool not classified by its trigger time gets no buy (`excluded`, reason `unclassified`).
+  - The live lookup is not evidence and does not bind the read.
+
+**Install-verified record (item 3), dated 2026-10-09.**
+
+```
+H5_SYNTHETIC_BUILD_INSTALL_VERIFIED: 2026-10-09T16:52Z.
+```
+
+- **Helm's report.** Helm reported part 1 done to the owner: the pinned reinstall at `af02e90561e23b13a3a2fa89c63faad0da899d33`, checked against the manifest (sha256 `b8e7981d…758a`, PR #519 comment 6078235561), plus the keyless dry-run start check. The owner relayed this to the manager at about 16:52Z. Helm's own report time was not relayed, so this line uses the relay time, which is the earliest instant the manager knew.
+- **Manager's check.** At 16:53Z the manager ran job #467 on mal-fast-0:
+  - the installed `tools/h5_executor.py` sha256 is `e44d1b4c5ffb25c0705509b1e175015acee6c019c2a73e27053479e591f91152`, which matches the manifest;
+  - the unit is inactive and disabled;
+  - `/etc/mal-h5/` holds neither TIER nor LIVE_OK.
+- **Effect.** From this instant, `synthetic_share_high` is recorded and reported only. It is no longer a live halt (item 3).
+- **Go-live pair.** The go-live shadow is MiScusi job #454 on main `af02e90`. Its shadow blob is `ea061266`, and its md5 decision-equivalence on 09-20 is `75cb0b0c585bc2479137cae31330e73e`, equal, proved at 4dd43d2 with the same blob. The keyless dry run is job #455 on the same head.
+- **Still required before the first send.** The official A3 run (EXP-024 Am.4 F, job #449, 19:23Z) must show none of the five halt flags and no `program_changed` (items 3–4). Step 11 follows only after that.
+
 **Not re-run.** The stop-probability table of Amendment 1 item 4 used September's confirmation day counts, which have no synthetic pools. Excluding them lowers the number of trades by the synthetic share (about 0.20 to 0.37 on the readings above [inferred]). The table is not re-run here. Section 4 holds: a stop firing is not evidence about H5.
 
 **Unchanged:**
@@ -231,9 +257,47 @@ EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 20
 
 **Takes effect** on merge, with quant-proof's OK on its final head, before the official P2 run and before 2026-10-10T00:00Z. It starts no trade. `LIVE_OK` and the go to Helm stay separate acts.
 
+## Amendment 3 (2026-10-09, about 16:00Z, the owner's decision, before any canary send): a short T0 trial, then T1 with a 1 SOL wallet
+
+```
+OWNER_LADDER_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owner, verbatim: "When we go live, I presume 0.02 per trade is going to get washed out by fees, let's use it to do a quick trial run, and then depending on how we feel about the strategy, let's bump it up to 0.05 or 0.1 right away." Answers to the manager's three questions (AskUserQuestion, the recommended option each time): trial length "~20 trades"; next size "0.10 SOL", whose option text the owner chose read verbatim "This is tier T1, already built into the bot: Helm changes one file and no reinstall is needed. Limits: up to 3 open trades, 40 a day, daily stop 0.40 SOL, total stop 0.60 SOL or 35% of the wallet, whichever is lower."; wallet "Top up to ~1 SOL", whose option text read "Send about 0.7 SOL when the trial checks out. At 0.10/trade the total stop becomes 0.35 SOL, enough to ride out normal swings. This is within the 1 SOL you approved on 10-08." MiScusi notebook n_VzbN0Cri0QAVPA.
+```
+
+The manager corrected one premise before asking: at 0.02 SOL, H5's fixed costs are about 0.55% of the stake (section 4, "Trial-size effect"), so the trial is not "washed out by fees". It is only small in SOL.
+
+**What this sets**
+1. **T0 is a short trial.** T0 (0.02 SOL) runs until **20 landed buys**. This replaces the 25–50 trade length of the 10-09 ladder for T0 only. T1 → T2 stays at 25–50 trades per step.
+2. **The step to T1 requires all of these at that point:**
+   - the landing p50 is at most 3.0 s over those 20 landed buys (section 5, item 3);
+   - no live-halt rule and no stop that ends the canary has fired and is unresolved;
+   - the canary's realized mean per closed trade, after fees, is not below zero;
+   - the shadow twin's mean per trade over the same trades is not below zero;
+   - if EXP-024 Look 1 has been read, its deciding-cell flat and pressure means are not below zero (section 7).
+
+   Section 7's live−twin CI90 condition needs at least 100 fills. **It is waived for the T0 → T1 step by the owner's decision above** (a 20-trade trial cannot meet it). It still binds as the section 5 item 4 live halt from 100 fills on, at any tier.
+
+   **At 20 trades both mean checks are weak.** Amendment 1's simulation had a zero-edge book end the full T0 run above zero in 28% of runs (section 8 table, line 191); over 20 trades the checks are weaker still. Passing them is not evidence about H5.
+
+   If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway.
+3. **Wallet.** Before T1 the owner tops the wallet up to about 1 SOL. That supersedes section 4's "Funding … Nothing more".
+   - The manager updates `/data/mal/hunt-1008/h5-work/FUNDED_SOL`.
+   - Helm updates `H5_WATCH_FUNDED_SOL` in `/etc/mal-h5-watch/watch.env`.
+   - Only then does Helm write `T1` to `/etc/mal-h5/TIER`.
+4. **T1 limits are the executor's code constants** (`tools/h5_executor.py`, `TIERS`):
+   - 0.10 SOL stake, 3 open, 40 attempts per UTC day;
+   - daily stop 0.40 SOL;
+   - total stop min(0.60 SOL, 35% of the wallet when the tier started), about 0.35 SOL with a 1 SOL wallet;
+   - wallet floor 0.05 SOL.
+
+   The owner confirmed these values by choosing the option whose text is quoted in the line above. While T1 is active, this item supersedes section 4's T0 rows for stake, open positions, attempts, and the daily and total stops.
+
+   **Worst case at T1 with a 1 SOL wallet.** Realized losses stop at about 0.35 SOL (the total stop). Up to 3 × 0.10 SOL can be open when it fires, and fees and rent add a little, so up to about **0.66 SOL** can be lost, leaving a floor of about **0.34 SOL**. The 0.40 SOL daily stop is above the 0.35 SOL total stop, so at this wallet size it never binds before the total stop.
+5. **What it is.** This is section 7's scale-up toward 1 SOL under `OWNER_OVERRIDE_CONFIRMED`. It is an unpromoted trial in every report. It changes nothing in EXP-024 and nothing in section 5's halts.
+
+
 ## Open for the owner
 
-1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). Still open: the trial's stake, open-position cap and stops at 1 SOL, in writing.
+1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
 2. **The declared observation.** Section 6 records a decision relayed by the manager: canary and shadow outcomes for Look 1's window pools are seen in real time, and Look 1 is read as written whatever they show. EXP-024 Amendment 2 (2026-10-09) extends it, as a manager decision derived from your scale ladder, the 10-08 mandate and the override line, to Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and Look 2 is read as written whatever they show. You may revoke the extension. Please confirm it in your own words. It can influence your scale-up choice, and the Look 1 and Look 2 reports say so.
 3. **The limits.** Stake 0.02, 2 open, 30 a day, stops 0.08 and 0.12, and a 14-day duration are the manager's terms.
 

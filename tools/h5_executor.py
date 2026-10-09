@@ -19,7 +19,12 @@ Trigger interface. The shadow detector (tools/h5_shadow.py, PR #477) writes JSON
 Primary input, #477's own records (intents_file may be a file or the detector's output directory; the newest hourly file is followed and
 the previous hour is drained first on a roll):
   type "trigger"  variant "pv" only; mint, pool, s0, slot, sps, t_detect_ms, q_trigger_sol (post-trade Q, quote + the print's V), base_pre +
-                  sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused)
+                  sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused), synthetic (must be the literal false:
+                  the detector classified the pool as NOT a synthetic migration (no pump PostCompleteBuyEvent; DEC-024 Am.2: it reads the
+                  completing tx or the migrate tx, and a pool whose tx it cannot find is unclassified, so it gets `excluded`); absent,
+                  null, true or a non-bool is refused as synthetic_unconfirmed), synthetic_src (must be "rpc": a plain pool is only ever confirmed by an RPC read; ws, pre_event_binary, absent or junk are refused too)
+  type "excluded" the detector classified a pool as synthetic (or could not classify it): counted, never traded, never an alert; a later
+                  trigger on the same pool or mint is refused as excluded_pool
   type "gap"      detector lost prints: buys refused for gap_hold_ms (20 s minimum) unless flags_pools is the literal false (a reconnect on a
                   redundant feed whose other sockets stayed up: ledgered as feed_reconnect_redundant, no hold); a missing key holds
   type "hb"       heartbeat (used when feed_heartbeat_max_age_ms is set)
@@ -90,6 +95,17 @@ SHADOW_REQUIRED_KEYS = (
     "s0_reanchored_slots", "sps_span_s", "gap",
 )
 SCHEMA_ALERT_WINDOW_MS = 600_000
+# Synthetic migrations (owner-approved, quant-proof ruled): a pool classified as a synthetic migration (a pump PostCompleteBuyEvent), or not
+# classifiable, gets no buy.
+# The detector classifies at decision time and writes `synthetic: false` on a trigger it lets through; anything else is refused here, so a
+# record from a detector that predates the classifier can never be traded (fail closed). This executor does not re-derive the class; see the
+# PR that added this for why (no pool-naming record arrives before the trigger, so a confirmation would sit on the buy path).
+SYNTHETIC_UNCONFIRMED = "synthetic_unconfirmed"
+EXCLUDED_POOL = "excluded_pool"
+EXCLUDED_REASONS = ("synthetic", "unclassified")  # the detector's `excluded` record reasons; anything else is counted as "other"
+EXCLUDED_KEEP = 4096  # pools and mints remembered from `excluded` records (a refusal guard against a conflicting trigger), oldest dropped first
+SYNTHETIC_LOGGED_KEEP = 2048  # pools for which a synthetic_unconfirmed ledger row was already written (one row per pool)
+SYNTHETIC_SRC_RE = re.compile(r"[A-Za-z0-9_.\-]{1,32}")
 T0_ALERT_STOPS = frozenset({"total_loss_stop", "daily_loss_stop", "max_trades_day", "max_attempts", "max_days", "end_instant"})  # a refusal at T0 alerts
 ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
@@ -293,6 +309,8 @@ class H5Trigger:
     base_breaks_unresolved_settled: int | None = None  # the gate (0 = no missed print among the settled prints)
     s0_reanchored_slots: int | None = None  # ledgered: how far s0 moved down when an earlier print arrived late (before any trigger)
     s0_minus_announced_slots: int | None = None
+    synthetic: bool | None = None  # the detector's class of the pool: only the literal False is tradable (None = never confirmed -> refused)
+    synthetic_src: str | None = None  # how the detector got it: only "rpc" is tradable (SYNTHETIC_SRC_OK); ledgered on the decision row
 
     @property
     def pre_unlinked(self) -> bool:
@@ -317,11 +335,29 @@ def pre_unlinked(unresolved: Any, settled: Any) -> bool:
     return _is_int(unresolved) and unresolved >= 1 and _is_int(settled) and settled == 0
 
 
+SYNTHETIC_SRC_OK = "rpc"  # the only source that confirms a plain pool: live, "not synthetic" can only come from an RPC read; the ws path only ever marks synthetic
+
+
+def synthetic_confirmed(row: Any) -> bool:
+    """The class gate, fail closed: a trigger is tradable only if the record says `synthetic` is the literal False (the detector classified the
+    pool as NOT a synthetic migration) AND `synthetic_src` is exactly "rpc". Absent, null, true, 0, "false" and every other value are not a
+    confirmation; nor is any other source (absent, "ws", "pre_event_binary", junk)."""
+    return isinstance(row, dict) and row.get("synthetic") is False and row.get("synthetic_src") == SYNTHETIC_SRC_OK
+
+
+def _synthetic_src(row: dict[str, Any]) -> str | None:
+    v = row.get("synthetic_src")
+    return v if isinstance(v, str) and SYNTHETIC_SRC_RE.fullmatch(v) else None  # a short name-shaped string or nothing: it is only ledgered
+
+
 def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
     """(trigger, None) for a good h5_intent_v1 row, (None, reason) for a malformed one, (None, None) for any other schema.
-    Only the whitelisted fields are read; anything else in the row is dropped."""
+    Only the whitelisted fields are read; anything else in the row is dropped. A row whose `synthetic` is not the literal False is refused
+    with SYNTHETIC_UNCONFIRMED before anything else is looked at."""
     if not isinstance(row, dict) or row.get("schema") != SCHEMA_INTENT:
         return None, None
+    if not synthetic_confirmed(row):
+        return None, SYNTHETIC_UNCONFIRMED
     try:
         mint, pool = row["mint"], row["pool"]
         if not (isinstance(mint, str) and isinstance(pool, str) and mint and pool):
@@ -343,7 +379,8 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
     return H5Trigger(mint, pool, row["s0_slot"], float(sps), row["trigger_slot"], row["q_lamports"], row["base_reserve"],
                      row["v_lamports"], row["decision_ms"], bool(row.get("gap")),
                      row["s0_wall_ms"] if _is_int(row.get("s0_wall_ms")) else None, row["block_time"] if _is_int(row.get("block_time")) else None,
-                     row["trigger_recv_ms"] if _is_int(row.get("trigger_recv_ms")) else None), None
+                     row["trigger_recv_ms"] if _is_int(row.get("trigger_recv_ms")) else None,
+                     synthetic=False, synthetic_src=_synthetic_src(row)), None
 
 
 def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | None, str | None]:
@@ -351,7 +388,7 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
     the print's own V, the primary; "fv" is the rule's literal fixed V and is ignored here). Mapping, all from fields #477 writes:
       s0 -> s0_slot, slot -> trigger_slot, q_trigger_sol * 1e9 -> q_lamports (post-trade Q of that variant),
       base_pre + sell_token_raw -> base_reserve (a sell adds its tokens to the pool), v_print -> v_lamports, t_detect_ms -> decision_ms,
-      gap -> gap. (None, None) for any other record or the other variant."""
+      gap -> gap, synthetic (the literal false) -> synthetic, synthetic_src -> synthetic_src. (None, None) for any other record or the other variant."""
     if not isinstance(row, dict) or row.get("type") != "trigger" or row.get("variant") != variant:
         return None, None
     if row.get("suppressed"):  # the sealed stub #477 writes from 2026-10-16T01Z: type, variant, pool, slot, suppressed ... and nothing to trade on
@@ -359,6 +396,8 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
     missing = [k for k in SHADOW_REQUIRED_KEYS if k not in row]
     if missing:  # a schema mismatch, not a bad value: the caller alerts at once
         return None, f"bad_intent:missing_{missing[0]}"
+    if not synthetic_confirmed(row):  # the class gate: a detector that does not say `synthetic: false` is never traded (the caller tells absent from bad)
+        return None, SYNTHETIC_UNCONFIRMED
     try:
         q_sol, base_pre, tok = row["q_trigger_sol"], row["base_pre"], row["sell_token_raw"]
         v = row["v_print"]
@@ -396,7 +435,7 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
                                 "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
                                 "trigger_recv_ms": row.get("t_recv_ms"),
                                 "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
-                                "gap": row.get("gap")})
+                                "gap": row.get("gap"), "synthetic": row.get("synthetic"), "synthetic_src": row.get("synthetic_src")})
         if t is None:
             return None, bad
         raw = {k: row[k] for k in ("base_breaks", "slot_regress") if _is_int(row.get(k))}  # raw counts: ledgered on the decision row
@@ -556,6 +595,8 @@ class H5Counters:
     landed_buys: int = 0  # buys that landed (a position opened), for the pre-unlinked share
     pre_unlinked_landed: int = 0  # ... of which the trigger was pre-unlinked (see pre_unlinked)
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
+    synthetic_unconfirmed: int = 0  # trigger records refused because `synthetic` was not the literal false (a detector without the classifier, or a bug)
+    excluded: dict[str, int] = field(default_factory=dict)  # the detector's `excluded` records by reason (synthetic | unclassified | other): pools kept out
 
     def day(self, key: str) -> dict[str, Any]:
         d = self.days.setdefault(key, {"trades": 0, "realized": 0})
@@ -882,6 +923,9 @@ class H5Executor(pl.LiveExecutor):
         self._bad_intent_ms: list[int] = []
         self._bad_intent_alert_ms = -BAD_INTENT_WINDOW_MS
         self._schema_alert_ms = -SCHEMA_ALERT_WINDOW_MS
+        self._synthetic_alert_ms = -SCHEMA_ALERT_WINDOW_MS
+        self.excluded_pools: dict[str, str] = {}  # pool and mint of every `excluded` record -> its reason (insertion order, EXCLUDED_KEEP newest)
+        self._synthetic_logged: dict[str, None] = {}  # pools with a synthetic_unconfirmed ledger row already (one row per pool, SYNTHETIC_LOGGED_KEEP newest)
         self._anchor_refusal_ms: list[int] = []
         self._anchor_alert_ms = -BAD_INTENT_WINDOW_MS
         self._anchor_info: dict[str, Any] = {}
@@ -1118,6 +1162,10 @@ class H5Executor(pl.LiveExecutor):
         why = self._kill_reason() or self._live_gate()
         if why:
             return why
+        if trg.synthetic is not False or trg.synthetic_src != SYNTHETIC_SRC_OK:  # the parsers already refuse this; a trigger handed in by a callback must not slip past (fail closed)
+            return SYNTHETIC_UNCONFIRMED
+        if trg.pool in self.excluded_pools or trg.mint in self.excluded_pools:  # the detector said `excluded` for this pool: no buy, whatever a trigger says
+            return EXCLUDED_POOL
         if now + pl.CLOCK_BACK_TOLERANCE_MS < self.state.max_seen_ms:
             return "clock_backwards"
         if self.feed_gap or trg.gap or now < self._gap_until_ms:
@@ -1205,6 +1253,9 @@ class H5Executor(pl.LiveExecutor):
 
     def _refuse(self, trg: H5Trigger, reason: str, **kw: Any) -> None:
         self._count_refusal(reason)
+        if reason == SYNTHETIC_UNCONFIRMED:  # (only a trigger that skipped the parsers gets here; the parsers' refusals are counted in _bad_intent)
+            self.counters.synthetic_unconfirmed += 1
+            self.counters.save(self.counters_path)
         if reason in SEAL_REASONS:  # a count only: which mints the gate picked is never written down
             self.counters.seal_skips += 1
             self.counters.save(self.counters_path)
@@ -1509,6 +1560,8 @@ class H5Executor(pl.LiveExecutor):
         not on the head this executor reads): that alerts at the first record, rate-limited to one per SCHEMA_ALERT_WINDOW_MS, and is not part of
         the hourly count. A bad VALUE counts: more than BAD_INTENT_ALERT_N in an hour is an alert (a broken detector looks like this)."""
         now = self.now_ms()
+        if why == SYNTHETIC_UNCONFIRMED:
+            return self._synthetic_unconfirmed(row, now)
         self._log("skip", str(row.get("mint") or ""), reason=why)
         self._count_refusal(why)
         if shadow and why.startswith("bad_intent:missing_"):
@@ -1521,6 +1574,53 @@ class H5Executor(pl.LiveExecutor):
         if len(self._bad_intent_ms) > BAD_INTENT_ALERT_N and now - self._bad_intent_alert_ms >= BAD_INTENT_WINDOW_MS:
             self._bad_intent_alert_ms = now
             self._alert("bad_intent_rate", "", count=len(self._bad_intent_ms), last_reason=why)
+
+    def _synthetic_unconfirmed(self, row: dict[str, Any], now: int) -> None:
+        """A trigger record whose `synthetic` is not the literal false: never a buy. Every one is counted (the hourly refusal counts, and
+        counters.synthetic_unconfirmed for --status); its ledger row is written once per pool. The two causes are told apart:
+          key ABSENT   the detector is not on a head that classifies (an old-schema shadow): a schema problem, so an alert at the first record,
+                       then at most one per SCHEMA_ALERT_WINDOW_MS, and not part of the hourly bad-value count
+          key present  null / true / not a bool, or false from a source other than "rpc": a detector bug (it should have written `excluded`, or a trigger with false): counts like any
+                       other bad value, so more than BAD_INTENT_ALERT_N in an hour is a bad_intent_rate alert"""
+        absent = "synthetic" not in row
+        v = row.get("synthetic")
+        seen = "absent" if absent else "true" if v is True else "false" if v is False else "null" if v is None else "not_bool"
+        key = str(row.get("pool") or row.get("mint") or "")
+        if key not in self._synthetic_logged:
+            self._synthetic_logged[key] = None
+            while len(self._synthetic_logged) > SYNTHETIC_LOGGED_KEEP:
+                del self._synthetic_logged[next(iter(self._synthetic_logged))]
+            src = _synthetic_src(row)
+            self._log("skip", str(row.get("mint") or ""), reason=SYNTHETIC_UNCONFIRMED, pool=key, synthetic_seen=seen,
+                      synthetic_src_seen=src if src is not None else ("absent" if "synthetic_src" not in row else "invalid"))
+        self._count_refusal(SYNTHETIC_UNCONFIRMED)
+        self.counters.synthetic_unconfirmed += 1
+        self.counters.save(self.counters_path)
+        if absent:
+            if now - self._synthetic_alert_ms >= SCHEMA_ALERT_WINDOW_MS:
+                self._synthetic_alert_ms = now
+                self._alert("shadow_synthetic_missing", "", pool=key, shadow_schema=row.get("schema"),
+                            note="the trigger record has no `synthetic` key: the shadow job is not on the head that classifies synthetic migrations")
+            return
+        self._bad_intent_ms = [t for t in self._bad_intent_ms if now - t < BAD_INTENT_WINDOW_MS] + [now]
+        if len(self._bad_intent_ms) > BAD_INTENT_ALERT_N and now - self._bad_intent_alert_ms >= BAD_INTENT_WINDOW_MS:
+            self._bad_intent_alert_ms = now
+            self._alert("bad_intent_rate", "", count=len(self._bad_intent_ms), last_reason=SYNTHETIC_UNCONFIRMED)
+
+    def _note_excluded(self, row: dict[str, Any]) -> None:
+        """An `excluded` record: the detector kept a pool out (synthetic, or it could not classify it). Counted by reason (the caller saves the
+        counters once per tick), remembered by pool and mint so a conflicting trigger is refused, and otherwise silent: no ledger row, no alert,
+        no halt."""
+        reason = row.get("reason")
+        reason = reason if reason in EXCLUDED_REASONS else "other"
+        self.counters.excluded[reason] = self.counters.excluded.get(reason, 0) + 1
+        for k in ("pool", "mint"):
+            v = row.get(k)
+            if isinstance(v, str) and v:
+                self.excluded_pools.pop(v, None)
+                self.excluded_pools[v] = reason
+        while len(self.excluded_pools) > EXCLUDED_KEEP:
+            del self.excluded_pools[next(iter(self.excluded_pools))]
 
     # -- intent file ---------------------------------------------------------------------------------------------------------
     def signal_tick(self) -> int:
@@ -1572,6 +1672,7 @@ class H5Executor(pl.LiveExecutor):
             self.save()  # the offset first: a crash mid-trigger must not replay it
         triggers: list[H5Trigger] = []
         watches: list[tuple[str, str]] = []
+        excluded_seen = False
         for line in lines:
             try:
                 row = json.loads(line)
@@ -1600,6 +1701,9 @@ class H5Executor(pl.LiveExecutor):
             elif rtype == "skipped_no_sps":  # the detector could not time this pool: a later trigger on it is refused
                 if isinstance(row.get("mint"), str):
                     self.no_sps_pools.add(row["mint"])
+            elif rtype == "excluded":  # the detector kept this pool out (synthetic migration, or unclassifiable): counted, never traded, never an alert
+                self._note_excluded(row)
+                excluded_seen = True
             elif rtype == "pool":  # per-pool close record: BOOST last-slice timing. The rule's own clock (slots x sps) first.
                 # Only a pool that ran its full horizon, with no feed gap, and whose BOOST identity is the vault PDA or the event authority
                 # (not the behavioural fallback) counts; a shutdown close, a gapped pool or a guessed BOOST wallet is ledgered and ignored.
@@ -1631,6 +1735,8 @@ class H5Executor(pl.LiveExecutor):
             self.handle_trigger(trg, seen)
         for mint, pool in watches:
             self.prefetch(mint, pool)
+        if excluded_seen:  # after the buys: one counters write per tick, not per record, and none before a trigger is handled
+            self.counters.save(self.counters_path)
         return len(triggers)
 
     # -- exit scheduler ------------------------------------------------------------------------------------------------------
@@ -2189,7 +2295,8 @@ def status_report(cfg: dict[str, Any]) -> str:
         lines.append(f"[{mode}] attempts={st.attempts} (lifetime; {c.tier_attempts}/{h5.max_attempts} in {c.tier_state.get('tier', 'T0')}) realized_sol={st.realized_lamports / pe.LAMPORTS:.6f} "
                      f"open={len(st.open)}/{h5.max_open} pending={len(st.pending)} today_trades={today.get('trades', 0)} "
                      f"today_realized_sol={today.get('realized', 0) / pe.LAMPORTS:.6f} halts={sorted(c.halts)} seal_skips={c.seal_skips} "
-                     f"sells_landed={c.sells_landed} sells_late={c.sells_late}")
+                     f"sells_landed={c.sells_landed} sells_late={c.sells_late} synthetic_unconfirmed={c.synthetic_unconfirmed} "
+                     f"excluded={sum(c.excluded.values())} ({','.join(f'{k}:{n}' for k, n in sorted(c.excluded.items())) or 'none'})")
     return "\n".join(lines)
 
 

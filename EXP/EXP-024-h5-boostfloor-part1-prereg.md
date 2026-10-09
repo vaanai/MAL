@@ -713,6 +713,30 @@ It carries **quant-proof's OK on its final head** and **the owner's approval**: 
 
 **Not changed.** The rule, parameters, trigger, entry, exit, fill pricing, costs, legs, correction, gate statistics (every item of section 7), look schedule, futility, α, k = 1 and m, the pinned counting start (section 0), windows, hours read, the read tool's hour allowlist, the seal of section 3 apart from item D1, the CAP-PICK seal, and every NOT_DECIDABLE condition apart from item B3. EXP-022 is not amended here.
 
+#### Amendment 4, Clarification 1 (2026-10-09, before 2026-10-10T00:00Z and before the official P2 run): how the read locates the two transactions B1 tests
+
+**Why.** B1 defines the class by "the transaction that carries the mint's CompleteEvent" and the pool's migrate transaction. It does not say how the read finds them, and leaving that choice to the read tool's builder would mean making it later. This clarification fixes the search procedure now. It is not a re-scope.
+
+**Prompted by.** The structure measurement disclosed in item 4 (job #448's projection, `/data/mal/hunt-1008/h5-work/synthetic-1009/REPORT.md`) found that a 10-signature window on the curve PDA missed the completing transaction in 20 of 160 graduations, because failed sniper transactions crowd it.
+- Only that depth finding prompted this clarification.
+- Its trigger counts by class are **not** a basis here or anywhere else in this amendment (item 4; Amendment 3, line 631).
+
+**B4. Locating the transactions** (read time, after the FINAL; `getTransaction` with `maxSupportedTransactionVersion` 1; finalized commitment):
+1. **The migrate transaction.** This is the transaction that carries the PumpSwap `CreatePoolEvent` for the pool, the same transaction that carries pump's `CompletePumpAmmMigrationEvent`.
+   - If the tape has a row from that event, its signature locates the transaction.
+   - Otherwise, test the transaction of the pool's s0 print first. Then call `getSignaturesForAddress` on the pool address with `before` = the s0 print's signature, paginating newest-first to a cap of **1,000 signatures**. The migrate transaction is the oldest successful transaction in that set that carries a `CreatePoolEvent` for the pool.
+2. **The CompleteEvent transaction.**
+   - If the migrate transaction carries the mint's CompleteEvent, it is also the completing transaction.
+   - Otherwise, a tape `complete` row's signature, if present, locates the transaction.
+   - Failing both, call `getSignaturesForAddress` on the bonding-curve PDA with `before` = the migrate transaction's signature, paginating newest-first to a cap of **1,000 signatures**. The completing transaction is the newest **successful** (`err` null) transaction in that set whose events include a CompleteEvent for the mint.
+   - **Each located transaction must carry the event that defines it.** A located migrate transaction must carry `CompletePumpAmmMigrationEvent` for the mint, and a located completing transaction must carry the mint's CompleteEvent. A transaction that fails this check is not used, and the next source in the order is tried. If no source passes, the pool is unclassified (B3).
+3. **The tape only locates.** In every case the class comes from `getTransaction` of the located transactions, tested with `post_complete_buy_seen` (B1, B2), on event blobs extracted by the monitor's `tx_event_blobs` (`tools/pump_structure_monitor.py:411`), which reads both `Program data:` logs and emit_cpi inner instructions. Not finding either transaction within its cap, or a failed fetch after retries, makes the pool unclassified (B3).
+4. **Unchanged:** the B1 classifier, the B2 rule that the tape never settles non-synthetic, the B3 1% cap, every threshold, and items A, C, D, F and G.
+
+**Live side.** DEC-024 Amendment 2, Clarification 1 states the decision-time version of this procedure. That version is bounded by the trigger time, not by the read's caps. It is not evidence and does not bind the read.
+
+This clarification carries quant-proof's OK on its final head and merges before 2026-10-10T00:00Z.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`

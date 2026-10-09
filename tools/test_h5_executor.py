@@ -73,7 +73,7 @@ class H5Rpc(LiveRpc):
 
 
 def row(clock: Clock, **kw) -> dict:
-    base = dict(schema="h5_intent_v1", mint=MINT, pool=POOL, s0_slot=S0, sps=SPS, trigger_slot=TRIG_SLOT, q_lamports=Q,
+    base = dict(schema="h5_intent_v1", synthetic=False, synthetic_src="rpc", mint=MINT, pool=POOL, s0_slot=S0, sps=SPS, trigger_slot=TRIG_SLOT, q_lamports=Q,
                 base_reserve=BASE0, v_lamports=V, decision_ms=clock())
     return {**base, **kw}
 

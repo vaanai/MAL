@@ -27,7 +27,68 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-09 ~07:35Z (NEWEST, read first; supersedes the sections below where they differ)
+### STATE 10-09 ~09:30Z (NEWEST, read first; supersedes everything below where they differ)
+
+**Bottom line.** The H5 exclusion build is merged, reviewed and running in paper. The canary goes live once three things are done:
+- **(a)** the official A3 run at 19:23Z is clean on the five H5 flags;
+- **(b)** Helm does a pinned reinstall at `af02e90` and reports "install verified";
+- **(c)** Step 11.
+
+The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The owner forwards it; send it only after (a).
+
+**What happened since 07:35Z**
+- **A3.** The re-pin (#517, 82cd674) cured `pins_changed`.
+  - One dry check afterwards halted on `synthetic_share_high`, 7/19 = 0.368.
+  - Synthetic migrations (PostCompleteBuyEvent in the curve-completing tx) appeared with the 10-08T16:20Z redeploy. They were 0/61 before; the share is now about 35%.
+- **Owner decision** (n_xtknDqL-ychBNg): exclude synthetic pools from H5. The texts:
+  - EXP-024 Am.4 (population restriction; five A3 halt flags, `synthetic_share_high` report-only; P2 = last run; official-run protocol);
+  - DEC-024 Am.2 (same classifier at decision time; `program_changed` is a canary halt; `synthetic_share_high` stays a live halt until Helm's verified install);
+  - EXP-022 Am.5 (P2 reading plus erratum);
+  - EXP-024 Am.4 Clarification 1 (B4 read-time tx lookup, 1,000-signature caps);
+  - DEC-024 Am.2 Clarification 1 (the executor applies the shadow's class; the daily re-classification audit).
+  - Merged as #518 (10ee500) and #520 (22f5602), quant-proof OK on the final heads.
+- **Build.**
+  - #519, executor (5ed0d09): trades only if `synthetic is False` and `synthetic_src == "rpc"`.
+  - #521, shadow (ccd0a21): pump.fun side feed plus an RPC lookup at CreatePool, using `tx_event_blobs` and a defining-event check, on the completing OR migrate tx; fail-closed `excluded` records; a dedicated RPC pool capped at 4 rps.
+  - #523, B4 module plus the daily audit (af02e90).
+  - Every merge had reviewer and quant-proof OK on its final head.
+  - md5 09-20 at 4dd43d2: `75cb0b0c…` equal. The merged shadow blob `ea061266` = 4dd43d2's.
+- **Smoke.** Job #452, 45 min on 4dd43d2: 1.26M events, peak 54 MB, 20/20 pools classified (16 plain, 4 synthetic), 0 gaps, 0 triggers in the window.
+- **Running now (fast-0).**
+  - **Shadow #454** on main af02e90: 3 sockets, EXP-024-Am2 flag. It replaces #447, cancelled about 09:2xZ. This is the go-live shadow.
+  - **Dry run #455:** the new executor at af02e90, keyless. It replaces #435.
+- **Official P2 run.**
+  - Job #449 (research-0, git_ref 82cd674) sleeps until **2026-10-09T19:23:00Z**.
+  - Backup #450 runs at 21:53:00Z, only if #449 printed no flag summary (Am.4 F5).
+  - No other monitor run before 10-10T00Z.
+  - Read the five flags from `halt.flags`. One-shot crons a9244b69 (19:33Z) and c1849681 (22:03Z) read them.
+- **Manifest** for Helm at af02e90: sha256 `b8e7981d…758a`, posted on PR #519 (comment 6078235561). Identical at ccd0a21.
+
+**Volume finding** (structure counts only; n_KqwGD1bzt_lbpg; `/data/mal/hunt-1008/h5-work/synthetic-1009/REPORT.md`):
+- About **76% of H5's live triggers were on synthetic pools** (22/29 classified over 10.3 h). Non-synthetic triggers run at about **16/day**.
+- The T0 step (about 50 trades) now takes about 3 days.
+- Look 1's P6 (≥100 triggers over 6 dates) has P(refusal) of about **0.3–0.5** (quant-proof). There is no legitimate pre-window fix, and a refusal spends Look 1 (Am.3).
+- These counts may not be used as a basis for any EXP-024 change (Am.3:631).
+
+**Next steps, in order**
+1. **19:33Z:** read #449. If the five flags are clear, P2 is MET and the owner sends Helm the go. If a flag fired, H5 is withdrawn (§11) and the canary is blocked.
+2. **Helm reports "install verified":** add a dated line under DEC-024 Am.2 item 3 (that instant switches `synthetic_share_high` off as a live halt). In the same PR, record shadow #454 / dry run #455 as the go-live pair.
+3. **After go-live:**
+   - ladder T0 → T1 after about 50 trades → T2 after about 25 (fills match the twin, no halts, not negative);
+   - daily audit plus health check via cron e0efe702 (12:17Z);
+   - A3 daily via cron a5083765 (06:41Z, amended rules).
+4. **Before 10-15T06:41Z:** EXP-022's own synthetic amendment (Am.5 leaves it open). CAP-PICK counts synthetic pools as attempts (EXP-022:121), and its 21 daily runs make a halt near-certain.
+5. **Before 10-16:**
+   - wire the pick oracle (#509) into the executor and shadow;
+   - extend executor `end_ms` (now 10-16T00:30Z) in a second reinstall;
+   - ask the owner to extend DEC-024 §4's 14-day cap;
+   - EXP-024 read tool #476 must use `tools/synthetic_class.py` (B4).
+6. **C1-NF:** draft DEC-026 is #522, awaiting the owner's 7 [OWNER CHOOSES] items and 13 quant-proof questions.
+   - **Key point:** at 0.02 SOL and 505k lamports per send, fixed costs are about 5% of stake, which is more than C1-NF's edge. The first tier must be larger, or the fee lower.
+   - #504 was closed unmerged and needs a rebase. #503 lacks decision-time reserves.
+7. **H5 champion-challenger:** draft `DEC/DEC-027-h5-champion-challenger.md` (docs only, draft PR). Rev 2 after quant-proof's NOT OK on 975d8db. At most 2 challengers ever frozen: C-Q35 (Q\* 35, a threshold retune with a numeric withdrawal rule) and C-LF (loss filter, not freezable until rule text and a REPORT). C-BX is parked; C-SYN is blocked until Look 2 is read (EXP-024 Am.4 D1). One root-owned `/etc/mal-h5/VARIANT` file, switch only at 00:00Z with 0 open positions. Switching rule: 100 paired pools, +3.0 pp, Holm over k and Bonferroni over 2 looks, one switch at most, power low, expected result no switch. Gating item G1: the companion EXP-024 amendment must merge before any multi-rule shadow starts. A live challenger after a likely Look 1 FAIL needs a new owner override.
+
+### STATE 10-09 ~07:35Z (older)
 
 **H5 live canary: installed and funded, but HELD by an A3 halt.**
 - **Synthetic exclusion and P2 reading: draft PR #518** (EXP-024 Am.4, EXP-022 Am.5, DEC-024 Am.2). Needs quant-proof OK on its final head and the owner approval (n_xtknDqL-ychBNg); #517 is merged (`82cd674`); this must merge before the one official A3 run (start time `<TO BE FIXED BY MANAGER>` in EXP-024 Am.4 section F) and before 10-10T00Z. EXP-022's own synthetic amendment is still open (before 10-15T06:41Z).
