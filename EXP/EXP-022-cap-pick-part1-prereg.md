@@ -751,6 +751,22 @@ No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thres
 4. **No effect on EXP-022.** EXP-022's picks, looks, gate and the walk-2 run to at least 2026-11-06T02 are unchanged. The exclusion costs C1-NF volume, not EXP-022 anything.
 5. **Order.** C1-NF has two looks. Its Look 1 reads walk-2 chain tape `[2026-10-16T01, 2026-10-17T02)` about 2026-10-17T03Z, before EXP-022's look 1 (day 7, 2026-10-23T01). Its Look 2, only if Look 1 did not pass, reads to 2026-10-24T02 about 2026-10-24T03Z, between EXP-022's look 1 and look 2. Neither prints a CAP-PICK field, and neither report is an input to any CAP-PICK look.
 
+### Amendment 5 (2026-10-09, before any counted hour and before the 2026-10-10T06:41Z daily A3 run): P2 is read as the last run; an erratum on the BOOST pin citation; the synthetic handling is not amended here
+
+No CAP-PICK outcome was computed or read to make this amendment, and no row of walk 2, forward-1002, forward-paper or a runner was opened. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged. **Line numbers below are those of this file on main at `ecdc7af`, before this amendment.**
+
+**Context (disclosed).** The daily A3 run of 2026-10-09T07:11:06Z (job #445) halted on `pins_changed` alone: the pump, PumpSwap and fees programs were redeployed at 2026-10-08T16:20Z. PR #517 re-pins them (and pins the three programdata hashes). At that run `synthetic_share_high` read 6/19 = 0.316, below the 0.35 line. One dry check, at 07:38:11Z, read 7/19 = 0.368 and halted on that flag. **The dry check is not the P2 run:** it used the unmerged pins of PR #517 and a scratch `--out`. It is disclosed here as it is in [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) Amendment 4, and it is not counted as an A3 run.
+
+**1. Clarification: P2 is the last run (not a change).** P2 (section 10, line 320) names the test: "The A3 monitor's **last** daily run before the first counted hour has no halt, and no core rule went unevaluated on two consecutive days." Section 11 (line 358, "Before counting. A halt withdraws CAP-PICK") is the consequence of that test. It is not a second, stricter test that every earlier run must pass. So:
+- **A reviewed re-pin plus a clean last run cures `pins_changed`.** The halt of 2026-10-09T07:11:06Z is cured if PR #517 is merged after review and the last run before 2026-10-16T01:00Z shows no halt.
+- **The reading cuts both ways.** A halt in the last run before the first counted hour withdraws CAP-PICK, whatever ran clean earlier.
+- The core-rule clause (two consecutive daily runs, line 357) is unchanged.
+- This is quant-proof's ruling of 2026-10-09, as the manager relayed it. It is recorded here before the 2026-10-10T06:41Z daily run. EXP-024 Amendment 4 records the same reading for its P2.
+
+**2. Erratum: the BOOST pins are cited by key.** Section 11, line 356 cites the BOOST pins at `tools/pump_structure_pins.json:41-42`. After PR #517 adds the six programdata hash lines, the same two pins sit at lines 47-48. **The values are unchanged: 17.585 SOL and 29 slices.** Read line 356 as citing the keys `boost.budget_sol` (17.585) and `boost.slices` (29) of `tools/pump_structure_pins.json`, whatever their line numbers. This is a citation fix with no change of value, and it takes effect when PR #517 merges.
+
+**3. Not amended here: the synthetic handling. It is open.** This file keeps `synthetic_share_high` (above 0.35) among the halt flags (line 354), treats a synthetic pool that meets the conditions as an attempt (line 121, a reject at -55,000 lamports if it opens above the guard) and reports the count of synthetic pools (line 420). Quant-proof ruled that EXP-022 needs **its own separate amendment**, not a copy of EXP-024 Amendment 4, and that it must merge before the 2026-10-15T06:41Z daily run. **That amendment is open and is not made here.** Until it merges, those lines stand as written.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
