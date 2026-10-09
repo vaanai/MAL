@@ -931,16 +931,26 @@ class H5Executor(pl.LiveExecutor):
         return TIER_FILE_PATH if not self.dry_run else Path(self.h5cfg["state_dir"]) / "TIER"
 
     def _refresh_tier(self, now: int) -> None:
-        """Re-read the tier file (before every buy). A change is ledgered as `tier_change` and never touches an open position. Missing or
-        invalid means T0; an unsafe, unreadable or invalid file also raises an alert (once per distinct problem)."""
+        """Re-read the tier file (before every buy). A change is ledgered as `tier_change` and never touches an open position. A missing file is
+        T0 (a real change). An unsafe, unreadable or invalid file is a PROBLEM read: it raises an alert (once per distinct problem) and applies
+        T0's limits to that trigger, but does not re-start the tier the counters hold, so that tier's baselines (realized_at_start, wallet)
+        survive a half-written file. Only the first start ever (nothing held) records a tier_change for a problem read."""
         tier, problem = read_tier(self._tier_path(), root_checks=not self.dry_run)
-        if problem not in (None, "tier_file_missing") and problem != self._tier_problem:
+        bad_read = problem not in (None, "tier_file_missing")  # invalid, unsafe or unreadable (a missing file is the documented T0)
+        if bad_read and problem != self._tier_problem:
             self._alert("tier_file_problem", "", problem=problem)
         self._tier_problem = problem
         ts = self.counters.tier_state
-        if tier != ts.get("tier") or tier != self.tier:
+        if bad_read and ts.get("tier") in TIERS:
+            # A problem read (a half-written file, a bad owner) applies T0's limits to this trigger and nothing else: the tier the counters hold,
+            # with its start baselines (realized_at_start, wallet), is NOT re-started, so the next valid read of the same tier carries on from them.
+            self.tier = "T0"
+            return
+        if tier != ts.get("tier"):
             self._start_tier(tier, ts.get("tier"), problem, now)
-        elif ts.get("wallet_lamports") is None:  # the wallet could not be read when the tier started: try again
+            return
+        self.tier = tier  # the same tier the counters hold (also after a problem read): keep realized_at_start and the wallet
+        if ts.get("wallet_lamports") is None:  # the wallet could not be read when the tier started: try again
             wallet = self._balance_value(now)
             if wallet is not None:
                 ts["wallet_lamports"] = wallet
@@ -1080,7 +1090,8 @@ class H5Executor(pl.LiveExecutor):
         if self._tier_realized() - at_risk <= -total_stop:  # the loss since this tier started, against min(tier total, 35% of the wallet then)
             return "total_loss_stop"
         if st.realized_lamports - at_risk <= -self._run_total_stop_lamports():  # and the run-cumulative loss against the HIGHEST total of any tier
-            return "total_loss_stop"                                         # entered in this run: a step-down does not stop the bottom tier for good
+            return "total_loss_stop"                                         # entered in this run. A flicker of the file does not re-baseline the tier
+                                                                             # (see _refresh_tier), so the since-start check above holds across it
         day = self.counters.day(day_key(now))
         if day["realized"] - at_risk <= -h5.daily_loss_lamports:
             return "daily_loss_stop"

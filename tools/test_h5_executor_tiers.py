@@ -323,18 +323,116 @@ class TotalStopSinceTierStartTests(TierCase):
         self.assertEqual(self.stop_at(e, 300_000_000 - 550_000_000), "total_loss_stop")  # the restarted executor still counts from the tier start
         self.assertEqual([r["realized_at_start"] for r in e.ledger("tier_change")], [0, 300_000_000])
 
-    def test_a_tier_file_flicker_cannot_reset_the_allowance(self):
+    def test_a_problem_read_does_not_rebaseline_the_tier(self):
         e = self.tier_env("T1", balance=10 * SOL)  # 35% of 10 SOL is far above the tier's 0.60, so the tier's own total binds
         e.ex._refresh_tier(e.clock())
+        held = dict(e.ex.counters.tier_state)
+        changes = len(e.ledger("tier_change"))
         e.ex.state.realized_lamports = -500_000_000  # T1 lost 0.50: one more 0.10 buy is the last that the 0.60 total allows
-        h.TIER_FILE_PATH.write_text("garbage\n")  # an invalid read means T0 ...
+        h.TIER_FILE_PATH.write_text("garbage\n")  # a problem read ...
         e.ex._refresh_tier(e.clock())
-        self.assertEqual(e.ex.tier, "T0")
-        self.write_tier("T1\n")  # ... and then T1 again: a new tier start, which re-records realized_at_start
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state, len(e.ledger("tier_change"))), ("T0", held, changes))  # T0's limits, nothing re-started
+        self.write_tier("T1\n")  # ... and then T1 again, the tier the counters hold: the baselines are kept
         e.ex._refresh_tier(e.clock())
-        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["realized_at_start"]), ("T1", -500_000_000))
-        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")  # since-start is 0, but the run-cumulative -0.50 - 0.10 hits the tier's 0.60
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state, len(e.ledger("tier_change"))), ("T1", held, changes))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")  # since T1's real start: -0.50 and this 0.10 stake reach 0.60
         self.assertIsNone(self.stop_at(e, -499_999_999))
+
+
+class ProblemReadTests(TierCase):
+    """H2: a problem read of the tier file (invalid, unsafe, unreadable) applies T0's limits to that trigger without re-starting the tier."""
+
+    def profit_then_t1(self) -> Env:
+        e = self.tier_env("T0", balance=1_300_000_000)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = 300_000_000
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        return e
+
+    def test_the_prior_profit_flicker_repro_cannot_widen_the_35_percent_cap(self):
+        e = self.profit_then_t1()
+        self.assertEqual(e.ex._total_stop_lamports(), 455_000_000)
+        e.ex.state.realized_lamports = 300_000_000 - 350_000_000  # T1 lost 0.35: allowed
+        self.assertIsNone(e.ex._budget_stop(e.clock()))
+        e.rpc.balance = 950_000_000
+        e.ex._bal = None  # the wallet reads lower now: a re-baseline would take 35% of THIS
+        h.TIER_FILE_PATH.write_text("")  # the truncate-then-write window of a non-atomic `echo T1 > TIER`
+        e.ex._refresh_tier(e.clock())
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        ts = e.ex.counters.tier_state
+        self.assertEqual((e.ex.tier, ts["realized_at_start"], ts["wallet_lamports"], e.ex._total_stop_lamports()), ("T1", 300_000_000, 1_300_000_000, 455_000_000))
+        self.assertEqual(len(e.ledger("tier_change")), 2)  # T0 at the start, T1: the flicker added none
+        # the loss since the ORIGINAL T1 start is still held to 0.455 including the next stake (it used to reach about 0.7)
+        e.ex.state.realized_lamports = 300_000_000 - 354_999_999
+        self.assertIsNone(e.ex._budget_stop(e.clock()))
+        e.ex.state.realized_lamports = 300_000_000 - 355_000_000
+        self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
+
+    def test_a_trigger_during_a_problem_read_is_judged_at_t0_with_the_held_baseline(self):
+        e = self.profit_then_t1()
+        held = dict(e.ex.counters.tier_state)
+        h.TIER_FILE_PATH.write_text("garbage\n")
+        e.fire()  # T0's 0.02 stake and T0's limits (T1 has lost nothing yet since its start)
+        self.assertEqual((e.ex.tier, e.refusals(), buy_args(e.sent()[0])[0], e.ex.counters.tier_state), ("T0", [], 20_000_000, held))
+        self.assertEqual(len(e.alerts("tier_file_problem")), 1)
+        sub = self.tmp / "lost"
+        sub.mkdir()
+        h.TIER_FILE_PATH.write_text("T1\n")
+        e2 = Env(sub)
+        e2.rpc.balance = 10 * SOL
+        e2.ex._refresh_tier(e2.clock())
+        e2.ex.state.realized_lamports = -130_000_000  # T1 lost 0.13: fine for T1 (0.60), over T0's 0.12
+        h.TIER_FILE_PATH.write_text("garbage\n")
+        e2.fire()
+        self.assertEqual((e2.ex.tier, e2.refusals(), e2.rpc.sent), ("T0", ["total_loss_stop"], []))  # fails safe: T0's limit on the held baseline
+        self.assertEqual(len(e2.alerts("t0_budget_stop")), 1)  # and it is not silent
+        self.write_tier("T1\n")
+        e2.fire()
+        self.assertEqual((e2.ex.tier, buy_args(e2.sent()[0])[0]), ("T1", 100_000_000))  # the file is whole again: T1 carries on
+
+    def test_unsafe_unreadable_and_invalid_reads_are_all_problem_reads(self):
+        for i, (text, mode) in enumerate((("garbage\n", 0o644), ("T1\n", 0o666), ("", 0o644), ("T1 T2\n", 0o644))):
+            sub = self.tmp / f"p{i}"
+            sub.mkdir()
+            self.write_tier("T1\n")
+            e = Env(sub)
+            e.rpc.balance = 10 * SOL
+            e.ex._refresh_tier(e.clock())
+            held, changes = dict(e.ex.counters.tier_state), len(e.ledger("tier_change"))
+            self.write_tier(text, mode)
+            e.ex._refresh_tier(e.clock())
+            self.assertEqual((e.ex.tier, e.ex.counters.tier_state, len(e.ledger("tier_change"))), ("T0", held, changes), (text, oct(mode)))
+            self.assertEqual(len(e.alerts("tier_file_problem")), 1, (text, oct(mode)))
+
+    def test_a_missing_file_is_the_documented_t0_and_does_restart_the_tier(self):
+        e = self.profit_then_t1()
+        h.TIER_FILE_PATH.unlink()  # Helm removes the file to go down: a real, deliberate T0
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["tier"]), ("T0", "T0"))
+        self.assertEqual(self.changes(e)[-1], ("T1", "T0", "tier_file_missing"))
+        self.assertEqual(e.alerts("tier_file_problem"), [])  # a missing file is not a problem alert
+
+    def test_a_problem_read_on_a_fresh_start_starts_t0_with_the_problem_recorded(self):
+        self.write_tier("garbage\n")
+        e = self.env()
+        e.rpc.balance = 10 * SOL
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["tier"]), ("T0", "T0"))
+        self.assertEqual(self.changes(e), [(None, "T0", "tier_file_invalid")])
+
+    def test_a_restart_during_a_problem_keeps_the_held_tier_and_its_baselines(self):
+        e = self.profit_then_t1()
+        held = dict(e.ex.counters.tier_state)
+        e.ex.save()
+        h.TIER_FILE_PATH.write_text("garbage\n")
+        e.ex = e.build()
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state), ("T0", held))
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state), ("T1", held))
 
 
 class StepDownTests(TierCase):
