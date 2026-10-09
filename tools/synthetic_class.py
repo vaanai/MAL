@@ -43,7 +43,7 @@ result that used it has `;via_audit_fallback` appended to its `reason`. The Crea
 from __future__ import annotations
 
 import struct
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from observe.trade_decode import decode_program_data
 from tools import pump_structure_monitor as M
@@ -195,7 +195,8 @@ def _search_curve_for_migrate(rpc: Any, *, mint: str, pool: str, curve_pda: str,
 
 
 def _locate_migrate(rpc: Any, *, mint: str, pool: str, curve_pda: str, s0_sig: str | None, before_sig: str | None, tape_migrate_sig: str | None,
-                    cap: int, page_size: int, audit_fallback: bool) -> tuple[str, dict[str, Any], bool]:
+                    cap: int, page_size: int, audit_fallback: bool,
+                    before_fallback: Callable[[], None] | None = None) -> tuple[str, dict[str, Any], bool]:
     """(migrate sig, tx, whether the audit-only fallback found it)."""
     if tape_migrate_sig:
         tx = _fetch(rpc, tape_migrate_sig, "migrate")
@@ -211,6 +212,8 @@ def _locate_migrate(rpc: Any, *, mint: str, pool: str, curve_pda: str, s0_sig: s
     except _Unclassified as first:
         if not audit_fallback:
             raise
+        if before_fallback is not None:
+            before_fallback()  # the caller gives the fallback its own budget (the first search may have used all of its own)
         try:
             sig, tx = _search_curve_for_migrate(rpc, mint=mint, pool=pool, curve_pda=curve_pda, cap=cap, page_size=page_size)
         except _Unclassified as second:
@@ -258,6 +261,7 @@ def classify_pool(
     cap: int = CAP_DEFAULT,
     page_size: int = PAGE_DEFAULT,
     audit_fallback: bool = False,
+    before_fallback: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """EXP-024 Am.4 B1/B4. Returns {"class": synthetic | non_synthetic | unclassified, "migrate_sig", "complete_sig", "reason"}.
 
@@ -266,7 +270,8 @@ def classify_pool(
     s0 print; `before_sig` stands in for it when only a later signature is known (a superset window: the migrate tx is older than
     both). With neither, the pool search starts from the newest signature, which only works for a young pool inside `cap`.
     The tape signatures only locate; the class always comes from the transactions read here. `audit_fallback` is for the daily audit only
-    (module docstring); leave it False on the read path.
+    (module docstring); leave it False on the read path. `before_fallback`, if given, is called once, just before the fallback search
+    starts, whatever made the first search fail (a call-budget error included): the audit uses it to give the fallback a fresh budget.
     """
     curve = curve_pda or curve_pda_for_mint(mint)
     migrate_sig: str | None = None
@@ -277,7 +282,7 @@ def classify_pool(
     try:
         migrate_sig, migrate_tx, via_fallback = _locate_migrate(
             rpc, mint=mint, pool=pool, curve_pda=curve, s0_sig=s0_sig, before_sig=before_sig, tape_migrate_sig=tape_migrate_sig,
-            cap=cap, page_size=page_size, audit_fallback=audit_fallback)
+            cap=cap, page_size=page_size, audit_fallback=audit_fallback, before_fallback=before_fallback)
         seen_any = _pcb(migrate_tx, mint)
         complete_sig, complete_tx = _locate_complete(
             rpc, mint=mint, curve_pda=curve, migrate_sig=migrate_sig, migrate_tx=migrate_tx, tape_complete_sig=tape_complete_sig,

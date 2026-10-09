@@ -258,7 +258,9 @@ def test_a_pool_is_cut_off_at_its_per_pool_call_cap(monkeypatch, capsys):
     code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "2"], rpc, ledger)
     assert json.loads(out)["n_unclassified_now"] == 2 and code == 5
     assert "PoolCallBudgetExceeded" in err
-    assert len(rpc.tx_calls) + len(rpc.sig_calls) == 4  # 2 calls for each of the two pools, not one more
+    # synthetic_1: 2 calls, budget out, then the fallback's fresh budget of 2 (curve list, migrate tx), then out again: 4. non_synthetic_1: the pool
+    # search finds the migrate tx in 2 calls, no fallback, the completing-tx search is out of budget: 2. Never one call beyond a budget.
+    assert len(rpc.tx_calls) + len(rpc.sig_calls) == 6
     # and the cap resets per pool: with room for both, both are classified
     rpc2 = multi_rpc("synthetic_1", "non_synthetic_1")
     code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "300"], rpc2, ledger)
@@ -369,3 +371,58 @@ def test_second_run_makes_an_unclassified_pool_a_disagreement():
     second = au.run_audit(rows, DAY, classify, second_run=True)
     assert first == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
     assert second == {"date": DAY, "n_pools": 1, "n_disagree": 1, "n_unclassified_now": 0, "halt": True}
+
+
+# ---- the fallback has its own per-pool budget; the global cap follows the row count ------------------------------------------
+
+
+def _busy_pool_rpc(name="non_synthetic_1", n_older=20):
+    """A busy pool: `n_older` successful transactions older than the migrate tx, so the oldest-first walk spends its budget before the migrate tx."""
+    rpc = multi_rpc(name)
+    c = CASES[name]
+    older = [_entry(f"busy{i}") for i in range(n_older)]
+    rpc.lists[c["pool"]] = rpc.lists[c["pool"]] + older
+    rpc.txs.update({e["signature"]: {"slot": 1, "meta": {"err": None, "logMessages": []}, "transaction": {"message": {"accountKeys": []}}} for e in older})
+    return rpc, c
+
+
+def test_a_busy_pool_whose_search_exhausts_its_budget_is_still_classified_by_the_fallback(monkeypatch, capsys):
+    rpc, c = _busy_pool_rpc()
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "5"], rpc, ledger_line("non_synthetic_1", synthetic=False))
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+    served = len(rpc.tx_calls) + len(rpc.sig_calls)
+    assert 5 < served <= 10  # more than one budget's worth, at most two
+    assert "PoolCallBudgetExceeded" not in err  # the first search's budget error was handed to the fallback, not reported
+    # the same pool and budget WITHOUT the hook: the fallback inherits the spent budget and the pool stays unclassified
+    rpc2, c = _busy_pool_rpc()
+    budget = au.PoolBudget(rpc2, 5)
+    res = sc.classify_pool(budget, mint=c["mint"], pool=c["pool"], before_sig=c["boundary_sig"], audit_fallback=True)
+    assert res["class"] == "unclassified" and "PoolCallBudgetExceeded" in res["reason"] and "fallback:" in res["reason"]
+
+
+def test_a_busy_pool_that_needs_the_fallback_and_agrees_or_disagrees_is_judged_on_its_class(monkeypatch, capsys):
+    rpc, c = _busy_pool_rpc("synthetic_2", n_older=20)
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "5"], rpc, ledger_line("synthetic_2", synthetic=False))
+    assert code == 3 and json.loads(out)["n_disagree"] == 1 and json.loads(out)["n_unclassified_now"] == 0
+
+
+def test_the_global_call_cap_is_computed_from_the_row_count_unless_given(monkeypatch, capsys):
+    assert au.default_max_calls(5, 300) == 5 * 2 * 300 + 500
+    seen = []
+
+    class Stub:
+        def __init__(self, url, **kw):
+            seen.append(kw)
+
+        def call(self, method, params):
+            raise au.M.RpcUnreachable("stub")
+
+    monkeypatch.setattr(au.M, "RpcClient", Stub)
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=True, ts=TS - DAY_MS)])
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], None, ledger)[0] == 3  # today unclassified (alert), yesterday still unclassified (halt)
+    assert seen[-1]["max_calls"] == 2 * 2 * 300 + 500
+    run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "50"], None, ledger)
+    assert seen[-1]["max_calls"] == 2 * 2 * 50 + 500
+    run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "77"], None, ledger)
+    assert seen[-1]["max_calls"] == 77
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "0"], None, ledger)[0] == 2

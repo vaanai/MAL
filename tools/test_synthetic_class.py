@@ -405,3 +405,29 @@ def test_audit_fallback_respects_the_cap_and_a_missing_tx_in_its_walk_is_unclass
     rpc2.lists[c["curve"]] = [_entry("not_in_the_node"), _entry(c["migrate_sig"])]
     out = sc.classify_pool(rpc2, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True)
     assert out["class"] == "unclassified" and out["reason"].endswith("fallback:tx_missing:migrate_fallback")
+
+
+def test_before_fallback_hook_runs_once_just_before_the_fallback_and_never_on_the_b4_path():
+    events = []
+
+    def watch(rpc, c):
+        orig = rpc.call
+
+        def rec(method, params):
+            nofall = method == "getSignaturesForAddress" and params[0] == c["curve"] and "before" not in params[1]
+            events.append("curve_no_before" if nofall else method)
+            return orig(method, params)
+
+        rpc.call = rec
+
+    rpc, c = fake_for("synthetic_1")
+    watch(rpc, c)
+    out = sc.classify_pool(rpc, **args(c, before_sig=UNKNOWN_BEFORE), audit_fallback=True, before_fallback=lambda: events.append("HOOK"))
+    assert out["class"] == "synthetic" and events[:3] == ["getSignaturesForAddress", "HOOK", "curve_no_before"] and events.count("HOOK") == 1
+    for kw in ({"before_sig": None}, {"before_sig": UNKNOWN_BEFORE}):  # B4 path with the pool search fine, or the flag off
+        events.clear()
+        rpc, c = fake_for("synthetic_1")
+        watch(rpc, c)
+        kw = dict(kw, before_sig=c["boundary_sig"]) if kw["before_sig"] is None else kw
+        sc.classify_pool(rpc, **args(c, **kw), audit_fallback=kw["before_sig"] != UNKNOWN_BEFORE, before_fallback=lambda: events.append("HOOK"))
+        assert "HOOK" not in events

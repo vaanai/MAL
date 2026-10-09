@@ -16,7 +16,7 @@ INPUT, one of
                        with O_NOFOLLOW; `-` reads stdin.
   --out PATH           with --ledger: write the projected rows of --date (the five keys, mode 0600, O_NOFOLLOW) to PATH and stop;
                        --out-prev PATH2 writes the previous UTC day's rows the same way. Nothing about a row goes to stdout. This is
-                       the step that takes the `sudo dd` stream of the root-owned ledger (`--ledger -`), as the manager's own user:
+                       the step that takes a copy of the root-owned ledger that `sudo dd` wrote to a 0600 file (`--ledger FILE`), as the manager's own user:
                        the projection is written once, to files the audit then reads (`--decisions`, `--prev-decisions`).
                        Without --out, --ledger audits both days straight from the stream.
 
@@ -54,7 +54,9 @@ A pool "disagrees" when
   - it is a pool of the previous UTC day that is still unclassified (the second look above).
 A pool of --date that B4 cannot classify now is also counted in n_unclassified_now, whether or not it is a disagreement.
 
-Budget: public RPC only; at most `--max-calls-per-pool` (300) calls per pool, `--max-calls` (3,000) in all, and at least
+Budget: public RPC only; at most `--max-calls-per-pool` (300) calls for a pool's pool-address search and another 300 for the audit-only
+fallback and the completing-tx search after it (the pool's budget is reset just before the fallback, so a busy pool that used up the first
+still gets classified); a global cap of rows x 2 x 300 + 500 calls unless `--max-calls` says otherwise; and at least
 `--min-interval` (0.2 s, default 0.5) between calls. A pool that runs out of calls is `unclassified` (reason `...:PoolCallBudgetExceeded`).
 
 Exit code 3 if n_disagree > 0 (checked first), else 5 if n_unclassified_now > 0, 4 on a failed or empty ledger read, 2 on a usage error
@@ -82,6 +84,14 @@ _READ = frozenset(KEEP_KEYS) | frozenset(SELECTOR_KEYS)
 DEFAULT_RPC_HOST = "api.mainnet-beta.solana.com"
 MIN_INTERVAL_FLOOR = 0.2
 MAX_CALLS_PER_POOL_DEFAULT = 300
+MAX_CALLS_MARGIN = 500
+
+
+def default_max_calls(n_rows: int, per_pool: int) -> int:
+    """Global call cap when --max-calls is not given: every row (>= every pool) of both days may use two per-pool budgets, plus a margin."""
+    return n_rows * 2 * per_pool + MAX_CALLS_MARGIN
+
+
 EXIT_HALT, EXIT_READ, EXIT_UNCLASSIFIED = 3, 4, 5
 
 
@@ -224,7 +234,8 @@ class PoolCallBudgetExceeded(M.CallBudgetExceeded):
 
 
 class PoolBudget:
-    """Wraps an RPC client: at most `limit` calls (logical calls; the client's own retries are not counted) between two `reset()`s."""
+    """Wraps an RPC client: at most `limit` calls (logical calls; the client's own retries are not counted) between two `reset()`s.
+    The audit resets it before each pool and once more just before a pool's audit-only fallback (`before_fallback`)."""
 
     def __init__(self, rpc: Any, limit: int):
         self.rpc, self.limit, self.used = rpc, limit, 0
@@ -285,8 +296,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--rpc-url", default=M.DEFAULT_RPC, help="public mainnet RPC (default %(default)s)")
     p.add_argument("--allow-rpc-host", action="append", default=[], metavar="HOST", help="another public RPC host to allow (repeatable)")
     p.add_argument("--min-interval", type=float, default=0.5, help=f"seconds between RPC calls (not below {MIN_INTERVAL_FLOOR})")
-    p.add_argument("--max-calls", type=int, default=3000, help="hard cap on RPC calls in all, retries included")
-    p.add_argument("--max-calls-per-pool", type=int, default=MAX_CALLS_PER_POOL_DEFAULT, help="calls one pool may use")
+    p.add_argument("--max-calls", type=int, default=None, help="hard cap on RPC calls in all, retries included (default: rows x 2 x --max-calls-per-pool + 500)")
+    p.add_argument("--max-calls-per-pool", type=int, default=MAX_CALLS_PER_POOL_DEFAULT, help="calls one pool may use for the pool-address search; the audit-only fallback gets the same again")
     p.add_argument("--cap", type=int, default=sc.CAP_DEFAULT, help="signatures per search (B4: 1000)")
     return p.parse_args(argv)
 
@@ -307,7 +318,7 @@ def main(argv: Sequence[str] | None = None, *, rpc: Any = None) -> int:
     if (args.out and (not args.ledger or args.out == "-")) or (args.out_prev and (not args.out or args.out_prev == "-")) or (args.prev_decisions and not args.decisions):
         print("usage: --out needs --ledger and a file path; --out-prev needs --out; --prev-decisions needs --decisions", file=sys.stderr)
         return 2
-    if args.min_interval < MIN_INTERVAL_FLOOR or args.max_calls_per_pool < 1 or args.max_calls < 1 or args.cap < 1:
+    if args.min_interval < MIN_INTERVAL_FLOOR or args.max_calls_per_pool < 1 or (args.max_calls is not None and args.max_calls < 1) or args.cap < 1:
         print(f"usage: --min-interval must be at least {MIN_INTERVAL_FLOOR}; the caps must be positive", file=sys.stderr)
         return 2
     if rpc is None and not args.out:
@@ -342,12 +353,14 @@ def main(argv: Sequence[str] | None = None, *, rpc: Any = None) -> int:
             return _emit_error(args.date, "projection_write_failed")
         return 0
     if rpc is None:
-        rpc = M.RpcClient(args.rpc_url, min_interval=args.min_interval, max_calls=args.max_calls)
+        max_calls = args.max_calls if args.max_calls is not None else default_max_calls(len(rows) + len(prev_rows), args.max_calls_per_pool)
+        rpc = M.RpcClient(args.rpc_url, min_interval=args.min_interval, max_calls=max_calls)
     budget = PoolBudget(rpc, args.max_calls_per_pool)
 
     def classify(r: Mapping[str, Any]) -> Mapping[str, Any]:
         budget.reset()
-        return sc.classify_pool(budget, mint=r["mint"], pool=r["pool"], before_sig=r.get("signature"), cap=args.cap, audit_fallback=True)
+        return sc.classify_pool(budget, mint=r["mint"], pool=r["pool"], before_sig=r.get("signature"), cap=args.cap, audit_fallback=True,
+                                 before_fallback=budget.reset)
 
     reasons: Counter = Counter()
     today = run_audit(rows, args.date, classify, reasons)
