@@ -42,6 +42,7 @@ class H5Rpc(LiveRpc):
         self._anchor = (TRIG_SLOT + 8, clock())
         self.slot_fails = False
         self.state_fails = False
+        self.accounts: dict = {}
 
     def slot_at(self, wall_ms: int) -> int:
         if self.slot_fn is not None:
@@ -58,6 +59,9 @@ class H5Rpc(LiveRpc):
         self._anchor = (v, self.clock())
 
     def __call__(self, method, params):
+        if method == "getAccountInfo" and params[0] in self.accounts:  # a test pins an account (None = closed)
+            self.calls.append(method)
+            return {"context": {"slot": 1}, "value": self.accounts[params[0]]}
         if self.state_fails and method in ("getAccountInfo", "getMultipleAccounts"):
             raise pe.RpcError("timeout")
         if method == "getSlot":
