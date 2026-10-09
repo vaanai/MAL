@@ -105,17 +105,20 @@ EXIT_OK, EXIT_USAGE, EXIT_REFUSED = 0, 2, 3
 # ---- pick schema (the executor parses these) -----------------------------------------------------------------------------------------------
 # q_lamports / base_reserve: the decision-time state, i.e. the state after the last canonical-pool print with slot < SD_slot (quote + that
 # print's V, raw base), the reference of the executor's 1.15 x spot guard (DEC-026 section 6; the executor gives a pick without them no buy).
-# state_slot: the slot of that print. A pool with no such state at decision time gets no pick (counter `no_decision_state`).
+# v_lamports: that print's V, so the executor can repeat H5's q_lamports >= v_lamports check (h5_executor.py:373); the shadow already requires
+# q_lamports > v_lamports > 0. state_slot: the slot of that print. A pool with no such state at decision time, or whose last print before SD is
+# malformed (missing raw quote, base, token_raw, side, or sol_lamports on a buy), gets no pick (counter `no_decision_state`).
 PICK_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "pred", "h_top1", "stage1", "feature_hash", "model_sha", "q_lamports",
-               "base_reserve", "state_slot")
+               "base_reserve", "v_lamports", "state_slot")
 PICK_TYPES = {"type": str, "mint": str, "pool": str, "decision_T_ms": int, "SD_slot": int, "pred": float, "h_top1": float, "stage1": bool,
-              "feature_hash": str, "model_sha": str, "q_lamports": int, "base_reserve": int, "state_slot": int}
-PICK_POSITIVE = ("q_lamports", "base_reserve")
+              "feature_hash": str, "model_sha": str, "q_lamports": int, "base_reserve": int, "v_lamports": int, "state_slot": int}
+PICK_POSITIVE = ("q_lamports", "base_reserve", "v_lamports")
 PICK_ENVELOPE = ("schema", "t_ms")   # added to every record by the sink path; the executor may ignore them
 PICK_EXAMPLE = {
     "type": "c1nf_pick", "mint": "DxkqpagQamHXMVhS2GC7fni4qugWp5fcw28chKfUpump", "pool": "5N4CLYwiyx7AWtUzPhErC97bJX62aQbCpBz2CCuFc2Bm",
     "decision_T_ms": 1788523800000, "SD_slot": 444240500, "pred": 0.0431, "h_top1": 0.12, "stage1": True,
-    "feature_hash": "0" * 64, "model_sha": "f" * 64, "q_lamports": 137_580_000_000, "base_reserve": 206_900_000_000_000, "state_slot": 444240499,
+    "feature_hash": "0" * 64, "model_sha": "f" * 64, "q_lamports": 137_580_000_000, "base_reserve": 206_900_000_000_000, "v_lamports": 17_580_000_000,
+    "state_slot": 444240499,
 }
 OUTCOME_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "complete", "legs")
 EVENT_TYPES = ("c1nf_gap", "c1nf_heartbeat", "c1nf_start", "c1nf_stop")
@@ -156,6 +159,9 @@ def validate_pick(rec: Mapping[str, Any]) -> list[str]:
         v = rec.get(k)
         if isinstance(v, int) and not isinstance(v, bool) and v <= 0:
             bad.append(f"{k}: not positive")
+    q, v = rec.get("q_lamports"), rec.get("v_lamports")
+    if all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in (q, v)) and q <= v:
+        bad.append("q_lamports: not above v_lamports")
     if _class_keys(rec):
         bad.append("carries the synthetic class")
     return bad
@@ -285,25 +291,44 @@ def tier_fee(q: float, b: float) -> float:
     return pumpswap_sol_fee_ppm(q / b * 1e6) / 1e6
 
 
+def _pos(x: Any) -> float:
+    """A raw row amount as a float, or 0.0 when it is missing, not a number, a bool, not finite or not positive (the Print then refuses)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x <= 0:
+        return 0.0
+    return float(x)
+
+
 class Print:
-    """One canonical-pool PumpSwap print: PRE-trade reserves. Q = vault quote + this print's V."""
+    """One canonical-pool PumpSwap print: PRE-trade reserves. Q = vault quote + this print's V.
 
-    __slots__ = ("slot", "bt", "isb", "sol", "tok", "q", "b", "v")
+    Fail closed on malformed rows (a missing tip key reaches this as 0): pre() raises unless the raw vault quote and base are > 0; post() also
+    raises unless the side is known, token_raw > 0 (and sol_lamports > 0 for a buy) and the base after the trade is > 0. There is no fallback
+    to the pre-trade state, so a bad print never becomes a decision state or a price (callers turn the ValueError into no pick / incomplete)."""
 
-    def __init__(self, slot: int, bt: Optional[int], isb: bool, sol: float, tok: float, q: float, b: float, v: Optional[float]) -> None:
+    __slots__ = ("slot", "bt", "isb", "sol", "tok", "q", "b", "v", "side_ok")
+
+    def __init__(self, slot: int, bt: Optional[int], isb: bool, sol: float, tok: float, q: float, b: float, v: Optional[float],
+                 side_ok: bool = True) -> None:
         self.slot, self.bt, self.isb, self.sol, self.tok, self.q, self.b, self.v = slot, bt, isb, sol, tok, q, b, v
+        self.side_ok = side_ok
 
     def pre(self) -> tuple[float, float]:
         if self.v is None:
             raise ValueError("print without V")
+        if not (self.q > 0 and self.b > 0 and math.isfinite(self.q) and math.isfinite(self.b)):
+            raise ValueError("print without vault quote / base")
         return self.q + self.v, self.b
 
     def post(self) -> tuple[float, float]:
         """State after this print: base moves by token_raw; quote by constant product with the LP share kept in the pool (estimate)."""
         q, b = self.pre()
+        if not self.side_ok:
+            raise ValueError("print without a side")
+        if not (self.tok > 0 and math.isfinite(self.tok)) or (self.isb and not (self.sol > 0 and math.isfinite(self.sol))):
+            raise ValueError("print without token_raw / sol_lamports")
         b2 = b + (-self.tok if self.isb else self.tok)
         if b2 <= 0:
-            return q, b
+            raise ValueError("post-trade base <= 0")
         q_cp = q * b / b2
         dq = (q_cp - q) * (1 + LP_FRAC) if self.isb else -(q - q_cp) * (1 - LP_FRAC)
         return q + dq, b2
@@ -780,8 +805,8 @@ class Shadow:
             side = row.get("side")
             self.engine.on_trade(venue, mint, row.get("trader"), side == "buy", row.get("sol_lamports"), row.get("token_raw"), row.get("quote_reserve"),
                                  row.get("base_reserve"), pool, slot, bt)
-            pr = Print(slot, bt, side == "buy", float(row.get("sol_lamports") or 0), float(row.get("token_raw") or 0), float(row.get("quote_reserve") or 0),
-                       float(row.get("base_reserve") or 0), v)
+            pr = Print(slot, bt, side == "buy", _pos(row.get("sol_lamports")), _pos(row.get("token_raw")), _pos(row.get("quote_reserve")),
+                       _pos(row.get("base_reserve")), v, side_ok=side in ("buy", "sell"))
             if pool not in self.first_ms:
                 self.first_ms[pool] = bt * 1000
                 self._classify(pool, mint, bt)
@@ -856,23 +881,31 @@ class Shadow:
             self.c["picks"] += 1
             self.emit({"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
                        "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
-                       "q_lamports": state[0], "base_reserve": state[1], "state_slot": state[2]})
+                       "q_lamports": state[0], "base_reserve": state[1], "v_lamports": state[2], "state_slot": state[3]})
             if not outcome_allowed(T * 1000):                # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
                 self.c["outcome_guard_pre_window"] += 1
                 continue
             self.pending[pool].append(Pending(pool, mint, T, int(sd), bt, float(pred), self.clock_ms(), self.first_ms.get(pool), self.last_print.get(pool), sps))
 
-    def _decision_state(self, pool: str, sd: int) -> Optional[tuple[int, int, int]]:
-        """(q_lamports, base_reserve, slot): the state after the last print of `pool` with slot < sd (quote + that print's V). None if unknown."""
+    def _decision_state(self, pool: str, sd: int) -> Optional[tuple[int, int, int, int]]:
+        """(q_lamports, base_reserve, v_lamports, slot): the state after the last print of `pool` with slot < sd (quote + that print's V).
+
+        Fail closed (None: no pick): that print lacks V, a raw vault quote, base or token_raw (or sol_lamports on a buy), or a known side; its
+        post-trade base is not > 0; V is not > 0; or the post-trade quote is not above V (no real quote left). A bad last print is never
+        replaced by an older one: the executor would guard on a stale state."""
         for pr in (self.last_print.get(pool), self.before_slot.get(pool)):
             if pr is not None and pr.slot < sd:
                 try:
                     q, b = pr.post()
-                except ValueError:                           # print without V
+                except ValueError:                           # no V, a missing raw amount or side, post-trade base <= 0
                     return None
-                if not (math.isfinite(q) and math.isfinite(b) and q > 0 and b > 0):
+                v = pr.v
+                if v is None or not (math.isfinite(q) and math.isfinite(b) and math.isfinite(v) and v > 0 and b > 0):
                     return None
-                return int(round(q)), int(round(b)), int(pr.slot)
+                qi, bi, vi = int(round(q)), int(round(b)), int(round(v))
+                if not (qi > vi > 0 and bi > 0):             # the executor repeats this check (H5's q_lamports >= v_lamports, h5_executor.py:373)
+                    return None
+                return qi, bi, vi, int(pr.slot)
         return None
 
     # ---- outcomes ----

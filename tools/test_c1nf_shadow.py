@@ -719,10 +719,10 @@ def test_pick_carries_decision_state_of_the_last_print_before_sd():
     prev = sd - 1                                                  # the last print with slot < SD (the stream prints every slot)
     want_q, want_b = cs.Print(prev, bt_of(prev), bool(prev % 2), 1e6, 1e9, Q0 + RAMP * (prev - S0), B0, V0).post()
     assert pick["state_slot"] == prev
-    assert pick["q_lamports"] == round(want_q) and pick["base_reserve"] == round(want_b)
+    assert pick["q_lamports"] == round(want_q) and pick["base_reserve"] == round(want_b) and pick["v_lamports"] == round(V0)
     assert type(pick["q_lamports"]) is int and type(pick["base_reserve"]) is int and pick["q_lamports"] > V0
     assert cs.validate_pick(pick) == []
-    assert set(cs.PICK_FIELDS) >= {"q_lamports", "base_reserve", "state_slot"}
+    assert set(cs.PICK_FIELDS) >= {"q_lamports", "base_reserve", "v_lamports", "state_slot"}
     fx = json.loads((FIX / "pick_example.json").read_text())
     assert fx == cs.PICK_EXAMPLE and fx["q_lamports"] > 0 and fx["base_reserve"] > 0
 
@@ -731,8 +731,8 @@ def test_decision_state_never_uses_a_print_at_or_after_sd():
     sh, _ = mk_shadow()
     sh.last_print[POOL] = cs.Print(500, BT0, True, 1e6, 1e9, 100e9, B0, V0)
     sh.before_slot[POOL] = cs.Print(497, BT0, False, 1e6, 1e9, 90e9, B0, V0)
-    q, b, slot = sh._decision_state(POOL, 500)                     # the SD-slot print is skipped; the earlier slot's state is used
-    assert slot == 497 and (q, b) == tuple(round(x) for x in sh.before_slot[POOL].post())
+    q, b, v, slot = sh._decision_state(POOL, 500)                  # the SD-slot print is skipped; the earlier slot's state is used
+    assert slot == 497 and (q, b) == tuple(round(x) for x in sh.before_slot[POOL].post()) and v == round(V0)
     assert sh._decision_state(POOL, 497) is None                   # nothing strictly before SD: no state
     assert sh._decision_state("UNSEEN", 500) is None
 
@@ -747,16 +747,98 @@ def test_no_decision_state_means_no_pick_no_book_no_outcome():
 
 
 @pytest.mark.parametrize("field,val", [("q_lamports", 0), ("q_lamports", -5), ("q_lamports", 1.5e11), ("base_reserve", True),
-                                       ("base_reserve", 0), ("state_slot", "1")])
+                                       ("base_reserve", 0), ("state_slot", "1"), ("v_lamports", 0), ("v_lamports", 1.758e10),
+                                       ("v_lamports", 137_580_000_000), ("q_lamports", 17_580_000_000)])
 def test_validate_pick_rejects_bad_decision_state(field, val):
     assert cs.validate_pick({**cs.PICK_EXAMPLE, field: val}) != []
 
 
-@pytest.mark.parametrize("field", ["q_lamports", "base_reserve", "state_slot"])
+@pytest.mark.parametrize("field", ["q_lamports", "base_reserve", "v_lamports", "state_slot"])
 def test_validate_pick_requires_decision_state(field):
     rec = dict(cs.PICK_EXAMPLE)
     del rec[field]
     assert f"missing {field}" in cs.validate_pick(rec)
+
+
+SD10 = slot_of_sec(600)                                           # SD of minute 10: the first slot with block_time >= BT0 + 600
+
+
+def _stream_with_bad_print(bad_side, drop=(), **over):
+    """Every slot prints; the last print before SD of minute 10 is `side` with the keys in `drop` removed (a tip key mismatch) or overridden."""
+    sh, sink = mk_shadow(only_minute(10))
+    for slot in range(S0, slot_of_sec(1000)):
+        row = mk_row(slot, side="buy" if slot % 2 else "sell")
+        if slot == SD10 - 1:
+            row["side"] = bad_side
+            for k in drop:
+                del row[k]
+            row.update(over)
+        sh.feed(row, "trades")
+    sh.finish("test")
+    return sh, sink
+
+
+def test_sd_minus_one_is_the_state_print():
+    assert bt_of(SD10) == BT0 + 600 and bt_of(SD10 - 1) < BT0 + 600
+    sh, sink = _stream_with_bad_print("sell")                      # control: a well-formed sell before SD gives a pick
+    (pick,) = sink.of("c1nf_pick")
+    assert pick["state_slot"] == SD10 - 1 and sh.c["no_decision_state"] == 0
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+@pytest.mark.parametrize("drop,over", [
+    (("quote_reserve",), {}), (("base_reserve",), {}), (("token_raw",), {}),          # missing raw keys (tip key mismatch)
+    ((), {"quote_reserve": None}), ((), {"base_reserve": 0}), ((), {"token_raw": "1000"}), ((), {"quote_reserve": True}),
+    ((), {"base_reserve": float("nan")})])
+def test_malformed_state_print_gives_no_pick(side, drop, over):
+    """Reviewer probe on 17a6b81: no base_reserve gave a 20x spot, no quote_reserve about V (0.13x), no token_raw the PRE state labelled post.
+    Each now gives no pick, no book entry and no outcome."""
+    sh, sink = _stream_with_bad_print(side, drop, **over)
+    assert sink.of("c1nf_pick") == [] and sink.of("c1nf_outcome") == [] and not sh.book
+    assert sh.c["no_decision_state"] == 1 and sh.c["picks"] == 0
+
+
+@pytest.mark.parametrize("over", [{"sol_lamports": None}, {"sol_lamports": 0}, {"side": None}, {"side": "swap"}])
+def test_buy_without_sol_or_unknown_side_gives_no_pick(over):
+    sh, sink = _stream_with_bad_print("buy", **over)
+    assert sink.of("c1nf_pick") == [] and sh.c["no_decision_state"] == 1
+
+
+def test_sell_without_sol_still_has_a_state():
+    sh, sink = _stream_with_bad_print("sell", sol_lamports=None)   # post() of a sell needs only token_raw; sol is the output
+    assert len(sink.of("c1nf_pick")) == 1
+
+
+def test_post_has_no_pre_state_fallback():
+    p = cs.Print(1, BT0, True, 1e6, 2e15, Q0, B0, V0)                # buys more tokens than the pool holds
+    with pytest.raises(ValueError):
+        p.post()
+    for bad in (cs.Print(1, BT0, True, 1e6, 1e9, 0.0, B0, V0), cs.Print(1, BT0, False, 1e6, 1e9, Q0, 0.0, V0)):
+        with pytest.raises(ValueError):
+            bad.pre()
+    with pytest.raises(ValueError):
+        cs.Print(1, BT0, False, 0.0, 0.0, Q0, B0, V0).post()
+
+
+@pytest.mark.parametrize("v", [0.0, -1e9])
+def test_state_needs_positive_v_and_quote_above_v(v):
+    sh, _ = mk_shadow()
+    sh.last_print[POOL] = cs.Print(499, BT0, False, 1e6, 1e9, Q0, B0, v)
+    assert sh._decision_state(POOL, 500) is None
+    sh.last_print[POOL] = cs.Print(499, BT0, False, 1e6, 1e9, Q0, B0, V0)
+    assert sh._decision_state(POOL, 500)[2] == round(V0)
+
+
+def test_malformed_print_after_sd_makes_the_outcome_incomplete_not_a_price():
+    sh, sink = mk_shadow(only_minute(10))
+    for slot in range(S0, slot_of_sec(1000)):
+        row = mk_row(slot, side="buy" if slot % 2 else "sell")
+        if slot == SD10:
+            del row["base_reserve"]                                    # the batch spot print: a 20x price if it were read as 0 -> 1
+        sh.feed(row, "trades")
+    sh.finish("test")
+    (o,) = sink.of("c1nf_outcome")
+    assert o["complete"] is False and o["spot"] is None and "no_spot" in o["reasons"]
 
 
 # ---- DEC-026 item 8: binding outcome guard from 2026-10-10T00Z -------------------------------------------------------------------------------

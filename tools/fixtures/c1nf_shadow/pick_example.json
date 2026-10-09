@@ -11,5 +11,6 @@
   "q_lamports": 137580000000,
   "stage1": true,
   "state_slot": 444240499,
-  "type": "c1nf_pick"
+  "type": "c1nf_pick",
+  "v_lamports": 17580000000
 }
