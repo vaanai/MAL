@@ -758,5 +758,133 @@ class SafetyTests(Case):
             self.assertEqual(c.get("jito_tip_lamports", 0), 0)
 
 
+# --- running as a plain user on the host: no dependence on the probe's files, and an RPC URL for the dry run ---------------------------------
+
+
+@unittest.skipIf(os.geteuid() == 0, "root ignores directory modes")
+class ProbeIndependenceTests(Case):
+    def locked_live_dir(self) -> Path:
+        d = self.tmp / "mal-live"  # stands in for /var/lib/mal-live: mal-live 0700, unreadable to the job user
+        d.mkdir()
+        (d / "state-live-dec020.json").write_text("{}")
+        os.chmod(d, 0)
+        self.addCleanup(os.chmod, d, 0o700)
+        return d
+
+    def test_a_dry_run_is_built_while_the_probes_directory_is_unreadable(self):
+        locked = self.locked_live_dir()
+        with mock.patch.object(pe, "LIVE_DIR", locked):
+            with self.assertRaises(PermissionError):  # the failure seen on mal-fast-0: the probe's own precheck cannot stat its dec020 file
+                pe.profile_precheck({"mode": "live"}, "live")
+            sub = self.tmp / "job"
+            sub.mkdir()
+            e = Env(sub, live=False)
+            e.fire()
+        self.assertEqual(e.ex.run_mode, "dryrun")
+        self.assertEqual(len(e.ledger("decision")), 1)
+        self.assertIsNot(pe.profile_precheck, h.h5_precheck)  # the probe's function is put back after construction
+
+    def test_the_probes_own_precheck_is_not_weakened(self):
+        d = self.tmp / "probe-live"
+        d.mkdir()
+        pe.State(open={"m": {"x": 1}}, mode="live").save(pe.state_path_for(d, "live", "dec020"))
+        sub = self.tmp / "job"
+        sub.mkdir()
+        with mock.patch.object(pe, "LIVE_DIR", d):
+            Env(sub, live=False)  # H5 builds without looking at the probe's state
+            with self.assertRaises(SystemExit):
+                pe.profile_precheck({"mode": "live"}, "live")  # dec019 still refuses while a dec020 position is open
+
+    def test_h5_state_that_cannot_be_read_fails_closed_in_both_modes(self):
+        for live in (True, False):
+            sub = self.tmp / f"s{live}"
+            sub.mkdir()
+            e = Env(sub, live=live)
+            mode_dir = Path(e.conf["state_dir"]) / e.ex.run_mode
+            os.chmod(mode_dir, 0)
+            self.addCleanup(os.chmod, mode_dir, 0o700)
+            with self.assertRaises(SystemExit) as cm:
+                e.build()
+            self.assertIn("fail closed", str(cm.exception))
+
+    def test_h5_state_file_that_cannot_be_read_fails_closed(self):
+        e = self.env()
+        e.fire()
+        os.chmod(e.ex.state_path, 0)
+        self.addCleanup(os.chmod, e.ex.state_path, 0o600)
+        with self.assertRaises(SystemExit):
+            e.build()
+
+
+class RpcOptionTests(Case):
+    URL = "https://rpc.example.test/?api-key=SECRETKEY123"
+
+    def cfg_file(self, e: Env) -> str:
+        cp = self.tmp / "c.json"
+        cp.write_text(json.dumps(e.conf))
+        Path(e.conf["intents_file"]).write_text("")
+        return str(cp)
+
+    def test_dry_run_uses_the_given_url_and_never_the_env_file_and_redacts_it(self):
+        e = self.env(live=False)
+        seen = []
+
+        def probe_rpc(url):
+            seen.append(url)
+            return e.rpc
+
+        with mock.patch.object(pe, "ProbeRpc", probe_rpc), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
+                mock.patch.dict(os.environ, {}, clear=False), contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            os.environ.pop("HELIUS_API_KEY", None)
+            rc = h.main(["--config", self.cfg_file(e), "--dry-run", "--once", "--rpc", self.URL, "--env-file", str(self.tmp / "unreadable.env")])
+        self.assertEqual((rc, seen), (0, [self.URL]))  # the RPC object gets the real URL; nothing else does
+        self.assertIn("mode=dryrun", out.getvalue())
+        self.assertIn("api-key=REDACTED", out.getvalue())
+        blobs = [out.getvalue(), err.getvalue(), *(p.read_text() for p in self.tmp.rglob("*") if p.is_file())]
+        for blob in blobs:
+            self.assertNotIn("SECRETKEY123", blob)
+        start = e.ledger("start") or [json.loads(x) for x in Path(e.ex.fills.path).read_text().splitlines() if '"start"' in x]
+        self.assertTrue(any(r.get("rpc") == "https://rpc.example.test/?api-key=REDACTED" for r in start), start)
+
+    def test_rpc_without_dry_run_flag_is_still_a_dry_run(self):
+        e = self.env(live=True)  # config says live, no --live flag: a dry run, so --rpc is allowed
+        with mock.patch.object(pe, "ProbeRpc", lambda url: e.rpc), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = h.main(["--config", self.cfg_file(e), "--once", "--rpc", self.URL])
+        self.assertEqual(rc, 0)
+        self.assertIn("mode=dryrun", out.getvalue())
+
+    def test_rpc_is_refused_with_live_before_anything_is_touched(self):
+        e = self.env(end_ms=T0 + 10**9)
+        built = mock.Mock(side_effect=AssertionError("rpc built"))
+        with mock.patch.object(pe, "ProbeRpc", built), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
+                mock.patch.object(pl, "harden_process", side_effect=AssertionError("hardened")), contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as cm:
+            h.main(["--config", self.cfg_file(e), "--live", "--once", "--rpc", self.URL])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("dry-run only", err.getvalue())
+        self.assertNotIn("SECRETKEY123", err.getvalue())  # the refusal does not echo the URL
+        self.assertFalse((Path(e.conf["state_dir"]) / "h5-executor.lock").exists())  # refused before the lock
+
+    def test_live_still_reads_the_key_from_the_environment_only(self):
+        kp = Keypair.from_seed(bytes(range(32)))
+        cred = self.tmp / "cred"
+        cred.mkdir()
+        (cred / pl.CREDENTIAL_NAME).write_text(json.dumps(list(bytes(kp))))
+        os.chmod(cred / pl.CREDENTIAL_NAME, 0o400)
+        e = self.env(end_ms=T0 + 10**9)
+        root = self.tmp / "repo"
+        lru = mock.Mock(return_value="http://x")
+        with mock.patch.object(h, "repo_root", return_value=root), mock.patch.object(pl, "harden_process"), \
+                mock.patch.object(pe, "rpc_env_problem", return_value=None), mock.patch.object(pe, "ProbeRpc", lambda url: e.rpc), \
+                mock.patch.object(h.sim, "load_rpc_url", lru), \
+                mock.patch.dict(os.environ, {"HELIUS_API_KEY": "k", "CREDENTIALS_DIRECTORY": str(cred)}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(h.main(["--config", self.cfg_file(e), "--live", "--once"]), 0)
+        lru.assert_called_once()
+        self.assertEqual(lru.call_args.args[0], None)  # no explicit URL
+        self.assertEqual(lru.call_args.kwargs, {"use_env_file": False})  # and no env file
+
+
 if __name__ == "__main__":
     unittest.main()
