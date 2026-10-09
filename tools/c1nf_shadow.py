@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import collections
+import concurrent.futures
 import hashlib
 import importlib
 import json
@@ -94,6 +95,7 @@ SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp(
 OUTCOME_START_MS = int(datetime(2026, 10, 10, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 CANARY_STAKE_LAMPORTS = 50_000_000    # DEC-026 O-3: the canary's stake; each outcome bound carries a twin priced at it next to the 0.25 SOL cell
 ORACLE_STALE_S = 60.0
+CLASSIFY_TIMEOUT_S = 10.0             # synthetic classifier: runs off the row thread; no answer within this (monotonic) time is unclassified
 DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 DEFAULT_OUT_DIR = os.path.join(os.path.expanduser("~"), "data", "c1nf-shadow")
 TAPE_DIR = "/data/mal/audit-1008/tape"
@@ -116,7 +118,7 @@ PICK_POSITIVE = ("q_lamports", "base_reserve", "v_lamports")
 PICK_ENVELOPE = ("schema", "t_ms")   # added to every record by the sink path; the executor may ignore them
 PICK_EXAMPLE = {
     "type": "c1nf_pick", "mint": "DxkqpagQamHXMVhS2GC7fni4qugWp5fcw28chKfUpump", "pool": "5N4CLYwiyx7AWtUzPhErC97bJX62aQbCpBz2CCuFc2Bm",
-    "decision_T_ms": 1788523800000, "SD_slot": 444240500, "pred": 0.0431, "h_top1": 0.12, "stage1": True,
+    "decision_T_ms": 1791591000000, "SD_slot": 444240500, "pred": 0.0431, "h_top1": 0.12, "stage1": True,
     "feature_hash": "0" * 64, "model_sha": "f" * 64, "q_lamports": 137_580_000_000, "base_reserve": 206_900_000_000_000, "v_lamports": 17_580_000_000,
     "state_slot": 444240499,
 }
@@ -167,6 +169,19 @@ def validate_pick(rec: Mapping[str, Any]) -> list[str]:
     return bad
 
 
+def executor_refusal(rec: Mapping[str, Any]) -> Optional[str]:
+    """The executor's side of the pick contract (DEC-026 sections 6 and 8): None when the executor may act on this pick line, else the reason.
+    The executor must apply it (import it or repeat it) to every line of c1nf-picks-*: `invalid_pick` (validate_pick fails, including a
+    missing or inconsistent decision state) or `pre_window` (decision_T_ms < OUTCOME_START_MS). The shadow writes pre-window picks for the
+    book's continuity only; a canary outcome for one would break DEC-026 section 8 and Appendix A item 1, so the refusal is in the contract,
+    not left to the executor's start time."""
+    if validate_pick(rec):
+        return "invalid_pick"
+    if rec["decision_T_ms"] < OUTCOME_START_MS:
+        return "pre_window"
+    return None
+
+
 def _class_keys(obj: Any) -> list[str]:
     """Keys of CLASS_KEYS anywhere inside a record (dicts and lists, any depth)."""
     found: list[str] = []
@@ -181,11 +196,14 @@ def _class_keys(obj: Any) -> list[str]:
     return found
 
 
-def outcome_allowed(T_ms: int) -> bool:
-    """Binding outcome guard (DEC-026 section 8): an outcome may be computed and written for a decision at T_ms only from OUTCOME_START_MS, or
-    inside an exploration range (replay of August / September tape). Every other decision before 2026-10-10T00Z gets none."""
+def outcome_allowed(T_ms: int, *, replay: bool) -> bool:
+    """Binding outcome guard (DEC-026 section 8): an outcome may be computed and written for a decision at T_ms only from OUTCOME_START_MS, or,
+    in replay mode only, inside an exploration range (August / September tape). Live mode never uses the exemption, whatever its clock says.
+    Every other decision before 2026-10-10T00Z gets none."""
     if T_ms >= OUTCOME_START_MS:
         return True
+    if replay is not True:
+        return False
     h = datetime.fromtimestamp(T_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")
     return any(lo <= h < hi for lo, hi in EXPLORATION)
 
@@ -654,11 +672,13 @@ def cap_ok(h_top1: float) -> bool:
 
 # ---- the shadow -----------------------------------------------------------------------------------------------------------------------------
 class Pending:
-    __slots__ = ("pool", "mint", "T", "sd", "sd_bt", "pred", "pick_ms", "first_print_ms", "last_before", "prints", "slots", "sps", "gap", "done")
+    __slots__ = ("pool", "mint", "T", "sd", "sd_bt", "pred", "pick_ms", "first_print_ms", "last_before", "prints", "slots", "sps", "gap", "done",
+                 "ref_q", "ref_b")
 
-    def __init__(self, pool, mint, T, sd, sd_bt, pred, pick_ms, first_print_ms, last_before, sps):
+    def __init__(self, pool, mint, T, sd, sd_bt, pred, pick_ms, first_print_ms, last_before, sps, ref_q=None, ref_b=None):
         self.pool, self.mint, self.T, self.sd, self.sd_bt, self.pred = pool, mint, T, sd, sd_bt, pred
         self.pick_ms, self.first_print_ms, self.last_before, self.sps = pick_ms, first_print_ms, last_before, sps
+        self.ref_q, self.ref_b = ref_q, ref_b              # the pick's (q_lamports, base_reserve): the live executor's guard reference
         self.prints: list[Print] = []
         self.slots: list[int] = []
         self.gap = False
@@ -669,7 +689,7 @@ class Shadow:
     def __init__(self, engine: Any, models: ModelSet, sink: Any, *, oracle: Optional[Callable[[str], Any]] = None, seal_start_ms: Optional[int] = SEAL_START_MS,
                  universe: Optional[Universe] = None, wall: Callable[[], int] = now_ms, replay: bool = False, errors: Optional[ErrorLog] = None,
                  decide_from: Optional[int] = None, decide_to: Optional[int] = None,
-                 classifier: Optional[Callable[[str, str], Any]] = None) -> None:
+                 classifier: Optional[Callable[[str, str], Any]] = None, classify_timeout_s: float = CLASSIFY_TIMEOUT_S) -> None:
         self.engine, self.models, self.sink = engine, models, sink
         self.universe = universe or Universe()
         self.seal = SealGuard(seal_start_ms, oracle)
@@ -686,10 +706,15 @@ class Shadow:
         self.before_slot: dict[str, Print] = {}            # pool -> last print of an earlier slot than last_print's (decision state fallback)
         # synthetic class (EXP-025 Am.2 item 5): kept apart from every per-pool record; only per-UTC-day counts leave the process, in their
         # own stream (c1nf-synclass-*), written once per closed day and at stop. Never in the heartbeat, status.json or the counters.
+        # The classifier runs on one worker thread, never on the row / decision path; results are collected on the row thread once per new
+        # block time; no answer within classify_timeout_s (monotonic) is unclassified. Pools first seen during the bootstrap are not asked.
         self.classifier = classifier
+        self.classify_timeout_s = float(classify_timeout_s)
         self._cls: dict[str, str] = {}                      # pool -> class; read by nothing but the counter (classify once per pool)
         self._cls_counts: dict[str, collections.Counter] = {}
-        self._cls_day: Optional[str] = None
+        self._cls_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._cls_pending: list[tuple[str, str, float, concurrent.futures.Future]] = []   # (pool, day, monotonic submit time, future)
+        self._cls_carry: Optional[tuple[str, str, collections.Counter]] = None          # (day_first, day_last, counts) held back
         self.pending: dict[str, list[Pending]] = collections.defaultdict(list)
         self.book: dict[str, float] = {}                   # mint -> estimated exit (stream seconds)
         self.gaps: list[tuple[int, int, str]] = []        # (lo_slot, hi_slot, kind)
@@ -716,30 +741,85 @@ class Shadow:
 
     # ---- synthetic class: counts only ----
     def _classify(self, pool: str, mint: str, bt: int) -> None:
-        if self.classifier is None or pool in self._cls:
+        """Queue one classification (once per pool, at its first print). Never called during the bootstrap; never blocks the row thread."""
+        if self.classifier is None or pool in self._cls or not self.decide_enabled:
             return
+        self._cls[pool] = "queued"
+        if self._cls_pool is None:
+            self._cls_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="c1nf-synclass")
         try:
-            cls = self.classifier(mint, pool)
-        except Exception:  # noqa: BLE001 - a failed lookup is unclassified, never a refusal
-            cls = "unclassified"
-        cls = cls if isinstance(cls, str) and cls in SYN_CLASSES else "unclassified"
-        self._cls[pool] = cls
-        if self.decide_enabled:                              # pools first seen in the restart bootstrap are classified but not counted
-            self._cls_count(day_of(bt), f"universe_{cls}")
+            fut = self._cls_pool.submit(self.classifier, mint, pool)
+        except Exception:  # noqa: BLE001 - a pool that cannot be queued is unclassified, never a refusal
+            self._cls[pool] = "unclassified"
+            self._cls_count(day_of(bt), "universe_unclassified")
+            return
+        self._cls_pending.append((pool, day_of(bt), time.monotonic(), fut))
+
+    def _collect_classes(self, wait_s: float = 0.0) -> None:
+        """Count finished classifications; one past classify_timeout_s is unclassified (cancelled if not started). Blocks only when wait_s > 0
+        (at stop), and then at most until each call's own timeout."""
+        keep = []
+        for pool, day, t0, fut in self._cls_pending:
+            left = t0 + self.classify_timeout_s - time.monotonic()
+            if wait_s > 0 and not fut.done() and left > 0:
+                concurrent.futures.wait([fut], timeout=min(left, wait_s))
+            if fut.done():
+                try:
+                    cls = fut.result(timeout=0)
+                except Exception:  # noqa: BLE001 - a failed lookup is unclassified, never a refusal
+                    cls = "unclassified"
+            elif time.monotonic() - t0 > self.classify_timeout_s:
+                fut.cancel()
+                cls = "unclassified"
+            else:
+                keep.append((pool, day, t0, fut))
+                continue
+            cls = cls if isinstance(cls, str) and cls in SYN_CLASSES else "unclassified"
+            self._cls[pool] = cls
+            self._cls_count(day, f"universe_{cls}")
+        self._cls_pending = keep
 
     def _cls_count(self, day: str, key: str) -> None:
         self._cls_counts.setdefault(day, collections.Counter())[key] += 1
 
+    @staticmethod
+    def _cls_degenerate(cnt: Mapping[str, int]) -> bool:
+        """A span whose synthetic or non-synthetic count is 0 or the whole universe: with it, an observer could attribute that span's outcomes
+        to one class (or to 'not synthetic'). Such a span is not written alone; it is merged into the next one."""
+        tot = sum(cnt.values())
+        return any(cnt.get(k, 0) in (0, tot) for k in ("universe_synthetic", "universe_non_synthetic"))
+
     def _flush_class_counts(self, upto_day: Optional[str], partial: bool = False) -> None:
-        """Write one counts-only record per UTC day < upto_day (all days when None): universe pools by class. No mint, pool, price or outcome
-        field, and deliberately no pick count by class: per-day pick counts by class next to the real-time daily outcomes would let an observer
-        split outcomes by class (a day whose picks are all of one class), which EXP-025 Am.2 item 5 bars before the final look."""
+        """Write counts-only records for closed UTC days < upto_day (all days when None, at stop): universe pools by class, in day order. A day
+        waits while one of its classifications is pending. A degenerate span (_cls_degenerate) is held back and merged into the following
+        day(s); a record covers [day_first, day_last]. At stop a span still degenerate is written with `held_back` and no class counts. No
+        mint, pool, price or outcome field, and deliberately no pick count by class: per-day pick counts by class next to the real-time daily
+        outcomes would let an observer split outcomes by class, which EXP-025 Am.2 item 5 bars before the final look."""
+        pending_days = {d for _, d, _, _ in self._cls_pending}
         for day in sorted(self._cls_counts):
-            if upto_day is not None and day >= upto_day:
-                continue
+            if (upto_day is not None and day >= upto_day) or day in pending_days:
+                break
             cnt = self._cls_counts.pop(day)
-            self.emit({"type": SYNCLASS_TYPE, "day": day, "partial": bool(partial and upto_day is None),
-                       "counts": {f"universe_{c}": int(cnt.get(f"universe_{c}", 0)) for c in SYN_CLASSES}})
+            first = day
+            if self._cls_carry is not None:
+                first, _, prev = self._cls_carry
+                cnt = prev + cnt
+                self._cls_carry = None
+            if sum(cnt.values()) == 0:
+                continue
+            if self._cls_degenerate(cnt):
+                self._cls_carry = (first, day, cnt)
+                continue
+            self._emit_cls(first, day, cnt, partial=bool(partial and upto_day is None), held_back=False)
+        if upto_day is None and self._cls_carry is not None:
+            first, last, cnt = self._cls_carry
+            self._cls_carry = None
+            self._emit_cls(first, last, cnt, partial=bool(partial), held_back=True)
+
+    def _emit_cls(self, first: str, last: str, cnt: Mapping[str, int], *, partial: bool, held_back: bool) -> None:
+        counts = None if held_back else {f"universe_{c}": int(cnt.get(f"universe_{c}", 0)) for c in SYN_CLASSES}
+        self.emit({"type": SYNCLASS_TYPE, "day_first": first, "day_last": last, "partial": partial, "held_back": held_back,
+                   "universe_total": int(sum(cnt.values())), "counts": counts})
 
     # ---- rows ----
     def feed(self, row: Mapping[str, Any], kind: Optional[str] = None) -> None:
@@ -777,9 +857,9 @@ class Shadow:
         newbt = self.hw_bt is None or bt > self.hw_bt
         if newbt:
             self.hw_bt = bt
-            if self.classifier is not None and day_of(bt) != self._cls_day:
-                self._cls_day = day_of(bt)
-                self._flush_class_counts(self._cls_day)
+            if self.classifier is not None:                  # collect finished classifications (non-blocking); write closed days
+                self._collect_classes()
+                self._flush_class_counts(day_of(bt))
             Tc = bt // 60 * 60
             if self.last_T is None:
                 self.last_T = Tc
@@ -882,10 +962,11 @@ class Shadow:
             self.emit({"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
                        "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
                        "q_lamports": state[0], "base_reserve": state[1], "v_lamports": state[2], "state_slot": state[3]})
-            if not outcome_allowed(T * 1000):                # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
+            if not outcome_allowed(T * 1000, replay=self.replay):   # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
                 self.c["outcome_guard_pre_window"] += 1
                 continue
-            self.pending[pool].append(Pending(pool, mint, T, int(sd), bt, float(pred), self.clock_ms(), self.first_ms.get(pool), self.last_print.get(pool), sps))
+            self.pending[pool].append(Pending(pool, mint, T, int(sd), bt, float(pred), self.clock_ms(), self.first_ms.get(pool), self.last_print.get(pool), sps,
+                                              ref_q=state[0], ref_b=state[1]))
 
     def _decision_state(self, pool: str, sd: int) -> Optional[tuple[int, int, int, int]]:
         """(q_lamports, base_reserve, v_lamports, slot): the state after the last print of `pool` with slot < sd (quote + that print's V).
@@ -957,6 +1038,7 @@ class Shadow:
         reasons: list[str] = []
         sps = pend.sps
         spot: Optional[float] = None
+        pick_spot = pend.ref_q / pend.ref_b if pend.ref_q and pend.ref_b else None   # the executor's 1.15 x reference (the pick's state)
         try:
             if pend.prints:
                 q0, b0 = pend.prints[0].pre()                 # the first print with slot >= SD, PRE-trade: the batch's decision spot
@@ -993,9 +1075,13 @@ class Shadow:
                         continue
                     leg[name] = {"entry_q": eb[0], "entry_b": eb[1], "exit_q": es[0], "exit_b": es[1], "entry_px": eb[0] / eb[1], "exit_px": es[0] / es[1],
                                  "tokens": rt["tokens"], "guarded": rt["guarded"], "proceeds": rt["proceeds"], "gross_ret": rt["gross_ret"], **pnl_variants(rt)}
-                    rc = round_trip(eb[0], eb[1], es[0], es[1], stake=CANARY_STAKE_LAMPORTS, spot=spot)
+                    # the canary twin guards on the pick's state, as the live executor will (DEC-026 section 6); the 0.25 SOL cell above stays
+                    # on the batch spot. `guarded_at_batch_spot` records where the two references disagree on this fill.
+                    rc = round_trip(eb[0], eb[1], es[0], es[1], stake=CANARY_STAKE_LAMPORTS, spot=pick_spot) if pick_spot else None
+                    rcb = round_trip(eb[0], eb[1], es[0], es[1], stake=CANARY_STAKE_LAMPORTS, spot=spot)
                     if rc is not None:
-                        leg[name]["canary"] = {"stake_lamports": CANARY_STAKE_LAMPORTS, "guarded": rc["guarded"], "proceeds": rc["proceeds"],
+                        leg[name]["canary"] = {"stake_lamports": CANARY_STAKE_LAMPORTS, "guard_ref": "pick_state", "guarded": rc["guarded"],
+                                               "guarded_at_batch_spot": None if rcb is None else rcb["guarded"], "proceeds": rc["proceeds"],
                                                "gross_ret": rc["gross_ret"], **pnl_variants(rc, CANARY_STAKE_LAMPORTS)}
                 legs[key] = leg
             except Exception as exc:  # noqa: BLE001 - missing V, no print, empty pool
@@ -1009,7 +1095,7 @@ class Shadow:
         if not complete:
             self.c["outcomes_incomplete"] += 1
         self.emit({**base, "complete": bool(complete), "primary": f"{PRIMARY_LAT:g}", "sps": sps,
-                   "spot": spot, "stake_lamports": STAKE_LAMPORTS, "gap": bool(gap), "reasons": reasons[:6], "legs": legs,
+                   "spot": spot, "pick_spot": pick_spot, "stake_lamports": STAKE_LAMPORTS, "gap": bool(gap), "reasons": reasons[:6], "legs": legs,
                    "pick_lag_ms": max(0, pend.pick_ms - pend.sd_bt * 1000) if not self.replay else None})
         pend.prints, pend.slots = [], []
 
@@ -1072,7 +1158,10 @@ class Shadow:
                     self._resolve(p, final=True)
         self.pending.clear()
         if self.classifier is not None:
+            self._collect_classes(wait_s=self.classify_timeout_s)
             self._flush_class_counts(None, partial=True)
+            if self._cls_pool is not None:
+                self._cls_pool.shutdown(wait=False, cancel_futures=True)
         self.emit({"type": "c1nf_stop", "reason": reason, "counters": dict(self.c)})
         self.heartbeat()
 
