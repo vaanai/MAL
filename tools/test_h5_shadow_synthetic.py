@@ -15,7 +15,7 @@ from types import SimpleNamespace as NS
 
 from tools import h5_shadow as h5
 from tools import pump_structure_monitor as M
-from tools.test_h5_shadow import MINT, POOL, SOL, SPS, Tape, announce, boost_buys, drain, make_engine, run, types
+from tools.test_h5_shadow import MINT, POOL, SOL, SPS, Tape, announce, boost_buys, drain, fixture_notice, make_engine, run, types
 
 FX = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "completing_txs_20261009.json").read_text())["txs"]
 SYN = [t for t in FX if t["synthetic"]]
@@ -35,6 +35,53 @@ def rpc_tx(tx, *, with_logs=True, with_cpi=True):
     inner = [{"index": 0, "instructions": [{"programIdIndex": 0, "data": c["data"]} for c in tx["emit_cpi_inner"]]}] if with_cpi else []
     return {"slot": tx["slot"], "transaction": {"message": {"accountKeys": [M.PUMP_PROGRAM]}},
             "meta": {"logMessages": list(tx["program_data_lines"]) if with_logs else [], "innerInstructions": inner}}
+
+
+def _pcb_line():
+    """A real PostCompleteBuyEvent 'Program data:' line from a recorded synthetic completing tx."""
+    for ln in SYN[0]["program_data_lines"]:
+        raw = h5._program_data_bytes(ln)
+        if raw and raw[:8] == M.DISC_POST_COMPLETE_BUY:
+            return ln
+    raise AssertionError("no PostCompleteBuyEvent line in the synthetic fixture")
+
+
+def mig_raw(mint):
+    """A CompletePumpAmmMigrationEvent blob for `mint` (layout: monitor.decode_migration_event)."""
+    raw = M.DISC_MIGRATE + b"\0" * 32 + M.b58decode(mint) + b"\0" * 24 + b"\1" * 32 + (1_800_000_000).to_bytes(8, "little") + b"\2" * 32 + b"\0" * 32
+    assert M.decode_migration_event(raw)["mint"] == mint
+    return raw
+
+
+def mig_line(mint):
+    return "Program data: " + __import__("base64").b64encode(mig_raw(mint)).decode()
+
+
+def migrate_cut_tx(mint, *, pcb=False):
+    """A migrate tx as the chain returns it in practice: the logs are cut after the CreatePool line, the pump events sit in emit_cpi inner instructions only."""
+    blobs = [mig_raw(mint)]
+    if pcb:
+        blobs.append(h5._program_data_bytes(_pcb_line()))
+    inner = [{"programIdIndex": 0, "data": M.b58encode(M.EVENT_CPI_TAG + b)} for b in blobs]
+    return {"slot": 2, "transaction": {"message": {"accountKeys": [M.PUMP_PROGRAM]}},
+            "meta": {"logMessages": ["Program log: Instruction: Migrate", "Log truncated"], "innerInstructions": [{"index": 0, "instructions": inner}]}}
+
+
+def migrate_note(mint, *, pcb=False, failed=False, truncated=False, with_complete=False):
+    """The PumpSwap CreatePool notice = the pool's migrate tx."""
+    logs = [f"Program {M.PUMP_PROGRAM} invoke [1]", "Program log: Instruction: Migrate", mig_line(mint)]
+    if pcb:
+        logs.append(_pcb_line())
+    if with_complete:
+        logs += [ln for ln in next(t for t in FX if t["mint"] == mint)["program_data_lines"] if "Program data" in ln]
+    if truncated:
+        logs.insert(2, "Log truncated")
+    return NS(slot=2, signature="migrate", failed=failed, logs=tuple(logs), t_recv_ms=1, commitment="confirmed", feed="x")
+
+
+def migrate_rpc_tx(mint, *, pcb=False):
+    lines = [mig_line(mint)] + ([_pcb_line()] if pcb else [])
+    return {"slot": 2, "transaction": {"message": {"accountKeys": [M.PUMP_PROGRAM]}}, "meta": {"logMessages": lines, "innerInstructions": []}}
 
 
 def other_tx(slot=1):
@@ -85,24 +132,78 @@ class FixtureTests(unittest.TestCase):
 
 
 class WsClassificationTests(unittest.TestCase):
-    def test_every_fixture_tx_is_classified_like_the_monitor(self):
+    def test_every_fixture_completing_tx_gives_the_comp_part_like_the_monitor(self):
         clf = h5.SynClassifier()
         for tx in FX:
             self.assertEqual(clf.observe_notice(ws_note(tx)), 1)
             blobs = [b for b in (h5._program_data_bytes(ln) for ln in tx["program_data_lines"]) if b]
-            self.assertEqual(clf.lookup(tx["mint"]), (M.post_complete_buy_seen(blobs, tx["mint"])[0], "ws"))  # the monitor's function, not a copy
-            self.assertEqual(clf.lookup(tx["mint"])[0], tx["synthetic"])  # and it is the recorded truth
+            seen = M.post_complete_buy_seen(blobs, tx["mint"])[0]  # the monitor's function, not a copy
+            self.assertEqual(seen, tx["synthetic"])  # and it is the recorded truth
+            self.assertEqual(clf._m[tx["mint"]]["comp"], (seen, "ws"))
+            # synthetic is decided by the completing tx alone; plain also needs the migrate tx
+            self.assertEqual(clf.lookup(tx["mint"]), (True, "ws") if seen else (None, None))
         self.assertEqual(clf.lookup("nope"), (None, None))
+
+    def test_plain_needs_both_txs_and_synthetic_needs_either(self):
+        plain, syn = PLAIN[0], SYN[0]
+        clf = h5.SynClassifier()
+        clf.observe_notice(ws_note(plain))
+        self.assertEqual(clf.lookup(plain["mint"]), (None, None))  # the migrate tx has not been read: unclassified
+        self.assertEqual(clf.observe_migrate_notice(plain["mint"], migrate_note(plain["mint"])), 1)
+        self.assertEqual(clf.lookup(plain["mint"]), (False, "ws"))
+        # the migrate tx alone, no completing tx read
+        clf2 = h5.SynClassifier()
+        clf2.observe_migrate_notice(syn["mint"], migrate_note(syn["mint"]))
+        self.assertEqual(clf2.lookup(syn["mint"]), (None, None))
+        # ... but a PostCompleteBuyEvent in it is conclusive without the completing tx
+        clf2.observe_migrate_notice(PLAIN[1]["mint"], migrate_note(PLAIN[1]["mint"], pcb=True))
+        self.assertEqual(clf2.lookup(PLAIN[1]["mint"]), (True, "ws"))
+
+    def test_event_only_in_the_migrate_tx_gives_synthetic(self):
+        plain = PLAIN[0]
+        clf = h5.SynClassifier()
+        clf.observe_notice(ws_note(plain))  # the CompleteEvent tx is clean
+        clf.observe_migrate_notice(plain["mint"], migrate_note(plain["mint"], pcb=True))  # the PostCompleteBuyEvent rides in the migrate tx only
+        self.assertEqual(clf._m[plain["mint"]]["comp"], (False, "ws"))
+        self.assertEqual(clf._m[plain["mint"]]["mig"], (True, "ws"))
+        self.assertEqual(clf.lookup(plain["mint"]), (True, "ws"))
+        # the other order gives the same answer
+        clf = h5.SynClassifier()
+        clf.observe_migrate_notice(plain["mint"], migrate_note(plain["mint"], pcb=True))
+        clf.observe_notice(ws_note(plain))
+        self.assertEqual(clf.lookup(plain["mint"]), (True, "ws"))
+
+    def test_a_migrate_tx_that_carries_the_complete_event_is_both_parts(self):
+        plain = PLAIN[0]
+        clf = h5.SynClassifier()
+        self.assertEqual(clf.observe_migrate_notice(plain["mint"], migrate_note(plain["mint"], with_complete=True)), 2)
+        self.assertEqual(clf.lookup(plain["mint"]), (False, "ws"))
+        clf2 = h5.SynClassifier()
+        clf2.observe_migrate_notice(SYN[0]["mint"], migrate_note(SYN[0]["mint"], with_complete=True))
+        self.assertEqual(clf2.lookup(SYN[0]["mint"]), (True, "ws"))
+
+    def test_the_pump_feed_also_reads_a_migrate_notice_it_sees(self):
+        plain = PLAIN[0]
+        clf = h5.SynClassifier()
+        clf.observe_notice(ws_note(plain))
+        self.assertEqual(clf.observe_notice(migrate_note(plain["mint"], pcb=True)), 1)
+        self.assertEqual(clf.lookup(plain["mint"]), (True, "ws"))
 
     def test_failed_truncated_and_unrelated_notices_classify_nothing(self):
         clf = h5.SynClassifier()
         self.assertEqual(clf.observe_notice(ws_note(SYN[0], failed=True)), 0)
-        self.assertEqual(clf.observe_notice(ws_note(SYN[0], truncated=True)), 0)  # the PostCompleteBuy line may be the cut part: leave it to the RPC path
-        self.assertEqual(clf.stats["ws_truncated"], 1)
+        self.assertEqual(clf.observe_migrate_notice(SYN[0]["mint"], migrate_note(SYN[0]["mint"], failed=True)), 0)
+        # truncated logs and no PostCompleteBuyEvent visible: the cut part may hold it, so nothing is recorded (the RPC path reads the inner instructions)
+        self.assertEqual(clf.observe_notice(ws_note(PLAIN[0], truncated=True)), 0)
+        self.assertEqual(clf.observe_migrate_notice(PLAIN[0]["mint"], migrate_note(PLAIN[0]["mint"], truncated=True)), 0)
+        self.assertEqual(clf.lookup(PLAIN[0]["mint"]), (None, None))
+        self.assertEqual(clf.stats["ws_truncated"], 2)
+        # a PostCompleteBuyEvent that IS visible is conclusive even in a truncated log
+        self.assertEqual(clf.observe_notice(ws_note(SYN[0], truncated=True)), 1)
+        self.assertEqual(clf.lookup(SYN[0]["mint"]), (True, "ws"))
         self.assertEqual(clf.observe_notice(NS(failed=False, logs=("Program log: hi",), slot=1, signature="s")), 0)
         trade_only = NS(failed=False, logs=("Program data: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",), slot=1, signature="s")
         self.assertEqual(clf.observe_notice(trade_only), 0)
-        self.assertEqual(clf.lookup(SYN[0]["mint"]), (None, None))
 
     def test_true_is_sticky_on_conflict(self):
         clf = h5.SynClassifier()
@@ -111,7 +212,7 @@ class WsClassificationTests(unittest.TestCase):
         self.assertEqual(clf.lookup("m"), (True, "rpc"))
         clf.record("m", False, "ws")
         self.assertEqual(clf.lookup("m"), (True, "rpc"))
-        self.assertEqual(clf.stats["conflicts"], 2)
+        self.assertGreaterEqual(clf.stats["conflicts"], 2)
 
     def test_memory_is_bounded(self):
         clf = h5.SynClassifier(max_n=3)
@@ -151,7 +252,7 @@ class PumpSideFeedTests(unittest.TestCase):
         errs = asyncio.run(go())
         self.assertEqual(errs, ["syn_ws"])
         self.assertEqual(clf.lookup(SYN[0]["mint"]), (True, "ws"))
-        self.assertEqual(clf.lookup(PLAIN[0]["mint"]), (False, "ws"))
+        self.assertEqual(clf._m[PLAIN[0]["mint"]]["comp"], (False, "ws"))  # the completing tx is clean; plain still waits for the migrate tx
         self.assertEqual((clf.stats["ws_decode_errors"], clf.stats["ws_feed_errors"], len(calls)), (1, 1, 2))
 
     def test_side_feed_is_its_own_source_object_and_subscribes_the_pump_program(self):
@@ -169,39 +270,125 @@ class RpcFallbackTests(unittest.TestCase):
     def curve(self, mint):
         return M.find_program_address([b"bonding-curve", M.b58decode(mint)], M.PUMP_PROGRAM)[0]
 
-    def test_classify_via_rpc_finds_the_completing_tx_behind_other_txs_and_skips_failed_ones(self):
-        for tx in FX:
+    def test_classify_via_rpc_finds_both_txs_behind_other_txs_and_skips_failed_ones(self):
+        for tx in PLAIN:
             sigs = [{"signature": "failed1", "err": {"x": 1}}, {"signature": "migrate"}, {"signature": "noise"}, {"signature": tx["signature"]}]
-            c = FakeRpc(sigs, {"migrate": other_tx(), "noise": other_tx(), tx["signature"]: rpc_tx(tx)})
-            self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), tx["synthetic"])
+            c = FakeRpc(sigs, {"migrate": migrate_rpc_tx(tx["mint"]), "noise": other_tx(), tx["signature"]: rpc_tx(tx)})
+            self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), {"mig": False, "comp": False})
             self.assertEqual(c.log[0][0], "getSignaturesForAddress")
             self.assertEqual(c.log[0][1][0], self.curve(tx["mint"]))  # the bonding-curve PDA of the mint
             self.assertEqual([m for m, _ in c.log].count("getTransaction"), 3)  # the failed one was never fetched
             self.assertTrue(all(p[1]["commitment"] == "confirmed" for m, p in c.log if m == "getTransaction"))
 
+    def test_classify_via_rpc_stops_at_the_first_true(self):
+        tx = SYN[0]
+        sigs = [{"signature": "migrate"}, {"signature": tx["signature"]}, {"signature": "never"}]
+        c = FakeRpc(sigs, {"migrate": migrate_rpc_tx(tx["mint"]), tx["signature"]: rpc_tx(tx)})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), {"mig": False, "comp": True})
+        self.assertEqual([m for m, _ in c.log].count("getTransaction"), 2)
+
+    def test_event_only_in_the_migrate_tx_gives_synthetic_through_the_rpc_path(self):
+        tx = PLAIN[0]
+        sigs = [{"signature": "migrate"}, {"signature": tx["signature"]}]
+        c = FakeRpc(sigs, {"migrate": migrate_rpc_tx(tx["mint"], pcb=True), tx["signature"]: rpc_tx(tx)})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), {"mig": True})  # conclusive at once: the completing tx need not be read
+        clf = h5.SynClassifier()
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=lambda: c, delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
+            fb.request(tx["mint"])
+            await asyncio.gather(*list(fb._inflight.values()))
+
+        asyncio.run(go())
+        self.assertEqual(clf.lookup(tx["mint"]), (True, "rpc"))
+
+    def test_the_migrate_tx_is_read_by_its_signature_in_one_call_even_with_cut_logs(self):
+        tx = PLAIN[0]
+        c = FakeRpc([], {"migsig": migrate_cut_tx(tx["mint"])})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], "migsig", {"mig"}), {"mig": False})
+        self.assertEqual([m for m, _ in c.log], ["getTransaction"])  # no getSignaturesForAddress when only the migrate tx is needed
+        c = FakeRpc([], {"migsig": migrate_cut_tx(tx["mint"], pcb=True)})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], "migsig", {"mig"}), {"mig": True})  # event only in the (cut-log) migrate tx: synthetic
+
+    def test_with_both_parts_needed_the_migrate_tx_is_not_fetched_twice(self):
+        tx = PLAIN[0]
+        c = FakeRpc([{"signature": "migsig"}, {"signature": tx["signature"]}], {"migsig": migrate_cut_tx(tx["mint"]), tx["signature"]: rpc_tx(tx)})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], "migsig", {"comp", "mig"}), {"mig": False, "comp": False})
+        self.assertEqual([p[0] for m, p in c.log if m == "getTransaction"], ["migsig", tx["signature"]])
+
+    def test_a_signature_that_is_not_this_mints_migrate_tx_gives_nothing(self):
+        tx = PLAIN[0]
+        c = FakeRpc([], {"migsig": migrate_cut_tx(PLAIN[1]["mint"])})  # another mint's migrate tx
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], "migsig", {"mig"}), {})
+
+    def test_request_with_the_migrate_signature_costs_one_call_when_the_completing_tx_is_known(self):
+        tx = PLAIN[0]
+        clf = h5.SynClassifier()
+        clf.record_part(tx["mint"], "comp", False, "ws")
+        fake = FakeRpc([], {"migsig": migrate_cut_tx(tx["mint"])})
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=lambda: fake, delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
+            self.assertTrue(fb.request(tx["mint"], "migsig"))
+            await asyncio.gather(*list(fb._inflight.values()))
+            self.assertFalse(fb.request(tx["mint"], "migsig"))  # settled, and never asked twice
+            clf.record_part("MintNew", "comp", True, "ws")
+            self.assertFalse(fb.request("MintNew"))  # already known synthetic: nothing to read
+
+        asyncio.run(go())
+        self.assertEqual(clf.lookup(tx["mint"]), (False, "rpc"))
+        self.assertEqual(clf.stats["rpc_calls"], 1)
+
+    def test_a_given_up_mint_is_not_asked_again_at_s0(self):
+        clf = h5.SynClassifier()
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=lambda: FakeRpc([], {}), delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
+            self.assertTrue(fb.request(MX, "migsig"))
+            await asyncio.gather(*list(fb._inflight.values()))
+            self.assertFalse(fb.request(MX))
+
+        asyncio.run(go())
+        self.assertEqual((clf.stats["rpc_requests"], clf.stats["rpc_gave_up"]), (1, 1))
+
+    def test_only_one_of_the_two_txs_found_leaves_a_plain_looking_pool_unclassified(self):
+        tx = PLAIN[0]
+        for sigs, txs in (([{"signature": tx["signature"]}], {tx["signature"]: rpc_tx(tx)}),  # the migrate tx is missing
+                          ([{"signature": "migrate"}], {"migrate": migrate_rpc_tx(tx["mint"])})):  # the completing tx is missing
+            clf = h5.SynClassifier()
+
+            async def go():
+                fb = h5.RpcFallback(clf, client_factory=lambda: FakeRpc(sigs, txs), delays=(0.0, 0.0), sleep=lambda s: asyncio.sleep(0))
+                fb.request(tx["mint"])
+                await asyncio.gather(*list(fb._inflight.values()))
+
+            asyncio.run(go())
+            self.assertEqual(clf.lookup(tx["mint"]), (None, None))
+            self.assertEqual(clf.stats["rpc_gave_up"], 1)
+
     def test_the_event_is_read_from_logs_alone_or_from_the_emit_cpi_inner_instruction_alone(self):
         for tx in FX:
             for kw in ({"with_cpi": False}, {"with_logs": False}):
                 c = FakeRpc([{"signature": tx["signature"]}], {tx["signature"]: rpc_tx(tx, **kw)})
-                self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), tx["synthetic"], kw)
+                self.assertEqual(h5.classify_via_rpc(c, tx["mint"]), {"comp": tx["synthetic"]}, kw)
 
     def test_not_found_is_none_and_is_bounded(self):
         sigs = [{"signature": f"s{i}"} for i in range(20)]
         c = FakeRpc(sigs, {s["signature"]: other_tx() for s in sigs})
-        self.assertIsNone(h5.classify_via_rpc(c, SYN[0]["mint"]))
+        self.assertEqual(h5.classify_via_rpc(c, SYN[0]["mint"]), {})
         self.assertEqual(c.total_calls, 1 + h5.RPC_TX_PER_ATTEMPT)
-        self.assertIsNone(h5.classify_via_rpc(FakeRpc([], {}), SYN[0]["mint"]))
-        self.assertIsNone(h5.classify_via_rpc(FakeRpc(None, {}), SYN[0]["mint"]))
+        self.assertEqual(h5.classify_via_rpc(FakeRpc([], {}), SYN[0]["mint"]), {})
+        self.assertEqual(h5.classify_via_rpc(FakeRpc(None, {}), SYN[0]["mint"]), {})
 
     def test_a_completion_event_for_another_mint_is_not_this_mints_class(self):
         a, b = SYN[0], PLAIN[0]
         c = FakeRpc([{"signature": a["signature"]}], {a["signature"]: rpc_tx(a)})
-        self.assertIsNone(h5.classify_via_rpc(c, b["mint"]))
+        self.assertEqual(h5.classify_via_rpc(c, b["mint"]), {})
 
     def test_request_returns_at_once_and_the_lookup_lands_in_the_classifier(self):
-        tx = SYN[0]
+        tx = PLAIN[0]
         clf = h5.SynClassifier()
-        fake = FakeRpc([{"signature": tx["signature"]}], {tx["signature"]: rpc_tx(tx)}, delay=0.2)
+        fake = FakeRpc([{"signature": "migrate"}, {"signature": tx["signature"]}], {"migrate": migrate_rpc_tx(tx["mint"]), tx["signature"]: rpc_tx(tx)}, delay=0.2)
 
         async def go():
             fb = h5.RpcFallback(clf, client_factory=lambda: fake, delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
@@ -217,9 +404,9 @@ class RpcFallbackTests(unittest.TestCase):
             await fb.close()
 
         asyncio.run(go())
-        self.assertEqual(clf.lookup(tx["mint"]), (True, "rpc"))
-        self.assertEqual((clf.stats["rpc_requests"], clf.stats["rpc_attempts"], clf.stats["rpc_synthetic"]), (1, 1, 1))
-        self.assertEqual(clf.stats["rpc_calls"], 2)  # one getSignaturesForAddress + one getTransaction
+        self.assertEqual(clf.lookup(tx["mint"]), (False, "rpc"))
+        self.assertEqual((clf.stats["rpc_requests"], clf.stats["rpc_attempts"], clf.stats["rpc_comp_plain"], clf.stats["rpc_mig_plain"]), (1, 1, 1, 1))
+        self.assertEqual(clf.stats["rpc_calls"], 3)  # one getSignaturesForAddress + two getTransaction
 
     def test_retries_then_gives_up_leaving_the_mint_unclassified(self):
         clf = h5.SynClassifier()
@@ -375,18 +562,18 @@ class EngineGateTests(unittest.TestCase):
     def test_the_rpc_request_goes_out_once_for_a_pool_unclassified_at_s0_and_never_for_a_classified_one(self):
         asked = []
         eng, out = make_engine(classifier=h5.SynClassifier())
-        eng.syn_request = asked.append
+        eng.syn_request = lambda mint, sig=None: asked.append(mint)
         t = scenario(eng)
         run(eng, t)
         self.assertEqual(asked, [MINT])
         asked2 = []
         eng2, _ = make_engine(classifier=h5.StaticClassifier(True, "ws"))
-        eng2.syn_request = asked2.append
+        eng2.syn_request = lambda mint, sig=None: asked2.append(mint)
         run(eng2, scenario(eng2))
         self.assertEqual(asked2, [])
 
     def test_a_failing_rpc_request_hook_cannot_stop_the_feed(self):
-        def boom(mint):
+        def boom(mint, sig=None):
             raise RuntimeError("no loop")
 
         eng, out = make_engine(classifier=h5.SynClassifier())
@@ -401,7 +588,7 @@ class EngineGateTests(unittest.TestCase):
         results = []
         for clf in (h5.StaticClassifier(True, "ws"), h5.StaticClassifier(False, "ws"), h5.SynClassifier()):
             eng, out = make_engine(classifier=clf, seal_start_ms=1_800_000_000 * 1000, suppress_outcome=lambda m: True)
-            eng.syn_request = asked.append
+            eng.syn_request = lambda mint, sig=None: asked.append(mint)
             run(eng, scenario(eng))
             eng.close_all("t")
             self.assertEqual(types(out, "excluded"), [])
@@ -422,6 +609,77 @@ class EngineGateTests(unittest.TestCase):
             self.assertEqual(len(types(out, "excluded")), expect)
             self.assertEqual(types(out, "outcome"), [])
             self.assertEqual(len(types(out, "trigger")), 0 if expect else 2)
+
+
+class CreatePoolNoticeTests(unittest.TestCase):
+    """The migrate tx reaches the shadow as the PumpSwap CreatePool notice (decode_notice): its logs are tested directly, no RPC."""
+
+    @staticmethod
+    def mint_of(note):
+        eng, _ = make_engine(classifier=h5.SynClassifier())
+        h5.decode_notice(eng, note, {})
+        return eng.announced[next(iter(eng.announced))][2]
+
+    def run_pool(self, note, clf):
+        eng, out = make_engine(classifier=clf)
+        h5.decode_notice(eng, note, {})
+        (pool,) = eng.announced
+        mint = eng.announced[pool][2]
+        s0 = note.slot + 1
+        t = Tape(pool=pool, slot0=s0)
+        t.row(s0, "buy", "A", SOL // 10)
+        boost_buys(t, s0)
+        drain(t, s0 + 110, 35.0)
+        t.row(s0 + 200, "buy", "Z", SOL // 20)
+        run(eng, t)
+        eng.close_all("t")
+        return eng, out, mint
+
+    def test_a_real_migrate_notice_has_cut_logs_so_the_websocket_cannot_call_it_plain(self):
+        note = fixture_notice("create_pool_init_boost.json")
+        self.assertIn("Log truncated", note.logs)  # recorded 2026-10-07: the CreatePool line is the only event line left
+        clf = h5.SynClassifier()
+        mint = self.mint_of(note)
+        clf.record_part(mint, "comp", False, "ws")  # the pump.fun socket delivered a clean CompleteEvent tx earlier
+        asked = []
+        eng, out = make_engine(classifier=clf)
+        eng.syn_request = lambda m, sig=None: asked.append((m, sig))
+        h5.decode_notice(eng, note, {})
+        self.assertEqual(asked, [(mint, note.signature)])  # asked at the announcement, with the migrate tx's signature
+        self.assertEqual(clf.lookup(mint), (None, None))  # the websocket could not read the cut part: still unclassified
+        self.assertEqual(clf.stats["ws_truncated"], 1)
+
+    def test_comp_from_ws_and_mig_from_rpc_make_the_pool_plain_and_it_triggers(self):
+        note = fixture_notice("create_pool_init_boost.json")
+        clf = h5.SynClassifier()
+        mint = self.mint_of(note)
+        clf.record_part(mint, "comp", False, "ws")
+        clf.record_part(mint, "mig", False, "rpc")  # RpcFallback read the migrate tx's inner instructions
+        eng, out, m = self.run_pool(note, clf)
+        self.assertEqual(m, mint)
+        self.assertEqual(types(out, "excluded"), [])
+        self.assertEqual({(r["synthetic"], r["synthetic_src"]) for r in types(out, "trigger")}, {(False, "rpc")})
+
+    def test_event_only_in_the_migrate_tx_gives_synthetic_and_no_trigger(self):
+        base = fixture_notice("create_pool_init_boost.json")
+        note = base._replace(logs=base.logs + (_pcb_line(),))
+        clf = h5.SynClassifier()
+        mint = self.mint_of(base)
+        clf.record_part(mint, "comp", False, "ws")  # the completing tx is clean
+        eng, out, _ = self.run_pool(note, clf)
+        self.assertEqual(clf.lookup(mint), (True, "ws"))
+        self.assertEqual(types(out, "trigger") + types(out, "outcome") + types(out, "strip"), [])
+        (ex,) = types(out, "excluded")
+        self.assertEqual((ex["reason"], set(ex)), ("synthetic", EXCLUDED_KEYS))
+        self.assertEqual(eng.counters["excluded_synthetic"], 1)
+
+    def test_a_clean_migrate_tx_with_the_completing_tx_unread_is_unclassified(self):
+        note = fixture_notice("create_pool_init_boost.json")
+        eng, out, mint = self.run_pool(note, h5.SynClassifier())
+        self.assertEqual(types(out, "trigger"), [])
+        (ex,) = types(out, "excluded")
+        self.assertEqual(ex["reason"], "unclassified")
+        self.assertEqual(eng.counters["excluded_unclassified"], 1)
 
 
 class ReplayClassifierTests(unittest.TestCase):

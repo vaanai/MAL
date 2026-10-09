@@ -80,13 +80,15 @@ from tools.paper_curve_math import pumpswap_sol_fee_ppm
 from tools.pump_structure_monitor import (  # pure python; the classifier semantics are the monitor's, not re-implemented here
     DEFAULT_RPC,
     DISC_COMPLETE,
+    DISC_MIGRATE,
     PUMP_PROGRAM,
     RpcClient,
     b58decode,
-    completion_info,
     decode_complete_event,
+    decode_migration_event,
     find_program_address,
     post_complete_buy_seen,
+    tx_event_blobs,
 )
 
 log = logging.getLogger("mal.h5_shadow")
@@ -154,9 +156,11 @@ ERRORS_MAX_BYTES = 5_000_000
 ERROR_RECORDS_MAX = 20
 
 # ---- synthetic-migration class (EXP-024 Amendment 4 / DEC-024 Amendment 2): H5 buys nothing on a synthetic or unclassifiable pool ----------------
-# A pool is synthetic iff the mint's CompleteEvent tx carries a PostCompleteBuyEvent (tools.pump_structure_monitor.post_complete_buy_seen: the
-# discriminator alone, so a layout change over-counts synthetic rather than hiding it). Sources, in order: the pump.fun logsSubscribe (ws), an
-# off-hot-path RPC lookup of the curve's completing tx (rpc), else unknown (None -> excluded as "unclassified").
+# A pool is synthetic iff a PostCompleteBuyEvent is seen in the mint's CompleteEvent tx OR in the pool's migrate (CreatePool) tx when the two differ
+# (tools.pump_structure_monitor.post_complete_buy_seen: the discriminator alone, so a layout change over-counts synthetic rather than hiding it; the
+# monitor ORs the two the same way). It is plain only when BOTH txs were read and neither carries one; a tx that cannot be found or read leaves the pool
+# unclassified. Sources, in order: the websocket (the PumpSwap feed's CreatePool notice is the migrate tx; the pump.fun logsSubscribe delivers the
+# CompleteEvent tx), an off-hot-path RPC lookup of the curve's txs (rpc), else unknown (None -> excluded as "unclassified").
 # Replay only: PCB_FIRST_DEPLOY_SLOT is the first pump deploy that can emit the event. EVIDENCE: the first PostCompleteBuyEvent anywhere in MAL's data
 # is slot 454600658 (2026-10-08T16:39Z, 40/40 sampled synthetic completions are >= it, synthetic-1009/grads.jsonl), after the pump redeploy of
 # 2026-10-08T16:20Z (deploy slot 454596459, docs/HANDOFF.md); the binary live from the 2026-10-02T15:47Z deploy (slot 452654932) through 10-08 had no
@@ -170,10 +174,11 @@ SYN_MAX = 50_000  # classified mints kept (count-bounded)
 RPC_ATTEMPT_DELAYS_S = (0.0, 3.0, 6.0)  # RPC fallback: attempts and the wait before each (a few attempts, bounded)
 RPC_ATTEMPT_TIMEOUT_S = 12.0  # wall bound of one attempt, enforced on the awaiting side; the worker thread is bounded by its client's own timeout
 RPC_SIGS_LIMIT = 25  # getSignaturesForAddress(curve) page: the completing tx sits behind the migrate tx(s)
-RPC_TX_PER_ATTEMPT = 5  # non-failed txs fetched per attempt, newest first
+RPC_TX_PER_ATTEMPT = 8  # non-failed txs fetched per attempt, newest first (two txs are needed: the migrate tx and the CompleteEvent tx; 5 missed 3 of 10 in the cost run)
 RPC_MAX_INFLIGHT = 8  # concurrent fallback lookups; a request beyond this is dropped (the pool stays unclassified -> excluded)
 RPC_MIN_INTERVAL_S = 0.25  # pacing of the public RPC client
 _COMPLETE_EVENT_PREFIX = base64.b64encode(DISC_COMPLETE).decode()[:10]
+_MIGRATE_EVENT_PREFIX = base64.b64encode(DISC_MIGRATE).decode()[:10]
 
 _CREATE_POOL_PREFIX = base64.b64encode(bytes.fromhex("b1310cd2a076a774")).decode()[:10]
 _BOOST_EVENT_PREFIX = base64.b64encode(bytes.fromhex("3f451c16305cc2b9")).decode()[:10]
@@ -359,50 +364,113 @@ def common_down(states: Sequence[dict], now_ms_: int, rel_silent_ms: int = REL_S
 
 # ---- synthetic-migration classifier ---------------------------------------------------------------------------
 class SynClassifier:
-    """mint -> (synthetic, src). Written by the pump.fun ws side feed ("ws") and the RPC fallback ("rpc"); read by the Engine (`lookup`) at trigger and
-    close time. First writer wins, except that True is sticky: a conflict resolves toward exclusion. No IO here and no engine access, so the side feed
-    can never touch the PumpSwap feed's clock, link state or records."""
+    """mint -> (synthetic, src), from TWO txs per pool (quant-proof, EXP-024 Am.4 B1; the monitor's rule): the curve's CompleteEvent tx ("comp") and the
+    pool's migrate / CreatePool tx ("mig"); they are one tx when the CompleteEvent rode in the migrate tx. Each part is a PostCompleteBuyEvent verdict
+    (monitor.post_complete_buy_seen). The pool is synthetic as soon as either part says True; plain only when BOTH parts are known and False; otherwise
+    unknown (None), so a tx that cannot be found or read leaves the pool unclassified. Written by the pump.fun ws side feed, the PumpSwap CreatePool
+    notice and the RPC fallback; read by the Engine (`lookup`). First writer wins per part except True, which is sticky. No IO and no engine access, so
+    the side feed can never touch the PumpSwap feed's clock, link state or records."""
+
+    PARTS = ("comp", "mig")
 
     def __init__(self, max_n: int = SYN_MAX) -> None:
         self.max_n = max_n
-        self._m: collections.OrderedDict[str, tuple[bool, str]] = collections.OrderedDict()
+        self._m: collections.OrderedDict[str, dict[str, tuple[bool, str]]] = collections.OrderedDict()
         self.stats: collections.Counter = collections.Counter()
 
-    def record(self, mint: str, syn: bool, src: str) -> None:
-        old = self._m.get(mint)
-        if old is not None:
-            if old[0] == syn:
-                return
-            self.stats["conflicts"] += 1
-            if not syn:
-                return
-        self._m[mint] = (bool(syn), src)
+    def _put(self, mint: str, part: str, syn: bool, src: str) -> bool:
+        """Record one part. Returns True when it contradicted an earlier verdict (True wins)."""
+        parts = self._m.get(mint)
+        if parts is None:
+            parts = self._m[mint] = {}
+        old = parts.get(part)
+        conflict = old is not None and old[0] != syn
+        if old is not None and (old[0] == syn or not syn):
+            return conflict
+        parts[part] = (bool(syn), src)
         self._m.move_to_end(mint)
-        self.stats[f"{src}_{'synthetic' if syn else 'plain'}"] += 1
+        self.stats[f"{src}_{part}_{'synthetic' if syn else 'plain'}"] += 1
         while len(self._m) > self.max_n:
             self._m.popitem(last=False)
+        return conflict
+
+    def record_part(self, mint: str, part: str, syn: bool, src: str) -> None:
+        if self._put(mint, part, syn, src):
+            self.stats["conflicts"] += 1
+
+    def record(self, mint: str, syn: bool, src: str) -> None:
+        """The whole class at once (both parts): a drill / test convenience; the live paths use record_part."""
+        if any([self._put(mint, part, syn, src) for part in self.PARTS]):
+            self.stats["conflicts"] += 1
+
+    def missing(self, mint: str) -> set[str]:
+        """Parts still to be read for `mint` (empty once it is known synthetic: nothing more can change that)."""
+        parts = self._m.get(mint) or {}
+        if any(v[0] for v in parts.values()):
+            return set()
+        return {part for part in self.PARTS if part not in parts}
 
     def lookup(self, mint: str | None, s0: int | None = None) -> tuple[bool | None, str | None]:
-        got = self._m.get(mint) if mint else None
-        return (got[0], got[1]) if got is not None else (None, None)
+        parts = self._m.get(mint) if mint else None
+        if not parts:
+            return None, None
+        for part in self.PARTS:
+            if parts.get(part, (False, ""))[0]:
+                return True, parts[part][1]
+        if all(part in parts for part in self.PARTS):
+            return False, "rpc" if any(parts[part][1] == "rpc" for part in self.PARTS) else parts["comp"][1]
+        return None, None
+
+    @staticmethod
+    def _verdict(blobs: list[bytes], mint: str, truncated: bool) -> bool | None:
+        """PostCompleteBuyEvent verdict of one tx's visible events. A PostCompleteBuyEvent that is visible is conclusive even in a truncated log; the absence
+        of one in a truncated log is not (the cut part may hold it): None, left to the RPC path, which also reads the inner instructions."""
+        if post_complete_buy_seen(blobs, mint)[0]:
+            return True
+        return None if truncated else False
+
+    @staticmethod
+    def _blobs(note: Any) -> tuple[list[bytes], bool]:
+        cand = [ln for ln in note.logs if "Program data: " in ln]
+        return [b for b in (_program_data_bytes(ln) for ln in cand) if b], any("Log truncated" in ln for ln in note.logs)
 
     def observe_notice(self, note: Any) -> int:
-        """One pump.fun logsSubscribe notice. Records the class of every mint whose CompleteEvent it carries; returns how many. A failed tx carries no
-        committed event. A notice with truncated logs is NOT classified here (the PostCompleteBuyEvent line may be the cut part): the RPC path reads
-        the tx's inner instructions as well."""
+        """One pump.fun logsSubscribe notice. Records the "comp" part of every mint whose CompleteEvent it carries and the "mig" part of every mint whose
+        CompletePumpAmmMigrationEvent it carries (the migrate tx also reaches this feed); returns how many parts. A failed tx carries no committed event."""
         if note.failed:
             return 0
         cand = [ln for ln in note.logs if "Program data: " in ln]
-        if not cand or not any(ln[ln.find("Program data: ") + 14:].lstrip().startswith(_COMPLETE_EVENT_PREFIX) for ln in cand):
+        pref = [ln[ln.find("Program data: ") + 14:].lstrip() for ln in cand]
+        if not any(p.startswith(_COMPLETE_EVENT_PREFIX) or p.startswith(_MIGRATE_EVENT_PREFIX) for p in pref):
             return 0
-        self.stats["ws_complete_notices"] += 1
-        if any("Log truncated" in ln for ln in note.logs):
+        blobs, truncated = self._blobs(note)
+        n = 0
+        for part, decoder in (("comp", decode_complete_event), ("mig", decode_migration_event)):
+            for ev in (e for e in (decoder(b) for b in blobs) if e is not None):
+                self.stats[f"ws_{part}_notices"] += 1
+                v = self._verdict(blobs, ev["mint"], truncated)
+                if v is None:
+                    self.stats["ws_truncated"] += 1
+                    continue
+                self.record_part(ev["mint"], part, v, "ws")
+                n += 1
+        return n
+
+    def observe_migrate_notice(self, mint: str, note: Any) -> int:
+        """The PumpSwap CreatePool notice of `mint`'s pool: it IS the migrate tx, so its events are the "mig" part, and when it also carries the mint's
+        CompleteEvent that is the "comp" part too (one tx). Returns how many parts it recorded."""
+        if note.failed or not mint:
+            return 0
+        blobs, truncated = self._blobs(note)
+        v = self._verdict(blobs, mint, truncated)
+        if v is None:
             self.stats["ws_truncated"] += 1
             return 0
-        blobs = [b for b in (_program_data_bytes(ln) for ln in cand) if b]
-        n = 0
-        for ev in (e for e in (decode_complete_event(b) for b in blobs) if e is not None):
-            self.record(ev["mint"], post_complete_buy_seen(blobs, ev["mint"])[0], "ws")
+        self.stats["ws_mig_notices"] += 1
+        self.record_part(mint, "mig", v, "ws")
+        n = 1
+        if any(e["mint"] == mint for e in (decode_complete_event(b) for b in blobs) if e is not None):
+            self.record_part(mint, "comp", v, "ws")
             n += 1
         return n
 
@@ -449,23 +517,52 @@ def _rpc_get_tx(client: Any, sig: str) -> dict | None:
     return None
 
 
-def classify_via_rpc(client: Any, mint: str) -> bool | None:
-    """Blocking. The curve PDA's newest signatures (newest first, failed txs skipped), up to RPC_TX_PER_ATTEMPT getTransaction calls, until one carries
-    the mint's CompleteEvent (monitor.completion_info). True/False = that tx's PostCompleteBuyEvent verdict; None = not found yet."""
+def _rpc_tx_parts(tx: dict, mint: str) -> dict[str, bool]:
+    """Parts one tx carries for `mint`: "comp" if it holds the mint's CompleteEvent, "mig" if it holds its CompletePumpAmmMigrationEvent or its CreatePoolEvent
+    (the migrate tx), each with the tx's PostCompleteBuyEvent verdict. Events are read from log lines AND emit_cpi inner instructions (monitor.tx_event_blobs):
+    a migrate tx's logs are cut in practice, but its inner instructions carry every event."""
+    blobs = tx_event_blobs(tx)
+    pcb = post_complete_buy_seen(blobs, mint)[0]
+    out: dict[str, bool] = {}
+    if any(e["mint"] == mint for e in (decode_complete_event(b) for b in blobs) if e is not None):
+        out["comp"] = pcb
+    if (any(e["mint"] == mint for e in (decode_migration_event(b) for b in blobs) if e is not None)
+            or any((e or {}).get("kind") == "create_pool" and e.get("base_mint") == mint for e in (decode_program_data(b) for b in blobs))):
+        out["mig"] = pcb
+    return out
+
+
+def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, need: Sequence[str] = ("comp", "mig")) -> dict[str, bool]:
+    """Blocking. Returns the parts found, {"comp": PostCompleteBuyEvent verdict of the mint's CompleteEvent tx, "mig": the same for its migrate tx} (one tx can
+    be both); a part that could not be found or read is absent. 1) `migrate_sig` (the CreatePool notice's signature), if the migrate tx is needed: one
+    getTransaction. 2) If the CompleteEvent tx is still needed and nothing is True yet: the curve PDA's newest signatures (newest first, failed txs skipped,
+    up to RPC_TX_PER_ATTEMPT getTransaction calls). Stops early on a True: synthetic is already decided."""
+    need = set(need)
+    found: dict[str, bool] = {}
+    if migrate_sig and "mig" in need:
+        tx = _rpc_get_tx(client, migrate_sig)
+        if tx:
+            for part, v in _rpc_tx_parts(tx, mint).items():
+                found.setdefault(part, v)
+    if any(found.values()) or not (need - set(found)):
+        return found
     curve = find_program_address([b"bonding-curve", b58decode(mint)], PUMP_PROGRAM)[0]
     sigs = client.call("getSignaturesForAddress", [curve, {"limit": RPC_SIGS_LIMIT, "commitment": "confirmed"}]) or []
     tried = 0
     for s in sigs:
-        if s.get("err") is not None:
+        if s.get("err") is not None or s["signature"] == migrate_sig and "mig" in found:
             continue
         if tried >= RPC_TX_PER_ATTEMPT:
             break
         tried += 1
         tx = _rpc_get_tx(client, s["signature"])
-        info = completion_info(tx, mint) if tx else None
-        if info is not None:
-            return bool(info["synthetic"])
-    return None
+        if not tx:
+            continue
+        for part, v in _rpc_tx_parts(tx, mint).items():
+            found.setdefault(part, v)
+        if any(found.values()) or not (need - set(found)):
+            break
+    return found
 
 
 class RpcFallback:
@@ -480,29 +577,34 @@ class RpcFallback:
         self._client_factory = client_factory or (lambda: RpcClient(rpc_url, min_interval=RPC_MIN_INTERVAL_S, max_retries=1, timeout=8.0,
                                                                      max_calls=RPC_TX_PER_ATTEMPT + 3))
         self._inflight: dict[str, asyncio.Task] = {}
+        self._done: collections.OrderedDict[str, None] = collections.OrderedDict()  # mints already looked up (found or given up): never asked twice
         self.calls = 0  # RPC calls made by finished attempts (RpcClient.total_calls), for the cost report
 
-    def request(self, mint: str) -> bool:
-        if not mint or mint in self._inflight:
+    def request(self, mint: str, migrate_sig: str | None = None) -> bool:
+        """Ask for the missing parts of `mint`'s class. `migrate_sig` is the signature of the CreatePool notice (the pool's migrate tx): one getTransaction
+        reads it. Returns False when nothing was started (already asked, in flight, or the class is already settled)."""
+        if not mint or mint in self._inflight or mint in self._done or not self.classifier.missing(mint):
             return False
         if len(self._inflight) >= self.max_inflight:
             self.classifier.stats["rpc_dropped"] += 1
             return False
         self.classifier.stats["rpc_requests"] += 1
-        self._inflight[mint] = asyncio.get_running_loop().create_task(self._run(mint))
+        self._inflight[mint] = asyncio.get_running_loop().create_task(self._run(mint, migrate_sig))
         return True
 
-    async def _run(self, mint: str) -> None:
+    async def _run(self, mint: str, migrate_sig: str | None = None) -> None:
         try:
             for delay in self.delays:
                 if delay:
                     await self._sleep(delay)
-                if self.classifier.lookup(mint)[0] is not None:  # the ws path (or an earlier attempt) classified it meanwhile
+                need = self.classifier.missing(mint)
+                if not need:  # the ws path (or an earlier attempt) settled it meanwhile
                     return
                 client = self._client_factory()
                 self.classifier.stats["rpc_attempts"] += 1
                 try:
-                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint), self.attempt_timeout_s)
+                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig, need),
+                                                 self.attempt_timeout_s)
                 except asyncio.TimeoutError:
                     self.classifier.stats["rpc_timeouts"] += 1
                     res = None
@@ -514,12 +616,16 @@ class RpcFallback:
                     res = None
                 self.calls += getattr(client, "total_calls", 0) or 0
                 self.classifier.stats["rpc_calls"] = self.calls
-                if res is not None:
-                    self.classifier.record(mint, res, "rpc")
+                for part, verdict in (res or {}).items():
+                    self.classifier.record_part(mint, part, verdict, "rpc")
+                if not self.classifier.missing(mint):
                     return
             self.classifier.stats["rpc_gave_up"] += 1
         finally:
             self._inflight.pop(mint, None)
+            self._done[mint] = None
+            while len(self._done) > SYN_MAX:
+                self._done.popitem(last=False)
 
     async def close(self) -> None:
         tasks = list(self._inflight.values())
@@ -619,7 +725,7 @@ class Engine:
         self.counters["excluded_synthetic"] = 0  # present in every hb, even at zero
         self.counters["excluded_unclassified"] = 0
         self.classifier = classifier
-        self.syn_request: Callable[[str], Any] | None = None  # run_live: RpcFallback.request; called once for a pool unclassified at s0, must not block
+        self.syn_request: Callable[..., Any] | None = None  # run_live: RpcFallback.request(mint, migrate_sig); must not block
         self.mint_pools: dict[str, set[str]] = {}
         self._feed_prev: dict[int, dict] = {}
         self._looks: collections.deque = collections.deque(maxlen=LOOKS_WINDOW)
@@ -836,14 +942,20 @@ class Engine:
             self.counters["h5_look2_sealed_pools"] += 1  # a pool count only; its trigger records are still written
         if mint and len(self.mint_pools.get(mint, ())) > 1:
             p.gaps.append({"kind": "ambiguous_mint"})
-        if self.syn_request is not None and mint and not self._sealed(p) and self._syn(p)[0] is None:  # still unclassified at s0: ask the RPC fallback (async)
-            try:
-                self.syn_request(mint)
-            except Exception:  # noqa: BLE001 - the fallback may not take the feed down; the pool stays unclassified and is excluded
-                self.counters["syn_request_errors"] += 1
+        if mint and not self._sealed(p):  # still unclassified at s0: ask the RPC fallback (async; a no-op if it was already asked at the announcement)
+            self.request_class(mint)
         if ann is not None and self.last_flag_gap_ms is not None and ann[1] < self.last_flag_gap_ms:
             p.gaps.append({"kind": "announced_before_gap"})  # first prints may have been lost in a gap between the CreatePool and this s0
         return p
+
+    def request_class(self, mint: str, migrate_sig: str | None = None) -> None:
+        """Ask the (async, off-hot-path) RPC fallback for the parts of `mint`'s synthetic class that are still unknown. Never blocks, never raises."""
+        if self.syn_request is None or self.classifier is None or self.classifier.lookup(mint)[0] is not None:
+            return
+        try:
+            self.syn_request(mint, migrate_sig)
+        except Exception:  # noqa: BLE001 - the fallback may not take the feed down; the pool stays unclassified and is excluded
+            self.counters["syn_request_errors"] += 1
 
     def _syn(self, p: Pool) -> tuple[bool | None, str | None]:
         """(synthetic, src) of the pool's mint right now: (True|False, src) or (None, None) when unknown (no classifier, no mint, nothing recorded)."""
@@ -1481,6 +1593,10 @@ def decode_notice(engine: Engine, note: Any, pool_mints: dict[str, tuple[str, st
             ev = decode_program_data(raw) if raw else None
             if ev and ev.get("kind") == "create_pool":
                 engine.on_create_pool(ev["pool"], ev["base_mint"], ev["quote_mint"], note.slot, note.t_recv_ms)
+                clf = engine.classifier
+                if clf is not None and hasattr(clf, "observe_migrate_notice"):  # this tx is the pool's migrate tx: its PostCompleteBuyEvent (if any) counts
+                    clf.observe_migrate_notice(ev["base_mint"], note)
+                    engine.request_class(ev["base_mint"], note.signature)  # the notice's logs are cut in practice (the pump events sit in inner instructions): read the tx
         elif blob.startswith(_BOOST_EVENT_PREFIX):
             raw = _program_data_bytes(ln)
             ev = decode_extra_event(raw) if raw else None
