@@ -19,6 +19,8 @@
 #                   CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says. A MiScusi resume or re-run must set the variable again:
 #                   the daily check alerts when the newest start record of a shadow running past 2026-10-16T00Z shows h5_look2.observed false.
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
+#   H5_SYN_SOCKETS  logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed, default 1; the RPC fallback covers a miss)
+#   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -48,6 +50,14 @@ mkdir -p "$OUT" 2>/dev/null || true
 [ -w "$OUT" ] || { echo "h5-shadow: out dir $OUT is not writable by $(id -un)" >&2; exit 4; }
 cd "$ROOT"
 set -- --out-dir "$OUT" --sockets "$SOCKETS"
+SYN_SOCKETS="${H5_SYN_SOCKETS:-1}"
+case "$SYN_SOCKETS" in
+  ''|*[!0-9]*) echo "h5-shadow: refusing H5_SYN_SOCKETS=$SYN_SOCKETS (not a number)" >&2; exit 2 ;;
+esac
+set -- "$@" --syn-sockets "$SYN_SOCKETS"
+if [ -n "${H5_RPC_URL:-}" ]; then
+  set -- "$@" --rpc-url "$H5_RPC_URL"
+fi
 if [ -n "${H5_WS_URLS:-}" ]; then
   OLDIFS="$IFS"; IFS=","
   for u in $H5_WS_URLS; do set -- "$@" --ws-url "$u"; done
