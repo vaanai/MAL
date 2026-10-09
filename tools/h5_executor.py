@@ -752,7 +752,8 @@ class H5Executor(pl.LiveExecutor):
         self.counters.save(self.counters_path)
         self.paths = {"state_dir": str(Path(cfg["state_dir"])), "stop": str(run_path(cfg, "stop_file", "STOP", not self.dry_run)),
                       "halt": str(run_path(cfg, "halt_file", "HALT", not self.dry_run)), "final_marker": str(self.final_marker),
-                      "live_ok": str(LIVE_OK_PATH) if not self.dry_run else None, "intents": str(self.intents_path)}
+                      "live_ok": str(LIVE_OK_PATH) if not self.dry_run else None, "intents": str(self.intents_path),
+                      "wallet_stop": str(Path(pe.LIVE_DIR) / "STOP"), "wallet_halt": str(Path(pe.LIVE_DIR) / "HALT")}
         self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
@@ -761,10 +762,25 @@ class H5Executor(pl.LiveExecutor):
         return f"H5Executor(mode={self.run_mode}, user={self.user})"
 
     # -- guards and kill switches --------------------------------------------------------------------------------------
+    def _wallet_switch(self, name: str, fail_closed: bool) -> bool:
+        """The wallet-wide STOP / HALT under the probe's directory (/var/lib/mal-live): the paths an operator already knows. Same semantics as
+        the ones in <state_dir>. A directory this process cannot read counts as present for STOP in live (it only blocks buys) and as absent
+        for HALT (it would freeze exits); a dry run, which cannot read it as another user, treats both as absent."""
+        try:
+            return (Path(pe.LIVE_DIR) / name).exists()
+        except OSError:
+            return fail_closed and not self.dry_run
+
+    def _halt_present(self) -> bool:
+        return pe.check_halt_file(self.limits) or self._wallet_switch("HALT", False)
+
+    def _stop_present(self) -> bool:
+        return pe.check_stop_file(self.limits) or self._wallet_switch("STOP", True)
+
     def _kill_reason(self) -> str | None:
-        if pe.check_halt_file(self.limits):
+        if self._halt_present():
             return "halt_file"
-        if pe.check_stop_file(self.limits):
+        if self._stop_present():
             return "stop_file"
         return None
 
@@ -1063,7 +1079,7 @@ class H5Executor(pl.LiveExecutor):
         if self.dry_run:
             self._log("send_blocked_dry_run", mint, kind_=p.get("kind"))
             return
-        if pe.check_halt_file(self.limits):
+        if self._halt_present():
             self._log("send_blocked", mint, reason="halt_file", kind_=p.get("kind"))
             return
         if p["kind"] == "buy" and p.get("sends", 0) == 0:
@@ -1277,7 +1293,7 @@ class H5Executor(pl.LiveExecutor):
 
     @pe.critical
     def exit_tick(self, now: int) -> None:
-        if pe.check_halt_file(self.limits):
+        if self._halt_present():
             return  # HALT freezes everything, sells included
         for mint, pos in list(self.state.open.items()):
             if pos.get("abandoned"):
@@ -1606,7 +1622,7 @@ class H5Executor(pl.LiveExecutor):
             self._last_adv = now
             self._poll_priors()
             self.advance_pending()
-        if pe.check_halt_file(self.limits):
+        if self._halt_present():
             return
         for mint, p in list(self.state.pending.items()):
             window = BUY_REBROADCAST_MS if p["kind"] == "buy" else 25_000
@@ -1721,6 +1737,111 @@ def status_report(cfg: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _live_wallet(ledger_path: Path) -> str | None:
+    """Our wallet's public key, from the newest live `start` row of OUR ledger (never from the command line)."""
+    wallet = None
+    if ledger_path.exists():
+        for line in ledger_path.read_text().splitlines():
+            if '"kind":"start"' in line and '"run_mode":"live"' in line:
+                try:
+                    wallet = json.loads(line).get("user") or wallet
+                except ValueError:
+                    continue
+    return wallet
+
+
+def mark_closed(cfg: dict[str, Any], mint: str, sig: str, rpc: Callable[[str, list], Any], *, now_ms: int | None = None) -> int:
+    """Offline: reconcile a position that Helm closed by hand (root sell-and-close). Needs the lock, so it is refused while the unit runs.
+    It fetches the transaction and checks that OUR wallet signed it, that it sold THIS mint through PumpSwap, that the token account is
+    now closed or empty, and that the position exists. Only then does it move the position from open to closed, book the realized P&L
+    from the transaction meta (the loss stops read the same totals), and ledger `manual_close`. Any failed check refuses and changes nothing."""
+    try:
+        lock = acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")
+    except SystemExit:
+        raise SystemExit("h5_executor --mark-closed refused: the unit holds the lock (stop it first)") from None
+    try:
+        def refuse(why: str) -> int:
+            print(f"h5_executor --mark-closed refused: {why}; nothing was changed", flush=True)
+            return 1
+
+        sd = Path(cfg["state_dir"]) / LIVE
+        ledger_path, counters_path, state_path = sd / "h5-ledger.jsonl", sd / "h5-counters.json", pe.state_path_for(sd, LIVE)
+        wallet = _live_wallet(ledger_path)
+        if wallet is None or not state_path.exists():
+            return refuse("no live state or no live start row for this wallet")
+        st = pe.State.load(state_path, LIVE)
+        pos = st.open.get(mint)
+        if pos is None:
+            return refuse("that mint has no open position")
+        if not isinstance(pos.get("buy_cost_lamports"), int):
+            return refuse("the position has no cost basis")
+        try:
+            res = rpc("getTransaction", [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
+        except (Exception, SystemExit) as exc:
+            return refuse(f"getTransaction failed ({pe.error_label(exc)})")
+        if not res or not res.get("meta"):
+            return refuse("the transaction was not found")
+        try:
+            msg, meta = res["transaction"]["message"], res["meta"]
+            keys = [k if isinstance(k, str) else k["pubkey"] for k in msg["accountKeys"]]
+            if (res["transaction"].get("signatures") or [None])[0] != sig:
+                return refuse("the transaction's first signature is not the one given")
+            if meta.get("err") is not None:
+                return refuse("the transaction failed on chain")
+            n_sign = int((msg.get("header") or {}).get("numRequiredSignatures", 1))
+            if wallet not in keys[:n_sign]:
+                return refuse("our wallet did not sign that transaction")
+            if not any(keys[int(ix["programIdIndex"])] == str(tx.PUMPSWAP_PROGRAM) for ix in msg.get("instructions") or []):
+                return refuse("the transaction does not call PumpSwap")
+            if pos["base_ata"] not in keys:
+                return refuse("our token account for that mint is not in the transaction")
+            ai = keys.index(pos["base_ata"])
+
+            def amount(rows: list | None) -> int:
+                vals = [r for r in (rows or []) if r.get("accountIndex") == ai and r.get("mint") in (None, mint)]
+                return int(vals[0]["uiTokenAmount"]["amount"]) if vals else 0
+
+            pre_amt, post_amt = amount(meta.get("preTokenBalances")), amount(meta.get("postTokenBalances"))
+            if pre_amt <= post_amt:
+                return refuse("the transaction did not sell that mint (our token balance did not fall)")
+            wi = keys.index(wallet)
+            sol_delta = int(meta["postBalances"][wi]) - int(meta["preBalances"][wi])
+            fee = int(meta["fee"])
+            ata_rent = int(meta["preBalances"][ai])
+        except (KeyError, ValueError, TypeError, IndexError):
+            return refuse("the transaction is not in the shape of a sell")
+        try:
+            info = rpc("getAccountInfo", [pos["base_ata"], {"encoding": "base64", "commitment": "confirmed"}]).get("value")
+            left = 0 if info is None else sim.token_amount(sim._b64(info))
+        except (Exception, SystemExit) as exc:
+            return refuse(f"could not read the token account ({pe.error_label(exc)})")
+        if left != 0:
+            return refuse(f"our token account still holds {left} tokens")
+        # All checks passed. Realized = what the wallet gained in the sell less what the buy cost (the same arithmetic as a timed sell;
+        # fees of earlier failed sell attempts were booked as they landed).
+        extra = int(pos.get("extra_cost") or 0)
+        realized = sol_delta - int(pos["buy_cost_lamports"]) - extra
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        when = int(res["blockTime"]) * 1000 if isinstance(res.get("blockTime"), int) else now
+        counters = H5Counters.load(counters_path, LIVE)
+        del st.open[mint]
+        st.pending.pop(mint, None)
+        st.realized_lamports += realized + extra
+        st.save(state_path)
+        counters.day(day_key(when))["realized"] += realized + extra
+        counters.plans.pop(mint, None)
+        counters.sell_land_s.pop(mint, None)
+        counters.save(counters_path)
+        H5Ledger(ledger_path, LIVE).write({
+            "kind": "manual_close", "ts_ms": now, "mint": mint, "signature": sig, "landed_slot": res.get("slot"), "block_time": res.get("blockTime"),
+            "tokens_sold": pre_amt - post_amt, "sol_delta_lamports": sol_delta, "fee_lamports": fee, "rent_refunded_lamports": ata_rent,
+            "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports})
+        print(f"h5_executor --mark-closed: {mint} closed by {sig}; realized {realized} lamports", flush=True)
+        return 0
+    finally:
+        os.close(lock)
+
+
 def clear_halt(cfg: dict[str, Any], name: str, run_mode: str) -> int:
     """Offline, manual and ledgered: clear one latched halt. Needs the lock (so no executor is running)."""
     lock = acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")
@@ -1748,6 +1869,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--clear-halt", metavar="NAME")
+    ap.add_argument("--mark-closed", metavar="MINT", help="offline: reconcile a position closed by hand; needs --sig and the lock (refused while the unit runs)")
+    ap.add_argument("--sig", metavar="SIGNATURE", help="the transaction that sold --mark-closed's mint")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
     ap.add_argument("--rpc-env", metavar="VARNAME", help="dry run only: the NAME of an environment variable holding the RPC URL, for a user who "
                     "cannot read the env file. The URL itself never goes on the command line. Refused with --live")
@@ -1764,6 +1887,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.status:
         print(status_report(cfg))
         return 0
+    if args.mark_closed:
+        if not args.sig:
+            ap.error("--mark-closed needs --sig SIGNATURE")
+        url = (os.environ.get(args.rpc_env) or "").strip() if args.rpc_env else None
+        if args.rpc_env and not url:
+            raise SystemExit(f"--rpc-env {args.rpc_env}: that environment variable is not set")
+        rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(url, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
+        return mark_closed(cfg, args.mark_closed, args.sig, rpc)
     mode, warn = pe.resolve_mode(cfg.get("mode", DRYRUN), args.live and not args.dry_run)
     if args.clear_halt:
         return clear_halt(cfg, args.clear_halt, mode)
