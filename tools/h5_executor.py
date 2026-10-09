@@ -255,6 +255,8 @@ class H5Trigger:
     base_breaks: int | None = None  # raw per-pool counts from the detector, ledgered (they count reorders too; base_breaks_unresolved decides)
     slot_regress: int | None = None
     base_breaks_unresolved: int | None = None
+    base_breaks_unresolved_settled: int | None = None  # the gate (0 = no missed print among the settled prints)
+    s0_reanchored_slots: int | None = None  # ledgered: how far s0 moved down when an earlier print arrived late (before any trigger)
     s0_minus_announced_slots: int | None = None
 
     def public(self) -> dict[str, Any]:
@@ -321,12 +323,15 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
             return None, "bad_intent:v_missing"
         if not isinstance(row.get("gap"), bool):  # the key must be there and a bool; the default would be silent
             return None, "bad_intent:gap"
-        # base_breaks_unresolved is the order-independent count: a pure reorder reads 0, a missed print reads >= 1 (it can read 1 for a moment while
-        # a predecessor print is in flight, which only costs a trade). The raw base_breaks / slot_regress count reorders too (on live data they
-        # were non-zero on most triggers), so they are ledgered, not used to refuse.
-        unresolved = row.get("base_breaks_unresolved")
-        if not _is_int(unresolved) or unresolved != 0:
-            return None, "bad_intent:base_breaks_unresolved"  # missing, null, or >= 1
+        # The gate is base_breaks_unresolved_settled: the order-independent count over the prints at least 2 slots behind the detector's
+        # high-water mark, so a predecessor print still in flight is not read as a break. A pure reorder reads 0, a missed print >= 1. On the
+        # 09-20 frozen triggers with a within-slot shuffle it passes 53/72, the unsettled field 13-15/72. Missing, null or anything but the
+        # integer 0 refuses. The unsettled field and the raw base_breaks / slot_regress (which count reorders too) are ledgered, not gated.
+        settled = row.get("base_breaks_unresolved_settled")
+        if not _is_int(settled) or settled != 0:
+            return None, "bad_intent:base_breaks_unresolved_settled"
+        unresolved = row.get("base_breaks_unresolved") if _is_int(row.get("base_breaks_unresolved")) else None
+        reanchored = row.get("s0_reanchored_slots") if _is_int(row.get("s0_reanchored_slots")) else None  # s0 moved down by this many slots (ledgered)
         lag = row.get("s0_minus_announced_slots")  # how long after the pool's CreatePool the first print we call s0 came; null when never announced
         if not _is_int(lag) or not 0 <= lag <= S0_ANNOUNCE_LAG_MAX:
             return None, "bad_intent:s0_minus_announced_slots"  # a late "s0" is a pool we joined mid-life, or one whose first prints were lost
@@ -345,7 +350,8 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
         if t is None:
             return None, bad
         raw = {k: row[k] for k in ("base_breaks", "slot_regress") if _is_int(row.get(k))}  # raw counts: ledgered on the decision row
-        return replace(t, base_breaks_unresolved=unresolved, s0_minus_announced_slots=lag, **raw), None
+        return replace(t, base_breaks_unresolved=unresolved, base_breaks_unresolved_settled=settled, s0_reanchored_slots=reanchored,
+                       s0_minus_announced_slots=lag, **raw), None
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
 
