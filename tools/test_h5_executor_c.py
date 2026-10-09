@@ -212,21 +212,36 @@ class TriggerFidelityTests(Case):
         self.assertEqual((e.refusals(), e.rpc.sent), (["sps_skipped_pool"], []))
 
     def test_a_missed_print_refuses_the_trigger_but_a_pure_reorder_does_not(self):
-        # R3: base_breaks_unresolved decides. It reads 0 for a reorder and >= 1 for a missed print; missing or null refuses.
+        # F1: base_breaks_unresolved_settled decides. It counts only prints at least 2 slots behind the high-water mark, so a predecessor still
+        # in flight is not a break. 0 for a reorder or an in-flight print, >= 1 for a missed print; missing, null or non-integer refuses.
         for bad in (1, 2, None, "0", True, 0.0):
-            self.assertEqual(self.parse(base_breaks_unresolved=bad), (None, "bad_intent:base_breaks_unresolved"), bad)
+            self.assertEqual(self.parse(base_breaks_unresolved_settled=bad), (None, "bad_intent:base_breaks_unresolved_settled"), bad)
         r = shadow_trigger(Clock())
-        del r["base_breaks_unresolved"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks_unresolved"))
-        t, bad = self.parse(base_breaks=7, slot_regress=5, base_breaks_unresolved=0)  # the live pattern: many raw breaks, all reorders
+        del r["base_breaks_unresolved_settled"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks_unresolved_settled"))
+        # the live pattern: many raw breaks, the unsettled field reading 1 for a predecessor in flight, nothing missed once settled
+        t, bad = self.parse(base_breaks=7, slot_regress=5, base_breaks_unresolved=1, base_breaks_unresolved_settled=0, s0_reanchored_slots=3)
         self.assertIsNone(bad)
-        self.assertEqual((t.base_breaks, t.slot_regress, t.base_breaks_unresolved), (7, 5, 0))
+        self.assertEqual((t.base_breaks, t.slot_regress, t.base_breaks_unresolved, t.base_breaks_unresolved_settled, t.s0_reanchored_slots),
+                         (7, 5, 1, 0, 3))
+        r = shadow_trigger(Clock())
+        del r["base_breaks_unresolved"]  # the unsettled field is only ledgered: absent is fine
+        self.assertIsNone(h.parse_shadow_trigger(r)[1])
 
-    def test_the_raw_break_counts_are_on_the_decision_row(self):
+    def test_the_break_counts_and_the_reanchor_are_on_the_decision_row(self):
         e = self.env()
-        e.ex.handle_trigger(h.parse_shadow_trigger(shadow_trigger(e.clock, base_breaks=7, slot_regress=5))[0])
+        e.ex.handle_trigger(h.parse_shadow_trigger(shadow_trigger(e.clock, base_breaks=7, slot_regress=5, base_breaks_unresolved=1,
+                                                                  s0_reanchored_slots=2))[0])
         dec = e.ledger("decision")[0]
-        self.assertEqual((dec["base_breaks"], dec["slot_regress"], dec["base_breaks_unresolved"], dec["s0_minus_announced_slots"]), (7, 5, 0, 0))
+        self.assertEqual((dec["base_breaks"], dec["slot_regress"], dec["base_breaks_unresolved"], dec["base_breaks_unresolved_settled"],
+                          dec["s0_reanchored_slots"], dec["s0_minus_announced_slots"]), (7, 5, 1, 0, 2, 0))
+
+    def test_a_trigger_whose_s0_was_reanchored_below_it_is_refused_through_the_gap_flag(self):
+        # the detector puts slot_below_s0 in `gaps` and sets gap true when a print below s0 arrives after a trigger: already a refusal
+        self.assertTrue(self.parse(gap=True, gaps=[{"kind": "slot_below_s0", "s0": S0, "slot": S0 - 1}])[0].gap)
+        e = self.env()
+        e.ex.handle_trigger(self.parse(gap=True, gaps=[{"kind": "slot_below_s0"}])[0])
+        self.assertEqual((e.refusals(), e.rpc.sent), (["feed_gap"], []))
 
     def test_the_first_print_must_follow_the_announcement_by_at_most_two_slots(self):
         for ok in (0, 1, 2):
@@ -257,18 +272,18 @@ class TriggerFidelityTests(Case):
         e.ex.intent_tick()
         with path.open("a") as fh:
             for _ in range(6):
-                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved_settled=1)) + "\n")
         e.ex.intent_tick()
         alerts = [r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]
         self.assertEqual((len(alerts), alerts[0]["count"]), (1, 6))
         with path.open("a") as fh:
-            fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+            fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved_settled=1)) + "\n")
         e.ex.intent_tick()
         self.assertEqual(len([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]), 1)  # not repeated within the hour
         e.jump(3_700_000)
         with path.open("a") as fh:
             for _ in range(6):
-                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved_settled=1)) + "\n")
         e.ex.intent_tick()
         self.assertEqual(len([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]), 2)  # an hour on, it can alert again
 
@@ -279,7 +294,7 @@ class TriggerFidelityTests(Case):
         e.ex.intent_tick()
         with path.open("a") as fh:
             for _ in range(5):
-                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved_settled=1)) + "\n")
         e.ex.intent_tick()
         self.assertEqual([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"], [])
 
@@ -306,6 +321,7 @@ class TriggerFidelityTests(Case):
 
     def test_the_window_is_300_seconds_with_no_slack(self):
         e = self.env()
+        e.seed_clock(back_s=320)  # a history that reaches an s0 300 s back
         e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1501)  # 300.2 s after s0
         self.assertEqual(e.refusals(), ["outside_rule_window"])
         e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1500)  # exactly 300.0 s
@@ -322,7 +338,7 @@ class TriggerFidelityTests(Case):
         trig, pool = VENDORED["trigger"], VENDORED["pool"]
         read = {"type", "variant", "pool", "mint", "s0", "slot", "sps", "t_detect_ms", "q_trigger_sol", "base_pre", "sell_token_raw", "v_print",
                 "v_missing", "gap", "base_breaks", "slot_regress", "sps_span_s", "boost_spent_sol", "s0_t_recv_ms", "block_time",
-                "base_breaks_unresolved", "s0_minus_announced_slots", "announced_slot"}
+                "base_breaks_unresolved", "base_breaks_unresolved_settled", "s0_reanchored_slots", "s0_minus_announced_slots", "announced_slot"}
         self.assertTrue(read <= set(trig), read - set(trig))
         self.assertTrue({"type", "reason", "mint", "gap", "boost_src", "boost_last_slice_s", "boost_last_slice_s_blocktime",
                          "boost_last_slice_s_recv"} <= set(pool))

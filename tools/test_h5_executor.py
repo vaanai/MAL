@@ -124,12 +124,12 @@ class Env:
         self.seed_clock(ex)
         return ex
 
-    def seed_clock(self, ex: h.H5Executor | None = None) -> None:
+    def seed_clock(self, ex: h.H5Executor | None = None, back_s: int = 150) -> None:
         """Our own getSlot history, as 150 s of the prewarm loop would have left it: the measured slot rate is the chain's."""
         ex = ex or self.ex
         ex.slots = h.SlotClock()
         now = self.clock()
-        for k in range(75, -1, -1):
+        for k in range(back_s // 2, -1, -1):
             ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
 
     def jump(self, ms: int) -> None:
@@ -234,7 +234,8 @@ class Case(unittest.TestCase):
         os.chmod(self.etc, 0o755)
         self.probe_dir = self.tmp / "probe-live-dir"
         self.probe_dir.mkdir()
-        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (h, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
+        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "TIER_FILE_PATH", self.etc / "TIER"), (h, "LIVE_OK_UID", os.getuid()),
+                                  (h, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
             patcher = mock.patch.object(target, attr, val)
             patcher.start()
             self.addCleanup(patcher.stop)

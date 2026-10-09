@@ -1,5 +1,5 @@
 {
-  "source": "tools/h5_shadow.py at claude/h5-shadow fe7eb43 (PR #477): the dicts built in Engine._fire (type trigger) and at pool close (type pool). Keys and units as written there; values are a plausible record for the fixture pool.",
+  "source": "tools/h5_shadow.py at claude/h5-shadow 3dbe1de (PR #477): the dicts built in Engine._fire (type trigger) and at pool close (type pool). Keys and units as written there; values are a plausible record for the fixture pool.",
   "trigger": {
     "type": "trigger",
     "variant": "pv",
@@ -63,7 +63,9 @@
     },
     "announced_slot": 100000,
     "s0_minus_announced_slots": 0,
-    "base_breaks_unresolved": 0
+    "base_breaks_unresolved": 0,
+    "base_breaks_unresolved_settled": 0,
+    "s0_reanchored_slots": 0
   },
   "pool": {
     "type": "pool",
@@ -108,6 +110,8 @@
     "gap": false,
     "gaps": [],
     "s0_minus_announced_slots": 0,
-    "base_breaks_unresolved": 0
+    "base_breaks_unresolved": 0,
+    "base_breaks_unresolved_settled": 0,
+    "s0_reanchored_slots": 0
   }
 }
