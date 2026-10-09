@@ -83,6 +83,12 @@ class ShadowFlowTests(Case):
         e.ex.intent_tick()
         return e
 
+    def start_in(self, sub: Path, **kw) -> Env:
+        e = Env(sub, **kw)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        return e
+
     def test_a_shadow_trigger_becomes_the_same_buy_as_an_h5_intent(self):
         e = self.start()
         self.append(e, shadow_trigger(e.clock))
@@ -118,21 +124,68 @@ class ShadowFlowTests(Case):
         self.assertEqual(h.H5Limits.from_config({"gap_hold_ms": 1}).gap_hold_ms, 20_000)
         self.assertEqual(h.H5Limits.from_config({"gap_hold_ms": 90_000}).gap_hold_ms, 90_000)
 
-    def test_a_pool_close_record_feeds_the_boost_halt(self):
+    def test_a_non_flagging_reconnect_does_not_block_a_trigger_one_second_later(self):
+        e = self.start()
+        self.append(e, {"type": "gap", "kind": "socket_reconnect", "open_pools": 12, "flags_pools": False})
+        e.ex.intent_tick()
+        e.clock.t += 1_000
+        self.append(e, shadow_trigger(e.clock))
+        e.ex.intent_tick()
+        self.assertEqual((e.refusals(), len(e.rpc.sent)), ([], 1))
+        self.assertEqual([r["kind_"] for r in e.ledger("feed_reconnect_redundant")], ["socket_reconnect"])
+        self.assertEqual(e.ledger("feed_gap"), [])  # no hold was started
+
+    def test_a_flagging_gap_blocks_a_trigger_one_second_later(self):
+        for kind in ("socket_reconnect", "slot_jump", "silence"):
+            sub = self.tmp / kind
+            sub.mkdir()
+            e = self.start_in(sub)
+            self.append(e, {"type": "gap", "kind": kind, "open_pools": 12, "flags_pools": True})
+            e.ex.intent_tick()
+            e.clock.t += 1_000
+            self.append(e, shadow_trigger(e.clock))
+            e.ex.intent_tick()
+            self.assertEqual((e.refusals(), e.rpc.sent), (["feed_gap"], []), kind)
+
+    def test_a_gap_record_without_flags_pools_or_with_an_unclear_value_blocks(self):
+        for i, extra in enumerate(({}, {"flags_pools": None}, {"flags_pools": "false"}, {"flags_pools": 0})):
+            sub = self.tmp / f"u{i}"
+            sub.mkdir()
+            e = self.start_in(sub)
+            self.append(e, {"type": "gap", "kind": "socket_reconnect", "open_pools": 12, **extra})
+            e.ex.intent_tick()
+            e.clock.t += 1_000
+            self.append(e, shadow_trigger(e.clock))
+            e.ex.intent_tick()
+            self.assertEqual((e.refusals(), e.rpc.sent), (["feed_gap"], []), extra)  # only the literal false lifts the hold: unknown fails closed
+
+    def test_a_trigger_the_detector_flagged_is_refused_even_after_a_redundant_reconnect(self):
+        e = self.start()
+        self.append(e, {"type": "gap", "kind": "socket_reconnect", "open_pools": 12, "flags_pools": False}, shadow_trigger(e.clock, gap=True))
+        e.ex.intent_tick()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["feed_gap"], []))
+
+    def test_a_pool_close_record_is_a_ledger_row_and_one_early_pool_halts_nothing(self):
         e = self.start()
         self.append(e, pool_row(MINT, boost_last_slice_s=341.5), pool_row("X" * 43 + "1", boost_last_slice_s=None, boost_last_slice_s_blocktime=None,
-                                                                         boost_last_slice_s_recv=None))
+                                                                         boost_last_slice_s_recv=None),
+                    pool_row("Y" * 43 + "2", boost_last_slice_s=334.0), pool_row("W" * 43 + "3", boost_last_slice_s=250.0))
         e.ex.intent_tick()
-        self.assertEqual(e.ex.counters.halts, {})  # 341.5 s is healthy; a pool with no BOOST identified says nothing
-        self.append(e, pool_row("Y" * 43 + "2", boost_last_slice_s=334.0))
+        self.assertEqual(e.ex.counters.halts, {})  # a pool with no BOOST identified says nothing; single early pools are noise
+        self.assertEqual([r["seconds_after_s0"] for r in e.ledger("boost_last_slice")], [341.5, 334.0, 250.0])
+
+    def test_ten_pool_close_records_under_335_s_halt_through_the_file(self):
+        e = self.start()
+        self.append(e, *[pool_row(f"M{i:02d}" + "1" * 40, boost_last_slice_s=334.0) for i in range(10)])
         e.ex.intent_tick()
-        self.assertEqual(list(e.ex.counters.halts), ["boost_last_slice_lt_335"])
+        self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_335"])
 
     def test_boost_timing_falls_back_to_block_time_then_wall_clock(self):
         e = self.start()
-        self.append(e, pool_row(MINT, boost_last_slice_s=None, boost_last_slice_s_blocktime=333.0))
+        self.append(e, pool_row(MINT, boost_last_slice_s=None, boost_last_slice_s_blocktime=333.0),
+                    pool_row("N" * 43 + "1", boost_last_slice_s=None, boost_last_slice_s_blocktime=None, boost_last_slice_s_recv=342.0))
         e.ex.intent_tick()
-        self.assertIn("boost_last_slice_lt_335", e.ex.counters.halts)
+        self.assertEqual([r["seconds_after_s0"] for r in e.ledger("boost_last_slice")], [333.0, 342.0])
 
     def test_heartbeat_records_keep_the_feed_fresh(self):
         e = self.start(feed_heartbeat_max_age_ms=5_000)
@@ -152,15 +205,15 @@ class ShadowFlowTests(Case):
         e.ex.intent_tick()  # first look: the end of the existing file
         self.append(e, pool_row("A" * 43 + "1", boost_last_slice_s=336.0), path=old)
         e.ex.intent_tick()
-        self.assertEqual(e.ex.counters.halts, {})  # one pool under 337 s
+        self.assertEqual(list(e.ex.counters.day(h.day_key(T0))["boost_s"]), ["A" * 43 + "1"])
         new.write_text("")
         e.ex._glob_ms = 0  # the directory listing is cached for a second
         self.append(e, pool_row("B" * 43 + "2", boost_last_slice_s=336.0), path=old)  # written after the new hour's file appeared
         self.append(e, pool_row("C" * 43 + "3", boost_last_slice_s=336.0), path=new)
         e.ex.intent_tick()
         self.assertEqual(e.ex._tail_path, new)
-        self.assertEqual(sorted(e.ex.counters.day(h.day_key(T0))["boost_lt337"]), ["A" * 43 + "1", "B" * 43 + "2", "C" * 43 + "3"])
-        self.assertEqual(list(e.ex.counters.halts), ["boost_last_slice_lt_337_twice"])
+        self.assertEqual(sorted(e.ex.counters.day(h.day_key(T0))["boost_s"]), ["A" * 43 + "1", "B" * 43 + "2", "C" * 43 + "3"])  # all three, old hour first
+        self.assertEqual(e.ex.counters.halts, {})  # three pools: no day median yet
 
     def test_directory_with_no_shadow_file_yet_is_quiet(self):
         d = self.tmp / "empty"

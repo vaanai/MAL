@@ -20,9 +20,12 @@ Primary input, #477's own records (intents_file may be a file or the detector's 
 the previous hour is drained first on a roll):
   type "trigger"  variant "pv" only; mint, pool, s0, slot, sps, t_detect_ms, q_trigger_sol (post-trade Q, quote + the print's V), base_pre +
                   sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused)
-  type "gap"      detector lost prints: buys refused for gap_hold_ms (20 s minimum)
+  type "gap"      detector lost prints: buys refused for gap_hold_ms (20 s minimum) unless flags_pools is the literal false (a reconnect on a
+                  redundant feed whose other sockets stayed up: ledgered as feed_reconnect_redundant, no hold); a missing key holds
   type "hb"       heartbeat (used when feed_heartbeat_max_age_ms is set)
-  type "pool"     close record; boost_last_slice_s (else the block-time, else the wall-clock figure) feeds the BOOST halt rules
+  type "pool"     close record; boost_last_slice_s (else the block-time, else the wall-clock figure) feeds the BOOST halt rules, which judge the
+                  UTC-day median over tracked pools (< 335 s, or < 337 s on two days), the share of our sells that landed after their pool's
+                  BOOST finished (> 15% from 20 sells), and a structure floor (< 300 s on 3 pools in a day); never a single pool
 Alternative flat rows, same meaning, for tests and other detectors:
   h5_intent_v1  mint, pool, s0_slot, sps, trigger_slot, q_lamports (post-trade real quote + V), base_reserve
                 (post-trade raw base), v_lamports (per-print V), decision_ms (wall clock of the decision)
@@ -75,8 +78,16 @@ ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
 
 # --- live-halt rules (coordinator brief 2026-10-08, PLAN.md section 5). Fixed in code. --------------------------------
-BOOST_HALT_S = 335.0  # BOOST last slice earlier than this after s0 on any tracked pool -> halt
-BOOST_HALT_TWICE_S = 337.0  # earlier than this on two distinct pools in one UTC day -> halt
+# BOOST timing is judged on a UTC-day MEDIAN of the last-slice time over tracked pools, not on single pools (DEC-024 5.1, LIVE-PLAN 3, ROBUST
+# S2): on the shadow feed 27% of single pools finish under 335 s while the median is 340 s, so a per-pool halt fires every day.
+BOOST_MEDIAN_MIN_POOLS = 10  # a day's median counts once this many tracked pools have closed that day
+BOOST_MEDIAN_HALT_S = 335.0  # day median below this -> halt (boost_median_lt_335)
+BOOST_MEDIAN_TWICE_S = 337.0  # day median below this on two UTC days, consecutive or not -> halt (boost_median_lt_337_twice)
+BOOST_ABSURD_S = 300.0  # a single pool this early is a structure change, not noise ...
+BOOST_ABSURD_POOLS = 3  # ... when it happens on this many pools in one UTC day -> halt (boost_structure_lt_300_x3)
+BOOST_BEFORE_SELL_FRAC = 0.15  # share of our landed sells whose pool's BOOST last slice was at or before the sell's landing -> halt above this
+BOOST_BEFORE_SELL_MIN_SELLS = 20  # ... judged once this many landed sells have a known BOOST last slice (boost_before_sell_gt_15pct)
+BOOST_SEEN_KEEP = 300  # pools remembered, to pair a pool's BOOST time with our sell on it
 LATE_SELL_S = 335.0  # a sell landing after s0 + this is late
 LATE_SELL_FRAC = 0.05  # more than 5% of our landed sells late -> halt
 LANDING_MEDIAN_MAX_S = 3.0  # median trigger-to-landing over the last LANDING_WINDOW fills above this -> halt
@@ -370,13 +381,24 @@ class H5Counters:
     sells_landed: int = 0
     sells_late: int = 0
     seal_skips: int = 0
+    boost_seen_s: dict[str, float] = field(default_factory=dict)  # recent pool -> BOOST last slice, seconds after s0
+    sell_land_s: dict[str, float] = field(default_factory=dict)  # our landed sells not yet paired: pool -> landing, seconds after s0
+    bvs_n: int = 0  # landed sells paired with their pool's BOOST last slice
+    bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
 
     def day(self, key: str) -> dict[str, Any]:
-        return self.days.setdefault(key, {"trades": 0, "realized": 0, "boost_lt337": []})
+        d = self.days.setdefault(key, {"trades": 0, "realized": 0})
+        d.setdefault("boost_s", {})  # pool -> last slice (s), one per pool, for the day's median
+        d.setdefault("boost_lt300", [])
+        d.setdefault("boost_median", None)  # the day's running median once BOOST_MEDIAN_MIN_POOLS pools closed
+        return d
 
     def save(self, path: Path) -> None:
         for old in sorted(self.days)[:-14]:
             del self.days[old]
+        for old in sorted(self.days)[:-3]:
+            self.days[old].pop("boost_s", None)  # the raw list is only needed for the current day's median; the median stays
+            self.days[old].pop("boost_lt300", None)
         _atomic_json(path, {"schema": "h5_counters_v1", **self.__dict__})
 
     @classmethod
@@ -925,22 +947,55 @@ class H5Executor(pl.LiveExecutor):
         self.feed_last_ms = self.now_ms()
 
     def on_boost_row(self, mint: str, s0_slot: int | None, sps: float | None, last_slice_slot: int | None, last_slice_s: float | None) -> None:
-        """BOOST last-slice timing for a tracked pool (the detector logs it). Halts new buys when it comes early."""
+        """BOOST last-slice timing of a closed tracked pool (seconds after s0). Every pool gets a ledger row; the halts judge the day, not the
+        pool (a single early pool is noise: 27% of pools finish under 335 s while the median is 340 s):
+          (a) UTC-day median over >= 10 pools: < 335 s -> boost_median_lt_335; < 337 s on two UTC days -> boost_median_lt_337_twice;
+          (c) structure floor: last slice < 300 s on 3 pools in one UTC day -> boost_structure_lt_300_x3;
+          (b) the share of our landed sells whose pool's BOOST had already finished is judged in _pair_boost_with_sell."""
         sec = last_slice_s
         if sec is None and last_slice_slot is not None and s0_slot is not None and sps:
             sec = (last_slice_slot - s0_slot) * sps
         if isinstance(sec, bool) or not isinstance(sec, (int, float)) or not math.isfinite(sec) or not (0 < sec < 2_000):
             return self._log("boost_row_ignored", mint, why="bad_seconds")
-        day = self.counters.day(day_key(self.now_ms()))
-        self._log("boost_last_slice", mint, seconds_after_s0=round(float(sec), 3))
-        if sec < BOOST_HALT_S:
-            self._latch("boost_last_slice_lt_335", pool_mint=mint, seconds=round(float(sec), 3))
-        elif sec < BOOST_HALT_TWICE_S:
-            if mint not in day["boost_lt337"]:
-                day["boost_lt337"].append(mint)
-            self.counters.save(self.counters_path)
-            if len(day["boost_lt337"]) >= 2:
-                self._latch("boost_last_slice_lt_337_twice", pools=list(day["boost_lt337"]))
+        sec = round(float(sec), 3)
+        c = self.counters
+        day = c.day(day_key(self.now_ms()))
+        self._log("boost_last_slice", mint, seconds_after_s0=sec)
+        c.boost_seen_s[mint] = sec
+        while len(c.boost_seen_s) > BOOST_SEEN_KEEP:
+            c.boost_seen_s.pop(next(iter(c.boost_seen_s)))
+        if mint not in day["boost_s"]:  # a pool is counted once a day, however often it is re-reported
+            day["boost_s"][mint] = sec
+            if sec < BOOST_ABSURD_S:
+                day["boost_lt300"].append(mint)
+            if len(day["boost_s"]) >= BOOST_MEDIAN_MIN_POOLS:
+                med = statistics.median(day["boost_s"].values())
+                day["boost_median"] = round(med, 3)
+                if med < BOOST_MEDIAN_HALT_S:
+                    self._latch("boost_median_lt_335", median_s=day["boost_median"], pools=len(day["boost_s"]))
+                low_days = sorted(k for k, d in c.days.items() if d.get("boost_median") is not None and d["boost_median"] < BOOST_MEDIAN_TWICE_S)
+                if len(low_days) >= 2:
+                    self._latch("boost_median_lt_337_twice", days=low_days, medians=[c.days[k]["boost_median"] for k in low_days])
+            if len(day["boost_lt300"]) >= BOOST_ABSURD_POOLS:
+                self._latch("boost_structure_lt_300_x3", pools=len(day["boost_lt300"]))
+        c.save(self.counters_path)
+        self._pair_boost_with_sell(mint)
+
+    def _pair_boost_with_sell(self, mint: str) -> None:
+        """Halt rule (b): over our own landed sells, the share whose pool's BOOST last slice came at or before our sell's landing (both
+        in seconds after s0, the same clock). Judged from 20 paired sells, strictly above 15%. The running share is ledgered on every pair."""
+        c = self.counters
+        if mint not in c.sell_land_s or mint not in c.boost_seen_s:
+            return  # the pool's close record comes after our usual 330 s exit, so either side may arrive first
+        landing, boost = c.sell_land_s.pop(mint), c.boost_seen_s[mint]
+        c.bvs_n += 1
+        c.bvs_before += 1 if boost <= landing else 0
+        share = c.bvs_before / c.bvs_n
+        c.save(self.counters_path)
+        self._log("boost_vs_sell", mint, before=boost <= landing, boost_s=boost, landing_s=round(landing, 3), n=c.bvs_n, before_n=c.bvs_before,
+                  share=round(share, 4))
+        if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
+            self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
 
     # -- intent file ---------------------------------------------------------------------------------------------------------
     def signal_tick(self) -> int:
@@ -1004,9 +1059,14 @@ class H5Executor(pl.LiveExecutor):
                     triggers.append(trg)
                 elif bad:
                     self._log("skip", str(row.get("mint") or ""), reason=bad)
-            elif rtype == "gap":  # the detector lost prints: refuse for a while (it also flags the open pools' own records)
-                self._gap_until_ms = self.now_ms() + self.h5.gap_hold_ms
-                self._log("feed_gap", "", gap=True, kind_=row.get("kind"))
+            elif rtype == "gap":
+                # The hold starts only when the record says coverage was lost: flags_pools true, or the key missing or anything but the
+                # literal false (an unknown schema fails closed). A reconnect on a redundant feed whose other sockets stayed up says false.
+                if row.get("flags_pools") is False:
+                    self._log("feed_reconnect_redundant", "", kind_=row.get("kind"))
+                else:
+                    self._gap_until_ms = self.now_ms() + self.h5.gap_hold_ms
+                    self._log("feed_gap", "", gap=True, kind_=row.get("kind"))
             elif rtype == "hb":
                 self.feed_last_ms = self.now_ms()
             elif rtype == "pool":  # per-pool close record: BOOST last-slice timing. The rule's own clock (slots x sps) first.
@@ -1251,6 +1311,9 @@ class H5Executor(pl.LiveExecutor):
         """Halt rule: more than 5% of our landed sells landing after s0 + 335 s (strictly more than 5%)."""
         c = self.counters
         c.sells_landed += 1
+        c.sell_land_s[mint] = (landed_slot - plan["s0_slot"]) * plan["sps"]  # paired with the pool's BOOST last slice when that is known
+        while len(c.sell_land_s) > BOOST_SEEN_KEEP:
+            c.sell_land_s.pop(next(iter(c.sell_land_s)))
         late = landed_slot > plan["late_slot"]
         c.sells_late += 1 if late else 0
         self._log("exit_landing", mint, landed_slot=landed_slot, exit_slot=plan["exit_slot"], land_slot=plan["land_slot"],
@@ -1258,6 +1321,7 @@ class H5Executor(pl.LiveExecutor):
         c.save(self.counters_path)
         if c.sells_landed >= self.h5.late_sell_min_n and c.sells_late / c.sells_landed > LATE_SELL_FRAC:
             self._latch("late_sells_gt_5pct", late=c.sells_late, landed=c.sells_landed)
+        self._pair_boost_with_sell(mint)
 
     @pe.critical
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
