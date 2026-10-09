@@ -2003,7 +2003,8 @@ class H5Executor(pl.LiveExecutor):
 
     def _poll_priors(self) -> None:
         """One getSignatureStatuses call for the current signature and every superseded one of each pending sell. The timed supersede stops
-        only while some live signature shows a NON-ERROR status at processed or better (it landed). A superseded sell that failed on chain
+        only WHILE some live signature shows a NON-ERROR status at processed or better (it landed); if that status disappears on a later poll (a
+        processed transaction on a dropped fork) the flag is cleared and the timed supersede goes on. A superseded sell that failed on chain
         has paid its fee: book it and drop it, without touching that flag. One that landed is the sell to resolve: swap it in (it has its
         own non-error status), keep the replaced current signature in `prior` (its status and fee are still tracked), and the base confirm
         loop then reads the new current signature."""
@@ -2019,12 +2020,14 @@ class H5Executor(pl.LiveExecutor):
         except (Exception, SystemExit):
             return
         now = self.now_ms()
+        with_status: set[str] = set()  # pending sells that have a non-error status on at least one polled signature in THIS poll
         for (m, e, cur), st in zip(items, res):
             p = self.state.pending.get(m)
             if not st or p is None:
                 continue
             if st.get("err") is None:  # per signature: only a status that is not an error means a sell landed or is landing
                 p.setdefault("status_seen_ms", now)
+                with_status.add(m)
             if cur or e["signature"] not in {x["signature"] for x in p.get("prior", [])}:
                 continue
             if st.get("err") is not None:
@@ -2037,6 +2040,10 @@ class H5Executor(pl.LiveExecutor):
                 p.pop("confirm_seen_ms", None)
                 p["status_seen_ms"] = now  # the promoted signature's own non-error status
                 self._log("sell_superseded_landed", m, signature=e["signature"], level=e["h5"].get("level"))
+        for m in {m for m, _e, _c in items}:  # the flag is recomputed on every poll: a status that was there and is gone (a processed transaction
+            p = self.state.pending.get(m)     # on a dropped fork) no longer blocks the timed supersede
+            if p is not None and m not in with_status and p.pop("status_seen_ms", None) is not None:
+                self._log("sell_status_vanished", m)
         self.save()
 
     def _settle_priors(self, mint: str, priors: list[dict[str, Any]]) -> None:
