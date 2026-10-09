@@ -844,6 +844,294 @@ class OutDirAndArgvTests(unittest.TestCase):
         self.assertEqual(out[6], "wss://plain.example/")
 
 
+def chain_tape(n=8, **kw):
+    """n chain-consistent prints (buys and sells) with BOOST buys first, so every pre-trade base equals the previous post-trade base."""
+    t = Tape(**kw)
+    t.row(1000, "buy", "A", SOL // 10)
+    for i in range(1, n):
+        t.row(1000 + 20 * i, "buy" if i % 3 else "sell", f"T{i}", SOL // 20)
+    return t
+
+
+class UnresolvedChainTests(unittest.TestCase):
+    def feed(self, rows):
+        eng, out = make_engine()
+        announce(eng)
+        for r in rows:
+            eng.on_trade(r)
+        return eng, out
+
+    def test_pure_reorder_resolves_to_zero_but_raw_counters_stay(self):
+        t = chain_tape()
+        r = t.rows
+        eng, out = self.feed([r[0], r[2], r[1], r[4], r[3], r[6], r[5], r[7]])
+        p = eng.pools[POOL]
+        self.assertEqual(p.base_unresolved, 0)
+        self.assertGreater(p.base_breaks, 0)  # the raw consecutive-pair counter still sees the swaps
+        self.assertGreater(p.slot_regress, 0)
+
+    def test_transient_unresolved_while_a_predecessor_is_in_flight(self):
+        t = chain_tape(4)
+        eng, out = self.feed([t.rows[0], t.rows[2]])  # print 2 arrived before print 1
+        self.assertEqual(eng.pools[POOL].base_unresolved, 1)
+        eng.on_trade(t.rows[1])
+        self.assertEqual(eng.pools[POOL].base_unresolved, 0)
+
+    def test_a_missing_print_leaves_at_least_one_unresolved(self):
+        t = chain_tape()
+        r = t.rows
+        eng, out = self.feed(r[:3] + r[4:])  # print 3 never arrived
+        self.assertGreaterEqual(eng.pools[POOL].base_unresolved, 1)
+        eng2, _ = self.feed([r[0], r[2], r[1]] + r[4:])  # a reorder AND a missing print
+        self.assertGreaterEqual(eng2.pools[POOL].base_unresolved, 1)
+
+    def test_first_print_is_excluded_and_clean_chain_is_zero(self):
+        eng, out = self.feed(chain_tape().rows)
+        self.assertEqual(eng.pools[POOL].base_unresolved, 0)
+        self.assertEqual(eng.pools[POOL].base_breaks, 0)
+        eng, out = self.feed(chain_tape(1).rows)
+        self.assertEqual(eng.pools[POOL].base_unresolved, 0)
+
+    def test_trigger_and_pool_records_carry_it(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape(q=100 * SOL)
+        for i in range(5):
+            t.row(1000 + 10 * i, "buy", f"T{i}", SOL // 20)
+        drain(t, 1200, 35.0)
+        r = t.rows
+        for x in [r[0], r[2], r[1], r[3], r[4], r[5]]:  # one swap before the trigger print
+            eng.on_trade(x)
+        trig = [x for x in types(out, "trigger") if x["variant"] == "pv"][0]
+        self.assertEqual(trig["base_breaks_unresolved"], 0)
+        self.assertGreater(trig["base_breaks"], 0)
+        self.assertGreater(trig["slot_regress"], 0)
+        eng.close_all("t")
+        rec = types(out, "pool")[0]
+        self.assertEqual(rec["base_breaks_unresolved"], 0)
+        self.assertGreater(rec["base_breaks"], 0)
+
+
+class S0AnchorTests(unittest.TestCase):
+    def test_s0_minus_announced_slots_on_trigger_and_pool(self):
+        eng, out = make_engine()
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, 997, 0)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        run(eng, t)
+        for r in types(out, "trigger"):
+            self.assertEqual((r["s0_minus_announced_slots"], r["announced_slot"]), (3, 997))
+        eng.close_all("t")
+        self.assertEqual(types(out, "pool")[0]["s0_minus_announced_slots"], 3)
+
+    def test_unannounced_pool_has_none(self):
+        eng, out = make_engine(require_announce=False)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        run(eng, t)
+        self.assertIsNone(types(out, "trigger")[0]["s0_minus_announced_slots"])
+
+    def test_announced_before_a_silence_gap_flags_the_pool_tracked_later(self):
+        eng, out = make_engine()
+        t0 = 1_800_000_000_000
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, 999, t0 - 400)
+        eng.advance(990, t0 - 500, None)
+        eng.tick(t0 + 25_000)  # the feed went quiet for 25 s: no pool is open yet, but the true first prints may be lost
+        self.assertEqual([g["kind"] for g in types(out, "gap")], ["silence"])
+        t = Tape(slot0=1000)
+        t.row(1100, "buy", "PDA_" + POOL, SOL // 2)  # first print SEEN is 100 slots late
+        boost_buys(t, 1100)
+        drain(t, 1300, 35.0)
+        run(eng, t)
+        trig = types(out, "trigger")[0]
+        self.assertTrue(trig["gap"])
+        self.assertIn({"kind": "announced_before_gap"}, trig["gaps"])
+        self.assertEqual(trig["s0"], 1100)
+        self.assertEqual(trig["s0_minus_announced_slots"], 101)
+
+    def test_announced_after_the_gap_is_not_flagged(self):
+        eng, out = make_engine()
+        t0 = 1_800_000_000_000
+        eng.advance(990, t0 - 500, None)
+        eng.tick(t0 + 25_000)
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, 999, t0 + 26_000)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        self.assertFalse(eng.pools[POOL].gaps)
+
+    def test_announce_in_the_notice_that_reveals_a_slot_jump_is_not_flagged_but_an_older_one_is(self):
+        eng, out = make_engine()
+        t0 = 1_800_000_000_000
+        eng.advance(1000, t0, None)
+        eng.on_create_pool("OLD", "MINT_OLD", h5.WSOL_MINT, 1001, t0 + 100)  # announced before the jump was seen
+        eng.on_create_pool(POOL, "MINT_NEW", h5.WSOL_MINT, 1100, t0 + 5_000)
+        eng.advance(1100, t0 + 5_000, None)  # a slot jump of 100: detected on this event
+        self.assertEqual([g["kind"] for g in types(out, "gap")], ["slot_jump"])
+        for pool, expect in (("OLD", True), (POOL, False)):
+            t = Tape(pool=pool, slot0=1100)
+            t.row(1101, "buy", "A", SOL // 10, t_recv_ms=t0 + 5_100)
+            eng.on_trade(t.rows[0])
+            self.assertEqual(bool(eng.pools[pool].gaps), expect, pool)
+
+    def test_a_flagging_feed_restart_marks_earlier_announcements(self):
+        eng, out = make_engine()
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, 999, 1_000)
+        eng.feed_restart(2_000, "source_restart")
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        self.assertIn({"kind": "announced_before_gap"}, eng.pools[POOL].gaps)
+
+    def test_non_flagging_reconnect_does_not_move_the_anchor(self):
+        eng, out = make_engine()
+        eng.note_feed_stats(1, {"reconnects": 0, "closes": {}, "rejections": {}, "errors": {}, "per_socket": [0, 0], "sockets": 2}, 0)
+        eng.note_feed_stats(1, {"reconnects": 1, "closes": {"1006": 1}, "rejections": {}, "errors": {}, "per_socket": [1, 0], "sockets": 2}, 5_000)
+        self.assertIsNone(eng.last_flag_gap_ms)
+
+
+class AcrossLooksTests(unittest.TestCase):
+    def snap(self, per_socket):
+        return {"reconnects": sum(per_socket), "closes": {}, "rejections": {}, "errors": {}, "per_socket": per_socket, "sockets": len(per_socket)}
+
+    def run_looks(self, deltas, n=2):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        cum = [0] * n
+        eng.note_feed_stats(1, self.snap(list(cum)), 0)
+        for i, d in enumerate(deltas, start=1):
+            cum = [c + x for c, x in zip(cum, d)]
+            eng.note_feed_stats(1, self.snap(list(cum)), i * 5_000)
+        return eng, [g for g in types(out, "gap")]
+
+    def test_two_sockets_dropping_in_consecutive_looks_flag_the_pools(self):  # the B2 hole
+        eng, gaps = self.run_looks([[1, 0], [0, 1]])
+        self.assertEqual([g["flags_pools"] for g in gaps], [False, True])
+        self.assertEqual(gaps[1]["sockets_down_recent"], [0, 1])
+        self.assertTrue(eng.pools[POOL].gaps)
+        self.assertEqual(eng.last_flag_gap_ms, 10_000)
+
+    def test_one_socket_flapping_twice_does_not_flag(self):
+        eng, gaps = self.run_looks([[1, 0], [1, 0], [2, 0]])
+        self.assertEqual([g["flags_pools"] for g in gaps], [False, False, False])
+        self.assertFalse(eng.pools[POOL].gaps)
+
+    def test_drops_further_apart_than_three_looks_do_not_combine(self):
+        eng, gaps = self.run_looks([[1, 0], [0, 0], [0, 0], [0, 0], [0, 1]])
+        self.assertEqual([g["flags_pools"] for g in gaps], [False, False])  # socket 0 aged out of the 3-look window before socket 1 dropped
+        self.assertEqual(gaps[1]["sockets_down_recent"], [1])
+
+    def test_three_sockets_need_all_three(self):
+        eng, gaps = self.run_looks([[1, 0, 0], [0, 1, 0], [0, 0, 1]], n=3)
+        self.assertEqual([g["flags_pools"] for g in gaps], [False, False, True])
+
+    def test_single_socket_and_same_look_double_drop(self):
+        eng, gaps = self.run_looks([[1]], n=1)
+        self.assertTrue(gaps[0]["flags_pools"])
+        eng, gaps = self.run_looks([[1, 1]])
+        self.assertTrue(gaps[0]["flags_pools"])
+
+    def test_a_rebuilt_source_forgets_the_old_looks(self):
+        eng, out = make_engine()
+        eng.note_feed_stats(1, self.snap([0, 0]), 0)
+        eng.note_feed_stats(1, self.snap([1, 0]), 5_000)
+        eng.note_feed_stats(2, self.snap([0, 0]), 10_000)  # new source object
+        eng.note_feed_stats(2, self.snap([0, 1]), 15_000)
+        self.assertEqual([g["flags_pools"] for g in types(out, "gap")], [False, False])
+
+
+class SealedTriggerTests(unittest.TestCase):
+    TS = 1_792_116_000  # 2026-10-16T02:00:00Z
+
+    def run_pool(self, ts0, sps_fn=lambda p: SPS):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub, sps_fn=sps_fn)
+        announce(eng)
+        t = Tape(ts0=ts0)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        t.v -= 2 * SOL  # a pv/fv disagreement exists, so the counter would move if it were not sealed
+        t.q += 2 * SOL
+        drain(t, 1200, 38.5)
+        t.row(1210, "buy", "X", SOL)
+        t.row(1900, "buy", "W", SOL)
+        for r in t.rows:
+            eng.on_trade(r)
+        eng.close_all("t")
+        return eng, out
+
+    def test_trigger_inside_the_window_is_a_stub_without_prices(self):
+        eng, out = self.run_pool(self.TS)
+        trigs = types(out, "trigger")
+        self.assertEqual(len(trigs), 1)  # only pv fires (fv sees 40.5)
+        r = trigs[0]
+        self.assertEqual(set(r) - {"v", "schema", "t_ms"}, {"type", "variant", "pool", "slot", "suppressed"})
+        self.assertEqual((r["variant"], r["pool"], r["slot"], r["suppressed"]), ("pv", POOL, 1200, "cap_pick_seal"))
+        for rec in out:
+            if rec["type"] in ("trigger", "skipped_no_sps", "outcome", "strip"):
+                self.assertFalse([k for k in rec if k.startswith("q_") or k in ("real_quote_pre", "base_pre", "sell_token_raw", "sell_user_out", "rows", "legs")], rec)
+        self.assertEqual(eng.counters["triggers_suppressed"], 1)
+        self.assertEqual(eng.counters["pv_fv_disagree_sells"], 0)
+
+    def test_pool_record_nulls_triggered_and_disagreement(self):
+        eng, out = self.run_pool(self.TS)
+        (rec,) = types(out, "pool")
+        self.assertTrue(rec["sealed"])
+        self.assertIsNone(rec["triggered"])
+        self.assertIsNone(rec["pv_fv_disagree_sells"])
+        self.assertIsNone(rec["min_q_pv_sol"])
+        self.assertIsNone(rec["min_q_fv_sol"])
+        outs = types(out, "outcome")
+        self.assertTrue(outs and all(o["suppressed"] == "cap_pick_seal" for o in outs))
+        self.assertTrue(all(s["suppressed"] == "cap_pick_seal" for s in types(out, "strip")))
+
+    def test_the_hour_before_the_window_is_unsealed(self):
+        eng, out = self.run_pool(self.TS - 3 * 3600 - 1)  # 2026-10-15T22:59:59Z
+        r = types(out, "trigger")[0]
+        self.assertNotIn("suppressed", r)
+        self.assertIn("q_pv_post_sol", r)
+        (rec,) = types(out, "pool")
+        self.assertFalse(rec["sealed"])
+        self.assertEqual(rec["triggered"], ["pv"])
+        self.assertEqual(rec["pv_fv_disagree_sells"], 1)
+
+    def test_skipped_no_sps_is_a_stub_inside_the_window(self):
+        eng, out = self.run_pool(self.TS, sps_fn=lambda p: None)
+        (rec,) = types(out, "skipped_no_sps")
+        self.assertEqual(set(rec) - {"v", "schema", "t_ms"}, {"type", "pool", "slot", "suppressed"})
+        eng2, out2 = self.run_pool(self.TS - 4 * 3600, sps_fn=lambda p: None)
+        self.assertIn("q_pv_post_sol", types(out2, "skipped_no_sps")[0])
+
+    def test_oracle_false_inside_the_window_keeps_the_full_trigger(self):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=lambda m: False)
+        announce(eng)
+        t = Tape(ts0=self.TS)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        run(eng, t)
+        self.assertIn("q_pv_post_sol", types(out, "trigger")[0])
+        self.assertEqual(eng.counters["triggers_suppressed"], 0)
+
+    def test_the_oracle_is_asked_once_per_pool(self):
+        calls = []
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=lambda m: calls.append(m) or True)
+        announce(eng)
+        t = Tape(ts0=self.TS)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        run(eng, t)
+        eng.close_all("t")
+        self.assertEqual(calls, [MINT])
+
+
 class DisclosedAdditionsTests(unittest.TestCase):
     """Coordinator additions: per-print V next to the frozen fixed V, the exit ladder, BOOST last slice on every pool."""
 
@@ -952,7 +1240,10 @@ class SealAndStripTests(unittest.TestCase):
         self.assertTrue(pool["sealed"])
         self.assertEqual((eng.counters["outcomes_suppressed"], eng.counters["strips_suppressed"]), (2, 1))
         self.assertEqual(eng.counters["outcomes"], 0)
-        self.assertEqual(len(types(out, "trigger")), 2)  # decision-time records are not sealed
+        trigs = types(out, "trigger")
+        self.assertEqual(len(trigs), 2)  # sealed pools get stub triggers (EXP-022 s9): no prices
+        for r in trigs:
+            self.assertEqual(r["suppressed"], "cap_pick_seal")
 
     def test_before_the_window_nothing_is_suppressed(self):
         eng, out, t = self.sealed_run(suppress_outcome=lambda m: True, seal_start_ms=(self.TS0 + 1) * 1000)

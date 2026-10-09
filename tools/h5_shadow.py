@@ -113,6 +113,7 @@ SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp(
 SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
+LOOKS_WINDOW = 3  # socket-drop memory: the last 3 looks (3 x 5 s housekeeping) decide whether every socket was down
 REJECT_LOG_MAX = 50  # reject records written per run (the counters are unbounded)
 # heuristic only (counter unannounced_fresh): a first-seen print that looks like a new pool's first print
 FRESH_REAL_QUOTE_MAX = 100 * 10**9
@@ -282,6 +283,12 @@ class Pool:
         self.no_sps = 0
         self.disagree = 0  # sells in [0, 300] s where the per-print-V and fixed-V Q fall on different sides of 40 SOL
         self.slot_regress = 0  # prints whose slot is lower than the previous print's (arrival order is not slot order)
+        # order-independent chain check: a print's pre-trade base must equal SOME print's post-trade base (multiset match; the first print
+        # to arrive is excluded). Unresolved = pres with no post left. A pure reorder resolves to 0; a missed print leaves >= 1.
+        self.pre_cnt: collections.Counter = collections.Counter()
+        self.post_cnt: collections.Counter = collections.Counter()
+        self.base_unresolved = 0
+        self.sealed_cache: bool | None = None
         self.skip_logged = False
         self.closed = False
 
@@ -318,10 +325,11 @@ class Engine:
         self.hw_recv_ms: int | None = None
         self.last_event_ms: int | None = None
         self.silence_open = False
-        self.feed_epoch_ms: int | None = None  # time of the last feed (re)start; pools announced before it may have missed prints
+        self.last_flag_gap_ms: int | None = None  # time of the last gap that flagged pools; a CreatePool announced before it may have lost first prints
         self.counters: collections.Counter = collections.Counter()
         self.mint_pools: dict[str, set[str]] = {}
         self._feed_prev: dict[int, dict] = {}
+        self._looks: collections.deque = collections.deque(maxlen=LOOKS_WINDOW)
 
     # ---- emit -----------------------------------------------------------------------------------------------
     def emit(self, rec: dict) -> None:
@@ -377,7 +385,7 @@ class Engine:
         if ts:
             self.clock.observe(slot, ts)
         if self.hw_slot is not None and slot > self.hw_slot + GAP_SLOTS:
-            self._gap("slot_jump", from_slot=self.hw_slot, to_slot=slot, missed_slots=slot - self.hw_slot - 1)
+            self._gap("slot_jump", at_ms=recv_ms, from_slot=self.hw_slot, to_slot=slot, missed_slots=slot - self.hw_slot - 1)
         if self.hw_slot is None or slot > self.hw_slot:
             self.hw_slot, self.hw_recv_ms = slot, recv_ms
 
@@ -389,7 +397,7 @@ class Engine:
         """Wall-clock housekeeping (no events needed): silence detection, backstop closes, purge of the seen / announced maps."""
         if self.last_event_ms is not None and not self.silence_open and now - self.last_event_ms > SILENCE_S * 1000:
             self.silence_open = True
-            self._gap("silence", silent_ms=now - self.last_event_ms)
+            self._gap("silence", at_ms=now, silent_ms=now - self.last_event_ms)
         self._close_due(now)
         self._evict_announced(now)
         cut = now - SEEN_TTL_S * 1000
@@ -398,35 +406,40 @@ class Engine:
 
     def feed_restart(self, now: int, reason: str) -> None:
         """The feed was down or restarted: every open pool may have missed prints. Pools announced before this moment are suspect."""
-        self.feed_epoch_ms = now
-        self._gap("feed_restart", reason=reason)
+        self._gap("feed_restart", at_ms=now, reason=reason)
         self.hw_slot = None  # the next event is a fresh reference; do not report a slot jump across a known restart
 
-    def _gap(self, kind: str, *, flag_pools: bool = True, **kw: Any) -> None:
+    def _gap(self, kind: str, *, flag_pools: bool = True, at_ms: int | None = None, **kw: Any) -> None:
         self.counters["gaps"] += 1
         rec = {"type": "gap", "kind": kind, "open_pools": len(self.pools), "flags_pools": flag_pools, **kw}
         if flag_pools:
+            self.last_flag_gap_ms = self.wall() if at_ms is None else at_ms
             for p in self.pools.values():
                 p.gaps.append({"kind": kind, **{k: v for k, v in kw.items() if isinstance(v, (int, str))}})
         self.emit(rec)
 
     def note_feed_stats(self, key: int, snap: dict, now_ms_: int) -> None:
         """Compare the source's reconnect counters with the last look. Any advance is a gap record carrying the cause (close codes, handshake
-        rejections, errors, which socket). On a redundant feed the open pools are flagged only when every socket reconnected (delta >= sockets);
-        on a single socket every reconnect flags them."""
+        rejections, errors, which socket). On a redundant feed the open pools are flagged when the DISTINCT sockets that reconnected over the last
+        LOOKS_WINDOW looks (15 s) reach the socket count (an overlapping outage across looks counts; one socket flapping twice does not); on a single
+        socket every reconnect flags them."""
+        if key not in self._feed_prev:  # a rebuilt source starts at zero: only the current one is tracked
+            self._looks.clear()
         prev = self._feed_prev.get(key) or {"reconnects": 0, "closes": {}, "rejections": {}, "errors": {}, "per_socket": []}
-        self._feed_prev = {key: snap}  # a rebuilt source starts at zero: only the current one is tracked
+        self._feed_prev = {key: snap}
         delta = snap["reconnects"] - prev["reconnects"]
+        n = int(snap.get("sockets") or 1)
+        ps_prev = prev.get("per_socket") or [0] * n
+        per_socket = [c - (ps_prev[i] if i < len(ps_prev) else 0) for i, c in enumerate(snap.get("per_socket") or [])]
+        self._looks.append(per_socket)  # every look is remembered, with or without a reconnect
         if delta <= 0:
             return
+        down = sorted({i for look in self._looks for i, d in enumerate(look) if d > 0})  # distinct sockets that reconnected in the last LOOKS_WINDOW looks
 
         def dd(a: dict, b: dict) -> dict:
             return {k: v - b.get(k, 0) for k, v in a.items() if v > b.get(k, 0)}
 
-        n = int(snap.get("sockets") or 1)
-        ps_prev = prev.get("per_socket") or [0] * n
-        per_socket = [c - (ps_prev[i] if i < len(ps_prev) else 0) for i, c in enumerate(snap.get("per_socket") or [])]
-        self._gap("socket_reconnect", flag_pools=(n == 1 or delta >= n), delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
+        self._gap("socket_reconnect", flag_pools=(n == 1 or len(down) >= n), at_ms=now_ms_, sockets_down_recent=down, delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
                   redundant=n > 1, per_socket_delta=per_socket, delta_closes=dd(snap["closes"], prev["closes"]),
                   delta_rejections=dd(snap["rejections"], prev["rejections"]), delta_errors=dd(snap["errors"], prev["errors"]))
 
@@ -495,8 +508,8 @@ class Engine:
         self.counters["pools_tracked"] += 1
         if mint and len(self.mint_pools.get(mint, ())) > 1:
             p.gaps.append({"kind": "ambiguous_mint"})
-        if self.feed_epoch_ms is not None and ann is not None and ann[1] < self.feed_epoch_ms:
-            p.gaps.append({"kind": "announced_before_feed_restart"})
+        if ann is not None and self.last_flag_gap_ms is not None and ann[1] < self.last_flag_gap_ms:
+            p.gaps.append({"kind": "announced_before_gap"})  # first prints may have been lost in a gap between the CreatePool and this s0
         return p
 
     def _sps(self, p: Pool) -> float | None:
@@ -520,6 +533,7 @@ class Engine:
             if rel > CHAIN_TOL:
                 p.chain_breaks += 1
                 self.counters["chain_breaks"] += 1
+        self._base_chain(p, pr, first=not p.prints)
         p.prints.append(pr)
         qpv, qfv = pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)
         if pr.slot - p.s0 <= 1500:  # first 300 s at the fastest slot time the rule allows (0.2 s); a monitoring field only
@@ -528,6 +542,19 @@ class Engine:
         self._boost_update(p, pr)
         if not pr.buy:
             self._eval(p, pr, len(p.prints) - 1)
+
+    @staticmethod
+    def _base_chain(p: Pool, pr: Pr, first: bool) -> None:
+        """Multiset match of pre-trade to post-trade base reserves, incremental. base_unresolved = sum over values of max(0, pres - posts)."""
+        bpre, bpost = int(pr.b), int(pr.b_post)
+        if not first:
+            p.pre_cnt[bpre] += 1
+            if p.pre_cnt[bpre] > p.post_cnt[bpre]:
+                p.base_unresolved += 1
+        old = p.post_cnt[bpost]
+        p.post_cnt[bpost] += 1
+        if p.pre_cnt[bpost] > old:
+            p.base_unresolved -= 1
 
     # ---- BOOST tracking -------------------------------------------------------------------------------------
     def _boost_update(self, p: Pool, pr: Pr) -> None:
@@ -593,6 +620,9 @@ class Engine:
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
                     self.counters["skipped_no_sps_would_trigger"] += 1
+                    if self._sealed(p):
+                        self.emit({"type": "skipped_no_sps", "pool": p.pool, "slot": pr.slot, "suppressed": SEAL_REASON})
+                        return
                     self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
                                "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
                                "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src})
@@ -600,7 +630,7 @@ class Engine:
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
             return
-        if (pr.q_post("pv", p.v0) / 1e9 <= Q_STAR_SOL) != (pr.q_post("fv", p.v0) / 1e9 <= Q_STAR_SOL):
+        if (pr.q_post("pv", p.v0) / 1e9 <= Q_STAR_SOL) != (pr.q_post("fv", p.v0) / 1e9 <= Q_STAR_SOL) and not self._sealed(p):
             p.disagree += 1
             self.counters["pv_fv_disagree_sells"] += 1
         spent, ident, src = self.boost_spent(p)
@@ -620,6 +650,7 @@ class Engine:
         el = math.ceil(EXIT_LAG_S / sps - 1e-9)
         exit_slot = p.s0 + int(round(EXIT_AFTER_S0_S / sps))
         detect = self.wall()
+        sealed = self._sealed(p)
         rec = {
             "type": "trigger", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "s0_t_recv_ms": p.s0_recv_ms,
             "slot": pr.slot, "signature": pr.sig, "t_since_s0_s": t, "sps": sps,
@@ -634,15 +665,21 @@ class Engine:
             "landing_slot_primary": pr.slot + k_p, "landing_slot_binding": pr.slot + k_b, "entry_slots": {"primary": k_p, "binding": k_b},
             "exit_trigger_slot": exit_slot, "exit_landing_slot": exit_slot + el, "exit_lag_slots": el,
             "prints_seen": len(p.prints), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "base_breaks_unresolved": p.base_unresolved, "announced_slot": p.announced_slot,
+            "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
             "sps_n": None if self.sps_fn else self.clock.n_points(), "sps_span_s": None if self.sps_fn else self.clock.span_s(),
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
         }
-        p.trig[var] = rec
+        p.trig[var] = {"slot": pr.slot, "sps": sps, "sealed": True} if sealed else rec  # a sealed pool keeps no prices
         ladder = {T: p.s0 + int(round(T / sps)) for T in EXIT_LADDER_S}  # exit trigger slot per ladder point
         rec["exit_ladder_trigger_slots"] = {str(int(T)): v for T, v in ladder.items()}
         p.pending.append({"variant": var, "idx": idx, "sps": sps, "k": {"primary": k_p, "binding": k_b}, "exit_slot": exit_slot, "exit_land": exit_slot + el,
                           "trig_slot": pr.slot, "el": el, "ladder": ladder, "resolve_at": max(ladder.values()) + el})
         self.counters[f"triggers_{var}"] += 1
+        if sealed:  # EXP-022 s9: no post-decision price of a possible pick is written inside the window; the executor refuses this stub
+            self.counters["triggers_suppressed"] += 1
+            self.emit({"type": "trigger", "variant": var, "pool": p.pool, "slot": pr.slot, "suppressed": SEAL_REASON})
+            return
         self.emit(rec)
 
     # ---- outcomes -------------------------------------------------------------------------------------------
@@ -716,6 +753,12 @@ class Engine:
     def _sealed(self, p: Pool) -> bool:
         """True when this pool's post-decision states must not be written. Fail closed: no mint, no oracle, or an oracle that raises inside
         the window all suppress. Before the window nothing is suppressed."""
+        if p.sealed_cache is not None:
+            return p.sealed_cache
+        p.sealed_cache = self._sealed_now(p)
+        return p.sealed_cache
+
+    def _sealed_now(self, p: Pool) -> bool:
         if self.seal_start_ms is None:
             return False
         t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
@@ -788,8 +831,9 @@ class Engine:
             "boost_vault_remaining_sol": None if p.boost_remaining is None else p.boost_remaining / 1e9,
             "min_q_pv_sol": None if (sealed or p.min_q_pv is None) else p.min_q_pv / 1e9,
             "min_q_fv_sol": None if (sealed or p.min_q_fv is None) else p.min_q_fv / 1e9, "sealed": sealed,
-            "sps_path": self._sps_path(p), "pv_fv_disagree_sells": p.disagree,
-            "triggered": sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "sps_path": self._sps_path(p), "pv_fv_disagree_sells": None if sealed else p.disagree,
+            "triggered": None if sealed else sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "base_breaks_unresolved": p.base_unresolved, "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
             "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
@@ -1082,7 +1126,6 @@ async def run_live(args: argparse.Namespace) -> int:
     engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, "oracle": "stub_always_true"}})
-    engine.feed_epoch_ms = engine.wall()
     hk = asyncio.create_task(housekeeping(engine, sink, out_dir / "h5-shadow-status.json", stop, source_ref, on_error=lambda e, ctx: errlog.log(e, ctx)))
     try:
         await run_feed(factory, engine, stop, max_seconds=args.max_seconds,
