@@ -151,6 +151,9 @@ class Env:
     def refusals(self) -> list[str]:
         return [r["reason"] for r in self.ledger("skip")]
 
+    def alerts(self, name: str | None = None) -> list[dict]:
+        return [r for r in self.ledger("alert") if name is None or r.get("alert") == name]
+
     def fire(self, **kw) -> None:
         self.ex.handle_trigger(trig(self.clock, **kw))
 

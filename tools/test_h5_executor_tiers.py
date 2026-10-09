@@ -414,6 +414,70 @@ class OneTierReadPerTriggerTests(TierCase):
         self.assertTrue(sig)
 
 
+class ShippedLadderTests(TierCase):
+    """G3: the shipped configs must not hold the five tier-scaled limits, or the ladder does nothing (config can only tighten)."""
+
+    KEYS = ("stake_lamports", "max_open", "max_trades_per_day", "daily_loss_lamports", "total_loss_lamports")
+    ROOT = Path(h.__file__).resolve().parent.parent
+
+    def shipped(self, name: str) -> dict:
+        return json.loads((self.ROOT / "scripts/mal-fast" / name).read_text())
+
+    def test_the_shipped_configs_hold_none_of_the_tier_scaled_keys(self):
+        for name in ("h5-executor-live.json", "h5-executor.json"):
+            for k in self.KEYS:
+                self.assertNotIn(k, self.shipped(name), f"{name}: {k} would clamp T1 and T2 to T0's value")
+
+    def test_the_shipped_live_config_gives_each_tier_its_table_values(self):
+        live = self.shipped("h5-executor-live.json")
+        for tier, vals in h.TIERS.items():
+            lim = h.H5Limits.from_config(live, tier)
+            self.assertEqual({k: getattr(lim, k) for k in self.KEYS}, vals, tier)
+        self.assertEqual(h.H5Limits.from_config(live, "T1").stake_lamports, 100_000_000)
+        self.assertEqual(h.H5Limits.from_config(live, "T2").stake_lamports, 300_000_000)
+
+    def test_an_executor_on_the_shipped_live_config_buys_the_tier_stake(self):
+        live = {k: v for k, v in self.shipped("h5-executor-live.json").items()
+                if k not in ("mode", "intents_file", "state_dir", "end_ms", "commitment")}  # paths and the run end belong to the test env
+        for tier, stake in (("T0", 20_000_000), ("T1", 100_000_000), ("T2", 300_000_000)):
+            sub = self.tmp / f"shipped-{tier}"
+            sub.mkdir()
+            self.write_tier(tier + "\n")
+            e = Env(sub, **live)
+            e.rpc.balance = 10 * SOL
+            e.ex.feed_last_ms = e.clock()  # (the shipped config keeps the feed-heartbeat check on)
+            e.fire()
+            self.assertEqual((e.refusals(), buy_args(e.sent()[0])[0], e.ex._config_clamps()), ([], stake, {}), tier)
+            self.assertEqual(e.alerts(), [], tier)
+
+    def test_a_config_that_clamps_the_active_tier_raises_an_alert_on_a_tier_change_and_at_start(self):
+        self.write_tier("T1\n")
+        e = Env(self.tmp, stake_lamports=20_000_000, max_open=2)  # the old shipped values
+        e.rpc.balance = 10 * SOL
+        self.assertEqual(e.alerts("config_clamps_tier"), [])  # a fresh start runs at T0 until the file is read, and T0's table is the config's numbers
+        e.ex._refresh_tier(e.clock())  # the file says T1: the tier starts here
+        clamps = {"stake_lamports": {"table": 100_000_000, "effective": 20_000_000}, "max_open": {"table": 3, "effective": 2}}
+        self.assertEqual(e.ex._config_clamps(), clamps)
+        self.assertEqual([(a["when"], a["tier"], a["clamps"]) for a in e.alerts("config_clamps_tier")], [("tier_change", "T1", clamps)])
+        self.assertEqual(e.ledger("tier_change")[-1]["config_clamps"], clamps)
+        e.fire()
+        self.assertEqual(buy_args(e.sent()[0])[0], 20_000_000)  # the ladder really is off: that is what the alert says
+        e.ex = e.build()  # a restart keeps T1: the alert is raised again at start
+        self.assertEqual([(a["when"], a["tier"]) for a in e.alerts("config_clamps_tier")], [("tier_change", "T1"), ("start", "T1")])
+        self.assertEqual(e.ledger("start")[-1]["config_clamps"], clamps)
+        self.write_tier("T2\n")
+        e.ex._refresh_tier(e.clock())
+        t2 = {"stake_lamports": {"table": 300_000_000, "effective": 20_000_000}, "max_open": {"table": 3, "effective": 2}}
+        self.assertEqual([(a["when"], a["tier"]) for a in e.alerts("config_clamps_tier")][-1], ("tier_change", "T2"))
+        self.assertEqual(e.ledger("tier_change")[-1]["config_clamps"], t2)
+
+    def test_no_alert_when_the_config_does_not_clamp(self):
+        self.write_tier("T1\n")
+        e = Env(self.tmp, max_trades_per_day=40)  # equal to the table value is not a clamp
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex._config_clamps(), e.alerts("config_clamps_tier"), e.ledger("start")[0]["config_clamps"]), ({}, [], {}))
+
+
 class AttemptsPerTierTests(TierCase):
     def attempt(self, e: Env, **kw) -> None:
         e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)

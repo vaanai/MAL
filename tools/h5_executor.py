@@ -877,7 +877,9 @@ class H5Executor(pl.LiveExecutor):
                       "wallet_stop": str(Path(pe.LIVE_DIR) / "STOP"), "wallet_halt": str(Path(pe.LIVE_DIR) / "HALT"), "tier_file": str(self._tier_path())}
         self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
-                  code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
+                  code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms,
+                  config_clamps=self._config_clamps())
+        self._clamp_alert("start")
 
     def __repr__(self) -> str:
         return f"H5Executor(mode={self.run_mode}, user={self.user})"
@@ -920,7 +922,20 @@ class H5Executor(pl.LiveExecutor):
         self.counters.tier_attempts = 0
         self.counters.save(self.counters_path)
         self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self.h5),
-                  open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts)
+                  open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts,
+                  config_clamps=self._config_clamps())
+        self._clamp_alert("tier_change")
+
+    def _config_clamps(self) -> dict[str, dict[str, int]]:
+        """The tier-scaled limits that the config holds BELOW the active tier's table value (config can only tighten). A shipped config that sets
+        them silently turns the ladder off: T1 and T2 would run at the config's numbers."""
+        lim = asdict(self.h5)
+        return {k: {"table": v, "effective": lim[k]} for k, v in TIERS[self.tier].items() if lim[k] < v}
+
+    def _clamp_alert(self, when: str) -> None:
+        clamps = self._config_clamps()
+        if clamps:
+            self._alert("config_clamps_tier", "", when=when, tier=self.tier, clamps=clamps)
 
     def _total_stop_lamports(self) -> int | None:
         """The tier's total stop, also capped at 35% of the wallet balance measured when the tier started. None while that balance is unknown.
