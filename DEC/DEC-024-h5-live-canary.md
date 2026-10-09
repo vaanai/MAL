@@ -26,7 +26,7 @@ This is a **measurement canary**. It measures how the frozen H5 rule lands and e
 
 - **After EXP-024 Part 1 is merged.** The rule is then frozen by sha256 and the read tool has no overrides, so nothing the canary shows can change the read.
 - **After every item in section 8.** The canary is built keyless first (a detector, an executor profile, a keyless shadow detector run of at least 24 h on live triggers with 0 build errors, and a md5 decision-equivalence replay against the frozen scorer on exploration or already-read September tape only, never on the fast-0 tip archive of 10-05..07).
-- **Never before 2026-10-10T00:00Z** and never while the A3 monitor shows a halt.
+- **Never before 2026-10-10T00:00Z** and never while the A3 monitor shows a halt. *(The date bar is lifted by Amendment 1, the owner's decision of 2026-10-09; the A3 halt bar stays.)*
 
 ## 4. Limits (code constants; config may only lower them)
 
@@ -139,6 +139,66 @@ Size above the canary is governed by DEC-018, DEC-019 and DEC-020, and by the ow
 - A keyless shadow of at least 24 h with 0 build errors.
 - The stop-probability simulation rerun at the canary's limits (section 4).
 - No Jito, no Sender, no LaserStream, no paid RPC: **$0 extra** (owner plan 10-08). Public RPC may serve as an exit-only fallback sender.
+
+## Amendment 1 (2026-10-09, about 07:15Z, the owner's decision, before any canary send): early start
+
+**The owner's decision.** The manager asked the owner in session (AskUserQuestion, 2026-10-09 about 07:05Z):
+- Question: "DEC-024 (written 10-08) bars live H5 trades before 10-10 00:00 UTC and requires a 24 h shadow soak first. Start now anyway?"
+- Answer: "Start now (Recommended)".
+- The option text: "I amend DEC-024 to allow the early start and Helm goes live within the hour at 0.02 SOL/trade. Today's pools aren't counted in the formal reads. The soak is replaced by the reviews, ~9.5 h of live shadow runs, 5 clean simulated round trips and Helm's dry run. Worst case is the ~0.10 SOL loss stop."
+- The record is the MiScusi notebook entry "OWNER: H5 canary may start before 10-10T00Z (DEC-024 Amendment 1)".
+
+**What changes.**
+
+1. **Section 3, "Never before 2026-10-10T00:00Z", is lifted.** The canary may send from the moment Helm creates `LIVE_OK` after this amendment is merged.
+   - Why this cannot change a read:
+     - Every pool with s0 before 2026-10-10T00 is outside every EXP-024 look's counted window, which starts at 2026-10-10T00 (EXP-024 section 0).
+     - EXP-024 Part 1, Amendment 1 and Amendment 2 were all merged before any canary send.
+     - No rule, window, alpha, gate item or read-tool input changes.
+   - Hour 2026-10-09T23 is read by Look 1 only for `complete` events (universe membership), and no outcome from it is used (EXP-024 section 3).
+2. **Observation of the early pools is declared, in EXP-024 Amendment 3.** For pools whose s0 falls before 2026-10-10T00, the canary's and the shadow's outcomes are observed in real time, by the same readers as section 6. The shadow has printed such outcomes since about 2026-10-08T21:30Z, after EXP-024 merged (2026-10-08T20:25Z); that part is disclosed, not declared in advance.
+   - These pools are in no look's counted window.
+   - Hour 2026-10-09T23 is a Look 1 read hour, so EXP-024 section 3's seal runs on it, and its exception list is EXP-024's own. EXP-024 Amendment 3 enters this observation there and is also the carve-out for DEC-016 Amendment 7's H5-seal sentence.
+   - The EXP-024 read tool still never takes the canary's ledger or the shadow's output as input.
+3. **Section 3 and section 8's "keyless shadow of at least 24 h with 0 build errors" is replaced by this evidence:**
+   - **Shadow runs.** Keyless runs on live triggers from 2026-10-08 about 21:30Z, across reviewed heads, with no crash: MiScusi jobs #399 (ff31026), #424 (fe7eb43), #428 (3dbe1de), #438 (91b7a34) and #440 (fc0816a). Each was stopped by the manager for an upgrade. The go-live shadow is #447 on main 88eef14, started 2026-10-09T07:16:53Z (MiScusi start event) with `H5_LOOK2_OBSERVED=EXP-024-Am2`.
+   - **Replay.** Replay against the frozen rule on 2026-09-20 is 72/72, with max trigger-time difference 0.0 s. It was re-run by quant-proof on each head.
+   - **md5.** The md5 decision-equivalence replay of sections 3 and 8 is not replaced: md5 `75cb0b0c585bc2479137cae31330e73e` on both lists (72 decisions each), from MiScusi job #446 on main 88eef14 (`/data/mal/hunt-1008/h5-work/md5proof-88eef14/md5proof.json`). The shadow's pv trigger list and the frozen rule's list for pools with s0 on 2026-09-20 hash equal. The go-live shadow is restarted on 88eef14, the head this md5 covers (MiScusi job #447), before Helm creates `LIVE_OK`; #440 (fc0816a) does not feed the live executor.
+   - **Dry runs.**
+     - Keyless executor dry runs on the real feed (jobs #404 to #435): 5 complete simulated round trips with 0 simulate errors, sells sent at s0 + 330.4 to 330.8 s.
+     - Helm's pinned-install dry run: 11 minutes, 0 restarts, no startup refusal.
+   - **Reviews.** Review rounds on the executor (#484), the shadow (#477, #510) and the unit (#499). Every MUST-FIX is fixed. The files are in `/data/mal/hunt-1008/h5-work/REVIEW-*.md`.
+4. **Section 8's stop-probability rerun at the canary's limits is done.** It is report-only, and section 4 still applies: a stop firing is not evidence about H5.
+   - **Setup:**
+     - stake 0.02 SOL, daily stop 0.08, total stop 0.1045 SOL (35% of the funded 0.298689 SOL);
+     - at most 30 trades per day;
+     - the September confirmation day counts × 0.6, the share of triggers that pass the executor's static checks live;
+     - a fixed-cost term of 0.44% per trade: two 55,000-lamport sends are 0.55% of a 0.02 SOL stake, and the 0.1 SOL `flat` P&L already carries 0.11% (section 4, trial-size effect);
+     - trades drawn independently, with replacement, from the 1,124 flat-leg trades on 21 September days (2026-09-03 to 09-25, `live-plan-mc/conf_p01.parquet`); "latest blocks" is days from 2026-09-18;
+     - not modeled: the pressure leg, the 2-open-position cap and the code's open-exposure check, live fills worse than paper, stuck positions and stranded rent;
+     - 6 days; the live config runs to `end_ms` 2026-10-16T00:30Z, about 6.7 days, and at 7 days a zero-edge book's P(total stop) is 0.673;
+     - the +13.21% row is the selected rule's September mean (winner's curse). EXP-024 section 15 expects a FAIL (P(Look 1 pass) ≈ 0.0265);
+     - 10,000 simulations, seed 1; reproduced by quant-proof (`scratchpad/qp513-mc/run3.py`).
+
+| Assumed edge per trade (gross, 0.1 SOL flat leg) | Net of the 0.02 SOL fixed-cost term | P(total stop) | Total P&L p5 / p50 / p95 (SOL) | P(T0 P&L > 0) |
+| --- | --- | --- | --- | --- |
+| September pooled, +13.21% | +12.77% | 0.011 | +0.031 / +0.337 / +0.804 | 0.971 |
+| Latest blocks, +6.15% | +5.71% | 0.030 | −0.044 / +0.152 / +0.406 | 0.901 |
+| Half the latest, +3.07% | +2.63% | 0.150 | −0.109 / +0.058 / +0.315 | 0.679 |
+| Zero | −0.44% | 0.643 | −0.113 / −0.106 / +0.376 | 0.281 |
+| −3% | −3.44% | 0.763 | −0.114 / −0.107 / +0.267 | 0.176 |
+
+   The payoff is right-skewed, so a zero-edge book hits the total stop most of the time (0.643). Section 4 holds: neither a stop nor a positive T0 result is evidence about H5. A zero-edge book ends T0 above 0 in 28% of runs and a −3% book in 18%, so section 7's "not negative" check often passes a losing book.
+
+**Unchanged:**
+- the limits in section 4;
+- the tier ladder;
+- the halts in section 5;
+- the seals in section 6 (Look 1, the Look 2 declared observation of EXP-024 Amendment 2, and CAP-PICK from 2026-10-16T01 with the oracle failing closed);
+- the scale-up conditions in section 7;
+- every EXP-024 and EXP-022 rule.
+
+EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 2026-10-10T00:00Z" was true when that amendment merged (2026-10-09T07:03Z, before this one). Its conclusion, that no Look 2-window outcome exists before 2026-10-16T00, still holds.
 
 ## Open for the owner
 
