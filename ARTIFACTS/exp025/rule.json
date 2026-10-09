@@ -1,0 +1,2 @@
+{"id": "c1-cascade-postgrad", "role": "primary", "stage1": [1.0, 3.0, 20.0, 20.0], "exit": "E3", "threshold": 0.02, "model": "lgb", "objective": "huber",
+ "rounds": 400, "train_leg": "p", "clip": [-0.5, 1.0], "purge_s": 3600, "retrain": "daily-expanding", "knn_features": 20, "knn_train": 80000, "knn_k": 200}

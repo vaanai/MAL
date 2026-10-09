@@ -1,0 +1,37 @@
+--- /data/mal/hunt-1008/c1-cascade-postgrad/scripts/01_wallet_daily.py	2026-10-08 17:09:42.390209500 +0000
++++ 01_wallet_daily.py	2026-10-09 00:24:58.090875545 +0000
+@@ -4,9 +4,9 @@
+ """
+ import duckdb, glob, os, sys, time
+ T = '/data/mal/audit-1008/tape/trades'
+-O = '/data/mal/hunt-1008/c1-cascade-postgrad/wl'
++O = '/data/mal/hunt-1008/c1nf-verify/wl'
+ c = duckdb.connect()
+-c.execute("SET memory_limit='6GB'; SET threads=3; SET temp_directory='/data/mal/hunt-1008/tmp/c1-cascade-postgrad'; SET preserve_insertion_order=false")
++c.execute("SET memory_limit='6GB'; SET threads=3; SET temp_directory='/data/mal/hunt-1008/c1nf-verify/tmp_duck'; SET preserve_insertion_order=false")
+ days = sorted({os.path.basename(p)[:10] for p in glob.glob(f'{T}/*.parquet')})
+ for d in days:
+     o = f'{O}/{d}.parquet'
+@@ -24,7 +24,7 @@
+       SELECT th, sum(n) n, count(*) nm, sum(nbond) nbond, sum(buy) buy, sum(sell) sell,
+              sum((ns > 0 AND nb > 0 AND sell > buy)::INT) nwin, sum((ns > 0 AND nb > 0)::INT) nrt,
+              sum(sell - buy) cash
+-      FROM pm GROUP BY 1) TO '{o}.tmp' (FORMAT parquet)""")
++      FROM pm GROUP BY 1) TO '{o}.tmp' (FORMAT parquet, COMPRESSION zstd)""")
+     os.rename(o + '.tmp', o)
+     print(d, len(fs), round(time.time() - t0, 1), flush=True)
+ print('done')
+--- /data/mal/hunt-1008/c1-cascade-postgrad/scripts/common2.py	2026-10-08 19:28:08.868003767 +0000
++++ common2.py	2026-10-09 00:24:58.076875423 +0000
+@@ -1,9 +1,9 @@
+ """C1 v2 constants (restart after the 10-08 disk incident). Every number here is pinned before any CONFIRMATION read."""
+ import numpy as np, math, datetime as dt
+-O = '/data/mal/hunt-1008/c1-cascade-postgrad'
++O = '/data/mal/hunt-1008/c1nf-verify'
+ TAPE = '/data/mal/audit-1008/tape'
+ SH = '/data/mal/hunt-shared'
+-TMP = '/data/mal/hunt-1008/tmp/c1-cascade-postgrad'
++TMP = '/data/mal/hunt-1008/c1nf-verify/tmp_duck'
+ # tools/paper_curve_math.PUMPSWAP_SOL_FEE_TIERS (mcap SOL inclusive lower bound, ppm) == cap_pick_score.fee_ppm
+ TIERS = ((0, 12_500), (420, 12_000), (1470, 11_500), (2460, 11_000), (3440, 10_500), (4420, 10_000), (9820, 9_500), (14740, 9_000), (19650, 8_500),
+          (24560, 8_000), (29470, 7_500), (34380, 7_000), (39300, 6_500), (44210, 6_000), (49120, 5_500), (54030, 5_250), (58940, 5_000), (63860, 4_750),
