@@ -211,12 +211,77 @@ class TriggerFidelityTests(Case):
         e.ex.intent_tick()
         self.assertEqual((e.refusals(), e.rpc.sent), (["sps_skipped_pool"], []))
 
-    def test_missed_or_reordered_prints_refuse_the_trigger(self):
-        for kw in ({"base_breaks": 1}, {"slot_regress": 2}, {"base_breaks": None}, {"base_breaks": "0"}):
-            self.assertEqual(self.parse(**kw), (None, "bad_intent:base_breaks"), kw)
+    def test_a_missed_print_refuses_the_trigger_but_a_pure_reorder_does_not(self):
+        # R3: base_breaks_unresolved decides. It reads 0 for a reorder and >= 1 for a missed print; missing or null refuses.
+        for bad in (1, 2, None, "0", True, 0.0):
+            self.assertEqual(self.parse(base_breaks_unresolved=bad), (None, "bad_intent:base_breaks_unresolved"), bad)
         r = shadow_trigger(Clock())
-        del r["base_breaks"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks"))
+        del r["base_breaks_unresolved"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks_unresolved"))
+        t, bad = self.parse(base_breaks=7, slot_regress=5, base_breaks_unresolved=0)  # the live pattern: many raw breaks, all reorders
+        self.assertIsNone(bad)
+        self.assertEqual((t.base_breaks, t.slot_regress, t.base_breaks_unresolved), (7, 5, 0))
+
+    def test_the_raw_break_counts_are_on_the_decision_row(self):
+        e = self.env()
+        e.ex.handle_trigger(h.parse_shadow_trigger(shadow_trigger(e.clock, base_breaks=7, slot_regress=5))[0])
+        dec = e.ledger("decision")[0]
+        self.assertEqual((dec["base_breaks"], dec["slot_regress"], dec["base_breaks_unresolved"], dec["s0_minus_announced_slots"]), (7, 5, 0, 0))
+
+    def test_the_first_print_must_follow_the_announcement_by_at_most_two_slots(self):
+        for ok in (0, 1, 2):
+            self.assertIsNone(self.parse(s0_minus_announced_slots=ok)[1], ok)
+        for bad in (3, 4440, -1, None, "0", True):
+            self.assertEqual(self.parse(s0_minus_announced_slots=bad), (None, "bad_intent:s0_minus_announced_slots"), bad)
+        r = shadow_trigger(Clock())
+        del r["s0_minus_announced_slots"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:s0_minus_announced_slots"))
+
+    def test_the_sealed_stub_from_the_seal_window_is_refused(self):
+        stub = {"type": "trigger", "variant": "pv", "pool": POOL, "slot": TRIG_SLOT, "suppressed": "cap_pick_seal", "v": 1, "schema": "h5_shadow_v1",
+                "t_ms": T0}  # exactly the keys #477 writes: nothing to trade on
+        self.assertEqual(h.parse_shadow_trigger(stub), (None, "bad_intent:suppressed"))
+        e = self.env()
+        path = Path(e.conf["intents_file"])
+        path.write_text("")
+        e.ex.intent_tick()
+        with path.open("a") as fh:
+            fh.write(json.dumps(stub) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["bad_intent:suppressed"], []))
+
+    def test_more_than_five_bad_records_in_an_hour_raise_an_alert_once(self):
+        e = self.env()
+        path = Path(e.conf["intents_file"])
+        path.write_text("")
+        e.ex.intent_tick()
+        with path.open("a") as fh:
+            for _ in range(6):
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+        e.ex.intent_tick()
+        alerts = [r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]
+        self.assertEqual((len(alerts), alerts[0]["count"]), (1, 6))
+        with path.open("a") as fh:
+            fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual(len([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]), 1)  # not repeated within the hour
+        e.jump(3_700_000)
+        with path.open("a") as fh:
+            for _ in range(6):
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual(len([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"]), 2)  # an hour on, it can alert again
+
+    def test_five_bad_records_are_not_an_alert(self):
+        e = self.env()
+        path = Path(e.conf["intents_file"])
+        path.write_text("")
+        e.ex.intent_tick()
+        with path.open("a") as fh:
+            for _ in range(5):
+                fh.write(json.dumps(shadow_trigger(e.clock, base_breaks_unresolved=1)) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"], [])
 
     def test_gap_must_be_a_bool_and_v_missing_literally_false(self):
         for bad in (None, "false", 0, 1, [], "False"):
@@ -256,7 +321,8 @@ class TriggerFidelityTests(Case):
     def test_the_vendored_records_carry_every_key_the_executor_reads(self):
         trig, pool = VENDORED["trigger"], VENDORED["pool"]
         read = {"type", "variant", "pool", "mint", "s0", "slot", "sps", "t_detect_ms", "q_trigger_sol", "base_pre", "sell_token_raw", "v_print",
-                "v_missing", "gap", "base_breaks", "slot_regress", "sps_span_s", "boost_spent_sol", "s0_t_recv_ms", "block_time"}
+                "v_missing", "gap", "base_breaks", "slot_regress", "sps_span_s", "boost_spent_sol", "s0_t_recv_ms", "block_time",
+                "base_breaks_unresolved", "s0_minus_announced_slots", "announced_slot"}
         self.assertTrue(read <= set(trig), read - set(trig))
         self.assertTrue({"type", "reason", "mint", "gap", "boost_src", "boost_last_slice_s", "boost_last_slice_s_blocktime",
                          "boost_last_slice_s_recv"} <= set(pool))

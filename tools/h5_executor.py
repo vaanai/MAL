@@ -50,7 +50,7 @@ import stat
 import statistics
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -79,6 +79,8 @@ RULE_Q_MAX_LAMPORTS = 40 * 10**9  # trigger needs post-trade Q = quote + V <= 40
 SPS_MIN, SPS_MAX = 0.15, 0.6
 SPS_MIN_SPAN_S = 120.0  # the detector's sps window must span at least this (it can be ready after ~8 s; a bootstrap sps sets a wrong exit)
 BOOST_BUDGET_SOL, BOOST_DONE_FRAC = 17.585, 0.999  # the rule: BOOST spent < 0.999 x 17.585 SOL
+S0_ANNOUNCE_LAG_MAX = 2  # slots between the pool's CreatePool and the first print we call s0 (live: p50 0, p90 1, p99 4440)
+BAD_INTENT_ALERT_N, BAD_INTENT_WINDOW_MS = 5, 3_600_000  # more than 5 malformed or unusable trigger records in an hour raises an alert
 ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
 
@@ -247,6 +249,10 @@ class H5Trigger:
     gap: bool = False  # the detector flagged this pool as having seen a feed gap
     s0_wall_ms: int | None = None  # wall clock at which the detector saw s0: the anchor of the 330 s exit if the slot rate moves
     block_time: int | None = None  # chain time (s) of the trigger print
+    base_breaks: int | None = None  # raw per-pool counts from the detector, ledgered (they count reorders too; base_breaks_unresolved decides)
+    slot_regress: int | None = None
+    base_breaks_unresolved: int | None = None
+    s0_minus_announced_slots: int | None = None
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -295,6 +301,8 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
       gap -> gap. (None, None) for any other record or the other variant."""
     if not isinstance(row, dict) or row.get("type") != "trigger" or row.get("variant") != variant:
         return None, None
+    if row.get("suppressed"):  # the sealed stub #477 writes from 2026-10-16T01Z: type, variant, pool, slot, suppressed ... and nothing to trade on
+        return None, "bad_intent:suppressed"
     try:
         q_sol, base_pre, tok = row["q_trigger_sol"], row["base_pre"], row["sell_token_raw"]
         v = row["v_print"]
@@ -309,19 +317,30 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
             return None, "bad_intent:v_missing"
         if not isinstance(row.get("gap"), bool):  # the key must be there and a bool; the default would be silent
             return None, "bad_intent:gap"
-        if not _is_int(row.get("base_breaks")) or row["base_breaks"] != 0 or not _is_int(row.get("slot_regress")) or row["slot_regress"] != 0:
-            return None, "bad_intent:base_breaks"  # missed or reordered prints in this pool's book
+        # base_breaks_unresolved is the order-independent count: a pure reorder reads 0, a missed print reads >= 1 (it can read 1 for a moment while
+        # a predecessor print is in flight, which only costs a trade). The raw base_breaks / slot_regress count reorders too (on live data they
+        # were non-zero on most triggers), so they are ledgered, not used to refuse.
+        unresolved = row.get("base_breaks_unresolved")
+        if not _is_int(unresolved) or unresolved != 0:
+            return None, "bad_intent:base_breaks_unresolved"  # missing, null, or >= 1
+        lag = row.get("s0_minus_announced_slots")  # how long after the pool's CreatePool the first print we call s0 came; null when never announced
+        if not _is_int(lag) or not 0 <= lag <= S0_ANNOUNCE_LAG_MAX:
+            return None, "bad_intent:s0_minus_announced_slots"  # a late "s0" is a pool we joined mid-life, or one whose first prints were lost
         span = row.get("sps_span_s")  # the detector's sps window; null only in a tape replay, which this executor never runs
         if isinstance(span, bool) or not isinstance(span, (int, float)) or not math.isfinite(span) or span < SPS_MIN_SPAN_S:
             return None, "bad_intent:sps_span"
         spent = row.get("boost_spent_sol")  # the rule's BOOST-remaining condition, re-checked
         if isinstance(spent, bool) or not isinstance(spent, (int, float)) or not math.isfinite(spent) or spent < 0 or spent >= BOOST_DONE_FRAC * BOOST_BUDGET_SOL:
             return None, "bad_intent:boost_spent"
-        return parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
-                              "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
-                              "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
-                              "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
-                              "gap": row.get("gap")})
+        t, bad = parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
+                                "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
+                                "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
+                                "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
+                                "gap": row.get("gap")})
+        if t is None:
+            return None, bad
+        raw = {k: row[k] for k in ("base_breaks", "slot_regress") if _is_int(row.get(k))}  # raw counts: ledgered on the decision row
+        return replace(t, base_breaks_unresolved=unresolved, s0_minus_announced_slots=lag, **raw), None
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
 
@@ -758,6 +777,8 @@ class H5Executor(pl.LiveExecutor):
         self.feed_gap = False
         self._gap_until_ms = 0
         self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
+        self._bad_intent_ms: list[int] = []
+        self._bad_intent_alert_ms = -BAD_INTENT_WINDOW_MS
         self._glob_path: Path | None = None
         self._glob_ms = 0
         self.trigger_variant = TRIGGER_VARIANT  # the traded rule is not a config value
@@ -1198,6 +1219,16 @@ class H5Executor(pl.LiveExecutor):
         if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
             self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
 
+    def _bad_intent(self, row: dict[str, Any], why: str) -> None:
+        """A trigger record that cannot be traded on. Ledgered; more than BAD_INTENT_ALERT_N in an hour is an alert (a schema change or a
+        broken detector looks exactly like this: every trigger refused, nothing else wrong)."""
+        now = self.now_ms()
+        self._log("skip", str(row.get("mint") or ""), reason=why)
+        self._bad_intent_ms = [t for t in self._bad_intent_ms if now - t < BAD_INTENT_WINDOW_MS] + [now]
+        if len(self._bad_intent_ms) > BAD_INTENT_ALERT_N and now - self._bad_intent_alert_ms >= BAD_INTENT_WINDOW_MS:
+            self._bad_intent_alert_ms = now
+            self._alert("bad_intent_rate", "", count=len(self._bad_intent_ms), last_reason=why)
+
     # -- intent file ---------------------------------------------------------------------------------------------------------
     def signal_tick(self) -> int:
         return self.intent_tick()
@@ -1262,7 +1293,7 @@ class H5Executor(pl.LiveExecutor):
                 if trg is not None:
                     triggers.append(trg)
                 elif bad:
-                    self._log("skip", str(row.get("mint") or ""), reason=bad)
+                    self._bad_intent(row, bad)
             elif rtype == "gap":
                 # The hold starts only when the record says coverage was lost: flags_pools true, or the key missing or anything but the
                 # literal false (an unknown schema fails closed). A reconnect on a redundant feed whose other sockets stayed up says false.
@@ -1302,7 +1333,7 @@ class H5Executor(pl.LiveExecutor):
                 if trg is not None:
                     triggers.append(trg)
                 elif bad:
-                    self._log("skip", str(row.get("mint") or ""), reason=bad)
+                    self._bad_intent(row, bad)
         for trg in triggers:  # triggers first: the buy path is the latency path
             self.handle_trigger(trg, seen)
         for mint, pool in watches:

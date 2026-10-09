@@ -881,7 +881,14 @@ class SafetyTests(Case):
         live = json.loads((root / "scripts/mal-fast/h5-executor-live.json").read_text())
         self.assertEqual(dry["mode"], "dryrun")
         self.assertEqual(live["mode"], "live")
-        self.assertNotIn("end_ms", live)  # a live start needs a deliberate end instant
+        self.assertNotIn("end_ms", dry)
+        self.assertEqual(live["end_ms"], 1792110600000)  # 2026-10-16T00:30:00Z: ends before the EXP-022 seal window opens
+        self.assertLess(live["end_ms"], h.SEAL_START_MS)
+        self.assertEqual((live["intents_file"], dry["intents_file"]), ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow"))
+        self.assertEqual((live["feed_heartbeat_max_age_ms"], dry["feed_heartbeat_max_age_ms"]), (60000, 60000))
+        for c in (dry, live):
+            for fixed in ("sell_priority_lamports", "escalated_priority_lamports", "late_sell_min_n"):
+                self.assertNotIn(fixed, c)  # not configurable
         self.assertNotIn("key_path", live)
         for c in (dry, live):
             h.H5Limits.from_config(c)

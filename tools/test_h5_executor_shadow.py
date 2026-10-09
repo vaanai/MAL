@@ -1,4 +1,4 @@
-"""The executor against the shadow detector's records (tools/h5_shadow.py, PR #477, claude/h5-shadow at ff31026).
+"""The executor against the shadow detector's records (tools/h5_shadow.py, PR #477, claude/h5-shadow at fe7eb43).
 
 SHADOW_TRIGGER mirrors the dict built in h5_shadow.Engine._fire at that commit (same keys, same units). If #477 renames a key the
 parser tests here are the ones that fail."""
@@ -16,11 +16,11 @@ from tools.test_h5_executor import Clock
 SOLD = 5_000_000_000  # tokens the triggering sell put into the pool (raw)
 
 
-VENDORED = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "records_ff31026.json").read_text())
+VENDORED = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "records_fe7eb43.json").read_text())
 
 
 def shadow_trigger(clock: Clock, **kw) -> dict:
-    """The vendored record (keys as Engine._fire writes them at ff31026) with the fixture pool's values and the fake clock's times."""
+    """The vendored record (keys as Engine._fire writes them at fe7eb43) with the fixture pool's values and the fake clock's times."""
     row = {**VENDORED["trigger"], "pool": POOL, "mint": MINT, "s0": S0, "slot": TRIG_SLOT, "sps": SPS, "s0_t_recv_ms": clock() - 101_600,
            "block_time": clock() // 1000, "t_recv_ms": clock() - 50, "t_detect_ms": clock(), "q_trigger_sol": Q / 1e9, "q_pv_post_sol": Q / 1e9,
            "q_fv_post_sol": Q / 1e9 + 0.001, "q_pv_pre_sol": Q / 1e9 + 0.2, "q_fv_pre_sol": Q / 1e9 + 0.2, "v_print": V, "v0": V,
