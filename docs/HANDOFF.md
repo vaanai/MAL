@@ -78,6 +78,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Unmeasured: on synthetic pools H5's s0 (first PumpSwap print) may come later, which eats the 330 s exit margin.
 - **When re-pinning, also pin the three program sha256s** (the `program_changed` rule is not evaluated today).
 - **Quant-proof must rule** whether a reviewed re-pin cures today's pins_changed halt before 10-10T00Z. EXP-024:330 says "H5 is withdrawn"; P2 says "last A3 run before 10-10T00Z shows no halt".
+- **Re-pin builder started:** agent `a4c8233b0ab378c99`, branch `claude/a3-repin-1009`. It does `--write-pins` with sha256s, writes the note `ARTIFACTS/lab/a3-repin-2026-10-09.md`, and runs a dry monitor check.
 - **NEXT:**
   1. Builder: re-pin PR (`--write-pins`, including the sha256s) plus a short re-pin note citing the review.
   2. Quant-proof: the cure ruling, and the synthetic-share risk.
