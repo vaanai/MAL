@@ -322,6 +322,47 @@ class EventVMapping(unittest.TestCase):
         after = self.m.map_quote_reserve(vault - swept, v_t + swept, 17_585_000_000) + 17_585_000_000
         self.assertEqual(before, after)
 
+    def test_p7_constant_product_thresholds_and_rule(self):
+        self.assertEqual((self.m.P7_CP_SELL_MIN, self.m.P7_CP_BUY_MIN, self.m.P7_CP_TOLERANCE_BP), (0.99, 0.99, 1.0))
+        self.assertTrue(self.m.p7_cp_pass(99, 100, 99, 100))
+        self.assertFalse(self.m.p7_cp_pass(98, 100, 99, 100))
+        self.assertFalse(self.m.p7_cp_pass(99, 100, 98, 100))
+        self.assertFalse(self.m.p7_cp_pass(0, 0, 99, 100))
+        self.assertFalse(self.m.p7_cp_pass(99, 100, 0, 0))
+
+    def test_p7_needs_both_lines(self):
+        ok_cp, bad_cp = (99, 100, 99, 100), (50, 100, 99, 100)
+        ok_fee, bad_fee = (75, 100, 90, 100), (74, 100, 90, 100)
+        self.assertTrue(self.m.p7_all_pass(ok_cp, ok_fee))
+        self.assertFalse(self.m.p7_all_pass(bad_cp, ok_fee))
+        self.assertFalse(self.m.p7_all_pass(ok_cp, bad_fee))
+
+    def test_within_bp(self):
+        self.assertTrue(self.m.within_bp(1_000_000, 1_000_100, 1.0))   # exactly 1 bp
+        self.assertFalse(self.m.within_bp(1_000_000, 1_000_101, 1.0))
+        self.assertTrue(self.m.within_bp(0, 0, 1.0))
+        self.assertFalse(self.m.within_bp(0, 1, 1.0))
+
+    def test_constant_product_separates_the_pinned_mapping_from_one_that_ignores_pending_fees(self):
+        v0, base, base_in, qin = 17_585_000_000, 1_000_000_000_000_000, 3_000_000_000_000, 400_000_000
+        vault_pre = 60_000_000_000
+        pending = 2_300_000_000                      # about 3% of the effective quote, unswept in the vault
+        v_t = v0 - pending                           # stored V net of the pending fees (the effective quote is vault + V(t))
+        true_total = vault_pre + v_t
+        gross_actual = true_total * base_in // (base + base_in)
+        token_actual = base * qin // (true_total + qin)
+        q_ok = self.m.map_quote_reserve(vault_pre, v_t, v0)
+        self.assertEqual(self.m.cp_sell_gross_quote_out(q_ok, v0, base, base_in), gross_actual)
+        self.assertEqual(self.m.cp_buy_token_out(q_ok, v0, base, qin), token_actual)
+        # the naive column (gross vault, constant V0) overstates the quote by the pending amount
+        q_naive = vault_pre
+        g_naive = self.m.cp_sell_gross_quote_out(q_naive, v0, base, base_in)
+        t_naive = self.m.cp_buy_token_out(q_naive, v0, base, qin)
+        self.assertTrue(self.m.within_bp(gross_actual, self.m.cp_sell_gross_quote_out(q_ok, v0, base, base_in), self.m.P7_CP_TOLERANCE_BP))
+        self.assertFalse(self.m.within_bp(gross_actual, g_naive, self.m.P7_CP_TOLERANCE_BP))
+        self.assertFalse(self.m.within_bp(token_actual, t_naive, self.m.P7_CP_TOLERANCE_BP))
+        self.assertGreater(abs(g_naive - gross_actual) * 10_000 / gross_actual, 100)  # at least 100 bp: orders of magnitude over the 1 bp bar
+
     def test_p7_decision_rule(self):
         self.assertEqual((self.m.P7_SAMPLE, self.m.P7_SELL_MIN, self.m.P7_BUY_MIN), (1000, 0.75, 0.90))
         self.assertTrue(self.m.p7_pass(75, 100, 90, 100))
