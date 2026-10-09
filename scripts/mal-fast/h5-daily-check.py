@@ -549,13 +549,15 @@ def check_tier_file(host: Host, rep: Report) -> tuple[str | None, float | None]:
     return text, host.mtime(TIER_FILE)
 
 
-def report_tier(host: Host, rep: Report, tier_state, ledger: bytes | None, tier_file, unit: UnitInfo, now: float) -> None:
-    """The tier the executor is on (its counters' tier_state), the file's, and how many triggers it acted on in this tier."""
+def report_tier(host: Host, rep: Report, tier_state, ledger: bytes | None, tier_file, unit: UnitInfo, now: float, tier_attempts=None) -> None:
+    """The tier the executor is on (its counters' tier_state), the file's, and how many buy attempts it has made in this tier. The count is the
+    executor's own `tier_attempts` (counters file; what its per-tier max_attempts of 150 caps; reset at every tier_change). A sha without it
+    falls back to tier_state.attempts, then to the live ledger's decision rows since the tier began."""
     ts = tier_state if isinstance(tier_state, dict) else {}
     ex = ts.get("tier") if ts.get("tier") in TIERS else None
     since = ts.get("since_ms") if isinstance(ts.get("since_ms"), (int, float)) else None
-    n = ts.get("attempts") if isinstance(ts.get("attempts"), int) else None
-    if n is None and since is not None:  # the executor's own per-tier count if it keeps one, else the live ledger's decision rows since the tier began
+    n = tier_attempts if isinstance(tier_attempts, int) and not isinstance(tier_attempts, bool) else (ts.get("attempts") if isinstance(ts.get("attempts"), int) else None)
+    if n is None and since is not None:  # an older sha without the executor's own count: the live ledger's decision rows since the tier began
         n = 0
         for line in (ledger or b"").splitlines():
             try:
@@ -608,7 +610,7 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
     if stuck:
         rep.alert("h5_stuck_position", f"{len(stuck)} stuck or abandoned position(s): root sell-and-close (docs/runbooks/h5-executor.md)")
     ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL)
-    report_tier(host, rep, counters.get("tier_state"), ledger, tier_file, unit, now)
+    report_tier(host, rep, counters.get("tier_state"), ledger, tier_file, unit, now, counters.get("tier_attempts"))
     user = None
     for line in (ledger or b"").splitlines():
         if b'"kind":"start"' in line.replace(b" ", b""):

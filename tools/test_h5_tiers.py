@@ -30,9 +30,12 @@ def with_tier(h: FakeHost, text: bytes | None = b"T0\n", mode: str = "root:root:
     return h
 
 
-def tier_state(tier="T1", since_age_s=7200, **kw) -> bytes:
-    return json.dumps({"halts": {}, "sells_landed": 3, "sells_late": 0,
-                       "tier_state": {"tier": tier, "since_ms": int((NOW - since_age_s) * 1000), "wallet_lamports": 250_000_000, **kw}}).encode()
+def tier_state(tier="T1", since_age_s=7200, tier_attempts=None, **kw) -> bytes:
+    body = {"halts": {}, "sells_landed": 3, "sells_late": 0,
+            "tier_state": {"tier": tier, "since_ms": int((NOW - since_age_s) * 1000), "wallet_lamports": 250_000_000, **kw}}
+    if tier_attempts is not None:
+        body["tier_attempts"] = tier_attempts  # the executor's own per-tier count (1866327): top level of the counters file, reset at each tier_change
+    return json.dumps(body).encode()
 
 
 # --- the installer never touches TIER and refuses a bad one ---------------------------------------------------------------------
@@ -88,6 +91,9 @@ def test_the_tooling_matches_the_executors_tier_names_and_rules(tmp_path):
     assert str(h5_executor.TIER_FILE_PATH) == dc.TIER_FILE == "/etc/mal-h5/TIER"
     assert "tier_file" in h5_executor.PINNED_PATH_KEYS  # no config override in live
     assert h5_executor.LIVE_OK_MODE == 0o644 and h5_executor.LIVE_OK_UID == 0
+    assert "tier_attempts" in h5_executor.H5Counters.__dataclass_fields__ and h5_executor.H5_DEFAULT["max_attempts"] == 150  # 150 per tier
+    assert "(lifetime; {c.tier_attempts}/{h5.max_attempts} in {c.tier_state.get('tier', 'T0')})" in EXECUTOR_SRC  # the --status line the runbook describes
+    assert h5_executor.T2_IMPACT_OK is True, "T2_IMPACT_OK is False again: the runbook's T2 paragraph (allowed by code, written only on the manager's ask) must be reviewed"
     for name in ("tier_change", "tier_file_problem", "tier_step_down_due"):
         assert f'"{name}"' in EXECUTOR_SRC, name
         if name != "tier_change":
@@ -136,9 +142,13 @@ def test_the_tier_line_reports_the_executors_tier_the_files_and_the_trades_in_it
             {"kind": "decision", "ts_ms": int((NOW - 600) * 1000)}, {"kind": "skip", "reason": "max_open", "ts_ms": int((NOW - 500) * 1000)}]
     h.files[f"{H5}/live/h5-ledger.jsonl"] = ledger({"kind": "start", "user": dc.WALLET, "ts_ms": 1}, *rows)
     rc, out = go(h, tmp=tmp_path / "ledger")
-    assert "tier: executor=T1 file=T1" in out and "trades_in_tier=2" in out  # only the decisions since the tier began
-    h.files[f"{H5}/live/h5-counters.json"] = tier_state("T1", since_age_s=3600, attempts=7)  # the executor's own count wins if it keeps one
-    assert "trades_in_tier=7" in go(h, tmp=tmp_path / "own")[1]
+    assert "tier: executor=T1 file=T1" in out and "trades_in_tier=2" in out  # an older sha without a count: only the decisions since the tier began
+    h.files[f"{H5}/live/h5-counters.json"] = tier_state("T1", since_age_s=3600, tier_attempts=11)  # the executor's own per-tier count wins
+    assert "trades_in_tier=11" in go(h, tmp=tmp_path / "own")[1]
+    h.files[f"{H5}/live/h5-counters.json"] = tier_state("T1", since_age_s=3600, tier_attempts=0)  # zero right after a tier change is a count, not "missing"
+    assert "trades_in_tier=0" in go(h, tmp=tmp_path / "zero")[1]
+    h.files[f"{H5}/live/h5-counters.json"] = tier_state("T1", since_age_s=3600, attempts=7)  # the in-state field some shas used is the second choice
+    assert "trades_in_tier=7" in go(h, tmp=tmp_path / "legacy")[1]
     assert "tier: executor=unknown file=none since=unknown trades_in_tier=unknown" in go(FakeHost(), tmp=tmp_path / "none")[1]
     h.files[f"{H5}/live/h5-counters.json"] = tier_state("T9")  # an unknown tier name is not echoed
     assert "executor=unknown" in go(h, tmp=tmp_path / "bad")[1]
@@ -220,8 +230,13 @@ def test_the_runbook_creates_tier_with_t0_at_go_live_and_has_the_step_procedure(
     assert "sudoedit /etc/mal-h5/TIER" in sec and "expect exactly: root:root 644 regular file /etc/mal-h5/TIER" in sec
     assert "'\"kind\":\"tier_change\"'" in sec and '"from_tier":"T0","to_tier":"T1","problem":null' in sec and "iflag=nofollow" in sec
     assert "`tier_step_down_due`" in sec and "`tier_file_problem`" in sec and "the executor never lowers the tier by itself" in sec
-    assert "manager asks in writing" in sec and "Helm edits the file" in sec and "T2_IMPACT_OK" in sec and "Missing, unsafe or invalid means T0" in sec
-    assert "`--status` reads no tier" in sec  # honest about what --status shows at this head
+    assert "manager asks in writing" in sec and "Helm edits the file" in sec and "Missing, unsafe or invalid means T0" in sec
+    # T2 is allowed by the final executor head's code; Helm still writes it only on the manager's written ask, after T1's ~25 trades pass the checks
+    assert "T2 is allowed by the code of the final executor head" in sec and "`T2_IMPACT_OK = True`" in sec
+    assert "Helm writes `T2` only when the manager asks in writing, after T1's ~25 trades have passed the checks" in sec
+    assert "T2 is blocked" not in sec and "before that" not in sec and "refuses T2 buys. The manager says" not in sec
+    assert "per tier: 150" in sec and "reset at each change" in sec and "attempts_in_old_tier" in sec and "lifetime_attempts" in sec
+    assert "`attempts=<lifetime> (lifetime; 0/150 in T1)`" in sec and "`--status` reads no tier" not in sec  # --status now names the tier and the attempts in it
     # the numbers on the page are the executor's table
     tiers = h5_executor.TIERS
     stake = ", ".join(f"{k} {v['stake_lamports'] / 1e9:.2f}" for k, v in tiers.items())
@@ -234,7 +249,8 @@ def test_the_runbook_creates_tier_with_t0_at_go_live_and_has_the_step_procedure(
     assert "`/etc/mal-h5/TIER`" in t.split("## What is where")[1].split("`intents_file` is a config value")[0]
     assert "Create `/etc/mal-h5/TIER` with `T0` at go-live" in t.replace("**Create `/etc/mal-h5/TIER` with `T0` at go-live; edit it to step the tier up or down**", "Create `/etc/mal-h5/TIER` with `T0` at go-live")
     assert "never creates, edits or removes `LIVE_OK` or `TIER`" in t and "an existing `/etc/mal-h5/TIER` that is not a regular `root:root` 0644 file" in t
-    assert "Never write `T2` into `/etc/mal-h5/TIER` before the manager has said `T2_IMPACT_OK` is set" in t
+    assert "Never write a higher tier into `/etc/mal-h5/TIER` except on the manager's written ask (for `T2`: after T1's ~25 trades have passed the checks)" in t
+    assert "Never write `T2` into" not in t
 
 
 def test_the_runbook_names_the_final_shadow_head_and_gate():

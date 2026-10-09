@@ -54,7 +54,7 @@ Every step in this runbook that stops the live unit, switches it to the dry run,
 ```
 sudo rm -f /etc/mal-h5/LIVE_OK                     # no new buys (and/or: sudo touch /var/lib/mal-live/h5/STOP)
 S="sudo /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --status"
-$S | grep '^\[live\]'                              # repeat until: [live] attempts=... open=0/2 pending=0 ...
+$S | grep '^\[live\]'                              # repeat until: [live] attempts=... open=0/<cap> pending=0 ...   (the first number of open= is what counts; the cap shown is the T0 one)
 ```
 
 An open position exits on its timer at s0 + 330 s and the executor's own hard deadline is s0 + 400 s, so wait up to about 7 minutes. If `open` or `pending` is still not 0 after that, **do not stop the unit**: look at the journal and the alerts. If the executor cannot sell it, stop the unit and run Sell-and-close for EACH open mint. The open mints (public addresses) are listed by:
@@ -63,7 +63,7 @@ An open position exits on its timer at s0 + 330 s and the executor's own hard de
 sudo dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/state-live.json | python3 -I -c 'import json, sys; print(*json.load(sys.stdin)["open"], sep="\n")'
 ```
 
-Only when `--status` shows `open=0/2 pending=0` (or every open mint has been sold and closed) go on to the stop.
+Only when `--status` shows `open=0/<cap> pending=0` (or every open mint has been sold and closed) go on to the stop.
 
 ## Helm's steps, in order
 
@@ -395,7 +395,7 @@ Removing `LIVE_OK` stops new buys at once, like `STOP`; open positions still exi
 
 ## Step up / step down a tier (the scale ladder)
 
-The executor carries the owner's ladder as a code-constant table: **T0 0.02 SOL per trade, T1 0.10, T2 0.30**. Max open, trades per day and the daily and total loss stops scale with the tier (T0 2 / 30 / 0.08 / 0.12 SOL; T1 3 / 40 / 0.40 / 0.60; T2 3 / 40 / 1.20 / 1.80), and the total stop is also capped at 35% of the wallet balance measured when the tier started. The active tier is the content of `/etc/mal-h5/TIER`: a regular file owned `root:root`, mode exactly 0644, no symlink, in the `root:root` 0755 directory, content exactly `T0`, `T1` or `T2`. The executor reads it before every buy and on every tick. **Missing, unsafe or invalid means T0** (the fail-safe), and an unsafe or invalid file raises the executor ALERT `tier_file_problem`. **T2 is blocked in code until `T2_IMPACT_OK` is set** (0.30 SOL is above the 0.25 SOL that was tested): while it is not, the executor refuses T2 buys. The manager says in the sha comment whether it is set, and nobody writes `T2` before that. The executor never edits the file, and a tier change never touches an open position: the open ones keep their stake and exit on their timers.
+The executor carries the owner's ladder as a code-constant table: **T0 0.02 SOL per trade, T1 0.10, T2 0.30**. Max open, trades per day and the daily and total loss stops scale with the tier (T0 2 / 30 / 0.08 / 0.12 SOL; T1 3 / 40 / 0.40 / 0.60; T2 3 / 40 / 1.20 / 1.80), and the total stop is also capped at 35% of the wallet balance measured when the tier started. The active tier is the content of `/etc/mal-h5/TIER`: a regular file owned `root:root`, mode exactly 0644, no symlink, in the `root:root` 0755 directory, content exactly `T0`, `T1` or `T2`. The executor reads it before every buy and on every tick. **Missing, unsafe or invalid means T0** (the fail-safe), and an unsafe or invalid file raises the executor ALERT `tier_file_problem`. **T2 is allowed by the code of the final executor head** (`T2_IMPACT_OK = True`: the price-impact check was done for 0.30 SOL only), but **Helm writes `T2` only when the manager asks in writing, after T1's ~25 trades have passed the checks** (the owner's ladder; the basis is DEC-024 section 7). If `T2_IMPACT_OK` is ever set back to False in a later sha (a live-fill impact finding), the executor refuses T2 buys again (`t2_impact_unchecked`) and the file goes back to `T1`. The executor also caps buy attempts **per tier: 150**, counted from the `tier_change` that started the tier and reset at each change (the lifetime count is kept for the ledger). The executor never edits the file, and a tier change never touches an open position: the open ones keep their stake and exit on their timers.
 
 Helm creates the file with `T0` at go-live (Step 11, `install` then `sudoedit`). Every later change is Helm's, on the manager's written ask.
 
@@ -417,7 +417,7 @@ sudo dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl 
 #   expect: ... "from_tier":"T0","to_tier":"T1","problem":null ...
 ```
 
-A `problem` other than null, or a `to_tier` of `T0` after you wrote `T1`, means the file failed its checks (or, for T2, that `T2_IMPACT_OK` is not set): fix the file so it is exactly as above; do not restart the unit. `--status` reads no tier at the head this was written against (it prints the T0 limits), so it is not the proof; the ledger row and the daily check's `tier:` line are. If the sha you installed prints the tier in `--status`, it must agree with the row.
+A `problem` other than null, or a `to_tier` of `T0` after you wrote `T1`, means the file failed its checks: fix the file so it is exactly as above; do not restart the unit. The row also carries `attempts_in_old_tier` and `lifetime_attempts`. `--status` agrees with it: its `[live]` line names the tier the executor is on and the attempts used in it, `attempts=<lifetime> (lifetime; 0/150 in T1)` right after a step up, because the per-tier count restarts at the change (its first line still prints the T0 limits, `stake_sol=` and `max_open=`, and so does the `/<cap>` of `open=`; read the first number).
 4. The daily check's `tier:` INFO line shows `executor=T1 file=T1`, and the watchdog posts `EVENT tier_change T0 -> T1`. `h5_tier_unapplied` alerts if the file and the executor disagree for 15 minutes.
 
 **Step down:** the executor never lowers the tier by itself. A halt or loss stop above T0 raises the executor ALERT `tier_step_down_due` (the daily check shows it as `h5_executor_alert_tier_step_down_due`, and the watchdog posts it to Discord). On that alert the manager asks and Helm steps down the same way: edit the file to the lower tier (`T1` or `T0`), verify the `tier_change` row, tell the owner. A step down is not a retune: a latched halt stays latched until `--clear-halt`, and a stop stays in force.
@@ -520,7 +520,7 @@ After a `--send`, the position is still "open" in the executor's state. Book it 
 sudo systemd-run --wait --collect --pipe -p User=mal-live -p EnvironmentFile=/etc/mal-probe-rpc/helius.env -p ProtectSystem=strict -p ReadWritePaths=/var/lib/mal-live/h5 -p UMask=0077 \
   /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --mark-closed <MINT> --sig <SIGNATURE>
 #   expect: h5_executor --mark-closed: <MINT> closed by <SIGNATURE>; realized N lamports
-sudo /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --status | grep '^\[live\]'     # open=0/2 pending=0 once every open mint is booked
+sudo /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --status | grep '^\[live\]'     # open=0/<cap> pending=0 once every open mint is booked (the first number counts)
 ```
 
 Until every open mint is booked and the stuck-position halt is cleared (`--clear-halt stuck_position`, above), the unit stays stopped and `LIVE_OK` stays removed. Send the manager the signature, the fill line and the `--mark-closed` output.
@@ -562,7 +562,7 @@ The key directory `/etc/mal-probe` already has Helm's watch from DEC-019; check 
 - Never stop the live unit, switch it to the dry run, roll it back or turn it off with `open` or `pending` above 0 (the Wind-down), except by an emergency `HALT`.
 - Never run the executor or the tool from a working tree or from `/var/lib/mal/fast-forward/src`.
 - Never install the live drop-in from a working tree; install it from `/usr/local/lib/mal-h5-exec/current/`.
-- Never write `T2` into `/etc/mal-h5/TIER` before the manager has said `T2_IMPACT_OK` is set, never change the tier on your own, and never make `TIER` anything but a regular `root:root` 0644 file (the installer refuses to run over a bad one, the executor ignores it and runs T0).
+- Never write a higher tier into `/etc/mal-h5/TIER` except on the manager's written ask (for `T2`: after T1's ~25 trades have passed the checks), never change the tier on your own, and never make `TIER` anything but a regular `root:root` 0644 file (the installer refuses to run over a bad one, the executor ignores it and runs T0).
 - Never create `/etc/mal-h5/LIVE_OK` with any mode but 0644 owned root:root, and never before the Step 5 hash check of the sha that will run, before the watchdog is enabled and its test message seen, or from the executor's side, and never put a `LIVE_OK` in `/var/lib/mal-live/h5` (the executor does not read it and the daily check alerts on it).
 - Never install any sha but the one the manager names in the PR #499 comment, and never roll back by swapping the `current` link.
 - Never remove the probe's `/var/lib/mal-live/STOP` on your own: it is the manager's written decision in the sha comment.
