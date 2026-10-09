@@ -1,0 +1,57 @@
+[Unit]
+Description=MAL H5-BOOSTFLOOR executor (DEC-024), keyless dry-run base unit (no signing, no sending)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+# Two processes must never share the probe wallet key: starting either unit stops the other.
+Conflicts=mal-probe-executor.service
+
+[Service]
+Type=simple
+User=mal-live
+Nice=10
+WorkingDirectory=/usr/local/lib/mal-h5-exec/current
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Helius key for the key holder: the SAME root-only copy the DEC-019 probe used (/etc/mal-probe-rpc root:root 0700,
+# helius.env root:root 0600, only the HELIUS_API_KEY= line). Never the ubuntu-writable /var/lib/mal/fast-listener/helius.env:
+# systemd reads an EnvironmentFile as root, so a file the paper side can write could inject LD_PRELOAD. No "-" prefix: a
+# missing file fails the start.
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+# Root-run inline check, no file-based code. "+" lifts the sandbox for this command only. %% is systemd's escape for %.
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc/helius.env)" = 0:0:600'
+# Code runs from the root-owned pinned copy only (scripts/mal-fast/install-h5-executor-pinned.sh). This base unit is the
+# KEYLESS dry run: no --live, no LoadCredential. The live drop-in (mal-h5-executor-live-pinned.conf) is the only thing that
+# hands the process the key.
+ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor.json
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a deterministic start refusal (LIVE_OK missing, EXP-024 absent, end_ms unset, rpc env, key): do not hot-loop.
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+# Hardening. Writes only /var/lib/mal-live/h5 (must exist: mal-live, 0700, created at provisioning). The probe's own files in
+# /var/lib/mal-live are read-only here. /var/lib/mal (runner output, sealed data) is an empty tmpfs. /home is an empty tmpfs;
+# the shadow detector's output directory is made visible read-only by a Helm drop-in (mal-h5-executor-shadow-feed.conf).
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-live/h5
+ReadOnlyPaths=/usr/local/lib/mal-h5-exec
+TemporaryFileSystem=/var/lib/mal:ro
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+LimitCORE=0
+MemoryMax=1G
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

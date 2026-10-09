@@ -1,6 +1,6 @@
 {
   "mode": "live",
-  "intents_file": "/var/lib/mal/h5/h5-intents.jsonl",
+  "intents_file": "/srv/mal-h5-shadow",
   "state_dir": "/var/lib/mal-live/h5",
   "commitment": "confirmed",
   "poll_s": 5.0,
