@@ -316,7 +316,7 @@ def _source_select(sf: SourceFile, dedupe: bool) -> str:
     p = _q(sf.path)
     if sf.kind == "parquet":
         return f"SELECT venue, mint, trader, side, sol_lamports FROM read_parquet('{p}')"
-    comp = "zstd" if sf.kind == "jsonl.zst" else "none"
+    comp = "zstd" if sf.kind == "jsonl.zst" else "uncompressed"
     return (
         "SELECT venue, mint, trader, side, sol_lamports, signature, event_index FROM "
         f"read_json('{p}', format='newline_delimited', compression='{comp}', columns={TIP_JSON_COLUMNS})"
@@ -564,7 +564,7 @@ def tip_gap_summary(tip_dirs: Sequence[str | Path], day: str) -> dict[str, Any] 
     """Summary of the follower's gaps.jsonl[.zst] records whose t_recv_ms falls in `day` (UTC)."""
     lo, hi = day_bounds_ms(day)
     for d in tip_dirs:
-        for name, comp in (("gaps.jsonl.zst", "zstd"), ("gaps.jsonl", "none")):
+        for name, comp in (("gaps.jsonl.zst", "zstd"), ("gaps.jsonl", "uncompressed")):
             p = Path(d) / name
             if not p.is_file() or p.stat().st_size == 0:
                 continue
@@ -845,7 +845,7 @@ def coverage(
     small = sorted(h for h, v in tip_hours.items() if v["bytes"] == 0 or (median and v["bytes"] < 0.25 * median))
     gaps = None
     for d in tip_dirs:
-        for name, comp in (("gaps.jsonl.zst", "zstd"), ("gaps.jsonl", "none")):
+        for name, comp in (("gaps.jsonl.zst", "zstd"), ("gaps.jsonl", "uncompressed")):
             p = Path(d) / name
             if p.is_file() and p.stat().st_size > 0 and gaps is None:
                 con = _duckdb().connect()
