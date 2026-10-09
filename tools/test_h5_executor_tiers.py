@@ -254,6 +254,58 @@ class TierLimitsBindTests(TierCase):
         self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_state["wallet_lamports"]), (1, 10 * SOL))
 
 
+class AttemptsPerTierTests(TierCase):
+    def attempt(self, e: Env, **kw) -> None:
+        e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)
+        e.ex.state.pending.clear()
+        e.ex.state.open.clear()
+        e.fire(**kw)
+
+    def test_the_cap_is_150_per_tier_and_binds_at_the_150th(self):
+        self.assertEqual(h.H5Limits.from_config({}).max_attempts, 150)
+        e = self.tier_env()
+        e.ex._refresh_tier(e.clock())  # the first look starts the tier (and zeroes its count): seed the count after it
+        e.ex.counters.tier_attempts = 149
+        self.attempt(e)
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts), (1, 150))  # the 150th attempt goes
+        self.attempt(e)
+        self.assertEqual((e.refusals(), len(e.rpc.sent)), (["max_attempts"], 1))  # the 151st does not
+
+    def test_a_tier_change_resets_the_per_tier_counter_and_the_lifetime_counter_keeps_counting(self):
+        e = self.tier_env()
+        e.ex._refresh_tier(e.clock())
+        e.ex.counters.tier_attempts = 150
+        e.ex.state.attempts = 150  # (150 spent at T0 in all)
+        self.attempt(e)
+        self.assertEqual(e.refusals(), ["max_attempts"])
+        self.write_tier("T1\n")
+        self.attempt(e)  # T1: a fresh 150
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 1, 151))
+        row = e.ledger("tier_change")[-1]
+        self.assertEqual((row["from_tier"], row["to_tier"], row["attempts_in_old_tier"], row["lifetime_attempts"]), ("T0", "T1", 150, 150))
+        e.ex.counters.tier_attempts = 150
+        self.attempt(e)
+        self.assertEqual(e.refusals()[-1], "max_attempts")  # and T1 is capped at 150 on its own
+        self.write_tier("T0\n")  # stepping down starts a fresh count too
+        self.attempt(e)
+        self.assertEqual((e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 152))
+
+    def test_the_per_tier_count_survives_a_restart_and_config_can_tighten_it(self):
+        e = self.tier_env(max_attempts=5)
+        for _ in range(5):
+            self.attempt(e)
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts), (5, 5))
+        e.ex = e.build()  # a restart does not reset it
+        self.assertEqual(e.ex.counters.tier_attempts, 5)
+        self.attempt(e)
+        self.assertEqual((e.refusals(), len(e.rpc.sent)), (["max_attempts"], 5))
+
+    def test_a_dry_run_counts_per_tier_too(self):
+        e = Env(self.tmp, live=False)
+        e.fire()
+        self.assertEqual((e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 1))
+
+
 class TierChangeTests(TierCase):
     def test_a_tier_change_never_touches_an_open_position(self):
         e = self.tier_env("T1")

@@ -518,7 +518,7 @@ class RefusalTests(Case):
         self.check("total_loss_stop", lambda e: setattr(e.ex.state, "realized_lamports", -120_000_000))
         self.check("daily_loss_stop", lambda e: e.ex.counters.day(day).update(realized=-80_000_000))
         self.check("max_trades_day", lambda e: e.ex.counters.day(day).update(trades=30))
-        self.check("max_attempts", lambda e: setattr(e.ex.state, "attempts", 120))
+        self.check("max_attempts", lambda e: (e.ex._refresh_tier(e.clock()), setattr(e.ex.counters, "tier_attempts", 150)))
         self.check("max_open", lambda e: e.ex.state.open.update({"a": {}, "b": {}}))
         self.check("already_bought", lambda e: e.ex.state.bought.append(MINT))
         self.check("clock_backwards", lambda e: setattr(e.ex.state, "max_seen_ms", T0 + 3_600_000))

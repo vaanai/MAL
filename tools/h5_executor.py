@@ -125,7 +125,7 @@ SEAL_REASONS = frozenset({"seal_window_no_oracle", "seal_pick", "seal_oracle_err
 # --- limits: code maxima, config can only lower (floors: config can only raise) ---------------------------------------
 H5_DEFAULT = {
     "stake_lamports": 20_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 80_000_000,
-    "total_loss_lamports": 120_000_000, "max_attempts": 120, "max_days": 10, "buy_priority_lamports": 55_000,
+    "total_loss_lamports": 120_000_000, "max_attempts": 150, "max_days": 10, "buy_priority_lamports": 55_000,
     "sell_priority_lamports": 55_000, "escalated_priority_lamports": 150_000, "entry_tolerance_bps": 1500,
 }
 H5_MAX = dict(H5_DEFAULT)  # the defaults ARE the maxima (review of 86a224b): config can only tighten. Loosening is a reviewed code change.
@@ -518,6 +518,7 @@ class H5Counters:
     bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
     tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports}: the active tier and the wallet when it started
+    tier_attempts: int = 0  # buy attempts since the active tier started: what max_attempts caps. Reset at every tier_change.
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
 
     def day(self, key: str) -> dict[str, Any]:
@@ -906,11 +907,13 @@ class H5Executor(pl.LiveExecutor):
 
     def _start_tier(self, tier: str, old: str | None, problem: str | None, now: int) -> None:
         wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
+        in_tier = self.counters.tier_attempts  # what the old tier used, for the ledger; the cap starts again from zero in the new one
         self.tier = tier
         self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet}
+        self.counters.tier_attempts = 0
         self.counters.save(self.counters_path)
         self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, limits=asdict(self.h5),
-                  open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK)
+                  open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts)
 
     def _total_stop_lamports(self) -> int | None:
         """The tier's total stop, also capped at 35% of the wallet balance measured when the tier started. None while that balance is unknown."""
@@ -1003,7 +1006,7 @@ class H5Executor(pl.LiveExecutor):
             return "daily_loss_stop"
         if day["trades"] >= h5.max_trades_per_day:
             return "max_trades_day"
-        if st.attempts >= h5.max_attempts:
+        if self.counters.tier_attempts >= h5.max_attempts:  # per tier: reset at each tier_change (state.attempts is the lifetime count, for the ledger)
             return "max_attempts"
         if st.first_attempt_ms is not None and now - st.first_attempt_ms >= h5.max_days * 86_400_000:
             return "max_days"
@@ -1213,6 +1216,7 @@ class H5Executor(pl.LiveExecutor):
             return self._refuse(trg, late)
         st = self.state
         st.attempts += 1
+        self.counters.tier_attempts += 1
         st.bought.append(trg.mint)
         if st.first_attempt_ms is None:
             st.first_attempt_ms = now
@@ -1267,6 +1271,7 @@ class H5Executor(pl.LiveExecutor):
         if res.get("err") is None and len(accts) > 1 and accts[1]:
             sim_tokens = sim.token_amount(sim._b64(accts[1]))
         self.state.attempts += 1
+        self.counters.tier_attempts += 1
         self.state.bought.append(trg.mint)
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
@@ -2043,7 +2048,7 @@ def status_report(cfg: dict[str, Any]) -> str:
         st = pe.State.load(sp, LIVE)
         c = H5Counters.load(sd / "h5-counters.json", mode) if (sd / "h5-counters.json").exists() else H5Counters(run_mode=mode)
         today = c.days.get(day_key(int(time.time() * 1000)), {})
-        lines.append(f"[{mode}] attempts={st.attempts}/{h5.max_attempts} realized_sol={st.realized_lamports / pe.LAMPORTS:.6f} "
+        lines.append(f"[{mode}] attempts={st.attempts} (lifetime; {c.tier_attempts}/{h5.max_attempts} in {c.tier_state.get('tier', 'T0')}) realized_sol={st.realized_lamports / pe.LAMPORTS:.6f} "
                      f"open={len(st.open)}/{h5.max_open} pending={len(st.pending)} today_trades={today.get('trades', 0)} "
                      f"today_realized_sol={today.get('realized', 0) / pe.LAMPORTS:.6f} halts={sorted(c.halts)} seal_skips={c.seal_skips} "
                      f"sells_landed={c.sells_landed} sells_late={c.sells_late}")
