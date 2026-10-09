@@ -57,19 +57,27 @@ class ConfirmedTriggerTests(Feed):
         self.assertEqual(e.refusals(), [])
         dec = e.ledger("decision")[0]
         self.assertEqual((dec["q_lamports"], dec["trigger_slot"]), (Q, TRIG_SLOT))
-        self.assertEqual((dec["synthetic"], dec["synthetic_src"]), (False, "ws"))  # the class and its source are on the decision row
+        self.assertEqual((dec["synthetic"], dec["synthetic_src"]), (False, "rpc"))  # the class and its source are on the decision row
         self.assertEqual(self.counters(e).synthetic_unconfirmed, 0)
 
-    def test_every_documented_source_is_carried_and_the_source_is_never_a_gate(self):
-        for src in ("ws", "rpc", "pre_event_binary"):
-            t, bad = h.parse_shadow_trigger(shadow_trigger(Clock(), synthetic_src=src))
-            self.assertEqual((bad, t.synthetic, t.synthetic_src), (None, False, src))
-        for src in (None, "", "x" * 33, "ws rpc", "a;b", 7, ["ws"]):  # an odd or missing source is dropped from the ledger row, the trigger stays tradable
-            t, bad = h.parse_shadow_trigger(shadow_trigger(Clock(), synthetic_src=src))
-            self.assertEqual((bad, t.synthetic, t.synthetic_src), (None, False, None), src)
-        r = without(shadow_trigger(Clock()), "synthetic_src")
-        t, bad = h.parse_shadow_trigger(r)
-        self.assertEqual((bad, t.synthetic_src), (None, None))
+    def test_only_the_rpc_source_confirms_and_every_other_source_is_refused(self):
+        t, bad = h.parse_shadow_trigger(shadow_trigger(Clock(), synthetic_src="rpc"))
+        self.assertEqual((bad, t.synthetic, t.synthetic_src), (None, False, "rpc"))
+        for src in ("ws", "pre_event_binary", "RPC", "rpc ", "rpc2", "", None, 7, ["rpc"], True, "x" * 33):  # live, plain can only come from an RPC read
+            self.assertEqual(h.parse_shadow_trigger(shadow_trigger(Clock(), synthetic_src=src)), (None, "synthetic_unconfirmed"), src)
+        r = without(shadow_trigger(Clock()), "synthetic_src")  # synthetic false but no source named
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "synthetic_unconfirmed"))
+
+    def test_a_false_from_another_source_is_never_a_buy_and_is_ledgered_with_the_source_name(self):
+        e = self.start()
+        for i, src in enumerate(("ws", "pre_event_binary", "junk;1", None)):
+            r = {**shadow_trigger(e.clock), "pool": f"{i}" * 43 + "9", "mint": f"{i}" * 43 + "8"}
+            self.append(e, without(r, "synthetic_src") if src is None else {**r, "synthetic_src": src})
+        e.ex.intent_tick()
+        rows = e.ledger("skip")
+        self.assertEqual([(r["synthetic_seen"], r["synthetic_src_seen"]) for r in rows],
+                         [("false", "ws"), ("false", "pre_event_binary"), ("false", "invalid"), ("false", "absent")])
+        self.assertEqual((e.rpc.sent, e.ledger("decision"), e.alerts("shadow_synthetic_missing")), ([], [], []))  # `synthetic` is there: a wrong value, not a stale shadow
 
     def test_a_confirmed_flat_intent_row_is_accepted_and_carries_the_class(self):
         e = self.env()
@@ -110,9 +118,9 @@ class UnconfirmedTriggerTests(Feed):
         e = self.env()
         flat = {"schema": "h5_intent_v1", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": 0.2, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
                 "base_reserve": BASE0, "v_lamports": 17_580_000_000, "decision_ms": e.clock()}
-        for extra in ({}, {"synthetic": None}, {"synthetic": True}, {"synthetic": "false"}):
+        for extra in ({}, {"synthetic": None}, {"synthetic": True}, {"synthetic": "false"}, {"synthetic": False}, {"synthetic": False, "synthetic_src": "ws"}):
             self.assertEqual(h.parse_trigger({**flat, **extra}), (None, "synthetic_unconfirmed"), extra)
-        t, bad = h.parse_trigger({**flat, "synthetic": False})
+        t, bad = h.parse_trigger({**flat, "synthetic": False, "synthetic_src": "rpc"})
         self.assertEqual((bad, t.synthetic), (None, False))
         path = Path(e.conf["intents_file"])
         path.write_text("")
@@ -135,9 +143,10 @@ class UnconfirmedTriggerTests(Feed):
         t = replace(trig(e.clock), synthetic=None)  # a callback caller, or a future code path, that builds the trigger itself
         e.ex.handle_trigger(t)
         e.ex.handle_trigger(replace(t, synthetic=True))
-        self.assertEqual((e.refusals(), e.rpc.sent), (["synthetic_unconfirmed"] * 2, []))
+        e.ex.handle_trigger(replace(t, synthetic_src="ws"))
+        self.assertEqual((e.refusals(), e.rpc.sent), (["synthetic_unconfirmed"] * 3, []))
         self.assertEqual(h.H5Trigger.__dataclass_fields__["synthetic"].default, None)  # the default is not a confirmation
-        self.assertEqual(self.counters(e).synthetic_unconfirmed, 2)
+        self.assertEqual(self.counters(e).synthetic_unconfirmed, 3)
 
     def test_it_is_logged_once_per_pool_but_counted_every_time(self):
         e = self.start()

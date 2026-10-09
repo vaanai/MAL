@@ -22,7 +22,7 @@ the previous hour is drained first on a roll):
                   sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused), synthetic (must be the literal false:
                   the detector classified the pool as NOT a synthetic migration (no pump PostCompleteBuyEvent; DEC-024 Am.2: it reads the
                   completing tx or the migrate tx, and a pool whose tx it cannot find is unclassified, so it gets `excluded`); absent,
-                  null, true or a non-bool is refused as synthetic_unconfirmed), synthetic_src (ws | rpc | pre_event_binary, ledgered only)
+                  null, true or a non-bool is refused as synthetic_unconfirmed), synthetic_src (must be "rpc": a plain pool is only ever confirmed by an RPC read; ws, pre_event_binary, absent or junk are refused too)
   type "excluded" the detector classified a pool as synthetic (or could not classify it): counted, never traded, never an alert; a later
                   trigger on the same pool or mint is refused as excluded_pool
   type "gap"      detector lost prints: buys refused for gap_hold_ms (20 s minimum) unless flags_pools is the literal false (a reconnect on a
@@ -310,7 +310,7 @@ class H5Trigger:
     s0_reanchored_slots: int | None = None  # ledgered: how far s0 moved down when an earlier print arrived late (before any trigger)
     s0_minus_announced_slots: int | None = None
     synthetic: bool | None = None  # the detector's class of the pool: only the literal False is tradable (None = never confirmed -> refused)
-    synthetic_src: str | None = None  # how the detector got it (ws | rpc | pre_event_binary): ledgered on the decision row, never gated on
+    synthetic_src: str | None = None  # how the detector got it: only "rpc" is tradable (SYNTHETIC_SRC_OK); ledgered on the decision row
 
     @property
     def pre_unlinked(self) -> bool:
@@ -335,10 +335,14 @@ def pre_unlinked(unresolved: Any, settled: Any) -> bool:
     return _is_int(unresolved) and unresolved >= 1 and _is_int(settled) and settled == 0
 
 
+SYNTHETIC_SRC_OK = "rpc"  # the only source that confirms a plain pool: live, "not synthetic" can only come from an RPC read; the ws path only ever marks synthetic
+
+
 def synthetic_confirmed(row: Any) -> bool:
     """The class gate, fail closed: a trigger is tradable only if the record says `synthetic` is the literal False (the detector classified the
-    pool as NOT a synthetic migration). Absent, null, true, 0, "false" and every other value are not a confirmation."""
-    return isinstance(row, dict) and row.get("synthetic") is False
+    pool as NOT a synthetic migration) AND `synthetic_src` is exactly "rpc". Absent, null, true, 0, "false" and every other value are not a
+    confirmation; nor is any other source (absent, "ws", "pre_event_binary", junk)."""
+    return isinstance(row, dict) and row.get("synthetic") is False and row.get("synthetic_src") == SYNTHETIC_SRC_OK
 
 
 def _synthetic_src(row: dict[str, Any]) -> str | None:
@@ -1158,7 +1162,7 @@ class H5Executor(pl.LiveExecutor):
         why = self._kill_reason() or self._live_gate()
         if why:
             return why
-        if trg.synthetic is not False:  # the parsers already refuse this; a trigger handed in by a callback must not slip past (fail closed)
+        if trg.synthetic is not False or trg.synthetic_src != SYNTHETIC_SRC_OK:  # the parsers already refuse this; a trigger handed in by a callback must not slip past (fail closed)
             return SYNTHETIC_UNCONFIRMED
         if trg.pool in self.excluded_pools or trg.mint in self.excluded_pools:  # the detector said `excluded` for this pool: no buy, whatever a trigger says
             return EXCLUDED_POOL
@@ -1576,7 +1580,7 @@ class H5Executor(pl.LiveExecutor):
         counters.synthetic_unconfirmed for --status); its ledger row is written once per pool. The two causes are told apart:
           key ABSENT   the detector is not on a head that classifies (an old-schema shadow): a schema problem, so an alert at the first record,
                        then at most one per SCHEMA_ALERT_WINDOW_MS, and not part of the hourly bad-value count
-          key present  null / true / not a bool: a detector bug (it should have written `excluded`, or a trigger with false): counts like any
+          key present  null / true / not a bool, or false from a source other than "rpc": a detector bug (it should have written `excluded`, or a trigger with false): counts like any
                        other bad value, so more than BAD_INTENT_ALERT_N in an hour is a bad_intent_rate alert"""
         absent = "synthetic" not in row
         v = row.get("synthetic")
@@ -1586,7 +1590,9 @@ class H5Executor(pl.LiveExecutor):
             self._synthetic_logged[key] = None
             while len(self._synthetic_logged) > SYNTHETIC_LOGGED_KEEP:
                 del self._synthetic_logged[next(iter(self._synthetic_logged))]
-            self._log("skip", str(row.get("mint") or ""), reason=SYNTHETIC_UNCONFIRMED, pool=key, synthetic_seen=seen)
+            src = _synthetic_src(row)
+            self._log("skip", str(row.get("mint") or ""), reason=SYNTHETIC_UNCONFIRMED, pool=key, synthetic_seen=seen,
+                      synthetic_src_seen=src if src is not None else ("absent" if "synthetic_src" not in row else "invalid"))
         self._count_refusal(SYNTHETIC_UNCONFIRMED)
         self.counters.synthetic_unconfirmed += 1
         self.counters.save(self.counters_path)

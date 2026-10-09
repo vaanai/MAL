@@ -351,7 +351,7 @@ class TriggerFidelityTests(Case):
 
     def test_a_flat_intent_row_missing_a_key_is_not_a_shadow_mismatch(self):
         e = self.env()
-        r = {"schema": "h5_intent_v1", "synthetic": False, "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
+        r = {"schema": "h5_intent_v1", "synthetic": False, "synthetic_src": "rpc", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
              "base_reserve": BASE0, "v_lamports": V}  # no decision_ms
         self.feed(e, r)
         self.assertEqual((e.refusals(), e.alerts("shadow_schema_mismatch")), (["bad_intent:missing_decision_ms"], []))
@@ -367,7 +367,7 @@ class TriggerFidelityTests(Case):
         r = shadow_trigger(Clock())
         del r["v_missing"]
         self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_v_missing"))
-        flat = {"schema": "h5_intent_v1", "synthetic": False, "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
+        flat = {"schema": "h5_intent_v1", "synthetic": False, "synthetic_src": "rpc", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
                 "base_reserve": BASE0, "v_lamports": V, "decision_ms": T0, "gap": "no"}
         self.assertEqual(h.parse_trigger(flat), (None, "bad_intent:gap"))
 
@@ -402,7 +402,7 @@ class TriggerFidelityTests(Case):
                          "boost_last_slice_s_recv"} <= set(pool))
         stamp = {"pool": POOL, "mint": MINT, "t_detect_ms": T0, "block_time": T0 // 1000, "s0_t_recv_ms": T0 - 100_000}
         self.assertEqual(h.parse_shadow_trigger({**trig, **stamp}), (None, "synthetic_unconfirmed"))  # the 3dbe1de record has no class: refused
-        t, bad = h.parse_shadow_trigger({**trig, **stamp, "synthetic": False, "synthetic_src": "ws"})
+        t, bad = h.parse_shadow_trigger({**trig, **stamp, "synthetic": False, "synthetic_src": "rpc"})
         self.assertIsNone(bad)
         self.assertEqual(t.s0_wall_ms, T0 - 100_000)
 
