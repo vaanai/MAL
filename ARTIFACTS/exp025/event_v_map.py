@@ -99,20 +99,28 @@ def p7_all_pass(cp: tuple, fee: tuple) -> bool:
 # sell and the constant-product quote input `qin` of a buy are not on the tape. They are on the raw event: observe/trade_decode.py decodes
 # event bytes [64:72] to the key `pool_quote_amount` (buy: _decode_buy line 413, sell: _decode_sell line 445; kept by seal_trade, line 534).
 # The check fetches each sampled print's transaction (getTransaction), decodes it with records_from_logs(event_v=True), keys the record by
-# (slot, signature, event_index), and applies the integer laws above to the RAW fields. Pure functions on dicts: no file, no network, and no
-# decoder import (the tool decodes; these functions decide).
+# (slot, signature, event_index), and applies the integer laws above. The gross quote out / qin, base_reserve and token_raw are the RAW event's.
+# `quote_reserve_mapped` is NOT rebuilt from the raw vault and V(t): it is the adapter's written column, the row of the look's materialised
+# tape/trades/<hour>.parquet at (slot, tx_index, event_index) with the same pool, which is what pass A prices on (quant-proof E2). V0 is
+# tokens.v0_lamports; the sample frame holds only pools that have one (quant-proof E1). Pure functions on dicts: no file, no network, and no
+# decoder import (the tool decodes and looks the rows up; these functions decide and draw).
 # ---------------------------------------------------------------------------------------------------------------------------------------
 P7_RAW_TX_ATTEMPTS = 3                              # getTransaction attempts per transaction (a transaction holding several sampled prints is fetched once)
 P7_EXACT_QUOTE_IN_PREFIX = "buy_exact_quote_in"     # ix_name of `buy_exact_quote_in` and `buy_exact_quote_in_v2`: their quote_amount_in is net of fees
+P7_RAW_BUY_MIN_COMPARABLE = 100                     # line 1 only: top the buy side up to this many comparable buys (quant-proof E3)
 # fields that must be equal on the sampled tape row and on the raw event for the raw event to count as the same print
 # (zero_sol is written only when true; a comparable tape row has none, so a raw event that has one is a different print)
 P7_RAW_IDENTITY_FIELDS = ("pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves", "ix_name", "zero_sol")
+# the adapter row must be the sampled print's row: same key and pool as the tape row, and the same base_reserve and token_raw as the raw event
+P7_RAW_ADAPTER_KEY = ("slot", "tx_index", "event_index", "pool")
+P7_RAW_ADAPTER_FIELDS = ("base_reserve", "token_raw")
 # why a sampled row is NOT COMPARABLE (it leaves both denominators), tested in this order
 P7_RAW_EXCLUSIONS = ("zero_sol", "not_buy_or_sell", "buy_exact_quote_in", "no_ix_name")
-# fields the law reads from the raw event; each must be an int
+# fields the law reads from the raw event; each must be an int (the adapter row's quote_reserve too)
 P7_RAW_LAW_FIELDS = ("pool_quote_amount", "quote_reserve", "base_reserve", "token_raw", "virtual_quote_reserves")
-# the closed list of reasons a sampled print can be unresolved; each counts as a MISS on its line (the denominator never shrinks)
-P7_RAW_REASONS = ("fetch_failed", "no_record", "no_v0", "slot_mismatch", "identity_mismatch", "field_missing")
+# the closed list of reasons a sampled print can be unresolved; each counts as a MISS on its line (the denominator never shrinks).
+# There is no `no_v0`: the sample frame holds only pools with a non-null tokens.v0_lamports.
+P7_RAW_REASONS = ("fetch_failed", "no_record", "no_adapter_row", "slot_mismatch", "identity_mismatch", "field_missing")
 
 
 def p7_raw_exclusion(tape_row: dict) -> str | None:
@@ -142,19 +150,14 @@ def p7_raw_line(tape_row: dict) -> str | None:
     return tape_row["side"]
 
 
-def raw_event_mapped(raw: dict, v0: int) -> int:
-    """quote_reserve_mapped from the raw event's OWN pre-trade vault and V: map_quote_reserve(quote_reserve, virtual_quote_reserves, V0)."""
-    return map_quote_reserve(raw["quote_reserve"], raw["virtual_quote_reserves"], v0)
+def p7_raw_hit(line: str, raw: dict, q_mapped: int, v0: int) -> bool:
+    """One print against the constant-product law. A match is within_tolerance: within P7_CP_TOLERANCE_BP of actual OR within
+    P7_CP_TOLERANCE_UNITS units (base units for a buy, lamports for a sell).
 
-
-def p7_raw_hit(line: str, raw: dict, v0: int, mapping=map_quote_reserve) -> bool:
-    """One print against the constant-product law, every field taken from the RAW event. A match is within_tolerance: within
-    P7_CP_TOLERANCE_BP of actual OR within P7_CP_TOLERANCE_UNITS units (base units for a buy, lamports for a sell).
-
+    q_mapped is the ADAPTER's written quote_reserve for the print (what pass A prices on), v0 is tokens.v0_lamports; the rest is the RAW event's.
     sell: raw pool_quote_amount (the gross quote out) vs (q_mapped + V0) * token_raw // (base_reserve + token_raw); token_raw is base_in.
-    buy : raw token_raw vs base_reserve * qin // (q_mapped + V0 + qin); qin is raw pool_quote_amount.
-    `mapping(vault, v_pre, v0)` is the pinned mapping by default; a test passes a pending-blind one to show that it fails."""
-    q = int(mapping(raw["quote_reserve"], raw["virtual_quote_reserves"], v0))
+    buy : raw token_raw vs base_reserve * qin // (q_mapped + V0 + qin); qin is raw pool_quote_amount."""
+    q = int(q_mapped)
     base, token, gross = int(raw["base_reserve"]), int(raw["token_raw"]), int(raw["pool_quote_amount"])
     if line == "sell":
         if base + token <= 0:
@@ -167,14 +170,23 @@ def p7_raw_hit(line: str, raw: dict, v0: int, mapping=map_quote_reserve) -> bool
     raise ValueError(f"line must be 'sell' or 'buy', not {line!r}")
 
 
-def p7_raw_check(tape_row: dict, raw: dict | None, v0: int | None, *, fetch_failed: bool = False, mapping=map_quote_reserve) -> tuple:
+def _is_int(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def p7_raw_check(tape_row: dict, raw: dict | None, adapter_row: dict | None, v0: int, *, fetch_failed: bool = False) -> tuple:
     """Outcome of one SAMPLED print: (line, outcome, reason).
 
     line is p7_raw_line(tape_row); outcome is 'excluded', 'hit', 'miss' or 'unresolved'; reason is None for a hit or a miss, one of
-    P7_RAW_EXCLUSIONS for an excluded (not comparable) print, and one of P7_RAW_REASONS for an unresolved one. raw is the record of
-    records_from_logs(event_v=True) at the sampled event_index (None if there is none); v0 is tokens.v0_lamports of the print's pool (None if
-    absent). The tests run in this fixed order: excluded, fetch_failed, no raw record, no V0, slot, (signature, event_index), identity fields,
-    law fields."""
+    P7_RAW_EXCLUSIONS for an excluded (not comparable) print, and one of P7_RAW_REASONS for an unresolved one.
+    tape_row is the sampled print's raw walker row (it has slot, tx_index, signature, event_index); raw is the record of
+    records_from_logs(event_v=True) at the sampled event_index (None if there is none); adapter_row is the look's materialised tape row at
+    (slot, tx_index, event_index) (None if there is none); v0 is tokens.v0_lamports of the print's pool. The frame holds only pools with a V0,
+    so a v0 that is not an integer is a defect in the caller, not a miss: it raises.
+    The tests run in this fixed order: excluded, fetch_failed, no raw record, no adapter row, slot, (signature, event_index), tape-vs-raw
+    identity fields, adapter key and pool, adapter-vs-raw base_reserve and token_raw, law fields."""
+    if not _is_int(v0):
+        raise ValueError("v0 must be an integer: the P7 frame holds only pools with a non-null tokens.v0_lamports")
     cause = p7_raw_exclusion(tape_row)
     if cause is not None:
         return None, "excluded", cause
@@ -183,17 +195,21 @@ def p7_raw_check(tape_row: dict, raw: dict | None, v0: int | None, *, fetch_fail
         return line, "unresolved", "fetch_failed"
     if raw is None:
         return line, "unresolved", "no_record"
-    if v0 is None:
-        return line, "unresolved", "no_v0"
+    if adapter_row is None:
+        return line, "unresolved", "no_adapter_row"
     if raw.get("slot") != tape_row.get("slot"):
         return line, "unresolved", "slot_mismatch"
     if raw.get("signature") != tape_row.get("signature") or raw.get("event_index") != tape_row.get("event_index"):
         return line, "unresolved", "no_record"
     if any(raw.get(k) != tape_row.get(k) for k in P7_RAW_IDENTITY_FIELDS):
         return line, "unresolved", "identity_mismatch"
-    if any(not isinstance(raw.get(k), int) or isinstance(raw.get(k), bool) for k in P7_RAW_LAW_FIELDS):
+    if any(adapter_row.get(k) != tape_row.get(k) for k in P7_RAW_ADAPTER_KEY):
+        return line, "unresolved", "identity_mismatch"
+    if any(adapter_row.get(k) != raw.get(k) for k in P7_RAW_ADAPTER_FIELDS):
+        return line, "unresolved", "identity_mismatch"
+    if any(not _is_int(raw.get(k)) for k in P7_RAW_LAW_FIELDS) or not _is_int(adapter_row.get("quote_reserve")):
         return line, "unresolved", "field_missing"
-    return line, ("hit" if p7_raw_hit(line, raw, int(v0), mapping) else "miss"), None
+    return line, ("hit" if p7_raw_hit(line, raw, adapter_row["quote_reserve"], v0) else "miss"), None
 
 
 def p7_raw_tally(results) -> dict:
@@ -220,3 +236,52 @@ def p7_raw_pass(tally: dict) -> bool:
     """P7 line 1 on raw events: >= 99% of the comparable sampled sells and >= 99% of the comparable sampled buys (p7_cp_pass).
     A side with no comparable event fails."""
     return p7_cp_pass(tally["sell_ok"], tally["sell_n"], tally["buy_ok"], tally["buy_n"])
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# The P7 sample: frame, main draw, buy top-up. All fixed before any fetch, from the tape rows' pool, key, `side`, `zero_sol` and `ix_name` only.
+# ---------------------------------------------------------------------------------------------------------------------------------------
+def _key(row: dict) -> tuple:
+    return (row["slot"], row["tx_index"], row["event_index"])
+
+
+def p7_raw_frame(rows, v0_by_pool: dict) -> list:
+    """The sample frame (quant-proof E1): canonical-pool PumpSwap prints of pools that have a non-null tokens.v0_lamports, in
+    (slot, tx_index, event_index) order. v0_by_pool maps a canonical pool to its tokens.v0_lamports; a pool with a null V0 is absent or maps to
+    None and none of its prints is in the frame. Graduations before 2026-10-09T00 have no V0 (EXP-025 section 10 P6 item 2), so their pools are out."""
+    frame = [r for r in rows if _is_int(v0_by_pool.get(r.get("pool")))]
+    frame.sort(key=_key)
+    return frame
+
+
+def p7_raw_main_draw(frame: list, n: int = P7_SAMPLE) -> list:
+    """The P7 sample: the start of each of n equal segments of the frame, index (k * N) // n for k in 0..n-1, spread evenly over the
+    look's hours. The whole frame if it holds n prints or fewer."""
+    size = len(frame)
+    if size <= n:
+        return list(frame)
+    return [frame[(k * size) // n] for k in range(n)]
+
+
+def p7_raw_buy_topup(frame: list, main: list, minimum: int = P7_RAW_BUY_MIN_COMPARABLE) -> list:
+    """Line 1 only (quant-proof E3). If `main` holds fewer than `minimum` comparable buys, add comparable buys of the frame that are not in
+    `main`: `need` of them, the midpoint of each of `need` equal segments of the candidate list (a second stride, offset half a stride from
+    the segment start): index ((2k + 1) * B) // (2 * need). If the candidates number `need` or fewer, all of them. Comparable means
+    p7_raw_line(row) == 'buy': decided from side, zero_sol and ix_name alone."""
+    have = sum(1 for r in main if p7_raw_line(r) == "buy")
+    if have >= minimum:
+        return []
+    need = minimum - have
+    taken = {_key(r) for r in main}
+    candidates = [r for r in frame if p7_raw_line(r) == "buy" and _key(r) not in taken]
+    size = len(candidates)
+    if size <= need:
+        return candidates
+    return [candidates[((2 * k + 1) * size) // (2 * need)] for k in range(need)]
+
+
+def p7_raw_draw(rows, v0_by_pool: dict, n: int = P7_SAMPLE) -> dict:
+    """frame -> main draw (shared by both lines) -> buy top-up (line 1 only). Returns {'frame_n', 'main', 'topup'}."""
+    frame = p7_raw_frame(rows, v0_by_pool)
+    main = p7_raw_main_draw(frame, n)
+    return {"frame_n": len(frame), "main": main, "topup": p7_raw_buy_topup(frame, main)}

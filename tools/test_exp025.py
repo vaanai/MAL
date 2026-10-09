@@ -390,7 +390,7 @@ class RawEventP7(unittest.TestCase):
     def _base(self, side, i=0, pending=None):
         pending = self.PENDING if pending is None else pending
         v_t = self.V0 - pending
-        return {"venue": "pumpswap", "pool": "POOL", "side": side, "slot": 1000 + i, "signature": f"sig{i}", "event_index": i % 3,
+        return {"venue": "pumpswap", "pool": "POOL", "side": side, "slot": 1000 + i, "tx_index": 7 + i, "signature": f"sig{i}", "event_index": i % 3,
                 "quote_reserve": self.VAULT, "base_reserve": self.BASE, "virtual_quote_reserves": v_t, "_total": self.VAULT + v_t}
 
     def _sell(self, i=0, pending=None):
@@ -412,8 +412,20 @@ class RawEventP7(unittest.TestCase):
         """What stored_trade keeps: the raw fields minus the ones it drops."""
         return {k: v for k, v in raw.items() if k not in ("pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee")}
 
-    def _check(self, raw, v0=None, **kw):
-        return self.m.p7_raw_check(self._tape(raw), raw, self.V0 if v0 is None else v0, **kw)
+    def _adapter(self, raw, v0=None, gross=False, **over):
+        """The look's materialised tape row for this print. A correct adapter writes quote_reserve := vault + V(t) - V0 (section 2.4); an
+        adapter that writes the gross vault (the September column) is gross=True."""
+        v0 = self.V0 if v0 is None else v0
+        q = raw["quote_reserve"] if gross else self.m.map_quote_reserve(raw["quote_reserve"], raw["virtual_quote_reserves"], v0)
+        row = {"pool": raw["pool"], "slot": raw["slot"], "tx_index": raw.get("tx_index"), "event_index": raw["event_index"],
+               "quote_reserve": q, "base_reserve": raw["base_reserve"], "token_raw": raw["token_raw"]}
+        row.update(over)
+        return row
+
+    def _check(self, raw, v0=None, adapter="correct", **kw):
+        v0 = self.V0 if v0 is None else v0
+        row = self._adapter(raw, v0) if adapter == "correct" else (self._adapter(raw, v0, gross=True) if adapter == "gross" else adapter)
+        return self.m.p7_raw_check(self._tape(raw), raw, row, v0, **kw)
 
     # -- the finding, on the real decoder and the real store ------------------------------------------------------------------------------
     def _real(self, name):
@@ -425,7 +437,8 @@ class RawEventP7(unittest.TestCase):
         with open(os.path.join(ROOT, "tools", "fixtures", "walk2_event_v", name), encoding="utf-8") as fh:
             d = json.load(fh)
         (rec,) = records_from_logs(d["meta"]["logMessages"], slot=d["slot"], signature=d["signature"], t_recv_ms=0, commitment="confirmed", feed="t", event_v=True)
-        return rec, stored_trade(rec)
+        # the walker adds tx_index to every trade row it writes (tools/pump_history_backfill.py rows_from_block)
+        return rec, dict(stored_trade(rec), tx_index=5)
 
     def test_stored_trade_drops_what_line_one_needs_and_the_raw_event_has_it(self):
         for name in ("sell_v2_kept.json", "buy_v1_481_wsol.json"):
@@ -436,49 +449,79 @@ class RawEventP7(unittest.TestCase):
             for k in ("slot", "signature", "event_index", "pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves"):
                 self.assertIn(k, tape, (name, k))
 
-    def test_real_events_hit_with_the_pinned_mapping_whatever_v0_is(self):
+    def test_real_events_hit_with_a_correct_adapter_row_whatever_v0_is(self):
         for name, line in (("sell_v2_kept.json", "sell"), ("buy_v1_481_wsol.json", "buy")):
             rec, tape = self._real(name)
             for v0 in (self.V0, 17_500_000_000, 17_700_000_000):
-                self.assertEqual(self.m.p7_raw_check(tape, rec, v0), (line, "hit", None), (name, v0))
-                self.assertEqual(self.m.raw_event_mapped(rec, v0) + v0, rec["quote_reserve"] + rec["virtual_quote_reserves"])
-            # a mapping that ignores V(t) (constant V0) is right only if V0 happens to equal V(t)
-            blind = lambda vault, v_pre, v0: vault  # noqa: E731
-            self.assertEqual(self.m.p7_raw_check(tape, rec, 16_000_000_000, mapping=blind)[1], "miss", name)
+                row = self._adapter(dict(rec, tx_index=tape["tx_index"]), v0)         # what a correct adapter writes for this print
+                self.assertEqual(row["quote_reserve"] + v0, rec["quote_reserve"] + rec["virtual_quote_reserves"])
+                self.assertEqual(self.m.p7_raw_check(tape, rec, row, v0), (line, "hit", None), (name, v0))
+            # an adapter that writes the gross vault is right only if V0 happens to equal V(t)
+            bad = self._adapter(dict(rec, tx_index=tape["tx_index"]), gross=True)
+            self.assertEqual(self.m.p7_raw_check(tape, rec, bad, 16_000_000_000)[1], "miss", name)
 
     def test_real_exact_quote_in_buys_are_excluded_by_ix_name_of_the_tape_row(self):
         for name in ("buy_exact_quote_in_496.json", "buy_exact_quote_in_v2_499_kept.json", "boost_buy_and_burn.json"):
             rec, tape = self._real(name)
             self.assertTrue(tape["ix_name"].startswith("buy_exact_quote_in"), name)
-            self.assertEqual(self.m.p7_raw_check(tape, rec, self.V0), (None, "excluded", "buy_exact_quote_in"), name)
+            self.assertEqual(self.m.p7_raw_check(tape, rec, None, self.V0), (None, "excluded", "buy_exact_quote_in"), name)
         rec, tape = self._real("buy_v1_481_wsol.json")
         self.assertEqual(self.m.p7_raw_line(tape), "buy")
 
     # -- decision rules on synthetic raw events -------------------------------------------------------------------------------------------
-    def test_pinned_mapping_hits_and_a_pending_blind_mapping_misses(self):
-        blind = lambda vault, v_pre, v0: vault  # noqa: E731  (the September column: gross vault, constant V0)
+    def test_the_adapters_column_is_what_the_law_is_checked_on(self):
+        """E2: quote_reserve_mapped is the materialised row's, not rebuilt from the raw vault and V(t)."""
         for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
             self.assertEqual(self._check(raw), (line, "hit", None))
-            self.assertEqual(self._check(raw, mapping=blind), (line, "miss", None))
+            # the raw event is untouched and right; only the adapter's column differs, and the check follows the adapter's column
+            gross = self._adapter(raw, gross=True)
+            self.assertEqual(gross["quote_reserve"], raw["quote_reserve"])
+            self.assertEqual(self._check(raw, adapter=gross), (line, "miss", None))
             # the miss is not marginal: it is above 100 bp of the raw field
-            q = blind(raw["quote_reserve"], raw["virtual_quote_reserves"], self.V0)
             if line == "sell":
-                actual, model = raw["pool_quote_amount"], self.m.cp_sell_gross_quote_out(q, self.V0, self.BASE, raw["token_raw"])
+                actual, model = raw["pool_quote_amount"], self.m.cp_sell_gross_quote_out(gross["quote_reserve"], self.V0, self.BASE, raw["token_raw"])
             else:
-                actual, model = raw["token_raw"], self.m.cp_buy_token_out(q, self.V0, self.BASE, raw["pool_quote_amount"])
+                actual, model = raw["token_raw"], self.m.cp_buy_token_out(gross["quote_reserve"], self.V0, self.BASE, raw["pool_quote_amount"])
             self.assertGreater(abs(model - actual) * 10_000 / actual, 100, line)
-        # with no pending fees the two mappings agree: V(t) = V0 and the vault is the effective quote
+            # and a column that is off by an LP-sized amount (a vault chained across a deposit) misses too
+            stale = self._adapter(raw, quote_reserve=self._adapter(raw)["quote_reserve"] - 1_000_000_000)
+            self.assertEqual(self._check(raw, adapter=stale)[1], "miss", line)
+        # with no pending fees V(t) = V0 and the gross vault IS the effective quote, so the September column is right there
         for raw in (self._sell(pending=0), self._buy(pending=0)):
             self.assertEqual(self._check(raw)[1], "hit")
-            self.assertEqual(self._check(raw, mapping=blind)[1], "hit")
+            self.assertEqual(self._check(raw, adapter="gross")[1], "hit")
 
-    def test_a_stale_vault_from_a_chain_across_an_lp_deposit_misses(self):
-        # the print's own pre-trade vault is what the law holds on; a vault chained from the previous print misses it by the LP deposit
-        lp_deposit = 1_000_000_000
-        for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
-            self.assertEqual(self.m.raw_event_mapped(raw, self.V0), raw["quote_reserve"] + raw["virtual_quote_reserves"] - self.V0)
-            self.assertTrue(self.m.p7_raw_hit(line, raw, self.V0))
-            self.assertFalse(self.m.p7_raw_hit(line, dict(raw, quote_reserve=raw["quote_reserve"] - lp_deposit), self.V0))
+    def test_an_adapter_that_writes_the_gross_vault_fails_p7(self):
+        """E2 required test: a whole sample whose adapter writes the gross vault (pending fees in it) fails line 1; the pinned adapter passes."""
+        for adapter, want in (("correct", True), ("gross", False)):
+            results = [self._check(self._sell(i), adapter=adapter) for i in range(100)] + [self._check(self._buy(i), adapter=adapter) for i in range(100)]
+            t = self.m.p7_raw_tally(results)
+            self.assertEqual((t["sell_n"], t["buy_n"]), (100, 100))
+            self.assertEqual(self.m.p7_raw_pass(t), want, adapter)
+            if not want:
+                self.assertEqual((t["sell_ok"], t["buy_ok"]), (0, 0))
+        # one bad adapter row among 100 is a miss like any other; two fail the side
+        for bad, want in ((1, True), (2, False)):
+            results = [self._check(self._sell(i), adapter="gross" if i < bad else "correct") for i in range(100)]
+            results += [self._check(self._buy(i)) for i in range(100)]
+            self.assertEqual(self.m.p7_raw_pass(self.m.p7_raw_tally(results)), want, bad)
+
+    def test_the_adapter_row_must_be_this_print_and_be_present(self):
+        raw = self._sell()
+        self.assertEqual(self._check(raw, adapter=None), ("sell", "unresolved", "no_adapter_row"))
+        for over in ({"pool": "OTHER"}, {"slot": raw["slot"] + 1}, {"tx_index": raw["tx_index"] + 1}, {"event_index": raw["event_index"] + 1},
+                     {"base_reserve": raw["base_reserve"] + 1}, {"token_raw": raw["token_raw"] + 1}):
+            self.assertEqual(self._check(raw, adapter=self._adapter(raw, **over)), ("sell", "unresolved", "identity_mismatch"), over)
+        self.assertEqual(self._check(raw, adapter=self._adapter(raw, quote_reserve=None)), ("sell", "unresolved", "field_missing"))
+        self.assertEqual(self.m.P7_RAW_ADAPTER_KEY, ("slot", "tx_index", "event_index", "pool"))
+        self.assertEqual(self.m.P7_RAW_ADAPTER_FIELDS, ("base_reserve", "token_raw"))
+
+    def test_v0_is_never_missing_the_frame_guarantees_it(self):
+        raw = self._sell()
+        self.assertNotIn("no_v0", self.m.P7_RAW_REASONS)
+        for bad in (None, "17585000000", 1.5, True):
+            with self.assertRaises(ValueError):
+                self.m.p7_raw_check(self._tape(raw), raw, self._adapter(raw), bad)
 
     def test_one_bp_on_the_raw_field(self):
         for make, field in ((self._sell, "pool_quote_amount"), (self._buy, "token_raw")):
@@ -521,10 +564,9 @@ class RawEventP7(unittest.TestCase):
         self.assertTrue(self.m.within_tolerance(0, 2))
         self.assertFalse(self.m.within_tolerance(0, 3))
 
-    def test_a_pending_blind_mapping_still_misses_on_a_non_dust_print_with_the_unit_alternative(self):
-        blind = lambda vault, v_pre, v0: vault  # noqa: E731
+    def test_a_gross_vault_adapter_still_misses_on_a_non_dust_print_with_the_unit_alternative(self):
         for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
-            self.assertEqual(self._check(raw, mapping=blind), (line, "miss", None))
+            self.assertEqual(self._check(raw, adapter="gross"), (line, "miss", None))
 
     def test_not_comparable_rows_leave_every_denominator(self):
         for name in ("buy_exact_quote_in", "buy_exact_quote_in_v2"):
@@ -538,8 +580,8 @@ class RawEventP7(unittest.TestCase):
         self.assertEqual(self.m.p7_raw_line(self._tape(no_name)), None)
         # every row with zero_sol, either side, even a buy_exact_quote_in or a nameless one (zero_sol is tested first)
         for raw in (self._sell(), self._buy(), self._buy(ix_name="buy_exact_quote_in"), no_name):
-            self.assertEqual(self.m.p7_raw_check(dict(self._tape(raw), zero_sol=True), raw, self.V0), (None, "excluded", "zero_sol"))
-        self.assertEqual(self.m.p7_raw_check({"side": "transfer"}, None, self.V0), (None, "excluded", "not_buy_or_sell"))
+            self.assertEqual(self.m.p7_raw_check(dict(self._tape(raw), zero_sol=True), raw, self._adapter(raw), self.V0), (None, "excluded", "zero_sol"))
+        self.assertEqual(self.m.p7_raw_check({"side": "transfer"}, None, None, self.V0), (None, "excluded", "not_buy_or_sell"))
         self.assertEqual(self.m.p7_raw_exclusion({"side": "sell"}), None)                 # a sell has no ix_name and needs none
         # every other ix_name is comparable, including a name this file has not seen
         for name in ("buy", "buy_v2", "something_new"):
@@ -548,25 +590,27 @@ class RawEventP7(unittest.TestCase):
 
     def test_a_raw_event_with_zero_sol_is_not_the_comparable_tape_print(self):
         raw = self._sell()
-        self.assertEqual(self.m.p7_raw_check(self._tape(raw), dict(raw, zero_sol=True), self.V0), ("sell", "unresolved", "identity_mismatch"))
+        self.assertEqual(self.m.p7_raw_check(self._tape(raw), dict(raw, zero_sol=True), self._adapter(raw), self.V0), ("sell", "unresolved", "identity_mismatch"))
 
     def test_each_unresolved_reason_is_a_miss_on_its_line(self):
         raw = self._sell()
         tape = self._tape(raw)
+        ad = self._adapter(raw)
+        chk = lambda t, r, a, **kw: self.m.p7_raw_check(t, r, a, self.V0, **kw)  # noqa: E731
         cases = {
-            "fetch_failed": self.m.p7_raw_check(tape, None, self.V0, fetch_failed=True),
-            "no_record": self.m.p7_raw_check(tape, None, self.V0),
-            "no_v0": self.m.p7_raw_check(tape, raw, None),
-            "slot_mismatch": self.m.p7_raw_check(tape, dict(raw, slot=raw["slot"] + 1), self.V0),
-            "identity_mismatch": self.m.p7_raw_check(tape, dict(raw, base_reserve=raw["base_reserve"] + 1), self.V0),
-            "field_missing": self.m.p7_raw_check(dict(tape, virtual_quote_reserves=None), {k: v for k, v in raw.items() if k != "virtual_quote_reserves"}, self.V0),
+            "fetch_failed": chk(tape, None, ad, fetch_failed=True),
+            "no_record": chk(tape, None, ad),
+            "no_adapter_row": chk(tape, raw, None),
+            "slot_mismatch": chk(tape, dict(raw, slot=raw["slot"] + 1), ad),
+            "identity_mismatch": chk(tape, dict(raw, base_reserve=raw["base_reserve"] + 1), ad),
+            "field_missing": chk(dict(tape, virtual_quote_reserves=None), {k: v for k, v in raw.items() if k != "virtual_quote_reserves"}, ad),
         }
         self.assertEqual(set(cases), set(self.m.P7_RAW_REASONS))
         for reason, out in cases.items():
             self.assertEqual(out, ("sell", "unresolved", reason), reason)
         # a record at another event_index or signature is not the print
-        self.assertEqual(self.m.p7_raw_check(tape, dict(raw, event_index=raw["event_index"] + 1), self.V0)[2], "no_record")
-        self.assertEqual(self.m.p7_raw_check(tape, dict(raw, signature="other"), self.V0)[2], "no_record")
+        self.assertEqual(chk(tape, dict(raw, event_index=raw["event_index"] + 1), ad)[2], "no_record")
+        self.assertEqual(chk(tape, dict(raw, signature="other"), ad)[2], "no_record")
         t = self.m.p7_raw_tally(cases.values())
         self.assertEqual((t["sell_n"], t["sell_ok"], t["buy_n"]), (len(cases), 0, 0))
         self.assertEqual(t["unresolved"], {r: 1 for r in self.m.P7_RAW_REASONS})
@@ -578,7 +622,7 @@ class RawEventP7(unittest.TestCase):
             if i < bad_sell:
                 raw["pool_quote_amount"] = raw["pool_quote_amount"] * 101 // 100        # 100 bp off the law
             if bad_sell <= i < bad_sell + unresolved_sell:
-                results.append(self.m.p7_raw_check(self._tape(raw), None, self.V0, fetch_failed=True))
+                results.append(self.m.p7_raw_check(self._tape(raw), None, None, self.V0, fetch_failed=True))
             else:
                 results.append(self._check(raw))
         for i in range(n_buy):
@@ -587,7 +631,7 @@ class RawEventP7(unittest.TestCase):
                 raw["token_raw"] = raw["token_raw"] * 101 // 100
             results.append(self._check(raw))
         results += [self._check(self._buy(i, ix_name="buy_exact_quote_in_v2")) for i in range(exact)]
-        results += [self.m.p7_raw_check(dict(self._tape(self._sell(i)), zero_sol=True), None, self.V0, fetch_failed=True) for i in range(zero_sol)]
+        results += [self.m.p7_raw_check(dict(self._tape(self._sell(i)), zero_sol=True), None, None, self.V0, fetch_failed=True) for i in range(zero_sol)]
         results += [self._check({k: v for k, v in self._buy(i).items() if k != "ix_name"}) for i in range(no_name)]
         return self.m.p7_raw_tally(results)
 
@@ -629,6 +673,122 @@ class RawEventP7(unittest.TestCase):
         self.assertFalse(self.m.p7_raw_pass(self._sample(0, 0)))
         # a not-comparable row is excluded before fetch_failed is looked at, so it never counts as unresolved
         self.assertEqual(self._sample(100, 100, zero_sol=3)["unresolved"], {r: 0 for r in self.m.P7_RAW_REASONS})
+
+    # -- the sample: frame (E1), main draw, buy top-up (E3) --------------------------------------------------------------------------------
+    @staticmethod
+    def _frame_rows(n, buy_every, pool="P0"):
+        """n tape rows with unique keys; every `buy_every`-th is a buy, of which some are not comparable (exact quote-in, zero_sol, nameless)."""
+        rows = []
+        for i in range(n):
+            if i % buy_every == 0:
+                kind = i // buy_every
+                r = {"side": "buy", "ix_name": "buy"}
+                if kind % 5 == 4:
+                    r["ix_name"] = "buy_exact_quote_in_v2"
+                elif kind % 7 == 6:
+                    r["zero_sol"] = True
+                elif kind % 11 == 10:
+                    del r["ix_name"]
+            else:
+                r = {"side": "sell"}
+            r.update(pool=pool, slot=5000 + i, tx_index=i % 9, event_index=i % 3, sol_lamports=1000 + i)
+            rows.append(r)
+        return rows
+
+    def test_frame_holds_only_canonical_prints_of_pools_with_a_v0_in_key_order(self):
+        import random
+
+        rows = self._frame_rows(30, 3, "A") + [dict(r, pool="B", slot=r["slot"] + 100) for r in self._frame_rows(30, 3, "B")]
+        rows += [dict(r, pool="C", slot=r["slot"] + 200) for r in self._frame_rows(30, 3, "C")]       # C is not a canonical pool: absent from the map
+        random.Random(1).shuffle(rows)
+        frame = self.m.p7_raw_frame(rows, {"A": 17_585_000_000, "B": None})
+        self.assertEqual({r["pool"] for r in frame}, {"A"})
+        self.assertEqual(len(frame), 30)
+        keys = [(r["slot"], r["tx_index"], r["event_index"]) for r in frame]
+        self.assertEqual(keys, sorted(keys))
+        # a V0 must be an integer: a bool or a string is not a V0
+        self.assertEqual(self.m.p7_raw_frame(rows, {"A": True, "B": "17585000000"}), [])
+        self.assertEqual(len(self.m.p7_raw_frame(rows, {"A": 0})), 30)                           # 0 is an integer; null is the only absence
+
+    def test_main_draw_spreads_evenly_and_is_deterministic(self):
+        frame = self.m.p7_raw_frame(self._frame_rows(5000, 40), {"P0": 1})
+        main = self.m.p7_raw_main_draw(frame)
+        self.assertEqual([r["slot"] for r in main], [5000 + (k * 5000) // 1000 for k in range(1000)])
+        self.assertEqual(main, self.m.p7_raw_main_draw(frame))
+        # a frame just over n is spread over its whole length, not cut at the first n
+        frame = self.m.p7_raw_frame(self._frame_rows(1999, 40), {"P0": 1})
+        main = self.m.p7_raw_main_draw(frame)
+        self.assertEqual(len(main), 1000)
+        self.assertGreaterEqual(main[-1]["slot"] - 5000, 1997 - 1)
+        # a frame of n or fewer is taken whole
+        for size in (700, 1000):
+            frame = self.m.p7_raw_frame(self._frame_rows(size, 40), {"P0": 1})
+            self.assertEqual(self.m.p7_raw_main_draw(frame), frame)
+
+    def test_no_top_up_when_the_main_draw_already_holds_100_comparable_buys(self):
+        frame = self.m.p7_raw_frame(self._frame_rows(10_000, 5), {"P0": 1})
+        main = self.m.p7_raw_main_draw(frame)
+        self.assertGreaterEqual(sum(1 for r in main if self.m.p7_raw_line(r) == "buy"), 100)
+        self.assertEqual(self.m.p7_raw_buy_topup(frame, main), [])
+
+    def test_top_up_brings_comparable_buys_to_100_by_a_second_stride_offset_half_a_stride(self):
+        rows = self._frame_rows(100_000, 211)
+        frame = self.m.p7_raw_frame(rows, {"P0": 1})
+        main = self.m.p7_raw_main_draw(frame)
+        have = sum(1 for r in main if self.m.p7_raw_line(r) == "buy")
+        self.assertLess(have, 100)
+        top = self.m.p7_raw_buy_topup(frame, main)
+        need = 100 - have
+        self.assertEqual(len(top), need)
+        self.assertEqual(self.m.P7_RAW_BUY_MIN_COMPARABLE, 100)
+        # only comparable buys, none already drawn, none twice, in frame order
+        taken = {(r["slot"], r["tx_index"], r["event_index"]) for r in main}
+        keys = [(r["slot"], r["tx_index"], r["event_index"]) for r in top]
+        self.assertTrue(all(self.m.p7_raw_line(r) == "buy" for r in top))
+        self.assertFalse(set(keys) & taken)
+        self.assertEqual(len(set(keys)), need)
+        self.assertEqual(keys, sorted(keys))
+        # the stride: candidates are the comparable buys not in main; the k-th pick is the midpoint of the k-th of `need` equal segments
+        cand = [r for r in frame if self.m.p7_raw_line(r) == "buy" and (r["slot"], r["tx_index"], r["event_index"]) not in taken]
+        size = len(cand)
+        self.assertGreater(size, need)
+        self.assertEqual(top, [cand[((2 * k + 1) * size) // (2 * need)] for k in range(need)])
+        self.assertEqual(top[0], cand[size // (2 * need)])                  # offset: half a stride, not the start of the list
+        self.assertNotEqual(top[0], cand[0])
+        # the draw as a whole: line 1's buy side is now 100 comparable buys, deterministic
+        d = self.m.p7_raw_draw(rows, {"P0": 1})
+        self.assertEqual((d["frame_n"], d["main"], d["topup"]), (len(frame), main, top))
+        self.assertEqual(d, self.m.p7_raw_draw(rows, {"P0": 1}))
+        self.assertEqual(sum(1 for r in d["main"] + d["topup"] if self.m.p7_raw_line(r) == "buy"), 100)
+
+    def test_top_up_uses_every_comparable_buy_when_the_hours_hold_fewer_than_100(self):
+        rows = self._frame_rows(20_000, 401)                                  # 50 buys in all, fewer comparable
+        frame = self.m.p7_raw_frame(rows, {"P0": 1})
+        comparable = [r for r in frame if self.m.p7_raw_line(r) == "buy"]
+        self.assertLess(len(comparable), 100)
+        d = self.m.p7_raw_draw(rows, {"P0": 1})
+        got = [r for r in d["main"] + d["topup"] if self.m.p7_raw_line(r) == "buy"]
+        self.assertEqual(sorted(r["slot"] for r in got), sorted(r["slot"] for r in comparable))
+        # and a frame with no comparable buy at all: the buy side is empty and P7 line 1 fails that side
+        sells_only = [r for r in rows if r["side"] == "sell"]
+        d = self.m.p7_raw_draw(sells_only, {"P0": 1})
+        self.assertEqual(d["topup"], [])
+        results = [self._check(self._sell(i)) for i in range(len(d["main"]))]
+        self.assertFalse(self.m.p7_raw_pass(self.m.p7_raw_tally(results)))
+
+    def test_the_selection_reads_only_pool_key_side_zero_sol_and_ix_name(self):
+        rows = self._frame_rows(100_000, 211)
+        other = [dict(r, sol_lamports=7, signature="x" + str(i), price_sol=0.5 + i, token_raw=i, quote_reserve=i * 3, base_reserve=1, block_time=i)
+                 for i, r in enumerate(rows)]
+        a, b = self.m.p7_raw_draw(rows, {"P0": 1}), self.m.p7_raw_draw(other, {"P0": 1})
+        key = lambda r: (r["slot"], r["tx_index"], r["event_index"])  # noqa: E731
+        self.assertEqual([key(r) for r in a["main"]], [key(r) for r in b["main"]])
+        self.assertEqual([key(r) for r in a["topup"]], [key(r) for r in b["topup"]])
+        # not comparable rows are never topped up, and neither is a pool with no V0
+        for r in a["topup"]:
+            self.assertIsNone(self.m.p7_raw_exclusion(r))
+            self.assertEqual(r["side"], "buy")
+        self.assertEqual(self.m.p7_raw_draw(rows, {"P0": None}), {"frame_n": 0, "main": [], "topup": []})
 
 
 class ExpFile(unittest.TestCase):
