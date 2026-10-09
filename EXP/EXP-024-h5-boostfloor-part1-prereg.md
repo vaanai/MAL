@@ -548,6 +548,31 @@ All items marked "before 10-10T00Z" ship in the same PR as this file.
 - Any sealed-block claim.
 - No `data/tries.jsonl` line at registration.
 
+## Amendments
+
+### Amendment 1 (2026-10-09, before any counted hour and before any forward value was read): V for forward-1002 comes from forward-1002ev first
+
+Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no H5 outcome, trigger, fill, exit or P&L was computed or read. Its inputs are the walker and decoder source, file lists and the repo docs. It changes where Look 1 gets V, nothing else.
+
+**Why.** Section 4 gives forward-1002 V by `getTransaction` at about 2 calls per trade, because job #382 was walked without `--event-v`. A second walk, `forward-1002ev` (`[2026-10-09T00, 2026-10-16T01)`, `--event-v`, [DEC-016 Amendment 8](../DEC/DEC-016-exp012-forward-on-chain-hours.md)), carries V on the tape for the same hours. Look 1 and Look 2 then price from the same decoder (Amendment 8 §4 pins it).
+
+**The V source order for forward-1002 (replaces section 4's "forward-1002" bullets for V0 and V(t) and the "Fallback" bullet at lines 166-175; Look 2 on walk 2 already has event V and is unchanged).** Per print that needs V0 or V(t), take the first source that has it, and never choose among sources by their effect on a result:
+
+1. **forward-1002ev, through `tools/forward_v_join.py join`**, run once after the EXP-012 FINAL (A) is written. A print gets its V from here when its hour is usable (both walks' hour sealed and verified, the file hash matches its verify line, and the 1:1 match rate is at least 99.5% over all trade rows and over PumpSwap rows) and the print matches an ev row 1:1 on (slot, signature, event_index) with `sol_lamports`, `token_raw`, `quote_reserve` and `base_reserve` equal and an ev `virtual_quote_reserves` present. The convention of that V (the stored V before the trade) is the decoder's, pinned by its fixture tests (#467).
+2. **`getTransaction`** (`maxSupportedTransactionVersion` 1) for the prints on the join's **fallback list**: every PumpSwap row of a refused or bad hour, and the individual rows of a usable hour that did not match, differed in a field, or matched an ev row with no V. It is fetched only for the prints this section already fetches (s0, the landing state, the exit state). An ev hour that was **not walked** (the walk hit its credit cap or stopped) is a bad hour, not an empty one: it is on this list, and it does not make the forward-1002 hour bad under the Coverage rule (forward-1002's own hours are what Coverage counts).
+3. **The pool account** (V + pending counters), exactly as the "Fallback" bullet says: a new, empty file at or after 2026-10-16T00:00Z with `tools/exp012_forward_vmap.py` `pools`/`fetch --new`, sha256 recorded. This is now the third source.
+4. **None of the three:** the missing-V rule of section 4 applies unchanged (the lower P&L of the two cases, the top-3 and 1% NOT_DECIDABLE tests).
+
+**P5 (section 10), restated.** After the FINAL (A) and before Look 1, outcome-blind: run the join into a new empty directory; record the sha256 of `join-report.json`, `fallback.jsonl` and each `v-<hour>.jsonl.zst`; print only counts (hours usable and refused with their reason codes, rows joined, rows on the fallback list). Ids stay in files and are never printed. Then fetch step 2 and step 3 as before and record their file sha256s. The decoder pins of Amendment 8 §4 are recorded with them (`python3 -m tools.forward_v_join pins` exits 0).
+
+**The seal.** forward-1002ev is sealed as forward-1002 is ([DEC-016 Amendment 8](../DEC/DEC-016-exp012-forward-on-chain-hours.md) §2). Before the FINAL the only run is `tools/forward_v_join.py check --hash-only` (md5 verdicts, counts and match rates, no value, no file). The tool refuses every other mode until the FINAL marker is in the external FINAL ledger. A hash-only result may lead to a re-walk of an ev hour (a manager decision, recorded in Amendment 8); it may not lead to a read. This does not touch sections 3 and 3.1: no H5 outcome is computed or opened before the look, and nothing in this amendment lets the tool or the join compute one.
+
+**Not changed.** The rule, parameters, universe, trigger, fill pricing convention, costs, legs, gate statistics, look schedule, futility, multiplicity, kill rules, pinned counting start (section 0), the V-range and sps conditions, and the NOT_DECIDABLE conditions. The window, hours read and alpha of both looks are as in section 3. Nothing is added to the families or to m.
+
+**Companion text.** EXP-025 (PR #501, branch `claude/exp025-c1nf-prereg`) will cite the same source, forward-1002ev through the join tool, in its P6. That branch is not edited here and this amendment does not register EXP-025 as a reader of anything.
+
+**Not decided here.** A cross-source check (a sample of ev V values compared with `getTransaction` V on the same prints) is not part of this amendment. It would need a pre-declared sample size and a threshold, which are a quant-proof decision before any read.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
