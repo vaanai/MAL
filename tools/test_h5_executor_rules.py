@@ -843,7 +843,7 @@ class SafetyTests(Case):
         e = self.env()
         e.fire()
         out = h.status_report(e.conf)
-        self.assertIn("[live] attempts=1/120", out)
+        self.assertIn("[live] attempts=1 (lifetime; 1/150 in T0)", out)
         self.assertNotIn("http", out)
 
     def test_feed_gap_and_heartbeat(self):

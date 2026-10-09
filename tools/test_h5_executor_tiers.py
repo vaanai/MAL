@@ -1,11 +1,13 @@
-"""H5 executor: the scale ladder (owner decision). The tier comes from a root-owned file read before every buy; T2 is refused until
-T2_IMPACT_OK; the total stop is also capped at 35% of the wallet at tier start. Fixtures: test_h5_executor."""
+"""H5 executor: the scale ladder (owner decision). The tier comes from a root-owned file read before every buy; T2 is refused if
+T2_IMPACT_OK is False (it is True: IMPACT.md covers 0.30 only, and the ladder ends at T2); the total stop is also capped at 35% of the wallet at
+tier start. Fixtures: test_h5_executor."""
 
 from __future__ import annotations
 
 import copy
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -43,13 +45,28 @@ class TierTableTests(unittest.TestCase):
             "T2": {"stake_lamports": sol(0.30), "max_open": 3, "max_trades_per_day": 40, "daily_loss_lamports": sol(1.20), "total_loss_lamports": sol(1.80)},
         })
         self.assertEqual(h.TIER_WALLET_FRAC, 0.35)
-        self.assertIs(h.T2_IMPACT_OK, False)  # the shipped value: T2 is refused until the price-impact check is done and this is reviewed
+        self.assertIs(h.T2_IMPACT_OK, True)  # the impact check for 0.30 is done (h5-work/IMPACT.md, replay model); nothing above 0.30 is allowed
         self.assertEqual(h.H5Limits.from_config({}).stake_lamports, h.TIERS["T0"]["stake_lamports"])  # no tier means T0
+
+    def test_the_ladder_ends_at_t2_and_the_top_stake_is_0_30_sol(self):
+        # Any tier above 0.30 needs a new price-impact check with live-fill evidence (IMPACT.md covers 0.30 only; 0.50 fails in thinner pools).
+        self.assertEqual(list(h.TIERS), ["T0", "T1", "T2"])
+        self.assertEqual(max(t["stake_lamports"] for t in h.TIERS.values()), 300_000_000)
+        self.assertEqual(h.TIERS["T2"]["stake_lamports"], 300_000_000)
+        self.assertEqual([h.TIERS[k]["stake_lamports"] for k in h.TIERS], sorted(h.TIERS[k]["stake_lamports"] for k in h.TIERS))
+        with tempfile.TemporaryDirectory() as d:
+            for bigger in ("T3", "T0.50", "0.50"):  # a tier file naming anything above T2 is invalid: the lowest tier applies
+                f = Path(d) / "TIER_big"
+                f.write_text(bigger + "\n")
+                self.assertEqual(h.read_tier(f, False)[0], "T0", bigger)
+                self.assertIsNotNone(h.read_tier(f, False)[1], bigger)
 
     def test_constants_in_source(self):
         src = Path(h.__file__).read_text()
         self.assertIn('TIER_FILE_PATH = Path("/etc/mal-h5/TIER")', src)
-        self.assertIn("T2_IMPACT_OK = False", src)
+        self.assertIn("T2_IMPACT_OK = True", src)
+        self.assertIn("h5-work/IMPACT.md", src)  # the flip cites the check
+        self.assertIn("THE LADDER ENDS AT T2 (0.30 SOL)", src)
 
     def test_config_can_only_tighten_within_the_active_tier(self):
         for tier, vals in h.TIERS.items():
@@ -198,7 +215,7 @@ class TierLimitsBindTests(TierCase):
         e1.fire()
         self.assertEqual(e1.refusals(), ["max_open"])
 
-    def test_t1_buy_is_100m_and_t2_is_refused_while_the_impact_check_is_pending(self):
+    def test_t1_buy_is_100m_and_t2_buys_300m_now_the_impact_check_is_done(self):
         e = self.tier_env("T1")
         e.fire()
         self.assertEqual((buy_args(e.sent()[0])[0], e.refusals()), (100_000_000, []))
@@ -208,14 +225,15 @@ class TierLimitsBindTests(TierCase):
         e2 = Env(sub)
         e2.rpc.balance = 10 * SOL
         e2.fire()
-        self.assertEqual((e2.refusals(), e2.rpc.sent, e2.ex.tier), (["t2_impact_unchecked"], [], "T2"))
-        with mock.patch.object(h, "T2_IMPACT_OK", True):
-            sub = self.tmp / "t2ok"
-            sub.mkdir()
-            e3 = Env(sub)
-            e3.rpc.balance = 10 * SOL
-            e3.fire()
-            self.assertEqual((e3.refusals(), buy_args(e3.sent()[0])[0]), ([], 300_000_000))
+        self.assertEqual((e2.refusals(), buy_args(e2.sent()[0])[0], e2.ex.tier), ([], 300_000_000, "T2"))
+
+    def test_t2_is_refused_again_if_the_impact_flag_is_set_back_to_false(self):
+        self.write_tier("T2\n")
+        with mock.patch.object(h, "T2_IMPACT_OK", False):
+            e = Env(self.tmp)
+            e.rpc.balance = 10 * SOL
+            e.fire()
+            self.assertEqual((e.refusals(), e.rpc.sent, e.ex.tier), (["t2_impact_unchecked"], [], "T2"))
 
     def test_the_probes_own_size_limit_does_not_refuse_a_larger_tier_stake(self):
         e = self.tier_env("T1")
@@ -252,6 +270,58 @@ class TierLimitsBindTests(TierCase):
         self.assertIsNone(e.ex.counters.tier_state["wallet_lamports"])
         e.fire()  # readable now: the wallet is filled in and the buy goes
         self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_state["wallet_lamports"]), (1, 10 * SOL))
+
+
+class AttemptsPerTierTests(TierCase):
+    def attempt(self, e: Env, **kw) -> None:
+        e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)
+        e.ex.state.pending.clear()
+        e.ex.state.open.clear()
+        e.fire(**kw)
+
+    def test_the_cap_is_150_per_tier_and_binds_at_the_150th(self):
+        self.assertEqual(h.H5Limits.from_config({}).max_attempts, 150)
+        e = self.tier_env()
+        e.ex._refresh_tier(e.clock())  # the first look starts the tier (and zeroes its count): seed the count after it
+        e.ex.counters.tier_attempts = 149
+        self.attempt(e)
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts), (1, 150))  # the 150th attempt goes
+        self.attempt(e)
+        self.assertEqual((e.refusals(), len(e.rpc.sent)), (["max_attempts"], 1))  # the 151st does not
+
+    def test_a_tier_change_resets_the_per_tier_counter_and_the_lifetime_counter_keeps_counting(self):
+        e = self.tier_env()
+        e.ex._refresh_tier(e.clock())
+        e.ex.counters.tier_attempts = 150
+        e.ex.state.attempts = 150  # (150 spent at T0 in all)
+        self.attempt(e)
+        self.assertEqual(e.refusals(), ["max_attempts"])
+        self.write_tier("T1\n")
+        self.attempt(e)  # T1: a fresh 150
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 1, 151))
+        row = e.ledger("tier_change")[-1]
+        self.assertEqual((row["from_tier"], row["to_tier"], row["attempts_in_old_tier"], row["lifetime_attempts"]), ("T0", "T1", 150, 150))
+        e.ex.counters.tier_attempts = 150
+        self.attempt(e)
+        self.assertEqual(e.refusals()[-1], "max_attempts")  # and T1 is capped at 150 on its own
+        self.write_tier("T0\n")  # stepping down starts a fresh count too
+        self.attempt(e)
+        self.assertEqual((e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 152))
+
+    def test_the_per_tier_count_survives_a_restart_and_config_can_tighten_it(self):
+        e = self.tier_env(max_attempts=5)
+        for _ in range(5):
+            self.attempt(e)
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_attempts), (5, 5))
+        e.ex = e.build()  # a restart does not reset it
+        self.assertEqual(e.ex.counters.tier_attempts, 5)
+        self.attempt(e)
+        self.assertEqual((e.refusals(), len(e.rpc.sent)), (["max_attempts"], 5))
+
+    def test_a_dry_run_counts_per_tier_too(self):
+        e = Env(self.tmp, live=False)
+        e.fire()
+        self.assertEqual((e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 1))
 
 
 class TierChangeTests(TierCase):
