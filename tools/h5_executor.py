@@ -134,6 +134,8 @@ H5_MAX = dict(H5_DEFAULT)  # the defaults ARE the maxima (review of 86a224b): co
 # The five limits that scale with the stake are a code-constant table; the active tier is read from a root-owned file before every buy. Config
 # can still only tighten within the active tier. T0 equals H5_DEFAULT. Lamports (T0 0.02 / 2 / 30 / 0.08 / 0.12 SOL, T1 0.10 / 3 / 40 / 0.40 /
 # 0.60, T2 0.30 / 3 / 40 / 1.20 / 1.80).
+# THE LADDER ENDS AT T2 (0.30 SOL). Do not add a tier above 0.30: it needs a new price-impact check that uses LIVE-FILL evidence (the
+# check behind T2 is a replay model; see T2_IMPACT_OK), and a reviewed code change. tools/test_h5_executor_tiers.py pins the keys and the top stake.
 TIERS: dict[str, dict[str, int]] = {
     "T0": {"stake_lamports": 20_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 80_000_000, "total_loss_lamports": 120_000_000},
     "T1": {"stake_lamports": 100_000_000, "max_open": 3, "max_trades_per_day": 40, "daily_loss_lamports": 400_000_000, "total_loss_lamports": 600_000_000},
@@ -141,7 +143,11 @@ TIERS: dict[str, dict[str, int]] = {
 }
 assert all(H5_DEFAULT[k] == v for k, v in TIERS["T0"].items())
 TIER_WALLET_FRAC = 0.35  # the total stop is also capped at this share of the wallet balance measured when the tier started
-T2_IMPACT_OK = False  # T2's 0.30 SOL is above the 0.25 SOL tested; a price-impact check is pending. While False, T2 is refused.
+# /data/mal/hunt-1008/h5-work/IMPACT.md (quant-proof, 2026-10-09T04:14Z, report-only, replay model R1, blocks already read): 0.30 SOL is OK on impact
+# grounds, but only in September-depth pools. Latest blocks (09-18..25) primary flat at 0.30: +5.144%, CI90 lo +2.438; with pools half as deep
+# (alpha 0.5) primary pressure lo +0.810. 0.50 fails in thinner pools (alpha 0.5: primary press lo -0.191), so 0.30 is the ceiling. This is a
+# capacity check, not gate evidence. If live fills show more impact than the R1 model, size down (IMPACT.md suggests 0.20).
+T2_IMPACT_OK = True  # the impact check is done for 0.30 only; the guard stays in handle_trigger (refuses T2 with t2_impact_unchecked when False)
 TIER_FILE_PATH = Path("/etc/mal-h5/TIER")  # contains just T0, T1 or T2; root:root 0644 like LIVE_OK. Missing or invalid means T0.
 MIN_WALLET_FLOOR_LAMPORTS = 50_000_000  # config may raise
 DEFAULT_WALLET_FLOOR_LAMPORTS = 50_000_000
@@ -1166,7 +1172,7 @@ class H5Executor(pl.LiveExecutor):
         self._refresh_tier(now)  # before every buy: the limits below are the active tier's
         why = self._hard_refusal(trg, now)
         if not why and self.tier == "T2" and not T2_IMPACT_OK:
-            why = "t2_impact_unchecked"  # 0.30 SOL is above the 0.25 SOL tested; the price-impact check is pending
+            why = "t2_impact_unchecked"  # only reachable if T2_IMPACT_OK is set back to False (e.g. a live-fill impact finding): T2 is then refused again
         would: str | None = None
         if not why:
             budget = self._budget_stop(now)
