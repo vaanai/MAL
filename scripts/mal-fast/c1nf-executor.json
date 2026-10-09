@@ -1,0 +1,23 @@
+{
+  "mode": "dryrun",
+  "intents_file": "/srv/mal-c1nf-shadow",
+  "state_dir": "/var/lib/mal-live/c1nf",
+  "commitment": "confirmed",
+  "poll_s": 5.0,
+  "intent_poll_ms": 25,
+  "rps": 8.0,
+  "stake_lamports": 20000000,
+  "buy_priority_lamports": 55000,
+  "jito_enabled": false,
+  "jito_tip_lamports": 0,
+  "entry_tolerance_bps": 1500,
+  "max_open": 3,
+  "max_trades_per_day": 40,
+  "daily_loss_lamports": 80000000,
+  "total_loss_lamports": 150000000,
+  "wallet_floor_lamports": 50000000,
+  "send_lead_ms": 500,
+  "max_pick_age_s": 3.0,
+  "sell_retries": 5,
+  "feed_heartbeat_max_age_ms": 150000
+}
