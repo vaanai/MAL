@@ -68,6 +68,7 @@ from observe.trade_decode import (
     iso_from_ms,
     records_from_logs,
 )
+from observe.link_state import GAP_EDGES_MS, SILENT_MS_DEFAULT
 from tools.paper_curve_math import pumpswap_sol_fee_ppm
 
 log = logging.getLogger("mal.h5_shadow")
@@ -114,6 +115,9 @@ SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
 SETTLE_SLOTS = 2  # a print this close to the high-water slot may still be waiting for a predecessor that is in flight
+REL_SILENT_MS = 3_000  # a socket that delivered nothing for this long while a peer delivered after its last notice is silent
+LOOK_MS = 5_000  # housekeeping interval
+RECENT_MARGIN_MS = 5_000
 SEALED_MIN_COUNT = 5  # sealed_hour reports decisions only from this many; below it the field is "<5"
 LOOKS_WINDOW = 3  # socket-drop memory: the last 3 looks (3 x 5 s housekeeping) decide whether every socket was down
 REJECT_LOG_MAX = 50  # reject records written per run (the counters are unbounded)
@@ -267,18 +271,24 @@ def _merge(iv: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
-def common_down(states: Sequence[dict], now_ms_: int) -> list[tuple[int, int]]:
+def common_down(states: Sequence[dict], now_ms_: int, rel_silent_ms: int = REL_SILENT_MS, min_end_ms: int | None = None) -> list[tuple[int, int]]:
     """Intervals during which EVERY socket was down or silent. states: observe.link_state snapshots {"up", "down_since_ms", "intervals",
-    "last_notice_ms", "silent_ms", "silent_intervals"}. A socket that is down right now contributes [down_since_ms, now]; a socket that is up
-    but has delivered nothing for more than silent_ms contributes [last_notice_ms, now]."""
+    "last_notice_ms", "silent_ms", "silent_intervals"}. A socket that is down right now contributes [down_since_ms, now]. A socket that is up but
+    silent contributes [last_notice_ms, now], where silent means either (absolute) nothing for more than silent_ms, or (relative) nothing for
+    more than rel_silent_ms while some other socket delivered after its last notification. min_end_ms drops closed intervals that ended earlier
+    (bounds the work to recent history)."""
+    lns = [st.get("last_notice_ms") for st in states]
     per: list[list[tuple[int, int]]] = []
-    for st in states:
-        iv = [(int(a), int(b)) for a, b in (st.get("intervals") or []) + (st.get("silent_intervals") or [])]
+    for k, st in enumerate(states):
+        iv = [(int(a), int(b)) for a, b in (st.get("intervals") or []) + (st.get("silent_intervals") or []) if min_end_ms is None or int(b) > min_end_ms]
         if not st.get("up") and st.get("down_since_ms") is not None:
             iv.append((int(st["down_since_ms"]), int(now_ms_)))
         ln, sm = st.get("last_notice_ms"), int(st.get("silent_ms") or 0)
-        if st.get("up") and ln is not None and sm and now_ms_ - int(ln) > sm:  # connected but not delivering: down from its last notification
-            iv.append((int(ln), int(now_ms_)))
+        if st.get("up") and ln is not None:
+            quiet = now_ms_ - int(ln)
+            relative = rel_silent_ms and quiet > rel_silent_ms and any(o is not None and o > ln for j, o in enumerate(lns) if j != k)
+            if (sm and quiet > sm) or relative:  # connected but not delivering: down from its last notification
+                iv.append((int(ln), int(now_ms_)))
         per.append(_merge(iv))
     if not per:
         return []
@@ -382,9 +392,12 @@ class Engine:
         self._feed_prev: dict[int, dict] = {}
         self._looks: collections.deque = collections.deque(maxlen=LOOKS_WINDOW)
         self._prev_look_ms: int | None = None
+        self.on_error: Callable[[BaseException, dict], None] | None = None  # error log hook (run_live: ErrorLog.log)
         self.link_probe: Callable[[], tuple[int, dict] | None] | None = None  # () -> (source key, feed snapshot); checked right before a trigger is written
-        self._flagged_starts: collections.deque = collections.deque(maxlen=64)  # starts of common-outage pieces already flagged
-        self._sealed_hours: dict[int, int] = {}  # UTC hour index -> sealed decisions (unlabelled aggregate; the only trace of a sealed decision)
+        self._flagged_starts: collections.deque = collections.deque(maxlen=256)  # starts of common-outage pieces already flagged
+        self._sealed_hours: dict[int, list[int]] = {}
+        self._sealed_cursor: int | None = None  # next UTC hour index to report; starts at the seal start or the first event, whichever is later
+        # (old comment follows:)  # UTC hour index -> sealed decisions (unlabelled aggregate; the only trace of a sealed decision)
 
     # ---- emit -----------------------------------------------------------------------------------------------
     def emit(self, rec: dict) -> None:
@@ -434,6 +447,7 @@ class Engine:
 
     def _advance_clock(self, slot: int, recv_ms: int, ts: int | None) -> None:
         self.counters["events"] += 1
+        self._ensure_sealed_cursor(recv_ms)
         if self.last_event_ms is not None and self.silence_open:
             self.silence_open = False
         self.last_event_ms = recv_ms
@@ -497,7 +511,11 @@ class Engine:
         states = snap.get("socket_states")
         pieces: list[tuple[int, int]] = []
         if states:
-            pieces = [(a, b) for a, b in common_down(states, now_ms_) if a not in self._flagged_starts and (self._prev_look_ms is None or b > self._prev_look_ms)]
+            # A silence only counts once it is long enough, so a common outage can be found AFTER the fact: no filter on the previous look.
+            # Dedupe by piece start; bound the work to intervals that ended inside (silent_ms + 2 looks + margin).
+            sm = max([int(st.get("silent_ms") or 0) for st in states] + [SILENT_MS_DEFAULT])
+            recent = now_ms_ - (sm + 2 * LOOK_MS + RECENT_MARGIN_MS)
+            pieces = [(a, b) for a, b in common_down(states, now_ms_, min_end_ms=recent) if a not in self._flagged_starts]
         self._prev_look_ms = now_ms_
         if delta <= 0 and not pieces:
             return
@@ -581,7 +599,7 @@ class Engine:
         self.pools[pool] = p
         self.counters["pools_tracked"] += 1
         if self._sealed(p):
-            self._note_sealed_pool(recv_ms)
+            self._note_sealed_pool(p.s0_recv_ms)
         if mint and len(self.mint_pools.get(mint, ())) > 1:
             p.gaps.append({"kind": "ambiguous_mint"})
         if ann is not None and self.last_flag_gap_ms is not None and ann[1] < self.last_flag_gap_ms:
@@ -640,11 +658,12 @@ class Engine:
             p.gaps.append({"kind": "slot_below_s0", "s0": p.s0, "slot": pr.slot})
             self.counters["slot_below_s0_after_trigger"] += 1
             return
+        self._sealed(p)  # judge the pool on the s0 it has NOW; the verdict is frozen: moving s0 down can only make it earlier, so a sealed pool
+        # stays sealed (fail closed) and an unsealed one cannot become sealed
         p.s0_reanchored_slots += p.s0 - pr.slot
         p.s0 = pr.slot
         if pr.ts:
             p.s0_ts = pr.ts
-        p.sealed_cache = None  # the seal window is judged on the s0 block time
         self.counters["s0_reanchored"] += 1
 
     @staticmethod
@@ -725,7 +744,7 @@ class Engine:
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
                     if self._sealed(p):  # EXP-022 s9: no per-pool trace of a decision; only the unlabelled hourly aggregate
-                        self._note_sealed_decision(pr.recv_ms)
+                        self._note_sealed_decision(p.s0_recv_ms)
                         return
                     self.counters["skipped_no_sps_would_trigger"] += 1
                     self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
@@ -754,12 +773,13 @@ class Engine:
         k_b = math.ceil(ENTRY_S["binding"] / sps - 1e-9)
         el = math.ceil(EXIT_LAG_S / sps - 1e-9)
         exit_slot = p.s0 + int(round(EXIT_AFTER_S0_S / sps))
-        detect = self.wall()
-        if not self._sealed(p):
-            self._probe_links(detect)  # a half-open or flapping socket seen since the last 5 s look must show on THIS trigger
-        if self._sealed(p):  # EXP-022 s9 (from 2026-10-16T01Z): no per-pool trigger record, no counters, no pending outcome, no strip
+        sealed = self._sealed(p)
+        if not sealed:
+            self._probe_links(self.wall())  # a half-open or flapping socket seen since the last 5 s look must show on THIS trigger
+        detect = self.wall()  # after the probe, so detect_lag_ms includes its cost
+        if sealed:  # EXP-022 s9 (from 2026-10-16T01Z): no per-pool trigger record, no counters, no pending outcome, no strip
             p.trig[var] = {"sealed": True}
-            self._note_sealed_decision(pr.recv_ms)
+            self._note_sealed_decision(p.s0_recv_ms)
             return
         rec = {
             "type": "trigger", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "s0_t_recv_ms": p.s0_recv_ms,
@@ -884,20 +904,23 @@ class Engine:
             return
         if sealed:  # EXP-022 s9: not even a stub (its existence would say the pool triggered)
             return
-        start = min(r["slot"] for r in p.trig.values())
-        base = {"type": "strip", "pool": p.pool, "mint": p.mint, "s0": p.s0, "from_slot": start, "variants": sorted(p.trig)}
+        real = {v: r for v, r in p.trig.items() if "slot" in r}  # a sealed stub ({"sealed": True}) has no slot
+        if not real:
+            return
+        start = min(r["slot"] for r in real.values())
+        base = {"type": "strip", "pool": p.pool, "mint": p.mint, "s0": p.s0, "from_slot": start, "variants": sorted(real)}
         prints = [r for r in p.prints if r.slot >= start]
         rows = [[r.slot, int(round(r.q_pre("pv", p.v0))), int(round(r.q_pre("fv", p.v0))), int(r.b)] for r in prints[:STRIP_MAX_ROWS]]
         last = p.prints[-1]
         self.counters["strips"] += 1
-        self.emit({**base, "sps_path": self._sps_path(p), "sps_trigger": {v: r["sps"] for v, r in p.trig.items()}, "n_prints": len(p.prints),
+        self.emit({**base, "sps_path": self._sps_path(p), "sps_trigger": {v: r["sps"] for v, r in real.items()}, "n_prints": len(p.prints),
                    "cols": ["slot", "q_pv_pre", "q_fv_pre", "base_pre"], "rows": rows, "truncated": len(prints) > STRIP_MAX_ROWS,
                    "post_last": [last.slot, int(round(last.q_post("pv", p.v0))), int(round(last.q_post("fv", p.v0))), int(last.b_post)]})
 
     # ---- pool close -----------------------------------------------------------------------------------------
     def _close_due(self, now_ms_: int) -> None:
         for pool in [k for k, p in self.pools.items() if self._due(p, now_ms_)]:
-            self._close(self.pools[pool], "horizon")
+            self._close_safe(self.pools[pool], "horizon")
 
     def _due(self, p: Pool, now_ms_: int) -> bool:
         sps = p.sps_last or p.sps0 or 0.4
@@ -962,38 +985,64 @@ class Engine:
             return None
         return (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
 
+    def _close_safe(self, p: Pool, reason: str) -> None:
+        """One bad pool is logged (class name only: a sealed pool must not be named) and dropped; it never blocks the others or wedges the engine."""
+        try:
+            self._close(p, reason)
+        except Exception as exc:  # noqa: BLE001
+            self.counters["close_errors"] += 1
+            log.warning("pool close failed: %s", type(exc).__name__)
+            if self.on_error is not None:
+                try:
+                    self.on_error(exc, {"where": "close"})
+                except Exception:  # noqa: BLE001
+                    pass
+            self.pools.pop(p.pool, None)
+
     def close_all(self, reason: str) -> None:
         for p in list(self.pools.values()):
-            self._close(p, reason)
-        self._flush_sealed_hours(self.wall(), final=True)
+            self._close_safe(p, reason)
+        self._flush_sealed_hours(self.last_event_ms if self.last_event_ms is not None else self.wall(), final=True)
 
-    def _note_sealed_decision(self, at_ms: int) -> None:
-        self._sealed_hours.setdefault(int(at_ms) // 3_600_000, [0, 0])[1] += 1
+    def _ensure_sealed_cursor(self, ms: int) -> None:
+        if self.seal_start_ms is not None and self._sealed_cursor is None:
+            self._sealed_cursor = max(self.seal_start_ms // 3_600_000, int(ms) // 3_600_000)
 
-    def _note_sealed_pool(self, at_ms: int) -> None:
-        self._sealed_hours.setdefault(int(at_ms) // 3_600_000, [0, 0])[0] += 1
+    def _note_sealed_decision(self, pool_open_ms: int) -> None:
+        """A sealed decision is counted under the hour its pool OPENED in (the same key as pools_opened), however much later it was taken."""
+        self._ensure_sealed_cursor(pool_open_ms)
+        self._sealed_hours.setdefault(int(pool_open_ms) // 3_600_000, [0, 0])[1] += 1
+
+    def _note_sealed_pool(self, pool_open_ms: int) -> None:
+        self._ensure_sealed_cursor(pool_open_ms)
+        self._sealed_hours.setdefault(int(pool_open_ms) // 3_600_000, [0, 0])[0] += 1
 
     def _probe_links(self, now_ms_: int) -> None:
         if self.link_probe is None:
             return
-        try:
+        try:  # the probe AND its evaluation: nothing here may stop a trigger from being written
             got = self.link_probe()
-        except Exception:  # noqa: BLE001 - the probe must never stop a trigger from being written
+            if got:
+                self.note_feed_stats(got[0], got[1], now_ms_)
+        except Exception:  # noqa: BLE001
             self.counters["link_probe_errors"] += 1
-            return
-        if got:
-            self.note_feed_stats(got[0], got[1], now_ms_)
 
     def _flush_sealed_hours(self, now_ms_: int, final: bool = False) -> None:
-        """One unlabelled record per completed UTC hour in which a sealed pool opened or a sealed decision happened: how many sealed pools opened,
-        and how many decisions (trigger or skipped candidates). `decisions` is the string "<5" below 5, so a quiet hour cannot single a pool out
-        (an hour with sealed pools and no decision reads the same as one with a decision). No pool, mint, slot or variant."""
+        """One unlabelled record for EVERY UTC hour from the seal start (or from the process start, if later), whether or not it has any sealed pool:
+        how many sealed pools opened in it and how many decisions their pools took (trigger or skipped candidates, counted under the pool's open hour).
+        `decisions` is the string "<5" below 5. An hour is reported only once WALL_CLOSE has passed for every pool that could have opened in it, so
+        the existence of a record says nothing. No pool, mint, slot or variant. The current hour is reported only on shutdown, flagged partial."""
+        if self._sealed_cursor is None:
+            return
         cur = int(now_ms_) // 3_600_000
-        for h in sorted(k for k in self._sealed_hours if final or k < cur):
-            opened, n = self._sealed_hours.pop(h)
+        last = cur if final else (int(now_ms_) - int(WALL_CLOSE_S * 1000)) // 3_600_000 - 1
+        while self._sealed_cursor <= last:
+            h = self._sealed_cursor
+            opened, n = self._sealed_hours.pop(h, [0, 0])
             hour = datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H")
             self.emit({"type": "sealed_hour", "hour": hour, "pools_opened": opened, "decisions": n if n >= SEALED_MIN_COUNT else f"<{SEALED_MIN_COUNT}",
                        "partial": bool(final and h >= cur)})
+            self._sealed_cursor += 1
 
 
 def _neg(s: str) -> tuple:
@@ -1242,6 +1291,13 @@ def status_snapshot(engine: Engine, sink: JsonlSink | None, source: Any) -> dict
     if stats is not None:
         s["feed"] = {"reconnects": getattr(stats, "reconnects", None), "notes": getattr(stats, "notes", None), "slot_jumps": getattr(stats, "slot_jumps", None),
                      "rejections": dict(getattr(stats, "rejections", {}) or {}), "closes": dict(getattr(stats, "closes", {}) or {})}
+    snap = feed_snapshot(source) if source is not None else None
+    if snap and snap.get("socket_states"):  # per-socket link health: lets the silence thresholds be tuned from live gaps
+        now = engine.wall()
+        s["link"] = {"gap_edges_ms": list(GAP_EDGES_MS), "sockets": [
+            {"up": st["up"], "last_notice_age_ms": None if st.get("last_notice_ms") is None else now - st["last_notice_ms"],
+             "max_gap_ms": st.get("max_gap_ms"), "gap_hist": st.get("gap_hist"), "silent_intervals": len(st.get("silent_intervals") or []),
+             "down_intervals": len(st.get("intervals") or [])} for st in snap["socket_states"]]}
     return s
 
 
@@ -1259,6 +1315,7 @@ async def run_live(args: argparse.Namespace) -> int:
     sink = JsonlSink(out_dir)
     errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub)
+    engine.on_error = errlog.log
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

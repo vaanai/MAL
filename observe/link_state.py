@@ -14,11 +14,15 @@ feed outage and is reported as one.
 
 from __future__ import annotations
 
+import bisect
 import collections
 import time
 from typing import Any, Callable
 
 SILENT_MS_DEFAULT = 10_000
+# Edges of the inter-notification gap histogram (ms): gaps below 250, 250..500, ..., 5..10 s, 10 s and more. Lets the silence threshold be tuned
+# from measured live gaps instead of assumption (the shadow's hb record carries it per socket).
+GAP_EDGES_MS = (250, 500, 1_000, 2_000, 3_000, 5_000, 10_000)
 
 
 def _now_ms() -> int:
@@ -44,6 +48,8 @@ class LinkState:
         self.down_intervals: collections.deque[tuple[int, int]] = collections.deque(maxlen=maxlen)
         self.last_notice_ms: int | None = None
         self.silent_intervals: collections.deque[tuple[int, int]] = collections.deque(maxlen=maxlen)
+        self.gap_hist = [0] * (len(GAP_EDGES_MS) + 1)
+        self.max_gap_ms = 0
 
     def mark_up(self, t_ms: int | None = None) -> None:
         t = self._clock() if t_ms is None else t_ms
@@ -60,14 +66,23 @@ class LinkState:
         t = self._clock() if t_ms is None else t_ms
         if not self.up:
             return
+        if self.last_notice_ms is not None and t - self.last_notice_ms > self.silent_ms:
+            # the socket was silent up to this drop (a half-open path closed by the ping timeout or the idle timeout): the silence outlives the drop
+            self.silent_intervals.append((self.last_notice_ms, t))
         self.up = False
         self.down_since_ms = t
 
     def note_notice(self, t_ms: int | None = None) -> None:
         """A notification arrived on this socket: it is delivering. Closes a silent interval if it had been quiet for more than silent_ms."""
         t = self._clock() if t_ms is None else t_ms
-        if self.up and self.last_notice_ms is not None and t - self.last_notice_ms > self.silent_ms:
-            self.silent_intervals.append((self.last_notice_ms, t))
+        if self.up and self.last_notice_ms is not None:
+            gap = t - self.last_notice_ms
+            if gap > self.silent_ms:
+                self.silent_intervals.append((self.last_notice_ms, t))
+            if gap > 0:
+                self.gap_hist[bisect.bisect_right(GAP_EDGES_MS, gap)] += 1
+                if gap > self.max_gap_ms:
+                    self.max_gap_ms = gap
         self.last_notice_ms = t
 
     def snapshot(self) -> dict[str, Any]:
@@ -78,4 +93,6 @@ class LinkState:
             "last_notice_ms": self.last_notice_ms,
             "silent_ms": self.silent_ms,
             "silent_intervals": [list(i) for i in self.silent_intervals],
+            "max_gap_ms": self.max_gap_ms,
+            "gap_hist": list(self.gap_hist),
         }
