@@ -20,7 +20,8 @@ Primary input, #477's own records (intents_file may be a file or the detector's 
 the previous hour is drained first on a roll):
   type "trigger"  variant "pv" only; mint, pool, s0, slot, sps, t_detect_ms, q_trigger_sol (post-trade Q, quote + the print's V), base_pre +
                   sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused), synthetic (must be the literal false:
-                  the pool is classified as NOT a synthetic migration, i.e. its curve-completing tx carried no PostCompleteBuyEvent; absent,
+                  the detector classified the pool as NOT a synthetic migration (no pump PostCompleteBuyEvent; DEC-024 Am.2: it reads the
+                  completing tx or the migrate tx, and a pool whose tx it cannot find is unclassified, so it gets `excluded`); absent,
                   null, true or a non-bool is refused as synthetic_unconfirmed), synthetic_src (ws | rpc | pre_event_binary, ledgered only)
   type "excluded" the detector classified a pool as synthetic (or could not classify it): counted, never traded, never an alert; a later
                   trigger on the same pool or mint is refused as excluded_pool
@@ -94,7 +95,8 @@ SHADOW_REQUIRED_KEYS = (
     "s0_reanchored_slots", "sps_span_s", "gap",
 )
 SCHEMA_ALERT_WINDOW_MS = 600_000
-# Synthetic migrations (owner-approved, quant-proof ruled): a pool whose curve-completing tx carries a pump PostCompleteBuyEvent gets no buy.
+# Synthetic migrations (owner-approved, quant-proof ruled): a pool classified as a synthetic migration (a pump PostCompleteBuyEvent), or not
+# classifiable, gets no buy.
 # The detector classifies at decision time and writes `synthetic: false` on a trigger it lets through; anything else is refused here, so a
 # record from a detector that predates the classifier can never be traded (fail closed). This executor does not re-derive the class; see the
 # PR that added this for why (no pool-naming record arrives before the trigger, so a confirmation would sit on the buy path).
