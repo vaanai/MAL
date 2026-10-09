@@ -195,7 +195,7 @@ These values are quant-proof's, from its review of 975d8db (they replace the ear
 7. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 5 (the DEC-021 §6(f) practice).
 
    ```
-   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no. Challenger's own gate numbers: n=<n>, dates=<positive>/<total>, CI90 lower bound flat=<x> pressure=<y>, ex-top-3 flat=<z1> pressure=<z2>, cleared: yes|no.
+   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no. Challenger's own gate numbers: n=<n>, dates positive flat=<pf>/<total> pressure=<pp>/<total>, CI90 lower bound flat=<x> pressure=<y>, ex-top-3 flat=<z1> pressure=<z2>, cleared: yes|no.
    ```
 
    - The own gate numbers are those of the promotion gate for the challenger's own book (CLAUDE.md). **"cleared: no" means the switch rests on the override alone**, and the owner's line says so.
