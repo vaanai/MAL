@@ -295,6 +295,24 @@ The manager corrected one premise before asking: at 0.02 SOL, H5's fixed costs a
 5. **What it is.** This is section 7's scale-up toward 1 SOL under `OWNER_OVERRIDE_CONFIRMED`. It is an unpromoted trial in every report. It changes nothing in EXP-024 and nothing in section 5's halts.
 
 
+**Amendment 3, addendum (2026-10-09, about 17:10Z, the owner's decision, before any canary send): the T1 top-up is +0.5 SOL, not +0.7.**
+
+```
+OWNER_CAPITAL_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owner, verbatim: "I'm depositing 1 sol in my phantom wallet ontop of the 0.29 that was just sent to helms wallet, so that's all we have across the tests." Answer to the manager's split question (AskUserQuestion): "H5 +0.5, C1-NF 0.5" (the recommended option). MiScusi notebook n_MAnWCLTcb6rPJA.
+```
+
+- **What changes in Amendment 3.**
+  - Item 3's "about 1 SOL" becomes about **0.79 SOL**: 0.298688847 SOL already funded, plus 0.5 SOL at the T1 step.
+  - Item 4's "about 0.35 SOL with a 1 SOL wallet" becomes min(0.60, 35% × about 0.79) ≈ **0.28 SOL**.
+- **Worst case at T1 with about 0.79 SOL.**
+  - Realized losses stop at about 0.28 SOL.
+  - Up to 3 × 0.10 SOL can be open when the stop fires, and fees and rent add a little.
+  - So up to about **0.59 SOL** can be lost, leaving a floor of about **0.20 SOL**. That is above the 0.05 SOL wallet floor and the balance guard.
+  - The 0.40 SOL daily stop is above the total stop, so it never binds first.
+- **Capital limit.** The owner's total capital across all tests is about 1.29 SOL. C1-NF's separate 0.5 SOL wallet is governed by DEC-026, not here. No further capital is planned, so T2 (0.30 SOL, 3 open) needs about 2 SOL or more in this wallet and can only come from profits.
+- **Unchanged.** Every other item of Amendment 3 stands.
+
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
