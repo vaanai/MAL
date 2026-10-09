@@ -1,0 +1,12 @@
+{
+  "SD_slot": 444240500,
+  "decision_T_ms": 1788523800000,
+  "feature_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "h_top1": 0.12,
+  "mint": "DxkqpagQamHXMVhS2GC7fni4qugWp5fcw28chKfUpump",
+  "model_sha": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "pool": "5N4CLYwiyx7AWtUzPhErC97bJX62aQbCpBz2CCuFc2Bm",
+  "pred": 0.0431,
+  "stage1": true,
+  "type": "c1nf_pick"
+}
