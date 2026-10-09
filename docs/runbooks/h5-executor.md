@@ -572,7 +572,7 @@ From the first live day, once a day (after 00:30Z, for the UTC day that ended), 
 
 - **The first audited day must be on a build with the executor's synthetic gate (PR #519).** Decision rows carry `synthetic` and `synthetic_src` only on such a build. A row without a bool `synthetic` counts as a disagreement for any pool B4 can classify, by design: the executor must have refused that trigger. Do not audit a day from before that build and read the result as a halt on the code; read it as the wrong build.
 - **Tool:** `tools/h5_synthetic_audit.py` (classifier: `tools/synthetic_class.py`). Public RPC only: the default host `api.mainnet-beta.solana.com` is the only one allowed unless `--allow-rpc-host` names another public host; Helius and keyed URLs are always refused. At least 0.2 s between calls (default 0.5), at most 300 calls per pool and 3,000 in all. It imports the monitor's helpers and never runs the monitor.
-- **Run it as a MiScusi job on `mal-fast-0`** (`miscusi_job_submit`, not resumable, `sh`). The ledger is `mal-live` 0700, so step 1 projects it under `sudo` to a temp file, and step 2 audits that file. There is no pipe: a failed read stops the job before the audit runs (`set -eu`), and the audit cannot report an all-clear for a ledger it did not read.
+- **Run it as a MiScusi job on `mal-fast-0`** (`miscusi_job_submit`, not resumable, `sh`). The ledger is `mal-live` 0700, so step 1 reads it with `sudo -n /usr/bin/dd` and pipes it into the audit's projection (`--out`), which runs as the manager's own user and never as root, and step 2 audits the projected file. The pipe is safe because of `--expect-ledger`: a failed `dd` gives an empty stdin, the projection exits 4, and `set -eu` stops the job before step 2, so the audit cannot report an all-clear for a ledger it did not read. The manager has sudo on `mal-fast-0`, but this job uses only the `/usr/bin/dd iflag=nofollow status=none if=<path>` line that the daily check's allowlist already names; no working-tree Python runs as root.
 
   ```sh
   set -eu
@@ -581,18 +581,17 @@ From the first live day, once a day (after 00:30Z, for the UTC day that ended), 
   DAY=$(date -u -d yesterday +%F)
   D=$(mktemp -d)
   trap 'rm -rf "$D"' EXIT
-  # step 1 (root): the ledger -> five keys per decision row, to a 0600 file. Exit 4 if the ledger is empty or unreadable.
-  sudo -n "$PY" -B -m tools.h5_synthetic_audit --ledger /var/lib/mal-live/h5/live/h5-ledger.jsonl --date "$DAY" --expect-ledger --out "$D/decisions.jsonl"
-  sudo -n chown "$(id -u):$(id -g)" "$D/decisions.jsonl"
+  # step 1: root only runs dd; the projection (five keys per decision row, to a 0600 file) runs as this user. Exit 4 if dd gave nothing.
+  sudo -n /usr/bin/dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl | "$PY" -m tools.h5_synthetic_audit --ledger - --date "$DAY" --expect-ledger --out "$D/decisions.jsonl"
   # step 2 (manager): the audit. An empty projected file here is a day with no buys, so --no-expect-ledger.
   "$PY" -m tools.h5_synthetic_audit --decisions "$D/decisions.jsonl" --date "$DAY" --no-expect-ledger
   ```
 
-  Use `.../dryrun/h5-ledger.jsonl` for a dry run. `--date` is the UTC day whose decisions are audited (step 1 filters on the row's `ts_ms`). Check that the job's log shows the step-1 line `n_lines_read=<N> ...` with N above 0 on a day the executor ran.
+  Use `.../dryrun/h5-ledger.jsonl` for a dry run. A `dd` that fails partway leaves a short ledger that exit 4 cannot see; the step-1 line `n_lines_read=<N>` is how to notice it. `--date` is the UTC day whose decisions are audited (step 1 filters on the row's `ts_ms`). Check that the job's log shows the step-1 line `n_lines_read=<N> ...` with N above 0 on a day the executor ran.
 - **Fields read from the ledger** (decision rows only, `kind == "decision"`): `pool`, `mint`, `synthetic`, `synthetic_src`, `signature` are kept; `kind` and `ts_ms` are read to pick the rows and thrown away. No other field of any row is kept, written or printed (no fill, size, exit, price or P&L field, none of the nested objects). The projected file has those five keys and nothing else; it is deleted when the job ends. `signature` is OUR buy transaction's signature, used as B4's `before` anchor (the ledger carries no trigger-print signature). That window is a superset of B4's "before s0", so a pool with more than 1,000 signatures between its migrate transaction and our buy shows as `unclassified`, never as a disagreement. A buy that never landed has a signature the node does not know (the node answers -32020 to such a `before`), so that pool is `unclassified` too.
 - **Output**, one line on stdout, these keys only: `{"date":"2026-10-12","n_pools":N,"n_disagree":N,"n_unclassified_now":N,"halt":false}`. No pool, mint, signature or per-pool class is printed. stderr has `n_lines_read`, the rows kept, and the unclassified pools counted by reason; no ids. The job log must not be post-processed to add one.
 - **Exit codes.** `3` = `n_disagree > 0` = a live halt: tell the owner and Helm (`HALT` or `STOP` per "Stop, halt, status" is the manager's call under section 5.6), and do not look up which pool by joining the class to a fill or P&L. `4` = the ledger read was empty or failed (`"error":"no_ledger_lines"` or `"ledger_read_failed"` on stdout): not an all-clear, fix the read and rerun. `2` = a usage error or a refused RPC URL. `0` = no disagreement; if `n_unclassified_now` is more than a few, check the RPC (rate limit) and rerun the next day.
-- **What counts as a disagreement.** B4 classifies the pool and the shadow's class differs (a missing class differs from any); or the shadow called the pool plain and B4 saw the PostCompleteBuyEvent in any readable located transaction even though the other one is unreadable (DEC-024 Amendment 2, Clarification 1). The second case also counts in `n_unclassified_now`.
+- **What counts as a disagreement.** B4 classifies the pool and the shadow's class differs (a missing class differs from any); or B4 could not classify the pool but saw the PostCompleteBuyEvent in any readable located transaction (the other one is unreadable) and the shadow did not call it synthetic, that is, it called it plain or recorded no class (DEC-024 Amendment 2, Clarification 1). The second case also counts in `n_unclassified_now`.
 
 ## Never
 

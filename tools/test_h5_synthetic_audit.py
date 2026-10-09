@@ -267,3 +267,22 @@ def test_rpc_allowlist_and_pacing_floor():
 def test_a_host_off_the_allowlist_is_refused_before_any_call(monkeypatch, capsys):
     code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--rpc-url", "https://rpc.example.org"], None, ledger_line("non_synthetic_1", synthetic=False))
     assert code == 2 and out == "" and "allowlist" in err
+
+
+def test_event_seen_in_a_readable_tx_with_no_recorded_shadow_class_is_also_a_disagreement(monkeypatch, capsys):
+    for syn in (None, "false", 0):  # absent-like and non-bool values are no class
+        row = json.loads(ledger_line("synthetic_1", synthetic=False))
+        row["synthetic"] = syn
+        code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), json.dumps(row))
+        assert code == 3 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 1, "n_unclassified_now": 1, "halt": True}
+    row = json.loads(ledger_line("synthetic_1", synthetic=False))
+    del row["synthetic"]  # the key itself absent, as on a pre-#519 ledger
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), json.dumps(row))
+    assert code == 3 and json.loads(out)["n_disagree"] == 1
+    # unclassified with NO event seen and no recorded class stays a plain unclassified pool
+    rpc = multi_rpc("non_synthetic_1")
+    rpc.txs.pop(CASES["non_synthetic_1"]["complete_sig"])
+    row = json.loads(ledger_line("non_synthetic_1", synthetic=False))
+    row["synthetic"] = None
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, json.dumps(row))
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}

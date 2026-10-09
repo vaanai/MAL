@@ -13,8 +13,8 @@ INPUT, one of
                        exit, price or P&L field, not the nested `plan`, `anchor` or `sent` objects. The JSON parser's object hook drops every
                        other key as soon as its object closes. The file is opened with O_NOFOLLOW; `-` reads stdin.
   --out PATH           with --ledger: write the projected rows (the five keys, mode 0600, O_NOFOLLOW) to PATH and stop. Nothing about a
-                       row goes to stdout. This is the step that runs under `sudo`: the root-owned ledger is projected once, to a file the
-                       audit then reads (`--decisions PATH`), so no pipe can hide a failed read.
+                       row goes to stdout. This is the step that takes the `sudo dd` stream of the root-owned ledger (`--ledger -`), as the
+                       manager's own user: the projection is written once, to a file the audit then reads (`--decisions PATH`).
 
 FAIL CLOSED ON THE READ. `--expect-ledger` (on by default; `--no-expect-ledger` turns it off): zero non-blank input lines is not an
 all-clear. It prints {"date", "error": "no_ledger_lines"} and exits 4. A read that fails (missing file, a symlink, a permission error, a
@@ -37,8 +37,9 @@ A pool "disagrees" when
   - B4 classifies it (synthetic or non_synthetic) and the shadow's class is not the same. The shadow's class is `true` -> synthetic,
     `false` -> non_synthetic; an absent, null or non-bool field is no class, so a bought pool with no recorded class disagrees with any
     B4 class (the executor must have refused it; this is the case on every ledger from before the #519 gate, by design); or
-  - the shadow called it plain (`synthetic` false) and B4 could not classify it but saw the PostCompleteBuyEvent in ANY readable located
-    transaction (`event_seen_any`), even though the other transaction is unreadable (DEC-024 Am.2 C1).
+  - B4 could not classify it but saw the PostCompleteBuyEvent in ANY readable located transaction (`event_seen_any`), even though the
+    other transaction is unreadable, and the shadow did not call it synthetic: it called it plain (`synthetic` false) or recorded no
+    class (DEC-024 Am.2 C1).
 A pool B4 cannot classify now is also counted in n_unclassified_now, whether or not it is a disagreement.
 
 Budget: public RPC only; at most `--max-calls-per-pool` (300) calls per pool, `--max-calls` (3,000) in all, and at least
@@ -171,8 +172,8 @@ def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[
         n_unclassified += 1
         if reasons is not None:
             reasons[str(res.get("reason") or "unknown")] += 1
-        if res.get("event_seen_any") is True and any(r.get("synthetic") is False for r in rs):
-            n_disagree += 1  # the shadow said plain; B4 saw the event in a readable located tx (the other tx is unreadable)
+        if res.get("event_seen_any") is True and {shadow_class(r.get("synthetic")) for r in rs} != {sc.CLASS_SYNTHETIC}:
+            n_disagree += 1  # B4 saw the event in a readable located tx (the other tx is unreadable) and the shadow did not say synthetic: plain, or no class
     return {"date": date, "n_pools": len(pools), "n_disagree": n_disagree, "n_unclassified_now": n_unclassified, "halt": n_disagree > 0}
 
 
