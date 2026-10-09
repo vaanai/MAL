@@ -27,6 +27,44 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
+### H5 live path, 10-09 ~01:40Z (newest; supersedes the H5 rows below where they differ)
+- **Owner, 10-08 ~23:50Z:** "start up some small trades now... headstart... run the simulation alongside". The manager agreed and pulled the start forward. The owner sends ~0.25 SOL **only when the manager says so**, after Helm's hash check (standing rule).
+- **Target live start:** ~10-09 evening UTC. That is after the 200 ms slot switch (~14:30Z): no trading through the switch.
+- **Reviews done.** Findings are in /data/mal/hunt-1008/h5-work/:
+  - REVIEW-86a224b.md: 3 MUST-FIX, all fixed in 96b677b..ab0b1cd.
+  - REVIEW-484-ab0b1cd.md: 1 MUST-FIX on the wall anchor, plus sell bookkeeping and the #477 holes. The round-3 fixes are in progress.
+  - REVIEW-499-429e2fa.md: runbook stop-with-open-positions, plus about 10 SHOULD-FIX. Fixes in progress.
+- **Dry-run findings on the real feed** (jobs #404–#419). All are fixed in code:
+  - The Helius env is root-only for jobs, hence `--rpc-env`.
+  - The probe precheck stats /var/lib/mal-live.
+  - The BOOST halt was per pool. Over 111 pools the last slice is median 340.2 s, 27% < 335. Now it uses the UTC-day median with ≥30 pools.
+  - The gap hold fired on redundant reconnects (173/265). Now it holds only on flags_pools.
+  - Trigger quality: only 5 of 15 pv triggers pass the strict checks, because raw base_breaks/slot_regress are mostly reorders. They are being replaced by `base_breaks_unresolved` from #477.
+  - s0 − announced_slot: p50 0, p90 1, p99 4440. Refuse > 2.
+- **Feed.** The public mainnet-beta WS is the only usable free feed; publicnode was useless (job #412). It yields ~1.5–3 tradeable triggers per hour, enough for the 30/day canary. For scale-up, ask the owner/Helm for a Helius WS on the shadow.
+- **Branches:**
+  - executor `claude/h5-executor`: head 4f05e30 plus the round-3 fixes; builder `ab84c2d698b6716d6`.
+  - shadow `claude/h5-shadow` (#477): round-3 fixes in progress; builder `accfdac84de54afb2`. The **shadow job #399 must be restarted on the new #477 head before live**, because the executor requires the new fields.
+  - live unit `claude/h5-live-unit` (#499, base claude/h5-executor): unit, pinned installer, `/etc/mal-h5/LIVE_OK` (root 0644), h5_sell_and_close, h5-daily-check, runbook; builder `a16b48c5c2858494d`.
+- **Dry run:** job #416 (ab0b1cd, public RPC, out ~/data/h5-exec-dry3 on fast-0). Re-run it on the final head.
+- **Remaining order:**
+  1. Fixes land.
+  2. A short delta review.
+  3. Merge #477, then #484, then #499 (retarget to main) on main.
+  4. Restart shadow #399 on main.
+  5. Dry run on main for a few hours: needs ≥3 simulated buys and sells with no errors.
+  6. Set `end_ms` in the live config (reviewed).
+  7. Helm installs the main sha per docs/runbooks/h5-executor.md, then the hash check.
+  8. Update the 12:17Z cron (0bdc383b) to scripts/mal-fast/h5-daily-check.py.
+  9. Ask the owner for the SOL.
+  10. Helm creates LIVE_OK.
+- **Before 10-16T01:** the picks exporter plus FINAL_WRITTEN. Without them the executor refuses every buy in the seal window, which is fail-closed.
+
+### Hunt 4 (DONE 10-09 ~00:30Z)
+- JUDGE-4 is at /data/mal/hunt-1008/JUDGE-4.md. No frozen rule passed.
+- Lead **C1-NF** (frozen C1 + top-holder share ≤ 0.5, post hoc): +8.454/+7.479%, n 422, 17/21 days, BOOST-independent, ~20/day. Its adversarial VERIFY is running (agent `a2dc77e610bfc3d72`, out /data/mal/hunt-1008/c1nf-verify/). Kill rules are in JUDGE-4 §3.3.1.
+- Second lead: uninformed-sell walk-forward, +2.13/+1.66%.
+
 ### H5 BOOST-floor: the one real candidate
 - **Rule.** After a non-mayhem graduation, if a sell drains the pool to Q = real quote + V ≤ 40 SOL within 0–300 s of the first print while BOOST still has budget, buy at 1.3 s and sell at s0 + 330 s.
 - **Sep confirmation,** read once, 21 days, n 1,124, 0.25 SOL:
@@ -68,7 +106,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - **G4-FLOORDIP** is the 2nd candidate and BOOST-independent: +1.88% / +1.56%, 13/15 days. It needs about 31 concurrent positions, so only about 0.016 SOL/day at 1 SOL; a scaling candidate.
   - **Ingredients:** the G7 R' veto and the O4 regime overlay.
   - **Nine frozen v1s failed;** they go to the post-H5 iterate loops. |
-| w9b4m533o (wf_0d1a560e-ebe) | Hunt-4: LAYA-filter cascades, analog trader, 9 strategy-tree leaves | /data/mal/hunt-1008/JUDGE-4.md, STRATEGY-TREE.md |
+| w9b4m533o (wf_0d1a560e-ebe) | Hunt-4 (DONE): LAYA-filter cascades, analog trader, 9 strategy-tree leaves | /data/mal/hunt-1008/JUDGE-4.md, STRATEGY-TREE.md |
 | wo1wq4khh (wf_f304b5f5-877) | LAYA-opt (DONE) | /data/mal/hunt-1008/laya-opt/REPORT.md; backup in /data/mal/hunt-reports/laya-opt; notebook n_51ukuyOnjwHmOA.
   - The development path is smooth, but the October central is ≈ 0 after selection.
   - **r4-a** is a migration race (closed route).
@@ -155,6 +193,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - #479 builder `a31eac1461a68c989`; #479 quant-proof `ad2e39687ffc72eeb`;
   - E0 harness builder `ac12844d0ae1b5598` (branch `claude/cap-pick-e0-exp022`, plus the precount); harness reviewer `a70139af1577132a7`; harness quant-proof `a4efdfa6397dca01f`;
   - T2 builder `a7815fa1df1ceed25`.
+  - H5 live-unit builder `a16b48c5c2858494d` (#499); C1-NF verifier `a2dc77e610bfc3d72`.
 - **Workflows:** hunt-2 `w9v7nomhy`, hunt-4 `w9b4m533o`, LAYA-opt `wo1wq4khh`.
 - **MiScusi hand-off ho_Mkus_DAfsz-6iw** was prepared, but the owner chose to compact instead. Ignore it.
 
