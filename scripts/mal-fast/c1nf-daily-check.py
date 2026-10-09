@@ -24,7 +24,7 @@ look; this check and the watchdog print nothing by class. Concretely:
   A test runs every check on two ledgers that differ only in class fields and requires identical output.
 
   UNIT          mal-c1nf-executor: installed unit file equal to the pinned copy, drop-ins only live.conf (equal to the pinned drop-in) and
-                10-shadow-feed.conf (both pass check-c1nf-unit.py from the executor PR); the running ExecStart is the pinned launcher; a
+                10-shadow-feed.conf (both pass check-c1nf-unit.py, pinned beside this file); the running ExecStart is the pinned launcher; a
                 unit running --live sets a credential, and every credential line is exactly LoadCredential=c1nf-wallet:<the C1-NF key> (never
                 the H5/probe key).
   GATE          /etc/mal-c1nf/LIVE_OK (root:root 0644, no symlink, parent root:root 0755); TIER exactly T1 or T2 (missing or invalid = T1).
@@ -75,7 +75,7 @@ WATCH_TIMER = "mal-c1nf-watch.timer"
 C1NF_DIR = "/var/lib/mal-live/c1nf"
 LIVE_DIR = f"{C1NF_DIR}/live"
 STATE_FILE = f"{LIVE_DIR}/state-live.json"
-COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # #504 reuses H5Counters and its file name inside the C1-NF state dir
+COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (156a941) reuses H5Counters and its file name inside the C1-NF state dir
 LEDGER_FILE = f"{LIVE_DIR}/h5-ledger.jsonl"
 C1NF_ETC = "/etc/mal-c1nf"  # root:root 0755; holds LIVE_OK and TIER, which Helm creates (the executor cannot)
 LIVE_OK = f"{C1NF_ETC}/LIVE_OK"
@@ -90,7 +90,7 @@ UNIT_FILE = f"/etc/systemd/system/{C1NF_UNIT}.service"
 DROPIN_DIR = f"/etc/systemd/system/{C1NF_UNIT}.service.d"
 DROPIN_LIVE = f"{DROPIN_DIR}/live.conf"
 DROPIN_FEED = f"{DROPIN_DIR}/10-shadow-feed.conf"
-UNIT_CHECKER = "check-c1nf-unit.py"  # from the executor PR (claude/c1nf-executor-v2): --base, --dropin, --shadow-feed
+UNIT_CHECKER = "check-c1nf-unit.py"  # this PR, pinned beside this file: --base, --dropin, --shadow-feed
 WATCH_STATE = "/var/lib/mal-c1nf-watch/state.json"
 WATCH_FILES = ((f"/etc/systemd/system/{WATCH_SERVICE}", f"{PINNED}/{WATCH_SERVICE}"),
                (f"/etc/systemd/system/{WATCH_TIMER}", f"{PINNED}/{WATCH_TIMER}"))
@@ -152,7 +152,7 @@ NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"
 CLASS_RE = re.compile(r"synth|migration_class|mig_class", re.I)
 CLASS_ALLOWED = ("synthetic_share_high",)  # the A3 structure flag: a share of graduations, alert only (DEC-026 section 7 rule 6)
 
-# Live halts the executor latches (#504 names, DEC-026 section 7). Unknown names are still shown if name-shaped and class-free.
+# Live halts the executor latches (v2 at 156a941 and DEC-026 section 7). Unknown names are still shown if name-shaped and class-free.
 HALT_MEANING = {
     "fill_selection_adverse": "unfilled picks beat filled ones by more than 3 pp over the last 30 monitored (rule 1)",
     "twin_divergence": "live worse than its paper twin by more than 1 pp at the CI90 upper bound after 50 fills (rule 2)",
@@ -559,7 +559,7 @@ def check_c1nf_unit(host: Host, rep: Report, checker) -> UnitInfo:
         rep.alert("c1nf_unit_failed", f"result={props.get('Result')}; see journalctl -u {C1NF_UNIT}")
     problems = []
     if checker is None:
-        problems.append(f"{UNIT_CHECKER} is not beside this script (the pinned tree is not the executor PR's): the drop-ins cannot be checked")
+        problems.append(f"{UNIT_CHECKER} is not beside this script (the pinned tree lacks it): the drop-ins cannot be checked")
     if props.get("FragmentPath") != UNIT_FILE:
         problems.append(f"FragmentPath is {props.get('FragmentPath')!r}, expected {UNIT_FILE}")
     pinned_base = host.read(f"{PINNED}/{C1NF_UNIT}.service")

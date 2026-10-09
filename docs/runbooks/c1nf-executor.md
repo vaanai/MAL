@@ -2,7 +2,7 @@
 
 The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, on `mal-fast-0`, unit `mal-c1nf-executor`, user `mal-live`. Its design follows the H5 canary's ([h5-executor.md](h5-executor.md), DEC-024). Read that runbook for the reasons behind each check. This one gives C1-NF's paths, the second-wallet steps, and the ways C1-NF differs from H5.
 
-**Status of this runbook.** It was written without host access, from DEC-026 and the H5 runbook (see "Not verified" at the end). The executor itself (`tools/c1nf_executor.py`, its launcher, configs, base unit, drop-ins and `check-c1nf-unit.py`) comes from the executor PR (branch `claude/c1nf-executor-v2`), which was not merged when this was written. **Which sha: only the one the manager names in a PR comment after DEC-026 section 11 item 9 is merged.** Until then the installer refuses (`<file> is missing or empty at <sha>`).
+**Status of this runbook.** It was written without host access, from DEC-026 and the H5 runbook (see "Not verified" at the end). The executor module and its two configs (`tools/c1nf_executor.py`, `c1nf-executor.json`, `c1nf-executor-live.json`) come from the executor PR (branch `claude/c1nf-executor-v2`, reference sha `156a941`), which was not merged when this was written. The launcher (`c1nf_exec_launcher.py`), the base unit (`mal-c1nf-executor.service`), the live and shadow-feed drop-ins and `check-c1nf-unit.py` are in this runbook's PR (#531), built from H5's. The installer needs both PRs in one sha. **Which sha: only the one the manager names in a PR comment after DEC-026 section 11 item 9 is merged.** Until then the installer refuses (`<file> is missing or empty at <sha>`).
 
 **Two wallets, one host.** Nothing here reads, writes, stops or restarts anything of H5's: not its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, pinned tree, `TIER` or watchdog. **Do not remove the wallet-wide `/var/lib/mal-live/STOP` for C1-NF's sake.** While it is there, this unit cannot send (DEC-026 section 5).
 
@@ -32,7 +32,7 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 | Shadow-feed drop-in (host path, Helm writes it) | `/etc/systemd/system/mal-c1nf-executor.service.d/10-shadow-feed.conf`, one line `BindReadOnlyPaths=-<shadow dir>:/srv/mal-c1nf-shadow` |
 | Watchdog units, config and state | `/etc/systemd/system/mal-c1nf-watch.{service,timer}`, `/etc/mal-c1nf-watch/watch.env` (root:root 0600 in a root:root 0700 dir), `/var/lib/mal-c1nf-watch/` |
 | State dir (mal-live 0700), the only path the unit can write | `/var/lib/mal-live/c1nf/` |
-| Live state, counters, ledger | `/var/lib/mal-live/c1nf/live/{state-live.json,h5-counters.json,h5-ledger.jsonl}` (#504's names: the C1-NF executor reuses H5's counters and ledger classes; dry run in `.../dryrun/`) |
+| Live state, counters, ledger | `/var/lib/mal-live/c1nf/live/{state-live.json,h5-counters.json,h5-ledger.jsonl}` (v2's names at `156a941`: the C1-NF executor reuses H5's counters and ledger classes, plus its own `c1nf-extra.json` beside the counters; dry run in `.../dryrun/`) |
 | `LIVE_OK` (the gate the executor cannot create) | `/etc/mal-c1nf/LIVE_OK`: a regular file, root:root, mode **exactly 0644**, no symlink, parent `/etc/mal-c1nf` root:root 0755 |
 | `TIER` | `/etc/mal-c1nf/TIER`, the same checks, content exactly `T1` or `T2`. Missing or invalid means T1 (the lowest). The C1-NF table, not H5's |
 | C1-NF's `STOP`, `HALT` | `/var/lib/mal-live/c1nf/STOP`, `/var/lib/mal-live/c1nf/HALT` (the executor only tests that they exist) |
@@ -46,7 +46,7 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 
 ## Before Helm starts (manager)
 
-1. The sha, in a PR comment, after the executor PR is merged. It must contain `EXP/EXP-025-c1nf-part1-prereg.md`, and its `c1nf-executor-live.json` must hold the stake, priority, `end_ms` and `state_dir` of DEC-026 section 6. The installer refuses otherwise.
+1. The sha, in a PR comment, after the executor PR and this PR are both merged. It must contain `EXP/EXP-025-c1nf-part1-prereg.md`, and its `c1nf-executor-live.json` must hold the stake, priority, `end_ms` and `state_dir` of DEC-026 section 6. The installer refuses otherwise.
 2. The manifest, made in the manager's own clone: `scripts/mal-fast/make-c1nf-manifest.sh <40-char-sha> > c1nf-manifest.txt`. Give it to Helm and keep a copy.
 3. The C1-NF shadow's output directory (absolute path of the MiScusi job user's `~/data/c1nf-shadow`), with the shadow running at the reviewed #503 head, and its pinned model hash (DEC-026 section 11 item 12).
 4. The Discord webhook for the watchdog (to Helm over the private channel, never into a repo), the funded total (0.5), and the wallet's public address once Helm has given it.
@@ -116,7 +116,7 @@ stat -c '%U:%G %a %F %n' /etc/mal-c1nf /srv/mal-c1nf-shadow /var/lib/mal-live/c1
 #   expect: root:root 755 directory /etc/mal-c1nf | root:root 755 directory /srv/mal-c1nf-shadow | mal-live:mal-live 700 directory /var/lib/mal-live/c1nf
 ```
 
-(The `__SHADOW_DIR__` placeholder is the H5 convention. Use whatever the executor PR's feed drop-in names.)
+(The `__SHADOW_DIR__` placeholder is the H5 convention. The template is `mal-c1nf-executor-shadow-feed.conf` in the pinned tree.)
 
 **Step 6. Sandbox and credential checks** (read-only; they change nothing of H5's):
 
@@ -212,6 +212,8 @@ What it checks is in the file's header. In short: the unit files against the pin
 
 As in the H5 runbook's "Sell-and-close", with the C1-NF state dir and the C1-NF key: the credential is `c1nf-wallet` from `/etc/mal-c1nf-key/c1nf-wallet.json`. Never use the H5 key for a C1-NF mint, or the C1-NF key for an H5 mint. Wind-down first. Then `--mark-closed` with the C1-NF config, and report the signature to the manager.
 
+**Open item: no pinned C1-NF sell tool yet.** The C1-NF launcher has no `--run-tool` (it refuses one). H5's `sell_and_close` defaults to H5's key file and checks only that `mal-h5-executor` and `mal-probe-executor` are stopped, not `mal-c1nf-executor`, so it is not offered for the second wallet. Until a C1-NF-aware tool is merged, a stuck C1-NF position is Helm's by hand: `mal-c1nf-executor` stopped and verified inactive first, the C1-NF key only.
+
 ## Rollback
 
 Wind-down, `systemctl stop mal-c1nf-executor`, then `ln -sfn <previous sha> /usr/local/lib/mal-c1nf-exec/current` only if that sha was hash-checked when it was installed, then run the installer's hash table again by hand (`sha256sum` of the tree against the manifest you kept). Otherwise reinstall from the manager's named sha. Never edit a file under `/usr/local/lib/mal-c1nf-exec/<sha>/`.
@@ -228,8 +230,11 @@ Wind-down, `systemctl stop mal-c1nf-executor`, then `ln -sfn <previous sha> /usr
 
 ## Not verified (written without host access)
 
-- The executor PR's file names (launcher, configs, drop-ins, `check-c1nf-unit.py`, the `--status` text and the `__SHADOW_DIR__` placeholder) and its state file names (`h5-counters.json`, `h5-ledger.jsonl` under `/var/lib/mal-live/c1nf/live/`) are #504's. They must be checked against the merged executor.
-- The live-config key names the installer and the daily check test (`stake_lamports`, `buy_priority_lamports`, `end_ms`, `state_dir`, `max_open`, `max_trades_per_day`, `daily_loss_lamports`, `total_loss_lamports`, `max_pick_age_s`, `wallet_floor_lamports`) are #504's.
-- The skip-reason names the daily check counts (`oracle_*`, `seal*`/`cap_pick*`, `feed_stale`, `pick_stale`, `bad_intent:missing_q_lamports`, `bad_intent:missing_base_reserve`) and the halt names are #504's or DEC-026's wording. Unknown names are still counted and shown if they are name-shaped and do not name the class.
+- The executor's state file names (`h5-counters.json`, `h5-ledger.jsonl`, `c1nf-extra.json` under `/var/lib/mal-live/c1nf/live/`), its credential name (`c1nf-wallet`), its `intents_file` (`/srv/mal-c1nf-shadow`) and its live-config keys were read from `claude/c1nf-executor-v2` at `156a941`, not from a merged executor. The `--status` text was not checked. If the merged executor differs, the unit files, the checker, the daily check and this runbook follow it before the install.
+- The live-config keys the installer and the daily check test (`stake_lamports`, `buy_priority_lamports`, `end_ms`, `state_dir`, `jito_enabled`, `jito_tip_lamports`, `entry_tolerance_bps`, `feed_heartbeat_max_age_ms`, `max_open`, `max_trades_per_day`, `daily_loss_lamports`, `total_loss_lamports`, `max_pick_age_s`, `wallet_floor_lamports`) are v2's at `156a941`.
+- The refusal names the daily check counts are v2's at `156a941`: guard inputs `bad_pick:ref_state_missing`, `bad_pick:ref_state`, `bad_pick:missing_*` (and H5's `bad_intent:missing_*`), `feed_stale`, `pick_stale`. Refusals are counted from `skip` rows only (v2 also writes a `pick_status` row per refusal). The CAP-PICK seal is never ledgered per mint: the check reads the count-only `seal_skips` (H5's `seal_count` rows and the counters file), so it cannot tell "no oracle" from "sealed pick"; a rise with no decision and no buy, `LIVE_OK` present, from 2026-10-16T01Z is the `c1nf_oracle_unavailable` alert. Unknown names are still counted and shown if they are name-shaped and do not name the class.
+- **v2's live config at `156a941` has no `pick_file`.** From 2026-10-16T01Z every pick is then refused `seal_window_no_oracle` (fail closed, as intended) and the canary is paused until the #509 oracle's file is in the pinned config.
+- The base unit hides H5's state dir, `/etc/mal-h5`, `/etc/mal-probe` and H5's pinned tree (`InaccessiblePaths=`). That the C1-NF executor needs none of them was read from v2's code (it repoints `LIVE_OK` and `TIER` to `/etc/mal-c1nf`), not run in the sandbox. The keyless dry run under the unit is the check.
+- The shadow-feed checker accepts a source directory named `c1nf-shadow*` under `/home/<user>/`. The real #503 output directory name was not checked; if it differs, the checker's pattern follows it.
 - The key-tool commands in Step 2 and the sandbox values in Step 6 are proposals; Helm owns the exact install (DEC-026 section 5).
 - The pinned model file and its sha256 (DEC-026 section 11 item 12) are not installed by this installer. Their path and check belong to the executor PR.

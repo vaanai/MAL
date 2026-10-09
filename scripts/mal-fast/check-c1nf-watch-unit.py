@@ -6,7 +6,7 @@ tab strip, ASCII only, every line exact and in order).
     /usr/bin/python3 -I check-c1nf-watch-unit.py --watch-service <unit file>   exit 0 = identical to the intended C1-NF watchdog service
     /usr/bin/python3 -I check-c1nf-watch-unit.py --watch-timer   <unit file>   exit 0 = identical to the intended C1-NF watchdog timer
 
-The executor's own units (--base, --dropin, --shadow-feed) are checked by check-c1nf-unit.py, which the executor PR ships.
+The executor's own units (--base, --dropin, --shadow-feed) are checked by check-c1nf-unit.py, which this PR ships (built from check-h5-unit.py).
 install-c1nf-executor-pinned.sh runs this on the manifest-verified blobs before anything is moved.
 """
 from __future__ import annotations
