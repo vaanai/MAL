@@ -27,7 +27,11 @@ Locating the transactions (B4; `getTransaction` json, maxSupportedTransactionVer
   the pool as unclassified (reason `tx_missing:*` / `fetch_failed:*`).
 
 The helpers (`tx_event_blobs`, `post_complete_buy_seen`, `fetch_tx`, the event decoders, `find_program_address`) are the monitor's
-own; none of their semantics is copied here. The CreatePoolEvent decoder is `observe.trade_decode.decode_program_data`.
+own; none of their semantics is copied here.
+
+`event_seen_any` (audit use only; the formal read ignores it and applies B3 to `class` as written): True when a PostCompleteBuyEvent
+discriminator was seen in ANY transaction that was located and read here, so it can be True on an `unclassified` pool whose other
+transaction was unreadable. It is True for every `synthetic` pool and False for every `non_synthetic` one. The CreatePoolEvent decoder is `observe.trade_decode.decode_program_data`.
 """
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ CLASSES = (CLASS_SYNTHETIC, CLASS_NON_SYNTHETIC, CLASS_UNCLASSIFIED)
 
 CAP_DEFAULT = 1000  # EXP-024 Am.4 B4: signatures per search, per address
 PAGE_DEFAULT = 1000  # getSignaturesForAddress maximum `limit`
-RESULT_KEYS = ("class", "migrate_sig", "complete_sig", "reason")
+RESULT_KEYS = ("class", "migrate_sig", "complete_sig", "reason", "event_seen_any")
 
 
 def curve_pda_for_mint(mint: str) -> str:
@@ -87,8 +91,21 @@ class _Unclassified(Exception):
         self.reason = reason
 
 
-def _result(cls: str, migrate_sig: str | None, complete_sig: str | None, reason: str) -> dict[str, Any]:
-    return {"class": cls, "migrate_sig": migrate_sig, "complete_sig": complete_sig, "reason": reason}
+def _result(cls: str, migrate_sig: str | None, complete_sig: str | None, reason: str, event_seen_any: bool) -> dict[str, Any]:
+    return {"class": cls, "migrate_sig": migrate_sig, "complete_sig": complete_sig, "reason": reason, "event_seen_any": event_seen_any}
+
+
+def _pcb(tx: Mapping[str, Any], mint: str) -> bool:
+    return M.post_complete_buy_seen(M.tx_event_blobs(tx), mint)[0]
+
+
+def _tape_complete_shows_event(rpc: Any, sig: str, mint: str) -> bool:
+    """For `event_seen_any` only: the migrate tx was not located, but the tape names the completing tx. One read; a failure is just False."""
+    try:
+        tx = M.fetch_tx(rpc, sig)
+    except M.ITEM_ERRORS:
+        return False
+    return _complete_ok(tx, mint) and _pcb(tx, mint)
 
 
 # ---- RPC reads --------------------------------------------------------------------------------------------
@@ -212,21 +229,26 @@ def classify_pool(
     curve = curve_pda or curve_pda_for_mint(mint)
     migrate_sig: str | None = None
     complete_sig: str | None = None
+    migrate_tx: Mapping[str, Any] | None = None
+    seen_any = False
     try:
         migrate_sig, migrate_tx = _locate_migrate(
             rpc, mint=mint, pool=pool, s0_sig=s0_sig, before_sig=before_sig, tape_migrate_sig=tape_migrate_sig, cap=cap, page_size=page_size)
+        seen_any = _pcb(migrate_tx, mint)
         complete_sig, complete_tx = _locate_complete(
             rpc, mint=mint, curve_pda=curve, migrate_sig=migrate_sig, migrate_tx=migrate_tx, tape_complete_sig=tape_complete_sig,
             cap=cap, page_size=page_size)
     except _Unclassified as exc:
-        return _result(CLASS_UNCLASSIFIED, migrate_sig, complete_sig, exc.reason)
+        if migrate_tx is None and tape_complete_sig:  # no migrate tx, but a tape-located completing tx may still show the event
+            seen_any = _tape_complete_shows_event(rpc, tape_complete_sig, mint)
+        return _result(CLASS_UNCLASSIFIED, migrate_sig, complete_sig, exc.reason, seen_any)
     same = complete_sig == migrate_sig  # the migrate tx also carried the CompleteEvent: one transaction to test
-    in_migrate = M.post_complete_buy_seen(M.tx_event_blobs(migrate_tx), mint)[0]
-    in_complete = in_migrate if same else M.post_complete_buy_seen(M.tx_event_blobs(complete_tx), mint)[0]
+    in_migrate = seen_any
+    in_complete = in_migrate if same else _pcb(complete_tx, mint)
     if in_migrate and in_complete:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_and_complete_tx" if same else "post_complete_buy_in_both_txs")
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_and_complete_tx" if same else "post_complete_buy_in_both_txs", True)
     if in_complete:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_complete_tx")
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_complete_tx", True)
     if in_migrate:
-        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_tx")
-    return _result(CLASS_NON_SYNTHETIC, migrate_sig, complete_sig, "no_post_complete_buy")
+        return _result(CLASS_SYNTHETIC, migrate_sig, complete_sig, "post_complete_buy_in_migrate_tx", True)
+    return _result(CLASS_NON_SYNTHETIC, migrate_sig, complete_sig, "no_post_complete_buy", False)

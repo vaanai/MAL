@@ -100,6 +100,7 @@ def test_recorded_graduation_is_classified_by_the_b4_search(name):
     out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"]))
     assert tuple(out) == sc.RESULT_KEYS
     assert out["class"] == c["expect"]
+    assert out["event_seen_any"] is (c["expect"] == "synthetic")
     assert out["migrate_sig"] == c["migrate_sig"] and out["complete_sig"] == c["complete_sig"]
     assert out["reason"] == ("post_complete_buy_in_complete_tx" if c["expect"] == "synthetic" else "no_post_complete_buy")
     assert [a for a, _ in rpc.sig_calls] == [c["pool"], c["curve"]]
@@ -166,12 +167,13 @@ def test_one_tx_that_is_both_migrate_and_completing_is_tested_once_spliced():
     assert [a for a, _ in rpc.sig_calls] == [c["pool"]]  # no curve search: the migrate tx carries the CompleteEvent
 
 
-def test_a_post_complete_buy_seen_in_one_tx_is_not_enough_if_the_other_tx_is_unreadable():
+def test_post_complete_buy_in_one_tx_with_the_other_unreadable_stays_unclassified_but_event_seen_any_is_true():
     rpc, c = fake_for("synthetic_1")
     rpc.txs[c["migrate_sig"]]["meta"]["logMessages"].append(_line_with_disc(FX["txs"][c["complete_sig"]], M.DISC_POST_COMPLETE_BUY))
     rpc.txs.pop(c["complete_sig"])
     out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"]))
-    assert out["class"] == "unclassified" and out["reason"] == "tx_missing:complete"  # B1: either tx unreadable -> unclassified
+    assert out["class"] == "unclassified" and out["reason"] == "tx_missing:complete"  # B1/B3 as written: the class stays literal
+    assert out["event_seen_any"] is True  # ... and the audit's separate field records that the event WAS seen in a readable located tx
 
 
 # ---- defining-event check and fallback to the next source ------------------------------------------------------------
@@ -313,3 +315,18 @@ def test_recorded_pool_with_an_older_successful_non_createpool_tx_is_walked_past
     out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"]))
     assert out["migrate_sig"] == c["migrate_sig"] and out["class"] == "synthetic"
     assert rpc.tx_calls[:2] == [older[0], c["migrate_sig"]]
+
+
+def test_event_seen_any_is_false_when_nothing_readable_shows_the_event():
+    rpc, c = fake_for("non_synthetic_1")
+    rpc.txs.pop(c["complete_sig"])
+    out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"]))
+    assert out["class"] == "unclassified" and out["event_seen_any"] is False
+    assert tuple(out) == sc.RESULT_KEYS
+
+
+def test_event_seen_any_from_a_tape_located_completing_tx_when_the_migrate_tx_cannot_be_found():
+    rpc, c = fake_for("synthetic_1")
+    rpc.txs.pop(c["migrate_sig"])
+    out = sc.classify_pool(rpc, **args(c, before_sig=c["boundary_sig"], tape_complete_sig=c["complete_sig"]))
+    assert out["class"] == "unclassified" and out["reason"] == "tx_missing:migrate" and out["event_seen_any"] is True
