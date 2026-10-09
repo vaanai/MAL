@@ -1,0 +1,46 @@
+[Unit]
+Description=MAL H5 watchdog (DEC-024 section 8): checks the H5 canary and posts alerts to Discord
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# /etc/mal-h5-watch/watch.env (root:root 0600 in a root:root 0700 dir) holds exactly three lines: H5_WATCH_DISCORD_WEBHOOK=...,
+# H5_WATCH_FUNDED_SOL=<total SOL deposited>, H5_WATCH_SHADOW_DIR=/home/<jobuser>/data/h5-shadow. It is read by systemd as root; the
+# webhook URL is a secret and is never printed. No "-" prefix: a missing file fails the start.
+EnvironmentFile=/etc/mal-h5-watch/watch.env
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch/watch.env)" = 0:0:600'
+# Stdlib only, from the root-owned pinned tree, with -I -S (no site: no .pth file from /usr/local runs in this root process). It reads
+# state through h5-daily-check.py (nofollow reads, fixed paths) and posts; it holds no wallet key, uses the public RPC for the balance,
+# and writes only its own state dir. The key paths below are fenced off anyway: it never needs them, and a root process with
+# CAP_DAC_READ_SEARCH that talks to Discord must not be able to read them even through a future bug. PID 1 reads EnvironmentFile before
+# the namespace exists, so the fence does not touch watch.env.
+ExecStart=/usr/bin/python3 -I -S -B -u /usr/local/lib/mal-h5-exec/current/h5-watch.py
+StateDirectory=mal-h5-watch
+StateDirectoryMode=0700
+TimeoutStartSec=120
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=256M
+MemorySwapMax=0
+UMask=0077
