@@ -242,6 +242,37 @@ EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 20
 
 **Takes effect** on merge, with quant-proof's OK on its final head, before the official P2 run and before 2026-10-10T00:00Z. It starts no trade. `LIVE_OK` and the go to Helm stay separate acts.
 
+## Amendment 3 (2026-10-09, about 16:00Z, the owner's decision, before any canary send): a short T0 trial, then T1 with a 1 SOL wallet
+
+```
+OWNER_LADDER_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owner, verbatim: "When we go live, I presume 0.02 per trade is going to get washed out by fees, let's use it to do a quick trial run, and then depending on how we feel about the strategy, let's bump it up to 0.05 or 0.1 right away." Answers to the manager's three questions (AskUserQuestion, the recommended option each time): trial length "~20 trades"; next size "0.10 SOL"; wallet "Top up to ~1 SOL". MiScusi notebook n_VzbN0Cri0QAVPA.
+```
+
+The manager corrected one premise before asking: at 0.02 SOL, H5's fixed costs are about 0.55% of the stake (section 4, "Trial-size effect"), so the trial is not "washed out by fees". It is only small in SOL.
+
+**What this sets**
+1. **T0 is a short trial.** T0 (0.02 SOL) runs until **20 landed buys**. This replaces the 25–50 trade length of the 10-09 ladder for T0 only. T1 → T2 stays at 25–50 trades per step.
+2. **The step to T1 requires all of these at that point:**
+   - the landing p50 is at most 3.0 s over those 20 landed buys (section 5, item 3);
+   - no live-halt rule and no stop that ends the canary has fired and is unresolved;
+   - the canary's realized mean per closed trade, after fees, is not below zero;
+   - the shadow twin's mean per trade over the same trades is not below zero.
+
+   These are the section 7 conditions that can be evaluated at 20 fills. The live−twin CI90 condition needs at least 100 fills, so it cannot bind at this step. It binds from 100 fills on, at any tier.
+
+   If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway.
+3. **Wallet.** Before T1 the owner tops the wallet up to about 1 SOL. That supersedes section 4's "Funding … Nothing more".
+   - The manager updates `/data/mal/hunt-1008/h5-work/FUNDED_SOL`.
+   - Helm updates `H5_WATCH_FUNDED_SOL` in `/etc/mal-h5-watch/watch.env`.
+   - Only then does Helm write `T1` to `/etc/mal-h5/TIER`.
+4. **T1 limits are the executor's code constants** (`tools/h5_executor.py`, `TIERS`):
+   - 0.10 SOL stake, 3 open, 40 attempts per UTC day;
+   - daily stop 0.40 SOL;
+   - total stop min(0.60 SOL, 35% of the wallet when the tier started), about 0.35 SOL with a 1 SOL wallet;
+   - wallet floor 0.05 SOL.
+5. **What it is.** This is section 7's scale-up toward 1 SOL under `OWNER_OVERRIDE_CONFIRMED`. It is an unpromoted trial in every report. It changes nothing in EXP-024 and nothing in section 5's halts.
+
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). Still open: the trial's stake, open-position cap and stops at 1 SOL, in writing.
