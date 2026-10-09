@@ -14,10 +14,12 @@ is never echoed into an alert. A failing `sudo -n` is an ALERT (sudo_unavailable
 (HELIUS_API_KEY from the environment or the paper env file, or --public-rpc) is never printed.
 
   ALLOWED now   the H5 unit mal-h5-executor (active or enabled), /var/lib/mal-live/h5, the pinned tree, /etc/mal-h5/LIVE_OK, the watchdog.
-  STILL ALERTS  any mal-probe-executor* unit active or enabled; the probe unit holding ANY drop-in or LoadCredential (a started probe must
-                have no key); /var/lib/mal-live/state-live.json OR state-live-dec020.json changed (sha256 against a baseline, plus attempts
-                <= 62, realized -0.210755 SOL, nothing open for the first). The old "/var/lib/mal-live/STOP must exist" alert is gone: the
-                executor treats that file as a wallet-wide STOP, so it must be absent for H5 to buy.
+  STILL ALERTS  any mal-probe-executor* unit active or enabled; the probe unit holding ANY drop-in or a credential (a started probe must
+                have no key; "a credential" is a non-comment LoadCredential= or LoadCredentialEncrypted= line in `systemctl cat`, never the
+                `show` property: systemd 255 prints LoadCredential=[unprintable] for every unit); /var/lib/mal-live/state-live.json OR
+                state-live-dec020.json changed (sha256 against a baseline, plus attempts <= 62, realized -0.210755 SOL, nothing open for the
+                first). The old "/var/lib/mal-live/STOP must exist" alert is gone: the executor treats that file as a wallet-wide STOP, so it
+                must be absent for H5 to buy. The H5 unit running with --live must show a credential in its own `systemctl cat` text.
   UNMANAGED     live state with open or pending positions while the unit is not active with --live (alert h5_positions_unmanaged).
   IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); a shadow directory created AFTER the unit started (the unit's
                 bind points at nothing or at the old directory); LIVE_OK present but the unit not active and enabled, the running ExecStart
@@ -311,7 +313,7 @@ class Host:
 
     def systemctl(self, *argv: str) -> tuple[int, str]:
         try:
-            r = subprocess.run(["/usr/bin/systemctl", *argv], capture_output=True, text=True, timeout=30)
+            r = subprocess.run(["/usr/bin/systemctl", *argv], capture_output=True, text=True, errors="replace", timeout=30)
         except (OSError, subprocess.SubprocessError):
             return 127, ""
         return r.returncode, r.stdout
@@ -371,6 +373,45 @@ def sysctl_show(host: Host, rep: Report, unit: str, *props: str) -> dict[str, st
     return d
 
 
+CREDENTIAL_RE = re.compile(r"^LoadCredential(?:Encrypted)?[ \t]*=")
+UNIT_WS = " \t\r"  # what systemd strips around a line; the text is split on LF only (check-h5-unit.py does the same)
+
+
+def text_sets_credential(text: str) -> bool:
+    """True if the unit text has a non-comment LoadCredential= or LoadCredentialEncrypted= line. Lines starting with `#` or `;` are comments, also
+    inside a backslash continuation (systemd skips them there too). Every physical line is tested, and so is every logical line (continuations
+    joined with a space), so a key split over a continuation is still seen. A hit anywhere in the text counts: the section is not tracked."""
+    physical, logical, cur = [], [], ""
+    for raw in text.split("\n"):
+        line = raw.strip(UNIT_WS)
+        if line[:1] in ("#", ";"):
+            continue
+        physical.append(line)
+        if line.endswith("\\"):
+            cur += line[:-1] + " "
+            continue
+        logical.append((cur + line).strip(UNIT_WS))
+        cur = ""
+    if cur.strip(UNIT_WS):
+        logical.append(cur.strip(UNIT_WS))
+    return any(CREDENTIAL_RE.match(line) for line in physical + logical)
+
+
+def unit_sets_credential(host: Host, rep: Report, unit: str, load_state: str | None) -> bool | None:
+    """Does the unit's EFFECTIVE unit text set a credential? `systemctl cat` prints the fragment and every drop-in systemd merges (transient and
+    generator files too), which is the text systemd acts on. The `show -p LoadCredential` property is not used: systemd 255 prints
+    `LoadCredential=[unprintable]` for EVERY unit (ssh.service too), so any non-empty value there is meaningless.
+    A unit systemd does not have (not-found) or has masked holds no credential. If `systemctl cat` fails or prints nothing for a loaded unit the
+    answer is unknown: an ALERT systemctl_failed and None, never "no credential". The text is only scanned, never echoed."""
+    if load_state in ("not-found", "masked"):
+        return False
+    rc, out = host.systemctl("cat", unit, "--no-pager")
+    if rc != 0 or not out.strip():
+        rep.alert("systemctl_failed", f"`systemctl cat {unit}` failed (exit {rc}, {len(out)} bytes): whether it sets a credential cannot be told; this is not 'no credential'")
+        return None
+    return text_sets_credential(out)
+
+
 def _json(host: Host, path: str, tail: int | None = None) -> dict | None:
     raw = host.read(path, tail) if tail else host.read(path)
     if raw is None:
@@ -388,7 +429,8 @@ def load_unit_checker(dir_: Path):
 
 def check_probe_units(host: Host, rep: Report) -> None:
     bad = []
-    p = sysctl_show(host, rep, f"{PROBE_UNIT}.service", "LoadState", "ActiveState", "UnitFileState", "DropInPaths", "LoadCredential")
+    p = sysctl_show(host, rep, f"{PROBE_UNIT}.service", "LoadState", "ActiveState", "UnitFileState", "DropInPaths")
+    has_key: bool | None = False
     if p is not None:
         if p.get("ActiveState") in ACTIVE_STATES:
             bad.append(f"{PROBE_UNIT}.service is {p.get('ActiveState')}")
@@ -396,8 +438,10 @@ def check_probe_units(host: Host, rep: Report) -> None:
             bad.append(f"{PROBE_UNIT}.service is {p.get('UnitFileState')}")
         if p.get("DropInPaths", "").strip():
             rep.alert("probe_live_dropin", f"the probe unit has drop-in(s) {p['DropInPaths'].strip()}: move them to /root/disabled (runbook Step 1), so a start of the probe has no key")
-        if p.get("LoadCredential", "").strip():
-            rep.alert("probe_has_key", "the probe unit would be handed a credential (LoadCredential is set): a start of it would arm the wallet key")
+        has_key = unit_sets_credential(host, rep, f"{PROBE_UNIT}.service", p.get("LoadState"))
+        if has_key:
+            rep.alert("probe_has_key", "the probe unit would be handed a credential (its unit text sets LoadCredential= or LoadCredentialEncrypted=): "
+                                       "a start of it would arm the wallet key")
     rc, out = host.systemctl("list-unit-files", "--no-legend", "--no-pager", f"{PROBE_UNIT}*")
     for line in out.splitlines():
         parts = line.split()
@@ -410,8 +454,8 @@ def check_probe_units(host: Host, rep: Report) -> None:
             bad.append(f"{parts[0]} is {parts[2]}")
     if bad:
         rep.alert("probe_unit", "; ".join(bad) + " (two processes must never share the key; stop and disable it, docs/runbooks/h5-executor.md step 1)")
-    elif p is not None:
-        rep.ok("no mal-probe-executor unit is active or enabled, and it holds no drop-in or credential" if not p.get("DropInPaths", "").strip() and not p.get("LoadCredential", "").strip()
+    elif p is not None and has_key is not None:  # None: `systemctl cat` failed, and that already alerted
+        rep.ok("no mal-probe-executor unit is active or enabled, and it holds no drop-in or credential" if not p.get("DropInPaths", "").strip() and not has_key
                else "no mal-probe-executor unit is active or enabled")
 
 
@@ -507,9 +551,15 @@ def check_h5_unit(host: Host, rep: Report, checker) -> UnitInfo:
         if "/usr/local/lib/mal-h5-exec/" not in es or "fast-forward" in es:
             problems.append("running ExecStart is not the pinned launcher")
         running_live = props.get("ActiveState") == "active" and "--live" in es
+    cred_unknown = False
+    if running_live:  # the live executor gets its key only through the unit's credential: the unit text systemd acts on must still set one
+        has_key = unit_sets_credential(host, rep, f"{H5_UNIT}.service", props.get("LoadState"))
+        cred_unknown = has_key is None
+        if has_key is False:
+            problems.append("the unit runs with --live but its effective unit text sets no LoadCredential= (live drop-in missing or changed)")
     if problems:
         rep.alert("h5_unit_files", "; ".join(problems))
-    else:
+    elif not cred_unknown:  # unknown: `systemctl cat` failed, and that already alerted
         rep.ok("H5 unit files equal the pinned copies; only the allowed drop-ins exist")
     try:
         start_us = int(props.get("ActiveEnterTimestampMonotonic", ""))
