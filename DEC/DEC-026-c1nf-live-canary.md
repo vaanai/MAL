@@ -217,3 +217,150 @@ Any of these halts new buys at once (`STOP`). Open positions exit on the timer u
   - **(B)** The canary skips synthetic and unclassifiable pools as H5 does. It is safer, but its population is no longer the read's. If the read should follow, EXP-025 needs its own population amendment (EXP-024 Amendment 4 is the model), which this DEC does not draft.
   - **(C)** Measure first: a count-only pass over October post-upgrade prints on how many universe pools are synthetic, before choosing A or B.
 - **Status.** Open. A dated quant-proof ruling line goes under this heading before `LIVE_OK` (section 11, "Synthetic ruling"). Until then `synthetic_share_high` is a live halt for the canary (section 7, rule 6).
+
+## 10. Scale-up (the ladder)
+
+A step up (T0 to T1, T1 to T2) needs the manager's written ask (a PR comment or the notebook) and **all** of these:
+- **The owner's line for that tier** (**O-2**): `OWNER_LADDER_CONFIRMED` below, with his words, stating the tier's stake, open cap and stops. T1 and T2 are inactive without it. This follows DEC-025 section 4 and EXP-025 section 5.1: "Scale-up beyond canary size needs a passed read or a further explicit owner override." 0.10 and 0.30 SOL are 5 and 15 times the canary's size.
+- **Enough closed trades at the current tier:** about 50 at T0, about 25 at T1, then 25 to 50 a step. Counting fills.
+- **Live execution is consistent with the sim:** the landing p50 is at most 1.9 s, over at least 20 landed buys; the fill-selection rule has not latched; and, after at least 50 fills, the live-minus-twin CI90 upper bound is not below -1 pp (section 7 rules 1 to 3).
+- **The paper twin is not negative:** the shadow's mean per trade for the canary's picks, priced at the canary's stake and fee, is not below zero.
+- **EXP-025 Look 1, if it has been read, is not negative:** its deciding-cell flat and pressure means are not below zero. **Plainly: Look 1 cannot be read before about 2026-10-17T03Z (EXP-025 section 3), so this condition cannot bind a step made before then.**
+- **The canary's own realized result, after fees, is not negative:** its mean per closed trade is not below zero. **Near a coin flip, by section 6's arithmetic.** If the rule worked exactly as September says, the expected mean at 0.02 SOL is about +2% against a standard error of about 5 pp at 50 trades [inferred]. A zero-edge book passes this check a large share of the time. The check is a guard against a gross fault, not a test.
+- **No live-halt rule (section 7) and no stop that ends the canary is unresolved,** including the synthetic ruling (section 9.3) and the A3 flags that apply.
+- **The tier is funded** by the owner's separate decision, and the 35% cap is set from the wallet at the tier's start. **T2 also needs a C1-NF price-impact check** (Q8).
+
+**These are necessary and not sufficient.** The twin is observed in real time (section 8), and the looks, if read, are read as written. **Neither clears the promotion gate.** CLAUDE.md says nothing goes live before a book clears the gate on both fail models. This DEC does not waive that, and it records **no** override of the kind DEC-024 section 7 records for H5. The ladder's upper steps are written here so the owner can decide them, not decided for him.
+
+```
+OWNER_LADDER_CONFIRMED: none. T1 and T2 are inactive. A dated line from the owner, with his words, goes here and nowhere else.
+```
+
+Size above T2, or any step on a passed read, is governed by DEC-018, DEC-019, DEC-020, DEC-025 section 5 (at most 4 x 0.25 SOL open at a 1 SOL bankroll, after the owner's yes) and the owner.
+
+**Mechanics of a step (as H5's runbook).** Helm edits `/etc/mal-c1nf/TIER` on the manager's written ask. No wind-down and no restart: nothing stops and open positions are untouched. The executor writes a `tier_change` ledger row within a few seconds of its next tick. The watchdog posts it. The daily check alerts if the file and the executor disagree for 15 minutes. A step down is the same edit.
+
+## 11. What must happen before the first live send
+
+Status is as of 2026-10-09, about 08:30Z, **from the PR list and PR bodies, not from the hosts**. Nothing was checked on `mal-fast-0` or `mal-core-0`.
+
+| # | Item | Status |
+| --- | --- | --- |
+| 1 | **Appendix A merged** as an EXP-025 amendment (section 8) | Not started. Draft text below. Time-critical only for gap 1 |
+| 2 | **The owner's answers** to O-1 to O-7 | Open |
+| 3 | **Quant-proof OK on this DEC's final head**, and the stop table (section 12) | Not requested. Table not computed |
+| 4 | **Synthetic ruling** (section 9.3), a dated quant-proof line | Open |
+| 5 | **Pool-overlap count** (section 9.2, Q2), or every "0 overlap" removed from the documents | Open. Source of the claim not found |
+| 6 | **Ledger** #502 (`claude/c1nf-ledger`) merged, with a review | OPEN draft at 53da60f. Its body reports 21 tests and byte-equal parity with the pinned ledger on 2026-09-20. No review recorded. Not run on fast-0; `duckdb==1.5.6` not checked there. The nightly rollup is not scheduled |
+| 7 | **Features** #506 (`claude/c1nf-features`) merged, with a review | OPEN draft at 3ae9915. Exact mode bit-equal on two days; the **live mode drifts** (state features differ by 2e-7 to 1.7e-2 relative at p99, maximum 1.9, from the fee-model estimate; "the main open item"). No review recorded |
+| 8 | **Shadow** #503 (`claude/c1nf-shadow`) merged, with a review | OPEN draft at 2a96ce0, "not for merge until the missing items are closed": no pinned model, no parity, features not on main, no live run. 72 tests. **Two changes this DEC needs:** the pick record must carry the decision-time `q_lamports` and `base_reserve` (its `PICK_FIELDS` do not; section 6, buy guard), and outcome records start at 2026-10-10T00 unless Appendix A item 1 is in (section 8) |
+| 9 | **Executor** (`c1nf` profile) merged, with a review and a **security review** (it holds a key) | **#504 is CLOSED, not merged**, at 2026-10-09T05:33:55Z, the same minute #484 merged; its base branch was `claude/h5-executor` (closed by that merge, inferred; no comment says so). The branch `claude/c1nf-executor` is still on origin at a98ff07, built on the pre-merge H5 head 9c5618b. It must be rebased onto main and reworked for the merged tier mechanism. Its limits (3 open, 40 a day, total 0.15) differ from section 6. Other gaps against this DEC: the buy guard fail-closed, the oracle keying (section 9.1), `end_ms`, priority per O-3, the file paths of section 5. No review of it is recorded |
+| 10 | **Daily check and watchdog** for `c1nf` | Not written (H5's are `scripts/mal-fast/h5-daily-check.py` and the `h5-watch` units) |
+| 11 | **Pinned installer and runbook** `docs/runbooks/c1nf-executor.md`, modelled on `docs/runbooks/h5-executor.md` | Not written |
+| 12 | **Pinned model file** and its sha256 in a dated line | Not done (HANDOFF; #503 body). It is trained on the 36 exploration days only: no October label may be used while the EXP-025 seal runs (sections 4 and 11.3). EXP-025 P2's deterministic rebuild (due before 2026-10-16T01Z) is the natural source; its status is not known to the drafter. If the canary needs a model earlier, it is a separate documented model and its difference from the read's is disclosed (Q7) |
+| 13 | **Parity task 3:** the shadow's picks against VERIFY's 419 | Not done (HANDOFF; #503 body). The bar is set by quant-proof **before** the run. Reference: VERIFY reproduced C1's frozen primary at 99.25% of its trades, Jaccard 98.53%, on a non-deterministic ledger (EXP-025 section 9). #506 shows the live mode is not bit-equal, so the bar must say what a live-mode miss is allowed to be (Q7) |
+| 14 | **md5 decision-equivalence replay proof** (CLAUDE.md: every runner change carries one before deploy) | Not done. Three lists, md5 on each pair, on exploration day **2026-09-20** (EXP-025's E0 day; 34 C1-NF trades in VERIFY's September book): (a) the shadow's picks against the frozen scorer's, in the mode where they must be equal; (b) a shadow restarted mid-day (the 26 h bootstrap) against an uninterrupted run; (c) the executor's accepted and skipped intents, with reasons, against the pick list. Quant-proof reviews the replay, as for H5 (DEC-024 Amendment 1 item 3) |
+| 15 | **Keyless shadow soak** of at least 24 h on live tip-tape triggers, 0 build errors, on the reviewed head, as a MiScusi job on fast-0 | Not started. A shorter soak is a dated owner decision, as DEC-024 Amendment 1 was; it is not assumed |
+| 16 | **Keyless executor dry run** on the real feed: at least 5 complete simulated round trips with 0 simulate errors | Not started |
+| 17 | **Reviews:** `reviewer` on each PR; the security review of item 9; quant-proof on item 14 | None recorded |
+| 18 | **Memory and disk on fast-0:** `systemctl show user-1002.slice -p MemoryCurrent` before each start; the shadow's bootstrap, the rollup (reserve about 8 GB, #502) and H5's shadow and dry runs fit together; one heavy job at a time | Not measured. The 2026-09-29 OOM and reboot is the reason |
+| 19 | **A3 monitor:** no flag that section 7 rule 6 makes a halt shows a halt at the time `LIVE_OK` is created | At 07:11Z `pins_changed` was on (the 10-08 redeploy). #517 (re-pin) is merged. The official run was still pending at the HANDOFF of 07:35Z. Not known now |
+| 20 | **CAP-PICK pick oracle** #509 reviewed and wired into the shadow and the executor | OPEN draft at 983b12c. Needed from 2026-10-16T01 only. Before it, the executor trades; from it, with no oracle, it refuses every buy |
+| 21 | **Helm:** creates the second wallet and gives the public address; pinned root-owned install with the manifest and sha256 check; auditd watch; the keyless dry run; the watchdog test message seen by the manager | Not done. The wallet does not exist |
+| 22 | **Funding** per O-1, finalized, with the transaction recorded | Not done |
+| 23 | **Limits as code constants with tests:** stops fire, config only lowers them, a restart cannot reset them, `TIER` missing or invalid means T0 | Not done (the executor is not rebuilt) |
+
+`LIVE_OK` and the go to Helm are separate acts, made by Helm and the manager after items 1 to 23.
+
+## 12. Stop-probability table: to be computed by quant-proof
+
+Not computed here. The H5 table (DEC-024 Amendment 1 item 4) is the form. **Inputs quant-proof needs, with the sources in the repo:**
+- **Limits:** stake 0.02 SOL; daily stop 0.08; total stop 0.12 clipped to 35% of the funded wallet (0.0875 at 0.25 SOL); at most 30 attempts a day; at most 2 open; the run length from the first send to `end_ms` 2026-10-24T00:30Z.
+- **Pick rate:** about 20 a day in September (419 trades over 21 days [exploration]); EXP-025 section 3 also uses 12 a day and 20/12 with the oracle exclusion. October is unmeasured. The share of picks the executor lets through (staleness, guard inputs, the open cap, clusters) is unknown.
+- **Per-trade distribution:** EXP-025 section 3's four-part mixture calibrated to VERIFY (win rate 66.8%; 22 of 419 lose at least 90%; median +10.17%; p95 +63.17%; no-fail mean +9.625%; top-3 average about +165%; top-10 about +122%; p1 -99.29%, p5 -97.81%), or the 419 September trades drawn with replacement. Both are exploration.
+- **Fail legs:** flat 15%, and pressure with intercept refit to a mean failure rate of 0.289. Plus the **adverse-fill stress**: the no-fail mean if the best 10% of fills fail (+1.855%) and the best 28.9% (-5.116%) [VERIFY section 6; not in the power table].
+- **Fixed-cost term at 0.02 SOL:** two sends at 505,000 are 5.05%, of which 0.404% is already inside the 0.25 SOL means, so **-4.646 pp per fill**. One send (2.525%) for each guard-reverted attempt. Stranded ATA rent (10.2% of stake) for a stuck position. The alternative priority (55,000: round trip 0.55%) if the owner picks it (O-3).
+- **Day effect:** SD 0.03 of stake as in EXP-025 section 3's day-effect row.
+- **Not modelled in H5's table and needed here:** the 2-open cap with clustered picks; the pressure leg; the ladder's step checks (section 10); live fills worse than paper; stuck positions.
+- **Outputs wanted:** P(total stop) and P(daily stop) over the T0 phase and over the whole run; total P&L p5 / p50 / p95; **P(T0 P&L > 0)**; **P(each ladder check passes at 50 trades)** per scenario, so the owner sees how little "not negative" separates; and P(the fill-selection rule latches) under **no** selection effect, against #504's roughly 40% claim.
+- 10,000 simulations, seed 1, reproduced by a second run, as for H5.
+
+| Assumed edge per trade (gross, 0.25 SOL cell) | Net of the 0.02 SOL fixed-cost term | P(total stop) | Total P&L p5 / p50 / p95 (SOL) | P(T0 P&L > 0) | P(ladder check passes at 50) |
+| --- | --- | --- | --- | --- | --- |
+| September holds: flat +7.458%, pressure +6.640% | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| Half of it | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| A quarter | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| Zero | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| -3% | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| Best 10% of fills fail | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+| Best 28.9% of fills fail | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof | to be computed by quant-proof |
+
+A stop firing is not evidence about C1-NF (section 6).
+
+## 13. Helm's steps
+
+A runbook, `docs/runbooks/c1nf-executor.md`, modelled on `docs/runbooks/h5-executor.md` (Who does what, What is where, Helm's steps with expected output, Wind-down, tier steps, Never), is a builder item (section 11, item 11). Until it is written and merged, these are the steps, in order. Helm owns the commands.
+
+1. **Do not touch H5.** Its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, watchdog and `TIER` are left alone. Do not remove the wallet-wide `/var/lib/mal-live/STOP` for C1-NF's sake.
+2. **Create the second keypair** (never printed, never in a repo). Give the manager the **public** address only. Keep the withdraw address with Helm (DEC-019 section 6 item 6). Confirm the address differs from the H5 wallet.
+3. **Install the key** at `/etc/mal-c1nf-key/c1nf-wallet.json` (root:root 0400, directory 0700). Add the auditd watch.
+4. **Pinned install** of the executor tree for the sha the manager names in a PR comment, after item 9 of section 11 is merged: manifest made in the manager's own clone, sha256 check against the installed tree, `/usr/local/lib/mal-c1nf-exec/<sha>/`. Base unit keyless. The live drop-in (the only thing that hands over the key, via `LoadCredential=c1nf-wallet`) is written after the keyless dry run and before the go. `LIVE_OK` stays the gate.
+5. **Create `/etc/mal-c1nf` and `/var/lib/mal-live/c1nf`** with the owners and modes of section 5. Bind the shadow feed read-only into the unit.
+6. **Keyless dry run** on the real feed. Report: minutes run, restarts, any startup refusal, simulated round trips, simulate errors. Expect `live_ok=live_ok_missing` in `--status`.
+7. **Watchdog:** install `mal-c1nf-watch`, send the test message, tell the manager to look in Discord.
+8. **Wait for the owner's funding** (O-1) and confirm the finalized balance and signature.
+9. **On the manager's written go** (after items 1 to 23 of section 11): write `/etc/mal-c1nf/TIER` = `T0`, create `LIVE_OK` (root:root 0644), check `--status` shows `live_ok=valid`, start the unit.
+10. **After that:** remove `LIVE_OK` on any halt the manager or owner asks for. Edit `TIER` only on the manager's written ask (section 10). Run the root sell-and-close tool if a position is ever abandoned. Report any restart.
+11. **Never:** `ufw`/firewall, `sshd`, cloudflared or Cloudflare changes (CLAUDE.md). No key or webhook goes into a repo file or a PR. The withdraw address stays with Helm.
+
+## 14. Open for the owner, and questions for quant-proof
+
+**Owner.** O-1 to O-7 in section 3. Also, please read these two sentences once:
+- **The canary cannot tell you whether C1-NF works.** At 0.02 SOL and 505,000 lamports a send, the fixed cost is 5.05% of every stake and about 20% of the wallet over the first 50 trades, and the result's noise is about 5 pp (section 6).
+- **Its live picks are not the read's picks.** A good canary week does not move the formal read, and a bad one does not either (section 8).
+
+**Quant-proof questions** (none is the owner's to answer).
+- **Q1.** Synthetic pools in C1-NF's universe and in its September evidence; options A, B, C (section 9.3).
+- **Q2.** Source of the "0 overlap" claim; the count-only overlap pass with H5 (section 9.2).
+- **Q3.** Power of the fill-selection rule (3 pp, at least 8 unfilled of 30) at C1-NF's variance; whether to keep it as a rate tripwire (section 7 rule 1).
+- **Q4.** N and the line for the divergence rule at C1-NF's paired variance (section 7 rule 2).
+- **Q5.** Whether 1.9 s is the right landing halt given the book's flat response to latency in exploration (section 7 rule 3).
+- **Q6.** Whether any of `boost_disabled`, `boost_share_low`, `boost_budget_or_slices_changed` should halt C1-NF rather than alert (section 7 rule 6).
+- **Q7.** The pinned model (exploration-only; P2 or a separate canary model) and the bar for parity task 3, including what a live-mode miss may be (section 11 items 12 and 13).
+- **Q8.** A price-impact check at 0.30 SOL for C1-NF's pools, before T2 (section 6).
+- **Q9.** The rent number: 2,039,280 lamports (EXP-025 section 6) against 1,513,840 (DEC-024 section 4).
+- **Q10.** The twin: priced at the canary's stake and fee, and how often the ladder's "not negative" checks pass under no edge (sections 6 and 10).
+- **Q11.** Appendix A: scope, timing, and that gap 1 is the only clock-bound one (section 8).
+- **Q12.** The stop-probability table (section 12).
+- **Q13.** The oracle keying difference between #504 (every mint) and EXP-025 section 5.3 (pools first printing at or after 2026-10-16T01), and whether the executor may be stricter than the read (section 9.1).
+
+## Appendix A. Draft EXP-025 Amendment 2 (not applied; to be merged as its own PR into `EXP/EXP-025-c1nf-part1-prereg.md`)
+
+**This is proposed text.** It edits nothing in EXP-025 today. The sentences in quotation marks are proposed wording in the form of [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Amendments 2 and 3. The owner has not seen them. The drafter did not open the notebook entries it names.
+
+### Amendment 2 (`<MERGE INSTANT, UTC, from date -u at merge>`; before the shadow writes its first outcome for a decision before 2026-10-10T00, before any canary send, and before any outcome of a decision in Look 1's window exists): declared observation for pre-window and post-window decisions, the executor's CAP-PICK skip, observers and report disclosure
+
+**Outcome-blindness statement (to be confirmed at merge).** Outcome-blind for every decision with T at or after 2026-10-10T00, the start of Look 1's counted window. At the merge instant, no C1-NF shadow or canary outcome (label, fill, exit, P&L, mean, CI or day sign) of any October decision had been computed or seen, from any source. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book or a runner was opened, and no key was used. **If any shadow or canary outcome of an October decision existed at the merge instant, this sentence is replaced by a plain statement of what was seen and when, as EXP-024 Amendment 3 did for H5's shadow.**
+
+**The gap it closes.** Section 5.1 declares the real-time observation for "decisions inside the windows". Four things are not in it: decisions before 2026-10-10T00, which section 4's seal still protects (October rows before the window, including the training-label rows of graduations from 2026-10-09T00); decisions at or after 2026-10-24T00; the live executor's CAP-PICK skip (section 5.3 names the read and the shadow); and a list of observers with the report disclosure.
+
+1. **Pre-window decisions.** "By a manager decision derived from the owner's recorded decision O3 (DEC-025) and the owner's choice in DEC-026 (O-6), the paper shadow's and the live canary's outcomes for decisions with T in `[<MERGE INSTANT>, 2026-10-10T00)` are observed in real time. This is declared before any such outcome exists." The read's own labels for those rows (pass A inside the locked job) stay sealed. The read never takes the shadow's output as training input. **[Delete this item if the owner chooses to keep them sealed; the shadow then starts its outcome records at 2026-10-10T00.]**
+2. **Post-window decisions.** "The same outcomes for decisions with T at or after 2026-10-24T00, up to the canary's `end_ms`, are observed in real time. No look reads them." This is not a CAP-PICK exception (item 3).
+3. **The executor's CAP-PICK skip.** Section 5.3's exclusion and fail-closed oracle apply also to the live executor of DEC-026: from 2026-10-16T01 to the end of EXP-022's read it trades no mint the oracle answers True for, writes no CAP-PICK field into any record and joins no record to a pick. A missing, stale, erroring, non-boolean or undecided oracle means no buy. If the executor refuses a wider set than section 5.3's keying (DEC-026 section 9.1), each look's report says so.
+4. **Observers.** The owner, Helm, the manager, builders, the DEC-026 watchdog (its Discord alerts, including the stops and the wallet line) and the daily check may read the canary's ledger and the shadow's outcomes in real time. The read tool may not: its inputs stay section 4's hours, it never takes the canary's ledger or the shadow's output, and its refusal set is not loosened. Observing them opens no tape row.
+5. **Report disclosure.** The Look 1 report and the Look 2 report each state that the shadow's and canary's outcomes were observed in real time for decisions in the windows (section 5.1), for decisions before 2026-10-10T00 (item 1, if kept) and at or after 2026-10-24T00 (item 2); that this can have influenced later choices, for example an owner tier step; and that **any EXP-025 amendment dated after the first such outcome was made with outcomes in view and is listed in the report, not called outcome-blind.** The disclosure does not change the verdict.
+6. **Unchanged.** The rule block, the five pinned lines, the patches and hashes, the windows, the alpha pair (0.005, 0.020), items 1 to 9 of section 7, P2 to P7, R1 to R14, section 11.5 and k = 1. Section 5.1's sentences stand: Look 1 and Look 2 are always read as written and never skipped, delayed, re-scoped or re-thresholded because of anything the shadow or canary shows; nothing they show may change any EXP-025 parameter; a canary halt, stop or tier step stops or changes the canary only.
+7. **Spending.** Nothing is spent. No look is refused, withdrawn or not run because of this amendment.
+8. **Enforcement in the tools.** The shadow withholds outcome-bearing records for decisions before 2026-10-10T00 unless started with a declaring flag (the builder names it, as `--h5-look2-observed EXP-024-Am2` was named for H5). The daily check alerts when that flag is missing while `LIVE_OK` exists, because without outcomes the canary has no twin and DEC-026 section 7 rule 2 cannot fire.
+9. **Provenance.** A manager-side draft by the DEC-026 drafter, derived from DEC-025 section 4 and EXP-025 section 5.1 (the only owner words are the O3 sentence). The owner may revoke it. A revocation applies from its recorded instant, restores section 4's seal for decisions after that instant, and does not undo the disclosure for outcomes already observed.
+
+**Fallback if it cannot merge in time.** Item 1 is the only clock-bound item. If the amendment is not merged before the shadow would write its first pre-window outcome, the shadow starts its outcome records at 2026-10-10T00, and items 2 to 5 wait. No canary send is allowed before the amendment merges (DEC-026 section 4), so waiting costs nothing in the seal.
+
+## Sources
+
+- [DEC-025](DEC-025-c1nf-family.md) (sections 4 and 5, `OWNER_DECISION_CONFIRMED`), [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md) (sections 0, 2, 3, 4, 5, 6, 7, 9, 10, 11).
+- [DEC-024](DEC-024-h5-live-canary.md) with Amendments 1 and 2, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Amendments 2 to 4, `docs/runbooks/h5-executor.md`, `tools/h5_executor.py` (`TIERS`, `TIER_WALLET_FRAC`, lines 147 to 163), `tools/pump_structure_monitor.py` (halt flags, WATCH_RULES, `SYNTHETIC_MAX`, `post_complete_buy_seen`).
+- [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md), [DEC-021](DEC-021-champion-challenger.md) section 7, [DEC-018](DEC-018-live-trial-readiness.md), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) section 9.
+- PR bodies: #502 (ledger, 53da60f), #503 (shadow, 2a96ce0), #504 (executor, closed, a98ff07), #506 (features, 3ae9915), #509 (pick oracle, 983b12c), #517, #518.
+- `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` sections 5.2 and 6 (as EXP-025 copies them) and `/data/mal/hunt-1008/JUDGE-4.md` (text search only). Exploration; not evidence of an edge.
+- `docs/HANDOFF.md`, state 10-09 ~07:35Z (ladder table, C1-NF open items, A3 state).
