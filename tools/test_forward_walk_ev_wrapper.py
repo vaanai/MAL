@@ -1,4 +1,4 @@
-"""scripts/research/forward-walk-ev.sh (DEC-016 Amendment 8, forward-1002ev). Offline: no network, no /data/mal.
+"""scripts/research/forward-walk-ev.sh (DEC-016 Amendment 9, forward-1002ev). Offline: no network, no /data/mal.
 
 Same harness as tools/test_forward_walk2_wrapper.py (it reuses that file's stubs and `prepare`): the script's test hook
 FW2_TEST_ROOT moves its output dir, lock dir and Helius env under a temp dir; the walker and verify are stubs in a stub
@@ -560,6 +560,26 @@ class ScriptTextTests(unittest.TestCase):
         self.assertNotIn("--event-v", walk1)
         self.assertIn("forward-1016", walk2)
         self.assertNotIn("forward-1002ev", walk1 + walk2)
+
+    def test_code_lines_are_those_of_the_running_job(self) -> None:
+        # job #433 runs this script at 153f1a02; later commits may change comments only
+        ref = "153f1a02fc9b9540644e48e3cf4fefacd035fca1"
+        if shutil.which("git") is None:
+            self.skipTest("no git")
+        proc = subprocess.run(["git", "show", f"{ref}:scripts/research/forward-walk-ev.sh"], cwd=REPO, capture_output=True,
+                              text=True, timeout=60)
+        if proc.returncode != 0:
+            self.skipTest("the job's commit is not in this clone")
+
+        def code(text: str) -> list[str]:
+            return [x for x in text.splitlines() if not x.lstrip().startswith("#")]
+
+        self.assertEqual(code(self.text), code(proc.stdout))
+
+    def test_credit_governance_is_in_the_header(self) -> None:
+        self.assertIn("when the spend reaches 3.0M", self.text)
+        self.assertIn("recorded owner OK", self.text)
+        self.assertIn("cancels this job", self.text)
 
     def test_window_hours(self) -> None:
         from datetime import datetime

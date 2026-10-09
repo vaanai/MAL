@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Join event-V from forward-1002ev onto forward-1002 rows (DEC-016 Amendment 8, EXP-024 Amendment 1).
+"""Join event-V from forward-1002ev onto forward-1002 rows (DEC-016 Amendment 9, EXP-024 Amendment 1).
 
 forward-1002 (job #382) was walked without --event-v, so its PumpSwap rows carry no virtual quote reserve V. The
 forward-1002ev walk (scripts/research/forward-walk-ev.sh) re-walks the last week with the event-V decoder. This tool
 carries V across, row by row, and refuses to trust an hour it cannot check.
 
-    python3 -m tools.forward_v_join pins
-    python3 -m tools.forward_v_join check --from H --to H --hash-only                  # allowed BEFORE the FINAL
-    python3 -m tools.forward_v_join check --from H --to H --fallback-out F --report-out R   # after the FINAL
-    python3 -m tools.forward_v_join join  --from H --to H --out-dir D [--emit v|rows]       # after the FINAL
+    python3 -m tools.forward_v_join pins [--ref GITREF]                                  # hashes only, no trade file
+    python3 -m tools.forward_v_join check --from H --to H --hash-only                    # counts only, no file
+    python3 -m tools.forward_v_join check --from H --to H --fallback-out F --report-out R
+    python3 -m tools.forward_v_join join  --from H --to H --out-dir D [--emit v|rows]
 
 [H, H) is hour-aligned (YYYY-MM-DDTHH), end exclusive.
 
-SEAL. forward-1002 and forward-1002ev are sealed until the DEC-016 FINAL (A) is written: nothing reads their values.
-So `check` without --hash-only, and `join`, refuse unless the EXP-012 FINAL marker is in the external FINAL ledger
-(default /data/mal/exp012-forward/FINAL_READS.jsonl, a line with final=true, no test_window). `--hash-only` is the
-only mode that runs before it. It reads the rows in process and prints nothing but, per hour, the md5 verdict, the
-row counts, the 1:1 match rate, the decision and a reason from a fixed list. It prints no row value, no signature
-and no pool id, and it writes no file; an exception prints only its class name. There is no flag that skips the gate.
+SEAL. forward-1002 and forward-1002ev are sealed until the DEC-016 FINAL (A) is written. **No run of this tool
+happens before it, `--hash-only` included**: EXP-025's seal lets only the walker, tools/backfill_verify.py and hour
+counts touch forward-1002ev before the FINAL, and DEC-016 Amendment 9 adopts that for both readers. So `check` (every
+mode) and `join` refuse unless the EXP-012 FINAL marker is in the external FINAL ledger (default
+/data/mal/exp012-forward/FINAL_READS.jsonl, a line with final=true, no test_window). Only `pins`, which opens no trade
+file, runs without it. `--hash-only` is a counts-only print mode for use after the FINAL: per hour the md5 verdict,
+the row counts, the 1:1 match rate, the decision and a reason from a fixed list; no row value, no signature, no pool
+id, no file written; an exception prints only its class name. There is no flag that skips the gate.
 
 WHAT IT CHECKS, per hour, on the raw JSONL (trades-<hour>.jsonl.zst of each walk):
   1. Each hour of each walk is usable: sealed in checkpoint.json, a last OK line in verify.jsonl, and the file bytes
@@ -34,14 +36,19 @@ WHAT IT CHECKS, per hour, on the raw JSONL (trades-<hour>.jsonl.zst of each walk
 
 A usable hour gets V for each 1:1-matched row that carries it. Its other PumpSwap rows (no match, a field that
 differs, or a matched ev row with no V) go to the FALLBACK list one by one. For a refused or bad hour the fallback
-list holds every PumpSwap row of the forward-1002 hour (when that hour is readable). The fallback list is
+list holds every READABLE PumpSwap row of the forward-1002 hour, a `bad_lines` hour included (its unreadable lines
+cannot be listed; they are counted as bad_lines_base).
+When forward-1002's hour is itself unusable, or a stream fails, there is nothing readable to list. The fallback list is
 {hour, slot, signature, event_index, why} per line: the rows whose V must be rebuilt by getTransaction (EXP-024
 Amendment 1). Bonding rows need no V; they get ix_name when matched.
 
 Decoder pin. `pins` and every `check`/`join` verify that observe/trade_decode.py, observe/trade_store.py and
-tools/pump_history_backfill.py hash (git blob sha1) to PINNED_BLOBS, the blobs on main at a3e923c that forward-walk-ev.sh
-and forward-walk2.sh (walk 2) both run through `python -m tools.pump_history_backfill --event-v`. A different blob
-is a refusal (exit 2), not a warning. A decoder change needs a dated amendment and a new pin.
+tools/pump_history_backfill.py hash (git blob sha1) to PINNED_BLOBS: the blobs at job #433's gitRef (153f1a0, equal to
+main at a3e923c), which forward-walk-ev.sh and forward-walk2.sh (walk 2) both run through
+`python -m tools.pump_history_backfill --event-v`. A different blob is a refusal (exit 2), not a warning.
+`pins --ref GITREF` hashes the same three files AT a git ref, so walk 2's job ref can be checked against the pins
+before Look 2 reads: exit 0 only if all three equal. forward-1002 itself (job #382 at 2bd45f1) was written by older
+blobs, so "same decoder" holds for V only; the md5 line tests the rest.
 
 Output files are never written inside either walk dir, never overwrite, and are written whole or not at all.
 Exit: 0 every hour usable, 1 some hour refused or bad (informational), 2 a refusal (seal, pin, usage).
@@ -75,7 +82,8 @@ MATCH_FIELDS = ("sol_lamports", "token_raw", "quote_reserve", "base_reserve")
 V_FIELD = "virtual_quote_reserves"  # the name EVENT_V_KEYS carries; the one PumpSwap rows need
 VENUE_PUMPSWAP = "pumpswap"
 
-# Git blob shas (sha1 of "blob N\0" + bytes, what `git hash-object` prints) on main at a3e923c.
+# Git blob shas (sha1 of "blob N\0" + bytes, what `git hash-object` prints) at job #433's gitRef
+# 153f1a02fc9b9540644e48e3cf4fefacd035fca1, equal to main at a3e923c.
 PINNED_BLOBS: dict[str, str] = {
     "observe/trade_decode.py": "238942a6b3c5425389eddfde4d11268c300acbec",
     "observe/trade_store.py": "ea4e11eddf9f034e3bc7318ce8743337d753f350",
@@ -109,6 +117,22 @@ def pin_status(repo: Path = REPO) -> list[dict[str, Any]]:
     for rel, want in PINNED_BLOBS.items():
         p = repo / rel
         got = git_blob_sha(p) if p.is_file() else None
+        out.append({"file": rel, "pinned": want, "actual": got, "ok": got == want})
+    return out
+
+
+REF_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._/-]*$")
+
+
+def pin_status_at_ref(ref: str, repo: Path = REPO) -> list[dict[str, Any]]:
+    """The same three blobs AT a git ref of `repo` (what a MiScusi job with that gitRef runs)."""
+    if not REF_RE.match(ref):
+        raise Refused("--ref must be a commit sha or a branch/tag name")
+    out = []
+    for rel, want in PINNED_BLOBS.items():
+        proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}:{rel}"], cwd=repo, capture_output=True,
+                              text=True, timeout=60, stdin=subprocess.DEVNULL)
+        got = proc.stdout.strip() if proc.returncode == 0 else None
         out.append({"file": rel, "pinned": want, "actual": got, "ok": got == want})
     return out
 
@@ -306,6 +330,8 @@ class HourResult:
     matched_ps: int = 0
     field_mismatch: int = 0
     unkeyed: int = 0
+    bad_lines_base: int = 0
+    bad_lines_ev: int = 0
     v_missing: int = 0
     rate: float | None = None
     rate_ps: float | None = None
@@ -321,6 +347,7 @@ class HourResult:
             "rows_base": self.n_base, "rows_ev": self.n_ev, "pumpswap_base": self.n_base_ps, "pumpswap_ev": self.n_ev_ps,
             "matched_1to1": self.matched, "pumpswap_matched": self.matched_ps, "rate": self.rate, "rate_pumpswap": self.rate_ps,
             "field_mismatch": self.field_mismatch, "unkeyed": self.unkeyed, "v_missing": self.v_missing,
+            "bad_lines_base": self.bad_lines_base, "bad_lines_ev": self.bad_lines_ev,
             "fallback_rows": self.fallback_n, "v_rows": self.v_rows,
         }
 
@@ -401,6 +428,7 @@ def check_hour(
                 else:
                     vp = v_part(row)
                     ev_map[key] = (match_fields(row), vp if sink is not None else ({V_FIELD: 1} if V_FIELD in vp else {}))
+            res.bad_lines_ev = rd.bad_lines
             if rd.bad_lines:
                 ev_reason = "ev_bad_lines"
         except HourReadError:
@@ -453,6 +481,7 @@ def check_hour(
                 out.update(vp)
                 sink.write(out)
                 res.v_rows += 1
+        res.bad_lines_base = rd.bad_lines
         base_bad = bool(rd.bad_lines)
         res.base_readable = True
     except HourReadError:
@@ -480,8 +509,8 @@ def check_hour(
     res.reason, res.usable = reason, reason == "ok"
     if res.usable:
         res.fallback = per_row
-    elif reason != "bad_lines":
-        res.fallback = [(*k, "hour_" + reason) for k in pending]
+    else:
+        res.fallback = [(*k, "hour_" + reason) for k in pending]  # a bad_lines hour too: its readable rows
     res.fallback_n = len(res.fallback)
     return res
 
@@ -562,7 +591,8 @@ def format_public(r: HourResult) -> str:
     verdict = "usable" if r.usable else f"refused({r.reason})"
     return (f"{r.hour} {verdict} md5={md5} rows_base={r.n_base} rows_ev={r.n_ev} matched={r.matched} rate={rate} "
             f"ps_base={r.n_base_ps} ps_ev={r.n_ev_ps} ps_matched={r.matched_ps} ps_rate={rate_ps} "
-            f"field_mismatch={r.field_mismatch} v_missing={r.v_missing} unkeyed={r.unkeyed} fallback_rows={r.fallback_n}")
+            f"field_mismatch={r.field_mismatch} v_missing={r.v_missing} unkeyed={r.unkeyed} "
+            f"bad_lines_base={r.bad_lines_base} bad_lines_ev={r.bad_lines_ev} fallback_rows={r.fallback_n}")
 
 
 def summary_line(results: Sequence[HourResult]) -> str:
@@ -591,7 +621,8 @@ def build_report(results: Sequence[HourResult], args: argparse.Namespace, marker
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("pins", help="print the decoder pins and whether the working tree matches (hashes only)")
+    pp = sub.add_parser("pins", help="print the decoder pins and whether the working tree (or --ref) matches (hashes only)")
+    pp.add_argument("--ref", help="check the three files at this git ref instead of the working tree (walk 2's job gitRef)")
     for name in ("check", "join"):
         p = sub.add_parser(name)
         p.add_argument("--base", type=Path, default=DEFAULT_BASE)
@@ -601,9 +632,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--final-ledger", type=Path, default=DEFAULT_LEDGER)
         if name == "check":
             p.add_argument("--hash-only", action="store_true",
-                           help="the only mode before the FINAL: md5 verdict, counts and rates per hour; no values, no files")
-            p.add_argument("--fallback-out", type=Path, help="after the FINAL: the (hour, slot, signature, event_index, why) list")
-            p.add_argument("--report-out", type=Path, help="after the FINAL: counts-only JSON report")
+                           help="counts-only print: md5 verdict, counts and rates per hour; no values, no files. Like every mode "
+                                "it refuses until the FINAL marker is in the FINAL ledger")
+            p.add_argument("--fallback-out", type=Path, help="the (hour, slot, signature, event_index, why) list, a new file")
+            p.add_argument("--report-out", type=Path, help="counts-only JSON report, a new file")
         else:
             p.add_argument("--out-dir", type=Path, required=True)
             p.add_argument("--emit", choices=("v", "rows"), default="v",
@@ -613,18 +645,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.cmd == "pins":
-            st = pin_status()
+            st = pin_status_at_ref(args.ref) if args.ref is not None else pin_status()
             for x in st:
                 print(f"{x['file']} pinned={x['pinned']} actual={x['actual']} {'ok' if x['ok'] else 'DIFFERS'}")
             return 0 if all(x["ok"] for x in st) else 2
         hours = hour_list(args.start, args.end)
         hash_only = args.cmd == "check" and args.hash_only
         if hash_only and (args.fallback_out or args.report_out):
-            raise Refused("--hash-only writes nothing: drop --fallback-out/--report-out (they run after the FINAL)")
+            raise Refused("--hash-only writes nothing: drop --fallback-out/--report-out")
         pins = require_pins()
-        marker: dict[str, Any] = {}
-        if not hash_only:
-            marker = final_marker(args.final_ledger)
+        marker = final_marker(args.final_ledger)  # every mode: nothing runs before the FINAL
         if args.cmd == "join":
             for d in (args.base, args.ev):
                 if _inside(args.out_dir, d):

@@ -124,6 +124,7 @@ class Fixture(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.base, self.ev, self.out = self.root / "forward-1002", self.root / "forward-1002ev", self.root / "out"
         self.ledger = self.root / "FINAL_READS.jsonl"
+        self.final()  # the default world is after the FINAL; SealTests removes the ledger
 
     def walks(self, base: dict, ev: dict, **kw) -> None:
         write_walk(self.base, base)
@@ -186,8 +187,10 @@ class SealTests(Fixture):
         super().setUp()
         rows = base_rows(60)
         self.walks({H1: rows}, {H1: ev_of(rows)})
+        self.ledger.unlink()  # before the FINAL: no ledger
 
     def test_hash_only_prints_counts_and_no_value_and_writes_nothing(self) -> None:
+        self.final()
         before = sorted(p.name for p in self.root.rglob("*"))
         r = cli(*self.args("check", (H1, H2), "--hash-only"))
         self.assertEqual(r.rc, 0, r.text)
@@ -196,10 +199,28 @@ class SealTests(Fixture):
             self.assertNotIn(secret, r.text)
         self.assertEqual(sorted(p.name for p in self.root.rglob("*")), before, "hash-only creates no file")
 
-    def test_hash_only_does_not_need_or_look_at_the_final_ledger(self) -> None:
-        r = cli(*self.args("check", (H1, H2), "--hash-only"))
-        self.assertEqual(r.rc, 0, r.text)
-        self.assertFalse(self.ledger.exists())
+    def test_hash_only_refuses_before_the_final_too_and_opens_no_trade_file(self) -> None:
+        # EXP-025's seal lets only the walker, backfill_verify and hour counts touch forward-1002ev before the FINAL
+        opened = []
+        real_open = fj.RowReader.__iter__
+
+        def spy(self_):
+            opened.append(self_.path)
+            return real_open(self_)
+
+        fj.RowReader.__iter__ = spy
+        try:
+            r = cli(*self.args("check", (H1, H2), "--hash-only"))
+        finally:
+            fj.RowReader.__iter__ = real_open
+        self.assertEqual(r.rc, 2, r.text)
+        self.assertIn("sealed until the DEC-016 FINAL", r.err)
+        self.assertEqual(opened, [], "no trade file is opened before the marker is checked")
+        self.assertNotIn("usable", r.out)
+        self.assertNotIn("md5=", r.text)
+
+    def test_pins_runs_without_the_final_and_opens_no_trade_file(self) -> None:
+        self.assertEqual(cli("pins").rc, 0)
 
     def test_hash_only_refuses_output_flags(self) -> None:
         for flag in ("--fallback-out", "--report-out"):
@@ -208,7 +229,8 @@ class SealTests(Fixture):
             self.assertFalse((self.root / "x.out").exists())
 
     def test_values_modes_refuse_without_the_final(self) -> None:
-        for argv in (self.args("check", (H1, H2)), self.args("check", (H1, H2), "--fallback-out", str(self.root / "fb.jsonl")),
+        for argv in (self.args("check", (H1, H2)), self.args("check", (H1, H2), "--hash-only"),
+                     self.args("check", (H1, H2), "--fallback-out", str(self.root / "fb.jsonl")),
                      self.args("join", (H1, H2), "--out-dir", str(self.out))):
             with self.subTest(argv=argv[0]):
                 r = cli(*argv)
@@ -258,6 +280,7 @@ class SealTests(Fixture):
 
     def test_a_bad_stream_prints_only_the_reason_never_a_row(self) -> None:
         # a truncated zstd stream: read_error, no message from the decoder
+        self.final()
         p = self.ev / "trades" / f"trades-{H1}.jsonl.zst"
         data = p.read_bytes()
         p.write_bytes(data[: len(data) // 2])
@@ -322,6 +345,7 @@ class MatchTests(Fixture):
             with self.subTest(field=fld), tempfile.TemporaryDirectory() as tmp:
                 self.root = Path(tmp)
                 self.base, self.ev, self.ledger = self.root / "b", self.root / "e", self.root / "L.jsonl"
+                self.final()
                 rows = base_rows(1000, bonding_every=0)
                 evs = ev_of(rows)
                 evs[10][fld] += 1
@@ -424,7 +448,8 @@ class BadHourTests(Fixture):
         for reason, kw in cases.items():
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
                 self.root = Path(tmp)
-                self.base, self.ev = self.root / "b", self.root / "e"
+                self.base, self.ev, self.ledger = self.root / "b", self.root / "e", self.root / "L.jsonl"
+                self.final()
                 write_walk(self.base, {H1: rows})
                 write_walk(self.ev, {H1: ev_of(rows)}, **kw)
                 r = cli(*self.args("check", (H1, H2), "--hash-only"))
@@ -444,6 +469,35 @@ class BadHourTests(Fixture):
         self.walks({H1: rows}, {H1: raw})
         r = cli(*self.args("check", (H1, H2), "--hash-only"))
         self.assertIn("refused(ev_bad_lines)", r.out)
+
+    def test_a_forward_1002_hour_with_a_bad_line_lists_its_readable_pumpswap_rows(self) -> None:
+        # walk 1's verify is non-strict, so this hour can still look verified; it used to be refused with an empty list
+        rows = base_rows(100)
+        raw = b"".join(json.dumps(r).encode() + b"\n" for r in rows) + b"not json\n"
+        write_walk(self.base, {H1: raw})
+        write_walk(self.ev, {H1: ev_of(rows)})
+        r = cli(*self.args("join", (H1, H2), "--out-dir", str(self.out)))
+        self.assertEqual(r.rc, 1, r.text)
+        self.assertIn(f"{H1} refused(bad_lines) md5=match", r.out)
+        self.assertIn("bad_lines_base=1 bad_lines_ev=0", r.out)
+        fb = [json.loads(x) for x in (self.out / "fallback.jsonl").read_text().splitlines()]
+        ps = [x for x in rows if x["venue"] == "pumpswap"]
+        self.assertEqual(len(fb), len(ps))
+        self.assertEqual({x["why"] for x in fb}, {"hour_bad_lines"})
+        self.assertEqual({(x["signature"], x["event_index"]) for x in fb}, {(x["signature"], x["event_index"]) for x in ps})
+        self.assertFalse((self.out / f"v-{H1}.jsonl.zst").exists(), "none of a bad_lines hour's V is used")
+        (h,) = json.loads((self.out / "join-report.json").read_text())["hours"]
+        self.assertEqual((h["bad_lines_base"], h["reason"], h["fallback_rows"]), (1, "bad_lines", len(ps)))
+
+    def test_an_ev_hour_with_bad_lines_lists_every_pumpswap_row_of_the_base_hour(self) -> None:
+        rows = base_rows(100)
+        write_walk(self.base, {H1: rows})
+        write_walk(self.ev, {H1: ev_of(rows)}, bad_lines_in_verify=2)
+        r = cli(*self.args("check", (H1, H2), "--fallback-out", str(self.root / "fb.jsonl")))
+        self.assertIn("refused(ev_bad_lines)", r.out)
+        fb = [json.loads(x) for x in (self.root / "fb.jsonl").read_text().splitlines()]
+        self.assertEqual(len(fb), sum(1 for x in rows if x["venue"] == "pumpswap"))
+        self.assertEqual({x["why"] for x in fb}, {"hour_ev_bad_lines"})
 
     def test_a_base_hour_that_is_not_usable_has_nothing_to_join_and_nothing_to_list(self) -> None:
         rows = base_rows(100)
@@ -532,6 +586,30 @@ class DecoderPinTests(unittest.TestCase):
             with self.assertRaises(fj.Refused) as ctx:
                 fj.require_pins(repo)
             self.assertIn("observe/trade_decode.py", str(ctx.exception))
+
+    def test_pins_at_a_git_ref_checks_the_blobs_a_job_would_run(self) -> None:
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        # this checkout's HEAD runs the pinned decoder
+        self.assertEqual(cli("pins", "--ref", "HEAD").rc, 0)
+
+        def has(ref: str) -> bool:
+            return subprocess.run(["git", "cat-file", "-e", ref + "^{commit}"], cwd=REPO, capture_output=True).returncode == 0
+
+        # job #433's gitRef (the walk) must carry exactly the pinned blobs
+        if has("153f1a02fc9b9540644e48e3cf4fefacd035fca1"):
+            r = cli("pins", "--ref", "153f1a02fc9b9540644e48e3cf4fefacd035fca1")
+            self.assertEqual(r.rc, 0, r.text)
+            self.assertEqual(r.out.count(" ok"), 3)
+        # forward-1002 (job #382 at 2bd45f1) was written by older blobs: "same decoder" holds for V only
+        if has("2bd45f1"):
+            r = cli("pins", "--ref", "2bd45f1")
+            self.assertEqual(r.rc, 2, r.text)
+            self.assertEqual(r.out.count("DIFFERS"), 3)
+            for older in ("a10e0568f3d6", "b5eb3f822e00", "8bcb5ebc4411"):
+                self.assertIn(older, r.out)
+        for bad in ("bad ref", "--output=x", "", "no-such-ref-zzzz"):
+            self.assertEqual(cli("pins", "--ref", bad).rc, 2, bad)
 
     def test_check_refuses_when_the_pin_differs(self) -> None:
         old = dict(fj.PINNED_BLOBS)

@@ -55,8 +55,14 @@
 #   created before START, re-walks of failed hours and refusal spend are not in the arithmetic). CAP_TOTAL 3,600,000
 #   is about 9% above 3.3M and 21% above 2.97M. The owner approved about 3.0M for this walk; the cap is the manager's
 #   and quant-proof's number, and the job's progress note shows the spend against it every hour.
-# If the cap stops the walk (exit 5), the hours not walked are BAD hours for tools/forward_v_join.py: they are not
-# joined and their PumpSwap rows go to the getTransaction fallback list. Nothing is silently empty.
+#   GOVERNANCE (DEC-016 Amendment 9 §1): when the spend reaches 3.0M, the manager either holds a recorded owner OK
+#   for up to 3.6M, or cancels this job. The script itself does not stop at 3.0M and is not changed for that.
+# If the cap stops the walk (exit 5), or the job is cancelled, the hours not walked are BAD hours for
+# tools/forward_v_join.py: they are not joined and their PumpSwap rows go to the getTransaction fallback list. Nothing
+# is silently empty.
+# Numbering note: this script's header and its two refusal messages say "DEC-016 Amendment 8"; EXP-025's Amendment 8
+# merged first, so the forward-1002ev amendment is DEC-016 Amendment 9. The messages are left as they are on purpose:
+# job #433 runs the script at 153f1a02fc9b9540644e48e3cf4fefacd035fca1 and every later commit keeps its code lines.
 # Same cap bookkeeping as walk 2: checkpoint.json credits_used is the cumulative spend; a refused call (exit 3) never
 # writes the checkpoint, so spend against the cap is checkpoint + sum(refusals.jsonl). The walker is passed
 # --credit-cap CAP_TOTAL - sum(refusals), so its own check equals the true total vs CAP_TOTAL. Fewer than
