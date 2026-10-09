@@ -489,6 +489,38 @@ No row of forward-1002, forward-1002ev, walk 2, a forward-paper book or a runner
 - **Not measured:** no October print has been checked against the law; the fetch success rate; how many of the 1,000 will be comparable buys (a buy needs an `ix_name`, and router buys are `buy_exact_quote_in_v2`), and so whether the top-up will fire. The top-up secures 100 comparable buys when the hours have them; if they hold fewer, all are used and 99% of a small side leaves no room for a miss (29 of 30 is 96.7%); a side with none fails.
 - **Not changed:** the rule block, the looks and windows, `EXP025_ALPHA_LOOK1` and `EXP025_ALPHA_LOOK2`, items 1 to 9 of section 7, the 99% and 75% and 90% bars, R14, section 2.4's mapping, section 11.5, and the rule of line 2 of P7.
 
+### Amendment 2 (2026-10-09, about 17:30Z, the owner's decision; before 2026-10-10T00:00Z and before any C1-NF outcome exists): synthetic-migration pools stay in the universe
+
+```
+OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager9 via AskUserQuestion). Question: "C1-NF's formal test starts counting at midnight UTC tonight. Synthetic pools (~35% of graduations now, zero in September's evidence) are inside its universe. Unlike H5, its rules have no synthetic-pool halt that could kill the test. Keep them in or exclude them? This must be filed before midnight UTC." Answer: "Keep them in (Recommended)".
+```
+
+**This amendment is blind to every C1-NF outcome. It is not called outcome-blind.**
+- **No C1-NF outcome exists.** No C1-NF shadow or canary has run, and no C1-NF label, fill, exit or P&L has been computed on any October hour (section 0, "No outcome before merge").
+- **What was in view:**
+  - the program-upgrade review's counts (0 of 61 synthetic graduations before the 2026-10-08T16:20Z redeploy, 12 of 61 after);
+  - the A3 monitor's `synthetic_share_high` readings, 6/19 = 0.316 (job #445) and 7/19 = 0.368 (one dry check);
+  - the structure measurement `/data/mal/hunt-1008/h5-work/synthetic-1009/REPORT.md`: 35.0% of 160 classified graduations, the synthetic first print 0 s after migrate at the median (max 7 s), and H5 trigger counts by class. That report is H5's, counts only.
+  - Aggregate H5 shadow outcomes were also in view. They are H5 outcomes, not C1-NF outcomes.
+- **No synthetic class has been joined to any C1-NF record.**
+
+**What it sets**
+1. **The universe is unchanged.** Synthetic-migration pools (a pump `PostCompleteBuyEvent` in the curve-completing or the migrate transaction) stay in C1-NF's universe, its training rows and both looks. Nothing in section 2, the rule, the cap, the windows, alpha, the legs or the gate changes.
+   - October training labels come only from graduations at or after 2026-10-09T00 (section 4). Those include synthetic pools, so the model's October training rows include them too. That is a consequence of keeping the universe, not a change.
+2. **Why it is kept.** This is a basis in structure only.
+   - EXP-025 has no A3 halt that a rising synthetic share could fire: section 5 lists the A3 flags as allowed reading, not as a refusal.
+   - Excluding the pools would cut Look 1's expected selections from about 140 to roughly 90–113 [inferred; quant-proof, 2026-10-09]. R4's minimum is 90 (section 11.4).
+   - The live canary (DEC-026) trades the same population.
+3. **What the test therefore measures.** The verdict is C1-NF's result on October's actual population, synthetic pools included. September's evidence had none (0 of 61 before the redeploy). Every report states this.
+4. **The class is recorded, as structure only.**
+   - At each look's precount (section 11.3), the precount also prints, per UTC date, the number of universe rows and kept rows that are synthetic, non-synthetic or unclassified. It prints counts only, never a price, fill, exit, pnl, mean, CI or day sign.
+   - The class uses EXP-024 Amendment 4 B1 (discriminator alone, on the completing and the migrate transaction; monitor blob `1ca0a88cecf0853d94336ea046ba1a910b79f198`), the B2 rule that the tape can only mark a pool synthetic, and Clarification 1's B4 lookup with 1,000-signature caps.
+   - An unclassified pool stays in the universe. It is counted, not excluded.
+5. **Seal.** Before Look 2 is read (or, if Look 2 does not run, before the final C1-NF report), joining the synthetic class to any C1-NF outcome from any source is a breach. That covers a label, fill, exit, pnl, mean, CI, day sign, win or loss, or any field derived from one. A breach is recorded here, dated, and the read is reported compromised.
+6. **After the final look, report-only.** The result split by class may be printed after the final look, labelled report-only. It never decides and never re-scopes either look.
+7. **Effect.** This amendment carries quant-proof's OK on its final head and the owner line above, and it merges before 2026-10-10T00:00Z. If it does not merge in time, the universe stays as written (the same outcome), but items 4–6 do not apply.
+
+
 ## Sources
 
 `observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`.
