@@ -232,6 +232,21 @@ EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 20
   - A pool not classified by its trigger time gets no buy (`excluded`, reason `unclassified`).
   - The live lookup is not evidence and does not bind the read.
 
+**Install-verified record (item 3), dated 2026-10-09.**
+
+```
+H5_SYNTHETIC_BUILD_INSTALL_VERIFIED: 2026-10-09T16:52Z.
+```
+
+- **Helm's report.** Helm reported part 1 done to the owner: the pinned reinstall at `af02e90561e23b13a3a2fa89c63faad0da899d33`, checked against the manifest (sha256 `b8e7981d…758a`, PR #519 comment 6078235561), plus the keyless dry-run start check. The owner relayed this to the manager at about 16:52Z. Helm's own report time was not relayed, so this line uses the relay time, which is the earliest instant the manager knew.
+- **Manager's check.** At 16:53Z the manager ran job #467 on mal-fast-0:
+  - the installed `tools/h5_executor.py` sha256 is `e44d1b4c5ffb25c0705509b1e175015acee6c019c2a73e27053479e591f91152`, which matches the manifest;
+  - the unit is inactive and disabled;
+  - `/etc/mal-h5/` holds neither TIER nor LIVE_OK.
+- **Effect.** From this instant, `synthetic_share_high` is recorded and reported only. It is no longer a live halt (item 3).
+- **Go-live pair.** The go-live shadow is MiScusi job #454 on main `af02e90`. Its shadow blob is `ea061266`, and its md5 decision-equivalence on 09-20 is `75cb0b0c585bc2479137cae31330e73e`, equal, proved at 4dd43d2 with the same blob. The keyless dry run is job #455 on the same head.
+- **Still required before the first send.** The official A3 run (EXP-024 Am.4 F, job #449, 19:23Z) must show none of the five halt flags and no `program_changed` (items 3–4). Step 11 follows only after that.
+
 **Not re-run.** The stop-probability table of Amendment 1 item 4 used September's confirmation day counts, which have no synthetic pools. Excluding them lowers the number of trades by the synthetic share (about 0.20 to 0.37 on the readings above [inferred]). The table is not re-run here. Section 4 holds: a stop firing is not evidence about H5.
 
 **Unchanged:**
