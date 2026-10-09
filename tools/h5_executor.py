@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -526,13 +527,51 @@ class JsonlPickOracle:
         return self._flags[mint]
 
 
+# --- H5's own precheck ------------------------------------------------------------------------------------------------------
+
+
+def h5_precheck(probe_cfg: dict[str, Any], mode: str) -> list[str]:
+    """H5's replacement for probe_executor.profile_precheck, scoped to H5's own state_dir. The probe's version stats the probe's DEC-020
+    state file under /var/lib/mal-live (mal-live 0700), which a dry run as another user cannot do, and H5 has no handover from the
+    probe's profiles. Here: the limits must be valid, and H5's own state dir and files must be readable and writable. Anything else
+    refuses (fail closed), in a dry run and in live. Returns [] (there is no probe `bought` list to seed)."""
+    try:
+        pe.Limits.from_config(probe_cfg)
+    except ValueError as exc:
+        raise SystemExit(f"limits refused: {exc}") from None
+    sd = Path(probe_cfg["state_dir"])
+    try:
+        sd.mkdir(parents=True, exist_ok=True)
+        if not os.access(sd, os.R_OK | os.W_OK | os.X_OK):
+            raise PermissionError(sd)
+        for f in (pe.state_path_for(sd, LIVE, pe.DEFAULT_PROFILE), sd / "h5-counters.json", sd / "h5-ledger.jsonl"):
+            if f.exists() and not os.access(f, os.R_OK | os.W_OK):
+                raise PermissionError(f)
+    except OSError:
+        raise SystemExit("h5 precheck refused: the H5 state dir or its files cannot be read and written (fail closed)") from None
+    return []
+
+
+@contextlib.contextmanager
+def _h5_precheck_scope():
+    """probe_executor.Executor.__init__ calls the module-global profile_precheck. For the duration of H5Executor's construction (one
+    thread, restored in `finally`) that name is H5's own precheck. Nothing of the probe's is edited, and the probe's executor, which
+    never runs in this process, keeps its own."""
+    orig = pe.profile_precheck
+    pe.profile_precheck = h5_precheck
+    try:
+        yield
+    finally:
+        pe.profile_precheck = orig
+
+
 # --- the executor -------------------------------------------------------------------------------------------------------
 
 
 class H5Executor(pl.LiveExecutor):
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool] | None = None,
-                 root: Path | None = None):
+                 root: Path | None = None, rpc_label: str | None = None):
         self.h5 = H5Limits.from_config(cfg)
         self.dry_run = keypair is None
         self.run_mode = DRYRUN if self.dry_run else LIVE
@@ -543,8 +582,10 @@ class H5Executor(pl.LiveExecutor):
         kp = keypair if keypair is not None else PublicOnly(Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER))
         sd = Path(probe_cfg["state_dir"])
         self.counters_path = sd / "h5-counters.json"
+        h5_precheck(probe_cfg, self.run_mode)  # first, before any H5 file is touched
         pe.guard_live_state(self.run_mode, self.counters_path, sd / "h5-ledger.jsonl")  # deleting the counters cannot reset the limits
-        super().__init__(rpc, probe_cfg, kp, now_ms=now_ms)  # type: ignore[arg-type]
+        with _h5_precheck_scope():
+            super().__init__(rpc, probe_cfg, kp, now_ms=now_ms)  # type: ignore[arg-type]
         self.fills = H5Ledger(sd / "h5-ledger.jsonl", self.run_mode)
         self.decisions = self.intents_path  # base-class messages name the file we actually tail
         self.counters = H5Counters.load(self.counters_path, self.run_mode)
@@ -575,6 +616,7 @@ class H5Executor(pl.LiveExecutor):
         self.save()  # state and counters exist on disk before the first ledger row, so the anti-reset guards hold from the first start
         self.counters.save(self.counters_path)
         self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user),
+                  rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
 
     def __repr__(self) -> str:
@@ -1342,7 +1384,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--clear-halt", metavar="NAME")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
+    ap.add_argument("--rpc", metavar="URL", help="dry run only: the RPC URL, for a user who cannot read the env file. Refused with --live")
     args = ap.parse_args(argv)
+    if args.rpc and args.live:  # before the config, the lock, the key or any RPC object; the URL is not echoed
+        ap.error("--rpc is allowed with --dry-run only: live reads HELIUS_API_KEY from the environment and never takes a URL")
     cfg = json.loads(Path(args.config).read_text())
     try:
         H5Limits.from_config(cfg)
@@ -1377,9 +1422,10 @@ def main(argv: list[str] | None = None) -> int:
             rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file, use_env_file=False)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
             ex = H5Executor(rpc, cfg, kp, pick_oracle=oracle)
         else:
-            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
-            ex = H5Executor(rpc, cfg, None, pick_oracle=oracle)
-        print(f"h5_executor mode={ex.run_mode} user={ex.user} limits={ex.h5}", flush=True)
+            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(args.rpc, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
+            ex = H5Executor(rpc, cfg, None, pick_oracle=oracle, rpc_label=args.rpc)
+        shown = f" rpc={sim.redact_rpc_url(args.rpc)}" if args.rpc else ""
+        print(f"h5_executor mode={ex.run_mode} user={ex.user}{shown} limits={ex.h5}", flush=True)
         if args.once:
             ex.tick()
             return 0
