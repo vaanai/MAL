@@ -95,3 +95,67 @@ Each is a **different idea, not a threshold tweak of v1**. EXP-024 section 11 al
   - The full-universe book "never decides" and is not computed or reported before Look 2 (EXP-024 Amendment 4 item A3).
 - **Proposed extension [PROPOSED, manager to decide].** Treat pools with s0 in [2026-10-08T20:25Z, 2026-10-10T00) the same way. D1's letter covers counted-window pools only. But the same people would read the join before Look 2 and would carry it into the same decisions, and Amendment 4 item 4's attestation says no outcome has been split by class.
 - **No design work is done on C-SYN in this DEC beyond this section.** After Look 2 is read it needs its own freeze, exploration and a fresh paper window, so its earliest decision is late November, after the October mandate window.
+
+## 4. Freezing a challenger (before its paper window starts)
+
+A candidate has no standing until every step below is done and recorded in a dated **Freeze N** amendment at the end of this file.
+
+1. **Exploration discovery, on exploration data only.**
+   - Allowed ranges are the exploration pool of MAP.md section 2: explore-0814 for discovery, and the 09-03 to 09-25 blocks for one confirmation look. Nothing else.
+   - Never read: a sealed block, forward-1002, forward-1002ev, walk 2, forward-paper, the fast-0 tip archive of 10-05 to 10-07, and any shadow or canary outcome.
+   - One run per candidate. For C-Q35 that is the frozen `s14_boostdip.py` (sha256 `70becfb7d7e48b8e24cee9ae807db29200db9990cf96d18ab2dce755301c1ad0`) with `DS=35` and every other input v1's. The result is reported whatever it shows.
+   - The run can **withdraw** a candidate. It cannot change the candidate's text and cannot add a second value.
+   - It is not evidence of edge. The confirmation blocks are in-sample for the lab (EXP-024 section 9: m at least 14, about 37 counting untracked readers). Only the paper window counts for section 6.
+2. **The rule text, exact.** A fenced `rule` block in the Freeze amendment, with its sha256 and the one-line check command (as EXP-024 section 2 does). For C-LF the filter's constants and feature definitions are in it. No constant is left to code.
+3. **A decision-equivalence proof, by md5, on 2026-09-20.** This is the day [DEC-024](DEC-024-h5-live-canary.md) Amendment 1 item 3 used.
+   - The champion's trigger list must stay equal to `75cb0b0c585bc2479137cae31330e73e` (72 decisions), so adding a rule to the shadow cannot move v1.
+   - Each challenger's list from the live engine must equal its frozen rule's list from the offline scorer.
+   - The day is exploration tape. The proof is not evidence of edge.
+4. **Keyless run.** The shadow carries the rule on live triggers with 0 build errors, and v1's records are unchanged by it.
+5. **Reviews.** A `reviewer` pass on the shadow change and quant-proof's OK on the Freeze record, including the power statement (section 6, item 10).
+6. **The window opens at the first full UTC hour** after both of these hold: the Freeze amendment is merged, and the shadow's start record shows the rule id with its sha256. No earlier hour is ever scored for that challenger. Replaying a challenger over hours that began before its window, even to "see how it would have done", is a breach of this DEC and makes that challenger ineligible.
+7. **After the freeze, no edit.** A change of any constant is a new candidate with a new id. The old one is withdrawn and still counts in k.
+
+## 5. Paper evaluation
+
+### 5.1 Data and window
+
+- **Source.** The shadow's own records, written live after the challenger's window opens. One detector feed, one process, N registered rules, each record tagged `rule_id` (section 5.3). The paired scorer is a later PR. It reads those records only. It never reads forward-1002, walk 2, the tip tape, or the EXP-024 read tool's output.
+- **Hours.** Pools whose s0 is at or after the window's opening instant and before **2026-11-06T00** (the end of the declared observation; the shadow withholds outcomes after it, DEC-024 section 6). A decision that needs later pools waits for Look 2.
+- **Excluded the same way for both arms.** Pools flagged `gap`, and bad hours (a gap record or a missing heartbeat). They are counted and reported.
+- **Pools it never sees.** Synthetic and unclassified pools (DEC-024 Amendment 2) and, from 2026-10-16T01, CAP-PICK picks (section 5.4). The pick rate is unknown, so the pair count after 10-16T01 falls by an unmeasured amount.
+- **Rate [measured, structure counts].** About 16 non-synthetic triggers a day (`docs/HANDOFF.md`, STATE 10-09 ~09:30Z, "Volume finding"; MiScusi n_KqwGD1bzt_lbpg). At that rate 80 paired pools take about 5 days and 100 take about 6. The rate may not be used as a basis for any EXP-024 change (EXP-024 Amendment 3, line 631), and it is not used as one here.
+
+### 5.2 Pairing and pricing
+
+- **Unit.** One row per eligible pool in which at least one of the two arms trades. An arm that does not trade on the pool is 0 (DEC-021 Section 4). The paired value is challenger minus champion, in SOL.
+  - C-LF and C-BX share v1's entry, so their pairs are tight (ρ high).
+  - C-Q35 enters on a different print, so its pairs are looser (ρ lower), and some pools are traded by only one arm.
+- **Price.** The EXP-024 deciding cell D: stake 0.1 SOL, 1.9 s entry, END bound, own impact, tier fee, exit lag 0.55 s, 55,000 lamports per send, and the section 5 correction (the larger of the DEC-021 Section 1 haircut and the E1 term; the haircut alone, stated, if E1 is not yet recorded). Both fail legs. The pressure leg's intercept is refit once on the union of both arms' sends and held for both [PROPOSED], so the arms are not priced with different p.
+- **Also reported.** B1 (3 s entry) and B2 (15% guard) per section 6 item 3, and the live tier's stake, because fixed costs weigh 5 times more at 0.02 SOL than at 0.1 SOL (DEC-024 section 4, "Trial-size effect").
+- **Reported at every look, never deciding:** the trade-level bootstrap p, the per-date table, and the top-3 and best-date concentration. The best-date total is checked before anyone says a variant is positive (EXP-024 section 7 item 5).
+
+### 5.3 What the shadow must log that it does not log today
+
+All are decision-time fields, written on the trigger or `pool` record, never joined to an outcome.
+
+1. **`rule_id` on every record of every registered rule** (`trigger`, `outcome`, `strip`, `excluded`). The champion keeps `H5-BOOSTFLOOR-v1`. The shadow already has a `variant` field on trigger records, meaning `pv` or `fv` (V per print or fixed V). The new field is named `rule_id` so the two cannot be confused. The `fv` triggers are never traded (`TRIGGER_VARIANT = "pv"`).
+2. **One trigger evaluation per rule on the shared feed.** For C-Q35, a second trigger per pool at the first qualifying print with Q at most 35 SOL, with the same fields as a v1 trigger (`q_trigger_sol`, `slot`, landing and exit slots, BOOST spent). It cannot be rebuilt from v1's trigger, because it is a later print.
+3. **For C-BX, a live `boost_done` event:** the pool, the slot, the block time, the receive time, the seconds from s0, and the cumulative spend at the line (0.999 x 17.585 SOL). Today the last-slice time is known only at pool close (`pool` record `boost_last_slice_s`, and the executor's `h5_boost_v1` rows, used for halts). A sell cannot wait for the pool to close. The trigger record also carries the rule's exit trigger slot, the earlier of the done slot and the 330 s slot, and which of the two it was.
+4. **For C-LF, the filter's inputs and its verdict** on every v1 trigger: each feature value, `lf_id`, `lf_pass` and `lf_sha256`. The feature list is part of the Freeze record. A feature that cannot be computed at the trigger print is not allowed.
+5. **A skip record per rule** for every pool the rule saw and did not trade, with the reason. Skips are counted per rule and per date. This is what makes the "0 where an arm does not trade" rows auditable.
+6. **The start record** lists each registered `rule_id` with its rule sha256, so section 4 step 6 is checkable from the log.
+7. **No class column.** None of these records pairs the synthetic class with an outcome row (section 5.4).
+
+### 5.4 Seals and what they bar
+
+- **EXP-024's seal and declared observation** (section 3, line 132; section 3.1; Amendment 2).
+  - The declared observation covers "the live canary's and the shadow detector's outcomes" for pools with s0 in `[2026-10-10T00, 2026-11-06T00)`. A challenger rule's outcomes are the shadow's outcomes under a rule that the text never named. **This DEC does not rely on that wording.** It needs a companion EXP-024 amendment, merged with quant-proof's OK before any challenger outcome exists, that extends the declaration to the shadow's outcomes under any registered `rule_id`, for the same window and the same readers.
+  - That amendment would be written with v1's aggregate October outcomes in view, so it cannot call itself outcome-blind. It is written before any challenger outcome exists, and says so.
+  - Readers are those of DEC-024 section 6: the owner, Helm, the manager, builders, the watchdog and the daily check. The EXP-024 read tool is excluded, and its inputs do not change.
+  - For a pool with s0 at or after 2026-11-06T00, only the allowlisted timing and count fields may be read until Look 2 is read. The shadow withholds the rest, for every `rule_id`.
+  - From 2026-10-16T00 the shadow needs `--h5-look2-observed EXP-024-Am2` for challenger outcomes to appear, as for v1.
+- **The CAP-PICK seal** (EXP-022 section 9; DEC-024 section 6). From 2026-10-16T01 to the end of EXP-022's read: no challenger trade, paper or live, on a mint the EXP-022 gate picked; no record joined to a pick; no per-pool challenger P&L for a pick before each CAP-PICK look. The pick oracle seals a pool for **every** `rule_id`, and its fail-closed rule (a feed missing or stale for more than 60 s) stands.
+- **D1** (EXP-024 Amendment 4, line 691). No synthetic class is joined to any challenger outcome for a counted-window pool before Look 2 is read. The shadow writes no outcome for such pools, and the paired scorer has no class column.
+- **No challenger outcome may change any EXP-024 parameter** (rule, Q\* = 40, 330 s exit, 15% guard, 1.9 s deciding cell, windows, alpha, universe, classifier, kill rules), delay a look, or re-scope it.
+- **Disclosure the Look reports must carry.** The Look 1 and Look 2 reports add which variant was live on each UTC date (from the `variant_change` rows, section 7), and that challenger outcomes were observed in real time and could have influenced the choice of live variant. A live variant's trades are ordinary tape rows (EXP-024 section 3). A C-BX sell can land before v1's exit state on the same pool, and at 0.02 to 0.10 SOL against a pool of about 40 SOL that is about 0.05 to 0.25% of the pool. It is disclosed and not corrected.
