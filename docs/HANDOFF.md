@@ -68,6 +68,24 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 - **Do not use shadow outcomes in this review** (EXP-024 Amendment 3).
 - **If fees or pricing changed:** rerun the DEC-024 §8 stop table and tell the owner. The September evidence predates the upgrade.
 
+**Program-upgrade review DONE (07:45Z).** The review is in `/data/mal/hunt-1008/h5-work/PROGRAM-UPGRADE-2026-10-08.md`, with a copy in hunt-reports.
+- **Re-pinning is safe for layouts.** These are unchanged: PumpSwap buy, sell and buy_exact_quote_in, the decoder event offsets, V, the fee configs, GlobalConfig and BOOST (budget 17.586, 29–30 slices). Last-slice timing was 332.5–346 s before the redeploy and 335–344 s after.
+- **What the upgrade added:** multi-hop swaps, a curve-depth setting (pump Global gained 1 byte), and pump errors 6098–6108. Docs commits `8cda1fa` and `2293f9a` say "pump_amm and pump_fees IDLs are unchanged".
+- **NEW RISK: synthetic migrations.** These are graduations whose big first buy happens via the v3 buys rather than a PumpSwap trade.
+  - Before the redeploy: 0/61. After: 12/61, and 6/16 in the latest window.
+  - The monitor's `synthetic_share_high` reads **0.316 against its 0.35 halt**; the review's own sample read 0.375.
+  - If it fires, EXP-024 ends (EXP-024:328-331) and CAP-PICK is withdrawn (EXP-022:358).
+  - Unmeasured: on synthetic pools H5's s0 (first PumpSwap print) may come later, which eats the 330 s exit margin.
+- **When re-pinning, also pin the three program sha256s** (the `program_changed` rule is not evaluated today).
+- **Quant-proof must rule** whether a reviewed re-pin cures today's pins_changed halt before 10-10T00Z. EXP-024:330 says "H5 is withdrawn"; P2 says "last A3 run before 10-10T00Z shows no halt".
+- **NEXT:**
+  1. Builder: re-pin PR (`--write-pins`, including the sha256s) plus a short re-pin note citing the review.
+  2. Quant-proof: the cure ruling, and the synthetic-share risk.
+  3. Merge the re-pin.
+  4. Run the monitor as a MiScusi job before 10-10T00Z.
+  5. If it is clean, send Helm the go (`scratchpad/helm-go-h5.md`).
+  6. Tell the owner the synthetic-share risk plainly.
+
 **Merged today, on main:**
 - #500, #508: handoff;
 - #501: EXP-025 C1-NF Part 1, two looks (α 0.005/0.020), quant-proof OK;
