@@ -1585,8 +1585,9 @@ class DeliveringTests(unittest.TestCase):
         ls2 = LinkState(clock=lambda: 0)
         ls2.mark_up(0)
         ls2.note_notice(1_000)
-        ls2.mark_down(5_000)  # an ordinary drop: no silence recorded
+        ls2.mark_down(3_500)  # an ordinary drop (2.5 s since the last notice): no silence recorded
         self.assertEqual(list(ls2.silent_intervals), [])
+        self.assertEqual(ls2.drop_silences, 0)
 
     def test_dedup_is_by_piece_start_and_old_pieces_are_ignored(self):
         eng, out = make_engine()
@@ -1664,11 +1665,12 @@ class DeliveringTests(unittest.TestCase):
 
         ls = LinkState(clock=lambda: 0)
         ls.mark_up(0)
-        for t in (100, 400, 1_500, 4_000, 20_000):  # gaps 100, 300, 1100, 2500, 16000 ms
+        for t in (100, 400, 1_500, 4_000, 20_000):  # gaps 100 (subscribe to first notice), 300, 1100, 2500, 16000 ms
             ls.note_notice(t)
         snap = ls.snapshot()
         self.assertEqual(snap["max_gap_ms"], 16_000)
-        self.assertEqual(snap["gap_hist"], [1, 1, 0, 1, 1, 0, 0, 1])  # <250, <500, <1000, <2000, <3000, <5000, <10000, >=10000
+        self.assertEqual(snap["gap_hist"], [0, 1, 0, 1, 1, 0, 0, 1])  # <250, <500, <1000, <2000, <3000, <5000, <10000, >=10000; the first gap is not here
+        self.assertEqual(snap["sub_latency_hist"], [1, 0, 0, 0, 0, 0, 0, 0])
         self.assertEqual(len(snap["gap_hist"]), len(GAP_EDGES_MS) + 1)
         eng, out = make_engine()
         eng.now[0] = 21_000
