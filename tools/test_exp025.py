@@ -372,6 +372,203 @@ class EventVMapping(unittest.TestCase):
         self.assertFalse(self.m.p7_pass(75, 100, 0, 0))
 
 
+class RawEventP7(unittest.TestCase):
+    """Amendment 1: P7 line 1 runs on RAW events, because stored tape rows drop `pool_quote_amount` (the gross quote out and `qin`).
+
+    Synthetic events use the integer laws of tools/test_walk2_event_v.py (test_constant_product_uses_vault_plus_event_v). The real-fixture tests
+    decode public getTransaction results kept in the repo; no network, no /data/mal, no forward or walk row."""
+
+    V0 = 17_585_000_000
+    BASE = 1_000_000_000_000_000
+    VAULT = 60_000_000_000
+    PENDING = 2_300_000_000          # about 3% of the effective quote, kept in the vault and subtracted from stored V
+
+    def setUp(self):
+        self.m = load("event_v_map", "event_v_map.py")
+
+    # -- synthetic raw events -------------------------------------------------------------------------------------------------------------
+    def _base(self, side, i=0, pending=None):
+        pending = self.PENDING if pending is None else pending
+        v_t = self.V0 - pending
+        return {"venue": "pumpswap", "pool": "POOL", "side": side, "slot": 1000 + i, "signature": f"sig{i}", "event_index": i % 3,
+                "quote_reserve": self.VAULT, "base_reserve": self.BASE, "virtual_quote_reserves": v_t, "_total": self.VAULT + v_t}
+
+    def _sell(self, i=0, pending=None):
+        r = self._base("sell", i, pending)
+        base_in = 3_000_000_000_000 + i * 1_000_000_000
+        gross = r.pop("_total") * base_in // (self.BASE + base_in)
+        r.update(token_raw=base_in, pool_quote_amount=gross, sol_lamports=gross * 9_925 // 10_000)
+        return r
+
+    def _buy(self, i=0, pending=None, ix_name="buy"):
+        r = self._base("buy", i, pending)
+        qin = 400_000_000 + i * 1_000
+        out = self.BASE * qin // (r.pop("_total") + qin)
+        r.update(token_raw=out, pool_quote_amount=qin, sol_lamports=qin * 10_125 // 10_000, ix_name=ix_name)
+        return r
+
+    @staticmethod
+    def _tape(raw):
+        """What stored_trade keeps: the raw fields minus the ones it drops."""
+        return {k: v for k, v in raw.items() if k not in ("pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee")}
+
+    def _check(self, raw, v0=None, **kw):
+        return self.m.p7_raw_check(self._tape(raw), raw, self.V0 if v0 is None else v0, **kw)
+
+    # -- the finding, on the real decoder and the real store ------------------------------------------------------------------------------
+    def _real(self, name):
+        import json
+
+        from observe.trade_decode import records_from_logs
+        from observe.trade_store import stored_trade
+
+        with open(os.path.join(ROOT, "tools", "fixtures", "walk2_event_v", name), encoding="utf-8") as fh:
+            d = json.load(fh)
+        (rec,) = records_from_logs(d["meta"]["logMessages"], slot=d["slot"], signature=d["signature"], t_recv_ms=0, commitment="confirmed", feed="t", event_v=True)
+        return rec, stored_trade(rec)
+
+    def test_stored_trade_drops_what_line_one_needs_and_the_raw_event_has_it(self):
+        for name in ("sell_v2_kept.json", "buy_v1_481_wsol.json"):
+            rec, tape = self._real(name)
+            for k in ("pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee"):
+                self.assertNotIn(k, tape, (name, k))
+            self.assertIsInstance(rec["pool_quote_amount"], int, name)
+            for k in ("slot", "signature", "event_index", "pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves"):
+                self.assertIn(k, tape, (name, k))
+
+    def test_real_events_hit_with_the_pinned_mapping_whatever_v0_is(self):
+        for name, line in (("sell_v2_kept.json", "sell"), ("buy_v1_481_wsol.json", "buy")):
+            rec, tape = self._real(name)
+            for v0 in (self.V0, 17_500_000_000, 17_700_000_000):
+                self.assertEqual(self.m.p7_raw_check(tape, rec, v0), (line, "hit", None), (name, v0))
+                self.assertEqual(self.m.raw_event_mapped(rec, v0) + v0, rec["quote_reserve"] + rec["virtual_quote_reserves"])
+            # a mapping that ignores V(t) (constant V0) is right only if V0 happens to equal V(t)
+            blind = lambda vault, v_pre, v0: vault  # noqa: E731
+            self.assertEqual(self.m.p7_raw_check(tape, rec, 16_000_000_000, mapping=blind)[1], "miss", name)
+
+    def test_real_exact_quote_in_buys_are_excluded_by_ix_name_of_the_tape_row(self):
+        for name in ("buy_exact_quote_in_496.json", "buy_exact_quote_in_v2_499_kept.json", "boost_buy_and_burn.json"):
+            rec, tape = self._real(name)
+            self.assertTrue(tape["ix_name"].startswith("buy_exact_quote_in"), name)
+            self.assertEqual(self.m.p7_raw_check(tape, rec, self.V0), (None, "excluded", None), name)
+        rec, tape = self._real("buy_v1_481_wsol.json")
+        self.assertEqual(self.m.p7_raw_line(tape), "buy")
+
+    # -- decision rules on synthetic raw events -------------------------------------------------------------------------------------------
+    def test_pinned_mapping_hits_and_a_pending_blind_mapping_misses(self):
+        blind = lambda vault, v_pre, v0: vault  # noqa: E731  (the September column: gross vault, constant V0)
+        for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
+            self.assertEqual(self._check(raw), (line, "hit", None))
+            self.assertEqual(self._check(raw, mapping=blind), (line, "miss", None))
+            # the miss is not marginal: it is above 100 bp of the raw field
+            q = blind(raw["quote_reserve"], raw["virtual_quote_reserves"], self.V0)
+            if line == "sell":
+                actual, model = raw["pool_quote_amount"], self.m.cp_sell_gross_quote_out(q, self.V0, self.BASE, raw["token_raw"])
+            else:
+                actual, model = raw["token_raw"], self.m.cp_buy_token_out(q, self.V0, self.BASE, raw["pool_quote_amount"])
+            self.assertGreater(abs(model - actual) * 10_000 / actual, 100, line)
+        # with no pending fees the two mappings agree: V(t) = V0 and the vault is the effective quote
+        for raw in (self._sell(pending=0), self._buy(pending=0)):
+            self.assertEqual(self._check(raw)[1], "hit")
+            self.assertEqual(self._check(raw, mapping=blind)[1], "hit")
+
+    def test_a_stale_vault_from_a_chain_across_an_lp_deposit_misses(self):
+        # the print's own pre-trade vault is what the law holds on; a vault chained from the previous print misses it by the LP deposit
+        lp_deposit = 1_000_000_000
+        for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
+            self.assertEqual(self.m.raw_event_mapped(raw, self.V0), raw["quote_reserve"] + raw["virtual_quote_reserves"] - self.V0)
+            self.assertTrue(self.m.p7_raw_hit(line, raw, self.V0))
+            self.assertFalse(self.m.p7_raw_hit(line, dict(raw, quote_reserve=raw["quote_reserve"] - lp_deposit), self.V0))
+
+    def test_one_bp_on_the_raw_field(self):
+        for make, field in ((self._sell, "pool_quote_amount"), (self._buy, "token_raw")):
+            raw = make()
+            actual = raw[field]
+            for delta_bp, want in ((0.0, "hit"), (0.9, "hit"), (-0.9, "hit"), (2.0, "miss"), (-2.0, "miss")):
+                moved = dict(raw)
+                moved[field] = actual + int(round(actual * delta_bp / 10_000))
+                self.assertEqual(self._check(moved)[1], want, (field, delta_bp))
+
+    def test_exact_quote_in_buys_are_not_in_any_denominator_and_a_buy_without_ix_name_is(self):
+        for name in ("buy_exact_quote_in", "buy_exact_quote_in_v2"):
+            self.assertEqual(self._check(self._buy(ix_name=name)), (None, "excluded", None))
+        no_name = self._buy()
+        del no_name["ix_name"]
+        self.assertEqual(self.m.p7_raw_line(self._tape(no_name)), "buy")
+        self.assertEqual(self._check(no_name), ("buy", "hit", None))
+        self.assertEqual(self.m.p7_raw_line({"side": "transfer"}), None)
+        self.assertEqual(self._check(self._buy(ix_name="buy_v2"))[:2], ("buy", "hit"))
+
+    def test_each_unresolved_reason_is_a_miss_on_its_line(self):
+        raw = self._sell()
+        tape = self._tape(raw)
+        cases = {
+            "fetch_failed": self.m.p7_raw_check(tape, None, self.V0, fetch_failed=True),
+            "no_record": self.m.p7_raw_check(tape, None, self.V0),
+            "no_v0": self.m.p7_raw_check(tape, raw, None),
+            "slot_mismatch": self.m.p7_raw_check(tape, dict(raw, slot=raw["slot"] + 1), self.V0),
+            "identity_mismatch": self.m.p7_raw_check(tape, dict(raw, base_reserve=raw["base_reserve"] + 1), self.V0),
+            "field_missing": self.m.p7_raw_check(dict(tape, virtual_quote_reserves=None), {k: v for k, v in raw.items() if k != "virtual_quote_reserves"}, self.V0),
+        }
+        self.assertEqual(set(cases), set(self.m.P7_RAW_REASONS))
+        for reason, out in cases.items():
+            self.assertEqual(out, ("sell", "unresolved", reason), reason)
+        # a record at another event_index or signature is not the print
+        self.assertEqual(self.m.p7_raw_check(tape, dict(raw, event_index=raw["event_index"] + 1), self.V0)[2], "no_record")
+        self.assertEqual(self.m.p7_raw_check(tape, dict(raw, signature="other"), self.V0)[2], "no_record")
+        t = self.m.p7_raw_tally(cases.values())
+        self.assertEqual((t["sell_n"], t["sell_ok"], t["buy_n"]), (len(cases), 0, 0))
+        self.assertEqual(t["unresolved"], {r: 1 for r in self.m.P7_RAW_REASONS})
+
+    def _sample(self, n_sell, n_buy, bad_sell=0, bad_buy=0, unresolved_sell=0, exact=0):
+        results = []
+        for i in range(n_sell):
+            raw = self._sell(i)
+            if i < bad_sell:
+                raw["pool_quote_amount"] = raw["pool_quote_amount"] * 101 // 100        # 100 bp off the law
+            if bad_sell <= i < bad_sell + unresolved_sell:
+                results.append(self.m.p7_raw_check(self._tape(raw), None, self.V0, fetch_failed=True))
+            else:
+                results.append(self._check(raw))
+        for i in range(n_buy):
+            raw = self._buy(i)
+            if i < bad_buy:
+                raw["token_raw"] = raw["token_raw"] * 101 // 100
+            results.append(self._check(raw))
+        results += [self._check(self._buy(i, ix_name="buy_exact_quote_in_v2")) for i in range(exact)]
+        return self.m.p7_raw_tally(results)
+
+    def test_decision_rule_99_percent_per_side(self):
+        self.assertEqual((self.m.P7_CP_SELL_MIN, self.m.P7_CP_BUY_MIN, self.m.P7_CP_TOLERANCE_BP), (0.99, 0.99, 1.0))
+        t = self._sample(100, 100)
+        self.assertEqual((t["sell_n"], t["sell_ok"], t["buy_n"], t["buy_ok"], t["excluded"]), (100, 100, 100, 100, 0))
+        self.assertTrue(self.m.p7_raw_pass(t))
+        self.assertTrue(self.m.p7_raw_pass(self._sample(100, 100, bad_sell=1)))       # 99 of 100
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 100, bad_sell=2)))      # 98 of 100
+        self.assertTrue(self.m.p7_raw_pass(self._sample(100, 100, bad_buy=1)))
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 100, bad_buy=2)))
+        self.assertTrue(self.m.p7_raw_pass(self._sample(200, 200, bad_sell=2, bad_buy=2)))     # 99% exactly, per side
+        self.assertFalse(self.m.p7_raw_pass(self._sample(200, 200, bad_sell=3)))
+
+    def test_unresolved_prints_stay_in_the_denominator(self):
+        t = self._sample(100, 100, unresolved_sell=1)
+        self.assertEqual((t["sell_n"], t["sell_ok"], t["unresolved"]["fetch_failed"]), (100, 99, 1))
+        self.assertTrue(self.m.p7_raw_pass(t))
+        t = self._sample(100, 100, unresolved_sell=2)
+        self.assertEqual((t["sell_n"], t["sell_ok"]), (100, 98))
+        self.assertFalse(self.m.p7_raw_pass(t))
+        # a miss and an unresolved print add up against the same 1%
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 100, bad_sell=1, unresolved_sell=1)))
+
+    def test_excluded_buys_change_no_denominator_and_an_empty_side_fails(self):
+        a, b = self._sample(100, 100), self._sample(100, 100, exact=40)
+        self.assertEqual({k: v for k, v in b.items() if k != "excluded"}, {k: v for k, v in a.items() if k != "excluded"})
+        self.assertEqual(b["excluded"], 40)
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 0, exact=40)))      # only buy_exact_quote_in buys: the buy side is empty
+        self.assertFalse(self.m.p7_raw_pass(self._sample(0, 100)))
+        self.assertFalse(self.m.p7_raw_pass(self._sample(0, 0)))
+
+
 class ExpFile(unittest.TestCase):
     def _text(self):
         p = os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")
