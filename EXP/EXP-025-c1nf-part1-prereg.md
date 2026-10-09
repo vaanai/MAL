@@ -496,7 +496,12 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 ```
 
 **This amendment is blind to every C1-NF outcome. It is not called outcome-blind.**
-- **No C1-NF outcome exists.** No C1-NF shadow or canary has run, and no C1-NF label, fill, exit or P&L has been computed on any October hour (section 0, "No outcome before merge").
+- **No C1-NF outcome exists.** No C1-NF shadow or canary has run, and no C1-NF label, fill, exit or P&L has been computed on any October hour (section 0, "No outcome before merge"). Verified at 2026-10-09T17:53:08Z on mal-fast-0 by MiScusi job #468:
+  - no unit or unit file matching `c1nf`;
+  - no `c1nf` output directory under `$HOME/data`, `/var/lib/mal*` or `/var/lib/mal-live`;
+  - no running `c1nf` process.
+  
+  The MiScusi job list holds only the exploration-only C1-NF VERIFY jobs (#415, #420, #421, #423).
 - **What was in view:**
   - the program-upgrade review's counts (0 of 61 synthetic graduations before the 2026-10-08T16:20Z redeploy, 12 of 61 after);
   - the A3 monitor's `synthetic_share_high` readings, 6/19 = 0.316 (job #445) and 7/19 = 0.368 (one dry check);
@@ -507,6 +512,7 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 **What it sets**
 1. **The universe is unchanged.** Synthetic-migration pools (a pump `PostCompleteBuyEvent` in the curve-completing or the migrate transaction) stay in C1-NF's universe, its training rows and both looks. Nothing in section 2, the rule, the cap, the windows, alpha, the legs or the gate changes.
    - October training labels come only from graduations at or after 2026-10-09T00 (section 4). Those include synthetic pools, so the model's October training rows include them too. That is a consequence of keeping the universe, not a change.
+   - **No later exclusion.** No later amendment excludes synthetic or unclassified pools from either look or from training. C1-NF v1 is never re-filed restricted by class on any hour in `[2026-10-10T00, 2026-10-24T02)` (section 11.5).
 2. **Why it is kept.** This is a basis in structure only.
    - EXP-025 has no A3 halt that a rising synthetic share could fire: section 5 lists the A3 flags as allowed reading, not as a refusal.
    - Excluding the pools would cut Look 1's expected selections from about 140 to roughly 90–113 [inferred; quant-proof, 2026-10-09]. R4's minimum is 90 (section 11.4).
@@ -516,9 +522,14 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
    - At each look's precount (section 11.3), the precount also prints, per UTC date, the number of universe rows and kept rows that are synthetic, non-synthetic or unclassified. It prints counts only, never a price, fill, exit, pnl, mean, CI or day sign.
    - The class uses EXP-024 Amendment 4 B1 (discriminator alone, on the completing and the migrate transaction; monitor blob `1ca0a88cecf0853d94336ea046ba1a910b79f198`), the B2 rule that the tape can only mark a pool synthetic, and Clarification 1's B4 lookup with 1,000-signature caps.
    - An unclassified pool stays in the universe. It is counted, not excluded.
+   - **The class counts are report-only.** No R item reads them. R4 and gate item 1 count all universe rows, whatever their class.
+   - A failed fetch or any unclassified share never makes a look NOT_DECIDABLE. If classification cannot finish, the affected pools print as unclassified and the look runs on schedule.
+   - The classification runs after the FINAL (section 4), and its Helius credits are recorded.
 5. **Seal.** Before Look 2 is read (or, if Look 2 does not run, before the final C1-NF report), joining the synthetic class to any C1-NF outcome from any source is a breach. That covers a label, fill, exit, pnl, mean, CI, day sign, win or loss, or any field derived from one. A breach is recorded here, dated, and the read is reported compromised.
-6. **After the final look, report-only.** The result split by class may be printed after the final look, labelled report-only. It never decides and never re-scopes either look.
-7. **Effect.** This amendment carries quant-proof's OK on its final head and the owner line above, and it merges before 2026-10-10T00:00Z. If it does not merge in time, the universe stays as written (the same outcome), but items 4–6 do not apply.
+   - Section 5.1's real-time observation does not extend to splits by class.
+   - Before the seal ends, no C1-NF shadow or canary record that carries an outcome also carries the class. The class is logged as a separate counts-only stream.
+6. **After the final look, report-only.** The result split by class may be printed after the final look's verdict is written and recorded, labelled report-only. It never decides and never re-scopes either look.
+7. **Effect.** This amendment carries quant-proof's OK on its final head and the owner line above, and it is to merge before 2026-10-10T00:00Z. If it merges after that instant, items 1–6 apply from the merge instant. Each look's report then lists the amendment as dated after the window opened, and states whether any C1-NF outcome existed at merge.
 
 
 ## Sources
