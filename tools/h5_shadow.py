@@ -68,7 +68,7 @@ from observe.trade_decode import (
     iso_from_ms,
     records_from_logs,
 )
-from observe.link_state import GAP_EDGES_MS, SILENT_MS_DEFAULT
+from observe.link_state import GAP_EDGES_MS, REL_SILENT_MS_DEFAULT, SILENT_MS_DEFAULT
 from tools.paper_curve_math import pumpswap_sol_fee_ppm
 
 log = logging.getLogger("mal.h5_shadow")
@@ -115,7 +115,7 @@ SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
 SETTLE_SLOTS = 2  # a print this close to the high-water slot may still be waiting for a predecessor that is in flight
-REL_SILENT_MS = 3_000  # a socket that delivered nothing for this long while a peer delivered after its last notice is silent
+REL_SILENT_MS = REL_SILENT_MS_DEFAULT  # 3 s: a socket quiet this long while a peer DELIVERED after its last notice is silent (also LinkState's drop-ended quiet)
 LOOK_MS = 5_000  # housekeeping interval
 RECENT_MARGIN_MS = 5_000
 SEALED_MIN_COUNT = 5  # sealed_hour reports decisions only from this many; below it the field is "<5"
@@ -273,11 +273,14 @@ def _merge(iv: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 def common_down(states: Sequence[dict], now_ms_: int, rel_silent_ms: int = REL_SILENT_MS, min_end_ms: int | None = None) -> list[tuple[int, int]]:
     """Intervals during which EVERY socket was down or silent. states: observe.link_state snapshots {"up", "down_since_ms", "intervals",
-    "last_notice_ms", "silent_ms", "silent_intervals"}. A socket that is down right now contributes [down_since_ms, now]. A socket that is up but
-    silent contributes [last_notice_ms, now], where silent means either (absolute) nothing for more than silent_ms, or (relative) nothing for
-    more than rel_silent_ms while some other socket delivered after its last notification. min_end_ms drops closed intervals that ended earlier
-    (bounds the work to recent history)."""
-    lns = [st.get("last_notice_ms") for st in states]
+    "last_notice_ms", "last_delivery_ms", "silent_ms", "silent_intervals"}. A socket that is down right now contributes [down_since_ms, now]. A
+    socket that is up but silent contributes [last_notice_ms, now], where silent means either (absolute) nothing for more than silent_ms, or
+    (relative) nothing for more than rel_silent_ms while some other socket DELIVERED a notification after this socket's last notice. Only
+    last_delivery_ms counts as a peer delivery: a peer's resubscribe moves its own last_notice_ms (the quiet clock starts at the subscribe) but
+    delivered nothing, so it must not turn a common stall into a common outage. A snapshot without last_delivery_ms (an older format) falls back
+    to last_notice_ms, the fail-safe direction (more flags, never fewer). min_end_ms drops closed intervals that ended earlier (bounds the work
+    to recent history)."""
+    lds = [st["last_delivery_ms"] if "last_delivery_ms" in st else st.get("last_notice_ms") for st in states]
     per: list[list[tuple[int, int]]] = []
     for k, st in enumerate(states):
         iv = [(int(a), int(b)) for a, b in (st.get("intervals") or []) + (st.get("silent_intervals") or []) if min_end_ms is None or int(b) > min_end_ms]
@@ -286,7 +289,7 @@ def common_down(states: Sequence[dict], now_ms_: int, rel_silent_ms: int = REL_S
         ln, sm = st.get("last_notice_ms"), int(st.get("silent_ms") or 0)
         if st.get("up") and ln is not None:
             quiet = now_ms_ - int(ln)
-            relative = rel_silent_ms and quiet > rel_silent_ms and any(o is not None and o > ln for j, o in enumerate(lns) if j != k)
+            relative = rel_silent_ms and quiet > rel_silent_ms and any(o is not None and o > ln for j, o in enumerate(lds) if j != k)
             if (sm and quiet > sm) or relative:  # connected but not delivering: down from its last notification
                 iv.append((int(ln), int(now_ms_)))
         per.append(_merge(iv))
@@ -395,9 +398,9 @@ class Engine:
         self.on_error: Callable[[BaseException, dict], None] | None = None  # error log hook (run_live: ErrorLog.log)
         self.link_probe: Callable[[], tuple[int, dict] | None] | None = None  # () -> (source key, feed snapshot); checked right before a trigger is written
         self._flagged_starts: collections.deque = collections.deque(maxlen=256)  # starts of common-outage pieces already flagged
-        self._sealed_hours: dict[int, list[int]] = {}
+        self.link_prev: tuple[int, list[dict]] | None = None  # (feed id, per-socket cumulative link histograms) at the previous status record
+        self._sealed_hours: dict[int, list[int]] = {}  # UTC hour index -> [sealed pools opened, sealed decisions] (unlabelled aggregate; the only trace of a sealed decision)
         self._sealed_cursor: int | None = None  # next UTC hour index to report; starts at the seal start or the first event, whichever is later
-        # (old comment follows:)  # UTC hour index -> sealed decisions (unlabelled aggregate; the only trace of a sealed decision)
 
     # ---- emit -----------------------------------------------------------------------------------------------
     def emit(self, rec: dict) -> None:
@@ -986,7 +989,9 @@ class Engine:
         return (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
 
     def _close_safe(self, p: Pool, reason: str) -> None:
-        """One bad pool is logged (class name only: a sealed pool must not be named) and dropped; it never blocks the others or wedges the engine."""
+        """One bad pool is logged and dropped; it never blocks the others or wedges the engine. A sealed pool must not be named anywhere, so for it
+        (or any pool whose verdict is not known to be unsealed) the error hook gets a sanitized exception: the class name only, no message, no
+        traceback. The message of a KeyError(pool) or a traceback frame could carry the pool or mint."""
         try:
             self._close(p, reason)
         except Exception as exc:  # noqa: BLE001
@@ -994,7 +999,7 @@ class Engine:
             log.warning("pool close failed: %s", type(exc).__name__)
             if self.on_error is not None:
                 try:
-                    self.on_error(exc, {"where": "close"})
+                    self.on_error(exc if p.sealed_cache is False else _sanitized(exc), {"where": "close"})
                 except Exception:  # noqa: BLE001
                     pass
             self.pools.pop(p.pool, None)
@@ -1031,7 +1036,9 @@ class Engine:
         """One unlabelled record for EVERY UTC hour from the seal start (or from the process start, if later), whether or not it has any sealed pool:
         how many sealed pools opened in it and how many decisions their pools took (trigger or skipped candidates, counted under the pool's open hour).
         `decisions` is the string "<5" below 5. An hour is reported only once WALL_CLOSE has passed for every pool that could have opened in it, so
-        the existence of a record says nothing. No pool, mint, slot or variant. The current hour is reported only on shutdown, flagged partial."""
+        the existence of a record says nothing. No pool, mint, slot or variant. The current hour is reported only on shutdown, flagged partial; so
+        is any earlier hour whose WALL_CLOSE wait had not run out at shutdown (close_all closed its pools early). Hours are per run: a restart
+        writes a second record for its first hour and none for the downtime hours, so a reader sums sealed_hour records by hour."""
         if self._sealed_cursor is None:
             return
         cur = int(now_ms_) // 3_600_000
@@ -1041,8 +1048,13 @@ class Engine:
             opened, n = self._sealed_hours.pop(h, [0, 0])
             hour = datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H")
             self.emit({"type": "sealed_hour", "hour": hour, "pools_opened": opened, "decisions": n if n >= SEALED_MIN_COUNT else f"<{SEALED_MIN_COUNT}",
-                       "partial": bool(final and h >= cur)})
+                       "partial": bool(final and (h + 1) * 3_600_000 + int(WALL_CLOSE_S * 1000) > int(now_ms_))})
             self._sealed_cursor += 1
+
+
+def _sanitized(exc: BaseException) -> BaseException:
+    """A fresh exception of a class with the same NAME and nothing else (no args, no traceback, no cause), for logging about a sealed pool."""
+    return type(type(exc).__name__, (Exception,), {})()
 
 
 def _neg(s: str) -> tuple:
@@ -1294,11 +1306,32 @@ def status_snapshot(engine: Engine, sink: JsonlSink | None, source: Any) -> dict
     snap = feed_snapshot(source) if source is not None else None
     if snap and snap.get("socket_states"):  # per-socket link health: lets the silence thresholds be tuned from live gaps
         now = engine.wall()
-        s["link"] = {"gap_edges_ms": list(GAP_EDGES_MS), "sockets": [
-            {"up": st["up"], "last_notice_age_ms": None if st.get("last_notice_ms") is None else now - st["last_notice_ms"],
-             "max_gap_ms": st.get("max_gap_ms"), "gap_hist": st.get("gap_hist"), "silent_intervals": len(st.get("silent_intervals") or []),
-             "down_intervals": len(st.get("intervals") or [])} for st in snap["socket_states"]]}
+        states = snap["socket_states"]
+        lp = engine.link_prev
+        prev = lp[1] if lp is not None and lp[0] == id(source) and len(lp[1]) == len(states) else [{}] * len(states)  # a rebuilt source starts at zero
+        socks, cur_all = [], []
+        for st, pv in zip(states, prev):
+            cur = {"gap_hist": list(st.get("gap_hist") or []), "sub_latency_hist": list(st.get("sub_latency_hist") or []),
+                   "drop_silences": int(st.get("drop_silences") or 0)}
+            cur_all.append(cur)
+            socks.append({
+                "up": st["up"], "last_notice_age_ms": None if st.get("last_notice_ms") is None else now - st["last_notice_ms"],
+                "last_delivery_age_ms": None if st.get("last_delivery_ms") is None else now - st["last_delivery_ms"],
+                "max_gap_ms": st.get("max_gap_ms"), "gap_hist": st.get("gap_hist"), "gap_hist_delta": _hist_delta(cur["gap_hist"], pv.get("gap_hist")),
+                "sub_latency_hist": st.get("sub_latency_hist"), "sub_latency_hist_delta": _hist_delta(cur["sub_latency_hist"], pv.get("sub_latency_hist")),
+                "max_sub_latency_ms": st.get("max_sub_latency_ms"), "drop_silences": cur["drop_silences"],
+                "drop_silences_delta": max(0, cur["drop_silences"] - int(pv.get("drop_silences") or 0)) if pv else cur["drop_silences"],
+                "silent_intervals": len(st.get("silent_intervals") or []), "down_intervals": len(st.get("intervals") or [])})
+        engine.link_prev = (id(source), cur_all)
+        s["link"] = {"gap_edges_ms": list(GAP_EDGES_MS), "delta_since": "previous status record of this run (hb or stop)", "sockets": socks}
     return s
+
+
+def _hist_delta(cur: list, prev: list | None) -> list:
+    """Per-bucket increase since the previous status record. A histogram that shrank (a rebuilt source starts at zero) is taken as new."""
+    if not prev or len(prev) != len(cur) or any(c < p for c, p in zip(cur, prev)):
+        return list(cur)
+    return [c - p for c, p in zip(cur, prev)]
 
 
 def build_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
