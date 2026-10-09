@@ -18,6 +18,7 @@ from tools import pump_structure_monitor as M
 from tools.test_h5_shadow import MINT, POOL, SOL, SPS, Tape, announce, boost_buys, drain, fixture_notice, make_engine, run, types
 
 FX = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "completing_txs_20261009.json").read_text())["txs"]
+MIG = {t["mint"]: t for t in json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "migrate_txs_20261009.json").read_text())["txs"]}
 SYN = [t for t in FX if t["synthetic"]]
 PLAIN = [t for t in FX if not t["synthetic"]]
 MX, MY = SYN[0]["mint"], PLAIN[0]["mint"]  # valid base58 mints for the paths that derive the curve PDA
@@ -760,9 +761,25 @@ class ReplayClassifierTests(unittest.TestCase):
     def test_the_pinned_slot_is_a_pump_deploy_after_the_last_replayable_hour(self):
         pins = json.loads((Path(__file__).parent / "pump_structure_pins.json").read_text())
         self.assertIn("452654932", json.dumps(pins))  # the 2026-10-02T15:47Z deploy: still without the event
-        self.assertGreater(h5.PCB_FIRST_DEPLOY_SLOT, 452_654_932)
-        self.assertLess(min(t["slot"] for t in SYN), 10**9)
+        self.assertEqual(h5.PCB_FIRST_DEPLOY_SLOT, 452_654_932)  # the 2026-10-02T15:47Z deploy, not the later 10-08 one
         self.assertLessEqual(h5.PCB_FIRST_DEPLOY_SLOT, min(t["slot"] for t in SYN))  # every recorded synthetic completion is at or after it
+
+    def test_a_pool_in_the_10_02_to_10_08_window_is_excluded_in_replay_not_assumed_plain(self):
+        s0 = 453_500_000  # between the 10-02 deploy (452654932) and the 10-08 redeploy (454596459)
+        eng, out = make_engine(classifier=h5.PreEventClassifier())
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, s0 - 1, 0)
+        t = Tape(slot0=s0)
+        t.row(s0, "buy", "A", SOL // 10)
+        boost_buys(t, s0)
+        drain(t, s0 + 110, 35.0)
+        t.row(s0 + 200, "buy", "Z", SOL // 20)
+        run(eng, t)
+        eng.close_all("t")
+        self.assertEqual(types(out, "trigger") + types(out, "outcome") + types(out, "strip"), [])
+        (ex,) = types(out, "excluded")
+        self.assertEqual(ex["reason"], "unclassified")
+        (pool,) = types(out, "pool")
+        self.assertEqual((pool["synthetic"], pool["synthetic_src"]), (None, None))
 
     def test_engine_with_the_replay_classifier_writes_triggers_tagged_pre_event_binary(self):
         eng, out = make_engine(classifier=h5.PreEventClassifier())
@@ -780,6 +797,43 @@ class ReplayClassifierTests(unittest.TestCase):
 
 
 
+class RealMigrateBytesTests(unittest.TestCase):
+    """The real migrate (CreatePool) txs of the 7 fixture mints, recorded from public RPC (migrate_txs_20261009.json)."""
+
+    def test_fixture_shape(self):
+        self.assertEqual(set(MIG), {t["mint"] for t in FX})
+        for m in MIG.values():
+            self.assertEqual(set(m), {"signature", "slot", "mint", "synthetic", "program_data_lines", "emit_cpi_inner", "logs_truncated", "n_logs"})
+            self.assertIs(m["synthetic"], False)  # none of the 7 migrate txs carries a PostCompleteBuyEvent (the monitor's post_complete_in_tx was False for all 160)
+
+    def test_real_migrate_bytes_pass_the_defining_event_check_and_read_plain(self):
+        for mint, m in MIG.items():
+            parts = h5._rpc_tx_parts(rpc_tx(m), mint)  # tx_event_blobs over the logs AND the inner instructions, then post_complete_buy_seen
+            self.assertEqual(parts.get("mig"), False, mint)
+            other = next(t["mint"] for t in FX if t["mint"] != mint)
+            self.assertNotIn("mig", h5._rpc_tx_parts(rpc_tx(m), other))  # another mint's migrate event does not satisfy the check
+
+    def test_event_only_in_the_real_migrate_tx_gives_synthetic_through_logs_or_inner_instructions_alone(self):
+        pcb = h5._program_data_bytes(_pcb_line())
+        for mint in (PLAIN[0]["mint"], PLAIN[1]["mint"]):
+            m = MIG[mint]
+            cpi_only = {**m, "emit_cpi_inner": m["emit_cpi_inner"] + [{"program": M.PUMP_PROGRAM, "data": M.b58encode(M.EVENT_CPI_TAG + pcb)}]}
+            log_only = {**m, "program_data_lines": m["program_data_lines"] + [_pcb_line()]}
+            for variant in (cpi_only, log_only):
+                c = FakeRpc([], {"migsig": rpc_tx(variant)})
+                self.assertEqual(h5.classify_via_rpc(c, mint, "migsig", {"mig"}), {"mig": True})
+
+    def test_the_ws_notice_of_a_real_clean_migrate_tx_concludes_nothing(self):
+        clf = h5.SynClassifier()
+        for mint, m in MIG.items():
+            self.assertEqual(clf.observe_migrate_notice(mint, ws_note(m)), 0)
+            self.assertEqual(clf.lookup(mint), (None, None))
+
+
+def clf_parts(eng, mint):
+    return dict(eng.classifier._m[mint])
+
+
 class FixtureLivePathTests(unittest.TestCase):
     """Every recorded completing tx through the live lookup path: the pool is tracked, the Engine asks the RpcFallback, the RPC is mocked from the recording,
     the gate decides. With and without the pump.fun socket having seen the completing tx first."""
@@ -787,14 +841,16 @@ class FixtureLivePathTests(unittest.TestCase):
     def run_one(self, tx, ws_first):
         clf = h5.SynClassifier()
         eng, out = make_engine(classifier=clf)
-        migsig = "migsig-" + tx["signature"][:8]
-        fake = FakeRpc([{"signature": migsig}, {"signature": tx["signature"]}], {migsig: migrate_cut_tx(tx["mint"]), tx["signature"]: rpc_tx(tx)})
+        mig = MIG[tx["mint"]]  # the real migrate tx, recorded from public RPC
+        migsig = mig["signature"]
+        fake = FakeRpc([{"signature": migsig}, {"signature": tx["signature"]}], {migsig: rpc_tx(mig), tx["signature"]: rpc_tx(tx)})
 
         async def go():
             fb = h5.RpcFallback(clf, client_factory=lambda: fake, delays=(0.0, 0.0), sleep=lambda s: asyncio.sleep(0))
             eng.syn_request = fb.request
             if ws_first:
                 clf.observe_notice(ws_note(tx))
+                clf.observe_migrate_notice(tx["mint"], ws_note(mig))  # the CreatePool notice of the real migrate tx: concludes nothing without a visible event
             eng.on_create_pool(POOL, tx["mint"], h5.WSOL_MINT, 999, 0)
             t = scenario_rows()
             for r in t.rows[:-2]:  # the pool opens: unclassified -> the fallback is asked
@@ -806,6 +862,32 @@ class FixtureLivePathTests(unittest.TestCase):
         asyncio.run(go())
         eng.close_all("t")
         return eng, out
+
+    def test_event_only_in_the_real_migrate_tx_excludes_the_pool_through_the_live_path(self):
+        tx = PLAIN[0]
+        mig = MIG[tx["mint"]]
+        injected = {**mig, "emit_cpi_inner": mig["emit_cpi_inner"] + [{"program": M.PUMP_PROGRAM, "data": M.b58encode(M.EVENT_CPI_TAG + h5._program_data_bytes(_pcb_line()))}]}
+        clf = h5.SynClassifier()
+        eng, out = make_engine(classifier=clf)
+        fake = FakeRpc([{"signature": mig["signature"]}, {"signature": tx["signature"]}], {mig["signature"]: rpc_tx(injected), tx["signature"]: rpc_tx(tx)})
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=lambda: fake, delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
+            eng.syn_request = fb.request
+            eng.on_create_pool(POOL, tx["mint"], h5.WSOL_MINT, 999, 0)
+            t = scenario_rows()
+            for r in t.rows[:-2]:
+                eng.on_trade(r)
+            await asyncio.gather(*list(fb._inflight.values()))
+            for r in t.rows[-2:]:
+                eng.on_trade(r)
+
+        asyncio.run(go())
+        eng.close_all("t")
+        self.assertEqual(types(out, "trigger") + types(out, "outcome") + types(out, "strip"), [])
+        (ex,) = types(out, "excluded")
+        self.assertEqual(ex["reason"], "synthetic")
+        self.assertEqual(clf._m[tx["mint"]]["mig"], (True, "rpc"))
 
     def test_every_recorded_tx_is_gated_correctly_both_ways(self):
         for tx in FX:
@@ -823,6 +905,7 @@ class FixtureLivePathTests(unittest.TestCase):
                     self.assertEqual(sorted(r["variant"] for r in trig), ["fv", "pv"])
                     self.assertTrue(all(r["synthetic"] is False and r["synthetic_src"] == "rpc" for r in trig))  # exactly false; plain always comes from an RPC read
                     self.assertIs(pool["synthetic"], False)
+                    self.assertEqual(clf_parts(eng, tx["mint"]), {"comp": (False, "rpc"), "mig": (False, "rpc")})  # plain was reached on real completing AND migrate bytes
 
 
 if __name__ == "__main__":

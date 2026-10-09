@@ -161,14 +161,13 @@ ERROR_RECORDS_MAX = 20
 # monitor ORs the two the same way). It is plain only when BOTH txs were read and neither carries one; a tx that cannot be found or read leaves the pool
 # unclassified. Sources, in order: the websocket (the PumpSwap feed's CreatePool notice is the migrate tx; the pump.fun logsSubscribe delivers the
 # CompleteEvent tx), an off-hot-path RPC lookup of the curve's txs (rpc), else unknown (None -> excluded as "unclassified").
-# Replay only: PCB_FIRST_DEPLOY_SLOT is the first pump deploy that can emit the event. EVIDENCE: the first PostCompleteBuyEvent anywhere in MAL's data
-# is slot 454600658 (2026-10-08T16:39Z, 40/40 sampled synthetic completions are >= it, synthetic-1009/grads.jsonl), after the pump redeploy of
-# 2026-10-08T16:20Z (deploy slot 454596459, docs/HANDOFF.md); the binary live from the 2026-10-02T15:47Z deploy (slot 452654932) through 10-08 had no
-# PostCompleteBuy instruction (g_october_structure_check s04 at slot 454473446: BuyV3/MigrateV2 present, PostCompleteBuy 0) and the IDL naming the
-# event was published 2026-10-07; walk-2 decoders saw 0 sightings before. The s05 discriminator scan is NOT used: it reports found=0 for every event
-# including TradeEvent, so it cannot discriminate. Every replayable hour (< 2026-10-02T10) lies below both deploys, so the choice between the two
-# slots cannot change a replay; the later one is the first deploy with positive evidence of the event.
-PCB_FIRST_DEPLOY_SLOT = 454_596_459
+# Replay only: PCB_FIRST_DEPLOY_SLOT is the 2026-10-02T15:47Z pump deploy (slot 452654932), the first deploy that MIGHT emit PostCompleteBuyEvent: the v3
+# buys were already in that binary, and the s04 string scan (no PostCompleteBuy string at slot 454473446, 0 of 61 sampled) is a sample, not proof that it
+# could not. A pool whose first print is below this slot (every replayable hour: < 2026-10-02T10) completed on an older binary and is plain by
+# "pre_event_binary". A pool in the 10-02..10-08 window (first print at or after the slot) is NOT assumed plain: PreEventClassifier returns unknown and
+# replay excludes it as unclassified. The first PostCompleteBuyEvent actually seen is slot 454600658 (2026-10-08T16:39Z), after the 10-08T16:20Z redeploy
+# (slot 454596459). The s05 discriminator scan reports found=0 for every event, TradeEvent included, so it cannot discriminate and is not used.
+PCB_FIRST_DEPLOY_SLOT = 452_654_932
 PRE_EVENT_SRC = "pre_event_binary"
 SYN_MAX = 50_000  # classified mints kept (count-bounded)
 RPC_ATTEMPT_DELAYS_S = (0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, 30.0, 45.0, 60.0, 60.0, 60.0)  # attempts and the wait before each: backoff over ~306 s, i.e. through the trigger window (T_MAX_S = 300) and inside POOL_LIFE_S; stops as soon as the class is settled
