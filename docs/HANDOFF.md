@@ -83,8 +83,8 @@ The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The
    - extend executor `end_ms` (now 10-16T00:30Z) in a second reinstall;
    - ask the owner to extend DEC-024 §4's 14-day cap;
    - EXP-024 read tool #476 must use `tools/synthetic_class.py` (B4).
-6. **C1-NF:** draft DEC-026 is #522, awaiting the owner's 7 [OWNER CHOOSES] items and 13 quant-proof questions.
-   - **Key point:** at 0.02 SOL and 505k lamports per send, fixed costs are about 5% of stake, which is more than C1-NF's edge. The first tier must be larger, or the fee lower.
+6. **C1-NF:** draft DEC-026 is #522, updated 10-09 ~17:10Z with the owner's answers: **0.10 SOL per trade** at 505,000 lamports a send (no 0.02 step), 2 open, daily stop 0.20, total stop 0.30, **0.5 SOL** wallet, keep going to Look 2, `end_ms` 10-24T00:30Z. Awaiting quant-proof on 14 questions.
+   - **Key point (answered):** the first tier is 0.10 SOL, so fixed costs are about 1% of stake. **New flag (Q14):** with the 35% cap the total stop is 0.175 SOL, not 0.30. H5's exposure test then allows one open position until +0.025 SOL and stops new buys after one loss above about 0.075 SOL. Hard worst case about 0.38 SOL lost, floor about 0.12 SOL.
    - #504 was closed unmerged and needs a rebase. #503 lacks decision-time reserves.
 7. **H5 champion-challenger:** draft `DEC/DEC-027-h5-champion-challenger.md` (docs only, draft PR). Rev 2 after quant-proof's NOT OK on 975d8db. At most 2 challengers ever frozen: C-Q35 (Q\* 35, a threshold retune with a numeric withdrawal rule) and C-LF (loss filter, not freezable until rule text and a REPORT). C-BX is parked; C-SYN is blocked until Look 2 is read (EXP-024 Am.4 D1). One root-owned `/etc/mal-h5/VARIANT` file, switch only at 00:00Z with 0 open positions. Switching rule: 100 paired pools, +3.0 pp, Holm over k and Bonferroni over 2 looks, one switch at most, power low, expected result no switch. Gating item G1: the companion EXP-024 amendment must merge before any multi-rule shadow starts. A live challenger after a likely Look 1 FAIL needs a new owner override.
 
@@ -204,7 +204,7 @@ The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The
 **C1-NF:**
 - parity task 3: shadow picks vs VERIFY's 419;
 - pinned model file and sha;
-- DEC-026: **DRAFT PR #522** (`claude/dec026-c1nf-canary`), for the owner's morning review. Seven **[OWNER CHOOSES]** items in its section 3 (funding, ladder authority, priority fee, end date, what a Look 1 FAIL does, 10-09 observation, T0 limits) and 13 quant-proof questions in section 14. Appendix A is draft text for a separate EXP-025 amendment. It must merge before the shadow writes its first outcome for a 10-09 decision. #504 (the executor) is CLOSED, not merged. No send until its 23 preconditions hold;
+- DEC-026: **DRAFT PR #522** (`claude/dec026-c1nf-canary`). The owner's answers are in (10-09 ~17:00Z); quant-proof questions Q1 to Q14 are open. Appendix A is draft text for a separate EXP-025 amendment and must merge before the shadow writes its first outcome for a 10-09 decision. #504 (the executor) is CLOSED, not merged. No send until its 23 preconditions hold;
 - Helm creates a second wallet.
 
 **Agent ids:**
