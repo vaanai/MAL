@@ -11,9 +11,10 @@ Outputs (OUT dir, hourly JSONL, strict JSON):
     c1nf-picks-<hour>.jsonl     c1nf_pick       one per pick; the executor parses these (PICK_FIELDS, PICK_EXAMPLE)
     c1nf-outcomes-<hour>.jsonl  c1nf_outcome    paper fills per pick: entries 1.3 / 1.9 / 3.0 / 4.0 s, END and WORST bounds, exit +300 s
     c1nf-events-<hour>.jsonl    c1nf_gap, c1nf_heartbeat, c1nf_start, c1nf_stop
-    c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: per-UTC-day counts of universe pools (by first
-                                print) by synthetic class, one record per closed day and one (partial) at stop. Never a mint, pool, price,
-                                outcome, or a pick count by class.
+    c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: counts of universe pools (by first print day)
+                                by synthetic class, one record per closed UTC day and one (partial) at stop. A day with no synthetic or no
+                                non-synthetic pool is merged into the next day (day_first..day_last); one still degenerate at stop is written
+                                with held_back and no class counts. Never a mint, pool, price, outcome, or a pick count by class.
     status.json                 last heartbeat. errors.log: tracebacks (capped).
 
 Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V (tip rows carry `virtual_quote_reserve`).
@@ -28,12 +29,17 @@ Seals.
     (newest rule: no per-pool record for sealed pools).
   * EXP-025 section 5.1 declared observation: the shadow may log outcomes for decisions inside the counted window. It is not the read.
   * DEC-026 section 8 (binding): outcome records start at 2026-10-10T00:00Z. A decision before that instant still writes its pick but gets
-    no Pending, no price and no outcome record (counter `outcome_guard_pre_window`), unless T is in an exploration range (replay only).
+    no Pending, no price and no outcome record (counter `outcome_guard_pre_window`), unless T is in an exploration range and the shadow
+    runs in replay mode (live mode never gets the exemption).
   * EXP-025 Amendment 2 item 5: the synthetic class never sits on a pick or an outcome (emit() drops such a record and counts
-    `class_leak_blocked`); it leaves the process only as per-day counts in c1nf-synclass-*.
+    `class_leak_blocked`); it leaves the process only as counts in c1nf-synclass-*. The classifier runs on its own thread (never on the row or
+    decision path), is not called during the restart bootstrap, and an answer later than CLASSIFY_TIMEOUT_S is unclassified.
 
-Pick contract (DEC-026 section 6). Each pick carries the decision-time state `q_lamports` (quote + V) and `base_reserve`: the state after the
-last canonical-pool print with slot < SD_slot, the reference of the executor's 1.15 x spot guard. No such state: no pick (`no_decision_state`).
+Pick contract (DEC-026 section 6). Each pick carries the decision-time state `q_lamports` (quote + V), `base_reserve` and `v_lamports`: the
+state after the last canonical-pool print with slot < SD_slot, the reference of the executor's 1.15 x spot guard. No such state, or a malformed
+last print (missing raw quote, base, token_raw, side, or sol on a buy; q not above V): no pick (`no_decision_state`). The executor applies
+executor_refusal() to every pick line: an invalid pick or a decision before 2026-10-10T00Z (`pre_window`) is never acted on. The outcome's
+0.05 SOL twin guards on the pick's state (as the executor will); the 0.25 SOL cell keeps the batch's spot.
 
 Paper only. No key, no transaction, no RPC. It reads only the tip tape (live) or one exploration day of /data/mal/audit-1008/tape (replay).
 """
@@ -1544,7 +1550,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke runs)")
     p.add_argument("--pick-oracle", default=None, help="module:callable, oracle(mint) -> bool (True = CAP-PICK pick); absent = fail closed in the window")
     p.add_argument("--synthetic-classifier", default=None,
-                   help="module:callable, classifier(mint, pool) -> synthetic | non_synthetic | unclassified. Written ONLY as per-UTC-day counts to "
+                   help="module:callable, classifier(mint, pool) -> synthetic | non_synthetic | unclassified. Runs on its own thread with a timeout; "
+                        "written ONLY as counts by UTC day (degenerate days merged) to "
                         "c1nf-synclass-*; never onto a pick or outcome (EXP-025 Am.2 item 5). Absent = no class at all")
     p.add_argument("--seal-start", default="2026-10-16T01:00:00Z")
     p.add_argument("--no-seal", action="store_true", help="tests only: disables the seal")
