@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-09T19:45:00Z",
+ "updated_utc": "2026-10-09T21:55:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-first-trades-1009",
+   "kind": "other",
+   "title": "H5 canary first live check: 2 trades, +0.004728 SOL realized, no halts",
+   "detail": "By 21:52Z: 2 landed buys and 2 timed sells at 0.02 SOL. Trade 1 -0.008437 SOL (-42.2%; paper twin -47.1%), trade 2 +0.013165 SOL (+65.8%; twin +67.5%). Buys landed about 0.87 s after the trigger print (limit 3.0 s); sells landed at 329.1 s and 329.5 s after s0 (none late). Daily check #475: ALERTS=0, wallet 0.303417 SOL balanced. Two trades are not evidence; unpromoted trial.",
+   "atUtc": "2026-10-09T21:52:00Z"
+  },
   {
    "id": "h5-live-1009",
    "kind": "other",
@@ -214,7 +221,7 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "LIVE canary at 0.02 SOL since 10-09T19:29:53Z (DEC-024; owner override, unpromoted). P2 met by the official A3 run. Look 1 counts [10-10, 10-16), Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03); the canary is not evidence.",
+   "note": "LIVE canary at 0.02 SOL since 10-09T19:29:53Z (DEC-024; owner override, unpromoted); 2 trades by 21:52Z, +0.004728 SOL, no halts. P2 met by the official A3 run. Look 1 counts [10-10, 10-16), Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03); the canary is not evidence.",
    "tag": {
     "text": "live canary",
     "tone": "good"
@@ -528,6 +535,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261009-2155-h5",
+   "from": "claude",
+   "kind": "status",
+   "text": "10-09 21:55Z: H5 canary first live check. 2 trades (-42.2%, +65.8%), +0.004728 SOL realized, wallet 0.303417 SOL. Landing about 0.87 s, sells on time, live within a few points of the paper twin on both. ALERTS=0; no halt rule fired. Trial continues to 20 landed buys.",
+   "atUtc": "2026-10-09T21:55:00Z"
+  },
   {
    "id": "s-20261009-1945-live",
    "from": "claude",
