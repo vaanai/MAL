@@ -27,7 +27,115 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-09 ~05:30Z (newest; read first)
+### STATE 10-09 ~07:35Z (NEWEST, read first; supersedes the sections below where they differ)
+
+**H5 live canary: installed and funded, but HELD by an A3 halt.**
+- **Helm's install.** Helm installed sha `5a281b2` on fast-0 and completed runbook steps 1–10.
+  - Manifest: 24/24 match (manifest file sha256 `1c2780c6…551e`, PR #499 comment 6074979090).
+  - Old probe: disabled; its drop-ins are in /root/disabled.
+  - Watchdog timer: enabled. The owner confirmed the Discord test arrived.
+  - Not yet done: `/etc/mal-h5/TIER` and `LIVE_OK` are absent, and the wallet-wide `/var/lib/mal-live/STOP` is still in place.
+- **Funding.** The owner funded **0.298688847 SOL**, finalized 07:00Z (tx 5fTmqeg68pGQeYd7Acd5…).
+  - `/data/mal/hunt-1008/h5-work/FUNDED_SOL` holds this number. The 12:17Z cron d6590929 reads it.
+  - Daily check job #444: ALERTS=0.
+  - Probe-state baseline is written (`state-live.json` e11cba1d…1839, dec020 absent).
+- **Helm's go message.** Drafted at `scratchpad/helm-go-h5.md`. **Do not send it until the A3 halt is cleared.** It asks Helm to:
+  - set `H5_WATCH_FUNDED_SOL=0.298688847`;
+  - do Step 11: remove the wallet STOP, write TIER=T0, create LIVE_OK, start the unit.
+- **Helm's open items, already answered in the draft:**
+  - `probe_has_key` is a false positive on systemd 255. It is fixed on main as d562287 (#512) and takes effect at the next pinned reinstall.
+  - Sudoers: wait.
+  - Runbook deviations: accepted.
+- **DEC-024 Amendment 1** (#513, 196dc9b; owner decision n_7Vi03b-5G31yGA):
+  - lifts the "never before 10-10T00Z" bar;
+  - adds EXP-024 Amendment 3 (declared observation for pools with s0 before 10-10T00);
+  - adds the stop-probability table (zero-edge P(total stop) 0.643);
+  - adds the md5 decision-equivalence proof: `75cb0b0c585bc2479137cae31330e73e` on both sides, 72/72, job #446 on 88eef14.
+- **Go-live shadow.** MiScusi **#447** on main 88eef14, with `H5_LOOK2_OBSERVED=EXP-024-Am2`, started 07:16:53Z. Dry run #435 on 5a281b2 is still running.
+
+**A3 HALT, 2026-10-09T07:11Z** (job #445; notebook n_ci2HqDs94LOtIg).
+- **Cause.** `pins_changed`: the pump, PumpSwap and fees programs were redeployed at 2026-10-08T16:20Z (new deploy slots 454596459, 454596406, 454596501).
+- **Other flags are clean.** boost_enabled=1, InitBoost 16/16, budget 17.586 SOL, 29 slices. The last slice after migrate has median **335 s** (it was 341.5).
+- **What it blocks:**
+  - DEC-024 §3: no canary send while A3 shows a halt.
+  - EXP-024 P2: the last A3 run before 10-10T00Z must show no halt, otherwise H5 is withdrawn.
+  - EXP-022 P2: the same, before 10-16T01.
+- **Path to clear it.** Do these steps in order:
+  1. Program-upgrade review. Agent `a4772b9fb1d96a4d5` is writing it to `/data/mal/hunt-1008/h5-work/PROGRAM-UPGRADE-2026-10-08.md`. It covers instruction/IDL, fees, BOOST and our code paths. Early evidence after the upgrade: the shadow decodes and fires, and 5 dry-run simulations had 0 errors.
+  2. Re-pin PR. Run `tools/pump_structure_monitor --write-pins`, which writes `tools/pump_structure_pins.json`. Get **quant-proof** to rule on two things: the review, and whether a reviewed re-pin plus a clean run satisfies EXP-024 P2 / §11 and EXP-022 P2 / §11.
+  3. Merge the re-pin, then run the monitor again as a MiScusi job **before 10-10T00Z**. It must be clean.
+  4. Send Helm the go.
+- **Do not use shadow outcomes in this review** (EXP-024 Amendment 3).
+- **If fees or pricing changed:** rerun the DEC-024 §8 stop table and tell the owner. The September evidence predates the upgrade.
+
+**Merged today, on main:**
+- #500, #508: handoff;
+- #501: EXP-025 C1-NF Part 1, two looks (α 0.005/0.020), quant-proof OK;
+- #505: forward-1002ev, DEC-016 Am.9, EXP-024 Am.1, EXP-012 Am.5;
+- #507: EXP-025 Am.1, P7 on raw events;
+- #484 + #499: executor and live unit (5a281b2);
+- #477, #510: shadow (310b194, fc0816a);
+- #511: EXP-024 Am.2, declared observation for the Look 2 window plus a shadow code guard (88eef14);
+- #512: credential-check fix (d562287);
+- #513: DEC-024 Am.1 (196dc9b).
+
+**Open drafts:**
+- #502 C1-NF ledger;
+- #503 C1-NF shadow;
+- #504 C1-NF executor;
+- #506 C1-NF features;
+- #509 CAP-PICK boolean pick oracle (needs review and wiring before 10-16T01; quant-proof call on live-vs-replay divergence);
+- #471 T2 (B90 kept, report-only);
+- #476 EXP-024 scorer port (forward mode, V from forward-1002ev, before 10-16).
+
+**Running jobs:**
+- shadow #447 (fast-0);
+- dry run #435 (fast-0);
+- forward-1002ev walk **#433** (research-0; cap 3.6M credits, owner OK n_zrsp9q0hvvecdQ);
+- DEC-016 walk #382.
+
+**Owner decisions today** (MiScusi notebook):
+- Scale ladder n_xaHk-8t27C8qbw. Per tier:
+
+  | Tier | Stake (SOL) | Max open | Trades/day | Daily stop | Total stop |
+  |---|---|---|---|---|---|
+  | T0 | 0.02 | 2 | 30 | 0.08 | 0.12 |
+  | T1 | 0.10 | 3 | 40 | 0.40 | 0.60 |
+  | T2 | 0.30 | 3 | 40 | 1.20 | 1.80 |
+
+  - Steps up about every 25–50 trades.
+  - The total stop is also capped at 35% of the wallet at tier start.
+  - Helm writes `/etc/mal-h5/TIER`.
+  - T2_IMPACT_OK is True (IMPACT.md: 0.30 is OK, 0.50 fails in thin pools).
+- C1-NF two looks n_YStdR3WX1QDkkw.
+- C1-NF small live canary approved (O3) n_hZaavyDyNcJcZg. It needs DEC-026 and a second wallet.
+- Credits: 3M n_hXFJlpzcwrI2Eg, raised to 3.6M n_zrsp9q0hvvecdQ.
+- Early start n_7Vi03b-5G31yGA.
+
+**Before 2026-10-16:**
+1. Pick oracle #509: review and quant-proof, then wire it into the executor and shadow.
+2. Executor live `end_ms` is 10-16T00:30Z. Extend it in a reviewed config plus a reinstall, bundled with d562287.
+3. DEC-024 §4 caps the canary at **14 days**, about 10-23. **Ask the owner** to extend it.
+4. EXP-022 re-pin / P2.
+5. Walk-2 submit, cron 01c21bbd at 10-16T00:23.
+6. EXP-024 read tool #476.
+
+**C1-NF:**
+- parity task 3: shadow picks vs VERIFY's 419;
+- pinned model file and sha;
+- DEC-026;
+- Helm creates a second wallet.
+
+**Agent ids:**
+- program review `a4772b9fb1d96a4d5`;
+- QPs: `a9f352620793c1fac` (#511), `acb1c807c558f8ac4` (#513);
+- Am.2 builder `a69356b24d85bf901`;
+- cred-fix builder `a636054d9c3906e95`;
+- pick oracle `a07c78ea9889c77f6`;
+- shadow follow-up `abce3497d3889689d`.
+- The earlier ids are listed below.
+
+### STATE 10-09 ~05:30Z (older)
 **Owner decisions today** (all in the MiScusi notebook):
 - Small live trades ASAP at 0.02 SOL/trade. The owner funds ~0.25 SOL only when the manager asks, after Helm's hash check.
 - **Scale ladder:** T0 0.02 → ~50 trades → T1 0.10 → ~25 trades → T2 0.30 → onward, 25–50 trades per step. No skipped steps.
