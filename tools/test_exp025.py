@@ -621,6 +621,48 @@ class ExpFile(unittest.TestCase):
         self.assertIn("DEC-026", txt)
         self.assertIn("TWO LOOKS", txt)
 
+    def _amendment_1(self):
+        txt = self._text()
+        head = "### Amendment 1 (2026-10-09, before any counted hour): P7 line 1 runs on raw events"
+        self.assertEqual(txt.count(head), 1)
+        body = txt.split(head, 1)[1]
+        self.assertEqual(body.count("\n## "), 1)           # the next H2 is "## Sources": the amendment is the last thing before it
+        body, rest = body.split("\n## Sources", 1)
+        self.assertTrue(txt.index("## Amendments") < txt.index(head) < txt.index("## Sources"))
+        self.assertLess(txt.index("## 12. What is not decided here"), txt.index("## Amendments"))
+        return body
+
+    def test_amendment_1_agrees_with_the_helpers(self):
+        m = load("event_v_map", "event_v_map.py")
+        body = self._amendment_1()
+        for reason in m.P7_RAW_REASONS:
+            self.assertIn(f"`{reason}`", body, reason)
+        for field in m.P7_RAW_IDENTITY_FIELDS:
+            self.assertIn(f"`{field}`", body, field)
+        self.assertEqual(m.P7_RAW_TX_ATTEMPTS, 3)
+        self.assertIn("Up to 3 attempts per transaction (`P7_RAW_TX_ATTEMPTS`)", body)
+        self.assertIn(f"begins with `{m.P7_EXACT_QUOTE_IN_PREFIX}`", body)
+        # thresholds restated, not changed: two 99% bars and 1 bp, in the file's own P7 text and in the helpers
+        self.assertEqual((m.P7_CP_SELL_MIN, m.P7_CP_BUY_MIN, m.P7_CP_TOLERANCE_BP), (0.99, 0.99, 1.0))
+        self.assertEqual(body.count("at least **99%**"), 2)
+        self.assertEqual(body.count("within **1 bp**"), 2)
+        self.assertIn("R14 fires", body)
+        self.assertIn("`pool_quote_amount`", body)
+
+    def test_amendment_1_pins_the_decoder_blob_of_the_checkout(self):
+        body = self._amendment_1()
+        path = os.path.join(ROOT, "observe", "trade_decode.py")
+        data = open(path, "rb").read()
+        blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()   # the git blob id
+        self.assertIn(f"blob `{blob}`", body)
+
+    def test_amendment_1_changes_no_pinned_line(self):
+        txt = self._text()
+        for key in ("EXP025_COUNT_START", "EXP025_LOOK1_END", "EXP025_COUNT_END", "EXP025_ALPHA_LOOK1", "EXP025_ALPHA_LOOK2"):
+            self._line(txt, key)                           # exactly once each, whole file including the amendment
+        self.assertEqual(txt.count("EXP025_ALPHA_LOOK1: 0.005"), 1)
+        self.assertEqual(txt.count("EXP025_ALPHA_LOOK2: 0.020"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
