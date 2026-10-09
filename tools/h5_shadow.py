@@ -575,7 +575,7 @@ class RpcFallback:
                  sleep: Callable[[float], Any] = asyncio.sleep) -> None:
         self.classifier, self.delays, self.attempt_timeout_s, self.max_inflight, self._sleep = classifier, tuple(delays), attempt_timeout_s, max_inflight, sleep
         self._client_factory = client_factory or (lambda: RpcClient(rpc_url, min_interval=RPC_MIN_INTERVAL_S, max_retries=1, timeout=8.0,
-                                                                     max_calls=RPC_TX_PER_ATTEMPT + 3))
+                                                                     max_calls=RPC_TX_PER_ATTEMPT + 6))
         self._inflight: dict[str, asyncio.Task] = {}
         self._done: collections.OrderedDict[str, None] = collections.OrderedDict()  # mints already looked up (found or given up): never asked twice
         self.calls = 0  # RPC calls made by finished attempts (RpcClient.total_calls), for the cost report
