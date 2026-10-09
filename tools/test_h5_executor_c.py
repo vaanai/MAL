@@ -217,16 +217,17 @@ class TriggerFidelityTests(Case):
         for bad in (1, 2, None, "0", True, 0.0):
             self.assertEqual(self.parse(base_breaks_unresolved_settled=bad), (None, "bad_intent:base_breaks_unresolved_settled"), bad)
         r = shadow_trigger(Clock())
-        del r["base_breaks_unresolved_settled"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks_unresolved_settled"))
+        del r["base_breaks_unresolved_settled"]  # an absent key is a schema mismatch (see test_a_shadow_that_lacks_a_required_key...)
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_base_breaks_unresolved_settled"))
         # the live pattern: many raw breaks, the unsettled field reading 1 for a predecessor in flight, nothing missed once settled
         t, bad = self.parse(base_breaks=7, slot_regress=5, base_breaks_unresolved=1, base_breaks_unresolved_settled=0, s0_reanchored_slots=3)
         self.assertIsNone(bad)
         self.assertEqual((t.base_breaks, t.slot_regress, t.base_breaks_unresolved, t.base_breaks_unresolved_settled, t.s0_reanchored_slots),
                          (7, 5, 1, 0, 3))
         r = shadow_trigger(Clock())
-        del r["base_breaks_unresolved"]  # the unsettled field is only ledgered: absent is fine
-        self.assertIsNone(h.parse_shadow_trigger(r)[1])
+        del r["base_breaks_unresolved"]  # the unsettled field is needed too (it marks a trigger whose predecessor is unlinked): absent is a mismatch
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_base_breaks_unresolved"))
+        self.assertEqual(self.parse(base_breaks_unresolved=None)[1], None)  # present as null (a value, not a missing key) is still ledgered as None
 
     def test_the_break_counts_and_the_reanchor_are_on_the_decision_row(self):
         e = self.env()
@@ -250,7 +251,7 @@ class TriggerFidelityTests(Case):
             self.assertEqual(self.parse(s0_minus_announced_slots=bad), (None, "bad_intent:s0_minus_announced_slots"), bad)
         r = shadow_trigger(Clock())
         del r["s0_minus_announced_slots"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:s0_minus_announced_slots"))
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_s0_minus_announced_slots"))
 
     def test_the_sealed_stub_from_the_seal_window_is_refused(self):
         stub = {"type": "trigger", "variant": "pv", "pool": POOL, "slot": TRIG_SLOT, "suppressed": "cap_pick_seal", "v": 1, "schema": "h5_shadow_v1",
@@ -298,6 +299,63 @@ class TriggerFidelityTests(Case):
         e.ex.intent_tick()
         self.assertEqual([r for r in e.ledger("alert") if r.get("alert") == "bad_intent_rate"], [])
 
+    def old_shadow_trigger(self, e: Env, **kw) -> dict:
+        r = shadow_trigger(e.clock, schema="h5_shadow_v1", **kw)  # (the engine's emit adds the schema string; the vendored record is the body)
+        del r["base_breaks_unresolved_settled"]  # a detector from before 3dbe1de: same schema string, no such key
+        return r
+
+    def feed(self, e: Env, *rows: dict) -> None:
+        path = Path(e.conf["intents_file"])
+        if not path.exists():
+            path.write_text("")
+            e.ex.intent_tick()
+        with path.open("a") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+        e.ex.intent_tick()
+
+    def test_a_shadow_that_lacks_a_required_key_alerts_at_the_first_record_and_refuses(self):
+        e = self.env()
+        self.feed(e, self.old_shadow_trigger(e))  # ONE record, at the measured 1.5 to 3 triggers an hour
+        alerts = e.alerts("shadow_schema_mismatch")
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual((alerts[0]["missing"], alerts[0]["shadow_schema"]), (["base_breaks_unresolved_settled"], "h5_shadow_v1"))
+        self.assertEqual((e.refusals(), e.rpc.sent), (["bad_intent:missing_base_breaks_unresolved_settled"], []))
+        self.assertEqual(e.alerts("bad_intent_rate"), [])
+
+    def test_the_schema_alert_is_rate_limited_to_one_per_ten_minutes_and_is_not_the_hourly_count(self):
+        e = self.env()
+        self.feed(e, *[self.old_shadow_trigger(e) for _ in range(8)])  # eight in a row: one alert, and no bad_intent_rate (that is for values)
+        self.assertEqual((len(e.alerts("shadow_schema_mismatch")), e.alerts("bad_intent_rate")), (1, []))
+        self.assertEqual(len(e.refusals()), 8)  # every one is refused and ledgered
+        e.jump(599_000)
+        self.feed(e, self.old_shadow_trigger(e))
+        self.assertEqual(len(e.alerts("shadow_schema_mismatch")), 1)  # still inside the ten minutes
+        e.jump(2_000)
+        self.feed(e, self.old_shadow_trigger(e))
+        self.assertEqual(len(e.alerts("shadow_schema_mismatch")), 2)  # ten minutes on, it alerts again
+
+    def test_every_required_key_is_a_schema_mismatch_when_absent(self):
+        for k in h.SHADOW_REQUIRED_KEYS:
+            r = shadow_trigger(Clock())
+            del r[k]
+            self.assertEqual(h.parse_shadow_trigger(r), (None, f"bad_intent:missing_{k}"), k)
+        self.assertEqual(set(h.SHADOW_REQUIRED_KEYS) - set(VENDORED["trigger"]), set())  # and the vendored #477 record has all of them
+
+    def test_a_bad_value_is_not_a_schema_mismatch_and_keeps_the_hourly_threshold(self):
+        e = self.env()
+        self.feed(e, *[shadow_trigger(e.clock, base_breaks_unresolved_settled=1) for _ in range(5)])
+        self.assertEqual((e.alerts("shadow_schema_mismatch"), e.alerts("bad_intent_rate")), ([], []))
+        self.feed(e, shadow_trigger(e.clock, base_breaks_unresolved_settled=1))
+        self.assertEqual((e.alerts("shadow_schema_mismatch"), len(e.alerts("bad_intent_rate"))), ([], 1))
+
+    def test_a_flat_intent_row_missing_a_key_is_not_a_shadow_mismatch(self):
+        e = self.env()
+        r = {"schema": "h5_intent_v1", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
+             "base_reserve": BASE0, "v_lamports": V}  # no decision_ms
+        self.feed(e, r)
+        self.assertEqual((e.refusals(), e.alerts("shadow_schema_mismatch")), (["bad_intent:missing_decision_ms"], []))
+
     def test_gap_must_be_a_bool_and_v_missing_literally_false(self):
         for bad in (None, "false", 0, 1, [], "False"):
             self.assertEqual(self.parse(gap=bad), (None, "bad_intent:gap"), bad)
@@ -305,10 +363,10 @@ class TriggerFidelityTests(Case):
         self.assertEqual(self.parse(v_missing=True), (None, "bad_intent:v_missing"))
         r = shadow_trigger(Clock())
         del r["gap"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:gap"))
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_gap"))
         r = shadow_trigger(Clock())
         del r["v_missing"]
-        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:v_missing"))
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:missing_v_missing"))
         flat = {"schema": "h5_intent_v1", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
                 "base_reserve": BASE0, "v_lamports": V, "decision_ms": T0, "gap": "no"}
         self.assertEqual(h.parse_trigger(flat), (None, "bad_intent:gap"))

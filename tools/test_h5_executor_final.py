@@ -4,8 +4,10 @@ Fixtures: test_h5_executor (the consistent fake chain), test_h5_executor_shadow 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 
 from tools import h5_executor as h
+from tools import probe_executor as pe
 from tools.test_h5_executor import BASE0, MINT, POOL, Q, RENT, S0, SPS, T0, TRIG_SLOT, V, Case, Env
 from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_probe_live import meta_result
@@ -256,6 +258,41 @@ class SellBookkeepingTests(Case):
         self.e.clock.t += 3_000
         self.e.ex.exit_tick(self.e.clock())
         self.assertEqual({d["signature"] for d in self.e.sent()[1:]}, {first, second})  # no rung 2
+
+    def test_a_status_that_disappears_on_a_later_poll_clears_the_flag_and_the_timed_supersede_goes_on(self):
+        first, second = self.second_rung()
+        self.e.rpc.statuses[first] = {"slot": self.plan["land_slot"], "confirmationStatus": "processed", "err": None}  # landing on a fork ...
+        self.poll()
+        self.assertIn("status_seen_ms", self.e.ex.state.pending[MINT])
+        self.e.clock.t += 3_000
+        self.e.ex.exit_tick(self.e.clock())
+        self.assertEqual({d["signature"] for d in self.e.sent()[1:]}, {first, second})  # blocked while the status is there
+        del self.e.rpc.statuses[first]  # ... the fork is dropped: the status is gone
+        self.poll()
+        p = self.e.ex.state.pending[MINT]
+        self.assertNotIn("status_seen_ms", p)
+        self.assertEqual(len(self.e.ledger("sell_status_vanished")), 1)
+        self.e.ex.exit_tick(self.e.clock())
+        new = {d["signature"] for d in self.e.sent()[1:]} - {first, second}
+        self.assertEqual(len(new), 1)  # rung 2 goes out: the ladder is not stuck until the escalation
+
+    def test_the_flag_stays_while_any_polled_signature_still_has_a_non_error_status(self):
+        first, second = self.second_rung()
+        self.e.rpc.statuses[first] = {"slot": self.plan["land_slot"], "confirmationStatus": "processed", "err": None}
+        self.poll()
+        self.e.rpc.statuses[second] = {"slot": self.plan["land_slot"], "confirmationStatus": "processed", "err": None}  # the current one shows up too
+        del self.e.rpc.statuses[first]  # the old one vanishes
+        self.poll()
+        self.assertIn("status_seen_ms", self.e.ex.state.pending[MINT])  # one live signature still has a status
+        self.assertEqual(self.e.ledger("sell_status_vanished"), [])
+
+    def test_a_failed_poll_does_not_clear_the_flag(self):
+        first, _second = self.second_rung()
+        self.e.rpc.statuses[first] = {"slot": self.plan["land_slot"], "confirmationStatus": "processed", "err": None}
+        self.poll()
+        with mock.patch.object(self.e.ex, "rpc", side_effect=pe.RpcError("timeout")):
+            self.e.ex._poll_priors()  # no answer is not "the status is gone"
+        self.assertIn("status_seen_ms", self.e.ex.state.pending[MINT])
 
     def test_promotion_clears_the_flags_until_the_promoted_signature_shows_its_own_status(self):
         first, second = self.second_rung()

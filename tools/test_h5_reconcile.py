@@ -6,12 +6,13 @@ import contextlib
 import io
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from tools import h5_executor as h5
 from tools import h5_reconcile as rc
 from tools import paper_curve_math as pcm
-from tools.test_h5_executor import BASE0, MINT, QREAL, S0, SPS, STAKE, T0, TRIG_SLOT, V, Case
+from tools.test_h5_executor import BASE0, MINT, QREAL, S0, SPS, STAKE, T0, TRIG_SLOT, V, Case, trig
 from tools.test_h5_executor_rules import SLIPPAGE_ERR
 
 PROCEEDS = 21_000_000
@@ -46,9 +47,12 @@ class CostModelTests(unittest.TestCase):
 
 
 class ReconcileTests(Case):
-    def run_trade(self, *, land_buy_slot=None, sell_slot=None, proceeds=PROCEEDS, fail_first_sell=False, sub=None):
+    def run_trade(self, *, land_buy_slot=None, sell_slot=None, proceeds=PROCEEDS, fail_first_sell=False, sub=None, unresolved=None):
         e = Env2(self, sub) if sub else self.env()
-        e.fire()
+        if unresolved is None:
+            e.fire()
+        else:  # (base_breaks_unresolved, base_breaks_unresolved_settled) as the shadow wrote them on the trigger record
+            e.ex.handle_trigger(replace(trig(e.clock), base_breaks_unresolved=unresolved[0], base_breaks_unresolved_settled=unresolved[1]))
         e.land_buy(slot=land_buy_slot)
         plan = e.plan()
         e.at_slot(plan["send_slot"])
@@ -83,6 +87,46 @@ class ReconcileTests(Case):
         t = rc.build_trades(rc.read_jsonl(Path(e.ex.fills.path)), {MINT: states})[0]
         self.assertAlmostEqual(t["sim"]["pnl"], rc.sim_trade(STAKE, q, b, q, b)["pnl"])
         self.assertAlmostEqual(t["gap_lamports"], t["live_pnl_comparable"] - t["sim"]["pnl"])
+
+    def test_a_pre_unlinked_trade_is_left_out_of_the_sim_match_and_reported_separately(self):
+        e, plan = self.run_trade(proceeds=PROCEEDS - 400_000, unresolved=(1, 0))
+        ledger = rc.read_jsonl(Path(e.ex.fills.path))
+        self.assertIs([r for r in ledger if r.get("kind") == "decision"][0]["trigger_pre_unlinked"], True)
+        t = rc.build_trades(ledger, {MINT: self.sim_row(plan)})[0]
+        self.assertEqual((t["pre_unlinked"], t["sim_match_excluded"], "gap_lamports" in t, "gap_pct_of_stake" in t), (True, True, False, False))
+        s = rc.summarize([t])
+        self.assertEqual((s["n_with_sim"], s["gap_lamports_mean"], s["gap_pct_of_stake_mean"]), (0, None, None))
+        self.assertEqual(s["pre_unlinked"], {"n_decisions": 1, "n_buys_landed": 1, "n_closed": 1, "share_of_landed": 1.0, "halt_share": 0.15,
+                                             "n_excluded_from_sim_match": 1})
+        self.assertEqual((s["n_closed"], s["n_buys_landed"]), (1, 1))  # the execution measures still count it
+        self.assertIsNotNone(s["landing_ms_median"])
+
+    def test_a_linked_trade_still_enters_the_sim_match_and_the_pre_unlinked_block_is_empty(self):
+        for unresolved in (None, (0, 0), (1, 1)):  # no counts, none, or settled non-zero: not "pre-unlinked"
+            e, plan = self.run_trade(proceeds=PROCEEDS - 400_000, unresolved=unresolved, sub=f"linked{unresolved}")
+            t = rc.build_trades(rc.read_jsonl(Path(e.ex.fills.path)), {MINT: self.sim_row(plan)})[0]
+            self.assertEqual((t["pre_unlinked"], t["gap_lamports"]), (False, -400_000), unresolved)
+            s = rc.summarize([t])
+            self.assertEqual((s["n_with_sim"], s["gap_lamports_mean"], s["pre_unlinked"]["n_decisions"]), (1, -400_000, 0), unresolved)
+
+    def test_a_ledger_written_before_the_flag_is_classified_from_the_counts(self):
+        e, plan = self.run_trade(proceeds=PROCEEDS - 400_000, unresolved=(2, 0))
+        ledger = rc.read_jsonl(Path(e.ex.fills.path))
+        for r in ledger:
+            r.pop("trigger_pre_unlinked", None)  # an older decision row has only the two counts
+        t = rc.build_trades(ledger, {MINT: self.sim_row(plan)})[0]
+        self.assertEqual((t["pre_unlinked"], "gap_lamports" in t), (True, False))
+
+    def test_the_cli_reports_the_pre_unlinked_block(self):
+        e, plan = self.run_trade(unresolved=(1, 0))
+        sim = self.tmp / "sim.jsonl"
+        sim.write_text(json.dumps(self.sim_row(plan)) + "\n")
+        out = self.tmp / "out.json"
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            self.assertEqual(rc.main(["--ledger", str(e.ex.fills.path), "--sim", str(sim), "--json", str(out)], now_ms=T0), 0)
+        self.assertIn("pre_unlinked:", buf.getvalue())
+        data = json.loads(out.read_text())
+        self.assertEqual((data["n_with_sim"], data["pre_unlinked"]["n_excluded_from_sim_match"]), (0, 1))
 
     def test_landing_delay_in_slots_and_ms(self):
         e, _plan = self.run_trade(land_buy_slot=TRIG_SLOT + 8)

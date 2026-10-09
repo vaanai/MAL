@@ -740,6 +740,17 @@ Section 9 says the first boot reads "the creates of `[2026-10-15T00, 2026-10-16T
 
 **Unchanged:** the book; the pick rule and threshold; the counted window and looks; the seal; the correction; the gate; items 1 to 3 of section 2.1 as written (item 5(b) is stricter on the E0 day only); and the pinned line in section 0.
 
+### Amendment 4 (2026-10-09, before any counted hour): EXP-025 (C1-NF) reads walk 2 while EXP-022 counts
+
+No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged.
+
+[EXP-025](EXP-025-c1nf-part1-prereg.md) (C1-NF, [DEC-025](../DEC/DEC-025-c1nf-family.md)) is a separate DEC-014 family in its own alpha slot. If DEC-025 is merged, it reads walk-2 chain tape `[2026-10-16T01, 2026-10-24T02)` for its counted decisions `[2026-10-16T00, 2026-10-24T00)` **while EXP-022 is counting**. Ledger rule 3 requires this disclosure. To keep section 9:
+1. **Pick exclusion.** From 2026-10-16T01 to the end of EXP-022's read, every mint whose canonical pool first prints at or after 2026-10-16T01 is looked up with the boolean `pick_oracle(mint)` of Amendment 2 item 2 and Amendment 3 (d). A pick is removed from C1-NF's universe before its pass A runs, so no grid, candidate or outcome row is ever computed for it. The oracle's source is the union of the live intents and EXP-022's replay pick decisions at E0 commit `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` (Amendment 3), held as booleans only. C1-NF never prices a CAP-PICK pick, writes no CAP-PICK field into any C1-NF record, and joins none.
+2. **Fail closed.** A missing, stale, erroring, non-boolean or undecided oracle makes C1-NF's read NOT_DECIDABLE. It does not change anything in EXP-022.
+3. **No outcome opened.** C1-NF opens no CAP-PICK outcome row, no paper-twin field, and no `LOOK_READS.jsonl` field other than what the oracle contract defines. It reads chain tape only.
+4. **No effect on EXP-022.** EXP-022's picks, looks, gate and the walk-2 run to at least 2026-11-06T02 are unchanged. The exclusion costs C1-NF volume, not EXP-022 anything.
+5. **Order.** C1-NF has two looks. Its Look 1 reads walk-2 chain tape `[2026-10-16T01, 2026-10-17T02)` about 2026-10-17T03Z, before EXP-022's look 1 (day 7, 2026-10-23T01). Its Look 2, only if Look 1 did not pass, reads to 2026-10-24T02 about 2026-10-24T03Z, between EXP-022's look 1 and look 2. Neither prints a CAP-PICK field, and neither report is an input to any CAP-PICK look.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.

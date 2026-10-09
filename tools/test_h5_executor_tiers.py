@@ -272,6 +272,212 @@ class TierLimitsBindTests(TierCase):
         self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_state["wallet_lamports"]), (1, 10 * SOL))
 
 
+class TotalStopSinceTierStartTests(TierCase):
+    """G1: the total stop (and its 35% wallet cap) limits the loss since the TIER started, not the run's cumulative realized P&L."""
+
+    def start_t0_with_profit_then_t1(self, profit: int = 300_000_000, balance: int = 1_300_000_000) -> Env:
+        e = self.tier_env("T0", balance=balance)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = profit  # T0 made money
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        return e
+
+    def stop_at(self, e: Env, realized: int):
+        e.ex.state.realized_lamports = realized
+        return e.ex._budget_stop(e.clock())
+
+    def test_profit_before_the_tier_does_not_widen_the_35_percent_cap(self):
+        e = self.start_t0_with_profit_then_t1()  # wallet 1.30 SOL: min(0.60, 0.35 x 1.30) = 0.455
+        self.assertEqual((e.ex._total_stop_lamports(), e.ex.counters.tier_state["realized_at_start"]), (455_000_000, 300_000_000))
+        # the loss since T1 started, plus this 0.10 SOL stake, must stay above -0.455: a loss of 0.355 is the last one that lets a buy go
+        self.assertIsNone(self.stop_at(e, 300_000_000 - 354_999_999))
+        self.assertEqual(self.stop_at(e, 300_000_000 - 355_000_000), "total_loss_stop")
+        # the reviewer's repro: -0.55 since the tier started (42% of the wallet then) is refused, not allowed through
+        self.assertEqual(self.stop_at(e, 300_000_000 - 550_000_000), "total_loss_stop")
+
+    def test_only_the_since_tier_start_check_refuses_after_a_prior_profit(self):
+        # the run-cumulative figure alone (-0.25 - 0.10 stake) is still above -0.455: it is the since-tier-start loss that refuses
+        e = self.start_t0_with_profit_then_t1()
+        e.ex.state.realized_lamports = 300_000_000 - 550_000_000
+        self.assertGreater(e.ex.state.realized_lamports - 100_000_000, -e.ex._total_stop_lamports())
+        self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
+
+    def test_a_loss_before_the_tier_is_still_counted_by_the_run_cumulative_check(self):
+        e = self.tier_env("T0", balance=10 * SOL)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -50_000_000  # T0 lost 0.05 (inside its 0.12)
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.counters.tier_state["realized_at_start"], -50_000_000)
+        # since the tier started the loss may reach 0.50, but the run total (-0.05 + that + this 0.10 stake) may not reach T1's own 0.60
+        self.assertIsNone(self.stop_at(e, -499_999_999))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")
+
+    def test_realized_at_start_survives_a_restart(self):
+        e = self.start_t0_with_profit_then_t1()
+        e.ex.save()
+        e.ex = e.build()
+        self.assertEqual(e.ex.tier, "T1")
+        self.assertEqual(e.ex.counters.tier_state["realized_at_start"], 300_000_000)
+        self.assertEqual(self.stop_at(e, 300_000_000 - 550_000_000), "total_loss_stop")  # the restarted executor still counts from the tier start
+        self.assertEqual([r["realized_at_start"] for r in e.ledger("tier_change")], [0, 300_000_000])
+
+    def test_a_tier_file_flicker_cannot_reset_the_allowance(self):
+        e = self.tier_env("T1", balance=10 * SOL)  # 35% of 10 SOL is far above the tier's 0.60, so the tier's own total binds
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -500_000_000  # T1 lost 0.50: one more 0.10 buy is the last that the 0.60 total allows
+        h.TIER_FILE_PATH.write_text("garbage\n")  # an invalid read means T0 ...
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.tier, "T0")
+        self.write_tier("T1\n")  # ... and then T1 again: a new tier start, which re-records realized_at_start
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["realized_at_start"]), ("T1", -500_000_000))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")  # since-start is 0, but the run-cumulative -0.50 - 0.10 hits the tier's 0.60
+        self.assertIsNone(self.stop_at(e, -499_999_999))
+
+
+class OneTierReadPerTriggerTests(TierCase):
+    """G2: the tier file is read ONCE per trigger. A rewrite between two reads (the reviewer's TOCTOU repros) cannot make the buy go out at a
+    tier that the earlier checks did not judge, and the T2 guard has a second line of defence in the build and in the signer."""
+
+    def test_one_read_per_trigger(self):
+        e = self.tier_env("T1")
+        with mock.patch.object(h, "read_tier", wraps=h.read_tier) as rt:
+            e.fire()
+        self.assertEqual((rt.call_count, e.refusals(), buy_args(e.sent()[0])[0]), (1, [], 100_000_000))
+
+    def test_a_t2_rewrite_mid_trigger_does_not_buy_at_t2_while_the_guard_is_off(self):
+        e = self.tier_env("T1")
+        orig = e.ex._hard_refusal
+
+        def hard_refusal(trg, now):
+            self.write_tier("T2\n")  # Helm writes T2 while this trigger is being handled
+            return orig(trg, now)
+
+        with mock.patch.object(h, "T2_IMPACT_OK", False), mock.patch.object(e.ex, "_hard_refusal", side_effect=hard_refusal):
+            e.fire()
+            self.assertEqual((e.ex.tier, e.refusals(), buy_args(e.sent()[0])[0]), ("T1", [], 100_000_000))  # the whole trigger was judged at T1
+            e.ex.state.bought.clear()
+            e.ex.state.pending.clear()
+            e.fire()  # the NEXT trigger reads T2, and T2 is refused while the guard is off
+        self.assertEqual((e.ex.tier, e.refusals(), len(e.rpc.sent)), ("T2", ["t2_impact_unchecked"], 1))
+
+    def test_a_step_down_mid_trigger_is_judged_at_one_tier(self):
+        e = self.tier_env("T1")
+        e.ex.state.open.update({"a": {}, "b": {}})  # T1 allows a third position, T0 would not
+        orig = e.ex._hard_refusal
+
+        def hard_refusal(trg, now):
+            r = orig(trg, now)  # max_open judged at T1 (3)
+            self.write_tier("T0\n")
+            return r
+
+        with mock.patch.object(e.ex, "_hard_refusal", side_effect=hard_refusal):
+            e.fire()
+        self.assertEqual((e.ex.tier, e.refusals(), buy_args(e.sent()[0])[0]), ("T1", [], 100_000_000))  # not a T1 max_open with a T0 stake
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.tier, "T0")  # the file is honoured at the next read
+
+    def test_live_buy_refuses_t2_again_if_the_guard_turns_off_after_the_first_check(self):
+        e = self.tier_env("T2")
+        orig = e.ex._static_for
+
+        def static_for(trg, now):
+            h.T2_IMPACT_OK = False  # the guard is read again in _live_buy: it must not trust the earlier check
+            return orig(trg, now)
+
+        self.addCleanup(setattr, h, "T2_IMPACT_OK", True)
+        with mock.patch.object(e.ex, "_static_for", side_effect=static_for):
+            e.fire()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["t2_impact_unchecked"], []))
+
+    def test_the_signer_cap_is_never_above_t1_while_t2_is_off(self):
+        e = self.tier_env("T1")
+        e.fire()
+        ps = e.ex.pool_cache[MINT][0]
+        bhash = e.ex.bh.get()[0]
+        e.ex.tier = "T2"  # a T2-sized message reaches the signer by some path that skipped both guards
+        msg = e.ex._buy_message(ps, e.ex.user, 1, bhash)
+        self.assertEqual(e.ex.h5.stake_lamports, 300_000_000)
+        with mock.patch.object(h, "T2_IMPACT_OK", False):
+            self.assertEqual(e.ex._signer_spend_cap(), 100_000_000)
+            with self.assertRaises(h.pl.UnsafeTx) as cm:
+                e.ex._sign(msg, ps, MINT, cap=e.ex.h5.buy_priority_lamports)
+            self.assertEqual(cm.exception.label, "unsafe_tx:spend_over_size")
+            e.ex.tier = "T0"  # and a lower tier keeps its own, smaller cap
+            self.assertEqual(e.ex._signer_spend_cap(), 20_000_000)
+        self.assertEqual(e.ex._signer_spend_cap(), 20_000_000)
+        e.ex.tier = "T2"
+        self.assertEqual(e.ex._signer_spend_cap(), 300_000_000)  # with the guard on, T2's stake is signable
+        sig, _b64 = e.ex._sign(msg, ps, MINT, cap=e.ex.h5.buy_priority_lamports)
+        self.assertTrue(sig)
+
+
+class ShippedLadderTests(TierCase):
+    """G3: the shipped configs must not hold the five tier-scaled limits, or the ladder does nothing (config can only tighten)."""
+
+    KEYS = ("stake_lamports", "max_open", "max_trades_per_day", "daily_loss_lamports", "total_loss_lamports")
+    ROOT = Path(h.__file__).resolve().parent.parent
+
+    def shipped(self, name: str) -> dict:
+        return json.loads((self.ROOT / "scripts/mal-fast" / name).read_text())
+
+    def test_the_shipped_configs_hold_none_of_the_tier_scaled_keys(self):
+        for name in ("h5-executor-live.json", "h5-executor.json"):
+            for k in self.KEYS:
+                self.assertNotIn(k, self.shipped(name), f"{name}: {k} would clamp T1 and T2 to T0's value")
+
+    def test_the_shipped_live_config_gives_each_tier_its_table_values(self):
+        live = self.shipped("h5-executor-live.json")
+        for tier, vals in h.TIERS.items():
+            lim = h.H5Limits.from_config(live, tier)
+            self.assertEqual({k: getattr(lim, k) for k in self.KEYS}, vals, tier)
+        self.assertEqual(h.H5Limits.from_config(live, "T1").stake_lamports, 100_000_000)
+        self.assertEqual(h.H5Limits.from_config(live, "T2").stake_lamports, 300_000_000)
+
+    def test_an_executor_on_the_shipped_live_config_buys_the_tier_stake(self):
+        live = {k: v for k, v in self.shipped("h5-executor-live.json").items()
+                if k not in ("mode", "intents_file", "state_dir", "end_ms", "commitment")}  # paths and the run end belong to the test env
+        for tier, stake in (("T0", 20_000_000), ("T1", 100_000_000), ("T2", 300_000_000)):
+            sub = self.tmp / f"shipped-{tier}"
+            sub.mkdir()
+            self.write_tier(tier + "\n")
+            e = Env(sub, **live)
+            e.rpc.balance = 10 * SOL
+            e.ex.feed_last_ms = e.clock()  # (the shipped config keeps the feed-heartbeat check on)
+            e.fire()
+            self.assertEqual((e.refusals(), buy_args(e.sent()[0])[0], e.ex._config_clamps()), ([], stake, {}), tier)
+            self.assertEqual(e.alerts(), [], tier)
+
+    def test_a_config_that_clamps_the_active_tier_raises_an_alert_on_a_tier_change_and_at_start(self):
+        self.write_tier("T1\n")
+        e = Env(self.tmp, stake_lamports=20_000_000, max_open=2)  # the old shipped values
+        e.rpc.balance = 10 * SOL
+        self.assertEqual(e.alerts("config_clamps_tier"), [])  # a fresh start runs at T0 until the file is read, and T0's table is the config's numbers
+        e.ex._refresh_tier(e.clock())  # the file says T1: the tier starts here
+        clamps = {"stake_lamports": {"table": 100_000_000, "effective": 20_000_000}, "max_open": {"table": 3, "effective": 2}}
+        self.assertEqual(e.ex._config_clamps(), clamps)
+        self.assertEqual([(a["when"], a["tier"], a["clamps"]) for a in e.alerts("config_clamps_tier")], [("tier_change", "T1", clamps)])
+        self.assertEqual(e.ledger("tier_change")[-1]["config_clamps"], clamps)
+        e.fire()
+        self.assertEqual(buy_args(e.sent()[0])[0], 20_000_000)  # the ladder really is off: that is what the alert says
+        e.ex = e.build()  # a restart keeps T1: the alert is raised again at start
+        self.assertEqual([(a["when"], a["tier"]) for a in e.alerts("config_clamps_tier")], [("tier_change", "T1"), ("start", "T1")])
+        self.assertEqual(e.ledger("start")[-1]["config_clamps"], clamps)
+        self.write_tier("T2\n")
+        e.ex._refresh_tier(e.clock())
+        t2 = {"stake_lamports": {"table": 300_000_000, "effective": 20_000_000}, "max_open": {"table": 3, "effective": 2}}
+        self.assertEqual([(a["when"], a["tier"]) for a in e.alerts("config_clamps_tier")][-1], ("tier_change", "T2"))
+        self.assertEqual(e.ledger("tier_change")[-1]["config_clamps"], t2)
+
+    def test_no_alert_when_the_config_does_not_clamp(self):
+        self.write_tier("T1\n")
+        e = Env(self.tmp, max_trades_per_day=40)  # equal to the table value is not a clamp
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex._config_clamps(), e.alerts("config_clamps_tier"), e.ledger("start")[0]["config_clamps"]), ({}, [], {}))
+
+
 class AttemptsPerTierTests(TierCase):
     def attempt(self, e: Env, **kw) -> None:
         e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)
