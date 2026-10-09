@@ -363,7 +363,7 @@ def test_installer_static_guards():
 
 def test_installer_uses_absolute_stat_and_clean_git_env():
     t = INSTALL.read_text()
-    assert t.count("/usr/bin/stat -c") == 4 and not re.search(r"(?<![/\w])stat -c", t)
+    assert t.count("/usr/bin/stat -c") == 5 and not re.search(r"(?<![/\w])stat -c", t)  # check_dir x2, /etc/mal-probe-rpc x2, /etc/mal-h5
     assert "GITENV=(env -i PATH=/usr/bin:/bin)" in t
     for ln in t.splitlines():
         if re.search(r"(^|[\s(\"])git\s", ln) and not ln.lstrip().startswith(("#", "[", "echo")):
@@ -374,9 +374,19 @@ def test_installer_checks_clone_state_then_manifest_then_units_then_preflight_th
     t = INSTALL.read_text()
     order = ["clone HEAD is not", "the clone is dirty", 'show "$COMMIT:$f"', "sha256 mismatch or missing manifest entry", "manifest verified",
              '--base "$TMP/$BASE_UNIT_SRC"', '--dropin "$TMP/$DROPIN_SRC"', 'stat -c %u:%g:%a "$RPC_DIR"', "is-active --quiet \"$UNIT\"",
-             "is-active --quiet \"$PROBE_UNIT\"", "is-enabled", 'mv -T "$STAGE" "$DEST/$COMMIT"']
+             "is-active --quiet \"$PROBE_UNIT\"", "is-enabled", '"$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755"', '-e "$H5_ETC/LIVE_OK"',
+             'install -d -m 0755 -o root -g root "$H5_ETC"', 'mv -T "$STAGE" "$DEST/$COMMIT"']
     idx = [t.index(s) for s in order]
     assert idx == sorted(idx), dict(zip(order, idx))
+    # LIVE_OK is Helm's, after the hash check: the installer only ever tests for it (and says so), never creates, touches or removes it
+    assert "H5_ETC=/etc/mal-h5" in t
+    code = [l.strip() for l in t.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    for l in code:
+        if "LIVE_OK" in l and not l.startswith("echo "):
+            assert not re.search(r"^(touch|rm|install|cp|mv|ln|tee|chown|chmod)\b|\s>\s*\S*LIVE_OK|:\s*>", l), l  # only tests (-e / -L) mention it
+        if "$H5_ETC" in l:
+            assert not re.match(r"(touch|rm|cp|mv|ln|tee)\b", l), l
+    assert [l for l in code if l.startswith("install") and "$H5_ETC" in l] == ['install -d -m 0755 -o root -g root "$H5_ETC"']  # the directory, nothing in it
     assert "grep" not in t[t.index("Allowlist check"):t.index("is-active --quiet")]
     assert "status --porcelain --untracked-files=all --ignored" in t
 
@@ -423,15 +433,15 @@ def _manifest(clone: Path, files: list[str]) -> str:
 FAKE_SYSTEMCTL = "exit 3"  # not active, not enabled, no output
 
 
-def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None):
-    """A throwaway clone, a PATH of fakes and a manifest. Returns (cmd-builder, clone, env)."""
+def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, etc_mode="0:0:755"):
+    """A throwaway clone, a PATH of fakes and a manifest. Returns (clone, env). /etc/mal-h5 is redirected to <tmp>/etc-mal-h5."""
     clone = tmp_path / "clone"
     (clone / "scripts/mal-fast").mkdir(parents=True)
     for f in all_files():
         (clone / f).parent.mkdir(parents=True, exist_ok=True)
         (clone / f).write_bytes(src_bytes(f))
     script = clone / "scripts/mal-fast/install-h5-executor-pinned.sh"
-    script.write_text(INSTALL.read_text().replace("/usr/bin/stat", "stat"))  # a non-root test cannot fake the absolute path
+    script.write_text(INSTALL.read_text().replace("/usr/bin/stat", "stat").replace("H5_ETC=/etc/mal-h5", f"H5_ETC={tmp_path}/etc-mal-h5"))  # a non-root test cannot fake the absolute paths
     script.chmod(0o755)
     shutil.copy(CHECK_TREE, clone / "scripts/mal-fast/check-h5-exec-tree.sh")
     if edit:
@@ -444,7 +454,7 @@ def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None):
     fakes = {
         "id": '[ "$1" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"',
         "stat": (f'case "$2" in %a) echo {mode};; %u) echo 0;; '
-                 '%u:%g:%a) case "$3" in */helius.env) echo 0:0:600;; *) echo 0:0:700;; esac;; '
+                 f'%u:%g:%a) case "$3" in */helius.env) echo 0:0:600;; */etc-mal-h5) echo {etc_mode};; *) echo 0:0:700;; esac;; '
                  '*) exec /usr/bin/stat "$@";; esac'),
         "find": "exit 0",
         "systemctl": systemctl,
@@ -542,6 +552,42 @@ def test_refuses_while_the_h5_unit_or_the_probe_unit_is_active_or_enabled(tmp_pa
         assert r.returncode != 0 and want in r.stderr and "FAKE-INSTALL" not in r.stdout, (name, r.stderr)
     clone, env = _build(tmp_path / "masked", systemctl='[ "$1" = is-enabled ] && { echo masked; exit 1; }\nexit 3')
     assert _run(clone, env).returncode == 99  # masked and stopped is the desired state
+
+
+def test_etc_mal_h5_gate_directory_and_live_ok_preflight(tmp_path):
+    etc = lambda p: p / "etc-mal-h5"  # noqa: E731  the installer copy under test points H5_ETC here
+
+    # absent: the installer would create it (the fake install stops the run at 99 right there)
+    clone, env = _build(tmp_path / "absent")
+    assert _run(clone, env).returncode == 99
+
+    # present as a real root:root 0755 directory, no LIVE_OK: accepted
+    clone, env = _build(tmp_path / "good")
+    etc(tmp_path / "good").mkdir()
+    assert _run(clone, env).returncode == 99
+
+    # wrong mode or owner (the fake stat reports it): refused before anything is installed
+    for name, mode in (("group-writable", "0:0:775"), ("not-root", "1000:1000:755"), ("tight", "0:0:700")):
+        clone, env = _build(tmp_path / name, etc_mode=mode)
+        etc(tmp_path / name).mkdir()
+        r = _run(clone, env)
+        assert r.returncode != 0 and "must be a real root:root 0755 directory" in r.stderr and "FAKE-INSTALL" not in r.stdout, name
+
+    # the directory is a symlink: refused
+    clone, env = _build(tmp_path / "link")
+    (tmp_path / "link" / "elsewhere").mkdir()
+    etc(tmp_path / "link").symlink_to(tmp_path / "link" / "elsewhere")
+    r = _run(clone, env)
+    assert r.returncode != 0 and "must be a real root:root 0755 directory" in r.stderr and "FAKE-INSTALL" not in r.stdout
+
+    # LIVE_OK already there (a regular file, or a symlink, even dangling): a reinstall starts with the gate closed
+    for name, make in (("file", lambda f: f.write_text("")), ("symlink", lambda f: f.symlink_to(f.parent / "nowhere"))):
+        clone, env = _build(tmp_path / ("ok-" + name))
+        etc(tmp_path / ("ok-" + name)).mkdir()
+        make(etc(tmp_path / ("ok-" + name)) / "LIVE_OK")
+        r = _run(clone, env)
+        assert r.returncode != 0 and "LIVE_OK exists; remove it first" in r.stderr and "FAKE-INSTALL" not in r.stdout, name
+        assert (etc(tmp_path / ("ok-" + name)) / "LIVE_OK").is_symlink() == (name == "symlink")  # and the installer did not touch it
 
 
 def test_preflight_refuses_without_root_only_key_dir_and_file(tmp_path):
@@ -658,13 +704,14 @@ RUNBOOK = ROOT / "docs/runbooks/h5-executor.md"
 
 def test_runbook_has_the_ordered_steps_and_the_paths_the_code_uses():
     t = RUNBOOK.read_text()
-    order = ["**Step 1. Stop and disable", "sudo systemctl stop mal-probe-executor", "sudo systemctl disable mal-probe-executor", "**Step 2.",
-             "install -d -m 0700 -o mal-live -g mal-live /var/lib/mal-live/h5", "**Step 3.", "**Step 4. Install.", "install-h5-executor-pinned.sh <FULL_SHA>",
-             "**Step 5. Hash check.", "**Step 6.", "**Step 7.", "**Step 8.", "**Step 9.", "**Step 10.", "**Step 11.", "## Going live (manager)",
+    order = ["**Step 1. Stop and disable", "sudo systemctl stop mal-probe-executor", "sudo systemctl disable mal-probe-executor", "**Step 1b.", "**Step 2.",
+             "install -d -m 0700 -o mal-live -g mal-live /var/lib/mal-live/h5", "install -d -m 0755 -o root -g root /etc/mal-h5", "**Step 3.",
+             "**Step 3b.", "*3b-1.", "*3b-2.", "*3b-3.", "**Step 4. Install.", "install-h5-executor-pinned.sh <FULL_SHA>",
+             "**Step 5. Hash check.", "**Step 6.", "**Step 7.", "**Step 8.", "**Step 9.", "**Step 10.", "**Step 11.", "## Going live (manager, then Helm)",
              "## Stop, halt, status", "## Daily check", "## Sell-and-close", "## Rollback", "## Auditd", "## Never", "## Not verified"]
     idx = [t.index(s) for s in order]
     assert idx == sorted(idx), [s for s, i in zip(order, idx) if i != sorted(idx)[idx.index(i)]]
-    for p in ("/var/lib/mal-live/h5/LIVE_OK", "/var/lib/mal-live/h5/STOP", "/var/lib/mal-live/h5/HALT", "/usr/local/lib/mal-h5-exec/current/h5-executor-live.json",
+    for p in ("/etc/mal-h5/LIVE_OK", "/var/lib/mal-live/h5/STOP", "/var/lib/mal-live/h5/HALT", "/var/lib/mal-live/h5/FINAL_WRITTEN", "-k malh5-liveok", "/usr/local/lib/mal-h5-exec/current/h5-executor-live.json",
               "/etc/systemd/system/mal-h5-executor.service.d/live.conf", "/etc/systemd/system/mal-h5-executor.service.d/10-shadow-feed.conf",
               "/srv/mal-h5-shadow", "/etc/mal-probe-rpc/helius.env", "make-h5-manifest.sh", "h5-daily-check.py", "-w /usr/local/lib/mal-h5-exec -p wa"):
         assert p in t, p
@@ -690,3 +737,65 @@ def test_runbook_never_reads_a_key_or_env_file_and_flags_exist():
     ex = (ROOT / "tools/h5_executor.py").read_text()
     for flag in ("--status", "--clear-halt", "--live", "--dry-run"):
         assert f'"{flag}"' in ex, flag
+
+
+def test_runbook_names_the_sha_rule_and_the_live_ok_gate():
+    t = RUNBOOK.read_text()
+    assert "only the one the manager names in a comment on PR #499" in t and "after the executor branch" in t and "Never install any sha but the one the manager names" in t
+    assert "origin/main" in t and "EXP-024" in t
+    # LIVE_OK: root-owned gate in /etc/mal-h5, created by Helm after the hash check; the state dir is not the gate
+    assert "Create `/etc/mal-h5/LIVE_OK`" in t and "(root:root 0644)" in t and "sudo install -m 0644 -o root -g root /dev/null /etc/mal-h5/LIVE_OK" in t
+    assert t.index("**Step 5. Hash check.**") < t.index("sudo install -m 0644 -o root -g root /dev/null /etc/mal-h5/LIVE_OK")
+    assert "sudo touch /var/lib/mal-live/h5/LIVE_OK" not in t and "sudo rm /var/lib/mal-live/h5/LIVE_OK" not in t
+    assert "sudo rm /etc/mal-h5/LIVE_OK" in t and "Removing `LIVE_OK` stops new buys at once" in t
+    # STOP: sudo touch, with what the executor accepts
+    assert "sudo touch /var/lib/mal-live/h5/STOP" in t and "asks for no owner and no mode" in t and "Path.exists()" in t
+    # the installer refuses an existing LIVE_OK, and the runbook says how to close the gate before a reinstall
+    assert "**Step 1b." in t and "sudo rm -f /etc/mal-h5/LIVE_OK" in t
+
+
+def test_runbook_preflight_checks_match_the_unit_and_have_expected_output():
+    t = RUNBOOK.read_text()
+    sec = t[t.index("**Step 3b."):t.index("**Step 4. Install.")]
+    unit = {l for l in UNIT.read_text().splitlines() if "=" in l and not l.startswith("#")}
+    # every sandbox property the transient unit carries is the real unit's (so the check tests the real combination)
+    props = re.findall(r"-p \"?([A-Za-z]+=[^\s\")]*)", sec)
+    assert props
+    for p in props:
+        k, v = p.split("=", 1)
+        if k == "User":
+            assert "User=mal-live" in unit
+        elif k == "BindReadOnlyPaths":
+            assert v == "-$SHADOW:/srv/mal-h5-shadow"
+        else:
+            assert p in unit, p
+    for need in ("ProtectSystem=strict", "ProtectHome=tmpfs", "TemporaryFileSystem=/var/lib/mal:ro", "ReadWritePaths=/var/lib/mal-live/h5", "BindReadOnlyPaths="):
+        assert any(need in p for p in props), need
+    # the three checks and their expected output are written down
+    assert "systemctl --version" in sec and "systemd-analyze verify /root/mal-h5-src/scripts/mal-fast/mal-h5-executor.service" in sec
+    assert "sudo systemd-run \"${P[@]}\" /bin/sh -c" in sec
+    for line in ("home:", "shadow-file-read: ok", "shadow-write: refused", "h5-dir-write: ok", "probe-dir-write: refused", "etc-mal-h5-write: refused",
+                 "etc-mal-h5-read: ok", "var-lib-mal:", "rc=0", "Command /usr/local/lib/mal-h5-exec/venv/bin/python is not executable"):
+        assert line in sec, line
+    for bad in ("SUCCEEDED (BAD)", "FAILED"):
+        assert bad in sec
+    # verify is also run on the installed unit (steps 7 and 9), and the running unit's namespace is inspected (step 8)
+    assert t.count("sudo systemd-analyze verify /etc/systemd/system/mal-h5-executor.service") == 2 and "nsenter -t \"$PID\" -m" in t
+    assert "/proc/$PID/mountinfo" in t
+
+
+def test_runbook_preflight_script_is_valid_sh_and_every_write_probe_is_a_refused_dot_preflight_file():
+    t = RUNBOOK.read_text()
+    sec = t[t.index("**Step 3b."):t.index("**Step 4. Install.")]
+    m = re.search(r"/bin/sh -c '\n(.*?)\n'; echo \"rc=\$\?\"", sec, re.S)
+    assert m
+    body = m.group(1)
+    assert "'" not in body
+    r = subprocess.run(["sh", "-n", "-c", body], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    writes = re.findall(r": > (\S+)\)", body)
+    assert writes and all(w.endswith("/.preflight") for w in writes)
+    assert {w.rsplit("/", 1)[0] for w in writes} == {"/srv/mal-h5-shadow", "/var/lib/mal-live/h5", "/var/lib/mal-live", "/etc/mal-h5"}
+    # the array assignment and the surrounding commands parse as bash once the placeholder is filled
+    head = sec[sec.index("SHADOW="):sec.index("sudo systemd-run")].replace("<jobuser>", "x")
+    assert subprocess.run(["bash", "-n", "-c", head], capture_output=True, text=True).returncode == 0

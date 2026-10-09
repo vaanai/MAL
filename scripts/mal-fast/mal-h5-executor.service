@@ -33,6 +33,8 @@ NoNewPrivileges=true
 # Hardening. Writes only /var/lib/mal-live/h5 (must exist: mal-live, 0700, created at provisioning). The probe's own files in
 # /var/lib/mal-live are read-only here. /var/lib/mal (runner output, sealed data) is an empty tmpfs. /home is an empty tmpfs;
 # the shadow detector's output directory is made visible read-only by a Helm drop-in (mal-h5-executor-shadow-feed.conf).
+# /etc/mal-h5 (root:root 0755, holds LIVE_OK, which Helm creates) stays readable here: ProtectSystem=strict makes /etc read-only, not
+# hidden, and nothing below hides it. It is not under ReadWritePaths, so this process can neither create nor remove LIVE_OK.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/mal-live/h5
 ReadOnlyPaths=/usr/local/lib/mal-h5-exec

@@ -28,12 +28,14 @@ class FakeHost(dc.Host):
             f"{dc.PINNED}/mal-h5-executor.service": BASE, f"{dc.PINNED}/mal-h5-executor-live-pinned.conf": DROPIN,
             f"{ETC}/mal-h5-executor.service": BASE, f"{ETC}/mal-h5-executor.service.d/live.conf": DROPIN,
             f"{ETC}/mal-h5-executor.service.d/10-shadow-feed.conf": FEED,
-            f"{H5}/LIVE_OK": b"",
+            dc.LIVE_OK: b"",
             f"{H5}/live/state-live.json": json.dumps({"attempts": 3, "realized_lamports": -1_000_000, "open": {}, "pending": {}}).encode(),
             f"{H5}/live/h5-counters.json": json.dumps({"halts": {}, "sells_landed": 3, "sells_late": 0}).encode(),
             f"{H5}/live/h5-ledger.jsonl": (json.dumps({"kind": "start", "user": dc.WALLET}) + "\n").encode(),
         }
-        self.modes = {H5: "mal-live:mal-live:700"}
+        self.modes = {H5: "mal-live:mal-live:700", dc.H5_ETC: "root:root:755", dc.LIVE_OK: "root:root:644"}
+        self.links: set[str] = set()
+        self.irregular: set[str] = set()
         self.unit_files = "mal-probe-executor.service masked -\n"
         self.units = ""
         self.h5_props = {"LoadState": "loaded", "ActiveState": "active", "SubState": "running", "UnitFileState": "enabled", "NRestarts": "0", "Result": "success"}
@@ -47,7 +49,13 @@ class FakeHost(dc.Host):
         return v
 
     def exists(self, path):
-        return path in self.files
+        return path in self.files or path == dc.H5_ETC and dc.H5_ETC in self.modes
+
+    def islink(self, path):
+        return path in self.links
+
+    def is_regular(self, path):
+        return path in self.files and path not in self.links and path not in self.irregular
 
     def stat(self, path):
         return self.modes.get(path)
@@ -183,6 +191,43 @@ def test_h5_state_alerts(tmp_path):
     assert rc == 1 and "ALERT h5_wallet_mismatch" in out
     rc, out = with_(lambda h: h.files.__setitem__(f"{H5}/live/state-live.json", PermissionError("x")))
     assert rc == 1 and "ALERT check_failed" in out  # a check that cannot run is an alert, never a silent pass
+
+
+def test_live_ok_is_the_root_owned_gate_in_etc_mal_h5(tmp_path):
+    """DEC-024 section 3: the executor must not be able to create LIVE_OK, so the gate is /etc/mal-h5/LIVE_OK and must look the way the
+    executor requires: regular file, root-owned, not group/other writable, no symlink, parent root:root 0755."""
+    assert dc.LIVE_OK == "/etc/mal-h5/LIVE_OK" and dc.H5_ETC == "/etc/mal-h5"
+
+    def case(name, mut):
+        h = FakeHost()
+        mut(h)
+        return go(h, tmp=tmp_path / name)
+
+    rc, out = go(FakeHost(), tmp=tmp_path / "ok")
+    assert rc == 0 and "LIVE_OK=yes" in out
+    rc, out = case("absent", lambda h: (h.files.pop(dc.LIVE_OK), h.modes.pop(dc.LIVE_OK)))
+    assert rc == 0 and "LIVE_OK=no" in out  # no gate is a legitimate state (buys closed)
+    for name, mut in {
+        "group writable": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:664"),
+        "other writable": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:646"),
+        "owned by mal-live": lambda h: h.modes.__setitem__(dc.LIVE_OK, "mal-live:mal-live:644"),
+        "symlink": lambda h: h.links.add(dc.LIVE_OK),
+        "not a regular file": lambda h: h.irregular.add(dc.LIVE_OK),
+    }.items():
+        rc, out = case(name.replace(" ", "_"), mut)
+        assert rc == 1 and "ALERT h5_live_ok_invalid" in out, name
+    for name, mut in {
+        "dir mode": lambda h: h.modes.__setitem__(dc.H5_ETC, "root:root:775"),
+        "dir owner": lambda h: h.modes.__setitem__(dc.H5_ETC, "mal-live:mal-live:755"),
+        "dir symlink": lambda h: h.links.add(dc.H5_ETC),
+    }.items():
+        rc, out = case("d" + name.replace(" ", "_"), mut)
+        assert rc == 1 and "ALERT h5_etc_dir" in out, name
+    # a LIVE_OK in the state dir (the executor's own writable dir) is not Helm's gate: alert, never accept it
+    rc, out = case("stale", lambda h: h.files.__setitem__(f"{H5}/LIVE_OK", b""))
+    assert rc == 1 and "ALERT h5_live_ok_stale" in out
+    rc, out = case("stale_only", lambda h: (h.files.pop(dc.LIVE_OK), h.modes.pop(dc.LIVE_OK), h.files.__setitem__(f"{H5}/LIVE_OK", b"")))
+    assert rc == 1 and "ALERT h5_live_ok_stale" in out and "LIVE_OK=no" in out
 
 
 def test_stop_file_is_info_not_alert(tmp_path):

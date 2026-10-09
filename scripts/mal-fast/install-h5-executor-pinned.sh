@@ -39,6 +39,9 @@ BASE_UNIT_CHECK="scripts/mal-fast/check-h5-unit.py"
 DROPIN_SRC="scripts/mal-fast/mal-h5-executor-live-pinned.conf"
 LIVE_CFG_SRC="scripts/mal-fast/h5-executor-live.json"
 BASE_UNIT_DEST=/etc/systemd/system/mal-h5-executor.service
+# LIVE_OK lives in this root-owned directory, outside every path the unit can write (DEC-024 section 3: the executor must not be
+# able to create it). This script provisions the directory and NEVER creates or touches LIVE_OK: Helm creates it after the hash check.
+H5_ETC=/etc/mal-h5
 
 case "$COMMIT" in *[!0-9a-f]*|"") echo "commit must be a lowercase hex sha" >&2; exit 1 ;; esac
 [ "${#COMMIT}" -eq 40 ] || { echo "commit must be the full 40-char sha" >&2; exit 1; }
@@ -119,7 +122,20 @@ case "$(systemctl is-enabled "$PROBE_UNIT" 2>/dev/null || true)" in
     exit 1 ;;
 esac
 
+# /etc/mal-h5 must be a real root:root 0755 directory if it exists (the executor checks LIVE_OK and this parent), and LIVE_OK must not
+# exist yet: it is created only AFTER the hash check of THIS install, so a reinstall starts with the gate closed. Remove it first
+# (docs/runbooks/h5-executor.md step 1b); that also stops new buys of a running executor.
+if [ -L "$H5_ETC" ] || { [ -e "$H5_ETC" ] && [ "$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755" ]; }; then
+  echo "refusing: $H5_ETC must be a real root:root 0755 directory (not a symlink)" >&2
+  exit 1
+fi
+if [ -e "$H5_ETC/LIVE_OK" ] || [ -L "$H5_ETC/LIVE_OK" ]; then
+  echo "refusing: $H5_ETC/LIVE_OK exists; remove it first and create it again only after this install's hash check" >&2
+  exit 1
+fi
+
 install -d -m 0755 -o root -g root "$DEST"
+install -d -m 0755 -o root -g root "$H5_ETC"
 d="$DEST"
 while :; do check_dir "$d"; [ "$d" != "/" ] || break; d="$(dirname "$d")"; done
 [ ! -e "$DEST/$COMMIT" ] || { echo "refusing: $DEST/$COMMIT already exists (installs are immutable; remove it by hand to redo)" >&2; exit 1; }
@@ -245,6 +261,7 @@ case "$(cat "$DEST/$COMMIT/h5-executor-live.json")" in
   *'"end_ms"'*) ;;
   *) echo "NOTE: $LIVE_CFG_SRC at this commit has no end_ms, so a live start will refuse with end_ms_missing. The dry run is unaffected." ;;
 esac
+echo "NOTE: $H5_ETC/LIVE_OK was NOT created. The executor sends nothing live until Helm creates it (root:root 0644) after the hash check below."
 echo "BEGIN-MANIFEST (sha256 of each INSTALLED file, repo path; diff this against the manager's manifest):"
 verify_tree "$DEST/$COMMIT" print | sort -k2
 echo "END-MANIFEST"

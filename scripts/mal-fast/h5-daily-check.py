@@ -9,7 +9,7 @@ if there is any ALERT (0 otherwise). The RPC URL (HELIUS_API_KEY from the enviro
 
 What changed from the probe check, and what did not:
   ALLOWED now   the H5 unit mal-h5-executor (active or enabled), its state dir /var/lib/mal-live/h5, the pinned tree
-                /usr/local/lib/mal-h5-exec. The wallet is no longer expected to be 0.
+                /usr/local/lib/mal-h5-exec, /etc/mal-h5/LIVE_OK. The wallet is no longer expected to be 0.
   STILL ALERTS  any mal-probe-executor* unit that is active or enabled (masked is fine); /var/lib/mal-live/state-live.json
                 changed (sha256 against a baseline written once with --write-baseline, plus the old fixed facts: attempts <= 62,
                 realized -0.210755 SOL, nothing open or pending); /var/lib/mal-live/STOP missing.
@@ -40,6 +40,8 @@ PROBE_MAX_ATTEMPTS = 62
 PROBE_REALIZED_SOL = -0.210755
 H5_UNIT = "mal-h5-executor"
 H5_DIR = "/var/lib/mal-live/h5"
+H5_ETC = "/etc/mal-h5"  # root:root 0755; holds LIVE_OK, which Helm creates (the executor cannot)
+LIVE_OK = f"{H5_ETC}/LIVE_OK"
 PINNED = "/usr/local/lib/mal-h5-exec/current"
 DROPIN_DIRS = ("/etc/systemd/system", "/run/systemd/system", "/usr/local/lib/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
 RENT_TOLERANCE = 2_100_000  # per open or pending position (token account rent, refunded at close)
@@ -70,6 +72,12 @@ class Host:
 
     def exists(self, path: str) -> bool:
         return os.path.lexists(path) or self._sudo("/usr/bin/test", "-e", path).returncode == 0
+
+    def islink(self, path: str) -> bool:
+        return os.path.islink(path)
+
+    def is_regular(self, path: str) -> bool:
+        return os.path.isfile(path) and not os.path.islink(path)
 
     def stat(self, path: str) -> str | None:
         """owner:group:mode of a path, or None."""
@@ -235,10 +243,22 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
         rep.info(f"{H5_DIR} does not exist yet")
     elif st_dir != "mal-live:mal-live:700":
         rep.alert("h5_dir_mode", f"{H5_DIR} is {st_dir}, expected mal-live:mal-live:700")
-    flags = {n: host.exists(f"{H5_DIR}/{n}") for n in ("STOP", "HALT", "LIVE_OK")}
+    flags = {n: host.exists(f"{H5_DIR}/{n}") for n in ("STOP", "HALT")}
+    flags["LIVE_OK"] = host.exists(LIVE_OK) or host.islink(LIVE_OK)
     rep.info("files: " + " ".join(f"{n}={'yes' if v else 'no'}" for n, v in flags.items()))
     if flags["HALT"]:
         rep.alert("h5_halt_file", "HALT exists: everything is frozen, sells included")
+    # LIVE_OK is the root-owned gate the executor cannot create (DEC-024 section 3): same facts the executor requires of it.
+    if host.exists(H5_ETC) or host.islink(H5_ETC):
+        if host.islink(H5_ETC) or host.stat(H5_ETC) != "root:root:755":
+            rep.alert("h5_etc_dir", f"{H5_ETC} is {host.stat(H5_ETC)}{' (symlink)' if host.islink(H5_ETC) else ''}, expected root:root:755")
+    if flags["LIVE_OK"]:
+        owner = host.stat(LIVE_OK) or "?:?:?"
+        mode = owner.rsplit(":", 1)[-1]
+        if host.islink(LIVE_OK) or not owner.startswith("root:") or not mode.isdigit() or int(mode, 8) & 0o022 or not host.is_regular(LIVE_OK):
+            rep.alert("h5_live_ok_invalid", f"{LIVE_OK} must be a regular file, root-owned, not group/other writable, no symlink (is {owner})")
+    if host.exists(f"{H5_DIR}/LIVE_OK"):
+        rep.alert("h5_live_ok_stale", f"{H5_DIR}/LIVE_OK exists: the gate is {LIVE_OK} now; a file in the state dir is not Helm's (remove it, find out who made it)")
     state = _json(host, f"{H5_DIR}/live/state-live.json") or {}
     counters = _json(host, f"{H5_DIR}/live/h5-counters.json") or {}
     opens = state.get("open") or {}
