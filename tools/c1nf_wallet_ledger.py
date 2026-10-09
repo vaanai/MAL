@@ -23,14 +23,26 @@ Semantics, kept from 01_wallet_daily.py on purpose:
     received just after 00:00 belongs to the next day's file. The ledger for day D is "everything
     that was in the files named D". That is causal for a ledger used from D+1 on.
 
+The pinned reference. EXP-025 pinned a deterministic version of the same step
+(ARTIFACTS/exp025/ledger/01_wallet_daily_det.py, sha256 bc1838f1..., commit 0799c4c). It sums integer
+lamports and writes `buy`, `sell`, `cash` on a 2^-20 SOL grid, round(lamports * 2^20 / 1e9) / 2^20,
+so that the float sums over prior days inside the pinned 11_passA.py are exact in any add order.
+`tools/c1nf_wallet_det_pinned.py` is a verbatim copy; this module checks its sha256 before it uses
+`to_grid`, and on the exploration tape its wl/ output must equal the pinned script's output (the tests
+and the PR run that comparison). Nothing here re-derives the grid.
+
 Files.
   daily/wl-<day>.npz        one row per wallet, sorted by th, int64 lamports and counts.
                             Deterministic zip bytes (fixed timestamps), no wall clock inside.
   daily/wl-<day>.manifest.json   sources, hashes, timings (not deterministic, never compared).
   asof/asof-<day>/*.npy     cumulative ledger over daily files with day < <day>, one .npy per
-                            column, th sorted. Open with numpy mmap_mode='r' (`AsofLedger`).
-  The optional `--wl-parquet-dir` writes `<day>.parquet` with C1's wl/ columns and dtypes (th
-  UBIGINT, n/nbond/nwin/nrt/buy/sell/cash DOUBLE, nm BIGINT), a drop-in for 11_passA.py.
+                            column, th sorted. Open with numpy mmap_mode='r' (`AsofLedger`). Besides
+                            the exact lamport sums it holds `buy_q`, `cash_q`: the sums of the daily
+                            grid units, so cash = cash_q / 2^20 equals what the pinned 11_passA.py
+                            computes from the pinned wl/ files.
+  The optional `--wl-parquet-dir` writes `<day>.parquet`, the pinned wl/ file: C1's columns and dtypes
+  (th UBIGINT, n/nbond/nwin/nrt/buy/sell/cash DOUBLE, nm BIGINT), SOL columns on the 2^-20 grid. A
+  drop-in for 11_passA.py.
 
 Subcommands: day, asof, rollup (the daily job), coverage, parity.
 Exit codes: 0 ok, 2 usage, 3 refused (bad or incomplete input; nothing written), 4 output exists
@@ -44,6 +56,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -65,13 +78,16 @@ HASH_VECTORS = {
     "abc": 1924864467101078684,
     "4hkvaqAwuQjFzkTfD6vjSbG3JUPM6EqgQSPou4buPGmD": 1048625625799252214,
 }
+PINNED_DET_SHA256 = "bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5"
+PINNED_DET_PATH = Path(__file__).with_name("c1nf_wallet_det_pinned.py")
 VENUES = ("pump_bonding", "pumpswap")
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 # Daily columns. All int64 except th (uint64). `*_lamports` are exact integer sums.
 DAILY_COLS = ("n", "nm", "nbond", "nwin", "nrt", "buy_lamports", "sell_lamports", "cash_lamports")
-# As-of columns: the daily ones plus ndays (daily files the wallet appears in).
-ASOF_COLS = DAILY_COLS + ("ndays",)
+# As-of columns: the daily ones, the sums of the daily 2^-20 grid units of buy and cash, and ndays
+# (daily files the wallet appears in).
+ASOF_COLS = DAILY_COLS + ("buy_q", "cash_q", "ndays")
 # Order of the matrix 11_passA.py builds from the prior-day ledger: n, nbond, cash, nwin, nrt, ndays, buy.
 PASSA_COLS = ("n", "nbond", "cash", "nwin", "nrt", "ndays", "buy")
 LAMPORTS_PER_SOL = 1e9
@@ -175,6 +191,35 @@ def write_npz_deterministic(path: Path, arrays: dict[str, np.ndarray]) -> None:
 def read_npz(path: Path) -> dict[str, np.ndarray]:
     with np.load(path, allow_pickle=False) as z:
         return {k: z[k] for k in z.files}
+
+
+_PINNED: Any = None
+
+
+def pinned():
+    """The EXP-025 pinned ledger module (verbatim copy), loaded only if its sha256 is the pinned one."""
+    global _PINNED
+    if _PINNED is None:
+        got = file_sha256(PINNED_DET_PATH)
+        if got != PINNED_DET_SHA256:
+            raise Refused(f"{PINNED_DET_PATH} sha256 {got} != pinned {PINNED_DET_SHA256}")
+        spec = importlib.util.spec_from_file_location("c1nf_wallet_det_pinned", PINNED_DET_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        _PINNED = mod
+    return _PINNED
+
+
+def to_grid(lamports: np.ndarray) -> np.ndarray:
+    """Lamports -> float64 SOL on the 2^-20 grid. This IS the pinned function."""
+    return pinned().to_grid(lamports)
+
+
+def grid_units(lamports: np.ndarray) -> np.ndarray:
+    """Lamports -> int64 count of 2^-20 SOL units, such that grid_units(l) / 2^20 == to_grid(l) exactly."""
+    g = pinned().GRID
+    return np.rint(to_grid(lamports) * g).astype(np.int64)
 
 
 # --------------------------------------------------------------------------------------------
@@ -398,27 +443,49 @@ def validate_daily(a: dict[str, np.ndarray]) -> None:
 
 
 def to_wl_float(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """C1's wl/ view: th uint64; n, nbond, nwin, nrt, buy, sell, cash float64 (SOL); nm int64."""
+    """The pinned wl/ view: th uint64; n, nbond, nwin, nrt float64; nm int64; buy, sell, cash float64 SOL
+    on the 2^-20 grid (the pinned `to_grid`)."""
     f = np.float64
     return {
         "th": a["th"],
         "n": a["n"].astype(f),
         "nm": a["nm"].astype(np.int64),
         "nbond": a["nbond"].astype(f),
-        "buy": a["buy_lamports"].astype(f) / LAMPORTS_PER_SOL,
-        "sell": a["sell_lamports"].astype(f) / LAMPORTS_PER_SOL,
+        "buy": to_grid(a["buy_lamports"]),
+        "sell": to_grid(a["sell_lamports"]),
         "nwin": a["nwin"].astype(f),
         "nrt": a["nrt"].astype(f),
-        "cash": a["cash_lamports"].astype(f) / LAMPORTS_PER_SOL,
+        "cash": to_grid(a["cash_lamports"]),
     }
 
 
+# SQL form of the pinned to_grid: round_even(l * (2^20 / 1e9)) / 2^20 (numpy rint is round-half-even too).
+# write_wl_parquet checks the result against the pinned to_grid on the same numbers before it writes the file.
 _WL_PARQUET_SQL = """
-COPY (SELECT th, n::DOUBLE n, nm, nbond::DOUBLE nbond, buy_lamports::DOUBLE / 1e9 buy,
-             sell_lamports::DOUBLE / 1e9 sell, nwin::DOUBLE nwin, nrt::DOUBLE nrt,
-             cash_lamports::DOUBLE / 1e9 cash
-      FROM daily ORDER BY th) TO '{out}' (FORMAT parquet, COMPRESSION zstd)
+CREATE OR REPLACE TEMP TABLE wlg AS
+SELECT th, n::DOUBLE n, nm, nbond::DOUBLE nbond,
+       round_even(buy_lamports::DOUBLE * CAST('{scale!r}' AS DOUBLE), 0) / CAST('{grid!r}' AS DOUBLE) buy,
+       round_even(sell_lamports::DOUBLE * CAST('{scale!r}' AS DOUBLE), 0) / CAST('{grid!r}' AS DOUBLE) sell,
+       nwin::DOUBLE nwin, nrt::DOUBLE nrt,
+       round_even(cash_lamports::DOUBLE * CAST('{scale!r}' AS DOUBLE), 0) / CAST('{grid!r}' AS DOUBLE) cash
+FROM daily ORDER BY th
 """
+
+
+def write_wl_parquet(con, arrays: dict[str, np.ndarray], out: Path) -> None:
+    pin = pinned()
+    con.execute(_WL_PARQUET_SQL.format(scale=pin._SCALE, grid=pin.GRID))
+    got = con.execute("SELECT th, buy, sell, cash FROM wlg ORDER BY th").fetchnumpy()
+    want = to_wl_float(arrays)
+    if not (
+        np.array_equal(np.asarray(got["th"], dtype=np.uint64), want["th"])
+        and all(np.array_equal(np.asarray(got[c], dtype=np.float64), want[c]) for c in ("buy", "sell", "cash"))
+    ):
+        raise Refused("SQL grid columns differ from the pinned to_grid; wl parquet not written")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    con.execute(f"COPY (SELECT * FROM wlg ORDER BY th) TO '{_q(tmp)}' (FORMAT parquet, COMPRESSION zstd)")
+    os.replace(tmp, out)
 
 
 # --------------------------------------------------------------------------------------------
@@ -540,10 +607,7 @@ def build_day(
     }
     _atomic_write_json(man_path, manifest)
     if wl_parquet_dir is not None:
-        wl_parquet_dir.mkdir(parents=True, exist_ok=True)
-        out = wl_parquet_dir / f"{day}.parquet"
-        con.execute(_WL_PARQUET_SQL.format(out=_q(str(out) + ".tmp")))
-        os.replace(str(out) + ".tmp", out)
+        write_wl_parquet(con, arrays, wl_parquet_dir / f"{day}.parquet")
     con.close()
     return {
         "day": day,
@@ -608,6 +672,8 @@ def _reduce_sorted(th: np.ndarray, cols: dict[str, np.ndarray]) -> dict[str, np.
 def merge_asof(prev: dict[str, np.ndarray] | None, daily: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """as-of(next) = as-of(prev) + daily. Exact: only int64 additions."""
     d_cols = {c: daily[c] for c in DAILY_COLS}
+    d_cols["buy_q"] = grid_units(daily["buy_lamports"])
+    d_cols["cash_q"] = grid_units(daily["cash_lamports"])
     d_cols["ndays"] = np.ones(len(daily["th"]), np.int64)
     if prev is None:
         th = daily["th"]
@@ -736,17 +802,17 @@ class AsofLedger:
     def passa_matrix(self, th: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(known mask, M) with M float64 [len(th), 7], columns PASSA_COLS, NaN for unknown wallets.
 
-        Same meaning as the matrix 11_passA.py builds from the sum of the prior wl/ files: cash and buy in
-        SOL (exact lamports / 1e9), the others as counts."""
+        The matrix 11_passA.py builds from the sum of the prior pinned wl/ files: cash and buy are the sums
+        of the daily grid values (cash_q / 2^20, exact), the others are counts."""
         known, i = self.lookup_index(th)
         m = np.full((len(known), len(PASSA_COLS)), np.nan)
         if known.any():
             ik = i[known]
             for j, c in enumerate(PASSA_COLS):
                 if c == "cash":
-                    v = np.asarray(self.cols["cash_lamports"][ik], dtype=np.float64) / LAMPORTS_PER_SOL
+                    v = np.asarray(self.cols["cash_q"][ik], dtype=np.float64) / pinned().GRID
                 elif c == "buy":
-                    v = np.asarray(self.cols["buy_lamports"][ik], dtype=np.float64) / LAMPORTS_PER_SOL
+                    v = np.asarray(self.cols["buy_q"][ik], dtype=np.float64) / pinned().GRID
                 else:
                     v = np.asarray(self.cols[c][ik], dtype=np.float64)
                 m[known, j] = v
@@ -951,6 +1017,14 @@ def diff_wl(a: dict[str, np.ndarray], b: dict[str, np.ndarray], a_lamports: dict
     if a_lamports is not None:
         # every sign difference should be a wallet whose exact net is 0 lamports (float residue +-1e-16)
         res["sign_differs_with_nonzero_exact_cash"] = int((sign_flip & (a_lamports["cash_lamports"][ia] != 0)).sum())
+        # a flip against a NON-pinned (float) table is explained when the exact net is 0 lamports or rounds to
+        # 0 on the 2^-20 grid (|cash| <= 476 lamports); anything else is unexplained
+        ex = np.abs(a_lamports["cash_lamports"][ia])
+        res["sign_differs_by_class"] = {
+            "exact_zero": int((sign_flip & (ex == 0)).sum()),
+            "rounds_to_zero_on_grid": int((sign_flip & (ex > 0) & (to_grid(ex) == 0)).sum()),
+            "unexplained": int((sign_flip & (ex > 0) & (to_grid(ex) != 0)).sum()),
+        }
         flow = (a_lamports["buy_lamports"][ia] + a_lamports["sell_lamports"][ia]).astype(np.float64) / LAMPORTS_PER_SOL
         dc = np.abs(ca - cb)
         ok = flow > 0

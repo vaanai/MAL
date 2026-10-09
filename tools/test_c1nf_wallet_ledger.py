@@ -343,6 +343,8 @@ def test_asof_fold_incremental_and_lookup_match_passa_sql(tmp_path):
             e = expect.setdefault(t, dict.fromkeys(L.ASOF_COLS, 0))
             for c in L.DAILY_COLS:
                 e[c] += o[c]
+            e["buy_q"] += int(L.grid_units(np.array([o["buy_lamports"]]))[0])
+            e["cash_q"] += int(L.grid_units(np.array([o["cash_lamports"]]))[0])
             e["ndays"] += 1
     ths = th_of(TRADERS)
     known, i = led.lookup_index(np.array([ths[t] for t in expect], np.uint64))
@@ -350,7 +352,7 @@ def test_asof_fold_incremental_and_lookup_match_passa_sql(tmp_path):
     for (t, e), ix in zip(expect.items(), i):
         assert {c: int(led.cols[c][ix]) for c in L.ASOF_COLS} == e
 
-    # same numbers as the 11_passA.py SQL over the prior wl/*.parquet files (exact except the float columns)
+    # the 11_passA.py SQL over the prior pinned (grid) wl/*.parquet files gives the same numbers, bit for bit
     con = duckdb.connect()
     wl = "['" + "','".join(str(tmp_path / "wlparq" / f"{d}.parquet") for d in days) + "']"
     x = con.execute(
@@ -361,11 +363,7 @@ def test_asof_fold_incremental_and_lookup_match_passa_sql(tmp_path):
     known, m = led.passa_matrix(np.concatenate([q, np.array([12345], np.uint64)]))  # 12345: an unknown wallet
     assert known[:-1].all() and not known[-1] and np.isnan(m[-1]).all()
     for j, c in enumerate(L.PASSA_COLS):
-        want = np.asarray(x[c], dtype=np.float64)
-        if c in ("cash", "buy"):
-            assert np.allclose(m[:-1, j], want, atol=1e-6, rtol=1e-9)
-        else:
-            assert np.array_equal(m[:-1, j], want)
+        assert np.array_equal(m[:-1, j], np.asarray(x[c], dtype=np.float64)), c
 
 
 def test_asof_refusals(tmp_path):
@@ -432,25 +430,89 @@ def test_coverage_labels_the_known_hole(tmp_path):
     assert "holes between" in L.format_coverage(cov)
 
 
-def test_diff_wl_flags_only_exact_zero_cash_flips():
-    th = np.array([1, 2, 3], np.uint64)
+def test_diff_wl_classifies_sign_flips_against_a_float_table():
+    th = np.array([1, 2, 3, 4], np.uint64)
     exact = {
         "th": th,
-        "n": np.array([3, 3, 3]),
-        "nm": np.array([1, 1, 1]),
-        "nbond": np.zeros(3, np.int64),
-        "nwin": np.zeros(3, np.int64),
-        "nrt": np.zeros(3, np.int64),
-        "buy_lamports": np.array([10, 10, 10], np.int64),
-        "sell_lamports": np.array([10, 20, 5], np.int64),
-        "cash_lamports": np.array([0, 10, -5], np.int64),
+        "n": np.array([3, 3, 3, 3]),
+        "nm": np.array([1, 1, 1, 1]),
+        "nbond": np.zeros(4, np.int64),
+        "nwin": np.zeros(4, np.int64),
+        "nrt": np.zeros(4, np.int64),
+        "buy_lamports": np.array([1000, 10_000_000, 10_000_000, 1000], np.int64),
+        "sell_lamports": np.array([1000, 20_000_000, 5_000_000, 1100], np.int64),
+        "cash_lamports": np.array([0, 10_000_000, -5_000_000, 100], np.int64),
     }
     a = L.to_wl_float(exact)
+    assert a["cash"][3] == 0.0  # +100 lamports is under half a grid step: 0 on the pinned grid
     b = {k: v.copy() for k, v in a.items()}
     b["cash"][0] = 5.5e-17  # float residue on an exact-zero wallet
+    b["cash"][3] = 1e-7  # the original float table kept the 100 lamports
     d = L.diff_wl(a, b, exact)
-    assert d["cash_positive_flips"] == 1 and d["sign_differs_with_nonzero_exact_cash"] == 0
+    assert d["cash_positive_flips"] == 2 and d["sign_differs_with_nonzero_exact_cash"] == 1
+    assert d["sign_differs_by_class"] == {"exact_zero": 1, "rounds_to_zero_on_grid": 1, "unexplained": 0}
     assert d["exact_zero_cash_wallets"] == 1 and d["th_only_a"] == d["th_only_b"] == 0
+
+
+def test_pinned_copy_is_verbatim_and_tampering_is_refused(tmp_path, monkeypatch):
+    assert L.file_sha256(L.PINNED_DET_PATH) == L.PINNED_DET_SHA256
+    assert L.pinned().GRID == 2.0**20
+    bad = tmp_path / "c1nf_wallet_det_pinned.py"
+    bad.write_text(L.PINNED_DET_PATH.read_text() + "\n# edited\n")
+    monkeypatch.setattr(L, "PINNED_DET_PATH", bad)
+    monkeypatch.setattr(L, "_PINNED", None)
+    with pytest.raises(L.Refused, match="pinned"):
+        L.to_grid(np.array([1], np.int64))
+
+
+def test_grid_units_and_sql_grid_equal_the_pinned_to_grid(tmp_path):
+    rng = np.random.default_rng(5)
+    lam = np.concatenate(
+        [
+            rng.integers(-3_000_000_000, 3_000_000_000, 5000),
+            rng.integers(-10**15, 10**15, 2000),
+            np.arange(-1500, 1500),  # around the half-step at 476.84 lamports
+            np.array([0, 476, 477, -476, -477, 953, 954, 1_048_576, 10**9]),
+        ]
+    ).astype(np.int64)
+    assert np.array_equal(L.grid_units(lam).astype(np.float64) / 2.0**20, L.to_grid(lam))
+    con = duckdb.connect()
+    con.execute("CREATE TEMP TABLE daily (th UBIGINT, n BIGINT, nm BIGINT, nbond BIGINT, buy_lamports BIGINT, sell_lamports BIGINT, nwin BIGINT, nrt BIGINT, cash_lamports BIGINT)")
+    rows = [(i + 1, 1, 1, 0, int(max(x, 0)), int(max(-x, 0)), 0, 0, int(x)) for i, x in enumerate(lam)]
+    con.executemany("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    arrays = {
+        "th": np.arange(1, len(lam) + 1, dtype=np.uint64),
+        "n": np.ones(len(lam), np.int64),
+        "nm": np.ones(len(lam), np.int64),
+        "nbond": np.zeros(len(lam), np.int64),
+        "nwin": np.zeros(len(lam), np.int64),
+        "nrt": np.zeros(len(lam), np.int64),
+        "buy_lamports": np.maximum(lam, 0),
+        "sell_lamports": np.maximum(-lam, 0),
+        "cash_lamports": lam,
+    }
+    L.write_wl_parquet(con, arrays, tmp_path / "x.parquet")  # raises if the SQL grid differs from to_grid
+    got = L.load_wl_parquet(tmp_path / "x.parquet")
+    assert np.array_equal(got["cash"], L.to_grid(lam))
+
+
+def test_wl_parquet_equals_the_pinned_script_output(tmp_path):
+    """Our wl/ file for a tape day equals what ARTIFACTS/exp025/ledger/01_wallet_daily_det.py writes: same
+    rows, same values, and the same file bytes."""
+    pytest.importorskip("pandas")
+    rows = [r for r in make_rows(21, 3000) if r["trader"] is not None]  # the pinned script keeps a NULL wallet; the tape has none
+    tape = tmp_path / "tape"
+    write_tape(tape, DAY, rows, files=4, seed=3)
+    L.build_day(DAY, "tape", tmp_path / "ours", tape_dir=tape, wl_parquet_dir=tmp_path / "ours_wl", threads=2)
+    pin = L.pinned()
+    assert pin.main(["--tape", str(tape / "trades"), "--out", str(tmp_path / "pinned_wl"), "--tmp", str(tmp_path / "duck"), "--threads", "1", "--day", DAY]) == 0
+    ours, theirs = tmp_path / "ours_wl" / f"{DAY}.parquet", tmp_path / "pinned_wl" / f"{DAY}.parquet"
+    con = duckdb.connect()
+    a, b = f"'{ours}'", f"'{theirs}'"
+    assert con.execute(f"SELECT count(*) FROM (SELECT * FROM {a} EXCEPT ALL SELECT * FROM {b})").fetchone()[0] == 0
+    assert con.execute(f"SELECT count(*) FROM (SELECT * FROM {b} EXCEPT ALL SELECT * FROM {a})").fetchone()[0] == 0
+    assert con.execute(f"SELECT count(*) FROM {a}").fetchone()[0] == con.execute(f"SELECT count(*) FROM {b}").fetchone()[0] > 0
+    assert L.file_sha256(ours) == L.file_sha256(theirs)
 
 
 def test_tip_json_columns_exist_in_follower_rows():
