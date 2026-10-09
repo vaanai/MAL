@@ -45,10 +45,10 @@ class ExitTests(Case):
         e.at_slot(plan["arm_slot"])
         self.assertIn(MINT, e.ex.armed)  # signed and held, not sent
         self.assertEqual(len(e.rpc.sent), 1)
-        e.at_slot(plan["send_slot"] - 1, advance_ms=300)
+        e.at_slot(plan["send_slot"] - 1)
         self.assertEqual(len(e.rpc.sent), 1)
         e.rpc.calls.clear()
-        e.at_slot(plan["send_slot"], advance_ms=300)
+        e.at_slot(plan["send_slot"])
         self.assertEqual(len(e.rpc.sent), 2)
         before_send = e.rpc.calls[: e.rpc.calls.index("sendTransaction")]
         self.assertTrue(set(before_send) <= {"getSlot"}, before_send)  # the precomputed sell needs no state read to go out
@@ -82,13 +82,13 @@ class ExitTests(Case):
         sigs = [e.sent()[1]["signature"]]
         e.land_sell(plan["land_slot"], err=SLIPPAGE_ERR)
         self.assertIn(MINT, e.ex.state.open)
-        e.at_slot(plan["send_slot"] + 1)  # retry 1: fresh quote and blockhash, same guard and priority
+        e.at_slot(plan["send_slot"] + 2)  # retry 1: fresh quote and blockhash, same guard and priority
         d1 = e.sent()[2]
         sigs.append(d1["signature"])
         self.assertEqual(sell_args(d1)[1], quote_out(sell_args(d1)[0]) * 8500 // 10_000)
         self.assertEqual(d1["priority"], 55_000)
         e.land_sell(plan["land_slot"] + 2, err=SLIPPAGE_ERR)
-        e.at_slot(plan["send_slot"] + 2)  # retry 2: 0.65 and the escalated priority
+        e.at_slot(plan["send_slot"] + 4)  # retry 2: 0.65 and the escalated priority
         d2 = e.sent()[3]
         sigs.append(d2["signature"])
         self.assertEqual(sell_args(d2)[1], quote_out(sell_args(d2)[0]) * 6500 // 10_000)
@@ -117,7 +117,8 @@ class ExitTests(Case):
         self.assertEqual(e.ledger("halt_latched")[0]["reason"], "stuck_position")
         self.assertIn("stuck_position", e.ex.counters.halts)
         e.ex.state.pending.pop(MINT)
-        e.fire(mint=str(Keypair().pubkey()))
+        now_slot = e.rpc.slot  # a fresh trigger on the chain as it is now
+        e.fire(mint=str(Keypair().pubkey()), trigger_slot=now_slot - 5, s0_slot=now_slot - 505)
         self.assertEqual(e.refusals(), ["halt_latched:stuck_position"])
 
     def test_never_sell_blind_before_the_deadline_but_do_at_the_deadline(self):
@@ -486,7 +487,7 @@ class SealTests(Case):
         d = self.tmp / sub if sub else self.tmp
         d.mkdir(exist_ok=True)
         e = Env(d, oracle=oracle, **cfg)
-        e.clock.t = when
+        e.set_time(when)
         if marker:
             (d / "FINAL_WRITTEN").write_text("")
         return e
@@ -566,8 +567,8 @@ class SealTests(Case):
     def test_exits_are_not_sealed(self):
         e = self.env()
         e.open_position()
-        e.clock.t = T_SEAL
-        e.at_slot(e.plan()["send_slot"], advance_ms=0)
+        e.set_time(T_SEAL)  # far past every stage of the plan: the exit goes out, the seal does not touch it
+        e.ex.exit_tick(e.clock())
         self.assertEqual(len(e.rpc.sent), 2)
 
 
@@ -949,37 +950,52 @@ class RpcOptionTests(Case):
             seen.append(url)
             return e.rpc
 
+        argv = ["--config", self.cfg_file(e), "--dry-run", "--once", "--rpc-env", "H5_TEST_RPC", "--env-file", str(self.tmp / "unreadable.env")]
+        self.assertFalse(any("SECRETKEY123" in a for a in argv))  # the secret is in the environment, never on the command line
         with mock.patch.object(pe, "ProbeRpc", probe_rpc), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
-                mock.patch.dict(os.environ, {}, clear=False), contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                mock.patch.dict(os.environ, {"H5_TEST_RPC": self.URL}), contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
             os.environ.pop("HELIUS_API_KEY", None)
-            rc = h.main(["--config", self.cfg_file(e), "--dry-run", "--once", "--rpc", self.URL, "--env-file", str(self.tmp / "unreadable.env")])
+            rc = h.main(argv)
         self.assertEqual((rc, seen), (0, [self.URL]))  # the RPC object gets the real URL; nothing else does
         self.assertIn("mode=dryrun", out.getvalue())
-        self.assertIn("api-key=REDACTED", out.getvalue())
+        self.assertIn("rpc=https://rpc.example.test ", out.getvalue())  # scheme://host and nothing more
         blobs = [out.getvalue(), err.getvalue(), *(p.read_text() for p in self.tmp.rglob("*") if p.is_file())]
         for blob in blobs:
             self.assertNotIn("SECRETKEY123", blob)
-        start = e.ledger("start") or [json.loads(x) for x in Path(e.ex.fills.path).read_text().splitlines() if '"start"' in x]
-        self.assertTrue(any(r.get("rpc") == "https://rpc.example.test/?api-key=REDACTED" for r in start), start)
+            self.assertNotIn("api-key", blob)
+        start = [json.loads(x) for x in Path(e.ex.fills.path).read_text().splitlines() if '"start"' in x]
+        self.assertTrue(any(r.get("rpc") == "https://rpc.example.test" for r in start), start)
 
-    def test_rpc_without_dry_run_flag_is_still_a_dry_run(self):
-        e = self.env(live=True)  # config says live, no --live flag: a dry run, so --rpc is allowed
+    def test_rpc_env_variable_must_exist_and_must_be_a_name_not_a_url(self):
+        e = self.env(live=False)
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+            h.main(["--config", self.cfg_file(e), "--once", "--rpc-env", self.URL])  # someone pastes the URL: refused, and not echoed
+        self.assertEqual(cm.exception.code, 2)
+        self.assertNotIn("SECRETKEY123", err.getvalue())
+        with mock.patch.dict(os.environ, {}, clear=False), self.assertRaises(SystemExit) as cm2:
+            os.environ.pop("H5_UNSET_RPC", None)
+            h.main(["--config", self.cfg_file(e), "--once", "--rpc-env", "H5_UNSET_RPC"])
+        self.assertIn("not set", str(cm2.exception))
+
+    def test_rpc_env_without_dry_run_flag_is_still_a_dry_run(self):
+        e = self.env(live=True)  # config says live, no --live flag: a dry run, so --rpc-env is allowed
         with mock.patch.object(pe, "ProbeRpc", lambda url: e.rpc), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            rc = h.main(["--config", self.cfg_file(e), "--once", "--rpc", self.URL])
+                mock.patch.dict(os.environ, {"H5_TEST_RPC": self.URL}), contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = h.main(["--config", self.cfg_file(e), "--once", "--rpc-env", "H5_TEST_RPC"])
         self.assertEqual(rc, 0)
         self.assertIn("mode=dryrun", out.getvalue())
 
-    def test_rpc_is_refused_with_live_before_anything_is_touched(self):
+    def test_rpc_env_is_refused_with_live_before_anything_is_touched(self):
         e = self.env(end_ms=T0 + 10**9)
         built = mock.Mock(side_effect=AssertionError("rpc built"))
         with mock.patch.object(pe, "ProbeRpc", built), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("key")), \
                 mock.patch.object(pl, "harden_process", side_effect=AssertionError("hardened")), contextlib.redirect_stderr(io.StringIO()) as err, \
-                self.assertRaises(SystemExit) as cm:
-            h.main(["--config", self.cfg_file(e), "--live", "--once", "--rpc", self.URL])
+                mock.patch.dict(os.environ, {"H5_TEST_RPC": self.URL}), self.assertRaises(SystemExit) as cm:
+            h.main(["--config", self.cfg_file(e), "--live", "--once", "--rpc-env", "H5_TEST_RPC"])
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("dry-run only", err.getvalue())
-        self.assertNotIn("SECRETKEY123", err.getvalue())  # the refusal does not echo the URL
+        self.assertNotIn("SECRETKEY123", err.getvalue())
         self.assertFalse((Path(e.conf["state_dir"]) / "h5-executor.lock").exists())  # refused before the lock
 
     def test_live_still_reads_the_key_from_the_environment_only(self):

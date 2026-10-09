@@ -36,9 +36,26 @@ STAKE = 20_000_000
 class H5Rpc(LiveRpc):
     def __init__(self, clock: Clock, **kw):
         super().__init__(clock, **kw)
-        self.slot = TRIG_SLOT + 8
+        # The chain follows the fake clock: one slot per slot_ms. slot_fn(wall_ms) replaces that for a chain whose slot time changes.
+        self.slot_ms = 200.0
+        self.slot_fn = None
+        self._anchor = (TRIG_SLOT + 8, clock())
         self.slot_fails = False
         self.state_fails = False
+
+    def slot_at(self, wall_ms: int) -> int:
+        if self.slot_fn is not None:
+            return self.slot_fn(wall_ms)
+        s, t = self._anchor
+        return s + int((wall_ms - t) / self.slot_ms)
+
+    @property
+    def slot(self) -> int:
+        return self.slot_at(self.clock())
+
+    @slot.setter
+    def slot(self, v: int) -> None:
+        self._anchor = (v, self.clock())
 
     def __call__(self, method, params):
         if self.state_fails and method in ("getAccountInfo", "getMultipleAccounts"):
@@ -84,7 +101,28 @@ class Env:
         self.ex = self.build()
 
     def build(self) -> h.H5Executor:
-        return h.H5Executor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=self.oracle, root=self.root)
+        ex = h.H5Executor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=self.oracle, root=self.root)
+        self.seed_clock(ex)
+        return ex
+
+    def seed_clock(self, ex: h.H5Executor | None = None) -> None:
+        """Our own getSlot history, as 150 s of the prewarm loop would have left it: the measured slot rate is the chain's."""
+        ex = ex or self.ex
+        ex.slots = h.SlotClock()
+        now = self.clock()
+        for k in range(75, -1, -1):
+            ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
+
+    def jump(self, ms: int) -> None:
+        """Skip ahead in time with the chain standing still (a day rollover, a seal window): the slot history is re-seeded to match."""
+        cur = self.rpc.slot
+        self.clock.t += ms
+        self.rpc.slot_fn = None
+        self.rpc.slot = cur
+        self.seed_clock()
+
+    def set_time(self, when_ms: int) -> None:
+        self.jump(when_ms - self.clock())
 
     def ledger(self, kind: str | None = None) -> list[dict]:
         p = Path(self.ex.fills.path)
@@ -124,10 +162,11 @@ class Env:
         assert MINT in self.ex.state.open
         return self.ex.state.open[MINT]
 
-    def at_slot(self, slot: int, advance_ms: int = 21_000) -> None:
-        """Move the chain to `slot` and let the exit scheduler look: the clock moves past the resync age so getSlot is re-read."""
-        self.rpc.slot = slot
-        self.clock.t += advance_ms
+    def at_slot(self, slot: int) -> None:
+        """Let the clock run until the chain reaches `slot` (the world is consistent: slots follow the clock) and run the exit scheduler."""
+        delta = slot - self.rpc.slot
+        if delta > 0:
+            self.clock.t += int(delta * self.rpc.slot_ms)
         self.ex.exit_tick(self.clock())
 
     def plan(self) -> dict:
@@ -473,7 +512,7 @@ class RefusalTests(Case):
         e.ex.counters.day(h.day_key(T0)).update(trades=30, realized=-80_000_000)
         e.fire()
         self.assertEqual(len(e.refusals()), 1)
-        e.clock.t += 24 * 3_600_000  # the next UTC day
+        e.jump(24 * 3_600_000)  # the next UTC day
         e.fire(decision_ms=e.clock())
         self.assertEqual(len(e.rpc.sent), 1)
 
@@ -536,13 +575,15 @@ class RefusalTests(Case):
         e.ex._send(p, MINT)
         self.assertEqual(len(e.rpc.sent), 1)  # HALT blocks even a rebroadcast
         Path(e.conf["halt_file"]).unlink()
+        e.ex._send(p, MINT)
+        self.assertEqual(len(e.rpc.sent), 2)  # no STOP: a rebroadcast inside the 3 s window goes out
         Path(e.conf["stop_file"]).write_text("")
         e.ex._send(p, MINT)
-        self.assertEqual(len(e.rpc.sent), 2)  # STOP does not cancel an in-flight buy that already went out
+        self.assertEqual(len(e.rpc.sent), 2)  # STOP: a buy is no longer rebroadcast (it is left to expire)
         fresh = {"kind": "buy", "sends": 0, "signature": "s", "tx_b64": p["tx_b64"]}
         e.ex.state.pending["other"] = fresh
         e.ex._send(fresh, "other")
-        self.assertEqual(len(e.rpc.sent), 2)  # but a buy that has not been sent yet is cancelled by STOP
+        self.assertEqual(len(e.rpc.sent), 2)  # and a buy that has not been sent yet is cancelled by STOP
         self.assertNotIn("other", e.ex.state.pending)
 
 

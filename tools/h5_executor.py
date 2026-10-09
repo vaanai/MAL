@@ -52,6 +52,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from solders.hash import Hash
 from solders.keypair import Keypair
@@ -88,6 +89,16 @@ BOOST_ABSURD_POOLS = 3  # ... when it happens on this many pools in one UTC day 
 BOOST_BEFORE_SELL_FRAC = 0.15  # share of our landed sells whose pool's BOOST last slice was at or before the sell's landing -> halt above this
 BOOST_BEFORE_SELL_MIN_SELLS = 20  # ... judged once this many landed sells have a known BOOST last slice (boost_before_sell_gt_15pct)
 BOOST_SEEN_KEEP = 300  # pools remembered, to pair a pool's BOOST time with our sell on it
+
+# --- exit timing and entry age (review of 86a224b) ----------------------------------------------------------------------------
+SPS_TOLERANCE = 0.01  # a trigger whose sps is more than 1% from the one we measure is refused; an open plan is rebuilt past the same drift
+SPS_WINDOW_MS = 300_000  # trailing window of our own getSlot observations
+SPS_MIN_SPAN_MS = 60_000  # ... and the two points compared must be at least this far apart
+HIST_KEEP_MS = 900_000
+EARLY_TOLERANCE_MS = 3_000  # a slot-timed stage never fires more than this before its wall-clock time since s0
+SUPERSEDE_MS = 2_000  # a sell with no status this long after it was first sent is superseded by the next rung
+BUY_REBROADCAST_MS = 3_000  # a buy is rebroadcast for this long after its first send, then left to expire
+ENTRY_LATE_S = 5.0  # a buy landing later than this after the trigger print is out of the rule (the binding leg is 1.9 s)
 LATE_SELL_S = 335.0  # a sell landing after s0 + this is late
 LATE_SELL_FRAC = 0.05  # more than 5% of our landed sells late -> halt
 LANDING_MEDIAN_MAX_S = 3.0  # median trigger-to-landing over the last LANDING_WINDOW fills above this -> halt
@@ -226,6 +237,8 @@ class H5Trigger:
     v_lamports: int  # per-print V (logged; Q already contains it)
     decision_ms: int
     gap: bool = False  # the detector flagged this pool as having seen a feed gap
+    s0_wall_ms: int | None = None  # wall clock at which the detector saw s0: the anchor of the 330 s exit if the slot rate moves
+    block_time: int | None = None  # chain time (s) of the trigger print
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -260,7 +273,8 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
     return H5Trigger(mint, pool, row["s0_slot"], float(sps), row["trigger_slot"], row["q_lamports"], row["base_reserve"],
-                     row["v_lamports"], row["decision_ms"], bool(row.get("gap"))), None
+                     row["v_lamports"], row["decision_ms"], bool(row.get("gap")),
+                     row["s0_wall_ms"] if _is_int(row.get("s0_wall_ms")) else None, row["block_time"] if _is_int(row.get("block_time")) else None), None
 
 
 def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | None, str | None]:
@@ -282,7 +296,8 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
             return None, "bad_intent:v_print"  # #477 writes v_print null when the print had no V (v_missing): not tradable
         return parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
                               "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
-                              "v_lamports": v, "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
+                              "v_lamports": v, "s0_wall_ms": row.get("s0_t_recv_ms"), "block_time": row.get("block_time"),
+                              "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
                               "gap": row.get("gap")})
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
@@ -302,18 +317,33 @@ class ExitPlan:
     escalate_slot: int  # s0 + round(345 / sps)
     deadline_slot: int  # s0 + round(400 / sps): emergency market sell, hard
     late_slot: int  # s0 + round(335 / sps): a sell landing after this is late
+    # The same stages in wall time since s0 (s0_wall_ms + 330 s, ...). Slots follow the slot rate the detector measured; if that rate moves
+    # (the 400 -> 200 ms switch) a slot plan lands tens of seconds from 330 s, so the wall stages bound it: no stage fires more than
+    # EARLY_TOLERANCE_MS before its wall time, and every stage fires at its wall time even if the slot clock is unknown.
+    s0_wall_ms: int | None = None
+    arm_wall_ms: int | None = None
+    send_wall_ms: int | None = None
+    escalate_wall_ms: int | None = None
+    deadline_wall_ms: int | None = None
+    late_wall_ms: int | None = None
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def exit_plan(s0_slot: int, sps: float, h5: H5Limits) -> ExitPlan:
+def exit_plan(s0_slot: int, sps: float, h5: H5Limits, s0_wall_ms: int | None = None) -> ExitPlan:
     exit_slot = s0_slot + int(round(HOLD_S / sps))  # python round, as the frozen scorer (s14_boostdip.py)
     land_slot = exit_slot + ceil_slots(h5.exit_land_offset_s, sps)
     send_slot = land_slot - ceil_slots(h5.send_lead_ms / 1000.0, sps)
     arm_slot = send_slot - ceil_slots(h5.arm_lead_ms / 1000.0, sps)
+    wall: dict[str, int | None] = {}
+    if s0_wall_ms is not None:
+        send_wall = s0_wall_ms + int(HOLD_S * 1000) + int(h5.exit_land_offset_s * 1000) - h5.send_lead_ms
+        wall = dict(s0_wall_ms=s0_wall_ms, send_wall_ms=send_wall, arm_wall_ms=send_wall - h5.arm_lead_ms,
+                    escalate_wall_ms=s0_wall_ms + int(ESCALATE_S * 1000), deadline_wall_ms=s0_wall_ms + int(h5.deadline_s * 1000),
+                    late_wall_ms=s0_wall_ms + int(LATE_SELL_S * 1000))
     return ExitPlan(s0_slot, sps, exit_slot, land_slot, send_slot, arm_slot, s0_slot + int(round(ESCALATE_S / sps)),
-                    s0_slot + int(round(h5.deadline_s / sps)), s0_slot + int(round(LATE_SELL_S / sps)))
+                    s0_slot + int(round(h5.deadline_s / sps)), s0_slot + int(round(LATE_SELL_S / sps)), **wall)
 
 
 def entry_terms(q_lamports: int, base_reserve: int, stake: int, tol_bps: int) -> dict[str, Any]:
@@ -337,10 +367,26 @@ class SlotClock:
     def __init__(self) -> None:
         self.slot: int | None = None
         self.wall_ms = 0
+        self.hist: list[tuple[int, int]] = []  # (wall_ms, slot), thinned to >= 2 s apart, trailing HIST_KEEP_MS
 
     def observe(self, slot: int, wall_ms: int) -> None:
         if self.slot is None or slot >= self.slot:
             self.slot, self.wall_ms = slot, wall_ms
+            if not self.hist or wall_ms - self.hist[-1][0] >= 2_000:
+                self.hist.append((wall_ms, slot))
+                while self.hist and wall_ms - self.hist[0][0] > HIST_KEEP_MS:
+                    self.hist.pop(0)
+
+    def measured_sps(self, now_ms: int) -> float | None:
+        """Seconds per slot from OUR OWN getSlot observations: the newest point against the oldest within the trailing 300 s, and only when
+        they are at least 60 s apart and the newest is under 30 s old. None when that does not hold (a fresh start has none for a minute)."""
+        recent = [(w, s) for w, s in self.hist if now_ms - w <= SPS_WINDOW_MS]
+        if len(recent) < 2 or now_ms - recent[-1][0] > 30_000:
+            return None
+        (w0, s0), (w1, s1) = recent[0], recent[-1]
+        if w1 - w0 < SPS_MIN_SPAN_MS or s1 <= s0:
+            return None
+        return (w1 - w0) / 1000.0 / (s1 - s0)
 
     def est(self, now_ms: int, sps: float) -> int | None:
         if self.slot is None:
@@ -385,6 +431,7 @@ class H5Counters:
     sell_land_s: dict[str, float] = field(default_factory=dict)  # our landed sells not yet paired: pool -> landing, seconds after s0
     bvs_n: int = 0  # landed sells paired with their pool's BOOST last slice
     bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
+    plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
 
     def day(self, key: str) -> dict[str, Any]:
         d = self.days.setdefault(key, {"trades": 0, "realized": 0})
@@ -720,8 +767,18 @@ class H5Executor(pl.LiveExecutor):
             return "sell_stuck"
         if now - trg.decision_ms > self.h5.max_trigger_age_ms:
             return "stale_trigger"
-        if (trg.trigger_slot - trg.s0_slot) * trg.sps > RULE_TRIGGER_WINDOW_S + 1.0:
+        if trg.block_time is not None and now / 1000.0 - trg.block_time > self.h5.max_trigger_age_ms / 1000.0 + 2.0:  # block_time is whole seconds
+            return "stale_trigger"
+        est = self.slots.est(now, trg.sps)  # the chain's own age of the trigger print, not the detector's clock
+        if est is not None and est - trg.trigger_slot > ceil_slots(self.h5.max_trigger_age_ms / 1000.0, trg.sps):
+            return "stale_trigger_chain"
+        if (trg.trigger_slot - trg.s0_slot) * trg.sps > RULE_TRIGGER_WINDOW_S:  # the frozen window is [0, 300] s, no slack
             return "outside_rule_window"
+        measured = self.slots.measured_sps(now)  # the exit is timed in slots from the detector's sps: it must be the rate we see
+        if measured is None:
+            return "sps_unmeasured"
+        if abs(trg.sps / measured - 1.0) > SPS_TOLERANCE:
+            return "sps_mismatch"
         if trg.q_lamports > RULE_Q_MAX_LAMPORTS:
             return "q_above_rule_max"
         if trg.mint in self.state.open or trg.mint in self.state.pending or trg.mint in self.state.bought:
@@ -819,7 +876,8 @@ class H5Executor(pl.LiveExecutor):
                 drift = (snap.quote_priced / snap.base_reserve) / (trg.q_lamports / trg.base_reserve) - 1.0
                 if drift > self.h5.entry_tolerance_bps / 10_000.0:
                     return self._refuse(trg, "price_moved", drift_vs_trigger=drift)
-            plan = exit_plan(trg.s0_slot, trg.sps, self.h5)
+            s0_wall = trg.s0_wall_ms or (trg.decision_ms - int(round((trg.trigger_slot - trg.s0_slot) * trg.sps * 1000)))
+            plan = exit_plan(trg.s0_slot, trg.sps, self.h5, s0_wall)
             if self.dry_run:
                 return self._dry_buy(trg, ps, terms, plan, now, would, drift)
             self._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
@@ -844,6 +902,8 @@ class H5Executor(pl.LiveExecutor):
         if st.first_attempt_ms is None:
             st.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
+        self.counters.plans[trg.mint] = {"trigger": trg.public(), "plan": plan.public(), "min_out": terms["min_out"],  # durable before the send
+                                         "tolerance_bps": self.h5.entry_tolerance_bps}
         spend = self.h5.stake_lamports
         st.pending[trg.mint] = {
             "kind": "buy", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": trg.pool, "snap_slot": trg.trigger_slot,
@@ -936,6 +996,11 @@ class H5Executor(pl.LiveExecutor):
             if why:
                 self.state.pending.pop(mint, None)
                 self._log("send_blocked", mint, reason=why, kind_="buy")
+                return
+        if p["kind"] == "buy" and p.get("sends", 0) >= 1:
+            # A buy is rebroadcast only for BUY_REBROADCAST_MS after its first send, and never once STOP exists or LIVE_OK is gone; then it is
+            # left to expire. This is the one place both rebroadcast paths (ours and the base class's 2 s one) pass through.
+            if self._kill_reason() or self._live_gate() or self.now_ms() - p.get("first_send_ms", 0) > BUY_REBROADCAST_MS:
                 return
         super()._send(p, mint)
 
@@ -1128,33 +1193,124 @@ class H5Executor(pl.LiveExecutor):
         if pe.check_halt_file(self.limits):
             return  # HALT freezes everything, sells included
         for mint, pos in list(self.state.open.items()):
-            plan = pos.get("h5", {}).get("plan")
-            if plan is None or mint in self.state.pending or pos.get("abandoned"):
+            if pos.get("abandoned"):
                 continue
-            if pos.get("stuck"):
-                wait = min(pl.STUCK_RETRY_MS * 2 ** max(0, pos["sell_attempts"] - self.sell_retries), pl.STUCK_RETRY_MAX_MS)
-                if now - pos.get("last_sell_fail_ms", 0) < wait:
-                    continue
+            if not (pos.get("h5") or {}).get("plan"):
+                self._recover_plan(mint, pos)  # an open position with no plan is an incident, never a silent skip
+            plan = pos["h5"]["plan"]
             self._slot_fresh(now, plan)
-            est = self.slots.est(self.now_ms(), plan["sps"])
-            if est is None:
-                continue
-            if est >= plan["deadline_slot"]:
+            now = self.now_ms()
+            est = self.slots.est(now, plan["sps"])
+            plan = self._maybe_replan(pos, now) or plan
+            dead, esc = self._due(plan, "deadline", est, now), self._due(plan, "escalate", est, now)
+            send = self._due(plan, "send", est, now) or bool(pos["h5"].get("immediate_exit"))
+            pend = self.state.pending.get(mint)
+            if pend is not None:
+                if pend["kind"] == "sell":
+                    self._maybe_supersede(mint, pos, pend, est, dead, esc)
+            elif pos.get("stuck") and not esc and not dead and \
+                    now - pos.get("last_sell_fail_ms", 0) < min(pl.STUCK_RETRY_MS * 2 ** max(0, pos["sell_attempts"] - self.sell_retries), pl.STUCK_RETRY_MAX_MS):
+                pass  # the stuck back-off applies before the escalation, never after it
+            elif dead:
                 self._fire_sell(mint, pos, est, emergency=True)
-            elif est >= plan["send_slot"]:
+            elif send:
                 self._fire_sell(mint, pos, est, emergency=False)
-            elif est >= plan["arm_slot"] and not self.dry_run:  # a dry run has nothing to precompute: it cannot sign
+            elif self._due(plan, "arm", est, now) and not self.dry_run:  # a dry run has nothing to precompute: it cannot sign
                 armed = self.armed.get(mint)
-                if armed is None or self.now_ms() - armed["armed_ms"] > MAX_ARM_AGE_MS:
-                    if self.now_ms() - self._last_sell_try.get(mint, 0) >= 500:
-                        self._last_sell_try[mint] = self.now_ms()
+                if armed is None or now - armed["armed_ms"] > MAX_ARM_AGE_MS:
+                    if now - self._last_sell_try.get(mint, 0) >= 500:
+                        self._last_sell_try[mint] = now
                         with self._prio():
-                            self._arm_sell(mint, pos, self._level(pos, est, False), False)
+                            self._arm_sell(mint, pos, self._level(pos, est, False), False, est=est)
+            if dead and not pos.get("emergency_attempted"):
+                # Not sold by s0 + 400 s, pending or not: the emergency sell has been attempted above; now the halt.
+                pos["emergency_attempted"] = True
+                self._latch("stuck_position", position_mint=mint, why="not_sold_by_deadline", est_slot=est, deadline_slot=plan["deadline_slot"])
+                self.save()
 
     @staticmethod
-    def _level(pos: dict[str, Any], est: int, emergency: bool) -> int:
+    def _due(plan: dict[str, Any], stage: str, est: int | None, now: int) -> bool:
+        """A stage is due at its wall time since s0 whatever the slot clock says (and when it is unknown), and at its slot only from
+        EARLY_TOLERANCE_MS before that wall time, so a changed slot rate can neither make it late nor fire it minutes early."""
+        slot_due = est is not None and est >= plan[f"{stage}_slot"]
+        wall = plan.get(f"{stage}_wall_ms")
+        if wall is None:
+            return slot_due
+        return now >= wall or (slot_due and now >= wall - EARLY_TOLERANCE_MS)
+
+    def _recover_plan(self, mint: str, pos: dict[str, Any]) -> None:
+        saved = self.counters.plans.get(mint)
+        if saved and saved.get("plan"):
+            pos["h5"] = {**saved, **(pos.get("h5") or {}), "plan": saved["plan"], "recovered": True}
+            self._log("plan_recovered", mint)
+        else:  # nothing durable: sell now at the escalated level (every stage due, the deadline far away)
+            far = 10**15
+            pos["h5"] = {**(pos.get("h5") or {}), "immediate_exit": True, "no_plan": True,
+                         "plan": {"s0_slot": 0, "sps": 0.4, "exit_slot": 0, "land_slot": 0, "send_slot": 0, "arm_slot": 0, "escalate_slot": 0,
+                                  "deadline_slot": far, "late_slot": far, "s0_wall_ms": None, "arm_wall_ms": 0, "send_wall_ms": 0,
+                                  "escalate_wall_ms": 0, "deadline_wall_ms": far, "late_wall_ms": far}}
+            self._alert("position_without_plan", mint)
+        self.save()
+
+    def _maybe_replan(self, pos: dict[str, Any], now: int) -> dict[str, Any] | None:
+        """When the slot rate we measure has moved more than 1% from the plan's, rebuild the plan's slots from the measured rate, anchored
+        on the same wall time since s0. The wall stages in the plan do not move."""
+        plan = pos["h5"]["plan"]
+        m = self.slots.measured_sps(now)
+        if pos["h5"].get("no_plan") or m is None or not (SPS_MIN < m < SPS_MAX) or abs(m / plan["sps"] - 1.0) <= SPS_TOLERANCE:
+            return None  # (a stand-in plan for a position that lost its own is not rebuilt: it has no s0 to anchor on)
+        new = exit_plan(plan["s0_slot"], m, self.h5, plan.get("s0_wall_ms")).public()
+        self._log("plan_recomputed", pos["mint"], old_sps=plan["sps"], new_sps=round(m, 5), send_slot=new["send_slot"], deadline_slot=new["deadline_slot"])
+        pos["h5"]["plan"] = new
+        self.save()
+        return new
+
+    def _maybe_supersede(self, mint: str, pos: dict[str, Any], p: dict[str, Any], est: int | None, dead: bool, esc: bool) -> None:
+        """A pending sell no longer blocks the ladder. At the escalation, at the deadline, and when it has had no status for SUPERSEDE_MS, sign
+        the next rung with a fresh blockhash and send it too. Every live signature stays in the pending record (`prior`); whichever lands
+        is resolved, the others fail harmlessly (the winner closed the token account), at the cost of one fee each."""
+        if self.dry_run:
+            return
+        h = p.get("h5") or {}
+        lvl, emg = int(h.get("level", 0)), bool(h.get("emergency"))
+        now = self.now_ms()
+        timed = now - int(h.get("new_ms") or p.get("first_send_ms") or now) >= SUPERSEDE_MS and "confirm_seen_ms" not in p
+        top = len(SELL_LADDER_SLIP_BPS) - 1
+        if emg:
+            return
+        if dead:
+            new_lvl, new_emg = top, True
+        elif esc and lvl < top:
+            new_lvl, new_emg = top, False
+        elif timed and lvl < top:
+            new_lvl, new_emg = lvl + 1, False
+        else:
+            return
+        if now - self._last_sell_try.get(mint, 0) < 250:
+            return
+        self._last_sell_try[mint] = now
+        with self._prio():
+            rec = self._arm_sell(mint, pos, new_lvl, new_emg, est=est, fresh=True)
+        self.armed.pop(mint, None)
+        if rec is None:
+            return
+        keep = {k: p[k] for k in ("signature", "tx_b64", "lvbh", "min_out", "q_out", "reason", "h5")}
+        rec["prior"] = [*(p.get("prior") or []), keep][-4:]
+        rec["h5"]["new_ms"] = now
+        pos["exit_reason"] = rec["reason"]
+        self.state.pending[mint] = rec
+        self.save()
+        with self._prio():
+            self._send(rec, mint)
+        self.save()
+        plan = pos["h5"]["plan"]
+        self._log("sell_sent", mint, level=rec["h5"]["level"], emergency=new_emg, superseding=True, est_slot=est, send_slot=plan["send_slot"],
+                  land_slot=plan["land_slot"], deadline_slot=plan["deadline_slot"], min_out=rec["min_out"], priority_lamports=rec["h5"]["priority"],
+                  signature=rec["signature"], sent_ms=rec.get("first_send_ms"), prior_signatures=[x["signature"] for x in rec["prior"]])
+
+    def _level(self, pos: dict[str, Any], est: int | None, emergency: bool) -> int:
         lvl = min(int(pos.get("sell_attempts", 0)), len(SELL_LADDER_SLIP_BPS) - 1)
-        if est >= pos["h5"]["plan"]["escalate_slot"]:
+        if self._due(pos["h5"]["plan"], "escalate", est, self.now_ms()):
             lvl = len(SELL_LADDER_SLIP_BPS) - 1
         return lvl
 
@@ -1165,7 +1321,7 @@ class H5Executor(pl.LiveExecutor):
             return known, "buy_meta"
         return self._ata_balance(pos["base_ata"]), "rpc"
 
-    def _arm_sell(self, mint: str, pos: dict[str, Any], level: int, emergency: bool) -> dict[str, Any] | None:
+    def _arm_sell(self, mint: str, pos: dict[str, Any], level: int, emergency: bool, est: int | None = None, fresh: bool = False) -> dict[str, Any] | None:
         """Precompute the sell: balance, quote, min_out, blockhash, signature. Nothing is sent. Returns the pending record."""
         now = self.now_ms()
         bal, bsrc = self._sell_balance(pos)
@@ -1181,12 +1337,19 @@ class H5Executor(pl.LiveExecutor):
         if snap is not None and snap.quote_priced is not None:
             chk = pe.exit_check({**pos, "tokens": bal}, snap, now, own_trade_in_state=True)
             quote, ret = chk["quote_out"], chk["ret"]
+            if quote and quote > 0:
+                pos["last_quote_out"] = quote  # the reference for a floor when the pool cannot be read later
         if ps is None:
             return None
         if emergency:
             min_out = EMERGENCY_MIN_OUT  # a market sell: never 0, never blocked by a price floor
         elif quote and quote > 0:
             min_out = tx.min_out_with_slippage(quote, SELL_LADDER_SLIP_BPS[level])
+        elif self._due(pos["h5"]["plan"], "escalate", est, now):
+            # No readable quote, and we are past the escalation: do not wait for the deadline. Floor at 0.65 x the last good quote (else the
+            # stake), at the escalated priority. Still never a blind min_out before the deadline.
+            level = len(SELL_LADDER_SLIP_BPS) - 1
+            min_out = tx.min_out_with_slippage(int(pos.get("last_quote_out") or pos["spend"]), SELL_LADDER_SLIP_BPS[level])
         else:
             if now - pos.get("unpriced_alert_ms", 0) >= 60_000:  # never sell blind outside the emergency
                 pos["unpriced_alert_ms"] = now
@@ -1194,7 +1357,7 @@ class H5Executor(pl.LiveExecutor):
             return None
         prio = self.h5.escalated_priority_lamports if (level >= len(SELL_LADDER_SLIP_BPS) - 1 or emergency) else self.h5.sell_priority_lamports
         try:
-            bhash, lvbh = self.bh.get(fresh=pos.get("sell_attempts", 0) > 0 or emergency)
+            bhash, lvbh = self.bh.get(fresh=fresh or pos.get("sell_attempts", 0) > 0 or emergency)
             ixs = [*tx.sell_instructions(ps, self.user, bal, min_out, priority_total_lamports=prio, cu_limit=self.h5.sell_cu_limit),
                    pl.close_token_account(Pubkey.from_string(pos["base_ata"]), self.user, Pubkey.from_string(pos["base_tp"]))]
             signature, tx_b64 = self._sign(Message.new_with_blockhash(ixs, self.user, bhash), ps, mint, cap=prio)
@@ -1226,27 +1389,21 @@ class H5Executor(pl.LiveExecutor):
         else:
             self._last_sell_try[mint] = now
             with self._prio():
-                rec = self._arm_sell(mint, pos, level, emergency)
+                rec = self._arm_sell(mint, pos, level, emergency, est=est)
         self.armed.pop(mint, None)
         if rec is None:
-            if emergency and not pos.get("emergency_attempted"):
-                pos["emergency_attempted"] = True
-                self._latch("stuck_position", position_mint=mint, why="emergency_sell_not_built", est_slot=est)
-            return
+            return  # exit_tick latches stuck_position at the deadline whether or not a sell could be built
         rec["decision_t_ms"] = rec["receive_ms"] = now
         pos["exit_reason"] = rec["reason"]
         self.state.pending[mint] = rec
         self.save()  # write-ahead
-        self._send(rec, mint)
+        with self._prio():  # the timed send goes ahead of the status polls and slot reads in the rate-limit queue
+            self._send(rec, mint)
         self.save()
         plan = pos["h5"]["plan"]
         self._log("sell_sent", mint, level=rec["h5"]["level"], emergency=emergency, est_slot=est, send_slot=plan["send_slot"],
                   land_slot=plan["land_slot"], deadline_slot=plan["deadline_slot"], min_out=rec["min_out"], priority_lamports=rec["h5"]["priority"],
                   signature=rec["signature"], sent_ms=rec.get("first_send_ms"))
-        if emergency and not pos.get("emergency_attempted"):
-            pos["emergency_attempted"] = True
-            self._latch("stuck_position", position_mint=mint, why="not_sold_by_deadline", est_slot=est, deadline_slot=plan["deadline_slot"])
-            self.save()
 
     def _dry_sell(self, mint: str, pos: dict[str, Any], est: int, emergency: bool) -> None:
         """Outcome-blind: simulate the sell shape against live state and log only err, CU, slot and timing. No quote, no P&L."""
@@ -1279,12 +1436,23 @@ class H5Executor(pl.LiveExecutor):
         self._bal = None  # the balance moved
         self._book_realized(self.state.realized_lamports - before)
         pos = self.state.open.get(mint)
-        h5 = p.get("h5")
+        h5 = p.get("h5") or self.counters.plans.get(mint)
+        if pos is None:
+            self.counters.plans.pop(mint, None)  # the buy failed: no position, no plan to keep
+            self.counters.save(self.counters_path)
         if pos is None or h5 is None:
             return
         pos["h5"] = {**h5, "buy_landed_slot": m["slot"]}
         if m.get("slot"):
-            self._note_buy_landing(h5["trigger"]["trigger_slot"], m["slot"], h5["trigger"]["sps"])
+            trg, plan = h5["trigger"], h5["plan"]
+            self._note_buy_landing(trg["trigger_slot"], m["slot"], trg["sps"])
+            if m["slot"] > trg["trigger_slot"] + ceil_slots(ENTRY_LATE_S, trg["sps"]) or m["slot"] > plan["arm_slot"]:
+                # A buy that lands this late is not the rule's entry (it was rebroadcast, or the network stalled): get out now at level 0
+                # and stop buying until someone looks.
+                pos["h5"]["immediate_exit"] = True
+                self._log("out_of_rule_entry", mint, landed_slot=m["slot"], trigger_slot=trg["trigger_slot"], arm_slot=plan["arm_slot"],
+                          slots_after_trigger=m["slot"] - trg["trigger_slot"])
+                self._latch("out_of_rule_entry", landed_slot=m["slot"], slots_after_trigger=m["slot"] - trg["trigger_slot"])
         self.save()
 
     def _note_buy_landing(self, trigger_slot: int, landed_slot: int, sps: float) -> None:
@@ -1310,6 +1478,7 @@ class H5Executor(pl.LiveExecutor):
     def _note_sell_landing(self, mint: str, plan: dict[str, Any], landed_slot: int, emergency: bool) -> None:
         """Halt rule: more than 5% of our landed sells landing after s0 + 335 s (strictly more than 5%)."""
         c = self.counters
+        c.plans.pop(mint, None)  # the position is closed
         c.sells_landed += 1
         c.sell_land_s[mint] = (landed_slot - plan["s0_slot"]) * plan["sps"]  # paired with the pool's BOOST last slice when that is known
         while len(c.sell_land_s) > BOOST_SEEN_KEEP:
@@ -1332,6 +1501,7 @@ class H5Executor(pl.LiveExecutor):
     # -- loop ----------------------------------------------------------------------------------------------------------------
     def prewarm(self) -> None:
         super().prewarm()
+        self.refresh_slot()  # our own slot-rate measurement needs observations whether or not a position is open
         now = self.now_ms()
         if not self.dry_run:
             v = self._balance()
@@ -1347,13 +1517,49 @@ class H5Executor(pl.LiveExecutor):
             return
         if now - self._last_adv >= self.h5.status_poll_ms:
             self._last_adv = now
+            self._poll_priors()
             self.advance_pending()
         if pe.check_halt_file(self.limits):
             return
         for mint, p in list(self.state.pending.items()):
+            window = BUY_REBROADCAST_MS if p["kind"] == "buy" else 25_000
             if (p.get("sends", 0) >= 1 and "expired_seen_ms" not in p and now - p.get("last_send_ms", 0) >= self.h5.rebroadcast_ms
-                    and now - p.get("first_send_ms", now) <= 25_000):
-                self._send(p, mint)
+                    and now - p.get("first_send_ms", now) <= window):
+                with self._prio():  # inside the exit window a rebroadcast must not queue behind the slot polls
+                    self._send(p, mint)
+
+    def _poll_priors(self) -> None:
+        """Superseded sells stay live until their blockhash expires. Poll all their statuses in one call; if one landed it is the sell to
+        resolve (swap it in, the base confirm loop then reads its status), and if one failed on chain drop it."""
+        items = [(m, pr) for m, p in self.state.pending.items() if p["kind"] == "sell" for pr in p.get("prior", [])]
+        if not items:
+            return
+        try:
+            res = self.rpc("getSignatureStatuses", [[pr["signature"] for _m, pr in items], {"searchTransactionHistory": True}])["value"]
+        except (Exception, SystemExit):
+            return
+        keys = ("signature", "tx_b64", "lvbh", "min_out", "q_out", "reason", "h5")
+        for (m, pr), st in zip(items, res):
+            p = self.state.pending.get(m)
+            if not st or p is None:
+                continue
+            if st.get("err") is not None:
+                p["prior"] = [x for x in p["prior"] if x["signature"] != pr["signature"]]
+            elif st.get("confirmationStatus") in ("confirmed", "finalized"):
+                p["prior"] = [x for x in p["prior"] if x["signature"] != pr["signature"]]
+                p.update({k: pr[k] for k in keys})
+                self._log("sell_superseded_landed", m, signature=pr["signature"], level=pr["h5"].get("level"))
+        self.save()
+
+    def _resolve_landed(self, mint: str, p: dict[str, Any], st: dict[str, Any]) -> None:
+        super()._resolve_landed(mint, p, st)
+        if p.get("kind") == "sell" and st.get("err") is not None and p is self.state.pending.get(mint):
+            # The status already says the sell failed, but its meta is not available yet: move to the next rung now on an estimated fee
+            # (the base class would wait for getTransaction). The row is marked estimated.
+            prio = int((p.get("h5") or {}).get("priority") or self.h5.sell_priority_lamports)
+            fee = tx.BASE_FEE_PER_SIGNATURE + prio
+            self._finish_sell(mint, p, {"slot": st.get("slot"), "fee": fee, "err": st["err"], "sol_delta": -fee, "token_delta": 0, "logs": [],
+                                        "ata_rent_pre": 0, "ata_rent_post": 0, "estimated": True})
 
     def tick(self) -> int:
         now = self.now_ms()
@@ -1396,6 +1602,14 @@ def tail_lines(path: Path, st: pe.State) -> list[str]:
 
 
 # --- CLI ------------------------------------------------------------------------------------------------------------------
+
+
+def url_label(url: str | None) -> str | None:
+    """Only scheme://host of an RPC URL, for logs and the ledger: no path, query, userinfo or key (redact_rpc_url applied first as well)."""
+    if not url:
+        return None
+    parts = urlsplit(sim.redact_rpc_url(url))
+    return f"{parts.scheme}://{parts.hostname}" if parts.hostname else "rpc"
 
 
 def status_report(cfg: dict[str, Any]) -> str:
@@ -1448,10 +1662,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--clear-halt", metavar="NAME")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
-    ap.add_argument("--rpc", metavar="URL", help="dry run only: the RPC URL, for a user who cannot read the env file. Refused with --live")
+    ap.add_argument("--rpc-env", metavar="VARNAME", help="dry run only: the NAME of an environment variable holding the RPC URL, for a user who "
+                    "cannot read the env file. The URL itself never goes on the command line. Refused with --live")
     args = ap.parse_args(argv)
-    if args.rpc and args.live:  # before the config, the lock, the key or any RPC object; the URL is not echoed
-        ap.error("--rpc is allowed with --dry-run only: live reads HELIUS_API_KEY from the environment and never takes a URL")
+    if args.rpc_env and args.live:  # before the config, the lock, the key or any RPC object
+        ap.error("--rpc-env is allowed with --dry-run only: live reads HELIUS_API_KEY from the environment and never takes a URL")
+    if args.rpc_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.rpc_env):
+        ap.error("--rpc-env takes the NAME of an environment variable, not a URL")  # a URL here would already have put a key in argv; it is not echoed
     cfg = json.loads(Path(args.config).read_text())
     try:
         H5Limits.from_config(cfg)
@@ -1466,6 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
     if warn:
         print(f"h5_executor WARNING {warn}", flush=True)
     lock_fd = acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")
+    url: str | None = None
     try:
         oracle = JsonlPickOracle(cfg["pick_file"]) if cfg.get("pick_file") else None
         if mode == LIVE:
@@ -1486,9 +1704,12 @@ def main(argv: list[str] | None = None) -> int:
             rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file, use_env_file=False)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
             ex = H5Executor(rpc, cfg, kp, pick_oracle=oracle)
         else:
-            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(args.rpc, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
-            ex = H5Executor(rpc, cfg, None, pick_oracle=oracle, rpc_label=args.rpc)
-        shown = f" rpc={sim.redact_rpc_url(args.rpc)}" if args.rpc else ""
+            url = (os.environ.get(args.rpc_env) or "").strip() if args.rpc_env else None
+            if args.rpc_env and not url:
+                raise SystemExit(f"--rpc-env {args.rpc_env}: that environment variable is not set")
+            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(url, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
+            ex = H5Executor(rpc, cfg, None, pick_oracle=oracle, rpc_label=url_label(url))
+        shown = f" rpc={url_label(url)}" if url else ""
         print(f"h5_executor mode={ex.run_mode} user={ex.user}{shown} limits={ex.h5}", flush=True)
         if args.once:
             ex.tick()

@@ -54,7 +54,7 @@ class ReconcileTests(Case):
         e.at_slot(plan["send_slot"])
         if fail_first_sell:
             e.land_sell(plan["land_slot"], err=SLIPPAGE_ERR)
-            e.at_slot(plan["send_slot"] + 1)
+            e.at_slot(plan["send_slot"] + 2)  # past the 250 ms retry throttle
         e.land_sell(sell_slot or plan["land_slot"], proceeds=proceeds)
         return e, plan
 

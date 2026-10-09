@@ -115,7 +115,7 @@ class ShadowFlowTests(Case):
         self.append(e, {"type": "gap", "kind": "feed_restart", "open_pools": 3, "flags_pools": True}, shadow_trigger(e.clock))
         e.ex.intent_tick()
         self.assertEqual(e.refusals(), ["feed_gap"])
-        e.clock.t += e.ex.h5.gap_hold_ms + 1
+        e.jump(e.ex.h5.gap_hold_ms + 1)
         self.append(e, shadow_trigger(e.clock))
         e.ex.intent_tick()
         self.assertEqual(len(e.rpc.sent), 1)
