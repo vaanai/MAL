@@ -171,9 +171,9 @@ ERROR_RECORDS_MAX = 20
 PCB_FIRST_DEPLOY_SLOT = 454_596_459
 PRE_EVENT_SRC = "pre_event_binary"
 SYN_MAX = 50_000  # classified mints kept (count-bounded)
-RPC_ATTEMPT_DELAYS_S = (0.0, 3.0, 6.0)  # RPC fallback: attempts and the wait before each (a few attempts, bounded)
+RPC_ATTEMPT_DELAYS_S = (0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, 30.0, 45.0, 60.0, 60.0, 60.0)  # attempts and the wait before each: backoff over ~306 s, i.e. through the trigger window (T_MAX_S = 300) and inside POOL_LIFE_S; stops as soon as the class is settled
 RPC_ATTEMPT_TIMEOUT_S = 12.0  # wall bound of one attempt, enforced on the awaiting side; the worker thread is bounded by its client's own timeout
-RPC_SIGS_LIMIT = 25  # getSignaturesForAddress(curve) page: the completing tx sits behind the migrate tx(s)
+RPC_SIGS_LIMIT = 100  # getSignaturesForAddress(curve) page: 10-59 failed sniper txs crowd a short window (a 10-window missed the completing tx in 20 of 160 graduations)
 RPC_TX_PER_ATTEMPT = 8  # non-failed txs fetched per attempt, newest first (two txs are needed: the migrate tx and the CompleteEvent tx; 5 missed 3 of 10 in the cost run)
 RPC_MAX_INFLIGHT = 8  # concurrent fallback lookups; a request beyond this is dropped (the pool stays unclassified -> excluded)
 RPC_MIN_INTERVAL_S = 0.25  # pacing of the public RPC client
@@ -532,12 +532,14 @@ def _rpc_tx_parts(tx: dict, mint: str) -> dict[str, bool]:
     return out
 
 
-def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, need: Sequence[str] = ("comp", "mig")) -> dict[str, bool]:
+def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, need: Sequence[str] = ("comp", "mig"), skip: set[str] | None = None) -> dict[str, bool]:
     """Blocking. Returns the parts found, {"comp": PostCompleteBuyEvent verdict of the mint's CompleteEvent tx, "mig": the same for its migrate tx} (one tx can
     be both); a part that could not be found or read is absent. 1) `migrate_sig` (the CreatePool notice's signature), if the migrate tx is needed: one
     getTransaction. 2) If the CompleteEvent tx is still needed and nothing is True yet: the curve PDA's newest signatures (newest first, failed txs skipped,
-    up to RPC_TX_PER_ATTEMPT getTransaction calls). Stops early on a True: synthetic is already decided."""
+    up to RPC_TX_PER_ATTEMPT getTransaction calls; failed txs are skipped, and `skip` (the caller's set, extended here) holds signatures already read with no
+    match, so a retry goes deeper instead of re-reading). Stops early on a True: synthetic is already decided."""
     need = set(need)
+    skip = set() if skip is None else skip
     found: dict[str, bool] = {}
     if migrate_sig and "mig" in need:
         tx = _rpc_get_tx(client, migrate_sig)
@@ -550,7 +552,7 @@ def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, nee
     sigs = client.call("getSignaturesForAddress", [curve, {"limit": RPC_SIGS_LIMIT, "commitment": "confirmed"}]) or []
     tried = 0
     for s in sigs:
-        if s.get("err") is not None or s["signature"] == migrate_sig and "mig" in found:
+        if s.get("err") is not None or s["signature"] in skip or (s["signature"] == migrate_sig and "mig" in found):
             continue
         if tried >= RPC_TX_PER_ATTEMPT:
             break
@@ -558,6 +560,7 @@ def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, nee
         tx = _rpc_get_tx(client, s["signature"])
         if not tx:
             continue
+        skip.add(s["signature"])
         for part, v in _rpc_tx_parts(tx, mint).items():
             found.setdefault(part, v)
         if any(found.values()) or not (need - set(found)):
@@ -593,6 +596,7 @@ class RpcFallback:
         return True
 
     async def _run(self, mint: str, migrate_sig: str | None = None) -> None:
+        skip: set[str] = set()  # curve signatures already read with no match: a retry looks deeper, not again
         try:
             for delay in self.delays:
                 if delay:
@@ -603,7 +607,7 @@ class RpcFallback:
                 client = self._client_factory()
                 self.classifier.stats["rpc_attempts"] += 1
                 try:
-                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig, need),
+                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig, need, skip),
                                                  self.attempt_timeout_s)
                 except asyncio.TimeoutError:
                     self.classifier.stats["rpc_timeouts"] += 1

@@ -351,6 +351,55 @@ class RpcFallbackTests(unittest.TestCase):
         asyncio.run(go())
         self.assertEqual((clf.stats["rpc_requests"], clf.stats["rpc_gave_up"]), (1, 1))
 
+    def test_failed_sniper_txs_crowding_the_window_do_not_hide_the_completing_tx(self):
+        tx = SYN[0]
+        sigs = [{"signature": f"fail{i}", "err": {"InstructionError": [0, "x"]}} for i in range(59)] + [{"signature": "migsig"}] + \
+               [{"signature": f"fail_b{i}", "err": {"x": 1}} for i in range(30)] + [{"signature": tx["signature"]}]
+        self.assertLess(len(sigs), h5.RPC_SIGS_LIMIT)
+        c = FakeRpc(sigs, {"migsig": migrate_cut_tx(tx["mint"]), tx["signature"]: rpc_tx(tx)})
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], "migsig", {"comp", "mig"}), {"mig": False, "comp": True})
+        self.assertGreaterEqual(c.log[1][1][1]["limit"], 100)  # the getSignaturesForAddress page
+        self.assertEqual(c.log[1][1][1]["commitment"], "confirmed")
+        self.assertEqual([p[0] for m, p in c.log if m == "getTransaction"], ["migsig", tx["signature"]])  # no failed tx was fetched
+
+    def test_a_retry_goes_deeper_instead_of_reading_the_same_txs_again(self):
+        tx = PLAIN[0]
+        noise = [{"signature": f"n{i}"} for i in range(h5.RPC_TX_PER_ATTEMPT + 2)]
+        sigs = noise + [{"signature": tx["signature"]}]
+        c = FakeRpc(sigs, {**{s["signature"]: other_tx() for s in noise}, tx["signature"]: rpc_tx(tx)})
+        skip = set()
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], None, {"comp"}, skip), {})  # budget spent on noise
+        n1 = [p[0] for m, p in c.log if m == "getTransaction"]
+        self.assertEqual(h5.classify_via_rpc(c, tx["mint"], None, {"comp"}, skip), {"comp": False})
+        n2 = [p[0] for m, p in c.log if m == "getTransaction"][len(n1):]
+        self.assertEqual(set(n1) & set(n2), set())
+        self.assertIn(tx["signature"], n2)
+
+    def test_the_retry_schedule_runs_through_the_trigger_window_and_stays_inside_the_pool_life(self):
+        self.assertGreaterEqual(len(h5.RPC_ATTEMPT_DELAYS_S), 8)
+        self.assertEqual(h5.RPC_ATTEMPT_DELAYS_S[0], 0.0)  # first attempt at the announcement
+        self.assertGreaterEqual(sum(h5.RPC_ATTEMPT_DELAYS_S), h5.T_MAX_S)
+        self.assertLess(sum(h5.RPC_ATTEMPT_DELAYS_S), h5.POOL_LIFE_S)
+
+    def test_retries_stop_as_soon_as_the_class_is_settled(self):
+        tx = PLAIN[0]
+        clf = h5.SynClassifier()
+        clf.record_part(tx["mint"], "comp", False, "ws")
+        calls = []
+
+        def factory():
+            calls.append(1)
+            return FakeRpc([], {"migsig": migrate_cut_tx(tx["mint"])} if len(calls) >= 3 else {})  # the node does not have the tx yet for two attempts
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=factory, sleep=lambda s: asyncio.sleep(0))  # the production schedule, sleeps stubbed
+            fb.request(tx["mint"], "migsig")
+            await asyncio.gather(*list(fb._inflight.values()))
+
+        asyncio.run(go())
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(clf.lookup(tx["mint"]), (False, "rpc"))
+
     def test_only_one_of_the_two_txs_found_leaves_a_plain_looking_pool_unclassified(self):
         tx = PLAIN[0]
         for sigs, txs in (([{"signature": tx["signature"]}], {tx["signature"]: rpc_tx(tx)}),  # the migrate tx is missing
