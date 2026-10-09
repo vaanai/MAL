@@ -13,6 +13,9 @@
 #                   live executor: with 2 sockets any reconnect of the peer during a 3-10 s pause of the other flags every open pool, which
 #                   starves the canary. All sockets share one default endpoint, so prefer 2+ distinct endpoints in H5_WS_URLS.
 #   H5_ALLOW_FEW_SOCKETS  set to 1 to allow H5_SOCKETS below 3 (smoke tests and manual runs whose records feed nothing)
+#   H5_LOOK2_OBSERVED  set to exactly EXP-024-Am2 to start the shadow with EXP-024 Amendment 2's declared observation of Look 2's added window
+#                   (pools with s0 >= 2026-10-16T00Z write outcomes). Unset or empty keeps the H5 seal: those pools get trigger records only.
+#                   Any other value is refused. CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says.
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -33,6 +36,10 @@ if [ "$SOCKETS" -lt 3 ] && [ "${H5_ALLOW_FEW_SOCKETS:-}" != "1" ]; then
   echo "h5-shadow: refusing H5_SOCKETS=$SOCKETS: fewer than 3 sockets false-flags pools on ordinary reconnects (set H5_ALLOW_FEW_SOCKETS=1 to override)" >&2
   exit 2
 fi
+if [ -n "${H5_LOOK2_OBSERVED:-}" ] && [ "$H5_LOOK2_OBSERVED" != "EXP-024-Am2" ]; then
+  echo "h5-shadow: refusing H5_LOOK2_OBSERVED=$H5_LOOK2_OBSERVED (the only accepted value is EXP-024-Am2; unset it to keep the H5 Look-2 seal)" >&2
+  exit 2
+fi
 [ -x "$PY" ] || { echo "h5-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -c 'import websockets, certifi' 2>/dev/null || { echo "h5-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 mkdir -p "$OUT" 2>/dev/null || true
@@ -44,8 +51,11 @@ if [ -n "${H5_WS_URLS:-}" ]; then
   for u in $H5_WS_URLS; do set -- "$@" --ws-url "$u"; done
   IFS="$OLDIFS"
 fi
+if [ -n "${H5_LOOK2_OBSERVED:-}" ]; then
+  set -- "$@" --h5-look2-observed "$H5_LOOK2_OBSERVED"
+fi
 if [ -n "${H5_MAX_SECONDS:-}" ]; then
   set -- "$@" --max-seconds "$H5_MAX_SECONDS"
 fi
-echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 exec env PYTHONPATH="$ROOT" "$PY" -m tools.h5_shadow "$@"
