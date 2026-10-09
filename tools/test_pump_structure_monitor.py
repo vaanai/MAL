@@ -1,6 +1,7 @@
 """Tests for tools/pump_structure_monitor.py. Fixture-based: no network.
 
-Recorded fixtures (tools/fixtures/pump_structure_monitor/, public mainnet RPC, 2026-10-08): config/gate/program
+Recorded fixtures (tools/fixtures/pump_structure_monitor/, public mainnet RPC, 2026-10-08; programdata.json re-recorded
+2026-10-09 after the 2026-10-08T16:20Z program redeploy so it matches the committed pins): config/gate/program
 accounts, programdata slices, performance samples, epoch info (all current state), and one 2026-09-20
 exploration-period pool (migrate tx, completing tx, BOOST signature list, Pool account). Constructed inputs are
 labelled as such: nothing on chain yet shows a PostCompleteBuyEvent or a PumpSwap v2 trade instruction in our
@@ -346,7 +347,8 @@ def test_programdata_and_program_accounts_recorded():
     vals = fx("config_accounts.json")["value"]
     assert [m.decode_program_account(m._account_bytes(v)) for v in vals[8:11]] == [
         "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu", "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc", "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw"]
-    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [452654932, 452654882, 452655002]
+    # programdata.json was re-recorded on 2026-10-09 (after the 2026-10-08T16:20Z redeploy), so it carries the new deploy slots
+    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [454596459, 454596406, 454596501]
     assert m.decode_programdata_slot(bytes(45)) is None and m.decode_programdata_slot(None) is None
 
 
@@ -578,6 +580,31 @@ def test_changed_global_config_halts():
     halt, _ = flags(rec)
     assert halt["pins_changed"]["halt"] and "pumpswap_global_config" in halt["pins_changed"]["reason"]
     assert "bonding_fee_config" not in halt["pins_changed"]["reason"]
+
+
+def grow_pump_global(values):
+    """Constructed from the 2026-10-08 redeploy: the pump Global gained one trailing byte (max_curve_depth = 1) and its first
+    1,087 bytes are unchanged. values[3] is pump_global (three pinned accounts come first)."""
+    data = base64.b64decode(values[3]["data"][0])
+    assert len(data) == 1087
+    values[3]["data"][0] = base64.b64encode(data + b"\x01").decode()
+
+
+def test_pump_global_growing_by_one_byte_is_not_a_pins_change_or_a_halt():
+    # pump_global is read and hashed but informational only (pinned False): no pin holds its length or sha, so the 1,087 -> 1,088 byte
+    # growth cannot trip pins_changed. The monitor code does not change for this; it never compared that account.
+    node = Node({"getMultipleAccounts": lambda p: config_result(grow_pump_global)})
+    acc = m.stage_accounts(client_for(node), fx("epoch_info.json"), NOW)
+    pg = acc["accounts"]["pump_global"]
+    assert pg["len"] == 1088 and pg["pinned"] is False and "pump_global" not in PINS["accounts"]
+    assert pg["sha256"] != m.sha256_hex(base64.b64decode(fx("config_accounts.json")["value"][3]["data"][0]))
+    rec = healthy()
+    rec["accounts"] = acc["accounts"]
+    cmp_ = m.compare_pins(rec, PINS)
+    assert cmp_["changed"] == [] and "pump_global" not in cmp_["ok"]
+    halt, _ = flags(rec)
+    assert not halt["pins_changed"]["halt"] and not any(v["halt"] for v in halt.values())
+    assert m.build_pins({**rec, "run_utc": "2026-10-09T00:00:00Z", "accounts_context_slot": 1, "programs": {}}, PINS)["accounts"] == PINS["accounts"]  # a re-pin does not store it either
 
 
 def test_changed_fee_config_and_program_deploy_halt():
@@ -985,11 +1012,12 @@ def test_program_changed_needs_a_pin_and_a_read():
     assert w["program_changed"]["evaluated"] and not w["program_changed"]["warn"] and "unread: ['fees']" in w["program_changed"]["reason"]
 
 
-def test_committed_program_hash_pins_are_well_formed_when_present():
-    # The hash pins are added through the --write-pins review path; until then program_changed reports "unpinned" (not a change).
+def test_committed_program_hash_pins_are_present_and_well_formed():
+    # The hash pins were added by the 2026-10-09 re-pin (--write-pins). A missing hash would silently turn program_changed back into
+    # "unpinned" (not evaluated), so all three are required here.
     assert set(PINS["programs"]) == {"pump", "pumpswap", "fees"}
     for p in PINS["programs"].values():
-        assert p.get("sha256") is None or (re.fullmatch(r"[0-9a-f]{64}", p["sha256"]) and p["data_len"] > 45)
+        assert re.fullmatch(r"[0-9a-f]{64}", p["sha256"] or "") and p["data_len"] > 45
 
 
 def test_end_to_end_program_hash_change_is_a_warn_not_a_halt(tmp_path):
