@@ -694,7 +694,7 @@ By the owner's decision of 2026-10-09 ([DEC-024](../DEC/DEC-024-h5-live-canary.m
 #### E. Clarification: P2 is the last run (not a change)
 
 P2 (section 10, line 296) names the test: **"The last A3 run before 10-10T00Z shows no halt"**, and no core rule unevaluated on two consecutive days. Section 11 (lines 328-329, "Before 10-10T00Z: H5 is withdrawn") is the consequence of that test. It is not a second, stricter test that every earlier run must also pass. So:
-- **A reviewed re-pin plus a clean last run cures `pins_changed`.** The 07:11:06Z halt on `pins_changed` (job #445) is cured if PR #517, the re-pin, is merged after review, and the last official run before 10-10T00Z shows none of the five flags.
+- **A reviewed re-pin plus a clean last run cures `pins_changed`.** The 07:11:06Z halt on `pins_changed` (job #445) is cured by PR #517, the re-pin (merged as `82cd674`), if the last official run before 10-10T00Z shows none of the five flags.
 - **The reading cuts both ways.** A halt on any of the five flags in the last run before 10-10T00Z withdraws H5, whatever ran clean earlier.
 - The same reading is recorded for EXP-022 (P2 at line 320 against line 358) in that file, before the 2026-10-10T06:41Z daily run.
 
@@ -702,8 +702,8 @@ P2 (section 10, line 296) names the test: **"The last A3 run before 10-10T00Z sh
 
 The dry check (item 2) is not the P2 run. One more run is allowed, under this protocol, which is fixed here before it starts:
 1. **Exactly one official run**, with default arguments and `--out /data/mal/structure-monitor/daily.jsonl` (the default output, written out), that is `python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`, run as a MiScusi job.
-2. **Code and pins:** `main` at the merge commit of PR #517, where `tools/pump_structure_monitor.py` is the blob `1ca0a88cecf0853d94336ea046ba1a910b79f198` and `tools/pump_structure_pins.json` is the blob `7486f57f372e79c7d852f9cb70991d20043d4a8f` (`git rev-parse HEAD:<path>` is recorded in the job's start record).
-3. **Start time (UTC): `<TO BE FIXED BY MANAGER>`.** It is fixed in this declaration, after this amendment, EXP-022's clarification, DEC-024 Amendment 2 and PR #517 have merged, and before 2026-10-10T00:00Z.
+2. **Code and pins:** `main` at the merge commit of PR #517, `82cd6746b0550758c36a26d3f27bf1a2c3540414`, where `tools/pump_structure_monitor.py` is the blob `1ca0a88cecf0853d94336ea046ba1a910b79f198` and `tools/pump_structure_pins.json` is the blob `7486f57f372e79c7d852f9cb70991d20043d4a8f` (`git rev-parse HEAD:<path>` is recorded in the job's start record).
+3. **Start time (UTC): `<TO BE FIXED BY MANAGER>`.** It is fixed in this declaration, after this amendment, EXP-022's clarification and DEC-024 Amendment 2 have merged (PR #517 already has), and before 2026-10-10T00:00Z.
 4. **No other monitor run of any kind before 2026-10-10T00:00Z.** That covers scheduled, manual, dry, scratch-`--out` and `--write-pins` runs.
 5. **An errored run counts as it stands, with no retry.** Its record, or its lack of one, is the last A3 run before 10-10T00Z, and P2 is read on that. If it leaves no record, the last record is the 07:11:06Z run, which showed `pins_changed`, and P2 is not met.
 6. Section C1 governs the reading: the five flags, one by one. The run's `synthetic_share_high` value is recorded and reported, and decides nothing.

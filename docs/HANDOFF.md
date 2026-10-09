@@ -30,7 +30,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 ### STATE 10-09 ~07:35Z (NEWEST, read first; supersedes the sections below where they differ)
 
 **H5 live canary: installed and funded, but HELD by an A3 halt.**
-- **Synthetic exclusion and P2 reading: draft PR #518** (EXP-024 Am.4, EXP-022 Am.5, DEC-024 Am.2). Needs quant-proof OK on its final head and the owner approval (n_xtknDqL-ychBNg); it must merge, with #517, before the one official A3 run (start time `<TO BE FIXED BY MANAGER>` in EXP-024 Am.4 section F) and before 10-10T00Z. EXP-022's own synthetic amendment is still open (before 10-15T06:41Z).
+- **Synthetic exclusion and P2 reading: draft PR #518** (EXP-024 Am.4, EXP-022 Am.5, DEC-024 Am.2). Needs quant-proof OK on its final head and the owner approval (n_xtknDqL-ychBNg); #517 is merged (`82cd674`); this must merge before the one official A3 run (start time `<TO BE FIXED BY MANAGER>` in EXP-024 Am.4 section F) and before 10-10T00Z. EXP-022's own synthetic amendment is still open (before 10-15T06:41Z).
 - **Helm's install.** Helm installed sha `5a281b2` on fast-0 and completed runbook steps 1–10.
   - Manifest: 24/24 match (manifest file sha256 `1c2780c6…551e`, PR #499 comment 6074979090).
   - Old probe: disabled; its drop-ins are in /root/disabled.
