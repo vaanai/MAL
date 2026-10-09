@@ -216,32 +216,40 @@ Modeled on the tier file (`tools/h5_executor.py`: `TIER_FILE_PATH`, `TIERS`, `re
 
 1. **The file.** `/etc/mal-h5/VARIANT`, a constant `VARIANT_FILE_PATH` beside `TIER_FILE_PATH`. root:root 0644 in a root-owned directory, not a symlink, checked by the same `root_file_problem` that checks `LIVE_OK` and `TIER`. The executor cannot write it. Helm writes it.
 2. **Content and default.** Exactly one token from the compiled-in table (whitespace ignored): `v1`, or a challenger's id once it is compiled in. Missing, unsafe, unreadable, invalid or unknown means **`v1`**, with the reason, as `read_tier` falls back to T0. An unsafe, invalid or unknown read alerts once per distinct problem. No file is needed to run v1.
-3. **When it is read.** Before every buy decision, at the call site that refreshes the tier. The variant is then stamped (`rule_id`) on the intent, the pending buy and the position. **An open position leaves by its own variant's exit rule**, whatever the file says later. A file change never touches an open position, as a tier change does not.
-4. **Compiled in, only.** A `VARIANTS` table of code constants, with its keys pinned by a test as `tools/test_h5_executor_tiers.py` pins `TIERS`. Each entry holds the `rule_id`, the sha256 of its frozen rule, its exit mode and the head it was approved at. A file cannot add a variant or change a constant. Adding one is a reviewed code change plus a pinned reinstall by Helm (manifest and sha256, as for the canary). That reinstall is the only one the design ever needs. Moving between variants already compiled in needs none.
+3. **When it is read, and when a switch happens.**
+   - The file is read before every buy decision, at the call site that refreshes the tier. The variant is then stamped (`rule_id`) on the intent, the pending buy and the position. **An open position leaves by its own variant's exit rule**, whatever the file says later. A file change never touches an open position, as a tier change does not.
+   - **A discretionary switch happens only at 00:00Z with 0 open positions** (the DEC-021 §7 precedent: "Swaps are pinned re-pins at 0 open positions, at a planned boundary"). Helm writes a changed `VARIANT` only at 00:00Z and only after the ledger shows 0 open. The executor applies a changed variant to new buys only while it holds 0 open positions. Otherwise it keeps the active variant and ledgers `variant_change_deferred`.
+   - A fail-safe return to `v1` (the file missing or invalid, or Helm's write of `v1`) applies to new buys at once and is not bound by that rule.
+4. **Compiled in, only.** A `VARIANTS` table of code constants, with its keys pinned by a test as `tools/test_h5_executor_tiers.py` pins `TIERS`. Each entry holds the `rule_id`, the sha256 of its frozen rule, its exit mode and the head it was approved at. A file cannot add a variant or change a constant. Adding one is a reviewed code change plus a pinned reinstall by Helm (manifest and sha256, as for the canary). That reinstall is the only one the design ever needs.
+   - **v1's 330 s timer stays armed as the latest exit for every variant.** Whatever a variant's exit rule says, a position that has not been sold by s0 + round(330 s / sps) is sold by v1's timer, through the DEC-024 section 4 sell ladder.
 5. **Before a variant is compiled in:**
    - its Freeze record is merged (section 4);
-   - its own md5 decision-equivalence replay is recorded on 2026-09-20 or other exploration or already-read tape, never the fast-0 tip archive of 10-05 to 10-07, and v1's md5 `75cb0b0c…` is unchanged by its presence;
+   - its own md5 decision-equivalence replay is recorded on 2026-09-20 or other exploration or already-read tape, never the fast-0 tip archive of 10-05 to 10-07, **covering its exit decisions as well as its entries**, and v1's md5 `75cb0b0c…` is unchanged by its presence;
    - structure-only fixtures cover its decision paths;
    - a `reviewer` pass, a **security review** (the executor holds a key) and quant-proof's OK on the final head;
-   - a keyless executor dry run on the real feed shows at least 5 complete simulated round trips with 0 simulate errors (the DEC-024 Amendment 1 standard). For C-BX that includes the event-driven sell path.
+   - a keyless executor dry run on the real feed shows at least 5 complete simulated round trips with 0 simulate errors (the DEC-024 Amendment 1 standard).
 
    **After a switch,** the first 20 landed buys of the new variant must show a landing p50 of at most 3.0 s (DEC-024 section 5 item 3). If they do not, Helm writes `v1`. That is a revert, not a switch.
 6. **What a switch does not change.** The tier file and the tier. The stake, open-position cap and attempts per day. The daily and total stops **and their baselines**: the counters belong to the run and the tier, not to a variant, so a variant never starts with a fresh allowance. The wallet floor. `LIVE_OK`, `STOP` and `HALT`. The CAP-PICK exclusion and the synthetic exclusion. Every fail-closed rule.
-   - **Halts stay in force across a switch.** DEC-024 section 5 applies to the active variant, with the variant's own times (for example, "late sells" is measured against the variant's exit time, and item 4's twin is the active variant's twin). A switch clears nothing.
+   - **Halts stay in force across a switch.** DEC-024 section 5 applies to the active variant, with the variant's own times (item 4's twin is the active variant's twin). A switch clears nothing.
 7. **Triggers.** The shadow evaluates every registered rule on the shared feed. The executor acts only on a trigger whose `rule_id` equals the active variant's and refuses any other (`rule_id_mismatch`). How an old-shape record without `rule_id` is treated is the build PR's compatibility step, and it must fail closed.
-8. **Ledger.** A `variant_change` row on every change, like `tier_change`: from, to, problem, the tier, open positions and the counters' baseline. The shadow's start record names the variant, so the Look reports can list it by date (section 5.4).
-9. **Watchdog.** Alerts on `variant_file_problem` and on `variant_unapproved` (the file names a variant with no `OWNER_VARIANT_SWITCH` line). The executor cannot read a prose line, so the second alert is the manager's daily check, run with the existing H5 daily check. A change inside the dwell (section 6, item 8) also alerts. These detect. They do not stop the executor, because the fail-safe default is already `v1`.
-10. **Who does what.** The owner writes the dated line. The manager posts the numbers and gets quant-proof's OK. Helm installs builds and writes `VARIANT` as root only after the line exists, and writes `v1` or removes the file on a halt the manager asks for. Builders write the code. The executor only reads.
+8. **Ledger.** A `variant_change` row on every change, like `tier_change`: from, to, problem, the tier, open positions and the counters' baseline. The shadow's start record names the variant, so the Look reports can list it by date (section 5.4, G1 item c).
+9. **Watchdog.** Alerts on `variant_file_problem`, on a change inside the dwell, and on `variant_unapproved` (the file names a variant with no `OWNER_VARIANT_SWITCH` line). The executor cannot read a prose line, so `variant_unapproved` comes from the manager's daily check, run with the existing H5 daily check.
+   - **`variant_unapproved` is not fail-safe on its own.** The executor still follows the file. On that alert **Helm must write `v1` at once.** The alert pages Helm directly.
+   - The other two alerts detect only.
+10. **Who does what.** The owner writes the dated line. The manager posts the numbers and gets quant-proof's OK. Helm installs builds and writes `VARIANT` as root only after the line exists, at 00:00Z with 0 open positions, and writes `v1` at once on `variant_unapproved` or on a halt the manager asks for. Builders write the code. The executor only reads.
 
 ## 8. What this is not, and why the rule is strict
 
 - **Not gate evidence, not EXP-024, not a promotion.** The paper window lies in the same hours as EXP-024's looks and is chosen from N. It is not a fresh pre-registered read of any challenger. A challenger has no path to the promotion gate except a new pre-registration on hours it has not touched.
 - **The winner's curse, plainly.** Take the best of N paper variants on the same hours and you pick the luckiest as often as the best. v1 is itself the best of at least 23 hunt families on the same dates (EXP-024 section 9, JUDGE.md:58). Its block means decayed from +26.727% to +6.781% (DEC-023 Context). **The switching rule exists to stop the lab switching to the luckiest variant.** It does that with:
-  - a bound corrected for k x L;
-  - a minimum effect of +1.0 pp;
-  - fixed looks, with no rescue hours;
-  - the challenger's own book tested on its own (items 2 and 3 of section 6);
-  - a dwell, and the owner's dated line.
+  - minimums of 100 paired pools and 100 challenger trades;
+  - an effect floor of +3.0 pp under both fail models;
+  - two tests at a corrected alpha (Holm over k, Bonferroni over 2 looks), with k capped at 2;
+  - robustness to the top 3 differences and the best date;
+  - fixed looks that begin only after Look 1, with no rescue hours;
+  - the challenger's own book tested on its own, and its gate numbers written on the owner's line;
+  - a dwell, one switch at most, and the owner's dated line.
 - **A pass is still optimistic.** DEC-021 says a reported winning margin "will usually overstate the true one" (winner's curse floor at n = 100). A switched variant should be expected to do worse live than its paper margin, and no report may quote the margin as an expected gain.
 - **A live variant has no formal read.** EXP-024's Look 1 and Look 2 read the frozen v1. A PASS or FAIL speaks about v1 only. The live trial of a variant is an unpromoted trial under the owner's override, in every report.
 - **No challenger result changes EXP-024.** See section 5.4.
@@ -249,36 +257,32 @@ Modeled on the tier file (`tools/h5_executor.py`: `TIER_FILE_PATH`, `TIERS`, `re
 ## 9. Timeline
 
 - **2026-10-09 (today).** This draft is a PR. The owner decides. The other critical-path items (the 19:23Z official A3 run, Helm's install) are not touched by it.
-- **Within 1 to 2 days of approval (about 10-10 to 10-11).** The first paper challengers, as far as their steps allow:
-  - **C-BX and C-Q35:** exploration step (section 4, step 1), the early-end share count for C-BX, Freeze 1, the N-rule shadow build with its md5 proof and review, a shadow restart (one bad hour, scheduled by the manager), then the window opens at the next full UTC hour.
-  - **C-LF:** only when its rule text exists. It is not promised for this step. It may join later (section 6, item 5).
-  - **C-SYN:** not before about 11-06.
-- **2026-10-16T00 and T01.** The flag for outcomes in Look 2's added window, and the CAP-PICK seal. Pair counts fall by the pick rate.
+- **Before any challenger paper window:** G1, the companion EXP-024 amendment, merged with quant-proof's OK (section 5.4). Then C-Q35's exploration run and its Freeze record (a withdrawal under section 3(c) ends it), the multi-rule shadow build with its md5 proof and review, a shadow restart (one bad hour, scheduled by the manager), and the window opens at the next full UTC hour. **This can be done within 1 to 2 days of approval only if G1 merges promptly.**
+  - Only **C-Q35** can be ready on that schedule. C-LF waits for rule text and a REPORT. C-BX is parked. C-SYN is blocked.
+- **2026-10-16T00 and T01.** The flag for outcomes in Look 2's added window, and the CAP-PICK seal. **While the pick oracle is a stub the shadow seals every pool from 10-16T01, and no pair accrues until #509 is wired in.**
 - **About 10-16T07Z to 10-17T12Z.** EXP-024 Look 1 (earliest 10-16T07Z, deadline 10-17T12:00Z). It is not touched by this DEC. **A FAIL is the expected outcome** (P(Look 1 pass) of about 0.0265, EXP-024 section 15), and DEC-024 section 5 then stops new buys at the next 00:00Z unless the owner extends the canary.
-- **Earliest switch decision: about 10-17 to 10-20** (the first look, section 6 item 5; the second look 7 days later). A switch then also needs:
-  - the owner's extension of the canary past a Look 1 FAIL, for the live trial of a variant (open question 2);
-  - the executor's `end_ms` (now 10-16T00:30Z) and DEC-024 section 4's 14-day cap extended (`docs/HANDOFF.md`, next steps, item 5);
-  - the real CAP-PICK pick oracle (#509) merged and wired in;
-  - the variant compiled in with its proofs (section 7, item 5).
+- **Earliest switch decision.** The first look is the later of the Look 1 report (or the 10-17T12:00Z deadline) and the item 1 minimums (section 6). With a window opening at the earliest on about 10-11, 100 paired pools take until about 10-17 at 16 a day and until about 10-23 at 8 a day, and fewer than 100 can accrue by 10-16T01 if the oracle is still a stub. **So 10-17 to 10-20 is the best case, not the plan. A look in the week of 10-23 to 10-28 is likelier [inferred], and at the power in section 6 item 11 the result is expected to be no switch.**
+- **A live challenger after a Look 1 FAIL needs a new owner override.** DEC-024 section 5 lets the owner extend the canary after a Look 1 FAIL "for execution measurement only". A live trial of a challenger is not that. It needs the owner's new, explicit override (section 10, question 2), as well as the `end_ms` and 14-day-cap extensions (`docs/HANDOFF.md`, next steps, item 5) and the CAP-PICK oracle (#509).
 - **2026-11-06T00.** The declared observation ends for the shadow's outcomes. Look 2's earliest run is about 11-06T03Z. C-SYN's freeze can come only after Look 2 is read, so its earliest decision is late November.
 
 ## 10. Open for the owner
 
 1. **Approve the design,** and the one-row change to DEC-024 section 4 (the executor may trade a pre-approved variant that `VARIANT` names, after your dated line).
-2. **After a Look 1 FAIL,** DEC-024 section 5 ends new buys unless you extend the canary. Do you want the canary extended so a challenger can be live? Without it, the 10-17 to 10-20 decision window has nothing to switch.
-3. **Does the live-trial override extend to a challenger?** You gave it for "this one strategy", v1. This DEC makes you answer for each switch on the dated line, and a "no" refuses the switch.
+2. **A live challenger after a Look 1 FAIL.** DEC-024 section 5 ends new buys after a Look 1 FAIL, and allows an extension only "for execution measurement only". Do you give a new, explicit override for a live trial of a challenger? Without it, the switch window has nothing to switch.
+3. **Does the live-trial override extend to a challenger?** You gave it for "this one strategy", v1. Each switch line asks, and a "no" refuses the switch.
 4. **Tier after a switch.** The design keeps the tier as it is. Do you want a new variant to run its first 20 landed buys at T0? That would be a separate act by Helm on the tier file, not something the selector does.
-5. **How many.** You asked for 3 or 4. Three can run before Look 2: C-BX, C-Q35 and C-LF, and C-LF only once its rule text exists. The fourth, C-SYN, cannot start before about 11-06.
-6. **The thresholds** in section 6 are the manager's draft. Quant-proof sets them, and the numbers go to you before the first look.
-7. **The proposed extension of D1** to pools with s0 in [2026-10-08T20:25Z, 2026-10-10T00) (section 3(d)).
-8. **The companion EXP-024 amendment** (section 5.4). It extends the declared observation to challenger paper outcomes. It is a manager decision derived from your design, as Amendment 2 was, and you may revoke it.
+5. **How many.** You asked for 3 or 4. This DEC freezes **at most 2**, and realistically only **C-Q35 now** (it may be withdrawn by its own exploration rule) and **C-LF** once it has rule text and a REPORT. C-BX is parked and C-SYN cannot start before about 11-06. Raising the cap needs a new DEC and a stricter correction.
+6. **The values in section 6** are quant-proof's. At the stated power the expected result is no switch. Do you want the lab to spend the build effort for that?
+7. **At most one discretionary switch** under this DEC (section 6, item 9). A second needs a new DEC.
+8. **The companion EXP-024 amendment G1** (section 5.4). It is a manager decision derived from your design, as Amendment 2 was, and you may revoke it.
 
 ## Sources
 
 - [DEC-024](DEC-024-h5-live-canary.md) (sections 3 to 7, Amendments 1 to 3), [DEC-021](DEC-021-champion-challenger.md) (§1, §4 to §7, and the owner decision), [DEC-023](DEC-023-h5-family.md), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md).
-- [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md): sections 2, 3, 3.1, 7, 9, 11, 15, Amendments 2 to 4 (D1 at line 691).
+- [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md): sections 2, 3, 3.1, 7, 9, 10, 11, 15, Amendments 2 to 4 (D1 at line 691).
 - [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) section 9.
-- `tools/h5_shadow.py` (record types, `EXIT_LADDER_S`, the trigger record's fields, `boost_last_slice_s`) and `tools/h5_executor.py` (`TIERS`, `TIER_FILE_PATH`, `read_tier`, `root_file_problem`, `_refresh_tier`, `TRIGGER_VARIANT`).
-- `/data/mal/hunt-1008/h5-flows/RULE.md`, `VERIFY.md` ("NEW: the exit is a timing race"), and `/data/mal/hunt-1008/h5-lossfilter/MAP.md` (sections 0, 1, 2, 4), read as text only.
+- `tools/h5_shadow.py` (record types, `EXIT_LADDER_S`, the trigger record's fields, `boost_last_slice_s`, the `min_q` withholding) and `tools/h5_executor.py` (`TIERS`, `TIER_FILE_PATH`, `read_tier`, `root_file_problem`, `_refresh_tier`, `TRIGGER_VARIANT`).
+- `/data/mal/hunt-1008/h5-flows/RULE.md`, `REPORT.md` (lines 23 and 24), `VERIFY.md` ("NEW: the exit is a timing race"), and `/data/mal/hunt-1008/h5-lossfilter/MAP.md` (sections 0 to 4), read as text only.
 - `docs/HANDOFF.md`, STATE 10-09 ~09:30Z (volume finding, next steps).
+- Quant-proof's review of #526 at 975d8db, as the coordinator relayed it. Its values and power figures are quoted, not recomputed.
 - No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or shadow or canary outcome record was opened to write this file.
