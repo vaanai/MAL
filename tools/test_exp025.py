@@ -209,6 +209,76 @@ class PowerModel(unittest.TestCase):
         self.assertGreater(a[0]["0.008:0.017"]["either"], a[1]["0.008:0.017"]["either"])
 
 
+class OctoberPatches(unittest.TestCase):
+    """Quant-proof R1: the pinned October segment patches (a pinned patch, never a rule change)."""
+
+    EXPECT = {
+        1: ("2026-10-17T02", "7060cbd537571dc8a2da6249d4443adf2453224b8bca6aa46c68dbfbee803a11", "404669118447557f42bad7aa9cdb0b41e48ce6916b0cc7e003a7d643ece45722"),
+        2: ("2026-10-24T02", "ca6d4b75790de653410df985e8598e8a336d0016d40c0535b5a73b2d0bd0ac7e", "885ce0d89f50c82562c2edeb572491080ef80d30ef1a328a67a3b7d6d7e32fb6"),
+    }
+
+    def test_patch_files_hash_and_are_named_in_the_exp(self):
+        txt = open(os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")).read()
+        for look, (_, applied_sha, patch_sha) in self.EXPECT.items():
+            self.assertEqual(sha(os.path.join(ART, "patches", f"common2_look{look}.patch")), patch_sha)
+            self.assertIn(patch_sha, txt)
+            self.assertIn(applied_sha, txt)
+
+    @unittest.skipIf(np is None, "numpy missing")
+    def test_patches_apply_to_the_pinned_file_and_set_the_october_segment(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("patch") is None:
+            self.skipTest("patch(1) missing")
+        for look, (end, applied_sha, _) in self.EXPECT.items():
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "common2.py")
+                r = subprocess.run(["patch", "-o", out, os.path.join(ART, "scripts", "common2.py"), os.path.join(ART, "patches", f"common2_look{look}.patch")],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(sha(out), applied_sha)
+                spec = importlib.util.spec_from_file_location(f"common2_look{look}", out)
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                ep = m.ep
+                self.assertEqual(m.seg_of(ep("2026-10-12T00")), 3)
+                self.assertEqual(m.seg_of(ep("2026-10-02T15")), 3)
+                self.assertEqual(m.seg_of(ep("2026-10-02T14")), -1)
+                self.assertEqual(m.seg_of(ep(end)), -1)  # the segment end is exclusive
+                self.assertEqual(m.seg_of(ep("2026-10-24T02" if look == 1 else "2026-10-25T00")), -1)
+                self.assertEqual([m.seg_of(ep(x)) for x in ("2026-08-20T00", "2026-09-10T00", "2026-09-20T00")], [0, 1, 2])
+                self.assertEqual(len(m.SEGS), 4)
+                self.assertEqual(m.O, f"/data/mal/exp025/look{look}")
+                self.assertEqual(m.TAPE, f"/data/mal/exp025/look{look}/tape")
+                self.assertEqual(m.SH, f"/data/mal/exp025/look{look}/hunt-shared")
+
+
+class EventVMapping(unittest.TestCase):
+    """Quant-proof R2: quote_reserve := vault + V(t) - V0, PRE-trade states."""
+
+    def setUp(self):
+        self.m = load("event_v_map", "event_v_map.py")
+
+    def test_total_quote_identity(self):
+        for vault, v_t, v0 in ((100_000_000_000, 17_585_000_000, 17_585_000_000), (123_456_789_012, 17_540_000_000, 17_585_000_000), (20_000_000_000, 17_700_000_000, 17_500_000_000)):
+            q = self.m.map_quote_reserve(vault, v_t, v0)
+            self.assertEqual(q + v0, vault + v_t)
+
+    def test_constant_v_is_the_september_behaviour(self):
+        self.assertEqual(self.m.map_quote_reserve(55_000_000_000, 17_585_000_000, 17_585_000_000), 55_000_000_000)
+
+    def test_pre_trade_state_of_print_i_is_post_trade_state_of_print_i_minus_1(self):
+        post = [(101, 17_600), (103, 17_500), (99, 17_700)]
+        self.assertEqual(self.m.pre_trade_states(post, v0=17_585, vault0=100), [(100, 17_585), (101, 17_600), (103, 17_500)])
+
+    def test_mapped_series_uses_the_pre_state_not_the_post_state(self):
+        post = [(101, 17_600), (103, 17_500)]
+        got = self.m.mapped_series(post, v0=17_585, vault0=100)
+        self.assertEqual(got, [100 + 17_585 - 17_585, 101 + 17_600 - 17_585])
+        self.assertNotEqual(got[0], self.m.map_quote_reserve(post[0][0], post[0][1], 17_585))
+
+
 class ExpFile(unittest.TestCase):
     def _text(self):
         p = os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")

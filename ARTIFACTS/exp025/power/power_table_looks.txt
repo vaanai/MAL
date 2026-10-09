@@ -10,47 +10,89 @@ calibration (model vs reported):
   pressure p_eff 0.2408 (flat 0.15); failed send 0.202% of stake
 
 two looks: Look 1 = first 7 dates, Look 2 = cumulative 14 dates, runs only if Look 1 did not pass.
-pass probability, both fail legs, 1.3 s cell, rent per fill; 1500 sims per row, Monte Carlo SE <= 0.013
-deciding split (ALPHA_LOOK1, ALPHA_LOOK2) = (0.008, 0.017); other splits shown for the quant-proof comparison
+pass probability, both GATE-WEIGHTED fail legs (0.85 pnl - 0.15 fee, not random draws), 1.3 s cell, rent per fill; 1200 sims per row, Monte Carlo SE <= 0.014
+registered split (ALPHA_LOOK1, ALPHA_LOOK2) = (0.005, 0.02); other splits shown for comparison
 
-edge 1.0  trades/day 20.0  mean n: look 1 139, look 2 278   (single look, 14 dates, alpha 0.025: 0.713)
+edge 1.0  scenario: 20/day on all dates  mean n: look 1 141, look 2 281   (one 14-date read at alpha 0.025: 0.834)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.161           0.505              0.666
-  0.005:0.02        0.103           0.577              0.681
-  0.0125:0.0125     0.225           0.399              0.624
-  0.01:0.015        0.188           0.459              0.647
+  0.005:0.02        0.258           0.562              0.821
+  0.008:0.017       0.331           0.484              0.815
+  0.003:0.022       0.193           0.637              0.831
+  0.01:0.015        0.364           0.443              0.807
 
-edge 1.0  trades/day 12.0  mean n: look 1 85, look 2 168   (single look, 14 dates, alpha 0.025: 0.491)
+edge 1.0  scenario: 12/day on all dates  mean n: look 1 83, look 2 167   (one 14-date read at alpha 0.025: 0.660)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.023           0.409              0.432
-  0.005:0.02        0.016           0.443              0.459
-  0.0125:0.0125     0.039           0.352              0.391
-  0.01:0.015        0.030           0.386              0.416
+  0.005:0.02        0.033           0.608              0.642
+  0.008:0.017       0.043           0.577              0.620
+  0.003:0.022       0.026           0.622              0.647
+  0.01:0.015        0.052           0.555              0.607
 
-edge 0.5  trades/day 20.0  mean n: look 1 139, look 2 278   (single look, 14 dates, alpha 0.025: 0.264)
+edge 1.0  scenario: 20/day forward-1002, 12/day walk-2 dates (oracle exclusion)  mean n: look 1 131, look 2 215   (one 14-date read at alpha 0.025: 0.762)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.039           0.191              0.230
-  0.005:0.02        0.023           0.224              0.247
-  0.0125:0.0125     0.062           0.148              0.210
-  0.01:0.015        0.048           0.167              0.215
+  0.005:0.02        0.212           0.537              0.749
+  0.008:0.017       0.282           0.448              0.730
+  0.003:0.022       0.153           0.606              0.759
+  0.01:0.015        0.310           0.407              0.717
 
-edge 0.5  trades/day 12.0  mean n: look 1 85, look 2 168   (single look, 14 dates, alpha 0.025: 0.174)
+edge 1.0  scenario: 20/day with a day effect, SD 0.03 of stake  mean n: look 1 140, look 2 281   (one 14-date read at alpha 0.025: 0.840)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.007           0.145              0.151
-  0.005:0.02        0.005           0.158              0.163
-  0.0125:0.0125     0.012           0.127              0.139
-  0.01:0.015        0.009           0.135              0.143
+  0.005:0.02        0.209           0.618              0.827
+  0.008:0.017       0.274           0.538              0.812
+  0.003:0.022       0.147           0.686              0.833
+  0.01:0.015        0.315           0.483              0.798
 
-edge 0.25  trades/day 20.0  mean n: look 1 139, look 2 278   (single look, 14 dates, alpha 0.025: 0.087)
+edge 0.5  scenario: 20/day on all dates  mean n: look 1 141, look 2 281   (one 14-date read at alpha 0.025: 0.448)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.014           0.065              0.079
-  0.005:0.02        0.009           0.073              0.082
-  0.0125:0.0125     0.025           0.051              0.075
-  0.01:0.015        0.020           0.057              0.077
+  0.005:0.02        0.081           0.354              0.435
+  0.008:0.017       0.116           0.310              0.426
+  0.003:0.022       0.052           0.384              0.437
+  0.01:0.015        0.140           0.279              0.419
 
-edge 0.25  trades/day 12.0  mean n: look 1 85, look 2 168   (single look, 14 dates, alpha 0.025: 0.075)
+edge 0.5  scenario: 12/day on all dates  mean n: look 1 83, look 2 167   (one 14-date read at alpha 0.025: 0.305)
   split (a1:a2)    look 1   look 2 (if 1 not passed)   either
-  0.008:0.017       0.002           0.057              0.059
-  0.005:0.02        0.002           0.061              0.063
-  0.0125:0.0125     0.004           0.047              0.051
-  0.01:0.015        0.003           0.051              0.054
+  0.005:0.02        0.013           0.276              0.289
+  0.008:0.017       0.016           0.258              0.274
+  0.003:0.022       0.009           0.285              0.294
+  0.01:0.015        0.018           0.243              0.261
+
+edge 0.5  scenario: 20/day forward-1002, 12/day walk-2 dates (oracle exclusion)  mean n: look 1 131, look 2 215   (one 14-date read at alpha 0.025: 0.357)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.077           0.279              0.357
+  0.008:0.017       0.100           0.248              0.348
+  0.003:0.022       0.046           0.313              0.359
+  0.01:0.015        0.111           0.223              0.334
+
+edge 0.5  scenario: 20/day with a day effect, SD 0.03 of stake  mean n: look 1 140, look 2 281   (one 14-date read at alpha 0.025: 0.414)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.058           0.321              0.379
+  0.008:0.017       0.088           0.278              0.367
+  0.003:0.022       0.038           0.355              0.393
+  0.01:0.015        0.107           0.248              0.356
+
+edge 0.25  scenario: 20/day on all dates  mean n: look 1 141, look 2 281   (one 14-date read at alpha 0.025: 0.169)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.033           0.136              0.168
+  0.008:0.017       0.043           0.111              0.154
+  0.003:0.022       0.024           0.147              0.171
+  0.01:0.015        0.051           0.095              0.146
+
+edge 0.25  scenario: 12/day on all dates  mean n: look 1 83, look 2 167   (one 14-date read at alpha 0.025: 0.116)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.006           0.100              0.106
+  0.008:0.017       0.009           0.087              0.097
+  0.003:0.022       0.003           0.109              0.113
+  0.01:0.015        0.009           0.082              0.091
+
+edge 0.25  scenario: 20/day forward-1002, 12/day walk-2 dates (oracle exclusion)  mean n: look 1 131, look 2 215   (one 14-date read at alpha 0.025: 0.138)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.024           0.115              0.139
+  0.008:0.017       0.036           0.096              0.132
+  0.003:0.022       0.016           0.122              0.138
+  0.01:0.015        0.045           0.086              0.131
+
+edge 0.25  scenario: 20/day with a day effect, SD 0.03 of stake  mean n: look 1 140, look 2 281   (one 14-date read at alpha 0.025: 0.152)
+  split (a1:a2)    look 1   look 2 (if 1 not passed)   either
+  0.005:0.02        0.022           0.120              0.142
+  0.008:0.017       0.028           0.108              0.137
+  0.003:0.022       0.015           0.129              0.144
+  0.01:0.015        0.037           0.095              0.133

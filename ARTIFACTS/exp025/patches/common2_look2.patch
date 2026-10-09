@@ -1,0 +1,25 @@
+--- a/scripts/common2.py
++++ b/scripts/common2.py
+@@ -1,9 +1,9 @@
+ """C1 v2 constants (restart after the 10-08 disk incident). Every number here is pinned before any CONFIRMATION read."""
+ import numpy as np, math, datetime as dt
+-O = '/data/mal/hunt-1008/c1-cascade-postgrad'
+-TAPE = '/data/mal/audit-1008/tape'
+-SH = '/data/mal/hunt-shared'
+-TMP = '/data/mal/hunt-1008/tmp/c1-cascade-postgrad'
++O = '/data/mal/exp025/look2'
++TAPE = '/data/mal/exp025/look2/tape'
++SH = '/data/mal/exp025/look2/hunt-shared'
++TMP = '/data/mal/exp025/tmp/look2'
+ # tools/paper_curve_math.PUMPSWAP_SOL_FEE_TIERS (mcap SOL inclusive lower bound, ppm) == cap_pick_score.fee_ppm
+ TIERS = ((0, 12_500), (420, 12_000), (1470, 11_500), (2460, 11_000), (3440, 10_500), (4420, 10_000), (9820, 9_500), (14740, 9_000), (19650, 8_500),
+          (24560, 8_000), (29470, 7_500), (34380, 7_000), (39300, 6_500), (44210, 6_000), (49120, 5_500), (54030, 5_250), (58940, 5_000), (63860, 4_750),
+@@ -23,7 +23,7 @@
+ 
+ 
+ # tape segments [start, end) epoch s; S1 = DISCOVERY, S2 + S3 = CONFIRMATION
+-SEGS = [(ep('2026-08-14T12'), ep('2026-08-28T12')), (ep('2026-09-03T12'), ep('2026-09-15T12')), (ep('2026-09-18T23'), ep('2026-09-25T07'))]
++SEGS = [(ep('2026-08-14T12'), ep('2026-08-28T12')), (ep('2026-09-03T12'), ep('2026-09-15T12')), (ep('2026-09-18T23'), ep('2026-09-25T07')), (ep('2026-10-02T15'), ep('2026-10-24T02'))]
+ 
+ 
+ def seg_of(t):

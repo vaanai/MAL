@@ -6,13 +6,13 @@
 | --- | --- |
 | **ID** | `EXP-025-c1nf-part1-prereg` |
 | **Status** | **planned**. Counting starts at 2026-10-10T00 (section 0). |
-| **Declared (UTC)** | 2026-10-09. It must merge before 2026-10-10T00:00Z (target 2026-10-09T23:00Z). The owner's choice of a two-look design and his OK on DEC-025 O1, O2 and O3 were relayed by the manager on 2026-10-09 (DEC-025 `OWNER_DECISION_CONFIRMED`). |
+| **Declared (UTC)** | 2026-10-09. It must merge before 2026-10-10T00:00Z (target 2026-10-09T23:00Z). The owner's choice of a two-look design and his OK on DEC-025 O1, O2 and O3 were confirmed by the manager on 2026-10-09 (DEC-025 `OWNER_DECISION_CONFIRMED`). Quant-proof's 12 required edits on 95a0cc6 are applied in this version. |
 | **Parent** | hunt-1008 / c1-cascade-postgrad: `RULE.md` (sha256 `a22cebc481f36cda70fff07663e525b5b72ebee8741c843b7489038dbd49281c`), `REPORT.md`; `/data/mal/hunt-1008/JUDGE-4.md` section 3.3 (ranks C1-NF third of the hunt 1-4 survivors); `c1nf-verify/VERIFY.md` (verdict SURVIVES-VERIFY). |
 | **Rules** | [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md) (ledger, Holm, block budget, family lineage), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) (forward-1002, seal, FINAL; Am.7, Am.8), [DEC-021](../DEC/DEC-021-champion-challenger.md) section 8, Am.1 to Am.3, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-025](../DEC/DEC-025-c1nf-family.md) (this family), [EXP-022](EXP-022-cap-pick-part1-prereg.md) section 9 and Amendment 4, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md). |
 | **Hypothesis** | The frozen C1 cascade plus the top-holder cap (C1-NF, section 2) has mean SOL per trade > 0 at 0.25 SOL on October post-graduation decisions, under both fail models, at a 1.3 s entry, 505,000 lamports per send and rent on every fill (section 6), and clears the gate and the day-level test at that look's alpha (section 7). Look 1 counts decisions in `[2026-10-10T00, 2026-10-17T00)` (7 dates). Look 2, only if Look 1 did not pass, counts the cumulative `[2026-10-10T00, 2026-10-24T00)` (14 dates). |
 | **Kill condition** | Neither look passes (section 7); or a refusal fires (section 11.4, NOT_DECIDABLE); or a precondition fails (section 10). Two looks. No retune, no re-cap, no re-read. |
-| **Expected outcome** | **Unknown, probably a fail.** The edge was found after the read on spent blocks. Conditional on the stated model and the placeholder alpha pair, P(pass at either look) is about 0.67 if September holds, 0.23 if the edge is half and 0.08 at a quarter, at 20 trades per day (0.43 / 0.15 / 0.06 at 12 per day; section 3). |
-| **Tools** | **Read:** a locked read tool built on the October adapter (section 11). **Pick exclusion:** `pick_oracle(mint) -> bool` (section 5). **Determinism:** `ARTIFACTS/exp025/ledger/01_wallet_daily_det.py`. **Power:** `tools/exp025_power.py`. |
+| **Expected outcome** | **Unknown, probably a fail.** The edge was found after the read on spent blocks. Conditional on the stated model and the registered pair (0.005, 0.020), P(pass at either look) is about 0.82 if September holds, 0.44 if the edge is half and 0.17 at a quarter, at 20 trades per day (0.64 / 0.29 / 0.11 at 12 per day; 0.75 / 0.36 / 0.14 with 12 per day on walk-2 dates; section 3). |
+| **Tools** | **Read:** a locked read tool built on the October adapter (section 11). **Pick exclusion:** `pick_oracle(mint) -> bool` (section 5.3). **Determinism:** `ARTIFACTS/exp025/ledger/01_wallet_daily_det.py`. **October patches and V mapping:** `ARTIFACTS/exp025/patches/`, `event_v_map.py` (section 2.4). **Power:** `tools/exp025_power.py`. |
 
 **Labels.** [measured] is copied from a cited file that computed it. [pinned] is a design value this file fixes; it is not evidence. [inferred] is reasoned. [est] is an estimate. Numbers from VERIFY are copied, not rounded up.
 
@@ -22,15 +22,16 @@
 EXP025_COUNT_START: 2026-10-10T00
 EXP025_LOOK1_END: 2026-10-17T00
 EXP025_COUNT_END: 2026-10-24T00
-EXP025_ALPHA_LOOK1: 0.008
-EXP025_ALPHA_LOOK2: 0.017
+EXP025_ALPHA_LOOK1: 0.005
+EXP025_ALPHA_LOOK2: 0.020
 ```
 
 - **Format.** Each line matches its pattern (for example `^EXP025_COUNT_START: 2026-10-10T00$`) exactly once. The read tool refuses unless all five do, and unless this file is clean against HEAD. The values never change after merge.
-- **The alpha pair is one constant pair.** `EXP025_ALPHA_LOOK1` + `EXP025_ALPHA_LOOK2` = 0.025 / k (Bonferroni over looks; k = 1 at this merge, DEC-025 section 2). **0.008 and 0.017 are a placeholder** until quant-proof recommends the split. Replacing them means editing these two lines and the constants `ALPHA_LOOK1` and `ALPHA_LOOK2` in `tools/exp025_power.py`, then re-running the power table; `tools/test_exp025.py` fails if the lines, the constants or the sum disagree. Nothing else in the file depends on the values. After merge they are fixed.
+- **The alpha pair is one constant pair.** `EXP025_ALPHA_LOOK1` + `EXP025_ALPHA_LOOK2` = 0.025 / k (Bonferroni over looks; k = 1 at this merge, DEC-025 section 2). **(0.005, 0.020) is quant-proof's recommendation** (section 3). Replacing it before the merge means editing these two lines and the constants `ALPHA_LOOK1` and `ALPHA_LOOK2` in `tools/exp025_power.py`, then re-running the power table; `tools/test_exp025.py` fails if the lines, the constants or the sum disagree. After merge they are fixed.
 - **Counted decision.** A selected row counts at a look if its decision time T (a whole UTC minute) satisfies `START <= T < LOOK1_END` (Look 1, 7 dates, 10-10 to 10-16) or `START <= T < COUNT_END` (Look 2, 14 dates, 10-10 to 10-23). The last counted exit of Look 1 lands before 2026-10-17T01:10 and of Look 2 before 2026-10-24T01:10; hours 2026-10-17T01 and 2026-10-24T01 are read for exits only.
-- **Why 10-10T00.** A counted window must be fixed before its first hour begins in real time (ledger rule 4; EXP-024 section 0). This file can merge during 10-09, so 10-10T00 is the first full UTC day. Ledger feature hours before it are read as features only, after the FINAL (section 4).
-- **If the merge is late.** If this file (with DEC-025, quant-proof OK on its final head) is not merged by 2026-10-10T00:00Z, the pinned dates are void. The counted start is then the first 00:00Z after the merge, `C`, set by a dated, outcome-blind amendment merged before `C`; Look 1 ends at `C + 7 d` and the cumulative end is `C + 14 d`. The alpha lines do not change. Nothing else changes. If `C` is later than 10-15T00, Look 1 has fewer than one forward-1002 date and the amendment must say so.
+- **Why 10-10T00.** A counted window must be fixed before its first hour begins in real time (ledger rule 4; EXP-024 section 0). This file can merge during 10-09, so 10-10T00 is the first full UTC day. October hours before it are read as ledger, feature and **training-label** input only, after the FINAL (section 4).
+- **If the merge is late [pinned].** The only alternative start is `C = 2026-10-11T00`, and only if this file (with DEC-025, quant-proof OK on its final head) merges before that instant. The three date lines then become `2026-10-11T00`, `2026-10-18T00` and `2026-10-25T00` by a dated, outcome-blind amendment merged before 2026-10-11T00, and the allowlists of section 4 move by one day. The alpha lines and everything else are unchanged. If the file has not merged by 2026-10-11T00:00Z, C1-NF v1 is **withdrawn** on these hours (section 11.5). No other start date is allowed.
+- **No outcome before merge [pinned].** No C1-NF shadow or canary outcome (label, fill, exit, P&L, mean, CI or day sign) is computed before this file merges, so the start can not be chosen after watching outcomes.
 - **Not counted.** Every decision before 2026-10-10T00, whatever its source. The tip tape and the shadow (section 5) may have seen such hours; none is read for C1-NF's outcome.
 
 ## 1. Family status (DEC-014, DEC-025)
@@ -110,9 +111,10 @@ Same everything, exit E7 (time exit 900 s), target pnl_E7, threshold 0.06. It me
 
 **October adaptations [pinned; not tuned]** (JUDGE-4 section 3.3.3):
 - canonical pool found by PDA instead of the September V band;
-- pricing Q = vault quote + per-print event V; "real quote >= 20 SOL" uses the vault quote net of pending fees, as decoded;
+- pricing uses the pinned event-V mapping `quote_reserve := vault + V(t) - V0` of section 2.4 (not a carried column that pass A never reads); "real quote >= 20 SOL" is pass A's `qreal`, the vault net of pending fees;
 - seconds per slot measured per UTC hour; after about 2026-10-09T14:30Z slots are 200 ms, so the 0.55 s sell lag is 3 slots (`ceil(0.55 / s)`, as pass A computes it);
 - the wallet ledger is built from tape days strictly before D: the exploration days plus October hours (section 11.2).
+- October training rows come only from graduations at or after 2026-10-09T00 (the first hour with event V, P6); the 36 exploration days are unchanged. This departs from RULE.md's "every stage-1 row with t < D 00:00Z - 3,600 s", which has no October rows before 10-09T00 to train on;
 
 ### 2.3 Pinned artifacts
 
@@ -135,77 +137,124 @@ All are copied into the repo (`/data/mal/hunt-1008` is `.nobackup`). `ARTIFACTS/
 | **`ledger/01_wallet_daily_det.py`** (replaces the line above; section 11.1) | `bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5` |
 | `ledger/determinism_check.py` / `.log` | `8da3ce73…485dc` / `6767a870…ea57b` (full values in `SHA256SUMS`) |
 | **`c1nf_cap.py`** (the added line as code) | `e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6` |
+| **`patches/common2_look1.patch`** / **`patches/common2_look2.patch`** (section 2.4) | `404669118447557f42bad7aa9cdb0b41e48ce6916b0cc7e003a7d643ece45722` / `885ce0d89f50c82562c2edeb572491080ef80d30ef1a328a67a3b7d6d7e32fb6` |
+| **`event_v_map.py`** (section 2.4) | in `SHA256SUMS` |
 | `ref/convert.py` (walker JSONL to the hunt tape layout), `ref/build_shared.py` (`tokens.parquet`, `bars_1m`) | in `SHA256SUMS`; the layout reference for the adapter (section 11.2) |
 | `verify/VERIFY.md`, `verify/results.json`, `verify/v2_sim.py`, `verify/v3_report.py` | in `SHA256SUMS`; the numbers cited here and the independent simulator that cross-checks the read tool (section 10, P4) |
 
 **Training data (not in the repo; 0.5 GB).** VERIFY's rebuild produced `ml/disc.npz` (sha256 `4b68d55b93158c3967926fb9b41192ba2a5aee27075669b95af374bd0a582409`) and `ml/conf.npz` (`0dc37940dee7768086fe6f1f618c80fdc97b0a93fec80af01e19d902f4649e1d`) from a **non-deterministic** ledger. They are reference only. The training set the read uses is the rebuild on the deterministic ledger (section 10, P2), whose hashes are recorded in a dated amendment before 2026-10-16T01:00Z and copied to a backed-up path.
 
+### 2.4 Pinned October patches and the event-V mapping (not rule changes)
+
+**October segment and paths (quant-proof R1).** As pinned, `scripts/common2.py` lists only the three September segments in `SEGS`, `scripts/11_passA.py` skips a graduation whose `seg_of(g0)` is negative (lines 109-110), and its grid end is `min(g0 + GRID_END, SEGS[seg][1] - MAX_HOLD - MARGIN)` (line 146). Run unpatched on October tape every graduation is skipped. One exact diff per look fixes this and edits no other file:
+
+| Patch (sha256) | Applied `common2.py` (sha256) | October segment 3 | Paths |
+| --- | --- | --- | --- |
+| `patches/common2_look1.patch` `404669118447557f42bad7aa9cdb0b41e48ce6916b0cc7e003a7d643ece45722` | `7060cbd537571dc8a2da6249d4443adf2453224b8bca6aa46c68dbfbee803a11` | `[2026-10-02T15, 2026-10-17T02)` | `O = /data/mal/exp025/look1`, `TAPE = O/tape`, `SH = O/hunt-shared`, `TMP = /data/mal/exp025/tmp/look1` |
+| `patches/common2_look2.patch` `885ce0d89f50c82562c2edeb572491080ef80d30ef1a328a67a3b7d6d7e32fb6` | `ca6d4b75790de653410df985e8598e8a336d0016d40c0535b5a73b2d0bd0ac7e` | `[2026-10-02T15, 2026-10-24T02)` | the same with `look2` |
+
+- **It is a pinned patch, never a rule change.** It adds a segment and changes four path constants. No threshold, feature, fill, exit, cost or filter changes. `seg_of` and the grid clip read the patched `SEGS`, so `11_passA.py` itself is not edited. `tools/test_exp025.py` applies each patch to the pinned `common2.py` and checks the result's sha256, `seg_of` on September and October instants, and that the three September segments are unchanged.
+- **Invocation.** `11_passA.py <D>` for graduation days D from 2026-10-09 to the day before the look's end (V coverage starts 10-09T00, P6). `10_meta.py`, `12_passC.py` and `14_export.py` run as pinned on the look's `O`.
+
+**Event-V mapping (quant-proof R2) [pinned].** Pass A prices with one constant per-pool `V = tokens.v0_lamports` added to the tape's `quote_reserve`. It never reads a carried per-print column, so the adapter must put the per-print V into `quote_reserve` itself:
+
+`quote_reserve := vault + V(t) - V0`
+
+- `vault` is the quote vault balance and `V(t)` the per-print event V, both in the **PRE-trade** state of the print (PumpSwap tape reserves are PRE-trade, EXP-024 section 4); `V0` is V at the pool's first print s0 (pending fees are 0 at a fresh pool) and is the value the adapter writes to `tokens.v0_lamports`.
+- Pass A then prices with `quote_reserve + V0 = vault + V(t)`, and `qreal` is the vault net of pending fees. If V(t) = V0 throughout, the mapping returns the vault and the September behaviour. Without it the October price would be gross vault + V0, whose unswept fees the audit bounds at 2.46% to 3.83% of effective quote at 300 s (daily p50) and calls an optimistic bias [measured, `/data/mal/audit-1008/reports/g_october_structure_check.md:45,90-92`, relayed by quant-proof].
+- The function is `ARTIFACTS/exp025/event_v_map.py` (`map_quote_reserve`, `pre_trade_states`). Fixture tests in `tools/test_exp025.py` check the identity `q + V0 = vault + V(t)`, that print i's PRE state is print i-1's POST state, and the constant-V case.
+
+### 2.5 Choices pinned at this merge (quant-proof R7)
+
+| Choice | Pinned |
+| --- | --- |
+| October segment and paths, per look | the two patches above |
+| Event-V mapping | section 2.4 |
+| Missing-V pricing for counted trades | section 6 |
+| Oracle exclusion point and the oracle source | section 5.3: before `11_passA.py`; union of the live intents and EXP-022's replay pick decisions at E0 commit `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572`; booleans only |
+| V source for forward-1002 | `forward-1002ev`, read directly for `[2026-10-09T00, 2026-10-16T01)` (P6) |
+| E0 day (ledger, adapter and pricing layer) | **2026-09-20** (fast-pool-0918; 24 hour files; 34 C1-NF trades in VERIFY's September book) |
+| Wallet-ledger hole | frozen as is, not filled (section 11.2) |
+| Allowlists | section 4 |
+| Late merge | section 0 |
+| Alpha pair and look deadlines | sections 0 and 3 |
+| Decoder blob | P6 |
+
 ## 3. The two looks, the alpha pair and the power
 
-**Design [pinned; the owner chose "Two looks", relayed 2026-10-09].**
+**Design [pinned; the owner chose "Two looks", 2026-10-09].**
 
 | | Look 1 | Look 2 (cumulative) |
 | --- | --- | --- |
 | Counted decision dates | `[2026-10-10T00, 2026-10-17T00)`, 7 dates | `[2026-10-10T00, 2026-10-24T00)`, 14 dates |
 | Tapes | 10-10 to 10-15 on forward-1002 (needs the FINAL); 10-16 on walk 2 (needs the oracle) | adds 10-17 to 10-23 on walk 2 (needs the oracle) |
-| Hours read | forward-1002 `[2026-10-02T15, 2026-10-16T01)`; walk 2 `[2026-10-16T01, 2026-10-17T02)` | adds walk 2 to `2026-10-24T02` |
+| Allowlisted hours | section 4 | section 4 |
 | Earliest run | about **2026-10-17T03Z**, after the last exit, the FINAL and the section 10 preconditions | about **2026-10-24T03Z** |
 | Deadline | 2026-10-18T12:00Z | 2026-10-26T12:00Z |
 | Runs | always | only if Look 1 did not pass (FAIL or NOT_DECIDABLE) |
-| alpha | `EXP025_ALPHA_LOOK1` = 0.008 (placeholder) | `EXP025_ALPHA_LOOK2` = 0.017 (placeholder) |
+| alpha | `EXP025_ALPHA_LOOK1` = **0.005** | `EXP025_ALPHA_LOOK2` = **0.020** |
 
-- **PASS at the first look that passes**; the read then ends and Look 2 does not run. FAIL if no look passes. A look not run by its deadline is NOT_DECIDABLE and its alpha is not carried forward.
+- **PASS at the first look that passes**; the read then ends and Look 2 does not run. FAIL if no look passes. A look not run by its deadline is NOT_DECIDABLE and spends its alpha (section 11.5).
 - **No futility rule.** A Look 1 FAIL does not end the read. (The manager may add one before the merge; it could only stop the read and would spend no alpha.)
 - **Look 2 re-derives Look 1's decisions** for 10-10 to 10-16 from the same hours and the same pinned inputs. They must match by md5 or Look 2 refuses (R9). The daily expanding retrain uses only labels before each decision day, so a later look cannot change an earlier day's decisions.
-- **Power** (`tools/exp025_power.py`, default mode `looks`; 1,500 simulations per row, Monte Carlo SE <= 0.013; table in `ARTIFACTS/exp025/power/power_table_looks.txt` and `.json`). The probability that **every** deciding item of section 7 holds on **both** fail legs at the deciding cell (1.3 s, 505,000 per send, rent on every fill). One simulated October serves both looks. The edge is relative to September's rent-inclusive effect (flat +7.458%, pressure +6.640%, VERIFY section 5.2).
+- **Power** (`tools/exp025_power.py`, default mode `looks`; 1,200 simulations per row, Monte Carlo SE <= 0.014; table in `ARTIFACTS/exp025/power/power_table_looks.txt` and `.json`). The probability that **every** deciding item of section 7 holds on **both** fail legs at the deciding cell (1.3 s, 505,000 per send, rent on every fill). **The legs are weighted by expected value as the gate does** (`mlcommon.legs`: flat = 0.85 pnl - 0.15 fee; pressure = (1 - p) pnl - p fee), not drawn at random; the earlier draft drew failures at random and understated every power (quant-proof R10). One simulated October serves both looks. The edge is relative to September's rent-inclusive effect (flat +7.458%, pressure +6.640%, VERIFY section 5.2). B1 (1.9 s, item 9) is not simulated.
 
-| Edge | Trades/day | n at Look 1 / Look 2 | Look 1 | Look 2, if Look 1 did not pass | **Either look** | One 14-date read at alpha 0.025 (comparison) |
+| Scenario | Edge | n at Look 1 / 2 | Look 1 | Look 2, if Look 1 did not pass | **Either look** | One 14-date read at 0.025 (comparison) |
 | --- | --- | --- | --- | --- | --- | --- |
-| September holds | 20 | 139 / 278 | 0.161 | 0.505 | **0.666** | 0.713 |
-| **Half the edge** | 20 | 139 / 278 | 0.039 | 0.191 | **0.230** | 0.264 |
-| Quarter | 20 | 139 / 278 | 0.014 | 0.065 | **0.079** | 0.087 |
-| September holds | 12 | 85 / 168 | 0.023 | 0.409 | 0.432 | 0.491 |
-| Half the edge | 12 | 85 / 168 | 0.007 | 0.145 | 0.151 | 0.174 |
-| Quarter | 12 | 85 / 168 | 0.002 | 0.057 | 0.059 | 0.075 |
+| 20/day on all dates | September holds | 141 / 281 | 0.258 | 0.562 | **0.821** | 0.834 |
+| 20/day on all dates | **Half the edge** | 141 / 281 | 0.081 | 0.354 | **0.435** | 0.448 |
+| 20/day on all dates | Quarter | 141 / 281 | 0.033 | 0.136 | 0.168 | 0.169 |
+| 12/day on all dates | September holds | 83 / 167 | 0.033 | 0.608 | 0.642 | 0.660 |
+| 12/day on all dates | Half the edge | 83 / 167 | 0.013 | 0.276 | 0.289 | 0.305 |
+| 12/day on all dates | Quarter | 83 / 167 | 0.006 | 0.100 | 0.106 | 0.116 |
+| 20/day on forward-1002, 12/day on walk-2 dates (oracle exclusion) | September holds | 131 / 215 | 0.212 | 0.537 | 0.749 | 0.762 |
+| same | Half the edge | 131 / 215 | 0.077 | 0.279 | 0.357 | 0.357 |
+| same | Quarter | 131 / 215 | 0.024 | 0.115 | 0.139 | 0.138 |
+| 20/day with a day effect (SD 0.03 of stake) | September holds | 140 / 281 | 0.209 | 0.618 | 0.827 | 0.840 |
+| same | Half the edge | 140 / 281 | 0.058 | 0.321 | 0.379 | 0.414 |
+| same | Quarter | 140 / 281 | 0.022 | 0.120 | 0.142 | 0.152 |
 
-  Placeholder pair (0.008, 0.017). The comparison column is one read of the 14 dates at alpha 0.025 (not registered). Look 1 is mostly a look for a large edge: at half the edge it passes 4% of the time. Look 2 carries nearly all of the power. Two looks cost about 0.05 of power at September's edge and 0.03 at half the edge, against one read of the 14 dates, and buy an answer on about 10-17.
-- **Other splits (either look, 20/day; same run).** (0.005, 0.020): 0.681 / 0.247 / 0.082 at September / half / quarter. (0.010, 0.015): 0.647 / 0.215 / 0.077. (0.0125, 0.0125): 0.624 / 0.210 / 0.075. A tighter Look 1 raises the total at September's edge and at half the edge, because Look 1 spends alpha for little power. This is the comparison quant-proof can use to recommend the pair.
-- **Earlier single-window table** (6, 7, 10 and 14 dates at one alpha): `ARTIFACTS/exp025/power/power_table.txt`. For the record: a 14-date single read gave 0.703 / 0.289 / 0.071 in that run.
-- **A FAIL at half the edge would not prove the edge is absent.** Even over both looks the test is more likely to miss a real half-size edge than to catch it (0.77 miss).
-- **12/day rows.** Walk-2 days lose the picks CAP-PICK took (section 5), and October volume is unmeasured. 12/day is a sensitivity, not a forecast.
+- **What it says [simulation; no October information].** At (0.005, 0.020), Look 1 passes about 26% of the time if September holds and 8% at half the edge. Either look passes about 82% and 44%. A real half-size edge is missed about 56% of the time. With only 12 per day on walk-2 dates the figures are 75% and 36%. The model does not simulate correlated fill failure.
+- **Other splits (either look, 20/day; same run; September / half / quarter).** (0.008, 0.017): 0.815 / 0.426 / 0.154. (0.003, 0.022): 0.831 / 0.437 / 0.171. (0.010, 0.015): 0.807 / 0.419 / 0.146. With 12/day on walk-2 dates at half the edge: 0.348 / 0.359 / 0.334 for those three.
+- **Why (0.005, 0.020), per quant-proof.** Total power is equal or higher than (0.008, 0.017) in every case it ran. Look 1 is the thinner read: 6 of its 7 dates are on one tape, n is about 141 against the floor of 100, its halves are 4 and 3 dates, and its dates are watched live, so it carries the smaller share. 0.005 matches EXP-022's first look. The cost is the chance of an early answer on about 10-17: Look 1 passes 26% instead of 33% if September holds, and 8% instead of 12% at half the edge. (0.008, 0.017) is also a valid Bonferroni pair.
+- **Null check, from quant-proof's own simulation [not re-run here].** 20,000 simulations with the trade mean set to exactly 0, day-level t alone: Look 1 at 0.008 rejects 0.00815; Look 2 at 0.017 rejects 0.01675; either look 0.0227 for (0.008, 0.017) and 0.0233 for (0.005, 0.020). **(0.008, 0.022) rejects 0.0276, which is over 0.025 and breaks the slot; it is not used.**
+- **Earlier single-window table** (6, 7, 10 and 14 dates at one alpha, random-draw legs): `ARTIFACTS/exp025/power/power_table.txt`, superseded.
+- **A FAIL at half the edge would not prove the edge is absent.** Over both looks the test misses a real half-size edge more than half the time.
+- **12/day rows.** Walk-2 days lose the picks CAP-PICK took (section 5), and October volume is unmeasured. They are sensitivities, not forecasts.
 - **Model and assumptions (all printed by the script).**
   - Per-trade returns are a four-part mixture calibrated to VERIFY's numbers: win rate 66.8%, 22 of 419 trades lose >= 90%, median +10.17%, p95 +63.17%, no-fail mean +9.625%, top-3 average about +165%, top-10 about +122% [measured, VERIFY sections 5 and 6, `results.json`]. The model's trade SD is 0.373 against 0.342 implied by VERIFY's trade CI (slightly conservative).
-  - The between-day variance of September's daily means is below the trade-level noise, so the day effect is 0. The edge scales the positive parts, not the loss tail.
-  - Flat failure 15%. The pressure leg uses one effective failure rate (0.2408), set so that September's rent-inclusive pressure mean is reproduced; the real leg has a per-trade rate.
-  - **Not simulated:** the 1.9 s cell (report-only here), correlated fill failure, the other binding legs, the canary's own footprint, and any October regime change. The model has no October information.
+  - The fitted day effect is 0 (September's between-day variance of daily means is below the trade-level noise); the day-effect row adds SD 0.03 of stake. The edge scales the positive parts, not the loss tail.
+  - Flat failure 15%; the pressure leg uses one effective failure rate (0.2408) set so that September's rent-inclusive pressure mean is reproduced; the real leg has a per-trade rate.
+  - **Not simulated:** B1 (1.9 s), correlated fill failure, the canary's footprint, and any October regime change.
 - **Adverse fills.** The edge sits in the right tail of hot entries, so correlated fill failure is the main untested live risk. VERIFY section 6 [measured]: if the best 10% of fills failed, the no-fail mean (1.3 s, 505,000) would fall to +1.855%; if the best 28.9% failed, to -5.116%. The power table does not include this.
 
 ## 4. Data, windows and seal
 
 | | Hours read | Source | When |
 | --- | --- | --- | --- |
-| Ledger and features | forward-1002 `[2026-10-02T15, 2026-10-16T01)` | `/data/mal/blocks/forward-1002` | after the FINAL is written |
-| Counted decisions and exits | Look 1: forward-1002 to 10-16T01 and walk 2 `[2026-10-16T01, 2026-10-17T02)`. Look 2 adds walk 2 to `2026-10-24T02` | `/data/mal/blocks/forward-1016` (planned) | after the FINAL; walk-2 hours as sealed and verified |
-| Training | the 36 exploration days (spent blocks) plus October labels before each cutoff | exploration tape; the two above | inside the one locked job |
+| Ledger, features and **October training labels** | forward-1002 `[2026-10-02T15, 2026-10-09T00)` | `/data/mal/blocks/forward-1002` | after the FINAL is written |
+| Counted decisions, exits, training labels from graduations at or after 10-09T00 | Look 1: `forward-1002ev` `[2026-10-09T00, 2026-10-16T01)` and walk 2 `[2026-10-16T01, 2026-10-17T02)`. Look 2 adds walk 2 to `2026-10-24T02` | `/data/mal/blocks/forward-1002ev`, `/data/mal/blocks/forward-1016` (planned) | after the FINAL; walk-2 hours as sealed and verified |
+| Training | the 36 exploration days plus October universe rows from graduations at or after 2026-10-09T00 | exploration tape; the two above | inside the one locked job of each look |
 
-- **Hours.** Every opened hour needs a `backfill_verify --content` OK line and a sha256 line (DEC-016:26). Pass A reads trade hours `D T00 .. D+2 T01` for the pools graduating on D; the decision grid runs to graduation + 24 h, so graduations from 2026-10-09T00 matter. Graduation-day D = 10-09 decisions run into 10-10; their trade hours are in forward-1002.
-- **Counted selection.** A selection counts in the read if its decision time T is in the window (section 0). The universe is every `complete` graduation whose canonical pool is found by PDA (RULE.md universe).
-- **Seal (from merge until the read).** No person, agent or job does any of these on any October hour, from any source (forward-1002, walk 2, the tip tape, the live listener, RPC, a paper runner or a live wallet), **except the declared observation in section 5**:
-  - computes, opens or prints a C1-NF label, fill, exit, P&L, mean, CI or day sign for a decision whose T is in the window;
+- **The pre-10-10 hours are not "features only".** Hours before 2026-10-10T00 also supply October **training labels** (pass-A `pnl_E3` on October rows, section 2.2). They are read after the FINAL and inside the look's locked job, and are sealed from merge like any other October label.
+- **Allowlist per look [pinned, R9].** Look 1: forward-1002 `[2026-10-02T15, 2026-10-09T00)`, forward-1002ev `[2026-10-09T00, 2026-10-16T01)`, walk 2 `[2026-10-16T01, 2026-10-17T02)`. Look 2: the same plus walk 2 `[2026-10-17T02, 2026-10-24T02)`. The adapter **materialises only the look's allowlisted hours** into `/data/mal/exp025/look{1,2}/tape`. Pass A opens hours `D T00 .. D+2 T01` and skips a missing file, so near a look's end it would otherwise reach walk-2 hours past the allowlist, which are EXP-022's counted hours; with only the allowlisted files present it cannot. **The read tool refuses to open any hour outside the allowlist** (R12).
+- **Counted selection.** A selection counts in a look if its decision time T is in that look's window (section 0). The universe is every `complete` graduation whose canonical pool is found by PDA (RULE.md universe), minus oracle-True mints on walk 2 (section 5.3).
+- **Seal (from merge until the look that reads them) [pinned, R7].** No person, agent or job does any of these on **any October hour**, from any source (forward-1002, forward-1002ev, walk 2, the tip tape, the live listener, RPC, a paper runner or a live wallet), **except the declared observation in section 5**:
+  - computes, opens or prints a C1-NF label, fill, exit, P&L, mean, CI or day sign for **any October row**, whether a decision inside a window or a training row before it;
   - prices the C1-NF book on a counted decision.
 - **What stays allowed:** hour counts (sealed, verified, bad); the section 11.3 precount, which is counts only; the A3 structure monitor's flags; building and testing the adapter on exploration hours.
-- **No early forward-1002 read.** No C1-NF process opens any forward-1002 hour before the EXP-012 FINAL (A) report is written (DEC-016 Am.7 and Am.8). Its tool checks the FINAL marker, the entry in the external ledger `/data/mal/exp012-forward/FINAL_READS.jsonl`, and opens none of the files DEC-016 Am.2 keeps closed (`OUT/rows.jsonl`, `OUT/scratch/*.jsonl`, a FINAL `report.json` or `report.md`). It does not use the (B) V-map files.
+- **No early forward-1002 read.** No C1-NF process opens any forward-1002 hour before the EXP-012 FINAL (A) report is written (DEC-016 Am.8). **Before the FINAL, only the walker, `backfill_verify` and hour counts touch `forward-1002ev`** (it is a second copy of the same hours, same owner, not a new block). The tool checks the FINAL marker, the entry in the external ledger `/data/mal/exp012-forward/FINAL_READS.jsonl`, and opens none of the files DEC-016 Am.2 keeps closed (`OUT/rows.jsonl`, `OUT/scratch/*.jsonl`, a FINAL `report.json` or `report.md`). It does not use the (B) V-map files.
 - **A breach** is recorded here, dated, and the read is reported compromised. A compromised read cannot support a live request.
 
 ## 5. Declared observation, tip tape, and the CAP-PICK seal
 
 ### 5.1 Declared observation (the manager's ruling, 2026-10-09; modelled on EXP-024 section 3.1 and DEC-024)
 
-- "The manager intends to run a C1-NF **paper shadow** and a small **live canary** (O3, approved; see below) before and during the counted windows. Their outcomes for decisions inside the windows may be watched in real time. This is declared before the window opens and before any shadow or canary trade."
+- "The manager intends to run a C1-NF **paper shadow** and a small **live canary** (O3, approved; see below) after this file merges, before and during the counted windows. No shadow or canary outcome is computed before the merge. Their outcomes for decisions inside the windows may be watched in real time. This is declared before the window opens and before any shadow or canary trade."
 - "The read's rule, data, analysis and pass bar are fixed by this file. Look 1 and Look 2 are always run (Look 2 under its own condition) and reported as written. Neither is skipped, delayed, re-scoped or re-thresholded because of anything the shadow or the canary shows. Nothing the shadow or canary shows may change any EXP-025 parameter."
 - **The shadow is not the read.** It uses different inputs (the tip tape, a tip-tape ledger, its own V source), so its decisions will differ from the read's. The read never uses the shadow's trades, features or ledger, and the read's report states the declared observation and any disagreement the manager chooses to record.
-- **A small live canary is approved (O3), relayed 2026-10-09.** DEC-025 `OWNER_DECISION_CONFIRMED` records the owner's words as the manager relayed them: "I'm also down to do some testing with some small trades in parallel." The manager's scope, which is his and not a quotation of the owner: 0.02 SOL stakes, a separate wallet, running before and during the counted windows, **under its own DEC-026, which is to be written and does not block this PR**. No C1-NF live order is sent until DEC-026 is merged and its own preconditions hold. The canary is separate from H5's DEC-024 canary and override. **Its outcomes fall under this declared observation:** watched live, with Look 1 and Look 2 fixed and always reported as written. **Scale-up beyond canary size needs a passed read or a further explicit owner override.** At 0.02 SOL against a stage-1 real quote of at least 20 SOL the canary is at most 0.1% of a pool's quote; its trades are real chain activity by one participant, appear in the tape as ordinary rows, and are not removed (that would edit chain truth). The read reports them. A paper shadow needs no DEC.
-- **Provenance.** This subsection records a ruling relayed by the manager on 2026-10-09. The quoted sentences are the manager's wording. No owner's words are quoted.
+- **A small live canary is approved (O3), confirmed by the manager 2026-10-09.** DEC-025 `OWNER_DECISION_CONFIRMED` records the owner's words as the manager recorded them: "I'm also down to do some testing with some small trades in parallel." The manager's scope, which is his and not a quotation of the owner: 0.02 SOL stakes, a separate wallet, running before and during the counted windows, **under its own DEC-026, which is to be written and does not block this PR**. No C1-NF live order is sent until DEC-026 is merged and its own preconditions hold. The canary is separate from H5's DEC-024 canary and override. **Its outcomes fall under this declared observation:** watched live, with Look 1 and Look 2 fixed and always reported as written. **Scale-up beyond canary size needs a passed read or a further explicit owner override.** At 0.02 SOL against a stage-1 real quote of at least 20 SOL the canary is at most 0.1% of a pool's quote; its trades are real chain activity by one participant, appear in the tape as ordinary rows, and are not removed (that would edit chain truth). The read reports them. A paper shadow needs no DEC.
+- **Provenance.** This subsection records a ruling the manager gave on 2026-10-09. The quoted sentences are the manager's wording. The only owner's words quoted are the O3 sentence above.
 
 ### 5.2 The tip tape
 
@@ -216,8 +265,9 @@ All are copied into the repo (`/data/mal/hunt-1008` is `.nobackup`). `ARTIFACTS/
 ### 5.3 The EXP-022 section 9 seal (from 2026-10-16T01Z)
 
 - Walk 2 belongs to EXP-022. EXP-022 section 9 forbids pricing the counted picks from any source. C1-NF therefore never prices a CAP-PICK pick of a counted hour.
-- **Exclusion by the boolean oracle [pinned].** From 2026-10-16T01 until EXP-022's read ends, every mint whose canonical pool's first print is at or after 2026-10-16T01 is looked up with `pick_oracle(mint) -> bool`, the contract of EXP-022 Amendment 2 item 2 and DEC-024 section 6. A mint answered `True` is dropped from training, scoring and the book (all its rows). The C1-NF side reads only that boolean, writes no CAP-PICK field into any C1-NF record, and joins no C1-NF record to a pick.
-- **Fail closed.** If the oracle is missing, stale for more than 60 s at the shadow, errors, returns a non-boolean, or is undecided for any in-scope mint, then for the **shadow** no walk-2 buy is priced, and for the **read** the result is **NOT_DECIDABLE** (section 11.4 R7). It is never a pass and never an excuse to read on a truncated window. A manager may file a new pre-registration for a forward-1002-only window before the read; it would be a different test (power 0.249 at September's edge and 0.080 at half the edge at alpha 0.025, `power/power_table.txt`).
+- **Exclusion at the universe, before pass A [pinned, R4].** From 2026-10-16T01 until EXP-022's read ends, every mint whose canonical pool's first print is at or after 2026-10-16T01 is looked up with `pick_oracle(mint) -> bool`, the contract of EXP-022 Amendment 2 item 2 and DEC-024 section 6. **A mint answered `True` is removed from `work/universe.parquet` after `10_meta.py` and before any `11_passA.py` run**, so no grid, candidate or `mout` row ever exists for it. Pass A computes `pnl_E1..E8` and a 0 to 6 h `mout` return from the graduation price for every universe mint, and `rgrad` at graduation + 10 minutes; those overlap CAP-PICK's first 300 s, so dropping the mint later (at scoring or in the book) would still price a pick. The shadow applies the same rule. The C1-NF side reads only the boolean, writes no CAP-PICK field into any C1-NF record, and joins no C1-NF record to a pick.
+- **The oracle's source [pinned].** The union of (a) the live gate intents (DEC-024 section 6) and (b) the `pick` decisions of EXP-022's walk-tape replay (EXP-022 section 2) at the commit EXP-022's E0 pins, `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` (Amendment 3), kept in memory as booleans only. The live intents alone can miss replay picks (receive time, uptime); the union is a superset of the counted pick set. Both parts read only after the FINAL marker.
+- **Fail closed.** If the oracle is missing, stale for more than 60 s at the shadow, errors, returns a non-boolean, or is undecided for any in-scope mint, then for the **shadow** no walk-2 buy is priced, and for the **read** the result is **NOT_DECIDABLE** (section 11.4 R7). It spends the look's alpha (section 11.5) and is never a pass.
 - **Effect.** The exclusion removes some of the hottest early pools, which C1-NF's stage 1 also likes. It biases the walk-2 sample against the book, and shrinks n. It is disclosed, not corrected. The report prints the excluded count per date (counts only, no P&L).
 - **No per-pool join to CAP-PICK.** The read tool gets the oracle's booleans in memory. The C1-NF report never says which mints were picks.
 - **Disclosure.** C1-NF's walk-2 reads are non-owner reads of an EXP-022 block (ledger rule 3), made while EXP-022 is counting; [EXP-022 Amendment 4](EXP-022-cap-pick-part1-prereg.md) records them. They open only chain tape, never a CAP-PICK outcome row.
@@ -225,7 +275,8 @@ All are copied into the repo (`/data/mal/hunt-1008` is `.nobackup`). `ARTIFACTS/
 ## 6. Execution, costs and legs
 
 - **Deciding cell [pinned]:** stake 0.25 SOL; buy lands at decision slot + `round(1.3 s / measured s-per-slot of that UTC hour)`; END bound; own trade applied; PumpSwap fee tier on (quote + V, base); **505,000 lamports per send**, buy and sell; **rent 2,039,280 lamports on every fill** (the pessimistic reading: it is refunded only if the executor closes the ATA on every sell, which is unconfirmed); guard 1.15 x the decision-time spot, where a guarded buy costs one send (505,000); exit E3 (sell 300 s after landing, landing 0.55 s after the deadline, `ceil(0.55 / s)` slots); one position per mint, a selected row taken only if t >= the previous exit + 60 s for that mint.
-- **Fail legs [pinned], both deciding:** flat (a fill pays 0.85 pnl + 0.15 (-505,000 lamports)) and pressure (slopes 0.8 / 0.35, `p = sigmoid(c + 0.8 log1p(same-slot buys at landing) + 0.35 log1p(buy SOL in the 2 s to landing))`, intercept `c` refit so the mean p over the book's sends is 0.289). A guarded row is -505,000 on every leg.
+- **Fail legs [pinned], both deciding:** flat (a fill pays 0.85 pnl + 0.15 (-505,000 lamports)) and pressure (slopes 0.8 / 0.35, `p = sigmoid(c + 0.8 log1p(same-slot buys at landing) + 0.35 log1p(buy SOL in the 2 s to landing))`, intercept `c` refit so the mean p over filled (non-guarded) attempts is 0.289). A guarded row is -505,000 on every leg.
+- **Missing V (quant-proof R3) [pinned].** A counted trade whose landing or exit state has no decoded V(t) is priced at the **lower** P&L of two assumptions at the exit: pending fees 0, and pending fees 3.83% of effective quote (the upper end of the audit's 300 s bound). The look is **NOT_DECIDABLE** if any such trade is among the top 3 trades of either leg, or if such trades are more than 1% of the look's trades (R11). This is the rule of EXP-022 section 3 and EXP-024 section 4. `getTransaction` can fill only the states that price a counted trade (P6).
 - **VERIFY's numbers for this cell** (independent simulator, 1.3 s, 505,000, rent per fill, END bound, spec order; 419 trades) [measured, VERIFY section 5.2]: flat +7.458% (date-cluster CI90 lo +4.611), 16/21 days positive; pressure +6.640% (+4.258), 17/21. The same cell without rent: flat +8.151% (date CI lo +5.304), pressure +7.220% (+4.837), 18/21 days. These are September, exploration, post-hoc cap.
 - **Where the deciding prices come from [pinned].** The pinned pass A (`11_passA.py`) bakes 55,000 lamports per send into its P&L columns, and the frozen training label `pnl_E3` is that 55,000 column. The label and the model stay as frozen, so the selection (prediction > 0.02, then the cap, then the book) is the frozen one. The **deciding P&L** of each selected row is priced by the read tool's pricing layer, which must be equivalent to `verify/v2_sim.py` (the independent simulator that produced every VERIFY number cited above: clock-based exit, END bound, own trade applied, the tier fee, the 1.15 x guard, 505,000 per send, rent per fill). The pass-A-column book (RULE.md's next-print exit at 55,000) is reported beside it (VERIFY: flat +8.484%, pressure +7.528%, 55,000, no rent, September). P4's E0 compares the two on an exploration day.
 - **Stakes in SOL.** All gate statistics are in SOL per trade at 0.25 SOL. The 0.1 SOL leg is report-only.
@@ -242,8 +293,9 @@ The read passes if and only if **every** item holds under **both** the flat and 
 6. The date-cluster CI90 lower bound of mean SOL per trade > 0 (1,000 date resamples, seed 1). **Binding** (JUDGE-4 section 3.3.7).
 7. Mean > 0 in each half of the look's counted dates (Look 1: the first 4 dates and the last 3; Look 2: the first 7 and the last 7). **Binding.** JUDGE-4 says "each tape"; the walk-2 tape has 8 dates and the forward-1002 tape 6, and a per-tape sign is noisier, so the by-tape means are report-only (section 8). The manager may restore by-tape; it lowers power.
 8. **Day-level p <= alpha.** Clusters are UTC dates (24 h blocks from 00:00Z). A date with no trades is dropped; W is the count of the rest, df = W - 1. m_d is the mean SOL per trade on date d, sd is the sample SD of the W date means (ddof 1), t = mean(m_d) / (sd / sqrt(W)), p = P(T_{W-1} >= t), one-sided. **The larger of the flat and pressure p decides.** alpha is the look's: `EXP025_ALPHA_LOOK1` at Look 1, `EXP025_ALPHA_LOOK2` at Look 2 (section 0; the pair sums to 0.025 / k, k = 1 at this merge, DEC-025 section 2).
+9. **Binding leg B1, the 1.9 s entry [pinned].** As the deciding cell with the buy landing at `round(1.9 s / s-per-slot)` (same costs, rent, exit and guard): **mean > 0 and total SOL > 0 after removing the top 3 trades, on both fail legs** (the form of EXP-024's B1). VERIFY, September, 505,000 with rent [measured]: flat +7.511%, pressure +6.323%. This is looser than JUDGE-4 section 3.3.7, which applied the full gate at both latencies (section 9).
 
-Items 1 to 4 are the promotion gate, unchanged. Items 5 to 8 can only turn a pass into a fail.
+Items 1 to 4 are the promotion gate, unchanged. Items 5 to 9 can only turn a pass into a fail.
 
 **Outcome.** PASS at the first look that passes (the read then ends and Look 2 does not run). FAIL if no look passes. A NOT_DECIDABLE look (section 11.4) is not a pass and carries no alpha forward. **On a FAIL, C1-NF is closed. No re-threshold, no re-cap, no re-read.** On a PASS: (1) quant-proof on the read; (2) a paper twin on the H5 executor core; (3) the owner's yes, with a size plan of at most 4 x 0.25 SOL open at a 1 SOL bankroll (5-minute holds); then only the DEC-018 / DEC-019 / DEC-020 path. The post-hoc bot path (45.048 SOL) is not a size estimate. The canary (section 5.1) is measurement, never gate evidence.
 
@@ -252,7 +304,7 @@ Items 1 to 4 are the promotion gate, unchanged. Items 5 to 8 can only turn a pas
 Each is reported on both fail legs unless it says otherwise, at every look that runs.
 - **The farm check.** The frozen C1 primary **without** the cap, to show whether the farm population is still there (VERIFY: 8,760 trades, flat -2.536%, pressure -2.039% at 505,000, September).
 - **Caps and gameability.** `h_top1` <= 0.3 and <= 0.7; `h_top5` <= 0.5 and `h_top10` <= 0.5 (a farm operator can defeat a per-wallet cap by splitting the bag; VERIFY condition 2). In September `h_top5` <= 0.5 gave n 418 and the same mean as the 0.3 cap.
-- **Legs.** 1.9 s entry; worst-in-slot (buy and sell); START bound; sell lags 2 s and 5 s; 55,000 per send; no rent; 0.1 SOL; 4.0 s; the 3.0 s report-only latency.
+- **Legs.** The full gate at 1.9 s (B1 decides only on mean and ex-top-3); worst-in-slot (buy and sell); START bound; sell lags 2 s and 5 s; 55,000 per send; no rent; 0.1 SOL; 4.0 s; the 3.0 s report-only latency.
 - **Fill-risk stress.** The mean if the best 10% and the best 28.9% of fills fail (VERIFY section 6 construction), the no-fail leg, and the by-tail table (p1, p5, median, p95, share losing >= 90%).
 - **Splits.** Per date; per tape (forward-1002 vs walk 2); per half; ex-best-day, ex-top-10; mint concentration (mints, trades per mint, positive mints, total without the top 5 mints); the walk-2 count excluded by the oracle, per date (counts only).
 - **Selections.** Per-day graduations, stage-1 rows, selections and kept rows (also printed by the precount); the model score threshold sweep (> 0.0 to > 0.05).
@@ -264,7 +316,7 @@ Each is reported on both fail legs unless it says otherwise, at every look that 
 ## 9. Multiplicity and disclosures
 
 - **Within the family:** k = 1. One deciding cell; two looks; alpha 0.025 split by Bonferroni over looks (section 0).
-- **Across families:** DEC-025 opens a third alpha slot of 0.025 (section 2 of the DEC). With EXP-022 and EXP-024 the promotion-eligible October families can carry an overall rate of up to 0.075, not 0.05. The owner's OK on this (O1) was relayed by the manager on 2026-10-09 (DEC-025 `OWNER_DECISION_CONFIRMED`).
+- **Across families:** DEC-025 opens a third alpha slot of 0.025 (section 2 of the DEC). With EXP-022 and EXP-024 the promotion-eligible October families can carry an overall rate of up to 0.075, not 0.05. The owner's OK on this (O1) was confirmed by the manager on 2026-10-09 (DEC-025 `OWNER_DECISION_CONFIRMED`).
 - **Selection, in full [measured or counted from the hunt files]:**
   - C1's primary was the best of about 24 walk-forward cells, after a 144-cell split scan (JUDGE-4 section 3.3).
   - The farm cap was chosen **after** the read, from about 4 post-hoc splits in `x06_posthoc.py` (real quote < 400, age < 1,800 s, a combined split, `h_top1`).
@@ -274,22 +326,29 @@ Each is reported on both fail legs unless it says otherwise, at every look that 
 - **Decay and instability.** Block means (flat, 505,000, no rent) were +8.823 / +5.898 / +12.974 / +4.794% (fresh-0903, exp011-0909, fast-pool-0918, oracle-insample-0922). The second half of September was 8 of 11 days positive with the negative days at n of 3, 1 and 4. The `v5` and `new5` medians are higher in September than in discovery. October is unmeasured.
 - **Known feature-drift risk: the wallet-ledger hole.** The exploration tape ends 2026-09-25T07 and the first forward-1002 hour is 2026-10-02T15. The manager's live-build plan places the hole in the live view at 09-25T07 to 10-05T05. For the read, wallets seen only inside the hole look new, so "new wallet" shares are inflated and creator history is undercounted. The size of the effect on picks is unmeasured. Section 11.2 gives the ruling. Mitigating, not proof: the training tape already contains two ledger holes (08-28T12 to 09-03T12 and 09-15T12 to 09-18T23).
 - **October regime.** BOOST, event V, the 200 ms slots (about 10-09T14:30Z) and PDA pools are not in the September evidence. The read prices on them.
+- **Looser than JUDGE-4 on one point.** JUDGE-4 section 3.3.7 applied the whole gate at 1.3 s and at 1.9 s. Here 1.9 s decides only as B1 (mean > 0 and ex-top-3 > 0 on both legs, item 9); the full gate at 1.9 s is report-only. VERIFY shows 1.9 s close to 1.3 s (without rent: flat +8.203% against +8.151%, pressure +6.902% against +7.220%), so the difference is small, but it is a loosening and is disclosed as one.
 - **Not exchangeable with H5 or CAP-PICK.** C1-NF is BOOST-independent per JUDGE-4; a BOOST switch-off kills H5 and CAP-PICK together, not necessarily C1-NF.
 
 ## 10. Preconditions and integrity
 
 **Before 2026-10-10T00:00Z.** If any is missing, C1-NF is withdrawn before counting and no outcome is read:
 - **P0.** This file is merged, with quant-proof OK on its final head.
-- **P1.** DEC-025 and its amendments (DEC-016 Am.8, DEC-021 Am.3, EXP-012 Am.4, EXP-022 Am.4) and the ledger edit are merged in the same PR, and DEC-025 carries `OWNER_DECISION_CONFIRMED` for O1, O2 and O3 (relayed by the manager, 2026-10-09). If the merge slips, section 0's late rule applies.
+- **P1.** DEC-025 and its amendments (DEC-016 Am.8, DEC-021 Am.3, EXP-012 Am.4, EXP-022 Am.4) and the ledger edit are merged in the same PR, and DEC-025 carries `OWNER_DECISION_CONFIRMED` for O1, O2 and O3 (confirmed by the manager, 2026-10-09). If the merge slips, section 0's late-merge rule is the only way to start later.
 
-**Before 2026-10-16T01:00Z, the first walk-2 hour.** If any is missing, the walk-2 part cannot be read and the read is NOT_DECIDABLE:
-- **P2. Deterministic rebuild (E0-C1).** Run the rebuild of `verify/run_rebuild.sh` with `ledger/01_wallet_daily_det.py` in place of the original ledger step, as one MiScusi job on research-0 (about 35 minutes, at most 2 workers, memory-capped). The pinned scripts are not edited: the run copies them to a working directory and applies the path-only patches of `verify/PATCHES.diff`, recording the sha256 of each patched file. Record the sha256 of the new `disc.npz`, `conf.npz` and the pinned `16_confirm.py` primary in a dated, outcome-blind amendment, and copy the three to a backed-up path. **Acceptance (reproducibility, not tuning):** the rebuilt unconstrained primary at 1.3 s must have n within 3% of 8,797 and, in spec order, the C1-NF book n within 400 to 440. A rebuild outside these bands withdraws C1-NF. It does not choose another cap, threshold or ledger.
-- **P3. October adapter (section 11.2)** built, merged with quant-proof OK, and pinned by blob sha. Its E0: run on one exploration day's raw walker files it reproduces `ref/convert.py`'s trade rows and `ref/build_shared.py`'s `tokens` rows by md5.
-- **P4. Read tool** merged with quant-proof OK: adapter + pinned pass A + daily retrain + the cap + book + legs + section 7. Its E0: on one exploration day it reproduces the independent simulator's (`verify/v2_sim.py`) per-trade results for the same selections to within 1% of stake on at least 99% of trades (VERIFY: 99.4% on all picks).
-- **P5. The pick oracle** (section 5.3) exists, is tested for a boolean-only answer, and is wired to a fail-closed shadow, by 2026-10-16T01:00Z. Look 1's 10-16 date already needs it. Without it the walk-2 part, and with it both looks, is NOT_DECIDABLE.
-- **P6. One pinned V source for forward-1002 (not decided here).** forward-1002 was walked without event V, and the read needs per-print V for canonical-pool prints. EXP-024 Look 1 also prices forward-1002 and needs the same V solution. **EXP-024 and EXP-025 should share one pinned V source.** The manager decides it with the EXP-024 scorer work, and a dated, outcome-blind amendment to both files records it (file sha256) before the first read of either. EXP-025 neither chooses nor builds a separate one. Candidates, as EXP-024 section 10 P5 frames them: a re-walk with `--event-v`, or `getTransaction` reconstruction; the Helius credit cost is not estimated here.
+**Before 2026-10-16T01:00Z, the first walk-2 hour.** If any is missing, the walk-2 part cannot be read and the look is NOT_DECIDABLE (it spends the look, section 11.5). Their choices are pinned in section 2.5; only their execution is open:
+- **P2. Deterministic rebuild (E0-C1).** Run the rebuild of `verify/run_rebuild.sh` with `ledger/01_wallet_daily_det.py` in place of the original ledger step, as one MiScusi job on research-0 (about 35 minutes, at most 2 workers, memory-capped). The pinned scripts are not edited: the exploration run copies them to a working directory and applies only the path patches of `verify/PATCHES.diff`; the October runs apply `patches/common2_look{1,2}.patch` (section 2.4). Record the sha256 of each patched file. Record the sha256 of the new `disc.npz`, `conf.npz` and the pinned `16_confirm.py` primary in a dated, outcome-blind amendment, and copy the three to a backed-up path. **Acceptance (reproducibility, not tuning):** the rebuilt unconstrained primary at 1.3 s must have n within 3% of 8,797 and, in spec order, the C1-NF book n within 400 to 440. A rebuild outside these bands withdraws C1-NF. It does not choose another cap, threshold or ledger.
+- **P3. October adapter (section 11.2)** built, merged with quant-proof OK, and pinned by blob sha. Its E0, on exploration day **2026-09-20**: run on that day's raw walker files it reproduces `ref/convert.py`'s trade rows and `ref/build_shared.py`'s `tokens` rows by md5, and the event-V mapping fixture of section 2.4 passes.
+- **P4. Read tool** merged with quant-proof OK: adapter + the two pinned patches + pinned pass A + daily retrain + the cap + book + legs + section 7. Its E0, on exploration day **2026-09-20** (quant-proof R11): the pricing layer's **P&L equals `verify/v2_sim.py`'s per trade to the lamport**, shown by equal md5 over (mint, decision time, leg, pnl in lamports) for that day's C1-NF selections; and the tool's statistics (n, days, days positive, means, trade CI, date CI, totals, ex-top-3, ex-best-day, day-level t) **equal `verify/v3_report.py`'s output** on VERIFY's simulation rows. (VERIFY's 99.4% agreement compared pass-A columns with `v2_sim.py` and is not this bar; on the 419 C1-NF rows that agreement was 89.0%.)
+- **P5. The pick oracle** (section 5.3) exists, with the pinned union source, is tested for a boolean-only answer, and is wired to a fail-closed shadow, by 2026-10-16T01:00Z. Look 1's 10-16 date already needs it. Without it the walk-2 part, and with it both looks, is NOT_DECIDABLE.
+- **P6. `forward-1002ev`: the event-V re-walk of forward-1002 `[2026-10-09T00, 2026-10-16T01)` (quant-proof; the shared V source).** forward-1002 was walked without event V, and the read needs per-print V. EXP-024 Look 1 prices the same hours and needs the same V solution, so **EXP-024 and EXP-025 share this one pinned V source**; moving EXP-024 section 4 from `getTransaction` to it needs its own dated amendment, best merged before 2026-10-10T00Z, and if later it must be an equal-data substitution shown by forward-1002ev V matching `getTransaction` V on a pinned sample of s0, landing and exit prints. A separate builder on branch `claude/forward-1002ev` writes the walker, the join tool and the EXP-024 / DEC-016 amendments. This file references that branch and does not edit it. Pinned here:
+  1. **Seal.** `[10-09T00, 10-16T01)` lies inside the FINAL's window, so forward-1002ev is a second copy of sealed hours: same owner, not a new block (ledger note; DEC-016 amendment on the builder's branch). **Before the FINAL marker only the walker, `backfill_verify` and hour counts touch it.** The cross-check below opens forward-1002 rows and runs only after the FINAL.
+  2. **Coverage starts at 10-09T00.** Graduations from 10-02T15 to 10-08 get no V0, cannot pass the universe V band, and so supply no October training row and no `mout` creator outcome. Training is the 36 exploration days plus October universe rows from graduations at or after 2026-10-09T00 (section 2.2). The earlier forward-1002 hours feed only the ledger, creates and market counts. This departs from RULE.md and is disclosed (section 9).
+  3. **Tape and cross-check [my call].** The tape for `[2026-10-09T00, 2026-10-16T01)` is **forward-1002ev read directly**, so every counted date comes from the same decoder as walk 2. forward-1002 is the cross-check, joined **on the raw JSONL** (the hunt-layout trade table has no `signature` column, and main's decoder may emit events forward-1002 lacks, which shifts `event_index`), requiring equal `sol_lamports`, `token_raw` and both reserves. **An hour whose 1:1 match rate is below 99.5% is a bad hour (R1).**
+  4. **Fallback scope.** `getTransaction` fills only the states that price a counted trade: the decision print (for the guard), the landing state and the exit state. It cannot rebuild per-print V for features across a bad hour. Feature coverage stays under R3 of section 11.4; counted trades fall under the missing-V rule of section 6.
+  5. **Decoder.** The same decoder blob for forward-1002ev and walk 2. `tools/pump_history_backfill.py` is blob `9a8bebb32adcf86de060b55f5a08110d11c0a550` at main `a3e923c` [measured 2026-10-09]. The dated amendment that records forward-1002ev's completion records both runs' blobs, and the read tool refuses unless they are equal (R13).
+  6. **Credits.** About 3.3M [inferred; quant-proof's arithmetic: after about 10-09T14:34 an hour is about 18,000 slots, so the range is about 2.98M slots at about 1.16 credits per slot]. The approved 3.0M may be short before any fallback calls. Record the credits used (CLAUDE.md). Run as a MiScusi job. **Hours not walked are bad hours (R1).**
 
-**Before the read (after the FINAL, outcome-blind; counts and hashes only):** the section 11.3 precount and the section 11.4 refusals.
+**Before each look (outcome-blind; counts and hashes only):** the section 11.3 precount and the section 11.4 refusals.
 
 **In each locked job:** each look is run once, in one locked MiScusi job. After the lock there is no resume.
 
@@ -317,10 +376,11 @@ Each is reported on both fail legs unless it says otherwise, at every look that 
 
 **Transformations that differ from September (all pre-declared).**
 1. **Strict lines.** The reader refuses bad lines (a NUL byte, or a line that is not a JSON object) and the hour that holds one is bad (`--strict-lines`; EXP-022 section 10 "Bad lines"). Bad hours are counted and reported; they are never skipped silently.
-2. **Event V.** `quote_reserve` for PumpSwap rows is the vault quote and the per-print event V is carried so that Q = vault quote + V (`--event-v`, #467). The reserve convention is checked first: PumpSwap tape reserves are PRE-trade, bonding reserves POST-trade (EXP-024 section 4). forward-1002 was walked without event V; P6 fixes its source.
+2. **Event V.** `quote_reserve := vault + V(t) - V0` from the PRE-trade state of each print (section 2.4), with `V0` written to `tokens.v0_lamports`. The event V comes from `--event-v` (#467). Walk 2 and `forward-1002ev` use the same decoder blob (P6); the earlier forward-1002 hours (before 10-09T00) carry no V and feed only the ledger, creates and market counts.
 3. **Canonical pool by PDA.** The canonical PumpSwap pool of a graduated mint is derived by PDA instead of the September V band. The match to the tape's pool must be >= 95% of non-Mayhem completes (refusal R2).
 4. **Slot time.** Seconds per slot are measured per UTC hour from the clock (the pinned pass A does this); after about 10-09T14:30Z they are 200 ms.
 5. **Universe filter.** `v0_lamports` between 17.5e9 and 17.7e9 and the first print within [-5 s, +120 s] of `complete`, as RULE.md says. The adapter fills `tokens` so the pinned `10_meta.py` selects the same universe; it does not change the filter.
+6. **Allowlist and patches.** The adapter materialises only the look's allowlisted hours (section 4) into the look's `tape/`, and the two pinned patches of section 2.4 set the segment and the paths. Nothing outside the allowlist is written, and the read tool refuses it (R12).
 
 **Wallet-ledger hole: the ruling [pinned; the manager may overrule before the merge].**
 - The exploration ledger ends at 2026-09-25T07; the first forward-1002 hour is 2026-10-02T15. The read ledger for decision day D is built **from the exploration days plus every October hour in `[2026-10-02T15, D)` read from forward-1002 and walk 2, after the FINAL.** The adapter must fill that range; it is available only after the FINAL, which is also when the read runs.
@@ -336,11 +396,11 @@ Each is reported on both fail legs unless it says otherwise, at every look that 
 
 ### 11.3 The mandatory count-only precount on the real layout
 
-It runs on the real October layout after the adapter is built and the FINAL is written, **before any P&L**, with the model trained on the 36 exploration days only (no October label). A first-time try on fixtures is not a substitute: fixtures miss loader bugs (the lesson of the EXP-016 and EXP-021 try-spending runs). It is run once for each look, on that look's window (7 dates for Look 1, 14 for Look 2). It prints, per UTC date of the window: graduations, universe rows, stage-1 rows, selections at prediction > 0.02, kept rows after the cap, rows dropped by the oracle (walk-2 dates), bad hours, PDA-match share, V-coverage share, ledger-coverage share, fallback slot-time hours. It prints no price, fill, exit, pnl, mean, CI or day sign.
+It runs on the real October layout after the adapter is built and the FINAL is written, **before any P&L**, with the model trained on the 36 exploration days only (no October label). A first-time try on fixtures is not a substitute: fixtures miss loader bugs (the lesson of the EXP-016 and EXP-021 try-spending runs). It is run once for each look, on that look's window and allowlisted hours only (7 dates for Look 1, 14 for Look 2). It prints, per UTC date of the window: graduations, universe rows, stage-1 rows, selections at prediction > 0.02, kept rows after the cap, rows dropped by the oracle (walk-2 dates), bad hours, PDA-match share, V-coverage share, ledger-coverage share, fallback slot-time hours. It prints no price, fill, exit, pnl, mean, CI or day sign.
 
 ### 11.4 Pre-declared refusals (NOT_DECIDABLE; outcome-blind; none is a pass)
 
-- **R1.** More than 2% of the ledger and counted hours (`[2026-10-02T15, 2026-10-17T02)` at Look 1, `[2026-10-02T15, 2026-10-24T02)` at Look 2) are bad or unverified, or any hour a counted attempt needs (from its mint's create hour through the hour that holds the landing block_time + 300 s + 60 s) is bad (that attempt is excluded and counted; more than 5% of attempts excluded makes the read NOT_DECIDABLE).
+- **R1.** More than 2% of the ledger and counted hours (`[2026-10-02T15, 2026-10-17T02)` at Look 1, `[2026-10-02T15, 2026-10-24T02)` at Look 2) are bad or unverified, or any hour a counted attempt needs (from its mint's create hour through the hour that holds the landing block_time + 300 s + 60 s) is bad (that attempt is excluded and counted; more than 5% of attempts excluded makes the look NOT_DECIDABLE). **A bad hour includes** an hour of `forward-1002ev` that was not walked, and an hour whose raw-JSONL cross-check against forward-1002 has a 1:1 match rate below 99.5% (P6).
 - **R2.** The PDA canonical-pool match is below 95% of non-Mayhem completes.
 - **R3.** Per-print V coverage on canonical-pool prints of universe pools is below 95%.
 - **R4.** The precount's kept selections over the look's window are below 90 (Look 1) or 150 (Look 2), or fewer than 5 of 7 (Look 1) or 8 of 14 (Look 2) dates have a kept selection. These are about 62% of the expected 140 and 280.
@@ -350,6 +410,16 @@ It runs on the real October layout after the adapter is built and the FINAL is w
 - **R8.** P2 to P6 are not all met by their deadlines.
 - **R9.** Decision stability: a re-derivation of any decision from the window start must match the first by md5, or the read refuses. Look 2 re-derives Look 1's decisions (10-10 to 10-16) and they must match Look 1's record by md5, or Look 2 refuses.
 - **R10.** A seal breach is not a refusal: the read runs and is reported compromised (section 4).
+- **R11.** Missing V (section 6): a counted trade priced under the missing-V rule is among the top 3 trades of either leg, or such trades are more than 1% of the look's trades.
+- **R12.** The tool is asked to open an hour outside the look's allowlist (section 4).
+- **R13.** The recorded decoder blobs of `forward-1002ev` and walk 2 differ, or the E0 records of P3 and P4 are missing.
+
+### 11.5 Spending [pinned; the form of EXP-024 section 11]
+
+- From 2026-10-10T00Z, any refusal, withdrawal, non-run or NOT_DECIDABLE of a look **spends that look's alpha and window.** The alpha is not carried to the other look. Those hours have begun and are watched by the shadow and the canary (section 5.1); filing again on them would be a forking path (let the oracle fail, then re-file on the tape that looked good).
+- **C1-NF v1 is never re-filed on any hour in `[2026-10-10T00, 2026-10-24T02)`.** No forward-1002-only variant is filed after the fact.
+- A failure before 2026-10-10T00:00Z, before any hour has begun (P0 or P1), does not spend; section 0's late-merge rule is then the only way to start later, and only at `C = 2026-10-11T00`.
+- A look that runs and FAILs is closed (section 7).
 
 ## 12. What is not decided here
 
