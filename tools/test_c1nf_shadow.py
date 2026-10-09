@@ -708,3 +708,227 @@ def test_asof_dir_ledger_adapts_passa_matrix_to_get(tmp_path):
     assert snap.get("known") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0) and snap.get("other") is None
     assert led.snapshot_for_day("2026-10-09") is None                   # no prior-day snapshot: wallet features stay NaN, as in C1
     assert opened == [tmp_path / "asof" / "asof-2026-10-10"]
+
+
+# ---- DEC-026 item 8: decision-time state on the pick -----------------------------------------------------------------------------------------
+def test_pick_carries_decision_state_of_the_last_print_before_sd():
+    sh, sink = mk_shadow(only_minute(10))
+    run_stream(sh, 640)
+    (pick,) = sink.of("c1nf_pick")
+    sd = pick["SD_slot"]
+    prev = sd - 1                                                  # the last print with slot < SD (the stream prints every slot)
+    want_q, want_b = cs.Print(prev, bt_of(prev), bool(prev % 2), 1e6, 1e9, Q0 + RAMP * (prev - S0), B0, V0).post()
+    assert pick["state_slot"] == prev
+    assert pick["q_lamports"] == round(want_q) and pick["base_reserve"] == round(want_b)
+    assert type(pick["q_lamports"]) is int and type(pick["base_reserve"]) is int and pick["q_lamports"] > V0
+    assert cs.validate_pick(pick) == []
+    assert set(cs.PICK_FIELDS) >= {"q_lamports", "base_reserve", "state_slot"}
+    fx = json.loads((FIX / "pick_example.json").read_text())
+    assert fx == cs.PICK_EXAMPLE and fx["q_lamports"] > 0 and fx["base_reserve"] > 0
+
+
+def test_decision_state_never_uses_a_print_at_or_after_sd():
+    sh, _ = mk_shadow()
+    sh.last_print[POOL] = cs.Print(500, BT0, True, 1e6, 1e9, 100e9, B0, V0)
+    sh.before_slot[POOL] = cs.Print(497, BT0, False, 1e6, 1e9, 90e9, B0, V0)
+    q, b, slot = sh._decision_state(POOL, 500)                     # the SD-slot print is skipped; the earlier slot's state is used
+    assert slot == 497 and (q, b) == tuple(round(x) for x in sh.before_slot[POOL].post())
+    assert sh._decision_state(POOL, 497) is None                   # nothing strictly before SD: no state
+    assert sh._decision_state("UNSEEN", 500) is None
+
+
+def test_no_decision_state_means_no_pick_no_book_no_outcome():
+    sh, sink = mk_shadow(only_minute(10))
+    for slot in range(S0, slot_of_sec(1000)):                      # V known on the first prints, missing on every print before SD
+        sh.feed(mk_row(slot, v=V0 if slot < S0 + 10 or slot >= S0 + 1500 else None), "trades")
+    sh.finish("test")
+    assert sink.of("c1nf_pick") == [] and sink.of("c1nf_outcome") == [] and not sh.book
+    assert sh.c["no_decision_state"] == 1 and sh.c["picks"] == 0
+
+
+@pytest.mark.parametrize("field,val", [("q_lamports", 0), ("q_lamports", -5), ("q_lamports", 1.5e11), ("base_reserve", True),
+                                       ("base_reserve", 0), ("state_slot", "1")])
+def test_validate_pick_rejects_bad_decision_state(field, val):
+    assert cs.validate_pick({**cs.PICK_EXAMPLE, field: val}) != []
+
+
+@pytest.mark.parametrize("field", ["q_lamports", "base_reserve", "state_slot"])
+def test_validate_pick_requires_decision_state(field):
+    rec = dict(cs.PICK_EXAMPLE)
+    del rec[field]
+    assert f"missing {field}" in cs.validate_pick(rec)
+
+
+# ---- DEC-026 item 8: binding outcome guard from 2026-10-10T00Z -------------------------------------------------------------------------------
+OS_MS = cs.OUTCOME_START_MS
+OS_S = OS_MS // 1000
+
+
+def test_outcome_start_constant_is_2026_10_10T00Z():
+    assert OS_MS == int(datetime(2026, 10, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+@pytest.mark.parametrize("t,ok", [
+    (OS_MS, True), (OS_MS - 60_000, False), (OS_MS + 86_400_000, True),
+    (BT0 * 1000, True),                                                        # exploration (2026-09-04T12): replay keeps its outcomes
+    (int(datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc).timestamp() * 1000), True),
+    (int(datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc).timestamp() * 1000), False),   # end of the last exploration range (exclusive)
+    (int(datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp() * 1000), False),
+    (int(datetime(2026, 10, 9, 17, tzinfo=timezone.utc).timestamp() * 1000), False),
+    (int(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp() * 1000), False)])
+def test_outcome_allowed_boundaries(t, ok):
+    assert cs.outcome_allowed(t) is ok
+
+
+def _midnight_shadow(replay=True, classifier=None, decide_mins=(-10, 0)):
+    """A stream from 2026-10-09T23:49Z across 2026-10-10T00Z. Decisions at the given minutes relative to 00:00Z."""
+    base = OS_S - 660
+    want = {OS_S + 60 * m for m in decide_mins}
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    wall = {"t": base * 1000}
+    sh = cs.Shadow(StubEngine(lambda T: (True, 0.1) if T in want else None), models, sink, replay=replay, seal_start_ms=None,
+                   wall=lambda: wall["t"], classifier=classifier)
+    for h in (base, OS_S):
+        sh.clock.hour_sps[cs.hour_of(h)] = SPS
+    pend_at_pre = []
+
+    def run(until_s):
+        for slot in range(S0, S0 + int(until_s / SPS)):
+            bt = base + int((slot - S0) * SPS)
+            wall["t"] = bt * 1000 + 700
+            sh.feed(mk_row(slot, side="buy" if slot % 2 else "sell", block_time=bt), "trades")
+            if bt == OS_S - 1:
+                pend_at_pre.append(sum(len(v) for v in sh.pending.values()))
+    return sh, sink, run, pend_at_pre
+
+
+@pytest.mark.parametrize("replay", [True, False])
+def test_pre_window_decision_writes_its_pick_but_nothing_is_priced(replay):
+    sh, sink, run, pend_at_pre = _midnight_shadow(replay=replay)
+    run(660 + 400)                                                 # to 00:06:40Z, past the 00:00Z pick's exit + grace
+    sh.finish("test")
+    picks, outs = sink.of("c1nf_pick"), sink.of("c1nf_outcome")
+    assert [p["decision_T_ms"] for p in picks] == [OS_MS - 600_000, OS_MS]
+    assert all(cs.validate_pick(p) == [] for p in picks)
+    assert [o["decision_T_ms"] for o in outs] == [OS_MS]           # only the 00:00Z decision has an outcome
+    assert pend_at_pre and set(pend_at_pre) == {0}                 # the 23:50Z pick never had a Pending (nothing priced)
+    assert sh.c["outcome_guard_pre_window"] == 1 and sh.c["outcomes"] == 1
+    blob = json.dumps([r for r in sink.records if r.get("type") != "c1nf_pick"])
+    assert str(OS_MS - 600_000) not in blob                       # no record but the pick names the pre-window decision
+
+
+def test_outcome_guard_has_no_switch():
+    import inspect
+    params = set(inspect.signature(cs.Shadow).parameters)
+    assert not any("outcome" in p or "guard" in p for p in params)
+    opts = {a for act in cs.build_parser()._actions for a in act.option_strings}
+    assert not any("outcome" in o for o in opts)
+
+
+# ---- EXP-025 Amendment 2 item 5: synthetic class only as a counts stream ---------------------------------------------------------------------
+def _counts(**kw):
+    out = {f"{w}_{c}": 0 for w in ("universe", "picks") for c in cs.SYN_CLASSES}
+    out.update(kw)
+    return out
+
+
+def test_synthetic_class_goes_only_to_a_separate_counts_stream():
+    asked = []
+    sh, sink = mk_shadow(only_minute(10), classifier=lambda m, p: (asked.append((m, p)), "synthetic")[1])
+    run_stream(sh, 1000)
+    sh.heartbeat()
+    sh.finish("test")
+    assert asked == [(MINT, POOL)]                                 # asked once per pool
+    (pick,), (out,) = sink.of("c1nf_pick"), sink.of("c1nf_outcome")
+    assert cs.validate_pick(pick) == [] and cs._class_keys(out) == []
+    (sc,) = sink.of(cs.SYNCLASS_TYPE)
+    assert set(sc) == {"schema", "t_ms", "type", "day", "partial", "counts"} and sc["partial"] is True and sc["day"] == "2026-09-04"
+    assert sc["counts"] == _counts(universe_synthetic=1, picks_synthetic=1)
+    assert MINT not in json.dumps(sc) and POOL not in json.dumps(sc)
+    others = [r for r in sink.records if r.get("type") != cs.SYNCLASS_TYPE]
+    assert "synthetic" not in json.dumps(others) and "unclassified" not in json.dumps(others)   # heartbeat, stop, pick, outcome: no class
+
+
+def test_synclass_counts_close_each_utc_day_once():
+    sh, sink, run, _ = _midnight_shadow(classifier=lambda m, p: "non_synthetic")
+    run(660 + 400)
+    days = [r["day"] for r in sink.of(cs.SYNCLASS_TYPE)]
+    assert days == ["2026-10-09"]                                  # written when the stream enters 2026-10-10, not before
+    sh.finish("test")
+    recs = sink.of(cs.SYNCLASS_TYPE)
+    assert [(r["day"], r["partial"]) for r in recs] == [("2026-10-09", False), ("2026-10-10", True)]
+    assert recs[0]["counts"] == _counts(universe_non_synthetic=1, picks_non_synthetic=1)
+    assert recs[1]["counts"] == _counts(picks_non_synthetic=1)
+
+
+@pytest.mark.parametrize("cls", [RuntimeError("rpc down"), "weird", None, True])
+def test_classifier_failure_or_junk_is_unclassified(cls):
+    def clf(m, p):
+        if isinstance(cls, Exception):
+            raise cls
+        return cls
+    sh, sink = mk_shadow(only_minute(10), classifier=clf)
+    run_stream(sh, 700)
+    sh.finish("test")
+    (sc,) = sink.of(cs.SYNCLASS_TYPE)
+    assert sc["counts"] == _counts(universe_unclassified=1, picks_unclassified=1)
+    assert len(sink.of("c1nf_pick")) == 1                          # never a refusal by class
+
+
+def test_no_classifier_no_class_stream():
+    sh, sink = mk_shadow(only_minute(10))
+    run_stream(sh, 1000)
+    sh.finish("test")
+    assert sink.of(cs.SYNCLASS_TYPE) == [] and len(sink.of("c1nf_outcome")) == 1
+
+
+@pytest.mark.parametrize("rec", [
+    {"type": "c1nf_outcome", "mint": MINT, "legs": {"1.3": {"end": {"synthetic": True}}}},
+    {"type": "c1nf_outcome", "mint": MINT, "synthetic_class": "synthetic"},
+    {**cs.PICK_EXAMPLE, "class": "non_synthetic"},
+    {**cs.PICK_EXAMPLE, "extra": [{"is_synthetic": False}]}])
+def test_emit_drops_a_per_pool_record_that_carries_the_class(rec):
+    sh, sink = mk_shadow()
+    sh.emit(rec)
+    assert sink.records == [] and sh.c["class_leak_blocked"] == 1
+
+
+def test_class_stream_is_its_own_file_on_disk(tmp_path):
+    sink = cs.JsonlSink(tmp_path)
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    sh = cs.Shadow(StubEngine(only_minute(10)), models, sink, replay=True, seal_start_ms=None, classifier=lambda m, p: "synthetic")
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    run_stream(sh, 1000)
+    sh.finish("test")
+    sink.close()
+    cls_files = list(tmp_path.glob("c1nf-synclass-*"))
+    assert len(cls_files) == 1 and "universe_synthetic" in cls_files[0].read_text()
+    for p in tmp_path.iterdir():
+        if p not in cls_files and p.suffix == ".jsonl":
+            assert "synthetic" not in p.read_text(), p.name
+    assert list(tmp_path.glob("c1nf-outcomes-*")) and list(tmp_path.glob("c1nf-picks-*"))
+
+
+def test_cli_accepts_a_synthetic_classifier_spec():
+    args = cs.build_parser().parse_args(["--synthetic-classifier", "tools.synthetic_class:nope"])
+    assert args.synthetic_classifier == "tools.synthetic_class:nope"
+    assert cs.build_parser().parse_args([]).synthetic_classifier is None
+
+
+# ---- DEC-026 section 6: the paper twin at the canary's stake ---------------------------------------------------------------------------------
+def test_each_bound_carries_a_twin_at_the_canary_stake():
+    sh, sink = mk_shadow(only_minute(10))
+    run_stream(sh, 1000)
+    (o,) = sink.of("c1nf_outcome")
+    assert o["stake_lamports"] == 250_000_000 and cs.CANARY_STAKE_LAMPORTS == 50_000_000
+    for k, leg in o["legs"].items():
+        for bound in ("end", "worst"):
+            c = leg[bound]["canary"]
+            assert c["stake_lamports"] == 50_000_000
+            if not c["guarded"]:
+                assert c["pnl_505k"] == pytest.approx(c["proceeds"] - 50_000_000 - 2 * 505_000)
+                assert c["pnl_505k_rent"] == pytest.approx(c["pnl_505k"] - 2 * cs.RENT_LAMPORTS)
+                assert c["gross_ret"] == pytest.approx(c["proceeds"] / 50_000_000 - 1)
+            # a smaller buy moves the pool less: the twin's gross return is not worse than the 0.25 SOL cell's
+            assert c["gross_ret"] >= leg[bound]["gross_ret"] - 1e-12
