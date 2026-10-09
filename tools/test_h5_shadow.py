@@ -1988,6 +1988,22 @@ class LinkStateRound6Tests(unittest.TestCase):
         # the edge: just inside WALL_CLOSE after the end of the hour
         self.assertEqual(self.sealed_hour_partials(int(h5.WALL_CLOSE_S) - 1)[0], ("2026-10-16T01", True))
 
+    def test_trigger_and_pool_record_keys_are_the_ones_the_executor_vendored(self):
+        """The executor parses these records (tools/test_h5_executor_shadow.py vendors them): a key added or dropped here is a break there."""
+        fx = json.loads((Path(__file__).parent / "fixtures" / "h5_shadow" / "records_3dbe1de.json").read_text())
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1110, 35.0)
+        t.row(1200, "buy", "Z", SOL // 20)
+        run(eng, t)
+        eng.close_all("t")
+        envelope = {"v", "schema", "t_ms"}
+        self.assertEqual(set(types(out, "trigger")[0]) - envelope, set(fx["trigger"]))
+        self.assertEqual(set(types(out, "pool")[0]) - envelope, set(fx["pool"]))
+
     def test_the_stale_comment_is_gone(self):
         self.assertNotIn("old comment follows", Path(h5.__file__).read_text())
 
