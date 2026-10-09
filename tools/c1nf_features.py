@@ -129,6 +129,45 @@ class LedgerProvider(Protocol):
     def snapshot_for_day(self, day: str) -> Optional[LedgerSnapshot]: ...
 
 
+class AsofLedgerAdapter:
+    """Adapts tools/c1nf_wallet_ledger.AsofLedger (claude/c1nf-ledger, PR #502) to the engine's snapshot interface.
+
+    The ledger is keyed by th = DuckDB hash(trader) (UBIGINT); the engine keys by pubkey, so the caller supplies `th_of(list[str]) ->
+    uint64 array` (see duckdb_th_of). `asof.passa_matrix(th)` returns (known mask, float64 [n, 7] in PASSA_COLS == LEDGER_COLS order, NaN
+    for unknown wallets): exactly the matrix 11_passA builds."""
+
+    def __init__(self, asof: Any, th_of) -> None:
+        self.asof, self.th_of = asof, th_of
+
+    def lookup_many(self, traders: Sequence[str]):
+        th = np.asarray(self.th_of(list(traders)), dtype=np.uint64)
+        return self.asof.passa_matrix(th)
+
+    def get(self, trader: str) -> Optional[Sequence[float]]:
+        known, m = self.lookup_many([trader])
+        return tuple(float(x) for x in m[0]) if known[0] else None
+
+
+class AsofLedgerProvider:
+    """LedgerProvider over per-day AsofLedger snapshots: open_day('YYYY-MM-DD') -> AsofLedger | None (asof-<day> = days strictly before)."""
+
+    def __init__(self, open_day, th_of) -> None:
+        self.open_day, self.th_of = open_day, th_of
+
+    def snapshot_for_day(self, day: str):
+        a = self.open_day(day)
+        return None if a is None else AsofLedgerAdapter(a, self.th_of)
+
+
+def duckdb_th_of(con):
+    """th_of backed by DuckDB hash(VARCHAR) (the pinned function; the ledger module refuses a duckdb whose hash differs)."""
+    def th_of(traders: Sequence[str]) -> np.ndarray:
+        rows = con.execute("SELECT x, hash(x) FROM (SELECT unnest(?) AS x)", [list(traders)]).fetchall()
+        m = {a: b for a, b in rows}
+        return np.array([m[t] for t in traders], dtype=np.uint64)
+    return th_of
+
+
 class SlotClock:
     """block_time -> min slot, sorted by block_time. decision_slot(T) = min slot of the smallest block_time >= T (11_passA.dec_slot)."""
 
@@ -575,12 +614,17 @@ class FeatureEngine:
                         continue
                     users = list(acc)
                     usol = np.array([acc[u] for u in users], dtype=np.float64)
-                    st = np.full((len(users), 7), np.nan)
-                    known = np.zeros(len(users), dtype=bool)
-                    for i, u in enumerate(users):
-                        row = led.get(u)
-                        if row is not None:
-                            st[i] = row; known[i] = True
+                    if hasattr(led, "lookup_many"):               # AsofLedgerAdapter: one vectorised lookup per window
+                        known, st = led.lookup_many(users)
+                        known = np.asarray(known, dtype=bool); st = np.array(st, dtype=np.float64)
+                        st[~known] = np.nan
+                    else:
+                        st = np.full((len(users), 7), np.nan)
+                        known = np.zeros(len(users), dtype=bool)
+                        for i, u in enumerate(users):
+                            row = led.get(u)
+                            if row is not None:
+                                st[i] = row; known[i] = True
                     nn, nbond, cash, nwin, nrt, ndays, buy = st.T
                     with np.errstate(invalid="ignore", divide="ignore"):
                         skill = known & (cash > 0)

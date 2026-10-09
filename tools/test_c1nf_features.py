@@ -341,6 +341,41 @@ def test_wallet_features_with_stub_ledger_and_missing_ledger():
     assert r2.get("v5") == res.get("v5") and r2.get("h_top1") == res.get("h_top1")
 
 
+class FakeAsof:
+    """Duck-types AsofLedger.passa_matrix: th -> (known, float64 [n, 7])."""
+
+    def __init__(self, table):
+        self.table = table
+
+    def passa_matrix(self, th):
+        known = np.array([int(t) in self.table for t in th], dtype=bool)
+        m = np.full((len(th), 7), np.nan)
+        for i, t in enumerate(th):
+            if int(t) in self.table:
+                m[i] = self.table[int(t)]
+        return known, m
+
+
+def test_asof_ledger_adapter_matches_dict_ledger():
+    rows = make_prints(9, n=150, span_s=900, n_traders=6)
+    day = cf.utc_day(G0 + 900)
+    table = {"W0": (1000.0, 950.0, 3.0, 8.0, 10.0, 2.0, 5.0), "W1": (40.0, 10.0, -1.0, 1.0, 6.0, 1.0, 2.0), "W2": (3000.0, 0.0, 0.5, 2.0, 2.0, 2.0, 0.01)}
+    th_of = lambda xs: np.array([int(x[1:]) for x in xs], dtype=np.uint64)
+    asof = FakeAsof({int(k[1:]): v for k, v in table.items()})
+    prov = cf.AsofLedgerProvider(lambda d: asof if d == day else None, th_of)
+    out = []
+    for ledger in (StubLedger(table, day), prov):
+        eng = new_engine(rows, ledger=ledger)
+        for r in rows:
+            feed(eng, r)
+        out.append(eng.features_at("POOL", G0 + 900, sd=900 * SPS))
+    assert out[0].pre
+    for name in cf.FEATURE_NAMES:
+        if cf.feature_group(name) == "wallet":
+            assert close(out[0].get(name), out[1].get(name)), name
+    assert prov.snapshot_for_day("2000-01-01") is None
+
+
 def test_stage1_flag_cap_and_float32_rule():
     eng = cf.FeatureEngine(); eng.set_pool_v("POOL", V); eng.on_graduation("MINT", G0)
     big = [dict(slot=(1 + 4 * i) * SPS, bt=G0 + 1 + 4 * i, isb=True, sol=3e9, tok=1e12, q=70e9 + 3e9 * i, b=206e12 - 1e12 * i, trader=f"W{i}") for i in range(60)]

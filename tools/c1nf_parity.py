@@ -191,7 +191,9 @@ def replay(day: str, h_from: str, out: str, max_hours: int | None = None) -> Non
             if P.eligible and P.g0 is not None and cf.utc_day(P.g0) == day:
                 elig_set.add(pid)
         if lastbt:
-            eng.expire(lastbt, market_keep_s=10 ** 9)      # deferred "exact" evaluations need the old market minutes
+            # "exact" mode resolves a quiet pool's state at its next print, which the batch reads up to D+2 T01 (>24 h after graduation): keep pools
+            # alive 24 h longer than live needs, and keep the old market minutes for the deferred evaluations
+            eng.expire(lastbt - 86400, market_keep_s=10 ** 9)
         print(f"  {h} rows {nrows:,} decisions {len(live):,} pools {len(eng._pools)} t={time.time()-t0:.0f}s", flush=True)
     exact_all = [exact.get((r[0], r[1]), r) for r in live]       # no later print for the pool in the window -> exact == live
 
