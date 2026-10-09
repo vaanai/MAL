@@ -309,7 +309,7 @@ OWNER_CAPITAL_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owne
   - Up to 3 × 0.10 SOL can be open when the stop fires, and fees and rent add a little.
   - So up to about **0.59 SOL** can be lost, leaving a floor of about **0.20 SOL**. That is above the 0.05 SOL wallet floor and the balance guard.
   - The 0.40 SOL daily stop is above the total stop, so it never binds first.
-- **Capital limit.** The owner's total capital across all tests is about 1.29 SOL. C1-NF's separate 0.5 SOL wallet is governed by DEC-026, not here. No further capital is planned, so T2 (0.30 SOL, 3 open) needs about 2 SOL or more in this wallet and can only come from profits.
+- **Capital limit.** The owner's total capital across all tests is about 1.29 SOL. C1-NF's separate 0.5 SOL wallet is governed by DEC-026, not here. No further capital is planned. No code or DEC rule ties T2 to a wallet size: the balance guard alone would allow T2 with about 1 SOL. About 2 SOL is the manager's sizing line. At 2 SOL the T2 total stop is 0.70 SOL, and up to about 1.61 SOL can be lost. T2 needs a new owner line in any case (Open item 1), and with no further capital it can only come from profits.
 - **Unchanged.** Every other item of Amendment 3 stands.
 
 
