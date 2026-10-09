@@ -43,7 +43,7 @@ OWNER_DECISION_CONFIRMED: 2026-10-09 | O3 small live C1-NF test trades in parall
 
 - Ledger rule 1 gives each block of hours one owner. The Forward walk row `[2026-10-02T10, 2026-10-16T01)` belongs to the EXP-012 forward book. The Forward walk 2 row `[2026-10-16T01, 2026-11-16T01)` belongs to EXP-022.
 - **Exception, for EXP-025 only (O2, approved).** EXP-025 is a further **counted reader** of forward-1002, and a **non-owner reader of walk 2** while EXP-022 is counting. It is not an owner. It reads:
-  - forward-1002 `[2026-10-02T15, 2026-10-09T00)` and its event-V copy `forward-1002ev` `[2026-10-09T00, 2026-10-16T01)` (a second copy of the same hours: same owner, not a new block): ledger, features, **October training labels**, and counted decisions from 2026-10-10T00;
+  - forward-1002 `[2026-10-02T15, 2026-10-09T00)`, which supplies only the ledger, creates and market counts (never labels), and its event-V copy `forward-1002ev` `[2026-10-09T00, 2026-10-16T01)` (a second copy of the same hours: same owner, not a new block), which also supplies features, **October training labels** (graduations from 2026-10-09T00) and counted decisions from 2026-10-10T00;
   - walk 2 `[2026-10-16T01, 2026-10-17T02)` at Look 1, and to `2026-10-24T02` at Look 2.
 - **Conditions, all of them:**
   - **After the FINAL.** No C1-NF process opens any forward-1002 hour before the EXP-012 FINAL (A) report is written (DEC-016 Am.8; the FINAL marker only, as in Am.7). Before the FINAL only the walker, `backfill_verify` and hour counts touch forward-1002ev.

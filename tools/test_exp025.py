@@ -216,6 +216,46 @@ class OctoberPatches(unittest.TestCase):
         1: ("2026-10-17T02", "7060cbd537571dc8a2da6249d4443adf2453224b8bca6aa46c68dbfbee803a11", "404669118447557f42bad7aa9cdb0b41e48ce6916b0cc7e003a7d643ece45722"),
         2: ("2026-10-24T02", "ca6d4b75790de653410df985e8598e8a336d0016d40c0535b5a73b2d0bd0ac7e", "885ce0d89f50c82562c2edeb572491080ef80d30ef1a328a67a3b7d6d7e32fb6"),
     }
+    LATE = {  # the late-merge variants for C = 2026-10-11T00 (quant-proof S3): segment 3 ends one day later
+        1: ("2026-10-18T02", "c87809cf3052999063ebd8c871539b05f1252ac9421ecdf29e0b0396a67120d2", "0a4ca896595c963f4964319ab0c51338ab82b56d3076e0f986cf3b434bfb8d40"),
+        2: ("2026-10-25T02", "e5eb33d76524d57ea7f0a396e965fb5c233b1e6a55be388628b05d409e682c11", "58b24f71c7e8565a06c6734e19bffeb77a18ab4855a1760a2154644c51bcbb89"),
+    }
+
+    def test_late_merge_variants_are_pinned_and_differ_only_in_the_segment_end(self):
+        txt = open(os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")).read()
+        for look, (end, applied_sha, patch_sha) in self.LATE.items():
+            pf = os.path.join(ART, "patches", "late_merge_C1011", f"common2_look{look}.patch")
+            self.assertEqual(sha(pf), patch_sha)
+            self.assertIn(patch_sha, txt)
+            self.assertIn(applied_sha, txt)
+            a = open(os.path.join(ART, "patches", f"common2_look{look}.patch")).read().splitlines()
+            b = open(pf).read().splitlines()
+            self.assertEqual(len(a), len(b))
+            diff = [(x, y) for x, y in zip(a, b) if x != y]
+            self.assertEqual(len(diff), 1)
+            self.assertIn(end, diff[0][1])
+            self.assertIn(self.EXPECT[look][0], diff[0][0])
+
+    @unittest.skipIf(np is None, "numpy missing")
+    def test_late_variants_apply_and_move_the_segment_end_one_day(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("patch") is None:
+            self.skipTest("patch(1) missing")
+        for look, (end, applied_sha, _) in self.LATE.items():
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "common2.py")
+                r = subprocess.run(["patch", "-o", out, os.path.join(ART, "scripts", "common2.py"),
+                                    os.path.join(ART, "patches", "late_merge_C1011", f"common2_look{look}.patch")], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(sha(out), applied_sha)
+                spec = importlib.util.spec_from_file_location(f"late{look}", out)
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                # Look 1 under C = 10-11 ends at 10-18T00; its last decision clips at SEGS[seg][1] - 3900 s and must not lose the last date
+                self.assertEqual(m.seg_of(m.ep(end)), -1)
+                self.assertEqual(m.seg_of(m.ep("2026-10-17T23")), 3)
 
     def test_patch_files_hash_and_are_named_in_the_exp(self):
         txt = open(os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")).read()
@@ -255,7 +295,7 @@ class OctoberPatches(unittest.TestCase):
 
 
 class EventVMapping(unittest.TestCase):
-    """Quant-proof R2: quote_reserve := vault + V(t) - V0, PRE-trade states."""
+    """Quant-proof R2 and S2: quote_reserve := vault + V(t) - V0, from the SAME print's own PRE-trade values (never chained)."""
 
     def setUp(self):
         self.m = load("event_v_map", "event_v_map.py")
@@ -268,15 +308,27 @@ class EventVMapping(unittest.TestCase):
     def test_constant_v_is_the_september_behaviour(self):
         self.assertEqual(self.m.map_quote_reserve(55_000_000_000, 17_585_000_000, 17_585_000_000), 55_000_000_000)
 
-    def test_pre_trade_state_of_print_i_is_post_trade_state_of_print_i_minus_1(self):
-        post = [(101, 17_600), (103, 17_500), (99, 17_700)]
-        self.assertEqual(self.m.pre_trade_states(post, v0=17_585, vault0=100), [(100, 17_585), (101, 17_600), (103, 17_500)])
+    def test_mapping_uses_each_prints_own_vault_and_v(self):
+        # print 1 follows an LP deposit of 7 that no trade explains: its own pre-trade vault is 107, not print 0's post-trade 101
+        prints = [(100, 17_585), (107, 17_600), (109, 17_500)]
+        self.assertEqual(self.m.mapped_series(prints, v0=17_585), [100, 107 + 17_600 - 17_585, 109 + 17_500 - 17_585])
+        chained_wrong = 101 + 17_600 - 17_585
+        self.assertNotEqual(self.m.mapped_series(prints, v0=17_585)[1], chained_wrong)
 
-    def test_mapped_series_uses_the_pre_state_not_the_post_state(self):
-        post = [(101, 17_600), (103, 17_500)]
-        got = self.m.mapped_series(post, v0=17_585, vault0=100)
-        self.assertEqual(got, [100 + 17_585 - 17_585, 101 + 17_600 - 17_585])
-        self.assertNotEqual(got[0], self.m.map_quote_reserve(post[0][0], post[0][1], 17_585))
+    def test_a_fee_sweep_keeps_vault_plus_v(self):
+        # a sweep removes `swept` from the vault and the same amount from stored V's deficit: vault + V is unchanged, so the mapped total quote is too
+        vault, v_t, swept = 50_000_000_000, 17_000_000_000, 123_456
+        before = self.m.map_quote_reserve(vault, v_t, 17_585_000_000) + 17_585_000_000
+        after = self.m.map_quote_reserve(vault - swept, v_t + swept, 17_585_000_000) + 17_585_000_000
+        self.assertEqual(before, after)
+
+    def test_p7_decision_rule(self):
+        self.assertEqual((self.m.P7_SAMPLE, self.m.P7_SELL_MIN, self.m.P7_BUY_MIN), (1000, 0.75, 0.90))
+        self.assertTrue(self.m.p7_pass(75, 100, 90, 100))
+        self.assertFalse(self.m.p7_pass(74, 100, 90, 100))
+        self.assertFalse(self.m.p7_pass(75, 100, 89, 100))
+        self.assertFalse(self.m.p7_pass(0, 0, 90, 100))
+        self.assertFalse(self.m.p7_pass(75, 100, 0, 0))
 
 
 class ExpFile(unittest.TestCase):
