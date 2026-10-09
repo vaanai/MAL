@@ -11,31 +11,49 @@ INPUT, one of
                        two selectors that are read and thrown away: `kind` (only `kind == "decision"` rows are audited) and `ts_ms`
                        (only rows whose UTC day is --date). No other field of a row is kept, printed or passed on: not a fill, size,
                        exit, price or P&L field, not the nested `plan`, `anchor` or `sent` objects. The JSON parser's object hook drops every
-                       other key as soon as its object closes. `-` reads stdin, so a root-owned ledger is piped in with `sudo`.
-  --project-only       with --ledger: print the projected rows (the five keys) as JSONL and stop. For a two-stage run.
+                       other key as soon as its object closes. The file is opened with O_NOFOLLOW; `-` reads stdin.
+  --out PATH           with --ledger: write the projected rows (the five keys, mode 0600, O_NOFOLLOW) to PATH and stop. Nothing about a
+                       row goes to stdout. This is the step that runs under `sudo`: the root-owned ledger is projected once, to a file the
+                       audit then reads (`--decisions PATH`), so no pipe can hide a failed read.
+
+FAIL CLOSED ON THE READ. `--expect-ledger` (on by default; `--no-expect-ledger` turns it off): zero non-blank input lines is not an
+all-clear. It prints {"date", "error": "no_ledger_lines"} and exits 4. A read that fails (missing file, a symlink, a permission error, a
+bad byte) prints {"date", "error": "ledger_read_failed"} and exits 4 whatever the flag says. `n_lines_read` goes to stderr on every run.
+Use --no-expect-ledger only on the second step of the runbook, where an empty projected file is a day with no buys.
 
 `signature` on a decision row is the signature of OUR buy transaction, not of the trigger print (the ledger carries no trigger
 signature). It is used as B4's `before` anchor. B4 says "before the s0 print's signature"; our buy is after s0, so this window is a
 SUPERSET of B4's: the migrate tx is older than both, so it is still found, but a pool with more than `cap` (1,000) signatures between
-its migrate tx and our buy is `unclassified` here where B4 would have found it. That shows in n_unclassified_now, never in n_disagree.
-A buy that never landed has an unknown signature to the node: the lookup fails and the pool is unclassified.
+its migrate tx and our buy is `unclassified` here where B4 would have found it. A buy that never landed has a signature the node does
+not know (the public RPC answers -32020 "Transaction ... not found" to such a `before`): the pool is `unclassified`, and its reason on
+stderr is `fetch_failed:signatures:pool:RpcError`.
 
 OUTPUT (one JSON line on stdout, exactly these keys, and nothing else on stdout):
   {"date", "n_pools", "n_disagree", "n_unclassified_now", "halt": n_disagree > 0}
-No pool, mint, signature, per-pool class or fill is printed anywhere. stderr carries only counts and error type names.
+No pool, mint, signature, per-pool class or fill is printed anywhere. stderr carries only counts (`n_lines_read`, the rows kept, the
+unclassified pools by reason) and error type names, never an id or an error message.
 
-A pool "disagrees" when B4 classifies it (synthetic or non_synthetic) and the shadow's class is not the same. The shadow's class is
-`synthetic` -> synthetic, `false` -> non_synthetic; an absent, null or non-bool field is no class, so a bought pool with no recorded
-class disagrees with any B4 class (the executor must have refused it). A pool B4 cannot classify now is counted in n_unclassified_now.
+A pool "disagrees" when
+  - B4 classifies it (synthetic or non_synthetic) and the shadow's class is not the same. The shadow's class is `true` -> synthetic,
+    `false` -> non_synthetic; an absent, null or non-bool field is no class, so a bought pool with no recorded class disagrees with any
+    B4 class (the executor must have refused it; this is the case on every ledger from before the #519 gate, by design); or
+  - the shadow called it plain (`synthetic` false) and B4 could not classify it but saw the PostCompleteBuyEvent in ANY readable located
+    transaction (`event_seen_any`), even though the other transaction is unreadable (DEC-024 Am.2 C1).
+A pool B4 cannot classify now is also counted in n_unclassified_now, whether or not it is a disagreement.
 
-Exit code 3 if n_disagree > 0, 2 on a usage error or a refused RPC URL, else 0. Public RPC only (Helius and keyed URLs are refused).
-Never run this against, or beside, `python -m tools.pump_structure_monitor`: it does not call the monitor, it imports its helpers.
+Budget: public RPC only; at most `--max-calls-per-pool` (300) calls per pool, `--max-calls` (3,000) in all, and at least
+`--min-interval` (0.2 s, default 0.5) between calls. A pool that runs out of calls is `unclassified` (reason `...:PoolCallBudgetExceeded`).
+
+Exit code 3 if n_disagree > 0, 4 on a failed or empty ledger read, 2 on a usage error or a refused RPC URL, else 0.
+It does not call the monitor: it imports its helpers.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import urlparse
@@ -47,6 +65,10 @@ KEEP_KEYS = ("pool", "mint", "synthetic", "synthetic_src", "signature")  # the o
 SELECTOR_KEYS = ("kind", "ts_ms")  # read to choose rows, then discarded
 OUTPUT_KEYS = ("date", "n_pools", "n_disagree", "n_unclassified_now", "halt")
 _READ = frozenset(KEEP_KEYS) | frozenset(SELECTOR_KEYS)
+
+DEFAULT_RPC_HOST = "api.mainnet-beta.solana.com"
+MIN_INTERVAL_FLOOR = 0.2
+MAX_CALLS_PER_POOL_DEFAULT = 300
 
 
 def _hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -125,40 +147,103 @@ def shadow_class(synthetic: Any) -> str | None:
     return None
 
 
-def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[Mapping[str, Any]], str]) -> dict[str, Any]:
-    """`classify(row)` returns the B4 class string. Rows are grouped by pool; a row with no pool or mint cannot be classified."""
+def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+              reasons: Counter | None = None) -> dict[str, Any]:
+    """`classify(row)` returns classify_pool's dict (`class`, `reason`, `event_seen_any`). Rows are grouped by pool; a row with no pool or
+    mint cannot be classified. `reasons` (if given) counts the reasons of the unclassified pools: no ids."""
     pools: dict[str, list[Mapping[str, Any]]] = {}
     for i, r in enumerate(rows):
         pools.setdefault(r.get("pool") or f"?row{i}", []).append(r)
     n_disagree = n_unclassified = 0
     for rs in pools.values():
         first = rs[0]
-        cls = sc.CLASS_UNCLASSIFIED
+        res: Mapping[str, Any] = {"class": sc.CLASS_UNCLASSIFIED, "reason": "no_pool_or_mint", "event_seen_any": False}
         if first.get("pool") and first.get("mint"):
             try:
-                cls = classify(first)
+                res = classify(first)
             except Exception as exc:  # noqa: BLE001  (a lookup that blows up is an unclassified pool, not a crash; the type goes to stderr)
-                print(f"classify error: {type(exc).__name__}", file=sys.stderr)
-        if cls not in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
-            n_unclassified += 1
-        elif {shadow_class(r.get("synthetic")) for r in rs} != {cls}:
-            n_disagree += 1
+                res = {"class": sc.CLASS_UNCLASSIFIED, "reason": f"classify_error:{type(exc).__name__}", "event_seen_any": False}
+        cls = res.get("class")
+        if cls in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
+            if {shadow_class(r.get("synthetic")) for r in rs} != {cls}:
+                n_disagree += 1
+            continue
+        n_unclassified += 1
+        if reasons is not None:
+            reasons[str(res.get("reason") or "unknown")] += 1
+        if res.get("event_seen_any") is True and any(r.get("synthetic") is False for r in rs):
+            n_disagree += 1  # the shadow said plain; B4 saw the event in a readable located tx (the other tx is unreadable)
     return {"date": date, "n_pools": len(pools), "n_disagree": n_disagree, "n_unclassified_now": n_unclassified, "halt": n_disagree > 0}
 
 
-def check_public_rpc(url: str) -> str | None:
+# ---- RPC guard and budget --------------------------------------------------------------------------------------------
+
+
+def check_public_rpc(url: str, allow_hosts: Sequence[str] = ()) -> str | None:
+    """None if `url` may be used. Allowlist: https://api.mainnet-beta.solana.com, plus any host named by --allow-rpc-host. Never a keyed URL."""
     p = urlparse(url)
-    if "helius" in url.lower() or p.query or p.username or p.password:
+    if "helius" in url.lower() or p.query or p.username or p.password or p.params or p.fragment:
+        return "refused: public RPC only (no Helius, no keyed URL)"
+    if p.scheme != "https" or not p.hostname:
+        return "refused: https only"
+    allowed = {DEFAULT_RPC_HOST, *(h.lower() for h in allow_hosts)}
+    if p.hostname.lower() not in allowed:
+        return "refused: host not on the allowlist (name a public host with --allow-rpc-host)"
+    if any("helius" in h.lower() for h in allow_hosts):
         return "refused: public RPC only (no Helius, no keyed URL)"
     return None
 
 
-def _lines(path: str) -> Iterator[str]:
+class PoolCallBudgetExceeded(M.CallBudgetExceeded):
+    """One pool used its per-pool call allowance."""
+
+
+class PoolBudget:
+    """Wraps an RPC client: at most `limit` calls (logical calls; the client's own retries are not counted) between two `reset()`s."""
+
+    def __init__(self, rpc: Any, limit: int):
+        self.rpc, self.limit, self.used = rpc, limit, 0
+
+    def reset(self) -> None:
+        self.used = 0
+
+    def call(self, method: str, params: Sequence[Any]) -> Any:
+        if self.used >= self.limit:
+            raise PoolCallBudgetExceeded(f"per-pool call cap {self.limit} reached before {method}")
+        self.used += 1
+        return self.rpc.call(method, params)
+
+
+# ---- input and output files --------------------------------------------------------------------------------------------
+
+
+class _Counted:
+    """Iterates lines and counts the non-blank ones."""
+
+    def __init__(self, it: Iterable[str]):
+        self.it, self.n = it, 0
+
+    def __iter__(self) -> Iterator[str]:
+        for line in self.it:
+            if line.strip():
+                self.n += 1
+            yield line
+
+
+def _read_lines(path: str) -> Iterator[str]:
     if path == "-":
         yield from sys.stdin
         return
-    with open(path, encoding="utf-8") as fh:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, "r", encoding="utf-8") as fh:
         yield from fh
+
+
+def write_rows(path: str, rows: Iterable[Mapping[str, Any]]) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps({k: r.get(k) for k in KEEP_KEYS}, separators=(",", ":")) + "\n")
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -167,12 +252,21 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--decisions", metavar="FILE|-", help="JSONL projected to pool, mint, synthetic, synthetic_src, signature")
     g.add_argument("--ledger", metavar="FILE|-", help="executor ledger JSONL; projected here to those five keys")
-    p.add_argument("--project-only", action="store_true", help="with --ledger: print the projected rows and stop (no RPC)")
+    p.add_argument("--out", metavar="PATH", help="with --ledger: write the projected rows to PATH (0600) and stop; prints nothing about rows")
+    p.add_argument("--expect-ledger", action=argparse.BooleanOptionalAction, default=True,
+                   help="zero input lines is an error (exit 4), not an all-clear (default on)")
     p.add_argument("--rpc-url", default=M.DEFAULT_RPC, help="public mainnet RPC (default %(default)s)")
-    p.add_argument("--min-interval", type=float, default=0.5, help="seconds between RPC calls")
-    p.add_argument("--max-calls", type=int, default=3000, help="hard cap on RPC calls, retries included")
+    p.add_argument("--allow-rpc-host", action="append", default=[], metavar="HOST", help="another public RPC host to allow (repeatable)")
+    p.add_argument("--min-interval", type=float, default=0.5, help=f"seconds between RPC calls (not below {MIN_INTERVAL_FLOOR})")
+    p.add_argument("--max-calls", type=int, default=3000, help="hard cap on RPC calls in all, retries included")
+    p.add_argument("--max-calls-per-pool", type=int, default=MAX_CALLS_PER_POOL_DEFAULT, help="calls one pool may use")
     p.add_argument("--cap", type=int, default=sc.CAP_DEFAULT, help="signatures per search (B4: 1000)")
     return p.parse_args(argv)
+
+
+def _emit_error(date: str, name: str, code: int = 4) -> int:
+    print(json.dumps({"date": date, "error": name}, separators=(",", ":")))
+    return code
 
 
 def main(argv: Sequence[str] | None = None, *, rpc: Any = None) -> int:
@@ -182,30 +276,45 @@ def main(argv: Sequence[str] | None = None, *, rpc: Any = None) -> int:
     except ValueError:
         print("usage: --date must be YYYY-MM-DD", file=sys.stderr)
         return 2
-    if args.project_only and not args.ledger:
-        print("usage: --project-only needs --ledger", file=sys.stderr)
+    if args.out and (not args.ledger or args.out == "-"):
+        print("usage: --out needs --ledger and a file path", file=sys.stderr)
         return 2
-    if args.ledger:
-        rows, bad = project_ledger(_lines(args.ledger), args.date)
-    else:
-        rows, bad = load_projected(_lines(args.decisions))
-    if bad:
-        print(f"{bad} unparseable input line(s) skipped", file=sys.stderr)
-    if args.project_only:
-        for r in rows:
-            print(json.dumps(r, separators=(",", ":")))
-        return 0
-    if rpc is None:
-        refusal = check_public_rpc(args.rpc_url)
+    if args.min_interval < MIN_INTERVAL_FLOOR or args.max_calls_per_pool < 1 or args.max_calls < 1 or args.cap < 1:
+        print(f"usage: --min-interval must be at least {MIN_INTERVAL_FLOOR}; the caps must be positive", file=sys.stderr)
+        return 2
+    if rpc is None and not args.out:
+        refusal = check_public_rpc(args.rpc_url, args.allow_rpc_host)
         if refusal:
             print(refusal, file=sys.stderr)
             return 2
+    src = _Counted(_read_lines(args.ledger or args.decisions))
+    try:
+        rows, bad = project_ledger(src, args.date) if args.ledger else load_projected(src)
+    except (OSError, UnicodeError) as exc:
+        print(f"n_lines_read={src.n} read failed: {type(exc).__name__}", file=sys.stderr)
+        return _emit_error(args.date, "ledger_read_failed")
+    print(f"n_lines_read={src.n} n_rows={len(rows)}" + (f" n_unparseable={bad}" if bad else ""), file=sys.stderr)
+    if args.expect_ledger and src.n == 0:
+        return _emit_error(args.date, "no_ledger_lines")
+    if args.out:
+        try:
+            write_rows(args.out, rows)
+        except OSError as exc:
+            print(f"write failed: {type(exc).__name__}", file=sys.stderr)
+            return _emit_error(args.date, "projection_write_failed")
+        return 0
+    if rpc is None:
         rpc = M.RpcClient(args.rpc_url, min_interval=args.min_interval, max_calls=args.max_calls)
+    budget = PoolBudget(rpc, args.max_calls_per_pool)
 
-    def classify(r: Mapping[str, Any]) -> str:
-        return sc.classify_pool(rpc, mint=r["mint"], pool=r["pool"], before_sig=r.get("signature"), cap=args.cap)["class"]
+    def classify(r: Mapping[str, Any]) -> Mapping[str, Any]:
+        budget.reset()
+        return sc.classify_pool(budget, mint=r["mint"], pool=r["pool"], before_sig=r.get("signature"), cap=args.cap)
 
-    out = run_audit(rows, args.date, classify)
+    reasons: Counter = Counter()
+    out = run_audit(rows, args.date, classify, reasons)
+    if reasons:
+        print("unclassified_by_reason=" + json.dumps(dict(sorted(reasons.items())), separators=(",", ":")), file=sys.stderr)
     print(json.dumps({k: out[k] for k in OUTPUT_KEYS}, separators=(",", ":")))
     return 3 if out["n_disagree"] > 0 else 0
 
