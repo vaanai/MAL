@@ -233,11 +233,49 @@ def test_refuses_while_an_executor_unit_is_active_unless_forced(tmp_path):
     kp = Keypair()
     for unit in sc.UNITS:
         rpc = SellRpc(kp.pubkey())
-        with pytest.raises(pw.Refuse, match=f"{unit} is active"):
+        with pytest.raises(pw.Refuse, match=f"{unit} is not stopped"):
             sc.run(make_args(tmp_path, kp), rpc, is_active=lambda u, unit=unit: u == unit, out=lambda s: None, check_location=False)
         assert rpc.calls == []  # refused before any RPC
     rpc = SellRpc(kp.pubkey())
     assert sc.run(make_args(tmp_path, kp, force=True), rpc, is_active=lambda u: True, out=lambda s: None, check_location=False) == 0
+
+
+def test_unit_running_is_false_only_for_inactive_or_failed_and_fails_closed(monkeypatch):
+    import subprocess as sp
+
+    def fake(state, rc=0):
+        calls = []
+
+        def run_(argv, **kw):
+            calls.append(argv)
+            return sp.CompletedProcess(argv, rc, state, "")
+
+        monkeypatch.setattr(sc.subprocess, "run", run_)
+        return calls
+
+    for state in ("inactive\n", "failed\n"):
+        calls = fake(state)
+        assert sc.unit_running("mal-h5-executor") is False
+        assert calls == [["/usr/bin/systemctl", "show", "-p", "ActiveState", "--value", "mal-h5-executor"]]
+    for state in ("active\n", "activating\n", "deactivating\n", "reloading\n", "maintenance\n", "\n", "", "unknown\n", "inactive extra\n"):
+        fake(state)
+        assert sc.unit_running("mal-probe-executor") is True, repr(state)
+    fake("inactive\n", rc=1)  # an error exit with a plausible stdout is still no answer
+    assert sc.unit_running("x") is True
+
+    def boom(argv, **kw):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(sc.subprocess, "run", boom)  # no systemctl at all: fail closed
+    assert sc.unit_running("x") is True
+
+    def slow(argv, **kw):
+        raise sp.TimeoutExpired(argv, 15)
+
+    monkeypatch.setattr(sc.subprocess, "run", slow)
+    assert sc.unit_running("x") is True
+    assert "pw.executor_active" not in Path(sc.__file__).read_text().split("def unit_running")[1].split("def parse_mint")[0].replace("probe_withdraw.executor_active, which", "")
+    assert sc.run.__kwdefaults__["is_active"] is sc.unit_running  # the default guard is the strict one
 
 
 def test_priority_is_capped(tmp_path):

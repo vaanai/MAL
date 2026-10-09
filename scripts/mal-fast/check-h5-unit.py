@@ -4,6 +4,8 @@
     /usr/bin/python3 -I check-h5-unit.py --base        <unit file>   exit 0 = identical to the intended base unit
     /usr/bin/python3 -I check-h5-unit.py --dropin      <conf file>   exit 0 = identical to the intended pinned live drop-in
     /usr/bin/python3 -I check-h5-unit.py --shadow-feed <conf file>   exit 0 = a valid shadow-feed bind (one line, see below)
+    /usr/bin/python3 -I check-h5-unit.py --watch-service <unit file> exit 0 = identical to the intended watchdog service
+    /usr/bin/python3 -I check-h5-unit.py --watch-timer   <unit file> exit 0 = identical to the intended watchdog timer
 
 The installer runs --base and --dropin on the manifest-verified blobs before anything is moved. Helm (and the daily check)
 run --dropin on /etc/systemd/system/mal-h5-executor.service.d/live.conf and --shadow-feed on 10-shadow-feed.conf.
@@ -40,6 +42,7 @@ EXPECTED_BASE: list[tuple[str, str, str]] = [
     ("Unit", "Documentation", "https://github.com/vaanai/MAL"),
     ("Unit", "After", "network-online.target"),
     ("Unit", "Wants", "network-online.target"),
+    ("Unit", "After", "mal-probe-executor.service"),
     ("Unit", "Conflicts", "mal-probe-executor.service"),
     ("Service", "Type", "simple"),
     ("Service", "User", "mal-live"),
@@ -71,6 +74,13 @@ EXPECTED_BASE: list[tuple[str, str, str]] = [
     ("Service", "PrivateDevices", "true"),
     ("Service", "ProtectProc", "invisible"),
     ("Service", "SystemCallFilter", "@system-service"),
+    ("Service", "SystemCallArchitectures", "native"),
+    ("Service", "RestrictNamespaces", "true"),
+    ("Service", "RestrictRealtime", "true"),
+    ("Service", "ProtectClock", "true"),
+    ("Service", "ProtectKernelLogs", "true"),
+    ("Service", "ProtectHostname", "true"),
+    ("Service", "UMask", "0077"),
     ("Service", "LimitCORE", "0"),
     ("Service", "MemoryMax", "1G"),
     ("Service", "MemorySwapMax", "0"),
@@ -81,7 +91,60 @@ EXPECTED_DROPIN: list[tuple[str, str, str]] = [
     ("Service", "ExecStart", ""),
     ("Service", "ExecStart", f"{PY} --config {PINNED}/current/h5-executor-live.json --live"),
 ]
-KINDS = {"base": (EXPECTED_BASE, ("Unit", "Service", "Install")), "dropin": (EXPECTED_DROPIN, ("Service",))}
+PRE_WATCH = (
+    "+/usr/bin/env -i /bin/sh -c 'test \"$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch)\" = 0:0:700 && "
+    "test \"$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch/watch.env)\" = 0:0:600'"
+)
+EXPECTED_WATCH_SERVICE: list[tuple[str, str, str]] = [
+    ("Unit", "Description", "MAL H5 watchdog (DEC-024 section 8): checks the H5 canary and posts alerts to Discord"),
+    ("Unit", "Documentation", "https://github.com/vaanai/MAL"),
+    ("Unit", "After", "network-online.target"),
+    ("Unit", "Wants", "network-online.target"),
+    ("Service", "Type", "oneshot"),
+    ("Service", "User", "root"),
+    ("Service", "EnvironmentFile", "/etc/mal-h5-watch/watch.env"),
+    ("Service", "ExecStartPre", PRE_WATCH),
+    ("Service", "ExecStart", f"/usr/bin/python3 -I -B -u {PINNED}/current/h5-watch.py"),
+    ("Service", "StateDirectory", "mal-h5-watch"),
+    ("Service", "StateDirectoryMode", "0700"),
+    ("Service", "TimeoutStartSec", "120"),
+    ("Service", "NoNewPrivileges", "true"),
+    ("Service", "ProtectSystem", "strict"),
+    ("Service", "ProtectHome", "read-only"),
+    ("Service", "PrivateTmp", "true"),
+    ("Service", "PrivateDevices", "true"),
+    ("Service", "ProtectKernelTunables", "true"),
+    ("Service", "ProtectKernelModules", "true"),
+    ("Service", "ProtectKernelLogs", "true"),
+    ("Service", "ProtectControlGroups", "true"),
+    ("Service", "ProtectClock", "true"),
+    ("Service", "ProtectHostname", "true"),
+    ("Service", "RestrictSUIDSGID", "true"),
+    ("Service", "RestrictRealtime", "true"),
+    ("Service", "RestrictNamespaces", "true"),
+    ("Service", "LockPersonality", "true"),
+    ("Service", "RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"),
+    ("Service", "CapabilityBoundingSet", "CAP_DAC_READ_SEARCH"),
+    ("Service", "SystemCallFilter", "@system-service"),
+    ("Service", "SystemCallArchitectures", "native"),
+    ("Service", "MemoryMax", "256M"),
+    ("Service", "MemorySwapMax", "0"),
+    ("Service", "UMask", "0077"),
+]
+EXPECTED_WATCH_TIMER: list[tuple[str, str, str]] = [
+    ("Unit", "Description", "MAL H5 watchdog every 5 minutes (DEC-024 section 8)"),
+    ("Unit", "Documentation", "https://github.com/vaanai/MAL"),
+    ("Timer", "OnBootSec", "2min"),
+    ("Timer", "OnUnitActiveSec", "5min"),
+    ("Timer", "AccuracySec", "30s"),
+    ("Install", "WantedBy", "timers.target"),
+]
+KINDS = {
+    "base": (EXPECTED_BASE, ("Unit", "Service", "Install")),
+    "dropin": (EXPECTED_DROPIN, ("Service",)),
+    "watch-service": (EXPECTED_WATCH_SERVICE, ("Unit", "Service")),
+    "watch-timer": (EXPECTED_WATCH_TIMER, ("Unit", "Timer", "Install")),
+}
 
 SHADOW_DEST = "/srv/mal-h5-shadow"
 _COMP = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"
@@ -173,9 +236,9 @@ def shadow_problems(data: "bytes | str") -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    kinds = {"--base": "base", "--dropin": "dropin", "--shadow-feed": "shadow-feed"}
+    kinds = {"--base": "base", "--dropin": "dropin", "--shadow-feed": "shadow-feed", "--watch-service": "watch-service", "--watch-timer": "watch-timer"}
     if len(argv) != 3 or argv[1] not in kinds:
-        print("usage: check-h5-unit.py (--base|--dropin|--shadow-feed) <file>", file=sys.stderr)
+        print("usage: check-h5-unit.py (--base|--dropin|--shadow-feed|--watch-service|--watch-timer) <file>", file=sys.stderr)
         return 2
     errs = problems(Path(argv[2]).read_bytes(), kinds[argv[1]])
     for e in errs:

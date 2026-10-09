@@ -96,6 +96,8 @@ class FakeHost(dc.Host):
             return 0, "".join(f"{k}={v}\n" for k, v in self.watch_props.items())
         if "DropInPaths" in argv:
             return 0, " ".join(self.dropins) + "\n"
+        if "NRestarts" in argv and "--value" in argv:
+            return 0, self.h5_props["NRestarts"] + "\n"
         if "--value" in argv:
             return 0, self.execstart
         return 0, "".join(f"{k}={v}\n" for k, v in self.h5_props.items())

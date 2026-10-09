@@ -3,7 +3,9 @@ Description=MAL H5-BOOSTFLOOR executor (DEC-024), keyless dry-run base unit (no 
 Documentation=https://github.com/vaanai/MAL
 After=network-online.target
 Wants=network-online.target
-# Two processes must never share the probe wallet key: starting either unit stops the other.
+# Two processes must never share the probe wallet key. Conflicts= makes starting either unit stop the other; After= orders that stop
+# job before this unit's start job (Conflicts= alone does not order them, so both could briefly run).
+After=mal-probe-executor.service
 Conflicts=mal-probe-executor.service
 
 [Service]
@@ -51,6 +53,13 @@ CapabilityBoundingSet=
 PrivateDevices=true
 ProtectProc=invisible
 SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0077
 LimitCORE=0
 MemoryMax=1G
 MemorySwapMax=0

@@ -25,6 +25,7 @@ import argparse
 import base64
 import hashlib
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -51,6 +52,17 @@ MAX_PRIORITY_LAMPORTS = 150_000  # the executor's escalated level; the validator
 CLOSE_ONLY_PRIORITY_LAMPORTS = 5_000
 CLOSE_ONLY_CU_LIMIT = 50_000
 COMMITMENT = "confirmed"
+
+
+def unit_running(unit: str) -> bool:
+    """True unless systemd says ActiveState is exactly `inactive` or `failed` (a unit in `activating`, i.e. waiting out RestartSec,
+    `deactivating` or `reloading` still has or is about to have a process holding the key). Fails closed: a missing or broken systemctl,
+    a timeout, an error or any other output counts as running. (probe_withdraw.executor_active, which tests `== "active"`, is not used.)"""
+    try:
+        r = subprocess.run(["/usr/bin/systemctl", "show", "-p", "ActiveState", "--value", unit], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return not (r.returncode == 0 and r.stdout.strip() in ("inactive", "failed"))
 
 
 def parse_mint(text: str) -> Pubkey:
@@ -175,7 +187,7 @@ def fetch_fill(rpc: Callable, sig: str, plan: dict[str, Any], sleep: Callable[[f
     return None
 
 
-def run(args, rpc: Callable, *, is_active: Callable[[str], bool] = pw.executor_active, out: Callable[[str], None] = print,
+def run(args, rpc: Callable, *, is_active: Callable[[str], bool] = unit_running, out: Callable[[str], None] = print,
         sleep: Callable[[float], None] = time.sleep, check_location: bool = True) -> int:
     mint = parse_mint(args.mint)  # before the key is touched
     if args.emergency and args.slippage_bps is not None:
@@ -184,7 +196,7 @@ def run(args, rpc: Callable, *, is_active: Callable[[str], bool] = pw.executor_a
     if not args.force:
         for unit in UNITS:
             if is_active(unit):
-                raise Refuse(f"refusing: {unit} is active (stop it first, or --force)")
+                raise Refuse(f"refusing: {unit} is not stopped (ActiveState is not inactive or failed; stop it first, or --force)")
     if check_location:
         pw.check_key_location(args.keyfile)
     kp = pw.load_keypair(args.keyfile)

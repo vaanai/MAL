@@ -22,23 +22,34 @@
 # MODULES is the transitive import closure of tools.h5_executor, tools.h5_sell_and_close (and so tools.probe_*) inside tools/
 # (tools/test_h5_executor_pinned.py recomputes it from the sources and fails if this list differs).
 set -euo pipefail
+# A root script must not inherit the caller's search path, working directory or Python environment: install, mv, sha256sum, awk, find,
+# chown and systemctl resolve from this PATH only, and `python3 -m venv` would otherwise put the current directory first on sys.path.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"   # before cd /: the script may have been started by a relative path
+ORIG_PWD="$PWD"
+cd /
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 umask 022
 
 COMMIT="${1:?usage: $0 <full-sha> <manifest>}"
 MANIFEST="${2:-}"
+case "$MANIFEST" in "" | /*) ;; *) MANIFEST="$ORIG_PWD/$MANIFEST" ;; esac
 [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || { echo "refusing: the manifest argument is mandatory (usage: $0 <full-sha> <manifest>)" >&2; exit 1; }
 DEST=/usr/local/lib/mal-h5-exec
 UNIT=mal-h5-executor
 PROBE_UNIT=mal-probe-executor
 MODULES="tools/__init__.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
-EXTRA="scripts/mal-fast/h5_exec_launcher.py:launcher.py scripts/mal-fast/h5-executor-live.json:h5-executor-live.json scripts/mal-fast/h5-executor.json:h5-executor.json scripts/mal-fast/mal-h5-executor-live-pinned.conf:mal-h5-executor-live-pinned.conf scripts/mal-fast/mal-h5-executor-shadow-feed.conf:mal-h5-executor-shadow-feed.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt EXP/EXP-024-h5-boostfloor-part1-prereg.md:EXP/EXP-024-h5-boostfloor-part1-prereg.md"
+EXTRA="scripts/mal-fast/h5_exec_launcher.py:launcher.py scripts/mal-fast/h5-executor-live.json:h5-executor-live.json scripts/mal-fast/h5-executor.json:h5-executor.json scripts/mal-fast/mal-h5-executor-live-pinned.conf:mal-h5-executor-live-pinned.conf scripts/mal-fast/mal-h5-executor-shadow-feed.conf:mal-h5-executor-shadow-feed.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt scripts/mal-fast/h5-watch.py:h5-watch.py scripts/mal-fast/h5-daily-check.py:h5-daily-check.py scripts/mal-fast/mal-h5-watch.service:mal-h5-watch.service scripts/mal-fast/mal-h5-watch.timer:mal-h5-watch.timer EXP/EXP-024-h5-boostfloor-part1-prereg.md:EXP/EXP-024-h5-boostfloor-part1-prereg.md"
 BASE_UNIT_SRC="scripts/mal-fast/mal-h5-executor.service"
 BASE_UNIT_CHECK="scripts/mal-fast/check-h5-unit.py"
 DROPIN_SRC="scripts/mal-fast/mal-h5-executor-live-pinned.conf"
 LIVE_CFG_SRC="scripts/mal-fast/h5-executor-live.json"
 BASE_UNIT_DEST=/etc/systemd/system/mal-h5-executor.service
+LIVE_DROPIN=/etc/systemd/system/mal-h5-executor.service.d/live.conf
+WATCH_SERVICE_SRC="scripts/mal-fast/mal-h5-watch.service"
+WATCH_TIMER_SRC="scripts/mal-fast/mal-h5-watch.timer"
 # LIVE_OK lives in this root-owned directory, outside every path the unit can write (DEC-024 section 3: the executor must not be
 # able to create it). This script provisions the directory and NEVER creates or touches LIVE_OK: Helm creates it after the hash check.
 H5_ETC=/etc/mal-h5
@@ -47,7 +58,6 @@ case "$COMMIT" in *[!0-9a-f]*|"") echo "commit must be a lowercase hex sha" >&2;
 [ "${#COMMIT}" -eq 40 ] || { echo "commit must be the full 40-char sha" >&2; exit 1; }
 
 # Our own repo dir and every ancestor must be root-owned and not group/world-writable.
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="$(cd "$HERE/../.." && pwd -P)"
 [ -d "$REPO/.git" ] || { echo "not run from a git clone: $REPO" >&2; exit 1; }
 check_dir() {
@@ -97,6 +107,10 @@ echo "manifest verified"
   || { echo "refusing: $BASE_UNIT_SRC failed the allowlist check; nothing was installed" >&2; exit 1; }
 /usr/bin/python3 -I "$TMP/$BASE_UNIT_CHECK" --dropin "$TMP/$DROPIN_SRC" \
   || { echo "refusing: $DROPIN_SRC failed the allowlist check; nothing was installed" >&2; exit 1; }
+/usr/bin/python3 -I "$TMP/$BASE_UNIT_CHECK" --watch-service "$TMP/$WATCH_SERVICE_SRC" \
+  || { echo "refusing: $WATCH_SERVICE_SRC failed the allowlist check; nothing was installed" >&2; exit 1; }
+/usr/bin/python3 -I "$TMP/$BASE_UNIT_CHECK" --watch-timer "$TMP/$WATCH_TIMER_SRC" \
+  || { echo "refusing: $WATCH_TIMER_SRC failed the allowlist check; nothing was installed" >&2; exit 1; }
 
 # Pre-flight: the key holder's EnvironmentFile must already be the root-only copy (this script runs as root, so it can
 # stat both). Refuse otherwise, before anything is installed or moved.
@@ -106,14 +120,18 @@ RPC_DIR=/etc/mal-probe-rpc
 [ "$(/usr/bin/stat -c %u:%g:%a "$RPC_DIR/helius.env" 2>/dev/null)" = "0:0:600" ] \
   || { echo "refusing: $RPC_DIR/helius.env must exist as a root:root 0600 file (only the HELIUS_API_KEY= line)" >&2; exit 1; }
 
+# A unit counts as stopped only when systemd says ActiveState is exactly inactive or failed. `is-active` is false for "activating"
+# (a unit waiting out RestartSec), "deactivating" and "reloading", and a missing or broken systemctl gives no answer at all: every
+# one of those is "not stopped" here (fail closed).
+unit_stopped() { case "$(systemctl show -p ActiveState --value "$1" 2>/dev/null)" in inactive|failed) return 0 ;; *) return 1 ;; esac; }
 # The venv is rebuilt in place, so the H5 executor must not be running.
-if systemctl is-active --quiet "$UNIT"; then
-  echo "refusing: $UNIT is active; stop it first (docs/runbooks/h5-executor.md)" >&2
+if ! unit_stopped "$UNIT"; then
+  echo "refusing: $UNIT is not stopped (ActiveState is not inactive or failed); stop it first (docs/runbooks/h5-executor.md)" >&2
   exit 1
 fi
 # Two processes must never share the key: the DEC-019 probe unit must be stopped AND disabled before H5 is installed.
-if systemctl is-active --quiet "$PROBE_UNIT"; then
-  echo "refusing: $PROBE_UNIT is active; stop and disable it first (docs/runbooks/h5-executor.md step 1)" >&2
+if ! unit_stopped "$PROBE_UNIT"; then
+  echo "refusing: $PROBE_UNIT is not stopped (ActiveState is not inactive or failed); stop and disable it first (docs/runbooks/h5-executor.md step 1)" >&2
   exit 1
 fi
 case "$(systemctl is-enabled "$PROBE_UNIT" 2>/dev/null || true)" in
@@ -131,6 +149,12 @@ if [ -L "$H5_ETC" ] || { [ -e "$H5_ETC" ] && [ "$(/usr/bin/stat -c %u:%g:%a "$H5
 fi
 if [ -e "$H5_ETC/LIVE_OK" ] || [ -L "$H5_ETC/LIVE_OK" ]; then
   echo "refusing: $H5_ETC/LIVE_OK exists; remove it first and create it again only after this install's hash check" >&2
+  exit 1
+fi
+# A live drop-in from an earlier install would make this install's "keyless dry run" a live start (the drop-in hands over the key) held back
+# only by the closed gate. Move it away first (runbook step 1b); it is installed again from the new tree at step 9.
+if [ -e "$LIVE_DROPIN" ] || [ -L "$LIVE_DROPIN" ]; then
+  echo "refusing: $LIVE_DROPIN exists; move it away first (docs/runbooks/h5-executor.md step 1b) so the install and the dry run are keyless" >&2
   exit 1
 fi
 
@@ -173,7 +197,7 @@ verify_tree "$STAGE" check || { echo "refusing: staged tree differs from the man
 # pinned sha) stays intact unless every step below succeeded. Never reuse an unverified venv.
 VENV_NEW="$DEST/venv.$COMMIT.new"
 rm -rf "$VENV_NEW"
-/usr/bin/python3 -m venv "$VENV_NEW"
+/usr/bin/python3 -I -m venv "$VENV_NEW"
 "$VENV_NEW/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
   -r "$STAGE/requirements-probe-exec.txt"
 # Permission + symlink check of the staged tree and staged venv BEFORE anything is moved, so a failure

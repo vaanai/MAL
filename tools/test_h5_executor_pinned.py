@@ -129,7 +129,8 @@ def test_extra_files_and_installed_names():
     for src, dst in pairs:
         assert src == EXP024 or (ROOT / src).is_file(), src  # EXP-024 lands from main; the installer refuses a sha without it
     assert {d for _, d in pairs} == {"launcher.py", "h5-executor-live.json", "h5-executor.json", "mal-h5-executor-live-pinned.conf",
-                                     "mal-h5-executor-shadow-feed.conf", "requirements-probe-exec.txt", EXP024}
+                                     "mal-h5-executor-shadow-feed.conf", "requirements-probe-exec.txt", EXP024,
+                                     "h5-watch.py", "h5-daily-check.py", "mal-h5-watch.service", "mal-h5-watch.timer"}
     # exp024_part1_present() looks for <repo_root>/EXP/EXP-024-...; repo_root() is the sha dir, so that exact relative path is installed
     from tools import h5_executor
 
@@ -357,7 +358,9 @@ def test_installer_static_guards():
     assert 'mv -T "$DEST/.current.tmp" "$DEST/current"' in t and "already exists" in t
     assert t.index("import tools.h5_executor, tools.h5_sell_and_close") < t.index('mv -T "$DEST/.current.tmp"')
     assert not re.search(r"install -m 0?[0-7]*[2367][0-7]\b", t.replace("0644", "").replace("0755", ""))
-    assert "mal-h5-executor-live-pinned.conf" in t and "/etc/systemd/system/mal-h5-executor.service.d" not in t  # the drop-in is never installed here
+    # the live drop-in is never installed here: its directory is named once (LIVE_DROPIN, which is only tested for and echoed)
+    assert "mal-h5-executor-live-pinned.conf" in t and t.count("/etc/systemd/system/mal-h5-executor.service.d") == 1
+    assert all(re.search(r'-[eL] "\$LIVE_DROPIN"', l) or l.strip().startswith("echo ") for l in t.splitlines() if "$LIVE_DROPIN" in l and not l.lstrip().startswith("#"))
     assert "LoadCredential" not in t
 
 
@@ -373,8 +376,8 @@ def test_installer_uses_absolute_stat_and_clean_git_env():
 def test_installer_checks_clone_state_then_manifest_then_units_then_preflight_then_moves():
     t = INSTALL.read_text()
     order = ["clone HEAD is not", "the clone is dirty", 'show "$COMMIT:$f"', "sha256 mismatch or missing manifest entry", "manifest verified",
-             '--base "$TMP/$BASE_UNIT_SRC"', '--dropin "$TMP/$DROPIN_SRC"', 'stat -c %u:%g:%a "$RPC_DIR"', "is-active --quiet \"$UNIT\"",
-             "is-active --quiet \"$PROBE_UNIT\"", "is-enabled", '"$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755"', '-e "$H5_ETC/LIVE_OK"',
+             '--base "$TMP/$BASE_UNIT_SRC"', '--dropin "$TMP/$DROPIN_SRC"', '--watch-service "$TMP/$WATCH_SERVICE_SRC"', '--watch-timer "$TMP/$WATCH_TIMER_SRC"',
+             'stat -c %u:%g:%a "$RPC_DIR"', 'unit_stopped "$UNIT"', 'unit_stopped "$PROBE_UNIT"', "is-enabled", '"$(/usr/bin/stat -c %u:%g:%a "$H5_ETC")" != "0:0:755"', '-e "$H5_ETC/LIVE_OK"', '-e "$LIVE_DROPIN"',
              'install -d -m 0755 -o root -g root "$H5_ETC"', 'mv -T "$STAGE" "$DEST/$COMMIT"']
     idx = [t.index(s) for s in order]
     assert idx == sorted(idx), dict(zip(order, idx))
@@ -387,7 +390,9 @@ def test_installer_checks_clone_state_then_manifest_then_units_then_preflight_th
         if "$H5_ETC" in l:
             assert not re.match(r"(touch|rm|cp|mv|ln|tee)\b", l), l
     assert [l for l in code if l.startswith("install") and "$H5_ETC" in l] == ['install -d -m 0755 -o root -g root "$H5_ETC"']  # the directory, nothing in it
-    assert "grep" not in t[t.index("Allowlist check"):t.index("is-active --quiet")]
+    assert "grep" not in t[t.index("Allowlist check"):t.index("unit_stopped()")]
+    assert not any("is-active" in l for l in code)  # only `show -p ActiveState --value` is trusted (a comment may explain why)
+    assert 'case "$(systemctl show -p ActiveState --value "$1" 2>/dev/null)" in inactive|failed) return 0 ;; *) return 1 ;; esac' in t
     assert "status --porcelain --untracked-files=all --ignored" in t
 
 
@@ -430,7 +435,27 @@ def _manifest(clone: Path, files: list[str]) -> str:
     return "\n".join(f"{hashlib.sha256((clone / f).read_bytes()).hexdigest()}  {f}" for f in files) + "\n"
 
 
-FAKE_SYSTEMCTL = "exit 3"  # not active, not enabled, no output
+def fake_systemctl(h5="inactive", probe="inactive", enabled=None) -> str:
+    """`systemctl show -p ActiveState --value <unit>` answers h5/probe (an empty string is an empty answer); `is-enabled` prints `enabled`
+    (exit 0) or nothing (exit 3); daemon-reload succeeds; anything else fails."""
+    return ('if [ "$1" = show ]; then case "$5" in mal-h5-executor) echo "' + h5 + '";; mal-probe-executor) echo "' + probe + '";; esac; exit 0; fi\n'
+            'if [ "$1" = is-enabled ] && [ "$2" = mal-probe-executor ]; then ' + (f'echo {enabled}; exit 0' if enabled else 'exit 3') + '; fi\n'
+            '[ "$1" = daemon-reload ] && exit 0\nexit 3')
+
+
+FAKE_SYSTEMCTL = fake_systemctl()  # both units inactive, probe unit not enabled
+
+
+def installer_under_test(tmp_path: Path) -> str:
+    """The installer text with the absolute paths a non-root test cannot fake redirected into tmp_path, and the fakes first on PATH.
+    Each replaced line must exist in the script, so a rename cannot silently turn a test into a no-op."""
+    t = INSTALL.read_text()
+    for old, new in (("/usr/bin/stat", "stat"), ("H5_ETC=/etc/mal-h5", f"H5_ETC={tmp_path}/etc-mal-h5"),
+                     ("LIVE_DROPIN=/etc/systemd/system/mal-h5-executor.service.d/live.conf", f"LIVE_DROPIN={tmp_path}/live.conf"),
+                     ("export PATH=/usr/sbin:/usr/bin:/sbin:/bin", f'export PATH="{tmp_path}/bin:/usr/sbin:/usr/bin:/sbin:/bin"')):
+        assert old in t, old
+        t = t.replace(old, new)
+    return t
 
 
 def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, etc_mode="0:0:755"):
@@ -441,7 +466,7 @@ def _build(tmp_path: Path, *, mode="755", systemctl=FAKE_SYSTEMCTL, edit=None, e
         (clone / f).parent.mkdir(parents=True, exist_ok=True)
         (clone / f).write_bytes(src_bytes(f))
     script = clone / "scripts/mal-fast/install-h5-executor-pinned.sh"
-    script.write_text(INSTALL.read_text().replace("/usr/bin/stat", "stat").replace("H5_ETC=/etc/mal-h5", f"H5_ETC={tmp_path}/etc-mal-h5"))  # a non-root test cannot fake the absolute paths
+    script.write_text(installer_under_test(tmp_path))
     script.chmod(0o755)
     shutil.copy(CHECK_TREE, clone / "scripts/mal-fast/check-h5-exec-tree.sh")
     if edit:
@@ -540,18 +565,62 @@ def test_refuses_a_sha_without_exp024(tmp_path):
     assert r.returncode != 0 and "FAKE-INSTALL" not in r.stdout and "manifest verified" not in r.stdout
 
 
-def test_refuses_while_the_h5_unit_or_the_probe_unit_is_active_or_enabled(tmp_path):
-    cases = {
-        "h5 active": ('[ "$1" = is-active ] && [ "$3" = mal-h5-executor ] && exit 0\nexit 3', "mal-h5-executor is active"),
-        "probe active": ('[ "$1" = is-active ] && [ "$3" = mal-probe-executor ] && exit 0\nexit 3', "mal-probe-executor is active"),
-        "probe enabled": ('[ "$1" = is-enabled ] && [ "$2" = mal-probe-executor ] && { echo enabled; exit 0; }\nexit 3', "mal-probe-executor is enabled"),
-    }
-    for name, (body, want) in cases.items():
-        clone, env = _build(tmp_path / name.replace(" ", "_"), systemctl=body)
-        r = _run(clone, env)
-        assert r.returncode != 0 and want in r.stderr and "FAKE-INSTALL" not in r.stdout, (name, r.stderr)
-    clone, env = _build(tmp_path / "masked", systemctl='[ "$1" = is-enabled ] && { echo masked; exit 1; }\nexit 3')
+def test_a_unit_counts_as_stopped_only_when_activestate_is_exactly_inactive_or_failed(tmp_path):
+    """S1: `is-active` is false for activating (waiting out RestartSec), deactivating and reloading; those must refuse, as must an
+    empty answer or a missing systemctl (fail closed). Both units are checked."""
+    for unit, key in (("mal-h5-executor", "h5"), ("mal-probe-executor", "probe")):
+        for state in ("active", "activating", "deactivating", "reloading", "maintenance", "refreshing", "unknown", ""):
+            clone, env = _build(tmp_path / f"{key}-{state or 'empty'}", systemctl=fake_systemctl(**{key: state}))
+            r = _run(clone, env)
+            assert r.returncode != 0 and f"{unit} is not stopped" in r.stderr and "FAKE-INSTALL" not in r.stdout, (unit, state, r.stderr)
+        for state in ("inactive", "failed"):
+            clone, env = _build(tmp_path / f"{key}-ok-{state}", systemctl=fake_systemctl(**{key: state}))
+            assert _run(clone, env).returncode == 99, (unit, state)
+    clone, env = _build(tmp_path / "no-systemctl", systemctl="exit 127")  # systemctl missing or broken: no answer is not "stopped"
+    r = _run(clone, env)
+    assert r.returncode != 0 and "is not stopped" in r.stderr and "FAKE-INSTALL" not in r.stdout
+
+
+def test_refuses_while_the_probe_unit_is_enabled_and_accepts_it_masked(tmp_path):
+    clone, env = _build(tmp_path / "enabled", systemctl=fake_systemctl(enabled="enabled"))
+    r = _run(clone, env)
+    assert r.returncode != 0 and "mal-probe-executor is enabled" in r.stderr and "FAKE-INSTALL" not in r.stdout
+    clone, env = _build(tmp_path / "masked", systemctl=fake_systemctl(enabled="masked"))
     assert _run(clone, env).returncode == 99  # masked and stopped is the desired state
+
+
+def test_installer_runs_in_a_clean_environment_from_root_whatever_the_callers_cwd_path_and_python(tmp_path):
+    t = INSTALL.read_text()
+    body = t[t.index("set -euo pipefail"):]
+    first = [l for l in body.splitlines() if l.strip() and not l.startswith("#")][:8]
+    assert first[0] == "set -euo pipefail" and first[1] == "export PATH=/usr/sbin:/usr/bin:/sbin:/bin"
+    assert first[2] == "unset PYTHONPATH PYTHONHOME PYTHONSTARTUP" and first[3].startswith('HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"')
+    assert first[4] == 'ORIG_PWD="$PWD"' and first[5] == "cd /"
+    assert t.index("export PATH=") < t.index('id -u') and t.index("cd /\n") < t.index("git -C") and t.index("cd /\n") < t.index("mktemp -d")
+    assert "/usr/bin/python3 -I -m venv" in t and "/usr/bin/python3 -m venv" not in t
+    assert 'case "$MANIFEST" in "" | /*) ;; *) MANIFEST="$ORIG_PWD/$MANIFEST" ;; esac' in t
+    # run for real from a hostile environment: a relative script path, a relative manifest, a bad PATH-less caller env, PYTHON* set
+    clone, env = _build(tmp_path)
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    (evil / "sha256sum").write_text("#!/bin/sh\necho 0000\n")
+    (evil / "sha256sum").chmod(0o755)
+    env2 = {**env, "PYTHONPATH": str(evil), "PYTHONHOME": "/nonexistent", "PYTHONSTARTUP": str(evil / "x.py"), "PATH": f"{evil}:{env['PATH']}"}
+    sha = _git(clone, "rev-parse", "HEAD")
+    r = subprocess.run(["bash", "./install-h5-executor-pinned.sh", sha, "../../../manifest"], cwd=clone / "scripts/mal-fast", env=env2, capture_output=True, text=True)
+    assert "manifest verified" in r.stdout and r.returncode == 99, r.stderr  # the pinned PATH put the real sha256sum first, not the caller's
+
+
+def test_refuses_an_existing_live_dropin_so_the_install_and_the_dry_run_are_keyless(tmp_path):
+    clone, env = _build(tmp_path)
+    (tmp_path / "live.conf").write_text("[Service]\nLoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json\n")
+    r = _run(clone, env)
+    assert r.returncode != 0 and "live.conf exists; move it away first" in r.stderr and "step 1b" in r.stderr and "FAKE-INSTALL" not in r.stdout
+    (tmp_path / "live.conf").unlink()
+    (tmp_path / "live.conf").symlink_to(tmp_path / "nowhere")  # even a dangling link
+    assert _run(clone, env).returncode != 0
+    (tmp_path / "live.conf").unlink()
+    assert _run(clone, env).returncode == 99
 
 
 def test_etc_mal_h5_gate_directory_and_live_ok_preflight(tmp_path):
