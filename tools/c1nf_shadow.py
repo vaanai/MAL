@@ -5,12 +5,14 @@ Rule (EXP-025 section 2, RULE.md, JUDGE-4 3.3). At every whole UTC minute T from
 that printed in the last 60 min, the feature engine (tools/c1nf_features.py) builds the 107 stage-2 features from canonical-pool prints with
 slot < SD, SD = the first slot whose block_time >= T. Then: LAYA stage 1, the pinned LightGBM (pred > 0.02), the cap h_top1 <= 0.5 (NaN
 dropped), the one-position-per-mint book (re-entry 60 s after the exit). A pick buys 0.25 SOL at SD + 1.3 s (1.9 s binding) and sells 300 s
-after the landing.
+after the landing. Each END / WORST bound also carries `canary`: the same fill priced at the canary's 0.05 SOL (DEC-026 O-3).
 
 Outputs (OUT dir, hourly JSONL, strict JSON):
     c1nf-picks-<hour>.jsonl     c1nf_pick       one per pick; the executor parses these (PICK_FIELDS, PICK_EXAMPLE)
     c1nf-outcomes-<hour>.jsonl  c1nf_outcome    paper fills per pick: entries 1.3 / 1.9 / 3.0 / 4.0 s, END and WORST bounds, exit +300 s
     c1nf-events-<hour>.jsonl    c1nf_gap, c1nf_heartbeat, c1nf_start, c1nf_stop
+    c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: per-UTC-day counts of universe pools and picks by
+                                synthetic class, one record per closed day and one (partial) at stop. Never a mint, pool, price or outcome.
     status.json                 last heartbeat. errors.log: tracebacks (capped).
 
 Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V (tip rows carry `virtual_quote_reserve`).
@@ -24,6 +26,13 @@ Seals.
     aggregate `withheld` of the heartbeat and stop records. The oracle is read as a boolean only. Same approach as tools/h5_shadow.py `_sealed`
     (newest rule: no per-pool record for sealed pools).
   * EXP-025 section 5.1 declared observation: the shadow may log outcomes for decisions inside the counted window. It is not the read.
+  * DEC-026 section 8 (binding): outcome records start at 2026-10-10T00:00Z. A decision before that instant still writes its pick but gets
+    no Pending, no price and no outcome record (counter `outcome_guard_pre_window`), unless T is in an exploration range (replay only).
+  * EXP-025 Amendment 2 item 5: the synthetic class never sits on a pick or an outcome (emit() drops such a record and counts
+    `class_leak_blocked`); it leaves the process only as per-day counts in c1nf-synclass-*.
+
+Pick contract (DEC-026 section 6). Each pick carries the decision-time state `q_lamports` (quote + V) and `base_reserve`: the state after the
+last canonical-pool print with slot < SD_slot, the reference of the executor's 1.15 x spot guard. No such state: no pick (`no_decision_state`).
 
 Paper only. No key, no transaction, no RPC. It reads only the tip tape (live) or one exploration day of /data/mal/audit-1008/tape (replay).
 """
@@ -78,6 +87,11 @@ CLOCK_JUMP_S = 60
 HEARTBEAT_S = 60.0
 HOLD_MS = 600                        # live: feed rows only once t_recv_ms is this old, so the three kinds of one block arrive together
 SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
+# DEC-026 section 8 / section 11 item 8: outcome records start at 2026-10-10T00:00Z. BINDING, not a fallback: a decision with T before this
+# instant gets no Pending, no price and no outcome record, in every mode, unless T lies in an exploration range (EXPLORATION, August and
+# September; replay refuses every other hour). There is no flag or argument that moves it.
+OUTCOME_START_MS = int(datetime(2026, 10, 10, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+CANARY_STAKE_LAMPORTS = 50_000_000    # DEC-026 O-3: the canary's stake; each outcome bound carries a twin priced at it next to the 0.25 SOL cell
 ORACLE_STALE_S = 60.0
 DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 DEFAULT_OUT_DIR = os.path.join(os.path.expanduser("~"), "data", "c1nf-shadow")
@@ -88,17 +102,29 @@ ERRORS_MAX_BYTES = 5_000_000
 EXIT_OK, EXIT_USAGE, EXIT_REFUSED = 0, 2, 3
 
 # ---- pick schema (the executor parses these) -----------------------------------------------------------------------------------------------
-PICK_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "pred", "h_top1", "stage1", "feature_hash", "model_sha")
+# q_lamports / base_reserve: the decision-time state, i.e. the state after the last canonical-pool print with slot < SD_slot (quote + that
+# print's V, raw base), the reference of the executor's 1.15 x spot guard (DEC-026 section 6; the executor gives a pick without them no buy).
+# state_slot: the slot of that print. A pool with no such state at decision time gets no pick (counter `no_decision_state`).
+PICK_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "pred", "h_top1", "stage1", "feature_hash", "model_sha", "q_lamports",
+               "base_reserve", "state_slot")
 PICK_TYPES = {"type": str, "mint": str, "pool": str, "decision_T_ms": int, "SD_slot": int, "pred": float, "h_top1": float, "stage1": bool,
-              "feature_hash": str, "model_sha": str}
+              "feature_hash": str, "model_sha": str, "q_lamports": int, "base_reserve": int, "state_slot": int}
+PICK_POSITIVE = ("q_lamports", "base_reserve")
 PICK_ENVELOPE = ("schema", "t_ms")   # added to every record by the sink path; the executor may ignore them
 PICK_EXAMPLE = {
     "type": "c1nf_pick", "mint": "DxkqpagQamHXMVhS2GC7fni4qugWp5fcw28chKfUpump", "pool": "5N4CLYwiyx7AWtUzPhErC97bJX62aQbCpBz2CCuFc2Bm",
     "decision_T_ms": 1788523800000, "SD_slot": 444240500, "pred": 0.0431, "h_top1": 0.12, "stage1": True,
-    "feature_hash": "0" * 64, "model_sha": "f" * 64,
+    "feature_hash": "0" * 64, "model_sha": "f" * 64, "q_lamports": 137_580_000_000, "base_reserve": 206_900_000_000_000, "state_slot": 444240499,
 }
 OUTCOME_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "complete", "legs")
 EVENT_TYPES = ("c1nf_gap", "c1nf_heartbeat", "c1nf_start", "c1nf_stop")
+SYNCLASS_TYPE = "c1nf_synclass_counts"
+# EXP-025 Amendment 2 item 5 / DEC-026 section 9.3: no per-pool record (a pick is joinable to its outcome by mint) may carry the synthetic class.
+# emit() drops any per-pool record that has one of these keys at any depth, and counts `class_leak_blocked`.
+PER_POOL_TYPES = ("c1nf_pick", "c1nf_outcome")
+CLASS_KEYS = frozenset({"class", "synthetic", "synthetic_class", "syn_class", "is_synthetic", "synclass", "post_complete_buy_seen",
+                        "event_seen_any", "migrate_sig", "complete_sig"})
+SYN_CLASSES = ("synthetic", "non_synthetic", "unclassified")
 
 
 class Refused(RuntimeError):
@@ -125,7 +151,36 @@ def validate_pick(rec: Mapping[str, Any]) -> list[str]:
         v = rec.get(k)
         if isinstance(v, str) and (len(v) != 64 or any(c not in "0123456789abcdef" for c in v)):
             bad.append(f"{k}: not 64 hex chars")
+    for k in PICK_POSITIVE:
+        v = rec.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v <= 0:
+            bad.append(f"{k}: not positive")
+    if _class_keys(rec):
+        bad.append("carries the synthetic class")
     return bad
+
+
+def _class_keys(obj: Any) -> list[str]:
+    """Keys of CLASS_KEYS anywhere inside a record (dicts and lists, any depth)."""
+    found: list[str] = []
+    if isinstance(obj, Mapping):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in CLASS_KEYS:
+                found.append(k)
+            found.extend(_class_keys(v))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            found.extend(_class_keys(v))
+    return found
+
+
+def outcome_allowed(T_ms: int) -> bool:
+    """Binding outcome guard (DEC-026 section 8): an outcome may be computed and written for a decision at T_ms only from OUTCOME_START_MS, or
+    inside an exploration range (replay of August / September tape). Every other decision before 2026-10-10T00Z gets none."""
+    if T_ms >= OUTCOME_START_MS:
+        return True
+    h = datetime.fromtimestamp(T_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+    return any(lo <= h < hi for lo, hi in EXPLORATION)
 
 
 def now_ms() -> int:
@@ -455,7 +510,7 @@ class JsonlSink:
     """Hourly strict-JSON-lines files per stream, flushed per line. The hour is the UTC hour of the record's t_ms. Closed hours of the bulky
     streams are compressed with zstd (the picks stream stays plain: the executor tails it)."""
 
-    PREFIX = {"c1nf_pick": "c1nf-picks", "c1nf_outcome": "c1nf-outcomes"}
+    PREFIX = {"c1nf_pick": "c1nf-picks", "c1nf_outcome": "c1nf-outcomes", SYNCLASS_TYPE: "c1nf-synclass"}
 
     def __init__(self, out_dir: str | Path) -> None:
         self.dir = Path(out_dir)
@@ -587,7 +642,8 @@ class Pending:
 class Shadow:
     def __init__(self, engine: Any, models: ModelSet, sink: Any, *, oracle: Optional[Callable[[str], Any]] = None, seal_start_ms: Optional[int] = SEAL_START_MS,
                  universe: Optional[Universe] = None, wall: Callable[[], int] = now_ms, replay: bool = False, errors: Optional[ErrorLog] = None,
-                 decide_from: Optional[int] = None, decide_to: Optional[int] = None) -> None:
+                 decide_from: Optional[int] = None, decide_to: Optional[int] = None,
+                 classifier: Optional[Callable[[str, str], Any]] = None) -> None:
         self.engine, self.models, self.sink = engine, models, sink
         self.universe = universe or Universe()
         self.seal = SealGuard(seal_start_ms, oracle)
@@ -601,6 +657,13 @@ class Shadow:
         self.last_row_wall: Optional[int] = None
         self.first_ms: dict[str, int] = {}                # pool -> first print time (ms)
         self.last_print: dict[str, Print] = {}
+        self.before_slot: dict[str, Print] = {}            # pool -> last print of an earlier slot than last_print's (decision state fallback)
+        # synthetic class (EXP-025 Am.2 item 5): kept apart from every per-pool record; only per-UTC-day counts leave the process, in their
+        # own stream (c1nf-synclass-*), written once per closed day and at stop. Never in the heartbeat, status.json or the counters.
+        self.classifier = classifier
+        self._cls: dict[str, str] = {}
+        self._cls_counts: dict[str, collections.Counter] = {}
+        self._cls_day: Optional[str] = None
         self.pending: dict[str, list[Pending]] = collections.defaultdict(list)
         self.book: dict[str, float] = {}                   # mint -> estimated exit (stream seconds)
         self.gaps: list[tuple[int, int, str]] = []        # (lo_slot, hi_slot, kind)
@@ -617,8 +680,38 @@ class Shadow:
         return self._wall()
 
     def emit(self, rec: dict) -> None:
+        if rec.get("type") in PER_POOL_TYPES and _class_keys(rec):
+            self.c["class_leak_blocked"] += 1                # a code fault, never expected: the record is dropped, not written
+            if self.errors:
+                self.errors.log(RuntimeError("per-pool record carried a class key"), {"type": rec.get("type")})
+            return
         rec = {"schema": SCHEMA, "t_ms": self.clock_ms(), **rec}
         self.sink.write(rec)
+
+    # ---- synthetic class: counts only ----
+    def _classify(self, pool: str, mint: str, bt: int) -> None:
+        if self.classifier is None or pool in self._cls:
+            return
+        try:
+            cls = self.classifier(mint, pool)
+        except Exception:  # noqa: BLE001 - a failed lookup is unclassified, never a refusal
+            cls = "unclassified"
+        cls = cls if isinstance(cls, str) and cls in SYN_CLASSES else "unclassified"
+        self._cls[pool] = cls
+        if self.decide_enabled:                              # pools first seen in the restart bootstrap are classified but not counted
+            self._cls_count(day_of(bt), f"universe_{cls}")
+
+    def _cls_count(self, day: str, key: str) -> None:
+        self._cls_counts.setdefault(day, collections.Counter())[key] += 1
+
+    def _flush_class_counts(self, upto_day: Optional[str], partial: bool = False) -> None:
+        """Write one counts-only record per UTC day < upto_day (all days when None). No mint, pool, price or outcome field."""
+        for day in sorted(self._cls_counts):
+            if upto_day is not None and day >= upto_day:
+                continue
+            cnt = self._cls_counts.pop(day)
+            self.emit({"type": SYNCLASS_TYPE, "day": day, "partial": bool(partial and upto_day is None),
+                       "counts": {f"{w}_{c}": int(cnt.get(f"{w}_{c}", 0)) for w in ("universe", "picks") for c in SYN_CLASSES}})
 
     # ---- rows ----
     def feed(self, row: Mapping[str, Any], kind: Optional[str] = None) -> None:
@@ -656,6 +749,9 @@ class Shadow:
         newbt = self.hw_bt is None or bt > self.hw_bt
         if newbt:
             self.hw_bt = bt
+            if self.classifier is not None and day_of(bt) != self._cls_day:
+                self._cls_day = day_of(bt)
+                self._flush_class_counts(self._cls_day)
             Tc = bt // 60 * 60
             if self.last_T is None:
                 self.last_T = Tc
@@ -683,7 +779,12 @@ class Shadow:
                                  row.get("base_reserve"), pool, slot, bt)
             pr = Print(slot, bt, side == "buy", float(row.get("sol_lamports") or 0), float(row.get("token_raw") or 0), float(row.get("quote_reserve") or 0),
                        float(row.get("base_reserve") or 0), v)
-            self.first_ms.setdefault(pool, bt * 1000)
+            if pool not in self.first_ms:
+                self.first_ms[pool] = bt * 1000
+                self._classify(pool, mint, bt)
+            lp = self.last_print.get(pool)
+            if lp is not None and lp.slot < slot:
+                self.before_slot[pool] = lp
             self.last_print[pool] = pr
             for pend in self.pending.get(pool, ()):
                 if not pend.done and slot >= pend.sd:
@@ -743,12 +844,35 @@ class Shadow:
             if T < self.book.get(mint, -1.0) + REENTRY_S:
                 self.c["book_blocked"] += 1
                 continue
+            state = self._decision_state(pool, int(sd))
+            if state is None:                                # no state to anchor the executor's 1.15 x guard: the executor could not buy
+                self.c["no_decision_state"] += 1
+                continue
             sps = self.clock.sps(bt)
             self.book[mint] = bt + PRIMARY_LAT + EXIT_S + EXIT_LAG_S
             self.c["picks"] += 1
+            if self.classifier is not None:
+                self._cls_count(day_of(T), f"picks_{self._cls.get(pool, 'unclassified')}")
             self.emit({"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
-                       "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha})
+                       "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
+                       "q_lamports": state[0], "base_reserve": state[1], "state_slot": state[2]})
+            if not outcome_allowed(T * 1000):                # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
+                self.c["outcome_guard_pre_window"] += 1
+                continue
             self.pending[pool].append(Pending(pool, mint, T, int(sd), bt, float(pred), self.clock_ms(), self.first_ms.get(pool), self.last_print.get(pool), sps))
+
+    def _decision_state(self, pool: str, sd: int) -> Optional[tuple[int, int, int]]:
+        """(q_lamports, base_reserve, slot): the state after the last print of `pool` with slot < sd (quote + that print's V). None if unknown."""
+        for pr in (self.last_print.get(pool), self.before_slot.get(pool)):
+            if pr is not None and pr.slot < sd:
+                try:
+                    q, b = pr.post()
+                except ValueError:                           # print without V
+                    return None
+                if not (math.isfinite(q) and math.isfinite(b) and q > 0 and b > 0):
+                    return None
+                return int(round(q)), int(round(b)), int(pr.slot)
+        return None
 
     # ---- outcomes ----
     def _resolve_due(self) -> None:
@@ -835,6 +959,10 @@ class Shadow:
                         continue
                     leg[name] = {"entry_q": eb[0], "entry_b": eb[1], "exit_q": es[0], "exit_b": es[1], "entry_px": eb[0] / eb[1], "exit_px": es[0] / es[1],
                                  "tokens": rt["tokens"], "guarded": rt["guarded"], "proceeds": rt["proceeds"], "gross_ret": rt["gross_ret"], **pnl_variants(rt)}
+                    rc = round_trip(eb[0], eb[1], es[0], es[1], stake=CANARY_STAKE_LAMPORTS, spot=spot)
+                    if rc is not None:
+                        leg[name]["canary"] = {"stake_lamports": CANARY_STAKE_LAMPORTS, "guarded": rc["guarded"], "proceeds": rc["proceeds"],
+                                               "gross_ret": rc["gross_ret"], **pnl_variants(rc, CANARY_STAKE_LAMPORTS)}
                 legs[key] = leg
             except Exception as exc:  # noqa: BLE001 - missing V, no print, empty pool
                 legs[key] = {"landing_slot": X, "exit_slot": Y, "incomplete": type(exc).__name__}
@@ -909,6 +1037,8 @@ class Shadow:
                 if not p.done:
                     self._resolve(p, final=True)
         self.pending.clear()
+        if self.classifier is not None:
+            self._flush_class_counts(None, partial=True)
         self.emit({"type": "c1nf_stop", "reason": reason, "counters": dict(self.c)})
         self.heartbeat()
 
@@ -1214,7 +1344,8 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
     errors = ErrorLog(out / "errors.log")
     oracle = load_oracle(args.pick_oracle)
     seal_ms = None if args.no_seal else int(datetime.strptime(args.seal_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
-    sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn()), errors=errors)
+    sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn()), errors=errors,
+                classifier=load_oracle(args.synthetic_classifier))
     tail = TipTail(args.tip_dir)
     gaps = GapTail(args.gaps_file) if args.gaps_file else None
     sh.emit({"type": "c1nf_start", "mode": "live", "tip_dir": str(args.tip_dir), "model_shas": models.shas, "seal_start_ms": seal_ms,
@@ -1289,6 +1420,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poll-s", type=float, default=0.5)
     p.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke runs)")
     p.add_argument("--pick-oracle", default=None, help="module:callable, oracle(mint) -> bool (True = CAP-PICK pick); absent = fail closed in the window")
+    p.add_argument("--synthetic-classifier", default=None,
+                   help="module:callable, classifier(mint, pool) -> synthetic | non_synthetic | unclassified. Written ONLY as per-UTC-day counts to "
+                        "c1nf-synclass-*; never onto a pick or outcome (EXP-025 Am.2 item 5). Absent = no class at all")
     p.add_argument("--seal-start", default="2026-10-16T01:00:00Z")
     p.add_argument("--no-seal", action="store_true", help="tests only: disables the seal")
     p.add_argument("--replay-from", help="UTC hour YYYY-MM-DDTHH of the first exploration-tape hour (replay mode)")

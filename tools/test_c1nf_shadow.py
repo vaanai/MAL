@@ -320,7 +320,7 @@ def test_stream_ending_early_gives_incomplete_outcome():
 def test_missing_v_makes_the_leg_incomplete_not_a_price():
     sh, sink = mk_shadow(only_minute(10))
     for slot in range(S0, slot_of_sec(1000)):
-        sh.feed(mk_row(slot, v=V0 if slot < S0 + 100 else None), "trades")
+        sh.feed(mk_row(slot, v=V0 if slot <= S0 + 1500 else None), "trades")    # V known up to SD (decision state and spot), lost after
     (o,) = sink.of("c1nf_outcome")
     assert o["complete"] is False
     assert any("incomplete" in leg for leg in o["legs"].values())
