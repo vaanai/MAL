@@ -1,0 +1,433 @@
+"""Tests for tools/cap_pick_oracle.py on synthetic decision records. Nothing here reads /data/mal, /var/lib/mal or a real row."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from tools import cap_pick_oracle as co
+
+REPO = Path(__file__).resolve().parents[1]
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+SCORE, PNL, PRICE, FEAT = "0.987654321", "-123456789", "4.2424242e-08", "777.5551"
+SENTINELS = (SCORE, PNL, PRICE, FEAT, "score", "pnl", "price", "features", "positions", "outcome")
+
+
+def mint(i: int) -> str:
+    return ("P" + "".join(B58[(i >> (5 * k)) % len(B58)] for k in range(3))).ljust(44, "x")
+
+
+def gate_line(m: str, entered: bool, reason: str | None = None, **extra) -> str:
+    """Same keys as tools/forward_exp012_gate.gate_row, written like the runner's JsonlLog (compact separators)."""
+    row = {"schema": "forward_paper_exp012_gate_v1", "book": "exp012_migrate_tp50_sl30", "mint": m, "mig_ms": 1_792_112_400_000,
+           "decision_t_ms": 1_792_112_400_123, "score": float(SCORE), "threshold": 0.8030766588450794, "entered": entered,
+           "reason": reason if reason is not None else (None if entered else "below_threshold"), "error": None,
+           "time_fallbacks": {"create_sig_match": 1}, "features": {"f1": float(FEAT), "price_return_pre": float(PRICE)}}
+    row.update(extra)
+    return json.dumps(row, separators=(",", ":"))
+
+
+def intent_line(m: str) -> str:
+    return json.dumps({"schema": "forward_paper_intent_v1", "book": "b", "ledger": "ceiling", "mint": m, "creator": "C" * 44,
+                       "decision_t_ms": 1, "written_ms": 2, "trigger": "migrate", "score": float(SCORE), "runner_kill": False,
+                       "migration_slot": 5, "migration_slot_src": "migrate_tx"}, separators=(",", ":"))
+
+
+def arm_line(m: str) -> str:
+    return json.dumps({"schema": "forward_paper_arm_v1", "book": "b", "mint": m, "score": float(SCORE)}, separators=(",", ":"))
+
+
+def replay_line(m: str, entered: bool, kind: str = "decision") -> str:
+    if kind == "dead":
+        return json.dumps({"schema": "cap_pick_gate_replay_v1", "kind": "dead", "view": "walk2", "mint": m, "first_pumpswap_ms": 1, "day": "2026-10-16",
+                           "decision": "pre_restart"})
+    return json.dumps({"schema": "cap_pick_gate_replay_v1", "kind": "decision", "view": "walk2", "mint": m, "day": "2026-10-16", "mig_ms": 1,
+                       "score": float(SCORE), "decision": "pick" if entered else "below", "entered": entered, "error": None, "time_fallbacks": None})
+
+
+def write(p: Path, lines: list[str]) -> Path:
+    p.write_text("".join(x + "\n" for x in lines))
+    return p
+
+
+class Clock:
+    def __init__(self, t: int = 1_792_112_400_000):
+        self.t = t
+
+    def __call__(self) -> int:
+        return self.t
+
+    def sleep(self, s: float) -> None:
+        self.t += int(s * 1000)
+
+
+def rows(p: Path) -> list[dict]:
+    return [json.loads(x) for x in p.read_text().splitlines()]
+
+
+# --- the narrow parser ---------------------------------------------------------------------------------------------------
+
+
+def test_extract_gate_reads_only_mint_and_entered():
+    a, b = mint(1), mint(2)
+    assert co.extract("gate", gate_line(a, True)) == (a, True)
+    assert co.extract("gate", gate_line(b, False)) == (b, False)
+
+
+def test_extract_gate_error_other_schema_and_ambiguous_lines_are_not_decisions():
+    a = mint(3)
+    assert co.extract("gate", gate_line(a, False, reason="gate_error", error="ValueError")) is None  # undecided, fail closed
+    assert co.extract("gate", arm_line(a)) is None
+    assert co.extract("gate", gate_line(a, True, other={"entered": False})) is None  # two flags on one line: not trusted
+    assert co.extract("gate", gate_line(a, True, extra_mint={"mint": mint(4)})) is None  # two mints on one line
+    assert co.extract("gate", '{"schema":"forward_paper_exp012_gate_v1","mint":"%s","ent' % a) is None  # half-written
+
+
+def test_extract_intents_are_picks_and_arm_rows_are_ignored():
+    a = mint(5)
+    assert co.extract("intents", intent_line(a)) == (a, True)
+    assert co.extract("intents", arm_line(a)) is None
+
+
+def test_extract_replay_decision_and_dead():
+    a, b, c = mint(6), mint(7), mint(8)
+    assert co.extract("replay", replay_line(a, True)) == (a, True)
+    assert co.extract("replay", replay_line(b, False)) == (b, False)
+    assert co.extract("replay", replay_line(c, False, kind="dead")) == (c, False)
+    assert co.extract("replay", json.dumps({"schema": "cap_pick_gate_replay_v1", "kind": "meta", "view": "w", "days": ["2026-10-16"]})) is None
+
+
+def test_unknown_kind_raises():
+    with pytest.raises(ValueError):
+        co.extract("positions", "{}")
+
+
+def test_decision_row_takes_only_a_bool_and_a_base58_mint():
+    assert json.loads(co.decision_row(mint(1), True, 5)) == {"mint": mint(1), "pick": True, "t_ms": 5}
+    for bad in (1, 0, "true", None, 0.9):
+        with pytest.raises(ValueError):
+            co.decision_row(mint(1), bad, 5)
+    with pytest.raises(ValueError):
+        co.decision_row("not a mint", True, 5)
+
+
+# --- exporter -----------------------------------------------------------------------------------------------------------
+
+
+def test_no_non_boolean_field_ever_leaves_the_exporter(tmp_path):
+    a, b, c, d = mint(1), mint(2), mint(3), mint(4)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, True), gate_line(b, False), gate_line(c, False, reason="gate_error", error="X")])
+    ints = write(tmp_path / "i.jsonl", [intent_line(a), intent_line(d), arm_line(b)])
+    out = tmp_path / "picks.jsonl"
+    clk = Clock()
+    co.run_export([("gate", gate), ("intents", ints)], out, once=True, now_ms=clk)
+    got = rows(out)
+    for r in got:
+        assert set(r) == {"mint", "pick", "t_ms"}
+        assert isinstance(r["pick"], bool) and isinstance(r["t_ms"], int)
+    assert {(r["mint"], r["pick"]) for r in got} == {(a, True), (b, False), (d, True)}  # c: gate_error, undecided; b stays false (arm ignored)
+    blob = out.read_text()
+    for s in SENTINELS + ("decision_t_ms", "mig_ms", "reason", "entered", "creator", "book"):
+        assert s not in blob
+
+
+def test_sources_with_hostile_extra_fields_still_export_booleans_only(tmp_path):
+    a = mint(9)
+    line = gate_line(a, True, pnl_sol=float(PNL), positions=[1, 2], outcome="won", fill_price=float(PRICE))
+    gate = write(tmp_path / "g.jsonl", [line])
+    out = tmp_path / "picks.jsonl"
+    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
+    assert rows(out) == [{"mint": a, "pick": True, "t_ms": 1_792_112_400_000}]
+    for s in SENTINELS:
+        assert s not in out.read_text()
+
+
+def test_idempotent_restart_and_sticky_true(tmp_path):
+    a, b = mint(1), mint(2)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, False), gate_line(a, False), gate_line(b, True)])
+    out = tmp_path / "picks.jsonl"
+    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
+    assert len(rows(out)) == 2  # the repeated false is not written twice
+    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())  # restart: re-reads the source from the start
+    assert len(rows(out)) == 2
+    with gate.open("a") as fh:
+        fh.write(gate_line(a, True) + "\n" + gate_line(b, False) + "\n")  # a flips to a pick; b was a pick and stays one
+    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
+    assert [(r["mint"], r["pick"]) for r in rows(out)] == [(a, False), (b, True), (a, True)]
+
+
+def test_heartbeat_only_when_every_source_is_readable(tmp_path):
+    a = mint(1)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, False)])
+    out = tmp_path / "picks.jsonl"
+    clk = Clock()
+    n = co.run_export([("gate", gate)], out, hb_s=5, poll_s=1, max_seconds=12, now_ms=clk, sleep=clk.sleep)
+    hb = [r for r in rows(out) if "hb" in r]
+    assert n["heartbeats_written"] == len(hb) == 3  # t = 0, 5, 10 s
+    assert all(set(r) == {"hb", "t_ms"} and r["hb"] is True for r in hb)
+    out2 = tmp_path / "picks2.jsonl"
+    clk2 = Clock()
+    n2 = co.run_export([("gate", gate), ("intents", tmp_path / "missing.jsonl")], out2, hb_s=1, poll_s=1, max_seconds=5, now_ms=clk2, sleep=clk2.sleep)
+    assert n2["heartbeats_written"] == 0 and n2["source_errors"] > 0  # a lost source never beats: the reader goes stale
+    assert [r for r in rows(out2) if "hb" in r] == []
+
+
+def test_once_and_replay_only_runs_write_no_heartbeat(tmp_path):
+    rep = write(tmp_path / "r.jsonl", [replay_line(mint(1), True), replay_line(mint(2), False)])
+    out = tmp_path / "picks-replay.jsonl"
+    n = co.run_export([("replay", rep)], out, once=True, now_ms=Clock())
+    assert n["heartbeats_written"] == 0 and n["decisions_written"] == 2
+    assert all("hb" not in r for r in rows(out))
+
+
+def test_source_rotation_and_a_half_written_line(tmp_path):
+    a, b = mint(1), mint(2)
+    gate = tmp_path / "g.jsonl"
+    gate.write_text(gate_line(a, True) + "\n" + gate_line(b, False)[:40])
+    t = co.Tailer(gate)
+    lines, reset = t.read_new()
+    assert len(lines) == 1 and not reset
+    with gate.open("a") as fh:
+        fh.write(gate_line(b, False)[40:] + "\n")
+    lines, reset = t.read_new()
+    assert len(lines) == 1 and co.extract("gate", lines[0]) == (b, False)
+    gate.unlink()
+    gate.write_text(gate_line(a, False) + "\n")
+    lines, reset = t.read_new()
+    assert reset and len(lines) == 1
+
+
+def test_output_lines_match_the_executors_two_regexes():
+    """tools/h5_executor.py JsonlPickOracle reads a row only when it has exactly one mint match and one pick match."""
+    mint_re = re.compile(r'"mint"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"')
+    pick_re = re.compile(r'"pick"\s*:\s*(true|false)')
+    d = co.decision_row(mint(1), True, 1)
+    h = co.heartbeat_row(1)
+    assert len(mint_re.findall(d)) == 1 and len(pick_re.findall(d)) == 1
+    assert mint_re.findall(h) == [] and pick_re.findall(h) == []  # a heartbeat is invisible to the executor's reader
+
+
+# --- reader -------------------------------------------------------------------------------------------------------------
+
+
+def picks_file(p: Path, decisions: list[tuple[str, bool]], hb_t: int | None, t0: int = 1_792_112_400_000) -> Path:
+    lines = [co.decision_row(m, f, t0) for m, f in decisions]
+    if hb_t is not None:
+        lines.append(co.heartbeat_row(hb_t))
+    return write(p, lines)
+
+
+def test_reader_true_false_and_undecided(tmp_path):
+    clk = Clock()
+    a, b, c = mint(1), mint(2), mint(3)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, True), (b, False)], clk.t)
+    o = co.PickOracle([live], now_ms=clk)
+    assert o(a) is True
+    assert o(b) is False
+    assert o(c) is None  # undecided is never False
+    assert o.suppress(a) is True and o.suppress(b) is False and o.suppress(c) is True and o.suppress(None) is True
+
+
+def test_reader_is_sticky_true_across_later_false_rows_and_rotation(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, True)], clk.t)
+    o = co.PickOracle([live], now_ms=clk)
+    assert o(a) is True
+    with live.open("a") as fh:
+        fh.write(co.decision_row(a, False, clk.t) + "\n")
+    assert o(a) is True  # a later false never undoes a pick
+    live.unlink()
+    picks_file(live, [(mint(2), False)], clk.t)  # rotated file that no longer holds the pick
+    assert o(a) is True and o(mint(2)) is False
+
+
+def test_reader_union_of_live_and_replay(tmp_path):
+    clk = Clock()
+    a, b, c, d = mint(1), mint(2), mint(3), mint(4)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, False), (b, True), (c, False)], clk.t)
+    rep = write(tmp_path / "picks-replay.jsonl", [co.decision_row(a, True, 1), co.decision_row(b, False, 1), co.decision_row(d, False, 1)])
+    o = co.PickOracle([live], [rep], now_ms=clk)
+    assert o(a) is True  # the replay picked what the live gate called below: the union is a pick
+    assert o(b) is True  # live pick stays a pick whatever the replay says
+    assert o(c) is False
+    assert o(d) is False  # decided only by the replay: not a pick
+    assert o(mint(5)) is None
+
+
+def test_reader_replay_file_may_be_absent_or_grow_later(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, False)], clk.t)
+    rep = tmp_path / "picks-replay.jsonl"
+    o = co.PickOracle([live], [rep], now_ms=clk)
+    assert o(a) is False  # no replay file yet: the live answer stands
+    write(rep, [co.decision_row(a, True, 1)])
+    assert o(a) is True
+
+
+def test_stale_feed_answers_none_except_for_a_known_pick(tmp_path):
+    clk = Clock()
+    a, b = mint(1), mint(2)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, True), (b, False)], clk.t)
+    o = co.PickOracle([live], now_ms=clk, stale_s=60)
+    assert o(b) is False and o.staleness_s() == 0.0
+    clk.t += 59_000
+    assert o(b) is False
+    clk.t += 2_000  # 61 s since the last heartbeat
+    assert o.staleness_s() == 61.0
+    assert o(b) is None and o(mint(9)) is None
+    assert o(a) is True  # a pick cannot flip, so it stays True
+    with live.open("a") as fh:
+        fh.write(co.heartbeat_row(clk.t) + "\n")
+    assert o(b) is False  # a fresh heartbeat revives the feed
+
+
+def test_no_heartbeat_at_all_is_stale_and_a_missing_live_file_is_none(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, False)], None)
+    o = co.PickOracle([live], now_ms=clk)
+    assert o.staleness_s() is None and o(a) is None
+    gone = co.PickOracle([tmp_path / "nope.jsonl"], now_ms=clk)
+    assert gone(a) is None and gone.staleness_s() is None and gone.suppress(a) is True
+
+
+def test_a_heartbeat_from_the_future_is_a_clock_fault(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, False)], clk.t + 60_000)
+    assert co.PickOracle([live], now_ms=clk)(a) is None
+    live2 = picks_file(tmp_path / "picks2.jsonl", [(a, False)], clk.t + 3_000)  # within the 5 s skew allowance
+    assert co.PickOracle([live2], now_ms=clk)(a) is False
+
+
+def test_every_live_source_must_be_fresh(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    l1 = picks_file(tmp_path / "p1.jsonl", [(a, False)], clk.t)
+    l2 = picks_file(tmp_path / "p2.jsonl", [], clk.t - 120_000)
+    assert co.PickOracle([l1, l2], now_ms=clk)(a) is None
+
+
+def test_final_marker_gates_everything_and_nothing_is_opened_before_it(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = picks_file(tmp_path / "picks.jsonl", [(a, False)], clk.t)
+    marker = tmp_path / "FINAL_WRITTEN"
+    o = co.PickOracle([live], now_ms=clk, final_marker=marker)
+    assert o(a) is None and o.staleness_s() is None
+    marker.write_text("")
+    assert o(a) is False
+
+
+def test_reader_never_raises_and_never_holds_a_score_or_pnl(tmp_path):
+    clk = Clock()
+    a = mint(1)
+    live = tmp_path / "picks.jsonl"
+    # a richer file than the exporter writes: the reader still keeps only the booleans
+    live.write_text(json.dumps({"mint": a, "pick": True, "score": float(SCORE), "pnl_sol": int(PNL), "positions": [1]}) + "\n" + co.heartbeat_row(clk.t) + "\n")
+    o = co.PickOracle([live], now_ms=clk)
+    assert o(a) is True
+    held = repr(vars(o)) + "".join(repr(vars(s)) for s in o._src)
+    for s in (SCORE, PNL, "positions"):
+        assert s not in held
+    assert o(12345) is None  # type error inside the call: fail closed, no raise
+    d = co.PickOracle([tmp_path], now_ms=clk)  # a directory is not a file
+    assert d(a) is None
+
+
+def test_lines_with_two_flags_or_two_mints_are_not_trusted(tmp_path):
+    clk = Clock()
+    a, b = mint(1), mint(2)
+    live = tmp_path / "picks.jsonl"
+    live.write_text(json.dumps({"mint": a, "pick": True, "x": {"pick": False}}) + "\n" + json.dumps({"mint": b, "nested": {"mint": a}, "pick": True}) + "\n"
+                    + co.heartbeat_row(clk.t) + "\n")
+    o = co.PickOracle([live], now_ms=clk)
+    assert o(a) is None and o(b) is None
+
+
+# --- environment oracle ---------------------------------------------------------------------------------------------------
+
+
+def test_from_env_without_a_marker_or_a_live_file_is_closed(tmp_path):
+    clk = Clock()
+    live = picks_file(tmp_path / "picks.jsonl", [(mint(1), False)], clk.t)
+    assert co.from_env({"CAP_PICK_LIVE": str(live)})(mint(1)) is None  # no CAP_PICK_FINAL_MARKER: closed
+    assert co.from_env({})(mint(1)) is None
+    assert co.from_env({}).suppress(mint(1)) is True and co.from_env({}).staleness_s() is None
+
+
+def test_default_oracle_reads_the_environment_lazily(tmp_path, monkeypatch):
+    live = picks_file(tmp_path / "picks.jsonl", [(mint(1), False), (mint(2), True)], int(__import__("time").time() * 1000))
+    rep = write(tmp_path / "r.jsonl", [co.decision_row(mint(1), True, 1)])
+    marker = tmp_path / "FINAL_WRITTEN"
+    marker.write_text("")
+    monkeypatch.setenv("CAP_PICK_LIVE", str(live))
+    monkeypatch.setenv("CAP_PICK_REPLAY", str(rep))
+    monkeypatch.setenv("CAP_PICK_FINAL_MARKER", str(marker))
+    o = co._LazyEnvOracle()
+    assert o(mint(1)) is True and o(mint(2)) is True and o(mint(3)) is None
+    assert o.staleness_s() is not None and o.staleness_s() < 60
+    assert o.suppress(mint(3)) is True
+    assert isinstance(co.default_oracle, co._LazyEnvOracle)  # `--pick-oracle tools.cap_pick_oracle:default_oracle`
+
+
+# --- CLI and the sh wrapper -----------------------------------------------------------------------------------------------
+
+
+def test_cli_export_once_and_check(tmp_path, capsys):
+    a = mint(1)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, True)])
+    out = tmp_path / "picks.jsonl"
+    assert co.main(["export", "--gate-log", str(gate), "--out", str(out), "--once"]) == 0
+    counts = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert counts["decisions_written"] == 1
+    assert a not in capsys.readouterr().out  # counts only
+    assert co.main(["export", "--out", str(out)]) == 2
+    assert co.main(["export", "--gate-log", str(tmp_path / "nope.jsonl"), "--out", str(out)]) == 2
+    capsys.readouterr()
+    assert co.main(["check", "--live", str(out)]) == 1  # --once wrote no heartbeat: stale
+    chk = json.loads(capsys.readouterr().out)
+    assert chk["fresh"] is False and chk["decided_mints"] == 1 and a not in json.dumps(chk)
+
+
+def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path):
+    sh = REPO / "scripts" / "research" / "cap-pick-oracle.sh"
+    assert subprocess.run(["sh", "-n", str(sh)]).returncode == 0
+    text = sh.read_text()
+    assert text.startswith("#!/bin/sh") and "${PIPESTATUS" not in text and "[[" not in text
+    a, b = mint(1), mint(2)
+    gate = write(tmp_path / "exp012-gate.jsonl", [gate_line(a, True), gate_line(b, False)])
+    env = {**os.environ, "CAP_PICK_OUT": str(tmp_path / "out"), "CAP_PICK_GATE_LOG": str(gate), "CAP_PICK_INTENTS": str(tmp_path / "no-intents.jsonl"),
+           "CAP_PICK_PYTHON": sys.executable}
+    r = subprocess.run(["sh", str(sh), "--max-seconds", "0.3", "--poll-s", "0.05", "--hb-s", "0.1"], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    got = rows(tmp_path / "out" / "picks.jsonl")
+    assert {(x["mint"], x["pick"]) for x in got if "mint" in x} == {(a, True), (b, False)}
+    assert any("hb" in x for x in got)
+    assert a not in r.stdout + r.stderr  # no mint is printed
+    # a missing gate log is refused before anything starts
+    env2 = {**env, "CAP_PICK_GATE_LOG": str(tmp_path / "missing.jsonl")}
+    assert subprocess.run(["sh", str(sh), "--once"], env=env2, capture_output=True, text=True).returncode == 2
+
+
+def test_wrapper_replay_mode_converts_a_decision_list_to_booleans(tmp_path):
+    sh = REPO / "scripts" / "research" / "cap-pick-oracle.sh"
+    a, b, c = mint(1), mint(2), mint(3)
+    rep = write(tmp_path / "replay.jsonl", [replay_line(a, True), replay_line(b, False), replay_line(c, False, kind="dead")])
+    env = {**os.environ, "CAP_PICK_OUT": str(tmp_path / "out"), "CAP_PICK_REPLAY_IN": str(rep), "CAP_PICK_PYTHON": sys.executable}
+    r = subprocess.run(["sh", str(sh)], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    got = rows(tmp_path / "out" / "picks-replay.jsonl")
+    assert {(x["mint"], x["pick"]) for x in got} == {(a, True), (b, False), (c, False)}
+    assert all(set(x) == {"mint", "pick", "t_ms"} for x in got)
+    blob = (tmp_path / "out" / "picks-replay.jsonl").read_text()
+    for s in SENTINELS:
+        assert s not in blob
