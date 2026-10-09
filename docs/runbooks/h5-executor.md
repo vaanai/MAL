@@ -571,6 +571,40 @@ Every creation or removal of `LIVE_OK` shows up under `malh5-liveok` (`sudo ause
 
 The key directory `/etc/mal-probe` already has Helm's watch from DEC-019; check with `sudo auditctl -l | grep -i mal-probe` and add `-w /etc/mal-probe -p rwa -k malprobe-key` only if it is missing (do not duplicate it). Expect a read event on the key file at each unit start: that is systemd's `LoadCredential`. Any other reader is a finding. The `malh5-state` rule logs every write by the executor too; keep it for the first days, then drop it if the volume is too high.
 
+## Daily synthetic-class audit (manager, DEC-024 Amendment 2 Clarification 1)
+
+From the first live day, once a day (after 00:30Z, for the UTC day that ended), the manager re-classifies every pool the executor made a buy decision on with the read-time procedure of EXP-024 Amendment 4 (B4), and compares it with the class the shadow recorded. A disagreement on any pool is a live halt under DEC-024 section 5.6. The tool prints counts only.
+
+- **The first audited day must be on a build with the executor's synthetic gate (PR #519).** Decision rows carry `synthetic` and `synthetic_src` only on such a build. A row without a bool `synthetic` counts as a disagreement for any pool B4 can classify, by design: the executor must have refused that trigger. Do not audit a day from before that build and read the result as a halt on the code; read it as the wrong build.
+- **Tool:** `tools/h5_synthetic_audit.py` (classifier: `tools/synthetic_class.py`). Public RPC only: the default host `api.mainnet-beta.solana.com` is the only one allowed unless `--allow-rpc-host` names another public host; Helius and keyed URLs are always refused. At least 0.2 s between calls (default 0.5), at most 300 calls per pool for the pool-address search and 300 more for the audit-only fallback (the budget is reset just before the fallback, so a busy pool that spent the first is still classified), and a global cap of rows x 600 + 500 unless `--max-calls` says otherwise. It imports the monitor's helpers and never runs the monitor.
+- **Run it as a MiScusi job on `mal-fast-0`** (`miscusi_job_submit`, not resumable, `sh`). The ledger is `mal-live` 0700, so step 1 copies it with `sudo -n /usr/bin/dd`, redirected by the manager's own shell into a 0600 file (`umask 077`), and then projects that copy (`--out`, `--out-prev`) as the manager's own user, never as root; the copy is deleted at once; step 2 audits the projected files. There is no pipe, so `set -eu` sees `dd`'s own exit code and a failed `dd` stops the job before anything is projected. `--expect-ledger` is the second guard: an empty copy exits 4. For a few seconds the copy holds the whole ledger, every field, in a directory only the manager can open; the tool reads it, keeps five keys and writes nothing else. The manager has sudo on `mal-fast-0`, but this job uses only the `/usr/bin/dd iflag=nofollow status=none if=<path>` line that the daily check's allowlist already names; no working-tree Python runs as root.
+
+  ```sh
+  set -eu
+  cd "$HOME/MAL"
+  PY=/data/mal/venv/bin/python
+  DAY=$(date -u -d yesterday +%F)
+  umask 077
+  D=$(mktemp -d)
+  trap 'rm -rf "$D"' EXIT   # also removes the raw copy if any later command fails
+  # step 1a: root only runs dd, and the redirect is the manager's own, so set -e sees dd's exit code.
+  sudo -n /usr/bin/dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl > "$D/ledger.raw"
+  # step 1b: the projection (five keys per decision row, two 0600 files: DAY and the day before) runs as this user. Exit 4 if the copy is empty.
+  "$PY" -m tools.h5_synthetic_audit --ledger "$D/ledger.raw" --date "$DAY" --expect-ledger --out "$D/decisions.jsonl" --out-prev "$D/prev.jsonl"
+  rm -f "$D/ledger.raw"
+  # step 2: the audit of DAY, and the re-audit of the day before. An empty projected file is a day with no buys, so --no-expect-ledger.
+  "$PY" -m tools.h5_synthetic_audit --decisions "$D/decisions.jsonl" --prev-decisions "$D/prev.jsonl" --date "$DAY" --no-expect-ledger
+  ```
+
+  Use `.../dryrun/h5-ledger.jsonl` for a dry run. `--date` is the UTC day whose decisions are audited (step 1 filters on the row's `ts_ms`).
+- **Fields read from the ledger** (decision rows only, `kind == "decision"`): `pool`, `mint`, `synthetic`, `synthetic_src`, `signature` are kept; `kind` and `ts_ms` are read to pick the rows and thrown away. No other field of any row is kept, written or printed (no fill, size, exit, price or P&L field, none of the nested objects). The projected files have those five keys and nothing else; they are deleted when the job ends. `signature` is OUR buy transaction's signature, used as B4's `before` anchor (the ledger carries no trigger-print signature). That window is a superset of B4's "before s0". A pool with more than 1,000 signatures between its migrate transaction and our buy, or a buy that never landed (the node answers -32020 to its `before`), fails the pool-address search; the audit then uses its audit-only fallback, which is not part of B4: it searches the bonding-curve address newest-first, with no `before`, for the migrate transaction, and goes on as B4. A pool that is still unclassified after that is counted below.
+- **Output**, one line on stdout, these keys only: `{"date":"2026-10-12","n_pools":N,"n_disagree":N,"n_unclassified_now":N,"halt":false}`. `n_pools` counts the pools of DAY and of the re-audited day. No pool, mint, signature or per-pool class is printed. stderr has `n_lines_read`, the rows kept, and the unclassified pools counted by reason (the re-audited day's under `reaudit:`); no ids. The job log must not be post-processed to add one.
+- **Exit codes.**
+  - `3` = `n_disagree > 0` = a live halt. DEC-024 section 5 requires `STOP` (no new buys) at once on any halt, so place `STOP` first, per "Stop, halt, status", and then tell the owner and Helm. `STOP` is not the manager's call to delay. Whether to also place `HALT` (it freezes everything, sells included, while positions are open) is the manager's call. Do not look up which pool it was by joining the class to a fill or P&L.
+  - `5` = `n_unclassified_now > 0` and no disagreement: an alert, and the job shows as failed. There is no halt yet, and no rerun clears it. The same pools are re-audited by the next daily run (the previous-day look in step 2), and a pool that is still unclassified then counts as a disagreement: exit 3, `STOP`. Do not wave an exit 5 away.
+  - `4` = the ledger read was empty or failed (`"error":"no_ledger_lines"` or `"ledger_read_failed"` on stdout): not an all-clear, fix the read and rerun. `2` = a usage error or a refused RPC URL. `0` = no disagreement and nothing unclassified.
+- **What counts as a disagreement.** B4 classifies the pool and the shadow's class differs (a missing class differs from any); or B4 could not classify the pool but saw the PostCompleteBuyEvent in any readable located transaction (the other one is unreadable) and the shadow did not call it synthetic, that is, it called it plain or recorded no class (DEC-024 Amendment 2, Clarification 1; this case also counts in `n_unclassified_now`); or the pool is from the previous UTC day and is still unclassified on this second look.
+
 ## Never
 
 - Never print, copy, paste or commit `/etc/mal-probe/probe-wallet.json`, `/etc/mal-probe-rpc/helius.env`, `/etc/mal-h5-watch/watch.env` or the Discord webhook, or their contents.
