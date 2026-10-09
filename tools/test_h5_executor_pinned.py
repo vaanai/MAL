@@ -803,12 +803,12 @@ def test_runbook_never_reads_a_key_or_env_file_and_flags_exist():
 
     section = t[t.index("## Sell-and-close"):t.index("## Rollback")]
     help_src = Path(sc.__file__).read_text()
-    for flag in (set(re.findall(r"`(--[a-z-]+)", section)) - {"--clear-halt"}) | {"--mint", "--send"}:  # --clear-halt is the executor's
+    for flag in (set(re.findall(r"`(--[a-z-]+)", section)) - {"--clear-halt", "--mark-closed", "--sig"}) | {"--mint", "--send"}:  # those three are the executor's
         assert f'"{flag}"' in help_src, flag
     daily = (FAST / "h5-daily-check.py").read_text()
     assert '"--funded-sol"' in daily and '"--write-baseline"' in daily
     ex = (ROOT / "tools/h5_executor.py").read_text()
-    for flag in ("--status", "--clear-halt", "--live", "--dry-run"):
+    for flag in ("--status", "--clear-halt", "--live", "--dry-run", "--mark-closed", "--sig"):
         assert f'"{flag}"' in ex, flag
 
 
@@ -872,3 +872,23 @@ def test_runbook_preflight_script_is_valid_sh_and_every_write_probe_is_a_refused
     # the array assignment and the surrounding commands parse as bash once the placeholder is filled
     head = sec[sec.index("SHADOW="):sec.index("sudo systemd-run")].replace("<jobuser>", "x")
     assert subprocess.run(["bash", "-n", "-c", head], capture_output=True, text=True).returncode == 0
+
+
+def test_runbook_live_ok_mode_is_exactly_0644_and_the_wallet_wide_switches_and_shadow_head_are_stated():
+    t = RUNBOOK.read_text()
+    # LIVE_OK: root:root, mode exactly 0644 (not "or tighter": mal-live must be able to open it read-only)
+    assert "exactly 0644" in t and "mode **exactly 0644**" in t and "not 0600 or tighter" in t
+    assert "expect exactly: root:root 644 regular empty file /etc/mal-h5/LIVE_OK" in t
+    assert "0644 or tighter" not in t and "not group or other writable, not a symlink" not in t.replace("with mode exactly 0644, not a symlink", "")
+    # the executor honours the wallet-wide STOP and HALT, and the probe's permanent STOP therefore blocks H5 until the manager decides
+    assert "/var/lib/mal-live/h5/STOP" in t and "/var/lib/mal-live/STOP" in t and "/var/lib/mal-live/HALT" in t
+    assert "while it exists, H5 never buys" in t and "the manager's written decision" in t
+    assert t.index("sudo test ! -e /var/lib/mal-live/STOP") < t.index("sudo install -m 0644 -o root -g root /dev/null /etc/mal-h5/LIVE_OK")
+    assert "sudo rm /var/lib/mal-live/STOP" in t and "ONLY on the manager's written OK" in t
+    # the shadow job must run at the reviewed #477 head: a manager step, and a go-live precondition
+    assert t.count("the shadow job running at the reviewed #477 head") == 1 and "s0_minus_announced_slots" in t and "base_breaks_unresolved" in t
+    going = t[t.index("## Going live (manager, then Helm)"):t.index("## Stop, halt, status")]
+    assert "the shadow job is running at the reviewed #477 head" in going
+    # --mark-closed: the offline reconcile after a root sell-and-close, run as mal-live with the key from the env file through systemd
+    assert "--mark-closed <MINT> --sig <SIGNATURE>" in t and "-p EnvironmentFile=/etc/mal-probe-rpc/helius.env" in t and "-p User=mal-live" in t
+    assert "no tool books the fill" not in t

@@ -13,10 +13,11 @@ is any ALERT. The RPC URL (HELIUS_API_KEY from the environment or the paper env 
   ALLOWED now   the H5 unit mal-h5-executor (active or enabled), /var/lib/mal-live/h5, the pinned tree, /etc/mal-h5/LIVE_OK. The
                 wallet is no longer expected to be 0.
   STILL ALERTS  any mal-probe-executor* unit active or enabled; /var/lib/mal-live/state-live.json changed (sha256 against a
-                baseline, plus attempts <= 62, realized -0.210755 SOL, nothing open); /var/lib/mal-live/STOP missing.
+                baseline, plus attempts <= 62, realized -0.210755 SOL, nothing open). (The old "/var/lib/mal-live/STOP must exist" alert
+                is gone: the executor treats that file as a wallet-wide STOP, so it must be absent for H5 to buy.)
   UNMANAGED     live state with open or pending positions while the unit is not active with --live (alert h5_positions_unmanaged).
   IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); LIVE_OK present but the unit not active and enabled,
-                the running ExecStart without --live, or STOP present; LIVE_OK older than 6 h with no buy/skip/decision ledger row
+                the running ExecStart without --live, or STOP present (the H5 one or the wallet-wide one); LIVE_OK older than 6 h with no buy/skip/decision ledger row
                 in 6 h; the watchdog timer not enabled.
   UNIT FILES    the installed unit files equal the pinned copies; the drop-in list comes from systemd (DropInPaths) and may hold
                 only live.conf (equal to the pinned drop-in) and 10-shadow-feed.conf (passing check-h5-unit.py --shadow-feed).
@@ -41,8 +42,8 @@ from typing import Callable, NamedTuple
 
 WALLET = "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # the DEC-019 probe wallet; public (DEC-024)
 PROBE_STATE = "/var/lib/mal-live/state-live.json"
-PROBE_STOP = "/var/lib/mal-live/STOP"
-WALLET_HALT = "/var/lib/mal-live/HALT"  # the probe's file name; the executor also honours it wallet-wide (executor builder's change)
+WALLET_STOP = "/var/lib/mal-live/STOP"  # the probe's file names; the executor (4f05e30) honours both wallet-wide, next to its own in the H5 dir
+WALLET_HALT = "/var/lib/mal-live/HALT"
 PROBE_MAX_ATTEMPTS = 62
 PROBE_REALIZED_SOL = -0.210755
 H5_UNIT = "mal-h5-executor"
@@ -305,12 +306,12 @@ def check_probe_state(host: Host, rep: Report, baseline_path: Path, write_baseli
     else:
         if json.loads(baseline_path.read_text()).get("sha256") != digest:
             problems.append("sha256 differs from the baseline: the probe's state file changed")
-    if not host.exists(PROBE_STOP):
-        problems.append(f"{PROBE_STOP} is missing")
+    # The probe's old "STOP must exist" alert is gone on purpose: the executor honours /var/lib/mal-live/STOP as a wallet-wide STOP, so a
+    # leftover probe STOP would stop every H5 buy. Its presence is reported below (and is an idle-canary reason once the gate is open).
     if problems:
         rep.alert("probe_state", "; ".join(problems))
     else:
-        rep.ok(f"probe state unchanged (attempts {st.get('attempts')}, realized -0.210755 SOL, STOP in place)")
+        rep.ok(f"probe state unchanged (attempts {st.get('attempts')}, realized -0.210755 SOL)")
 
 
 def check_h5_unit(host: Host, rep: Report, checker) -> UnitInfo:
@@ -362,15 +363,15 @@ def check_h5_unit(host: Host, rep: Report, checker) -> UnitInfo:
 
 
 def check_live_ok_gate(host: Host, rep: Report) -> bool:
-    """Same facts the executor requires of LIVE_OK (DEC-024 section 3). Returns whether the file is present."""
+    """Same facts the executor requires of LIVE_OK (DEC-024 section 3): a regular file, not a symlink, owned root:root, mode EXACTLY 0644
+    (mal-live must be able to open it read-only, and nobody may write it), in a root:root 0755 directory. Returns whether it is present."""
     present = host.exists(LIVE_OK)
     if host.exists(H5_ETC) and (host.islink(H5_ETC) or host.stat(H5_ETC) != "root:root:755"):
         rep.alert("h5_etc_dir", f"{H5_ETC} is {host.stat(H5_ETC)}{' (symlink)' if host.islink(H5_ETC) else ''}, expected root:root:755")
     if present:
         owner = host.stat(LIVE_OK) or "?:?:?"
-        mode = owner.rsplit(":", 1)[-1]
-        if host.islink(LIVE_OK) or not owner.startswith("root:") or not mode.isdigit() or int(mode, 8) & 0o022 or not host.is_regular(LIVE_OK):
-            rep.alert("h5_live_ok_invalid", f"{LIVE_OK} must be a regular file, root-owned, not group/other writable, no symlink (is {owner})")
+        if host.islink(LIVE_OK) or owner != "root:root:644" or not host.is_regular(LIVE_OK):
+            rep.alert("h5_live_ok_invalid", f"{LIVE_OK} must be a regular file owned root:root with mode exactly 0644, no symlink (is {owner})")
     if host.exists(f"{H5_DIR}/LIVE_OK"):
         rep.alert("h5_live_ok_stale", f"{H5_DIR}/LIVE_OK exists: the gate is {LIVE_OK}; a file in the state dir is not Helm's (remove it, find out who made it)")
     return present
@@ -385,11 +386,13 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
         rep.alert("h5_dir_mode", f"{H5_DIR} is {st_dir}, expected mal-live:mal-live:700")
     flags = {n: host.exists(f"{H5_DIR}/{n}") for n in ("STOP", "HALT")}
     flags["LIVE_OK"] = live_ok
+    flags["wallet_STOP"] = host.exists(WALLET_STOP)
+    flags["wallet_HALT"] = host.exists(WALLET_HALT)
     rep.info("files: " + " ".join(f"{n}={'yes' if v else 'no'}" for n, v in flags.items()))
     if flags["HALT"]:
         rep.alert("h5_halt_file", "HALT exists: everything is frozen, sells included")
-    if host.exists(WALLET_HALT):
-        rep.alert("wallet_halt_file", f"{WALLET_HALT} exists: the wallet-wide HALT (the executor honours it, and the probe's name for it)")
+    if flags["wallet_HALT"]:
+        rep.alert("wallet_halt_file", f"{WALLET_HALT} exists: the wallet-wide HALT, which the executor honours (everything is frozen, sells included)")
     state = _json(host, f"{H5_DIR}/live/state-live.json") or {}
     counters = _json(host, f"{H5_DIR}/live/h5-counters.json") or {}
     opens = state.get("open") or {}
@@ -461,6 +464,8 @@ def check_canary_idle(host: Host, rep: Report, unit: UnitInfo, live_ok: bool, sh
         why.append("the running ExecStart has no --live (live drop-in missing)")
     if host.exists(f"{H5_DIR}/STOP"):
         why.append("STOP exists")
+    if host.exists(WALLET_STOP):
+        why.append(f"the wallet-wide {WALLET_STOP} exists (the executor honours it; the probe's old STOP file must be removed for H5 to buy)")
     if why:
         rep.alert("h5_idle", "LIVE_OK is present but the canary is not trading: " + "; ".join(why))
     t = host.mtime(LIVE_OK)

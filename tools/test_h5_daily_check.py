@@ -37,7 +37,8 @@ def ledger(*rows) -> bytes:
 class FakeHost(dc.Host):
     def __init__(self):
         self.files: dict[str, bytes] = {
-            dc.PROBE_STATE: PROBE_STATE, dc.PROBE_STOP: b"",
+            dc.PROBE_STATE: PROBE_STATE,  # no /var/lib/mal-live/STOP: the executor treats it as a wallet-wide STOP, so go-live needs it gone
+           
             f"{dc.PINNED}/mal-h5-executor.service": BASE, f"{dc.PINNED}/mal-h5-executor-live-pinned.conf": DROPIN,
             dc.UNIT_FILE: BASE, dc.DROPIN_LIVE: DROPIN, dc.DROPIN_FEED: FEED, dc.LIVE_OK: b"",
             f"{H5}/live/state-live.json": json.dumps({"attempts": 3, "realized_lamports": -1_000_000, "open": {}, "pending": {}}).encode(),
@@ -154,9 +155,6 @@ def test_probe_state_changes_alert(tmp_path):
         rc, out = go(h, tmp=tmp_path / name)
         assert rc == 1 and "ALERT probe_state" in out, name
     h = FakeHost()
-    del h.files[dc.PROBE_STOP]
-    rc, out = go(h, tmp=tmp_path / "stop")
-    assert rc == 1 and "STOP is missing" in out
     del h.files[dc.PROBE_STATE]
     rc, out = go(h, tmp=tmp_path / "gone")
     assert rc == 1 and "state-live.json is missing" in out
@@ -328,6 +326,11 @@ def test_live_ok_is_the_root_owned_gate_in_etc_mal_h5(tmp_path):
         "group writable": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:664"),
         "other writable": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:646"),
         "owned by mal-live": lambda h: h.modes.__setitem__(dc.LIVE_OK, "mal-live:mal-live:644"),
+        "mode exactly 0644, not tighter (mal-live must be able to read it)": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:600"),
+        "mode 0640": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:640"),
+        "mode 0444": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:444"),
+        "mode 0755": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:root:755"),
+        "group is not root": lambda h: h.modes.__setitem__(dc.LIVE_OK, "root:mal-live:644"),
         "symlink": lambda h: h.links.add(dc.LIVE_OK),
         "not a regular file": lambda h: h.irregular.add(dc.LIVE_OK),
     }.items():
@@ -342,6 +345,27 @@ def test_live_ok_is_the_root_owned_gate_in_etc_mal_h5(tmp_path):
         assert rc == 1 and "ALERT h5_etc_dir" in out, name
     rc, out = case("stale", lambda h: h.files.__setitem__(f"{H5}/LIVE_OK", b""))
     assert rc == 1 and "ALERT h5_live_ok_stale" in out
+
+
+def test_wallet_wide_stop_and_halt_follow_the_executor(tmp_path):
+    """At executor 4f05e30 /var/lib/mal-live/STOP and HALT (the probe's file names) are wallet-wide switches next to the H5 ones."""
+    assert dc.WALLET_STOP == "/var/lib/mal-live/STOP" and dc.WALLET_HALT == "/var/lib/mal-live/HALT"
+    rc, out = go(FakeHost(), tmp=tmp_path / "clean")
+    assert rc == 0 and "wallet_STOP=no wallet_HALT=no" in out
+    h = FakeHost()
+    h.files[dc.WALLET_STOP] = b""  # the probe's leftover STOP: H5 would never buy
+    rc, out = go(h, tmp=tmp_path / "gate_open")
+    assert rc == 1 and "h5_idle" in alerts(out) and "wallet-wide /var/lib/mal-live/STOP exists" in out and "wallet_STOP=yes" in out
+    h = FakeHost()
+    h.files[dc.WALLET_STOP] = b""
+    h.files.pop(dc.LIVE_OK), h.modes.pop(dc.LIVE_OK), h.h5_props.update(ActiveState="inactive")
+    rc, out = go(h, tmp=tmp_path / "gate_closed")
+    assert "h5_idle" not in alerts(out) and "wallet_STOP=yes" in out  # before go-live it is only reported
+    # its absence is no longer an alert (the old probe check required it)
+    assert "STOP is missing" not in out
+    h = FakeHost()
+    h.files[dc.WALLET_HALT] = b""
+    assert "wallet_halt_file" in alerts(go(h, tmp=tmp_path / "halt")[1])
 
 
 def test_stop_file_is_info_when_the_gate_is_closed_and_idle_when_open(tmp_path):
