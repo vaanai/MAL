@@ -12,15 +12,19 @@ User=root
 # webhook URL is a secret and is never printed. No "-" prefix: a missing file fails the start.
 EnvironmentFile=/etc/mal-h5-watch/watch.env
 ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-watch/watch.env)" = 0:0:600'
-# Stdlib only, from the root-owned pinned tree. It reads state through h5-daily-check.py (nofollow reads, fixed paths) and posts; it
-# holds no wallet key, uses the public RPC for the balance, and writes only its own state dir.
-ExecStart=/usr/bin/python3 -I -B -u /usr/local/lib/mal-h5-exec/current/h5-watch.py
+# Stdlib only, from the root-owned pinned tree, with -I -S (no site: no .pth file from /usr/local runs in this root process). It reads
+# state through h5-daily-check.py (nofollow reads, fixed paths) and posts; it holds no wallet key, uses the public RPC for the balance,
+# and writes only its own state dir. The key paths below are fenced off anyway: it never needs them, and a root process with
+# CAP_DAC_READ_SEARCH that talks to Discord must not be able to read them even through a future bug. PID 1 reads EnvironmentFile before
+# the namespace exists, so the fence does not touch watch.env.
+ExecStart=/usr/bin/python3 -I -S -B -u /usr/local/lib/mal-h5-exec/current/h5-watch.py
 StateDirectory=mal-h5-watch
 StateDirectoryMode=0700
 TimeoutStartSec=120
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

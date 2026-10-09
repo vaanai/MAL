@@ -196,7 +196,7 @@ def run(args, rpc: Callable, *, is_active: Callable[[str], bool] = unit_running,
     if not args.force:
         for unit in UNITS:
             if is_active(unit):
-                raise Refuse(f"refusing: {unit} is not stopped (ActiveState is not inactive or failed; stop it first, or --force)")
+                raise Refuse(f"refusing: {unit} is not stopped (ActiveState is not inactive or failed); stop it first")
     if check_location:
         pw.check_key_location(args.keyfile)
     kp = pw.load_keypair(args.keyfile)
@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--emergency", action="store_true", help="min_out = 1 lamport: accept any price")
     ap.add_argument("--priority-lamports", type=int, default=MAX_PRIORITY_LAMPORTS)
     ap.add_argument("--send", action="store_true", help="send it (the default is to simulate only)")
-    ap.add_argument("--force", action="store_true", help="ignore the executor-running check")
+    ap.add_argument("--force", action="store_true", help="HELM ONLY: skip the unit-state check, after verifying by hand that both units' ActiveState is inactive")
     args = ap.parse_args(argv)
     if os.geteuid() != 0 and os.environ.get("MAL_LIVE_TEST") != "1":
         print("refusing: sell-and-close is root-only", file=sys.stderr)

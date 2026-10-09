@@ -54,6 +54,7 @@ def go(h, state, poster, now=NOW, env=ENV):
     if now > NOW:  # the fake clock advanced: the detector keeps writing, and the gate was opened an hour ago (the 6 h idle-ledger rule is quiet)
         h.feed = (h.feed[0], max(h.feed[1], now - 60)) if h.feed else h.feed
         h.mtimes[dc.LIVE_OK] = max(h.mtimes[dc.LIVE_OK], now - 3600)
+        h.files[dc.WATCH_STATE] = json.dumps({"ts": now - 120}).encode()  # the watchdog's own previous run, two minutes ago
     return hw.run(h, env, poster, state, now, balance_fn=lambda w, e: h.balance_lamports)
 
 
@@ -199,7 +200,12 @@ def test_checker_accepts_the_shipped_watch_units_and_refuses_changes():
         "env file optional": svc.replace("EnvironmentFile=/etc", "EnvironmentFile=-/etc"),
         "second env file": svc.replace("Type=oneshot", "Type=oneshot\nEnvironmentFile=/var/lib/mal/fast-listener/helius.env"),
         "ExecStart elsewhere": svc.replace("/usr/local/lib/mal-h5-exec/current/h5-watch.py", "/var/lib/mal/fast-forward/src/scripts/mal-fast/h5-watch.py"),
-        "no -I": svc.replace("python3 -I -B -u", "python3 -B -u"),
+        "no -I": svc.replace("python3 -I -S -B -u", "python3 -S -B -u"),
+        "no -S": svc.replace("python3 -I -S -B -u", "python3 -I -B -u"),
+        "python elsewhere": svc.replace("/usr/bin/python3", "/usr/local/bin/python3"),
+        "key paths not fenced": svc.replace("InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials\n", ""),
+        "credentials not fenced": svc.replace(" -/run/credentials", ""),
+        "probe key dir not fenced": svc.replace("-/etc/mal-probe -/etc/mal-probe-rpc", "-/etc/mal-probe-rpc"),
         "credential": svc + "LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json\n",
         "caps widened": svc.replace("CAP_DAC_READ_SEARCH", "CAP_SYS_ADMIN"),
         "no caps limit": svc.replace("CapabilityBoundingSet=CAP_DAC_READ_SEARCH\n", ""),
@@ -222,7 +228,10 @@ def test_checker_accepts_the_shipped_watch_units_and_refuses_changes():
 
 def test_the_watch_service_holds_no_key_and_reads_only_what_it_must():
     svc = "\n".join(l for l in SERVICE.read_text().splitlines() if not l.lstrip().startswith("#"))
+    assert "InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials" in svc.splitlines()  # the key paths are fenced off
+    svc = svc.replace("InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials", "")  # the only place those paths may appear
     assert "LoadCredential" not in svc and "probe-wallet" not in svc and "/etc/mal-probe-rpc" not in svc and "/etc/mal-probe/" not in svc
+    assert "ExecStart=/usr/bin/python3 -I -S -B -u /usr/local/lib/mal-h5-exec/current/h5-watch.py" in svc.splitlines()
     assert "EnvironmentFile=/etc/mal-h5-watch/watch.env" in svc and "ReadWritePaths" not in svc  # writes only its StateDirectory
     assert "StateDirectory=mal-h5-watch" in svc and "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in svc and "AF_UNIX" in svc  # AF_UNIX: systemctl show
     assert re.search(r"^ExecStartPre=\+/usr/bin/env -i /bin/sh -c 'test .*0:0:700.*0:0:600'$", svc, re.M)

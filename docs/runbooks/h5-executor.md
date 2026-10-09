@@ -41,7 +41,7 @@ The executor is `tools/h5_executor.py` (PR #484). Unit: `mal-h5-executor` on `ma
 1. The sha, named in a comment on PR #499 once the executor branch has merged `origin/main` and its review fixes and this PR is merged into it. It must contain `EXP/EXP-024-h5-boostfloor-part1-prereg.md` (the installer refuses a sha without it, and so does the executor), the live config, and this runbook. The shipped live config carries `end_ms` = 2026-10-16T00:30Z (1792110600000): the executor stops buying then, and a later end is a new reviewed sha. A live config without `end_ms` would install and then refuse to start (`ALERT startup_refused end_ms_missing`); the installer prints a NOTE when it sees that. The pinned configs set `intents_file` = `/srv/mal-h5-shadow` and `feed_heartbeat_max_age_ms` = 150000 (taken from the executor branch as they are), and none of `late_sell_min_n`, `sell_priority_lamports`, `escalated_priority_lamports` (code constants now: the executor refuses a config that sets them) or `live_ok_file`, `stop_file`, `halt_file`, `final_marker_file` (pinned in live).
 2. The manifest, made in the manager's own clone, not Helm's:
    `scripts/mal-fast/make-h5-manifest.sh <40-char-sha> > h5-manifest.txt`. It has one `<sha256>  <repo path>` line per file the installer reads. Give it to Helm and keep a copy for every sha that is installed.
-3. The job user's detector output directory (`~/data/h5-shadow` of the MiScusi job user, as an absolute path), and **the shadow job running at the reviewed #477 head, `fe7eb43` or later**: the head whose trigger records carry `s0_minus_announced_slots` and `base_breaks_unresolved`, which the executor reads and refuses without (`bad_intent:*`). A shadow job started on an older head must be restarted on that head before go-live. This is a manager step; the daily check and the watchdog alert `h5_feed_schema` if triggers are refused for those fields.
+3. The job user's detector output directory (`~/data/h5-shadow` of the MiScusi job user, as an absolute path), and **the shadow job running at the reviewed #477 head, `fe7eb43` or later**: the head whose trigger records carry `s0_minus_announced_slots` and `base_breaks_unresolved`, which the executor reads and refuses without (`bad_intent:*`). A shadow job started on an older head must be restarted on that head before go-live. This is a manager step; the daily check and the watchdog alert `h5_feed_schema` if triggers are refused for those fields. Before Helm starts, the manager also runs `chmod 755 ~/data/h5-shadow`, checks that the newest hourly file is `-rw-r--r--`, and reports both: a detector started under `umask 002` makes a 775 directory, which the Step 7 check rejects, and Ubuntu home directories are 0750, so Helm can only look with `sudo`.
 4. The probe's `/var/lib/mal-live/STOP` decision (see Kill switches): written in the sha comment, yes or no.
 5. The Discord webhook for the watchdog and the total SOL deposited, for Helm's step 10 (the webhook goes to Helm over the usual private channel, never into a PR, a note or a file in a repo).
 
@@ -58,7 +58,7 @@ $S | grep '^\[live\]'                              # repeat until: [live] attemp
 An open position exits on its timer at s0 + 330 s and the executor's own hard deadline is s0 + 400 s, so wait up to about 7 minutes. If `open` or `pending` is still not 0 after that, **do not stop the unit**: look at the journal and the alerts. If the executor cannot sell it, stop the unit and run Sell-and-close for EACH open mint. The open mints (public addresses) are listed by:
 
 ```
-sudo python3 -I -c 'import json; print(*json.load(open("/var/lib/mal-live/h5/live/state-live.json"))["open"], sep="\n")'
+sudo dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/state-live.json | python3 -I -c 'import json, sys; print(*json.load(sys.stdin)["open"], sep="\n")'
 ```
 
 Only when `--status` shows `open=0/2 pending=0` (or every open mint has been sold and closed) go on to the stop.
@@ -77,14 +77,28 @@ systemctl is-enabled mal-probe-executor       # expect: disabled
 pgrep -af 'tools.probe_executor|probe_exec_launcher' || echo none     # expect: none
 sudo test -e /var/lib/mal-live/STOP && echo probe-stop-present       # record whether the probe's STOP is there; it is NOT removed here (see Kill switches, Step 11)
 sudo sha256sum /var/lib/mal-live/state-live.json                      # tell the manager; it must not change from here on
+sudo sh -c 'test -e /var/lib/mal-live/state-live-dec020.json && sha256sum /var/lib/mal-live/state-live-dec020.json || echo absent'     # tell the manager: a sha256, or the word absent; it must not change either
+sudo install -d -m 0700 -o root -g root /root/disabled
+for f in /etc/systemd/system/mal-probe-executor.service.d/*.conf; do [ -e "$f" ] && sudo mv "$f" /root/disabled/; done     # the probe's live drop-in(s), including the DEC-020 one
+sudo systemctl daemon-reload
+systemctl show -p DropInPaths --value mal-probe-executor      # expect: empty. Anything listed: stop and tell the manager.
+systemctl cat mal-probe-executor | grep -c LoadCredential     # expect: 0 (a started probe now has no key)
+sudo ls /root/disabled                                        # the moved drop-in(s): the probe's record
 ```
 
-Leave `/etc/systemd/system/mal-probe-executor.service.d/live.conf` where it is (it is the probe's record). The H5 base unit has `Conflicts=` and `After=mal-probe-executor.service` (so the probe's stop is ordered before H5's start), the installer refuses unless the probe unit's ActiveState is inactive or failed and it is not enabled, and the daily check alerts if any `mal-probe-executor*` unit is active or enabled. Do not `systemctl mask` it: the base unit is a regular file in `/etc/systemd/system` and masking would need `--force`.
+The probe's keyed drop-ins are moved, not deleted: Step 11 removes the wallet-wide `/var/lib/mal-live/STOP`, which is also the probe's own stop file, so a probe drop-in left in place would let an accidental `systemctl start mal-probe-executor` arm the key again (and `Conflicts=` would stop H5 without a Wind-down). Without its drop-ins the probe unit is keyless, and the daily check and the watchdog alert `probe_live_dropin` or `probe_has_key` if a drop-in or a credential ever comes back. The H5 base unit has `Conflicts=` and `After=mal-probe-executor.service` (so the probe's stop is ordered before H5's start), the installer refuses unless the probe unit's ActiveState is inactive or failed and it is not enabled, and the daily check alerts if any `mal-probe-executor*` unit is active or enabled. Do not `systemctl mask` it: the base unit is a regular file in `/etc/systemd/system` and masking would need `--force`.
 
 **Step 1b. On a reinstall only (an earlier install exists).**
 
 1. Do the Wind-down above (gate closed, `open=0 pending=0`), then stop the unit: `sudo systemctl stop mal-h5-executor`, and check `systemctl show -p ActiveState --value mal-h5-executor` says `inactive`.
 2. Move the old live drop-in away, so the install and the dry run of Step 8 are keyless: `sudo mv /etc/systemd/system/mal-h5-executor.service.d/live.conf /root/live.conf.prev && sudo systemctl daemon-reload`.
+3. After Step 4 and the Step 5 hash check, install the watchdog units again from the new tree (a new sha's `h5-watch.py` must not run under an older watch unit; the daily check alerts `h5_watch_files` if the installed units differ from the pinned copies):
+
+```
+sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.service /etc/systemd/system/mal-h5-watch.service
+sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.timer /etc/systemd/system/mal-h5-watch.timer
+sudo systemctl daemon-reload && sudo systemctl restart mal-h5-watch.timer
+```
 
 The installer refuses while `/etc/mal-h5/LIVE_OK` or `live.conf` exists, so every install starts with the gate closed and no key drop-in; `LIVE_OK` is created again only after that install's hash check, and `live.conf` is installed again in Step 9.
 
@@ -181,7 +195,7 @@ rc=0
 | If the output shows | It means | Do |
 | --- | --- | --- |
 | names under `home:` | `/home` is not an empty tmpfs: `ProtectHome=tmpfs` was not applied | stop, report the systemd version |
-| nothing or an error under `shadow:` | the bind is not visible, the detector has written no hourly file yet, `$SHADOW` is wrong or missing (`ls -ld "$SHADOW"`), or the `ProtectHome=tmpfs` plus bind combination does not work on this systemd | check `$SHADOW` and that the detector runs; if both are right, stop and report. The fallback is a detector output directory outside `/home` and a checker change, which is a new sha; the manager decides |
+| nothing or an error under `shadow:` | the bind is not visible, the detector has written no hourly file yet, `$SHADOW` is wrong or missing (`sudo ls -ld "$SHADOW"`), or the `ProtectHome=tmpfs` plus bind combination does not work on this systemd | check `$SHADOW` and that the detector runs; if both are right, stop and report. The fallback is a detector output directory outside `/home` and a checker change, which is a new sha; the manager decides |
 | `shadow-file-read: FAILED` | the detector's files are not readable by others (mode 600) | the manager fixes the detector's umask or modes |
 | `shadow-write: SUCCEEDED (BAD)` | the bind is not read-only | `rm "$SHADOW/.preflight"` (as the job user), stop |
 | `h5-dir-write: FAILED` | step 2 not done, or `/var/lib/mal-live/h5` not `mal-live` 0700, or `ReadWritePaths` not applied | fix step 2, rerun |
@@ -218,8 +232,8 @@ Send the manager the printed table and the two `sha256sum` results. Stop here if
 
 ```
 SHADOW=/home/<jobuser>/data/h5-shadow                         # the absolute path the manager gave you
-stat -c '%U:%G %a %n' "$SHADOW"                               # expect: not group/world-writable, readable by others (755 is fine)
-ls -l "$SHADOW" | head -3                                     # files are readable by others (644)
+sudo stat -c '%U:%G %a %n' "$SHADOW"                          # expect: not group/world-writable, readable by others (755 is fine). sudo: home directories are 0750
+sudo ls -l "$SHADOW" | head -3                                # files are readable by others (-rw-r--r--)
 sed "s#__SHADOW_DIR__#$SHADOW#" /usr/local/lib/mal-h5-exec/current/mal-h5-executor-shadow-feed.conf \
   | sudo tee /etc/systemd/system/mal-h5-executor.service.d/10-shadow-feed.conf >/dev/null
 python3 -I /usr/local/lib/mal-h5-exec/current/check-h5-unit.py --shadow-feed /etc/systemd/system/mal-h5-executor.service.d/10-shadow-feed.conf && echo feed ok
@@ -232,7 +246,7 @@ systemctl show mal-h5-executor -p ProtectHome -p ProtectSystem -p TemporaryFileS
 
 The read and the refused write were already proved as `mal-live` in step 3b-3, with the same `$SHADOW`; use the same path here.
 
-The checker accepts only `/home/<user>/.../h5-shadow*` with no hidden path component. If the detector job is restarted into a new directory (new inode), restart `mal-h5-executor` too, because the bind pins the old one. A missing source is a silent no-op at the unit level (leading `-`); the executor then reports `signals_absent` and buys nothing, and the daily check and the watchdog alert on a stale feed.
+The checker accepts only `/home/<user>/.../h5-shadow*` with no hidden path component. If the detector job is restarted into a new directory (new inode), restart `mal-h5-executor` too, because the bind pins the old one. A missing source is a silent no-op at the unit level (leading `-`); the executor then prints `signals_file_missing` to the journal and buys nothing. The daily check and the watchdog catch a stale host feed (`h5_feed_stale`) and a shadow directory created after the unit's current run started (`h5_feed_bind_stale`: they compare the directory's birth time with the unit's run start, which is what a missing or recreated bind source looks like). They do not look inside the unit's mount namespace; that needs `CAP_SYS_ADMIN`, which the watchdog must not hold. So after every restart of the detector job into a recreated directory: Wind-down, restart `mal-h5-executor`, and repeat the Step 8 `nsenter` lines.
 
 **Step 8. Keyless dry run, at least 10 minutes. No key is involved.** This proves the pinned path, the sandbox, the state dir, the shadow bind and the RPC env on the real host before anything live. First prove that nothing can hand the process a key:
 
@@ -252,7 +266,7 @@ sudo awk '$5 == "/home" || $5 == "/srv/mal-h5-shadow" {print $5, $6}' /proc/$PID
 sudo systemctl stop mal-h5-executor
 ```
 
-If the ledger shows `signals_absent` the whole time, the bind is wrong; fix step 7 before going on. The dry run holds no live position, so stopping it needs no Wind-down. Running `--status` as root only reads; never run the executor itself, or `--clear-halt`, as root (see Never).
+`journalctl -u mal-h5-executor | grep signals_file_missing` must find nothing while hourly files exist (the executor prints that to the journal; there is no ledger row for it); a hit means the bind is wrong: fix step 7 before going on. The dry run holds no live position, so stopping it needs no Wind-down. Running `--status` as root only reads; never run the executor itself, or `--clear-halt`, as root (see Never).
 
 **Step 9. Install the live drop-in from the verified copy, and do not start.**
 
@@ -274,28 +288,71 @@ sudo systemctl enable mal-h5-executor                                           
 
 *Auditd:* the rules in "Auditd" below.
 
-*Watchdog (DEC-024 section 8):* the once-a-day check is not enough for a stuck position. The probe's own `mal-probe-watch` timer is Helm's host-local file and is not in the repo, so this is a new H5 one: `h5-watch.py` runs every 5 minutes as a hardened root oneshot from the pinned tree, runs the daily check's engine, and posts to Discord when an alert is new, every 6 h while it lasts, and when it clears. It watches: a stuck or abandoned position, any latched live halt, HALT files, STOP placed or removed, the unit restarting, the unit failed or idle, a stale shadow feed, positions with no live unit, and the wallet balance against the funded amount plus the H5 realized total. It holds no key and uses the public RPC for the balance.
+*Watchdog (DEC-024 section 8):* the once-a-day check is not enough for a stuck position. The probe's own `mal-probe-watch` timer is Helm's host-local file and is not in the repo, so this is a new H5 one. `watch.env` holds exactly three lines, `NAME=value`, with no comments, no quotes and no spaces (systemd does not strip a trailing `# ...` from a value, and `float()` of it fails): `H5_WATCH_DISCORD_WEBHOOK=` the webhook URL, `H5_WATCH_FUNDED_SOL=` the total SOL deposited net of withdrawals (update it after a top-up or a withdrawal), `H5_WATCH_SHADOW_DIR=` the same `$SHADOW` as Step 7. The webhook is a secret: it is pasted into the editor that `sudoedit` opens and nowhere else, never with `echo`, `tee`, a here-document or on any command line (they print it, put it in the shell history, and create the file 0644 under umask 022, which makes the watchdog's `ExecStartPre` fail every run). The next lines are: `h5-watch.py` runs every 5 minutes as a hardened root oneshot from the pinned tree, runs the daily check's engine, and posts to Discord when an alert is new, every 6 h while it lasts, and when it clears. It watches: a stuck or abandoned position, any latched live halt, HALT files, STOP placed or removed, the unit restarting, the unit failed or idle, a stale shadow feed, positions with no live unit, and the wallet balance against the funded amount plus the H5 realized total. It holds no key and uses the public RPC for the balance.
 
 ```
 sudo install -d -m 0700 -o root -g root /etc/mal-h5-watch
-# Helm creates /etc/mal-h5-watch/watch.env as root:root 0600 with exactly three lines (the webhook is a secret: never print it, never paste it into a ticket):
-#   H5_WATCH_DISCORD_WEBHOOK=<the webhook URL>
-#   H5_WATCH_FUNDED_SOL=0.25                              # total SOL deposited, net of withdrawals; update it after a top-up or a withdrawal
-#   H5_WATCH_SHADOW_DIR=/home/<jobuser>/data/h5-shadow    # the same $SHADOW as step 7
+sudo install -m 0600 -o root -g root /dev/null /etc/mal-h5-watch/watch.env
+sudoedit /etc/mal-h5-watch/watch.env
 sudo stat -c '%U:%G %a %n' /etc/mal-h5-watch /etc/mal-h5-watch/watch.env     # expect: root:root 700 /etc/mal-h5-watch | root:root 600 /etc/mal-h5-watch/watch.env
+sudo wc -l < /etc/mal-h5-watch/watch.env                                      # expect: 3 (a count, not the content)
+sudo grep -c -E '^(H5_WATCH_DISCORD_WEBHOOK|H5_WATCH_FUNDED_SOL|H5_WATCH_SHADOW_DIR)=[^ #"]+$' /etc/mal-h5-watch/watch.env      # expect: 3 (a count, not the content)
 python3 -I /usr/local/lib/mal-h5-exec/current/check-h5-unit.py --watch-service /usr/local/lib/mal-h5-exec/current/mal-h5-watch.service && echo watch service ok
 python3 -I /usr/local/lib/mal-h5-exec/current/check-h5-unit.py --watch-timer /usr/local/lib/mal-h5-exec/current/mal-h5-watch.timer && echo watch timer ok
 sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.service /etc/systemd/system/mal-h5-watch.service
 sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.timer /etc/systemd/system/mal-h5-watch.timer
 sudo systemctl daemon-reload
-sudo systemd-run --wait --collect --pipe -p EnvironmentFile=/etc/mal-h5-watch/watch.env /usr/bin/python3 -I -B /usr/local/lib/mal-h5-exec/current/h5-watch.py --test-message
+sudo systemd-run --wait --collect --pipe -p EnvironmentFile=/etc/mal-h5-watch/watch.env /usr/bin/python3 -I -S -B /usr/local/lib/mal-h5-exec/current/h5-watch.py --test-message
 #   expect: "h5_watch: test message posted" on screen, and the line "[H5 watch] test message ..." in the Discord channel. Tell the manager to look.
 sudo systemctl enable --now mal-h5-watch.timer
-sudo systemctl start mal-h5-watch.service; journalctl -u mal-h5-watch.service -n 5 --no-pager      # expect: h5_watch: N alert(s), M line(s) posted; status=0/SUCCESS
+sudo systemctl start mal-h5-watch.service; journalctl -u mal-h5-watch.service -n 5 --no-pager      # expect a line like: h5_watch: unit=mal-h5-executor active=inactive enabled=enabled feed_age=<n>s alerts=<n> posted=<n>, and status=0/SUCCESS
 systemctl is-enabled mal-h5-watch.timer; systemctl is-active mal-h5-watch.timer                  # expect: enabled, active
 ```
 
-The first runs may post real alerts (a closed gate is not one; a stale feed or a missing `/var/lib/mal-live/STOP` is). Then tell the manager "steps 1 to 10 done" with the step 5 table and that the Discord test message was posted.
+That summary line must name the unit and its state: `unit=unknown` or `active=unknown` means systemd did not answer inside the watchdog's sandbox (the daily check and the watchdog then raise `systemctl_failed`), so stop and tell the manager. The first runs may post real alerts (a closed gate is not one; a stale feed is). Then tell the manager "steps 1 to 10 done" with the step 5 table and that the Discord test message was posted.
+
+**Step 10b. The manager's 12:17Z daily-check job, and its sudo (Helm).** The job runs as user `claude`, under `sh`, as a MiScusi job (not resumable), from the checkout at `main` after this PR has merged. It uses absolute paths only, so its working directory and `HOME` do not matter; the baseline and shadow paths must be the same as in the `--write-baseline` run of "Going live":
+
+```
+/usr/bin/python3 -I /home/claude/MAL/scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 --public-rpc --window-hours 24 --shadow-dir /home/claude/data/h5-shadow --baseline /home/claude/data/h5-daily/probe-state.baseline.json
+```
+
+Exit status 1 means at least one `ALERT`; the output is the report. Do not register the job before the script is on `main` (the path does not exist until then). The privileged reads go through `sudo -n` on fixed paths. Today `claude` has full passwordless sudo on fast-0, which covers them. If Helm ever narrows that, this is the whole set: one exact rule per call, `/usr/bin/true`, `/usr/bin/stat -c <format> <fixed path>` and `/usr/bin/dd iflag=nofollow status=none if=<fixed path>`, with **no wildcard anywhere**. Never a `dd` rule with `*`: `dd` could then read, or with `of=` write, any file as root, the key included. The reads are whole-file (size-capped at 8 MB) for exactly this reason: an argument that varies cannot be pinned. Print the lines from the code, so they cannot drift (a test compares them with this page and with the calls the script makes):
+
+```
+python3 -I /home/claude/MAL/scripts/mal-fast/h5-daily-check.py --print-sudoers
+```
+
+```
+Cmnd_Alias MAL_H5_CHECK = /usr/bin/true, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/STOP, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/HALT, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/state-live.json, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/state-live-dec020.json, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/STOP, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/HALT, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/LIVE_OK, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/live/state-live.json, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/live/h5-counters.json, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-live/h5/live/h5-ledger.jsonl, \
+    /usr/bin/stat -c %F|%h|%U|%G|%a|%Y|%s /var/lib/mal-h5-watch/state.json, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-live/state-live.json, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-live/state-live-dec020.json, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-live/h5/live/state-live.json, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-live/h5/live/h5-counters.json, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-live/h5/live/h5-ledger.jsonl, \
+    /usr/bin/dd iflag\=nofollow status\=none if\=/var/lib/mal-h5-watch/state.json
+claude ALL=(root) NOPASSWD: MAL_H5_CHECK
+```
+
+Install them only if the blanket sudo is narrowed, with the syntax check:
+
+```
+sudo visudo -f /etc/sudoers.d/mal-h5-daily-check       # paste the lines above, save
+sudo visudo -c
+sudo stat -c '%U:%G %a %n' /etc/sudoers.d/mal-h5-daily-check      # expect: root:root 440 /etc/sudoers.d/mal-h5-daily-check
+```
 
 **Step 11. Create `LIVE_OK`, then start, once the manager has said go and the owner has funded the wallet** (see "Going live"). `LIVE_OK` is created by Helm, as root, only after the Step 5 hash check of the sha that will run.
 
@@ -321,8 +378,8 @@ Preconditions are DEC-024 section 8 and the PR #484 list; this runbook adds the 
 1. Manager, after Helm reports steps 1 to 10 (the step 5 table matches; the **watchdog timer `mal-h5-watch.timer` is enabled and active and the manager has seen the Discord test message**), the owner has funded the wallet, the dry run of step 8 was clean, **the shadow job is running at the reviewed #477 head, fe7eb43 or later** (restarted on it if it was started earlier; its newest hourly file carries the two new trigger fields) and the probe-STOP decision is in the sha comment:
 
 ```
-python3 -I scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 --write-baseline --expect-sha256 <the sha256 Helm reported in Step 1>
-#   once: records the probe state's sha256, and refuses if it is not the one Helm saw in Step 1. Expect no ALERT; LIVE_OK=no is right at this point.
+/usr/bin/python3 -I /home/claude/MAL/scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 --public-rpc --window-hours 24 --shadow-dir /home/claude/data/h5-shadow --baseline /home/claude/data/h5-daily/probe-state.baseline.json --write-baseline --expect-sha256 <the sha256 of state-live.json Helm reported in Step 1> --expect-dec020-sha256 <Helm's Step 1 value for state-live-dec020.json: a sha256, or the word absent>
+#   once: records both probe state hashes, and refuses if either is not the one Helm saw in Step 1. Expect no ALERT; LIVE_OK=no is right at this point.
 ```
 
 2. Manager tells Helm "go". Going live does not happen without the watchdog: the daily check alerts `h5_watch_timer` if the timer is not enabled and active while the gate is open.
@@ -340,7 +397,7 @@ Removing `LIVE_OK` stops new buys at once, like `STOP`; open positions still exi
 | EXP-022 seal marker | `sudo touch /var/lib/mal-live/h5/FINAL_WRITTEN`, only after the DEC-016 FINAL is written | Same directory and same method as `STOP`; the seal rules around it are in #484. |
 | Status (local files only, no key, no RPC) | `sudo /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --status` | Kill files, `live_ok`, attempts, realized, open, pending, latched halts. |
 | Hard stop | Wind-down first (above), then `sudo systemctl stop mal-h5-executor` | A restart resumes pending signatures without re-buying. Never stop it with `open` or `pending` above 0 unless every open mint is sold and closed first (Sell-and-close). |
-| Daily check | `python3 -I scripts/mal-fast/h5-daily-check.py --funded-sol <total deposited>` | See below. |
+| Daily check | the job command of Step 10b (`/usr/bin/python3 -I /home/claude/MAL/scripts/mal-fast/h5-daily-check.py --funded-sol <total deposited> ...`) | See below. |
 
 **Either place works** (see "Kill switches" under "What is where"): H5's own files above, or the wallet-wide `/var/lib/mal-live/STOP` and `/var/lib/mal-live/HALT` that the probe runbook's `sudo touch /var/lib/mal-live/STOP` makes. A `STOP` left at the wallet-wide path stops H5 buys until it is removed, so remove the one you placed when you mean to resume, and look for both: `sudo ls /var/lib/mal-live/ /var/lib/mal-live/h5/ | grep -E '^(STOP|HALT)$'`.
 
@@ -357,13 +414,15 @@ A halt is never followed by a retune. Do not clear one without telling the owner
 `scripts/mal-fast/h5-daily-check.py` replaces the decommissioned-probe check (job #385's command). Read-only, no key, prints `INFO`/`OK`/`ALERT` lines and exits 1 on any alert. The watchdog (`h5-watch.py`, every 5 minutes) runs the same checks and posts the alerts to Discord; the daily run is the manager's own second look and also checks the probe's state.
 
 - **Allowed now:** the `mal-h5-executor` unit (active or enabled), `/var/lib/mal-live/h5`, the pinned tree, `/etc/mal-h5/LIVE_OK`, the watchdog timer. The wallet is no longer expected to be 0.
-- **Still alerts:** any `mal-probe-executor*` unit active or enabled; `/var/lib/mal-live/state-live.json` changed (sha256 against the baseline from `--write-baseline`, plus attempts <= 62, realized -0.210755 SOL, nothing open). (The old "`/var/lib/mal-live/STOP` must exist" alert is gone: the executor treats it as a wallet-wide STOP.)
+- **Still alerts:** any `mal-probe-executor*` unit active or enabled; the probe unit holding any drop-in or a credential (`probe_live_dropin`, `probe_has_key`); `/var/lib/mal-live/state-live.json` or `state-live-dec020.json` changed (sha256 of both against the baseline from `--write-baseline`; the DEC-020 file may be `absent`, and appearing is a change; plus attempts <= 62, realized -0.210755 SOL, nothing open for the first). The old "STOP must exist" alert is gone: the executor treats `/var/lib/mal-live/STOP` as a wallet-wide STOP, so a present one is an idle-canary reason once `LIVE_OK` exists.
 - **Positions without a seller:** `h5_positions_unmanaged` when the live state has open or pending positions and the unit is not active with `--live` (stopped, failed, activating, not installed, or a dry-run ExecStart). This is the alert for a stop done without the Wind-down.
-- **Idle canary:** `h5_feed_stale` (newest `h5-shadow-<hour>.jsonl` in `--shadow-dir`, default `~/data/h5-shadow`, older than 10 minutes, or none); once `LIVE_OK` exists, `h5_idle` (unit not active, not enabled, running ExecStart without `--live`, or a `STOP` present at either place), `h5_idle_ledger` (`LIVE_OK` older than 6 h and no buy, skip or decision row in the live ledger in 6 h) and `h5_watch_timer` (the watchdog timer not enabled and active).
+- **Idle canary:** `h5_feed_stale` (newest `h5-shadow-<hour>.jsonl` in `--shadow-dir` older than 10 minutes, or none), `h5_feed_bind_stale` (that directory was created after the unit's current run began, so the unit's bind shows nothing or the old directory); once `LIVE_OK` exists, `h5_idle` (unit not active, not enabled, running ExecStart without `--live`, or a `STOP` present at either place) and `h5_idle_ledger` (`LIVE_OK` older than 6 h and no buy, skip or decision row in the live ledger in 6 h).
+- **The watchdog itself:** `h5_watch_timer` (timer not enabled and active while the gate is open), `h5_watch_failing` (`systemctl show mal-h5-watch.service -p Result` is not `success`: every run fails and nothing is posted), `h5_watch_stale` (its state file's `ts` older than 15 minutes, or no state once the gate is open), `h5_watch_files` (the installed watch service or timer differs from the pinned copy, or any drop-in exists on either). `systemctl_failed` is raised whenever `systemctl show` does not answer: that is never read as "not installed".
+- **Executor stops and ALERTs (DEC-024 section 8, "stop fired"):** from the live ledger's last `--window-hours` (6 for the watchdog, 24 for the daily job): `h5_budget_stop_<reason>` for `total_loss_stop`, `daily_loss_stop`, `max_trades_day`, `max_attempts`, `max_days`, `end_instant` and `balance_floor`, and `h5_executor_alert_<name>` for every `alert` row the executor wrote (`bad_intent_rate`, `zero_token_balance`, `unsafe_tx_refused`, `sell_build_error`, ...). Both reach Discord through the watchdog.
 - **Unit files:** the installed base unit and `FragmentPath` equal the pinned copies; the drop-in list is what systemd applies (`DropInPaths`, which includes prefix and top-level `.d` directories and `/run`) and may hold only `live.conf` (equal to the pinned drop-in) and a valid `10-shadow-feed.conf`.
 - **Other:** the unit `failed`, a `HALT` file in the state dir or at `/var/lib/mal-live/HALT`, a latched live halt, a stuck or abandoned position, the H5 state dir not `mal-live:mal-live` 0700, `/etc/mal-h5` not a real `root:root` 0755 directory, a `LIVE_OK` that is a symlink, not a regular file, or not owned `root:root` with mode exactly 0644, a `LIVE_OK` in the state dir (it is not Helm's gate; find out who made it), the ledger naming another wallet, and **wallet balance vs funded + H5 realized - cost of open positions - buys in flight** outside a tolerance of 0.005 SOL plus 0.0021 SOL per open or pending position. Pass the total deposited, net of withdrawals, as `--funded-sol`; a top-up or withdrawal shows as a gap until you do. "H5 realized" is `realized_lamports` in the live state file, the number the loss stops use; the check does not sum the ledger.
-- **Halts and refusals:** the alert text for a latched halt carries the halt's name and meaning, and the INFO line "refusals in the last 6 h" lists the `skip` reasons. The names are in "Halt and refusal names" below. `h5_s0_refusals` (3 or more `s0_recv_late`/`s0_unverifiable` in 6 h) and `h5_feed_schema` (a `bad_intent:missing_*` field, or 5 or more `s0_minus_announced_slots`/`base_breaks_unresolved` refusals with no decision in 6 h) are alerts; the sealed stub `bad_intent:suppressed` never is.
-- **How it reads:** the state dir is read through fixed paths with `stat` first (a symlink, a hard-linked file or a non-regular file is refused) and then `O_NOFOLLOW` or `sudo -n /usr/bin/dd iflag=nofollow`, never `cat`. File content is never put into an alert. A failing `sudo -n` is `ALERT sudo_unavailable` or `sudo_failed`, never "absent". The RPC key is read from `HELIUS_API_KEY` or the paper env file for `getBalance` only (the watchdog uses the public RPC and no key) and is never printed.
+- **Halts and refusals:** the alert text for a latched halt carries the halt's name and meaning, and the INFO line "refusals in the last N h" lists the `skip` reasons. The names are in "Halt and refusal names" below. `h5_s0_refusals` (3 or more `s0_recv_late`/`s0_unverifiable` in 6 h) and `h5_feed_schema` (a `bad_intent:missing_*` field, or 5 or more `s0_minus_announced_slots`/`base_breaks_unresolved` refusals with no decision in 6 h) are alerts; the sealed stub `bad_intent:suppressed` never is.
+- **How it reads:** the state dirs are read through fixed paths with `stat` first (a symlink, a hard-linked file, a non-regular file or one over 8 MB is refused, as `unsafe_path`) and then `O_NOFOLLOW` or `sudo -n /usr/bin/dd iflag=nofollow status=none if=<path>`, never `cat`. File content is never put into an alert. A failing `sudo -n` is `ALERT sudo_unavailable` or `sudo_failed`, never "absent". The RPC key is read from `HELIUS_API_KEY` or the paper env file for `getBalance` only (the watchdog uses the public RPC and no key) and is never printed.
 
 ### Halt and refusal names
 
@@ -414,6 +473,7 @@ $P --mint <MINT> --send                       # sells everything at min_out = 0.
 | `--emergency` | `min_out` = 1 lamport: accept any price. Exclusive with `--slippage-bps`. Only if the position is otherwise lost. |
 | `--priority-lamports N` | 1 to 150000 (default 150000). |
 | `--send` | Send. Without it nothing is sent. |
+| `--force` | **Helm only.** Skips the tool's own unit-state check. Use it only after you have verified by hand that BOTH units have ActiveState `inactive` (`systemctl show -p ActiveState --value mal-h5-executor mal-probe-executor`), for example because systemctl is not answering. Never while a unit is `activating`, and never to get past a refusal you do not understand: the refusal is what keeps a root signer and the executor from holding the key at the same time. |
 
 The tool refuses while either executor unit's ActiveState is anything but `inactive` or `failed` (an `activating` unit is not stopped), and refuses if systemd gives no answer. `min_out` is never 0. A tiny quote that would give 0 is refused (use `--emergency`). With a zero token balance the tool only closes the accounts. Send the manager the signature and the fill line.
 
@@ -434,7 +494,7 @@ Until every open mint is booked and the stuck-position halt is cleared (`--clear
 | --- | --- |
 | Stop trading, keep the unit | `sudo rm /etc/mal-h5/LIVE_OK` (closes the gate at once) and/or `sudo touch /var/lib/mal-live/h5/STOP`; positions exit on the timer. |
 | Back to the keyless dry run | **Wind-down first** (gate closed, `open=0 pending=0`, or every open mint sold and closed with Sell-and-close). Then `sudo systemctl stop mal-h5-executor`, `sudo mv /etc/systemd/system/mal-h5-executor.service.d/live.conf /root/live.conf.prev`, `sudo systemctl daemon-reload`, `sudo systemctl start mal-h5-executor`; then repeat the three "no live drop-in" checks of Step 8. Without the drop-in nothing hands the process the key. |
-| An earlier pinned sha | **Never a bare symlink swap** (it skips the hash check, keeps the gate open and keeps the newer sha's base unit and venv). Wind-down first. Then a full re-install of the old sha: stop the unit, Step 1b (move `live.conf` away), `sudo rm -rf /usr/local/lib/mal-h5-exec/<old-sha>` (the installer refuses an existing sha directory), run the installer for `<old-sha>` with ITS manifest (the manager keeps one per sha), then Steps 5, 9 and 11 again, so `LIVE_OK` is created only after the old tree's hash check. |
+| An earlier pinned sha | **Never a bare symlink swap** (it skips the hash check, keeps the gate open and keeps the newer sha's base unit and venv). Wind-down first. Then a full re-install of the old sha: stop the unit, Step 1b (move `live.conf` away), `sudo rm -rf /usr/local/lib/mal-h5-exec/<old-sha>` (the installer refuses an existing sha directory), run the installer for `<old-sha>` with ITS manifest (the manager keeps one per sha), then Steps 5, 9 and 11 again, so `LIVE_OK` is created only after the old tree's hash check, and the watchdog units again from the old tree: `sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.service /etc/systemd/system/mal-h5-watch.service && sudo install -m 0644 -o root -g root /usr/local/lib/mal-h5-exec/current/mal-h5-watch.timer /etc/systemd/system/mal-h5-watch.timer && sudo systemctl daemon-reload && sudo systemctl restart mal-h5-watch.timer`. |
 | A failed install | The installer rolls back by itself; if it prints "rollback FAILED", run the lines it prints, as root, then rerun. |
 | Off entirely | **Wind-down first**, then `sudo systemctl disable --now mal-h5-executor mal-h5-watch.timer`, move `live.conf` away. To withdraw, follow [probe-wallet.md](probe-wallet.md) section 3 (`probe-withdraw.sh --to <OWNER_DEST>`). That tool checks only `mal-probe-executor` and the probe's state files, not H5, so first run `systemctl show -p ActiveState --value mal-h5-executor mal-probe-executor` (expect inactive/failed for both), `--status` (expect `open=0 pending=0`), and confirm no stranded token (it refuses non-zero token balances). |
 
@@ -468,9 +528,10 @@ The key directory `/etc/mal-probe` already has Helm's watch from DEC-019; check 
 - Never create `/etc/mal-h5/LIVE_OK` with any mode but 0644 owned root:root, and never before the Step 5 hash check of the sha that will run, before the watchdog is enabled and its test message seen, or from the executor's side, and never put a `LIVE_OK` in `/var/lib/mal-live/h5` (the executor does not read it and the daily check alerts on it).
 - Never install any sha but the one the manager names in the PR #499 comment, and never roll back by swapping the `current` link.
 - Never remove the probe's `/var/lib/mal-live/STOP` on your own: it is the manager's written decision in the sha comment.
+- Never pass `--force` to the sell-and-close tool without having checked both units' ActiveState by hand (see its flag table).
 - Never raise a limit in config (config can only lower the code maxima), and never fund the wallet beyond what the owner decided.
 - Canary and live fills are never a book and never count toward any gate (DEC-024).
 
 ## Not verified (written without host access)
 
-The expected outputs in Steps 3b, 7, 8, 9, 10 and 11 are written from the systemd documentation and from the code, not observed: the wording of `systemd-analyze verify` and `systemd-run` messages can differ by version, so judge them by meaning (clean of `Unknown`, `Invalid`, `Failed`; the sandbox lines as listed). Also unverified: the installer on the real host (venv build, `systemctl`, paths), systemd's reading of the units on this host's version (including `RestrictNamespaces=true`, `ProtectClock=true` and `UMask=0077` on the executor with its Python and native extensions, and the watchdog running as root with only `CAP_DAC_READ_SEARCH` and talking to systemd over AF_UNIX), the `ProtectHome=tmpfs` plus `BindReadOnlyPaths` combination, the `Conflicts=`/`After=` ordering with the probe unit, the root `ExecStartPre`, the auditd rule syntax, the daily check's and the watchdog's parsing of real `systemctl` output and of `DropInPaths`, Discord accepting the watchdog's post, and the sell-and-close tool against the real chain. The tests use fakes for all of these.
+The expected outputs in Steps 3b, 7, 8, 9, 10 and 11 are written from the systemd documentation and from the code, not observed: the wording of `systemd-analyze verify` and `systemd-run` messages can differ by version, so judge them by meaning (clean of `Unknown`, `Invalid`, `Failed`; the sandbox lines as listed). Also unverified: the installer on the real host (venv build, `systemctl`, paths), systemd's reading of the units on this host's version (including `RestrictNamespaces=true`, `ProtectClock=true` and `UMask=0077` on the executor with its Python and native extensions, and the watchdog running as root with only `CAP_DAC_READ_SEARCH` and talking to systemd over AF_UNIX), the `ProtectHome=tmpfs` plus `BindReadOnlyPaths` combination, the `Conflicts=`/`After=` ordering with the probe unit, the root `ExecStartPre`, the auditd rule syntax, the daily check's and the watchdog's parsing of real `systemctl` output and of `DropInPaths`, Discord accepting the watchdog's post, `systemctl` answering inside the watchdog's sandbox (the runbook checks the summary line of Step 10 for that), `statx` birth times on the shadow directory's file system (`h5_feed_bind_stale` reports "unavailable" otherwise), the pip environment cleaning on the real host, and the sell-and-close tool against the real chain. The tests use fakes for all of these.

@@ -28,6 +28,10 @@ H5 = dc.H5_DIR
 LIVE_EXEC = ("{ path=/usr/local/lib/mal-h5-exec/venv/bin/python ; argv[]=/usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u "
              "/usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --live }")
 DRY_EXEC = LIVE_EXEC.replace("h5-executor-live.json --live", "h5-executor.json")
+UPTIME = 100_000.0
+WSVC = (FAST / "mal-h5-watch.service").read_bytes()
+WTMR = (FAST / "mal-h5-watch.timer").read_bytes()
+WATCH_SVC, WATCH_TMR = dc.WATCH_FILES[0][0], dc.WATCH_FILES[1][0]
 
 
 def ledger(*rows) -> bytes:
@@ -55,12 +59,25 @@ class FakeHost(dc.Host):
         self.units = ""
         self.h5_props = {"LoadState": "loaded", "ActiveState": "active", "SubState": "running", "UnitFileState": "enabled", "NRestarts": "0",
                          "Result": "success", "FragmentPath": dc.UNIT_FILE}
-        self.watch_props = {"ActiveState": "active", "UnitFileState": "enabled"}
+        self.h5_props["ActiveEnterTimestampMonotonic"] = str(int((UPTIME - 3600) * 1e6))  # the current run began an hour ago
+        self.watch_props = {"LoadState": "loaded", "ActiveState": "active", "UnitFileState": "enabled", "FragmentPath": WATCH_TMR, "DropInPaths": ""}
+        self.watch_svc = {"LoadState": "loaded", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "FragmentPath": WATCH_SVC, "DropInPaths": ""}
+        self.probe_props = {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "disabled", "DropInPaths": "", "LoadCredential": ""}
+        self.files.update({WATCH_SVC: WSVC, WATCH_TMR: WTMR, f"{dc.PINNED}/mal-h5-watch.service": WSVC, f"{dc.PINNED}/mal-h5-watch.timer": WTMR,
+                           dc.WATCH_STATE: json.dumps({"ts": NOW - 120}).encode()})
+        self.systemctl_rc = 0
         self.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED]
         self.execstart = LIVE_EXEC
         self.balance_lamports = FUNDED - 1_000_000
         self.feed = ("h5-shadow-2026-10-09T14.jsonl", NOW - 60)
+        self.birth_t: float | None = NOW - 86400  # the shadow directory is a day old: older than the unit's run, so the unit's bind is the real one
         self.sudo = True
+
+    def birth(self, path):
+        return self.birth_t
+
+    def uptime(self):
+        return UPTIME
 
     def sudo_ok(self):
         return self.sudo
@@ -89,26 +106,37 @@ class FakeHost(dc.Host):
         return self.feed
 
     def systemctl(self, *argv):
+        if self.systemctl_rc:
+            return self.systemctl_rc, ""
         if argv[0] == "list-unit-files":
             return 0, self.unit_files
         if argv[0] == "list-units":
             return 0, self.units
-        if argv[1] == dc.WATCH_TIMER:
-            return 0, "".join(f"{k}={v}\n" for k, v in self.watch_props.items())
-        if "DropInPaths" in argv:
+        unit = argv[1]
+
+        def props(d):
+            return "".join(f"{k}={v}\n" for k, v in d.items())
+
+        if unit == dc.WATCH_TIMER:
+            return 0, props(self.watch_props)
+        if unit == dc.WATCH_SERVICE:
+            return 0, props(self.watch_svc)
+        if unit == f"{dc.PROBE_UNIT}.service":
+            return 0, props(self.probe_props)
+        if "DropInPaths" in argv and "--value" in argv:
             return 0, " ".join(self.dropins) + "\n"
         if "NRestarts" in argv and "--value" in argv:
             return 0, self.h5_props["NRestarts"] + "\n"
         if "--value" in argv:
             return 0, self.execstart
-        return 0, "".join(f"{k}={v}\n" for k, v in self.h5_props.items())
+        return 0, props(self.h5_props)
 
 
 def go(host, *extra, tmp, baseline=True, balance=None, now=NOW):
     tmp.mkdir(parents=True, exist_ok=True)
     base = tmp / "baseline.json"
     if baseline and not base.exists():
-        base.write_text(json.dumps({"sha256": hashlib.sha256(PROBE_STATE).hexdigest()}))
+        base.write_text(json.dumps({"sha256": hashlib.sha256(PROBE_STATE).hexdigest(), "dec020_sha256": "absent"}))
     lines: list[str] = []
     rc = dc.main(["--funded-sol", "0.25", "--baseline", str(base), "--shadow-dir", "/nowhere", *extra], host=host, out=lines.append,
                  balance_fn=balance or (lambda w, e: host.balance_lamports), now=now)
@@ -307,9 +335,11 @@ def test_idle_canary_alerts(tmp_path):
     rc, out = run("young_gate", lambda h: (silent(h), h.mtimes.__setitem__(dc.LIVE_OK, NOW - 3600))[0])
     assert "h5_idle_ledger" not in alerts(out)  # the gate opened an hour ago: nothing to say yet
     # the watchdog must be on while the gate is open
-    for state in ({"ActiveState": "inactive", "UnitFileState": "enabled"}, {"ActiveState": "active", "UnitFileState": "disabled"}, {}):
-        rc, out = run("watch" + str(len(state)) + state.get("ActiveState", ""), lambda h, s=state: setattr(h, "watch_props", s))
+    for state in ({"ActiveState": "inactive", "UnitFileState": "enabled"}, {"ActiveState": "active", "UnitFileState": "disabled"}):
+        rc, out = run("watch" + str(len(state)) + state.get("ActiveState", ""), lambda h, s=state: setattr(h, "watch_props", {**h.watch_props, **s}))
         assert "h5_watch_timer" in alerts(out)
+    rc, out = run("watch_missing", lambda h: setattr(h, "watch_props", {"LoadState": "not-found", "ActiveState": "inactive", "UnitFileState": ""}))
+    assert "h5_watch_timer" in alerts(out)
 
 
 def test_live_ok_is_the_root_owned_gate_in_etc_mal_h5(tmp_path):
@@ -412,7 +442,7 @@ def test_no_funded_amount_skips_the_comparison_without_failing(tmp_path):
     h = FakeHost()
     lines: list[str] = []
     base = tmp_path / "b.json"
-    base.write_text(json.dumps({"sha256": hashlib.sha256(PROBE_STATE).hexdigest()}))
+    base.write_text(json.dumps({"sha256": hashlib.sha256(PROBE_STATE).hexdigest(), "dec020_sha256": "absent"}))
     rc = dc.main(["--baseline", str(base), "--shadow-dir", "/x"], host=h, out=lines.append, now=NOW)
     assert rc == 0 and any("pass --funded-sol" in l for l in lines)
 
@@ -451,14 +481,16 @@ def cp(rc=0, out=b"", err=b""):
 
 
 @pytest.fixture
-def locked(tmp_path):
-    """A path that a non-root user cannot even lstat (parent mode 000): the code must go through sudo."""
+def locked(tmp_path, monkeypatch):
+    """A path that a non-root user cannot even lstat (parent mode 000): the code must go through sudo. It is added to the fixed lists."""
     if os.geteuid() == 0:
         pytest.skip("needs a non-root user")
     d = tmp_path / "locked"
     d.mkdir()
     (d / "f").write_text("{}")
     d.chmod(0)
+    monkeypatch.setattr(dc.Host, "priv_stat", (*dc.PRIV_STAT, str(d / "f")))
+    monkeypatch.setattr(dc.Host, "priv_read", (*dc.PRIV_READ, str(d / "f")))
     yield str(d / "f")
     d.chmod(0o700)
 
@@ -472,11 +504,23 @@ def test_privileged_read_uses_dd_nofollow_on_the_exact_path_and_never_cat(locked
     h = SudoHost(replies)
     assert h.read(locked) == b'{"a": 1}'
     assert h.calls[0][:3] == ("/usr/bin/stat", "-c", "%F|%h|%U|%G|%a|%Y|%s") and h.calls[0][-1] == locked
-    assert h.calls[1] == ("/usr/bin/dd", "iflag=nofollow,skip_bytes", "skip=0", "status=none", f"if={locked}")
+    assert h.calls[1] == ("/usr/bin/dd", "iflag=nofollow", "status=none", f"if={locked}")  # no varying operand (skip=): a sudoers rule can pin it exactly
     assert all(c[0].startswith("/usr/bin/") and c[0] != "/usr/bin/cat" for c in h.calls)
-    h.calls.clear()
-    h.read(locked, tail=5)  # a tail read skips to size-5 (12 bytes: skip 7) instead of reading the whole ledger
-    assert h.calls[1][2] == "skip=7"
+    h2 = SudoHost(lambda argv: cp(0, b"regular file|1|mal-live|mal-live|600|1800000000|12\n") if argv[0] == "/usr/bin/stat" else cp(0, b"0123456789AB"))
+    assert h2.read(locked, tail=5) == b"789AB"  # the tail is cut in Python from the whole (size-capped) file
+    assert h2.calls[1] == ("/usr/bin/dd", "iflag=nofollow", "status=none", f"if={locked}")
+
+
+def test_privileged_calls_only_for_the_fixed_paths_and_never_for_a_file_over_8_mb(locked, tmp_path):
+    other = str(tmp_path / "locked" / "other")
+    h = SudoHost(lambda argv: cp(0, b"regular file|1|root|root|600|1800000000|5\n"))
+    with pytest.raises(dc.SudoError, match="not a path the privileged calls are allowed for"):
+        h.lstat(other)
+    assert h.calls == []  # nothing was run for a path that is not on the list
+    big = SudoHost(lambda argv: cp(0, f"regular file|1|mal-live|mal-live|600|1800000000|{dc.MAX_READ + 1}\n".encode()))
+    with pytest.raises(dc.Unsafe, match="larger than"):
+        big.read(locked)
+    assert [c[0] for c in big.calls] == ["/usr/bin/stat"]  # refused on the size from stat, before any read
 
 
 def test_privileged_stat_refuses_symlinks_hardlinks_and_non_regular_before_any_read(locked):
@@ -535,6 +579,7 @@ def test_script_is_read_only_and_keyless():
     assert "sendTransaction" not in src and "/usr/bin/cat" not in src and '"cat"' not in src
     verbs = {l.split("systemctl(")[1].split(",")[0].strip('")').strip('"') for l in src.splitlines() if "host.systemctl(" in l}
     assert verbs == {'"list-unit-files"', '"list-units"', '"show"'} or verbs == {"list-unit-files", "list-units", "show"}, verbs  # read verbs only
-    sudo_args = re.findall(r'self\._sudo\("(/usr/bin/[a-z]+)"', src)
-    assert sorted(set(sudo_args)) == ["/usr/bin/dd", "/usr/bin/stat", "/usr/bin/true"]  # sudo only runs fixed absolute read-only binaries
+    assert set(re.findall(r'"(/usr/bin/[a-z]+)"', src)) == {"/usr/bin/true", "/usr/bin/stat", "/usr/bin/dd", "/usr/bin/systemctl"}  # nothing else is ever run
+    assert src.count("self._sudo(") == 3  # sudo runs only these three calls, built from fixed paths
+    assert 'self._sudo("/usr/bin/true")' in src and "self._sudo(*stat_argv(path))" in src and "self._sudo(*dd_argv(path))" in src
     assert "iflag=nofollow" in src and "O_NOFOLLOW" in src

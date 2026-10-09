@@ -2,15 +2,18 @@
 """H5 watchdog (DEC-024 section 8: "re-target the durable Discord watchdog (stuck, structure halt, stop fired, restarts, wallet balance)").
 
 Runs every 5 minutes from mal-h5-watch.timer as a hardened root oneshot (scripts/mal-fast/mal-h5-watch.service), from the root-owned
-pinned tree. Stdlib only. It runs the same checks as the daily run (h5-daily-check.py: stuck or abandoned position, any latched live
-halt, HALT files, unmanaged positions, unit files, idle canary, wallet balance against funded + H5 realized) and adds what only a
-repeated run can see: the unit restarted since the last run, and STOP placed or removed. It posts to Discord when an alert is NEW, again
-every 6 h while it stays, and "RESOLVED" when it clears. It does not touch the key, the executor or any state of the executor.
+pinned tree, as `python3 -I -S`. Stdlib only. It runs the same checks as the daily run (h5-daily-check.py: stuck or abandoned position,
+latched live halts, HALT files, unmanaged positions, unit files, idle canary, executor budget stops, executor ALERT rows, refusals, the
+watchdog's own health, wallet balance against funded + H5 realized) and adds what only a repeated run can see: the unit restarted since
+the last run, and STOP placed or removed. It posts to Discord when an alert is NEW, again every 6 h while it stays, and "RESOLVED" when it
+clears. A failing systemctl is an alert (systemctl_failed), never "not installed". It does not touch the key, the executor or any state of
+the executor.
 
 Config comes from the environment (systemd EnvironmentFile /etc/mal-h5-watch/watch.env, root:root 0600):
-  H5_WATCH_DISCORD_WEBHOOK  the webhook URL: a secret, never printed or logged
+  H5_WATCH_DISCORD_WEBHOOK  the webhook URL: a secret, never printed or logged, and removed from os.environ as soon as it is read, so no
+                            child process (systemctl, stat, dd) inherits it
   H5_WATCH_FUNDED_SOL       total SOL deposited, net of withdrawals (the wallet comparison)
-  H5_WATCH_SHADOW_DIR       the shadow detector's output directory (the stale-feed check)
+  H5_WATCH_SHADOW_DIR       the shadow detector's output directory (the stale-feed and bind checks)
 The balance comes from the public RPC (no key). The probe-state check stays with the manager's daily run.
 
     h5-watch.py                run the checks and post what changed
@@ -30,8 +33,10 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 REPEAT_S = 6 * 3600
+WATCH_WINDOW_HOURS = "6"
 WEBHOOK_RE = re.compile(r"^https://(?:discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$")
 MAX_CONTENT = 1900
+WEBHOOK_VAR = "H5_WATCH_DISCORD_WEBHOOK"
 
 
 def load_daily():
@@ -77,16 +82,17 @@ def collect(daily, host, env: dict[str, str], now: float, balance_fn=None) -> tu
         shadow = env["H5_WATCH_SHADOW_DIR"]
     except (KeyError, ValueError):
         return {"watch_config": "H5_WATCH_FUNDED_SOL or H5_WATCH_SHADOW_DIR is missing or invalid in /etc/mal-h5-watch/watch.env"}, {}
-    args = daily.build_parser().parse_args(["--funded-sol", str(funded), "--public-rpc", "--skip-probe-state", "--shadow-dir", shadow])
+    args = daily.build_parser().parse_args(["--funded-sol", str(funded), "--public-rpc", "--skip-probe-state", "--shadow-dir", shadow,
+                                            "--window-hours", WATCH_WINDOW_HOURS])
     rep = daily.run_checks(args, host, lambda s: None, balance_fn, now)
     for name, msg in rep.alert_list:
         alerts[name] = f"{alerts[name]}; {msg}" if name in alerts else msg
-    obs: dict = {}
-    rc, out = host.systemctl("show", daily.H5_UNIT, "-p", "NRestarts", "--value", "--no-pager")
+    obs: dict = {"facts": dict(rep.facts)}
     try:
-        obs["restarts"] = int(out.strip())
-    except ValueError:
-        obs["restarts"] = None
+        rc, out = host.systemctl("show", daily.H5_UNIT, "-p", "NRestarts", "--value", "--no-pager")
+        obs["restarts"] = int(out.strip()) if rc == 0 else None
+    except (ValueError, OSError, RuntimeError):
+        obs["restarts"] = None  # the engine already raised systemctl_failed if systemd does not answer
     try:
         obs["stop"] = host.exists(f"{daily.H5_DIR}/STOP")
     except Exception:  # noqa: BLE001 - the daily checks already alert on a failing privileged read
@@ -120,9 +126,16 @@ def decide(alerts: dict[str, str], obs: dict, state: dict, now: float) -> tuple[
     return lines, {"active": new_active, "restarts": r if isinstance(r, int) else prev_r, "stop": stop if isinstance(stop, bool) else prev_stop, "ts": now}
 
 
+def summary(obs: dict, n_alerts: int, n_lines: int) -> str:
+    f = obs.get("facts") or {}
+    age = f.get("feed_age_s")
+    return (f"h5_watch: unit={f.get('unit', 'unknown')} active={f.get('active', 'unknown')} enabled={f.get('enabled', 'unknown')} "
+            f"feed_age={'unknown' if age is None else f'{age}s'} alerts={n_alerts} posted={n_lines}")
+
+
 def run(host, env: dict[str, str], post: Callable[[str, str], None], state_path: Path, now: float | None = None, balance_fn=None) -> int:
     now = time.time() if now is None else now
-    webhook = env.get("H5_WATCH_DISCORD_WEBHOOK", "")
+    webhook = env.get(WEBHOOK_VAR, "")
     if not WEBHOOK_RE.match(webhook):
         print("h5_watch: H5_WATCH_DISCORD_WEBHOOK is missing or not a Discord webhook URL", file=sys.stderr)
         return 2
@@ -137,16 +150,17 @@ def run(host, env: dict[str, str], post: Callable[[str, str], None], state_path:
             print(f"h5_watch: {exc}", file=sys.stderr)  # state is not advanced: the same lines are tried again next run
             return 1
     save_state(state_path, new_state)
-    print(f"h5_watch: {len(alerts)} alert(s), {len(lines)} line(s) posted")
+    print(summary(obs, len(alerts), len(lines)))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     env = dict(os.environ)
+    os.environ.pop(WEBHOOK_VAR, None)  # read once, now: no child process (systemctl, stat, dd, true) may inherit the secret
     if argv == ["--test-message"]:
         try:
-            post_discord(env.get("H5_WATCH_DISCORD_WEBHOOK", ""), "[H5 watch] test message: the watchdog can post. If you read this, enabling the timer is allowed.")
+            post_discord(env.get(WEBHOOK_VAR, ""), "[H5 watch] test message: the watchdog can post. If you read this, enabling the timer is allowed.")
         except RuntimeError as exc:
             print(f"h5_watch: {exc}", file=sys.stderr)
             return 1

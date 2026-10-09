@@ -124,6 +124,16 @@ RPC_DIR=/etc/mal-probe-rpc
 # (a unit waiting out RestartSec), "deactivating" and "reloading", and a missing or broken systemctl gives no answer at all: every
 # one of those is "not stopped" here (fail closed).
 unit_stopped() { case "$(systemctl show -p ActiveState --value "$1" 2>/dev/null)" in inactive|failed) return 0 ;; *) return 1 ;; esac; }
+# pip and the venv module run in this clean environment (see the venv build below).
+CLEAN_ENV=(env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin PIP_CONFIG_FILE=/dev/null)
+# pip_set_ok <requirements file> <`pip list --format=freeze` output>: the installed set equals the file's name==version pins, ignoring case
+# and _ . - in names, plus pip and setuptools; an extra or a missing distribution fails.
+pip_set_ok() {
+  local want got
+  want="$(sed -n 's/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*==[^ ]*\) \\$/\1/p' "$1" | tr 'A-Z_.' 'a-z--' | sort -u)"
+  got="$(awk -F'==' '$1 != "pip" && $1 != "setuptools"' "$2" | tr 'A-Z_.' 'a-z--' | sort -u)"
+  [ -n "$want" ] && [ "$want" = "$got" ]
+}
 # The venv is rebuilt in place, so the H5 executor must not be running.
 if ! unit_stopped "$UNIT"; then
   echo "refusing: $UNIT is not stopped (ActiveState is not inactive or failed); stop it first (docs/runbooks/h5-executor.md)" >&2
@@ -197,9 +207,15 @@ verify_tree "$STAGE" check || { echo "refusing: staged tree differs from the man
 # pinned sha) stays intact unless every step below succeeded. Never reuse an unverified venv.
 VENV_NEW="$DEST/venv.$COMMIT.new"
 rm -rf "$VENV_NEW"
-/usr/bin/python3 -I -m venv "$VENV_NEW"
-"$VENV_NEW/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
+# Both run under `env -i` with PIP_CONFIG_FILE=/dev/null: `python -I` does not disable pip's own environment (PIP_REQUIREMENT, PIP_FIND_LINKS, ...)
+# or its config files (/etc/pip.conf, root's ~/.config/pip), and --require-hashes does not stop those from naming an extra requirement.
+"${CLEAN_ENV[@]}" /usr/bin/python3 -I -m venv "$VENV_NEW"
+"${CLEAN_ENV[@]}" "$VENV_NEW/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
   -r "$STAGE/requirements-probe-exec.txt"
+# After the install the venv must hold exactly the hashed requirements, plus pip itself (and setuptools if the venv module put it there).
+"${CLEAN_ENV[@]}" "$VENV_NEW/bin/python" -I -m pip list --format=freeze --disable-pip-version-check > "$TMP/pip-freeze.txt"
+pip_set_ok "$STAGE/requirements-probe-exec.txt" "$TMP/pip-freeze.txt" \
+  || { echo "refusing: the new venv's packages are not exactly the hashed requirements plus pip and setuptools; nothing was installed" >&2; exit 1; }
 # Permission + symlink check of the staged tree and staged venv BEFORE anything is moved, so a failure
 # leaves nothing half-installed (the EXIT trap removes the stage and the new venv).
 chown -R root:root "$STAGE" "$VENV_NEW"
