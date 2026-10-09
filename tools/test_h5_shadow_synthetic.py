@@ -839,7 +839,8 @@ class ReplayClassifierTests(unittest.TestCase):
 
     def test_the_pinned_slot_is_a_pump_deploy_after_the_last_replayable_hour(self):
         pins = json.loads((Path(__file__).parent / "pump_structure_pins.json").read_text())
-        self.assertIn("452654932", json.dumps(pins))  # the 2026-10-02T15:47Z deploy: still without the event
+        # the 2026-10-02T15:47Z deploy (slot 452654932) was re-pinned away by #517; the current pump deploy (10-08) must be later than it
+        self.assertGreater(pins["programs"]["pump"]["deploy_slot"], h5.PCB_FIRST_DEPLOY_SLOT)
         self.assertEqual(h5.PCB_FIRST_DEPLOY_SLOT, 452_654_932)  # the 2026-10-02T15:47Z deploy, not the later 10-08 one
         self.assertLessEqual(h5.PCB_FIRST_DEPLOY_SLOT, min(t["slot"] for t in SYN))  # every recorded synthetic completion is at or after it
 
