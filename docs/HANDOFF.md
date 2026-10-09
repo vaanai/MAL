@@ -27,7 +27,37 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-09 ~09:30Z (NEWEST, read first; supersedes everything below where they differ)
+### STATE 10-09 ~19:35Z (NEWEST, read first)
+
+**H5 canary.**
+- **LIVE** at T0 (0.02 SOL) since 2026-10-09T19:29:53Z, on install af02e90. The effective total stop is about 0.1045 SOL.
+- The official A3 run (#449) met EXP-024 P2, and Look 1 counts from 10-10T00Z.
+- The trial runs to 20 landed buys, then T1 (0.10 SOL) with the owner's +0.5 SOL top-up (DEC-024 Am.3 and addendum).
+- Live checks:
+  - one-shot cron 2f687566 at 21:47Z;
+  - the daily cron e0efe702 (health check plus synthetic audit) at 12:17Z;
+  - A3 daily via cron a5083765 at 06:41Z.
+
+**Due before 10-16T00:30Z: a second H5 reinstall,** or the canary stops at end_ms. It needs:
+- the CAP-PICK oracle #509, reviewed and wired into the executor and shadow;
+- end_ms extended;
+- the owner extending DEC-024 §4's 14-day cap.
+
+**C1-NF.**
+- EXP-025 Am.2 merged (#529): synthetic pools stay in.
+- DEC-026 merged (#522): 0.05 SOL stake and a 0.5 SOL wallet.
+- Build round 1 is done, and every PR is still CHANGES_NEEDED: #530 executor v2, #503 shadow, #531 ops, #506 features (3 HIGH), #502 ledger. Realistic live date is 10-15 to 10-17.
+
+**Research.**
+- The loss filter found no v2 filter (`/data/mal/hunt-1008/h5-lossfilter/REPORT.md`).
+- Iteration round 1: FLOOR-OPTION v2 survives narrowly but is small (`/data/mal/hunt-1008/iter-r1/REPORT.md`).
+- DEC-027 (champion–challenger, at most 2 challengers) is merged as a framework.
+
+**Owner capital.** 1.29 SOL in total:
+- H5 wallet: 0.29 now, +0.5 at T1;
+- C1-NF wallet: 0.5.
+
+### STATE 10-09 ~09:30Z (older)
 
 **Bottom line.** The H5 exclusion build is merged, reviewed and running in paper. The canary goes live once three things are done:
 - **(a)** the official A3 run at 19:23Z is clean on the five H5 flags;
