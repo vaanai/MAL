@@ -876,6 +876,26 @@ class ExpFile(unittest.TestCase):
         for cause in m.P7_RAW_EXCLUSIONS:
             self.assertIn(f"`{cause}`", body, cause)
         self.assertIn("**A side with no comparable event fails that side.**", body)
+        # E1: the frame holds only pools with a V0, citing section 10 P6 item 2; no `no_v0` reason exists
+        self.assertIn("non-null `tokens.v0_lamports`", body)
+        self.assertIn("section 10 P6 item 2", body)
+        self.assertIn("There is no `no_v0` reason", body)
+        self.assertNotIn("no_v0", m.P7_RAW_REASONS)
+        # E2: the mapped column is the adapter's, at the print's key; a missing adapter row is a miss
+        self.assertIn("**adapter's written column**", body)
+        self.assertIn("`(slot, tx_index, event_index)`", body)
+        for k in m.P7_RAW_ADAPTER_KEY + m.P7_RAW_ADAPTER_FIELDS:
+            self.assertIn(f"`{k}`", body, k)
+        self.assertIn("**A missing adapter row is a miss**", body)
+        self.assertIn("An adapter that writes the gross vault fails P7 (tested).", body)
+        # E3: the buy top-up to 100 comparable buys, midpoints of equal segments, line 1 only
+        self.assertEqual(m.P7_RAW_BUY_MIN_COMPARABLE, 100)
+        self.assertIn("If the 1,000 hold fewer than 100 comparable buys", body)
+        self.assertIn("`((2k + 1) * B) // (2 * need)`", body)
+        self.assertIn("`(k * N) // 1000`", body)
+        self.assertIn("line 1 only", body)
+        # the seal wording mirrors #505
+        self.assertIn("No hash-only, md5, join or match-rate run on `forward-1002ev` happens before the FINAL", body)
         self.assertIn("R14 fires", body)
         self.assertIn("`pool_quote_amount`", body)
 
