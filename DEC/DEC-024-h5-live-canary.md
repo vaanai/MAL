@@ -224,11 +224,11 @@ EXP-024 Amendment 2's sentence "DEC-024 section 3 bars any canary send before 20
 **Clarification 1 (2026-10-09, before any canary send).**
 - **Who applies the classifier.** The shadow detector applies it at decision time. The executor applies the shadow's class: it acts on a trigger only if the record's `synthetic` field is exactly `false`, and refuses any other value, including an absent field (`synthetic_unconfirmed`), so it fails closed. It also refuses a trigger on a pool or mint the shadow has already marked `excluded`.
   - The executor does not re-fetch the transactions itself. Doing so would put at least three RPC round trips on the buy path (PR #519, item 3).
-  - Every decision row records `synthetic` and `synthetic_src`, so any traded pool can be re-classified afterwards. An independent post-buy audit is a follow-up.
+  - Every decision row records `synthetic` and `synthetic_src`, so any traded pool can be re-classified afterwards. From the first live day, a daily audit re-classifies every pool the executor sent a buy on, using EXP-024 Am.4 B4. It prints only the count of pools where the shadow's class disagrees with B4's, with no fill, size, exit or P&L field. A disagreement on any pool is a live halt under §5.6.
   - Item 1's "the executor and the shadow apply the same classifier" means this division of work.
 - **How the shadow locates the transactions live.** It uses the procedure of EXP-024 Amendment 4, Clarification 1 (B4), adapted to decision time:
   - The shadow's PumpSwap-only subscription does not deliver the completing transaction in most synthetic cases. The structure measurement of 2026-10-09 found it delivered in 10 of 56.
-  - So the lookup starts at the pool's CreatePool notice. It calls `getSignaturesForAddress` on the curve PDA with a limit of at least 100, skipping failed transactions, then `getTransaction`, at `confirmed` commitment where the API allows. It retries with backoff until the pool is classified or its trigger arrives.
+  - So the lookup starts at the pool's CreatePool notice. It calls `getSignaturesForAddress` on the curve PDA with a limit of at least 100, skipping failed transactions, then `getTransaction`, at `confirmed` commitment where the API allows. It tests event blobs extracted by the monitor's `tx_event_blobs` (`tools/pump_structure_monitor.py:411`), which reads both `Program data:` logs and emit_cpi inner instructions, and it applies the same check that each located transaction carries its defining event (EXP-024 Am.4 B4). It retries with backoff until the pool is classified or its trigger arrives.
   - A pool not classified by its trigger time gets no buy (`excluded`, reason `unclassified`).
   - The live lookup is not evidence and does not bind the read.
 
