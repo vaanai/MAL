@@ -9,7 +9,10 @@
 #   H5_PYTHON       python with websockets + certifi (default: the listener venv /var/lib/mal/fast-listener/.venv/bin/python)
 #   H5_OUT_DIR      output dir (default $HOME/data/h5-shadow; only $HOME/data/h5-shadow*, /var/lib/mal/h5-shadow* or /tmp/* is accepted; no "..")
 #   H5_WS_URLS      comma-separated public websocket URLs (default: the public mainnet-beta endpoint). Free endpoints only.
-#   H5_SOCKETS      redundant public logsSubscribe sockets (default 2)
+#   H5_SOCKETS      redundant public logsSubscribe sockets (default 3; fewer than 3 is refused, see H5_ALLOW_FEW_SOCKETS). Their records feed the
+#                   live executor: with 2 sockets any reconnect of the peer during a 3-10 s pause of the other flags every open pool, which
+#                   starves the canary. All sockets share one default endpoint, so prefer 2+ distinct endpoints in H5_WS_URLS.
+#   H5_ALLOW_FEW_SOCKETS  set to 1 to allow H5_SOCKETS below 3 (smoke tests and manual runs whose records feed nothing)
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -22,12 +25,20 @@ case "$OUT" in
   "$HOME"/data/h5-shadow|"$HOME"/data/h5-shadow/*|/var/lib/mal/h5-shadow|/var/lib/mal/h5-shadow/*|/tmp/*) ;;
   *) echo "h5-shadow: refusing out dir $OUT" >&2; exit 2 ;;
 esac
+SOCKETS="${H5_SOCKETS:-3}"
+case "$SOCKETS" in
+  ''|*[!0-9]*) echo "h5-shadow: refusing H5_SOCKETS=$SOCKETS (not a number)" >&2; exit 2 ;;
+esac
+if [ "$SOCKETS" -lt 3 ] && [ "${H5_ALLOW_FEW_SOCKETS:-}" != "1" ]; then
+  echo "h5-shadow: refusing H5_SOCKETS=$SOCKETS: fewer than 3 sockets false-flags pools on ordinary reconnects (set H5_ALLOW_FEW_SOCKETS=1 to override)" >&2
+  exit 2
+fi
 [ -x "$PY" ] || { echo "h5-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -c 'import websockets, certifi' 2>/dev/null || { echo "h5-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 mkdir -p "$OUT" 2>/dev/null || true
 [ -w "$OUT" ] || { echo "h5-shadow: out dir $OUT is not writable by $(id -un)" >&2; exit 4; }
 cd "$ROOT"
-set -- --out-dir "$OUT" --sockets "${H5_SOCKETS:-2}"
+set -- --out-dir "$OUT" --sockets "$SOCKETS"
 if [ -n "${H5_WS_URLS:-}" ]; then
   OLDIFS="$IFS"; IFS=","
   for u in $H5_WS_URLS; do set -- "$@" --ws-url "$u"; done

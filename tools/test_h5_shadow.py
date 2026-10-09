@@ -1690,6 +1690,308 @@ class DeliveringTests(unittest.TestCase):
         self.assertEqual(stats.notes, 1)
 
 
+def _snap_of(links, recon):
+    return {"reconnects": sum(recon), "closes": {}, "rejections": {}, "errors": {}, "per_socket": list(recon), "sockets": len(links),
+            "socket_states": [l.snapshot() for l in links]}
+
+
+def _flagged(out):
+    return [g for g in types(out, "gap") if g.get("flags_pools")]
+
+
+class LinkStateRound6Tests(unittest.TestCase):
+    """Round-5 review of #477: a peer's resubscribe is not a delivery; a 3-10 s quiet that ends in a drop is recorded; the first gap after a
+    subscribe is a handshake latency; the wrapper refuses fewer than 3 sockets; sealed close errors and sealed_hour partial."""
+
+    # ---- 1. last_delivery_ms: only notifications move it -------------------------------------------------------------------------
+    def test_last_delivery_is_set_by_notices_only(self):
+        from observe.link_state import LinkState
+
+        ls = LinkState(clock=lambda: 0)
+        self.assertIsNone(ls.snapshot()["last_delivery_ms"])
+        ls.mark_up(1_000)
+        self.assertEqual((ls.snapshot()["last_notice_ms"], ls.snapshot()["last_delivery_ms"]), (1_000, None))  # the quiet clock starts at the subscribe
+        ls.note_notice(1_500)
+        self.assertEqual((ls.snapshot()["last_notice_ms"], ls.snapshot()["last_delivery_ms"]), (1_500, 1_500))
+        ls.mark_down(2_000)
+        ls.mark_up(3_000)  # a resubscribe moves the quiet clock, never the delivery clock
+        self.assertEqual((ls.snapshot()["last_notice_ms"], ls.snapshot()["last_delivery_ms"]), (3_000, 1_500))
+
+    def test_a_peer_that_only_resubscribed_does_not_make_this_socket_relatively_silent(self):
+        quiet = {"up": True, "down_since_ms": None, "intervals": [], "last_notice_ms": 10_000, "last_delivery_ms": 10_000, "silent_ms": 10_000, "silent_intervals": []}
+        resub = dict(quiet, last_notice_ms=12_000, last_delivery_ms=9_990, intervals=[[11_000, 12_000]])  # subscribed at 12 s, delivered nothing since
+        self.assertEqual(h5.common_down([quiet, resub], 13_500), [])  # 3.5 s quiet, but nobody delivered after 10 s
+        delivered = dict(resub, last_delivery_ms=13_000)
+        self.assertEqual(h5.common_down([quiet, delivered], 13_500), [(11_000, 12_000)])  # the same peer, having delivered: relatively silent
+        # a snapshot without the field (older format) falls back to last_notice_ms: the fail-safe direction
+        old = {k: v for k, v in resub.items() if k != "last_delivery_ms"}
+        self.assertEqual(h5.common_down([{k: v for k, v in quiet.items() if k != "last_delivery_ms"}, old], 13_500), [(11_000, 12_000)])
+
+    def common_stall(self, n, look_phase, reconnect=None, stall=(0, 6_000), horizon=20_000, step=20):
+        """S1. Every socket stalls for `stall` (one shared endpoint hiccup, < 10 s), nothing is lost: the backlog is delivered late. Optionally
+        socket 1 drops and resubscribes inside the stall (and delivers nothing until it is over)."""
+        from observe.link_state import LinkState
+
+        eng, out = make_engine()
+        L = [LinkState(clock=lambda: 0) for _ in range(n)]
+        for l in L:
+            l.mark_up(-10_000)
+        recon = [0] * n
+        looks = set(range(look_phase, horizon, 5_000))
+        for t in range(-9_000, horizon, step):
+            if reconnect and t == reconnect[0]:
+                L[1].mark_down(t)
+            if reconnect and t == reconnect[1]:
+                L[1].mark_up(t)
+                recon[1] += 1
+            if not (stall[0] <= t < stall[1]):
+                for l in L:
+                    if l.up:
+                        l.note_notice(t + (3 if l is L[0] else 0))
+            if t in looks:
+                eng.note_feed_stats(1, _snap_of(L, recon), t)
+        return _flagged(out)
+
+    def test_a_common_stall_under_ten_seconds_plus_one_reconnect_is_not_flagged(self):  # repro S1: 3 of 5 look phases flagged before the fix
+        for n in (2, 3):
+            for phase in (0, 1_000, 2_000, 3_000, 4_000):
+                self.assertEqual(self.common_stall(n, phase), [], (n, phase, "no reconnect"))
+                self.assertEqual(self.common_stall(n, phase, reconnect=(1_000, 2_000)), [], (n, phase, "reconnect inside the stall"))
+
+    def test_a_reconnect_during_a_real_half_open_socket_is_still_flagged(self):  # the R1 / K1.3 shape: the peer DID deliver
+        for phase in (0, 1_000, 2_500, 4_000):
+            self.assertTrue(DeliveringTests.half_open_plus_blip(DeliveringTests(), 2_000, phase_ms=phase), phase)
+
+    # ---- 2. a 3-10 s quiet that ends in a drop is recorded -----------------------------------------------------------------------
+    def quiet_then_server_close(self, phase, drop_ms):
+        """repro_sr5c. Socket A goes quiet at 0 and the server closes it at `drop_ms` (< 10 s); it resubscribes 1 s later and the notices it was
+        owed are gone. Socket B drops [1.0, 2.5] s and delivers otherwise. The merged stream lost [1.0, 2.5] s. Looks every 5 s at `phase`."""
+        from observe.link_state import LinkState
+
+        eng, out = make_engine()
+        A, B = LinkState(clock=lambda: 0), LinkState(clock=lambda: 0)
+        A.mark_up(-5_000)
+        B.mark_up(-5_000)
+        recon = [0, 0]
+        for t in range(-4_900, 40_000, 20):
+            if t == 1_000:
+                B.mark_down(t)
+            if t == 2_500:
+                B.mark_up(t)
+                recon[1] += 1
+            if t == drop_ms:
+                A.mark_down(t)
+            if t == drop_ms + 1_000:
+                A.mark_up(t)
+                recon[0] += 1
+            if B.up and t > 2_500 or t < 1_000:
+                B.note_notice(t)
+            if A.up and (t <= 0 or t > drop_ms + 1_000):
+                A.note_notice(t)
+            if t > 0 and (t - phase) % 5_000 == 0:
+                eng.note_feed_stats(1, _snap_of([A, B], recon), t)
+        return _flagged(out)
+
+    def test_a_quiet_of_four_or_six_seconds_that_ends_in_a_drop_is_flagged_at_every_look_phase(self):  # repro_sr5c: 20 / 10 phases of 25 missed before the fix
+        for drop_ms in (4_000, 6_000, 8_000, 9_900):
+            for phase in range(20, 5_000, 200):
+                self.assertTrue(self.quiet_then_server_close(phase, drop_ms), (drop_ms, phase))
+
+    def test_mark_down_records_a_quiet_from_three_seconds_and_counts_it(self):
+        from observe.link_state import LinkState, REL_SILENT_MS_DEFAULT
+
+        self.assertEqual(h5.REL_SILENT_MS, REL_SILENT_MS_DEFAULT)  # one constant
+        ls = LinkState(clock=lambda: 0)
+        ls.mark_up(0)
+        ls.note_notice(1_000)
+        ls.mark_down(4_001)  # 3.001 s
+        self.assertEqual(list(ls.silent_intervals), [(1_000, 4_001)])
+        self.assertEqual(ls.drop_silences, 1)
+        ls.mark_up(5_000)
+        ls.note_notice(5_100)
+        ls.mark_down(8_100)  # exactly 3 s: not more than the threshold
+        self.assertEqual(ls.drop_silences, 1)
+        ls.mark_up(9_000)
+        ls.mark_down(20_000)  # resubscribed, never delivered, closed after 11 s
+        self.assertEqual((ls.drop_silences, list(ls.silent_intervals)[-1]), (2, (9_000, 20_000)))
+
+    def test_a_lone_quiet_then_drop_socket_cannot_flag_by_itself(self):
+        from observe.link_state import LinkState
+
+        eng, out = make_engine()
+        A, B = LinkState(clock=lambda: 0), LinkState(clock=lambda: 0)
+        A.mark_up(-5_000)
+        B.mark_up(-5_000)
+        for t in range(-4_900, 30_000, 20):
+            B.note_notice(t)  # B delivers throughout
+            if t == 4_000:
+                A.mark_down(t)
+            if t == 5_000:
+                A.mark_up(t)
+            if A.up and (t <= 0 or t > 5_000):
+                A.note_notice(t)
+            if t > 0 and t % 5_000 == 0:
+                eng.note_feed_stats(1, _snap_of([A, B], [0, 0]), t)
+        self.assertEqual(_flagged(out), [])
+
+    # ---- 4. the gap histogram ----------------------------------------------------------------------------------------------------
+    def test_the_first_gap_after_a_subscribe_goes_to_the_subscribe_latency_histogram(self):
+        from observe.link_state import LinkState
+
+        ls = LinkState(clock=lambda: 0)
+        ls.mark_up(0)
+        ls.note_notice(3_500)  # subscribe -> first notice: 3.5 s of handshake, not a pause of a live socket
+        ls.note_notice(3_600)
+        s = ls.snapshot()
+        self.assertEqual((s["gap_hist"], s["max_gap_ms"]), ([1, 0, 0, 0, 0, 0, 0, 0], 100))
+        self.assertEqual((s["sub_latency_hist"], s["max_sub_latency_ms"]), ([0, 0, 0, 0, 0, 1, 0, 0], 3_500))
+        ls.mark_down(3_700)
+        ls.mark_up(4_000)  # a new subscribe: its first gap is a latency again
+        ls.note_notice(4_800)
+        ls.note_notice(4_900)
+        s = ls.snapshot()
+        self.assertEqual(s["gap_hist"], [2, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(s["sub_latency_hist"], [0, 0, 1, 0, 0, 1, 0, 0])  # 800 ms and 3500 ms
+        self.assertEqual(s["drop_silences"], 0)
+
+    def test_the_heartbeat_link_section_carries_per_hb_deltas(self):
+        from types import SimpleNamespace as NS
+        from observe.link_state import LinkState
+
+        eng, out = make_engine()
+        ls = LinkState(clock=lambda: 0)
+        ls.mark_up(0)
+        for t in (100, 200, 400, 5_000):  # first = latency 100; gaps 100, 200, 4600 ms
+            ls.note_notice(t)
+        src = NS(stats=NS(reconnects=0, sockets=[NS(reconnects=0, closes={}, rejections={}, errors={}, link=ls)]))
+        eng.now[0] = 6_000
+        (a,) = h5.status_snapshot(eng, None, src)["link"]["sockets"]
+        self.assertEqual(a["gap_hist"], a["gap_hist_delta"])  # the first record: the delta is everything so far
+        self.assertEqual(a["gap_hist"], [2, 0, 0, 0, 0, 1, 0, 0])
+        self.assertEqual((a["sub_latency_hist_delta"], a["drop_silences_delta"], a["last_delivery_age_ms"]), ([1, 0, 0, 0, 0, 0, 0, 0], 0, 1_000))
+        for t in (5_100, 5_200, 12_000):  # gaps 100, 100, 6800
+            ls.note_notice(t)
+        ls.mark_down(16_000)  # 4 s quiet, closed
+        (b,) = h5.status_snapshot(eng, None, src)["link"]["sockets"]
+        self.assertEqual(b["gap_hist"], [4, 0, 0, 0, 0, 1, 1, 0])  # cumulative
+        self.assertEqual(b["gap_hist_delta"], [2, 0, 0, 0, 0, 0, 1, 0])  # since the first record
+        self.assertEqual(b["sub_latency_hist_delta"], [0] * 8)
+        self.assertEqual((b["drop_silences"], b["drop_silences_delta"]), (1, 1))
+        (c,) = h5.status_snapshot(eng, None, src)["link"]["sockets"]
+        self.assertEqual((c["gap_hist_delta"], c["drop_silences_delta"]), ([0] * 8, 0))
+        # a rebuilt source starts at zero: its first record is all new
+        ls2 = LinkState(clock=lambda: 0)
+        ls2.mark_up(0)
+        ls2.note_notice(50)
+        ls2.note_notice(100)
+        src2 = NS(stats=NS(reconnects=0, sockets=[NS(reconnects=0, closes={}, rejections={}, errors={}, link=ls2)]))
+        (d,) = h5.status_snapshot(eng, None, src2)["link"]["sockets"]
+        self.assertEqual((d["gap_hist_delta"], d["sub_latency_hist_delta"]), ([1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]))
+
+    # ---- 3. the wrapper ------------------------------------------------------------------------------------------------------------
+    def wrapper(self, shell, **env):
+        import subprocess
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        base = {"PATH": os.environ["PATH"], "HOME": "/home/x", "H5_OUT_DIR": "/tmp/h5-x", "H5_PYTHON": "/nonexistent"}  # stops at "no python", before any socket opens
+        r = subprocess.run([shell, str(script)], env={**base, **env}, capture_output=True, text=True)
+        return r.returncode, r.stderr
+
+    def test_the_wrapper_defaults_to_three_sockets_and_refuses_fewer_unless_allowed(self):
+        for shell in ("sh", "bash"):  # sh-safe: no bash-isms
+            rc, err = self.wrapper(shell)
+            self.assertEqual((rc, "no python at" in err), (2, True), (shell, err))  # default 3: passes the socket check
+            rc, err = self.wrapper(shell, H5_SOCKETS="3")
+            self.assertIn("no python at", err, shell)
+            for n in ("2", "1", "0"):
+                rc, err = self.wrapper(shell, H5_SOCKETS=n)
+                self.assertEqual(rc, 2, (shell, n))
+                self.assertIn("refusing H5_SOCKETS=" + n, err, (shell, n))
+                self.assertNotIn("no python at", err, (shell, n))
+                rc, err = self.wrapper(shell, H5_SOCKETS=n, H5_ALLOW_FEW_SOCKETS="1")  # explicit override reaches the next check
+                self.assertIn("no python at", err, (shell, n))
+            rc, err = self.wrapper(shell, H5_SOCKETS="2", H5_ALLOW_FEW_SOCKETS="yes")  # only "1" overrides
+            self.assertIn("refusing H5_SOCKETS=2", err, shell)
+            for bad in ("x", "2x", "-1", "3.0", " "):
+                rc, err = self.wrapper(shell, H5_SOCKETS=bad)
+                self.assertEqual(rc, 2, (shell, bad))
+                self.assertIn("refusing H5_SOCKETS=", err, (shell, bad))
+                self.assertNotIn("no python at", err, (shell, bad))
+
+    # ---- 5. nits ---------------------------------------------------------------------------------------------------------------------
+    def sealed_pool_engine(self):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub)
+        announce(eng)
+        t = Tape(ts0=SealedTriggerTests.TS)
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        return eng, out
+
+    def test_a_sealed_pool_close_error_reaches_the_hook_as_a_class_name_only(self):
+        eng, out = self.sealed_pool_engine()
+        self.assertTrue(eng._sealed(eng.pools[POOL]))
+        seen = []
+        eng.on_error = lambda e, ctx: seen.append((e, ctx))
+
+        def boom(p, sealed):
+            raise KeyError(p.pool)  # an exception whose message names the pool
+
+        eng._emit_strip = boom
+        eng.close_all("t")
+        self.assertEqual(eng.pools, {})
+        ((exc, ctx),) = seen
+        self.assertEqual((type(exc).__name__, exc.args, str(exc), exc.__traceback__, exc.__cause__, ctx), ("KeyError", (), "", None, None, {"where": "close"}))
+        # through the real error log: the class and nothing else
+        with tempfile.TemporaryDirectory() as d:
+            elog = h5.ErrorLog(Path(d) / "e.log")
+            elog.log(exc, ctx)
+            text = (Path(d) / "e.log").read_text()
+        self.assertIn("KeyError", text)
+        for secret in (POOL, MINT):
+            self.assertNotIn(secret, text)
+        self.assertNotIn("Traceback", text)
+
+    def test_an_unsealed_pool_close_error_keeps_the_full_exception(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        seen = []
+        eng.on_error = lambda e, ctx: seen.append(e)
+
+        def boom(p, sealed):
+            raise KeyError(p.pool)
+
+        eng._emit_strip = boom
+        eng.close_all("t")
+        (exc,) = seen
+        self.assertEqual((type(exc), exc.args), (KeyError, (POOL,)))
+
+    def sealed_hour_partials(self, last_event_offset_s):
+        """The pool opens at 01:59:40Z; the last event is `last_event_offset_s` after 02:00:00Z; then shutdown (close_all)."""
+        H = 1_792_116_000  # 2026-10-16T02:00:00Z
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub)
+        announce(eng)
+        t = Tape(ts0=H - 20)
+        t.row(1000, "buy", "A", SOL // 10)
+        t.row(1000 + int((20 + last_event_offset_s) / SPS), "buy", "B", SOL // 20)
+        run(eng, t)
+        eng.close_all("shutdown")
+        return [(r["hour"], r["partial"]) for r in types(out, "sealed_hour")]
+
+    def test_sealed_hour_is_partial_for_an_hour_still_inside_its_wall_close_wait_at_shutdown(self):
+        # shutdown at 02:03: hour 01 ended at 02:00 and its WALL_CLOSE wait runs to 02:07:10, so close_all closed its pools early
+        self.assertEqual(self.sealed_hour_partials(180), [("2026-10-16T01", True), ("2026-10-16T02", True)])
+        # shutdown at 02:10: the wait is over (the pool would have been closed anyway), only the running hour is partial
+        self.assertEqual(self.sealed_hour_partials(600), [("2026-10-16T01", False), ("2026-10-16T02", True)])
+        # the edge: just inside WALL_CLOSE after the end of the hour
+        self.assertEqual(self.sealed_hour_partials(int(h5.WALL_CLOSE_S) - 1)[0], ("2026-10-16T01", True))
+
+    def test_the_stale_comment_is_gone(self):
+        self.assertNotIn("old comment follows", Path(h5.__file__).read_text())
+
+
 class LinkStateTests(unittest.TestCase):
     def test_history(self):
         from observe.link_state import LinkState

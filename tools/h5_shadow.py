@@ -398,6 +398,7 @@ class Engine:
         self.on_error: Callable[[BaseException, dict], None] | None = None  # error log hook (run_live: ErrorLog.log)
         self.link_probe: Callable[[], tuple[int, dict] | None] | None = None  # () -> (source key, feed snapshot); checked right before a trigger is written
         self._flagged_starts: collections.deque = collections.deque(maxlen=256)  # starts of common-outage pieces already flagged
+        self.link_prev: tuple[int, list[dict]] | None = None  # (feed id, per-socket cumulative link histograms) at the previous status record
         self._sealed_hours: dict[int, list[int]] = {}  # UTC hour index -> [sealed pools opened, sealed decisions] (unlabelled aggregate; the only trace of a sealed decision)
         self._sealed_cursor: int | None = None  # next UTC hour index to report; starts at the seal start or the first event, whichever is later
 
@@ -1305,11 +1306,32 @@ def status_snapshot(engine: Engine, sink: JsonlSink | None, source: Any) -> dict
     snap = feed_snapshot(source) if source is not None else None
     if snap and snap.get("socket_states"):  # per-socket link health: lets the silence thresholds be tuned from live gaps
         now = engine.wall()
-        s["link"] = {"gap_edges_ms": list(GAP_EDGES_MS), "sockets": [
-            {"up": st["up"], "last_notice_age_ms": None if st.get("last_notice_ms") is None else now - st["last_notice_ms"],
-             "max_gap_ms": st.get("max_gap_ms"), "gap_hist": st.get("gap_hist"), "silent_intervals": len(st.get("silent_intervals") or []),
-             "down_intervals": len(st.get("intervals") or [])} for st in snap["socket_states"]]}
+        states = snap["socket_states"]
+        lp = engine.link_prev
+        prev = lp[1] if lp is not None and lp[0] == id(source) and len(lp[1]) == len(states) else [{}] * len(states)  # a rebuilt source starts at zero
+        socks, cur_all = [], []
+        for st, pv in zip(states, prev):
+            cur = {"gap_hist": list(st.get("gap_hist") or []), "sub_latency_hist": list(st.get("sub_latency_hist") or []),
+                   "drop_silences": int(st.get("drop_silences") or 0)}
+            cur_all.append(cur)
+            socks.append({
+                "up": st["up"], "last_notice_age_ms": None if st.get("last_notice_ms") is None else now - st["last_notice_ms"],
+                "last_delivery_age_ms": None if st.get("last_delivery_ms") is None else now - st["last_delivery_ms"],
+                "max_gap_ms": st.get("max_gap_ms"), "gap_hist": st.get("gap_hist"), "gap_hist_delta": _hist_delta(cur["gap_hist"], pv.get("gap_hist")),
+                "sub_latency_hist": st.get("sub_latency_hist"), "sub_latency_hist_delta": _hist_delta(cur["sub_latency_hist"], pv.get("sub_latency_hist")),
+                "max_sub_latency_ms": st.get("max_sub_latency_ms"), "drop_silences": cur["drop_silences"],
+                "drop_silences_delta": max(0, cur["drop_silences"] - int(pv.get("drop_silences") or 0)) if pv else cur["drop_silences"],
+                "silent_intervals": len(st.get("silent_intervals") or []), "down_intervals": len(st.get("intervals") or [])})
+        engine.link_prev = (id(source), cur_all)
+        s["link"] = {"gap_edges_ms": list(GAP_EDGES_MS), "delta_since": "previous status record of this run (hb or stop)", "sockets": socks}
     return s
+
+
+def _hist_delta(cur: list, prev: list | None) -> list:
+    """Per-bucket increase since the previous status record. A histogram that shrank (a rebuilt source starts at zero) is taken as new."""
+    if not prev or len(prev) != len(cur) or any(c < p for c, p in zip(cur, prev)):
+        return list(cur)
+    return [c - p for c, p in zip(cur, prev)]
 
 
 def build_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
