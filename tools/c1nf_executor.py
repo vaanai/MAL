@@ -220,6 +220,7 @@ class C1NFPick:
     t_emit_ms: int | None = None
     sps: float | None = None  # filled in by the executor: the slot rate it measures at the decision
     v_lamports: int | None = None  # filled in from the receipt snapshot
+    guard_ref: str | None = None  # "decision_state" (the pick's own reserves) or "receipt_snapshot": what the 1.15 x spot guard is measured against
 
     @property
     def decision_ms(self) -> int:
@@ -537,8 +538,8 @@ class C1NFExecutor(h5.H5Executor):
             if pool != pick.pool:
                 return self._refuse(pick, "pool_mismatch")
             self.pool_cache[pick.mint] = (snap.ps, now)
-            pick = replace(pick, sps=round(measured, 5), v_lamports=snap.v)
             ref_q, ref_b, guard_ref = (pick.q_lamports, pick.base_reserve, "decision_state") if pick.q_lamports else (snap.quote_priced, snap.base_reserve, "receipt_snapshot")
+            pick = replace(pick, sps=round(measured, 5), v_lamports=snap.v, guard_ref=guard_ref)
             terms = h5.entry_terms(ref_q, ref_b, self.h5.stake_lamports, self.h5.entry_tolerance_bps)  # type: ignore[arg-type]
             if terms["expected_tokens"] <= 0 or terms["min_out"] <= 0:
                 return self._refuse(pick, "zero_quote")

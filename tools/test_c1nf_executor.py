@@ -588,10 +588,14 @@ class RefusalTests(Case):
         e.fire(q_lamports=QREAL + V, base_reserve=BASE0)
         _spend, min_ref = buy_args(e.sent()[0])
         self.assertEqual(min_ref, h5.entry_terms(QREAL + V, BASE0, STAKE, 1500)["min_out"])
-        self.assertEqual(e.ledger("decision")[0]["guard_ref"] if "guard_ref" in e.ledger("decision")[0] else "decision_state", "decision_state")
+        self.assertEqual(e.ledger("decision")[0]["guard_ref"], "decision_state")
         e2 = self.fresh("r")
         e2.fire()
         self.assertEqual(buy_args(e2.sent()[0]), (STAKE, h5.entry_terms(QREAL + V, BASE0, STAKE, 1500)["min_out"]))
+        self.assertEqual(e2.ledger("decision")[0]["guard_ref"], "receipt_snapshot")
+        e3 = self.fresh("m")
+        e3.fire(q_lamports=(QREAL + V) * 9 // 10, base_reserve=BASE0)  # a decision state 10% cheaper than the read: inside the 15% guard, taken
+        self.assertEqual(buy_args(e3.sent()[0])[1], h5.entry_terms((QREAL + V) * 9 // 10, BASE0, STAKE, 1500)["min_out"])  # the guard is the decision state's
 
     def test_the_buy_is_the_canaries_size_and_the_ledger_names_the_pick(self):
         e = self.env()
