@@ -623,6 +623,14 @@ The owner's recorded decisions (Provenance) need the live P&L to be watched: the
 
 These need the live P&L to be watched, and the probe wallet is public on chain (DEC-024 section 6), so anyone can compute it. The sentences in quotation marks are the manager's wording. The owner's own words are not quoted here. The notebook ID and its verification are as the manager relayed them, and the author of this amendment did not open the entry. The owner may revoke this decision. A revocation applies from its recorded instant, restores the section 3 seal for pools whose s0 is after that instant, and does not undo the disclosure for outcomes already observed. DEC-024 section 6 mirrors this amendment.
 
+### Amendment 3 (2026-10-09, before any canary send and before any pool with s0 in hour 2026-10-09T23 existed): declared observation for pools with s0 before 2026-10-10T00
+
+By the owner's decision of 2026-10-09 ([DEC-024](../DEC/DEC-024-h5-live-canary.md) Amendment 1), the live canary's and the shadow detector's outcomes for pools with s0 in [2026-10-08T20:25Z, 2026-10-10T00) are observed in real time. This adds one item to section 3's exception list and changes nothing else.
+- The shadow has printed such outcomes since about 2026-10-08T21:30Z. For pools with s0 before this amendment's merge, that is disclosed here, not declared in advance. Every such pool is outside every look's counted window. Hour 2026-10-09T23 stays a Look 1 read hour for `complete` events only, and no outcome from it is used.
+- This is also the carve-out for DEC-016 Amendment 7's H5-seal sentence on hour 2026-10-09T23.
+- Section 3.1's sentences apply unchanged. Look 1 is always read and reported as written. It is never skipped, delayed, withdrawn, re-filed, re-scoped or re-thresholded because of anything the canary or shadow shows, including outcomes for pools with s0 before 2026-10-10T00. The read tool's inputs are unchanged.
+- The Look 1 report's section 12 disclosure adds: canary and shadow outcomes for pools with s0 before 2026-10-10T00 were observed in real time, from about 2026-10-08T21:30Z (shadow) and from the first canary send (canary).
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
