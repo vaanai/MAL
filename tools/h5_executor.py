@@ -901,6 +901,8 @@ class H5Executor(pl.LiveExecutor):
         self._slot_alert_ms = 0
         self._slot_fail_ms: int | None = None
         self._seal_logged = self.counters.seal_skips
+        ts0 = self.counters.tier_state
+        self._tier_state_legacy = bool(ts0.get("tier")) and "realized_at_start" not in ts0  # counters from before the tier baselines were stored
         self._seal_logged_ms = 0
         self.save()  # state and counters exist on disk before the first ledger row, so the anti-reset guards hold from the first start
         self.counters.save(self.counters_path)
@@ -913,6 +915,9 @@ class H5Executor(pl.LiveExecutor):
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms,
                   config_clamps=self._config_clamps())
         self._clamp_alert("start")
+        if self._tier_state_legacy:
+            self._alert("tier_state_legacy", "", tier=self.counters.tier_state.get("tier"),
+                        action="buys are refused until a tier_change re-baselines the tier (write another tier to the file, then the one wanted)")
 
     def __repr__(self) -> str:
         return f"H5Executor(mode={self.run_mode}, user={self.user})"
@@ -964,6 +969,7 @@ class H5Executor(pl.LiveExecutor):
         realized_at_start = self.state.realized_lamports  # the tier's loss allowance counts from here, not from the start of the run
         self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet, "realized_at_start": realized_at_start}
         self.counters.tier_attempts = 0
+        self._tier_state_legacy = False  # a fresh baseline is stored now
         self.counters.save(self.counters_path)
         self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self.h5),
                   open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts,
@@ -1081,6 +1087,8 @@ class H5Executor(pl.LiveExecutor):
         st, h5 = self.state, self.h5
         if self.counters.halts:
             return "halt_latched:" + ",".join(sorted(self.counters.halts))
+        if self._tier_state_legacy:
+            return "tier_state_legacy"  # the tier the counters hold has no stored baseline (realized_at_start): only a tier_change sets one
         total_stop = self._total_stop_lamports()
         if total_stop is None:
             return "balance_unreadable"  # the wallet at tier start is unknown: fail closed

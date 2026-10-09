@@ -525,6 +525,71 @@ class StepDownTests(TierCase):
         return d
 
 
+class LegacyCountersTests(TierCase):
+    """H3: counters that hold a tier but no stored realized_at_start (written before the baselines existed) are not trusted: alert at load, refuse
+    buys until a tier_change re-baselines."""
+
+    def legacy_env(self, tier: str = "T1", live: bool = True) -> Env:
+        self.write_tier(tier + "\n")
+        e = Env(self.tmp, live=live)
+        e.rpc.balance = 10 * SOL
+        e.ex._refresh_tier(e.clock())
+        e.ex.save()
+        path = Path(e.ex.counters_path)
+        raw = json.loads(path.read_text())
+        raw["tier_state"].pop("realized_at_start")  # as an older build wrote it
+        raw.pop("max_total_loss_lamports", None)
+        path.write_text(json.dumps(raw))
+        e.ex = e.build()
+        return e
+
+    def test_alert_at_load_and_buys_refused(self):
+        e = self.legacy_env()
+        alerts = e.alerts("tier_state_legacy")
+        self.assertEqual([(a["tier"]) for a in alerts], ["T1"])
+        e.ex._refresh_tier(e.clock())  # the file still says T1: the same tier, so nothing re-baselines
+        e.fire()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["tier_state_legacy"], []))
+        self.assertNotIn("realized_at_start", e.ex.counters.tier_state)
+
+    def test_a_tier_change_rebaselines_and_trading_resumes(self):
+        e = self.legacy_env()
+        e.fire()
+        self.assertEqual(e.refusals(), ["tier_state_legacy"])
+        e.ex.state.realized_lamports = -40_000_000
+        self.write_tier("T0\n")
+        e.fire()  # the file now says T0: a tier_change, which stores the baseline
+        ts = e.ex.counters.tier_state
+        self.assertEqual((ts["tier"], ts["realized_at_start"], e.refusals(), buy_args(e.sent()[0])[0]), ("T0", -40_000_000, ["tier_state_legacy"], 20_000_000))
+        self.assertEqual(self.changes(e)[-1], ("T1", "T0", None))
+        e.ex.save()
+        e.ex = e.build()
+        self.assertEqual(len(e.alerts("tier_state_legacy")), 1)  # no second alert after the restart: the baseline is stored now
+
+    def test_a_problem_read_does_not_rebaseline_a_legacy_tier(self):
+        e = self.legacy_env()
+        h.TIER_FILE_PATH.write_text("garbage\n")
+        e.fire()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["tier_state_legacy"], []))
+        self.assertNotIn("realized_at_start", e.ex.counters.tier_state)
+
+    def test_counters_with_a_stored_baseline_or_no_tier_at_all_are_not_legacy(self):
+        e = self.tier_env("T1")
+        e.ex._refresh_tier(e.clock())
+        e.ex.save()
+        e.ex = e.build()
+        self.assertEqual((e.alerts("tier_state_legacy"), e.ex._tier_state_legacy), ([], False))
+        sub = self.tmp / "fresh"
+        sub.mkdir()
+        f = Env(sub)  # a first start: no tier held yet
+        self.assertEqual((f.alerts("tier_state_legacy"), f.ex._tier_state_legacy), ([], False))
+
+    def test_a_dry_run_records_it_as_would_have_halted(self):
+        e = self.legacy_env(live=False)
+        e.fire()
+        self.assertEqual(e.ledger("decision")[0]["would_have_halted"], "tier_state_legacy")
+
+
 class OneTierReadPerTriggerTests(TierCase):
     """G2: the tier file is read ONCE per trigger. A rewrite between two reads (the reviewer's TOCTOU repros) cannot make the buy go out at a
     tier that the earlier checks did not judge, and the T2 guard has a second line of defence in the build and in the signer."""
