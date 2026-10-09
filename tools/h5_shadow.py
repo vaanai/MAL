@@ -376,6 +376,7 @@ class SynClassifier:
     def __init__(self, max_n: int = SYN_MAX) -> None:
         self.max_n = max_n
         self._m: collections.OrderedDict[str, dict[str, tuple[bool, str]]] = collections.OrderedDict()
+        self._sig: collections.OrderedDict[str, dict[str, str]] = collections.OrderedDict()  # mint -> {part: signature the websocket saw the defining event in}
         self.stats: collections.Counter = collections.Counter()
 
     def _put(self, mint: str, part: str, syn: bool, src: str) -> bool:
@@ -421,56 +422,58 @@ class SynClassifier:
             return False, "rpc" if any(parts[part][1] == "rpc" for part in self.PARTS) else parts["comp"][1]
         return None, None
 
-    @staticmethod
-    def _verdict(blobs: list[bytes], mint: str, truncated: bool) -> bool | None:
-        """PostCompleteBuyEvent verdict of one tx's visible events. A PostCompleteBuyEvent that is visible is conclusive even in a truncated log; the absence
-        of one in a truncated log is not (the cut part may hold it): None, left to the RPC path, which also reads the inner instructions."""
-        if post_complete_buy_seen(blobs, mint)[0]:
-            return True
-        return None if truncated else False
+    # ---- websocket side: it can only ever say True ------------------------------------------------------------------
+    # A notice carries log lines, not inner instructions, and real logs are cut (a migrate tx's pump events sit in emit_cpi inner instructions only). The
+    # monitor reads both (tx_event_blobs); a log-only "no PostCompleteBuyEvent" would therefore not be conclusive. So the websocket records only a visible
+    # PostCompleteBuyEvent (True, conclusive) and remembers the signature of the defining tx; plain (False) comes only from an RPC read of the whole tx.
+    def hint(self, mint: str, part: str, sig: str) -> None:
+        self._sig.setdefault(mint, {})[part] = sig
+        self._sig.move_to_end(mint)
+        while len(self._sig) > self.max_n:
+            self._sig.popitem(last=False)
+
+    def sig_for(self, mint: str, part: str) -> str | None:
+        return (self._sig.get(mint) or {}).get(part)
 
     @staticmethod
-    def _blobs(note: Any) -> tuple[list[bytes], bool]:
-        cand = [ln for ln in note.logs if "Program data: " in ln]
-        return [b for b in (_program_data_bytes(ln) for ln in cand) if b], any("Log truncated" in ln for ln in note.logs)
+    def _blobs(note: Any) -> list[bytes]:
+        return [b for b in (_program_data_bytes(ln) for ln in note.logs if "Program data: " in ln) if b]
 
     def observe_notice(self, note: Any) -> int:
-        """One pump.fun logsSubscribe notice. Records the "comp" part of every mint whose CompleteEvent it carries and the "mig" part of every mint whose
-        CompletePumpAmmMigrationEvent it carries (the migrate tx also reaches this feed); returns how many parts. A failed tx carries no committed event."""
+        """One pump.fun logsSubscribe notice. For every mint whose CompleteEvent ("comp") or CompletePumpAmmMigrationEvent ("mig") it carries (the defining-event
+        check): a visible PostCompleteBuyEvent records True ("ws"); otherwise the signature is remembered for the RPC read and nothing is concluded. Returns
+        the number of defining events seen. A failed tx carries no committed event."""
         if note.failed:
             return 0
-        cand = [ln for ln in note.logs if "Program data: " in ln]
-        pref = [ln[ln.find("Program data: ") + 14:].lstrip() for ln in cand]
+        pref = [ln[ln.find("Program data: ") + 14:].lstrip() for ln in note.logs if "Program data: " in ln]
         if not any(p.startswith(_COMPLETE_EVENT_PREFIX) or p.startswith(_MIGRATE_EVENT_PREFIX) for p in pref):
             return 0
-        blobs, truncated = self._blobs(note)
+        blobs = self._blobs(note)
         n = 0
         for part, decoder in (("comp", decode_complete_event), ("mig", decode_migration_event)):
             for ev in (e for e in (decoder(b) for b in blobs) if e is not None):
-                self.stats[f"ws_{part}_notices"] += 1
-                v = self._verdict(blobs, ev["mint"], truncated)
-                if v is None:
-                    self.stats["ws_truncated"] += 1
-                    continue
-                self.record_part(ev["mint"], part, v, "ws")
                 n += 1
+                self.stats[f"ws_{part}_notices"] += 1
+                if post_complete_buy_seen(blobs, ev["mint"])[0]:
+                    self.record_part(ev["mint"], part, True, "ws")
+                else:
+                    self.hint(ev["mint"], part, note.signature)
         return n
 
     def observe_migrate_notice(self, mint: str, note: Any) -> int:
-        """The PumpSwap CreatePool notice of `mint`'s pool: it IS the migrate tx, so its events are the "mig" part, and when it also carries the mint's
-        CompleteEvent that is the "comp" part too (one tx). Returns how many parts it recorded."""
+        """The PumpSwap CreatePool notice of `mint`'s pool, which is its migrate tx. A visible PostCompleteBuyEvent in it is conclusive (synthetic is the safe
+        direction even if the CompletePumpAmmMigrationEvent line was cut): "mig" True, and "comp" True too when the notice also carries the mint's CompleteEvent.
+        Anything else concludes nothing here; Engine.request_class passes the signature to the RPC read. Returns the parts recorded."""
         if note.failed or not mint:
             return 0
-        blobs, truncated = self._blobs(note)
-        v = self._verdict(blobs, mint, truncated)
-        if v is None:
-            self.stats["ws_truncated"] += 1
+        blobs = self._blobs(note)
+        if not post_complete_buy_seen(blobs, mint)[0]:
             return 0
         self.stats["ws_mig_notices"] += 1
-        self.record_part(mint, "mig", v, "ws")
+        self.record_part(mint, "mig", True, "ws")
         n = 1
         if any(e["mint"] == mint for e in (decode_complete_event(b) for b in blobs) if e is not None):
-            self.record_part(mint, "comp", v, "ws")
+            self.record_part(mint, "comp", True, "ws")
             n += 1
         return n
 
@@ -518,41 +521,51 @@ def _rpc_get_tx(client: Any, sig: str) -> dict | None:
 
 
 def _rpc_tx_parts(tx: dict, mint: str) -> dict[str, bool]:
-    """Parts one tx carries for `mint`: "comp" if it holds the mint's CompleteEvent, "mig" if it holds its CompletePumpAmmMigrationEvent or its CreatePoolEvent
-    (the migrate tx), each with the tx's PostCompleteBuyEvent verdict. Events are read from log lines AND emit_cpi inner instructions (monitor.tx_event_blobs):
-    a migrate tx's logs are cut in practice, but its inner instructions carry every event."""
+    """Parts one tx carries for `mint`, each with the tx's PostCompleteBuyEvent verdict. The bytes come from the monitor's `tx_event_blobs` (Program data log
+    lines AND emit_cpi inner instructions: a migrate tx's logs are cut in practice, its inner instructions carry every event) and the verdict from
+    `post_complete_buy_seen`. Defining-event check: "comp" only if the tx carries the mint's CompleteEvent, "mig" only if it carries the mint's
+    CompletePumpAmmMigrationEvent. A tx that fails the check yields nothing and the caller tries the next source."""
     blobs = tx_event_blobs(tx)
     pcb = post_complete_buy_seen(blobs, mint)[0]
     out: dict[str, bool] = {}
     if any(e["mint"] == mint for e in (decode_complete_event(b) for b in blobs) if e is not None):
         out["comp"] = pcb
-    if (any(e["mint"] == mint for e in (decode_migration_event(b) for b in blobs) if e is not None)
-            or any((e or {}).get("kind") == "create_pool" and e.get("base_mint") == mint for e in (decode_program_data(b) for b in blobs))):
+    if any(e["mint"] == mint for e in (decode_migration_event(b) for b in blobs) if e is not None):
         out["mig"] = pcb
     return out
 
 
-def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, need: Sequence[str] = ("comp", "mig"), skip: set[str] | None = None) -> dict[str, bool]:
+def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, need: Sequence[str] = ("comp", "mig"), skip: set[str] | None = None,
+                     comp_sig: str | None = None) -> dict[str, bool]:
     """Blocking. Returns the parts found, {"comp": PostCompleteBuyEvent verdict of the mint's CompleteEvent tx, "mig": the same for its migrate tx} (one tx can
-    be both); a part that could not be found or read is absent. 1) `migrate_sig` (the CreatePool notice's signature), if the migrate tx is needed: one
-    getTransaction. 2) If the CompleteEvent tx is still needed and nothing is True yet: the curve PDA's newest signatures (newest first, failed txs skipped,
-    up to RPC_TX_PER_ATTEMPT getTransaction calls; failed txs are skipped, and `skip` (the caller's set, extended here) holds signatures already read with no
-    match, so a retry goes deeper instead of re-reading). Stops early on a True: synthetic is already decided."""
+    be both); a part that could not be found or read, or whose tx fails the defining-event check, is absent. Sources in order: 1) `migrate_sig` (the CreatePool
+    notice's signature) if the migrate tx is needed, 2) `comp_sig` (the signature the pump.fun socket saw the CompleteEvent in) if the completing tx is needed,
+    3) the curve PDA's signatures before the migrate tx (`before=migrate_sig` when known, so post-migration noise cannot fill the budget), newest first,
+    failed txs skipped, up to RPC_TX_PER_ATTEMPT getTransaction calls; `skip` (the caller's set, extended here) holds signatures already read with no match, so
+    a retry goes deeper instead of re-reading. Stops early on a True: synthetic is already decided."""
     need = set(need)
     skip = set() if skip is None else skip
     found: dict[str, bool] = {}
-    if migrate_sig and "mig" in need:
-        tx = _rpc_get_tx(client, migrate_sig)
-        if tx:
-            for part, v in _rpc_tx_parts(tx, mint).items():
-                found.setdefault(part, v)
-    if any(found.values()) or not (need - set(found)):
+
+    def settled() -> bool:
+        return any(found.values()) or not (need - set(found))
+
+    for sig, want in ((migrate_sig, "mig"), (comp_sig, "comp")):
+        if sig and want in need and want not in found and not settled() and not (want == "comp" and sig == migrate_sig):
+            tx = _rpc_get_tx(client, sig)
+            if tx:
+                for part, v in _rpc_tx_parts(tx, mint).items():
+                    found.setdefault(part, v)
+    if settled():
         return found
     curve = find_program_address([b"bonding-curve", b58decode(mint)], PUMP_PROGRAM)[0]
-    sigs = client.call("getSignaturesForAddress", [curve, {"limit": RPC_SIGS_LIMIT, "commitment": "confirmed"}]) or []
+    opts: dict[str, Any] = {"limit": RPC_SIGS_LIMIT, "commitment": "confirmed"}
+    if migrate_sig:
+        opts["before"] = migrate_sig
+    sigs = client.call("getSignaturesForAddress", [curve, opts]) or []
     tried = 0
     for s in sigs:
-        if s.get("err") is not None or s["signature"] in skip or (s["signature"] == migrate_sig and "mig" in found):
+        if s.get("err") is not None or s["signature"] in skip or (s["signature"] == migrate_sig and "mig" in found) or (s["signature"] == comp_sig and "comp" in found):
             continue
         if tried >= RPC_TX_PER_ATTEMPT:
             break
@@ -563,7 +576,7 @@ def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, nee
         skip.add(s["signature"])
         for part, v in _rpc_tx_parts(tx, mint).items():
             found.setdefault(part, v)
-        if any(found.values()) or not (need - set(found)):
+        if settled():
             break
     return found
 
@@ -607,7 +620,8 @@ class RpcFallback:
                 client = self._client_factory()
                 self.classifier.stats["rpc_attempts"] += 1
                 try:
-                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig, need, skip),
+                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig or self.classifier.sig_for(mint, "mig"), need, skip,
+                                                                  self.classifier.sig_for(mint, "comp")),
                                                  self.attempt_timeout_s)
                 except asyncio.TimeoutError:
                     self.classifier.stats["rpc_timeouts"] += 1
