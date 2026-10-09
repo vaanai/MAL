@@ -548,3 +548,19 @@ def test_follower_rows_roundtrip_through_the_adapter(tmp_path):
     assert res["rows"]["rows_used"] == len(trades) + 23
     z = L.load_daily(L.daily_paths(tmp_path / "o", DAY)[0])
     assert int(z["n"].sum()) == len(trades) + 23
+
+
+def test_rollup_require_prev_day(tmp_path, capsys):
+    tip = tmp_path / "tip"
+    for d, seed in (("2026-10-06", 31), ("2026-10-07", 32)):
+        write_tip_day(tip, d, make_rows(seed, 100))
+    write_tip_hour(tip, "2026-10-08T00", make_rows(33, 5))
+    base = ["--tip-dir", str(tip), "--threads", "1", "--mem-gb", "1", "--tmp-dir", str(tmp_path / "duck")]
+    root = str(tmp_path / "root")
+    # a skipped night: 10-07 with no 10-06 ledger is refused, and nothing is written
+    assert L.main(["rollup", "--day", "2026-10-07", "--require-prev-day", "--out-root", root, *base]) == 3
+    assert not list((tmp_path / "root").glob("**/*.npz"))
+    # bootstrap without the flag, then the guarded daily job passes
+    assert L.main(["rollup", "--day", "2026-10-06", "--out-root", root, *base]) == 0
+    assert L.main(["rollup", "--day", "2026-10-07", "--require-prev-day", "--out-root", root, *base]) == 0
+    capsys.readouterr()

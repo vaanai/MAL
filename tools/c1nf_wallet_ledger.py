@@ -824,8 +824,18 @@ class AsofLedger:
 # --------------------------------------------------------------------------------------------
 
 
-def rollup(day: str, out_root: Path, tip_dirs: Sequence[str | Path], **kw: Any) -> dict[str, Any]:
-    """Build the tip-tape daily ledger for `day`, then the as-of snapshot for day+1."""
+def rollup(
+    day: str, out_root: Path, tip_dirs: Sequence[str | Path], require_prev_day: bool = False, **kw: Any
+) -> dict[str, Any]:
+    """Build the tip-tape daily ledger for `day`, then the as-of snapshot for day+1.
+
+    With `require_prev_day` the job refuses (nothing written) when the ledger of the day before `day` is
+    missing, so a skipped night is a failed job and not a quietly thinner snapshot."""
+    check_day(day)
+    if require_prev_day:
+        prev = (dt.date.fromisoformat(day) - dt.timedelta(days=1)).isoformat()
+        if prev not in set(list_daily_days(out_root)):
+            raise Refused(f"no daily ledger for {prev}; run it first or drop --require-prev-day")
     d = build_day(day, "tip", out_root, tip_dirs=tip_dirs, **kw)
     a = build_asof(out_root, next_day(day), force=kw.get("force", False))
     return {"day": d, "asof": a}
@@ -1083,6 +1093,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-missing-hours", action="store_true")
     p.add_argument("--no-dedupe", action="store_true")
     p.add_argument("--verify-sha", action="store_true")
+    p.add_argument("--require-prev-day", action="store_true", help="refuse if the day before has no daily ledger")
     _add_run_args(p)
 
     p = sub.add_parser("coverage", help="which hours and days have source data (names and sizes only)")
@@ -1133,6 +1144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     check_day(args.day),
                     Path(args.out_root),
                     args.tip_dir,
+                    require_prev_day=args.require_prev_day,
                     allow_missing_hours=args.allow_missing_hours,
                     dedupe=not args.no_dedupe,
                     verify_sha=args.verify_sha,
