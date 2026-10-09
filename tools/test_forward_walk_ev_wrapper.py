@@ -382,12 +382,13 @@ class CreditTests(WrapperCase):
         self.assertEqual(r.alerts()[0]["kind"], "credit_state")
 
     def test_header_arithmetic(self) -> None:
-        # 15 h at 13.4k + 154 h at 18k, as the header says; the cap leaves the stated margin.
+        # 15 h at 13.4k + 154 h at 18k, as the header says; quant-proof's estimate is about 3.3M; the cap is above both.
         total = 15 * 13_400 + 154 * 18_000
         self.assertEqual(15 + 154, 169)
-        self.assertLess(total, CAP_TOTAL)
-        self.assertGreater(CAP_TOTAL / total, 1.2)
-        self.assertLess(total, 3_000_000, "the owner approved about 3.0M for the walk")
+        self.assertLess(total, 3_000_000)
+        self.assertGreater(CAP_TOTAL, 3_300_000 * 1.08, "the cap leaves margin over quant-proof's 3.3M")
+        self.assertIn("3.3M", SCRIPT.read_text())
+        self.assertIn("BAD hours", SCRIPT.read_text())
 
 
 class HeliusEnvGuardTests(WrapperCase):

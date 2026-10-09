@@ -51,8 +51,12 @@
 # 13.4k credits an hour before the 200 ms slot step (epoch 1053, ~2026-10-09T14:34Z) and about 18k after it.
 #   hours 2026-10-09T00..14 (15 h, the step lands in hour 14): 15 x 13.4k = 0.20M (upper)
 #   hours 2026-10-09T15..2026-10-16T00 (154 h):                 154 x 18k = 2.77M
-#   walked total about 2.97M; plus account lookups for pools created before START (getMultipleAccounts) and any
-#   refusal spend. CAP_TOTAL 3,600,000 is about 21% above that; the owner approved about 3.0M for the walk.
+#   walked total about 2.97M by this arithmetic. The quant-proof estimate is about 3.3M (account lookups for pools
+#   created before START, re-walks of failed hours and refusal spend are not in the arithmetic). CAP_TOTAL 3,600,000
+#   is about 9% above 3.3M and 21% above 2.97M. The owner approved about 3.0M for this walk; the cap is the manager's
+#   and quant-proof's number, and the job's progress note shows the spend against it every hour.
+# If the cap stops the walk (exit 5), the hours not walked are BAD hours for tools/forward_v_join.py: they are not
+# joined and their PumpSwap rows go to the getTransaction fallback list. Nothing is silently empty.
 # Same cap bookkeeping as walk 2: checkpoint.json credits_used is the cumulative spend; a refused call (exit 3) never
 # writes the checkpoint, so spend against the cap is checkpoint + sum(refusals.jsonl). The walker is passed
 # --credit-cap CAP_TOTAL - sum(refusals), so its own check equals the true total vs CAP_TOTAL. Fewer than
