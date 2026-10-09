@@ -18,9 +18,11 @@ Fill arithmetic is RULE.md's: fee tier on (Q, B), own trade applied, guard 1.15 
 rent 2,039,280 per fill as report-only variants. Fail legs (flat / pressure) are a book statistic and are not applied here.
 
 Seals.
-  * EXP-022 section 9, from 2026-10-16T01Z: every post-decision price of a pool whose first print is at or after that instant is suppressed
-    unless a boolean pick oracle answers exactly False for its mint. Missing oracle, an error, a non-bool, a stale oracle: suppressed
-    (fail closed). The oracle is read as a boolean only; no pick field is written. Same approach as tools/h5_shadow.py `_sealed`.
+  * EXP-022 section 9, from 2026-10-16T01Z: a pool whose first print is at or after that instant is followed only when a boolean pick oracle
+    answers exactly False for its mint. Missing oracle, an error, a non-bool, a stale oracle: withheld (fail closed). A withheld pool gets NO
+    per-pool record of any kind (no pick, no outcome, no reason label): it never enters the book and is counted only in the unlabelled
+    aggregate `withheld` of the heartbeat and stop records. The oracle is read as a boolean only. Same approach as tools/h5_shadow.py `_sealed`
+    (newest rule: no per-pool record for sealed pools).
   * EXP-025 section 5.1 declared observation: the shadow may log outcomes for decisions inside the counted window. It is not the read.
 
 Paper only. No key, no transaction, no RPC. It reads only the tip tape (live) or one exploration day of /data/mal/audit-1008/tape (replay).
@@ -36,6 +38,7 @@ import importlib
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -75,7 +78,6 @@ CLOCK_JUMP_S = 60
 HEARTBEAT_S = 60.0
 HOLD_MS = 600                        # live: feed rows only once t_recv_ms is this old, so the three kinds of one block arrive together
 SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
-SEAL_REASON = "cap_pick_seal"
 ORACLE_STALE_S = 60.0
 DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 DEFAULT_OUT_DIR = os.path.join(os.path.expanduser("~"), "data", "c1nf-shadow")
@@ -95,7 +97,7 @@ PICK_EXAMPLE = {
     "decision_T_ms": 1788523800000, "SD_slot": 444240500, "pred": 0.0431, "h_top1": 0.12, "stage1": True,
     "feature_hash": "0" * 64, "model_sha": "f" * 64,
 }
-OUTCOME_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "complete", "suppressed", "legs")
+OUTCOME_FIELDS = ("type", "mint", "pool", "decision_T_ms", "SD_slot", "complete", "legs")
 EVENT_TYPES = ("c1nf_gap", "c1nf_heartbeat", "c1nf_start", "c1nf_stop")
 
 
@@ -446,6 +448,9 @@ class SealGuard:
 
 
 # ---- output ---------------------------------------------------------------------------------------------------------------------------------
+_FILE_RE = re.compile(r"^(c1nf-[a-z]+)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
+
+
 class JsonlSink:
     """Hourly strict-JSON-lines files per stream, flushed per line. The hour is the UTC hour of the record's t_ms. Closed hours of the bulky
     streams are compressed with zstd (the picks stream stays plain: the executor tails it)."""
@@ -459,13 +464,15 @@ class JsonlSink:
         self._name: dict[str, str] = {}
         self.lines: collections.Counter = collections.Counter()
 
+    def prefix_of(self, rec: Mapping[str, Any]) -> str:
+        return self.PREFIX.get(rec.get("type", ""), "c1nf-events")
+
     def path_for(self, rec: Mapping[str, Any]) -> Path:
-        prefix = self.PREFIX.get(rec.get("type", ""), "c1nf-events")
-        return self.dir / f"{prefix}-{hour_of(int(rec['t_ms']) // 1000)}.jsonl"
+        return self.dir / f"{self.prefix_of(rec)}-{hour_of(int(rec['t_ms']) // 1000)}.jsonl"
 
     def write(self, rec: Mapping[str, Any]) -> None:
         path = self.path_for(rec)
-        key = path.name[: path.name.index("-20")]
+        key = self.prefix_of(rec)
         if self._name.get(key) != path.name:
             if key in self._fh:
                 self._fh[key].close()
@@ -480,9 +487,10 @@ class JsonlSink:
         n = 0
         cutoff = hour_of(now_s - keep_hours * 3600)
         for p in sorted(self.dir.glob("c1nf-*.jsonl")):
-            if p.name.startswith("c1nf-picks-"):
+            m = _FILE_RE.match(p.name)
+            if m is None or m.group(1) == "c1nf-picks":
                 continue
-            if p.name[-19:-6] < cutoff and p.name != self._name.get(p.name[: p.name.index("-20")]):
+            if m.group(2) < cutoff and p.name != self._name.get(m.group(1)):
                 try:
                     subprocess.run(["zstd", "-q", "-3", "--rm", "-f", str(p)], check=True, timeout=120)
                     n += 1
@@ -604,8 +612,8 @@ class Shadow:
 
     # ---- time ----
     def clock_ms(self) -> int:
-        if self.replay:
-            return (self.hw_bt or 0) * 1000
+        if self.replay and self.hw_bt is not None:
+            return self.hw_bt * 1000
         return self._wall()
 
     def emit(self, rec: dict) -> None:
@@ -729,6 +737,9 @@ class Shadow:
             if mint is None:
                 self.c["no_mint"] += 1
                 continue
+            if self.seal.suppress(mint, self.first_ms.get(pool)):
+                self.c["withheld"] += 1                      # EXP-022 s9: no pick, no book entry, no record about this pool; aggregate only
+                continue
             if T < self.book.get(mint, -1.0) + REENTRY_S:
                 self.c["book_blocked"] += 1
                 continue
@@ -778,9 +789,9 @@ class Shadow:
         self.c["outcomes"] += 1
         base = {"type": "c1nf_outcome", "mint": pend.mint, "pool": pend.pool, "decision_T_ms": pend.T * 1000, "SD_slot": pend.sd, "SD_bt": pend.sd_bt,
                 "pred": pend.pred}
-        if self.seal.suppress(pend.mint, pend.first_print_ms):
-            self.c["outcomes_suppressed"] += 1
-            self.emit({**base, "complete": False, "suppressed": SEAL_REASON, "legs": None})
+        if self.seal.suppress(pend.mint, pend.first_print_ms):   # the oracle went stale / failed since the pick: price nothing, say nothing
+            self.c["withheld"] += 1
+            self.c["outcomes"] -= 1
             pend.prints, pend.slots = [], []
             return
         legs: dict[str, Any] = {}
@@ -835,7 +846,7 @@ class Shadow:
             self.c["outcomes_gap"] += 1
         if not complete:
             self.c["outcomes_incomplete"] += 1
-        self.emit({**base, "complete": bool(complete), "suppressed": None, "primary": f"{PRIMARY_LAT:g}", "sps": sps,
+        self.emit({**base, "complete": bool(complete), "primary": f"{PRIMARY_LAT:g}", "sps": sps,
                    "spot": spot, "stake_lamports": STAKE_LAMPORTS, "gap": bool(gap), "reasons": reasons[:6], "legs": legs,
                    "pick_lag_ms": max(0, pend.pick_ms - pend.sd_bt * 1000) if not self.replay else None})
         pend.prints, pend.slots = [], []
@@ -887,7 +898,7 @@ class Shadow:
         hb = {"type": "c1nf_heartbeat", "hw_slot": self.hw_slot, "hw_bt": self.hw_bt, "last_decided_T": self.last_T,
               "stream_lag_s": None if self.hw_bt is None or self.replay else round(now / 1000 - self.hw_bt, 2),
               "pending": sum(len(v) for v in self.pending.values()), "pools_alive": len(self.universe.pool_mint), "counters": dict(self.c),
-              "universe": dict(self.universe.counts), "seal": dict(self.seal.counters), "model_shas": self.models.shas, "rule": RULE_ID,
+              "universe": dict(self.universe.counts), "model_shas": self.models.shas, "rule": RULE_ID,
               "uptime_s": round((now - self.started_ms) / 1000, 1)}
         self.emit(hb)
         return hb
@@ -1184,7 +1195,8 @@ def run_replay(args: argparse.Namespace, models: ModelSet, engine: Any, sink: An
     sh = Shadow(engine, models, sink, replay=True, seal_start_ms=None, decide_from=dec_from, decide_to=dec_to, errors=ErrorLog(Path(args.out_dir) / "errors.log"))
     sh.clock.hour_sps = hour_sps_from_tape(args.replay_tape, hours)
     sh.run_info = {"mode": "replay", "hours": [hours[0], hours[-1]], "decide_from": args.decide_from, "decide_to": args.decide_to}
-    sh.emit({"type": "c1nf_start", "mode": "replay", "hours": [hours[0], hours[-1]], "model_shas": models.shas, "v_source": "hunt-shared tokens.v0_lamports (tape has no event-V)"})
+    t_first = int(datetime.strptime(hours[0], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    sh.emit({"type": "c1nf_start", "t_ms": t_first, "mode": "replay", "hours": [hours[0], hours[-1]], "model_shas": models.shas, "v_source": "hunt-shared tokens.v0_lamports (tape has no event-V)"})
     for batch in tape_rows(args.replay_tape, hours, pool_v, pool_of_mint):
         for r in batch:
             sh.feed(r, r["_k"])
@@ -1255,7 +1267,7 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
 def _write_status(path: Path, sh: Shadow) -> None:
     tmp = path.with_suffix(".tmp")
     st = {"schema": SCHEMA, "t_ms": now_ms(), "hw_slot": sh.hw_slot, "hw_bt": sh.hw_bt, "counters": dict(sh.c), "universe": dict(sh.universe.counts),
-          "seal": dict(sh.seal.counters), "pending": sum(len(v) for v in sh.pending.values())}
+          "pending": sum(len(v) for v in sh.pending.values())}
     try:
         tmp.write_text(json.dumps(clean(st), allow_nan=False))
         os.replace(tmp, path)

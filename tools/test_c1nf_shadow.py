@@ -274,7 +274,7 @@ def test_outcome_prices_pre_trade_state_of_next_print_with_per_print_v():
     for slot in range(S0, slot_of_sec(1000)):
         sh.feed(mk_row(slot, side="buy" if slot % 2 else "sell", v=V0 if slot < vchange else V0 + 1e9), "trades")
     (o,) = sink.of("c1nf_outcome")
-    assert o["complete"] is True and o["suppressed"] is None and o["gap"] is False
+    assert o["complete"] is True and "suppressed" not in o and o["gap"] is False
     sd = sink.of("c1nf_pick")[0]["SD_slot"]
     leg = o["legs"]["1.3"]
     X = sd + round(1.3 / SPS)                                     # = sd + 3
@@ -360,29 +360,53 @@ def test_seal_before_window_and_unknown_time():
     assert cs.SealGuard(None, None).suppress(MINT, SEAL_MS + 5) is False
 
 
-def test_sealed_outcome_carries_no_price_and_pick_oracle_is_boolean_only():
-    ora = Oracle(True)
-    sh, sink = mk_shadow(only_minute(10), seal_start_ms=BT0 * 1000 - 1000, oracle=ora)    # the pool's first print is inside the window
+def test_sealed_pool_gets_no_per_pool_record_only_an_unlabelled_aggregate():
+    ora = Oracle(True)                                           # the oracle says: this mint is a CAP-PICK pick
+    sh, sink = mk_shadow(only_minute(10, 11), seal_start_ms=BT0 * 1000 - 1000, oracle=ora)    # the pool's first print is inside the window
     run_stream(sh, 1000)
-    (o,) = sink.of("c1nf_outcome")
-    assert o["suppressed"] == cs.SEAL_REASON and o["legs"] is None and o["complete"] is False
-    blob = json.dumps(o)
-    for word in ("entry_q", "exit_q", "proceeds", "pnl", "spot", "entry_px", "gross_ret", "tokens"):
-        assert word not in blob
-    assert ora.asked == [MINT] and "cap_pick" not in json.dumps(sink.of("c1nf_pick")).lower()
-    assert sh.c["outcomes_suppressed"] == 1 and len(sink.of("c1nf_pick")) == 1     # decision-time record is still written
+    sh.finish("test")
+    assert ora.asked == [MINT, MINT]                              # asked at each candidate decision, read as a boolean only
+    assert sink.of("c1nf_pick") == [] and sink.of("c1nf_outcome") == [] and not sh.book and not sh.pending
+    blob = json.dumps(sink.records).lower()
+    for word in (MINT.lower(), POOL.lower(), "cap_pick", "cap-pick", "suppress", "seal", "oracle"):
+        assert word not in blob, word
+    hb = sink.of("c1nf_heartbeat")[-1]
+    assert hb["counters"]["withheld"] == 2 and "seal" not in hb
 
 
-def test_oracle_false_prices_in_window():
+def test_sealed_pool_leaves_nothing_on_disk(tmp_path):
+    sink = cs.JsonlSink(tmp_path)
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    sh = cs.Shadow(StubEngine(only_minute(10)), models, sink, replay=True, seal_start_ms=BT0 * 1000 - 1000, oracle=None)    # no oracle: fail closed
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    run_stream(sh, 1000)
+    sh.finish("test")
+    sink.close()
+    text = "".join(p.read_text() for p in tmp_path.iterdir())
+    assert MINT not in text and POOL not in text and not list(tmp_path.glob("c1nf-picks-*")) and not list(tmp_path.glob("c1nf-outcomes-*"))
+
+
+def test_oracle_false_follows_the_pool_in_window():
     sh, sink = mk_shadow(only_minute(10), seal_start_ms=BT0 * 1000 - 1000, oracle=Oracle(False))
     run_stream(sh, 1000)
     (o,) = sink.of("c1nf_outcome")
-    assert o["suppressed"] is None and o["legs"]["1.3"]["end"]["proceeds"] > 0
+    assert len(sink.of("c1nf_pick")) == 1 and "suppressed" not in o and o["legs"]["1.3"]["end"]["proceeds"] > 0
+    assert sh.c["withheld"] == 0
+
+
+def test_oracle_gone_stale_after_the_pick_drops_the_outcome_silently():
+    ora = Oracle(False, stale=1.0)
+    sh, sink = mk_shadow(only_minute(10), seal_start_ms=BT0 * 1000 - 1000, oracle=ora)
+    run_stream(sh, 700)
+    assert len(sink.of("c1nf_pick")) == 1
+    ora.staleness_s = lambda: 500.0                              # the oracle stops refreshing before the exit resolves
+    run_stream(sh, 1000, first_sec=700)
+    sh.finish("test")
+    assert sink.of("c1nf_outcome") == [] and sh.c["withheld"] == 1
 
 
 def test_seal_start_constant_is_2026_10_16T01Z():
     assert SEAL_MS == int(datetime(2026, 10, 16, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    assert cs.SEAL_REASON == "cap_pick_seal"
 
 
 # ---- universe and row routing ---------------------------------------------------------------------------------------------------------------
@@ -634,3 +658,53 @@ def test_run_live_smoke_with_stub_engine(tmp_path, monkeypatch):
     assert not list(out.glob("c1nf-picks-*")) or all(not p.read_text() for p in out.glob("c1nf-picks-*"))
     assert json.loads((out / "status.json").read_text())["counters"]["rows"] == len(eng.blocks) > 100
     assert eng.asked == []                                             # decisions were off while rebuilding state
+
+
+# ---- wrapper --------------------------------------------------------------------------------------------------------------------------------
+WRAP = Path(__file__).resolve().parent.parent / "scripts" / "research" / "c1nf-shadow.sh"
+
+
+def _wrap(env_extra, *args, tmp):
+    import subprocess
+    import sys
+
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp), "C1NF_PYTHON": sys.executable, **env_extra}
+    return subprocess.run(["sh", str(WRAP), *args], env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_wrapper_is_posix_sh_and_refuses_without_a_pin(tmp_path):
+    import subprocess
+
+    text = WRAP.read_text()
+    assert text.startswith("#!/bin/sh") and "[[" not in text and "${PIPESTATUS" not in text and "$PIPESTATUS" not in text
+    assert subprocess.run(["sh", "-n", str(WRAP)]).returncode == 0
+    r = _wrap({}, tmp=tmp_path)
+    assert r.returncode == 2 and "C1NF_MODEL" in r.stderr
+
+
+def test_wrapper_passes_pin_and_python_refuses_a_bad_hash(tmp_path):
+    m = tmp_path / "m.txt"
+    m.write_text("model")
+    r = _wrap({"C1NF_MODEL": str(m), "C1NF_MODEL_SHA256": "0" * 64}, "--max-seconds", "1", tmp=tmp_path)
+    assert r.returncode == cs.EXIT_REFUSED and "pinned" in r.stderr
+    assert (tmp_path / "data" / "c1nf-shadow").is_dir()               # default out dir is $HOME/data/c1nf-shadow
+    assert not list((tmp_path / "data" / "c1nf-shadow").glob("c1nf-picks-*"))
+
+
+# ---- ledger adapter -------------------------------------------------------------------------------------------------------------------------
+def test_asof_dir_ledger_adapts_passa_matrix_to_get(tmp_path):
+    (tmp_path / "asof" / "asof-2026-10-10").mkdir(parents=True)
+
+    class FakeAsof:
+        def passa_matrix(self, th):
+            known = np.array([int(t) == 7 for t in th])
+            m = np.full((len(th), 7), np.nan)
+            m[known] = [10, 2, 1.5, 3, 4, 5, 9.0]
+            return known, m
+
+    opened = []
+    led = cs.AsofDirLedger(tmp_path, opener=lambda p: (opened.append(p), FakeAsof())[1], hash_fn=lambda s: 7 if s == "known" else 8)
+    snap = led.snapshot_for_day("2026-10-10")
+    assert snap.get("known") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0) and snap.get("other") is None
+    assert led.snapshot_for_day("2026-10-09") is None                   # no prior-day snapshot: wallet features stay NaN, as in C1
+    assert opened == [tmp_path / "asof" / "asof-2026-10-10"]
