@@ -13,7 +13,7 @@ from unittest import mock
 from tools import c1nf_executor as c
 from tools import h5_executor as h5
 from tools import probe_executor as pe
-from tools.test_c1nf_executor import MINUTE, STAKE, Case, outcome, touch_streams, write_stream
+from tools.test_c1nf_executor import MINUTE, STAKE, TEST_KP, TEST_SHA, Case, Env, H5Rpc, outcome, touch_streams, write_stream
 from tools.test_h5_executor import MINT, POOL, QREAL
 from tools.test_probe_executor import BASE0, T0, V
 
@@ -313,3 +313,100 @@ class H5UntouchedTests(TierCase):
         self.assertIsInstance(h5.H5Executor.__dict__["h5"], property)
         self.assertNotIn("tier", h5.H5Executor.__dict__)  # the tier property is the subclass's only
         self.assertEqual(h5.H5Limits.from_config({}).max_open, 2)
+
+
+class ReviewFixTests(Case):
+    """#530 review: the model and wallet pins, the late-sell alert (no halt), the stale-checked seal oracle."""
+
+    def test_a_pick_or_heartbeat_naming_another_model_is_a_halt(self):
+        e = self.env()
+        e.fire(model_sha="cd" * 32)
+        self.assertEqual(e.refusals(), [c.MODEL_HALT])
+        self.assertIn(c.MODEL_HALT, e.ex.counters.halts)
+        self.assertFalse(e.ex.extra.picks[f"{MINT}:{e.t0}"]["monitored"])  # a stop, not a fill failure
+        e.fire(minute=e.t0 + MINUTE)
+        self.assertEqual(e.refusals()[-1], "halt_latched:" + c.MODEL_HALT)
+        self.assertEqual(e.rpc.sent, [])
+        e2 = self.fresh("hb")
+        e2.ex._on_heartbeat({"type": "c1nf_heartbeat", "model_shas": [TEST_SHA]})
+        self.assertEqual(e2.ex.counters.halts, {} if isinstance(e2.ex.counters.halts, dict) else set())
+        e2.ex._on_heartbeat({"type": "c1nf_heartbeat", "model_shas": [TEST_SHA, "cd" * 32]})
+        self.assertIn(c.MODEL_HALT, e2.ex.counters.halts)
+
+    def test_with_no_pinned_model_live_refuses_and_a_dry_run_says_so(self):
+        with mock.patch.object(c, "C1NF_MODEL_SHA256", frozenset()):
+            with self.assertRaises(SystemExit):
+                self.fresh("live")
+            e = self.fresh("dry", live=False)
+            self.assertFalse(e.ledger("c1nf_start")[0]["model_pinned"])
+            e.fire(model_sha="cd" * 32)
+            self.assertIn(MINT, e.ex.state.open)  # dry run: nothing to compare against, ledgered as unpinned
+            self.assertEqual(c.start_refusal({"state_dir": str(c.LIVE_STATE_DIR), "end_ms": c.C1NF_END_MAX_MS, "intents_file": "/x"},
+                                             root=e.root), "model_unpinned")
+
+    def test_the_wallet_is_never_h5s_and_must_be_the_pinned_c1nf_wallet(self):
+        pub = str(TEST_KP.pubkey())
+        self.assertIsNone(c.wallet_refusal(pub))
+        self.assertEqual(c.wallet_refusal(c.H5_WALLET_PUBKEY), "wallet_is_h5")
+        self.assertEqual(c.wallet_refusal("11111111111111111111111111111111"), "wallet_not_pinned_c1nf")
+        with mock.patch.object(c, "C1NF_WALLET_PUBKEY", None):
+            self.assertEqual(c.wallet_refusal(pub), "wallet_not_pinned_c1nf")
+            with self.assertRaises(SystemExit):
+                self.fresh("unpinned")
+            self.assertEqual(c.start_refusal({"state_dir": str(c.LIVE_STATE_DIR), "end_ms": c.C1NF_END_MAX_MS, "intents_file": "/x"},
+                                             root=self.tmp), "exp025_part1_missing")
+        with mock.patch.object(c, "H5_WALLET_PUBKEY", pub), self.assertRaises(SystemExit) as cm:
+            self.fresh("h5")
+        self.assertIn("wallet_is_h5", str(cm.exception))
+        self.assertEqual(c.H5_WALLET_PUBKEY, "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk")
+
+    def test_late_sells_alert_past_10pct_of_the_last_20_and_never_halt(self):
+        e = self.env()
+        lim = c.c1nf_limits({})
+        plan = c.c1nf_exit_plan(10_000, 0.2, lim).public()
+        self.assertEqual(plan["late_slot"], 10_000 + 1525)  # landing + 305 s
+        def land(late: bool) -> None:
+            e.ex._note_sell_landing(MINT, dict(plan), plan["late_slot"] + (1 if late else 0), False)
+        for _ in range(9):
+            land(False)
+        land(True)  # 1 of 10: not above 10%
+        self.assertEqual([a for a in e.ledger("alert") if a["alert"] == "exit_late_share_gt_10pct"], [])
+        land(True)  # 2 of 11
+        land(True)  # still over: no second alert
+        alerts = [a for a in e.ledger("alert") if a["alert"] == "exit_late_share_gt_10pct"]
+        self.assertEqual(len(alerts), 1)
+        self.assertFalse(e.ex.counters.halts)  # DEC-026 section 7 rule 5: report and alert, no halt
+        for _ in range(20):
+            land(False)
+        self.assertFalse(e.ex.extra.late_alert_on)
+        land(True), land(True), land(True)
+        self.assertEqual(len([a for a in e.ledger("alert") if a["alert"] == "exit_late_share_gt_10pct"]), 2)  # a new crossing alerts again
+        self.assertFalse(e.ex.counters.halts)
+        e.fire()
+        self.assertEqual(e.refusals(), [])  # buys go on
+
+    def test_the_seal_oracle_fails_closed_when_its_heartbeat_is_older_than_60_s(self):
+        now = [h5.ORACLE_EARLIEST_MS + 120_000]
+        f = self.tmp / "cap-picks.jsonl"
+        f.write_text('{"mint":"%s","pick":false}\n{"mint":"So11111111111111111111111111111111111111112","pick":true}\n{"hb":true,"t_ms":%d}\n' % (MINT, now[0] - 10_000))
+        o = c.StaleCheckedPickOracle(f, now_ms=lambda: now[0])
+        self.assertIs(o(MINT), False)
+        with self.assertRaises(h5.OracleUndecided):
+            o("11111111111111111111111111111111")
+        now[0] += 51_000  # 61 s after the heartbeat
+        with self.assertRaises(c.OracleStale):
+            o(MINT)
+        self.assertIs(o("So11111111111111111111111111111111111111112"), True)  # a pick never flips; True refuses the buy anyway
+        with f.open("a") as fh:
+            fh.write('{"hb":true,"t_ms":%d}\n' % (now[0] + 6_000))  # more than 5 s in the future: a clock fault
+        with self.assertRaises(c.OracleStale):
+            o(MINT)
+        g = self.tmp / "no-hb.jsonl"
+        g.write_text('{"mint":"%s","pick":false}\n' % MINT)
+        with self.assertRaises(c.OracleStale):
+            c.StaleCheckedPickOracle(g, now_ms=lambda: now[0])(MINT)
+        e = self.env(oracle=c.StaleCheckedPickOracle(g, now_ms=lambda: now[0]))
+        Path(e.ex.final_marker).parent.mkdir(parents=True, exist_ok=True)
+        Path(e.ex.final_marker).write_text("")
+        e.set_clock(now[0])
+        self.assertEqual(e.ex._seal_reason(c._MintOnly(MINT), now[0]), "seal_oracle_error")
