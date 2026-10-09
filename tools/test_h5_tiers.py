@@ -255,11 +255,11 @@ def test_the_runbook_creates_tier_with_t0_at_go_live_and_has_the_step_procedure(
 
 def test_the_runbook_names_the_final_shadow_head_and_gate():
     t = runbook()
-    assert "fe7eb43" not in t and t.count("3dbe1de") >= 3
-    assert "#477 head, `3dbe1de` or later" in t and "`base_breaks_unresolved_settled` (the executor's gate)" in t
+    assert "fe7eb43" not in t and t.count("d3b69d0") >= 3
+    assert "#477 head, `d3b69d0` or later" in t and "`base_breaks_unresolved_settled`, the gate)" in t
     assert "| `bad_intent:base_breaks_unresolved_settled` |" in t and "| `s0_before_history` |" in t
     going = t[t.index("## Going live (manager, then Helm)"):t.index("## Step up / step down a tier")]
-    assert "3dbe1de or later" in going
+    assert "d3b69d0 or later" in going
     for name in re.findall(r'"(s0_[a-z_]+)"', EXECUTOR_SRC.split("S0_ANCHOR_REASONS = frozenset({")[1].split("})")[0]):
         assert name in dc.S0_REFUSALS, name  # every s0 anchor refusal the executor has is one the check counts
     assert "bad_intent:base_breaks_unresolved_settled" in dc.NEW_FIELD_REFUSALS

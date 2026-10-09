@@ -26,7 +26,7 @@ is never echoed into an alert. A failing `sudo -n` is an ALERT (sudo_unavailable
                 installed unit files differing from the pinned copies or any drop-in on them.
   STOPS/ALERTS  from the live ledger (window = --window-hours, default 6): executor budget stops (total_loss_stop, daily_loss_stop,
                 max_trades_day, max_attempts, max_days, end_instant, balance_floor), every `alert` row, s0_recv_late / s0_unverifiable (3 or
-                more), and triggers refused for the two #477 fields (the shadow job is not at #477 head 3dbe1de or later). The sealed stub
+                more), and triggers refused for the two #477 fields (the shadow job is not at #477 head d3b69d0 or later). The sealed stub
                 (bad_intent:suppressed) is expected and never an alert.
   UNIT FILES    the installed unit files equal the pinned copies; the drop-in list comes from systemd (DropInPaths) and may hold only live.conf
                 (equal to the pinned drop-in) and 10-shadow-feed.conf (passing check-h5-unit.py --shadow-feed).
@@ -99,6 +99,7 @@ HALT_MEANING = {
     "out_of_rule_entry": "a buy landed outside the rule's entry window",
     "landing_median_gt_3s": "median trigger-to-landing above 3 s",
     "late_sells_gt_5pct": "more than 5% of landed sells late",
+    "pre_unlinked_share": "triggers traded although their predecessor print may be missing are more than 15% of landed buys (judged from 20 landed)",
 }
 # Executor budget stops, written as `skip` rows (reason=...) for every trigger refused while they are in force (DEC-024 section 8: "stop fired").
 BUDGET_STOPS = {
@@ -114,11 +115,14 @@ ALERT_MEANING = {
     "tier_file_problem": "the TIER file failed the executor's checks (not a regular root:root 0644 file, or not exactly T0/T1/T2); it runs T0 meanwhile",
     "tier_step_down_due": "a halt or loss stop above T0: the manager asks and Helm steps the tier down (runbook \"Step up / step down a tier\"); the executor never edits the file",
     "s0_anchor_refusals": "several triggers refused on the s0 anchor in a short time",
+    "config_clamps_tier": "a config holds a tier-scaled limit below the active tier's table value, so the ladder is partly off and that tier runs at the config's numbers (the shipped configs set none: someone edited a config)",
+    "shadow_schema_mismatch": "a shadow record lacks keys the executor requires, so every such trigger is refused as bad_intent:missing_<key>: the shadow job is not at #477 head d3b69d0 or later",
+    "trigger_pre_unlinked": "hourly: triggers were traded although their predecessor print may be missing (marked trigger_pre_unlinked on the decision row); more than 15% of landed buys halts as pre_unlinked_share",
 }
 NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"  # only names that look like names are ever printed from a file
 # Trigger refusals the executor ledgers as `skip` rows. Printing the reason NAMES is fine; they are fixed strings.
 S0_REFUSALS = ("s0_recv_late", "s0_unverifiable", "s0_before_history")
-NEW_FIELD_REFUSALS = ("bad_intent:s0_minus_announced_slots", "bad_intent:base_breaks_unresolved_settled")  # the two fields the executor gates on (#477 head 3dbe1de)
+NEW_FIELD_REFUSALS = ("bad_intent:s0_minus_announced_slots", "bad_intent:base_breaks_unresolved_settled")  # the two fields the executor gates on (#477 head d3b69d0)
 EXPECTED_REFUSALS = ("bad_intent:suppressed",)  # #477's sealed stub from 2026-10-16T01Z: a refusal by design, never an alert
 S0_REFUSAL_ALERT_N = 3
 SCHEMA_REFUSAL_ALERT_N = 5
@@ -795,7 +799,7 @@ def check_refusals(host: Host, rep: Report, now: float, window_s: float = 6 * 36
     if missing or (new_fields >= SCHEMA_REFUSAL_ALERT_N and decisions == 0):
         shown = ", ".join(f"{r} x{n}" for r, n in {**missing, **{r: counts[r] for r in NEW_FIELD_REFUSALS if counts[r]}}.items())
         rep.alert("h5_feed_schema", f"triggers are refused for the trigger fields ({shown}) and none was acted on: the shadow job is probably not running at "
-                                    "#477 head 3dbe1de or later (the head that writes s0_minus_announced_slots and base_breaks_unresolved_settled)")
+                                    "#477 head d3b69d0 or later (the head whose records carry every key the executor requires, among them s0_minus_announced_slots and base_breaks_unresolved_settled)")
 
 
 def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] = print,

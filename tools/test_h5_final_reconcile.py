@@ -65,7 +65,7 @@ def test_s0_refusals_alert_from_three_inside_the_six_hour_window(tmp_path):
 def test_feed_schema_alert_means_the_shadow_job_is_at_the_wrong_head(tmp_path):
     field = "bad_intent:base_breaks_unresolved_settled"
     rc, out = go(ledger_world(*skips("bad_intent:missing_s0_minus_announced_slots", 1)), tmp=tmp_path / "missing")
-    assert "h5_feed_schema" in alerts(out) and "3dbe1de or later" in out
+    assert "h5_feed_schema" in alerts(out) and "d3b69d0 or later" in out
     decision = {"kind": "decision", "ts_ms": int((NOW - 60) * 1000)}
     rc, out = go(ledger_world(*skips(field, 5), decision), tmp=tmp_path / "with_decision")
     assert "h5_feed_schema" not in alerts(out)  # refusals next to real decisions are data quality, not the wrong head
@@ -94,7 +94,7 @@ def test_refusal_and_halt_alerts_reach_discord_and_the_sealed_stub_does_not(tmp_
     p2 = Poster()
     h.files[f"{H5}/live/h5-ledger.jsonl"] = ledger({"kind": "start", "user": dc.WALLET, "ts_ms": 1}, *skips("bad_intent:missing_base_breaks_unresolved", 1))
     watch_go(h, tmp_path / "schema.json", p2)
-    assert "ALERT h5_feed_schema" in p2.posts[0][1] and "3dbe1de" in p2.posts[0][1]
+    assert "ALERT h5_feed_schema" in p2.posts[0][1] and "d3b69d0" in p2.posts[0][1]
     p3 = Poster()
     h.files[f"{H5}/live/h5-counters.json"] = json.dumps({"halts": {"late_sells_gt_5pct": {}}}).encode()
     watch_go(h, tmp_path / "halt.json", p3)
@@ -113,6 +113,10 @@ def test_pinned_configs_are_the_executor_branchs_final_ones():
         assert not {"late_sell_min_n", "sell_priority_lamports", "escalated_priority_lamports"} & set(cfg)
         assert not set(h5_executor.PINNED_PATH_KEYS) & set(cfg)
         h5_executor.H5Limits.from_config(cfg)  # the executor accepts both files as shipped
+        assert not {"stake_lamports", "max_open", "max_trades_per_day", "daily_loss_lamports", "total_loss_lamports"} & set(cfg)  # the tier table owns these five
+        for tier, table in h5_executor.TIERS.items():  # and what is shipped clamps no tier below its table (what config_clamps_tier would report)
+            lim = h5_executor.H5Limits.from_config(cfg, tier)
+            assert all(getattr(lim, k) == v for k, v in table.items()), tier
     assert live["end_ms"] == 1792110600000 and "end_ms" not in dry
     assert datetime.datetime.fromtimestamp(live["end_ms"] / 1000, datetime.timezone.utc).isoformat() == "2026-10-16T00:30:00+00:00"
     for key in ("late_sell_min_n", "sell_priority_lamports", "escalated_priority_lamports"):
@@ -126,7 +130,7 @@ def test_pinned_configs_are_the_executor_branchs_final_ones():
 
 def test_runbook_states_the_final_facts():
     t = RUNBOOK.read_text()
-    assert t.count("3dbe1de") >= 3 and "or later" in t and "2026-10-16T00:30Z" in t and "1792110600000" in t
+    assert t.count("d3b69d0") >= 3 and "or later" in t and "2026-10-16T00:30Z" in t and "1792110600000" in t
     assert "s0_recv_late" in t and "s0_unverifiable" in t and "bad_intent:suppressed" in t and "h5_feed_schema" in t and "h5_s0_refusals" in t
     for name in set(re.findall(r'_latch\("([a-z0-9_]+)"', EXECUTOR_SRC)):
         assert f"`{name}`" in t, name  # every latched halt is in the runbook's table
@@ -135,4 +139,4 @@ def test_runbook_states_the_final_facts():
     assert "live_ok={live_ok_valid() or 'valid'} ({LIVE_OK_PATH})" in EXECUTOR_SRC and "stop_file={Path(" in EXECUTOR_SRC
     assert "late_sell_min_n" in t and "code constants" in t
     going = t[t.index("## Going live (manager, then Helm)"):t.index("## Stop, halt, status")]
-    assert "3dbe1de or later" in going
+    assert "d3b69d0 or later" in going
