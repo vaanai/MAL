@@ -138,3 +138,10 @@ Proposed by the manager on 2026-10-08. The owner's OK is asked by 2026-10-09T20:
 - **§2, §3, §6 and §7 do not apply to EXP-024.** It is not a challenger to a champion and has no sim arm to pair. As in Amendment 1 for CAP-PICK, no backward-block PASS is required (DEC-023 §6 gives the reasons). A pass leads only to the DEC-018 path, the second branch of §7. The 10-16 FINAL stays reported compromised (DEC-016 Am.2).
 
 **Not changed:** §1, §4, §5 (for EXP-022), §6, §9, the promotion gate, and DEC-016 Am.2 and Am.3.
+
+## Amendment 3 (2026-10-09): a third alpha slot for EXP-025 (C1-NF), subject to the owner's written OK
+
+Proposed by the manager's worker draft on 2026-10-09; **it takes effect only with the owner's written OK on DEC-025 item O1** and on merge, before 2026-10-10T00:00Z. No hour was read to write it.
+
+- **Section 8 (cumulative error).** Slot 1 is EXP-022, slot 2 is EXP-024 (Amendment 2). **Slot 3, alpha 0.025, is the register of [DEC-025](DEC-025-c1nf-family.md) section 2**, whose only member at this amendment is [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md). The overall rate across the promotion-eligible October families is then bounded by 0.075, not 0.05. A fourth slot needs a new DEC.
+- **Unchanged.** EXP-022's thresholds, counted window and seal; EXP-024's 0.020 / 0.005 split. Sections 2, 3, 6 and 7 do not apply to EXP-025 (it is not a challenger to a champion). As in Amendment 1 and Amendment 2, no backward-block PASS is required; a pass leads only to the DEC-018 path and the owner's yes.

@@ -247,6 +247,12 @@ Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-
 - **Not Option X.** The rejected Option X made EXP-022 a second owner whose counted picks the FINAL would have priced first. EXP-024 is a reader, after the FINAL, of hours the FINAL already priced for EXP-012's own entries.
 - **The FINAL remains reported compromised** under DEC-016 Amendment 2. This amendment does not change that.
 
+## Amendment 4 (2026-10-09): EXP-025 (C1-NF) reads of the forward walk's hours
+
+DEC-014(a) disclosure. No forward outcome was read to make this amendment. The FINAL's window, read, verdict, seal and tools are unchanged; it remains **reported compromised** (DEC-016 Am.2).
+
+[EXP-025](EXP-025-c1nf-part1-prereg.md) (C1-NF, [DEC-025](../DEC/DEC-025-c1nf-family.md)) is a counted reader, not an owner, of forward-1002. It reads `[2026-10-02T15, 2026-10-16T01)` for wallet-ledger features and for counted decisions from 2026-10-10T00, **only after the FINAL (A) report is written** ([DEC-016 Amendment 8](../DEC/DEC-016-exp012-forward-on-chain-hours.md)). It opens no file Amendment 2 keeps closed, uses neither the (B) V-map files nor any EXP-012 model, threshold or pick list, and has no EXP-012 component, so the FINAL's picks do not select C1-NF's trades and C1-NF's outcomes do not change the FINAL. It uses its own V source. It is the same pattern as Amendment 3 (EXP-024).
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
