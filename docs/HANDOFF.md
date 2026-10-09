@@ -86,6 +86,7 @@ The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The
 6. **C1-NF:** draft DEC-026 is #522, awaiting the owner's 7 [OWNER CHOOSES] items and 13 quant-proof questions.
    - **Key point:** at 0.02 SOL and 505k lamports per send, fixed costs are about 5% of stake, which is more than C1-NF's edge. The first tier must be larger, or the fee lower.
    - #504 was closed unmerged and needs a rebase. #503 lacks decision-time reserves.
+7. **H5 champion-challenger:** draft `DEC/DEC-027-h5-champion-challenger.md` (docs only, draft PR). Paper challengers C-BX (exit on the observed BOOST end), C-Q35 (Q\* 35) and C-LF (loss filter, rule text TBD) beside live v1, one root-owned `/etc/mal-h5/VARIANT` file, a switching rule with every threshold [PROPOSED] for quant-proof, and the owner's dated line per switch. C-SYN is blocked until Look 2 is read (EXP-024 Am.4 D1). Needs a companion EXP-024 amendment before any challenger outcome exists, and the owner's answer on extending the canary past a likely Look 1 FAIL.
 
 ### STATE 10-09 ~07:35Z (older)
 
