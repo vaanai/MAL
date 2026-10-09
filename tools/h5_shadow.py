@@ -113,6 +113,7 @@ SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp(
 SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
+SETTLE_SLOTS = 2  # a print this close to the high-water slot may still be waiting for a predecessor that is in flight
 LOOKS_WINDOW = 3  # socket-drop memory: the last 3 looks (3 x 5 s housekeeping) decide whether every socket was down
 REJECT_LOG_MAX = 50  # reject records written per run (the counters are unbounded)
 # heuristic only (counter unannounced_fresh): a first-seen print that looks like a new pool's first print
@@ -255,7 +256,36 @@ class Pr:
         return self.b + self.db
 
 
+def common_down(states: Sequence[dict], now_ms_: int) -> list[tuple[int, int]]:
+    """Intervals during which EVERY socket was down. states: observe.link_state snapshots {"up", "down_since_ms", "intervals": [[start, end]...]}.
+    A socket that is down right now contributes its open interval [down_since_ms, now]."""
+    per: list[list[tuple[int, int]]] = []
+    for st in states:
+        iv = [(int(a), int(b)) for a, b in st.get("intervals") or []]
+        if not st.get("up") and st.get("down_since_ms") is not None:
+            iv.append((int(st["down_since_ms"]), int(now_ms_)))
+        per.append(sorted(iv))
+    if not per:
+        return []
+    out = per[0]
+    for iv in per[1:]:
+        nxt: list[tuple[int, int]] = []
+        for a1, b1 in out:
+            for a2, b2 in iv:
+                a, b = max(a1, a2), min(b1, b2)
+                if b > a:
+                    nxt.append((a, b))
+        out = sorted(nxt)
+        if not out:
+            return []
+    return out
+
+
 class Pool:
+    @property
+    def base_unresolved(self) -> int:
+        return max(0, self.pre_excess - 1)
+
     def __init__(self, pool: str, mint: str | None, s0: int, first: Pr, v0: int, announced_slot: int | None, pda: str | None) -> None:
         self.pool, self.mint, self.s0, self.v0 = pool, mint, s0, v0
         self.s0_recv_ms, self.s0_ts = first.recv_ms, first.ts
@@ -283,11 +313,16 @@ class Pool:
         self.no_sps = 0
         self.disagree = 0  # sells in [0, 300] s where the per-print-V and fixed-V Q fall on different sides of 40 SOL
         self.slot_regress = 0  # prints whose slot is lower than the previous print's (arrival order is not slot order)
-        # order-independent chain check: a print's pre-trade base must equal SOME print's post-trade base (multiset match; the first print
-        # to arrive is excluded). Unresolved = pres with no post left. A pure reorder resolves to 0; a missed print leaves >= 1.
+        # Order-independent chain check over the multiset of base values. Every print's pre-trade base must equal SOME print's post-trade base,
+        # except exactly one: the chain head. pre_excess = sum over values of max(0, pre_count - post_count); unresolved = max(0, pre_excess - 1).
+        # Every permutation of a complete chain gives 0 (the head is whichever print really came first, however the prints arrived); a dropped
+        # mid-life print gives 1. Known blind spot: a missed print is masked when the trigger print's post base equals the missed print's
+        # post base (an exact-token round trip between them); this needs zero net token flow and is rare. A dropped HEAD is not caught here;
+        # the s0 anchor (announced_before_gap, s0_minus_announced_slots) covers it.
         self.pre_cnt: collections.Counter = collections.Counter()
         self.post_cnt: collections.Counter = collections.Counter()
-        self.base_unresolved = 0
+        self.pre_excess = 0
+        self.s0_reanchored_slots = 0  # a print below s0 arrived late and s0 moved down by this many slots (only done before any trigger)
         self.sealed_cache: bool | None = None
         self.skip_logged = False
         self.closed = False
@@ -330,6 +365,9 @@ class Engine:
         self.mint_pools: dict[str, set[str]] = {}
         self._feed_prev: dict[int, dict] = {}
         self._looks: collections.deque = collections.deque(maxlen=LOOKS_WINDOW)
+        self._prev_look_ms: int | None = None
+        self._flagged_starts: collections.deque = collections.deque(maxlen=64)  # starts of common-outage pieces already flagged
+        self._sealed_hours: dict[int, int] = {}  # UTC hour index -> sealed decisions (unlabelled aggregate; the only trace of a sealed decision)
 
     # ---- emit -----------------------------------------------------------------------------------------------
     def emit(self, rec: dict) -> None:
@@ -400,6 +438,7 @@ class Engine:
             self._gap("silence", at_ms=now, silent_ms=now - self.last_event_ms)
         self._close_due(now)
         self._evict_announced(now)
+        self._flush_sealed_hours(now)
         cut = now - SEEN_TTL_S * 1000
         while self.seen and next(iter(self.seen.values())) < cut:
             self.seen.popitem(last=False)
@@ -413,18 +452,24 @@ class Engine:
         self.counters["gaps"] += 1
         rec = {"type": "gap", "kind": kind, "open_pools": len(self.pools), "flags_pools": flag_pools, **kw}
         if flag_pools:
-            self.last_flag_gap_ms = self.wall() if at_ms is None else at_ms
+            at = self.wall() if at_ms is None else at_ms
+            self.last_flag_gap_ms = at if self.last_flag_gap_ms is None else max(self.last_flag_gap_ms, at)
             for p in self.pools.values():
                 p.gaps.append({"kind": kind, **{k: v for k, v in kw.items() if isinstance(v, (int, str))}})
         self.emit(rec)
 
     def note_feed_stats(self, key: int, snap: dict, now_ms_: int) -> None:
         """Compare the source's reconnect counters with the last look. Any advance is a gap record carrying the cause (close codes, handshake
-        rejections, errors, which socket). On a redundant feed the open pools are flagged when the DISTINCT sockets that reconnected over the last
-        LOOKS_WINDOW looks (15 s) reach the socket count (an overlapping outage across looks counts; one socket flapping twice does not); on a single
-        socket every reconnect flags them."""
+        rejections, errors, which socket).
+
+        Whether the open pools are FLAGGED depends on whether every socket was down at a common instant. With per-socket link state
+        (snap["socket_states"], from observe.link_state: drop -> resubscribe intervals, an unsubscribed socket is down since its drop) the
+        common instant is exact, and the flag's time is the real start of the common outage, not the look time. Without link state
+        (a stateless snapshot) the fallback is the counter rule: distinct sockets that reconnected over the last LOOKS_WINDOW looks reach
+        the socket count. A single socket always flags."""
         if key not in self._feed_prev:  # a rebuilt source starts at zero: only the current one is tracked
             self._looks.clear()
+            self._flagged_starts.clear()
         prev = self._feed_prev.get(key) or {"reconnects": 0, "closes": {}, "rejections": {}, "errors": {}, "per_socket": []}
         self._feed_prev = {key: snap}
         delta = snap["reconnects"] - prev["reconnects"]
@@ -432,16 +477,28 @@ class Engine:
         ps_prev = prev.get("per_socket") or [0] * n
         per_socket = [c - (ps_prev[i] if i < len(ps_prev) else 0) for i, c in enumerate(snap.get("per_socket") or [])]
         self._looks.append(per_socket)  # every look is remembered, with or without a reconnect
-        if delta <= 0:
+        states = snap.get("socket_states")
+        pieces: list[tuple[int, int]] = []
+        if states:
+            pieces = [(a, b) for a, b in common_down(states, now_ms_) if a not in self._flagged_starts and (self._prev_look_ms is None or b > self._prev_look_ms)]
+        self._prev_look_ms = now_ms_
+        if delta <= 0 and not pieces:
             return
         down = sorted({i for look in self._looks for i, d in enumerate(look) if d > 0})  # distinct sockets that reconnected in the last LOOKS_WINDOW looks
+        if states:
+            flag, at = bool(pieces), (min(a for a, _ in pieces) if pieces else now_ms_)
+            for a, _ in pieces:
+                self._flagged_starts.append(a)
+            extra = {"common_down_ms": sum(b - a for a, b in pieces), "common_down_start_ms": at if pieces else None, "link_state": True}
+        else:
+            flag, at, extra = (n == 1 or len(down) >= n), now_ms_, {"link_state": False}
 
         def dd(a: dict, b: dict) -> dict:
             return {k: v - b.get(k, 0) for k, v in a.items() if v > b.get(k, 0)}
 
-        self._gap("socket_reconnect", flag_pools=(n == 1 or len(down) >= n), at_ms=now_ms_, sockets_down_recent=down, delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
-                  redundant=n > 1, per_socket_delta=per_socket, delta_closes=dd(snap["closes"], prev["closes"]),
-                  delta_rejections=dd(snap["rejections"], prev["rejections"]), delta_errors=dd(snap["errors"], prev["errors"]))
+        self._gap("socket_reconnect", flag_pools=flag, at_ms=at, sockets_down_recent=down, delta_reconnects=delta, reconnects_total=snap["reconnects"],
+                  sockets=n, redundant=n > 1, per_socket_delta=per_socket, delta_closes=dd(snap["closes"], prev["closes"]),
+                  delta_rejections=dd(snap["rejections"], prev["rejections"]), delta_errors=dd(snap["errors"], prev["errors"]), **extra)
 
     # ---- trades ---------------------------------------------------------------------------------------------
     def on_trade(self, row: dict) -> None:
@@ -533,7 +590,9 @@ class Engine:
             if rel > CHAIN_TOL:
                 p.chain_breaks += 1
                 self.counters["chain_breaks"] += 1
-        self._base_chain(p, pr, first=not p.prints)
+        if p.prints and pr.slot < p.s0:
+            self._below_s0(p, pr)
+        self._base_chain(p, pr)
         p.prints.append(pr)
         qpv, qfv = pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)
         if pr.slot - p.s0 <= 1500:  # first 300 s at the fastest slot time the rule allows (0.2 s); a monitoring field only
@@ -543,18 +602,43 @@ class Engine:
         if not pr.buy:
             self._eval(p, pr, len(p.prints) - 1)
 
+    def unresolved_settled(self, p: Pool) -> int:
+        """Same multiset check, but only the pre-trade bases of SETTLED prints (slot <= high-water - SETTLE_SLOTS) need a matching post-trade base
+        (posts of every print count). base_breaks_unresolved counts the arrival prefix as it stands, so a predecessor still in flight in the last
+        slot or two reads as a break at decision time; this one waits for those prints to settle and still catches a print missing for longer.
+        One chain head is subtracted. With no settled print it is 0."""
+        if self.hw_slot is None:
+            return p.base_unresolved
+        posts = collections.Counter(int(r.b_post) for r in p.prints)
+        pres = collections.Counter(int(r.b) for r in p.prints if r.slot <= self.hw_slot - SETTLE_SLOTS)
+        return max(0, sum(max(0, n - posts.get(v, 0)) for v, n in pres.items()) - 1)
+
+    def _below_s0(self, p: Pool, pr: Pr) -> None:
+        """A print with a slot below s0 arrived after s0 was set (the pool's true first print was delivered late). Before any trigger this is a
+        pure reorder across slots and s0 moves down to it (safe: sells already evaluated against the later s0 had a smaller t, so none that
+        qualifies under the true s0 was skipped). After a trigger the exit plan is already anchored on the old s0, so the pool is flagged."""
+        if p.trig:
+            p.gaps.append({"kind": "slot_below_s0", "s0": p.s0, "slot": pr.slot})
+            self.counters["slot_below_s0_after_trigger"] += 1
+            return
+        p.s0_reanchored_slots += p.s0 - pr.slot
+        p.s0 = pr.slot
+        if pr.ts:
+            p.s0_ts = pr.ts
+        p.sealed_cache = None  # the seal window is judged on the s0 block time
+        self.counters["s0_reanchored"] += 1
+
     @staticmethod
-    def _base_chain(p: Pool, pr: Pr, first: bool) -> None:
-        """Multiset match of pre-trade to post-trade base reserves, incremental. base_unresolved = sum over values of max(0, pres - posts)."""
+    def _base_chain(p: Pool, pr: Pr) -> None:
+        """Multiset counts of pre- and post-trade base reserves, incremental. pre_excess = sum over values of max(0, pres - posts)."""
         bpre, bpost = int(pr.b), int(pr.b_post)
-        if not first:
-            p.pre_cnt[bpre] += 1
-            if p.pre_cnt[bpre] > p.post_cnt[bpre]:
-                p.base_unresolved += 1
+        p.pre_cnt[bpre] += 1
+        if p.pre_cnt[bpre] > p.post_cnt[bpre]:
+            p.pre_excess += 1
         old = p.post_cnt[bpost]
         p.post_cnt[bpost] += 1
         if p.pre_cnt[bpost] > old:
-            p.base_unresolved -= 1
+            p.pre_excess -= 1
 
     # ---- BOOST tracking -------------------------------------------------------------------------------------
     def _boost_update(self, p: Pool, pr: Pr) -> None:
@@ -619,10 +703,10 @@ class Engine:
                 spent, ident, src = self.boost_spent(p)
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
-                    self.counters["skipped_no_sps_would_trigger"] += 1
-                    if self._sealed(p):
-                        self.emit({"type": "skipped_no_sps", "pool": p.pool, "slot": pr.slot, "suppressed": SEAL_REASON})
+                    if self._sealed(p):  # EXP-022 s9: no per-pool trace of a decision; only the unlabelled hourly aggregate
+                        self._note_sealed_decision(pr.recv_ms)
                         return
+                    self.counters["skipped_no_sps_would_trigger"] += 1
                     self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
                                "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
                                "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src})
@@ -650,7 +734,10 @@ class Engine:
         el = math.ceil(EXIT_LAG_S / sps - 1e-9)
         exit_slot = p.s0 + int(round(EXIT_AFTER_S0_S / sps))
         detect = self.wall()
-        sealed = self._sealed(p)
+        if self._sealed(p):  # EXP-022 s9 (from 2026-10-16T01Z): no per-pool trigger record, no counters, no pending outcome, no strip
+            p.trig[var] = {"sealed": True}
+            self._note_sealed_decision(pr.recv_ms)
+            return
         rec = {
             "type": "trigger", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "s0_t_recv_ms": p.s0_recv_ms,
             "slot": pr.slot, "signature": pr.sig, "t_since_s0_s": t, "sps": sps,
@@ -665,21 +752,19 @@ class Engine:
             "landing_slot_primary": pr.slot + k_p, "landing_slot_binding": pr.slot + k_b, "entry_slots": {"primary": k_p, "binding": k_b},
             "exit_trigger_slot": exit_slot, "exit_landing_slot": exit_slot + el, "exit_lag_slots": el,
             "prints_seen": len(p.prints), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
-            "base_breaks_unresolved": p.base_unresolved, "announced_slot": p.announced_slot,
+            "base_breaks_unresolved": p.base_unresolved, "base_breaks_unresolved_settled": self.unresolved_settled(p),
+            "announced_slot": p.announced_slot,
             "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
+            "s0_reanchored_slots": p.s0_reanchored_slots,
             "sps_n": None if self.sps_fn else self.clock.n_points(), "sps_span_s": None if self.sps_fn else self.clock.span_s(),
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
         }
-        p.trig[var] = {"slot": pr.slot, "sps": sps, "sealed": True} if sealed else rec  # a sealed pool keeps no prices
+        p.trig[var] = rec
         ladder = {T: p.s0 + int(round(T / sps)) for T in EXIT_LADDER_S}  # exit trigger slot per ladder point
         rec["exit_ladder_trigger_slots"] = {str(int(T)): v for T, v in ladder.items()}
         p.pending.append({"variant": var, "idx": idx, "sps": sps, "k": {"primary": k_p, "binding": k_b}, "exit_slot": exit_slot, "exit_land": exit_slot + el,
                           "trig_slot": pr.slot, "el": el, "ladder": ladder, "resolve_at": max(ladder.values()) + el})
         self.counters[f"triggers_{var}"] += 1
-        if sealed:  # EXP-022 s9: no post-decision price of a possible pick is written inside the window; the executor refuses this stub
-            self.counters["triggers_suppressed"] += 1
-            self.emit({"type": "trigger", "variant": var, "pool": p.pool, "slot": pr.slot, "suppressed": SEAL_REASON})
-            return
         self.emit(rec)
 
     # ---- outcomes -------------------------------------------------------------------------------------------
@@ -703,10 +788,7 @@ class Engine:
         if pend not in p.pending:
             return
         p.pending.remove(pend)
-        if self._sealed(p):
-            self.counters["outcomes_suppressed"] += 1
-            self.emit({"type": "outcome", "variant": pend["variant"], "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
-                       "suppressed": SEAL_REASON})
+        if self._sealed(p):  # unreachable for a sealed pool (_fire creates no pending outcome); silent if it ever happens
             return
         var, sps, X_exit = pend["variant"], pend["sps"], pend["exit_land"]
         complete = (self.hw_slot is not None and self.hw_slot >= pend["resolve_at"]) or not final
@@ -777,12 +859,10 @@ class Engine:
         reprice any landing / exit slot exactly (state at X = pre of the first row with slot > X, else post_last), e.g. s0 + round(330 / sps_path)."""
         if not p.trig:
             return
+        if sealed:  # EXP-022 s9: not even a stub (its existence would say the pool triggered)
+            return
         start = min(r["slot"] for r in p.trig.values())
         base = {"type": "strip", "pool": p.pool, "mint": p.mint, "s0": p.s0, "from_slot": start, "variants": sorted(p.trig)}
-        if sealed:
-            self.counters["strips_suppressed"] += 1
-            self.emit({**base, "suppressed": SEAL_REASON})
-            return
         prints = [r for r in p.prints if r.slot >= start]
         rows = [[r.slot, int(round(r.q_pre("pv", p.v0))), int(round(r.q_pre("fv", p.v0))), int(r.b)] for r in prints[:STRIP_MAX_ROWS]]
         last = p.prints[-1]
@@ -833,7 +913,9 @@ class Engine:
             "min_q_fv_sol": None if (sealed or p.min_q_fv is None) else p.min_q_fv / 1e9, "sealed": sealed,
             "sps_path": self._sps_path(p), "pv_fv_disagree_sells": None if sealed else p.disagree,
             "triggered": None if sealed else sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
-            "base_breaks_unresolved": p.base_unresolved, "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
+            "base_breaks_unresolved": p.base_unresolved, "base_breaks_unresolved_settled": self.unresolved_settled(p),
+            "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
+            "s0_reanchored_slots": p.s0_reanchored_slots,
             "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
@@ -852,6 +934,20 @@ class Engine:
     def close_all(self, reason: str) -> None:
         for p in list(self.pools.values()):
             self._close(p, reason)
+        self._flush_sealed_hours(self.wall(), final=True)
+
+    def _note_sealed_decision(self, at_ms: int) -> None:
+        h = int(at_ms) // 3_600_000
+        self._sealed_hours[h] = self._sealed_hours.get(h, 0) + 1
+
+    def _flush_sealed_hours(self, now_ms_: int, final: bool = False) -> None:
+        """One unlabelled record per completed UTC hour: how many sealed decisions (trigger or skipped candidates) happened. No pool, mint, slot or
+        variant. The only trace of a sealed decision."""
+        cur = int(now_ms_) // 3_600_000
+        for h in sorted(k for k in self._sealed_hours if final or k < cur):
+            n = self._sealed_hours.pop(h)
+            hour = datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+            self.emit({"type": "sealed_hour", "hour": hour, "decisions": n, "partial": bool(final and h >= cur)})
 
 
 def _neg(s: str) -> tuple:
@@ -959,8 +1055,12 @@ def feed_snapshot(source: Any) -> dict | None:
                 out[str(k)] = out.get(str(k), 0) + int(v)
         return out
 
-    return {"reconnects": stats.reconnects, "closes": merged("closes"), "rejections": merged("rejections"), "errors": merged("errors"),
+    links = [getattr(s, "link", None) for s in parts]
+    snap = {"reconnects": stats.reconnects, "closes": merged("closes"), "rejections": merged("rejections"), "errors": merged("errors"),
             "per_socket": [int(getattr(s, "reconnects", 0)) for s in parts], "sockets": len(parts)}
+    if all(l is not None for l in links):
+        snap["socket_states"] = [l.snapshot() for l in links]
+    return snap
 
 
 def write_status(path: Path, status: dict) -> None:
@@ -1205,6 +1305,22 @@ def replay_rows(tape_dir: str, work_dir: str, hours: Sequence[str]) -> tuple[Ite
     return gen(), meta, sps_pool
 
 
+def shuffle_within_slot(rows: Iterable[dict], seed: int) -> Iterator[dict]:
+    """Measurement aid: permute rows that share a slot (arrival order is not tx order on the live feed), seeded."""
+    import random
+
+    rng = random.Random(seed)
+    buf: list[dict] = []
+    for r in rows:
+        if buf and r["slot"] != buf[0]["slot"]:
+            rng.shuffle(buf)
+            yield from buf
+            buf = []
+        buf.append(r)
+    rng.shuffle(buf)
+    yield from buf
+
+
 def replay(rows: Iterable[dict], meta: dict[str, dict], engine: Engine) -> None:
     """Feed rows; announce each pool one slot before its first print (the tape's meta is its CreatePool)."""
     announced: set[str] = set()
@@ -1254,6 +1370,8 @@ def run_replay(args: argparse.Namespace) -> int:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
     rows, meta, sps_pool = replay_rows(args.replay_tape, args.work_dir, hours)
+    if args.shuffle_slot_seed is not None:
+        rows = shuffle_within_slot(rows, args.shuffle_slot_seed)
     records: list[dict] = []
     sps_fn = (lambda p: sps_pool.get(p.pool)) if args.sps == "pool" else None
     engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn)
@@ -1285,6 +1403,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--replay-tape", default=None, help="run the engine over this exploration tape dir instead of the live feed")
     ap.add_argument("--replay-hours", default=None, help="comma-separated tape hours, e.g. 2026-09-20T12,2026-09-20T13")
     ap.add_argument("--work-dir", default=WORK_DIR)
+    ap.add_argument("--shuffle-slot-seed", type=int, default=None, help="replay: permute prints within a slot (seeded) to measure the reorder-proof chain check")
     ap.add_argument("--sps", default="pool", choices=("pool", "rolling"), help="replay: frozen per-pool sps (parity) or the live rolling slot clock")
     ap.add_argument("--compare-frozen", default=None, help="parquet of the frozen rule's trades (boostdip_frozen_conf.parquet)")
     ap.add_argument("--compare-s0", default=None, help="compare pools whose first print is in this UTC hour or day prefix (default: the first replayed hour)")

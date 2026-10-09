@@ -26,6 +26,7 @@ import certifi
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
+from observe.link_state import LinkState
 from observe.trade_decode import TRADE_PROGRAMS
 
 log = logging.getLogger("mal.trade_tape")
@@ -197,6 +198,14 @@ class _ReconnectStats:
         self.rejections: dict[int, int] = {}
         # Websocket close codes seen (e.g. {1006: 47}); 1006 = no close frame.
         self.closes: dict[int, int] = {}
+        # Up / down history (observe.link_state). Additive: the tape recorder does not read it.
+        self.link = LinkState()
+
+    def mark_up(self) -> None:
+        self.link.mark_up()
+
+    def mark_down(self) -> None:
+        self.link.mark_down()
 
     def observe(self, note: RawNotice) -> None:
         self.notes += 1
@@ -243,6 +252,7 @@ async def _iter_ws(
                 for payload in subscribe_payloads:
                     await ws.send(json.dumps(payload))
                     log.info("subscribed feed=%s method=%s id=%s", feed, payload.get("method"), payload.get("id"))
+                stats.mark_up()
                 while not stop.is_set():
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -285,6 +295,7 @@ async def _iter_ws(
             log.warning("ws_error feed=%s err=%s", feed, _safe_err(exc))
         if stop.is_set():
             break
+        stats.mark_down()
         stats.reconnects += 1
         delay = backoff if jitter is None else jitter(backoff)
         log.info("ws_reconnect feed=%s sleep_s=%.1f reconnects=%s%s", feed, delay, stats.reconnects, tag)
@@ -513,6 +524,7 @@ class MultiSocketLogsSource:
             except Exception as exc:  # one socket's failure must not end the feed
                 name = type(exc).__name__
                 stats.errors[name] = stats.errors.get(name, 0) + 1
+                stats.mark_down()
                 log.warning("ws_pump_error socket=%s error_class=%s err=%s", index, name, _safe_err(exc))
                 delay = self._jitter(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_S)

@@ -20,6 +20,7 @@ POOL = "PoolAAAA"
 MINT = "MintAAAA"
 SPS = 0.4
 SOL = 10**9
+_REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
 
 
 def tier_ref(q: float, b: float) -> float:
@@ -892,6 +893,108 @@ class UnresolvedChainTests(unittest.TestCase):
         eng, out = self.feed(chain_tape(1).rows)
         self.assertEqual(eng.pools[POOL].base_unresolved, 0)
 
+    def test_every_permutation_of_a_complete_chain_resolves_to_zero(self):
+        import itertools
+        import random
+
+        t = Tape(q=100 * SOL)
+        t.row(1000, "buy", "A", SOL // 10)
+        t.row(1000, "buy", "B", SOL // 20)
+        t.row(1000, "sell", "A", SOL // 30, tok=t.rows[0]["token_raw"] // 2)  # three prints in the s0 slot
+        for i in range(3, 8):
+            t.row(1000 + 20 * i, "buy", f"T{i}", SOL // 20)
+        r = t.rows
+        for perm in itertools.permutations(range(3)):  # the head is not necessarily the first to arrive
+            eng, out = self.feed([r[k] for k in perm] + r[3:])
+            self.assertEqual(eng.pools[POOL].base_unresolved, 0, perm)
+        rng = random.Random(7)
+        for _ in range(40):  # and any arrival order at all
+            order = list(r)
+            rng.shuffle(order)
+            eng, out = self.feed(order)
+            self.assertEqual(eng.pools[POOL].base_unresolved, 0)
+        eng, out = self.feed([x for k, x in enumerate(r) if k != 4])  # one mid-life print dropped
+        self.assertEqual(eng.pools[POOL].base_unresolved, 1)
+        eng, out = self.feed([x for k, x in enumerate(r) if k not in (4, 5)])  # two adjacent ones dropped
+        self.assertGreaterEqual(eng.pools[POOL].base_unresolved, 1)
+
+    def test_same_slot_swap_of_the_first_two_prints_does_not_stick(self):  # the verifier's repro
+        t = Tape(q=100 * SOL)
+        t.row(1000, "buy", "A", SOL // 10)
+        t.row(1000, "buy", "B", SOL // 20)
+        for i in range(2, 6):
+            t.row(1000 + 20 * i, "buy", f"T{i}", SOL // 20)
+        r = t.rows
+        eng, out = self.feed([r[1], r[0]] + r[2:])
+        p = eng.pools[POOL]
+        self.assertEqual((p.base_unresolved, p.slot_regress, p.s0), (0, 0, 1000))
+        self.assertGreater(p.base_breaks, 0)
+
+    def test_settled_variant_ignores_a_predecessor_still_in_flight_but_not_a_long_missing_one(self):
+        t = Tape(q=100 * SOL)
+        t.row(1000, "buy", "A", SOL // 10)
+        for i in range(1, 5):
+            t.row(1000 + 10 * i, "buy", f"T{i}", SOL // 20)
+        t.row(1100, "buy", "B1", SOL // 20)
+        t.row(1100, "buy", "B2", SOL // 20)
+        drain(t, 1100, 35.0)  # the trigger print is the last of three prints in slot 1100
+        r = t.rows
+        eng, out = make_engine()
+        announce(eng)
+        for x in r[:5] + [r[7], r[6], r[5]]:  # the trigger arrives before its two same-slot predecessors
+            eng.on_trade(x)
+        trig = [x for x in types(out, "trigger") if x["variant"] == "pv"][0]
+        self.assertGreaterEqual(trig["base_breaks_unresolved"], 1)  # the arrival prefix is incomplete at decision time
+        self.assertEqual(trig["base_breaks_unresolved_settled"], 0)  # those prints are inside the settle window
+        # a print missing for longer is still caught once it is outside the window
+        eng2, out2 = make_engine()
+        announce(eng2)
+        for x in r[:2] + r[3:]:  # slot-1020 print never arrives
+            eng2.on_trade(x)
+        eng2.advance(1105, 1_800_000_000_000 + 50_000, None)
+        trig2 = [x for x in types(out2, "trigger") if x["variant"] == "pv"][0]
+        self.assertEqual(trig2["base_breaks_unresolved_settled"], 1)
+        self.assertEqual(eng2.unresolved_settled(eng2.pools[POOL]), 1)
+        eng2.close_all("t")
+        self.assertEqual(types(out2, "pool")[0]["base_breaks_unresolved_settled"], 1)
+
+    def test_late_lower_slot_print_moves_s0_down_before_a_trigger(self):
+        eng, out = make_engine()
+        announce(eng, slot=990)
+        t = Tape(q=100 * SOL)
+        t.row(995, "buy", "A", SOL // 10)
+        for i in range(1, 5):
+            t.row(1000 + 10 * i, "buy", f"T{i}", SOL // 20)
+        drain(t, 1200, 35.0)
+        r = t.rows
+        for x in [r[1], r[0]] + r[2:]:  # the true first print (slot 995) arrives after the print at 1010
+            eng.on_trade(x)
+        p = eng.pools[POOL]
+        self.assertEqual((p.s0, p.s0_reanchored_slots, eng.counters["s0_reanchored"]), (995, 15, 1))
+        trig = [x for x in types(out, "trigger") if x["variant"] == "pv"][0]
+        self.assertEqual((trig["s0"], trig["s0_reanchored_slots"], trig["s0_minus_announced_slots"]), (995, 15, 5))
+        self.assertAlmostEqual(trig["t_since_s0_s"], (1200 - 995) * SPS)
+        self.assertEqual(trig["exit_trigger_slot"], 995 + round(330 / SPS))
+        self.assertEqual(trig["base_breaks_unresolved"], 0)
+        self.assertFalse([g for g in trig["gaps"] if g["kind"] in ("slot_below_s0", "announced_before_gap")])  # a benign reorder is not a gap
+
+    def test_late_lower_slot_print_after_a_trigger_flags_the_pool_and_keeps_s0(self):
+        eng, out = make_engine()
+        announce(eng, slot=990)
+        t = Tape(q=100 * SOL)
+        t.row(995, "buy", "A", SOL // 10)
+        for i in range(1, 5):
+            t.row(1000 + 10 * i, "buy", f"T{i}", SOL // 20)
+        drain(t, 1200, 35.0)
+        r = t.rows
+        for x in r[1:] + [r[0]]:  # the slot-995 print arrives after the trigger
+            eng.on_trade(x)
+        p = eng.pools[POOL]
+        self.assertEqual((p.s0, p.s0_reanchored_slots), (1010, 0))
+        self.assertIn({"kind": "slot_below_s0", "s0": 1010, "slot": 995}, p.gaps)
+        self.assertEqual(eng.counters["slot_below_s0_after_trigger"], 1)
+        self.assertTrue(types(out, "trigger")[0]["s0"] == 1010)  # the already-written trigger keeps its anchor and (earlier) had gap False
+
     def test_trigger_and_pool_records_carry_it(self):
         eng, out = make_engine()
         announce(eng)
@@ -1047,11 +1150,247 @@ class AcrossLooksTests(unittest.TestCase):
         self.assertEqual([g["flags_pools"] for g in types(out, "gap")], [False, False])
 
 
+class CommonDownTests(unittest.TestCase):
+    def st(self, up, down_since=None, intervals=()):
+        return {"up": up, "down_since_ms": down_since, "intervals": [list(i) for i in intervals]}
+
+    def snap(self, per_socket, states, closes=None):
+        return {"reconnects": sum(per_socket), "closes": closes or {}, "rejections": {}, "errors": {}, "per_socket": per_socket, "sockets": len(per_socket),
+                "socket_states": states}
+
+    def test_common_down_intervals(self):
+        a = self.st(False, 0)  # down since 0, still down
+        b = self.st(True, None, [(50_000, 51_000), (60_000, 61_000)])
+        self.assertEqual(h5.common_down([a, b], 70_000), [(50_000, 51_000), (60_000, 61_000)])
+        c = self.st(True, None, [(0, 1_000)])
+        d = self.st(True, None, [(5_000, 6_000)])
+        self.assertEqual(h5.common_down([c, d], 10_000), [])
+        self.assertEqual(h5.common_down([self.st(False, 4_000)], 9_000), [(4_000, 9_000)])  # one socket: its own outage
+        self.assertEqual(h5.common_down([], 9_000), [])
+        e = self.st(True, None, [(1_000, 9_000)])
+        f = self.st(True, None, [(2_000, 3_000), (4_000, 5_000), (8_000, 12_000)])
+        self.assertEqual(h5.common_down([e, f], 20_000), [(2_000, 3_000), (4_000, 5_000), (8_000, 9_000)])
+
+    def test_one_socket_down_for_a_long_time_and_the_other_blips_flags_the_pools(self):  # reviewer S3
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        down0 = self.st(False, 0)
+        # socket 0 has been rejected since t=0 (its reconnect counter stepped long ago and not since); five looks, 5 s apart
+        for i, now in enumerate((40_000, 45_000, 50_000)):
+            eng.note_feed_stats(1, self.snap([3, 0], [down0, self.st(True)]), now)
+        self.assertTrue(all(not g["flags_pools"] for g in types(out, "gap")))  # socket 1 was up: no common instant
+        self.assertFalse(eng.pools[POOL].gaps)
+        blip = self.st(True, None, [(52_000, 53_000)])
+        eng.note_feed_stats(1, self.snap([3, 1], [down0, blip]), 55_000)
+        g = types(out, "gap")[-1]
+        self.assertTrue(g["flags_pools"])
+        self.assertEqual((g["common_down_start_ms"], g["common_down_ms"], g["link_state"]), (52_000, 1_000, True))
+        self.assertTrue(eng.pools[POOL].gaps)
+        self.assertEqual(eng.last_flag_gap_ms, 52_000)  # the outage time, not the 55 s look
+        # the counter-delta rule over three looks would not have flagged this
+        eng2, out2 = make_engine()
+        for now, ps in ((40_000, [3, 0]), (45_000, [3, 0]), (50_000, [3, 0]), (55_000, [3, 1])):
+            eng2.note_feed_stats(1, {k: v for k, v in self.snap(ps, []).items() if k != "socket_states"}, now)
+        self.assertFalse(types(out2, "gap")[-1]["flags_pools"])
+
+    def test_non_overlapping_blips_do_not_flag(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        eng.note_feed_stats(1, self.snap([0, 0], [self.st(True), self.st(True)]), 0)
+        eng.note_feed_stats(1, self.snap([1, 1], [self.st(True, None, [(1_000, 2_000)]), self.st(True, None, [(3_000, 4_000)])]), 5_000)
+        (g,) = types(out, "gap")
+        self.assertFalse(g["flags_pools"])
+        self.assertIsNone(eng.last_flag_gap_ms)
+
+    def test_an_ongoing_common_outage_is_flagged_once(self):
+        eng, out = make_engine()
+        eng.note_feed_stats(1, self.snap([0, 0], [self.st(True), self.st(True)]), 0)
+        both = [self.st(False, 6_000), self.st(False, 7_000)]
+        eng.note_feed_stats(1, self.snap([1, 1], both), 10_000)
+        eng.note_feed_stats(1, self.snap([1, 1], both), 15_000)
+        eng.note_feed_stats(1, self.snap([2, 2], both), 20_000)
+        flagged = [g for g in types(out, "gap") if g["flags_pools"]]
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged[0]["common_down_start_ms"], 7_000)
+
+    def test_a_single_socket_flags_at_its_real_drop_time(self):
+        eng, out = make_engine()
+        eng.note_feed_stats(1, self.snap([0], [self.st(True)]), 0)
+        eng.note_feed_stats(1, self.snap([1], [self.st(True, None, [(2_000, 4_000)])]), 5_000)
+        (g,) = types(out, "gap")
+        self.assertTrue(g["flags_pools"])
+        self.assertEqual(eng.last_flag_gap_ms, 2_000)
+
+    def test_createpool_after_the_reconnect_but_before_the_look_is_not_flagged(self):  # reviewer nit
+        eng, out = make_engine()
+        eng.note_feed_stats(1, self.snap([0, 0], [self.st(True), self.st(True)]), 0)
+        eng.note_feed_stats(1, self.snap([1, 1], [self.st(True, None, [(1_000, 2_000)]), self.st(True, None, [(1_500, 2_500)])]), 5_000)
+        eng.on_create_pool(POOL, MINT, h5.WSOL_MINT, 999, 3_000)  # after the outage, before the 5 s look
+        eng.on_create_pool("EARLY", "M2", h5.WSOL_MINT, 998, 1_200)  # announced during the outage window start: before it ended
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        eng.on_trade(t.rows[0])
+        self.assertFalse(eng.pools[POOL].gaps)
+        t2 = Tape(pool="EARLY")
+        t2.row(1000, "buy", "A", SOL // 10)
+        eng.on_trade(t2.rows[0])
+        self.assertTrue(eng.pools["EARLY"].gaps)
+
+    def test_feed_snapshot_carries_link_states(self):
+        from types import SimpleNamespace as NS
+        from observe.link_state import LinkState
+
+        a, b = LinkState(clock=lambda: 100), LinkState(clock=lambda: 100)
+        a.mark_up(200)
+        b.mark_up(200)
+        b.mark_down(300)
+        b.mark_up(400)
+        a.mark_down(500)
+        src = NS(stats=NS(reconnects=2, sockets=[NS(reconnects=1, closes={}, rejections={}, errors={}, link=a), NS(reconnects=1, closes={}, rejections={}, errors={}, link=b)]))
+        snap = h5.feed_snapshot(src)
+        self.assertEqual(snap["socket_states"][0], {"up": False, "down_since_ms": 500, "intervals": []})
+        self.assertEqual(snap["socket_states"][1], {"up": True, "down_since_ms": None, "intervals": [[300, 400]]})
+        self.assertNotIn("socket_states", h5.feed_snapshot(NS(stats=NS(reconnects=1, closes={}, rejections={}, errors={}))))
+
+
+class LinkStateTests(unittest.TestCase):
+    def test_history(self):
+        from observe.link_state import LinkState
+
+        ls = LinkState(clock=lambda: 1_000)
+        self.assertEqual(ls.snapshot(), {"up": False, "down_since_ms": 1_000, "intervals": []})  # starts down; never up yet
+        ls.mark_up(1_500)
+        self.assertEqual(ls.snapshot(), {"up": True, "down_since_ms": None, "intervals": []})  # the initial gap is not an outage
+        ls.mark_up(1_600)  # idempotent
+        ls.mark_down(2_000)
+        ls.mark_down(2_100)  # idempotent: keeps the first drop time
+        self.assertEqual(ls.snapshot()["down_since_ms"], 2_000)
+        ls.mark_up(2_600)
+        ls.mark_down(3_000)
+        ls.mark_up(3_100)
+        self.assertEqual(ls.snapshot()["intervals"], [[2_000, 2_600], [3_000, 3_100]])
+
+    def test_a_socket_that_never_comes_up_stays_down_since_construction(self):
+        from observe.link_state import LinkState
+
+        ls = LinkState(clock=lambda: 7)
+        ls.mark_down(50)  # a failed connect attempt: nothing was up, so nothing changes
+        self.assertEqual(ls.snapshot(), {"up": False, "down_since_ms": 7, "intervals": []})
+
+    def test_interval_history_is_bounded(self):
+        from observe.link_state import LinkState
+
+        ls = LinkState(clock=lambda: 0, maxlen=4)
+        ls.mark_up(1)
+        for k in range(10):
+            ls.mark_down(10 * k + 2)
+            ls.mark_up(10 * k + 5)
+        self.assertEqual(len(ls.snapshot()["intervals"]), 4)
+
+
+class TradeSourceMarksTests(unittest.TestCase):
+    """observe/trade_source.py marks its sockets up after the subscribe and down before the backoff. websockets is stubbed (it is not installed
+    on every host), so this runs anywhere."""
+
+    def load(self):
+        import importlib.util
+        import sys
+        import types
+        from unittest import mock
+
+        class ConnectionClosed(Exception):
+            def __init__(self):
+                self.code, self.rcvd, self.reason = 1006, None, ""
+
+        class InvalidStatusCode(Exception):
+            status_code = 429
+
+        ws, exc, cert = types.ModuleType("websockets"), types.ModuleType("websockets.exceptions"), types.ModuleType("certifi")
+        exc.ConnectionClosed, exc.InvalidStatusCode = ConnectionClosed, InvalidStatusCode
+        ws.exceptions = exc
+        cert.where = lambda: ""
+        self.conns = 0
+        test = self
+
+        class Conn:
+            async def __aenter__(self):
+                test.conns += 1
+                self.n = test.conns
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def send(self, m):
+                pass
+
+            async def recv(self):
+                if self.n == 1:
+                    raise ConnectionClosed()  # the first connection drops at once
+                await _REAL_SLEEP(3600)  # the second stays up
+
+        ws.connect = lambda *a, **k: Conn()
+        path = Path(__file__).resolve().parent.parent / "observe" / "trade_source.py"
+        with mock.patch.dict(sys.modules, {"websockets": ws, "websockets.exceptions": exc, "certifi": cert}):
+            spec = importlib.util.spec_from_file_location("trade_source_stubbed", path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["trade_source_stubbed"] = mod  # dataclasses look the module up by name; patch.dict removes it again
+            spec.loader.exec_module(mod)
+        return mod
+
+    def test_up_after_subscribe_down_before_backoff(self):
+        mod = self.load()
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(d):
+            await real_sleep(0)
+
+        async def go():
+            stats, stop = mod._ReconnectStats(), asyncio.Event()
+            self.assertFalse(stats.link.up)
+            seen = []
+
+            async def consume():
+                async for _ in mod._iter_ws("wss://x", [{"method": "m", "id": 1}], mod.parse_logs_notification, "confirmed", "f", stop, stats, log_url="wss://x"):
+                    pass
+
+            from unittest import mock
+
+            with mock.patch.object(mod.asyncio, "sleep", fast_sleep):
+                task = asyncio.create_task(consume())
+                for _ in range(200):
+                    await real_sleep(0.001)
+                    if self.conns >= 2 and stats.link.up:
+                        break
+                snap = stats.link.snapshot()
+                stop.set()
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+            return stats, snap
+
+        stats, snap = asyncio.run(go())
+        self.assertEqual(stats.reconnects, 1)
+        self.assertEqual(stats.closes, {1006: 1})
+        self.assertTrue(snap["up"])
+        self.assertEqual(len(snap["intervals"]), 1)
+        a, b = snap["intervals"][0]
+        self.assertLessEqual(a, b)
+
+
 class SealedTriggerTests(unittest.TestCase):
     TS = 1_792_116_000  # 2026-10-16T02:00:00Z
 
-    def run_pool(self, ts0, sps_fn=lambda p: SPS):
-        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub, sps_fn=sps_fn)
+    def run_pool(self, ts0, sps_fn=lambda p: SPS, oracle=h5.cap_pick_seal_oracle_stub):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=oracle, sps_fn=sps_fn)
         announce(eng)
         t = Tape(ts0=ts0)
         t.row(1000, "buy", "A", SOL // 10)
@@ -1066,69 +1405,71 @@ class SealedTriggerTests(unittest.TestCase):
         eng.close_all("t")
         return eng, out
 
-    def test_trigger_inside_the_window_is_a_stub_without_prices(self):
+    def test_a_sealed_pool_leaves_no_record_with_its_pool_mint_or_slot_except_the_pool_record(self):
         eng, out = self.run_pool(self.TS)
-        trigs = types(out, "trigger")
-        self.assertEqual(len(trigs), 1)  # only pv fires (fv sees 40.5)
-        r = trigs[0]
-        self.assertEqual(set(r) - {"v", "schema", "t_ms"}, {"type", "variant", "pool", "slot", "suppressed"})
-        self.assertEqual((r["variant"], r["pool"], r["slot"], r["suppressed"]), ("pv", POOL, 1200, "cap_pick_seal"))
-        for rec in out:
-            if rec["type"] in ("trigger", "skipped_no_sps", "outcome", "strip"):
-                self.assertFalse([k for k in rec if k.startswith("q_") or k in ("real_quote_pre", "base_pre", "sell_token_raw", "sell_user_out", "rows", "legs")], rec)
-        self.assertEqual(eng.counters["triggers_suppressed"], 1)
-        self.assertEqual(eng.counters["pv_fv_disagree_sells"], 0)
-
-    def test_pool_record_nulls_triggered_and_disagreement(self):
-        eng, out = self.run_pool(self.TS)
-        (rec,) = types(out, "pool")
+        mine = [r for r in out if r.get("pool") == POOL or r.get("mint") == MINT or r.get("slot") == 1200 or r.get("trigger_slot") == 1200]
+        self.assertEqual([r["type"] for r in mine], ["pool"])
+        (rec,) = mine
+        for k in ("triggered", "pv_fv_disagree_sells", "min_q_pv_sol", "min_q_fv_sol"):
+            self.assertIsNone(rec[k], k)
         self.assertTrue(rec["sealed"])
-        self.assertIsNone(rec["triggered"])
-        self.assertIsNone(rec["pv_fv_disagree_sells"])
-        self.assertIsNone(rec["min_q_pv_sol"])
-        self.assertIsNone(rec["min_q_fv_sol"])
-        outs = types(out, "outcome")
-        self.assertTrue(outs and all(o["suppressed"] == "cap_pick_seal" for o in outs))
-        self.assertTrue(all(s["suppressed"] == "cap_pick_seal" for s in types(out, "strip")))
+        # nothing priced anywhere in the output
+        blob = json.dumps(out)
+        for forbidden in ("q_pv_post_sol", "q_trigger_sol", "real_quote_pre", "sell_token_raw", "sell_user_out", "cap_pick_seal"):
+            self.assertNotIn(forbidden, blob)
+        # no counter moved by the decision
+        for k in ("triggers_pv", "triggers_fv", "skipped_no_sps_would_trigger", "pv_fv_disagree_sells", "outcomes", "strips"):
+            self.assertEqual(eng.counters[k], 0, k)
+
+    def test_the_only_trace_is_an_unlabelled_hourly_aggregate(self):
+        eng, out = self.run_pool(self.TS)
+        (agg,) = types(out, "sealed_hour")
+        self.assertEqual(set(agg), {"type", "hour", "decisions", "partial", "v", "schema", "t_ms"})
+        self.assertEqual((agg["hour"], agg["decisions"]), ("2026-10-16T02", 1))
+
+    def test_hourly_aggregate_is_flushed_when_the_hour_is_over(self):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub)
+        announce(eng)
+        t = Tape(ts0=self.TS)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        run(eng, t)
+        self.assertEqual(types(out, "sealed_hour"), [])
+        eng.tick(self.TS * 1000 + 30 * 60_000)  # still inside the hour
+        self.assertEqual(types(out, "sealed_hour"), [])
+        eng.tick((self.TS + 3600) * 1000 + 1)
+        (agg,) = types(out, "sealed_hour")
+        self.assertEqual((agg["hour"], agg["decisions"], agg["partial"]), ("2026-10-16T02", 2, False))  # pv and fv
+        eng.tick((self.TS + 7200) * 1000)
+        self.assertEqual(len(types(out, "sealed_hour")), 1)  # flushed once
+
+    def test_skipped_no_sps_leaves_no_record_inside_the_window(self):
+        eng, out = self.run_pool(self.TS, sps_fn=lambda p: None)
+        self.assertEqual(types(out, "skipped_no_sps"), [])
+        self.assertEqual(eng.counters["skipped_no_sps_would_trigger"], 0)
+        self.assertEqual([r["type"] for r in out if r.get("pool") == POOL], ["pool"])
+        eng2, out2 = self.run_pool(self.TS - 4 * 3600, sps_fn=lambda p: None)
+        self.assertIn("q_pv_post_sol", types(out2, "skipped_no_sps")[0])
 
     def test_the_hour_before_the_window_is_unsealed(self):
         eng, out = self.run_pool(self.TS - 3 * 3600 - 1)  # 2026-10-15T22:59:59Z
         r = types(out, "trigger")[0]
-        self.assertNotIn("suppressed", r)
         self.assertIn("q_pv_post_sol", r)
+        self.assertEqual(types(out, "sealed_hour"), [])
         (rec,) = types(out, "pool")
         self.assertFalse(rec["sealed"])
         self.assertEqual(rec["triggered"], ["pv"])
         self.assertEqual(rec["pv_fv_disagree_sells"], 1)
 
-    def test_skipped_no_sps_is_a_stub_inside_the_window(self):
-        eng, out = self.run_pool(self.TS, sps_fn=lambda p: None)
-        (rec,) = types(out, "skipped_no_sps")
-        self.assertEqual(set(rec) - {"v", "schema", "t_ms"}, {"type", "pool", "slot", "suppressed"})
-        eng2, out2 = self.run_pool(self.TS - 4 * 3600, sps_fn=lambda p: None)
-        self.assertIn("q_pv_post_sol", types(out2, "skipped_no_sps")[0])
-
     def test_oracle_false_inside_the_window_keeps_the_full_trigger(self):
-        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=lambda m: False)
-        announce(eng)
-        t = Tape(ts0=self.TS)
-        t.row(1000, "buy", "A", SOL // 10)
-        boost_buys(t, 1000)
-        drain(t, 1200, 35.0)
-        run(eng, t)
+        eng, out = self.run_pool(self.TS, oracle=lambda m: False)
         self.assertIn("q_pv_post_sol", types(out, "trigger")[0])
-        self.assertEqual(eng.counters["triggers_suppressed"], 0)
+        self.assertEqual(types(out, "sealed_hour"), [])
 
     def test_the_oracle_is_asked_once_per_pool(self):
         calls = []
-        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=lambda m: calls.append(m) or True)
-        announce(eng)
-        t = Tape(ts0=self.TS)
-        t.row(1000, "buy", "A", SOL // 10)
-        boost_buys(t, 1000)
-        drain(t, 1200, 35.0)
-        run(eng, t)
-        eng.close_all("t")
+        self.run_pool(self.TS, oracle=lambda m: calls.append(m) or True)
         self.assertEqual(calls, [MINT])
 
 
@@ -1223,31 +1564,21 @@ class SealAndStripTests(unittest.TestCase):
         eng.close_all("t")
         return eng, out, t
 
-    def test_oracle_true_inside_the_window_suppresses_outcome_strip_and_min_q(self):
+    def test_oracle_true_inside_the_window_leaves_no_outcome_strip_or_trigger_and_nulls_the_pool_record(self):
         eng, out, t = self.sealed_run(suppress_outcome=lambda m: True)
-        outs = types(out, "outcome")
-        self.assertEqual(len(outs), 2)
-        for o in outs:
-            self.assertEqual(o["suppressed"], "cap_pick_seal")
-            for k in ("legs", "exit", "exit_ladder", "complete"):
-                self.assertNotIn(k, o)
-        (strip,) = types(out, "strip")
-        self.assertEqual(strip["suppressed"], "cap_pick_seal")
-        self.assertNotIn("rows", strip)
+        self.assertEqual([x["type"] for x in out if x["type"] in ("trigger", "outcome", "strip", "skipped_no_sps")], [])
         (pool,) = types(out, "pool")
         self.assertIsNone(pool["min_q_pv_sol"])
         self.assertIsNone(pool["min_q_fv_sol"])
+        self.assertIsNone(pool["triggered"])
+        self.assertIsNone(pool["pv_fv_disagree_sells"])
         self.assertTrue(pool["sealed"])
-        self.assertEqual((eng.counters["outcomes_suppressed"], eng.counters["strips_suppressed"]), (2, 1))
         self.assertEqual(eng.counters["outcomes"], 0)
-        trigs = types(out, "trigger")
-        self.assertEqual(len(trigs), 2)  # sealed pools get stub triggers (EXP-022 s9): no prices
-        for r in trigs:
-            self.assertEqual(r["suppressed"], "cap_pick_seal")
+        self.assertEqual(eng.counters["triggers_pv"], 0)
 
     def test_before_the_window_nothing_is_suppressed(self):
         eng, out, t = self.sealed_run(suppress_outcome=lambda m: True, seal_start_ms=(self.TS0 + 1) * 1000)
-        self.assertEqual(eng.counters["outcomes_suppressed"], 0)
+        self.assertEqual(eng.counters["outcomes"], 2)
         self.assertIn("legs", types(out, "outcome")[0])
         self.assertIn("rows", types(out, "strip")[0])
         self.assertIsNotNone(types(out, "pool")[0]["min_q_pv_sol"])
@@ -1255,7 +1586,7 @@ class SealAndStripTests(unittest.TestCase):
 
     def test_oracle_false_inside_the_window_lets_the_non_pick_through(self):
         eng, out, t = self.sealed_run(suppress_outcome=lambda m: False)
-        self.assertEqual(eng.counters["outcomes_suppressed"], 0)
+        self.assertEqual(eng.counters["outcomes"], 2)
         self.assertIn("legs", types(out, "outcome")[0])
 
     def test_fail_closed(self):
@@ -1264,7 +1595,8 @@ class SealAndStripTests(unittest.TestCase):
 
         for kw in ({"suppress_outcome": boom}, {"suppress_outcome": None}):
             eng, out, t = self.sealed_run(**kw)
-            self.assertEqual(eng.counters["outcomes_suppressed"], 2, kw)
+            self.assertEqual(types(out, "outcome"), [], kw)
+            self.assertTrue(types(out, "pool")[0]["sealed"], kw)
         # no mint: suppressed even though the oracle would say no
         eng, out = make_engine(seal_start_ms=self.TS0 * 1000, suppress_outcome=lambda m: False)
         eng.on_create_pool(POOL, None, h5.WSOL_MINT, 999, 0)
@@ -1276,7 +1608,8 @@ class SealAndStripTests(unittest.TestCase):
             eng.on_trade(r)
         eng.close_all("t")
         self.assertEqual(eng.pools, {})
-        self.assertEqual(eng.counters["outcomes_suppressed"], 2)
+        self.assertEqual(types(out, "outcome"), [])
+        self.assertTrue(types(out, "pool")[0]["sealed"])
 
     def test_stub_oracle_and_default_window(self):
         self.assertTrue(h5.cap_pick_seal_oracle_stub("anything"))
