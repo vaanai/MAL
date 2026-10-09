@@ -234,7 +234,8 @@ class Case(unittest.TestCase):
         os.chmod(self.etc, 0o755)
         self.probe_dir = self.tmp / "probe-live-dir"
         self.probe_dir.mkdir()
-        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (h, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
+        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "TIER_FILE_PATH", self.etc / "TIER"), (h, "LIVE_OK_UID", os.getuid()),
+                                  (h, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
             patcher = mock.patch.object(target, attr, val)
             patcher.start()
             self.addCleanup(patcher.stop)

@@ -129,6 +129,20 @@ H5_DEFAULT = {
     "sell_priority_lamports": 55_000, "escalated_priority_lamports": 150_000, "entry_tolerance_bps": 1500,
 }
 H5_MAX = dict(H5_DEFAULT)  # the defaults ARE the maxima (review of 86a224b): config can only tighten. Loosening is a reviewed code change.
+
+# --- the scale ladder (owner decision) -----------------------------------------------------------------------------------------
+# The five limits that scale with the stake are a code-constant table; the active tier is read from a root-owned file before every buy. Config
+# can still only tighten within the active tier. T0 equals H5_DEFAULT. Lamports (T0 0.02 / 2 / 30 / 0.08 / 0.12 SOL, T1 0.10 / 3 / 40 / 0.40 /
+# 0.60, T2 0.30 / 3 / 40 / 1.20 / 1.80).
+TIERS: dict[str, dict[str, int]] = {
+    "T0": {"stake_lamports": 20_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 80_000_000, "total_loss_lamports": 120_000_000},
+    "T1": {"stake_lamports": 100_000_000, "max_open": 3, "max_trades_per_day": 40, "daily_loss_lamports": 400_000_000, "total_loss_lamports": 600_000_000},
+    "T2": {"stake_lamports": 300_000_000, "max_open": 3, "max_trades_per_day": 40, "daily_loss_lamports": 1_200_000_000, "total_loss_lamports": 1_800_000_000},
+}
+assert all(H5_DEFAULT[k] == v for k, v in TIERS["T0"].items())
+TIER_WALLET_FRAC = 0.35  # the total stop is also capped at this share of the wallet balance measured when the tier started
+T2_IMPACT_OK = False  # T2's 0.30 SOL is above the 0.25 SOL tested; a price-impact check is pending. While False, T2 is refused.
+TIER_FILE_PATH = Path("/etc/mal-h5/TIER")  # contains just T0, T1 or T2; root:root 0644 like LIVE_OK. Missing or invalid means T0.
 MIN_WALLET_FLOOR_LAMPORTS = 50_000_000  # config may raise
 DEFAULT_WALLET_FLOOR_LAMPORTS = 50_000_000
 RENT_RESERVE_LAMPORTS = 2_100_000  # token ATA rent is paid up front on a buy and refunded on the closing sell
@@ -184,7 +198,10 @@ class H5Limits:
     end_ms: int | None = None
 
     @classmethod
-    def from_config(cls, cfg: dict[str, Any]) -> "H5Limits":
+    def from_config(cls, cfg: dict[str, Any], tier: str = "T0") -> "H5Limits":
+        if tier not in TIERS:
+            raise ValueError(f"unknown tier {tier!r}")
+        defaults, maxima = {**H5_DEFAULT, **TIERS[tier]}, {**H5_MAX, **TIERS[tier]}  # the tier's values are the defaults AND the maxima
         def num(key: str, default: Any, lo: float, hi: float, as_int: bool = True) -> Any:
             v = cfg.get(key)
             v = default if v is None else v
@@ -204,9 +221,9 @@ class H5Limits:
             if key in cfg:
                 raise ValueError(f"{key} is not configurable")
         kw: dict[str, Any] = {}
-        for key, default in H5_DEFAULT.items():
-            kw[key] = H5_DEFAULT[key] if key in fixed else num(key, default, 1, H5_MAX[key], as_int=(key != "max_days"))
-        kw["max_days"] = num("max_days", H5_DEFAULT["max_days"], 0.01, H5_MAX["max_days"], as_int=False)
+        for key, default in defaults.items():
+            kw[key] = defaults[key] if key in fixed else num(key, default, 1, maxima[key], as_int=(key != "max_days"))
+        kw["max_days"] = num("max_days", defaults["max_days"], 0.01, maxima["max_days"], as_int=False)
         kw["wallet_floor_lamports"] = int(max(MIN_WALLET_FLOOR_LAMPORTS, num("wallet_floor_lamports", DEFAULT_WALLET_FLOOR_LAMPORTS, 0, 10**12)))
         kw["send_lead_ms"] = num("send_lead_ms", 500, 0, 3_000)
         kw["exit_land_offset_s"] = num("exit_land_offset_s", 0.0, 0.0, 1.0, as_int=False)
@@ -500,6 +517,7 @@ class H5Counters:
     bvs_n: int = 0  # landed sells paired with their pool's BOOST last slice
     bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
+    tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports}: the active tier and the wallet when it started
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
 
     def day(self, key: str) -> dict[str, Any]:
@@ -573,30 +591,57 @@ LIVE_OK_PATH = Path("/etc/mal-h5/LIVE_OK")  # DEC-024 3: "The executor sends onl
 LIVE_OK_UID = 0  # (module constants so a test can stand in for root)
 LIVE_OK_GID = 0
 LIVE_OK_MODE = 0o644
-PINNED_PATH_KEYS = ("stop_file", "halt_file", "live_ok_file", "final_marker_file")  # no config override in live
+PINNED_PATH_KEYS = ("stop_file", "halt_file", "live_ok_file", "final_marker_file", "tier_file")  # no config override in live
 
 
-def live_ok_valid() -> str | None:
-    """None when LIVE_OK is a regular file at the fixed path, not a symlink, mode exactly 0644 root:root, in a directory that is owned by root and
-    not group- or other-writable; all by lstat and O_NOFOLLOW (the same inode is checked that is opened). The executor cannot create it.
-    'live_ok_missing' when absent, 'live_ok_unsafe' for anything else."""
-    p = LIVE_OK_PATH
+def root_file_problem(p: Path) -> str | None:
+    """None when `p` is a regular file, not a symlink, mode exactly 0644, owner and group root, in a directory owned by root that is not
+    group- or other-writable; all by lstat and O_NOFOLLOW (the same inode is checked that is opened). 'missing' when absent, 'unsafe' for anything
+    else. Used for LIVE_OK and TIER: mal-live opens them, so they must be readable by it, and nobody but root may be able to write them."""
     try:
         dst, lst = os.lstat(p.parent), os.lstat(p)
         fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
-        return "live_ok_missing"
+        return "missing"
     except OSError:  # ELOOP for a symlink, EACCES, ENOTDIR ...
-        return "live_ok_unsafe"
+        return "unsafe"
     try:
         fst = os.fstat(fd)
     finally:
         os.close(fd)
-    # Exactly 0644 root:root: the executor runs as mal-live and opens the file, so it must be world-readable, and it must not be writable by anyone else.
     ok = (stat.S_ISDIR(dst.st_mode) and dst.st_uid == LIVE_OK_UID and not dst.st_mode & 0o022
           and stat.S_ISREG(lst.st_mode) and stat.S_ISREG(fst.st_mode) and (lst.st_dev, lst.st_ino) == (fst.st_dev, fst.st_ino)
           and fst.st_uid == LIVE_OK_UID and fst.st_gid == LIVE_OK_GID and stat.S_IMODE(fst.st_mode) == LIVE_OK_MODE)
-    return None if ok else "live_ok_unsafe"
+    return None if ok else "unsafe"
+
+
+def live_ok_valid() -> str | None:
+    """None when LIVE_OK passes root_file_problem. 'live_ok_missing' when absent, 'live_ok_unsafe' for anything else. The executor cannot create it."""
+    why = root_file_problem(LIVE_OK_PATH)
+    return None if why is None else f"live_ok_{why}"
+
+
+def read_tier(path: Path, root_checks: bool) -> tuple[str, str | None]:
+    """(tier, problem). Live: `path` must pass root_file_problem (the same checks as LIVE_OK). A dry run reads its own state_dir/TIER with no
+    ownership checks. The content must be exactly T0, T1 or T2 (whitespace around it is ignored). Missing, unsafe, unreadable or invalid means
+    T0, with the reason: the lowest tier is the fail-safe one."""
+    if root_checks:
+        why = root_file_problem(path)
+        if why:
+            return "T0", f"tier_file_{why}"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return "T0", "tier_file_missing"
+    except OSError:
+        return "T0", "tier_file_unreadable"
+    try:
+        text = os.read(fd, 64).decode("ascii", "replace").strip()
+    except OSError:
+        return "T0", "tier_file_unreadable"
+    finally:
+        os.close(fd)
+    return (text, None) if text in TIERS else ("T0", "tier_file_invalid")
 
 
 def live_path_overrides(cfg: dict[str, Any]) -> list[str]:
@@ -757,7 +802,12 @@ class H5Executor(pl.LiveExecutor):
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
-        self.h5 = H5Limits.from_config(cfg)
+        self.h5cfg = cfg
+        self.tier = "T0"  # the active tier (see the `h5` property); the file is read before every buy
+        self._tier_limits: dict[str, H5Limits] = {}
+        self._tier_problem: str | None = None
+        self._stepdown_seen: set[tuple[str, str, str]] = set()
+        H5Limits.from_config(cfg)  # a bad config fails here, at T0
         self.dry_run = keypair is None
         self.run_mode = DRYRUN if self.dry_run else LIVE
         self.h5cfg = cfg
@@ -777,6 +827,9 @@ class H5Executor(pl.LiveExecutor):
         self.fills = H5Ledger(sd / "h5-ledger.jsonl", self.run_mode)
         self.decisions = self.intents_path  # base-class messages name the file we actually tail
         self.counters = H5Counters.load(self.counters_path, self.run_mode)
+        persisted = self.counters.tier_state.get("tier")
+        if persisted in TIERS:
+            self.tier = persisted  # a restart keeps the tier it was on; the file is re-read before the next buy
         self.final_marker = run_path(cfg, "final_marker_file", "FINAL_WRITTEN", not self.dry_run)
         self._tail_path = Path(self.counters.tail_path) if self.counters.tail_path else None  # a restart drains the file it was reading first
         seal_end = int(cfg.get("seal_end_ms") or SEAL_END_DEFAULT_MS)
@@ -814,13 +867,64 @@ class H5Executor(pl.LiveExecutor):
         self.paths = {"state_dir": str(Path(cfg["state_dir"])), "stop": str(run_path(cfg, "stop_file", "STOP", not self.dry_run)),
                       "halt": str(run_path(cfg, "halt_file", "HALT", not self.dry_run)), "final_marker": str(self.final_marker),
                       "live_ok": str(LIVE_OK_PATH) if not self.dry_run else None, "intents": str(self.intents_path),
-                      "wallet_stop": str(Path(pe.LIVE_DIR) / "STOP"), "wallet_halt": str(Path(pe.LIVE_DIR) / "HALT")}
+                      "wallet_stop": str(Path(pe.LIVE_DIR) / "STOP"), "wallet_halt": str(Path(pe.LIVE_DIR) / "HALT"), "tier_file": str(self._tier_path())}
         self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
 
     def __repr__(self) -> str:
         return f"H5Executor(mode={self.run_mode}, user={self.user})"
+
+    @property
+    def h5(self) -> H5Limits:
+        """The limits of the ACTIVE tier, with the config tightening them (never loosening). Open positions are untouched by a tier change:
+        these limits are read only when a new buy is considered."""
+        lim = self._tier_limits.get(self.tier)
+        if lim is None:
+            lim = self._tier_limits[self.tier] = H5Limits.from_config(self.h5cfg, self.tier)
+        return lim
+
+    # -- the scale ladder ----------------------------------------------------------------------------------------------------
+    def _tier_path(self) -> Path:
+        return TIER_FILE_PATH if not self.dry_run else Path(self.h5cfg["state_dir"]) / "TIER"
+
+    def _refresh_tier(self, now: int) -> None:
+        """Re-read the tier file (before every buy). A change is ledgered as `tier_change` and never touches an open position. Missing or
+        invalid means T0; an unsafe, unreadable or invalid file also raises an alert (once per distinct problem)."""
+        tier, problem = read_tier(self._tier_path(), root_checks=not self.dry_run)
+        if problem not in (None, "tier_file_missing") and problem != self._tier_problem:
+            self._alert("tier_file_problem", "", problem=problem)
+        self._tier_problem = problem
+        ts = self.counters.tier_state
+        if tier != ts.get("tier") or tier != self.tier:
+            self._start_tier(tier, ts.get("tier"), problem, now)
+        elif ts.get("wallet_lamports") is None:  # the wallet could not be read when the tier started: try again
+            wallet = self._balance_value(now)
+            if wallet is not None:
+                ts["wallet_lamports"] = wallet
+                self.counters.save(self.counters_path)
+
+    def _start_tier(self, tier: str, old: str | None, problem: str | None, now: int) -> None:
+        wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
+        self.tier = tier
+        self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet}
+        self.counters.save(self.counters_path)
+        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, limits=asdict(self.h5),
+                  open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK)
+
+    def _total_stop_lamports(self) -> int | None:
+        """The tier's total stop, also capped at 35% of the wallet balance measured when the tier started. None while that balance is unknown."""
+        wallet = self.counters.tier_state.get("wallet_lamports")
+        return None if wallet is None else min(self.h5.total_loss_lamports, int(TIER_WALLET_FRAC * wallet))
+
+    def _tier_step_down_due(self, why: str) -> None:
+        """A halt or a loss stop above T0: the file is NOT changed here. An alert for the watchdog; Helm or the manager edits the file."""
+        if self.dry_run or self.tier == "T0":
+            return
+        key = (self.tier, why, day_key(self.now_ms()))
+        if key not in self._stepdown_seen:
+            self._stepdown_seen.add(key)
+            self._alert("tier_step_down_due", "", tier=self.tier, why=why)
 
     # -- guards and kill switches --------------------------------------------------------------------------------------
     def _wallet_switch(self, name: str, fail_closed: bool) -> bool:
@@ -866,6 +970,7 @@ class H5Executor(pl.LiveExecutor):
         self.counters.save(self.counters_path)
         self._log("halt_latched", "", reason=name, **detail)
         self._alert(f"halt_{name}", "", **detail)
+        self._tier_step_down_due(name)
 
     def _seal_reason(self, trg: H5Trigger, now: int) -> str | None:
         if not (SEAL_START_MS <= now < self.seal_end_ms):
@@ -881,13 +986,17 @@ class H5Executor(pl.LiveExecutor):
         return "seal_pick" if picked else None
 
     def _budget_stop(self, now: int) -> str | None:
+        self._refresh_tier(now)
         st, h5 = self.state, self.h5
         if self.counters.halts:
             return "halt_latched:" + ",".join(sorted(self.counters.halts))
+        total_stop = self._total_stop_lamports()
+        if total_stop is None:
+            return "balance_unreadable"  # the wallet at tier start is unknown: fail closed
         # Worst-case exposure, not realized alone: everything open or in flight, and this stake, is assumed lost.
         at_risk = (sum(int(p.get("spend") or 0) + int(p.get("extra_cost") or 0) for p in st.open.values())
                    + sum(int(p.get("spend") or 0) for p in st.pending.values() if p["kind"] == "buy") + h5.stake_lamports)
-        if st.realized_lamports - at_risk <= -h5.total_loss_lamports:
+        if st.realized_lamports - at_risk <= -total_stop:
             return "total_loss_stop"
         day = self.counters.day(day_key(now))
         if day["realized"] - at_risk <= -h5.daily_loss_lamports:
@@ -1051,10 +1160,15 @@ class H5Executor(pl.LiveExecutor):
     @pe.critical
     def handle_trigger(self, trg: H5Trigger, seen_ms: int | None = None) -> None:
         now = self.now_ms()
+        self._refresh_tier(now)  # before every buy: the limits below are the active tier's
         why = self._hard_refusal(trg, now)
+        if not why and self.tier == "T2" and not T2_IMPACT_OK:
+            why = "t2_impact_unchecked"  # 0.30 SOL is above the 0.25 SOL tested; the price-impact check is pending
         would: str | None = None
         if not why:
             budget = self._budget_stop(now)
+            if budget in ("total_loss_stop", "daily_loss_stop"):
+                self._tier_step_down_due(budget)
             if budget and not self.dry_run:
                 why = budget
             elif budget:
@@ -1179,8 +1293,9 @@ class H5Executor(pl.LiveExecutor):
     def _sign(self, msg: Message, ps: tx.PoolState, mint: str, cap: int | None = None) -> tuple[str, str]:
         if self.dry_run:
             raise RuntimeError("dry run cannot sign")
+        # (the spend cap is the ACTIVE tier's stake: the probe's own Limits clamps its size to 0.05 SOL, which would refuse every T1 and T2 buy)
         pl.validate_message(msg, ps, Pubkey.from_string(mint), self.user, cap if cap is not None else self.h5.escalated_priority_lamports,
-                            self.limits.size_lamports)
+                            self.h5.stake_lamports)
         t = VersionedTransaction(msg, [self._kp])
         raw = bytes(t)
         if len(raw) > tx.TX_SIZE_LIMIT:
@@ -1747,6 +1862,7 @@ class H5Executor(pl.LiveExecutor):
         self.refresh_slot()  # our own slot-rate measurement needs observations whether or not a position is open
         now = self.now_ms()
         self._hour_roll(now)  # the hourly refusal_counts row is written when the hour turns, triggers or not
+        self._refresh_tier(now)  # a tier change is seen (and ledgered) without waiting for the next trigger
         if not self.dry_run:
             v = self._balance()
             if v is not None:
