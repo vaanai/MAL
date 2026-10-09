@@ -36,9 +36,26 @@ STAKE = 20_000_000
 class H5Rpc(LiveRpc):
     def __init__(self, clock: Clock, **kw):
         super().__init__(clock, **kw)
-        self.slot = TRIG_SLOT + 8
+        # The chain follows the fake clock: one slot per slot_ms. slot_fn(wall_ms) replaces that for a chain whose slot time changes.
+        self.slot_ms = 200.0
+        self.slot_fn = None
+        self._anchor = (TRIG_SLOT + 8, clock())
         self.slot_fails = False
         self.state_fails = False
+
+    def slot_at(self, wall_ms: int) -> int:
+        if self.slot_fn is not None:
+            return self.slot_fn(wall_ms)
+        s, t = self._anchor
+        return s + int((wall_ms - t) / self.slot_ms)
+
+    @property
+    def slot(self) -> int:
+        return self.slot_at(self.clock())
+
+    @slot.setter
+    def slot(self, v: int) -> None:
+        self._anchor = (v, self.clock())
 
     def __call__(self, method, params):
         if self.state_fails and method in ("getAccountInfo", "getMultipleAccounts"):
@@ -63,6 +80,17 @@ def trig(clock: Clock, **kw) -> h.H5Trigger:
     return t
 
 
+class PathConf(dict):
+    """A config dict whose pinned paths read as the executor resolves them, without being keys (a live config must not carry them)."""
+
+    def __missing__(self, key):
+        sd = Path(self["state_dir"])
+        names = {"stop_file": sd / "STOP", "halt_file": sd / "HALT", "final_marker_file": sd / "FINAL_WRITTEN", "live_ok_file": h.LIVE_OK_PATH}
+        if key in names:
+            return str(names[key])
+        raise KeyError(key)
+
+
 class Env:
     """One executor in a temp dir. live=True builds a keyed executor (throwaway Keypair) with LIVE_OK and EXP-024 in place."""
 
@@ -74,17 +102,42 @@ class Env:
         (self.root / "EXP").mkdir(parents=True, exist_ok=True)
         if exp024:
             (self.root / h.EXP024_PART1).write_text("# EXP-024 Part 1 (test stub)\n")
-        self.conf = {"intents_file": str(tmp / "intents.jsonl"), "state_dir": str(tmp / "state"), "mode": "live" if live else "dryrun",
-                     "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), "live_ok_file": str(tmp / "LIVE_OK"),
-                     "final_marker_file": str(tmp / "FINAL_WRITTEN"), "poll_s": 5.0, **cfg}
-        if live and live_ok:
-            (tmp / "LIVE_OK").write_text("")
+        # A live config carries no STOP / HALT / LIVE_OK / FINAL_WRITTEN keys (they are pinned); PathConf lets a test read where they are.
+        self.conf = PathConf(intents_file=str(tmp / "intents.jsonl"), state_dir=str(tmp / "state"), mode="live" if live else "dryrun", poll_s=5.0)
+        self.conf.update(cfg)
+        if live:
+            if live_ok:
+                h.LIVE_OK_PATH.write_text("")  # the patched stand-in for /etc/mal-h5/LIVE_OK, "owned by root" (the test's own uid)
+                os.chmod(h.LIVE_OK_PATH, 0o644)
+            else:
+                h.LIVE_OK_PATH.unlink(missing_ok=True)
         self.kp = (Keypair.from_seed(seed) if seed else Keypair()) if live else None
         self.oracle = oracle
         self.ex = self.build()
 
     def build(self) -> h.H5Executor:
-        return h.H5Executor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=self.oracle, root=self.root)
+        ex = h.H5Executor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=self.oracle, root=self.root)
+        self.seed_clock(ex)
+        return ex
+
+    def seed_clock(self, ex: h.H5Executor | None = None) -> None:
+        """Our own getSlot history, as 150 s of the prewarm loop would have left it: the measured slot rate is the chain's."""
+        ex = ex or self.ex
+        ex.slots = h.SlotClock()
+        now = self.clock()
+        for k in range(75, -1, -1):
+            ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
+
+    def jump(self, ms: int) -> None:
+        """Skip ahead in time with the chain standing still (a day rollover, a seal window): the slot history is re-seeded to match."""
+        cur = self.rpc.slot
+        self.clock.t += ms
+        self.rpc.slot_fn = None
+        self.rpc.slot = cur
+        self.seed_clock()
+
+    def set_time(self, when_ms: int) -> None:
+        self.jump(when_ms - self.clock())
 
     def ledger(self, kind: str | None = None) -> list[dict]:
         p = Path(self.ex.fills.path)
@@ -124,10 +177,11 @@ class Env:
         assert MINT in self.ex.state.open
         return self.ex.state.open[MINT]
 
-    def at_slot(self, slot: int, advance_ms: int = 21_000) -> None:
-        """Move the chain to `slot` and let the exit scheduler look: the clock moves past the resync age so getSlot is re-read."""
-        self.rpc.slot = slot
-        self.clock.t += advance_ms
+    def at_slot(self, slot: int) -> None:
+        """Let the clock run until the chain reaches `slot` (the world is consistent: slots follow the clock) and run the exit scheduler."""
+        delta = slot - self.rpc.slot
+        if delta > 0:
+            self.clock.t += int(delta * self.rpc.slot_ms)
         self.ex.exit_tick(self.clock())
 
     def plan(self) -> dict:
@@ -170,9 +224,24 @@ class Case(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory()
         self.tmp = Path(self._td.name)
         self.addCleanup(self._td.cleanup)
+        # Stand-ins for the host: /etc/mal-h5 (root-owned there, owned by this test's uid here) and the probe's /var/lib/mal-live.
+        self.etc = self.tmp / "etc-mal-h5"
+        self.etc.mkdir()
+        os.chmod(self.etc, 0o755)
+        self.probe_dir = self.tmp / "probe-live-dir"
+        self.probe_dir.mkdir()
+        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (pe, "LIVE_DIR", self.probe_dir)):
+            patcher = mock.patch.object(target, attr, val)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def env(self, **kw) -> Env:
         return Env(self.tmp, **kw)
+
+    @staticmethod
+    def make_live_ok(mode: int = 0o644) -> None:
+        h.LIVE_OK_PATH.write_text("")
+        os.chmod(h.LIVE_OK_PATH, mode)  # (the umask must not decide whether it is group-writable)
 
 
 # --- limits and config ------------------------------------------------------------------------------------------------
@@ -455,8 +524,8 @@ class RefusalTests(Case):
         self.check("halt_latched:late_sells_gt_5pct", lambda e: e.ex.counters.halts.update({"late_sells_gt_5pct": {}}))
 
     def test_boundaries_just_inside_the_limits_trade(self):
-        for name, setup in (("loss", lambda e: setattr(e.ex.state, "realized_lamports", -119_999_999)),
-                            ("daily", lambda e: e.ex.counters.day(h.day_key(T0)).update(realized=-79_999_999)),
+        for name, setup in (("loss", lambda e: setattr(e.ex.state, "realized_lamports", -99_999_999)),
+                            ("daily", lambda e: e.ex.counters.day(h.day_key(T0)).update(realized=-59_999_999)),
                             ("trades", lambda e: e.ex.counters.day(h.day_key(T0)).update(trades=29)),
                             ("age", None)):
             sub = self.tmp / name
@@ -473,7 +542,7 @@ class RefusalTests(Case):
         e.ex.counters.day(h.day_key(T0)).update(trades=30, realized=-80_000_000)
         e.fire()
         self.assertEqual(len(e.refusals()), 1)
-        e.clock.t += 24 * 3_600_000  # the next UTC day
+        e.jump(24 * 3_600_000)  # the next UTC day
         e.fire(decision_ms=e.clock())
         self.assertEqual(len(e.rpc.sent), 1)
 
@@ -536,13 +605,15 @@ class RefusalTests(Case):
         e.ex._send(p, MINT)
         self.assertEqual(len(e.rpc.sent), 1)  # HALT blocks even a rebroadcast
         Path(e.conf["halt_file"]).unlink()
+        e.ex._send(p, MINT)
+        self.assertEqual(len(e.rpc.sent), 2)  # no STOP: a rebroadcast inside the 3 s window goes out
         Path(e.conf["stop_file"]).write_text("")
         e.ex._send(p, MINT)
-        self.assertEqual(len(e.rpc.sent), 2)  # STOP does not cancel an in-flight buy that already went out
+        self.assertEqual(len(e.rpc.sent), 2)  # STOP: a buy is no longer rebroadcast (it is left to expire)
         fresh = {"kind": "buy", "sends": 0, "signature": "s", "tx_b64": p["tx_b64"]}
         e.ex.state.pending["other"] = fresh
         e.ex._send(fresh, "other")
-        self.assertEqual(len(e.rpc.sent), 2)  # but a buy that has not been sent yet is cancelled by STOP
+        self.assertEqual(len(e.rpc.sent), 2)  # and a buy that has not been sent yet is cancelled by STOP
         self.assertNotIn("other", e.ex.state.pending)
 
 

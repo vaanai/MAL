@@ -1,0 +1,324 @@
+"""H5 executor: LIVE_OK at /etc/mal-h5 (DEC-024 3) and the review's interface and fidelity items (C1-C11).
+Fixtures: test_h5_executor (the probe's fake RPC, the consistent fake chain, PathConf), test_h5_executor_shadow (the vendored #477 records)."""
+
+from __future__ import annotations
+
+import ast
+import contextlib
+import io
+import json
+import os
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tools import h5_executor as h
+from tools import probe_executor as pe
+from tools.test_h5_executor import BASE0, MINT, POOL, Q, S0, SPS, T0, TRIG_SLOT, V, Case, Clock, Env
+from tools.test_h5_executor_shadow import VENDORED, pool_row, shadow_trigger
+
+
+class LiveOkTests(Case):
+    def setUp(self):
+        super().setUp()
+        self.real = self.tmp / "real-live-ok"
+
+    def test_a_valid_live_ok_passes_and_a_missing_one_does_not(self):
+        self.assertEqual(h.live_ok_valid(), "live_ok_missing")
+        self.make_live_ok()
+        self.assertIsNone(h.live_ok_valid())
+
+    def test_wrong_owner_is_refused(self):
+        self.make_live_ok()
+        with mock.patch.object(h, "LIVE_OK_UID", os.getuid() + 1):  # "root" is someone else: the file is not root-owned
+            self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+
+    def test_a_symlink_is_refused_even_to_a_good_file(self):
+        self.real.write_text("")
+        os.chmod(self.real, 0o644)
+        h.LIVE_OK_PATH.symlink_to(self.real)
+        self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+
+    def test_group_or_other_writable_is_refused(self):
+        for mode in (0o664, 0o646, 0o666, 0o620):
+            self.make_live_ok(mode)
+            self.assertEqual(h.live_ok_valid(), "live_ok_unsafe", oct(mode))
+        for mode in (0o644, 0o600, 0o400):
+            self.make_live_ok(0o644)
+            os.chmod(h.LIVE_OK_PATH, mode)
+            self.assertIsNone(h.live_ok_valid(), oct(mode))
+
+    def test_a_directory_instead_of_a_file_is_refused(self):
+        h.LIVE_OK_PATH.mkdir()
+        self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+
+    def test_the_parent_directory_must_not_be_group_or_other_writable_or_a_symlink(self):
+        self.make_live_ok()
+        os.chmod(self.etc, 0o775)
+        self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+        os.chmod(self.etc, 0o757)
+        self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")
+        os.chmod(self.etc, 0o755)
+        self.assertIsNone(h.live_ok_valid())
+        other = self.tmp / "other-etc"
+        other.mkdir()
+        os.chmod(other, 0o755)
+        (other / "LIVE_OK").write_text("")
+        os.chmod(other / "LIVE_OK", 0o644)
+        linked = self.tmp / "linked-etc"
+        linked.symlink_to(other)
+        with mock.patch.object(h, "LIVE_OK_PATH", linked / "LIVE_OK"):
+            self.assertEqual(h.live_ok_valid(), "live_ok_unsafe")  # the parent is a symlink
+
+    def test_a_live_buy_is_refused_for_each_unsafe_live_ok_and_sends_nothing(self):
+        cases = {"missing": lambda: h.LIVE_OK_PATH.unlink(), "group_writable": lambda: os.chmod(h.LIVE_OK_PATH, 0o664),
+                 "symlink": lambda: (h.LIVE_OK_PATH.unlink(), h.LIVE_OK_PATH.symlink_to(self.real))}
+        self.real.write_text("")
+        os.chmod(self.real, 0o644)
+        for name, damage in cases.items():
+            sub = self.tmp / name
+            sub.mkdir()
+            e = Env(sub)
+            damage()
+            e.fire()
+            self.assertEqual(e.refusals(), ["live_ok_missing" if name == "missing" else "live_ok_unsafe"], name)
+            self.assertEqual((e.rpc.sent, e.ex.state.attempts), ([], 0), name)
+            h.LIVE_OK_PATH.unlink(missing_ok=True)
+
+    def test_live_ok_removed_mid_run_means_no_new_buy_and_no_buy_rebroadcast(self):
+        e = self.env()
+        e.fire()
+        self.assertEqual(len(e.rpc.sent), 1)
+        h.LIVE_OK_PATH.unlink()
+        e.clock.t += 450
+        e.ex.housekeeping(e.clock())
+        e.ex.advance_pending()
+        self.assertEqual(len(e.rpc.sent), 1)  # no rebroadcast of the buy
+        e.fire(mint="Other" + "1" * 38)
+        self.assertEqual(e.refusals()[-1], "live_ok_missing")  # and no new buy
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_a_dry_run_never_looks_at_live_ok_and_never_sends(self):
+        e = self.env(live=False)
+        h.LIVE_OK_PATH.unlink(missing_ok=True)
+        e.fire()
+        self.assertEqual((e.refusals(), e.rpc.sent, len(e.ledger("decision"))), ([], [], 1))
+
+    def test_stop_halt_and_final_marker_are_pinned_to_the_state_dir_in_live(self):
+        e = self.env()
+        sd = Path(e.conf["state_dir"])
+        paths = e.ledger("start")[0]["paths"]
+        self.assertEqual((paths["stop"], paths["halt"], paths["final_marker"], paths["live_ok"]),
+                         (str(sd / "STOP"), str(sd / "HALT"), str(sd / "FINAL_WRITTEN"), str(h.LIVE_OK_PATH)))
+        self.assertEqual(e.ex.final_marker, sd / "FINAL_WRITTEN")
+
+    def test_a_live_config_may_not_override_any_of_the_four(self):
+        for key in h.PINNED_PATH_KEYS:
+            sub = self.tmp / key
+            sub.mkdir()
+            with self.assertRaises(SystemExit, msg=key) as cm:
+                Env(sub, **{key: str(self.tmp / "elsewhere")})
+            self.assertIn(key, str(cm.exception))
+            self.assertEqual(h.start_refusal({"state_dir": str(sub), key: "x", "end_ms": 1}), f"config_path_override:{key}")
+
+    def test_a_dry_run_may_still_point_them_elsewhere(self):
+        e = Env(self.tmp, live=False, stop_file=str(self.tmp / "ELSEWHERE_STOP"))
+        (self.tmp / "ELSEWHERE_STOP").write_text("")
+        e.fire()
+        self.assertEqual(e.refusals(), ["stop_file"])
+
+    def test_the_banner_prints_the_resolved_paths(self):
+        e = self.env(live=False)
+        cp = self.tmp / "c.json"
+        cp.write_text(json.dumps(e.conf))
+        Path(e.conf["intents_file"]).write_text("")
+        with mock.patch.object(pe, "ProbeRpc", lambda url: e.rpc), mock.patch.object(h.sim, "load_rpc_url", return_value="http://x"), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            h.main(["--config", str(cp), "--once"])
+        self.assertIn("paths=", out.getvalue())
+        self.assertIn(str(Path(e.conf["state_dir"]) / "STOP"), out.getvalue())
+
+
+class ProbeStateAndLockTests(Case):
+    def probe_state(self, profile: str, **kw):
+        pe.State(mode="live", **kw).save(pe.state_path_for(self.probe_dir, "live", profile))
+
+    def test_live_refuses_while_either_probe_profile_has_a_position_open_or_in_flight(self):
+        for i, (prof, kw) in enumerate((("dec019", {"open": {"m": {"x": 1}}}), ("dec020", {"pending": {"m": {"kind": "buy"}}}))):
+            self.probe_state(prof, **kw)
+            sub = self.tmp / f"p{i}"
+            sub.mkdir()
+            with self.assertRaises(SystemExit) as cm:
+                Env(sub)
+            self.assertIn(prof, str(cm.exception))
+            pe.state_path_for(self.probe_dir, "live", prof).unlink()
+
+    def test_live_passes_when_the_probe_states_are_empty_or_absent(self):
+        self.probe_state("dec019")  # the decommissioned probe: 0 open, 0 pending
+        self.env()
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory modes")
+    def test_unreadable_probe_state_fails_closed_in_live_but_not_in_a_dry_run(self):
+        self.probe_state("dec019")
+        os.chmod(self.probe_dir, 0)
+        self.addCleanup(os.chmod, self.probe_dir, 0o700)
+        with self.assertRaises(SystemExit) as cm:
+            self.env()
+        self.assertIn("fail closed", str(cm.exception))
+        Env(self.tmp / "dry", live=False) if (self.tmp / "dry").mkdir() is None else None  # a dry run as another user skips the cross-check
+
+    def test_the_lock_is_not_opened_through_a_symlink(self):
+        target = self.tmp / "precious"
+        target.write_text("keep me")
+        link = self.tmp / "state" / "h5-executor.lock"
+        link.parent.mkdir()
+        link.symlink_to(target)
+        with self.assertRaises(OSError):
+            h.acquire_lock(link)
+        self.assertEqual(target.read_text(), "keep me")  # not truncated
+
+
+class TriggerFidelityTests(Case):
+    def parse(self, **kw):
+        return h.parse_shadow_trigger(shadow_trigger(Clock(), **kw))
+
+    def test_the_sps_window_must_span_120_seconds(self):
+        for span in (None, 0, 119.9, True, "300", float("nan")):
+            self.assertEqual(self.parse(sps_span_s=span), (None, "bad_intent:sps_span"), span)
+        self.assertIsNotNone(self.parse(sps_span_s=120.0)[0])
+
+    def test_a_pool_the_detector_skipped_for_want_of_an_sps_is_refused(self):
+        e = self.env()
+        path = Path(e.conf["intents_file"])
+        path.write_text("")
+        e.ex.intent_tick()
+        with path.open("a") as fh:
+            fh.write(json.dumps({"type": "skipped_no_sps", "pool": POOL, "mint": MINT, "s0": S0, "slot": S0 + 5}) + "\n")
+            fh.write(json.dumps(shadow_trigger(e.clock)) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual((e.refusals(), e.rpc.sent), (["sps_skipped_pool"], []))
+
+    def test_missed_or_reordered_prints_refuse_the_trigger(self):
+        for kw in ({"base_breaks": 1}, {"slot_regress": 2}, {"base_breaks": None}, {"base_breaks": "0"}):
+            self.assertEqual(self.parse(**kw), (None, "bad_intent:base_breaks"), kw)
+        r = shadow_trigger(Clock())
+        del r["base_breaks"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:base_breaks"))
+
+    def test_gap_must_be_a_bool_and_v_missing_literally_false(self):
+        for bad in (None, "false", 0, 1, [], "False"):
+            self.assertEqual(self.parse(gap=bad), (None, "bad_intent:gap"), bad)
+            self.assertEqual(self.parse(v_missing=bad), (None, "bad_intent:v_missing"), bad)
+        self.assertEqual(self.parse(v_missing=True), (None, "bad_intent:v_missing"))
+        r = shadow_trigger(Clock())
+        del r["gap"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:gap"))
+        r = shadow_trigger(Clock())
+        del r["v_missing"]
+        self.assertEqual(h.parse_shadow_trigger(r), (None, "bad_intent:v_missing"))
+        flat = {"schema": "h5_intent_v1", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
+                "base_reserve": BASE0, "v_lamports": V, "decision_ms": T0, "gap": "no"}
+        self.assertEqual(h.parse_trigger(flat), (None, "bad_intent:gap"))
+
+    def test_boost_spent_is_rechecked_against_the_rule(self):
+        for spent in (None, "4", -1.0, 17.5675, 17.585, 20.0, float("nan")):
+            self.assertEqual(self.parse(boost_spent_sol=spent), (None, "bad_intent:boost_spent"), spent)
+        self.assertIsNotNone(self.parse(boost_spent_sol=17.5674)[0])  # 0.999 x 17.585 = 17.567415
+        self.assertIsNotNone(self.parse(boost_spent_sol=0.0)[0])
+
+    def test_the_window_is_300_seconds_with_no_slack(self):
+        e = self.env()
+        e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1501)  # 300.2 s after s0
+        self.assertEqual(e.refusals(), ["outside_rule_window"])
+        e.fire(trigger_slot=e.rpc.slot - 5, s0_slot=e.rpc.slot - 5 - 1500)  # exactly 300.0 s
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_a_trigger_print_older_than_the_limit_by_block_time_is_stale(self):
+        e = self.env()
+        e.fire(block_time=T0 // 1000 - 13)
+        self.assertEqual(e.refusals(), ["stale_trigger"])
+        e.fire(block_time=T0 // 1000 - 12)  # block_time is whole seconds: 2 s of slack on top of the 10 s limit
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_the_vendored_records_carry_every_key_the_executor_reads(self):
+        trig, pool = VENDORED["trigger"], VENDORED["pool"]
+        read = {"type", "variant", "pool", "mint", "s0", "slot", "sps", "t_detect_ms", "q_trigger_sol", "base_pre", "sell_token_raw", "v_print",
+                "v_missing", "gap", "base_breaks", "slot_regress", "sps_span_s", "boost_spent_sol", "s0_t_recv_ms", "block_time"}
+        self.assertTrue(read <= set(trig), read - set(trig))
+        self.assertTrue({"type", "reason", "mint", "gap", "boost_src", "boost_last_slice_s", "boost_last_slice_s_blocktime",
+                         "boost_last_slice_s_recv"} <= set(pool))
+        t, bad = h.parse_shadow_trigger({**trig, "pool": POOL, "mint": MINT, "t_detect_ms": T0, "block_time": T0 // 1000, "s0_t_recv_ms": T0 - 100_000})
+        self.assertIsNone(bad)
+        self.assertEqual(t.s0_wall_ms, T0 - 100_000)
+
+    @unittest.skipUnless((Path(h.__file__).parent / "h5_shadow.py").exists(), "tools/h5_shadow.py (PR #477) is not on this branch yet")
+    def test_the_vendored_records_match_the_detector_source_once_it_is_here(self):
+        tree = ast.parse((Path(h.__file__).parent / "h5_shadow.py").read_text())
+        dicts = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                keys = {k.value: v for k, v in zip(node.keys, node.values) if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if "type" in keys and isinstance(keys["type"], ast.Constant):
+                    dicts.append((keys["type"].value, set(keys)))
+        for kind in ("trigger", "pool"):
+            written = set().union(*[k for t, k in dicts if t == kind])
+            need = set(VENDORED[kind]) - {"exit_ladder_trigger_slots"}  # (added after the literal in _fire)
+            self.assertTrue(need <= written, f"{kind}: the detector no longer writes {sorted(need - written)}")
+
+
+class OracleAndPoolRecordTests(Case):
+    def append(self, e: Env, *rows: dict, path: Path | None = None) -> None:
+        with (path or Path(e.conf["intents_file"])).open("a") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+
+    def start(self, **kw) -> Env:
+        e = self.env(**kw)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        return e
+
+    def test_only_clean_horizon_pda_pool_records_feed_the_boost_halts(self):
+        e = self.start()
+        ignored = [pool_row("S" * 43 + "1", reason="shutdown"), pool_row("G" * 43 + "2", gap=True), pool_row("B" * 43 + "3", boost_src="behavioural"),
+                   pool_row("N" * 43 + "4", boost_src=None), pool_row("U" * 43 + "5", gap=None)]
+        counted = [pool_row("H" * 43 + "6"), pool_row("E" * 43 + "7", boost_src="event_authority")]
+        self.append(e, *ignored, *counted)
+        e.ex.intent_tick()
+        self.assertEqual(len(e.ledger("boost_row_ignored")), 5)
+        self.assertEqual(sorted(e.ex.counters.day(h.day_key(T0))["boost_s"]), sorted(r["mint"] for r in counted))
+        self.assertEqual(len(e.ledger("boost_last_slice")), 2)
+
+    def test_a_pick_is_sticky_in_the_oracle(self):
+        a, b = "A" * 43 + "1", "B" * 43 + "2"
+        f = self.tmp / "picks.jsonl"
+        f.write_text(json.dumps({"mint": a, "pick": True}) + "\n" + json.dumps({"mint": a, "pick": False}) + "\n"
+                     + json.dumps({"mint": b, "pick": False}) + "\n" + json.dumps({"mint": b, "pick": True}) + "\n")
+        o = h.JsonlPickOracle(f)
+        self.assertIs(o(a), True)  # a later false never undoes a true
+        self.assertIs(o(b), True)
+        with f.open("a") as fh:
+            fh.write(json.dumps({"mint": a, "pick": False}) + "\n")
+        self.assertIs(o(a), True)
+
+    def test_a_restart_drains_the_file_it_was_reading_before_it_moves_to_the_newest_hour(self):
+        d = self.tmp / "shadow"
+        d.mkdir()
+        old, new = d / "h5-shadow-2026-10-06T14.jsonl", d / "h5-shadow-2026-10-06T15.jsonl"
+        old.write_text("")
+        e = self.env(intents_file=str(d))
+        e.ex.intent_tick()
+        self.append(e, pool_row("A" * 43 + "1"), path=old)
+        e.ex.intent_tick()
+        self.assertEqual(e.ex.counters.tail_path, str(old))  # persisted
+        self.append(e, pool_row("B" * 43 + "2"), path=old)  # written while the executor was down ...
+        new.write_text(json.dumps(pool_row("C" * 43 + "3")) + "\n")  # ... and the hour rolled
+        e.ex = e.build()  # restart
+        self.assertEqual(e.ex._tail_path, old)
+        e.ex.intent_tick()
+        self.assertEqual([r["mint"] for r in e.ledger("boost_last_slice")], ["A" * 43 + "1", "B" * 43 + "2", "C" * 43 + "3"])  # old tail first
+        self.assertEqual(e.ex.counters.tail_path, str(new))
+
+
+if __name__ == "__main__":
+    unittest.main()
