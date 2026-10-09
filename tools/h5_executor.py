@@ -523,7 +523,7 @@ class H5Counters:
     bvs_n: int = 0  # landed sells paired with their pool's BOOST last slice
     bvs_before: int = 0  # ... of which BOOST's last slice came at or before our landing
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
-    tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports}: the active tier and the wallet when it started
+    tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports, realized_at_start}: the active tier, the wallet and the run's realized P&L when it started
     tier_attempts: int = 0  # buy attempts since the active tier started: what max_attempts caps. Reset at every tier_change.
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
 
@@ -915,16 +915,23 @@ class H5Executor(pl.LiveExecutor):
         wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
         in_tier = self.counters.tier_attempts  # what the old tier used, for the ledger; the cap starts again from zero in the new one
         self.tier = tier
-        self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet}
+        realized_at_start = self.state.realized_lamports  # the tier's loss allowance counts from here, not from the start of the run
+        self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet, "realized_at_start": realized_at_start}
         self.counters.tier_attempts = 0
         self.counters.save(self.counters_path)
-        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, limits=asdict(self.h5),
+        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self.h5),
                   open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts)
 
     def _total_stop_lamports(self) -> int | None:
-        """The tier's total stop, also capped at 35% of the wallet balance measured when the tier started. None while that balance is unknown."""
+        """The tier's total stop, also capped at 35% of the wallet balance measured when the tier started. None while that balance is unknown.
+        It limits the loss SINCE THE TIER STARTED (see `_tier_realized`), not the run's cumulative realized P&L."""
         wallet = self.counters.tier_state.get("wallet_lamports")
         return None if wallet is None else min(self.h5.total_loss_lamports, int(TIER_WALLET_FRAC * wallet))
+
+    def _tier_realized(self) -> int:
+        """Realized P&L since the active tier started. A profit made before the tier change must not widen the new tier's loss allowance (the
+        35% cap is a share of the wallet measured at tier start). A counters file with no `realized_at_start` counts from the run's start."""
+        return self.state.realized_lamports - int(self.counters.tier_state.get("realized_at_start") or 0)
 
     def _tier_step_down_due(self, why: str) -> None:
         """A halt or a loss stop above T0: the file is NOT changed here. An alert for the watchdog; Helm or the manager edits the file."""
@@ -1005,8 +1012,10 @@ class H5Executor(pl.LiveExecutor):
         # Worst-case exposure, not realized alone: everything open or in flight, and this stake, is assumed lost.
         at_risk = (sum(int(p.get("spend") or 0) + int(p.get("extra_cost") or 0) for p in st.open.values())
                    + sum(int(p.get("spend") or 0) for p in st.pending.values() if p["kind"] == "buy") + h5.stake_lamports)
-        if st.realized_lamports - at_risk <= -total_stop:
+        if self._tier_realized() - at_risk <= -total_stop:  # the loss since this tier started, against min(tier total, 35% of the wallet then)
             return "total_loss_stop"
+        if st.realized_lamports - at_risk <= -h5.total_loss_lamports:  # and the run-cumulative loss against the tier's own total: a tier-file
+            return "total_loss_stop"                                  # flicker (T1, T0, T1) restarts the check above and cannot reset this one
         day = self.counters.day(day_key(now))
         if day["realized"] - at_risk <= -h5.daily_loss_lamports:
             return "daily_loss_stop"

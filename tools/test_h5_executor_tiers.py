@@ -272,6 +272,71 @@ class TierLimitsBindTests(TierCase):
         self.assertEqual((len(e.rpc.sent), e.ex.counters.tier_state["wallet_lamports"]), (1, 10 * SOL))
 
 
+class TotalStopSinceTierStartTests(TierCase):
+    """G1: the total stop (and its 35% wallet cap) limits the loss since the TIER started, not the run's cumulative realized P&L."""
+
+    def start_t0_with_profit_then_t1(self, profit: int = 300_000_000, balance: int = 1_300_000_000) -> Env:
+        e = self.tier_env("T0", balance=balance)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = profit  # T0 made money
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        return e
+
+    def stop_at(self, e: Env, realized: int):
+        e.ex.state.realized_lamports = realized
+        return e.ex._budget_stop(e.clock())
+
+    def test_profit_before_the_tier_does_not_widen_the_35_percent_cap(self):
+        e = self.start_t0_with_profit_then_t1()  # wallet 1.30 SOL: min(0.60, 0.35 x 1.30) = 0.455
+        self.assertEqual((e.ex._total_stop_lamports(), e.ex.counters.tier_state["realized_at_start"]), (455_000_000, 300_000_000))
+        # the loss since T1 started, plus this 0.10 SOL stake, must stay above -0.455: a loss of 0.355 is the last one that lets a buy go
+        self.assertIsNone(self.stop_at(e, 300_000_000 - 354_999_999))
+        self.assertEqual(self.stop_at(e, 300_000_000 - 355_000_000), "total_loss_stop")
+        # the reviewer's repro: -0.55 since the tier started (42% of the wallet then) is refused, not allowed through
+        self.assertEqual(self.stop_at(e, 300_000_000 - 550_000_000), "total_loss_stop")
+
+    def test_only_the_since_tier_start_check_refuses_after_a_prior_profit(self):
+        # the run-cumulative figure alone (-0.25 - 0.10 stake) is still above -0.455: it is the since-tier-start loss that refuses
+        e = self.start_t0_with_profit_then_t1()
+        e.ex.state.realized_lamports = 300_000_000 - 550_000_000
+        self.assertGreater(e.ex.state.realized_lamports - 100_000_000, -e.ex._total_stop_lamports())
+        self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
+
+    def test_a_loss_before_the_tier_is_still_counted_by_the_run_cumulative_check(self):
+        e = self.tier_env("T0", balance=10 * SOL)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -50_000_000  # T0 lost 0.05 (inside its 0.12)
+        self.write_tier("T1\n")
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.counters.tier_state["realized_at_start"], -50_000_000)
+        # since the tier started the loss may reach 0.50, but the run total (-0.05 + that + this 0.10 stake) may not reach T1's own 0.60
+        self.assertIsNone(self.stop_at(e, -499_999_999))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")
+
+    def test_realized_at_start_survives_a_restart(self):
+        e = self.start_t0_with_profit_then_t1()
+        e.ex.save()
+        e.ex = e.build()
+        self.assertEqual(e.ex.tier, "T1")
+        self.assertEqual(e.ex.counters.tier_state["realized_at_start"], 300_000_000)
+        self.assertEqual(self.stop_at(e, 300_000_000 - 550_000_000), "total_loss_stop")  # the restarted executor still counts from the tier start
+        self.assertEqual([r["realized_at_start"] for r in e.ledger("tier_change")], [0, 300_000_000])
+
+    def test_a_tier_file_flicker_cannot_reset_the_allowance(self):
+        e = self.tier_env("T1", balance=10 * SOL)  # 35% of 10 SOL is far above the tier's 0.60, so the tier's own total binds
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -500_000_000  # T1 lost 0.50: one more 0.10 buy is the last that the 0.60 total allows
+        h.TIER_FILE_PATH.write_text("garbage\n")  # an invalid read means T0 ...
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.tier, "T0")
+        self.write_tier("T1\n")  # ... and then T1 again: a new tier start, which re-records realized_at_start
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["realized_at_start"]), ("T1", -500_000_000))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")  # since-start is 0, but the run-cumulative -0.50 - 0.10 hits the tier's 0.60
+        self.assertIsNone(self.stop_at(e, -499_999_999))
+
+
 class AttemptsPerTierTests(TierCase):
     def attempt(self, e: Env, **kw) -> None:
         e.ex.state.bought.clear()  # (the fixture has one pool: let the same mint be tried again)
