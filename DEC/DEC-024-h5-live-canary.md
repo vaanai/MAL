@@ -313,6 +313,29 @@ OWNER_CAPITAL_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owne
 - **Unchanged.** Every other item of Amendment 3 stands.
 
 
+## Go-live record (2026-10-09)
+
+```
+H5_CANARY_LIVE: 2026-10-09T19:29:53Z at T0 (0.02 SOL), install af02e90561e23b13a3a2fa89c63faad0da899d33.
+```
+
+- **Official A3 run.** EXP-024 Am.4 F, job #449: 2026-10-09T19:23:02Z on main 82cd674, monitor blob 1ca0a88c, pins blob 7486f57f.
+  - None of the five H5 halt flags fired, so **EXP-024 P2 is met**.
+  - `synthetic_share_high` read 6/17 = 0.353. It is recorded only (EXP-024 Am.4 C1; this file's Amendment 2 item 3, install verified at 16:52Z).
+  - `program_changed` was clear.
+  - `ms_per_slot_moved` gave a WARN, 267.26 → 217.39 ms/slot. That is the slot step and lies inside section 5.6's [150, 450] ms band.
+- **Step 11, done by Helm and relayed by the owner:**
+  - `H5_WATCH_FUNDED_SOL=0.298688847`;
+  - wallet-wide STOP removed at 19:29:31Z;
+  - TIER `T0`; LIVE_OK created;
+  - unit started at 19:29:53Z, active and enabled, running as `mal-live`;
+  - the only credential is `LoadCredential=probe-wallet`, and `check-h5-unit.py` passed;
+  - first watchdog pass: `alerts=0`.
+- **Manager check (job #469, about 19:31Z):** ALERTS=0. Unit files equal the pinned copies, the wallet balances to the funded amount, and the shadow feed is fresh.
+- **Total stop at T0.** The executor logs the T0 table constant, `total_loss_lamports=120000000` (0.12 SOL). The binding stop is min(0.12, 35% of the wallet at tier start), about **0.1045 SOL** (`tools/h5_executor.py:1034-1038`).
+- **Go-live pair.** The shadow is MiScusi job #454. The keyless dry run, job #455, keeps running for comparison.
+
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
