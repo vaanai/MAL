@@ -17,7 +17,7 @@ The only owner words in the repo for this canary are in [DEC-025](DEC-025-c1nf-f
 
 > "I'm also down to do some testing with some small trades in parallel."
 
-DEC-025 adds, in the manager's voice and not the owner's: "scope (0.02 SOL stakes, a separate wallet, DEC-026) is the manager's, not the owner's words". The task that produced this draft relays the O3 entry as "a small live C1-NF canary in parallel" (notebook n_hZaavyDyNcJcZg) and says it rides "the same tier ladder as H5". Whether the ladder's upper steps are inside "small" is **[OWNER CHOOSES]** O-2 below.
+DEC-025 adds, in the manager's voice and not the owner's: "scope (0.02 SOL stakes, a separate wallet, DEC-026) is the manager's, not the owner's words". The manager's brief for this draft relays the O3 entry as "a small live C1-NF canary in parallel" (notebook n_hZaavyDyNcJcZg) and says it rides "the same tier ladder as H5". Whether the ladder's upper steps are inside "small" is **[OWNER CHOOSES]** O-2 below.
 
 ## 2. What it is and is not
 
@@ -49,7 +49,7 @@ The quant-proof questions are in section 14. None of them is the owner's to answ
 - **After Appendix A is merged as an EXP-025 amendment**, or after the fallback in Appendix A applies. Appendix A item 1 must be merged before the shadow writes its first outcome for any decision made before 2026-10-10T00, and in any case before the first canary send.
 - **After every item in section 11.** The build, the pinned model, the parity and md5 proofs, Helm's install and dry run, funding, and the watchdog test.
 - **Never while a live-halt rule of section 7 is on.** That includes the A3 flags that apply to C1-NF (section 7, rule 6) and the open synthetic question (section 9.3).
-- **No date bar.** DEC-024 barred sends before 2026-10-10T00Z and its Amendment 1 lifted the bar. Here none is needed: every pool decided before 2026-10-10T00 is outside every look's counted window, and Appendix A item 1 covers the observation. The ladder is slow enough that the first send will probably be after the build is done, which is not before 2026-10-10 on the PR states in section 11.
+- **No date bar.** DEC-024 barred sends before 2026-10-10T00Z and its Amendment 1 lifted the bar. Here none is needed: every pool decided before 2026-10-10T00 is outside every look's counted window, and Appendix A item 1 covers the observation. The first send cannot come before the build of section 11 is done, and on the PR states listed there that is not before 2026-10-10.
 - **Two wallets, one host.** The H5 canary keeps its own wallet, files and unit. Nothing in this DEC reads, writes or restarts them.
 
 ## 5. Custody and files
@@ -100,7 +100,7 @@ Same custody design as DEC-024 and DEC-019. Paths are proposals for Helm to conf
 - **No skipped steps.** The ladder ends at T2 (0.30 SOL). A tier above it needs a new reviewed code change and a new DEC.
 - **T1 and T2 are written here but inactive** until the owner's line in section 10 (**O-2**). Only T0 is canary size.
 - **The trades-per-day cap is above the book's rate.** The exploration book had about 20 trades a day (419 trades over 21 days [exploration, VERIFY]) against a cap of 30. The 30 a day and 2 open are H5's values. Whether 2 open binds when picks cluster is read off the shadow's skipped count, not guessed.
-- **T2's price-impact check is H5's, not C1-NF's.** `T2_IMPACT_OK` rests on a replay model for H5 triggers (`/data/mal/hunt-1008/h5-work/IMPACT.md`, per `tools/h5_executor.py:158-162`). C1-NF's pools are older and deeper (the stage-1 real quote is at least 20 SOL; VERIFY's pick median is 142.65 SOL [exploration]). The check is not transferable. T2 needs its own (section 14, Q8).
+- **T2's price-impact check is H5's, not C1-NF's.** `T2_IMPACT_OK` rests on a replay model for H5 triggers (`/data/mal/hunt-1008/h5-work/IMPACT.md`, per `tools/h5_executor.py:158-162`). C1-NF's pools are older and deeper (the stage-1 real quote is at least 20 SOL; the discovery picks' median real quote is 142.65 SOL, VERIFY section 6 as EXP-025 section 8 cites it [exploration]). The check is not transferable. T2 needs its own (section 14, Q8).
 
 **Funding (O-1).** Default **0.25 SOL**, nothing more before the T1 step. At T1 and T2 the stakes and open caps need far more than that (T2: 3 x 0.30), and the 35% cap on the total stop would clip the table's stops on a small wallet. Each step's funding is a separate owner decision when the manager asks for the step.
 
@@ -252,7 +252,7 @@ Status is as of 2026-10-09, about 08:30Z, **from the PR list and PR bodies, not 
 | 4 | **Synthetic ruling** (section 9.3), a dated quant-proof line | Open |
 | 5 | **Pool-overlap count** (section 9.2, Q2), or every "0 overlap" removed from the documents | Open. Source of the claim not found |
 | 6 | **Ledger** #502 (`claude/c1nf-ledger`) merged, with a review | OPEN draft at 53da60f. Its body reports 21 tests and byte-equal parity with the pinned ledger on 2026-09-20. No review recorded. Not run on fast-0; `duckdb==1.5.6` not checked there. The nightly rollup is not scheduled |
-| 7 | **Features** #506 (`claude/c1nf-features`) merged, with a review | OPEN draft at 3ae9915. Exact mode bit-equal on two days; the **live mode drifts** (state features differ by 2e-7 to 1.7e-2 relative at p99, maximum 1.9, from the fee-model estimate; "the main open item"). No review recorded |
+| 7 | **Features** #506 (`claude/c1nf-features`) merged, with a review | OPEN draft at 3ae9915. Exact mode bit-equal on two days; the **live mode drifts** (state features: median relative difference 2e-7 to 3e-5, p99 5e-4 to 1.7e-2, maximum 1.9, from the fee-model estimate; "the main open item"; no flag flipped on the two days tried). No review recorded |
 | 8 | **Shadow** #503 (`claude/c1nf-shadow`) merged, with a review | OPEN draft at 2a96ce0, "not for merge until the missing items are closed": no pinned model, no parity, features not on main, no live run. 72 tests. **Two changes this DEC needs:** the pick record must carry the decision-time `q_lamports` and `base_reserve` (its `PICK_FIELDS` do not; section 6, buy guard), and outcome records start at 2026-10-10T00 unless Appendix A item 1 is in (section 8) |
 | 9 | **Executor** (`c1nf` profile) merged, with a review and a **security review** (it holds a key) | **#504 is CLOSED, not merged**, at 2026-10-09T05:33:55Z, the same minute #484 merged; its base branch was `claude/h5-executor` (closed by that merge, inferred; no comment says so). The branch `claude/c1nf-executor` is still on origin at a98ff07, built on the pre-merge H5 head 9c5618b. It must be rebased onto main and reworked for the merged tier mechanism. Its limits (3 open, 40 a day, total 0.15) differ from section 6. Other gaps against this DEC: the buy guard fail-closed, the oracle keying (section 9.1), `end_ms`, priority per O-3, the file paths of section 5. No review of it is recorded |
 | 10 | **Daily check and watchdog** for `c1nf` | Not written (H5's are `scripts/mal-fast/h5-daily-check.py` and the `h5-watch` units) |
