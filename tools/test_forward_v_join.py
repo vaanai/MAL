@@ -236,6 +236,7 @@ class SealTests(Fixture):
                 r = cli(*argv)
                 self.assertEqual(r.rc, 2, r.text)
                 self.assertIn("sealed until the DEC-016 FINAL", r.err)
+                self.assertIn("Only `pins` runs before it; every mode that opens a trade file, `--hash-only` included, waits for the FINAL marker.", r.err)
                 self.assertFalse(self.out.exists())
                 self.assertFalse((self.root / "fb.jsonl").exists())
                 self.assertNotIn(SIG_SENTINEL, r.text)
@@ -252,6 +253,7 @@ class SealTests(Fixture):
                 self.ledger.write_text(json.dumps(doc) + "\n")
                 r = cli(*self.args("join", (H1, H2), "--out-dir", str(self.out)))
                 self.assertEqual(r.rc, 2, r.text)
+                self.assertIn("Only `pins` runs before it; every mode that opens a trade file, `--hash-only` included, waits for the FINAL marker.", r.err)
                 self.assertFalse(self.out.exists())
 
     def test_a_torn_or_invalid_ledger_refuses(self) -> None:

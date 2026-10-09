@@ -153,7 +153,8 @@ def final_marker(ledger: Path) -> dict[str, Any]:
 
     A marker is a line with final=true for EXP-012 (the field absent counts as EXP-012) and no test_window."""
     if not ledger.is_file():
-        raise Refused(f"sealed until the DEC-016 FINAL: no FINAL ledger at {ledger}. Only `check --hash-only` runs before it.")
+        raise Refused(f"sealed until the DEC-016 FINAL: no FINAL ledger at {ledger}. "
+                      "Only `pins` runs before it; every mode that opens a trade file, `--hash-only` included, waits for the FINAL marker.")
     text = ledger.read_text(encoding="utf-8")
     if text and not text.endswith("\n"):
         raise Refused(f"{ledger} ends with a torn line; repair it first")
@@ -170,7 +171,7 @@ def final_marker(ledger: Path) -> dict[str, Any]:
             found = doc
     if found is None:
         raise Refused("sealed until the DEC-016 FINAL: the EXP-012 FINAL marker is not in the FINAL ledger. "
-                      "Only `check --hash-only` runs before it.")
+                      "Only `pins` runs before it; every mode that opens a trade file, `--hash-only` included, waits for the FINAL marker.")
     return found
 
 
