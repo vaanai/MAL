@@ -59,8 +59,10 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from pathlib import Path
@@ -82,6 +84,7 @@ from tools.pump_structure_monitor import (  # pure python; the classifier semant
     DISC_COMPLETE,
     DISC_MIGRATE,
     PUMP_PROGRAM,
+    CallBudgetExceeded,
     RpcClient,
     b58decode,
     decode_complete_event,
@@ -175,7 +178,7 @@ RPC_ATTEMPT_TIMEOUT_S = 12.0  # wall bound of one attempt, enforced on the await
 RPC_SIGS_LIMIT = 100  # getSignaturesForAddress(curve) page: 10-59 failed sniper txs crowd a short window (a 10-window missed the completing tx in 20 of 160 graduations)
 RPC_TX_PER_ATTEMPT = 8  # non-failed txs fetched per attempt, newest first (two txs are needed: the migrate tx and the CompleteEvent tx; 5 missed 3 of 10 in the cost run)
 RPC_MAX_INFLIGHT = 8  # concurrent fallback lookups; a request beyond this is dropped (the pool stays unclassified -> excluded)
-RPC_MIN_INTERVAL_S = 0.25  # pacing of the public RPC client
+RPC_MIN_INTERVAL_S = 0.25  # pacing of the ONE shared public RPC client: a global rate of at most 4 requests per second, retries included
 _COMPLETE_EVENT_PREFIX = base64.b64encode(DISC_COMPLETE).decode()[:10]
 _MIGRATE_EVENT_PREFIX = base64.b64encode(DISC_MIGRATE).decode()[:10]
 
@@ -580,6 +583,38 @@ def classify_via_rpc(client: Any, mint: str, migrate_sig: str | None = None, nee
     return found
 
 
+class SharedRpc:
+    """One RpcClient behind a lock, shared by every lookup: the process-wide request rate is at most 1 / RPC_MIN_INTERVAL_S (4 rps), retries included, and a
+    429 backoff pauses all lookups, not just one. (A client per attempt would each pace only itself.)"""
+
+    def __init__(self, url: str, *, client: Any = None) -> None:
+        self._lock = threading.Lock()
+        self._client = client or RpcClient(url, min_interval=RPC_MIN_INTERVAL_S, max_retries=1, timeout=8.0, max_calls=10**9)
+
+    def call(self, method: str, params: Sequence[Any]) -> Any:
+        with self._lock:
+            return self._client.call(method, params)
+
+    def attempt(self, deadline: float, max_calls: int) -> "AttemptClient":
+        return AttemptClient(self, deadline, max_calls)
+
+
+class AttemptClient:
+    """One lookup attempt's view of the shared client: a call budget and a monotonic deadline. A worker thread whose awaiting side already timed out cannot be
+    cancelled, but it stops issuing calls at the next one (the deadline has passed) instead of burning the shared rate."""
+
+    def __init__(self, shared: SharedRpc, deadline: float, max_calls: int) -> None:
+        self.shared, self.deadline, self.max_calls, self.total_calls = shared, deadline, max_calls, 0
+
+    def call(self, method: str, params: Sequence[Any]) -> Any:
+        if time.monotonic() >= self.deadline:
+            raise TimeoutError("lookup attempt deadline")
+        if self.total_calls >= self.max_calls:
+            raise CallBudgetExceeded(f"call cap {self.max_calls} reached before {method}")
+        self.total_calls += 1
+        return self.shared.call(method, params)
+
+
 class RpcFallback:
     """Off-hot-path lookup for a pool still unclassified at s0. `request(mint)` returns at once; the blocking RPC runs in a worker thread, awaited with a
     per-attempt timeout, a few attempts with delays, at most RPC_MAX_INFLIGHT at a time. It writes only to the SynClassifier. Any failure leaves the
@@ -589,8 +624,9 @@ class RpcFallback:
                  delays: Sequence[float] = RPC_ATTEMPT_DELAYS_S, attempt_timeout_s: float = RPC_ATTEMPT_TIMEOUT_S, max_inflight: int = RPC_MAX_INFLIGHT,
                  sleep: Callable[[float], Any] = asyncio.sleep) -> None:
         self.classifier, self.delays, self.attempt_timeout_s, self.max_inflight, self._sleep = classifier, tuple(delays), attempt_timeout_s, max_inflight, sleep
-        self._client_factory = client_factory or (lambda: RpcClient(rpc_url, min_interval=RPC_MIN_INTERVAL_S, max_retries=1, timeout=8.0,
-                                                                     max_calls=RPC_TX_PER_ATTEMPT + 6))
+        self._shared = None if client_factory is not None else SharedRpc(rpc_url)  # one client, one rate limiter, for every attempt of every lookup
+        self._client_factory = client_factory or (lambda: self._shared.attempt(time.monotonic() + self.attempt_timeout_s, RPC_TX_PER_ATTEMPT + 6))
+        self._executor = ThreadPoolExecutor(max_workers=max(1, max_inflight), thread_name_prefix="syn-rpc")  # dedicated: the loop's default executor stays free for DNS
         self._inflight: dict[str, asyncio.Task] = {}
         self._done: collections.OrderedDict[str, None] = collections.OrderedDict()  # mints already looked up (found or given up): never asked twice
         self.calls = 0  # RPC calls made by finished attempts (RpcClient.total_calls), for the cost report
@@ -619,7 +655,7 @@ class RpcFallback:
                 client = self._client_factory()
                 self.classifier.stats["rpc_attempts"] += 1
                 try:
-                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint, migrate_sig or self.classifier.sig_for(mint, "mig"), need, skip,
+                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(self._executor, classify_via_rpc, client, mint, migrate_sig or self.classifier.sig_for(mint, "mig"), need, skip,
                                                                   self.classifier.sig_for(mint, "comp")),
                                                  self.attempt_timeout_s)
                 except asyncio.TimeoutError:
@@ -649,6 +685,7 @@ class RpcFallback:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class Pool:
@@ -1537,16 +1574,28 @@ def _strip_url(u: str) -> str:
     return f"{sp.scheme}://{sp.hostname}{':' + str(sp.port) if sp.port else ''}{sp.path}" + ("?REDACTED" if sp.query else "")
 
 
+def _host_only(u: str) -> str:
+    """scheme://host only: an RPC URL can carry its key in the userinfo, the path (/v2/<key>) or the query."""
+    try:
+        sp = urlsplit(u)
+    except ValueError:
+        return "REDACTED"
+    return f"{sp.scheme}://{sp.hostname}" if sp.scheme and sp.hostname else "REDACTED"
+
+
 def redact_argv(argv: Sequence[str]) -> list[str]:
+    """--ws-url keeps scheme://host/path (no userinfo or query); --rpc-url keeps scheme://host only."""
     out: list[str] = []
-    nxt = False
+    flag: str | None = None
     for a in argv:
-        if nxt:
-            out.append(_strip_url(a))
-            nxt = False
-        elif a == "--ws-url":
+        if flag is not None:
+            out.append(_host_only(a) if flag == "--rpc-url" else _strip_url(a))
+            flag = None
+        elif a in ("--ws-url", "--rpc-url"):
             out.append(a)
-            nxt = True
+            flag = a
+        elif a.startswith("--rpc-url="):
+            out.append("--rpc-url=" + _host_only(a.split("=", 1)[1]))
         elif a.startswith("--ws-url="):
             out.append("--ws-url=" + _strip_url(a.split("=", 1)[1]))
         else:

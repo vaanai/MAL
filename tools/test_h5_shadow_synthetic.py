@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -678,6 +679,84 @@ class EngineGateTests(unittest.TestCase):
             self.assertEqual(len(types(out, "excluded")), expect)
             self.assertEqual(types(out, "outcome"), [])
             self.assertEqual(len(types(out, "trigger")), 0 if expect else 2)
+
+
+class RpcSafetyTests(unittest.TestCase):
+    """Reviewer findings on #521: a dedicated executor, one shared paced client (<= 4 rps), no secrets in the start record."""
+
+    def test_the_shared_client_paces_and_serialises_every_lookup_thread(self):
+        stamps, active, peak, lock = [], [0], [0], threading.Lock()
+
+        def transport(url, body, timeout):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+                stamps.append(time.monotonic())
+            time.sleep(0.01)
+            with lock:
+                active[0] -= 1
+            return 200, {}, b'{"jsonrpc":"2.0","id":1,"result":1}'
+
+        client = M.RpcClient("https://x.example", min_interval=0.05, max_retries=1, max_calls=10**9, transport=transport)
+        shared = h5.SharedRpc("https://x.example", client=client)
+        threads = [threading.Thread(target=lambda: shared.call("getSlot", [])) for _ in range(6)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        gaps = [b - a for a, b in zip(sorted(stamps), sorted(stamps)[1:])]
+        self.assertEqual((len(stamps), peak[0]), (6, 1))  # never two requests at once
+        self.assertGreaterEqual(min(gaps), 0.045)  # one limiter for all threads
+
+    def test_the_default_fallback_uses_one_client_paced_at_4_rps_or_less_and_a_dedicated_executor(self):
+        self.assertGreaterEqual(h5.RPC_MIN_INTERVAL_S, 0.25)
+        fb = h5.RpcFallback(h5.SynClassifier(), "https://api.mainnet-beta.solana.com")
+        self.assertIsInstance(fb._shared, h5.SharedRpc)
+        self.assertGreaterEqual(fb._shared._client.min_interval, 0.25)
+        self.assertEqual(fb._executor._max_workers, h5.RPC_MAX_INFLIGHT)
+        self.assertIs(fb._client_factory().shared, fb._shared)  # every attempt goes through the same limiter
+        self.assertIs(fb._client_factory().shared, fb._shared)
+
+    def test_lookups_run_on_the_dedicated_executor_not_the_loops_default(self):
+        names = []
+
+        class NameRpc(FakeRpc):
+            def call(self, method, params):
+                names.append(threading.current_thread().name)
+                return super().call(method, params)
+
+        clf = h5.SynClassifier()
+
+        async def go():
+            fb = h5.RpcFallback(clf, client_factory=lambda: NameRpc([], {"migsig": migrate_cut_tx(MX)}), delays=(0.0,), sleep=lambda s: asyncio.sleep(0))
+            fb.request(MX, "migsig")
+            await asyncio.gather(*list(fb._inflight.values()))
+            await fb.close()
+
+        asyncio.run(go())
+        self.assertTrue(names and all(n.startswith("syn-rpc") for n in names), names)
+
+    def test_an_attempt_has_a_call_budget_and_a_deadline_so_a_timed_out_thread_stops_calling(self):
+        fake = FakeRpc([], {})
+        shared = h5.SharedRpc("https://x.example", client=fake)
+        a = shared.attempt(time.monotonic() + 5, 2)
+        a.call("getSignaturesForAddress", [])
+        a.call("getSignaturesForAddress", [])
+        with self.assertRaises(M.CallBudgetExceeded):
+            a.call("getSignaturesForAddress", [])
+        late = shared.attempt(time.monotonic() - 1, 5)
+        with self.assertRaises(TimeoutError):
+            late.call("getSignaturesForAddress", [])
+        self.assertEqual(fake.total_calls, 2)  # the over-budget and the late call never reached the wire
+
+    def test_rpc_url_is_redacted_in_the_start_record_like_the_ws_url(self):
+        argv = ["--rpc-url", "https://rpc.example/path?api-key=SECRET", "--ws-url=wss://ws.example/?k=SECRET2", "--rpc-url=https://u:p@rpc2.example/x?token=SECRET3"]
+        red = h5.redact_argv(argv)
+        self.assertNotIn("SECRET", json.dumps(red))
+        self.assertNotIn("u:p", json.dumps(red))
+        self.assertIn("https://rpc.example", red)  # scheme and host only: a key can sit in the path too
+        self.assertNotIn("/path", json.dumps(red))
+        self.assertIn("--rpc-url=https://rpc2.example", red)
 
 
 class CreatePoolNoticeTests(unittest.TestCase):

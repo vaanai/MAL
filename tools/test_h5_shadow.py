@@ -2429,7 +2429,7 @@ class SealAndStripTests(unittest.TestCase):
         self.assertTrue(h5.cap_pick_seal_oracle_stub(None))
         self.assertEqual(h5.SEAL_START_MS, 1_792_112_400_000)  # 2026-10-16T01:00:00Z
         self.assertEqual(h5.iso_from_ms(h5.SEAL_START_MS), "2026-10-16T01:00:00.000Z")
-        eng = h5.Engine(lambda r: None, pda_fn=lambda p: "x", suppress_outcome=h5.cap_pick_seal_oracle_stub)
+        eng = h5.Engine(lambda r: None, pda_fn=lambda p: "x", suppress_outcome=h5.cap_pick_seal_oracle_stub, classifier=h5.StaticClassifier(False))
         before = h5.Pool("p", "m", 1, h5.Pr(recv_ms=1_792_112_399_000, ts=1_792_112_399), V0, None, None)
         after = h5.Pool("p", "m", 1, h5.Pr(recv_ms=1_792_112_400_000, ts=1_792_112_400), V0, None, None)
         self.assertFalse(eng._sealed(before))
@@ -2530,7 +2530,7 @@ class DecodeTests(unittest.TestCase):
     def test_boost_buy_and_burn_tx_feeds_the_engine(self):
         n = fixture_notice("boost_buy_and_burn_oct.json")
         out: list[dict] = []
-        eng = h5.Engine(out.append, sps_fn=lambda p: SPS, pda_fn=lambda p: "PDA")
+        eng = h5.Engine(out.append, sps_fn=lambda p: SPS, pda_fn=lambda p: "PDA", classifier=h5.StaticClassifier(False))
         cache: dict = {}
         # the pool in this fixture is known only from its own events: announce it from the decoded BuyEvent
         from observe.trade_decode import records_from_logs
@@ -3000,7 +3000,7 @@ class ReplayVsFrozenTests(unittest.TestCase):
     def run_replay(self, sps_mode):
         rows, meta, sps_pool = h5.replay_rows(TAPE, h5.WORK_DIR, list(REPLAY_HOURS))
         records: list[dict] = []
-        eng = h5.Engine(records.append, boost_mode="behavioural", sps_fn=(lambda p: sps_pool.get(p.pool)) if sps_mode == "pool" else None)
+        eng = h5.Engine(records.append, boost_mode="behavioural", sps_fn=(lambda p: sps_pool.get(p.pool)) if sps_mode == "pool" else None, classifier=h5.PreEventClassifier())
         h5.replay(rows, meta, eng)
         return h5.compare_frozen(records, meta, FROZEN, REPLAY_S0, list(REPLAY_HOURS)), records
 
