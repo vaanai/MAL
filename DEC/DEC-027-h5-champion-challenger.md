@@ -5,9 +5,9 @@
 | **Status** | **Proposed 2026-10-09.** Paper only until a switch is approved. The champion is H5-BOOSTFLOOR v1, live under [DEC-024](DEC-024-h5-live-canary.md). This file freezes no challenger, sets no threshold that binds, and starts no trade. It takes effect on merge, with the owner's OK and quant-proof OK on its final head. Every number marked **[PROPOSED]** is the manager's draft for quant-proof to set. |
 | **Decider** | Vaan (owner) for every live switch (a dated line, section 6). The Claude manager runs the rest. |
 | **Date** | 2026-10-09 |
-| **Builds on** | DEC-024 (sections 4, 5, 6, 7, Amendments 1 to 3), [DEC-021](DEC-021-champion-challenger.md) (the lab's champion-challenger precedent: Sections 4 to 6, and the owner decision "a challenger swap never changes size or wallet"), [DEC-023](DEC-023-h5-family.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) (sections 3, 3.1, 11, Amendments 2 to 4), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) section 9, DEC-018, DEC-019, [DEC-020](DEC-020-size-step-proposal.md) (sizing). |
+| **Builds on** | DEC-024 (sections 4, 5, 6, 7, Amendments 1 to 3), [DEC-021](DEC-021-champion-challenger.md) (the lab's champion-challenger precedent: §4 to §6, and the owner decision "a challenger swap never changes size or wallet"), [DEC-023](DEC-023-h5-family.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) (sections 3, 3.1, 11, Amendments 2 to 4), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) section 9, DEC-018, DEC-019, [DEC-020](DEC-020-size-step-proposal.md) (sizing). |
 | **Amends** | **On approval, DEC-024 section 4 "Rule" row only** ("Frozen H5-BOOSTFLOOR v1 …"), so that the executor may trade a pre-approved variant that the root-owned `VARIANT` file names (section 7), after the owner's dated line for it. Every other DEC-024 limit, halt, seal and scale-up condition stands. |
-| **Does not amend** | The promotion gate, for any book. EXP-024's rule, parameters, looks, alpha, seal and read tool. EXP-022 and its CAP-PICK seal. DEC-021 sections 6 to 9. The tier ladder and the T0, T1, T2 limits (DEC-024 Amendment 3). DEC-024 sections 5 to 7. |
+| **Does not amend** | The promotion gate, for any book. EXP-024's rule, parameters, looks, alpha, seal and read tool. EXP-022 and its CAP-PICK seal. DEC-021 §6 to §9. The tier ladder and the T0, T1, T2 limits (DEC-024 Amendment 3). DEC-024 sections 5 to 7. |
 
 ## 0. The request and the design (2026-10-09)
 
@@ -53,7 +53,7 @@ Each is a **different idea, not a threshold tweak of v1**. EXP-024 section 11 al
 - **Rule text: TBD.** It comes from the running research at `/data/mal/hunt-1008/h5-lossfilter/` (MAP.md and the decision-time feature table). As of this DEC the study has built no filter and joined no feature to an outcome (MAP.md section 0).
 - **Freeze preconditions specific to C-LF:**
   - the filter is derived on the discovery block (explore-0814) and checked on the confirmation set once, as MAP.md section 1 splits them. The confirmation set is in-sample for the lab (EXP-024 section 9), so the check **is not evidence**; only the paper window is;
-  - every configuration tried is logged in `data/tries.jsonl` (DEC-021 Section 1), and the count is stated in the freeze record. The search size bears on how far the exploration estimate shrinks (the winner's curse). It does not change the paper test's alpha, because the paper window is a fresh draw;
+  - every configuration tried is logged in `data/tries.jsonl` (DEC-021 §1), and the count is stated in the freeze record. The search size bears on how far the exploration estimate shrinks (the winner's curse). It does not change the paper test's alpha, because the paper window is a fresh draw;
   - **no October shadow or canary outcome may enter the derivation.** The declared observation (EXP-024 section 3.1) lets the team watch v1's aggregate October outcomes. A filter tuned after looking at them is not frozen blind, and the freeze record says what was in view;
   - every feature must exist at or before the trigger print, and the shadow must log it (section 5.3);
   - the synthetic class is **not** a feature (section 3(d), EXP-024 Amendment 4 item D1).
@@ -67,7 +67,7 @@ Each is a **different idea, not a threshold tweak of v1**. EXP-024 section 11 al
 - **Why it is a different idea.** v1 sells on a clock. C-BX sells on an observed event, which is the "exit tied to the observed BOOST end" that EXP-024 section 11 and VERIFY.md (line 110) call a new rule.
 - **Rationale (exploration, [measured] in `h5-flows/VERIFY.md`, "NEW: the exit is a timing race").**
   - The edge is concentrated before the cliff. Pooled confirmation, flat, 0.1 SOL, exit at s0 + 330 s: +13.208%; at 335 s: +12.122%; 340 s: +8.827%; 345 s: +5.291% (CI90 lower bound -0.439); 350 s: +1.341%.
-  - BOOST's last slice moves earlier. p50 347.4 s in fresh-0903 and 342.9 s in oracle-0922; p10 334.2 s and 331.7 s. On the trades where BOOST had already ended at our exit (3.5% and 6.5%), the mean was +2.91%, against +13.588% for the rest.
+  - BOOST's last slice moves earlier. p50 347.4 s in fresh-0903 and 342.9 s in oracle-0922; p10 334.2 s and 331.7 s. On the trades where BOOST had already ended at our exit (3.5% and 6.5%), the mean was +2.91%, against +13.588% for the rest (VERIFY.md does not say whether that is pooled or per block).
   - The manager reports that BOOST now ends about 335 to 340 s after the first print, against 342 to 347 s in September. That reading is the A3 monitor's last-slice median and is not re-measured here.
 - **What it can and cannot do, said plainly.**
   - With the 330 s cap, C-BX differs from v1 **only on pools whose BOOST finishes before about 330 s**. On every other pool it is v1, to the slot. So it is a tail-insurance variant, its pairing with v1 is very tight, and its expected gain is small and concentrated in few pools [inferred].
@@ -75,7 +75,7 @@ Each is a **different idea, not a threshold tweak of v1**. EXP-024 section 11 al
   - Detection comes after the final slice lands, and the sell lands after that (the shadow's exit lag is 0.55 s, `tools/h5_shadow.py`), so on an early-ending pool the sell still lands after the last slice. The variant limits how far past the end the sell goes. It does not sell before the end.
   - DEC-024 section 5 item 1 halts new buys when a post-step A3 run shows a last slice below 335 s. In a regime where that fires, v1 is already halted, and DEC-024 section 5 bars answering a halt with a retune. C-BX is not a way around that halt.
 - **Not listed:** selling on a slice count (for example, after the 27th slice). It is the same idea on a different cut. Adding it needs an amendment and counts in k.
-- **Live cost.** The sell becomes event-driven instead of timer-driven. That is a new send path, so it needs a keyless dry run and a first-20-fills check (section 7, item 5), as DEC-021 Section 7 requires for any changed send setting.
+- **Live cost.** The sell becomes event-driven instead of timer-driven. That is a new send path, so it needs a keyless dry run and a first-20-fills check (section 7, item 5), as DEC-021 §7 requires for any changed send setting.
 
 ### 3(c). C-Q35: a different drain threshold
 
@@ -128,10 +128,10 @@ A candidate has no standing until every step below is done and recorded in a dat
 
 ### 5.2 Pairing and pricing
 
-- **Unit.** One row per eligible pool in which at least one of the two arms trades. An arm that does not trade on the pool is 0 (DEC-021 Section 4). The paired value is challenger minus champion, in SOL.
+- **Unit.** One row per eligible pool in which at least one of the two arms trades. An arm that does not trade on the pool is 0 (DEC-021 §4). The paired value is challenger minus champion, in SOL.
   - C-LF and C-BX share v1's entry, so their pairs are tight (ρ high).
   - C-Q35 enters on a different print, so its pairs are looser (ρ lower), and some pools are traded by only one arm.
-- **Price.** The EXP-024 deciding cell D: stake 0.1 SOL, 1.9 s entry, END bound, own impact, tier fee, exit lag 0.55 s, 55,000 lamports per send, and the section 5 correction (the larger of the DEC-021 Section 1 haircut and the E1 term; the haircut alone, stated, if E1 is not yet recorded). Both fail legs. The pressure leg's intercept is refit once on the union of both arms' sends and held for both [PROPOSED], so the arms are not priced with different p.
+- **Price.** The EXP-024 deciding cell D: stake 0.1 SOL, 1.9 s entry, END bound, own impact, tier fee, exit lag 0.55 s, 55,000 lamports per send, and the section 5 correction (the larger of the DEC-021 §1 haircut and the E1 term; the haircut alone, stated, if E1 is not yet recorded). Both fail legs. The pressure leg's intercept is refit once on the union of both arms' sends and held for both [PROPOSED], so the arms are not priced with different p.
 - **Also reported.** B1 (3 s entry) and B2 (15% guard) per section 6 item 3, and the live tier's stake, because fixed costs weigh 5 times more at 0.02 SOL than at 0.1 SOL (DEC-024 section 4, "Trial-size effect").
 - **Reported at every look, never deciding:** the trade-level bootstrap p, the per-date table, and the top-3 and best-date concentration. The best-date total is checked before anyone says a variant is positive (EXP-024 section 7 item 5).
 
@@ -172,7 +172,7 @@ Every threshold here is **[PROPOSED, quant-proof to set]**. A switch needs all i
 3. **The challenger's own book**, under both fail models, at D, B1 (3 s entry) and B2 (15% guard): mean SOL per trade above 0, total above 0 after removing the top 3 trades, and total above 0 after removing the best UTC date [PROPOSED].
 4. **Multiplicity.** The corrected interval uses the 5th percentile divided by **k x L** [PROPOSED]. k is the number of challengers frozen, counted from their freeze, including any dropped later. L is the number of scheduled decision looks (item 5). Example: k = 3, L = 2 gives the 0.83rd percentile. Quant-proof may choose Holm over Bonferroni if it is valid here. The k tests share one champion, so they are positively dependent and Bonferroni is conservative [inferred].
 5. **Looks, fixed in advance.** L = 2 [PROPOSED]. The first is at the later of "item 1 met" and 2026-10-17T00Z. The second is 7 days after the first. There is no other look. Real-time observation of challenger outcomes is declared (section 5.4) but is not a look, and nobody switches on a reading outside a look. A challenger that fails at the first look is not given more hours to rescue it. A challenger frozen after the first look joins at the second look only, on its own pairs [PROPOSED].
-6. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 4 (the DEC-021 Section 6(f) practice).
+6. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 4 (the DEC-021 §6(f) practice).
 
    ```
    OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no.
@@ -182,7 +182,7 @@ Every threshold here is **[PROPOSED, quant-proof to set]**. A switch needs all i
 7. **Preconditions on the day.** No DEC-024 section 5 halt and no stop that ends the canary has fired and is unresolved. The A3 monitor shows none of the five flags. No seal breach. The variant is compiled in with its proofs (section 7, item 5). The champion's live-versus-twin check has not tripped.
 8. **Dwell.** No second discretionary switch within **7 days** of the last one [PROPOSED]. A fail-safe return to v1 (the file missing or invalid, a halt, or a failed first-20 check) is not a switch. Going back to a variant after any return is a new switch: a new line and a new dwell.
 9. **quant-proof** agrees with the numbers before the owner is asked.
-10. **Power, stated before the first look.** DEC-021 Section 5 requires the DEC to state the power at the minimum effect, even below 0.5. This DEC does not compute it. Quant-proof does, from exploration SD and ρ (not October outcomes), and it goes in each Freeze record. For orientation only, DEC-021's table (a different book, n = 100) shows a low-ρ selector is not reliably detected in a week even at +0.006 SOL per 0.05 SOL trade, while a high-ρ variant is detectable from about +0.003. **The expected outcome of the first look is no switch** [inferred].
+10. **Power, stated before the first look.** DEC-021 §5 requires the DEC to state the power at the minimum effect, even below 0.5. This DEC does not compute it. Quant-proof does, from exploration SD and ρ (not October outcomes), and it goes in each Freeze record. For orientation only, DEC-021's table (a different book, n = 100) shows a low-ρ selector is not reliably detected in a week even at +0.006 SOL per 0.05 SOL trade, while a high-ρ variant is detectable from about +0.003. **The expected outcome of the first look is no switch** [inferred].
 
 ## 7. The live selector (a design; the code is a later PR)
 
@@ -249,7 +249,7 @@ Modeled on the tier file (`tools/h5_executor.py`: `TIER_FILE_PATH`, `TIERS`, `re
 
 ## Sources
 
-- [DEC-024](DEC-024-h5-live-canary.md) (sections 3 to 7, Amendments 1 to 3), [DEC-021](DEC-021-champion-challenger.md) (Sections 1, 4 to 7, and the owner decision), [DEC-023](DEC-023-h5-family.md), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md).
+- [DEC-024](DEC-024-h5-live-canary.md) (sections 3 to 7, Amendments 1 to 3), [DEC-021](DEC-021-champion-challenger.md) (§1, §4 to §7, and the owner decision), [DEC-023](DEC-023-h5-family.md), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md).
 - [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md): sections 2, 3, 3.1, 7, 9, 11, 15, Amendments 2 to 4 (D1 at line 691).
 - [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) section 9.
 - `tools/h5_shadow.py` (record types, `EXIT_LADDER_S`, the trigger record's fields, `boost_last_slice_s`) and `tools/h5_executor.py` (`TIERS`, `TIER_FILE_PATH`, `read_tier`, `root_file_problem`, `_refresh_tier`, `TRIGGER_VARIANT`).
