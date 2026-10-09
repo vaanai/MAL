@@ -749,7 +749,7 @@ No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thres
 2. **Fail closed.** A missing, stale, erroring, non-boolean or undecided oracle makes C1-NF's read NOT_DECIDABLE. It does not change anything in EXP-022.
 3. **No outcome opened.** C1-NF opens no CAP-PICK outcome row, no paper-twin field, and no `LOOK_READS.jsonl` field other than what the oracle contract defines. It reads chain tape only.
 4. **No effect on EXP-022.** EXP-022's picks, looks, gate and the walk-2 run to at least 2026-11-06T02 are unchanged. The exclusion costs C1-NF volume, not EXP-022 anything.
-5. **Order.** C1-NF's read runs about 2026-10-24T03Z, between EXP-022's look 1 (day 7) and look 2 (day 14). It prints no CAP-PICK field, and its report is not an input to any CAP-PICK look.
+5. **Order.** C1-NF has two looks. Its Look 1 reads walk-2 chain tape `[2026-10-16T01, 2026-10-17T02)` about 2026-10-17T03Z, before EXP-022's look 1 (day 7, 2026-10-23T01). Its Look 2, only if Look 1 did not pass, reads to 2026-10-24T02 about 2026-10-24T03Z, between EXP-022's look 1 and look 2. Neither prints a CAP-PICK field, and neither report is an input to any CAP-PICK look.
 
 ## Sources
 

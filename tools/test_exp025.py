@@ -196,14 +196,70 @@ class PowerModel(unittest.TestCase):
         self.assertEqual(rows, self.pw.simulate(m, ds, [7, 14], [1.0, 0.5], [20.0], [0.025], 120, seed=3))
 
 
+    def test_two_looks_sim_is_deterministic_and_bounded(self):
+        m = self.pw.Model()
+        ds = self.pw.day_structure(m)
+        a = self.pw.simulate_looks(m, ds, [1.0, 0.25], [20.0], [(0.008, 0.017)], 80, seed=3)
+        b = self.pw.simulate_looks(m, ds, [1.0, 0.25], [20.0], [(0.008, 0.017)], 80, seed=3)
+        self.assertEqual(a, b)
+        for r in a:
+            c = r["0.008:0.017"]
+            self.assertAlmostEqual(c["either"], c["look1"] + c["look2_given_look1_not_passed"], places=9)
+            self.assertLessEqual(c["either"], 1.0)
+        self.assertGreater(a[0]["0.008:0.017"]["either"], a[1]["0.008:0.017"]["either"])
+
+
 class ExpFile(unittest.TestCase):
-    def test_pinned_count_start_line_once(self):
+    def _text(self):
         p = os.path.join(ROOT, "EXP", "EXP-025-c1nf-part1-prereg.md")
         if not os.path.exists(p):
             self.skipTest("EXP-025 not written yet")
+        return open(p).read()
+
+    def _line(self, txt, key):
+        m = re.findall(r"^" + key + r": (\S+)$", txt, flags=re.M)
+        self.assertEqual(len(m), 1, key)
+        return m[0]
+
+    def test_pinned_lines_once_each(self):
+        txt = self._text()
+        self.assertEqual(self._line(txt, "EXP025_COUNT_START"), "2026-10-10T00")
+        self.assertEqual(self._line(txt, "EXP025_LOOK1_END"), "2026-10-17T00")
+        self.assertEqual(self._line(txt, "EXP025_COUNT_END"), "2026-10-24T00")
+
+    def test_look_windows_are_7_and_14_dates(self):
+        import datetime as dt
+
+        txt = self._text()
+        f = lambda k: dt.datetime.strptime(self._line(txt, k), "%Y-%m-%dT%H")
+        self.assertEqual((f("EXP025_LOOK1_END") - f("EXP025_COUNT_START")).days, 7)
+        self.assertEqual((f("EXP025_COUNT_END") - f("EXP025_COUNT_START")).days, 14)
+
+    @unittest.skipIf(np is None, "numpy missing")
+    def test_alpha_pair_matches_power_constants_and_sums_to_slot(self):
+        import tools.exp025_power as pw
+
+        txt = self._text()
+        a1 = float(self._line(txt, "EXP025_ALPHA_LOOK1"))
+        a2 = float(self._line(txt, "EXP025_ALPHA_LOOK2"))
+        self.assertEqual((a1, a2), (pw.ALPHA_LOOK1, pw.ALPHA_LOOK2))
+        self.assertAlmostEqual(a1 + a2, 0.025, places=9)
+        self.assertEqual((pw.LOOK1_DATES, pw.TOTAL_DATES), (7, 14))
+
+    def test_rule_block_is_rule_md_byte_for_byte(self):
+        txt = self._text()
+        m = re.search(r"^~~~rule\n(.*?)^~~~$", txt, flags=re.M | re.S)
+        self.assertIsNotNone(m)
+        self.assertEqual(hashlib.sha256(m.group(1).encode()).hexdigest(), JUDGE4_PINS["RULE.md"])
+
+    def test_dec025_records_owner_decisions_and_dec026_scope(self):
+        p = os.path.join(ROOT, "DEC", "DEC-025-c1nf-family.md")
+        if not os.path.exists(p):
+            self.skipTest("DEC-025 not written yet")
         txt = open(p).read()
-        self.assertEqual(len(re.findall(r"^EXP025_COUNT_START: 2026-10-10T00$", txt, flags=re.M)), 1)
-        self.assertEqual(len(re.findall(r"^EXP025_COUNT_END: ", txt, flags=re.M)), 1)
+        self.assertGreaterEqual(len(re.findall(r"OWNER_DECISION_CONFIRMED: 2026-10-09", txt)), 2)
+        self.assertIn("DEC-026", txt)
+        self.assertIn("TWO LOOKS", txt)
 
 
 if __name__ == "__main__":

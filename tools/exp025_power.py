@@ -14,12 +14,13 @@ Model (per counted decision day d, W days from 2026-10-10T00):
   Day effect: additive, N(0, tau_d^2), tau_d^2 = the between-day variance of the September daily means in excess of the trade-level noise (floored at 0).
   Fail legs: flat p = 0.15 (VERIFY, rent-inclusive: flat +7.458%); pressure p_eff chosen so that at k = 1 the pressure mean equals VERIFY's rent-inclusive +6.640% (the real pressure leg has a per-trade p). A failed
   send costs 505,000 lamports on a 0.25 SOL stake. Failure is independent of r (stylised).
+Two looks: Look 1 = first 7 dates at ALPHA_LOOK1, Look 2 = cumulative 14 dates at ALPHA_LOOK2, only if Look 1 did not pass (--mode looks, the default).
 Gate per leg (all legs must pass): n >= 100; >= 5 dates with a strict majority positive; trade bootstrap CI90 lower bound > 0 (1,000 draws, 5th percentile);
   total > 0 after removing the top 3 trades; total > 0 after removing the best date; date-cluster CI90 lower bound > 0 (1,000 draws); one-sided day-level t
   (df = W - 1, empty dates dropped) with p <= alpha; optionally mean > 0 in each half of the dates.
 Not simulated: the 1.9 s cell (VERIFY: flat +8.203, pressure +6.902, about the same), the binding legs of EXP-025 section 6, and correlated fill failure
   (VERIFY section 6 bounds it: +1.855% if the best 10% of fills fail).
-Usage: python tools/exp025_power.py [--sims 1200] [--json out.json]
+Usage: python tools/exp025_power.py [--mode looks|single] [--sims 1500] [--json out.json]   (looks = the registered two-look design; single = the one-window table)
 """
 from __future__ import annotations
 
@@ -51,6 +52,14 @@ P95 = 0.6317
 TOP3_AVG = (10.082443740273359 - 8.846251358638687) / 0.25 / 3  # from total and ex-top-3 (SOL, no-fail), stake 0.25
 TOP10_AVG = (10.082443740273359 - 7.0249498330033555) / 0.25 / 10
 FLAT_P = 0.15
+
+# The two-look design (owner answer relayed 2026-10-09: "Two looks"). ONE constant pair, easy to edit. The pair is a PLACEHOLDER until quant-proof
+# recommends the split. It must sum to 0.025 (DEC-025 slot 3 with k = 1) and must equal the EXP025_ALPHA_LOOK1 / EXP025_ALPHA_LOOK2 lines in
+# EXP/EXP-025-c1nf-part1-prereg.md section 0 (tools/test_exp025.py checks both).
+ALPHA_LOOK1 = 0.008
+ALPHA_LOOK2 = 0.017
+LOOK1_DATES = 7   # counted decision dates [2026-10-10, 2026-10-17)
+TOTAL_DATES = 14  # cumulative [2026-10-10, 2026-10-24)
 SD_FROM_CI = (0.08454 - 0.05762) / 1.645 * math.sqrt(422)  # JUDGE-4 3.3.5 arithmetic, for comparison only
 
 
@@ -278,14 +287,80 @@ def simulate(model, ds, windows, ks, lambdas, alphas, sims, seed=1):
     return rows
 
 
+def simulate_looks(model, ds, ks, lambdas, splits, sims, seed=1, look1_dates=LOOK1_DATES, total_dates=TOTAL_DATES):
+    """Two-look read. Look 1 uses the first look1_dates dates; Look 2 is cumulative over total_dates and runs only if Look 1 did not pass.
+    One simulated October serves both looks (the same trades), so the looks are correctly correlated. splits: list of (alpha1, alpha2).
+    Each look passes only if every section 7 item holds on both legs (halves by date included) and the larger day-level p <= the look's alpha."""
+    rows = []
+    p_press = pressure_p()
+    for k in ks:
+        theta = model.theta_for(k)
+        for lam in lambdas:
+            rng = np.random.default_rng(seed)
+            rec = []
+            n1s = n2s = 0
+            for _ in range(sims):
+                cnt = rng.negative_binomial(ds["nb_r"], ds["nb_r"] / (ds["nb_r"] + lam), total_dates)
+                n = int(cnt.sum())
+                day = np.repeat(np.arange(total_dates), cnt)
+                r = model.sample(rng, n, theta)
+                if ds["tau_d2"] > 0:
+                    r = np.maximum(r + np.repeat(rng.normal(0.0, math.sqrt(ds["tau_d2"]), total_dates), cnt), -1.0)
+                u1, u2 = rng.random(n), rng.random(n)
+                r = r - RENT
+                legs = [np.where(u1 < FLAT_P, -FAIL_COST, r), np.where(u2 < p_press, -FAIL_COST, r)]
+                out = []
+                for nd in (look1_dates, total_dates):
+                    m = day < nd
+                    res = [leg_pass(x[m], day[m], nd, rng, None, True) for x in legs]
+                    base = all(all(v for kk, v in rr.items() if kk != "p") for rr in res)
+                    out.append((base, max(rr["p"] for rr in res), int(m.sum())))
+                n1s += out[0][2]
+                n2s += out[1][2]
+                rec.append(out)
+            row = {"edge_k": k, "per_day": lam, "mean_n_look1": n1s / sims, "mean_n_look2": n2s / sims}
+            for a1, a2 in splits:
+                l1 = np.array([o[0][0] and o[0][1] <= a1 for o in rec])
+                l2 = np.array([o[1][0] and o[1][1] <= a2 for o in rec])
+                row[f"{a1}:{a2}"] = {"look1": float(l1.mean()), "look2_given_look1_not_passed": float((~l1 & l2).mean()), "either": float((l1 | (~l1 & l2)).mean())}
+            row["single_look_14_at_0.025"] = float(np.mean([o[1][0] and o[1][1] <= 0.025 for o in rec]))
+            rows.append(row)
+    return rows
+
+
+def main_looks(a, model, ds) -> int:
+    splits = [tuple(float(y) for y in x.split(":")) for x in a.splits.split(",")]
+    if (ALPHA_LOOK1, ALPHA_LOOK2) not in splits:
+        splits.insert(0, (ALPHA_LOOK1, ALPHA_LOOK2))
+    ks = [float(x) for x in a.ks.split(",")]
+    lambdas = [float(x) for x in a.lambdas.split(",")]
+    rows = simulate_looks(model, ds, ks, lambdas, splits, a.sims)
+    se = math.sqrt(0.25 / a.sims)
+    print(f"\ntwo looks: Look 1 = first {LOOK1_DATES} dates, Look 2 = cumulative {TOTAL_DATES} dates, runs only if Look 1 did not pass.")
+    print(f"pass probability, both fail legs, 1.3 s cell, rent per fill; {a.sims} sims per row, Monte Carlo SE <= {se:.3f}")
+    print(f"deciding split (ALPHA_LOOK1, ALPHA_LOOK2) = ({ALPHA_LOOK1}, {ALPHA_LOOK2}); other splits shown for the quant-proof comparison")
+    for r in rows:
+        print(f"\nedge {r['edge_k']}  trades/day {r['per_day']}  mean n: look 1 {r['mean_n_look1']:.0f}, look 2 {r['mean_n_look2']:.0f}   (single look, 14 dates, alpha 0.025: {r['single_look_14_at_0.025']:.3f})")
+        print("  split (a1:a2)    look 1   look 2 (if 1 not passed)   either")
+        for a1, a2 in splits:
+            c = r[f"{a1}:{a2}"]
+            print(f"  {str(a1) + ':' + str(a2):<14}  {c['look1']:>7.3f}  {c['look2_given_look1_not_passed']:>14.3f}            {c['either']:>7.3f}")
+    if a.json:
+        json.dump({"model": model.summary(), "day_structure": ds, "pressure_p": pressure_p(), "sims": a.sims, "alpha_look1": ALPHA_LOOK1,
+                   "alpha_look2": ALPHA_LOOK2, "rows": rows}, open(a.json, "w"), indent=1, sort_keys=True)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sims", type=int, default=1200)
+    ap.add_argument("--sims", type=int, default=1500)
     ap.add_argument("--json", default=None)
     ap.add_argument("--windows", default="6,7,10,14")
     ap.add_argument("--ks", default="1,0.5,0.25")
     ap.add_argument("--lambdas", default="20,12")
     ap.add_argument("--alphas", default="0.025,0.0125,0.00833")
+    ap.add_argument("--mode", choices=("looks", "single"), default="looks")
+    ap.add_argument("--splits", default="0.005:0.020,0.0125:0.0125,0.010:0.015")
     a = ap.parse_args(argv)
     model = Model()
     ds = day_structure(model)
@@ -300,6 +375,8 @@ def main(argv=None) -> int:
     print(f"  trade SD      {summ['sd']:.4f} (JUDGE-4 CI-derived SD for the 422-trade C1 columns: {SD_FROM_CI:.4f})")
     print(f"  day structure {json.dumps({k: round(v, 6) for k, v in ds.items()})}")
     print(f"  pressure p_eff {pressure_p():.4f} (flat {FLAT_P}); failed send {FAIL_COST * 100:.3f}% of stake")
+    if a.mode == "looks":
+        return main_looks(a, model, ds)
     windows = [int(x) for x in a.windows.split(",")]
     ks = [float(x) for x in a.ks.split(",")]
     lambdas = [float(x) for x in a.lambdas.split(",")]
