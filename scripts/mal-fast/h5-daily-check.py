@@ -19,6 +19,9 @@ is any ALERT. The RPC URL (HELIUS_API_KEY from the environment or the paper env 
   IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); LIVE_OK present but the unit not active and enabled,
                 the running ExecStart without --live, or STOP present (the H5 one or the wallet-wide one); LIVE_OK older than 6 h with no buy/skip/decision ledger row
                 in 6 h; the watchdog timer not enabled.
+  REFUSALS      the live ledger's `skip` rows of the last 6 h: s0_recv_late / s0_unverifiable (3 or more), and triggers refused for the two #477
+                fields (bad_intent:missing_*, or 5 or more for s0_minus_announced_slots / base_breaks_unresolved with no decision: the shadow job
+                is not at #477 head fe7eb43 or later). The sealed stub (bad_intent:suppressed) is expected and never an alert.
   UNIT FILES    the installed unit files equal the pinned copies; the drop-in list comes from systemd (DropInPaths) and may hold
                 only live.conf (equal to the pinned drop-in) and 10-shadow-feed.conf (passing check-h5-unit.py --shadow-feed).
   WALLET        balance against funded + realized - cost of open positions - in-flight buys, with a tolerance for rent and fees.
@@ -65,6 +68,25 @@ IDLE_KINDS = ("buy", "skip", "decision")
 LEDGER_TAIL = 4_000_000
 HOURLY_RE = r"^h5-shadow-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$"
 ACTIVE_STATES = {"active", "activating", "reloading", "deactivating"}
+# Live halts the executor latches (tools/h5_executor.py _latch names at 9c5618b); cleared only by --clear-halt. Unknown names are still shown.
+HALT_MEANING = {
+    "boost_median_lt_335": "UTC-day median of the BOOST last-slice time below 335 s",
+    "boost_structure_lt_300_x3": "BOOST last slice below 300 s on three pools",
+    "boost_median_lt_337_twice": "day median below 337 s on two days",
+    "boost_before_sell_gt_15pct": "BOOST ended before our sell on more than 15% of sells",
+    "stuck_position": "a position not sold by its deadline",
+    "out_of_rule_entry": "a buy landed outside the rule's entry window",
+    "landing_median_gt_3s": "median trigger-to-landing above 3 s",
+    "late_sells_gt_5pct": "more than 5% of landed sells late",
+}
+NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"  # only names that look like names are ever printed from a file
+# Trigger refusals the executor ledgers as `skip` rows (reason=...). Printing the reason NAMES is fine; they are fixed strings.
+S0_REFUSALS = ("s0_recv_late", "s0_unverifiable")
+NEW_FIELD_REFUSALS = ("bad_intent:s0_minus_announced_slots", "bad_intent:base_breaks_unresolved")  # the two fields from #477 head fe7eb43
+EXPECTED_REFUSALS = ("bad_intent:suppressed",)  # #477's sealed stub from 2026-10-16T01Z: a refusal by design, never an alert
+REFUSAL_WINDOW_S = 6 * 3600
+S0_REFUSAL_ALERT_N = 3
+SCHEMA_REFUSAL_ALERT_N = 5
 ENABLED_STATES = {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias"}
 
 
@@ -398,10 +420,14 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
     opens = state.get("open") or {}
     pending = state.get("pending") or {}
     realized = int(state.get("realized_lamports", 0))
+    import re as _re
+
+    halt_names = [n for n in sorted(counters.get("halts") or {}) if _re.match(NAME_RE, str(n))]  # only name-shaped strings are ever printed
     rep.info(f"live state: attempts={state.get('attempts', 0)} open={len(opens)} pending={len(pending)} realized_sol={realized / 1e9:.6f} "
-             f"halts={sorted(counters.get('halts') or {})} sells_landed={counters.get('sells_landed', 0)} sells_late={counters.get('sells_late', 0)}")
+             f"halts={halt_names} sells_landed={counters.get('sells_landed', 0)} sells_late={counters.get('sells_late', 0)}")
     if counters.get("halts"):
-        rep.alert("h5_live_halt", "latched: " + ",".join(sorted(counters["halts"])) + " (cleared only by --clear-halt)")
+        rep.alert("h5_live_halt", "latched: " + ", ".join(f"{n} ({HALT_MEANING[n]})" if n in HALT_MEANING else n for n in halt_names)
+                  + " (new buys stop; cleared only by --clear-halt, never followed by a retune)")
     if (opens or pending) and not unit.running_live:
         rep.alert("h5_positions_unmanaged",
                   f"live state has {len(opens)} open and {len(pending)} pending position(s) and the unit is not running with --live "
@@ -488,6 +514,42 @@ def check_canary_idle(host: Host, rep: Report, unit: UnitInfo, live_ok: bool, sh
         rep.alert("h5_watch_timer", f"{WATCH_TIMER} is {w.get('ActiveState', 'missing')}/{w.get('UnitFileState', 'missing')}: the Discord watchdog must be on while the gate is open")
 
 
+def check_refusals(host: Host, rep: Report, now: float) -> None:
+    """What the executor refused in the last 6 h, from the live ledger's `skip` rows. The sealed stub (bad_intent:suppressed) is expected."""
+    import re
+    from collections import Counter
+
+    ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL)
+    if not ledger:
+        return
+    counts: Counter = Counter()
+    decisions = 0
+    for line in ledger.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        ts = row.get("ts_ms") if isinstance(row, dict) else None
+        if not isinstance(ts, (int, float)) or ts / 1000.0 < now - REFUSAL_WINDOW_S:
+            continue
+        if row.get("kind") == "decision":
+            decisions += 1
+        elif row.get("kind") == "skip" and isinstance(row.get("reason"), str) and re.match(NAME_RE, row["reason"]):
+            counts[row["reason"]] += 1
+    if counts:
+        rep.info(f"refusals in the last {REFUSAL_WINDOW_S // 3600} h ({decisions} decision(s)): " + ", ".join(f"{r} x{n}" for r, n in counts.most_common(8)))
+    s0 = sum(counts[r] for r in S0_REFUSALS)
+    if s0 >= S0_REFUSAL_ALERT_N:
+        rep.alert("h5_s0_refusals", f"{s0} trigger(s) refused as s0_recv_late or s0_unverifiable in {REFUSAL_WINDOW_S // 3600} h "
+                                    f"({', '.join(f'{r} x{counts[r]}' for r in S0_REFUSALS if counts[r])}): the detector is backlogged or our slot history cannot verify s0")
+    missing = {r: n for r, n in counts.items() if r.startswith("bad_intent:missing_")}
+    new_fields = sum(counts[r] for r in NEW_FIELD_REFUSALS)
+    if missing or (new_fields >= SCHEMA_REFUSAL_ALERT_N and decisions == 0):
+        shown = ", ".join(f"{r} x{n}" for r, n in {**missing, **{r: counts[r] for r in NEW_FIELD_REFUSALS if counts[r]}}.items())
+        rep.alert("h5_feed_schema", f"triggers are refused for the trigger fields ({shown}) and none was acted on: the shadow job is probably not running at "
+                                    "#477 head fe7eb43 or later (the head that writes s0_minus_announced_slots and base_breaks_unresolved)")
+
+
 def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] = print,
                balance_fn: Callable[[str, str], int] | None = None, now: float | None = None) -> Report:
     rep = Report(out)
@@ -509,7 +571,8 @@ def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] 
         steps.append(("probe_state", lambda: check_probe_state(host, rep, Path(args.baseline), args.write_baseline, args.expect_sha256)))
     steps += [("h5_unit", unit_step), ("h5_gate", gate_step),
               ("h5_state", lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc)),
-              ("h5_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now))]
+              ("h5_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now)),
+              ("h5_refusals", lambda: check_refusals(host, rep, now))]
     for name, step in steps:
         try:
             step()

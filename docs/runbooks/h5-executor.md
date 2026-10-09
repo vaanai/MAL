@@ -29,7 +29,7 @@ The executor is `tools/h5_executor.py` (PR #484). Unit: `mal-h5-executor` on `ma
 | `LIVE_OK` (the gate the executor cannot create) | `/etc/mal-h5/LIVE_OK`: a regular file owned `root:root` with mode **exactly 0644** (not 0600 or tighter: `mal-live` must be able to open it read-only; not group or other writable), no symlink. Parent `/etc/mal-h5` is `root:root` 0755. Readable by the unit, not writable (`ProtectSystem=strict`, not in `ReadWritePaths`). The path is pinned in the executor code. |
 | **H5's `STOP`, `HALT`, `FINAL_WRITTEN`** | **`/var/lib/mal-live/h5/STOP`, `/var/lib/mal-live/h5/HALT`, `/var/lib/mal-live/h5/FINAL_WRITTEN`** (the executor only tests that they exist) |
 | The probe's own files, untouched and read-only to this unit | `/var/lib/mal-live/{state-live.json,probe-fills.jsonl,STOP}` |
-| Intents path the executor reads, inside the unit | `/srv/mal-h5-shadow` (config value `intents_file` in both pinned configs) |
+| Intents path the executor reads, inside the unit | `/srv/mal-h5-shadow` (config value `intents_file` in both pinned configs). The shadow job behind it must be at #477 head `fe7eb43` or later. |
 | Root-only Helius env, shared with the probe | `/etc/mal-probe-rpc/helius.env` (root:root 0600 in a root:root 0700 dir) |
 
 **Kill switches, stated once so nobody guesses.** The executor (from 4f05e30) stops on a `STOP` or `HALT` in either place: H5's own files in `/var/lib/mal-live/h5/` and the wallet-wide ones in `/var/lib/mal-live/` (the probe's file names). `STOP` means no new buys; `HALT` freezes everything, sells included. `--status` prints only the H5 files, so look at the wallet-wide ones with `sudo test -e /var/lib/mal-live/STOP` and `.../HALT`. **The probe's permanent `/var/lib/mal-live/STOP` is therefore a wallet-wide STOP for H5: while it exists, H5 never buys.** It has to be removed for the canary to trade, which ends the probe's STOP record (the probe stays off because its unit is stopped and disabled, the installer and the daily check refuse or alert otherwise, and the daily check keeps the probe's state-file hash). That removal is **the manager's written decision, recorded in the PR comment that names the sha**; Helm does it at Step 11 and not before, and never on his own. The old daily check required that file to exist; the new one does not (it reports it, and calls it an idle-canary reason once the gate is open). The daily check and the watchdog alert if `/var/lib/mal-live/HALT` exists.
@@ -38,10 +38,10 @@ The executor is `tools/h5_executor.py` (PR #484). Unit: `mal-h5-executor` on `ma
 
 ## Before Helm starts (manager)
 
-1. The sha, named in a comment on PR #499 once the executor branch has merged `origin/main` and its review fixes and this PR is merged into it. It must contain `EXP/EXP-024-h5-boostfloor-part1-prereg.md` (the installer refuses a sha without it, and so does the executor), the live config with an explicit `end_ms`, and this runbook. A config without `end_ms` installs fine and then refuses to go live (`ALERT startup_refused end_ms_missing`); the installer prints a NOTE when it sees that.
+1. The sha, named in a comment on PR #499 once the executor branch has merged `origin/main` and its review fixes and this PR is merged into it. It must contain `EXP/EXP-024-h5-boostfloor-part1-prereg.md` (the installer refuses a sha without it, and so does the executor), the live config, and this runbook. The shipped live config carries `end_ms` = 2026-10-16T00:30Z (1792110600000): the executor stops buying then, and a later end is a new reviewed sha. A live config without `end_ms` would install and then refuse to start (`ALERT startup_refused end_ms_missing`); the installer prints a NOTE when it sees that. The pinned configs set `intents_file` = `/srv/mal-h5-shadow` and `feed_heartbeat_max_age_ms` = 150000 (taken from the executor branch as they are), and none of `late_sell_min_n`, `sell_priority_lamports`, `escalated_priority_lamports` (code constants now: the executor refuses a config that sets them) or `live_ok_file`, `stop_file`, `halt_file`, `final_marker_file` (pinned in live).
 2. The manifest, made in the manager's own clone, not Helm's:
    `scripts/mal-fast/make-h5-manifest.sh <40-char-sha> > h5-manifest.txt`. It has one `<sha256>  <repo path>` line per file the installer reads. Give it to Helm and keep a copy for every sha that is installed.
-3. The job user's detector output directory (`~/data/h5-shadow` of the MiScusi job user, as an absolute path), and **the shadow job running at the reviewed #477 head**: the head whose trigger records carry `s0_minus_announced_slots` and `base_breaks_unresolved`, which the executor's next head reads. A shadow job started on an older head must be restarted on the reviewed one before go-live. This is a manager step.
+3. The job user's detector output directory (`~/data/h5-shadow` of the MiScusi job user, as an absolute path), and **the shadow job running at the reviewed #477 head, `fe7eb43` or later**: the head whose trigger records carry `s0_minus_announced_slots` and `base_breaks_unresolved`, which the executor reads and refuses without (`bad_intent:*`). A shadow job started on an older head must be restarted on that head before go-live. This is a manager step; the daily check and the watchdog alert `h5_feed_schema` if triggers are refused for those fields.
 4. The probe's `/var/lib/mal-live/STOP` decision (see Kill switches): written in the sha comment, yes or no.
 5. The Discord webhook for the watchdog and the total SOL deposited, for Helm's step 10 (the webhook goes to Helm over the usual private channel, never into a PR, a note or a file in a repo).
 
@@ -318,7 +318,7 @@ If it prints `ALERT startup_refused <why>` it exits 2 and stays stopped: `live_o
 
 Preconditions are DEC-024 section 8 and the PR #484 list; this runbook adds the mechanics. The gate is `/etc/mal-h5/LIVE_OK`, in a root-owned directory the executor cannot write (DEC-024 section 3). The executor accepts it only as a regular file owned `root:root` with mode exactly 0644, not a symlink, in a `root:root` 0755 parent, at that fixed path (a config override is refused in live). The manager does not create it; Helm does, only after the hash check.
 
-1. Manager, after Helm reports steps 1 to 10 (the step 5 table matches; the **watchdog timer `mal-h5-watch.timer` is enabled and active and the manager has seen the Discord test message**), the owner has funded the wallet, the dry run of step 8 was clean, **the shadow job is running at the reviewed #477 head** (restarted on it if it was started earlier; its newest hourly file carries the two new trigger fields) and the probe-STOP decision is in the sha comment:
+1. Manager, after Helm reports steps 1 to 10 (the step 5 table matches; the **watchdog timer `mal-h5-watch.timer` is enabled and active and the manager has seen the Discord test message**), the owner has funded the wallet, the dry run of step 8 was clean, **the shadow job is running at the reviewed #477 head, fe7eb43 or later** (restarted on it if it was started earlier; its newest hourly file carries the two new trigger fields) and the probe-STOP decision is in the sha comment:
 
 ```
 python3 -I scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 --write-baseline --expect-sha256 <the sha256 Helm reported in Step 1>
@@ -362,7 +362,35 @@ A halt is never followed by a retune. Do not clear one without telling the owner
 - **Idle canary:** `h5_feed_stale` (newest `h5-shadow-<hour>.jsonl` in `--shadow-dir`, default `~/data/h5-shadow`, older than 10 minutes, or none); once `LIVE_OK` exists, `h5_idle` (unit not active, not enabled, running ExecStart without `--live`, or a `STOP` present at either place), `h5_idle_ledger` (`LIVE_OK` older than 6 h and no buy, skip or decision row in the live ledger in 6 h) and `h5_watch_timer` (the watchdog timer not enabled and active).
 - **Unit files:** the installed base unit and `FragmentPath` equal the pinned copies; the drop-in list is what systemd applies (`DropInPaths`, which includes prefix and top-level `.d` directories and `/run`) and may hold only `live.conf` (equal to the pinned drop-in) and a valid `10-shadow-feed.conf`.
 - **Other:** the unit `failed`, a `HALT` file in the state dir or at `/var/lib/mal-live/HALT`, a latched live halt, a stuck or abandoned position, the H5 state dir not `mal-live:mal-live` 0700, `/etc/mal-h5` not a real `root:root` 0755 directory, a `LIVE_OK` that is a symlink, not a regular file, or not owned `root:root` with mode exactly 0644, a `LIVE_OK` in the state dir (it is not Helm's gate; find out who made it), the ledger naming another wallet, and **wallet balance vs funded + H5 realized - cost of open positions - buys in flight** outside a tolerance of 0.005 SOL plus 0.0021 SOL per open or pending position. Pass the total deposited, net of withdrawals, as `--funded-sol`; a top-up or withdrawal shows as a gap until you do. "H5 realized" is `realized_lamports` in the live state file, the number the loss stops use; the check does not sum the ledger.
+- **Halts and refusals:** the alert text for a latched halt carries the halt's name and meaning, and the INFO line "refusals in the last 6 h" lists the `skip` reasons. The names are in "Halt and refusal names" below. `h5_s0_refusals` (3 or more `s0_recv_late`/`s0_unverifiable` in 6 h) and `h5_feed_schema` (a `bad_intent:missing_*` field, or 5 or more `s0_minus_announced_slots`/`base_breaks_unresolved` refusals with no decision in 6 h) are alerts; the sealed stub `bad_intent:suppressed` never is.
 - **How it reads:** the state dir is read through fixed paths with `stat` first (a symlink, a hard-linked file or a non-regular file is refused) and then `O_NOFOLLOW` or `sudo -n /usr/bin/dd iflag=nofollow`, never `cat`. File content is never put into an alert. A failing `sudo -n` is `ALERT sudo_unavailable` or `sudo_failed`, never "absent". The RPC key is read from `HELIUS_API_KEY` or the paper env file for `getBalance` only (the watchdog uses the public RPC and no key) and is never printed.
+
+### Halt and refusal names
+
+Latched live halts (the ledger gets a `halt_latched` row; new buys stop; only `--clear-halt NAME` clears one, and a halt is never followed by a retune):
+
+| Name | Meaning |
+| --- | --- |
+| `boost_median_lt_335` | UTC-day median of the BOOST last-slice time below 335 s |
+| `boost_structure_lt_300_x3` | BOOST last slice below 300 s on three pools |
+| `boost_median_lt_337_twice` | day median below 337 s on two days |
+| `boost_before_sell_gt_15pct` | BOOST ended before our sell on more than 15% of sells |
+| `stuck_position` | a position not sold by its deadline (s0 + 400 s) |
+| `out_of_rule_entry` | a buy landed outside the rule's entry window |
+| `landing_median_gt_3s` | median trigger-to-landing above 3 s |
+| `late_sells_gt_5pct` | more than 5% of landed sells late |
+
+Trigger refusals (`skip` rows with `reason=...`; a refusal costs a trade, not safety):
+
+| Reason | Meaning |
+| --- | --- |
+| `s0_recv_late` | the detector says it received s0 more than 1.5 s after our own mapping of `s0_slot`: the feed was backlogged, or the claim is false |
+| `s0_unverifiable` | s0 could not be mapped from our slot history or the print's block time |
+| `bad_intent:s0_minus_announced_slots` | the pool's first print we call s0 came more than 2 slots after its CreatePool, or the field is missing or null |
+| `bad_intent:base_breaks_unresolved` | the order-independent missed-print count is not 0, or the field is missing or null |
+| `bad_intent:missing_<field>` | a field the executor reads is absent from the record: an older #477 head |
+| `bad_intent:suppressed` | #477's sealed stub from 2026-10-16T01Z: expected, never an alert |
+| other `bad_intent:*` (`v_missing`, `gap`, `sps_span`, `boost_spent`, ...) | data-quality refusals of one trigger, shown in the INFO line only |
 
 ## Sell-and-close an abandoned position (Helm or the owner, root)
 
