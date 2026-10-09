@@ -1,0 +1,351 @@
+{
+ "alpha_look1": 0.005,
+ "alpha_look2": 0.02,
+ "day_structure": {
+  "between_var": 0.008862850190634907,
+  "mean_n": 19.952380952380953,
+  "nb_r": 4.355779512868034,
+  "noise_var": 0.01658317642123582,
+  "sd_trade": 0.3722153199837427,
+  "tau_d2": 0.0,
+  "var_n": 111.34761904761906
+ },
+ "model": {
+  "mean": 0.09580742499245855,
+  "median": 0.10177205515758198,
+  "p95": 0.6292476645446741,
+  "p_lose90": 0.052307,
+  "sd": 0.3732604616923734,
+  "top10_avg_of_419": 1.213923455647965,
+  "top3_avg_of_419": 1.5838075260865432,
+  "win_rate": 0.667866
+ },
+ "pressure_p": 0.24075068160789573,
+ "rows": [
+  {
+   "0.003:0.022": {
+    "either": 0.8308333333333333,
+    "look1": 0.19333333333333333,
+    "look2_given_look1_not_passed": 0.6375
+   },
+   "0.005:0.02": {
+    "either": 0.8208333333333333,
+    "look1": 0.25833333333333336,
+    "look2_given_look1_not_passed": 0.5625
+   },
+   "0.008:0.017": {
+    "either": 0.815,
+    "look1": 0.3308333333333333,
+    "look2_given_look1_not_passed": 0.4841666666666667
+   },
+   "0.01:0.015": {
+    "either": 0.8066666666666666,
+    "look1": 0.3641666666666667,
+    "look2_given_look1_not_passed": 0.4425
+   },
+   "edge_k": 1.0,
+   "mean_n_look1": 140.80416666666667,
+   "mean_n_look2": 281.36,
+   "scenario": "20/day on all dates",
+   "single_look_14_at_0.025": 0.8341666666666666
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.6475,
+    "look1": 0.025833333333333333,
+    "look2_given_look1_not_passed": 0.6216666666666667
+   },
+   "0.005:0.02": {
+    "either": 0.6416666666666667,
+    "look1": 0.03333333333333333,
+    "look2_given_look1_not_passed": 0.6083333333333333
+   },
+   "0.008:0.017": {
+    "either": 0.62,
+    "look1": 0.043333333333333335,
+    "look2_given_look1_not_passed": 0.5766666666666667
+   },
+   "0.01:0.015": {
+    "either": 0.6066666666666667,
+    "look1": 0.051666666666666666,
+    "look2_given_look1_not_passed": 0.555
+   },
+   "edge_k": 1.0,
+   "mean_n_look1": 83.41666666666667,
+   "mean_n_look2": 167.4125,
+   "scenario": "12/day on all dates",
+   "single_look_14_at_0.025": 0.66
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.7591666666666667,
+    "look1": 0.15333333333333332,
+    "look2_given_look1_not_passed": 0.6058333333333333
+   },
+   "0.005:0.02": {
+    "either": 0.7491666666666666,
+    "look1": 0.2125,
+    "look2_given_look1_not_passed": 0.5366666666666666
+   },
+   "0.008:0.017": {
+    "either": 0.73,
+    "look1": 0.2825,
+    "look2_given_look1_not_passed": 0.4475
+   },
+   "0.01:0.015": {
+    "either": 0.7166666666666667,
+    "look1": 0.31,
+    "look2_given_look1_not_passed": 0.4066666666666667
+   },
+   "edge_k": 1.0,
+   "mean_n_look1": 130.70833333333334,
+   "mean_n_look2": 214.83833333333334,
+   "scenario": "20/day forward-1002, 12/day walk-2 dates (oracle exclusion)",
+   "single_look_14_at_0.025": 0.7625
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.8325,
+    "look1": 0.14666666666666667,
+    "look2_given_look1_not_passed": 0.6858333333333333
+   },
+   "0.005:0.02": {
+    "either": 0.8266666666666667,
+    "look1": 0.20916666666666667,
+    "look2_given_look1_not_passed": 0.6175
+   },
+   "0.008:0.017": {
+    "either": 0.8125,
+    "look1": 0.27416666666666667,
+    "look2_given_look1_not_passed": 0.5383333333333333
+   },
+   "0.01:0.015": {
+    "either": 0.7983333333333333,
+    "look1": 0.315,
+    "look2_given_look1_not_passed": 0.48333333333333334
+   },
+   "edge_k": 1.0,
+   "mean_n_look1": 139.975,
+   "mean_n_look2": 280.63166666666666,
+   "scenario": "20/day with a day effect, SD 0.03 of stake",
+   "single_look_14_at_0.025": 0.84
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.43666666666666665,
+    "look1": 0.0525,
+    "look2_given_look1_not_passed": 0.38416666666666666
+   },
+   "0.005:0.02": {
+    "either": 0.435,
+    "look1": 0.08083333333333333,
+    "look2_given_look1_not_passed": 0.3541666666666667
+   },
+   "0.008:0.017": {
+    "either": 0.42583333333333334,
+    "look1": 0.11583333333333333,
+    "look2_given_look1_not_passed": 0.31
+   },
+   "0.01:0.015": {
+    "either": 0.4191666666666667,
+    "look1": 0.14,
+    "look2_given_look1_not_passed": 0.2791666666666667
+   },
+   "edge_k": 0.5,
+   "mean_n_look1": 140.80416666666667,
+   "mean_n_look2": 281.36,
+   "scenario": "20/day on all dates",
+   "single_look_14_at_0.025": 0.4483333333333333
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.2941666666666667,
+    "look1": 0.009166666666666667,
+    "look2_given_look1_not_passed": 0.285
+   },
+   "0.005:0.02": {
+    "either": 0.2891666666666667,
+    "look1": 0.013333333333333334,
+    "look2_given_look1_not_passed": 0.2758333333333333
+   },
+   "0.008:0.017": {
+    "either": 0.27416666666666667,
+    "look1": 0.015833333333333335,
+    "look2_given_look1_not_passed": 0.25833333333333336
+   },
+   "0.01:0.015": {
+    "either": 0.2608333333333333,
+    "look1": 0.0175,
+    "look2_given_look1_not_passed": 0.24333333333333335
+   },
+   "edge_k": 0.5,
+   "mean_n_look1": 83.41666666666667,
+   "mean_n_look2": 167.4125,
+   "scenario": "12/day on all dates",
+   "single_look_14_at_0.025": 0.305
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.3591666666666667,
+    "look1": 0.04583333333333333,
+    "look2_given_look1_not_passed": 0.31333333333333335
+   },
+   "0.005:0.02": {
+    "either": 0.3566666666666667,
+    "look1": 0.0775,
+    "look2_given_look1_not_passed": 0.2791666666666667
+   },
+   "0.008:0.017": {
+    "either": 0.34833333333333333,
+    "look1": 0.1,
+    "look2_given_look1_not_passed": 0.24833333333333332
+   },
+   "0.01:0.015": {
+    "either": 0.33416666666666667,
+    "look1": 0.11083333333333334,
+    "look2_given_look1_not_passed": 0.22333333333333333
+   },
+   "edge_k": 0.5,
+   "mean_n_look1": 130.70833333333334,
+   "mean_n_look2": 214.83833333333334,
+   "scenario": "20/day forward-1002, 12/day walk-2 dates (oracle exclusion)",
+   "single_look_14_at_0.025": 0.3566666666666667
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.3933333333333333,
+    "look1": 0.03833333333333333,
+    "look2_given_look1_not_passed": 0.355
+   },
+   "0.005:0.02": {
+    "either": 0.37916666666666665,
+    "look1": 0.058333333333333334,
+    "look2_given_look1_not_passed": 0.32083333333333336
+   },
+   "0.008:0.017": {
+    "either": 0.36666666666666664,
+    "look1": 0.08833333333333333,
+    "look2_given_look1_not_passed": 0.2783333333333333
+   },
+   "0.01:0.015": {
+    "either": 0.35583333333333333,
+    "look1": 0.1075,
+    "look2_given_look1_not_passed": 0.24833333333333332
+   },
+   "edge_k": 0.5,
+   "mean_n_look1": 139.975,
+   "mean_n_look2": 280.63166666666666,
+   "scenario": "20/day with a day effect, SD 0.03 of stake",
+   "single_look_14_at_0.025": 0.4141666666666667
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.17083333333333334,
+    "look1": 0.024166666666666666,
+    "look2_given_look1_not_passed": 0.14666666666666667
+   },
+   "0.005:0.02": {
+    "either": 0.16833333333333333,
+    "look1": 0.0325,
+    "look2_given_look1_not_passed": 0.13583333333333333
+   },
+   "0.008:0.017": {
+    "either": 0.15416666666666667,
+    "look1": 0.043333333333333335,
+    "look2_given_look1_not_passed": 0.11083333333333334
+   },
+   "0.01:0.015": {
+    "either": 0.14583333333333334,
+    "look1": 0.050833333333333335,
+    "look2_given_look1_not_passed": 0.095
+   },
+   "edge_k": 0.25,
+   "mean_n_look1": 140.80416666666667,
+   "mean_n_look2": 281.36,
+   "scenario": "20/day on all dates",
+   "single_look_14_at_0.025": 0.16916666666666666
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.1125,
+    "look1": 0.0033333333333333335,
+    "look2_given_look1_not_passed": 0.10916666666666666
+   },
+   "0.005:0.02": {
+    "either": 0.10583333333333333,
+    "look1": 0.005833333333333334,
+    "look2_given_look1_not_passed": 0.1
+   },
+   "0.008:0.017": {
+    "either": 0.09666666666666666,
+    "look1": 0.009166666666666667,
+    "look2_given_look1_not_passed": 0.0875
+   },
+   "0.01:0.015": {
+    "either": 0.09083333333333334,
+    "look1": 0.009166666666666667,
+    "look2_given_look1_not_passed": 0.08166666666666667
+   },
+   "edge_k": 0.25,
+   "mean_n_look1": 83.41666666666667,
+   "mean_n_look2": 167.4125,
+   "scenario": "12/day on all dates",
+   "single_look_14_at_0.025": 0.11583333333333333
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.13833333333333334,
+    "look1": 0.015833333333333335,
+    "look2_given_look1_not_passed": 0.1225
+   },
+   "0.005:0.02": {
+    "either": 0.13916666666666666,
+    "look1": 0.024166666666666666,
+    "look2_given_look1_not_passed": 0.115
+   },
+   "0.008:0.017": {
+    "either": 0.13166666666666665,
+    "look1": 0.035833333333333335,
+    "look2_given_look1_not_passed": 0.09583333333333334
+   },
+   "0.01:0.015": {
+    "either": 0.13083333333333333,
+    "look1": 0.045,
+    "look2_given_look1_not_passed": 0.08583333333333333
+   },
+   "edge_k": 0.25,
+   "mean_n_look1": 130.70833333333334,
+   "mean_n_look2": 214.83833333333334,
+   "scenario": "20/day forward-1002, 12/day walk-2 dates (oracle exclusion)",
+   "single_look_14_at_0.025": 0.1375
+  },
+  {
+   "0.003:0.022": {
+    "either": 0.14416666666666667,
+    "look1": 0.015,
+    "look2_given_look1_not_passed": 0.12916666666666668
+   },
+   "0.005:0.02": {
+    "either": 0.14166666666666666,
+    "look1": 0.021666666666666667,
+    "look2_given_look1_not_passed": 0.12
+   },
+   "0.008:0.017": {
+    "either": 0.13666666666666666,
+    "look1": 0.028333333333333332,
+    "look2_given_look1_not_passed": 0.10833333333333334
+   },
+   "0.01:0.015": {
+    "either": 0.1325,
+    "look1": 0.0375,
+    "look2_given_look1_not_passed": 0.095
+   },
+   "edge_k": 0.25,
+   "mean_n_look1": 139.975,
+   "mean_n_look2": 280.63166666666666,
+   "scenario": "20/day with a day effect, SD 0.03 of stake",
+   "single_look_14_at_0.025": 0.1525
+  }
+ ],
+ "sims": 1200
+}
