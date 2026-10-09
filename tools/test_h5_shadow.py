@@ -78,6 +78,7 @@ def make_engine(**kw):
     kw.setdefault("sps_fn", lambda p: SPS)
     kw.setdefault("pda_fn", lambda pool: "PDA_" + pool)
     kw.setdefault("seal_start_ms", None)  # synthetic tape times are in 2027; the seal is tested on its own
+    kw.setdefault("h5_look2_start_ms", None)  # likewise the H5 Look-2 outcome seal (tested in H5Look2SealTests)
     now = [1_800_000_000_000]
     eng = h5.Engine(out.append, wall=lambda: now[0], **kw)
     eng.now = now
@@ -2662,6 +2663,318 @@ class ModuleTests(unittest.TestCase):
     def test_rule_pins(self):
         self.assertEqual(h5.RULE_SHA256, "c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c")
         self.assertEqual((h5.Q_STAR_SOL, h5.T_MAX_S, h5.EXIT_AFTER_S0_S, h5.EXIT_LAG_S, h5.PRIO_LAMPORTS), (40.0, 300.0, 330.0, 0.55, 55_000))
+
+
+# ---- EXP-024 Amendment 2: the H5 seal of Look 2's added window, lifted only by the declared observation -----------------
+class H5Look2SealTests(unittest.TestCase):
+    """Pools with s0 at or after 2026-10-16T00:00Z have every outcome-bearing record withheld unless the process declares EXP-024-Am2. Trigger
+    records stay (the executor trades on them). The CAP-PICK seal (from 2026-10-16T01Z) applies on top, whatever the flag says."""
+
+    T_LOOK2 = 1_792_108_800  # 2026-10-16T00:00:00Z
+    T_0030 = T_LOOK2 + 1800  # 00:30Z, inside Look 2's window and before the CAP-PICK seal
+    T_0200 = 1_792_116_000  # 2026-10-16T02:00:00Z, inside both seals
+    T_END = 1_793_923_200  # 2026-11-06T00:00:00Z, the end of the declared window
+    T_LOOK1 = 1_791_849_600  # 2026-10-13T00:00:00Z, Look 1's window
+    OUTCOME_WORDS = ("legs", "exit_ladder", "net_pct", "pnl_nofail", "price_lamports_per_raw", "gross", "\"landing_slot\"", "state_src")
+
+    def run_pool(self, ts0, *, observed=False, oracle=lambda m: False, h5_start=h5.H5_LOOK2_START_MS):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=oracle, h5_look2_start_ms=h5_start, h5_look2_observed=observed)
+        announce(eng)
+        t = Tape(ts0=ts0)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 38.5)
+        t.row(1210, "buy", "X", SOL)
+        t.row(1900, "buy", "W", SOL)
+        run(eng, t)
+        eng.close_all("t")
+        return eng, out
+
+    def assert_decision_only(self, eng, out):
+        """A pool whose outcomes are withheld by the H5 seal: both trigger records, a pool record with min_q withheld, and nothing priced after the decision."""
+        self.assertEqual(sorted(r["variant"] for r in types(out, "trigger")), ["fv", "pv"])
+        self.assertEqual(types(out, "outcome"), [])
+        self.assertEqual(types(out, "strip"), [])
+        (pool,) = types(out, "pool")
+        self.assertFalse(pool["sealed"])  # not the CAP-PICK seal: the pool record is the full one
+        self.assertTrue(pool["h5_look2_sealed"])
+        self.assertIsNone(pool["min_q_pv_sol"])
+        self.assertIsNone(pool["min_q_fv_sol"])
+        self.assertEqual(pool["triggered"], ["fv", "pv"])  # the decision itself is not withheld
+        for trig in types(out, "trigger"):
+            self.assertTrue(trig["h5_look2_sealed"])
+        blob = json.dumps(out)
+        for word in self.OUTCOME_WORDS:
+            self.assertFalse(word in blob, f"outcome-bearing word {word!r} in the output")
+        self.assertEqual((eng.counters["outcomes"], eng.counters["strips"], eng.counters["outcomes_incomplete"]), (0, 0, 0))
+
+    def assert_outcomes(self, out):
+        self.assertEqual(sorted(r["variant"] for r in types(out, "outcome")), ["fv", "pv"])
+        (strip,) = [r for r in types(out, "strip")] or [None]
+        self.assertIsNotNone(strip)
+        (pool,) = types(out, "pool")
+        self.assertNotIn("h5_look2_sealed", pool)
+        self.assertIsNotNone(pool["min_q_pv_sol"])
+        for o in types(out, "outcome"):
+            self.assertIn("legs", o)
+            self.assertIn("exit_ladder", o)
+            self.assertIsNotNone(o["legs"]["primary"]["net"])
+        for trig in types(out, "trigger"):
+            self.assertIn("exit_ladder_trigger_slots", trig)
+            self.assertNotIn("h5_look2_sealed", trig)
+
+    def strip_times(self, out):
+        return [{k: v for k, v in r.items() if k != "t_ms"} for r in out if r["type"] in ("outcome", "strip")]
+
+    def test_a_pool_at_0030_without_the_flag_has_triggers_but_no_outcome_strip_legs_or_ladder(self):
+        eng, out = self.run_pool(self.T_0030)
+        self.assert_decision_only(eng, out)
+        self.assertEqual(eng.counters["h5_look2_sealed_pools"], 1)
+
+    def test_the_same_pool_with_the_flag_gets_its_outcomes(self):
+        eng, out = self.run_pool(self.T_0030, observed=True)
+        self.assert_outcomes(out)
+        self.assertEqual(eng.counters["h5_look2_sealed_pools"], 0)
+
+    def test_the_flag_lifts_exactly_the_h5_seal_the_outcomes_equal_a_look_1_pool_on_the_same_tape(self):
+        _, look1 = self.run_pool(self.T_LOOK1)
+        _, look2 = self.run_pool(self.T_0030, observed=True)
+        a, b = self.strip_times(look1), self.strip_times(look2)
+        self.assertEqual(len(a), 3)  # two outcomes and one strip
+
+        def norm(rows):  # the tape carries its own block times; nothing else may differ
+            return json.loads(json.dumps(rows).replace(str(self.T_LOOK1), "T").replace(str(self.T_0030), "T"))
+
+        self.assertEqual(norm(a), norm(b))
+
+    def test_trigger_records_keep_every_key_the_executor_reads(self):
+        import ast
+
+        src = (Path(__file__).resolve().parent / "h5_executor.py").read_text()
+        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SHADOW_REQUIRED_KEYS" for t in n.targets))
+        required = ast.literal_eval(node.value)
+        self.assertGreater(len(required), 10)
+        _, sealed_out = self.run_pool(self.T_0030)
+        _, plain_out = self.run_pool(self.T_LOOK1)
+        for rec in types(sealed_out, "trigger") + types(plain_out, "trigger"):
+            self.assertEqual([k for k in required if k not in rec], [])
+        # the sealed trigger record is the plain one minus the ladder, plus its marker
+        sealed_t = {r["variant"]: r for r in types(sealed_out, "trigger")}
+        plain_t = {r["variant"]: r for r in types(plain_out, "trigger")}
+        for var in ("pv", "fv"):
+            extra = set(sealed_t[var]) - set(plain_t[var])
+            missing = set(plain_t[var]) - set(sealed_t[var])
+            self.assertEqual((extra, missing), ({"h5_look2_sealed"}, {"exit_ladder_trigger_slots"}))
+            for k in required:
+                if k not in ("t_ms", "t_detect_ms"):
+                    self.assertEqual(sealed_t[var][k], plain_t[var][k] if k not in ("block_time", "s0_t_recv_ms", "t_recv_ms") else sealed_t[var][k], k)
+
+    def test_the_window_edge_is_s0_block_time_at_or_after_0000(self):
+        eng, out = self.run_pool(self.T_LOOK2)  # exactly 10-16T00:00:00Z
+        self.assert_decision_only(eng, out)
+        eng, out = self.run_pool(self.T_LOOK2 - 1)  # 10-15T23:59:59Z: Look 1's window, the pool then runs on past midnight
+        self.assert_outcomes(out)
+
+    def test_the_declared_window_ends_at_1106_0000_and_the_flag_does_not_reach_past_it(self):
+        eng, out = self.run_pool(self.T_END - 1, observed=True)  # 11-05T23:59:59Z: the last second inside the window
+        self.assert_outcomes(out)
+        for ts0 in (self.T_END, self.T_END + 1, self.T_END + 2 * 86400):  # exactly 11-06T00:00:00Z, one second after, two days after
+            for observed in (True, False):
+                eng, out = self.run_pool(ts0, observed=observed)
+                self.assert_decision_only(eng, out)
+                self.assertEqual(eng.counters["h5_look2_sealed_pools"], 1, (ts0, observed))
+
+    def test_a_pool_past_the_end_is_also_sealed_by_the_pick_oracle_with_the_flag(self):
+        eng, out = self.run_pool(self.T_END + 3600, observed=True, oracle=lambda m: True)
+        self.assertEqual([r["type"] for r in out if r.get("pool") == POOL], ["pool"])
+        self.assertEqual(set(types(out, "pool")[0]), SEALED_POOL_KEYS)
+
+    def test_look_1_pools_are_unaffected_with_or_without_the_flag(self):
+        for observed in (False, True):
+            for ts0 in (self.T_LOOK1, self.T_LOOK2 - 3600, self.T_LOOK2 - 1):
+                eng, out = self.run_pool(ts0, observed=observed)
+                self.assert_outcomes(out)
+                self.assertEqual(eng.counters["h5_look2_sealed_pools"], 0)
+
+    def test_a_pick_after_0100_stays_fully_sealed_with_the_flag(self):
+        for observed in (False, True):
+            eng, out = self.run_pool(self.T_0200, observed=observed, oracle=lambda m: True)
+            mine = [r for r in out if r.get("pool") == POOL or r.get("mint") == MINT]
+            self.assertEqual([r["type"] for r in mine], ["pool"], observed)  # the CAP-PICK sealed pool record only: no trigger, outcome or strip
+            self.assertEqual(set(mine[0]), SEALED_POOL_KEYS, observed)
+            self.assertTrue(mine[0]["sealed"])
+            blob = json.dumps(out)
+            for forbidden in ("q_pv_post_sol", "q_trigger_sol", "h5_look2_sealed") + self.OUTCOME_WORDS:
+                self.assertFalse(forbidden in blob, (observed, forbidden))
+            for k in ("triggers_pv", "triggers_fv", "outcomes", "strips", "h5_look2_sealed_pools"):
+                self.assertEqual(eng.counters[k], 0, (observed, k))
+
+    def test_a_broken_oracle_fails_closed_even_with_the_flag(self):
+        def boom(mint):
+            raise RuntimeError("oracle down")
+
+        for oracle in (boom, None):
+            eng, out = self.run_pool(self.T_0200, observed=True, oracle=oracle)
+            self.assertEqual([r["type"] for r in out if r.get("pool") == POOL], ["pool"])
+            self.assertTrue(types(out, "pool")[0]["sealed"])
+            self.assertEqual(types(out, "outcome") + types(out, "strip") + types(out, "trigger"), [])
+
+    def test_a_non_pick_after_0100_is_h5_sealed_without_the_flag_and_observed_with_it(self):
+        eng, out = self.run_pool(self.T_0200, oracle=lambda m: False)  # leak (b): a real oracle clearing the pool must not unseal it
+        self.assert_decision_only(eng, out)
+        eng, out = self.run_pool(self.T_0200, observed=True, oracle=lambda m: False)
+        self.assert_outcomes(out)
+
+    def test_the_stub_oracle_keeps_everything_sealed_after_0100_whatever_the_flag(self):
+        for observed in (False, True):
+            eng, out = self.run_pool(self.T_0200, observed=observed, oracle=h5.cap_pick_seal_oracle_stub)
+            self.assertEqual([r["type"] for r in out if r.get("pool") == POOL], ["pool"])
+
+    def test_the_engine_defaults_fail_closed(self):
+        out: list[dict] = []
+        eng = h5.Engine(out.append, wall=lambda: 1_800_000_000_000, sps_fn=lambda p: SPS, pda_fn=lambda p: "PDA", seal_start_ms=None)  # no h5 kwargs
+        self.assertEqual((eng.h5_look2_start_ms, eng.h5_look2_observed), (h5.H5_LOOK2_START_MS, False))
+        announce(eng)
+        t = Tape(ts0=self.T_0030)
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 38.5)
+        t.row(1900, "buy", "W", SOL)
+        run(eng, t)
+        eng.close_all("t")
+        self.assert_decision_only(eng, out)
+
+    def test_the_verdict_is_frozen_when_a_late_print_moves_s0_down(self):
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=lambda m: False, h5_look2_start_ms=h5.H5_LOOK2_START_MS)
+        announce(eng)
+        t = Tape(ts0=self.T_LOOK2 + 4)
+        t.row(1010, "buy", "A", SOL // 10)
+        eng.on_trade(t.rows[0])
+        p = eng.pools[POOL]
+        self.assertTrue(eng._h5_sealed(p))
+        p.s0_ts = self.T_LOOK2 - 100  # the true first print turns out to be before midnight: sealed stays sealed (fail closed)
+        self.assertTrue(eng._h5_sealed(p))
+
+    def test_constants(self):
+        self.assertEqual(h5.H5_LOOK2_START_MS, 1_792_108_800_000)
+        self.assertEqual(h5.iso_from_ms(h5.H5_LOOK2_START_MS), "2026-10-16T00:00:00.000Z")
+        self.assertEqual(h5.H5_LOOK2_START_MS + 3_600_000, h5.SEAL_START_MS)  # one hour before the CAP-PICK seal
+        self.assertEqual(h5.H5_LOOK2_END_MS, 1_793_923_200_000)
+        self.assertEqual(h5.iso_from_ms(h5.H5_LOOK2_END_MS), "2026-11-06T00:00:00.000Z")
+        self.assertEqual(h5.H5_LOOK2_END_MS - h5.H5_LOOK2_START_MS, 21 * 86_400_000)  # [10-16T00, 11-06T00): 21 days
+        self.assertEqual(h5.H5_LOOK2_AMENDMENT_REF, "EXP-024-Am2")
+
+    # ---- the flag ------------------------------------------------------------------------------------------------------------------
+    def test_only_the_literal_amendment_reference_lifts_the_seal(self):
+        self.assertIsNone(h5.check_look2_ref(None))
+        self.assertEqual(h5.check_look2_ref("EXP-024-Am2"), "EXP-024-Am2")
+        for bad in ("", "yes", "1", "true", "exp-024-am2", "EXP-024-Am1", "EXP-024-Am2 ", "EXP-024", "EXP-024-Am2,x"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                h5.check_look2_ref(bad)
+
+    def test_the_command_line_accepts_only_the_literal_and_not_with_replay(self):
+        import contextlib
+        import io
+
+        ap = h5.build_parser()
+        self.assertIsNone(ap.parse_args([]).h5_look2_observed)
+        self.assertEqual(ap.parse_args(["--h5-look2-observed", "EXP-024-Am2"]).h5_look2_observed, "EXP-024-Am2")
+        for argv in (["--h5-look2-observed", "yes"], ["--h5-look2-observed", ""], ["--h5-look2-observed", "EXP-024-Am2", "--replay-tape", "/x", "--replay-hours", "2026-09-20T12"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                h5.main(argv)
+            self.assertEqual(cm.exception.code, 2, argv)
+
+    def test_the_start_record_logs_the_declaration(self):
+        off, on = h5.look2_start_info(None), h5.look2_start_info("EXP-024-Am2")
+        self.assertEqual((off["observed"], off["amendment_ref"]), (False, None))
+        self.assertEqual((on["observed"], on["amendment_ref"]), (True, "EXP-024-Am2"))
+        self.assertEqual((on["start"], on["start_ms"]), ("2026-10-16T00:00:00.000Z", h5.H5_LOOK2_START_MS))
+        self.assertEqual((on["end"], on["end_ms"]), ("2026-11-06T00:00:00.000Z", h5.H5_LOOK2_END_MS))
+        self.assertEqual((off["end"], off["end_ms"]), (on["end"], on["end_ms"]))
+
+    def run_live_start_record(self, extra):
+        import argparse
+        import shutil
+        from unittest import mock
+
+        d = tempfile.mkdtemp(dir="/tmp", prefix="h5-look2-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        args = h5.build_parser().parse_args(["--out-dir", d, "--sockets", "3", *extra])
+        self.assertIsInstance(args, argparse.Namespace)
+
+        async def no_feed(*a, **k):
+            return None
+
+        with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None):
+            self.assertEqual(asyncio.run(h5.run_live(args)), 0)
+        rows = [json.loads(line) for f in sorted(Path(d).glob("h5-shadow-*.jsonl")) for line in f.read_text().splitlines()]
+        return [r for r in rows if r["type"] == "start"][0], rows
+
+    def test_run_live_logs_the_declaration_in_its_start_record_and_builds_the_engine_from_it(self):
+        start, _ = self.run_live_start_record([])
+        self.assertEqual((start["h5_look2"]["observed"], start["h5_look2"]["amendment_ref"]), (False, None))
+        self.assertEqual(start["argv"].count("--h5-look2-observed"), 0)
+        start, _ = self.run_live_start_record(["--h5-look2-observed", "EXP-024-Am2"])
+        self.assertEqual((start["h5_look2"]["observed"], start["h5_look2"]["amendment_ref"]), (True, "EXP-024-Am2"))
+        self.assertEqual(start["seal"]["start_ms"], h5.SEAL_START_MS)  # the CAP-PICK seal record is unchanged by the flag
+        self.assertEqual(start["seal"]["oracle"], "stub_always_true")
+        # the Engine run_live builds: observed only when declared
+        from unittest import mock
+
+        built = []
+        real = h5.Engine
+
+        def spy(*a, **k):
+            built.append(k.get("h5_look2_observed"))
+            return real(*a, **k)
+
+        with mock.patch.object(h5, "Engine", spy):
+            self.run_live_start_record([])
+            self.run_live_start_record(["--h5-look2-observed", "EXP-024-Am2"])
+        self.assertEqual(built, [False, True])
+
+    # ---- the wrapper -----------------------------------------------------------------------------------------------------------------
+    def wrapper(self, shell, **env):
+        import subprocess
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        base = {"PATH": os.environ["PATH"], "HOME": "/home/x", "H5_OUT_DIR": "/tmp/h5-x", "H5_PYTHON": "/nonexistent"}
+        r = subprocess.run([shell, str(script)], env={**base, **env}, capture_output=True, text=True)
+        return r.returncode, r.stderr, r.stdout
+
+    def test_the_wrapper_refuses_any_look2_value_but_the_literal(self):
+        for shell in ("sh", "bash"):  # sh-safe
+            for bad in ("1", "yes", "true", "exp-024-am2", "EXP-024-Am1", "EXP-024-Am2x", " "):
+                rc, err, _ = self.wrapper(shell, H5_LOOK2_OBSERVED=bad)
+                self.assertEqual(rc, 2, (shell, bad))
+                self.assertIn("refusing H5_LOOK2_OBSERVED=", err, (shell, bad))
+                self.assertNotIn("no python at", err, (shell, bad))
+            for ok in ("EXP-024-Am2", ""):  # the literal, or empty = not declared: both reach the next check
+                rc, err, _ = self.wrapper(shell, H5_LOOK2_OBSERVED=ok)
+                self.assertIn("no python at", err, (shell, ok))
+            rc, err, _ = self.wrapper(shell)
+            self.assertIn("no python at", err, shell)
+
+    def test_the_wrapper_passes_the_declaration_to_the_detector_only_when_set(self):
+        import shutil
+        import subprocess
+
+        d = tempfile.mkdtemp(dir="/tmp", prefix="h5-look2-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        fake = Path(d) / "fakepy"
+        fake.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\n')
+        fake.chmod(0o755)
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        for shell in ("sh", "bash"):
+            base = {"PATH": os.environ["PATH"], "HOME": d, "H5_OUT_DIR": d + "/out", "H5_PYTHON": str(fake)}
+            r = subprocess.run([shell, str(script)], env=base, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))
+            self.assertIn("look2_observed=no", r.stdout)
+            self.assertNotIn("--h5-look2-observed", r.stdout.split("ARGV:")[1])
+            r = subprocess.run([shell, str(script)], env={**base, "H5_LOOK2_OBSERVED": "EXP-024-Am2"}, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))
+            self.assertIn("look2_observed=EXP-024-Am2", r.stdout)
+            self.assertIn("--h5-look2-observed EXP-024-Am2", r.stdout.split("ARGV:")[1])
 
 
 # ---- replay vs the frozen rule's own trigger list (exploration tape; skipped where the data or pandas is absent) ------
