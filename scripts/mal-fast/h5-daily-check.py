@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """Daily health check for the H5 live executor (DEC-024), for the manager's 12:17Z cron. Replaces the decommissioned-probe check.
+Its engine also runs every few minutes as the H5 watchdog (h5-watch.py), which posts the alerts to Discord.
 
-    python3 -I scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 [--write-baseline]
+    python3 -I scripts/mal-fast/h5-daily-check.py --funded-sol 0.25 [--write-baseline [--expect-sha256 <Step 1 value>]]
 
-Read-only, no key: it never opens /etc/mal-probe, never loads a wallet, never sends anything. Root-only files (the 0700 state
-dir /var/lib/mal-live) are read with `sudo -n /usr/bin/cat|stat|test` on fixed paths. Prints INFO / OK / ALERT lines and exits 1
-if there is any ALERT (0 otherwise). The RPC URL (HELIUS_API_KEY from the environment or the paper env file) is never printed.
+Read-only, no key: it never opens /etc/mal-probe, never loads a wallet, never sends anything. Files in the 0700 state dir are
+read through fixed paths only: lstat first (a symlink or a hard-linked file is refused), then O_NOFOLLOW (direct) or
+`sudo -n /usr/bin/dd iflag=nofollow` (never cat, which follows symlinks). File content is never echoed into an alert. A failing
+`sudo -n` is an ALERT (sudo_unavailable / sudo_failed), never "file absent". Prints INFO / OK / ALERT lines and exits 1 if there
+is any ALERT. The RPC URL (HELIUS_API_KEY from the environment or the paper env file, or --public-rpc) is never printed.
 
-What changed from the probe check, and what did not:
-  ALLOWED now   the H5 unit mal-h5-executor (active or enabled), its state dir /var/lib/mal-live/h5, the pinned tree
-                /usr/local/lib/mal-h5-exec, /etc/mal-h5/LIVE_OK. The wallet is no longer expected to be 0.
-  STILL ALERTS  any mal-probe-executor* unit that is active or enabled (masked is fine); /var/lib/mal-live/state-live.json
-                changed (sha256 against a baseline written once with --write-baseline, plus the old fixed facts: attempts <= 62,
-                realized -0.210755 SOL, nothing open or pending); /var/lib/mal-live/STOP missing.
-  NEW           the H5 unit's installed files equal the pinned copies (base unit, live.conf; only 10-shadow-feed.conf may be
-                extra and it must pass check-h5-unit.py --shadow-feed); ActiveState failed; HALT file; latched live halts;
-                an abandoned or stuck position; and the wallet balance against the funded amount plus the H5 realized total.
-
-Wallet check: expected = funded + realized (H5 live state file, the number the loss stops use) - cost of open positions. The gap
-must be within a tolerance for rent and in-flight fees. A deposit or a withdrawal shows up as a gap: pass the new --funded-sol.
+  ALLOWED now   the H5 unit mal-h5-executor (active or enabled), /var/lib/mal-live/h5, the pinned tree, /etc/mal-h5/LIVE_OK. The
+                wallet is no longer expected to be 0.
+  STILL ALERTS  any mal-probe-executor* unit active or enabled; /var/lib/mal-live/state-live.json changed (sha256 against a
+                baseline, plus attempts <= 62, realized -0.210755 SOL, nothing open); /var/lib/mal-live/STOP missing.
+  UNMANAGED     live state with open or pending positions while the unit is not active with --live (alert h5_positions_unmanaged).
+  IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); LIVE_OK present but the unit not active and enabled,
+                the running ExecStart without --live, or STOP present; LIVE_OK older than 6 h with no buy/skip/decision ledger row
+                in 6 h; the watchdog timer not enabled.
+  UNIT FILES    the installed unit files equal the pinned copies; the drop-in list comes from systemd (DropInPaths) and may hold
+                only live.conf (equal to the pinned drop-in) and 10-shadow-feed.conf (passing check-h5-unit.py --shadow-feed).
+  WALLET        balance against funded + realized - cost of open positions - in-flight buys, with a tolerance for rent and fees.
 """
 from __future__ import annotations
 
@@ -27,93 +29,200 @@ import hashlib
 import importlib.util
 import json
 import os
+import pwd
+import grp
+import stat as stat_mod
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 WALLET = "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # the DEC-019 probe wallet; public (DEC-024)
 PROBE_STATE = "/var/lib/mal-live/state-live.json"
 PROBE_STOP = "/var/lib/mal-live/STOP"
+WALLET_HALT = "/var/lib/mal-live/HALT"  # the probe's file name; the executor also honours it wallet-wide (executor builder's change)
 PROBE_MAX_ATTEMPTS = 62
 PROBE_REALIZED_SOL = -0.210755
 H5_UNIT = "mal-h5-executor"
+WATCH_TIMER = "mal-h5-watch.timer"
 H5_DIR = "/var/lib/mal-live/h5"
 H5_ETC = "/etc/mal-h5"  # root:root 0755; holds LIVE_OK, which Helm creates (the executor cannot)
 LIVE_OK = f"{H5_ETC}/LIVE_OK"
 PINNED = "/usr/local/lib/mal-h5-exec/current"
-DROPIN_DIRS = ("/etc/systemd/system", "/run/systemd/system", "/usr/local/lib/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+UNIT_FILE = f"/etc/systemd/system/{H5_UNIT}.service"
+DROPIN_DIR = f"/etc/systemd/system/{H5_UNIT}.service.d"
+DROPIN_LIVE = f"{DROPIN_DIR}/live.conf"
+DROPIN_FEED = f"{DROPIN_DIR}/10-shadow-feed.conf"
+PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 RENT_TOLERANCE = 2_100_000  # per open or pending position (token account rent, refunded at close)
 BASE_TOLERANCE = 5_000_000  # fees in flight, dust
+FEED_STALE_S = 600  # the newest hourly shadow file must have been written to within 10 minutes
+IDLE_LEDGER_S = 6 * 3600  # LIVE_OK older than this and no buy/skip/decision row newer than this: the canary is idle
+IDLE_KINDS = ("buy", "skip", "decision")
+LEDGER_TAIL = 4_000_000
+HOURLY_RE = r"^h5-shadow-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$"
 ACTIVE_STATES = {"active", "activating", "reloading", "deactivating"}
 ENABLED_STATES = {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias"}
+
+
+class SudoError(Exception):
+    """A privileged read failed. Never to be confused with the file being absent."""
+
+
+class Unsafe(Exception):
+    """A fixed path is not what it must be (symlink, hard link, not a regular file). The message names the path, never content."""
+
+
+class Entry(NamedTuple):
+    kind: str  # file | dir | link | other
+    nlink: int
+    owner: str
+    group: str
+    mode: int
+    mtime: float
+    size: int
+
+
+def _kind_of(label: str) -> str:
+    label = label.strip()
+    return "file" if label.startswith("regular") else "dir" if label == "directory" else "link" if label == "symbolic link" else "other"
 
 
 class Host:
     """Everything that touches the machine. Tests replace it."""
 
-    def _sudo(self, *argv: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["sudo", "-n", *argv], capture_output=True, timeout=30)
+    def _run(self, *argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run(list(argv), capture_output=True, timeout=30)
 
-    def read(self, path: str) -> bytes | None:
-        """File bytes, or None if it does not exist. PermissionError falls back to a fixed-path sudo cat."""
+    def _sudo(self, *argv: str) -> subprocess.CompletedProcess:
+        return self._run(*(argv if os.geteuid() == 0 else ("sudo", "-n", *argv)))  # root has no use for sudo (and a sandboxed unit cannot run it)
+
+    def sudo_ok(self) -> bool:
         try:
-            return Path(path).read_bytes()
+            return self._sudo("/usr/bin/true").returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def lstat(self, path: str) -> Entry | None:
+        """None only if the path does not exist. A privilege failure raises SudoError."""
+        try:
+            st = os.lstat(path)
+            m = st.st_mode
+            kind = "link" if stat_mod.S_ISLNK(m) else "file" if stat_mod.S_ISREG(m) else "dir" if stat_mod.S_ISDIR(m) else "other"
+            try:
+                owner, group = pwd.getpwuid(st.st_uid).pw_name, grp.getgrgid(st.st_gid).gr_name
+            except KeyError:
+                owner, group = str(st.st_uid), str(st.st_gid)
+            return Entry(kind, st.st_nlink, owner, group, stat_mod.S_IMODE(m), st.st_mtime, st.st_size)
         except FileNotFoundError:
             return None
         except PermissionError:
-            r = self._sudo("/usr/bin/cat", path)
-            if r.returncode == 0:
-                return r.stdout
-            if self._sudo("/usr/bin/test", "-e", path).returncode != 0:
-                return None
-            raise PermissionError(path) from None
+            pass
+        try:
+            r = self._sudo("/usr/bin/stat", "-c", "%F|%h|%U|%G|%a|%Y|%s", path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SudoError(f"stat {path}: {type(exc).__name__}") from None
+        err = r.stderr.decode(errors="replace")
+        if r.returncode == 0:
+            f = r.stdout.decode().strip().split("|")
+            try:
+                return Entry(_kind_of(f[0]), int(f[1]), f[2], f[3], int(f[4], 8), float(f[5]), int(f[6]))
+            except (IndexError, ValueError):
+                raise SudoError(f"stat {path}: unparseable output") from None
+        if "No such file or directory" in err and not err.startswith("sudo:"):
+            return None
+        raise SudoError(f"stat {path}: privileged stat failed")
 
     def exists(self, path: str) -> bool:
-        return os.path.lexists(path) or self._sudo("/usr/bin/test", "-e", path).returncode == 0
+        return self.lstat(path) is not None
 
     def islink(self, path: str) -> bool:
-        return os.path.islink(path)
+        e = self.lstat(path)
+        return e is not None and e.kind == "link"
 
     def is_regular(self, path: str) -> bool:
-        return os.path.isfile(path) and not os.path.islink(path)
+        e = self.lstat(path)
+        return e is not None and e.kind == "file"
 
     def stat(self, path: str) -> str | None:
-        """owner:group:mode of a path, or None."""
-        r = subprocess.run(["/usr/bin/stat", "-c", "%U:%G:%a", path], capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            r = self._sudo("/usr/bin/stat", "-c", "%U:%G:%a", path)
-            r = subprocess.CompletedProcess(r.args, r.returncode, (r.stdout or b"").decode(), "")
-        return r.stdout.strip() if r.returncode == 0 else None
+        """owner:group:mode of a path, or None if absent."""
+        e = self.lstat(path)
+        return None if e is None else f"{e.owner}:{e.group}:{e.mode:o}"
 
-    def listdir(self, path: str) -> list[str] | None:
-        try:
-            return sorted(os.listdir(path))
-        except (FileNotFoundError, NotADirectoryError):
+    def mtime(self, path: str) -> float | None:
+        e = self.lstat(path)
+        return None if e is None else e.mtime
+
+    def read(self, path: str, tail: int | None = None) -> bytes | None:
+        """File bytes (the last `tail` bytes if given), or None if the path does not exist. Refuses symlinks, hard-linked files and
+        non-regular files before reading; reads with O_NOFOLLOW, or `dd iflag=nofollow` through sudo. Never cat."""
+        e = self.lstat(path)
+        if e is None:
             return None
+        if e.kind != "file":
+            raise Unsafe(f"{path} is not a regular file ({e.kind})")
+        if e.nlink > 1:
+            raise Unsafe(f"{path} has {e.nlink} hard links")
+        skip = max(0, e.size - tail) if tail else 0
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            fd = -1
+        if fd >= 0:
+            with os.fdopen(fd, "rb") as fh:
+                st = os.fstat(fh.fileno())
+                if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink > 1:
+                    raise Unsafe(f"{path} changed under us")
+                fh.seek(skip)
+                return fh.read()
+        try:
+            r = self._sudo("/usr/bin/dd", "iflag=nofollow,skip_bytes", f"skip={skip}", "status=none", f"if={path}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SudoError(f"read {path}: {type(exc).__name__}") from None
+        if r.returncode == 0:
+            return r.stdout
+        raise SudoError(f"read {path}: privileged read failed")
+
+    def newest_hourly(self, directory: str) -> tuple[str, float] | None:
+        import re
+
+        try:
+            names = [n for n in os.listdir(directory) if re.match(HOURLY_RE, n)]
+        except OSError:
+            return None
+        if not names:
+            return None
+        newest = max(names)
+        return newest, os.lstat(os.path.join(directory, newest)).st_mtime
 
     def systemctl(self, *argv: str) -> tuple[int, str]:
         r = subprocess.run(["systemctl", *argv], capture_output=True, text=True, timeout=30)
         return r.returncode, r.stdout
 
-    def balance(self, wallet: str, env_file: str) -> int:
-        key = (os.environ.get("HELIUS_API_KEY") or "").strip()
-        if not key and Path(env_file).exists():
-            for line in Path(env_file).read_text().splitlines():
-                line = line.strip().removeprefix("export ")
-                if line.startswith("HELIUS_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip("\"'")
-        if not key:
-            raise RuntimeError("no HELIUS_API_KEY")
+    def balance(self, wallet: str, env_file: str, public: bool = False) -> int:
+        key = ""
+        if not public:
+            key = (os.environ.get("HELIUS_API_KEY") or "").strip()
+            if not key and Path(env_file).exists():
+                for line in Path(env_file).read_text().splitlines():
+                    line = line.strip().removeprefix("export ")
+                    if line.startswith("HELIUS_API_KEY="):
+                        key = line.split("=", 1)[1].strip().strip("\"'")
+            if not key:
+                raise RuntimeError("no HELIUS_API_KEY")
+        url = PUBLIC_RPC if public else f"https://mainnet.helius-rpc.com/?api-key={key}"
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [wallet, {"commitment": "confirmed"}]}).encode()
-        req = urllib.request.Request(f"https://mainnet.helius-rpc.com/?api-key={key}", body, {"Content-Type": "application/json"})
+        req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
         return int(json.load(urllib.request.urlopen(req, timeout=20))["result"]["value"])  # type: ignore[no-any-return]
 
 
 class Report:
     def __init__(self, out: Callable[[str], None] = print):
-        self.out, self.alerts = out, 0
+        self.out, self.alerts, self.alert_list = out, 0, []
 
     def info(self, msg: str) -> None:
         self.out(f"INFO  {msg}")
@@ -123,11 +232,22 @@ class Report:
 
     def alert(self, name: str, msg: str) -> None:
         self.alerts += 1
+        self.alert_list.append((name, msg))
         self.out(f"ALERT {name}: {msg}")
 
 
-def _json(host: Host, path: str) -> dict | None:
-    raw = host.read(path)
+class UnitInfo(NamedTuple):
+    installed: bool
+    active_state: str
+    unit_file_state: str
+    running_live: bool  # active, and the running ExecStart carries --live
+
+
+NO_UNIT = UnitInfo(False, "not-installed", "", False)
+
+
+def _json(host: Host, path: str, tail: int | None = None) -> dict | None:
+    raw = host.read(path, tail) if tail else host.read(path)
     if raw is None:
         return None
     obj = json.loads(raw)
@@ -154,12 +274,12 @@ def check_probe_units(host: Host, rep: Report) -> None:
         if len(parts) >= 3 and parts[2] in ACTIVE_STATES:
             bad.append(f"{parts[0]} is {parts[2]}")
     if bad:
-        rep.alert("probe_unit", "; ".join(bad) + " (two processes must never share the key; stop, disable and mask it)")
+        rep.alert("probe_unit", "; ".join(bad) + " (two processes must never share the key; stop and disable it, docs/runbooks/h5-executor.md step 1)")
     else:
         rep.ok("no mal-probe-executor unit is active or enabled")
 
 
-def check_probe_state(host: Host, rep: Report, baseline_path: Path, write_baseline: bool) -> None:
+def check_probe_state(host: Host, rep: Report, baseline_path: Path, write_baseline: bool, expect_sha: str | None = None) -> None:
     raw = host.read(PROBE_STATE)
     if raw is None:
         rep.alert("probe_state", f"{PROBE_STATE} is missing")
@@ -174,9 +294,12 @@ def check_probe_state(host: Host, rep: Report, baseline_path: Path, write_baseli
     if st.get("open") or st.get("pending"):
         problems.append("open or pending positions")
     if write_baseline:
-        baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline_path.write_text(json.dumps({"sha256": digest}) + "\n")
-        rep.info(f"probe state baseline written ({digest[:12]})")
+        if expect_sha and expect_sha.lower() != digest:
+            problems.append("--expect-sha256 does not match the probe state's sha256 now: the baseline was NOT written (it changed since Helm's Step 1)")
+        else:
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            baseline_path.write_text(json.dumps({"sha256": digest}) + "\n")
+            rep.info(f"probe state baseline written ({digest[:12]})")
     elif not baseline_path.exists():
         problems.append(f"no baseline at {baseline_path}: run once with --write-baseline, or changes cannot be detected")
     else:
@@ -190,75 +313,83 @@ def check_probe_state(host: Host, rep: Report, baseline_path: Path, write_baseli
         rep.ok(f"probe state unchanged (attempts {st.get('attempts')}, realized -0.210755 SOL, STOP in place)")
 
 
-def check_h5_unit(host: Host, rep: Report, checker) -> bool:
-    """Returns True if the unit is installed. Alerts if what is installed differs from the pinned copies."""
-    rc, out = host.systemctl("show", H5_UNIT, "-p", "LoadState,ActiveState,SubState,UnitFileState,NRestarts,Result", "--no-pager")
+def check_h5_unit(host: Host, rep: Report, checker) -> UnitInfo:
+    """Alerts if what is installed differs from the pinned copies. Returns what the other checks need."""
+    rc, out = host.systemctl("show", H5_UNIT, "-p", "LoadState,ActiveState,SubState,UnitFileState,NRestarts,Result,FragmentPath", "--no-pager")
     props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     if props.get("LoadState") in (None, "not-found"):
         rep.info(f"{H5_UNIT} is not installed")
-        return False
+        return NO_UNIT
     rep.info(f"{H5_UNIT} active={props.get('ActiveState')}/{props.get('SubState')} enabled={props.get('UnitFileState')} "
              f"restarts={props.get('NRestarts')} result={props.get('Result')}")
     if props.get("ActiveState") == "failed":
         rep.alert("h5_unit_failed", f"result={props.get('Result')}; see journalctl -u {H5_UNIT}")
     problems = []
-    base = host.read(f"/etc/systemd/system/{H5_UNIT}.service")
+    if props.get("FragmentPath") != UNIT_FILE:
+        problems.append(f"FragmentPath is {props.get('FragmentPath')!r}, expected {UNIT_FILE}")
+    base = host.read(UNIT_FILE)
     pinned_base = host.read(f"{PINNED}/mal-h5-executor.service")
     if pinned_base is None:
         problems.append(f"{PINNED}/mal-h5-executor.service is missing (no pinned install)")
     elif base != pinned_base:
         problems.append("installed base unit differs from the pinned copy")
-    for d in DROPIN_DIRS:
-        names = host.listdir(f"{d}/{H5_UNIT}.service.d")
-        for n in names or []:
-            p = f"{d}/{H5_UNIT}.service.d/{n}"
-            data = host.read(p) or b""
-            if d == "/etc/systemd/system" and n == "live.conf":
-                want = host.read(f"{PINNED}/mal-h5-executor-live-pinned.conf")
-                if want is None or data != want:
-                    problems.append("live.conf differs from the pinned live drop-in")
-                elif checker.problems(data, "dropin"):
-                    problems.append("live.conf failed the drop-in allowlist")
-            elif d == "/etc/systemd/system" and n == "10-shadow-feed.conf":
-                bad = checker.problems(data, "shadow-feed")
-                if bad:
-                    problems.append("10-shadow-feed.conf failed the shadow-feed check: " + bad[0])
-            else:
-                problems.append(f"unexpected drop-in {p}")
+    # the drop-in list is what systemd applies (DropInPaths covers prefix and top-level .d directories and /run too), not a directory listing
+    rc, out = host.systemctl("show", H5_UNIT, "-p", "DropInPaths", "--value", "--no-pager")
+    for p in out.split():
+        if p == DROPIN_LIVE:
+            want = host.read(f"{PINNED}/mal-h5-executor-live-pinned.conf")
+            data = host.read(p)
+            if want is None or data != want:
+                problems.append("live.conf differs from the pinned live drop-in")
+            elif checker.problems(data, "dropin"):
+                problems.append("live.conf failed the drop-in allowlist")
+        elif p == DROPIN_FEED:
+            if checker.problems(host.read(p) or b"", "shadow-feed"):
+                problems.append("10-shadow-feed.conf failed the shadow-feed check (run check-h5-unit.py --shadow-feed on it)")
+        else:
+            problems.append(f"unexpected drop-in {p}")
+    running_live = False
     if props.get("ActiveState") in ACTIVE_STATES:
-        rc, out = host.systemctl("show", H5_UNIT, "-p", "ExecStart", "--value", "--no-pager")
-        if "/usr/local/lib/mal-h5-exec/" not in out or "fast-forward" in out:
+        rc, es = host.systemctl("show", H5_UNIT, "-p", "ExecStart", "--value", "--no-pager")
+        if "/usr/local/lib/mal-h5-exec/" not in es or "fast-forward" in es:
             problems.append("running ExecStart is not the pinned launcher")
+        running_live = props.get("ActiveState") == "active" and "--live" in es
     if problems:
         rep.alert("h5_unit_files", "; ".join(problems))
     else:
         rep.ok("H5 unit files equal the pinned copies; only the allowed drop-ins exist")
-    return True
+    return UnitInfo(True, props.get("ActiveState", ""), props.get("UnitFileState", ""), running_live)
 
 
-def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env_file: str,
-                   balance_fn: Callable[[str, str], int] | None = None) -> None:
+def check_live_ok_gate(host: Host, rep: Report) -> bool:
+    """Same facts the executor requires of LIVE_OK (DEC-024 section 3). Returns whether the file is present."""
+    present = host.exists(LIVE_OK)
+    if host.exists(H5_ETC) and (host.islink(H5_ETC) or host.stat(H5_ETC) != "root:root:755"):
+        rep.alert("h5_etc_dir", f"{H5_ETC} is {host.stat(H5_ETC)}{' (symlink)' if host.islink(H5_ETC) else ''}, expected root:root:755")
+    if present:
+        owner = host.stat(LIVE_OK) or "?:?:?"
+        mode = owner.rsplit(":", 1)[-1]
+        if host.islink(LIVE_OK) or not owner.startswith("root:") or not mode.isdigit() or int(mode, 8) & 0o022 or not host.is_regular(LIVE_OK):
+            rep.alert("h5_live_ok_invalid", f"{LIVE_OK} must be a regular file, root-owned, not group/other writable, no symlink (is {owner})")
+    if host.exists(f"{H5_DIR}/LIVE_OK"):
+        rep.alert("h5_live_ok_stale", f"{H5_DIR}/LIVE_OK exists: the gate is {LIVE_OK}; a file in the state dir is not Helm's (remove it, find out who made it)")
+    return present
+
+
+def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env_file: str, unit: UnitInfo, live_ok: bool,
+                   balance_fn: Callable[[str, str], int] | None = None, public_rpc: bool = False) -> None:
     st_dir = host.stat(H5_DIR)
     if st_dir is None:
         rep.info(f"{H5_DIR} does not exist yet")
     elif st_dir != "mal-live:mal-live:700":
         rep.alert("h5_dir_mode", f"{H5_DIR} is {st_dir}, expected mal-live:mal-live:700")
     flags = {n: host.exists(f"{H5_DIR}/{n}") for n in ("STOP", "HALT")}
-    flags["LIVE_OK"] = host.exists(LIVE_OK) or host.islink(LIVE_OK)
+    flags["LIVE_OK"] = live_ok
     rep.info("files: " + " ".join(f"{n}={'yes' if v else 'no'}" for n, v in flags.items()))
     if flags["HALT"]:
         rep.alert("h5_halt_file", "HALT exists: everything is frozen, sells included")
-    # LIVE_OK is the root-owned gate the executor cannot create (DEC-024 section 3): same facts the executor requires of it.
-    if host.exists(H5_ETC) or host.islink(H5_ETC):
-        if host.islink(H5_ETC) or host.stat(H5_ETC) != "root:root:755":
-            rep.alert("h5_etc_dir", f"{H5_ETC} is {host.stat(H5_ETC)}{' (symlink)' if host.islink(H5_ETC) else ''}, expected root:root:755")
-    if flags["LIVE_OK"]:
-        owner = host.stat(LIVE_OK) or "?:?:?"
-        mode = owner.rsplit(":", 1)[-1]
-        if host.islink(LIVE_OK) or not owner.startswith("root:") or not mode.isdigit() or int(mode, 8) & 0o022 or not host.is_regular(LIVE_OK):
-            rep.alert("h5_live_ok_invalid", f"{LIVE_OK} must be a regular file, root-owned, not group/other writable, no symlink (is {owner})")
-    if host.exists(f"{H5_DIR}/LIVE_OK"):
-        rep.alert("h5_live_ok_stale", f"{H5_DIR}/LIVE_OK exists: the gate is {LIVE_OK} now; a file in the state dir is not Helm's (remove it, find out who made it)")
+    if host.exists(WALLET_HALT):
+        rep.alert("wallet_halt_file", f"{WALLET_HALT} exists: the wallet-wide HALT (the executor honours it, and the probe's name for it)")
     state = _json(host, f"{H5_DIR}/live/state-live.json") or {}
     counters = _json(host, f"{H5_DIR}/live/h5-counters.json") or {}
     opens = state.get("open") or {}
@@ -268,12 +399,16 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
              f"halts={sorted(counters.get('halts') or {})} sells_landed={counters.get('sells_landed', 0)} sells_late={counters.get('sells_late', 0)}")
     if counters.get("halts"):
         rep.alert("h5_live_halt", "latched: " + ",".join(sorted(counters["halts"])) + " (cleared only by --clear-halt)")
+    if (opens or pending) and not unit.running_live:
+        rep.alert("h5_positions_unmanaged",
+                  f"live state has {len(opens)} open and {len(pending)} pending position(s) and the unit is not running with --live "
+                  f"(ActiveState={unit.active_state}): sell-and-close each open mint, or start the live unit (docs/runbooks/h5-executor.md)")
     stuck = [m for m, p in opens.items() if p.get("abandoned") or p.get("stuck")]
     if stuck:
         rep.alert("h5_stuck_position", f"{len(stuck)} stuck or abandoned position(s): root sell-and-close (docs/runbooks/h5-executor.md)")
-    ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl")
+    ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL)
     user = None
-    for line in (ledger or b"")[-4_000_000:].splitlines():
+    for line in (ledger or b"").splitlines():
         if b'"kind":"start"' in line.replace(b" ", b""):
             try:
                 user = json.loads(line).get("user") or user
@@ -285,44 +420,121 @@ def check_h5_state(host: Host, rep: Report, funded: int | None, wallet: str, env
         rep.info("wallet balance not compared: pass --funded-sol")
         return
     try:
-        bal = (balance_fn or Host().balance)(wallet, env_file)
+        bal = (balance_fn or (lambda w, e: Host().balance(w, e, public_rpc)))(wallet, env_file)
     except Exception as exc:  # noqa: BLE001 - never echo the URL
         rep.alert("balance_unavailable", f"getBalance failed ({type(exc).__name__})")
         return
     open_cost = sum(int(p.get("buy_cost_lamports") or p.get("spend") or 0) for p in opens.values())
-    expected = funded + realized - open_cost
+    in_flight = sum(int(p.get("spend") or 0) for p in pending.values() if p.get("kind") == "buy")  # debited on chain, not yet an open position
+    expected = funded + realized - open_cost - in_flight
     tol = BASE_TOLERANCE + RENT_TOLERANCE * (len(opens) + len(pending))
     gap = bal - expected
     line = (f"wallet {bal / 1e9:.6f} SOL; funded {funded / 1e9:.6f} + realized {realized / 1e9:.6f} - open cost {open_cost / 1e9:.6f} "
-            f"= {expected / 1e9:.6f}; gap {gap / 1e9:+.6f} (tolerance {tol / 1e9:.6f})")
+            f"- in-flight buys {in_flight / 1e9:.6f} = {expected / 1e9:.6f}; gap {gap / 1e9:+.6f} (tolerance {tol / 1e9:.6f})")
     if abs(gap) > tol:
         rep.alert("wallet_gap", line + " (unexplained deposit/withdrawal/loss, or a stale --funded-sol)")
     else:
         rep.ok(line)
 
 
-def main(argv: list[str] | None = None, host: Host | None = None, out: Callable[[str], None] = print,
-         balance_fn: Callable[[str, str], int] | None = None) -> int:
+def check_canary_idle(host: Host, rep: Report, unit: UnitInfo, live_ok: bool, shadow_dir: str, now: float) -> None:
+    """A canary that is installed but not trading must not look healthy."""
+    if not unit.installed:
+        return
+    newest = host.newest_hourly(shadow_dir)
+    if newest is None:
+        rep.alert("h5_feed_stale", f"no h5-shadow-<hour>.jsonl in {shadow_dir}: the shadow detector is not writing")
+    elif now - newest[1] > FEED_STALE_S:
+        rep.alert("h5_feed_stale", f"the newest shadow file {newest[0]} was last written {int((now - newest[1]) // 60)} min ago (limit {FEED_STALE_S // 60}): "
+                                   "the detector is dead or stuck")
+    else:
+        rep.ok(f"shadow feed fresh ({newest[0]}, {int(now - newest[1])} s)")
+    if not live_ok:
+        rep.info("LIVE_OK absent: canary idle by design (gate closed)")
+        return
+    why = []
+    if unit.active_state != "active":
+        why.append(f"unit is {unit.active_state}")
+    if unit.unit_file_state != "enabled":
+        why.append(f"unit is not enabled ({unit.unit_file_state or 'unknown'})")
+    if unit.active_state == "active" and not unit.running_live:
+        why.append("the running ExecStart has no --live (live drop-in missing)")
+    if host.exists(f"{H5_DIR}/STOP"):
+        why.append("STOP exists")
+    if why:
+        rep.alert("h5_idle", "LIVE_OK is present but the canary is not trading: " + "; ".join(why))
+    t = host.mtime(LIVE_OK)
+    if t is not None and now - t > IDLE_LEDGER_S:
+        ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL) or b""
+        last = 0
+        for line in ledger.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("kind") in IDLE_KINDS and isinstance(row.get("ts_ms"), (int, float)):
+                last = max(last, row["ts_ms"] / 1000.0)
+        if now - last > IDLE_LEDGER_S:
+            rep.alert("h5_idle_ledger", f"LIVE_OK is {int((now - t) // 3600)} h old and the live ledger has no buy, skip or decision row in the last "
+                                        f"{IDLE_LEDGER_S // 3600} h: the canary sees no triggers (feed, detector or executor)")
+    rc, out = host.systemctl("show", WATCH_TIMER, "-p", "ActiveState,UnitFileState", "--no-pager")
+    w = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if w.get("ActiveState") != "active" or w.get("UnitFileState") != "enabled":
+        rep.alert("h5_watch_timer", f"{WATCH_TIMER} is {w.get('ActiveState', 'missing')}/{w.get('UnitFileState', 'missing')}: the Discord watchdog must be on while the gate is open")
+
+
+def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] = print,
+               balance_fn: Callable[[str, str], int] | None = None, now: float | None = None) -> Report:
+    rep = Report(out)
+    now = time.time() if now is None else now
+    checker = load_unit_checker(Path(__file__).resolve().parent)
+    funded = None if args.funded_sol is None else int(round(args.funded_sol * 1e9))
+    if not host.sudo_ok():
+        rep.alert("sudo_unavailable", "sudo -n /usr/bin/true failed: the files in /var/lib/mal-live cannot be read, so the checks that need them cannot pass")
+    ctx: dict = {"unit": NO_UNIT, "live_ok": False}
+
+    def unit_step() -> None:
+        ctx["unit"] = check_h5_unit(host, rep, checker)
+
+    def gate_step() -> None:
+        ctx["live_ok"] = check_live_ok_gate(host, rep)
+
+    steps = [("probe_units", lambda: check_probe_units(host, rep))]
+    if not args.skip_probe_state:
+        steps.append(("probe_state", lambda: check_probe_state(host, rep, Path(args.baseline), args.write_baseline, args.expect_sha256)))
+    steps += [("h5_unit", unit_step), ("h5_gate", gate_step),
+              ("h5_state", lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc)),
+              ("h5_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now))]
+    for name, step in steps:
+        try:
+            step()
+        except SudoError as exc:
+            rep.alert("sudo_failed", f"{name}: {exc} (a failing privileged read is not 'absent')")
+        except Unsafe as exc:
+            rep.alert("unsafe_path", f"{name}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - a check that cannot run is an alert, never a silent pass
+            rep.alert("check_failed", f"{name}: {type(exc).__name__}")
+    return rep
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--funded-sol", type=float, default=None, help="total SOL the owner has deposited (net of withdrawals)")
     ap.add_argument("--wallet", default=WALLET)
     ap.add_argument("--rpc-env", default="/var/lib/mal/fast-listener/helius.env", help="read-only getBalance only; HELIUS_API_KEY in the environment wins")
+    ap.add_argument("--public-rpc", action="store_true", help=f"getBalance through {PUBLIC_RPC}: no key at all")
+    ap.add_argument("--shadow-dir", default=str(Path.home() / "data/h5-shadow"), help="the shadow detector's output directory (the manager's own, no sudo)")
     ap.add_argument("--baseline", default=str(Path.home() / "data/h5-daily/probe-state.baseline.json"))
     ap.add_argument("--write-baseline", action="store_true", help="record the probe state's sha256 (once, at install time)")
-    args = ap.parse_args(argv)
-    host = host or Host()
-    rep = Report(out)
-    checker = load_unit_checker(Path(__file__).resolve().parent)
-    funded = None if args.funded_sol is None else int(round(args.funded_sol * 1e9))
-    steps = (lambda: check_probe_units(host, rep),
-             lambda: check_probe_state(host, rep, Path(args.baseline), args.write_baseline),
-             lambda: check_h5_unit(host, rep, checker),
-             lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, balance_fn))
-    for step in steps:
-        try:
-            step()
-        except Exception as exc:  # noqa: BLE001 - a check that cannot run is an alert, never a silent pass
-            rep.alert("check_failed", f"{type(exc).__name__}")
+    ap.add_argument("--expect-sha256", default=None, help="with --write-baseline: Helm's Step 1 sha256 of state-live.json; refuse to write on a mismatch")
+    ap.add_argument("--skip-probe-state", action="store_true", help="skip the probe-state check (the watchdog leaves it to the daily run)")
+    return ap
+
+
+def main(argv: list[str] | None = None, host: Host | None = None, out: Callable[[str], None] = print,
+         balance_fn: Callable[[str, str], int] | None = None, now: float | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    rep = run_checks(args, host or Host(), out, balance_fn, now)
     out(f"h5_daily_check ALERTS={rep.alerts}")
     return 1 if rep.alerts else 0
 

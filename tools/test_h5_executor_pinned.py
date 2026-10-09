@@ -717,7 +717,11 @@ def test_runbook_has_the_ordered_steps_and_the_paths_the_code_uses():
         assert p in t, p
     from tools import h5_executor
 
-    assert callable(h5_executor.live_ok_present) and h5_executor.EXP024_PART1  # the names the runbook relies on exist
+    # the names the runbook relies on exist, and the executor pins LIVE_OK to the path the installer, the unit and the daily check use
+    assert callable(h5_executor.live_ok_valid) and h5_executor.EXP024_PART1 and str(h5_executor.LIVE_OK_PATH) == "/etc/mal-h5/LIVE_OK"
+    assert "live_ok_file" in h5_executor.PINNED_PATH_KEYS  # a config override is refused in live, so the pinned configs set none
+    for cfgname in ("h5-executor-live.json", "h5-executor.json"):
+        assert not set(h5_executor.PINNED_PATH_KEYS) & set(json.loads((FAST / cfgname).read_text())), cfgname
     assert json.loads((FAST / "h5-executor-live.json").read_text())["intents_file"] == "/srv/mal-h5-shadow"
     assert t.index("**Step 1.") < t.index("**Step 4. Install.")  # the old unit is stopped and disabled before anything is installed
 
