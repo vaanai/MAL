@@ -27,6 +27,62 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
+### STATE 10-09 ~05:30Z (newest; read first)
+**Owner decisions today** (all in the MiScusi notebook):
+- Small live trades ASAP at 0.02 SOL/trade. The owner funds ~0.25 SOL only when the manager asks, after Helm's hash check.
+- **Scale ladder:** T0 0.02 → ~50 trades → T1 0.10 → ~25 trades → T2 0.30 → onward, 25–50 trades per step. No skipped steps.
+  - Mechanism: code `TIERS` plus a root-owned `/etc/mal-h5/TIER` written by Helm.
+  - T2 is capped at 0.30: IMPACT.md says 0.50 fails in thin pools.
+- **C1-NF (hunt-4 lead)** is registered as EXP-025 with two looks: Look 1 α 0.005 at ~10-17, Look 2 α 0.020 at ~10-24.
+  - Merged fcc7e99, with quant-proof OK on final head 8a50400.
+  - A small live C1-NF canary is approved (O3). It needs DEC-026 and a separate wallet.
+- **Helius:** ~3.0M credits approved, raised to 3.6M, for the `forward-1002ev` event-V re-walk (job #433). It is the V source for EXP-024 Look 1 and EXP-025.
+
+**H5 PRs:**
+- #477 shadow, d3b69d0.
+- #484 executor: round 6 in progress on 1866327+. G1 is a MUST: the 35% cap must use a tier-start realized baseline.
+- #499 live unit: 6c6728d; re-merge the executor after round 6.
+- Reviews are in /data/mal/hunt-1008/h5-work/REVIEW-*.md. The last one is REVIEW-last-7c4db74-3dbe1de.md.
+
+**H5 jobs (fast-0):**
+- shadow #428 at 3dbe1de; restart on the final #477 head before live;
+- dry run #432 at 7c4db74;
+- 5 clean simulated round trips on the earlier head: sells at s0+330.4..330.8 s.
+
+**Remaining H5 order:**
+1. Executor round 6.
+2. Short delta check.
+3. Merge #477, then #484, then #499 (retarget it to main).
+4. Restart the shadow and the dry run on main.
+5. Helm installs per docs/runbooks/h5-executor.md, including TIER=T0.
+6. Hash check.
+7. Re-register the 12:17Z cron to scripts/mal-fast/h5-daily-check.py.
+8. Ask the owner for SOL.
+9. LIVE_OK.
+
+**Before 10-16T01:** the CAP-PICK boolean pick oracle (`claude/cap-pick-oracle`). Without it H5 refuses every buy, and the shadow seals every pool, from 10-16T01 to 11-06.
+
+**forward-1002ev:**
+- PR #505 (94c40a7+) holds DEC-016 Am.9, EXP-024 Am.1 and EXP-012 Am.5. Its quant-proof is on pass 3.
+- PR #507 is EXP-025 Amendment 1, P7 on raw events. Its quant-proof is in progress.
+- **Both must merge before 10-10T00Z.**
+
+**C1-NF build drafts:**
+- #502 ledger;
+- #506 features (parity exact in replay mode; drift in live mode);
+- #503 shadow (no pinned model yet);
+- #504 executor.
+- Next: replay parity of picks against VERIFY, a pinned model, DEC-026, and Helm for a second wallet.
+
+**Other:** CAP-PICK T2 B90 passed its kill rule and is kept report-only (#471, d71060f).
+
+**Agent ids:**
+- executor `ab84c2d698b6716d6`; shadow `accfdac84de54afb2`; unit `a16b48c5c2858494d`;
+- fwd-ev `a5bf01d461057fc20`; EXP-025 Am.1 `adb91a0dd7cd60256`; pick oracle `a07c78ea9889c77f6`;
+- QP #505 `a83a7cdd6faf84f12`; QP #507 `acca18609cea186a9`; QP #501 `a7dc7c15365d0e3ce`;
+- C1-NF ledger `a6eb8ab30e1b223dd`; features `ab22d98e7232b34be`; shadow `a916d155cb4c28525`; executor `a323ae5912ea507c4`;
+- impact QP `a4588d78c7c6df5b7`.
+
 ### H5 live path, 10-09 ~01:40Z (newest; supersedes the H5 rows below where they differ)
 - **Owner, 10-08 ~23:50Z:** "start up some small trades now... headstart... run the simulation alongside". The manager agreed and pulled the start forward. The owner sends ~0.25 SOL **only when the manager says so**, after Helm's hash check (standing rule).
 - **Target live start:** ~10-09 evening UTC. That is after the 200 ms slot switch (~14:30Z): no trading through the switch.
