@@ -80,7 +80,16 @@ SPS_MIN, SPS_MAX = 0.15, 0.6
 SPS_MIN_SPAN_S = 120.0  # the detector's sps window must span at least this (it can be ready after ~8 s; a bootstrap sps sets a wrong exit)
 BOOST_BUDGET_SOL, BOOST_DONE_FRAC = 17.585, 0.999  # the rule: BOOST spent < 0.999 x 17.585 SOL
 S0_ANNOUNCE_LAG_MAX = 2  # slots between the pool's CreatePool and the first print we call s0 (live: p50 0, p90 1, p99 4440)
-BAD_INTENT_ALERT_N, BAD_INTENT_WINDOW_MS = 5, 3_600_000  # more than 5 malformed or unusable trigger records in an hour raises an alert
+BAD_INTENT_ALERT_N, BAD_INTENT_WINDOW_MS = 5, 3_600_000  # more than 5 malformed or unusable VALUES in trigger records in an hour raises an alert
+# A trigger record that lacks a key this executor needs is a shadow-schema mismatch (a detector that was not restarted on the new head: the schema
+# string stays h5_shadow_v1). The first one alerts at once, then at most once per SCHEMA_ALERT_WINDOW_MS. The keys are those Engine._fire of
+# tools/h5_shadow.py (#477) writes and this file reads; the others it writes (outcomes, ladders, prices) are not needed here.
+SHADOW_REQUIRED_KEYS = (
+    "mint", "pool", "s0", "s0_t_recv_ms", "slot", "sps", "block_time", "t_recv_ms", "t_detect_ms", "q_trigger_sol", "v_print", "v_missing",
+    "base_pre", "sell_token_raw", "boost_spent_sol", "base_breaks_unresolved", "base_breaks_unresolved_settled", "s0_minus_announced_slots",
+    "s0_reanchored_slots", "sps_span_s", "gap",
+)
+SCHEMA_ALERT_WINDOW_MS = 600_000
 ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
 
@@ -332,6 +341,9 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
         return None, None
     if row.get("suppressed"):  # the sealed stub #477 writes from 2026-10-16T01Z: type, variant, pool, slot, suppressed ... and nothing to trade on
         return None, "bad_intent:suppressed"
+    missing = [k for k in SHADOW_REQUIRED_KEYS if k not in row]
+    if missing:  # a schema mismatch, not a bad value: the caller alerts at once
+        return None, f"bad_intent:missing_{missing[0]}"
     try:
         q_sol, base_pre, tok = row["q_trigger_sol"], row["base_pre"], row["sell_token_raw"]
         v = row["v_print"]
@@ -850,6 +862,7 @@ class H5Executor(pl.LiveExecutor):
         self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
         self._bad_intent_ms: list[int] = []
         self._bad_intent_alert_ms = -BAD_INTENT_WINDOW_MS
+        self._schema_alert_ms = -SCHEMA_ALERT_WINDOW_MS
         self._anchor_refusal_ms: list[int] = []
         self._anchor_alert_ms = -BAD_INTENT_WINDOW_MS
         self._anchor_info: dict[str, Any] = {}
@@ -1429,12 +1442,19 @@ class H5Executor(pl.LiveExecutor):
         self._hour_roll(self.now_ms())
         self._accepted_hour += 1
 
-    def _bad_intent(self, row: dict[str, Any], why: str) -> None:
-        """A trigger record that cannot be traded on. Ledgered; more than BAD_INTENT_ALERT_N in an hour is an alert (a schema change or a
-        broken detector looks exactly like this: every trigger refused, nothing else wrong)."""
+    def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False) -> None:
+        """A trigger record that cannot be traded on. Ledgered. A shadow record that LACKS a required key is a schema mismatch (a detector that is
+        not on the head this executor reads): that alerts at the first record, rate-limited to one per SCHEMA_ALERT_WINDOW_MS, and is not part of
+        the hourly count. A bad VALUE counts: more than BAD_INTENT_ALERT_N in an hour is an alert (a broken detector looks like this)."""
         now = self.now_ms()
         self._log("skip", str(row.get("mint") or ""), reason=why)
         self._count_refusal(why)
+        if shadow and why.startswith("bad_intent:missing_"):
+            if now - self._schema_alert_ms >= SCHEMA_ALERT_WINDOW_MS:
+                self._schema_alert_ms = now
+                self._alert("shadow_schema_mismatch", "", missing=[k for k in SHADOW_REQUIRED_KEYS if k not in row][:12], shadow_schema=row.get("schema"),
+                            reason_=why)
+            return
         self._bad_intent_ms = [t for t in self._bad_intent_ms if now - t < BAD_INTENT_WINDOW_MS] + [now]
         if len(self._bad_intent_ms) > BAD_INTENT_ALERT_N and now - self._bad_intent_alert_ms >= BAD_INTENT_WINDOW_MS:
             self._bad_intent_alert_ms = now
@@ -1504,7 +1524,7 @@ class H5Executor(pl.LiveExecutor):
                 if trg is not None:
                     triggers.append(trg)
                 elif bad:
-                    self._bad_intent(row, bad)
+                    self._bad_intent(row, bad, shadow=True)
             elif rtype == "gap":
                 # The hold starts only when the record says coverage was lost: flags_pools true, or the key missing or anything but the
                 # literal false (an unknown schema fails closed). A reconnect on a redundant feed whose other sockets stayed up says false.
