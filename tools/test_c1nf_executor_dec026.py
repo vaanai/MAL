@@ -13,7 +13,7 @@ from unittest import mock
 from tools import c1nf_executor as c
 from tools import h5_executor as h5
 from tools import probe_executor as pe
-from tools.test_c1nf_executor import MINUTE, STAKE, Case
+from tools.test_c1nf_executor import MINUTE, STAKE, Case, outcome, touch_streams, write_stream
 from tools.test_h5_executor import MINT, POOL, QREAL
 from tools.test_probe_executor import BASE0, T0, V
 
@@ -86,9 +86,12 @@ class LimitTests(TierCase):
         self.assertEqual(c.C1NF_END_MAX_MS, 1792801800000)  # 2026-10-24T00:30:00Z
 
     def test_the_end_instant_stops_buys(self):
-        e = self.env()
+        e = self.env(end_ms=c.C1NF_END_MAX_MS)  # (C1NF_END_MAX_MS is inside the CAP-PICK seal: there the seal refuses first, a count only)
         e.fire(minute=c.C1NF_END_MAX_MS // MINUTE * MINUTE + MINUTE)
-        self.assertEqual(e.refusals(), ["end_instant"])
+        self.assertEqual((e.refusals(), e.ex.counters.seal_skips), ([], 1))
+        e2 = self.fresh("early", end_ms=e.t0 + 5 * MINUTE)
+        e2.fire(minute=e2.t0 + 6 * MINUTE)
+        self.assertEqual(e2.refusals(), ["end_instant"])
 
 
 class ExposureTests(TierCase):
@@ -222,20 +225,17 @@ class SyntheticTests(TierCase):
 
     def test_a_synthetic_pool_is_traded_and_the_class_is_on_no_record(self):
         e = self.env(live=False)
-        path = Path(e.conf["intents_file"])
-        path.write_text("")
+        touch_streams(e.shadow_dir)
         e.ex.intent_tick()
         row = e.row()
-        rows = [{"type": "hb"}, {"type": "excluded", "pool": POOL, "mint": MINT, "reason": "synthetic"},
+        rows = [{"type": "c1nf_heartbeat"}, {"type": "excluded", "pool": POOL, "mint": MINT, "reason": "synthetic"},
                 {**row, "synthetic": True, "synthetic_src": "ws", "synthetic_class": "synthetic"}]
-        with path.open("a") as fh:
-            fh.write("".join(json.dumps(r) + "\n" for r in rows))
+        write_stream(e.shadow_dir, rows)
         e.ex.intent_tick()
         self.assertEqual(e.refusals(), [])
         self.assertIn(MINT, e.ex.state.open)  # the dry run's virtual position: the pick was taken
         e.ex.on_outcome(MINT, row["decision_T_ms"], 4.0)
-        with path.open("a") as fh:
-            fh.write(json.dumps({"type": "c1nf_outcome", "mint": MINT, "decision_T_ms": row["decision_T_ms"], "outcome_pct": 4.0, "synthetic": True}) + "\n")
+        write_stream(e.shadow_dir, [{**outcome(MINT, row["decision_T_ms"], 4.0), "synthetic": True}])
         e.ex.intent_tick()
         records = e.ledger() + [json.loads(e.ex.extra_path.read_text()), json.loads(Path(e.ex.state_path).read_text())]
         seen = " ".join(self.keys_and_values(records, [])).lower()

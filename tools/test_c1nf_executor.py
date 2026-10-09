@@ -22,8 +22,34 @@ from tools.test_probe_executor import BASE0, T0, V, Clock
 from tools.test_probe_live import RENT, meta_result
 
 STAKE = 50_000_000  # the canary stake: the live config lowers the 0.10 SOL ceiling to 0.05 (DEC-026 O-3)
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "c1nf_pick_v1.jsonl"
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "c1nf_shadow_v1"  # written by #503's own code (see its README)
 MINUTE = 60_000
+TEST_SHA = "ab" * 32  # the pinned model sha256 inside these tests (C1NF_MODEL_SHA256 is empty on main until DEC-026 item 12)
+TEST_KP = Keypair.from_seed(bytes([7] * 32))  # the pinned C1-NF wallet inside these tests
+HOUR = "2026-10-06T15"  # T0's UTC hour
+STREAM_OF = {"c1nf_pick": "c1nf-picks", "c1nf_outcome": "c1nf-outcomes"}  # #503 JsonlSink.PREFIX; anything else is an event
+
+
+def write_stream(d: Path, rows: list, hour: str = HOUR) -> None:
+    """Append rows to the shadow's hourly streams in `d`, each to the file #503's JsonlSink would put it in (a raw string goes to the picks)."""
+    for r in rows:
+        prefix = "c1nf-picks" if isinstance(r, str) else STREAM_OF.get(r.get("type", ""), "c1nf-events")
+        with (d / f"{prefix}-{hour}.jsonl").open("a") as fh:
+            fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+
+
+def touch_streams(d: Path, hour: str = HOUR) -> None:
+    for prefix in ("c1nf-picks", "c1nf-events", "c1nf-outcomes"):
+        (d / f"{prefix}-{hour}.jsonl").touch()
+
+
+def outcome(mint: str, t_ms: int, pct: float, stake: int = 50_000_000, leg: str = "1.3") -> dict:
+    """A #503-shaped c1nf_outcome whose pinned leg prices `pct` percent of the canary twin's stake."""
+    pnl = pct * stake / 100.0
+    twin = {"stake_lamports": stake, "guard_ref": "pick_state", "guarded": False, "pnl_nofee": pnl + 1_010_000, "pnl_55k": pnl + 900_000,
+            "pnl_505k": pnl, "pnl_505k_rent": pnl - 4_078_560}
+    return {"schema": "c1nf_shadow_v1", "type": "c1nf_outcome", "mint": mint, "pool": POOL, "decision_T_ms": t_ms, "SD_slot": 1, "complete": True,
+            "primary": "1.3", "legs": {leg: {"landing_slot": 4, "exit_slot": 800, "end": {"canary": twin}, "worst": {"canary": dict(twin)}}}}
 
 
 class Case(unittest.TestCase):
@@ -38,7 +64,8 @@ class Case(unittest.TestCase):
         self.probe_dir.mkdir()
         self.state_dir = self.tmp / "state"
         for target, attr, val in ((c, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (c, "LIVE_STATE_DIR", self.state_dir), (h5, "LIVE_OK_UID", os.getuid()),
-                                  (h5, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
+                                  (h5, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir), (c, "PICK_WINDOW_START_MS", 0),
+                                  (c, "C1NF_MODEL_SHA256", frozenset({TEST_SHA})), (c, "C1NF_WALLET_PUBKEY", str(TEST_KP.pubkey()))):
             p = mock.patch.object(target, attr, val)
             p.start()
             self.addCleanup(p.stop)
@@ -65,18 +92,21 @@ class Case(unittest.TestCase):
 class Env:
     """One C1-NF executor on the H5 fake chain. live=True builds a keyed executor with LIVE_OK and EXP-025 in place. The chain follows the clock."""
 
-    def __init__(self, tmp: Path, state_dir: Path, live: bool = True, oracle=None, exp025: bool = True, live_ok: bool = True, slot_ms: float = 200.0,
+    def __init__(self, tmp: Path, state_dir: Path, live: bool = True, oracle=None, exp025: bool = True, live_ok: bool = True, slot_ms: float = 200.0, t0: int = T0,
                  quote: int = QREAL, **cfg):
         self.tmp = tmp
-        self.clock = Clock(T0 + 1_500)
+        self.t0 = t0
+        self.clock = Clock(t0 + 1_500)
         self.rpc = H5Rpc(self.clock, quote=quote)
         self.rpc.slot_ms = slot_ms
-        self.rpc._anchor = (100_000, T0)
+        self.rpc._anchor = (100_000, t0)
         self.root = tmp / "repo"
         (self.root / "EXP").mkdir(parents=True, exist_ok=True)
         if exp025:
             (self.root / c.EXP025_PART1).write_text("# EXP-025 Part 1 (test stub)\n")
-        self.conf = dict(intents_file=str(tmp / "intents.jsonl"), state_dir=str(state_dir), mode="live" if live else "dryrun", poll_s=5.0,
+        self.shadow_dir = tmp / "shadow"
+        self.shadow_dir.mkdir(exist_ok=True)
+        self.conf = dict(intents_file=str(self.shadow_dir), state_dir=str(state_dir), mode="live" if live else "dryrun", poll_s=5.0,
                          stake_lamports=STAKE)
         self.conf.update(cfg)
         if live:
@@ -85,7 +115,7 @@ class Env:
                 os.chmod(c.LIVE_OK_PATH, 0o644)
             else:
                 c.LIVE_OK_PATH.unlink(missing_ok=True)
-        self.kp = Keypair() if live else None
+        self.kp = TEST_KP if live else None
         self.ex = c.C1NFExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=oracle, root=self.root)
         self.seed()
 
@@ -93,6 +123,7 @@ class Env:
         """Our own getSlot history, as 150 s of the prewarm loop would have left it: the measured slot rate is the chain's."""
         self.ex.slots = h5.SlotClock()
         now = self.clock()
+        self.ex.feed_last_ms = now  # a fresh c1nf_heartbeat (the guard is a code constant now: a test of staleness moves the clock past it)
         for k in range(75, -1, -1):
             self.ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
 
@@ -100,12 +131,14 @@ class Env:
         self.clock.t = when_ms
         self.seed()
 
-    def row(self, minute: int = T0, age_ms: int = 1_500, **kw) -> dict:
-        """A pick for the decision minute `minute`, `age_ms` old on the chain's clock (the clock is moved there)."""
+    def row(self, minute: int | None = None, age_ms: int = 1_500, **kw) -> dict:
+        """A pick for the decision minute `minute` (default t0), `age_ms` old on the chain's clock (the clock is moved there)."""
+        minute = self.t0 if minute is None else minute
         self.set_clock(minute + age_ms)
         base = {"type": "c1nf_pick", "mint": MINT, "pool": POOL, "decision_T_ms": minute, "SD_slot": self.rpc.slot_at(minute + 200), "pred": 0.05,
                 "h_top1": 0.1, "stage1": True, "feature_hash": "abcdef0123456789",
-                "q_lamports": QREAL + V, "base_reserve": BASE0}
+                "q_lamports": QREAL + V, "base_reserve": BASE0, "v_lamports": V, "state_slot": self.rpc.slot_at(minute + 200) - 1,
+                "model_sha": TEST_SHA}
         return {**base, **kw}
 
     def pick(self, **kw) -> c.C1NFPick:
@@ -244,19 +277,43 @@ class LimitsTests(Case):
 class PickParseTests(Case):
     def good(self, **kw):
         row = {"type": "c1nf_pick", "mint": MINT, "pool": POOL, "decision_T_ms": T0, "SD_slot": 100_000, "pred": 0.05, "h_top1": 0.1, "stage1": True,
-               "feature_hash": "abcdef0123456789", "q_lamports": QREAL + V, "base_reserve": BASE0, **kw}
+               "feature_hash": "abcdef0123456789", "q_lamports": QREAL + V, "base_reserve": BASE0, "v_lamports": V, "state_slot": 99_999,
+               "model_sha": TEST_SHA, **kw}
         return row
 
-    def test_the_fixture_is_a_good_pick_and_outcome_and_matches_the_schema(self):
-        rows = [json.loads(x) for x in FIXTURE.read_text().splitlines()]
-        pick, bad = c.parse_pick(rows[0])
+    def test_the_503_contract_is_the_one_pinned_here(self):
+        """#503's own constants (contract_503.json, written by its code at 8f12a9a) against this executor's pinned contract."""
+        k = json.loads((FIXTURE_DIR / "contract_503.json").read_text())
+        self.assertEqual(set(k["PICK_FIELDS"]) - {"type"}, set(c.PICK_SCHEMA["required"]))
+        self.assertEqual({k["PREFIX"]["c1nf_pick"], k["PREFIX"]["c1nf_outcome"]}, {c.PICKS_GLOB.split("-?")[0], c.OUTCOMES_GLOB.split("-?")[0]})
+        self.assertTrue({c.HEARTBEAT_TYPE, c.GAP_TYPE} <= set(k["EVENT_TYPES"]))
+        self.assertEqual(c.EVENTS_GLOB.split("-?")[0], "c1nf-events")  # JsonlSink: every type not in PREFIX goes to c1nf-events
+        self.assertEqual(k["OUTCOME_START_MS"], c.PICK_WINDOW_START_MS + 0 if c.PICK_WINDOW_START_MS else k["OUTCOME_START_MS"])
+        self.assertEqual(k["OUTCOME_START_MS"], 1791590400000)
+        self.assertEqual((k["CANARY_STAKE_LAMPORTS"], k["SEND_FEES"]["505k"], f"{k['PRIMARY_LAT']:g}"), (STAKE, 505_000, c.OUTCOME_LEG))
+        try:  # once #503 is on the same tree, check its live module as well
+            from tools import c1nf_shadow as sh
+        except ImportError:
+            return
+        self.assertEqual(list(sh.PICK_FIELDS), k["PICK_FIELDS"])
+        self.assertEqual(list(sh.EVENT_TYPES), k["EVENT_TYPES"])
+        self.assertEqual(sh.OUTCOME_START_MS, k["OUTCOME_START_MS"])
+
+    def test_503s_records_parse(self):
+        rows = [json.loads(x) for f in sorted(FIXTURE_DIR.glob("c1nf-*.jsonl")) for x in f.read_text().splitlines()]
+        picks = [r for r in rows if r["type"] == "c1nf_pick"]
+        pick, bad = c.parse_pick(picks[0])
         self.assertIsNone(bad)
-        self.assertEqual((pick.mint, pick.pool, pick.pick_id), (MINT, POOL, f"{MINT}:{T0}"))
-        self.assertTrue(set(c.PICK_SCHEMA["required"]) <= set(rows[0]))
-        self.assertTrue(set(rows[0]) - {"type"} <= set(c.PICK_SCHEMA["required"]) | set(c.PICK_SCHEMA["optional"]))
-        out, bad = c.parse_outcome(rows[1])
-        self.assertEqual((out, bad), ((MINT, T0, 6.25), None))
-        self.assertEqual(c.parse_pick(rows[2]), (None, None))
+        self.assertEqual((pick.mint, pick.pool, pick.model_sha, pick.t_emit_ms), (MINT, POOL, TEST_SHA, picks[0]["t_ms"]))
+        with mock.patch.object(c, "PICK_WINDOW_START_MS", 1791590400000):
+            self.assertEqual(c.parse_pick(picks[2]), (None, "pre_window"))  # #503 executor_refusal's pre_window
+        out, bad = c.parse_outcome(next(r for r in rows if r["type"] == "c1nf_outcome"))
+        o = next(r for r in rows if r["type"] == "c1nf_outcome")["legs"]["1.3"]["end"]["canary"]
+        self.assertEqual((out, bad), ((MINT, picks[0]["decision_T_ms"], 100.0 * o["pnl_505k"] / o["stake_lamports"]), None))
+        self.assertGreater(out[2], 0)
+        example = json.loads((FIXTURE_DIR / "pick_example_503.json").read_text())  # #503's PICK_EXAMPLE: every field read, none missing
+        self.assertNotEqual(c.parse_pick(example)[1], None)  # its ids are not a canonical pair ...
+        self.assertEqual(c.parse_pick({**example, "mint": MINT, "pool": POOL, "decision_T_ms": T0}), (c.parse_pick(example | {"mint": MINT, "pool": POOL, "decision_T_ms": T0})[0], None))
 
     def test_a_good_pick_and_the_rules_edges(self):
         self.assertIsNone(c.parse_pick(self.good())[1])
@@ -277,8 +334,11 @@ class PickParseTests(Case):
             "bad_pick:ids": [self.good(mint="nope"), self.good(pool=7), self.good(mint="")],
             "bad_pick:not_canonical": [self.good(pool="11111111111111111111111111111111")],
             "bad_pick:ref_state": [self.good(q_lamports=0, base_reserve=5), self.good(q_lamports="1", base_reserve=1), self.good(base_reserve=-1),
-                                   self.good(q_lamports=True)],
-            "bad_pick:ref_state_missing": [self.good(q_lamports=None), self.good(base_reserve=None)],
+                                   self.good(q_lamports=True), self.good(v_lamports=QREAL + V), self.good(v_lamports=0), self.good(state_slot=100_000),
+                                   self.good(state_slot=0), self.good(state_slot="1")],
+            "bad_pick:ref_state_missing": [self.good(q_lamports=None), self.good(base_reserve=None), self.good(v_lamports=None),
+                                           self.good(state_slot=None)],
+            "bad_pick:model_sha": [self.good(model_sha="AB" * 32), self.good(model_sha="ab" * 31), self.good(model_sha=None), self.good(model_sha=7)],
             "bad_pick:suppressed": [self.good(suppressed=True)],
         }
         for reason, rows in cases.items():
@@ -290,13 +350,29 @@ class PickParseTests(Case):
             self.assertEqual(c.parse_pick(row), (None, f"bad_pick:missing_{key}"))
         self.assertEqual(c.parse_pick("x"), (None, None))
         self.assertEqual(c.parse_pick({"type": "trigger"}), (None, None))
+        with mock.patch.object(c, "PICK_WINDOW_START_MS", T0 + MINUTE):
+            self.assertEqual(c.parse_pick(self.good()), (None, "pre_window"))
+            self.assertIsNone(c.parse_pick(self.good(decision_T_ms=T0 + MINUTE))[1])
 
     def test_outcome_parse(self):
-        self.assertEqual(c.parse_outcome({"type": "c1nf_outcome", "mint": MINT, "decision_T_ms": T0, "outcome_pct": -3.5}), ((MINT, T0, -3.5), None))
-        for bad in ({"mint": "x"}, {"decision_T_ms": 0}, {"outcome_pct": float("nan")}, {"outcome_pct": "1"}, {"outcome_pct": -101}):
-            row = {"type": "c1nf_outcome", "mint": MINT, "decision_T_ms": T0, "outcome_pct": 1.0, **bad}
-            self.assertIsNone(c.parse_outcome(row)[0], bad)
-            self.assertTrue(c.parse_outcome(row)[1].startswith("bad_outcome:"), bad)
+        """The pinned leg: legs['1.3']['end']['canary'], pnl_505k over the twin's stake, in percent."""
+        self.assertEqual(c.parse_outcome(outcome(MINT, T0, -3.5)), ((MINT, T0, -3.5), None))
+        row = outcome(MINT, T0, 2.0)
+        row["legs"]["1.3"]["worst"]["canary"]["pnl_505k"] = -40_000_000.0  # the WORST bound is not the monitor's
+        row["legs"]["1.9"] = {"end": {"canary": {"stake_lamports": STAKE, "pnl_505k": -1e7}}}
+        self.assertEqual(c.parse_outcome(row)[0][2], 2.0)
+        for bad in ({"mint": "x"}, {"decision_T_ms": 0}):
+            r = {**outcome(MINT, T0, 1.0), **bad}
+            self.assertTrue(c.parse_outcome(r)[1].startswith("bad_outcome:"), bad)
+        unpriced = [outcome(MINT, T0, 1.0, leg="1.9"), {**outcome(MINT, T0, 1.0), "legs": {"1.3": {"landing_slot": 4, "incomplete": "clock_short"}}},
+                    outcome(MINT, T0, 1.0, stake=0), {**outcome(MINT, T0, 1.0), "outcome_pct": 3.0, "legs": None},
+                    {"type": "c1nf_outcome", "mint": MINT, "decision_T_ms": T0, "outcome_pct": 3.0}]  # #504's scalar form is not the contract
+        unpriced[3]["legs"] = None
+        r = outcome(MINT, T0, 1.0)
+        r["legs"]["1.3"]["end"]["canary"]["pnl_505k"] = float("nan")
+        unpriced.append(r)
+        for row in unpriced:
+            self.assertEqual(c.parse_outcome(row), (None, "outcome_unpriced"), row)
         self.assertEqual(c.parse_outcome({"type": "pick"}), (None, None))
 
 
@@ -314,7 +390,7 @@ class ExitPlanTests(Case):
         self.assertEqual(p.arm_slot, p.send_slot - 8)  # 2 s: ceil(7.4)
         self.assertEqual(p.escalate_slot, 10_000 + round(315 / 0.27))
         self.assertEqual(p.deadline_slot, 10_000 + round(370 / 0.27))
-        self.assertEqual(p.late_slot, 10_000 + round(305.55 / 0.27))
+        self.assertEqual(p.late_slot, 10_000 + round(305 / 0.27))  # DEC-026 section 7 rule 5: landing + 305 s
 
     def test_plan_at_200ms_slots(self):
         p = c.c1nf_exit_plan(10_000, 0.2, self.L, 1_000_000)
@@ -330,7 +406,7 @@ class ExitPlanTests(Case):
         self.assertEqual(p.send_wall_ms, 1_000_000 + 300_550 - 500)  # lands at landing + 300 s + 0.55 s
         self.assertEqual(p.arm_wall_ms, p.send_wall_ms - 2_000)
         self.assertEqual((p.escalate_wall_ms, p.deadline_wall_ms), (1_000_000 + 315_000, 1_000_000 + 370_000))
-        self.assertEqual(p.late_wall_ms, 1_000_000 + 305_550)
+        self.assertEqual(p.late_wall_ms, 1_000_000 + 305_000)
         self.assertIsNone(c.c1nf_exit_plan(10_000, 0.2, self.L).send_wall_ms)
 
     def test_exit_slot_uses_the_scorers_rounding(self):
@@ -529,6 +605,7 @@ class RefusalTests(Case):
             e2 = self.fresh(f"s{extra}")
             row = e2.row(age_ms=1_000)
             row["SD_slot"] = e2.rpc.slot - limit - extra  # est == rpc.slot in the fake chain
+            row["state_slot"] = row["SD_slot"] - 1
             e2.ex.handle_pick(c.parse_pick(row)[0])
             self.assertEqual(e2.refusals(), [] if ok else ["stale_pick"], extra)
         e.fire(age_ms=3_400)  # 17 slots at 200 ms
@@ -557,7 +634,9 @@ class RefusalTests(Case):
 
     def test_feed_hold_and_heartbeat(self):
         e = self.env(feed_heartbeat_max_age_ms=150_000)
-        e.fire()
+        row = e.row()
+        e.ex.feed_last_ms = None
+        e.ex.handle_pick(c.parse_pick(row)[0])
         self.assertEqual(e.refusals(), ["feed_stale"])  # no heartbeat seen yet
         row = e.row(minute=T0 + MINUTE)
         e.ex.feed_last_ms = e.clock()
@@ -601,13 +680,11 @@ class RefusalTests(Case):
         self.assertEqual(min_ref, h5.entry_terms(QREAL + V, BASE0, STAKE, 1500)["min_out"])
         self.assertEqual(e.ledger("decision")[0]["guard_ref"], "decision_state")
         e2 = self.fresh("r", live=False)  # DEC-026 section 6: a pick without the decision-time reserves never reaches a buy (no receipt fallback)
-        path = Path(e2.conf["intents_file"])
-        path.write_text("")
+        touch_streams(e2.shadow_dir)
         e2.ex.intent_tick()
         row = e2.row()
         del row["q_lamports"], row["base_reserve"]
-        with path.open("a") as fh:
-            fh.write(json.dumps(row) + "\n")
+        write_stream(e2.shadow_dir, [row])
         e2.ex.intent_tick()
         self.assertEqual(e2.refusals(), ["bad_pick:ref_state_missing"])
         self.assertEqual((e2.ledger("decision"), e2.ex.state.open), ([], {}))
@@ -943,73 +1020,167 @@ class FillStatusTests(Case):
 # --- the feed ---------------------------------------------------------------------------------------------------------------------------
 
 
-class FeedTests(Case):
-    def write(self, path: Path, rows: list) -> None:
-        with path.open("a") as fh:
-            for r in rows:
-                fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+class SealFirstTests(Case):
+    def test_the_seal_is_checked_before_anything_that_writes_a_per_mint_row(self):
+        e = self.env(oracle=lambda m: True)
+        Path(e.ex.limits.stop_file).write_text("")
+        e.set_clock(h5.SEAL_START_MS + 120_000)
+        e.ex._gap_until_ms = e.clock() + 60_000  # a feed gap and a STOP file would both write a per-mint row
+        row = e.row(minute=h5.SEAL_START_MS + MINUTE)
+        e.ex.handle_pick(c.parse_pick(row)[0])
+        self.assertEqual((e.ledger("skip"), e.ledger("pick_status"), e.ex.extra.picks), ([], [], {}))
+        self.assertEqual(e.ex.counters.seal_skips, 1)
 
-    def test_picks_outcomes_heartbeats_and_gaps_from_a_file(self):
-        e = self.env(live=False, feed_heartbeat_max_age_ms=150_000)
-        path = Path(e.conf["intents_file"])
-        path.write_text("")
-        e.ex.intent_tick()  # first look: starts at the end
+    def test_a_send_blocked_by_a_stop_is_not_a_monitored_fill_failure(self):
+        e = self.env()
+        with mock.patch.object(h5.H5Executor, "_send", lambda self, p, mint: self.state.pending.pop(mint, None)):
+            e.fire()
+        p = e.ex.extra.picks[f"{MINT}:{T0}"]
+        self.assertEqual((p["status"], p["reason"], p["monitored"]), ("unfilled", "send_blocked", False))
+
+
+class FeedTests(Case):
+    def test_picks_outcomes_heartbeats_and_gaps_from_the_three_streams(self):
+        e = self.env(live=False)
+        d = e.shadow_dir
+        touch_streams(d)
+        e.ex.intent_tick()  # first look: every stream starts at its end
         row = e.row()
-        self.write(path, [{"type": "hb"}, {"type": "trigger", "variant": "pv", "mint": MINT}, {"schema": "h5_intent_v1"}, "not json", row,
-                          {"type": "c1nf_outcome", "mint": MINT, "decision_T_ms": T0, "outcome_pct": 3.0}])
+        e.ex.feed_last_ms = None
+        write_stream(d, [{"type": "c1nf_heartbeat", "model_shas": [TEST_SHA]}, {"type": "trigger", "variant": "pv", "mint": MINT},
+                         {"type": "c1nf_start"}, row, outcome(MINT, T0, 3.0)])
         self.assertEqual(e.ex.intent_tick(), 1)
         self.assertIn(MINT, e.ex.state.open)  # dry run: the simulated position
         self.assertEqual(e.ex.extra.picks[f"{MINT}:{T0}"]["outcome_pct"], 3.0)
         self.assertEqual(e.refusals(), [])
-        self.write(path, [{"type": "gap", "kind": "reconnect", "flags_pools": False}])
-        e.ex.intent_tick()
-        self.assertEqual(e.ledger("feed_reconnect_redundant")[0]["kind_"], "reconnect")
-        self.assertEqual(e.ex._gap_until_ms, 0)
-        self.write(path, [{"type": "gap", "kind": "disconnect", "flags_pools": True}])
+        write_stream(d, [{"type": "c1nf_gap", "kind": "silence", "slot_from": 1, "slot_to": None}])
         e.ex.intent_tick()
         self.assertGreater(e.ex._gap_until_ms, e.clock())
+        self.assertEqual(e.ledger("feed_gap")[-1]["kind_"], "silence")
 
-    def test_bad_picks_are_ledgered_and_alert_past_five_an_hour(self):
+    def test_the_old_single_file_and_hb_gap_types_are_not_the_contract(self):
+        e = self.env(live=False, intents_file=str(self.tmp / "intents.jsonl"))
+        Path(e.conf["intents_file"]).write_text(json.dumps(e.row()) + "\n")
+        e.ex.feed_last_ms = None
+        self.assertEqual(e.ex.intent_tick(), 0)  # a plain file is not the shadow's directory: nothing is read
+        e2 = self.fresh("old", live=False)
+        touch_streams(e2.shadow_dir)
+        e2.ex.intent_tick()
+        e2.ex.feed_last_ms = None
+        write_stream(e2.shadow_dir, [{"type": "hb"}, {"type": "gap", "kind": "x", "flags_pools": True}])
+        e2.ex.intent_tick()
+        self.assertIsNone(e2.ex.feed_last_ms)
+        self.assertEqual(e2.ex._gap_until_ms, 0)
+
+    def test_a_gap_over_the_decision_minute_refuses_its_pick_and_heartbeat_staleness_refuses_all(self):
         e = self.env(live=False)
-        path = Path(e.conf["intents_file"])
-        path.write_text("")
+        touch_streams(e.shadow_dir)
+        e.ex.intent_tick()
+        sd = e.rpc.slot_at(T0 + MINUTE + 200)
+        write_stream(e.shadow_dir, [{"type": "c1nf_gap", "kind": "follower_gap", "slot_from": sd - 200, "slot_to": sd - 150}])
+        e.ex.intent_tick()
+        e.ex._gap_until_ms = 0  # past the time hold: the slot range alone refuses
+        e.ex.handle_pick(e.pick(minute=T0 + MINUTE))
+        self.assertEqual(e.refusals(), ["feed_gap"])
+        e.ex.handle_pick(e.pick(minute=T0 + 3 * MINUTE))  # a later minute: the gap is outside its 60 s lookback
+        self.assertEqual(e.refusals(), ["feed_gap"])
+        self.assertIn(MINT, e.ex.state.open)
+        e2 = self.fresh("stale", live=False)
+        row = e2.row()
+        e2.ex.feed_last_ms = e2.clock() - 150_001
+        e2.ex.handle_pick(c.parse_pick(row)[0])
+        self.assertEqual(e2.refusals(), ["feed_stale"])
+
+    def test_the_heartbeat_guard_is_a_code_constant_config_only_lowers(self):
+        for cfg, want in (({}, 150_000), ({"feed_heartbeat_max_age_ms": 0}, 150_000), ({"feed_heartbeat_max_age_ms": 10**9}, 150_000),
+                          ({"feed_heartbeat_max_age_ms": 60_000}, 60_000)):
+            self.assertEqual(c.heartbeat_max_age_ms(cfg), want, cfg)
+            self.assertEqual(self.fresh(f"hb{len(cfg)}{want}{cfg.get('feed_heartbeat_max_age_ms')}", live=False, **cfg).ex.heartbeat_max_age_ms, want)
+        for bad in (-1, True, 1.5, "150000"):
+            with self.assertRaises(ValueError):
+                c.c1nf_limits({"feed_heartbeat_max_age_ms": bad})
+
+    def test_bad_picks_are_ledgered_and_alert_past_five_an_hour_and_count_only_rows_carry_no_mint(self):
+        e = self.env(live=False)
+        touch_streams(e.shadow_dir)
         e.ex.intent_tick()
         bad = e.row()
         bad["h_top1"] = 0.9
-        self.write(path, [bad] * 7)
+        write_stream(e.shadow_dir, [bad] * 7)
         e.ex.intent_tick()
         self.assertEqual([r["reason"] for r in e.ledger("skip")], ["bad_pick:h_top1_over_cap"] * 7)
         self.assertEqual(len([a for a in e.ledger("alert") if a["alert"] != "config_clamps_tier"]), 1)
         self.assertEqual(e.ex.extra.picks, {})
+        n = len(e.ledger())
+        with mock.patch.object(c, "PICK_WINDOW_START_MS", T0 + MINUTE):
+            write_stream(e.shadow_dir, [e.row(), {**e.row(minute=T0 + MINUTE), "suppressed": True}, outcome(MINT, T0, 1.0, leg="1.9"),
+                                        {**outcome(MINT, T0, 1.0), "mint": "x"}])
+            e.ex.intent_tick()
+        self.assertNotIn(MINT, json.dumps(e.ledger()[n:]))
+        self.assertEqual(e.ex.extra.counts, {"pre_window": 1, "bad_pick:suppressed": 1, "bad_outcome:mint": 1})
+        self.assertEqual(e.ex.extra.outcomes_unpriced, 1)
 
     def test_the_newest_hourly_file_is_followed_and_the_previous_drained_on_a_roll(self):
-        d = self.tmp / "shadow"
-        d.mkdir()
-        e = self.env(live=False, intents_file=str(d))
-        a, b = d / "c1nf-shadow-2026-10-10T00.jsonl", d / "c1nf-shadow-2026-10-10T01.jsonl"
-        a.write_text("")
+        e = self.env(live=False)
+        d = e.shadow_dir
+        touch_streams(d, "2026-10-06T14")
         e.ex.intent_tick()
         row = e.row()
-        self.write(a, [{"type": "hb"}, row])
-        self.write(b, [{"type": "hb"}])
+        write_stream(d, [row, outcome(MINT, T0 - MINUTE, 1.0)], "2026-10-06T14")
+        write_stream(d, [{"type": "c1nf_heartbeat"}], HOUR)
         e.clock.t += 1_100
-        e.ex._glob_path = None  # the glob is cached for a second: the next look finds the new hour and drains the old one first
+        e.ex._globs.clear()  # the glob is cached for a second: the next look finds the new hour and drains the old one first
         self.assertEqual(e.ex.intent_tick(), 1)  # the pick written to the old hour just before the roll is not lost
         self.assertIn(MINT, e.ex.state.open)
+        self.assertEqual(e.ex.extra.outcomes_unmatched, 1)  # the old hour's outcome was read too
 
-    def test_the_fixture_runs_through_the_tail(self):
+    def test_the_outcomes_offset_survives_a_restart(self):
         e = self.env(live=False)
-        path = Path(e.conf["intents_file"])
-        path.write_text("")
+        touch_streams(e.shadow_dir)
         e.ex.intent_tick()
-        e.set_clock(T0 + 1_500)
-        e.rpc.slot = 100_000 + 7
-        rows = [json.loads(x) for x in FIXTURE.read_text().splitlines()]
-        rows[0]["SD_slot"] = e.rpc.slot_at(T0 + 200)
-        self.write(path, rows)
-        self.assertEqual(e.ex.intent_tick(), 1)
-        self.assertEqual(e.ex.extra.picks[f"{MINT}:{T0}"]["outcome_pct"], 6.25)
-        self.assertGreater(e.ex._gap_until_ms, 0)
+        write_stream(e.shadow_dir, [e.row()])
+        e.ex.intent_tick()
+        write_stream(e.shadow_dir, [outcome(MINT, T0, 4.0)])  # written while the executor is down
+        e2 = Env(self.tmp, self.state_dir, live=False, intents_file=str(e.shadow_dir))
+        e2.ex.intent_tick()
+        self.assertEqual(e2.ex.extra.picks[f"{MINT}:{T0}"]["outcome_pct"], 4.0)
+
+    def test_503s_own_records_through_the_tail(self):
+        """The cross-PR test: the three streams #503's JsonlSink wrote (fixtures/c1nf_shadow_v1, its code at 8f12a9a): the pick is taken, its
+        outcome reaches the monitor, the c1nf_gap holds the next minute's pick, the pre-window line is a count."""
+        t = 1791633600000  # the fixture's decision minute, 2026-10-10T12:00Z
+        with mock.patch.object(c, "PICK_WINDOW_START_MS", 1791590400000):
+            e = self.env(live=False, t0=t)
+            d = e.shadow_dir
+            files = {f.name: f.read_text().splitlines() for f in sorted(FIXTURE_DIR.glob("c1nf-*.jsonl"))}
+            for name in files:
+                (d / name).touch()
+            e.ex.intent_tick()
+            e.ex.feed_last_ms = None
+            e.set_clock(t + 1_500)
+            e.ex.feed_last_ms = None
+
+            def put(name, pred):
+                with (d / name).open("a") as fh:
+                    fh.write("".join(x + "\n" for x in files[name] if pred(json.loads(x))))
+
+            put("c1nf-events-2026-10-10T12.jsonl", lambda r: r["type"] == "c1nf_heartbeat")
+            put("c1nf-picks-2026-10-10T12.jsonl", lambda r: r["decision_T_ms"] == t)
+            self.assertEqual(e.ex.intent_tick(), 1)
+            self.assertIn(MINT, e.ex.state.open)
+            self.assertEqual(e.refusals(), [])
+            put("c1nf-outcomes-2026-10-10T12.jsonl", lambda r: True)
+            e.ex.intent_tick()
+            self.assertGreater(e.ex.extra.picks[f"{MINT}:{t}"]["outcome_pct"], 0)
+            self.assertEqual(e.ledger("fill_selection_check")[-1]["n"], 1)
+            e.ex.state.open.clear()
+            e.ex.extra.last_exit_ms.clear()
+            e.set_clock(t + MINUTE + 1_500)
+            put("c1nf-events-2026-10-10T12.jsonl", lambda r: r["type"] == "c1nf_gap")
+            put("c1nf-picks-2026-10-10T12.jsonl", lambda r: r["decision_T_ms"] != t)
+            e.ex.intent_tick()
+            self.assertEqual(e.refusals(), ["feed_gap"])
+            self.assertEqual(e.ex.extra.counts, {"pre_window": 1})
 
 
 if __name__ == "__main__":

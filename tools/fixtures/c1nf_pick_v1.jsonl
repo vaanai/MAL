@@ -1,4 +1,0 @@
-{"type":"c1nf_pick","mint":"FZrt8uvQsQMR2vtKCLRFwU7CCtHJBxq9eTALNTJpump","pool":"qyUJB5V7pRdDUQ7bhGSgUQeXjyLJFDjXdxYDLiusz5R","decision_T_ms":1791300000000,"SD_slot":300000000,"pred":0.0412,"h_top1":0.0365,"stage1":true,"feature_hash":"9f2c41ab7d3e5c10","q_lamports":37584505288,"base_reserve":400000000000000,"model_hash":"3b7d0e91a2c4f658","t_emit_ms":1791300000650}
-{"type":"c1nf_outcome","mint":"FZrt8uvQsQMR2vtKCLRFwU7CCtHJBxq9eTALNTJpump","decision_T_ms":1791300000000,"outcome_pct":6.25}
-{"type":"hb","t_ms":1791300000000}
-{"type":"gap","kind":"reconnect","flags_pools":true}
