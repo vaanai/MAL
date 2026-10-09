@@ -209,6 +209,7 @@ class _ReconnectStats:
 
     def observe(self, note: RawNotice) -> None:
         self.notes += 1
+        self.link.note_notice(note.t_recv_ms)
         if note.failed:
             self.failed_notes += 1
         if self.last_slot is not None and note.slot > self.last_slot + 2:
