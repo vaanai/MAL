@@ -450,7 +450,7 @@ class RawEventP7(unittest.TestCase):
         for name in ("buy_exact_quote_in_496.json", "buy_exact_quote_in_v2_499_kept.json", "boost_buy_and_burn.json"):
             rec, tape = self._real(name)
             self.assertTrue(tape["ix_name"].startswith("buy_exact_quote_in"), name)
-            self.assertEqual(self.m.p7_raw_check(tape, rec, self.V0), (None, "excluded", None), name)
+            self.assertEqual(self.m.p7_raw_check(tape, rec, self.V0), (None, "excluded", "buy_exact_quote_in"), name)
         rec, tape = self._real("buy_v1_481_wsol.json")
         self.assertEqual(self.m.p7_raw_line(tape), "buy")
 
@@ -489,15 +489,66 @@ class RawEventP7(unittest.TestCase):
                 moved[field] = actual + int(round(actual * delta_bp / 10_000))
                 self.assertEqual(self._check(moved)[1], want, (field, delta_bp))
 
-    def test_exact_quote_in_buys_are_not_in_any_denominator_and_a_buy_without_ix_name_is(self):
+    def _dust(self, line, delta):
+        """A dust print whose raw field is `delta` units away from the integer law. Returns the check outcome."""
+        v_t = self.V0 - self.PENDING
+        total = self.VAULT + v_t
+        raw = self._sell() if line == "sell" else self._buy()
+        if line == "sell":
+            raw["token_raw"] = 1_000_000                                   # base_in: a dust sell
+            model = total * raw["token_raw"] // (self.BASE + raw["token_raw"])
+            raw["pool_quote_amount"] = model + delta
+        else:
+            raw["pool_quote_amount"] = 1                                   # qin: a dust buy
+            model = self.BASE * 1 // (total + 1)
+            raw["token_raw"] = model + delta
+        field = "pool_quote_amount" if line == "sell" else "token_raw"
+        self.assertEqual(self._check(dict(raw, **{field: model}))[1], "hit")   # the law itself is exact on the dust print
+        return raw, model, self._check(raw)[1]
+
+    def test_two_units_are_a_hit_when_one_bp_is_less_than_a_unit(self):
+        self.assertEqual(self.m.P7_CP_TOLERANCE_UNITS, 2)
+        for line, field in (("sell", "pool_quote_amount"), ("buy", "token_raw")):
+            for delta, want in ((0, "hit"), (1, "hit"), (-1, "hit"), (2, "hit"), (-2, "hit"), (3, "miss"), (-3, "miss")):
+                raw, model, got = self._dust(line, delta)
+                self.assertEqual(got, want, (line, delta))
+                if abs(delta) == 2:
+                    # the unit alternative is what rescues it: 1 bp of the dust amount is under one unit, so within_bp alone fails
+                    self.assertFalse(self.m.within_bp(raw[field], model, self.m.P7_CP_TOLERANCE_BP), (line, delta))
+                    self.assertTrue(self.m.within_tolerance(raw[field], model))
+        # the alternative does not widen the bar on a normal print: 2 bp off a large amount is still a miss
+        self.assertEqual(self._check(dict(self._sell(), pool_quote_amount=self._sell()["pool_quote_amount"] * 10_002 // 10_000))[1], "miss")
+        self.assertTrue(self.m.within_tolerance(0, 2))
+        self.assertFalse(self.m.within_tolerance(0, 3))
+
+    def test_a_pending_blind_mapping_still_misses_on_a_non_dust_print_with_the_unit_alternative(self):
+        blind = lambda vault, v_pre, v0: vault  # noqa: E731
+        for raw, line in ((self._sell(), "sell"), (self._buy(), "buy")):
+            self.assertEqual(self._check(raw, mapping=blind), (line, "miss", None))
+
+    def test_not_comparable_rows_leave_every_denominator(self):
         for name in ("buy_exact_quote_in", "buy_exact_quote_in_v2"):
-            self.assertEqual(self._check(self._buy(ix_name=name)), (None, "excluded", None))
+            self.assertEqual(self._check(self._buy(ix_name=name)), (None, "excluded", "buy_exact_quote_in"))
+        # a buy with no ix_name (missing, None or empty) is not comparable
         no_name = self._buy()
         del no_name["ix_name"]
-        self.assertEqual(self.m.p7_raw_line(self._tape(no_name)), "buy")
-        self.assertEqual(self._check(no_name), ("buy", "hit", None))
-        self.assertEqual(self.m.p7_raw_line({"side": "transfer"}), None)
-        self.assertEqual(self._check(self._buy(ix_name="buy_v2"))[:2], ("buy", "hit"))
+        self.assertEqual(self._check(no_name), (None, "excluded", "no_ix_name"))
+        self.assertEqual(self._check(self._buy(ix_name=None)), (None, "excluded", "no_ix_name"))
+        self.assertEqual(self._check(self._buy(ix_name="")), (None, "excluded", "no_ix_name"))
+        self.assertEqual(self.m.p7_raw_line(self._tape(no_name)), None)
+        # every row with zero_sol, either side, even a buy_exact_quote_in or a nameless one (zero_sol is tested first)
+        for raw in (self._sell(), self._buy(), self._buy(ix_name="buy_exact_quote_in"), no_name):
+            self.assertEqual(self.m.p7_raw_check(dict(self._tape(raw), zero_sol=True), raw, self.V0), (None, "excluded", "zero_sol"))
+        self.assertEqual(self.m.p7_raw_check({"side": "transfer"}, None, self.V0), (None, "excluded", "not_buy_or_sell"))
+        self.assertEqual(self.m.p7_raw_exclusion({"side": "sell"}), None)                 # a sell has no ix_name and needs none
+        # every other ix_name is comparable, including a name this file has not seen
+        for name in ("buy", "buy_v2", "something_new"):
+            self.assertEqual(self._check(self._buy(ix_name=name))[:2], ("buy", "hit"), name)
+        self.assertEqual(self.m.P7_RAW_EXCLUSIONS, ("zero_sol", "not_buy_or_sell", "buy_exact_quote_in", "no_ix_name"))
+
+    def test_a_raw_event_with_zero_sol_is_not_the_comparable_tape_print(self):
+        raw = self._sell()
+        self.assertEqual(self.m.p7_raw_check(self._tape(raw), dict(raw, zero_sol=True), self.V0), ("sell", "unresolved", "identity_mismatch"))
 
     def test_each_unresolved_reason_is_a_miss_on_its_line(self):
         raw = self._sell()
@@ -520,7 +571,7 @@ class RawEventP7(unittest.TestCase):
         self.assertEqual((t["sell_n"], t["sell_ok"], t["buy_n"]), (len(cases), 0, 0))
         self.assertEqual(t["unresolved"], {r: 1 for r in self.m.P7_RAW_REASONS})
 
-    def _sample(self, n_sell, n_buy, bad_sell=0, bad_buy=0, unresolved_sell=0, exact=0):
+    def _sample(self, n_sell, n_buy, bad_sell=0, bad_buy=0, unresolved_sell=0, exact=0, zero_sol=0, no_name=0):
         results = []
         for i in range(n_sell):
             raw = self._sell(i)
@@ -536,6 +587,8 @@ class RawEventP7(unittest.TestCase):
                 raw["token_raw"] = raw["token_raw"] * 101 // 100
             results.append(self._check(raw))
         results += [self._check(self._buy(i, ix_name="buy_exact_quote_in_v2")) for i in range(exact)]
+        results += [self.m.p7_raw_check(dict(self._tape(self._sell(i)), zero_sol=True), None, self.V0, fetch_failed=True) for i in range(zero_sol)]
+        results += [self._check({k: v for k, v in self._buy(i).items() if k != "ix_name"}) for i in range(no_name)]
         return self.m.p7_raw_tally(results)
 
     def test_decision_rule_99_percent_per_side(self):
@@ -560,13 +613,22 @@ class RawEventP7(unittest.TestCase):
         # a miss and an unresolved print add up against the same 1%
         self.assertFalse(self.m.p7_raw_pass(self._sample(100, 100, bad_sell=1, unresolved_sell=1)))
 
-    def test_excluded_buys_change_no_denominator_and_an_empty_side_fails(self):
-        a, b = self._sample(100, 100), self._sample(100, 100, exact=40)
-        self.assertEqual({k: v for k, v in b.items() if k != "excluded"}, {k: v for k, v in a.items() if k != "excluded"})
-        self.assertEqual(b["excluded"], 40)
-        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 0, exact=40)))      # only buy_exact_quote_in buys: the buy side is empty
+    def test_not_comparable_rows_change_no_denominator_and_a_side_with_none_fails(self):
+        a = self._sample(100, 100)
+        b = self._sample(100, 100, exact=40, zero_sol=7, no_name=5)
+        skip = ("excluded", "excluded_by")
+        self.assertEqual({k: v for k, v in b.items() if k not in skip}, {k: v for k, v in a.items() if k not in skip})
+        self.assertEqual(b["excluded"], 52)
+        self.assertEqual(b["excluded_by"], {"zero_sol": 7, "not_buy_or_sell": 0, "buy_exact_quote_in": 40, "no_ix_name": 5})
+        self.assertTrue(self.m.p7_raw_pass(b))
+        # a side with no comparable event fails that side, whatever the other side shows
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 0, exact=40)))                # only buy_exact_quote_in buys
+        self.assertFalse(self.m.p7_raw_pass(self._sample(100, 0, no_name=40)))              # only nameless buys
+        self.assertFalse(self.m.p7_raw_pass(self._sample(0, 100, zero_sol=40)))             # only zero_sol sells
         self.assertFalse(self.m.p7_raw_pass(self._sample(0, 100)))
         self.assertFalse(self.m.p7_raw_pass(self._sample(0, 0)))
+        # a not-comparable row is excluded before fetch_failed is looked at, so it never counts as unresolved
+        self.assertEqual(self._sample(100, 100, zero_sol=3)["unresolved"], {r: 0 for r in self.m.P7_RAW_REASONS})
 
 
 class ExpFile(unittest.TestCase):
@@ -646,6 +708,14 @@ class ExpFile(unittest.TestCase):
         self.assertEqual((m.P7_CP_SELL_MIN, m.P7_CP_BUY_MIN, m.P7_CP_TOLERANCE_BP), (0.99, 0.99, 1.0))
         self.assertEqual(body.count("at least **99%**"), 2)
         self.assertEqual(body.count("within **1 bp**"), 2)
+        # EXP-024 alignment: 2 units as an alternative, and the not-comparable causes, named as the helpers name them
+        self.assertEqual(m.P7_CP_TOLERANCE_UNITS, 2)
+        self.assertIn("within **1 bp** or **2 lamports**", body)
+        self.assertIn("within **1 bp** or **2 base units**", body)
+        self.assertIn("`P7_CP_TOLERANCE_UNITS` = 2", body)
+        for cause in m.P7_RAW_EXCLUSIONS:
+            self.assertIn(f"`{cause}`", body, cause)
+        self.assertIn("**A side with no comparable event fails that side.**", body)
         self.assertIn("R14 fires", body)
         self.assertIn("`pool_quote_amount`", body)
 

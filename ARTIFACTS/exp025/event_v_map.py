@@ -32,6 +32,9 @@ P7_TOLERANCE_BP = 1.0
 P7_CP_SELL_MIN = 0.99   # sells whose gross quote out matches (q_mapped + V0) * base_in // (base_reserve + base_in) within P7_CP_TOLERANCE_BP
 P7_CP_BUY_MIN = 0.99    # `buy` prints (not buy_exact_quote_in) whose token_raw matches base_reserve * qin // (q_mapped + V0 + qin)
 P7_CP_TOLERANCE_BP = 1.0
+# EXP-025 Amendment 1, aligned with EXP-024's price-level rule (quant-proof E2/E3 on #505): a print also matches if it is within this many
+# units of the integer law (base units for a buy's token_raw, lamports for a sell's gross quote out), so dust-trade rounding is not a miss.
+P7_CP_TOLERANCE_UNITS = 2
 
 
 def map_quote_reserve(vault_pre: int, v_pre: int, v0: int) -> int:
@@ -70,8 +73,15 @@ def within_bp(actual: int, model: int, bp: float) -> bool:
     return abs(actual - model) * 10_000 <= bp * abs(actual)
 
 
+def within_tolerance(actual: int, model: int, bp: float = P7_CP_TOLERANCE_BP, units: int = P7_CP_TOLERANCE_UNITS) -> bool:
+    """A print matches the integer law if it is within `bp` basis points of actual (within_bp) OR within `units` units (integers).
+
+    The unit alternative is for dust trades, where 1 bp is less than one unit and a rounding step would otherwise be a miss."""
+    return abs(int(actual) - int(model)) <= int(units) or within_bp(actual, model, bp)
+
+
 def p7_cp_pass(sell_ok: int, sell_n: int, buy_ok: int, buy_n: int) -> bool:
-    """Constant-product line: >= 99% of sampled sells and >= 99% of sampled buys within 1 bp. An empty side fails."""
+    """Constant-product line: >= 99% of the comparable sells and >= 99% of the comparable buys match. A side with none fails."""
     if sell_n <= 0 or buy_n <= 0:
         return False
     return sell_ok / sell_n >= P7_CP_SELL_MIN and buy_ok / buy_n >= P7_CP_BUY_MIN
@@ -95,27 +105,41 @@ def p7_all_pass(cp: tuple, fee: tuple) -> bool:
 P7_RAW_TX_ATTEMPTS = 3                              # getTransaction attempts per transaction (a transaction holding several sampled prints is fetched once)
 P7_EXACT_QUOTE_IN_PREFIX = "buy_exact_quote_in"     # ix_name of `buy_exact_quote_in` and `buy_exact_quote_in_v2`: their quote_amount_in is net of fees
 # fields that must be equal on the sampled tape row and on the raw event for the raw event to count as the same print
-P7_RAW_IDENTITY_FIELDS = ("pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves", "ix_name")
+# (zero_sol is written only when true; a comparable tape row has none, so a raw event that has one is a different print)
+P7_RAW_IDENTITY_FIELDS = ("pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves", "ix_name", "zero_sol")
+# why a sampled row is NOT COMPARABLE (it leaves both denominators), tested in this order
+P7_RAW_EXCLUSIONS = ("zero_sol", "not_buy_or_sell", "buy_exact_quote_in", "no_ix_name")
 # fields the law reads from the raw event; each must be an int
 P7_RAW_LAW_FIELDS = ("pool_quote_amount", "quote_reserve", "base_reserve", "token_raw", "virtual_quote_reserves")
 # the closed list of reasons a sampled print can be unresolved; each counts as a MISS on its line (the denominator never shrinks)
 P7_RAW_REASONS = ("fetch_failed", "no_record", "no_v0", "slot_mismatch", "identity_mismatch", "field_missing")
 
 
-def p7_raw_line(tape_row: dict) -> str | None:
-    """Which line-1 population a SAMPLED tape row belongs to, fixed by the sample before any fetch: 'sell', 'buy', or None (excluded).
+def p7_raw_exclusion(tape_row: dict) -> str | None:
+    """Why a SAMPLED tape row is not comparable (one of P7_RAW_EXCLUSIONS), or None if it is. Decided from the tape row alone, before any fetch.
 
-    A sell is a sell. A buy whose tape `ix_name` begins with `buy_exact_quote_in` is excluded; every other buy, including one with no
-    `ix_name`, is in the buy population. A row that is neither a buy nor a sell is in no population."""
+    In order: any row with `zero_sol`; a row that is neither a buy nor a sell; a buy whose `ix_name` begins with `buy_exact_quote_in`
+    (v1 and v2); a buy with no `ix_name` (a missing or empty name cannot be told from the exact-quote-in family)."""
+    if tape_row.get("zero_sol"):
+        return "zero_sol"
     side = tape_row.get("side")
     if side == "sell":
-        return "sell"
-    if side == "buy":
-        name = tape_row.get("ix_name")
-        if isinstance(name, str) and name.startswith(P7_EXACT_QUOTE_IN_PREFIX):
-            return None
-        return "buy"
+        return None
+    if side != "buy":
+        return "not_buy_or_sell"
+    name = tape_row.get("ix_name")
+    if isinstance(name, str) and name.startswith(P7_EXACT_QUOTE_IN_PREFIX):
+        return "buy_exact_quote_in"
+    if not isinstance(name, str) or not name:
+        return "no_ix_name"
     return None
+
+
+def p7_raw_line(tape_row: dict) -> str | None:
+    """Which line-1 population a SAMPLED tape row belongs to, fixed by the sample before any fetch: 'sell', 'buy', or None (not comparable)."""
+    if p7_raw_exclusion(tape_row) is not None:
+        return None
+    return tape_row["side"]
 
 
 def raw_event_mapped(raw: dict, v0: int) -> int:
@@ -124,7 +148,8 @@ def raw_event_mapped(raw: dict, v0: int) -> int:
 
 
 def p7_raw_hit(line: str, raw: dict, v0: int, mapping=map_quote_reserve) -> bool:
-    """One print against the constant-product law within P7_CP_TOLERANCE_BP, every field taken from the RAW event.
+    """One print against the constant-product law, every field taken from the RAW event. A match is within_tolerance: within
+    P7_CP_TOLERANCE_BP of actual OR within P7_CP_TOLERANCE_UNITS units (base units for a buy, lamports for a sell).
 
     sell: raw pool_quote_amount (the gross quote out) vs (q_mapped + V0) * token_raw // (base_reserve + token_raw); token_raw is base_in.
     buy : raw token_raw vs base_reserve * qin // (q_mapped + V0 + qin); qin is raw pool_quote_amount.
@@ -134,24 +159,26 @@ def p7_raw_hit(line: str, raw: dict, v0: int, mapping=map_quote_reserve) -> bool
     if line == "sell":
         if base + token <= 0:
             return False
-        return within_bp(gross, cp_sell_gross_quote_out(q, v0, base, token), P7_CP_TOLERANCE_BP)
+        return within_tolerance(gross, cp_sell_gross_quote_out(q, v0, base, token))
     if line == "buy":
         if q + int(v0) + gross <= 0:
             return False
-        return within_bp(token, cp_buy_token_out(q, v0, base, gross), P7_CP_TOLERANCE_BP)
+        return within_tolerance(token, cp_buy_token_out(q, v0, base, gross))
     raise ValueError(f"line must be 'sell' or 'buy', not {line!r}")
 
 
 def p7_raw_check(tape_row: dict, raw: dict | None, v0: int | None, *, fetch_failed: bool = False, mapping=map_quote_reserve) -> tuple:
     """Outcome of one SAMPLED print: (line, outcome, reason).
 
-    line is p7_raw_line(tape_row); outcome is 'excluded', 'hit', 'miss' or 'unresolved'; reason is None unless unresolved, then one of
-    P7_RAW_REASONS. raw is the record of records_from_logs(event_v=True) at the sampled event_index (None if there is none); v0 is
-    tokens.v0_lamports of the print's pool (None if absent). The tests run in this fixed order: excluded, fetch_failed, no raw record, no V0,
-    slot, (signature, event_index), identity fields, law fields."""
-    line = p7_raw_line(tape_row)
-    if line is None:
-        return None, "excluded", None
+    line is p7_raw_line(tape_row); outcome is 'excluded', 'hit', 'miss' or 'unresolved'; reason is None for a hit or a miss, one of
+    P7_RAW_EXCLUSIONS for an excluded (not comparable) print, and one of P7_RAW_REASONS for an unresolved one. raw is the record of
+    records_from_logs(event_v=True) at the sampled event_index (None if there is none); v0 is tokens.v0_lamports of the print's pool (None if
+    absent). The tests run in this fixed order: excluded, fetch_failed, no raw record, no V0, slot, (signature, event_index), identity fields,
+    law fields."""
+    cause = p7_raw_exclusion(tape_row)
+    if cause is not None:
+        return None, "excluded", cause
+    line = tape_row["side"]
     if fetch_failed:
         return line, "unresolved", "fetch_failed"
     if raw is None:
@@ -170,13 +197,16 @@ def p7_raw_check(tape_row: dict, raw: dict | None, v0: int | None, *, fetch_fail
 
 
 def p7_raw_tally(results) -> dict:
-    """results: one (line, outcome, reason) per SAMPLED print. The denominators are the line populations of the sample, fixed before any fetch.
+    """results: one (line, outcome, reason) per SAMPLED print. The denominators are the comparable populations of the sample, fixed before any fetch.
 
-    An unresolved print is a miss on its line (it stays in the denominator) and is also counted per reason."""
-    t = {"sell_n": 0, "sell_ok": 0, "buy_n": 0, "buy_ok": 0, "excluded": 0, "unresolved": {r: 0 for r in P7_RAW_REASONS}}
+    A not-comparable print is counted (in total and per cause) and is in no denominator. An unresolved print is a miss on its line (it stays
+    in the denominator) and is also counted per reason."""
+    t = {"sell_n": 0, "sell_ok": 0, "buy_n": 0, "buy_ok": 0, "excluded": 0, "excluded_by": {c: 0 for c in P7_RAW_EXCLUSIONS},
+         "unresolved": {r: 0 for r in P7_RAW_REASONS}}
     for line, outcome, reason in results:
         if line is None:
             t["excluded"] += 1
+            t["excluded_by"][reason] += 1
             continue
         t[line + "_n"] += 1
         if outcome == "hit":
@@ -187,5 +217,6 @@ def p7_raw_tally(results) -> dict:
 
 
 def p7_raw_pass(tally: dict) -> bool:
-    """P7 line 1 on raw events: >= 99% of the sampled sells and >= 99% of the sampled eligible buys (p7_cp_pass). An empty side fails."""
+    """P7 line 1 on raw events: >= 99% of the comparable sampled sells and >= 99% of the comparable sampled buys (p7_cp_pass).
+    A side with no comparable event fails."""
     return p7_cp_pass(tally["sell_ok"], tally["sell_n"], tally["buy_ok"], tally["buy_n"])
