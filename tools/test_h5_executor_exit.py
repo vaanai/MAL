@@ -237,6 +237,63 @@ class BuyRebroadcastTests(Case):
         self.assertEqual((d["priority"], sell_args(d)[1]), (150_000, quote_out(sell_args(d)[0]) * 6500 // 10_000))
 
 
+class MoneyLimitTests(Case):
+    def test_the_loss_stops_use_worst_case_exposure(self):
+        stake = 20_000_000
+        day = h.day_key(T0)
+        # total 0.12 SOL: refused when realized - open spend - in-flight buy spend - this stake <= -0.12
+        for opens, pend, realized, refused in ((0, 0, -99_999_999, False), (0, 0, -100_000_000, True),
+                                               (1, 0, -79_999_999, False), (1, 0, -80_000_000, True),
+                                               (1, 1, -59_999_999, False), (1, 1, -60_000_000, True)):
+            sub = self.tmp / f"t{opens}{pend}{realized}"
+            sub.mkdir()
+            e = Env(sub)
+            for i in range(opens):
+                e.ex.state.open[f"o{i}"] = {"spend": stake}
+            for i in range(pend):
+                e.ex.state.pending[f"p{i}"] = {"kind": "buy", "spend": stake}
+            e.ex.state.realized_lamports = realized
+            self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop" if refused else None, (opens, pend, realized))
+        # daily 0.08 SOL
+        for opens, realized, refused in ((0, -59_999_999, False), (0, -60_000_000, True), (1, -39_999_999, False), (1, -40_000_000, True)):
+            sub = self.tmp / f"d{opens}{realized}"
+            sub.mkdir()
+            e = Env(sub)
+            for i in range(opens):
+                e.ex.state.open[f"o{i}"] = {"spend": stake}
+            e.ex.counters.day(day)["realized"] = realized
+            self.assertEqual(e.ex._budget_stop(e.clock()), "daily_loss_stop" if refused else None, (opens, realized))
+
+    def test_a_failed_sells_extra_cost_counts_as_at_risk(self):
+        e = self.env()
+        e.ex.state.open["o"] = {"spend": 20_000_000, "extra_cost": 60_000}
+        e.ex.state.realized_lamports = -79_940_000  # 79.94M + 20.06M open + 20M stake = 120M
+        self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
+
+    def test_config_clamps(self):
+        l = h.H5Limits.from_config({"stake_lamports": 50_000_000, "max_open": 3, "max_attempts": 300, "entry_tolerance_bps": 3000,
+                                    "buy_priority_lamports": 150_000, "sell_priority_lamports": 150_000, "wallet_floor_lamports": 1})
+        d = h.H5_DEFAULT
+        self.assertEqual((l.stake_lamports, l.max_open, l.max_attempts, l.entry_tolerance_bps, l.buy_priority_lamports, l.sell_priority_lamports),
+                         (d["stake_lamports"], d["max_open"], d["max_attempts"], d["entry_tolerance_bps"], d["buy_priority_lamports"], d["sell_priority_lamports"]))
+        self.assertEqual(l.wallet_floor_lamports, 50_000_000)  # a floor config can only raise
+        self.assertEqual(h.H5_MAX, h.H5_DEFAULT)
+
+    def test_sell_retries_are_clamped_and_the_variant_is_fixed(self):
+        for given, want in ((99, 10), (0, 1), (-3, 1), (5, 5)):
+            sub = self.tmp / f"r{given}"
+            sub.mkdir()
+            e = Env(sub, sell_retries=given)
+            self.assertEqual(e.ex.sell_retries, want, given)
+        with self.assertRaises(ValueError):
+            h.H5Limits.from_config({"trigger_variant": "fv"})
+        h.H5Limits.from_config({"trigger_variant": "pv"})
+        self.assertEqual(self.env().ex.trigger_variant, "pv")
+
+    def test_the_boost_median_needs_30_pools(self):
+        self.assertEqual(h.BOOST_MEDIAN_MIN_POOLS, 30)
+
+
 class SlotRateTests(Case):
     def test_measured_sps_needs_60_seconds_between_points_and_a_fresh_newest_point(self):
         c = h.SlotClock()

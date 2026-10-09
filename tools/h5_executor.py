@@ -66,6 +66,7 @@ from tools import pumpswap_simulate as sim
 from tools import pumpswap_tx as tx
 
 RULE_ID = "H5-BOOSTFLOOR-v1"
+TRIGGER_VARIANT = "pv"  # quote + the print's own V; the frozen rule's literal fixed V ("fv") is never traded
 SCHEMA_INTENT, SCHEMA_FEED, SCHEMA_BOOST, SCHEMA_WATCH = "h5_intent_v1", "h5_feed_v1", "h5_boost_v1", "h5_watch_v1"
 SCHEMA_LEDGER = "h5_ledger_v1"
 DRYRUN, LIVE = "dryrun", "live"
@@ -81,7 +82,8 @@ EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured o
 # --- live-halt rules (coordinator brief 2026-10-08, PLAN.md section 5). Fixed in code. --------------------------------
 # BOOST timing is judged on a UTC-day MEDIAN of the last-slice time over tracked pools, not on single pools (DEC-024 5.1, LIVE-PLAN 3, ROBUST
 # S2): on the shadow feed 27% of single pools finish under 335 s while the median is 340 s, so a per-pool halt fires every day.
-BOOST_MEDIAN_MIN_POOLS = 10  # a day's median counts once this many tracked pools have closed that day
+BOOST_MEDIAN_MIN_POOLS = 30  # a day's median counts once this many tracked pools have closed that day. 10 false-latched ~11.6% of days on the
+# shadow feed's own distribution, 20: 3.6%, 30: 0.9%, 50: 0.2% (simulation, coordinator decision 2026-10-09).
 BOOST_MEDIAN_HALT_S = 335.0  # day median below this -> halt (boost_median_lt_335)
 BOOST_MEDIAN_TWICE_S = 337.0  # day median below this on two UTC days, consecutive or not -> halt (boost_median_lt_337_twice)
 BOOST_ABSURD_S = 300.0  # a single pool this early is a structure change, not noise ...
@@ -116,12 +118,8 @@ H5_DEFAULT = {
     "total_loss_lamports": 120_000_000, "max_attempts": 120, "max_days": 10, "buy_priority_lamports": 55_000,
     "sell_priority_lamports": 55_000, "escalated_priority_lamports": 150_000, "entry_tolerance_bps": 1500,
 }
-H5_MAX = {
-    "stake_lamports": 50_000_000, "max_open": 3, "max_trades_per_day": 30, "daily_loss_lamports": 80_000_000,
-    "total_loss_lamports": 120_000_000, "max_attempts": 300, "max_days": 10, "buy_priority_lamports": 150_000,
-    "sell_priority_lamports": 150_000, "escalated_priority_lamports": 150_000, "entry_tolerance_bps": 3000,
-}
-MIN_WALLET_FLOOR_LAMPORTS = 20_000_000  # config may raise
+H5_MAX = dict(H5_DEFAULT)  # the defaults ARE the maxima (review of 86a224b): config can only tighten. Loosening is a reviewed code change.
+MIN_WALLET_FLOOR_LAMPORTS = 50_000_000  # config may raise
 DEFAULT_WALLET_FLOOR_LAMPORTS = 50_000_000
 RENT_RESERVE_LAMPORTS = 2_100_000  # token ATA rent is paid up front on a buy and refunded on the closing sell
 SELL_RESERVE_LAMPORTS = 1_000_000  # worst-case fees of one exit (escalated priority, a few attempts)
@@ -188,6 +186,8 @@ class H5Limits:
             v = min(v, hi)  # config can lower a maximum, never raise it
             return int(v) if as_int else float(v)
 
+        if cfg.get("trigger_variant") not in (None, TRIGGER_VARIANT):
+            raise ValueError(f"trigger_variant is fixed at {TRIGGER_VARIANT!r}")
         if cfg.get("jito_enabled") or (cfg.get("jito_tip_lamports") or 0) != 0:
             raise ValueError("jito tips are not supported in this build (jito_enabled must be false, jito_tip_lamports 0)")
         kw: dict[str, Any] = {}
@@ -541,7 +541,7 @@ def build_probe_cfg(cfg: dict[str, Any], h5: H5Limits, run_mode: str) -> dict[st
         "mode": LIVE, "book": "h5_boostfloor_v1", "commitment": cfg.get("commitment", "confirmed"), "poll_s": float(cfg.get("poll_s", 5.0)),
         "size_lamports": h5.stake_lamports, "priority_lamports": h5.buy_priority_lamports, "max_attempts": h5.max_attempts,
         "max_open": h5.max_open, "loss_cap_lamports": h5.total_loss_lamports, "max_days": h5.max_days,
-        "slippage_cap": h5.entry_tolerance_bps / 10_000.0, "sell_retries": int(cfg.get("sell_retries", 5)),
+        "slippage_cap": h5.entry_tolerance_bps / 10_000.0, "sell_retries": max(1, min(int(cfg.get("sell_retries", 5)), pl.SELL_MAX_ATTEMPTS)),
         "signal_poll_ms": int(cfg.get("intent_poll_ms", 25)),
     }
     if h5.end_ms is not None:
@@ -671,7 +671,7 @@ class H5Executor(pl.LiveExecutor):
         self._tail_path: Path | None = None
         self._glob_path: Path | None = None
         self._glob_ms = 0
-        self.trigger_variant = str(cfg.get("trigger_variant") or "pv")
+        self.trigger_variant = TRIGGER_VARIANT  # the traded rule is not a config value
         self.feed_last_ms: int | None = None
         self.heartbeat_max_age_ms = int(cfg.get("feed_heartbeat_max_age_ms") or 0)
         self.refusals: dict[str, int] = {}
@@ -737,10 +737,13 @@ class H5Executor(pl.LiveExecutor):
         st, h5 = self.state, self.h5
         if self.counters.halts:
             return "halt_latched:" + ",".join(sorted(self.counters.halts))
-        if st.realized_lamports <= -h5.total_loss_lamports:
+        # Worst-case exposure, not realized alone: everything open or in flight, and this stake, is assumed lost.
+        at_risk = (sum(int(p.get("spend") or 0) + int(p.get("extra_cost") or 0) for p in st.open.values())
+                   + sum(int(p.get("spend") or 0) for p in st.pending.values() if p["kind"] == "buy") + h5.stake_lamports)
+        if st.realized_lamports - at_risk <= -h5.total_loss_lamports:
             return "total_loss_stop"
         day = self.counters.day(day_key(now))
-        if day["realized"] <= -h5.daily_loss_lamports:
+        if day["realized"] - at_risk <= -h5.daily_loss_lamports:
             return "daily_loss_stop"
         if day["trades"] >= h5.max_trades_per_day:
             return "max_trades_day"

@@ -28,6 +28,7 @@ def quote_out(tokens: int) -> int:
     return tx.cp_sell_out(tokens, q, b, pe.fee_ppm_for(q, b))
 
 
+N = h.BOOST_MEDIAN_MIN_POOLS  # pools a day needs before its BOOST median counts
 SLIPPAGE_ERR = {"InstructionError": [3, {"Custom": 6004}]}
 
 
@@ -244,7 +245,7 @@ class HaltRuleTests(Case):
 
     def test_day_median_below_335_halts_once_10_pools_have_closed(self):
         e = self.env()
-        self.feed(e, [334.0] * 9)
+        self.feed(e, [334.0] * (N - 1))
         self.assertEqual(e.ex.counters.halts, {})  # nine pools: no median yet
         self.feed(e, [334.0], prefix="Z")
         self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_335"])
@@ -256,7 +257,7 @@ class HaltRuleTests(Case):
 
     def test_median_of_exactly_335_is_not_below_335_and_one_day_under_337_is_not_twice(self):
         e = self.env()
-        self.feed(e, [335.0] * 10)
+        self.feed(e, [335.0] * N)
         self.assertEqual(e.ex.counters.halts, {})  # < 337 on one day only
         self.assertEqual(self.day(e)["boost_median"], 335.0)
 
@@ -265,23 +266,23 @@ class HaltRuleTests(Case):
             sub = self.tmp / f"g{gap_days}"
             sub.mkdir()
             e = Env(sub)
-            self.feed(e, [336.0] * 10)
+            self.feed(e, [336.0] * N)
             self.assertEqual(e.ex.counters.halts, {})
             e.ex = e.build()  # the first day's median is persisted, a restart does not lose it
             e.clock.t += gap_days * 24 * 3_600_000
-            self.feed(e, [336.5] * 10, prefix="D")
+            self.feed(e, [336.5] * N, prefix="D")
             self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_337_twice"], gap_days)
             row = e.ledger("halt_latched")[0]
             self.assertEqual(row["medians"], [336.0, 336.5])
 
     def test_a_healthy_day_between_two_low_days_does_not_reset_and_two_healthy_days_do_not_halt(self):
         e = self.env()
-        self.feed(e, [338.0] * 10)
+        self.feed(e, [338.0] * N)
         e.clock.t += 24 * 3_600_000
-        self.feed(e, [336.0] * 10, prefix="D")
+        self.feed(e, [336.0] * N, prefix="D")
         self.assertEqual(e.ex.counters.halts, {})  # 338 does not count; one day under 337
         e.clock.t += 24 * 3_600_000
-        self.feed(e, [336.9] * 10, prefix="E")
+        self.feed(e, [336.9] * N, prefix="E")
         self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_337_twice"])
 
     def test_a_pool_counts_once_a_day_however_often_it_is_reported(self):
@@ -439,7 +440,7 @@ class HaltRuleTests(Case):
 
     def test_halts_survive_a_restart_and_clear_only_by_the_manual_command(self):
         e = self.env()
-        self.feed(e, [334.0] * 10)  # a day median under 335 s
+        self.feed(e, [334.0] * N)  # a day median under 335 s
         e.ex = e.build()
         self.assertIn("boost_median_lt_335", e.ex.counters.halts)
         e.fire()
@@ -455,7 +456,7 @@ class HaltRuleTests(Case):
 
     def test_dry_run_records_a_latched_halt_as_would_halt(self):
         e = self.env(live=False)
-        self.feed(e, [334.0] * 10)
+        self.feed(e, [334.0] * N)
         e.fire()
         self.assertEqual(e.ledger("decision")[0]["would_have_halted"], "halt_latched:boost_median_lt_335")
 

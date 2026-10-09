@@ -176,7 +176,7 @@ class ShadowFlowTests(Case):
 
     def test_ten_pool_close_records_under_335_s_halt_through_the_file(self):
         e = self.start()
-        self.append(e, *[pool_row(f"M{i:02d}" + "1" * 40, boost_last_slice_s=334.0) for i in range(10)])
+        self.append(e, *[pool_row(f"M{i:02d}" + "1" * 40, boost_last_slice_s=334.0) for i in range(h.BOOST_MEDIAN_MIN_POOLS)])
         e.ex.intent_tick()
         self.assertEqual(list(e.ex.counters.halts), ["boost_median_lt_335"])
 

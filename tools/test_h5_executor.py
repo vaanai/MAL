@@ -494,8 +494,8 @@ class RefusalTests(Case):
         self.check("halt_latched:late_sells_gt_5pct", lambda e: e.ex.counters.halts.update({"late_sells_gt_5pct": {}}))
 
     def test_boundaries_just_inside_the_limits_trade(self):
-        for name, setup in (("loss", lambda e: setattr(e.ex.state, "realized_lamports", -119_999_999)),
-                            ("daily", lambda e: e.ex.counters.day(h.day_key(T0)).update(realized=-79_999_999)),
+        for name, setup in (("loss", lambda e: setattr(e.ex.state, "realized_lamports", -99_999_999)),
+                            ("daily", lambda e: e.ex.counters.day(h.day_key(T0)).update(realized=-59_999_999)),
                             ("trades", lambda e: e.ex.counters.day(h.day_key(T0)).update(trades=29)),
                             ("age", None)):
             sub = self.tmp / name
