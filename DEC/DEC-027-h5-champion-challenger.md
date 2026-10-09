@@ -177,27 +177,38 @@ The other seals:
 
 ## 6. The switching rule (written before any challenger outcome)
 
-Every threshold here is **[PROPOSED, quant-proof to set]**. A switch needs all items. They can only remove a switch.
+These values are quant-proof's, from its review of 975d8db (they replace the earlier PROPOSED values). A switch needs all items. They can only remove a switch.
 
-1. **Sample.** At least **80 paired pools** [PROPOSED], at least **50** pools the challenger itself trades [PROPOSED], and at least **5 distinct UTC dates** of s0, counted from the challenger's window. The promotion gate asks for 100 trades. A paired switch is not promotion, so 80 is the proposed floor. It is below the gate's, and every report says so.
-2. **The paired difference** (challenger minus champion, per eligible pool, SOL, deciding cell D), under **both** the flat and the pressure fail model:
-   - the lower bound of the Bonferroni-corrected interval is above 0, from **both** a pool-level bootstrap (10,000 draws, seed 1) and a date-cluster bootstrap (10,000 date resamples, seed 1) [PROPOSED];
-   - the point estimate is at least **+1.0 pp of stake** [PROPOSED]. The reason: DEC-024 section 5 item 4 halts on a live-minus-twin gap of 1 pp, so a gain smaller than that is below the resolution at which live execution is checked;
-   - the difference is positive on a majority of dates.
-3. **The challenger's own book**, under both fail models, at D, B1 (3 s entry) and B2 (15% guard): mean SOL per trade above 0, total above 0 after removing the top 3 trades, and total above 0 after removing the best UTC date [PROPOSED].
-4. **Multiplicity.** The corrected interval uses the 5th percentile divided by **k x L** [PROPOSED]. k is the number of challengers frozen, counted from their freeze, including any dropped later. L is the number of scheduled decision looks (item 5). Example: k = 3, L = 2 gives the 0.83rd percentile. Quant-proof may choose Holm over Bonferroni if it is valid here. The k tests share one champion, so they are positively dependent and Bonferroni is conservative [inferred].
-5. **Looks, fixed in advance.** L = 2 [PROPOSED]. The first is at the later of "item 1 met" and 2026-10-17T00Z. The second is 7 days after the first. There is no other look. Real-time observation of challenger outcomes is declared (section 5.4) but is not a look, and nobody switches on a reading outside a look. A challenger that fails at the first look is not given more hours to rescue it. A challenger frozen after the first look joins at the second look only, on its own pairs [PROPOSED].
-6. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 4 (the DEC-021 §6(f) practice).
+1. **Minimums.** At least **100 paired pools**, at least **100 challenger trades**, and at least **5 distinct UTC dates** of s0, counted from the challenger's window. The paired difference is positive on a **majority of dates**.
+2. **Effect.** The point estimate of the paired difference (challenger minus champion, per eligible pool, SOL, deciding cell D) is at least **+3.0 pp of stake**, under **both** the flat and the pressure fail model.
+3. **Tests**, each at the corrected alpha of item 4, under both fail models. The pressure leg uses slopes 0.8 and 0.35 at scale 1, with the intercept refit once on both arms' sends to mean p 0.289.
+   - A **one-sided pool-level paired bootstrap** (10,000 draws, seed 1): the lower bound is above 0.
+   - **And** the EXP-024 section 7 item 6 **day-level t on the paired date means**: clusters are UTC dates, W is the number of dates with at least one paired pool, df = W - 1, t = mean(m_d) / (sd / √W), p = P(T_{W-1} ≥ t), one-sided. The larger of the flat and pressure p decides.
+   - The **date-cluster bootstrap is report-only.**
+4. **Multiplicity.** One-sided 0.05 in total, **Bonferroni over 2 looks** (0.025 per look), and **Holm over k within a look**. **k counts every challenger ever frozen, and k is at most 2**: a third freeze is refused and needs a new DEC. At k = 2 the rank-1 level is **0.0125**, and rank 2 is 0.025.
+5. **Robustness.** The paired sum stays above 0 after removing the **top 3 paired differences** and after removing the **best UTC date**. The challenger's own book holds the same (mean per trade above 0, total above 0 ex-top-3 trades and ex-best-date) at D, B1 (3 s entry) and B2 (15% guard), under both fail models.
+6. **Looks, fixed in advance.** L = 2.
+   - **The first look comes after the Look 1 report is written, or after Look 1's deadline of 2026-10-17T12:00Z, whichever is first**, and not before item 1 is met. So no switch is decided while Look 1 is unread.
+   - The second look is 7 days after the first. There is no other look.
+   - Real-time observation of challenger outcomes is declared (section 5.4) but is not a look. Nobody switches on a reading outside a look.
+   - A challenger that fails at the first look is not given more hours to rescue it. A challenger frozen after the first look joins at the second look only, on its own pairs.
+7. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 5 (the DEC-021 §6(f) practice).
 
    ```
-   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no.
+   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no. Challenger's own gate numbers: n=<n>, dates=<d>, CI90 lower bound flat=<x> pressure=<y>, ex-top-3=<z>, cleared: yes|no.
    ```
 
-   If "no", the switch is refused: the live trial's override was given for v1 only (section 0).
-7. **Preconditions on the day.** No DEC-024 section 5 halt and no stop that ends the canary has fired and is unresolved. The A3 monitor shows none of the five flags. No seal breach. The variant is compiled in with its proofs (section 7, item 5). The champion's live-versus-twin check has not tripped.
-8. **Dwell.** No second discretionary switch within **7 days** of the last one [PROPOSED]. A fail-safe return to v1 (the file missing or invalid, a halt, or a failed first-20 check) is not a switch. Going back to a variant after any return is a new switch: a new line and a new dwell.
-9. **quant-proof** agrees with the numbers before the owner is asked.
-10. **Power, stated before the first look.** DEC-021 §5 requires the DEC to state the power at the minimum effect, even below 0.5. This DEC does not compute it. Quant-proof does, from exploration SD and ρ (not October outcomes), and it goes in each Freeze record. For orientation only, DEC-021's table (a different book, n = 100) shows a low-ρ selector is not reliably detected in a week even at +0.006 SOL per 0.05 SOL trade, while a high-ρ variant is detectable from about +0.003. **The expected outcome of the first look is no switch** [inferred].
+   - The own gate numbers are those of the promotion gate for the challenger's own book (CLAUDE.md). **"cleared: no" means the switch rests on the override alone**, and the owner's line says so.
+   - If "DEC-024 override extended" is "no", the switch is refused: the live trial's override was given for v1 only (section 0).
+8. **Preconditions on the day.** No DEC-024 section 5 halt and no stop that ends the canary has fired and is unresolved. The A3 monitor shows none of the five flags. No seal breach. The variant is compiled in with its proofs (section 7, item 5). The champion's live-versus-twin check has not tripped. The switch happens only at **00:00Z with 0 open positions** (section 7, item 3).
+9. **Dwell and number of switches.** The dwell is **7 days**. **At most one discretionary switch is made under DEC-027**, counting a re-adoption after a revert; a further switch needs a new DEC. A fail-safe return to v1 (the file missing, invalid or unapproved, a halt, or a failed first-20 check) is not a switch.
+10. **quant-proof** agrees with the numbers before the owner is asked.
+11. **Power, stated plainly** [quant-proof's figures from its review of 975d8db; not recomputed here].
+    - At k = 2 and an effect of +3 pp, power is about **0.05 to 0.12 at 80 pairs** and **0.08 to 0.24 at 160 pairs**.
+    - At the executor's roughly 8 a day, a look at the date item 6 allows would see about **40 pairs**, with power of **0.03 to 0.07**; item 1's 100 pairs would take about 12 days.
+    - **80% power needs about 660 pairs, roughly 6 weeks.**
+    - For scale, DEC-021's +0.003 SOL per 0.05 SOL trade is +6 pp at a per-trade SD of 0.4 times the stake.
+    - **Expected result: no switch.**
 
 ## 7. The live selector (a design; the code is a later PR)
 
