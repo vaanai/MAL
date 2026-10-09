@@ -11,8 +11,9 @@ Outputs (OUT dir, hourly JSONL, strict JSON):
     c1nf-picks-<hour>.jsonl     c1nf_pick       one per pick; the executor parses these (PICK_FIELDS, PICK_EXAMPLE)
     c1nf-outcomes-<hour>.jsonl  c1nf_outcome    paper fills per pick: entries 1.3 / 1.9 / 3.0 / 4.0 s, END and WORST bounds, exit +300 s
     c1nf-events-<hour>.jsonl    c1nf_gap, c1nf_heartbeat, c1nf_start, c1nf_stop
-    c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: per-UTC-day counts of universe pools and picks by
-                                synthetic class, one record per closed day and one (partial) at stop. Never a mint, pool, price or outcome.
+    c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: per-UTC-day counts of universe pools (by first
+                                print) by synthetic class, one record per closed day and one (partial) at stop. Never a mint, pool, price,
+                                outcome, or a pick count by class.
     status.json                 last heartbeat. errors.log: tracebacks (capped).
 
 Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V (tip rows carry `virtual_quote_reserve`).
@@ -661,7 +662,7 @@ class Shadow:
         # synthetic class (EXP-025 Am.2 item 5): kept apart from every per-pool record; only per-UTC-day counts leave the process, in their
         # own stream (c1nf-synclass-*), written once per closed day and at stop. Never in the heartbeat, status.json or the counters.
         self.classifier = classifier
-        self._cls: dict[str, str] = {}
+        self._cls: dict[str, str] = {}                      # pool -> class; read by nothing but the counter (classify once per pool)
         self._cls_counts: dict[str, collections.Counter] = {}
         self._cls_day: Optional[str] = None
         self.pending: dict[str, list[Pending]] = collections.defaultdict(list)
@@ -705,13 +706,15 @@ class Shadow:
         self._cls_counts.setdefault(day, collections.Counter())[key] += 1
 
     def _flush_class_counts(self, upto_day: Optional[str], partial: bool = False) -> None:
-        """Write one counts-only record per UTC day < upto_day (all days when None). No mint, pool, price or outcome field."""
+        """Write one counts-only record per UTC day < upto_day (all days when None): universe pools by class. No mint, pool, price or outcome
+        field, and deliberately no pick count by class: per-day pick counts by class next to the real-time daily outcomes would let an observer
+        split outcomes by class (a day whose picks are all of one class), which EXP-025 Am.2 item 5 bars before the final look."""
         for day in sorted(self._cls_counts):
             if upto_day is not None and day >= upto_day:
                 continue
             cnt = self._cls_counts.pop(day)
             self.emit({"type": SYNCLASS_TYPE, "day": day, "partial": bool(partial and upto_day is None),
-                       "counts": {f"{w}_{c}": int(cnt.get(f"{w}_{c}", 0)) for w in ("universe", "picks") for c in SYN_CLASSES}})
+                       "counts": {f"universe_{c}": int(cnt.get(f"universe_{c}", 0)) for c in SYN_CLASSES}})
 
     # ---- rows ----
     def feed(self, row: Mapping[str, Any], kind: Optional[str] = None) -> None:
@@ -851,8 +854,6 @@ class Shadow:
             sps = self.clock.sps(bt)
             self.book[mint] = bt + PRIMARY_LAT + EXIT_S + EXIT_LAG_S
             self.c["picks"] += 1
-            if self.classifier is not None:
-                self._cls_count(day_of(T), f"picks_{self._cls.get(pool, 'unclassified')}")
             self.emit({"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
                        "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
                        "q_lamports": state[0], "base_reserve": state[1], "state_slot": state[2]})

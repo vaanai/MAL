@@ -828,7 +828,7 @@ def test_outcome_guard_has_no_switch():
 
 # ---- EXP-025 Amendment 2 item 5: synthetic class only as a counts stream ---------------------------------------------------------------------
 def _counts(**kw):
-    out = {f"{w}_{c}": 0 for w in ("universe", "picks") for c in cs.SYN_CLASSES}
+    out = {f"universe_{c}": 0 for c in cs.SYN_CLASSES}
     out.update(kw)
     return out
 
@@ -844,22 +844,24 @@ def test_synthetic_class_goes_only_to_a_separate_counts_stream():
     assert cs.validate_pick(pick) == [] and cs._class_keys(out) == []
     (sc,) = sink.of(cs.SYNCLASS_TYPE)
     assert set(sc) == {"schema", "t_ms", "type", "day", "partial", "counts"} and sc["partial"] is True and sc["day"] == "2026-09-04"
-    assert sc["counts"] == _counts(universe_synthetic=1, picks_synthetic=1)
+    assert sc["counts"] == _counts(universe_synthetic=1)
+    assert not any(k.startswith("pick") for k in sc["counts"])    # no pick count by class (a near-join with daily outcomes)
     assert MINT not in json.dumps(sc) and POOL not in json.dumps(sc)
     others = [r for r in sink.records if r.get("type") != cs.SYNCLASS_TYPE]
     assert "synthetic" not in json.dumps(others) and "unclassified" not in json.dumps(others)   # heartbeat, stop, pick, outcome: no class
 
 
 def test_synclass_counts_close_each_utc_day_once():
-    sh, sink, run, _ = _midnight_shadow(classifier=lambda m, p: "non_synthetic")
+    sh, sink, run, _ = _midnight_shadow(classifier=lambda m, p: "synthetic" if p == "POOLbbbb" else "non_synthetic")
     run(660 + 400)
+    sh.feed(mk_row(S0 + 2700, pool="POOLbbbb", mint="MINTbbbb", block_time=OS_S + 420), "trades")     # a second pool, first print on 10-10
     days = [r["day"] for r in sink.of(cs.SYNCLASS_TYPE)]
     assert days == ["2026-10-09"]                                  # written when the stream enters 2026-10-10, not before
     sh.finish("test")
     recs = sink.of(cs.SYNCLASS_TYPE)
     assert [(r["day"], r["partial"]) for r in recs] == [("2026-10-09", False), ("2026-10-10", True)]
-    assert recs[0]["counts"] == _counts(universe_non_synthetic=1, picks_non_synthetic=1)
-    assert recs[1]["counts"] == _counts(picks_non_synthetic=1)
+    assert recs[0]["counts"] == _counts(universe_non_synthetic=1)
+    assert recs[1]["counts"] == _counts(universe_synthetic=1)
 
 
 @pytest.mark.parametrize("cls", [RuntimeError("rpc down"), "weird", None, True])
@@ -872,7 +874,7 @@ def test_classifier_failure_or_junk_is_unclassified(cls):
     run_stream(sh, 700)
     sh.finish("test")
     (sc,) = sink.of(cs.SYNCLASS_TYPE)
-    assert sc["counts"] == _counts(universe_unclassified=1, picks_unclassified=1)
+    assert sc["counts"] == _counts(universe_unclassified=1)
     assert len(sink.of("c1nf_pick")) == 1                          # never a refusal by class
 
 
