@@ -143,7 +143,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 **C1-NF:**
 - parity task 3: shadow picks vs VERIFY's 419;
 - pinned model file and sha;
-- DEC-026;
+- DEC-026: **DRAFT PR #522** (`claude/dec026-c1nf-canary`), for the owner's morning review. Seven **[OWNER CHOOSES]** items in its section 3 (funding, ladder authority, priority fee, end date, what a Look 1 FAIL does, 10-09 observation, T0 limits) and 13 quant-proof questions in section 14. Appendix A is draft text for a separate EXP-025 amendment. It must merge before the shadow writes its first outcome for a 10-09 decision. #504 (the executor) is CLOSED, not merged. No send until its 23 preconditions hold;
 - Helm creates a second wallet.
 
 **Agent ids:**
