@@ -10,7 +10,7 @@ anything of H5's (DEC-026 section 4: "Nothing in this DEC reads, writes or resta
 The only shared files it looks at are the wallet-wide /var/lib/mal-live/{STOP,HALT}, which the C1-NF executor honours (existence only).
 Files in the 0700 state dir are read through FIXED paths only (PRIV_STAT / PRIV_READ below), exactly as the H5 check does: lstat first
 (a symlink, a hard-linked file, a non-regular file or one over 8 MB is refused), then O_NOFOLLOW or `sudo -n /usr/bin/dd iflag=nofollow`.
-`--print-sudoers` prints the exact sudoers lines. A failing `sudo -n` or `systemctl` is an ALERT, never "absent". Prints INFO / OK /
+`--print-sudoers` prints the exact sudoers lines (root: stat and dd of the fixed paths; mal-c1nf: the manager's two --status reads). A failing `sudo -n` or `systemctl` is an ALERT, never "absent". Prints INFO / OK /
 ALERT lines and exits 1 on any ALERT. The RPC URL is never printed.
 
 CLASS-BLIND (EXP-025 Amendment 2 item 5, DEC-026 section 9.3). No observer may split C1-NF outcomes by synthetic class before the final
@@ -84,6 +84,8 @@ C1NF_UNIT = "mal-c1nf-executor"
 WATCH_SERVICE = "mal-c1nf-watch.service"
 WATCH_TIMER = "mal-c1nf-watch.timer"
 C1NF_DIR = "/var/lib/mal-live/c1nf"
+UNIT_USER = "mal-c1nf"  # the unit's own system user, never H5's mal-live (DEC-026 note 2026-10-10, security review F2)
+C1NF_DIR_OWNER_MODE = f"{UNIT_USER}:{UNIT_USER}:700"
 LIVE_DIR = f"{C1NF_DIR}/live"
 STATE_FILE = f"{LIVE_DIR}/state-live.json"
 COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (32265af) reuses H5Counters and its file name inside the C1-NF state dir
@@ -241,14 +243,27 @@ def dd_argv(path: str) -> tuple[str, ...]:
     return ("/usr/bin/dd", "iflag=nofollow", "status=none", f"if={path}")
 
 
+STATUS_CONFIGS = ("c1nf-executor-live.json", "c1nf-executor.json")
+
+
+def status_argv(config: str) -> tuple[str, ...]:
+    """The manager's `--status` read of one pinned config (runbook Wind-down and Step 7). It runs as the unit's user, never as root
+    (DEC-026 note 2026-10-10, security review F2). This check never runs it; only sudoers_text names it."""
+    return (f"{PINNED_ROOT}/venv/bin/python", "-I", "-B", "-u", f"{PINNED}/launcher.py", "--config", f"{PINNED}/{config}", "--status")
+
+
 def sudoers_text(user: str = "claude") -> str:
-    """The exact sudoers lines for the privileged calls above. In sudoers, `,` `:` `=` and `\\` in a command's arguments are escaped with a backslash."""
+    """The exact sudoers lines for the privileged calls above (as root: stat and dd of fixed paths), plus the manager's two `--status`
+    reads (as UNIT_USER, never root; never --live, --clear-halt, --mark-closed or --run-tool). In sudoers, `,` `:` `=` and `\\` in a
+    command's arguments are escaped with a backslash."""
     def esc(argv: tuple[str, ...]) -> str:
         return " ".join(re.sub(r"([,:=\\])", r"\\\1", a) for a in argv)
 
     cmds = ["/usr/bin/true", *(esc(stat_argv(p)) for p in PRIV_STAT), *(esc(dd_argv(p)) for p in PRIV_READ)]
     body = ", \\\n    ".join(cmds)
-    return f"Cmnd_Alias MAL_C1NF_CHECK = {body}\n{user} ALL=(root) NOPASSWD: MAL_C1NF_CHECK\n"
+    status = ", \\\n    ".join(esc(status_argv(c)) for c in STATUS_CONFIGS)
+    return (f"Cmnd_Alias MAL_C1NF_CHECK = {body}\n{user} ALL=(root) NOPASSWD: MAL_C1NF_CHECK\n"
+            f"Cmnd_Alias MAL_C1NF_STATUS = {status}\n{user} ALL=({UNIT_USER}) NOPASSWD: MAL_C1NF_STATUS\n")
 
 
 class SudoError(Exception):
@@ -861,8 +876,9 @@ def check_c1nf_state(host: Host, rep: Report, funded: int | None, wallet: str, e
     st_dir = host.stat(C1NF_DIR)
     if st_dir is None:
         rep.info(f"{C1NF_DIR} does not exist yet")
-    elif st_dir != "mal-live:mal-live:700":
-        rep.alert("c1nf_dir_mode", f"{C1NF_DIR} is {st_dir}, expected mal-live:mal-live:700")
+    elif st_dir != C1NF_DIR_OWNER_MODE:
+        hint = " (still H5's user: chown it to mal-c1nf, runbook Step 5)" if st_dir.split(":", 1)[0] == "mal-live" else ""
+        rep.alert("c1nf_dir_mode", f"{C1NF_DIR} is {st_dir}, expected {C1NF_DIR_OWNER_MODE}{hint}")
     flags = {n: host.exists(f"{C1NF_DIR}/{n}") for n in ("STOP", "HALT", "FINAL_WRITTEN")}
     flags["LIVE_OK"] = live_ok
     flags["wallet_STOP"] = host.exists(WALLET_STOP)

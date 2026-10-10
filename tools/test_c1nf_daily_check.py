@@ -91,7 +91,7 @@ class FakeHost(dc.Host):
             WATCH_SVC: WSVC, WATCH_TMR: WTMR, f"{dc.PINNED}/{dc.WATCH_SERVICE}": WSVC, f"{dc.PINNED}/{dc.WATCH_TIMER}": WTMR,
             dc.WATCH_STATE: json.dumps({"ts": NOW - 120}).encode(),
         }
-        self.modes = {dc.C1NF_DIR: "mal-live:mal-live:700", dc.C1NF_ETC: "root:root:755", dc.LIVE_OK: "root:root:644", dc.TIER_FILE: "root:root:644",
+        self.modes = {dc.C1NF_DIR: "mal-c1nf:mal-c1nf:700", dc.C1NF_ETC: "root:root:755", dc.LIVE_OK: "root:root:644", dc.TIER_FILE: "root:root:644",
                       dc.FINAL_MARKER: "root:root:644"}
         self.mtimes = {dc.LIVE_OK: NOW - 7200, dc.TIER_FILE: NOW - 7200}
         self.links: set[str] = set()
@@ -202,6 +202,31 @@ def test_sudoers_fixed_paths_only_and_nothing_of_h5_or_the_key():
     assert "mal-h5" not in text and "/var/lib/mal-live/h5" not in text and "mal-probe" not in text and "c1nf-key" not in text
     for p in dc.PRIV_READ:
         assert p in dc.PRIV_STAT
+
+
+def test_sudoers_status_reads_run_as_the_unit_user_never_root():
+    """DEC-026 note 2026-10-10 (security review F2): the manager's --status reads run as mal-c1nf; the root alias stays stat and dd only."""
+    text = dc.sudoers_text("claude")
+    check, status = text.split("Cmnd_Alias MAL_C1NF_STATUS", 1)
+    assert "claude ALL=(root) NOPASSWD: MAL_C1NF_CHECK\n" in check and "--status" not in check and "launcher.py" not in check
+    assert dc.UNIT_USER == "mal-c1nf" and status.endswith("\nclaude ALL=(mal-c1nf) NOPASSWD: MAL_C1NF_STATUS\n")
+    assert status.count("--status") == 2 and "(root)" not in status
+    for bad in ("--live", "--clear-halt", "--mark-closed", "--run-tool", "mal-live", "*"):
+        assert bad not in status, bad
+    rb = (ROOT / "docs/runbooks/c1nf-executor.md").read_text()
+    for cfg in dc.STATUS_CONFIGS:  # the runbook's S and D are exactly the allowed commands
+        assert 'sudo -n -u mal-c1nf ' + " ".join(dc.status_argv(cfg)) + '"' in rb, cfg
+    assert "sudo -n " + " ".join(dc.dd_argv(dc.STATE_FILE)) + " |" in rb  # the Wind-down's open-mint read is the root alias's dd
+    assert "sudo -u mal-live" not in rb and "--pipe -p User=mal-c1nf -p EnvironmentFile" in rb and "--pipe -p User=mal-live" not in rb
+
+
+@pytest.mark.parametrize("owner", ["mal-live:mal-live:700", "root:root:700", "mal-c1nf:mal-c1nf:750", "mal-c1nf:mal-live:700"])
+def test_c1nf_dir_must_belong_to_the_unit_user(owner):
+    host = FakeHost()
+    host.modes[dc.C1NF_DIR] = owner
+    rc, out = go(host)
+    assert rc == 1 and "c1nf_dir_mode" in alerts(out), out
+    assert ("still H5's user" in out) == owner.startswith("mal-live:")
 
 
 def test_never_touches_h5_or_the_key():

@@ -18,6 +18,13 @@
 # LoadCredential=c1nf-wallet) is never installed here: Helm installs it from the verified <sha>/ copy (docs/runbooks/c1nf-executor.md).
 # It also refuses unless the live config at <sha> holds DEC-026 section 6's stake (0.05 SOL), priority (505,000 lamports), end_ms
 # (2026-10-24T00:30Z) and state_dir (/var/lib/mal-live/c1nf), Jito off with a zero tip, and no wider buy guard or feed line.
+# UNIX USER (DEC-026 note 2026-10-10, security review F2): the base unit runs as its own system user mal-c1nf, never H5's mal-live. This
+# script creates nothing for it on the host: no user, group, directory owner or ACL. Those are Helm's steps (docs/runbooks/c1nf-executor.md
+# Step 3b and Step 5), done before this install:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin --user-group mal-c1nf
+#   setfacl -m u:mal-c1nf:--x /var/lib/mal-live                          (search only; /var/lib/mal-live stays mal-live 0700)
+#   install -d -m 0700 -o mal-c1nf -g mal-c1nf /var/lib/mal-live/c1nf
+# This script only refuses when that user or group is missing, shares mal-live's uid, or is in the mal-live group.
 # DEPENDENCY: tools/c1nf_executor.py and the two JSON configs come from the executor PR (#530, claude/c1nf-executor-v2, reference sha
 # 32265af); the launcher, the base unit, the live and shadow-feed drop-ins, check-c1nf-unit.py and the root rescue tool
 # tools/c1nf_sell_and_close.py are in the ops PR (#531, built from H5's). MODULES below is the import closure of tools.c1nf_executor and
@@ -167,6 +174,17 @@ if [ -e "$LIVE_DROPIN" ] || [ -L "$LIVE_DROPIN" ]; then
   echo "refusing: $LIVE_DROPIN exists; move it away first (docs/runbooks/c1nf-executor.md, Wind-down) so the install and the dry run are keyless" >&2
   exit 1
 fi
+
+# The unit's own system user and group (DEC-026 note 2026-10-10, security review F2). Helm creates them (runbook Step 3b); this script never
+# does. Read-only lookups: a missing user refuses here instead of failing the unit's start later, and a user that is mal-live in disguise
+# (the same uid, or a member of the mal-live group) refuses too.
+C1NF_USER=mal-c1nf
+getent passwd "$C1NF_USER" >/dev/null && getent group "$C1NF_USER" >/dev/null \
+  || { echo "refusing: system user and group $C1NF_USER must exist (Helm creates them first: docs/runbooks/c1nf-executor.md Step 3b)" >&2; exit 1; }
+if getent passwd mal-live >/dev/null && [ "$(id -u "$C1NF_USER")" = "$(id -u mal-live)" ]; then
+  echo "refusing: $C1NF_USER has mal-live's uid (one uid per wallet, DEC-026 note 2026-10-10)" >&2; exit 1
+fi
+case " $(id -Gn "$C1NF_USER") " in *" mal-live "*) echo "refusing: $C1NF_USER is in the mal-live group (DEC-026 note 2026-10-10)" >&2; exit 1 ;; esac
 
 # The second wallet's key directory (Helm's, DEC-026 section 5): if it exists it must be root:root 0700, and the key in it root:root 0400.
 # The key is never read; only its metadata is checked, so a wrong mode is caught before a live drop-in can hand it over.
@@ -324,6 +342,7 @@ rm -rf "$DEST/venv.old"
 rm -f "$BASE_UNIT_DEST.old"
 echo "installed base unit $BASE_UNIT_DEST: $(sha256sum "$BASE_UNIT_DEST")"
 echo "installed commit $COMMIT into $DEST/$COMMIT (previous current: ${PREV:-none})"
+echo "NOTE: the unit runs as $C1NF_USER. This script did not create that user, chown /var/lib/mal-live/c1nf or set the ACL on /var/lib/mal-live: Helm's runbook Steps 3b and 5."
 echo "NOTE: $C1NF_ETC/LIVE_OK was NOT created. The executor sends nothing live until Helm creates it (root:root 0644) after the hash check below and the manager's written go."
 echo "BEGIN-MANIFEST (sha256 of each INSTALLED file, repo path; diff this against the manager's manifest):"
 verify_tree "$DEST/$COMMIT" print | sort -k2
