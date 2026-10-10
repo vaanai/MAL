@@ -407,6 +407,23 @@ class JudgeTests(Base):
         self.assertTrue(ev.p7_raw_hit("sell", raw, q_mapped=tape["quote_reserve"] + tape["virtual_quote_reserves"], v0=0))
         self.assertFalse(ev.p7_raw_hit("sell", raw, q_mapped=tape["quote_reserve"], v0=0))  # the vault without V misses
         self.assertIsNone(p7.adapter_row_from_tape(dict(tape, virtual_quote_reserves=None))["quote_reserve"])
+        # the same on a buy: with V it hits, the vault alone (no V) misses
+        btape, braw = self.buy_tape(), first_record(self.buy_doc)
+        self.assertTrue(ev.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"] + btape["virtual_quote_reserves"], v0=0))
+        self.assertFalse(ev.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"], v0=0))
+
+    def test_stamps_swapped_between_two_prints_with_different_v_are_identity_mismatches(self):
+        sell, buy = self.sell_tape(), self.buy_tape()
+        self.assertNotEqual(sell["virtual_quote_reserves"], buy["virtual_quote_reserves"])
+        sell["virtual_quote_reserves"], buy["virtual_quote_reserves"] = buy["virtual_quote_reserves"], sell["virtual_quote_reserves"]
+        frame, _ = self.frame_of([sell, buy])
+        txs = {self.sell_doc["signature"]: tx_of(self.sell_doc), self.buy_doc["signature"]: tx_of(self.buy_doc)}
+        results, _ = p7.run_check([("main", r) for r in frame], txs.get)
+        self.assertEqual(sorted(results), sorted([("sell", "unresolved", "identity_mismatch"), ("buy", "unresolved", "identity_mismatch")]))
+        # unswapped, the same two prints hit
+        frame, _ = self.frame_of([self.sell_tape(), self.buy_tape()])
+        results, _ = p7.run_check([("main", r) for r in frame], txs.get)
+        self.assertEqual(sorted(results), sorted([("sell", "hit", None), ("buy", "hit", None)]))
 
     # -- unresolved: every reason, each a miss that stays in the denominator -------------------------------------------------------------
     def test_fetch_failed(self):
