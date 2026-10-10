@@ -1032,6 +1032,9 @@ class SafetyTests(Case):
         self.assertEqual(live["end_ms"], 1792110600000)  # 2026-10-16T00:30:00Z: ends before the EXP-022 seal window opens
         self.assertLess(live["end_ms"], h.SEAL_START_MS)
         self.assertEqual((live["intents_file"], dry["intents_file"]), ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow"))
+        # the CAP-PICK exporter's live booleans, under the shadow bind (CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick); end_ms is unchanged
+        self.assertEqual((live["pick_file"], dry["pick_file"]), ("/srv/mal-h5-shadow/cap-pick/picks.jsonl",) * 2)
+        self.assertIsNotNone(h.build_pick_oracle(live))
         # 2.5 x the shadow's 60 s heartbeat period: one late or missed heartbeat does not refuse buys, a feed that has gone quiet does
         self.assertEqual((live["feed_heartbeat_max_age_ms"], dry["feed_heartbeat_max_age_ms"]), (150000, 150000))
         self.assertEqual(live["feed_heartbeat_max_age_ms"], int(2.5 * 60_000))
