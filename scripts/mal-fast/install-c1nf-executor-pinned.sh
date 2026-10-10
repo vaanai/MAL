@@ -8,7 +8,7 @@
 # clone that is not exactly <sha> (HEAD differs, or modified/untracked/ignored files exist).
 # Layout (root:root, dirs 0755, files 0644, nothing writable by others):
 #   /usr/local/lib/mal-c1nf-exec/<sha>/{launcher.py,c1nf-executor.json,c1nf-executor-live.json,mal-c1nf-executor-live-pinned.conf,
-#       mal-c1nf-executor-shadow-feed.conf,mal-c1nf-executor.service,check-c1nf-unit.py,check-c1nf-watch-unit.py,c1nf-watch.py,
+#       mal-c1nf-executor-shadow-feed.conf,mal-c1nf-executor-cap-pick.conf,mal-c1nf-executor.service,check-c1nf-unit.py,check-c1nf-watch-unit.py,c1nf-watch.py,
 #       c1nf-daily-check.py,mal-c1nf-watch.{service,timer},requirements-probe-exec.txt,EXP/EXP-025-c1nf-part1-prereg.md,tools/*.py}
 #   /usr/local/lib/mal-c1nf-exec/venv       built from the hashed requirements only
 #   /usr/local/lib/mal-c1nf-exec/current -> <sha>   (atomic swap, last step)
@@ -43,7 +43,7 @@ DEST=/usr/local/lib/mal-c1nf-exec
 UNIT=mal-c1nf-executor
 MODULES="tools/__init__.py tools/c1nf_executor.py tools/c1nf_sell_and_close.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
-EXTRA="scripts/mal-fast/c1nf_exec_launcher.py:launcher.py scripts/mal-fast/c1nf-executor-live.json:c1nf-executor-live.json scripts/mal-fast/c1nf-executor.json:c1nf-executor.json scripts/mal-fast/mal-c1nf-executor-live-pinned.conf:mal-c1nf-executor-live-pinned.conf scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf:mal-c1nf-executor-shadow-feed.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt scripts/mal-fast/c1nf-watch.py:c1nf-watch.py scripts/mal-fast/c1nf-daily-check.py:c1nf-daily-check.py scripts/mal-fast/check-c1nf-watch-unit.py:check-c1nf-watch-unit.py scripts/mal-fast/mal-c1nf-watch.service:mal-c1nf-watch.service scripts/mal-fast/mal-c1nf-watch.timer:mal-c1nf-watch.timer EXP/EXP-025-c1nf-part1-prereg.md:EXP/EXP-025-c1nf-part1-prereg.md"
+EXTRA="scripts/mal-fast/c1nf_exec_launcher.py:launcher.py scripts/mal-fast/c1nf-executor-live.json:c1nf-executor-live.json scripts/mal-fast/c1nf-executor.json:c1nf-executor.json scripts/mal-fast/mal-c1nf-executor-live-pinned.conf:mal-c1nf-executor-live-pinned.conf scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf:mal-c1nf-executor-shadow-feed.conf scripts/mal-fast/mal-c1nf-executor-cap-pick.conf:mal-c1nf-executor-cap-pick.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt scripts/mal-fast/c1nf-watch.py:c1nf-watch.py scripts/mal-fast/c1nf-daily-check.py:c1nf-daily-check.py scripts/mal-fast/check-c1nf-watch-unit.py:check-c1nf-watch-unit.py scripts/mal-fast/mal-c1nf-watch.service:mal-c1nf-watch.service scripts/mal-fast/mal-c1nf-watch.timer:mal-c1nf-watch.timer EXP/EXP-025-c1nf-part1-prereg.md:EXP/EXP-025-c1nf-part1-prereg.md"
 BASE_UNIT_SRC="scripts/mal-fast/mal-c1nf-executor.service"
 BASE_UNIT_CHECK="scripts/mal-fast/check-c1nf-unit.py"
 WATCH_UNIT_CHECK="scripts/mal-fast/check-c1nf-watch-unit.py"
@@ -186,7 +186,7 @@ fi
 import json, sys
 c = json.load(open(sys.argv[1]))
 want = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50000000, "buy_priority_lamports": 505000, "end_ms": 1792801800000,
-        "jito_enabled": False, "jito_tip_lamports": 0}
+        "jito_enabled": False, "jito_tip_lamports": 0, "pick_file": "/srv/mal-cap-pick/picks.jsonl"}
 bad = [k for k, v in want.items() if type(c.get(k)) is not type(v) or c.get(k) != v]
 for k, top in (("entry_tolerance_bps", 1500), ("feed_heartbeat_max_age_ms", 150000)):
     v = c.get(k)

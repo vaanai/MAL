@@ -4,10 +4,11 @@
     /usr/bin/python3 -I check-c1nf-unit.py --base        <unit file>   exit 0 = identical to the intended base unit
     /usr/bin/python3 -I check-c1nf-unit.py --dropin      <conf file>   exit 0 = identical to the intended pinned live drop-in
     /usr/bin/python3 -I check-c1nf-unit.py --shadow-feed <conf file>   exit 0 = a valid shadow-feed bind (one line, see below)
+    /usr/bin/python3 -I check-c1nf-unit.py --cap-pick    <conf file>   exit 0 = a valid CAP-PICK oracle bind (one line, see below)
 
 The watchdog units are checked by check-c1nf-watch-unit.py. The installer runs --base and --dropin on the manifest-verified blobs
 before anything is moved. Helm (and c1nf-daily-check.py, which imports this file from the pinned tree and calls problems()) run
---dropin on /etc/systemd/system/mal-c1nf-executor.service.d/live.conf and --shadow-feed on 10-shadow-feed.conf.
+--dropin on /etc/systemd/system/mal-c1nf-executor.service.d/live.conf, --shadow-feed on 10-shadow-feed.conf and --cap-pick on 20-cap-pick.conf.
 
 Second wallet (DEC-026 section 4): the drop-in's only credential is c1nf-wallet:/etc/mal-c1nf-key/c1nf-wallet.json. H5's
 probe-wallet, any other credential and any Conflicts= with an H5/probe unit refuse (they are not on the list).
@@ -20,6 +21,11 @@ and exact: `User =x` is an unknown key to systemd, so whitespace between key and
 --shadow-feed: the only file allowed to differ per host. [Service] once, exactly one key BindReadOnlyPaths, whose value is
 `-<source>:/srv/mal-c1nf-shadow` with <source> = /home/<user>/<dir>/.../c1nf-shadow<suffix>, every component made of
 [A-Za-z0-9_.-] and not starting with a dot (no `..`, no hidden dirs such as .ssh or .claude). Nothing else can ride along.
+
+--cap-pick: the same rule for the CAP-PICK oracle bind (DEC-026 Amendment 1 item B): exactly one BindReadOnlyPaths line in [Service],
+`-<source>:/srv/mal-cap-pick` with <source> = /home/<user>/<dir>/.../cap-pick (the exporter's CAP_PICK_OUT; the exact last component, no suffix: `cap-pick-oracle`, the
+FINAL marker's directory, is refused). The live config's
+"pick_file" is /srv/mal-cap-pick/picks.jsonl.
 
 The file is read as BYTES and refused if any byte is outside {TAB, LF, 0x20-0x7e}: no NUL, BOM, CR (CRLF too), VT, FF, 0x1c-0x1e,
 0x85, NBSP, U+3000 or any other non-ASCII. Python's str.splitlines()/strip() treat those as line breaks or whitespace, systemd 255
@@ -101,6 +107,8 @@ KINDS = {
 SHADOW_DEST = "/srv/mal-c1nf-shadow"
 _COMP = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"
 SHADOW_RE = re.compile(rf"^-(/home/{_COMP}(?:/{_COMP})*/c1nf-shadow[A-Za-z0-9_.-]*):{re.escape(SHADOW_DEST)}$")
+CAP_PICK_DEST = "/srv/mal-cap-pick"  # the live config's pick_file is CAP_PICK_DEST + "/picks.jsonl" (DEC-026 Amendment 1 item B)
+CAP_PICK_RE = re.compile(rf"^-(/home/{_COMP}(?:/{_COMP})*/cap-pick):{re.escape(CAP_PICK_DEST)}$")  # the EXACT name: never cap-pick-oracle (the FINAL marker's directory) or any suffix
 
 OK_BYTES = frozenset([9, 10, *range(0x20, 0x7F)])
 WS = " \t"
@@ -160,6 +168,8 @@ def _parse(data: "bytes | str", sections: tuple[str, ...]) -> tuple[list[tuple[s
 def problems(data: "bytes | str", kind: str = "base") -> list[str]:
     if kind == "shadow-feed":
         return shadow_problems(data)
+    if kind == "cap-pick":
+        return cap_pick_problems(data)
     expected, sections = KINDS[kind]
     got, errs = _parse(data, sections)
     if errs and not got:
@@ -175,22 +185,30 @@ def problems(data: "bytes | str", kind: str = "base") -> list[str]:
     return errs
 
 
-def shadow_problems(data: "bytes | str") -> list[str]:
+def _bind_problems(data: "bytes | str", pattern: "re.Pattern[str]", name: str, dest: str) -> list[str]:
     got, errs = _parse(data, ("Service",))
     if errs:
         return errs
     if len(got) != 1 or got[0][1] != "BindReadOnlyPaths":
         return [f"expected exactly one BindReadOnlyPaths line in [Service], got {[(g[1]) for g in got]!r}"]
     val = got[0][2]
-    if not SHADOW_RE.match(val):
-        return [f"BindReadOnlyPaths value {val!r} is not -/home/<user>/.../c1nf-shadow*:{SHADOW_DEST} with plain path components"]
+    if not pattern.match(val):
+        return [f"BindReadOnlyPaths value {val!r} is not -/home/<user>/.../{name}:{dest} with plain path components"]
     return []
 
 
+def shadow_problems(data: "bytes | str") -> list[str]:
+    return _bind_problems(data, SHADOW_RE, "c1nf-shadow*", SHADOW_DEST)
+
+
+def cap_pick_problems(data: "bytes | str") -> list[str]:
+    return _bind_problems(data, CAP_PICK_RE, "cap-pick", CAP_PICK_DEST)
+
+
 def main(argv: list[str]) -> int:
-    kinds = {"--base": "base", "--dropin": "dropin", "--shadow-feed": "shadow-feed"}
+    kinds = {"--base": "base", "--dropin": "dropin", "--shadow-feed": "shadow-feed", "--cap-pick": "cap-pick"}
     if len(argv) != 3 or argv[1] not in kinds:
-        print("usage: check-c1nf-unit.py (--base|--dropin|--shadow-feed) <file>", file=sys.stderr)
+        print("usage: check-c1nf-unit.py (--base|--dropin|--shadow-feed|--cap-pick) <file>", file=sys.stderr)
         return 2
     errs = problems(Path(argv[2]).read_bytes(), kinds[argv[1]])
     for e in errs:
