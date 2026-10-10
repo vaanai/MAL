@@ -150,3 +150,25 @@ def test_smoke_import_is_the_c1nf_modules():
 def test_rescue_tool_closure_is_in_modules_without_the_executor():
     # on this branch alone: everything the rescue tool imports (h5_sell_and_close and the probe modules) is installed
     assert _closure(["tools/c1nf_sell_and_close.py"]) - {"tools/c1nf_executor.py"} <= set(var("MODULES").split())
+
+
+RUNBOOK = (ROOT / "docs/runbooks/c1nf-executor.md").read_text()
+
+
+def test_runbook_sell_and_close_is_c1nfs_tool_only():
+    sec = RUNBOOK.split("## Sell-and-close an abandoned position", 1)[1].split("\n## ", 1)[0]
+    assert "**Never run H5's tool" in sec and "tools/c1nf_sell_and_close.py" in sec
+    assert 'P="sudo /usr/local/lib/mal-c1nf-exec/venv/bin/python -I -B -u /usr/local/lib/mal-c1nf-exec/current/launcher.py --run-tool sell_and_close"' in sec
+    code = "\n".join(sec.split("```")[1::2])  # the commands Helm runs
+    assert "/usr/local/lib/mal-h5-exec" not in code and "--keyfile" not in code and "mal-h5" not in code and "mal-probe-executor" not in code
+    assert "ReadWritePaths=/var/lib/mal-live/c1nf" in code and "c1nf-executor-live.json --mark-closed <MINT> --sig <SIGNATURE>" in code
+    assert "systemctl show -p ActiveState --value mal-c1nf-executor " in code
+
+
+def test_runbook_paths_match_the_daily_check():
+    spec = importlib.util.spec_from_file_location("c1nf_daily_check_rb", FAST / "c1nf-daily-check.py")
+    dc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dc)
+    for path in (dc.FINAL_MARKER, dc.LIVE_OK, dc.TIER_FILE, dc.KEY_PATH, f"{dc.C1NF_DIR}/STOP", f"{dc.C1NF_DIR}/HALT", dc.UNIT_FILE):
+        assert path in RUNBOOK, path
+    assert "c1nf-extra.json" in RUNBOOK and "8ea24e6" in RUNBOOK and "156a941" not in RUNBOOK

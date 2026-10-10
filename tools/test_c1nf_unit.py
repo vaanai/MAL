@@ -96,7 +96,7 @@ def test_shadow_feed_template_and_fill():
 
 
 def test_feed_dest_matches_v2_config_intents_file():
-    # the pinned configs (claude/c1nf-executor-v2 @ 156a941) read "intents_file": "/srv/mal-c1nf-shadow"
+    # the pinned configs (claude/c1nf-executor-v2 @ 8ea24e6) read "intents_file": "/srv/mal-c1nf-shadow"
     for cfg in ("c1nf-executor.json", "c1nf-executor-live.json"):
         p = MF / cfg
         if p.exists():
