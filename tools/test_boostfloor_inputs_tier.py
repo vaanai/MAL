@@ -398,6 +398,81 @@ class P7Check(unittest.TestCase):
             self.assertEqual({k: v for k, v in res3.items() if k != "exact_in_raw_report_only"},
                              {k: v for k, v in res.items() if k != "exact_in_raw_report_only"})
 
+    SELLS = ((2_320_000_000, 200_000_000_000_000, 1_000_000_000_000), (871_420_000_000, 200_000_000_000_000, 22_494_657_518),
+             (19_635_420_000_000, 200_000_000_000_000, 1_017_651_159))  # (q, b, tok) of the synthetic sells, V = 17.58 SOL
+    EXACT_IN = ("buy_exact_quote_in_496.json", "buy_exact_quote_in_v2_499_kept.json")  # public-chain exact-in buys with their fee rates
+
+    def _passing_layout(self, d: str):
+        """A P5 layout on which every P7 bar clears, so `pass` is True: the shared cases that hit (buy / buy_v2, line A and line B buys),
+        sells on the sell tier relation and line B's sell law, and the two exact-in fixtures (excluded from both buy lines; exact_in_raw
+        counts them with every field present)."""
+        lay = br.Layout(Path(d), 1)
+        lay.p5.mkdir(parents=True)
+        hits = [c for c in load_cases()["cases"] if c["expect"] == "hit"]
+        sample, recs = [], []
+        for i, c in enumerate(hits):
+            row, rec = case_row(c, 2_000 + i)
+            rec["decoded"].update(sol_lamports=c["sol"], token_raw=c["tok"], quote_reserve=c["q"], base_reserve=c["b"],
+                                  virtual_quote_reserves=c["v"], pool_quote_amount=bi.buy_law(c["q"] + c["v"], c["b"], c["tok"]))
+            sample.append(row)
+            recs.append(rec)
+        v = 17_580_000_000
+        for i, (q, b, tok) in enumerate(self.SELLS):
+            Q = q + v
+            sol = round(Q * tok / (b + tok) * (1 - bf.tier_fee(Q, b)))
+            key = [3_000 + i, "M", sol, tok, q, b]
+            sample.append({"key": key, "isbuy": False, "ev_v": v})
+            recs.append({"key": key, "status": "ok", "fields_equal": True,
+                         "decoded": {"side": "sell", "ix_name": "sell", "sol_lamports": sol, "token_raw": tok, "quote_reserve": q,
+                                     "base_reserve": b, "virtual_quote_reserves": v, "pool_quote_amount": Q * tok // (b + tok)}})
+        for name in self.EXACT_IN:
+            _tx, (row,) = fixture_rows(name)
+            key, rec = p5_record(row)
+            sample.append({"key": key, "isbuy": True, "ev_v": row["virtual_quote_reserves"]})
+            recs.append(rec)
+        lay.p7_sample.write_text("".join(json.dumps(r) + "\n" for r in sample))
+        lay.gettx_v.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        lay.line_a_sample.write_text("")
+        lay.cross_source.write_text(json.dumps({"line_a_pass": True, "p7_sampled": len(sample)}))
+        return lay, hits
+
+    def test_exact_in_raw_cannot_change_a_true_pass(self):
+        """Am.7 E: on a layout where `pass` is True, exact_in_raw returning garbage or raising leaves `pass` True and every other field
+        equal. (test_counts_and_pass has no sells, so its `pass` is False whatever exact_in_raw does.)"""
+        with tempfile.TemporaryDirectory() as d:
+            lay, hits = self._passing_layout(d)
+            res = bi.p7_check(lay)
+            self.assertIs(res["pass"], True)
+            self.assertEqual([res["tier"]["sell"]["pass"], res["tier"]["buy"]["pass"], res["line_b"]["sell"]["pass"],
+                              res["line_b"]["buy"]["pass"]], [True] * 4)
+            self.assertEqual((res["tier"]["sell"]["n"], res["tier"]["sell"]["match"]), (len(self.SELLS), len(self.SELLS)))
+            buy = res["tier"]["buy"]
+            self.assertEqual((buy["n"], buy["match"], buy["excluded"], buy["excluded_by"]["buy_exact_quote_in"]),
+                             (len(hits), len(hits), len(self.EXACT_IN), len(self.EXACT_IN)))
+            lb = res["line_b"]
+            self.assertEqual((lb["sell"]["comparable"], lb["sell"]["match"], lb["buy"]["comparable"], lb["buy"]["match"],
+                              lb["buy"]["excluded_by"]["buy_exact_quote_in"]),
+                             (len(self.SELLS), len(self.SELLS), len(hits), len(hits), len(self.EXACT_IN)))
+            ex = res["exact_in_raw_report_only"]
+            self.assertEqual((ex["n"], ex["fields_missing"], ex["pqa_minus_sol_eq_ceil_sum"], ex["report_only"]),
+                             (len(self.EXACT_IN), 0, len(self.EXACT_IN), True))
+
+            def rest(r):
+                return {k: v for k, v in r.items() if k != "exact_in_raw_report_only"}
+
+            for garbage in ({"garbage": True}, {"pass": False, "error": "garbage", "n": -1, "report_only": False}, None, "garbage"):
+                with self.subTest(returns=garbage), mock.patch.object(bi, "exact_in_raw", return_value=garbage):
+                    r = bi.p7_check(lay)
+                    self.assertIs(r["pass"], True)
+                    self.assertEqual(r["exact_in_raw_report_only"], garbage)
+                    self.assertEqual(rest(r), rest(res))
+            for exc in (ZeroDivisionError("x"), KeyError("k"), ValueError("v")):
+                with self.subTest(raises=type(exc).__name__), mock.patch.object(bi, "exact_in_raw", side_effect=exc):
+                    r = bi.p7_check(lay)
+                    self.assertIs(r["pass"], True)
+                    self.assertEqual(r["exact_in_raw_report_only"], {"error": type(exc).__name__, "report_only": True})
+                    self.assertEqual(rest(r), rest(res))
+
     def test_gettx_v_source_gives_the_same_buy_counts(self):
         with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
             a = bi.p7_check(self._layout(d1, line_a_pass=True)[0])["tier"]["buy"]
