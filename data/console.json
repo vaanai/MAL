@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T13:35:00Z",
+ "updated_utc": "2026-10-10T14:15:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "tipfollower-p7-fail-1010",
+   "kind": "other",
+   "title": "Event-V feed: the price-law acceptance check failed on 6% of buys; the feed stays on but counts for nothing until a corrected check passes",
+   "detail": "Sells 400 of 400 matched; buys 165 of 176. The 11 misses are not a feed error: 9 are multi-hop router buys that carry a small fee the check didn't model, 2 are tiny buys where rounding exceeds 1 bp. The same flaw sits in the formal 10-16/10-17 reads' pricing check and would have voided them, so it is being fixed there too, before any data is read. Quant-proof: keep the feed, re-check on a fresh hour under the corrected rule by 10-12 20:00Z, else roll back.",
+   "atUtc": "2026-10-10T14:00:00Z"
+  },
   {
    "id": "tipfollower-eventv-1010",
    "kind": "other",
