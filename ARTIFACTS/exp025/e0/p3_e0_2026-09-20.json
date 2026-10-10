@@ -13,8 +13,8 @@
   "ARTIFACTS/exp025/ref/convert.py": "252c643276d0250cb48430da019b6afcd6bf7b25",
   "ARTIFACTS/exp025/scripts/10_meta.py": "4583cf1220b90ef17139b94425efd67a5731a272",
   "ARTIFACTS/exp025/scripts/common2.py": "abb36397fdb5f4655161ee3cdd9991f9f8c28e37",
-  "tools/exp025_adapter.py": "69b5879316ccedaa6a6bb002703b1857a1c27eff",
-  "tools/test_exp025_adapter.py": "8de1334d2f2886851956ccfd267ae7990fa56584"
+  "tools/exp025_adapter.py": "20ba1c02f01e18e90eef3633a8d6ddd9e8e572a2",
+  "tools/test_exp025_adapter.py": "eaa7f4ffa6b5739ee2ad806ed6a7ad7207fbeb67"
  },
  "block": "fast-pool-0918",
  "day": "2026-09-20",
@@ -82,12 +82,13 @@
   }
  },
  "mid_check": {
-  "appended_source": "/data/mal/exp025/e0/p3-0920-r4/adapter-shared/tokens.parquet",
+  "appended_source": "/data/mal/exp025/e0/p3-0920-r5/adapter-shared/tokens.parquet",
   "appended_source_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb",
   "cases": {
    "earlier_shift": {
     "append": {
      "exploration_rows": 1419194,
+     "october_dup_graduated": 0,
      "october_dup_mints_dropped": 0,
      "october_rows": 73685,
      "sha256": "3262809acc0a4f9f4b05a37b0bbac281f6359b6c1d5e89dac19befea9d6d72e1"
@@ -121,6 +122,7 @@
    "later_shift": {
     "append": {
      "exploration_rows": 1419194,
+     "october_dup_graduated": 0,
      "october_dup_mints_dropped": 0,
      "october_rows": 73685,
      "sha256": "1b8cab351b552aa16dbed0a5313aeec27b6b7dc8b341469385dbe826be27efe9"
@@ -157,6 +159,7 @@
    "same_day": {
     "append": {
      "exploration_rows": 1419194,
+     "october_dup_graduated": 1123,
      "october_dup_mints_dropped": 73685,
      "october_rows": 0,
      "sha256": "47bab7f25b6dba8cef797b000a674039e9c5aba21a2439e70ca8e307a8f983f5"
@@ -208,7 +211,7 @@
  },
  "ref_tape": "/data/mal/audit-1008/tape",
  "schema": "exp025_p3_e0_v1",
- "seconds": 265.2,
+ "seconds": 267.4,
  "src": "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
  "tokens": {
   "adapter_md5": "88ce6423d480c3f74ef4e2a91448e55c",
