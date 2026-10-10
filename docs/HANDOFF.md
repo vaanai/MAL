@@ -40,7 +40,15 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - 0 late sells;
   - landing about 0.87 s.
 - **Formal tests.** No A3 halt flag fired, so EXP-024 Look 1 is not halted (it counts from 10-10T00Z). This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check. EXP-022's six flags are clear. `program_changed` was clear.
-- **To resume** (after the owner's amendment): `sudo rm /var/lib/mal-live/h5/STOP` on fast-0 in a MiScusi job, then check that `--status` shows `stop_file=False`.
+- **Owner decided at 07:27:25Z: DEC-024 Amendment 4.**
+  - §5.1 is now the executor's UTC-day median over ≥30 pools after s0.
+  - The A3 median is report-only, except that below 330 s it halts.
+  - The 07:11Z fire counts as the first "below 337".
+- **Resume:** only if day 10-10 completes at ≥337 s over ≥30 pools with no other §5 rule fired. The manager checks after 10-11T00:00Z, runs `sudo rm /var/lib/mal-live/h5/STOP` in a MiScusi job, checks `stop_file=False`, and records the instant and the median in Am.4. A clean resume counts as resolved for T1.
+- **Daily manager duty (Am.4 item 2), after each 00:00Z:**
+  - read the completed day's executor median;
+  - place STOP on the first completed day from 10-11 below 337 s;
+  - a day under 30 pools is unevaluated, and two in a row halt.
 - **Minor, for the pre-10-16 reinstall:** the `on_boost_row` docstring says ">= 10 pools" while the code uses 30.
 
 ### STATE 10-09 ~19:35Z (older)
