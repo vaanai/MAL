@@ -47,10 +47,10 @@ class Base(unittest.TestCase):
         self.marker.write_text("")
         self.ledger.write_text(json.dumps({"experiment": "EXP-012", "final": True, "utc_time": "2026-10-16T02:10:00Z"}) + "\n")
 
-    def run_x(self, hours=(H1,)) -> tuple[int, str]:
+    def run_x(self, hours=(H1,), now=None) -> tuple[int, str]:
         buf = io.StringIO()
         rc = X.run(marker=str(self.marker), ledger=str(self.ledger), base_dir=self.base, ev_dir=self.ev, out_path=self.out,
-                   hours=list(hours), out=buf)
+                   hours=list(hours), out=buf, now=R.ep("2026-10-17T02") if now is None else now)
         return rc, buf.getvalue()
 
     def record(self) -> dict:
@@ -173,6 +173,26 @@ class SealTests(Base):
 
     def test_test_window_final_is_not_the_final(self):
         self.ledger.write_text(json.dumps({"experiment": "EXP-012", "final": True, "test_window": True}) + "\n"); self.assert_refused()
+
+    def test_before_look1_last_hour_ends_refuses_even_after_the_final(self):
+        rows = base_rows(10)
+        write_walk(self.base, {H1: rows}); write_walk(self.ev, {H1: ev_of(rows)})
+        with self._no_open():
+            rc, txt = self.run_x(now=R.ep("2026-10-17T02") - 1)
+        self.assertEqual(rc, 2); self.assertEqual(self.opened, [])
+        self.assertIn("sealed until the DEC-016 FINAL", txt)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_forward_v_join_not_the_pinned_blob_refuses(self):
+        rows = base_rows(10)
+        write_walk(self.base, {H1: rows}); write_walk(self.ev, {H1: ev_of(rows)})
+        real = FVJ.git_blob_sha
+        def fake(path):
+            return "0" * 40 if Path(path).name == "forward_v_join.py" else real(path)
+        with mock.patch.object(FVJ, "git_blob_sha", fake):
+            rc, txt = self.run_x()
+        self.assertEqual(rc, 2); self.assertIn("forward_v_join", txt); self.assertNotIn('"crash"', txt)
+        self.assertFalse(os.path.exists(self.out))
 
     def test_written_once(self):
         rows = base_rows(10)

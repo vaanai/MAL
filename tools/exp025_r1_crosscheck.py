@@ -24,8 +24,8 @@ forward_v_join's usable hour, the same hours EXP-024 accepts V from.
 SEAL. Before anything else, the tool refuses (exit 2) unless the DEC-016 FINAL holds by both of the repo's existing checks: the marker file
 exp025_read.FINAL_MARKER exists (exp025_read.check_read_time's first condition) and forward_v_join.final_marker finds the EXP-012 FINAL line
 (final=true, no test_window) in exp025_read.FINAL_LEDGER. No walk directory, trade file, checkpoint or verify file is opened before that.
-check_read_time's other condition (Look 1's last allowlisted hour has ended, 10-17T02) is not required: this tool opens only forward-1002 and
-forward-1002ev hours of [10-09T00, 10-16T01), which P6 item 1 opens "only after the FINAL", and never a walk-2 hour.
+check_read_time's time condition is required too (Look 1's last allowlisted hour, 10-17T02Z, has ended): the record is write-once, and
+forward-1002ev's last hour 10-16T00 is walked and verified only after 10-16T01Z, so an earlier run could record a still-walking hour as not walked.
 
 ONE READ. No CLI argument: the walk dirs, the FINAL marker and ledger, the hour range and the output path are fixed in code. The record is
 written whole or not at all (temp file + link) and never overwritten: a second run refuses (exit 2). exp025_look's `lock` event records its
@@ -62,6 +62,7 @@ HOURS = tuple(FVJ.hour_list(*K.XCHECK_RANGE))
 MIN_RATE = K.XCHECK_MIN
 BASE_DIR, EV_DIR = FVJ.DEFAULT_BASE, FVJ.DEFAULT_EV          # forward-1002 (the reference), forward-1002ev (the tape)
 FINAL_MARKER, FINAL_LEDGER = R.FINAL_MARKER, R.FINAL_LEDGER
+FVJ_BLOB = "8b60e5bf5fc8a45b28a587b96a01aa20a07df2ad"   # tools/forward_v_join.py as pinned by EXP-024 (v_join); R1's rule is its check_hour
 RATED = ("ok", "below_threshold")                             # forward_v_join reasons with a computed 1:1 rate
 COUNT_FIELDS = ("rows_base", "rows_ev", "pumpswap_base", "pumpswap_ev", "matched_1to1", "pumpswap_matched", "rate", "rate_pumpswap",
                 "field_mismatch", "unkeyed", "v_missing", "bad_lines_base", "bad_lines_ev", "md5_match")
@@ -70,10 +71,12 @@ assert MIN_RATE == FVJ.MIN_MATCH_RATE, "exp025_look.XCHECK_MIN and forward_v_joi
 assert str(FVJ.DEFAULT_LEDGER) == R.FINAL_LEDGER, "forward_v_join and exp025_read must read the same FINAL ledger"
 
 
-def final_gate(marker: str, ledger: str) -> dict[str, Any]:
-    """The DEC-016 FINAL by the repo's two existing checks; FVJ.Refused otherwise. Opens the marker path and the ledger only."""
-    if not os.path.exists(marker):
-        raise FVJ.Refused(f"sealed until the DEC-016 FINAL: marker {marker} is absent")
+def final_gate(marker: str, ledger: str, now: int | None = None) -> dict[str, Any]:
+    """exp025_read.check_read_time(1, ...) (the LookGuard condition: FINAL marker, ledger entry, Look 1's last allowlisted hour 10-17T02 ended), then forward_v_join.final_marker; FVJ.Refused otherwise. Opens the marker path and the ledger only."""
+    try:
+        R.check_read_time(1, now, marker, ledger)
+    except R.Refusal as e:
+        raise FVJ.Refused(f"sealed until the DEC-016 FINAL and the end of Look 1's last allowlisted hour: {e}") from None
     return FVJ.final_marker(Path(ledger))
 
 
@@ -107,10 +110,13 @@ def write_once(path: str, doc: dict[str, Any]) -> None:
         os.unlink(tmp)
 
 
-def run(*, marker: str, ledger: str, base_dir: Path, ev_dir: Path, out_path: str, hours: Sequence[str], out: TextIO = sys.stdout) -> int:
+def run(*, marker: str, ledger: str, base_dir: Path, ev_dir: Path, out_path: str, hours: Sequence[str], out: TextIO = sys.stdout,
+        now: int | None = None) -> int:
     try:
-        final_gate(marker, ledger)                          # before any walk dir is touched
+        final_gate(marker, ledger, now)                     # before any walk dir is touched
         FVJ.require_pins()
+        if FVJ.git_blob_sha(Path(FVJ.__file__)) != FVJ_BLOB:
+            raise FVJ.Refused("tools/forward_v_join.py is not blob 8b60e5bf (EXP-024 v_join pin): R1's rule would differ")
         if os.path.exists(out_path):
             raise FVJ.Refused(f"{out_path} exists: the R1 cross-check record is written once")
     except FVJ.Refused as e:
