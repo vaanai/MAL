@@ -745,7 +745,12 @@ This read's seal end states, and quant-proof's ruling that Amendment 4 item D1 l
 
 Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the repo at main `742d7c9` (with #476 merged as `42c1e41`, #562 as `0ef32e2` and #566 as `737c307`), the MiScusi records of jobs #538, #546 and #551, and the E0 record files those jobs wrote on exploration day 2026-09-20. It records what section 10 (P3, P4) and section 12 require. It changes no rule, parameter, window, leg, threshold or refusal.
 
-**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Items D (who writes the forward vmap) and E (whether a `parse_failed` hour counts as bad) stay OPEN for the manager. Neither changes a pin.
+**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Every blob in A is also unchanged on main `b63555b` (merged into this branch; checked 2026-10-10T13:34Z). Items D (the forward vmap) and E (`parse_failed` hours) record the manager's decisions, declared before any October data is read.
+
+**What would change a pin.** The pins are the eight blobs of the A line.
+- A change to the read tool, for example to apply item E in code, changes the `read_tool` blob. That needs a new A line, a P4.2 E0 re-run at the new blob, and an amendment merged before 2026-10-16T00:00Z. This amendment makes no such change: E is applied from P6's counts.
+- The vmap producer (D) is a NEW file, `tools/h5_forward_vmap.py` (#568). It is not an A-line key and it edits no pinned file, so no pinned blob changes.
+- Any edit to `tools/forward_v_join.py` or `tools/h5_forward_extract.py` changes the `v_join` or `extractor` blob. That breaks the pins and forces an E0-H5 re-run at the new blobs, a new A line and an amendment before the same deadline.
 
 #### A. The pin line (section 10 P4 item 3; section 12 "the E0-H5 blobs match")
 
@@ -772,9 +777,11 @@ EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408
 
 | PR | What | Final head | Merge commit | quant-proof OK on the final head |
 | --- | --- | --- | --- | --- |
-| #476 | read tool (forward mode), #476 module, inputs producer | `3f2e26c` (job #551's code; same three blobs as main) | `42c1e41ff28ec068bc0315a4bc247c35abab68ff` | **TBD (manager):** link |
-| #562 | forward extractor and E0-H5 | `38c3c73` | `0ef32e254ac9f7c85bb752e37f6418afa761729d` | **TBD (manager):** link |
-| #566 | extractor: keep null-V0 pools, fix the `cp1` v pairing | `810221d` (job #546's code; same extractor blob as main) | `737c3078e4bb27def876cdc16c35fa6bdaa5faaf` | **TBD (manager):** link |
+| #476 | read tool (forward mode), #476 module, inputs producer | `3f2e26c` (job #551's code; same three blobs as main) | `42c1e41ff28ec068bc0315a4bc247c35abab68ff` | [OK at `3f2e26c`](https://github.com/vaanai/MAL/pull/476#issuecomment-6097758381) |
+| #562 | forward extractor and E0-H5 | `38c3c73` | `0ef32e254ac9f7c85bb752e37f6418afa761729d` | [OK at `38c3c73`](https://github.com/vaanai/MAL/pull/562#issuecomment-6097303978) |
+| #566 | extractor: keep null-V0 pools, fix the `cp1` v pairing | `810221d` (job #546's code; same extractor blob as main) | `737c3078e4bb27def876cdc16c35fa6bdaa5faaf` | [OK at `810221d`](https://github.com/vaanai/MAL/pull/566#issuecomment-6097536311) |
+
+Each link is the manager's merge comment on that PR, which records quant-proof's OK at the head named.
 
 **Catalog (section 12).** On main `742d7c9` the read tool does not call `mal_catalog.check_read`. The only mention is its docstring, which says it allowlists exactly the section 3 hours. So #465 is not a precondition.
 
@@ -793,7 +800,7 @@ EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408
   - `equal` true: n_tool 288 = n_ref 288.
   - md5_tool = md5_ref = `328264a4f22176f7048d9f7719ae930b`, over (mint, leg, stake, pnl rounded to the lamport) of the `boostdip_frozen_conf.parquet` rows with `H == 'end'` on 2026-09-20.
   - `conf_sha256` `a4798efaa362122e1866db6ca0c34c4b75a17aba6f9a6ffd5940515808c977ca`; `read_tool_blob` `fefe0c156ce75839cf973da82e408f0dd9454678`. The job log prints `inputs` blob `adef463e0258b522318eb2c8b9051516b4776685`. Both equal A.
-  - The record is the job's `e0.json` in its MiScusi output directory. Its file sha256 was not measured here.
+  - Record: the job's `e0.json` in its MiScusi output directory, `/home/claude/.miscusi/jobs/j_vz_rlwvrMJWXSQ/out/e0.json` on mal-research-0, sha256 `839548727f5b29b256b0f892a441704fd7968fe688e8829ad30023bc648c852c` [measured 2026-10-10T13:34Z; its content equals the JSON the job log prints].
   - It replaces job #540 (code `b3dbc80`, read-tool blob `f92abdd6…`, same n and md5), whose blob is no longer pinned.
 - **P4.3, blobs:** the extractor, the read tool, `tools/latency_curve.py`, `tools/paper_curve_math.py` and #476's module are the A line, and the E0 runs above ran at those blobs.
 
@@ -812,7 +819,11 @@ Null-V0 pools stay in, per #566: `load_vmap` keeps a null as V-unknown, the pool
 - `forward_v_join join --emit v` writes the V fields per matched row, keyed by (slot, signature, event_index), plus the fallback list. It writes no per-pool map.
 - No tool on main reduces the join output to `{pool: V at the pool's first print | null}`.
 
-**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **TBD (manager):** the producer PR, and its blob recorded in the P6 precount amendment. It is not an `integrity()` key, so the A line does not change.
+**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **The producer (pending merge).** #568, `claude/h5-forward-vmap`, open, head `8c5e37f30dbc0200815899a3e038ff1bcd9145c4`. It adds two new files, `tools/h5_forward_vmap.py` (blob `49c40e7a9776c5886c5dd7ff7f2570e227d29d2f` at that head) and `tools/test_h5_forward_vmap.py` (`8ce3f41c453a6dfa12bd28768f40672a6ba21e2c`), and edits no pinned file. Its mode `ev` writes the map chosen above. Both blobs are pending merge; the merged blob and the map's sha256 are recorded in the P6 precount amendment. The producer is not an `integrity()` key, so the A line does not change.
+
+**If line A fails [the manager's choice].** Am.1 then does not use forward-1002ev for Look 1, so the `ev` map is not used either. The vmap is rebuilt without ev, by the producer PR's line-A branch (`h5_forward_vmap gettx`). Per pool, it takes the P5 `getTransaction` record of the pool's first print (Am.1 source 2, accepted by the rule of `boostfloor_read.load_gettx` plus a pool check), then `account_v0.json` (source 3), then null. That mode refuses unless `p5/cross_source.json` records `line_a_pass: false`, `gettx_v.jsonl` hashes to the sha256 that file recorded, and `account_v0.json` exists; mode `ev` refuses once line A has failed. The forward extract is then re-run into a new directory, with the rebuilt map and job #546's E0 record, before `classify` and P6. Its manifest's `vmap_sha256` is the rebuilt map's, and the first extract is not used after that. **OPEN:** `boostfloor_inputs p5` plans its fetches from the extract; whether it is re-run on the new extract before `classify` is not decided here.
+
+**Reporting [pre-declared; outcome-blind; counts only].** P6 reports the forward extract's `canon_null_v` and `canon_null_v_multipool` (job #546's E0-H5 record gave 0 and 0), with the producer's counts (pools, pools with V, nulls by reason) and the map's sha256.
 
 Not used, with reasons:
 - `pool_v_0909.json` is the E0 map, a 2026-09-09 snapshot. October pools are absent from it, and the extractor drops absent pools.
@@ -820,11 +831,12 @@ Not used, with reasons:
 
 **Order [OPEN to confirm].** Each step needs the one before it:
 1. P5(a) `forward_v_join join`;
-2. the vmap producer;
+2. the vmap producer, mode `ev`;
 3. the forward extract, with job #546's E0 record;
 4. `boostfloor_inputs p5`, which plans its fetches from the extract;
-5. `classify`;
-6. P6 `precount`.
+5. only if line A fails: `boostfloor_inputs account`, the producer's `gettx` mode, and the extract re-run into a new directory (above);
+6. `classify`;
+7. P6 `precount`.
 
 All of these run after the FINAL (A), and none computes an outcome.
 
@@ -840,7 +852,9 @@ The read tool on main `742d7c9` does not read that manifest. Its good and bad ho
 - the extractor manifest's `reason_counts`;
 - the number of hours that `hour_state` calls `ok` and the manifest calls `parse_failed`.
 
-**OPEN:** the manager decides, before P6 and without any outcome, whether such an hour also counts as bad in the 5% test. That would need a read-tool change or a rule written here. If the count is 0, the question is moot.
+**The manager's decision (2026-10-10; declared before any October data is read; fail closed, R1).** An hour with any `parse_failed` line counts as a BAD hour. The pinned read tool does not read the manifest, so the rule is written here and applied from the P6 count, with no read-tool change: the bad hours of section 4's 5% test are the read tool's bad hours plus the hours that `hour_state` calls `ok` and the manifest calls `parse_failed`. If that sum is more than 5% of the look's window hours, Look 1 is NOT_DECIDABLE, and section 11 "Spending" applies. If the count is 0, the rule changes nothing.
+
+Disclosed, not covered by the count: the extractor's hole rule already removes every mint whose migration hour, or the next hour, is `parse_failed`, but a later `parse_failed` hour inside a trade's span is not visible to the pinned read tool, which would treat that trade as covered. If the count is not 0, that case needs a ruling before any outcome.
 
 #### F. Not changed
 
