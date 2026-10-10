@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -598,6 +599,379 @@ def test_bootstrap_reads_zst_hours_and_continues_live_offsets(tmp_path):
     assert [r["slot"] for r in t.poll(now)] == [4]
 
 
+# ---- streaming bootstrap (job #568: the in-memory hour was OOM-killed at a 1.9 GB cap) ------------------------------------------------------
+class _OldTipTail(cs.TipTail):
+    """The bootstrap as #503 merged it, kept here as the reference: every kind file of an hour is read into one list (a .zst whole into memory by
+    `capture_output`) and the list is sorted with `list.sort(key=row_key)`, which is stable. The new bootstrap must give this row sequence."""
+
+    def old_read_plain(self, kind, hour):
+        path = self.dir / f"{kind}-{hour}.jsonl"
+        key = (kind, hour)
+        try:
+            st = path.stat()
+        except OSError:
+            return []
+        pos = self.off.get(key, 0)
+        if key in self.ino and (self.ino[key] != st.st_ino or st.st_size < pos):
+            pos = 0
+            self.resets += 1
+        self.ino[key] = st.st_ino
+        out = []
+        with open(path, "rb") as fh:
+            fh.seek(pos)
+            while True:
+                line = fh.readline()
+                if not line.endswith(b"\n"):
+                    break
+                pos += len(line)
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    self.bad_lines += 1
+                    continue
+                if isinstance(r, dict):
+                    r["_k"] = kind
+                    out.append(r)
+        self.off[key] = pos
+        self.rows_read += len(out)
+        return out
+
+    def old_read_zst(self, kind, hour, extra_dirs):
+        import subprocess
+
+        for d in (self.dir, *extra_dirs):
+            p = d / f"{kind}-{hour}.jsonl.zst"
+            if p.is_file():
+                res = subprocess.run(["zstd", "-dc", str(p)], capture_output=True, check=True, timeout=300)
+                out = []
+                for line in res.stdout.splitlines():
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        self.bad_lines += 1
+                        continue
+                    if isinstance(r, dict):
+                        r["_k"] = kind
+                        out.append(r)
+                self.rows_read += len(out)
+                return out
+        return []
+
+    def old_bootstrap(self, hours, extra_dirs=()):
+        from pathlib import Path as _P
+
+        extra = [_P(d) for d in extra_dirs]
+        for h in hours:
+            rows = []
+            for k in cs.KINDS:
+                got = self.old_read_plain(k, h) if (self.dir / f"{k}-{h}.jsonl").exists() else self.old_read_zst(k, h, extra)
+                rows.extend(got)
+            rows.sort(key=cs.row_key)
+            yield rows
+
+
+def _put(path: Path, text: str, zst: bool = False) -> None:
+    """Write `text` as path (plain) or path + '.zst'."""
+    import subprocess
+
+    if zst:
+        subprocess.run(["zstd", "-q", "-f", "-o", str(path) + ".zst"], input=text.encode(), check=True)
+    else:
+        path.write_bytes(text.encode())
+
+
+def _mixed_hours(tmp_path: Path) -> tuple[Path, Path, list[str]]:
+    """A tip dir and an archive dir that hit every branch of the bootstrap: ties across kinds and inside a file, rows without tx_index / event_index,
+    bad lines, non-object JSON, a blank line, a half-written last line, .zst in the tip dir and in the archive dir (CRLF, no final newline), an
+    empty file, a file of garbage only, a missing kind, a missing hour, and keys that are floats or past int64 (the exact-key path)."""
+    tip, arc = tmp_path / "tip", tmp_path / "arc"
+    tip.mkdir()
+    arc.mkdir()
+    hs = [f"2026-10-09T{h:02d}" for h in range(8, 16)]
+    # 08: plain, everything
+    _put(tip / f"trades-{hs[0]}.jsonl",
+         jl({"slot": 7, "tx_index": 2, "event_index": 0, "uid": "t1"}, {"slot": 5, "tx_index": 1, "event_index": 0, "uid": "t2"},
+            {"slot": 5, "tx_index": 1, "event_index": 0, "uid": "t3"}, {"slot": 5, "uid": "t4"},
+            {"slot": 5, "tx_index": None, "event_index": None, "uid": "t5"}, {"slot": 6, "tx_index": 0, "uid": "t6"})
+         + "garbage\n[1, 2]\n5\nnull\n\n" + jl({"slot": 5, "tx_index": 1, "event_index": 1, "uid": "t7"}) + '{"slot": 4, "uid": "half"')
+    _put(tip / f"creates-{hs[0]}.jsonl", jl({"slot": 5, "tx_index": 1, "event_index": 0, "uid": "c1"}, {"slot": 5, "uid": "c2"},
+                                            {"slot": 7, "tx_index": 2, "event_index": 0, "uid": "c3"}))
+    _put(tip / f"migrations-{hs[0]}.jsonl", jl({"slot": 5, "tx_index": 1, "event_index": 0, "uid": "m1"}, {"slot": 7, "tx_index": 2, "event_index": 0, "uid": "m2"}))
+    # 09: trades .zst, creates plain, migrations absent
+    _put(tip / f"trades-{hs[1]}.jsonl", jl({"slot": 20, "tx_index": 3, "uid": "z1"}, {"slot": 19, "tx_index": 3, "uid": "z2"}, {"slot": 20, "tx_index": 3, "uid": "z3"}), zst=True)
+    _put(tip / f"creates-{hs[1]}.jsonl", jl({"slot": 20, "tx_index": 3, "uid": "zc1"}))
+    # 10: an empty plain file, a plain file of garbage only, no migrations
+    _put(tip / f"trades-{hs[2]}.jsonl", "")
+    _put(tip / f"creates-{hs[2]}.jsonl", "nope\n{broken\n")
+    # 11: no file at all
+    # 12: .zst in the archive dir (CRLF lines, a bad line, no final newline) and in the tip dir (no final newline)
+    _put(arc / f"trades-{hs[4]}.jsonl", jl({"slot": 30, "tx_index": 1, "uid": "a1"}, {"slot": 29, "uid": "a2"}).replace("\n", "\r\n") + "bad\r\n"
+         + json.dumps({"slot": 30, "tx_index": 1, "uid": "a3"}), zst=True)
+    _put(tip / f"creates-{hs[4]}.jsonl", jl({"slot": 30, "tx_index": 1, "uid": "ac1"}).rstrip("\n"), zst=True)
+    # 13: keys that are not plain int64: a float equal to an int, a float tx_index, a value past int64
+    _put(tip / f"trades-{hs[5]}.jsonl", jl({"slot": 5.0, "uid": "x1"}, {"slot": 5, "uid": "x2"}, {"slot": 2 ** 70, "uid": "x3"}, {"slot": 3, "tx_index": 2.5, "uid": "x4"},
+                                           {"slot": 3, "tx_index": 2, "uid": "x5"}, {"slot": -4, "uid": "x6"}))
+    _put(tip / f"migrations-{hs[5]}.jsonl", jl({"slot": 5, "uid": "xm1"}))
+    # 14: big ints that still fit int64 (the compact path at its edge)
+    _put(tip / f"trades-{hs[6]}.jsonl", jl({"slot": 2 ** 63 - 1, "uid": "e1"}, {"slot": -(2 ** 63), "uid": "e2"}, {"slot": 2 ** 63 - 1, "tx_index": 1, "uid": "e3"}))
+    # 15: same slot in the three kinds, tied keys appear in a different order than the kinds
+    for k in cs.KINDS:
+        _put(tip / f"{k}-{hs[7]}.jsonl", jl({"slot": 9, "tx_index": 4, "event_index": 2, "uid": f"{k}1"}, {"slot": 9, "tx_index": 4, "event_index": 2, "uid": f"{k}2"}))
+    return tip, arc, hs
+
+
+needs_zstd = pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd binary")
+
+
+def _drain(t, hours, extra, new: bool):
+    gen = t.bootstrap(hours, extra) if new else t.old_bootstrap(hours, extra)
+    return [list(b) for b in gen]
+
+
+def _counters(t):
+    return {"off": t.off, "ino": t.ino, "rows_read": t.rows_read, "bad_lines": t.bad_lines, "resets": t.resets}
+
+
+@needs_zstd
+def test_bootstrap_two_pass_gives_the_old_row_sequence_and_offsets(tmp_path):
+    tip, arc, hs = _mixed_hours(tmp_path)
+    old, new = _OldTipTail(tip), cs.TipTail(tip, tmp_dir=tmp_path)
+    # hs[6] / hs[5] hold keys past the plain int64 path: the exact-key path must agree too
+    want = _drain(old, hs, [arc], new=False)
+    got = _drain(new, hs, [arc], new=True)
+    assert [len(b) for b in got] == [len(b) for b in want]
+    assert got == want                                                 # same dicts, same order, ties included
+    # recorded, not derived: by (slot, tx_index or 0, event_index or 0, kind rank creates < migrations < trades), ties by line order
+    assert [r["uid"] for r in got[0]] == ["c2", "t4", "t5", "c1", "m1", "t2", "t3", "t7", "t6", "c3", "m2", "t1"]
+    assert [r["uid"] for r in got[7]] == ["creates1", "creates2", "migrations1", "migrations2", "trades1", "trades2"]
+    assert _counters(new) == _counters(old)
+    assert old.bad_lines == 5 and old.rows_read == sum(len(b) for b in want)   # the counters are not trivially zero
+    assert [("trades", hs[0]), ("creates", hs[0]), ("migrations", hs[0])] == [k for k in new.off if k[1] == hs[0]]
+    assert not any(k[1] == hs[1] and k[0] == "trades" for k in new.off)         # a .zst hour keeps no offset
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".bootstrap")) == []   # no temp file left behind
+
+
+@needs_zstd
+def test_bootstrap_two_pass_empty_hours_are_exactly_the_old_empty_batches(tmp_path):
+    tip, arc, hs = _mixed_hours(tmp_path)
+    old, new = _OldTipTail(tip), cs.TipTail(tip, tmp_dir=tmp_path)
+    want = [not b for b in old.old_bootstrap(hs, [arc])]
+    got = [not b for b in new.bootstrap(hs, [arc])]
+    assert got == want
+    assert want[2] and want[3] and not want[0] and not want[1] and not want[4]   # garbage-only and absent hours are empty
+
+
+@needs_zstd
+def test_bootstrap_two_pass_live_tail_continues_where_the_bootstrap_stopped(tmp_path):
+    tip, arc, hs = _mixed_hours(tmp_path)
+    old, new = _OldTipTail(tip), cs.TipTail(tip, tmp_dir=tmp_path)
+    _drain(old, hs, [arc], new=False)
+    _drain(new, hs, [arc], new=True)
+    now = int(datetime(2026, 10, 9, 8, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    assert [r["uid"] for r in new.poll(now)] == [r["uid"] for r in old.poll(now)] == []      # nothing is read twice, the half line still waits
+    with (tip / f"trades-{hs[0]}.jsonl").open("a") as fh:
+        fh.write(', "tx_index": 9}\n' + jl({"slot": 8, "uid": "late"}))                    # completes the half-written line, then one more row
+    with (tip / f"creates-{hs[0]}.jsonl").open("a") as fh:
+        fh.write(jl({"slot": 8, "uid": "latec"}))
+    a, b = new.poll(now), old.poll(now)
+    assert [r["uid"] for r in a] == [r["uid"] for r in b] == ["half", "latec", "late"] and a == b
+    assert _counters(new) == _counters(old)
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+@needs_zstd
+def test_bootstrap_two_pass_random_hours_with_many_ties(tmp_path, seed):
+    import random
+
+    rnd = random.Random(seed)
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    hs = [f"2026-10-09T{h:02d}" for h in range(3)]
+    n = 0
+    for h in hs:
+        for k in cs.KINDS:
+            lines = []
+            for _ in range(rnd.randrange(0, 700)):
+                row = {"slot": rnd.randrange(12), "uid": n}
+                n += 1
+                if rnd.random() < 0.7:
+                    row["tx_index"] = rnd.choice([None, 0, 1, 2, 3])
+                if rnd.random() < 0.5:
+                    row["event_index"] = rnd.choice([None, 0, 1])
+                lines.append(json.dumps(row) + "\n")
+                if rnd.random() < 0.02:
+                    lines.append(rnd.choice(["junk\n", "\n", "[]\n"]))
+            text = "".join(lines)
+            if rnd.random() < 0.3:
+                text += '{"slot": 1, "uid": "tail"'                                         # half-written
+            _put(tip / f"{k}-{h}.jsonl", text, zst=(seed == 3 and k != "creates"))
+    old, new = _OldTipTail(tip), cs.TipTail(tip, tmp_dir=tmp_path)
+    want, got = _drain(old, hs, [], new=False), _drain(new, hs, [], new=True)
+    assert got == want and sum(map(len, want)) > 500
+    assert _counters(new) == _counters(old)
+
+
+@needs_zstd
+def test_bootstrap_two_pass_unorderable_keys_fail_as_the_old_sort_did(tmp_path):
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    _put(tip / "trades-2026-10-09T08.jsonl", jl({"slot": "x", "uid": 1}, {"slot": 1, "uid": 2}))
+    with pytest.raises(TypeError):
+        _drain(_OldTipTail(tip), ["2026-10-09T08"], [], new=False)
+    with pytest.raises(TypeError):
+        _drain(cs.TipTail(tip), ["2026-10-09T08"], [], new=True)
+
+
+def test_bootstrap_two_pass_hour_rows_is_reiterable_and_refuses_a_replaced_file(tmp_path):
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    p = tip / "trades-2026-10-09T08.jsonl"
+    _put(p, jl({"slot": 2, "uid": "b"}, {"slot": 1, "uid": "a"}))
+    t = cs.TipTail(tip)
+    (batch,) = list(t.bootstrap(["2026-10-09T08"]))                    # the generator is done; the hour is still readable
+    assert len(batch) == 2 and [r["uid"] for r in batch] == ["a", "b"]
+    assert [r["uid"] for r in batch] == ["a", "b"]                     # a second iteration reads it again
+    q = tip / "x.tmp"
+    _put(q, jl({"slot": 2, "uid": "b"}, {"slot": 1, "uid": "a"}))
+    os.replace(q, p)                                                   # same bytes, new inode: the offsets no longer belong to the file we scanned
+    with pytest.raises(RuntimeError):
+        list(batch)
+    p.write_text(jl({"slot": 1, "uid": "z"}))                          # same inode, shorter than the scanned end
+    (batch2,) = list(cs.TipTail(tip).bootstrap(["2026-10-09T08"]))
+    p.write_text("")
+    with pytest.raises(RuntimeError):
+        list(batch2)
+
+
+@needs_zstd
+def test_bootstrap_zst_temp_file_is_removed_when_the_consumer_stops_early(tmp_path):
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    _put(tip / "trades-2026-10-09T08.jsonl", jl(*({"slot": i, "uid": i} for i in range(50))), zst=True)
+    t = cs.TipTail(tip, tmp_dir=tmp_path)
+    (batch,) = list(t.bootstrap(["2026-10-09T08"]))
+    it = iter(batch)
+    assert next(it)["slot"] == 0
+    assert len([p for p in tmp_path.iterdir() if p.name.startswith(".bootstrap-")]) == 1     # decompressed while the iteration runs
+    it.close()
+    assert [p for p in tmp_path.iterdir() if p.name.startswith(".bootstrap-")] == []
+    (tmp_path / ".bootstrap-stale.tmp").write_text("x")                # a killed run's leftover goes at the next bootstrap in that dir
+    list(t.bootstrap([]))
+    assert not (tmp_path / ".bootstrap-stale.tmp").exists()
+
+
+@needs_zstd
+def test_bootstrap_two_pass_corrupt_zst_raises(tmp_path):
+    import subprocess
+
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    (tip / "trades-2026-10-09T08.jsonl.zst").write_bytes(b"not a zstd frame")
+    with pytest.raises(subprocess.CalledProcessError):
+        list(cs.TipTail(tip, tmp_dir=tmp_path).bootstrap(["2026-10-09T08"]))
+    assert [p for p in tmp_path.iterdir() if p.name.startswith(".bootstrap-")] == []
+
+
+def _synthetic_tip(tip: Path, hour: str, n_rows: int, zst: bool = False) -> None:
+    """About n_rows tip rows of the live shape (a dozen fields, near-sorted by slot like the follower's arrival order): 80% trades, 10% creates, 10% migrations."""
+    import random
+
+    rnd = random.Random(7)
+    for k, share in (("trades", 0.8), ("creates", 0.1), ("migrations", 0.1)):
+        lines = []
+        for i in range(int(n_rows * share)):
+            slot = 1_000_000 + i // 3 + rnd.randrange(-2, 3)
+            lines.append(json.dumps({"venue": "pumpswap", "mint": f"M{i % 997:05d}" + "x" * 38, "trader": f"W{rnd.randrange(50_000):06d}" + "y" * 36, "side": "buy",
+                                     "sol_lamports": 1_000_000 + i, "token_raw": 1_000_000_000 + i, "quote_reserve": 120e9 + i, "base_reserve": 1e15,
+                                     "pool": f"P{i % 997:05d}" + "z" * 38, "slot": slot, "block_time": 1_788_523_200 + slot // 3, "tx_index": rnd.randrange(1, 300),
+                                     "event_index": rnd.randrange(0, 3), "virtual_quote_reserve": 17.58e9, "t_recv_ms": 1}) + "\n")
+        _put(tip / f"{k}-{hour}.jsonl", "".join(lines), zst=zst)
+
+
+def _consume_md5(gen) -> tuple[int, str]:
+    """Walk a bootstrap row by row, keeping only a digest of the row sequence (so the check itself holds no list of rows)."""
+    import hashlib as _h
+
+    md, n = _h.md5(), 0
+    for batch in gen:
+        for r in batch:
+            md.update(f"{r['_k']}{r['slot']}{r['tx_index']}{r['event_index']}{r['sol_lamports']}".encode())
+            n += 1
+    return n, md.hexdigest()
+
+
+def test_bootstrap_two_pass_python_allocations_are_a_fraction_of_the_old_list(tmp_path, capsys):
+    """tracemalloc peak (numpy allocations are traced too) of the old bootstrap against the new one on one synthetic hour, same rows, same digest."""
+    import tracemalloc
+
+    hour, n_rows = "2026-10-09T08", 40_000
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    _synthetic_tip(tip, hour, n_rows)
+    peaks = {}
+    digests = {}
+    for name, gen in (("old", lambda: _OldTipTail(tip).old_bootstrap([hour], [])), ("new", lambda: cs.TipTail(tip).bootstrap([hour], []))):
+        tracemalloc.start()
+        try:
+            digests[name] = _consume_md5(gen())
+            peaks[name] = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    with capsys.disabled():
+        print(f"\nbootstrap tracemalloc peak, {digests['new'][0]} rows: old {peaks['old'] / 1e6:.1f} MB, new {peaks['new'] / 1e6:.1f} MB")
+    assert digests["old"] == digests["new"] and digests["new"][0] >= n_rows - 1
+    assert peaks["new"] * 8 < peaks["old"]
+
+
+_RSS_PROBE = r'''
+import json, sys
+root, tip, mode, tmp = sys.argv[1:5]
+sys.path.insert(0, root)
+from pathlib import Path
+from tools import c1nf_shadow as cs
+from tools.test_c1nf_shadow import _OldTipTail, _consume_md5
+
+
+def hwm_kb():                       # this process's own high-water RSS (getrusage ru_maxrss would carry the parent's peak over the exec)
+    for line in open("/proc/self/status"):
+        if line.startswith("VmHWM:"):
+            return int(line.split()[1])
+
+
+base_kb = hwm_kb()
+hour = "2026-10-09T08"
+gen = _OldTipTail(Path(tip)).old_bootstrap([hour], []) if mode == "old" else cs.TipTail(Path(tip), tmp_dir=tmp).bootstrap([hour], [])
+n, md = _consume_md5(gen)
+print(json.dumps({"n": n, "md5": md, "base_kb": base_kb, "peak_kb": hwm_kb()}))
+'''
+
+
+@needs_zstd
+@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="Linux /proc")
+@pytest.mark.parametrize("zst,n_rows", [(False, 300_000), (True, 120_000)])
+def test_bootstrap_two_pass_resident_memory_does_not_follow_the_hour(tmp_path, capsys, zst, n_rows):
+    """Peak resident memory (VmHWM) of a fresh process walking one synthetic hour, old bootstrap against new: the cause of job #568 was RSS. The hour
+    is written by this process; each probe is its own process, so its baseline (interpreter, numpy, this module) is subtracted."""
+    import subprocess
+    import sys
+
+    tip = tmp_path / "tip"
+    tip.mkdir()
+    _synthetic_tip(tip, "2026-10-09T08", n_rows, zst=zst)
+    root = str(Path(__file__).resolve().parent.parent)
+    res = {}
+    for mode in ("old", "new"):
+        p = subprocess.run([sys.executable, "-c", _RSS_PROBE, root, str(tip), mode, str(tmp_path)], capture_output=True, text=True, timeout=300)
+        assert p.returncode == 0, p.stderr[-2000:]
+        res[mode] = json.loads(p.stdout.strip().splitlines()[-1])
+    extra = {m: (r["peak_kb"] - r["base_kb"]) / 1024 for m, r in res.items()}
+    with capsys.disabled():
+        print(f"\nbootstrap RSS ({'zst' if zst else 'plain'}, {res['new']['n']} rows): old +{extra['old']:.0f} MB (peak {res['old']['peak_kb'] / 1024:.0f}), "
+              f"new +{extra['new']:.0f} MB (peak {res['new']['peak_kb'] / 1024:.0f})")
+    assert res["old"]["n"] == res["new"]["n"] >= n_rows - 1 and res["old"]["md5"] == res["new"]["md5"]
+    assert extra["old"] > 100 and extra["new"] < 60 and extra["new"] * 5 < extra["old"]
+
+
 def test_gap_tail_primes_at_end_and_reads_new_lines(tmp_path):
     p = tmp_path / "gaps.jsonl"
     p.write_text(jl({"reason": "old"}))
@@ -847,6 +1221,139 @@ def test_asof_dir_ledger_default_hash_is_built_from_the_pinned_connection(tmp_pa
     assert checked == [con]                            # the pin was checked, once, on the connection the hash runs on
     assert led.hash_fn("anyone") == 7
     assert led.snapshot_for_day("2026-10-10").get("anyone") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
+
+
+# ---- file-backed snapshot: _PreadSnapshot must return exactly what _AsofSnapshot returns, without mapping the ledger -------------------------
+FIX_DAY = "2026-10-10"
+I64_EDGES = [0, 1, -1, 2**53, 2**53 + 1, 2**62 + 3, -(2**62) - 5, np.iinfo(np.int64).max, np.iinfo(np.int64).min, 1_048_576, -1_048_577, 7]
+
+
+def _fixture_root(tmp_path: Path, th: np.ndarray, seed: int = 0, day: str = FIX_DAY) -> Path:
+    """<root>/asof/asof-<day>/ in the layout of tools/c1nf_wallet_ledger.py: th.npy (uint64, sorted) and the 11 int64 columns, plus a MANIFEST."""
+    from tools import c1nf_wallet_ledger as L
+
+    rng = np.random.default_rng(seed)
+    d = tmp_path / "asof" / f"asof-{day}"
+    d.mkdir(parents=True)
+    np.save(d / "th.npy", np.asarray(th, dtype=np.uint64), allow_pickle=False)
+    n = len(th)
+    for c in L.ASOF_COLS:
+        v = rng.integers(-(2**40), 2**40, size=n, dtype=np.int64)
+        if n:
+            v[rng.integers(0, n, size=min(n, 12))] = rng.choice(np.array(I64_EDGES, dtype=np.int64), size=min(n, 12))
+        np.save(d / f"{c}.npy", v, allow_pickle=False)
+    (d / "MANIFEST.json").write_text(json.dumps({"schema": L.SCHEMA_VERSION, "asof_day": day, "days": []}))
+    return tmp_path
+
+
+def _bits(v):
+    return None if v is None else (type(v), tuple(type(x) for x in v), struct.pack("<7d", *v))
+
+
+def _both(root: Path, hash_fn=int):
+    from tools import c1nf_wallet_ledger as L
+
+    led = L.AsofLedger.open_for_day(root, FIX_DAY)
+    old = cs._AsofSnapshot(led, hash_fn)
+    new = cs._PreadSnapshot.from_ledger(led, hash_fn)
+    assert isinstance(new, cs._PreadSnapshot)
+    return led, old, new
+
+
+@pytest.mark.parametrize("n,block,dup", [(0, 512, False), (1, 512, False), (2, 4, False), (37, 4, False), (64, 4, False), (65, 4, False),
+                                          (512, 512, False), (513, 512, False), (1025, 512, False), (5000, 512, False), (5000, 7, False),
+                                          (300, 8, True)])
+def test_pread_snapshot_returns_exactly_what_the_memmap_snapshot_returns(tmp_path, monkeypatch, n, block, dup):
+    monkeypatch.setattr(cs._PreadSnapshot, "BLOCK", block)
+    rng = np.random.default_rng(n * 31 + block)
+    top = np.array([0, 1, 2, 2**63, 2**64 - 3, 2**64 - 2, 2**64 - 1], dtype=np.uint64)
+    pool = np.unique(np.concatenate([top, rng.integers(0, 2**64 - 1, size=n * 2, dtype=np.uint64, endpoint=True)]))
+    th = np.sort(rng.choice(pool, size=min(n, len(pool)), replace=False)) if not dup else np.sort(rng.choice(pool[:20], size=n, replace=True))
+    root = _fixture_root(tmp_path, th, seed=n)
+    led, old, new = _both(root)
+    known = [int(x) for x in th]
+    probes = known + [h + d for h in known for d in (-1, 1) if 0 <= h + d < 2**64] + [0, 1, 2**64 - 1, 2**63, 2**63 - 1, 2**63 + 1]
+    probes += [int(x) for x in rng.integers(0, 2**64 - 1, size=500, dtype=np.uint64, endpoint=True)]
+    hits = 0
+    for h in probes:
+        vo, vn = old.get(str(h)), new.get(str(h))
+        assert _bits(vo) == _bits(vn), h                       # None, or tuple of float, bit for bit
+        hits += vo is not None
+        old._cache.clear(), new._cache.clear()
+    assert hits >= (0 if n == 0 else min(len(th), 1))
+    if len(th) and not dup:                                   # and against the ledger's own matrix
+        known_m, m = led.passa_matrix(th)
+        assert known_m.all()
+        for i, h in enumerate(known):
+            assert struct.pack("<7d", *new.get(str(h))) == m[i].tobytes()
+    new.close()
+
+
+def test_pread_snapshot_unknown_wallets_and_the_cache_behave_like_the_memmap_snapshot(tmp_path):
+    root = _fixture_root(tmp_path, np.arange(10, 4000, 3, dtype=np.uint64))
+    _, old, new = _both(root)
+    assert old.get("11") is None and new.get("11") is None and "11" in new._cache      # absent is cached as None, as before
+    assert new.get("13") is new.get("13") and new.get("13") == old.get("13") and new.get("13") is not None
+    assert len(new._cache) == 2
+    new._cache_max = 3
+    for k in ("16", "19", "22", "25"):
+        new.get(k)
+    assert len(new._cache) <= 4                               # cleared once past the bound, like the 500_000 of _AsofSnapshot
+    for bad in (-1, 1 << 64):                                 # a hash outside uint64 fails the same way in both
+        old._hash = new._hash = lambda _s, bad=bad: bad
+        with pytest.raises(OverflowError):
+            old.get("x")
+        with pytest.raises(OverflowError):
+            new.get("x")
+
+
+def test_pread_snapshot_keeps_no_mapping_and_closes_its_descriptors(tmp_path):
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("needs /proc")
+    import gc
+
+    def mapped() -> int:
+        return sum(str(tmp_path) in line for line in open("/proc/self/maps"))
+
+    def fds() -> int:
+        return sum(os.path.realpath(f"/proc/self/fd/{f}").startswith(str(tmp_path.resolve())) for f in os.listdir("/proc/self/fd") if os.path.exists(f"/proc/self/fd/{f}"))
+
+    root = _fixture_root(tmp_path, np.arange(0, 20000, 2, dtype=np.uint64))
+    led = cs.AsofDirLedger(root, hash_fn=int)
+    snap = led.snapshot_for_day(FIX_DAY)
+    gc.collect()
+    assert isinstance(snap, cs._PreadSnapshot) and mapped() == 0                   # AsofLedger's maps closed with the ledger
+    assert snap.get("100") is not None and snap.get("101") is None and mapped() == 0     # and lookups map nothing
+    assert fds() == 8                                                              # th + the 7 passA columns
+    snap.close()
+    assert fds() == 0
+    snap2 = led.snapshot_for_day(FIX_DAY)
+    assert fds() == 8
+    del snap2
+    gc.collect()
+    assert fds() == 0                                                              # dropped by the engine's day rollover: closed by GC
+
+
+def test_asof_dir_ledger_uses_the_pread_snapshot_for_a_file_backed_ledger_and_the_memmap_one_for_doubles(tmp_path):
+    root = _fixture_root(tmp_path / "real", np.arange(5, 500, 5, dtype=np.uint64))
+    real = cs.AsofDirLedger(root, hash_fn=int).snapshot_for_day(FIX_DAY)
+    assert type(real) is cs._PreadSnapshot and real.get("10") is not None and real.get("11") is None
+    assert real.get("10") == cs.AsofDirLedger(root, hash_fn=int).snapshot_for_day(FIX_DAY).get("10")
+    dbl = cs.AsofDirLedger(tmp_path, open_for_day=lambda r, d: FakeAsof(d), hash_fn=lambda s: 7).snapshot_for_day(FIX_DAY)
+    assert type(dbl) is cs._AsofSnapshot                                          # no .th / .cols: the reference implementation
+    assert cs._PreadSnapshot.from_ledger(FakeAsof(FIX_DAY), lambda s: 7) is None
+
+
+def test_pread_snapshot_refuses_a_truncated_column_instead_of_reading_garbage(tmp_path):
+    from tools import c1nf_wallet_ledger as L
+
+    root = _fixture_root(tmp_path, np.arange(0, 3000, 3, dtype=np.uint64))
+    led = L.AsofLedger.open_for_day(root, FIX_DAY)
+    cut = tmp_path / "asof" / f"asof-{FIX_DAY}" / "nrt.npy"
+    with open(cut, "r+b") as fh:                              # the maps were taken at full size; the file is shorter when we open it
+        fh.truncate(cut.stat().st_size - 800)
+    with pytest.raises(OSError, match="nrt.npy"):
+        cs._PreadSnapshot.from_ledger(led, int)
 
 
 def _real_shadow(v_source):

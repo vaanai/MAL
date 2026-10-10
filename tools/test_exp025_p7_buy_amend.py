@@ -174,6 +174,54 @@ class P7BuyAmend(unittest.TestCase):
             self.assertTrue(self.m.p7_raw_hit("buy", rec, row["quote_reserve"], self.V0), name)
             self.assertEqual(self.m.p7_raw_check(tape, rec, row, self.V0), (None, "excluded", "buy_exact_quote_in"), name)
 
+    def test_inverse_law_replaces_the_forward_law_it_is_not_an_alternative(self):
+        """An exact-in buy where one base unit costs far more than a lamport: the forward law hits it exactly, the inverse law misses by 4.1955 bp.
+        Kills an unguarded 'either law' (inverse hit OR forward hit); the guarded variants and buy_v2 are covered by test_no_guarded_either_law_and_buy_v2_uses_the_inverse_law."""
+        q, b, qin = 75_000_000_000, 1_000_000, 100_000_000
+        q_mapped = q - self.V0
+        self.assertGreater(q // b, 1)                                                        # a base unit costs about 75,000 lamports
+        t = b * qin // (q + qin)
+        self.assertEqual(t, 1331)
+        raw = dict(self._base("buy"), quote_reserve=q_mapped + self.PENDING, base_reserve=b, token_raw=t, pool_quote_amount=qin,
+                   sol_lamports=qin, ix_name="buy")
+        row = self._adapter(raw)
+        self.assertEqual(row["quote_reserve"], q_mapped)
+        self.assertTrue(self.ev.p7_raw_hit("buy", raw, q_mapped, self.V0))                   # the forward law hits
+        self.assertEqual(self.ev.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "hit", None))
+        self.assertEqual(self.m.cp_buy_quote_in(q_mapped, self.V0, b, t), 99_958_045)        # 41,955 lamports short: 4.1955 bp of actual
+        self.assertFalse(self.m.p7_raw_hit("buy", raw, q_mapped, self.V0))                   # the inverse law alone decides
+        self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))
+
+    def test_no_guarded_either_law_and_buy_v2_uses_the_inverse_law(self):
+        """Forward-law hits that the inverse law misses, in the two regimes the 4.1955 bp case does not cover (dust; Q/B < 1), for buy and
+        buy_v2. Kills an either-law guarded by size or by Q/B, and a forward law kept for buy_v2."""
+        for ix in ("buy", "buy_v2"):
+            b = 100_000_000                                                                  # dust exact-in, a base unit costs about 753 lamports
+            for qin, t, inv in ((1_660, 2, 1_506), (4_898, 6, 4_518)):
+                self.assertEqual(b * qin // (self._q() + qin), t)
+                raw = dict(self._base("buy"), base_reserve=b, token_raw=t, pool_quote_amount=qin, sol_lamports=qin, ix_name=ix)
+                row = self._adapter(raw)
+                self.assertEqual(self.m.cp_buy_quote_in(row["quote_reserve"], self.V0, b, t), inv)
+                self.assertEqual(self.ev.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "hit", None))
+                self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))
+            raw = self._buy(token_raw=self.BASE // 2, ix_name=ix)                            # whale exact-out, Q/B < 1
+            self.assertEqual(raw["pool_quote_amount"], self._q())
+            row = self._adapter(raw, quote_reserve=self._adapter(raw)["quote_reserve"] + self._q() * 15 // 100_000)   # column 1.5 bp of Q high
+            self.assertEqual(self.ev.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "hit", None))    # forward sees ~0.75 bp
+            self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))    # inverse sees 1.5 bp
+
+    def test_inverse_law_is_an_exact_integer_ceil(self):
+        """Integer ceil, not float: math.ceil(q * t / (b - t)) gives 2**59 here."""
+        self.assertEqual(self.m.cp_buy_quote_in(2 ** 60 + 1, 0, 3, 1), 2 ** 59 + 1)
+        self.assertEqual(self.m.cp_buy_quote_in(20, 0, 7, 2), 8)                             # divisible: no +1
+        self.assertEqual(self.m.cp_buy_quote_in(21, 0, 7, 2), 9)                             # not divisible: rounds up
+
+    def test_one_bp_tolerance_is_of_actual(self):
+        """base_reserve 2, token_raw 1, v0 0: the model is q_mapped. A gap of 100,000 is 1 bp of 1e9 but more than 1 bp of 999,900,000 (99,990)."""
+        raw = {"base_reserve": 2, "token_raw": 1}
+        self.assertTrue(self.m.p7_raw_hit("buy", dict(raw, pool_quote_amount=1_000_000_000), 999_900_000, 0))   # gap = 1 bp of actual
+        self.assertFalse(self.m.p7_raw_hit("buy", dict(raw, pool_quote_amount=999_900_000), 1_000_000_000, 0))  # gap > 1 bp of actual
+
     def test_a_buy_with_5_bp_of_fee_inside_pool_quote_amount_misses(self):
         for ix in ("buy", "buy_v2"):
             raw = self._buy(ix_name=ix)

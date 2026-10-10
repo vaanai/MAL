@@ -62,8 +62,10 @@ Paper only. No key, no transaction, no RPC. It reads only the tip tape (live) or
 from __future__ import annotations
 
 import argparse
+import array
 import bisect
 import collections
+import contextlib
 import hashlib
 import importlib
 import json
@@ -74,9 +76,11 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
+import weakref
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
@@ -1448,13 +1452,113 @@ def row_key(row: Mapping[str, Any]) -> tuple:
     return (row.get("slot", 0), row.get("tx_index") or 0, row.get("event_index") or 0, KIND_RANK.get(row.get("_k", "trades"), 2))
 
 
+_I64_MIN, _I64_MAX = -(1 << 63), (1 << 63) - 1
+_PASS2_BUF = 1 << 18                  # read buffer of the bootstrap's passes (rows of one file are close to sorted, so most seeks land in it)
+_PASS2_CHUNK = 1 << 16                # rows of the sorted index turned into Python ints at a time (bounds the second pass's own memory)
+
+
+class _HourKeys:
+    """Pass 1 of one bootstrap hour. Per valid row only its sort key (`row_key`), the kind position in KINDS and the byte offset of its line are kept, in
+    typed columns (about 34 bytes a row); the row itself is dropped. A key that is not four plain int64 values (a float slot, a string, a value past
+    int64) moves the hour to exact Python key tuples, so the order is the one `list.sort(key=row_key)` gives on any input, errors included."""
+
+    def __init__(self) -> None:
+        self.slot, self.tx, self.ev = array.array("q"), array.array("q"), array.array("q")
+        self.rank, self.kpos, self.off = array.array("b"), array.array("b"), array.array("q")
+        self.py: Optional[list[tuple]] = None
+
+    def add(self, key: tuple, kpos: int, off: int) -> None:
+        if self.py is None:
+            if all(type(v) is int and _I64_MIN <= v <= _I64_MAX for v in key):
+                self.slot.append(key[0])
+                self.tx.append(key[1])
+                self.ev.append(key[2])
+                self.rank.append(key[3])
+            else:
+                self.py = list(zip(self.slot, self.tx, self.ev, self.rank))      # earlier keys were plain ints: these tuples equal what row_key gave
+                self.py.append(key)
+                self.slot, self.tx, self.ev, self.rank = (array.array("q"), array.array("q"), array.array("q"), array.array("b"))
+        else:
+            self.py.append(key)
+        self.kpos.append(kpos)
+        self.off.append(off)
+
+    def order(self) -> np.ndarray:
+        """Positions 0..n-1 (the order the rows were scanned in: KINDS order, then line order) sorted by key, ties by position: the stable sort of the
+        old in-memory list. The position is the last lexsort key, so the tie rule does not rest on lexsort being stable."""
+        n = len(self.kpos)
+        if self.py is not None:
+            return np.asarray(sorted(range(n), key=self.py.__getitem__), dtype=np.int64)
+        if n == 0:
+            return np.empty(0, dtype=np.int64)
+        col = lambda a, dt: np.frombuffer(a, dtype=dt)               # noqa: E731
+        return np.lexsort((np.arange(n, dtype=np.int64), col(self.rank, np.int8), col(self.ev, np.int64), col(self.tx, np.int64),
+                           col(self.slot, np.int64)))
+
+
+class HourRows:
+    """The rows of one bootstrap hour in `row_key` order, read lazily: len() is the number of valid rows (so `not hour_rows` is the empty hour) and
+    iterating re-reads each row from its recorded byte offset, parsing it again, so only one row at a time is alive. Iterable more than once. A plain
+    file is checked on open (same inode, not shorter than the pass-1 end) and a line that no longer parses as an object raises: nothing is skipped
+    silently. A .zst source is decompressed again into a temp file for the iteration and the file is removed when the iteration ends or is closed."""
+
+    def __init__(self, hour: str, sources: Sequence[Optional[tuple]], kpos: np.ndarray, off: np.ndarray, zst_temp: Callable[[Path], Any]) -> None:
+        self.hour, self._sources, self._kpos, self._off, self._zst_temp = hour, list(sources), kpos, off, zst_temp
+
+    def __len__(self) -> int:
+        return int(len(self._off))
+
+    def __iter__(self) -> Iterator[dict]:
+        return self._rows()
+
+    def _rows(self) -> Iterator[dict]:
+        if len(self._off) == 0:
+            return
+        with contextlib.ExitStack() as stack:
+            fhs: dict[int, Any] = {}
+            for kp in np.unique(self._kpos).tolist():
+                src = self._sources[kp]
+                if src[0] == "plain":
+                    _t, path, ino, end = src
+                    fh = stack.enter_context(open(path, "rb", buffering=_PASS2_BUF))
+                    st = os.fstat(fh.fileno())
+                    if st.st_ino != ino or st.st_size < end:
+                        raise RuntimeError(f"bootstrap {path}: the file changed between the key pass and the read pass (inode or size)")
+                else:
+                    _t, path, end = src
+                    tmp = stack.enter_context(self._zst_temp(path))
+                    fh = stack.enter_context(open(tmp, "rb", buffering=_PASS2_BUF))
+                    if os.fstat(fh.fileno()).st_size != end:
+                        raise RuntimeError(f"bootstrap {path}: decompressed size changed between the key pass and the read pass")
+                fhs[kp] = fh
+            nxt = [-1] * len(KINDS)
+            for lo in range(0, len(self._off), _PASS2_CHUNK):
+                for kp, o in zip(self._kpos[lo:lo + _PASS2_CHUNK].tolist(), self._off[lo:lo + _PASS2_CHUNK].tolist()):
+                    fh = fhs[kp]
+                    if o != nxt[kp]:
+                        fh.seek(o)
+                    line = fh.readline()
+                    nxt[kp] = o + len(line)
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        r = None
+                    if not isinstance(r, dict):
+                        raise RuntimeError(f"bootstrap {self._sources[kp][1]}: the line at byte {o} is no longer a JSON object")
+                    r["_k"] = KINDS[kp]
+                    yield r
+
+
 class TipTail:
     """Tails <kind>-<hour>.jsonl in the tip dir. Offsets are per (kind, hour); a half-written last line waits for the next poll; a file that shrank
     or was replaced (inode change) restarts at 0; offsets of hours older than the previous hour are dropped. `bootstrap` reads whole hours (plain
-    or .zst) from the beginning, so the live offsets continue where the bootstrap stopped."""
+    or .zst) from the beginning, so the live offsets continue where the bootstrap stopped. A bootstrap hour is two passes (`HourRows`): the sort
+    keys and line offsets first, then the rows in sorted order, so memory does not grow with the hour (job #568: one list of the hour's dicts, plus
+    the whole decompressed .zst in memory, was OOM-killed at 1.9 GB). `tmp_dir` is where a .zst hour is decompressed (default: the system temp dir)."""
 
-    def __init__(self, directory: str | Path) -> None:
+    def __init__(self, directory: str | Path, tmp_dir: str | Path | None = None) -> None:
         self.dir = Path(directory)
+        self.tmp_dir = Path(tmp_dir) if tmp_dir is not None else None
         self.off: dict[tuple[str, str], int] = {}
         self.ino: dict[tuple[str, str], int] = {}
         self.rows_read = 0
@@ -1493,35 +1597,93 @@ class TipTail:
         self.rows_read += len(out)
         return out
 
-    def _read_zst(self, kind: str, hour: str, extra_dirs: Sequence[Path]) -> list[dict]:
-        for d in (self.dir, *extra_dirs):
-            p = d / f"{kind}-{hour}.jsonl.zst"
-            if p.is_file():
-                res = subprocess.run(["zstd", "-dc", str(p)], capture_output=True, check=True, timeout=300)
-                out = []
-                for line in res.stdout.splitlines():
-                    try:
-                        r = json.loads(line)
-                    except ValueError:
-                        self.bad_lines += 1
-                        continue
-                    if isinstance(r, dict):
-                        r["_k"] = kind
-                        out.append(r)
-                self.rows_read += len(out)
-                return out
-        return []
+    @contextlib.contextmanager
+    def _zst_temp(self, p: Path) -> Iterator[Path]:
+        """`zstd -dc p` written to a temp file (under tmp_dir), removed on exit; nothing of the output passes through Python memory."""
+        fd, name = tempfile.mkstemp(prefix=".bootstrap-", suffix=".tmp", dir=self.tmp_dir)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                subprocess.run(["zstd", "-dc", str(p)], stdout=out, stderr=subprocess.PIPE, check=True, timeout=300)
+            yield Path(name)
+        finally:
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
 
-    def bootstrap(self, hours: Sequence[str], extra_dirs: Sequence[str | Path] = ()) -> Iterator[list[dict]]:
-        """Yield one sorted batch per hour, oldest first. An hour with a plain file is read (and its offset kept); otherwise its .zst."""
+    def _scan(self, fh: Any, kp: int, keys: _HourKeys, pos: int, partial_ok: bool) -> tuple[int, int]:
+        """Pass 1 over one file: one `row_key` and one offset per valid object line, then the line is dropped. Returns (end of the last line read,
+        valid rows). A plain file ends at its last complete line (a half-written line waits); a decompressed .zst may end without a newline, as
+        `bytes.splitlines` allowed."""
+        kind, n = KINDS[kp], 0
+        fh.seek(pos)
+        while True:
+            line = fh.readline()
+            if not line.endswith(b"\n") and not (partial_ok and line):
+                break
+            start = pos
+            pos += len(line)
+            try:
+                r = json.loads(line)
+            except ValueError:
+                self.bad_lines += 1
+                continue
+            if isinstance(r, dict):
+                r["_k"] = kind
+                keys.add(row_key(r), kp, start)
+                n += 1
+        return pos, n
+
+    def _scan_plain(self, kp: int, hour: str, keys: _HourKeys) -> Optional[tuple]:
+        """`_read_plain` for a bootstrap hour: same offset / inode / reset bookkeeping, but the rows go to `keys` instead of a list."""
+        kind = KINDS[kp]
+        path = self.dir / f"{kind}-{hour}.jsonl"
+        key = (kind, hour)
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        pos = self.off.get(key, 0)
+        if key in self.ino and (self.ino[key] != st.st_ino or st.st_size < pos):
+            pos = 0
+            self.resets += 1
+        self.ino[key] = st.st_ino
+        with open(path, "rb", buffering=_PASS2_BUF) as fh:
+            ino = os.fstat(fh.fileno()).st_ino
+            end, n = self._scan(fh, kp, keys, pos, False)
+        self.off[key] = end
+        self.rows_read += n
+        return ("plain", path, ino, end)
+
+    def _scan_zst(self, kp: int, hour: str, extra_dirs: Sequence[Path], keys: _HourKeys) -> Optional[tuple]:
+        for d in (self.dir, *extra_dirs):
+            p = d / f"{KINDS[kp]}-{hour}.jsonl.zst"
+            if p.is_file():
+                with self._zst_temp(p) as tmp, open(tmp, "rb", buffering=_PASS2_BUF) as fh:
+                    end, n = self._scan(fh, kp, keys, 0, True)
+                self.rows_read += n
+                return ("zst", p, end)
+        return None
+
+    def bootstrap(self, hours: Sequence[str], extra_dirs: Sequence[str | Path] = ()) -> Iterator[HourRows]:
+        """Yield one `HourRows` per hour, oldest first: the hour's rows sorted by `row_key`, ties in (kind order, line order). An hour with a plain file
+        is read (and its offset kept); otherwise its .zst. Pass 1 of an hour (keys, counters, offsets) runs when the hour is asked for."""
         extra = [Path(d) for d in extra_dirs]
+        if self.tmp_dir is not None:
+            for stale in self.tmp_dir.glob(".bootstrap-*.tmp"):        # left by a killed run; the out dir has one writer
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
         for h in hours:
-            rows: list[dict] = []
-            for k in KINDS:
-                got = self._read_plain(k, h) if (self.dir / f"{k}-{h}.jsonl").exists() else self._read_zst(k, h, extra)
-                rows.extend(got)
-            rows.sort(key=row_key)
-            yield rows
+            keys = _HourKeys()
+            sources = [self._scan_plain(kp, h, keys) if (self.dir / f"{k}-{h}.jsonl").exists() else self._scan_zst(kp, h, extra, keys)
+                       for kp, k in enumerate(KINDS)]
+            perm = keys.order()
+            kpos = np.frombuffer(keys.kpos, dtype=np.int8)[perm]
+            off = np.frombuffer(keys.off, dtype=np.int64)[perm]
+            del keys, perm
+            yield HourRows(h, sources, kpos, off, self._zst_temp)
 
     def poll(self, now_ms_: int) -> list[dict]:
         cur = hour_of(now_ms_ / 1000)
@@ -1575,7 +1737,12 @@ class GapTail:
 # ---- ledger adapter -------------------------------------------------------------------------------------------------------------------------
 class _AsofSnapshot:
     """c1nf_features.LedgerSnapshot over a tools.c1nf_wallet_ledger.AsofLedger: get(trader) -> 7 passA values or None. The ledger keys wallets on
-    duckdb hash(trader); `hash_fn(trader) -> int` defaults to a duckdb call."""
+    duckdb hash(trader); `hash_fn(trader) -> int` defaults to a duckdb call.
+
+    Reference implementation and fallback. It reads through the ledger's numpy memmaps, and a file-backed mapping of a random-access lookup does
+    not stay small: the kernel maps a window around every fault, so after ~10^4 distinct wallets the 8 columns it reads (th + the 7 passA
+    inputs) are resident in full. 16.56M wallets x 64 B = 1.06 GB of RssFile (job #599; PR claude/c1nf-ledger-lowmem). `_PreadSnapshot` returns the
+    same values without mapping; `AsofDirLedger` uses it whenever the ledger is file-backed."""
 
     def __init__(self, asof: Any, hash_fn: Optional[Callable[[str], int]] = None) -> None:
         self.asof, self._hash, self._cache = asof, hash_fn or _duck_hash(), {}
@@ -1587,6 +1754,127 @@ class _AsofSnapshot:
         known, m = self.asof.passa_matrix(th)
         v = tuple(float(x) for x in m[0]) if bool(known[0]) else None
         if len(self._cache) > 500_000:
+            self._cache.clear()
+        self._cache[trader] = v
+        return v
+
+
+def _close_fds(fds: list[int]) -> None:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+class _PreadSnapshot:
+    """`_AsofSnapshot.get` without mapping the ledger: the same 7 passA values (types and float bits), or None, for the same trader.
+
+    `AsofLedger` maps th.npy and the value columns with np.load(mmap_mode="r"). Looking wallets up at random through those maps makes the
+    kernel fault in a window around every touched page, so the 8 files `get` reads end up resident (RssFile) after ~10^4 distinct wallets: 64 B
+    per ledger wallet, 1.06 GB at 16.56M. This class reads the same files with os.pread instead and keeps in RAM only a sparse key index:
+        * one in-RAM index of every BLOCK-th th value (array 'Q', 8 B per 512 wallets: 258 kB at 16.56M);
+        * per lookup: bisect in the index, one pread of <= 513 keys (4 kB) and a bisect in it. This is np.searchsorted(th, h) (side left) and
+          `th[min(i, n - 1)] == h` exactly, duplicates included;
+        * per known wallet: one 8-byte pread per passA column, the int64 -> float64 cast of the ledger, and `/ GRID` for cash and buy (the
+          ledger's passa_matrix arithmetic; GRID is the pinned module's, loaded and sha256-checked by `pinned()` on the first known wallet,
+          as in the ledger).
+    The ledger's on-disk format, MANIFEST checks and as-of day logic are untouched: `from_ledger` takes (path, offset) of the arrays an opened
+    `AsofLedger` already maps, then lets go of that ledger (its maps are closed). The page cache still holds what `get` reads; that is not RSS.
+
+    `from_ledger` returns None when the ledger is not file-backed (a test double, a non-little-endian host, no os.pread): `_AsofSnapshot` then.
+    The file descriptors (th + 7 columns) are closed with the snapshot (`close()` or garbage collection)."""
+
+    BLOCK = 512
+
+    def __init__(self, n: int, th_file: tuple[str, int], col_files: Sequence[tuple[str, int, bool]],
+                 hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> None:
+        self._n, self._cache, self._cache_max = int(n), {}, int(cache_max)
+        self._hash = hash_fn or _duck_hash()
+        fds: list[int] = []
+        try:
+            for path, off in [th_file] + [(p, o) for p, o, _ in col_files]:
+                fd = os.open(path, os.O_RDONLY)
+                fds.append(fd)
+                size = os.fstat(fd).st_size
+                if size < off + self._n * 8:
+                    raise OSError(f"{path}: {size} bytes, need {off + self._n * 8} for {self._n} rows")
+            self._th_fd, self._th_off = fds[0], th_file[1]
+            self._cols = [(fd, o) for fd, (_, o, _) in zip(fds[1:], col_files)]
+            self._scaled = [j for j, (_, _, sc) in enumerate(col_files) if sc]
+            self._idx = self._build_index()
+        except BaseException:
+            _close_fds(fds)
+            raise
+        self._finalizer = weakref.finalize(self, _close_fds, fds)
+
+    @classmethod
+    def from_ledger(cls, asof: Any, hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> Optional["_PreadSnapshot"]:
+        if not hasattr(os, "pread") or sys.byteorder != "little":
+            return None
+        th, cols = getattr(asof, "th", None), getattr(asof, "cols", None)
+        if not isinstance(th, np.memmap) or not isinstance(cols, Mapping):
+            return None
+        from tools.c1nf_wallet_ledger import PASSA_COLS  # PR #502
+
+        # passa_matrix reads cash from cash_q and buy from buy_q (grid units, / GRID); the other five as they are.
+        src = [("cash_q", True) if c == "cash" else ("buy_q", True) if c == "buy" else (c, False) for c in PASSA_COLS]
+        files = []
+        for arr, want in [(th, "<u8")] + [(cols.get(name), "<i8") for name, _ in src]:
+            if (not isinstance(arr, np.memmap) or arr.ndim != 1 or arr.shape != th.shape or arr.dtype != np.dtype(want)
+                    or arr.filename is None):
+                return None
+            files.append((os.fspath(arr.filename), int(arr.offset)))
+        return cls(len(th), files[0], [(p, o, sc) for (p, o), (_, sc) in zip(files[1:], src)], hash_fn, cache_max)
+
+    def close(self) -> None:
+        self._finalizer()
+
+    @staticmethod
+    def _read(fd: int, size: int, off: int) -> bytes:
+        b = os.pread(fd, size, off)
+        if len(b) != size:
+            raise OSError(f"short read: {len(b)} of {size} bytes at {off}")
+        return b
+
+    def _build_index(self) -> "array.array":
+        """th[::BLOCK] by sequential reads of 4 MiB (nothing else is kept)."""
+        idx, chunk = array.array("Q"), self.BLOCK * 1024
+        for row in range(0, self._n, chunk):
+            take = min(chunk, self._n - row)
+            idx.frombytes(np.frombuffer(self._read(self._th_fd, take * 8, self._th_off + row * 8), dtype="<u8")[:: self.BLOCK].tobytes())
+        return idx
+
+    def _row(self, h: int) -> int:
+        """The row whose th is h, or -1."""
+        if self._n == 0:
+            return -1
+        idx = self._idx
+        j = bisect.bisect_left(idx, h)                  # block starts strictly below h
+        if j == 0:                                      # th[0] >= h: the first row is the only candidate
+            return 0 if idx[0] == h else -1
+        lo = (j - 1) * self.BLOCK                       # the first row >= h lies in (lo, j * BLOCK]
+        hi = min(j * self.BLOCK + 1, self._n)
+        blk = memoryview(self._read(self._th_fd, (hi - lo) * 8, self._th_off + lo * 8)).cast("Q")
+        p = bisect.bisect_left(blk, h)
+        return lo + p if p < len(blk) and blk[p] == h else -1
+
+    def _values(self, row: int) -> tuple[float, ...]:
+        from tools.c1nf_wallet_ledger import pinned  # PR #502: the pinned GRID, sha256-checked on first use
+
+        raw = b"".join(self._read(fd, 8, off + row * 8) for fd, off in self._cols)
+        v = np.frombuffer(raw, dtype="<i8").astype(np.float64)
+        for j in self._scaled:
+            v[j] = v[j] / pinned().GRID
+        return tuple(v.tolist())
+
+    def get(self, trader: str) -> Optional[Sequence[float]]:
+        if trader in self._cache:
+            return self._cache[trader]
+        th = np.array([self._hash(trader)], dtype=np.uint64)   # as _AsofSnapshot: a hash outside uint64 fails the same way
+        row = self._row(int(th[0]))
+        v = self._values(row) if row >= 0 else None
+        if len(self._cache) > self._cache_max:
             self._cache.clear()
         self._cache[trader] = v
         return v
@@ -1639,7 +1927,7 @@ class AsofDirLedger:
         self.open_for_day = open_for_day
         self.stale = 0
 
-    def snapshot_for_day(self, day: str) -> Optional[_AsofSnapshot]:
+    def snapshot_for_day(self, day: str) -> Optional[Any]:   # _PreadSnapshot, or _AsofSnapshot for a ledger that is not file-backed
         try:
             led = self.open_for_day(self.root, day)
         except Exception as exc:  # noqa: BLE001 - only StaleLedger is a None; the rest propagates
@@ -1651,7 +1939,8 @@ class AsofDirLedger:
         if man is not None and (not isinstance(man, Mapping) or man.get("asof_day") != day):
             self.stale += 1
             return None
-        return _AsofSnapshot(led, self.hash_fn)
+        snap = _PreadSnapshot.from_ledger(led, self.hash_fn)      # no memmap reads: the maps of `led` close when it goes out of scope
+        return snap if snap is not None else _AsofSnapshot(led, self.hash_fn)
 
 
 def load_oracle(spec: Optional[str]) -> Optional[Callable[[str], Any]]:
@@ -1816,7 +2105,7 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
     except Refused as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    tail = TipTail(args.tip_dir)
+    tail = TipTail(args.tip_dir, tmp_dir=out)
     gaps = GapTail(args.gaps_file) if args.gaps_file else None
     sh.emit({"type": "c1nf_start", "mode": "live", "tip_dir": str(args.tip_dir), "model_shas": models.shas, "seal_start_ms": seal_ms,
              "oracle": bool(oracle), "v_source": V_SOURCE_LIVE, "bootstrap_hours": args.bootstrap_hours, "max_seconds": args.max_seconds,
