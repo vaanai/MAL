@@ -229,101 +229,109 @@ def cmd_equiv(a: argparse.Namespace) -> int:
     old = cs._AsofSnapshot(led, int)
     new = cs._PreadSnapshot.from_ledger(led, int)
     assert type(new).__name__ == "_PreadSnapshot"
-    # Disable the old cache bound effects: the cache returns the stored tuple, which is the same value, but keep it small for memory.
     old_h, new_h, ref_h = hashlib.md5(), hashlib.md5(), hashlib.md5()
     bad: list[dict] = []
-    known_n = 0
-    chunk = 1 << 16
+    mism = 0
     t0 = time.time()
 
     def same(x: Any, y: Any) -> bool:
+        """None, or a tuple of 7 Python floats with the same bits."""
         if x is None or y is None:
             return x is None and y is None
-        return (type(x) is type(y) and len(x) == len(y) and all(type(p) is float and type(q) is float for p, q in zip(x, y))
-                and pack7(x) == pack7(y))
+        return (type(x) is tuple and type(y) is tuple and len(x) == len(y) == 7
+                and all(type(p) is float and type(q) is float for p, q in zip(x, y)) and pack7(x) == pack7(y))
 
+    def note(rec: dict) -> None:
+        nonlocal mism
+        mism += 1
+        if len(bad) < 20:
+            bad.append(rec)
+
+    chunk = 1 << 16
     for lo in range(0, n, chunk):
         hi = min(lo + chunk, n)
         ths = np.asarray(th[lo:hi])
-        known, m = led.passa_matrix(ths)               # the ledger's own matrix, vectorised
+        known, m = led.passa_matrix(ths)               # the ledger's own matrix, vectorised: the third witness
         assert bool(known.all())
         for j in range(hi - lo):
             w = int(ths[j])
-            name = str(w)
-            vo, vn = old.get(name), new.get(name)
+            vo, vn = old.get(str(w)), new.get(str(w))
             if not same(vo, vn) or vo is None or pack7(vo) != m[j].tobytes():
-                if len(bad) < 20:
-                    bad.append({"wallet": w, "old": vo, "new": vn, "ref": m[j].tolist()})
+                note({"wallet": w, "old": vo, "new": vn, "ref": m[j].tolist()})
             wb = struct.pack("<Q", w)
             old_h.update(wb + (pack7(vo) if vo is not None else b"NONE"))
             new_h.update(wb + (pack7(vn) if vn is not None else b"NONE"))
             ref_h.update(wb + m[j].tobytes())
-            known_n += 1
         if (lo // chunk) % 20 == 0:
-            print(json.dumps({"stage": "progress", "done": hi, "of": n, "bad": len(bad), "secs": round(time.time() - t0, 1)}), flush=True)
+            print(json.dumps({"stage": "progress", "done": hi, "of": n, "mismatches": mism, "secs": round(time.time() - t0, 1)}), flush=True)
         old._cache.clear()
-        new._cache.clear() if hasattr(new, "_cache") else None
-    # Absent wallets.
+        new._cache.clear()
+    print(json.dumps({"stage": "known_done", "mismatches": mism, "secs": round(time.time() - t0, 1)}), flush=True)
+
+    # Absent wallets: random uint64, the edges, and the neighbours of known keys. The ledger decides what is known (passa_matrix).
     rng = np.random.default_rng(a.seed)
-    cand = [int(x) for x in rng.integers(0, 2**63, size=a.absent, dtype=np.uint64) * np.uint64(2) + np.uint64(rng.integers(0, 2))]
+    cand = [int(x) for x in rng.integers(0, U64_MAX, size=a.absent, dtype=np.uint64, endpoint=True)]
     edges = [0, 1, U64_MAX, U64_MAX - 1, 2**63, 2**63 - 1]
     first, last = int(th[0]), int(th[n - 1])
     edges += [x for x in (first - 1, first + 1, last - 1, last + 1) if 0 <= x <= U64_MAX]
     sample = np.asarray(th[rng.integers(0, n, size=min(a.absent, 200_000))])
     near = [int(x) + d for x in sample for d in (-1, 1) if 0 <= int(x) + d <= U64_MAX]
     probe = cand + edges + near
-    known_set_hits = 0
-    abs_bad = 0
-    abs_old, abs_new = hashlib.md5(), hashlib.md5()
-    for w in probe:
-        name = str(w)
-        vo, vn = old.get(name), new.get(name)
-        if not same(vo, vn):
-            abs_bad += 1
-            if len(bad) < 20:
-                bad.append({"wallet": w, "old": vo, "new": vn, "absent_probe": True})
-        if vo is not None:
-            known_set_hits += 1
-        abs_old.update(struct.pack("<Q", w) + (pack7(vo) if vo is not None else b"NONE"))
-        abs_new.update(struct.pack("<Q", w) + (pack7(vn) if vn is not None else b"NONE"))
+    pk, pm = led.passa_matrix(np.array(probe, dtype=np.uint64))
+    abs_old, abs_new, abs_ref = hashlib.md5(), hashlib.md5(), hashlib.md5()
+    ref_hits = 0
+    for i, w in enumerate(probe):
+        vo, vn = old.get(str(w)), new.get(str(w))
+        if not same(vo, vn) or (vo is not None) != bool(pk[i]) or (vo is not None and pack7(vo) != pm[i].tobytes()):
+            note({"wallet": w, "old": vo, "new": vn, "ledger_known": bool(pk[i]), "absent_probe": True})
+        ref_hits += int(pk[i])
+        wb = struct.pack("<Q", w)
+        abs_old.update(wb + (pack7(vo) if vo is not None else b"NONE"))
+        abs_new.update(wb + (pack7(vn) if vn is not None else b"NONE"))
+        abs_ref.update(wb + (pm[i].tobytes() if pk[i] else b"NONE"))
         if len(old._cache) > 100_000:
             old._cache.clear()
+            new._cache.clear()
+
     # A hash outside uint64 must fail the same way in both.
     errs = []
     for h in (-1, 1 << 64):
         r = []
         for snap in (old, new):
+            snap._hash = lambda _s, h=h: h
+            snap._cache.clear()
             try:
-                snap._hash = lambda _s, h=h: h
-                snap._cache.clear() if hasattr(snap, "_cache") else None
                 snap.get(f"bad{h}")
                 r.append("no error")
             except Exception as exc:  # noqa: BLE001
                 r.append(type(exc).__name__)
         errs.append({"hash": h, "old": r[0], "new": r[1]})
+
     res = {
+        "day": day,
         "wallets": n,
-        "compared_known": known_n,
-        "mismatches": len(bad),
+        "compared_known": n,
+        "mismatches": mism,
         "mismatch_examples": bad,
         "absent_probes": len(probe),
-        "absent_probes_that_hit_a_known_wallet": known_set_hits,
-        "absent_mismatches": abs_bad,
+        "absent_probes_known_to_the_ledger": ref_hits,
         "md5_old": old_h.hexdigest(),
         "md5_new": new_h.hexdigest(),
         "md5_ledger_passa_matrix": ref_h.hexdigest(),
-        "md5_absent_probe_old": abs_old.hexdigest(),
-        "md5_absent_probe_new": abs_new.hexdigest(),
+        "md5_absent_old": abs_old.hexdigest(),
+        "md5_absent_new": abs_new.hexdigest(),
+        "md5_absent_ledger": abs_ref.hexdigest(),
         "out_of_range_hash_errors": errs,
         "secs": round(time.time() - t0, 1),
         "manifest_content_sha256": led.manifest.get("content_sha256"),
         **proc_status(),
     }
-    ok = (not bad and abs_bad == 0 and res["md5_old"] == res["md5_new"] == res["md5_ledger_passa_matrix"]
-          and res["md5_absent_probe_old"] == res["md5_absent_probe_new"] and all(e["old"] == e["new"] for e in errs))
-    res["equal"] = bool(ok)
+    res["equal"] = bool(
+        mism == 0 and res["md5_old"] == res["md5_new"] == res["md5_ledger_passa_matrix"]
+        and res["md5_absent_old"] == res["md5_absent_new"] == res["md5_absent_ledger"] and all(e["old"] == e["new"] != "no error" for e in errs)
+    )
     print("RESULT " + json.dumps(res), flush=True)
-    return 0 if ok else 1
+    return 0 if res["equal"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
