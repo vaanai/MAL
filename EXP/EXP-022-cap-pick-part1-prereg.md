@@ -767,6 +767,21 @@ No CAP-PICK outcome was computed or read to make this amendment, and no row of w
 
 **3. Not amended here: the synthetic handling. It is open.** This file keeps `synthetic_share_high` (above 0.35) among the halt flags (line 354), treats a synthetic pool that meets the conditions as an attempt (line 121, a reject at -55,000 lamports if it opens above the guard) and reports the count of synthetic pools (line 420). Quant-proof ruled that EXP-022 needs **its own separate amendment**, not a copy of EXP-024 Amendment 4, and that it must merge before the 2026-10-15T06:41Z daily run. **That amendment is open and is not made here.** Until it merges, those lines stand as written.
 
+### Amendment 6 (2026-10-10, before any counted hour; the manager's decision): the pick feed as built, and the replay-only residual
+
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled H5 executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
+
+No CAP-PICK outcome, paper-twin field or gate-log row was read to make this amendment. EXP-022's book, pick rule (section 2), counted window, looks, correction, gate and seal (section 9) are unchanged.
+
+1. **The feed.** Amendment 2 item 2 and Amendment 3 (d) say H5 reads only the `mint` of the decision-time intents. The feed as built is described in DEC-024 Amendment 6, from PR #509 and PR #540:
+   - An exporter reads the `mint` and `entered` of the frozen book's gate rows and the `mint` of its intents. It does so only after the DEC-016 FINAL marker exists and 2026-10-16T02:00:00Z, and it writes booleans.
+   - H5 and C1-NF read the booleans, with a staleness limit of no more than 60 s.
+   - False needs a scored gate row. Anything else is undecided and is refused (fail closed).
+   - The exporter prints no count that includes intents-file lines.
+2. **Meaning of "picked" in Amendment 2 item 2.** A mint the oracle answers True for at the H5 decision. The read's picks (section 2) are the walk-2 replay's picks and differ from the online set both ways (section 17 item 12). An H5 trade or shadow record on a replay-only pick, made under item 1, is a declared residual and not a breach.
+3. **No join before a look.** Before each look, no person, agent or job joins H5 records or the H5 wallet history to the replay's picks, or counts the overlap. A join is a breach under section 9.
+4. **Report-only count (section 13; never deciding).** After each look is written, report two numbers: the look's counted picks with an H5 live fill, and those with an H5 shadow outcome record. The report also says that H5's live fills on those mints are on the tape the read prices.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
