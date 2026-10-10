@@ -430,7 +430,7 @@
   {
    "id": "fy-h5-51-resume",
    "from": "claude",
-   "text": "Decided by you at 07:27Z (DEC-024 Amendment 4): H5 restarts on the bot's own 30+ coin daily measure only if today (10-10) finishes at or above 337 s; the manager checks just after 00:00Z (about 5:05 PM PT). A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 trades.",
+   "text": "Decided by you at 07:27Z (DEC-024 Amendment 4): H5 restarts on the bot's own 30+ coin daily measure only if today (10-10) finishes at or above 337 s; the manager checks just after 00:00Z (about 5:05 PM PT). A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 landed buys, landing p50 at most 3.0 s, the canary's and the paper twin's means not negative, and your +0.5 SOL top-up.",
    "atUtc": "2026-10-10T07:40:00Z"
   },
   {

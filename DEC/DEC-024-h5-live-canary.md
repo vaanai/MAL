@@ -380,6 +380,10 @@ The owner answered two questions:
 
 The verbatim questions, options and option descriptions are in MiScusi notebook n_SmtvxryJ4N4Dfw. The instant is the manager's `date -u` read right after the answer.
 
+**Provenance of the items.**
+- **From the owner's chosen option text:** the measure (the bot's own count over 30+ pools a day); the resume condition (10-10 completes at or above 337 s); "one more day below 337 s, or a daily check below 330 s, stops it again"; and the fired check becoming report-only.
+- **Added by the manager after quant-proof review, both stricter:** two consecutive unevaluated days (under 30 pools) halt, and the manager's daily read that enforces the 07:11Z fire as the first "below 337".
+
 1. **This loosens section 5.1 after it fired.**
    - The A3-run clause that fired (job #478: 333 s after migrate, n=9) is report-only from 2026-10-10T07:27:25Z.
    - When the owner chose this, the executor's measure was known not to have latched (10-09: 340.306 s over 117 pools; 10-10 at 07:15Z: 337.556 s over 200 pools).
