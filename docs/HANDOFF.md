@@ -45,6 +45,13 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - The A3 median is report-only, except that below 330 s it halts.
   - The 07:11Z fire counts as the first "below 337".
 - **Resume:** only if day 10-10 completes at ≥337 s over ≥30 pools with no other §5 rule fired. The manager checks after 10-11T00:00Z, runs `sudo rm /var/lib/mal-live/h5/STOP` in a MiScusi job, checks `stop_file=False`, and records the instant and the median in Am.4. A clean resume counts as resolved for T1.
+- **Amendment 5 (manager, stricter, 08:15Z):**
+  - A PLAIN-pool day median (synthetic false/rpc, ≥30) also judges §5.1.
+  - Resume also needs plain ≥337 for 10-10.
+  - A running plain median below 335 halts.
+  - Measured on 10-10 so far: plain 336.435 vs all 337.648 (job #482), so tonight's resume may be blocked.
+  - The A3 #478 reconciliation is exact (same second on all 9 mints; the gap is the sample, not the clock): /data/mal/hunt-1008/h5-work/a3-reconcile-1010/REPORT.md.
+  - Enforcement tool is PR #538.
 - **Daily manager duty (Am.4 item 2), after each 00:00Z:**
   - read the completed day's executor median;
   - place STOP on the first completed day from 10-11 below 337 s;
