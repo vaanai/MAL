@@ -434,7 +434,7 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    | | synthetic | 64 | 342.175 s | — |
 
    - Plain pools end BOOST earlier.
-   - "Share before 329.5 s" uses the rule's own exit timing: the exit at s0 + 330 s, with the sell planned to land just before it. It is not derived from canary sells. It is a population-level preview of EXP-024 §11's mechanism condition ("BOOST ended before our exit on more than 15% of trades") and of rule (b)'s 15% line. The plain share on 10-10 so far is 0.151, above that line.
+   - **Share before 329.5 s.** 329.5 s is a fixed constant just under the rule's s0 + 330 s exit. It matches our sells' reported typical landing. No canary field is joined to any pool. The share is a population-level preview of EXP-024 §11's mechanism condition ("BOOST ended before our exit on more than 15% of trades") and of rule (b)'s 15% line. The plain share on 10-10 so far is 0.151, above that line.
    - **The all-pool 10-09 figure is the job's own.** Job #482 computed 340.306 s itself over 211 pools. The executor's 10-09 figure, 340.306 s over 117 pools, is the same value by coincidence of the middle pool: both counts are odd, so each median is one pool's value.
 3. **Reconciliation of A3 job #478 with the shadow, on the same 9 mints.** Files: `/data/mal/hunt-1008/h5-work/a3-reconcile-1010/REPORT.md`; MiScusi jobs #483 and #484; 112 public RPC calls, 0 Helius credits.
    - **The rebuild is exact.** It used the monitor's helpers with its own time bounds and matches #478's counts and BOOST distribution: n=9, min 329, median 333, max 353.
@@ -461,7 +461,7 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - **The log.** Each run appends one JSON line to `/home/claude/data/h5-daily/boost-day.jsonl`.
    - **Placing STOP.** Day and running modes run with `--place-stop`: on a due halt the job touches STOP, verifies it, and exits non-zero.
    - **Never removing STOP.** The tool never removes STOP. Resuming stays a manager step, after Amendment 4 item 4 and item 1 above both hold.
-   - **Until #538 merges,** the manager runs the same computation inline in a MiScusi job.
+   - **Until #538 merges,** the manager runs the same computation inline in a MiScusi job, with item 1's filter: `reason` "horizon", `gap` false, `boost_src` "pda" or "event_authority". The fields read are the allowlist plus `gap` and `boost_src`. If a run cannot apply that filter, its record names the filter actually used, and its plain figure does not count as item 1's measure. That blocks a resume.
 7. **Code note.** The `on_boost_row` docstring (`tools/h5_executor.py`) says ">= 10 pools"; the code uses 30. The fix rides with the pre-10-16 reinstall (the pick-oracle wiring).
 8. **Look 1 disclosure.** The Look 1 report states that BOOST timing split by pool class was observed before the look for pools in Look 1's window, from 10-10T00Z on (jobs #482 and #485, and the scheduled checks under item 6). It is structure timing, never joined to an outcome (EXP-024 Am.4 D1).
 9. **Not changed:**

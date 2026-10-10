@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T08:19:17Z",
+ "updated_utc": "2026-10-10T08:20:24Z",
  "review_windows": [],
  "events": [
   {
@@ -437,8 +437,8 @@
   {
    "id": "fy-h5-51-resume",
    "from": "claude",
-   "text": "H5 restart check at 00:13Z (about 5:13 PM PT): needs both the all-coin and the plain-coin BOOST medians for 10-10 at or above 337 s (Amendment 4 plus the manager's stricter Amendment 5). Plain coins read 336.4 s so far today, so the restart may not happen. Separately, research is exploring a new rule whose exit is timed off BOOST itself; it would need its own pre-registration and test, and it does not change H5 v1. A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 landed buys, landing p50 at most 3.0 s, the canary's and the paper twin's means not negative, and your +0.5 SOL top-up.",
-   "atUtc": "2026-10-10T08:19:17Z"
+   "text": "H5 restart check at 00:13Z (about 5:13 PM PT): needs three BOOST medians for 10-10 at or above 337 s: the bot's own figure (Amendment 4) plus the all-coin and plain-coin checks (the manager's stricter Amendment 5). Plain coins read 336.4 s so far today, so the restart may not happen. Separately, research is exploring a new rule whose exit is timed off BOOST itself; it would need its own pre-registration and test, and it does not change H5 v1. A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 landed buys, landing p50 at most 3.0 s, the canary's and the paper twin's means not negative, and your +0.5 SOL top-up.",
+   "atUtc": "2026-10-10T08:20:24Z"
   },
   {
    "id": "fy-20261009-1945-live",
