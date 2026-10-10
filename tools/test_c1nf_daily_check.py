@@ -746,6 +746,7 @@ def test_cap_pick_dropin_is_allowed_and_checked():
     host.files[dc.DROPIN_CAP_PICK] = CAP_PICK
     assert "c1nf_unit_files" not in alerts(go(host, checker=real)[1])
     for bad in (CAP_PICK.replace(b"/srv/mal-cap-pick", b"/srv/mal-c1nf-shadow"), CAP_PICK.replace(b"/home/claude/data", b"/var/lib/mal"),
+                CAP_PICK.replace(b"/home/claude/data/h5-shadow/cap-pick:", b"/home/claude/data/cap-pick-oracle:"),  # the FINAL marker's directory
                 FEED):
         host = FakeHost()
         host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]

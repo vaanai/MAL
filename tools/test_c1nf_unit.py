@@ -154,6 +154,13 @@ def test_cap_pick_template_and_fill(tmp_path):
     for bad in (b"/home/claude/.claude/cap-pick-oracle", b"/home/claude/../root/cap-pick-oracle", b"/srv/mal-cap-pick-src/cap-pick",
                 b"/home/claude/data/c1nf-shadow", b"/home/claude/data/cap-pick-oracle /etc", b"/var/lib/mal-live/cap-pick"):
         assert chk.problems(CAPF.replace(b"__CAP_PICK_DIR__", bad), "cap-pick"), bad
+    # the manager's decision on #544: the EXACT directory name. The exporter's FINAL marker lives in ~/data/cap-pick-oracle and must never be bound.
+    for bad in (b"/home/claude/data/cap-pick-oracle", b"/home/claude/data/h5-shadow/cap-pick-oracle", b"/home/claude/data/h5-shadow/cap-pick2",
+                b"/home/claude/data/h5-shadow/cap-pick.bak", b"/home/claude/data/h5-shadow/cap-pick-", b"/home/claude/data/h5-shadow/cap-pick/",
+                b"/home/claude/data/h5-shadow/cap-pick/sub", b"/home/claude/data/h5-shadow/Cap-pick"):
+        assert chk.problems(CAPF.replace(b"__CAP_PICK_DIR__", bad), "cap-pick"), bad
+    for ok in (b"/home/claude/data/h5-shadow/cap-pick", b"/home/claude/cap-pick", b"/home/mal-user/data/x_y.z/cap-pick"):
+        assert chk.problems(CAPF.replace(b"__CAP_PICK_DIR__", ok), "cap-pick") == [], ok
     assert chk.problems(good.replace(b":/srv/mal-cap-pick", b":/srv/mal-c1nf-shadow"), "cap-pick")
     assert chk.problems(good.replace(b"BindReadOnlyPaths=", b"BindPaths="), "cap-pick")  # never writable
     assert chk.problems(good + b"BindReadOnlyPaths=-/home/claude/data/cap-pick2:/srv/mal-cap-pick\n", "cap-pick")

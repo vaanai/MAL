@@ -23,7 +23,8 @@ and exact: `User =x` is an unknown key to systemd, so whitespace between key and
 [A-Za-z0-9_.-] and not starting with a dot (no `..`, no hidden dirs such as .ssh or .claude). Nothing else can ride along.
 
 --cap-pick: the same rule for the CAP-PICK oracle bind (DEC-026 Amendment 1 item B): exactly one BindReadOnlyPaths line in [Service],
-`-<source>:/srv/mal-cap-pick` with <source> = /home/<user>/<dir>/.../cap-pick<suffix> (the exporter's CAP_PICK_OUT). The live config's
+`-<source>:/srv/mal-cap-pick` with <source> = /home/<user>/<dir>/.../cap-pick (the exporter's CAP_PICK_OUT; the exact last component, no suffix: `cap-pick-oracle`, the
+FINAL marker's directory, is refused). The live config's
 "pick_file" is /srv/mal-cap-pick/picks.jsonl.
 
 The file is read as BYTES and refused if any byte is outside {TAB, LF, 0x20-0x7e}: no NUL, BOM, CR (CRLF too), VT, FF, 0x1c-0x1e,
@@ -107,7 +108,7 @@ SHADOW_DEST = "/srv/mal-c1nf-shadow"
 _COMP = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"
 SHADOW_RE = re.compile(rf"^-(/home/{_COMP}(?:/{_COMP})*/c1nf-shadow[A-Za-z0-9_.-]*):{re.escape(SHADOW_DEST)}$")
 CAP_PICK_DEST = "/srv/mal-cap-pick"  # the live config's pick_file is CAP_PICK_DEST + "/picks.jsonl" (DEC-026 Amendment 1 item B)
-CAP_PICK_RE = re.compile(rf"^-(/home/{_COMP}(?:/{_COMP})*/cap-pick[A-Za-z0-9_.-]*):{re.escape(CAP_PICK_DEST)}$")
+CAP_PICK_RE = re.compile(rf"^-(/home/{_COMP}(?:/{_COMP})*/cap-pick):{re.escape(CAP_PICK_DEST)}$")  # the EXACT name: never cap-pick-oracle (the FINAL marker's directory) or any suffix
 
 OK_BYTES = frozenset([9, 10, *range(0x20, 0x7F)])
 WS = " \t"
@@ -201,7 +202,7 @@ def shadow_problems(data: "bytes | str") -> list[str]:
 
 
 def cap_pick_problems(data: "bytes | str") -> list[str]:
-    return _bind_problems(data, CAP_PICK_RE, "cap-pick*", CAP_PICK_DEST)
+    return _bind_problems(data, CAP_PICK_RE, "cap-pick", CAP_PICK_DEST)
 
 
 def main(argv: list[str]) -> int:
