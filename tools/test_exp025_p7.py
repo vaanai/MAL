@@ -143,6 +143,8 @@ class DriverTests(unittest.TestCase):
         self.assertEqual((d["cp"], d["fee"]), (rec["cp"], rec["fee"]))
         self.assertEqual(d["prints_sha256"], P._sha256(d["prints"]))
         self.assertEqual(d["pins"]["p7_buy_amend_sha256"], P.AMEND_SHA256)
+        self.assertEqual(d["pins"]["p7_line2_amend_sha256"], P.LINE2_SHA256)                # Amendment 7 D: the look's P7 must name both
+        self.assertEqual(d["pins"]["driver_blob"], P.git_blob(P.__file__))
         self.assertTrue(d["p7_all_pass"])
 
     def test_double_adapter_columns_equal_int64(self):
@@ -169,8 +171,9 @@ class DriverTests(unittest.TestCase):
         comparable = sum(b.get("ix_name") in ("buy", "buy_v2") for b in buys)
         self.assertEqual(rec["cp"], [0, n_sell, 0, comparable])
         self.assertEqual(rec["counts"]["line1"]["unresolved"]["field_missing"], n_sell + comparable)
-        self.assertEqual(rec["fee"], [0, n_sell, 0, len(buys)])
-        self.assertEqual(rec["counts"]["line2"]["miss_by"]["field_missing"], len(self.tape))
+        self.assertEqual(rec["fee"], [0, n_sell, 0, comparable])                          # Amendment 7: line 2 judges line 1's buys
+        self.assertEqual(rec["counts"]["line2"]["miss_by"]["field_missing"], n_sell + comparable)
+        self.assertEqual(rec["counts"]["line2"]["buy_excluded"], len(buys) - comparable)
 
     def test_identity_mismatch_by_field_is_counted(self):
         sell = next(t for t in self.tape if t["side"] == "sell")
@@ -239,14 +242,19 @@ class DriverTests(unittest.TestCase):
         rec = P.run_p7(self.ctx(), FakeFetch(self.txs))
         n_sell, buys = self._sides()
         l2 = rec["counts"]["line2"]
-        self.assertEqual((l2["sell_n"], l2["buy_n"]), (n_sell, len(buys)))     # every sampled sell and buy of the 1,000, exact-in included
+        comparable = [b for b in buys if b.get("ix_name") in ("buy", "buy_v2")]
+        self.assertEqual((l2["sell_n"], l2["buy_n"]), (n_sell, len(comparable)))   # Amendment 7: line 2's buys are line 1's comparable buys
         self.assertEqual(rec["fee"], [l2["sell_ok"], l2["sell_n"], l2["buy_ok"], l2["buy_n"]])
         self.assertEqual((sum(l2["miss_by"].values()), l2["buy_skipped"]), (0, 0))
-        # tier_lines' form (EXP-024 section 10 P7): sell_v2_kept hits; sell_433 is a non-canonical pool (flat 0.3%) and misses the canonical
-        # tier; the `buy` (tier 0.3%: fee-on-net and fee-on-gross are 0.09 bp apart) hits; buy_exact_quote_in_v2 misses (its tape sol_lamports
-        # is net of fees). Exact-in buys stay in line 2 (Amendment 6 D).
-        self.assertEqual(rec["fee"], [1, 2, 1, 2])
-        self.assertEqual(l2["buy_by_ix_name"], {"buy": {"n": 1, "ok": 1}, "buy_exact_quote_in_v2": {"n": 1, "ok": 0}})
+        # Sells in tier_lines' form (unchanged): sell_v2_kept hits; sell_433 is a non-canonical pool (flat 0.3%) and misses the canonical tier.
+        # Buys (Amendment 7 B): the `buy` hits the chain's relation (sol = qin + ceiled fees on the curve input, tier 0.3%);
+        # buy_exact_quote_in_v2 is excluded (its tape sol_lamports is the net curve input, so no fee is visible on the row).
+        self.assertEqual(rec["fee"], [1, 2, 1, 1])
+        self.assertEqual(l2["buy_by_ix_name"], {"buy": {"n": 1, "ok": 1}, "buy_v2": {"n": 0, "ok": 0}})
+        self.assertEqual((l2["buy_excluded"], l2["buy_excluded_by_name"]), (1, {"buy_exact_quote_in_v2": 1}))
+        self.assertEqual(l2["buy_excluded_by"], {"zero_sol": 0, "buy_exact_quote_in": 1, "no_ix_name": 0, "ix_not_listed": 0})
+        self.assertEqual(rec["counts"]["line1"]["excluded_by"]["buy_exact_quote_in"], l2["buy_excluded_by"]["buy_exact_quote_in"])
+        self.assertEqual(l2["sell_n"] + l2["buy_n"] + l2["buy_skipped"] + l2["buy_excluded"] + l2["neither"], rec["counts"]["sample_n"])
 
     def test_line2_runs_on_the_main_draw_only_when_a_topup_exists(self):
         """Main draw of n=2 out of the four: the buy top-up is non-empty and line 2 still tallies exactly the main sample (Amendment 6 D)."""
@@ -262,7 +270,7 @@ class DriverTests(unittest.TestCase):
             rec = P.run_p7(self.ctx(), FakeFetch(self.txs))
         c, l2 = rec["counts"], rec["counts"]["line2"]
         self.assertGreater(c["topup_n"], 0)
-        self.assertEqual(l2["sell_n"] + l2["buy_n"] + l2["buy_skipped"] + l2["neither"], c["sample_n"])
+        self.assertEqual(l2["sell_n"] + l2["buy_n"] + l2["buy_skipped"] + l2["buy_excluded"] + l2["neither"], c["sample_n"])
 
     def test_line2_real_fixtures_match_the_tier_and_a_shifted_fee_misses(self):
         for t in self.tape:
@@ -277,11 +285,14 @@ class DriverTests(unittest.TestCase):
             self.assertFalse(P.line2_one(t, dict(a, sol_lamports=off), v0)[1])
 
     def test_line2_skip_rule_and_misses(self):
-        """tier_lines: a buy with sol <= 0, tok <= 0 or tok >= b is skipped (not in buy_n); a sell with sol 0 is a formula miss."""
+        """tier_lines: a buy with sol <= 0, tok <= 0 or tok >= b is skipped (not in buy_n); a sell with sol 0 is a formula miss. Amendment 7:
+        a zero_sol buy is excluded (cause zero_sol) before the skip rule."""
         b = next(x for x in self.tape if x["side"] == "buy")
+        self.assertEqual(b.get("ix_name"), "buy")
         a = self._adapter_row(b)
         sk = ("buy", None, P.LINE2_SKIPPED)
-        self.assertEqual(P.line2_one(dict(b, zero_sol=True), dict(a, sol_lamports=0), V0), sk)
+        self.assertEqual(P.line2_one(dict(b, zero_sol=True), dict(a, sol_lamports=0), V0), ("buy", None, "zero_sol"))
+        self.assertEqual(P.line2_one(b, dict(a, sol_lamports=0), V0), sk)
         self.assertEqual(P.line2_one(b, dict(a, sol_lamports=-1), V0), sk)
         self.assertEqual(P.line2_one(b, dict(a, token_raw=a["base_reserve"]), V0), sk)
         self.assertEqual(P.line2_one(b, dict(a, token_raw=0), V0), sk)
@@ -292,18 +303,21 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(P.line2_one(dict(b, side="other"), a, V0), (None, False, None))
         self.assertNotIn("zero_sol", P.LINE2_CAUSES)
 
-    def test_line2_synthetic_tier_1_25pct_fee_on_net_buy_misses(self):
-        """At a 1.25% tier: fee on net (implied f/(1+f), ~1.5 bp off) MISSES; fee on gross HITS (Amendment 6 D). Skips leave buy_n."""
+    def test_line2_synthetic_tier_1_25pct_fee_on_curve_input_hits_fee_on_gross_misses(self):
+        """At a 1.25% tier (Amendment 7 B): the chain's buy (qin = ceil law, sol = qin + ceil per fee component, split 2/93/30 bp) HITS; the
+        pinned relation's good buy, fee on gross (sol = qin / (1 - f), which is the simulator's relation), MISSES by f^2/(1-f) = 1.58 bp.
+        Skips leave buy_n. Sells unchanged."""
         q, b, tok = 85_000_000_000 - V0, 800_000_000_000_000, 1_000_000_000_000
         Q = q + V0
         self.assertEqual(float(R.fee(Q, b)), 0.0125)
-        N = tok * Q / (b - tok)
-        n_int = tok * Q // (b - tok)
+        qin = -((-Q * tok) // (b - tok))
+        chain = qin + sum(-((-qin * x) // 10_000) for x in (2, 93, 30))
         E = Q * tok / (b + tok) * (1 - 0.0125)
-        cases = [("buy", tok, n_int + -((-n_int * 125) // 10_000), False),       # sol = N + ceil(N * 0.0125): fee on net
-                 ("buy", tok, round(N / (1 - 0.0125)), True),                    # fee on gross
-                 ("buy", b, 10**9, None),                                         # tok >= b: skipped
-                 ("buy", tok, 0, None),                                           # sol == 0: skipped
+        cases = [("buy", tok, chain, True),                                    # fee on the curve input, ceiled per component (the chain)
+                 ("buy", tok, round(qin / (1 - 0.0125)), False),               # fee on gross (the old pinned relation / the simulator)
+                 ("buy", tok, chain + -((-qin * 5) // 10_000), False),         # 5 bp more fee than the tier
+                 ("buy", b, 10**9, None),                                      # tok >= b: skipped
+                 ("buy", tok, 0, None),                                        # sol == 0: skipped
                  ("sell", tok, round(E), True),
                  ("sell", tok, round(E * (1 - 2e-4)), False)]
         main, adapters = [], {}
@@ -313,8 +327,40 @@ class DriverTests(unittest.TestCase):
             adapters[(1, i, 0)] = dict(r, sol_lamports=sol, token_raw=t, quote_reserve=q, base_reserve=b)
         t2, per = P.line2_tally(main, adapters, {"P125": V0})
         self.assertEqual([h for _, h, _ in per], [c[3] for c in cases])
-        self.assertEqual((t2["buy_n"], t2["buy_ok"], t2["buy_skipped"], t2["sell_n"], t2["sell_ok"]), (2, 1, 2, 2, 1))
-        self.assertEqual(t2["buy_by_ix_name"], {"buy": {"n": 2, "ok": 1}})
+        self.assertEqual((t2["buy_n"], t2["buy_ok"], t2["buy_skipped"], t2["sell_n"], t2["sell_ok"]), (3, 1, 2, 2, 1))
+        self.assertEqual(t2["buy_by_ix_name"], {"buy": {"n": 3, "ok": 1}, "buy_v2": {"n": 0, "ok": 0}})
+
+    def test_line2_exclusion_before_adapter_checks_and_counts_per_name(self):
+        """Amendment 7 B item 1: the sampled raw row decides the exclusion first; a whitelisted buy without an adapter row stays a miss."""
+        _, buys = self._sides()
+        buy = next(x for x in buys if x.get("ix_name") == "buy")
+        extra = [dict(buy, ix_name=n, slot=10 + i, signature=f"x{i}") for i, n in enumerate(("multi_hop_swap", None, "buy_exact_quote_in"))]
+        tape = self.tape + extra + [dict(buy, zero_sol=True, slot=20, signature="zs")]
+        rec = P.run_p7(self.ctx(tape=tape, adapter=[self._adapter_row(t) for t in self.tape]), FakeFetch(self.txs))
+        l2 = rec["counts"]["line2"]
+        self.assertEqual(l2["buy_excluded_by"], {"zero_sol": 1, "buy_exact_quote_in": 2, "no_ix_name": 1, "ix_not_listed": 1})
+        self.assertEqual(l2["buy_excluded_by_name"], {"buy_exact_quote_in": 1, "buy_exact_quote_in_v2": 1, "multi_hop_swap": 1})
+        self.assertEqual(l2["miss_by"]["no_adapter_row"], 0)                  # the extra rows have no adapter row but are excluded first
+        self.assertEqual(rec["fee"][2:], [1, 1])
+        self.assertEqual(rec["counts"]["line1"]["excluded_by"]["ix_not_listed"], l2["buy_excluded_by"]["ix_not_listed"])
+
+    def test_line2_module_sha_mismatch_refuses_before_anything_is_written(self):
+        bad = os.path.join(self.tmp, "p7_line2_amend.py")
+        shutil.copy(P.LINE2_PATH, bad)
+        with open(bad, "a") as fh:
+            fh.write("\n# edited\n")
+        with self.assertRaises(R.Refusal) as cm:
+            P.run_p7(self.ctx(), FakeFetch(self.txs), line2_path=bad)
+        self.assertEqual(cm.exception.code, "PIN")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "O", "p7")))
+        with mock.patch.object(P, "sums_line", lambda rel: "0" * 64 if rel == "p7_line2_amend.py" else None), self.assertRaises(R.Refusal):
+            P.load_line2_amend()                                                # the SHA256SUMS line must agree too
+        self.assertEqual(P.LINE2_SHA256, P._sha256(P.LINE2_PATH))
+
+    def test_e0_writes_a_new_directory(self):
+        """P7.json is write-once: #607's E0 record is /data/mal/exp025/e0/p7-0920, so the Amendment 7 plumbing E0 writes a new one."""
+        self.assertEqual(P.E0_OUT, "/data/mal/exp025/e0/p7-0920-am7")
+        self.assertNotEqual(P.E0_OUT, "/data/mal/exp025/e0/p7-0920")
 
     # -- frame window -----------------------------------------------------------------------------------------------------------------------------
     def test_look_context_window(self):

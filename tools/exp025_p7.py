@@ -14,12 +14,16 @@ Rule (EXP/EXP-025-c1nf-part1-prereg.md section 10 P7, Amendment 1, Amendment 6):
     confirmed, maxSupportedTransactionVersion 1; at most 3 attempts per transaction; one fetch per transaction) decoded by
     observe.trade_decode.records_from_logs(event_v=True) at blob 238942a6 (refused otherwise), keyed by event_index. The adapter row is the
     row of the look's materialised tape/trades/<hour>.parquet at (slot, tx_index, event_index). Unresolved = miss. Tally: p7_raw_tally.
-  Line 2 (fee tier, section 10 P7 line 2: "(EXP-024 section 10 P7)"), on the main 1,000 only, in the form tools/boostfloor_inputs.py
-    tier_lines computes, from the adapter row (the row pass A prices) and V0. Q = quote_reserve_mapped + V0, b = base_reserve, tok = token_raw,
-    sol = sol_lamports, f = float(exp025_read.fee(Q, b)) (the read's own tier), BP = 1e-4 (1 bp):
-      sell: E = Q * tok / (b + tok) * (1 - f); hit iff E > 0 and |sol - E| <= BP * E
-      buy : skipped (not in buy_n; counted as buy_skipped) if sol <= 0 or tok <= 0 or tok >= b; else hit iff |(1 - tok * Q / (b - tok) / sol) - f| <= BP
-    A buy that pays its fee on net (implied fee f / (1 + f)) misses at canonical tiers of about 1% and above (Amendment 6 D: "That is a miss").
+  Line 2 (fee tier, section 10 P7 line 2: "(EXP-024 section 10 P7)", buy side as amended by Amendment 7), on the main 1,000 only, from the
+    adapter row (the row pass A prices) and V0. Q = quote_reserve_mapped + V0, b = base_reserve, tok = token_raw, sol = sol_lamports.
+      sell (unchanged, tools/boostfloor_inputs.py tier_lines' form): f = float(exp025_read.fee(Q, b)), BP = 1e-4 (1 bp),
+            E = Q * tok / (b + tok) * (1 - f); hit iff E > 0 and |sol - E| <= BP * E
+      buy  (Amendment 7 B, decided only through ARTIFACTS/exp025/p7_line2_amend.py, loaded after its sha256 check):
+            1. excluded (in neither denominator; counted per cause and per name) unless the SAMPLED raw row is a comparable buy of line 1
+               (p7_buy_amend.p7_raw_exclusion: zero_sol, buy_exact_quote_in, no_ix_name, ix_not_listed), before any adapter check;
+            2. the adapter checks below; 3. skipped (not in buy_n; buy_skipped) if sol <= 0 or tok <= 0 or tok >= b;
+            4. hit iff abs(sol * 10**6 - qin * (10**6 + ppm)) <= 100 * qin, qin = -((-Q * tok) // (b - tok)), ppm = the integer tier of
+               exp025_read.fee(Q, b) (p7_line2_amend.tier_ppm). All in Python ints.
     no_adapter_row, identity_mismatch and field_missing are misses in the denominator (EXP-024: "a print without V is a miss"), counted per
     cause (LINE2_CAUSES); a sell whose formula is undefined (b <= 0 or b + tok <= 0: the tier divides by b) is a miss counted as `degenerate`.
 
@@ -28,7 +32,8 @@ marker and its ledger entry, and the look's last allowlisted hour has ended), an
 Every hour it opens passes the guard's allowlist check. Paths are fixed in code; the record is written once (an existing record refuses).
 
 Output (in the look's O/p7/): P7.json {"schema", "look", "cp": [sell_ok, sell_n, buy_ok, buy_n], "fee": [...], counts, credits, pins,
-"prints": path, "prints_sha256"} and p7_prints.jsonl (signatures and per-print outcomes). Stdout: counts only (per side, cause, ix_name).
+"prints": path, "prints_sha256"} and p7_prints.jsonl (signatures and per-print outcomes). pins carry p7_line2_amend_sha256 and driver_blob (this
+file's git blob), which Amendment 7 D pins. Stdout: counts only (per side, cause, ix_name).
 No pick, label, fill, exit or P&L is computed anywhere here.
 """
 from __future__ import annotations
@@ -52,6 +57,8 @@ import exp025_read as R  # noqa: E402
 ART = os.path.join(ROOT, "ARTIFACTS", "exp025")
 AMEND_PATH = os.path.join(ART, "p7_buy_amend.py")
 AMEND_SHA256 = "ed3005f083d80bba768292a8ff6adf4b4220370e01760a540034c6d1bcace31b"   # SHA256SUMS line (git blob 24dc5ede)
+LINE2_PATH = os.path.join(ART, "p7_line2_amend.py")
+LINE2_SHA256 = "1908931c9ff1c88219d1276cfd8537f533073be7c97f8eb4ae4fa49994c19b2f"   # SHA256SUMS line; EXP-025 Amendment 7 D
 DECODER_PATH = os.path.join(ROOT, "observe", "trade_decode.py")
 DECODER_BLOB = "238942a6b3c5425389eddfde4d11268c300acbec"                            # Amendment 1 part 2 "Decode"
 HELIUS_ENV = "/var/lib/mal/backfill/helius.env"                                       # the research walkers' key file; never printed
@@ -62,7 +69,7 @@ BLOCK_OF_SOURCE = {"forward-1002": "forward-1002", "forward-1002ev": "forward-10
 TOKENS_OF_LOOK = {1: "/data/mal/exp025/look1/hunt-shared/tokens.parquet",            # the SH line of patches/common2_look{1,2}.patch
                   2: "/data/mal/exp025/look2/hunt-shared/tokens.parquet"}
 E0_DAY = "2026-09-20"
-E0_OUT = "/data/mal/exp025/e0/p7-0920"
+E0_OUT = "/data/mal/exp025/e0/p7-0920-am7"   # a new directory: P7.json is write-once and #607's record is /data/mal/exp025/e0/p7-0920
 RPS_DEFAULT = 5.0
 RAW_COLS = ("{venue:'VARCHAR',pool:'VARCHAR',side:'VARCHAR',slot:'BIGINT',tx_index:'INTEGER',event_index:'INTEGER',signature:'VARCHAR',"
             "sol_lamports:'BIGINT',token_raw:'HUGEINT',quote_reserve:'HUGEINT',base_reserve:'HUGEINT',virtual_quote_reserves:'HUGEINT',"
@@ -107,6 +114,17 @@ def load_amend(path: str = AMEND_PATH):
     if got != AMEND_SHA256 or sums_line("p7_buy_amend.py") != AMEND_SHA256:
         raise P7Refusal("PIN", f"p7_buy_amend.py sha256 {got[:12]} is not the pinned {AMEND_SHA256[:12]} (SHA256SUMS)")
     spec = importlib.util.spec_from_file_location("exp025_p7_buy_amend_driver", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def load_line2_amend(path: str = LINE2_PATH):
+    """ARTIFACTS/exp025/p7_line2_amend.py, only if its sha256 equals both the pinned constant and its SHA256SUMS line (refuse otherwise)."""
+    got = _sha256(path)
+    if got != LINE2_SHA256 or sums_line("p7_line2_amend.py") != LINE2_SHA256:
+        raise P7Refusal("PIN", f"p7_line2_amend.py sha256 {got[:12]} is not the pinned {LINE2_SHA256[:12]} (SHA256SUMS)")
+    spec = importlib.util.spec_from_file_location("exp025_p7_line2_amend_driver", path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -338,12 +356,19 @@ def decode(signature: str, res: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------------------------- line 2
-def line2_one(row: dict, adapter: dict | None, v0: int) -> tuple:
-    """(side, hit, cause) of one sampled print of the 1,000 for the fee-tier line, in tools/boostfloor_inputs.py tier_lines' form.
-    side None: neither a sell nor a buy. hit None with cause LINE2_SKIPPED: a buy tier_lines skips (not in the denominator)."""
+def line2_one(row: dict, adapter: dict | None, v0: int, L2=None) -> tuple:
+    """(side, hit, cause) of one sampled print of the 1,000 for the fee-tier line. Sells: tools/boostfloor_inputs.py tier_lines' form,
+    unchanged. Buys: Amendment 7 B through p7_line2_amend (L2; loaded with its sha256 check when not given).
+    side None: neither a sell nor a buy. hit None: a buy in neither denominator, cause one of L2.LINE2_BUY_EXCLUSIONS (excluded) or
+    LINE2_SKIPPED (the skip rule)."""
     side = row.get("side")
     if side not in ("sell", "buy"):
         return None, False, None
+    if side == "buy":
+        L2 = L2 if L2 is not None else load_line2_amend()
+        why = L2.line2_buy_exclusion(row)                     # the sampled raw row, before any adapter check
+        if why is not None:
+            return side, None, why
     if adapter is None:
         return side, False, "no_adapter_row"
     if adapter.get("pool") != row.get("pool") or adapter.get("side") != side:
@@ -354,10 +379,9 @@ def line2_one(row: dict, adapter: dict | None, v0: int) -> tuple:
     q, b, tok, sol = vals
     Q = q + v0
     if side == "buy":
-        if sol <= 0 or tok <= 0 or tok >= b:
+        if L2.line2_buy_skip(sol, tok, b):
             return side, None, LINE2_SKIPPED
-        f = float(R.fee(Q, b))
-        return side, bool(abs((1 - tok * Q / (b - tok) / sol) - f) <= LINE2_BP), None
+        return side, L2.line2_buy_hit(sol, tok, Q, b, L2.tier_ppm(R.fee(Q, b))), None
     if b <= 0 or b + tok <= 0:
         return side, False, "degenerate"
     f = float(R.fee(Q, b))
@@ -365,28 +389,11 @@ def line2_one(row: dict, adapter: dict | None, v0: int) -> tuple:
     return side, bool(E > 0 and abs(sol - E) <= LINE2_BP * E), None
 
 
-def line2_tally(main: list, adapters: dict, v0_by_pool: dict) -> tuple:
-    t = {"sell_n": 0, "sell_ok": 0, "buy_n": 0, "buy_ok": 0, "neither": 0, "buy_skipped": 0, "miss_by": {c: 0 for c in LINE2_CAUSES},
-         "buy_by_ix_name": {}}
-    per = []
-    for r in main:
-        side, hit, cause = line2_one(r, adapters.get((r["slot"], r["tx_index"], r["event_index"])), v0_by_pool[r["pool"]])
-        per.append((side, hit, cause))
-        if side is None:
-            t["neither"] += 1
-            continue
-        if cause == LINE2_SKIPPED:
-            t["buy_skipped"] += 1
-            continue
-        t[side + "_n"] += 1
-        t[side + "_ok"] += int(hit)
-        if side == "buy":
-            b = t["buy_by_ix_name"].setdefault(str(r.get("ix_name")), {"n": 0, "ok": 0})
-            b["n"] += 1
-            b["ok"] += int(hit)
-        if cause:
-            t["miss_by"][cause] += 1
-    return t, per
+def line2_tally(main: list, adapters: dict, v0_by_pool: dict, L2=None) -> tuple:
+    """Line 2 over the main 1,000: every print through line2_one, counted by p7_line2_amend.line2_tally. Returns (tally, per-print outcomes)."""
+    L2 = L2 if L2 is not None else load_line2_amend()
+    per = [line2_one(r, adapters.get((r["slot"], r["tx_index"], r["event_index"])), v0_by_pool[r["pool"]], L2) for r in main]
+    return L2.line2_tally(zip(main, per)), per
 
 
 # ------------------------------------------------------------------------------------------------------------------- diagnosis
@@ -403,10 +410,12 @@ def _share(ok, n):
     return (ok / n) if n else None
 
 
-def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, decoder_path: str = DECODER_PATH) -> dict:
+def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, decoder_path: str = DECODER_PATH,
+           line2_path: str = LINE2_PATH) -> dict:
     """Pins, materialised check, frame and draw, adapter rows, fetch and decode, both lines; writes P7.json and the prints file once."""
     AM = load_amend(amend_path)
     EV = AM.EV
+    L2 = load_line2_amend(line2_path)
     check_decoder(decoder_path)
     out_json, out_prints = os.path.join(ctx["out"], "P7.json"), os.path.join(ctx["out"], "p7_prints.jsonl")
     if os.path.exists(out_json) or os.path.exists(out_prints):
@@ -441,7 +450,7 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
                            signature=r.get("signature"), side=r.get("side"), ix_name=r.get("ix_name"),
                            line1=dict(line=res[0], outcome=res[1], reason=res[2])))
     t1 = AM.p7_raw_tally(checked)
-    t2, per2 = line2_tally(main, adapters, v0)
+    t2, per2 = line2_tally(main, adapters, v0, L2)
     for p, (side, hit, cause) in zip(prints, per2):       # main prints come first, in order
         p["line2"] = dict(side=side, hit=hit, cause=cause)
     cp = [t1["sell_ok"], t1["sell_n"], t1["buy_ok"], t1["buy_n"]]
@@ -460,13 +469,15 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
                   line2=dict(sell_n=t2["sell_n"], sell_ok=t2["sell_ok"], sell_share=_share(t2["sell_ok"], t2["sell_n"]), buy_n=t2["buy_n"],
                              buy_ok=t2["buy_ok"], buy_share=_share(t2["buy_ok"], t2["buy_n"]), neither=t2["neither"], buy_skipped=t2["buy_skipped"],
                              miss_by=t2["miss_by"],
-                             buy_by_ix_name=t2["buy_by_ix_name"],
+                             buy_by_ix_name=t2["buy_by_ix_name"], buy_excluded=t2["buy_excluded"],
+                             buy_excluded_by=t2["buy_excluded_by"], buy_excluded_by_name=t2["buy_excluded_by_name"],
                              pass_=bool(EV.p7_pass(*fee))),
                   credits=dict(get_transaction_calls=getattr(fetch, "credits", None), failed_calls=getattr(fetch, "failed_calls", None),
                                rps=getattr(fetch, "rps", None), unit=f"exp025_p7 {ctx['mode']} (getTransaction, Helius key of {HELIUS_ENV})"))
     rec = dict(schema=ctx["schema"], look=ctx["look"], mode=ctx["mode"], cp=cp, fee=fee, p7_all_pass=bool(EV.p7_all_pass(tuple(cp), tuple(fee))),
                counts=counts, prints=out_prints, prints_sha256=_sha256(out_prints),
                pins=dict(p7_buy_amend_sha256=_sha256(amend_path), event_v_map_sha256=AM.EVENT_V_MAP_SHA256, decoder_blob=git_blob(decoder_path),
+                         p7_line2_amend_sha256=_sha256(line2_path), driver_blob=git_blob(os.path.abspath(__file__)),
                          look_assembly_sha256=_sha256(ctx["assembly"]) if ctx.get("assembly") else None),
                written_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     with open(out_json, "x") as fh:
