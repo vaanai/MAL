@@ -6,7 +6,7 @@
   "october_rows": 0,
   "sha256": "47bab7f25b6dba8cef797b000a674039e9c5aba21a2439e70ca8e307a8f983f5"
  },
- "assembly_sha256": "a864aee6d74ff3aad48efbfbe724f5baebd2698f74c5837860e268e49594a14a",
+ "assembly_sha256": "97534043da00b46a5f9ddb5b01314376c0fbbb299d70108f97955dc09464d0bc",
  "bars_1m": {
   "dup_blocks_dropped": 1,
   "exploration_blocks": 5,
@@ -14,7 +14,7 @@
  },
  "blobs": {
   "tools/exp025_adapter.py": "75ee1768ce57fecd58a32d95b180b2d5fb2955aa",
-  "tools/exp025_look_driver.py": "15bb4f4b921864ad9eabd397ea84109683512398"
+  "tools/exp025_look_driver.py": "8d7d7f41f45dbd7a48767ada16614c1487b9b692"
  },
  "blocks": [
   {
@@ -31,6 +31,52 @@
   "n": 1123,
   "non_mayhem": 897,
   "rebuilt": false
+ },
+ "e0_wl_day": {
+  "day": "2026-09-20",
+  "equals_p2": true,
+  "inputs": 24,
+  "ledger_script_sha256": "bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5",
+  "p2_sha256": "123487ab288c389efd47effc3ae7c15acac4b8402a4789b9b8937d761df6a9c5",
+  "sha256": "123487ab288c389efd47effc3ae7c15acac4b8402a4789b9b8937d761df6a9c5",
+  "wallet_rows": 1193201
+ },
+ "history": {
+  "mout": {
+   "files": 36,
+   "october_files": 0,
+   "p2_files": 36,
+   "p2_manifest_sha256": "64239ce8d5f1e7e21bdc228f83c49fcab3b4847ff762570b03bd77eb718d913c"
+  },
+  "wl": {
+   "files": 36,
+   "october_files": 0,
+   "p2_files": 36,
+   "p2_manifest_sha256": "026310101a60f8a6d7c1c34f4c38374ca5015d6d7f42d907adaee2c0cd2d6431"
+  }
+ },
+ "history_copy": {
+  "mout": {
+   "copied": 36,
+   "dir": "/data/mal/exp025/e0/look-driver-0920/out/mout",
+   "kept": 0,
+   "removed": 0,
+   "src": "/data/mal/hunt-1008/c1nf-p2/out/mout"
+  },
+  "wl": {
+   "copied": 36,
+   "dir": "/data/mal/exp025/e0/look-driver-0920/wl",
+   "kept": 0,
+   "removed": 0,
+   "src": "/data/mal/hunt-1008/c1nf-p2/wl"
+  }
+ },
+ "history_wl_provenance": {
+  "days": {},
+  "ledger_script": "ledger/01_wallet_daily_det.py",
+  "ledger_script_sha256": "bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5",
+  "out": "/data/mal/exp025/e0/look-driver-0920/wl",
+  "tape": "/data/mal/exp025/e0/look-driver-0920/tape/trades"
  },
  "hour_status_on_exploration_hours": "R12",
  "load_assembly": "accepted",
