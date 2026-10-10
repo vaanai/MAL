@@ -468,9 +468,9 @@ def _run_look(look: int, a, S, lock: bool, rec: dict) -> dict:
         rec.update(phase="read", verdict=res["verdict"], result=out_path)
         return rec
     except R.Refusal as e:
-        # not terminal: `ready` (no lock ever), a LOCK refusal, a readiness gap (NOT_READY), and a tool crash before the lock (10_meta:
-        # outcome-blind, fixable, no outcome seen)
-        if not lock or e.code in ("LOCK", "NOT_READY") or (e.code == "RUN" and not took):
+        # not terminal: `ready` (no lock ever), a LOCK refusal, and a readiness gap (NOT_READY) or a tool crash (10_meta: outcome-blind,
+        # fixable, no outcome seen) before the lock; after the lock a NOT_READY (e.g. price_rows with no v_ok) is a terminal non-run
+        if not lock or e.code == "LOCK" or (e.code in ("RUN", "NOT_READY") and not took):
             raise
         return _not_decidable(look, ledger, O, took, rec, e.code, str(e), out_path)
     except Exception as e:  # noqa: BLE001 - after the lock a crash is a non-run of the look (section 11.5)

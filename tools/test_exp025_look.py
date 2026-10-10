@@ -290,6 +290,22 @@ class NotTerminal(unittest.TestCase):
                 F = Fixture(os.path.join(d, str(lock)) if os.makedirs(os.path.join(d, str(lock))) is None else d, v_flag=False)
                 self.assertIn("v_ok", str(self._not_ready(F, lock)))
 
+    def test_not_ready_after_the_lock_is_terminal(self):
+        # review r7: a NOT_READY raised after the lock (price_rows with vmiss hours and no v_ok) spends the look as NOT_DECIDABLE
+        class LateNotReady(Fixture):
+            def price_fn(self, rows, tape_dir, guard, hour_source=None, vmiss_hours=None):
+                self.priced += 1
+                raise R.Refusal("NOT_READY", "simulated: v_ok absent at pricing")
+        with tempfile.TemporaryDirectory() as d:
+            F = LateNotReady(d)
+            rec = K.run_look(1, F.a, F)
+            self.assertEqual((rec["verdict"], rec["refused"]), ("NOT_DECIDABLE", "NOT_READY"), rec)
+            self.assertEqual(F.events(), ["lock", "not_decidable"])
+            self.assertTrue(os.path.exists(os.path.join(F.O, "READ.lock")))
+            with self.assertRaises(R.Refusal) as c:
+                K.run_look(1, F.a, F)                                                   # spent: no re-run
+            self.assertEqual(c.exception.code, "LOCK")
+
     def test_missing_assembly_is_not_ready_not_r8(self):
         with tempfile.TemporaryDirectory() as d:
             F = Fixture(d); os.remove(os.path.join(F.O, "look_assembly.json"))
