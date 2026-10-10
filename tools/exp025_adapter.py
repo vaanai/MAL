@@ -24,6 +24,10 @@ never >= 2026-09-25T07) from a path with no sealed part. Nothing here prices, la
 
   python3 tools/exp025_adapter.py convert --src DIR --block NAME --out TAPE_DIR --hours H0 H1 [--look look1|look2]
   python3 tools/exp025_adapter.py e0 --work /data/mal/exp025/e0/p3-0920 --record ARTIFACTS/exp025/e0/p3_e0_2026-09-20.json
+
+The E0 (section 10 P3) also runs the `mid` item (e0_mid): P2's universe.parquet (job #504, sha256 pinned below) against
+the universe the pinned 10_meta.py builds on the appended tokens.parquet. Run it with the interpreter P2 used
+(/data/mal/audit-1008/venv/bin/python, duckdb 1.5.6): `ch` is DuckDB's hash(creator).
 """
 from __future__ import annotations
 
@@ -83,6 +87,17 @@ E0_DAY = "2026-09-20"
 E0_BLOCK = "fast-pool-0918"
 E0_SRC = "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00"
 E0_REF_TAPE = "/data/mal/audit-1008/tape"
+# P2 (MiScusi job #504; EXP-025 Amendment 4, PR #558): the look-directory inputs the `mid` item of the E0 reads (section 11.2)
+P2_WORK = "/data/mal/hunt-1008/c1nf-p2/work"
+P2_UNIVERSE = P2_WORK + "/universe.parquet"
+P2_UNIVERSE_SHA256 = "217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211"
+EXPLORATION_SH = "/data/mal/hunt-shared"
+EXPLORATION_TOKENS_SHA256 = "2c01a6d4b140e3710f45234594881f9bb26428da101f4b426bafa68fbb2a2681"
+META_PY = ART / "scripts" / "10_meta.py"
+COMMON2_PY = ART / "scripts" / "common2.py"
+COMMON2_PATH_VARS = ("O", "TAPE", "SH", "TMP")  # the four lines patches/common2_look{1,2}.patch and P2's common2_p2.diff retarget
+E0_SHIFT_DAYS = 365  # the E0's synthetic extension: the E0 day's rows renamed and moved a year later (or earlier); never October
+E0_SHIFT_SUFFIX = "#e0shift"  # not base58, so a shifted mint can never be a real mint
 SEALED_PARTS = ("fresh-0802", "fresh-0808", "fresh-0828", "oracle-live", "exp012-gate", "/OUT/", "rows.jsonl", "/scratch/",
                 "report.json", "report.md", "v-map", "vmap-b")
 OCTOBER_PATH_PARTS = ("forward", "walk2", "walk-2", "1016")
@@ -500,6 +515,128 @@ def check_mid_stable(look_universe: str | Path, p2_universe: str | Path) -> dict
     return res
 
 
+# ------------------------------------------------------------------------------------------------ look meta (pinned 10_meta.py)
+def stage_meta(look: str | Path, sh: str | Path, tmp: str | Path) -> Path:
+    """The pinned 10_meta.py and common2.py (sha256 checked) copied to <look>/scripts, with common2.py's O, TAPE, SH and TMP
+    lines retargeted (the form of patches/common2_look{1,2}.patch and P2's common2_p2.diff). No other byte changes;
+    10_meta.py reads only O, SH and TMP."""
+    check_pinned(META_PY, "scripts/10_meta.py")
+    check_pinned(COMMON2_PY, "scripts/common2.py")
+    look, sh, tmp = Path(look), Path(sh), Path(tmp)
+    want = {"O": look, "TAPE": look / "tape", "SH": sh, "TMP": tmp}
+    lines = COMMON2_PY.read_text().splitlines(keepends=True)
+    done: list[str] = []
+    for i, line in enumerate(lines):
+        k = line.split(" = ", 1)[0]
+        if k in want and k not in done and line.startswith(f"{k} = '") and line.rstrip().endswith("'"):
+            lines[i] = f"{k} = {_q(want[k])}\n"
+            done.append(k)
+    if sorted(done) != sorted(COMMON2_PATH_VARS):
+        raise Refused(f"common2.py: retargeted {done}, expected {list(COMMON2_PATH_VARS)}")
+    sd = look / "scripts"
+    sd.mkdir(parents=True, exist_ok=True)
+    (look / "work").mkdir(parents=True, exist_ok=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(META_PY, sd / "10_meta.py")
+    (sd / "common2.py").write_text("".join(lines))
+    return sd / "10_meta.py"
+
+
+def run_meta(look: str | Path, sh: str | Path, tmp: str | Path) -> dict[str, Path]:
+    """The pinned 10_meta.py on <sh>/tokens.parquet and <sh>/bars_1m, into <look>/work (section 11.2 item 4)."""
+    meta = stage_meta(look, sh, tmp)
+    r = subprocess.run([sys.executable, str(meta)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"10_meta.py failed ({r.returncode}): {r.stderr.strip()[-600:]}")
+    return {k: Path(look) / "work" / f"{k}.parquet" for k in ("universe", "creates", "mkt")}
+
+
+def shift_tokens(src: str | Path, out: str | Path, days: int) -> dict:
+    """E0 test input only: every row of `src` with its mint renamed (E0_SHIFT_SUFFIX) and every *_ms column moved by `days`."""
+    import duckdb
+    con = duckdb.connect()
+    cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({_q(src)})").fetchall()]
+    ms = [c for c in cols if c.endswith("_ms")]
+    rep = [f"mint || {_q(E0_SHIFT_SUFFIX)} AS mint"] + [f"{c} + {int(days) * 86_400_000} AS {c}" for c in ms]
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    con.execute(f"COPY (SELECT * REPLACE ({', '.join(rep)}) FROM read_parquet({_q(src)})) TO {_q(out)} (FORMAT parquet)")
+    n = con.execute(f"SELECT count(*) FROM read_parquet({_q(out)})").fetchone()[0]
+    con.close()
+    return {"rows": int(n), "ms_columns": ms, "days": int(days)}
+
+
+def e0_mid(work: str | Path, appended_tokens: str | Path, *, exploration_sh: str | Path = EXPLORATION_SH,
+           exploration_sha256: str = EXPLORATION_TOKENS_SHA256, p2_universe: str | Path = P2_UNIVERSE,
+           p2_universe_sha256: str = P2_UNIVERSE_SHA256, p2_work: str | Path = P2_WORK, threads: int = 4) -> dict:
+    """P3 E0, the `mid` item (section 10 P3; section 11.2): the look-directory steps the adapter owns (append_tokens onto the
+    exploration tokens.parquet, then the pinned 10_meta.py) give every exploration token P2's `mid`. Exploration rows only:
+      same_day       the E0 day's adapter tokens appended (all already in the exploration file, so none is added): the look
+                     universe equals P2's row for row, every column; creates.parquet too (mkt.parquet: float sums, reported);
+      later_shift    the same rows renamed and moved E0_SHIFT_DAYS later, as October rows complete later: P2's rows keep
+                     every column and the new rows take mid n+1..n+k;
+      earlier_shift  negative control, moved E0_SHIFT_DAYS earlier: check_mid_stable must refuse.
+    The look itself repeats check_mid_stable on its own universe.parquet (section 11.2)."""
+    work = Path(work)
+    got = sha256_file(p2_universe)
+    if got != p2_universe_sha256:
+        raise Refused(f"P2 universe.parquet sha256 {got} is not the recorded {p2_universe_sha256}")
+    con = _connect(threads=threads, tmp=str(work / "tmp_md5"))
+    p2_md5, p2_n = rows_md5(con, [p2_universe])
+    qp = _q(p2_universe)
+    res = {"p2_universe": str(p2_universe), "p2_universe_sha256": got, "p2_rows": p2_n, "p2_rows_md5": p2_md5,
+           "exploration_tokens": str(Path(exploration_sh) / "tokens.parquet"), "exploration_tokens_sha256": exploration_sha256,
+           "appended_source": str(appended_tokens), "appended_source_sha256": sha256_file(appended_tokens), "cases": {}}
+    for name, days in (("same_day", 0), ("later_shift", E0_SHIFT_DAYS), ("earlier_shift", -E0_SHIFT_DAYS)):
+        look = work / f"look-{name}"
+        sh = look / "hunt-shared"
+        sh.mkdir(parents=True, exist_ok=True)
+        if not (sh / "bars_1m").exists():
+            os.symlink(Path(exploration_sh) / "bars_1m", sh / "bars_1m")
+        c: dict = {"shift_days": days}
+        app = Path(appended_tokens)
+        if days:
+            app = look / "appended_shifted.parquet"
+            c["shift"] = shift_tokens(appended_tokens, app, days)
+        c["append"] = append_tokens(Path(exploration_sh) / "tokens.parquet", app, sh / "tokens.parquet",
+                                    exploration_sha256=exploration_sha256)
+        out = run_meta(look, sh, work / f"tmp_meta_{name}")
+        q = _q(out["universe"])
+        c["universe_sha256"] = sha256_file(out["universe"])
+        try:
+            c["mid"], c["refused"] = check_mid_stable(out["universe"], p2_universe), None
+        except Refused as e:
+            c["mid"], c["refused"] = None, str(e)
+        c["universe_rows"] = int(con.execute(f"SELECT count(*) FROM read_parquet({q})").fetchone()[0])
+        kept = look / "work" / "universe_p2_mints.parquet"
+        con.execute(f"COPY (SELECT * FROM read_parquet({q}) WHERE mint IN (SELECT mint FROM read_parquet({qp}))) "
+                    f"TO {_q(kept)} (FORMAT parquet)")
+        k_md5, k_n = rows_md5(con, [kept])
+        c["p2_mint_rows"], c["p2_mint_rows_md5_equal"] = k_n, (k_md5 == p2_md5 and k_n == p2_n)
+        new = con.execute(f"SELECT count(*), min(mid), max(mid) FROM read_parquet({q}) "
+                          f"WHERE mint NOT IN (SELECT mint FROM read_parquet({qp}))").fetchone()
+        c["new_rows"] = {"n": int(new[0]), "min_mid": new[1], "max_mid": new[2]}
+        if name == "same_day":
+            for k in ("creates", "mkt"):
+                ref = Path(p2_work) / f"{k}.parquet"
+                if ref.exists():
+                    a, na = rows_md5(con, [out[k]])
+                    b, nb = rows_md5(con, [ref])
+                    c[k] = {"rows": [na, nb], "md5_equal": a == b and na == nb}
+                else:
+                    c[k] = {"missing_ref": str(ref), "md5_equal": False}
+        res["cases"][name] = c
+    con.close()
+    s, l, e = (res["cases"][k] for k in ("same_day", "later_shift", "earlier_shift"))
+    res["pass"] = bool(
+        s["refused"] is None and s["p2_mint_rows_md5_equal"] and s["universe_rows"] == p2_n and s["new_rows"]["n"] == 0
+        and s["creates"]["md5_equal"]
+        and l["refused"] is None and l["p2_mint_rows_md5_equal"] and l["new_rows"]["n"] > 0
+        and l["new_rows"]["min_mid"] == p2_n + 1 and l["new_rows"]["max_mid"] == p2_n + l["new_rows"]["n"]
+        and l["universe_rows"] == p2_n + l["new_rows"]["n"]
+        and e["refused"] is not None and e["new_rows"]["n"] > 0)
+    return res
+
+
 # ------------------------------------------------------------------------------------------------ md5 over rows
 def rows_md5(con, files: Sequence[str | Path]) -> tuple[str, int]:
     """md5 over the rows of `files`: each row as its columns' text joined by '|' (NULL as \\N), the rows sorted
@@ -555,6 +692,7 @@ def run_e0(work: str | Path, record: str | Path, *, threads: int = 4) -> dict:
     comp = con.execute(f"""SELECT mint, coalesce(is_mayhem_mode, false), pool FROM read_parquet({_q(ad_sh / 'tokens.parquet')})
                            WHERE grad_src = 'complete'""").fetchall()
     con.close()
+    mid = e0_mid(work / "mid", ad_sh / "tokens.parquet", threads=threads)
     nm = [(m, p) for m, mh, p in comp if not mh]
     pda_eq = sum(1 for m, p in nm if p is not None and canonical_pool(m) == p)
     # the section 2.4 event-V mapping fixture
@@ -572,14 +710,18 @@ def run_e0(work: str | Path, record: str | Path, *, threads: int = 4) -> dict:
         "pda_first_pool_match": {"non_mayhem_completes": len(nm), "pda_equals_tokens_pool": pda_eq},
         "event_v_fixture": {"cmd": "python3 -m unittest tools.test_exp025.EventVMapping", "returncode": fx.returncode,
                             "ok": fx.returncode == 0, "tail": fx.stderr.strip().splitlines()[-1:] if fx.stderr else []},
-        "mid_check": "pending P2 (needs P2's universe.parquet; check_mid_stable)",
+        "mid_check": mid,
         "blobs": {"tools/exp025_adapter.py": git_blob(__file__), "ARTIFACTS/exp025/ref/convert.py": git_blob(CONVERT_PY),
                   "ARTIFACTS/exp025/ref/build_shared.py": git_blob(BUILD_SHARED_PY),
-                  "ARTIFACTS/exp025/event_v_map.py": git_blob(ART / "event_v_map.py")},
+                  "ARTIFACTS/exp025/event_v_map.py": git_blob(ART / "event_v_map.py"),
+                  "ARTIFACTS/exp025/scripts/10_meta.py": git_blob(META_PY), "ARTIFACTS/exp025/scripts/common2.py": git_blob(COMMON2_PY),
+                  "tools/test_exp025_adapter.py": git_blob(REPO / "tools" / "test_exp025_adapter.py")},
+        "interpreter": {"python": sys.version.split()[0], "duckdb": __import__("duckdb").__version__,
+                        "pyarrow": __import__("pyarrow").__version__},
         "seconds": round(time.time() - t0, 1),
     }
     rec["pass"] = bool(all(k["equal"] for k in kinds.values()) and rec["tokens"]["equal"] and rec["event_v_fixture"]["ok"]
-                       and not rec["bad_hours"] and rec["idempotence_T05"]["equal"])
+                       and not rec["bad_hours"] and rec["idempotence_T05"]["equal"] and mid["pass"])
     Path(record).parent.mkdir(parents=True, exist_ok=True)
     Path(record).write_text(json.dumps(rec, indent=1, sort_keys=True) + "\n")
     return rec
@@ -608,7 +750,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             rec = run_e0(a.work, a.record, threads=a.threads)
             print(json.dumps({"pass": rec["pass"], "kinds": {k: v["equal"] for k, v in rec["kinds"].items()},
-                              "tokens": rec["tokens"]["equal"], "event_v_fixture": rec["event_v_fixture"]["ok"]}))
+                              "tokens": rec["tokens"]["equal"], "event_v_fixture": rec["event_v_fixture"]["ok"],
+                              "mid": rec["mid_check"]["pass"]}))
             return 0 if rec["pass"] else 1
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)

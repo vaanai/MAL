@@ -304,5 +304,85 @@ class LookAssembly(unittest.TestCase):
             A.check_mid_stable(bad, p2)
 
 
+
+try:
+    import numpy  # noqa: F401
+    import pandas  # noqa: F401
+    HAVE_PANDAS = True
+except ImportError:
+    HAVE_PANDAS = False
+
+
+@unittest.skipUnless(HAVE_DUCKDB and HAVE_PANDAS, "duckdb, numpy or pandas missing (the pinned 10_meta.py needs them)")
+class MidE0(unittest.TestCase):
+    """The `mid` item of the E0 (e0_mid) end to end on a fixture: the pinned 10_meta.py, staged and retargeted, run three times."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _fixture_sh(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        sh = self.tmp / "sh"
+        (sh / "bars_1m" / "blk").mkdir(parents=True)
+        t0 = 1_790_000_000_000  # 2026-09-21, exploration-like
+        # c and a complete at the same ms: the (complete_ms, mint) order breaks the tie; d is not a complete; e is out of the V band
+        mints = ["b", "c", "a", "d", "e"]
+        cms = [t0 + 2_000, t0 + 1_000, t0 + 1_000, None, t0 + 3_000]
+        tok = pa.table({
+            "mint": mints, "pool": [f"P{m}" for m in mints], "grad_src": ["complete", "complete", "complete", None, "complete"],
+            "v0_lamports": pa.array([17_600_000_000, 17_550_000_000, 17_650_000_000, None, 16_000_000_000], pa.int64()),
+            "complete_ms": pa.array(cms, pa.int64()), "ps_first_ms": pa.array([c + 500 if c else None for c in cms], pa.int64()),
+            "complete_slot": pa.array([1, 2, 3, None, 4], pa.int64()), "create_ms": pa.array([t0 - 60_000] * 5, pa.int64()),
+            "creator": ["k1", "k2", "k1", "k3", "k2"], "name": mints, "symbol": mints, "is_mayhem_mode": [False] * 5,
+            "has_create": [True, True, False, True, True], "bc_n_trades": pa.array([10] * 5, pa.int64()),
+            "bc_n_traders": pa.array([5] * 5, pa.int64()), "bc_buy_sol": [1.5] * 5, "bc_sell_sol": [0.5] * 5,
+            "ps_first_price": [1e-7] * 5})
+        pq.write_table(tok, sh / "tokens.parquet")
+        pq.write_table(pa.table({"minute_ms": pa.array([t0, t0 + 60_000], pa.int64()), "venue": ["pumpswap", "pump_bonding"],
+                                 "n_buys": pa.array([3, 4], pa.int64()), "n_sells": pa.array([1, 2], pa.int64()),
+                                 "buy_sol": [0.25, 0.5], "sell_sol": [0.125, None]}), sh / "bars_1m" / "blk" / "d.parquet")
+        return sh
+
+    def test_stage_meta_retargets_four_path_lines_only(self):
+        meta = A.stage_meta(self.tmp / "look", self.tmp / "sh", self.tmp / "t")
+        self.assertEqual(meta.read_bytes(), A.META_PY.read_bytes())
+        pinned = A.COMMON2_PY.read_text().splitlines()
+        staged = (meta.parent / "common2.py").read_text().splitlines()
+        self.assertEqual(len(pinned), len(staged))
+        diff = [(a, b) for a, b in zip(pinned, staged) if a != b]
+        self.assertEqual([b.split(" = ")[0] for _, b in diff], ["O", "TAPE", "SH", "TMP"])
+        self.assertIn(f"SH = '{self.tmp / 'sh'}'", staged)
+
+    def test_e0_mid_same_later_earlier(self):
+        import pyarrow.parquet as pq
+        sh = self._fixture_sh()
+        p2 = A.run_meta(self.tmp / "p2", sh, self.tmp / "tmp_p2")
+        uni = pq.read_table(p2["universe"]).to_pylist()
+        self.assertEqual([(r["mid"], r["mint"]) for r in uni], [(1, "a"), (2, "c"), (3, "b")])
+        appended = self.tmp / "appended.parquet"  # the "E0 day": a subset of the exploration rows (all duplicates)
+        pq.write_table(pq.read_table(sh / "tokens.parquet").slice(0, 3), appended)
+        with self.assertRaisesRegex(A.Refused, "P2 universe"):
+            A.e0_mid(self.tmp / "w0", appended, exploration_sh=sh, exploration_sha256=A.sha256_file(sh / "tokens.parquet"),
+                     p2_universe=p2["universe"], p2_universe_sha256="0" * 64, p2_work=p2["universe"].parent, threads=1)
+        r = A.e0_mid(self.tmp / "w", appended, exploration_sh=sh, exploration_sha256=A.sha256_file(sh / "tokens.parquet"),
+                     p2_universe=p2["universe"], p2_universe_sha256=A.sha256_file(p2["universe"]),
+                     p2_work=p2["universe"].parent, threads=1)
+        s, l, e = (r["cases"][k] for k in ("same_day", "later_shift", "earlier_shift"))
+        self.assertEqual((s["append"]["october_rows"], s["append"]["october_dup_mints_dropped"]), (0, 3))
+        self.assertTrue(s["p2_mint_rows_md5_equal"] and s["creates"]["md5_equal"] and s["mkt"]["md5_equal"])
+        self.assertEqual(l["shift"]["ms_columns"], ["complete_ms", "ps_first_ms", "create_ms"])
+        self.assertEqual(l["new_rows"], {"n": 3, "min_mid": 4, "max_mid": 6})
+        self.assertTrue(l["p2_mint_rows_md5_equal"])
+        self.assertIsNone(l["refused"])
+        self.assertRegex(e["refused"], "3 exploration tokens change `mid`")
+        self.assertTrue(r["pass"])
+        later = pq.read_table(self.tmp / "w" / "look-later_shift" / "work" / "universe.parquet").to_pylist()
+        self.assertEqual([r["mint"] for r in later][3:], ["a#e0shift", "c#e0shift", "b#e0shift"])
+
+
 if __name__ == "__main__":
     unittest.main()
