@@ -56,8 +56,11 @@ def write(p: Path, lines: list[str]) -> Path:
     return p
 
 
+T_OPEN = 1_792_117_800_000  # 2026-10-16T02:30:00Z: after the exporter's FINAL clock floor (02:00Z)
+
+
 class Clock:
-    def __init__(self, t: int = 1_792_112_400_000):
+    def __init__(self, t: int = T_OPEN):
         self.t = t
 
     def __call__(self) -> int:
@@ -65,6 +68,14 @@ class Clock:
 
     def sleep(self, s: float) -> None:
         self.t += int(s * 1000)
+
+
+@pytest.fixture
+def marker(tmp_path: Path) -> Path:
+    """The FINAL marker, present (the manager writes it after the DEC-016 FINAL)."""
+    m = tmp_path / "FINAL_WRITTEN"
+    m.write_text("")
+    return m
 
 
 def rows(p: Path) -> list[dict]:
@@ -120,13 +131,13 @@ def test_decision_row_takes_only_a_bool_and_a_base58_mint():
 # --- exporter -----------------------------------------------------------------------------------------------------------
 
 
-def test_no_non_boolean_field_ever_leaves_the_exporter(tmp_path):
+def test_no_non_boolean_field_ever_leaves_the_exporter(tmp_path, marker):
     a, b, c, d = mint(1), mint(2), mint(3), mint(4)
     gate = write(tmp_path / "g.jsonl", [gate_line(a, True), gate_line(b, False), gate_line(c, False, reason="gate_error", error="X")])
     ints = write(tmp_path / "i.jsonl", [intent_line(a), intent_line(d), arm_line(b)])
     out = tmp_path / "picks.jsonl"
     clk = Clock()
-    co.run_export([("gate", gate), ("intents", ints)], out, once=True, now_ms=clk)
+    co.run_export([("gate", gate), ("intents", ints)], out, final_marker=marker, once=True, now_ms=clk)
     got = rows(out)
     for r in got:
         assert set(r) == {"mint", "pick", "t_ms"}
@@ -137,51 +148,52 @@ def test_no_non_boolean_field_ever_leaves_the_exporter(tmp_path):
         assert s not in blob
 
 
-def test_sources_with_hostile_extra_fields_still_export_booleans_only(tmp_path):
+def test_sources_with_hostile_extra_fields_still_export_booleans_only(tmp_path, marker):
     a = mint(9)
     line = gate_line(a, True, pnl_sol=float(PNL), positions=[1, 2], outcome="won", fill_price=float(PRICE))
     gate = write(tmp_path / "g.jsonl", [line])
     out = tmp_path / "picks.jsonl"
-    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
-    assert rows(out) == [{"mint": a, "pick": True, "t_ms": 1_792_112_400_000}]
+    co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=Clock())
+    assert rows(out) == [{"mint": a, "pick": True, "t_ms": T_OPEN}]
     for s in SENTINELS:
         assert s not in out.read_text()
 
 
-def test_idempotent_restart_and_sticky_true(tmp_path):
+def test_idempotent_restart_and_sticky_true(tmp_path, marker):
     a, b = mint(1), mint(2)
     gate = write(tmp_path / "g.jsonl", [gate_line(a, False), gate_line(a, False), gate_line(b, True)])
     out = tmp_path / "picks.jsonl"
-    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
+    co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=Clock())
     assert len(rows(out)) == 2  # the repeated false is not written twice
-    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())  # restart: re-reads the source from the start
+    co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=Clock())  # restart: re-reads the source from the start
     assert len(rows(out)) == 2
     with gate.open("a") as fh:
         fh.write(gate_line(a, True) + "\n" + gate_line(b, False) + "\n")  # a flips to a pick; b was a pick and stays one
-    co.run_export([("gate", gate)], out, once=True, now_ms=Clock())
+    co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=Clock())
     assert [(r["mint"], r["pick"]) for r in rows(out)] == [(a, False), (b, True), (a, True)]
 
 
-def test_heartbeat_only_when_every_source_is_readable(tmp_path):
+def test_heartbeat_only_when_every_source_is_readable(tmp_path, marker):
     a = mint(1)
     gate = write(tmp_path / "g.jsonl", [gate_line(a, False)])
     out = tmp_path / "picks.jsonl"
     clk = Clock()
-    n = co.run_export([("gate", gate)], out, hb_s=5, poll_s=1, max_seconds=12, now_ms=clk, sleep=clk.sleep)
+    n = co.run_export([("gate", gate)], out, final_marker=marker, hb_s=5, poll_s=1, max_seconds=12, now_ms=clk, sleep=clk.sleep)
     hb = [r for r in rows(out) if "hb" in r]
     assert n["heartbeats_written"] == len(hb) == 3  # t = 0, 5, 10 s
     assert all(set(r) == {"hb", "t_ms"} and r["hb"] is True for r in hb)
     out2 = tmp_path / "picks2.jsonl"
     clk2 = Clock()
-    n2 = co.run_export([("gate", gate), ("intents", tmp_path / "missing.jsonl")], out2, hb_s=1, poll_s=1, max_seconds=5, now_ms=clk2, sleep=clk2.sleep)
+    n2 = co.run_export([("gate", gate), ("intents", tmp_path / "missing.jsonl")], out2, final_marker=marker, hb_s=1, poll_s=1, max_seconds=5,
+                       now_ms=clk2, sleep=clk2.sleep)
     assert n2["heartbeats_written"] == 0 and n2["source_errors"] > 0  # a lost source never beats: the reader goes stale
     assert [r for r in rows(out2) if "hb" in r] == []
 
 
-def test_once_and_replay_only_runs_write_no_heartbeat(tmp_path):
+def test_once_and_replay_only_runs_write_no_heartbeat(tmp_path, marker):
     rep = write(tmp_path / "r.jsonl", [replay_line(mint(1), True), replay_line(mint(2), False)])
     out = tmp_path / "picks-replay.jsonl"
-    n = co.run_export([("replay", rep)], out, once=True, now_ms=Clock())
+    n = co.run_export([("replay", rep)], out, final_marker=marker, once=True, now_ms=Clock())
     assert n["heartbeats_written"] == 0 and n["decisions_written"] == 2
     assert all("hb" not in r for r in rows(out))
 
@@ -382,23 +394,50 @@ def test_default_oracle_reads_the_environment_lazily(tmp_path, monkeypatch):
 # --- CLI and the sh wrapper -----------------------------------------------------------------------------------------------
 
 
-def test_cli_export_once_and_check(tmp_path, capsys):
+def test_cli_export_once_and_check(tmp_path, capsys, marker, monkeypatch):
     a = mint(1)
     gate = write(tmp_path / "g.jsonl", [gate_line(a, True)])
     out = tmp_path / "picks.jsonl"
-    assert co.main(["export", "--gate-log", str(gate), "--out", str(out), "--once"]) == 0
+    with pytest.raises(SystemExit):
+        co.main(["export", "--gate-log", str(gate), "--out", str(out), "--once"])  # argparse: --final-marker is required
+    capsys.readouterr()
+    monkeypatch.setattr(co, "EXPORT_EARLIEST_MS", 0)  # test only: the code floor is 2026-10-16T02:00Z, after this test's wall clock
+    assert co.main(["export", "--gate-log", str(gate), "--out", str(out), "--final-marker", str(marker), "--once"]) == 0
     counts = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert counts["decisions_written"] == 1
     assert a not in capsys.readouterr().out  # counts only
-    assert co.main(["export", "--out", str(out)]) == 2
-    assert co.main(["export", "--gate-log", str(tmp_path / "nope.jsonl"), "--out", str(out)]) == 2
+    assert co.main(["export", "--out", str(out), "--final-marker", str(marker)]) == 2  # no source
+    assert co.main(["export", "--gate-log", str(tmp_path / "nope.jsonl"), "--out", str(out), "--final-marker", str(marker)]) == 2
     capsys.readouterr()
     assert co.main(["check", "--live", str(out)]) == 1  # --once wrote no heartbeat: stale
     chk = json.loads(capsys.readouterr().out)
     assert chk["fresh"] is False and chk["decided_mints"] == 1 and a not in json.dumps(chk)
 
 
-def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path):
+def test_cli_once_refuses_before_the_final_gate_and_reads_nothing(tmp_path, capsys, marker, monkeypatch):
+    gate = write(tmp_path / "g.jsonl", [gate_line(mint(1), True)])
+    out = tmp_path / "picks.jsonl"
+    opened: list[str] = []
+    monkeypatch.setattr(co.Tailer, "read_new", lambda self, *a, **k: opened.append(str(self.path)) or ([], False))
+    # no marker: refused whatever the clock says
+    assert co.main(["export", "--gate-log", str(gate), "--out", str(out), "--final-marker", str(tmp_path / "absent"), "--once"]) == 3
+    # a marker, but the clock is before the floor (patched to the far future so this holds whenever the suite runs)
+    monkeypatch.setattr(co, "EXPORT_EARLIEST_MS", 10**15)
+    assert co.main(["export", "--gate-log", str(gate), "--out", str(out), "--final-marker", str(marker), "--once"]) == 3
+    assert opened == [] and not out.exists()
+    assert "refusing" in capsys.readouterr().err
+
+
+def _floor_shim(tmp_path: Path) -> Path:
+    """A CAP_PICK_PYTHON stand-in for the wrapper tests: drops `-m tools.cap_pick_oracle`, lowers the FINAL clock floor (test only), runs the CLI."""
+    shim = tmp_path / "py-shim"
+    shim.write_text("#!/bin/sh\nshift 2\nexec \"$REAL_PY\" -c 'import sys; from tools import cap_pick_oracle as c; c.EXPORT_EARLIEST_MS = 0; "
+                    "sys.exit(c.main(sys.argv[1:]))' \"$@\"\n")
+    shim.chmod(0o755)
+    return shim
+
+
+def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path, marker):
     sh = REPO / "scripts" / "research" / "cap-pick-oracle.sh"
     assert subprocess.run(["sh", "-n", str(sh)]).returncode == 0
     text = sh.read_text()
@@ -406,7 +445,7 @@ def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path):
     a, b = mint(1), mint(2)
     gate = write(tmp_path / "exp012-gate.jsonl", [gate_line(a, True), gate_line(b, False)])
     env = {**os.environ, "CAP_PICK_OUT": str(tmp_path / "out"), "CAP_PICK_GATE_LOG": str(gate), "CAP_PICK_INTENTS": str(tmp_path / "no-intents.jsonl"),
-           "CAP_PICK_PYTHON": sys.executable}
+           "CAP_PICK_PYTHON": str(_floor_shim(tmp_path)), "REAL_PY": sys.executable, "CAP_PICK_FINAL_MARKER": str(marker)}
     r = subprocess.run(["sh", str(sh), "--max-seconds", "0.3", "--poll-s", "0.05", "--hb-s", "0.1"], env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     got = rows(tmp_path / "out" / "picks.jsonl")
@@ -416,13 +455,23 @@ def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path):
     # a missing gate log is refused before anything starts
     env2 = {**env, "CAP_PICK_GATE_LOG": str(tmp_path / "missing.jsonl")}
     assert subprocess.run(["sh", str(sh), "--once"], env=env2, capture_output=True, text=True).returncode == 2
+    # no FINAL marker variable: refused before python starts
+    env3 = {k: v for k, v in env.items() if k != "CAP_PICK_FINAL_MARKER"}
+    r3 = subprocess.run(["sh", str(sh), "--once"], env=env3, capture_output=True, text=True)
+    assert r3.returncode == 2 and "CAP_PICK_FINAL_MARKER" in r3.stderr
+    # the real interpreter (no shim) with a marker that is not there: exit 3, nothing written
+    env4 = {**env, "CAP_PICK_PYTHON": sys.executable, "CAP_PICK_OUT": str(tmp_path / "out4"), "CAP_PICK_FINAL_MARKER": str(tmp_path / "absent")}
+    r4 = subprocess.run(["sh", str(sh), "--once"], env=env4, capture_output=True, text=True, timeout=60)
+    assert r4.returncode == 3, r4.stderr
+    assert not (tmp_path / "out4" / "picks.jsonl").exists()
 
 
-def test_wrapper_replay_mode_converts_a_decision_list_to_booleans(tmp_path):
+def test_wrapper_replay_mode_converts_a_decision_list_to_booleans(tmp_path, marker):
     sh = REPO / "scripts" / "research" / "cap-pick-oracle.sh"
     a, b, c = mint(1), mint(2), mint(3)
     rep = write(tmp_path / "replay.jsonl", [replay_line(a, True), replay_line(b, False), replay_line(c, False, kind="dead")])
-    env = {**os.environ, "CAP_PICK_OUT": str(tmp_path / "out"), "CAP_PICK_REPLAY_IN": str(rep), "CAP_PICK_PYTHON": sys.executable}
+    env = {**os.environ, "CAP_PICK_OUT": str(tmp_path / "out"), "CAP_PICK_REPLAY_IN": str(rep), "CAP_PICK_PYTHON": str(_floor_shim(tmp_path)),
+           "REAL_PY": sys.executable, "CAP_PICK_FINAL_MARKER": str(marker)}
     r = subprocess.run(["sh", str(sh)], env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     got = rows(tmp_path / "out" / "picks-replay.jsonl")
@@ -431,3 +480,79 @@ def test_wrapper_replay_mode_converts_a_decision_list_to_booleans(tmp_path):
     blob = (tmp_path / "out" / "picks-replay.jsonl").read_text()
     for s in SENTINELS:
         assert s not in blob
+
+
+# --- the FINAL gate (EXP-022 s9 "Nothing before the FINAL"; DEC-016:95) ----------------------------------------------------------
+
+
+def test_final_gate_constant_is_2026_10_16T02Z():
+    import datetime as dt
+
+    assert co.EXPORT_EARLIEST_MS == 1_792_116_000_000
+    assert dt.datetime.fromtimestamp(co.EXPORT_EARLIEST_MS / 1000, dt.timezone.utc).isoformat() == "2026-10-16T02:00:00+00:00"
+
+
+def test_exporter_opens_nothing_and_creates_nothing_before_the_final_gate(tmp_path, monkeypatch):
+    gate = write(tmp_path / "g.jsonl", [gate_line(mint(1), True)])
+    out = tmp_path / "o" / "picks.jsonl"
+    marker = tmp_path / "FINAL_WRITTEN"
+
+    def no_read(self, *a, **k):
+        raise AssertionError("a source was opened before the FINAL gate")
+
+    monkeypatch.setattr(co.Tailer, "read_new", no_read)
+    # (1) no marker, clock after the floor; (2) a marker, clock still before the floor when the 60 s budget ends; (3) no marker given at all
+    for t, make, given in ((T_OPEN, False, marker), (co.EXPORT_EARLIEST_MS - 120_001, True, marker), (T_OPEN, True, None)):
+        if make:
+            marker.write_text("")
+        elif marker.exists():
+            marker.unlink()
+        clk = Clock(t)
+        n = co.run_export([("gate", gate)], out, final_marker=given, hb_s=1, poll_s=1, max_seconds=60, now_ms=clk, sleep=clk.sleep)
+        assert n["decisions_written"] == n["heartbeats_written"] == n["lines"] == 0 and n["final_wait_s"] >= 60
+        assert not out.exists() and not out.parent.exists()
+        with pytest.raises(co.FinalNotWritten):
+            co.run_export([("gate", gate)], out, final_marker=given, once=True, now_ms=Clock(t))
+    assert not co.final_gate_open(tmp_path, T_OPEN) and not co.final_gate_open(tmp_path / "absent", T_OPEN)  # a directory is not the marker
+
+
+def test_a_waiting_exporter_starts_when_the_marker_appears(tmp_path):
+    a = mint(1)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, True)])
+    out = tmp_path / "picks.jsonl"
+    marker = tmp_path / "FINAL_WRITTEN"
+    clk = Clock(co.EXPORT_EARLIEST_MS - 30_000)  # 30 s before the floor, no marker yet
+    waits: list[float] = []
+
+    def sleep(s: float) -> None:
+        waits.append(s)
+        if len(waits) == 2:
+            marker.write_text("")  # the manager writes it after the FINAL
+        clk.sleep(s)
+
+    n = co.run_export([("gate", gate)], out, final_marker=marker, hb_s=5, poll_s=1, max_seconds=120, now_ms=clk, sleep=sleep)
+    assert waits[:3] == [co.FINAL_WAIT_POLL_S] * 3  # stat-only waits until both the marker and the floor hold (t = -30, -20, -10 s)
+    assert n["decisions_written"] == 1 and n["heartbeats_written"] >= 1 and n["final_wait_s"] == 30
+    assert [(r["mint"], r["pick"]) for r in rows(out) if "mint" in r] == [(a, True)]
+    assert all(r["t_ms"] >= co.EXPORT_EARLIEST_MS for r in rows(out))
+
+
+def test_tailer_does_not_open_an_unchanged_file_and_refuses_a_non_regular_one(tmp_path, monkeypatch):
+    f = write(tmp_path / "p.jsonl", [co.heartbeat_row(1)])
+    t = co.Tailer(f)
+    assert len(t.read_new()[0]) == 1
+    real_open = Path.open
+
+    def guarded(self, *a, **k):
+        if self == f:
+            raise AssertionError("opened an unchanged file")
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", guarded)
+    assert t.read_new() == ([], False)
+    monkeypatch.setattr(Path, "open", real_open)
+    with f.open("a") as fh:
+        fh.write(co.heartbeat_row(2) + "\n")
+    assert len(t.read_new()[0]) == 1
+    with pytest.raises(OSError):
+        co.Tailer(tmp_path).read_new()

@@ -13,7 +13,7 @@ Two halves.
        {"hb":true,"t_ms":<exporter wall clock, ms>}                                 staleness heartbeat
 
    Nothing else ever leaves the exporter: no score, no feature, no price, no P&L, no outcome, no decision time. A source line is NOT parsed
-   as JSON. Two regexes pull the mint and the flag (the approach of tools/h5_executor.py `JsonlPickOracle`); the rest of the line is never
+   as JSON. Two regexes pull the mint and the flag (the approach of the H5 executor's first pick reader); the rest of the line is never
    read into a value. A line with zero or two mints, or zero or two flags, is rejected and only counted.
 
    Source kinds (all are decision records; none is a position, fill, P&L or outcome file):
@@ -29,6 +29,13 @@ Two halves.
    (a first sight of a mint, or false -> true), and resumes by re-reading the sources from the start.
    The heartbeat is written only after a pass in which every configured source was readable, so a lost source goes stale in 60 s.
 
+   FINAL GATE (EXP-022 section 9 "Nothing before the FINAL"; DEC-016:95, runner-side reads go only through tools/runner_timing_read.py
+   until the read). The gate log and the intents are runner-side files, and their `entered` flags over the forward window are EXP-012's
+   forward book. So the exporter opens NO source, and creates no output, until BOTH hold: the FINAL marker (`--final-marker`, written by the
+   manager after the DEC-016 FINAL) is a file, and the wall clock is at or after EXPORT_EARLIEST_MS (2026-10-16T02:00:00Z, the same
+   instant as tools/h5_executor.py ORACLE_EARLIEST_MS). A live run waits (stat calls only, no heartbeat, so every reader stays None);
+   `--once` refuses (exit 3). It may therefore be submitted early.
+
 2. READER (`PickOracle`), shared by the shadow, the executor and the C1-NF shadow. `PickOracle(mint) -> bool | None`.
      True   some source said pick. STICKY: a later false never undoes it, and it survives file rotation inside the process.
      False  at least one source decided the mint and no source picked it.
@@ -37,10 +44,16 @@ Two halves.
    Every caller treats None as REFUSE. The union of several sources is the point: the live file (online decisions) plus the replay file
    (walk-2 replay picks, which cover receive-time and uptime misses of the live gate) are OR-ed.
 
+   TIMING. The live gate decides on the runner's first PumpSwap print of the mint, after the runner's 300 ms holdback, the tape write and
+   this exporter's poll. A consumer that sees the pool's first print directly (the H5 shadow) asks BEFORE the row exists, so the first
+   answer is usually None. A caller must therefore never freeze a None it got at pool open: ask again at each decision point, freeze only
+   a True (a pick never flips back), and treat None as "not yet, refuse for now".
+
    Wiring (three lines each):
      H5 executor     oracle = PickOracle(live=[cfg["pick_file"]], replay=cfg.get("pick_replay_files") or [])
-                     (the executor already refuses on None and on a non-bool: seal_oracle_error)
-     H5 shadow       Engine(..., suppress_outcome=oracle.suppress)             # True = withhold; None counts as withhold
+                     (the executor already refuses on None and on a non-bool: seal_oracle_error). PR claude/h5-oracle-wire.
+     H5 shadow       Engine(..., pick_oracle=oracle)    # the three-state answer, re-asked per decision point (not `.suppress` frozen at
+                     s0, which would seal every pool: see TIMING). PR claude/h5-oracle-wire.
      C1-NF shadow    --pick-oracle tools.cap_pick_oracle:default_oracle        # reads the CAP_PICK_* environment below
    Environment for `default_oracle` / `from_env()`: CAP_PICK_LIVE and CAP_PICK_REPLAY (os.pathsep lists), CAP_PICK_FINAL_MARKER
    (REQUIRED: without it the oracle answers None for everything), CAP_PICK_STALE_S (default 60).
@@ -54,6 +67,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import time
 from pathlib import Path
@@ -66,6 +80,10 @@ POLL_S_DEFAULT = 0.2
 MAX_CHUNK = 8 * 1024 * 1024  # bytes per read call
 MAX_PER_REFRESH = 256 * 1024 * 1024  # a reader never spends longer than this on one refresh
 CLOCK_SKEW_OK_S = 5.0  # a heartbeat this far in the future is still fresh; further is a clock fault (fail closed)
+# The exporter reads no runner file before this instant AND the FINAL marker (EXP-022 s9; DEC-016:95). 2026-10-16T02:00:00Z, the same instant
+# as tools/h5_executor.py ORACLE_EARLIEST_MS. A code constant: no flag or environment variable moves it.
+EXPORT_EARLIEST_MS = 1_792_116_000_000
+FINAL_WAIT_POLL_S = 10.0  # while the FINAL gate is closed the exporter only stats the marker, this often
 
 # The only two things pulled out of a decision line (plus three tag tests that read no value).
 _MINT_RE = re.compile(r'"mint"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"')
@@ -137,11 +155,15 @@ class Tailer:
 
     def read_new(self, max_bytes: int = MAX_PER_REFRESH) -> tuple[list[str], bool]:
         st = self.path.stat()
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"not a regular file: {self.path.name}")
         reset = False
         if self._ino is not None and (st.st_ino != self._ino or st.st_size < self._off):
             self._off, reset = 0, True
         self._ino = st.st_ino
         lines: list[str] = []
+        if st.st_size <= self._off:
+            return lines, reset  # nothing appended: one stat, no open (the H5 shadow asks on every decision point of a pool)
         spent = 0
         with self.path.open("rb") as fh:
             while spent < max_bytes:
@@ -199,22 +221,52 @@ class PicksWriter:
         self._fh.close()
 
 
-def run_export(sources: Sequence[tuple[str, str | Path]], out: str | Path, *, poll_s: float = POLL_S_DEFAULT, hb_s: float = HB_S_DEFAULT,
-               once: bool = False, max_seconds: float | None = None, now_ms: Callable[[], int] | None = None,
+class FinalNotWritten(RuntimeError):
+    """`--once` before the FINAL gate opened: nothing was read."""
+
+
+def final_gate_open(final_marker: str | Path | None, now: int) -> bool:
+    """The exporter may open a source only when the FINAL marker is a file AND the clock is at or after EXPORT_EARLIEST_MS. Stats only."""
+    if final_marker is None or now < EXPORT_EARLIEST_MS:
+        return False
+    try:
+        return Path(final_marker).is_file()
+    except OSError:
+        return False
+
+
+def run_export(sources: Sequence[tuple[str, str | Path]], out: str | Path, *, final_marker: str | Path | None, poll_s: float = POLL_S_DEFAULT,
+               hb_s: float = HB_S_DEFAULT, once: bool = False, max_seconds: float | None = None, now_ms: Callable[[], int] | None = None,
                sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] | None = None) -> dict[str, int]:
     """Tail every source, append boolean rows to `out`. Returns counts only. `once`: one pass over what is there, then stop.
-    Heartbeats are written only when `once` is False and at least one source is a live kind (gate or intents)."""
+    Heartbeats are written only when `once` is False and at least one source is a live kind (gate or intents).
+    Nothing is opened, and `out` is not created, until `final_gate_open` (see FINAL GATE in the module docstring): a live run waits for it,
+    `once` raises FinalNotWritten. `final_marker` has no default on purpose."""
     clock = now_ms or (lambda: int(time.time() * 1000))
     for kind, _ in sources:
         if kind not in SOURCE_KINDS:
             raise ValueError(f"unknown source kind {kind!r}")
     if not sources:
         raise ValueError("no source")
+    counts = {"lines": 0, "rejected": 0, "source_errors": 0, "passes": 0, "final_wait_s": 0}
+    t_start = clock()
+    if not final_gate_open(final_marker, clock()):
+        if once:
+            raise FinalNotWritten("the FINAL gate is closed (no marker, or before 2026-10-16T02:00Z): nothing was read")
+        if log:
+            log("cap_pick_oracle export waiting_for_final (no source is opened before the FINAL marker and 2026-10-16T02:00Z)")
+        while not final_gate_open(final_marker, clock()):
+            if max_seconds is not None and clock() - t_start >= max_seconds * 1000:
+                counts["final_wait_s"] = (clock() - t_start) // 1000
+                counts.update(decisions_written=0, heartbeats_written=0)
+                if log:
+                    log("cap_pick_oracle export stopped_waiting_for_final " + " ".join(f"{k}={v}" for k, v in counts.items()))
+                return counts
+            sleep(FINAL_WAIT_POLL_S)
+        counts["final_wait_s"] = (clock() - t_start) // 1000
     writer = PicksWriter(out, clock)
     tails = [(kind, Tailer(p)) for kind, p in sources]
     live = any(k in ("gate", "intents") for k, _ in sources) and not once
-    counts = {"lines": 0, "rejected": 0, "source_errors": 0, "passes": 0}
-    t_start = clock()
     last_hb: int | None = None
     try:
         while True:
@@ -401,6 +453,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--intents", action="append", default=[], metavar="PATH", help="intents.jsonl of the live gate runner (repeatable)")
     e.add_argument("--replay", action="append", default=[], metavar="PATH", help="a cap_pick_gate_replay_v1 decision list (repeatable)")
     e.add_argument("--out", required=True, help="the append-only booleans file")
+    e.add_argument("--final-marker", required=True, metavar="PATH",
+                   help="the FINAL marker the manager writes after the DEC-016 FINAL; no source is opened before it exists and before "
+                        "2026-10-16T02:00Z (a live run waits, --once refuses with exit 3)")
     e.add_argument("--once", action="store_true", help="one pass over what is there, then stop (no heartbeat); the replay conversion mode")
     e.add_argument("--poll-s", type=float, default=POLL_S_DEFAULT)
     e.add_argument("--hb-s", type=float, default=HB_S_DEFAULT)
@@ -427,8 +482,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if missing:
         print(f"refusing: {len(missing)} source file(s) missing at start ({', '.join(sorted(set(missing)))})", file=sys.stderr)
         return 2
-    counts = run_export(sources, a.out, poll_s=a.poll_s, hb_s=a.hb_s, once=a.once, max_seconds=a.max_seconds,
-                        log=lambda s: print(s, file=sys.stderr, flush=True))
+    try:
+        counts = run_export(sources, a.out, final_marker=a.final_marker, poll_s=a.poll_s, hb_s=a.hb_s, once=a.once, max_seconds=a.max_seconds,
+                            log=lambda s: print(s, file=sys.stderr, flush=True))
+    except FinalNotWritten as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(counts))
     return 0
 
