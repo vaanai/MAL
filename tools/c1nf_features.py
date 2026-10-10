@@ -835,6 +835,7 @@ class FeatureEngine:
             if P.outcome is None and P.eligible:
                 P.outcome = P.outcome_now()
             P.free(); n += 1
+            self._rejected[pid] = now_bt                 # later prints of a freed pool are ignored (not a rejection: not counted)
         for m in [m for m in self._mk if m < now_bt - market_keep_s]:
             del self._mk[m]
         for p in [p for p, bt in self._rejected.items() if bt < now_bt - 86400]:
