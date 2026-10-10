@@ -30,8 +30,12 @@ Seals.
   * EXP-022 section 9, from 2026-10-16T01Z: a pool whose first print is at or after that instant is followed only when a boolean pick oracle
     answers exactly False for its mint. Missing oracle, an error, a non-bool, a stale oracle: withheld (fail closed). A withheld pool gets NO
     per-pool record of any kind (no pick, no outcome, no reason label): it never enters the book and is counted only in the unlabelled
-    aggregate `withheld` of the heartbeat and stop records. The oracle is read as a boolean only. Same approach as tools/h5_shadow.py `_sealed`
-    (newest rule: no per-pool record for sealed pools).
+    aggregate `withheld` of the heartbeat and stop records. The oracle is asked again at every decision and again when the outcome resolves.
+    An answer is never frozen: a None at pool open withholds that minute only (tools/cap_pick_oracle.py TIMING). Exception: a False can later
+    become True (a replay source or a second live source picks the mint). If that happens before the outcome resolves, the pick line stays in
+    c1nf-picks-* with no outcome, and only `withheld` counts it. If it happens after the outcome resolves, it is not caught and the outcome
+    stays written. The oracle is read as a boolean only. Same approach as tools/h5_shadow.py `_sealed` (newest rule: no per-pool record for
+    sealed pools).
   * EXP-025 section 5.1 declared observation: the shadow may log outcomes for decisions inside the counted window. It is not the read.
   * DEC-026 section 8 (binding): outcome records start at 2026-10-10T00:00Z. A decision before that instant still writes its pick (to
     c1nf-prewindow-picks-*, not the executor's c1nf-picks-*) but gets no Pending, no price and no outcome record (counter
@@ -1149,7 +1153,7 @@ class Shadow:
         self.c["outcomes"] += 1
         base = {"type": "c1nf_outcome", "mint": pend.mint, "pool": pend.pool, "decision_T_ms": pend.T * 1000, "SD_slot": pend.sd, "SD_bt": pend.sd_bt,
                 "pred": pend.pred}
-        if self.seal.suppress(pend.mint, pend.first_print_ms):   # the oracle went stale / failed since the pick: price nothing, say nothing
+        if self.seal.suppress(pend.mint, pend.first_print_ms):   # stale, failed, or now True (a False that became a pick) since the pick: price nothing, say nothing
             self.c["withheld"] += 1
             self.c["outcomes"] -= 1
             pend.prints, pend.slots = [], []

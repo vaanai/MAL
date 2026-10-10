@@ -407,6 +407,36 @@ def test_oracle_gone_stale_after_the_pick_drops_the_outcome_silently():
     assert sink.of("c1nf_outcome") == [] and sh.c["withheld"] == 1
 
 
+class SeqOracle:
+    """Pick oracle stub that returns `answers` in turn (the last one repeats); records every mint asked."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = list(answers), []
+
+    def __call__(self, mint):
+        self.asked.append(mint)
+        return self.answers[min(len(self.asked), len(self.answers)) - 1]
+
+
+def test_undecided_answer_at_pool_open_is_asked_again_not_frozen():
+    ora = SeqOracle([None, False])                               # not yet exported at minute 10, a final False at minute 11
+    sh, sink = mk_shadow(only_minute(10, 11), seal_start_ms=BT0 * 1000 - 1000, oracle=ora)
+    run_stream(sh, 1000)
+    sh.finish("test")
+    (pick,) = sink.of("c1nf_pick")
+    assert pick["decision_T_ms"] // 1000 - BT0 == 660             # minute 10 withheld only for that minute; minute 11 picks
+    assert len(sink.of("c1nf_outcome")) == 1 and sh.c["withheld"] == 1
+    assert len(ora.asked) == 3                                    # minute 10, minute 11, and again when the outcome resolves
+
+
+def test_answer_turning_to_pick_after_the_pick_drops_the_outcome():
+    ora = SeqOracle([False, True])                               # a False at the decision that later becomes a CAP-PICK pick
+    sh, sink = mk_shadow(only_minute(10), seal_start_ms=BT0 * 1000 - 1000, oracle=ora)
+    run_stream(sh, 1000)
+    sh.finish("test")
+    assert len(sink.of("c1nf_pick")) == 1 and sink.of("c1nf_outcome") == [] and sh.c["withheld"] == 1
+
+
 def test_seal_start_constant_is_2026_10_16T01Z():
     assert SEAL_MS == int(datetime(2026, 10, 16, 1, tzinfo=timezone.utc).timestamp() * 1000)
 
