@@ -43,6 +43,7 @@ RESERVE_KEYS = ("quote_reserve", "base_reserve", "token_raw", "sol_lamports", "v
 SELL = "sell_v2_kept.json"                 # a sell on the canonical pool of create_pool_init_boost.json
 BUY = "buy_v1_481_wsol.json"               # ix_name "buy": a comparable buy
 EXACT_IN = "buy_exact_quote_in_496.json"   # ix_name "buy_exact_quote_in": not comparable
+AMEND_SHA256 = "ed3005f083d80bba768292a8ff6adf4b4220370e01760a540034c6d1bcace31b"  # ARTIFACTS/exp025/p7_buy_amend.py (blob 24dc5ede...)
 
 
 def fixture(name: str) -> dict:
@@ -411,6 +412,10 @@ class JudgeTests(Base):
         btape, braw = self.buy_tape(), first_record(self.buy_doc)
         self.assertTrue(ev.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"] + btape["virtual_quote_reserves"], v0=0))
         self.assertFalse(ev.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"], v0=0))
+        # and under the amended inverse law, which is what the tool now runs for buys
+        am = p7.buy_amend()
+        self.assertTrue(am.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"] + btape["virtual_quote_reserves"], v0=0))
+        self.assertFalse(am.p7_raw_hit("buy", braw, q_mapped=btape["quote_reserve"], v0=0))
 
     def test_stamps_swapped_between_two_prints_with_different_v_are_identity_mismatches(self):
         sell, buy = self.sell_tape(), self.buy_tape()
@@ -709,6 +714,9 @@ class CliTests(Base):
         self.assertEqual(d["comparable"], {"sell_n": 1, "buy_n": 1})
         self.assertEqual((d["excluded_n"], d["excluded_by"]["buy_exact_quote_in"]), (1, 1))
         self.assertEqual((d["tx_n"], d["max_credits"]), (2, 6))
+        self.assertEqual(d["comparable_by_ix_name"], {"sell": {p7.NO_NAME: 1}, "buy": {"buy": 1}})
+        self.assertEqual(d["excluded_by_name"]["buy_exact_quote_in"], {"buy_exact_quote_in": 1})
+        self.assertFalse(any(k.startswith("line2") for k in d))  # the dry run judges nothing, line 2 included
         self.assertEqual(d["key"], "(slot, signature, event_index)")
         self.assertFalse(self.out.exists())
         self.assert_no_leak(out + err)
@@ -736,7 +744,19 @@ class CliTests(Base):
         self.assertEqual((d["hits"], d["shares"]), ({"sell": 1, "buy": 1}, {"sell": 1.0, "buy": 1.0}))
         self.assertEqual((d["excluded_n"], d["excluded_by"]["buy_exact_quote_in"]), (1, 1))
         self.assertEqual(d["unresolved"], {"fetch_failed": 0, "no_record": 0, "slot_mismatch": 0, "identity_mismatch": 0, "field_missing": 0})
-        self.assertIs(d["pass"], True)
+        # line 1 holds on both prints, but one comparable buy is short of the ruling's 100: not a pass
+        self.assertEqual(d["acceptance"]["line1_pass"], True)
+        self.assertEqual(d["acceptance"]["buy_n_at_least_100"], False)
+        self.assertIs(d["pass"], False)
+        self.assertEqual(d["bars"], {"sell": 0.99, "buy": 0.99, "min_comparable_buys": 100})
+        self.assertEqual(d["by_ix_name"], {"sell": {p7.NO_NAME: {"n": 1, "hits": 1, "share": 1.0}}, "buy": {"buy": {"n": 1, "hits": 1, "share": 1.0}}})
+        self.assertEqual(d["excluded_by_name"], {"zero_sol": {}, "not_buy_or_sell": {}, "buy_exact_quote_in": {"buy_exact_quote_in": 1},
+                                                 "no_ix_name": {}, "ix_not_listed": {}})
+        self.assertEqual(set(d["excluded_by"]), set(p7.buy_amend().P7_RAW_EXCLUSIONS))
+        self.assertEqual(d["p7_buy_amend_sha256"], AMEND_SHA256)
+        for rule in ("line2_exp025", "line2_exp024"):  # reported on the 3-print main draw, never scored
+            self.assertEqual((d[rule]["prints"], d[rule]["sell"]["n"], d[rule]["buy"]["n"], d[rule]["scored"]), (3, 1, 2, False), rule)
+            self.assertEqual(set(d[rule]["by_ix_name"]), {p7.NO_NAME, "buy", "buy_exact_quote_in"}, rule)
         self.assertEqual(d["window"], {"start": START, "end": END, "field": "t_recv_ms"})
         self.assertEqual(d["decoder_blob"], p7.DECODER_BLOB)
         self.assertIs(d["decoder_blob_pinned"], True)
@@ -886,6 +906,280 @@ class CliTests(Base):
                 p7.main(["--dry-run"])
         shutil.rmtree(self.trades)
         self.assertIn("trades-dir", self.refused(["--dry-run"]))
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# The amended buy side (quant-proof ruling 2026-10-10, item 2), through this tool.
+def synth_buy(*, q_vault: int, v: int, base: int, token: int, pqa: int, ix_name: str | None = "buy", sig: str = "Syn" + "1" * 85,
+              sol: int | None = None) -> tuple[dict, dict]:
+    """(tape row, raw event) of one synthetic buy whose identity fields agree, so judge() reaches the law."""
+    tape = {"slot": 7, "signature": sig, "event_index": 0, "tx_index": sig, "pool": "SynPool", "side": "buy",
+            "sol_lamports": pqa if sol is None else sol, "token_raw": token, "quote_reserve": q_vault, "base_reserve": base,
+            "virtual_quote_reserves": v}
+    if ix_name is not None:
+        tape["ix_name"] = ix_name
+    raw = dict(tape, pool_quote_amount=pqa)
+    raw.pop("tx_index")
+    return tape, raw
+
+
+class AmendPinTests(unittest.TestCase):
+    def _copy(self, *files) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        art = root / "ARTIFACTS" / "exp025"
+        for f in files:
+            (art / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(REPO / "ARTIFACTS" / "exp025" / f, art / f)
+        return art
+
+    def _fresh(self, root: Path):
+        return mock.patch.multiple(p7, REPO=root, _EV=None, _AMEND=None, _FEE_FRAC=None)
+
+    def test_the_tool_loads_the_sha_pinned_amendment(self):
+        am = p7.buy_amend()
+        self.assertEqual(am.SHA256, AMEND_SHA256)
+        self.assertIn(f"{AMEND_SHA256}  p7_buy_amend.py", (REPO / "ARTIFACTS" / "exp025" / "SHA256SUMS").read_text())
+        self.assertEqual(am.EVENT_V_MAP_SHA256, p7.event_v_map().SHA256)
+        self.assertEqual(am.P7_BUY_IX_WHITELIST, ("buy", "buy_v2"))
+        self.assertEqual(am.P7_RAW_EXCLUSIONS, ("zero_sol", "not_buy_or_sell", "buy_exact_quote_in", "no_ix_name", "ix_not_listed"))
+
+    def test_a_changed_amendment_is_refused_and_the_cli_exits_2_before_reading_any_tape(self):
+        art = self._copy("event_v_map.py", "p7_buy_amend.py", "SHA256SUMS")
+        root = art.parent.parent
+        with self._fresh(root):
+            p7.buy_amend()  # untouched copies load
+        with open(art / "p7_buy_amend.py", "a") as fh:
+            fh.write("\n# edited\n")
+        with self._fresh(root):
+            with self.assertRaises(p7.Refused) as cm:
+                p7.buy_amend()
+        self.assertIn("p7_buy_amend.py", str(cm.exception))
+        with self._fresh(root), mock.patch.object(p7, "build_frame", lambda *a, **k: self.fail("no tape is read after a refusal")):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = p7.main(["--end", END, "--dry-run", "--trades-dir", str(root)])
+        self.assertEqual(rc, 2)
+        self.assertIn("refused", err.getvalue())
+
+    def test_an_amendment_pinning_another_event_v_map_is_refused(self):
+        art = self._copy("event_v_map.py", "p7_buy_amend.py", "SHA256SUMS")
+        with open(art / "event_v_map.py", "a") as fh:  # SHA256SUMS re-pinned to the edited file: the tool would load it, the amendment not
+            fh.write("\n# edited\n")
+        digest = hashlib.sha256((art / "event_v_map.py").read_bytes()).hexdigest()
+        sums = art / "SHA256SUMS"
+        sums.write_text("".join(f"{digest}  event_v_map.py\n" if l.endswith("  event_v_map.py") else l + "\n" for l in sums.read_text().splitlines()))
+        with self._fresh(art.parent.parent):
+            self.assertEqual(p7.event_v_map().SHA256, digest)
+            with self.assertRaises(p7.Refused):
+                p7.buy_amend()
+
+    def test_a_changed_line2_tier_is_refused(self):
+        art = self._copy("event_v_map.py", "p7_buy_amend.py", "SHA256SUMS", "scripts/common2.py")
+        with self._fresh(art.parent.parent):
+            self.assertAlmostEqual(p7.exp025_tier()(10**11, 6 * 10**14), 0.0125)
+        with open(art / "scripts" / "common2.py", "a") as fh:
+            fh.write("\n# edited\n")
+        with self._fresh(art.parent.parent):
+            with self.assertRaises(p7.Refused):
+                p7.exp025_tier()
+
+
+class AmendJudgeTests(Base):
+    Q_VAULT, V, BASE = 70_000_000_000, 30_000_000_000, 600_000_000_000_000  # Q = 100 SOL incl. V; one base unit costs ~1/6000 lamport
+
+    def test_whitelist_buy_and_buy_v2_only_every_other_buy_excluded_before_fetch_with_its_cause(self):
+        names = {"buy": None, "buy_v2": None, "buy_exact_quote_in": "buy_exact_quote_in", "buy_exact_quote_in_v2": "buy_exact_quote_in",
+                 "multi_hop_swap": "ix_not_listed", "Buy": "ix_not_listed", "buy_v3": "ix_not_listed", "": "no_ix_name"}
+        rows = []
+        for i, (name, cause) in enumerate(names.items()):
+            rows.append((self.buy_tape(signature=f"N{i:03d}" + "1" * 84, ix_name=name), cause))
+        nameless = self.buy_tape(signature="Nnull" + "1" * 83)
+        nameless.pop("ix_name")
+        rows += [(nameless, "no_ix_name"), (self.buy_tape(signature="Nnone" + "1" * 83, ix_name=None), "no_ix_name"),
+                 (self.buy_tape(signature="Nzero" + "1" * 83, zero_sol=True), "zero_sol"),
+                 (self.sell_tape(signature="Nsell" + "1" * 83), None)]
+        am = p7.buy_amend()
+        for row, cause in rows:
+            self.assertEqual(am.p7_raw_exclusion(row), cause, row.get("ix_name"))
+        frame, _ = self.frame_of([r for r, _ in rows])
+        fetched = []
+
+        def fetch(sig):
+            fetched.append(sig)
+            return None
+
+        sampled = [("main", r) for r in frame]
+        results, extras = p7.run_check(sampled, fetch)
+        comparable = {r["signature"] for r in frame if am.p7_raw_line(r) is not None}
+        self.assertEqual(sorted(fetched), sorted(comparable))  # buy, buy_v2 and the sell only
+        self.assertEqual(extras["tx_n"], 3)
+        excl = p7.excluded_by_name(sampled, results)
+        self.assertEqual(excl["ix_not_listed"], {"Buy": 1, "buy_v3": 1, "multi_hop_swap": 1})
+        self.assertEqual(excl["buy_exact_quote_in"], {"buy_exact_quote_in": 1, "buy_exact_quote_in_v2": 1})
+        self.assertEqual(excl["no_ix_name"], {p7.NO_NAME: 3})
+        self.assertEqual(excl["zero_sol"], {"buy": 1})
+        self.assertEqual(p7.by_ix_name(sampled, results)["buy"], {"buy": {"n": 1, "hits": 0, "share": 0.0}, "buy_v2": {"n": 1, "hits": 0, "share": 0.0}})
+        # the plan (dry run) sees the same split before any fetch
+        plan = p7._plan(sampled)
+        self.assertEqual(plan["comparable_by_ix_name"]["buy"], {"buy": 1, "buy_v2": 1})
+        self.assertEqual(plan["excluded_by_name"], excl)
+        self.assertEqual(plan["excluded_by"], {c: sum(v.values()) for c, v in excl.items()})
+
+    def test_topup_candidates_are_whitelisted_buys_only(self):
+        # 2,000 prints: 1 in 4 a multi_hop_swap buy (comparable under the old rule), 1 in 40 a whitelisted buy (50 in all), the rest sells
+        rows = []
+        for i in range(2000):
+            sig = f"T{i:05d}" + "1" * 82
+            if i % 4 == 0:
+                r = self.buy_tape(signature=sig, ix_name="multi_hop_swap")
+            elif i % 40 == 1:
+                r = self.buy_tape(signature=sig, ix_name="buy_v2" if i % 80 == 1 else "buy")
+            else:
+                r = self.sell_tape(signature=sig)
+            rows.append(dict(r, slot=1000 + i, tx_index=None, t_recv_ms=T0 + 1000 + i))
+        frame, _ = self.frame_of(rows)
+        main, topup = p7.draw(frame)
+        am, ev = p7.buy_amend(), p7.event_v_map()
+        have = sum(1 for r in main if am.p7_raw_line(r) == "buy")
+        self.assertLess(have, 50)
+        self.assertGreater(sum(1 for r in main if ev.p7_raw_line(r) == "buy"), 100)  # the old rule would count multi_hop_swap and skip the top-up
+        self.assertEqual(len(topup), 50 - have)  # fewer candidates than needed: every whitelisted buy not in the main draw
+        self.assertTrue(all(r["ix_name"] in ("buy", "buy_v2") for r in topup))
+        self.assertFalse({r["signature"] for r in main} & {r["signature"] for r in topup})
+
+    def judge_synth(self, **kw) -> tuple:
+        tape, raw = synth_buy(**kw)
+        return p7.judge(tape, raw)
+
+    def test_dust_exact_out_buy_hits_under_the_inverse_law_where_the_forward_law_misses(self):
+        ev, q = p7.event_v_map(), self.Q_VAULT + self.V
+        found = None
+        for token in range(9_960_000, 9_980_000, 37):  # qin about 1,660 lamports, as the ruling's 4.767 bp print
+            qin = -((-q * token) // (self.BASE - token))  # the program's exact-out quote in
+            if not ev.within_tolerance(token, ev.cp_buy_token_out(q, 0, self.BASE, qin)):
+                found = (token, qin)
+                break
+        self.assertIsNotNone(found, "no dust exact-out print where the forward law misses")
+        token, qin = found
+        self.assertLess(qin, 2_000)
+        self.assertEqual(self.judge_synth(q_vault=self.Q_VAULT, v=self.V, base=self.BASE, token=token, pqa=qin), ("buy", "hit", None))
+
+    def test_exact_in_buy_hits(self):
+        q = self.Q_VAULT + self.V
+        for qin in (1_000_000_000, 50_000_000, 123_457):
+            token = self.BASE * qin // (q + qin)  # the program's exact-in token out
+            self.assertEqual(self.judge_synth(q_vault=self.Q_VAULT, v=self.V, base=self.BASE, token=token, pqa=qin), ("buy", "hit", None), qin)
+
+    def test_misses_fee_inside_the_quote_gross_vault_lp_offset_and_a_reserve_at_or_below_the_token_amount(self):
+        q, token = self.Q_VAULT + self.V, 6_000_000_000  # about 1 SOL
+        law = -((-q * token) // (self.BASE - token))
+        hit = dict(q_vault=self.Q_VAULT, v=self.V, base=self.BASE, token=token)
+        self.assertEqual(self.judge_synth(**hit, pqa=law), ("buy", "hit", None))
+        self.assertEqual(self.judge_synth(**hit, pqa=law + law * 5 // 10_000), ("buy", "miss", None))  # 5 bp of fee inside pool_quote_amount
+        gross = -((-(q + q * 3 // 100) * token) // (self.BASE - token))  # a gross vault (pending fees in Q, ~3%)
+        self.assertEqual(self.judge_synth(**hit, pqa=gross), ("buy", "miss", None))
+        lp = -((-q * token) // (self.BASE + self.BASE // 100 - token))  # an LP-sized base offset (1% of the reserve)
+        self.assertEqual(self.judge_synth(**hit, pqa=lp), ("buy", "miss", None))
+        self.assertEqual(self.judge_synth(q_vault=self.Q_VAULT, v=self.V, base=token, token=token, pqa=law), ("buy", "miss", None))
+        self.assertEqual(self.judge_synth(q_vault=self.Q_VAULT, v=self.V, base=token - 1, token=token, pqa=law), ("buy", "miss", None))
+        # the tip check prices on vault + V, V0 = 0: the vault alone misses the same print
+        self.assertEqual(self.judge_synth(q_vault=self.Q_VAULT, v=self.V, base=self.BASE, token=token,
+                                          pqa=-((-self.Q_VAULT * token) // (self.BASE - token))), ("buy", "miss", None))
+
+    def test_per_ix_name_counts_agree_with_the_amendments_tally(self):
+        am, q = p7.buy_amend(), self.Q_VAULT + self.V
+        sampled, results = [], []
+        for i, (name, good) in enumerate([("buy", True), ("buy", False), ("buy_v2", True), ("buy_v2", True), ("multi_hop_swap", True)]):
+            token = 6_000_000 * (i + 1)
+            law = -((-q * token) // (self.BASE - token))
+            tape, raw = synth_buy(q_vault=self.Q_VAULT, v=self.V, base=self.BASE, token=token, pqa=law if good else law * 2, ix_name=name,
+                                  sig=f"Per{i}" + "1" * 84)
+            sampled.append(("main", tape))
+            results.append(p7.judge(tape, raw))
+        per = p7.by_ix_name(sampled, results)["buy"]
+        self.assertEqual(per, {"buy": {"n": 2, "hits": 1, "share": 0.5}, "buy_v2": {"n": 2, "hits": 2, "share": 1.0}})
+        tally = am.p7_raw_tally([(row, res) for (_, row), res in zip(sampled, results)])
+        self.assertEqual({k: {"n": v["n"], "hits": v["ok"]} for k, v in tally["buy_by_ix"].items()}, {k: {"n": v["n"], "hits": v["hits"]} for k, v in per.items()})
+        self.assertEqual((tally["buy_n"], tally["buy_ok"], tally["excluded_by"]["ix_not_listed"], tally["ix_not_listed_by"]), (4, 3, 1, {"multi_hop_swap": 1}))
+        summary = p7.summarize(tally, window=(T0, T0 + 3_600_000), frame_info={"frame_n": 5, "unstamped_canonical_n": 0}, main_n=5, topup_n=0,
+                               extras={"tx_n": 4, "decode_errors": 0}, credits=4, errors={}, prints_sha256=None, blob=p7.DECODER_BLOB,
+                               per_name=p7.by_ix_name(sampled, results), excl_names=p7.excluded_by_name(sampled, results))
+        self.assertEqual(summary["by_ix_name"]["buy"], per)
+        self.assertEqual(summary["excluded_by_name"]["ix_not_listed"], {"multi_hop_swap": 1})
+        self.assertIs(summary["pass"], False)  # 3 of 4 buys, and fewer than 100
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+class Line2Tests(unittest.TestCase):
+    Q_VAULT, V, BASE = 70_000_000_000, 30_000_000_000, 600_000_000_000_000  # mcap ~167 SOL: tier 12,500 ppm
+
+    def row(self, side: str, sol: int, tok: int, ix_name: str | None = None, **over) -> dict:
+        r = {"slot": 1, "pool": "SynPool", "side": side, "sol_lamports": sol, "token_raw": tok, "quote_reserve": self.Q_VAULT,
+             "base_reserve": self.BASE, "virtual_quote_reserves": self.V}
+        if ix_name is not None:
+            r["ix_name"] = ix_name
+        r.update(over)
+        return r
+
+    def rows(self) -> list:
+        q, b, f, tok = self.Q_VAULT + self.V, self.BASE, 0.0125, 6_000_000_000
+        sell_exact = round(q * tok / (b + tok) * (1 - f))
+        net = tok * q / (b - tok)
+        return [
+            self.row("sell", sell_exact, tok),                                    # on the tier: match
+            self.row("sell", sell_exact + sell_exact * 3 // 10_000, tok),         # 3 bp off: miss
+            self.row("buy", round(net / (1 - f)), tok, "buy"),                    # implied fee = f: match
+            self.row("buy", round(net * (1 + f)), tok, "buy_exact_quote_in"),     # implied f / (1 + f): about 1.5 bp under the tier, a miss
+            self.row("buy", 0, tok, "buy"),                                       # zero buy: skipped
+            self.row("buy", round(net / (1 - f)), tok, "multi_hop_swap"),         # match
+            self.row("buy", 5, 5, "buy", base_reserve=None),                      # a field missing: counted apart, not judged
+        ]
+
+    def test_the_exp025_tier_is_the_exp024_tier(self):
+        from tools import boostfloor_score as bf
+
+        tier = p7.exp025_tier()
+        for mcap_sol in (1, 419.9, 420, 420.1, 1469, 1470, 9820, 50_000, 98_239, 98_240, 200_000):
+            q, b = int(mcap_sol * 1_000_000), 1_000_000_000_000
+            self.assertAlmostEqual(tier(q, b), bf.tier_fee(q, b), places=12, msg=mcap_sol)
+
+    def test_both_rules_count_per_side_and_per_ix_name_and_are_not_scored(self):
+        for rule in ("exp025", "exp024"):
+            r = p7.line2_report(self.rows(), rule)
+            self.assertEqual((r["prints"], r["fields_missing"], r["scored"]), (6, 1, False), rule)
+            self.assertEqual((r["sell"]["n"], r["sell"]["match"], r["sell"]["need"]), (2, 1, 0.75), rule)
+            self.assertEqual((r["buy"]["n"], r["buy"]["match"], r["buy"]["skipped"], r["buy"]["need"]), (3, 2, 1, 0.90), rule)
+            self.assertIs(r["line_pass"], False)  # sells 1/2 < 75%, buys 2/3 < 90%
+            per = r["by_ix_name"]
+            self.assertEqual(set(per), {p7.NO_NAME, "buy", "buy_exact_quote_in", "multi_hop_swap"}, rule)
+            self.assertEqual((per[p7.NO_NAME]["sell"]["n"], per[p7.NO_NAME]["sell"]["match"]), (2, 1))
+            self.assertEqual((per["buy"]["buy"]["n"], per["buy"]["buy"]["match"], per["buy"]["buy"]["skipped"]), (1, 1, 1))
+            self.assertEqual((per["buy_exact_quote_in"]["buy"]["n"], per["buy_exact_quote_in"]["buy"]["match"]), (1, 0))
+            self.assertEqual((per["multi_hop_swap"]["buy"]["n"], per["multi_hop_swap"]["buy"]["match"]), (1, 1))
+
+    def test_line2_passes_on_the_tier_and_uses_the_prints_own_v(self):
+        rows = self.rows()
+        ok = [rows[0], rows[2], rows[5]]  # the on-tier sell and the two on-tier buys
+        for rule in ("exp025", "exp024"):
+            self.assertIs(p7.line2_report(ok, rule)["line_pass"], True, rule)
+            no_v = [dict(r, virtual_quote_reserves=0) for r in ok]  # the vault alone: the price level is 30% off
+            r = p7.line2_report(no_v, rule)
+            self.assertEqual((r["sell"]["match"], r["buy"]["match"]), (0, 0), rule)
+
+    def test_line2_does_not_change_pass(self):
+        tally = {"sell_n": 100, "sell_ok": 100, "buy_n": 100, "buy_ok": 100, "excluded": 0,
+                 "excluded_by": {c: 0 for c in p7.buy_amend().P7_RAW_EXCLUSIONS}, "unresolved": {r: 0 for r in p7.event_v_map().P7_RAW_REASONS}}
+        kw = dict(window=(T0, T0 + 3_600_000), frame_info={"frame_n": 200, "unstamped_canonical_n": 0}, main_n=200, topup_n=0,
+                  extras={"tx_n": 200, "decode_errors": 0}, credits=200, errors={}, prints_sha256=None, blob=p7.DECODER_BLOB)
+        failing = {"exp025": p7.line2_report(self.rows(), "exp025"), "exp024": p7.line2_report(self.rows(), "exp024")}
+        self.assertIs(failing["exp025"]["line_pass"], False)
+        for line2 in (None, failing):
+            s = p7.summarize(tally, **kw, line2=line2)
+            self.assertIs(s["pass"], True)
+        s = p7.summarize(dict(tally, buy_n=99, buy_ok=99), **kw, line2=failing)
+        self.assertIs(s["pass"], False)  # 99 comparable buys is short of 100 even at 100%
+        self.assertIs(s["acceptance"]["line1_pass"], True)
 
 
 if __name__ == "__main__":

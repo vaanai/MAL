@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
-"""Outcome-blind P7 line-1 check on the tip follower's event-V stamp (docs/runbooks/tip-follower-event-v.md, step 7, last item).
+"""Outcome-blind P7 line-1 check on the tip follower's event-V stamp (docs/runbooks/tip-follower-event-v.md, step 7, last item), under the
+AMENDED buy rule of the quant-proof ruling of 2026-10-10 (/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md, sha256 bf298d8a..., items 1 and 2).
 
-    python -m tools.tip_event_v_p7 --end <UTC> --out-dir <new dir> [--start <UTC>] [--rps 5] [--dry-run]
+    python -m tools.tip_event_v_p7 --start <H> --end <H+1h> --out-dir <new dir> [--rps 5] [--dry-run]
 
 Question: on a stride sample of stamped canonical-pool PumpSwap prints written by `tools/fast_tip_follower.py --trade-event-v`, does the
-integer constant-product law hold within 1 bp (or 2 units) on at least 99% of the comparable sells and 99% of the comparable buys? That is
-EXP-025 Amendment 1, part 2 ("P7 line 1, amended"), run on tip rows instead of a look's adapter column.
+integer constant-product law hold within tolerance (1 bp of actual OR 2 units, lamports on both sides) on at least 99% of the comparable sells
+and 99% of the comparable buys? That is EXP-025 Amendment 1, part 2 ("P7 line 1"), with its buy side amended (ruling item 2), run on tip rows
+instead of a look's adapter column.
 
-What it does, in order (every decision goes through ARTIFACTS/exp025/event_v_map.py; that file is sha-pinned and is imported, not edited or copied):
+Amended acceptance (ruling item 1, one run). Before H, #570 and the amendment module are pushed and the window [H, H+1h) is declared in the PR
+and a notebook entry; H is the first full UTC hour at least 10 minutes after the push. The run on that window passes only if
+  - sells >= 99% and buys >= 99% under within_tolerance (1 bp or 2 units);
+  - there are at least 100 comparable buys (this tool's `pass` includes it: `acceptance.buy_n_at_least_100`);
+  - over the window the follower's mismatch, errors and missing_pumpswap counters are all 0, with no new backlog_jump or unfetchable rows
+    (the follower's counters, read beside this output; this tool does not see them);
+  - the output shows n and hits per ix_name, and exclusions per cause and per name (`by_ix_name`, `excluded_by`, `excluded_by_name`).
+If it fails, roll back (runbook); one re-run on the next declared hour only if the failure is from fetch_failed alone. No window shopping.
+Re-scoring #576 under the amended rule is a diagnostic only, never the acceptance.
+
+Amended buy side (ARTIFACTS/exp025/p7_buy_amend.py; event_v_map.py is unchanged and still pinned):
+  - Comparable buys: no `zero_sol` and `ix_name` exactly `buy` or `buy_v2`. Every other buy leaves both denominators with cause
+    `buy_exact_quote_in` (prefix, v1 and v2), `no_ix_name` (missing, null, empty) or `ix_not_listed` (any other name, `multi_hop_swap`
+    included), decided from the sampled tape row before any fetch. Sells are unchanged and need no name.
+  - Law: the raw event's `pool_quote_amount` within tolerance of ceil(Q * token_raw / (base_reserve - token_raw)), in integers
+    -((-Q * token_raw) // (base_reserve - token_raw)); base_reserve <= token_raw is a miss. It REPLACES the forward law for buys.
+  - Q for this tip check stays vault + the print's own virtual_quote_reserves, V0 = 0 (see step 5).
+
+What it does, in order (every line-1 decision goes through ARTIFACTS/exp025/p7_buy_amend.py, which imports the unchanged parts of
+ARTIFACTS/exp025/event_v_map.py; both files are sha-pinned in ARTIFACTS/exp025/SHA256SUMS and loaded, not edited or copied):
   1. Frame. Reads trades-<hour>.jsonl in --trades-dir for [--start, --end) by the row's t_recv_ms (the follower buckets files by it). Keeps
      PumpSwap rows whose `pool` is the canonical pool of the row's `mint` (tools.exp025_adapter.canonical_pool, stdlib only) and whose
      `virtual_quote_reserves` is an int (the stamp). Canonical PumpSwap rows with no stamp are counted, not framed.
@@ -16,16 +37,26 @@ What it does, in order (every decision goes through ARTIFACTS/exp025/event_v_map
      has none (tools/pump_history_backfill.py backfill_trade_row; tools/test_tip_event_v_p7.py shows it on the follower's own fixtures). The
      event_map helpers key their top-up on row["tx_index"], so each frame row carries its signature in that field: the helpers' key is then
      (slot, signature, event_index) for every row, and unique. The real tx_index, when the row has one, is not used.
-  3. Draw. p7_raw_main_draw(frame, 1000) then p7_raw_buy_topup(frame, main). Both are done before the first fetch, from the tape rows alone.
+  3. Draw. p7_raw_main_draw(frame, 1000) then the amended p7_raw_buy_topup(frame, main) (candidates are whitelisted buys only). Both are done
+     before the first fetch, from the tape rows alone.
   4. Fetch. One getTransaction per distinct signature of a comparable sampled print, up to P7_RAW_TX_ATTEMPTS attempts, encoding json,
      commitment confirmed, maxSupportedTransactionVersion 1 (the walker's getBlock settings, tools/pump_history_backfill.py _getblock_params;
      Amendment 1, "Fetch"). One credit is counted per call made (a retry is a call).
   5. Decode and judge. observe.trade_decode.records_from_logs(..., event_v=True), keyed by event_index = the position in the transaction's decoded
-     trade list, which is how the follower and the walker assign it. The decision is p7_raw_check(tape_row, raw, adapter_row, v0=0):
+     trade list, which is how the follower and the walker assign it. The decision is the amended p7_raw_check(tape_row, raw, adapter_row, v0=0):
      there is no look adapter here, so adapter_row is built from the tape row with quote_reserve = vault + V (the print's own pre-trade
      event V), and v0 = 0. That is the EXP-025 identity q_mapped + V0 = vault + V(t), and tools/c1nf_shadow.py's "Q = vault quote + this print's V".
+     It tests vault + V(t) against vault alone, not against vault + V0; only the reads' adapter-column check covers that convention.
      Reasons: fetch_failed, no_record, slot_mismatch, identity_mismatch, field_missing. no_adapter_row cannot occur. Unresolved prints are misses
      and stay in the denominator.
+  6. Line 2 (fee tier), reported, NOT scored here. On the same 1,000-print main draw (no top-up, no fetch: the tape row's sol_lamports,
+     token_raw, quote_reserve, base_reserve and stamp), outcome-blind, per side and per ix_name:
+       line2_exp025: EXP-025 section 10 P7 line 2 with EXP-025's helpers: Q = (vault + V) + V0 with V0 = 0, the tier of the pinned pass A
+                     (ARTIFACTS/exp025/scripts/common2.py fee_frac, sha-checked), sells' sol within event_v_map.within_bp(P7_TOLERANCE_BP) of
+                     Q tok / (b + tok) (1 - tier), buys' implied fee 1 - net / sol (net = tok Q / (b - tok)) within P7_TOLERANCE_BP of the tier,
+                     bars P7_SELL_MIN / P7_BUY_MIN and event_v_map.p7_pass.
+       line2_exp024: tools.boostfloor_inputs.tier_lines as written, V = the print's own stamp.
+     A zero buy (sol <= 0, tok <= 0 or tok >= b) is skipped, as tier_lines does. Line 2 does not change `pass`: acceptance is line 1.
 
 Counts only. stdout shows no signature, pool, mint, amount, price or reserve. Per-print outcomes (signature, line, outcome, reason) go to
 <out-dir>/p7-tip-prints.jsonl and the summary to <out-dir>/p7-tip.json, which carries that file's sha256. The RPC URL and key are held in
@@ -33,9 +64,10 @@ memory and never printed, logged or written; errors are reduced to a type or a s
 
 Refuses (exit 2) when the window is not closed (no row with t_recv_ms >= --end on disk: the follower writes it non-decreasing, so one later row
 proves every earlier row is written; pick an --end a few minutes in the past) and when the frame passes --max-frame-rows (default 1,200,000, about
-1.1 GB at ~923 B per row; checked while reading, before the sort). Also refuses unless observe/trade_decode.py is git blob 238942a6b3c5425389eddfde4d11268c300acbec (job #433's decoder) and ARTIFACTS/exp025/
-event_v_map.py matches ARTIFACTS/exp025/SHA256SUMS. Run it from a full checkout: the follower's own source tree holds only tools/ and observe/.
-Exit 0 means the check ran to the end; the verdict is `pass` in the JSON. No file under /var/lib/mal is written. Paper only.
+1.1 GB at ~923 B per row; checked while reading, before the sort). Also refuses unless observe/trade_decode.py is git blob 238942a6b3c5425389eddfde4d11268c300acbec (job #433's decoder), and
+ARTIFACTS/exp025/event_v_map.py, ARTIFACTS/exp025/p7_buy_amend.py and ARTIFACTS/exp025/scripts/common2.py each match ARTIFACTS/exp025/SHA256SUMS,
+and the line-2 helpers import (numpy; run with /data/mal/venv/bin/python). Run it from a full checkout: the follower's own source tree holds only
+tools/ and observe/. Exit 0 means the check ran to the end; the verdict is `pass` in the JSON. No file under /var/lib/mal is written. Paper only.
 """
 
 from __future__ import annotations
@@ -107,31 +139,75 @@ def _is_int(x: Any) -> bool:
 
 # ---- pinned inputs ---------------------------------------------------------------------------------------------------------------------
 _EV: Any = None
+_AMEND: Any = None
+_FEE_FRAC: Any = None
+BUY_AMEND_FILE = "p7_buy_amend.py"  # ARTIFACTS/exp025/p7_buy_amend.py: the amended buy side (quant-proof ruling 2026-10-10, item 2)
+TIER_FILE = "scripts/common2.py"    # ARTIFACTS/exp025/scripts/common2.py: the pinned pass A tier (fee_frac), line 2 only
 
 
-def event_v_map() -> Any:
-    """ARTIFACTS/exp025/event_v_map.py, loaded by path, after its sha256 is checked against ARTIFACTS/exp025/SHA256SUMS."""
-    global _EV
-    if _EV is not None:
-        return _EV
+def _pinned_module(rel: str, name: str) -> tuple[Any, str]:
+    """ARTIFACTS/exp025/<rel>, loaded by path after its sha256 is checked against its line in ARTIFACTS/exp025/SHA256SUMS. Refused otherwise."""
     art = REPO / "ARTIFACTS" / "exp025"
-    path, sums = art / "event_v_map.py", art / "SHA256SUMS"
+    path, sums = art / rel, art / "SHA256SUMS"
     if not path.is_file() or not sums.is_file():
-        raise Refused("ARTIFACTS/exp025/event_v_map.py or SHA256SUMS not found: run from a full checkout, not the follower's source tree")
+        raise Refused(f"ARTIFACTS/exp025/{rel} or SHA256SUMS not found: run from a full checkout, not the follower's source tree")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     pinned = None
     for line in sums.read_text(encoding="utf-8").splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1] == "event_v_map.py":
+        if len(parts) == 2 and parts[1] == rel:
             pinned = parts[0]
     if pinned != digest:
-        raise Refused("ARTIFACTS/exp025/event_v_map.py does not match its SHA256SUMS entry")
-    spec = importlib.util.spec_from_file_location("exp025_event_v_map", path)
+        raise Refused(f"ARTIFACTS/exp025/{rel} does not match its SHA256SUMS entry")
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.SHA256 = digest
-    _EV = mod
-    return mod
+    try:
+        spec.loader.exec_module(mod)
+    except ImportError as exc:  # p7_buy_amend.py refuses an event_v_map.py that is not its pinned digest with ImportError
+        raise Refused(f"ARTIFACTS/exp025/{rel} did not load: {type(exc).__name__}") from None
+    return mod, digest
+
+
+def event_v_map() -> Any:
+    """ARTIFACTS/exp025/event_v_map.py (unchanged constants, sell law, fee-line helpers), sha-checked against ARTIFACTS/exp025/SHA256SUMS."""
+    global _EV
+    if _EV is None:
+        mod, digest = _pinned_module("event_v_map.py", "exp025_event_v_map")
+        mod.SHA256 = digest
+        _EV = mod
+    return _EV
+
+
+def buy_amend() -> Any:
+    """ARTIFACTS/exp025/p7_buy_amend.py (the amended line-1 rule: exclusion, line, check, tally, top-up), sha-checked against
+    ARTIFACTS/exp025/SHA256SUMS. It loads event_v_map.py itself against its own pinned digest; the two must name the same file."""
+    global _AMEND
+    if _AMEND is None:
+        ev = event_v_map()
+        mod, digest = _pinned_module(BUY_AMEND_FILE, "exp025_p7_buy_amend")
+        if mod.EVENT_V_MAP_SHA256 != ev.SHA256:
+            raise Refused("ARTIFACTS/exp025/p7_buy_amend.py pins a different event_v_map.py than SHA256SUMS")
+        mod.SHA256 = digest
+        _AMEND = mod
+    return _AMEND
+
+
+def exp025_tier() -> Callable[[int, int], float]:
+    """(Q including V, base_reserve) -> fee fraction: ARTIFACTS/exp025/scripts/common2.py fee_frac (the pinned pass A tier), sha-checked."""
+    global _FEE_FRAC
+    if _FEE_FRAC is None:
+        mod, _ = _pinned_module(TIER_FILE, "exp025_common2_for_tip_p7")  # needs numpy; a missing module is refused
+        _FEE_FRAC = lambda q, b: float(mod.fee_frac(q, b))  # noqa: E731
+    return _FEE_FRAC
+
+
+def exp024_tier_lines() -> Callable[..., dict]:
+    """tools.boostfloor_inputs.tier_lines (EXP-024 section 10 P7 tier lines), imported lazily: it needs numpy."""
+    try:
+        from tools.boostfloor_inputs import tier_lines
+    except ImportError as exc:
+        raise Refused(f"tools.boostfloor_inputs did not import ({type(exc).__name__}): run with /data/mal/venv/bin/python") from None
+    return tier_lines
 
 
 def decoder_blob() -> str | None:
@@ -277,10 +353,10 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
 
 
 def draw(frame: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(main, topup), both from the frame alone."""
-    ev = event_v_map()
-    main = ev.p7_raw_main_draw(frame, ev.P7_SAMPLE)
-    return main, ev.p7_raw_buy_topup(frame, main)
+    """(main, topup), both from the frame alone: the unchanged main draw, then the amended top-up (whitelisted buys only)."""
+    am = buy_amend()
+    main = am.p7_raw_main_draw(frame, am.P7_SAMPLE)
+    return main, am.p7_raw_buy_topup(frame, main)
 
 
 # ---- fetch -----------------------------------------------------------------------------------------------------------------------------
@@ -368,15 +444,16 @@ def adapter_row_from_tape(tape: Mapping[str, Any]) -> dict:
 
 
 def judge(tape: Mapping[str, Any], raw: Mapping[str, Any] | None, *, fetch_failed: bool = False) -> tuple:
-    """(line, outcome, reason) of one sampled print: event_v_map.p7_raw_check with the adapter row built from the tape row and V0 = 0."""
-    return event_v_map().p7_raw_check(dict(tape), None if raw is None else dict(raw), adapter_row_from_tape(tape), Q_V0, fetch_failed=fetch_failed)
+    """(line, outcome, reason) of one sampled print: the amended p7_raw_check (p7_buy_amend.py) with the adapter row built from the tape row
+    and V0 = 0."""
+    return buy_amend().p7_raw_check(dict(tape), None if raw is None else dict(raw), adapter_row_from_tape(tape), Q_V0, fetch_failed=fetch_failed)
 
 
 def run_check(sampled: Sequence[tuple[str, dict]], fetch: Callable[[str], dict | None], progress: Callable[[int, int], None] | None = None
               ) -> tuple[list[tuple], dict]:
     """sampled: (set name, frame row) in draw order. Fetches each distinct signature of a comparable print once, then judges every print.
     Returns (results, extras): results[i] = (line, outcome, reason) for sampled[i]; extras counts transactions and decoder errors."""
-    ev = event_v_map()
+    ev = buy_amend()
     sigs: list[str] = []
     seen: set[str] = set()
     for _, row in sampled:
@@ -410,24 +487,151 @@ def run_check(sampled: Sequence[tuple[str, dict]], fetch: Callable[[str], dict |
     return results, {"tx_n": len(sigs), "decode_errors": decode_errors}
 
 
+# ---- per-name counts -------------------------------------------------------------------------------------------------------------------
+NO_NAME = "(none)"  # the ix_name key of a print with no string ix_name (sells carry none)
+
+
+def _name(row: Mapping[str, Any]) -> str:
+    n = row.get("ix_name")
+    return n if isinstance(n, str) and n else NO_NAME
+
+
+def by_ix_name(sampled: Sequence[tuple[str, dict]], results: Sequence[tuple]) -> dict:
+    """Comparable prints per line and ix_name: {line: {ix_name: {"n", "hits", "share"}}}. Every comparable print is counted once."""
+    out: dict[str, dict[str, dict]] = {"sell": {}, "buy": {}}
+    for (_, row), (line, outcome, _reason) in zip(sampled, results):
+        if line is None:
+            continue
+        c = out[line].setdefault(_name(row), {"n": 0, "hits": 0})
+        c["n"] += 1
+        c["hits"] += int(outcome == "hit")
+    for per in out.values():
+        for c in per.values():
+            c["share"] = _share(c["hits"], c["n"])
+    return {line: dict(sorted(per.items())) for line, per in out.items()}
+
+
+def excluded_by_name(sampled: Sequence[tuple[str, dict]], results: Sequence[tuple]) -> dict:
+    """Excluded prints per cause and ix_name: {cause: {ix_name: count}}, every cause of P7_RAW_EXCLUSIONS present."""
+    out: dict[str, dict[str, int]] = {c: {} for c in buy_amend().P7_RAW_EXCLUSIONS}
+    for (_, row), (line, _outcome, reason) in zip(sampled, results):
+        if line is None:
+            out[reason][_name(row)] = out[reason].get(_name(row), 0) + 1
+    return {c: dict(sorted(per.items())) for c, per in out.items()}
+
+
+# ---- line 2 (fee tier): reported, not scored ------------------------------------------------------------------------------------------
+_L2_FIELDS = ("sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves")
+
+
+def _l2_rows(main: Sequence[Mapping[str, Any]]) -> tuple[list, int]:
+    """The main draw's buys and sells with every line-2 field an int, and how many lacked one (counted, not judged)."""
+    rows, missing = [], 0
+    for r in main:
+        if r.get("side") not in ("buy", "sell"):
+            continue
+        if not all(_is_int(r.get(k)) for k in _L2_FIELDS):
+            missing += 1
+            continue
+        rows.append(r)
+    return rows, missing
+
+
+def _l2_side_block(n: int, match: int, skipped: int, need: float) -> dict:
+    return {"n": n, "match": match, "skipped": skipped, "share": _share(match, n), "need": need}
+
+
+def line2_exp025_counts(rows: Sequence[Mapping[str, Any]], tier: Callable[[int, int], float]) -> dict:
+    """EXP-025 P7 line 2 on tape rows with event_v_map's fee helpers. Q = (vault + V) + V0, V0 = 0 (integers).
+    sell: within_bp(sol, round(Q tok / (b + tok) (1 - tier(Q, b))), P7_TOLERANCE_BP), relative to the actual sol.
+    buy : |1 - net / sol - tier(Q, b)| <= P7_TOLERANCE_BP / 1e4, net = tok Q / (b - tok); a zero buy (sol <= 0, tok <= 0, tok >= b) is skipped."""
+    ev = event_v_map()
+    bp = ev.P7_TOLERANCE_BP
+    c = {"sell": [0, 0, 0], "buy": [0, 0, 0]}  # n, match, skipped
+    for r in rows:
+        side = r["side"]
+        sol, tok, b = r["sol_lamports"], r["token_raw"], r["base_reserve"]
+        q = r["quote_reserve"] + r["virtual_quote_reserves"] + Q_V0
+        if side == "buy" and (sol <= 0 or tok <= 0 or tok >= b):
+            c[side][2] += 1
+            continue
+        c[side][0] += 1
+        f = tier(q, b)
+        if side == "sell":
+            ok = b + tok > 0 and ev.within_bp(sol, int(round(q * tok / (b + tok) * (1 - f))), bp)
+        else:
+            ok = abs((1 - tok * q / (b - tok) / sol) - f) * 10_000 <= bp
+        c[side][1] += int(bool(ok))
+    sell, buy = _l2_side_block(*c["sell"], ev.P7_SELL_MIN), _l2_side_block(*c["buy"], ev.P7_BUY_MIN)
+    return {"sell": sell, "buy": buy, "line_pass": bool(ev.p7_pass(sell["match"], sell["n"], buy["match"], buy["n"]))}
+
+
+def line2_exp024_counts(rows: Sequence[Mapping[str, Any]], tier_lines: Callable[..., dict]) -> dict:
+    """tools.boostfloor_inputs.tier_lines on tape rows, V = the print's own stamp. Its record: key = (slot, pool, sol, tok, q, b), isbuy."""
+    sample = [{"key": (r["slot"], r["pool"], r["sol_lamports"], r["token_raw"], r["quote_reserve"], r["base_reserve"]),
+               "isbuy": r["side"] == "buy", "v": r["virtual_quote_reserves"]} for r in rows]
+    t = tier_lines(sample, lambda _k, rec: float(rec["v"]))
+    out = {}
+    for side in ("sell", "buy"):
+        x = t[side]
+        out[side] = {"n": x["n"], "match": x["match"], "skipped": x["skipped"], "no_v": x["no_v"], "share": x["share"], "need": x["need"]}
+    out["line_pass"] = bool(t["sell"]["pass"] and t["buy"]["pass"])
+    return out
+
+
+def line2_report(main: Sequence[Mapping[str, Any]], rule: str) -> dict:
+    """Line 2 by `rule` ('exp025' or 'exp024') on the main draw: per side, and per ix_name per side. Outcome-blind, tape rows only, no fetch.
+    `line_pass` is the line's own bar; it does not enter this tool's `pass`."""
+    rows, missing = _l2_rows(main)
+    if rule == "exp025":
+        tier = exp025_tier()
+
+        def count(rs):
+            return line2_exp025_counts(rs, tier)
+    elif rule == "exp024":
+        tl = exp024_tier_lines()
+
+        def count(rs):
+            return line2_exp024_counts(rs, tl)
+    else:
+        raise ValueError(rule)
+    total = count(rows)
+    names: dict[str, list] = {}
+    for r in rows:
+        names.setdefault(_name(r), []).append(r)
+    per = {}
+    for name in sorted(names):
+        x = count(names[name])
+        per[name] = {side: {k: v for k, v in x[side].items() if k != "need"} for side in ("sell", "buy") if x[side]["n"] or x[side]["skipped"]}
+    return {"sample": "main draw (no top-up)", "prints": len(rows), "fields_missing": missing, "sell": total["sell"], "buy": total["buy"],
+            "line_pass": total["line_pass"], "by_ix_name": per, "scored": False}
+
+
 # ---- output ----------------------------------------------------------------------------------------------------------------------------
 def _share(ok: int, n: int) -> float | None:
     return ok / n if n else None
 
 
 def summarize(tally: Mapping[str, Any], *, window: tuple[int, int], frame_info: Mapping[str, Any], main_n: int, topup_n: int,
-              extras: Mapping[str, Any], credits: int, errors: Mapping[str, int], prints_sha256: str | None, blob: str | None) -> dict:
-    ev = event_v_map()
+              extras: Mapping[str, Any], credits: int, errors: Mapping[str, int], prints_sha256: str | None, blob: str | None,
+              per_name: Mapping[str, Any] | None = None, excl_names: Mapping[str, Any] | None = None,
+              line2: Mapping[str, Any] | None = None) -> dict:
+    ev, am = event_v_map(), buy_amend()
     unresolved = {r: n for r, n in tally["unresolved"].items() if r != "no_adapter_row"}
     assert tally["unresolved"]["no_adapter_row"] == 0  # the adapter row is built from the tape row, so it always exists
+    line1 = bool(am.p7_raw_pass(dict(tally)))
+    enough = tally["buy_n"] >= am.P7_RAW_BUY_MIN_COMPARABLE
+    line2 = line2 or {}
     return {
         "tool": "tools/tip_event_v_p7.py",
-        "check": "EXP-025 Amendment 1 P7 line 1 on tip follower rows (outcome-blind, counts only)",
+        "check": "EXP-025 Amendment 1 P7 line 1, buy side amended (quant-proof ruling 2026-10-10), on tip follower rows (outcome-blind, counts only)",
+        "buy_rule": "ix_name in {buy, buy_v2}, no zero_sol; pool_quote_amount vs ceil(Q token_raw / (base_reserve - token_raw)), within 1 bp or 2 lamports",
         "window": {"start": iso_utc(window[0]), "end": iso_utc(window[1]), "field": "t_recv_ms"},
         "key": KEY_NAME,
         "q_identity": "Q = quote_reserve + virtual_quote_reserves of the print itself, V0 = 0",
         "decoder_blob": blob, "decoder_blob_pinned": blob == DECODER_BLOB,
         "event_v_map_sha256": ev.SHA256,
+        "p7_buy_amend_sha256": am.SHA256,
         "getTransaction": dict(TX_CONFIG, attempts=ev.P7_RAW_TX_ATTEMPTS),
         "frame_n": frame_info["frame_n"],
         "unstamped_canonical_n": frame_info["unstamped_canonical_n"],
@@ -437,15 +641,21 @@ def summarize(tally: Mapping[str, Any], *, window: tuple[int, int], frame_info: 
         "comparable": {"sell_n": tally["sell_n"], "buy_n": tally["buy_n"]},
         "excluded_n": tally["excluded"],
         "excluded_by": dict(tally["excluded_by"]),
+        "excluded_by_name": dict(excl_names or {}),
+        "by_ix_name": dict(per_name or {}),
         "hits": {"sell": tally["sell_ok"], "buy": tally["buy_ok"]},
         "shares": {"sell": _share(tally["sell_ok"], tally["sell_n"]), "buy": _share(tally["buy_ok"], tally["buy_n"])},
-        "bars": {"sell": ev.P7_CP_SELL_MIN, "buy": ev.P7_CP_BUY_MIN},
+        "bars": {"sell": ev.P7_CP_SELL_MIN, "buy": ev.P7_CP_BUY_MIN, "min_comparable_buys": am.P7_RAW_BUY_MIN_COMPARABLE},
         "unresolved": unresolved,
         "unresolved_n": sum(unresolved.values()),
         "decode_errors": extras["decode_errors"],
         "credits": credits,
         "fetch_errors": dict(errors),
-        "pass": bool(ev.p7_raw_pass(dict(tally))),
+        "acceptance": {"line1_pass": line1, "buy_n_at_least_100": enough,
+                       "not_seen_here": "follower counters mismatch/errors/missing_pumpswap = 0, no new backlog_jump or unfetchable rows"},
+        "pass": line1 and enough,
+        "line2_exp025": line2.get("exp025"),
+        "line2_exp024": line2.get("exp024"),
         "prints_file": OUT_PRINTS,
         "prints_sha256": prints_sha256,
         "frame": dict(frame_info),
@@ -468,19 +678,33 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 # ---- driver ----------------------------------------------------------------------------------------------------------------------------
 def _plan(sampled: Sequence[tuple[str, dict]]) -> dict:
-    """What the draw alone decides: the comparable populations, the exclusions per cause, the transactions to fetch."""
-    ev = event_v_map()
-    lines = Counter(ev.p7_raw_line(r) for _, r in sampled)
-    causes = Counter(ev.p7_raw_exclusion(r) for _, r in sampled if ev.p7_raw_line(r) is None)
-    sigs = {r["signature"] for _, r in sampled if ev.p7_raw_line(r) is not None}
+    """What the draw alone decides: the comparable populations (per ix_name), the exclusions per cause and per name, the transactions to fetch."""
+    am = buy_amend()
+    lines = Counter(am.p7_raw_line(r) for _, r in sampled)
+    causes = Counter(am.p7_raw_exclusion(r) for _, r in sampled if am.p7_raw_line(r) is None)
+    by_name: dict[str, Counter] = {"sell": Counter(), "buy": Counter()}
+    excl: dict[str, Counter] = {c: Counter() for c in am.P7_RAW_EXCLUSIONS}
+    for _, r in sampled:
+        line = am.p7_raw_line(r)
+        if line is None:
+            excl[am.p7_raw_exclusion(r)][_name(r)] += 1
+        else:
+            by_name[line][_name(r)] += 1
+    sigs = {r["signature"] for _, r in sampled if am.p7_raw_line(r) is not None}
     return {"comparable": {"sell_n": lines["sell"], "buy_n": lines["buy"]}, "excluded_n": lines[None],
-            "excluded_by": {c: causes[c] for c in ev.P7_RAW_EXCLUSIONS}, "tx_n": len(sigs), "max_credits": len(sigs) * ev.P7_RAW_TX_ATTEMPTS}
+            "excluded_by": {c: causes[c] for c in am.P7_RAW_EXCLUSIONS},
+            "excluded_by_name": {c: dict(sorted(v.items())) for c, v in excl.items()},
+            "comparable_by_ix_name": {k: dict(sorted(v.items())) for k, v in by_name.items()},
+            "tx_n": len(sigs), "max_credits": len(sigs) * am.EV.P7_RAW_TX_ATTEMPTS}
 
 
 def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, canonical: Callable[[str], str] | None = None,
         sleep: Callable[[float], None] = time.sleep, out=None) -> int:
     out = out or sys.stdout
     ev = event_v_map()
+    buy_amend()
+    exp025_tier()  # line 2's helpers load before any fetch: a missing or changed helper refuses here, not after the credits are spent
+    exp024_tier_lines()
     blob = decoder_blob()
     if blob != DECODER_BLOB:
         raise Refused("observe/trade_decode.py is not job #433's decoder blob; a new pin needs a dated outcome-blind amendment")
@@ -511,7 +735,7 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
     plan = _plan(sampled)
     head = {"frame_n": info["frame_n"], "unstamped_canonical_n": info["unstamped_canonical_n"], "sample_n": len(main_rows),
             "topup_n": len(topup_rows)}
-    if args.dry_run:
+    if args.dry_run:  # counts the draw decides only: no law, no line 2, no RPC call, nothing written
         report = {"dry_run": True, "window": {"start": iso_utc(start_ms), "end": iso_utc(end_ms)}, "key": KEY_NAME, **head, **plan,
                   "decoder_blob": blob, "frame": info}
         out.write(json.dumps(report, indent=1, sort_keys=True) + "\n")
@@ -525,12 +749,14 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
         print(f"tip_event_v_p7: fetched {done}/{total} transactions, credits={fetch.calls}", file=sys.stderr, flush=True)
 
     results, extras = run_check(sampled, fetch, progress)
-    tally = ev.p7_raw_tally(results)
+    tally = buy_amend().p7_raw_tally([(row, res) for (_, row), res in zip(sampled, results)])
+    line2 = {"exp025": line2_report(main_rows, "exp025"), "exp024": line2_report(main_rows, "exp024")}
     out_dir.mkdir(parents=True, exist_ok=True)
     prints = print_rows(sampled, results)
     _write_atomic(out_dir / OUT_PRINTS, prints)
     summary = summarize(tally, window=(start_ms, end_ms), frame_info=info, main_n=len(main_rows), topup_n=len(topup_rows), extras=extras,
-                        credits=fetch.calls, errors=fetch.errors, prints_sha256=hashlib.sha256(prints).hexdigest(), blob=blob)
+                        credits=fetch.calls, errors=fetch.errors, prints_sha256=hashlib.sha256(prints).hexdigest(), blob=blob,
+                        per_name=by_ix_name(sampled, results), excl_names=excluded_by_name(sampled, results), line2=line2)
     text = json.dumps(summary, indent=1, sort_keys=True) + "\n"
     _write_atomic(out_dir / OUT_SUMMARY, text.encode())
     out.write(text)
