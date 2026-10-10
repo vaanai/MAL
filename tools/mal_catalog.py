@@ -157,6 +157,27 @@ def _parse_hours_cell(cell: str, *, row_name: str) -> tuple[str | None, str | No
     raise ValueError(f"row {row_name!r}: could not parse Hours cell {cell!r} (no bracket range, arrow range, 'older than', or explicit hour list found)")
 
 
+_PAREN_RE = re.compile(r"\([^()]*\)")
+_PRIOR_OWNER_RE = re.compile(r"prior owner\s+EXP-\d+", re.IGNORECASE)
+
+_POOL_TAGS = (
+    ("exploration pool", "exploration-pool"),
+    ("kill review", "kill-review"),
+    ("unassigned", "unassigned"),
+)
+
+
+def _strip_parentheticals(text: str) -> str:
+    """Drop every balanced `( ... )` group, innermost first. A stray `)`
+    (the end of a half-open `[a, b)` range) has no `(` to pair with and
+    stays."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _PAREN_RE.sub(" ", text)
+    return text
+
+
 def _normalize_owner(cell: str, *, row_name: str) -> str:
     text = cell.replace("**", "").replace("`", "").strip()
     lowered = text.lower()
@@ -165,15 +186,23 @@ def _normalize_owner(cell: str, *, row_name: str) -> str:
     # denied for every role by allowed().
     if lowered.startswith("reserved"):
         return "reserved"
-    m = _EXP_OWNER_RE.search(text)
-    if m:
-        return f"EXP-{m.group(1)}"
-    if "exploration pool" in lowered:
-        return "exploration-pool"
-    if "kill review" in lowered:
-        return "kill-review"
-    if "unassigned" in lowered:
-        return "unassigned"
+    # Parenthetical text in an Owner cell is commentary, never the owner: a
+    # spent block moved to the pool reads "**exploration pool** (spent
+    # confirmation block; prior owner EXP-011, closed NOT_DECIDABLE)", and the
+    # prior owner's id there must not win over the pool tag. Only the text
+    # outside parentheses names the owner, and it must name exactly one; two
+    # candidates (an EXP id and a pool tag, or two EXP ids) raise rather than
+    # guess, so the guard fails closed.
+    head = _strip_parentheticals(text)
+    head_lower = head.lower()
+    candidates = [f"EXP-{n}" for n in dict.fromkeys(_EXP_OWNER_RE.findall(head))]
+    candidates += [tag for phrase, tag in _POOL_TAGS if phrase in head_lower]
+    if len(candidates) > 1:
+        raise ValueError(f"row {row_name!r}: Owner cell {cell!r} names more than one owner outside parentheses: {candidates}")
+    if candidates == ["exploration-pool"] and _EXP_OWNER_RE.search(_PRIOR_OWNER_RE.sub(" ", text)):
+        raise ValueError(f"row {row_name!r}: exploration-pool Owner cell {cell!r} names an EXP id outside a 'prior owner' clause")
+    if candidates:
+        return candidates[0]
     raise ValueError(f"row {row_name!r}: unrecognized Owner cell {cell!r}")
 
 
