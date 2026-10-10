@@ -3,8 +3,11 @@ forward-1002, forward-1002ev, walk 2, an October label or an outcome. Every Octo
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import subprocess
 import tempfile
 import types
 import unittest
@@ -40,7 +43,10 @@ class Fixture:
         open(mk, "w").close(); open(lg, "w").write('{"x":1}\n')
         blobs = os.path.join(d, "blobs.json"); json.dump({"forward-1002ev": "a" * 40, "walk2": "a" * 40}, open(blobs, "w"))
         e0 = os.path.join(d, "e0"); os.makedirs(e0)
-        json.dump({"pass": True}, open(os.path.join(e0, "p3_e0_2026-09-20.json"), "w")); json.dump({"e0_pass": True}, open(os.path.join(e0, "p4_e0.json"), "w"))
+        json.dump({"pass": True}, open(os.path.join(e0, "p3_e0_2026-09-20.json"), "w")); json.dump({"e0_pass": True, "tool_blob": R.tool_blob()}, open(os.path.join(e0, "p4_e0.json"), "w"))
+        xc = os.path.join(d, "r1_crosscheck.json")
+        json.dump({"schema": K.CROSSCHECK_SCHEMA, "hours": {h: {"match_rate": 1.0} for s_, h in R.allowlisted_hours(1) if s_ == "forward-1002ev"}},
+                  open(xc, "w"))
         p7 = os.path.join(d, "p7.json"); json.dump({"cp": [995, 1000, 995, 1000], "fee": [990, 1000, 990, 1000]}, open(p7, "w"))
         mans = {}
         for src, h in R.allowlisted_hours(1):
@@ -70,7 +76,7 @@ class Fixture:
         self.X["h_top1"] = np.where(self.X.mid % 10 == 0, 0.7, 0.3); self.X["h_top5"] = 0.6
         self.X["wb5_n"] = 4; self.X["wb5_new"] = 0.25; self.X["ws5_n"] = 2; self.X["ws5_new"] = 0.5   # 3 + 1 of 6 wallets known: 2/3
         self.a = types.SimpleNamespace(now=R.ep("2026-10-17T03"), final_marker=mk, final_ledger=lg, decoder_blobs=blobs, e0_dir=e0, p7=p7,
-                                       p2_universe=self.p2, ledger=os.path.join(d, "LOOK_READS.jsonl"), o_dir=self.O, look1_record=None,
+                                       p2_universe=self.p2, ledger=os.path.join(d, "LOOK_READS.jsonl"), o_dir=self.O, r1_crosscheck=xc,
                                        oracle_live=[os.path.join(d, "live.jsonl")], oracle_replay=None, oracle_stale_s=None)
 
     # ---- the Steps interface
@@ -140,7 +146,14 @@ class LockedRun(unittest.TestCase):
             F = Fixture(d)
             rec = K.run_look(1, F.a, F)
             self.assertEqual(rec["verdict"], "PASS", rec)
-            self.assertEqual(F.events(), ["lock", "read"])
+            self.assertEqual(F.events(), ["lock", "decisions", "read"])
+            ev = R.ledger_events(F.a.ledger, 1)
+            self.assertEqual(ev[1]["md5_look1_window"], ev[1]["decisions_md5"]); self.assertEqual(ev[1]["decisions_md5"], ev[2]["decisions_md5"])
+            inp = ev[0]["inputs"]                                                          # r3 item 1: the lock records the inputs' sha256
+            self.assertEqual(inp["look_assembly"][os.path.join(F.O, "look_assembly.json")], R.sha256(os.path.join(F.O, "look_assembly.json")))
+            self.assertEqual(len(inp["manifests"]), 3); self.assertTrue(all(inp["manifests"].values()))
+            self.assertEqual(inp["p7"][F.a.p7], R.sha256(F.a.p7)); self.assertEqual(inp["r1_crosscheck"][F.a.r1_crosscheck], R.sha256(F.a.r1_crosscheck))
+            self.assertIn(F.a.decoder_blobs, inp["decoder_blobs"]); self.assertIsNone(inp["oracle_live"][F.a.oracle_live[0]])
             self.assertEqual(F.priced, 1)
             self.assertEqual(F.calls[0], "10_meta.py"); self.assertIn("retrain_explo", F.calls)
             self.assertLess(F.calls.index("retrain_explo"), F.calls.index("retrain"))
@@ -154,7 +167,7 @@ class LockedRun(unittest.TestCase):
             self.assertLess(F.calls.index("r3"), F.calls.index("11_passA.py"))                # R3 after 10_meta, before the lock
             self.assertEqual(len(F.r3_pools), 143)
             res = json.load(open(rec["result"]))
-            self.assertEqual(res["n_kept"], 126); self.assertIn("report_only", res)
+            self.assertEqual(res["n_kept"], 126); self.assertIn("report_only", res); self.assertEqual(res["r9"], "n/a: Look 1")
             with self.assertRaises(R.Refusal) as c:
                 K.run_look(1, F.a, F)
             self.assertEqual(c.exception.code, "LOCK")
@@ -300,7 +313,7 @@ class NotTerminal(unittest.TestCase):
             F = LateNotReady(d)
             rec = K.run_look(1, F.a, F)
             self.assertEqual((rec["verdict"], rec["refused"]), ("NOT_DECIDABLE", "NOT_READY"), rec)
-            self.assertEqual(F.events(), ["lock", "not_decidable"])
+            self.assertEqual(F.events(), ["lock", "decisions", "not_decidable"])          # r3 item 3: the md5 survives a late refusal
             self.assertTrue(os.path.exists(os.path.join(F.O, "READ.lock")))
             with self.assertRaises(R.Refusal) as c:
                 K.run_look(1, F.a, F)                                                   # spent: no re-run
@@ -319,7 +332,7 @@ class AdapterInterface(unittest.TestCase):
             F = Fixture(d, drop_hours=["2026-10-12T03"])
             _, mans = K.load_assembly(1, F.O)
             mans[1]["files"][-1]["pumpswap_rows_with_v"] = 9                             # one V-incomplete hour
-            hs = K.hour_status(1, mans)
+            hs = K.hour_status(1, mans, K.load_crosscheck(F.a.r1_crosscheck))
             self.assertEqual(hs["unwalked"], ["2026-10-12T03"]); self.assertIn("2026-10-12T03", hs["bad"])
             self.assertEqual(hs["vmiss"], [mans[1]["files"][-1]["hour"]])
             self.assertLess(hs["manifest_v_share"], 1.0); self.assertNotIn("v_coverage", hs)
@@ -388,6 +401,13 @@ class AdapterInterface(unittest.TestCase):
             with self.assertRaises(R.Refusal):
                 R.check_e0_records(d)
             json.dump({"e0_pass": True}, open(os.path.join(d, "p4_e0.json"), "w"))
+            with self.assertRaises(R.Refusal) as c:                                        # r3 item 6: no tool_blob, no cover
+                R.check_e0_records(d)
+            self.assertEqual(c.exception.code, "R13")
+            json.dump({"e0_pass": True, "tool_blob": "0" * 40}, open(os.path.join(d, "p4_e0.json"), "w"))
+            with self.assertRaises(R.Refusal):
+                R.check_e0_records(d)
+            json.dump({"e0_pass": True, "tool_blob": R.tool_blob()}, open(os.path.join(d, "p4_e0.json"), "w"))
             R.check_e0_records(d)
             json.dump({"pass": False}, open(os.path.join(d, "p3_e0_2026-09-21.json"), "w"))
             with self.assertRaises(R.Refusal):
@@ -401,6 +421,109 @@ class AdapterInterface(unittest.TestCase):
         self.assertEqual((A.R2_MIN, A.R3_MIN, A.R1_MAX_BAD, A.V_COVER_START), (K.R2_MIN, K.R3_MIN, 0.02, K.V_COVER_START))
         for k, n in (("look1", 1), ("look2", 2)):     # same (hour -> block) sets; look 2's walk-2 range is one tuple there, two here
             self.assertEqual({h: K.BLOCK_OF_SOURCE[s] for s, h in R.allowlisted_hours(n)}, dict(A.look_allowlist(k)))
+
+
+@unittest.skipIf(np is None, "numpy/pandas/duckdb missing")
+class QuantProofR3(unittest.TestCase):
+    def test_cli_has_no_overrides(self):
+        for flag in ("--ledger", "--o-dir", "--final-marker", "--final-ledger", "--e0-dir", "--p2-universe", "--oracle-stale-s", "--look1-record"):
+            with self.assertRaises(SystemExit) as c, contextlib.redirect_stderr(io.StringIO()):
+                K.main(["run", "--look", "1", "--decoder-blobs", "x", flag, "x"])
+            self.assertEqual(c.exception.code, 2, flag)
+        for flag in ("--final-marker", "--final-ledger"):
+            with self.assertRaises(SystemExit) as c, contextlib.redirect_stderr(io.StringIO()):
+                R.main(["check", "--look", "1", flag, "x"])
+            self.assertEqual(c.exception.code, 2, flag)
+
+    def test_r8_after_the_deadline_spends_the_look(self):
+        self.assertEqual((R.LOOKS[1]["deadline"], R.LOOKS[2]["deadline"]), ("2026-10-18T12:00", "2026-10-26T12:00"))
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); F.a.now = R.ep("2026-10-18T12:01")
+            rec = K.run_look(1, F.a, F)
+            self.assertEqual((rec["verdict"], rec["refused"]), ("NOT_DECIDABLE", "R8"), rec)
+            self.assertEqual(F.events(), ["lock", "not_decidable"]); self.assertEqual(F.calls, []); self.assertEqual(F.priced, 0)
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); F.a.now = R.ep("2026-10-18T12:00")                         # at the deadline: not after it
+            self.assertEqual(K.run_look(1, F.a, F)["verdict"], "PASS")
+
+    def test_look2_after_a_look1_pass_refuses_without_a_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d)
+            self.assertEqual(K.run_look(1, F.a, F)["verdict"], "PASS")
+            F.a.now = R.ep("2026-10-24T03")
+            with self.assertRaises(R.Refusal) as c:
+                K.run_look(2, F.a, F)
+            self.assertEqual(c.exception.code, "LOOK2")
+            self.assertEqual([e["event"] for e in R.ledger_events(F.a.ledger, 2)], ["ready"])
+
+    def test_look2_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            L = os.path.join(d, "L.jsonl")
+            with self.assertRaises(R.Refusal) as c:
+                K.look2_gate(L)
+            self.assertEqual(c.exception.code, "NOT_READY")
+            R.ledger_event(L, 1, "lock", token="t"); R.ledger_event(L, 1, "not_decidable", code="R11")
+            self.assertEqual(K.look2_gate(L), "look1 not_decidable")
+            L2 = os.path.join(d, "L2.jsonl"); R.ledger_event(L2, 1, "read", verdict="FAIL")
+            self.assertEqual(K.look2_gate(L2), "look1 FAIL")
+
+    def test_r9_from_look_reads(self):
+        with tempfile.TemporaryDirectory() as d:
+            L = os.path.join(d, "L.jsonl")
+            self.assertEqual(R.r9_check(2, "m", L), "n/a: Look 1 refused before selection")    # Look 2 still runs after an early NOT_DECIDABLE
+            R.ledger_event(L, 1, "decisions", decisions_md5="m", md5_look1_window="m", n_kept=3)
+            self.assertEqual(R.r9_check(2, "m", L), "match")
+            with self.assertRaises(R.Refusal) as c:
+                R.r9_check(2, "x", L)
+            self.assertEqual(c.exception.code, "R9")
+            self.assertEqual(R.r9_check(1, "x", L), "n/a: Look 1")
+
+    def test_r12_extra_tape_hour_before_pass_a(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d)
+            td = os.path.join(F.O, "tape", "trades"); os.makedirs(td)
+            open(os.path.join(td, "2026-10-16T05.parquet"), "w").close()
+            self.assertEqual(K.tape_outside_allowlist(1, F.O), [])
+            open(os.path.join(td, "2026-10-17T02.parquet"), "w").close()                  # walk 2's first counted hour
+            os.makedirs(os.path.join(F.O, "tape", "creates")); open(os.path.join(F.O, "tape", "creates", "junk.parquet"), "w").close()
+            self.assertEqual(K.tape_outside_allowlist(1, F.O), ["trades/2026-10-17T02.parquet", "creates/junk.parquet"])
+            RefusalsBeforeAnyPnl._nd(self, F, "R12", False)
+            self.assertNotIn("10_meta.py", F.calls)
+
+    def test_crosscheck_bad_hours_and_missing_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d)
+            _, mans = K.load_assembly(1, F.O)
+            xc = K.load_crosscheck(F.a.r1_crosscheck)
+            self.assertEqual(K.hour_status(1, mans, xc)["bad"], [])                     # forward-1002 / walk-2 hours need no cross-check
+            xc["2026-10-11T04"] = 0.9949; del xc["2026-10-12T07"]; xc["2026-10-13T00"] = 0.995
+            hs = K.hour_status(1, mans, xc)
+            self.assertEqual(hs["xcheck_bad"], ["2026-10-11T04", "2026-10-12T07"]); self.assertEqual(hs["bad"], hs["xcheck_bad"])
+            json.dump({"schema": K.CROSSCHECK_SCHEMA, "hours": {"2026-10-09T00": {"match_rate": None}}}, open(F.a.r1_crosscheck, "w"))
+            self.assertIsNone(K.load_crosscheck(F.a.r1_crosscheck)["2026-10-09T00"])
+            os.remove(F.a.r1_crosscheck)
+            with self.assertRaises(R.Refusal) as c:
+                K.run_look(1, F.a, F)
+            self.assertEqual(c.exception.code, "NOT_READY"); self.assertEqual(F.events(), ["ready"])
+            self.assertFalse(os.path.exists(os.path.join(F.O, "READ.lock")))
+
+    def test_lock_refusal_after_the_lock_is_terminal(self):
+        class LockGone(Fixture):
+            def retrain(self, look, october, gtime, out, exploration_only, log):
+                if not exploration_only:
+                    os.remove(os.path.join(self.O, "READ.lock"))
+                return Fixture.retrain(self, look, october, gtime, out, exploration_only, log)
+        with tempfile.TemporaryDirectory() as d:
+            F = LockGone(d)
+            rec = K.run_look(1, F.a, F)
+            self.assertEqual((rec["verdict"], rec["refused"]), ("NOT_DECIDABLE", "LOCK"), rec)
+            self.assertEqual(F.events(), ["lock", "not_decidable"]); self.assertEqual(F.priced, 0)
+
+    def test_e0_record_is_pinned_and_covers_this_code(self):
+        self.assertIn("e0/p4_e0.json", R.check_pins())
+        r = subprocess.run(["git", "hash-object", R.__file__], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        if r.returncode == 0:
+            self.assertEqual(r.stdout.strip(), R.tool_blob())
 
 
 if __name__ == "__main__":

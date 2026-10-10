@@ -107,7 +107,7 @@ class Preconditions(unittest.TestCase):
             with self.assertRaises(R.Refusal):
                 R.check_e0_records(d)
             for n in ("p3_e0.json", "p4_e0.json"):
-                json.dump({"e0_pass": True}, open(os.path.join(d, n), "w"))
+                json.dump({"e0_pass": True, "tool_blob": R.tool_blob()}, open(os.path.join(d, n), "w"))
             R.check_e0_records(d)
 
     def test_lock_is_once(self):

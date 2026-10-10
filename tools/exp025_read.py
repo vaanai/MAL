@@ -67,16 +67,17 @@ LOOKS = {
     1: dict(start="2026-10-10T00", end="2026-10-17T00", hours_end="2026-10-17T02", allow=_A1, alpha_key="EXP025_ALPHA_LOOK1",
             patch="patches/common2_look1.patch", patch_sha="404669118447557f42bad7aa9cdb0b41e48ce6916b0cc7e003a7d643ece45722",
             applied_sha="7060cbd537571dc8a2da6249d4443adf2453224b8bca6aa46c68dbfbee803a11", O="/data/mal/exp025/look1",
-            TMP="/data/mal/exp025/tmp/look1", halves=4, min_kept=90, min_dates=5),
+            TMP="/data/mal/exp025/tmp/look1", halves=4, min_kept=90, min_dates=5, deadline="2026-10-18T12:00"),
     2: dict(start="2026-10-10T00", end="2026-10-24T00", hours_end="2026-10-24T02", allow=_A1 + (("forward-1016", "2026-10-17T02", "2026-10-24T02"),),
             alpha_key="EXP025_ALPHA_LOOK2", patch="patches/common2_look2.patch",
             patch_sha="885ce0d89f50c82562c2edeb572491080ef80d30ef1a328a67a3b7d6d7e32fb6",
             applied_sha="ca6d4b75790de653410df985e8598e8a336d0016d40c0535b5a73b2d0bd0ac7e", O="/data/mal/exp025/look2",
-            TMP="/data/mal/exp025/tmp/look2", halves=7, min_kept=150, min_dates=8),
+            TMP="/data/mal/exp025/tmp/look2", halves=7, min_kept=150, min_dates=8, deadline="2026-10-26T12:00"),
 }
 PINNED_SCRIPTS = ("scripts/common2.py", "scripts/10_meta.py", "scripts/11_passA.py", "scripts/12_passC.py", "scripts/14_export.py",
                   "scripts/mlcommon.py", "scripts/16_confirm.py", "c1nf_cap.py", "rule.json", "event_v_map.py",
                   "ledger/01_wallet_daily_det.py", "verify/v2_sim.py", "verify/v3_report.py")
+PINNED_RECORDS = ("e0/p4_e0.json",)   # runtime pin check (quant-proof r3 item 6): the P4 E0 record R13 relies on
 
 
 class Refusal(Exception):
@@ -184,14 +185,14 @@ def exp_clean_against_head() -> None:
 
 
 def check_pins() -> dict:
-    """Every PINNED_SCRIPTS file equals its SHA256SUMS line (section 2.3)."""
+    """Every PINNED_SCRIPTS file and every PINNED_RECORDS file (the P4 E0 record) equals its SHA256SUMS line (section 2.3)."""
     sums = {}
     for line in open(os.path.join(ART, "SHA256SUMS")):
         parts = line.split()
         if len(parts) == 2:
             sums[parts[1]] = parts[0]
     got = {}
-    for rel in PINNED_SCRIPTS:
+    for rel in PINNED_SCRIPTS + PINNED_RECORDS:
         if rel not in sums:
             raise Refusal("PIN", f"{rel} is not in SHA256SUMS")
         h = sha256(os.path.join(ART, rel))
@@ -235,8 +236,15 @@ def check_decoder_blobs(path: str) -> None:
         raise Refusal("R13", f"decoder blobs differ or are malformed: {a!r} vs {b!r}")
 
 
+def tool_blob(path: str | None = None) -> str:
+    """`git hash-object` of this file (sha1 over 'blob <size>\\0' + the bytes; no filters): the code the P4 E0 record covers."""
+    b = open(path or os.path.abspath(__file__), "rb").read()
+    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
+
+
 def check_e0_records(e0_dir: str = E0_DIR) -> None:
-    """R13: the P3 and P4 E0 records exist and say equal. P3 (#563) writes p3_e0_<day>.json with `pass`; P4 writes p4_e0.json with `e0_pass`."""
+    """R13: the P3 and P4 E0 records exist and say equal. P3 (#563) writes p3_e0_<day>.json with `pass`; P4 writes p4_e0.json with `e0_pass`,
+    and its `tool_blob` must equal the running tools/exp025_read.py's blob (an E0 at older pricing code does not cover this one)."""
     for pre in ("p3_e0", "p4_e0"):
         names = sorted(n for n in (os.listdir(e0_dir) if os.path.isdir(e0_dir) else ()) if n.startswith(pre) and n.endswith(".json"))
         if not names:
@@ -245,6 +253,8 @@ def check_e0_records(e0_dir: str = E0_DIR) -> None:
             d = json.load(open(os.path.join(e0_dir, n)))
             if not (d.get("e0_pass") is True or d.get("pass") is True):
                 raise Refusal("R13", f"{n} does not record a pass")
+            if pre == "p4_e0" and d.get("tool_blob") != tool_blob():
+                raise Refusal("R13", f"{n} tool_blob {d.get('tool_blob')!r} != the running tools/exp025_read.py blob {tool_blob()}")
 
 
 # ----------------------------------------------------------------------------------------------------------------- book, legs, statistics
@@ -623,9 +633,10 @@ def ledger_events(ledger: str, look: int) -> list:
     return [e for e in (json.loads(x) for x in open(ledger) if x.strip()) if e.get("look") == look]
 
 
-def take_lock(look: int, ledger: str = LOOK_LEDGER, o_dir: str | None = None, job: str | None = None) -> str:
+def take_lock(look: int, ledger: str = LOOK_LEDGER, o_dir: str | None = None, job: str | None = None, inputs: dict | None = None) -> str:
     """One locked read per look; no resume after the lock (section 10). O_EXCL lock file in the look's O plus a `lock` line in LOOK_READS.jsonl
-    (token, MiScusi job, repo head). Refuses (LOCK) if the lock file exists or the ledger already holds a lock for the look. Returns the lock path."""
+    (token, MiScusi job, repo head, and `inputs`: the sha256 of every input file the runner names, exp025_look.lock_inputs). Refuses (LOCK) if
+    the lock file exists or the ledger already holds a lock for the look. Returns the lock path."""
     lock = os.path.join(o_dir or LOOKS[look]["O"], "READ.lock")
     os.makedirs(os.path.dirname(lock), exist_ok=True)
     if any(e["event"] == "lock" for e in ledger_events(ledger, look)):
@@ -638,7 +649,7 @@ def take_lock(look: int, ledger: str = LOOK_LEDGER, o_dir: str | None = None, jo
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(dict(token=token, at=_now_iso())) + "\n")
     head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
-    ledger_event(ledger, look, "lock", token=token, job=job or os.environ.get("MISCUSI_JOB_ID", ""), head=head)
+    ledger_event(ledger, look, "lock", token=token, job=job or os.environ.get("MISCUSI_JOB_ID", ""), head=head, inputs=inputs or {})
     return lock
 
 
@@ -665,6 +676,22 @@ def decisions_md5(mints, ts) -> str:
     return h.hexdigest()
 
 
+def r9_check(look: int, md5_look1_window: str, ledger: str = LOOK_LEDGER) -> str:
+    """R9: Look 2 re-derives Look 1's decisions. Look 1's md5 is its `decisions` event in LOOK_READS (written before pricing, so it survives a
+    Look 1 NOT_DECIDABLE after selection, e.g. R11). No such event (Look 1 refused before selection): R9 is n/a and Look 2 runs (section 3).
+    Returns the record's r9 text; a mismatch (or more than one Look 1 `decisions` event) refuses R9."""
+    if look != 2:
+        return "n/a: Look 1"
+    ev = [e for e in ledger_events(ledger, 1) if e["event"] == "decisions"]
+    if not ev:
+        return "n/a: Look 1 refused before selection"
+    if len(ev) != 1:
+        raise Refusal("R9", f"LOOK_READS holds {len(ev)} Look 1 decisions events")
+    if ev[0].get("md5_look1_window") != md5_look1_window:
+        raise Refusal("R9", "Look 2's re-derivation of Look 1's decisions differs from Look 1's decisions event")
+    return "match"
+
+
 def oracle_exclude(universe_mints, first_print_ms, oracle, start_ms=ep("2026-10-16T01") * 1000):
     """Section 5.3 (R7): mints whose canonical pool's first print is at or after 10-16T01 are looked up with oracle(mint) -> bool and removed when
     True, before pass A. A non-bool, an exception or a missing oracle refuses (R7). Returns the keep mask and the excluded count (count only)."""
@@ -688,7 +715,9 @@ def oracle_exclude(universe_mints, first_print_ms, oracle, start_ms=ep("2026-10-
 
 
 def deciding_book(sel_rows, priced, lat="p", bnd="END", lag="l055", fee_=F505, rent=RENT):
-    """Cap already applied in sel_rows['sel']. Book in (t, mid) order with the pricing layer's exit, then the legs."""
+    """Cap already applied in sel_rows['sel']. Book in (t, mid) order with the pricing layer's exit, then the legs.
+    Added refusal (not in the section 11.4 R1 text; outcome-blind, fail-closed, and it spends the look): any selected row the pricing layer
+    could not price (`noprints`: no print of its canonical pool in reach; `nocanonical`: no canonical pool) refuses R1 instead of being dropped."""
     df = sel_rows.merge(priced, on="idx", how="left", suffixes=("", "_px"))
     if (df.err.fillna("x") != "").any():
         raise Refusal("R1", f"{int((df.err.fillna('x') != '').sum())} selected rows have no price")
@@ -802,7 +831,7 @@ def cmd_check(a) -> int:
     codes = []
     try:
         section0_lines(open(EXP_FILE).read()); exp_clean_against_head(); check_pins()
-        check_read_time(a.look, None, a.final_marker, a.final_ledger)
+        check_read_time(a.look, None, FINAL_MARKER, FINAL_LEDGER)
         check_decoder_blobs(a.decoder_blobs); check_e0_records()
     except Refusal as e:
         codes.append(e.code); print(str(e))
@@ -811,7 +840,7 @@ def cmd_check(a) -> int:
 
 
 def read_after_lock(look: int, rows, preds, guard, out_path: str, *, o_dir: str | None = None, ledger: str = LOOK_LEDGER,
-                    look1_record: str | None = None, vmiss_hours=None, price_fn=None) -> dict:
+                    vmiss_hours=None, price_fn=None) -> dict:
     """The P&L part of the one locked read. Called only by tools/exp025_look.py `run`, after the lock and after every outcome-blind refusal
     (R1 hours, R2, R3, R6, R7, R12, R13, R14 before the lock; R4 precount and R1 attempts after it). Order here: selection (threshold, cap,
     R1 attempt exclusion via rows.r1_keep) -> R9 -> pricing (R12 on every hour) -> R11 -> section 7 -> report-only. A Refusal propagates to the
@@ -833,12 +862,10 @@ def read_after_lock(look: int, rows, preds, guard, out_path: str, *, o_dir: str 
     sel = rows[rows.sel].copy(); st2 = rows[rows.sel2].copy()
     rec = dict(look=look, decisions_md5=decisions_md5(sel.mint, sel.t), n_kept=int(len(sel)), n_r1_excluded=int((capk & ~r1k).sum()),
                n_stage2=int(stage2.sum()))
-    if look == 2:          # R9: Look 2 re-derives Look 1's decisions
-        if not look1_record:
-            raise Refusal("R9", "Look 2 needs Look 1's record to re-derive its decisions")
-        l1 = json.load(open(look1_record)); s1 = sel[sel.t < ep(LOOKS[1]["end"])]
-        if decisions_md5(s1.mint, s1.t) != l1["decisions_md5"]:
-            raise Refusal("R9", "Look 2's re-derivation of Look 1's decisions differs")
+    s1 = sel[sel.t < ep(LOOKS[1]["end"])]
+    rec["md5_look1_window"] = decisions_md5(s1.mint, s1.t)
+    ledger_event(ledger, look, "decisions", decisions_md5=rec["decisions_md5"], md5_look1_window=rec["md5_look1_window"], n_kept=rec["n_kept"])
+    rec["r9"] = r9_check(look, rec["md5_look1_window"], ledger)        # R9: Look 2 re-derives Look 1's decisions (from LOOK_READS)
 
     def src(h):
         return next((s_ for s_, x, y in L["allow"] if ep(x) <= ep(h) < ep(y)), "outside")
@@ -905,7 +932,9 @@ def cmd_e0(a) -> int:
     if ep(day + "T00") >= ep(EXPLORATION_END[:10] + "T00") or ep(day + "T00") < ep("2026-08-14T00"):
         raise Refusal("SEAL", f"{day} is not an exploration day")
     pins = check_pins()
-    rec = dict(day=day, pins={k: pins[k] for k in ("verify/v2_sim.py", "verify/v3_report.py", "c1nf_cap.py")})
+    head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+    rec = dict(day=day, code_head=head, tool_blob=tool_blob(), job=os.environ.get("MISCUSI_JOB_ID", ""),
+               pins={k: pins[k] for k in ("verify/v2_sim.py", "verify/v3_report.py", "c1nf_cap.py")})
     z = np.load(f"{VERIFY}/v/cands.npz", allow_pickle=False)
     C = pd.DataFrame({k: z[k] for k in z.files})
     S = pd.read_parquet(a.ref_sim or f"{VERIFY}/v/sim.parquet")
@@ -999,7 +1028,6 @@ def main(argv=None) -> int:
     e = sp.add_parser("e0"); e.add_argument("--day", default="2026-09-20"); e.add_argument("--tape", default="/data/mal/audit-1008/tape/trades")
     e.add_argument("--out-dir", required=True); e.add_argument("--ref-sim"); e.add_argument("--rerun-v2", action="store_true")
     c = sp.add_parser("check"); c.add_argument("--look", type=int, choices=(1, 2), required=True)
-    c.add_argument("--final-marker", default=FINAL_MARKER); c.add_argument("--final-ledger", default=FINAL_LEDGER)
     c.add_argument("--decoder-blobs")
     r = sp.add_parser("retrain"); r.add_argument("--look", type=int, choices=(1, 2), required=True)
     r.add_argument("--disc", default=f"{P2_BACKUP}/disc.npz"); r.add_argument("--conf", default=f"{P2_BACKUP}/conf.npz")
