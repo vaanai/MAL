@@ -888,7 +888,7 @@ The rule lives in a new module, `ARTIFACTS/exp025/p7_buy_amend.py`. It comes fro
 - **Everything else:** the rule block, the cap, the threshold, the legs, the statistics, the looks, alpha and the section 0 counting start.
 - This amendment adds no reader and opens no sealed block.
 
-### Amendment 7 (written 2026-10-10T19:25:50Z, from `date -u`; before any look's P7 sample is drawn; it must merge before any look's P7 sample is drawn and before 2026-10-16T01:00Z): P7 line 2 (fee tier), buy side amended
+### Amendment 7 (written 2026-10-10T19:25:50Z, from `date -u`; last edited 2026-10-10T20:09:34Z, from `date -u`; before any look's P7 sample is drawn; it must merge before any look's P7 sample is drawn and before 2026-10-16T01:00Z): P7 line 2 (fee tier), buy side amended
 
 Outcome-blind in its inputs (see E, "Outcome records in existence", for Amendment 3 item 6). This is the amendment that Amendment 6 D provides for: line 2 was measured once on October prints, and its buy side failed. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are listed in E. It changes only the buy side of section 10 P7 item 2 (line 2). Amendment 6 is the last amendment on main `822cefb`; amendments take numbers in merge order. It applies quant-proof's two reviews of the draft (both OK_WITH_FIXES) as the manager ruled on them. Labels as in Amendment 1.
 
@@ -926,8 +926,8 @@ So the failure is the buy relation and the exact-in field meaning, not V, Q or t
 #### B. The rule [pinned]
 
 > **P7 line 2 (fee tier), buy side, amended [pinned]. Sells unchanged.**
-> 1. *Comparable buys.* A sampled buy of the main 1,000 is in line 2's buy denominator only if it is a comparable buy of line 1 under Amendment 6 item 1: it has no `zero_sol`, and its `ix_name` is exactly `buy` or `buy_v2`. Every other buy is in neither denominator. Its cause is `zero_sol`, `buy_exact_quote_in` (by prefix: v1 and v2), `no_ix_name` (missing, null or empty) or `ix_not_listed` (any other name, `multi_hop_swap` included). The causes are tested in that order and decided from the sampled raw tape row, before any fetch and before any adapter check (`p7_buy_amend.p7_raw_exclusion`, reused, not copied). They are counted per cause, and within `buy_exact_quote_in` and `ix_not_listed` per name. Then, as before, a buy with sol ≤ 0, tok ≤ 0 or tok ≥ b is skipped and is not in the denominator.
-> 2. *Relation.* Q = `quote_reserve_mapped + V0`: the adapter row's `quote_reserve` plus `tokens.v0_lamports`, as now. b, tok and sol are the adapter row's `base_reserve`, `token_raw` and `sol_lamports`, as now. **All are Python integers, not bool; the law refuses anything else.** An integral DOUBLE adapter column is read as its integer and a non-integral one is `field_missing`, as now; a non-integer V0 raises, as in line 1. ppm is the integer tier from the read's own helper at (Q, b): `exp025_read.fee(Q, b)` × 10^6, which must be a table tier. With qin = ceil(Q·tok/(b − tok)) = `-((-Q*tok) // (b - tok))`, a comparable buy matches if `abs(sol * 10**6 - qin * (10**6 + ppm)) <= 100 * qin`. In words: the implied fee on the curve input, sol/qin − 1, is within 1 bp of the tier. This **replaces** 1 − tok·Q/(b − tok)/sol for buys. The old relation is not an alternative.
+> 1. *Comparable buys.* A sampled buy of the main 1,000 is in line 2's buy denominator only if it is a comparable buy of line 1 under Amendment 6 item 1: it has no `zero_sol`, and its `ix_name` is exactly `buy` or `buy_v2`. Every other buy is in neither denominator. Its cause is `zero_sol`, `buy_exact_quote_in` (by prefix: v1 and v2), `no_ix_name` (missing, null or empty) or `ix_not_listed` (any other name, `multi_hop_swap` included). The causes are tested in that order and decided from the sampled raw tape row alone, before any adapter check (`p7_buy_amend.p7_raw_exclusion`, reused, not copied). The decision never depends on the fetch: for line 2, `run_p7` evaluates it after the fetch, on the tape row only. They are counted per cause, and within `buy_exact_quote_in` and `ix_not_listed` per name. Then, as before, a buy with sol ≤ 0, tok ≤ 0 or tok ≥ b is skipped and is not in the denominator.
+> 2. *Relation.* Q = `quote_reserve_mapped + V0`: the adapter row's `quote_reserve` plus `tokens.v0_lamports`, as now. b, tok and sol are the adapter row's `base_reserve`, `token_raw` and `sol_lamports`, as now. **All are Python integers, not bool; the law refuses anything else.** An integral DOUBLE adapter column is read as its integer and a non-integral one is `field_missing`, as now. V0 comes from `exp025_p7.v0_map`, which applies `int()` to `tokens.v0_lamports` before either line sees it, so a non-integral value would be truncated, not raised; that is the same for line 1 and predates this amendment. ppm is the integer tier from the read's own helper at (Q, b): `exp025_read.fee(Q, b)` × 10^6, which must be a table tier. With qin = ceil(Q·tok/(b − tok)) = `-((-Q*tok) // (b - tok))`, a comparable buy matches if `abs(sol * 10**6 - qin * (10**6 + ppm)) <= 100 * qin`. In words: the implied fee on the curve input, sol/qin − 1, is within 1 bp of the tier. This **replaces** 1 − tok·Q/(b − tok)/sol for buys. The old relation is not an alternative.
 > 3. *Tolerance.* 1 bp of qin (the pinned `P7_TOLERANCE_BP`). There is no unit allowance.
 > 4. *Unchanged:*
 >    - the sell relation and its match;
@@ -961,13 +961,13 @@ So the failure is the buy relation and the exact-in field meaning, not V, Q or t
 
 #### D. The code and the pins
 
-The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f848c4c556be81611a0`, the commit the E0 and the parity run below used. Later commits on the branch change only this file's text; the blobs below must equal the merge commit's.
+The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f848c4c556be81611a0`, the commit the E0 and the parity run below used. Later commits on the branch change this file's text, move the case table to its own path ("Case tables" below), add tests, and merge main `3b9ba5f` (#580); none changes a code blob. The blobs below must equal the merge commit's.
 
 | File | git blob | sha256 |
 | --- | --- | --- |
 | `ARTIFACTS/exp025/p7_line2_amend.py` (new) | `39fc4e9974fe8865aa2f3069875e620eafa8e691` | `1908931c9ff1c88219d1276cfd8537f533073be7c97f8eb4ae4fa49994c19b2f` (its new `SHA256SUMS` line) |
 | `tools/exp025_p7.py` (the P7 driver; `182cc406…` on main `822cefb`; pinned in Amendment 8) | `26f475314de427d3be6e05d743cb33e987909ec4` | not pinned by sha256 |
-| `tools/fixtures/p7_line2_buy_cases.json` (new; shared with EXP-024's tier lines) | `5f619ee0b31e80eba17622a43cda77107a31e50b` | `e0497bbfbbca861d45e4252c65d897361313d1ce2b91b1f4982ac9d81e2e8fa4` |
+| `tools/fixtures/p7_line2_buy_cases_exp025.json` (new; this amendment's 37 cases; EXP-024's own 38 are `tools/fixtures/p7_line2_buy_cases.json`) | `5f619ee0b31e80eba17622a43cda77107a31e50b` | `e0497bbfbbca861d45e4252c65d897361313d1ce2b91b1f4982ac9d81e2e8fa4` |
 | `ARTIFACTS/exp025/p7_buy_amend.py` (unchanged) | `24dc5ede16125099f67907d9a2ac30cbb90ac934` | `ed3005f083d80bba768292a8ff6adf4b4220370e01760a540034c6d1bcace31b` |
 | `ARTIFACTS/exp025/event_v_map.py` (unchanged) | `9771ec333046e065ce66921e88f4a893bd557aec` | `8ba3723680cb49418581f1f59bfe38340b73494e6147b466fa52893ceb6f42f1` |
 | `tools/exp025_read.py` (unchanged; Amendment 5 B) | `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c` | — |
@@ -1020,7 +1020,7 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
   - **Line 2 on these prints:** fee `[392, 429, 175, 183]`, and `event_v_map.p7_pass` returns true.
   - **Record:** `~/data/p7l2-parity-both-20261010/parity.json` on mal-fast-0, sha256 `e73bbee17ad11bec57a4038f9b7593cd3b3d9961823d04dd9ca7662f4251d2b0`. The joined tape rows carry signatures, so they were deleted after the run.
   - This is in-sample (E). It checks both code paths on the real tape layout. It is not evidence for the rule.
-- **Tests** at `efbc185` (audit venv): `tools/test_exp025_p7_line2_amend.py` has 29 tests and `tools/test_exp025_p7.py` 28, all OK; the module's file also passes under `/data/mal/venv` pytest. With `tools.test_exp025`, `test_exp025_p7_buy_amend`, `test_exp025_look`, `test_exp025_read`, `test_exp025_look_driver`, `test_exp025_adapter` and `test_exp025_r1_crosscheck`, 268 tests pass. `sha256sum -c ARTIFACTS/exp025/SHA256SUMS` gives 36 OK. The tests cover:
+- **Tests** at `efbc185` (audit venv): `tools/test_exp025_p7_line2_amend.py` has 29 tests and `tools/test_exp025_p7.py` 28, all OK; the module's file also passes under `/data/mal/venv` pytest. With `tools.test_exp025`, `test_exp025_p7_buy_amend`, `test_exp025_look`, `test_exp025_read`, `test_exp025_look_driver`, `test_exp025_adapter` and `test_exp025_r1_crosscheck`, 268 tests pass. `sha256sum -c ARTIFACTS/exp025/SHA256SUMS` gives 36 OK. After main `3b9ba5f` was merged in, `tools/test_exp025_p7_line2_amend.py` has 33 tests (the four `CrossImplementation` tests added; 33 also under `/data/mal/venv` pytest) and the nine EXP-025 suites pass 272; EXP-024's suites (`tools.test_boostfloor_inputs_tier`, `tools.test_boostfloor_read`, `tools.test_tip_event_v_p7`, `tools.test_boostfloor_score`) pass 220 (1 skipped); `sha256sum -c` still gives 36 OK. The tests cover:
   - an edited module, or an edited `p7_buy_amend.py`, is refused;
   - the integer edge: |dev| = 100·qin hits and 101 misses, on both sides;
   - chain-true exact-out buys hit at 125, 120, 115, 110, 105, 100 and 30 bp, and at the half tiers 42.5 and 37.5 charged as 43 and 38; the old relation misses the ones at 105 bp and above;
@@ -1029,7 +1029,14 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
   - `buy_v1_481_wsol` hits, with sol = qin + ceiled fees; `buy_exact_quote_in_496` is excluded, and its tape sol is the ceil law + 1;
   - v1 and v2 exact-in, `multi_hop_swap`, `Buy`, unknown, null, empty and missing names, and `zero_sol`, are excluded and counted per cause and per name; the exclusion comes before `no_adapter_row`; the skip rule is unchanged;
   - float or bool inputs raise; the functions do no I/O; P7.json carries both new pins.
-- **Shared cases.** `tools/fixtures/p7_line2_buy_cases.json` holds 37 synthetic integer cases: 11 hit, 11 miss, 10 excluded and 5 skipped. It is the parity table for EXP-024's tier lines: the same file, byte for byte, must give the same hit, miss, skipped and excluded there. No case is both excluded and skipped, because EXP-025 decides the exclusion first and EXP-024 its skip rule first; such a print is out of the denominator in both.
+- **Case tables.** `tools/fixtures/p7_line2_buy_cases_exp025.json` holds this amendment's 37 synthetic integer cases: 11 hit, 11 miss, 10 excluded and 5 skipped. EXP-024 Amendment 7 (#580, merged at main `3b9ba5f`) keeps its own 38 cases, in a different schema, at `tools/fixtures/p7_line2_buy_cases.json` (blob `7cdac9ec2a7cb52389e6311269b6bb98e3e76056`), which this branch took from main unchanged.
+  - **Both implementations agree on both files (37 + 38 = 75 cases).** In `tools/test_exp025_p7_line2_amend.py`, class `CrossImplementation`:
+    - `test_exp025_module_gives_each_exp024_case_its_expect`: this module gives each of EXP-024's 38 cases its expected outcome;
+    - `test_exp025_driver_gives_each_exp024_case_its_expect`: so does the driver's `line2_one`, with the tier from `exp025_read.fee`, which equals each case's tier;
+    - `test_exp024_tier_buy_one_gives_each_exp025_case_its_expect`: EXP-024's `tools.boostfloor_inputs.tier_buy_one` (blob `edf0d2d7…`) gives each of this amendment's 37 cases its expected outcome;
+    - `test_the_tables_are_separate_files_and_this_prs_is_pinned`: this table's blob and sha256 equal the row above, and it is not EXP-024's file.
+  - The class docstring states the schema mapping between the two tables.
+  - No case in either table is both excluded and skipped, because EXP-025 decides the exclusion first and EXP-024 its skip rule first; such a print is out of the denominator in both.
 
 #### E. Disclosure
 
@@ -1051,7 +1058,7 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
 - #625 reproduced #598's old counts exactly: sells 390/429 and 392/429, buys 139/571, and the same split by `ix_name`.
 - Amended: buys 175/183 = 0.9563 (`buy` 144/152, `buy_v2` 31/31) under both helpers, which give the same tier on all 183. Excluded 388: `buy_exact_quote_in` 354, `buy_exact_quote_in_v2` 33, `multi_hop_swap` 1. Skipped 0. Sells unchanged.
 - Old to new on the 183 (#626): 139 hit both ways, 36 changed from miss to hit, 8 missed both ways, and none changed from hit to miss. By tier: at 105 bp or more, 35/36 (old 0/36); at 100 bp, 15/15 (old 15/15); below 100 bp, 125/132 (old 124/132). 107 of the 183 were at the 30 bp tier.
-- The 8 misses: 7 are dust buys within 3 lamports (qin 1,858 to 14,159 lamports, 1.39 to 3.26 bp; six at 30 bp, one at 90 bp). 1 is +5.0 bp at the 105 bp tier (qin 520,701,948), so the chain charged 110 there; it was not refetched.
+- The 8 misses: 7 are dust buys within 3 lamports (qin 1,858 to 14,159 lamports, 1.39 to 3.26 bp; six at 30 bp, one at 90 bp). 1 is +5.0 bp at the 105 bp tier (qin 520,701,948), so the chain charged 110 there [inferred: the print was not refetched, and a tier set from the mint's actual supply (A.5) is another explanation].
 - A 3-lamport allowance would have given 182/183. That figure was seen before the tolerance was chosen, which is one reason B keeps 1 bp with no allowance.
 - **This rescore is in-sample, because #598 shaped the rule. It is a diagnostic, never an acceptance.**
 
@@ -1065,6 +1072,8 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
 - The direction is conservative, and the rule block is frozen, so it stays.
 - Line 2 as amended tests the tier at Q. It does not validate pass A's buy algebra, and no report may say it does.
 
+**Exact-in buys are not tested at the look.** After Amendments 6 and 7, no EXP-025 P7 line tests the exact-in family (`buy_exact_quote_in`, `buy_exact_quote_in_v2`) at a look, although it is the executors' default instruction (`tools/pumpswap_tx.py:382`, `tools/h5_executor.py:1314`). Its fee law (A.2) rests only on #624, one in-sample hour (93 refetched prints). Each Look report must say so.
+
 **Routed outside this amendment.** Tape `sol_lamports` is the net curve input for exact-in buys and the user amount for exact-out buys. A separate counts-only audit, before Look 1, checks which features, detectors or BOOST `spent(i)` sums read buy-side tape SOL, and whether September and October rows store the same field. It changes nothing here.
 
 **Optional fresh-hour run, report-only.** A fresh tip-tape hour may be scored once with the merged module and driver, declared in a PR and a notebook entry before H. Its result is reported and changes nothing: not the relation, the population, the tolerance, the bars or this amendment (F).
@@ -1074,8 +1083,8 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
 **Outcome records in existence (Amendment 3 item 6).** These C1-NF shadow runs on October tip prints preceded this text (times from `miscusi_job_status`, read 2026-10-10T19:10Z–19:15Z):
 - **#568**, the C1-NF shadow memory smoke: OOM-killed in its bootstrap at 13:38:34Z, before any decision. This time is Amendment 6 C's record; MiScusi no longer returns #568 to a status query, so it was not re-read.
 - **#584**, smoke2 on #571, with the scratch out dir `/home/claude/data/c1nf-shadow-smoke2-1010`: 13:54:48Z to 14:24:56Z (`--max-seconds 1800`).
-- **#594**, the `c1nf-shadow-soak` at `f0787ea`, with the out dir `/home/claude/data/c1nf-shadow`: started 14:39:13Z, cancelled 15:10:33Z, before #608.
-- **#608**, the `c1nf-shadow-soak` at `09b4389`, a restart of #594 on the same out dir: started 15:10:33Z, OOM-killed 18:06:01Z.
+- **#594**, the `c1nf-shadow-soak` at `f0787ea`, with the out dir `/home/claude/data/c1nf-shadow`: started 14:39:13Z; its cancel was requested at 15:10:27.8Z, before #608 was submitted, and completed at 15:10:33.5Z.
+- **#608**, the `c1nf-shadow-soak` at `09b4389`, a restart of #594 on the same out dir: started 15:10:33.1Z (MiScusi's start event; its log says 15:10:34Z), OOM-killed 18:06:01Z.
 
 These may have computed shadow outcome records for October decisions. None was opened or read for this amendment. Their logs, and the read-back jobs #609, #616 and #618, printed only whitelisted counters (rows, bootstrap rows, stream expiries, errors, gaps, `pools_alive`), stream lag, uptime, the last decided decision time and memory. The read-back scripts parsed the events files and printed only start, stop and heartbeat records. No pick, outcome, decision row or class was printed or read. Jobs #621 and #622 replayed September exploration tape for memory only. The job list holds no C1-NF canary job.
 
@@ -1103,9 +1112,9 @@ This amendment changes none of the following:
 
 It adds no reader and opens no sealed block.
 
-### Amendment 8 (written 2026-10-10T19:25:50Z, from `date -u`; before 2026-10-16T01:00Z; outcome-blind, blobs and E0 records only): pins of the Look-1 assembly tools merged on 2026-10-10
+### Amendment 8 (written 2026-10-10T19:25:50Z, from `date -u`; before 2026-10-16T01:00Z; Outcome-blind in its inputs (see Amendment 7 E, "Outcome records in existence", for Amendment 3 item 6)): pins of the Look-1 assembly tools merged on 2026-10-10
 
-Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are:
+Outcome-blind in its inputs (see Amendment 7 E, "Outcome records in existence", for Amendment 3 item 6). Under item 6, the Look reports list this amendment as written after shadow outcomes could exist, and do not call it outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are:
 - main `822cefb`;
 - PRs #574, #575 and #577, their bodies and comments;
 - the MiScusi records of jobs #603, #607, #610 to #613 and #630;
