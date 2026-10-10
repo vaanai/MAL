@@ -14,7 +14,7 @@
    "id": "tipfollower-p7-pass-1010",
    "kind": "other",
    "title": "Event-V feed accepted: the corrected price-law check passed on a pre-declared hour (sells 429/429, buys 183/183)",
-   "detail": "Window 15:00-16:00Z, declared at 14:40Z before it started; checked once after it closed (job #598, 612 transactions, 612 credits). 0 unresolved prints, 0 feed mismatches or errors, no new feed gaps. The feed now counts. Separate finding from the same run: the fee-tier check (line 2) fails on buys for both formal reads (139/571 = 24%, need 90%); sells pass (91%). Most misses are a buy type the fee check can't model; an amendment is being written before any read data exists (deadline 10-16 00:00Z).",
+   "detail": "Window 15:00-16:00Z, declared at 14:40Z before it started; checked once after it closed (job #598, 612 transactions, 612 credits). 0 unresolved prints, 0 feed mismatches or errors, no new feed gaps. The feed now counts. Separate finding from the same run: the fee-tier check (line 2) fails on buys for both formal reads (139/571 = 24%, need 90%); sells pass (91%). Most misses (387 of 432) are exact-input buys; the cause is being checked on refetched transactions, and any amendment is written before any read data exists (deadline 10-16 00:00Z).",
    "atUtc": "2026-10-10T16:10:46Z"
   },
   {
