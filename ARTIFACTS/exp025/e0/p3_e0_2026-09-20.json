@@ -1,0 +1,97 @@
+{
+ "bad_hours": [],
+ "bars_1m": {
+  "adapter_md5": "689057c03c67db32dab52e61b1b8c538",
+  "adapter_rows": 711168,
+  "equal": true,
+  "ref_md5": "689057c03c67db32dab52e61b1b8c538",
+  "ref_rows": 711168
+ },
+ "blobs": {
+  "ARTIFACTS/exp025/event_v_map.py": "9771ec333046e065ce66921e88f4a893bd557aec",
+  "ARTIFACTS/exp025/ref/build_shared.py": "0b024e92f78e1f623b8167e4dcf713292c2bfff3",
+  "ARTIFACTS/exp025/ref/convert.py": "252c643276d0250cb48430da019b6afcd6bf7b25",
+  "tools/exp025_adapter.py": "c0c3c54ae05d7a184cd6c71983b7057923f04e74"
+ },
+ "block": "fast-pool-0918",
+ "day": "2026-09-20",
+ "event_v_fixture": {
+  "cmd": "python3 -m unittest tools.test_exp025.EventVMapping",
+  "ok": true,
+  "returncode": 0,
+  "tail": [
+   "OK"
+  ]
+ },
+ "idempotence_T05": {
+  "by_threads": {
+   "1": {
+    "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
+    "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
+    "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
+   },
+   "4": {
+    "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
+    "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
+    "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
+   }
+  },
+  "equal": true
+ },
+ "kinds": {
+  "creates": {
+   "adapter_md5": "9e299075f571f98ebcf3c0ee086394e1",
+   "adapter_rows": 30771,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "9e299075f571f98ebcf3c0ee086394e1",
+   "ref_rows": 30771
+  },
+  "migrations": {
+   "adapter_md5": "f686647801b183d48c302ab8d69d779c",
+   "adapter_rows": 1189,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "f686647801b183d48c302ab8d69d779c",
+   "ref_rows": 1189
+  },
+  "trades": {
+   "adapter_md5": "9418a47dd39fbcd13bd143a5146dd187",
+   "adapter_rows": 26499051,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "9418a47dd39fbcd13bd143a5146dd187",
+   "ref_rows": 26499051
+  }
+ },
+ "mid_check": "pending P2 (needs P2's universe.parquet; check_mid_stable)",
+ "missing": [],
+ "pass": true,
+ "pda_first_pool_match": {
+  "non_mayhem_completes": 897,
+  "pda_equals_tokens_pool": 875
+ },
+ "ref_tape": "/data/mal/audit-1008/tape",
+ "schema": "exp025_p3_e0_v1",
+ "seconds": 258.1,
+ "src": "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
+ "tokens": {
+  "adapter_md5": "88ce6423d480c3f74ef4e2a91448e55c",
+  "adapter_rows": 73685,
+  "adapter_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb",
+  "equal": true,
+  "ref_md5": "88ce6423d480c3f74ef4e2a91448e55c",
+  "ref_rows": 73685,
+  "ref_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb"
+ },
+ "view_sha256_file": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8"
+}
