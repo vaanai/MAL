@@ -107,8 +107,9 @@ GAPS_KEEP = 200
 # The wallets (DEC-026 section 5). Public keys only. H5's wallet is never C1-NF's; C1-NF's own public key is pinned when Helm gives it.
 H5_WALLET_PUBKEY = "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # DEC-024 / DEC-019 probe wallet
 C1NF_WALLET_PUBKEY: str | None = None  # <HELM FILLS> (DEC-026 section 5 table). None: live refuses to start
-# The pinned model (DEC-026 section 11 item 12, not done at this commit). Empty: live refuses to start; a dry run ledgers model_pinned false.
-C1NF_MODEL_SHA256: frozenset[str] = frozenset()
+# The pinned model (DEC-026 section 11 item 12, 2026-10-10): ARTIFACTS/c1nf_model/c1nf_model_exp36.txt, built by tools/c1nf_model_pin.py from the frozen
+# EXP-025 recipe on the 36 exploration days only (manifest.json; tools/test_c1nf_model_pin.py checks this set equals the manifest). Empty: live refuses.
+C1NF_MODEL_SHA256: frozenset[str] = frozenset({"faf8a01f5fb5019a3c26affc7de49f47270e7b6717eea34767bfcdc759399478"})
 MODEL_HALT = "model_sha_mismatch"  # DEC-026 section 7 rule 7: a pick or heartbeat naming another model is a halt
 SEAL_ORACLE_STALE_S = 60.0  # DEC-026 section 9.1: C1-NF's own ceiling on the pick feed's heartbeat age. build_pick_oracle never lets the oracle's limit exceed it
 C1NF_END_MAX_MS = 1792801800000  # 2026-10-24T00:30:00Z, the owner's end (DEC-026 O-4). Config end_ms may be earlier, never later; an extension is a code change
