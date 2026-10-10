@@ -366,3 +366,59 @@ def test_window_restart_alone_fails_on_the_decision_rows_not_on_the_feature_diff
     rc, out = _main_end_to_end(tmp_path, monkeypatch, "window")
     assert rc == vp.EXIT_FAIL and out["restart"]["feature_diff"]["features_differ"] == ["cr_prev_creates"]
     assert "restart: decision rows differ (n 2 / 2)" in out["fail_reasons"]
+
+
+# ---- job #608 memory: the float64 decision-row md5, and the engine's print window through the shadow ------------------------------------------
+def test_decision_tap_reports_a_float64_md5_beside_the_float32_one():
+    md5 = lambda b: hashlib.md5(b).hexdigest()  # noqa: E731
+    tap = vp.DecisionTap(split_s=120)
+    tap.add(60, "P2", "h2", "g2")
+    tap.add(60, "P1", "h1", "g1")
+    tap.add(120, "P1", "h3", "g3")
+    assert tap.summary() == {"n": 3, "md5": md5(b"60,P1,h1\n60,P2,h2\n120,P1,h3\n"), "from_split": {"n": 1, "md5": md5(b"120,P1,h3\n")}}
+    assert tap.summary_f64() == {"n": 3, "md5": md5(b"60,P1,g1\n60,P2,g2\n120,P1,g3\n"), "from_split": {"n": 1, "md5": md5(b"120,P1,g3\n")}}
+    v = np.arange(cs.N_FEATURES, dtype=np.float64) / 3
+    assert vp.vector_hash64(v) == hashlib.sha256(v.astype("<f8").tobytes()).hexdigest()
+    w = v.copy()
+    w[5] = np.nextafter(w[5], 10.0)                                                         # a float64 difference the float32 export hides
+    assert cs.feature_hash(w.astype(np.float32)) == cs.feature_hash(v.astype(np.float32)) and vp.vector_hash64(w) != vp.vector_hash64(v)
+    p = [{"decision_T_ms": 1, "mint": "A"}]
+    rows_ok = vp.compare_rows({"n": 3, "md5": "x"}, {"n": 3, "md5": "x"})
+    f64_diff = vp.compare_rows({"n": 3, "md5": "x"}, {"n": 3, "md5": "y"})
+    assert vp.verdict({"identity": {**vp.compare(p, p), "decision_rows": rows_ok, "decision_rows_f64": f64_diff}}) == (vp.EXIT_PASS, [])   # reported only
+
+
+def _window_batches(until=8400):
+    """One pool for 2 h 20 min: quiet stretches (9 traders, 0.001 SOL) and bursts (400 traders, 0.03 SOL), so stage 1 opens and the holder,
+    shape and flow features are computed on rows long after the first hour's prints are dropped."""
+    rows = [{"_k": "migrations", "type": "complete", "mint": MINT, "slot": S0, "block_time": BT0}]
+    for slot in range(S0, slot_of_sec(until)):
+        burst = ((bt_of(slot) - BT0) // 60) % 37 < 4
+        r = {"_k": "trades", "venue": "pumpswap", "mint": MINT, "trader": f"w{(slot * 7919) % (400 if burst else 9)}", "side": "buy" if slot % 3 else "sell",
+             "sol_lamports": 30_000_000 if burst else 1_000_000, "token_raw": 1_000_000_000, "quote_reserve": Q0 + RAMP * (slot - S0), "base_reserve": B0,
+             "pool": POOL, "slot": slot, "block_time": bt_of(slot), "tx_index": 1, "event_index": 0}
+        cs.stamp_replay_v(r, V0, event_v=True)
+        rows.append(r)
+    return [rows]
+
+
+def test_print_window_through_the_shadow_keeps_both_decision_row_md5s():
+    """build_engine's engine (print window on) against the same engine with the window off, through Shadow with the stream expiry run_live
+    uses: equal float32 and float64 decision-row md5s, prints dropped, no window_violation."""
+    from tools import c1nf_features as cf
+
+    hs = {cs.hour_of(BT0 + 3600 * h): SPS for h in range(4)}
+    on_eng = REAL_BUILD_ENGINE(None, v_source="event")
+    off_eng = cf.FeatureEngine(None, v_source="event", ledger_keep_days=cs.LIVE_LEDGER_KEEP_DAYS)
+    assert on_eng.print_window is True and off_eng.print_window is False
+    on, off = (vp.run_rows(e, _models(), _window_batches(), v_source="event", decide_from=None, decide_to=None, hour_sps=hs,
+                           stream_expire_s=cs.EXPIRE_S, keep_vectors=True) for e in (on_eng, off_eng))
+    assert on["engine_window"]["window_dropped_prints"] > 0 and on["engine_window"]["window_violation"] == 0
+    assert off["engine_window"] == {"window_dropped_prints": 0, "window_violation": 0}
+    assert vp.compare_rows(off["decision_rows"], on["decision_rows"])["equal"] and on["decision_rows"]["n"] > 100
+    assert on["decision_rows_f64"] == off["decision_rows_f64"] and on["decision_rows_f64"]["n"] == on["decision_rows"]["n"]
+    assert on["counters"] == off["counters"] and on["counters"]["stream_expires"] > 10
+    assert on["vectors"] == off["vectors"] and len(on["vectors"]) == on["decision_rows"]["n"]
+    late = [k for k, v in on["vectors"].items() if k[0] >= BT0 + 3600 + 600 and np.isfinite(np.frombuffer(v, dtype=np.float32)[FIDX["h_top1"]])]
+    assert len(late) > 10                                       # superset rows (holders computed) after the first prints were dropped
+    assert on_eng.held_sizes()["held_prints"] < off_eng.held_sizes()["held_prints"]
