@@ -127,6 +127,10 @@ class Seal(unittest.TestCase):
             A.check_october_hour("2026-10-12T00", "look1", "forward-1002", A.SOURCES["forward-1002"], **kw)
         with self.assertRaisesRegex(A.Refused, "R12"):
             A.check_october_hour("2026-10-12T00", "look1", "forward-1002ev", "/data/mal/somewhere-else", **kw)
+        with self.assertRaisesRegex(A.Refused, "R12"):  # a prefix of another block's directory is not the block's directory
+            A.check_october_hour("2026-10-05T00", "look1", "forward-1002", A.SOURCES["forward-1002ev"], **kw)
+        with self.assertRaisesRegex(A.Refused, "R12"):
+            A.check_october_hour("2026-10-05T00", "look1", "forward-1002", A.SOURCES["forward-1002"] + "/../forward-1016", **kw)
         with self.assertRaisesRegex(A.Refused, "R12"):
             A.check_october_hour("2026-10-12T00", "look3", "forward-1002ev", A.SOURCES["forward-1002ev"], **kw)
         with self.assertRaisesRegex(A.Refused, "R12"):
@@ -258,12 +262,44 @@ class Convert(unittest.TestCase):
         other = self.tmp / "other" / "trades" / "trades-2026-09-20T04.jsonl.zst"
         write_zst(other, jl([trade(slot=50, quote_reserve=1)]))  # s0 with no V (a forward-1002-like hour)
         write_zst(self.src / "trades" / f"trades-{self.HOUR}.jsonl.zst",
-                  jl([trade(slot=100, quote_reserve=9, virtual_quote_reserves=17_000_000_000)]))
+                  jl([trade(slot=100, quote_reserve=9, virtual_quote_reserves=17_000_000_000),
+                      trade(slot=101, quote_reserve=10, virtual_quote_reserves=17_003_000_000)]))
+        import duckdb
         import pyarrow.parquet as pq
-        A.convert(str(self.src), "fixture-blk", self.tmp / "t", [self.HOUR], event_v=True,
-                  v0_files=[other, A.src_file(str(self.src), "trades", self.HOUR)])
+        files = [other, A.src_file(str(self.src), "trades", self.HOUR)]
+        con = duckdb.connect()
+        A.collect_v0(con, files, A.pinned_cols())
+        self.assertEqual(con.execute("SELECT pool, v0, first_slot FROM v0map").fetchall(), [(POOL, None, 50)])
+        con.close()
+        A.convert(str(self.src), "fixture-blk", self.tmp / "t", [self.HOUR], event_v=True, v0_files=files)
         t = pq.read_table(self.tmp / "t" / "trades" / f"{self.HOUR}.parquet").to_pylist()
         self.assertEqual(int(t[0]["quote_reserve"]), 9)  # V0 unknown -> vault kept, never chained from a later print
+        self.assertEqual(int(t[1]["quote_reserve"]), 10)  # not 10 + 17_003_000_000 - 17_000_000_000
+
+    def test_look_v0_spans_every_allowlisted_trade_hour(self):
+        """A look's event-V convert takes V0 over every allowlisted trade hour of every block, not only its own hours."""
+        from unittest import mock
+        import pyarrow.parquet as pq
+        a_dir, b_dir = self.tmp / "blocks" / "blk-a", self.tmp / "blocks" / "blk-b"
+        write_zst(a_dir / "trades" / "trades-2026-10-03T00.jsonl.zst", jl([trade(slot=50, quote_reserve=1)]))  # s0, no V
+        write_zst(b_dir / "trades" / "trades-2026-10-03T01.jsonl.zst",
+                  jl([trade(slot=100, quote_reserve=9, virtual_quote_reserves=17_000_000_000),
+                      trade(slot=101, quote_reserve=10, virtual_quote_reserves=17_003_000_000)]))
+        ledger = self.tmp / "FINAL_READS.jsonl"
+        ledger.write_text(json.dumps(FINAL_ROW) + "\n")
+        looks = {"look1": (("blk-a", "2026-10-03T00", "2026-10-03T01"), ("blk-b", "2026-10-03T01", "2026-10-03T03"))}
+        hb = ["2026-10-03T01"]
+        with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), mock.patch.dict(A.LOOKS, looks, clear=True):
+            kw = dict(look="look1", event_v=True, final_ledger=ledger)
+            with self.assertRaisesRegex(A.Refused, "not closed"):  # 10-03T02 is allowlisted and still open
+                A.convert(str(b_dir), "blk-b", self.tmp / "o0", hb, now=datetime(2026, 10, 3, 2, 30, tzinfo=timezone.utc), **kw)
+            after = datetime(2026, 10, 25, tzinfo=timezone.utc)
+            with self.assertRaisesRegex(A.Refused, "v0_files"):
+                A.convert(str(b_dir), "blk-b", self.tmp / "o1", hb, now=after, v0_files=[], **kw)
+            man = A.convert(str(b_dir), "blk-b", self.tmp / "o", hb, now=after, **kw)
+        self.assertEqual((man["v0_files"], man["v0_missing_hours"]), (2, ["2026-10-03T02"]))
+        t = pq.read_table(self.tmp / "o" / "trades" / "2026-10-03T01.parquet").to_pylist()
+        self.assertEqual([int(r["quote_reserve"]) for r in t], [9, 10])  # s0 in blk-a has no V: no V0, nothing mapped
 
 
 @unittest.skipUnless(HAVE_DUCKDB, "duckdb missing")
@@ -283,11 +319,12 @@ class LookAssembly(unittest.TestCase):
     def test_exploration_rows_unchanged_then_october_rows(self):
         import pyarrow.parquet as pq
         ex = self._tokens(self.tmp / "ex.parquet", ["b", "a"], [2, 1])
-        oc = self._tokens(self.tmp / "oc.parquet", ["c", "a"], [9, 8])
+        oc = self._tokens(self.tmp / "oc.parquet", ["c", "a", "b"], [9, 8, None])  # b: dropped, never graduated
         with self.assertRaisesRegex(A.Refused, "sha256"):
             A.append_tokens(ex, oc, self.tmp / "out.parquet", exploration_sha256="0" * 64)
         res = A.append_tokens(ex, oc, self.tmp / "out.parquet", exploration_sha256=A.sha256_file(ex))
-        self.assertEqual((res["exploration_rows"], res["october_rows"], res["october_dup_mints_dropped"]), (2, 1, 1))
+        self.assertEqual((res["exploration_rows"], res["october_rows"], res["october_dup_mints_dropped"],
+                          res["october_dup_graduated"]), (2, 1, 2, 1))
         out = pq.read_table(self.tmp / "out.parquet")
         self.assertEqual(out.slice(0, 2).to_pylist(), pq.read_table(ex).to_pylist())
         self.assertEqual(out.column("mint").to_pylist(), ["b", "a", "c"])
@@ -372,7 +409,8 @@ class MidE0(unittest.TestCase):
                      p2_universe=p2["universe"], p2_universe_sha256=A.sha256_file(p2["universe"]),
                      p2_work=p2["universe"].parent, threads=1)
         s, l, e = (r["cases"][k] for k in ("same_day", "later_shift", "earlier_shift"))
-        self.assertEqual((s["append"]["october_rows"], s["append"]["october_dup_mints_dropped"]), (0, 3))
+        self.assertEqual((s["append"]["october_rows"], s["append"]["october_dup_mints_dropped"],
+                          s["append"]["october_dup_graduated"]), (0, 3, 3))
         self.assertTrue(s["p2_mint_rows_md5_equal"] and s["creates"]["md5_equal"] and s["mkt"]["md5_equal"])
         self.assertEqual(l["shift"]["ms_columns"], ["complete_ms", "ps_first_ms", "create_ms"])
         self.assertEqual(l["new_rows"], {"n": 3, "min_mid": 4, "max_mid": 6})

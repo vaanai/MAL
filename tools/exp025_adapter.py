@@ -7,8 +7,8 @@ and `tokens.parquet` / `bars_1m` come from the pinned `ARTIFACTS/exp025/ref/buil
 sha256 is checked against `ARTIFACTS/exp025/SHA256SUMS`. The adapter only drives them.
 
 What the adapter does that the September scripts did not (section 11.2, all pre-declared):
-  1. strict lines: a NUL byte, a non-blank line that is not a JSON object, or a row DuckDB cannot read with the pinned
-     columns makes the hour BAD. Bad hours are written to the manifest and counted; there is no lenient fallback.
+  1. strict lines: a NUL byte, any line that is not a JSON object (blank lines included), or a row DuckDB cannot read with
+     the pinned columns makes the hour BAD. Bad hours are written to the manifest and counted; there is no lenient fallback.
   2. event V: on PumpSwap prints that carry `virtual_quote_reserves`, quote_reserve := vault + V(t) - V0 (section 2.4,
      `event_v_map.map_quote_reserve`), V0 = V at the pool's first print s0; V0 goes to tokens.v0_lamports via the vmap.
   3. canonical pool by PDA: the October vmap holds V0 only for the PDA canonical pool of each completed mint, so the
@@ -209,7 +209,7 @@ def check_october_hour(hour: str, look: str | None, block: str, src: str, *, fin
         raise Refused(f"R12: {hour} is outside {look}'s allowlist")
     if allow[hour] != block:
         raise Refused(f"R12: {hour} belongs to {allow[hour]} in {look}, not {block}")
-    if os.path.realpath(src) != os.path.realpath(SOURCES[block]) and not src.startswith(SOURCES[block]):
+    if os.path.realpath(src) != os.path.realpath(SOURCES[block]):
         raise Refused(f"R12: {block} is read only from {SOURCES[block]}, not {src}")
     for part in SEALED_PARTS:
         if part.lower() in src.lower():
@@ -227,7 +227,7 @@ def check_october_hour(hour: str, look: str | None, block: str, src: str, *, fin
 
 # ------------------------------------------------------------------------------------------------ strict lines
 def strict_scan(path: str | Path) -> int:
-    """Count the lines of a .jsonl.zst; raise BadHour on a NUL byte or a non-blank line that is not `{...}`.
+    """Count the lines of a .jsonl.zst; raise BadHour on a NUL byte or any line that is not `{...}` (blank lines included).
     (DuckDB's strict read, with no ignore_errors, then rejects any `{...}` line that is not valid JSON for the columns.)"""
     proc = subprocess.Popen(["zstd", "-dc", "--", str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdout is not None
@@ -345,25 +345,46 @@ def convert_hour(con, f: Path, kind: str, block: str, hour: str, out: Path, cols
 
 
 def collect_v0(con, files: Sequence[Path], cols: dict[str, str]) -> str:
-    """Table v0map(pool, v0, first_slot, first_tx, first_ev): V at each pool's first print s0 over `files`, NULL if s0 has no V.
+    """Table v0map(pool, v0, first_slot): V at each pool's first print s0 over `files`, NULL if s0 has no V (section 2.4).
+    arg_min_null keeps a NULL V at s0; plain arg_min skips NULL rows and would take V from a later print.
     Ties on (slot, tx_index, event_index) cannot occur for distinct prints."""
     spec_v = cols["trades"][:-1] + ",virtual_quote_reserves:'HUGEINT'}"
     lst = "[" + ",".join(_q(f) for f in files) + "]"
     con.execute(f"""CREATE OR REPLACE TABLE v0map AS
-        SELECT pool, arg_min(virtual_quote_reserves, slot::HUGEINT * 10000000000 + coalesce(tx_index, 0)::HUGEINT * 100000
+        SELECT pool, arg_min_null(virtual_quote_reserves, slot::HUGEINT * 10000000000 + coalesce(tx_index, 0)::HUGEINT * 100000
                                  + coalesce(event_index, 0)) AS v0, min(slot) AS first_slot
         FROM read_json({lst}, format='newline_delimited', compression='zstd', columns={spec_v})
         WHERE venue = 'pumpswap' AND pool IS NOT NULL GROUP BY pool""")
     return "v0map"
 
 
+def look_trade_files(look: str, *, final_ledger: str | Path | None, now: datetime | None = None) -> tuple[list[Path], list[str]]:
+    """The V0 files of an event-V look convert: every allowlisted trade hour of every block of `look` (section 4), from the
+    pinned block directories. Every hour passes check_october_hour (R12, FINAL marker, closed) before any file is opened.
+    Returns (files, hours with no trades file)."""
+    allow = look_allowlist(look)
+    for h, blk in sorted(allow.items()):
+        check_october_hour(h, look, blk, SOURCES[blk], final_ledger=final_ledger, now=now)
+    files: list[Path] = []
+    missing: list[str] = []
+    for h, blk in sorted(allow.items()):
+        p = src_file(SOURCES[blk], "trades", h)
+        if p is None:
+            missing.append(h)
+        else:
+            files.append(p)
+    return files, missing
+
+
 def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look: str | None = None,
             event_v: bool = False, v0_files: Sequence[str | Path] | None = None, final_ledger: str | Path | None = None,
             threads: int = 4, now: datetime | None = None) -> dict:
     """Materialise `hours` of `src` into `out/{trades,creates,migrations}/<hour>.parquet`. Every hour is checked before any
-    file is opened. With `event_v`, V0 is V at each pool's first print over `v0_files` (default: this call's trade files);
-    an October look passes every allowlisted trade hour of every block, so a pool whose s0 lies in a forward-1002 hour
-    (no V there) gets no V0 and is left unmapped. Returns the manifest (also written to out/manifest.json)."""
+    file is opened. With `event_v`, V0 is V at each pool's first print over the V0 files. In exploration mode they are
+    `v0_files` (default: this call's trade files). In a look they are always every allowlisted trade hour of every block of
+    the look (look_trade_files, each hour seal-checked first), never only this call's hours and never caller-given files;
+    so a pool whose s0 lies in a forward-1002 hour (no V there) gets no V0 and is left unmapped.
+    Returns the manifest (also written to out/manifest.json)."""
     for h in hours:
         if is_october(h):
             check_october_hour(h, look, block, src, final_ledger=final_ledger, now=now)
@@ -371,15 +392,22 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
             if look is not None:
                 raise Refused(f"R12: {h} is not an October hour of {look}")
             check_exploration_hour(h, src)
+    v0_missing: list[str] = []
+    if look is not None and event_v:
+        if v0_files is not None:
+            raise Refused(f"R12: in {look} the V0 files are the look's allowlisted trade hours; v0_files is not accepted")
+        v0_files, v0_missing = look_trade_files(look, final_ledger=final_ledger, now=now)
     cols = pinned_cols()
     out = Path(out)
     # one thread: DuckDB's parallel parquet writer cuts row groups by thread count (E0 job #520: 4 vs 1 thread gave
     # equal rows but different file sha256), so the files are written single-threaded to be byte-stable.
     con = _connect(threads=1, tmp=str(out / "tmp_duck"))
     v0_table = None
+    v0_n_files = 0
     if event_v:
         tf = list(v0_files) if v0_files is not None else [p for h in hours if (p := src_file(src, "trades", h))]
         v0_table = collect_v0(con, tf, cols)
+        v0_n_files = len(tf)
     rows, bad, missing = [], [], []
     for h in hours:
         for kind in KINDS:
@@ -396,7 +424,8 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
     shutil.rmtree(out / "tmp_duck", ignore_errors=True)
     man = {"schema": "exp025_adapter_manifest_v1", "block": block, "src": src, "look": look, "event_v": event_v,
            "hours": list(hours), "files": rows, "bad": bad, "missing": missing,
-           "bad_hours": sorted({b["hour"] for b in bad}), "adapter_blob": git_blob(__file__)}
+           "bad_hours": sorted({b["hour"] for b in bad}), "v0_files": v0_n_files, "v0_missing_hours": v0_missing,
+           "adapter_blob": git_blob(__file__)}
     (out / "manifest.json").write_text(json.dumps(man, indent=1, sort_keys=True))
     return man
 
@@ -482,7 +511,9 @@ def build_shared(tape: str | Path, out: str | Path, hours: Sequence[str], *, vma
 
 def append_tokens(exploration: str | Path, october: str | Path, out: str | Path, *, exploration_sha256: str) -> dict:
     """Look tokens.parquet = the exploration rows, unchanged and in order, then the October rows (section 11.2 item 1).
-    An October mint that already has an exploration row is not appended (its exploration row stays as it is); counted."""
+    An October mint that already has an exploration row is not appended (its exploration row stays as it is); counted.
+    `october_dup_graduated` counts the dropped rows with a complete_ms: the October graduations the look loses by this rule
+    (for the precount; outcome-blind)."""
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
@@ -496,10 +527,13 @@ def append_tokens(exploration: str | Path, october: str | Path, out: str | Path,
     octo = octo.cast(ex.schema)
     dup = pc.is_in(octo.column("mint"), value_set=ex.column("mint"))
     n_dup = int(pc.sum(dup.cast("int64")).as_py() or 0)
+    dropped = octo.filter(dup)
+    n_dup_grad = int(pc.sum(pc.is_valid(dropped.column("complete_ms")).cast("int64")).as_py() or 0)
     octo = octo.filter(pc.invert(dup))
     t = pa.concat_tables([ex, octo])
     sha = _write_parquet(t, Path(out))
-    return {"exploration_rows": ex.num_rows, "october_rows": octo.num_rows, "october_dup_mints_dropped": n_dup, "sha256": sha}
+    return {"exploration_rows": ex.num_rows, "october_rows": octo.num_rows, "october_dup_mints_dropped": n_dup,
+            "october_dup_graduated": n_dup_grad, "sha256": sha}
 
 
 def check_mid_stable(look_universe: str | Path, p2_universe: str | Path) -> dict:
