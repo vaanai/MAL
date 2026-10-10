@@ -563,13 +563,13 @@ def test_late_sells_follow_the_executors_window_not_the_lifetime_counters():
 
 def test_extra_file_is_read_through_fixed_keys_only():
     a, b = FakeHost(), FakeHost()
-    base = {"late_window": [0, 1, 0], "counts": {"pre_window": 4, "seal_bad_pick": 1}, "outcomes_unpriced": 2}
+    base = {"late_window": [0, 1, 0], "counts": {"pre_window": 4, "outcome_unpriced": 1}, "outcomes_unpriced": 2}
     a.files[dc.EXTRA_FILE] = json.dumps(base).encode()
     b.files[dc.EXTRA_FILE] = json.dumps({**base, "picks": {f"M{i}:1": {"mint": f"M{i}", "status": "filled", "outcome_pct": 12.5 * i,
                                                                       "synthetic": True, "migration_class": "synthetic"} for i in range(9)},
                                          "last_exit_ms": {"M1": 1}, "otail": {"path": "/srv/x"}}).encode()
     out_a, out_b = go(a)[1], go(b)[1]
-    assert out_a == out_b and "pre_window x4, seal_bad_pick x1; shadow outcomes without the pinned leg x2" in out_a
+    assert out_a == out_b and "outcome_unpriced x1, pre_window x4; shadow outcomes without the pinned leg x2" in out_a
     assert "12.5" not in out_b and not re.search("synth", out_b.replace("synthetic_share_high", ""), re.I)
     assert dc.EXTRA_FILE in dc.PRIV_READ and dc.EXTRA_FILE in dc.PRIV_STAT
 

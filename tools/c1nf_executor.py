@@ -32,10 +32,12 @@ with its tier-start baseline, STOP / HALT (state dir and wallet-wide), the latch
   wallet    Live refuses to start when the credential holds H5's wallet (H5_WALLET_PUBKEY) or anything but the pinned C1-NF wallet
             (C1NF_WALLET_PUBKEY; unset until Helm gives the public key, so live cannot start before that line is a reviewed code change).
   gates     EXP-025 Part 1 in the tree (not EXP-024).
-  seal      H5's boolean pick oracle from 2026-10-16T01Z, asked about EVERY mint (wider than EXP-025 section 5.3's keying, fail safe); missing,
-            erroring, undecided (None) or non-boolean means no buy. Seal refusals are a count only, never recorded per mint, and the seal is
-            checked FIRST, before any refusal that writes a per-mint row. The config's `pick_file` is read through StaleCheckedPickOracle (#509's
-            row format, its 60 s heartbeat staleness: DEC-026 section 9.1). H5's seal also needs the FINAL marker <state_dir>/FINAL_WRITTEN
+  seal      H5's boolean pick oracle from 2026-10-16T01Z, asked about EVERY mint (wider than EXP-025 section 5.3's keying, fail safe); only an
+            exact False lets a buy go ahead: a pick (True), undecided (None), a stale or missing feed, an exception or a non-boolean is no buy.
+            Seal refusals are a count only, never recorded per mint, and the seal is checked FIRST, before any refusal that writes a per-mint
+            row (and a refusal that H5's _refuse relabels to a seal reason writes no pick_status row either). The config's `pick_file` is read
+            by tools.cap_pick_oracle.PickOracle, the same reader H5 uses (build_pick_oracle below; #509's row format and its three-state answer,
+            60 s heartbeat staleness: DEC-026 section 9.1). H5's seal also needs the FINAL marker <state_dir>/FINAL_WRITTEN
             (live: /var/lib/mal-live/c1nf/FINAL_WRITTEN); without it every buy in the seal window is refused (fail closed). Who writes it, and
             when, is a runbook item (DEC-026 section 11 item 11), not this code.
 
@@ -82,6 +84,7 @@ from tools import probe_executor as pe
 from tools import probe_live as pl
 from tools import pumpswap_simulate as sim
 from tools import pumpswap_tx as tx
+from tools.cap_pick_oracle import PickOracle
 
 RULE_ID = "C1NF-v1"
 BOOK = "c1nf_v1"
@@ -107,8 +110,7 @@ C1NF_WALLET_PUBKEY: str | None = None  # <HELM FILLS> (DEC-026 section 5 table).
 # The pinned model (DEC-026 section 11 item 12, not done at this commit). Empty: live refuses to start; a dry run ledgers model_pinned false.
 C1NF_MODEL_SHA256: frozenset[str] = frozenset()
 MODEL_HALT = "model_sha_mismatch"  # DEC-026 section 7 rule 7: a pick or heartbeat naming another model is a halt
-SEAL_ORACLE_STALE_S = 60.0  # DEC-026 section 9.1 / #509 STALE_S_DEFAULT
-SEAL_ORACLE_SKEW_S = 5.0  # #509 CLOCK_SKEW_OK_S: a heartbeat this far in the future is still fresh; further is a clock fault (stale)
+SEAL_ORACLE_STALE_S = 60.0  # DEC-026 section 9.1: C1-NF's own ceiling on the pick feed's heartbeat age. build_pick_oracle never lets the oracle's limit exceed it
 C1NF_END_MAX_MS = 1792801800000  # 2026-10-24T00:30:00Z, the owner's end (DEC-026 O-4). Config end_ms may be earlier, never later; an extension is a code change
 
 # --- the shadow's records ------------------------------------------------------------------------------------------------
@@ -468,54 +470,17 @@ def parse_outcome(row: Any) -> tuple[tuple[str, int, float] | None, str | None]:
     return (mint, t, float(pct)), None
 
 
-class OracleStale(Exception):
-    """The CAP-PICK oracle file has no fresh heartbeat: a False cannot be trusted (fail closed)."""
-
-
-_HB_RE = re.compile(r'"hb"\s*:\s*true')
-_TMS_RE = re.compile(r'"t_ms"\s*:\s*(\d{1,16})')
-
-
-class StaleCheckedPickOracle(h5.JsonlPickOracle):
-    """H5's boolean-only picks-file reader plus #509's staleness rule (DEC-026 section 9.1): the exporter writes {"hb":true,"t_ms":...} rows; when
-    the newest is older than 60 s (or more than 5 s in the future, or there is none) a False is not trusted: OracleStale, so the seal refuses.
-    A True still answers True (a pick never flips, and True refuses the buy anyway). Rows are matched by regex, never parsed as JSON."""
-
-    def __init__(self, path: str | Path, now_ms: Callable[[], int] | None = None, stale_s: float = SEAL_ORACLE_STALE_S):
-        super().__init__(path)
-        self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self.stale_s = min(float(stale_s), SEAL_ORACLE_STALE_S)
-        self.last_hb_ms: int | None = None
-        self._hb_off = 0
-        self._hb_ino: int | None = None
-
-    def _refresh(self) -> None:
-        st = self.path.stat()
-        if self._hb_ino != st.st_ino or st.st_size < self._hb_off:
-            self._hb_off, self._hb_ino, self.last_hb_ms = 0, st.st_ino, None
-        with self.path.open("rb") as fh:
-            fh.seek(self._hb_off)
-            data = fh.read(pe.MAX_READ_BYTES * 8)
-        end = data.rfind(b"\n")
-        if end >= 0:
-            for raw in data[: end + 1].splitlines():
-                line = raw.decode("utf-8", "replace")
-                t = _TMS_RE.findall(line)
-                if _HB_RE.search(line) and len(t) == 1:
-                    self.last_hb_ms = max(self.last_hb_ms or 0, int(t[0]))
-            self._hb_off += end + 1
-        super()._refresh()
-
-    def __call__(self, mint: str) -> bool:
-        self._refresh()
-        if self._flags.get(mint) is True:
-            return True
-        now = self.now_ms()
-        if self.last_hb_ms is None or now - self.last_hb_ms > self.stale_s * 1000 or self.last_hb_ms - now > SEAL_ORACLE_SKEW_S * 1000:
-            raise OracleStale("stale")
-        if mint not in self._flags:
-            raise h5.OracleUndecided("undecided")
-        return self._flags[mint]
+def build_pick_oracle(cfg: dict[str, Any], now_ms: Callable[[], int] | None = None) -> PickOracle | None:
+    """The seal's pick oracle from the config: H5's own builder, so C1-NF and H5 read the same feed the same way (tools.cap_pick_oracle.PickOracle on
+    `pick_file`, three-state: True a pick, False decided and not a pick, None undecided / no heartbeat within the stale limit / a missing file /
+    anything raised). None when `pick_file` is not set (every buy in the seal window is then refused: seal_window_no_oracle). Raises ValueError for a
+    malformed `pick_file` or `pick_replay_files`. The stale limit is H5's PICK_STALE_S (60 s), and never above C1-NF's own SEAL_ORACLE_STALE_S: no
+    config value moves it. A fresh heartbeat is the only thing that lets a False stand; a known True still answers True when the feed is stale (a
+    pick never flips back, and True refuses the buy anyway)."""
+    oracle = h5.build_pick_oracle(cfg, now_ms=now_ms)
+    if oracle is not None:
+        oracle.stale_s = min(oracle.stale_s, SEAL_ORACLE_STALE_S)
+    return oracle
 
 
 @dataclass
@@ -549,7 +514,7 @@ class C1NFExtra:
     otail: dict[str, Any] = field(default_factory=dict)  # the outcomes stream's tail: {path, started, offset, inode} (a restart loses no outcome)
     late_window: list[int] = field(default_factory=list)  # 1 = late, over the last LATE_SELL_WINDOW landed sells
     late_alert_on: bool = False
-    counts: dict[str, int] = field(default_factory=dict)  # count-only refusals with no mint: pre_window, suppressed, sealed bad picks
+    counts: dict[str, int] = field(default_factory=dict)  # count-only refusals with no mint: pre_window, suppressed, malformed outcomes (a sealed mint's bad pick is in-process only)
 
     def save(self, path: Path, now_ms: int) -> None:
         for m in [m for m, t in self.last_exit_ms.items() if now_ms - t > 3_600_000]:
@@ -661,7 +626,7 @@ def credential_path() -> str:
 
 class C1NFExecutor(h5.H5Executor):
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
-                 now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool] | None = None,
+                 now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
         c1nf_limits(cfg)  # a bad value, or a key that is not this rule's to set, refuses before any file is touched
         if keypair is not None and Path(str(cfg.get("state_dir", ""))) != LIVE_STATE_DIR:
@@ -682,6 +647,7 @@ class C1NFExecutor(h5.H5Executor):
         if not 0 < self.heartbeat_max_age_ms <= FEED_HEARTBEAT_MAX_AGE_MS:
             raise SystemExit("refused: the feed heartbeat guard is not set")
         self.max_pick_age_s = min(MAX_PICK_AGE_S, float(cfg.get("max_pick_age_s") or MAX_PICK_AGE_S))
+        self.seal_bad_picks_in_process = 0  # memory only, never saved, logged, alerted or reported (see _pick_row)
         self._gaps: list[tuple[int, int]] = []  # recent c1nf_gap slot ranges (in memory: a restart waits for a fresh heartbeat anyway)
         self._ev_tail = _Tail()  # the events stream starts at its end: freshness comes from the next heartbeat
         self._ev_path: Path | None = None
@@ -865,8 +831,13 @@ class C1NFExecutor(h5.H5Executor):
         self._save_extra()
 
     def _refuse(self, trg: Any, reason: str, **kw: Any) -> None:
+        sealed_before = (self.counters.seal_skips, self.seal_picks_in_process)
         super()._refuse(trg, reason, **kw)
-        if isinstance(trg, C1NFPick) and reason not in h5.SEAL_REASONS:  # a seal refusal is a count only: never recorded per mint
+        # H5's _refuse asks the seal again before it writes a per-mint row and, when the mint is now a pick or not known to be a non-pick (a pick
+        # row arrived, or the feed went stale, since handle_pick's first ask), counts it under its seal reason instead. That refusal must get no
+        # pick_status row either: it moved a seal counter (a pick is counted in process only, any other seal reason in seal_skips).
+        relabelled = reason not in h5.SEAL_REASONS and (self.counters.seal_skips, self.seal_picks_in_process) != sealed_before
+        if isinstance(trg, C1NFPick) and reason not in h5.SEAL_REASONS and not relabelled:  # a seal refusal is a count only: never recorded per mint
             monitored = reason not in BOOK_REASONS and reason not in STOP_REASONS and not reason.startswith("halt_latched")
             if reason == "duplicate_pick":
                 return  # the first record of this pick keeps its row
@@ -1190,7 +1161,10 @@ class C1NFExecutor(h5.H5Executor):
             return None
         mint = row.get("mint")
         if isinstance(mint, str) and _B58.match(mint) and self._seal_reason(_MintOnly(mint), self.now_ms()):
-            self._count_only("seal_bad_pick")  # a sealed mint's bad pick: no per-mint row either
+            # A malformed pick on a mint that is a CAP-PICK pick, or not known to be a non-pick, is outcome-linked: the count says which kind of
+            # mint C1-NF's model picked. So it is kept in this process only (as H5's seal_pick: quant-proof (d) on #540, manager decision on #552):
+            # no hourly row, no c1nf-extra.json or counters value, no log line, no alert, nothing in --status. No per-mint row either.
+            self.seal_bad_picks_in_process += 1
             return None
         self._bad_intent(row, bad)
         return None
@@ -1307,7 +1281,11 @@ def main(argv: list[str] | None = None) -> int:
     lock_fd = h5.acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")  # the name H5's --mark-closed / --clear-halt look for
     url: str | None = None
     try:
-        oracle = StaleCheckedPickOracle(cfg["pick_file"]) if cfg.get("pick_file") else None  # #509's 60 s staleness (DEC-026 s9.1)
+        try:
+            oracle = build_pick_oracle(cfg)  # H5's reader: #509's PickOracle, 60 s staleness (DEC-026 s9.1)
+        except ValueError as exc:
+            print(f"c1nf_executor ALERT startup_refused pick_oracle_config ({exc})", flush=True)
+            return 2
         if mode == LIVE:
             why = start_refusal(cfg)
             if why:
