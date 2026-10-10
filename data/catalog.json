@@ -1,7 +1,7 @@
 {
   "schema_version": "catalog.v1",
-  "generated_utc": "2026-09-30T20:33:53Z",
-  "ledger_sha256": "ee435de99e0d367bd6f79482bba36d7cea495c381906b551c7f56e877c1ea3d8",
+  "generated_utc": "2026-10-10T11:32:18Z",
+  "ledger_sha256": "4323a2f1beebdd1fbcc76be0f9b7311f09c9a2acbfee8c9aaea7404e241b40c2",
   "blocks": [
     {
       "name": "Oracle in-sample",
@@ -92,15 +92,113 @@
     {
       "name": "Fast `[2026-09-09T12, 2026-09-15T12)`",
       "host": "fast",
-      "owner": "EXP-011",
+      "owner": "exploration-pool",
       "hours": {
         "start": "2026-09-09T12",
         "end_exclusive": "2026-09-15T12"
       },
-      "status": "**Spent as a confirmation holdout (2026-09-30).** The one-shot scorer ran once at 20:25:56Z, wrote its lock, loaded part of walker C's create files, and aborted on a missing hour (2026-09-11T03, a walker bug) before computing any metric. Resumed hours in both walkers also contain exact duplicate rows. No outcome was observed. It is not re-read: see [EXP-011 Result](../EXP/EXP-011-migrate-entry-model-prereg.md). The block can move to the exploration pool only by a later ledger edit, after it has been deduplicated and the missing hour re-fetched with the fixed walker.",
+      "status": "**Moved to the exploration pool 2026-10-06 (changelog line of that date: all four preconditions done).** **Spent as a confirmation holdout (2026-09-30).** The one-shot scorer ran once at 20:25:56Z, wrote its lock, loaded part of walker C's create files, and aborted on a missing hour (2026-09-11T03, a walker bug) before computing any metric. Resumed hours in both walkers also contain exact duplicate rows. No outcome was observed. It is not re-read: see [EXP-011 Result](../EXP/EXP-011-migrate-entry-model-prereg.md). The block can move to the exploration pool only by a later ledger edit, after it has been deduplicated and the missing hour re-fetched with the fixed walker. **Proposed 2026-10-06 ([EXP-015 plan v2](../EXP/EXP-015-pooled-retrain-plan-v2.md) \u00a72): it moves to the exploration pool, but only when a one-line follow-up ledger edit records all four preconditions as done. Until then the owner stays EXP-011 (closed) and no exploration job reads it.** Preconditions, in order: (1) re-fetch hour 2026-09-11T03 with the fixed walker (outcome-blind, one hour; no other hour is re-walked); (2) exact-duplicate removal on both walkers (`backfill_verify --content --dedupe-out`); (3) both `backfill_verify` modes pass (metadata, for slot contiguity, and `--content --min-slots-per-hour 8000`), showing 144/144 hours sealed, 0 flagged, 0 duplicate rows, with one outcome-blind fixed-walker re-walk of any hour that fails either, then both modes re-run; (4) sha256 manifest plus a clean view with `VIEW.sha256`; if the data is copied to mal-research-0 (job #211), the copy is sha256-checked at source and at destination and the lists must match; only counts and hashes printed. **EXP-014 screen v2 (exploration, [plan Amendment 7](../EXP/EXP-014-mig15-pumpswap-selector-plan.md), tool `tools/exp014_screen_v2.py`, 2026-10-06): will read this block's trades once, in the mig+15 PumpSwap selector screen, together with P2/P3/P4. Outcome-blind precount clean; the screen has not run, no try is spent and no outcome has been read. After the run this note records the job and the verdict. One of 7 families scoped to the 27 non-P1 dates.**",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Fresh confirmation block",
+      "host": "research",
+      "owner": "exploration-pool",
+      "hours": {
+        "start": "2026-09-03T12",
+        "end_exclusive": "2026-09-09T12"
+      },
+      "status": "**Spent by EXP-012's one read (2026-10-01T15:41Z, job #32, verdict PASS) and moved to the exploration pool by this ledger edit (proposed 2026-10-06, [EXP-015 plan v2](../EXP/EXP-015-pooled-retrain-plan-v2.md) \u00a72).** It is never a confirmation holdout again, for any experiment. EXP-012's frozen model and result are unchanged by this move; the PASS stands as one read on this block, and the block is now training data for exploration. History: [EXP-012](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md). Owner named 2026-10-01 by the EXP-012 pre-registration (a re-freeze of EXP-011's recipe on the deduplicated pool); it is withdrawn and the block released unread if the freeze's proceed screen fails (EXP-012 \u00a73.3). Reserved 2026-10-01 before any hour is sealed or read. At reservation the oldest sealed hour on any host was 2026-09-09T12 (walker C, mal-fast-0); none older existed on mal-fast-0, mal-research-0 or mal-core-0. Must pass `tools/backfill_verify.py` (metadata and `--content`), dedupe, and a sha256 manifest before its one read. **EXP-014 screen v2 (exploration, [plan Amendment 7](../EXP/EXP-014-mig15-pumpswap-selector-plan.md), tool `tools/exp014_screen_v2.py`, 2026-10-06): will read this block's trades once, in the mig+15 PumpSwap selector screen, together with P2/P3/P4. Outcome-blind precount clean; the screen has not run, no try is spent and no outcome has been read. After the run this note records the job and the verdict. One of 7 families scoped to the 27 non-P1 dates.**",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Backup confirmation block",
+      "host": "research",
+      "owner": "reserved",
+      "hours": {
+        "start": "2026-08-28T12",
+        "end_exclusive": "2026-09-03T12"
+      },
+      "status": "Reserved 2026-10-01 before any hour is sealed or read. At reservation no hour older than 2026-09-03T12 existed on mal-fast-0 or mal-research-0 (the 09-03 block's walker w3 was still walking down to it). It is held so a failed EXP-012 doesn't wait on fresh data. The same verify, dedupe and manifest steps apply before its one read. **Sealed and verified 2026-10-02 (unread):** 144/144 hours (jobs #24\u2013#26: 555,356 + 552,319 + 547,086 credits). `backfill_verify --content --min-slots-per-hour 8000` gives 0 flagged and 0 duplicate rows in each walker (jobs #58\u2013#60). Dedupe copies and manifests are in `/data/mal/blocks-clean/fresh-0828/w{1,2,3}`, and the clean view is `/data/mal/clean-view/fresh-0828/w{1,2,3}` with `VIEW.sha256` checked against the manifest. Only counts and hashes were printed.",
       "access": {
         "exploration": false,
-        "confirmation_oneshot_exp": "EXP-011"
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Exploration expansion",
+      "host": "research",
+      "owner": "exploration-pool",
+      "hours": {
+        "start": "2026-08-14T12",
+        "end_exclusive": "2026-08-28T12"
+      },
+      "status": "Assigned 2026-10-01 before any hour is sealed. Purpose: grow the 9-day exploration pool, which is the main limit on model quality and on how honest the LODO checks are. It is never a confirmation holdout. It must pass `backfill_verify` + dedupe + manifest before any exploration job reads it. EXP-012 is frozen on the original 9 days and does not use it. EXP-012 backcheck (exploration, frozen model, cells in EXP/EXP-012-backcheck-0814.md, PR #342) reads migrate-entry outcomes on these days once; date and job recorded after the run. **Run 2026-10-06, job #207 @ c946a12 (after #346): outcomes were computed, then the run REFUSED by its own pre-declared rule. 1 primary-cell trade sat on a pool the V adapter priced without V (30 pools no-V: 29 absent from pool_v_0814, 1 closed account. The earlier \"1 null of the 16,346 August pools\" overstated coverage, because the map held only the migrated mints' pools; pool_v_0909 helps EXP-015 only once EXP-015 pins it pre-read, see EXP-012-backcheck-0814 Result). Status refused_after_read; 6 tries logged; no report written; no outcome read by anyone. Per rule 0: no reading. It is not rerun (EXP-015 bar 3 covers frozen EXP-012 on these days). Scratch kept sealed at /data/mal/exp012-backcheck-0814.refused-job207 (0700).** EXP-013/EXP-014 August bars are no longer on unread data from that read. **EXP-014 screen v2 (exploration, [plan Amendment 7](../EXP/EXP-014-mig15-pumpswap-selector-plan.md), tool `tools/exp014_screen_v2.py`, 2026-10-06): will read this block's trades once, in the mig+15 PumpSwap selector screen, together with P2/P3/P4. Outcome-blind precount clean; the screen has not run, no try is spent and no outcome has been read. After the run this note records the job and the verdict. One of 7 families scoped to the 27 non-P1 dates.**",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Forward walk",
+      "host": "research",
+      "owner": "EXP-012",
+      "hours": {
+        "start": "2026-10-02T10",
+        "end_exclusive": "2026-10-16T01"
+      },
+      "status": "Assigned 2026-10-02 before any hour is sealed. Never exploration, never a backward confirmation holdout. Read only by `tools/exp012_forward.py` (and `tools/tape_coverage.py` for identities and times). Every hour passes `backfill_verify --content` and gets a sha256 line before it is read. `[2026-10-14T01, 2026-10-16T01)` is also read for features only as walk 2's buffer (DEC-021 \u00a73); no outcome used. That read runs only after EXP-012's FINAL is written. **EXP-022 (CAP-PICK), 2026-10-08:** EXP-022 counts no hour of this row; its counted window starts at 2026-10-16T01, on walk 2. It reads this row only after EXP-012's FINAL is written, in two ways. (1) As walk-2 feature buffer, inside `[2026-10-14T01, 2026-10-16T01)` above: the creates of `[2026-10-15T00, 2026-10-16T01)` and the prints of hour 2026-10-16T00. (2) The A11 report-only October check on `[2026-10-06T00, 2026-10-16T00)`, only if a separate DEC-016 amendment registers it before 2026-10-16T00Z; it is never gate evidence. Both are disclosed in [EXP-012 Amendment 2](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) (DEC-014(a)). Option X (EXP-022 as second owner of `[2026-10-10T00, 2026-10-16T01)`) was considered and rejected on 2026-10-08 (EXP-022 \u00a70). **EXP-024 (H5-BOOSTFLOOR), 2026-10-08 ([DEC-023](../DEC/DEC-023-h5-family.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md)):** the owner of this row is unchanged. EXP-024 is a second counted reader of `[2026-10-09T23, 2026-10-16T01)` (counted s0 window `[2026-10-10T00, 2026-10-16T00)`, its Look 1) under the DEC-023 exception, **only after EXP-012's FINAL is written** (DEC-016 Amendment 7), with its own V fetch and not the (B) files. It is disclosed in [EXP-012 Amendment 3](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) (DEC-014(a)). **EXP-025 (C1-NF), 2026-10-09 ([DEC-025](../DEC/DEC-025-c1nf-family.md), [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md)):** the owner of this row is unchanged. EXP-025 is a counted reader, not an owner, of `[2026-10-02T15, 2026-10-16T01)`: ledger, feature and creates/market-count input before 2026-10-10T00 (October training labels only from graduations at or after 2026-10-09T00), counted decisions in `[2026-10-10T00, 2026-10-24T00)` in two looks (counted decision times: Look 1 `[2026-10-10T00, 2026-10-17T00)`, 7 UTC dates; Look 2 cumulative, 14 dates, only if Look 1 did not pass; pinned lines `EXP025_COUNT_START`, `EXP025_LOOK1_END` and `EXP025_COUNT_END` in EXP-025 section 0), **only after EXP-012's FINAL is written** (DEC-016 Amendment 8), with its own V source, opening none of the files Amendment 2 keeps closed. Disclosed in [EXP-012 Amendment 4](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) (DEC-014(a)). The owner's OK on DEC-025 O1 and O2 (two looks) and O3 (a small live canary, only under DEC-026, to be written) was confirmed by the manager on 2026-10-09. **forward-1002ev (MiScusi job #433; DEC-016 [Amendment 9](../DEC/DEC-016-exp012-forward-on-chain-hours.md), 2026-10-09):** the event-V re-walk of `[2026-10-09T00, 2026-10-16T01)` into `/data/mal/blocks/forward-1002ev` (`--event-v`, credit cap 3,600,000), a second copy of the same hours: same owner (EXP-012), not a new block, reader or owner. It is **sealed exactly as forward-1002 is**: before EXP-012's FINAL is written only the walker, `tools/backfill_verify.py` and hour counts touch it, and **no hash-only, join or md5 run happens before the FINAL** (EXP-025's seal forbids it). After the FINAL, EXP-025 reads it directly (its P6) and EXP-024's Look 1 takes V from it through `tools/forward_v_join.py`, with `getTransaction` for the fallback list ([EXP-024 Amendment 1](../EXP/EXP-024-h5-boostfloor-part1-prereg.md)). It is not a FINAL (A) or (B) input. A separate table row for the same hours on the same host is not possible (`tools/mal_catalog.py` rejects two ranged rows that overlap on one host), so the ev copy is recorded here.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": "EXP-012"
+      }
+    },
+    {
+      "name": "Second backup confirmation block",
+      "host": "research",
+      "owner": "reserved",
+      "hours": {
+        "start": "2026-08-08T12",
+        "end_exclusive": "2026-08-14T12"
+      },
+      "status": "**Sealed and verified 2026-10-04, never read:** 3 walkers x 48 h = 144 h, `hours_flagged` 0, 144 `VIEW.sha256` lines each; reports at `/data/mal/ops/verify/fresh-0808-w*-content.json`. **Displacement (2026-10-06, proposed, [EXP-015 plan v2](../EXP/EXP-015-pooled-retrain-plan-v2.md) \u00a76):** this block was EXP-014's plan target (EXP-014 plan, Target confirmation block). It is now EXP-015's confirmation target, and EXP-014 waits for a new block older than 2026-08-08T12 that is walked later and entered in the ledger before it is sealed. The owner stays \"reserved\" until EXP-015's Part 1 pre-registration names it. It sits immediately before `explore-0814`, so a read there is near-adjacent backcasting. Original reservation: reserved 2026-10-03 before any hour is sealed or read: no hour older than 2026-08-14T12 exists on any host. It is held so the next candidate does not wait on fresh data if EXP-013 fails its screen, or if EXP-013 passes and takes the backup block. The walkers are queued behind the explore-0814 walkers, so they hold no Helius slot before then. The same steps apply before its one read: `backfill_verify --content --min-slots-per-hour 8000`, dedupe, manifest, and a clean view with `VIEW.sha256`, printing only counts and hashes. Expected cost: about 1.4M credits.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Forward walk 2",
+      "host": "research",
+      "owner": "EXP-022",
+      "hours": {
+        "start": "2026-10-16T01",
+        "end_exclusive": "2026-11-16T01"
+      },
+      "status": "**Owner named 2026-10-08 by the [EXP-022 Part 1](../EXP/EXP-022-cap-pick-part1-prereg.md) pre-registration, before any hour of this row is sealed.** **Counted window:** `[2026-10-16T01, 2026-11-06T01)` (Option Y), set by the line `EXP022_COUNT_START: 2026-10-16T01` in EXP-022 \u00a70, and never moved. **Reads:** EXP-022 reads outcomes only at its three sealed looks (days 7, 14, 21), with its own read tool. **Hours after the counted window** are not counted by anything and are not gate evidence, except that hour 2026-11-06T01 is read only for the exits of counted attempts. **Release:** if EXP-022 is withdrawn before counting, the owner goes back to reserved by ledger edit. Original reservation: reserved 2026-10-06 before any hour is sealed. It starts at the hour the Forward walk row above ends (`2026-10-16T01`), so no hour is in two rows. **The counted window's start and end are fixed by a pre-registration merged before the first counted hour begins in real time, and are never moved after.** Feature buffer per DEC-021 \u00a73: 48 h read from first-walk hours `[2026-10-14T01, 2026-10-16T01)`, features only, a disclosed non-owner read; counting may start at 2026-10-16T01. A re-run of the incumbent EXP-012 on this walk would be a second EXP-012 test under DEC-014 (b) and DEC-017 \u00a71, not a free re-read. Never exploration and never a backward confirmation holdout. Nothing reads it before an owner is named, and the owner must be named before the first hour is read. **EXP-024 (H5-BOOSTFLOOR), 2026-10-08:** the owner of this row is unchanged (EXP-022). EXP-024's Look 2 is a second counted reader of `[2026-10-16T01, 2026-11-06T01)` and reads it **only after EXP-022's read has ended** (a PASS, look 3 done or NOT_DECIDABLE, a halt, or a withdrawal). Walk 2 runs to at least 2026-11-06T02 whatever EXP-022's status. From 2026-10-16T01 to the end of EXP-022's read, no H5 trade (live or paper) is taken on, or joined to, a CAP-PICK pick. Disclosed in [EXP-022 Amendment 2](../EXP/EXP-022-cap-pick-part1-prereg.md). **EXP-025 (C1-NF), 2026-10-09:** the owner of this row is unchanged (EXP-022). EXP-025 is a **non-owner reader while EXP-022 counts** of `[2026-10-16T01, 2026-10-24T02)` (counted decisions `[2026-10-16T00, 2026-10-24T00)`, exits to 2026-10-24T01). It reads chain tape only, never a CAP-PICK outcome, and removes every CAP-PICK pick from its universe, before pass A, by the boolean `pick_oracle` (a missing or stale oracle makes its read NOT_DECIDABLE). Look 1 reads `[2026-10-16T01, 2026-10-17T02)` about 2026-10-17T03Z; Look 2, if it runs, reads to 2026-10-24T02 about 2026-10-24T03Z. Disclosed in [EXP-022 Amendment 4](../EXP/EXP-022-cap-pick-part1-prereg.md) (ledger rule 3). The owner's OK on DEC-025 O2 was confirmed by the manager on 2026-10-09.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": "EXP-022"
+      }
+    },
+    {
+      "name": "Third backup confirmation block",
+      "host": "research",
+      "owner": "reserved",
+      "hours": {
+        "start": "2026-08-02T12",
+        "end_exclusive": "2026-08-08T12"
+      },
+      "status": "Reserved 2026-10-06 before any hour is fetched, sealed or read: no hour older than 2026-08-08T12 exists on any host. Owner request (10-06): a stricter rug filter after the 10-16 read needs a fresh confirmation block, and walking takes about a day. Before its one read: `backfill_verify` (metadata and `--content --min-slots-per-hour 8000`), dedupe, manifest, and a clean view with `VIEW.sha256`, printing only counts and hashes. Nothing reads its rows before a pre-registration names it. Expected cost: about 1.3M credits (fresh-0808 used 1,240,364). **Sealed and verified 2026-10-07, never read:** walkers w1 #248, w2 #249, w3 #250; `backfill_verify --content --min-slots-per-hour 8000` gives 48/48 hours and 0 flagged in each walker (w2 job #342, w3 job #360), 144 `VIEW.sha256` lines each, 0 duplicates removed in w3; clean views at `/data/mal/clean-view/fresh-0802/w{1,2,3}`. Only counts and hashes were printed.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": null
       }
     },
     {
@@ -109,7 +207,7 @@
       "owner": "unassigned",
       "hours": {
         "start": null,
-        "end_exclusive": "2026-09-09T12"
+        "end_exclusive": "2026-08-02T12"
       },
       "status": "To be allocated in \u22656-day blocks, one confirmation test each, as the backfill extends.",
       "access": {

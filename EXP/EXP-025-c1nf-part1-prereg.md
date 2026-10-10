@@ -531,6 +531,10 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 6. **After the final look, report-only.** The result split by class may be printed after the final look's verdict is written and recorded, labelled report-only. It never decides and never re-scopes either look.
 7. **Effect.** This amendment carries quant-proof's OK on its final head and the owner line above, and it is to merge before 2026-10-10T00:00Z. If it merges after that instant, items 1–6 apply from the merge instant. Each look's report then lists the amendment as dated after the window opened, and states whether any C1-NF outcome existed at merge.
 
+### Pointer (2026-10-10; not an amendment): seal end state
+
+This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
+
 ### Amendment 4 (written 2026-10-10T10:34:03Z, from `date -u`; before 2026-10-16T01:00Z; outcome-blind, counts and hashes only): the P2 deterministic rebuild record
 
 Numbered after Amendment 3 (#548, open when this was written). Amendments take numbers in merge order: if this merges before #548, the manager renames this heading to Amendment 3, and #548's to Amendment 4, at merge. The written instants stay as they are. This amendment records P2 (section 10) and the hashes that section 2.3 says a dated amendment records. It changes no rule, cap, threshold, feature or band.
