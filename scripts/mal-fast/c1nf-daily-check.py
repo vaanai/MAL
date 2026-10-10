@@ -30,21 +30,31 @@ look; this check and the watchdog print nothing by class. Concretely:
   GATE          /etc/mal-c1nf/LIVE_OK (root:root 0644, no symlink, parent root:root 0755); TIER exactly T1 or T2 (missing or invalid = T1).
   LIVE CONFIG   the pinned c1nf-executor-live.json against DEC-026 section 6: stake 0.05 SOL (lowered from the 0.10 code ceiling), priority
                 505,000 lamports, end_ms 2026-10-24T00:30Z, pick age <= 3 s, wallet floor >= 0.05 SOL; a limit present may only be lower.
+  SEAL INPUTS   from 24 h before 2026-10-16T01Z: the live config names a `pick_file` (the #509 oracle); from 10-16T01Z with LIVE_OK present,
+                <state dir>/FINAL_WRITTEN exists (H5's seal, which C1-NF inherits, refuses every buy in the window without it).
   STATE         latched halts, HALT files, unmanaged or stuck positions, the effective total stop min(0.30, 0.35 x funded) and how much of
-                it realized loss has used, the ledger's wallet against --wallet (and --wallet never the H5 wallet), the balance.
+                it realized loss has used, the ledger's wallet against --wallet (and --wallet never the H5 wallet), the balance; the tier
+                the executor holds (counters tier_state) against the TIER file, 15 min grace (DEC-026 section 10), and its attempts in that
+                tier; late sells (rule 5, alert only: the executor's own rolling window of the last 20 landed sells, from c1nf-extra.json).
   IDLE CANARY   stale shadow heartbeat; a shadow directory created after the unit started; LIVE_OK present but the unit not trading.
   WATCHDOG      mal-c1nf-watch.timer on, its service not failing, its state fresh, its unit files as pinned.
   STOPS/ALERTS  executor budget stops, every executor `alert` row, refusals by reason name (counts only), the fill-rate alert (DEC-026
-                section 7 rule 8: more than 28.9% of the last 30 monitored picks unfilled), late sells (rule 5: more than 10% of landed
-                sells), picks refused for missing decision-time guard inputs (v2's bad_pick:ref_state_missing / ref_state /
-                missing_*), feed_stale refusals, and the CAP-PICK seal from 2026-10-16T01Z: a seal refusal is never ledgered per
-                mint, so the check reads the count-only seal_skips (seal_count rows, the counters file); a rise with no decision and
-                no buy in the window while LIVE_OK is present is an alert (paused). Refusals are counted from skip rows only (v2 also
-                writes a pick_status row per refusal; those feed only the fill-rate window).
+                section 7 rule 8: more than 28.9% of the last 30 buy ATTEMPTS did not fill; an attempt is a pick_status row that is
+                filled, or unfilled as buy_failed / buy_expired, never a refusal before the send), picks refused for missing or invalid
+                fields (v2's bad_pick:ref_state_missing / ref_state / model_sha, and the missing_* forms), feed_stale refusals, and the
+                CAP-PICK seal from 2026-10-16T01Z: a seal refusal is never ledgered per mint, so the check reads the count-only
+                seal_skips (seal_count rows, the counters file); a rise with no decision and no buy in the window while LIVE_OK is
+                present is an alert (paused). Refusals are counted from skip rows only (v2 also writes a pick_status row per refusal;
+                those feed only the fill-rate window).
+  A3 (rule 6)   only with --a3-file: the newest record of the A3 structure monitor (tools/pump_structure_monitor.py JSONL). pins_changed,
+                program_changed (a WARN in the monitor) and ms per slot outside [150, 450] are C1-NF live halts that the executor does NOT
+                latch: the check alerts and the manager places STOP. synthetic_share_high and the boost_* flags are alert only. Without
+                --a3-file it says so in an INFO line: the manager's daily A3 run is then the only rule 6 check.
 
-DEPENDENCY. The file names in the state dir, the halt names, the skip-reason names and the live-config keys follow the executor branch
-claude/c1nf-executor-v2 at 156a941 (built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl). If the
-merged executor differs, this file follows it before the install; tools/test_c1nf_daily_check.py pins them in one place.
+DEPENDENCY. The file names in the state dir, the halt names, the skip-reason names and the live-config keys follow the executor PR #530
+(claude/c1nf-executor-v2) at 8ea24e6 (built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl, and
+its own live/c1nf-extra.json). If the merged executor differs, this file follows it before the install; tools/test_c1nf_daily_check.py
+pins them in one place.
 """
 from __future__ import annotations
 
@@ -53,6 +63,7 @@ import calendar
 import grp
 import importlib.util
 import json
+import math
 import os
 import pwd
 import re
@@ -75,12 +86,16 @@ WATCH_TIMER = "mal-c1nf-watch.timer"
 C1NF_DIR = "/var/lib/mal-live/c1nf"
 LIVE_DIR = f"{C1NF_DIR}/live"
 STATE_FILE = f"{LIVE_DIR}/state-live.json"
-COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (156a941) reuses H5Counters and its file name inside the C1-NF state dir
+COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (8ea24e6) reuses H5Counters and its file name inside the C1-NF state dir
 LEDGER_FILE = f"{LIVE_DIR}/h5-ledger.jsonl"
+EXTRA_FILE = f"{LIVE_DIR}/c1nf-extra.json"  # v2's C1NFExtra beside the counters; only EXTRA_KEYS are ever looked at
+FINAL_MARKER = f"{C1NF_DIR}/FINAL_WRITTEN"  # H5's seal marker in the C1-NF state dir (the manager touches it after the DEC-016 FINAL)
 C1NF_ETC = "/etc/mal-c1nf"  # root:root 0755; holds LIVE_OK and TIER, which Helm creates (the executor cannot)
 LIVE_OK = f"{C1NF_ETC}/LIVE_OK"
 TIER_FILE = f"{C1NF_ETC}/TIER"
 TIERS = ("T1", "T2")  # DEC-026 section 5: exactly T1 or T2; missing or invalid means T1, the lowest
+ACTIVE_TIERS = ("T1",)  # v2's C1NF_TIERS: T2 is named but inactive until the owner's dated line, so a T2 file runs T1 (read_tier)
+TIER_UNAPPLIED_S = 15 * 60  # DEC-026 section 10: the daily check alerts if the TIER file and the executor disagree for 15 minutes
 KEY_PATH = "/etc/mal-c1nf-key/c1nf-wallet.json"  # never opened or stat'ed here; only matched in the unit text
 CREDENTIAL_LINE = f"c1nf-wallet:{KEY_PATH}"
 PINNED_ROOT = "/usr/local/lib/mal-c1nf-exec"
@@ -122,8 +137,9 @@ WALLET_FLOOR_LAMPORTS = 50_000_000
 MAX_PICK_AGE_S = 3.0
 END_MS = calendar.timegm((2026, 10, 24, 0, 30, 0)) * 1000  # 2026-10-24T00:30Z (O-4)
 SEAL_START_S = calendar.timegm((2026, 10, 16, 1, 0, 0))  # CAP-PICK seal: the oracle fails closed from here (DEC-026 section 9.1)
+SEAL_WARN_S = 24 * 3600  # the seal inputs (pick_file) are alerted from this long before SEAL_START_S
 # live-config key -> (rule, value). "eq": must be present and equal. "le"/"ge": absent means the code constant applies; present may only be
-# lower (le) or higher (ge). Key names are claude/c1nf-executor-v2's (156a941).
+# lower (le) or higher (ge). Key names are claude/c1nf-executor-v2's (8ea24e6).
 ENTRY_TOLERANCE_BPS = 1500  # the 1.15x buy guard (DEC-026 section 6); config may only tighten it
 FEED_HEARTBEAT_MAX_AGE_MS = 150_000  # rule 7's 150 s feed line; config may only tighten it
 CONFIG_RULES = {
@@ -142,29 +158,39 @@ CONFIG_RULES = {
     "wallet_floor_lamports": ("ge", WALLET_FLOOR_LAMPORTS),
 }
 FILL_RATE_WINDOW = 30
-FILL_RATE_ALERT = 0.289  # DEC-026 section 7 rule 8: the pressure leg's mean failure rate
-LATE_SELL_SHARE = 0.10  # rule 5: more than 10% of sells landing later than landing + 305 s
+FILL_RATE_ALERT = 0.289  # DEC-026 section 7 rule 8: the pressure leg's mean failure rate, over buy ATTEMPTS
+# A pick_status row is a buy attempt only when a buy was sent: filled, or unfilled because the sent buy failed or expired (v2's _finish_buy
+# and _resolve_expired). A refusal before the send (feed_stale, stale_pick, price_moved, a stop) is not an attempt and never counts here.
+SEND_FAIL_REASONS = ("buy_failed", "buy_expired")
+LATE_SELL_SHARE = 0.10  # rule 5: more than 10% of the last 20 landed sells later than landing + 305 s (v2's alert, never a halt)
 LATE_SELL_MIN = 10
+LATE_SELL_WINDOW = 20
 
 # The only ledger keys ever looked at. Nothing else of a row is read, so a class field or an outcome on a row cannot reach the output.
 LEDGER_KEYS = ("kind", "ts_ms", "reason", "alert", "status", "monitored", "user", "from_tier", "to_tier", "problem", "seal_skips")
+# The only keys of c1nf-extra.json ever looked at (its per-pick table, with the shadow's paper outcomes, is never read).
+EXTRA_KEYS = ("late_window", "late_alert_on", "counts", "outcomes_unpriced", "outcomes_unmatched")
 NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"
 CLASS_RE = re.compile(r"synth|migration_class|mig_class", re.I)
 CLASS_ALLOWED = ("synthetic_share_high",)  # the A3 structure flag: a share of graduations, alert only (DEC-026 section 7 rule 6)
 
-# Live halts the executor latches (v2 at 156a941 and DEC-026 section 7). Unknown names are still shown if name-shaped and class-free.
+# Live halts the C1-NF executor latches (v2 at 8ea24e6; the rest of H5's latches are closed or replaced there). Unknown names are still
+# shown if name-shaped and class-free. NOT latched by the executor, so not here: rule 2's twin divergence (not built) and rule 6's A3 halts
+# (see A3 below: alerted by this check with --a3-file, acted on by the manager).
 HALT_MEANING = {
-    "fill_selection_adverse": "unfilled picks beat filled ones by more than 3 pp over the last 30 monitored (rule 1)",
-    "twin_divergence": "live worse than its paper twin by more than 1 pp at the CI90 upper bound after 50 fills (rule 2)",
-    "landing_p50_gt_1_9s": "rolling landing p50 above 1.9 s (rule 3)",
+    "fill_selection_adverse": "unfilled picks beat filled ones by more than 3 pp over the last 30 monitored picks with outcomes (rule 1)",
+    "landing_p50_gt_1_9s": "rolling landing p50 above 1.9 s over 20 landed buys (rule 3)",
     "out_of_rule_entry": "a buy landed more than 5 s after SD_slot (rule 3)",
-    "stuck_position": "a position not closed by landing + 600 s (rule 4)",
-    "late_sells_gt_5pct": "more than 5% of landed sells late (H5's latch, inherited)",
-    "pins_changed": "A3: the program pins changed (rule 6)",
-    "program_changed": "A3: a program redeploy (rule 6, a live halt for the canary)",
-    "ms_per_slot_out_of_range": "ms per slot outside [150, 450] (rule 6)",
-    "model_hash_changed": "the model file or manifest hash differs from the pinned one (rule 7)",
+    "stuck_position": "a sell not landed by the exit plan's deadline (rule 4; v2 at 8ea24e6 latches at landing + 370 s, DEC-026 says + 600 s)",
+    "model_sha_mismatch": "a pick or a shadow heartbeat names a model sha256 other than the pinned one (rule 7)",
 }
+# A3 structure monitor (DEC-026 section 7 rule 6), read only with --a3-file, through these fixed keys of its newest JSONL record.
+A3_HALT_FLAGS = ("pins_changed",)  # rec["halt"]["flags"][name]["halt"]
+A3_WARN_HALTS = ("program_changed",)  # rec["warn"]["flags"][name]["warn"]: a WARN in the monitor, a live halt for the canary
+A3_ALERT_ONLY = ("synthetic_share_high", "boost_disabled", "boost_share_low", "boost_budget_or_slices_changed", "boost_last_slice_early")
+MS_PER_SLOT_RANGE = (150.0, 450.0)  # rec["slot_time"]["ms_per_slot_median"] outside it is a live halt
+A3_STALE_S = 30 * 3600  # the monitor runs daily
+A3_TAIL = 1 << 20
 BUDGET_STOPS = {
     "total_loss_stop": "total stop reached (min(0.30, 35% of the wallet at tier start)); no new buys until the owner restarts",
     "daily_loss_stop": "daily realized loss stop 0.20 SOL reached (until 00:00Z)",
@@ -176,19 +202,20 @@ BUDGET_STOPS = {
 }
 ALERT_MEANING = {
     "synthetic_share_high": "A3 structure share above 0.35: recorded and alerted only, not a C1-NF halt (DEC-026 section 7 rule 6); no outcome is split by class",
+    "exit_late_share_gt_10pct": "more than 10% of the last 20 landed sells landed after landing + 305 s (DEC-026 section 7 rule 5: alert only, no halt)",
     "tier_file_problem": "the TIER file failed the executor's checks; it runs T1 meanwhile",
     "feed_stale": "the shadow heartbeat is older than 150 s: every pick is refused (rule 7)",
     "boost_disabled": "BOOST regime alert (alert only for C1-NF, rule 6)",
     "boost_share_low": "BOOST regime alert (alert only for C1-NF, rule 6)",
     "boost_budget_or_slices_changed": "BOOST regime alert (alert only for C1-NF, rule 6)",
 }
-# DEC-026 section 6 buy guard, fail closed: a pick without the decision-time q_lamports / base_reserve. v2 (156a941) refuses it as
-# bad_pick:ref_state_missing (absent) or bad_pick:ref_state (not a positive int); the bad_pick:missing_* / bad_intent:missing_* forms are
-# matched too (a required key absent: v2's KeyError spelling and H5's / #504's).
-GUARD_INPUT_REFUSALS = ("bad_pick:ref_state_missing", "bad_pick:ref_state")
+# DEC-026 section 6 buy guard, fail closed: a pick without the decision-time state (q_lamports, base_reserve, v_lamports, state_slot). v2
+# (8ea24e6) refuses it as bad_pick:ref_state_missing (absent) or bad_pick:ref_state (invalid), and a pick without a 64-hex model_sha as
+# bad_pick:model_sha; the bad_pick:missing_* / bad_intent:missing_* forms are matched too (H5's / #504's spelling of an absent key).
+GUARD_INPUT_REFUSALS = ("bad_pick:ref_state_missing", "bad_pick:ref_state", "bad_pick:model_sha")
 GUARD_INPUT_PREFIXES = ("bad_pick:missing_", "bad_intent:missing_")
 FEED_REFUSALS = ("feed_stale", "feed_gap")
-STALE_REFUSALS = ("pick_stale", "stale_pick", "max_pick_age")
+STALE_REFUSALS = ("stale_pick",)  # v2: chain age above 3 s since SD_slot, or the wall-clock backstop
 # CAP-PICK seal refusals (h5.SEAL_REASONS: seal_window_no_oracle, seal_oracle_error, seal_pick) are never ledgered per mint: the executor
 # only raises counters.seal_skips and writes a count-only `seal_count` row (seal_skips=<total>) at most once a minute. The seal check reads
 # that count and the counters file's seal_skips. A row whose reason starts with seal / cap_pick is hidden from the reason list if one appears.
@@ -196,9 +223,9 @@ SEAL_PREFIXES = ("seal", "cap_pick")
 REFUSAL_ALERT_N = 3
 SCHEMA_REFUSAL_ALERT_N = 5
 
-PRIV_STAT = (WALLET_STOP, WALLET_HALT, C1NF_DIR, f"{C1NF_DIR}/STOP", f"{C1NF_DIR}/HALT", f"{C1NF_DIR}/LIVE_OK",
-             STATE_FILE, COUNTERS_FILE, LEDGER_FILE, WATCH_STATE)
-PRIV_READ = (STATE_FILE, COUNTERS_FILE, LEDGER_FILE, WATCH_STATE)
+PRIV_STAT = (WALLET_STOP, WALLET_HALT, C1NF_DIR, f"{C1NF_DIR}/STOP", f"{C1NF_DIR}/HALT", f"{C1NF_DIR}/LIVE_OK", FINAL_MARKER,
+             STATE_FILE, COUNTERS_FILE, LEDGER_FILE, EXTRA_FILE, WATCH_STATE)
+PRIV_READ = (STATE_FILE, COUNTERS_FILE, LEDGER_FILE, EXTRA_FILE, WATCH_STATE)
 STAT_FORMAT = "%F|%h|%U|%G|%a|%Y|%s"
 
 
@@ -348,6 +375,22 @@ class Host:
         if r.returncode == 0:
             return r.stdout[skip:]  # the tail is cut here: a `skip=` operand would have to vary, and a varying sudo argument cannot be pinned
         raise SudoError(f"read {path}: privileged read failed")
+
+    def read_tail(self, path: str, n: int) -> bytes | None:
+        """The last `n` bytes of a file this user can read (the A3 monitor's JSONL), or None if it does not exist. No sudo, no size cap (the
+        file grows a record a day); O_NOFOLLOW, and anything but a regular file is refused."""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise Unsafe(f"{path} cannot be opened ({type(exc).__name__}; a symlink is refused)") from None
+        with os.fdopen(fd, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat_mod.S_ISREG(st.st_mode):
+                raise Unsafe(f"{path} is not a regular file")
+            fh.seek(max(0, st.st_size - n))
+            return fh.read(n)
 
     def newest_hourly(self, directory: str) -> tuple[str, float] | None:
         try:
@@ -645,16 +688,17 @@ def check_tier_file(host: Host, rep: Report) -> str | None:
     return text
 
 
-def check_live_config(host: Host, rep: Report) -> None:
-    """The pinned live config against DEC-026 section 6. Config may only lower a limit; the stake, the fee and end_ms must be exactly the DEC's."""
+def check_live_config(host: Host, rep: Report) -> dict | None:
+    """The pinned live config against DEC-026 section 6. Config may only lower a limit; the stake, the fee and end_ms must be exactly the DEC's.
+    Returns the config (None when there is no pinned install or it is not an object)."""
     raw = host.read(LIVE_CONFIG)
     if raw is None:
         rep.info(f"{LIVE_CONFIG} is absent (no pinned install yet)")
-        return
+        return None
     cfg = json.loads(raw)
     if not isinstance(cfg, dict):
         rep.alert("c1nf_live_config", f"{LIVE_CONFIG} is not a JSON object")
-        return
+        return None
     bad, notes = [], []
     for key, (rule, want) in CONFIG_RULES.items():
         v = cfg.get(key)
@@ -675,6 +719,123 @@ def check_live_config(host: Host, rep: Report) -> None:
     else:
         rep.ok(f"live config: stake {STAKE_LAMPORTS / LAMPORTS:.2f} SOL, priority {PRIORITY_LAMPORTS} lamports, end_ms 2026-10-24T00:30Z"
                + (f" ({'; '.join(notes)})" if notes else ""))
+    return cfg
+
+
+def check_seal_inputs(host: Host, rep: Report, cfg: dict | None, live_ok: bool, now: float) -> None:
+    """What the CAP-PICK seal needs from 2026-10-16T01Z (DEC-026 section 9.1), which the executor fails closed without: a `pick_file` in the
+    pinned live config (v2 reads it through its stale-checked #509 oracle; without one every pick in the window is refused
+    seal_window_no_oracle), and H5's FINAL marker in the C1-NF state dir (without it, the same refusal). Existence only; the picks file is
+    never opened here."""
+    final = host.exists(FINAL_MARKER)
+    rep.facts["final_marker"] = final
+    if cfg is not None:
+        if isinstance(cfg.get("pick_file"), str) and cfg["pick_file"]:
+            rep.ok("live config names a pick_file (the CAP-PICK oracle; its staleness is the executor's check)")
+        elif now >= SEAL_START_S - SEAL_WARN_S:
+            rep.alert("c1nf_seal_no_pick_file", "the pinned live config has no pick_file: from 2026-10-16T01Z every pick is refused "
+                                                "seal_window_no_oracle and the canary is paused (DEC-026 section 9.1). It needs #509 and a "
+                                                "reviewed config with the oracle's file, bound into the unit, and a pinned reinstall")
+        else:
+            rep.info("the pinned live config has no pick_file yet: needed before 2026-10-16T01Z (#509), or the canary pauses then")
+    if now >= SEAL_START_S and live_ok and not final:
+        rep.alert("c1nf_seal_final_missing", f"{FINAL_MARKER} does not exist: every buy in the seal window is refused seal_window_no_oracle "
+                                             "until the manager touches it after the DEC-016 FINAL (docs/runbooks/c1nf-executor.md)")
+
+
+def report_tier(rep: Report, counters: dict, tier_file: tuple[str | None, float | None], unit: UnitInfo, now: float) -> None:
+    """The tier the executor holds (counters tier_state, which a tier_change sets), the file's, and the executor's buy attempts in that tier
+    (tier_attempts). DEC-026 section 10: an alert if they disagree for more than 15 minutes while the unit runs live. The file's tier is the
+    one v2's read_tier applies: a missing, invalid or inactive (T2) file means T1."""
+    ts = counters.get("tier_state") if isinstance(counters.get("tier_state"), dict) else {}
+    ex = ts.get("tier") if ts.get("tier") in TIERS else None
+    since = ts.get("since_ms") if isinstance(ts.get("since_ms"), (int, float)) and not isinstance(ts.get("since_ms"), bool) else None
+    n = counters.get("tier_attempts")
+    n = n if isinstance(n, int) and not isinstance(n, bool) else None
+    file_tier, file_mtime = tier_file
+    want = file_tier if file_tier in ACTIVE_TIERS else ACTIVE_TIERS[0]
+    rep.facts["tier"] = ex or want
+    rep.info(f"tier: executor={ex or 'unknown'} file={file_tier or 'none'} (applies {want}) "
+             f"since={time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(since / 1000)) if since else 'unknown'} "
+             f"attempts_in_tier={n if n is not None else 'unknown'}")
+    if unit.running_live and ex and ex != want and (file_mtime is None or now - file_mtime > TIER_UNAPPLIED_S):
+        rep.alert("c1nf_tier_unapplied", f"the TIER file applies {want} but the running executor holds {ex}"
+                  + (f" ({int((now - file_mtime) // 60)} min after the file changed)" if file_mtime is not None else "")
+                  + ": it re-reads the file for every pick, so it is not reading /etc/mal-c1nf/TIER or has seen no pick (DEC-026 section 10)")
+
+
+def check_late_sells(rep: Report, extra: dict) -> None:
+    """DEC-026 section 7 rule 5 (alert only): v2's own window of the last 20 landed sells (1 = landed after landing + 305 s) and its alert
+    latch, from c1nf-extra.json. Only EXTRA_KEYS are read."""
+    lw = extra.get("late_window")
+    lw = [x for x in lw if x in (0, 1) and not isinstance(x, bool)][-LATE_SELL_WINDOW:] if isinstance(lw, list) else []
+    n, k = len(lw), sum(lw)
+    if (n >= LATE_SELL_MIN and k / n > LATE_SELL_SHARE) or extra.get("late_alert_on") is True:
+        rep.alert("c1nf_late_sells", f"{k} of the last {n} landed sells landed after landing + 305 s (> 10%; DEC-026 section 7 rule 5: alert and "
+                                     "report, no halt)")
+    elif n:
+        rep.info(f"late sells: {k} of the last {n} landed")
+    counts = extra.get("counts") if isinstance(extra.get("counts"), dict) else {}
+    shown = [(r, c) for r, c in sorted(counts.items()) if printable(r) and isinstance(c, int) and not isinstance(c, bool) and c > 0]
+    unpriced = extra.get("outcomes_unpriced")
+    if shown or (isinstance(unpriced, int) and unpriced):
+        rep.info("count-only (no mint): " + ", ".join(f"{r} x{c}" for r, c in shown)
+                 + (f"; shadow outcomes without the pinned leg x{unpriced}" if isinstance(unpriced, int) and unpriced else ""))
+
+
+def check_a3(host: Host, rep: Report, path: str | None, now: float) -> None:
+    """DEC-026 section 7 rule 6 from the A3 monitor's newest record, through fixed keys only. The executor does not read A3, so a halt here is
+    an alert for the manager, who places STOP."""
+    if not path:
+        rep.info("A3 not read (no --a3-file): rule 6's live halts (pins_changed, program_changed, ms per slot outside [150, 450]) are not "
+                 "latched by the executor; the manager's daily A3 run is the only check")
+        return
+    raw = host.read_tail(path, A3_TAIL)
+    if raw is None:
+        rep.alert("c1nf_a3_missing", f"{path} does not exist: rule 6's A3 halts cannot be checked")
+        return
+    lines = [ln for ln in raw.splitlines() if ln.strip()]
+    try:
+        rec = json.loads(lines[-1])
+        if not isinstance(rec, dict):
+            raise ValueError
+    except (IndexError, ValueError):
+        rep.alert("c1nf_a3_unreadable", f"the newest record of {path} is not a JSON object: rule 6's A3 halts cannot be checked")
+        return
+    run = rec.get("run_unix")
+    run = run if isinstance(run, (int, float)) and not isinstance(run, bool) else None
+    when = rec.get("run_utc") if printable(rec.get("run_utc")) else "unknown"
+    if run is None or now - run > A3_STALE_S:
+        rep.alert("c1nf_a3_stale", f"the newest A3 record ({when}) is older than {A3_STALE_S // 3600} h or undated: rule 6 is not being checked")
+    hf = (rec.get("halt") or {}).get("flags") if isinstance(rec.get("halt"), dict) else None
+    wf = (rec.get("warn") or {}).get("flags") if isinstance(rec.get("warn"), dict) else None
+    hf, wf = (hf if isinstance(hf, dict) else {}), (wf if isinstance(wf, dict) else {})
+    halts: list[str] = []
+    unevaluated: list[str] = []
+    for flags, names, key in ((hf, A3_HALT_FLAGS, "halt"), (wf, A3_WARN_HALTS, "warn")):
+        for name in names:
+            v = flags.get(name)
+            if not isinstance(v, dict) or v.get("evaluated") is not True:
+                unevaluated.append(name)
+            elif v.get(key) is True:
+                halts.append(name)
+    st = rec.get("slot_time") if isinstance(rec.get("slot_time"), dict) else {}
+    ms = st.get("ms_per_slot_median")
+    if not isinstance(ms, (int, float)) or isinstance(ms, bool) or not math.isfinite(ms):
+        unevaluated.append("ms_per_slot")
+        ms = None
+    elif not MS_PER_SLOT_RANGE[0] <= ms <= MS_PER_SLOT_RANGE[1]:
+        halts.append(f"ms_per_slot {ms:g} outside [150, 450]")
+    alert_only = [n for n in A3_ALERT_ONLY if isinstance(hf.get(n), dict) and hf[n].get("halt") is True]
+    if halts:
+        rep.alert("c1nf_a3_halt", f"A3 run {when}: {', '.join(halts)}. A DEC-026 section 7 rule 6 live halt (it also bars the start), which the "
+                                  "executor does not latch: place STOP (sudo touch /var/lib/mal-live/c1nf/STOP) and tell the owner")
+    if unevaluated:
+        rep.alert("c1nf_a3_not_evaluated", f"A3 run {when} did not evaluate {', '.join(unevaluated)}: rule 6 cannot be cleared from it")
+    if alert_only:
+        rep.alert("c1nf_a3_alert", f"A3 run {when}: {', '.join(alert_only)} (alert only for C1-NF, DEC-026 section 7 rule 6; no halt)")
+    if not (halts or unevaluated):
+        rep.ok(f"A3 run {when}: no rule 6 halt (pins and programs unchanged, {ms:g} ms per slot)")
 
 
 def effective_total_stop(funded: int | None) -> int:
@@ -682,13 +843,14 @@ def effective_total_stop(funded: int | None) -> int:
 
 
 def check_c1nf_state(host: Host, rep: Report, funded: int | None, wallet: str, env_file: str, unit: UnitInfo, live_ok: bool,
-                     balance_fn: Callable[[str, str], int] | None = None, public_rpc: bool = False) -> None:
+                     balance_fn: Callable[[str, str], int] | None = None, public_rpc: bool = False,
+                     tier_file: tuple[str | None, float | None] = (None, None), now: float = 0.0) -> None:
     st_dir = host.stat(C1NF_DIR)
     if st_dir is None:
         rep.info(f"{C1NF_DIR} does not exist yet")
     elif st_dir != "mal-live:mal-live:700":
         rep.alert("c1nf_dir_mode", f"{C1NF_DIR} is {st_dir}, expected mal-live:mal-live:700")
-    flags = {n: host.exists(f"{C1NF_DIR}/{n}") for n in ("STOP", "HALT")}
+    flags = {n: host.exists(f"{C1NF_DIR}/{n}") for n in ("STOP", "HALT", "FINAL_WRITTEN")}
     flags["LIVE_OK"] = live_ok
     flags["wallet_STOP"] = host.exists(WALLET_STOP)
     flags["wallet_HALT"] = host.exists(WALLET_HALT)
@@ -709,8 +871,8 @@ def check_c1nf_state(host: Host, rep: Report, funded: int | None, wallet: str, e
     if counters.get("halts"):
         rep.alert("c1nf_live_halt", "latched: " + (", ".join(f"{n} ({HALT_MEANING[n]})" if n in HALT_MEANING else n for n in halt_names) or "a halt")
                   + " (new buys stop; cleared only by --clear-halt, never followed by a retune)")
-    if landed >= LATE_SELL_MIN and late / landed > LATE_SELL_SHARE:
-        rep.alert("c1nf_late_sells", f"{late} of {landed} landed sells were late ({100 * late / landed:.1f}% > 10%; DEC-026 section 7 rule 5, report only)")
+    report_tier(rep, counters, tier_file, unit, now)
+    check_late_sells(rep, {k: v for k, v in (_json(host, EXTRA_FILE) or {}).items() if k in EXTRA_KEYS})
     stop = effective_total_stop(funded)
     rep.info(f"total stop: min(0.30, 0.35 x funded) = {stop / LAMPORTS:.3f} SOL; realized {realized / LAMPORTS:+.6f} uses "
              f"{max(0, -realized) / stop * 100:.1f}% of it; daily stop {DAILY_STOP_LAMPORTS / LAMPORTS:.2f} SOL")
@@ -852,7 +1014,8 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
     """The live ledger's last window. Counts by reason NAME only (never a mint, never an outcome, never a class).
 
     Refusals are counted from `skip` rows only: v2's _refuse writes a skip row AND a pick_status row with the same reason, so counting both
-    doubled every refusal. pick_status rows feed only the rule 8 fill-rate window. The CAP-PICK seal is read from the count-only
+    doubled every refusal. pick_status rows feed only the rule 8 fill-rate window, and only those that are buy ATTEMPTS (filled, or unfilled
+    as buy_failed / buy_expired): a refusal before the send is not a failed fill. The CAP-PICK seal is read from the count-only
     `seal_count` rows (and the counters file's seal_skips), because a seal refusal is never ledgered per mint."""
     raw = host.read(LEDGER_FILE, LEDGER_TAIL)
     if not raw:
@@ -862,12 +1025,12 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
     alert_rows: Counter = Counter()
     decisions = buys = withheld = 0
     changes: list[tuple] = []
-    picks: list[str] = []  # pick_status of monitored picks, oldest first (whole tail, not the window: rule 8 is a rolling 30)
+    attempts: list[str] = []  # outcome of each buy attempt, oldest first (whole tail, not the window: rule 8 is a rolling 30)
     seal_before = seal_last = None  # seal_skips totals: the last one before the window, the last one inside it
     for row in ledger_rows(raw):
         kind = row.get("kind")
-        if kind == "pick_status" and row.get("monitored") is True and row.get("status") in ("filled", "unfilled"):
-            picks.append(row["status"])
+        if kind == "pick_status" and (row.get("status") == "filled" or (row.get("status") == "unfilled" and row.get("reason") in SEND_FAIL_REASONS)):
+            attempts.append(row["status"])
         ts = row.get("ts_ms")
         if not isinstance(ts, (int, float)):
             continue
@@ -922,8 +1085,8 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
     guard = sum(n for r, n in counts.items() if r in GUARD_INPUT_REFUSALS or r.startswith(GUARD_INPUT_PREFIXES))
     if guard >= SCHEMA_REFUSAL_ALERT_N and decisions == 0:
         rep.alert("c1nf_feed_schema", f"{guard} pick(s) refused for missing or invalid fields in {hours} h and none acted on: the shadow's picks lack "
-                                      "a required field or the decision-time q_lamports and base_reserve the buy guard needs (DEC-026 section 6: "
-                                      "no buy without them)")
+                                      "a required field, the decision-time state the buy guard needs (q_lamports, base_reserve, v_lamports, "
+                                      "state_slot; DEC-026 section 6: no buy without them) or the model_sha")
     feed = sum(counts[r] for r in FEED_REFUSALS)
     if feed >= REFUSAL_ALERT_N:
         rep.alert("c1nf_feed_refusals", f"{feed} pick(s) refused as feed_stale or feed_gap in {hours} h (DEC-026 section 7 rule 7)")
@@ -932,15 +1095,18 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
         rep.alert("c1nf_stale_picks", f"{stale} pick(s) older than 3 s of chain age refused in {hours} h: the shadow is late")
     if seal and live_ok and now >= SEAL_START_S and decisions == 0 and buys == 0:
         rep.alert("c1nf_oracle_unavailable", f"seal_skips rose by {seal} in {hours} h and no pick was acted on: every pick met the CAP-PICK seal "
-                                             "(no oracle, an oracle error, or sealed), so the canary is paused by the seal (DEC-026 section 9.1, #509). "
-                                             "Check that the live config has a working pick_file")
-    last = picks[-FILL_RATE_WINDOW:]
+                                             "(no oracle, a stale oracle, an oracle error, no FINAL_WRITTEN, or sealed), so the canary is paused by "
+                                             "the seal (DEC-026 section 9.1, #509). Check the live config's pick_file, the oracle's heartbeat and "
+                                             f"{FINAL_MARKER}")
+    last = attempts[-FILL_RATE_WINDOW:]
     if len(last) >= FILL_RATE_WINDOW:
         unfilled = last.count("unfilled")
         if unfilled / len(last) > FILL_RATE_ALERT:
-            rep.alert("c1nf_fill_rate", f"{unfilled} of the last {len(last)} monitored picks did not fill (> 28.9%; DEC-026 section 7 rule 8, alert only)")
+            rep.alert("c1nf_fill_rate", f"{unfilled} of the last {len(last)} buy attempts did not fill (> 28.9%; DEC-026 section 7 rule 8, alert only)")
         else:
-            rep.info(f"fill rate: {len(last) - unfilled} of the last {len(last)} monitored picks filled")
+            rep.info(f"fill rate: {len(last) - unfilled} of the last {len(last)} buy attempts filled")
+    elif attempts:
+        rep.info(f"fill rate: {attempts.count('filled')} of {len(attempts)} buy attempts filled (rule 8 needs {FILL_RATE_WINDOW})")
 
 
 def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] = print,
@@ -949,25 +1115,37 @@ def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] 
     now = time.time() if now is None else now
     if checker is None:
         checker = load_unit_checker(Path(__file__).resolve().parent)
-    funded = None if args.funded_sol is None else int(round(args.funded_sol * LAMPORTS))
+    funded = None
+    if args.funded_sol is not None:
+        if math.isfinite(args.funded_sol) and args.funded_sol > 0:
+            funded = int(round(args.funded_sol * LAMPORTS))
+        else:  # nan and inf parse as floats; neither may reach int(round(...)) or the total stop
+            rep.alert("funded_invalid", "--funded-sol must be a finite number above 0: the total stop and the wallet are judged without it")
     window_s = float(getattr(args, "window_hours", 6.0)) * 3600
     if not host.sudo_ok():
         rep.alert("sudo_unavailable", "sudo -n /usr/bin/true failed: the files in /var/lib/mal-live cannot be read, so the checks that need them cannot pass")
-    ctx: dict = {"unit": NO_UNIT, "live_ok": False}
+    ctx: dict = {"unit": NO_UNIT, "live_ok": False, "cfg": None, "tier_file": (None, None)}
 
     def unit_step() -> None:
         ctx["unit"] = check_c1nf_unit(host, rep, checker)
 
     def gate_step() -> None:
         ctx["live_ok"] = check_live_ok_gate(host, rep)
-        rep.facts["tier"] = check_tier_file(host, rep) or "T1"
+        tier = check_tier_file(host, rep)
+        ctx["tier_file"] = (tier, host.mtime(TIER_FILE) if tier else None)
+        rep.facts["tier"] = tier if tier in ACTIVE_TIERS else ACTIVE_TIERS[0]
 
-    steps = [("c1nf_unit", unit_step), ("c1nf_gate", gate_step),
-             ("c1nf_config", lambda: check_live_config(host, rep)),
-             ("c1nf_state", lambda: check_c1nf_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc)),
+    def config_step() -> None:
+        ctx["cfg"] = check_live_config(host, rep)
+
+    steps = [("c1nf_unit", unit_step), ("c1nf_gate", gate_step), ("c1nf_config", config_step),
+             ("c1nf_seal_inputs", lambda: check_seal_inputs(host, rep, ctx["cfg"], ctx["live_ok"], now)),
+             ("c1nf_state", lambda: check_c1nf_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc,
+                                                     ctx["tier_file"], now)),
              ("c1nf_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now)),
              ("c1nf_watch", lambda: check_watch(host, rep, ctx["live_ok"], now)),
-             ("c1nf_refusals", lambda: check_refusals(host, rep, now, ctx["live_ok"], window_s))]
+             ("c1nf_refusals", lambda: check_refusals(host, rep, now, ctx["live_ok"], window_s)),
+             ("c1nf_a3", lambda: check_a3(host, rep, getattr(args, "a3_file", None), now))]
     for name, step in steps:
         try:
             step()
@@ -990,6 +1168,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--public-rpc", action="store_true", help=f"getBalance through {PUBLIC_RPC}: no key at all")
     ap.add_argument("--shadow-dir", default=str(Path.home() / "data/c1nf-shadow"), help="the C1-NF shadow's output directory (heartbeat files only)")
     ap.add_argument("--window-hours", type=float, default=6.0, help="how far back the ledger is read for stops, alerts and refusals (the daily job uses 24)")
+    ap.add_argument("--a3-file", default=None, help="the A3 structure monitor's JSONL (tools/pump_structure_monitor.py --out); its newest record "
+                                                     "is checked for DEC-026 rule 6's live halts. Without it, rule 6 is the manager's A3 run only")
     ap.add_argument("--print-sudoers", action="store_true", help="print the exact sudoers lines the privileged calls need and exit")
     ap.add_argument("--sudoers-user", default="claude")
     return ap

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """C1-NF watchdog (DEC-026 section 5: its own timer and config, `mal-c1nf-watch`; Discord: stuck, structure halt, stop fired, restarts,
-wallet line, tier change). Modelled on h5-watch.py (DEC-024). The H5 watchdog stays H5's: this one reads nothing of H5's.
+wallet line, tier change). Modelled on h5-watch.py (DEC-024). The H5 watchdog stays H5's: this one reads nothing of H5's. "Structure halt"
+(DEC-026 section 7 rule 6) is the A3 monitor's: the watchdog alerts on it only when C1NF_WATCH_A3_FILE names the monitor's file here.
 
 Runs every 5 minutes from mal-c1nf-watch.timer as a hardened root oneshot (scripts/mal-fast/mal-c1nf-watch.service), from the root-owned
 pinned tree, as `python3 -I -S`. Stdlib only. It runs the same checks as the daily run (c1nf-daily-check.py: stuck or abandoned position,
@@ -18,6 +19,8 @@ Config comes from the environment (systemd EnvironmentFile /etc/mal-c1nf-watch/w
   C1NF_WATCH_FUNDED_SOL       total SOL deposited into the second wallet, net of withdrawals (0.5 at O-1)
   C1NF_WATCH_SHADOW_DIR       the C1-NF shadow's output directory (heartbeat files only: the stale-feed and bind checks)
   C1NF_WATCH_WALLET           the second wallet's PUBLIC address (Helm gives it; never the H5 wallet)
+  C1NF_WATCH_A3_FILE          optional: the A3 structure monitor's JSONL on this host (absolute path). With it the watchdog alerts on
+                              DEC-026 section 7 rule 6's live halts (the executor does not latch them); without it the check says so.
 The balance comes from the public RPC (no key).
 
     c1nf-watch.py                run the checks and post what changed
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -84,15 +88,21 @@ def collect(daily, host, env: dict[str, str], now: float, balance_fn=None) -> tu
     alerts: dict[str, str] = {}
     try:
         funded = float(env["C1NF_WATCH_FUNDED_SOL"])
+        if not math.isfinite(funded) or funded <= 0:  # float() accepts nan and inf; either would crash the engine's lamport conversion
+            raise ValueError("funded")
         shadow = env["C1NF_WATCH_SHADOW_DIR"]
         wallet = env["C1NF_WATCH_WALLET"]
         if not WALLET_RE.match(wallet) or wallet == daily.H5_WALLET:
             raise ValueError("wallet")
+        a3 = env.get("C1NF_WATCH_A3_FILE", "")
+        if a3 and not a3.startswith("/"):
+            raise ValueError("a3")
     except (KeyError, ValueError):
-        return {"watch_config": "C1NF_WATCH_FUNDED_SOL, C1NF_WATCH_SHADOW_DIR or C1NF_WATCH_WALLET is missing or invalid in /etc/mal-c1nf-watch/watch.env "
-                                "(the wallet must be a base58 public address and not the H5 wallet)"}, {}
+        return {"watch_config": "C1NF_WATCH_FUNDED_SOL, C1NF_WATCH_SHADOW_DIR, C1NF_WATCH_WALLET or C1NF_WATCH_A3_FILE is missing or invalid in "
+                                "/etc/mal-c1nf-watch/watch.env (funded a finite number above 0; the wallet a base58 public address and not the "
+                                "H5 wallet; the optional A3 file an absolute path)"}, {}
     args = daily.build_parser().parse_args(["--funded-sol", str(funded), "--wallet", wallet, "--public-rpc", "--shadow-dir", shadow,
-                                            "--window-hours", WATCH_WINDOW_HOURS])
+                                            "--window-hours", WATCH_WINDOW_HOURS, *(["--a3-file", a3] if a3 else [])])
     rep = daily.run_checks(args, host, lambda s: None, balance_fn, now)
     for name, msg in rep.alert_list:
         alerts[name] = f"{alerts[name]}; {msg}" if name in alerts else msg

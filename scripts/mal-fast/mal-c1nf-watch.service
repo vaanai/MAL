@@ -7,8 +7,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
-# /etc/mal-c1nf-watch/watch.env (root:root 0600 in a root:root 0700 dir) holds exactly four lines: C1NF_WATCH_DISCORD_WEBHOOK=...,
-# C1NF_WATCH_FUNDED_SOL=<total SOL deposited>, C1NF_WATCH_SHADOW_DIR=/home/<jobuser>/data/c1nf-shadow, C1NF_WATCH_WALLET=<public address>.
+# /etc/mal-c1nf-watch/watch.env (root:root 0600 in a root:root 0700 dir) holds four lines: C1NF_WATCH_DISCORD_WEBHOOK=...,
+# C1NF_WATCH_FUNDED_SOL=<total SOL deposited>, C1NF_WATCH_SHADOW_DIR=/home/<jobuser>/data/c1nf-shadow, C1NF_WATCH_WALLET=<public address>,
+# and an optional fifth, C1NF_WATCH_A3_FILE=<absolute path of the A3 monitor's JSONL on this host> (DEC-026 section 7 rule 6).
 # It is read by systemd as root; the webhook URL is a secret and is never printed. No "-" prefix: a missing file fails the start.
 # This is NOT the H5 watchdog: its own env, state dir and timer (DEC-026 section 5). It reads nothing of H5's.
 EnvironmentFile=/etc/mal-c1nf-watch/watch.env

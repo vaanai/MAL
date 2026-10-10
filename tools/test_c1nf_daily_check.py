@@ -40,8 +40,23 @@ WTMR = (FAST / "mal-c1nf-watch.timer").read_bytes()
 WATCH_SVC, WATCH_TMR = dc.WATCH_FILES[0][0], dc.WATCH_FILES[1][0]
 LIVE_CFG = {"mode": "live", "state_dir": dc.C1NF_DIR, "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
             "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000,
-            # claude/c1nf-executor-v2 @ 156a941, scripts/mal-fast/c1nf-executor-live.json
-            "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}
+            # claude/c1nf-executor-v2 @ 8ea24e6, scripts/mal-fast/c1nf-executor-live.json
+            "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000,
+            # NOT in v2's live config at 8ea24e6 (the #509 open item); a healthy canary inside the seal window needs one
+            "pick_file": "/srv/mal-cap-pick/picks.jsonl"}
+A3_PATH = "/data/mal/structure-monitor/daily.jsonl"
+
+
+def a3_record(**over) -> dict:
+    """The shape of tools/pump_structure_monitor.py's record (fixed keys only), clean by default."""
+    flags = {n: {"halt": False, "evaluated": True, "reason": "r"} for n in ("pins_changed", "boost_disabled", "boost_share_low",
+                                                                            "boost_last_slice_early", "boost_budget_or_slices_changed",
+                                                                            "synthetic_share_high")}
+    rec = {"schema": "a3", "run_utc": "2026-10-17T00:41:07Z", "run_unix": int(NOW - 2400), "slot_time": {"ms_per_slot_median": 218.2},
+           "halt": {"any": False, "flags": flags}, "warn": {"any": False, "flags": {"program_changed": {"warn": False, "evaluated": True, "reason": "r"}}}}
+    for k, v in over.items():
+        rec[k] = v
+    return rec
 
 
 def ledger(*rows) -> bytes:
@@ -67,12 +82,15 @@ class FakeHost(dc.Host):
             dc.UNIT_FILE: BASE, dc.DROPIN_LIVE: DROPIN, dc.DROPIN_FEED: FEED, dc.LIVE_OK: b"", dc.TIER_FILE: b"T1\n",
             dc.LIVE_CONFIG: json.dumps(LIVE_CFG).encode(),
             dc.STATE_FILE: json.dumps({"attempts": 3, "realized_lamports": -1_000_000, "open": {}, "pending": {}}).encode(),
-            dc.COUNTERS_FILE: json.dumps({"halts": {}, "sells_landed": 3, "sells_late": 0}).encode(),
+            dc.COUNTERS_FILE: json.dumps({"halts": {}, "sells_landed": 3, "sells_late": 0, "tier_attempts": 3,
+                                          "tier_state": {"tier": "T1", "since_ms": ms(NOW - 7200)}}).encode(),
+            dc.EXTRA_FILE: json.dumps({"schema": "c1nf_extra_v1", "late_window": [0, 0, 0], "late_alert_on": False, "counts": {}}).encode(),
             dc.LEDGER_FILE: ledger({"kind": "start", "user": WALLET, "ts_ms": ms(NOW - 7200)}, {"kind": "decision", "ts_ms": ms(NOW - 600)}),
             WATCH_SVC: WSVC, WATCH_TMR: WTMR, f"{dc.PINNED}/{dc.WATCH_SERVICE}": WSVC, f"{dc.PINNED}/{dc.WATCH_TIMER}": WTMR,
             dc.WATCH_STATE: json.dumps({"ts": NOW - 120}).encode(),
         }
-        self.modes = {dc.C1NF_DIR: "mal-live:mal-live:700", dc.C1NF_ETC: "root:root:755", dc.LIVE_OK: "root:root:644", dc.TIER_FILE: "root:root:644"}
+        self.modes = {dc.C1NF_DIR: "mal-live:mal-live:700", dc.C1NF_ETC: "root:root:755", dc.LIVE_OK: "root:root:644", dc.TIER_FILE: "root:root:644",
+                      dc.FINAL_MARKER: "root:root:644"}
         self.mtimes = {dc.LIVE_OK: NOW - 7200, dc.TIER_FILE: NOW - 7200}
         self.links: set[str] = set()
         self.read_log: list[str] = []
@@ -99,6 +117,11 @@ class FakeHost(dc.Host):
     def read(self, path, tail=None):
         self.read_log.append(path)
         return self.files.get(path)
+
+    def read_tail(self, path, n):
+        self.read_log.append(path)
+        data = self.files.get(path)
+        return None if data is None else data[-n:]
 
     def exists(self, path):
         self.read_log.append(path)
@@ -199,7 +222,7 @@ def _busy_ledger(with_class: bool) -> bytes:
     rows = [{"kind": "start", "user": WALLET, "ts_ms": ms(NOW - 7200)}]
     for i in range(30):
         r = {"kind": "pick_status", "ts_ms": ms(NOW - 3000 + i), "status": "unfilled" if i % 3 == 0 else "filled", "monitored": True,
-             "reason": "filled" if i % 3 else "guard_revert", "mint": f"M{i}"}
+             "reason": None if i % 3 else "buy_failed", "mint": f"M{i}"}
         if with_class:
             r.update(synthetic=bool(i % 2), migration_class="synthetic" if i % 2 else "canonical", c1nf_outcome=0.1 * i)
         rows.append(r)
@@ -335,6 +358,7 @@ def test_live_ok_with_wallet_wide_stop_is_idle():
 def test_halt_and_stuck_and_open_cap():
     host = FakeHost()
     host.files[dc.COUNTERS_FILE] = json.dumps({"halts": {"fill_selection_adverse": {}}, "sells_landed": 20, "sells_late": 3}).encode()
+    host.files[dc.EXTRA_FILE] = json.dumps({"late_window": [0] * 17 + [1] * 3}).encode()
     host.files[dc.STATE_FILE] = json.dumps({"attempts": 9, "realized_lamports": -2_000_000, "pending": {},
                                             "open": {"A": {"stuck": True, "spend": 1}, "B": {"spend": 1}, "C": {"spend": 1}}}).encode()
     a = alerts(go(host, balance=lambda w, e: FUNDED - 2_000_003)[1])
@@ -344,18 +368,18 @@ def test_halt_and_stuck_and_open_cap():
 def test_budget_stop_and_feed_refusals():
     host = FakeHost()
     host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "skip", "ts_ms": ms(NOW - 60 - i), "reason": r} for i, r in
-                                          enumerate(["total_loss_stop", "feed_stale", "feed_stale", "feed_stale", "pick_stale", "pick_stale", "pick_stale"])])
+                                          enumerate(["total_loss_stop", "feed_stale", "feed_stale", "feed_stale", "stale_pick", "stale_pick", "stale_pick"])])
     a = alerts(go(host)[1])
     assert {"c1nf_budget_stop_total_loss_stop", "c1nf_feed_refusals", "c1nf_stale_picks"} <= set(a)
 
 
 def v2_refusal(t_ms: int, reason: str, i: int = 0) -> list[dict]:
-    """What v2 (156a941) writes for one refusal: C1NFExecutor._refuse -> H5's skip row, then _set_status's pick_status row, same reason."""
+    """What v2 (8ea24e6) writes for one refusal: C1NFExecutor._refuse -> H5's skip row, then _set_status's pick_status row, same reason."""
     return [{"kind": "skip", "ts_ms": t_ms, "mint": f"M{i}", "reason": reason},
             {"kind": "pick_status", "ts_ms": t_ms, "mint": f"M{i}", "pick_id": f"p{i}", "status": "unfilled", "reason": reason, "monitored": True}]
 
 
-@pytest.mark.parametrize("reason", ["bad_pick:ref_state_missing", "bad_pick:ref_state", "bad_pick:missing_q_lamports",
+@pytest.mark.parametrize("reason", ["bad_pick:ref_state_missing", "bad_pick:ref_state", "bad_pick:model_sha", "bad_pick:missing_q_lamports",
                                     "bad_pick:missing_base_reserve", "bad_intent:missing_q_lamports"])
 def test_guard_inputs_missing_alerts(reason):
     # v2's parse_pick reasons go to the ledger through H5's _bad_intent as a bare skip row (no pick_status: the pick never parsed)
@@ -415,12 +439,175 @@ def test_seal_pause_needs_live_ok():
     assert "c1nf_oracle_unavailable" not in alerts(go(host)[1])
 
 
+def attempt_rows(n_failed: int, n: int = 30, fail_reason: str = "buy_failed") -> list[dict]:
+    """v2's pick_status rows of n buy attempts: _resolve_pick writes filled, or unfilled with buy_failed / buy_expired."""
+    return [{"kind": "pick_status", "ts_ms": ms(NOW - 600 + i), "monitored": True, "status": "unfilled" if i < n_failed else "filled",
+             "reason": fail_reason if i < n_failed else None} for i in range(n)]
+
+
 def test_fill_rate_under_line_is_info():
     host = FakeHost()
-    host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "pick_status", "ts_ms": ms(NOW - 600 + i), "monitored": True,
-                                           "status": "unfilled" if i < 8 else "filled"} for i in range(30)])
+    host.files[dc.LEDGER_FILE] = ledger(*attempt_rows(8))
     rc, out = go(host)
-    assert "c1nf_fill_rate" not in alerts(out) and "22 of the last 30 monitored picks filled" in out
+    assert "c1nf_fill_rate" not in alerts(out) and "22 of the last 30 buy attempts filled" in out
+
+
+@pytest.mark.parametrize("reason", ["buy_failed", "buy_expired"])
+def test_fill_rate_over_the_line_alerts(reason):
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger(*attempt_rows(9, fail_reason=reason))  # 9 / 30 = 0.30 > 0.289
+    assert "c1nf_fill_rate" in alerts(go(host)[1])
+
+
+def test_fill_rate_counts_attempts_not_refusals():
+    # rule 8 is over buy attempts: a refusal before the send (feed outage, stale pick, price guard) is monitored by rule 1 but is no attempt
+    host = FakeHost()
+    refusals = [r for i, why in enumerate(["feed_stale"] * 20 + ["stale_pick"] * 10 + ["price_moved"] * 10)
+                for r in v2_refusal(ms(NOW - 900 + i), why, i)]
+    host.files[dc.LEDGER_FILE] = ledger(*refusals, *attempt_rows(2))
+    rc, out = go(host)
+    assert "c1nf_fill_rate" not in alerts(out) and "28 of the last 30 buy attempts filled" in out
+    host.files[dc.LEDGER_FILE] = ledger(*refusals)
+    rc, out = go(host)
+    assert "c1nf_fill_rate" not in alerts(out) and "buy attempts" not in out
+
+
+# ---- seal inputs, tier, late sells, A3 (re-review of 7ce15d3) ----
+
+@pytest.mark.parametrize("now,expect", [(dc.SEAL_START_S - dc.SEAL_WARN_S - 60, None), (dc.SEAL_START_S - 3600, "c1nf_seal_no_pick_file"),
+                                        (NOW, "c1nf_seal_no_pick_file")])
+def test_live_config_without_pick_file(now, expect):
+    host = FakeHost()
+    host.files[dc.LIVE_CONFIG] = json.dumps({k: v for k, v in LIVE_CFG.items() if k != "pick_file"}).encode()
+    rc, out = go(host, now=now)
+    assert ("c1nf_seal_no_pick_file" in alerts(out)) is (expect is not None)
+    if expect is None:
+        assert "has no pick_file yet" in out
+
+
+def test_final_marker_missing_in_the_seal_window():
+    host = FakeHost()
+    del host.modes[dc.FINAL_MARKER]
+    assert "c1nf_seal_final_missing" in alerts(go(host)[1])
+    assert "c1nf_seal_final_missing" not in alerts(go(host, now=dc.SEAL_START_S - 60)[1])  # before the window it is not needed
+    for d in (host.files, host.modes, host.mtimes):
+        d.pop(dc.LIVE_OK, None)
+    assert "c1nf_seal_final_missing" not in alerts(go(host)[1])  # gate closed: nothing would trade anyway
+    assert dc.FINAL_MARKER in dc.PRIV_STAT and dc.FINAL_MARKER == "/var/lib/mal-live/c1nf/FINAL_WRITTEN"
+
+
+def test_tier_report_and_unapplied_alert():
+    host = FakeHost()
+    rc, out = go(host)
+    assert "tier: executor=T1 file=T1 (applies T1)" in out and "attempts_in_tier=3" in out
+    host.files[dc.COUNTERS_FILE] = json.dumps({"halts": {}, "tier_state": {"tier": "T2", "since_ms": ms(NOW - 7200)}}).encode()
+    assert "c1nf_tier_unapplied" in alerts(go(host)[1])  # the file applies T1 since 2 h, the executor holds T2
+    host.mtimes[dc.TIER_FILE] = NOW - 300
+    assert "c1nf_tier_unapplied" not in alerts(go(host)[1])  # inside the 15 minute grace
+    host.mtimes[dc.TIER_FILE] = NOW - 7200
+    host.files[dc.TIER_FILE] = b"T2\n"  # T2 is inactive: the file still applies T1, and T2 in the file is its own alert
+    a = alerts(go(host)[1])
+    assert "c1nf_tier_unapplied" in a and "c1nf_tier_t2" in a
+    host.props["ActiveState"] = "inactive"
+    assert "c1nf_tier_unapplied" not in alerts(go(host)[1])  # only while it runs live
+
+
+def test_late_sells_follow_the_executors_window_not_the_lifetime_counters():
+    host = FakeHost()
+    host.files[dc.COUNTERS_FILE] = json.dumps({"halts": {}, "sells_landed": 40, "sells_late": 8}).encode()  # 20% lifetime, all long ago
+    host.files[dc.EXTRA_FILE] = json.dumps({"late_window": [1] * 2 + [0] * 18, "late_alert_on": False}).encode()  # 10%: not above
+    rc, out = go(host)
+    assert "c1nf_late_sells" not in alerts(out) and "late sells: 2 of the last 20 landed" in out
+    host.files[dc.EXTRA_FILE] = json.dumps({"late_window": [1] * 3 + [0] * 17}).encode()
+    assert "c1nf_late_sells" in alerts(go(host)[1])
+    host.files[dc.EXTRA_FILE] = json.dumps({"late_window": [1] * 3, "late_alert_on": True}).encode()  # the executor's own latch
+    assert "c1nf_late_sells" in alerts(go(host)[1])
+
+
+def test_extra_file_is_read_through_fixed_keys_only():
+    a, b = FakeHost(), FakeHost()
+    base = {"late_window": [0, 1, 0], "counts": {"pre_window": 4, "seal_bad_pick": 1}, "outcomes_unpriced": 2}
+    a.files[dc.EXTRA_FILE] = json.dumps(base).encode()
+    b.files[dc.EXTRA_FILE] = json.dumps({**base, "picks": {f"M{i}:1": {"mint": f"M{i}", "status": "filled", "outcome_pct": 12.5 * i,
+                                                                      "synthetic": True, "migration_class": "synthetic"} for i in range(9)},
+                                         "last_exit_ms": {"M1": 1}, "otail": {"path": "/srv/x"}}).encode()
+    out_a, out_b = go(a)[1], go(b)[1]
+    assert out_a == out_b and "pre_window x4, seal_bad_pick x1; shadow outcomes without the pinned leg x2" in out_a
+    assert "12.5" not in out_b and not re.search("synth", out_b.replace("synthetic_share_high", ""), re.I)
+    assert dc.EXTRA_FILE in dc.PRIV_READ and dc.EXTRA_FILE in dc.PRIV_STAT
+
+
+def test_halt_meaning_lists_only_what_the_executor_latches():
+    assert set(dc.HALT_MEANING) == {"fill_selection_adverse", "landing_p50_gt_1_9s", "out_of_rule_entry", "stuck_position", "model_sha_mismatch"}
+    for gone in ("twin_divergence", "pins_changed", "program_changed", "ms_per_slot_out_of_range", "model_hash_changed", "late_sells_gt_5pct"):
+        assert gone not in dc.HALT_MEANING
+    h5src = (ROOT / "tools/h5_executor.py").read_text()
+    assert '_latch("out_of_rule_entry"' in h5src and '_latch("stuck_position"' in h5src
+    v2 = ROOT / "tools/c1nf_executor.py"
+    if v2.is_file():  # the executor PR's names, once it is on the branch
+        src = v2.read_text()
+        for name in ("fill_selection_adverse", "landing_p50_gt_1_9s", "model_sha_mismatch", "exit_late_share_gt_10pct"):
+            assert f'"{name}"' in src, name
+
+
+def test_a3_not_given_is_an_info_line():
+    rc, out = go(FakeHost())
+    assert rc == 0 and "A3 not read (no --a3-file)" in out
+
+
+@pytest.mark.parametrize("change,expect", [
+    ({}, []),
+    ({"halt": {"flags": {**a3_record()["halt"]["flags"], "pins_changed": {"halt": True, "evaluated": True, "reason": "x"}}}}, ["c1nf_a3_halt"]),
+    ({"warn": {"flags": {"program_changed": {"warn": True, "evaluated": True, "reason": "x"}}}}, ["c1nf_a3_halt"]),
+    ({"slot_time": {"ms_per_slot_median": 470.0}}, ["c1nf_a3_halt"]),
+    ({"slot_time": {"ms_per_slot_median": 149.0}}, ["c1nf_a3_halt"]),
+    ({"slot_time": {}}, ["c1nf_a3_not_evaluated"]),
+    ({"warn": {"flags": {"program_changed": {"warn": False, "evaluated": False, "reason": "x"}}}}, ["c1nf_a3_not_evaluated"]),
+    ({"halt": {"flags": {**a3_record()["halt"]["flags"], "synthetic_share_high": {"halt": True, "evaluated": True, "reason": "x"},
+                         "boost_disabled": {"halt": True, "evaluated": True, "reason": "x"}}}}, ["c1nf_a3_alert"]),
+    ({"run_unix": int(NOW - 40 * 3600)}, ["c1nf_a3_stale"]),
+])
+def test_a3_rule6(change, expect):
+    host = FakeHost()
+    host.files[A3_PATH] = (json.dumps(a3_record(run_utc="old")) + "\n" + json.dumps(a3_record(**change)) + "\n").encode()
+    rc, out = go(host, "--a3-file", A3_PATH)
+    got = [a for a in alerts(out) if a.startswith("c1nf_a3")]
+    assert got == expect, out
+    if not expect:
+        assert "no rule 6 halt" in out and rc == 0
+    if "c1nf_a3_halt" in expect:
+        assert "sudo touch /var/lib/mal-live/c1nf/STOP" in out
+    if expect == ["c1nf_a3_alert"]:
+        assert "synthetic_share_high, boost_disabled (alert only" in out and "class_blind" not in out
+
+
+@pytest.mark.parametrize("data,expect", [(None, "c1nf_a3_missing"), (b"", "c1nf_a3_unreadable"), (b"{not json\n", "c1nf_a3_unreadable"),
+                                         (b"[1, 2]\n", "c1nf_a3_unreadable")])
+def test_a3_missing_or_unreadable(data, expect):
+    host = FakeHost()
+    if data is not None:
+        host.files[A3_PATH] = data
+    assert expect in alerts(go(host, "--a3-file", A3_PATH)[1])
+
+
+def test_real_host_read_tail(tmp_path):
+    f = tmp_path / "a3.jsonl"
+    f.write_bytes(b"x" * 100 + b"\nlast\n")
+    assert dc.Host().read_tail(str(f), 5) == b"last\n"
+    assert dc.Host().read_tail(str(tmp_path / "none"), 5) is None
+    (tmp_path / "link").symlink_to(f)
+    with pytest.raises(dc.Unsafe):
+        dc.Host().read_tail(str(tmp_path / "link"), 5)
+
+
+@pytest.mark.parametrize("val", ["nan", "inf", "-0.5", "0"])
+def test_invalid_funded_is_an_alert_not_a_crash(val):
+    host = FakeHost()
+    lines: list[str] = []
+    rc = dc.main(["--funded-sol", val, "--wallet", WALLET, "--shadow-dir", "/x"], host=host, out=lines.append,
+                 balance_fn=lambda w, e: FUNDED, now=NOW, checker=FakeChecker())
+    out = "\n".join(lines)
+    assert rc == 1 and "funded_invalid" in alerts(out) and "check_failed" not in out
 
 
 def test_stale_feed_and_late_bind():
@@ -463,6 +650,27 @@ def test_watch_config_requires_a_wallet_that_is_not_h5(tmp_path):
     assert "watch_config" in alerts_
     alerts_, _ = watch.collect(daily, FakeHost(), {k: v for k, v in env.items() if k != "C1NF_WATCH_WALLET"}, NOW)
     assert "watch_config" in alerts_
+
+
+@pytest.mark.parametrize("funded", ["nan", "inf", "-inf", "0", "-1"])
+def test_watch_config_refuses_a_funded_value_that_is_not_finite_and_positive(funded):
+    daily = watch.load_daily()
+    env = {"C1NF_WATCH_FUNDED_SOL": funded, "C1NF_WATCH_SHADOW_DIR": "/x", "C1NF_WATCH_WALLET": WALLET}
+    alerts_, obs = watch.collect(daily, FakeHost(), env, NOW, lambda w, e: FUNDED)
+    assert "watch_config" in alerts_ and obs == {}
+
+
+def test_watch_passes_the_a3_file_through():
+    daily = watch.load_daily()
+    env = {"C1NF_WATCH_FUNDED_SOL": "0.5", "C1NF_WATCH_SHADOW_DIR": "/x", "C1NF_WATCH_WALLET": WALLET}
+    host = FakeHost()
+    host.files[A3_PATH] = (json.dumps(a3_record(slot_time={"ms_per_slot_median": 470.0})) + "\n").encode()
+    alerts_, _ = watch.collect(daily, host, {**env, "C1NF_WATCH_A3_FILE": A3_PATH}, NOW, lambda w, e: FUNDED - 1_000_000)
+    assert "c1nf_a3_halt" in alerts_ and "watch_config" not in alerts_
+    alerts_, _ = watch.collect(daily, host, env, NOW, lambda w, e: FUNDED - 1_000_000)
+    assert not any(a.startswith("c1nf_a3") for a in alerts_)  # not configured: the engine's INFO line only
+    alerts_, _ = watch.collect(daily, host, {**env, "C1NF_WATCH_A3_FILE": "daily.jsonl"}, NOW)
+    assert "watch_config" in alerts_  # a relative path is refused
 
 
 def test_watch_units_pass_their_allowlist_and_h5_units_do_not():
