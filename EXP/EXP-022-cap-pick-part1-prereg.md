@@ -796,6 +796,8 @@ OWNER_SYNTHETIC_DECISION_EXP022: OPEN
 
 **Written** 2026-10-10T11:03Z (`date -u`). That is before 2026-10-16T01:00Z, so no counted hour exists. **Line numbers below are those of this file on main at `13fa26c`, before this amendment.**
 
+**Revised** 2026-10-10T11:42Z (`date -u`), after quant-proof's review of head `b3cd6b6`: edits E1 to E3 (items A4, A3, B and 0), the owner-line form (item 0), an erratum on section 11's line citation (item A2), and two conforming edits (item A4's last seal bullet, item C condition 1). The owner line is still OPEN. The branch now includes main at `99a8dd2`. On it, every line cited here (all before line 783) and the blobs `1ca0a88c`, `7486f57f` and `930c8caa` are unchanged.
+
 **This amendment is blind to every CAP-PICK outcome. It is not outcome-blind.**
 - No CAP-PICK outcome of a counted hour exists, because counting starts at 2026-10-16T01 (section 0).
 - To write it, the author opened no row, report or scratch file of walk 2, forward-1002, forward-1002ev, forward-paper, the paper twin, a runner, the pick oracle, the H5 shadow or canary, or C1-NF. The author computed no CAP-PICK, H5 or C1-NF outcome.
@@ -883,7 +885,20 @@ CAP-PICK has no live path today (the probe stopped 10-07), and its book has no c
 The owner has not decided EXP-022, so the line stays OPEN.
 
 **Question for the owner** (suggested; the manager asks it):
-> "CAP-PICK (EXP-022) starts counting at 10-16T01. Its own text keeps synthetic pools in the book, priced through the guard. But its A3 rules also halt the test whenever one daily sample of about 18 graduations reads above 35% synthetic. At today's share, a halt on one of the 21 daily runs is near-certain, and the 10-15 run alone could withdraw it. Keep the pools in and make the share report-only (Recommended), exclude them as H5 does, or leave EXP-022 as written? The decision must merge before 10-15T06:41Z."
+> "CAP-PICK (EXP-022) starts counting at 10-16T01. Its text keeps synthetic pools in the book: they are priced through the guard and count as rejects at −fee above it. Its A3 rules also halt the test when one daily sample of about 16–19 graduations reads above 35% synthetic. The four runs so far read 0/16, 6/19, 6/17 (fired, but did not count) and 4/18. If about 25% of graduations are synthetic, the 10-15 run alone withdraws CAP-PICK with roughly 14–24% chance, and a halt during the 21 counted days is near-certain. The 10-08 audit you approved planned to halt and re-specify as a new EXP if synthetic migration was adopted. Options: (a) keep the pools in and make the share report-only, with no replacement halt (Recommended). This drops a pre-registered halt after the readings were seen. It is blind to CAP-PICK P&L, and the verdict covers October's population, synthetic pools included. (b) Exclude them as H5 does; the paper book then differs from the live gate and executor. (c) Leave EXP-022 as written; it will likely be withdrawn on 10-15 or halted mid-read, then A12 or a new EXP. This must merge before 10-15T06:41Z."
+
+**The owner line, once answered** (quant-proof ruling 3, 2026-10-10; the EXP-025 form).
+- **Form.** The manager replaces `OPEN` in the owner line at the top of this amendment, exactly as below. This indented copy is a template, not the owner line:
+  ```
+  OWNER_SYNTHETIC_DECISION_EXP022: <YYYY-MM-DD> (owner, <channel>, asked by <manager> via <AskUserQuestion|miscusi_ask>; MiScusi notebook <n_...>). Question: "<verbatim, the question above>". Answer: "<verbatim>".
+  ```
+- This amendment applies only if the answer is option (a).
+- The question put to the owner must have said four things:
+  - (a) drops a pre-registered halt after the readings were seen;
+  - this departs from the audit plan the owner approved (SYN:258 and SYN:554);
+  - no backstop is added;
+  - the verdict covers October's population, including a class the exploration evidence never contained.
+- If the owner was already asked with the earlier wording of this question (PR head `b3cd6b6`), the manager puts the missing disclosure to the owner and records both exchanges in the line.
 
 #### A. What option (a) sets
 
@@ -899,6 +914,7 @@ The owner has not decided EXP-022, so the line stays OPEN.
 - **How a run is read.** The five flags are read one by one from the record's `halt.flags`, never from `halt.any`, which also counts the sixth flag. A run on which `synthetic_share_high` is the only flag that fired counts as a run with no halt.
 - **`synthetic_share_high` is recorded and reported, and never decides.** Each look prints every daily run's reading in its window as n_syn/n_chk, report-only.
 - **The monitor does not change.** `tools/pump_structure_monitor.py` stays blob `1ca0a88cecf0853d94336ea046ba1a910b79f198` and the pins stay blob `7486f57f372e79c7d852f9cb70991d20043d4a8f` (on main at `13fa26c`). The monitor still computes the flag.
+- **Erratum (section 11, line 348; stale before this amendment).** Section 11 cites the six halt flags at `tools/pump_structure_monitor.py:1027-1130`. In blob `1ca0a88c` they are set at about lines 1365-1443. A2 reads the flags by key, so the line numbers decide nothing.
 
 **A3. The class count (section 13, line 420, now defined).**
 - **The classifier:**
@@ -906,7 +922,7 @@ The owner has not decided EXP-022, so the line stays OPEN.
   - B2: a tape `post_complete_buy` row can only mark a pool synthetic, and only a located and read tx settles non-synthetic;
   - Clarification 1 B4: the transaction search, with its caps.
 - **The code:** `tools/synthetic_class.py` `classify_pool`, blob `930c8caa5d55a68e7886828b0e171acf107a2af1` on main at `13fa26c`. The read tool records the blob it imports.
-- **What is printed.** At each look, by UTC date of s0, the number of attempts that are synthetic, non-synthetic and unclassified. Counts only.
+- **What is printed.** At each look, over the look's window, the number of attempts that are synthetic, non-synthetic and unclassified. Counts only, as window totals. The split by UTC date of s0 is printed only after the final verdict (item A4), because the look also prints per-date totals for gate condition (ii).
 - **Unclassified attempts stay in the book.** A failed fetch, or any unclassified share, never makes a look NOT_DECIDABLE or late. If classification cannot finish, the affected attempts print as `unclassified` and the look runs on schedule.
 - **No item reads the counts.** Nothing in sections 7, 10, 11 or 12 reads them. Each look's report records the Helius credits that classification used (CLAUDE.md, Credits).
 
@@ -916,9 +932,10 @@ The owner has not decided EXP-022, so the line stays OPEN.
   - The class may come from any source: item A3, the A3 monitor's sample, the H5 shadow or executor, `tools/h5_synthetic_audit.py`, the C1-NF class stream, or the tape.
   - An outcome is a fill, reject, guard-reject count, exit, P&L, mean, CI, day sign, win or loss, or any field derived from one.
 - **Between looks:**
-  - No person, agent or job computes the class of a counted CAP-PICK pick or attempt.
+  - No person, agent or job computes the class of a mint because it is a counted CAP-PICK pick or attempt, or selects mints from the pick set to classify.
   - No one joins any class stream to the pick set or to the pick oracle's True mints, even for counts.
-  - Only the sealed look does this, and it prints counts by class and date only.
+  - Class streams that other jobs compute over all graduations without reference to the pick set (the A3 monitor's sample, the H5 executor and shadow, the C1-NF class stream) are not a breach. Joining any of them to the pick set is.
+  - Only the sealed look classifies counted attempts, and it prints window counts by class only (item A3).
   - The reason: under line 121, an attempt's class may say something about its guard result, so a class count of counted picks could stand in for an outcome count [inferred].
 - **Inside a look.** The report prints the guard-reject share (line 420) and the class counts as separate totals. It prints no cross-tab of class against reject, fill, exit or P&L. The read tool writes no per-attempt class field into any file that carries an outcome field.
 - **When there is a breach,** it is recorded here, dated, and the read is reported compromised (section 9).
@@ -937,14 +954,14 @@ The owner has not decided EXP-022, so the line stays OPEN.
   - supersede line 121's "never dropped";
   - apply the item A3 classifier to every attempt before scoring, and exclude synthetic and unclassified attempts from every leg;
   - make unclassified attempts above 1% of the look's attempts a NOT_DECIDABLE condition (section 10, "At every look");
-  - use the A2 five-flag halt list, the A3 per-date counts and the A4 seal;
+  - use the A2 five-flag halt list, the A3 counts and the A4 seal;
   - state that the book then differs from the live gate and executor.
 - **(c), as written.** This amendment does not take effect. Lines 121, 354 and 420 stand (Amendment 5 item 3).
 
 #### C. Conditions for this amendment to take effect
 
 All of these must hold:
-1. The owner line above reads (a), with the date and the notebook reference. The manager records it there.
+1. The owner line above reads (a), with the date and the notebook reference, in the form given in item 0. The manager records it there.
 2. Quant-proof's OK is posted on the final head.
 3. It merged before the 2026-10-15T06:41Z daily A3 run started.
 
