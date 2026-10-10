@@ -769,7 +769,7 @@ No CAP-PICK outcome was computed or read to make this amendment, and no row of w
 
 ### Amendment 6 (2026-10-10, before any counted hour; the manager's decision): the pick feed as built, and the replay-only residual
 
-**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled H5 executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10).
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled H5 executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
 
 No CAP-PICK outcome, paper-twin field or gate-log row was read to make this amendment. EXP-022's book, pick rule (section 2), counted window, looks, correction, gate and seal (section 9) are unchanged.
 

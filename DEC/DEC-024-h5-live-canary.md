@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (his words are in section 1).** The limits below are the manager's terms for his confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
+| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (the owner's words are in section 1).** The limits below are the manager's terms for the owner's confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-10-08 |
 | **Builds on** | [DEC-019](DEC-019-execution-probe.md) (probe wallet, custody, executor), DEC-020, DEC-021 §7, [DEC-023](DEC-023-h5-family.md), EXP-024, EXP-022 §9 |
@@ -474,7 +474,7 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
 
 ## Amendment 6 (2026-10-10, the manager's decision; written before 2026-10-16T01:00Z, before any counted CAP-PICK hour and before any H5 trade in the seal window; no CAP-PICK outcome, paper-twin field or gate-log row was read to write it): the pick feed as built (section 6)
 
-**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Item 8 is the manager's record of the duration and `end_ms`.
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Item 8 is the manager's record of the duration and `end_ms`. Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
 
 Section 6 says the executor "reads only the `mint` field of the decision-time intents into an in-process set". The feed as built (PR #509 `tools/cap_pick_oracle.py`, wired by PR #540) differs as follows. Items 1 to 3 and 5 to 6 are stricter for H5. Item 4 is declared here.
 
@@ -504,11 +504,11 @@ Section 6 says the executor "reads only the `mint` field of the decision-time in
 6. **Markers.** The manager creates `~/data/cap-pick-oracle/FINAL_WRITTEN` and `/var/lib/mal-live/h5/FINAL_WRITTEN` only after the DEC-016 FINAL row is in `/data/mal/exp012-forward/FINAL_READS.jsonl`. The creation instant (`date -u`) is recorded in LAB_STATE.
 7. **Unchanged.** The 60 s fail-closed halt, the seal window, the breach consequence, and every other rule in section 6.
 8. **Duration and `end_ms` (recorded; nothing here changes them).**
-   - **The owner did not extend the 14-day duration** (section 4). His words, 2026-10-10 about 08:35Z: "Don't extend the trial I think, let's keep things moving" (MiScusi notebook n_FdE6WF1rhq8-Hw). Section 4's cap stands.
-   - **The live config's `end_ms` stays 2026-10-16T00:30Z.** From that instant the installed v1 executor refuses every new buy (`end_instant`, `tools/h5_executor.py`). So it stops buying 30 minutes before the seal window opens at 2026-10-16T01:00Z, unless the owner decides otherwise. That instant is earlier than the 14-day cap from the first send (2026-10-09T19:29:53Z).
+   - **The owner did not extend the 14-day duration** (section 4). The owner's words, 2026-10-10 about 08:35Z: "Don't extend the trial I think, let's keep things moving" (MiScusi notebook decision entry "OWNER 2026-10-10 ~08:35Z: do not extend H5's 14-day trial", id n_FdE6WF1rhq8-Hw, confirmed by the manager who created it). Section 4's cap stands.
+   - **The live config's `end_ms` is 2026-10-16T00:30Z at this writing.** From that instant the installed v1 executor refuses every new buy (`end_instant`, `tools/h5_executor.py`). So it stops buying 30 minutes before the seal window opens at 2026-10-16T01:00Z. Extending `end_ms`, at most to section 4's cap of 2026-10-23T19:29:53Z, is a reviewed config change plus a reinstall (the manager's step); a run past that cap is the owner's decision (section 4). That instant is earlier than the 14-day cap from the first send (2026-10-09T19:29:53Z).
    - **The oracle wiring still matters.**
      - The H5 shadow is the canary's paper twin. It keeps running through Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and items 2, 3 and 5 govern which of its records it writes in the seal window. Until PR #540 is merged and the shadow restarted on it, the shadow seals every pool in the seal window (section 6, Dependency).
-     - Any later executor sha that runs in the seal window, by an owner decision, must carry items 2, 3 and 5.
+     - Any executor that runs in the seal window (an `end_ms` after 2026-10-16T01:00Z) must carry items 2, 3 and 5 (PR #540 or a later head with the same seal code).
 
 ## Open for the owner
 
