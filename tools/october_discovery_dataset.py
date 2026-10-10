@@ -54,6 +54,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import resource
 import statistics
 import subprocess
 import sys
@@ -76,6 +77,8 @@ HEUR_MAX_SLICE = 2_000_000_000
 HEUR_MAX_TOTAL = 17_700_000_000
 HEUR_WINDOW_S = 450  # the RULE used 1,600 slots (about 427 s at 267 ms); a time window survives the 200 ms switch
 DEFAULT_WINDOW_S = 900
+S0_LAG_MAX_S = 300  # rows are kept to complete + S0_LAG_MAX_S + window; a pool whose first print lags more is cut short
+FINALIZE_MARGIN_S = 120  # a graduation is written once the hours read so far end this long after its last kept second
 FIRST_MIN_S = 60
 MICRO_S = 360
 MAX_WORKERS = 2  # resource rule: at most 2 worker processes per agent
@@ -237,8 +240,13 @@ def verify_hour(src: HourSource, view_cache: dict[Path, dict[str, str] | None], 
         _path, state = hour_state(src.root, src.hour, strict=True)
         if state != "ok":
             raise Refused(f"hour {src.hour} under {src.root} is not usable: {state}")
+        pinned = _last_verify_sha(src.root, src.hour)
         for stream, path in src.files.items():
-            src.sha256[stream] = sha256_file(path)
+            got = sha256_file(path)
+            src.sha256[stream] = got
+            want = pinned.get(stream)
+            if want is not None and stream != "trades" and want != got:
+                raise Refused(f"{stream}/{path.name} does not match its verify.jsonl sha256")
         src.integrity = "walk_verified"
         return
     if not allow_unverified:
@@ -246,6 +254,20 @@ def verify_hour(src: HourSource, view_cache: dict[Path, dict[str, str] | None], 
     for stream, path in src.files.items():
         src.sha256[stream] = sha256_file(path)
     src.integrity = "unverified"
+
+
+def _last_verify_sha(root: Path, hour: str) -> dict[str, str]:
+    """The sha256 map of the hour's last verify.jsonl line (trades is checked by hour_state; other streams here)."""
+    last: dict[str, Any] = {}
+    for line in (root / "verify.jsonl").read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("hour") == hour:
+            last = rec
+    sha = last.get("sha256")
+    return {k: v for k, v in sha.items() if isinstance(v, str)} if isinstance(sha, dict) else {}
 
 
 def iter_rows(path: Path) -> Iterator[dict[str, Any]]:
@@ -371,7 +393,7 @@ def read_lifecycle(sources: Sequence[HourSource]) -> Lifecycle:
             for r in iter_rows(src.files["creates"]):
                 m = r.get("mint")
                 if m and m not in lc.creates:
-                    lc.creates[m] = r
+                    lc.creates[m] = {k: r.get(k) for k in ("slot", "block_time", "creator", "is_mayhem_mode")}
         if "migrations" in src.files:
             for r in iter_rows(src.files["migrations"]):
                 m = r.get("mint")
@@ -512,13 +534,13 @@ def _diff(a: int | None, b: int | None) -> int | None:
     return None if a is None or b is None else a - b
 
 
-def choose_pool(mint: str, complete: Mapping[str, Any], migs: Sequence[Mapping[str, Any]], rows_by_pool: Mapping[str, list],
+def choose_pool(mint: str, complete: Mapping[str, Any], migs: Sequence[Mapping[str, Any]], mint_pools: Mapping[str, list],
                 vmap: Mapping[str, int]) -> tuple[str | None, str | None, dict[str, Any]]:
     """Canonical pool: the migrate event's pool if the tape has it, else the first V-band pool (event V or map V) after
     complete, else the first pool with the graduation's quote mint after complete."""
     c_slot = int(complete["slot"])
     cands = []
-    for pool, rows in rows_by_pool.items():
+    for pool, rows in mint_pools.items():
         rows_m = [r for r in rows if r.get("mint") == mint and int(r["slot"]) >= c_slot]
         if rows_m:
             first = min(rows_m, key=order_key)
@@ -575,9 +597,14 @@ def boost_heuristic(rows: Sequence[Mapping[str, Any]], s0_bt: int) -> tuple[str 
     return tr, sorted(per[tr], key=order_key)
 
 
+CHAIN_KEYS = ("chain_links", "chain_breaks", "chain_links_multi", "chain_breaks_multi", "chain_unknown",
+              "chain_breaks_same_tx", "chain_breaks_same_slot", "chain_breaks_cross_slot")
+
+
 def chain_check(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     """Base-reserve chain on one pool's prints in (slot, tx_index, event_index) order. PumpSwap rows carry PRE-trade
-    reserves: next.base == base - token_raw after a buy, base + token_raw after a sell. Counts only."""
+    reserves: next.base == base - token_raw after a buy, base + token_raw after a sell. Counts only. A break is also
+    classed by where it sits: inside one transaction, between two transactions of one slot, or across slots."""
     out = Counter()
     for a, b in zip(rows, rows[1:]):
         if a.get("base_reserve") is None or b.get("base_reserve") is None or a.get("token_raw") is None:
@@ -585,13 +612,20 @@ def chain_check(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             continue
         want = int(a["base_reserve"]) - int(a["token_raw"]) if a.get("side") == "buy" else int(a["base_reserve"]) + int(a["token_raw"])
         out["chain_links"] += 1
+        multi = bool(a.get("_multi") or b.get("_multi"))
+        if multi:
+            out["chain_links_multi"] += 1
         if int(b["base_reserve"]) != want:
             out["chain_breaks"] += 1
-            if a.get("_multi") or b.get("_multi"):
+            if multi:
                 out["chain_breaks_multi"] += 1
-        if a.get("_multi") or b.get("_multi"):
-            out["chain_links_multi"] += 1
-    return {k: int(out.get(k, 0)) for k in ("chain_links", "chain_breaks", "chain_links_multi", "chain_breaks_multi", "chain_unknown")}
+            if a.get("signature") is not None and a.get("signature") == b.get("signature"):
+                out["chain_breaks_same_tx"] += 1
+            elif a.get("slot") == b.get("slot"):
+                out["chain_breaks_same_slot"] += 1
+            else:
+                out["chain_breaks_cross_slot"] += 1
+    return {k: int(out.get(k, 0)) for k in CHAIN_KEYS}
 
 
 def slot_micro(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -638,7 +672,7 @@ def _slices_summary(prefix: str, slices: Sequence[Mapping[str, Any]], amount_key
     }
 
 
-def graduation_row(mint: str, lc: Lifecycle, rows_by_pool: Mapping[str, list], vmap: Mapping[str, int], *,
+def graduation_row(mint: str, lc: Lifecycle, mint_pools: Mapping[str, list], vmap: Mapping[str, int], *,
                    window_s: int, read_end_s: int, missing_hours: set[str]) -> dict[str, Any]:
     c = lc.completes[mint]
     c_slot, c_bt, c_sig = int(c["slot"]), _bt(c), c.get("signature")
@@ -706,9 +740,9 @@ def graduation_row(mint: str, lc: Lifecycle, rows_by_pool: Mapping[str, list], v
         "pcb_event_source": p0.get("event_source") if p0 else None,
     })
     # canonical pool and s0
-    pool, pool_src, pinfo = choose_pool(mint, c, migs, rows_by_pool, vmap)
+    pool, pool_src, pinfo = choose_pool(mint, c, migs, mint_pools, vmap)
     row.update({"pool": pool, "pool_src": pool_src, **pinfo})
-    prow = sorted([r for r in rows_by_pool.get(pool, []) if r.get("mint") == mint and int(r["slot"]) >= c_slot], key=order_key) if pool else []
+    prow = sorted([r for r in mint_pools.get(pool, []) if r.get("mint") == mint and int(r["slot"]) >= c_slot], key=order_key) if pool else []
     s0 = prow[0] if prow else None
     s0_bt, s0_slot = _bt(s0), (int(s0["slot"]) if s0 else None)
     v0, v0_src = None, None
@@ -761,6 +795,7 @@ def graduation_row(mint: str, lc: Lifecycle, rows_by_pool: Mapping[str, list], v
             win_hours.add(datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%dT%H"))
             t += 3600
     row["span_end_bt"] = span_end
+    row["s0_lag_cut"] = bool(s0_bt is not None and c_bt is not None and s0_bt - c_bt > S0_LAG_MAX_S)
     row["censored_read_end"] = span_end >= read_end_s
     row["censored_missing_hour"] = bool(win_hours & missing_hours)
     # BOOST
@@ -857,35 +892,50 @@ def build(roots: Sequence[Path], start: str, end: str, *, ledger: Path, ledger_h
     vmap = load_vmap(vmap_paths) if vmap_paths else {}
 
     lc = read_lifecycle(sources)
-    grad_until = {m: int(_bt(c) or 0) + window_s + 3600 for m, c in lc.completes.items()}  # slack: s0 may lag complete
+    grad_until = {m: int(_bt(c) or 0) + S0_LAG_MAX_S + window_s for m, c in lc.completes.items()}
     jobs = [(s.hour, str(s.files["trades"]), grad_until, window_s) for s in sources if s.root is not None]
-    rows_by_pool: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    pools_by_mint: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     hour_stats: list[dict[str, Any]] = []
+    read_end_s = hour_start_s(end)
+    pending = sorted(lc.completes, key=lambda m: order_key(lc.completes[m]))  # grad_until is monotone in this order
+    grads: list[dict[str, Any]] = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    part = out_dir / "graduations.jsonl.partial"
+    gfh = part.open("x", encoding="utf-8")
+
+    def finalize(upto_s: int | None) -> None:
+        """Write and free every graduation whose kept rows are all in (the hours read so far end after upto_s)."""
+        nonlocal pending
+        n = 0
+        while n < len(pending) and (upto_s is None or grad_until[pending[n]] + FINALIZE_MARGIN_S < upto_s):
+            mint = pending[n]
+            row = graduation_row(mint, lc, pools_by_mint.pop(mint, {}), vmap, window_s=window_s, read_end_s=read_end_s, missing_hours=missing)
+            gfh.write(json.dumps(row, separators=(",", ":")) + "\n")
+            grads.append(row)
+            n += 1
+        pending = pending[n:]
+
     if workers == 1:
         results: Iterable = map(scan_trades_hour, jobs)
     else:
         pool = multiprocessing.get_context("spawn").Pool(workers)
-        results = pool.imap(scan_trades_hour, jobs)
+        results = pool.imap(scan_trades_hour, jobs)  # imap keeps hour order
     try:
         for hour, keep, stats in results:
             for p, rws in keep.items():
-                rows_by_pool[p].extend(rws)
+                for r in rws:
+                    pools_by_mint[r["mint"]][p].append(r)
             stats["events_types"] = dict(lc.event_types.get(hour, {}))
             stats["has_event_stream"] = hour in lc.hours_with_events
             hour_stats.append(stats)
+            finalize(hour_start_s(hour) + 3600)
+        finalize(None)
     finally:
         if workers > 1:
             pool.close()
             pool.join()
-    read_end_s = hour_start_s(end)
-    grads = []
-    for mint in sorted(lc.completes, key=lambda m: order_key(lc.completes[m])):
-        grads.append(graduation_row(mint, lc, rows_by_pool, vmap, window_s=window_s, read_end_s=read_end_s, missing_hours=missing))
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with (out_dir / "graduations.jsonl").open("x", encoding="utf-8") as fh:
-        for g in grads:
-            fh.write(json.dumps(g, separators=(",", ":"), sort_keys=False) + "\n")
+        gfh.close()
+    part.rename(out_dir / "graduations.jsonl")
     with (out_dir / "hour_stats.jsonl").open("x", encoding="utf-8") as fh:
         for h in hour_stats:
             fh.write(json.dumps(h, separators=(",", ":")) + "\n")
@@ -908,6 +958,8 @@ def build(roots: Sequence[Path], start: str, end: str, *, ledger: Path, ledger_h
         "final_marker": {k: final.get(k) for k in ("utc_time",)} if final else None,
         "hours": [{"hour": s.hour, "root": str(s.root) if s.root else None, "integrity": s.integrity, "sha256": s.sha256} for s in sources],
         "duplicate_completes": lc.duplicate_completes,
+        "peak_rss_mb": {"self": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+                        "children": round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)},
         "summary": summary,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
@@ -923,7 +975,7 @@ def summarize(grads: Sequence[Mapping[str, Any]], hour_stats: Sequence[Mapping[s
         vals = [r[key] for r in rows if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool)]
         return _median(vals)
 
-    ok = [g for g in grads if g.get("s0_seen") and not g.get("censored_read_end") and not g.get("censored_missing_hour")]
+    ok = [g for g in grads if g.get("s0_seen") and not g.get("censored_read_end") and not g.get("censored_missing_hour") and not g.get("s0_lag_cut")]
     vb = [g for g in ok if g.get("v_band")]
     vb_boost = [g for g in vb if g.get("boost_src") is not None]
     hs = Counter()
@@ -951,10 +1003,7 @@ def summarize(grads: Sequence[Mapping[str, Any]], hour_stats: Sequence[Mapping[s
         "vband_ms_sec_per_slot_median": med("ms_sec_per_slot", vb),
         "vband_pools_with_multi_tx_prints": sum(1 for g in vb if (g.get("mh_n_prints_multi_tx") or 0) > 0),
         "vband_pools_with_rot_in": sum(1 for g in vb if (g.get("mh_n_rot_in") or 0) > 0),
-        "chain_links": sum(int(g.get("chain_links") or 0) for g in ok),
-        "chain_breaks": sum(int(g.get("chain_breaks") or 0) for g in ok),
-        "chain_links_multi": sum(int(g.get("chain_links_multi") or 0) for g in ok),
-        "chain_breaks_multi": sum(int(g.get("chain_breaks_multi") or 0) for g in ok),
+        **{k: sum(int(g.get(k) or 0) for g in ok) for k in CHAIN_KEYS},
         "hour_totals": dict(hs),
     }
 

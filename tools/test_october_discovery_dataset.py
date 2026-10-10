@@ -221,6 +221,26 @@ def write_view(root: Path, *, corrupt: str | None = None) -> None:
     (root / "VIEW.sha256").write_text("\n".join(lines) + "\n")
 
 
+def write_walk_meta(root: Path, *, unsealed: tuple[str, ...] = (), bad_trades_sha: tuple[str, ...] = (), bad_events_sha: tuple[str, ...] = ()) -> None:
+    """checkpoint.json + verify.jsonl the way the forward walks write them (see tools/test_forward_v_join.py)."""
+    cp = {"hours": {}}
+    lines = []
+    for h in (H1, H2):
+        cp["hours"][h] = {"status": "partial" if h in unsealed else "sealed"}
+        sha = {}
+        for stream in od.STREAMS:
+            p = od.stream_file(root, stream, h)
+            if p is not None:
+                sha[stream] = hashlib.sha256(p.read_bytes()).hexdigest()
+        if h in bad_trades_sha:
+            sha["trades"] = "0" * 64
+        if h in bad_events_sha:
+            sha["events"] = "0" * 64
+        lines.append({"hour": h, "issues": [], "content": {"trades": {"duplicates": 0, "bad_lines": 0}}, "sha256": sha})
+    (root / "checkpoint.json").write_text(json.dumps(cp))
+    (root / "verify.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+
 def read_out(out: Path) -> tuple[dict[str, dict], list[dict], dict]:
     grads = [json.loads(x) for x in (out / "graduations.jsonl").read_text().splitlines() if x.strip()]
     hours = [json.loads(x) for x in (out / "hour_stats.jsonl").read_text().splitlines() if x.strip()]
@@ -291,6 +311,19 @@ class TestGuards(Base):
         write_view(self.root)
         man = self.run_build(allow_unverified=False)
         self.assertEqual({h["integrity"] for h in man["hours"]}, {"view_ok"})
+
+    def test_walk_layout_verified(self):
+        build_fixture(self.root)
+        for kw, msg in ((dict(unsealed=(H2,)), "not_sealed"), (dict(bad_trades_sha=(H1,)), "sha_mismatch"),
+                        (dict(bad_events_sha=(H2,)), "verify.jsonl sha256")):
+            write_walk_meta(self.root, **kw)
+            with self.assertRaises(od.Refused) as cm:
+                self.run_build(allow_unverified=False)
+            self.assertIn(msg, str(cm.exception))
+            self.assertFalse((self.out / "graduations.jsonl").exists())
+        write_walk_meta(self.root)
+        man = self.run_build(allow_unverified=False)
+        self.assertEqual({h["integrity"] for h in man["hours"]}, {"walk_verified"})
 
     def test_missing_hour_refused_or_flagged(self):
         build_fixture(self.root)
@@ -387,6 +420,7 @@ class TestFixtureBuild(Base):
         # chain: every link holds except the injected break; the rotation link is checked and holds
         self.assertEqual(a["chain_breaks"], 1)
         self.assertEqual(a["chain_breaks_multi"], 0)
+        self.assertEqual(a["chain_breaks_cross_slot"], 1)
         self.assertGreaterEqual(a["chain_links_multi"], 1)
         self.assertEqual(a["chain_links"], 37 - 1)
         self.assertFalse(a["censored_read_end"])
@@ -477,10 +511,12 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(od.boost_heuristic(rows, 1000), (None, []))
 
     def test_chain_check_counts(self):
-        rows = [{"side": "buy", "token_raw": 10, "base_reserve": 100}, {"side": "sell", "token_raw": 5, "base_reserve": 90},
-                {"side": "buy", "token_raw": 1, "base_reserve": 96, "_multi": True}]
+        rows = [{"side": "buy", "token_raw": 10, "base_reserve": 100, "slot": 1, "signature": "s1"},
+                {"side": "sell", "token_raw": 5, "base_reserve": 90, "slot": 1, "signature": "s2"},
+                {"side": "buy", "token_raw": 1, "base_reserve": 96, "_multi": True, "slot": 2, "signature": "s3"}]
         self.assertEqual(od.chain_check(rows), {"chain_links": 2, "chain_breaks": 1, "chain_links_multi": 1, "chain_breaks_multi": 1,
-                                                 "chain_unknown": 0})
+                                                 "chain_unknown": 0, "chain_breaks_same_tx": 0, "chain_breaks_same_slot": 0,
+                                                 "chain_breaks_cross_slot": 1})
 
     def test_fee_tier_line(self):
         self.assertEqual(od.fee_tier(410.88), (12_500, 3_000, 0.0))
