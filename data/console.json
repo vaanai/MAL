@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T07:35:00Z",
+ "updated_utc": "2026-10-10T07:40:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-am4-1010",
+   "kind": "other",
+   "title": "Owner decision: DEC-024 Amendment 4, the section 5.1 measure (written after the halt)",
+   "detail": "From 07:27:25Z section 5.1 uses the executor's UTC-day median of the BOOST last slice after the first print over at least 30 pools (below 335 s halts; below 337 s on two completed days halts, the 07:11Z fire counting as the first; an A3 run below 330 s still halts). Resume only if day 10-10 completes at or above 337 s over at least 30 pools with no other halt. Disclosed as a loosening chosen after the fire.",
+   "atUtc": "2026-10-10T07:27:25Z"
+  },
   {
    "id": "h5-stop-51-1010",
    "kind": "other",
@@ -423,8 +430,8 @@
   {
    "id": "fy-h5-51-resume",
    "from": "claude",
-   "text": "H5 canary is stopped under DEC-024 section 5.1: BOOST's last slice came at most 333 s after the first print (median of 9 pools), against our sells at about 329.5 s. Your choices: (1) an amendment, written after the halt, that drops the A3 clause that fired to report-only and judges section 5.1 on the executor's 30+ pool day median, resuming only after a full UTC day at or above 337 s; (2) resume with both checks, where the A3 run already has one run below 337 s, so the next A3 run below 337 s stops it again; (3) keep H5 stopped. Manager recommends (1).",
-   "atUtc": "2026-10-10T07:35:00Z"
+   "text": "Decided by you at 07:27Z (DEC-024 Amendment 4): H5 restarts on the bot's own 30+ coin daily measure only if today (10-10) finishes at or above 337 s; the manager checks just after 00:00Z (about 5:05 PM PT). A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 trades.",
+   "atUtc": "2026-10-10T07:40:00Z"
   },
   {
    "id": "fy-20261009-1945-live",
