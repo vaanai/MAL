@@ -533,7 +533,7 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 
 ### Amendment 4 (written 2026-10-10T10:34:03Z, from `date -u`; before 2026-10-16T01:00Z; outcome-blind, counts and hashes only): the P2 deterministic rebuild record
 
-Numbered after Amendment 3, which is open in #548. If that PR does not merge first, the manager renumbers this one at merge. This amendment records P2 (section 10) and the hashes that section 2.3 says a dated amendment records. It changes no rule, cap, threshold, feature or band.
+Numbered after Amendment 3 (#548, open when this was written). Amendments take numbers in merge order: if this merges before #548, the manager renames this heading to Amendment 3, and #548's to Amendment 4, at merge. The written instants stay as they are. This amendment records P2 (section 10) and the hashes that section 2.3 says a dated amendment records. It changes no rule, cap, threshold, feature or band.
 
 **What ran [measured].** MiScusi job **#504** (`j_zbuqJu4lySNRfw`), on `mal-research-0`, role `exploration`, 6 CPU, 40 GB memory cap (peak 9.2 GB), 2 pass-A workers, repo at `b17dc0b`. It ran 38 minutes, ended 2026-10-10T10:33:22Z with exit 0, and ran once. It read the exploration tape only (`/data/mal/audit-1008/tape`, `/data/mal/hunt-shared`).
 - **Script.** `run_p2.sh` (sha256 `20c8ac02950d734616ce4aaeb546bd53a9a9ea401804072b6e8c7f3302744f9a`). It runs the steps of `verify/run_rebuild.sh` in the same order: ledger, `10_meta.py`, `11_passA.py` per day (the 36 days of C1's `logs/A_*.log`, 2 workers, the same memory and load wait), `12_passC.py` (2 chunks), `14_export.py`, `16_confirm.py`. It differs in five places:
@@ -591,7 +591,7 @@ Numbered after Amendment 3, which is open in #548. If that PR does not merge fir
 - the manifests `p2_outputs_sha256.txt`, `staged_sha256.txt`, `wl_sha256.txt`, `mout_sha256.txt`, `shared_sha256.txt`;
 - `run_p2.sh`, `p2_counts.py`, `common2_p2.diff`.
 
-`/data/mal/c1nf` has no `.nobackup` marker, while `/data/mal/hunt-1008` has one. The working directory `/data/mal/hunt-1008/c1nf-p2` (2.7 GB, including `wl/` and `out/mout/`) is kept for look assembly.
+`/data/mal/c1nf` has no `.nobackup` marker, while `/data/mal/hunt-1008` has one. `/data` is in the nightly restic set (`mal-backup.timer`, about 03:17Z, `--exclude-if-present .nobackup`) [measured 2026-10-10]. No snapshot holds these files yet: they were written at 10:33Z, after the 2026-10-10T03:17Z run, and that run failed (`Fatal: unable to save snapshot`; the target reported `no space left on device`). Until a snapshot that contains `/data/mal/c1nf/p2/` is confirmed, the copy is on local disk only. The manager records that snapshot's id, checked with `restic ls`, in a dated line before 2026-10-16T01:00Z. The working directory `/data/mal/hunt-1008/c1nf-p2` (2.7 GB, including `wl/` and `out/mout/`) is kept for look assembly.
 
 **Outcome-blindness.**
 - Neither the job log nor the job result holds a P&L, return, fill or exit value of the rebuild, and the writer printed or opened none. The job log and result hold only counts and hashes.
@@ -602,7 +602,7 @@ Numbered after Amendment 3, which is open in #548. If that PR does not merge fir
 - It runs no October step. The look patches of section 2.4 belong to the read tool (P4).
 - It is not P3 or P4.
 - It is not the canary's model pin. #550 trains on VERIFY's arrays, and a model built on P2's arrays needs its own pin and dated line.
-- It is not quant-proofed. It needs the manager's review before merge.
+- Quant-proof reviewed it on head `f7da961` (2026-10-10). The run matches section 10 P2, with the `common2.py` retarget disclosed above. The count step is count-only. The bands and hashes check against the files.
 
 ## Sources
 
