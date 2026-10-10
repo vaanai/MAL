@@ -531,9 +531,29 @@ class ExtractorContract(unittest.TestCase):
             self.assertEqual((g.v0, g.v0_src), (17.6e9, "ev"))  # Am.1: the s0 print's ev V comes before the extractor's vmap V0
             self.assertTrue(np.array_equal(g.vt, np.array([ev[k] for k in p.keys], float)))
             self.assertEqual(g.cls, "non_synthetic")
-            g2 = br.load_pools(lay, br.VSources(None, {}, {}), {})[0]
+            g2 = br.load_pools(lay, br.VSources(None, {}, {}, vmap_fallback=True), {})[0]  # the P5 stage and classify only
             self.assertEqual((g2.v0, g2.v0_src, g2.cls), (tb.V, "extract_vmap", "unclassified"))
             self.assertTrue(np.isnan(g2.vt).all())
+
+    def test_default_has_no_vmap_v0_so_v0_is_unknown(self):
+        """Am.1 lists three V0 sources; the extractor's vmap V is not one. With the default (precount and look), a pool that none of
+        the three covers has V0 unknown: it takes both section 4 V0 cases and its trade is flagged v_missing."""
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            write_extract(lay, [keyed(make_fwd())])  # the meta row carries a vmap V (tb.V)
+            vs = br.VSources(None, {}, {})
+            self.assertFalse(vs.vmap_fallback)
+            g = br.load_pools(lay, vs, {"PM1": "non_synthetic"})[0]
+            self.assertTrue(math.isnan(g.v0))
+            self.assertEqual(g.v0_src, "none")
+            s = br.structure(g, GOOD)
+            self.assertTrue(s.v0_unknown)
+            self.assertEqual(sorted(t.v0 for t in s.trigs), list(br.V0_UNKNOWN_CASES))
+            got = br.price_cell(g, s, br.CELLS["D"], rbar=RBAR, corr="none")
+            self.assertTrue(got["v_missing"])
+            # the account source still gives V0 under the default
+            g3 = br.load_pools(lay, br.VSources(None, {}, {"PM1": 17_600_000_000}), {"PM1": "non_synthetic"})[0]
+            self.assertEqual((g3.v0, g3.v0_src), (17.6e9, "account"))
 
     def test_refuses_other_columns(self):
         with tempfile.TemporaryDirectory() as d:
@@ -830,6 +850,26 @@ class Producers(unittest.TestCase):
                 bi.e1_copy(src, Path(d) / "e1b.json")
             with self.assertRaises(br.Refused):
                 bi.e1_copy(Path("/var/lib/mal/fast-listener/helius.env"), Path(d) / "x.json")
+
+    def test_run_account_uses_the_vmap_tools_v0_resolver(self):
+        """Source 3 keeps v_base, and the stored V when the account has no pending counters (pending and v_base both None:
+        exp012_forward_vmap._v0, DEC-016 Am.5 clarification); never the stored V when pending is an int."""
+        from tools import pumpswap_virtual as pv
+
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            lay.account_map.parent.mkdir(parents=True)
+            v = {"PA": 17_650_000_000, "PB": 17_550_000_000, "PC": 17_700_000_000, "PD": None, "PE": 17_500_000_000}
+            detail = {"PA": {"pending": 5, "v_base": 17_600_000_000}, "PB": {"pending": None, "v_base": None},
+                      "PC": {"pending": 3, "v_base": None}, "PD": {}}  # PE: no detail entry
+            pv.save_map(lay.account_map, v, 0)
+            lay.account_map.with_name(lay.account_map.name + ".detail.json").write_text(json.dumps(detail))
+            with mock.patch.object(bi, "ACCOUNT_NOT_BEFORE", "2020-01-01T00:00:00Z"):
+                r = bi.run_account(lay)
+            got = json.loads(lay.account_v0.read_text())
+            self.assertEqual(got, {"PA": 17_600_000_000, "PB": 17_550_000_000})
+            self.assertEqual((r["pools_in_map"], r["pools_with_v0"]), (4, 2))
+            self.assertEqual(br.VSources(None, {}, got).v0((1, "x", 0), "PB"), (17.55e9, "account"))
 
     def test_pda_record(self):
         from tools import pump_structure_monitor as M

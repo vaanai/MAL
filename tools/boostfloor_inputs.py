@@ -378,7 +378,9 @@ def run_account(lay: br.Layout) -> dict[str, Any]:
     if mp.stat().st_mtime < br._ts(ACCOUNT_NOT_BEFORE[:13]):
         raise br.Refused(f"{mp} was written before {ACCOUNT_NOT_BEFORE} (section 4: a new file at or after it)")
     detail = VM.load_detail(mp)
-    acct = {p: int(d["v_base"]) for p, d in sorted(detail.items()) if type((d or {}).get("v_base")) is int}
+    vmap = json.loads(mp.read_text(encoding="utf-8"))["v"]
+    # the vmap tool's own resolver: v_base, or the stored V when the account has no pending counters (DEC-016 Am.5 clarification)
+    acct = {p: v0 for p in sorted(set(detail) | set(vmap)) if (v0 := VM._v0(detail, p, vmap.get(p))) is not None}
     br.write_new(lay.account_v0, (json.dumps(acct, sort_keys=True) + "\n").encode())
     return {"pools_in_map": len(detail), "pools_with_v0": len(acct), "map_sha256": br.sha256_file(mp), "sha256": br.sha256_file(lay.account_v0)}
 

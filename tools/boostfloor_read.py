@@ -29,8 +29,9 @@ INPUT (forward mode): exactly the columns `tools/h5_forward_extract.py forward` 
                                rows share is ambiguous: it gets no V (the missing-V rule) and no getTransaction record.
 V source order (Am.1), per print: 1. forward-1002ev through `forward_v_join join` (only when P5 line A passed); 2. P5's getTransaction
 records (`tools/boostfloor_inputs.py p5`), used only when the decode's (sol, tok, q, b) equal the tape's; 3. the pool account
-(`boostfloor_inputs account`; V0 only: an account read at >= 10-16 cannot give V(t) at a past print), then the extractor's vmap V0 (V0
-only); 4. none: the section 4 missing-V rule. Producers of the P5, P7, E1 and BOOST-PDA files: tools/boostfloor_inputs.py.
+(`boostfloor_inputs account`; V0 only: an account read at >= 10-16 cannot give V(t) at a past print); 4. none: the section 4
+missing-V rule. The extractor's vmap V0 is not an Am.1 source: it is used only where no V0 is scored (`VSources.vmap_fallback`: the P5
+stage, which only plans fetches, and classify), never by precount or look. Producers of the P5, P7, E1 and BOOST-PDA files: tools/boostfloor_inputs.py.
 
 OUTPUT. Verdict and report on stderr first, then (new, empty dir) report.json and rows.csv, then the `completed` ledger line.
 """
@@ -480,6 +481,7 @@ class VSources:
     ev: dict[Key, int] | None  # None: P5 line A failed (or absent), so forward-1002ev is not used
     gettx: dict[Key, int]
     account_v0: dict[str, int]
+    vmap_fallback: bool = False  # True only at the P5 stage (fetch planning) and classify: the extractor's vmap V0 is not an Am.1 source
 
     def v(self, key: Any) -> tuple[float, str]:
         if self.ev is not None and key in self.ev:
@@ -494,7 +496,7 @@ class VSources:
             return v, src
         if pool in self.account_v0:
             return float(self.account_v0[pool]), "account"
-        if vmap_v0 == vmap_v0:
+        if self.vmap_fallback and vmap_v0 == vmap_v0:
             return float(vmap_v0), "extract_vmap"
         return math.nan, "none"
 
@@ -627,7 +629,7 @@ def forward_pools(lay: Layout, classes: Mapping[str, str], *, p5_stage: bool = F
     """Production loader: index the raw prints, take V by the source order, attach the BOOST PDA records. `p5_stage`: before P5 exists,
     V is forward-1002ev's alone (Am.1: the cross-source sample's triggers are found with the joined V)."""
     index, _ = index_prints(FORWARD_1002, lay.vjoin, extract_mints(lay))
-    vs = VSources(ev_map(index), {}, {}) if p5_stage else load_vsources(lay, index)
+    vs = VSources(ev_map(index), {}, {}, vmap_fallback=True) if p5_stage else load_vsources(lay, index)  # load_vsources: Am.1 only
     pools = load_pools(lay, vs, classes)
     pda = load_pda(lay.boost_pda)
     for p in pools:
@@ -1349,7 +1351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if lay.classes.exists():
                 raise Refused(f"{lay.classes} exists: classes are written once")
             good, _ = _good_bad(FORWARD_1002)
-            pools = load_pools(lay, VSources(None, {}, {}), {})  # V0 from the extractor's vmap; classify needs no P5 file
+            pools = load_pools(lay, VSources(None, {}, {}, vmap_fallback=True), {})  # V0 from the extractor's vmap; classify needs no P5 file
             recs = classify_pools(M.RpcClient(M.DEFAULT_RPC, max_calls=60_000), pools)
             write_new(lay.classes, "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs).encode())
             counts: dict[str, int] = {}
