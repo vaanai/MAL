@@ -30,7 +30,7 @@ Dated 2026-10-10 (`date -u` read 2026-10-10T11:10:56Z when this text was drafted
 | [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) | PASS; look 3 done or NOT_DECIDABLE; A3 halt; withdrawal (only before counting, under F2 (d)). |
 | [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) | FINAL (A) written. If (A) passes, also the single (B) run and the Amendment 3(a) re-score, each done or refused. |
 
-"F2 (d)" is clause (d), "No lever", of the F2 package (the walk-2 week-1 lane) in the ruling's section (2). F2 is not on `main` as of this text.
+"F2 (d)" is clause (d), "No lever", of the F2 package (the walk-2 week-1 lane) in the ruling's section (2). F2 is not on `main` as of this text. The limit "only before counting" holds without it: EXP-022 provides withdrawal only before its first counted hour, 2026-10-16T01:00Z (sections 2.1, 10 and 11), so a stop after that instant is not a withdrawal end state.
 
 Terms that apply to every read:
 
@@ -40,7 +40,7 @@ Terms that apply to every read:
 
 **(3b) EXP-024 Amendment 4 item D1 lifts at EXP-024's end state.** Item D1 is the seal on joining synthetic class to an H5 outcome (not domain D1 of the domain map). In it, "before Look 2 is read" means "before EXP-024's last look". So D1 lifts when EXP-024's end state (table above) is recorded on `main`, including when Look 2 never runs.
 
-- The full-universe book (synthetic pools included) stays report-only (EXP-024 Amendment 4 A3).
+- The full-universe book (synthetic pools included) stays report-only (EXP-024 Amendment 4 A3). A3's "before Look 2 has been read (item D1)" takes the same reading.
 - After a Look 1 PASS, a synthetic split cannot widen the live universe. Widening it would be a new family.
 
 ## Table
