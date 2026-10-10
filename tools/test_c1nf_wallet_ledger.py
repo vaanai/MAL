@@ -14,6 +14,7 @@ import datetime as dt
 import itertools
 import json
 import random
+import re
 import shutil
 import subprocess
 from collections import defaultdict
@@ -994,3 +995,205 @@ def test_spill_cap_is_an_option(tmp_path):
     assert con.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0] == "1.8 GiB"  # 2e9 bytes
     p = L.build_parser().parse_args(["rollup", "--day", DAY, "--out-root", str(tmp_path)])
     assert p.max_temp_gb == L.DEFAULT_MAX_TEMP_GB == 8.0 and p.keep_asof == L.DEFAULT_KEEP_ASOF == 3
+
+
+# --------------------------------------------------------------------------------------------
+# event-V keys on tip rows (quant-proof ruling on the C1-NF live V source, section (c) item 5)
+# --------------------------------------------------------------------------------------------
+# Option A stamps observe.trade_decode.EVENT_V_KEYS on tip trade rows, and main's follower writes a negative
+# single `virtual_quote_reserve` where the deployed one wrote None. The ledger reads tip rows only through
+# TIP_JSON_COLUMNS. These tests build the same day with and without the new keys and require the ledger
+# arrays (values and dtypes), the row counters, the content sha and the npz bytes to be equal.
+
+# virtual_quote_reserves is i128 and may be negative (trade_decode.event_v_fields); creator_fee_unclaimed and
+# buyback_fee are u64, so values above int64 max are legal. The ledger reads none of these keys.
+_EV_VQR = (-123_456_789, -1, 0, 17_584_317_180, -(2**127), 2**127 - 1, -(2**70), 2**64 + 5)
+_EV_U64 = (0, 777, 2**63, 2**64 - 1)
+_EV_IX = ("buy", "buy_exact_quote_in", "sell", "", 'q"uo\\te', "ünï")
+_SINGLE_V = (-17_584_317_180, None, 0, 554_841_812)
+_FILLER = [
+    {"venue": "pumpswap", "mint": MINTS[0], "trader": "FILLER" + "z" * 38, "side": "buy", "sol_lamports": 1,
+     "signature": f"f{h}", "event_index": 0}
+    for h in range(24)
+]
+
+
+def _event_v_extra(i: int, rng: random.Random) -> dict:
+    """Keys an event-V tip row may carry, in the shapes the stamper can write: the full tail (shapes 0, 1), keys
+    present with JSON nulls (2), the older sell tail that stops at V, so no creator_fee_unclaimed (3), and no
+    tail at all, left unstamped as event_v_missing (4). Every row also has the follower's single V."""
+    shape = i % 5
+    out: dict = {"virtual_quote_reserve": _SINGLE_V[i % len(_SINGLE_V)]}
+    if shape == 4:
+        return out
+    out.update(
+        virtual_quote_reserves=_EV_VQR[i % len(_EV_VQR)],
+        ix_name=rng.choice(_EV_IX),
+        buyback_fee=rng.choice(_EV_U64),
+        fee_recipient_zero=bool(i & 1),
+    )
+    if shape != 3:
+        out["creator_fee_unclaimed"] = rng.choice(_EV_U64)
+    if shape == 2:
+        out.update(ix_name=None, buyback_fee=None, creator_fee_unclaimed=None, fee_recipient_zero=None)
+    return out
+
+
+def _with_event_v(rows: list[dict], seed: int, shift: int = 0) -> list[dict]:
+    """The same rows plus event-V keys. Every other row puts the new keys before the legacy ones."""
+    rng = random.Random(seed)
+    out = []
+    for i, r in enumerate(rows):
+        extra = _event_v_extra(i + shift, rng)
+        out.append({**extra, **r} if i % 2 else {**r, **extra})
+    return out
+
+
+def _write_tip_layout(d: Path, hour0: list[dict], dup: list[dict], filler: list[dict], zst: bool) -> None:
+    """Hour 0 holds the rows and then the duplicate lines (dedupe works inside one file); hours 1-23 and the next
+    day's T00 hold one filler row each, so the day is closed and no hour is missing."""
+    write_tip_hour(d, f"{DAY}T00", hour0 + dup, zst=zst)
+    for h in range(1, 24):
+        write_tip_hour(d, f"{DAY}T{h:02d}", [filler[h]], zst=zst)
+    write_tip_hour(d, f"{NEXT}T00", [filler[0]], zst=zst)
+
+
+def _hour_lines(d: Path, hour: str, zst: bool) -> list[dict]:
+    if zst:
+        raw = subprocess.run(["zstd", "-dc", str(d / f"trades-{hour}.jsonl.zst")], capture_output=True, check=True).stdout
+        text = raw.decode()
+    else:
+        text = (d / f"trades-{hour}.jsonl").read_text()
+    return [json.loads(x) for x in text.splitlines()]
+
+
+def _assert_same_ledger(res_a: dict, res_b: dict, root_a: Path, root_b: Path) -> dict[str, np.ndarray]:
+    za = L.load_daily(L.daily_paths(root_a, DAY)[0])
+    zb = L.load_daily(L.daily_paths(root_b, DAY)[0])
+    assert set(za) == set(zb) == {"th", *L.DAILY_COLS}
+    for k in za:
+        assert za[k].dtype == zb[k].dtype, k
+        assert np.array_equal(za[k], zb[k]), k
+    assert res_a["rows"] == res_b["rows"]
+    assert res_a["wallets"] == res_b["wallets"] == len(za["th"]) > 0
+    assert res_a["content_sha256"] == res_b["content_sha256"] == L.content_sha256(za)
+    assert res_a["npz_sha256"] == res_b["npz_sha256"]
+    return za
+
+
+def test_event_v_keys_are_not_ledger_columns():
+    """The premise of the two tests below: the tip adapter selects none of the new keys."""
+    from observe.trade_decode import EVENT_V_KEYS
+
+    cols = set(re.findall(r"(\w+):'", L.TIP_JSON_COLUMNS))
+    assert cols == {"venue", "mint", "trader", "side", "sol_lamports", "signature", "event_index"}
+    assert not cols & {*EVENT_V_KEYS, "virtual_quote_reserve"}
+
+
+@pytest.mark.parametrize("zst", [False, True], ids=["jsonl", "jsonl.zst"])
+@pytest.mark.parametrize("dedupe", [True, False], ids=["dedupe", "no-dedupe"])
+def test_event_v_keys_leave_the_tip_ledger_unchanged(tmp_path, zst, dedupe):
+    """(c) item 5: rows with the event-V keys (negative and out-of-int64 virtual_quote_reserves, u64 fees above
+    int64 max, nulls, a negative single virtual_quote_reserve) give the same ledger as the rows without them."""
+    if zst and shutil.which("zstd") is None:
+        pytest.skip("zstd CLI not installed")
+    rows = make_rows(11, 1500)
+    ev_rows = _with_event_v(rows, 11)
+    # A replayed block: the same (signature, event_index) again in one hour file. In the event-V tape the
+    # copy's stamp differs from the first one; the ledger dedupes on the selected columns only.
+    dup = rows[:40:2]
+    ev_dup = _with_event_v(dup, 99, shift=3)
+    assert any(a != b for a, b in zip(ev_dup, ev_rows[:40:2]))
+    ev_filler = _with_event_v(_FILLER, 12)
+
+    plain, ev = tmp_path / "tip_plain", tmp_path / "tip_ev"
+    _write_tip_layout(plain, rows, dup, _FILLER, zst)
+    _write_tip_layout(ev, ev_rows, ev_dup, ev_filler, zst)
+    # the keys and edge values are really in the event-V file the ledger reads
+    on_disk = _hour_lines(ev, f"{DAY}T00", zst)
+    vqr = [r["virtual_quote_reserves"] for r in on_disk if r.get("virtual_quote_reserves") is not None]
+    assert min(vqr) == -(2**127) and max(vqr) == 2**127 - 1 and -123_456_789 in vqr
+    assert -17_584_317_180 in [r["virtual_quote_reserve"] for r in on_disk]
+    assert any("virtual_quote_reserves" not in r for r in on_disk)  # event_v_missing rows
+    assert any(r.get("creator_fee_unclaimed") == 2**64 - 1 for r in on_disk)
+    assert not any("virtual_quote_reserves" in r for r in _hour_lines(plain, f"{DAY}T00", zst))
+
+    res_p = L.build_day(DAY, "tip", tmp_path / "o_plain", tip_dirs=[plain], dedupe=dedupe)
+    res_e = L.build_day(DAY, "tip", tmp_path / "o_ev", tip_dirs=[ev], dedupe=dedupe)
+    z = _assert_same_ledger(res_p, res_e, tmp_path / "o_plain", tmp_path / "o_ev")
+    assert res_e["rows"]["rows_dedup_dropped"] == (len(dup) if dedupe else 0)
+    assert daily_to_ref(z) == reference(rows + _FILLER[1:] + ([] if dedupe else dup))
+
+
+def _negative_v_sell_doc() -> dict:
+    """sell_v2_kept.json with its SellEvent virtual_quote_reserves set to -123456789 (the patch of
+    test_walk2_event_v.test_negative_v_is_signed), under its own signature so the row is not a duplicate."""
+    import base64
+    import copy
+
+    from tools.test_walk2_event_v import _load, _program_data_line
+
+    doc = copy.deepcopy(_load("sell_v2_kept.json"))
+    lines, hits = [], 0
+    for ln in doc["meta"]["logMessages"]:
+        if "Program data: " in ln:
+            head, b64 = ln.split("Program data: ", 1)
+            raw = bytearray(base64.b64decode(b64.strip()))
+            if raw[:8].hex() == "3e2f370aa503dc2a":
+                raw[392:408] = (-123456789).to_bytes(16, "little", signed=True)
+                ln = head + _program_data_line(bytes(raw))
+                hits += 1
+        lines.append(ln)
+    assert hits == 1
+    doc["meta"]["logMessages"] = lines
+    doc["signature"] = doc["signature"][:-6] + "negVxx"
+    return doc
+
+
+def _decoded_trades(doc: dict, *, event_v: bool) -> list[dict]:
+    """rows_from_block twice, the second pass with the pools the first left unresolved (as test_walk2_event_v)."""
+    from tools.pump_history_backfill import rows_from_block
+    from tools.test_walk2_event_v import _block
+
+    kw = {"event_v": True} if event_v else {}
+    block = _block(doc)
+    first = rows_from_block(block, {}, "t", **kw)
+    pools = {r["pool"]: ("MINT" + r["pool"][:6], L.WSOL_MINT) for r in first["unresolved"] if r.get("pool")}
+    return rows_from_block(block, dict(pools), "t", **kw)["trades"]
+
+
+def test_decoder_event_v_rows_leave_the_tip_ledger_unchanged(tmp_path):
+    """(c) item 5 on decoder output: main's rows_from_block(event_v=True) on the walk-2 decoder fixtures plus a
+    negative-V sell, with the new follower's negative single V, against the event_v=False rows with the
+    deployed follower's None. Decoder fixtures only; no price, return or P&L is read."""
+    from observe.trade_decode import EVENT_V_KEYS
+    from tools.test_walk2_event_v import FIX, _load
+
+    docs = [_load(p.name) for p in sorted(FIX.glob("*.json"))] + [_negative_v_sell_doc()]
+    ev_rows, plain_rows = [], []
+    for doc in docs:
+        ev_rows += _decoded_trades(doc, event_v=True)
+        plain_rows += _decoded_trades(doc, event_v=False)
+    assert ev_rows and len(ev_rows) == len(plain_rows)
+    # the decoder's own promise: event_v adds keys and never changes a legacy one
+    assert [{k: v for k, v in r.items() if k not in EVENT_V_KEYS} for r in ev_rows] == plain_rows
+    vqr = [r["virtual_quote_reserves"] for r in ev_rows if "virtual_quote_reserves" in r]
+    assert -123456789 in vqr and any(v > 0 for v in vqr)
+    assert any(r["venue"] == "pumpswap" for r in ev_rows) and all(r["trader"] for r in ev_rows)
+    for r in ev_rows:
+        r.update(source="tip", virtual_quote_reserve=-17_584_317_180 if r["venue"] == "pumpswap" else None)
+    for r in plain_rows:
+        r.update(source="tip", virtual_quote_reserve=None)
+
+    # a replayed negative-V print whose second copy came back unstamped (event_v_missing); it must dedupe
+    neg = next(r for r in ev_rows if r.get("virtual_quote_reserves") == -123456789)
+    ev_dup = [{k: v for k, v in neg.items() if k not in EVENT_V_KEYS}]
+    plain_dup = [plain_rows[ev_rows.index(neg)]]
+    plain, ev = tmp_path / "tip_plain", tmp_path / "tip_ev"
+    _write_tip_layout(plain, plain_rows, plain_dup, _FILLER, zst=False)
+    _write_tip_layout(ev, ev_rows, ev_dup, _FILLER, zst=False)
+    res_p = L.build_day(DAY, "tip", tmp_path / "o_plain", tip_dirs=[plain])
+    res_e = L.build_day(DAY, "tip", tmp_path / "o_ev", tip_dirs=[ev])
+    z = _assert_same_ledger(res_p, res_e, tmp_path / "o_plain", tmp_path / "o_ev")
+    assert res_e["rows"]["rows_used"] == len(ev_rows) + 23 and res_e["rows"]["rows_dedup_dropped"] == 1
+    assert int(z["n"].sum()) == len(ev_rows) + 23
