@@ -223,6 +223,35 @@ class PickOracleWireTests(unittest.TestCase):
         feed(eng, tape().rows[:1])
         self.assertEqual(asked, [])  # the legacy stub: unchanged
 
+    def skip_run(self, oracle, later: bool | None):
+        state = {"sps": None}
+        eng, out = engine(oracle, sps_fn=lambda p: state["sps"])
+        t = tape()
+        rows = t.rows[: DRAIN_IDX + 1]
+        feed(eng, rows)  # the drain qualifies but the slot rate is unknown: a skipped_no_sps candidate
+        oracle.ans = later
+        state["sps"] = 0.4
+        feed(eng, [t.row(1250, "sell", "S2", SOL // 100)])  # a later sell, now with a slot rate: a trigger candidate
+        eng.close_all("t")
+        return eng, out
+
+    def test_a_skip_held_while_pending_is_written_before_any_trigger_once_the_pool_is_a_non_pick(self):
+        eng, out = self.skip_run(Answer(None), later=False)
+        kinds = [x["type"] for x in out if x["type"] in ("skipped_no_sps", "trigger")]
+        self.assertEqual(kinds[0], "skipped_no_sps")  # first, so the executor refuses the later trigger (sps_skipped_pool) exactly as before
+        self.assertIn("trigger", kinds)
+        self.assertTrue(types(out, "skipped_no_sps")[0]["withheld_pick_pending"])
+        self.assertEqual(eng.counters["skipped_no_sps_would_trigger"], 1)
+        # the same pool when the oracle says "not a pick" from the start: the same records in the same order
+        legacy = Answer(False)
+        _, out_l = self.skip_run(legacy, later=False)
+        self.assertEqual([x["type"] for x in out_l if x["type"] in ("skipped_no_sps", "trigger")], kinds)
+
+    def test_a_skip_held_while_pending_is_dropped_for_a_pick(self):
+        eng, out = self.skip_run(Answer(None), later=True)
+        self.assertEqual(decision_records(out), [])
+        self.assertEqual(set(types(out, "pool")[0]), SEALED_POOL_KEYS)
+
     def test_an_oracle_that_raises_seals_for_now_and_counts(self):
         state = {"boom": True}
 

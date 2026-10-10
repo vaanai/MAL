@@ -758,6 +758,7 @@ class Pool:
         self.sealed_cache: bool | None = None  # a FINAL CAP-PICK verdict (legacy hook: the first answer; pick oracle: a pick, or no mint)
         self.seal_window: bool | None = None  # inside the CAP-PICK window, judged once at the s0 the pool has when first asked
         self.sealed_noted = False  # counted in the sealed_hour aggregate already
+        self.skip_withheld: dict | None = None  # a skipped_no_sps record held while the pick oracle had no answer (written if the pool unseals)
         self.h5_sealed_cache: bool | None = None
         self.skip_logged = False
         self.excluded: str | None = None  # "synthetic" | "unclassified" once a trigger of this pool was withheld (sticky: no variant of it fires later)
@@ -1184,6 +1185,8 @@ class Engine:
     # ---- trigger --------------------------------------------------------------------------------------------
     def _eval(self, p: Pool, pr: Pr, idx: int) -> None:
         sealed = self._sealed(p)
+        if not sealed:
+            self._flush_withheld_skip(p)
         if len(p.trig) == len(VARIANTS) and not sealed:  # a sealed pool keeps evaluating, so nothing it does depends on whether it triggered
             return
         sps = self._sps(p)
@@ -1195,13 +1198,16 @@ class Engine:
                 spent, ident, src = self.boost_spent(p)
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
+                    rec = {"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
+                           "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
+                           "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src}
                     if self._sealed(p):  # EXP-022 s9: no per-pool trace of a decision; only the unlabelled hourly aggregate
                         self._note_sealed_decision(p.s0_recv_ms)
+                        if p.sealed_cache is None:  # pick oracle, no answer yet: held, and written once the pool is known to be a non-pick, so
+                            p.skip_withheld = rec  # the executor still refuses this pool's later triggers (sps_skipped_pool) exactly as before
                         return
                     self.counters["skipped_no_sps_would_trigger"] += 1
-                    self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
-                               "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
-                               "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src})
+                    self.emit(rec)
             return
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
@@ -1219,6 +1225,15 @@ class Engine:
                 continue
             if pr.q_post(var, p.v0) / 1e9 <= Q_STAR_SOL:
                 self._fire(p, pr, idx, var, sps, t, spent, ident, src)
+
+    def _flush_withheld_skip(self, p: Pool) -> None:
+        """A skipped_no_sps record held while the pick oracle had no answer, written now that the pool is known to be a non-pick (before any
+        later record of the pool, so the executor learns the skip before a trigger). Only the caller's verdict is used: it is unsealed."""
+        if p.skip_withheld is None:
+            return
+        rec, p.skip_withheld = p.skip_withheld, None
+        self.counters["skipped_no_sps_would_trigger"] += 1
+        self.emit({**rec, "withheld_pick_pending": True})
 
     def _fire(self, p: Pool, pr: Pr, idx: int, var: str, sps: float, t: float, spent: int, ident: str | None, src: str) -> None:
         k_p = math.ceil(ENTRY_S["primary"] / sps - 1e-9)
@@ -1437,6 +1452,8 @@ class Engine:
             self._resolve(p, pend, final=True)
         sealed = self._sealed(p)
         h5s = self._h5_sealed(p)
+        if not sealed:
+            self._flush_withheld_skip(p)
         self._emit_strip(p, sealed or h5s)
         if sealed:  # EXP-022 s9: only what was known when the pool opened, before any decision print; nothing here can differ with the decision
             if not p.sealed_noted:  # a pick oracle's pool that sealed after s0 (or never got an answer) is counted under its open hour now
