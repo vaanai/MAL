@@ -117,7 +117,7 @@ class Layout:
     @property
     def gettx_v(self) -> Path: return self.p5 / "gettx_v.jsonl"  # boostfloor_inputs p5: {key, slot, signature, event_index, status, decoded}
     @property
-    def account_v0(self) -> Path: return self.p5 / "account_v0.json"  # {pool: V0 lamports} from exp012_forward_vmap (v_base)
+    def account_v0(self) -> Path: return self.p5 / "account_v0.json"  # {pool: V0 lamports} from exp012_forward_vmap (`_v0`: v_base, or the stored V when the account has no pending counters)
     @property
     def account_map(self) -> Path: return self.p5 / "account" / "map.json"  # exp012_forward_vmap fetch --new, at or after 10-16T00Z
     @property
