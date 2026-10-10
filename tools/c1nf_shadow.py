@@ -22,7 +22,12 @@ Outputs (OUT dir, hourly JSONL, strict JSON):
                                 price, outcome, or a pick count by class.
     status.json                 last heartbeat. errors.log: tracebacks (capped).
 
-Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V (tip rows carry `virtual_quote_reserve`).
+Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V. Live (engine "event"): V is the print's decoded
+pre-trade event V, `virtual_quote_reserves` (event_v_of), for the universe band, Print.v, the pick's v_lamports / q_lamports and every outcome
+price; the tip follower's cached pool-account read `virtual_quote_reserve` is never read there, and a print without event V has no price (an
+incomplete leg, no decision state). Replay (engine "const"): V is the `virtual_quote_reserve` that run_replay stamps on each canonical-pool row
+from the tape's V0 (hunt-shared tokens.v0_lamports; v_of). Event mode also rejects a pool as `v0_gap` when a follower gap record lies between its
+opening and its first print seen here (that print may not be its first, so V0 = V(t1) would miss the pending fees at t1).
 Fill arithmetic is RULE.md's: fee tier on (Q, B), own trade applied, guard 1.15 x the decision spot, 55,000 / 505,000 lamports per send,
 rent 2,039,280 per fill as report-only variants. Fail legs (flat / pressure) are a book statistic and are not applied here.
 
@@ -452,9 +457,11 @@ class SlotTime:
 
 
 def event_v_of(row: Mapping[str, Any]) -> Optional[int]:
-    """The print's own pre-trade event V (`virtual_quote_reserves`, lamports, signed) as an int, else None. This is the key the "event" engine reads;
-    the tip follower's `virtual_quote_reserve` is one cached pool-account read and is not it, so a row that lacks this key gives None and the
-    engine rejects the pool (`v0_missing`) or marks it bad (`v_missing`): counted, never priced on a stale V. Ignored by a "const" engine."""
+    """The print's own pre-trade event V (`virtual_quote_reserves`, lamports, signed) as an int, else None. This is the key the "event" engine reads
+    and, in event (live) mode, the only V the shadow itself uses (universe band, Print.v, the pick's v_lamports / q_lamports, outcome prices). The
+    tip follower's `virtual_quote_reserve` is one cached pool-account read and is not it: a row that lacks this key gives None, with no fallback,
+    and the pool is rejected (`no_v_first_print` here, `v0_missing` in the engine) or the leg is incomplete and the engine marks the pool bad
+    (`v_missing`): counted, never priced on a stale V. Not used in "const" mode."""
     v = row.get("virtual_quote_reserves")
     if isinstance(v, bool) or v is None:
         return None
@@ -466,24 +473,48 @@ def event_v_of(row: Mapping[str, Any]) -> Optional[int]:
 
 
 # ---- universe -------------------------------------------------------------------------------------------------------------------------------
+V_SOURCE_LIVE, V_SOURCE_REPLAY = "event", "const"   # tools.c1nf_features.V_EVENT / V_CONST (a test pins the equality)
+V0_GAP_HORIZON_S = 25 * 3600                        # v0_gap with an unknown opening: the rule's 24 h window plus the 60 min activity lookback
+
+
 def v_of(row: Mapping[str, Any]) -> Optional[float]:
-    """Per-print virtual quote reserve (lamports). The tip follower stamps `virtual_quote_reserve`; the walker's event-V rows use
-    `virtual_quote_reserves`. Negative values (V0 = 0 pools with pending counters) are real signed readings and are kept."""
-    for k in ("virtual_quote_reserve", "virtual_quote_reserves"):
-        v = row.get(k)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
-            return float(v)
+    """Const-mode (replay) V: the `virtual_quote_reserve` that run_replay stamps on each canonical-pool row from the tape's V0 (lamports). Not
+    used in event (live) mode, where the tip follower writes this key from one cached pool-account read, which is not event V (event_v_of).
+    Negative values (V0 = 0 pools with pending counters) are real signed readings and are kept."""
+    v = row.get("virtual_quote_reserve")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+        return float(v)
     return None
 
 
+def print_v(row: Mapping[str, Any], event_v: bool) -> Optional[float]:
+    """The V the shadow prices a print on. Event mode: the print's own event V (event_v_of), no fallback to the tip key. Const mode: v_of."""
+    if event_v:
+        ev = event_v_of(row)
+        return None if ev is None else float(ev)
+    return v_of(row)
+
+
+def stamp_replay_v(row: dict, v0: float, *, event_v: bool) -> dict:
+    """Replay: put the pool's V0 on a tape row. Const: `virtual_quote_reserve` (run_replay). event_v (identity day, V(t) = V0; the #503
+    harness tools/c1nf_vmode_parity.py): `virtual_quote_reserves` as an int and no tip key, so the event path has nothing to fall back to."""
+    if event_v:
+        row["virtual_quote_reserves"] = int(round(v0))
+    else:
+        row["virtual_quote_reserve"] = v0
+    return row
+
+
 class Universe:
-    """Which PumpSwap rows may reach the feature engine: WSOL-quote pools, the canonical pool of the mint, and the event-V band at the pool's
-    first print. The engine applies the same rules itself (first print per mint, V band, graduation window); this filter keeps non-universe
+    """Which PumpSwap rows may reach the feature engine: WSOL-quote pools, the canonical pool of the mint, and the V band at the pool's
+    first print (event_v: that print's own event V, live; else the replay's stamped V0; print_v). Event mode also rejects `v0_gap` (gap_check). The engine applies the same rules itself (first print per mint, V band, graduation window); this filter keeps non-universe
     pools out of its memory and counts why they were out. `pda_fn(mint) -> pool or None` is the canonical PDA (tools.pumpswap_tx.canonical_pool)
     and is optional."""
 
-    def __init__(self, pda_fn: Optional[Callable[[str], Optional[str]]] = None, max_rejected: int = 200_000) -> None:
+    def __init__(self, pda_fn: Optional[Callable[[str], Optional[str]]] = None, max_rejected: int = 200_000, *, event_v: bool = False) -> None:
         self.pda_fn = pda_fn
+        self.event_v = bool(event_v)                     # True: the band reads the row's event V (live); False: the stamped replay V0
+        self.gap_check: Optional[Callable[[Mapping[str, Any]], bool]] = None   # event mode: Shadow._v0_gap_row
         self.canon: dict[str, str] = {}
         self.pool_mint: dict[str, str] = {}
         self.rejected: "collections.OrderedDict[str, str]" = collections.OrderedDict()
@@ -524,12 +555,15 @@ class Universe:
         if canon is not None and canon != pool:
             self._reject(pool, "not_canonical")
             return False
-        v = v_of(row)
+        v = print_v(row, self.event_v)
         if v is None:
             self._reject(pool, "no_v_first_print")
             return False
         if not (V_LO <= v <= V_HI):
             self._reject(pool, "v_out_of_band")
+            return False
+        if self.gap_check is not None and self.gap_check(row):
+            self._reject(pool, "v0_gap")
             return False
         self.pool_mint[pool] = mint
         self.counts["pools_accepted"] += 1
@@ -543,7 +577,7 @@ class Universe:
 class SealGuard:
     """EXP-022 section 9 / EXP-025 5.3. `oracle(mint) -> bool` answers "is this mint a CAP-PICK pick" (True = a pick). A pool in scope (first print
     at or after `start_ms`) is priced only when the oracle answers exactly False. Everything else suppresses. `oracle.staleness_s()` (optional)
-    over ORACLE_STALE_S suppresses. The oracle is read as a boolean and nothing about a pick is written."""
+    over ORACLE_STALE_S suppresses, and so does an age that is None, NaN, infinite, a bool or not a number. The oracle is read as a boolean and nothing about a pick is written."""
 
     def __init__(self, start_ms: Optional[int] = SEAL_START_MS, oracle: Optional[Callable[[str], Any]] = None, stale_s: float = ORACLE_STALE_S) -> None:
         self.start_ms, self.oracle, self.stale_s = start_ms, oracle, stale_s
@@ -564,7 +598,7 @@ class SealGuard:
             st = getattr(self.oracle, "staleness_s", None)
             if callable(st):
                 age = st()
-                if age is None or not isinstance(age, (int, float)) or age > self.stale_s:
+                if age is None or isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age > self.stale_s:
                     self.counters["seal_oracle_stale"] += 1
                     return True
             ans = self.oracle(mint)
@@ -794,9 +828,26 @@ class Shadow:
     def __init__(self, engine: Any, models: ModelSet, sink: Any, *, oracle: Optional[Callable[[str], Any]] = None, seal_start_ms: Optional[int] = SEAL_START_MS,
                  universe: Optional[Universe] = None, wall: Callable[[], int] = now_ms, replay: bool = False, errors: Optional[ErrorLog] = None,
                  decide_from: Optional[int] = None, decide_to: Optional[int] = None,
-                 classifier: Optional[Callable[[str, str], Any]] = None, classify_timeout_s: float = CLASSIFY_TIMEOUT_S) -> None:
+                 classifier: Optional[Callable[[str, str], Any]] = None, classify_timeout_s: float = CLASSIFY_TIMEOUT_S,
+                 v_source: Optional[str] = None) -> None:
         self.engine, self.models, self.sink = engine, models, sink
-        self.universe = universe or Universe()
+        # V source (#503 review): "event" (live) prices every print on its own event V, "const" (replay) on the stamped V0. Taken from the
+        # engine when it has one (tools.c1nf_features.FeatureEngine.v_source); a stub without it is "const". A disagreement refuses to build.
+        eng_vs = getattr(engine, "v_source", None)
+        if v_source is None:
+            v_source = eng_vs if eng_vs is not None else V_SOURCE_REPLAY
+        if v_source not in (V_SOURCE_LIVE, V_SOURCE_REPLAY) or (eng_vs is not None and eng_vs != v_source):
+            raise ValueError(f"v_source {v_source!r} does not match the engine's {eng_vs!r}")
+        self.v_source, self.event_v = v_source, v_source == V_SOURCE_LIVE
+        self.universe = universe if universe is not None else Universe(event_v=self.event_v)
+        if self.universe.event_v != self.event_v:
+            raise ValueError(f"Universe(event_v={self.universe.event_v}) does not match v_source {v_source!r}")
+        self.universe.gap_check = self._v0_gap_row if self.event_v else None
+        self.open_slot: dict[str, int] = {}                # pool -> slot of its migration row (v0_gap: the pool's opening)
+        self.grad_slot: dict[str, int] = {}                # mint -> slot of its bonding `complete` row (the opening when no migration row)
+        self.first_slot: dict[str, int] = {}               # pool -> slot of its first print seen here
+        self.follower_gaps: list[tuple[int, int, Optional[int]]] = []   # (lo_slot, hi_slot, hw_bt when noted)
+        self.v0_bad: set[str] = set()                      # event mode: accepted pools that a gap noted later may precede (v0_gap_late)
         self.seal = SealGuard(seal_start_ms, oracle)
         self.clock = SlotTime()
         self.replay, self._wall, self.errors = replay, wall, errors
@@ -972,9 +1023,11 @@ class Shadow:
                 self.engine.on_create(row["mint"], row.get("creator"), row.get("name"), row.get("symbol"), bt, row.get("is_mayhem_mode"))
             elif kind == "migrations":
                 if row.get("type") == "complete" or row.get("type") is None:
+                    self.grad_slot.setdefault(row["mint"], slot)
                     self.engine.on_graduation(row["mint"], bt)
                 elif row.get("pool") and row.get("quote_mint", WSOL) == WSOL:
                     self.universe.canon[row["mint"]] = row["pool"]
+                    self.open_slot.setdefault(row["pool"], slot)
         except Exception as exc:  # noqa: BLE001 - one bad row never stops the shadow
             self.c["row_errors"] += 1
             if self.errors:
@@ -1012,8 +1065,8 @@ class Shadow:
             if not self.universe.accept(row):
                 return
             pool, mint = row["pool"], row["mint"]
-            v = v_of(row)
-            if v is not None:
+            v = print_v(row, self.event_v)                    # event: the print's own event V, no fallback; const: the stamped V0
+            if v is not None and not self.event_v:           # an "event" engine ignores set_pool_v (and counts it): not called
                 self.engine.set_pool_v(pool, v)
             side = row.get("side")
             self.engine.on_trade(venue, mint, row.get("trader"), side == "buy", row.get("sol_lamports"), row.get("token_raw"), row.get("quote_reserve"),
@@ -1022,6 +1075,7 @@ class Shadow:
                        _pos(row.get("base_reserve")), v, side_ok=side in ("buy", "sell"))
             if pool not in self.first_ms:
                 self.first_ms[pool] = bt * 1000
+                self.first_slot[pool] = slot
                 self._classify(pool, mint, bt)
             lp = self.last_print.get(pool)
             if lp is not None and lp.slot < slot:
@@ -1040,6 +1094,8 @@ class Shadow:
         self.c["minutes"] += 1
         feats: list[tuple[str, Feat]] = []
         for pool in self.engine.alive_pools(T):
+            if pool in self.v0_bad:                          # event mode: a follower gap noted later may precede its first print
+                continue
             try:
                 f = unpack_features(self.engine.features_at(pool, T, sd))
             except Exception as exc:  # noqa: BLE001
@@ -1262,6 +1318,51 @@ class Shadow:
         lo = rec.get("slot_from", rec.get("from_slot", rec.get("slot")))
         hi = rec.get("slot_to", rec.get("to_slot", rec.get("slot")))
         self._gap("follower_gap", lo if isinstance(lo, int) else None, hi if isinstance(hi, int) else None, reason=str(rec.get("reason"))[:60])
+        if isinstance(lo, int) and isinstance(hi, int) and not isinstance(lo, bool) and not isinstance(hi, bool):
+            self._note_v0_gap(int(lo), int(hi))
+        else:
+            self.c["follower_gap_unplaced"] += 1
+
+    def _opened(self, pool: Optional[str], mint: Optional[str]) -> Optional[int]:
+        s = self.open_slot.get(pool) if pool else None
+        return s if s is not None else (self.grad_slot.get(mint) if mint else None)
+
+    def _v0_gap_row(self, row: Mapping[str, Any]) -> bool:
+        """Event mode, the first print of a pool seen here (quant-proof on #503, item 7): True when a follower gap record [lo, hi] with lo below
+        that print's slot reaches the pool's opening (its migration row's slot, else its mint's `complete` row's slot). The true first print
+        may then be in the gap, and V0 = V(t1) would fall short by the pending fees at t1. Opening unknown: any follower gap noted within
+        V0_GAP_HORIZON_S of the print counts. The Universe then rejects the pool as `v0_gap` (fail closed). Gaps from before this run (the
+        bootstrap's hours) are not known here."""
+        slot, bt = row.get("slot"), row.get("block_time")
+        if not isinstance(slot, int):
+            return True
+        opened = self._opened(row.get("pool"), row.get("mint"))
+        for lo, hi, gbt in self.follower_gaps:
+            if lo >= slot:
+                continue
+            if opened is not None:
+                if hi >= opened:
+                    return True
+            elif gbt is None or not isinstance(bt, int) or bt - gbt <= V0_GAP_HORIZON_S:
+                return True
+        return False
+
+    def _note_v0_gap(self, lo: int, hi: int) -> None:
+        """Keeps a follower gap for the v0_gap check. Event mode: an accepted pool whose first print came after `lo` and whose opening is
+        unknown or not after `hi` (the gap was read after its rows: the two files are tailed apart) gets no further decision (v0_gap_late)."""
+        self.follower_gaps.append((lo, hi, self.hw_bt))
+        if self.hw_bt is not None:
+            self.follower_gaps = [g for g in self.follower_gaps if g[2] is None or self.hw_bt - g[2] <= V0_GAP_HORIZON_S]
+        del self.follower_gaps[:-10_000]
+        if not self.event_v:
+            return
+        for pool, fs in self.first_slot.items():
+            if pool in self.v0_bad or pool not in self.universe.pool_mint or fs <= lo:
+                continue
+            opened = self._opened(pool, self.universe.pool_mint.get(pool))
+            if opened is None or hi >= opened:
+                self.v0_bad.add(pool)
+                self.c["v0_gap_late"] += 1
 
     def tick(self, now: Optional[int] = None) -> None:
         now = self._wall() if now is None else now
@@ -1547,8 +1648,6 @@ def canonical_pda_fn() -> Optional[Callable[[str], Optional[str]]]:
         return None
 
 
-V_SOURCE_LIVE, V_SOURCE_REPLAY = "event", "const"   # tools.c1nf_features.V_EVENT / V_CONST (a test pins the equality)
-
 
 def build_engine(ledger: Any = None, *, v_source: str) -> Any:
     """The real tools.c1nf_features.FeatureEngine (#506). v_source has no default there and none here: "event" for live (every PumpSwap print
@@ -1579,9 +1678,11 @@ def replay_hours(first: str, n: int) -> list[str]:
     return [(t0 + timedelta(hours=i)).strftime("%Y-%m-%dT%H") for i in range(n)]
 
 
-def tape_rows(tape_dir: str, hours: Sequence[str], pool_v: Mapping[str, float], pool_of_mint: Mapping[str, str]) -> Iterator[list[dict]]:
+def tape_rows(tape_dir: str, hours: Sequence[str], pool_v: Mapping[str, float], pool_of_mint: Mapping[str, str], *,
+              event_v: bool = False) -> Iterator[list[dict]]:
     """Per tape hour, the rows of all three kinds sorted by (slot, tx_index, event_index). The tape has no per-print V: each row gets the pool's V
-    from the hunt-shared token table (`pool_v`). Only canonical-pool PumpSwap rows (pool == the table's pool for the mint) are passed on."""
+    from the hunt-shared token table (`pool_v`). Only canonical-pool PumpSwap rows (pool == the table's pool for the mint) are passed on.
+    event_v (the #503 identity harness): the same V0 goes on each row as its event V instead (stamp_replay_v), so V(t) = V0."""
     import pandas as pd  # lazy: the audit venv
 
     for h in hours:
@@ -1594,7 +1695,7 @@ def tape_rows(tape_dir: str, hours: Sequence[str], pool_v: Mapping[str, float], 
             for r in df.to_dict("records"):
                 r["_k"] = "trades"
                 if is_ps:
-                    r["virtual_quote_reserve"] = pool_v[r["pool"]]
+                    stamp_replay_v(r, pool_v[r["pool"]], event_v=event_v)
                 rows.append(r)
         for k in ("creates", "migrations"):
             for r in pd.read_parquet(f"{tape_dir}/{k}/{h}.parquet").to_dict("records"):
@@ -1632,7 +1733,8 @@ def run_replay(args: argparse.Namespace, models: ModelSet, engine: Any, sink: An
     pool_of_mint = dict(zip(tk.mint, tk.pool))
     dec_from = int(datetime.strptime(args.decide_from, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) if args.decide_from else None
     dec_to = int(datetime.strptime(args.decide_to, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) if args.decide_to else None
-    sh = Shadow(engine, models, sink, replay=True, seal_start_ms=None, decide_from=dec_from, decide_to=dec_to, errors=ErrorLog(Path(args.out_dir) / "errors.log"))
+    sh = Shadow(engine, models, sink, replay=True, seal_start_ms=None, decide_from=dec_from, decide_to=dec_to, errors=ErrorLog(Path(args.out_dir) / "errors.log"),
+                v_source=V_SOURCE_REPLAY)
     sh.clock.hour_sps = hour_sps_from_tape(args.replay_tape, hours)
     sh.run_info = {"mode": "replay", "hours": [hours[0], hours[-1]], "decide_from": args.decide_from, "decide_to": args.decide_to}
     t_first = int(datetime.strptime(hours[0], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
@@ -1654,12 +1756,13 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
     errors = ErrorLog(out / "errors.log")
     oracle = load_oracle(args.pick_oracle)
     seal_ms = None if args.no_seal else int(datetime.strptime(args.seal_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
-    sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn()), errors=errors,
+    sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn(), event_v=True),
+                errors=errors, v_source=V_SOURCE_LIVE,
                 classifier=load_oracle(args.synthetic_classifier), classify_timeout_s=CLASSIFY_TIMEOUT_S)
     tail = TipTail(args.tip_dir)
     gaps = GapTail(args.gaps_file) if args.gaps_file else None
     sh.emit({"type": "c1nf_start", "mode": "live", "tip_dir": str(args.tip_dir), "model_shas": models.shas, "seal_start_ms": seal_ms,
-             "oracle": bool(oracle), "bootstrap_hours": args.bootstrap_hours, "max_seconds": args.max_seconds})
+             "oracle": bool(oracle), "v_source": V_SOURCE_LIVE, "bootstrap_hours": args.bootstrap_hours, "max_seconds": args.max_seconds})
 
     def on_sig(*_a: Any) -> None:
         Stop.flag = True

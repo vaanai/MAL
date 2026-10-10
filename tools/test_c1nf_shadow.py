@@ -887,8 +887,9 @@ def test_main_picks_the_v_source_from_the_mode(tmp_path, monkeypatch):
 
 def test_real_engine_event_mode_needs_the_rows_event_v_and_const_mode_takes_the_tip_v():
     """One PumpSwap print through Shadow._on_trade into the real engine. Live ("event"): the pool is accepted only when the row carries
-    `virtual_quote_reserves`; the tip follower's `virtual_quote_reserve` alone is not event V, so the pool is rejected `v0_missing` (counted,
-    fail closed). Replay ("const"): the tip/hunt V0 goes through set_pool_v and the same row is accepted."""
+    `virtual_quote_reserves`; the tip follower's `virtual_quote_reserve` alone is not event V, so the shadow's own universe rejects the pool
+    `no_v_first_print` before the engine sees it (counted, fail closed), and the engine's own guard still rejects such a print `v0_missing`.
+    Replay ("const"): the stamped V0 goes through set_pool_v and the same row is accepted."""
     row = mk_row(S0)
     assert cs.event_v_of({"virtual_quote_reserves": 17_580_000_000.0}) == 17_580_000_000 and cs.event_v_of(row) is None
     assert cs.event_v_of({"virtual_quote_reserves": True}) is None and cs.event_v_of({"virtual_quote_reserves": float("nan")}) is None
@@ -898,11 +899,164 @@ def test_real_engine_event_mode_needs_the_rows_event_v_and_const_mode_takes_the_
     assert live.engine.health()["pool_rejects"] == {}
     bare = _real_shadow("event")
     bare._on_trade(row, row["slot"], row["block_time"])                      # tip key only
+    assert bare.universe.counts["no_v_first_print"] == 1 and POOL not in bare.engine._pools
+    bare.engine.on_trade("pumpswap", MINT, "w", True, 1_000_000, 1_000_000_000, Q0, B0, POOL, S0, BT0, v_event=None)
     assert bare.engine.health()["pool_rejects"] == {"v0_missing": 1}
 
     replay = _real_shadow("const")
     replay._on_trade(row, row["slot"], row["block_time"])
     assert replay.engine.health()["pool_rejects"] == {}
+
+
+X_TIP, Y_EV = 10e9, int(V0)          # the tip follower's cached V (out of band) and the print's own event V (in band)
+
+
+def _event_shadow_real():
+    """Event mode on the real FeatureEngine, on an exploration-hour clock with replay=True (so the outcome guard lets the outcome through; the
+    V source is the engine's, not the replay flag's). The engine's decision is replaced by a fixed vector at minute 10; admission, V0 and the
+    event mapping stay the engine's."""
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    eng = cs.build_engine(None, v_source="event")
+    eng.alive_pools = lambda T: [p for p in eng._pools if T == BT0 + 600]
+    eng.features_at = lambda pool, T, sd=None: (np.full(cs.N_FEATURES, 0.5), True, 0.1)
+    sh = cs.Shadow(eng, models, sink, replay=True, seal_start_ms=None)
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    sh.clock.hour_sps[cs.hour_of(BT0 + 3600)] = SPS
+    return sh, sink
+
+
+def test_real_engine_live_prices_on_the_rows_event_v_never_the_tip_v():
+    """#503 review, MEDIUM: rows carry the tip's `virtual_quote_reserve` = X and the print's event `virtual_quote_reserves` = Y, X != Y. In
+    event mode the universe band, the engine's V0, Print.v, the pick's v_lamports / q_lamports and every outcome price are on Y."""
+    sh, sink = _event_shadow_real()
+    assert sh.event_v and sh.universe.event_v and sh.v_source == "event"
+    vchange = S0 + 1500 + 20
+    for slot in range(S0, slot_of_sec(1000)):
+        y = Y_EV if slot < vchange else Y_EV + 1_000_000_000
+        sh.feed(mk_row(slot, side="buy" if slot % 2 else "sell", v=X_TIP, virtual_quote_reserves=y), "trades")
+    assert sh.universe.counts["pools_accepted"] == 1 and sh.engine._pools[POOL].V == Y_EV      # band and V0 on Y (X is out of band)
+    assert sh.engine.stats.get("set_pool_v_ignored_event_mode", 0) == 0                          # set_pool_v is not called in event mode
+    (p,) = sink.of("c1nf_pick")
+    sd = p["SD_slot"]
+    s = sd - 1
+    pr = cs.Print(s, bt_of(s), s % 2 == 1, 1_000_000, 1_000_000_000, Q0 + RAMP * (s - S0), B0, float(Y_EV))
+    assert p["v_lamports"] == Y_EV and p["state_slot"] == s and p["q_lamports"] == int(round(pr.post()[0]))
+    assert cs.executor_refusal(p) == "pre_window"                              # a valid pick (September clock: never the executor's)
+    (o,) = sink.of("c1nf_outcome")
+    leg = o["legs"]["1.3"]
+    xs = sd + round(1.3 / SPS)
+    assert leg["end"]["entry_q"] == pytest.approx(Q0 + RAMP * (xs + 1 - S0) + Y_EV)                # entry priced on that print's Y
+    ys = leg["exit_slot"]
+    assert leg["end"]["exit_q"] == pytest.approx(Q0 + RAMP * (ys + 1 - S0) + Y_EV + 1e9)          # exit on the later Y, never X
+
+    band, _ = _event_shadow_real()                                           # band on Y: X in band, Y out of band -> rejected
+    band.feed(mk_row(S0, v=float(Y_EV), virtual_quote_reserves=int(X_TIP)), "trades")
+    assert band.universe.counts["v_out_of_band"] == 1 and POOL not in band.engine._pools
+
+    lost, lsink = _event_shadow_real()                                       # event V lost after SD, tip key still there: no price
+    for slot in range(S0, slot_of_sec(1000)):
+        kw = {"virtual_quote_reserves": Y_EV} if slot <= S0 + 1500 else {}
+        lost.feed(mk_row(slot, side="buy" if slot % 2 else "sell", v=X_TIP, **kw), "trades")
+    (o2,) = lsink.of("c1nf_outcome")
+    assert o2["complete"] is False and all("incomplete" in leg for leg in o2["legs"].values())
+
+
+def test_shadow_refuses_a_v_source_that_disagrees_with_the_engine_or_universe():
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    eng = cs.build_engine(None, v_source="event")
+    with pytest.raises(ValueError):
+        cs.Shadow(eng, models, cs.MemorySink(), v_source="const")
+    with pytest.raises(ValueError):
+        cs.Shadow(eng, models, cs.MemorySink(), universe=cs.Universe())                # a const Universe under an event engine
+    with pytest.raises(ValueError):
+        cs.Shadow(StubEngine(), models, cs.MemorySink(), v_source="bogus")
+    assert cs.Shadow(StubEngine(), models, cs.MemorySink()).event_v is False             # a stub without v_source is const
+    assert cs.Shadow(StubEngine(), models, cs.MemorySink(), v_source="event").universe.event_v is True
+    assert cs.Shadow(eng, models, cs.MemorySink()).universe.event_v is True
+
+
+@pytest.mark.parametrize("age", [float("nan"), float("inf"), True, False, "5", None])
+def test_seal_oracle_age_nan_inf_bool_or_non_number_is_stale(age):
+    class O:
+        def __call__(self, mint):
+            return False
+
+        def staleness_s(self):
+            return age
+
+    g = cs.SealGuard(SEAL_MS, O())
+    assert g.suppress(MINT, SEAL_MS) is True and g.counters["seal_oracle_stale"] == 1
+
+
+def _ev_stub_shadow(decide=None):
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    eng = StubEngine(decide or (lambda T: None))
+    eng.v_source = "event"
+    sh = cs.Shadow(eng, models, sink, replay=True, seal_start_ms=None)
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    sh.clock.hour_sps[cs.hour_of(BT0 + 3600)] = SPS
+    return sh, sink
+
+
+EV = {"virtual_quote_reserves": int(V0)}
+COMPLETE = {"type": "complete", "mint": MINT, "slot": S0, "block_time": BT0}
+
+
+def test_v0_gap_rejects_a_pool_first_seen_after_a_follower_gap_that_reaches_its_opening():
+    sh, _ = _ev_stub_shadow()                                                  # opening (complete row) before the gap: rejected
+    sh.feed(dict(COMPLETE), "migrations")
+    sh.note_follower_gap({"from_slot": S0 + 5, "to_slot": S0 + 9, "reason": "backlog_jump"})
+    sh.feed(mk_row(S0 + 20, **EV), "trades")
+    assert sh.universe.counts["v0_gap"] == 1 and POOL not in sh.universe.pool_mint and sh.engine.trades == []
+    sh.feed(mk_row(S0 + 21, **EV), "trades")                                   # stays rejected
+    assert sh.engine.trades == []
+
+    sh, _ = _ev_stub_shadow()                                                  # the migration row is the opening when present
+    sh.feed(dict(COMPLETE), "migrations")
+    sh.note_follower_gap({"from_slot": S0 + 5, "to_slot": S0 + 9, "reason": "backlog_jump"})
+    sh.feed({"type": "migration", "mint": MINT, "pool": POOL, "slot": S0 + 12, "block_time": bt_of(S0 + 12)}, "migrations")
+    sh.feed(mk_row(S0 + 20, **EV), "trades")
+    assert sh.universe.counts["v0_gap"] == 0 and POOL in sh.universe.pool_mint
+
+    sh, _ = _ev_stub_shadow()                                                  # the gap ends before the opening: accepted
+    sh.feed(mk_row(S0 - 50, pool="P0", mint="M0", **EV), "trades")
+    sh.note_follower_gap({"from_slot": S0 - 9, "to_slot": S0 - 5, "reason": "backlog_jump"})
+    sh.feed(dict(COMPLETE), "migrations")
+    sh.feed(mk_row(S0 + 20, **EV), "trades")
+    assert sh.universe.counts["v0_gap"] == 0 and POOL in sh.universe.pool_mint
+
+    sh, _ = _ev_stub_shadow()                                                  # opening unknown: a gap within the horizon rejects
+    sh.feed(mk_row(S0, pool="P0", mint="M0", **EV), "trades")
+    sh.note_follower_gap({"slot": S0 + 3, "kind": "gap", "reason": "unfetchable"})
+    sh.feed(mk_row(S0 + 20, **EV), "trades")
+    assert sh.universe.counts["v0_gap"] == 1
+
+    sh, _ = _ev_stub_shadow()                                                  # a gap after the first print does not touch V0
+    sh.feed(dict(COMPLETE), "migrations")
+    sh.feed(mk_row(S0 + 20, **EV), "trades")
+    sh.note_follower_gap({"from_slot": S0 + 30, "to_slot": S0 + 40, "reason": "backlog_jump"})
+    assert POOL in sh.universe.pool_mint and sh.c["v0_gap_late"] == 0
+
+    sh, _ = mk_shadow(lambda T: None)                                          # const (replay) mode: V0 is the table's, no check
+    sh.feed(dict(COMPLETE), "migrations")
+    sh.note_follower_gap({"from_slot": S0 + 5, "to_slot": S0 + 9, "reason": "backlog_jump"})
+    sh.feed(mk_row(S0 + 20), "trades")
+    assert sh.universe.counts["v0_gap"] == 0 and POOL in sh.universe.pool_mint
+
+
+def test_gap_read_after_the_first_print_stops_decisions_on_that_pool():
+    sh, sink = _ev_stub_shadow(only_minute(10))
+    sh.feed(dict(COMPLETE), "migrations")
+    run_stream(sh, 100, **EV)
+    sh.note_follower_gap({"from_slot": S0 - 1, "to_slot": S0 + 1, "reason": "backlog_jump"})    # read late: covers the opening
+    run_stream(sh, 1000, first_sec=100, **EV)
+    assert sh.c["v0_gap_late"] == 1 and sink.of("c1nf_pick") == []
+    ok, oksink = _ev_stub_shadow(only_minute(10))                               # the same stream without the gap picks
+    ok.feed(dict(COMPLETE), "migrations")
+    run_stream(ok, 1000, **EV)
+    assert len(oksink.of("c1nf_pick")) == 1
 
 
 class WalletEngine(StubEngine):
@@ -1380,7 +1534,7 @@ HANG_RUNNER = r'''
 import json, sys, threading, time
 from pathlib import Path
 from tools import c1nf_shadow as cs
-from tools.test_c1nf_shadow import StubEngine, StubModel, mk_row, S0
+from tools.test_c1nf_shadow import StubEngine, StubModel, mk_row, S0, V0
 
 tip, out, model = sys.argv[1:4]
 cs.CLASSIFY_TIMEOUT_S = 0.3
@@ -1390,7 +1544,7 @@ cs._lgb_loader = lambda p: StubModel()
 def append_after_bootstrap():
     time.sleep(0.4)
     bt = cs.now_ms() // 1000
-    row = mk_row(S0, block_time=bt, pool="POOLhang", mint="MINThang", t_recv_ms=1)
+    row = mk_row(S0, block_time=bt, pool="POOLhang", mint="MINThang", t_recv_ms=1, virtual_quote_reserves=int(V0))   # live reads event V
     with open(Path(tip) / f"trades-{cs.hour_of(bt)}.jsonl", "a") as fh:
         fh.write(json.dumps(row) + "\n")
 
