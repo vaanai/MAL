@@ -514,7 +514,7 @@ class C1NFExtra:
     otail: dict[str, Any] = field(default_factory=dict)  # the outcomes stream's tail: {path, started, offset, inode} (a restart loses no outcome)
     late_window: list[int] = field(default_factory=list)  # 1 = late, over the last LATE_SELL_WINDOW landed sells
     late_alert_on: bool = False
-    counts: dict[str, int] = field(default_factory=dict)  # count-only refusals with no mint: pre_window, suppressed, sealed bad picks
+    counts: dict[str, int] = field(default_factory=dict)  # count-only refusals with no mint: pre_window, suppressed, malformed outcomes (a sealed mint's bad pick is in-process only)
 
     def save(self, path: Path, now_ms: int) -> None:
         for m in [m for m, t in self.last_exit_ms.items() if now_ms - t > 3_600_000]:
@@ -647,6 +647,7 @@ class C1NFExecutor(h5.H5Executor):
         if not 0 < self.heartbeat_max_age_ms <= FEED_HEARTBEAT_MAX_AGE_MS:
             raise SystemExit("refused: the feed heartbeat guard is not set")
         self.max_pick_age_s = min(MAX_PICK_AGE_S, float(cfg.get("max_pick_age_s") or MAX_PICK_AGE_S))
+        self.seal_bad_picks_in_process = 0  # memory only, never saved, logged, alerted or reported (see _pick_row)
         self._gaps: list[tuple[int, int]] = []  # recent c1nf_gap slot ranges (in memory: a restart waits for a fresh heartbeat anyway)
         self._ev_tail = _Tail()  # the events stream starts at its end: freshness comes from the next heartbeat
         self._ev_path: Path | None = None
@@ -1160,7 +1161,10 @@ class C1NFExecutor(h5.H5Executor):
             return None
         mint = row.get("mint")
         if isinstance(mint, str) and _B58.match(mint) and self._seal_reason(_MintOnly(mint), self.now_ms()):
-            self._count_only("seal_bad_pick")  # a sealed mint's bad pick: no per-mint row either
+            # A malformed pick on a mint that is a CAP-PICK pick, or not known to be a non-pick, is outcome-linked: the count says which kind of
+            # mint C1-NF's model picked. So it is kept in this process only (as H5's seal_pick: quant-proof (d) on #540, manager decision on #552):
+            # no hourly row, no c1nf-extra.json or counters value, no log line, no alert, nothing in --status. No per-mint row either.
+            self.seal_bad_picks_in_process += 1
             return None
         self._bad_intent(row, bad)
         return None

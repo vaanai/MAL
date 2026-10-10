@@ -287,6 +287,42 @@ class SealTests(TierCase):
         self.assertEqual(e2.ex.counters.seal_skips, 1)
 
 
+    def test_a_malformed_pick_on_a_sealed_mint_leaves_no_countable_trace(self):
+        """Manager decision on #552 (quant-proof (d) on #540): a malformed C1-NF pick whose mint is a CAP-PICK pick, or not known to be a non-pick,
+        is counted in this process only. No hourly row, no c1nf-extra.json or counters value, no log line, no alert, nothing in --status."""
+        when = h5.ORACLE_EARLIEST_MS + 10 * MINUTE
+        for name, oracle, final, sealed in (("pick", lambda m: True, True, True), ("undecided", lambda m: None, True, True), ("no_oracle", None, True, True),
+                                            ("no_final", lambda m: False, False, True), ("not_a_pick", lambda m: False, True, False)):
+            e = self.fresh(name, oracle=oracle)
+            if final:
+                Path(e.ex.final_marker).write_text("")
+            touch_streams(e.shadow_dir)
+            e.ex.intent_tick()
+            bad = e.row(minute=when)
+            bad["h_top1"] = 0.9  # bad_pick:h_top1_over_cap
+            write_stream(e.shadow_dir, [bad] * 7)  # more than the five an hour that raise bad_intent_rate when they are counted
+            n = len(e.ledger())
+            e.ex.intent_tick()
+            e.ex._hour_roll(e.clock() + 2 * 3_600_000)  # flush the hour's refusal_counts row
+            new = json.dumps(e.ledger()[n:])
+            if sealed:
+                self.assertEqual(e.ex.seal_bad_picks_in_process, 7, name)
+                self.assertEqual(e.ex.extra.counts, {}, name)
+                self.assertEqual(e.ex.counters.seal_skips, 0, name)
+                self.assertNotIn(MINT, new, name)
+                self.assertNotIn("seal_bad_pick", new, name)  # no hourly row, no log line
+                self.assertEqual([r for r in e.ledger() if r.get("kind") == "refusal_counts"], [], name)
+                self.assertEqual([a["alert"] for a in e.ledger("alert") if a["alert"] not in ("config_clamps_tier", "seal_oracle_missing",
+                                                                                              "seal_final_marker_missing")], [], name)
+                self.assertEqual((e.ledger("skip"), e.ex.extra.picks), ([], {}), name)
+                on_disk = e.ex.extra_path.read_text() + e.ex.counters_path.read_text()
+                self.assertNotIn("seal_bad_pick", on_disk, name)
+                self.assertNotIn("seal_bad_pick", c.status_report(e.conf), name)
+            else:  # control: a mint the oracle says is not a pick still gets the ordinary bad_pick rows and alert
+                self.assertEqual(e.ex.seal_bad_picks_in_process, 0, name)
+                self.assertEqual([r["reason"] for r in e.ledger("skip")], ["bad_pick:h_top1_over_cap"] * 7, name)
+
+
 class LandingTests(TierCase):
     def test_the_landing_p50_rule_is_1_9_s_over_20(self):
         e = self.env()
