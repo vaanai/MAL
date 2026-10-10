@@ -63,7 +63,6 @@ import observe.trade_decode as _trade_decode_mod
 import observe.trade_store as _trade_store_mod
 import tools.pump_history_backfill as _backfill_mod
 from observe.trade_decode import EVENT_V_KEYS, decode_pool_account, records_from_logs
-from tools.pumpswap_tx import parse_pool_account
 from tools.pump_history_backfill import (
     CreditBudget,
     RateLimiter,
@@ -162,16 +161,25 @@ V_RETRY_S = 30.0  # first retry of a pool whose V could not be read (never stamp
 V_RETRY_CAP_S = 300.0
 
 
+# The single `virtual_quote_reserve` key keeps the running follower's reading in BOTH flag states
+# (quant-proof 10-10 r4, route 1): blob b6c0bb3 of tools/pumpswap_tx.py read the pool tail as an
+# UNSIGNED little-endian u64 at bytes 245..253 when the account has at least 253 bytes, else nothing.
+# A negative stored V is therefore stamped as its unsigned reading (>= 2**63), not as a negative value
+# and not as None; the runner at a25eb17 prices it as before. Fixing that reading is a runner-input
+# change and a separate PR after the DEC-016 FINAL marker. The event-V keys stay signed.
+POOL_V_OFFSET = 245
+POOL_V_END = POOL_V_OFFSET + 8
+
+
 def decode_pool_virtual(data: bytes) -> int | None:
-    """The pool's stored virtual quote reserve V (lamports), SIGNED, read by `pumpswap_tx.parse_pool_account`.
-    Negative on V0 = 0 pools with pending counters: it is stamped as that negative value, never as the
-    unsigned reading (~1.8e19). None when the account is too short, has no readable tail, or V is outside
-    i64. Never 0 as a stand-in."""
+    """The pool's virtual quote reserve V (lamports) exactly as blob b6c0bb3 read it: unsigned LE u64 at
+    bytes 245..253 when len(data) >= 253, else None. Never signed, never 0 as a stand-in."""
     try:
-        v = parse_pool_account(data).get("virtual_quote_reserves")
-    except (ValueError, TypeError):
+        if len(data) < POOL_V_END:
+            return None
+        return int.from_bytes(bytes(data[POOL_V_OFFSET:POOL_V_END]), "little", signed=False)
+    except (TypeError, ValueError):
         return None
-    return int(v) if isinstance(v, int) and -(2**63) <= v < 2**63 else None
 
 
 def _pct(values, q: int) -> float | None:

@@ -12,7 +12,7 @@ Sources: the design `/data/mal/hunt-1008/c1nf-verify/EVENT-V-DESIGN-1010.md` (op
 - The re-decoded record must agree with the row on `venue`, `side`, `pool` and `sol_lamports`. If it does not, `event_v_mismatch` goes up and the row is not stamped.
 - A print with no event-V tail is counted (`event_v_missing`; `event_v_missing_pumpswap` for PumpSwap rows without V) and left without the keys. **V is never carried from another print.**
 - If the decode raises, the tx's rows are written without the keys and `event_v_errors` goes up. The feed keeps running.
-- Nothing else in any row changes. Creates, migrations, observe, skipped slots and gaps are not touched. The singular `virtual_quote_reserve` is still stamped as before.
+- Nothing else in any row changes. Creates, migrations, observe, skipped slots and gaps are not touched. The singular `virtual_quote_reserve` is still stamped as before, in **both** flag states, with blob b6c0bb3's reading (route 1, quant-proof 10-10 r4): unsigned little-endian u64 at bytes 245..253 of the pool account when it has at least 253 bytes, else null. A pool with a negative stored V is stamped with that unsigned value (>= 2^63), as the running follower does today. Only the event-V keys are signed.
 - `status.json` always carries `decoder_blobs` (git blob sha of the three decoder files the process imported) and `decoder_blobs_pinned`.
 
 The stamp equals the V that forward-1002ev holds only when the tree carries **job #433's decoder blobs** (DEC-016:397):
@@ -37,11 +37,23 @@ So:
 
 The deployed follower today runs older code than main (quant-proof (c)):
 
-| File | Deployed blob | Main blob |
-| --- | --- | --- |
-| `tools/fast_tip_follower.py` | 36dd10e | 023e240 (before this PR) |
-| `observe/trade_decode.py` | a10e0568 (no event V) | 238942a |
-| `tools/pump_history_backfill.py` | cea9783 | 9a8bebb |
+The full delta between the deployed tree (`d0109f7`) and this PR's tree, for the files in `tools/` and `observe/` that the follower's import chain touches or that changed beside it (corrected per quant-proof 10-10 r4; (c) listed only the first three rows):
+
+| File | Deployed blob (`d0109f7`) | This PR | Imported by the follower at this PR |
+| --- | --- | --- | --- |
+| `tools/fast_tip_follower.py` | 36dd10e | 61e8062 (route 1 fix) | entry point |
+| `observe/trade_decode.py` | a10e0568 (no event V) | 238942a6 | yes |
+| `tools/pump_history_backfill.py` | cea9783 | 9a8bebb3 | yes |
+| `observe/trade_store.py` | b5eb3f82 | ea4e11ed | yes |
+| `tools/backfill_verify.py` | 5274061e | f4308871 | yes, through `pump_history_backfill` |
+| `tools/tape_lines.py` | (new file) | 810af3bc | yes, through `backfill_verify` |
+| `tools/pumpswap_tx.py` | b6c0bb3 | 92560e3 | **no**: the running follower imports it for the single V; after route 1 the follower reads those 8 bytes itself |
+| `observe/link_state.py` | (new file) | 026a9cd9 | no (imported by `observe/trade_source.py`) |
+| `observe/trade_source.py` | 5a74d871 | 4684fc16 | no |
+
+**The old follower stamps the unsigned value, not null.** Blob b6c0bb3 reads the pool tail as an unsigned u64, so the old `v >= 0` check never fires: a pool with a negative stored V gets `virtual_quote_reserve` >= 2^63 (about 1.8e19), not null. Quant-proof (c) said null; that was wrong (job #514). Blob 92560e3 reads V signed, which is why #554 at 7e0e60a changed 157 of 32,250 trade rows in P0 with the flag off. Route 1 keeps the b6c0bb3 reading for the single key in both flag states, so that difference is gone at this PR.
+
+Fixing the single key's unsigned reading is a **runner-input change** (the runner at a25eb17 prices an int V >= 0 as vault + V and refuses a negative one). It is a separate PR, after the DEC-016 FINAL marker, with its own P2 and ruling, and it is disclosed in the FINAL report. After the marker: an outcome-blind count of forward-1002 decisions and positions on pools whose stamped single V is >= 2^63.
 
 Moving the follower to a new tree therefore changes more than key presence. That is why proof 1 below exists.
 
@@ -93,7 +105,7 @@ sudo -u ubuntu mv "$DEST.new" "$DEST"
 sudo chmod -R a-w "$DEST"
 ```
 
-`tools` and `observe` are enough: the follower imports `observe.trade_decode`, `observe.trade_store`, `tools.pump_history_backfill`, `tools.backfill_verify` and `tools.pumpswap_tx` (solders comes from the venv).
+`tools` and `observe` are enough: the follower imports `observe.trade_decode`, `observe.trade_store`, `tools.pump_history_backfill`, `tools.backfill_verify` and `tools.tape_lines`. Since route 1 it no longer imports `tools.pumpswap_tx` (the deployed follower does).
 
 ### 4. Check the pins from the new tree, with the service's venv
 
