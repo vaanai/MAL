@@ -28,6 +28,7 @@ TEST_SHA = "ab" * 32  # the pinned model sha256 inside these tests (C1NF_MODEL_S
 TEST_KP = Keypair.from_seed(bytes([7] * 32))  # the pinned C1-NF wallet inside these tests
 HOUR = "2026-10-06T15"  # T0's UTC hour
 STREAM_OF = {"c1nf_pick": "c1nf-picks", "c1nf_outcome": "c1nf-outcomes"}  # #503 JsonlSink.PREFIX; anything else is an event
+START_ALERTS = ("config_clamps_tier", "seal_oracle_missing")  # every start of a test executor without a pick oracle raises these (information)
 
 
 def write_stream(d: Path, rows: list, hour: str = HOUR) -> None:
@@ -497,7 +498,8 @@ class LandingAnchoredExitTests(Case):
         e.ex.exit_tick(e.clock())
         emg = e.sent()[-1]
         self.assertEqual((sell_args(emg)[1], emg["priority"]), (h5.EMERGENCY_MIN_OUT, 1_010_000))  # the emergency market sell at landing + 370 s
-        self.assertEqual(e.ledger("halt_latched")[-1]["reason"], "stuck_position")
+        self.assertEqual(e.ex.counters.halts, {})  # the 370 s deadline is an exit stage, not the stuck line (DEC-026 section 7 rule 4: 600 s)
+        self.assertEqual(len(e.ledger("emergency_deadline_passed")), 1)
 
     def test_a_restart_before_the_reanchor_exits_on_the_provisional_plan(self):
         e = self.env()
@@ -1109,7 +1111,7 @@ class FeedTests(Case):
         write_stream(e.shadow_dir, [bad] * 7)
         e.ex.intent_tick()
         self.assertEqual([r["reason"] for r in e.ledger("skip")], ["bad_pick:h_top1_over_cap"] * 7)
-        self.assertEqual(len([a for a in e.ledger("alert") if a["alert"] != "config_clamps_tier"]), 1)
+        self.assertEqual([a["alert"] for a in e.ledger("alert") if a["alert"] not in START_ALERTS], ["bad_intent_rate"])
         self.assertEqual(e.ex.extra.picks, {})
         n = len(e.ledger())
         with mock.patch.object(c, "PICK_WINDOW_START_MS", T0 + MINUTE):

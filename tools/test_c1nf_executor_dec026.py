@@ -13,8 +13,10 @@ from unittest import mock
 from tools import c1nf_executor as c
 from tools import h5_executor as h5
 from tools import probe_executor as pe
+from tools import pumpswap_tx as tx
+from solders.pubkey import Pubkey
 from tools.test_c1nf_executor import MINUTE, STAKE, TEST_KP, TEST_SHA, Case, Env, H5Rpc, outcome, touch_streams, write_stream
-from tools.test_h5_executor import MINT, POOL, QREAL
+from tools.test_h5_executor import MINT, POOL, QREAL, sell_args
 from tools.test_probe_executor import BASE0, T0, V
 
 SOL = 1_000_000_000
@@ -410,3 +412,198 @@ class ReviewFixTests(Case):
         Path(e.ex.final_marker).write_text("")
         e.set_clock(now[0])
         self.assertEqual(e.ex._seal_reason(c._MintOnly(MINT), now[0]), "seal_oracle_error")
+
+
+OTHER_MINT = "So11111111111111111111111111111111111111112"
+OTHER_POOL = str(tx.canonical_pool(Pubkey.from_string(OTHER_MINT)))
+
+
+class Round3FixTests(TierCase):
+    """#530 review round 2 (head 8ea24e6): the stuck line at landing + 600 s, the seal-provisioning start alerts, the outcomes offset after
+    processing, the c1nf-extra anti-reset guard, no exit plan on slot 0, the per-exit balance reserve."""
+
+    # -- MEDIUM 1: DEC-026 section 7 rule 4, stuck_position at landing + 600 s (not at the 370 s emergency sell) ---------------------------
+    def to_emergency(self, e: Env) -> dict:
+        """An open position whose sells never get a status, walked to the emergency sell at landing + 370 s."""
+        e.open_position()
+        plan = e.plan()
+        e.clock.t = plan["send_wall_ms"]
+        e.ex.exit_tick(e.clock())
+        e.step_until_sent(2)
+        e.clock.t = plan["s0_wall_ms"] + 370_000
+        e.ex.exit_tick(e.clock())
+        self.assertEqual((sell_args(e.sent()[-1])[1], e.sent()[-1]["priority"]), (h5.EMERGENCY_MIN_OUT, 1_010_000))
+        return plan
+
+    def test_stuck_position_latches_at_landing_plus_600_s_and_not_at_the_370_s_emergency_sell(self):
+        e = self.env()
+        plan = self.to_emergency(e)
+        self.assertTrue(e.ex.state.open[MINT]["emergency_attempted"])  # H5's deadline path ran: the emergency sell went out
+        self.assertEqual(e.ex.counters.halts, {})
+        self.assertEqual(e.ledger("emergency_deadline_passed")[0]["mint"], MINT)
+        e.clock.t = plan["s0_wall_ms"] + 599_000
+        e.ex.exit_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts, {})
+        e.clock.t = plan["s0_wall_ms"] + 600_000
+        e.ex.exit_tick(e.clock())
+        self.assertEqual(set(e.ex.counters.halts), {c.STUCK_HALT})
+        halt = e.ex.counters.halts[c.STUCK_HALT]
+        self.assertEqual((halt["position_mint"], halt["why"], halt["landing_slot"]), (MINT, "not_closed_by_landing_600s", plan["s0_slot"]))
+        self.assertTrue(halt["sell_pending"])
+        self.assertEqual([a["alert"] for a in e.ledger("alert") if a["alert"] == "halt_stuck_position"], ["halt_stuck_position"])
+        e.clock.t += 60_000
+        e.ex.exit_tick(e.clock())
+        self.assertEqual(len(e.ledger("halt_latched")), 1)  # once per position
+        e.fire(minute=e.t0 + 20 * MINUTE, mint=OTHER_MINT, pool=OTHER_POOL)
+        self.assertEqual(e.refusals()[-1], "halt_latched:" + c.STUCK_HALT)  # new buys stop until --clear-halt
+
+    def test_a_sell_landing_between_370_and_600_s_never_latches(self):
+        e = self.env()
+        plan = self.to_emergency(e)
+        e.clock.t = plan["s0_wall_ms"] + 450_000
+        e.land_sell(e.rpc.slot)
+        self.assertNotIn(MINT, e.ex.state.open)
+        for dt in (600_000, 700_000):
+            e.clock.t = plan["s0_wall_ms"] + dt
+            e.ex.exit_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts, {})
+
+    def test_the_600_s_line_survives_a_restart_after_the_emergency_sell(self):
+        e = self.env()
+        plan = self.to_emergency(e)
+        e.ex = c.C1NFExecutor(e.rpc, e.conf, e.kp, now_ms=e.clock, root=e.root)  # a restart: H5's emergency_attempted is in the saved position
+        e.seed()
+        self.assertTrue(e.ex.state.open[MINT]["emergency_attempted"])
+        e.clock.t = plan["s0_wall_ms"] + 600_000
+        e.ex.exit_tick(e.clock())
+        self.assertIn(c.STUCK_HALT, e.ex.counters.halts)
+
+    def test_halt_freezes_the_stuck_check_like_h5s_exit_tick(self):
+        e = self.env()
+        plan = self.to_emergency(e)
+        (self.state_dir / "HALT").write_text("")
+        e.clock.t = plan["s0_wall_ms"] + 600_000
+        e.ex.exit_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts, {})
+        (self.state_dir / "HALT").unlink()
+        e.ex.exit_tick(e.clock())
+        self.assertIn(c.STUCK_HALT, e.ex.counters.halts)
+
+    def test_stuck_due_is_landing_plus_600_s_on_h5s_wall_bounded_rule(self):
+        lim = c.c1nf_limits({})
+        w0 = 1_000_000
+        plan = c.c1nf_exit_plan(10_000, 0.2, lim, w0).public()
+        self.assertFalse(c.stuck_due(plan, None, w0 + 599_999))
+        self.assertTrue(c.stuck_due(plan, None, w0 + 600_000))  # the wall time binds even with no slot clock
+        stuck_slot = 10_000 + 3_000  # 600 s / 0.2 s
+        self.assertTrue(c.stuck_due(plan, stuck_slot, w0 + 600_000 - h5.EARLY_TOLERANCE_MS))
+        self.assertFalse(c.stuck_due(plan, stuck_slot, w0 + 600_000 - h5.EARLY_TOLERANCE_MS - 1))  # a slot never fires it early
+        far = 10**15
+        stand_in = {"s0_slot": 0, "sps": 0.4, "deadline_slot": far, "deadline_wall_ms": far, "s0_wall_ms": None}
+        self.assertFalse(c.stuck_due(stand_in, 10**9, 10**13))  # H5's position_without_plan: no landing to count from
+        self.assertEqual(c.STUCK_S - c.DEADLINE_S, 230.0)
+
+    # -- MEDIUM 3: the seal window, provisioned or not, is said at start ------------------------------------------------------------------
+    def test_start_alerts_when_the_seal_window_is_not_provisioned(self):
+        e = self.env()
+        a = [x for x in e.ledger("alert") if x["alert"] == "seal_oracle_missing"]
+        self.assertEqual(len(a), 1)
+        self.assertEqual((a[0]["seal_start_ms"], a[0]["end_ms"]), (h5.SEAL_START_MS, c.C1NF_END_MAX_MS))
+        start = e.ledger("c1nf_start")[0]
+        self.assertEqual((start["seal_oracle"], start["final_marker_present"], start["seal_start_ms"]), (None, False, h5.SEAL_START_MS))
+        o = self.fresh("oracle", oracle=lambda mint: False)
+        self.assertEqual([x for x in o.ledger("alert") if x["alert"].startswith("seal_")], [])
+        short = self.fresh("short", live=False, end_ms=h5.SEAL_START_MS)
+        self.assertEqual([x for x in short.ledger("alert") if x["alert"].startswith("seal_")], [])  # a run that ends before the seal needs neither
+        late = h5.ORACLE_EARLIEST_MS + 60_000
+        m = self.tmp / "marker" / "FINAL_WRITTEN"
+        nm = self.fresh("late", live=False, t0=late, final_marker_file=str(m))
+        self.assertEqual(sorted(x["alert"] for x in nm.ledger("alert") if x["alert"].startswith("seal_")),
+                         ["seal_final_marker_missing", "seal_oracle_missing"])
+        m.parent.mkdir()
+        m.write_text("")
+        ok = self.fresh("late2", live=False, t0=late, final_marker_file=str(m), oracle=lambda mint: False)
+        self.assertEqual([x for x in ok.ledger("alert") if x["alert"].startswith("seal_")], [])
+        live_cfg = json.loads((Path(c.__file__).resolve().parents[1] / "scripts" / "mal-fast" / "c1nf-executor-live.json").read_text())
+        self.assertGreater(live_cfg["end_ms"], h5.SEAL_START_MS)  # the shipped live config reaches into the seal window: it alerts until pick_file is set
+
+    # -- LOW 4: the outcomes offset is persisted after the rows are processed; c1nf-extra.json has an anti-reset guard ------------------------
+    def test_a_crash_while_processing_outcomes_loses_none(self):
+        e = self.env(live=False)
+        touch_streams(e.shadow_dir)
+        e.ex.intent_tick()
+        write_stream(e.shadow_dir, [e.row()])
+        e.ex.intent_tick()
+        write_stream(e.shadow_dir, [outcome(MINT, T0, 4.0)])
+        with mock.patch.object(e.ex, "on_outcome", side_effect=RuntimeError("crash")), self.assertRaises(RuntimeError):
+            e.ex.intent_tick()
+        e2 = Env(self.tmp, self.state_dir, live=False, intents_file=str(e.shadow_dir))
+        e2.ex.intent_tick()
+        self.assertEqual(e2.ex.extra.picks[f"{MINT}:{T0}"]["outcome_pct"], 4.0)
+        self.assertEqual((e2.ex.extra.oseq, e2.ex.extra.outcomes_unmatched), (1, 0))
+        e2.ex._out_tail, e2.ex._out_path = c._Tail(started=True, offset=0, inode=None), None  # the same rows read again (a crash after on_outcome)
+        e2.ex._outcomes_tick()
+        self.assertEqual((e2.ex.extra.oseq, e2.ex.extra.outcomes_unmatched), (1, 1))  # a repeat: counted, never evidence twice
+
+    def test_deleting_c1nf_extra_after_a_run_refuses_live_and_alerts_a_dry_run(self):
+        e = self.env()
+        e.fire()  # a buy in flight: its durable plan is in the counters
+        self.assertTrue(e.ex.counters.plans)
+        e.ex.extra_path.unlink()
+        with self.assertRaises(SystemExit) as cm:
+            self.env()
+        self.assertIn("c1nf_extra_missing", str(cm.exception))
+        self.assertFalse(e.ex.extra_path.exists())  # refused before any file is touched
+        d = self.fresh("dry", live=False)
+        touch_streams(d.shadow_dir)
+        d.ex.intent_tick()  # a picks stream followed: tail_path is in the counters
+        d.ex.extra_path.unlink()
+        d2 = Env(d.tmp, d.ex.counters_path.parents[1], live=False)
+        self.assertEqual([a["why"] for a in d2.ledger("alert") if a["alert"] == "c1nf_extra_reset"], ["c1nf_extra_missing"])
+        f = self.fresh("unused")
+        f.ex.extra_path.unlink()  # nothing ran yet: nothing to guard
+        f2 = Env(f.tmp, f.ex.counters_path.parents[1])
+        self.assertEqual([a for a in f2.ledger("alert") if a["alert"] == "c1nf_extra_reset"], [])
+
+    # -- LOW 5: no slot estimate, no buy (never an exit plan anchored on slot 0) -----------------------------------------------------------
+    def test_no_slot_estimate_at_the_send_refuses_instead_of_anchoring_on_slot_0(self):
+        e = self.env()
+        pick = e.pick()
+        with mock.patch.object(e.ex, "_pick_refusal", return_value=None), mock.patch.object(e.ex.slots, "est", return_value=None):
+            e.ex.handle_pick(pick)
+        self.assertEqual(e.refusals(), ["stale_pick"])
+        self.assertEqual((e.rpc.sent, e.ex.state.pending, e.ex.counters.plans), ([], {}, {}))
+
+    # -- LOW 6: the balance guard reserves one escalated send per exit ---------------------------------------------------------------------
+    def test_the_per_exit_reserve_covers_one_escalated_send(self):
+        lim = c.c1nf_limits({"stake_lamports": STAKE})
+        self.assertEqual(c.c1nf_exit_reserve(lim), 1_015_000)
+        self.assertEqual(c.c1nf_exit_reserve(h5.H5Limits.from_config({})), h5.SELL_RESERVE_LAMPORTS)  # H5's own numbers keep H5's reserve
+        first = STAKE + 505_000 + 5_000 + h5.RENT_RESERVE_LAMPORTS + 1_015_000 + 50_000_000
+        self.assertEqual(first, 103_625_000)  # DEC-026 section 6: "about 0.104 SOL"
+        for name, wallet, n_open, taken in (("a", first, 0, True), ("b", first - 1, 0, False),
+                                            ("c", first + 1_015_000, 1, True), ("d", first + 1_014_999, 1, False)):
+            e = self.fresh(name)
+            e.rpc.balance = SOL // 2  # the tier starts on a 0.5 SOL wallet (the total stop's baseline), then the balance drops
+            e.ex._bal = None
+            e.ex._refresh_tier(e.clock())
+            for i in range(n_open):
+                e.ex.state.open[f"Other{i}"] = {"mint": f"Other{i}", "spend": STAKE}
+            e.rpc.balance = wallet
+            e.ex._bal = None
+            e.fire()
+            self.assertEqual(MINT in e.ex.state.pending, taken, name)
+            if not taken:
+                self.assertEqual(e.refusals(), ["balance_floor"], name)
+
+    # -- H5 stays H5 -------------------------------------------------------------------------------------------------------------------------
+    def test_h5s_methods_and_reserve_are_its_own(self):
+        e = self.env()
+        self.to_emergency(e)  # the deferred latch ran through the subclass
+        for name in ("_latch", "exit_tick", "_balance_refusal", "_due"):
+            self.assertIn(name, h5.H5Executor.__dict__)
+            self.assertEqual(getattr(h5.H5Executor, name).__module__, "tools.h5_executor", name)
+        for name in ("_latch", "exit_tick", "_balance_refusal"):  # overridden in the subclass only
+            self.assertEqual(c.C1NFExecutor.__dict__[name].__module__, "tools.c1nf_executor", name)
+        self.assertEqual((h5.SELL_RESERVE_LAMPORTS, h5.H5_DEFAULT["escalated_priority_lamports"]), (1_000_000, 150_000))
+        self.assertEqual(h5.balance_need(STAKE, 505_000, 0, 0, 50_000_000), 103_610_000)  # H5's function, unchanged

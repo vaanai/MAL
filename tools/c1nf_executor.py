@@ -22,10 +22,13 @@ with its tier-start baseline, STOP / HALT (state dir and wallet-wide), the latch
   guard     The 1.15 x spot guard is measured against the pick's decision-time q_lamports and base_reserve. A pick without them is refused (fail closed).
   exit      C1-NF anchors on its OWN buy landing: landing + 300 s + 0.55 s. The plan made at the send is provisional (anchored on the send); once the
             buy confirms it is re-anchored on the landed slot, mapped to wall time through the executor's own getSlot history. Escalation at
-            landing + 315 s, deadline at landing + 370 s.
+            landing + 315 s, the emergency market sell at landing + 370 s (the plan's `deadline`).
   halts     No BOOST halts. The fill-selection monitor (below), the landing p50 rule (rolling 20 landed buys, p50 above 1.9 s), H5's out-of-rule
-            entry (landing more than 5 s after SD_slot), and a pick or heartbeat whose model sha256 is not the pinned one (C1NF_MODEL_SHA256).
-            Exit timing is an ALERT, not a halt (DEC-026 section 7 rule 5): more than 10% of the last 20 landed sells past landing + 305 s.
+            entry (landing more than 5 s after SD_slot), a pick or heartbeat whose model sha256 is not the pinned one (C1NF_MODEL_SHA256), and
+            stuck_position at landing + 600 s (DEC-026 section 7 rule 4; H5 latches it at its own deadline, which here is the 370 s emergency
+            sell, so that latch is deferred to 600 s). Exit timing is an ALERT, not a halt (DEC-026 section 7 rule 5): more than 10% of the
+            last 20 landed sells past landing + 305 s.
+  balance   H5's balance guard with the per-exit reserve raised from 1,000,000 to one escalated send + base fee (1,015,000; c1nf_exit_reserve).
   wallet    Live refuses to start when the credential holds H5's wallet (H5_WALLET_PUBKEY) or anything but the pinned C1-NF wallet
             (C1NF_WALLET_PUBKEY; unset until Helm gives the public key, so live cannot start before that line is a reviewed code change).
   gates     EXP-025 Part 1 in the tree (not EXP-024).
@@ -44,7 +47,8 @@ hour is followed and the previous one drained on a roll:
   c1nf-events-<hour>.jsonl    type "c1nf_heartbeat" (feed freshness: older than 150 s, every pick is refused feed_stale) and "c1nf_gap" (buys
                               held for gap_hold_ms, and a pick whose decision minute overlaps the gap's slot range is refused feed_gap: DEC-026
                               section 7 rule 7). "c1nf_start" / "c1nf_stop" are ignored.
-  c1nf-outcomes-<hour>.jsonl  type "c1nf_outcome": the monitor's outcome_pct is OUTCOME_SCHEMA's leg (see outcome_pct_of). Offset persisted.
+  c1nf-outcomes-<hour>.jsonl  type "c1nf_outcome": the monitor's outcome_pct is OUTCOME_SCHEMA's leg (see outcome_pct_of). Offset persisted
+                              after the rows are processed; c1nf-extra.json has an anti-reset guard (extra_reset_problem).
   Anything else is ignored.
 
 Fill-selection monitor. Every pick that reaches the executor is ledgered `pick_status` filled or unfilled. When outcomes arrive, the last 30 monitored
@@ -145,7 +149,10 @@ DECISION_GRID_MS = 60_000
 HOLD_S = 300.0  # exit deadline = the buy's landing + 300 s ...
 EXIT_LAND_OFFSET_S = 0.55  # ... and the sell lands 0.55 s after it
 ESCALATE_S = 315.0  # escalated ladder level from landing + 315 s
-DEADLINE_S = 370.0  # emergency market sell from landing + 370 s
+DEADLINE_S = 370.0  # emergency market sell from landing + 370 s (the plan's `deadline`: an exit stage, NOT the stuck line)
+STUCK_S = 600.0  # DEC-026 section 7 rule 4: a position not closed by landing + 600 s latches stuck_position (C1NFExecutor._stuck_tick)
+STUCK_HALT = "stuck_position"  # H5's halt name, so the watchdog and --clear-halt treat it as H5's
+H5_DEADLINE_STUCK_WHY = "not_sold_by_deadline"  # H5's exit_tick latches STUCK_HALT with this `why` at the plan's deadline: C1-NF defers it
 LATE_AFTER_EXIT_S = 5.0  # a sell landing later than landing + 300 + 5 s is late (DEC-026 section 7 rule 5: an ALERT, never a halt)
 LATE_SELL_WINDOW = 20  # ... over the last 20 landed sells ...
 LATE_SELL_MIN_N = 10  # ... once at least 10 have landed ...
@@ -302,6 +309,25 @@ def c1nf_exit_plan(anchor_slot: int, sps: float, lim: h5.H5Limits, anchor_wall_m
                     late_wall_ms=anchor_wall_ms + round(late_s * 1000))
     return h5.ExitPlan(anchor_slot, sps, exit_slot, land_slot, send_slot, arm_slot, anchor_slot + int(round(ESCALATE_S / sps)),
                        anchor_slot + int(round(DEADLINE_S / sps)), anchor_slot + int(round(late_s / sps)), **wall)
+
+
+def stuck_due(plan: dict[str, Any], est: int | None, now: int) -> bool:
+    """DEC-026 section 7 rule 4's instant, the plan's anchor (the buy's landing) + 600 s, on H5's wall-bounded rule (H5Executor._due): due at
+    its wall time whatever the slot clock says, and at its slot only from EARLY_TOLERANCE_MS before that. It is never due before the plan's
+    own deadline (the emergency sell at landing + 370 s), so a stand-in plan, whose deadline is far away, never latches here."""
+    if not h5.H5Executor._due(plan, "deadline", est, now):
+        return False
+    wall0 = plan.get("s0_wall_ms")
+    stage = {"stuck_slot": plan["s0_slot"] + int(round(STUCK_S / plan["sps"])),
+             "stuck_wall_ms": wall0 + round(STUCK_S * 1000) if wall0 is not None else None}
+    return h5.H5Executor._due(stage, "stuck", est, now)
+
+
+def c1nf_exit_reserve(lim: h5.H5Limits) -> int:
+    """Lamports the balance guard reserves per exit. H5's SELL_RESERVE_LAMPORTS (1,000,000) was sized for H5's 150,000 escalated priority; one
+    C1-NF escalated or emergency send costs 1,010,000 + the base fee, so the reserve is never below that. DEC-026 section 6 quotes 1,000,000 per
+    exit; at 1,015,000 a first 0.05 SOL buy needs 103,625,000 lamports, still the DEC's "about 0.104 SOL" (fail closed: only stricter)."""
+    return max(h5.SELL_RESERVE_LAMPORTS, lim.escalated_priority_lamports + tx.BASE_FEE_PER_SIGNATURE)
 
 
 # --- the pick ---------------------------------------------------------------------------------------------------------------
@@ -542,6 +568,26 @@ class C1NFExtra:
         return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
 
 
+EXTRA_NAME, COUNTERS_NAME = "c1nf-extra.json", "h5-counters.json"
+
+
+def extra_reset_problem(mode_dir: Path) -> str | None:
+    """The anti-reset guard of c1nf-extra.json (as probe_executor.guard_live_state guards the state file): the extra file is gone while the H5
+    counters beside it show the executor has run (a picks stream followed, a buy landed, a sell landed, an exit plan held). Deleting the file
+    would silently reset the 60 s cooldown clock, the fill-selection window and its floor, the late-sell window and the outcomes offset. Both
+    files are written at the first start (H5's __init__ saves the counters, this one the extra right after), so a missing extra with a
+    used counters file means it was removed. None when there is nothing to guard."""
+    if (mode_dir / EXTRA_NAME).exists() or not (mode_dir / COUNTERS_NAME).exists():
+        return None
+    try:
+        raw = json.loads((mode_dir / COUNTERS_NAME).read_text())
+    except (OSError, ValueError):
+        return "c1nf_extra_missing"  # fail closed: the counters cannot even say whether the executor has run
+    if not isinstance(raw, dict) or raw.get("tail_path") or raw.get("landing_s") or raw.get("sells_landed") or raw.get("plans"):
+        return "c1nf_extra_missing"
+    return None
+
+
 def monitor_stats(extra: C1NFExtra) -> dict[str, Any]:
     """The fill-selection comparison over the last FILL_SEL_WINDOW monitored picks that have an outcome (ordered by decision time)."""
     rows = sorted(((p["T"], pid, p) for pid, p in extra.picks.items()
@@ -626,6 +672,10 @@ class C1NFExecutor(h5.H5Executor):
                 raise SystemExit(f"live refused: {why}")
             if not C1NF_MODEL_SHA256:
                 raise SystemExit("live refused: model_unpinned (DEC-026 section 11 item 12)")
+        extra_reset = extra_reset_problem(Path(cfg["state_dir"]) / (LIVE if keypair is not None else DRYRUN))
+        if extra_reset and keypair is not None:  # before any file is touched
+            raise SystemExit(f"live refused: {extra_reset}: {EXTRA_NAME} is gone but {COUNTERS_NAME} shows the executor ran (the cooldown clock, "
+                             "the fill-selection window and the outcomes offset would reset). Restore the file, or reconstruct it by hand")
         with h5_scope():
             super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=pick_oracle, root=root, rpc_label=rpc_label)
         self.heartbeat_max_age_ms = heartbeat_max_age_ms(cfg)  # replaces H5's config-only value: never off, never above 150 s
@@ -636,7 +686,7 @@ class C1NFExecutor(h5.H5Executor):
         self._ev_tail = _Tail()  # the events stream starts at its end: freshness comes from the next heartbeat
         self._ev_path: Path | None = None
         self._globs: dict[str, tuple[int, Path | None]] = {}
-        self.extra_path = self.counters_path.with_name("c1nf-extra.json")
+        self.extra_path = self.counters_path.with_name(EXTRA_NAME)
         self.extra = C1NFExtra.load(self.extra_path)
         self._out_tail = _Tail(**{k: self.extra.otail[k] for k in ("started", "offset", "inode") if k in self.extra.otail})
         self._out_path: Path | None = Path(self.extra.otail["path"]) if self.extra.otail.get("path") else None
@@ -646,7 +696,28 @@ class C1NFExecutor(h5.H5Executor):
                   exp025_part1=exp025_part1_present(self.root), live_ok=str(LIVE_OK_PATH) if not self.dry_run else None,
                   tier_file=str(self._tier_path()), tier_table=C1NF_TIERS, model_pinned=bool(C1NF_MODEL_SHA256),
                   model_sha256=sorted(C1NF_MODEL_SHA256), heartbeat_max_age_ms=self.heartbeat_max_age_ms,
-                  wallet_pinned=bool(C1NF_WALLET_PUBKEY), seal_oracle=type(self.pick_oracle).__name__ if self.pick_oracle else None)
+                  wallet_pinned=bool(C1NF_WALLET_PUBKEY), seal_oracle=type(self.pick_oracle).__name__ if self.pick_oracle else None,
+                  seal_start_ms=h5.SEAL_START_MS, final_marker_present=Path(self.final_marker).is_file(),
+                  exit_reserve_lamports=c1nf_exit_reserve(self.h5), stuck_s=STUCK_S)
+        if extra_reset:  # a dry run goes on (it has no money to protect) but says so
+            self._alert("c1nf_extra_reset", "", why=extra_reset)
+        self._seal_provisioning_alerts()
+
+    def _seal_provisioning_alerts(self) -> None:
+        """At start, say what will refuse every buy in the seal window (h5._seal_reason, fail closed) before it happens. Neither is a refusal to
+        start: buys before 2026-10-16T01Z need neither.
+          seal_oracle_missing      the run's end is past SEAL_START_MS and there is no pick oracle (no `pick_file` in the config).
+          seal_final_marker_missing  it is past ORACLE_EARLIEST_MS (the DEC-016 FINAL is written by then) and <state_dir>/FINAL_WRITTEN is absent.
+        Who sets `pick_file` (#509's exporter output) and who writes FINAL_WRITTEN is DEC-026 section 11 item 11 (the runbook)."""
+        end = self.h5.end_ms if self.h5.end_ms is not None else C1NF_END_MAX_MS
+        if end <= h5.SEAL_START_MS:
+            return
+        if self.pick_oracle is None:
+            self._alert("seal_oracle_missing", "", seal_start_ms=h5.SEAL_START_MS, end_ms=end,
+                        consequence="every buy from seal_start_ms is refused seal_window_no_oracle")
+        if self.now_ms() >= h5.ORACLE_EARLIEST_MS and not Path(self.final_marker).is_file():
+            self._alert("seal_final_marker_missing", "", final_marker=str(self.final_marker),
+                        consequence="every buy in the seal window is refused seal_window_no_oracle")
 
     def __repr__(self) -> str:
         return f"C1NFExecutor(mode={self.run_mode}, user={self.user})"
@@ -883,7 +954,10 @@ class C1NFExecutor(h5.H5Executor):
             drift = (snap.quote_priced / snap.base_reserve) / (ref_q / ref_b) - 1.0  # type: ignore[operator]
             if drift > self.h5.entry_tolerance_bps / 10_000.0:
                 return self._refuse(pick, "price_moved", drift_vs_trigger=drift, guard_ref=guard_ref)  # the 1.15 x spot guard would revert it: no send
-            plan = c1nf_exit_plan(self.slots.est(now, measured) or 0, measured, self.h5, now)  # provisional: anchored on the send, re-anchored at landing
+            anchor = self.slots.est(now, measured)
+            if anchor is None:  # never an exit plan anchored on slot 0 (every stage would be due at once): no slot estimate, no buy
+                return self._refuse(pick, "stale_pick")
+            plan = c1nf_exit_plan(anchor, measured, self.h5, now)  # provisional: anchored on the send, re-anchored at landing
             if self.dry_run:
                 self._dry_buy(pick, snap.ps, terms, plan, now, would, drift)
                 self._set_status(pick, "filled" if pick.mint in self.state.open else "unfilled", None if pick.mint in self.state.open else "dry_sim_error")
@@ -943,6 +1017,53 @@ class C1NFExecutor(h5.H5Executor):
         pos["h5"]["plan"] = new
         self.save()
         return new
+
+    def _latch(self, name: str, **detail: Any) -> None:
+        """H5's latch, except the stuck_position H5's exit_tick latches at the plan's deadline (why `not_sold_by_deadline`). For C1-NF that
+        deadline is the emergency sell at landing + 370 s, not the stuck line: DEC-026 section 7 rule 4 latches at landing + 600 s (_stuck_tick).
+        The emergency sell itself is H5's and unchanged; here the deadline is only ledgered."""
+        if name == STUCK_HALT and detail.get("why") == H5_DEADLINE_STUCK_WHY:
+            self._log("emergency_deadline_passed", str(detail.get("position_mint") or ""),
+                      **{k: v for k, v in detail.items() if k not in ("position_mint", "why")}, stuck_s=STUCK_S)
+            return
+        super()._latch(name, **detail)
+
+    @pe.critical
+    def exit_tick(self, now: int) -> None:
+        super().exit_tick(now)  # H5's exit scheduler, unchanged (the sell ladder, the emergency sell at landing + 370 s)
+        self._stuck_tick()
+
+    def _stuck_tick(self) -> None:
+        """DEC-026 section 7 rule 4: a position not closed by landing + 600 s latches stuck_position (new buys stop until --clear-halt) and
+        alerts. Once per position. HALT freezes this as it freezes H5's exit_tick. An abandoned position counts: it is not closed. A stand-in
+        plan (H5's position_without_plan) has no landing to count from and is H5's alert already (stuck_due is never true for it)."""
+        if self._halt_present():
+            return
+        now = self.now_ms()
+        for mint, pos in list(self.state.open.items()):
+            h = pos.get("h5") or {}
+            plan = h.get("plan")
+            if not plan or h.get("no_plan") or pos.get("c1nf_stuck_latched"):
+                continue
+            est = self.slots.est(now, plan["sps"])
+            if stuck_due(plan, est, now):
+                pos["c1nf_stuck_latched"] = True
+                self.save()
+                self._latch(STUCK_HALT, position_mint=mint, why="not_closed_by_landing_600s", est_slot=est,
+                            stuck_slot=plan["s0_slot"] + int(round(STUCK_S / plan["sps"])), landing_slot=plan["s0_slot"],
+                            sell_attempts=pos.get("sell_attempts", 0), abandoned=bool(pos.get("abandoned")), sell_pending=mint in self.state.pending)
+
+    def _balance_refusal(self, now: int) -> str | None:
+        """H5's balance guard (h5.balance_need, unchanged) with the per-exit reserve raised to c1nf_exit_reserve: one escalated send of this
+        profile is more than H5's 1,000,000."""
+        bal = self._balance_value(now)
+        if bal is None:
+            return "balance_unreadable"
+        pend_stake = sum(int(p.get("spend") or 0) for p in self.state.pending.values() if p["kind"] == "buy")
+        n_open = len(self.state.open)
+        need = h5.balance_need(self.h5.stake_lamports, self.h5.buy_priority_lamports, n_open, pend_stake, self.h5.wallet_floor_lamports)
+        need += (n_open + 1) * (c1nf_exit_reserve(self.h5) - h5.SELL_RESERVE_LAMPORTS)
+        return None if bal >= need else "balance_floor"
 
     def _note_exit(self, mint: str, when_ms: int) -> None:
         self.extra.last_exit_ms[mint] = when_ms
@@ -1044,9 +1165,9 @@ class C1NFExecutor(h5.H5Executor):
         before = (self._out_tail.started, self._out_tail.offset, self._out_tail.inode, self._out_path)
         rows = self._rows(self._tail_stream(path, self._out_path, self._out_tail))
         self._out_path = path
-        if (self._out_tail.started, self._out_tail.offset, self._out_tail.inode, self._out_path) != before:
-            self.extra.otail = {"path": str(path), "started": self._out_tail.started, "offset": self._out_tail.offset, "inode": self._out_tail.inode}
-            self._save_extra()
+        # The rows are processed BEFORE the new offset is persisted (each on_outcome saves the extra with the OLD otail): a crash in here re-reads
+        # these rows at the restart and loses none. A re-read outcome is a repeat (the first outcome of a pick stands, a repeat is counted
+        # outcomes_unmatched and is not evidence), so a replay cannot double the monitor's evidence; only the count-only tallies can repeat.
         for row in rows:
             out, bad = parse_outcome(row)
             if out is not None:
@@ -1056,6 +1177,9 @@ class C1NFExecutor(h5.H5Executor):
                 self._save_extra()
             elif bad:
                 self._count_only(bad)  # a malformed outcome: counted, never a per-mint row
+        if (self._out_tail.started, self._out_tail.offset, self._out_tail.inode, self._out_path) != before:
+            self.extra.otail = {"path": str(path), "started": self._out_tail.started, "offset": self._out_tail.offset, "inode": self._out_tail.inode}
+            self._save_extra()
 
     def _pick_row(self, row: dict[str, Any]) -> C1NFPick | None:
         pick, bad = parse_pick(row)
