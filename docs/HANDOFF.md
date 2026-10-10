@@ -27,7 +27,73 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-10 ~10:40Z (NEWEST, read first)
+### STATE 10-10 ~20:30Z (NEWEST, read first)
+
+**Merged since 10:40Z:**
+- #570: the tip-event-V P7 acceptance tool.
+- #578: PASS record.
+- #580: EXP-024 Am.7, line-2 buy rule.
+- #579: EXP-025 Am.7 and Am.8, line 2 plus pins of the look driver, R1 and P7 driver.
+- #581: test.
+- Main is f0c25ef. Merged-main suites OK, 36/36 ARTIFACTS/exp025 checksums, boostfloor pins rc 0.
+
+**Event-V feed accepted.** The amended P7 line 1 passed on the declared hour [15:00, 16:00Z): sells 429/429, buys 183/183 (job #598). PASS instant 16:10:46Z.
+
+**P7 line 2 (fee tier) buy side was broken in both reads; amended before any read data existed.** Mechanism from 245 refetched prints, #623/#624:
+- Exact-out buys pay the fee on top of the curve input: sol = qin + Σceil(qin·bps).
+- For exact-in buys, tape sol is the net curve input, so they are excluded.
+- New rule: |sol·1e6 − qin·(1e6+ppm)| ≤ 100·qin on buy/buy_v2, 1 bp, bars unchanged. It scores 175/183 on the declared hour (in-sample diagnostic). Line 2 is never amended again.
+- New pins:
+  - EXP-024 inputs edf0d2d7, E0 #637 PASS;
+  - EXP-025 p7_line2_amend 39fc4e99 / sha256 1908931c, driver exp025_p7 26f47531, E0 #630, parity #631/#639;
+  - look driver 8d7d7f41 (E0 #613), R1 16691502 (fixtures only).
+
+**Exact-in audit.** Exact-in tape sol is net (bytes 112).
+- BOOST is fee-free in August, September and October (#628, #629, #638: 77/77 October slices, full-pool total 17,584,505,288 lamports), so H5's detector and `spent` are exact.
+- Non-BOOST buy-volume features (H5 nb; C1-NF v*, wallet ledger) read about 0.6% low, the same way in training and live.
+- **Freeze:** no decoder, ledger or feature change before the reads. The read reports disclose this.
+- Any later gross-up uses bytes 64 or 104, never ix_name. An ix_name gross-up would push BOOST to 17.80 SOL, over the 17.7 cap.
+
+**C1-NF shadow memory.**
+- Soak #608 OOM'd at 18:06:01Z.
+- Replay #621: as written, it settles at about 9–11 GB (every print kept until g0+25 h, about 1,051 B/print).
+- Workflow c1nf-mem-fix (w7tp263ox) is building F1–F5 on branch claude/c1nf-mem-window:
+  - F1: an opt-in 1 h print window;
+  - F2: typed columns;
+  - F3: trader ids;
+  - F4: today-only ledger snapshot, cache 200k;
+  - F5: malloc_trim plus memory heartbeat fields.
+- Proofs: a twin-engine property test, an md5 decision-equivalence on 09-20 (old vs new head), and a 48 h memory proof under 1.9 GB.
+- After merge: a DEC-026 note, then restart the item-15 24 h soak (clock starts at the soak start). Then send Helm the mal-c1nf user and second-wallet spec.
+
+**research-0 disk.**
+- / reached 95%. tools/pump_history_backfill keeps a 20% reserve, so the forward walks #382/#433 refused every hour from about 07Z.
+- The owner approved deleting about 175 GB of rebuildable data; record at /data/mal/hunt-1008/DISK-CLEANUP-2026-10-10.md. h2-wallets/data/prints is gone; rebuild it before any h2 re-run.
+- Walkers resumed 20:05Z, catch-up about 04Z. Watcher alerts below 12 GB of room.
+- The OOM kills Helm saw were jobs at their own declared caps. Declare caps from measured peaks.
+
+**H5.**
+- STOPPED since 07:15Z. 3 live trades, +0.005199 SOL.
+- 18:18Z running check: ALL 338.759 s (n 436), PLAIN 337.254 s (n 315).
+- **Owner pre-authorized STOP removal** if the 00:13Z resume check passes (executor, ALL and PLAIN each ≥ 337; halts=[]; ALERTS=0; no other §5 rule fired). The manager removes STOP (`sudo -n rm /var/lib/mal-live/h5/STOP`), verifies stop_file=False, records it, and pings the owner so Helm knows.
+- T1 needs 20 landed buys, the owner's direct OK and +0.5 SOL.
+
+**Tip follower memory.** anon was 724 MB at 14:40Z and 799 MB at 18:40Z (~19 MB/h), against a cgroup max of 2 GiB. Sampler job #627 is collecting 12 h; decide on a fix or a planned restart before about 10-13.
+
+**Research.**
+- r6 (JUDGE-6) and r7 (JUDGE-7): 5 KILL, 1 PREP-READY (funding-graph rug veto, D1 read about 10-16/17 after 4 releases).
+- The H5 rule search on explore-0814 is closed.
+- r8 (wyqseyioz) is running: rug-veto fixes plus a stage-2 DECLARE, and the October structure check guarding H5 constants before T1.
+- r8-h2-wallet-d1-look is deferred until the walkers catch up.
+
+**Credits today (Helius).**
+- Acceptance and line 2: #598 612, #623 245.
+- Exact-in audit: #628 290, #629 290.
+- BOOST check: #638 93.
+- EXP-025 E0: #630 400.
+- The walkers continue at about 18k per hour each.
+
+### STATE 10-10 ~10:40Z
 
 **H5.**
 - **Status.** The canary is STOPPED (§5.1, since 07:15Z).
