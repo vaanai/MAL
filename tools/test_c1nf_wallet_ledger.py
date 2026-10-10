@@ -914,6 +914,25 @@ def test_recheck_and_force_on_a_changed_source(tmp_path, capsys):
     assert L.main(other) == 3  # nothing to recheck
 
 
+def test_runbook_job_command_parses():
+    """Review 1, runbook: the nightly command in docs/runbooks/c1nf-wallet-ledger.md uses flags this CLI accepts."""
+    import shlex
+
+    text = (Path(__file__).resolve().parents[1] / "docs" / "runbooks" / "c1nf-wallet-ledger.md").read_text()
+    block = text.split("```sh", 1)[1].split("```", 1)[0].replace("\\\n", " ")
+    seen = {}
+    for line in block.splitlines():
+        for part in line.split("&&"):
+            if "tools/c1nf_wallet_ledger.py" in part:
+                argv = shlex.split(part.split("tools/c1nf_wallet_ledger.py", 1)[1])
+                args = L.build_parser().parse_args(argv)
+                seen[args.cmd] = args
+    assert set(seen) == {"rollup", "check"}
+    r = seen["rollup"]
+    assert r.require_prev_day and r.keep_asof == 3 and r.max_temp_gb == 8 and r.tip_dir == ["/var/lib/mal/sealed/fast-trades-tip"]
+    assert seen["check"].max_wallets == 30_000_000 and seen["check"].asof_day
+
+
 def test_spill_cap_is_an_option(tmp_path):
     """Review 1, pruning item: the duckdb spill cap is a CLI option with a small default (was 40 GB, hard-coded)."""
     con = L.connect(threads=1, mem_gb=1, tmp_dir=tmp_path / "duck", max_temp_gb=2)
