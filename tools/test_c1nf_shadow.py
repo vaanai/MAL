@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -724,22 +725,94 @@ def test_wrapper_passes_pin_and_python_refuses_a_bad_hash(tmp_path):
 
 
 # ---- ledger adapter -------------------------------------------------------------------------------------------------------------------------
-def test_asof_dir_ledger_adapts_passa_matrix_to_get(tmp_path):
-    (tmp_path / "asof" / "asof-2026-10-10").mkdir(parents=True)
+class FakeAsof:
+    """AsofLedger double: passa_matrix knows th 7 only; manifest names its asof_day."""
 
-    class FakeAsof:
-        def passa_matrix(self, th):
-            known = np.array([int(t) == 7 for t in th])
-            m = np.full((len(th), 7), np.nan)
-            m[known] = [10, 2, 1.5, 3, 4, 5, 9.0]
-            return known, m
+    def __init__(self, day):
+        self.manifest = {"asof_day": day}
 
-    opened = []
-    led = cs.AsofDirLedger(tmp_path, opener=lambda p: (opened.append(p), FakeAsof())[1], hash_fn=lambda s: 7 if s == "known" else 8)
+    def passa_matrix(self, th):
+        known = np.array([int(t) == 7 for t in th])
+        m = np.full((len(th), 7), np.nan)
+        m[known] = [10, 2, 1.5, 3, 4, 5, 9.0]
+        return known, m
+
+
+class StaleLedger(Exception):
+    """Stands in for tools.c1nf_wallet_ledger.StaleLedger (matched by class name)."""
+
+
+def test_asof_dir_ledger_opens_through_open_for_day_and_adapts_passa_matrix(tmp_path):
+    asked = []
+
+    def open_for_day(root, day):
+        asked.append((root, day))
+        if day != "2026-10-10":
+            raise StaleLedger(f"no as-of snapshot for decision day {day}")
+        return FakeAsof(day)
+
+    led = cs.AsofDirLedger(tmp_path, open_for_day=open_for_day, hash_fn=lambda s: 7 if s == "known" else 8)
     snap = led.snapshot_for_day("2026-10-10")
     assert snap.get("known") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0) and snap.get("other") is None
-    assert led.snapshot_for_day("2026-10-09") is None                   # no prior-day snapshot: wallet features stay NaN, as in C1
-    assert opened == [tmp_path / "asof" / "asof-2026-10-10"]
+    assert led.snapshot_for_day("2026-10-11") is None and led.stale == 1     # asof-<D> not built yet (00:00Z..rollup): None, never asof-<D-1>
+    assert asked == [(tmp_path, "2026-10-10"), (tmp_path, "2026-10-11")]   # only the decision day is ever asked for
+
+
+def test_asof_dir_ledger_refuses_a_snapshot_for_another_day_and_propagates_other_errors(tmp_path):
+    led = cs.AsofDirLedger(tmp_path, open_for_day=lambda root, day: FakeAsof("2026-10-09"), hash_fn=lambda s: 7)
+    assert led.snapshot_for_day("2026-10-10") is None and led.stale == 1
+
+    def broken(root, day):
+        raise OSError("disk")
+
+    with pytest.raises(OSError):                                  # not a StaleLedger: the engine counts it as ledger_errors and retries
+        cs.AsofDirLedger(tmp_path, open_for_day=broken).snapshot_for_day("2026-10-10")
+
+
+def test_asof_dir_ledger_default_seam_is_asofledger_open_for_day(tmp_path, monkeypatch):
+    import types
+
+    calls = []
+
+    class AsofLedger:
+        @classmethod
+        def open_for_day(cls, root, day):
+            calls.append((root, day))
+            return FakeAsof(day)
+
+    monkeypatch.setitem(sys.modules, "tools.c1nf_wallet_ledger", types.SimpleNamespace(AsofLedger=AsofLedger))
+    led = cs.AsofDirLedger(tmp_path, hash_fn=lambda s: 7)
+    assert led.snapshot_for_day("2026-10-10").get("x") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
+    assert calls == [(tmp_path, "2026-10-10")]
+
+
+class WalletEngine(StubEngine):
+    """Returns a Features-like object with wallet_ok, as tools.c1nf_features does."""
+
+    def __init__(self, decide, wallet_ok):
+        super().__init__(decide)
+        self.wallet_ok = wallet_ok
+
+    def features_at(self, pool, T, sd=None):
+        r = super().features_at(pool, T, sd)
+        if r is None:
+            return None
+        import types
+
+        return types.SimpleNamespace(vec=r[0], stage1=r[1], h_top1=r[2], sd=None, mint=MINT, wallet_ok=self.wallet_ok)
+
+
+@pytest.mark.parametrize("wallet_ok,picks", [(False, 0), (True, 1)])
+def test_decision_without_the_days_ledger_snapshot_is_never_picked(wallet_ok, picks):
+    sink = cs.MemorySink()
+    model = StubModel()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: model)
+    sh = cs.Shadow(WalletEngine(only_minute(10), wallet_ok), models, sink, replay=True, seal_start_ms=None)
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    run_stream(sh, 1000)
+    sh.finish("test")
+    assert len(sink.of("c1nf_pick")) == picks and len(sink.of("c1nf_outcome")) == picks
+    assert sh.c["no_wallet_ledger"] == (1 - picks) and model.calls == picks    # refused before the model is asked
 
 
 # ---- DEC-026 item 8: decision-time state on the pick -----------------------------------------------------------------------------------------

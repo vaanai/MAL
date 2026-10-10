@@ -670,10 +670,13 @@ class ErrorLog:
 
 # ---- feature engine adapter -----------------------------------------------------------------------------------------------------------------
 class Feat:
-    __slots__ = ("vec", "stage1", "h_top1", "sd", "mint")
+    """wallet_ok: the engine's Features.wallet_ok (a ledger snapshot for the decision's UTC day was used); None when the engine does not say
+    (the bare interface tuple). False is never picked (`no_wallet_ledger`): its 42 wallet features are NaN, an input class the model never saw."""
+    __slots__ = ("vec", "stage1", "h_top1", "sd", "mint", "wallet_ok")
 
-    def __init__(self, vec: np.ndarray, stage1: bool, h_top1: float, sd: Optional[int], mint: Optional[str]) -> None:
-        self.vec, self.stage1, self.h_top1, self.sd, self.mint = vec, stage1, h_top1, sd, mint
+    def __init__(self, vec: np.ndarray, stage1: bool, h_top1: float, sd: Optional[int], mint: Optional[str],
+                 wallet_ok: Optional[bool] = None) -> None:
+        self.vec, self.stage1, self.h_top1, self.sd, self.mint, self.wallet_ok = vec, stage1, h_top1, sd, mint, wallet_ok
 
 
 def unpack_features(res: Any) -> Optional[Feat]:
@@ -683,14 +686,15 @@ def unpack_features(res: Any) -> Optional[Feat]:
     if isinstance(res, tuple):
         vec, s1, h = res[0], res[1], res[2]
         sd = res[3] if len(res) > 3 else None
-        mint = None
+        mint, wok = None, None
     else:
         vec, s1, h = res.vec, res.stage1, res.h_top1
         sd, mint = getattr(res, "sd", None), getattr(res, "mint", None)
+        wok = getattr(res, "wallet_ok", None)
     vec = np.asarray(vec, dtype=np.float64)
     if vec.shape != (N_FEATURES,):
         raise ValueError(f"feature vector has shape {vec.shape}, want ({N_FEATURES},)")
-    return Feat(vec, bool(s1), float(h) if h is not None else float("nan"), sd, mint)
+    return Feat(vec, bool(s1), float(h) if h is not None else float("nan"), sd, mint, None if wok is None else bool(wok))
 
 
 def cap_ok(h_top1: float) -> bool:
@@ -1033,6 +1037,9 @@ class Shadow:
                 self.c["not_decidable"] += 1
                 continue
             self.c["decision_rows"] += 1
+            if f.wallet_ok is False:                         # no as-of snapshot for this UTC day (open_for_day refused): never a pick
+                self.c["no_wallet_ledger"] += 1
+                continue
             if not f.stage1:
                 continue
             self.c["stage1"] += 1
@@ -1451,23 +1458,45 @@ def _duck_hash() -> Callable[[str], int]:
     return lambda s: int(con.execute("select hash(?)", [s]).fetchone()[0])
 
 
+def _is_stale_ledger(exc: BaseException) -> bool:
+    """True for tools.c1nf_wallet_ledger.StaleLedger (or a test double of that name), matched by class name so this module does not import the
+    ledger (and duckdb) at load time."""
+    return any(k.__name__ == "StaleLedger" for k in type(exc).__mro__)
+
+
 class AsofDirLedger:
-    """c1nf_features.LedgerProvider over `<root>/asof/asof-<day>` directories written by tools/c1nf_wallet_ledger.py. None for a day without a snapshot
-    (wallet features then stay NaN, as in C1)."""
+    """c1nf_features.LedgerProvider over the as-of snapshots of tools/c1nf_wallet_ledger.py (PR #502), opened ONLY through
+    `AsofLedger.open_for_day(root, day)`: the snapshot asof-<day> holds the days strictly before `day`, and a decision on `day` may use no other.
 
-    def __init__(self, root: str | Path, opener: Optional[Callable[[Path], Any]] = None, hash_fn: Optional[Callable[[str], int]] = None) -> None:
+    Seam: `open_for_day(root, day) -> ledger` (default: AsofLedger.open_for_day; tests pass a fake). It raises StaleLedger when asof-<day> does
+    not exist yet (00:00Z until the nightly rollup ends, ~00:17Z) or is for another day. That is returned as None (counted in `stale`): the
+    feature engine retries with backoff and marks the decision wallet_ok=False, and the shadow never picks on such a decision (counter
+    `no_wallet_ledger`). It never falls back to asof-<day-1>. A ledger whose manifest names another asof_day is refused the same way (belt and
+    braces over open_for_day's own check). Any other error propagates (the engine counts it as ledger_errors and retries)."""
+
+    def __init__(self, root: str | Path, open_for_day: Optional[Callable[[Path, str], Any]] = None,
+                 hash_fn: Optional[Callable[[str], int]] = None) -> None:
         self.root, self.hash_fn = Path(root), hash_fn
-        if opener is None:
-            from tools.c1nf_wallet_ledger import AsofLedger
+        if open_for_day is None:
+            from tools.c1nf_wallet_ledger import AsofLedger  # PR #502
 
-            opener = AsofLedger.open
-        self.opener = opener
+            open_for_day = AsofLedger.open_for_day
+        self.open_for_day = open_for_day
+        self.stale = 0
 
     def snapshot_for_day(self, day: str) -> Optional[_AsofSnapshot]:
-        p = self.root / "asof" / f"asof-{day}"
-        if not p.is_dir():
+        try:
+            led = self.open_for_day(self.root, day)
+        except Exception as exc:  # noqa: BLE001 - only StaleLedger is a None; the rest propagates
+            if _is_stale_ledger(exc):
+                self.stale += 1
+                return None
+            raise
+        man = getattr(led, "manifest", None)
+        if man is not None and (not isinstance(man, Mapping) or man.get("asof_day") != day):
+            self.stale += 1
             return None
-        return _AsofSnapshot(self.opener(p), self.hash_fn)
+        return _AsofSnapshot(led, self.hash_fn)
 
 
 def load_oracle(spec: Optional[str]) -> Optional[Callable[[str], Any]]:
