@@ -766,7 +766,7 @@ def test_asof_dir_ledger_refuses_a_snapshot_for_another_day_and_propagates_other
         raise OSError("disk")
 
     with pytest.raises(OSError):                                  # not a StaleLedger: the engine counts it as ledger_errors and retries
-        cs.AsofDirLedger(tmp_path, open_for_day=broken).snapshot_for_day("2026-10-10")
+        cs.AsofDirLedger(tmp_path, open_for_day=broken, hash_fn=lambda s: 7).snapshot_for_day("2026-10-10")
 
 
 def test_asof_dir_ledger_default_seam_is_asofledger_open_for_day(tmp_path, monkeypatch):
@@ -784,6 +784,42 @@ def test_asof_dir_ledger_default_seam_is_asofledger_open_for_day(tmp_path, monke
     led = cs.AsofDirLedger(tmp_path, hash_fn=lambda s: 7)
     assert led.snapshot_for_day("2026-10-10").get("x") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
     assert calls == [(tmp_path, "2026-10-10")]
+
+
+def _fake_duckdb_and_ledger(monkeypatch, check_hash_pin):
+    """A duckdb whose connection answers hash(?) with 7, and a tools.c1nf_wallet_ledger whose check_hash_pin is the given function."""
+    import types
+
+    class Con:
+        def execute(self, sql, params=None):
+            return types.SimpleNamespace(fetchone=lambda: (7,))
+
+    con = Con()
+    monkeypatch.setitem(sys.modules, "duckdb", types.SimpleNamespace(connect=lambda: con))
+    monkeypatch.setitem(sys.modules, "tools.c1nf_wallet_ledger",
+                        types.SimpleNamespace(AsofLedger=object, check_hash_pin=check_hash_pin))
+    return con
+
+
+def test_asof_dir_ledger_refuses_to_start_when_the_duckdb_hash_pin_fails(tmp_path, monkeypatch):
+    class PinRefused(RuntimeError):
+        """Stands in for tools.c1nf_wallet_ledger.Refused."""
+
+    def check_hash_pin(con):
+        raise PinRefused("duckdb hash() differs from the pinned function")
+
+    _fake_duckdb_and_ledger(monkeypatch, check_hash_pin)
+    with pytest.raises(PinRefused):                    # at construction: not inside snapshot_for_day, where it would be ledger_errors + no picks
+        cs.AsofDirLedger(tmp_path)
+
+
+def test_asof_dir_ledger_default_hash_is_built_from_the_pinned_connection(tmp_path, monkeypatch):
+    checked = []
+    con = _fake_duckdb_and_ledger(monkeypatch, lambda c: checked.append(c))
+    led = cs.AsofDirLedger(tmp_path, open_for_day=lambda root, day: FakeAsof(day))
+    assert checked == [con]                            # the pin was checked, once, on the connection the hash runs on
+    assert led.hash_fn("anyone") == 7
+    assert led.snapshot_for_day("2026-10-10").get("anyone") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
 
 
 class WalletEngine(StubEngine):

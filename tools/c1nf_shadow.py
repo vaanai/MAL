@@ -1452,9 +1452,15 @@ class _AsofSnapshot:
 
 
 def _duck_hash() -> Callable[[str], int]:
+    """duckdb hash(VARCHAR) as a function, after the hash pin of PR #502 (HASH_VECTORS) has passed. Under a duckdb other than the pinned one
+    hash(trader) differs, every wallet lookup misses, and the 42 wallet features would be NaN with wallet_ok still True: so a failed pin
+    raises #502's Refused here and nothing is built on it."""
     import duckdb  # lazy
 
+    from tools.c1nf_wallet_ledger import check_hash_pin  # PR #502
+
     con = duckdb.connect()
+    check_hash_pin(con)
     return lambda s: int(con.execute("select hash(?)", [s]).fetchone()[0])
 
 
@@ -1472,10 +1478,15 @@ class AsofDirLedger:
     not exist yet (00:00Z until the nightly rollup ends, ~00:17Z) or is for another day. That is returned as None (counted in `stale`): the
     feature engine retries with backoff and marks the decision wallet_ok=False, and the shadow never picks on such a decision (counter
     `no_wallet_ledger`). It never falls back to asof-<day-1>. A ledger whose manifest names another asof_day is refused the same way (belt and
-    braces over open_for_day's own check). Any other error propagates (the engine counts it as ledger_errors and retries)."""
+    braces over open_for_day's own check). Any other error propagates (the engine counts it as ledger_errors and retries).
+
+    hash_fn=None (production) builds the duckdb hash HERE, after #502's check_hash_pin: a duckdb other than the pinned one (or none) raises at
+    construction, so the run stops at start instead of picking on all-NaN wallet features."""
 
     def __init__(self, root: str | Path, open_for_day: Optional[Callable[[Path, str], Any]] = None,
                  hash_fn: Optional[Callable[[str], int]] = None) -> None:
+        if hash_fn is None:
+            hash_fn = _duck_hash()  # at start: a wrong or missing duckdb stops the run here, not inside snapshot_for_day (-> ledger_errors, no picks)
         self.root, self.hash_fn = Path(root), hash_fn
         if open_for_day is None:
             from tools.c1nf_wallet_ledger import AsofLedger  # PR #502
