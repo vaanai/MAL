@@ -165,6 +165,24 @@ class Relation(unittest.TestCase):
         # the same print at a whole-bp tier charged exactly (45 bp) is closer: the half-bp offset is what pushes it out
         self.assertLess(abs(chain(q2, (20, 5, 20)) * 10**6 - q2 * (10**6 + 4_500)), abs(chain(q2, (20, 5, 18)) * 10**6 - q2 * (10**6 + 4_250)))
 
+    def test_a_tier_step_down_is_caught_except_on_dust(self):
+        """Am.7 B, what it catches: the ceils only ADD lamports, so a chain charging one step MORE than the tier is caught at any qin, while
+        one step LESS (here 30 bp charged where the table says 32.5) is caught above about 20,000 lamports of qin and can hit on dust."""
+        Q = int((93_330 + 25) * 2e8)
+        self.assertEqual(pumpswap_sol_fee_ppm(Q / self.B * 1e6), 3_250)
+
+        def chain(qin, bps):
+            return qin + sum(ceil_div(qin * x, 10_000) for x in bps)
+
+        tok = 100_000_000 * self.B // (Q + 100_000_000)
+        self.assertFalse(bi.tier_buy_hit(chain(bi.buy_law(Q, self.B, tok), (20, 5, 5)), tok, Q, self.B, 3_250))  # -2.5 bp: miss
+        self.assertFalse(bi.tier_buy_hit(chain(bi.buy_law(Q, self.B, tok), (20, 5, 10)), tok, Q, self.B, 3_250))  # +2.5 bp: miss
+        t = next(t for t in range(90_000, 120_000) if bi.buy_law(Q, self.B, t) >= 10_001)
+        q2 = bi.buy_law(Q, self.B, t)
+        self.assertLess(q2, 20_000)
+        self.assertTrue(bi.tier_buy_hit(chain(q2, (20, 5, 5)), t, Q, self.B, 3_250))  # dust: the ceils lift a -2.5 bp charge inside 1 bp
+        self.assertFalse(bi.tier_buy_hit(chain(q2, (20, 5, 10)), t, Q, self.B, 3_250))  # dust, +2.5 bp: still a miss
+
     def test_the_simulators_relation_misses(self):
         """The sim books net = S (1 - f): as a print, sol = qin / (1 - f). It misses by f^2/(1-f): 1.582 bp at 125, 1.010 bp at 100."""
         qin = bi.buy_law(self.Q, self.B, self.TOK)
