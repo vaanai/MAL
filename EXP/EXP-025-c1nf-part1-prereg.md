@@ -699,6 +699,195 @@ Numbered after Amendment 3 (#548, open when this was written). Amendments take n
 - It is not the canary's model pin. #550 trains on VERIFY's arrays, and a model built on P2's arrays needs its own pin and dated line.
 - Quant-proof reviewed it on head `f7da961` (2026-10-10). The run matches section 10 P2, with the `common2.py` retarget disclosed above. The count step is count-only. The bands and hashes check against the files.
 
+### Amendment 5 (2026-10-10T13:06Z; it must merge before 2026-10-16T01:00Z): the P3 and P4 pins (October adapter, read tool)
+
+Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, C1-NF selection, fill or P&L was computed or read. Its inputs are main `742d7c9`, the head of #563, the MiScusi records of jobs #550 and #555, and those jobs' E0 record files on exploration day 2026-09-20. It records what section 10 P3 and P4 require. It changes no rule, cap, threshold, leg, patch or refusal. The number is 5 because Amendment 3 (#548, `ee173d1`) and Amendment 4 (#558, `54f1628`) are on main.
+
+**Status (written 2026-10-10T13:06Z; filled 2026-10-10T13:34Z).** P4's tool is merged: #561 is `742d7c9`. P3's tool is merged: #563 is `c35ebb2` (2026-10-10T13:13:08Z), and the adapter blob on that merge equals the pinned blob (A). This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T01:00Z. If either misses, section 10 makes the walk-2 part NOT_DECIDABLE, and section 11.5 spends the look.
+
+#### A. P3: October adapter (section 11.2)
+
+| Item | Value |
+| --- | --- |
+| PR | #563 `claude/exp025-october-adapter`, merged 2026-10-10T13:13:08Z; final head `f393a2026414b5b686840977c8b97c729397590f` |
+| Pinned blob | `tools/exp025_adapter.py` `75ee1768ce57fecd58a32d95b180b2d5fb2955aa` (at `f393a20`, and at `4df999a`, job #555's code) |
+| Test blob | `tools/test_exp025_adapter.py` `87fbcf1da038edcf68ce804a9d2521246a46456e` (the same at both commits) |
+| Merge commit | `c35ebb2c90feb4b56b337b16bc996f61e92d9652`. `git rev-parse c35ebb2:tools/exp025_adapter.py` = `75ee1768ce57fecd58a32d95b180b2d5fb2955aa`, the pinned blob, and `c35ebb2:tools/test_exp025_adapter.py` = `87fbcf1d…`, the test blob [measured 2026-10-10T13:34Z]. Both are equal, so job #555's E0 stands and no re-run is needed. |
+| quant-proof OK on the final head | [OK holds at `f393a20`](https://github.com/vaanai/MAL/pull/563#issuecomment-6097865402), after [r6 OK at `5e68132`](https://github.com/vaanai/MAL/pull/563#issuecomment-6097758674); `f393a20` is `5e68132` plus a normal merge of main `742d7c9`. Both are the manager's merge comments recording quant-proof's OK. |
+
+**E0 on 2026-09-20: MiScusi job #555.** It ran on mal-research-0 at code `4df999a30150` (the quant-proof r6 edit 1). Its result check confirmed that the record's `blobs` entries for the adapter and its test equal the files it ran (`fresh` true). Resources: a 16 GB cap and a 10 GB peak. Verdict: **PASS**.
+- Rows equal by md5: trades, creates and migrations against `ref/convert.py`, and `tokens` against `ref/build_shared.py`.
+- The section 2.4 event-V fixture: ok.
+- Idempotence: equal. Two independent runs plus the main run gave sha256 trades `ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a`, creates `cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83` and migrations `89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d`.
+- The `mid` check: pass. `p2_rows` 24,319; `later_new_rows` 815 (mid 24,320 to 25,134); `bad_hours` 0.
+- The record's other `blobs` equal main `742d7c9`: `ARTIFACTS/exp025/event_v_map.py` `9771ec33…`, `ref/build_shared.py` `0b024e92…`, `ref/convert.py` `252c6432…`, `scripts/10_meta.py` `4583cf12…` and `scripts/common2.py` `abb36397…`.
+- Record: `/data/mal/exp025/e0/p3_e0_2026-09-20.json`, sha256 `7974bf1536c235b2dd922b283c48372a113f4c82b8328e92e052f7c2eae6a195` [measured 2026-10-10T13:05Z; equals the job log]. The next adapter run writes over that path, so a copy is kept at `/data/mal/exp025/e0/p3_e0_2026-09-20.job555.json`, with the same sha256 [measured 2026-10-10T13:06Z]. The job also copied the record to its MiScusi output directory.
+- It replaces job #537 (code `996fa29`, adapter blob `20ba1c02…`), whose blob is no longer the #563 head's.
+
+**The `mid` check used Amendment 4's P2 universe.** In the job #555 record, `mid_check.p2_universe_sha256` is `217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211`, which equals Amendment 4's pinned hash of P2 `work/universe.parquet`. The record's `p2_rows` is 24,319, and in its `same_day` case (no October rows appended) the rebuilt universe has the same sha256 [read from the record, sha256 `7974bf15…`, 2026-10-10T13:34Z].
+
+#### B. P4: read tool
+
+| Item | Value |
+| --- | --- |
+| PR | #561 `claude/exp025-read-tool` |
+| Pinned blob | `tools/exp025_read.py` `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c` (main `742d7c9`) |
+| Merge commit | `742d7c92def3173fc3892459bd2e81fcf24a02c6` |
+| quant-proof OK on the final head | [reviewer OK and quant-proof r5 OK at `f3309e9`](https://github.com/vaanai/MAL/pull/561#issuecomment-6097758515), the final head `f3309e97d166bfd96e4b27923c24c4e5d28decbb` (the manager's merge comment) |
+
+**E0 on 2026-09-20: MiScusi job #550.** It ran `exp025_read.py e0 --day 2026-09-20 --rerun-v2` on mal-research-0 at the #561 head after the quant-proof r3 edits. Resources: an 8 GB cap, a 1.7 GB peak, and exit 0. Verdict: **PASS**.
+- The record's `code_head` is `efd11b4c038d7d08ef0d529154eab73c30ad398f`. Its `tool_blob` is `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c`, which equals the pinned blob.
+- Pricing to the lamport (quant-proof R11): the md5 over (mint, decision time, leg, pnl in lamports) is `7d5eb193a13495b84b06ac64f50049c8` for `verify/v2_sim.py` with `verify/v3_report.py`, and the same for the read tool. `n_c1nf_day` is 34, `rows_priced` 657, `pool_mismatch_v2` 0, and `lamport_all_tags` true.
+- Statistics equal to `verify/v3_report.py` on all eight tags: `p` and `b`, each for `END_l055_55` and `END_l055_505`, each with and without rent.
+- The record's `pins` (sha256): `verify/v2_sim.py` `11fc04b82be2dc4e5f4db1cccd9eb9bdc770bcd29099c4dc63bca518f3a42954`, `verify/v3_report.py` `053d77fed713ac35eed57d2035fc38c4b9756dde633c33044b99193994c4c6af` and `c1nf_cap.py` `e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6`.
+- Record: `/data/mal/exp025/e0/p4_r3qp/p4_e0.json`, sha256 `383d2707f48f365b50ca7ff9aa98979b910f53a7fb2b6461a56f9155ba2c78c5` [measured 2026-10-10T13:05Z; equals the job log].
+- It replaces job #541 (code `8b953c6`, tool blob `10d7beeb…`), whose blob is no longer main's.
+
+**The read tool's other inputs.**
+- The two look patches have the same blob at `efd11b4` and on main `742d7c9`: `ARTIFACTS/exp025/patches/common2_look1.patch` `dc82fbf0…` and `common2_look2.patch` `8a4fac90…`. The tool also pins their sha256 in its own code, so the tool blob covers them.
+- The adapter is not in the `efd11b4` tree, so it did not feed this E0. It is pinned by A.
+- **Pinned pass A is checked by its pin, and it is not part of P4's E0 bar.** Section 10 P4's E0 has two bars only: the pricing layer equals `verify/v2_sim.py` to the lamport, and the statistics equal `verify/v3_report.py`. Neither compares pass A output, so a pass-A comparison is not a P4 precondition. Pass A is pinned by section 2.3: `scripts/11_passA.py`, sha256 `24b1822e35a3b96337f8205370accc8eb9862d8411c9fda68296fb040ea79122`. The read tool's `check_pins()` refuses (`PIN`) unless every `PINNED_SCRIPTS` file, `scripts/11_passA.py` among them, equals its `ARTIFACTS/exp025/SHA256SUMS` line, and `e0` and `check` both call it before anything else. Measured 2026-10-10T13:34Z: the `SHA256SUMS` line and the file give `24b1822e…`, equal to section 2.3, and the file's git blob is `bb47821d0a6e53cade79ab7e1984939618136dc8` both at `efd11b4` (job #550's code) and on this head. Job #550 exited 0, so its `check_pins()` passed on that file.
+- **The per-look pass-A run.** `tools/exp025_look.py` runs it. It is the locked-look runner that merged with #561 (main `742d7c9`): blob `014df737f15f6668e204cd3c051aa96be1ebbf74`, with its test `tools/test_exp025_look.py` at `d599b5733bb8a1232c5b5039604c3765a481b4e7`; both are equal on main `b63555b` [measured 2026-10-10T13:44Z]. It takes the steps `exp025_read.pipeline_commands(look)` returns and runs each as a subprocess with one log: `10_meta.py` before the lock, then, inside the lock, `11_passA.py <D>` for every graduation day from 2026-10-09 to the day before the look's end, then `12_passC.py` and `14_export.py`. A non-zero exit is a refusal (`RUN`). The runner needs `<O>/look_assembly.json`, which its docstring assigns to the adapter-side look driver; on main `b63555b` no file other than the runner and its test mentions that file, and the runner returns `NOT_READY` while it is absent [measured 2026-10-10T13:44Z; the same on main `dbf2780`, `git grep look_assembly` finds only those two files, measured 2026-10-10T13:56Z]. A writer is a separate PR before Look 1 (10-17); until it merges, `exp025_look.py run` returns NOT_READY, which does not spend the look: the refusal appends a `ready` event to `LOOK_READS.jsonl` and takes no lock (`test_missing_assembly_is_not_ready_not_r8`). The one exception is the deadline: a `run` after Look 1's deadline, 2026-10-18T12:00Z, takes the lock under R8 before any readiness check and ends the look NOT_DECIDABLE. This note covers the pass-A run only, not that assembly. It records the blobs and adds them to no pin line: the pass-A script itself stays pinned by section 2.3 and `check_pins()`.
+
+#### C. Not changed
+
+Nothing else changes: the rule, the cap, the threshold, the patches' content, the event-V mapping, the legs, the statistics, the looks, alpha, the refusals R1–R14 and the section 0 counting start. This amendment adds no reader and opens no sealed block.
+
+### Amendment 6 (written 2026-10-10T14:19:17Z, from `date -u`; before any October row is read for a look; it must merge before any look's P7 sample is drawn and before 2026-10-16T01:00Z): P7 line 1, buy side, per the quant-proof ruling QP-P7-1010
+
+Outcome-blind in its inputs (see C, "Outcome records in existence", for EXP-025 Amendment 3 item 6). It follows the quant-proof ruling of 2026-10-10 (about 14:00Z), `/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md`, sha256 `bf298d8ad516bbc69b59bbba6c32dfcbde5f3cd2a3a5efd4fc17b85033a2bafc` [measured 2026-10-10T14:18Z], items 2 to 4. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, no October tape row was read, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are the ruling, the manager's brief that quotes the tip-check counts in C (this text copies them, as EXP-024 Amendment 6 does, and did not reopen the job outputs), the module branch `claude/exp025-p7-buy-amend` at `0c8327e`, and `ARTIFACTS/exp025/event_v_map.py`, `tools/exp025_read.py` and `tools/exp025_look.py` on main `f0787ea`. It is numbered after Amendment 5, which is in the same draft PR (#567). Amendments take numbers in merge order.
+
+#### A. The rule (the ruling's text, quoted)
+
+> **P7 line 1 (EXP-025) / line B (EXP-024), buy side, amended [pinned]. Sells unchanged.**
+> 1. *Comparable buys.* A sampled buy is comparable only if it has no `zero_sol` and its `ix_name` is exactly `buy` or `buy_v2`. Every other buy is in neither denominator, with cause `buy_exact_quote_in` (prefix), `no_ix_name` (missing/null/empty), or `ix_not_listed` (any other name, `multi_hop_swap` included). EXP-025 decides from the sampled tape row before any fetch; EXP-024 decides from the raw decode's `ix_name` (forward-1002 rows carry none; it is the instruction name and carries no outcome). Counts are printed per cause and, within `ix_not_listed`, per name.
+> 2. *Law.* A comparable buy matches if the raw event's `pool_quote_amount` is within tolerance of `ceil(Q·token_raw / (base_reserve − token_raw))`, in integers `-((-Q*token_raw) // (base_reserve - token_raw))`. Q = `quote_reserve_mapped + V0` (EXP-025; vault + V(t) with V0 = 0 in the tip check) or `quote_reserve + V` (EXP-024); `base_reserve` and `token_raw` are the raw event's. `base_reserve <= token_raw` is a miss. This **replaces** the forward law for buys; the forward law is not an alternative.
+> 3. *Tolerance.* Constants unchanged: 1 bp (EXP-025 of actual; EXP-024 of the law, as now) or 2 units, the units now lamports on both sides.
+> 4. *Unchanged:* sell law and match, the 1,000-print draw and frame, the 99% bars, EXP-025's top-up to 100 comparable buys (its candidates follow item 1), unresolved = miss (EXP-025), and the consequences (R14; EXP-024 both looks NOT_DECIDABLE).
+
+**What this replaces in Amendment 1 part 2.**
+- **Buys.** The bullet "`token_raw` equals `base_reserve * qin // (quote_reserve_mapped + V0 + qin)` within 1 bp or 2 base units" is replaced. A comparable buy now hits when the raw event's `pool_quote_amount` is within `event_v_map.within_tolerance` of `-((-Q*token_raw) // (base_reserve - token_raw))`, with Q = `quote_reserve_mapped + V0` (the adapter's written column plus `tokens.v0_lamports`, as Amendment 1 pins them) and `base_reserve` and `token_raw` the raw event's. The match is 1 bp of actual (`pool_quote_amount`) or 2 lamports. `base_reserve <= token_raw` is a miss.
+- **Population (buys).** The exclusions, tested in this order, are `zero_sol`, `not_buy_or_sell`, `buy_exact_quote_in` (prefix: v1 and v2), `no_ix_name` (missing, null or empty) and `ix_not_listed` (any buy name other than exactly `buy` or `buy_v2`; `multi_hop_swap` included). As before, the decision uses only the sampled tape row's `side`, `zero_sol` and `ix_name`, before any fetch.
+- **Buy top-up.** The candidates are the buys that are comparable under item 1. The form is unchanged: 100 comparable buys, the half-stride midpoints, and all of them if there are `need` or fewer.
+- **Printed.** The list gains the exclusions per cause, the `ix_not_listed` count per name (and the `buy_exact_quote_in` count per name), and n and hits for `buy` and `buy_v2` separately. The ruling (item 4) asks for `buy_v2` to be reported on its own because no `buy_v2` print has been checked under the inverse law. If `buy_v2` misses, it is not dropped from the whitelist after the fact. As before, no signature, pool, mint, amount, price or reserve is printed.
+- **The helpers.** Amendment 1 part 6 said the driver "must decide every hit through these helpers". For buys, that now means the module in B.
+- **Unchanged in part 2.** The frame, the main draw, the fetch, the decode and its pinned blob, identity, the law inputs, the sell law and its match, unresolved = miss with its closed reason list (`P7_RAW_REASONS`), and the outcomes.
+
+**Does it loosen the test? [the ruling's reasoning, inferred, not measured here].**
+- Above 20,000 lamports, the inverse law's error equals the relative error in Q, so the test is as tight as the forward law's or tighter.
+- Below 20,000 lamports, the Q tolerance widens to about 2/qin, about 12 bp at a 1,660-lamport print. Sells already have that allowance.
+- A gross-vault column and pending-fee errors still miss by 2% to 4% on any print above about 100 lamports.
+
+#### B. The code: a new pinned module
+
+The rule lives in a new module, `ARTIFACTS/exp025/p7_buy_amend.py`. It comes from branch `claude/exp025-p7-buy-amend` at `0c8327ec6184c8ba5a69a05681381bacc6ea670f`, which is GitHub draft PR #573 (not MiScusi job #573).
+
+| File | git blob | sha256 |
+| --- | --- | --- |
+| `ARTIFACTS/exp025/p7_buy_amend.py` (new) | `24dc5ede16125099f67907d9a2ac30cbb90ac934` | `ed3005f083d80bba768292a8ff6adf4b4220370e01760a540034c6d1bcace31b` (its new `SHA256SUMS` line at `0c8327e`) |
+| `ARTIFACTS/exp025/event_v_map.py` (unchanged) | `9771ec333046e065ce66921e88f4a893bd557aec` | `8ba3723680cb49418581f1f59bfe38340b73494e6147b466fa52893ceb6f42f1` |
+| `tools/exp025_read.py` (unchanged) | `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c` | not pinned by sha256; its blob is Amendment 5 B's pin |
+
+[measured 2026-10-10T14:20Z: `git rev-parse 0c8327e:<path>`, and sha256 of `git show 0c8327e:<path>`. The `event_v_map.py` and `exp025_read.py` blobs are the same at `0c8327e`, on main `f0787ea`, and on this PR's base head `906a93a`.]
+
+**What the module holds.**
+- The amended functions: `p7_raw_exclusion`, `p7_raw_line`, `cp_buy_quote_in` (the integer inverse law), `p7_raw_hit` and `p7_raw_check`. `p7_raw_check` keeps event_v_map's contract and reason order.
+- `p7_raw_hit` decides buys by the inverse law. For sells it calls `event_v_map.p7_raw_hit("sell", …)` unchanged.
+- Its own `p7_raw_tally`. event_v_map's tally builds `excluded_by` from its own `P7_RAW_EXCLUSIONS` and would raise a KeyError on `ix_not_listed`.
+- `p7_raw_buy_topup` and `p7_raw_draw`.
+- From `event_v_map` it reuses `p7_raw_frame`, `p7_raw_main_draw`, `within_tolerance`, `p7_raw_pass`, and the identity, adapter, law-field and reason constants. It loads `event_v_map.py` only after checking that file's sha256 against `8ba37236…`, and raises ImportError otherwise.
+
+**`event_v_map.py` is unchanged, so both E0s stand and neither is re-run.**
+- The #555 P3 E0 stands. Its record lists blob `9771ec33…` (Amendment 5 A).
+- The P4 E0 (#550) stands. `event_v_map.py` is one of `PINNED_SCRIPTS`, and `check_pins()` checks it.
+
+**R14 does not change.**
+- `tools/exp025_read.py` `r14_p7(cp, fee_line)` checks counts only. It runs `event_v_map.p7_all_pass` on two `(sell_ok, sell_n, buy_ok, buy_n)` tuples: line 1 at 99% per side, line 2 at 75% (sells) and 90% (buys). An empty side fails.
+- `tools/exp025_look.py` reads those two tuples from the P7 record it is given (`--p7`, keys `cp` and `fee`).
+- The read tool's blob stays `c5b3c460…`, so its P4 pin and E0 stand.
+
+**The P7 driver (not yet built) [pinned].**
+- It decides every buy hit through `p7_buy_amend` (`p7_raw_check`, and through it `cp_buy_quote_in`).
+- It decides every sell through `event_v_map`'s sell law (`event_v_map.p7_raw_hit("sell", …)`, that is `cp_sell_gross_quote_out`). The module's sell branch is that same call.
+- It draws the sample with the module's `p7_raw_draw`, so the top-up candidates follow item 1.
+- It tallies with the module's `p7_raw_tally` and writes line 1's `cp` tuple from that tally.
+- It loads the module only after checking the module's sha256 against `ed3005f0…`, the `SHA256SUMS` line. `check_pins()` does not cover this file, because `PINNED_SCRIPTS` is unchanged.
+- A driver that decides a buy by the forward law, or by any other copy of the rule, is not running P7.
+
+**Tests.** `tools/test_exp025_p7_buy_amend.py` at `0c8327e` has 15 tests, covering the ruling's shared cases (at `a20f32e`, after test-only commits from quant-proof's reviews, it has 19; `p7_buy_amend.py` is unchanged there, blob `24dc5ede`, sha256 `ed3005f0…`):
+- `event_v_map.py` is untouched, and an edited copy is refused.
+- The frame, main draw, tolerance and pass are reused unchanged.
+- A dust exact-out buy misses under the forward law and hits under the inverse law.
+- A real exact-out buy hits exactly, whatever V0 is.
+- An exact-in buy hits when one base unit costs less than one lamport.
+- A `buy` with 5 bp of fee inside `pool_quote_amount` misses.
+- A gross-vault column and an LP-sized offset still fail.
+- `base_reserve <= token_raw` misses.
+- `multi_hop_swap` and an unknown name are excluded before the fetch and counted per name.
+- The unresolved reasons and their order match the pinned check.
+- Sells are unchanged.
+- The top-up uses only whitelisted buys.
+- The tally has the expected keys.
+- The functions do no I/O.
+
+**What this needs.** The module PR merges with the blob and sha256 above, and quant-proof posts OK on its final head, before or together with this amendment. If the module's blob changes before it merges, the table above is updated in place before this amendment merges.
+
+#### C. Disclosure (ruling item 3)
+
+- **What was run.** An outcome-blind law-match check on tip-tape prints, which the tip-follower event-V runbook (steps 7–8) required: MiScusi jobs #573 (crashed, no result), #576, #583, #585, #586 and #587. Window `[2026-10-10T13:17:18Z, 13:35:00Z)` (copied from EXP-024 Amendment 6 C). 1,174 Helius credits in total.
+- **Counts (#576).**
+  - Sells: 400/400 within tolerance.
+  - Comparable buys under the old pinned rule: 165/176 (0.9375). 424 buys were excluded (400 + 176 + 424 = 1,000).
+  - Of the 11 buy misses, 9 were `multi_hop_swap`: about 5 bp ×8 and about 100 bp ×1.
+  - The other 2 misses were dust exact-out `buy` prints, at 1.603 bp and 4.767 bp. Both are inside the exact-out rounding bound: about 2.0 bp and 6.0 bp, at qin of about 4,898 and 1,660 lamports.
+  - The frame by `ix_name`: `buy` 20,418; `buy_v2` 4,137; `multi_hop_swap` 1,523; `buy_exact_quote_in` 61,219; `buy_exact_quote_in_v2` 3,152; sells 65,822. That is 156,271 in all.
+- **In-sample.**
+  - #576 shaped this amendment. Re-scoring #576 under it is a diagnostic only, never an acceptance.
+  - 154 of #576's 165 forward-law buy hits have never been checked under the inverse law.
+  - No `buy_v2` print has been checked under the inverse law; all 11 refetched hits were `buy`.
+  - Distinct pools (ruling item 4; MiScusi job #592, counts only, recorded 2026-10-10T14:38Z by the manager): the 9 `multi_hop_swap` misses span 6 distinct pools (the 2 dust misses, 1 pool). A constant ~5 bp gap across several pools is a fee, not a Q error of one pool. The whitelist does not depend on that count.
+- **Overlap.** These prints sit inside both reads' October hours (EXP-025's V-covered hours start 2026-10-09T00). So the same transactions are in forward-1002ev's hours, and a look's P7 sample can draw them.
+- **When.** Written while the declared observations run: EXP-024 section 3.1 and its Amendments 2 and 3, and EXP-025 section 5.1 and its Amendment 3.
+- **Outcome records in existence (EXP-025 Amendment 3 item 6; added by the manager 2026-10-10T14:38Z, quant-proof's caution on #571).** Two live-shadow smoke runs on October tip prints preceded this text: MiScusi job #568 (OOM-killed in its bootstrap at 13:38:34Z, before any decision) and job #584 (scratch out dir `/home/claude/data/c1nf-shadow-smoke2-1010`, started 2026-10-10T13:54Z, `--max-seconds 1800`), which may have computed shadow outcome records for October decisions. None was opened, printed or read: only whitelisted start/stop/heartbeat counters (bootstrap, error and expiry counts) were printed. Under Amendment 3 item 6 the Look reports list this amendment as written after shadow outcomes could exist and do not call it outcome-blind; its inputs contain no outcome.
+- **Inputs.** The inputs of the check and of this amendment contain no outcome. The ruling (item 3) finds that no label, fill, exit, P&L, mean, CI or day sign was computed. No C1-NF selection, canary record or shadow record was read.
+
+#### D. Line 2 (the fee tier): not changed, never yet measured on October prints
+
+- **It has never run on October prints, and it can void the reads too (ruling item 4).**
+  - Line 2 includes the exact-in family. `buy_exact_quote_in` and its v2 are 64,371 of 90,449 frame buys (71.2%) in #576's frame, and line 2's buy bar is 90%.
+  - If the October implied fee is f/(1+f) against a tier of f, the gap at f = 1.25% is about 1.6 bp. That is a miss.
+- **It will be measured once, before 2026-10-15.** The run is outcome-blind and counts only. It uses the tip-follower's declared one-hour acceptance window (ruling item 1: `[H, H+1h)`, declared in the PR and a notebook entry before H).
+- **If it fails,** line 2 is amended only under the same discipline:
+  - a mechanism shown on refetched prints;
+  - a dated, outcome-blind amendment with quant-proof OK on its final head;
+  - merged before any look's P7 sample is drawn and before 2026-10-16T01:00Z.
+- **Otherwise** line 2 stays as section 10 pinned it, and a line-2 failure at a look fires R14.
+
+#### E. Conditions
+
+- This amendment takes effect only if all of these hold:
+  - quant-proof posts OK on its final head;
+  - the module merges at the pinned blob (B);
+  - both merge before any look's P7 sample is drawn and before 2026-10-16T01:00Z.
+- After a P7 sample is drawn, line 1 cannot be amended again.
+- If this amendment does not take effect, line 1 stays as Amendment 1 pinned it, and P7 is run and reported under that rule. The ruling (item 3) calls that "the only honest alternative": leave the rule as pinned and report NOT_DECIDABLE, and both looks would be spent.
+
+#### F. Not changed
+
+- **P7 line 1, apart from the buy side above:**
+  - the sell law and its match;
+  - the tolerance constants: 1 bp of actual or 2 units (`P7_CP_TOLERANCE_UNITS` = 2), with the units now lamports on both sides;
+  - the sample size (1,000) and the main draw;
+  - the frame (pools with a V0, the V-covered hours) and the look windows;
+  - the 99% bars;
+  - the top-up form;
+  - unresolved = miss and the reason list;
+  - the consequence: R14 fires, and the look is NOT_DECIDABLE and spent under section 11.5.
+- **Line 2:** its rule and its 75% and 90% bars.
+- **Pins:** the decoder blob, `event_v_map.py`, `tools/exp025_read.py`, `PINNED_SCRIPTS` and R1–R14.
+- **Everything else:** the rule block, the cap, the threshold, the legs, the statistics, the looks, alpha and the section 0 counting start.
+- This amendment adds no reader and opens no sealed block.
+
 ## Sources
 
-`observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`; [DEC-026](../DEC/DEC-026-c1nf-live-canary.md) section 8 and Appendix A, `tools/c1nf_executor.py` (`PICK_WINDOW_START_MS`) and #503's `tools/c1nf_shadow.py` at `50eeaa1` (guard unchanged at `9a80398`) (`OUTCOME_START_MS`), MiScusi job #499 (Amendment 3).
+`observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`; [DEC-026](../DEC/DEC-026-c1nf-live-canary.md) section 8 and Appendix A, `tools/c1nf_executor.py` (`PICK_WINDOW_START_MS`) and #503's `tools/c1nf_shadow.py` at `50eeaa1` (guard unchanged at `9a80398`) (`OUTCOME_START_MS`), MiScusi job #499 (Amendment 3); `/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md`, branch `claude/exp025-p7-buy-amend` at `0c8327e` and MiScusi jobs #573, #576, #583, #585, #586 and #587 as quoted in the manager's brief (Amendment 6).

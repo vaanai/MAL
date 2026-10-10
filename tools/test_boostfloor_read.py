@@ -813,28 +813,144 @@ class Producers(unittest.TestCase):
         self.assertEqual(bi.tier_lines([good_s], lambda k, rec: None)["sell"]["no_v"], 1)
         self.assertFalse(bi.tier_lines([good_b], lambda k, rec: V)["sell"]["pass"])  # no sell at all fails the side
 
-    def test_line_b(self):
-        q, b, v = 30_000_000_000, 500_000_000_000_000, 17_580_000_000
+    # ---- line B (Am.1, buy side amended by Am.6 / QP-P7-1010): the shared cases ----
+    Q_ = (30_000_000_000, 500_000_000_000_000, 17_580_000_000)  # quote_reserve, base_reserve, V
+
+    def _buy(self, tok, pqa, ix_name="buy", **kw):
+        q, b, v = self.Q_
+        d = dict(side="buy", quote_reserve=q, base_reserve=b, virtual_quote_reserves=v, token_raw=tok, pool_quote_amount=pqa, ix_name=ix_name)
+        d.update(kw)
+        return {"status": "ok", "decoded": d}
+
+    def _sell(self, base_in, pqa=None, **kw):
+        q, b, v = self.Q_
+        d = dict(side="sell", quote_reserve=q, base_reserve=b, virtual_quote_reserves=v, token_raw=base_in,
+                 pool_quote_amount=(q + v) * base_in // (b + base_in) if pqa is None else pqa, ix_name="sell")
+        d.update(kw)
+        return {"status": "ok", "decoded": d}
+
+    def test_buy_law_integers(self):
+        self.assertEqual(bi.buy_law(10, 100, 3), 1)  # ceil(30 / 97) = 1
+        self.assertEqual(bi.buy_law(97, 100, 3), 3)  # exact: 291 / 97 = 3
+        self.assertEqual(bi.buy_law(98, 100, 3), 4)  # ceil(294 / 97) = 4
+        self.assertIsNone(bi.buy_law(10, 100, 100))  # base_reserve <= token_raw
+        self.assertIsNone(bi.buy_law(10, 100, 101))
+        Q, B, t = 47_580_000_000, 500_000_000_000_000, 17_444_321
+        self.assertEqual(bi.buy_law(Q, B, t), -((-Q * t) // (B - t)))
+        self.assertEqual(bi.buy_law(Q, B, t), math.ceil(Q * t / (B - t)))
+
+    def test_line_b_dust_exact_out_buy_hits_inverse_misses_forward(self):
+        q, b, v = self.Q_
+        Q = q + v
+        # a dust exact-out buy (about 1,660 lamports): the program charges ceil(Q tok / (b - tok)); pick a tok whose ceil rounds up by
+        # nearly a whole lamport, so the old forward law overstates token out by about 1/qin (about 6 bp) and misses
+        found = None
+        for tok in range(17_400_000, 17_500_000, 997):
+            pqa = bi.buy_law(Q, b, tok)
+            fwd = b * pqa // (Q + pqa)
+            if abs(tok - fwd) > 2 and abs(tok - fwd) > bi.BP * fwd:
+                found = (tok, pqa)
+                break
+        self.assertIsNotNone(found, "no forward-law miss in range")
+        tok, pqa = found
+        self.assertLess(pqa, 20_000)
+        r = bi.line_b([self._buy(tok, pqa)])
+        self.assertEqual((r["buy"]["comparable"], r["buy"]["match"], r["buy"]["pass"]), (1, 1, True))
+        self.assertEqual(r["buy"]["by_ix_name"]["buy"], {"n": 1, "match": 1})
+
+    def test_line_b_exact_in_buy_hits(self):
+        q, b, v = self.Q_
+        for qin, name in ((100_000_000, "buy"), (2_500_000_000, "buy_v2"), (4_898, "buy")):
+            tok = b * qin // (q + v + qin)  # an exact-in buy: the forward law is the program's own calculation
+            r = bi.line_b([self._buy(tok, qin, ix_name=name)])
+            self.assertEqual((r["buy"]["comparable"], r["buy"]["match"]), (1, 1), (qin, name))
+            self.assertEqual(r["buy"]["by_ix_name"][name], {"n": 1, "match": 1})
+
+    def test_line_b_buy_misses(self):
+        q, b, v = self.Q_
+        Q = q + v
+        tok = 1_048_000_000_000
+        law = bi.buy_law(Q, b, tok)
+        fee5 = self._buy(tok, law + law * 5 // 10_000)  # 5 bp of fee inside pool_quote_amount
+        lp = self._buy(tok, law + law * 20 // 10_000)  # an LP-sized (20 bp) offset
+        gross = self._buy(tok, law, quote_reserve=q + (q + v) * 3 // 100)  # a gross-vault column: the vault 3% above the pool's Q
+        over = self._buy(b, 10**12)  # base_reserve <= token_raw
+        r = bi.line_b([fee5, lp, gross, over])
+        self.assertEqual((r["buy"]["comparable"], r["buy"]["match"], r["buy"]["pass"]), (4, 0, False))
+        self.assertEqual(bi.line_b([self._buy(tok, law + 2)])["buy"]["match"], 1)  # 2 lamports is within tolerance
+        self.assertEqual(bi.line_b([self._buy(tok, law)])["buy"]["match"], 1)
+
+    def test_line_b_sells_unchanged_and_gross_vault_fails(self):
+        q, b, v = self.Q_
         base_in = 1_000_000_000_000
-        sell = {"status": "ok", "decoded": dict(side="sell", quote_reserve=q, base_reserve=b, virtual_quote_reserves=v, token_raw=base_in,
-                                                 pool_quote_amount=(q + v) * base_in // (b + base_in), ix_name="sell")}
+        good = self._sell(base_in)
+        two = self._sell(base_in, pqa=good["decoded"]["pool_quote_amount"] + 2)
+        gross = self._sell(base_in, quote_reserve=q + (q + v) * 3 // 100)
+        lp = self._sell(base_in, pqa=good["decoded"]["pool_quote_amount"] * 10_020 // 10_000)
+        r = bi.line_b([good, two, gross, lp])
+        self.assertEqual((r["sell"]["comparable"], r["sell"]["match"]), (4, 2))
+        self.assertTrue(bi.line_b([good, two])["sell"]["pass"])
+        self.assertFalse(bi.line_b([good, two])["buy"]["pass"])  # no comparable buy fails that side
+
+    def test_line_b_buy_exclusions_per_cause_and_name(self):
+        q, b, v = self.Q_
         qin = 100_000_000
-        buy = {"status": "ok", "decoded": dict(side="buy", quote_reserve=q, base_reserve=b, virtual_quote_reserves=v, pool_quote_amount=qin,
-                                                token_raw=b * qin // (q + v + qin), ix_name="buy")}
-        off = json.loads(json.dumps(buy))
-        off["decoded"]["token_raw"] += 10**9
-        exact_in = json.loads(json.dumps(buy))
-        exact_in["decoded"]["ix_name"] = "buy_exact_quote_in_v2"
-        no_ix = json.loads(json.dumps(buy))
-        no_ix["decoded"]["ix_name"] = None
-        r = bi.line_b([sell, buy, off, exact_in, no_ix, {"status": "absent"}])
-        self.assertEqual((r["sell"]["comparable"], r["sell"]["match"], r["sell"]["pass"]), (1, 1, True))
-        self.assertEqual((r["buy"]["comparable"], r["buy"]["match"], r["buy"]["excluded"], r["buy"]["not_comparable"]), (2, 1, 1, 1))
-        self.assertFalse(r["buy"]["pass"])
-        two = json.loads(json.dumps(sell))
-        two["decoded"]["pool_quote_amount"] += 2  # within 2 units
-        self.assertTrue(bi.line_b([two])["sell"]["pass"])
-        self.assertFalse(bi.line_b([two])["buy"]["pass"])  # no comparable buy fails that side
+        tok = b * qin // (q + v + qin)
+        recs = [self._buy(tok, qin), self._buy(tok, qin, ix_name="multi_hop_swap"), self._buy(tok, qin, ix_name="multi_hop_swap"),
+                self._buy(tok, qin, ix_name="some_new_buy"), self._buy(tok, qin, ix_name="buy_exact_quote_in"),
+                self._buy(tok, qin, ix_name="buy_exact_quote_in_v2"), self._buy(tok, qin, ix_name=None), self._buy(tok, qin, ix_name=""),
+                self._buy(tok, qin, zero_sol=True), self._buy(tok, qin, ix_name="Buy")]
+        missing = self._buy(tok, qin)
+        del missing["decoded"]["ix_name"]
+        r = bi.line_b(recs + [missing])
+        self.assertEqual((r["buy"]["comparable"], r["buy"]["match"], r["buy"]["excluded"]), (1, 1, 10))
+        self.assertEqual(r["buy"]["excluded_by"], {"zero_sol": 1, "buy_exact_quote_in": 2, "no_ix_name": 3, "ix_not_listed": 4})
+        self.assertEqual(r["buy"]["ix_not_listed_by_name"], {"Buy": 1, "multi_hop_swap": 2, "some_new_buy": 1})
+        self.assertEqual(r["sell"]["comparable"], 0)  # an excluded buy is in neither denominator
+        self.assertIsNone(bi.buy_exclusion({"ix_name": "buy_v2"}))
+
+    def test_line_b_unresolved_is_a_miss(self):
+        q, b, v = self.Q_
+        qin = 100_000_000
+        good_buy = self._buy(b * qin // (q + v + qin), qin)
+        no_v = self._buy(b * qin // (q + v + qin), qin, virtual_quote_reserves=None)
+        r = bi.line_b([good_buy, no_v, {"status": "absent", "isbuy": True}, {"status": "fetch_failed:RuntimeError", "isbuy": False},
+                       {"status": "no_record", "isbuy": False}, {"status": "no_raw_ref"}, self._sell(10**12)])
+        self.assertEqual((r["buy"]["comparable"], r["buy"]["match"], r["buy"]["unresolved"]), (4, 1, 3))
+        self.assertEqual((r["sell"]["comparable"], r["sell"]["match"], r["sell"]["unresolved"]), (4, 1, 3))
+        self.assertEqual(r["side_unknown"], 1)  # no tape side: a miss on both sides
+        self.assertFalse(r["buy"]["pass"] or r["sell"]["pass"])
+        # the decoded side wins over the tape side for a resolved print
+        self.assertEqual(bi.line_b([{**good_buy, "isbuy": False}])["buy"]["comparable"], 1)
+
+    def test_p7_check_scores_sampled_keys_with_no_record(self):
+        pools, idx = self._setup()
+
+        def decode(_rpc, sig):
+            k = next(k for k, r in idx.items() if r.signature == sig)
+            return [dict(_decoded_for(k, int(tb.V)), event_index=0)]
+
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            bi.run_p5(lay, None, GOOD, (pools, idx), decode)
+            la = [json.loads(x) for x in lay.line_a_sample.read_text().splitlines()]
+            self.assertTrue(la and all(type(r["isbuy"]) is bool for r in la))  # line A prints carry their tape side
+            full = bi.p7_check(lay)
+            n = full["line_b_prints"]
+            self.assertEqual(full["line_b"]["sell"]["comparable"] + full["line_b"]["buy"]["comparable"] + full["line_b"]["buy"]["excluded"], n)
+            sample = [json.loads(x) for x in lay.p7_sample.read_text().splitlines()]
+            buys = sorted(tuple(r["key"]) for r in sample if r["isbuy"])
+            self.assertTrue(buys)
+            drop = {buys[0]}  # a tape buy whose record (decoded here as a sell) is removed from gettx_v
+            kept = [x for x in lay.gettx_v.read_text().splitlines() if tuple(json.loads(x)["key"]) not in drop]
+            lay.gettx_v.chmod(0o644)
+            lay.gettx_v.write_text("".join(x + "\n" for x in kept))
+            p7 = bi.p7_check(lay)
+            self.assertEqual(p7["line_b_prints"], n)  # the dropped key is still scored
+            lb, fb = p7["line_b"], full["line_b"]
+            self.assertEqual((lb["buy"]["comparable"], lb["buy"]["unresolved"]), (fb["buy"]["comparable"] + 1, fb["buy"]["unresolved"] + 1))
+            self.assertEqual(lb["sell"]["comparable"], fb["sell"]["comparable"] - 1)
+            self.assertEqual(lb["side_unknown"], 0)
 
     def test_e1_copy(self):
         with tempfile.TemporaryDirectory() as d:
