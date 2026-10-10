@@ -29,7 +29,12 @@ hour with a gap record or a missing hb is a bad hour.
 EXIT LADDER. Every outcome record also carries the pool at the exit landing slot for exit triggers at s0 + 310/320/330/335/340/345/350 s
 (the rule exits at 330 s; VERIFY.md found the exit sits on a cliff). Report-only; the rule's exit is the 330 s row.
 
-BX10 (report-only paper exit variant; not v1, never traded, not read before a pre-registered read, EXP-026 draft). Cell C10 of
+BX10 (report-only paper exit variant; not v1, never traded, not read before a pre-registered read, EXP-026 draft). OFF BY DEFAULT: it is computed
+and written only when the process is started with --bx10-enable EXP-026 (scripts/research/h5-shadow.sh passes H5_BX10_ENABLE through when it is
+set). The draft pre-registration (PR #542) wants v2's outcomes in a WITHHELD store and an EXP-024 "G-v2" amendment merged before the shadow
+computes v2 at all, so until then the shadow does no bx10 work: no outcome_bx10 record, no computation, no counter, and every other record is
+byte-identical to a build without bx10. Any other value (an empty string, "1", "exp-026") counts as off; the start record's "bx10" says which.
+Cell C10 of
 H5-BOOSTCLOCK-EXIT (/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md s2, bc_rule.py): the same trade as each v1 outcome (same trigger,
 entry legs, END-bound states, fees), only the exit instant differs. From the BOOST signer's buys (slices) observed at least 1.35 s before the
 decision instant, projection E gives the last slice's time; the exit triggers at the first instant tau >= our landing with >= 3 slices observed
@@ -165,6 +170,7 @@ H5_LOOK2_START_MS = int(datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc).timest
 # stay withheld whatever the flag says.
 H5_LOOK2_END_MS = int(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 H5_LOOK2_AMENDMENT_REF = "EXP-024-Am2"  # the only value --h5-look2-observed accepts
+BX10_ENABLE_REF = "EXP-026"  # the only value that turns the report-only bx10 exit variant on (--bx10-enable / H5_BX10_ENABLE); anything else is off
 H5_LOOK2_SEAL_REASON = "h5_look2_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
@@ -838,6 +844,7 @@ class Engine:
         h5_look2_start_ms: int | None = H5_LOOK2_START_MS,  # None disables the H5 Look-2 outcome seal (tests on synthetic 2027 times)
         h5_look2_observed: bool = False,  # True only with the declared observation of EXP-024 Amendment 2 (run_live validates the reference)
         classifier: Any = None,  # synthetic-migration class source: .lookup(mint, s0) -> (syn, src). None = nothing is classified: every trigger is excluded
+        bx10_enabled: bool = False,  # True only with the declared flag (bx10_flag(); EXP-026). Off: no outcome_bx10 record, no bx10 computation, no counter
     ) -> None:
         if boost_mode not in ("auto", "pda", "behavioural"):
             raise ValueError("boost_mode")
@@ -849,6 +856,7 @@ class Engine:
         self.pda_fn = pda_fn
         self.suppress_outcome, self.seal_start_ms = suppress_outcome, seal_start_ms
         self.pick_oracle = pick_oracle
+        self.bx10_enabled = bx10_enabled is True  # strictly the boolean True: a string or a number never turns it on
         self.h5_look2_start_ms, self.h5_look2_observed = h5_look2_start_ms, bool(h5_look2_observed)
         self.pools: dict[str, Pool] = {}
         self.announced: collections.OrderedDict[str, tuple[int, int, str | None, str | None]] = collections.OrderedDict()
@@ -1408,11 +1416,12 @@ class Engine:
         if not complete:
             self.counters["outcomes_incomplete"] += 1
         self.emit(rec)
-        try:  # after v1's record, and nothing it does feeds back: v1's records and counters are the same with or without bx10
-            self._resolve_bx10(p, pend, complete)
-        except Exception as e:  # noqa: BLE001 - a bx10 fault must not touch v1 (no counter, no error record): it reports on its own record type
-            self.emit({"type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
-                       "boost_src_at_trigger": pend.get("boost_src"), "error": repr(e)[:300]})
+        if self.bx10_enabled:  # default off (EXP-026 flag not declared): no bx10 work of any kind
+            try:  # after v1's record, and nothing it does feeds back: v1's records and counters are the same with or without bx10
+                self._resolve_bx10(p, pend, complete)
+            except Exception as e:  # noqa: BLE001 - a bx10 fault must not touch v1 (no counter, no error record): it reports on its own record type
+                self.emit({"type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
+                           "boost_src_at_trigger": pend.get("boost_src"), "error": repr(e)[:300]})
 
     def _bx10_slices(self, p: Pool, pend: dict) -> tuple[list[tuple[int, int, int]], str | None, str | None]:
         """The BOOST signer's buys as (slot, lamports, recv_ms), slot order. If the pick AT THE TRIGGER was the behavioural detector's, that signer
@@ -1431,6 +1440,8 @@ class Engine:
 
     def _resolve_bx10(self, p: Pool, pend: dict, complete: bool) -> None:
         """Report-only bx10 outcome for one resolved v1 outcome (see BX10 in the module doc). Same entry legs and END-bound pricing as v1."""
+        if not self.bx10_enabled:  # the caller checks too; kept so no path writes a bx10 record without the declared flag
+            return
         if self._sealed(p) or self._h5_sealed(p):  # the same seals as v1's outcome (already checked by the caller; kept so this never leaks alone)
             return
         var, sps, s0, v1_slot, el = pend["variant"], pend["sps"], p.s0, pend["exit_slot"], pend["el"]
@@ -2067,6 +2078,12 @@ def check_look2_ref(ref: str | None) -> str | None:
     return ref
 
 
+def bx10_flag(ref: str | None) -> bool:
+    """True only for the literal BX10_ENABLE_REF (EXP-026). None, an empty string and every other value, "1" and "exp-026" included, count as off:
+    the report-only bx10 variant is a declared flag, not a truthy switch. Unlike --h5-look2-observed a wrong value is not refused; it just stays off."""
+    return ref == BX10_ENABLE_REF
+
+
 def look2_start_info(look2_ref: str | None) -> dict:
     """The H5 Look-2 seal state, as the `start` record logs it."""
     return {"reason": H5_LOOK2_SEAL_REASON, "start_ms": H5_LOOK2_START_MS, "start": iso_from_ms(H5_LOOK2_START_MS),
@@ -2079,6 +2096,10 @@ async def run_live(args: argparse.Namespace) -> int:
     sink = JsonlSink(out_dir)
     errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     look2_ref = check_look2_ref(getattr(args, "h5_look2_observed", None))
+    bx10_ref = getattr(args, "bx10_enable", None)
+    bx10_on = bx10_flag(bx10_ref)
+    if bx10_ref and not bx10_on:
+        log.warning("--bx10-enable %r is not %r: bx10 stays OFF", bx10_ref, BX10_ENABLE_REF)
     rpc_url = check_rpc_url(getattr(args, "rpc_url", None) or DEFAULT_RPC)
     classifier = SynClassifier()
     fallback = RpcFallback(classifier, rpc_url)
@@ -2087,7 +2108,7 @@ async def run_live(args: argparse.Namespace) -> int:
         log.warning("CAP-PICK pick oracle not configured (%s): every pool with s0 from %s is sealed (fail closed); set CAP_PICK_LIVE and "
                     "CAP_PICK_FINAL_MARKER", seal_info.get("why"), iso_from_ms(SEAL_START_MS))
     engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, pick_oracle=pick_oracle,
-                    h5_look2_observed=look2_ref is not None, classifier=classifier)
+                    h5_look2_observed=look2_ref is not None, classifier=classifier, bx10_enabled=bx10_on)
     engine.syn_request = fallback.request
     engine.on_error = errlog.log
     if look2_ref is not None:
@@ -2107,6 +2128,7 @@ async def run_live(args: argparse.Namespace) -> int:
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, **seal_info},
                  "h5_look2": look2_start_info(look2_ref),
+                 "bx10": bx10_on,
                  "synthetic_gate": {"rule": "no buy on a synthetic or unclassified pool (EXP-024 Am.4)", "sources": ["ws", "rpc"], "ws_program": "pump.fun logsSubscribe",
                                     "syn_sockets": getattr(args, "syn_sockets", 1), "rpc": "public getSignaturesForAddress+getTransaction", "rpc_attempt_delays_s": list(RPC_ATTEMPT_DELAYS_S)}})
 
@@ -2269,7 +2291,8 @@ def run_replay(args: argparse.Namespace) -> int:
         rows = shuffle_within_slot(rows, args.shuffle_slot_seed)
     records: list[dict] = []
     sps_fn = (lambda p: sps_pool.get(p.pool)) if args.sps == "pool" else None
-    engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn, classifier=PreEventClassifier())  # every replayable hour is pre-event
+    engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn, classifier=PreEventClassifier(),  # every replayable hour is pre-event
+                    bx10_enabled=bx10_flag(getattr(args, "bx10_enable", None)))
     replay(rows, meta, engine)
     if args.out_dir:
         sink = JsonlSink(args.out_dir, prefix="h5-replay")
@@ -2300,6 +2323,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"live: declare EXP-024 Amendment 2's observation of Look 2 outcomes for pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z); the value must be "
                          f"exactly {H5_LOOK2_AMENDMENT_REF}. Without it, pools with s0 >= 2026-10-16T00Z get trigger records only (no outcome, strip, legs, ladder or "
                          "min_q); pools with s0 >= 2026-11-06T00Z are withheld with it too. CAP-PICK picks stay sealed either way.")
+    ap.add_argument("--bx10-enable", default=None, metavar="EXP-026",
+                    help=f"write the report-only bx10 exit variant (outcome_bx10 records). Off by default; only the exact value {BX10_ENABLE_REF} turns it on, "
+                         "any other value counts as off. The shell wrapper passes H5_BX10_ENABLE through when it is set.")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--replay-tape", default=None, help="run the engine over this exploration tape dir instead of the live feed")
     ap.add_argument("--replay-hours", default=None, help="comma-separated tape hours, e.g. 2026-09-20T12,2026-09-20T13")
