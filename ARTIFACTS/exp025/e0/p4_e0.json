@@ -1,0 +1,115 @@
+{
+ "code_head": "61cb1204bfc0",
+ "day": "2026-09-20",
+ "e0_pass": true,
+ "gdays": [
+  "2026-09-20"
+ ],
+ "job": "MiScusi #519 (j_BUeu4_VRpdqWDA), mal-research-0, role exploration",
+ "md5": {
+  "read_tool": "7d5eb193a13495b84b06ac64f50049c8",
+  "v2_sim+v3": "7d5eb193a13495b84b06ac64f50049c8"
+ },
+ "md5_equal": true,
+ "n_c1nf_day": 34,
+ "nearby_b_equal": true,
+ "nearby_p_equal": true,
+ "note": "Exploration day only. VERIFY selections (cands.npz + independent h_top1 cap, spec order). No October hour opened.",
+ "per_tag_all_rows": {
+  "b_END_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "b_END_l2": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "b_END_l5": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "b_START_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "b_WORST_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "p_END_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "p_END_l2": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "p_END_l5": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "p_START_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  },
+  "p_WORST_l055": {
+   "exact": 657,
+   "guard_equal": true,
+   "lamport": 657,
+   "n": 657,
+   "xt_equal": true
+  }
+ },
+ "pins": {
+  "c1nf_cap.py": "e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6",
+  "verify/v2_sim.py": "11fc04b82be2dc4e5f4db1cccd9eb9bdc770bcd29099c4dc63bca518f3a42954",
+  "verify/v3_report.py": "053d77fed713ac35eed57d2035fc38c4b9756dde633c33044b99193994c4c6af"
+ },
+ "pool_mismatch_v2": 0,
+ "rows_priced": 657,
+ "sd_equal": true,
+ "ssb_b_equal": true,
+ "ssb_p_equal": true,
+ "stats_equal_v3": {
+  "b_END_l055_505": true,
+  "b_END_l055_505_rent": true,
+  "b_END_l055_55": true,
+  "b_END_l055_55_rent": true,
+  "p_END_l055_505": true,
+  "p_END_l055_505_rent": true,
+  "p_END_l055_55": true,
+  "p_END_l055_55_rent": true
+ },
+ "v2_rerun": {
+  "out": "/data/mal/exp025/e0/p4/e0_v2_sim.parquet",
+  "sha256": "177af784cdd23d39915187f2be60764b50b43da01f33d8c98008f777acbc8ffa"
+ },
+ "v2_rerun_equals_verify_sim": true
+}
