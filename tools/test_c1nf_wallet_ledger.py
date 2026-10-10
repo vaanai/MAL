@@ -1001,8 +1001,9 @@ def test_spill_cap_is_an_option(tmp_path):
 # event-V keys on tip rows (quant-proof ruling on the C1-NF live V source, section (c) item 5)
 # --------------------------------------------------------------------------------------------
 # Option A stamps observe.trade_decode.EVENT_V_KEYS on tip trade rows, and main's follower writes a negative
-# single `virtual_quote_reserve` where the deployed one wrote None. The ledger reads tip rows only through
-# TIP_JSON_COLUMNS. These tests build the same day with and without the new keys and require the ledger
+# single `virtual_quote_reserve` where the deployed one wrote the unsigned u64 (values >= 2**63 included; the
+# route 1 fix keeps that reading, so archived and future tip hours carry them). The ledger reads tip rows only
+# through TIP_JSON_COLUMNS. These tests build the same day with and without the new keys and require the ledger
 # arrays (values and dtypes), the row counters, the content sha and the npz bytes to be equal.
 
 # virtual_quote_reserves is i128 and may be negative (trade_decode.event_v_fields); creator_fee_unclaimed and
@@ -1010,7 +1011,8 @@ def test_spill_cap_is_an_option(tmp_path):
 _EV_VQR = (-123_456_789, -1, 0, 17_584_317_180, -(2**127), 2**127 - 1, -(2**70), 2**64 + 5)
 _EV_U64 = (0, 777, 2**63, 2**64 - 1)
 _EV_IX = ("buy", "buy_exact_quote_in", "sell", "", 'q"uo\\te', "ünï")
-_SINGLE_V = (-17_584_317_180, None, 0, 554_841_812)
+# the follower's single V: signed i64 (main), None, and the unsigned u64 reading in [2**63, 2**64) (quant-proof r4 item 5)
+_SINGLE_V = (-17_584_317_180, None, 0, 554_841_812, 2**63, 2**64 - 1)
 _FILLER = [
     {"venue": "pumpswap", "mint": MINTS[0], "trader": "FILLER" + "z" * 38, "side": "buy", "sol_lamports": 1,
      "signature": f"f{h}", "event_index": 0}
@@ -1094,7 +1096,8 @@ def test_event_v_keys_are_not_ledger_columns():
 @pytest.mark.parametrize("dedupe", [True, False], ids=["dedupe", "no-dedupe"])
 def test_event_v_keys_leave_the_tip_ledger_unchanged(tmp_path, zst, dedupe):
     """(c) item 5: rows with the event-V keys (negative and out-of-int64 virtual_quote_reserves, u64 fees above
-    int64 max, nulls, a negative single virtual_quote_reserve) give the same ledger as the rows without them."""
+    int64 max, nulls, a negative single virtual_quote_reserve and single ones in [2**63, 2**64)) give the same
+    ledger as the rows without them."""
     if zst and shutil.which("zstd") is None:
         pytest.skip("zstd CLI not installed")
     rows = make_rows(11, 1500)
@@ -1113,7 +1116,9 @@ def test_event_v_keys_leave_the_tip_ledger_unchanged(tmp_path, zst, dedupe):
     on_disk = _hour_lines(ev, f"{DAY}T00", zst)
     vqr = [r["virtual_quote_reserves"] for r in on_disk if r.get("virtual_quote_reserves") is not None]
     assert min(vqr) == -(2**127) and max(vqr) == 2**127 - 1 and -123_456_789 in vqr
-    assert -17_584_317_180 in [r["virtual_quote_reserve"] for r in on_disk]
+    single_v = [r["virtual_quote_reserve"] for r in on_disk]
+    assert {-17_584_317_180, None, 2**63, 2**64 - 1} <= set(single_v)
+    assert max(v for v in single_v if v is not None) == 2**64 - 1
     assert any("virtual_quote_reserves" not in r for r in on_disk)  # event_v_missing rows
     assert any(r.get("creator_fee_unclaimed") == 2**64 - 1 for r in on_disk)
     assert not any("virtual_quote_reserves" in r for r in _hour_lines(plain, f"{DAY}T00", zst))
@@ -1164,8 +1169,8 @@ def _decoded_trades(doc: dict, *, event_v: bool) -> list[dict]:
 
 def test_decoder_event_v_rows_leave_the_tip_ledger_unchanged(tmp_path):
     """(c) item 5 on decoder output: main's rows_from_block(event_v=True) on the walk-2 decoder fixtures plus a
-    negative-V sell, with the new follower's negative single V, against the event_v=False rows with the
-    deployed follower's None. Decoder fixtures only; no price, return or P&L is read."""
+    negative-V sell, with the new follower's negative single V, against the event_v=False rows with a None
+    single V (the ledger reads neither). Decoder fixtures only; no price, return or P&L is read."""
     from observe.trade_decode import EVENT_V_KEYS
     from tools.test_walk2_event_v import FIX, _load
 
