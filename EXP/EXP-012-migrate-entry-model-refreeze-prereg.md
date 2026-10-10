@@ -253,6 +253,17 @@ DEC-014(a) disclosure. No forward outcome was read to make this amendment. The F
 
 [EXP-025](EXP-025-c1nf-part1-prereg.md) (C1-NF, [DEC-025](../DEC/DEC-025-c1nf-family.md)) is a counted reader, not an owner, of forward-1002. It reads `[2026-10-02T15, 2026-10-16T01)` for wallet-ledger features and counted decisions from 2026-10-10T00, and for October training labels only from graduations at or after 2026-10-09T00 (the hours `[2026-10-09T00, 2026-10-16T01)` are read from their event-V copy `forward-1002ev`, a second copy of the same hours: same owner, not a new block), **only after the FINAL (A) report is written** ([DEC-016 Amendment 8](../DEC/DEC-016-exp012-forward-on-chain-hours.md)). It opens no file Amendment 2 keeps closed, uses neither the (B) V-map files nor any EXP-012 model, threshold or pick list, and has no EXP-012 component, so the FINAL's picks do not select C1-NF's trades and C1-NF's outcomes do not change the FINAL. It uses its own V source. It is the same pattern as Amendment 3 (EXP-024).
 
+## Amendment 5 (2026-10-09): forward-1002ev, an event-V copy of the forward walk's last week
+
+DEC-014(a) disclosure. No forward outcome was read to make this amendment. The FINAL's window, read, verdict, seal and tools are unchanged; it remains **reported compromised** (DEC-016 Am.2).
+
+[DEC-016 Amendment 9](../DEC/DEC-016-exp012-forward-on-chain-hours.md) adds a second walk of `[2026-10-09T00, 2026-10-16T01)` into `/data/mal/blocks/forward-1002ev` (MiScusi job #433, `--event-v`), because forward-1002 carries no V on its PumpSwap rows.
+- **A second copy of hours this experiment already owns.** Same owner (EXP-012). Not a new block, and no new owner or reader.
+- **Sealed as forward-1002 is.** Before the FINAL (A) report is written, only the walker, `tools/backfill_verify.py` and hour counts touch it. No hash-only, md5, join or match-rate run happens before the FINAL.
+- **Not an EXP-012 input.** The FINAL (A), book (B) and the sensitivity re-score read forward-1002 only. No EXP-012 tool opens forward-1002ev.
+- **Its readers, after the FINAL, are already disclosed:** [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) Look 1 (through `tools/forward_v_join.py`; Amendment 3 above) and [EXP-025](EXP-025-c1nf-part1-prereg.md) (directly; Amendment 4 above). This amendment adds none.
+- The ledger records the copy in the Forward walk row.
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).

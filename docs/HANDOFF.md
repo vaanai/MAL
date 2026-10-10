@@ -27,6 +27,305 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
+### STATE 10-10 ~07:30Z (NEWEST, read first)
+
+**H5 canary: STOPPED** (new buys) since 2026-10-10T07:15:10Z.
+- **Why.** DEC-024 §5.1 fired on the post-step A3 run of 07:11:07Z (job #478): median last slice 333 s after migrate, n=9, below 335 s.
+- **The STOP.** Placed by the manager with `sudo touch /var/lib/mal-live/h5/STOP` (job #479); open 0, pending 0, LIVE_OK still valid.
+- **Ruling.** Quant-proof (asked after the fire): STOP stands, and only a dated owner amendment can resume. See DEC-024 "Halt record: section 5.1".
+- **Canary at STOP:**
+  - 3 trades;
+  - +0.005199 SOL realized;
+  - wallet about 0.3039 SOL;
+  - 0 late sells;
+  - landing about 0.87 s.
+- **Formal tests.** No A3 halt flag fired, so EXP-024 Look 1 is not halted (it counts from 10-10T00Z). This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check. EXP-022's six flags are clear. `program_changed` was clear.
+- **Owner decided at 07:27:25Z: DEC-024 Amendment 4.**
+  - §5.1 is now the executor's UTC-day median over ≥30 pools after s0.
+  - The A3 median is report-only, except that below 330 s it halts.
+  - The 07:11Z fire counts as the first "below 337".
+- **Resume:** only if day 10-10 completes at ≥337 s over ≥30 pools with no other §5 rule fired. The manager checks after 10-11T00:00Z, runs `sudo rm /var/lib/mal-live/h5/STOP` in a MiScusi job, checks `stop_file=False`, and records the instant and the median in Am.4. A clean resume counts as resolved for T1.
+- **Daily manager duty (Am.4 item 2), after each 00:00Z:**
+  - read the completed day's executor median;
+  - place STOP on the first completed day from 10-11 below 337 s;
+  - a day under 30 pools is unevaluated, and two in a row halt.
+- **Minor, for the pre-10-16 reinstall:** the `on_boost_row` docstring says ">= 10 pools" while the code uses 30.
+
+### STATE 10-09 ~19:35Z (older)
+
+**H5 canary.**
+- **LIVE** at T0 (0.02 SOL) since 2026-10-09T19:29:53Z, on install af02e90. The effective total stop is about 0.1045 SOL.
+- The official A3 run (#449) met EXP-024 P2, and Look 1 counts from 10-10T00Z.
+- The trial runs to 20 landed buys, then T1 (0.10 SOL) with the owner's +0.5 SOL top-up (DEC-024 Am.3 and addendum).
+- Live checks:
+  - one-shot cron 2f687566 at 21:47Z;
+  - the daily cron e0efe702 (health check plus synthetic audit) at 12:17Z;
+  - A3 daily via cron a5083765 at 06:41Z.
+
+**Due before 10-16T00:30Z: a second H5 reinstall,** or the canary stops at end_ms. It needs:
+- the CAP-PICK oracle #509, reviewed and wired into the executor and shadow;
+- end_ms extended;
+- the owner extending DEC-024 §4's 14-day cap.
+
+**C1-NF.**
+- EXP-025 Am.2 merged (#529): synthetic pools stay in.
+- DEC-026 merged (#522): 0.05 SOL stake and a 0.5 SOL wallet.
+- Build round 1 is done, and every PR is still CHANGES_NEEDED: #530 executor v2, #503 shadow, #531 ops, #506 features (3 HIGH), #502 ledger. Realistic live date is 10-15 to 10-17.
+
+**Research.**
+- The loss filter found no v2 filter (`/data/mal/hunt-1008/h5-lossfilter/REPORT.md`).
+- Iteration round 1: FLOOR-OPTION v2 survives narrowly but is small (`/data/mal/hunt-1008/iter-r1/REPORT.md`).
+- DEC-027 (champion–challenger, at most 2 challengers) is merged as a framework.
+
+**Owner capital.** 1.29 SOL in total:
+- H5 wallet: 0.29 now, +0.5 at T1;
+- C1-NF wallet: 0.5.
+
+### STATE 10-09 ~09:30Z (older)
+
+**Bottom line.** The H5 exclusion build is merged, reviewed and running in paper. The canary goes live once three things are done:
+- **(a)** the official A3 run at 19:23Z is clean on the five H5 flags;
+- **(b)** Helm does a pinned reinstall at `af02e90` and reports "install verified";
+- **(c)** Step 11.
+
+The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The owner forwards it; send it only after (a).
+
+**What happened since 07:35Z**
+- **A3.** The re-pin (#517, 82cd674) cured `pins_changed`.
+  - One dry check afterwards halted on `synthetic_share_high`, 7/19 = 0.368.
+  - Synthetic migrations (PostCompleteBuyEvent in the curve-completing tx) appeared with the 10-08T16:20Z redeploy. They were 0/61 before; the share is now about 35%.
+- **Owner decision** (n_xtknDqL-ychBNg): exclude synthetic pools from H5. The texts:
+  - EXP-024 Am.4 (population restriction; five A3 halt flags, `synthetic_share_high` report-only; P2 = last run; official-run protocol);
+  - DEC-024 Am.2 (same classifier at decision time; `program_changed` is a canary halt; `synthetic_share_high` stays a live halt until Helm's verified install);
+  - EXP-022 Am.5 (P2 reading plus erratum);
+  - EXP-024 Am.4 Clarification 1 (B4 read-time tx lookup, 1,000-signature caps);
+  - DEC-024 Am.2 Clarification 1 (the executor applies the shadow's class; the daily re-classification audit).
+  - Merged as #518 (10ee500) and #520 (22f5602), quant-proof OK on the final heads.
+- **Build.**
+  - #519, executor (5ed0d09): trades only if `synthetic is False` and `synthetic_src == "rpc"`.
+  - #521, shadow (ccd0a21): pump.fun side feed plus an RPC lookup at CreatePool, using `tx_event_blobs` and a defining-event check, on the completing OR migrate tx; fail-closed `excluded` records; a dedicated RPC pool capped at 4 rps.
+  - #523, B4 module plus the daily audit (af02e90).
+  - Every merge had reviewer and quant-proof OK on its final head.
+  - md5 09-20 at 4dd43d2: `75cb0b0c…` equal. The merged shadow blob `ea061266` = 4dd43d2's.
+- **Smoke.** Job #452, 45 min on 4dd43d2: 1.26M events, peak 54 MB, 20/20 pools classified (16 plain, 4 synthetic), 0 gaps, 0 triggers in the window.
+- **Running now (fast-0).**
+  - **Shadow #454** on main af02e90: 3 sockets, EXP-024-Am2 flag. It replaces #447, cancelled about 09:2xZ. This is the go-live shadow.
+  - **Dry run #455:** the new executor at af02e90, keyless. It replaces #435.
+- **Official P2 run.**
+  - Job #449 (research-0, git_ref 82cd674) sleeps until **2026-10-09T19:23:00Z**.
+  - Backup #450 runs at 21:53:00Z, only if #449 printed no flag summary (Am.4 F5).
+  - No other monitor run before 10-10T00Z.
+  - Read the five flags from `halt.flags`. One-shot crons a9244b69 (19:33Z) and c1849681 (22:03Z) read them.
+- **Manifest** for Helm at af02e90: sha256 `b8e7981d…758a`, posted on PR #519 (comment 6078235561). Identical at ccd0a21.
+
+**Volume finding** (structure counts only; n_KqwGD1bzt_lbpg; `/data/mal/hunt-1008/h5-work/synthetic-1009/REPORT.md`):
+- About **76% of H5's live triggers were on synthetic pools** (22/29 classified over 10.3 h). Non-synthetic triggers run at about **16/day**.
+- The T0 step (about 50 trades) now takes about 3 days.
+- Look 1's P6 (≥100 triggers over 6 dates) has P(refusal) of about **0.3–0.5** (quant-proof). There is no legitimate pre-window fix, and a refusal spends Look 1 (Am.3).
+- These counts may not be used as a basis for any EXP-024 change (Am.3:631).
+
+**Next steps, in order**
+1. **19:33Z:** read #449. If the five flags are clear, P2 is MET and the owner sends Helm the go. If a flag fired, H5 is withdrawn (§11) and the canary is blocked.
+2. **Helm reports "install verified":** add a dated line under DEC-024 Am.2 item 3 (that instant switches `synthetic_share_high` off as a live halt). In the same PR, record shadow #454 / dry run #455 as the go-live pair.
+3. **After go-live:**
+   - ladder T0 → T1 after about 50 trades → T2 after about 25 (fills match the twin, no halts, not negative);
+   - daily audit plus health check via cron e0efe702 (12:17Z);
+   - A3 daily via cron a5083765 (06:41Z, amended rules).
+4. **Before 10-15T06:41Z:** EXP-022's own synthetic amendment (Am.5 leaves it open). CAP-PICK counts synthetic pools as attempts (EXP-022:121), and its 21 daily runs make a halt near-certain.
+5. **Before 10-16:**
+   - wire the pick oracle (#509) into the executor and shadow;
+   - extend executor `end_ms` (now 10-16T00:30Z) in a second reinstall;
+   - ask the owner to extend DEC-024 §4's 14-day cap;
+   - EXP-024 read tool #476 must use `tools/synthetic_class.py` (B4).
+6. **C1-NF:** draft DEC-026 is #522, updated 10-09 ~17:50Z after quant-proof's NOT OK on e570954 and the owner's 17:00Z and 17:30Z answers: **stake 0.05 SOL** per trade (code ceiling 0.10, config lowers it) at 505,000 lamports a send, 2 open, daily stop 0.20, total stop 0.30 ceiling (35% cap makes it 0.175), **0.5 SOL** wallet, keep going to Look 2, `end_ms` 10-24T00:30Z, **synthetic pools kept in** (EXP-025 Amendment 2, #529, must merge before 10-10T00Z). Awaiting quant-proof on 14 questions.
+   - **Key point (settled):** quant-proof's simulation at a 0.5 SOL wallet: a stop before 50 fills in 6% / 5% of runs (flat / pressure) if September holds and 22% / 20% at zero edge at 0.05 SOL, against 31% / 29% and 63% / 60% at 0.10 SOL. Hard worst case about 0.28 SOL lost, floor about 0.219 SOL. Appendix A (draft EXP-025 amendment) must merge before the first send, not before 10-10T00Z, because the shadow's outcome guard (records start at 10-10T00) is binding.
+   - #504 was closed unmerged and needs a rebase. #503 lacks decision-time reserves.
+7. **H5 champion-challenger:** draft `DEC/DEC-027-h5-champion-challenger.md` (docs only, draft PR). Rev 2 after quant-proof's NOT OK on 975d8db. At most 2 challengers ever frozen: C-Q35 (Q\* 35, a threshold retune with a numeric withdrawal rule) and C-LF (loss filter, not freezable until rule text and a REPORT). C-BX is parked; C-SYN is blocked until Look 2 is read (EXP-024 Am.4 D1). One root-owned `/etc/mal-h5/VARIANT` file, switch only at 00:00Z with 0 open positions. Switching rule: 100 paired pools, +3.0 pp, Holm over k and Bonferroni over 2 looks, one switch at most, power low, expected result no switch. Gating item G1: the companion EXP-024 amendment must merge before any multi-rule shadow starts. A live challenger after a likely Look 1 FAIL needs a new owner override.
+
+### STATE 10-09 ~07:35Z (older)
+
+**H5 live canary: installed and funded, but HELD by an A3 halt.**
+- **Synthetic exclusion and P2 reading: draft PR #518** (EXP-024 Am.4, EXP-022 Am.5, DEC-024 Am.2). Needs quant-proof OK on its final head and the owner approval (n_xtknDqL-ychBNg); #517 is merged (`82cd674`); this must merge before the one official A3 run (start time `<TO BE FIXED BY MANAGER>` in EXP-024 Am.4 section F) and before 10-10T00Z. EXP-022's own synthetic amendment is still open (before 10-15T06:41Z).
+- **Helm's install.** Helm installed sha `5a281b2` on fast-0 and completed runbook steps 1–10.
+  - Manifest: 24/24 match (manifest file sha256 `1c2780c6…551e`, PR #499 comment 6074979090).
+  - Old probe: disabled; its drop-ins are in /root/disabled.
+  - Watchdog timer: enabled. The owner confirmed the Discord test arrived.
+  - Not yet done: `/etc/mal-h5/TIER` and `LIVE_OK` are absent, and the wallet-wide `/var/lib/mal-live/STOP` is still in place.
+- **Funding.** The owner funded **0.298688847 SOL**, finalized 07:00Z (tx 5fTmqeg68pGQeYd7Acd5…).
+  - `/data/mal/hunt-1008/h5-work/FUNDED_SOL` holds this number. The 12:17Z cron d6590929 reads it.
+  - Daily check job #444: ALERTS=0.
+  - Probe-state baseline is written (`state-live.json` e11cba1d…1839, dec020 absent).
+- **Helm's go message.** Drafted at `scratchpad/helm-go-h5.md`. **Do not send it until the A3 halt is cleared.** It asks Helm to:
+  - set `H5_WATCH_FUNDED_SOL=0.298688847`;
+  - do Step 11: remove the wallet STOP, write TIER=T0, create LIVE_OK, start the unit.
+- **Helm's open items, already answered in the draft:**
+  - `probe_has_key` is a false positive on systemd 255. It is fixed on main as d562287 (#512) and takes effect at the next pinned reinstall.
+  - Sudoers: wait.
+  - Runbook deviations: accepted.
+- **DEC-024 Amendment 1** (#513, 196dc9b; owner decision n_7Vi03b-5G31yGA):
+  - lifts the "never before 10-10T00Z" bar;
+  - adds EXP-024 Amendment 3 (declared observation for pools with s0 before 10-10T00);
+  - adds the stop-probability table (zero-edge P(total stop) 0.643);
+  - adds the md5 decision-equivalence proof: `75cb0b0c585bc2479137cae31330e73e` on both sides, 72/72, job #446 on 88eef14.
+- **Go-live shadow.** MiScusi **#447** on main 88eef14, with `H5_LOOK2_OBSERVED=EXP-024-Am2`, started 07:16:53Z. Dry run #435 on 5a281b2 is still running.
+
+**A3 HALT, 2026-10-09T07:11Z** (job #445; notebook n_ci2HqDs94LOtIg).
+- **Cause.** `pins_changed`: the pump, PumpSwap and fees programs were redeployed at 2026-10-08T16:20Z (new deploy slots 454596459, 454596406, 454596501).
+- **Other flags are clean.** boost_enabled=1, InitBoost 16/16, budget 17.586 SOL, 29 slices. The last slice after migrate has median **335 s** (it was 341.5).
+- **What it blocks:**
+  - DEC-024 §3: no canary send while A3 shows a halt.
+  - EXP-024 P2: the last A3 run before 10-10T00Z must show no halt, otherwise H5 is withdrawn.
+  - EXP-022 P2: the same, before 10-16T01.
+- **Path to clear it.** Do these steps in order:
+  1. Program-upgrade review. Agent `a4772b9fb1d96a4d5` is writing it to `/data/mal/hunt-1008/h5-work/PROGRAM-UPGRADE-2026-10-08.md`. It covers instruction/IDL, fees, BOOST and our code paths. Early evidence after the upgrade: the shadow decodes and fires, and 5 dry-run simulations had 0 errors.
+  2. Re-pin PR. Run `tools/pump_structure_monitor --write-pins`, which writes `tools/pump_structure_pins.json`. Get **quant-proof** to rule on two things: the review, and whether a reviewed re-pin plus a clean run satisfies EXP-024 P2 / §11 and EXP-022 P2 / §11.
+  3. Merge the re-pin, then run the monitor again as a MiScusi job **before 10-10T00Z**. It must be clean.
+  4. Send Helm the go.
+- **Do not use shadow outcomes in this review** (EXP-024 Amendment 3).
+- **If fees or pricing changed:** rerun the DEC-024 §8 stop table and tell the owner. The September evidence predates the upgrade.
+
+**Program-upgrade review DONE (07:45Z).** The review is in `/data/mal/hunt-1008/h5-work/PROGRAM-UPGRADE-2026-10-08.md`, with a copy in hunt-reports.
+- **Re-pinning is safe for layouts.** These are unchanged: PumpSwap buy, sell and buy_exact_quote_in, the decoder event offsets, V, the fee configs, GlobalConfig and BOOST (budget 17.586, 29–30 slices). Last-slice timing was 332.5–346 s before the redeploy and 335–344 s after.
+- **What the upgrade added:** multi-hop swaps, a curve-depth setting (pump Global gained 1 byte), and pump errors 6098–6108. Docs commits `8cda1fa` and `2293f9a` say "pump_amm and pump_fees IDLs are unchanged".
+- **NEW RISK: synthetic migrations.** These are graduations whose big first buy happens via the v3 buys rather than a PumpSwap trade.
+  - Before the redeploy: 0/61. After: 12/61, and 6/16 in the latest window.
+  - The monitor's `synthetic_share_high` reads **0.316 against its 0.35 halt**; the review's own sample read 0.375.
+  - If it fires, EXP-024 ends (EXP-024:328-331) and CAP-PICK is withdrawn (EXP-022:358).
+  - Unmeasured: on synthetic pools H5's s0 (first PumpSwap print) may come later, which eats the 330 s exit margin.
+- **When re-pinning, also pin the three program sha256s** (the `program_changed` rule is not evaluated today).
+- **Quant-proof must rule** whether a reviewed re-pin cures today's pins_changed halt before 10-10T00Z. EXP-024:330 says "H5 is withdrawn"; P2 says "last A3 run before 10-10T00Z shows no halt".
+- **Re-pin builder started:** agent `a4c8233b0ab378c99`, branch `claude/a3-repin-1009`. It does `--write-pins` with sha256s, writes the note `ARTIFACTS/lab/a3-repin-2026-10-09.md`, and runs a dry monitor check.
+- **NEXT:**
+  1. Builder: re-pin PR (`--write-pins`, including the sha256s) plus a short re-pin note citing the review.
+  2. Quant-proof: the cure ruling, and the synthetic-share risk.
+  3. Merge the re-pin.
+  4. Run the monitor as a MiScusi job before 10-10T00Z.
+  5. If it is clean, send Helm the go (`scratchpad/helm-go-h5.md`).
+  6. Tell the owner the synthetic-share risk plainly.
+
+**Merged today, on main:**
+- #500, #508: handoff;
+- #501: EXP-025 C1-NF Part 1, two looks (α 0.005/0.020), quant-proof OK;
+- #505: forward-1002ev, DEC-016 Am.9, EXP-024 Am.1, EXP-012 Am.5;
+- #507: EXP-025 Am.1, P7 on raw events;
+- #484 + #499: executor and live unit (5a281b2);
+- #477, #510: shadow (310b194, fc0816a);
+- #511: EXP-024 Am.2, declared observation for the Look 2 window plus a shadow code guard (88eef14);
+- #512: credential-check fix (d562287);
+- #513: DEC-024 Am.1 (196dc9b).
+
+**Open drafts:**
+- #502 C1-NF ledger;
+- #503 C1-NF shadow;
+- #504 C1-NF executor;
+- #506 C1-NF features;
+- #509 CAP-PICK boolean pick oracle (needs review and wiring before 10-16T01; quant-proof call on live-vs-replay divergence);
+- #471 T2 (B90 kept, report-only);
+- #476 EXP-024 scorer port (forward mode, V from forward-1002ev, before 10-16).
+
+**Running jobs:**
+- shadow #447 (fast-0);
+- dry run #435 (fast-0);
+- forward-1002ev walk **#433** (research-0; cap 3.6M credits, owner OK n_zrsp9q0hvvecdQ);
+- DEC-016 walk #382.
+
+**Owner decisions today** (MiScusi notebook):
+- Scale ladder n_xaHk-8t27C8qbw. Per tier:
+
+  | Tier | Stake (SOL) | Max open | Trades/day | Daily stop | Total stop |
+  |---|---|---|---|---|---|
+  | T0 | 0.02 | 2 | 30 | 0.08 | 0.12 |
+  | T1 | 0.10 | 3 | 40 | 0.40 | 0.60 |
+  | T2 | 0.30 | 3 | 40 | 1.20 | 1.80 |
+
+  - Steps up about every 25–50 trades.
+  - The total stop is also capped at 35% of the wallet at tier start.
+  - Helm writes `/etc/mal-h5/TIER`.
+  - T2_IMPACT_OK is True (IMPACT.md: 0.30 is OK, 0.50 fails in thin pools).
+- C1-NF two looks n_YStdR3WX1QDkkw.
+- C1-NF small live canary approved (O3) n_hZaavyDyNcJcZg. It needs DEC-026 and a second wallet.
+- Credits: 3M n_hXFJlpzcwrI2Eg, raised to 3.6M n_zrsp9q0hvvecdQ.
+- Early start n_7Vi03b-5G31yGA.
+
+**Before 2026-10-16:**
+1. Pick oracle #509: review and quant-proof, then wire it into the executor and shadow.
+2. Executor live `end_ms` is 10-16T00:30Z. Extend it in a reviewed config plus a reinstall, bundled with d562287.
+3. DEC-024 §4 caps the canary at **14 days**, about 10-23. **Ask the owner** to extend it.
+4. EXP-022 re-pin / P2.
+5. Walk-2 submit, cron 01c21bbd at 10-16T00:23.
+6. EXP-024 read tool #476.
+
+**C1-NF:**
+- parity task 3: shadow picks vs VERIFY's 419;
+- pinned model file and sha;
+- DEC-026: **DRAFT PR #522** (`claude/dec026-c1nf-canary`). The owner's answers are in (stake 0.05, synthetic pools kept in); quant-proof questions Q1 to Q14 are open. Appendix A is draft text for a separate EXP-025 amendment (Amendment 3 after #529) and must merge before the first send. #504 (the executor) is CLOSED, not merged. No send until its 23 preconditions hold;
+- Helm creates a second wallet.
+
+**Agent ids:**
+- program review `a4772b9fb1d96a4d5`;
+- QPs: `a9f352620793c1fac` (#511), `acb1c807c558f8ac4` (#513);
+- Am.2 builder `a69356b24d85bf901`;
+- cred-fix builder `a636054d9c3906e95`;
+- pick oracle `a07c78ea9889c77f6`;
+- shadow follow-up `abce3497d3889689d`.
+- The earlier ids are listed below.
+
+### STATE 10-09 ~05:30Z (older)
+**Owner decisions today** (all in the MiScusi notebook):
+- Small live trades ASAP at 0.02 SOL/trade. The owner funds ~0.25 SOL only when the manager asks, after Helm's hash check.
+- **Scale ladder:** T0 0.02 → ~50 trades → T1 0.10 → ~25 trades → T2 0.30 → onward, 25–50 trades per step. No skipped steps.
+  - Mechanism: code `TIERS` plus a root-owned `/etc/mal-h5/TIER` written by Helm.
+  - T2 is capped at 0.30: IMPACT.md says 0.50 fails in thin pools.
+- **C1-NF (hunt-4 lead)** is registered as EXP-025 with two looks: Look 1 α 0.005 at ~10-17, Look 2 α 0.020 at ~10-24.
+  - Merged fcc7e99, with quant-proof OK on final head 8a50400.
+  - A small live C1-NF canary is approved (O3). It needs DEC-026 and a separate wallet.
+- **Helius:** ~3.0M credits approved, raised to 3.6M, for the `forward-1002ev` event-V re-walk (job #433). It is the V source for EXP-024 Look 1 and EXP-025.
+
+**H5 PRs:**
+- #477 shadow, d3b69d0.
+- #484 executor: round 6 in progress on 1866327+. G1 is a MUST: the 35% cap must use a tier-start realized baseline.
+- #499 live unit: 6c6728d; re-merge the executor after round 6.
+- Reviews are in /data/mal/hunt-1008/h5-work/REVIEW-*.md. The last one is REVIEW-last-7c4db74-3dbe1de.md.
+
+**H5 jobs (fast-0):**
+- shadow #428 at 3dbe1de; restart on the final #477 head before live;
+- dry run #432 at 7c4db74;
+- 5 clean simulated round trips on the earlier head: sells at s0+330.4..330.8 s.
+
+**Remaining H5 order:**
+1. Executor round 6.
+2. Short delta check.
+3. Merge #477, then #484, then #499 (retarget it to main).
+4. Restart the shadow and the dry run on main.
+5. Helm installs per docs/runbooks/h5-executor.md, including TIER=T0.
+6. Hash check.
+7. Re-register the 12:17Z cron to scripts/mal-fast/h5-daily-check.py.
+8. Ask the owner for SOL.
+9. LIVE_OK.
+
+**Before 10-16T01:** the CAP-PICK boolean pick oracle (`claude/cap-pick-oracle`). Without it H5 refuses every buy, and the shadow seals every pool, from 10-16T01 to 11-06.
+
+**forward-1002ev:**
+- PR #505 (94c40a7+) holds DEC-016 Am.9, EXP-024 Am.1 and EXP-012 Am.5. Its quant-proof is on pass 3.
+- PR #507 is EXP-025 Amendment 1, P7 on raw events. Its quant-proof is in progress.
+- **Both must merge before 10-10T00Z.**
+
+**C1-NF build drafts:**
+- #502 ledger;
+- #506 features (parity exact in replay mode; drift in live mode);
+- #503 shadow (no pinned model yet);
+- #504 executor.
+- Next: replay parity of picks against VERIFY, a pinned model, DEC-026, and Helm for a second wallet.
+
+**Other:** CAP-PICK T2 B90 passed its kill rule and is kept report-only (#471, d71060f).
+
+**Agent ids:**
+- executor `ab84c2d698b6716d6`; shadow `accfdac84de54afb2`; unit `a16b48c5c2858494d`;
+- fwd-ev `a5bf01d461057fc20`; EXP-025 Am.1 `adb91a0dd7cd60256`; pick oracle `a07c78ea9889c77f6`;
+- QP #505 `a83a7cdd6faf84f12`; QP #507 `acca18609cea186a9`; QP #501 `a7dc7c15365d0e3ce`;
+- C1-NF ledger `a6eb8ab30e1b223dd`; features `ab22d98e7232b34be`; shadow `a916d155cb4c28525`; executor `a323ae5912ea507c4`;
+- impact QP `a4588d78c7c6df5b7`.
+
 ### H5 live path, 10-09 ~01:40Z (newest; supersedes the H5 rows below where they differ)
 - **Owner, 10-08 ~23:50Z:** "start up some small trades now... headstart... run the simulation alongside". The manager agreed and pulled the start forward. The owner sends ~0.25 SOL **only when the manager says so**, after Helm's hash check (standing rule).
 - **Target live start:** ~10-09 evening UTC. That is after the 200 ms slot switch (~14:30Z): no trading through the switch.

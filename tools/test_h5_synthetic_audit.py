@@ -1,0 +1,428 @@
+"""Tests for tools/h5_synthetic_audit.py. No network: the RPC is the recorded-fixture fake of test_synthetic_class."""
+from __future__ import annotations
+
+import io
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from tools import h5_synthetic_audit as au
+from tools import synthetic_class as sc
+from tools.test_synthetic_class import CASES, FX, FakeRpc, _entry
+
+DAY = "2026-10-12"
+TS = int(datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc).timestamp() * 1000)
+SECRETS = ("FILLPRICE-9911", "PNL-7733", "SIZE-5522", "EXITSIG-4410")
+
+
+def multi_rpc(*names: str) -> FakeRpc:
+    lists, txs = {}, {}
+    for n in names:
+        c = CASES[n]
+        lists[c["pool"]] = [_entry(c["boundary_sig"])] + c["pool_sigs"]
+        lists[c["curve"]] = [_entry(c["migrate_sig"])] + c["curve_sigs"]
+    return FakeRpc(FX["txs"], lists)
+
+
+def ledger_line(name: str, *, synthetic, kind="decision", ts=TS, **extra) -> str:
+    c = CASES[name]
+    row = {"schema": "h5_ledger_v1", "mode": "live", "kind": kind, "ts_ms": ts, "mint": c["mint"], "book": "h5", "pool": c["pool"],
+           "synthetic": synthetic, "synthetic_src": "ws", "signature": c["boundary_sig"],
+           "stake_lamports": 20_000_000, "expected_tokens": 123, "min_out": 99, "plan": {"pool": "PLAN-POOL", "exit_price": SECRETS[0], "nested": {"signature": SECRETS[3]}},
+           "fill_price": SECRETS[0], "pnl_lamports": SECRETS[1], "size": SECRETS[2], "anchor": {"mint": "ANCHOR-MINT", "slot": 5}, **extra}
+    return json.dumps(row)
+
+
+def run(monkeypatch, capsys, argv, rpc=None, stdin=""):
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    code = au.main(argv, rpc=rpc)
+    cap = capsys.readouterr()
+    return code, cap.out, cap.err
+
+
+def test_output_keys_are_exactly_the_allowed_set_and_nothing_else_is_printed(monkeypatch, capsys):
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=False)])
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1", "synthetic_2"), ledger)
+    lines = out.strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert tuple(rec) == au.OUTPUT_KEYS == ("date", "n_pools", "n_disagree", "n_unclassified_now", "halt")
+    assert rec == {"date": DAY, "n_pools": 2, "n_disagree": 1, "n_unclassified_now": 0, "halt": True}
+    assert code == 3
+    for c in CASES.values():  # no pool, mint, signature or class per pool, on either stream
+        for v in (c["pool"], c["mint"], c["boundary_sig"], c["migrate_sig"], c["complete_sig"]):
+            assert v not in out and v not in err
+    assert "synthetic_2" not in out + err
+
+
+def test_no_disagreement_exits_0_and_does_not_halt(monkeypatch, capsys):
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("non_synthetic_3", synthetic=False)])
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1", "non_synthetic_3"), ledger)
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 2, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+
+
+def test_unclassified_now_is_an_alert_exit_5_not_a_disagreement(monkeypatch, capsys):
+    rpc = multi_rpc("synthetic_1")
+    rpc.txs.pop(CASES["synthetic_1"]["complete_sig"])
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, ledger_line("synthetic_1", synthetic=False))
+    assert code == 5 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
+    assert 'unclassified_by_reason={"tx_missing:complete":1}' in err
+
+
+def test_a_bought_pool_with_no_recorded_class_disagrees_with_any_b4_class(monkeypatch, capsys):
+    lines = []
+    for syn in (None, "false", 0):  # absent-like and non-bool values are no class
+        row = json.loads(ledger_line("non_synthetic_1", synthetic=False))
+        row["synthetic"] = syn
+        lines.append(json.dumps(row))
+    for ln in lines:
+        code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1"), ln)
+        assert code == 3 and json.loads(out)["n_disagree"] == 1
+
+
+def test_out_writes_only_the_five_keys_to_a_0600_file_and_nothing_about_rows_to_stdout(monkeypatch, capsys, tmp_path):
+    ledger = "\n".join([
+        ledger_line("non_synthetic_1", synthetic=False),
+        ledger_line("synthetic_1", synthetic=False, kind="fill"),  # not a decision row
+        ledger_line("synthetic_2", synthetic=False, ts=TS + 86_400_000),  # another UTC day
+        "not json at all",
+        ledger_line("non_synthetic_2", synthetic=False),
+    ])
+    dst = tmp_path / "decisions.jsonl"
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--out", str(dst)], None, ledger)
+    assert code == 0 and out == ""  # stdout never carries a row
+    text = dst.read_text()
+    rows = [json.loads(x) for x in text.strip().splitlines()]
+    assert len(rows) == 2 and all(tuple(r) == au.KEEP_KEYS for r in rows)
+    assert {r["pool"] for r in rows} == {CASES["non_synthetic_1"]["pool"], CASES["non_synthetic_2"]["pool"]}
+    assert oct(dst.stat().st_mode & 0o777) == "0o600"
+    for s in SECRETS + ("PLAN-POOL", "ANCHOR-MINT", "20000000", "kind", "ts_ms", "stake_lamports"):
+        assert s not in text + out + err
+    assert "n_lines_read=5 n_rows=2 n_prev_rows=0 n_unparseable=1" in err
+    for c in CASES.values():
+        assert c["pool"] not in err  # stderr counts, never ids
+
+
+def test_out_needs_a_ledger_and_a_path_and_does_not_follow_a_symlink(monkeypatch, capsys, tmp_path):
+    assert run(monkeypatch, capsys, ["--date", DAY, "--decisions", "-", "--out", str(tmp_path / "x")], None)[0] == 2
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--out", "-"], None)[0] == 2
+    target = tmp_path / "target"
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--out", str(link)], None, ledger_line("non_synthetic_1", synthetic=False))
+    assert code == 4 and json.loads(out) == {"date": DAY, "error": "projection_write_failed"} and not target.exists()
+
+
+def test_the_parser_hook_drops_other_keys_at_every_depth():
+    row = json.loads('{"kind":"decision","fill_price":1,"plan":{"signature":"inner","x":[{"pool":"p"}]},"pool":"P"}', object_pairs_hook=au._hook)
+    assert row == {"kind": "decision", "pool": "P"}  # `plan` is not an allowed key: it is gone, with the `signature` and `pool` inside it
+    inner = json.loads('{"signature":"inner","x":[{"pool":"p"}],"fill_price":1}', object_pairs_hook=au._hook)
+    assert inner == {"signature": "inner"}  # a nested object is filtered the same way when it is parsed on its own
+    assert au._project(row) == {"pool": "P", "mint": None, "synthetic": None, "synthetic_src": None, "signature": None}
+
+
+def test_decisions_mode_takes_a_projected_file_and_drops_any_extra_key(monkeypatch, capsys, tmp_path):
+    c = CASES["synthetic_3"]
+    p = tmp_path / "d.jsonl"
+    p.write_text(json.dumps({"pool": c["pool"], "mint": c["mint"], "synthetic": False, "synthetic_src": "rpc", "signature": c["boundary_sig"], "pnl": SECRETS[1]}) + "\n")
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--decisions", str(p)], multi_rpc("synthetic_3"))
+    assert code == 3 and json.loads(out)["n_disagree"] == 1 and SECRETS[1] not in out + err
+
+
+def test_the_same_pool_twice_is_one_pool(monkeypatch, capsys):
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False)] * 2)
+    _, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1"), ledger)
+    assert json.loads(out)["n_pools"] == 1
+
+
+def test_helius_and_keyed_urls_are_refused_before_any_call(monkeypatch, capsys):
+    for url in ("https://mainnet.helius-rpc.com/?api-key=x", "https://example.org/rpc?key=1", "https://user:pw@example.org/"):
+        code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--rpc-url", url], None, ledger_line("non_synthetic_1", synthetic=False))
+        assert code == 2 and out == "" and "refused" in err
+
+
+def test_usage_errors(monkeypatch, capsys):
+    assert run(monkeypatch, capsys, ["--date", "2026-13-40", "--ledger", "-"], None)[0] == 2
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--min-interval", "0.1"], None, "x")[0] == 2
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "0"], None, "x")[0] == 2
+    with pytest.raises(SystemExit):
+        au.parse_args(["--date", DAY])  # one of --decisions / --ledger is required
+
+
+def test_rows_without_pool_or_mint_count_as_unclassified():
+    out = au.run_audit([{"pool": None, "mint": "m", "synthetic": False}, {"pool": "p", "mint": None, "synthetic": False}], DAY, lambda r: {"class": sc.CLASS_NON_SYNTHETIC, "reason": "", "event_seen_any": False})
+    assert out == {"date": DAY, "n_pools": 2, "n_disagree": 0, "n_unclassified_now": 2, "halt": False}
+
+
+# ---- fail closed on the read -----------------------------------------------------------------------------------------
+
+
+def test_an_empty_ledger_is_exit_4_not_an_all_clear(monkeypatch, capsys):
+    for stdin in ("", "\n  \n"):
+        code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1"), stdin)
+        assert code == 4 and json.loads(out) == {"date": DAY, "error": "no_ledger_lines"}
+        assert "n_lines_read=0" in err
+
+
+def test_no_expect_ledger_lets_an_empty_projected_file_through_as_a_day_with_no_buys(monkeypatch, capsys):
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--decisions", "-", "--no-expect-ledger"], multi_rpc("non_synthetic_1"), "")
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 0, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+    assert "n_lines_read=0" in err
+
+
+def test_a_ledger_with_lines_but_no_decision_rows_is_a_real_zero(monkeypatch, capsys):
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1"), ledger_line("non_synthetic_1", synthetic=False, kind="skip"))
+    assert code == 0 and json.loads(out)["n_pools"] == 0 and "n_lines_read=1 n_rows=0" in err
+
+
+def test_a_failed_read_is_exit_4_whatever_the_flag_says(monkeypatch, capsys, tmp_path):
+    (tmp_path / "real").write_text(ledger_line("non_synthetic_1", synthetic=False))
+    (tmp_path / "link").symlink_to(tmp_path / "real")  # O_NOFOLLOW
+    (tmp_path / "bad").write_bytes(b"\xff\xfe\n")
+    for path in (tmp_path / "missing", tmp_path / "link", tmp_path / "bad"):
+        for flag in ("--expect-ledger", "--no-expect-ledger"):
+            code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", str(path), flag], multi_rpc("non_synthetic_1"))
+            assert code == 4 and json.loads(out) == {"date": DAY, "error": "ledger_read_failed"}
+            assert str(tmp_path) not in out + err  # the type name only, never the path or the message
+
+
+# ---- partial synthetic (manager decision, DEC-024 Am.2 C1) ---------------------------------------------------------------
+
+
+def _half_readable(name="synthetic_1"):
+    """The pool's completing tx is gone, the migrate tx shows the PostCompleteBuyEvent (spliced): B3 says unclassified; the event WAS seen."""
+    rpc = multi_rpc(name)
+    c = CASES[name]
+    line = [ln for ln in FX["txs"][c["complete_sig"]]["meta"]["logMessages"] if "Program data: " in ln]
+    from tools.test_synthetic_class import _line_with_disc
+    from tools import pump_structure_monitor as M
+
+    rpc.txs[c["migrate_sig"]]["meta"]["logMessages"].append(_line_with_disc(FX["txs"][c["complete_sig"]], M.DISC_POST_COMPLETE_BUY))
+    rpc.txs.pop(c["complete_sig"])
+    assert line
+    return rpc
+
+
+def test_shadow_plain_and_event_seen_in_one_readable_tx_is_a_disagreement_even_if_the_other_is_unreadable(monkeypatch, capsys):
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), ledger_line("synthetic_1", synthetic=False))
+    assert code == 3
+    assert json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 1, "n_unclassified_now": 1, "halt": True}
+    assert 'unclassified_by_reason={"tx_missing:complete":1}' in err
+
+
+def test_the_same_half_readable_pool_is_no_disagreement_if_the_shadow_called_it_synthetic(monkeypatch, capsys):
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), ledger_line("synthetic_1", synthetic=True))
+    assert code == 5 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
+
+
+# ---- a buy that never landed, budgets and the RPC guard -----------------------------------------------------------------
+
+
+class NodeFake(FakeRpc):
+    """The public node's answer to an unknown `before` (measured 2026-10-09): -32020, with the signature in the message."""
+
+    def call(self, method, params):
+        if method == "getSignaturesForAddress" and params[1].get("before") and not any(s["signature"] == params[1]["before"] for s in self.lists.get(params[0], [])):
+            raise au.M.RpcError(f"rpc error -32020 on getSignaturesForAddress: Transaction {params[1]['before']} not found")
+        return super().call(method, params)
+
+
+def test_a_buy_that_never_landed_is_classified_by_the_audit_fallback_on_the_curve(monkeypatch, capsys):
+    never = "N" * 20 + "EVERLANDED"
+    for name, shadow, want_code, want in (("non_synthetic_1", False, 0, {"n_disagree": 0, "halt": False}), ("synthetic_1", False, 3, {"n_disagree": 1, "halt": True})):
+        c = CASES[name]
+        rpc = NodeFake(FX["txs"], {c["pool"]: [_entry(c["boundary_sig"])] + c["pool_sigs"], c["curve"]: [_entry(c["migrate_sig"])] + c["curve_sigs"]})
+        row = json.loads(ledger_line(name, synthetic=shadow))
+        row["signature"] = never
+        code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, json.dumps(row))
+        assert code == want_code and json.loads(out) == {"date": DAY, "n_pools": 1, "n_unclassified_now": 0, **want}
+        assert never not in out + err and c["pool"] not in out + err  # the node's message carries the signature; it never reaches a stream
+
+
+def test_a_never_landed_buy_whose_fallback_also_fails_is_unclassified_exit_5_and_leaks_nothing(monkeypatch, capsys):
+    c = CASES["synthetic_1"]
+    never = "N" * 20 + "EVERLANDED"
+    rpc = NodeFake(FX["txs"], {c["pool"]: [_entry(c["boundary_sig"])] + c["pool_sigs"], c["curve"]: []})  # no migrate tx on the curve list
+    row = json.loads(ledger_line("synthetic_1", synthetic=False))
+    row["signature"] = never
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, json.dumps(row))
+    assert code == 5 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
+    assert 'unclassified_by_reason={"fetch_failed:signatures:pool:RpcError;fallback:migrate_tx_not_found":1}' in err
+    assert never not in out + err and c["pool"] not in out + err
+
+
+def test_a_pool_is_cut_off_at_its_per_pool_call_cap(monkeypatch, capsys):
+    rpc = multi_rpc("synthetic_1", "non_synthetic_1")
+    ledger = "\n".join([ledger_line("synthetic_1", synthetic=False), ledger_line("non_synthetic_1", synthetic=False)])
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "2"], rpc, ledger)
+    assert json.loads(out)["n_unclassified_now"] == 2 and code == 5
+    assert "PoolCallBudgetExceeded" in err
+    # synthetic_1: 2 calls, budget out, then the fallback's fresh budget of 2 (curve list, migrate tx), then out again: 4. non_synthetic_1: the pool
+    # search finds the migrate tx in 2 calls, no fallback, the completing-tx search is out of budget: 2. Never one call beyond a budget.
+    assert len(rpc.tx_calls) + len(rpc.sig_calls) == 6
+    # and the cap resets per pool: with room for both, both are classified
+    rpc2 = multi_rpc("synthetic_1", "non_synthetic_1")
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "300"], rpc2, ledger)
+    assert json.loads(out)["n_unclassified_now"] == 0 and code == 3  # synthetic_1 was bought as plain: a real disagreement
+
+
+def test_rpc_allowlist_and_pacing_floor():
+    ok = au.check_public_rpc
+    assert ok("https://api.mainnet-beta.solana.com") is None
+    assert ok("https://api.mainnet-beta.solana.com/") is None
+    assert ok("https://rpc.example.org") is not None  # not on the allowlist
+    assert ok("https://rpc.example.org", ["rpc.example.org"]) is None  # named explicitly
+    assert ok("https://rpc.example.org/?api-key=1", ["rpc.example.org"]) is not None  # a keyed URL is never allowed
+    assert ok("https://mainnet.helius-rpc.com", ["mainnet.helius-rpc.com"]) is not None
+    assert ok("http://api.mainnet-beta.solana.com") is not None  # https only
+    assert ok("https://user:pw@api.mainnet-beta.solana.com") is not None
+
+
+def test_a_host_off_the_allowlist_is_refused_before_any_call(monkeypatch, capsys):
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--rpc-url", "https://rpc.example.org"], None, ledger_line("non_synthetic_1", synthetic=False))
+    assert code == 2 and out == "" and "allowlist" in err
+
+
+def test_event_seen_in_a_readable_tx_with_no_recorded_shadow_class_is_also_a_disagreement(monkeypatch, capsys):
+    for syn in (None, "false", 0):  # absent-like and non-bool values are no class
+        row = json.loads(ledger_line("synthetic_1", synthetic=False))
+        row["synthetic"] = syn
+        code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), json.dumps(row))
+        assert code == 3 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 1, "n_unclassified_now": 1, "halt": True}
+    row = json.loads(ledger_line("synthetic_1", synthetic=False))
+    del row["synthetic"]  # the key itself absent, as on a pre-#519 ledger
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], _half_readable(), json.dumps(row))
+    assert code == 3 and json.loads(out)["n_disagree"] == 1
+    # unclassified with NO event seen and no recorded class stays a plain unclassified pool
+    rpc = multi_rpc("non_synthetic_1")
+    rpc.txs.pop(CASES["non_synthetic_1"]["complete_sig"])
+    row = json.loads(ledger_line("non_synthetic_1", synthetic=False))
+    row["synthetic"] = None
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, json.dumps(row))
+    assert code == 5 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
+
+
+# ---- fail closed on unclassified pools: the re-audit of the previous UTC day --------------------------------------------------
+
+DAY_MS = 86_400_000
+
+
+def test_a_previous_day_pool_still_unclassified_is_a_disagreement_and_a_halt(monkeypatch, capsys):
+    rpc = multi_rpc("non_synthetic_1", "synthetic_1")
+    rpc.txs.pop(CASES["synthetic_1"]["complete_sig"])  # yesterday's pool cannot be classified, today either
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_1", synthetic=True, ts=TS - DAY_MS)])
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, ledger)
+    assert code == 3 and json.loads(out) == {"date": DAY, "n_pools": 2, "n_disagree": 1, "n_unclassified_now": 0, "halt": True}
+    assert 'unclassified_by_reason={"reaudit:tx_missing:complete":1}' in err
+    for c in CASES.values():
+        assert c["pool"] not in out + err
+
+
+def test_a_previous_day_pool_that_classifies_and_agrees_changes_nothing_and_one_that_disagrees_halts(monkeypatch, capsys):
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=True, ts=TS - DAY_MS)])
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1", "synthetic_2"), ledger)
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 2, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=False, ts=TS - DAY_MS)])
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1", "synthetic_2"), ledger)
+    assert code == 3 and json.loads(out)["n_disagree"] == 1
+    # other days are not audited: two days back, and tomorrow
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=False, ts=TS - 2 * DAY_MS), ledger_line("synthetic_3", synthetic=False, ts=TS + DAY_MS)])
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], multi_rpc("non_synthetic_1"), ledger)
+    assert code == 0 and json.loads(out)["n_pools"] == 1
+
+
+def test_today_unclassified_and_yesterday_unclassified_are_counted_apart(monkeypatch, capsys):
+    rpc = multi_rpc("synthetic_1", "synthetic_2")
+    rpc.txs.pop(CASES["synthetic_1"]["complete_sig"])
+    rpc.txs.pop(CASES["synthetic_2"]["complete_sig"])
+    ledger = "\n".join([ledger_line("synthetic_1", synthetic=True), ledger_line("synthetic_2", synthetic=True, ts=TS - DAY_MS)])
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], rpc, ledger)
+    assert code == 3 and json.loads(out) == {"date": DAY, "n_pools": 2, "n_disagree": 1, "n_unclassified_now": 1, "halt": True}  # the halt wins over the alert
+
+
+def test_two_step_run_with_out_and_out_prev_matches_the_direct_run(monkeypatch, capsys, tmp_path):
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=True, ts=TS - DAY_MS),
+                        ledger_line("synthetic_3", synthetic=False, ts=TS - 2 * DAY_MS)])
+    d, p = tmp_path / "d.jsonl", tmp_path / "p.jsonl"
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--out", str(d), "--out-prev", str(p)], None, ledger)
+    assert code == 0 and out == ""
+    assert [json.loads(x)["pool"] for x in d.read_text().splitlines()] == [CASES["non_synthetic_1"]["pool"]]
+    assert [json.loads(x)["pool"] for x in p.read_text().splitlines()] == [CASES["synthetic_2"]["pool"]]
+    assert oct(p.stat().st_mode & 0o777) == "0o600" and "n_lines_read=3 n_rows=1 n_prev_rows=1" in err
+    for secret in SECRETS:
+        assert secret not in d.read_text() + p.read_text()
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--decisions", str(d), "--prev-decisions", str(p), "--no-expect-ledger"], multi_rpc("non_synthetic_1", "synthetic_2"))
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 2, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+    assert run(monkeypatch, capsys, ["--date", DAY, "--decisions", str(d), "--prev-decisions", str(tmp_path / "gone"), "--no-expect-ledger"], multi_rpc("non_synthetic_1"))[0] == 4
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--out-prev", str(p)], None, ledger)[0] == 2  # --out-prev needs --out
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--prev-decisions", str(p)], None, ledger)[0] == 2  # --prev-decisions needs --decisions
+
+
+def test_second_run_makes_an_unclassified_pool_a_disagreement():
+    seen = []
+
+    def classify(r):
+        seen.append(r["pool"])
+        return {"class": sc.CLASS_UNCLASSIFIED, "reason": "x", "event_seen_any": False}
+
+    rows = [{"pool": "P1", "mint": "M1", "synthetic": True}]
+    first = au.run_audit(rows, DAY, classify)
+    second = au.run_audit(rows, DAY, classify, second_run=True)
+    assert first == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 1, "halt": False}
+    assert second == {"date": DAY, "n_pools": 1, "n_disagree": 1, "n_unclassified_now": 0, "halt": True}
+
+
+# ---- the fallback has its own per-pool budget; the global cap follows the row count ------------------------------------------
+
+
+def _busy_pool_rpc(name="non_synthetic_1", n_older=20):
+    """A busy pool: `n_older` successful transactions older than the migrate tx, so the oldest-first walk spends its budget before the migrate tx."""
+    rpc = multi_rpc(name)
+    c = CASES[name]
+    older = [_entry(f"busy{i}") for i in range(n_older)]
+    rpc.lists[c["pool"]] = rpc.lists[c["pool"]] + older
+    rpc.txs.update({e["signature"]: {"slot": 1, "meta": {"err": None, "logMessages": []}, "transaction": {"message": {"accountKeys": []}}} for e in older})
+    return rpc, c
+
+
+def test_a_busy_pool_whose_search_exhausts_its_budget_is_still_classified_by_the_fallback(monkeypatch, capsys):
+    rpc, c = _busy_pool_rpc()
+    code, out, err = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "5"], rpc, ledger_line("non_synthetic_1", synthetic=False))
+    assert code == 0 and json.loads(out) == {"date": DAY, "n_pools": 1, "n_disagree": 0, "n_unclassified_now": 0, "halt": False}
+    served = len(rpc.tx_calls) + len(rpc.sig_calls)
+    assert 5 < served <= 10  # more than one budget's worth, at most two
+    assert "PoolCallBudgetExceeded" not in err  # the first search's budget error was handed to the fallback, not reported
+    # the same pool and budget WITHOUT the hook: the fallback inherits the spent budget and the pool stays unclassified
+    rpc2, c = _busy_pool_rpc()
+    budget = au.PoolBudget(rpc2, 5)
+    res = sc.classify_pool(budget, mint=c["mint"], pool=c["pool"], before_sig=c["boundary_sig"], audit_fallback=True)
+    assert res["class"] == "unclassified" and "PoolCallBudgetExceeded" in res["reason"] and "fallback:" in res["reason"]
+
+
+def test_a_busy_pool_that_needs_the_fallback_and_agrees_or_disagrees_is_judged_on_its_class(monkeypatch, capsys):
+    rpc, c = _busy_pool_rpc("synthetic_2", n_older=20)
+    code, out, _ = run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "5"], rpc, ledger_line("synthetic_2", synthetic=False))
+    assert code == 3 and json.loads(out)["n_disagree"] == 1 and json.loads(out)["n_unclassified_now"] == 0
+
+
+def test_the_global_call_cap_is_computed_from_the_row_count_unless_given(monkeypatch, capsys):
+    assert au.default_max_calls(5, 300) == 5 * 2 * 300 + 500
+    seen = []
+
+    class Stub:
+        def __init__(self, url, **kw):
+            seen.append(kw)
+
+        def call(self, method, params):
+            raise au.M.RpcUnreachable("stub")
+
+    monkeypatch.setattr(au.M, "RpcClient", Stub)
+    ledger = "\n".join([ledger_line("non_synthetic_1", synthetic=False), ledger_line("synthetic_2", synthetic=True, ts=TS - DAY_MS)])
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-"], None, ledger)[0] == 3  # today unclassified (alert), yesterday still unclassified (halt)
+    assert seen[-1]["max_calls"] == 2 * 2 * 300 + 500
+    run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls-per-pool", "50"], None, ledger)
+    assert seen[-1]["max_calls"] == 2 * 2 * 50 + 500
+    run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "77"], None, ledger)
+    assert seen[-1]["max_calls"] == 77
+    assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "0"], None, ledger)[0] == 2
