@@ -80,6 +80,7 @@ import tempfile
 import threading
 import time
 import traceback
+import weakref
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
@@ -1736,7 +1737,12 @@ class GapTail:
 # ---- ledger adapter -------------------------------------------------------------------------------------------------------------------------
 class _AsofSnapshot:
     """c1nf_features.LedgerSnapshot over a tools.c1nf_wallet_ledger.AsofLedger: get(trader) -> 7 passA values or None. The ledger keys wallets on
-    duckdb hash(trader); `hash_fn(trader) -> int` defaults to a duckdb call."""
+    duckdb hash(trader); `hash_fn(trader) -> int` defaults to a duckdb call.
+
+    Reference implementation and fallback. It reads through the ledger's numpy memmaps, and a file-backed mapping of a random-access lookup does
+    not stay small: the kernel maps a window around every fault, so after ~10^4 distinct wallets the 8 columns it reads (th + the 7 passA
+    inputs) are resident in full. 16.56M wallets x 64 B = 1.06 GB of RssFile (job #599; PR claude/c1nf-ledger-lowmem). `_PreadSnapshot` returns the
+    same values without mapping; `AsofDirLedger` uses it whenever the ledger is file-backed."""
 
     def __init__(self, asof: Any, hash_fn: Optional[Callable[[str], int]] = None) -> None:
         self.asof, self._hash, self._cache = asof, hash_fn or _duck_hash(), {}
@@ -1748,6 +1754,127 @@ class _AsofSnapshot:
         known, m = self.asof.passa_matrix(th)
         v = tuple(float(x) for x in m[0]) if bool(known[0]) else None
         if len(self._cache) > 500_000:
+            self._cache.clear()
+        self._cache[trader] = v
+        return v
+
+
+def _close_fds(fds: list[int]) -> None:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+class _PreadSnapshot:
+    """`_AsofSnapshot.get` without mapping the ledger: the same 7 passA values (types and float bits), or None, for the same trader.
+
+    `AsofLedger` maps th.npy and the value columns with np.load(mmap_mode="r"). Looking wallets up at random through those maps makes the
+    kernel fault in a window around every touched page, so the 8 files `get` reads end up resident (RssFile) after ~10^4 distinct wallets: 64 B
+    per ledger wallet, 1.06 GB at 16.56M. This class reads the same files with os.pread instead and keeps in RAM only a sparse key index:
+        * one in-RAM index of every BLOCK-th th value (array 'Q', 8 B per 512 wallets: 258 kB at 16.56M);
+        * per lookup: bisect in the index, one pread of <= 513 keys (4 kB) and a bisect in it. This is np.searchsorted(th, h) (side left) and
+          `th[min(i, n - 1)] == h` exactly, duplicates included;
+        * per known wallet: one 8-byte pread per passA column, the int64 -> float64 cast of the ledger, and `/ GRID` for cash and buy (the
+          ledger's passa_matrix arithmetic; GRID is the pinned module's, loaded and sha256-checked by `pinned()` on the first known wallet,
+          as in the ledger).
+    The ledger's on-disk format, MANIFEST checks and as-of day logic are untouched: `from_ledger` takes (path, offset) of the arrays an opened
+    `AsofLedger` already maps, then lets go of that ledger (its maps are closed). The page cache still holds what `get` reads; that is not RSS.
+
+    `from_ledger` returns None when the ledger is not file-backed (a test double, a non-little-endian host, no os.pread): `_AsofSnapshot` then.
+    The file descriptors (th + 7 columns) are closed with the snapshot (`close()` or garbage collection)."""
+
+    BLOCK = 512
+
+    def __init__(self, n: int, th_file: tuple[str, int], col_files: Sequence[tuple[str, int, bool]],
+                 hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> None:
+        self._n, self._cache, self._cache_max = int(n), {}, int(cache_max)
+        self._hash = hash_fn or _duck_hash()
+        fds: list[int] = []
+        try:
+            for path, off in [th_file] + [(p, o) for p, o, _ in col_files]:
+                fd = os.open(path, os.O_RDONLY)
+                fds.append(fd)
+                size = os.fstat(fd).st_size
+                if size < off + self._n * 8:
+                    raise OSError(f"{path}: {size} bytes, need {off + self._n * 8} for {self._n} rows")
+            self._th_fd, self._th_off = fds[0], th_file[1]
+            self._cols = [(fd, o) for fd, (_, o, _) in zip(fds[1:], col_files)]
+            self._scaled = [j for j, (_, _, sc) in enumerate(col_files) if sc]
+            self._idx = self._build_index()
+        except BaseException:
+            _close_fds(fds)
+            raise
+        self._finalizer = weakref.finalize(self, _close_fds, fds)
+
+    @classmethod
+    def from_ledger(cls, asof: Any, hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> Optional["_PreadSnapshot"]:
+        if not hasattr(os, "pread") or sys.byteorder != "little":
+            return None
+        th, cols = getattr(asof, "th", None), getattr(asof, "cols", None)
+        if not isinstance(th, np.memmap) or not isinstance(cols, Mapping):
+            return None
+        from tools.c1nf_wallet_ledger import PASSA_COLS  # PR #502
+
+        # passa_matrix reads cash from cash_q and buy from buy_q (grid units, / GRID); the other five as they are.
+        src = [("cash_q", True) if c == "cash" else ("buy_q", True) if c == "buy" else (c, False) for c in PASSA_COLS]
+        files = []
+        for arr, want in [(th, "<u8")] + [(cols.get(name), "<i8") for name, _ in src]:
+            if (not isinstance(arr, np.memmap) or arr.ndim != 1 or arr.shape != th.shape or arr.dtype != np.dtype(want)
+                    or arr.filename is None):
+                return None
+            files.append((os.fspath(arr.filename), int(arr.offset)))
+        return cls(len(th), files[0], [(p, o, sc) for (p, o), (_, sc) in zip(files[1:], src)], hash_fn, cache_max)
+
+    def close(self) -> None:
+        self._finalizer()
+
+    @staticmethod
+    def _read(fd: int, size: int, off: int) -> bytes:
+        b = os.pread(fd, size, off)
+        if len(b) != size:
+            raise OSError(f"short read: {len(b)} of {size} bytes at {off}")
+        return b
+
+    def _build_index(self) -> "array.array":
+        """th[::BLOCK] by sequential reads of 4 MiB (nothing else is kept)."""
+        idx, chunk = array.array("Q"), self.BLOCK * 1024
+        for row in range(0, self._n, chunk):
+            take = min(chunk, self._n - row)
+            idx.frombytes(np.frombuffer(self._read(self._th_fd, take * 8, self._th_off + row * 8), dtype="<u8")[:: self.BLOCK].tobytes())
+        return idx
+
+    def _row(self, h: int) -> int:
+        """The row whose th is h, or -1."""
+        if self._n == 0:
+            return -1
+        idx = self._idx
+        j = bisect.bisect_left(idx, h)                  # block starts strictly below h
+        if j == 0:                                      # th[0] >= h: the first row is the only candidate
+            return 0 if idx[0] == h else -1
+        lo = (j - 1) * self.BLOCK                       # the first row >= h lies in (lo, j * BLOCK]
+        hi = min(j * self.BLOCK + 1, self._n)
+        blk = memoryview(self._read(self._th_fd, (hi - lo) * 8, self._th_off + lo * 8)).cast("Q")
+        p = bisect.bisect_left(blk, h)
+        return lo + p if p < len(blk) and blk[p] == h else -1
+
+    def _values(self, row: int) -> tuple[float, ...]:
+        from tools.c1nf_wallet_ledger import pinned  # PR #502: the pinned GRID, sha256-checked on first use
+
+        raw = b"".join(self._read(fd, 8, off + row * 8) for fd, off in self._cols)
+        v = np.frombuffer(raw, dtype="<i8").astype(np.float64)
+        for j in self._scaled:
+            v[j] = v[j] / pinned().GRID
+        return tuple(v.tolist())
+
+    def get(self, trader: str) -> Optional[Sequence[float]]:
+        if trader in self._cache:
+            return self._cache[trader]
+        th = np.array([self._hash(trader)], dtype=np.uint64)   # as _AsofSnapshot: a hash outside uint64 fails the same way
+        row = self._row(int(th[0]))
+        v = self._values(row) if row >= 0 else None
+        if len(self._cache) > self._cache_max:
             self._cache.clear()
         self._cache[trader] = v
         return v
@@ -1800,7 +1927,7 @@ class AsofDirLedger:
         self.open_for_day = open_for_day
         self.stale = 0
 
-    def snapshot_for_day(self, day: str) -> Optional[_AsofSnapshot]:
+    def snapshot_for_day(self, day: str) -> Optional[Any]:   # _PreadSnapshot, or _AsofSnapshot for a ledger that is not file-backed
         try:
             led = self.open_for_day(self.root, day)
         except Exception as exc:  # noqa: BLE001 - only StaleLedger is a None; the rest propagates
@@ -1812,7 +1939,8 @@ class AsofDirLedger:
         if man is not None and (not isinstance(man, Mapping) or man.get("asof_day") != day):
             self.stale += 1
             return None
-        return _AsofSnapshot(led, self.hash_fn)
+        snap = _PreadSnapshot.from_ledger(led, self.hash_fn)      # no memmap reads: the maps of `led` close when it goes out of scope
+        return snap if snap is not None else _AsofSnapshot(led, self.hash_fn)
 
 
 def load_oracle(spec: Optional[str]) -> Optional[Callable[[str], Any]]:

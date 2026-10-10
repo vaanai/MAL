@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -1220,6 +1221,139 @@ def test_asof_dir_ledger_default_hash_is_built_from_the_pinned_connection(tmp_pa
     assert checked == [con]                            # the pin was checked, once, on the connection the hash runs on
     assert led.hash_fn("anyone") == 7
     assert led.snapshot_for_day("2026-10-10").get("anyone") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
+
+
+# ---- file-backed snapshot: _PreadSnapshot must return exactly what _AsofSnapshot returns, without mapping the ledger -------------------------
+FIX_DAY = "2026-10-10"
+I64_EDGES = [0, 1, -1, 2**53, 2**53 + 1, 2**62 + 3, -(2**62) - 5, np.iinfo(np.int64).max, np.iinfo(np.int64).min, 1_048_576, -1_048_577, 7]
+
+
+def _fixture_root(tmp_path: Path, th: np.ndarray, seed: int = 0, day: str = FIX_DAY) -> Path:
+    """<root>/asof/asof-<day>/ in the layout of tools/c1nf_wallet_ledger.py: th.npy (uint64, sorted) and the 11 int64 columns, plus a MANIFEST."""
+    from tools import c1nf_wallet_ledger as L
+
+    rng = np.random.default_rng(seed)
+    d = tmp_path / "asof" / f"asof-{day}"
+    d.mkdir(parents=True)
+    np.save(d / "th.npy", np.asarray(th, dtype=np.uint64), allow_pickle=False)
+    n = len(th)
+    for c in L.ASOF_COLS:
+        v = rng.integers(-(2**40), 2**40, size=n, dtype=np.int64)
+        if n:
+            v[rng.integers(0, n, size=min(n, 12))] = rng.choice(np.array(I64_EDGES, dtype=np.int64), size=min(n, 12))
+        np.save(d / f"{c}.npy", v, allow_pickle=False)
+    (d / "MANIFEST.json").write_text(json.dumps({"schema": L.SCHEMA_VERSION, "asof_day": day, "days": []}))
+    return tmp_path
+
+
+def _bits(v):
+    return None if v is None else (type(v), tuple(type(x) for x in v), struct.pack("<7d", *v))
+
+
+def _both(root: Path, hash_fn=int):
+    from tools import c1nf_wallet_ledger as L
+
+    led = L.AsofLedger.open_for_day(root, FIX_DAY)
+    old = cs._AsofSnapshot(led, hash_fn)
+    new = cs._PreadSnapshot.from_ledger(led, hash_fn)
+    assert isinstance(new, cs._PreadSnapshot)
+    return led, old, new
+
+
+@pytest.mark.parametrize("n,block,dup", [(0, 512, False), (1, 512, False), (2, 4, False), (37, 4, False), (64, 4, False), (65, 4, False),
+                                          (512, 512, False), (513, 512, False), (1025, 512, False), (5000, 512, False), (5000, 7, False),
+                                          (300, 8, True)])
+def test_pread_snapshot_returns_exactly_what_the_memmap_snapshot_returns(tmp_path, monkeypatch, n, block, dup):
+    monkeypatch.setattr(cs._PreadSnapshot, "BLOCK", block)
+    rng = np.random.default_rng(n * 31 + block)
+    top = np.array([0, 1, 2, 2**63, 2**64 - 3, 2**64 - 2, 2**64 - 1], dtype=np.uint64)
+    pool = np.unique(np.concatenate([top, rng.integers(0, 2**64 - 1, size=n * 2, dtype=np.uint64, endpoint=True)]))
+    th = np.sort(rng.choice(pool, size=min(n, len(pool)), replace=False)) if not dup else np.sort(rng.choice(pool[:20], size=n, replace=True))
+    root = _fixture_root(tmp_path, th, seed=n)
+    led, old, new = _both(root)
+    known = [int(x) for x in th]
+    probes = known + [h + d for h in known for d in (-1, 1) if 0 <= h + d < 2**64] + [0, 1, 2**64 - 1, 2**63, 2**63 - 1, 2**63 + 1]
+    probes += [int(x) for x in rng.integers(0, 2**64 - 1, size=500, dtype=np.uint64, endpoint=True)]
+    hits = 0
+    for h in probes:
+        vo, vn = old.get(str(h)), new.get(str(h))
+        assert _bits(vo) == _bits(vn), h                       # None, or tuple of float, bit for bit
+        hits += vo is not None
+        old._cache.clear(), new._cache.clear()
+    assert hits >= (0 if n == 0 else min(len(th), 1))
+    if len(th) and not dup:                                   # and against the ledger's own matrix
+        known_m, m = led.passa_matrix(th)
+        assert known_m.all()
+        for i, h in enumerate(known):
+            assert struct.pack("<7d", *new.get(str(h))) == m[i].tobytes()
+    new.close()
+
+
+def test_pread_snapshot_unknown_wallets_and_the_cache_behave_like_the_memmap_snapshot(tmp_path):
+    root = _fixture_root(tmp_path, np.arange(10, 4000, 3, dtype=np.uint64))
+    _, old, new = _both(root)
+    assert old.get("11") is None and new.get("11") is None and "11" in new._cache      # absent is cached as None, as before
+    assert new.get("13") is new.get("13") and new.get("13") == old.get("13") and new.get("13") is not None
+    assert len(new._cache) == 2
+    new._cache_max = 3
+    for k in ("16", "19", "22", "25"):
+        new.get(k)
+    assert len(new._cache) <= 4                               # cleared once past the bound, like the 500_000 of _AsofSnapshot
+    for bad in (-1, 1 << 64):                                 # a hash outside uint64 fails the same way in both
+        old._hash = new._hash = lambda _s, bad=bad: bad
+        with pytest.raises(OverflowError):
+            old.get("x")
+        with pytest.raises(OverflowError):
+            new.get("x")
+
+
+def test_pread_snapshot_keeps_no_mapping_and_closes_its_descriptors(tmp_path):
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("needs /proc")
+    import gc
+
+    def mapped() -> int:
+        return sum(str(tmp_path) in line for line in open("/proc/self/maps"))
+
+    def fds() -> int:
+        return sum(os.path.realpath(f"/proc/self/fd/{f}").startswith(str(tmp_path.resolve())) for f in os.listdir("/proc/self/fd") if os.path.exists(f"/proc/self/fd/{f}"))
+
+    root = _fixture_root(tmp_path, np.arange(0, 20000, 2, dtype=np.uint64))
+    led = cs.AsofDirLedger(root, hash_fn=int)
+    snap = led.snapshot_for_day(FIX_DAY)
+    gc.collect()
+    assert isinstance(snap, cs._PreadSnapshot) and mapped() == 0                   # AsofLedger's maps closed with the ledger
+    assert snap.get("100") is not None and snap.get("101") is None and mapped() == 0     # and lookups map nothing
+    assert fds() == 8                                                              # th + the 7 passA columns
+    snap.close()
+    assert fds() == 0
+    snap2 = led.snapshot_for_day(FIX_DAY)
+    assert fds() == 8
+    del snap2
+    gc.collect()
+    assert fds() == 0                                                              # dropped by the engine's day rollover: closed by GC
+
+
+def test_asof_dir_ledger_uses_the_pread_snapshot_for_a_file_backed_ledger_and_the_memmap_one_for_doubles(tmp_path):
+    root = _fixture_root(tmp_path / "real", np.arange(5, 500, 5, dtype=np.uint64))
+    real = cs.AsofDirLedger(root, hash_fn=int).snapshot_for_day(FIX_DAY)
+    assert type(real) is cs._PreadSnapshot and real.get("10") is not None and real.get("11") is None
+    assert real.get("10") == cs.AsofDirLedger(root, hash_fn=int).snapshot_for_day(FIX_DAY).get("10")
+    dbl = cs.AsofDirLedger(tmp_path, open_for_day=lambda r, d: FakeAsof(d), hash_fn=lambda s: 7).snapshot_for_day(FIX_DAY)
+    assert type(dbl) is cs._AsofSnapshot                                          # no .th / .cols: the reference implementation
+    assert cs._PreadSnapshot.from_ledger(FakeAsof(FIX_DAY), lambda s: 7) is None
+
+
+def test_pread_snapshot_refuses_a_truncated_column_instead_of_reading_garbage(tmp_path):
+    from tools import c1nf_wallet_ledger as L
+
+    root = _fixture_root(tmp_path, np.arange(0, 3000, 3, dtype=np.uint64))
+    led = L.AsofLedger.open_for_day(root, FIX_DAY)
+    cut = tmp_path / "asof" / f"asof-{FIX_DAY}" / "nrt.npy"
+    with open(cut, "r+b") as fh:                              # the maps were taken at full size; the file is shorter when we open it
+        fh.truncate(cut.stat().st_size - 800)
+    with pytest.raises(OSError, match="nrt.npy"):
+        cs._PreadSnapshot.from_ledger(led, int)
 
 
 def _real_shadow(v_source):
