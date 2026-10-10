@@ -9,7 +9,8 @@ Raw walker hour files (`{trades,creates,migrations}/<kind>-<hour>.jsonl.zst`) ->
      refusal; in forward its hour is dropped as `parse_failed`.
   2. extract: /data/mal/audit-1008/work/g_reachable_cap_book_rescore/extract.py (per UTC day: `complete`
      migrations, the first V-range PumpSwap pool, the window [mslot, mslot+7300), creates of the day and the day
-     before, trades of the day plus the next two hours, ordered (slot, tx_index, event_index)). Same SQL.
+     before, trades of the day plus the next two hours, ordered (slot, tx_index, event_index)). Same SQL, with two
+     changes: the tie-break below, and meta.v is the chosen pool's own vmap V (see "Null V").
 
 Modes (constants only; no CLI override of hours, sources, window or V range):
 
@@ -39,6 +40,14 @@ meta.v. The --vmap value is used for one thing: choosing the canonical pool (the
 EXP-024 "Universe"). It is copied into meta.v because the reference format has that column. It is NOT an Am.1 V0
 source: the read tool (#476) takes V0 and V(t) only from the Am.1 order (forward-1002ev join, getTransaction, the
 pool account) and otherwise applies the section 4 missing-V rule. The manifest says so (`vmap_role`).
+
+Null V (manager decision 2026-10-10; EXP-024 section 4 includes "a V0-unknown pool that would otherwise qualify" at the
+lower P&L of V0 = 17.5 and 17.7 SOL). A pool whose vmap V is null is KEPT as a canonical-pool candidate, exactly like a
+V-range pool, and reaches meta with v null (NaN in pandas). #476 reads that as "no vmap V0" and resolves V0 by the Am.1
+order, else the missing-V rule. A pool with a KNOWN V outside [17.5, 17.7] SOL is dropped (not universe), as before.
+A pool absent from the vmap file is dropped, as before (the vmap makes no claim about it). Per day, `canon_null_v`
+counts meta rows with null v, and `canon_null_v_multipool` those whose mint had more than one candidate pool (there
+the null-V pool won on s0; if its Am.1 V0 is out of range, a later V-range pool of that mint is not substituted).
 
 Seal. This tool computes no trigger, fill, exit or P&L, and joins nothing to outcomes. It never reads sealed blocks,
 forward-1002ev, walk 2, forward-paper or runner paths. `th` is duckdb's hash(trader); it depends on the duckdb
@@ -100,7 +109,8 @@ EXP009 = ("2026-09-15T12", "2026-09-18T23")
 RECORDED_BLOBS = ("tools/h5_forward_extract.py", "tools/forward_v_join.py", "tools/latency_curve.py",
                   "tools/paper_curve_math.py", "tools/boostfloor_score.py", "tools/boostfloor_read.py",
                   "tools/boostfloor_inputs.py")
-VMAP_ROLE = ("canonical-pool selection only (first V-range pool after complete); meta.v is not an Am.1 V0 source: "
+VMAP_ROLE = ("canonical-pool selection only (first V-range or null-V pool after complete; a null-V pool is kept with "
+             "meta.v null, a known out-of-range V is dropped); meta.v is not an Am.1 V0 source: "
              "the read tool takes V0/V(t) from forward-1002ev, then getTransaction, then the pool account, else the "
              "section 4 missing-V rule")
 HOLE_RULE = "mint excluded when its migration hour or the next hour is not usable (window <= 7300 slots, two hours)"
@@ -191,9 +201,20 @@ def write_excl(path: Path, obj: Any) -> None:
         fh.write("\n")
 
 
-def load_vmap(path: Path) -> dict[str, int]:
+def load_vmap(path: Path) -> dict[str, int | None]:
+    """{pool: V} for canonical-pool selection. A null (or NaN) V is kept as None: V0 unknown, which EXP-024 section 4
+    includes at the lower of 17.5 and 17.7 SOL (manager decision 2026-10-10). A known V outside [V_LO, V_HI] is dropped
+    (not universe). A pool absent from the file stays absent."""
     v = json.loads(Path(path).read_text(encoding="utf-8"))["v"]
-    return {k: x for k, x in v.items() if x is not None and V_LO <= x <= V_HI}
+    out: dict[str, int | None] = {}
+    for k, x in v.items():
+        if x is None or x != x:
+            out[k] = None
+        elif isinstance(x, bool) or not isinstance(x, (int, float)):
+            raise Refused(f"vmap {path}: pool {k} has a non-numeric V {x!r}")
+        elif V_LO <= x <= V_HI:
+            out[k] = int(x)
+    return out
 
 
 def raw_file(src_dir: Path, kind: str, hour: str) -> Path | None:
@@ -304,7 +325,11 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int],
     con.execute(f"""CREATE TABLE cp AS SELECT t.mint, t.pool, min(t.slot) s0, count(*) n, any_value(v.v) v
        FROM read_parquet({L(tf)}) t JOIN mig m ON t.mint=m.mint JOIN vmap v ON t.pool=v.pool
        WHERE t.venue='pumpswap' AND t.slot>=m.mslot AND t.slot<m.mslot+{WIN} GROUP BY 1,2""")
-    con.execute("CREATE TABLE cp1 AS SELECT mint, arg_min(pool, s0) pool, min(s0) s0, arg_min(v, s0) v, count(*) npools FROM cp GROUP BY mint")
+    # v is the chosen pool's own vmap V (null when unknown). The reference's arg_min(v, s0) skips a null v on duckdb
+    # 1.5.6, so it would pair a null-V pool with another pool's V. With no null V and no two candidate pools of a mint
+    # tied on s0 (E0, 09-20: one candidate pool per mint) the two give the same meta.
+    con.execute("CREATE TABLE cp1 AS SELECT c.mint, c.pool, c.s0, vmap.v, c.npools FROM (SELECT mint, arg_min(pool, s0) pool, "
+                "min(s0) s0, count(*) npools FROM cp GROUP BY mint) c JOIN vmap ON c.pool=vmap.pool")
     if cf:
         con.execute(f"CREATE TABLE cr AS SELECT mint, min(slot) cslot FROM read_parquet({L(cf)}) WHERE mint IN (SELECT mint FROM mig) GROUP BY mint")
     else:
@@ -320,9 +345,11 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int],
         ORDER BY t.mint, {order}) TO '{pout}.tmp' (FORMAT parquet)""")
     os.rename(pout + ".tmp", pout)
     s = con.execute("SELECT count(*), sum(uncensored::int), sum((npools>1)::int), sum((cslot IS NOT NULL)::int) FROM meta").fetchone()
+    nv = con.execute("SELECT count(*) FILTER (WHERE v IS NULL), count(*) FILTER (WHERE v IS NULL AND npools>1) FROM meta").fetchone()
     return {"day": day, "blk": blk, "order": "oracle_order" if oracle else "tx_order",
             "migs": con.execute("SELECT count(*) FROM mig").fetchone()[0], "excluded_hole_mints": excluded,
-            "canon_uncens_multipool_hascreate": list(s), "secs": round(time.time() - t0, 1)}
+            "canon_uncens_multipool_hascreate": list(s), "canon_null_v": nv[0], "canon_null_v_multipool": nv[1],
+            "secs": round(time.time() - t0, 1)}
 
 
 # ---- canonical md5 -----------------------------------------------------------------------------------------------
@@ -416,7 +443,8 @@ def run_e0(out: Path) -> int:
     con = connect(duckdb, out / "tmp")
     for kind, h, p in files:
         convert_hour(con, E0_BLOCK, kind, h, p, out / "tape")
-    stats = extract_day(con, out / "tape", out, E0_DAY, load_vmap(E0_VMAP))
+    e0_vmap = load_vmap(E0_VMAP)
+    stats = extract_day(con, out / "tape", out, E0_DAY, e0_vmap)
     con.close()
     cmp: dict[str, Any] = {}
     for part, order in (("meta", META_ORDER), ("paths", PATHS_SET_ORDER)):
@@ -435,6 +463,7 @@ def run_e0(out: Path) -> int:
         "view": str(E0_VIEW), "view_sha256": sha256_file(E0_VIEW / "VIEW.sha256"),
         "raw_files": len(files), "hours": [E0_FROM, E0_TO],
         "vmap": str(E0_VMAP), "vmap_sha256": E0_VMAP_SHA256, "reference": str(E0_REF),
+        "vmap_pools_null_v_kept": sum(x is None for x in e0_vmap.values()),
         "compare": cmp, "extract": stats, "duckdb": duckdb.__version__, "git": g, "blobs": blob_record(),
         "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -550,7 +579,11 @@ def run_forward(out: Path, vmap_path: Path, e0_record: Path) -> int:
         "skipped_days": [s["day"] for s in stats if s and s.get("skipped")],
         "hole_rule": HOLE_RULE,
         "excluded_hole_mints_by_day": {s["day"]: s["excluded_hole_mints"] for s in stats if s and not s.get("skipped")},
-        "vmap": str(vmap_path), "vmap_sha256": sha256_file(vmap_path), "vmap_pools_in_range": len(vmap),
+        "vmap": str(vmap_path), "vmap_sha256": sha256_file(vmap_path),
+        "vmap_pools_in_range": sum(x is not None for x in vmap.values()),
+        "vmap_pools_null_v_kept": sum(x is None for x in vmap.values()),
+        "canon_null_v_by_day": {s["day"]: [s["canon_null_v"], s["canon_null_v_multipool"]]
+                                for s in stats if s and not s.get("skipped")},
         "vmap_role": VMAP_ROLE,
         "final_marker": {k: marker.get(k) for k in ("written_utc", "ts", "final") if k in marker},
         "e0_record": str(e0_record), "e0_record_sha256": sha256_file(e0_record), "e0_view_sha256": e0.get("view_sha256"),
