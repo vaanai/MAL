@@ -136,9 +136,11 @@ sudo systemd-analyze verify /etc/systemd/system/mal-fast-tip-follower.service
 
 When:
 
-- 10-11 or 10-12, between 10:00Z and 20:00Z;
+- as early as possible once proofs 1, 4 and 5 are done (quant-proof (c): P0, the P2 runner md5, the DuckDB fixture), inside 10:00–20:00Z;
 - never 23:45–00:30Z (runner daily restart, 00:15Z archive and ledger jobs) or around 05:00Z (daily review);
 - latest **10-13T12Z**, and in any case before 10-16T00:30Z (H5 reinstall) and 10-16T01 (walk 2 / CAP-PICK count). The restart re-reads the cached singular V of active pools and changes gate answers for them, so it must land while no CAP-PICK in-scope mint exists.
+
+If A is not live by 10-13T12Z, C1-NF does not go live in event mode, and there is no silent switch to C.
 
 Before:
 
@@ -176,6 +178,8 @@ sudo systemctl restart mal-fast-tip-follower
 ```
 
 The follower goes back to the shared tree and its old code. Rows written after that lose only the extra keys. Keep `$DEST` for the audit.
+
+A rollback is also a restart. It re-reads the cached singular V of active pools, the same as step 6, so it uses the same window as step 6: inside 10:00–20:00Z, never 23:45–00:30Z, never around 05:00Z. After 10-16T00:30Z a rollback needs a manager plus quant-proof ruling first.
 
 ### 9. Record
 
