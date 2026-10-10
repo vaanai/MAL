@@ -8,7 +8,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=mal-live
+# Its own system user, never H5's mal-live (DEC-026 note 2026-10-10, security review F2): systemd makes /run/credentials/<unit>/ readable
+# by the unit's User=, so one shared user would let either executor read the other wallet's key. Helm creates mal-c1nf (runbook Step 3b).
+User=mal-c1nf
 Nice=10
 WorkingDirectory=/usr/local/lib/mal-c1nf-exec/current
 Environment=PYTHONUNBUFFERED=1
@@ -28,8 +30,8 @@ RestartSec=10
 # Exit 2 is a deterministic start refusal (LIVE_OK missing, EXP-025 absent, end_ms unset, rpc env, key): do not hot-loop.
 RestartPreventExitStatus=2
 NoNewPrivileges=true
-# Hardening. Writes only /var/lib/mal-live/c1nf (must exist: mal-live, 0700, created at provisioning). The wallet-wide STOP / HALT
-# in /var/lib/mal-live stay readable. H5's state dir, /etc/mal-h5, the probe key dir and H5's pinned tree are hidden outright: this
+# Hardening. Writes only /var/lib/mal-live/c1nf (must exist: mal-c1nf:mal-c1nf 0700, created at provisioning). /var/lib/mal-live stays
+# mal-live 0700 with one search-only ACL entry for mal-c1nf (runbook Step 3b), so the wallet-wide STOP / HALT there can be tested. H5's state dir, /etc/mal-h5, the probe key dir and H5's pinned tree are hidden outright: this
 # unit neither reads nor writes anything of H5's. /var/lib/mal (runner output, sealed data) is an empty tmpfs. /home is an empty
 # tmpfs; the C1-NF shadow's output directory is made visible read-only by a Helm drop-in (mal-c1nf-executor-shadow-feed.conf).
 # /etc/mal-c1nf (root:root 0755, holds LIVE_OK and TIER, which Helm creates) stays readable: ProtectSystem=strict makes /etc

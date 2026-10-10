@@ -1,0 +1,1211 @@
+#!/usr/bin/env python3
+"""October-regime discovery dataset: one structure row per graduation. No outcomes.
+
+Built so it can run on October walk hours (forward-1002ev layout, walk-2 layout) the hour the ledger frees them, and
+tested now only on fixtures and on pre-October exploration tape. It reads walker output as written by
+`tools/pump_history_backfill.py` (`trades/`, `creates/`, `migrations/` and, on `--event-v` walks, `events/`, one
+`<stream>-<YYYY-MM-DDTHH>.jsonl[.zst]` file per hour).
+
+What it writes, per graduation (`complete` row) in the read range:
+  * lifecycle: create, complete, migrate (CompletePumpAmmMigrationEvent) slots and times, and the gaps between them;
+  * the synthetic-migration class from the tape (PostCompleteBuyEvent rows in `events/`), with the PostCompleteBuy
+    delay and, only when it sits in the curve-completing tx, its size, fees and pool reserves. The tape can only mark
+    a pool synthetic; it never settles non-synthetic (EXP-024 Amendment 4 B2), so the classes are `synthetic`,
+    `pcb_other_tx`, `not_seen` and `no_event_stream`;
+  * the canonical PumpSwap pool, its first print s0, s0 minus migrate and minus complete (slots and seconds), V0 and
+    its source, the seed reserves, the seed market cap including V and the fee tier at the first print;
+  * BOOST: slices by the boost-vault authority PDA (the tape trader of a BOOST slice) and by `boost_buy_and_burn`
+    events when the walk has them: slice counts, and first/last slice times after s0, after migrate and after
+    complete. No slice amount;
+  * first-minute counts on the canonical pool (BOOST split out): prints and distinct traders, never by side;
+  * microstructure counts in the first 360 s: prints per active slot, same-slot prints, distinct traders, seconds per
+    slot;
+  * multi-hop counts: prints of the canonical pool inside transactions that trade two or more mints, and multi-hop
+    `ix_name` prints.
+
+Per hour it also writes counts: rows by venue, multi-mint transactions, event_index disorder and gaps, event-V
+coverage, non-WSOL quote rows, multi-hop `ix_name` rows, extra-event types and the slot span.
+
+D0 column rule (OCTOBER-DATA-QP-RULING.md section (1), "D0 bright lines": nothing from which a post-s0 price can be
+computed). Every output column must be on `D0_GRADUATION_COLUMNS` or `D0_HOUR_COLUMNS` with its value kind. Any other
+column, a wrong kind, or a PostCompleteBuy amount from outside the curve-completing tx refuses the row (fail closed).
+Graduated-pool trade rows are masked to `POST_S0_COLUMNS` before any feature is computed, so the `side`,
+`sol_lamports`, `token_raw`, `quote_reserve`, `base_reserve`, `virtual_quote_reserves` and `ix_name` of a post-s0
+row reach no output column (`ix_name` is reduced to the multi-hop flag `_mh_ix` when the row is read), and no signed
+or side-split quantity or buyback amount is written. The s0 row's PRE-trade reserves and V are the seed (fixed at
+s0). After s0, the one reader of the masked columns is the base-reserve chain check, an integrity counter whose totals
+go to the manifest only, never to a row. No price after s0, return, P&L, fill, exit,
+mark or label is written. The synthetic class is a structure field; it is never joined to an outcome here, and a
+caller that joins it to one breaks EXP-024 Amendment 4 D1 for counted-window pools.
+
+Read guard, before any data file is opened:
+  1. `tools.mal_catalog.check_read(role="exploration")` over every hour read, on `--ledger-host`. Today the ledger
+     denies every October hour (the forward walk rows say "never exploration"), so this tool cannot read October
+     data until the manager edits docs/HOLDOUT_LEDGER.md.
+  2. Roots under a reserved confirmation block (fresh-0802, fresh-0808, fresh-0828), the tip-tape archive or the
+     fast-0 live tape are refused whatever the ledger says.
+  3. A forward-1002 / forward-1002ev root also needs the EXP-012 FINAL marker (`tools.forward_v_join.final_marker`).
+  4. Every opened file must match its `VIEW.sha256` line (clean views) or the hour must be sealed and verified in
+     the walk's checkpoint.json / verify.jsonl (`tools.forward_v_join.hour_state`). `--allow-unverified` exists for
+     fixtures only.
+
+Usage (exploration example; run from inside /data/mal/hunt-1008 so the guards apply):
+  python3 -m tools.october_discovery_dataset --root /data/mal/clean-view/explore-0814/w4 \
+      --start 2026-08-20T12 --end 2026-08-21T12 --ledger-host research \
+      --vmap /data/mal/pumpswap-virtual/pool_v_0909.json --out /data/mal/hunt-1008/hunt-r3/october/smoke
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import multiprocessing
+import os
+import resource
+import statistics
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Mapping, Sequence
+
+SCHEMA = "october_discovery.v2"  # v2: D0 column allowlist (fm_* SOL, side splits, BOOST amounts, heuristic, rotation and per-pool chain removed)
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+LAMPORTS = 1_000_000_000
+PUMP_SUPPLY_RAW = 1_000_000_000 * 10**6
+
+V_BAND = (17_500_000_000, 17_700_000_000)  # the H5 / CAP-PICK universe band, lamports
+DEFAULT_WINDOW_S = 900
+S0_LAG_MAX_S = 300  # rows are kept to complete + S0_LAG_MAX_S + window; a pool whose first print lags more is cut short
+KEEP_BEFORE_S = 5  # block_time is whole seconds; a pool print can carry the complete's second or one before it
+FINALIZE_MARGIN_S = 120  # a graduation is written once the hours read so far end this long after its last kept second
+FIRST_MIN_S = 60
+MICRO_S = 360
+MAX_WORKERS = 2  # resource rule: at most 2 worker processes per agent
+STREAMS = ("trades", "creates", "migrations", "events")
+
+# Path parts that are never read by this tool, whatever the ledger says (sealed confirmation blocks, live tapes).
+NEVER_READ_PARTS = ("fresh-0802", "fresh-0808", "fresh-0828", "tip-tape-archive")
+NEVER_READ_PREFIXES = ("/var/lib/mal/sealed",)
+FINAL_GATED_PARTS = ("forward-1002",)  # forward-1002 and forward-1002ev: also need the EXP-012 FINAL marker
+
+# ---------------------------------------------------------------------------------------------------------------
+# D0 column rule (OCTOBER-DATA-QP-RULING.md section (1), "Allowed in D0"). Every output column is listed here with its
+# D0 category and value kind; build() refuses any row with another column, a wrong kind, or a PostCompleteBuy amount
+# from outside the curve-completing tx. Kinds: id (str), bool, int, num (int or float), count (int >= 0),
+# count_map ({str: int >= 0}). None is allowed in every column.
+
+IDENTITY = "identity"
+EVENT = "event_count_time"
+SEED = "fixed_at_or_before_s0"
+TRADE_COUNT = "unsigned_trade_count"
+MULTIHOP = "multihop_count"
+SLOT_TIMING = "slot_timing"
+INTEGRITY = "integrity_count"
+D0_CATEGORIES = {
+    IDENTITY: "identities",
+    EVENT: "event existence, counts and times for create, complete, migration, pool create, PostCompleteBuy, InitBoost "
+           "slices, fee claims and buybacks (BOOST: slice counts and times are D0, ruling's BOOST note)",
+    SEED: "anything fixed at or before s0: V0, seed reserves, seed market cap, fee tier, synthetic class and "
+          "PostCompleteBuy from the curve-completing tx, mayhem, quote mint (and the migrate event's seed amounts)",
+    TRADE_COUNT: "unsigned trade counts and distinct-trader counts",
+    MULTIHOP: "multi-hop counts",
+    SLOT_TIMING: "slot timing (s0 times and the read-window censor flags derived from them)",
+    INTEGRITY: "tape integrity counts (event_index disorder and gaps, event-V coverage), counts only",
+}
+KINDS = ("id", "bool", "int", "num", "count", "count_map")
+
+# PostCompleteBuy amounts and pool reserves: written only when the PCB sits in the curve-completing tx.
+PCB_QTY_SOURCE = {
+    "pcb_quote_in_lamports": "quote_in",
+    "pcb_base_out_raw": "base_out",
+    "pcb_fee_lamports": "fee",
+    "pcb_creator_fee_lamports": "creator_fee",
+    "pcb_pool_quote_before": "pool_quote_reserves_before",
+    "pcb_pool_quote_after": "pool_quote_reserves_after",
+    "pcb_pool_base_before": "pool_base_reserves_before",
+    "pcb_pool_base_after": "pool_base_reserves_after",
+}
+_SLICE_FIELDS = (("n", "count"), ("first_s_from_s0", "int"), ("last_s_from_s0", "int"), ("last_s_from_migrate", "int"),
+                 ("last_s_from_complete", "int"), ("last_slots_from_s0", "int"), ("median_gap_s", "num"))
+
+D0_GRADUATION_COLUMNS: dict[str, tuple[str, str]] = {
+    "schema": (IDENTITY, "id"),
+    "mint": (IDENTITY, "id"),
+    "quote_mint": (SEED, "id"),
+    "create_seen": (EVENT, "bool"),
+    "create_slot": (EVENT, "int"),
+    "create_bt": (EVENT, "int"),
+    "creator": (IDENTITY, "id"),
+    "is_mayhem": (SEED, "bool"),
+    "complete_slot": (EVENT, "int"),
+    "complete_bt": (EVENT, "int"),
+    "complete_tx_index": (EVENT, "int"),
+    "complete_sig": (IDENTITY, "id"),
+    "migrate_seen": (EVENT, "bool"),
+    "migrate_slot": (EVENT, "int"),
+    "migrate_bt": (EVENT, "int"),
+    "migrate_sig": (IDENTITY, "id"),
+    "migrate_event_source": (IDENTITY, "id"),
+    "migrate_init_boost": (SEED, "bool"),
+    "migrate_sol_lamports": (SEED, "int"),
+    "migrate_token_raw": (SEED, "int"),
+    "migrate_fee_lamports": (SEED, "int"),
+    "n_migrate_rows": (EVENT, "count"),
+    "complete_to_migrate_slots": (EVENT, "int"),
+    "complete_to_migrate_s": (EVENT, "int"),
+    "complete_migrate_same_tx": (EVENT, "bool"),
+    "synth_class": (SEED, "id"),
+    "pcb_n": (EVENT, "count"),
+    "pcb_slot": (EVENT, "int"),
+    "pcb_delay_slots_from_complete": (EVENT, "int"),
+    "pcb_delay_s_from_complete": (EVENT, "int"),
+    "pcb_same_tx_complete": (EVENT, "bool"),
+    "pcb_same_tx_migrate": (EVENT, "bool"),
+    "pcb_event_source": (IDENTITY, "id"),
+    **{col: (SEED, "int") for col in PCB_QTY_SOURCE},
+    "pool": (IDENTITY, "id"),
+    "pool_src": (IDENTITY, "id"),
+    "n_pumpswap_pools": (EVENT, "count"),
+    "n_wsol_pools": (EVENT, "count"),
+    "n_nonwsol_pools": (EVENT, "count"),
+    "s0_seen": (EVENT, "bool"),
+    "pool_quote_mint": (SEED, "id"),
+    "s0_slot": (SLOT_TIMING, "int"),
+    "s0_bt": (SLOT_TIMING, "int"),
+    "s0_tx_index": (SLOT_TIMING, "int"),
+    "s0_event_index": (SLOT_TIMING, "int"),
+    "s0_same_tx_migrate": (EVENT, "bool"),
+    "s0_minus_migrate_slots": (SLOT_TIMING, "int"),
+    "s0_minus_migrate_s": (SLOT_TIMING, "int"),
+    "s0_minus_complete_slots": (SLOT_TIMING, "int"),
+    "s0_minus_complete_s": (SLOT_TIMING, "int"),
+    "v0_lamports": (SEED, "int"),
+    "v0_src": (SEED, "id"),
+    "v_band": (SEED, "bool"),
+    "seed_quote_lamports": (SEED, "int"),
+    "seed_base_raw": (SEED, "int"),
+    "seed_mcap_sol": (SEED, "num"),
+    "seed_fee_ppm": (SEED, "int"),
+    "seed_creator_fee_ppm": (SEED, "int"),
+    "seed_tier_floor_sol": (SEED, "num"),
+    "seed_above_420": (SEED, "bool"),
+    "init_boost_event_n": (EVENT, "count"),
+    "init_boost_v_lamports": (SEED, "int"),
+    "span_end_bt": (SLOT_TIMING, "int"),
+    "s0_lag_cut": (SLOT_TIMING, "bool"),
+    "censored_read_end": (SLOT_TIMING, "bool"),
+    "censored_missing_hour": (SLOT_TIMING, "bool"),
+    **{f"boost_{src}_{name}": (EVENT, kind) for src in ("pda", "ev") for name, kind in _SLICE_FIELDS},
+    "boost_authority_known": (EVENT, "bool"),
+    "boost_src": (EVENT, "id"),
+    "fm_n_prints": (TRADE_COUNT, "count"),
+    "fm_n_traders": (TRADE_COUNT, "count"),
+    "fm_n_prints_ex_boost": (TRADE_COUNT, "count"),
+    "fm_n_traders_ex_boost": (TRADE_COUNT, "count"),
+    "fm_boost_n": (EVENT, "count"),
+    "ms_n_prints": (TRADE_COUNT, "count"),
+    "ms_n_traders": (TRADE_COUNT, "count"),
+    "ms_n_slots_active": (SLOT_TIMING, "count"),
+    "ms_slot_span": (SLOT_TIMING, "count"),
+    "ms_prints_per_active_slot_mean": (TRADE_COUNT, "num"),
+    "ms_prints_per_active_slot_max": (TRADE_COUNT, "count"),
+    "ms_same_slot_prints_mean": (TRADE_COUNT, "num"),
+    "ms_same_slot_prints_p90": (TRADE_COUNT, "num"),
+    "ms_same_slot_prints_max": (TRADE_COUNT, "count"),
+    "ms_sec_per_slot": (SLOT_TIMING, "num"),
+    "mh_n_prints_multi_tx": (MULTIHOP, "count"),
+    "mh_n_ix_multihop": (MULTIHOP, "count"),
+}
+
+D0_HOUR_COLUMNS: dict[str, tuple[str, str]] = {
+    "hour": (IDENTITY, "id"),
+    "rows": (TRADE_COUNT, "count"),
+    "rows_by_venue": (TRADE_COUNT, "count_map"),
+    "rows_pumpswap_event_v": (INTEGRITY, "count"),
+    "rows_pumpswap_nonwsol_quote": (TRADE_COUNT, "count"),
+    "rows_ix_multihop": (MULTIHOP, "count"),
+    "tx_event_index_disorder": (INTEGRITY, "count"),
+    "tx_event_index_gap": (INTEGRITY, "count"),
+    "tx_multi_mint": (MULTIHOP, "count"),
+    "tx_multi_pool_same_mint": (MULTIHOP, "count"),
+    "tx_multi_row": (MULTIHOP, "count"),
+    "tx_with_wsol_base_leg": (MULTIHOP, "count"),
+    "slot_min": (SLOT_TIMING, "int"),
+    "slot_max": (SLOT_TIMING, "int"),
+    "slot_span": (SLOT_TIMING, "count"),
+    "sec_per_slot_hour": (SLOT_TIMING, "num"),
+    "events_types": (EVENT, "count_map"),
+    "has_event_stream": (EVENT, "bool"),
+}
+
+# A graduated pool's trade rows keep only these columns once s0 is found; POST_S0_MASKED never reach a feature.
+POST_S0_COLUMNS = ("slot", "tx_index", "event_index", "block_time", "trader", "_mh_ix", "mint", "quote_mint", "pool",
+                   "signature", "venue", "_ord", "_multi")
+POST_S0_MASKED = ("side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves",
+                   "ix_name")
+
+# A column name carrying one of these words names a SOL, token, reserve, side or outcome quantity. Only the
+# fixed-at-or-before-s0 category may carry one (checked at import, and by the tests).
+QUANTITY_TOKENS = frozenset(
+    {
+        "sol", "lamports", "raw", "reserve", "reserves", "flow", "side", "buy", "buys", "sell", "sells", "buyer",
+        "buyers", "seller", "sellers", "in", "out", "before", "after", "remaining", "spent", "share", "price", "prices",
+        "mcap", "pnl", "profit", "ret", "return", "returns", "fill", "exit", "mark", "label", "outcome", "drawdown",
+        "net", "gross", "high", "low", "close",
+    }
+)
+
+
+def _check_allowlists() -> None:
+    for allow in (D0_GRADUATION_COLUMNS, D0_HOUR_COLUMNS):
+        for col, (cat, kind) in allow.items():
+            if cat not in D0_CATEGORIES or kind not in KINDS:
+                raise AssertionError(f"D0 allowlist: {col!r} has an unknown category or kind")
+            if cat != SEED and QUANTITY_TOKENS & set(col.lower().split("_")):
+                raise AssertionError(f"D0 allowlist: {col!r} names a quantity but is not fixed at or before s0")
+    if set(POST_S0_COLUMNS) & set(POST_S0_MASKED):
+        raise AssertionError("POST_S0_COLUMNS keeps a masked column")
+
+
+_check_allowlists()
+
+class Refused(Exception):
+    """A read the guard does not allow. The CLI exits 3."""
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# hours, files, integrity
+
+
+def _parse_hour(h: str) -> datetime:
+    return datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+
+
+def hour_list(start: str, end: str) -> list[str]:
+    a, b = _parse_hour(start), _parse_hour(end)
+    if b <= a:
+        raise ValueError(f"--end {end} must be after --start {start}")
+    out = []
+    while a < b:
+        out.append(a.strftime("%Y-%m-%dT%H"))
+        a += timedelta(hours=1)
+    return out
+
+
+def hour_start_s(h: str) -> int:
+    return int(_parse_hour(h).timestamp())
+
+
+def stream_file(root: Path, stream: str, hour: str) -> Path | None:
+    for ext in (".jsonl.zst", ".jsonl"):
+        p = root / stream / f"{stream}-{hour}{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_view_hashes(root: Path) -> dict[str, str] | None:
+    """VIEW.sha256 (`<sha>  ./<stream>/<file>` lines) of a clean view, or None when the root has none."""
+    p = root / "VIEW.sha256"
+    if not p.is_file():
+        return None
+    out: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        rel = parts[1][2:] if parts[1].startswith("./") else parts[1]
+        out[rel] = parts[0]
+    return out
+
+
+def check_root_path(root: Path) -> None:
+    text = str(root.resolve())
+    parts = set(Path(text).parts)
+    for bad in NEVER_READ_PARTS:
+        if bad in parts or any(p.startswith(bad) for p in parts):
+            raise Refused(f"root {root} is under {bad}: never read by this tool")
+    for pre in NEVER_READ_PREFIXES:
+        if text.startswith(pre):
+            raise Refused(f"root {root} is under {pre}: never read by this tool")
+
+
+def needs_final_marker(root: Path) -> bool:
+    return any(any(p.startswith(g) for g in FINAL_GATED_PARTS) for p in Path(str(root.resolve())).parts)
+
+
+def check_final_marker(final_ledger: Path) -> dict[str, Any]:
+    from tools.forward_v_join import Refused as FjRefused, final_marker
+
+    try:
+        return final_marker(final_ledger)
+    except FjRefused as exc:
+        raise Refused(str(exc)) from None
+
+
+def ledger_check(ledger: Path, host: str, start: str, end: str) -> list[str]:
+    from tools.mal_catalog import check_read, parse_ledger
+
+    blocks = parse_ledger(ledger.read_text(encoding="utf-8"))
+    ok, reasons = check_read(blocks, "exploration", host, start, end)
+    if not ok:
+        raise Refused("ledger denies role=exploration: " + "; ".join(reasons))
+    return []
+
+
+@dataclass
+class HourSource:
+    hour: str
+    root: Path | None
+    files: dict[str, Path] = field(default_factory=dict)
+    integrity: str = "missing"
+    sha256: dict[str, str] = field(default_factory=dict)
+
+
+def locate_hours(roots: Sequence[Path], hours: Sequence[str]) -> list[HourSource]:
+    out = []
+    for h in hours:
+        found = [(r, stream_file(r, "trades", h)) for r in roots]
+        found = [(r, p) for r, p in found if p is not None]
+        if len(found) > 1:
+            raise Refused(f"hour {h} has a trades file under two roots ({found[0][0]}, {found[1][0]}); pass one")
+        if not found:
+            out.append(HourSource(hour=h, root=None))
+            continue
+        root = found[0][0]
+        files = {s: p for s in STREAMS if (p := stream_file(root, s, h)) is not None}
+        out.append(HourSource(hour=h, root=root, files=files))
+    return out
+
+
+def verify_hour(src: HourSource, view_cache: dict[Path, dict[str, str] | None], *, allow_unverified: bool) -> None:
+    """Sets src.integrity and src.sha256, or raises Refused. Reads file bytes for hashing only, no row."""
+    assert src.root is not None
+    if src.root not in view_cache:
+        view_cache[src.root] = load_view_hashes(src.root)
+    view = view_cache[src.root]
+    if view is not None:
+        for stream, path in src.files.items():
+            rel = f"{stream}/{path.name}"
+            want = view.get(rel)
+            got = sha256_file(path)
+            src.sha256[stream] = got
+            if want is None:
+                raise Refused(f"{rel} is not listed in {src.root}/VIEW.sha256")
+            if want != got:
+                raise Refused(f"{rel} does not match {src.root}/VIEW.sha256")
+        src.integrity = "view_ok"
+        return
+    if (src.root / "checkpoint.json").is_file() and (src.root / "verify.jsonl").is_file():
+        from tools.forward_v_join import hour_state
+
+        _path, state = hour_state(src.root, src.hour, strict=True)
+        if state != "ok":
+            raise Refused(f"hour {src.hour} under {src.root} is not usable: {state}")
+        pinned = _last_verify_sha(src.root, src.hour)
+        for stream, path in src.files.items():
+            got = sha256_file(path)
+            src.sha256[stream] = got
+            want = pinned.get(stream)
+            if want is not None and stream != "trades" and want != got:
+                raise Refused(f"{stream}/{path.name} does not match its verify.jsonl sha256")
+        src.integrity = "walk_verified"
+        return
+    if not allow_unverified:
+        raise Refused(f"{src.root} has neither VIEW.sha256 nor checkpoint.json + verify.jsonl; refusing (fixtures: --allow-unverified)")
+    for stream, path in src.files.items():
+        src.sha256[stream] = sha256_file(path)
+    src.integrity = "unverified"
+
+
+def _last_verify_sha(root: Path, hour: str) -> dict[str, str]:
+    """The sha256 map of the hour's last verify.jsonl line (trades is checked by hour_state; other streams here)."""
+    last: dict[str, Any] = {}
+    for line in (root / "verify.jsonl").read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("hour") == hour:
+            last = rec
+    sha = last.get("sha256")
+    return {k: v for k, v in sha.items() if isinstance(v, str)} if isinstance(sha, dict) else {}
+
+
+def iter_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """JSON rows of one hour file. A zstd stream that does not end clean raises."""
+    if path.name.endswith(".zst"):
+        proc = subprocess.Popen(["zstd", "-dc", "-q", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        assert proc.stdout is not None
+        try:
+            for raw in proc.stdout:
+                if raw.strip():
+                    yield json.loads(raw)
+        finally:
+            proc.stdout.close()
+            rc = proc.wait()
+        if rc != 0:
+            raise ValueError(f"zstd failed on {path} (exit {rc})")
+        return
+    with path.open("rb") as fh:
+        for raw in fh:
+            if raw.strip():
+                yield json.loads(raw)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# small pure helpers
+
+
+def load_vmap(paths: Sequence[Path]) -> dict[str, int]:
+    """pool -> V lamports from one or more maps, first map wins. Accepts {"v": {...}} or a flat {pool: v}.
+    Values outside [0, 30 SOL] are dropped (the maps hold garbage for some non-pump pools)."""
+    out: dict[str, int] = {}
+    for p in paths:
+        doc = json.loads(Path(p).read_text(encoding="utf-8"))
+        m = doc.get("v") if isinstance(doc, dict) and isinstance(doc.get("v"), dict) else doc
+        for pool, v in (m or {}).items():
+            if pool in out or not isinstance(v, (int, float)):
+                continue
+            if 0 <= v <= 30 * LAMPORTS:
+                out[pool] = int(v)
+    return out
+
+
+def seed_mcap_sol(quote_lamports: int | None, v_lamports: int | None, base_raw: int | None) -> float | None:
+    if quote_lamports is None or v_lamports is None or not base_raw or base_raw <= 0:
+        return None
+    q = int(quote_lamports) + int(v_lamports)
+    if q <= 0:
+        return None
+    return (q * PUMP_SUPPLY_RAW / int(base_raw)) / LAMPORTS
+
+
+def fee_tier(mcap_sol: float | None) -> tuple[int | None, int | None, float | None]:
+    """(total fee ppm, creator fee ppm, tier lower bound in SOL) of the canonical PumpSwap WSOL tiers."""
+    if mcap_sol is None:
+        return None, None, None
+    from tools.paper_curve_math import PUMPSWAP_SOL_FEE_TIERS, pumpswap_sol_fee_ppm, pumpswap_sol_fee_split
+
+    floor = None
+    for lo, _p in PUMPSWAP_SOL_FEE_TIERS:
+        if mcap_sol + 1e-9 >= lo:
+            floor = float(lo)
+    return pumpswap_sol_fee_ppm(mcap_sol), pumpswap_sol_fee_split(mcap_sol)[0], floor
+
+
+def boost_authority(pool: str | None) -> str | None:
+    if not pool:
+        return None
+    try:
+        from tools.pump_structure_monitor import boost_vault_authority
+
+        return boost_vault_authority(pool)
+    except Exception:  # not a valid 32-byte key (fixtures, garbage)
+        return None
+
+
+def _q(values: Sequence[float], q: float) -> float | None:
+    if not values:
+        return None
+    s = sorted(values)
+    k = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
+    return s[k]
+
+
+def _median(values: Sequence[float]) -> float | None:
+    return statistics.median(values) if values else None
+
+
+def order_key(r: Mapping[str, Any]) -> tuple[int, int, int, int]:
+    tx = r.get("tx_index")
+    return (int(r["slot"]), int(tx) if tx is not None else 1 << 30, int(r.get("event_index") or 0), int(r.get("_ord") or 0))
+
+
+class D0ColumnError(ValueError):
+    """An output column off the D0 allowlist, of the wrong kind, or a PCB amount from outside the completing tx."""
+
+
+def _kind_ok(kind: str, v: Any) -> bool:
+    if v is None:
+        return True
+    if kind == "id":
+        return isinstance(v, str)
+    if kind == "bool":
+        return isinstance(v, bool)
+    if isinstance(v, bool):
+        return False
+    if kind == "int":
+        return isinstance(v, int)
+    if kind == "num":
+        return isinstance(v, (int, float))
+    if kind == "count":
+        return isinstance(v, int) and v >= 0
+    if kind == "count_map":
+        return isinstance(v, dict) and all(
+            isinstance(k, str) and isinstance(n, int) and not isinstance(n, bool) and n >= 0 for k, n in v.items())
+    return False
+
+
+def _assert_columns(row: Mapping[str, Any], allow: Mapping[str, tuple[str, str]], what: str) -> None:
+    for col, val in row.items():
+        spec = allow.get(col)
+        if spec is None:
+            raise D0ColumnError(f"{what} column {col!r} is not on the D0 allowlist; row refused (fail closed)")
+        if not _kind_ok(spec[1], val):
+            raise D0ColumnError(f"{what} column {col!r} holds a {type(val).__name__}, not D0 kind {spec[1]!r}; row refused")
+
+
+def assert_d0_graduation(row: Mapping[str, Any]) -> None:
+    """Fail closed: every column on D0_GRADUATION_COLUMNS with its kind, and PCB amounts only from the completing tx."""
+    _assert_columns(row, D0_GRADUATION_COLUMNS, "graduation")
+    if row.get("pcb_same_tx_complete") is not True:
+        bad = sorted(c for c in PCB_QTY_SOURCE if row.get(c) is not None)
+        if bad:
+            raise D0ColumnError(f"graduation columns {bad} hold PostCompleteBuy amounts from outside the curve-completing tx")
+
+
+def assert_d0_hour(row: Mapping[str, Any]) -> None:
+    _assert_columns(row, D0_HOUR_COLUMNS, "hour_stats")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# pass 1: lifecycle and extra events (small streams)
+
+
+@dataclass
+class Lifecycle:
+    creates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    completes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    migrations: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    pcb: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    boost_events: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    init_boost: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    hours_with_events: set[str] = field(default_factory=set)
+    event_types: dict[str, Counter] = field(default_factory=dict)
+    duplicate_completes: int = 0
+
+
+def read_lifecycle(sources: Sequence[HourSource]) -> Lifecycle:
+    lc = Lifecycle()
+    for src in sources:
+        if src.root is None:
+            continue
+        if "creates" in src.files:
+            for r in iter_rows(src.files["creates"]):
+                m = r.get("mint")
+                if m and m not in lc.creates:
+                    lc.creates[m] = {k: r.get(k) for k in ("slot", "block_time", "creator", "is_mayhem_mode")}
+        if "migrations" in src.files:
+            for r in iter_rows(src.files["migrations"]):
+                m = r.get("mint")
+                if not m:
+                    continue
+                if r.get("type") == "complete":
+                    if m in lc.completes:
+                        lc.duplicate_completes += 1
+                        continue
+                    lc.completes[m] = r
+                elif r.get("type") == "migration":
+                    lc.migrations[m].append(r)
+        types: Counter = Counter()
+        if "events" in src.files:
+            lc.hours_with_events.add(src.hour)
+            for r in iter_rows(src.files["events"]):
+                t = r.get("type")
+                types[str(t)] += 1
+                if t == "post_complete_buy" and r.get("mint"):
+                    lc.pcb[r["mint"]].append(r)
+                elif t == "boost_buy_and_burn" and r.get("pool"):
+                    lc.boost_events[r["pool"]].append(r)
+                elif t == "init_boost":
+                    lc.init_boost[str(r.get("signature"))].append(r)
+        lc.event_types[src.hour] = types
+    return lc
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# pass 2: trades, one hour at a time (parallel over hours, at most 2 workers)
+
+_KEEP = (
+    "slot", "tx_index", "event_index", "block_time", "side", "trader", "sol_lamports", "token_raw", "quote_reserve",
+    "base_reserve", "virtual_quote_reserves", "mint", "quote_mint", "pool", "signature",
+)
+
+
+def _flush_tx(group: list[dict[str, Any]], st: Counter) -> None:
+    """Multi-hop and event_index facts of one transaction's trade rows (contiguous in the walker's file). Reads no
+    side, amount or reserve: rotation shape (which needs `side`) is not computed (D0).
+
+    Rows whose mint is wrapped SOL (PumpSwap pools with WSOL as the base side) are SOL legs, not tokens, so they never
+    make a transaction multi-mint. event_index: `disorder` = not strictly increasing in file order (a decoder or
+    writer bug); `gap` = increasing but not 0..k-1 (rows the walker could not resolve and left out)."""
+    idx = [int(r.get("event_index") or 0) for r in group]
+    if any(b <= a for a, b in zip(idx, idx[1:])):
+        st["tx_event_index_disorder"] += 1
+    elif idx != list(range(len(group))):
+        st["tx_event_index_gap"] += 1
+    tokens = [r for r in group if r.get("mint") not in (None, WSOL_MINT)]
+    mints = {r["mint"] for r in tokens}
+    pools = {r.get("pool") for r in tokens if r.get("pool")}
+    if len(mints) >= 2:
+        st["tx_multi_mint"] += 1
+        for r in tokens:
+            r["_multi"] = True
+    if len(tokens) >= 2 and len(mints) == 1 and len(pools) >= 2:
+        st["tx_multi_pool_same_mint"] += 1
+    if len(group) >= 2:
+        st["tx_multi_row"] += 1
+    if len(tokens) < len(group):
+        st["tx_with_wsol_base_leg"] += 1
+    st["rows_ix_multihop"] += sum(1 for r in group if r.get("_mh_ix"))
+
+
+def _is_multihop_ix(name: Any) -> bool:
+    s = str(name).lower() if name else ""
+    return "multi" in s or "hop" in s
+
+
+def scan_trades_hour(args: tuple[str, str, dict[str, tuple[int, int]], int]) -> tuple[str, dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """(hour, rows kept per pool, hour stats). Keeps PumpSwap rows of graduated mints with block_time in
+    [complete - KEEP_BEFORE_S, complete + S0_LAG_MAX_S + window] (the (lo, hi) span per mint). Kept rows still carry
+    side, amounts and reserves; graduation_row takes the s0 seed and the integrity chain from them, then masks every
+    row to POST_S0_COLUMNS before any feature is computed."""
+    hour, path, spans, _window = args
+    keep: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    st: Counter = Counter()
+    venues: Counter = Counter()
+    group: list[dict[str, Any]] = []
+    cur_sig: Any = None
+    slot_min = slot_max = None
+    ordinal = 0
+    for r in iter_rows(Path(path)):
+        ordinal += 1
+        st["rows"] += 1
+        venue = r.get("venue")
+        venues[str(venue)] += 1
+        if venue == "pumpswap":
+            if r.get("virtual_quote_reserves") is not None:
+                st["rows_pumpswap_event_v"] += 1
+            if r.get("quote_is_wsol") is False:
+                st["rows_pumpswap_nonwsol_quote"] += 1
+        s = r.get("slot")
+        if isinstance(s, int):
+            slot_min = s if slot_min is None else min(slot_min, s)
+            slot_max = s if slot_max is None else max(slot_max, s)
+        sig = r.get("signature")
+        if sig != cur_sig:
+            if group:
+                _flush_tx(group, st)
+            group = []
+            cur_sig = sig
+        slim = {k: r.get(k) for k in _KEEP}
+        slim["_mh_ix"] = _is_multihop_ix(r.get("ix_name"))
+        slim["venue"] = venue
+        slim["_ord"] = ordinal
+        group.append(slim)
+        mint = r.get("mint")
+        if venue == "pumpswap" and mint in spans and r.get("pool"):
+            bt = r.get("block_time")
+            if isinstance(bt, int) and spans[mint][0] <= bt <= spans[mint][1]:
+                keep[r["pool"]].append(slim)  # same dict as in `group`, so _flush_tx's flags land on it
+    if group:
+        _flush_tx(group, st)
+    stats: dict[str, Any] = dict(st)
+    stats["hour"] = hour
+    stats["slot_min"] = slot_min
+    stats["slot_max"] = slot_max
+    stats["slot_span"] = (slot_max - slot_min + 1) if slot_min is not None else None
+    stats["sec_per_slot_hour"] = round(3600.0 / stats["slot_span"], 6) if stats["slot_span"] else None
+    stats["rows_by_venue"] = dict(sorted(venues.items()))
+    return hour, dict(keep), stats
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# per-graduation row
+
+
+def _bt(r: Mapping[str, Any] | None) -> int | None:
+    v = r.get("block_time") if r else None
+    return int(v) if isinstance(v, (int, float)) else None
+
+
+def _diff(a: int | None, b: int | None) -> int | None:
+    return None if a is None or b is None else a - b
+
+
+def choose_pool(mint: str, complete: Mapping[str, Any], migs: Sequence[Mapping[str, Any]], mint_pools: Mapping[str, list],
+                vmap: Mapping[str, int]) -> tuple[str | None, str | None, dict[str, Any]]:
+    """Canonical pool: the migrate event's pool if the tape has it, else the first V-band pool (event V or map V) after
+    complete, else the first pool with the graduation's quote mint after complete."""
+    c_slot = int(complete["slot"])
+    cands = []
+    for pool, rows in mint_pools.items():
+        rows_m = [r for r in rows if r.get("mint") == mint and int(r["slot"]) >= c_slot]
+        if rows_m:
+            first = min(rows_m, key=order_key)
+            cands.append((order_key(first), pool, first))
+    cands.sort()
+    info = {
+        "n_pumpswap_pools": len(cands),
+        "n_wsol_pools": sum(1 for _k, _p, f in cands if f.get("quote_mint") == WSOL_MINT),
+        "n_nonwsol_pools": sum(1 for _k, _p, f in cands if f.get("quote_mint") not in (None, WSOL_MINT)),
+    }
+    mig_pools = [m.get("pool") for m in migs if m.get("pool")]
+    if mig_pools:
+        return mig_pools[0], "migration", info
+    for _k, pool, first in cands:
+        v = first.get("virtual_quote_reserves")
+        v = int(v) if v is not None else vmap.get(pool)
+        if v is not None and V_BAND[0] <= v <= V_BAND[1]:
+            return pool, "first_vband_pool", info
+    q = complete.get("quote_mint") or WSOL_MINT
+    for _k, pool, first in cands:
+        if first.get("quote_mint") == q:
+            return pool, "first_pool_same_quote", info
+    return None, None, info
+
+
+CHAIN_KEYS = ("chain_links", "chain_breaks", "chain_links_multi", "chain_breaks_multi", "chain_unknown",
+              "chain_breaks_same_tx", "chain_breaks_same_slot", "chain_breaks_cross_slot")
+
+
+def chain_check(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Base-reserve chain on one pool's prints in (slot, tx_index, event_index) order. PumpSwap rows carry PRE-trade
+    reserves: next.base == base - token_raw after a buy, base + token_raw after a sell. Integrity role only
+    (OCTOBER-DATA-QP-RULING (1)): build() sums the counts into the manifest; no per-pool count, reserve, amount or
+    side reaches an output row. A break is also
+    classed by where it sits: inside one transaction, between two transactions of one slot, or across slots."""
+    out = Counter()
+    for a, b in zip(rows, rows[1:]):
+        if a.get("base_reserve") is None or b.get("base_reserve") is None or a.get("token_raw") is None:
+            out["chain_unknown"] += 1
+            continue
+        want = int(a["base_reserve"]) - int(a["token_raw"]) if a.get("side") == "buy" else int(a["base_reserve"]) + int(a["token_raw"])
+        out["chain_links"] += 1
+        multi = bool(a.get("_multi") or b.get("_multi"))
+        if multi:
+            out["chain_links_multi"] += 1
+        if int(b["base_reserve"]) != want:
+            out["chain_breaks"] += 1
+            if multi:
+                out["chain_breaks_multi"] += 1
+            if a.get("signature") is not None and a.get("signature") == b.get("signature"):
+                out["chain_breaks_same_tx"] += 1
+            elif a.get("slot") == b.get("slot"):
+                out["chain_breaks_same_slot"] += 1
+            else:
+                out["chain_breaks_cross_slot"] += 1
+    return {k: int(out.get(k, 0)) for k in CHAIN_KEYS}
+
+
+def slot_micro(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Unsigned print and trader counts per slot over masked rows (no side)."""
+    by_slot: dict[int, int] = Counter(int(r["slot"]) for r in rows)
+    per_slot = list(by_slot.values())
+    same_slot = [by_slot[int(r["slot"])] for r in rows]
+    slots = sorted(by_slot)
+    bts = [b for b in (_bt(r) for r in rows) if b is not None]
+    sps = None
+    if len(slots) >= 2 and bts and slots[-1] > slots[0]:
+        span_s = max(bts) - min(bts)
+        if span_s > 0:
+            sps = round(span_s / (slots[-1] - slots[0]), 6)
+    return {
+        "ms_n_prints": len(rows),
+        "ms_n_traders": len({r.get("trader") for r in rows}),
+        "ms_n_slots_active": len(by_slot),
+        "ms_slot_span": (slots[-1] - slots[0] + 1) if slots else None,
+        "ms_prints_per_active_slot_mean": round(sum(per_slot) / len(per_slot), 6) if per_slot else None,
+        "ms_prints_per_active_slot_max": max(per_slot) if per_slot else None,
+        "ms_same_slot_prints_mean": round(sum(same_slot) / len(same_slot), 6) if same_slot else None,
+        "ms_same_slot_prints_p90": _q(same_slot, 0.9),
+        "ms_same_slot_prints_max": max(same_slot) if same_slot else None,
+        "ms_sec_per_slot": sps,
+    }
+
+
+def _slices_summary(prefix: str, slices: Sequence[Mapping[str, Any]], s0_bt: int | None, mig_bt: int | None,
+                    c_bt: int | None, s0_slot: int | None) -> dict[str, Any]:
+    """BOOST slice counts and times only (ruling: "slice counts and times are D0"). No amount: buyback amounts after
+    s0 are forbidden in D0."""
+    bts = [b for b in (_bt(r) for r in slices) if b is not None]
+    gaps = [b - a for a, b in zip(bts, bts[1:])]
+    last = slices[-1] if slices else None
+    return {
+        f"{prefix}_n": len(slices),
+        f"{prefix}_first_s_from_s0": _diff(bts[0], s0_bt) if bts else None,
+        f"{prefix}_last_s_from_s0": _diff(bts[-1], s0_bt) if bts else None,
+        f"{prefix}_last_s_from_migrate": _diff(bts[-1], mig_bt) if bts else None,
+        f"{prefix}_last_s_from_complete": _diff(bts[-1], c_bt) if bts else None,
+        f"{prefix}_last_slots_from_s0": _diff(int(last["slot"]), s0_slot) if last is not None and s0_slot is not None else None,
+        f"{prefix}_median_gap_s": _median(gaps),
+    }
+
+
+def mask_post_s0(r: Mapping[str, Any]) -> dict[str, Any]:
+    """A graduated pool's trade row cut to POST_S0_COLUMNS: no side, amount, reserve or V survives."""
+    return {k: r[k] for k in POST_S0_COLUMNS if k in r}
+
+
+def _uncensored(g: Mapping[str, Any]) -> bool:
+    return bool(g.get("s0_seen")) and not g.get("censored_read_end") and not g.get("censored_missing_hour") and not g.get("s0_lag_cut")
+
+
+def graduation_row(mint: str, lc: Lifecycle, mint_pools: Mapping[str, list], vmap: Mapping[str, int], *,
+                   window_s: int, read_end_s: int, missing_hours: set[str]) -> tuple[dict[str, Any], dict[str, int]]:
+    """(the D0 row, the reserve-chain integrity counts of the canonical pool's window; never part of the row).
+
+    The kept pool rows still carry side, amounts and reserves. Three things read them: the s0 row's PRE-trade reserves
+    and V (the seed, fixed at s0), choose_pool's look at each candidate pool's first print (its own s0), and
+    chain_check (integrity counts). Every window row is masked to POST_S0_COLUMNS before any feature is computed."""
+    c = lc.completes[mint]
+    c_slot, c_bt, c_sig = int(c["slot"]), _bt(c), c.get("signature")
+    migs = sorted(lc.migrations.get(mint, []), key=order_key)
+    mig = migs[0] if migs else None
+    mig_bt = _bt(mig)
+    cr = lc.creates.get(mint)
+    row: dict[str, Any] = {
+        "schema": SCHEMA,
+        "mint": mint,
+        "quote_mint": c.get("quote_mint"),
+        "create_seen": cr is not None,
+        "create_slot": cr.get("slot") if cr else None,
+        "create_bt": _bt(cr),
+        "creator": cr.get("creator") if cr else None,
+        "is_mayhem": cr.get("is_mayhem_mode") if cr else None,
+        "complete_slot": c_slot,
+        "complete_bt": c_bt,
+        "complete_tx_index": c.get("tx_index"),
+        "complete_sig": c_sig,
+        "migrate_seen": mig is not None,
+        "migrate_slot": mig.get("slot") if mig else None,
+        "migrate_bt": mig_bt,
+        "migrate_sig": mig.get("signature") if mig else None,
+        "migrate_event_source": mig.get("event_source") if mig else None,
+        "migrate_init_boost": mig.get("init_boost") if mig else None,
+        "migrate_sol_lamports": mig.get("sol_lamports") if mig else None,
+        "migrate_token_raw": mig.get("token_raw") if mig else None,
+        "migrate_fee_lamports": mig.get("migration_fee") if mig else None,
+        "n_migrate_rows": len(migs),
+        "complete_to_migrate_slots": _diff(int(mig["slot"]), c_slot) if mig else None,
+        "complete_to_migrate_s": _diff(mig_bt, c_bt),
+        "complete_migrate_same_tx": (mig.get("signature") == c_sig) if mig else None,
+    }
+    # synthetic class (tape can only mark synthetic)
+    pcbs = sorted(lc.pcb.get(mint, []), key=order_key)
+    sigs = {c_sig} | ({mig.get("signature")} if mig else set())
+    in_tx = [p for p in pcbs if p.get("signature") in sigs]
+    c_hour = datetime.fromtimestamp(c_bt, tz=timezone.utc).strftime("%Y-%m-%dT%H") if c_bt is not None else None
+    if in_tx:
+        cls = "synthetic"
+    elif pcbs:
+        cls = "pcb_other_tx"
+    elif c_hour in lc.hours_with_events:
+        cls = "not_seen"
+    else:
+        cls = "no_event_stream"
+    p0 = (in_tx or pcbs or [None])[0]
+    # PCB amounts and pool reserves only from the curve-completing tx (fixed at or before s0); any other PCB gives its
+    # existence and time only
+    pq = p0 if (p0 is not None and c_sig is not None and p0.get("signature") == c_sig) else None
+    row.update({
+        "synth_class": cls,
+        "pcb_n": len(pcbs),
+        "pcb_slot": p0.get("slot") if p0 else None,
+        "pcb_delay_slots_from_complete": _diff(int(p0["slot"]), c_slot) if p0 else None,
+        "pcb_delay_s_from_complete": _diff(_bt(p0), c_bt) if p0 else None,
+        "pcb_same_tx_complete": (p0.get("signature") == c_sig) if p0 else None,
+        "pcb_same_tx_migrate": (mig is not None and p0.get("signature") == mig.get("signature")) if p0 else None,
+        "pcb_event_source": p0.get("event_source") if p0 else None,
+        **{col: (pq.get(key) if pq else None) for col, key in PCB_QTY_SOURCE.items()},
+    })
+    # canonical pool and s0
+    pool, pool_src, pinfo = choose_pool(mint, c, migs, mint_pools, vmap)
+    row.update({"pool": pool, "pool_src": pool_src, **pinfo})
+    prow_all = sorted([r for r in mint_pools.get(pool, []) if r.get("mint") == mint and int(r["slot"]) >= c_slot], key=order_key) if pool else []
+    s0 = prow_all[0] if prow_all else None
+    s0_bt, s0_slot = _bt(s0), (int(s0["slot"]) if s0 else None)
+    # seed: the s0 row's PRE-trade reserves and V, else the pool map. No later row's reserve or V is read.
+    v0, v0_src = None, None
+    if s0 is not None and s0.get("virtual_quote_reserves") is not None:
+        v0, v0_src = int(s0["virtual_quote_reserves"]), "event"
+    elif pool in vmap:
+        v0, v0_src = vmap[pool], "map"
+    mcap = seed_mcap_sol(s0.get("quote_reserve") if s0 else None, v0, s0.get("base_reserve") if s0 else None)
+    ppm, creator_ppm, tier_floor = fee_tier(mcap)
+    ib = []
+    if mig is not None:
+        ib = [e for e in lc.init_boost.get(str(mig.get("signature")), []) if e.get("pool") in (None, pool)]
+    row.update({
+        "s0_seen": s0 is not None,
+        "pool_quote_mint": s0.get("quote_mint") if s0 else None,
+        "s0_slot": s0_slot,
+        "s0_bt": s0_bt,
+        "s0_tx_index": s0.get("tx_index") if s0 else None,
+        "s0_event_index": s0.get("event_index") if s0 else None,
+        "s0_same_tx_migrate": (mig is not None and s0 is not None and s0.get("signature") == mig.get("signature")) if s0 else None,
+        "s0_minus_migrate_slots": _diff(s0_slot, int(mig["slot"])) if (mig and s0) else None,
+        "s0_minus_migrate_s": _diff(s0_bt, mig_bt),
+        "s0_minus_complete_slots": _diff(s0_slot, c_slot),
+        "s0_minus_complete_s": _diff(s0_bt, c_bt),
+        "v0_lamports": v0,
+        "v0_src": v0_src,
+        "v_band": (V_BAND[0] <= v0 <= V_BAND[1]) if v0 is not None else None,
+        "seed_quote_lamports": s0.get("quote_reserve") if s0 else None,
+        "seed_base_raw": s0.get("base_reserve") if s0 else None,
+        "seed_mcap_sol": round(mcap, 6) if mcap is not None else None,
+        "seed_fee_ppm": ppm,
+        "seed_creator_fee_ppm": creator_ppm,
+        "seed_tier_floor_sol": tier_floor,
+        "seed_above_420": (mcap >= 420.0) if mcap is not None else None,
+        "init_boost_event_n": len(ib),
+        "init_boost_v_lamports": ib[0].get("virtual_quote_reserves") if ib else None,
+    })
+    # windows. chain_check is the one reader of the masked columns after s0: counts, returned apart from the row.
+    win_all = [r for r in prow_all if s0_bt is not None and _bt(r) is not None and 0 <= _bt(r) - s0_bt <= window_s]
+    integrity = chain_check(win_all)
+    win = [mask_post_s0(r) for r in win_all]
+    del prow_all, win_all, s0
+    span_end = (s0_bt if s0_bt is not None else (c_bt or 0)) + window_s
+    win_hours = set()
+    if c_bt is not None:
+        t = c_bt - c_bt % 3600
+        while t <= span_end:
+            win_hours.add(datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%dT%H"))
+            t += 3600
+    row["span_end_bt"] = span_end
+    row["s0_lag_cut"] = bool(s0_bt is not None and c_bt is not None and s0_bt - c_bt > S0_LAG_MAX_S)
+    row["censored_read_end"] = span_end >= read_end_s
+    row["censored_missing_hour"] = bool(win_hours & missing_hours)
+    # BOOST: slice counts and times by the authority PDA (trader only, no side) and by boost_buy_and_burn events
+    auth = boost_authority(pool)
+    pda = [r for r in win if auth is not None and r.get("trader") == auth]
+    bev = sorted(lc.boost_events.get(pool, []), key=order_key) if pool else []
+    row.update(_slices_summary("boost_pda", pda, s0_bt, mig_bt, c_bt, s0_slot))
+    row.update(_slices_summary("boost_ev", bev, s0_bt, mig_bt, c_bt, s0_slot))
+    row["boost_authority_known"] = auth is not None
+    row["boost_src"] = "pda" if pda else ("event" if bev else None)
+    # first minute: unsigned print and distinct-trader counts, BOOST split out
+    fm = [r for r in win if _bt(r) - s0_bt < FIRST_MIN_S] if s0_bt is not None else []
+    org = [r for r in fm if auth is None or r.get("trader") != auth]
+    row.update({
+        "fm_n_prints": len(fm),
+        "fm_n_traders": len({r.get("trader") for r in fm}),
+        "fm_n_prints_ex_boost": len(org),
+        "fm_n_traders_ex_boost": len({r.get("trader") for r in org}),
+        "fm_boost_n": len(fm) - len(org),
+    })
+    # microstructure and multi-hop counts, first MICRO_S seconds
+    micro = [r for r in win if _bt(r) - s0_bt < MICRO_S] if s0_bt is not None else []
+    row.update(slot_micro(micro))
+    row.update({
+        "mh_n_prints_multi_tx": sum(1 for r in micro if r.get("_multi")),
+        "mh_n_ix_multihop": sum(1 for r in micro if r.get("_mh_ix")),
+    })
+    assert_d0_graduation(row)
+    return row, integrity
+
+# ---------------------------------------------------------------------------------------------------------------
+# driver
+
+
+def build(roots: Sequence[Path], start: str, end: str, *, ledger: Path, ledger_host: str, out_dir: Path,
+          vmap_paths: Sequence[Path] = (), window_s: int = DEFAULT_WINDOW_S, workers: int = 1,
+          allow_unverified: bool = False, allow_missing: bool = False,
+          final_ledger: Path = Path("/data/mal/exp012-forward/FINAL_READS.jsonl")) -> dict[str, Any]:
+    if workers < 1 or workers > MAX_WORKERS:
+        raise Refused(f"--workers must be 1..{MAX_WORKERS}")
+    hours = hour_list(start, end)
+    for r in roots:
+        check_root_path(r)
+    ledger_check(ledger, ledger_host, start, end)  # before any data file is opened
+    final = None
+    if any(needs_final_marker(r) for r in roots):
+        final = check_final_marker(final_ledger)
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise Refused(f"--out {out_dir} exists and is not empty; this tool never overwrites")
+    sources = locate_hours(roots, hours)
+    missing = {s.hour for s in sources if s.root is None}
+    if missing and not allow_missing:
+        raise Refused(f"{len(missing)} hour(s) have no trades file under the roots (first {sorted(missing)[0]}); --allow-missing flags them instead")
+    view_cache: dict[Path, dict[str, str] | None] = {}
+    for s in sources:
+        if s.root is not None:
+            verify_hour(s, view_cache, allow_unverified=allow_unverified)
+    vmap = load_vmap(vmap_paths) if vmap_paths else {}
+
+    lc = read_lifecycle(sources)
+    grad_until = {m: int(_bt(c) or 0) + S0_LAG_MAX_S + window_s for m, c in lc.completes.items()}
+    spans = {m: (int(_bt(c) or 0) - KEEP_BEFORE_S, grad_until[m]) for m, c in lc.completes.items()}
+    jobs = [(s.hour, str(s.files["trades"]), spans, window_s) for s in sources if s.root is not None]
+    pools_by_mint: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    hour_stats: list[dict[str, Any]] = []
+    read_end_s = hour_start_s(end)
+    pending = sorted(lc.completes, key=lambda m: order_key(lc.completes[m]))  # grad_until is monotone in this order
+    grads: list[dict[str, Any]] = []
+    chain_totals: Counter = Counter()  # integrity only: summed over uncensored graduations, manifest only
+    out_dir.mkdir(parents=True, exist_ok=True)
+    part = out_dir / "graduations.jsonl.partial"
+    gfh = part.open("x", encoding="utf-8")
+
+    def finalize(upto_s: int | None) -> None:
+        """Write and free every graduation whose kept rows are all in (the hours read so far end after upto_s)."""
+        nonlocal pending
+        n = 0
+        while n < len(pending) and (upto_s is None or grad_until[pending[n]] + FINALIZE_MARGIN_S < upto_s):
+            mint = pending[n]
+            row, integrity = graduation_row(mint, lc, pools_by_mint.pop(mint, {}), vmap, window_s=window_s, read_end_s=read_end_s,
+                                            missing_hours=missing)
+            assert_d0_graduation(row)
+            gfh.write(json.dumps(row, separators=(",", ":")) + "\n")
+            grads.append(row)
+            if _uncensored(row):
+                chain_totals.update(integrity)
+            n += 1
+        pending = pending[n:]
+
+    if workers == 1:
+        results: Iterable = map(scan_trades_hour, jobs)
+    else:
+        pool = multiprocessing.get_context("spawn").Pool(workers)
+        results = pool.imap(scan_trades_hour, jobs)  # imap keeps hour order
+    try:
+        for hour, keep, stats in results:
+            for p, rws in keep.items():
+                for r in rws:
+                    pools_by_mint[r["mint"]][p].append(r)
+            stats["events_types"] = dict(lc.event_types.get(hour, {}))
+            stats["has_event_stream"] = hour in lc.hours_with_events
+            assert_d0_hour(stats)
+            hour_stats.append(stats)
+            finalize(hour_start_s(hour) + 3600)
+        finalize(None)
+    finally:
+        if workers > 1:
+            pool.close()
+            pool.join()
+        gfh.close()
+    part.rename(out_dir / "graduations.jsonl")
+    with (out_dir / "hour_stats.jsonl").open("x", encoding="utf-8") as fh:
+        for h in hour_stats:
+            fh.write(json.dumps(h, separators=(",", ":")) + "\n")
+    summary = summarize(grads, hour_stats)
+    manifest = {
+        "schema": SCHEMA,
+        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "structure_only": True,
+        "outcome_columns": "none",
+        "d0_rule": "OCTOBER-DATA-QP-RULING.md (1) D0 bright lines: column allowlist, fail closed (assert_d0_graduation, assert_d0_hour)",
+        "d0_categories": D0_CATEGORIES,
+        "d0_columns": {"graduations": {c: cat for c, (cat, _k) in D0_GRADUATION_COLUMNS.items()},
+                       "hour_stats": {c: cat for c, (cat, _k) in D0_HOUR_COLUMNS.items()}},
+        "post_s0_masked_columns": list(POST_S0_MASKED),
+        "notes": [
+            "fm_* and ms_* and mh_* are unsigned counts measured AFTER s0: they are not decision-time features for a decision at s0.",
+            "No post-s0 side, SOL amount, token amount, reserve or V of a trade row is written; the reserve chain reads them for integrity counts only.",
+            "synth_class 'not_seen' is not 'non-synthetic': the tape never settles non-synthetic (EXP-024 Am.4 B2).",
+            "The synthetic class must never be joined to an outcome of a pool with s0 in a counted window before EXP-024 Look 2 is read (EXP-024 Am.4 D1).",
+        ],
+        "code": {"file": "tools/october_discovery_dataset.py", "sha256": sha256_file(Path(__file__))},
+        "args": {"roots": [str(r) for r in roots], "start": start, "end": end, "ledger": str(ledger), "ledger_host": ledger_host,
+                 "vmap": [str(p) for p in vmap_paths], "window_s": window_s, "workers": workers,
+                 "allow_unverified": allow_unverified, "allow_missing": allow_missing},
+        "ledger_check": {"role": "exploration", "host": ledger_host, "start": start, "end": end, "result": "ALLOW"},
+        "final_marker": {k: final.get(k) for k in ("utc_time",)} if final else None,
+        "hours": [{"hour": s.hour, "root": str(s.root) if s.root else None, "integrity": s.integrity, "sha256": s.sha256} for s in sources],
+        "duplicate_completes": lc.duplicate_completes,
+        "peak_rss_mb": {"self": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+                        "children": round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)},
+        "integrity": {
+            "reserve_chain": {k: int(chain_totals.get(k, 0)) for k in CHAIN_KEYS},
+            "scope": "canonical pool, s0 .. s0 + window, uncensored graduations with s0",
+            "note": "integrity counts only (OCTOBER-DATA-QP-RULING (1)); no per-pool count, reserve, amount or side is written",
+        },
+        "summary": summary,
+    }
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
+    return manifest
+
+
+def summarize(grads: Sequence[Mapping[str, Any]], hour_stats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Counts and medians of structure fields only."""
+    def cnt(key: str, rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        return dict(sorted(Counter("none" if r.get(key) is None else str(r.get(key)) for r in rows).items()))
+
+    def med(key: str, rows: Iterable[Mapping[str, Any]]) -> float | None:
+        vals = [r[key] for r in rows if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool)]
+        return _median(vals)
+
+    ok = [g for g in grads if _uncensored(g)]
+    vb = [g for g in ok if g.get("v_band")]
+    vb_boost = [g for g in vb if g.get("boost_src") is not None]
+    hs = Counter()
+    for h in hour_stats:
+        for k, v in h.items():
+            if isinstance(v, int) and not isinstance(v, bool) and k.startswith(("rows", "tx_")):
+                hs[k] += v
+    return {
+        "graduations": len(grads),
+        "uncensored_with_s0": len(ok),
+        "v_band": len(vb),
+        "by_synth_class": cnt("synth_class", grads),
+        "by_pool_src": cnt("pool_src", grads),
+        "by_v0_src": cnt("v0_src", grads),
+        "by_boost_src_vband": cnt("boost_src", vb),
+        "vband_boost_pda_n_median": med("boost_pda_n", vb_boost),
+        "vband_boost_pda_last_s_from_s0_median": med("boost_pda_last_s_from_s0", vb_boost),
+        "vband_boost_pda_last_s_from_migrate_median": med("boost_pda_last_s_from_migrate", vb_boost),
+        "vband_seed_mcap_sol_median": med("seed_mcap_sol", vb),
+        "vband_seed_above_420": sum(1 for g in vb if g.get("seed_above_420")),
+        "vband_s0_minus_migrate_s_median": med("s0_minus_migrate_s", vb),
+        "vband_s0_minus_complete_s_median": med("s0_minus_complete_s", vb),
+        "vband_ms_same_slot_prints_mean_median": med("ms_same_slot_prints_mean", vb),
+        "vband_ms_sec_per_slot_median": med("ms_sec_per_slot", vb),
+        "vband_pools_with_multi_tx_prints": sum(1 for g in vb if (g.get("mh_n_prints_multi_tx") or 0) > 0),
+        "hour_totals": dict(hs),
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--root", action="append", required=True, type=Path, help="walker output root (repeatable; one root per hour)")
+    ap.add_argument("--start", required=True, help="first hour read, YYYY-MM-DDTHH (inclusive)")
+    ap.add_argument("--end", required=True, help="end hour, YYYY-MM-DDTHH (exclusive)")
+    ap.add_argument("--ledger-host", required=True, choices=("research", "fast", "oracle"), help="host column the ledger check uses")
+    ap.add_argument("--ledger", type=Path, default=Path(__file__).resolve().parents[1] / "docs" / "HOLDOUT_LEDGER.md")
+    ap.add_argument("--out", required=True, type=Path, help="new or empty output directory")
+    ap.add_argument("--vmap", action="append", type=Path, default=[], help="pool V map JSON (fallback when rows carry no event V)")
+    ap.add_argument("--window-s", type=int, default=DEFAULT_WINDOW_S)
+    ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--allow-unverified", action="store_true", help="fixtures only: roots without VIEW.sha256 or verify.jsonl")
+    ap.add_argument("--allow-missing", action="store_true", help="flag graduations near missing hours instead of refusing")
+    ap.add_argument("--final-ledger", type=Path, default=Path("/data/mal/exp012-forward/FINAL_READS.jsonl"))
+    a = ap.parse_args(argv)
+    try:
+        man = build(a.root, a.start, a.end, ledger=a.ledger, ledger_host=a.ledger_host, out_dir=a.out, vmap_paths=a.vmap,
+                    window_s=a.window_s, workers=a.workers, allow_unverified=a.allow_unverified, allow_missing=a.allow_missing,
+                    final_ledger=a.final_ledger)
+    except Refused as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 3
+    s = man["summary"]
+    print(json.dumps({k: s[k] for k in ("graduations", "uncensored_with_s0", "v_band", "by_synth_class", "by_boost_src_vband")}, sort_keys=True))
+    print(f"wrote {a.out}/graduations.jsonl, hour_stats.jsonl, manifest.json")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
