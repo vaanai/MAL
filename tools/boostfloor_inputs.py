@@ -4,7 +4,7 @@ section 8) and the section 13 BOOST PDA fetch. Outcome-blind: they compute no fi
 
     python -m tools.boostfloor_inputs p5 --look 1          # gettx_v.jsonl, cross_source.json (line A), line_a_sample.jsonl, p7_sample.jsonl
     python -m tools.boostfloor_inputs account --look 1     # account_v0.json from p5/account/map.json (exp012_forward_vmap fetch --new)
-    python -m tools.boostfloor_inputs p7 --look 1          # p7/pricing_check.json: the two tier lines and line B
+    python -m tools.boostfloor_inputs p7 --look 1          # p7/pricing_check.json: the two tier lines and line B (buy side: Am.6)
     python -m tools.boostfloor_inputs boost-pda --look 1   # p5/boost_pda.jsonl: per traded pool, the BOOST vault authority's slices
     python -m tools.boostfloor_inputs e1 --source FILE     # e1/calibration.json: a probe_sim_calibration output, copied byte for byte
 
@@ -119,17 +119,20 @@ def plan_p5(pools: Sequence[br.FwdPool], index: Mapping[br.Key, br.PrintRef], go
         ranked.append((hashlib.sha256(f"{ref.signature}:{ref.event_index}".encode("ascii")).hexdigest(), p, s))
     ranked.sort(key=lambda x: x[0])
     line_a: list[Any] = []
+    line_a_isbuy: list[bool] = []  # each line A print's tape side, so line B can count an unresolved one as a miss on its side (Am.6)
     for _, p, s in ranked[:LINE_A_TRIGGERS]:
         idx: set[int] = set()
         br.price_cell(p, s, br.CELLS["D"], rbar=0.0, touch=idx)
-        for k in [p.keys[0]] + [p.keys[i] for i in sorted(idx)]:
-            if k not in line_a:
-                line_a.append(k)
+        for i in [0] + sorted(idx):
+            if p.keys[i] not in line_a:
+                line_a.append(p.keys[i])
+                line_a_isbuy.append(bool(p.path.isb[i]))
     allp = sorted(((p.s0_bt, p.mint, i, p) for p in universe for i in range(len(p.keys))), key=lambda x: x[:3])
     n = len(allp)
     m = min(P7_N, n)  # all prints when there are fewer than 1,000
     p7 = [(p.keys[i], bool(p.path.isb[i])) for _, _, i, p in (allp[(j * n) // m] for j in range(m))]
-    return {"needed": needed, "line_a": line_a, "p7": p7, "triggers": len(trig), "unranked_triggers": unranked, "universe": len(universe)}
+    return {"needed": needed, "line_a": line_a, "line_a_isbuy": line_a_isbuy, "p7": p7, "triggers": len(trig), "unranked_triggers": unranked,
+            "universe": len(universe)}
 
 
 # ---- getTransaction ---------------------------------------------------------------------------------------------------------
@@ -235,32 +238,89 @@ def tier_lines(sample: Sequence[Mapping[str, Any]], v_of: Callable[[Any, Mapping
     return out
 
 
+LINE_B_BUY_NAMES = frozenset({"buy", "buy_v2"})  # Am.6 (QP-P7-1010 item 2.1): the only comparable buys, by exact ix_name
+LINE_B_EXACT_IN_PREFIX = "buy_exact_quote_in"  # v1 and v2: excluded by prefix
+LINE_B_BUY_EXCLUSIONS = ("zero_sol", "buy_exact_quote_in", "no_ix_name", "ix_not_listed")  # the causes, in the order they are tested
+
+
+def buy_exclusion(d: Mapping[str, Any]) -> str | None:
+    """Why a raw buy event is in neither line B denominator (one of LINE_B_BUY_EXCLUSIONS), or None when it is comparable. Decided from the
+    raw getTransaction decode's `zero_sol` and `ix_name` (forward-1002 rows carry no ix_name; it is the instruction name and carries no
+    outcome): any `zero_sol`; a name starting with buy_exact_quote_in; a missing, null or empty name; any name other than buy / buy_v2."""
+    if d.get("zero_sol"):
+        return "zero_sol"
+    name = d.get("ix_name")
+    if name is None or name == "":
+        return "no_ix_name"
+    if str(name).startswith(LINE_B_EXACT_IN_PREFIX):
+        return "buy_exact_quote_in"
+    return None if name in LINE_B_BUY_NAMES else "ix_not_listed"
+
+
+def buy_law(Q: int, base_reserve: int, token_raw: int) -> int | None:
+    """Am.6 inverse law: the quote a buy of `token_raw` base units pays into the pool, ceil(Q * token_raw / (base_reserve - token_raw)) in
+    integers, Q = quote_reserve + V. None when base_reserve <= token_raw, which is a miss. It replaces the forward law for buys."""
+    if base_reserve <= token_raw:
+        return None
+    return -((-Q * token_raw) // (base_reserve - token_raw))
+
+
+def within_b(got: int, law: int) -> bool:
+    """Line B's tolerance: within 2 units (lamports on both sides) or within 1 bp of the law."""
+    return abs(got - law) <= LINE_B_UNITS or (law > 0 and abs(got - law) <= BP * law)
+
+
 def line_b(recs: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Am.1 line B on raw getTransaction events: sells' pool_quote_amount against (quote_reserve + V) base_in // (base_reserve + base_in);
-    buys' token_raw against base_reserve qin // (quote_reserve + V + qin), excluding buy_exact_quote_in* and zero_sol; a buy with no
-    ix_name is not comparable. Match: within 1 bp or within 2 units. Each side needs >= 99% of its comparable events; none fails it."""
-    c = {s: {"comparable": 0, "match": 0, "not_comparable": 0, "excluded": 0} for s in ("sell", "buy")}
+    """Am.1 line B on raw getTransaction events, buy side as amended by Am.6. Match: within 1 bp or within 2 lamports of the integer law.
+      sells: pool_quote_amount against (quote_reserve + V) * token_raw // (base_reserve + token_raw) (unchanged);
+      buys:  comparable only with no zero_sol and ix_name exactly buy or buy_v2 (else excluded, counted per cause and, within ix_not_listed,
+             per name); pool_quote_amount against buy_law(quote_reserve + V, base_reserve, token_raw); base_reserve <= token_raw is a miss.
+    An unresolved print (no record, a status other than ok, a decode with no buy/sell side, or a law field that is not an integer) is a
+    comparable MISS on its side: the decoded side, else the tape side `isbuy` the caller put on the record, else (side unknown) both sides.
+    Each side needs >= 99% of its comparable events; a side with none fails."""
+    c: dict[str, dict[str, Any]] = {s: {"comparable": 0, "match": 0, "unresolved": 0} for s in ("sell", "buy")}
+    c["buy"].update(excluded=0, excluded_by={x: 0 for x in LINE_B_BUY_EXCLUSIONS}, ix_not_listed_by_name={},
+                    by_ix_name={n: {"n": 0, "match": 0} for n in sorted(LINE_B_BUY_NAMES)})
+    side_unknown = 0
     for rec in recs:
         d = rec.get("decoded") or {}
-        side = d.get("side")
-        if rec.get("status") != "ok" or side not in ("buy", "sell"):
+        side = d.get("side") if rec.get("status") == "ok" else None
+        if side not in ("buy", "sell"):
+            tape = rec.get("isbuy")
+            sides = ("buy",) if tape is True else ("sell",) if tape is False else ("sell", "buy")
+            side_unknown += tape not in (True, False)
+            for s in sides:
+                c[s]["comparable"] += 1
+                c[s]["unresolved"] += 1
             continue
-        q, b, v, pqa, tok = (d.get(f) for f in ("quote_reserve", "base_reserve", "virtual_quote_reserves", "pool_quote_amount", "token_raw"))
-        if side == "buy" and (d.get("zero_sol") or str(d.get("ix_name") or "").startswith("buy_exact_quote_in")):
-            c[side]["excluded"] += 1
-            continue
-        if any(type(x) is not int for x in (q, b, v, pqa, tok)) or (side == "buy" and not d.get("ix_name")):
-            c[side]["not_comparable"] += 1
-            continue
-        if side == "sell":
-            got, law = pqa, (q + v) * tok // (b + tok)
-        else:
-            got, law = tok, b * pqa // (q + v + pqa)
+        if side == "buy":
+            why = buy_exclusion(d)
+            if why is not None:
+                c["buy"]["excluded"] += 1
+                c["buy"]["excluded_by"][why] += 1
+                if why == "ix_not_listed":
+                    nm = str(d.get("ix_name"))
+                    c["buy"]["ix_not_listed_by_name"][nm] = c["buy"]["ix_not_listed_by_name"].get(nm, 0) + 1
+                continue
         c[side]["comparable"] += 1
-        c[side]["match"] += abs(got - law) <= LINE_B_UNITS or (law > 0 and abs(got - law) <= BP * law)
+        q, b, v, pqa, tok = (d.get(f) for f in ("quote_reserve", "base_reserve", "virtual_quote_reserves", "pool_quote_amount", "token_raw"))
+        if any(type(x) is not int for x in (q, b, v, pqa, tok)):
+            c[side]["unresolved"] += 1
+            ok = False
+        elif side == "sell":
+            ok = b + tok > 0 and within_b(pqa, (q + v) * tok // (b + tok))
+        else:
+            law = buy_law(q + v, b, tok)
+            ok = law is not None and within_b(pqa, law)
+        c[side]["match"] += bool(ok)
+        if side == "buy":
+            c["buy"]["by_ix_name"][d["ix_name"]]["n"] += 1
+            c["buy"]["by_ix_name"][d["ix_name"]]["match"] += bool(ok)
     for s in c.values():
         s["share"] = s["match"] / s["comparable"] if s["comparable"] else None
         s["pass"] = s["share"] is not None and s["share"] >= LINE_B_MIN
+    c["buy"]["ix_not_listed_by_name"] = dict(sorted(c["buy"]["ix_not_listed_by_name"].items()))
+    c["side_unknown"] = side_unknown
     return c
 
 
@@ -279,8 +339,12 @@ def p7_check(lay: br.Layout) -> dict[str, Any]:
         return float(gettx[k]) if k in gettx else None
 
     tiers = tier_lines(sample, v_of)
-    b_keys = {br.content_key(*r["key"]) for r in _read_jsonl(lay.line_a_sample)} | {br.content_key(*r["key"]) for r in sample}
-    lb = line_b(recs[k] for k in sorted(b_keys) if k in recs)
+    # every line B key is scored: one with no gettx record is unresolved, a miss on its tape side (Am.6); the P7 sample's side first
+    side: dict[Any, Any] = {}
+    for r in sample + _read_jsonl(lay.line_a_sample):
+        side.setdefault(br.content_key(*r["key"]), r.get("isbuy") if type(r.get("isbuy")) is bool else None)
+    b_keys = set(side)
+    lb = line_b({**(recs.get(k) or {"key": list(k), "status": "no_record"}), "isbuy": side[k]} for k in sorted(b_keys))
     return {"pass": all(x["pass"] for x in (tiers["sell"], tiers["buy"], lb["sell"], lb["buy"])), "tier": tiers, "line_b": lb,
             "line_b_prints": len(b_keys), "v_source": "ev_then_gettx" if use_ev else "gettx",
             "inputs_sha256": {p.name: br.sha256_file(p) for p in (lay.cross_source, lay.gettx_v, lay.p7_sample, lay.line_a_sample)}}
@@ -360,7 +424,7 @@ def run_p5(lay: br.Layout, rpc: Any, good: frozenset[str], loaded: tuple[list[br
         rest = [k for k in plan["needed"] if k not in recs]
         recs.update({br.content_key(*r["key"]): r for r in fetch_prints(rpc, rest, index, purposes, decode)})
     br.write_new(lay.gettx_v, _jsonl(recs[k] for k in sorted(recs)))
-    br.write_new(lay.line_a_sample, _jsonl({"key": list(k)} for k in plan["line_a"]))
+    br.write_new(lay.line_a_sample, _jsonl({"key": list(k), "isbuy": isb} for k, isb in zip(plan["line_a"], plan["line_a_isbuy"])))
     br.write_new(lay.p7_sample, _jsonl({"key": list(k), "isbuy": isb, "ev_v": index[k].ev_v if k in index else None} for k, isb in plan["p7"]))
     status: dict[str, int] = {}
     for r in recs.values():
@@ -416,7 +480,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise br.Refused(f"{lay.p7} exists: P7 runs once")
             res = p7_check(lay)
             br.write_new(lay.p7, (json.dumps(res, indent=1, sort_keys=True) + "\n").encode())
-            res = {"pass": res["pass"], "sha256": br.sha256_file(lay.p7)}
+            lbc = {s: {f: res["line_b"][s][f] for f in ("comparable", "match", "unresolved", "excluded", "excluded_by", "ix_not_listed_by_name",
+                                                           "by_ix_name") if f in res["line_b"][s]} for s in ("sell", "buy")}
+            res = {"pass": res["pass"], "line_b_counts": {**lbc, "side_unknown": res["line_b"]["side_unknown"]}, "sha256": br.sha256_file(lay.p7)}
         else:
             good, _ = br._good_bad(br.FORWARD_1002)
             classes = br.load_classes(lay.classes)
