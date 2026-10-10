@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T20:16:30Z",
+ "updated_utc": "2026-10-10T21:55:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "c1nf-soak-restart-1010",
+   "kind": "other",
+   "title": "C1-NF 24 h soak restarted on the memory-fixed code (21:43Z); it must run clean to 10-11 21:43Z",
+   "detail": "The fix keeps only the last hour of trades per pool; every decision was proven bit-identical to the old code on a September day, and a 48 h replay stayed at 1.0 GB peak under the 1.9 GB cap. Early reading during start-up: 226 MB of program memory. Two monitors stop the clock on any rule breach (memory at 1.5 GB, growth over 20 MB/h, any decision difference).",
+   "atUtc": "2026-10-10T21:43:37Z"
+  },
   {
    "id": "p7-line2-fixed-1010",
    "kind": "other",
@@ -497,6 +504,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261010-2155-helm-c1nf",
+   "from": "claude",
+   "atUtc": "2026-10-10T21:55:00Z",
+   "text": "For Helm (C1-NF prep only; runbook docs/runbooks/c1nf-executor.md on main, 'Helm's steps, in order'): Step 1 don't touch H5 (unit, wallet, key, /etc/mal-h5, /var/lib/mal-live/h5, TIER; leave the wallet-wide STOP). Step 2 create the second keypair at /etc/mal-c1nf-key/c1nf-wallet.json (root 0400 in a 0700 dir) and send the manager ONLY its public address (must differ from H5's 5n95HyhZ…Sugk). Step 3 auditd watch on it. Step 3b create system user mal-c1nf with the search-only ACL u:mal-c1nf:--x on /var/lib/mal-live. Everything from Step 4 (install, drop-ins, LIVE_OK, TIER) waits for the manager's named sha: after a reviewed PR pins the public address and the 24 h soak passes (no earlier than 10-11 21:43Z). Your 0.5 SOL funding (Step 10) only when the manager asks."
+  },
   {
    "id": "fy-h5-51-resume",
    "from": "claude",
