@@ -109,6 +109,9 @@ SPS_MIN_SPAN_S = 60
 SILENCE_S = 20.0
 CLOCK_JUMP_S = 60
 HEARTBEAT_S = 60.0
+EXPIRE_S = 600                        # engine.expire on the STREAM clock: at every block time crossing a multiple of this (#503 item 7)
+ANCHOR_FILE = "c1nf-anchor.json"      # run_live: the history anchor hour; every (re)start bootstraps from it (#503 item 7)
+MAX_BOOTSTRAP_HOURS = 21 * 24         # run_live refuses to start when the anchor is older than this (a manager resets the anchor)
 HOLD_MS = 600                        # live: feed rows only once t_recv_ms is this old, so the three kinds of one block arrive together
 SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
 # DEC-026 section 8 / section 11 item 8: outcome records start at 2026-10-10T00:00Z. BINDING, not a fallback: a decision with T before this
@@ -829,8 +832,13 @@ class Shadow:
                  universe: Optional[Universe] = None, wall: Callable[[], int] = now_ms, replay: bool = False, errors: Optional[ErrorLog] = None,
                  decide_from: Optional[int] = None, decide_to: Optional[int] = None,
                  classifier: Optional[Callable[[str, str], Any]] = None, classify_timeout_s: float = CLASSIFY_TIMEOUT_S,
-                 v_source: Optional[str] = None) -> None:
+                 v_source: Optional[str] = None, stream_expire_s: Optional[int] = None) -> None:
         self.engine, self.models, self.sink = engine, models, sink
+        # #503 item 7: with stream_expire_s, engine.expire runs on the stream clock (the first row with block_time >= k * stream_expire_s,
+        # now_bt = k * stream_expire_s), during the bootstrap as well, so two runs fed the same rows from the same anchor prune at the same
+        # instants. Without it (replay, the frozen-scorer proofs) nothing changes: tick() expires on its own schedule and replay never ticks.
+        self.stream_expire_s = int(stream_expire_s) if stream_expire_s else None
+        self._expire_k: Optional[int] = None
         # V source (#503 review): "event" (live) prices every print on its own event V, "const" (replay) on the stamped V0. Taken from the
         # engine when it has one (tools.c1nf_features.FeatureEngine.v_source); a stub without it is "const". A disagreement refuses to build.
         eng_vs = getattr(engine, "v_source", None)
@@ -1043,6 +1051,13 @@ class Shadow:
         newbt = self.hw_bt is None or bt > self.hw_bt
         if newbt:
             self.hw_bt = bt
+            if self.stream_expire_s:
+                k = bt // self.stream_expire_s
+                if self._expire_k is None:
+                    self._expire_k = k
+                elif k > self._expire_k:
+                    self._expire_k = k
+                    self._expire(k * self.stream_expire_s)
             if self.classifier is not None:                  # collect finished classifications (non-blocking); write closed days
                 self._collect_classes()
                 self._flush_class_counts(day_of(bt))
@@ -1364,6 +1379,16 @@ class Shadow:
                 self.v0_bad.add(pool)
                 self.c["v0_gap_late"] += 1
 
+    def _expire(self, now_bt: int) -> None:
+        self.c["stream_expires"] += 1
+        try:
+            self.engine.expire(now_bt)
+        except Exception as exc:  # noqa: BLE001
+            self.c["expire_errors"] += 1
+            if self.errors:
+                self.errors.log(exc, {"where": "expire", "now_bt": now_bt})
+        self.clock.prune(now_bt - 3 * 3600)
+
     def tick(self, now: Optional[int] = None) -> None:
         now = self._wall() if now is None else now
         if self.last_row_wall is not None and not self.replay and now - self.last_row_wall > SILENCE_S * 1000 and not getattr(self, "_silent", False):
@@ -1377,12 +1402,13 @@ class Shadow:
             self._silent = False
         if self.hw_bt is not None and self.hw_bt - self.last_expire > 600:
             self.last_expire = self.hw_bt
-            try:
-                self.engine.expire(self.hw_bt)
-            except Exception as exc:  # noqa: BLE001
-                if self.errors:
-                    self.errors.log(exc, {"where": "expire"})
-            self.clock.prune(self.hw_bt - 3 * 3600)
+            if not self.stream_expire_s:                     # stream expiry: already done in _on_clock, at stream instants
+                try:
+                    self.engine.expire(self.hw_bt)
+                except Exception as exc:  # noqa: BLE001
+                    if self.errors:
+                        self.errors.log(exc, {"where": "expire"})
+                self.clock.prune(self.hw_bt - 3 * 3600)
             self.sink.compress_closed(now / 1000)
         if now / 1000 - self.last_hb >= HEARTBEAT_S:
             self.last_hb = now / 1000
@@ -1751,18 +1777,51 @@ class Stop:
     flag = False
 
 
+def bootstrap_plan(out_dir: str | Path, now_ms_: int, bootstrap_hours: int, max_hours: int = MAX_BOOTSTRAP_HOURS) -> tuple[list[str], dict]:
+    """#503 item 7: the bootstrap hours of a (re)start. The engine keeps creator histories since its first row and the create + bonding
+    record of every mint (bc_*, has_create, cr_prev_*, cr_known_out, nar_*, cr_sold/cr_bought): a restart that rebuilds from only the
+    last `bootstrap_hours` decides on different feature vectors than the run it replaces (job #513: same decision rows, different md5).
+    So the first start writes the anchor hour (now - bootstrap_hours) to <out_dir>/ANCHOR_FILE and every later start replays from that
+    anchor to the current hour, decisions off. An anchor older than max_hours refuses the start (Refused): a manager resets it by moving
+    the file away, which starts a new run with a new history (disclosed in its c1nf_start record)."""
+    f = Path(out_dir) / ANCHOR_FILE
+    now_h = hour_of(now_ms_ / 1000)
+    first = not f.is_file()
+    if first:
+        anchor = hour_of(now_ms_ / 1000 - 3600 * bootstrap_hours)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps({"anchor_hour": anchor, "written_ms": int(now_ms_), "bootstrap_hours": int(bootstrap_hours)}) + "\n")
+        os.replace(tmp, f)
+    else:
+        anchor = str(json.loads(f.read_text())["anchor_hour"])
+    a = datetime.strptime(anchor, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+    n = int((datetime.strptime(now_h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc) - a).total_seconds() // 3600) + 1
+    if n < 1:
+        raise Refused(f"{f}: anchor {anchor} is after the current hour {now_h}")
+    if n > max_hours:
+        raise Refused(f"{f}: anchor {anchor} needs {n} bootstrap hours > {max_hours}; a manager resets the anchor (a new run)")
+    return replay_hours(anchor, n), {"anchor_hour": anchor, "first_start": first, "bootstrap_hours_n": n}
+
+
 def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any) -> int:
     out = Path(args.out_dir)
     errors = ErrorLog(out / "errors.log")
     oracle = load_oracle(args.pick_oracle)
     seal_ms = None if args.no_seal else int(datetime.strptime(args.seal_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
     sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn(), event_v=True),
-                errors=errors, v_source=V_SOURCE_LIVE,
+                errors=errors, v_source=V_SOURCE_LIVE, stream_expire_s=EXPIRE_S,
                 classifier=load_oracle(args.synthetic_classifier), classify_timeout_s=CLASSIFY_TIMEOUT_S)
+    try:
+        hrs, plan = bootstrap_plan(out, now_ms(), args.bootstrap_hours, args.max_bootstrap_hours)
+    except Refused as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
     tail = TipTail(args.tip_dir)
     gaps = GapTail(args.gaps_file) if args.gaps_file else None
     sh.emit({"type": "c1nf_start", "mode": "live", "tip_dir": str(args.tip_dir), "model_shas": models.shas, "seal_start_ms": seal_ms,
-             "oracle": bool(oracle), "v_source": V_SOURCE_LIVE, "bootstrap_hours": args.bootstrap_hours, "max_seconds": args.max_seconds})
+             "oracle": bool(oracle), "v_source": V_SOURCE_LIVE, "bootstrap_hours": args.bootstrap_hours, "max_seconds": args.max_seconds,
+             "bootstrap_anchor": plan["anchor_hour"], "bootstrap_first_start": plan["first_start"], "bootstrap_hours_n": plan["bootstrap_hours_n"],
+             "stream_expire_s": EXPIRE_S})
 
     def on_sig(*_a: Any) -> None:
         Stop.flag = True
@@ -1773,8 +1832,9 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
     now = now_ms()
     # bootstrap: rebuild engine state from the last hours with decisions off, then resume at the next whole minute
     sh.decide_enabled = False
-    hrs = [hour_of(now / 1000 - 3600 * i) for i in range(args.bootstrap_hours, -1, -1)]
-    for batch in tail.bootstrap(hrs, args.archive_dir):
+    for batch in tail.bootstrap(hrs, args.archive_dir):     # from the anchor (bootstrap_plan), not now - bootstrap_hours
+        if not batch:
+            sh.c["bootstrap_empty_hours"] += 1
         for r in batch:
             sh.feed(r, r["_k"])
         if Stop.flag:
@@ -1828,7 +1888,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ledger-root", help="tools/c1nf_wallet_ledger.py output root (asof/asof-<day>)")
     p.add_argument("--archive-dir", action="append", default=[], help="extra dir with <kind>-<hour>.jsonl.zst for the bootstrap")
     p.add_argument("--gaps-file", default=None, help="the tip follower's gaps.jsonl")
-    p.add_argument("--bootstrap-hours", type=int, default=26)
+    p.add_argument("--bootstrap-hours", type=int, default=26, help="first start only: the anchor is now - this; later starts replay from the anchor")
+    p.add_argument("--max-bootstrap-hours", type=int, default=MAX_BOOTSTRAP_HOURS)
     p.add_argument("--poll-s", type=float, default=0.5)
     p.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke runs)")
     p.add_argument("--pick-oracle", default=None, help="module:callable, oracle(mint) -> bool (True = CAP-PICK pick); absent = fail closed in the window")

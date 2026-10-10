@@ -6,6 +6,7 @@ import hashlib
 import json
 
 import numpy as np
+import pytest
 
 from tools import c1nf_shadow as cs
 from tools import c1nf_vmode_parity as vp
@@ -168,3 +169,75 @@ def test_decision_row_md5_covers_every_decision_row_and_matches_across_modes():
     tap.add(60, "P2", "h2")
     tap.add(60, "P1", "h1")
     assert tap.summary() == {"n": 2, "md5": hashlib.md5(b"60,P1,h1\n60,P2,h2\n").hexdigest()}  # sorted within one T
+
+
+# ---- #503 item 7 after job #513: the restart rule, the feature diff, stream-clock expiry, the run_live anchor ----------------------------------
+def test_restart_passes_only_when_every_difference_is_on_a_held_mint_and_rows_are_equal():
+    a = [{"decision_T_ms": 1, "mint": "H", "x": 1}, {"decision_T_ms": 2, "mint": "A", "x": 1}]
+    rows_ok = vp.compare_rows({"n": 3, "md5": "x"}, {"n": 3, "md5": "x"})
+    good_id = {**vp.compare(a, a), "decision_rows": rows_ok}
+    held_only = {**vp.compare(a, [a[1]], held=["H"]), "decision_rows": rows_ok}
+    assert held_only["n_diff"] == held_only["n_diff_mint_held"] == 1
+    assert vp.verdict({"identity": good_id, "restart": held_only}) == (vp.EXIT_PASS, [])
+    off_held = {**vp.compare(a, [a[0], {**a[1], "x": 2}], held=["H"]), "decision_rows": rows_ok}     # same (T, mint), other features
+    rc, fails = vp.verdict({"identity": good_id, "restart": off_held})
+    assert rc == vp.EXIT_FAIL and fails[0].startswith("restart: picks differ off the held mints")
+    rows_bad = {**vp.compare(a, a), "decision_rows": vp.compare_rows({"n": 3, "md5": "x"}, {"n": 3, "md5": "y"})}
+    rc, fails = vp.verdict({"identity": good_id, "restart": rows_bad})
+    assert rc == vp.EXIT_FAIL and fails == ["restart: decision rows differ (n 3 / 3)"]
+    rc, _ = vp.verdict({"identity": good_id, "restart": {**rows_bad, "decision_rows": rows_ok}, "restart_window": off_held})
+    assert rc == vp.EXIT_PASS                                                                # the window diagnostic never decides
+
+
+def test_feature_diff_names_the_features_and_the_cause_class():
+    from tools.c1nf_features import FIDX, N_FEATURES
+    base = np.full(N_FEATURES, np.nan, dtype=np.float32)
+    base[FIDX["v5"]] = 1.0
+    other = base.copy()
+    other[FIDX["cr_prev_creates"]] = 3.0
+    other[FIDX["bc_n_trades"]] = 9.0
+    a = {(60, "P1"): base.tobytes(), (60, "P2"): other.tobytes(), (60, "P3"): other.tobytes(), (120, "P4"): base.tobytes()}
+    b = {(60, "P1"): base.tobytes(), (60, "P2"): base.tobytes(), (60, "P3"): base.tobytes(), (180, "P5"): base.tobytes()}
+    d = vp.feature_diff(a, b, {"P2": (50, None), "P3": (500, 40)}, rebuild_from_s=100)
+    assert d["rows_compared"] == 3 and d["only_a"] == 1 and d["only_b"] == 1 and d["rows_differ"] == 2 and d["pools_differ"] == 2
+    assert d["features_differ"] == ["bc_n_trades", "cr_prev_creates"] and d["by_feature"]["cr_prev_creates"] == {"rows": 2, "pools": 2}
+    assert d["by_group_rows"] == {"creator_record": 2, "pregrad": 2}
+    assert d["by_cause_rows"] == {"creator_history_before_rebuild": 1, "mint_create_before_rebuild": 1}
+
+
+def _expire_run(batches, **kw):
+    eng = _engine("event")
+    calls = []
+    real = eng.expire
+    eng.expire = lambda now_bt, *a, **k: (calls.append(now_bt), real(now_bt, *a, **k))[1]
+    res = vp.run_rows(eng, _models(), batches, v_source="event", decide_from=None, decide_to=None,
+                      hour_sps={cs.hour_of(BT0): SPS, cs.hour_of(BT0 + 3600): SPS}, stream_expire_s=300, **kw)
+    return res, calls
+
+
+def test_stream_expiry_runs_at_the_same_stream_instants_in_a_restart_from_the_same_anchor():
+    full, c_full = _expire_run(_batches(True), snap_s=BT0 + 15 * 60)
+    rs, c_rs = _expire_run(_batches(True), restart_s=BT0 + 15 * 60)                       # bootstrap from the anchor, decisions off
+    assert c_full and c_full == c_rs and all(t % 300 == 0 for t in c_full)
+    assert full["counters"]["stream_expires"] == len(c_full) == rs["counters"]["stream_expires"]
+    assert vp.compare_rows(full["decision_rows"]["from_split"], rs["decision_rows"])["equal"]
+    sh = cs.Shadow(_engine("event"), _models(), cs.MemorySink(), replay=True, seal_start_ms=None, v_source="event")
+    assert sh.stream_expire_s is None                                                        # replay default: no stream expiry, as before
+
+
+def test_bootstrap_plan_writes_the_anchor_once_and_restarts_replay_from_it(tmp_path):
+    t0 = int(cs.datetime(2026, 10, 11, 12, 30, tzinfo=cs.timezone.utc).timestamp() * 1000)
+    hrs, plan = cs.bootstrap_plan(tmp_path, t0, 26)
+    assert plan == {"anchor_hour": "2026-10-10T10", "first_start": True, "bootstrap_hours_n": 27} and hrs[0] == "2026-10-10T10"
+    assert hrs[-1] == "2026-10-11T12" and len(hrs) == 27                                     # as before: 26 hours back plus the current hour
+    hrs2, plan2 = cs.bootstrap_plan(tmp_path, t0 + 3 * 3600 * 1000, 26)
+    assert plan2 == {"anchor_hour": "2026-10-10T10", "first_start": False, "bootstrap_hours_n": 30} and hrs2[0] == "2026-10-10T10"
+    with pytest.raises(cs.Refused):
+        cs.bootstrap_plan(tmp_path, t0 + 3 * 3600 * 1000, 26, max_hours=29)
+    assert json.loads((tmp_path / cs.ANCHOR_FILE).read_text())["anchor_hour"] == "2026-10-10T10"
+
+
+def test_run_live_bootstraps_from_the_anchor_with_stream_expiry():
+    import inspect
+    src = inspect.getsource(cs.run_live)
+    assert "bootstrap_plan(" in src and "stream_expire_s=EXPIRE_S" in src and "range(args.bootstrap_hours" not in src

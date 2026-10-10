@@ -7,11 +7,16 @@
             day must be equal and non-empty: md5 of the canonical pick lines. The md5 over every decision row's (T, pool, feature_hash) must be
             equal and non-empty as well. This ties DEC-026 item 14(a) (shadow against the frozen scorer, const mode) to the live mode.
   restart   DEC-026 item 14(b) in event mode on the same injected tape: the uninterrupted event run against a run restarted at
-            --restart-at, whose engine is rebuilt from the --bootstrap-hours before it with decisions off (Shadow.resume_after_bootstrap, as
-            run_live does). md5 of the picks with decision_T >= the restart (equal and non-empty), and every differing pick with whether the
-            uninterrupted run's book held its mint at the restart (a restart drops the book: the expected difference class). The decision-row
-            md5 from the restart is printed for both runs but does not decide the exit: a pool that opened before the bootstrap start is not in
-            the restarted engine.
+            --restart-at, whose engine is rebuilt with decisions off (Shadow.resume_after_bootstrap, as run_live does). --restart-mode
+            anchored (the fix, as run_live's bootstrap_plan): the rebuild replays from the uninterrupted run's first hour (the run's anchor).
+            window (job #513's shape): from the --bootstrap-hours before the restart only. both: anchored decides, window is reported as
+            `restart_window` (diagnostic). The restart passes when the picks with decision_T >= the restart are non-empty and every differing
+            pick is on a mint the uninterrupted run's book held at the restart (a restart drops the book: the expected class), and the
+            decision-row md5 from the restart is equal and non-empty. Each restart comparison carries `feature_diff`: which of the 107
+            features differ on decision rows from the restart, on how many rows and pools, by group, and by cause class (the mint's create
+            or the creator's first create / graduation before the rebuild's first hour). Names and counts only, never a value.
+            Job #513 (window, 26 h): 223,998 decision rows on both sides, md5s differ, 260 non-held pick differences.
+            --expire-s (default cs.EXPIRE_S, as run_live): engine.expire on the stream clock in every run (Shadow stream_expire_s); 0 = never.
 
 --ledger-root is REQUIRED: the #502 as-of root (tools/c1nf_wallet_ledger.py output, docs/runbooks/c1nf-wallet-ledger.md) holding
 asof/asof-<--day>, built from exploration days only. Without it every decision row is wallet_ok=False (`no_wallet_ledger`), nothing is picked,
@@ -74,14 +79,20 @@ class DecisionTap:
     whatever its wallet_ok, stage 1 or pick. Lines are "T,pool,feature_hash\\n" (T in seconds, feature_hash = sha256 of the float32 vector as
     on a pick); the rows of one T are hashed sorted. With split_s, a second md5 covers the rows with T >= split_s."""
 
-    def __init__(self, split_s: Optional[int] = None) -> None:
+    def __init__(self, split_s: Optional[int] = None, keep: bool = False) -> None:
         self.split_s = split_s
+        self.keep = keep and split_s is not None
+        self.vecs: dict[tuple[int, str], bytes] = {}        # keep: (T, pool) -> float32 vector bytes, T >= split_s (diagnostic, in memory)
+        self.info: dict[str, tuple] = {}                     # keep: pool -> (mint create bt, creator's first create / graduation bt)
+        self._eng: Any = None
         self._all, self._tail = hashlib.md5(), hashlib.md5()
         self.n = self.n_tail = 0
         self._T: Optional[int] = None
         self._buf: list[str] = []
 
-    def wrap(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+    def wrap(self, fn: Callable[..., Any], engine: Any = None) -> Callable[..., Any]:
+        self._eng = engine
+
         def features_at(pool: str, T: int, sd: Any = None) -> Any:
             res = fn(pool, T, sd)
             try:
@@ -89,7 +100,12 @@ class DecisionTap:
             except Exception:  # noqa: BLE001 - the shadow unpacks it again and counts feature_errors
                 return res
             if f is not None:
-                self.add(T, pool, cs.feature_hash(np.asarray(f.vec).astype(np.float32)))
+                v32 = np.asarray(f.vec).astype(np.float32)
+                self.add(T, pool, cs.feature_hash(v32))
+                if self.keep and T >= self.split_s:
+                    self.vecs[(int(T), pool)] = v32.tobytes()
+                    if pool not in self.info:
+                        self.info[pool] = pool_history(self._eng, f.mint)
             return res
 
         return features_at
@@ -116,6 +132,53 @@ class DecisionTap:
         if self.split_s is not None:
             out["from_split"] = {"n": self.n_tail, "md5": self._tail.hexdigest()}
         return out
+
+
+def pool_history(eng: Any, mint: Optional[str]) -> tuple:
+    """(create bt of the pool's mint or None, earliest create or graduation bt of its creator or None), from the engine's long-memory
+    tables at the pool's first decision row from the split. Engine internals, read only; a stub without them gives (None, None)."""
+    info = getattr(eng, "_info", {}).get(mint) if mint else None
+    if info is None or not getattr(info, "has_create", False):
+        return (None, None)
+    cr = info.creator
+    firsts = [a[0] for a in (getattr(eng, "_by_cr", {}).get(cr), getattr(eng, "_g_cr", {}).get(cr)) if a]
+    return (int(info.cbt), int(min(firsts)) if firsts else None)
+
+
+def feature_diff(a: dict, b: dict, a_info: dict, rebuild_from_s: int) -> dict:
+    """Decision rows from the restart, uninterrupted (a) against restarted (b): which features differ (bitwise float32, NaN == NaN), on how
+    many rows and distinct pools, by feature group, and by cause class of the pool in the uninterrupted engine: `mint_create_before_rebuild`
+    (its mint's create is older than the rebuild's first hour, or was never seen), `creator_history_before_rebuild` (its creator created or
+    graduated a mint before then), else `other`. Names and counts only."""
+    from tools.c1nf_features import FEATURE_NAMES, feature_group
+
+    by_f: dict[str, list] = {}
+    cause: dict[str, int] = {}
+    pools: set[str] = set()
+    n_diff = 0
+    for k in sorted(set(a) & set(b)):
+        if a[k] == b[k]:
+            continue
+        va, vb = np.frombuffer(a[k], dtype=np.float32), np.frombuffer(b[k], dtype=np.float32)
+        bad = np.flatnonzero(~((va == vb) | (np.isnan(va) & np.isnan(vb))))
+        if not len(bad):
+            continue
+        n_diff += 1
+        pools.add(k[1])
+        for i in bad:
+            e = by_f.setdefault(FEATURE_NAMES[i], [0, set()])
+            e[0] += 1
+            e[1].add(k[1])
+        cbt, crf = a_info.get(k[1], (None, None))
+        c = ("mint_create_before_rebuild" if (cbt is None or cbt < rebuild_from_s) else
+             "creator_history_before_rebuild" if (crf is not None and crf < rebuild_from_s) else "other")
+        cause[c] = cause.get(c, 0) + 1
+    groups: dict[str, int] = {}
+    for name in by_f:
+        groups[feature_group(name)] = groups.get(feature_group(name), 0) + by_f[name][0]
+    return {"rows_compared": len(set(a) & set(b)), "only_a": len(set(a) - set(b)), "only_b": len(set(b) - set(a)), "rows_differ": n_diff,
+            "pools_differ": len(pools), "features_differ": sorted(by_f), "by_feature": {n: {"rows": e[0], "pools": len(e[1])} for n, e in sorted(by_f.items())},
+            "by_group_rows": dict(sorted(groups.items())), "by_cause_rows": dict(sorted(cause.items())), "rebuild_from_s": rebuild_from_s}
 
 
 def canon_line(p: dict) -> str:
@@ -149,7 +212,9 @@ def compare_rows(a: dict, b: dict) -> dict:
 
 
 def verdict(out: dict) -> tuple[int, list[str]]:
-    """EXIT_PASS only when every pick comparison present is equal AND non-empty, and the identity decision rows are equal and non-empty."""
+    """EXIT_PASS only when the identity picks are equal AND non-empty with equal, non-empty decision rows, and the restart picks are non-empty
+    with every difference on a mint held at the restart (n_diff == n_diff_mint_held) and, when present, equal non-empty decision rows from
+    the restart. `restart_window` (diagnostic) never decides."""
     fails: list[str] = []
     for k in ("identity", "restart"):
         c = out.get(k)
@@ -157,25 +222,33 @@ def verdict(out: dict) -> tuple[int, list[str]]:
             continue
         if not c["nonempty"]:
             fails.append(f"{k}: empty picks (n {c['a']['n']} / {c['b']['n']})")
-        elif not c["equal"]:
+        elif k == "identity" and not c["equal"]:
             fails.append(f"{k}: picks differ (n_diff {c['n_diff']})")
+        elif k == "restart" and c["n_diff"] != c["n_diff_mint_held"]:
+            fails.append(f"{k}: picks differ off the held mints (n_diff {c['n_diff']}, held {c['n_diff_mint_held']})")
     dr = (out.get("identity") or {}).get("decision_rows")
     if dr is not None and not (dr["nonempty"] and dr["equal"]):
         fails.append(f"identity: decision rows {'differ' if dr['nonempty'] else 'empty'} (n {dr['a']['n']} / {dr['b']['n']})")
+    rs = out.get("restart")
+    if rs is not None and rs["nonempty"] and rs.get("decision_rows") is not None and not (rs["decision_rows"]["nonempty"] and rs["decision_rows"]["equal"]):
+        rd = rs["decision_rows"]
+        fails.append(f"restart: decision rows {'differ' if rd['nonempty'] else 'empty'} (n {rd['a']['n']} / {rd['b']['n']})")
     if not any(k in out for k in ("identity", "restart")):
         fails.append("nothing compared")
     return (EXIT_FAIL if fails else EXIT_PASS), fails
 
 
 def run_rows(engine: Any, models: cs.ModelSet, batches: Iterable[Sequence[dict]], *, v_source: str, decide_from: Optional[int],
-             decide_to: Optional[int], hour_sps: Optional[dict] = None, restart_s: Optional[int] = None, snap_s: Optional[int] = None) -> dict:
+             decide_to: Optional[int], hour_sps: Optional[dict] = None, restart_s: Optional[int] = None, snap_s: Optional[int] = None,
+             stream_expire_s: Optional[int] = None, keep_vectors: bool = False) -> dict:
     """One replay pass. restart_s: decisions are off until the first row with block_time >= restart_s, then resume_after_bootstrap() (the
     live restart path). snap_s: the mints the book holds at that instant (re-entry not yet allowed) are returned as held_at_snap, and the
     decision-row md5 from snap_s on is kept as well."""
-    tap = DecisionTap(split_s=snap_s)
-    engine.features_at = tap.wrap(engine.features_at)
+    tap = DecisionTap(split_s=snap_s, keep=keep_vectors)
+    engine.features_at = tap.wrap(engine.features_at, engine)
     sink = PicksSink()
-    sh = cs.Shadow(engine, models, sink, replay=True, seal_start_ms=None, decide_from=decide_from, decide_to=decide_to, v_source=v_source)
+    sh = cs.Shadow(engine, models, sink, replay=True, seal_start_ms=None, decide_from=decide_from, decide_to=decide_to, v_source=v_source,
+                   stream_expire_s=stream_expire_s)
     sh.clock.hour_sps.update(hour_sps or {})
     if restart_s is not None:
         sh.decide_enabled = False
@@ -193,8 +266,10 @@ def run_rows(engine: Any, models: cs.ModelSet, batches: Iterable[Sequence[dict]]
     sh.finish("replay_end")
     health = engine.health() if hasattr(engine, "health") else {}
     rows = tap.summary()
-    counters = {k: int(sh.c[k]) for k in COUNTERS}
-    return {"picks": sink.of("c1nf_pick"), "held_at_snap": held, "counters": counters, "decision_rows": rows,
+    counters = {k: int(sh.c[k]) for k in COUNTERS + ("stream_expires", "expire_errors")}
+    vecs, info = tap.vecs, tap.info
+    tap._eng = None
+    return {"picks": sink.of("c1nf_pick"), "held_at_snap": held, "counters": counters, "decision_rows": rows, "vectors": vecs, "pool_info": info,
             "tap_matches_counter": rows["n"] == counters["decision_rows"], "universe": dict(sh.universe.counts),
             "engine_pool_rejects": health.get("pool_rejects"), "outcomes_dropped": sink.outcomes_dropped,
             "seconds": round(time.monotonic() - t0, 1)}
@@ -247,6 +322,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--model-sha256", default=None)
     ap.add_argument("--ledger-root", default=None, help="REQUIRED: #502 as-of root with asof/asof-<day> (exploration days only)")
     ap.add_argument("--what", choices=("all", "identity", "restart"), default="all")
+    ap.add_argument("--restart-mode", choices=("anchored", "window", "both"), default="anchored",
+                    help="anchored: rebuild from --tape-from (run_live's anchor, the fix); window: the --bootstrap-hours only (#513); both: anchored decides")
+    ap.add_argument("--expire-s", type=int, default=cs.EXPIRE_S, help="stream-clock engine.expire in every run, as run_live; 0 = never")
     ap.add_argument("--out-json", default=None)
     args = ap.parse_args(argv)
     try:
@@ -275,30 +353,45 @@ def main(argv: Optional[list[str]] = None) -> int:
         ledgers[name] = cs.AsofDirLedger(args.ledger_root)
         return cs.build_engine(ledgers[name], v_source=v_source)
 
+    exp_s = args.expire_s or None
     out: dict[str, Any] = {"day": args.day, "tape_from": full[0], "restart_at": args.restart_at, "bootstrap_from": boot[0], "model": model_kind,
+                           "restart_mode": args.restart_mode, "stream_expire_s": exp_s,
                            "ledger_root": str(args.ledger_root), "pools_v0": len(pool_v), "runs": {}}
     ev = None
     if args.what in ("all", "identity"):
         const = run_rows(engine("const", cs.V_SOURCE_REPLAY), models, cs.tape_rows(args.tape, full, pool_v, {}, event_v=False),
-                         v_source=cs.V_SOURCE_REPLAY, decide_from=dec_from, decide_to=dec_to, hour_sps=sps)
+                         v_source=cs.V_SOURCE_REPLAY, decide_from=dec_from, decide_to=dec_to, hour_sps=sps, stream_expire_s=exp_s)
+        const.pop("vectors", None)
         gc.collect()
     if args.what in ("all", "identity", "restart"):
         ev = run_rows(engine("event", cs.V_SOURCE_LIVE), models, cs.tape_rows(args.tape, full, pool_v, {}, event_v=True),
-                      v_source=cs.V_SOURCE_LIVE, decide_from=dec_from, decide_to=dec_to, hour_sps=sps, snap_s=R_s)
+                      v_source=cs.V_SOURCE_LIVE, decide_from=dec_from, decide_to=dec_to, hour_sps=sps, snap_s=R_s, stream_expire_s=exp_s,
+                      keep_vectors=args.what in ("all", "restart"))
         gc.collect()
     if args.what in ("all", "identity"):
         out["identity"] = compare(const["picks"], ev["picks"])
         out["identity"]["decision_rows"] = compare_rows(const["decision_rows"], {k: ev["decision_rows"][k] for k in ("n", "md5")})
-        out["runs"]["const"] = {k: v for k, v in const.items() if k != "picks"}
+        out["runs"]["const"] = {k: v for k, v in const.items() if k not in ("picks", "pool_info")}
         del const
     if args.what in ("all", "restart"):
-        rs = run_rows(engine("event_restarted", cs.V_SOURCE_LIVE), models, cs.tape_rows(args.tape, boot, pool_v, {}, event_v=True),
-                      v_source=cs.V_SOURCE_LIVE, decide_from=R_s, decide_to=dec_to, hour_sps=sps, restart_s=R_s)
-        out["restart"] = compare(ev["picks"], rs["picks"], from_ms=R_s * 1000, held=ev["held_at_snap"])
-        out["restart"]["held_at_restart"] = len(ev["held_at_snap"] or [])
-        out["restart"]["decision_rows"] = compare_rows(ev["decision_rows"]["from_split"], rs["decision_rows"])  # reported, not in verdict()
-        out["runs"]["event_restarted"] = {k: v for k, v in rs.items() if k != "picks"}
-    out["runs"]["event"] = {k: v for k, v in ev.items() if k not in ("picks", "held_at_snap")}
+        modes = {"anchored": ["anchored"], "window": ["window"], "both": ["window", "anchored"]}[args.restart_mode]
+        for mode in modes:
+            hrs = full if mode == "anchored" else boot
+            name = "event_restarted" if mode == "anchored" else "event_restarted_window"
+            rs = run_rows(engine(name, cs.V_SOURCE_LIVE), models, cs.tape_rows(args.tape, hrs, pool_v, {}, event_v=True),
+                          v_source=cs.V_SOURCE_LIVE, decide_from=R_s, decide_to=dec_to, hour_sps=sps, restart_s=R_s, stream_expire_s=exp_s,
+                          keep_vectors=True)
+            c = compare(ev["picks"], rs["picks"], from_ms=R_s * 1000, held=ev["held_at_snap"])
+            c["mode"], c["rebuild_from"] = mode, hrs[0]
+            c["held_at_restart"] = len(ev["held_at_snap"] or [])
+            c["decision_rows"] = compare_rows(ev["decision_rows"]["from_split"], rs["decision_rows"])
+            c["feature_diff"] = feature_diff(ev["vectors"], rs["vectors"], ev["pool_info"], int(_hour(hrs[0]).timestamp()))
+            key = "restart" if (mode == "anchored" or args.restart_mode == "window") else "restart_window"
+            out[key] = c
+            out["runs"][name] = {k: v for k, v in rs.items() if k not in ("picks", "vectors", "pool_info")}
+            del rs
+            gc.collect()
+    out["runs"]["event"] = {k: v for k, v in ev.items() if k not in ("picks", "held_at_snap", "vectors", "pool_info")}
     for name, led in ledgers.items():
         out["runs"].setdefault(name, {})["ledger_stale"] = int(getattr(led, "stale", 0))
     rc, fails = verdict(out)
