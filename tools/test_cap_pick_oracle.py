@@ -34,7 +34,7 @@ def gate_line(m: str, entered: bool, reason: str | None = None, **extra) -> str:
 
 
 def intent_line(m: str) -> str:
-    return json.dumps({"schema": "forward_paper_intent_v1", "book": "b", "ledger": "ceiling", "mint": m, "creator": "C" * 44,
+    return json.dumps({"schema": "forward_paper_intent_v1", "book": "exp012_migrate_tp50_sl30", "ledger": "ceiling", "mint": m, "creator": "C" * 44,
                        "decision_t_ms": 1, "written_ms": 2, "trigger": "migrate", "score": float(SCORE), "runner_kill": False,
                        "migration_slot": 5, "migration_slot_src": "migrate_tx"}, separators=(",", ":"))
 
@@ -186,7 +186,12 @@ def test_heartbeat_only_when_every_source_is_readable(tmp_path, marker):
     clk2 = Clock()
     n2 = co.run_export([("gate", gate), ("intents", tmp_path / "missing.jsonl")], out2, final_marker=marker, hb_s=1, poll_s=1, max_seconds=5,
                        now_ms=clk2, sleep=clk2.sleep)
-    assert n2["heartbeats_written"] == 0 and n2["source_errors"] > 0  # a lost source never beats: the reader goes stale
+    # a lost source never beats: the reader goes stale. An intents error is not counted (quant-proof E1): no printed count is intents-derived
+    assert n2["heartbeats_written"] == 0 and n2["source_errors"] == 0
+    clk3 = Clock()
+    n3 = co.run_export([("gate", tmp_path / "missing-gate.jsonl")], tmp_path / "picks3.jsonl", final_marker=marker, hb_s=1, poll_s=1,
+                       max_seconds=3, now_ms=clk3, sleep=clk3.sleep)
+    assert n3["heartbeats_written"] == 0 and n3["source_errors"] > 0
     assert [r for r in rows(out2) if "hb" in r] == []
 
 
@@ -556,3 +561,103 @@ def test_tailer_does_not_open_an_unchanged_file_and_refuses_a_non_regular_one(tm
     assert len(t.read_new()[0]) == 1
     with pytest.raises(OSError):
         co.Tailer(tmp_path).read_new()
+
+
+# --- review fixes on #509: frozen book only, scored-row-only False, no intents-derived count, staleness cap ----------------------
+
+
+OTHER_BOOK = "exp012_other_book"
+
+
+def test_rows_of_another_book_are_rejected():
+    a = mint(40)
+    assert co.CAP_PICK_BOOK == "exp012_migrate_tp50_sl30"
+    assert co.extract("gate", gate_line(a, False, book=OTHER_BOOK)) is None
+    assert co.extract("gate", gate_line(a, True, book=OTHER_BOOK)) is None
+    other_intent = intent_line(a).replace('"book":"exp012_migrate_tp50_sl30"', '"book":"%s"' % OTHER_BOOK)
+    assert '"book":"%s"' % OTHER_BOOK in other_intent
+    assert co.extract("intents", other_intent) is None
+    no_book = json.loads(gate_line(a, False))
+    del no_book["book"]
+    assert co.extract("gate", json.dumps(no_book, separators=(",", ":"))) is None
+    # two book keys (one of them the frozen book) are not trusted
+    assert co.extract("gate", gate_line(a, False, nested={"book": OTHER_BOOK})) is None
+    assert co.extract("intents", intent_line(a)[:-1] + ',"x":{"book":"%s"}}' % OTHER_BOOK) is None
+
+
+def test_a_second_books_not_pick_never_answers_false_for_the_frozen_books_pick(tmp_path, marker):
+    a = mint(41)
+    gate = write(tmp_path / "exp012-gate.jsonl", [gate_line(a, False, book=OTHER_BOOK)])
+    out = tmp_path / "picks.jsonl"
+    clk = Clock()
+    n = co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=clk)
+    assert n["decisions_written"] == 0 and n["rejected"] == 1
+    with out.open("a") as fh:
+        fh.write(co.heartbeat_row(clk.t) + "\n")
+    o = co.PickOracle([out], now_ms=clk)
+    assert o(a) is None  # undecided, never False
+    with gate.open("a") as fh:
+        fh.write(gate_line(a, True) + "\n")
+        fh.write(gate_line(a, False, book=OTHER_BOOK) + "\n")
+    co.run_export([("gate", gate)], out, final_marker=marker, once=True, now_ms=clk)
+    with out.open("a") as fh:
+        fh.write(co.heartbeat_row(clk.t) + "\n")
+    assert o(a) is True
+    assert all(r.get("pick") is not False for r in rows(out) if "mint" in r)
+
+
+def test_a_gate_not_pick_needs_a_computed_score():
+    a = mint(42)
+    assert co.extract("gate", gate_line(a, False)) == (a, False)
+    assert co.extract("gate", gate_line(a, False, score=-0.25)) == (a, False)
+    assert co.extract("gate", gate_line(a, False, score=1e-05)) == (a, False)
+    for reason in ("no_features", "no_bond_history", "below_threshold"):
+        assert co.extract("gate", gate_line(a, False, reason=reason, score=None)) is None  # undecided: offline may still pick it
+    assert co.extract("gate", gate_line(a, False, score=float("nan"))) is None
+    assert co.extract("gate", gate_line(a, False, score=float("inf"))) is None
+    no_score = json.loads(gate_line(a, False))
+    del no_score["score"]
+    assert co.extract("gate", json.dumps(no_score, separators=(",", ":"))) is None
+    assert co.extract("gate", gate_line(a, False, score=None, x={"score": 0.5})) is None  # a nested score does not count
+    assert co.extract("gate", gate_line(a, False, x={"score": 0.5})) is None  # two score keys: not trusted
+    assert co.extract("gate", gate_line(a, True, score=None)) == (a, True)  # a pick needs no score (True always refuses)
+
+
+def test_no_printed_count_includes_an_intents_line(tmp_path, marker, capsys):
+    a, b = mint(43), mint(44)
+    gate = write(tmp_path / "g.jsonl", [gate_line(a, True), gate_line(b, False)])
+    intents = write(tmp_path / "i.jsonl", [intent_line(a), arm_line(a), arm_line(b), "junk", intent_line(mint(45))])
+    n1 = co.run_export([("gate", gate)], tmp_path / "p1.jsonl", final_marker=marker, once=True, now_ms=Clock())
+    n2 = co.run_export([("gate", gate), ("intents", intents)], tmp_path / "p2.jsonl", final_marker=marker, once=True, now_ms=Clock())
+    for k in ("lines", "rejected", "source_errors"):
+        assert n1[k] == n2[k], k
+    assert n2["lines"] == 2 and n2["rejected"] == 0
+    with pytest.raises(ValueError):
+        co.run_export([("intents", intents)], tmp_path / "p3.jsonl", final_marker=marker, once=True, now_ms=Clock())
+    assert not (tmp_path / "p3.jsonl").exists()
+    rc = co.main(["export", "--intents", str(intents), "--out", str(tmp_path / "p4.jsonl"), "--final-marker", str(marker), "--once"])
+    assert rc == 2 and not (tmp_path / "p4.jsonl").exists()
+    assert "--intents needs --gate-log" in capsys.readouterr().err
+
+
+def test_from_env_caps_staleness_at_60_s(tmp_path):
+    live = write(tmp_path / "p.jsonl", [co.heartbeat_row(1)])
+    base = {"CAP_PICK_LIVE": str(live), "CAP_PICK_FINAL_MARKER": str(tmp_path / "m")}
+    assert co.from_env(base).stale_s == 60.0
+    for raw, want in (("10", 10.0), ("60", 60.0), ("61", 60.0), ("3600", 60.0), ("inf", 60.0), ("nan", 60.0), ("abc", 60.0), ("", 60.0)):
+        assert co.from_env({**base, "CAP_PICK_STALE_S": raw}).stale_s == want, raw
+
+
+def test_a_nan_staleness_limit_fails_closed(tmp_path):
+    a = mint(46)
+    clk = Clock()
+    live = picks_file(tmp_path / "p.jsonl", [(a, False)], hb_t=clk.t)
+    assert co.PickOracle([live], now_ms=clk)(a) is False
+    assert co.PickOracle([live], now_ms=clk, stale_s=float("nan"))(a) is None
+
+
+def test_wrapper_creates_nothing_before_the_final_gate(tmp_path):
+    src = (REPO / "scripts/research/cap-pick-oracle.sh").read_text()
+    assert "mkdir" not in "".join(ln for ln in src.splitlines(keepends=True) if not ln.lstrip().startswith("#"))
+    assert "ProtectHome=tmpfs" in src and "/srv/mal-h5-shadow/cap-pick/picks.jsonl" in src
+    assert "the readers use the same path" not in src and "pick_file points at it" not in src
