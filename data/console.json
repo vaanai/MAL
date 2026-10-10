@@ -1,8 +1,22 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T14:15:00Z",
+ "updated_utc": "2026-10-10T18:11:21Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "c1nf-soak-oom-1010",
+   "kind": "other",
+   "title": "C1-NF shadow soak stopped: ran out of memory after 2 h 55 m (1.9 GB cap); memory fix in progress before the 24 h soak restarts",
+   "detail": "Job #608 (operations-only) grew about 400 MB/h of program memory, in step with the number of pools it tracks (about 210 new pools/h since event-V started at 13:17Z). No trading was involved and no result was read. A code audit plus a memory replay on September exploration data is finding the cause and the steady-state size; the 24 h soak (DEC-026 item 15) restarts on a fixed, reviewed head.",
+   "atUtc": "2026-10-10T18:06:01Z"
+  },
+  {
+   "id": "tipfollower-p7-pass-1010",
+   "kind": "other",
+   "title": "Event-V feed accepted: the corrected price-law check passed on a pre-declared hour (sells 429/429, buys 183/183)",
+   "detail": "Window 15:00-16:00Z, declared at 14:40Z before it started; checked once after it closed (job #598, 612 transactions, 612 credits). 0 unresolved prints, 0 feed mismatches or errors, no new feed gaps. The feed now counts. Separate finding from the same run: the fee-tier check (line 2) fails on buys for both formal reads (139/571 = 24%, need 90%); sells pass (91%). Most misses (387 of 432) are exact-input buys; the cause is being checked on refetched transactions, and any amendment is written before any read data exists (deadline 10-16 00:00Z).",
+   "atUtc": "2026-10-10T16:10:46Z"
+  },
   {
    "id": "tipfollower-p7-fail-1010",
    "kind": "other",
@@ -576,6 +590,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261010-1811",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T18:11:21Z",
+   "text": "10-10 18:11Z: Event-V feed ACCEPTED: the corrected price-law check passed on the hour declared in advance, 15:00-16:00Z (sells 429/429, buys 183/183; job #598). Same run: the fee-tier check fails on buys for both formal reads (24% vs 90% needed); an amendment is due before 10-16 00:00Z, written before any read data exists. C1-NF shadow soak #608 hit its 1.9 GB memory cap after 2 h 55 m (about 400 MB/h growth, tracking new pools); the fix is being diagnosed, and the 24 h soak restarts on a fixed head. Merged today after review: the three EXP-025 look tools (#574, #575, #577) and the shadow memory fixes (#571, #576)."
+  },
   {
    "id": "s-20261010-1040",
    "from": "claude",
