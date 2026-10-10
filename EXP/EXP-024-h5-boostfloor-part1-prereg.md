@@ -745,7 +745,7 @@ This read's seal end states, and quant-proof's ruling that Amendment 4 item D1 l
 
 Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the repo at main `742d7c9` (with #476 merged as `42c1e41`, #562 as `0ef32e2` and #566 as `737c307`), the MiScusi records of jobs #538, #546 and #551, and the E0 record files those jobs wrote on exploration day 2026-09-20. It records what section 10 (P3, P4) and section 12 require. It changes no rule, parameter, window, leg, threshold or refusal.
 
-**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Every blob in A is also unchanged on main `b63555b` (merged into this branch; checked 2026-10-10T13:34Z). Items D (the forward vmap) and E (`parse_failed` hours) record the manager's decisions, declared before any October data is read.
+**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Every blob in A is also unchanged on main `b63555b` (merged into this branch; checked 2026-10-10T13:34Z) and on main `dbf2780`, which adds #568 (merged into this branch; `git rev-parse origin/main:<path>` equals each A blob for all eight keys, and `git diff --name-status dbf2780^ dbf2780` lists only the two new files `tools/h5_forward_vmap.py` and `tools/test_h5_forward_vmap.py`; checked 2026-10-10T13:55Z). Items D (the forward vmap) and E (`parse_failed` hours) record the manager's decisions, declared before any October data is read.
 
 **What would change a pin.** The pins are the eight blobs of the A line.
 - A change to the read tool, for example to apply item E in code, changes the `read_tool` blob. That needs a new A line, a P4.2 E0 re-run at the new blob, and an amendment merged before 2026-10-16T00:00Z. This amendment makes no such change: E is applied from P6's counts.
@@ -809,37 +809,60 @@ Each link is the manager's merge comment on that PR, which records quant-proof's
 **What the extractor uses it for.** In forward mode, `--vmap` does one thing: it chooses the canonical pool, which is the first V-range or null-V pool after `complete` (#566). The value is copied into `meta.v`. It is not an Am.1 V0 source (`VMAP_ROLE`). The read tool uses it only in P5 fetch planning and `classify` (`VSources.vmap_fallback`), never in `precount` or `look`.
 
 **The manager's choice (2026-10-10).** The forward vmap is Am.1's first source. Every PumpSwap pool with a print in the extract's hours gets one entry:
-- the joined forward-1002ev `virtual_quote_reserves` at that pool's **first print** (a PRE-trade value);
-- **null** where the join gives that print no V: the fallback list, a refused, bad or unwalked ev hour, or an ev row without V.
+- the joined forward-1002ev `virtual_quote_reserves` at that pool's **first print** (a PRE-trade value). The first print is the pool's earliest PumpSwap row in forward-1002's 146 Look 1 hours [2026-10-09T23, 2026-10-16T01), in the order the extractor gives a path. It is the extractor's s0 print except for a pool that printed before its mint's `complete`;
+- **null** where the join gives that print no V: the fallback list, a refused, bad or unwalked ev hour, an ev row without V, or two ev rows that give the print different V (`null_ev_conflict`); also a first print with no (slot, signature, event_index) key (`null_first_print_unkeyed`);
+- **null** where the first print is uncertain (`null_first_print_uncertain`): the pool is first seen in a forward-1002 hour that is not usable, stops on a read error or holds an unreadable line, or in the hour right after such an hour; or a row of the pool has no integer slot. A pool first seen when neither its own hour nor the hour before it is such an hour keeps its V, because the extractor's hole rule already drops a mint whose migration hour, or the next hour, is unusable.
 
 Null-V0 pools stay in, per #566: `load_vmap` keeps a null as V-unknown, the pool reaches meta with `v` null, and the read tool resolves it by the Am.1 order, else by the section 4 missing-V rule. A known V outside [17.5, 17.7] SOL is dropped, as before.
 
-**Does main `742d7c9` support it? Not end to end.**
+**Did main `742d7c9` support it? Not end to end. #568 adds the missing tool.**
 - The extractor reads a static file shaped `{"v": {pool: lamports|null}}` (`load_vmap`).
 - `forward_v_join join --emit v` writes the V fields per matched row, keyed by (slot, signature, event_index), plus the fallback list. It writes no per-pool map.
-- No tool on main reduces the join output to `{pool: V at the pool's first print | null}`.
+- No tool on main `742d7c9` reduces the join output to `{pool: V at the pool's first print | null}`. `tools/h5_forward_vmap.py` (#568, below) does.
 
-**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **The producer (pending merge).** #568, `claude/h5-forward-vmap`, open, head `8c5e37f30dbc0200815899a3e038ff1bcd9145c4`. It adds two new files, `tools/h5_forward_vmap.py` (blob `49c40e7a9776c5886c5dd7ff7f2570e227d29d2f` at that head) and `tools/test_h5_forward_vmap.py` (`8ce3f41c453a6dfa12bd28768f40672a6ba21e2c`), and edits no pinned file. Its mode `ev` writes the map chosen above. Both blobs are pending merge (#568 is being revised after quant-proof CHANGES; the manager fills the merged blobs before #567 merges). The map's sha256 is recorded in the P6 precount amendment. The producer is not an `integrity()` key, so the A line does not change.
+**So, what is used: the map that #568's producer writes.** The forward extract runs with the chosen vmap from a small, outcome-blind producer. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **The producer (merged).** #568, `claude/h5-forward-vmap`, merge commit `dbf27806a54eb04c3a09faeee364d356b670011c` (`dbf2780`). It adds two new files and edits no pinned file: `tools/h5_forward_vmap.py`, blob `55bcd9b023182d04bc083b9eeebda65a1786a710`, and `tools/test_h5_forward_vmap.py`, blob `3a8fb010808da9f7878a77f1d1e539e4fb86040c` (`git rev-parse origin/main:<path>`, 2026-10-10T13:55Z). Its mode `ev` writes the map chosen above. Both modes refuse before opening anything unless the EXP-012 FINAL marker is in the external FINAL ledger. `ev` then refuses unless:
+- `--vjoin` is named `vjoin` (`p5/vjoin`), so that the line A check below reads the P5 dir's own `cross_source.json`;
+- `p5/cross_source.json`, if it exists, records `line_a_pass: true` (before P5 runs the file does not exist, and `ev` runs);
+- `join-report.json` is the join of [2026-10-09T23, 2026-10-16T01) on `/data/mal/blocks/forward-1002`, lists exactly those 146 hours, and records every decoder pin ok;
+- every `v-<hour>` file is for a usable hour and hashes to the report's sha256, no refused hour has one, and no other `v-*` file is in the dir.
+
+The map's sha256 is recorded in the P6 precount amendment. The producer is not an `integrity()` key, so the A line does not change.
 
 **If line A fails [the manager's declared choice, 2026-10-10T13:43Z, before any forward-1002/forward-1002ev row is read].** Am.1 then does not use forward-1002ev for Look 1, so the `ev` map is not used either.
 
-**(a) The fallback vmap.** It is #568's `gettx` mode (`h5_forward_vmap gettx`). Per pool, it takes the P5 `getTransaction` record of the pool's first print (Am.1 source 2, accepted by the rule of `boostfloor_read.load_gettx` plus a pool check), then `account_v0.json` (source 3), then null. There is no all-null map. At #568 head `8c5e37f` the mode refuses unless `p5/cross_source.json` records `line_a_pass: false`, `gettx_v.jsonl` hashes to the sha256 that file recorded, and `account_v0.json` exists; mode `ev` refuses once line A has failed.
+**(a) The fallback vmap.** It is #568's `gettx` mode (`h5_forward_vmap gettx`). Per pool, it takes:
+1. **source 2:** the P5 `getTransaction` record of the pool's first print, accepted by the rule of `boostfloor_read.load_gettx` (status ok, `fields_equal` true, an integer `virtual_quote_reserves`, and the record's content key equal to the tape row's) plus two checks `load_gettx` does not make: the decode's pool equals the pool, and exactly one record has the print's (slot, signature, event_index) key (a print with two records is rejected, counted as `gettx_record_rejected`);
+2. else **source 3:** the pool's integer V0 in `account_v0.json`;
+3. else **null** (`null_no_source`).
+
+A pool whose first print is uncertain (see above) skips source 2 and still takes source 3, which is the pool's V0 and not a print's V; if it has none, it is null (`null_first_print_uncertain`). There is no all-null map. At main `dbf2780` the mode refuses, after the FINAL check and before it reads a base row, unless `p5/cross_source.json` exists and records `line_a_pass: false` (`true` refuses, and so does a file with no `line_a_pass`), `p5/gettx_v.jsonl` exists and hashes to the `gettx_sha256` that file recorded, and `p5/account_v0.json` exists. Mode `ev` refuses once `p5/cross_source.json` exists and does not record `line_a_pass: true`, so it refuses after line A has failed.
 
 **(b) The order if line A fails: one fixed pass, no loop.**
 1. `h5_forward_vmap gettx` on the original P5 dir;
 2. re-extract into a new dir E2;
-3. re-run `boostfloor_inputs` P5's s0 fetch and `account` on E2 into a new P5 dir P5b. Line A is not judged again: ev is already out;
+3. re-run `boostfloor_inputs` P5's s0 fetch and `account` on E2 into a new P5 dir P5b. Line A is not judged again: ev is already out (see (b3));
 4. `h5_forward_vmap gettx` on P5b;
 5. re-extract into E3;
 6. classify and P6 on E3.
 
 Each re-extract runs with the map just written and job #546's E0 record, and its manifest's `vmap_sha256` is that map's. After step 5 the first extract and E2 are not used. After this pass, any pool still lacking a source-2 or source-3 record takes section 4's missing-V rule. It is counted and reported in P6 as `canon_null_v` and `canon_null_v_multipool`. The credits the re-fetch uses are recorded.
 
+**(b1) New dirs at fixed paths [the manager's declared choice, 2026-10-10T13:55Z, before any forward-1002/forward-1002ev row is read].** The pinned tools take no path flag. `boostfloor_inputs` and `boostfloor_read` build every path from `Layout.for_look(ROOT, 1)`, with `ROOT = /data/mal/exp024`:
+- `boostfloor_inputs p5` writes `/data/mal/exp024/p5/gettx_v.jsonl`, `cross_source.json`, `line_a_sample.jsonl` and `p7_sample.jsonl`, and refuses if one of them exists ("P5 runs once"). It reads the join at `/data/mal/exp024/p5/vjoin` and the extract at `/data/mal/exp024/look1/extract`;
+- `boostfloor_inputs account` reads `/data/mal/exp024/p5/account/map.json` and writes `/data/mal/exp024/p5/account_v0.json`, a new file only;
+- `boostfloor_read classify` reads the extract at `/data/mal/exp024/look1/extract`, writes `/data/mal/exp024/p6/classes-look1.jsonl`, and refuses if it exists ("classes are written once"); `precount` writes `/data/mal/exp024/p6/precount-look1.json`.
+
+So in (b), "a new dir" means renaming the existing directory aside, then re-running the pinned tool at its fixed path: `mv <dir> <dir>.pass1`, and a second rename of the same directory is `.pass2`. The directories are `/data/mal/exp024/p5` (for P5b), `/data/mal/exp024/p6` (for a second `classify`) and `/data/mal/exp024/look1/extract` (for E2 and E3, which `p5` and `classify` read only at that path). Nothing is deleted, the renamed directories are kept for the audit, and each rename is logged with `date -u` in the read record.
+
+**(b2) `account` before `gettx` [the manager's declared choice, 2026-10-10T13:55Z, before any forward-1002/forward-1002ev row is read].** If line A fails, `account` runs on the original P5 dir first (as in order (c)), so step 1's `gettx` has `account_v0.json`; `gettx` refuses without it.
+
+**(b3) Line A is judged once [the manager's declared choice, 2026-10-10T13:55Z, before any forward-1002/forward-1002ev row is read].** Line A is judged only on the original P5. If the re-run P5 (P5b) records `line_a_pass: true` in its own `cross_source.json`, `gettx` on P5b would refuse. In that case the second pass stops: `classify` and P6 run on E2 (step 2's extract), and pools lacking a source-2 or source-3 record take section 4's missing-V rule, counted in P6 (`canon_null_v`, `canon_null_v_multipool`). There is no switch back to ev. If P5b records `line_a_pass: false`, steps 4 to 6 run as written.
+
 **Reporting [pre-declared; outcome-blind; counts only].** P6 reports the forward extract's `canon_null_v` and `canon_null_v_multipool` (job #546's E0-H5 record gave 0 and 0), with the producer's counts (pools, pools with V, nulls by reason) and the map's sha256.
 
 Not used, with reasons:
 - `pool_v_0909.json` is the E0 map, a 2026-09-09 snapshot. October pools are absent from it, and the extractor drops absent pools.
-- The pool-account map from `exp012_forward_vmap fetch --new` is the only file in the extractor's shape that main can write for October pools. Its raw `v` is the stored V at fetch time (at or after 2026-10-16T00Z), pending counters included. It is not V at s0, so it would choose canonical pools by a later state. **OPEN:** the manager may still name it as the fallback if no producer merges in time. That would be a different V from the choice above, and it needs its own amendment line before the extract.
+- The pool-account map from `exp012_forward_vmap fetch --new` is the only file in the extractor's shape that main can write for October pools. Its raw `v` is the stored V at fetch time (at or after 2026-10-16T00Z), pending counters included. It is not V at s0, so it would choose canonical pools by a later state. The `exp012_forward_vmap fetch --new` fallback is not used: the producer merged in #568 (`dbf2780`). (The same fetch still feeds source 3 through `account_v0.json`. That file holds the pool's V0 from `exp012_forward_vmap._v0`, not this raw `v`.)
 
 **(c) The order if line A passes [the manager's declared choice, 2026-10-10T13:43Z, before any forward-1002/forward-1002ev row is read].** Each step needs the one before it:
 1. `forward_v_join join` (P5(a));
