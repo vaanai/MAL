@@ -744,7 +744,7 @@ This clarification carries quant-proof's OK on its final head and merges before 
 **What was in view.** It is written with v1's October aggregate canary and shadow outcomes in view (the declared observation of section 3.1 and Amendments 2 and 3), and it says so. Its author opened no canary ledger, no shadow outcome record, no row of forward-1002, forward-1002ev or walk 2, and no forward-paper or runner output. No H5-BOOSTCLOCK v2 outcome exists on any pool at writing. It is not outcome-blind for v1, and it is written before any v2 outcome exists.
 
 - **(a) Scope.** These are declared exceptions to section 3's seal, for `rule_id` `H5-BOOSTCLOCK-v2` (rule block sha256 as merged in EXP-026 §2) and nothing else:
-  - (i) the shadow's computation of v2 exit decisions and v2 outcomes, for every pool from the v2 shadow's start, written only to EXP-026's withheld store (EXP-026 §3.3). Withheld hour files outside EXP-026's `[W0, E)` are never opened;
+  - (i) the shadow's computation of v2 exit decisions and v2 outcomes, for every pool from the v2 shadow's start, written only to EXP-026's withheld store (EXP-026 §3.3). Withheld files whose s0 hour is outside EXP-026's `[W0, E)` are never opened;
   - (ii) EXP-026's single read of that store, for pools with s0 in `[W0, E)`, by `tools/exp026_read.py` under its lock;
   - (iii) under DEC-028 Option B only, the real-time observation of the v2 canary's own fills, exits, wallet deltas and realized P&L, by the readers of DEC-024 §6.
 

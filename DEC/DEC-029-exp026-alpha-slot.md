@@ -29,7 +29,7 @@
 - **The owner's line must state** that the October promotion-eligible error then exceeds DEC-021 §8's bound (0.075 after Amendment 3).
 - **The label.** The EXP-026 report labels any M2 PASS "gate-only, outside DEC-021 §8".
 - **What it costs** [quant-proof resampling, EXP-026 §11]: P(pass) about 0.005–0.03. At a realistic date effect (σ_d 15 pp; September's date-mean SD is 20.6 pp), a pass at a true mean of 0 (0.005–0.017) is about as likely as a pass at +4% (0.025–0.063). An M2 PASS has a material chance of being a false pass.
-- Under M2, DEC-021 Amendment 4 does not take effect.
+- Under M2, DEC-021 Amendment 4 is removed from the PR before merge, and no slot-4 text enters DEC-021.
 
 ## 3. The owner's line
 
