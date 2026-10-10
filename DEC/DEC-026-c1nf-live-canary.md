@@ -702,6 +702,68 @@ Why it is accepted for now: low severity, and the fix is in signing code H5 shar
 
 **[Note 2026-10-10T15:10:04Z: item 15 runs at #576's merge head, `tools/c1nf_shadow.py` blob `008816fe6c8b00a2f96469228185c2278b648ca5`, not 9d437f04.]** #576 changes only how the wallet ledger is read: `_PreadSnapshot` (sparse index + `pread`) replaces memmap reads in `AsofDirLedger.snapshot_for_day`, with fallback to `_AsofSnapshot`. `tools/c1nf_wallet_ledger.py`, the hash pin, the model, the threshold, the features, the decision logic and `OUTCOME_START_MS` are unchanged. The proof is at the changed interface: `get()` is bit-equal for every wallet on exploration as-of days 2026-09-20 (10,912,272 wallets, md5 `f068fa8df8b63c74e598ab91d7405b16`) and 2026-09-19 (10,019,059, `50652d0c853253eb5da2aadb8cb4a7cd`), old = new = `passa_matrix`, plus 2,400,010 absent-wallet probes per day (jobs #601/#602). Memory on research-0: VmRSS peak 1,026,744 kB old vs 259,268 kB new (#599/#600). The fast-0 split is extrapolated, not measured. A replay-mode decision md5 does go through this path, so item 14 covers it when it runs; item 14 stays open. The restart is operations-only under the P7 ruling above; checklist items 1 and 2 apply to it, with RssFile/RssAnon and cgroup `memory.stat` file/anon recorded. (Quant-proof OK on #576 at 7bcffaa, 2026-10-10; reviewer OK at 7bcffaa.)
 
+## Note 2026-10-10T21:37:10Z (`date -u`; text only; before any canary send and before any soak result is used as evidence): item 15 runs at #582's merge head
+
+**[Note 2026-10-10T21:37:10Z: item 15 runs at #582's merge head `da9b5b0`, not 09b4389.]** Blobs, old → new:
+- `tools/c1nf_shadow.py`: `008816fe` → `c2dafcdcdc69f7f0269746431c01755dc7f45e4b`.
+- `tools/c1nf_features.py`: `8d7be366` → `d6c87354a520ea25efc59975d7d041570d8226f7`.
+- `tools/c1nf_vmode_parity.py`: `f5766c41` → `1574573ed10c663784f4678d04c251e96ff8460b`.
+
+**Why.** Job #608 (item-15 soak at 09b4389, operations-only) was OOM-killed at 18:06:01Z. Its process anon-rss was 1,939,888 kB and cgroup anon 1,987,047,424 B at the 1,945,600 kB limit, growing about 400 MB/h. The engine kept every canonical in-band print of each pool until g0 + 25 h, at about 1,051 B per print. Replay #621 (48 h, 2026-09-19/20 exploration tape) reached RssAnon 9,796,372 kB, with VmHWM 10,736,316 kB (job #621's result metrics: `RssAnon_end_kb` 9800292 at the last sample, `VmHWM_kb` 10736316).
+
+**What #582 changes.** It changes memory only:
+- **F1:** a 1 h print window. Off by default in `FeatureEngine`; on only through `cs.build_engine`, so `c1nf_parity` is unchanged.
+  - `build_engine` is used by `run_live`, `c1nf_vmode_parity` and the shadow's replay mode (`tools/c1nf_shadow.py:2279`). Replay mode never calls the engine's `expire`, which is where the window drops prints (the #621 measurement report; the #582 body). So the window drops nothing there, but it is on. Item 14's replay-mode decision md5 must still run at this head.
+  - A look-back past a dropped print counts `window_violation` and answers None.
+- **F2:** typed columns, with q, b, seen_any and the per-print lp dropped.
+- **F3:** per-pool trader ids.
+- **F4:** live keeps 1 ledger day; `_PreadSnapshot` memo cap 200k.
+- **F5:** `malloc_trim(0)` after each stream expire, plus the record additions below.
+
+The model, threshold, features, decision logic, `OUTCOME_START_MS` and the record contract are unchanged. The record changes are additions only:
+- heartbeat: `rss_anon_kb`, `vm_hwm_kb`, `held_prints`, `held_pairs`, `window_violation`;
+- shadow counters: `malloc_trim`, `malloc_trim_unavailable`;
+- in `tools/c1nf_vmode_parity.py`'s summary: `decision_rows_f64` and `engine_window` (`verdict()` still reads the float32 rows).
+
+**Proofs.** The proof table is PR #582 comment 6102366435. Quant-proof gave OK_WITH_FIXES at cf686467 (comment 6102420479), and so did the reviewer (comment 6102424925). Neither asked for a new head. main `da9b5b0` has the same three tool blobs as cf686467, so the proofs apply to it.
+- **md5 decision equivalence on 2026-09-20,** `c1nf_vmode_parity` anchored, the same tool blob `1574573e` on both heads. OLD is 09b4389 (#642), whose blobs equal 822cefb and main 38dec78. NEW is cf68646 (#643). Equal on both:
+  - decision rows 437,281: float32 `287e6bca6193705d483714296abdba41`, float64 `70d7340b6f8bbf7e185c3de2e52931d1`;
+  - picks 2,161: `93c5af1a0354217fc10879fd9afdf7d4`;
+  - anchored-restart rows 223,998: `8cd29588fbdf2881c4d2e4cec8ddb6e0` / float64 `48c35a9078029bab8c76f0f9f78c4d17`;
+  - restart picks 1,177 / 1,180, with 151 differences, all on held mints, on both sides;
+  - feature_diff: 0.
+  - The new head dropped 16,621,527 prints with window_violation 0. The runs used the stub model (pred 0.05); the float64 vectors are bit-equal, so the pinned model sees the same inputs.
+- **Memory, 48 sim hours, window on, 1.9 GB cap, job #653: PASS** under the rule written before the first run (VmHWM ≤ 1,500,000 kB; slope h25–48 ≤ 20,000 kB/h; window_violation 0; errors 0).
+  - VmHWM 1,022,988 kB. RssAnon 735,984 → 896,232 kB from h25 to h48, a slope of 7,424.5 kB/h. 0 errors.
+  - It fed the pre-serialised row stream (`harness_wp`, #652, round-trip exact, 26,480,626 rows). The pandas harnesses ran out of memory in the harness process itself at the 1.9 GB cap: #644 and #648. The no-feed controls #645 (1.9 GB, OOM) and #649 (4 GB; VmHWM 1,617,344 kB) show that the harness alone exceeds the cap.
+  - Two diagnostic runs at a 4 GB cap **failed** the pre-declared rule because of harness memory: #647 (VmHWM 3,323,432 kB) and #650 (VmHWM 2,337,560 kB, slope 11,672.9 kB/h).
+  - #653 ran on mal-research-0, not mal-fast-0. Its MiScusi cgroup peak reads 1.9 GB because of page cache from the 2.4 GB of row files; the process VmHWM was 1,022,988 kB and nothing was killed. mal-fast-0's limit is 1,945,600 kB, the limit #608 was killed at.
+- **Unit tests:** 352 passed, 2 skipped (#641); 355 passed with duckdb (#646); executor and model_pin 82 passed.
+
+**Not measured.** Do not claim any of these:
+- memory on mal-fast-0 itself;
+- anything past 48 h. Growth until about 72 h, when `_info` and `bc_traders` prune, to roughly 1.1 GB RssAnon is an estimate;
+- the wall time of `malloc_trim`, which runs in `_expire` before `_decide` on every tenth minute;
+- a real-tape `c1nf_parity` md5 with the window off and F2/F3 on (only the synthetic cross-head twin covers it);
+- the one-day ledger keep across a UTC midnight on real tape (synthetic test only).
+
+**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026 and LAB_STATE):
+- (a) The heartbeat's `window_violation` must stay 0. Any non-zero value means a decision differed from main. It voids bit-equality from that minute and stops item 15's clock until it is explained.
+- (b) From hour 25, RssAnon may grow at most 20 MB/h over any 24 h.
+- (c) An RssAnon alert at 1.5 GB, below the 1.9 GB cap.
+- (d) `malloc_trim_unavailable` must be 0 on fast-0.
+- (e) MemoryPeak and RssAnon are recorded per start (checklist item 2).
+- Also measured during the soak: `malloc_trim` wall time, compared through pick latency on the tenth minutes (not-measured list above).
+
+The item-15 clock starts at this soak's start. The event-V P7 amended PASS (2026-10-10T16:10:46Z, job #598) precedes it. The restart will be recorded in LAB_STATE when it starts. The soak checklist of the 13:11:59Z note applies in full:
+- item 1, the replay-vs-live first-hour check after the first real restart;
+- item 2, the per-start record;
+- item 3, repeat picks on held mints.
+
+The creator-anchor note of 13:11:59Z still applies. The restart replays from the anchor already in the out dir's `c1nf-anchor.json`, `bootstrap_anchor` 2026-10-09T12, which is what job #609's per-start record printed for #608's two starts.
+
+(Quant-proof OK_WITH_FIXES on #582 at cf686467, 2026-10-10, comment 6102420479; reviewer OK_WITH_FIXES at cf686467, comment 6102424925.)
+
 ## Appendix A. Draft EXP-025 amendment for the canary (not applied; its own PR into `EXP/EXP-025-c1nf-part1-prereg.md`)
 
 **This is proposed text.** It edits nothing in EXP-025 today. EXP-025 Amendment 2 is #529 (synthetic pools; open draft at 12f5133), so this text is Amendment 3 if #529 merges first, and whoever merges it renumbers it. The sentences in quotation marks are proposed wording in the form of [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Amendments 2 and 3. The owner has not seen them. **[Note 2026-10-10, QP-1010 (b1) item 3.]** #529 merged first (2026-10-09T17:53:58Z), so this is Amendment 3. It is open as #548.
