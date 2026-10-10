@@ -7,9 +7,12 @@ flags, <= 1e-9 relative on floats. The parity run on a real exploration day is t
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import math
+import struct
+from array import array
 from pathlib import Path
 
 import numpy as np
@@ -1107,6 +1110,144 @@ def test_health_reports_every_counter():
     h = eng.health()
     assert h["v_source"] == "event" and set(h) == {"v_source", "stats", "pool_rejects", "ledger", "sizes"}
     assert {"pools", "infos", "bc_traders", "v_pending", "rejected"} <= set(h["sizes"])
+
+
+# ======================================================================================================================================
+# Memory Build-A (job #608): typed print columns (F2), the ledger snapshot cache (F4), held sizes for the heartbeat (F5).
+# Bit-equality with the list layout is also checked outside the suite (twin engines, main vs this head, PR text).
+# ======================================================================================================================================
+def _vec_bytes(res):
+    return None if res is None else (res.vec.tobytes(), res.pre, res.stage1, struct.pack("<d", res.h_top1), res.cap_ok, res.wallet_ok,
+                                     res.ledger_day, res.i1, res.sd)
+
+
+def test_pool_columns_are_typed_and_the_unread_columns_are_gone():
+    rows = make_prints(3, n=200, span_s=900, n_traders=40)
+    eng = new_engine(rows)
+    for r in rows:
+        feed(eng, r)
+    P = eng._pools["POOL"]
+    for name in ("slot", "bt"):
+        assert type(getattr(P, name)) is array and getattr(P, name).typecode == "q"
+    assert type(P.isb) is bytearray and set(P.isb) <= {0, 1}
+    for name in ("sol", "tok", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "am_hi", "am_lo"):
+        assert type(getattr(P, name)) is array and getattr(P, name).typecode == "d", name
+    for gone in ("q", "b", "lp", "seen_any"):
+        assert not hasattr(P, gone), gone
+    n = len(rows)
+    assert len(P.slot) == len(P.bt) == len(P.isb) == len(P.sol) == len(P.th) == len(P.csl) == len(P.am_hi) == n and len(P.cs_vol) == n + 1
+    assert P.q0 == rows[0]["q"] and P.lp_last == math.log(P.ppre[-1])
+    assert P.cs_any[-1] == len(P.hold) == len({r["trader"] for r in rows})        # hold's keys are the traders seen (was seen_any)
+    assert list(P.isb) == [int(r["isb"]) for r in rows]
+    assert eng.held_sizes() == {"held_prints": n, "held_pairs": len(P.hold)}
+    eng.expire(G0 + cf.GRID_END + 3601)
+    assert eng.held_sizes() == {"held_prints": 0, "held_pairs": 0}
+
+
+@pytest.mark.parametrize("v", [True, False, np.True_, np.False_, 1, 0, None, 2, 0.0, 1.0, float("nan"), "x", ""])
+def test_isb_code_reads_exactly_like_the_value_it_stores(v):
+    c = cf._isb_code(v)
+    assert 0 <= c <= 3
+    assert bool(c & 1) == bool(v)                                # truthiness reads (flows, holders, maxbuy5, the sell index)
+    for want in (True, False):
+        assert (c == want) == bool(v == want)                     # the wallet windows' `isb[k] == want`
+
+
+def test_numpy_bool_and_int_sides_give_the_same_features_as_bools():
+    rows = make_prints(11, n=300, span_s=1500, n_traders=60)
+    led = StubLedger({f"W{i}": (float(10 + i), float(i), (i - 30) * 1e8, float(i % 7), float(i % 11), 3.0, 1e9) for i in range(0, 60, 2)},
+                     cf.utc_day(G0 + 1200))
+    out = []
+    for conv in (bool, np.bool_, int):
+        eng = new_engine(rows, ledger=led)
+        for r in rows:
+            feed(eng, dict(r, isb=conv(r["isb"])))
+        out.append([_vec_bytes(eng.features_at("POOL", T, sd=clock_sd(T))) for T in range(G0 + 600, G0 + 1560, 60)])
+    assert out[0] == out[1] == out[2] and any(x is not None and x[1] for x in out[0])
+
+
+def test_a_null_side_reads_as_before_sell_in_flows_and_holders_neither_side_in_the_wallet_windows():
+    """A list stored None: falsy (a sell for the cumulative flows, the holder sums and the sell index), but `None == False` is False, so it
+    sat in neither wallet window. The byte code keeps that: changing it would change c1nf_parity's decision rows on a NULL-side tape row."""
+    rows = make_prints(12, n=300, span_s=1500, n_traders=60)
+    T = G0 + 1200
+    sd = clock_sd(T)
+    late = [i for i, r in enumerate(rows) if r["slot"] < sd and r["bt"] >= T - 300 and not r["isb"]]
+    k = late[-1]
+    rows[k] = dict(rows[k], trader="ZNULL")                         # a seller seen nowhere else
+    led = StubLedger({"ZNULL": (5.0, 1.0, 1e9, 1.0, 1.0, 1.0, 1e9)}, cf.utc_day(T))
+
+    def run(side):
+        eng = new_engine(rows, ledger=led)
+        for i, r in enumerate(rows):
+            feed(eng, dict(r, isb=side) if i == k else r)
+        return eng.features_at("POOL", T, sd=sd)
+
+    sell, null = run(False), run(None)
+    assert sell.pre and null.pre
+    for name in ("ss5", "bs5", "v5", "h_npos", "h_top1", "sell_curveholder_share", "nb5", "n5"):
+        assert sell.vec[cf.FIDX[name]].tobytes() == null.vec[cf.FIDX[name]].tobytes(), name
+    assert null.get("ws5_n") == sell.get("ws5_n") - 1                 # ZNULL is a seller only when its side is False
+    assert null.get("wb5_n") == sell.get("wb5_n")
+
+
+class DayLedger:
+    """A snapshot per UTC day whose values differ by day, so a snapshot used on the wrong day changes the wallet features."""
+
+    def __init__(self) -> None:
+        self.opened: list[str] = []
+
+    def snapshot_for_day(self, day):
+        self.opened.append(day)
+        return _DaySnap(day)
+
+
+class _DaySnap:
+    def __init__(self, day) -> None:
+        self.day = day
+
+    def get(self, trader):
+        h = int(hashlib.md5(f"{self.day}|{trader}".encode()).hexdigest()[:8], 16)
+        if h % 4 == 0:
+            return None
+        return (float(h % 3000), float(h % 200), (h % 1000 - 500) * 1e7, float(h % 50), float(h % 60), float(1 + h % 30), float(h % 900) * 1e7)
+
+
+def test_ledger_keep_days_default_is_two_and_is_checked():
+    assert cf.LEDGER_KEEP_DAYS == 2 and cf.FeatureEngine(v_source="const").ledger_keep_days == 2
+    assert cf.FeatureEngine(v_source="const", ledger_keep_days=1).ledger_keep_days == 1
+    for bad in (0, -1, True, 1.0, None):
+        with pytest.raises(ValueError):
+            cf.FeatureEngine(v_source="const", ledger_keep_days=bad)
+
+
+def test_one_cached_ledger_day_gives_the_same_features_across_the_utc_day_change():
+    """F4: a live engine keeps one snapshot. Across a UTC midnight the answers are bit-equal to the default two, the old day is dropped
+    when the new one is cached, and a dropped day asked for again is reopened with the same values."""
+    mid = (G0 // 86400 + 1) * 86400
+    shift = mid - 1800 - G0                                             # graduation 30 min before midnight
+    rows = [dict(r, bt=r["bt"] + shift) for r in make_prints(13, n=900, span_s=3500, n_traders=300)]
+    Ts = list(range(G0 + shift + 600, G0 + shift + 3540, 60))
+    assert cf.utc_day(Ts[0]) != cf.utc_day(Ts[-1])
+    res, engs = {}, {}
+    for keep in (1, 2):
+        eng = cf.FeatureEngine(ledger=DayLedger(), v_source="const", ledger_keep_days=keep)
+        eng.set_pool_v("POOL", V)
+        eng.on_create("MINT", "CREATOR", "Foo Coin", "FOO", G0 + shift - 600, False)
+        eng.on_graduation("MINT", G0 + shift)
+        for r in rows:
+            feed(eng, r)
+        res[keep] = [_vec_bytes(eng.features_at("POOL", T, sd=clock_sd(T - shift))) for T in Ts]
+        engs[keep] = eng
+    assert res[1] == res[2]
+    days = {r[6] for r in res[1] if r is not None and r[1]}
+    assert days == {cf.utc_day(Ts[0]), cf.utc_day(Ts[-1])}             # wallet features computed on both sides of midnight
+    assert sorted(engs[1]._ledger_cache) == [cf.utc_day(Ts[-1])]
+    assert sorted(engs[2]._ledger_cache) == [cf.utc_day(Ts[0]), cf.utc_day(Ts[-1])]
+    assert engs[1].ledger.opened == engs[2].ledger.opened == [cf.utc_day(Ts[0]), cf.utc_day(Ts[-1])]
+    back = [_vec_bytes(engs[1].features_at("POOL", T, sd=clock_sd(T - shift))) for T in Ts[:5]]   # back to the dropped day
+    assert back == res[2][:5] and engs[1].ledger.opened[-1] == cf.utc_day(Ts[0])
+    assert engs[1]._ledger_for(cf.utc_day(Ts[-1]), keep_days=2) is not None and len(engs[1]._ledger_cache) == 2
 
 
 if __name__ == "__main__":
