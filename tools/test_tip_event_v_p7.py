@@ -771,6 +771,32 @@ class CliTests(Base):
         self.assertEqual(sorted(x["ix_name"] for x in lines), sorted([p7.NO_NAME, "buy", "buy_exact_quote_in"]))
         self.assertIs(d["acceptance"]["one_full_utc_hour"], False)  # 13:17:18 to 14:30:00 is not the declared [H, H+1h) form
 
+    def test_a_raising_line2_helper_still_exits_0_writes_both_files_and_leaves_line1_and_pass_unchanged(self):
+        """Line 2 runs after every credit is spent: a helper that raises is reported by type and the line-1 acceptance is still written."""
+        def call(sig):
+            return self.txs[sig]
+
+        rc, out, err = self.go(["--out-dir", str(self.out)], _call=call)
+        self.assertEqual(rc, 0, err)
+        clean = json.loads(out)
+
+        def tier_lines(sample, v_of):  # as tools.boostfloor_inputs.tier_fee does on a sampled sell with base_reserve 0
+            raise ZeroDivisionError("float division by zero")
+
+        out2 = self.tmp / "out2"
+        with mock.patch.object(p7, "exp024_tier_lines", lambda: tier_lines):
+            rc, out, err = self.go(["--out-dir", str(out2)], _call=call)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((out2 / "p7-tip.json").exists())
+        self.assertTrue((out2 / "p7-tip-prints.jsonl").exists())
+        d = json.loads(out)
+        self.assertEqual(d, json.loads((out2 / "p7-tip.json").read_text()))
+        self.assertEqual(d["line2_exp024"], {"error": "ZeroDivisionError", "scored": False})
+        self.assertEqual((d["pass"], d["acceptance"]), (clean["pass"], clean["acceptance"]))
+        self.assertEqual({k: v for k, v in d.items() if k != "line2_exp024"}, {k: v for k, v in clean.items() if k != "line2_exp024"})
+        self.assertEqual((out2 / "p7-tip-prints.jsonl").read_bytes(), (self.out / "p7-tip-prints.jsonl").read_bytes())
+        self.assertNotIn("float division", out + err)  # the type only
+
     def test_stdout_stderr_and_summary_carry_no_signature_pool_mint_amount_or_key(self):
         rc, out, err = self.go(["--out-dir", str(self.out)], _call=lambda sig: self.txs[sig])
         self.assertEqual(rc, 0, err)
@@ -1171,6 +1197,12 @@ class Line2Tests(unittest.TestCase):
             no_v = [dict(r, virtual_quote_reserves=0) for r in ok]  # the vault alone: the price level is 30% off
             r = p7.line2_report(no_v, rule)
             self.assertEqual((r["sell"]["match"], r["buy"]["match"]), (0, 0), rule)
+
+    def test_a_sell_with_base_reserve_zero_is_a_reported_line2_error_never_a_crash(self):
+        rows = self.rows() + [self.row("sell", 1_000, 1_000, base_reserve=0)]
+        with self.assertRaises(ZeroDivisionError):  # the real trigger: tools.boostfloor_inputs.tier_fee divides by base_reserve
+            p7.line2_report(rows, "exp024")
+        self.assertEqual(p7._line2_or_error(rows, "exp024"), {"error": "ZeroDivisionError", "scored": False})
 
     def test_line2_does_not_change_pass(self):
         tally = {"sell_n": 100, "sell_ok": 100, "buy_n": 100, "buy_ok": 100, "excluded": 0,

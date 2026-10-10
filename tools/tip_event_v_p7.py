@@ -58,6 +58,7 @@ ARTIFACTS/exp025/event_v_map.py; both files are sha-pinned in ARTIFACTS/exp025/S
                      bars P7_SELL_MIN / P7_BUY_MIN and event_v_map.p7_pass.
        line2_exp024: tools.boostfloor_inputs.tier_lines as written, V = the print's own stamp.
      A zero buy (sol <= 0, tok <= 0 or tok >= b) is skipped, as tier_lines does. Line 2 does not change `pass`: acceptance is line 1.
+     Line 2 runs after the prints file is written; a rule whose helper raises is reported as {"error": <exception type>, "scored": false}.
 
 Counts only. stdout shows no signature, pool, mint, amount, price or reserve. Per-print outcomes (signature, ix_name, line, outcome, reason) go to
 <out-dir>/p7-tip-prints.jsonl and the summary to <out-dir>/p7-tip.json, which carries that file's sha256. The RPC URL and key are held in
@@ -607,6 +608,15 @@ def line2_report(main: Sequence[Mapping[str, Any]], rule: str) -> dict:
             "line_pass": total["line_pass"], "by_ix_name": per, "scored": False}
 
 
+def _line2_or_error(main: Sequence[Mapping[str, Any]], rule: str) -> dict:
+    """line2_report, but an exception in a line-2 helper is reported by type only and never stops line 1, `pass` or the output files
+    (e.g. tools.boostfloor_inputs.tier_fee divides by a sampled sell's base_reserve; 0 raises ZeroDivisionError)."""
+    try:
+        return line2_report(main, rule)
+    except Exception as exc:  # noqa: BLE001 - type only: the message could carry tape values
+        return {"error": type(exc).__name__, "scored": False}
+
+
 # ---- output ----------------------------------------------------------------------------------------------------------------------------
 def _share(ok: int, n: int) -> float | None:
     return ok / n if n else None
@@ -752,10 +762,10 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
 
     results, extras = run_check(sampled, fetch, progress)
     tally = buy_amend().p7_raw_tally([(row, res) for (_, row), res in zip(sampled, results)])
-    line2 = {"exp025": line2_report(main_rows, "exp025"), "exp024": line2_report(main_rows, "exp024")}
     out_dir.mkdir(parents=True, exist_ok=True)
     prints = print_rows(sampled, results)
-    _write_atomic(out_dir / OUT_PRINTS, prints)
+    _write_atomic(out_dir / OUT_PRINTS, prints)  # the credits are spent: the line-1 prints are on disk before line 2 runs
+    line2 = {rule: _line2_or_error(main_rows, rule) for rule in ("exp025", "exp024")}
     summary = summarize(tally, window=(start_ms, end_ms), frame_info=info, main_n=len(main_rows), topup_n=len(topup_rows), extras=extras,
                         credits=fetch.calls, errors=fetch.errors, prints_sha256=hashlib.sha256(prints).hexdigest(), blob=blob,
                         per_name=by_ix_name(sampled, results), excl_names=excluded_by_name(sampled, results), line2=line2)
