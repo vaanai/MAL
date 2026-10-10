@@ -13,6 +13,10 @@ before anything is moved. Helm (and c1nf-daily-check.py, which imports this file
 Second wallet (DEC-026 section 4): the drop-in's only credential is c1nf-wallet:/etc/mal-c1nf-key/c1nf-wallet.json. H5's
 probe-wallet, any other credential and any Conflicts= with an H5/probe unit refuse (they are not on the list).
 
+Own Unix user (DEC-026 note 2026-10-10, security review F2): the base unit's only User= is mal-c1nf. H5's mal-live, root or any other
+user refuses, and so does a Group=, SupplementaryGroups= or DynamicUser= line (not on the list): systemd makes a unit's
+/run/credentials/<unit>/ readable by its User=, so one uid per wallet is what keeps each executor away from the other's key.
+
 --base / --dropin: the file must equal the EXPECTED list line for line. Stdlib only, no grep. Only the listed sections, each at
 most once. Any unknown key, extra or missing line, duplicate, different value or different order refuses. Keys are case-sensitive
 and exact: `User =x` is an unknown key to systemd, so whitespace between key and `=` is NOT normalised. An empty value
@@ -52,7 +56,7 @@ EXPECTED_BASE: list[tuple[str, str, str]] = [
     ("Unit", "After", "network-online.target"),
     ("Unit", "Wants", "network-online.target"),
     ("Service", "Type", "simple"),
-    ("Service", "User", "mal-live"),
+    ("Service", "User", "mal-c1nf"),  # its own user, never H5's mal-live (DEC-026 note 2026-10-10, security review F2)
     ("Service", "Nice", "10"),
     ("Service", "WorkingDirectory", f"{PINNED}/current"),
     ("Service", "Environment", "PYTHONUNBUFFERED=1"),

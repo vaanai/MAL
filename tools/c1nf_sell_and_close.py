@@ -15,7 +15,7 @@ Run as ROOT by Helm (or the owner), with the executor STOPPED (docs/runbooks/c1n
     sudo /usr/local/lib/mal-c1nf-exec/venv/bin/python -I -B -u /usr/local/lib/mal-c1nf-exec/current/launcher.py \\
         --run-tool sell_and_close --mint <MINT> [--slippage-bps N | --emergency] [--send]
 
-then book it in the executor's state with the executor's own offline --mark-closed (as mal-live, the unit still stopped; it books the
+then book it in the executor's state with the executor's own offline --mark-closed (as mal-c1nf, the unit still stopped; it books the
 realized P&L the loss stops read). The exact systemd-run line is in docs/runbooks/c1nf-executor.md, "Sell-and-close".
 
 Never run tools/h5_sell_and_close.py against the C1-NF wallet: its guard checks only mal-h5-executor and mal-probe-executor, so it would
@@ -103,7 +103,7 @@ def run(args: argparse.Namespace, rpc: Callable, *, pinned_wallet: str | None, i
         out("fill: unavailable (the transaction is confirmed; read it from the signature)")
     else:
         out("fill: " + " ".join(f"{k}={v}" for k, v in fill.items()))
-    out(f"next: with {UNITS[0]} still stopped, book it: --mark-closed {mint} --sig {sig} with the C1-NF live config, as mal-live "
+    out(f"next: with {UNITS[0]} still stopped, book it: --mark-closed {mint} --sig {sig} with the C1-NF live config, as mal-c1nf "
         "(docs/runbooks/c1nf-executor.md, Sell-and-close)")
     return 0
 

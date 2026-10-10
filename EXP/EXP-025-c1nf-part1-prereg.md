@@ -531,10 +531,173 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 6. **After the final look, report-only.** The result split by class may be printed after the final look's verdict is written and recorded, labelled report-only. It never decides and never re-scopes either look.
 7. **Effect.** This amendment carries quant-proof's OK on its final head and the owner line above, and it is to merge before 2026-10-10T00:00Z. If it merges after that instant, items 1–6 apply from the merge instant. Each look's report then lists the amendment as dated after the window opened, and states whether any C1-NF outcome existed at merge.
 
+### Amendment 3 (written 2026-10-10T09:30:19Z, from `date -u`; before any canary send): declared observation for the canary and shadow outcomes, the canary's stake, the executor's CAP-PICK skip, observers, no split by synthetic class, report disclosure
+
+**Where it comes from.** This is the draft in [DEC-026](../DEC/DEC-026-c1nf-live-canary.md) Appendix A, adopted as EXP-025's next amendment. DEC-026 section 4 and section 11 item 1 say it must merge before the first C1-NF canary send. Amendment 2 (#529) merged at 2026-10-09T17:53:58Z, so this is Amendment 3. Item 11 lists every change from the DEC-026 draft.
+
+**This amendment is blind to every C1-NF outcome. This was checked when it was written and is checked again at merge.**
+- **Written before any canary send.** At 2026-10-10T09:29:49Z (`date -u` on the host), MiScusi job #499 on `mal-fast-0` looked at names only:
+  - no system unit or unit file matched `c1nf`, and no user unit matched except job #499 itself;
+  - no process matched `c1nf`;
+  - no entry under the job user's `$HOME/data`, `/var/lib/mal` or `/var/lib/mal-live` matched `c1nf`.
+
+  DEC-026 grants the canary's key exception on `mal-fast-0` only (its "Amends" row), and there is no C1-NF executor unit there. So no canary send has been made. The writer did not look up any wallet. DEC-026 section 11 listed the second wallet (item 21) and its funding (item 22) as not done on 2026-10-09.
+- **No C1-NF shadow or canary outcome exists, as far as names and status lines show.**
+  - The MiScusi job list read at 2026-10-10T09:30Z (jobs #433 to #499) holds no C1-NF shadow, executor or dry-run job. Its only C1-NF jobs are the presence checks #468 and #499.
+  - The shadow (#503) is an open draft at `50eeaa1` (guard unchanged at `9a80398`) and has not run on `mal-fast-0` (above).
+  - The executor (#530) merged at 2026-10-10T08:59:53Z and is not installed (above).
+- **What was in view.** To write this amendment the writer read:
+  - DEC-026 (with Appendix A), and EXP-025 with Amendments 1 and 2;
+  - the PR list and the bodies of #503 and #544;
+  - `tools/c1nf_shadow.py` at `50eeaa1`, searched for its outcome guard only;
+  - the MiScusi job list's names and status lines, and job #499's output;
+  - for the edits of 2026-10-10T11:00:31Z (quant-proof's E1 to E3 on `abd413c`): quant-proof's review text, `tools/c1nf_shadow.py` at `9a80398` (its `OUTCOME_START_MS` and `outcome_allowed` lines only), DEC-026 Appendix A item 3, and #558's title and heading.
+
+  The status lines show other families' metrics: H5 replay-proof counts, BOOST timing structure counts and hunt-r3 discovery numbers. None of them is a C1-NF outcome.
+
+  No sealed block, forward-1002, forward-1002ev, walk-2, forward-paper or runner row was opened. No synthetic class was joined to any C1-NF record.
+- **At merge.** No edit is made to this file after quant-proof's OK. Before merging, the merger posts a PR comment with `date -u` confirming that no C1-NF shadow or canary outcome (label, fill, exit, P&L, mean, CI or day sign) of any October decision has been computed or seen. The merge commit's instant is the merge instant and is recorded in LAB_STATE. If an outcome had been computed or seen, the PR is not merged as is: this paragraph is rewritten to say what was seen and when, item 6 lists this amendment as made with outcomes in view, and quant-proof re-OKs the new head.
+
+**The gap it closes.** Section 5.1 declares the real-time observation for "decisions inside the windows" and names a 0.02 SOL canary. It does not cover:
+- the canary's actual stake;
+- decisions at or after 2026-10-24T00;
+- the live executor's CAP-PICK skip (section 5.3 names only the read and the shadow);
+- the observers and the report disclosure;
+- the bar on splitting outcomes by synthetic class, which Amendment 2 sets for the read side.
+
+1. **Pre-window decisions: no declaration.**
+   - DEC-026's draft item 1 declared observation for decisions with T in `[<merge instant>, 2026-10-10T00)`. This amendment is written after 2026-10-10T00:00Z, so that interval is empty and the item declares nothing.
+   - Every October decision before 2026-10-10T00 stays under section 4's seal.
+   - In live mode the shadow's code guard writes the pick of such a decision but no outcome (`OUTCOME_START_MS` = 2026-10-10T00:00Z in `tools/c1nf_shadow.py` at #503's `50eeaa1` (guard unchanged at `9a80398`), not yet merged). Its replay-mode exemption covers exploration hours only. DEC-026 section 11 item 8 makes the guard binding. The merged executor never acts on a decision before 2026-10-10T00. It counts such a decision under the refusal `pre_window`, with no mint (`PICK_WINDOW_START_MS` = 1791590400000 in `tools/c1nf_executor.py` on main).
+   - The O-6 default (DEC-026 section 3) is recorded but covers no decision. Decisions with T in `[2026-10-09T00, 2026-10-10T00)` are also October training-label input to both looks (section 4), so this is the stricter reading, not a loss of cover. Relaxing the guard needs a further dated EXP-025 amendment, with quant-proof's OK on its final head, written before any such outcome is computed or seen.
+2. **Post-window decisions.** "The same outcomes for decisions with T at or after 2026-10-24T00, up to the canary's `end_ms`, are observed in real time. No look reads them." This is not a CAP-PICK exception (item 3).
+3. **The executor's CAP-PICK skip.** Section 5.3's rule binds the read and the shadow. DEC-026's live executor follows the pick feed as built (DEC-024 Amendment 6 items 2 and 3, EXP-022 Amendment 6 item 1, DEC-026 Amendment 1 B), not section 5.3's pinned union source, which is read only after the FINAL.
+   - From 2026-10-16T01 to the end of EXP-022's read, the executor buys a mint only on an exact `False` from the live `PickOracle` on `pick_file`. `True`, `None` (no row, a gate row with no score, a feed stale for more than 60 s, no FINAL marker, an error) or a non-boolean means no buy. It writes no CAP-PICK field into any record and joins no record to a pick.
+   - **Residual, not declared here.** EXP-022's counted picks are the walk-2 replay's picks. They are not known at a C1-NF decision and differ from the online set both ways (EXP-022 Amendment 6 item 2). So the canary can fill, and the shadow can record, a replay-only pick. EXP-022 Amendment 6 items 2 to 4 declare that residual for H5 only. For C1-NF it is EXP-022's to declare, by its own amendment before 2026-10-16T01; this amendment does not declare it and does not call such a trade a non-breach. EXP-025's read is not affected: section 5.3 removes every mint the union source answers True for.
+   - Before each CAP-PICK look, no person, agent or job joins a C1-NF canary or shadow record, or the canary wallet's history, to the replay's picks, or counts the overlap (EXP-022 Amendment 6 item 3, applied to C1-NF).
+   - If the executor refuses a wider set than section 5.3's keying (DEC-026 section 9.1), each look's report says so.
+4. **The canary's stake.**
+   - Section 5.1's "0.02 SOL stakes" and "at most 0.1% of a pool's quote", and section 12's "0.02 SOL stakes", now read **0.05 SOL stakes** and **at most about 0.25% of a pool's quote** (0.05 SOL against a stage-1 real quote of at least 20 SOL).
+   - The separate wallet and DEC-026 are unchanged.
+   - The canary's trades remain real chain activity and appear in the tape as ordinary rows. They are not removed, because that would edit chain truth. The read reports them.
+   - DEC-025 section 4 also names 0.02 SOL. DEC-025 is not edited here. DEC-026 section 1 records that the owner's answers supersede it.
+5. **Observers, and no split by synthetic class.**
+   - The owner, Helm, the manager, builders, the DEC-026 watchdog (its Discord alerts, including the stops and the wallet line) and the daily check may read the canary's ledger and the shadow's outcomes in real time.
+   - The read tool may not. Its inputs stay section 4's hours. It never takes the canary's ledger or the shadow's output, and its refusal set is not loosened.
+   - **No observer, and no report, note, alert, Console entry or message, may split C1-NF outcomes by synthetic class before the final look.** This is Amendment 2 item 5: "Before Look 2 is read (or, if Look 2 does not run, before the final C1-NF report)". The class stays a counts-only stream.
+   - A breach is recorded here and the read is reported compromised.
+6. **Report disclosure.** The Look 1 report and the Look 2 report each state:
+   - that the shadow's and canary's outcomes were observed in real time for decisions in the windows (section 5.1) and, if used, for decisions at or after 2026-10-24T00 (item 2);
+   - that this can have influenced later choices, for example an owner step to a larger stake;
+   - that **any EXP-025 amendment dated after the first such outcome was made with outcomes in view.** The report lists it and does not call it outcome-blind.
+
+   The disclosure does not change the verdict.
+7. **Unchanged.**
+   - These stay as they are: the rule block, the five pinned lines, the patches and hashes, the windows, the alpha pair (0.005, 0.020), items 1 to 9 of section 7, P2 to P7, R1 to R14, section 11.5, k = 1, and everything Amendments 1 and 2 set.
+   - Section 5.1's sentences stand:
+     - Look 1 and Look 2 are always read as written. They are never skipped, delayed, re-scoped or re-thresholded because of anything the shadow or canary shows.
+     - Nothing the shadow or canary shows may change any EXP-025 parameter.
+     - A canary halt, stop or step stops or changes the canary only.
+8. **Spending.** Nothing is spent. No look is refused, withdrawn or left unrun because of this amendment.
+9. **Enforcement in the tools.**
+   - The shadow writes no outcome-bearing record for a decision before 2026-10-10T00 (binding; item 1).
+   - The shadow and the executor write the class only to a separate counts-only stream, if they write it at all.
+   - The daily check and the watchdog print no outcome by class.
+   - The build status of these is DEC-026 section 11's (items 4, 8 and 10). This amendment does not claim that they are built.
+10. **Provenance.**
+    - This is a manager-side draft by the DEC-026 drafter (DEC-026 Appendix A), derived from DEC-025 section 4, EXP-025 section 5.1 and Amendment 2. A worker adopted it here with the changes of item 11.
+    - The owner's words are the O3 sentence and the `OWNER_CANARY_CONFIRMED` line and addendum of DEC-026. DEC-026 Appendix A records that the owner has not seen this wording.
+    - The owner may revoke it. A revocation applies from its recorded instant and restores section 4's seal for decisions after that instant. It does not undo the disclosure for outcomes already observed.
+11. **Changes from DEC-026 Appendix A** (wording and dating only, apart from (c) and (h)):
+    - (a) It is numbered 3, because #529 merged as Amendment 2.
+    - (b) It is dated by its writing instant; the merge instant is the merge commit's, with no edit after the OK.
+    - (c) Item 1 declares nothing, because this amendment is written after 2026-10-10T00. The draft had made item 1 depend on the O-6 default and held it in reserve.
+    - (d) The blindness paragraph records job #499 and what was in view.
+    - (e) Item 5 quotes Amendment 2 item 5 word for word.
+    - (f) Item 9 says what is not yet built.
+    - (g) The timing paragraph is updated, because 2026-10-10T00:00Z has passed.
+    - (h) Item 3 follows DEC-024 Amendment 6, EXP-022 Amendment 6 and DEC-026 Amendment 1 B: the executor follows the pick feed as built, not section 5.3's pinned union source, and the replay-only residual is left to EXP-022 to declare (quant-proof's edit E1 on `abd413c`).
+
+**Timing.** It is written at 2026-10-10T09:30:19Z, after 2026-10-10T00:00Z. DEC-026 section 8 allows this because the shadow's outcome guard is binding and the shadow has not run. **It must merge before the first canary send** (DEC-026 section 4 and section 11 item 1). It merges with quant-proof's OK on its final head (DEC-026 Q11).
+
+**Why this cannot change a read.** EXP-025 sections 0, 3 and 7 fix the rule, data, analysis, pass bar and alpha pair. This amendment changes none of them, and it edits no pinned line, patch, hash or window. Section 5.1 already covers in-window decisions.
+
 ### Pointer (2026-10-10; not an amendment): seal end state
 
 This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
 
+### Amendment 4 (written 2026-10-10T10:34:03Z, from `date -u`; before 2026-10-16T01:00Z; outcome-blind, counts and hashes only): the P2 deterministic rebuild record
+
+Numbered after Amendment 3 (#548, open when this was written). Amendments take numbers in merge order: if this merges before #548, the manager renames this heading to Amendment 3, and #548's to Amendment 4, at merge. The written instants stay as they are. This amendment records P2 (section 10) and the hashes that section 2.3 says a dated amendment records. It changes no rule, cap, threshold, feature or band.
+
+**What ran [measured].** MiScusi job **#504** (`j_zbuqJu4lySNRfw`), on `mal-research-0`, role `exploration`, 6 CPU, 40 GB memory cap (peak 9.2 GB), 2 pass-A workers, repo at `b17dc0b`. It ran 38 minutes, ended 2026-10-10T10:33:22Z with exit 0, and ran once. It read the exploration tape only (`/data/mal/audit-1008/tape`, `/data/mal/hunt-shared`).
+- **Script.** `run_p2.sh` (sha256 `20c8ac02950d734616ce4aaeb546bd53a9a9ea401804072b6e8c7f3302744f9a`). It runs the steps of `verify/run_rebuild.sh` in the same order: ledger, `10_meta.py`, `11_passA.py` per day (the 36 days of C1's `logs/A_*.log`, 2 workers, the same memory and load wait), `12_passC.py` (2 chunks), `14_export.py`, `16_confirm.py`. It differs in five places:
+  1. **Ledger.** `ledger/01_wallet_daily_det.py` replaces `01_wallet_daily.py`. Its arguments are `--tape /data/mal/audit-1008/tape/trades --out <W>/wl --tmp <W>/tmp_duck`, with its defaults of 3 threads and 6 GB. Those are the original step's tape, output, temp directory and settings.
+  2. **Working directory.** `W = /data/mal/hunt-1008/c1nf-p2`, a new directory. The script refuses to run if `wl/`, `out/cand/`, `out/candx/` or either npz already holds output. The only patch is the `common2.py` hunk of `verify/PATCHES.diff` (`O` and `TMP`), with its target changed from `/data/mal/hunt-1008/c1nf-verify` to `W`. **Why it is not applied verbatim:** verbatim, it points at VERIFY's directory. The ledger step skips any day already in `wl/`, and `run_rebuild.sh` skips any day already in `out/cand/`, so the run would reuse VERIFY's non-deterministic ledger and pass-A output. The `01_wallet_daily.py` hunk of `PATCHES.diff` is not applied, because that step is replaced and the deterministic ledger takes its paths as arguments. The diff applied is `common2_p2.diff` (sha256 `baa3870187d04a95f190c35eb595375e01f51daa5317950e4fcf3690cce9d42d`), with two changed lines.
+  3. **`rule.json`** is copied from `ARTIFACTS/exp025/` (sha256 `e158e0b9…c5c196`, equal to C1's `ml/rule.json`, checked) instead of C1's directory.
+  4. **No P&L printed.** `16_confirm.py`'s stdout stays in `logs/confirm_primary.log`. The script does not print it, and the writer did not open it.
+  5. **Count step.** `p2_counts.py` (sha256 `a385abbad97b96103822b81492d23986e5f3df716db85adfd801a07acc1556c6`) follows the confirmation part of VERIFY's `v/v1_wf.py`. It re-runs the walk-forward with the pinned `mlcommon` (`lgb_params`: `deterministic=True`, seed 1, 3 threads) and `rule.json` (it asserts `model = lgb`, `exit = E3` and cap 0.5). From the pinned scorer's `confirm_primary_trades.npz` it opens only the `idx` array. It applies `c1nf_cap.apply_cap_before_book` before `mlcommon.book` (leg `p`, E3) and prints counts only.
+- **Staged files (sha256; `staged_sha256.txt`, checked by `sha256sum -c` at job start).** Every pinned file equals section 2.3. Only `common2.py` is patched.
+
+| File in `W` | sha256 |
+| --- | --- |
+| `scripts/common2.py` (**patched**: `O`, `TMP`) | `737631fbdb7e5367b71f86283a6575795574b7b68634fdde29d80b826ecf931f` |
+| `scripts/01_wallet_daily_det.py` | `bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5` |
+| `scripts/10_meta.py` | `5a25d0b122b5835ccea30922e73ce62a83e0a66af10d4f923495a09b7ba3346e` |
+| `scripts/11_passA.py` | `24b1822e35a3b96337f8205370accc8eb9862d8411c9fda68296fb040ea79122` |
+| `scripts/12_passC.py` | `22e6329415d40243ddcfab1b3f1793b25fd251cb9bf52be7e76e29300d6d0946` |
+| `scripts/14_export.py` | `7dc2d151094defa349353fccdfdb92a6b542c9fa03828ad7dc77a3b3aecee868` |
+| `scripts/16_confirm.py` | `c2fc497f141a9e650238beba26c4627eb51053a31e0e161ce6612cfc819ba0ae` |
+| `scripts/mlcommon.py` | `bf783986e338cd924c2a99c5fbd3df2d5ec24d765772e654f44b5e63f4dca46f` |
+| `scripts/c1nf_cap.py` | `e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6` |
+| `ml/rule.json` | `e158e0b9069a7db98a26c55b68f74055f44611330b2c636e68f37e4379c5c196` |
+
+**Acceptance (section 10 P2) [measured, job #504; counts only].**
+
+| Count | Band | Rebuilt n | In band |
+| --- | --- | --- | --- |
+| Unconstrained primary at 1.3 s (leg `p`, E3; the pinned `16_confirm.py` book) | 8,797 ± 3%, so 8,534 to 9,060 | **8,786** | yes |
+| C1-NF book, spec order (`h_top1` ≤ 0.5 and not NaN, before the per-mint book) | 400 to 440 | **422** | yes |
+
+- **P2 is accepted.** P2 does not withdraw C1-NF. Acceptance shows reproducibility only. It says nothing about P&L, and no P&L was computed for this record.
+- The count step's recount of the primary equals the pinned scorer's book row for row: 8,786 rows with the same indices.
+- Other counts: 806,592 discovery rows and 625,889 confirmation rows; 21 confirmation days; 49,738 stage-2 selections (rows, before the book), of which 1,515 survive the cap.
+- VERIFY's rebuild on the non-deterministic ledger had 8,797 (C1's file 8,799) and 419. This one has 11 fewer primary trades and 3 more C1-NF trades. That spread is what the ledger change can produce (section 11.1: `cash` sign flips change the `skill` feature) [inferred; not analysed further].
+
+**The read's training set [measured; section 2.3].** These replace VERIFY's `disc.npz` / `conf.npz` (`4b68d55b…` / `0dc37940…`), which stay reference only.
+
+| File | sha256 |
+| --- | --- |
+| `ml/disc.npz` | `c4138e08675e17a3d139ed946ea308835d9faa6e87a36948f15fd92952dfa61f` |
+| `ml/conf.npz` | `87bba5689a5968a9e9fb39735768e6a673d6de92929bdc29adcc5f315baf4026` |
+| `ml/confirm_primary.json` (the pinned `16_confirm.py` primary; holds P&L, hashed and copied, not opened) | `0b5c2bbc58bafa45cf1eb46b157671532b34361bbb9caf20bbfa1eec0a2f1fd5` |
+| `ml/confirm_primary_trades.npz` (the same; only `idx` was opened, by the count step) | `404a0df40bd5395e89d12f663d3c3fa69bebc394fac25969989231d27b6a8033` |
+| `scripts/16_confirm.py` (pinned, unedited) | `c2fc497f141a9e650238beba26c4627eb51053a31e0e161ce6612cfc819ba0ae` |
+
+**Look-directory inputs (section 11.2) [measured].**
+- Exploration `hunt-shared/tokens.parquet`: `2c01a6d4b140e3710f45234594881f9bb26428da101f4b426bafa68fbb2a2681`.
+- P2 `work/universe.parquet` (the `mid` reference for P3's E0): `217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211`.
+- P2's 36 deterministic `wl/` days: manifest `wl_sha256.txt` (sha256 `026310101a60f8a6d7c1c34f4c38374ca5015d6d7f42d907adaee2c0cd2d6431`), 36 files with 36 distinct hashes.
+- P2's `out/mout/`: manifest `mout_sha256.txt` (sha256 `64239ce8d5f1e7e21bdc228f83c49fcab3b4847ff762570b03bd77eb718d913c`), 36 files.
+- Cross-check with section 11.1: `wl/2026-09-20.parquet` has sha256 `123487ab288c389efd47effc3ae7c15acac4b8402a4789b9b8937d761df6a9c5`, equal to the determinism check's file.
+
+**Backed-up copy.** The job copied these files to `/data/mal/c1nf/p2/` and checked the copies with `sha256sum -c`:
+- `disc.npz`, `conf.npz`, `confirm_primary.json`, `confirm_primary_trades.npz`, `rule.json`, `p2_counts.json` (counts only);
+- the manifests `p2_outputs_sha256.txt`, `staged_sha256.txt`, `wl_sha256.txt`, `mout_sha256.txt`, `shared_sha256.txt`;
+- `run_p2.sh`, `p2_counts.py`, `common2_p2.diff`.
+
+`/data/mal/c1nf` has no `.nobackup` marker, while `/data/mal/hunt-1008` has one. `/data` is in the nightly restic set (`mal-backup.timer`, about 03:17Z, `--exclude-if-present .nobackup`) [measured 2026-10-10]. No snapshot holds these files yet: they were written at 10:33Z, after the 2026-10-10T03:17Z run, and that run failed (`Fatal: unable to save snapshot`; the target reported `no space left on device`). Until a snapshot that contains `/data/mal/c1nf/p2/` is confirmed, the copy is on local disk only. The manager records that snapshot's id, checked with `restic ls`, in a dated line before 2026-10-16T01:00Z. The working directory `/data/mal/hunt-1008/c1nf-p2` (2.7 GB, including `wl/` and `out/mout/`) is kept for look assembly.
+
+**Outcome-blindness.**
+- Neither the job log nor the job result holds a P&L, return, fill or exit value of the rebuild, and the writer printed or opened none. The job log and result hold only counts and hashes.
+- Looking for how 8,797 and 419 were defined, the writer saw numbers in `verify/VERIFY.md`. Those are exploration-pool numbers already published in the repo and cited by this file, and no seal covers them.
+- No sealed block was opened. Neither was any forward-1002 or forward-1002ev file, walk 2, any October label, or any forward-paper, canary or shadow output.
+
+**What this does not do.**
+- It runs no October step. The look patches of section 2.4 belong to the read tool (P4).
+- It is not P3 or P4.
+- It is not the canary's model pin. #550 trains on VERIFY's arrays, and a model built on P2's arrays needs its own pin and dated line.
+- Quant-proof reviewed it on head `f7da961` (2026-10-10). The run matches section 10 P2, with the `common2.py` retarget disclosed above. The count step is count-only. The bands and hashes check against the files.
 
 ### Amendment 5 [number TBD at merge: open #548 holds Amendment 3 and open #558 holds Amendment 4] (2026-10-10, DRAFT; the manager fills every TBD after the merges, and it must merge before 2026-10-16T01:00Z): the P3 and P4 pins (October adapter, read tool)
 
@@ -587,4 +750,4 @@ Nothing else changes: the rule, the cap, the threshold, the patches' content, th
 
 ## Sources
 
-`observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`.
+`observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`; [DEC-026](../DEC/DEC-026-c1nf-live-canary.md) section 8 and Appendix A, `tools/c1nf_executor.py` (`PICK_WINDOW_START_MS`) and #503's `tools/c1nf_shadow.py` at `50eeaa1` (guard unchanged at `9a80398`) (`OUTCOME_START_MS`), MiScusi job #499 (Amendment 3).
