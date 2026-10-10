@@ -405,6 +405,73 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - Meeting item 4 **does** resolve the 10-10 halt for section 7 and Amendment 3 item 2 (the owner's second answer). The T0 → T1 step still needs Amendment 3's other conditions: 20 landed buys, landing p50 ≤ 3.0 s, canary and twin means not negative, and Look 1 not negative if read.
 5. **Not changed:** the section 4 limits, the other section 5 rules, the section 6 seals, EXP-024 and EXP-022. Canary results are not evidence.
 
+## Amendment 5 (2026-10-10T08:15Z, the manager's decision; stricter only; written after the section 5.1 halt and after Amendment 4): plain pools, reconciliation, enforcement
+
+**Provenance.** The owner forwarded a reviewer's findings on Amendment 4 (2026-10-10, about 08:00Z) "purely as information to act on and make sure we're doing things correctly". The manager made this amendment in response. It changes only what can add a halt or block a resume, and it loosens nothing in Amendment 4.
+
+**What it does to the owner's choice.** Item 1 adds a condition to the owner's resume rule. It can therefore block a resume that Amendment 4 alone would allow. The owner may strike item 1 by a dated line here.
+
+**Disclosure.** This was written after the plain-pool medians below were measured. Partial day 10-10 already read below 337 s, so this addition was chosen knowing it may block the 10-11 resume.
+
+1. **A plain-pool measure is added to section 5.1.**
+   - **What it measures.** Amendment 4's measure, the executor's own UTC-day median over all pools, stays. Section 5.1 also judges the day median of the BOOST last slice after s0 over the PLAIN pools: `synthetic` false and `synthetic_src` `rpc`, the only pools H5 trades.
+   - **The source.** The shadow's pool records, filtered the way the executor filters them: `reason` "horizon", `gap` false, `boost_src` "pda" or "event_authority". `gap` and `boost_src` are structure fields; PR #538 adds them to the tool's allowlist for this. The day key is the hour of the shadow's file, while the executor keys by read time; this is disclosed.
+   - **Pool counts.** A plain median needs at least 30 plain pools, and the tool's all-pool median needs at least 30 pools. Each group is judged on its own count.
+   - **When it halts.**
+     - A completed UTC day from 10-11 on with a plain median below 337 s halts. This is the second strike; the 10-10T07:11Z fire was the first.
+     - A running plain median below 335 s halts at any time.
+   - **Fewer than 30 plain pools.** Plain is not judged that day. Amendment 4's all-pool rule still applies.
+   - **Resume.** Amendment 4 item 4's resume also requires day 10-10's plain median at or above 337 s over at least 30 plain pools. Fewer than 30 means no resume.
+2. **Why.** The executor's day median counts synthetic pools, which H5 never trades. Measured (MiScusi job #482; shadow records, not the executor's exact filter):
+
+   | Window | Pool set | n | Median | Share before 329.5 s |
+   |---|---|---|---|---|
+   | 10-09, 19-23Z (go-live day) | plain | 152 | 337.752 s | 0.105 |
+   | | all | 211 | 340.306 s | — |
+   | | synthetic | 59 | 345.587 s | — |
+   | 10-10, 00-07Z (partial day) | plain | 159 | 336.435 s | 0.151 |
+   | | all | 223 | 337.648 s | — |
+   | | synthetic | 64 | 342.175 s | — |
+
+   - Plain pools end BOOST earlier.
+   - **Share before 329.5 s.** 329.5 s is a fixed constant just under the rule's s0 + 330 s exit. It matches our sells' reported typical landing. No canary field is joined to any pool. The share is a population-level preview of EXP-024 §11's mechanism condition ("BOOST ended before our exit on more than 15% of trades") and of rule (b)'s 15% line. The plain share on 10-10 so far is 0.151, above that line.
+   - **The all-pool 10-09 figure is the job's own.** Job #482 computed 340.306 s itself over 211 pools. The executor's 10-09 figure, 340.306 s over 117 pools, is the same value by coincidence of the middle pool: both counts are odd, so each median is one pool's value.
+3. **Reconciliation of A3 job #478 with the shadow, on the same 9 mints.** Files: `/data/mal/hunt-1008/h5-work/a3-reconcile-1010/REPORT.md`; MiScusi jobs #483 and #484; 112 public RPC calls, 0 Helius credits.
+   - **The rebuild is exact.** It used the monitor's helpers with its own time bounds and matches #478's counts and BOOST distribution: n=9, min 329, median 333, max 353.
+   - **Same second.** A3 and the shadow put the last slice on the same absolute second on all 9 pools.
+   - **The clock is not the cause.** s0 is the migrate slot on 8 of 9 pools; the ninth is 1 s (2 slots) later.
+   - **Medians on these 9 mints:**
+     - 333 s after migrate and 333 s after s0, both by block time;
+     - 331.499 s by the executor's slots × slot-time estimator;
+     - plain (n=6) 332.5 s, synthetic (n=3) 338 s.
+   - **Conclusion.** The gap between A3's 333 s and the day medians comes from which pools were sampled, a low draw, not from the clock. A bootstrap from 10-10's distribution so far (10,000 draws, seed 1) puts P(a 9-pool median ≤ 333 s) at 0.194 by block time. On the executor's own slots × slot-time clock, P(≤ 331.499 s) is 0.059, the less favourable figure. On that clock these 9 coins read lower still, so A3 did not overstate anything.
+4. **The 330 s backstop is an upper bound.** Amendment 4 item 2's A3 backstop is measured after migrate. That is an upper bound on the time after the first print. By itself it cannot show BOOST outlasting our sell at about 329.5 s. On the sampled pools the bound is close, because s0 equals the migrate slot on 8 of 9.
+5. **No A3-run 335 s backstop.**
+   - Amendment 4 made the A3-run clause report-only by the owner's explicit choice, so reinstating it is the owner's decision.
+   - On about 9 pools it is noisy (item 3).
+   - Until 20 paired sells exist for rule (b), item 1's running plain check stands in its place, run every 6 hours.
+6. **Enforcement is a scheduled job, not a manual read.**
+   - **The owner's measure stays primary.** Every scheduled run also reads the executor's own completed-day median, from `h5-counters.json` by the allowlisted `sudo dd`, as Amendment 4 item 2 defines it. The tool's figures are an extra check.
+   - **When a halt is due.** If the executor's figure says so, or either of the tool's figures does.
+   - **When a resume is allowed.** Only if the executor's figure and both of the tool's figures clear.
+   - **The tool.** `tools/h5_boost_day_check.py` (PR #538, once merged) runs as a MiScusi job on mal-fast-0:
+     - day mode after each 00:00Z;
+     - running mode every 6 hours;
+     - resume mode once, for 10-10.
+   - **The log.** Each run appends one JSON line to `/home/claude/data/h5-daily/boost-day.jsonl`.
+   - **Placing STOP.** Day and running modes run with `--place-stop`: on a due halt the job touches STOP, verifies it, and exits non-zero.
+   - **Never removing STOP.** The tool never removes STOP. Resuming stays a manager step, after Amendment 4 item 4 and item 1 above both hold.
+   - **Until #538 merges,** the manager runs the same computation inline in a MiScusi job, with item 1's filter: `reason` "horizon", `gap` false, `boost_src` "pda" or "event_authority". The fields read are the allowlist plus `gap` and `boost_src`. If a run cannot apply that filter, its record names the filter actually used, and its plain figure does not count as item 1's measure. That blocks a resume.
+7. **Code note.** The `on_boost_row` docstring (`tools/h5_executor.py`) says ">= 10 pools"; the code uses 30. The fix rides with the pre-10-16 reinstall (the pick-oracle wiring).
+8. **Look 1 disclosure.** The Look 1 report states that BOOST timing split by pool class was observed before the look for pools in Look 1's window, from 10-10T00Z on (jobs #482 and #485, and the scheduled checks under item 6). It is structure timing, never joined to an outcome (EXP-024 Am.4 D1).
+9. **Not changed:**
+   - Amendment 4's items and the owner's choices in it;
+   - section 5.6;
+   - the other section 5 rules and section 4's limits;
+   - EXP-024 and EXP-022.
+
+   Canary results are not evidence.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.

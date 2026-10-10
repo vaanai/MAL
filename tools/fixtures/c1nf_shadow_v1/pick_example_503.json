@@ -1,0 +1,16 @@
+{
+  "SD_slot": 444240500,
+  "base_reserve": 206900000000000,
+  "decision_T_ms": 1791591000000,
+  "feature_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "h_top1": 0.12,
+  "mint": "DxkqpagQamHXMVhS2GC7fni4qugWp5fcw28chKfUpump",
+  "model_sha": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "pool": "5N4CLYwiyx7AWtUzPhErC97bJX62aQbCpBz2CCuFc2Bm",
+  "pred": 0.0431,
+  "q_lamports": 137580000000,
+  "stage1": true,
+  "state_slot": 444240499,
+  "type": "c1nf_pick",
+  "v_lamports": 17580000000
+}
