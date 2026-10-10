@@ -13,6 +13,36 @@ Which experiment owns which block of sealed historical hours. This is the accoun
 - **Second counted reader (DEC-023, 2026-10-08).** Rule 1 still holds: a block has one owner. [DEC-023](../DEC/DEC-023-h5-family.md) §3 allows one exception: [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) (H5-BOOSTFLOOR) is a **counted reader**, not an owner, of the Forward walk row's `[2026-10-09T23, 2026-10-16T01)`, and later of the Forward walk 2 row's `[2026-10-16T01, 2026-11-06T01)`. It reads each only after the owner's read is done (the EXP-012 FINAL, then EXP-022's end). It is recorded in those rows' Status cells and in the changelog, not as a new table row, because `tools/mal_catalog.py` rejects two ranged rows over one hour (rule 5).
 - **Further counted reader (DEC-025, 2026-10-09).** [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md) (C1-NF) is a counted reader, not an owner, of the Forward walk row's `[2026-10-02T15, 2026-10-16T01)` (counted decisions from 2026-10-10T00, only after EXP-012's FINAL) and a non-owner reader of the Forward walk 2 row's `[2026-10-16T01, 2026-10-24T02)` while EXP-022 counts (CAP-PICK picks excluded by the boolean oracle). **Its counted window is `[2026-10-10T00, 2026-10-24T00)` in two looks (Look 1 `[2026-10-10T00, 2026-10-17T00)`).** Recorded in those rows' Status cells and in the changelog, not as a new table row, for the same reason as above (rule 5). The owner's OK on DEC-025 O1, O2 and O3 was confirmed by the manager on 2026-10-09.
 
+### Clarification, 2026-10-10: when a seal ends, and how hours are released (quant-proof rulings (3a) and (3b))
+
+Dated 2026-10-10 (`date -u` read 2026-10-10T11:10:56Z when this text was drafted). Source: quant-proof's ruling on the October data memo, section "(3) Option B rulings, made now and outcome-blind", in `/data/mal/hunt-1008/OCTOBER-DATA-QP-RULING.md`. The rulings were made outcome-blind. This is a rules clarification of when existing seals end. It is not an amendment of any read.
+
+- **No data is released by this text.** No hour, row, owner, Status cell, reader or m changes here. A release still needs the owner's ledger edit, per domain (term 2 below).
+- **Disclosure.** The rulings were written while the H5 canary and shadow totals for EXP-024 Look 1's window were being watched (the declared real-time observation of [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) section 3.1). That is acceptable because the rulings move only release timing. They never change any read's rule, data, bar or timing. The worker that wrote this ledger text opened no October data and no canary, shadow, walk or runner file. Its only inputs were the ruling file and the texts it names.
+- **Timing.** The ruling requires both rulings to be on `main`, as this dated clarification, before DEC-016's FINAL (about 2026-10-16T02Z). This text merges only with quant-proof's OK on its final head.
+
+**(3a) A seal ends at its family's end state.** It ends when that end state is recorded on `main`, not at an earlier look of a cumulative read.
+
+| Read | End states |
+| --- | --- |
+| [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) | PASS at any look; section 8.3 futility at Look 1; Look 2 run; Look 2 NOT_DECIDABLE at 2026-11-14T00:00Z; withdrawal. A Look 1 non-pass without futility, or a Look 1 NOT_DECIDABLE, is **not** an end state. |
+| [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md) | PASS at Look 1; Look 2 run; Look 2 refused. |
+| [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) | PASS; look 3 done or NOT_DECIDABLE; A3 halt; withdrawal (only before counting, under F2 (d)). |
+| [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) | FINAL (A) written. If (A) passes, also the single (B) run and the Amendment 3(a) re-score, each done or refused. |
+
+"F2 (d)" is clause (d), "No lever", of the F2 package (the walk-2 week-1 lane) in the ruling's section (2). F2 is not on `main` as of this text.
+
+Terms that apply to every read:
+
+1. **A breach does not end a seal.** A compromised read still runs and is still reported.
+2. **Releases are per domain.** A domain (the ruling's section (1) domain map) opens only when every seal on it has ended **and** the owner has edited the ledger text.
+3. **Released hours never confirm.**
+
+**(3b) EXP-024 Amendment 4 item D1 lifts at EXP-024's end state.** Item D1 is the seal on joining synthetic class to an H5 outcome (not domain D1 of the domain map). In it, "before Look 2 is read" means "before EXP-024's last look". So D1 lifts when EXP-024's end state (table above) is recorded on `main`, including when Look 2 never runs.
+
+- The full-universe book (synthetic pools included) stays report-only (EXP-024 Amendment 4 A3).
+- After a Look 1 PASS, a synthetic split cannot widen the live universe. Widening it would be a new family.
+
 ## Table
 
 UTC hours, inclusive start, exclusive end.
@@ -45,6 +75,7 @@ UTC hours, inclusive start, exclusive end.
 
 ## Changelog
 
+- 2026-10-10 (quant-proof rulings (3a) and (3b), made outcome-blind, from `/data/mal/hunt-1008/OCTOBER-DATA-QP-RULING.md` section (3); no hour was read to make this edit): added the Rules clarification **"when a seal ends, and how hours are released"**. It records the end states of EXP-024, EXP-025, EXP-022 and DEC-016, and three terms: a breach does not end a seal; releases are per domain; released hours never confirm. It also records that EXP-024 Amendment 4 item D1 lifts at EXP-024's end state. Pointers were added in EXP-024, EXP-025, EXP-022 and DEC-016. **No data is released by this edit.** No hour, row, owner, Status cell, reader or m changed, and a release still needs the owner's ledger edit per domain. Disclosure: the rulings were written while the H5 canary and shadow totals for EXP-024 Look 1's window were being watched. They move only release timing, never a read's rule, data, bar or timing.
 - 2026-10-09 (manager's worker draft; owner's OK on [DEC-025](../DEC/DEC-025-c1nf-family.md) O1, O2 and O3 confirmed by the manager 2026-10-09, two looks; no hour was read to make this edit): **C1-NF (EXP-025) is proposed** as a new DEC-014 family in a third alpha slot ([DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 3). Counted decision window `[2026-10-10T00, 2026-10-24T00)` in two looks (counted decision times: Look 1 `[2026-10-10T00, 2026-10-17T00)`, 7 UTC dates; Look 2 cumulative, 14 dates, only if Look 1 did not pass; pinned lines `EXP025_COUNT_START`, `EXP025_LOOK1_END` and `EXP025_COUNT_END` in EXP-025 section 0). It is a counted reader, not an owner, of the Forward walk row (only after EXP-012's FINAL; [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Amendment 8) and a non-owner reader of the Forward walk 2 row while EXP-022 counts ([EXP-022 Amendment 4](../EXP/EXP-022-cap-pick-part1-prereg.md)). No row owner changes and no table row is added. It adds one family to m (**m >= 15**).
 - 2026-10-09 ([DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Amendment 9, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Amendment 1, [EXP-012](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) Amendment 5; no forward value was read to make this edit): **forward-1002ev is recorded in the Forward walk row** (`/data/mal/blocks/forward-1002ev`, `[2026-10-09T00, 2026-10-16T01)`, `--event-v`, credit cap 3,600,000, MiScusi job #433), sealed exactly as forward-1002 is sealed. Same hours, same owner (EXP-012); no new block, reader or owner, and no change to m. Before EXP-012's FINAL is written only the walker, `tools/backfill_verify.py` and hour counts touch it; no hash-only, join or md5 run happens before the FINAL. The Host and Status cells of the Forward walk row changed; its Hours, Owner and the second-reader exceptions are as before.
 - 2026-10-08 (manager; owner OK asked by 2026-10-09T20:00Z, else the 10-08 mandate; [DEC-023](../DEC/DEC-023-h5-family.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md), [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 2; no hour was read to make this edit): **H5-BOOSTFLOOR (EXP-024) is registered** as a new DEC-014 family (k = 1, α 0.020 at Look 1 and 0.005 at Look 2, DEC-021 §8's second slot). It is a second counted reader, not an owner, of the Forward walk row's `[2026-10-09T23, 2026-10-16T01)` (only after EXP-012's FINAL, DEC-016 Amendment 7, EXP-012 Amendment 3) and, for Look 2, of the Forward walk 2 row's `[2026-10-16T01, 2026-11-06T01)` (only after EXP-022's read ends, EXP-022 Amendment 2). Its counted s0 window starts at 2026-10-10T00, set by the pinned line in EXP-024 §0. No row owner changes and no new table row is added. It adds one family to m (**m ≥ 14**).
