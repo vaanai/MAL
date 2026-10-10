@@ -166,37 +166,87 @@ def v0_map(tokens: str) -> dict:
     return {p: int(v) for p, v in rows}
 
 
-def frame_rows(ctx: dict, pools) -> list:
-    """Raw block rows of the V-covered hours: PumpSwap prints of the pools with a V0. Each row is a dict of RAW_FIELDS plus `_hour`."""
+FRAME_FIELDS = ("pool", "side", "slot", "tx_index", "event_index", "zero_sol", "ix_name", "_hour")   # what the frame and draw read
+
+
+class Row(tuple):
+    """A frame row: a tuple read by field name (`row["slot"]`, `row.get("ix_name")`), so a look's frame (millions of prints) fits in memory.
+    The pinned frame / draw / exclusion functions read only FRAME_FIELDS; a SAMPLED print is re-read in full (full_rows) before its check."""
+    __slots__ = ()
+    _IX = {k: i for i, k in enumerate(FRAME_FIELDS)}
+
+    def __getitem__(self, k):
+        return tuple.__getitem__(self, self._IX[k] if isinstance(k, str) else k)
+
+    def get(self, k, default=None):
+        i = self._IX.get(k)
+        return default if i is None else tuple.__getitem__(self, i)
+
+
+def _con():
     import duckdb
-    import pandas as pd
     con = duckdb.connect()
+    con.execute("SET memory_limit='1GB'")
+    con.execute("SET threads=2")
+    return con
+
+
+def _raw_sql(cols: str) -> str:
+    return f"SELECT {cols} FROM read_json(?, format='newline_delimited', columns={RAW_COLS}) WHERE venue = 'pumpswap'"
+
+
+def frame_rows(ctx: dict, pools) -> list:
+    """Raw block rows of the V-covered hours: PumpSwap prints of the pools with a V0, as Rows of FRAME_FIELDS (strings interned)."""
+    import pandas as pd
+    con = _con()
     con.register("pp", pd.DataFrame({"pool": sorted(pools)}))
-    out = []
+    out, intern = [], sys.intern
     for h, p in ctx["hours"]:
         if not p:
             continue
-        q = (f"SELECT {', '.join(RAW_FIELDS)} FROM read_json(?, format='newline_delimited', columns={RAW_COLS}) "
-             "WHERE venue = 'pumpswap' AND pool IN (SELECT pool FROM pp)")
-        for rec in con.execute(q, [p]).fetchall():
-            d = dict(zip(RAW_FIELDS, rec))
-            d["_hour"] = h
-            out.append(d)
+        cur = con.execute(_raw_sql(", ".join(FRAME_FIELDS[:-1])) + " AND pool IN (SELECT pool FROM pp)", [p])
+        while True:
+            chunk = cur.fetchmany(100_000)
+            if not chunk:
+                break
+            for pool, side, slot, txi, evi, zs, ix in chunk:
+                out.append(Row((intern(pool), intern(side) if side else side, slot, txi, evi, zs, intern(ix) if ix else ix, h)))
     con.close()
     return out
+
+
+def full_rows(ctx: dict, sample: list) -> list:
+    """The sampled prints re-read in full (RAW_FIELDS + `_hour`) from their hour's raw file, by (slot, tx_index, event_index) and pool."""
+    import pandas as pd
+    path = dict(ctx["hours"])
+    by_hour = {}
+    for r in sample:
+        by_hour.setdefault(r["_hour"], set()).add((r["slot"], r["tx_index"], r["event_index"], r["pool"]))
+    got = {}
+    con = _con()
+    for h, keys in sorted(by_hour.items()):
+        k = sorted(keys)
+        con.register("kk", pd.DataFrame({"slot": [a[0] for a in k], "tx_index": [a[1] for a in k], "event_index": [a[2] for a in k],
+                                         "pool": [a[3] for a in k]}))
+        q = f"SELECT * FROM ({_raw_sql(', '.join(RAW_FIELDS))}) JOIN kk USING (slot, tx_index, event_index, pool)"
+        for rec in con.execute(q, [path[h]]).fetchall():
+            d = dict(zip(RAW_FIELDS, rec), _hour=h)
+            got.setdefault((d["slot"], d["tx_index"], d["event_index"], d["pool"]), d)
+        con.unregister("kk")
+    con.close()
+    return [got[(r["slot"], r["tx_index"], r["event_index"], r["pool"])] for r in sample]
 
 
 def adapter_rows(ctx: dict, sample: list) -> dict:
     """{(slot, tx_index, event_index): adapter row} from the look's materialised tape/trades/<hour>.parquet, per sampled print's hour.
     Several rows at one key: the one with the sampled print's pool, else the first."""
-    import duckdb
     import pandas as pd
     by_hour, want_pool = {}, {}
     for r in sample:
         by_hour.setdefault(r["_hour"], set()).add((r["slot"], r["tx_index"], r["event_index"]))
         want_pool[(r["slot"], r["tx_index"], r["event_index"])] = r["pool"]
     out = {}
-    con = duckdb.connect()
+    con = _con()
     for h, keys in sorted(by_hour.items()):
         f = os.path.join(ctx["tape"], f"{h}.parquet")
         if not os.path.exists(f):
@@ -330,7 +380,7 @@ def _share(ok, n):
     return (ok / n) if n else None
 
 
-def run_p7(ctx: dict, fetch, *, frame_fn=frame_rows, amend_path: str = AMEND_PATH, decoder_path: str = DECODER_PATH) -> dict:
+def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, decoder_path: str = DECODER_PATH) -> dict:
     """Pins, materialised check, frame and draw, adapter rows, fetch and decode, both lines; writes P7.json and the prints file once."""
     AM = load_amend(amend_path)
     EV = AM.EV
@@ -340,8 +390,9 @@ def run_p7(ctx: dict, fetch, *, frame_fn=frame_rows, amend_path: str = AMEND_PAT
         raise P7Refusal("LOCK", f"{out_json} already exists: P7 is drawn once per look")
     check_materialised(ctx)
     v0 = v0_map(ctx["tokens"])
-    draw = AM.p7_raw_draw(frame_fn(ctx, set(v0)), v0)
-    main, topup = draw["main"], draw["topup"]
+    draw = AM.p7_raw_draw((frame_fn or frame_rows)(ctx, set(v0)), v0)
+    full = full_rows(ctx, draw["main"] + draw["topup"])          # the drawn prints, in full, in draw order
+    main, topup = full[:len(draw["main"])], full[len(draw["main"]):]
     sample = [("main", r) for r in main] + [("topup", r) for r in topup]
     adapters = adapter_rows(ctx, [r for _, r in sample])
     sigs = []
