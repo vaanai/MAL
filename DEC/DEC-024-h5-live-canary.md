@@ -313,6 +313,98 @@ OWNER_CAPITAL_CONFIRMED: 2026-10-09 (owner, in session, asked by manager9). Owne
 - **Unchanged.** Every other item of Amendment 3 stands.
 
 
+## Go-live record (2026-10-09)
+
+```
+H5_CANARY_LIVE: 2026-10-09T19:29:53Z at T0 (0.02 SOL), install af02e90561e23b13a3a2fa89c63faad0da899d33.
+```
+
+- **Official A3 run.** EXP-024 Am.4 F, job #449: 2026-10-09T19:23:02Z on main 82cd674, monitor blob 1ca0a88c, pins blob 7486f57f.
+  - None of the five H5 halt flags fired, so **EXP-024 P2 is met**.
+  - `synthetic_share_high` read 6/17 = 0.353. It is recorded only (EXP-024 Am.4 C1; this file's Amendment 2 item 3, install verified at 16:52Z).
+  - `program_changed` was clear.
+  - `ms_per_slot_moved` gave a WARN, 267.26 → 217.39 ms/slot. That is the slot step and lies inside section 5.6's [150, 450] ms band.
+- **Step 11, done by Helm and relayed by the owner:**
+  - `H5_WATCH_FUNDED_SOL=0.298688847`;
+  - wallet-wide STOP removed at 19:29:31Z;
+  - TIER `T0`; LIVE_OK created;
+  - unit started at 19:29:53Z, active and enabled, running as `mal-live`;
+  - the only credential is `LoadCredential=probe-wallet`, and `check-h5-unit.py` passed;
+  - first watchdog pass: `alerts=0`.
+- **Manager check (job #469, about 19:31Z):** ALERTS=0. Unit files equal the pinned copies, the wallet balances to the funded amount, and the shadow feed is fresh.
+- **Total stop at T0.** The executor logs the T0 table constant, `total_loss_lamports=120000000` (0.12 SOL). The binding stop is min(0.12, 35% of the wallet at tier start), about **0.1045 SOL** (`tools/h5_executor.py:1034-1038`).
+- **Go-live pair.** The shadow is MiScusi job #454. The keyless dry run, job #455, keeps running for comparison.
+
+
+## Halt record: section 5.1, 2026-10-10
+
+DEC-024 §5.1 FIRED at 2026-10-10T07:11:07Z.
+
+- **The run.** The post-step A3 run (job #478, epoch 1053, 218.18 ms/slot) read a median BOOST last slice of 333 s after the migrate tx (n=9, min 329, max 353).
+- **Why it fires.** s0 is at or after the migrate tx, so the median after the first print is at most 333 s. That is below 335 s.
+- **Two-run clause.** This run is also the first post-step run below 337 s.
+- **STOP.** Placed at 07:15:10Z (job #479; open 0, pending 0).
+- **Clearing.** DEC-024 has no clearing rule for a §5 halt. STOP stays until the owner records a dated amendment that:
+  - names the §5.1 measure from that instant forward;
+  - does not reclassify this halt;
+  - states the resume condition.
+- **Disclosure.** That amendment is written after the halt, while the executor's own ≥30-pool day medians were known:
+  - 10-09: 340.306 s over 117 pools;
+  - 10-10 at 07:15Z: 337.556 s over 200 pools, not latched.
+
+Source: the quant-proof ruling of 2026-10-10, asked after the fire.
+
+The ruling's other points, recorded here:
+- **The executor's measure does not replace this clause.** The executor's in-code §5.1 measure (UTC-day median after s0, at least 30 pools, "two UTC days") is an extra live check. Adopting it in place of the A3-run clause after this fire would be a retune (section 5).
+- **The DEC text and the deployed code disagreed at go-live.** They differ on what is measured, on the 30-pool minimum, and on "two runs" vs "two UTC days". The monitor's own `boost_last_slice_early` flag halts below 315 s after migrate. Nobody recorded which reading governed. The manager's pre-fire default was the A3-run reading.
+- **No A3 run clears the halt on its own.** An after-migrate reading cannot prove that the after-first-print median is at or above a line.
+- **Until an amendment exists:**
+  - the STOP holds to the end of the 14-day duration;
+  - T0 → T1 stays blocked (Amendment 3 item 2; section 7).
+- **The canary at STOP** is not evidence (sections 2 and 4):
+  - 3 trades at 0.02 SOL;
+  - realized +0.005199 SOL;
+  - 3 sells landed, 0 late.
+- **Formal tests.**
+  - EXP-024 Look 1: no A3 halt flag fired (`boost_last_slice_early` halts below 315 s), so Look 1 is not halted. This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check.
+  - EXP-022: all six flags were clear.
+- **Other canary halts.** `program_changed` (a canary live halt under Amendment 2 item 4) was clear: 3 programdata hashes unchanged.
+
+## Amendment 4 (2026-10-10T07:27:25Z, the owner's decision; written after the section 5.1 halt of 2026-10-10T07:11:07Z): the section 5.1 measure
+
+OWNER_51_MEASURE_CONFIRMED: 2026-10-10T07:27:25Z (owner, in session, asked by manager9).
+
+The owner answered two questions:
+- How to handle the halt: "Restart on bot's count (Recommended)".
+- Whether a clean restart counts as resolved for the step to T1: "Yes, counts as resolved (Recommended)".
+
+The verbatim questions, options and option descriptions are in MiScusi notebook n_SmtvxryJ4N4Dfw. The instant is the manager's `date -u` read right after the answer.
+
+**Provenance of the items.**
+- **From the owner's chosen option text:** the measure (the bot's own count over 30+ pools a day); the resume condition (10-10 completes at or above 337 s); "one more day below 337 s, or a daily check below 330 s, stops it again"; and the fired check becoming report-only.
+- **Added by the manager after quant-proof review, both stricter:** two consecutive unevaluated days (under 30 pools) halt, and the manager's daily read that enforces the 07:11Z fire as the first "below 337".
+
+1. **This loosens section 5.1 after it fired.**
+   - The A3-run clause that fired (job #478: 333 s after migrate, n=9) is report-only from 2026-10-10T07:27:25Z.
+   - When the owner chose this, the executor's measure was known not to have latched (10-09: 340.306 s over 117 pools; 10-10 at 07:15Z: 337.556 s over 200 pools).
+   - The 07:11Z fire stays recorded as a fire (see "Halt record: section 5.1, 2026-10-10").
+2. **From 2026-10-10T07:27:25Z, section 5.1 is** the executor's UTC-day median of the BOOST last slice after s0, over at least 30 pools (install sha256 `e44d1b4c5ffb25c0705509b1e175015acee6c019c2a73e27053479e591f91152`).
+   - Below 335 s halts.
+   - Below 337 s on two completed UTC days halts, and the 10-10T07:11Z fire counts as the first. The executor cannot count that fire, so after each 00:00Z the manager reads the completed day's median and places STOP on the first completed UTC day, from 10-11 on, below 337 s.
+   - A completed day with fewer than 30 pools is unevaluated. Two consecutive unevaluated days halt.
+   - Rule (b) stays: BOOST over before our sell on more than 15% of at least 20 paired sells. It cannot bind before 20 paired sells; there is 1 now.
+   - Rule (c) stays: below 300 s on 3 pools in a day.
+   - **Backstop:** an A3 run whose median last slice after migrate is below 330 s halts. 330 s is EXP-024's pre-registered line, and an after-migrate reading is an upper bound on the after-first-print one.
+3. **Unchanged: section 5.6 in full.**
+   - Every A3 halt flag stays a live halt, including `boost_last_slice_early` (median below 315 s after migrate), and so does `program_changed`.
+   - The A3 last-slice median is still reported on every run.
+4. **Resume.**
+   - Resume only when UTC day 10-10 has completed with an executor median at or above 337 s over at least 30 pools, and no other section 5 rule or stop has fired.
+   - The manager then removes STOP in a MiScusi job and records here the instant and 10-10's median.
+   - If 10-10 completes below 337 s, or with fewer than 30 pools, there is no resume under this amendment.
+   - Meeting item 4 **does** resolve the 10-10 halt for section 7 and Amendment 3 item 2 (the owner's second answer). The T0 → T1 step still needs Amendment 3's other conditions: 20 landed buys, landing p50 ≤ 3.0 s, canary and twin means not negative, and Look 1 not negative if read.
+5. **Not changed:** the section 4 limits, the other section 5 rules, the section 6 seals, EXP-024 and EXP-022. Canary results are not evidence.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.

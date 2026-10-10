@@ -1,885 +1,986 @@
 {
-  "schema_version": "console.v1",
-  "updated_utc": "2026-10-08T18:09:43Z",
-  "review_windows": [],
-  "events": [
-    {
-      "id": "disk-incident-1008",
-      "kind": "other",
-      "title": "Research-0 disk reached 81% from the hunts; fixed, now 74%, with new rules for every hunt",
-      "detail": "Growth was about +100 GB/h from the hunts' per-branch extracts. Fixed by stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z), Helm's cleanup (freed 56 GB, now 74%) and .nobackup on hunt-1008 and audit-1008/{tape,work,tmp}. New rules for all hunts: shared data layer only, no per-branch tape copies, zstd Parquet or savez_compressed, a 5 GB disk budget each, heavy steps as MiScusi jobs, at most 4-5 at once. Watchdogs: the disk watchdog warns at 86% and stops (SIGSTOP) hunt processes at 90%; the CPU watchdog renices hunt processes above load 52. Time is approximate.",
-      "atUtc": "2026-10-08T18:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "hunts-1008",
-      "kind": "job",
-      "title": "Strategy hunts launched on the exploration tape: hunt-1, hunt-3 (LAYA), an LLM-trader test and hunt-2 (resumed) running; hunt-4 still stopped for disk",
-      "detail": "Protocol for every hunt: August discovery, RULE.md sha256, one September confirmation, adversarial verify, judge. Exploration tape only, so a survivor is still not gate evidence. Running: hunt-1 (H1-H6, wf_1b74c222-805), hunt-3 LAYA (L1-L3, wf_4f61363d-351), the LLM-trader test with Claude agents as the trader (wf_3b8d9808-907), and hunt-2 (12 theses, wf_84831245-793), which was stopped for disk and resumed at about 18:05Z under the new disk rules (at most 4 at once, each investigation continuing from its existing files; it uses the shared zstd layer /data/mal/hunt-shared if /data/mal/hunt-shared/README.md exists, otherwise it queries the tape directly with no copies). An OpenRouter arm is ready (free nemotron-3-ultra-550b-a55b, paid deepseek-chat, hard stop $1.50). Still stopped for disk: hunt-4 (cascades + strategy tree, wf_0d1a560e-ebe), which resumes after hunt-1 and hunt-3 finish. Results go to /data/mal/hunt-1008/JUDGE*.md. No hunt result yet. Time is approximate.",
-      "atUtc": "2026-10-08T18:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp022-gate-replay-387",
-      "kind": "result",
-      "title": "Job #387 (live-gate replay): not a kill for CAP-PICK",
-      "detail": "At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, positive on 19 of 29 days. Exploration, in-sample; not gate evidence. The known 60-min skip is not a kill and EXP-022 Amendment 1 (#474) sets the E0 comparison set at <= 60 min. A11 is not adopted. Time is approximate.",
-      "atUtc": "2026-10-08T18:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp022-amendment1-merged",
-      "kind": "decision",
-      "title": "Merged: #470 change watch + EXP-023 tripwire, #472 walk-2 wrapper guards, #474 EXP-022 Amendment 1 (E0 deciding set)",
-      "detail": "#470: pump.fun change watch (T1) and the EXP-023 USDC-BOOST tripwire plan; quant-proof OK on a8ab1c3. #472: the walk-2 wrapper refuses an empty Helius key (exit 6) and the test hook inside a job (exit 2). #474: E0 deciding set = mints with mig - create <= 60 min on either side plus every B pick, on E0 day explore-0814 2026-08-20; quant-proof OK on 3ece9c0. Still to write before 2026-10-16T01Z: the E0 record amendment. Time is the last merge (#474).",
-      "atUtc": "2026-10-08T17:24:35Z"
-    },
-    {
-      "id": "owner-goal-1008",
-      "kind": "decision",
-      "title": "Owner goal: $1000 real income by 10-31 ($400 minimum), the gate kept, full autonomy to fan out strategy tests",
-      "detail": "Owner mandate, about 2026-10-08T17:00Z. The wallet goes to 7 SOL from a 1 SOL start, funded once a book clears the gate. Many strategy tests run in parallel. These are the owner's targets, not measurements; nothing goes live until a book clears the promotion gate on both fail models and the owner approves. Time is approximate.",
-      "atUtc": "2026-10-08T17:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp022-registered",
-      "kind": "decision",
-      "title": "CAP-PICK registered as EXP-022: counts on walk 2 from 2026-10-16T01; expected outcome is fail",
-      "detail": "Owner approved the audit plan (O1 pause EXP-021 screen; O2 DEC-021 Amendment 1; O3 with its fallback). Counting starts 2026-10-16T01 (Option Y), not 10-10: under the early start the 10-16 FINAL would have priced most of CAP-PICK's counted picks. Pre-registration #464 (quant-proof OK on the final head): frozen EXP-012 picks exactly as the live gate makes them, entry 1.3 s (binding 1.9 s leg), on-chain min_out at seed x1.15, 300 s exit cap, 0.1 SOL, 55k per send, full promotion gate on both fail models plus ex-best-day > 0 and a day-level p at looks 10-23T01 / 10-30T01 / 11-06T01 (p <= 0.005 / 0.008 / 0.012). Estimated P(pass) about 5-7% (inferred). A fail triggers the pre-agreed cost wind-down. Also merged: #458 EXP-021 freeze pins (screen paused), #463 probe calibration reserve fix, #466/#467 walk-2 integrity and event-V decoder.",
-      "atUtc": "2026-10-08T16:00:00Z"
-    },
-    {
-      "id": "edge-scan-1008",
-      "kind": "finding",
-      "title": "Searched for other meme-coin edges: 16 strategies, 11 killed and 5 weakened by a red team; none works at MAL's latency and cost",
-      "detail": "Killed: LaunchLab and Meteora launchpads, LP on meme pools, backruns and cross-pool arbitrage, copying TWAP/DCA buyers, shorting young tokens, BSC and Robinhood Chain, and others. Weakened: Hyperliquid meme funding carry (about 8% a year in USD, a risk premium not an edge), shorting new exchange listings (2-3 a month), CAP-PICK exit overlays, USDC BOOST (gone since mid-September), a pump.fun change watch. Same-slot speed route: 94.5% (Aug) / 97.5% (Sep) of first-follower value is in the token's own creation slot; outside it the first follower makes +2.10% / +0.29% (bundle co-landing excluded) and the second loses -1.21% / -2.11%; estimated chance of profit about 1% in 3 weeks, at most 5% in 2-3 months (inferred), and it would cost an extra $500-3,250/month. Owner decision: sniper route closed for now; $0 extra budget for two weeks; start the change watch (T1) and the BOOST-timing insurance test (T2).",
-      "atUtc": "2026-10-08T16:00:00Z"
-    },
-    {
-      "id": "audit-1008",
-      "kind": "finding",
-      "title": "Full profitability audit: the fast-entry retail thesis is refuted at MAL's latency; one weak candidate (CAP-PICK) remains",
-      "detail": "885,012,060 trade rows on the audit tape (exploration-pool blocks explore-0814, fresh-0903, exp011-0909, fast-pool-0918, oracle-insample-0922; 776 hours over 36 UTC dates, nothing after 09-25T07; no sealed, EXP-009 or forward data), 0 Helius credits. Bonding curve: 0 of 3,168 tradeable cells net-positive. Migration: 0 of 1,008 unselected cells robust at probe fees (2 at lean fees, both needing the start of slot m0+1); none at k>=3 under either fee. KOL copier: 36/36 cells negative at +5 slots, every CI90 lower bound < 0. FOMO retail arrives in minutes (0.79% / 0.81% of its buy SOL by 10 s). App-identified wallets entering where MAL lands (k3-5, pooled across apps) had ROI -8.09% (Aug) / -30.33% (Sep). CAP-PICK (EXP-012 picks + seed x1.15 guard + 300 s cap + 55k priority): exploration +3.819% per attempt reproduces exactly (+3.492% on picks the live gate can trade), but the cap, guard and pairing were chosen on those same blocks, so it is not out-of-sample. Estimated (inferred, not measured): Aug-Sep about +1.5%; October about +0.3 to +0.5% (P<=0 about 40%), below MAL's running cost at 0.1-0.25 SOL. Estimated P(pass) of a walk-2 read about 10% (5-20%); about 5-7% with a day-level p. Report: https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk",
-      "atUtc": "2026-10-08T10:29:20Z"
-    },
-    {
-      "id": "seal-breach-consequence-1007",
-      "kind": "decision",
-      "title": "Seal breach consequence fixed: 10-16 FINAL read will be reported compromised",
-      "detail": "A PASS alone cannot support a live request; it needs a fresh sealed-block confirmation under DEC-014 (DEC-016 Am.2, PR #452). Runner side files are now read only through tools/runner_timing_read.py (timing allowlist; #453).",
-      "atUtc": "2026-10-07T23:42:26Z"
-    },
-    {
-      "id": "fast-entry-trigger-1007",
-      "kind": "result",
-      "title": "Fast-entry: processed migrate stream ~1 s ahead of today's trigger; DEC-022 proposed",
-      "detail": "Job #368 (arm-audit, timing only) + job #253 files; PR #451, quant-proof SOUND after fixes. Lead over the tip's receive of the first PumpSwap print: tip complete p50 0 ms; stream migrate p50 1,012 ms (262/284); earlier-of p50 996 ms (284/284). Not a lead over the on-chain first swap (162/262 same slot). Seal exposure disclosed in DEC-016 Am.2.",
-      "atUtc": "2026-10-07T18:25:04Z"
-    },
-    {
-      "id": "exp020-grid-end-result",
-      "kind": "result",
-      "title": "EXP-020 grid, END bound (report-only): k2 - k6 gain holds, books do not",
-      "detail": "Job #350 at a51000c. Paired k2 - k6 at 0.5 SOL: flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]. Every k2 kept book has ex-best-date < 0 (flat 0.25 -2.0312, 0.5 -1.3473; pressure 0.25 -2.0854, 0.5 -2.2641). Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. 27 dates with 100+ tries. Next: EXP-021 combined pre-registration with an END-bound co-primary, and live k2 landing calibration. No edge claim.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "exp020-grid-start-result",
-      "kind": "result",
-      "title": "EXP-020 grid, start bound (report-only): k2 looked positive",
-      "detail": "Job #347 at 8bce9ed. k2 at 0.25 SOL and above looked positive with ex-best-date > 0 (flat 0.5 SOL k2 mean 0.010803 SOL, total 25.3754, ex-best-date +15.1177). The start bound flatters fills; 2026-08-21 carries 40 to 43 % of the k2 flat totals. Quant-proof: the selector is causal at k2 (all 18 features from before migration). Not gate evidence, no edge claim.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "exp014v2-screen-result",
-      "kind": "result",
-      "title": "EXP-014 v2 screen (mig+15 PumpSwap selector): SCREEN NONE",
-      "detail": "Job #338. Every gating bar fails on both exit legs, Holm p 1.0, family closed (plan item 14). Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL: mean -0.004047897272035256. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "exp017-screen-result",
-      "kind": "result",
-      "title": "EXP-017 batch-1 screen (regime gate, score sizing): SCREEN NONE",
-      "detail": "Job #337, H3 and H4. H3 n 621, paired p 0.48605139486051396; H4 n 2,349, paired p 0.3955604439556044; no cell passed all bars (H4 B6 passed on the flat leg only); H4 did not beat uniform 0.10 SOL (flat -0.757406444 vs +0.208016013, pressure -1.104652902 vs -0.725846069). C0 report-only, frozen book on 27 already-read dates: 0.5 SOL flat mean +0.0036088916219667944 SOL, total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]; pressure mean +0.001149852399318859, total +2.701003286, ex-top-3 +0.969480593. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; not evidence of edge. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T00:08:15Z"
-    },
-    {
-      "id": "exp019-screen-result",
-      "kind": "result",
-      "title": "EXP-019 post-migration confirmation screen: SCREEN NONE, family closed",
-      "detail": "Job #328, one try (cell A). Paired vs frozen k6: flat mean x -0.0005277499177288448 SOL, p 0.9715028497150285. A book flat mean -0.0013183461738122827 SOL/trade over 1,726 trades, 9 of 27 dates positive. 289 of 1,726 entered were k8 MISS (about 5 percent of the positive paired sum); not MISS-driven. B1 to B6 all fail. Exploration, no edge claim.",
-      "atUtc": "2026-10-06T20:58:43Z"
-    },
-    {
-      "id": "exp018-screen-result",
-      "kind": "result",
-      "title": "EXP-018 wallet-skill screen: SCREEN NONE, family closed",
-      "detail": "Job #325, one try (W2). Paired vs frozen EXP-012: flat mean x +0.000004146408 SOL, p 0.46275. W2 book flat mean -0.0010193 SOL/trade over 988 trades, 6 of 22 dates positive. B1 to B6 all fail. Exploration, no edge claim.",
-      "atUtc": "2026-10-06T20:38:00Z"
-    },
-    {
-      "id": "fast0-runner-probe-dryrun",
-      "kind": "job",
-      "title": "fast-0: paper runner (probation) + probe dry run live; feed ~1.9 s behind chain",
-      "detail": "Tip follower keeps up (lag 2–3 slots). EXP-012 runner on probation since 05:31Z. Probe executor dry run since 05:35Z, no key. Early timing (dry run, n = 2, nothing sent): on-chain → ready-to-send ≈ 2.2–2.3 s; with landing an estimated 7–8 slots, near k ≈ 8, the last slot where the exploration-pool curve's lower bounds were above 0. Testing a faster migration stream.",
-      "atUtc": "2026-10-05T07:45:00Z"
-    },
-    {
-      "id": "kill-review-2026-10-05-result",
-      "kind": "result",
-      "title": "Kill review: no book promoted; all 8 NOT_DECIDABLE (incomplete), every mean negative",
-      "detail": "Single read of the 9 Oracle forward books (job #121; 8 scored, buy_all is the reference). Every scored book's mean is below 0 with the CI90 entirely below 0 under both fail models; 0 of 8 days positive (flat), 0 of 7 (pressure). Priced without V. Formal status NOT_DECIDABLE, not a measured KILL. EXP-012 stays the only candidate.",
-      "atUtc": "2026-10-05T09:42:00Z"
-    },
-    {
-      "id": "exp012-forward",
-      "kind": "other",
-      "title": "EXP-012 forward book: counting starts 10-06 00:00Z",
-      "detail": "Scored on forward chain hours with the code that passed the one-shot test (DEC-016). 10 full days, one read at about 10-16 02:00Z; anything earlier shows counts only. A PASS allows asking for a small live trial, after latency/size and runner-fill checks. The 10-16 read is reported compromised (DEC-016 Am.2, 2026-10-07), so a PASS needs a fresh-block confirmation first.",
-      "atUtc": "2026-10-06T00:00:00Z"
-    },
-    {
-      "id": "explore-0814",
-      "kind": "job",
-      "title": "Exploration days: w1–w4 verified, w5–w7 fetching (research-0)",
-      "detail": "w1–w4 verified (0 flagged, 0 duplicates); w5–w7 fetching; all due before the EXP-013 cutoff 10-04T12Z",
-      "atUtc": "2026-10-01T23:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "backup-0828",
-      "kind": "job",
-      "title": "Backup test block fetching",
-      "detail": "[08-28T12, 09-03T12), 3 walkers as MiScusi jobs, ready if EXP-012 fails.",
-      "atUtc": "2026-10-01T14:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp012-forward-read",
-      "kind": "other",
-      "title": "EXP-012 forward read (one-shot)",
-      "detail": "Single FINAL read of [10-06T00, 10-16T00). Secondary models (DEC-017, if registered by 10-05) read at the same time under their own Holm family.",
-      "atUtc": "2026-10-16T02:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp013-screen",
-      "kind": "other",
-      "title": "EXP-013 screen run",
-      "detail": "EXP-013 graduation classifier: one screen run on exploration data, after the cutoff",
-      "atUtc": "2026-10-04T12:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "kill-review",
-      "kind": "other",
-      "title": "Kill review (9 forward books)",
-      "detail": "DEC-014 single read on a snapshot. Runbook: docs/runbooks/kill-review-2026-10-05.md",
-      "atUtc": "2026-10-05T05:00:00Z"
-    },
-    {
-      "id": "probe-end",
-      "kind": "other",
-      "title": "Live probe stopped early (owner, 10-07T01:10:50Z)",
-      "detail": "Final 62/90 attempts, −0.210755 SOL. Helm withdrew 298,768,781 lamports to the owner's address at 2026-10-07T15:48Z, so the wallet is now about 0. The executor and watch timer are disabled and STOP stays in place. The next live run waits for the 1 SOL, a new reviewed build and a gated book.",
-      "atUtc": "2026-10-07T01:10:50Z"
-    },
-    {
-      "id": "early-arm-read",
-      "kind": "other",
-      "title": "Early-arm shadow read",
-      "detail": "Read of the runner's early-arm audit (latency lever)",
-      "atUtc": "2026-10-07T18:00:00Z",
-      "approx": true
-    }
-  ],
-  "ladder": [
-    {
-      "id": "EXP-022",
-      "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
-      "stage": "pre-registered",
-      "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
-      "tag": {
-        "text": "kill test",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-022-cap-pick-part1-prereg.md"
-    },
-    {
-      "id": "EXP-012",
-      "title": "EXP-012 entry model (re-freeze)",
-      "stage": "retired",
-      "note": "The 10-01 one-shot replay read passed the gate as configured, but the 10-08 audit shows the 10-01 pass was a scoring-setup artifact: +6.97% at k1 START vs +0.145% flat (+0.129% pressure) at realistic execution on the same 451 trades; at the gate setup even buy-all passes. The traded book (30-min hold, 0.05 SOL, 500k) is dead at realistic cost. Successor candidate: CAP-PICK (picks + seed guard + 300 s cap), weak, estimates only.",
-      "tag": {
-        "text": "pass was an artifact",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-012-migrate-entry-model-refreeze-prereg.md"
-    },
-    {
-      "id": "b3-clean",
-      "title": "Entry model, clean-data re-check",
-      "stage": "exploring",
-      "note": "Done: same 4 cells pass on deduplicated data. Lead cell flat +6.05% / pressure +3.72%, 8/9 days. Exploration only, unablated model.",
-      "tag": {
-        "text": "passed screen",
-        "tone": "accent"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md"
-    },
-    {
-      "id": "EXP-013",
-      "title": "EXP-013 graduation classifier",
-      "stage": "exploring",
-      "note": "Screen fixed in advance (Amendment 5); runs once after 10-04T12Z. Pass → one-shot test on the reserved backup block.",
-      "tag": {
-        "text": "screen pending",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-013-graduation-classifier-plan.md"
-    },
-    {
-      "id": "lane-d",
-      "title": "Early-curve entry filter",
-      "stage": "exploring",
-      "note": "Lane D · waits for research-0",
-      "paused": true,
-      "tag": {
-        "text": "paused",
-        "tone": "muted"
-      }
-    },
-    {
-      "id": "EXP-009",
-      "title": "EXP-009 creator gate",
-      "stage": "pre-registered",
-      "note": "Screen · block 09-15T12 → 09-19T01 sealed",
-      "paused": true,
-      "tag": {
-        "text": "scorer paused",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
-    },
-    {
-      "id": "EXP-014v2",
-      "title": "EXP-014 v2 mig+15 PumpSwap selector",
-      "stage": "retired",
-      "note": "Screen NONE (job #338): every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808]. Exploration, no edge claim.",
-      "tag": {
-        "text": "screen failed",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp014-v2-screen-2026-10-07.md"
-    },
-    {
-      "id": "EXP-020",
-      "title": "EXP-020 size x entry-slot grid (report-only)",
-      "stage": "exploring",
-      "note": "Start bound: k2 at 0.25 SOL and above looked positive, ex-best-date > 0. END bound: paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 %, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]) but every k2 kept book has ex-best-date < 0. Faster entry is a relative lever, not profit on its own. Not gate evidence, no edge claim.",
-      "tag": {
-        "text": "report-only",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp020-grid-2026-10-07.md"
-    },
-    {
-      "id": "EXP-017",
-      "title": "EXP-017 batch 1 cheap screens (H3 regime gate, H4 score sizing)",
-      "stage": "retired",
-      "note": "Screen NONE (job #337): H3 p 0.48605139486051396, H4 p 0.3955604439556044, no cell passed all bars; H4 did not beat uniform 0.10 SOL. C0 report-only: no stake clears the gate; 0.5 SOL flat mean +0.0036088916219667944, 13/27 dates positive. The C0 size result rests on one date (2026-08-21); without it every positive C0 total is negative. Exploration, no edge claim.",
-      "tag": {
-        "text": "screen failed",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp017-screen-2026-10-06.md"
-    },
-    {
-      "id": "EXP-019",
-      "title": "EXP-019 post-migration confirmation at k8",
-      "stage": "retired",
-      "note": "Screen NONE (job #328): paired vs frozen k6 p 0.9715028497150285, A book flat -0.0013183461738122827 SOL/trade, 9/27 dates positive. Exploration, no edge claim.",
-      "tag": {
-        "text": "screen failed",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp019-screen-2026-10-06.md"
-    },
-    {
-      "id": "EXP-018",
-      "title": "EXP-018 wallet skill at migration",
-      "stage": "retired",
-      "note": "Screen NONE (job #325): paired vs frozen EXP-012 p 0.46275, W2 book flat -0.0010193 SOL/trade, 6/22 dates positive. Exploration, no edge claim.",
-      "tag": {
-        "text": "screen failed",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp018-screen-2026-10-06.md"
-    },
-    {
-      "id": "EXP-011",
-      "title": "EXP-011 entry model",
-      "stage": "retired",
-      "note": "NOT_DECIDABLE: the read aborted on bad data, no outcome seen",
-      "tag": {
-        "text": "holdout spent",
-        "tone": "muted"
-      },
-      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-011-migrate-entry-model-prereg.md"
-    },
-    {
-      "id": "forward-books",
-      "title": "9 forward books",
-      "stage": "forward-paper",
-      "note": "Clean clock 09-28 · review 10-05",
-      "tag": {
-        "text": "P&L hidden",
-        "tone": "muted"
-      }
-    },
-    {
-      "id": "migrate-direct",
-      "title": "Migrate-direct cell",
-      "stage": "failed",
-      "note": "FAIL 2026-09-28, both fail models"
-    },
-    {
-      "id": "trailing-stop",
-      "title": "Trailing stop exit",
-      "stage": "failed",
-      "note": "Ex-top-3 −8.0 SOL"
-    },
-    {
-      "id": "fee-tiers",
-      "title": "Fee tiers",
-      "stage": "failed",
-      "note": "98.6% of fills already pay the top tier"
-    }
-  ],
-  "for_you": [
-    {
-      "id": "fy-20261008-1804-goal",
-      "from": "claude",
-      "text": "Recorded your goal: $1000 real income by 10-31, $400 minimum, the wallet at 7 SOL from a 1 SOL start once a book clears the gate. Honest odds, as I told you: about 5-10% for $400 or more real by 10-31, and about 1-2% for 7 SOL, without gambling. They rise if one of the strategy hunts survives its confirmation and verification; none has yet. Tonight: hunt-1, hunt-3, hunt-2 (resumed at about 18:05Z) and the LLM-trader test are running, and hunt-4 is paused until hunt-1 and hunt-3 finish (research-0 disk hit 81%, fixed, now 74%), the walk-2 wrapper guards and the E0 comparison-set amendment merged, and the live-gate replay (job #387) was not a kill for CAP-PICK. No new action needed from you tonight; O8 and O9 from the 16:00 note are still open.",
-      "atUtc": "2026-10-08T18:04:46Z"
-    },
-    {
-      "id": "fy-20261008-1600-plan",
-      "from": "claude",
-      "text": "Recorded your decisions: EXP-021 screen paused; CAP-PICK registered (counts from 10-16, first look 10-23); cost wind-down pre-agreed if it fails; sniper route closed for now; $0 extra budget for two weeks; change watch and BOOST-timing insurance test started. Still open for you: O8 send the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
-      "atUtc": "2026-10-08T16:00:00Z"
-    },
-    {
-      "id": "fy-20261008-1029-audit",
-      "from": "claude",
-      "text": "Your decisions from the audit (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk; numbering as in that report): O1 pause the EXP-021 screen (recommend yes); O2 amend DEC-021 so CAP-PICK can register on walk 2 as a zero-credit kill test with a day-level p (yes, if you want the test); O3 start counting 10-10 (yes if the Part 1 merges in time); O4/O5 live canaries and trial terms (defer until a look is not futile, per the CAP-PICK judge); O6 pre-agree a cost wind-down if CAP-PICK fails (yes); O7 the same-slot sniper arena (not now); O8 share the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
-      "atUtc": "2026-10-08T10:29:20Z"
-    },
-    {
-      "id": "fy-20261007-1554-oracle",
-      "from": "claude",
-      "text": "Your call (Lyra, 10-07): the old Oracle books keep losing on paper and are never going live. attn_first_hold_60m: n 2,162 clean, mean −57.68%, 0 of 10 days positive; buy_all is now about −226 SOL total. Oracle's >5 s exclusions rose to 19.7% and its feed lag p50 went from 1.6 s to 3.7 s, and observe.attention has logged 805 errors since its restart. I can't change Oracle (read-only). Should Helm (1) stop the attn book and observe.attention, (2) retire the V-less books, (3) move runner-restarts.jsonl somewhere mal-ro can read? I recommend yes to all three.",
-      "atUtc": "2026-10-07T15:54:21Z"
-    },
-    {
-      "id": "fy-20261006-1510",
-      "from": "claude",
-      "text": "One choice for you to see. You asked that the 10-16 V merge refuse if too many pools move. We now know why pools move: liquidity deposits and withdrawals rescale the reserve exactly. So I set the refusal limit (0.1% of pools) on moves the rule can't explain. Explained moves are priced exactly as the chain priced them, taking the worse price if liquidity changes mid-trade, and their count is reported. Quant-proof agrees on the merits. If you also want a hard limit on explained moves, tell me and I'll add it before 10-16.",
-      "atUtc": "2026-10-06T15:10:00Z"
-    },
-    {
-      "id": "fy-20261005-0950",
-      "from": "claude",
-      "text": "Kill review done (single read): the 8 scored old books all lost money on paper in the window, every day, under both fail models (old pricing, without V). Formally they are \"not decidable\" because some trades never closed, but none shows an edge, so we drop them and focus on EXP-012. The live probe is ready on the code side; its dry run ends around 11:36Z. If clean, I'll give Helm the hashes and ask you to fund 0.5 SOL. Biggest finding today: an early dry-run timing (2 samples, nothing sent) puts our entries at an estimated 7–8 slots after a migration. On the old test data that is about the last point where EXP-012's margin stayed above zero; past ~12 slots it did not. That is test data, not proof that EXP-012 makes money. I'm testing a faster feed: its first 3 events came 0.7–1.5 s earlier, at an estimated few thousand Helius credits a day.",
-      "atUtc": "2026-10-05T09:50:00Z"
-    },
-    {
-      "id": "fy-20261003-0545",
-      "from": "claude",
-      "text": "Before the 10-16 result, I wrote down exactly what would have to hold for a pass to justify a small real-money trial. It must still win at the server's real speed and at your trial size, and the paper runner must agree with the scorer. I asked you for the trial size; the defaults are 0.5 SOL per trade, 3 at once. Nothing goes live without your yes.",
-      "atUtc": "2026-10-03T05:45:00Z"
-    },
-    {
-      "id": "fy-20261002-1730",
-      "from": "claude",
-      "text": "I tried three ways to add more models to the forward test: a different sell rule, the same model retrained on more days, and a looser buy threshold for more trades. All three were checked on practice data under rules written down before looking, and none beat EXP-012 as it is (the extra trades from a looser threshold actually lose money). So EXP-012 stays the one forward test, which keeps its result clean. To genuinely use the data more, the next step is a different kind of signal, built on the new August data, for a later test window.",
-      "atUtc": "2026-10-02T17:30:00Z"
-    },
-    {
-      "id": "fy-20261002-1335",
-      "from": "claude",
-      "text": "Better news on the free trade feed. In a calm 2-hour stretch this morning the fast server's tape caught every single trade on the chain (100%). The 15% it missed yesterday was lost while the connection kept dropping and reconnecting. So the free feed is good when stable; the fix is to make it survive reconnects (e.g. two connections at once, free), and to keep checking it against the chain record every hour.",
-      "atUtc": "2026-10-02T13:35:00Z"
-    },
-    {
-      "id": "fy-20261002-1100",
-      "from": "claude",
-      "text": "Good early sign on the biggest risk for live trading. EXP-012's test assumed we buy in the very first moment after a token migrates. Our real feed is a few seconds behind, so I re-ran the strategy on its practice data with the buy delayed by up to 12 blocks (about 3 seconds). Profit per trade shrank by roughly 20% at a realistic 1–1.5 second delay, and by about 40% at 3 seconds, but it stayed positive throughout. This is practice data the model was built on, so it is a warning check, not proof. Separately, the backup test block (6 days) is fetched and verified, ready for the next test.",
-      "atUtc": "2026-10-02T11:00:00Z"
-    },
-    {
-      "id": "fy-20261002-0910",
-      "from": "claude",
-      "text": "The free public trade feed misses trades. Checked against the chain record for 2 hours, the fast server's tape caught 84.759% of trades and the Oracle tape caught 66.241%, so the fast tape fails its 95% bar. In that window the 9 Oracle paper books saw only about two-thirds of the trades. The EXP-012 test data comes from full block downloads, so that result is unaffected. A second check in a calmer period is running now. If the free feed still falls short, the fix is to follow new blocks directly (about 9.7M Helius credits/month, inside budget).",
-      "atUtc": "2026-10-02T09:10:00Z"
-    },
-    {
-      "id": "fy-20261001-1640",
-      "from": "claude",
-      "text": "EXP-012 passed its one-shot test on 6 never-seen days, under both fail models: 451 trades, about +0.035 SOL per trade (flat) and +0.021 (pressure), still positive without the top 3 trades. It is a replay, not money made, and the week was favourable (even unfiltered entries made money), with most of the edge coming from predicting which entries fill. Next is a forward-paper book on the fast server after the 10-05 kill review. Live needs that book to pass on its own trades, and then your approval.",
-      "atUtc": "2026-10-01T16:40:00Z"
-    },
-    {
-      "id": "fy-20261001-0320",
-      "from": "claude",
-      "text": "EXP-012 is frozen and passed its pre-stated screen on the clean training data: 9 of 9 days positive under both fail models. On the fast-box data the test block comes from, the in-sample result is weaker (+4.19% flat, +3.25% pressure), so expect the read to be weaker still. The one-shot read of the fresh block happens today after the walkers finish (about 12:30Z plus verification). A pass there starts forward paper; it does not mean live yet.",
-      "atUtc": "2026-10-01T03:20:00Z"
-    },
-    {
-      "id": "fy-20261001",
-      "from": "claude",
-      "text": "Clean data is in. The exploration pool is deduplicated (2.47M duplicate trade rows removed, all in 3 resumed hours), and the entry-model idea still passes its screen on it. Next is EXP-012, a fresh one-shot test on a never-read 6-day block, which is fetching now on research-0. Expected read: today after about 12:00Z, if the re-frozen model passes its pre-stated check first.",
-      "atUtc": "2026-10-01T01:45:00Z"
-    },
-    {
-      "id": "fy-exp011",
-      "from": "claude",
-      "text": "EXP-011 closed NOT_DECIDABLE: the walkers wrote duplicate rows and one empty hour. No result was seen. Next: fix the data, re-check the entry model on clean data, then a new test on a fresh block.",
-      "atUtc": "2026-09-30T20:50:00Z"
-    },
-    {
-      "id": "fy-20261006-0054",
-      "from": "claude",
-      "text": "Live so far: the losses are mostly the pre-fix build and one rug; the other trades are about break-even after fees (~2% of a 0.05 SOL trade). Size only helps if the edge exists, and no simulation can say whether 0.25 SOL works (DEC-020 §1). Replaying the fixed builds' live record at 0.25 SOL gives −0.1752 SOL, with the loss cap hit about 3 times in 4 (job #190). My recommendation is still Option A: no size step until the 10-16 forward read passes. The August backcheck is being redone at the realistic exit and is context only, not a reason to fund.",
-      "atUtc": "2026-10-06T00:54:00Z"
-    },
-    {
-      "id": "fy-20261006-0555",
-      "from": "claude",
-      "text": "Status 10-06 morning. The live probe is at 45 of 90 trades and down 0.066 SOL. That is a loss, small and inside its limits, and it ends 10-12. The decision that matters is the 10-16 forward read; it decides whether we may ask you for the 0.25 SOL step (DEC-020 Option A). This morning I found that the part of that read which decides live support had no tool built, and the price map it needs had the same hole that spoiled the August back-check. Both are being built and reviewed now so the read can't be wasted. No action needed from you.",
-      "atUtc": "2026-10-06T05:54:00Z"
-    },
-    {
-      "id": "fy-20261006-m7b",
-      "from": "claude",
-      "text": "Morning recap. The live probe is at 52 of 90 trades, down 0.076 SOL (a loss inside its 0.25 cap); the two big losers were one-step crashes that a stop can't catch. The 10-16 read that decides the 0.25 SOL step is now fully tooled and reviewed, and two bugs that would have spoiled it were found and fixed today. Of the challengers, EXP-013 failed its test (closed); EXP-015 is still running; the rug filter (EXP-016) is planned with fresh test data being fetched. No action needed from you.",
-      "atUtc": "2026-10-06T08:32:00Z"
-    },
-    {
-      "id": "fy-20261006-m7c",
-      "from": "claude",
-      "text": "Honest midday picture: both retrain challengers (EXP-013, EXP-015) failed their pre-set screens. The useful result is that the simulator and the live probe now agree: at 0.05 SOL the current strategy is about flat to slightly losing (≈ −0.0005 SOL per trade), mostly because fixed fees are ~2% at that size. Bigger size is the only fee lever, but no simulation can prove 0.25 SOL works, so the 10-16 read (scored at 0.5 SOL terms) stays the decision point; its tooling is ready. The rug filter (EXP-016) is the next genuinely new idea and is being built. No action needed from you.",
-      "atUtc": "2026-10-06T12:35:00Z"
-    }
-  ],
-  "stream": [
-    {
-      "id": "s-20261008-1804-evening",
-      "from": "claude",
-      "kind": "status",
-      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets nearly match at <= 32 min on P2-P4, not on P1; the P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample, not gate evidence). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
-      "atUtc": "2026-10-08T18:04:46Z"
-    },
-    {
-      "id": "s-20261008-1600-plan",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Afternoon 10-08: CAP-PICK pre-registered as EXP-022 (#464; counts from 10-16T01; expected fail, P(pass) about 5-7%). Walk-2 data integrity merged (#466 refuses silent holes; #467 records per-trade V and BOOST events and recovers migration rows: 95.35% of canonical migrations had no migration row on the old tape because migrate-tx logs exceed the 10 KB cap; complete rows: 24,224 of 24,272 (99.80%), so universes were unaffected [inferred]). Scorer port matches all 24,272 audit attempts within the 0.01 pp target; P2-P4 exact to the lamport (19,234 of 19,234); 6 P1 attempts differ. Edge search: none of 16 alternatives survives; same-slot route not worth buying. Next: live-gate pick-set check (#387), walk-2 launcher, change watch (T1), BOOST-timing insurance (T2).",
-      "atUtc": "2026-10-08T16:00:00Z"
-    },
-    {
-      "id": "s-20261008-1029-audit",
-      "from": "claude",
-      "kind": "finding",
-      "text": "Audit done (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk). Root causes: wrong side of the flow at our ~1.3 s landing (~35%), the 30-min exit rode through the end of pump.fun's BOOST bid (~20%), no seed-anchored price guard (~15%), measurement artifacts (the 10-01 PASS was +6.97% at the gate setup vs +0.145% flat at realistic execution), priority overpaid about 10x, and a market that is changing under us (10-02 program redeploy; 200 ms slots due about 10-09T14:34Z). Merged today: #454 slot-span bound + forward walk resubmitted (#382), #455 v1 transactions, #456 daily structure monitor (first run 10-08: no halt, BOOST on 12/12 non-mayhem WSOL graduations, last slice median 341.5 s).",
-      "atUtc": "2026-10-08T10:29:20Z"
-    },
-    {
-      "id": "s-20261007-234226-c",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Seal breach consequence fixed per DEC-016 Am.2: the 10-16 FINAL read will be reported compromised and cannot alone support a live request. The live path is EXP-021 confirmed on fresh-0802 plus faster entry. Runner-side reads are now timing-only in code (#453). DEC-022 Phase B bar tightened to landing p50 <= 2 and p90 <= 4.",
-      "atUtc": "2026-10-07T23:42:26Z"
-    },
-    {
-      "id": "s-20261007-182504-b",
-      "from": "claude",
-      "kind": "finding",
-      "text": "EXP-021: precount #2 found the screen would refuse on V coverage (95.08%, floor 99%; 1,711 pools never in the V map) and flagged a 09-25 window artifact in the P1 coverage check. Freeze #365 cancelled before it wasted 6 h. Fix in PR #450 (Amendment 4); precount #3 (job #366) running; then V remedy, freeze, pins, one screen.",
-      "atUtc": "2026-10-07T18:25:04Z"
-    },
-    {
-      "id": "s-20261007-182504-a",
-      "from": "claude",
-      "kind": "result",
-      "text": "Fast-entry read (PR #451, latency only): today's early arm gives no lead (p50 0 ms). The processed migrate stream is about 1 s ahead of the runner's current trigger (p50 1,012 ms on 262 of 284 graduations; earlier-of-both p50 996 ms on 284). That is mostly confirmation delay saved, not a lead over the first swap on chain, so realistic landing is about k 3-4 vs 5 today. DEC-022 proposes the build: Phase A paper timing shadow now (no key); Phase B live calibration only on your go. Seal note: an early-arm read printed per-day outcome counts inside the sealed window; no P&L was read; disclosed in DEC-016.",
-      "atUtc": "2026-10-07T18:25:04Z"
-    },
-    {
-      "id": "s-20261007-034714-a",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-020 grid, END bound (report-only, job #350): the paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]), but every k2 kept book has ex-best-date < 0. Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. These 27 dates have had 100+ tries. No edge claim. Next: one pre-registration with EXP-021 and an END-bound co-primary, and live k2 landing calibration.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "s-20261007-034714-b",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-020 grid, start bound (report-only, job #347): k2 at 0.25 SOL and above looked positive with ex-best-date > 0. The start bound flatters fills and 2026-08-21 carries 40 to 43 % of the k2 flat totals. Not gate evidence.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "s-20261007-034714-c",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-014 v2 (mig+15 PumpSwap selector) failed its screen: every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat: 2,496 trades, mean -0.0012437746370192308 SOL per trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL the mean is -0.004047897272035256. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T03:47:14Z"
-    },
-    {
-      "id": "s-20260930-1604",
-      "from": "claude",
-      "kind": "status",
-      "text": "Took over as manager. Walker C at 63/72; EXP-011 read expected about 20Z.",
-      "atUtc": "2026-09-30T16:04:00Z"
-    },
-    {
-      "id": "s-20260930-1630",
-      "from": "claude",
-      "kind": "status",
-      "text": "Console contracts merged: result record, data catalog with read guard, status files. Console build started.",
-      "atUtc": "2026-09-30T16:30:00Z"
-    },
-    {
-      "id": "s-20260930-1830",
-      "from": "claude",
-      "kind": "status",
-      "text": "Console is live at console.tradervaan.com (on mal-fast-0 for now, capped at 512 MB, localhost behind Cloudflare Access). MiScusi key pending.",
-      "atUtc": "2026-09-30T18:30:00Z"
-    },
-    {
-      "id": "s-20260930-2050",
-      "from": "claude",
-      "kind": "decision",
-      "text": "EXP-011 closed NOT_DECIDABLE. The read aborted on a sealed-but-empty hour, and resumed walker hours hold exact duplicate rows. No outcome was observed. The holdout is spent, and the walker fix and dedupe come first.",
-      "atUtc": "2026-09-30T20:50:00Z"
-    },
-    {
-      "id": "s-20261001-0045",
-      "from": "claude",
-      "kind": "status",
-      "text": "Manager2 took over. research-0 is now the work machine: data staged, venv, Helius key placed by Helm.",
-      "atUtc": "2026-10-01T00:45:00Z"
-    },
-    {
-      "id": "s-20261001-0054",
-      "from": "claude",
-      "kind": "status",
-      "text": "Reserved the fresh block [09-03T12, 09-09T12) in the ledger before any hour was fetched; 3 walkers started on research-0.",
-      "atUtc": "2026-10-01T00:54:00Z"
-    },
-    {
-      "id": "s-20261001-0105",
-      "from": "claude",
-      "kind": "finding",
-      "text": "Exploration pool deduplicated: fast lost 2,467,409 trade rows (3 resumed hours), Oracle in-sample 0, Oracle live 4,730. Matches the census.",
-      "atUtc": "2026-10-01T01:05:00Z"
-    },
-    {
-      "id": "s-20261001-0120",
-      "from": "claude",
-      "kind": "finding",
-      "text": "B3 re-run on clean data: same 4 cells pass the unchanged screen. Lead cell tp50_sl30/s2_clf flat +6.73% → +6.05%, pressure +3.84% → +3.72%, 8/9 days each; one fast day (09-20) turned negative. Rules out a bad-data artifact. Exploration only, not proof of profit.",
-      "atUtc": "2026-10-01T01:20:00Z"
-    },
-    {
-      "id": "s-20261001-0135",
-      "from": "claude",
-      "kind": "decision",
-      "text": "EXP-012 re-freezes EXP-011's recipe on clean data rather than reusing its retired model (quant-proof review). The re-frozen model must pass the same screen before the fresh block is read.",
-      "atUtc": "2026-10-01T01:35:00Z"
-    },
-    {
-      "id": "s-20261001-0140",
-      "from": "claude",
-      "kind": "status",
-      "text": "explore_exit job template wired (#186) with a data-root allowlist. MiScusi guard fix (#12) and Opus 5.5 1M context fix (#13) ready for Grokbot.",
-      "atUtc": "2026-10-01T01:40:00Z"
-    },
-    {
-      "id": "s-20261001-0200",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Helius budget raised to ~40M credits/month. Using ~7.5M on: the EXP-012 block, a backup test block, and 14 more exploration days (the 9-day pool is the main limit on model quality).",
-      "atUtc": "2026-10-01T02:00:00Z"
-    },
-    {
-      "id": "s-20261001-0205",
-      "from": "claude",
-      "kind": "finding",
-      "text": "Solana ran fewer slots per hour in August (~8,700 mid-Aug, ~9,850 late Aug vs ~11,400 in Sept). The walker guard stopped all 7 new walkers on hour one; boundaries verified against block times, restarted with a lower minimum for that block.",
-      "atUtc": "2026-10-01T02:05:00Z"
-    },
-    {
-      "id": "s-20261001-0212",
-      "from": "claude",
-      "kind": "status",
-      "text": "'Running now' panel is live: MiScusi jobs plus every mal-* service and timer on all three servers, with state, uptime, memory and a scrubbed last log line.",
-      "atUtc": "2026-10-01T02:12:00Z"
-    },
-    {
-      "id": "s-20261001-0320",
-      "from": "claude",
-      "kind": "finding",
-      "text": "EXP-012 freeze (job #23): proceed screen PASS. Flat +7.43% / pressure +4.67% pooled, 9/9 days; fast-box only +4.19% / +3.25%. In-sample, not gate evidence. Threshold 0.80308. Frozen artifacts in #200.",
-      "atUtc": "2026-10-01T03:20:00Z"
-    },
-    {
-      "id": "s-20261001-1640",
-      "from": "claude",
-      "kind": "finding",
-      "text": "EXP-012 one-shot read: promotion gate PASS under both fail models (replay). n=451; flat 0.0349 SOL/trade CI90 [0.0187, 0.0513]; pressure 0.0205 [0.0110, 0.0299]; 6/7 days; ex-top-3 +14.04 / +8.22 SOL. quant-proof confirmed. Caveats in the EXP-012 Result.",
-      "atUtc": "2026-10-01T16:40:00Z"
-    },
-    {
-      "id": "s-20261002-0850",
-      "from": "claude",
-      "kind": "status",
-      "text": "New manager on mal-research-0 took over. Expansion walkers w5-w7 queued (jobs #37-#39).",
-      "atUtc": "2026-10-02T08:50:00Z"
-    },
-    {
-      "id": "s-20261002-0910",
-      "from": "claude",
-      "kind": "result",
-      "text": "Tape coverage against chain truth, 10-01T17-19: fast tape 84.759%, Oracle tape 66.241% of chain trades. DEC-015 §2.2 FAIL (bar 95%). Re-check in a quiet stretch (job #44) is running.",
-      "atUtc": "2026-10-02T09:10:00Z"
-    },
-    {
-      "id": "s-20261002-1100",
-      "from": "claude",
-      "kind": "result",
-      "text": "Backup confirmation block [08-28T12, 09-03T12) fully fetched and verified (144/144 h, 0 flagged, 0 duplicates, 1,654,761 credits). Unread, reserved for the next confirmation test.",
-      "atUtc": "2026-10-02T11:00:00Z"
-    },
-    {
-      "id": "s-20261002-1101",
-      "from": "claude",
-      "kind": "result",
-      "text": "Exploration check: EXP-012's selected book on its 9 exploration days with out-of-fold selection. Pressure mean 0.02315 SOL/trade at 1-slot entry, 0.01875 at 4 slots, 0.01327 at 12 slots; CI lower bound above 0 throughout. Exploration, not evidence.",
-      "atUtc": "2026-10-02T11:00:00Z"
-    },
-    {
-      "id": "s-20261002-1335",
-      "from": "claude",
-      "kind": "result",
-      "text": "Tape coverage re-check, quiet stretch 10-02T06-08: fast tape 100.000% of chain trades, Oracle 98.615%. The 10-01 losses (84.759%) came with websocket reconnect episodes. Feed is complete when stable; needs reconnect resilience before a book counts on it.",
-      "atUtc": "2026-10-02T13:35:00Z"
-    },
-    {
-      "id": "s-20261002-1345",
-      "from": "claude",
-      "kind": "status",
-      "text": "Fast trade tape trial restarted with 2 redundant public sockets (#233). First minute: both subscribed, 0 reconnects, 0 rejections, duplicates merged cleanly. Coverage against chain to be re-measured after 24 h.",
-      "atUtc": "2026-10-02T13:45:00Z"
-    },
-    {
-      "id": "s-20261002-1600",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Forward walk started (job #71) after owner OK: every finished hour is fetched from the chain and verified, from 10-02T15. EXP-012's forward book counts 10-06 to 10-16, one read at about 10-16 02Z. About 9.7M Helius credits a month.",
-      "atUtc": "2026-10-02T16:00:00Z"
-    },
-    {
-      "id": "s-20261002-1730",
-      "from": "claude",
-      "kind": "result",
-      "text": "Extra forward models (DEC-017): all three candidates fail their pre-stated screens on exploration data (exit variant, expanded-pool refit, looser threshold). EXP-012 stays the only forward book.",
-      "atUtc": "2026-10-02T17:30:00Z"
-    },
-    {
-      "id": "s-20261002-2100",
-      "from": "claude",
-      "kind": "decision",
-      "text": "EXP-013 screen rules fixed before any data (Amendment 5, quant-proof reviewed); model and screen code merged.",
-      "atUtc": "2026-10-02T21:00:00Z"
-    },
-    {
-      "id": "s-20261003-0500",
-      "from": "claude",
-      "kind": "result",
-      "text": "Fast two-socket tape caught 100.000% of chain trades over 10-03T00–02 (Oracle 95.671%).",
-      "atUtc": "2026-10-03T05:00:00Z"
-    },
-    {
-      "id": "s-20261003-0540",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Rules for when an EXP-012 pass may support a live trial are fixed before any runner data (DEC-016 Amendment 3), with tooling merged.",
-      "atUtc": "2026-10-03T05:40:00Z"
-    },
-    {
-      "id": "s-20261006-0006",
-      "from": "claude",
-      "kind": "status",
-      "text": "Live probe on build faa3192: 30/90 attempts, −0.146514 SOL. Since the exit/entry fixes (24 trades): −0.045977 SOL, of which one rug was −0.047169; the other 23 net +0.001191 SOL (about break-even after ~2% fees at 0.05 SOL).",
-      "atUtc": "2026-10-06T00:06:00Z"
-    },
-    {
-      "id": "s-20261006-0020",
-      "from": "claude",
-      "kind": "result",
-      "text": "Rug screen (job #191): no pre-migration concentration rule helps; nested pressure −0.00032 SOL/trade, CI90 [−0.00060, −0.00005]. No live filter. Tries on the 9 days: 74.",
-      "atUtc": "2026-10-06T00:20:00Z"
-    },
-    {
-      "id": "s-20261006-0033",
-      "from": "claude",
-      "kind": "status",
-      "text": "Live probe: 34/90 attempts, −0.116494 SOL, 0 open; the 6 faa3192 trades recovered +0.036868 SOL (too few to judge).",
-      "atUtc": "2026-10-06T00:33:00Z"
-    },
-    {
-      "id": "s-20261006-0035",
-      "from": "claude",
-      "kind": "result",
-      "text": "Grad stream (6 h): processed curve-complete arrives p50 924 ms before the tip follower, 0 rollbacks, but sees only 23.4% of completes at threshold 0.90. Re-measuring at 0.70 (job #203).",
-      "atUtc": "2026-10-06T00:35:00Z"
-    },
-    {
-      "id": "s-20261006-0037",
-      "from": "claude",
-      "kind": "decision",
-      "text": "EXP-012 backcheck (job #201) started 00:37Z and was cancelled at 00:53Z during its V-coverage pre-pass, before any outcome was computed: the owner's reviewer flagged that its deciding cell used the optimistic exit (lag 0). It will rerun with the realistic exit (lag 2) as the deciding cell. Exploration only.",
-      "atUtc": "2026-10-06T00:37:00Z"
-    },
-    {
-      "id": "s-20261006-0532",
-      "from": "claude",
-      "kind": "status",
-      "text": "Live probe: 45/90 attempts, −0.065655 SOL realized, 0 open, healthy (job #233). New manager (manager7) took over; hourly monitor recreated.",
-      "atUtc": "2026-10-06T05:32:00Z"
-    },
-    {
-      "id": "s-20261006-0543",
-      "from": "claude",
-      "kind": "result",
-      "text": "Fee vs landing study (job #216, observational): buyers paying the least priority fee land in the first 6 slots most often (60%); fee only weakly orders buys inside a slot. Landing speed comes from send timing, not fee. No fee change (lab note #372).",
-      "atUtc": "2026-10-06T05:43:00Z"
-    },
-    {
-      "id": "s-20261006-0550",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Complete V map pinned (#371): 226,073 pools, 321 closed (no V), sha 70914a16…b42e. EXP-013 rerun started (job #236, try 1 of 3) and EXP-015 guard check (job #237, no tries). Both are exploration.",
-      "atUtc": "2026-10-06T05:50:00Z"
-    },
-    {
-      "id": "s-20261006-0553",
-      "from": "claude",
-      "kind": "finding",
-      "text": "Critical-path gap found: the 10-16 forward read's live-deciding book (B), priced with the virtual reserve, had no tool, and its V map would have repeated the bug that refused the August back-check. Tools #374/#375 and DEC-016 Amendment 5 (#376) are in review with quant-proof; they must merge before 10-16T00Z.",
-      "atUtc": "2026-10-06T05:54:00Z"
-    },
-    {
-      "id": "s-20261006-0712",
-      "from": "claude",
-      "kind": "decision",
-      "text": "10-16 read tooling merged after 4 quant-proof rounds: V-priced book (B) (#375), forward V map (#374), latency re-score on (B) (#378), DEC-016 Amendment 5 (#376).",
-      "atUtc": "2026-10-06T07:12:00Z"
-    },
-    {
-      "id": "s-20261006-0742",
-      "from": "claude",
-      "kind": "finding",
-      "text": "The 'no-price' pools were not closed: their virtual reserve reads slightly negative (pending fees). Reader fixed (#383); the 10-16 merge now checks the stable base value, so fee movement can't make the read refuse. A fast-0 feed bug of the same kind is fixed in code (#387) and awaits a replay-proof before deploy.",
-      "atUtc": "2026-10-06T07:42:00Z"
-    },
-    {
-      "id": "s-20261006-0830",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-013 (graduation classifier) failed its single screen: 4,314 trades over 24 days, flat mean +0.0012 SOL with CI90 low −0.0074, only 8/24 days positive. Family closed as pre-declared (#388).",
-      "atUtc": "2026-10-06T08:30:00Z"
-    },
-    {
-      "id": "s-20261006-0700",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Rug-filter study EXP-016 plan merged after 5 quant-proof rounds (#381): strict rug label, new pre-migration signals, one final test on fresh Aug 2–8 data being walked now (#248–#250). Reviewer's honest odds: ~15% to pass the screen, ~5% to pass the final test.",
-      "atUtc": "2026-10-06T07:05:00Z"
-    },
-    {
-      "id": "s-20261006-1150",
-      "from": "claude",
-      "kind": "status",
-      "text": "Live probe paused since 08:13Z: the paper EXP-012 book that sends it signals hit its daily loss limit; signals resume at the 00:00Z restart. Probe: 57/90 attempts, −0.167875 SOL realized (a loss, inside the 0.25 cap).",
-      "atUtc": "2026-10-06T11:50:00Z"
-    },
-    {
-      "id": "s-20261006-1215",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-015 (pooled retrain) failed its screen: 0 of 6 bars on all 3 configs; family closed, its Aug 8–14 test block released unread (#390). Same run: frozen EXP-012 at realistic costs on 27 unseen-ish dates scores −0.00044 (flat) / −0.00054 (pressure) SOL per trade at 0.05 SOL, matching the live probe's ~−0.0005 per trade. Fees (~2% at 0.05 SOL) eat the small edge; the 10-16 read at 0.5 SOL trial terms decides the next step.",
-      "atUtc": "2026-10-06T12:15:00Z"
-    },
-    {
-      "id": "s-20261006-1430",
-      "from": "claude",
-      "kind": "result",
-      "text": "Live entry speed on the current probe build (job #285, 29 attempts): median 5 slots after migration, p90 6, worst 15 (one slow RPC call). That is inside the range where the exploration curve still had an edge. About 3 of the 5 slots are the data feed's block delay.",
-      "atUtc": "2026-10-06T14:30:00Z"
-    },
-    {
-      "id": "s-20261006-1505",
-      "from": "claude",
-      "kind": "result",
-      "text": "10-16 blocker solved at the data level: the 6 pools whose virtual reserve 'moved' all had liquidity deposits or withdrawals. PumpSwap rescales the reserve by the LP-supply ratio, and that rule reproduces all 16 operations to the lamport (jobs #282–#284, pool fields and transaction logs only; quant-proof re-derived it). Snapshot #3 (job #286): over about 7 h only those same 6 pools moved.",
-      "atUtc": "2026-10-06T15:05:00Z"
-    },
-    {
-      "id": "s-20261007-0008",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-017 batch 1 (a regime gate and score-based sizing on the frozen EXP-012 selection) failed its screen: no cell passed. H3 p 0.48605139486051396 (621 trades), H4 p 0.3955604439556044 (2,349 trades); H4 did not beat a uniform 0.10 SOL stake. The report-only stake table on 27 already-read dates: at 0.5 SOL the flat mean is +0.0036088916219667944 SOL per trade (total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]); pressure +0.001149852399318859. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; it is not evidence of edge. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T00:08:15Z"
-    },
-    {
-      "id": "s-20261006-2058",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-019 (post-migration flow confirmation at k8) failed its one screen: no cell passed, family closed. Cell A vs frozen k6: flat mean difference -0.0005277499177288448 SOL per migration, p 0.9715028497150285. A book: 1,726 trades, flat mean -0.0013183461738122827 SOL, 9 of 27 dates positive, B1 to B6 all fail. Waiting 2 slots for early momentum costs more than the information is worth. Exploration, no edge claim.",
-      "atUtc": "2026-10-06T20:58:43Z"
-    },
-    {
-      "id": "s-20261006-2038",
-      "from": "claude",
-      "kind": "result",
-      "text": "EXP-018 (wallet skill at migration) failed its one screen: no cell passed, family closed. W2 vs frozen EXP-012: flat mean difference +0.000004146408 SOL per migration, p 0.46275. W2 book: 988 trades, flat mean -0.0010193 SOL, 6 of 22 dates positive, B1 to B6 all fail. Causal wallet skill adds nothing beyond frozen EXP-012 at realistic costs. Exploration, no edge claim.",
-      "atUtc": "2026-10-06T20:38:00Z"
-    },
-    {
-      "id": "s-20261006-1510",
-      "from": "claude",
-      "kind": "decision",
-      "text": "DEC-016 Am.5 §7 merged before the read (#400, 3 quant-proof rounds). (B) prices each trade at the reserve in force at entry. If liquidity changes during a hold, the trade takes the worse price. Unexplained moves count as missing data, and the merge refuses above 0.1% of pools. If the tools are not merged with quant-proof by 10-16T00Z, the old strict rule applies.",
-      "atUtc": "2026-10-06T15:10:00Z"
-    },
-    {
-      "id": "s-20261007-1554-probe",
-      "from": "claude",
-      "kind": "result",
-      "text": "Probe closed (stopped 10-07T01:10:50Z at 62/90, −0.210755 SOL). Corrected record (#445, quant-proof): fixed tx fees do not explain the last build's loss (−23.6M lamports before tx fees, ~40M of it pool fee), so a bigger stake does not by itself make money. Exit lag 2 is a fair primary (live landing p90 2), 5 is the pessimistic leg. Wallet ties to the lamport on chain.",
-      "atUtc": "2026-10-07T15:54:21Z"
-    },
-    {
-      "id": "s-20261007-1605-wd",
-      "from": "claude",
-      "kind": "decision",
-      "text": "Probe decommissioned. Helm withdrew the remaining balance (298,768,781 lamports plus a 5,000 fee) to the owner's address 5ANM…eufi at 15:48Z. The wallet is 0 on chain (job #363), the executor and watch timer are disabled, and STOP is in place. Block budget clarified before any EXP-021 read: EXP-021's new rug features, tested as a pair against a retrained control, may claim a sealed block. Retunes of the EXP-012 book (size, k, threshold) may not, and a k-speed test belongs to EXP-020. m is frozen at 12, so a claim needs p < 0.00208.",
-      "atUtc": "2026-10-07T16:05:21Z"
-    }
-  ]
+ "schema_version": "console.v1",
+ "updated_utc": "2026-10-10T07:40:00Z",
+ "review_windows": [],
+ "events": [
+  {
+   "id": "h5-am4-1010",
+   "kind": "other",
+   "title": "Owner decision: DEC-024 Amendment 4, the section 5.1 measure (written after the halt)",
+   "detail": "From 07:27:25Z section 5.1 uses the executor's UTC-day median of the BOOST last slice after the first print over at least 30 pools (below 335 s halts; below 337 s on two completed days halts, the 07:11Z fire counting as the first; an A3 run below 330 s still halts). Resume only if day 10-10 completes at or above 337 s over at least 30 pools with no other halt. Disclosed as a loosening chosen after the fire.",
+   "atUtc": "2026-10-10T07:27:25Z"
+  },
+  {
+   "id": "h5-stop-51-1010",
+   "kind": "other",
+   "title": "H5 canary STOPPED (new buys) at 2026-10-10T07:15:10Z: DEC-024 section 5.1, BOOST last-slice median 333 s < 335 s",
+   "detail": "Daily A3 run 07:11:07Z (job #478): median BOOST last slice 333 s after migrate over 9 pools (min 329, max 353); no A3 halt flag fired, so EXP-024 Look 1 is not halted; this 333 s is one of the daily medians in Look 1's 330 s window check. Manager placed STOP (job #479; nothing open). Quant-proof ruling: the halt fired as written; DEC-024 has no clearing rule, so only a dated owner amendment can resume. The executor's own 30+ pool day medians (10-09: 340.306 s over 117 pools; 10-10 so far: 337.556 s over 200) did not latch. Canary at STOP: 3 trades, +0.005199 SOL realized, 0 late sells.",
+   "atUtc": "2026-10-10T07:15:10Z"
+  },
+  {
+   "id": "h5-first-trades-1009",
+   "kind": "other",
+   "title": "H5 canary first live check: 2 trades, +0.004728 SOL realized, no halts",
+   "detail": "By 21:52Z: 2 landed buys and 2 timed sells at 0.02 SOL. Trade 1 -0.008437 SOL (-42.2%; paper twin -47.1%), trade 2 +0.013165 SOL (+65.8%; twin +67.5%). Buys landed about 0.87 s after the trigger print (limit 3.0 s); sells landed at 329.1 s and 329.5 s after s0 (none late). Daily check #475: ALERTS=0, wallet 0.303417 SOL balanced. Two trades are not evidence; unpromoted trial.",
+   "atUtc": "2026-10-09T21:52:00Z"
+  },
+  {
+   "id": "h5-live-1009",
+   "kind": "other",
+   "title": "H5 canary LIVE at 0.02 SOL per trade since 2026-10-09T19:29:53Z",
+   "detail": "Official A3 run (job #449, 19:23Z) clean on the five H5 halt flags, so EXP-024 P2 is met and Look 1 counts from 10-10T00Z. Helm reinstalled at af02e90 (synthetic-pool exclusion build) and ran Step 11. Manager check job #469: ALERTS=0, wallet 0.298689 SOL. Effective total stop about 0.1045 SOL (35% of the wallet). Trial runs to 20 landed buys, then 0.10 SOL with a +0.5 SOL top-up (owner decision). An unpromoted trial: not gate evidence.",
+   "atUtc": "2026-10-09T19:29:53Z"
+  },
+  {
+   "id": "synthetic-1009",
+   "kind": "other",
+   "title": "pump.fun redeploy brought 'synthetic migrations'; H5 now excludes them, C1-NF keeps them",
+   "detail": "The 10-08T16:20Z redeploy introduced synthetic migrations (about 35% of graduations; 0 in September's evidence). Owner decisions: H5 excludes them (EXP-024 Am.4, DEC-024 Am.2; shadow + executor build #519/#521/#523) and C1-NF keeps them (EXP-025 Am.2). They were about 76% of H5's live triggers, so H5 volume is about 16 per day.",
+   "atUtc": "2026-10-09T17:54:00Z"
+  },
+  {
+   "id": "disk-incident-1008",
+   "kind": "other",
+   "title": "Research-0 disk reached 81% from the hunts; fixed, now 74%, with new rules for every hunt",
+   "detail": "Growth was about +100 GB/h from the hunts' per-branch extracts. Fixed by stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z), Helm's cleanup (freed 56 GB, now 74%) and .nobackup on hunt-1008 and audit-1008/{tape,work,tmp}. New rules for all hunts: shared data layer only, no per-branch tape copies, zstd Parquet or savez_compressed, a 5 GB disk budget each, heavy steps as MiScusi jobs, at most 4-5 at once. Watchdogs: the disk watchdog warns at 86% and stops (SIGSTOP) hunt processes at 90%; the CPU watchdog renices hunt processes above load 52. Time is approximate.",
+   "atUtc": "2026-10-08T18:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "hunts-1008",
+   "kind": "job",
+   "title": "Strategy hunts launched on the exploration tape: hunt-1, hunt-3 (LAYA), an LLM-trader test and hunt-2 (resumed) running; hunt-4 still stopped for disk",
+   "detail": "Protocol for every hunt: August discovery, RULE.md sha256, one September confirmation, adversarial verify, judge. Exploration tape only, so a survivor is still not gate evidence. Running: hunt-1 (H1-H6, wf_1b74c222-805), hunt-3 LAYA (L1-L3, wf_4f61363d-351), the LLM-trader test with Claude agents as the trader (wf_3b8d9808-907), and hunt-2 (12 theses, wf_84831245-793), which was stopped for disk and resumed at about 18:05Z under the new disk rules (at most 4 at once, each investigation continuing from its existing files; it uses the shared zstd layer /data/mal/hunt-shared if /data/mal/hunt-shared/README.md exists, otherwise it queries the tape directly with no copies). An OpenRouter arm is ready (free nemotron-3-ultra-550b-a55b, paid deepseek-chat, hard stop $1.50). Still stopped for disk: hunt-4 (cascades + strategy tree, wf_0d1a560e-ebe), which resumes after hunt-1 and hunt-3 finish. Results go to /data/mal/hunt-1008/JUDGE*.md. No hunt result yet. Time is approximate.",
+   "atUtc": "2026-10-08T18:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "exp022-gate-replay-387",
+   "kind": "result",
+   "title": "Job #387 (live-gate replay): not a kill for CAP-PICK",
+   "detail": "At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, positive on 19 of 29 days. Exploration, in-sample; not gate evidence. The known 60-min skip is not a kill and EXP-022 Amendment 1 (#474) sets the E0 comparison set at <= 60 min. A11 is not adopted. Time is approximate.",
+   "atUtc": "2026-10-08T18:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "exp022-amendment1-merged",
+   "kind": "decision",
+   "title": "Merged: #470 change watch + EXP-023 tripwire, #472 walk-2 wrapper guards, #474 EXP-022 Amendment 1 (E0 deciding set)",
+   "detail": "#470: pump.fun change watch (T1) and the EXP-023 USDC-BOOST tripwire plan; quant-proof OK on a8ab1c3. #472: the walk-2 wrapper refuses an empty Helius key (exit 6) and the test hook inside a job (exit 2). #474: E0 deciding set = mints with mig - create <= 60 min on either side plus every B pick, on E0 day explore-0814 2026-08-20; quant-proof OK on 3ece9c0. Still to write before 2026-10-16T01Z: the E0 record amendment. Time is the last merge (#474).",
+   "atUtc": "2026-10-08T17:24:35Z"
+  },
+  {
+   "id": "owner-goal-1008",
+   "kind": "decision",
+   "title": "Owner goal: $1000 real income by 10-31 ($400 minimum), the gate kept, full autonomy to fan out strategy tests",
+   "detail": "Owner mandate, about 2026-10-08T17:00Z. The wallet goes to 7 SOL from a 1 SOL start, funded once a book clears the gate. Many strategy tests run in parallel. These are the owner's targets, not measurements; nothing goes live until a book clears the promotion gate on both fail models and the owner approves. Time is approximate.",
+   "atUtc": "2026-10-08T17:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "exp022-registered",
+   "kind": "decision",
+   "title": "CAP-PICK registered as EXP-022: counts on walk 2 from 2026-10-16T01; expected outcome is fail",
+   "detail": "Owner approved the audit plan (O1 pause EXP-021 screen; O2 DEC-021 Amendment 1; O3 with its fallback). Counting starts 2026-10-16T01 (Option Y), not 10-10: under the early start the 10-16 FINAL would have priced most of CAP-PICK's counted picks. Pre-registration #464 (quant-proof OK on the final head): frozen EXP-012 picks exactly as the live gate makes them, entry 1.3 s (binding 1.9 s leg), on-chain min_out at seed x1.15, 300 s exit cap, 0.1 SOL, 55k per send, full promotion gate on both fail models plus ex-best-day > 0 and a day-level p at looks 10-23T01 / 10-30T01 / 11-06T01 (p <= 0.005 / 0.008 / 0.012). Estimated P(pass) about 5-7% (inferred). A fail triggers the pre-agreed cost wind-down. Also merged: #458 EXP-021 freeze pins (screen paused), #463 probe calibration reserve fix, #466/#467 walk-2 integrity and event-V decoder.",
+   "atUtc": "2026-10-08T16:00:00Z"
+  },
+  {
+   "id": "edge-scan-1008",
+   "kind": "finding",
+   "title": "Searched for other meme-coin edges: 16 strategies, 11 killed and 5 weakened by a red team; none works at MAL's latency and cost",
+   "detail": "Killed: LaunchLab and Meteora launchpads, LP on meme pools, backruns and cross-pool arbitrage, copying TWAP/DCA buyers, shorting young tokens, BSC and Robinhood Chain, and others. Weakened: Hyperliquid meme funding carry (about 8% a year in USD, a risk premium not an edge), shorting new exchange listings (2-3 a month), CAP-PICK exit overlays, USDC BOOST (gone since mid-September), a pump.fun change watch. Same-slot speed route: 94.5% (Aug) / 97.5% (Sep) of first-follower value is in the token's own creation slot; outside it the first follower makes +2.10% / +0.29% (bundle co-landing excluded) and the second loses -1.21% / -2.11%; estimated chance of profit about 1% in 3 weeks, at most 5% in 2-3 months (inferred), and it would cost an extra $500-3,250/month. Owner decision: sniper route closed for now; $0 extra budget for two weeks; start the change watch (T1) and the BOOST-timing insurance test (T2).",
+   "atUtc": "2026-10-08T16:00:00Z"
+  },
+  {
+   "id": "audit-1008",
+   "kind": "finding",
+   "title": "Full profitability audit: the fast-entry retail thesis is refuted at MAL's latency; one weak candidate (CAP-PICK) remains",
+   "detail": "885,012,060 trade rows on the audit tape (exploration-pool blocks explore-0814, fresh-0903, exp011-0909, fast-pool-0918, oracle-insample-0922; 776 hours over 36 UTC dates, nothing after 09-25T07; no sealed, EXP-009 or forward data), 0 Helius credits. Bonding curve: 0 of 3,168 tradeable cells net-positive. Migration: 0 of 1,008 unselected cells robust at probe fees (2 at lean fees, both needing the start of slot m0+1); none at k>=3 under either fee. KOL copier: 36/36 cells negative at +5 slots, every CI90 lower bound < 0. FOMO retail arrives in minutes (0.79% / 0.81% of its buy SOL by 10 s). App-identified wallets entering where MAL lands (k3-5, pooled across apps) had ROI -8.09% (Aug) / -30.33% (Sep). CAP-PICK (EXP-012 picks + seed x1.15 guard + 300 s cap + 55k priority): exploration +3.819% per attempt reproduces exactly (+3.492% on picks the live gate can trade), but the cap, guard and pairing were chosen on those same blocks, so it is not out-of-sample. Estimated (inferred, not measured): Aug-Sep about +1.5%; October about +0.3 to +0.5% (P<=0 about 40%), below MAL's running cost at 0.1-0.25 SOL. Estimated P(pass) of a walk-2 read about 10% (5-20%); about 5-7% with a day-level p. Report: https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk",
+   "atUtc": "2026-10-08T10:29:20Z"
+  },
+  {
+   "id": "seal-breach-consequence-1007",
+   "kind": "decision",
+   "title": "Seal breach consequence fixed: 10-16 FINAL read will be reported compromised",
+   "detail": "A PASS alone cannot support a live request; it needs a fresh sealed-block confirmation under DEC-014 (DEC-016 Am.2, PR #452). Runner side files are now read only through tools/runner_timing_read.py (timing allowlist; #453).",
+   "atUtc": "2026-10-07T23:42:26Z"
+  },
+  {
+   "id": "fast-entry-trigger-1007",
+   "kind": "result",
+   "title": "Fast-entry: processed migrate stream ~1 s ahead of today's trigger; DEC-022 proposed",
+   "detail": "Job #368 (arm-audit, timing only) + job #253 files; PR #451, quant-proof SOUND after fixes. Lead over the tip's receive of the first PumpSwap print: tip complete p50 0 ms; stream migrate p50 1,012 ms (262/284); earlier-of p50 996 ms (284/284). Not a lead over the on-chain first swap (162/262 same slot). Seal exposure disclosed in DEC-016 Am.2.",
+   "atUtc": "2026-10-07T18:25:04Z"
+  },
+  {
+   "id": "exp020-grid-end-result",
+   "kind": "result",
+   "title": "EXP-020 grid, END bound (report-only): k2 - k6 gain holds, books do not",
+   "detail": "Job #350 at a51000c. Paired k2 - k6 at 0.5 SOL: flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]. Every k2 kept book has ex-best-date < 0 (flat 0.25 -2.0312, 0.5 -1.3473; pressure 0.25 -2.0854, 0.5 -2.2641). Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. 27 dates with 100+ tries. Next: EXP-021 combined pre-registration with an END-bound co-primary, and live k2 landing calibration. No edge claim.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "exp020-grid-start-result",
+   "kind": "result",
+   "title": "EXP-020 grid, start bound (report-only): k2 looked positive",
+   "detail": "Job #347 at 8bce9ed. k2 at 0.25 SOL and above looked positive with ex-best-date > 0 (flat 0.5 SOL k2 mean 0.010803 SOL, total 25.3754, ex-best-date +15.1177). The start bound flatters fills; 2026-08-21 carries 40 to 43 % of the k2 flat totals. Quant-proof: the selector is causal at k2 (all 18 features from before migration). Not gate evidence, no edge claim.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "exp014v2-screen-result",
+   "kind": "result",
+   "title": "EXP-014 v2 screen (mig+15 PumpSwap selector): SCREEN NONE",
+   "detail": "Job #338. Every gating bar fails on both exit legs, Holm p 1.0, family closed (plan item 14). Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL: mean -0.004047897272035256. Exploration, no edge claim.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "exp017-screen-result",
+   "kind": "result",
+   "title": "EXP-017 batch-1 screen (regime gate, score sizing): SCREEN NONE",
+   "detail": "Job #337, H3 and H4. H3 n 621, paired p 0.48605139486051396; H4 n 2,349, paired p 0.3955604439556044; no cell passed all bars (H4 B6 passed on the flat leg only); H4 did not beat uniform 0.10 SOL (flat -0.757406444 vs +0.208016013, pressure -1.104652902 vs -0.725846069). C0 report-only, frozen book on 27 already-read dates: 0.5 SOL flat mean +0.0036088916219667944 SOL, total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]; pressure mean +0.001149852399318859, total +2.701003286, ex-top-3 +0.969480593. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; not evidence of edge. Exploration, no edge claim.",
+   "atUtc": "2026-10-07T00:08:15Z"
+  },
+  {
+   "id": "exp019-screen-result",
+   "kind": "result",
+   "title": "EXP-019 post-migration confirmation screen: SCREEN NONE, family closed",
+   "detail": "Job #328, one try (cell A). Paired vs frozen k6: flat mean x -0.0005277499177288448 SOL, p 0.9715028497150285. A book flat mean -0.0013183461738122827 SOL/trade over 1,726 trades, 9 of 27 dates positive. 289 of 1,726 entered were k8 MISS (about 5 percent of the positive paired sum); not MISS-driven. B1 to B6 all fail. Exploration, no edge claim.",
+   "atUtc": "2026-10-06T20:58:43Z"
+  },
+  {
+   "id": "exp018-screen-result",
+   "kind": "result",
+   "title": "EXP-018 wallet-skill screen: SCREEN NONE, family closed",
+   "detail": "Job #325, one try (W2). Paired vs frozen EXP-012: flat mean x +0.000004146408 SOL, p 0.46275. W2 book flat mean -0.0010193 SOL/trade over 988 trades, 6 of 22 dates positive. B1 to B6 all fail. Exploration, no edge claim.",
+   "atUtc": "2026-10-06T20:38:00Z"
+  },
+  {
+   "id": "fast0-runner-probe-dryrun",
+   "kind": "job",
+   "title": "fast-0: paper runner (probation) + probe dry run live; feed ~1.9 s behind chain",
+   "detail": "Tip follower keeps up (lag 2–3 slots). EXP-012 runner on probation since 05:31Z. Probe executor dry run since 05:35Z, no key. Early timing (dry run, n = 2, nothing sent): on-chain → ready-to-send ≈ 2.2–2.3 s; with landing an estimated 7–8 slots, near k ≈ 8, the last slot where the exploration-pool curve's lower bounds were above 0. Testing a faster migration stream.",
+   "atUtc": "2026-10-05T07:45:00Z"
+  },
+  {
+   "id": "kill-review-2026-10-05-result",
+   "kind": "result",
+   "title": "Kill review: no book promoted; all 8 NOT_DECIDABLE (incomplete), every mean negative",
+   "detail": "Single read of the 9 Oracle forward books (job #121; 8 scored, buy_all is the reference). Every scored book's mean is below 0 with the CI90 entirely below 0 under both fail models; 0 of 8 days positive (flat), 0 of 7 (pressure). Priced without V. Formal status NOT_DECIDABLE, not a measured KILL. EXP-012 stays the only candidate.",
+   "atUtc": "2026-10-05T09:42:00Z"
+  },
+  {
+   "id": "exp012-forward",
+   "kind": "other",
+   "title": "EXP-012 forward book: counting starts 10-06 00:00Z",
+   "detail": "Scored on forward chain hours with the code that passed the one-shot test (DEC-016). 10 full days, one read at about 10-16 02:00Z; anything earlier shows counts only. A PASS allows asking for a small live trial, after latency/size and runner-fill checks. The 10-16 read is reported compromised (DEC-016 Am.2, 2026-10-07), so a PASS needs a fresh-block confirmation first.",
+   "atUtc": "2026-10-06T00:00:00Z"
+  },
+  {
+   "id": "explore-0814",
+   "kind": "job",
+   "title": "Exploration days: w1–w4 verified, w5–w7 fetching (research-0)",
+   "detail": "w1–w4 verified (0 flagged, 0 duplicates); w5–w7 fetching; all due before the EXP-013 cutoff 10-04T12Z",
+   "atUtc": "2026-10-01T23:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "backup-0828",
+   "kind": "job",
+   "title": "Backup test block fetching",
+   "detail": "[08-28T12, 09-03T12), 3 walkers as MiScusi jobs, ready if EXP-012 fails.",
+   "atUtc": "2026-10-01T14:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "exp012-forward-read",
+   "kind": "other",
+   "title": "EXP-012 forward read (one-shot)",
+   "detail": "Single FINAL read of [10-06T00, 10-16T00). Secondary models (DEC-017, if registered by 10-05) read at the same time under their own Holm family.",
+   "atUtc": "2026-10-16T02:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "exp013-screen",
+   "kind": "other",
+   "title": "EXP-013 screen run",
+   "detail": "EXP-013 graduation classifier: one screen run on exploration data, after the cutoff",
+   "atUtc": "2026-10-04T12:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "kill-review",
+   "kind": "other",
+   "title": "Kill review (9 forward books)",
+   "detail": "DEC-014 single read on a snapshot. Runbook: docs/runbooks/kill-review-2026-10-05.md",
+   "atUtc": "2026-10-05T05:00:00Z"
+  },
+  {
+   "id": "probe-end",
+   "kind": "other",
+   "title": "Live probe stopped early (owner, 10-07T01:10:50Z)",
+   "detail": "Final 62/90 attempts, −0.210755 SOL. Helm withdrew 298,768,781 lamports to the owner's address at 2026-10-07T15:48Z, so the wallet is now about 0. The executor and watch timer are disabled and STOP stays in place. The next live run waits for the 1 SOL, a new reviewed build and a gated book.",
+   "atUtc": "2026-10-07T01:10:50Z"
+  },
+  {
+   "id": "early-arm-read",
+   "kind": "other",
+   "title": "Early-arm shadow read",
+   "detail": "Read of the runner's early-arm audit (latency lever)",
+   "atUtc": "2026-10-07T18:00:00Z",
+   "approx": true
+  }
+ ],
+ "ladder": [
+  {
+   "id": "EXP-024",
+   "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
+   "stage": "pre-registered",
+   "note": "Canary STOPPED (new buys) since 10-10T07:15:10Z under DEC-024 section 5.1 (A3 BOOST last-slice median 333 s < 335 s); resume needs a dated owner amendment. Before the stop: 3 trades at 0.02 SOL, +0.005199 SOL (unpromoted, not evidence). Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03).",
+   "tag": {
+    "text": "canary stopped",
+    "tone": "warn"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
+  },
+  {
+   "id": "EXP-025",
+   "title": "EXP-025 C1-NF (post-graduation momentum model + top-holder cap)",
+   "stage": "pre-registered",
+   "note": "Looks about 10-17 and 10-24 on forward-1002ev. Synthetic pools kept (Am.2). Canary terms DEC-026: 0.05 SOL, 0.5 SOL wallet; build round 1 done, all PRs still need changes; live likely 10-15 to 10-17. September exploration +8.151% flat / +7.220% press (not out of sample).",
+   "tag": {
+    "text": "building canary",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-025-c1nf-part1-prereg.md"
+  },
+  {
+   "id": "DEC-027",
+   "title": "DEC-027 H5 champion-challenger (at most 2 challengers)",
+   "stage": "exploring",
+   "note": "Framework only; no challenger frozen. Power to pick a better variant in October is negligible (about 660 paired trades needed); expected result: no switch. Loss-filter research found no filter worth filing.",
+   "tag": {
+    "text": "framework",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/DEC/DEC-027-h5-champion-challenger.md"
+  },
+  {
+   "id": "EXP-022",
+   "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
+   "stage": "pre-registered",
+   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
+   "tag": {
+    "text": "kill test",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-022-cap-pick-part1-prereg.md"
+  },
+  {
+   "id": "EXP-012",
+   "title": "EXP-012 entry model (re-freeze)",
+   "stage": "retired",
+   "note": "The 10-01 one-shot replay read passed the gate as configured, but the 10-08 audit shows the 10-01 pass was a scoring-setup artifact: +6.97% at k1 START vs +0.145% flat (+0.129% pressure) at realistic execution on the same 451 trades; at the gate setup even buy-all passes. The traded book (30-min hold, 0.05 SOL, 500k) is dead at realistic cost. Successor candidate: CAP-PICK (picks + seed guard + 300 s cap), weak, estimates only.",
+   "tag": {
+    "text": "pass was an artifact",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-012-migrate-entry-model-refreeze-prereg.md"
+  },
+  {
+   "id": "b3-clean",
+   "title": "Entry model, clean-data re-check",
+   "stage": "exploring",
+   "note": "Done: same 4 cells pass on deduplicated data. Lead cell flat +6.05% / pressure +3.72%, 8/9 days. Exploration only, unablated model.",
+   "tag": {
+    "text": "passed screen",
+    "tone": "accent"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md"
+  },
+  {
+   "id": "EXP-013",
+   "title": "EXP-013 graduation classifier",
+   "stage": "exploring",
+   "note": "Screen fixed in advance (Amendment 5); runs once after 10-04T12Z. Pass → one-shot test on the reserved backup block.",
+   "tag": {
+    "text": "screen pending",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-013-graduation-classifier-plan.md"
+  },
+  {
+   "id": "lane-d",
+   "title": "Early-curve entry filter",
+   "stage": "exploring",
+   "note": "Lane D · waits for research-0",
+   "paused": true,
+   "tag": {
+    "text": "paused",
+    "tone": "muted"
+   }
+  },
+  {
+   "id": "EXP-009",
+   "title": "EXP-009 creator gate",
+   "stage": "pre-registered",
+   "note": "Screen · block 09-15T12 → 09-19T01 sealed",
+   "paused": true,
+   "tag": {
+    "text": "scorer paused",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
+  },
+  {
+   "id": "EXP-014v2",
+   "title": "EXP-014 v2 mig+15 PumpSwap selector",
+   "stage": "retired",
+   "note": "Screen NONE (job #338): every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808]. Exploration, no edge claim.",
+   "tag": {
+    "text": "screen failed",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp014-v2-screen-2026-10-07.md"
+  },
+  {
+   "id": "EXP-020",
+   "title": "EXP-020 size x entry-slot grid (report-only)",
+   "stage": "exploring",
+   "note": "Start bound: k2 at 0.25 SOL and above looked positive, ex-best-date > 0. END bound: paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 %, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]) but every k2 kept book has ex-best-date < 0. Faster entry is a relative lever, not profit on its own. Not gate evidence, no edge claim.",
+   "tag": {
+    "text": "report-only",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp020-grid-2026-10-07.md"
+  },
+  {
+   "id": "EXP-017",
+   "title": "EXP-017 batch 1 cheap screens (H3 regime gate, H4 score sizing)",
+   "stage": "retired",
+   "note": "Screen NONE (job #337): H3 p 0.48605139486051396, H4 p 0.3955604439556044, no cell passed all bars; H4 did not beat uniform 0.10 SOL. C0 report-only: no stake clears the gate; 0.5 SOL flat mean +0.0036088916219667944, 13/27 dates positive. The C0 size result rests on one date (2026-08-21); without it every positive C0 total is negative. Exploration, no edge claim.",
+   "tag": {
+    "text": "screen failed",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp017-screen-2026-10-06.md"
+  },
+  {
+   "id": "EXP-019",
+   "title": "EXP-019 post-migration confirmation at k8",
+   "stage": "retired",
+   "note": "Screen NONE (job #328): paired vs frozen k6 p 0.9715028497150285, A book flat -0.0013183461738122827 SOL/trade, 9/27 dates positive. Exploration, no edge claim.",
+   "tag": {
+    "text": "screen failed",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp019-screen-2026-10-06.md"
+  },
+  {
+   "id": "EXP-018",
+   "title": "EXP-018 wallet skill at migration",
+   "stage": "retired",
+   "note": "Screen NONE (job #325): paired vs frozen EXP-012 p 0.46275, W2 book flat -0.0010193 SOL/trade, 6/22 dates positive. Exploration, no edge claim.",
+   "tag": {
+    "text": "screen failed",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp018-screen-2026-10-06.md"
+  },
+  {
+   "id": "EXP-011",
+   "title": "EXP-011 entry model",
+   "stage": "retired",
+   "note": "NOT_DECIDABLE: the read aborted on bad data, no outcome seen",
+   "tag": {
+    "text": "holdout spent",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-011-migrate-entry-model-prereg.md"
+  },
+  {
+   "id": "forward-books",
+   "title": "9 forward books",
+   "stage": "forward-paper",
+   "note": "Clean clock 09-28 · review 10-05",
+   "tag": {
+    "text": "P&L hidden",
+    "tone": "muted"
+   }
+  },
+  {
+   "id": "migrate-direct",
+   "title": "Migrate-direct cell",
+   "stage": "failed",
+   "note": "FAIL 2026-09-28, both fail models"
+  },
+  {
+   "id": "trailing-stop",
+   "title": "Trailing stop exit",
+   "stage": "failed",
+   "note": "Ex-top-3 −8.0 SOL"
+  },
+  {
+   "id": "fee-tiers",
+   "title": "Fee tiers",
+   "stage": "failed",
+   "note": "98.6% of fills already pay the top tier"
+  }
+ ],
+ "for_you": [
+  {
+   "id": "fy-h5-51-resume",
+   "from": "claude",
+   "text": "Decided by you at 07:27Z (DEC-024 Amendment 4): H5 restarts on the bot's own 30+ coin daily measure only if today (10-10) finishes at or above 337 s; the manager checks just after 00:00Z (about 5:05 PM PT). A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 landed buys, landing p50 at most 3.0 s, the canary's and the paper twin's means not negative, and your +0.5 SOL top-up.",
+   "atUtc": "2026-10-10T07:40:00Z"
+  },
+  {
+   "id": "fy-20261009-1945-live",
+   "from": "claude",
+   "text": "H5 is live at 0.02 SOL per trade since 12:29 PT. Please confirm to Helm that the watchdog's two Discord posts arrived. Next from you: (1) after about 20 trades (about 1.5-2 days) the 0.10 SOL step with your +0.5 SOL top-up; (2) before 10-16, OK to extend the canary past its 14-day cap (and the trading window) with the second reinstall; (3) C1-NF's 0.5 SOL when Helm's second wallet is ready (about 10-15 to 10-17).",
+   "atUtc": "2026-10-09T19:45:00Z"
+  },
+  {
+   "id": "fy-20261008-1804-goal",
+   "from": "claude",
+   "text": "Recorded your goal: $1000 real income by 10-31, $400 minimum, the wallet at 7 SOL from a 1 SOL start once a book clears the gate. Honest odds, as I told you: about 5-10% for $400 or more real by 10-31, and about 1-2% for 7 SOL, without gambling. They rise if one of the strategy hunts survives its confirmation and verification; none has yet. Tonight: hunt-1, hunt-3, hunt-2 (resumed at about 18:05Z) and the LLM-trader test are running, and hunt-4 is paused until hunt-1 and hunt-3 finish (research-0 disk hit 81%, fixed, now 74%), the walk-2 wrapper guards and the E0 comparison-set amendment merged, and the live-gate replay (job #387) was not a kill for CAP-PICK. No new action needed from you tonight; O8 and O9 from the 16:00 note are still open.",
+   "atUtc": "2026-10-08T18:04:46Z"
+  },
+  {
+   "id": "fy-20261008-1600-plan",
+   "from": "claude",
+   "text": "Recorded your decisions: EXP-021 screen paused; CAP-PICK registered (counts from 10-16, first look 10-23); cost wind-down pre-agreed if it fails; sniper route closed for now; $0 extra budget for two weeks; change watch and BOOST-timing insurance test started. Still open for you: O8 send the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
+   "atUtc": "2026-10-08T16:00:00Z"
+  },
+  {
+   "id": "fy-20261008-1029-audit",
+   "from": "claude",
+   "text": "Your decisions from the audit (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk; numbering as in that report): O1 pause the EXP-021 screen (recommend yes); O2 amend DEC-021 so CAP-PICK can register on walk 2 as a zero-credit kill test with a day-level p (yes, if you want the test); O3 start counting 10-10 (yes if the Part 1 merges in time); O4/O5 live canaries and trial terms (defer until a look is not futile, per the CAP-PICK judge); O6 pre-agree a cost wind-down if CAP-PICK fails (yes); O7 the same-slot sniper arena (not now); O8 share the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
+   "atUtc": "2026-10-08T10:29:20Z"
+  },
+  {
+   "id": "fy-20261007-1554-oracle",
+   "from": "claude",
+   "text": "Your call (Lyra, 10-07): the old Oracle books keep losing on paper and are never going live. attn_first_hold_60m: n 2,162 clean, mean −57.68%, 0 of 10 days positive; buy_all is now about −226 SOL total. Oracle's >5 s exclusions rose to 19.7% and its feed lag p50 went from 1.6 s to 3.7 s, and observe.attention has logged 805 errors since its restart. I can't change Oracle (read-only). Should Helm (1) stop the attn book and observe.attention, (2) retire the V-less books, (3) move runner-restarts.jsonl somewhere mal-ro can read? I recommend yes to all three.",
+   "atUtc": "2026-10-07T15:54:21Z"
+  },
+  {
+   "id": "fy-20261006-1510",
+   "from": "claude",
+   "text": "One choice for you to see. You asked that the 10-16 V merge refuse if too many pools move. We now know why pools move: liquidity deposits and withdrawals rescale the reserve exactly. So I set the refusal limit (0.1% of pools) on moves the rule can't explain. Explained moves are priced exactly as the chain priced them, taking the worse price if liquidity changes mid-trade, and their count is reported. Quant-proof agrees on the merits. If you also want a hard limit on explained moves, tell me and I'll add it before 10-16.",
+   "atUtc": "2026-10-06T15:10:00Z"
+  },
+  {
+   "id": "fy-20261005-0950",
+   "from": "claude",
+   "text": "Kill review done (single read): the 8 scored old books all lost money on paper in the window, every day, under both fail models (old pricing, without V). Formally they are \"not decidable\" because some trades never closed, but none shows an edge, so we drop them and focus on EXP-012. The live probe is ready on the code side; its dry run ends around 11:36Z. If clean, I'll give Helm the hashes and ask you to fund 0.5 SOL. Biggest finding today: an early dry-run timing (2 samples, nothing sent) puts our entries at an estimated 7–8 slots after a migration. On the old test data that is about the last point where EXP-012's margin stayed above zero; past ~12 slots it did not. That is test data, not proof that EXP-012 makes money. I'm testing a faster feed: its first 3 events came 0.7–1.5 s earlier, at an estimated few thousand Helius credits a day.",
+   "atUtc": "2026-10-05T09:50:00Z"
+  },
+  {
+   "id": "fy-20261003-0545",
+   "from": "claude",
+   "text": "Before the 10-16 result, I wrote down exactly what would have to hold for a pass to justify a small real-money trial. It must still win at the server's real speed and at your trial size, and the paper runner must agree with the scorer. I asked you for the trial size; the defaults are 0.5 SOL per trade, 3 at once. Nothing goes live without your yes.",
+   "atUtc": "2026-10-03T05:45:00Z"
+  },
+  {
+   "id": "fy-20261002-1730",
+   "from": "claude",
+   "text": "I tried three ways to add more models to the forward test: a different sell rule, the same model retrained on more days, and a looser buy threshold for more trades. All three were checked on practice data under rules written down before looking, and none beat EXP-012 as it is (the extra trades from a looser threshold actually lose money). So EXP-012 stays the one forward test, which keeps its result clean. To genuinely use the data more, the next step is a different kind of signal, built on the new August data, for a later test window.",
+   "atUtc": "2026-10-02T17:30:00Z"
+  },
+  {
+   "id": "fy-20261002-1335",
+   "from": "claude",
+   "text": "Better news on the free trade feed. In a calm 2-hour stretch this morning the fast server's tape caught every single trade on the chain (100%). The 15% it missed yesterday was lost while the connection kept dropping and reconnecting. So the free feed is good when stable; the fix is to make it survive reconnects (e.g. two connections at once, free), and to keep checking it against the chain record every hour.",
+   "atUtc": "2026-10-02T13:35:00Z"
+  },
+  {
+   "id": "fy-20261002-1100",
+   "from": "claude",
+   "text": "Good early sign on the biggest risk for live trading. EXP-012's test assumed we buy in the very first moment after a token migrates. Our real feed is a few seconds behind, so I re-ran the strategy on its practice data with the buy delayed by up to 12 blocks (about 3 seconds). Profit per trade shrank by roughly 20% at a realistic 1–1.5 second delay, and by about 40% at 3 seconds, but it stayed positive throughout. This is practice data the model was built on, so it is a warning check, not proof. Separately, the backup test block (6 days) is fetched and verified, ready for the next test.",
+   "atUtc": "2026-10-02T11:00:00Z"
+  },
+  {
+   "id": "fy-20261002-0910",
+   "from": "claude",
+   "text": "The free public trade feed misses trades. Checked against the chain record for 2 hours, the fast server's tape caught 84.759% of trades and the Oracle tape caught 66.241%, so the fast tape fails its 95% bar. In that window the 9 Oracle paper books saw only about two-thirds of the trades. The EXP-012 test data comes from full block downloads, so that result is unaffected. A second check in a calmer period is running now. If the free feed still falls short, the fix is to follow new blocks directly (about 9.7M Helius credits/month, inside budget).",
+   "atUtc": "2026-10-02T09:10:00Z"
+  },
+  {
+   "id": "fy-20261001-1640",
+   "from": "claude",
+   "text": "EXP-012 passed its one-shot test on 6 never-seen days, under both fail models: 451 trades, about +0.035 SOL per trade (flat) and +0.021 (pressure), still positive without the top 3 trades. It is a replay, not money made, and the week was favourable (even unfiltered entries made money), with most of the edge coming from predicting which entries fill. Next is a forward-paper book on the fast server after the 10-05 kill review. Live needs that book to pass on its own trades, and then your approval.",
+   "atUtc": "2026-10-01T16:40:00Z"
+  },
+  {
+   "id": "fy-20261001-0320",
+   "from": "claude",
+   "text": "EXP-012 is frozen and passed its pre-stated screen on the clean training data: 9 of 9 days positive under both fail models. On the fast-box data the test block comes from, the in-sample result is weaker (+4.19% flat, +3.25% pressure), so expect the read to be weaker still. The one-shot read of the fresh block happens today after the walkers finish (about 12:30Z plus verification). A pass there starts forward paper; it does not mean live yet.",
+   "atUtc": "2026-10-01T03:20:00Z"
+  },
+  {
+   "id": "fy-20261001",
+   "from": "claude",
+   "text": "Clean data is in. The exploration pool is deduplicated (2.47M duplicate trade rows removed, all in 3 resumed hours), and the entry-model idea still passes its screen on it. Next is EXP-012, a fresh one-shot test on a never-read 6-day block, which is fetching now on research-0. Expected read: today after about 12:00Z, if the re-frozen model passes its pre-stated check first.",
+   "atUtc": "2026-10-01T01:45:00Z"
+  },
+  {
+   "id": "fy-exp011",
+   "from": "claude",
+   "text": "EXP-011 closed NOT_DECIDABLE: the walkers wrote duplicate rows and one empty hour. No result was seen. Next: fix the data, re-check the entry model on clean data, then a new test on a fresh block.",
+   "atUtc": "2026-09-30T20:50:00Z"
+  },
+  {
+   "id": "fy-20261006-0054",
+   "from": "claude",
+   "text": "Live so far: the losses are mostly the pre-fix build and one rug; the other trades are about break-even after fees (~2% of a 0.05 SOL trade). Size only helps if the edge exists, and no simulation can say whether 0.25 SOL works (DEC-020 §1). Replaying the fixed builds' live record at 0.25 SOL gives −0.1752 SOL, with the loss cap hit about 3 times in 4 (job #190). My recommendation is still Option A: no size step until the 10-16 forward read passes. The August backcheck is being redone at the realistic exit and is context only, not a reason to fund.",
+   "atUtc": "2026-10-06T00:54:00Z"
+  },
+  {
+   "id": "fy-20261006-0555",
+   "from": "claude",
+   "text": "Status 10-06 morning. The live probe is at 45 of 90 trades and down 0.066 SOL. That is a loss, small and inside its limits, and it ends 10-12. The decision that matters is the 10-16 forward read; it decides whether we may ask you for the 0.25 SOL step (DEC-020 Option A). This morning I found that the part of that read which decides live support had no tool built, and the price map it needs had the same hole that spoiled the August back-check. Both are being built and reviewed now so the read can't be wasted. No action needed from you.",
+   "atUtc": "2026-10-06T05:54:00Z"
+  },
+  {
+   "id": "fy-20261006-m7b",
+   "from": "claude",
+   "text": "Morning recap. The live probe is at 52 of 90 trades, down 0.076 SOL (a loss inside its 0.25 cap); the two big losers were one-step crashes that a stop can't catch. The 10-16 read that decides the 0.25 SOL step is now fully tooled and reviewed, and two bugs that would have spoiled it were found and fixed today. Of the challengers, EXP-013 failed its test (closed); EXP-015 is still running; the rug filter (EXP-016) is planned with fresh test data being fetched. No action needed from you.",
+   "atUtc": "2026-10-06T08:32:00Z"
+  },
+  {
+   "id": "fy-20261006-m7c",
+   "from": "claude",
+   "text": "Honest midday picture: both retrain challengers (EXP-013, EXP-015) failed their pre-set screens. The useful result is that the simulator and the live probe now agree: at 0.05 SOL the current strategy is about flat to slightly losing (≈ −0.0005 SOL per trade), mostly because fixed fees are ~2% at that size. Bigger size is the only fee lever, but no simulation can prove 0.25 SOL works, so the 10-16 read (scored at 0.5 SOL terms) stays the decision point; its tooling is ready. The rug filter (EXP-016) is the next genuinely new idea and is being built. No action needed from you.",
+   "atUtc": "2026-10-06T12:35:00Z"
+  }
+ ],
+ "stream": [
+  {
+   "id": "s-20261010-0735-h5stop",
+   "from": "claude",
+   "kind": "status",
+   "text": "10-10 07:35Z: H5 canary STOPPED for new buys at 07:15:10Z. DEC-024 section 5.1 fired: the daily A3 run read a BOOST last-slice median of 333 s after migrate (9 pools), so at most 333 s after the first print, under the 335 s line; our sells land about 329.5 s after the first print. Quant-proof: the halt stands; only a dated owner amendment can resume. No A3 halt flag fired, so EXP-024 Look 1 is not halted (333 s feeds its 330 s window check); EXP-022's flags are clear. Canary before the stop: 3 trades, +0.005199 SOL.",
+   "atUtc": "2026-10-10T07:35:00Z"
+  },
+  {
+   "id": "s-20261009-2155-h5",
+   "from": "claude",
+   "kind": "status",
+   "text": "10-09 21:55Z: H5 canary first live check. 2 trades (-42.2%, +65.8%), +0.004728 SOL realized, wallet 0.303417 SOL. Landing about 0.87 s, sells on time, live within a few points of the paper twin on both. ALERTS=0; no halt rule fired. Trial continues to 20 landed buys.",
+   "atUtc": "2026-10-09T21:55:00Z"
+  },
+  {
+   "id": "s-20261009-1945-live",
+   "from": "claude",
+   "kind": "status",
+   "text": "10-09: H5 canary LIVE at T0 (0.02 SOL) since 19:29:53Z after the official A3 run met EXP-024 P2. Merged today: A3 re-pin (#517), synthetic exclusion amendments and build (#518-#521, #523), go-live records (#525, #527, #528, #533), DEC-026 C1-NF canary terms (#522), EXP-025 Am.2 (#529), DEC-027 framework (#526). Research: loss filter (no v2 filter), iteration round 1 (FLOOR-OPTION v2 survives narrowly, small). C1-NF build round 1 done; all PRs need another round. Owner capital 1.29 SOL: H5 +0.5 at T1, C1-NF 0.5.",
+   "atUtc": "2026-10-09T19:45:00Z"
+  },
+  {
+   "id": "s-20261008-1804-evening",
+   "from": "claude",
+   "kind": "status",
+   "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets nearly match at <= 32 min on P2-P4, not on P1; the P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample, not gate evidence). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
+   "atUtc": "2026-10-08T18:04:46Z"
+  },
+  {
+   "id": "s-20261008-1600-plan",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Afternoon 10-08: CAP-PICK pre-registered as EXP-022 (#464; counts from 10-16T01; expected fail, P(pass) about 5-7%). Walk-2 data integrity merged (#466 refuses silent holes; #467 records per-trade V and BOOST events and recovers migration rows: 95.35% of canonical migrations had no migration row on the old tape because migrate-tx logs exceed the 10 KB cap; complete rows: 24,224 of 24,272 (99.80%), so universes were unaffected [inferred]). Scorer port matches all 24,272 audit attempts within the 0.01 pp target; P2-P4 exact to the lamport (19,234 of 19,234); 6 P1 attempts differ. Edge search: none of 16 alternatives survives; same-slot route not worth buying. Next: live-gate pick-set check (#387), walk-2 launcher, change watch (T1), BOOST-timing insurance (T2).",
+   "atUtc": "2026-10-08T16:00:00Z"
+  },
+  {
+   "id": "s-20261008-1029-audit",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Audit done (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk). Root causes: wrong side of the flow at our ~1.3 s landing (~35%), the 30-min exit rode through the end of pump.fun's BOOST bid (~20%), no seed-anchored price guard (~15%), measurement artifacts (the 10-01 PASS was +6.97% at the gate setup vs +0.145% flat at realistic execution), priority overpaid about 10x, and a market that is changing under us (10-02 program redeploy; 200 ms slots due about 10-09T14:34Z). Merged today: #454 slot-span bound + forward walk resubmitted (#382), #455 v1 transactions, #456 daily structure monitor (first run 10-08: no halt, BOOST on 12/12 non-mayhem WSOL graduations, last slice median 341.5 s).",
+   "atUtc": "2026-10-08T10:29:20Z"
+  },
+  {
+   "id": "s-20261007-234226-c",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Seal breach consequence fixed per DEC-016 Am.2: the 10-16 FINAL read will be reported compromised and cannot alone support a live request. The live path is EXP-021 confirmed on fresh-0802 plus faster entry. Runner-side reads are now timing-only in code (#453). DEC-022 Phase B bar tightened to landing p50 <= 2 and p90 <= 4.",
+   "atUtc": "2026-10-07T23:42:26Z"
+  },
+  {
+   "id": "s-20261007-182504-b",
+   "from": "claude",
+   "kind": "finding",
+   "text": "EXP-021: precount #2 found the screen would refuse on V coverage (95.08%, floor 99%; 1,711 pools never in the V map) and flagged a 09-25 window artifact in the P1 coverage check. Freeze #365 cancelled before it wasted 6 h. Fix in PR #450 (Amendment 4); precount #3 (job #366) running; then V remedy, freeze, pins, one screen.",
+   "atUtc": "2026-10-07T18:25:04Z"
+  },
+  {
+   "id": "s-20261007-182504-a",
+   "from": "claude",
+   "kind": "result",
+   "text": "Fast-entry read (PR #451, latency only): today's early arm gives no lead (p50 0 ms). The processed migrate stream is about 1 s ahead of the runner's current trigger (p50 1,012 ms on 262 of 284 graduations; earlier-of-both p50 996 ms on 284). That is mostly confirmation delay saved, not a lead over the first swap on chain, so realistic landing is about k 3-4 vs 5 today. DEC-022 proposes the build: Phase A paper timing shadow now (no key); Phase B live calibration only on your go. Seal note: an early-arm read printed per-day outcome counts inside the sealed window; no P&L was read; disclosed in DEC-016.",
+   "atUtc": "2026-10-07T18:25:04Z"
+  },
+  {
+   "id": "s-20261007-034714-a",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-020 grid, END bound (report-only, job #350): the paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]), but every k2 kept book has ex-best-date < 0. Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. These 27 dates have had 100+ tries. No edge claim. Next: one pre-registration with EXP-021 and an END-bound co-primary, and live k2 landing calibration.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "s-20261007-034714-b",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-020 grid, start bound (report-only, job #347): k2 at 0.25 SOL and above looked positive with ex-best-date > 0. The start bound flatters fills and 2026-08-21 carries 40 to 43 % of the k2 flat totals. Not gate evidence.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "s-20261007-034714-c",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-014 v2 (mig+15 PumpSwap selector) failed its screen: every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat: 2,496 trades, mean -0.0012437746370192308 SOL per trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL the mean is -0.004047897272035256. Exploration, no edge claim.",
+   "atUtc": "2026-10-07T03:47:14Z"
+  },
+  {
+   "id": "s-20260930-1604",
+   "from": "claude",
+   "kind": "status",
+   "text": "Took over as manager. Walker C at 63/72; EXP-011 read expected about 20Z.",
+   "atUtc": "2026-09-30T16:04:00Z"
+  },
+  {
+   "id": "s-20260930-1630",
+   "from": "claude",
+   "kind": "status",
+   "text": "Console contracts merged: result record, data catalog with read guard, status files. Console build started.",
+   "atUtc": "2026-09-30T16:30:00Z"
+  },
+  {
+   "id": "s-20260930-1830",
+   "from": "claude",
+   "kind": "status",
+   "text": "Console is live at console.tradervaan.com (on mal-fast-0 for now, capped at 512 MB, localhost behind Cloudflare Access). MiScusi key pending.",
+   "atUtc": "2026-09-30T18:30:00Z"
+  },
+  {
+   "id": "s-20260930-2050",
+   "from": "claude",
+   "kind": "decision",
+   "text": "EXP-011 closed NOT_DECIDABLE. The read aborted on a sealed-but-empty hour, and resumed walker hours hold exact duplicate rows. No outcome was observed. The holdout is spent, and the walker fix and dedupe come first.",
+   "atUtc": "2026-09-30T20:50:00Z"
+  },
+  {
+   "id": "s-20261001-0045",
+   "from": "claude",
+   "kind": "status",
+   "text": "Manager2 took over. research-0 is now the work machine: data staged, venv, Helius key placed by Helm.",
+   "atUtc": "2026-10-01T00:45:00Z"
+  },
+  {
+   "id": "s-20261001-0054",
+   "from": "claude",
+   "kind": "status",
+   "text": "Reserved the fresh block [09-03T12, 09-09T12) in the ledger before any hour was fetched; 3 walkers started on research-0.",
+   "atUtc": "2026-10-01T00:54:00Z"
+  },
+  {
+   "id": "s-20261001-0105",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Exploration pool deduplicated: fast lost 2,467,409 trade rows (3 resumed hours), Oracle in-sample 0, Oracle live 4,730. Matches the census.",
+   "atUtc": "2026-10-01T01:05:00Z"
+  },
+  {
+   "id": "s-20261001-0120",
+   "from": "claude",
+   "kind": "finding",
+   "text": "B3 re-run on clean data: same 4 cells pass the unchanged screen. Lead cell tp50_sl30/s2_clf flat +6.73% → +6.05%, pressure +3.84% → +3.72%, 8/9 days each; one fast day (09-20) turned negative. Rules out a bad-data artifact. Exploration only, not proof of profit.",
+   "atUtc": "2026-10-01T01:20:00Z"
+  },
+  {
+   "id": "s-20261001-0135",
+   "from": "claude",
+   "kind": "decision",
+   "text": "EXP-012 re-freezes EXP-011's recipe on clean data rather than reusing its retired model (quant-proof review). The re-frozen model must pass the same screen before the fresh block is read.",
+   "atUtc": "2026-10-01T01:35:00Z"
+  },
+  {
+   "id": "s-20261001-0140",
+   "from": "claude",
+   "kind": "status",
+   "text": "explore_exit job template wired (#186) with a data-root allowlist. MiScusi guard fix (#12) and Opus 5.5 1M context fix (#13) ready for Grokbot.",
+   "atUtc": "2026-10-01T01:40:00Z"
+  },
+  {
+   "id": "s-20261001-0200",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Helius budget raised to ~40M credits/month. Using ~7.5M on: the EXP-012 block, a backup test block, and 14 more exploration days (the 9-day pool is the main limit on model quality).",
+   "atUtc": "2026-10-01T02:00:00Z"
+  },
+  {
+   "id": "s-20261001-0205",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Solana ran fewer slots per hour in August (~8,700 mid-Aug, ~9,850 late Aug vs ~11,400 in Sept). The walker guard stopped all 7 new walkers on hour one; boundaries verified against block times, restarted with a lower minimum for that block.",
+   "atUtc": "2026-10-01T02:05:00Z"
+  },
+  {
+   "id": "s-20261001-0212",
+   "from": "claude",
+   "kind": "status",
+   "text": "'Running now' panel is live: MiScusi jobs plus every mal-* service and timer on all three servers, with state, uptime, memory and a scrubbed last log line.",
+   "atUtc": "2026-10-01T02:12:00Z"
+  },
+  {
+   "id": "s-20261001-0320",
+   "from": "claude",
+   "kind": "finding",
+   "text": "EXP-012 freeze (job #23): proceed screen PASS. Flat +7.43% / pressure +4.67% pooled, 9/9 days; fast-box only +4.19% / +3.25%. In-sample, not gate evidence. Threshold 0.80308. Frozen artifacts in #200.",
+   "atUtc": "2026-10-01T03:20:00Z"
+  },
+  {
+   "id": "s-20261001-1640",
+   "from": "claude",
+   "kind": "finding",
+   "text": "EXP-012 one-shot read: promotion gate PASS under both fail models (replay). n=451; flat 0.0349 SOL/trade CI90 [0.0187, 0.0513]; pressure 0.0205 [0.0110, 0.0299]; 6/7 days; ex-top-3 +14.04 / +8.22 SOL. quant-proof confirmed. Caveats in the EXP-012 Result.",
+   "atUtc": "2026-10-01T16:40:00Z"
+  },
+  {
+   "id": "s-20261002-0850",
+   "from": "claude",
+   "kind": "status",
+   "text": "New manager on mal-research-0 took over. Expansion walkers w5-w7 queued (jobs #37-#39).",
+   "atUtc": "2026-10-02T08:50:00Z"
+  },
+  {
+   "id": "s-20261002-0910",
+   "from": "claude",
+   "kind": "result",
+   "text": "Tape coverage against chain truth, 10-01T17-19: fast tape 84.759%, Oracle tape 66.241% of chain trades. DEC-015 §2.2 FAIL (bar 95%). Re-check in a quiet stretch (job #44) is running.",
+   "atUtc": "2026-10-02T09:10:00Z"
+  },
+  {
+   "id": "s-20261002-1100",
+   "from": "claude",
+   "kind": "result",
+   "text": "Backup confirmation block [08-28T12, 09-03T12) fully fetched and verified (144/144 h, 0 flagged, 0 duplicates, 1,654,761 credits). Unread, reserved for the next confirmation test.",
+   "atUtc": "2026-10-02T11:00:00Z"
+  },
+  {
+   "id": "s-20261002-1101",
+   "from": "claude",
+   "kind": "result",
+   "text": "Exploration check: EXP-012's selected book on its 9 exploration days with out-of-fold selection. Pressure mean 0.02315 SOL/trade at 1-slot entry, 0.01875 at 4 slots, 0.01327 at 12 slots; CI lower bound above 0 throughout. Exploration, not evidence.",
+   "atUtc": "2026-10-02T11:00:00Z"
+  },
+  {
+   "id": "s-20261002-1335",
+   "from": "claude",
+   "kind": "result",
+   "text": "Tape coverage re-check, quiet stretch 10-02T06-08: fast tape 100.000% of chain trades, Oracle 98.615%. The 10-01 losses (84.759%) came with websocket reconnect episodes. Feed is complete when stable; needs reconnect resilience before a book counts on it.",
+   "atUtc": "2026-10-02T13:35:00Z"
+  },
+  {
+   "id": "s-20261002-1345",
+   "from": "claude",
+   "kind": "status",
+   "text": "Fast trade tape trial restarted with 2 redundant public sockets (#233). First minute: both subscribed, 0 reconnects, 0 rejections, duplicates merged cleanly. Coverage against chain to be re-measured after 24 h.",
+   "atUtc": "2026-10-02T13:45:00Z"
+  },
+  {
+   "id": "s-20261002-1600",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Forward walk started (job #71) after owner OK: every finished hour is fetched from the chain and verified, from 10-02T15. EXP-012's forward book counts 10-06 to 10-16, one read at about 10-16 02Z. About 9.7M Helius credits a month.",
+   "atUtc": "2026-10-02T16:00:00Z"
+  },
+  {
+   "id": "s-20261002-1730",
+   "from": "claude",
+   "kind": "result",
+   "text": "Extra forward models (DEC-017): all three candidates fail their pre-stated screens on exploration data (exit variant, expanded-pool refit, looser threshold). EXP-012 stays the only forward book.",
+   "atUtc": "2026-10-02T17:30:00Z"
+  },
+  {
+   "id": "s-20261002-2100",
+   "from": "claude",
+   "kind": "decision",
+   "text": "EXP-013 screen rules fixed before any data (Amendment 5, quant-proof reviewed); model and screen code merged.",
+   "atUtc": "2026-10-02T21:00:00Z"
+  },
+  {
+   "id": "s-20261003-0500",
+   "from": "claude",
+   "kind": "result",
+   "text": "Fast two-socket tape caught 100.000% of chain trades over 10-03T00–02 (Oracle 95.671%).",
+   "atUtc": "2026-10-03T05:00:00Z"
+  },
+  {
+   "id": "s-20261003-0540",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Rules for when an EXP-012 pass may support a live trial are fixed before any runner data (DEC-016 Amendment 3), with tooling merged.",
+   "atUtc": "2026-10-03T05:40:00Z"
+  },
+  {
+   "id": "s-20261006-0006",
+   "from": "claude",
+   "kind": "status",
+   "text": "Live probe on build faa3192: 30/90 attempts, −0.146514 SOL. Since the exit/entry fixes (24 trades): −0.045977 SOL, of which one rug was −0.047169; the other 23 net +0.001191 SOL (about break-even after ~2% fees at 0.05 SOL).",
+   "atUtc": "2026-10-06T00:06:00Z"
+  },
+  {
+   "id": "s-20261006-0020",
+   "from": "claude",
+   "kind": "result",
+   "text": "Rug screen (job #191): no pre-migration concentration rule helps; nested pressure −0.00032 SOL/trade, CI90 [−0.00060, −0.00005]. No live filter. Tries on the 9 days: 74.",
+   "atUtc": "2026-10-06T00:20:00Z"
+  },
+  {
+   "id": "s-20261006-0033",
+   "from": "claude",
+   "kind": "status",
+   "text": "Live probe: 34/90 attempts, −0.116494 SOL, 0 open; the 6 faa3192 trades recovered +0.036868 SOL (too few to judge).",
+   "atUtc": "2026-10-06T00:33:00Z"
+  },
+  {
+   "id": "s-20261006-0035",
+   "from": "claude",
+   "kind": "result",
+   "text": "Grad stream (6 h): processed curve-complete arrives p50 924 ms before the tip follower, 0 rollbacks, but sees only 23.4% of completes at threshold 0.90. Re-measuring at 0.70 (job #203).",
+   "atUtc": "2026-10-06T00:35:00Z"
+  },
+  {
+   "id": "s-20261006-0037",
+   "from": "claude",
+   "kind": "decision",
+   "text": "EXP-012 backcheck (job #201) started 00:37Z and was cancelled at 00:53Z during its V-coverage pre-pass, before any outcome was computed: the owner's reviewer flagged that its deciding cell used the optimistic exit (lag 0). It will rerun with the realistic exit (lag 2) as the deciding cell. Exploration only.",
+   "atUtc": "2026-10-06T00:37:00Z"
+  },
+  {
+   "id": "s-20261006-0532",
+   "from": "claude",
+   "kind": "status",
+   "text": "Live probe: 45/90 attempts, −0.065655 SOL realized, 0 open, healthy (job #233). New manager (manager7) took over; hourly monitor recreated.",
+   "atUtc": "2026-10-06T05:32:00Z"
+  },
+  {
+   "id": "s-20261006-0543",
+   "from": "claude",
+   "kind": "result",
+   "text": "Fee vs landing study (job #216, observational): buyers paying the least priority fee land in the first 6 slots most often (60%); fee only weakly orders buys inside a slot. Landing speed comes from send timing, not fee. No fee change (lab note #372).",
+   "atUtc": "2026-10-06T05:43:00Z"
+  },
+  {
+   "id": "s-20261006-0550",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Complete V map pinned (#371): 226,073 pools, 321 closed (no V), sha 70914a16…b42e. EXP-013 rerun started (job #236, try 1 of 3) and EXP-015 guard check (job #237, no tries). Both are exploration.",
+   "atUtc": "2026-10-06T05:50:00Z"
+  },
+  {
+   "id": "s-20261006-0553",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Critical-path gap found: the 10-16 forward read's live-deciding book (B), priced with the virtual reserve, had no tool, and its V map would have repeated the bug that refused the August back-check. Tools #374/#375 and DEC-016 Amendment 5 (#376) are in review with quant-proof; they must merge before 10-16T00Z.",
+   "atUtc": "2026-10-06T05:54:00Z"
+  },
+  {
+   "id": "s-20261006-0712",
+   "from": "claude",
+   "kind": "decision",
+   "text": "10-16 read tooling merged after 4 quant-proof rounds: V-priced book (B) (#375), forward V map (#374), latency re-score on (B) (#378), DEC-016 Amendment 5 (#376).",
+   "atUtc": "2026-10-06T07:12:00Z"
+  },
+  {
+   "id": "s-20261006-0742",
+   "from": "claude",
+   "kind": "finding",
+   "text": "The 'no-price' pools were not closed: their virtual reserve reads slightly negative (pending fees). Reader fixed (#383); the 10-16 merge now checks the stable base value, so fee movement can't make the read refuse. A fast-0 feed bug of the same kind is fixed in code (#387) and awaits a replay-proof before deploy.",
+   "atUtc": "2026-10-06T07:42:00Z"
+  },
+  {
+   "id": "s-20261006-0830",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-013 (graduation classifier) failed its single screen: 4,314 trades over 24 days, flat mean +0.0012 SOL with CI90 low −0.0074, only 8/24 days positive. Family closed as pre-declared (#388).",
+   "atUtc": "2026-10-06T08:30:00Z"
+  },
+  {
+   "id": "s-20261006-0700",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Rug-filter study EXP-016 plan merged after 5 quant-proof rounds (#381): strict rug label, new pre-migration signals, one final test on fresh Aug 2–8 data being walked now (#248–#250). Reviewer's honest odds: ~15% to pass the screen, ~5% to pass the final test.",
+   "atUtc": "2026-10-06T07:05:00Z"
+  },
+  {
+   "id": "s-20261006-1150",
+   "from": "claude",
+   "kind": "status",
+   "text": "Live probe paused since 08:13Z: the paper EXP-012 book that sends it signals hit its daily loss limit; signals resume at the 00:00Z restart. Probe: 57/90 attempts, −0.167875 SOL realized (a loss, inside the 0.25 cap).",
+   "atUtc": "2026-10-06T11:50:00Z"
+  },
+  {
+   "id": "s-20261006-1215",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-015 (pooled retrain) failed its screen: 0 of 6 bars on all 3 configs; family closed, its Aug 8–14 test block released unread (#390). Same run: frozen EXP-012 at realistic costs on 27 unseen-ish dates scores −0.00044 (flat) / −0.00054 (pressure) SOL per trade at 0.05 SOL, matching the live probe's ~−0.0005 per trade. Fees (~2% at 0.05 SOL) eat the small edge; the 10-16 read at 0.5 SOL trial terms decides the next step.",
+   "atUtc": "2026-10-06T12:15:00Z"
+  },
+  {
+   "id": "s-20261006-1430",
+   "from": "claude",
+   "kind": "result",
+   "text": "Live entry speed on the current probe build (job #285, 29 attempts): median 5 slots after migration, p90 6, worst 15 (one slow RPC call). That is inside the range where the exploration curve still had an edge. About 3 of the 5 slots are the data feed's block delay.",
+   "atUtc": "2026-10-06T14:30:00Z"
+  },
+  {
+   "id": "s-20261006-1505",
+   "from": "claude",
+   "kind": "result",
+   "text": "10-16 blocker solved at the data level: the 6 pools whose virtual reserve 'moved' all had liquidity deposits or withdrawals. PumpSwap rescales the reserve by the LP-supply ratio, and that rule reproduces all 16 operations to the lamport (jobs #282–#284, pool fields and transaction logs only; quant-proof re-derived it). Snapshot #3 (job #286): over about 7 h only those same 6 pools moved.",
+   "atUtc": "2026-10-06T15:05:00Z"
+  },
+  {
+   "id": "s-20261007-0008",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-017 batch 1 (a regime gate and score-based sizing on the frozen EXP-012 selection) failed its screen: no cell passed. H3 p 0.48605139486051396 (621 trades), H4 p 0.3955604439556044 (2,349 trades); H4 did not beat a uniform 0.10 SOL stake. The report-only stake table on 27 already-read dates: at 0.5 SOL the flat mean is +0.0036088916219667944 SOL per trade (total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]); pressure +0.001149852399318859. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; it is not evidence of edge. Exploration, no edge claim.",
+   "atUtc": "2026-10-07T00:08:15Z"
+  },
+  {
+   "id": "s-20261006-2058",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-019 (post-migration flow confirmation at k8) failed its one screen: no cell passed, family closed. Cell A vs frozen k6: flat mean difference -0.0005277499177288448 SOL per migration, p 0.9715028497150285. A book: 1,726 trades, flat mean -0.0013183461738122827 SOL, 9 of 27 dates positive, B1 to B6 all fail. Waiting 2 slots for early momentum costs more than the information is worth. Exploration, no edge claim.",
+   "atUtc": "2026-10-06T20:58:43Z"
+  },
+  {
+   "id": "s-20261006-2038",
+   "from": "claude",
+   "kind": "result",
+   "text": "EXP-018 (wallet skill at migration) failed its one screen: no cell passed, family closed. W2 vs frozen EXP-012: flat mean difference +0.000004146408 SOL per migration, p 0.46275. W2 book: 988 trades, flat mean -0.0010193 SOL, 6 of 22 dates positive, B1 to B6 all fail. Causal wallet skill adds nothing beyond frozen EXP-012 at realistic costs. Exploration, no edge claim.",
+   "atUtc": "2026-10-06T20:38:00Z"
+  },
+  {
+   "id": "s-20261006-1510",
+   "from": "claude",
+   "kind": "decision",
+   "text": "DEC-016 Am.5 §7 merged before the read (#400, 3 quant-proof rounds). (B) prices each trade at the reserve in force at entry. If liquidity changes during a hold, the trade takes the worse price. Unexplained moves count as missing data, and the merge refuses above 0.1% of pools. If the tools are not merged with quant-proof by 10-16T00Z, the old strict rule applies.",
+   "atUtc": "2026-10-06T15:10:00Z"
+  },
+  {
+   "id": "s-20261007-1554-probe",
+   "from": "claude",
+   "kind": "result",
+   "text": "Probe closed (stopped 10-07T01:10:50Z at 62/90, −0.210755 SOL). Corrected record (#445, quant-proof): fixed tx fees do not explain the last build's loss (−23.6M lamports before tx fees, ~40M of it pool fee), so a bigger stake does not by itself make money. Exit lag 2 is a fair primary (live landing p90 2), 5 is the pessimistic leg. Wallet ties to the lamport on chain.",
+   "atUtc": "2026-10-07T15:54:21Z"
+  },
+  {
+   "id": "s-20261007-1605-wd",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Probe decommissioned. Helm withdrew the remaining balance (298,768,781 lamports plus a 5,000 fee) to the owner's address 5ANM…eufi at 15:48Z. The wallet is 0 on chain (job #363), the executor and watch timer are disabled, and STOP is in place. Block budget clarified before any EXP-021 read: EXP-021's new rug features, tested as a pair against a retrained control, may claim a sealed block. Retunes of the EXP-012 book (size, k, threshold) may not, and a k-speed test belongs to EXP-020. m is frozen at 12, so a claim needs p < 0.00208.",
+   "atUtc": "2026-10-07T16:05:21Z"
+  }
+ ]
 }
