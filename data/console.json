@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T10:38:17Z",
+ "updated_utc": "2026-10-10T13:35:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "tipfollower-eventv-1010",
+   "kind": "other",
+   "title": "Live feed now carries the pool's event V (needed for C1-NF): tip follower restarted 13:17:17Z on its own code tree",
+   "detail": "First 10 minutes: 172,014 prints stamped, 0 mismatches, 0 errors, 0 PumpSwap prints missing V; no new feed gaps; lag 2 slots. The paper runner and its code were not touched. One acceptance check (a 1,000-print price-law sample) is still to run; if it fails, the change is rolled back today.",
+   "atUtc": "2026-10-10T13:17:17Z"
+  },
   {
    "id": "h5-am5-1010",
    "kind": "other",
