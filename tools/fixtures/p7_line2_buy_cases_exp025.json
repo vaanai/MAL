@@ -1,0 +1,755 @@
+{
+ "cases": [
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     2,
+     93,
+     30
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 2275000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_12500",
+   "ppm": 12500,
+   "q": 62415123457,
+   "qin": 137235018,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     95
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 968000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_12000",
+   "ppm": 12000,
+   "q": 622415123457,
+   "qin": 137029336,
+   "sol": 138673689,
+   "tok": 171249970722,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     90
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 1047500,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_11500",
+   "ppm": 11500,
+   "q": 1582415123457,
+   "qin": 137011735,
+   "sol": 138587371,
+   "tok": 68499996221,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     85
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 936000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_11000",
+   "ppm": 11000,
+   "q": 2382415123457,
+   "qin": 137007824,
+   "sol": 138514911,
+   "tok": 45666665324,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     80
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 375500,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_10500",
+   "ppm": 10500,
+   "q": 3182415123457,
+   "qin": 137005869,
+   "sol": 138444431,
+   "tok": 34249999435,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     75
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 860000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_10000",
+   "ppm": 10000,
+   "q": 4782415123457,
+   "qin": 137003914,
+   "sol": 138373954,
+   "tok": 22833333253,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     5
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 2283000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "chain_true_3000",
+   "ppm": 3000,
+   "q": 79982415123457,
+   "qin": 137000239,
+   "sol": 137411242,
+   "tok": 1370000034,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     2,
+     93,
+     30
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 400000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy_v2",
+   "name": "chain_true_12500_buy_v2",
+   "ppm": 12500,
+   "q": 62415123457,
+   "qin": 91103648,
+   "sol": 92242444,
+   "tok": 909998765685,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     18
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 12501520500,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "half_tier_4250_chain_43bp",
+   "ppm": 4250,
+   "q": 59982415123457,
+   "qin": 250001054,
+   "sol": 251076060,
+   "tok": 3333333480,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     13
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 12501508750,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "half_tier_3750_chain_38bp",
+   "ppm": 3750,
+   "q": 67982415123457,
+   "qin": 250000931,
+   "sol": 250950936,
+   "tok": 2941176601,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     18
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 3995750,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "half_tier_4250_dust_miss",
+   "ppm": 4250,
+   "q": 59982415123457,
+   "qin": 20001,
+   "sol": 20090,
+   "tok": 266673,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     5
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 1997000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "dust_3000_rounding_miss",
+   "ppm": 3000,
+   "q": 79982415123457,
+   "qin": 5001,
+   "sol": 5018,
+   "tok": 50006,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     5
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 774000,
+   "expect": "hit",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "dust_3000_hit",
+   "ppm": 3000,
+   "q": 79982415123457,
+   "qin": 7742,
+   "sol": 7766,
+   "tok": 77416,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "sim",
+    "ppm": 12500
+   },
+   "dev_e6": 31725225000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "sim_fee_inside_qin_12500",
+   "ppm": 12500,
+   "q": 62415123457,
+   "qin": 200501262,
+   "sol": 203039253,
+   "tok": 1999997003586,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "sim",
+    "ppm": 11000
+   },
+   "dev_e6": 24471542000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "sim_fee_inside_qin_11000",
+   "ppm": 11000,
+   "q": 2382415123457,
+   "qin": 200016678,
+   "sol": 202241333,
+   "tok": 66666666244,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "sim",
+    "ppm": 10000
+   },
+   "dev_e6": 20202570000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "sim_fee_inside_qin_10000",
+   "ppm": 10000,
+   "q": 4782415123457,
+   "qin": 200008343,
+   "sol": 202028629,
+   "tok": 33333333982,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     2,
+     93,
+     30
+    ],
+    "kind": "chain_plus",
+    "plus_bps": 5
+   },
+   "dev_e6": 68620275000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "plus_5bp_12500",
+   "ppm": 12500,
+   "q": 62415123457,
+   "qin": 137235018,
+   "sol": 139019076,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     95
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": -75140237500,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "tier_12500_chain_120bp",
+   "ppm": 12500,
+   "q": 62415123457,
+   "qin": 150281779,
+   "sol": 152085161,
+   "tok": 1499997695191,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     10
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": -37498248750,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "tier_3750_chain_35bp",
+   "ppm": 3750,
+   "q": 67982415123457,
+   "qin": 150000333,
+   "sol": 150525336,
+   "tok": 1764705897,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     20,
+     5,
+     8
+    ],
+    "kind": "chain"
+   },
+   "dev_e6": 45002151000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "tier_3000_chain_33bp",
+   "ppm": 3000,
+   "q": 79982415123457,
+   "qin": 150000283,
+   "sol": 150495286,
+   "tok": 1500000014,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     2,
+     93,
+     30
+    ],
+    "kind": "chain_at_other_q",
+    "true_q": 62415123457
+   },
+   "dev_e6": -2779006475000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "q_plus_2pct_12500",
+   "ppm": 12500,
+   "q": 64015125926,
+   "qin": 139979718,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "chain_bps": [
+     2,
+     93,
+     30
+    ],
+    "kind": "chain_at_other_q",
+    "true_q": 62415123457
+   },
+   "dev_e6": 2779011025000,
+   "expect": "miss",
+   "in_denominator": true,
+   "ix_name": "buy",
+   "name": "q_minus_2pct_12500",
+   "ppm": 12500,
+   "q": 60815120988,
+   "qin": 134490318,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:buy_exact_quote_in",
+   "in_denominator": false,
+   "ix_name": "buy_exact_quote_in",
+   "name": "exact_in_v1",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 137235019,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:buy_exact_quote_in",
+   "in_denominator": false,
+   "ix_name": "buy_exact_quote_in_v2",
+   "name": "exact_in_v2",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 137235019,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:ix_not_listed",
+   "in_denominator": false,
+   "ix_name": "multi_hop_swap",
+   "name": "multi_hop_swap",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:ix_not_listed",
+   "in_denominator": false,
+   "ix_name": "Buy",
+   "name": "name_Buy_case",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:ix_not_listed",
+   "in_denominator": false,
+   "ix_name": "buy_unknown_ix",
+   "name": "name_unknown",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:no_ix_name",
+   "in_denominator": false,
+   "ix_name": null,
+   "name": "name_null",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:no_ix_name",
+   "in_denominator": false,
+   "ix_name": "",
+   "name": "name_empty",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:no_ix_name",
+   "in_denominator": false,
+   "name": "name_missing",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:zero_sol",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "zero_sol_buy",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": true
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "exclusion"
+   },
+   "expect": "excluded:zero_sol",
+   "in_denominator": false,
+   "ix_name": "buy_exact_quote_in",
+   "name": "zero_sol_exact_in",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 137235019,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": true
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "skip"
+   },
+   "expect": "skipped",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "skip_sol_zero",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 0,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "skip"
+   },
+   "expect": "skipped",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "skip_sol_negative",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": -1,
+   "tok": 1369997915809,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "skip"
+   },
+   "expect": "skipped",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "skip_tok_zero",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 0,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "skip"
+   },
+   "expect": "skipped",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "skip_tok_eq_b",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 800000000000000,
+   "v": 17585000000,
+   "zero_sol": false
+  },
+  {
+   "b": 800000000000000,
+   "construction": {
+    "kind": "skip"
+   },
+   "expect": "skipped",
+   "in_denominator": false,
+   "ix_name": "buy",
+   "name": "skip_tok_gt_b",
+   "ppm": 12500,
+   "q": 62415123457,
+   "sol": 138950458,
+   "tok": 800000000000001,
+   "v": 17585000000,
+   "zero_sol": false
+  }
+ ],
+ "fields": {
+  "b": "base_reserve",
+  "construction": "how sol was built (verified by the EXP-025 tests)",
+  "expect": "hit | miss | skipped | excluded:<cause>",
+  "in_denominator": "true for hit and miss",
+  "ppm": "the tier both helpers give at (q + v, b)",
+  "q": "EXP-025: adapter quote_reserve (mapped); EXP-024: tape quote_reserve",
+  "qin, dev_e6": "derived, for hit and miss cases only",
+  "sol": "sol_lamports",
+  "tok": "token_raw",
+  "v": "EXP-025: tokens.v0_lamports; EXP-024: V"
+ },
+ "note": "No case is both excluded and skipped: EXP-025 decides the exclusion first (from the sampled raw row), EXP-024 applies the skip rule first (on tape fields) and then the exclusion (from the raw decode). For such a print the two tools would count it in different buckets, and both leave it out of the denominator. Synthetic integers only; no October or tape row.",
+ "rule": "P7 line 2 (fee tier), buy side, amended (EXP-025 Amendment 7 B; EXP-024 Amendment 7 B). Comparable buy: no zero_sol and ix_name exactly 'buy' or 'buy_v2' (causes in order: zero_sol, buy_exact_quote_in prefix, no_ix_name, ix_not_listed). Skip rule: sol <= 0, tok <= 0 or tok >= b. Relation: Q = q + v; qin = -((-Q*tok) // (b - tok)); ppm = the tier at (Q, b); hit iff abs(sol*10**6 - qin*(10**6 + ppm)) <= 100*qin. All integers.",
+ "schema": "p7_line2_buy_cases_v1"
+}
