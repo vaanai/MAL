@@ -7,7 +7,10 @@ real ledger guard is exercised. Four graduations:
      a rotation tx (sell OTHER, buy A, same trader, one signature), a same-slot buy pair and one base-reserve break;
   B  synthetic (PostCompleteBuy in the completing tx, which also migrates), seed above the 420 SOL tier line;
   C  completes 10 minutes before the read end, so its window is censored;
-  D  no migrate row; a V=0 pool prints first and the V-band pool second, so the first V-band pool is canonical.
+  D  no migrate row; a V=0 pool prints first and the V-band pool second, so the first V-band pool is canonical; a
+     PostCompleteBuy in a later, separate tx (class pcb_other_tx, so no PCB amount may be written).
+The TestNoPostS0Price perturbation scrambles every post-s0 side, amount, reserve and V and the BOOST event amounts,
+and requires byte-identical graduations and hour stats.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import shutil
 import subprocess
 import tempfile
@@ -183,6 +187,10 @@ def build_fixture(root: Path, *, events: bool = True, zst: bool = False) -> dict
     tape.state[POOL_D1] = [1_000_000_000, 10_000_000_000_000]
     tape.trade(H1, pool=POOL_D1, mint=MINT_D, side="buy", sol=10_000_000, token=1_000_000_000, trader=key("d0"), slot=3001, bt=d_c_bt + 1, v=0)
     tape.trade(H1, pool=POOL_D2, mint=MINT_D, side="buy", sol=20_000_000, token=1_000_000_000, trader=key("d1"), slot=3002, bt=d_c_bt + 2)
+    evs[H1].append(event("post_complete_buy", slot=3020, bt=d_c_bt + 4, sig="SIG_PCB_D_LATER", mint=MINT_D, trader=key("pcb-d"), quote_mint=WSOL,
+                         base_out=1_000_000_000, quote_in=30_000_000, fee=300_000, creator_fee=90_000, buyback_fee=0,
+                         pool_base_reserves_before=10**15, pool_quote_reserves_before=10**11, pool_base_reserves_after=10**15 - 10**9,
+                         pool_quote_reserves_after=10**11 + 3 * 10**7, bonding_curve=key("curve-d"), event_source="inner_event"))
 
     # an unrelated tx with an event_index gap (0, 2): one order violation
     tape.trade(H1, pool=POOL_O, mint=MINT_O, side="buy", sol=1_000_000, token=1_000_000, trader=key("o1"), slot=100, bt=T1 + 10, sig="SIG_GAP", event_index=0, v=None)
@@ -349,12 +357,6 @@ class TestGuards(Base):
         with self.assertRaises(od.Refused):
             self.run_build(workers=3)
 
-    def test_structure_only_guard(self):
-        for bad in ({"pnl_sol": 1}, {"exit_s": 1}, {"fm_net_sol": 1}, {"ret_5m": 1}, {"seed_price": 1}, {"label": 1}):
-            with self.assertRaises(ValueError):
-                od.assert_structure_only(bad)
-        od.assert_structure_only({"fm_flow_sol": 1, "boost_pda_last_s_from_s0": 1, "synth_class": "x"})
-
     def test_cli_exit_3_on_refusal(self):
         rc = od.main(["--root", str(self.tmp / "nope"), "--start", "2026-10-10T00", "--end", "2026-10-10T01", "--ledger-host", "research",
                       "--out", str(self.out)])
@@ -369,7 +371,11 @@ class TestFixtureBuild(Base):
         self.assertEqual(man["summary"], man2["summary"])
         self.assertEqual(set(grads), {MINT_A, MINT_B, MINT_C, MINT_D})
         for g in grads.values():
-            od.assert_structure_only(g)
+            od.assert_d0_graduation(g)
+            self.assertLessEqual(set(g), set(od.D0_GRADUATION_COLUMNS))
+            self.assertFalse(set(g) & set(TestD0Columns.REMOVED))
+        for h in hours:
+            od.assert_d0_hour(h)
 
         a = grads[MINT_A]
         self.assertEqual(a["synth_class"], "not_seen")
@@ -385,44 +391,34 @@ class TestFixtureBuild(Base):
         self.assertEqual((a["seed_fee_ppm"], a["seed_creator_fee_ppm"], a["seed_tier_floor_sol"], a["seed_above_420"]), (12_500, 3_000, 0.0, False))
         self.assertTrue(a["migrate_init_boost"])
         self.assertEqual(a["init_boost_event_n"], 1)
-        # BOOST: 30 slices by the PDA, the same 30 as events, and the heuristic finds the PDA wallet
+        # BOOST: 30 slices by the PDA and the same 30 as events; counts and times only
         self.assertEqual(a["boost_src"], "pda")
         self.assertEqual(a["boost_pda_n"], 30)
         self.assertEqual(a["boost_ev_n"], 30)
-        self.assertEqual(a["boost_heur_n"], 30)
-        self.assertTrue(a["boost_heur_is_pda"])
         self.assertEqual(a["boost_pda_first_s_from_s0"], 10)
         self.assertEqual(a["boost_pda_last_s_from_s0"], 10 + 11 * 29)
         self.assertEqual(a["boost_pda_last_s_from_migrate"], 10 + 11 * 29 + 1)
         self.assertEqual(a["boost_pda_last_s_from_complete"], 10 + 11 * 29 + 2)
         self.assertEqual(a["boost_pda_median_gap_s"], 11)
-        self.assertAlmostEqual(a["boost_pda_sol"], 30 * 0.586166666, places=9)
-        self.assertTrue(a["boost_budget_complete"])
-        self.assertEqual(a["boost_ev_vault_remaining_last"], 17_585_000_000 - 586_166_666 * 30)
-        # first minute: BOOST split out; organic buys 1.0 + 0.5 + 0.3 + 0.39 (rotation buy), one 0.7 sell
-        self.assertEqual(a["fm_n_buys"], 4)
-        self.assertEqual(a["fm_n_sells"], 1)
-        self.assertAlmostEqual(a["fm_buy_sol"], 2.19, places=9)
-        self.assertAlmostEqual(a["fm_sell_sol"], 0.7, places=9)
-        self.assertAlmostEqual(a["fm_flow_sol"], 1.49, places=9)
-        self.assertEqual(a["fm_first_sell_s_from_s0"], 20)
-        self.assertEqual(a["fm_boost_n"], 5)  # slices at s0+10, 21, 32, 43, 54
-        self.assertEqual(a["fm_n_buyers"], 4)
-        # microstructure: the s0+5 slot holds two buys
-        self.assertEqual(a["ms_same_slot_buys_max"], 2)
+        self.assertEqual(a["boost_ev_last_s_from_s0"], 10 + 11 * 29)
+        # first minute: 5 organic prints by 4 traders (x twice) and 5 BOOST slices (s0+10, 21, 32, 43, 54); no side split
+        self.assertEqual((a["fm_n_prints"], a["fm_n_traders"]), (10, 5))
+        self.assertEqual((a["fm_n_prints_ex_boost"], a["fm_n_traders_ex_boost"], a["fm_boost_n"]), (5, 4, 5))
+        # first 360 s: 5 organic prints and 30 slices; the s0+5 slot holds two prints
+        self.assertEqual((a["ms_n_prints"], a["ms_n_traders"]), (35, 5))
+        self.assertEqual(a["ms_same_slot_prints_max"], 2)
         self.assertEqual(a["ms_prints_per_active_slot_max"], 2)
-        # multi-hop: one rotation-in print, flagged by structure and by ix_name
+        # multi-hop: one print in a multi-mint tx, flagged by structure and by ix_name
         self.assertEqual(a["mh_n_prints_multi_tx"], 1)
-        self.assertEqual(a["mh_n_rot_in"], 1)
-        self.assertAlmostEqual(a["mh_rot_in_sol"], 0.39, places=9)
-        self.assertEqual(a["mh_n_rot_out"], 0)
         self.assertEqual(a["mh_n_ix_multihop"], 1)
-        # chain: every link holds except the injected break; the rotation link is checked and holds
-        self.assertEqual(a["chain_breaks"], 1)
-        self.assertEqual(a["chain_breaks_multi"], 0)
-        self.assertEqual(a["chain_breaks_cross_slot"], 1)
-        self.assertGreaterEqual(a["chain_links_multi"], 1)
-        self.assertEqual(a["chain_links"], 37 - 1)
+        # reserve chain: integrity counts in the manifest only. A holds the one break; A has 36 links and B one.
+        chain = man["integrity"]["reserve_chain"]
+        self.assertEqual(chain["chain_breaks"], 1)
+        self.assertEqual(chain["chain_breaks_multi"], 0)
+        self.assertEqual(chain["chain_breaks_cross_slot"], 1)
+        self.assertGreaterEqual(chain["chain_links_multi"], 1)
+        self.assertEqual(chain["chain_links"], 36 + 1)
+        self.assertFalse([k for k in a if k.startswith("chain_")])
         self.assertFalse(a["censored_read_end"])
         self.assertEqual(a["creator"], key("creator-a"))
         self.assertIs(a["is_mayhem"], False)
@@ -434,6 +430,7 @@ class TestFixtureBuild(Base):
         self.assertTrue(b["complete_migrate_same_tx"])
         self.assertEqual(b["pcb_delay_slots_from_complete"], 0)
         self.assertEqual(b["pcb_quote_in_lamports"], 500_000_000)
+        self.assertEqual(b["pcb_pool_quote_after"], SEED_Q + 495_000_000)  # in the curve-completing tx: allowed in D0
         self.assertEqual(b["pcb_event_source"], "inner_event")
         self.assertTrue(b["seed_above_420"])
         self.assertEqual((b["seed_fee_ppm"], b["seed_creator_fee_ppm"], b["seed_tier_floor_sol"]), (12_000, 9_500, 420.0))
@@ -450,20 +447,24 @@ class TestFixtureBuild(Base):
         self.assertEqual(d["pool"], POOL_D2)
         self.assertEqual(d["pool_src"], "first_vband_pool")
         self.assertEqual(d["n_pumpswap_pools"], 2)
+        # a PCB in a later tx: existence and time only, no amount or pool reserve
+        self.assertEqual((d["synth_class"], d["pcb_n"], d["pcb_delay_s_from_complete"], d["pcb_same_tx_complete"]), ("pcb_other_tx", 1, 4, False))
+        self.assertEqual([d[c] for c in od.PCB_QTY_SOURCE], [None] * len(od.PCB_QTY_SOURCE))
 
         hs = {h["hour"]: h for h in hours}
         self.assertEqual(hs[H1]["tx_multi_mint"], 1)
-        self.assertEqual(hs[H1]["tx_rotation"], 1)
+        self.assertNotIn("tx_rotation", hs[H1])
+        self.assertEqual(hs[H1]["rows_by_venue"]["pump_bonding"], 1)
         self.assertEqual(hs[H1]["tx_event_index_gap"], 1)
         self.assertEqual(hs[H1]["tx_event_index_disorder"], 1)
         self.assertEqual(hs[H1]["tx_with_wsol_base_leg"], 1)
-        self.assertEqual(hs[H1]["ix_name_top"].get("multi_hop_swap"), 1)
+        self.assertEqual(hs[H1]["rows_ix_multihop"], 1)
         self.assertTrue(hs[H1]["has_event_stream"])
-        self.assertEqual(hs[H1]["events_types"]["post_complete_buy"], 1)
+        self.assertEqual(hs[H1]["events_types"]["post_complete_buy"], 2)
         s = man["summary"]
         self.assertEqual(s["graduations"], 4)
-        self.assertEqual(s["by_synth_class"], {"not_seen": 3, "synthetic": 1})
-        self.assertEqual(s["chain_breaks"], 1)
+        self.assertEqual(s["by_synth_class"], {"not_seen": 2, "pcb_other_tx": 1, "synthetic": 1})
+        self.assertNotIn("chain_breaks", s)
 
     def test_no_event_stream(self):
         build_fixture(self.root, events=False)
@@ -502,14 +503,6 @@ class TestFixtureBuild(Base):
 
 
 class TestHelpers(unittest.TestCase):
-    def test_heuristic_time_window(self):
-        rows = [{"slot": i, "tx_index": 0, "event_index": 0, "block_time": 1000 + 100 * i, "trader": "B", "side": "buy",
-                 "sol_lamports": 600_000_000} for i in range(6)]
-        w, s = od.boost_heuristic(rows, 1000)
-        self.assertEqual((w, len(s)), ("B", 5))  # the 6th buy is at s0+500 > 450 s
-        rows.append({"slot": 99, "tx_index": 0, "event_index": 0, "block_time": 1010, "trader": "B", "side": "sell", "sol_lamports": 1})
-        self.assertEqual(od.boost_heuristic(rows, 1000), (None, []))
-
     def test_chain_check_counts(self):
         rows = [{"side": "buy", "token_raw": 10, "base_reserve": 100, "slot": 1, "signature": "s1"},
                 {"side": "sell", "token_raw": 5, "base_reserve": 90, "slot": 1, "signature": "s2"},
@@ -528,6 +521,135 @@ class TestHelpers(unittest.TestCase):
         self.assertAlmostEqual(od.seed_mcap_sol(SEED_Q, V, SEED_B), (SEED_Q + V) / (SEED_B * 1000) * 1e9, places=6)
         self.assertAlmostEqual(od.seed_mcap_sol(SEED_Q, V, SEED_B), 410.78, places=2)
         self.assertIsNone(od.seed_mcap_sol(SEED_Q, None, SEED_B))
+
+
+def perturb_post_s0(root: Path, *, seed: int = 7) -> int:
+    """Rewrites the fixture walk in place. On every PumpSwap row of a graduated mint: flips `side` and scrambles
+    `sol_lamports` and `token_raw` (the s0 row included), and scrambles `quote_reserve`, `base_reserve` and
+    `virtual_quote_reserves` on every row after its pool's first print (s0). On every boost_buy_and_burn event:
+    scrambles the amounts, reserves and vault balance. Returns the number of rows changed."""
+    rng = random.Random(seed)
+    grad = {MINT_A, MINT_B, MINT_C, MINT_D}
+    seen: set[str] = set()
+    n = 0
+    for hour in (H1, H2):
+        p = root / "trades" / f"trades-{hour}.jsonl"
+        rows = [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+        for r in rows:
+            if r.get("venue") != "pumpswap" or r.get("mint") not in grad:
+                continue
+            r["side"] = "sell" if r["side"] == "buy" else "buy"
+            r["sol_lamports"] = rng.randrange(1, 10**12)
+            r["token_raw"] = rng.randrange(1, 10**15)
+            if r["pool"] in seen:
+                r["quote_reserve"] = rng.randrange(1, 10**12)
+                r["base_reserve"] = rng.randrange(1, 10**15)
+                if "virtual_quote_reserves" in r:
+                    r["virtual_quote_reserves"] = rng.randrange(1, 10**11)
+            seen.add(r["pool"])
+            n += 1
+        p.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+        e = root / "events" / f"events-{hour}.jsonl"
+        evs = [json.loads(x) for x in e.read_text().splitlines() if x.strip()]
+        for r in evs:
+            if r.get("type") == "boost_buy_and_burn":
+                for k in ("quote_amount_in_requested", "quote_amount_in_used", "base_amount_burned", "virtual_quote_reserves",
+                          "real_quote_reserves_after", "base_reserves_after", "boost_vault_remaining"):
+                    r[k] = rng.randrange(1, 10**12)
+                n += 1
+        e.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in evs))
+    return n
+
+
+class TestNoPostS0Price(Base):
+    """No post-s0 price can be reconstructed from the output: no post-s0 side, amount, reserve or V reaches it."""
+
+    def test_post_s0_trade_columns_reach_no_output(self):
+        build_fixture(self.root)
+        m1 = self.run_build()
+        g1, h1 = (self.out / "graduations.jsonl").read_bytes(), (self.out / "hour_stats.jsonl").read_bytes()
+        self.assertGreater(perturb_post_s0(self.root), 40)
+        out2 = self.tmp / "out2"
+        m2 = od.build([self.root], H1, H3, ledger=LEDGER, ledger_host="research", out_dir=out2, allow_unverified=True)
+        self.assertEqual(g1, (out2 / "graduations.jsonl").read_bytes())
+        self.assertEqual(h1, (out2 / "hour_stats.jsonl").read_bytes())
+        self.assertEqual(m1["summary"], m2["summary"])
+        # the scrambled columns were present and were read, by the integrity counter only (manifest, counts)
+        self.assertGreater(m2["integrity"]["reserve_chain"]["chain_breaks"], m1["integrity"]["reserve_chain"]["chain_breaks"])
+
+    def test_seed_is_the_s0_row_only(self):
+        build_fixture(self.root)
+        p = self.root / "trades" / f"trades-{H1}.jsonl"
+        rows = [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+        first = next(r for r in rows if r.get("pool") == POOL_A)
+        first["quote_reserve"] += 1_000_000_000  # the s0 row's PRE-trade quote reserve: the seed moves with it
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.run_build()
+        grads, _h, _m = read_out(self.out)
+        self.assertEqual(grads[MINT_A]["seed_quote_lamports"], SEED_Q + 1_000_000_000)
+
+    def test_no_signed_flow_or_reserve_column_after_s0(self):
+        build_fixture(self.root)
+        self.run_build()
+        grads, hours, man = read_out(self.out)
+        for g in grads.values():
+            for col in g:
+                cat = od.D0_GRADUATION_COLUMNS[col][0]
+                if od.QUANTITY_TOKENS & set(col.split("_")):
+                    self.assertEqual(cat, od.SEED, col)  # a quantity column is a seed column, fixed at or before s0
+        for h in hours:
+            self.assertFalse(od.QUANTITY_TOKENS & {t for col in h for t in col.split("_")}, h)
+        self.assertEqual(man["post_s0_masked_columns"], list(od.POST_S0_MASKED))
+
+
+class TestD0Columns(unittest.TestCase):
+    REMOVED = (
+        "fm_buy_sol", "fm_sell_sol", "fm_max_buy_sol", "fm_max_sell_sol", "fm_flow_sol", "fm_n_buys", "fm_n_sells",
+        "fm_n_buyers", "fm_n_sellers", "fm_first_sell_s_from_s0", "fm_boost_sol", "boost_pda_sol", "boost_ev_sol",
+        "boost_heur_n", "boost_heur_sol", "boost_heur_is_pda", "boost_budget_spent_share", "boost_budget_complete",
+        "boost_ev_vault_remaining_last", "mh_n_rot_in", "mh_n_rot_out", "mh_rot_in_sol", "mh_rot_out_sol", "mh_ix_names",
+        "ms_same_slot_buys_mean", "ms_same_slot_buys_max", "s0_side", "s0_ix_name", "chain_links", "chain_breaks",
+    )
+
+    def test_removed_and_unknown_columns_refused(self):
+        for col in self.REMOVED + ("pnl_sol", "seed_price", "ret_5m", "anything_new"):
+            self.assertNotIn(col, od.D0_GRADUATION_COLUMNS)
+            with self.assertRaises(od.D0ColumnError):
+                od.assert_d0_graduation({"mint": "m", col: 1})
+        for col in ("ix_name_top", "tx_rotation", "rows_pumpswap_buy", "sol_total"):
+            with self.assertRaises(od.D0ColumnError):
+                od.assert_d0_hour({"hour": H1, col: 1})
+
+    def test_kinds_fail_closed(self):
+        for bad in ({"fm_n_prints": 1.5}, {"fm_n_prints": -1}, {"fm_n_prints": True}, {"fm_n_prints": [1]}, {"mint": 5},
+                    {"seed_mcap_sol": {"x": 1}}, {"v_band": 1}):
+            with self.assertRaises(od.D0ColumnError):
+                od.assert_d0_graduation(bad)
+        for bad in ({"rows_by_venue": {"pumpswap": 1.5}}, {"events_types": {"x": -1}}, {"rows": "3"}):
+            with self.assertRaises(od.D0ColumnError):
+                od.assert_d0_hour(bad)
+        od.assert_d0_graduation({"mint": "m", "fm_n_prints": 3, "seed_mcap_sol": 410.78, "v_band": None})
+        od.assert_d0_hour({"hour": H1, "rows_by_venue": {"pumpswap": 3}, "tx_multi_mint": 0})
+
+    def test_pcb_amounts_only_from_the_completing_tx(self):
+        od.assert_d0_graduation({"pcb_same_tx_complete": True, "pcb_quote_in_lamports": 5, "pcb_pool_quote_after": 7})
+        for flag in (False, None):
+            with self.assertRaises(od.D0ColumnError):
+                od.assert_d0_graduation({"pcb_same_tx_complete": flag, "pcb_pool_quote_after": 7})
+
+    def test_allowlist_names_no_post_s0_quantity(self):
+        for allow in (od.D0_GRADUATION_COLUMNS, od.D0_HOUR_COLUMNS):
+            for col, (cat, kind) in allow.items():
+                self.assertIn(cat, od.D0_CATEGORIES)
+                self.assertIn(kind, od.KINDS)
+                if od.QUANTITY_TOKENS & set(col.lower().split("_")):
+                    self.assertEqual(cat, od.SEED, col)
+        self.assertEqual(set(od.POST_S0_COLUMNS) & set(od.POST_S0_MASKED), set())
+        self.assertLessEqual({"side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves"},
+                             set(od.POST_S0_MASKED))
+        r = {"slot": 1, "trader": "t", "side": "buy", "sol_lamports": 5, "token_raw": 6, "quote_reserve": 7, "base_reserve": 8,
+             "virtual_quote_reserves": 9}
+        self.assertEqual(od.mask_post_s0(r), {"slot": 1, "trader": "t"})
 
 
 if __name__ == "__main__":
