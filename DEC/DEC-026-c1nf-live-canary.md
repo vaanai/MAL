@@ -709,7 +709,7 @@ Why it is accepted for now: low severity, and the fix is in signing code H5 shar
 - `tools/c1nf_features.py`: `8d7be366` → `d6c87354a520ea25efc59975d7d041570d8226f7`.
 - `tools/c1nf_vmode_parity.py`: `f5766c41` → `1574573ed10c663784f4678d04c251e96ff8460b`.
 
-**Why.** Job #608 (item-15 soak at 09b4389, operations-only) was OOM-killed at 18:06:01Z. Its process anon-rss was 1,939,888 kB and cgroup anon 1,987,047,424 B at the 1,945,600 kB limit, growing about 400 MB/h. The engine kept every canonical in-band print of each pool until g0 + 25 h, at about 1,051 B per print. Replay #621 (48 h, 2026-09-19/20 exploration tape) reached RssAnon 9,796,372 kB, with VmHWM 10,736,316 kB (job #621's result metrics: `RssAnon_end_kb` 9800292 at the last sample, `VmHWM_kb` 10736316).
+**Why.** Job #608 (item-15 soak at 09b4389, operations-only) was OOM-killed at 18:06:01Z. Its process anon-rss was 1,939,888 kB and cgroup anon 1,987,047,424 B at the 1,945,600 kB limit, growing about 400 MB/h. The engine kept every canonical in-band print of each pool until g0 + 25 h, at about 1,051 B per print. Replay #621 (48 h, 2026-09-19/20 exploration tape) reached RssAnon 9,796,372 kB (the hour-48 sample, taken after a harness malloc_trim; the job's untrimmed end sample `RssAnon_end_kb` is 9,800,292), with VmHWM 10,736,316 kB (job #621's result metrics, `VmHWM_kb`).
 
 **What #582 changes.** It changes memory only:
 - **F1:** a 1 h print window. Off by default in `FeatureEngine`; on only through `cs.build_engine`, so `c1nf_parity` is unchanged.
@@ -747,20 +747,20 @@ The model, threshold, features, decision logic, `OUTCOME_START_MS` and the recor
 - a real-tape `c1nf_parity` md5 with the window off and F2/F3 on (only the synthetic cross-head twin covers it);
 - the one-day ledger keep across a UTC midnight on real tape (synthetic test only).
 
-**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026 and LAB_STATE):
+**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026, to be recorded in LAB_STATE):
 - (a) The heartbeat's `window_violation` must stay 0. Any non-zero value means a decision differed from main. It voids bit-equality from that minute and stops item 15's clock until it is explained.
 - (b) From hour 25, RssAnon may grow at most 20 MB/h over any 24 h.
 - (c) An RssAnon alert at 1.5 GB, below the 1.9 GB cap.
 - (d) `malloc_trim_unavailable` must be 0 on fast-0.
 - (e) MemoryPeak and RssAnon are recorded per start (checklist item 2).
-- Also measured during the soak: `malloc_trim` wall time, compared through pick latency on the tenth minutes (not-measured list above).
+- To be measured during the soak: `malloc_trim` wall time, compared through pick latency on the tenth minutes (not-measured list above).
 
 The item-15 clock starts at this soak's start. The event-V P7 amended PASS (2026-10-10T16:10:46Z, job #598) precedes it. The restart will be recorded in LAB_STATE when it starts. The soak checklist of the 13:11:59Z note applies in full:
 - item 1, the replay-vs-live first-hour check after the first real restart;
 - item 2, the per-start record;
 - item 3, repeat picks on held mints.
 
-The creator-anchor note of 13:11:59Z still applies. The restart replays from the anchor already in the out dir's `c1nf-anchor.json`, `bootstrap_anchor` 2026-10-09T12, which is what job #609's per-start record printed for #608's two starts.
+The creator-anchor note of 13:11:59Z still applies. The restart replays from the anchor already in the out dir's `c1nf-anchor.json`, `bootstrap_anchor` 2026-10-09T12, which is what job #609's per-start record printed for the two starts on that out dir, #594 (14:39:13Z) and #608 (15:10:33Z).
 
 (Quant-proof OK_WITH_FIXES on #582 at cf686467, 2026-10-10, comment 6102420479; reviewer OK_WITH_FIXES at cf686467, comment 6102424925.)
 
