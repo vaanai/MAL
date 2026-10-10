@@ -580,7 +580,7 @@ def test_gap_tail_primes_at_end_and_reads_new_lines(tmp_path):
 def test_sink_streams_hours_and_strict_json(tmp_path):
     s = cs.JsonlSink(tmp_path)
     t = int(datetime(2026, 10, 9, 10, 5, tzinfo=timezone.utc).timestamp() * 1000)
-    s.write({"type": "c1nf_pick", "t_ms": t, "x": float("nan")})
+    s.write({"type": "c1nf_pick", "t_ms": t, "decision_T_ms": cs.OUTCOME_START_MS, "x": float("nan")})
     s.write({"type": "c1nf_outcome", "t_ms": t, "x": np.float64(1.5)})
     s.write({"type": "c1nf_heartbeat", "t_ms": t + 3_600_000})
     s.close()
@@ -594,7 +594,7 @@ def test_sink_compresses_closed_hours_but_not_picks(tmp_path):
     s = cs.JsonlSink(tmp_path)
     t = int(datetime(2026, 10, 9, 1, 5, tzinfo=timezone.utc).timestamp() * 1000)
     for typ in ("c1nf_pick", "c1nf_outcome", "c1nf_heartbeat"):
-        s.write({"type": typ, "t_ms": t})
+        s.write({"type": typ, "t_ms": t, "decision_T_ms": cs.OUTCOME_START_MS})
     s.write({"type": "c1nf_outcome", "t_ms": t + 20 * 3_600_000})
     s.write({"type": "c1nf_heartbeat", "t_ms": t + 20 * 3_600_000})
     n = s.compress_closed(t / 1000 + 20 * 3600)
@@ -894,11 +894,11 @@ def test_executor_refuses_pre_window_and_invalid_picks():
     assert cs.executor_refusal(rec) == "invalid_pick"
 
 
-def _midnight_shadow(replay=True, classifier=None, decide_mins=(-10, 0)):
+def _midnight_shadow(replay=True, classifier=None, decide_mins=(-10, 0), sink=None):
     """A stream from 2026-10-09T23:49Z across 2026-10-10T00Z. Decisions at the given minutes relative to 00:00Z."""
     base = OS_S - 660
     want = {OS_S + 60 * m for m in decide_mins}
-    sink = cs.MemorySink()
+    sink = cs.MemorySink() if sink is None else sink
     models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
     wall = {"t": base * 1000}
     sh = cs.Shadow(StubEngine(lambda T: (True, 0.1) if T in want else None), models, sink, replay=replay, seal_start_ms=None,
@@ -932,6 +932,58 @@ def test_pre_window_decision_writes_its_pick_but_nothing_is_priced(replay):
     assert sh.c["outcome_guard_pre_window"] == 1 and sh.c["outcomes"] == 1
     blob = json.dumps([r for r in sink.records if r.get("type") != "c1nf_pick"])
     assert str(OS_MS - 600_000) not in blob                       # no record but the pick names the pre-window decision
+
+
+@pytest.mark.parametrize("t,prefix", [
+    (OS_MS, "c1nf-picks"), (OS_MS + 3_600_000, "c1nf-picks"), (OS_MS - 1, "c1nf-prewindow-picks"), (BT0 * 1000, "c1nf-prewindow-picks"),
+    (None, "c1nf-prewindow-picks"), ("1791591000000", "c1nf-prewindow-picks"), (True, "c1nf-prewindow-picks")])
+def test_sink_routes_pre_window_picks_away_from_the_executor_stream(tmp_path, t, prefix):
+    s = cs.JsonlSink(tmp_path)
+    assert s.prefix_of({**cs.PICK_EXAMPLE, "decision_T_ms": t}) == prefix
+    assert s.prefix_of({"type": "c1nf_outcome", "decision_T_ms": OS_MS - 1}) == "c1nf-outcomes"
+
+
+@pytest.mark.parametrize("replay", [True, False])
+def test_executor_pick_stream_holds_only_picks_the_executor_may_act_on(tmp_path, replay):
+    """Reviewer LOW on 0b679c4: the 23:50Z pick (pre-window) is written to c1nf-prewindow-picks-*, so the executor's tailer never sees it;
+    every line of c1nf-picks-* passes executor_refusal()."""
+    import fnmatch
+
+    sink = cs.JsonlSink(tmp_path)
+    sh, _, run, _ = _midnight_shadow(replay=replay, sink=sink)
+    run(660 + 400)
+    sh.finish("test")
+    sink.close()
+    exec_files = sorted(p for p in tmp_path.iterdir() if fnmatch.fnmatch(p.name, "c1nf-picks-*"))
+    exec_lines = [json.loads(l) for p in exec_files for l in p.read_text().splitlines()]
+    assert [r["decision_T_ms"] for r in exec_lines] == [OS_MS]
+    assert all(cs.executor_refusal(r) is None for r in exec_lines)
+    (pw,) = sorted(tmp_path.glob("c1nf-prewindow-picks-*.jsonl"))
+    assert pw.name == "c1nf-prewindow-picks-2026-10-09T23.jsonl"
+    (pre,) = [json.loads(l) for l in pw.read_text().splitlines()]
+    assert pre["decision_T_ms"] == OS_MS - 600_000 and cs.executor_refusal(pre) == "pre_window" and cs.validate_pick(pre) == []
+    assert not fnmatch.fnmatch(pw.name, "c1nf-picks-*") and not fnmatch.fnmatch(pw.name, "c1nf-picks-????-??-??T??.jsonl")
+    assert sh.c["picks"] == 2 and sh.c["picks_prewindow_stream"] == 1
+
+
+def test_replay_picks_go_to_the_prewindow_stream(tmp_path):
+    sink = cs.JsonlSink(tmp_path)
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    sh = cs.Shadow(StubEngine(only_minute(10)), models, sink, replay=True, seal_start_ms=None)
+    sh.clock.hour_sps[cs.hour_of(BT0)] = SPS
+    run_stream(sh, 1000)
+    sh.finish("test")
+    sink.close()
+    assert not list(tmp_path.glob("c1nf-picks-*"))
+    assert len(list(tmp_path.glob("c1nf-prewindow-picks-*"))) == 1 and list(tmp_path.glob("c1nf-outcomes-*"))   # exploration replay still priced
+
+
+def test_invalid_pick_is_never_written_booked_or_priced():
+    sh, sink = mk_shadow(only_minute(10, 12), pred=float("inf"))
+    run_stream(sh, 1000)
+    sh.finish("test")
+    assert sink.of("c1nf_pick") == [] and sink.of("c1nf_outcome") == [] and not sh.book
+    assert sh.c["invalid_pick"] == 2 and sh.c["picks"] == 0
 
 
 def test_outcome_guard_has_no_switch():
@@ -1079,7 +1131,7 @@ def test_class_stream_is_its_own_file_on_disk(tmp_path):
     for p in tmp_path.iterdir():
         if p not in cls_files and p.suffix == ".jsonl":
             assert "synthetic" not in p.read_text(), p.name
-    assert list(tmp_path.glob("c1nf-outcomes-*")) and list(tmp_path.glob("c1nf-picks-*"))
+    assert list(tmp_path.glob("c1nf-outcomes-*")) and list(tmp_path.glob("c1nf-prewindow-picks-*"))   # replay picks: exploration hours
 
 
 def test_slow_classifier_does_not_delay_the_pick_and_times_out_to_unclassified():

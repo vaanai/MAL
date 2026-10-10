@@ -8,13 +8,18 @@ dropped), the one-position-per-mint book (re-entry 60 s after the exit). A pick 
 after the landing. Each END / WORST bound also carries `canary`: the same fill priced at the canary's 0.05 SOL (DEC-026 O-3).
 
 Outputs (OUT dir, hourly JSONL, strict JSON):
-    c1nf-picks-<hour>.jsonl     c1nf_pick       one per pick; the executor parses these (PICK_FIELDS, PICK_EXAMPLE)
+    c1nf-picks-<hour>.jsonl     c1nf_pick       one per pick with decision_T_ms >= 2026-10-10T00Z; the executor parses these (PICK_FIELDS,
+                                                PICK_EXAMPLE). Every line passes executor_refusal().
+    c1nf-prewindow-picks-<hour>.jsonl  c1nf_pick  picks decided before 2026-10-10T00Z (and every replay pick: exploration hours are August /
+                                                September). Same schema; kept for the book's continuity and replay parity, never the executor's input.
     c1nf-outcomes-<hour>.jsonl  c1nf_outcome    paper fills per pick: entries 1.3 / 1.9 / 3.0 / 4.0 s, END and WORST bounds, exit +300 s
     c1nf-events-<hour>.jsonl    c1nf_gap, c1nf_heartbeat, c1nf_start, c1nf_stop
     c1nf-synclass-<hour>.jsonl  c1nf_synclass_counts   only with --synthetic-classifier: counts of universe pools (by first print day)
                                 by synthetic class, one record per closed UTC day and one (partial) at stop. A day with no synthetic or no
                                 non-synthetic pool is merged into the next day (day_first..day_last); one still degenerate at stop is written
-                                with held_back and no class counts. Never a mint, pool, price, outcome, or a pick count by class.
+                                with held_back and no class counts. The span holding a (re)start's resume day carries restart_in_span and
+                                bootstrap_unclassified (that day's pools first seen during the bootstrap, never classified). Never a mint, pool,
+                                price, outcome, or a pick count by class.
     status.json                 last heartbeat. errors.log: tracebacks (capped).
 
 Pricing. PumpSwap rows are PRE-trade. Price = (vault quote + V) / base with the print's own V (tip rows carry `virtual_quote_reserve`).
@@ -28,12 +33,13 @@ Seals.
     aggregate `withheld` of the heartbeat and stop records. The oracle is read as a boolean only. Same approach as tools/h5_shadow.py `_sealed`
     (newest rule: no per-pool record for sealed pools).
   * EXP-025 section 5.1 declared observation: the shadow may log outcomes for decisions inside the counted window. It is not the read.
-  * DEC-026 section 8 (binding): outcome records start at 2026-10-10T00:00Z. A decision before that instant still writes its pick but gets
-    no Pending, no price and no outcome record (counter `outcome_guard_pre_window`), unless T is in an exploration range and the shadow
-    runs in replay mode (live mode never gets the exemption).
+  * DEC-026 section 8 (binding): outcome records start at 2026-10-10T00:00Z. A decision before that instant still writes its pick (to
+    c1nf-prewindow-picks-*, not the executor's c1nf-picks-*) but gets no Pending, no price and no outcome record (counter
+    `outcome_guard_pre_window`), unless T is in an exploration range and the shadow runs in replay mode (live mode never gets the exemption).
   * EXP-025 Amendment 2 item 5: the synthetic class never sits on a pick or an outcome (emit() drops such a record and counts
     `class_leak_blocked`); it leaves the process only as counts in c1nf-synclass-*. The classifier runs on its own thread (never on the row or
-    decision path), is not called during the restart bootstrap, and an answer later than CLASSIFY_TIMEOUT_S is unclassified.
+    decision path), is not called during the restart bootstrap, and an answer later than CLASSIFY_TIMEOUT_S is unclassified. The thread is a
+    daemon: a call that never returns cannot keep the process alive after c1nf_stop.
 
 Pick contract (DEC-026 section 6). Each pick carries the decision-time state `q_lamports` (quote + V), `base_reserve` and `v_lamports`: the
 state after the last canonical-pool print with slot < SD_slot, the reference of the executor's 1.15 x spot guard. No such state, or a malformed
@@ -179,9 +185,9 @@ def validate_pick(rec: Mapping[str, Any]) -> list[str]:
 def executor_refusal(rec: Mapping[str, Any]) -> Optional[str]:
     """The executor's side of the pick contract (DEC-026 sections 6 and 8): None when the executor may act on this pick line, else the reason.
     The executor must apply it (import it or repeat it) to every line of c1nf-picks-*: `invalid_pick` (validate_pick fails, including a
-    missing or inconsistent decision state) or `pre_window` (decision_T_ms < OUTCOME_START_MS). The shadow writes pre-window picks for the
-    book's continuity only; a canary outcome for one would break DEC-026 section 8 and Appendix A item 1, so the refusal is in the contract,
-    not left to the executor's start time."""
+    missing or inconsistent decision state) or `pre_window` (decision_T_ms < OUTCOME_START_MS). The shadow writes pre-window picks to
+    c1nf-prewindow-picks-* (JsonlSink), so c1nf-picks-* should never hold one; a canary outcome for one would break DEC-026 section 8 and
+    Appendix A item 1, so the refusal stays in the contract as the second layer, not left to the executor's start time."""
     if validate_pick(rec):
         return "invalid_pick"
     if rec["decision_T_ms"] < OUTCOME_START_MS:
@@ -557,9 +563,16 @@ class SealGuard:
 _FILE_RE = re.compile(r"^(c1nf-[a-z]+)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
 
 
+PREWINDOW_PICKS = "c1nf-prewindow-picks"
+
+
 class JsonlSink:
     """Hourly strict-JSON-lines files per stream, flushed per line. The hour is the UTC hour of the record's t_ms. Closed hours of the bulky
-    streams are compressed with zstd (the picks stream stays plain: the executor tails it)."""
+    streams are compressed with zstd (the picks stream stays plain: the executor tails it).
+
+    A pick whose decision_T_ms is before OUTCOME_START_MS (or not an int) goes to c1nf-prewindow-picks-<hour>.jsonl, never to c1nf-picks-*
+    (reviewer LOW on 0b679c4): the executor's input holds only picks it may act on, and executor_refusal() stays as the second layer. Replay
+    picks (August / September exploration hours) are therefore in c1nf-prewindow-picks-* as well."""
 
     PREFIX = {"c1nf_pick": "c1nf-picks", "c1nf_outcome": "c1nf-outcomes", SYNCLASS_TYPE: "c1nf-synclass"}
 
@@ -571,7 +584,12 @@ class JsonlSink:
         self.lines: collections.Counter = collections.Counter()
 
     def prefix_of(self, rec: Mapping[str, Any]) -> str:
-        return self.PREFIX.get(rec.get("type", ""), "c1nf-events")
+        typ = rec.get("type", "")
+        if typ == "c1nf_pick":
+            t = rec.get("decision_T_ms")
+            if isinstance(t, bool) or not isinstance(t, int) or t < OUTCOME_START_MS:
+                return PREWINDOW_PICKS
+        return self.PREFIX.get(typ, "c1nf-events")
 
     def path_for(self, rec: Mapping[str, Any]) -> Path:
         return self.dir / f"{self.prefix_of(rec)}-{hour_of(int(rec['t_ms']) // 1000)}.jsonl"
@@ -1049,13 +1067,23 @@ class Shadow:
             if state is None:                                # no state to anchor the executor's 1.15 x guard: the executor could not buy
                 self.c["no_decision_state"] += 1
                 continue
+            pick = {"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
+                    "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
+                    "q_lamports": state[0], "base_reserve": state[1], "v_lamports": state[2], "state_slot": state[3]}
+            bad = validate_pick(pick)
+            if bad:                                          # a code fault (e.g. a non-finite pred): no record, no book entry, no outcome
+                self.c["invalid_pick"] += 1
+                if self.errors:
+                    self.errors.log(ValueError("invalid pick: " + "; ".join(bad)), {"T": T})
+                continue
             sps = self.clock.sps(bt)
             self.book[mint] = bt + PRIMARY_LAT + EXIT_S + EXIT_LAG_S
             self.c["picks"] += 1
-            self.emit({"type": "c1nf_pick", "mint": mint, "pool": pool, "decision_T_ms": T * 1000, "SD_slot": int(sd), "pred": float(pred),
-                       "h_top1": float(f.h_top1), "stage1": True, "feature_hash": feature_hash(f.vec.astype(np.float32)), "model_sha": sha,
-                       "q_lamports": state[0], "base_reserve": state[1], "v_lamports": state[2], "state_slot": state[3]})
-            if not outcome_allowed(T * 1000, replay=self.replay):   # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
+            pre_window = not outcome_allowed(T * 1000, replay=self.replay)
+            if T * 1000 < OUTCOME_START_MS:
+                self.c["picks_prewindow_stream"] += 1        # written to c1nf-prewindow-picks-*, never to the executor's c1nf-picks-*
+            self.emit(pick)
+            if pre_window:                                   # binding guard: nothing is priced for a pre-2026-10-10T00Z decision
                 self.c["outcome_guard_pre_window"] += 1
                 continue
             self.pending[pool].append(Pending(pool, mint, T, int(sd), bt, float(pred), self.clock_ms(), self.first_ms.get(pool), self.last_print.get(pool), sps,
