@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import random
+import sys
 import unittest
 from unittest import mock
 
@@ -12,6 +13,7 @@ from tools import h5_shadow as h5
 from tools.test_h5_shadow import POOL, SOL, SPS, Tape, announce, make_engine, ref_fill, types
 
 FROZEN_RULE = "/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/bc_rule.py"
+REQUIRE_PARITY_ENV = "MAL_REQUIRE_BX10_PARITY"  # =1: the parity test FAILS (not skips) when the frozen rule or numpy is missing
 
 
 class ProjectionTests(unittest.TestCase):
@@ -54,8 +56,11 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(h5.bx10_exit([1.0, 13.0], [1e9, 1e9], tmin=5.0, cap=330.0), (330.0, False, 2, None))
         self.assertEqual(h5.bx10_exit([], [], tmin=5.0, cap=330.0), (330.0, False, 0, None))
 
-    @unittest.skipUnless(os.path.exists(FROZEN_RULE) and importlib.util.find_spec("numpy"), "frozen research rule or numpy not here")
     def test_parity_with_the_frozen_rule_on_random_fixtures(self):
+        if not (os.path.exists(FROZEN_RULE) and importlib.util.find_spec("numpy")):
+            if os.environ.get(REQUIRE_PARITY_ENV) == "1":
+                self.fail(f"{REQUIRE_PARITY_ENV}=1 but the frozen rule {FROZEN_RULE} or numpy is missing: the parity check did NOT run")
+            self.skipTest(f"frozen research rule or numpy not here (set {REQUIRE_PARITY_ENV}=1 to make this a failure)")
         spec = importlib.util.spec_from_file_location("bc_rule_frozen", FROZEN_RULE)
         bc = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(bc)
@@ -76,6 +81,21 @@ class ProjectionTests(unittest.TestCase):
             self.assertEqual((mine[0], mine[1]), (float(ref[0]), bool(ref[1])), (t, a, tmin))
             fired += mine[1]
         self.assertGreater(fired, 200)  # the fixtures exercise both branches
+
+    def test_parity_fails_loudly_when_required_and_the_rule_is_missing(self):
+        def run_parity(require: bool) -> unittest.TestResult:
+            res = unittest.TestResult()
+            with mock.patch.dict(os.environ), mock.patch.object(sys.modules[__name__], "FROZEN_RULE", "/nonexistent/bc_rule.py"):
+                os.environ.pop(REQUIRE_PARITY_ENV, None)
+                if require:
+                    os.environ[REQUIRE_PARITY_ENV] = "1"
+                ProjectionTests("test_parity_with_the_frozen_rule_on_random_fixtures").run(res)
+            return res
+        req = run_parity(True)
+        self.assertEqual((len(req.failures), len(req.errors), len(req.skipped)), (1, 0, 0))
+        self.assertIn(REQUIRE_PARITY_ENV, req.failures[0][1])
+        opt = run_parity(False)
+        self.assertEqual((len(opt.failures), len(opt.errors), len(opt.skipped)), (0, 0, 1))
 
 
 def bx_tape(amt: int, n: int, extra: tuple = ()):
@@ -111,7 +131,7 @@ class EngineTests(unittest.TestCase):
         bx = {r["variant"]: r for r in types(out, "outcome_bx10")}
         self.assertEqual(set(bx), {"pv", "fv"})
         r = bx["pv"]
-        self.assertEqual((r["boost_id"], r["boost_src"], r["n_slices"]), ("PDA_" + POOL, "pda", 18))
+        self.assertEqual((r["boost_id"], r["boost_src"], r["boost_src_at_trigger"], r["n_slices"]), ("PDA_" + POOL, "pda", "pda", 18))
         self.assertEqual(r["v1_exit_trigger_slot"], 1825)
         self.assertTrue(r["complete"])
         b = r["legs"]["binding"]  # landing 1200 + ceil(1.9 / 0.4) = 1205 (82 s); P = 162 s, target 152 s, seen with k = 15
@@ -141,7 +161,7 @@ class EngineTests(unittest.TestCase):
         rs = types(out, "outcome_bx10")
         self.assertEqual(len(rs), 2)
         for r in rs:
-            self.assertEqual((r["boost_id"], r["n_slices"]), (None, 0))
+            self.assertEqual((r["boost_id"], r["boost_src"], r["boost_src_at_trigger"], r["n_slices"]), (None, "none", "none", 0))
             self.assertTrue(all(b["same_as_v1"] and not b["fired"] for b in r["legs"].values()))
 
     def test_v1_records_are_byte_identical_with_and_without_bx10(self):
@@ -162,7 +182,36 @@ class EngineTests(unittest.TestCase):
             eng2, ref = run_tape(bx_tape(SOL, 18))
         self.assertEqual([r for r in out if r["type"] != "outcome_bx10"], ref)
         self.assertEqual(dict(eng.counters), dict(eng2.counters))
-        self.assertTrue(all("error" in r for r in types(out, "outcome_bx10")))
+        self.assertTrue(all("error" in r and r["boost_src_at_trigger"] == "pda" for r in types(out, "outcome_bx10")))
+
+    def test_behavioural_pick_at_trigger_is_kept_when_the_pda_signs_later(self):
+        # B: 7 buys of 1 SOL before the trigger (the behavioural pick); the PDA first buys 10 slots AFTER the trigger (slot 1200)
+        b = tuple((1005 + 25 * i, "buy", "B", SOL) for i in range(7))
+        pda = tuple((1210 + 25 * i, "buy", "PDA_" + POOL, SOL) for i in range(10))
+        _, out = run_tape(bx_tape(SOL, 0, b + pda))
+        trig = {r["variant"]: r for r in types(out, "trigger")}
+        rs = types(out, "outcome_bx10")
+        self.assertEqual(len(rs), 2)
+        for r in rs:
+            self.assertEqual((trig[r["variant"]]["boost_id"], trig[r["variant"]]["boost_src"]), ("B", "behavioural"))
+            self.assertEqual((r["boost_id"], r["boost_src"], r["boost_src_at_trigger"], r["n_slices"]), ("B", "behavioural", "behavioural", 7))
+            self.assertEqual([s for s, _, _ in r["slices"]], [5 + 25 * i for i in range(7)])  # B's slices only, none of the PDA's
+        # the same tape with the old resolve-time switch would have used the PDA's 10 slices: the case is live
+        eng, _ = make_engine()
+        announce(eng)
+        for row in bx_tape(SOL, 0, b + pda).rows:
+            eng.on_trade(row)
+        p = eng.pools[POOL]
+        self.assertEqual(eng.boost_identity(p), ("PDA_" + POOL, "pda"))
+
+    def test_pda_signing_after_a_none_trigger_is_used(self):
+        # nobody qualifies at the trigger (src none); the PDA, a protocol address, starts buying after it: its slices are used
+        pda = tuple((1210 + 25 * i, "buy", "PDA_" + POOL, SOL) for i in range(10))
+        _, out = run_tape(bx_tape(SOL, 0, pda))
+        rs = types(out, "outcome_bx10")
+        self.assertEqual(len(rs), 2)
+        for r in rs:
+            self.assertEqual((r["boost_id"], r["boost_src"], r["boost_src_at_trigger"], r["n_slices"]), ("PDA_" + POOL, "pda", "none", 10))
 
     def test_cap_pick_sealed_pool_writes_no_bx10(self):
         _, out = run_tape(bx_tape(SOL, 18), seal_start_ms=0, suppress_outcome=lambda m: True)

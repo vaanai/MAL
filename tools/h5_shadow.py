@@ -35,7 +35,9 @@ entry legs, END-bound states, fees), only the exit instant differs. From the BOO
 decision instant, projection E gives the last slice's time; the exit triggers at the first instant tau >= our landing with >= 3 slices observed
 and tau >= projection - 10 s, at slot min(max(s0 + ceil(tau / sps), landing + 1), v1's exit slot); capped at v1's s0 + 330 s (then it IS v1's
 exit). Written as its own record, type "outcome_bx10", right after v1's outcome and only where v1's outcome is written (the same CAP-PICK and
-H5 Look-2 seals), so every v1 record is byte-identical with or without it.
+H5 Look-2 seals), so every v1 record is byte-identical with or without it. The signer: when the trigger-time pick was the behavioural
+detector's, that signer's slices are used; otherwise the per-pool PDA (or BoostBuyAndBurn authority) once it has signed a buy. Each record
+carries boost_src_at_trigger, so a scorer can see which pools changed signer after the trigger.
 
 H5 LOOK-2 SEAL (EXP-024 section 3.1, Amendment 2). Pools whose s0 block time is at or after H5_LOOK2_START_MS (2026-10-16T00:00Z, Look 2's
 added window) have every outcome-bearing record withheld (outcome, legs, exit ladder, strip, min_q), exactly as the CAP-PICK seal withholds them,
@@ -1361,15 +1363,18 @@ class Engine:
             self._resolve_bx10(p, pend, complete)
         except Exception as e:  # noqa: BLE001 - a bx10 fault must not touch v1 (no counter, no error record): it reports on its own record type
             self.emit({"type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
-                       "error": repr(e)[:300]})
+                       "boost_src_at_trigger": pend.get("boost_src"), "error": repr(e)[:300]})
 
     def _bx10_slices(self, p: Pool, pend: dict) -> tuple[list[tuple[int, int, int]], str | None, str | None]:
-        """The BOOST signer's buys as (slot, lamports, recv_ms), slot order. The signer is the per-pool PDA (or the BoostBuyAndBurn authority) when
-        it has signed a buy: a protocol address, known before any of its buys, so naming it later looks at nothing ahead. Otherwise the behavioural
-        detector's pick AT THE TRIGGER (a later pick could be chosen with hindsight)."""
-        ident, src = self.boost_identity(p)
-        if src not in ("pda", "event_authority"):
-            ident, src = pend.get("boost_id"), pend.get("boost_src")
+        """The BOOST signer's buys as (slot, lamports, recv_ms), slot order. If the pick AT THE TRIGGER was the behavioural detector's, that signer
+        is kept even when the PDA signs later: switching to a PDA that only starts buying after the trigger would pick the signer with later
+        knowledge. Otherwise the per-pool PDA (or the BoostBuyAndBurn authority) once it has signed a buy: a protocol address, known before any of
+        its buys, so naming it later looks at nothing ahead. Failing both, the trigger-time pick (a later behavioural pick could be hindsight)."""
+        ident, src = pend.get("boost_id"), pend.get("boost_src")
+        if src != "behavioural":
+            now_id, now_src = self.boost_identity(p)
+            if now_src in ("pda", "event_authority"):
+                ident, src = now_id, now_src
         if ident is None:
             return [], None, src
         sl = sorted(((r.slot, r.sol, r.recv_ms) for r in p.prints if r.buy and r.trader == ident), key=lambda x: x[0])
@@ -1404,7 +1409,7 @@ class Engine:
         self.emit({
             "type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": s0, "trigger_slot": pend["trig_slot"], "sps": sps,
             "rule": "bx10", "off_s": BX10_OFF_S, "obs_s": BX10_OBS_S, "kmin": BX10_KMIN, "cap_s": EXIT_AFTER_S0_S,
-            "boost_id": ident, "boost_src": src, "n_slices": len(sl),
+            "boost_id": ident, "boost_src": src, "boost_src_at_trigger": pend.get("boost_src"), "n_slices": len(sl),
             "slices": [[s - s0, x, rm] for s, x, rm in sl],  # slot offset from s0, lamports, recv ms: the observation timing can be audited
             "v1_exit_trigger_slot": v1_slot, "exit_lag_slots": el, "legs": legs, "complete": bool(complete), "hw_slot": self.hw_slot,
             "prints_seen": len(p.prints), "gap": bool(p.gaps),
