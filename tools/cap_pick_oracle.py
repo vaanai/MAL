@@ -65,7 +65,7 @@ Two halves.
      C1-NF shadow    --pick-oracle tools.cap_pick_oracle:default_oracle        # reads the CAP_PICK_* environment below
    Environment for `default_oracle` / `from_env()`: CAP_PICK_LIVE and CAP_PICK_REPLAY (os.pathsep lists), CAP_PICK_FINAL_MARKER
    (REQUIRED: without it the oracle answers None for everything), CAP_PICK_STALE_S (default 60 and CAPPED at 60: EXP-022 Am.2 item 2,
-   Am.4 item 2; an unparsable or non-finite value is 60).
+   Am.4 item 2; an unparsable or non-finite value is a configuration error: from_env raises ValueError, default_oracle answers None).
 
 No key, no RPC, no transaction. It reads decision records only, never prints a mint or a flag, and prints counts only.
 """
@@ -431,13 +431,13 @@ class PickOracle:
 
 
 def stale_s_from_env(raw: str | None) -> float:
-    """CAP_PICK_STALE_S, capped at STALE_S_MAX (quant-proof E2 on #509). Missing, unparsable or non-finite -> STALE_S_DEFAULT."""
-    try:
-        v = STALE_S_DEFAULT if raw is None or str(raw).strip() == "" else float(raw)
-    except (TypeError, ValueError):
+    """CAP_PICK_STALE_S, capped at STALE_S_MAX (quant-proof E2 on #509). Missing or empty -> STALE_S_DEFAULT. Unparsable or non-finite ->
+    ValueError, a configuration error: the H5 shadow then keeps its stub and records why, and `default_oracle` answers None for everything."""
+    if raw is None or str(raw).strip() == "":
         return STALE_S_DEFAULT
+    v = float(raw)  # ValueError on a non-number
     if not math.isfinite(v):
-        return STALE_S_DEFAULT
+        raise ValueError("CAP_PICK_STALE_S must be a finite number of seconds")
     return min(v, STALE_S_MAX)
 
 
@@ -472,7 +472,10 @@ class _LazyEnvOracle:
 
     def _get(self):
         if self._o is None:
-            self._o = from_env()
+            try:
+                self._o = from_env()
+            except (ValueError, OSError):
+                self._o = _ClosedOracle()  # misconfigured environment: every caller refuses
         return self._o
 
     def __call__(self, mint: str) -> bool | None:
