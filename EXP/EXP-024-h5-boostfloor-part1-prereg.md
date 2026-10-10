@@ -819,9 +819,21 @@ Null-V0 pools stay in, per #566: `load_vmap` keeps a null as V-unknown, the pool
 - `forward_v_join join --emit v` writes the V fields per matched row, keyed by (slot, signature, event_index), plus the fallback list. It writes no per-pool map.
 - No tool on main reduces the join output to `{pool: V at the pool's first print | null}`.
 
-**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **The producer (pending merge).** #568, `claude/h5-forward-vmap`, open, head `8c5e37f30dbc0200815899a3e038ff1bcd9145c4`. It adds two new files, `tools/h5_forward_vmap.py` (blob `49c40e7a9776c5886c5dd7ff7f2570e227d29d2f` at that head) and `tools/test_h5_forward_vmap.py` (`8ce3f41c453a6dfa12bd28768f40672a6ba21e2c`), and edits no pinned file. Its mode `ev` writes the map chosen above. Both blobs are pending merge; the merged blob and the map's sha256 are recorded in the P6 precount amendment. The producer is not an `integrity()` key, so the A line does not change.
+**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **The producer (pending merge).** #568, `claude/h5-forward-vmap`, open, head `8c5e37f30dbc0200815899a3e038ff1bcd9145c4`. It adds two new files, `tools/h5_forward_vmap.py` (blob `49c40e7a9776c5886c5dd7ff7f2570e227d29d2f` at that head) and `tools/test_h5_forward_vmap.py` (`8ce3f41c453a6dfa12bd28768f40672a6ba21e2c`), and edits no pinned file. Its mode `ev` writes the map chosen above. Both blobs are pending merge (#568 is being revised after quant-proof CHANGES; the manager fills the merged blobs before #567 merges). The map's sha256 is recorded in the P6 precount amendment. The producer is not an `integrity()` key, so the A line does not change.
 
-**If line A fails [the manager's choice].** Am.1 then does not use forward-1002ev for Look 1, so the `ev` map is not used either. The vmap is rebuilt without ev, by the producer PR's line-A branch (`h5_forward_vmap gettx`). Per pool, it takes the P5 `getTransaction` record of the pool's first print (Am.1 source 2, accepted by the rule of `boostfloor_read.load_gettx` plus a pool check), then `account_v0.json` (source 3), then null. That mode refuses unless `p5/cross_source.json` records `line_a_pass: false`, `gettx_v.jsonl` hashes to the sha256 that file recorded, and `account_v0.json` exists; mode `ev` refuses once line A has failed. The forward extract is then re-run into a new directory, with the rebuilt map and job #546's E0 record, before `classify` and P6. Its manifest's `vmap_sha256` is the rebuilt map's, and the first extract is not used after that. **OPEN:** `boostfloor_inputs p5` plans its fetches from the extract; whether it is re-run on the new extract before `classify` is not decided here.
+**If line A fails [the manager's declared choice, 2026-10-10T13:43Z, before any forward-1002/forward-1002ev row is read].** Am.1 then does not use forward-1002ev for Look 1, so the `ev` map is not used either.
+
+**(a) The fallback vmap.** It is #568's `gettx` mode (`h5_forward_vmap gettx`). Per pool, it takes the P5 `getTransaction` record of the pool's first print (Am.1 source 2, accepted by the rule of `boostfloor_read.load_gettx` plus a pool check), then `account_v0.json` (source 3), then null. There is no all-null map. At #568 head `8c5e37f` the mode refuses unless `p5/cross_source.json` records `line_a_pass: false`, `gettx_v.jsonl` hashes to the sha256 that file recorded, and `account_v0.json` exists; mode `ev` refuses once line A has failed.
+
+**(b) The order if line A fails: one fixed pass, no loop.**
+1. `h5_forward_vmap gettx` on the original P5 dir;
+2. re-extract into a new dir E2;
+3. re-run `boostfloor_inputs` P5's s0 fetch and `account` on E2 into a new P5 dir P5b. Line A is not judged again: ev is already out;
+4. `h5_forward_vmap gettx` on P5b;
+5. re-extract into E3;
+6. classify and P6 on E3.
+
+Each re-extract runs with the map just written and job #546's E0 record, and its manifest's `vmap_sha256` is that map's. After step 5 the first extract and E2 are not used. After this pass, any pool still lacking a source-2 or source-3 record takes section 4's missing-V rule. It is counted and reported in P6 as `canon_null_v` and `canon_null_v_multipool`. The credits the re-fetch uses are recorded.
 
 **Reporting [pre-declared; outcome-blind; counts only].** P6 reports the forward extract's `canon_null_v` and `canon_null_v_multipool` (job #546's E0-H5 record gave 0 and 0), with the producer's counts (pools, pools with V, nulls by reason) and the map's sha256.
 
@@ -829,16 +841,18 @@ Not used, with reasons:
 - `pool_v_0909.json` is the E0 map, a 2026-09-09 snapshot. October pools are absent from it, and the extractor drops absent pools.
 - The pool-account map from `exp012_forward_vmap fetch --new` is the only file in the extractor's shape that main can write for October pools. Its raw `v` is the stored V at fetch time (at or after 2026-10-16T00Z), pending counters included. It is not V at s0, so it would choose canonical pools by a later state. **OPEN:** the manager may still name it as the fallback if no producer merges in time. That would be a different V from the choice above, and it needs its own amendment line before the extract.
 
-**Order [OPEN to confirm].** Each step needs the one before it:
-1. P5(a) `forward_v_join join`;
-2. the vmap producer, mode `ev`;
-3. the forward extract, with job #546's E0 record;
-4. `boostfloor_inputs p5`, which plans its fetches from the extract;
-5. only if line A fails: `boostfloor_inputs account`, the producer's `gettx` mode, and the extract re-run into a new directory (above);
-6. `classify`;
+**(c) The order if line A passes [the manager's declared choice, 2026-10-10T13:43Z, before any forward-1002/forward-1002ev row is read].** Each step needs the one before it:
+1. `forward_v_join join` (P5(a));
+2. `h5_forward_vmap ev`;
+3. `h5_forward_extract forward --vmap`, with job #546's E0 record;
+4. `classify`;
+5. P5 (`boostfloor_inputs p5`), which plans its fetches from the extract;
+6. `account` (`boostfloor_inputs account`);
 7. P6 `precount`.
 
-All of these run after the FINAL (A), and none computes an outcome.
+This puts `classify` before P5. `boostfloor_read classify` reads no P5 file (it builds its pools with the extractor's vmap V0 only), and `boostfloor_inputs p5` loads the classes file `classify` writes.
+
+All of these run after the FINAL (A), and none computes an outcome. If line A fails at step 5, the pass in (b) applies.
 
 #### E. Disclosure: parse_failed hours
 
@@ -848,13 +862,13 @@ The read tool on main `742d7c9` does not read that manifest. Its good and bad ho
 
 **The effect.** Suppose `hour_state` calls an hour `ok` but the extractor dropped it as `parse_failed`. Then the read tool counts that hour as good in section 4's "more than 5% of the look's window hours are bad" test, yet the hour contributes no meta or paths rows. The bad-hour share is understated by the number of such hours. Pools with s0 in that hour, or whose window runs into it, are missing from the universe without being counted as excluded.
 
-**Reporting [pre-declared; outcome-blind; it adds nothing to a verdict].** The P6 precount amendment records two counts:
+**Reporting [pre-declared; outcome-blind; it adds nothing to a verdict].** The P6 precount amendment records:
 - the extractor manifest's `reason_counts`;
-- the number of hours that `hour_state` calls `ok` and the manifest calls `parse_failed`.
+- the number of hours that `hour_state` calls `ok` and the manifest calls `parse_failed`, as two counts: (i) over the 144 `COUNT_HOURS` `[2026-10-10T00, 2026-10-16T00)`, the span of the 5% test below; (ii) over the 146 `READ_HOURS` `[2026-10-09T23, 2026-10-16T01)`, the span the extractor covers.
 
-**The manager's decision (2026-10-10; declared before any October data is read; fail closed, R1).** An hour with any `parse_failed` line counts as a BAD hour. The pinned read tool does not read the manifest, so the rule is written here and applied from the P6 count, with no read-tool change: the bad hours of section 4's 5% test are the read tool's bad hours plus the hours that `hour_state` calls `ok` and the manifest calls `parse_failed`. If that sum is more than 5% of the look's window hours, Look 1 is NOT_DECIDABLE, and section 11 "Spending" applies. If the count is 0, the rule changes nothing.
+**The manager's decision (2026-10-10; declared before any October data is read; fail closed, R1).** An hour with any `parse_failed` line counts as a BAD hour. The pinned read tool does not read the manifest, so the rule is written here and applied from the P6 count, with no read-tool change. The pinned 5% test measures over the 144 `COUNT_HOURS`, not the 146 `READ_HOURS`: `_good_bad` lists the `COUNT_HOURS` whose state is not `ok`, `precount` divides that count by `len(COUNT_HOURS)` (recorded as `count_hours`, 144), and `not_decidable_reasons` tests that share against 5%. So the numerator of section 4's 5% test is the read tool's bad count hours plus the `COUNT_HOURS` that `hour_state` calls `ok` and the manifest calls `parse_failed`, over `count_hours`. If that share is more than 5% (more than 7.2 of the 144 hours, so 8 or more), Look 1 is NOT_DECIDABLE, and section 11 "Spending" applies. A `parse_failed` hour outside the `COUNT_HOURS` (2026-10-09T23 or 2026-10-16T00) adds nothing to the numerator. If the count is 0, the rule changes nothing.
 
-Disclosed, not covered by the count: the extractor's hole rule already removes every mint whose migration hour, or the next hour, is `parse_failed`, but a later `parse_failed` hour inside a trade's span is not visible to the pinned read tool, which would treat that trade as covered. If the count is not 0, that case needs a ruling before any outcome.
+Disclosed, not covered by the count: the extractor's hole rule already removes every mint whose migration hour, or the next hour, is `parse_failed`, but a later `parse_failed` hour inside a trade's span is not visible to the pinned read tool, which would treat that trade as covered. This case is triggered by the 146-hour count (ii), not the 144-hour count (i), because a trade from 2026-10-15T23 can run into 2026-10-16T00, which is a `READ_HOUR` outside the `COUNT_HOURS`. If the 146-hour count is not 0, that case needs a ruling before any outcome.
 
 #### F. Not changed
 
