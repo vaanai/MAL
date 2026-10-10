@@ -9,34 +9,47 @@ day's hourly files, for two groups:
   PLAIN  synthetic is False AND synthetic_src == "rpc" (the pools H5 can trade).
 SYN (synthetic is True) and OTHER (anything else) are reported too. Timing by class is a structure field, never an outcome (EXP-024 Am.4 D1).
 
-READING (the seal). Files <shadow-dir>/h5-shadow-<day>THH.jsonl, HH = 00..23; the day key is the file's hour (the executor keys a pool by
-the time it reads the record). A line whose leading key says a type other than "pool" is counted by that type and never parsed. A pool
-line (or a line with no leading type key) is parsed with an object hook that keeps ONLY the keys in ALLOWED_KEYS as each object closes;
-no other field (outcome, trigger, min_q, triggered, fill, P&L) is kept, printed or logged. Records that are not type "pool", are sealed
-(`sealed` is not exactly false) or have no mint are skipped.
-  sec = boost_last_slice_s, else boost_last_slice_s_blocktime, else boost_last_slice_s_recv: the first that is a number (bool excluded),
-  as tools/h5_executor.py does; then kept only if finite and 0 < sec < 2000 (no fall-through on a bad first value, as in the executor).
-  sec is rounded to 3 decimals, as the executor does. A mint counts once per day, on its first kept record (file-hour, then line order).
+READING (the seal). Files <shadow-dir>/h5-shadow-<day>THH.jsonl, HH = 00..23. A line whose leading key says a type other than "pool" is
+counted by that type and never parsed. A pool line (or a line with no leading type key) is parsed with an object hook that keeps ONLY the
+keys in ALLOWED_KEYS as each object closes; no other field (outcome, trigger, min_q, triggered, fill, P&L) is kept, printed or logged.
+`gap` and `boost_src` are in the list: they are structure fields (the executor's own filter reads them), not outcomes.
 
-NOT the executor's filter. The executor also drops pool records whose reason is not "horizon", whose `gap` is not false, or whose
-`boost_src` is not pda/event_authority. `gap` and `boost_src` are outside the seal's field list, so this tool cannot apply them;
-`n_not_horizon` reports how many kept pools have another reason.
+THE EXECUTOR'S FILTER, applied to every group (tools/h5_executor.py, the `rtype == "pool"` branch of the feed reader and on_boost_row):
+  a pool record counts only if reason == "horizon", gap is False (the literal) and boost_src in ("pda", "event_authority");
+  then sec = boost_last_slice_s, else boost_last_slice_s_blocktime, else boost_last_slice_s_recv: the FIRST that is a number (bool excluded),
+  kept only if finite and 0 < sec < 2000 (no fall-through on a bad first value), rounded to 3 decimals; a mint counts once per day, on its
+  first kept record (file-hour, then line order). Output carries "executor_filter_applied": true.
+Two guards the executor does not have, both fail-closed and counted in `skipped`: a record whose `sealed` is not exactly false (a sealed
+pool's close record carries no `gap`, so the executor's filter drops it too) and a record with no mint (the executor would key it under "").
 
-JUDGING (DEC-024 Am.4 item 2, item 4, and the manager's stricter addition):
-  --mode day      a COMPLETED UTC day D > --first-strike-day (default 2026-10-10; the 10-10T07:11Z fire is the first strike).
-                  evaluated iff n_plain >= 30 and n_all >= 30. halt_due if the plain median < 337 s or the all median < 337 s.
-                  Unevaluated (including no files: fail closed) and the previous day also unevaluated -> halt_due. The previous day
-                  is read from the latest `--mode day` line for it in --log; when the log has none, it is recomputed from the files.
+DAY KEY. "day_key": "file_hour". A pool belongs to the UTC day of the hourly FILE that holds its record. The executor keys a pool by the
+time it READS the record, so pools written near 00:00Z can land on different days there. Disclosed, not corrected.
+
+JUDGING (DEC-024 Am.4 item 2, item 4, and the manager's stricter addition). Each group is judged on its own count (n >= 30):
+  --mode day      a COMPLETED UTC day D > FIRST_STRIKE_DAY (2026-10-10; the 10-10T07:11Z fire is the first strike).
+                  halt_due if (n_all >= 30 and all median < 337 s) or (n_plain >= 30 and plain median < 337 s).
+                  "evaluated" is n_all >= 30; `plain_judged` (n_plain >= 30) is reported separately. A day that is not evaluated
+                  (including no files: fail closed) when the previous day was not evaluated either -> halt_due. The previous day is
+                  the latest `--mode day` line for it in --log (its evaluated is all.n >= 30, the same definition; lines written
+                  under MAL_BDC_NOW are ignored); with no such line it is recomputed from the files.
   --mode running  today so far. halt_due if (n_plain >= 30 and plain median < 335 s) or (n_all >= 30 and all median < 335 s).
-  --mode resume   UTC day --first-strike-day only (default 10-10), once complete. resume_ok iff n_plain >= 30, n_all >= 30, plain
-                  median >= 337 s and all median >= 337 s. It does not check the other section 5 rules or stops (the manager does).
-                  It never places STOP.
+  --mode resume   FIRST_STRIKE_DAY only (any other --day is refused), once complete. resume_ok iff all 24 hour files are present and read,
+                  n_plain >= 30, n_all >= 30, plain median >= 337 s and all median >= 337 s, and the clock is not overridden. It does not
+                  check the other section 5 rules or stops (the manager does). It never places STOP.
 --place-stop: only with this flag, and only when halt_due: `sudo -n touch /var/lib/mal-live/h5/STOP`, then
 `sudo -n test -e /var/lib/mal-live/h5/STOP`; both return codes are logged. This tool NEVER removes STOP.
 
+NO HIDDEN MISSING DATA. An hour path that exists (a symlink, a directory or any non-regular file included) but cannot be read raises
+InputError("unreadable_file"): exit 2, no verdict from partial data. Missing hour files are listed in `hours_missing`; resume refuses them.
+
+CLOCK. The CLI has no clock flag. Tests call main(argv, now=...). A subprocess test may set the env var MAL_BDC_NOW (ISO-8601); the run is
+then stamped "now_overridden": true and resume_ok is impossible. Real runs use the system clock ("now_overridden": false).
+
 OUTPUT. One compact JSON line on stdout with every number, the verdict and the reasons; the same line is appended to --log (created if
-missing; a path under /data/mal/structure-monitor/ is refused). Exit codes: 0 no halt / resume_ok; 3 halt_due; 4 resume not ok;
-2 input error (missing dir or no files; in day mode that is also an unevaluated day, and a second one in a row is halt_due, exit 3).
+missing; a path under /data/mal/structure-monitor/ is refused). Exit codes:
+  0 no_halt / resume_ok          3 halt_due (STOP verified present, or no --place-stop)
+  2 input error                  4 resume not ok
+  5 unevaluated (day read, n_all < 30, no halt)      6 halt_due with --place-stop and STOP NOT verified present
 """
 from __future__ import annotations
 
@@ -45,6 +58,7 @@ import json
 import math
 import os
 import re
+import stat
 import statistics
 import subprocess
 import sys
@@ -52,21 +66,23 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
 
 TOOL = "h5_boost_day_check"
-VERSION = 1
+VERSION = 2  # v2: per-group judging, executor filter, exit codes 5 and 6; v1 log lines are still read (evaluated is derived from all.n)
 ALLOWED_KEYS = frozenset({
     "type", "reason", "sealed", "pool", "mint", "s0", "s0_block_time", "boost_last_slice_s", "boost_last_slice_s_blocktime",
-    "boost_last_slice_s_recv", "boost_slices", "synthetic", "synthetic_src",
+    "boost_last_slice_s_recv", "boost_slices", "synthetic", "synthetic_src", "gap", "boost_src",
 })
+EXEC_BOOST_SRC = ("pda", "event_authority")  # tools/h5_executor.py, the pool branch of the feed reader
 SEC_KEYS = ("boost_last_slice_s", "boost_last_slice_s_blocktime", "boost_last_slice_s_recv")  # the executor's order
 SEC_MAX = 2000.0
 MIN_POOLS = 30  # DEC-024 Am.4 item 2 (the executor's BOOST_MEDIAN_MIN_POOLS)
 TWICE_S = 337.0  # below this on a completed day: the second strike (Am.4 item 2) / no resume (item 4)
 HALT_S = 335.0  # below this on today's running median: halt
-FIRST_STRIKE_DAY = "2026-10-10"
+FIRST_STRIKE_DAY = "2026-10-10"  # pinned: the 10-10T07:11Z fire. Not a flag.
+NOW_ENV = "MAL_BDC_NOW"  # tests only; a run that uses it is stamped now_overridden and cannot be resume_ok
 STOP_PATH = "/var/lib/mal-live/h5/STOP"
 FORBIDDEN_LOG_PREFIX = "/data/mal/structure-monitor"
 LEAD_TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([A-Za-z0-9_\-]{1,40})"')
-EXIT_OK, EXIT_INPUT, EXIT_HALT, EXIT_RESUME_NOT_OK = 0, 2, 3, 4
+EXIT_OK, EXIT_INPUT, EXIT_HALT, EXIT_RESUME_NOT_OK, EXIT_UNEVALUATED, EXIT_HALT_STOP_UNVERIFIED = 0, 2, 3, 4, 5, 6
 
 
 class InputError(Exception):
@@ -116,29 +132,30 @@ def _lines(fh: Any) -> Iterable[bytes]:
     try:
         yield from fh
     except OSError:
-        raise InputError("read_failed") from None
+        raise InputError("unreadable_file") from None
 
 
 def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] | None] | None = None) -> dict[str, Any]:
-    """Read one UTC day's hourly files. Returns counts and the kept seconds per mint. Raises InputError on a missing dir, no files or a
-    read error part-way through a file (fail closed)."""
+    """Read one UTC day's hourly files. Returns counts and the kept seconds per mint. Raises InputError on a missing dir, no files, or an
+    hour path that exists but cannot be read (a symlink, a non-regular file, an open or read error): no verdict from partial data."""
     parse = parse or parse_pool_line
     if not os.path.isdir(shadow_dir):
         raise InputError("shadow_dir_missing")
     hours_read: list[int] = []
     lines_by_type: dict[str, int] = {}
-    skipped = {"sealed": 0, "no_mint": 0, "bad_sec": 0, "dup_mint": 0, "bad_line": 0, "unreadable_file": 0}
-    seen: dict[str, tuple[str, float, bool]] = {}  # mint -> (class, sec, reason == "horizon")
+    skipped = {"sealed": 0, "executor_filter": 0, "no_mint": 0, "bad_sec": 0, "dup_mint": 0, "bad_line": 0}
+    filter_fail = {"reason": 0, "gap": 0, "boost_src": 0}  # each failing condition counted on its own; a record can fail several
+    seen: dict[str, tuple[str, float]] = {}  # mint -> (class, sec)
     pool_records = 0
     for h, path in hour_files(shadow_dir, day):
-        if os.path.islink(path) or not os.path.isfile(path):
-            continue
+        if not os.path.lexists(path):
+            continue  # absent: listed in hours_missing by the caller
         try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            if not stat.S_ISREG(os.lstat(path).st_mode):  # a symlink, a directory, a fifo: exists but is not read
+                raise InputError("unreadable_file")
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         except OSError:
-            skipped["unreadable_file"] += 1
-            continue
-        hours_read.append(h)
+            raise InputError("unreadable_file") from None
         with os.fdopen(fd, "rb") as fh:
             for raw in _lines(fh):
                 if not raw.strip():
@@ -161,6 +178,14 @@ def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] 
                 if rec.get("sealed") is not False:
                     skipped["sealed"] += 1
                     continue
+                # the executor's filter, verbatim: reason == "horizon", gap is False, boost_src in (pda, event_authority)
+                bad_reason, bad_gap, bad_src = rec.get("reason") != "horizon", rec.get("gap") is not False, rec.get("boost_src") not in EXEC_BOOST_SRC
+                if bad_reason or bad_gap or bad_src:
+                    skipped["executor_filter"] += 1
+                    filter_fail["reason"] += bad_reason
+                    filter_fail["gap"] += bad_gap
+                    filter_fail["boost_src"] += bad_src
+                    continue
                 mint = rec.get("mint")
                 if not isinstance(mint, str) or not mint:
                     skipped["no_mint"] += 1
@@ -172,11 +197,12 @@ def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] 
                 if mint in seen:
                     skipped["dup_mint"] += 1
                     continue
-                seen[mint] = (pool_class(rec), sec, rec.get("reason") == "horizon")
+                seen[mint] = (pool_class(rec), sec)
+        hours_read.append(h)
     if not hours_read:
         raise InputError("no_files")
     return {"hours_read": hours_read, "lines_by_type": dict(sorted(lines_by_type.items())), "pool_records": pool_records,
-            "skipped": skipped, "seen": seen}
+            "skipped": skipped, "executor_filter_fail": filter_fail, "seen": seen}
 
 
 def _median(xs: list[float]) -> float | None:
@@ -186,16 +212,13 @@ def _median(xs: list[float]) -> float | None:
 def summarize(read: dict[str, Any]) -> dict[str, Any]:
     seen = read["seen"]
     groups: dict[str, list[float]] = {"all": [], "plain": [], "syn": [], "other": []}
-    not_horizon = 0
-    for cls, sec, horizon in seen.values():
+    for cls, sec in seen.values():
         groups["all"].append(sec)
         groups[cls].append(sec)
-        not_horizon += 0 if horizon else 1
     out: dict[str, Any] = {}
     for g, xs in groups.items():
         med = _median(xs)
         out[g] = {"n": len(xs), "median_s": None if med is None else round(med, 4)}
-    out["n_not_horizon"] = not_horizon
     out["_exact"] = {g: _median(xs) for g, xs in groups.items()}
     return out
 
@@ -206,13 +229,19 @@ def parse_day(s: str) -> date:
     return date.fromisoformat(s)
 
 
-def parse_now(s: str | None) -> datetime:
-    if s is None:
-        return datetime.now(timezone.utc)
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+def resolve_now(now: datetime | None, environ: Any = None) -> tuple[datetime, bool]:
+    """(the clock, overridden). `now` is the in-process argument tests pass to main(); MAL_BDC_NOW is the subprocess override and is the
+    only one that counts as overridden. With neither, the system clock."""
+    if now is not None:
+        return (now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)), False
+    raw = (os.environ if environ is None else environ).get(NOW_ENV)
+    if raw is None:
+        return datetime.now(timezone.utc), False
+    try:
+        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise InputError("bad_now_env") from None
+    return (dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)), True
 
 
 def day_complete(d: date, now: datetime) -> bool:
@@ -220,7 +249,10 @@ def day_complete(d: date, now: datetime) -> bool:
 
 
 def prev_day_from_log(log_path: str, day: str) -> bool | None:
-    """The latest `--mode day` line for `day` in the log: its `evaluated`. None if the log has none (or cannot be read)."""
+    """The latest `--mode day` line for `day` in the log: was that day evaluated? Same definition as evaluated_of: all.n >= MIN_POOLS, so a
+    v1 line (whose `evaluated` also needed plain.n >= 30) reads the same as a v2 line. A line with no `all` block (an error line, such as
+    no_files) falls back to its `evaluated` bool. Lines written under MAL_BDC_NOW are ignored. None if the log has no such line or cannot
+    be read."""
     try:
         fh = open(log_path, "rb")
     except OSError:
@@ -232,14 +264,21 @@ def prev_day_from_log(log_path: str, day: str) -> bool | None:
                 rec = json.loads(raw)
             except ValueError:
                 continue
-            if (isinstance(rec, dict) and rec.get("tool") == TOOL and rec.get("mode") == "day" and rec.get("day") == day
-                    and isinstance(rec.get("evaluated"), bool)):
-                found = rec["evaluated"]
+            if not (isinstance(rec, dict) and rec.get("tool") == TOOL and rec.get("mode") == "day" and rec.get("day") == day
+                    and isinstance(rec.get("evaluated"), bool)) or rec.get("now_overridden") is True:
+                continue
+            all_n = rec["all"].get("n") if isinstance(rec.get("all"), dict) else None
+            found = (all_n >= MIN_POOLS) if isinstance(all_n, int) and not isinstance(all_n, bool) else rec["evaluated"]
     return found
 
 
 def evaluated_of(summary: dict[str, Any] | None) -> bool:
-    return summary is not None and summary["plain"]["n"] >= MIN_POOLS and summary["all"]["n"] >= MIN_POOLS
+    """A day is evaluated when ALL has MIN_POOLS pools. PLAIN is judged on its own count (plain_judged_of)."""
+    return summary is not None and summary["all"]["n"] >= MIN_POOLS
+
+
+def plain_judged_of(summary: dict[str, Any] | None) -> bool:
+    return summary is not None and summary["plain"]["n"] >= MIN_POOLS
 
 
 def place_stop(run: Callable[..., Any]) -> dict[str, Any]:
@@ -269,11 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="H5 BOOST day-median check (DEC-024 5.1, Amendment 4). Never removes STOP.")
     p.add_argument("--shadow-dir", required=True)
     p.add_argument("--mode", required=True, choices=("day", "running", "resume"))
-    p.add_argument("--day", help="YYYY-MM-DD: the completed day (day mode) or the resume day (resume mode; default --first-strike-day)")
+    p.add_argument("--day", help="YYYY-MM-DD: the completed day (day mode) or the resume day (resume mode: only FIRST_STRIKE_DAY, the default)")
     p.add_argument("--log", required=True, help="append one JSON line per run (created if missing)")
     p.add_argument("--place-stop", action="store_true", help="when halt_due: sudo -n touch the H5 STOP, then test it")
-    p.add_argument("--first-strike-day", default=FIRST_STRIKE_DAY)
-    p.add_argument("--now-utc", help=argparse.SUPPRESS)  # tests only
     return p
 
 
@@ -283,15 +320,28 @@ def _public(summary: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in summary.items() if not k.startswith("_")}
 
 
-def main(argv: list[str] | None = None, run: Callable[..., Any] | None = None) -> int:
+def _emit(rec: dict[str, Any], log: str) -> None:
+    line = json.dumps(rec, separators=(",", ":"), allow_nan=False)
+    if not append_log(log, line):
+        print(json.dumps({"tool": TOOL, "warning": "log_write_failed"}, separators=(",", ":")), file=sys.stderr)
+    print(line)
+
+
+def main(argv: list[str] | None = None, now: datetime | None = None, run: Callable[..., Any] | None = None) -> int:
+    """`now` and `run` are for tests (the clock; a stand-in for subprocess.run). The CLI has neither."""
     args = build_parser().parse_args(argv)
     if any(p == FORBIDDEN_LOG_PREFIX or p.startswith(FORBIDDEN_LOG_PREFIX + "/") for p in (os.path.abspath(args.log), os.path.realpath(args.log))):
         print(json.dumps({"tool": TOOL, "error": "log_path_forbidden"}, separators=(",", ":")))
         return EXIT_INPUT
+    first_strike = parse_day(FIRST_STRIKE_DAY)
     try:
-        now = parse_now(args.now_utc)
-        first_strike = parse_day(args.first_strike_day)
-        today = now.date()
+        now_dt, now_overridden = resolve_now(now)
+    except InputError as exc:
+        _emit({"tool": TOOL, "v": VERSION, "mode": args.mode, "error": str(exc), "halt_due": False, "exit": EXIT_INPUT}, args.log)
+        return EXIT_INPUT
+    stamp = {"now_utc": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "now_overridden": now_overridden}
+    try:
+        today = now_dt.date()
         if args.mode == "running":
             d = parse_day(args.day) if args.day else today
             if d != today:
@@ -306,25 +356,19 @@ def main(argv: list[str] | None = None, run: Callable[..., Any] | None = None) -
             d = parse_day(args.day)
             if d <= first_strike:
                 raise InputError("day_not_after_first_strike_day")
-            if not day_complete(d, now):
+            if not day_complete(d, now_dt):
                 raise InputError("day_not_complete")
     except ValueError:
-        rec = {"tool": TOOL, "v": VERSION, "mode": args.mode, "error": "bad_date", "halt_due": False, "exit": EXIT_INPUT}
-        line = json.dumps(rec, separators=(",", ":"))
-        append_log(args.log, line)
-        print(line)
+        _emit({"tool": TOOL, "v": VERSION, "mode": args.mode, **stamp, "error": "bad_date", "halt_due": False, "exit": EXIT_INPUT}, args.log)
         return EXIT_INPUT
     except InputError as exc:
-        rec = {"tool": TOOL, "v": VERSION, "mode": args.mode, "day": args.day, "now_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-               "error": str(exc), "halt_due": False, "exit": EXIT_INPUT}
-        line = json.dumps(rec, separators=(",", ":"))
-        append_log(args.log, line)
-        print(line)
+        _emit({"tool": TOOL, "v": VERSION, "mode": args.mode, "day": args.day, **stamp, "error": str(exc), "halt_due": False,
+               "exit": EXIT_INPUT}, args.log)
         return EXIT_INPUT
 
     day = d.isoformat()
-    rec: dict[str, Any] = {"tool": TOOL, "v": VERSION, "mode": args.mode, "day": day, "now_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                           "day_complete": day_complete(d, now), "first_strike_day": first_strike.isoformat(),
+    rec: dict[str, Any] = {"tool": TOOL, "v": VERSION, "mode": args.mode, "day": day, **stamp, "day_complete": day_complete(d, now_dt),
+                           "first_strike_day": FIRST_STRIKE_DAY, "executor_filter_applied": True, "day_key": "file_hour",
                            "thresholds": {"min_pools": MIN_POOLS, "twice_s": TWICE_S, "halt_s": HALT_S}}
     reasons: list[str] = []
     summary: dict[str, Any] | None = None
@@ -333,28 +377,33 @@ def main(argv: list[str] | None = None, run: Callable[..., Any] | None = None) -
         rd = read_day(args.shadow_dir, day)
         summary = summarize(rd)
         rec.update({"hours_read": rd["hours_read"], "hours_missing": [h for h in range(24) if h not in rd["hours_read"]],
-                    "lines_by_type": rd["lines_by_type"], "pool_records": rd["pool_records"], "skipped": rd["skipped"]})
+                    "lines_by_type": rd["lines_by_type"], "pool_records": rd["pool_records"], "skipped": rd["skipped"],
+                    "executor_filter_fail": rd["executor_filter_fail"]})
         rec.update(_public(summary))
     except InputError as exc:
         input_error = str(exc)
         rec["error"] = input_error
         reasons.append(input_error)
+    ex = summary["_exact"] if summary is not None else None
+    n_all = summary["all"]["n"] if summary is not None else 0
+    n_plain = summary["plain"]["n"] if summary is not None else 0
+    rec["plain_judged"] = plain_judged_of(summary)
 
     halt_due = False
-    exit_code = EXIT_OK
+    resume_ok = False
     if args.mode == "day":
-        evaluated = input_error is None and evaluated_of(summary)
+        evaluated = evaluated_of(summary)
         rec["evaluated"] = evaluated
-        if evaluated:
-            ex = summary["_exact"]  # type: ignore[index]
-            if ex["plain"] < TWICE_S:
-                reasons.append("plain_median_lt_337")
-            if ex["all"] < TWICE_S:
-                reasons.append("all_median_lt_337")
-            halt_due = bool(reasons)
-            if halt_due:
-                reasons.append("second_strike_after_first_strike_day")
-        else:
+        breach: list[str] = []
+        if summary is not None:
+            if n_plain >= MIN_POOLS and ex["plain"] < TWICE_S:  # type: ignore[index]
+                breach.append("plain_median_lt_337")
+            if n_all >= MIN_POOLS and ex["all"] < TWICE_S:  # type: ignore[index]
+                breach.append("all_median_lt_337")
+        if breach:
+            halt_due = True
+            reasons += breach + ["second_strike_after_first_strike_day"]
+        elif not evaluated:
             if input_error is None:
                 reasons.append("unevaluated_lt_30_pools")
             prev = (d - timedelta(days=1)).isoformat()
@@ -370,53 +419,55 @@ def main(argv: list[str] | None = None, run: Callable[..., Any] | None = None) -
             if not prev_eval:
                 halt_due = True
                 reasons.append("two_consecutive_unevaluated_days")
-        exit_code = EXIT_HALT if halt_due else (EXIT_INPUT if input_error else EXIT_OK)
         rec["verdict"] = "halt_due" if halt_due else ("no_halt" if evaluated else "unevaluated")
     elif args.mode == "running":
-        if input_error is None:
-            ex = summary["_exact"]  # type: ignore[index]
-            rec["judged"] = {"plain": summary["plain"]["n"] >= MIN_POOLS, "all": summary["all"]["n"] >= MIN_POOLS}  # type: ignore[index]
-            if summary["plain"]["n"] >= MIN_POOLS and ex["plain"] < HALT_S:  # type: ignore[index]
+        if summary is not None:
+            rec["judged"] = {"plain": n_plain >= MIN_POOLS, "all": n_all >= MIN_POOLS}
+            if n_plain >= MIN_POOLS and ex["plain"] < HALT_S:  # type: ignore[index]
                 reasons.append("plain_median_lt_335")
-            if summary["all"]["n"] >= MIN_POOLS and ex["all"] < HALT_S:  # type: ignore[index]
+            if n_all >= MIN_POOLS and ex["all"] < HALT_S:  # type: ignore[index]
                 reasons.append("all_median_lt_335")
             halt_due = bool(reasons)
-        exit_code = EXIT_HALT if halt_due else (EXIT_INPUT if input_error else EXIT_OK)
         rec["verdict"] = "halt_due" if halt_due else ("input_error" if input_error else "no_halt")
     else:  # resume: never places STOP, never removes it
-        ok = False
-        if input_error is None:
-            ex = summary["_exact"]  # type: ignore[index]
+        if summary is not None:
             if not rec["day_complete"]:
                 reasons.append("day_not_complete")
-            if summary["plain"]["n"] < MIN_POOLS:  # type: ignore[index]
+            if rec["hours_missing"]:
+                reasons.append("hours_missing")
+            if now_overridden:
+                reasons.append("now_overridden")
+            if n_plain < MIN_POOLS:
                 reasons.append("plain_lt_30_pools")
-            if summary["all"]["n"] < MIN_POOLS:  # type: ignore[index]
+            if n_all < MIN_POOLS:
                 reasons.append("all_lt_30_pools")
-            if ex["plain"] is not None and ex["plain"] < TWICE_S:
+            if ex["plain"] is not None and ex["plain"] < TWICE_S:  # type: ignore[index]
                 reasons.append("plain_median_lt_337")
-            if ex["all"] is not None and ex["all"] < TWICE_S:
+            if ex["all"] is not None and ex["all"] < TWICE_S:  # type: ignore[index]
                 reasons.append("all_median_lt_337")
-            ok = not reasons
-        rec["evaluated"] = input_error is None and evaluated_of(summary)
-        rec["resume_ok"] = ok
-        if ok:
+            resume_ok = not reasons
+        rec["evaluated"] = evaluated_of(summary)
+        rec["resume_ok"] = resume_ok
+        if resume_ok:
             reasons.append("other_section5_rules_and_stops_not_checked_here")
-        exit_code = EXIT_OK if ok else (EXIT_INPUT if input_error else EXIT_RESUME_NOT_OK)
-        rec["verdict"] = "resume_ok" if ok else ("input_error" if input_error else "resume_not_ok")
+        rec["verdict"] = "resume_ok" if resume_ok else ("input_error" if input_error else "resume_not_ok")
 
     rec["halt_due"] = halt_due
     rec["reasons"] = reasons
-    if args.mode != "resume" and halt_due and args.place_stop:
-        rec["stop"] = place_stop(run if run is not None else subprocess.run)
-    else:
-        rec["stop"] = None
     rec["place_stop_flag"] = bool(args.place_stop)
+    rec["stop"] = place_stop(run if run is not None else subprocess.run) if (halt_due and args.place_stop and args.mode != "resume") else None
+    if halt_due:
+        exit_code = EXIT_HALT_STOP_UNVERIFIED if (rec["stop"] is not None and not rec["stop"]["present"]) else EXIT_HALT
+    elif args.mode == "resume":
+        exit_code = EXIT_OK if resume_ok else (EXIT_INPUT if input_error else EXIT_RESUME_NOT_OK)
+    elif input_error:
+        exit_code = EXIT_INPUT
+    elif args.mode == "day" and not rec["evaluated"]:
+        exit_code = EXIT_UNEVALUATED
+    else:
+        exit_code = EXIT_OK
     rec["exit"] = exit_code
-    line = json.dumps(rec, separators=(",", ":"), allow_nan=False)
-    if not append_log(args.log, line):
-        print(json.dumps({"tool": TOOL, "warning": "log_write_failed"}, separators=(",", ":")), file=sys.stderr)
-    print(line)
+    _emit(rec, args.log)
     return exit_code
 
 
