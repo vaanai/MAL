@@ -515,7 +515,7 @@ class FeatureEngine:
         if self.v_source == V_EVENT:
             self.stats["set_pool_v_ignored_event_mode"] += 1
             return
-        if v_lamports is None or not _num(v_lamports):
+        if v_lamports is None or not _num(v_lamports) or pool in self._rejected:
             return
         if pool in self._pools:
             if float(v_lamports) != self._pools[pool].V:

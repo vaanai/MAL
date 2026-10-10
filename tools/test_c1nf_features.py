@@ -702,6 +702,13 @@ def test_tip_rows_without_event_v_fail_closed_and_are_counted():
     for row in _tip_stream(rows, event_v=False):
         c.on_row(row)
     assert c._pools["POOL"].eligible is True and c._pools["POOL"].V == V
+    # rows of a rejected pool do not grow the V table
+    c.on_graduation("MINT2", G0)
+    for i, r in enumerate(rows[:10]):
+        row = tip_ps_row(r, event_v=False, account_v=5 * 10**9)
+        row.update(pool="POOL2", mint="MINT2")
+        c.on_row(row)
+    assert c.pool_rejects["v_out_of_band"] == 1 and "POOL2" not in c._v
     # a const engine fed event-V rows whose V(t) moves counts the drift (that tape needs "event")
     c2 = cf.FeatureEngine(v_source="const")
     for row in _tip_stream(rows, event_v=True):
