@@ -19,25 +19,71 @@ cumulative wallet ledger that the C1-NF features read through `AsofLedger.passa_
 
 Set in the job command: `PY=/home/claude/venvs/c1nf-ledger/bin/python` and `LEDGER_ROOT=<path>`.
 
-## 2. Before the first night: what the root starts with (manager decision, open)
+## 2. Before the first night: what the root starts with
 
-The PR does not decide this. Record the choice before the rollup is scheduled.
+**Decided (manager, 2026-10-10, review 2 item D1): option B, with 10-05 added (step 0).** Reasons, from review 2:
+EXP-025 s11.2 item 3 pins the read's wl/ as "P2's 36 deterministic days plus the October days"; s11.2 calls history built
+from October alone "a silent feature drift VERIFY never tested"; the model was trained on history starting 08-14, so under
+A `ndays`, `n`, `cash` and the known-wallet share would come from a distribution the model never saw; and the DEC-026 s7
+coverage report against the exploration picks only makes sense under B. Costs, accepted: 121 wallets already above 0.5 of
+int64 max in `buy_lamports` and `sell_lamports` saturate within about two weeks (harmless: `passa_matrix` reads `buy_q`
+and `cash_q`, not these columns, section 5); the snapshot is 1.4 GB and grows about 46 MB a day; the
+`--max-wallets 30000000` alert fires about 30 nights after 10-08 (section 5).
 
-- **A. Tip days only.** The root starts empty and grows from the first rollup. Then `ndays`, `n`, the known-wallet share and the
-  skill features differ from training and from EXP-025's read, whose wl/ is P2's 36 exploration days plus October
-  (EXP-025 s11.2 item 3). This matters for the DEC-026 item 13 parity check.
-- **B. Seed with the exploration days.** Copy the 36 exploration daily files (byte-equal to the pinned EXP-025 wl/, see the PR)
-  and the tip days 10-06 and 10-07 from research-0 `/data/mal/hunt-1008/c1nf-ledger/out/all/daily/` (`wl-*.npz` plus
-  `wl-*.manifest.json`, 76 files) into `$LEDGER_ROOT/daily/`:
-  1. `sha256sum` the 76 files on research-0 and on fast-0 after the copy; the two lists must be equal.
-  2. `$PY tools/c1nf_wallet_ledger.py check --out-root "$LEDGER_ROOT" --daily` (exit 0: every file matches its manifest).
-  3. Build the tip days from 10-08 to yesterday in date order (section 4), then `asof --day <today>`.
+**The live hole is not the read's hole.** The read's ledger fills from 2026-10-02T15 with forward-1002 (EXP-025, the ledger
+row of the source table and the hole paragraph), so its hole is `[2026-09-25T07, 2026-10-02T15)` (176 h). The live root
+cannot use forward-1002, which is sealed, so its hole is `[2026-09-25T07, 2026-10-05T05)` (238 h, 62 h longer). DEC-026
+already says the shadow is not the read; this is one more reason its picks differ.
+
+- **A. Tip days only (not chosen).** The root starts empty and grows from the first rollup. Then `ndays`, `n`, the
+  known-wallet share and the skill features differ from training and from EXP-025's read, whose wl/ is P2's 36 exploration
+  days plus October (EXP-025 s11.2 item 3). This matters for the DEC-026 item 13 parity check. The first night runs the
+  section 3 command once without `--require-prev-day` (or builds that day with `day` first); every later night uses it.
+  (`rollup --require-prev-day` refuses when `daily/wl-<D-1>` is missing and has no exception for an empty root.)
+- **B. Seed with the exploration days (chosen).**
+  0. On research-0, build 10-05 from the daily archive (it is not in `out/all/daily/`, which has 38 manifests: the 36
+     exploration days plus 10-06 and 10-07):
+     ```sh
+     $PY tools/c1nf_wallet_ledger.py day --day 2026-10-05 --adapter tip --verify-sha --allow-missing-hours \
+       --tip-dir /data/mal/tip-tape-archive/fast-trades-tip --out-root /data/mal/hunt-1008/c1nf-ledger/out/all \
+       --threads 3 --mem-gb 6 --tmp-dir <tmp>
+     ```
+     The manifest must record `hours_missing` 00-04 (the tip tape starts 10-05T05); any other missing hour is a stop.
+     `--allow-missing-hours` is for this one build only.
+  1. Copy the 36 exploration daily files (byte-equal to the pinned EXP-025 wl/, 36 of 36 sha256 equal per the PR; not
+     re-run in review 2) and the tip days 10-05, 10-06 and 10-07 from research-0
+     `/data/mal/hunt-1008/c1nf-ledger/out/all/daily/` (`wl-*.npz` plus `wl-*.manifest.json`, 78 files) into
+     `$LEDGER_ROOT/daily/`.
+  2. `sha256sum` the 78 files on research-0 and on fast-0 after the copy; the two lists must be equal.
+  3. `$PY tools/c1nf_wallet_ledger.py check --out-root "$LEDGER_ROOT" --daily` (exit 0: every file matches its manifest).
+  4. Build the tip days from 10-08 to yesterday in date order (section 4). 10-08 and 10-09 have 24 of 24 hour files in the
+     research-0 archive (review 2 counted file names); build them there with `--verify-sha` and copy them as in step 1,
+     because 10-08 leaves the fast-0 live dir at about 10-11T00Z. Later days can come from the live dir.
+  5. `asof --day <today>` before the first nightly.
+
   The snapshot then carries the known 238 h hole `[09-25T07, 10-05T05)`: wallets active only in the hole are unknown.
 
 ## 3. The nightly job
 
-A MiScusi job on mal-fast-0 (`miscusi_job_submit`, `machine: mal-fast-0`, `cpus: 3`, `mem_gb: 8`, `time_limit_min: 30`),
-submitted daily at **00:15Z** by the manager's daily trigger (as for the tip archive job). The command is POSIX `sh`:
+**Decided (manager, 2026-10-10, review 2 item D2): MiScusi jobs on mal-fast-0, in one chain linked with `after`.**
+Each step is its own job (`miscusi_job_submit`, `machine: mal-fast-0`) and starts only after the one before it succeeded:
+
+1. **Preconditions** (section 1): the venv at `/home/claude/venvs/c1nf-ledger`; a check that duckdb prints `1.5.6`; one
+   dry build of today with `--allow-open-day`, run as the job user, which also proves read access to
+   `/var/lib/mal/sealed/fast-trades-tip`.
+2. **Seeding** (section 2, B steps 1-3): the copy, the sha256 compare at both ends, and `check --daily`.
+3. **Catch-up** (section 2, B steps 4-5): the missing days, then the `asof` fold.
+4. **The nightly command** below, unchanged: daily at **00:15Z**, `cpus: 3`, `mem_gb: 8`, `time_limit_min: 30`.
+   No `--allow-missing-hours` and no `--allow-null-trader` in the standing command; those stay per-day manager calls
+   (section 4).
+
+Before the first submit, check `systemctl show user-1002.slice -p MemoryCurrent` and keep to the one-heavy-job rule. Each
+job counts toward the 8-job session cap. The research-0 builds (B step 0, and 10-08 and 10-09 in B step 4) come before
+the seeding and catch-up jobs, as jobs on research-0; whether `after` links jobs across machines was not checked. How
+MiScusi triggers the daily submit at 00:15Z (as for the tip archive job) was not checked in review 2 either. Do not merge
+#503 or #506 until they call `AsofLedger.open_for_day`.
+
+The command is POSIX `sh`:
 
 ```sh
 PY=/home/claude/venvs/c1nf-ledger/bin/python; LEDGER_ROOT=<path>
@@ -48,7 +94,8 @@ $PY tools/c1nf_wallet_ledger.py rollup --day "$D" --require-prev-day \
 && $PY tools/c1nf_wallet_ledger.py check --out-root "$LEDGER_ROOT" --asof-day "$(date -u +%F)" --max-wallets 30000000
 ```
 
-- Day D is closed when the `D+1 T00` trade file is non-empty (about 00:01Z). Before that the job refuses.
+- Day D is closed when the `D+1 T00` trade file is non-empty (about 00:01Z). Before that the job refuses. The 00:00Z to
+  about 00:17Z window in which consumers refuse (see Consumers) is kept: failing closed there is the intended design.
 - `--require-prev-day`: a missed night makes every later night refuse until it is caught up (section 4). This is on purpose.
 - `mem_gb: 8` is the hard limit (the job is killed above it). `--mem-gb 6` limits only duckdb. Check `systemctl show user-1002.slice -p MemoryCurrent` before the first submit, as for any job there.
 - Output: one JSON line with `day`, `asof` (`wallets`, `mode`, `saturated`), `pruned_asof` and `peak_rss_mb`. Copy `peak_rss_mb` and `asof.wallets` into the daily note for the first week, then lower `mem_gb` if the measured peak allows.
@@ -78,7 +125,7 @@ is gone at about D+3 00:00Z, so the live dir can rebuild D until then.
   daily about 03:23Z, so the newest hours may not be there yet):
   ```sh
   $PY tools/c1nf_wallet_ledger.py day --day <D> --adapter tip --verify-sha \
-    --tip-dir /data/mal/tip-tape-archive/fast-trades-tip --out-root <research-0 root> --threads 3 --mem-gb 6 --tmp-dir <tmp>
+    --tip-dir /data/mal/tip-tape-archive/fast-trades-tip --out-root <research-0-root> --threads 3 --mem-gb 6 --tmp-dir <tmp>
   ```
   Copy `daily/wl-<D>.npz` and `daily/wl-<D>.manifest.json` to `$LEDGER_ROOT/daily/` on fast-0, compare sha256 at both ends,
   run `check --daily`, then `asof --day <today>` (a fold; it does not need the missing incremental base), then resume the

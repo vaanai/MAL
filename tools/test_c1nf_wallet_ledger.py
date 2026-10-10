@@ -2,6 +2,10 @@
 
 Run with a Python that has pytest, numpy and duckdb 1.5.6, for example
   PYTHONPATH=/data/mal/audit-1008/venv/lib/python3.12/site-packages /data/mal/venv/bin/python -m pytest tools/test_c1nf_wallet_ledger.py
+
+Without duckdb this file does not pass quietly as "1 skipped" (review 2): test_duckdb_pinned_is_installed fails with
+the command above, and every other test is skipped. Set C1NF_LEDGER_ALLOW_NO_DUCKDB=1 to turn that failure into a skip,
+for a run that knowingly has no duckdb.
 """
 
 from __future__ import annotations
@@ -15,12 +19,41 @@ import subprocess
 from collections import defaultdict
 from pathlib import Path
 
+import os
+
 import numpy as np
 import pytest
 
-duckdb = pytest.importorskip("duckdb")
+try:
+    import duckdb
+except ImportError:  # not importorskip: a whole-file skip reads as green (review 2)
+    duckdb = None
 
 from tools import c1nf_wallet_ledger as L  # noqa: E402
+
+_NO_DUCKDB = (
+    "duckdb is not importable, so the C1-NF ledger tests did not run. Use a Python with duckdb "
+    f"{L.PINNED_DUCKDB}, e.g. PYTHONPATH=/data/mal/audit-1008/venv/lib/python3.12/site-packages "
+    "/data/mal/venv/bin/python -m pytest tools/test_c1nf_wallet_ledger.py "
+    "(or set C1NF_LEDGER_ALLOW_NO_DUCKDB=1 to skip on purpose)"
+)
+
+
+@pytest.fixture(autouse=True)
+def _require_duckdb(request):
+    if duckdb is None and request.node.originalname != "test_duckdb_pinned_is_installed":
+        pytest.skip("duckdb not importable (see test_duckdb_pinned_is_installed)")
+
+
+def test_duckdb_pinned_is_installed():
+    """Fails, not skips, when duckdb is missing; the wallet key needs the pinned version."""
+    if duckdb is None:
+        if os.environ.get("C1NF_LEDGER_ALLOW_NO_DUCKDB") == "1":
+            pytest.skip("C1NF_LEDGER_ALLOW_NO_DUCKDB=1: duckdb missing, skipped on purpose")
+        pytest.fail(_NO_DUCKDB, pytrace=False)
+    assert duckdb.__version__ == L.PINNED_DUCKDB, (
+        f"duckdb {duckdb.__version__} is not the pinned {L.PINNED_DUCKDB}; wallet hashes would differ"
+    )
 
 DAY = "2026-09-10"
 NEXT = "2026-09-11"
@@ -914,23 +947,45 @@ def test_recheck_and_force_on_a_changed_source(tmp_path, capsys):
     assert L.main(other) == 3  # nothing to recheck
 
 
-def test_runbook_job_command_parses():
-    """Review 1, runbook: the nightly command in docs/runbooks/c1nf-wallet-ledger.md uses flags this CLI accepts."""
+def _runbook_sh_blocks() -> list[dict]:
+    """Each ```sh block of docs/runbooks/c1nf-wallet-ledger.md as {cmd: parsed args} for its tool calls."""
     import shlex
 
     text = (Path(__file__).resolve().parents[1] / "docs" / "runbooks" / "c1nf-wallet-ledger.md").read_text()
-    block = text.split("```sh", 1)[1].split("```", 1)[0].replace("\\\n", " ")
-    seen = {}
-    for line in block.splitlines():
-        for part in line.split("&&"):
-            if "tools/c1nf_wallet_ledger.py" in part:
-                argv = shlex.split(part.split("tools/c1nf_wallet_ledger.py", 1)[1])
-                args = L.build_parser().parse_args(argv)
-                seen[args.cmd] = args
+    out = []
+    for chunk in text.split("```sh")[1:]:
+        block = chunk.split("```", 1)[0].replace("\\\n", " ")
+        seen = {}
+        for line in block.splitlines():
+            for part in line.split("&&"):
+                if "tools/c1nf_wallet_ledger.py" in part:
+                    argv = shlex.split(part.split("tools/c1nf_wallet_ledger.py", 1)[1])
+                    args = L.build_parser().parse_args(argv)
+                    seen[args.cmd] = args
+        out.append(seen)
+    return out
+
+
+def test_runbook_job_command_parses():
+    """Review 1, runbook: the nightly command in docs/runbooks/c1nf-wallet-ledger.md uses flags this CLI accepts."""
+    nightly = [s for s in _runbook_sh_blocks() if "rollup" in s]
+    assert len(nightly) == 1
+    seen = nightly[0]
     assert set(seen) == {"rollup", "check"}
     r = seen["rollup"]
     assert r.require_prev_day and r.keep_asof == 3 and r.max_temp_gb == 8 and r.tip_dir == ["/var/lib/mal/sealed/fast-trades-tip"]
+    # review 2, D2: no allow flags in the standing command; those stay per-day manager calls
+    assert not r.allow_missing_hours and not r.allow_null_trader and not r.verify_sha
     assert seen["check"].max_wallets == 30_000_000 and seen["check"].asof_day
+
+
+def test_runbook_seed_1005_command_parses():
+    """Review 2, D1 option B step 0: 10-05 is built on research-0 from the archive, sha-checked, hours 00-04 allowed."""
+    seeds = [s["day"] for s in _runbook_sh_blocks() if "day" in s and s["day"].day == "2026-10-05"]
+    assert len(seeds) == 1
+    d = seeds[0]
+    assert d.adapter == "tip" and d.verify_sha and d.allow_missing_hours and not d.allow_open_day
+    assert d.tip_dir == ["/data/mal/tip-tape-archive/fast-trades-tip"] and not d.allow_null_trader
 
 
 def test_spill_cap_is_an_option(tmp_path):
