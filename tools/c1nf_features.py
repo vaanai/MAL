@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import bisect
 import collections
+from array import array
 import hashlib
 import importlib.util
 import math
@@ -79,6 +80,8 @@ CONST_V_KEYS = ("v_lamports", "virtual_quote_reserve", "virtual_quote_reserves")
 V_PENDING_MAX_S = 900                   # "const": hold a pool's prints this long for its V0 (the tip follower retries V at 30 s .. 300 s)
 V_PENDING_MAX_ROWS = 20_000
 LEDGER_RETRY_S = (5.0, 300.0)           # first retry after a missing snapshot, cap (doubling); monotonic seconds
+LEDGER_KEEP_DAYS = 2                    # ledger snapshots cached (UTC days). c1nf_parity defers evaluations past midnight: 2. A live caller,
+                                        # whose decision T only moves forward, passes 1 (tools/c1nf_shadow.build_engine)
 PRUNE_BONDING_IDLE_S = 24 * 3600        # ungraduated mint with no bonding trade for this long: drop its trader set
 PRUNE_INFO_IDLE_S = 3 * 86400           # ungraduated mint with no bonding trade or create for this long: forget it
 TABLE_KEEP_S = 2 * 86400 + 4 * 3600     # windowed as-of tables (nar_*, mk_*): longest window 24 h + pool life 25 h + margin
@@ -365,20 +368,35 @@ class _Info:
         self.revived = False       # this mint was forgotten (PRUNE_INFO_IDLE_S) and seen again: its pool is rejected (`info_pruned`)
 
 
+def _isb_code(isb: Any) -> int:
+    """The byte stored in `_Pool.isb` for one print's is_buy value. Every read of the column gives what the value itself gave when the column
+    was a list: truthiness is `code & 1`, and `code == want` (want True or False) is `isb == want`. 0 = False, 1 = True, 2 = falsy but not
+    == False (None: a null side), 3 = truthy but not == True. A bool or numpy bool is always 0 or 1."""
+    if isb == True:  # noqa: E712 - equality, not identity: numpy bool and 1 count
+        return 1
+    if isb == False:  # noqa: E712
+        return 0
+    return 3 if isb else 2
+
+
 class _Pool:
-    __slots__ = ("pool", "mint", "V", "creator", "slot", "bt", "isb", "sol", "tok", "q", "b", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss",
-                 "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "lp", "am_hi", "am_lo", "hold", "seen_any", "seen_buy", "first_slot",
+    """One pool's prints, as typed columns (memory, job #608): array('q') for slot and bt, a bytearray of _isb_code for isb, array('d') for the
+    floats (a double round-trips exactly, and every sum is formed in the same order as with lists, so every value is bit-equal). Kept as
+    scalars: q0 (the first print's quote_reserve as ingested) and lp_last (log price of the last print; only lp[j-1] and lp[n-1] were read).
+    Not kept: per-print q and b (never read), seen_any (its keys were exactly the keys of `hold`)."""
+    __slots__ = ("pool", "mint", "V", "creator", "slot", "bt", "isb", "sol", "tok", "q0", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss",
+                 "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "lp_last", "am_hi", "am_lo", "hold", "seen_buy", "first_slot",
                  "first_bt", "g0", "eligible", "bad", "bad_reason", "est", "outcome", "dead", "n_final")
 
     def __init__(self, pool: str, mint: str, V: float, creator: Optional[str]) -> None:
         self.pool, self.mint, self.V, self.creator = pool, mint, float(V), creator
-        self.slot: list[int] = []; self.bt: list[int] = []; self.isb: list[bool] = []; self.sol: list[float] = []; self.tok: list[float] = []
-        self.q: list[float] = []; self.b: list[float] = []; self.th: list[str] = []
-        self.qpre: list[float] = []; self.ppre: list[float] = []
-        self.cs_vol = [0.0]; self.cs_bs = [0.0]; self.cs_ss = [0.0]; self.cs_nb = [0.0]; self.cs_new = [0.0]; self.cs_any = [0.0]
-        self.cs_crs = [0.0]; self.cs_crb = [0.0]
-        self.csl: list[float] = []; self.lp: list[float] = []; self.am_hi = [NAN]; self.am_lo = [NAN]
-        self.hold: dict[str, float] = {}; self.seen_any: dict[str, int] = {}; self.seen_buy: dict[str, int] = {}
+        self.slot = array("q"); self.bt = array("q"); self.isb = bytearray(); self.sol = array("d"); self.tok = array("d")
+        self.q0: Optional[float] = None; self.th: list[str] = []
+        self.qpre = array("d"); self.ppre = array("d")
+        self.cs_vol = array("d", [0.0]); self.cs_bs = array("d", [0.0]); self.cs_ss = array("d", [0.0]); self.cs_nb = array("d", [0.0])
+        self.cs_new = array("d", [0.0]); self.cs_any = array("d", [0.0]); self.cs_crs = array("d", [0.0]); self.cs_crb = array("d", [0.0])
+        self.csl = array("d"); self.lp_last = NAN; self.am_hi = array("d", [NAN]); self.am_lo = array("d", [NAN])
+        self.hold: dict[str, float] = {}; self.seen_buy: dict[str, int] = {}
         self.first_slot = None; self.first_bt = None; self.g0 = None; self.eligible = None; self.bad = False; self.bad_reason = None
         self.est = None            # (q_incl_V, b, price) after the last ingested print, fee-model estimate; None = invalid
         self.outcome = None        # (max6, end6) over p_grad, once the first print with bt >= g0 + 6 h is ingested
@@ -398,15 +416,15 @@ class _Pool:
         if not (qp > 0 and b > 0 and math.isfinite(qp) and math.isfinite(b)):
             self.bad = True
         p = qp / b if b else NAN
-        self.slot.append(slot); self.bt.append(btv); self.isb.append(isb); self.sol.append(sol); self.tok.append(tok)
-        self.q.append(q); self.b.append(b); self.th.append(th); self.qpre.append(qp); self.ppre.append(p)
+        if j == 0:
+            self.q0 = q
+        self.slot.append(slot); self.bt.append(btv); self.isb.append(_isb_code(isb)); self.sol.append(sol); self.tok.append(tok)
+        self.th.append(th); self.qpre.append(qp); self.ppre.append(p)
         self.cs_vol.append(self.cs_vol[-1] + sol)
         self.cs_bs.append(self.cs_bs[-1] + (sol if isb else 0.0))
         self.cs_ss.append(self.cs_ss[-1] + (0.0 if isb else sol))
         self.cs_nb.append(self.cs_nb[-1] + (1.0 if isb else 0.0))
-        first_any = th not in self.seen_any
-        if first_any:
-            self.seen_any[th] = j
+        first_any = th not in self.hold              # hold gets every trader of every print (below), so its keys are the traders seen
         first_buy = isb and th not in self.seen_buy
         if first_buy:
             self.seen_buy[th] = j
@@ -420,11 +438,11 @@ class _Pool:
         if j == 0:
             self.csl.append(0.0)
         else:
-            d = lpj - self.lp[j - 1]
+            d = lpj - self.lp_last
             self.csl.append(self.csl[j - 1] + d * d)
             self.am_hi.append(p if j == 1 else max(self.am_hi[j - 1], p))
             self.am_lo.append(p if j == 1 else min(self.am_lo[j - 1], p))
-        self.lp.append(lpj)
+        self.lp_last = lpj
         if isb:
             qf, bf = qp + sol * (1 - G_FEE), b - tok
         else:
@@ -444,8 +462,8 @@ class _Pool:
 
     def free(self) -> None:
         self.n_final = len(self.slot)
-        for a in ("slot", "bt", "isb", "sol", "tok", "q", "b", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any",
-                  "cs_crs", "cs_crb", "csl", "lp", "am_hi", "am_lo", "hold", "seen_any", "seen_buy"):
+        for a in ("slot", "bt", "isb", "sol", "tok", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any",
+                  "cs_crs", "cs_crb", "csl", "am_hi", "am_lo", "hold", "seen_buy"):
             setattr(self, a, None)
         self.dead = True
 
@@ -458,9 +476,13 @@ def _nanmedian(a: np.ndarray) -> float:
 class FeatureEngine:
     def __init__(self, ledger: Optional[LedgerProvider] = None, *, v_source: str, strict: bool = False,
                  ledger_retry_s: tuple[float, float] = LEDGER_RETRY_S, prune_bonding_idle_s: Optional[int] = PRUNE_BONDING_IDLE_S,
-                 prune_info_idle_s: Optional[int] = PRUNE_INFO_IDLE_S, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 prune_info_idle_s: Optional[int] = PRUNE_INFO_IDLE_S, monotonic: Callable[[], float] = time.monotonic,
+                 ledger_keep_days: int = LEDGER_KEEP_DAYS) -> None:
         if v_source not in V_SOURCES:
             raise ValueError(f"v_source must be one of {V_SOURCES}, got {v_source!r}")
+        if isinstance(ledger_keep_days, bool) or not isinstance(ledger_keep_days, int) or ledger_keep_days < 1:
+            raise ValueError(f"ledger_keep_days must be an int >= 1, got {ledger_keep_days!r}")
+        self.ledger_keep_days = ledger_keep_days
         self.v_source = v_source
         self.strict = strict
         self._map_q = pinned_event_v_map().map_quote_reserve if v_source == V_EVENT else None
@@ -537,6 +559,15 @@ class FeatureEngine:
                 "w_c": sum(len(v) for v in self._w_c.values()), "w_g": sum(len(v) for v in self._w_g.values()),
                 "s_c": sum(len(v) for v in self._s_c.values()), "all_c": len(self._all_c), "all_g": len(self._all_g),
                 "by_cr": sum(len(v) for v in self._by_cr.values()), "g_cr": sum(len(v) for v in self._g_cr.values()), "clock": len(self.clock.bts)}
+
+    def held_sizes(self) -> dict:
+        """What drives memory (job #608): prints held in the per-print columns of the pools not yet freed, and their (pool, trader) pairs."""
+        prints = pairs = 0
+        for P in self._pools.values():
+            if P.slot is not None:
+                prints += len(P.slot)
+                pairs += len(P.hold)
+        return {"held_prints": prints, "held_pairs": pairs}
 
     # ------------------------------------------------------------------ events
     def set_pool_v(self, pool: str, v_lamports: Optional[float]) -> None:
@@ -918,11 +949,13 @@ class FeatureEngine:
     def alive_pools(self, T: int) -> list[str]:
         return [pid for pid, P in self._pools.items() if P.eligible and P.g0 is not None and P.g0 + GRID_START <= T <= P.g0 + GRID_END]
 
-    def _ledger_for(self, day: str):
-        """The snapshot for `day`, or None. A present snapshot is cached (two days, so deferred evaluations do not thrash); None and a
-        provider error are never cached: the provider is asked again after ledger_retry_s[0] seconds, doubling up to ledger_retry_s[1]."""
+    def _ledger_for(self, day: str, keep_days: Optional[int] = None):
+        """The snapshot for `day`, or None. A present snapshot is cached (keep_days days, default self.ledger_keep_days = 2, so deferred
+        evaluations do not thrash; a live caller keeps 1); None and a provider error are never cached: the provider is asked again after
+        ledger_retry_s[0] seconds, doubling up to ledger_retry_s[1]. A day dropped from the cache is opened again if asked for: same values."""
         if self.ledger is None:
             return None
+        keep = self.ledger_keep_days if keep_days is None else keep_days
         snap = self._ledger_cache.get(day)
         if snap is not None:
             return snap
@@ -945,8 +978,8 @@ class FeatureEngine:
             self.stats["ledger_missing"] += 1
             return None
         self._ledger_next.pop(day, None)
-        if len(self._ledger_cache) >= 2:
-            for d in sorted(self._ledger_cache)[:-1]:
+        if len(self._ledger_cache) >= keep:                  # keep - 1 days stay beside the new one (keep 2: the latest day, as before)
+            for d in sorted(self._ledger_cache)[:len(self._ledger_cache) - keep + 1]:
                 del self._ledger_cache[d]
         self._ledger_cache[day] = snap
         return snap
@@ -1017,7 +1050,7 @@ class FeatureEngine:
         def csl_at(k: int) -> float:
             if k < n:
                 return P.csl[k]
-            d = math.log(est[2]) - P.lp[n - 1]
+            d = math.log(est[2]) - P.lp_last                   # lp[n - 1]
             return P.csl[n - 1] + d * d
 
         c1 = csl_at(i1)
@@ -1026,7 +1059,7 @@ class FeatureEngine:
         f["vol60"] = math.sqrt(max(c1 - csl_at(i60), 0.0) / max(i1 - i60, 1))
         f["ncum"] = float(i1); f["ntr_cum"] = P.cs_any[i1]; f["vcum"] = cv[i1] / 1e9
         isb, sol, th = P.isb, P.sol, P.th
-        f["maxbuy5"] = (max((sol[k] if isb[k] else 0.0) for k in range(i5, i1)) / 1e9) if i1 > i5 else 0.0
+        f["maxbuy5"] = (max((sol[k] if isb[k] & 1 else 0.0) for k in range(i5, i1)) / 1e9) if i1 > i5 else 0.0
         f["avgbuy5"] = bs5 / max(nb5, 1); f["buyshare5"] = bs5 / max(v5, 1e-9)
         f["cr_sold"] = P.cs_crs[i1] / 1e15; f["cr_bought"] = P.cs_crb[i1] / 1e15
         # ---- holders (PumpSwap flows only)
@@ -1035,7 +1068,7 @@ class FeatureEngine:
         else:
             hold = {}
             for k in range(i1):
-                hold[th[k]] = hold.get(th[k], 0.0) + (P.tok[k] if isb[k] else -P.tok[k])
+                hold[th[k]] = hold.get(th[k], 0.0) + (P.tok[k] if isb[k] & 1 else -P.tok[k])
         pos = np.sort(np.array([x for x in hold.values() if x > 0], dtype=np.float64))[::-1]
         tot = pos.sum() if len(pos) else 0.0
         f["h_npos"] = float(len(pos))
@@ -1043,7 +1076,7 @@ class FeatureEngine:
         f["h_top5"] = float(pos[:5].sum() / tot) if tot > 0 else NAN
         f["h_top10"] = float(pos[:10].sum() / tot) if tot > 0 else NAN
         f["h_pos_frac_supply"] = float(tot / 1e15)
-        sidx = [k for k in range(i5, i1) if not isb[k]]
+        sidx = [k for k in range(i5, i1) if not (isb[k] & 1)]
         if sidx:
             sb = P.seen_buy
             num = np.array([sol[k] for k in sidx if sb.get(th[k], 1 << 60) >= i1], dtype=np.float64).sum()

@@ -417,7 +417,7 @@ def test_null_block_time_inherits_running_max():
     eng.on_trade("pumpswap", "MINT", "B", True, 1e9, 1e12, 71e9, 205e12, "POOL", 6, G0 + 50)
     eng.on_trade("pumpswap", "MINT", "C", True, 1e9, 1e12, 72e9, 204e12, "POOL", 7, None)
     P = eng._pools["POOL"]
-    assert P.bt == [G0, G0 + 50, G0 + 50]        # first null = graduation time (11_passA), later null = previous max
+    assert list(P.bt) == [G0, G0 + 50, G0 + 50]  # first null = graduation time (11_passA), later null = previous max
 
 
 # ======================================================================================================================================
@@ -817,7 +817,7 @@ def test_real_tip_follower_output_reaches_the_engine(tmp_path):
     ev2 = cf.FeatureEngine(v_source="event")
     assert ev2.on_row(ready[0]) is True
     P = ev2._pools[pool]
-    assert P.V == ready[0]["virtual_quote_reserves"] and P.q[0] == ready[0]["quote_reserve"]     # first print: V(t) = V0, mapped = vault
+    assert P.V == ready[0]["virtual_quote_reserves"] and P.q0 == ready[0]["quote_reserve"]       # first print: V(t) = V0, mapped = vault
 
 
 # ---- ledger readiness (HIGH 3) -----------------------------------------------------------------------------------------------------------

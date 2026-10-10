@@ -114,6 +114,8 @@ SILENCE_S = 20.0
 CLOCK_JUMP_S = 60
 HEARTBEAT_S = 60.0
 EXPIRE_S = 600                        # engine.expire on the STREAM clock: at every block time crossing a multiple of this (#503 item 7)
+LEDGER_CACHE_MAX = 200_000            # _PreadSnapshot: memo of wallet lookups, cleared past this (job #608: was 500_000, ~457 B per entry)
+LIVE_LEDGER_KEEP_DAYS = 1             # build_engine: ledger snapshots the engine keeps (decision T only moves forward here; FeatureEngine default 2)
 ANCHOR_FILE = "c1nf-anchor.json"      # run_live: the history anchor hour; every (re)start bootstraps from it (#503 item 7)
 MAX_BOOTSTRAP_HOURS = 21 * 24         # run_live refuses to start when the anchor is older than this (a manager resets the anchor)
 HOLD_MS = 600                        # live: feed rows only once t_recv_ms is this old, so the three kinds of one block arrive together
@@ -831,6 +833,46 @@ class Pending:
         self.done = False
 
 
+_MALLOC_TRIM: Any = None               # None = not looked up yet; False = unavailable on this host; else the libc function
+
+
+def malloc_trim() -> bool:
+    """glibc malloc_trim(0): hand freed heap pages back to the kernel (job #608: live never did, 0.4-0.7 GB of slack). True when it ran.
+    A host without it (no glibc, no ctypes, a failing call) is False and never raises; the lookup is done once."""
+    global _MALLOC_TRIM
+    if _MALLOC_TRIM is None:
+        try:
+            import ctypes
+
+            fn = ctypes.CDLL(None).malloc_trim             # dlopen(NULL): the process's own symbols, glibc's malloc_trim among them
+            fn.argtypes = [ctypes.c_size_t]
+            fn.restype = ctypes.c_int
+            _MALLOC_TRIM = fn
+        except Exception:  # noqa: BLE001 - musl, macOS, no ctypes: no trim
+            _MALLOC_TRIM = False
+    if _MALLOC_TRIM is False:
+        return False
+    try:
+        _MALLOC_TRIM(0)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def proc_mem_kb(path: str = "/proc/self/status") -> dict:
+    """RssAnon and VmHWM of this process in kB from /proc (the numbers the MiScusi cap and the OOM killer act on); {} without /proc."""
+    out: dict[str, int] = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key in ("RssAnon", "VmHWM"):
+                    out[key] = int(rest.split()[0])
+    except (OSError, ValueError, IndexError):
+        return {}
+    return out
+
+
 class Shadow:
     def __init__(self, engine: Any, models: ModelSet, sink: Any, *, oracle: Optional[Callable[[str], Any]] = None, seal_start_ms: Optional[int] = SEAL_START_MS,
                  universe: Optional[Universe] = None, wall: Callable[[], int] = now_ms, replay: bool = False, errors: Optional[ErrorLog] = None,
@@ -1392,6 +1434,24 @@ class Shadow:
             if self.errors:
                 self.errors.log(exc, {"where": "expire", "now_bt": now_bt})
         self.clock.prune(now_bt - 3 * 3600)
+        try:                                             # job #608: return what expire freed to the kernel; no effect on any decision
+            trimmed = malloc_trim()
+        except Exception:  # noqa: BLE001 - malloc_trim never raises; belt and braces
+            trimmed = False
+        self.c["malloc_trim" if trimmed else "malloc_trim_unavailable"] += 1
+
+    def _mem_fields(self) -> dict:
+        """Heartbeat memory fields (job #608): RssAnon / VmHWM (kB, None without /proc), the prints and (pool, trader) pairs the engine holds
+        (None for an engine without held_sizes), and the engine's window_violation counter (0 until the print window exists)."""
+        mem = proc_mem_kb()
+        try:
+            held = self.engine.held_sizes()
+        except Exception:  # noqa: BLE001 - a stub engine, or one without the method
+            held = {}
+        stats = getattr(self.engine, "stats", None)
+        wv = stats.get("window_violation", 0) if isinstance(stats, Mapping) else 0
+        return {"rss_anon_kb": mem.get("RssAnon"), "vm_hwm_kb": mem.get("VmHWM"), "held_prints": held.get("held_prints"),
+                "held_pairs": held.get("held_pairs"), "window_violation": int(wv)}
 
     def tick(self, now: Optional[int] = None) -> None:
         now = self._wall() if now is None else now
@@ -1424,7 +1484,7 @@ class Shadow:
               "stream_lag_s": None if self.hw_bt is None or self.replay else round(now / 1000 - self.hw_bt, 2),
               "pending": sum(len(v) for v in self.pending.values()), "pools_alive": len(self.universe.pool_mint), "counters": dict(self.c),
               "universe": dict(self.universe.counts), "model_shas": self.models.shas, "rule": RULE_ID,
-              "uptime_s": round((now - self.started_ms) / 1000, 1)}
+              "uptime_s": round((now - self.started_ms) / 1000, 1), **self._mem_fields()}
         self.emit(hb)
         return hb
 
@@ -1788,7 +1848,7 @@ class _PreadSnapshot:
     BLOCK = 512
 
     def __init__(self, n: int, th_file: tuple[str, int], col_files: Sequence[tuple[str, int, bool]],
-                 hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> None:
+                 hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = LEDGER_CACHE_MAX) -> None:
         self._n, self._cache, self._cache_max = int(n), {}, int(cache_max)
         self._hash = hash_fn or _duck_hash()
         fds: list[int] = []
@@ -1809,7 +1869,7 @@ class _PreadSnapshot:
         self._finalizer = weakref.finalize(self, _close_fds, fds)
 
     @classmethod
-    def from_ledger(cls, asof: Any, hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = 500_000) -> Optional["_PreadSnapshot"]:
+    def from_ledger(cls, asof: Any, hash_fn: Optional[Callable[[str], int]] = None, cache_max: int = LEDGER_CACHE_MAX) -> Optional["_PreadSnapshot"]:
         if not hasattr(os, "pread") or sys.byteorder != "little":
             return None
         th, cols = getattr(asof, "th", None), getattr(asof, "cols", None)
@@ -1966,10 +2026,12 @@ def canonical_pda_fn() -> Optional[Callable[[str], Optional[str]]]:
 
 def build_engine(ledger: Any = None, *, v_source: str) -> Any:
     """The real tools.c1nf_features.FeatureEngine (#506). v_source has no default there and none here: "event" for live (every PumpSwap print
-    carries its own pre-trade event V, `virtual_quote_reserves`), "const" for exploration-tape replay (one V0 per pool, set_pool_v)."""
+    carries its own pre-trade event V, `virtual_quote_reserves`), "const" for exploration-tape replay (one V0 per pool, set_pool_v).
+    The shadow's decision T only moves forward (Shadow._decide), so the engine keeps one day's ledger snapshot (LIVE_LEDGER_KEEP_DAYS): the
+    same values as the default two (a dropped day is reopened if ever asked for), one snapshot's memo less (job #608)."""
     from tools.c1nf_features import FeatureEngine  # #506
 
-    return FeatureEngine(ledger=ledger, v_source=v_source)
+    return FeatureEngine(ledger=ledger, v_source=v_source, ledger_keep_days=LIVE_LEDGER_KEEP_DAYS)
 
 
 # ---- replay (exploration tape, read-only) ---------------------------------------------------------------------------------------------------
