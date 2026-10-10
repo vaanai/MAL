@@ -747,7 +747,7 @@ The model, threshold, features, decision logic, `OUTCOME_START_MS` and the recor
 - a real-tape `c1nf_parity` md5 with the window off and F2/F3 on (only the synthetic cross-head twin covers it);
 - the one-day ledger keep across a UTC midnight on real tape (synthetic test only).
 
-**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026, to be recorded in LAB_STATE):
+**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026 and in LAB_STATE by #585):
 - (a) The heartbeat's `window_violation` must stay 0. Any non-zero value means a decision differed from main. It voids bit-equality from that minute and stops item 15's clock until it is explained.
 - (b) From hour 25, RssAnon may grow at most 20 MB/h over any 24 h.
 - (c) An RssAnon alert at 1.5 GB, below the 1.9 GB cap.
