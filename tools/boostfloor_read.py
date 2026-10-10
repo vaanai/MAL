@@ -70,9 +70,10 @@ REPO = Path(__file__).resolve().parents[1]
 PREREG = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"
 COUNT_START_LINE = "EXP024_COUNT_START: 2026-10-10T00"
 P3_PINS_PREFIX = "EXP024_P3_PINS:"
-P3_PIN_KEYS = ("read_tool", "score_module", "latency_curve", "paper_curve_math", "extractor", "v_join", "synthetic_class")
+P3_PIN_KEYS = ("read_tool", "score_module", "latency_curve", "paper_curve_math", "extractor", "v_join", "synthetic_class", "inputs")
 P3_PIN_PATHS = {"read_tool": "tools/boostfloor_read.py", "score_module": "tools/boostfloor_score.py", "latency_curve": "tools/latency_curve.py",
-                "paper_curve_math": "tools/paper_curve_math.py", "v_join": "tools/forward_v_join.py", "synthetic_class": "tools/synthetic_class.py"}
+                "paper_curve_math": "tools/paper_curve_math.py", "v_join": "tools/forward_v_join.py", "synthetic_class": "tools/synthetic_class.py",
+                "inputs": "tools/boostfloor_inputs.py"}  # the P5/P7/E1/PDA producers: their files feed the read, so their blob is pinned
 
 # ---- frozen inputs (section 2) ----------------------------------------------------------------------------------------
 H5_FLOWS = Path("/data/mal/hunt-1008/h5-flows")
