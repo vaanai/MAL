@@ -21,12 +21,23 @@ event (Q = quote_reserve + virtual_quote_reserves). Variant "fv" is the frozen r
 evaluated on every print, each fires at most once per pool, and every record carries both Qs.
 
 OUTPUT. <out-dir>/h5-shadow-<UTC hour>.jsonl, strict JSON lines flushed per line (tools/tape_lines.py clean), and h5-shadow-status.json
-(atomic). Record types: start, trigger, outcome, pool (EVERY tracked pool, with the BOOST last-slice time relative to s0), gap, hb, stop.
+(atomic). Record types: start, trigger, outcome, outcome_bx10, pool (EVERY tracked pool, with the BOOST last-slice time relative to s0), gap,
+hb, stop.
 A gap record (slot jump, silence, feed restart) also flags every pool open at the time (gap=true on its pool/trigger/outcome records); an
 hour with a gap record or a missing hb is a bad hour.
 
 EXIT LADDER. Every outcome record also carries the pool at the exit landing slot for exit triggers at s0 + 310/320/330/335/340/345/350 s
 (the rule exits at 330 s; VERIFY.md found the exit sits on a cliff). Report-only; the rule's exit is the 330 s row.
+
+BX10 (report-only paper exit variant; not v1, never traded, not read before a pre-registered read, EXP-026 draft). Cell C10 of
+H5-BOOSTCLOCK-EXIT (/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md s2, bc_rule.py): the same trade as each v1 outcome (same trigger,
+entry legs, END-bound states, fees), only the exit instant differs. From the BOOST signer's buys (slices) observed at least 1.35 s before the
+decision instant, projection E gives the last slice's time; the exit triggers at the first instant tau >= our landing with >= 3 slices observed
+and tau >= projection - 10 s, at slot min(max(s0 + ceil(tau / sps), landing + 1), v1's exit slot); capped at v1's s0 + 330 s (then it IS v1's
+exit). Written as its own record, type "outcome_bx10", right after v1's outcome and only where v1's outcome is written (the same CAP-PICK and
+H5 Look-2 seals), so every v1 record is byte-identical with or without it. The signer: when the trigger-time pick was the behavioural
+detector's, that signer's slices are used; otherwise the per-pool PDA (or BoostBuyAndBurn authority) once it has signed a buy. Each record
+carries boost_src_at_trigger, so a scorer can see which pools changed signer after the trigger.
 
 H5 LOOK-2 SEAL (EXP-024 section 3.1, Amendment 2). Pools whose s0 block time is at or after H5_LOOK2_START_MS (2026-10-16T00:00Z, Look 2's
 added window) have every outcome-bearing record withheld (outcome, legs, exit ladder, strip, min_q), exactly as the CAP-PICK seal withholds them,
@@ -58,6 +69,7 @@ if __package__ in (None, ""):  # `python tools/h5_shadow.py`
 import argparse
 import asyncio
 import base64
+import bisect
 import collections
 import json
 import logging
@@ -121,6 +133,10 @@ ENTRY_S = {"primary": 1.3, "binding": 1.9}
 EXIT_AFTER_S0_S = 330.0
 EXIT_LAG_S = 0.55
 EXIT_LADDER_S = (310.0, 320.0, 330.0, 335.0, 340.0, 345.0, 350.0)  # report-only exit-shift sensitivity (VERIFY.md: the exit sits on a cliff)
+BX10_OFF_S = 10.0  # bx10 (report-only): exit this long before the projected last BOOST slice (FREEZE.md cell C10)
+BX10_OBS_S = 1.35  # a slice at tape time t is usable for a decision at tau >= t + this (1.9 s entry latency - 0.55 s send-to-land)
+BX10_KMIN = 3  # slices needed before a projection exists
+BX10_DONE_LAMPORTS = 0.05e9  # BOOST budget left below this: the last slice has been seen
 PRESSURE_WINDOW_S = 2.0
 PRIO_LAMPORTS = 55_000
 STAKES = (("0.1", 100_000_000), ("0.25", 250_000_000))
@@ -234,6 +250,44 @@ def cap_pick_oracle_from_env(environ: dict[str, str] | None = None) -> tuple[Pic
     n_live = len([p for p in env.get("CAP_PICK_LIVE", "").split(os.pathsep) if p])
     n_rep = len([p for p in env.get("CAP_PICK_REPLAY", "").split(os.pathsep) if p])
     return o, {"oracle": "cap_pick_oracle", "live_files": n_live, "replay_files": n_rep, "final_marker": True, "stale_s": o.stale_s}
+
+
+def project_e(t: Sequence[float], a: Sequence[float]) -> float:
+    """bx10 projection E (FREEZE.md s2; same steps as bc_rule.project_E): the projected last BOOST slice time (s after s0) from the k >= 2 slices
+    seen so far (times t, lamports a): t_k + floor(R / mean(a)) * median(t_2 - t_1, ..., t_k - t_(k-1)), R = 17.585 SOL - sum(a); with
+    R < 0.05 SOL the budget is done and the last slice is t_k."""
+    k = len(t)
+    d = sorted(t[i] - t[i - 1] for i in range(1, k))
+    m = len(d)
+    med = d[m // 2] if m % 2 else (d[m // 2 - 1] + d[m // 2]) / 2
+    tot = float(sum(a))
+    rem = max(0.0, BOOST_BUDGET - tot)
+    if rem < BX10_DONE_LAMPORTS:
+        return t[-1]
+    return t[-1] + math.floor(rem / (tot / k)) * med
+
+
+def bx10_exit(t: Sequence[float], a: Sequence[float], tmin: float, cap: float, off: float = BX10_OFF_S, obs: float = BX10_OBS_S,
+              kmin: int = BX10_KMIN) -> tuple[float, bool, int, float | None]:
+    """bx10 decision instant (same steps as bc_rule.cad_exit): tau* = inf{tau >= tmin : k(tau) >= kmin and tau >= P_E(k(tau)) - off}, where
+    k(tau) counts slices with t_i + obs <= tau (t sorted, s after s0); capped at cap. Only slices observed before the decision are used.
+    Returns (tau*, fired before the cap, k slices used, projection used or None)."""
+    n = len(t)
+    if n < kmin:
+        return cap, False, n, None
+    ob = [x + obs for x in t]
+    k = max(kmin, bisect.bisect_right(ob, tmin))
+    while k <= n:
+        start = max(tmin, ob[k - 1])
+        end = ob[k] if k < n else math.inf
+        proj = project_e(t[:k], a[:k])
+        cand = max(start, proj - off)
+        if cand < end:
+            return (cand, True, k, proj) if cand < cap else (cap, False, k, proj)
+        if end >= cap:
+            return cap, False, k, proj
+        k += 1
+    return cap, False, n, None
 
 
 def sps_ok(sps: float | None) -> bool:
@@ -1283,7 +1337,8 @@ class Engine:
             ladder = {T: p.s0 + int(round(T / sps)) for T in EXIT_LADDER_S}  # exit trigger slot per ladder point
             rec["exit_ladder_trigger_slots"] = {str(int(T)): v for T, v in ladder.items()}
             p.pending.append({"variant": var, "idx": idx, "sps": sps, "k": {"primary": k_p, "binding": k_b}, "exit_slot": exit_slot, "exit_land": exit_slot + el,
-                              "trig_slot": pr.slot, "el": el, "ladder": ladder, "resolve_at": max(ladder.values()) + el})
+                              "trig_slot": pr.slot, "el": el, "ladder": ladder, "resolve_at": max(ladder.values()) + el,
+                              "boost_id": ident, "boost_src": src})  # bx10 only (never written to a v1 record)
         self.counters[f"triggers_{var}"] += 1
         self.emit(rec)
 
@@ -1353,6 +1408,61 @@ class Engine:
         if not complete:
             self.counters["outcomes_incomplete"] += 1
         self.emit(rec)
+        try:  # after v1's record, and nothing it does feeds back: v1's records and counters are the same with or without bx10
+            self._resolve_bx10(p, pend, complete)
+        except Exception as e:  # noqa: BLE001 - a bx10 fault must not touch v1 (no counter, no error record): it reports on its own record type
+            self.emit({"type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
+                       "boost_src_at_trigger": pend.get("boost_src"), "error": repr(e)[:300]})
+
+    def _bx10_slices(self, p: Pool, pend: dict) -> tuple[list[tuple[int, int, int]], str | None, str | None]:
+        """The BOOST signer's buys as (slot, lamports, recv_ms), slot order. If the pick AT THE TRIGGER was the behavioural detector's, that signer
+        is kept even when the PDA signs later: switching to a PDA that only starts buying after the trigger would pick the signer with later
+        knowledge. Otherwise the per-pool PDA (or the BoostBuyAndBurn authority) once it has signed a buy: a protocol address, known before any of
+        its buys, so naming it later looks at nothing ahead. Failing both, the trigger-time pick (a later behavioural pick could be hindsight)."""
+        ident, src = pend.get("boost_id"), pend.get("boost_src")
+        if src != "behavioural":
+            now_id, now_src = self.boost_identity(p)
+            if now_src in ("pda", "event_authority"):
+                ident, src = now_id, now_src
+        if ident is None:
+            return [], None, src
+        sl = sorted(((r.slot, r.sol, r.recv_ms) for r in p.prints if r.buy and r.trader == ident), key=lambda x: x[0])
+        return sl, ident, src
+
+    def _resolve_bx10(self, p: Pool, pend: dict, complete: bool) -> None:
+        """Report-only bx10 outcome for one resolved v1 outcome (see BX10 in the module doc). Same entry legs and END-bound pricing as v1."""
+        if self._sealed(p) or self._h5_sealed(p):  # the same seals as v1's outcome (already checked by the caller; kept so this never leaks alone)
+            return
+        var, sps, s0, v1_slot, el = pend["variant"], pend["sps"], p.s0, pend["exit_slot"], pend["el"]
+        sl, ident, src = self._bx10_slices(p, pend)
+        t = [(s - s0) * sps for s, _, _ in sl]
+        a = [x for _, x, _ in sl]
+        legs: dict[str, Any] = {}
+        for leg, k in pend["k"].items():
+            X = pend["trig_slot"] + k
+            tau, fired, k_used, proj = bx10_exit(t, a, (X - s0) * sps, EXIT_AFTER_S0_S)
+            trig = min(max(s0 + math.ceil(tau / sps - 1e-9), X + 1), v1_slot) if fired else v1_slot
+            ent: dict[str, Any] = {"landing_slot": X, "tau_s": tau, "fired": fired, "k_slices": k_used, "proj_last_slice_s": proj,
+                                   "exit_trigger_slot": trig, "exit_landing_slot": trig + el, "same_as_v1": trig == v1_slot}
+            if v1_slot <= X:  # v1 has no trade on this leg (exit_trigger_not_after_landing); neither has bx10
+                ent["net"] = None
+                ent["note"] = "exit_trigger_not_after_landing"
+            else:
+                qe, be, _ = self._state_at(p, X, var)
+                qx, bx, xsrc = self._state_at(p, trig + el, var)
+                ent.update({"q_sol": qx / 1e9, "base": bx, "state_src": xsrc, "net": {}})
+                for label, stake in STAKES:
+                    pnl, gross = fill_round_trip(qe, be, qx, bx, float(stake))
+                    ent["net"][label] = {"pnl_nofail_lamports": pnl, "net_pct_nofail": 100 * pnl / stake, "gross": gross}
+            legs[leg] = ent
+        self.emit({
+            "type": "outcome_bx10", "variant": var, "pool": p.pool, "mint": p.mint, "s0": s0, "trigger_slot": pend["trig_slot"], "sps": sps,
+            "rule": "bx10", "off_s": BX10_OFF_S, "obs_s": BX10_OBS_S, "kmin": BX10_KMIN, "cap_s": EXIT_AFTER_S0_S,
+            "boost_id": ident, "boost_src": src, "boost_src_at_trigger": pend.get("boost_src"), "n_slices": len(sl),
+            "slices": [[s - s0, x, rm] for s, x, rm in sl],  # slot offset from s0, lamports, recv ms: the observation timing can be audited
+            "v1_exit_trigger_slot": v1_slot, "exit_lag_slots": el, "legs": legs, "complete": bool(complete), "hw_slot": self.hw_slot,
+            "prints_seen": len(p.prints), "gap": bool(p.gaps),
+        })
 
     def _sealed(self, p: Pool) -> bool:
         """True when this pool's post-decision states must not be written. Fail closed: no mint, no oracle, or an oracle that raises inside
