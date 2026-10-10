@@ -248,6 +248,29 @@ class FrameTests(Base):
         self.assertEqual(frame[0]["sol_lamports"], a["sol_lamports"])
         self.assertEqual(info["duplicate_keys_dropped"], 1)
 
+    def test_row_ceiling_refuses_while_reading_before_the_sort_and_exactly_the_ceiling_passes(self):
+        rows = [self.sell_tape(signature=f"C{i:03d}" + "1" * 80, t_recv_ms=T0 + 1000 + i) for i in range(10)]
+        write_hour(self.trades, "2026-10-10T13", rows)
+        parsed, real = [], json.loads
+
+        def spy(raw, *a, **k):
+            parsed.append(1)
+            return real(raw, *a, **k)
+
+        with mock.patch.object(p7.json, "loads", spy):
+            with self.assertRaises(p7.Refused) as cm:
+                p7.build_frame(self.trades, T0, p7.parse_utc(END), self.canon, max_rows=3)
+        self.assertEqual(len(parsed), 4)  # stopped at the row that passed the ceiling, not after reading all 10
+        self.assertIn("--max-frame-rows", str(cm.exception))
+        frame, _ = p7.build_frame(self.trades, T0, p7.parse_utc(END), self.canon, max_rows=10)
+        self.assertEqual(len(frame), 10)
+        self.assertEqual(len(p7.build_frame(self.trades, T0, p7.parse_utc(END), self.canon)[0]), 10)  # None: no ceiling
+
+    def test_default_ceiling_keeps_the_frame_near_1_1_gb(self):
+        self.assertEqual(p7.DEFAULT_MAX_FRAME_ROWS, 1_200_000)
+        self.assertLess(p7.DEFAULT_MAX_FRAME_ROWS * 923, 1.2e9)  # ~923 B per frame row (reviewer's measurement on #570)
+        self.assertEqual(p7.build_parser().parse_args(["--end", END]).max_frame_rows, p7.DEFAULT_MAX_FRAME_ROWS)
+
     def test_frame_rows_keep_only_what_the_check_reads(self):
         (row,), _ = self.frame_of([self.sell_tape()])
         self.assertEqual(set(row), (set(p7._FRAME_FIELDS) - {"ix_name", "zero_sol"}) | {"tx_index"})
@@ -782,6 +805,12 @@ class CliTests(Base):
         self.refused(["--out-dir", str(self.out), "--end", START])
         self.refused(["--out-dir", str(self.out), "--start", "yesterday"])
         self.assertFalse(self.out.exists())
+
+    def test_refuses_when_the_frame_passes_max_frame_rows_even_for_a_dry_run(self):
+        for extra in (["--dry-run"], ["--out-dir", str(self.out)]):
+            self.assertIn("passed 2 rows", self.refused(extra + ["--max-frame-rows", "2"]))  # the frame holds 3
+        self.assertFalse(self.out.exists())
+        self.assertEqual(self.go(["--dry-run", "--max-frame-rows", "3"])[0], 0)
 
     def test_refuses_without_a_usable_key_before_any_call(self):
         self.env.write_text("OTHER=1\n")

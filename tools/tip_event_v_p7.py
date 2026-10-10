@@ -66,6 +66,9 @@ DEFAULT_TRADES_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 DEFAULT_HELIUS_ENV = "/var/lib/mal/fast-listener/helius.env"
 DEFAULT_START = "2026-10-10T13:17:18Z"  # the follower restarted with --trade-event-v at 13:17:17Z
 DEFAULT_RPS = 5.0
+# The frame is held in memory at about 923 B per row (the reviewer's measurement on #570). 1,200,000 rows is about 1.1 GB, under the 1.2 GB
+# budget; 2,000,000 would be about 1.8 GB, too close on mal-fast-0 (one heavy job at a time, user-1002.slice).
+DEFAULT_MAX_FRAME_ROWS = 1_200_000
 DECODER_BLOB = "238942a6b3c5425389eddfde4d11268c300acbec"  # observe/trade_decode.py at job #433 (DEC-016:397); tests tie it to the follower's pin
 # Amendment 1, "Fetch": encoding json, commitment confirmed, maxSupportedTransactionVersion 1 = the walker's getBlock settings
 # (tools/pump_history_backfill.py _getblock_params). tools/test_tip_event_v_p7.py asserts these equal the walker's.
@@ -168,12 +171,16 @@ def hours_in(start_ms: int, end_ms: int) -> list[str]:
 
 
 # ---- frame -----------------------------------------------------------------------------------------------------------------------------
-def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callable[[str], str] | None = None) -> tuple[list[dict], dict]:
+def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callable[[str], str] | None = None,
+                max_rows: int | None = None) -> tuple[list[dict], dict]:
     """The P7 sample frame from the tip follower's trade files, and the counts that describe it.
 
     Frame: PumpSwap rows with t_recv_ms in [start_ms, end_ms), `pool` == canonical(`mint`), and an int `virtual_quote_reserves`, one per
     (slot, signature, event_index), sorted by that key. Each frame row is a slim dict of the fields the check reads; its `tx_index` is the
-    signature (see the module doc). Canonical PumpSwap rows without an int stamp are counted in `unstamped_canonical_n`."""
+    signature (see the module doc). Canonical PumpSwap rows without an int stamp are counted in `unstamped_canonical_n`.
+
+    max_rows: the whole frame is held in memory (about 0.9 KB per row). The moment a row would take the frame past max_rows, while reading and
+    before the sort, this raises Refused. None means no ceiling."""
     canonical = canonical or default_canonical()
     canon_of: dict[str, str | None] = {}
     interned: dict[str, str] = {}
@@ -232,6 +239,9 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
                     stats["frame_with_tx_index_n"] += 1
                 slim["tx_index"] = slim["signature"]
                 frame.append(slim)
+                if max_rows is not None and len(frame) > max_rows:
+                    raise Refused(f"the frame passed {max_rows} rows while reading (about 0.9 KB per row in memory): "
+                                  "narrow --start/--end, or raise --max-frame-rows if the host has the memory")
     frame.sort(key=lambda r: (r["slot"], r["signature"], r["event_index"]))  # stable: the first of two rows with one key stays first
     unique: list[dict] = []
     last = None
@@ -479,7 +489,7 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
                 raise Refused("no usable HELIUS_API_KEY in --helius-env")
             url = helius_http_url(key)
 
-    frame, info = build_frame(Path(args.trades_dir), start_ms, end_ms, canonical)
+    frame, info = build_frame(Path(args.trades_dir), start_ms, end_ms, canonical, args.max_frame_rows)
     main_rows, topup_rows = draw(frame)  # both before any fetch
     sampled = [("main", r) for r in main_rows] + [("topup", r) for r in topup_rows]
     plan = _plan(sampled)
@@ -519,6 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-dir", default=None, help="new directory for p7-tip.json and p7-tip-prints.jsonl (required unless --dry-run)")
     ap.add_argument("--helius-env", default=DEFAULT_HELIUS_ENV, help="env file with HELIUS_API_KEY; the key and URL are never printed")
     ap.add_argument("--rps", type=float, default=DEFAULT_RPS, help="getTransaction calls per second")
+    ap.add_argument("--max-frame-rows", type=int, default=DEFAULT_MAX_FRAME_ROWS,
+                    help="refuse (exit 2) while reading once the frame passes this many rows; ~0.9 KB each, so the default is ~1.1 GB")
     ap.add_argument("--dry-run", action="store_true", help="build the frame and the draw, print the counts, make no RPC call and write nothing")
     return ap
 
