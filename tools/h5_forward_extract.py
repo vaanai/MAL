@@ -15,8 +15,10 @@ Modes (constants only; no CLI override of hours, sources, window or V range):
   e0       E0-H5 (EXP-024 section 10, P4.1), pinned 2026-10-08: 2026-09-20 on fast-pool-0918 (exploration).
            Checks every raw file it reads against the view's VIEW.sha256, runs both stages on hours
            [09-19T00, 09-21T02) into a new --out, and compares meta/paths with the reference by md5 over canonical
-           rows (meta sorted by mint; paths in file order, which the extract's ORDER BY fixes). File-byte md5s are
-           recorded too, as information (the reference meta was written without ORDER BY under 4 threads).
+           rows (meta sorted by mint; paths sorted by every column), plus a positional order check on paths: the
+           (mint, slot) sequence is identical and rows move only inside ties the reference's ORDER BY leaves open.
+           File-byte and file-order md5s are recorded as information: the reference meta has no ORDER BY and its
+           paths ties were ordered by duckdb's threads, so the reference's own bytes do not reproduce.
            Writes <out>/E0-H5.json (VIEW.sha256, vmap sha256, md5s, blob shas). Exit 0 PASS, 1 FAIL.
   forward  forward-1002 hours [2026-10-09T23, 2026-10-16T01) (EXP-024 section 3). Refuses, before opening anything
            under forward-1002, unless the EXP-012 FINAL marker is in the external FINAL ledger
@@ -186,7 +188,7 @@ def connect(duckdb: Any, tmp: Path, memory: str = "4GB", threads: int = 4) -> An
     con = duckdb.connect()
     tmp.mkdir(parents=True, exist_ok=True)
     con.execute(f"SET memory_limit='{memory}'; SET threads={threads}; SET temp_directory='{tmp}'; "
-                "SET preserve_insertion_order=false")
+                "SET preserve_insertion_order=true")  # tape keeps raw line order (the tie-break below)
     return con
 
 
@@ -239,7 +241,10 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int])
     con.execute(f"CREATE TABLE mig AS SELECT mint, min(slot) mslot, min(block_time) mbt, arg_min(block, slot) blk FROM read_parquet({L(mf)}) WHERE type='complete' GROUP BY mint")
     blk = con.execute("SELECT any_value(blk) FROM mig").fetchone()[0]
     oracle = (blk == "oracle-insample-0922")
-    order = "t.slot, t.file_row_number" if oracle else "t.slot, t.tx_index, t.event_index"
+    # Determinism (the one change to the SQL): the reference's key (slot, tx_index, event_index) has ties and nulls
+    # (09-20: 51 (mint, slot) groups, 426 rows), whose order duckdb leaves to its threads. hour + file_row_number
+    # (raw line order, kept by convert) break them. Rows the key orders keep the reference's order.
+    order = "t.slot, t.file_row_number" if oracle else "t.slot, t.tx_index, t.event_index, t.hour, t.file_row_number"
     maxslot = con.execute(f"SELECT max(slot) FROM read_parquet({L(tf)})").fetchone()[0]
     con.execute(f"""CREATE TABLE cp AS SELECT t.mint, t.pool, min(t.slot) s0, count(*) n, any_value(v.v) v
        FROM read_parquet({L(tf)}) t JOIN mig m ON t.mint=m.mint JOIN vmap v ON t.pool=v.pool
@@ -252,7 +257,7 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int])
     con.execute(f"""CREATE TABLE meta AS SELECT m.mint, cp1.pool, m.mslot, m.mbt, cp1.s0, cp1.v, cp1.npools, m.blk, cr.cslot, '{day}' AS day,
         (cp1.s0+6900 <= {maxslot} AND cp1.s0 - m.mslot <= 400) uncensored
         FROM mig m JOIN cp1 USING(mint) LEFT JOIN cr USING(mint)""")
-    con.execute(f"COPY meta TO '{out}/meta/{day}.parquet' (FORMAT parquet)")
+    con.execute(f"COPY (SELECT * FROM meta ORDER BY mint) TO '{out}/meta/{day}.parquet' (FORMAT parquet)")
     con.execute(f"""COPY (SELECT t.mint, t.slot, (t.side='buy') isbuy, t.sol_lamports sol, t.token_raw tok,
           t.quote_reserve q, t.base_reserve b, hash(t.trader) th, t.block_time bt
         FROM read_parquet({L(tf)}, file_row_number=true) t JOIN cp1 ON t.pool=cp1.pool AND t.mint=cp1.mint JOIN mig m ON t.mint=m.mint
@@ -268,6 +273,31 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int])
 # ---- canonical md5 -----------------------------------------------------------------------------------------------
 
 META_ORDER = "mint"
+PATHS_SET_ORDER = "mint, slot, isbuy, sol, tok, q, b, th, bt"  # every column: md5 of the row multiset
+ROWCOLS = "(a.isbuy, a.sol, a.tok, a.q, a.b, a.th, a.bt) IS DISTINCT FROM (b.isbuy, b.sol, b.tok, b.q, b.b, b.th, b.bt)"
+
+
+def order_check(duckdb: Any, mine: Path, ref: Path, tape: Path, meta: Path) -> dict[str, Any]:
+    """Positional comparison of two paths files. Binding: the (mint, slot) sequence is identical, and every row whose
+    position differs lies in a (mint, slot) group the reference's key leaves open (a duplicate or null
+    (tx_index, event_index) among the canonical pool's PumpSwap rows of that slot)."""
+    con = duckdb.connect()
+    con.execute("SET preserve_insertion_order=true; SET threads=4")
+    con.execute(f"CREATE TABLE a AS SELECT row_number() OVER () rn, * FROM read_parquet('{mine}')")
+    con.execute(f"CREATE TABLE b AS SELECT row_number() OVER () rn, * FROM read_parquet('{ref}')")
+    ms = con.execute("SELECT count(*) FROM a JOIN b USING(rn) WHERE (a.mint, a.slot) IS DISTINCT FROM (b.mint, b.slot)").fetchone()[0]
+    nd = con.execute(f"SELECT count(*) FROM a JOIN b USING(rn) WHERE {ROWCOLS}").fetchone()[0]
+    con.execute(f"CREATE TABLE d AS SELECT DISTINCT a.mint, a.slot FROM a JOIN b USING(rn) WHERE {ROWCOLS}")
+    con.execute(f"""CREATE TABLE u AS SELECT DISTINCT t.mint, t.slot FROM read_parquet('{tape}/trades/*.parquet') t
+        JOIN read_parquet('{meta}') m ON t.mint=m.mint AND t.pool=m.pool WHERE t.venue='pumpswap'
+        GROUP BY t.mint, t.slot, t.tx_index, t.event_index
+        HAVING count(*) > 1 OR bool_or(t.tx_index IS NULL OR t.event_index IS NULL)""")
+    outside = con.execute("SELECT count(*) FROM d ANTI JOIN u USING(mint, slot)").fetchone()[0]
+    groups = con.execute("SELECT count(*) FROM d").fetchone()[0]
+    rows_a, rows_b = (con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("a", "b"))
+    con.close()
+    return {"mint_slot_sequence_diffs": ms, "rows_moved": nd, "groups_moved": groups,
+            "groups_moved_outside_open_ties": outside, "ok": ms == 0 and outside == 0 and rows_a == rows_b}
 
 
 def canonical_md5(duckdb: Any, path: Path, order: str | None) -> dict[str, Any]:
@@ -334,12 +364,17 @@ def run_e0(out: Path) -> int:
     stats = extract_day(con, out / "tape", out, E0_DAY, load_vmap(E0_VMAP))
     con.close()
     cmp: dict[str, Any] = {}
-    for part, order in (("meta", META_ORDER), ("paths", None)):
+    for part, order in (("meta", META_ORDER), ("paths", PATHS_SET_ORDER)):
         mine = canonical_md5(duckdb, out / part / f"{E0_DAY}.parquet", order)
         ref = canonical_md5(duckdb, E0_REF / part / f"{E0_DAY}.parquet", order)
         cmp[part] = {"extractor": mine, "reference": ref, "rows_equal": mine["rows_md5"] == ref["rows_md5"],
                      "file_equal": mine["file_md5"] == ref["file_md5"]}
-    ok = all(c["rows_equal"] for c in cmp.values())
+    pm = out / "paths" / f"{E0_DAY}.parquet"
+    pr = E0_REF / "paths" / f"{E0_DAY}.parquet"
+    cmp["paths"]["file_order_md5"] = {"extractor": canonical_md5(duckdb, pm, None)["rows_md5"],
+                                      "reference": canonical_md5(duckdb, pr, None)["rows_md5"]}
+    cmp["paths"]["order"] = order_check(duckdb, pm, pr, out / "tape", out / "meta" / f"{E0_DAY}.parquet")
+    ok = all(c["rows_equal"] for c in cmp.values()) and cmp["paths"]["order"]["ok"]
     rec = {
         "kind": "EXP-024 E0-H5 extractor (P4.1)", "pass": ok, "day": E0_DAY, "block": E0_BLOCK,
         "view": str(E0_VIEW), "view_sha256": sha256_file(E0_VIEW / "VIEW.sha256"),
@@ -353,6 +388,7 @@ def run_e0(out: Path) -> int:
         print(f"E0-H5 {part}: rows_md5 {c['extractor']['rows_md5']} vs ref {c['reference']['rows_md5']} "
               f"rows {c['extractor']['rows']}/{c['reference']['rows']} rows_equal={c['rows_equal']} "
               f"file_equal={c['file_equal']}")
+    print(f"E0-H5 paths order: {json.dumps(cmp['paths']['order'], sort_keys=True)}")
     print(f"E0-H5 {'PASS' if ok else 'FAIL'} view_sha256={rec['view_sha256']} record={out / 'E0-H5.json'} "
           f"sha256={sha256_file(out / 'E0-H5.json')}")
     return 0 if ok else 1

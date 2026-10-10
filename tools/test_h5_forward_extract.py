@@ -110,6 +110,33 @@ class ExtractTest(unittest.TestCase):
             b = X.canonical_md5(duckdb, self.tmp / "o2" / part / "2026-09-20.parquet", order)
             self.assertEqual(a["rows_md5"], b["rows_md5"])
 
+    def test_ties_follow_raw_line_order_and_order_check(self):
+        # same (slot, tx_index, event_index) twice, and null tx_index twice: raw line order decides
+        fix = {h: {k: list(v) for k, v in kinds.items()} for h, kinds in FIX.items()}
+        n1, n2 = tr("A", "PA", 1008, 0, 0, trader="p"), tr("A", "PA", 1008, 0, 0, side="sell", trader="q")
+        n1["tx_index"] = n2["tx_index"] = None
+        fix["2026-09-20T00"]["trades"] += [tr("A", "PA", 1007, 2, 0, trader="x"),
+                                           tr("A", "PA", 1007, 2, 0, side="sell", trader="y"), n1, n2]
+        shutil.rmtree(self.tmp / "raw")
+        self.files = write_raw(self.tmp / "raw", fix)
+        out = self.tmp / "o"
+        self.run_both(out)
+        c = duckdb.connect()
+        p = out / "paths" / "2026-09-20.parquet"
+        got = c.execute(f"SELECT slot, isbuy FROM '{p}' WHERE slot IN (1007, 1008)").fetchall()
+        self.assertEqual(got, [(1007, True), (1007, False), (1008, True), (1008, False)])
+        meta = out / "meta" / "2026-09-20.parquet"
+
+        def swapped(slot: int) -> Path:
+            q = self.tmp / f"sw{slot}.parquet"
+            c.execute(f"COPY (SELECT * EXCLUDE (rn) FROM (SELECT row_number() OVER () rn, * FROM '{p}') "
+                      f"ORDER BY slot, CASE WHEN slot={slot} THEN -rn ELSE rn END) TO '{q}' (FORMAT parquet)")
+            return q
+        chk = X.order_check(duckdb, p, swapped(1008), out / "tape", meta)
+        self.assertEqual((chk["groups_moved"], chk["ok"]), (1, True))
+        # a move inside a slot the key orders (1005: tx 1 then tx 3) fails
+        self.assertFalse(X.order_check(duckdb, p, swapped(1005), out / "tape", meta)["ok"])
+
     def test_meta_md5_ignores_row_order(self):
         c = duckdb.connect()
         p1, p2 = self.tmp / "a.parquet", self.tmp / "b.parquet"
