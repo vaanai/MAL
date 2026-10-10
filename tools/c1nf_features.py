@@ -31,6 +31,7 @@ Event API (one call per decoded row, in (slot, tx_index, event_index) order):
     set_pool_v(pool, v_lamports)                       "const" mode only: the pool's V0
 Query:
     features_at(pool, T, sd=None) -> Features | None   None = pool not in the universe, not alive at T, bad, or no clock entry >= T
+                                                       (print_window: also a T below the last expire's window, counted window_violation)
     alive_pools(T)                                     eligible pools inside the decision window of T
     health()                                           every counter (dropped rows by reason, pool rejections by reason, ledger state,
                                                        state sizes); nothing is dropped without a counter. strict=True raises instead.
