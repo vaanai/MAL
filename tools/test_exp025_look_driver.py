@@ -231,6 +231,7 @@ class Assembly(unittest.TestCase):
         def build(tape, out, hours, *, vmap=None, **kw):
             self.builds.append(dict(vmap))
             out = Path(out)
+            self.assertFalse((out / "tokens.parquet").exists(), "build_shared ran over an earlier tokens.parquet")
             (out / "bars_1m" / "fixture-blk").mkdir(parents=True, exist_ok=True)
             mints = [TA.MINT] + (list(extra) if len(self.builds) == 1 else list(extra))
             pq.write_table(pa.table({"mint": mints, "grad_src": ["complete"] * len(mints), "is_mayhem_mode": [False] * len(mints),
@@ -356,6 +357,18 @@ class Assembly(unittest.TestCase):
         self.assertEqual(cm.exception.code, "NOT_READY")
         self.assertIn("1 files in no manifest", str(cm.exception))
         self.assertFalse((self.O / "look_assembly.json").exists())
+
+    def test_stale_october_shared_is_not_reused(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        stale = self.O / "october-shared"
+        stale_bars = stale / "bars_1m" / "fixture-blk" / "2026-09-20.parquet"
+        stale_bars.parent.mkdir(parents=True)
+        junk = pa.table({"junk": [1]})
+        pq.write_table(junk, stale / "tokens.parquet")
+        pq.write_table(junk, stale_bars)
+        self.run_assemble()
+        self.assertFalse(stale_bars.exists())
 
     def test_failed_reassembly_leaves_no_stale_record(self):
         self.O.mkdir(parents=True)

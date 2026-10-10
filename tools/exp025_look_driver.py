@@ -76,6 +76,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -308,11 +309,14 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
     comp = tape_completes(con, tape, all_hours)
     shared = os.path.join(O, "october-shared")
     vmap, r2 = A.october_vmap(v0_rows, comp)
+    if os.path.exists(shared):   # pinned build_shared.py skips an existing tokens.parquet / bars day (E0 #610): build from this tape only
+        shutil.rmtree(shared)
     tok = str(A.build_shared(tape, shared, all_hours, vmap=vmap))
     comp_tok = tokens_completes(con, tok)
     rebuilt = comp_tok != comp
     if rebuilt:   # R2 is over the pinned tokens' completes; they do not depend on the vmap, so one rebuild settles it
         vmap, r2 = A.october_vmap(v0_rows, comp_tok)
+        shutil.rmtree(shared)   # the rebuild's tokens.v0_lamports and bars must come from the new vmap
         tok = str(A.build_shared(tape, shared, all_hours, vmap=vmap))
         if tokens_completes(con, tok) != comp_tok:
             con.close()
