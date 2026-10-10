@@ -1,0 +1,229 @@
+"""Tests for tools/h5_forward_extract.py (EXP-024 forward extractor, E0-H5).
+
+Fixtures are fabricated rows in temp dirs; no real tape is read. Run from the repo root with duckdb 1.5.6:
+  /data/mal/audit-1008/venv/bin/python -m unittest tools.test_h5_forward_extract -v
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tools import h5_forward_extract as X
+
+try:
+    import duckdb
+except ImportError:  # pragma: no cover
+    duckdb = None
+
+HAVE = duckdb is not None and duckdb.__version__ == X.DUCKDB_VERSION and shutil.which("zstd") is not None
+V_IN, V_OUT = 17_580_000_000, 17_800_000_000
+
+
+def tr(mint, pool, slot, tx, ev, side="buy", venue="pumpswap", trader="w1"):
+    return {"venue": venue, "mint": mint, "trader": trader, "side": side, "sol_lamports": 100_000_000,
+            "token_raw": 5_000_000, "quote_reserve": 1_000_000_000 + slot, "base_reserve": 9_000_000_000,
+            "pool": pool, "slot": slot, "tx_index": tx, "event_index": ev, "block_time": 1_790_000_000 + slot,
+            "lp_fee": 1, "protocol_fee": 2, "creator_fee": 3, "signature": f"s{slot}{tx}{ev}"}
+
+
+def mg(mint, slot, typ="complete"):
+    return {"type": typ, "mint": mint, "trader": "t", "bonding_curve": "bc", "slot": slot, "tx_index": 0,
+            "event_index": 0, "block_time": 1_790_000_000 + slot, "signature": f"m{slot}"}
+
+
+def cr(mint, slot):
+    return {"mint": mint, "creator": "c", "trader": "c", "name": "n", "symbol": "s", "is_mayhem_mode": False,
+            "quote_reserve": 1, "base_reserve": 2, "real_token_reserves": 3, "token_raw": 4, "slot": slot,
+            "tx_index": 0, "event_index": 0, "block_time": 1_790_000_000 + slot, "signature": f"c{slot}"}
+
+
+# hour -> kind -> rows. Day 2026-09-20 = hours T00, T01; 09-19T23 carries the create.
+FIX = {
+    "2026-09-19T23": {"trades": [tr("A", "PA", 400, 0, 0, venue="pump")], "creates": [cr("A", 500)], "migrations": []},
+    "2026-09-20T00": {
+        "trades": [tr("A", "PB", 1001, 0, 0), tr("A", "PA", 1005, 3, 0), tr("A", "PA", 1005, 1, 0, side="sell"),
+                   tr("A", "PA", 999, 0, 0), tr("A", "PA", 1002, 0, 0, venue="pump"), tr("B", "PC", 2001, 0, 0)],
+        "creates": [],
+        "migrations": [mg("A", 1000), mg("A", 1003, "create_pool"), mg("B", 2000)],
+    },
+    "2026-09-20T01": {"trades": [tr("A", "PA", 1010, 0, 0), tr("A", "PA", 8300, 0, 0)], "creates": [], "migrations": []},
+}
+VMAP = {"v": {"PA": V_IN, "PB": V_OUT, "PZ": None}}
+
+
+def write_raw(root: Path, fix=FIX) -> dict[tuple[str, str], Path]:
+    out = {}
+    for hour, kinds in fix.items():
+        for kind, rows in kinds.items():
+            d = root / kind
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / f"{kind}-{hour}.jsonl"
+            p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            subprocess.run(["zstd", "-q", "--rm", "-f", str(p)], check=True)
+            out[(kind, hour)] = d / f"{kind}-{hour}.jsonl.zst"
+    return out
+
+
+@unittest.skipUnless(HAVE, "needs duckdb 1.5.6 and zstd")
+class ExtractTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.files = write_raw(self.tmp / "raw")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_both(self, out: Path) -> dict:
+        con = X.connect(duckdb, out / "tmp", memory="1GB", threads=2)
+        for (kind, hour), p in sorted(self.files.items()):
+            X.convert_hour(con, "fast-pool-0918", kind, hour, p, out / "tape")
+        vm = self.tmp / "vmap-fixture.json"
+        vm.write_text(json.dumps(VMAP))
+        stats = X.extract_day(con, out / "tape", out, "2026-09-20", X.load_vmap(vm))
+        con.close()
+        return stats
+
+    def test_canonical_pool_window_order(self):
+        out = self.tmp / "out"
+        stats = self.run_both(out)
+        self.assertEqual(stats["migs"], 2)
+        c = duckdb.connect()
+        meta = c.execute(f"SELECT mint, pool, mslot, s0, v, npools, blk, cslot, day, uncensored FROM '{out}/meta/2026-09-20.parquet'").fetchall()
+        self.assertEqual(meta, [("A", "PA", 1000, 1005, V_IN, 1, "fast-pool-0918", 500, "2026-09-20", True)])
+        paths = c.execute(f"SELECT mint, slot, isbuy FROM '{out}/paths/2026-09-20.parquet'").fetchall()
+        # PB (V out of range), slot 999 (before complete), bonding rows, slot 8300 (window end) are out;
+        # within slot 1005 the order is tx_index 1 (sell) then 3 (buy).
+        self.assertEqual(paths, [("A", 1005, False), ("A", 1005, True), ("A", 1010, True)])
+        cols = [r[0] for r in c.execute(f"DESCRIBE SELECT * FROM '{out}/paths/2026-09-20.parquet'").fetchall()]
+        self.assertEqual(cols, ["mint", "slot", "isbuy", "sol", "tok", "q", "b", "th", "bt"])
+
+    def test_rerun_is_md5_identical(self):
+        self.run_both(self.tmp / "o1")
+        self.run_both(self.tmp / "o2")
+        for part, order in (("meta", X.META_ORDER), ("paths", None)):
+            a = X.canonical_md5(duckdb, self.tmp / "o1" / part / "2026-09-20.parquet", order)
+            b = X.canonical_md5(duckdb, self.tmp / "o2" / part / "2026-09-20.parquet", order)
+            self.assertEqual(a["rows_md5"], b["rows_md5"])
+
+    def test_meta_md5_ignores_row_order(self):
+        c = duckdb.connect()
+        p1, p2 = self.tmp / "a.parquet", self.tmp / "b.parquet"
+        c.execute(f"COPY (SELECT * FROM (VALUES ('A', 1), ('B', NULL)) t(mint, s0)) TO '{p1}' (FORMAT parquet)")
+        c.execute(f"COPY (SELECT * FROM (VALUES ('B', NULL), ('A', 1)) t(mint, s0)) TO '{p2}' (FORMAT parquet)")
+        self.assertEqual(X.canonical_md5(duckdb, p1, "mint")["rows_md5"], X.canonical_md5(duckdb, p2, "mint")["rows_md5"])
+        self.assertNotEqual(X.canonical_md5(duckdb, p1, None)["rows_md5"], X.canonical_md5(duckdb, p2, None)["rows_md5"])
+
+    def test_strict_lines_refuse(self):
+        bad = self.tmp / "raw" / "trades" / "trades-2026-09-20T02.jsonl"
+        bad.write_text('{"venue": "pumpswap", "slot": \n', encoding="utf-8")
+        con = X.connect(duckdb, self.tmp / "t", memory="1GB", threads=1)
+        with self.assertRaises(X.Refused):
+            X.convert_hour(con, "fast-pool-0918", "trades", "2026-09-20T02", bad, self.tmp / "o" / "tape")
+
+    def test_forbidden_source(self):
+        with self.assertRaises(X.Refused):
+            X.check_source(Path("/data/mal/blocks/forward-1002ev/trades/x.jsonl.zst"))
+        with self.assertRaises(X.Refused):
+            X.check_source(Path("/data/mal/blocks/fresh-0828/w1"))
+
+    def test_forward_end_to_end_on_fixture_walk(self):
+        walk = self.tmp / "raw"
+        (walk / "checkpoint.json").write_text(json.dumps({"hours": {h: {"status": "sealed"} for h in FIX}}))
+        lines = [{"hour": h, "issues": [], "content": {},
+                  "sha256": {k: X.sha256_file(self.files[(k, h)]) for k in X.KINDS}} for h in FIX]
+        (walk / "verify.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lines))
+        ledger = self.tmp / "FINAL_READS.jsonl"
+        ledger.write_text(json.dumps({"experiment": "EXP-012", "final": True}) + "\n")
+        e0 = self.tmp / "E0-H5.json"
+        e0.write_text(json.dumps({"pass": True, "day": X.E0_DAY, "block": X.E0_BLOCK, "duckdb": X.DUCKDB_VERSION,
+                                  "blobs": {"tools/h5_forward_extract.py": X.git_blob_sha(X.REPO / "tools/h5_forward_extract.py")}}))
+        vm = self.tmp / "vmap.json"
+        vm.write_text(json.dumps(VMAP))
+        out = self.tmp / "fwd"
+        with mock.patch.multiple(X, FWD_DIR=walk, FINAL_LEDGER=ledger, FWD_FROM="2026-09-19T23", FWD_TO="2026-09-20T03"):
+            rc = X.run_forward(out, vm, e0)
+        self.assertEqual(rc, 0)
+        man = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(man["reason_counts"], {"ok": 3, "not_walked": 1})
+        self.assertEqual(man["days"], ["2026-09-19", "2026-09-20"])
+        ref = self.tmp / "ref"
+        self.run_both(ref)
+        for part, order in (("meta", X.META_ORDER), ("paths", None)):
+            want = X.canonical_md5(duckdb, ref / part / "2026-09-20.parquet", order)["rows_md5"]
+            got = man["outputs"][f"{part}/2026-09-20"]["rows_md5"]
+            # blk differs (forward-1002 vs fast-pool-0918) in meta only
+            if part == "paths":
+                self.assertEqual(got, want)
+        c = duckdb.connect()
+        self.assertEqual(c.execute(f"SELECT blk FROM '{out}/meta/2026-09-20.parquet'").fetchall(), [("forward-1002",)])
+
+    def test_forward_hour_needs_creates_and_migrations_sha(self):
+        walk = self.tmp / "raw"
+        h = "2026-09-20T00"
+        (walk / "checkpoint.json").write_text(json.dumps({"hours": {h: {"status": "sealed"}}}))
+        line = {"hour": h, "issues": [], "content": {}, "sha256": {"trades": X.sha256_file(self.files[("trades", h)])}}
+        (walk / "verify.jsonl").write_text(json.dumps(line) + "\n")
+        self.assertEqual(X.forward_hour(walk, h), ({}, "creates_not_verified"))
+        line["sha256"]["creates"] = X.sha256_file(self.files[("creates", h)])
+        line["sha256"]["migrations"] = "0" * 64
+        (walk / "verify.jsonl").write_text(json.dumps(line) + "\n")
+        self.assertEqual(X.forward_hour(walk, h), ({}, "migrations_sha_mismatch"))
+
+
+class ForwardSealTest(unittest.TestCase):
+    """Refusals that happen before anything under forward-1002 is opened."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.walk = self.tmp / "forward-1002-does-not-exist"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_fwd(self, ledger: Path, e0: Path | None = None) -> None:
+        with mock.patch.multiple(X, FWD_DIR=self.walk, FINAL_LEDGER=ledger):
+            X.run_forward(self.tmp / "out", self.tmp / "vmap.json", e0 or self.tmp / "E0-H5.json")
+
+    def test_no_ledger_refuses(self):
+        with self.assertRaisesRegex(X.Refused, "sealed until the DEC-016 FINAL"):
+            self.run_fwd(self.tmp / "missing.jsonl")
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_test_window_marker_is_not_final(self):
+        led = self.tmp / "FINAL_READS.jsonl"
+        led.write_text(json.dumps({"final": True, "test_window": True}) + "\n")
+        with self.assertRaisesRegex(X.Refused, "FINAL marker is not in the FINAL ledger"):
+            self.run_fwd(led)
+        self.assertFalse((self.tmp / "out").exists())
+
+    @unittest.skipUnless(HAVE, "needs duckdb 1.5.6")
+    def test_e0_record_required_and_bound_to_blob(self):
+        led = self.tmp / "FINAL_READS.jsonl"
+        led.write_text(json.dumps({"final": True}) + "\n")
+        with self.assertRaisesRegex(X.Refused, "no readable E0-H5 record"):
+            self.run_fwd(led)
+        e0 = self.tmp / "E0-H5.json"
+        base = {"pass": True, "day": X.E0_DAY, "block": X.E0_BLOCK, "duckdb": X.DUCKDB_VERSION}
+        e0.write_text(json.dumps({**base, "pass": False}))
+        with self.assertRaisesRegex(X.Refused, "not a PASS"):
+            self.run_fwd(led, e0)
+        e0.write_text(json.dumps({**base, "blobs": {"tools/h5_forward_extract.py": "0" * 40}}))
+        with self.assertRaisesRegex(X.Refused, "different extractor blob"):
+            self.run_fwd(led, e0)
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_constants(self):
+        hours = X.hour_list(X.FWD_FROM, X.FWD_TO)
+        self.assertEqual((hours[0], hours[-1], len(hours)), ("2026-10-09T23", "2026-10-16T00", 146))
+        e0 = X.hour_list(X.E0_FROM, X.E0_TO)
+        self.assertEqual((e0[0], e0[-1], len(e0)), ("2026-09-19T00", "2026-09-21T01", 50))
+        self.assertFalse(any(X.EXP009[0] <= h < X.EXP009[1] for h in e0))
+
+
+if __name__ == "__main__":
+    unittest.main()
