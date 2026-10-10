@@ -6,7 +6,7 @@
   "october_rows": 0,
   "sha256": "47bab7f25b6dba8cef797b000a674039e9c5aba21a2439e70ca8e307a8f983f5"
  },
- "assembly_sha256": "fd39ee4459e2d3af91c093da3c53a0bc21aaf739616527e9de3e5ddaa17811bd",
+ "assembly_sha256": "0273ff39ed6f0a71c86e481e163bf70ebfc4e15485c327571f5d236c13ccba64",
  "bars_1m": {
   "dup_blocks_dropped": 1,
   "exploration_blocks": 5,
@@ -14,7 +14,7 @@
  },
  "blobs": {
   "tools/exp025_adapter.py": "75ee1768ce57fecd58a32d95b180b2d5fb2955aa",
-  "tools/exp025_look_driver.py": "c85de5331460842a42190bad812b4d775a9b6b10"
+  "tools/exp025_look_driver.py": "445cad33628e05e31636d02a1752b5f7d56be9ec"
  },
  "blocks": [
   {
@@ -35,6 +35,7 @@
  "hour_status_on_exploration_hours": "R12",
  "load_assembly": "accepted",
  "manifests": 1,
+ "october_tokens_sha256": "67d8f983d4a9f3d8bb58c353c61f5f399150cca235b699d51de4dfa79d695b74",
  "pass": true,
  "pumpswap_rows": 23572909,
  "pumpswap_rows_with_v": 0,
@@ -43,5 +44,6 @@
   "pda_pool_in_tape": 875,
   "share": 0.9754738015607581
  },
+ "v_ok_missing": 0,
  "vmap_pools": 0
 }
