@@ -791,27 +791,44 @@ class Producers(unittest.TestCase):
             self.assertGreaterEqual(len(calls), first)
 
     def test_tier_lines(self):
-        V = 17.58e9
-        q, b = 30e9, 5e14
-        sell_tok = 1e12
+        """Sells unchanged; buys under Am.7 (the chain's relation, fee on top of the curve input; the replaced relation misses)."""
+        V = 17_580_000_000
+        q, b = 30_000_000_000, 500_000_000_000_000
+        sell_tok = 10**12
         Q = q + V
         sell_sol = Q * sell_tok / (b + sell_tok) * (1 - bf.tier_fee(Q, b))
-        buy_sol = 1e8
-        net = buy_sol * (1 - bf.tier_fee(Q, b))
-        buy_tok = b * net / (Q + net)
+        ppm = int(round(bf.tier_fee(Q, b) * 1e6))
+        self.assertEqual(ppm, 12_500)
+        buy_tok = 2_000_000_000_000
+        qin = bi.buy_law(Q, b, buy_tok)
+        chain_sol = qin + sum(-((-qin * x) // 10_000) for x in (2, 93, 30))  # the 125 bp split, each fee ceiled (#623/#624)
+        old_sol = round(qin / (1 - ppm / 1e6))  # the replaced relation: 1 - qin / sol = f
         good_s = {"key": [1, "M", sell_sol, sell_tok, q, b], "isbuy": False}
-        good_b = {"key": [2, "M", buy_sol, buy_tok, q, b], "isbuy": True}
+        good_b = {"key": [2, "M", chain_sol, buy_tok, q, b], "isbuy": True}
         bad_s = {"key": [3, "M", sell_sol * 1.001, sell_tok, q, b], "isbuy": False}
         zero_b = {"key": [4, "M", 0, 0, q, b], "isbuy": True}
-        for r in (good_s, good_b, bad_s, zero_b):
+        old_b = {"key": [5, "M", old_sol, buy_tok, q, b], "isbuy": True}
+        for r in (good_s, good_b, bad_s, zero_b, old_b):
             r["key"] = [int(round(x)) if not isinstance(x, str) else x for x in r["key"]]
-        res = bi.tier_lines([good_s, good_b, bad_s, zero_b], lambda k, rec: V)
+        recs = {br.content_key(*r["key"]): {"status": "ok", "fields_equal": True, "decoded": {"side": "buy", "ix_name": "buy"}}
+                for r in (good_b, zero_b, old_b)}
+        rec_of = lambda k, rec: recs.get(k)  # noqa: E731
+        res = bi.tier_lines([good_s, good_b, bad_s, zero_b], lambda k, rec: V, rec_of)
         self.assertEqual((res["sell"]["n"], res["sell"]["match"]), (2, 1))
         self.assertEqual((res["buy"]["n"], res["buy"]["match"], res["buy"]["skipped"]), (1, 1, 1))
         self.assertFalse(res["sell"]["pass"])  # 50% < 75%
         self.assertTrue(res["buy"]["pass"])
-        self.assertEqual(bi.tier_lines([good_s], lambda k, rec: None)["sell"]["no_v"], 1)
-        self.assertFalse(bi.tier_lines([good_b], lambda k, rec: V)["sell"]["pass"])  # no sell at all fails the side
+        self.assertEqual(res["buy"]["by_ix_name"], {"buy": {"n": 1, "match": 1}, "buy_v2": {"n": 0, "match": 0}})
+        self.assertEqual(bi.tier_lines([good_s], lambda k, rec: None, rec_of)["sell"]["no_v"], 1)
+        self.assertFalse(bi.tier_lines([good_b], lambda k, rec: V, rec_of)["sell"]["pass"])  # no sell at all fails the side
+        # the replaced relation's "good" buy (fee inside the user amount) misses by f^2/(1-f), about 1.58 bp at 125 bp
+        r_old = bi.tier_lines([old_b], lambda k, rec: V, rec_of)["buy"]
+        self.assertEqual((r_old["n"], r_old["match"]), (1, 0))
+        # sells: float V and int V give the same match (the sell arithmetic is the pre-Am.7 one)
+        self.assertEqual(bi.tier_lines([good_s, bad_s], lambda k, rec: float(V), rec_of)["sell"],
+                         bi.tier_lines([good_s, bad_s], lambda k, rec: V, rec_of)["sell"])
+        with self.assertRaises(TypeError):  # rec_of is required: the replaced buy relation cannot be called
+            bi.tier_lines([good_b], lambda k, rec: V)  # type: ignore[call-arg]
 
     # ---- line B (Am.1, buy side amended by Am.6 / QP-P7-1010): the shared cases ----
     Q_ = (30_000_000_000, 500_000_000_000_000, 17_580_000_000)  # quote_reserve, base_reserve, V

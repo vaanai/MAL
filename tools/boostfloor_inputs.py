@@ -4,7 +4,7 @@ section 8) and the section 13 BOOST PDA fetch. Outcome-blind: they compute no fi
 
     python -m tools.boostfloor_inputs p5 --look 1          # gettx_v.jsonl, cross_source.json (line A), line_a_sample.jsonl, p7_sample.jsonl
     python -m tools.boostfloor_inputs account --look 1     # account_v0.json from p5/account/map.json (exp012_forward_vmap fetch --new)
-    python -m tools.boostfloor_inputs p7 --look 1          # p7/pricing_check.json: the two tier lines and line B (buy side: Am.6)
+    python -m tools.boostfloor_inputs p7 --look 1          # p7/pricing_check.json: the two tier lines (buy side: Am.7) and line B (buy side: Am.6)
     python -m tools.boostfloor_inputs boost-pda --look 1   # p5/boost_pda.jsonl: per traded pool, the BOOST vault authority's slices
     python -m tools.boostfloor_inputs e1 --source FILE     # e1/calibration.json: a probe_sim_calibration output, copied byte for byte
 
@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from tools import boostfloor_read as br
 from tools import boostfloor_score as bf
+from tools.paper_curve_math import pumpswap_sol_fee_ppm
 
 LINE_A_TRIGGERS = 100
 LINE_A_MAX_NOT_COMPARABLE = 0.01  # at most 1% of the sample (3 of 300) not comparable
@@ -53,6 +54,8 @@ P7_N = 1_000
 P7_SELL_MIN, P7_BUY_MIN = 0.75, 0.90  # tier lines: share of sells / buys within 1 bp
 LINE_B_MIN = 0.99  # line B: share of each side's comparable events within 1 bp or 2 units of the integer law
 BP = 1e-4
+PPM = 1_000_000
+TIER_BUY_TOL_PPM = 100  # Am.7 B.3: the buy tier line's tolerance, 1 bp (BP) of qin in ppm; no unit allowance
 LINE_B_UNITS = 2
 TX_VERSION = 1  # Am.1: maxSupportedTransactionVersion 1
 MAX_CALLS = 30_000
@@ -60,8 +63,11 @@ PDA_SIG_LIMIT = 100
 PDA_VERIFY_FETCHES = 8
 ACCOUNT_NOT_BEFORE = "2026-10-16T00:00:00Z"  # section 4: the account map is fetched at or after this instant
 E1_NOT_BEFORE = datetime(2026, 10, 16, 6, 13, tzinfo=timezone.utc)  # section 8.1(c): the E1 record is the cron run's, written at or after
+FEE_FIELDS = ("lp_fee", "protocol_fee", "creator_fee")  # the decoder's fee amounts (event bytes 80, 96, 352)
+FEE_BPS_FIELDS = ("lp_fee_basis_points", "protocol_fee_basis_points", "coin_creator_fee_basis_points")  # event bytes 72, 88, 344 (Am.7)
+FEE_BPS_OFFSETS = (72, 88, 344)
 DECODED_FIELDS = ("side", "ix_name", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves",
-                  "pool_quote_amount", "zero_sol", "pool", "mint")
+                  "pool_quote_amount", "zero_sol", "pool", "mint") + FEE_FIELDS + FEE_BPS_FIELDS
 
 
 def _jsonl(recs: Iterable[Mapping[str, Any]]) -> bytes:
@@ -144,7 +150,41 @@ def decode_tx(rpc: Any, sig: str) -> list[dict[str, Any]] | None:
     if not tx:
         return None
     logs = (tx.get("meta") or {}).get("logMessages") or []
-    return records_from_logs(logs, slot=int(tx.get("slot") or 0), signature=sig, t_recv_ms=0, commitment="finalized", feed="gettx", event_v=True)
+    rows = records_from_logs(logs, slot=int(tx.get("slot") or 0), signature=sig, t_recv_ms=0, commitment="finalized", feed="gettx", event_v=True)
+    attach_fee_bps(logs, rows)
+    return rows
+
+
+def attach_fee_bps(logs: Sequence[Any], rows: Sequence[dict[str, Any]]) -> None:
+    """Am.7 E (report-only): stamp each PumpSwap buy/sell row with the event's three fee rates (FEE_BPS_FIELDS, event bytes 72, 88, 344),
+    which the pinned decoder does not return. The events are walked in records_from_logs' own order (every Program data blob the pinned
+    decode_program_data(event_v=True) turns into a trade, create_pool skipped), and a row is stamped only when that walk gives exactly one
+    event per row and the event's bytes 112:120 equal the row's sol_lamports. Anything else, or any exception, leaves the rows unstamped
+    (null in the P5 record). No other field changes; the decoder is not edited."""
+    try:
+        import observe.trade_decode as td
+
+        raws = []
+        for line in logs:
+            if not isinstance(line, str):
+                continue
+            raw = td._program_data_bytes(line)
+            if raw is None:
+                continue
+            ev = td.decode_program_data(raw, event_v=True)
+            if ev is None or ev.get("kind") == "create_pool":
+                continue
+            raws.append(raw)
+        if len(raws) != len(rows):
+            return
+        for row, raw in zip(rows, raws):
+            if raw[:8] not in (td._BUY_DISC, td._SELL_DISC) or len(raw) < 360:
+                continue
+            if int.from_bytes(raw[112:120], "little") != row.get("sol_lamports"):
+                continue
+            row.update({f: int.from_bytes(raw[o:o + 8], "little") for f, o in zip(FEE_BPS_FIELDS, FEE_BPS_OFFSETS)})
+    except Exception:  # noqa: BLE001 - report-only fields: a failure leaves them null and never stops P5
+        return
 
 
 def fetch_prints(rpc: Any, keys: Iterable[Any], index: Mapping[br.Key, br.PrintRef], purposes: Mapping[Any, Iterable[str]],
@@ -207,35 +247,173 @@ def line_a(sample: Sequence[Any], index: Mapping[br.Key, br.PrintRef], recs: Map
 
 
 # ---- P7 ---------------------------------------------------------------------------------------------------------------------
-def tier_lines(sample: Sequence[Mapping[str, Any]], v_of: Callable[[Any, Mapping[str, Any]], float | None]) -> dict[str, Any]:
-    """Section 10 P7 on tape prints, V by the source order. Sell: tape sol within 1 bp of (q+V) tok / (b+tok) * (1 - tier(q+V, b)). Buy: the
-    implied fee 1 - net / sol, net = tok (q+V) / (b - tok), within 1 bp of tier(q+V, b). A print without V is a miss; a zero buy is skipped."""
-    out = {}
-    for side, need in (("sell", P7_SELL_MIN), ("buy", P7_BUY_MIN)):
-        n = match = no_v = skipped = 0
-        for rec in sample:
-            if rec["isbuy"] != (side == "buy"):
-                continue
-            _slot, _mint, sol, tok, q, b = rec["key"]
-            if side == "buy" and (sol <= 0 or tok <= 0 or tok >= b):
-                skipped += 1
-                continue
-            n += 1
-            v = v_of(br.content_key(*rec["key"]), rec)
-            if v is None:
-                no_v += 1
-                continue
-            Q = q + v
-            if side == "sell":
-                exp = Q * tok / (b + tok) * (1 - bf.tier_fee(Q, b))
-                ok = exp > 0 and abs(sol - exp) <= BP * exp
-            else:
-                ok = abs((1 - tok * Q / (b - tok) / sol) - bf.tier_fee(Q, b)) <= BP
-            match += bool(ok)
-        share = match / n if n else None
-        out[side] = {"n": n, "match": match, "no_v": no_v, "skipped": skipped, "share": share, "need": need,
-                     "pass": share is not None and share >= need}
+TIER_UNRESOLVED = ("no_record", "status", "fields_equal", "side")  # Am.7 B.1(b), in the order they are tested
+
+
+def int_v(v: Any) -> int | None:
+    """Am.7 B.2: V as a Python int. An int is kept; a float (or numpy number) counts only when float(v).is_integer(); anything else (None,
+    a bool, a string, NaN, a fraction) is None, which the buy tier line scores as a miss."""
+    if v is None or isinstance(v, (bool, str, bytes)):
+        return None
+    if isinstance(v, int):
+        return v
+    try:
+        f = float(v)
+        return int(v) if math.isfinite(f) and f.is_integer() else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def tier_buy_hit(sol: int, tok: int, Q: int, b: int, ppm: int) -> bool:
+    """Am.7 B.2, in integers: with qin = ceil(Q tok / (b - tok)) (buy_law), |sol * 10^6 - qin * (10^6 + ppm)| <= 100 * qin, i.e. the
+    implied fee on the curve input, sol / qin - 1, is within 1 bp of the tier. Callers pass ints only (tier_buy_one checks)."""
+    qin = buy_law(Q, b, tok)
+    return qin is not None and abs(sol * PPM - qin * (PPM + ppm)) <= TIER_BUY_TOL_PPM * qin
+
+
+def tier_buy_one(rec: Mapping[str, Any], v_of: Callable[[Any, Mapping[str, Any]], Any],
+                 rec_of: Callable[[Any, Mapping[str, Any]], Mapping[str, Any] | None]) -> tuple[str, str | None]:
+    """(outcome, name) of one sampled tape buy under the amended buy tier line (Am.7 B.1), tested in this order:
+      (a) skipped:                 tape sol <= 0, tok <= 0 or tok >= b (not in the denominator, as before);
+      (b) unresolved:<why>:        its P5 record (rec_of) is missing, its status is not ok, fields_equal is not true, or its decode is not a
+                                   buy: a MISS in the denominator (its ix_name is not known, so it cannot be excluded);
+      (c) excluded:<cause>:        buy_exclusion(decoded) gives a cause (zero_sol, buy_exact_quote_in, no_ix_name, ix_not_listed): in neither
+                                   denominator;
+      (d) no_v:                    v_of gives no V: a miss; non_int: V is not integral, or sol, tok, q, b are not ints: a miss;
+      (e) hit / miss:              tier_buy_hit at Q = q + V, ppm = pumpswap_sol_fee_ppm(Q / b * 10^6) (boostfloor_score.tier_fee x 10^6).
+    `name` is the decode's ix_name from (c) on, else None."""
+    _slot, _mint, sol, tok, q, b = rec["key"]
+    if sol <= 0 or tok <= 0 or tok >= b:
+        return "skipped", None
+    k = br.content_key(*rec["key"])
+    r5 = rec_of(k, rec)
+    d = (r5.get("decoded") if r5 is not None else None) or {}
+    why = ("no_record" if r5 is None else "status" if r5.get("status") != "ok" else "fields_equal" if r5.get("fields_equal") is not True
+           else "side" if d.get("side") != "buy" else None)
+    if why is not None:
+        return f"unresolved:{why}", None
+    cause = buy_exclusion(d)
+    name = d.get("ix_name")
+    if cause is not None:
+        return f"excluded:{cause}", None if name is None else str(name)
+    v0 = v_of(k, rec)
+    if v0 is None:
+        return "no_v", name
+    v = int_v(v0)
+    if v is None or any(isinstance(x, bool) or not isinstance(x, int) for x in (sol, tok, q, b)):
+        return "non_int", name
+    Q = q + v
+    return ("hit" if tier_buy_hit(sol, tok, Q, b, pumpswap_sol_fee_ppm(Q / b * 1e6)) else "miss"), name
+
+
+def tier_lines(sample: Sequence[Mapping[str, Any]], v_of: Callable[[Any, Mapping[str, Any]], Any],
+               rec_of: Callable[[Any, Mapping[str, Any]], Mapping[str, Any] | None]) -> dict[str, Any]:
+    """Section 10 P7 tier lines on tape prints, V by the source order.
+    Sell (unchanged): tape sol within 1 bp of (q+V) tok / (b+tok) * (1 - tier(q+V, b)); a print without V is a miss.
+    Buy (Am.7): tier_buy_one. `rec_of(content_key, sample_row)` gives the print's P5 getTransaction record (None when there is none); it is
+    required, so the replaced relation 1 - net / sol cannot be called. Unresolved, no-V and non-integer buys are misses in the denominator;
+    excluded and skipped buys are in neither. The buy output adds the exclusions per cause and per name, the unresolved per reason, and
+    n / match for `buy` and `buy_v2`."""
+    out: dict[str, Any] = {}
+    n = match = no_v = skipped = 0
+    for rec in sample:
+        if rec["isbuy"] != False:  # noqa: E712 - the sell side's test as before Am.7
+            continue
+        _slot, _mint, sol, tok, q, b = rec["key"]
+        n += 1
+        v = v_of(br.content_key(*rec["key"]), rec)
+        if v is None:
+            no_v += 1
+            continue
+        Q = q + float(v)  # the sell arithmetic as before Am.7 (p7_check's V was float(V) there)
+        exp = Q * tok / (b + tok) * (1 - bf.tier_fee(Q, b))
+        match += bool(exp > 0 and abs(sol - exp) <= BP * exp)
+    share = match / n if n else None
+    out["sell"] = {"n": n, "match": match, "no_v": no_v, "skipped": skipped, "share": share, "need": P7_SELL_MIN,
+                   "pass": share is not None and share >= P7_SELL_MIN}
+    c: dict[str, Any] = {"n": 0, "match": 0, "no_v": 0, "non_int": 0, "skipped": 0, "unresolved": 0,
+                         "unresolved_by": {x: 0 for x in TIER_UNRESOLVED}, "excluded": 0,
+                         "excluded_by": {x: 0 for x in LINE_B_BUY_EXCLUSIONS}, "excluded_by_name": {x: {} for x in LINE_B_BUY_EXCLUSIONS},
+                         "by_ix_name": {nm: {"n": 0, "match": 0} for nm in sorted(LINE_B_BUY_NAMES)}}
+    for rec in sample:
+        if rec["isbuy"] != True:  # noqa: E712 - the buy side's test as before Am.7
+            continue
+        outcome, name = tier_buy_one(rec, v_of, rec_of)
+        if outcome == "skipped":
+            c["skipped"] += 1
+            continue
+        if outcome.startswith("excluded:"):
+            cause = outcome.split(":", 1)[1]
+            c["excluded"] += 1
+            c["excluded_by"][cause] += 1
+            c["excluded_by_name"][cause][str(name)] = c["excluded_by_name"][cause].get(str(name), 0) + 1
+            continue
+        c["n"] += 1
+        if outcome.startswith("unresolved:"):
+            c["unresolved"] += 1
+            c["unresolved_by"][outcome.split(":", 1)[1]] += 1
+            continue
+        hit = outcome == "hit"
+        c["match"] += hit
+        c["no_v"] += outcome == "no_v"
+        c["non_int"] += outcome == "non_int"
+        c["by_ix_name"][name]["n"] += 1
+        c["by_ix_name"][name]["match"] += hit
+    c["excluded_by_name"] = {x: dict(sorted(v.items())) for x, v in c["excluded_by_name"].items()}
+    share = c["match"] / c["n"] if c["n"] else None
+    out["buy"] = {**c, "share": share, "need": P7_BUY_MIN, "pass": share is not None and share >= P7_BUY_MIN,
+                  "tolerance_ppm_of_qin": TIER_BUY_TOL_PPM}
     return out
+
+
+def exact_in_raw(sample: Sequence[Mapping[str, Any]], v_of: Callable[[Any, Mapping[str, Any]], Any],
+                 rec_of: Callable[[Any, Mapping[str, Any]], Mapping[str, Any] | None]) -> dict[str, Any]:
+    """Am.7 E, REPORT-ONLY (never in `pass`, never a bar): the executors' family (buy_exact_quote_in v1 and v2) on the P7 sample's raw
+    getTransaction events, at no extra fetch. Population: sampled tape buys whose P5 record is ok, fields_equal true, decoded as a buy, and
+    excluded by buy_exclusion as buy_exact_quote_in. With sol the event's sol_lamports (the net curve input for this family) and pqa its
+    pool_quote_amount (the user's spend), it counts: pqa = sol + the three reported fees; each fee = ceil(sol * bps_i / 10^4); pqa - sol =
+    sum ceil(sol * bps_i / 10^4); and the chain's bps sum x 100 against the tier ppm at Q = q + V (equal, and within 50 ppm for the half-bp
+    tiers the chain charges as whole bps). A print with a non-integer field is counted in fields_missing and in nothing else."""
+    c: dict[str, Any] = {"n": 0, "fields_missing": 0, "pqa_eq_sol_plus_fees": 0, "fee_eq_ceil": {f: 0 for f in FEE_FIELDS},
+                         "pqa_minus_sol_eq_ceil_sum": 0, "no_v": 0, "bps_eq_tier": 0, "bps_within_half_bp_of_tier": 0, "by_name": {},
+                         "report_only": True}
+    for rec in sample:
+        if rec.get("isbuy") is not True:
+            continue
+        r5 = rec_of(br.content_key(*rec["key"]), rec)
+        d = (r5.get("decoded") if r5 is not None else None) or {}
+        if r5 is None or r5.get("status") != "ok" or r5.get("fields_equal") is not True or d.get("side") != "buy":
+            continue
+        if buy_exclusion(d) != "buy_exact_quote_in":
+            continue
+        nm = str(d.get("ix_name"))
+        per = c["by_name"].setdefault(nm, {"n": 0, "pqa_minus_sol_eq_ceil_sum": 0, "bps_eq_tier": 0})
+        c["n"] += 1
+        per["n"] += 1
+        sol, pqa = d.get("sol_lamports"), d.get("pool_quote_amount")
+        fees = [d.get(f) for f in FEE_FIELDS]
+        bps = [d.get(f) for f in FEE_BPS_FIELDS]
+        if any(isinstance(x, bool) or not isinstance(x, int) for x in [sol, pqa, *fees, *bps]):
+            c["fields_missing"] += 1
+            continue
+        ceil_fees = [-((-sol * x) // 10_000) for x in bps]
+        c["pqa_eq_sol_plus_fees"] += pqa == sol + sum(fees)
+        for f, got, want in zip(FEE_FIELDS, fees, ceil_fees):
+            c["fee_eq_ceil"][f] += got == want
+        law = pqa - sol == sum(ceil_fees)
+        c["pqa_minus_sol_eq_ceil_sum"] += law
+        per["pqa_minus_sol_eq_ceil_sum"] += law
+        _slot, _mint, _sol, _tok, q, b = rec["key"]
+        v = int_v(v_of(br.content_key(*rec["key"]), rec))
+        if v is None or not isinstance(q, int) or not isinstance(b, int) or b <= 0:
+            c["no_v"] += 1
+            continue
+        ppm = pumpswap_sol_fee_ppm((q + v) / b * 1e6)
+        c["bps_eq_tier"] += sum(bps) * 100 == ppm
+        per["bps_eq_tier"] += sum(bps) * 100 == ppm
+        c["bps_within_half_bp_of_tier"] += abs(sum(bps) * 100 - ppm) <= 50
+    c["by_name"] = dict(sorted(c["by_name"].items()))
+    return c
 
 
 LINE_B_BUY_NAMES = frozenset({"buy", "buy_v2"})  # Am.6 (QP-P7-1010 item 2.1): the only comparable buys, by exact ix_name
@@ -333,12 +511,16 @@ def p7_check(lay: br.Layout) -> dict[str, Any]:
     if len(sample) != cs.get("p7_sampled"):
         raise br.Refused("P7: p7_sample.jsonl does not hold the sample P5 recorded")
 
-    def v_of(k: Any, rec: Mapping[str, Any]) -> float | None:
+    def v_of(k: Any, rec: Mapping[str, Any]) -> int | None:  # Am.7 B.2: V as an int (ev V, then the gettx V; both are ints)
         if use_ev and type(rec.get("ev_v")) is int:
-            return float(rec["ev_v"])
-        return float(gettx[k]) if k in gettx else None
+            return rec["ev_v"]
+        return gettx.get(k)
 
-    tiers = tier_lines(sample, v_of)
+    def rec_of(k: Any, _rec: Mapping[str, Any]) -> Mapping[str, Any] | None:  # Am.7 B.1: the print's P5 record, or None
+        return recs.get(k)
+
+    tiers = tier_lines(sample, v_of, rec_of)
+    exact_in = exact_in_raw(sample, v_of, rec_of)  # Am.7 E: report-only, not in `pass`
     # every line B key is scored: one with no gettx record is unresolved, a miss on its tape side (Am.6); the P7 sample's side first
     side: dict[Any, Any] = {}
     for r in sample + _read_jsonl(lay.line_a_sample):
@@ -346,7 +528,7 @@ def p7_check(lay: br.Layout) -> dict[str, Any]:
     b_keys = set(side)
     lb = line_b({**(recs.get(k) or {"key": list(k), "status": "no_record"}), "isbuy": side[k]} for k in sorted(b_keys))
     return {"pass": all(x["pass"] for x in (tiers["sell"], tiers["buy"], lb["sell"], lb["buy"])), "tier": tiers, "line_b": lb,
-            "line_b_prints": len(b_keys), "v_source": "ev_then_gettx" if use_ev else "gettx",
+            "line_b_prints": len(b_keys), "v_source": "ev_then_gettx" if use_ev else "gettx", "exact_in_raw_report_only": exact_in,
             "inputs_sha256": {p.name: br.sha256_file(p) for p in (lay.cross_source, lay.gettx_v, lay.p7_sample, lay.line_a_sample)}}
 
 
@@ -482,7 +664,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             br.write_new(lay.p7, (json.dumps(res, indent=1, sort_keys=True) + "\n").encode())
             lbc = {s: {f: res["line_b"][s][f] for f in ("comparable", "match", "unresolved", "excluded", "excluded_by", "ix_not_listed_by_name",
                                                            "by_ix_name") if f in res["line_b"][s]} for s in ("sell", "buy")}
-            res = {"pass": res["pass"], "line_b_counts": {**lbc, "side_unknown": res["line_b"]["side_unknown"]}, "sha256": br.sha256_file(lay.p7)}
+            tier = {"sell": {f: res["tier"]["sell"][f] for f in ("n", "match", "no_v", "pass")},
+                    "buy": {f: res["tier"]["buy"][f] for f in ("n", "match", "no_v", "non_int", "skipped", "unresolved", "unresolved_by",
+                                                               "excluded", "excluded_by", "excluded_by_name", "by_ix_name", "pass")}}
+            res = {"pass": res["pass"], "line_b_counts": {**lbc, "side_unknown": res["line_b"]["side_unknown"]}, "tier_counts": tier,
+                   "exact_in_raw_report_only": res["exact_in_raw_report_only"], "sha256": br.sha256_file(lay.p7)}
         else:
             good, _ = br._good_bad(br.FORWARD_1002)
             classes = br.load_classes(lay.classes)
