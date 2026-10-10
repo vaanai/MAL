@@ -27,7 +27,23 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-09 ~19:35Z (NEWEST, read first)
+### STATE 10-10 ~07:30Z (NEWEST, read first)
+
+**H5 canary: STOPPED** (new buys) since 2026-10-10T07:15:10Z.
+- **Why.** DEC-024 §5.1 fired on the post-step A3 run of 07:11:07Z (job #478): median last slice 333 s after migrate, n=9, below 335 s.
+- **The STOP.** Placed by the manager with `sudo touch /var/lib/mal-live/h5/STOP` (job #479); open 0, pending 0, LIVE_OK still valid.
+- **Ruling.** Quant-proof (asked after the fire): STOP stands, and only a dated owner amendment can resume. See DEC-024 "Halt record: section 5.1".
+- **Canary at STOP:**
+  - 3 trades;
+  - +0.005199 SOL realized;
+  - wallet about 0.3039 SOL;
+  - 0 late sells;
+  - landing about 0.87 s.
+- **Formal tests.** No A3 halt flag fired, so EXP-024 Look 1 is not halted (it counts from 10-10T00Z). This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check. EXP-022's six flags are clear. `program_changed` was clear.
+- **To resume** (after the owner's amendment): `sudo rm /var/lib/mal-live/h5/STOP` on fast-0 in a MiScusi job, then check that `--status` shows `stop_file=False`.
+- **Minor, for the pre-10-16 reinstall:** the `on_boost_row` docstring says ">= 10 pools" while the code uses 30.
+
+### STATE 10-09 ~19:35Z (older)
 
 **H5 canary.**
 - **LIVE** at T0 (0.02 SOL) since 2026-10-09T19:29:53Z, on install af02e90. The effective total stop is about 0.1045 SOL.

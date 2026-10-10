@@ -336,6 +336,40 @@ H5_CANARY_LIVE: 2026-10-09T19:29:53Z at T0 (0.02 SOL), install af02e90561e23b13a
 - **Go-live pair.** The shadow is MiScusi job #454. The keyless dry run, job #455, keeps running for comparison.
 
 
+## Halt record: section 5.1, 2026-10-10
+
+DEC-024 §5.1 FIRED at 2026-10-10T07:11:07Z.
+
+- **The run.** The post-step A3 run (job #478, epoch 1053, 218.18 ms/slot) read a median BOOST last slice of 333 s after the migrate tx (n=9, min 329, max 353).
+- **Why it fires.** s0 is at or after the migrate tx, so the median after the first print is at most 333 s. That is below 335 s.
+- **Two-run clause.** This run is also the first post-step run below 337 s.
+- **STOP.** Placed at 07:15:10Z (job #479; open 0, pending 0).
+- **Clearing.** DEC-024 has no clearing rule for a §5 halt. STOP stays until the owner records a dated amendment that:
+  - names the §5.1 measure from that instant forward;
+  - does not reclassify this halt;
+  - states the resume condition.
+- **Disclosure.** That amendment is written after the halt, while the executor's own ≥30-pool day medians were known:
+  - 10-09: 340.306 s over 117 pools;
+  - 10-10 at 07:15Z: 337.556 s over 200 pools, not latched.
+
+Source: the quant-proof ruling of 2026-10-10, asked after the fire.
+
+The ruling's other points, recorded here:
+- **The executor's measure does not replace this clause.** The executor's in-code §5.1 measure (UTC-day median after s0, at least 30 pools, "two UTC days") is an extra live check. Adopting it in place of the A3-run clause after this fire would be a retune (section 5).
+- **The DEC text and the deployed code disagreed at go-live.** They differ on what is measured, on the 30-pool minimum, and on "two runs" vs "two UTC days". The monitor's own `boost_last_slice_early` flag halts below 315 s after migrate. Nobody recorded which reading governed. The manager's pre-fire default was the A3-run reading.
+- **No A3 run clears the halt on its own.** An after-migrate reading cannot prove that the after-first-print median is at or above a line.
+- **Until an amendment exists:**
+  - the STOP holds to the end of the 14-day duration;
+  - T0 → T1 stays blocked (Amendment 3 item 2; section 7).
+- **The canary at STOP** is not evidence (sections 2 and 4):
+  - 3 trades at 0.02 SOL;
+  - realized +0.005199 SOL;
+  - 3 sells landed, 0 late.
+- **Formal tests.**
+  - EXP-024 Look 1: no A3 halt flag fired (`boost_last_slice_early` halts below 315 s), so Look 1 is not halted. This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check.
+  - EXP-022: all six flags were clear.
+- **Other canary halts.** `program_changed` (a canary live halt under Amendment 2 item 4) was clear: 3 programdata hashes unchanged.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.

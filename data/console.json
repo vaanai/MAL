@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-09T21:55:00Z",
+ "updated_utc": "2026-10-10T07:35:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-stop-51-1010",
+   "kind": "other",
+   "title": "H5 canary STOPPED (new buys) at 2026-10-10T07:15:10Z: DEC-024 section 5.1, BOOST last-slice median 333 s < 335 s",
+   "detail": "Daily A3 run 07:11:07Z (job #478): median BOOST last slice 333 s after migrate over 9 pools (min 329, max 353); no A3 halt flag fired, so EXP-024 Look 1 is not halted; this 333 s is one of the daily medians in Look 1's 330 s window check. Manager placed STOP (job #479; nothing open). Quant-proof ruling: the halt fired as written; DEC-024 has no clearing rule, so only a dated owner amendment can resume. The executor's own 30+ pool day medians (10-09: 340.306 s over 117 pools; 10-10 so far: 337.556 s over 200) did not latch. Canary at STOP: 3 trades, +0.005199 SOL realized, 0 late sells.",
+   "atUtc": "2026-10-10T07:15:10Z"
+  },
   {
    "id": "h5-first-trades-1009",
    "kind": "other",
@@ -221,10 +228,10 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "LIVE canary at 0.02 SOL since 10-09T19:29:53Z (DEC-024; owner override, unpromoted); 2 trades by 21:52Z, +0.004728 SOL, no halts. P2 met by the official A3 run. Look 1 counts [10-10, 10-16), Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03); the canary is not evidence.",
+   "note": "Canary STOPPED (new buys) since 10-10T07:15:10Z under DEC-024 section 5.1 (A3 BOOST last-slice median 333 s < 335 s); resume needs a dated owner amendment. Before the stop: 3 trades at 0.02 SOL, +0.005199 SOL (unpromoted, not evidence). Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03).",
    "tag": {
-    "text": "live canary",
-    "tone": "good"
+    "text": "canary stopped",
+    "tone": "warn"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
   },
@@ -414,6 +421,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-h5-51-resume",
+   "from": "claude",
+   "text": "H5 canary is stopped under DEC-024 section 5.1: BOOST's last slice came at most 333 s after the first print (median of 9 pools), against our sells at about 329.5 s. Your choices: (1) an amendment, written after the halt, that drops the A3 clause that fired to report-only and judges section 5.1 on the executor's 30+ pool day median, resuming only after a full UTC day at or above 337 s; (2) resume with both checks, where the A3 run already has one run below 337 s, so the next A3 run below 337 s stops it again; (3) keep H5 stopped. Manager recommends (1).",
+   "atUtc": "2026-10-10T07:35:00Z"
+  },
+  {
    "id": "fy-20261009-1945-live",
    "from": "claude",
    "text": "H5 is live at 0.02 SOL per trade since 12:29 PT. Please confirm to Helm that the watchdog's two Discord posts arrived. Next from you: (1) after about 20 trades (about 1.5-2 days) the 0.10 SOL step with your +0.5 SOL top-up; (2) before 10-16, OK to extend the canary past its 14-day cap (and the trading window) with the second reinstall; (3) C1-NF's 0.5 SOL when Helm's second wallet is ready (about 10-15 to 10-17).",
@@ -535,6 +548,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261010-0735-h5stop",
+   "from": "claude",
+   "kind": "status",
+   "text": "10-10 07:35Z: H5 canary STOPPED for new buys at 07:15:10Z. DEC-024 section 5.1 fired: the daily A3 run read a BOOST last-slice median of 333 s after migrate (9 pools), so at most 333 s after the first print, under the 335 s line; our sells land about 329.5 s after the first print. Quant-proof: the halt stands; only a dated owner amendment can resume. No A3 halt flag fired, so EXP-024 Look 1 is not halted (333 s feeds its 330 s window check); EXP-022's flags are clear. Canary before the stop: 3 trades, +0.005199 SOL.",
+   "atUtc": "2026-10-10T07:35:00Z"
+  },
   {
    "id": "s-20261009-2155-h5",
    "from": "claude",
