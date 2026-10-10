@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (his words are in section 1).** The limits below are the manager's terms for his confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
+| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (the owner's words are in section 1).** The limits below are the manager's terms for the owner's confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-10-08 |
 | **Builds on** | [DEC-019](DEC-019-execution-probe.md) (probe wallet, custody, executor), DEC-020, DEC-021 §7, [DEC-023](DEC-023-h5-family.md), EXP-024, EXP-022 §9 |
@@ -471,6 +471,44 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - EXP-024 and EXP-022.
 
    Canary results are not evidence.
+
+## Amendment 6 (2026-10-10, the manager's decision; written before 2026-10-16T01:00Z, before any counted CAP-PICK hour and before any H5 trade in the seal window; no CAP-PICK outcome, paper-twin field or gate-log row was read to write it): the pick feed as built (section 6)
+
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Item 8 is the manager's record of the duration and `end_ms`. Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
+
+Section 6 says the executor "reads only the `mint` field of the decision-time intents into an in-process set". The feed as built (PR #509 `tools/cap_pick_oracle.py`, wired by PR #540) differs as follows. Items 1 to 3 and 5 to 6 are stricter for H5. Item 4 is declared here.
+
+1. **Exporter.** A MiScusi job (`cap_pick_oracle.py export`) reads the paper runner's `exp012-gate.jsonl` and `intents.jsonl`. It reads only:
+   - the `mint` and `entered` of `forward_paper_exp012_gate_v1` rows of book `exp012_migrate_tp50_sl30`;
+   - the `mint` of `forward_paper_intent_v1` rows of that book;
+   - any walk-2 replay decision list.
+
+   It extracts only those values, with fixed patterns, and parses no other part of a line. It writes `{mint, pick, t_ms}` rows and `{hb, t_ms}` heartbeats to `picks.jsonl`. It opens no source before the FINAL marker exists and 2026-10-16T02:00:00Z (DEC-016 Amendment 2). It prints no count that includes intents-file lines.
+2. **Readers.** The H5 executor and the H5 shadow read only `picks.jsonl` and the replay boolean files, through `PickOracle`, into memory. The answer has three states:
+   - **True:** any source picked the mint. True is sticky.
+   - **False:** a gate row with a computed score decided not-pick, and no source picked it.
+   - **None:** anything else. This includes no row, a gate row with no score, a feed stale for more than 60 s, no FINAL marker, or an error.
+3. **Rule.** In the seal window:
+   - The executor buys only on an exact False. True, None, a non-boolean or an error all refuse, so an undecided mint is never bought.
+   - The shadow writes a pool's outcome-bearing records only on an exact False at each decision point. A trigger that fires on None is withheld for good.
+4. **Residual (declared).** EXP-022's counted picks are the walk-2 replay's picks (EXP-022 section 2). They are not known at H5 decision time, and they differ from the online set both ways (EXP-022 section 17 item 12; not measured on October data). H5, live or shadow, can therefore trade or record a mint the live gate scored below threshold that the replay later picks.
+
+   For EXP-022 Amendment 2 item 2, "a mint the EXP-022 gate picked" means a mint the oracle answers True for at the H5 decision. A trade or record on a replay-only pick made under item 3 is not a breach. These hold:
+   - (a) Before each CAP-PICK look, no person, agent or job joins any H5 executor record, H5 shadow record or the wallet history to the replay pick list or to any CAP-PICK pick set, or counts the overlap. A join is a breach.
+   - (b) After each look is written, a count-only step reports two numbers: how many counted picks in the look's window have an H5 live fill, and how many have an H5 shadow outcome record. Both go into the CAP-PICK look report and the EXP-024 report. They change no computation, threshold or verdict.
+   - (c) The report states that H5's own live fills on such mints are on the walk-2 tape the CAP-PICK read prices.
+5. **Records and counts.**
+   - A pool the oracle never cleared closes with a `sealed: true` record that holds only open-time fields. It marks "pick or undecided" by mint, with no outcome. Section 6 seals outcomes and joins, not pick identity.
+   - `sealed_hour` prints `pools_opened` and the string "withheld" for `decisions`, because an H5 decision on a pick is outcome-linked.
+   - For the same reason, no executor ledger row, counter, alert or log holds a `seal_pick` count before EXP-022's read ends.
+6. **Markers.** The manager creates `~/data/cap-pick-oracle/FINAL_WRITTEN` and `/var/lib/mal-live/h5/FINAL_WRITTEN` only after the DEC-016 FINAL row is in `/data/mal/exp012-forward/FINAL_READS.jsonl`. The creation instant (`date -u`) is recorded in LAB_STATE.
+7. **Unchanged.** The 60 s fail-closed halt, the seal window, the breach consequence, and every other rule in section 6.
+8. **Duration and `end_ms` (recorded; nothing here changes them).**
+   - **The owner did not extend the 14-day duration** (section 4). The owner's words, 2026-10-10 about 08:35Z: "Don't extend the trial I think, let's keep things moving" (MiScusi notebook decision entry "OWNER 2026-10-10 ~08:35Z: do not extend H5's 14-day trial", id n_FdE6WF1rhq8-Hw, confirmed by the manager who created it). Section 4's cap stands.
+   - **The live config's `end_ms` is 2026-10-16T00:30Z at this writing.** From that instant the installed v1 executor refuses every new buy (`end_instant`, `tools/h5_executor.py`). So it stops buying 30 minutes before the seal window opens at 2026-10-16T01:00Z. Extending `end_ms`, at most to section 4's cap of 2026-10-23T19:29:53Z, is a reviewed config change plus a reinstall (the manager's step); a run past that cap is the owner's decision (section 4). That instant is earlier than the 14-day cap from the first send (2026-10-09T19:29:53Z).
+   - **The oracle wiring still matters.**
+     - The H5 shadow is the canary's paper twin. It keeps running through Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and items 2, 3 and 5 govern which of its records it writes in the seal window. Until PR #540 is merged and the shadow restarted on it, the shadow seals every pool in the seal window (section 6, Dependency).
+     - Any executor that runs in the seal window (an `end_ms` after 2026-10-16T01:00Z) must carry items 2, 3 and 5 (PR #540 or a later head with the same seal code).
 
 ## Open for the owner
 
