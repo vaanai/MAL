@@ -13,7 +13,7 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 - **STOP files.** The wallet-wide `/var/lib/mal-live/STOP` is **absent**: Helm removed it at H5's go-live, 2026-10-09T19:29:31Z (H5 runbook Step 11). H5's own `/var/lib/mal-live/h5/STOP` (2026-10-10T07:15Z) is present. Neither `HALT` exists. The manager's decision: the wallet-wide `STOP` is **not** recreated for C1-NF (see "Two wallets, one host").
 - Helm's backups and rollback notes are in `/root/c1nf-prep/` on fast-0.
 
-**Two wallets, one host.** Nothing here reads, writes, stops or restarts anything of H5's: not its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, pinned tree, `TIER` or watchdog. **The wallet-wide `/var/lib/mal-live/STOP` is absent and stays absent for C1-NF.** Helm removed it at H5's go-live (2026-10-09T19:29:31Z, H5 runbook Step 11). Do not recreate it to hold or stop C1-NF: it stops H5 too. C1-NF cannot trade without its own install, `LIVE_OK` and `TIER`, and it is stopped with its own `/var/lib/mal-live/c1nf/STOP`. The wallet-wide `STOP` (and `HALT`) stay available as the shared emergency switch for both units; the executor still honours them (DEC-026 section 5).
+**Two wallets, one host.** Nothing here reads, writes, stops or restarts anything of H5's: not its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, pinned tree, `TIER` or watchdog. **The wallet-wide `/var/lib/mal-live/STOP` is absent and stays absent for C1-NF.** Helm removed it at H5's go-live (2026-10-09T19:29:31Z, H5 runbook Step 11). Do not recreate it to hold or stop C1-NF: it stops H5 too. C1-NF cannot trade without its own pinned install (with the `c1nf-wallet` credential) and `LIVE_OK`; a missing `TIER` means T1, the lowest tier, so `TIER` is not a start gate. It is stopped with its own `/var/lib/mal-live/c1nf/STOP`. The wallet-wide `STOP` (and `HALT`) stay available as the shared emergency switch for both units; the executor still honours them (DEC-026 section 5).
 
 ## Who does what
 
@@ -341,6 +341,7 @@ Wind-down, `systemctl stop mal-c1nf-executor`, then `ln -sfn <previous sha> /usr
 - The H5 key for C1-NF, or the C1-NF key for H5. One credential per unit.
 - H5's sell-and-close tool against the C1-NF wallet (see Sell-and-close).
 - Creating the wallet-wide `/var/lib/mal-live/STOP` (or `HALT`) to stop or hold C1-NF alone: it stops H5 too. Use `/var/lib/mal-live/c1nf/STOP`. The wallet-wide files are only the shared emergency switch for both units.
+- Removing the wallet-wide `STOP` (or `HALT`) for C1-NF's sake when it is in place as the shared emergency switch.
 - `LIVE_OK` before the manager's written go, or `TIER` = `T2` without the owner's dated line.
 - Restarting the live unit with `open` or `pending` above 0 after `LIVE_OK` is removed: it will not start, and nothing sells.
 - Running the executor, `--clear-halt` or `--mark-closed` as root (root-owned files in the state dir fail the start precheck) or as H5's `mal-live` (it cannot reach the state dir). They run as `mal-c1nf`. `--status` runs as `mal-c1nf` too (Step 9); as root it only reads, but no sudoers line allows that.
