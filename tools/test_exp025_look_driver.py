@@ -155,6 +155,59 @@ class Assembly(unittest.TestCase):
         self.sh_sha = D.A.sha256_file(self.sh / "tokens.parquet")
         self.O = self.tmp / "O"
         self.builds = []
+        self.pre_merge = {}
+
+    @staticmethod
+    def rows(p, drop=()):
+        """(columns, rows) of a parquet file in file_row_number order, without `drop`."""
+        import duckdb
+        con = duckdb.connect()
+        cur = con.execute(f"SELECT * EXCLUDE (file_row_number{''.join(', ' + c for c in drop)}) FROM "
+                          f"read_parquet('{p}', file_row_number=true) ORDER BY file_row_number")
+        out = ([d[0] for d in cur.description], cur.fetchall())
+        con.close()
+        return out
+
+    def spy_merge(self):
+        real = D.merge_v_ok
+
+        def spy(tape, hour):   # convert's trades rows, before the merge
+            self.pre_merge[hour] = self.rows(Path(tape) / "trades" / f"{hour}.parquet")
+            return real(tape, hour)
+        return mock.patch.object(D, "merge_v_ok", side_effect=spy)
+
+    def make_history(self, october=True):
+        """Fixture P2 mout / wl manifests (36 days each) and O/out/mout, O/wl matching them; returns P2_HISTORY."""
+        hist = {}
+        for kind, d in (("mout", self.O / "out" / "mout"), ("wl", self.O / "wl")):
+            d.mkdir(parents=True, exist_ok=True)
+            lines = []
+            for i in range(D.P2_DAYS):
+                n = f"{D.R.date_str(D.R.ep('2026-08-14T00') + 86400 * i)}.parquet"
+                (d / n).write_text(f"{kind}{i}\n")
+                lines.append(f"{D.A.sha256_file(d / n)}  {n}")
+            if kind == "wl" and october:
+                for x in D.look_october_wl_days(1):
+                    (d / f"{x}.parquet").write_text(f"oct {x}\n")
+            m = self.tmp / f"{kind}_sha256.txt"
+            m.write_text("\n".join(lines) + "\n")
+            hist[kind] = (str(m), D.A.sha256_file(m))
+        return hist
+
+    def run_look_assemble(self, hist):
+        """Look-mode assemble on the fixture hour: convert runs the real adapter convert in exploration mode, look_trade_files
+        gives the fixture trades file, build_shared is the stub."""
+        real = D.A.convert
+        trades = D.A.src_file(str(self.src), "trades", self.HOUR)
+
+        def conv(src, blk, out, hours, *, look, event_v, final_ledger, now):
+            return real(src, blk, out, hours, event_v=event_v)
+        plan = [("fixture-blk", str(self.src), [self.HOUR], True)]
+        with mock.patch.object(D.A, "convert", side_effect=conv), mock.patch.dict(D.P2_HISTORY, hist), \
+                mock.patch.object(D.A, "look_trade_files", return_value=([trades], [])), \
+                mock.patch.object(D.A, "build_shared", self.fake_build()):
+            return D.assemble(1, str(self.O), str(self.O / "tape"), plan, lookname="look1", final_ledger=None, now=None,
+                              exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -175,7 +228,7 @@ class Assembly(unittest.TestCase):
 
     def run_assemble(self, extra=()):
         plan = [("fixture-blk", str(self.src), [self.HOUR], True)]
-        with mock.patch.object(D.A, "build_shared", self.fake_build(extra)):
+        with mock.patch.object(D.A, "build_shared", self.fake_build(extra)), self.spy_merge():
             return D.assemble(1, str(self.O), str(self.O / "tape"), plan, lookname=None, final_ledger=None, now=None,
                               exploration=True, exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
 
@@ -198,10 +251,135 @@ class Assembly(unittest.TestCase):
         self.assertFalse((self.O / "tape" / "manifest.json").exists())
         self.assertEqual(sorted(os.listdir(self.O / "hunt-shared" / "bars_1m")), ["explore-0814", "fixture-blk"])
         self.assertEqual((rec["pumpswap_rows"], rec["pumpswap_rows_with_v"]), (2, 2))
+        # E1: the trades file carries v_ok, so the runner's own V checks see it
+        class _G:
+            def check_hour(self, s, h):
+                pass
+        trades = str(self.O / "tape" / "trades")
+        with mock.patch.object(D.L, "v_hours", lambda look: [self.HOUR]):
+            self.assertEqual(D.L.v_flag_missing(1, trades, _G()), [])
+            cov = D.L.r3_coverage(1, trades, [TA.POOL], _G())
+        self.assertEqual((cov["n"], cov["n_v"]), (2, 2))
+        f = self.O / "tape" / "trades" / f"{self.HOUR}.parquet"
+        cols, got = self.rows(f, drop=("v_ok",))
+        self.assertEqual((cols, got), self.pre_merge[self.HOUR])          # convert's rows, same order, v_ok aside
+        self.assertEqual(self.rows(f)[0], cols + ["v_ok"])
+        tf = [x for x in mans[0]["files"] if x["kind"] == "trades"]
+        self.assertEqual([x["sha256_with_v_ok"] for x in tf], [D.A.sha256_file(f)])
+        self.assertNotEqual(tf[0]["sha256"], tf[0]["sha256_with_v_ok"])
         # the runner's hour check refuses exploration hours (R12): an E0 assembly is never a look's
         with self.assertRaises(D.R.Refusal) as cm:
             D.L.hour_status(1, mans, {})
         self.assertEqual(cm.exception.code, "R12")
+
+    def test_v_ok_sidecar_that_does_not_align_refuses(self):
+        import duckdb
+        tape = self.tmp / "t"
+        (tape / "trades").mkdir(parents=True)
+        (tape / "v_ok").mkdir()
+        t, s = tape / "trades" / f"{self.HOUR}.parquet", tape / "v_ok" / f"{self.HOUR}.parquet"
+        con = duckdb.connect()
+        con.execute(f"COPY (SELECT range AS slot, 0 AS tx_index, 0 AS event_index, 'x' AS venue FROM range(3)) TO '{t}' (FORMAT parquet)")
+        before = D.A.sha256_file(t)
+        for name, q in (("one row short", "SELECT range AS slot, 0 AS tx_index, 0 AS event_index, true AS v_ok FROM range(2)"),
+                        ("slot shifted", "SELECT range + 1 AS slot, 0 AS tx_index, 0 AS event_index, true AS v_ok FROM range(3)")):
+            with self.subTest(name):
+                con.execute(f"COPY ({q}) TO '{s}' (FORMAT parquet)")
+                with self.assertRaises(D.R.Refusal) as cm:
+                    D.merge_v_ok(str(tape), self.HOUR)
+                self.assertEqual(cm.exception.code, "NOT_READY")
+                self.assertEqual(D.A.sha256_file(t), before)
+        con.execute(f"COPY (SELECT range AS slot, 0 AS tx_index, 0 AS event_index, range = 1 AS v_ok FROM range(3)) TO '{s}' (FORMAT parquet)")
+        con.close()
+        D.merge_v_ok(str(tape), self.HOUR)
+        self.assertEqual(self.rows(t)[1], [(0, 0, 0, "x", False), (1, 0, 0, "x", True), (2, 0, 0, "x", False)])
+        with self.assertRaises(D.R.Refusal):   # a second merge on a file that already has v_ok
+            D.merge_v_ok(str(tape), self.HOUR)
+
+    def test_look_mode_needs_the_history_before_any_record(self):
+        hist = self.make_history()
+        shutil.rmtree(self.O / "wl")
+        with self.assertRaises(D.R.Refusal) as cm:
+            self.run_look_assemble(hist)
+        self.assertEqual(cm.exception.code, "NOT_READY")
+        self.assertFalse((self.O / "look_assembly.json").exists())
+        hist = self.make_history()
+        rec = self.run_look_assemble(hist)
+        self.assertTrue((self.O / "look_assembly.json").exists())
+        self.assertEqual(rec["mode"], "look")
+        h = rec["history"]
+        self.assertEqual((h["mout"]["files"], h["mout"]["october_files"]), (36, 0))
+        self.assertEqual((h["wl"]["p2_files"], h["wl"]["october_files"]), (36, len(D.look_october_wl_days(1))))
+        self.assertEqual(D.look_october_wl_days(1)[0], "2026-10-02")
+        self.assertEqual(D.look_october_wl_days(1)[-1], "2026-10-16")
+        A_, _ = D.L.load_assembly(1, str(self.O))
+        self.assertEqual(A_["history"], h)
+        for name, break_it in (("an October wl day missing", lambda: (self.O / "wl" / "2026-10-16.parquet").unlink()),
+                               ("a P2 mout file changed", lambda: (self.O / "out" / "mout" / "2026-08-14.parquet").write_text("x")),
+                               ("an extra mout file", lambda: (self.O / "out" / "mout" / "2026-10-10.parquet").write_text("x"))):
+            with self.subTest(name):
+                hist = self.make_history()
+                break_it()
+                with self.assertRaises(D.R.Refusal) as cm:
+                    self.run_look_assemble(hist)
+                self.assertEqual(cm.exception.code, "NOT_READY")
+                self.assertFalse((self.O / "look_assembly.json").exists())   # E3: the earlier record is gone too
+                (self.O / "out" / "mout" / "2026-10-10.parquet").unlink(missing_ok=True)
+        hist = self.make_history()
+        hist["wl"] = (hist["wl"][0], "0" * 64)   # a manifest that is not the pinned one
+        with self.assertRaises(D.R.Refusal):
+            self.run_look_assemble(hist)
+
+    def test_failed_reassembly_leaves_no_stale_record(self):
+        self.O.mkdir(parents=True)
+        (self.O / "look_assembly.json").write_text("{}\n")
+        plan = [("forward-1002ev", "a", ["2026-10-09T00"], True), ("walk2", "b", ["2026-10-16T01"], True)]
+        conv = mock.Mock(side_effect=[{"files": [], "event_v": True}, D.A.Refused("R12: the second block")])
+        with mock.patch.object(D.A, "convert", conv), self.assertRaises(D.A.Refused):
+            D.assemble(1, str(self.O), str(self.O / "tape"), plan, lookname="look1", final_ledger=None, now=None,
+                       exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
+        self.assertEqual(conv.call_count, 2)
+        self.assertFalse((self.O / "look_assembly.json").exists())
+
+    V0_PLAN = [("forward-1002", "sA", ["2026-10-08T00"], False), ("forward-1002ev", "sB", ["2026-10-09T00"], True),
+               ("walk2", "sC", ["2026-10-16T01"], True)]
+    V0_FILES = [Path("/x/forward-1002/trades-2026-10-08T00.jsonl.zst"), Path("/x/forward-1002ev/trades-2026-10-09T00.jsonl.zst"),
+                Path("/x/forward-1002ev/trades-2026-10-09T01.jsonl.zst"), Path("/x/walk2/trades-2026-10-16T01.jsonl.zst")]
+
+    def v0_assemble(self, bads, ns, collect):
+        """Look-mode assemble with convert / look_trade_files mocked; bads, ns: the event-V manifests' v0_bad and v0_files."""
+        mans = [{"block": "forward-1002", "event_v": False, "files": [], "bad_hours": [], "missing": [], "v0_bad": [], "v0_files": 0}]
+        for (blk, *_), bad, n in zip(self.V0_PLAN[1:], bads, ns):
+            mans.append({"block": blk, "event_v": True, "files": [], "bad_hours": [], "missing": [], "v0_files": n,
+                         "v0_bad": [{"file": str(f), "reason": "strict"} for f in bad]})
+        ltf = mock.Mock(return_value=(list(self.V0_FILES), []))
+        with mock.patch.object(D.A, "convert", side_effect=mans), mock.patch.object(D.A, "look_trade_files", ltf), \
+                mock.patch.object(D.A, "collect_v0", collect):
+            D.assemble(1, str(self.O), str(self.O / "tape"), self.V0_PLAN, lookname="look1", final_ledger="L", now=None,
+                       exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
+        return ltf
+
+    def test_v0_files_are_the_looks_trade_files_minus_v0_bad(self):
+        class _Stop(Exception):
+            pass
+        collect = mock.Mock(side_effect=_Stop)
+        bad = self.V0_FILES[2]
+        with self.assertRaises(_Stop):
+            self.v0_assemble([[bad], [bad]], [3, 3], collect)
+        want = [f for f in self.V0_FILES if f != bad]
+        self.assertEqual(collect.call_args[0][1], want)   # every allowlisted trade hour of the look, not the event-V blocks' own
+        self.assertIn(self.V0_FILES[0], collect.call_args[0][1])
+
+    def test_event_v_manifests_with_other_v0_files_refuse(self):
+        collect = mock.Mock(side_effect=AssertionError("collect_v0 called"))
+        bad = self.V0_FILES[2]
+        for name, bads, ns in (("v0_bad differs", [[bad], []], [3, 3]), ("v0_files differs", [[bad], [bad]], [3, 2]),
+                               ("v0_files is the block's own hours", [[], []], [1, 1])):
+            with self.subTest(name):
+                with self.assertRaises(D.R.Refusal) as cm:
+                    self.v0_assemble(bads, ns, collect)
+                self.assertEqual(cm.exception.code, "NOT_READY")
+        collect.assert_not_called()
 
     def test_completes_from_the_built_tokens_decide_r2(self):
         rec = self.run_assemble(extra=("ExtraMint1111111111111111111111111111111pump",))

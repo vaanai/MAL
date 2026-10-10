@@ -26,9 +26,20 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
      item 2); forward-1002ev [10-09T00, 10-16T01) and walk 2 (Look 1 [10-16T01, 10-17T02), Look 2 to 10-24T02) with event V,
      so every V-covered trades hour gets its v_ok sidecar. A walk-2 hour is read only from the pinned block directory
      (/data/mal/blocks/forward-1016), after the FINAL and after it has closed; a missing hour is in the manifest's
-     `missing` and the runner counts it unwalked (R1). Each manifest is kept as <O>/assembly/manifest-<block>.json.
+     `missing` and the runner counts it unwalked (R1). Before the first convert, any look_assembly.json an earlier assembly left
+     in O is removed, so a re-assembly that refuses or crashes part-way leaves no record that no longer describes the tape.
+     v_ok merge: the runner reads `v_ok` as a column of O/tape/trades/<hour>.parquet (exp025_look.v_flag_missing,
+     r3_coverage, exp025_read.price_rows); the adapter writes it only to the sidecar O/tape/v_ok/<hour>.parquet. For every
+     trades file of every event-V manifest, merge_v_ok rewrites the trades file as `t.* + s.v_ok` (POSITIONAL JOIN, one
+     thread, insertion order kept), refused NOT_READY unless both files have the same row count and every row's
+     (slot, tx_index, event_index) is equal. So the trades files carry one column beyond ref/convert.py's TR_COLS
+     (section 11.2); pinned 11_passA and the det ledger select named columns, so their output is unchanged. Each manifest
+     is then kept as <O>/assembly/manifest-<block>.json, with files[i]['sha256_with_v_ok'] for the merged trades files
+     (files[i]['sha256'] stays convert's).
   5. V0 rows: V at each pool's first print over the same V0 files the adapter's convert used (look_trade_files minus the
-     manifests' v0_bad), via the adapter's collect_v0. Completed mints (mint, is_mayhem) from the tape's migrations and
+     manifests' v0_bad), via the adapter's collect_v0. In a look, every event-V manifest must list the same v0_bad files and
+     have v0_files equal to the driver's V0 file count (NOT_READY otherwise: tokens.v0_lamports would not be the V0 the tape's
+     quote_reserve used, section 2.4). Completed mints (mint, is_mayhem) from the tape's migrations and
      creates; october_vmap gives the vmap and the R2 record. build_shared (pinned build_shared.py) builds the October
      tokens.parquet and bars_1m in <O>/october-shared with that vmap. The completes are then re-read from the built
      tokens.parquet (grad_src = 'complete', as the adapter's E0 does); if they differ, the vmap is rebuilt from them and the
@@ -36,12 +47,19 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
   6. <O>/hunt-shared/tokens.parquet = append_tokens(exploration tokens.parquet, sha256 pinned, then the October rows);
      <O>/hunt-shared/bars_1m/<block> = symlinks to the exploration block directories and the October ones (a block name in
      both refuses at a look).
-  7. <O>/look_assembly.json, written atomically, then exp025_look.load_assembly(look, O) on it (the runner's own check).
+  7. Look mode: check_look_history (section 11.2 items 2 and 3) refuses NOT_READY unless <O>/out/mout holds exactly P2's 36
+     mout files with Amendment 4's mout_sha256.txt hashes (12_passC reads out/mout/*.parquet) and <O>/wl holds exactly P2's
+     36 days per wl_sha256.txt plus one file per October date from 2026-10-02 to the day before LOOKS[look]['end']
+     (11_passA lists O/wl). Their counts and sha256s go into the record.
+  8. <O>/look_assembly.json, written atomically, then exp025_look.load_assembly(look, O) on it (the runner's own check).
 
-Not done here: <O>/out/mout and <O>/wl (section 11.2 items 2 and 3), the R1 cross-check record, P7. The driver prices,
-labels and picks nothing; stdout carries counts only (no pool, mint, V0, pick, label, fill, exit or P&L).
+Not done here: copying P2's out/mout and wl days into the look's O, and building the October wl days with the pinned
+ledger/01_wallet_daily_det.py on O/tape/trades (section 11.2 items 2 and 3) come in a follow-up PR. Until then step 7
+refuses NOT_READY in look mode and the driver writes no look_assembly.json for a look. Also not here: the R1 cross-check
+record, P7. The driver prices, labels and picks nothing; stdout carries counts only (no pool, mint, V0, pick, label, fill,
+exit or P&L).
 
-`e0` runs steps 4 to 7 in exploration mode (adapter convert with look=None: exploration hours only, sealed paths refused)
+`e0` runs steps 4 to 6 and 8 in exploration mode (adapter convert with look=None: exploration hours only, sealed paths refused)
 on the adapter E0's own inputs (exp025_adapter.E0_SRC / E0_BLOCK, day E0_DAY) into E0_O, then shows that
 exp025_look.load_assembly accepts the record and that exp025_look.hour_status refuses it R12 (its hours are not a look's).
 The E0 day has no virtual_quote_reserves (it predates event V), so its vmap is empty and every v_ok is false.
@@ -68,6 +86,13 @@ from tools import exp025_adapter as A  # noqa: E402
 E0_O = "/data/mal/exp025/e0/look-driver-0920"     # the E0's scratch O (never a look's O)
 E0_RECORD = "look_driver_e0_2026-09-20.json"      # written into E0_O; not a p3_e0 / p4_e0 record (R13 reads only those)
 THREADS = 2
+# Amendment 4 (section 11.2 items 2-3): P2's sha256 manifests (the sha256sum-checked backed-up copy) and their pinned sha256
+P2_HISTORY = {
+    "mout": ("/data/mal/c1nf/p2/mout_sha256.txt", "64239ce8d5f1e7e21bdc228f83c49fcab3b4847ff762570b03bd77eb718d913c"),
+    "wl": ("/data/mal/c1nf/p2/wl_sha256.txt", "026310101a60f8a6d7c1c34f4c38374ca5015d6d7f42d907adaee2c0cd2d6431"),
+}
+P2_DAYS = 36
+OCT_WL_FIRST = "2026-10-02"   # the first October tape date (forward-1002 from 10-02T15)
 SRC_OF_BLOCK = {b: s for s, b in L.BLOCK_OF_SOURCE.items()}
 
 
@@ -109,6 +134,85 @@ def stray_tape_files(look: int, tape: str) -> list:
         for n in (sorted(os.listdir(d)) if os.path.isdir(d) else ()):
             if n.endswith(".parquet") and n[:-8] not in allow:
                 out.append(f"{k}/{n}")
+    return out
+
+
+# ----------------------------------------------------------------------------------------------------------------- v_ok, history
+def merge_v_ok(tape: str, hour: str) -> str:
+    """Join the sidecar tape/v_ok/<hour>.parquet into tape/trades/<hour>.parquet as its last column (the runner reads v_ok
+    from the trades file). The adapter writes the sidecar in the trades file's row order, so this is a POSITIONAL JOIN,
+    refused NOT_READY unless both files have the same row count and every row's (slot, tx_index, event_index) is equal.
+    One thread, insertion order kept, written to .tmp then os.replace: the trades rows and their order are unchanged.
+    Returns the merged file's sha256."""
+    t = os.path.join(tape, "trades", f"{hour}.parquet")
+    s = os.path.join(tape, "v_ok", f"{hour}.parquet")
+    for p in (t, s):
+        if not os.path.isfile(p):
+            raise R.Refusal("NOT_READY", f"{p} missing: no v_ok to merge for {hour}")
+    tq, sq, tmp = A._q(t), A._q(s), t + ".tmp"
+    con = A._connect(threads=1, tmp=os.path.join(tape, "tmp_duck"))   # threads=1, preserve_insertion_order=true
+    try:
+        if con.execute(f"SELECT count(*) FROM parquet_schema({tq}) WHERE name = 'v_ok'").fetchone()[0]:
+            raise R.Refusal("NOT_READY", f"{t} already has v_ok: convert did not rewrite it")
+        nt = con.execute(f"SELECT count(*) FROM read_parquet({tq})").fetchone()[0]
+        ns = con.execute(f"SELECT count(*) FROM read_parquet({sq})").fetchone()[0]
+        mis = con.execute(f"""SELECT count(*) FILTER (WHERE t.slot IS DISTINCT FROM s.slot OR t.tx_index IS DISTINCT FROM s.tx_index
+                                                      OR t.event_index IS DISTINCT FROM s.event_index)
+                               FROM read_parquet({tq}) t POSITIONAL JOIN read_parquet({sq}) s""").fetchone()[0]
+        if nt != ns or mis:
+            raise R.Refusal("NOT_READY", f"{hour}: the v_ok sidecar does not align with the trades file "
+                                         f"({nt} vs {ns} rows, {mis} misaligned)")
+        con.execute(f"COPY (SELECT t.*, s.v_ok FROM read_parquet({tq}) t POSITIONAL JOIN read_parquet({sq}) s) "
+                    f"TO {A._q(tmp)} (FORMAT parquet, COMPRESSION zstd)")
+    finally:
+        con.close()
+    os.replace(tmp, t)
+    return A.sha256_file(t)
+
+
+def look_october_wl_days(look: int) -> list:
+    """The October wl days a look needs: OCT_WL_FIRST to the day before LOOKS[look]['end']."""
+    return [R.date_str(x) for x in range(R.ep(f"{OCT_WL_FIRST}T00"), R.ep(R.LOOKS[look]["end"]), 86400)]
+
+
+def _p2_manifest(kind: str) -> tuple:
+    path, pinned = P2_HISTORY[kind]
+    if not os.path.isfile(path) or A.sha256_file(path) != pinned:
+        raise R.Refusal("NOT_READY", f"P2's {kind} manifest {path} is missing or is not Amendment 4's ({pinned[:8]})")
+    rows = {}
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                h, n = line.split(None, 1)
+                rows[os.path.basename(n.strip().lstrip("*"))] = h
+    if len(rows) != P2_DAYS:
+        raise R.Refusal("NOT_READY", f"P2's {kind} manifest lists {len(rows)} files, not {P2_DAYS}")
+    return path, pinned, rows
+
+
+def check_look_history(look: int, O: str) -> dict:
+    """Section 11.2 items 2 and 3, in look mode before look_assembly.json is written. NOT_READY unless
+    (a) O/out/mout holds exactly P2's 36 mout files, each with mout_sha256.txt's hash (12_passC reads out/mout/*.parquet), and
+    (b) O/wl holds exactly P2's 36 days per wl_sha256.txt plus one file per October date from OCT_WL_FIRST to the day before
+        LOOKS[look]['end'] (11_passA lists O/wl: no wl/ crashes pass A inside the lock; a missing day is silent
+        creator-history and new-wallet drift).
+    The October days are checked for presence only and their sha256 recorded; building them with the pinned
+    ledger/01_wallet_daily_det.py on O/tape/trades is the follow-up PR's. Returns counts and sha256s for the record."""
+    out = {}
+    for kind, d in (("mout", os.path.join(O, "out", "mout")), ("wl", os.path.join(O, "wl"))):
+        path, pinned, p2 = _p2_manifest(kind)
+        want = set(p2) | ({f"{x}.parquet" for x in look_october_wl_days(look)} if kind == "wl" else set())
+        have = {n for n in os.listdir(d) if n.endswith(".parquet")} if os.path.isdir(d) else set()
+        miss, extra = sorted(want - have), sorted(have - want)
+        if miss or extra:
+            raise R.Refusal("NOT_READY", f"{d}: {len(miss)} files missing (first {miss[:1]}), {len(extra)} unexpected "
+                                         f"(first {extra[:1]}); section 11.2 items 2-3")
+        sha = {n: A.sha256_file(os.path.join(d, n)) for n in sorted(want)}
+        bad = sorted(n for n, h in p2.items() if sha[n] != h)
+        if bad:
+            raise R.Refusal("NOT_READY", f"{d}: {len(bad)} of P2's files differ from {os.path.basename(path)} (first {bad[0]})")
+        out[kind] = {"dir": d, "files": len(sha), "p2_files": len(p2), "p2_manifest": path, "p2_manifest_sha256": pinned,
+                     "october_files": len(sha) - len(p2), "october_sha256": {n: sha[n] for n in sorted(sha) if n not in p2}}
     return out
 
 
@@ -157,17 +261,24 @@ def link_bars(ex_dir: str, oct_dir: str, out: str, *, allow_dup: bool = False) -
 # ----------------------------------------------------------------------------------------------------------------- assembly
 def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger, now, exploration: bool = False,
              exploration_sh: str = A.EXPLORATION_SH, exploration_sha256: str = A.EXPLORATION_TOKENS_SHA256) -> dict:
-    """Steps 4 to 7 of the module docstring. lookname None = exploration mode (adapter convert with look=None)."""
+    """Steps 4 to 8 of the module docstring. lookname None = exploration mode (adapter convert with look=None)."""
+    Path(O, "look_assembly.json").unlink(missing_ok=True)   # a failed re-assembly must leave no record of the old tape
     asm = os.path.join(O, "assembly")
     os.makedirs(asm, exist_ok=True)
-    paths, mans = [], []
+    mans = []
     for blk, src, hours, ev in plan:
-        man = A.convert(src, blk, tape, hours, look=lookname, event_v=ev, final_ledger=final_ledger, now=now)
-        p = os.path.join(asm, f"manifest-{blk}.json")
-        _write_json(p, man)
-        paths.append(p)
-        mans.append(man)
+        mans.append(A.convert(src, blk, tape, hours, look=lookname, event_v=ev, final_ledger=final_ledger, now=now))
     Path(tape, "manifest.json").unlink(missing_ok=True)   # convert's per-call copy; the per-block copies are the record
+    for m in mans:   # the runner reads v_ok as a trades column (v_flag_missing, r3_coverage, price_rows)
+        if m.get("event_v"):
+            for f in m.get("files", []):
+                if f.get("kind") == "trades":
+                    f["sha256_with_v_ok"] = merge_v_ok(tape, f["hour"])
+    paths = []
+    for (blk, *_), m in zip(plan, mans):
+        p = os.path.join(asm, f"manifest-{blk}.json")
+        _write_json(p, m)
+        paths.append(p)
     all_hours = sorted({h for _, _, hs, _ in plan for h in hs})
     v0_files = []
     if any(ev for *_, ev in plan):   # the V0 files convert used: look_trade_files (look) or the call's own trade files
@@ -177,6 +288,11 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
             v0_files = [f for _, src, hs, ev in plan if ev for h in hs if (f := A.src_file(src, "trades", h))]
         bad = {b["file"] for m in mans for b in m.get("v0_bad", [])}
         v0_files = [f for f in v0_files if str(f) not in bad]
+    if lookname is not None:   # section 2.4: tokens.v0_lamports must come from the V0 files convert priced the tape with
+        ev_m = [m for m in mans if m.get("event_v")]
+        if (len({frozenset(b["file"] for b in m["v0_bad"]) for m in ev_m}) > 1
+                or any(m["v0_files"] != len(v0_files) for m in ev_m)):
+            raise R.Refusal("NOT_READY", "the driver's V0 files differ from convert's")
     con = A._connect(threads=THREADS, tmp=os.path.join(asm, "tmp_duck"))
     A.collect_v0(con, v0_files, A.pinned_cols())
     v0_rows = [(p, None if v is None else int(v)) for p, v in con.execute("SELECT pool, v0 FROM v0map ORDER BY pool").fetchall()]
@@ -214,6 +330,8 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
         "october_tokens_sha256": A.sha256_file(tok), "bars_1m": bars,
         "blobs": {"tools/exp025_look_driver.py": A.git_blob(__file__), "tools/exp025_adapter.py": A.git_blob(A.__file__)},
     }
+    if not exploration:   # section 11.2 items 2-3: no record until O holds the history pass A / pass C read
+        rec["history"] = check_look_history(look_label, O)
     _write_json(os.path.join(O, "look_assembly.json"), rec)
     L.load_assembly(look_label, O)   # the runner's own validation of what was just written
     return rec
