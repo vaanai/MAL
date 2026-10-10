@@ -368,7 +368,16 @@ def test_normalize_owner_and_host_synthetic_cells() -> None:
     assert _normalize_owner("EXP-012 book for `[2026-10-06T00, 2026-10-16T00)` (one read, see [DEC-016](../DEC/x.md))", row_name="x") == "EXP-012"
     assert _normalize_owner("unassigned (was (nested) EXP-007)", row_name="x") == "unassigned"
     # Two owners outside parentheses, or none, raise: the guard never guesses.
-    for cell in ("exploration pool, prior owner EXP-011", "EXP-011 and EXP-012", "kill review / exploration pool", "(EXP-011)"):
+    for cell in (
+        "exploration pool, prior owner EXP-011",
+        "EXP-011 and EXP-012",
+        "kill review / exploration pool",
+        "(EXP-011)",
+        # A pool row whose parenthetical hands the block to an EXP id is not a
+        # pool row: only a "prior owner EXP-n" clause may name an id there.
+        "**exploration pool** (reserved for EXP-030 from 2026-10-20T00)",
+        "**exploration pool** (until 10-20T00, then EXP-030)",
+    ):
         with pytest.raises(ValueError):
             _normalize_owner(cell, row_name="x")
     assert _normalize_host("mal-research-0, three walkers", row_name="x") == "research"

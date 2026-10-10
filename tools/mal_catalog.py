@@ -158,6 +158,7 @@ def _parse_hours_cell(cell: str, *, row_name: str) -> tuple[str | None, str | No
 
 
 _PAREN_RE = re.compile(r"\([^()]*\)")
+_PRIOR_OWNER_RE = re.compile(r"prior owner\s+EXP-\d+", re.IGNORECASE)
 
 _POOL_TAGS = (
     ("exploration pool", "exploration-pool"),
@@ -198,6 +199,8 @@ def _normalize_owner(cell: str, *, row_name: str) -> str:
     candidates += [tag for phrase, tag in _POOL_TAGS if phrase in head_lower]
     if len(candidates) > 1:
         raise ValueError(f"row {row_name!r}: Owner cell {cell!r} names more than one owner outside parentheses: {candidates}")
+    if candidates == ["exploration-pool"] and _EXP_OWNER_RE.search(_PRIOR_OWNER_RE.sub(" ", text)):
+        raise ValueError(f"row {row_name!r}: exploration-pool Owner cell {cell!r} names an EXP id outside a 'prior owner' clause")
     if candidates:
         return candidates[0]
     raise ValueError(f"row {row_name!r}: unrecognized Owner cell {cell!r}")
