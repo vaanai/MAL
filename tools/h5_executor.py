@@ -150,6 +150,10 @@ SEAL_START_MS = 1792112400000  # 2026-10-16T01:00:00Z
 ORACLE_EARLIEST_MS = 1792116000000  # 2026-10-16T02:00:00Z: the DEC-016 FINAL is written about now, not before
 SEAL_END_DEFAULT_MS = 1793930400000  # 2026-11-06T02:00:00Z. Config may move the end later, never earlier.
 SEAL_REASONS = frozenset({"seal_window_no_oracle", "seal_pick", "seal_oracle_error"})  # counted, never logged per mint
+# An H5 trigger on a pick is outcome-linked (the pool drained on a CAP-PICK pick): seal_pick is counted IN THIS PROCESS ONLY, never in the
+# refusal_counts ledger row, the counters file (seal_skips), the seal_count log, an alert or a log line, before EXP-022's read ends
+# (quant-proof (d) on #509/#540; DEC-024 Amendment 6 item 5; the #368 precedent: lumping a sealed count with others does not cure it).
+SEAL_PICK_IN_PROCESS_ONLY = "seal_pick"
 PICK_STALE_S = 60.0  # DEC-024 s6: a pick feed missing or stale for more than 60 s halts buys (the oracle answers None: seal_oracle_error). Code constant.
 PICK_FEED_ALERT_MS = 600_000  # the pick_feed_unavailable alert, at most once per 10 minutes (no mint, no trigger: a feed fact only)
 
@@ -925,6 +929,7 @@ class H5Executor(pl.LiveExecutor):
         self._slot_alert_ms = 0
         self._slot_fail_ms: int | None = None
         self._seal_logged = self.counters.seal_skips
+        self.seal_picks_in_process = 0  # SEAL_PICK_IN_PROCESS_ONLY: memory only, never saved, logged or alerted
         ts0 = self.counters.tier_state
         self._tier_state_legacy = bool(ts0.get("tier")) and "realized_at_start" not in ts0  # counters from before the tier baselines were stored
         self._seal_logged_ms = 0
@@ -1211,7 +1216,8 @@ class H5Executor(pl.LiveExecutor):
         return mapped, None, info
 
     def _hour_roll(self, now: int) -> None:
-        """One `refusal_counts` ledger row per UTC hour: accepted and refused triggers and the refusals by reason (seal skips as one count)."""
+        """One `refusal_counts` ledger row per UTC hour: accepted and refused triggers and the refusals by reason (seal skips as one count;
+        seal_pick is not in it: SEAL_PICK_IN_PROCESS_ONLY)."""
         hour = now // 3_600_000
         if self._counts_hour is None:
             self._counts_hour = hour
@@ -1226,6 +1232,8 @@ class H5Executor(pl.LiveExecutor):
             self._counts_hour, self._refusal_counts, self._accepted_hour, self._pre_unlinked_hour = hour, {}, 0, 0
 
     def _count_refusal(self, reason: str) -> None:
+        if reason == SEAL_PICK_IN_PROCESS_ONLY:
+            return  # never in the hourly ledger row (see SEAL_PICK_IN_PROCESS_ONLY)
         now = self.now_ms()
         self._hour_roll(now)
         key = "seal_skip" if reason in SEAL_REASONS else reason
@@ -1241,6 +1249,9 @@ class H5Executor(pl.LiveExecutor):
             sealed = self._seal_reason(trg, self.now_ms())
             if sealed is not None:  # EXP-022 s9 / DEC-024 s6: a mint the seal would refuse (a pick, or not known to be a non-pick) never gets a
                 reason, kw = sealed, {}  # per-mint row, whatever check refused it first. The decision (refuse) is the same; only the label is.
+        if reason == SEAL_PICK_IN_PROCESS_ONLY:  # a refusal on a pick: counted in this process only (no ledger, counters file, alert or log)
+            self.seal_picks_in_process += 1
+            return
         self._count_refusal(reason)
         if reason == SYNTHETIC_UNCONFIRMED:  # (only a trigger that skipped the parsers gets here; the parsers' refusals are counted in _bad_intent)
             self.counters.synthetic_unconfirmed += 1

@@ -536,7 +536,7 @@ class SealTests(Case):
         self.assertEqual((o.calls, len(e.rpc.sent), e.ex.counters.seal_skips), ([MINT], 1, 0))
         e2 = self.sealed(T_AFTER_FINAL, Oracle(True), sub="pk")
         e2.fire()
-        self.assertEqual((e2.rpc.sent, e2.ex.counters.seal_skips), ([], 1))
+        self.assertEqual((e2.rpc.sent, e2.ex.counters.seal_skips, e2.ex.seal_picks_in_process), ([], 0, 1))  # a pick: in-process count only
 
     def test_an_oracle_error_or_a_non_boolean_refuses_the_buy(self):
         for i, result in enumerate((RuntimeError("boom"), LookupError("undecided"), None, 1, "no", 0.0)):
@@ -558,8 +558,29 @@ class SealTests(Case):
         later = self.sealed(T_SEAL, None, sub="l", seal_end_ms=h.SEAL_END_DEFAULT_MS + 86_400_000)
         self.assertEqual(later.ex.seal_end_ms, h.SEAL_END_DEFAULT_MS + 86_400_000)
 
+    def test_a_seal_pick_is_counted_in_process_only(self):
+        # quant-proof (d): an H5 trigger on a pick is outcome-linked. No ledger row (seal_count, refusal_counts), counters file field, alert or
+        # log holds a seal_pick count; only the process's memory does.
+        e = self.sealed(T_AFTER_FINAL, Oracle(True))
+        for _ in range(3):
+            e.fire()
+        self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips, e.ex.seal_picks_in_process), ([], 0, 3))
+        self.assertNotIn("seal_skip", e.ex._refusal_counts)
+        self.assertNotIn("seal_pick", e.ex._refusal_counts)
+        e.clock.t += 3_700_000
+        e.ex.prewarm()
+        e.ex._hour_roll(e.clock())
+        self.assertEqual(e.ledger("seal_count"), [])
+        for r in e.ledger("refusal_counts"):
+            self.assertNotIn("seal_skip", r["by_reason"])
+            self.assertNotIn("seal_pick", r["by_reason"])
+        text = Path(e.ex.fills.path).read_text() + Path(e.ex.counters_path).read_text()
+        self.assertNotIn(MINT, text)
+        self.assertNotIn("seal_pick", text)
+        self.assertEqual(json.loads(Path(e.ex.counters_path).read_text()).get("seal_skips", 0), 0)
+
     def test_only_a_count_of_seal_skips_is_ever_logged_never_a_mint(self):
-        o = Oracle(True)
+        o = Oracle(None)  # undecided: a seal_oracle_error, which is a count (a pick is not: test_a_seal_pick_is_counted_in_process_only)
         e = self.sealed(T_AFTER_FINAL, o)
         for _ in range(3):
             e.fire()
@@ -714,7 +735,9 @@ class PickWireTests(Case):
                                           ([{"mint": MINT, "pick": False}], None))):
             e = self.setup(rows, hb_age_ms=age, sub=f"x{i}")
             e.fire()
-            self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips, e.refusals()), ([], 1, []), (rows, age))
+            pick = i == 0  # a known pick is counted in this process only (quant-proof (d)); the others are seal_oracle_error counts
+            self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips, e.ex.seal_picks_in_process, e.refusals()),
+                             ([], 0 if pick else 1, 1 if pick else 0, []), (rows, age))
             self.assertNotIn(MINT, Path(e.ex.fills.path).read_text())
 
     def test_before_the_window_the_feed_is_not_read_and_nothing_changes(self):
@@ -728,7 +751,7 @@ class PickWireTests(Case):
         e = self.setup([{"mint": MINT, "pick": True}])
         Path(e.ex.paths["stop"]).write_text("")
         e.fire()
-        self.assertEqual((e.rpc.sent, e.refusals(), e.ex.counters.seal_skips), ([], [], 1))
+        self.assertEqual((e.rpc.sent, e.refusals(), e.ex.counters.seal_skips, e.ex.seal_picks_in_process), ([], [], 0, 1))
         self.assertNotIn(MINT, Path(e.ex.fills.path).read_text())
         e2 = self.setup([{"mint": MINT, "pick": False}], sub="np")  # a non-pick refused by the same check keeps its row, as before
         Path(e2.ex.paths["stop"]).write_text("")
