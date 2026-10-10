@@ -722,13 +722,14 @@ def test_on_row_counts_or_raises_on_malformed_rows():
     bad = [({**tip_create_row("M", "C", "n", "s", 5, G0), "block_time": None}, "drop_creates_no_block_time"),
            ({**tip_complete_row("M", 5, G0), "block_time": None}, "drop_migrations_no_block_time"),
            ({**tip_ps_row(r), "side": "swap"}, "drop_bad_side"),
-           ({**tip_ps_row(r), "quote_reserve": None}, "drop_missing_quote_reserve"),
+           ({**tip_ps_row(r), "quote_reserve": None}, "drop_missing_reserves"),
            ({**tip_ps_row(r), "pool": None}, "drop_missing_pool"),
            ({**tip_ps_row(r), "slot": None}, "drop_no_slot"),
            ({**tip_ps_row(r), "block_time": "x"}, "drop_bad_block_time"),
            ({**tip_bonding_row("M", None, True, 1, 1, G0)}, "drop_missing_trader")]
+    forwarded = {"drop_missing_reserves"}       # counted, then forwarded with reserves None so the pool is marked bad (fail closed)
     for row, key in bad:
-        assert eng.on_row(row) is False, key
+        assert eng.on_row(row) is (key in forwarded), key
         assert eng.stats[key] == 1, key
     mig = {**tip_complete_row("M", 5, G0), "type": "migration"}
     assert eng.on_row(mig) is False and eng.stats["migrations_other_type"] == 1 and "M" not in eng._info
@@ -742,6 +743,39 @@ def test_on_row_counts_or_raises_on_malformed_rows():
     # a PumpSwap trade with a null block_time is kept (11_passA's rule) but counted
     ok = {**tip_ps_row(r), "block_time": None}
     assert eng.on_row(ok) is True and eng.stats["trades_no_block_time"] == 1
+
+
+@pytest.mark.parametrize("field,value", [("quote_reserve", None), ("base_reserve", None), ("base_reserve", float("nan")),
+                                         ("quote_reserve", "123")])
+def test_on_row_missing_reserves_mark_a_live_pool_bad(field, value):
+    """PR #506 round 2: a PumpSwap print with null / non-numeric reserves fed through on_row (the live path) marks the pool bad, as
+    on_trade does and as 11_passA:129-130 drops the whole mint. Before the fix on_row only counted and dropped the row, and the pool kept
+    being scored."""
+    rows = make_event_prints(31, n=200, span_s=1500)
+    T = G0 + 1200
+    eng = cf.FeatureEngine(v_source="event")
+    for row in _tip_stream(rows):
+        assert eng.on_row(row) is True
+    P = eng._pools["POOL"]
+    assert P.eligible is True and not P.bad and eng.features_at("POOL", T) is not None
+    last = rows[-1]
+    bad = {**tip_ps_row(last), field: value, "slot": last["slot"] + 1, "signature": "BADRES"}
+    assert eng.on_row(bad) is True
+    assert eng.stats["drop_missing_reserves"] == 1
+    assert P.bad and P.bad_reason == "bad_reserves" and eng.stats["bad_pool_bad_reserves"] == 1 and eng.stats["bad_pools"] == 1
+    assert eng.features_at("POOL", T) is None
+    # the direct-call path gives the same state
+    direct = cf.FeatureEngine(v_source="event")
+    for row in _tip_stream(rows):
+        direct.on_row(row)
+    direct.on_trade("pumpswap", "MINT", last["trader"], bool(last["isb"]), int(last["sol"]), int(last["tok"]),
+                    None if field == "quote_reserve" else last["vault"], None if field == "base_reserve" else last["b"], "POOL",
+                    last["slot"] + 1, last["bt"], v_event=last["v_event"])
+    assert direct._pools["POOL"].bad_reason == "bad_reserves" and direct.features_at("POOL", T) is None
+    # strict engines raise on the row instead
+    strict = cf.FeatureEngine(v_source="event", strict=True)
+    with pytest.raises(cf.RowError):
+        strict.on_row(bad)
 
 
 def test_real_tip_follower_output_reaches_the_engine(tmp_path):
@@ -870,6 +904,61 @@ def test_asof_provider_refuses_a_snapshot_for_another_day():
     prov2 = cf.AsofLedgerProvider(lambda d: FakeAsofManifest({0: (1.0,) * 7}, d), th_of)
     snap = prov2.snapshot_for_day(day)
     assert snap is not None and snap.get("W0") == (1.0,) * 7 and snap.get("W5") is None and prov2.refused == 0
+
+
+class FakeStale(RuntimeError):
+    pass
+
+
+class FakeAsofLedgerCls:
+    """tools.c1nf_wallet_ledger.AsofLedger double: open_for_day(root, day, verify) returns a snapshot for the days in `have`, else raises
+    the stale exception (as the real one does between 00:00Z and the end of the nightly rollup)."""
+
+    calls: list = []
+    have: dict = {}
+
+    @classmethod
+    def open_for_day(cls, root, day, verify=False):
+        cls.calls.append((root, day, verify))
+        if day == "boom":
+            raise ValueError("schema")
+        if day not in cls.have:
+            raise FakeStale(day)
+        return cls.have[day]
+
+
+def test_asof_provider_from_root_opens_through_open_for_day(tmp_path):
+    th_of = lambda xs: np.array([int(x[1:]) for x in xs], dtype=np.uint64)   # noqa: E731
+    FakeAsofLedgerCls.calls = []
+    FakeAsofLedgerCls.have = {"2026-10-12": FakeAsofManifest({0: (2.0,) * 7}, "2026-10-12"),
+                              "2026-10-13": FakeAsofManifest({0: (2.0,) * 7}, "2026-10-12")}   # a mislabelled snapshot
+    prov = cf.AsofLedgerProvider.from_root(tmp_path, th_of, verify=True, ledger_cls=FakeAsofLedgerCls, stale_exc=FakeStale)
+    snap = prov.snapshot_for_day("2026-10-12")
+    assert snap is not None and snap.get("W0") == (2.0,) * 7
+    assert prov.snapshot_for_day("2026-10-14") is None and prov.stale == 1           # not built yet: None, never asof-(D-1)
+    assert prov.snapshot_for_day("2026-10-13") is None and prov.refused == 1         # the manifest guard still applies
+    with pytest.raises(ValueError):
+        prov.snapshot_for_day("boom")                                                  # other refusals propagate (engine: ledger_errors)
+    assert FakeAsofLedgerCls.calls == [(str(tmp_path), d, True) for d in ("2026-10-12", "2026-10-14", "2026-10-13", "boom")]
+    # in the engine: a stale day is not cached and is asked again after the backoff
+    rows = make_prints(9, n=150, span_s=900, n_traders=6)
+    day = cf.utc_day(G0 + 900)
+    FakeAsofLedgerCls.calls, FakeAsofLedgerCls.have = [], {}
+    prov = cf.AsofLedgerProvider.from_root(tmp_path, th_of, ledger_cls=FakeAsofLedgerCls, stale_exc=FakeStale)
+    eng = new_engine(rows, ledger=prov)
+    for r in rows:
+        feed(eng, r)
+    r1 = eng.features_at("POOL", G0 + 900, sd=900 * SPS)
+    assert r1 is not None and not r1.wallet_ok and prov.stale >= 1 and eng.stats["ledger_missing"] >= 1
+    assert all(c[1] == day for c in FakeAsofLedgerCls.calls)
+
+
+def test_asof_provider_from_root_default_is_the_pr502_reader(tmp_path):
+    """With the real ledger module (PR #502) importable, the default opener is AsofLedger.open_for_day: an empty root is stale (None)."""
+    led = pytest.importorskip("tools.c1nf_wallet_ledger")
+    assert hasattr(led.AsofLedger, "open_for_day")
+    prov = cf.AsofLedgerProvider.from_root(tmp_path, lambda xs: np.zeros(len(xs), dtype=np.uint64))
+    assert prov.snapshot_for_day("2026-10-12") is None and prov.stale == 1
 
 
 class FakeCon:

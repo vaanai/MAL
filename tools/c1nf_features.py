@@ -84,7 +84,6 @@ PRUNE_INFO_IDLE_S = 3 * 86400           # ungraduated mint with no bonding trade
 TABLE_KEEP_S = 2 * 86400 + 4 * 3600     # windowed as-of tables (nar_*, mk_*): longest window 24 h + pool life 25 h + margin
 ART_EXP025 = Path(__file__).resolve().parent.parent / "ARTIFACTS" / "exp025"
 TRADE_FIELDS = ("mint", "trader", "sol_lamports", "token_raw")
-PS_FIELDS = ("pool", "quote_reserve", "base_reserve")
 
 
 class RowError(ValueError):
@@ -213,7 +212,8 @@ class LedgerProvider(Protocol):
     """Task 1 (claude/c1nf-ledger) builds the ledger. `snapshot_for_day('YYYY-MM-DD')` must contain tape days strictly BEFORE that
     UTC day, nothing from the day itself. Return None when that snapshot does not exist (yet): in a replay of the first tape day that means
     "no prior day" (wallet features NaN, as in C1); live it means the nightly rollup has not finished. The engine never caches None: it
-    asks again with backoff, and Features.wallet_ok tells the caller which case each decision was in."""
+    asks again with backoff, and Features.wallet_ok tells the caller which case each decision was in. The live provider is
+    AsofLedgerProvider.from_root (AsofLedger.open_for_day)."""
 
     def snapshot_for_day(self, day: str) -> Optional[LedgerSnapshot]: ...
 
@@ -240,13 +240,43 @@ class AsofLedgerAdapter:
 class AsofLedgerProvider:
     """LedgerProvider over per-day AsofLedger snapshots: open_day('YYYY-MM-DD') -> AsofLedger | None (asof-<day> = days strictly before).
 
-    A snapshot whose MANIFEST `asof_day` is not the requested day is refused (None, counted in `refused`): a decision on day D must not
-    silently use asof-(D-1), which lacks day D-1 (PR #502 review). A ledger without a manifest attribute (a duck-typed test double) is used
-    as is."""
+    Live callers build it with `from_root(out_root, th_of)`: every day is opened through `AsofLedger.open_for_day(out_root, day)` (PR #502),
+    the ledger's own reader for decision day D, which opens asof-<D> only and raises StaleLedger otherwise. Do not pass `AsofLedger.open`
+    or a directory picker of your own as `open_day` on the live path.
+
+    A second guard here: a snapshot whose MANIFEST `asof_day` is not the requested day is refused (None, counted in `refused`). A decision
+    on day D must not silently use asof-(D-1), which lacks day D-1 (PR #502 review). A ledger without a manifest attribute (a duck-typed
+    test double) is used as is."""
 
     def __init__(self, open_day, th_of) -> None:
         self.open_day, self.th_of = open_day, th_of
         self.refused = 0
+        self.stale = 0
+
+    @classmethod
+    def from_root(cls, out_root, th_of, *, verify: bool = False, ledger_cls: Any = None, stale_exc: Any = None) -> "AsofLedgerProvider":
+        """The live provider over a tools/c1nf_wallet_ledger.py output root. open_day(D) = AsofLedger.open_for_day(out_root, D, verify).
+
+        StaleLedger (asof-<D> not built yet: 00:00Z until the nightly rollup finishes, or the rollup failed) -> None, counted in `stale`;
+        the engine never caches None and asks again with backoff, and Features.wallet_ok is False meanwhile. Never falls back to asof-<D-1>.
+        Any other Refused (schema, sha256 with verify=True) propagates; the engine counts it as ledger_errors and retries the same way.
+        ledger_cls / stale_exc replace the PR #502 classes in tests only."""
+        if ledger_cls is None or stale_exc is None:
+            from tools.c1nf_wallet_ledger import AsofLedger, StaleLedger
+            ledger_cls = AsofLedger if ledger_cls is None else ledger_cls
+            stale_exc = StaleLedger if stale_exc is None else stale_exc
+        root = str(out_root)
+        prov: Optional["AsofLedgerProvider"] = None
+
+        def open_day(day: str):
+            try:
+                return ledger_cls.open_for_day(root, day, verify=verify)
+            except stale_exc:
+                prov.stale += 1
+                return None
+
+        prov = cls(open_day, th_of)
+        return prov
 
     def snapshot_for_day(self, day: str):
         a = self.open_day(day)
@@ -540,7 +570,9 @@ class FeatureEngine:
         The clock is stamped from the row's `block_time` (on_block). PumpSwap V: "event" mode reads only `virtual_quote_reserves` (the
         print's own event V); "const" mode takes the first non-null of CONST_V_KEYS as the pool's V0. Every row that cannot be used is counted
         under drop_<reason> (strict=True raises RowError): no_slot, bad_block_time, <kind>_no_block_time (creates and migrations need it),
-        bad_side, missing_<field>, bad_kind."""
+        bad_side, missing_<field>, bad_kind. A PumpSwap print with a null or non-numeric quote_reserve/base_reserve is counted under
+        drop_missing_reserves and still forwarded with both reserves None, so the pool is marked bad (bad_reserves), as 11_passA:129-130 drops
+        the whole mint and as on_trade does."""
         if kind is None:
             t = row.get("type")
             kind = "migrations" if t in ("complete", "migration") else "creates" if t == "create" else "trades"
@@ -562,12 +594,16 @@ class FeatureEngine:
                 self._drop("bad_side", side)
                 return False
             venue = row.get("venue")
-            need = TRADE_FIELDS + (PS_FIELDS if venue == VENUE_PUMPSWAP else ())
+            need = TRADE_FIELDS + (("pool",) if venue == VENUE_PUMPSWAP else ())
             for k in need:
                 v = row.get(k)
-                if v is None or (k in ("sol_lamports", "token_raw", "quote_reserve", "base_reserve") and not _num(v)):
+                if v is None or (k in ("sol_lamports", "token_raw") and not _num(v)):
                     self._drop("missing_" + k, venue)
                     return False
+            qr, br = row.get("quote_reserve"), row.get("base_reserve")
+            if venue == VENUE_PUMPSWAP and not (_num(qr) and _num(br)):
+                self._drop("missing_reserves", venue)   # counted (strict raises), then fail closed:
+                qr = br = None                          # on_trade -> _ingest marks the pool bad (11_passA:129-130)
             if bt is None:
                 self.stats["trades_no_block_time"] += 1           # kept: 11_passA's null block_time rule (running max / graduation)
             pool = row.get("pool")
@@ -588,8 +624,8 @@ class FeatureEngine:
                     P = self._pools.get(pool)
                     if ev is not None and P is not None and float(ev) != P.V:
                         self.stats["const_v_drift_rows"] += 1     # event V(t) != V0 on a "const" engine: this tape needs "event"
-            self.on_trade(venue, row["mint"], row["trader"], side == "buy", row["sol_lamports"], row["token_raw"], row.get("quote_reserve"),
-                          row.get("base_reserve"), pool, slot, bt, v_event=v_event)
+            self.on_trade(venue, row["mint"], row["trader"], side == "buy", row["sol_lamports"], row["token_raw"], qr, br, pool, slot, bt,
+                          v_event=v_event)
             return True
         if kind == "creates":
             if row.get("mint") is None:
