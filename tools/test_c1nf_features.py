@@ -7,6 +7,7 @@ flags, <= 1e-9 relative on floats. The parity run on a real exploration day is t
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import importlib.util
 import json
@@ -1130,16 +1131,21 @@ def test_pool_columns_are_typed_and_the_unread_columns_are_gone():
     for name in ("slot", "bt"):
         assert type(getattr(P, name)) is array and getattr(P, name).typecode == "q"
     assert type(P.isb) is bytearray and set(P.isb) <= {0, 1}
-    for name in ("sol", "tok", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "am_hi", "am_lo"):
+    for name in ("sol", "tok", "qpre", "ppre", "hprev", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "am_hi",
+                 "am_lo", "hold"):
         assert type(getattr(P, name)) is array and getattr(P, name).typecode == "d", name
-    for gone in ("q", "b", "lp", "seen_any"):
+    assert type(P.tid) is array and P.tid.typecode == "i" and type(P.fbuy) is array and P.fbuy.typecode == "q"
+    for gone in ("q", "b", "lp", "seen_any", "th", "seen_buy"):
         assert not hasattr(P, gone), gone
     n = len(rows)
-    assert len(P.slot) == len(P.bt) == len(P.isb) == len(P.sol) == len(P.th) == len(P.csl) == len(P.am_hi) == n and len(P.cs_vol) == n + 1
-    assert P.q0 == rows[0]["q"] and P.lp_last == math.log(P.ppre[-1])
-    assert P.cs_any[-1] == len(P.hold) == len({r["trader"] for r in rows})        # hold's keys are the traders seen (was seen_any)
+    assert len(P.slot) == len(P.bt) == len(P.isb) == len(P.sol) == len(P.tid) == len(P.hprev) == len(P.csl) == len(P.am_hi) == n
+    assert len(P.cs_vol) == n + 1 and P.off == 0 and P.cut is None and P.n() == n
+    assert P.q0 == rows[0]["q"] and P.p0 == P.ppre[0] and P.lp_last == math.log(P.ppre[-1])
+    first = list(dict.fromkeys(r["trader"] for r in rows))                         # F3: ids in first-occurrence order
+    assert P.names == first and P.tids == {t: i for i, t in enumerate(first)} and [P.names[t] for t in P.tid] == [r["trader"] for r in rows]
+    assert P.cs_any[-1] == len(P.hold) == len(P.fbuy) == len(first)
     assert list(P.isb) == [int(r["isb"]) for r in rows]
-    assert eng.held_sizes() == {"held_prints": n, "held_pairs": len(P.hold)}
+    assert eng.held_sizes() == {"held_prints": n, "held_pairs": len(first)}
     eng.expire(G0 + cf.GRID_END + 3601)
     assert eng.held_sizes() == {"held_prints": 0, "held_pairs": 0}
 
@@ -1248,6 +1254,415 @@ def test_one_cached_ledger_day_gives_the_same_features_across_the_utc_day_change
     back = [_vec_bytes(engs[1].features_at("POOL", T, sd=clock_sd(T - shift))) for T in Ts[:5]]   # back to the dropped day
     assert back == res[2][:5] and engs[1].ledger.opened[-1] == cf.utc_day(Ts[0])
     assert engs[1]._ledger_for(cf.utc_day(Ts[-1]), keep_days=2) is not None and len(engs[1]._ledger_cache) == 2
+
+
+# ======================================================================================================================================
+# Memory Build-B (job #608): the opt-in 1 h print window (F1) and per-pool trader ids (F3).
+# Twin engines, window off and window on, are fed the same rows the way the live shadow feeds them (clock first; expire(k * 600) before
+# the minute it decides; T never goes back). Every answer must be bit-equal (float64 vector bytes and every field), window_violation 0.
+# ======================================================================================================================================
+WG0 = 1_788_000_000 - 1_788_000_000 % 86400 + 86400 - 5 * 3600            # 19:00Z: the runs cross UTC midnights
+WV0 = 17_584_505_288
+
+
+class _HashSnap:
+    """Wallet ledger values from a hash of (day, trader); 1 in 5 traders unknown."""
+
+    def __init__(self, day):
+        self.day = day
+
+    def get(self, t):
+        if t is None:
+            return None
+        h = int(hashlib.md5((self.day + str(t)).encode()).hexdigest()[:8], 16)
+        if h % 5 == 0:
+            return None
+        r = np.random.default_rng(h)
+        return tuple(float(x) for x in (r.integers(1, 3000), r.integers(0, 200), r.normal(0, 5e9), r.integers(0, 50), r.integers(0, 60),
+                                        r.integers(1, 30), abs(r.normal(0, 3e9))))
+
+
+class _HashSnapMany(_HashSnap):
+    def lookup_many(self, traders):
+        rows = [self.get(t) for t in traders]
+        m = np.full((len(rows), 7), np.nan)
+        for i, r in enumerate(rows):
+            if r is not None:
+                m[i] = r
+        return np.array([r is not None for r in rows], dtype=bool), m
+
+
+class _HashLedger:
+    def __init__(self, vec, missing=()):
+        self.vec, self.missing = vec, set(missing)
+
+    def snapshot_for_day(self, day):
+        return None if day in self.missing else (_HashSnapMany if self.vec else _HashSnap)(day)
+
+
+def window_scenario(seed, n_max=700):
+    """Rows (slot, t, event) in feed order. Covers: a null first block time (before and after the graduation), same-slot prints, quiet gaps
+    over 1 h, slot/block-time inversions, out-of-order slots, null and numpy sides, null traders, a second non-canonical pool, a pool whose
+    graduation is never seen, and pools freed at g0 + 25 h whose prints come back (ignored while rejected; after 50 h as a new pool, once
+    with a second graduation row so it is decided and windowed again)."""
+    rng = np.random.default_rng(seed)
+    ev = []
+    traders = [f"W{i}" for i in range(int(rng.integers(5, 80)))] + [None]
+    for k in range(int(rng.integers(2, 6))):
+        mint, pool, cr = f"M{k}", f"P{k}", f"C{int(rng.integers(0, 3))}"
+        g = WG0 + int(rng.integers(0, 3 * 3600))
+        ev.append((g - int(rng.integers(300, 90_000)), 0, ("create", mint, cr, f"name {k} dog", "DOG" if k % 2 else f"S{k}", bool(rng.random() < .3))))
+        for _ in range(int(rng.integers(0, 5))):
+            ev.append((g - int(rng.integers(1, 3000)), 1, ("bond", mint, traders[int(rng.integers(0, len(traders) - 1))], bool(rng.random() < .6),
+                                                      float(rng.integers(1, 9) * 1e8))))
+        if rng.random() < .85:
+            ev.append((g, 2, ("grad", mint)))
+        V = float(WV0)
+
+        def burst(t0, span, n, null_first):
+            q, b = 70e9 + rng.normal(0, 1e9), 206.9e12
+            bts = np.sort(t0 + rng.integers(0, span, n))
+            bts[0] = t0
+            if n > 3 and rng.random() < .4:                                   # a quiet gap over 1 h
+                c = int(rng.integers(1, n))
+                bts[c:] += int(rng.integers(3700, 3 * 3600))
+            for i in range(n):
+                buy = bool(rng.random() < .55)
+                sol = float(rng.integers(5, 400)) * 1e7 if rng.random() > .03 else 0.0
+                if buy:
+                    net = sol * (1 - cf.G_FEE); tok = b * net / (q + V + net)
+                    rq, rb = q, b; q += net; b -= tok
+                else:
+                    tok = float(rng.integers(1, 50)) * 1e12
+                    out = (q + V) * tok / (b + tok); sol = out
+                    rq, rb = q, b; q -= out; b += tok
+                bt = int(bts[i])
+                if (i == 0 and null_first) or (i > 0 and rng.random() < .02):
+                    bt = None                                                 # null block_time (first print: 11_passA's graduation rule)
+                u = rng.random()
+                isb = np.bool_(buy) if u < .01 else (None if u < .015 else ((1 if buy else 0) if u < .02 else buy))
+                vev = WV0 + int(rng.integers(-3e8, 3e8)) if (i and rng.random() < .3) else WV0
+                ev.append((int(bts[i]), 3, ("ps", mint, traders[int(rng.integers(0, len(traders)))], isb, sol, tok, rq, rb, pool, bt, vev)))
+            return int(bts[0])
+
+        n = int(rng.integers(5, n_max))
+        first = burst(g + int(rng.integers(-3, 60)), int(rng.integers(600, 30 * 3600)), n, rng.random() < .15)
+        if rng.random() < .3:                                                 # a second, non-canonical pool of the same mint
+            ev.append((first + 3, 3, ("ps", mint, "WX", True, 1e9, 1e12, 70e9, 206e12, pool + "b", first + 3, WV0)))
+        if rng.random() < .4:                                                 # freed at g0 + 25 h, then back: ignored while rejected ...
+            burst(g + 25 * 3600 + 900, 1800, int(rng.integers(2, 20)), False)
+            back = g + 50 * 3600 + int(rng.integers(0, 3600))                 # ... and a new pool once the rejection is 24 h old
+            if rng.random() < .5:
+                ev.append((back - 2, 2, ("grad", mint)))
+            burst(back, int(rng.integers(600, 3 * 3600)), int(rng.integers(5, 200)), False)
+    ev.sort(key=lambda e: (e[0], e[1]))
+    out, slot = [], 1000
+    for t, _, e in ev:
+        slot += int(rng.integers(0, 3))                                       # 0: same-slot rows
+        out.append((slot, t, e))
+    for _ in range(int(rng.integers(1, 6))):
+        j = int(rng.integers(1, len(out)))
+        s, t, e = out[j]
+        if e[0] == "ps" and e[9] is not None:
+            if rng.random() < .6:
+                out[j] = (s, t, e[:9] + (e[9] - int(rng.integers(30, 400)),) + e[10:])    # slot/block-time inversion
+            else:
+                out[j] = (max(0, s - 5), t, e)                                            # out-of-order slot
+    return out
+
+
+def _answer(r):
+    if r is None:
+        return None
+    return (r.pool, r.mint, r.t, r.sd, r.i1, r.vec.tobytes(), r.pre, r.stage1, struct.pack("<d", r.h_top1), r.cap_ok, r.wallet_ok, r.ledger_day)
+
+
+def drive_like_the_shadow(engs, rows, mode, seed, skipped_max=20):
+    """Feed every engine the same rows as tools/c1nf_shadow.Shadow does (clock, expire(k * 600) on the stream clock, then the minute Tc =
+    bt // 60 * 60 with sd = the row's slot). Each decision also asks at the engine's own clock and at an SD below ingested prints (i1 < n);
+    a sample of minutes skipped by a jump is asked before the expire (their T is below the new block time); 1 in 10 decisions is asked again
+    with the next print's exact state (next_state) if its T is not below the last expire. Returns one answer list per engine."""
+    rng = np.random.default_rng(seed + 991)
+    outs = [[] for _ in engs]
+    hw = lastT = kexp = last_exp = None
+    pend: dict = {}
+
+    def ask(pid, T, sd, ns=None):
+        for o, e in zip(outs, engs):
+            o.append((pid, T, sd, _answer(e.features_at(pid, T, sd, next_state=ns))))
+
+    def decide(T, sd):
+        pids = engs[0].alive_pools(T)
+        assert all(e.alive_pools(T) == pids for e in engs[1:])
+        for pid in pids:
+            ask(pid, T, sd)
+            u = rng.random()
+            if u < .25:
+                ask(pid, T, None)
+            elif u < .55:
+                ask(pid, T, max(0, sd - int(rng.integers(1, 80))))
+            if rng.random() < .1:
+                pend.setdefault(pid, []).append((T, sd))
+
+    for slot, t, e in rows:
+        kind = e[0]
+        bt = e[9] if kind == "ps" else int(t)
+        if bt is not None:
+            for x in engs:
+                x.on_block(slot, bt)
+            if hw is None or bt > hw:
+                hw = bt
+                Tc = bt // 60 * 60
+                if lastT is not None and Tc > lastT + 60:
+                    sk = list(range(lastT + 60, Tc, 60))
+                    for T in (sk if len(sk) <= skipped_max else [sk[int(i)] for i in sorted(rng.choice(len(sk), skipped_max, replace=False))]):
+                        decide(T, slot)
+                k = bt // 600
+                if kexp is None:
+                    kexp = k
+                elif k > kexp:
+                    kexp, last_exp = k, k * 600
+                    got = [x.expire(last_exp) for x in engs]
+                    assert len(set(got)) == 1
+                if lastT is None:
+                    lastT = Tc
+                elif Tc > lastT:
+                    lastT = Tc
+                    decide(Tc, slot)
+        if kind == "create":
+            for x in engs:
+                x.on_create(e[1], e[2], e[3], e[4], int(t), e[5])
+        elif kind == "grad":
+            for x in engs:
+                x.on_graduation(e[1], int(t))
+        elif kind == "bond":
+            for x in engs:
+                x.on_trade("pump_bonding", e[1], e[2], e[3], e[4], 1e12, 30e9, 1e15, None, slot, int(t))
+        else:
+            pool = e[8]
+            if pool in pend:
+                for T0, sd0 in pend.pop(pool):
+                    if last_exp is None or T0 >= last_exp:                   # a live caller never asks below its last expire
+                        ask(pool, T0, sd0, (e[6], e[7]) if mode == "const" else (int(e[6]), e[7], int(e[10])))
+            members = [pool in x._pools for x in engs]
+            assert len(set(members)) == 1
+            for x in engs:
+                if mode == "const" and not members[0]:
+                    x.set_pool_v(pool, float(WV0))
+                x.on_trade("pumpswap", e[1], e[2], e[3], e[4], e[5], int(e[6]) if mode == "event" else e[6], e[7], pool, slot, e[9],
+                           v_event=e[10])
+    return outs
+
+
+def _window_engines(mode, vec, **kw):
+    missing = {cf.utc_day(WG0 + 86400 * 2)}
+    return [cf.FeatureEngine(ledger=_HashLedger(vec, missing), v_source=mode, ledger_retry_s=(0.0, 0.0), print_window=w, **kw) for w in (False, True)]
+
+
+def _outcomes(eng):
+    out = []
+    for cr, lst in sorted(eng._cr_pools.items()):
+        for Q in lst:
+            o = Q.outcome if Q.outcome is not None else (Q.outcome_now() if not Q.dead else None)
+            out.append((cr, Q.pool, Q.n_final if Q.dead else Q.n(), None if o is None else struct.pack("<2d", *o)))
+    return out
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("mode", ["const", "event"])
+def test_print_window_twin_engines_are_bit_equal(seed, mode):
+    off, on = _window_engines(mode, vec=bool(seed % 2))
+    rows = window_scenario(seed)
+    a, b = drive_like_the_shadow([off, on], rows, mode, seed)
+    assert len(a) == len(b) and a == b                                        # every (pool, T, sd): float64 vector bytes and every field
+    assert sum(x[3] is not None for x in a) > 50
+    assert on.stats["window_violation"] == 0 and "window_violation" not in off.stats
+    so, sn = dict(off.stats), dict(on.stats)
+    assert sn.pop("window_dropped_prints", 0) > 0 and "window_dropped_prints" not in so
+    assert so == sn and off.pool_rejects == on.pool_rejects and off.state_sizes() == on.state_sizes()
+    assert _outcomes(off) == _outcomes(on)
+
+
+def test_print_window_twin_covers_its_cases():
+    """The twin scenarios are not vacuous: across the seeds, i1 < n answers, windowed pools answering after a trim, a null first block
+    time rewritten by _register, a pool freed and back as a new pool that is decided again, and out-of-order rows all occur."""
+    _window_coverage()
+
+
+def _window_coverage():
+    seen = collections.Counter()
+    for seed in range(6):
+        off, on = _window_engines("const", vec=True)
+        rows = window_scenario(seed)
+        seen["null_first_bt"] += sum(1 for _, _, e in rows if e[0] == "ps" and e[9] is None)
+        orig = on.features_at
+
+        def spy(pid, T, sd=None, next_state=None, _o=orig, _e=on):
+            r = _o(pid, T, sd, next_state=next_state)
+            P = _e._pools.get(pid)
+            if r is not None:
+                seen["answers"] += 1
+                seen["i1_lt_n"] += r.i1 < P.n()
+                seen["after_trim"] += P.off > 0
+                seen["after_trim_i1_lt_n"] += P.off > 0 and r.i1 < P.n()
+                seen["returned_pool"] += P.first_bt is not None and P.g0 is not None and P.first_bt > WG0 + 40 * 3600
+            return r
+
+        on.features_at = spy
+        drive_like_the_shadow([off, on], rows, "const", seed)
+        seen["out_of_order"] += on.stats["out_of_order_rows"]
+        seen["freed"] += sum(1 for lst in on._cr_pools.values() for Q in lst if Q.dead)
+    for k in ("answers", "i1_lt_n", "after_trim", "after_trim_i1_lt_n", "returned_pool", "null_first_bt", "out_of_order", "freed"):
+        assert seen[k] > 0, (k, dict(seen))
+    return seen
+
+
+def _windowed_pool(strict=False, window=True):
+    eng = cf.FeatureEngine(v_source="const", strict=strict, print_window=window)
+    rows = make_prints(21, n=600, span_s=3 * 3600, n_traders=40)
+    eng.set_pool_v("POOL", V)
+    eng.on_create("MINT", "CREATOR", "Foo Coin", "FOO", G0 - 600, False)
+    eng.on_graduation("MINT", G0)
+    for r in rows:
+        eng.on_block(r["slot"], r["bt"])
+        feed(eng, r)
+    return eng, rows
+
+
+def test_print_window_drops_old_prints_keeps_absolute_indices_and_counts_a_violation():
+    off, rows = _windowed_pool(window=False)
+    on, _ = _windowed_pool()
+    now = G0 + 2 * 3600
+    assert off.expire(now) == on.expire(now) == 0
+    P = on._pools["POOL"]
+    cut = now - cf.PRINT_WINDOW_S
+    dropped = sum(1 for r in rows if max(x["bt"] for x in rows[:rows.index(r) + 1]) < cut)
+    assert P.off == dropped > 0 and P.cut == cut and P.n() == len(rows) and min(P.bt) >= cut
+    assert len(P.slot) == len(rows) - dropped and len(P.cs_vol) == len(P.slot) + 1 and P.p0 == off._pools["POOL"].ppre[0]
+    assert on.held_sizes()["held_prints"] == len(rows) - dropped < off.held_sizes()["held_prints"] == len(rows)
+    assert on.held_sizes()["held_pairs"] == off.held_sizes()["held_pairs"] and on.stats["window_dropped_prints"] == dropped
+    pre = []
+    for T in range(now, G0 + 3 * 3600 + 120, 60):                              # T >= now: bit-equal, absolute i1 (ncum) included
+        for sd in (clock_sd(T), clock_sd(T) - 7, None):
+            a = on.features_at("POOL", T, sd=sd)
+            assert _vec_bytes(a) == _vec_bytes(off.features_at("POOL", T, sd=sd))
+            if a is not None and a.pre:
+                pre.append(a)
+    assert pre and all(a.i1 > P.off and a.get("ncum") == float(a.i1) for a in pre)
+    assert on.stats["window_violation"] == 0
+    T = now - 60                                                                # looks back below the cut: None, counted
+    assert off.features_at("POOL", T, sd=clock_sd(T)) is not None
+    assert on.features_at("POOL", T, sd=clock_sd(T)) is None and on.stats["window_violation"] == 1
+    strict, _ = _windowed_pool(strict=True)
+    strict.expire(now)
+    with pytest.raises(cf.WindowViolation):
+        strict.features_at("POOL", T, sd=clock_sd(T))
+    assert strict.stats["window_violation"] == 1
+    assert strict.features_at("POOL", now, sd=clock_sd(now)) is not None
+
+
+def test_print_window_keeps_the_last_print_of_a_quiet_pool_and_ingests_after_it():
+    eng = cf.FeatureEngine(v_source="const", print_window=True)
+    ref = cf.FeatureEngine(v_source="const")
+    rows = make_prints(22, n=80, span_s=900, n_traders=10)
+    late = make_prints(23, n=80, span_s=900, n_traders=10)
+    shift = 3 * 3600
+    late = [dict(r, slot=r["slot"] + shift * SPS, bt=r["bt"] + shift) for r in late]
+    for e in (eng, ref):
+        e.set_pool_v("POOL", V); e.on_graduation("MINT", G0)
+        for r in rows:
+            e.on_block(r["slot"], r["bt"]); feed(e, r)
+    eng.expire(G0 + shift)                                                      # every print is older than the cut: the last one stays
+    P = eng._pools["POOL"]
+    assert len(P.slot) == 1 and P.off == len(rows) - 1 and P.slot[-1] == rows[-1]["slot"] and len(P.cs_any) == 2
+    assert eng.features_at("POOL", G0 + shift, sd=clock_sd(G0 + shift)) is None   # nothing in the last hour, as unwindowed
+    assert ref.features_at("POOL", G0 + shift, sd=clock_sd(G0 + shift)) is None
+    eng.on_trade("pumpswap", "MINT", "WZ", True, 1e9, 1e12, 70e9, 206e12, "POOL", rows[-1]["slot"] - 1, G0 + shift)
+    assert P.bad and P.bad_reason == "out_of_order"                            # slot[-1] is still the pool's last slot
+    for r in late:
+        for e in (eng, ref):
+            e.on_block(r["slot"], r["bt"])
+    eng2 = cf.FeatureEngine(v_source="const", print_window=True)
+    for e in (eng2,):
+        e.set_pool_v("POOL", V); e.on_graduation("MINT", G0)
+        for r in rows:
+            e.on_block(r["slot"], r["bt"]); feed(e, r)
+    eng2.expire(G0 + shift)
+    ref2 = cf.FeatureEngine(v_source="const")
+    ref2.set_pool_v("POOL", V); ref2.on_graduation("MINT", G0)
+    for r in rows:
+        ref2.on_block(r["slot"], r["bt"]); feed(ref2, r)
+    for r in late:
+        for e in (eng2, ref2):
+            e.on_block(r["slot"], r["bt"]); feed(e, r)
+    for T in range(G0 + shift + 600, G0 + shift + 960, 60):
+        sd = clock_sd(T - shift) + shift * SPS
+        a, b = eng2.features_at("POOL", T, sd=sd), ref2.features_at("POOL", T, sd=sd)
+        assert _vec_bytes(a) == _vec_bytes(b) and a is not None and a.i1 > len(rows)
+
+
+def test_print_window_is_off_by_default_and_never_trims_an_unregistered_pool():
+    assert cf.FeatureEngine(v_source="const").print_window is False
+    with pytest.raises(ValueError):
+        cf.FeatureEngine(v_source="const", print_window=1)
+    eng = cf.FeatureEngine(v_source="const", print_window=True)
+    eng.set_pool_v("POOL", V)                                                   # no graduation seen: never registered
+    rows = make_prints(24, n=200, span_s=4 * 3600, n_traders=10)
+    for r in rows:
+        feed(eng, r)
+    eng.expire(G0 + 5 * 3600)
+    P = eng._pools["POOL"]
+    assert P.eligible is None and P.off == 0 and len(P.slot) == len(rows)
+    off, _ = _windowed_pool(window=False)
+    off.expire(G0 + 2 * 3600)
+    assert off._pools["POOL"].off == 0 and "window_dropped_prints" not in off.stats
+
+
+def test_trader_ids_hold_rollback_matches_a_rebuild_from_the_first_print():
+    """F3: at i1 < n the holder state is rolled back from hold with hprev; it must equal the old rebuild over prints [0, i1) exactly."""
+    rows = make_prints(25, n=900, span_s=7200, n_traders=30)
+    eng = new_engine(rows)
+    for r in rows:
+        feed(eng, r)
+    P = eng._pools["POOL"]
+    n = P.n()
+    for i1 in (1, 2, 50, 251, 600, n - 1, n):
+        ref: dict = {}
+        for r in rows[:i1]:
+            ref[r["trader"]] = ref.get(r["trader"], 0.0) + (r["tok"] if r["isb"] else -r["tok"])
+        m = int(P.cs_any[i1])
+        h = P.hold[:m]
+        for k in range(n - 1, i1 - 1, -1):
+            if P.tid[k] < m:
+                h[P.tid[k]] = P.hprev[k]
+        assert list(ref) == P.names[:m]                                         # first-occurrence order
+        assert struct.pack(f"<{m}d", *h) == struct.pack(f"<{m}d", *ref.values())
+    for t, name in enumerate(P.names):                                          # first buy: absolute index, NO_BUY if none
+        buys = [k for k, r in enumerate(rows) if r["trader"] == name and r["isb"]]
+        assert P.fbuy[t] == (buys[0] if buys else cf.NO_BUY)
+    checked = 0                                                                 # features_at itself, i1 < n, window on and off
+    for window in (False, True):
+        eng = cf.FeatureEngine(v_source="const", print_window=window)
+        eng.set_pool_v("POOL", V); eng.on_create("MINT", "CREATOR", "Foo Coin", "FOO", G0 - 600, False); eng.on_graduation("MINT", G0)
+        for r in rows:
+            feed(eng, r)
+        eng.expire(G0 + 4200)
+        assert (eng._pools["POOL"].off > 0) == window
+        for T in range(G0 + 4200, G0 + 7200, 60):
+            for back in (1, 5, 9, 20, 40, 120, 400):
+                res = eng.features_at("POOL", T, sd=clock_sd(T) - back)
+                if res is None or not res.pre or res.i1 >= len(rows):
+                    continue
+                hold: dict = {}
+                for r in rows[:res.i1]:                                         # the old rebuild from print 0
+                    hold[r["trader"]] = hold.get(r["trader"], 0.0) + (r["tok"] if r["isb"] else -r["tok"])
+                pos = np.sort(np.array([x for x in hold.values() if x > 0], dtype=np.float64))[::-1]
+                tot = pos.sum()
+                want = (float(len(pos)), float(pos[:1].sum() / tot), float(pos[:5].sum() / tot), float(pos[:10].sum() / tot), float(tot / 1e15))
+                got = tuple(res.get(x) for x in ("h_npos", "h_top1", "h_top5", "h_top10", "h_pos_frac_supply"))
+                assert struct.pack("<5d", *got) == struct.pack("<5d", *want), (window, T, back)
+                checked += 1
+    assert checked > 20
 
 
 if __name__ == "__main__":
