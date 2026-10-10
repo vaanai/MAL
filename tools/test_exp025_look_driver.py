@@ -50,7 +50,8 @@ class Refusals(unittest.TestCase):
         self.patches = [mock.patch.dict(D.R.LOOKS[1], {"O": str(self.O)}),
                         mock.patch.dict(D.A.LOOK_TAPE, {"look1": str(self.O / "tape")}),
                         mock.patch.object(D.A, "convert", side_effect=AssertionError("convert called")),
-                        mock.patch.object(D.A, "look_trade_files", side_effect=AssertionError("V0 files listed"))]
+                        mock.patch.object(D.A, "look_trade_files", side_effect=AssertionError("V0 files listed")),
+                        mock.patch.object(D.R, "LOOK_LEDGER", str(self.tmp / "LOOK_READS.jsonl"))]   # never the host's ledger
         for p in self.patches:
             p.start()
 
@@ -104,6 +105,17 @@ class Refusals(unittest.TestCase):
         self.O.mkdir(parents=True)
         (self.O / "READ.lock").write_text("")
         self.assertEqual(self.drive(), "LOCK")
+
+    def test_lock_in_the_look_ledger_refuses_without_read_lock(self):
+        """The runner's spent look (exp025_look._run_look): READ.lock OR a `lock` event in LOOK_READS. A deleted READ.lock
+        must not let the driver rewrite O/tape after the read."""
+        ledger = self.tmp / "LOOK_READS_locked.jsonl"
+        ledger.write_text(json.dumps({"look": 1, "event": "lock"}) + "\n")
+        conv = mock.Mock(side_effect=AssertionError("convert called"))
+        with mock.patch.object(D.R, "LOOK_LEDGER", str(ledger)), mock.patch.object(D.A, "convert", conv):
+            self.assertEqual(self.drive(), "LOCK")
+        self.assertFalse((self.O / "READ.lock").exists())
+        conv.assert_not_called()
 
     def test_cli_exits_2_on_seal(self):
         def seal(*a, **k):
@@ -329,6 +341,21 @@ class Assembly(unittest.TestCase):
         hist["wl"] = (hist["wl"][0], "0" * 64)   # a manifest that is not the pinned one
         with self.assertRaises(D.R.Refusal):
             self.run_look_assemble(hist)
+
+    def test_tape_file_in_no_manifest_refuses_before_any_record(self):
+        """A file left by an earlier assembly for an allowlisted hour (e.g. a walk-2 hour re-walked between two assemblies,
+        whose source file is now missing) is in no manifest of this assembly: NOT_READY, no look_assembly.json."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        stray_hour = D.look_plan(1)[-1][2][0]
+        d = self.O / "tape" / "trades"
+        d.mkdir(parents=True)
+        pq.write_table(pa.table({"slot": [1]}), d / f"{stray_hour}.parquet")
+        with self.assertRaises(D.R.Refusal) as cm:
+            self.run_assemble()
+        self.assertEqual(cm.exception.code, "NOT_READY")
+        self.assertIn("1 files in no manifest", str(cm.exception))
+        self.assertFalse((self.O / "look_assembly.json").exists())
 
     def test_failed_reassembly_leaves_no_stale_record(self):
         self.O.mkdir(parents=True)

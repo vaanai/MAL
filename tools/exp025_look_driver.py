@@ -20,8 +20,9 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
      (cap_pick_gate_replay.require_final, the ledger's EXP-012 FINAL marker row) before it opens a source file.
   2. R13: exp025_read.check_decoder_blobs on --decoder-blobs (forward-1002ev and walk 2 decoded by one 40-hex blob).
   3. R12: the adapter's allowlist for the look must equal exp025_read.LOOKS[look]["allow"] (sources mapped by
-     exp025_look.BLOCK_OF_SOURCE), each hour passes LookGuard.check_hour, the tape directory is O/tape, O holds no READ.lock
-     (LOCK), and O/tape holds no file of an hour outside the allowlist.
+     exp025_look.BLOCK_OF_SOURCE), each hour passes LookGuard.check_hour, the tape directory is O/tape, the look is not spent
+     (LOCK, the runner's own test in exp025_look._run_look: O/READ.lock exists OR LOOK_READS holds a `lock` event for the
+     look; read from exp025_read.LOOK_LEDGER at call time), and O/tape holds no file of an hour outside the allowlist.
   4. One adapter convert per block, in allowlist order: forward-1002 [10-02T15, 10-09T00) without event V (no V there, P6
      item 2); forward-1002ev [10-09T00, 10-16T01) and walk 2 (Look 1 [10-16T01, 10-17T02), Look 2 to 10-24T02) with event V,
      so every V-covered trades hour gets its v_ok sidecar. A walk-2 hour is read only from the pinned block directory
@@ -35,7 +36,10 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
      (slot, tx_index, event_index) is equal. So the trades files carry one column beyond ref/convert.py's TR_COLS
      (section 11.2); pinned 11_passA and the det ledger select named columns, so their output is unchanged. Each manifest
      is then kept as <O>/assembly/manifest-<block>.json, with files[i]['sha256_with_v_ok'] for the merged trades files
-     (files[i]['sha256'] stays convert's).
+     (files[i]['sha256'] stays convert's). Then the tape must hold exactly the files this assembly's manifests list
+     (each manifest's kind/hour files, plus v_ok/<hour> for the trades files of event-V manifests), NOT_READY otherwise:
+     convert never deletes an earlier assembly's file for an allowlisted hour whose source file is now missing, which the
+     runner would count unwalked (R1) while pass A still read it.
   5. V0 rows: V at each pool's first print over the same V0 files the adapter's convert used (look_trade_files minus the
      manifests' v0_bad), via the adapter's collect_v0. In a look, every event-V manifest must list the same v0_bad files and
      have v0_files equal to the driver's V0 file count (NOT_READY otherwise: tokens.v0_lamports would not be the V0 the tape's
@@ -62,7 +66,9 @@ exit or P&L).
 `e0` runs steps 4 to 6 and 8 in exploration mode (adapter convert with look=None: exploration hours only, sealed paths refused)
 on the adapter E0's own inputs (exp025_adapter.E0_SRC / E0_BLOCK, day E0_DAY) into E0_O, then shows that
 exp025_look.load_assembly accepts the record and that exp025_look.hour_status refuses it R12 (its hours are not a look's).
-The E0 day has no virtual_quote_reserves (it predates event V), so its vmap is empty and every v_ok is false.
+The E0 day has no virtual_quote_reserves (it predates event V), so its vmap is empty and every v_ok is false. The E0
+record also carries october_tokens_sha256 and v_ok_missing (the E0 tape's trades files with no v_ok column, by
+parquet_schema); `pass` needs v_ok_missing == 0.
 Run with the audit venv (/data/mal/audit-1008/venv/bin/python: duckdb, pyarrow, numpy).
 """
 from __future__ import annotations
@@ -274,6 +280,9 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
             for f in m.get("files", []):
                 if f.get("kind") == "trades":
                     f["sha256_with_v_ok"] = merge_v_ok(tape, f["hour"])
+    listed = {f"{f['kind']}/{f['hour']}.parquet" for m in mans for f in m.get("files", [])} | {f"v_ok/{f['hour']}.parquet" for m in mans if m.get("event_v") for f in m.get("files", []) if f.get("kind") == "trades"}
+    on_disk = {f"{k}/{n}" for k in A.KINDS + ("v_ok",) if os.path.isdir(os.path.join(tape, k)) for n in os.listdir(os.path.join(tape, k)) if n.endswith(".parquet")}
+    if on_disk != listed: raise R.Refusal("NOT_READY", f"tape: {len(on_disk - listed)} files in no manifest of this assembly, {len(listed - on_disk)} listed files absent")
     paths = []
     for (blk, *_), m in zip(plan, mans):
         p = os.path.join(asm, f"manifest-{blk}.json")
@@ -352,13 +361,25 @@ def drive_look(look: int, decoder_blobs: str, *, now: int | None = None, final_m
     tape = A.LOOK_TAPE[f"look{look}"]
     if os.path.realpath(tape) != os.path.realpath(os.path.join(O, "tape")):
         raise R.Refusal("R12", f"look {look}'s tape {tape} is not {O}/tape")
-    if os.path.exists(os.path.join(O, "READ.lock")):
+    if os.path.exists(os.path.join(O, "READ.lock")) or any(e["event"] == "lock" for e in R.ledger_events(R.LOOK_LEDGER, look)):
         raise R.Refusal("LOCK", f"look {look} is locked: its O is not re-assembled")
     stray = stray_tape_files(look, tape)
     if stray:
         raise R.Refusal("R12", f"{len(stray)} tape files outside look {look}'s allowlist (first {stray[0]})")
     when = datetime.fromtimestamp(now, timezone.utc) if now is not None else datetime.now(timezone.utc)
     return assemble(look, O, tape, plan, lookname=f"look{look}", final_ledger=final_ledger, now=when)
+
+
+def v_ok_missing(tape: str) -> int:
+    """The number of tape/trades/*.parquet files whose parquet_schema has no v_ok column."""
+    d = os.path.join(tape, "trades")
+    fs = sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".parquet")) if os.path.isdir(d) else []
+    con = A._connect(threads=1, tmp=os.path.join(tape, "tmp_duck"))
+    try:
+        return sum(1 for f in fs
+                   if not con.execute(f"SELECT count(*) FROM parquet_schema({A._q(f)}) WHERE name = 'v_ok'").fetchone()[0])
+    finally:
+        con.close()
 
 
 def drive_e0(o_dir: str = E0_O) -> dict:
@@ -378,9 +399,10 @@ def drive_e0(o_dir: str = E0_O) -> dict:
           "r2": rec["r2"], "append_tokens": rec["append_tokens"], "blocks": rec["blocks"], "completes": rec["completes"],
           "vmap_pools": rec["vmap"]["pools"], "pumpswap_rows": rec["pumpswap_rows"], "pumpswap_rows_with_v": rec["pumpswap_rows_with_v"],
           "bars_1m": rec["bars_1m"], "blobs": rec["blobs"],
-          "assembly_sha256": A.sha256_file(os.path.join(o_dir, "look_assembly.json"))}
+          "assembly_sha256": A.sha256_file(os.path.join(o_dir, "look_assembly.json")),
+          "october_tokens_sha256": rec["october_tokens_sha256"], "v_ok_missing": v_ok_missing(os.path.join(o_dir, "tape"))}
     e0["pass"] = bool(hs == "R12" and rec["blocks"][0]["bad_hours"] == 0 and rec["blocks"][0]["files"] == 3 * len(hours)
-                      and rec["append_tokens"]["october_rows"] == 0)
+                      and rec["append_tokens"]["october_rows"] == 0 and e0["v_ok_missing"] == 0)
     _write_json(os.path.join(o_dir, E0_RECORD), e0)
     return e0
 
