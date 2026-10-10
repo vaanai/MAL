@@ -392,6 +392,11 @@ class P7Check(unittest.TestCase):
                 res2 = bi.p7_check(lay)
             self.assertEqual({k: v for k, v in res2.items() if k != "exact_in_raw_report_only"},
                              {k: v for k, v in res.items() if k != "exact_in_raw_report_only"})
+            with mock.patch.object(bi, "exact_in_raw", side_effect=ZeroDivisionError("x")):  # an error in it never stops P7
+                res3 = bi.p7_check(lay)
+            self.assertEqual(res3["exact_in_raw_report_only"], {"error": "ZeroDivisionError", "report_only": True})
+            self.assertEqual({k: v for k, v in res3.items() if k != "exact_in_raw_report_only"},
+                             {k: v for k, v in res.items() if k != "exact_in_raw_report_only"})
 
     def test_gettx_v_source_gives_the_same_buy_counts(self):
         with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:

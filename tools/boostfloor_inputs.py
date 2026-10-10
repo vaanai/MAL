@@ -520,7 +520,10 @@ def p7_check(lay: br.Layout) -> dict[str, Any]:
         return recs.get(k)
 
     tiers = tier_lines(sample, v_of, rec_of)
-    exact_in = exact_in_raw(sample, v_of, rec_of)  # Am.7 E: report-only, not in `pass`
+    try:  # Am.7 E: report-only; it is not in `pass`, and an error in it is reported by type and never stops P7
+        exact_in = exact_in_raw(sample, v_of, rec_of)
+    except Exception as e:  # noqa: BLE001
+        exact_in = {"error": type(e).__name__, "report_only": True}
     # every line B key is scored: one with no gettx record is unresolved, a miss on its tape side (Am.6); the P7 sample's side first
     side: dict[Any, Any] = {}
     for r in sample + _read_jsonl(lay.line_a_sample):
