@@ -18,6 +18,17 @@
 #                   get trigger records only, and pools with s0 >= 2026-11-06T00Z get them even with the flag. Any other value is refused.
 #                   CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says. A MiScusi resume or re-run must set the variable again:
 #                   the daily check alerts when the newest start record of a shadow running past 2026-10-16T00Z shows h5_look2.observed false.
+#   H5_BX10_ENABLE  set to exactly EXP-026 to write the report-only bx10 exit variant (outcome_bx10 records) into the hourly shadow files. Unset,
+#                   empty or any other value ("1", "exp-026", ...) keeps it OFF: no outcome_bx10 record, no bx10 computation, no counter, and every
+#                   other record is the same as without bx10 (a wrong value is not refused; it counts as off, and the start record's "bx10" says
+#                   so). The draft EXP-026 wants v2's outcomes in a withheld store and an EXP-024 "G-v2" amendment merged first: do not set it
+#                   before then. Passed to the detector as --bx10-enable only when the variable is set. A resume or re-run must set it again.
+#   CAP_PICK_LIVE, CAP_PICK_REPLAY, CAP_PICK_FINAL_MARKER, CAP_PICK_STALE_S
+#                   the CAP-PICK pick oracle (tools/cap_pick_oracle.py; passed through unchanged). CAP_PICK_LIVE is the exporter's picks.jsonl,
+#                   CAP_PICK_REPLAY the replay booleans (os.pathsep lists), CAP_PICK_FINAL_MARKER the marker the manager writes after the DEC-016
+#                   FINAL (the same path the exporter job waits on). Without CAP_PICK_LIVE and CAP_PICK_FINAL_MARKER every pool with s0 from
+#                   2026-10-16T01Z is sealed (no trigger record: the executor buys nothing). CAP_PICK_STALE_S may only tighten the 60 s limit.
+#                   The start record's seal.oracle says which one ran ("cap_pick_oracle" or "stub_always_true"). A resume must set them again.
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 #   H5_SYN_SOCKETS  logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed, default 1; the RPC fallback covers a miss)
 #   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
@@ -66,8 +77,13 @@ fi
 if [ -n "${H5_LOOK2_OBSERVED:-}" ]; then
   set -- "$@" --h5-look2-observed "$H5_LOOK2_OBSERVED"
 fi
+if [ -n "${H5_BX10_ENABLE:-}" ]; then
+  set -- "$@" --bx10-enable "$H5_BX10_ENABLE"
+fi
 if [ -n "${H5_MAX_SECONDS:-}" ]; then
   set -- "$@" --max-seconds "$H5_MAX_SECONDS"
 fi
-echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BX10=off
+if [ "${H5_BX10_ENABLE:-}" = "EXP-026" ]; then BX10=on; fi
+echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 exec env PYTHONPATH="$ROOT" "$PY" -m tools.h5_shadow "$@"

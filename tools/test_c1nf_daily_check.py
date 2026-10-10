@@ -34,6 +34,8 @@ BASE = b"[Unit]\nDescription=stand-in for the executor PR's keyless base unit\n"
 DROPIN = (f"[Service]\nLoadCredential={dc.CREDENTIAL_LINE}\nExecStart=\nExecStart={dc.PINNED_ROOT}/venv/bin/python -I -B -u "
           f"{dc.PINNED}/launcher.py --config {dc.LIVE_CONFIG} --live\n").encode()
 FEED = b"[Service]\nBindReadOnlyPaths=-/home/claude/data/c1nf-shadow:/srv/mal-c1nf-shadow\n"
+# the one exporter's CAP_PICK_OUT (the directory H5's pick_file also reads); the exporter's FINAL marker directory ~/data/cap-pick-oracle is not bound
+CAP_PICK = b"[Service]\nBindReadOnlyPaths=-/home/claude/data/h5-shadow/cap-pick:/srv/mal-cap-pick\n"
 LIVE_EXEC = f"{{ path={dc.PINNED_ROOT}/venv/bin/python ; argv[]=... {dc.PINNED}/launcher.py --config {dc.LIVE_CONFIG} --live }}"
 WSVC = (FAST / "mal-c1nf-watch.service").read_bytes()
 WTMR = (FAST / "mal-c1nf-watch.timer").read_bytes()
@@ -42,7 +44,7 @@ LIVE_CFG = {"mode": "live", "state_dir": dc.C1NF_DIR, "stake_lamports": 50_000_0
             "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000,
             # claude/c1nf-executor-v2 @ 32265af, scripts/mal-fast/c1nf-executor-live.json
             "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000,
-            # NOT in v2's live config at 32265af (the #509 open item); a healthy canary inside the seal window needs one
+            # DEC-026 Amendment 1 item B (scripts/mal-fast/c1nf-executor-live.json); a healthy canary inside the seal window needs one
             "pick_file": "/srv/mal-cap-pick/picks.jsonl"}
 A3_PATH = "/data/mal/structure-monitor/daily.jsonl"
 
@@ -79,7 +81,7 @@ class FakeHost(dc.Host):
     def __init__(self):
         self.files: dict[str, bytes] = {
             f"{dc.PINNED}/{dc.C1NF_UNIT}.service": BASE, f"{dc.PINNED}/{dc.C1NF_UNIT}-live-pinned.conf": DROPIN,
-            dc.UNIT_FILE: BASE, dc.DROPIN_LIVE: DROPIN, dc.DROPIN_FEED: FEED, dc.LIVE_OK: b"", dc.TIER_FILE: b"T1\n",
+            dc.UNIT_FILE: BASE, dc.DROPIN_LIVE: DROPIN, dc.DROPIN_FEED: FEED, dc.DROPIN_CAP_PICK: CAP_PICK, dc.LIVE_OK: b"", dc.TIER_FILE: b"T1\n",
             dc.LIVE_CONFIG: json.dumps(LIVE_CFG).encode(),
             dc.STATE_FILE: json.dumps({"attempts": 3, "realized_lamports": -1_000_000, "open": {}, "pending": {}}).encode(),
             dc.COUNTERS_FILE: json.dumps({"halts": {}, "sells_landed": 3, "sells_late": 0, "tier_attempts": 3,
@@ -99,7 +101,7 @@ class FakeHost(dc.Host):
                       "Result": "success", "FragmentPath": dc.UNIT_FILE, "ActiveEnterTimestampMonotonic": str(int((UPTIME - 3600) * 1e6))}
         self.watch_tmr = {"LoadState": "loaded", "ActiveState": "active", "UnitFileState": "enabled", "FragmentPath": WATCH_TMR, "DropInPaths": ""}
         self.watch_svc = {"LoadState": "loaded", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "FragmentPath": WATCH_SVC, "DropInPaths": ""}
-        self.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED]
+        self.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]
         self.execstart = LIVE_EXEC
         self.feed = ("c1nf-events-2026-10-17T01.jsonl", NOW - 60)
         self.birth_t: float | None = NOW - 86400
@@ -485,6 +487,41 @@ def test_live_config_without_pick_file(now, expect):
         assert "has no pick_file yet" in out
 
 
+@pytest.mark.parametrize("now,bind,expect", [
+    (dc.SEAL_START_S - dc.SEAL_WARN_S - 60, False, False),  # before the warn window: no alert
+    (dc.SEAL_START_S - dc.SEAL_WARN_S, False, True),  # the window opens
+    (dc.SEAL_START_S - 3600, False, True),
+    (NOW, False, True),  # inside the seal
+    (dc.SEAL_START_S - dc.SEAL_WARN_S - 60, True, False),  # drop-in present: never an alert
+    (dc.SEAL_START_S - 3600, True, False),
+    (NOW, True, False)])
+def test_seal_cap_pick_bind_missing(now, bind, expect):
+    """DEC-026 Amendment 1 item B: pick_file is always set in the pinned config, so a missing 20-cap-pick.conf is the early warning's only
+    trigger. 24 h before the seal it alerts; with the drop-in installed it never does."""
+    host = FakeHost()
+    if not bind:
+        host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED]
+    rc, out = go(host, now=now)
+    assert ("c1nf_seal_no_cap_pick_bind" in alerts(out)) is expect
+    assert "c1nf_seal_no_pick_file" not in alerts(out)  # the config names pick_file; only the bind is missing
+    if expect:
+        assert "20-cap-pick.conf is not installed" in out
+
+
+def test_seal_cap_pick_bind_unknown_when_dropins_unreadable():
+    """`systemctl show -p DropInPaths` failing is its own problem (c1nf_unit_files); it must not also claim the bind is missing."""
+    host = FakeHost()
+    real = host.systemctl
+
+    def failing(*argv):
+        return (1, "") if "DropInPaths" in argv and "--value" in argv else real(*argv)
+
+    host.systemctl = failing
+    rc, out = go(host)
+    assert "c1nf_seal_no_cap_pick_bind" not in alerts(out)
+    assert "c1nf_unit_files" in alerts(out)
+
+
 def test_final_marker_missing_in_the_seal_window():
     host = FakeHost()
     del host.modes[dc.FINAL_MARKER]
@@ -699,3 +736,19 @@ def test_watch_units_pass_their_allowlist_and_h5_units_do_not():
     assert ok == [0, 0]
     assert subprocess.run([sys.executable, "-I", str(chk), "--watch-service", str(FAST / "mal-h5-watch.service")], capture_output=True).returncode == 1
     assert b"/etc/mal-c1nf-key" in WSVC  # the second wallet's key directory is fenced off from the root watchdog
+
+
+def test_cap_pick_dropin_is_allowed_and_checked():
+    """DEC-026 Amendment 1 item B: 20-cap-pick.conf is an expected drop-in, and it must pass check-c1nf-unit.py --cap-pick."""
+    real = dc.load_unit_checker(FAST)  # the real check-c1nf-unit.py, not FakeChecker
+    host = FakeHost()
+    host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]
+    host.files[dc.DROPIN_CAP_PICK] = CAP_PICK
+    assert "c1nf_unit_files" not in alerts(go(host, checker=real)[1])
+    for bad in (CAP_PICK.replace(b"/srv/mal-cap-pick", b"/srv/mal-c1nf-shadow"), CAP_PICK.replace(b"/home/claude/data", b"/var/lib/mal"),
+                CAP_PICK.replace(b"/home/claude/data/h5-shadow/cap-pick:", b"/home/claude/data/cap-pick-oracle:"),  # the FINAL marker's directory
+                FEED):
+        host = FakeHost()
+        host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]
+        host.files[dc.DROPIN_CAP_PICK] = bad
+        assert "c1nf_unit_files" in alerts(go(host, checker=real)[1]), bad

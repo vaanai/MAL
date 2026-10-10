@@ -23,7 +23,8 @@ FROM_EXECUTOR_PR = {"tools/c1nf_executor.py", "scripts/mal-fast/c1nf-executor-li
 OURS = ("scripts/mal-fast/c1nf-watch.py", "scripts/mal-fast/c1nf-daily-check.py", "scripts/mal-fast/check-c1nf-watch-unit.py",
         "scripts/mal-fast/mal-c1nf-watch.service", "scripts/mal-fast/mal-c1nf-watch.timer", "EXP/EXP-025-c1nf-part1-prereg.md",
         "scripts/mal-fast/c1nf_exec_launcher.py", "scripts/mal-fast/mal-c1nf-executor.service", "scripts/mal-fast/check-c1nf-unit.py",
-        "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf", "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf", "tools/c1nf_sell_and_close.py")
+        "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf", "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf", "tools/c1nf_sell_and_close.py",
+        "scripts/mal-fast/mal-c1nf-executor-cap-pick.conf")
 
 
 def var(name: str) -> str:
@@ -91,7 +92,8 @@ def _config_check() -> str:
 
 
 GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
-        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 32265af
+        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000,  # v2 @ 32265af
+        "pick_file": "/srv/mal-cap-pick/picks.jsonl"}  # DEC-026 Amendment 1 item B
 
 
 @pytest.mark.parametrize("change,ok", [({}, True), ({"stake_lamports": 100_000_000}, False), ({"buy_priority_lamports": 55_000}, False),
@@ -101,7 +103,8 @@ GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports":
                                        ({"jito_tip_lamports": False}, False), ({"entry_tolerance_bps": 2_000}, False),
                                        ({"entry_tolerance_bps": 1_000}, True), ({"entry_tolerance_bps": None}, True),
                                        ({"feed_heartbeat_max_age_ms": 300_000}, False), ({"feed_heartbeat_max_age_ms": 60_000}, True),
-                                       ({"feed_heartbeat_max_age_ms": 150_000.0}, False)])
+                                       ({"feed_heartbeat_max_age_ms": 150_000.0}, False), ({"pick_file": None}, False),
+                                       ({"pick_file": "/srv/mal-h5-shadow/cap-pick/picks.jsonl"}, False), ({"pick_file": ""}, False)])
 def test_installer_live_config_check(tmp_path, change, ok):
     cfg = {**GOOD, **change}
     f = tmp_path / "c.json"

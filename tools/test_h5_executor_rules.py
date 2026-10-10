@@ -20,7 +20,7 @@ from tools import h5_executor as h
 from tools import probe_executor as pe
 from tools import probe_live as pl
 from tools import pumpswap_tx as tx
-from tools.test_h5_executor import BASE0, POOL, QREAL, RENT, S0, SPS, TRIG_SLOT, V, Case, Env, MINT, T0, row, sell_args, trig
+from tools.test_h5_executor import BASE0, POOL, QREAL, RENT, S0, SPS, TRIG_SLOT, V, Case, Clock, Env, MINT, T0, row, sell_args, trig
 
 
 def quote_out(tokens: int) -> int:
@@ -536,10 +536,10 @@ class SealTests(Case):
         self.assertEqual((o.calls, len(e.rpc.sent), e.ex.counters.seal_skips), ([MINT], 1, 0))
         e2 = self.sealed(T_AFTER_FINAL, Oracle(True), sub="pk")
         e2.fire()
-        self.assertEqual((e2.rpc.sent, e2.ex.counters.seal_skips), ([], 1))
+        self.assertEqual((e2.rpc.sent, e2.ex.counters.seal_skips, e2.ex.seal_picks_in_process), ([], 0, 1))  # a pick: in-process count only
 
     def test_an_oracle_error_or_a_non_boolean_refuses_the_buy(self):
-        for i, result in enumerate((RuntimeError("boom"), h.OracleUndecided("undecided"), None, 1, "no", 0.0)):
+        for i, result in enumerate((RuntimeError("boom"), LookupError("undecided"), None, 1, "no", 0.0)):
             e = self.sealed(T_AFTER_FINAL, Oracle(result), sub=f"x{i}")
             e.fire()
             self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips), ([], 1), repr(result))
@@ -558,8 +558,29 @@ class SealTests(Case):
         later = self.sealed(T_SEAL, None, sub="l", seal_end_ms=h.SEAL_END_DEFAULT_MS + 86_400_000)
         self.assertEqual(later.ex.seal_end_ms, h.SEAL_END_DEFAULT_MS + 86_400_000)
 
+    def test_a_seal_pick_is_counted_in_process_only(self):
+        # quant-proof (d): an H5 trigger on a pick is outcome-linked. No ledger row (seal_count, refusal_counts), counters file field, alert or
+        # log holds a seal_pick count; only the process's memory does.
+        e = self.sealed(T_AFTER_FINAL, Oracle(True))
+        for _ in range(3):
+            e.fire()
+        self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips, e.ex.seal_picks_in_process), ([], 0, 3))
+        self.assertNotIn("seal_skip", e.ex._refusal_counts)
+        self.assertNotIn("seal_pick", e.ex._refusal_counts)
+        e.clock.t += 3_700_000
+        e.ex.prewarm()
+        e.ex._hour_roll(e.clock())
+        self.assertEqual(e.ledger("seal_count"), [])
+        for r in e.ledger("refusal_counts"):
+            self.assertNotIn("seal_skip", r["by_reason"])
+            self.assertNotIn("seal_pick", r["by_reason"])
+        text = Path(e.ex.fills.path).read_text() + Path(e.ex.counters_path).read_text()
+        self.assertNotIn(MINT, text)
+        self.assertNotIn("seal_pick", text)
+        self.assertEqual(json.loads(Path(e.ex.counters_path).read_text()).get("seal_skips", 0), 0)
+
     def test_only_a_count_of_seal_skips_is_ever_logged_never_a_mint(self):
-        o = Oracle(True)
+        o = Oracle(None)  # undecided: a seal_oracle_error, which is a count (a pick is not: test_a_seal_pick_is_counted_in_process_only)
         e = self.sealed(T_AFTER_FINAL, o)
         for _ in range(3):
             e.fire()
@@ -586,52 +607,201 @@ class SealTests(Case):
 
 
 class PickOracleTests(Case):
+    """The executor's pick oracle is tools.cap_pick_oracle.PickOracle, built from the config by build_pick_oracle (EXP-022 s9, DEC-024 s6)."""
+
     SCORE = "0.987654321"
     PNL = "-123456789"
 
+    def picks(self, rows: list[dict], hb_ms: int | None, name: str = "picks.jsonl") -> Path:
+        f = self.tmp / name
+        lines = [json.dumps(r) for r in rows] + ([json.dumps({"hb": True, "t_ms": hb_ms})] if hb_ms is not None else [])
+        f.write_text("".join(x + "\n" for x in lines))
+        return f
+
+    def oracle(self, f: Path, clock, **cfg):
+        o = h.build_pick_oracle({"pick_file": str(f), **cfg}, now_ms=clock)
+        self.assertIsInstance(o, h.PickOracle)
+        return o
+
+    def test_no_pick_file_means_no_oracle_and_bad_config_is_refused(self):
+        self.assertIsNone(h.build_pick_oracle({}))
+        self.assertIsNone(h.build_pick_oracle({"pick_file": ""}))
+        for bad in ({"pick_file": 5}, {"pick_file": "/x", "pick_replay_files": "/y"}, {"pick_file": "/x", "pick_replay_files": [""]},
+                    {"pick_file": "/x", "pick_replay_files": [3]}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                h.build_pick_oracle(bad)
+        o = h.build_pick_oracle({"pick_file": "/x", "pick_replay_files": ["/y"]})
+        self.assertEqual(o.stale_s, h.PICK_STALE_S)
+        self.assertEqual(h.PICK_STALE_S, 60.0)  # DEC-024 s6: stale for more than 60 s halts buys
+
     def test_reads_only_the_boolean_and_never_holds_a_score_or_pnl(self):
+        c = Clock()
         a, b = "A" * 43 + "1", "B" * 43 + "2"
-        f = self.tmp / "picks.jsonl"
-        f.write_text(json.dumps({"mint": a, "pick": True, "score": float(self.SCORE), "pnl_sol": int(self.PNL), "positions": [1, 2]}) + "\n"
-                     + json.dumps({"pick": False, "mint": b, "net": self.PNL}) + "\n")
-        o = h.JsonlPickOracle(f)
+        f = self.picks([{"mint": a, "pick": True, "score": float(self.SCORE), "pnl_sol": int(self.PNL), "positions": [1, 2]},
+                        {"pick": False, "mint": b, "net": self.PNL}], c())
+        o = self.oracle(f, c)
         self.assertIs(o(a), True)
         self.assertIs(o(b), False)
-        held = repr(vars(o)) + repr(o._flags)
+        held = repr(vars(o)) + "".join(repr(vars(s)) for s in o._src)
         for sentinel in (self.SCORE, self.PNL, "positions"):
             self.assertNotIn(sentinel, held)
-        self.assertEqual(set(o._flags.values()), {True, False})
 
-    def test_unknown_mint_and_ambiguous_rows_are_undecided_not_false(self):
-        f = self.tmp / "picks.jsonl"
-        c = "C" * 43 + "3"
-        f.write_text(json.dumps({"mint": c, "pick": True, "other": {"pick": False}}) + "\n")
-        o = h.JsonlPickOracle(f)
-        with self.assertRaises(h.OracleUndecided):
-            o(c)  # two pick tokens on one line: not trusted
-        with self.assertRaises(h.OracleUndecided):
-            o("D" * 43 + "4")
+    def test_unknown_mint_ambiguous_rows_stale_feed_and_missing_file_are_none(self):
+        c = Clock()
+        x, y = "C" * 43 + "3", "D" * 43 + "4"
+        f = self.picks([{"mint": x, "pick": True, "other": {"pick": False}}, {"mint": y, "pick": False}], c())
+        o = self.oracle(f, c)
+        self.assertIsNone(o(x))  # two pick tokens on one line: not trusted
+        self.assertIsNone(o("E" * 43 + "5"))  # undecided is never False
+        self.assertIs(o(y), False)
+        c.t += 60_000
+        self.assertIs(o(y), False)  # 60 s is not MORE than 60 s
+        c.t += 1_000
+        self.assertIsNone(o(y))  # stale: the feed is not trusted
+        self.assertIsNone(self.oracle(self.tmp / "nope.jsonl", c)(y))  # missing file: None, no raise
 
-    def test_incremental_partial_line_and_rotation(self):
-        f = self.tmp / "picks.jsonl"
+    def test_a_pick_is_sticky_across_later_false_rows_and_rotation(self):
+        c = Clock()
         a, b = "A" * 43 + "1", "B" * 43 + "2"
-        f.write_text(json.dumps({"mint": a, "pick": False}) + "\n" + '{"mint": "' + b + '", "pi')
-        o = h.JsonlPickOracle(f)
+        f = self.picks([{"mint": a, "pick": False}], c())
+        with f.open("a") as fh:
+            fh.write('{"mint": "' + b + '", "pi')  # half-written
+        o = self.oracle(f, c)
         self.assertIs(o(a), False)
-        with self.assertRaises(h.OracleUndecided):
-            o(b)  # half-written
+        self.assertIsNone(o(b))
         with f.open("a") as fh:
             fh.write('ck": true}\n')
         self.assertIs(o(b), True)
         f.unlink()
-        f.write_text(json.dumps({"mint": b, "pick": False}) + "\n")  # a new file: the old flags are dropped
-        self.assertIs(o(b), False)
-        with self.assertRaises(h.OracleUndecided):
-            o(a)
+        self.picks([{"mint": b, "pick": False}], c())  # a new file that no longer holds the pick
+        self.assertIs(o(b), True)  # a pick never flips back
+        self.assertIsNone(o(a))  # a's old false went with the old file
 
-    def test_missing_file_raises_so_the_executor_refuses(self):
-        with self.assertRaises(Exception):
-            h.JsonlPickOracle(self.tmp / "nope.jsonl")(MINT)
+    def test_replay_file_is_ored_in(self):
+        c = Clock()
+        a = "A" * 43 + "1"
+        live = self.picks([{"mint": a, "pick": False}], c())
+        rep = self.picks([{"mint": a, "pick": True}], None, name="picks-replay.jsonl")
+        self.assertIs(self.oracle(live, c, pick_replay_files=[str(rep)])(a), True)
+
+    def test_the_cli_builds_the_oracle_from_the_config_and_refuses_a_bad_one(self):
+        e = self.env(live=False)
+        cfg_path = self.tmp / "cfg.json"
+        cfg_path.write_text(json.dumps({**e.conf, "pick_file": str(self.tmp / "p.jsonl"), "pick_replay_files": "not-a-list"}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(h.main(["--config", str(cfg_path), "--once"]), 2)
+        self.assertIn("startup_refused pick_oracle_config", out.getvalue())
+        built = []
+        real = h.H5Executor
+
+        def capture(*a, **k):
+            built.append(k.get("pick_oracle"))
+            raise SystemExit(0)
+
+        cfg_path.write_text(json.dumps({**e.conf, "pick_file": str(self.tmp / "p.jsonl")}))
+        with mock.patch.object(h, "H5Executor", capture), mock.patch.object(h.sim, "load_rpc_url", lambda *a, **k: "http://127.0.0.1:9"):
+            with self.assertRaises(SystemExit):
+                h.main(["--config", str(cfg_path), "--once"])
+        self.assertIs(real, h.H5Executor)
+        self.assertEqual(len(built), 1)
+        self.assertIsInstance(built[0], h.PickOracle)
+
+
+class PickWireTests(Case):
+    """The wired oracle inside the executor (DEC-024 s6), end to end on a picks file."""
+
+    def setup(self, rows: list[dict], hb_age_ms: int | None = 0, when: int = T_AFTER_FINAL, marker: bool = True, sub: str = "", **cfg) -> Env:
+        d = self.tmp / (sub or "w")
+        d.mkdir(exist_ok=True)
+        f = d / "picks.jsonl"
+        e = Env(d, oracle=None, **cfg)
+        e.set_time(when)
+        lines = [json.dumps(r) for r in rows]
+        if hb_age_ms is not None:
+            lines.append(json.dumps({"hb": True, "t_ms": e.clock() - hb_age_ms}))
+        f.write_text("".join(x + "\n" for x in lines))
+        e.oracle = h.build_pick_oracle({"pick_file": str(f)}, now_ms=e.clock)
+        e.ex.pick_oracle = e.oracle
+        if marker:
+            Path(e.conf["final_marker_file"]).write_text("")
+        return e
+
+    def test_a_non_pick_trades_a_pick_an_unknown_and_a_stale_feed_do_not(self):
+        e = self.setup([{"mint": MINT, "pick": False}], sub="np")
+        e.fire()
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.seal_skips), (1, 0))
+        for i, (rows, age) in enumerate((([{"mint": MINT, "pick": True}], 0), ([], 0), ([{"mint": MINT, "pick": False}], 61_000),
+                                          ([{"mint": MINT, "pick": False}], None))):
+            e = self.setup(rows, hb_age_ms=age, sub=f"x{i}")
+            e.fire()
+            pick = i == 0  # a known pick is counted in this process only (quant-proof (d)); the others are seal_oracle_error counts
+            self.assertEqual((e.rpc.sent, e.ex.counters.seal_skips, e.ex.seal_picks_in_process, e.refusals()),
+                             ([], 0 if pick else 1, 1 if pick else 0, []), (rows, age))
+            self.assertNotIn(MINT, Path(e.ex.fills.path).read_text())
+
+    def test_before_the_window_the_feed_is_not_read_and_nothing_changes(self):
+        e = self.setup([{"mint": MINT, "pick": True}], hb_age_ms=None, when=h.SEAL_START_MS - 1)  # a pick and a dead feed: irrelevant here
+        e.fire()
+        self.assertEqual((len(e.rpc.sent), e.ex.counters.seal_skips), (1, 0))
+
+    def test_a_pick_refused_by_an_earlier_check_gets_no_per_mint_row(self):
+        # The pick reaches the executor only if the shadow saw it as a non-pick a moment earlier (a later replay row). Whatever check refuses
+        # it first, the row that names the mint is not written: the refusal is relabelled to its seal reason and counted.
+        e = self.setup([{"mint": MINT, "pick": True}])
+        Path(e.ex.paths["stop"]).write_text("")
+        e.fire()
+        self.assertEqual((e.rpc.sent, e.refusals(), e.ex.counters.seal_skips, e.ex.seal_picks_in_process), ([], [], 0, 1))
+        self.assertNotIn(MINT, Path(e.ex.fills.path).read_text())
+        e2 = self.setup([{"mint": MINT, "pick": False}], sub="np")  # a non-pick refused by the same check keeps its row, as before
+        Path(e2.ex.paths["stop"]).write_text("")
+        e2.fire()
+        self.assertEqual((e2.rpc.sent, e2.ex.counters.seal_skips), ([], 0))
+        self.assertEqual(len(e2.refusals()), 1)
+        self.assertNotIn(e2.refusals()[0], h.SEAL_REASONS)
+
+    def test_outside_the_window_a_refusal_keeps_its_label(self):
+        e = self.setup([{"mint": MINT, "pick": True}], when=h.SEAL_START_MS - 60_000)
+        Path(e.ex.paths["stop"]).write_text("")
+        e.fire()
+        self.assertEqual(e.ex.counters.seal_skips, 0)
+        self.assertEqual(len(e.refusals()), 1)
+
+    def test_pick_feed_alert_from_the_final_on_without_a_mint(self):
+        e = self.setup([{"mint": MINT, "pick": False}], hb_age_ms=61_000)
+        e.ex.prewarm()
+        (a,) = e.alerts("pick_feed_unavailable")
+        self.assertEqual((a["why"], a["staleness_s"], a["mint"]), ("stale", 61.0, ""))
+        e.ex.prewarm()
+        self.assertEqual(len(e.alerts("pick_feed_unavailable")), 1)  # at most every 10 minutes
+        with Path(e.oracle._src[0].tail.path).open("a") as fh:
+            fh.write(json.dumps({"hb": True, "t_ms": e.clock()}) + "\n")
+        e.clock.t += h.PICK_FEED_ALERT_MS
+        with Path(e.oracle._src[0].tail.path).open("a") as fh:
+            fh.write(json.dumps({"hb": True, "t_ms": e.clock()}) + "\n")
+        e.ex.prewarm()
+        self.assertEqual(len(e.alerts("pick_feed_unavailable")), 1)  # fresh again: no alert
+        self.assertNotIn(MINT, json.dumps(e.alerts()))
+
+    def test_pick_feed_alert_needs_the_window_the_final_and_says_no_oracle(self):
+        e = self.setup([], hb_age_ms=None, when=h.ORACLE_EARLIEST_MS - 1)
+        e.ex.prewarm()
+        self.assertEqual(e.alerts("pick_feed_unavailable"), [])  # before 02:00Z the feed is not expected
+        e2 = self.setup([], hb_age_ms=None, marker=False, sub="nm")
+        e2.ex.prewarm()
+        self.assertEqual(e2.alerts("pick_feed_unavailable"), [])  # before the FINAL marker the feed is not expected either
+        e3 = self.setup([], hb_age_ms=None, sub="no")
+        e3.ex.pick_oracle = None
+        e3.ex.prewarm()
+        self.assertEqual(e3.alerts("pick_feed_unavailable")[0]["why"], "no_oracle")
+        e4 = self.setup([], hb_age_ms=None, sub="nh")
+        e4.ex.prewarm()
+        self.assertEqual(e4.alerts("pick_feed_unavailable")[0]["why"], "no_fresh_heartbeat")
+
+    def test_boost_docstring_names_the_pool_minimum(self):
+        self.assertIn(">= BOOST_MEDIAN_MIN_POOLS (30) pools", h.H5Executor.on_boost_row.__doc__)
+        self.assertNotIn(">= 10 pools", h.H5Executor.on_boost_row.__doc__)
+        self.assertEqual(h.BOOST_MEDIAN_MIN_POOLS, 30)
 
 
 # --- key hygiene helpers ----------------------------------------------------------------------------------------------------------
@@ -885,6 +1055,9 @@ class SafetyTests(Case):
         self.assertEqual(live["end_ms"], 1792110600000)  # 2026-10-16T00:30:00Z: ends before the EXP-022 seal window opens
         self.assertLess(live["end_ms"], h.SEAL_START_MS)
         self.assertEqual((live["intents_file"], dry["intents_file"]), ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow"))
+        # the CAP-PICK exporter's live booleans, under the shadow bind (CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick); end_ms is unchanged
+        self.assertEqual((live["pick_file"], dry["pick_file"]), ("/srv/mal-h5-shadow/cap-pick/picks.jsonl",) * 2)
+        self.assertIsNotNone(h.build_pick_oracle(live))
         # 2.5 x the shadow's 60 s heartbeat period: one late or missed heartbeat does not refuse buys, a feed that has gone quiet does
         self.assertEqual((live["feed_heartbeat_max_age_ms"], dry["feed_heartbeat_max_age_ms"]), (150000, 150000))
         self.assertEqual(live["feed_heartbeat_max_age_ms"], int(2.5 * 60_000))

@@ -510,6 +510,8 @@ Section 6 says the executor "reads only the `mint` field of the decision-time in
      - The H5 shadow is the canary's paper twin. It keeps running through Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and items 2, 3 and 5 govern which of its records it writes in the seal window. Until PR #540 is merged and the shadow restarted on it, the shadow seals every pool in the seal window (section 6, Dependency).
      - Any executor that runs in the seal window (an `end_ms` after 2026-10-16T01:00Z) must carry items 2, 3 and 5 (PR #540 or a later head with the same seal code).
 
+**Amendment 6, re-clearance record (2026-10-10T09:32:14Z).** Quant-proof re-cleared #540 at `bea3f30` (a merge of main `b5ba835` into `4feec6d`). The executor, pinned configs, oracle wrapper and seal code are identical to `4feec6d`. The shadow adds #541's report-only `outcome_bx10` behind the same CAP-PICK and H5 Look-2 seals. md5 decision-equivalence at `bea3f30`: `75cb0b0c585bc2479137cae31330e73e`, 72/72 (MiScusi job #498, 25-hour replay 2026-09-20T00..2026-09-21T00). Merged as `288f490`.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.

@@ -525,7 +525,8 @@ class Round3FixTests(TierCase):
         ok = self.fresh("late2", live=False, t0=late, final_marker_file=str(m), oracle=lambda mint: False)
         self.assertEqual([x for x in ok.ledger("alert") if x["alert"].startswith("seal_")], [])
         live_cfg = json.loads((Path(c.__file__).resolve().parents[1] / "scripts" / "mal-fast" / "c1nf-executor-live.json").read_text())
-        self.assertGreater(live_cfg["end_ms"], h5.SEAL_START_MS)  # the shipped live config reaches into the seal window: it alerts until pick_file is set
+        self.assertGreater(live_cfg["end_ms"], h5.SEAL_START_MS)  # the shipped live config reaches into the seal window, so it needs the oracle:
+        self.assertEqual(live_cfg["pick_file"], "/srv/mal-cap-pick/picks.jsonl")  # DEC-026 Amendment 1 item B (the read-only bind in the unit)
 
     # -- LOW 4: the outcomes offset is persisted after the rows are processed; c1nf-extra.json has an anti-reset guard ------------------------
     def test_a_crash_while_processing_outcomes_loses_none(self):

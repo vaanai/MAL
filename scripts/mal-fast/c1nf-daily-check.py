@@ -23,8 +23,8 @@ look; this check and the watchdog print nothing by class. Concretely:
   - Report drops (and counts, as class_blind_withheld) any line that would still name the class, so a future edit cannot leak one.
   A test runs every check on two ledgers that differ only in class fields and requires identical output.
 
-  UNIT          mal-c1nf-executor: installed unit file equal to the pinned copy, drop-ins only live.conf (equal to the pinned drop-in) and
-                10-shadow-feed.conf (both pass check-c1nf-unit.py, pinned beside this file); the running ExecStart is the pinned launcher; a
+  UNIT          mal-c1nf-executor: installed unit file equal to the pinned copy, drop-ins only live.conf (equal to the pinned drop-in),
+                10-shadow-feed.conf and 20-cap-pick.conf (all pass check-c1nf-unit.py, pinned beside this file); the running ExecStart is the pinned launcher; a
                 unit running --live sets a credential, and every credential line is exactly LoadCredential=c1nf-wallet:<the C1-NF key> (never
                 the H5/probe key).
   GATE          /etc/mal-c1nf/LIVE_OK (root:root 0644, no symlink, parent root:root 0755); TIER exactly T1 or T2 (missing or invalid = T1).
@@ -105,7 +105,8 @@ UNIT_FILE = f"/etc/systemd/system/{C1NF_UNIT}.service"
 DROPIN_DIR = f"/etc/systemd/system/{C1NF_UNIT}.service.d"
 DROPIN_LIVE = f"{DROPIN_DIR}/live.conf"
 DROPIN_FEED = f"{DROPIN_DIR}/10-shadow-feed.conf"
-UNIT_CHECKER = "check-c1nf-unit.py"  # this PR, pinned beside this file: --base, --dropin, --shadow-feed
+DROPIN_CAP_PICK = f"{DROPIN_DIR}/20-cap-pick.conf"  # the CAP-PICK oracle bind (DEC-026 Amendment 1 item B)
+UNIT_CHECKER = "check-c1nf-unit.py"  # pinned beside this file: --base, --dropin, --shadow-feed, --cap-pick
 WATCH_STATE = "/var/lib/mal-c1nf-watch/state.json"
 WATCH_FILES = ((f"/etc/systemd/system/{WATCH_SERVICE}", f"{PINNED}/{WATCH_SERVICE}"),
                (f"/etc/systemd/system/{WATCH_TIMER}", f"{PINNED}/{WATCH_TIMER}"))
@@ -626,8 +627,13 @@ def check_c1nf_unit(host: Host, rep: Report, checker) -> UnitInfo:
         elif p == DROPIN_FEED:
             if checker is not None and checker.problems(host.read(p) or b"", "shadow-feed"):
                 problems.append(f"10-shadow-feed.conf failed the shadow-feed check (run {UNIT_CHECKER} --shadow-feed on it)")
+        elif p == DROPIN_CAP_PICK:
+            if checker is not None and checker.problems(host.read(p) or b"", "cap-pick"):
+                problems.append(f"20-cap-pick.conf failed the CAP-PICK bind check (run {UNIT_CHECKER} --cap-pick on it)")
         else:
             problems.append(f"unexpected drop-in {p}")
+    if rc == 0:  # whether the CAP-PICK oracle bind is installed: check_seal_inputs warns 24 h before the seal if it is not
+        rep.facts["cap_pick_bind"] = DROPIN_CAP_PICK in out.split()
     running_live = False
     if props.get("ActiveState") in ACTIVE_STATES:
         rc, es = host.systemctl("show", f"{C1NF_UNIT}.service", "-p", "ExecStart", "--value", "--no-pager")
@@ -728,13 +734,17 @@ def check_live_config(host: Host, rep: Report) -> dict | None:
 def check_seal_inputs(host: Host, rep: Report, cfg: dict | None, live_ok: bool, now: float) -> None:
     """What the CAP-PICK seal needs from 2026-10-16T01Z (DEC-026 section 9.1), which the executor fails closed without: a `pick_file` in the
     pinned live config (v2 reads it through its stale-checked #509 oracle; without one every pick in the window is refused
-    seal_window_no_oracle), and H5's FINAL marker in the C1-NF state dir (without it, the same refusal). Existence only; the picks file is
-    never opened here."""
+    seal_window_no_oracle), the 20-cap-pick.conf bind that lets the unit see that file (without it every pick is refused; alerted from
+    SEAL_WARN_S before the seal), and H5's FINAL marker in the C1-NF state dir (without it, the same refusal). Existence only; the picks
+    file is never opened here."""
     final = host.exists(FINAL_MARKER)
     rep.facts["final_marker"] = final
     if cfg is not None:
         if isinstance(cfg.get("pick_file"), str) and cfg["pick_file"]:
             rep.ok("live config names a pick_file (the CAP-PICK oracle; its staleness is the executor's check)")
+            if now >= SEAL_START_S - SEAL_WARN_S and rep.facts.get("cap_pick_bind") is False:
+                rep.alert("c1nf_seal_no_cap_pick_bind", f"{DROPIN_CAP_PICK} is not installed: from 2026-10-16T01Z the unit cannot see "
+                          f"{cfg['pick_file']} and every pick is refused (DEC-026 Amendment 1 item B; runbook Step 5)")
         elif now >= SEAL_START_S - SEAL_WARN_S:
             rep.alert("c1nf_seal_no_pick_file", "the pinned live config has no pick_file: from 2026-10-16T01Z every pick is refused "
                                                 "seal_window_no_oracle and the canary is paused (DEC-026 section 9.1). It needs #509 and a "

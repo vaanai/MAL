@@ -32,6 +32,8 @@ The executor is `tools/h5_executor.py` (PR #484). Unit: `mal-h5-executor` on `ma
 | **H5's `STOP`, `HALT`, `FINAL_WRITTEN`** | **`/var/lib/mal-live/h5/STOP`, `/var/lib/mal-live/h5/HALT`, `/var/lib/mal-live/h5/FINAL_WRITTEN`** (the executor only tests that they exist) |
 | The probe's own files, untouched and read-only to this unit | `/var/lib/mal-live/{state-live.json,probe-fills.jsonl,STOP}` |
 | Intents path the executor reads, inside the unit | `/srv/mal-h5-shadow` (config value `intents_file` in both pinned configs). The shadow job behind it must be at #477 head `d3b69d0` or later. |
+| CAP-PICK pick file the executor reads, inside the unit | `/srv/mal-h5-shadow/cap-pick/picks.jsonl` (config value `pick_file` in both pinned configs). On the host it is `$SHADOW/cap-pick/picks.jsonl`, written by the CAP-PICK exporter job (`scripts/research/cap-pick-oracle.sh`, `CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick`, also its default). The existing shadow bind carries it: no new drop-in. The executor's hourly pattern and the daily check's do not match the subdirectory. |
+| CAP-PICK FINAL marker of the exporter and the shadow (job user, not `mal-live`) | `$HOME/data/cap-pick-oracle/FINAL_WRITTEN` of the MiScusi job user (`CAP_PICK_FINAL_MARKER` of both jobs). It is outside the shadow directory on purpose, so the bind does not carry it. See "CAP-PICK: the exporter, the shadow restart and the two FINAL markers". |
 | Root-only Helius env, shared with the probe | `/etc/mal-probe-rpc/helius.env` (root:root 0600 in a root:root 0700 dir) |
 
 **Kill switches, stated once so nobody guesses.** The executor (from 4f05e30) stops on a `STOP` or `HALT` in either place: H5's own files in `/var/lib/mal-live/h5/` and the wallet-wide ones in `/var/lib/mal-live/` (the probe's file names). `STOP` means no new buys; `HALT` freezes everything, sells included. `--status` prints only the H5 files, so look at the wallet-wide ones with `sudo test -e /var/lib/mal-live/STOP` and `.../HALT`. **The probe's permanent `/var/lib/mal-live/STOP` is therefore a wallet-wide STOP for H5: while it exists, H5 never buys.** It has to be removed for the canary to trade, which ends the probe's STOP record (the probe stays off because its unit is stopped and disabled, the installer and the daily check refuse or alert otherwise, and the daily check keeps the probe's state-file hash). That removal is **the manager's written decision, recorded in the PR comment that names the sha**; Helm does it at Step 11 and not before, and never on his own. The old daily check required that file to exist; the new one does not (it reports it, and calls it an idle-canary reason once the gate is open). The daily check and the watchdog alert if `/var/lib/mal-live/HALT` exists.
@@ -429,7 +431,7 @@ A `problem` other than null, or a `to_tier` of `T0` after you wrote `T1`, means 
 | Stop new buys | `sudo touch /var/lib/mal-live/h5/STOP` | No new buys; open positions still exit on the timer. Remove with `sudo rm /var/lib/mal-live/h5/STOP`. |
 | Freeze everything | `sudo touch /var/lib/mal-live/h5/HALT` | No buys, no sells, no rebroadcasts. Open positions stay open. Only if the executor or the wallet is wrong. This is the only stop that needs no Wind-down. |
 | Stop new buys by closing the gate | `sudo rm /etc/mal-h5/LIVE_OK` (Helm or the manager) | Same as `STOP` for buys. Only Helm creates it again. |
-| EXP-022 seal marker | `sudo touch /var/lib/mal-live/h5/FINAL_WRITTEN`, only after the DEC-016 FINAL is written | Same directory and same method as `STOP`; the seal rules around it are in #484. |
+| EXP-022 seal markers (two) | `sudo touch /var/lib/mal-live/h5/FINAL_WRITTEN` and, as the job user, `touch "$HOME/data/cap-pick-oracle/FINAL_WRITTEN"`, both only after the DEC-016 FINAL is written | The first is the executor's (same directory and same method as `STOP`; the seal rules around it are in #484). The second opens the CAP-PICK exporter and the shadow's pick oracle. Steps and checks: "CAP-PICK: the exporter, the shadow restart and the two FINAL markers". |
 | Status (local files only, no key, no RPC) | `sudo /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-exec/current/launcher.py --config /usr/local/lib/mal-h5-exec/current/h5-executor-live.json --status` | Kill files, `live_ok`, attempts, realized, open, pending, latched halts. |
 | Hard stop | Wind-down first (above), then `sudo systemctl stop mal-h5-executor` | A restart resumes pending signatures without re-buying. Never stop it with `open` or `pending` above 0 unless every open mint is sold and closed first (Sell-and-close). |
 | Daily check | the job command of Step 10b (`/usr/bin/python3 -I /home/claude/MAL/scripts/mal-fast/h5-daily-check.py --funded-sol <total deposited> ...`) | See below. |
@@ -443,6 +445,54 @@ sudo -u mal-live /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/
 ```
 
 A halt is never followed by a retune. Do not clear one without telling the owner.
+
+## CAP-PICK: the exporter, the shadow restart and the two FINAL markers (manager)
+
+DEC-024 section 6 and EXP-022 section 9: from 2026-10-16T01:00Z the executor buys a mint only when the CAP-PICK oracle says it is **not** a pick; a pick, an undecided mint, a missing or stale (> 60 s) feed, or no `FINAL_WRITTEN` are all refused. The shadow seals the same pools. All steps below are the manager's, as the MiScusi job user on fast-0, with `SHADOW=$HOME/data/h5-shadow`. They do not change `end_ms`: the 14-day run is not extended (owner, 10-10), so with the pinned `end_ms` (2026-10-16T00:30Z) this executor stops before the window opens, and the wiring matters for the shadow and for any later sha that runs inside the window.
+
+**1. The exporter job (submit any time; it waits for the FINAL).** `miscusi_job_submit` on `mal-fast-0`, `resumable: true`, command `sh scripts/research/cap-pick-oracle.sh`, with this environment:
+
+```
+CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick                 # also the script's default; the executor's pick_file is /srv/mal-h5-shadow/cap-pick/picks.jsonl
+CAP_PICK_FINAL_MARKER=$HOME/data/cap-pick-oracle/FINAL_WRITTEN
+```
+
+Run `mkdir -p ~/data/cap-pick-oracle` once first (the marker's directory; only the job user reads it). Until the marker is a file and the clock is at or after 2026-10-16T02:00Z, the exporter only waits: it opens no runner file and writes nothing. It writes under `umask 022`, so `cap-pick/` is 0755 and `picks.jsonl` 0644, which `mal-live` reads through the read-only bind. Its log prints counts only, never a mint.
+
+**2. The shadow restart with the oracle, before 2026-10-16T01:00Z.** Without `CAP_PICK_LIVE` and `CAP_PICK_FINAL_MARKER` the shadow seals every pool with s0 from 01:00Z (fail closed: no trigger record, nothing to buy). Restart the shadow job with the same command (`bash scripts/research/h5-shadow.sh`) and the same output directory, so the bind stays valid and no executor restart is needed, adding:
+
+```
+CAP_PICK_LIVE=$HOME/data/h5-shadow/cap-pick/picks.jsonl
+CAP_PICK_FINAL_MARKER=$HOME/data/cap-pick-oracle/FINAL_WRITTEN
+```
+
+Keep every variable the shadow already runs with (`H5_LOOK2_OBSERVED`, if EXP-024 Amendment 2's observation was declared). A MiScusi resume or re-run must set them all again. A restart is a feed gap, so do it while the executor buys nothing (the reinstall's Wind-down, or after `end_ms`). Check the start record of the newest hourly file:
+
+```
+f=$(ls "$SHADOW" | grep -E '^h5-shadow-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}[.]jsonl$' | tail -1)
+grep -h '^{"type":"start"' "$SHADOW/$f" | tail -1 | python3 -c 'import json,sys; s=json.loads(sys.stdin.read())["seal"]; print(s.get("oracle"), s.get("live_files"), s.get("final_marker"))'
+#   expect: cap_pick_oracle 1 True
+#   stub_always_true: the two variables did not reach the job; every pool from 01:00Z is sealed. Fix the environment and restart again.
+```
+
+From 01:00Z until the FINAL marker exists the oracle answers "undecided" for every mint, so every pool is sealed. That is expected.
+
+**3. The two FINAL markers, only after the DEC-016 FINAL is written.** A marker written early breaks the EXP-022 seal (the exporter would read runner files before the FINAL). Then:
+
+```
+sudo touch /var/lib/mal-live/h5/FINAL_WRITTEN                  # the executor's: a plain file; root:root 0644 is accepted
+touch "$HOME/data/cap-pick-oracle/FINAL_WRITTEN"               # the exporter's and the shadow's CAP_PICK_FINAL_MARKER, as the job user
+```
+
+Both are needed before any buy in the window: the executor refuses without its own marker, and the shadow's oracle answers "undecided" for every mint without the second. Checks, from 02:00Z (the exporter's earliest start):
+
+```
+stat -c '%a %U %n' "$SHADOW/cap-pick" "$SHADOW/cap-pick/picks.jsonl"     # expect 755 <jobuser> .../cap-pick and 644 <jobuser> .../picks.jsonl
+PID=$(systemctl show -p MainPID --value mal-h5-executor)
+sudo nsenter -t "$PID" -m /usr/bin/stat -c '%a %n' /srv/mal-h5-shadow/cap-pick/picks.jsonl   # expect: 644 /srv/mal-h5-shadow/cap-pick/picks.jsonl
+```
+
+Do not print `picks.jsonl` itself: it lists the picks by mint. A dead or stale exporter shows as the executor ALERT `pick_feed_unavailable` (no mint; the daily check shows it as `h5_executor_alert_pick_feed_unavailable`, and the watchdog posts it). The `cap-pick` subdirectory is not an hourly file: it never makes a stopped detector look fresh, and it raises no `h5_feed_*` alert by itself.
 
 ## Daily check (manager, 12:17Z cron) and the watchdog
 

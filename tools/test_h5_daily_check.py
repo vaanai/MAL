@@ -659,6 +659,34 @@ def shadow_line(**kw) -> str:
     return json.dumps({"type": "start", "v": 1, "t_ms": 1, **kw}, separators=(",", ":")) + "\n"
 
 
+def test_the_cap_pick_subdirectory_is_ignored_and_raises_no_feed_alert(tmp_path):
+    # CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick: the exporter's subdirectory sits in the shadow directory. It is never an hourly file, never
+    # makes a dead detector look fresh, and never by itself raises an h5_feed_* alert.
+    d = tmp_path / "h5-shadow"
+    (d / "cap-pick").mkdir(parents=True)
+    hour = d / "h5-shadow-2026-10-16T03.jsonl"
+    hour.write_text(shadow_line(h5_look2={"observed": False}) + '{"type":"hb"}\n')
+    (d / "cap-pick" / "picks.jsonl").write_text(shadow_line(h5_look2={"observed": True}) + '{"hb":true,"t_ms":1}\n')
+    os.utime(d / "cap-pick" / "picks.jsonl", (NOW, NOW))
+    os.utime(d / "cap-pick", (NOW, NOW))
+    assert dc.Host().newest_hourly(str(d))[0] == hour.name
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+
+    class H(FakeHost):
+        newest_hourly = dc.Host.newest_hourly
+
+    os.utime(hour, (NOW - 60, NOW - 60))
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "fresh")
+    assert not [a for a in alerts(out) if a.startswith("h5_feed")], out
+    assert f"shadow feed fresh ({hour.name}, 60 s)" in out
+    os.utime(hour, (NOW - 11 * 60, NOW - 11 * 60))  # the detector stopped; the exporter still writes
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "stale")
+    assert "h5_feed_stale" in alerts(out) and hour.name in out and "cap-pick" not in out
+    hour.unlink()
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "none")
+    assert "h5_feed_stale" in alerts(out) and "no h5-shadow-<hour>.jsonl" in out
+
+
 def test_newest_shadow_start_reads_the_last_start_record_of_the_newest_file_that_has_one(tmp_path):
     d = tmp_path
     (d / "h5-shadow-2026-10-16T01.jsonl").write_text(shadow_line(h5_look2={"observed": False}) + '{"type":"hb"}\n')
