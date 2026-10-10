@@ -88,6 +88,12 @@ class Pins(unittest.TestCase):
         self.assertTrue(set(l1) < set(l2))
         self.assertEqual(len(l1), 24 * 14 + 11)
 
+    def test_look_tape_is_the_tape_line_of_the_pinned_look_patches(self):
+        self.assertEqual(sorted(A.LOOK_TAPE), sorted(A.LOOKS))
+        for look, tape in A.LOOK_TAPE.items():
+            patch = (A.ART / "patches" / f"common2_{look}.patch").read_text().splitlines()
+            self.assertEqual([ln for ln in patch if ln.startswith("+TAPE = ")], [f"+TAPE = '{tape}'"], look)
+
     def test_pda_canonical_pool_matches_a_real_tape_pool(self):
         self.assertEqual(A.canonical_pool(MINT), POOL)
 
@@ -213,10 +219,19 @@ class Convert(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_convert_takes_no_threads_argument(self):
+        import inspect
+        import io
+        from unittest import mock
+        self.assertNotIn("threads", inspect.signature(A.convert).parameters)
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
+            A.main(["convert", "--src", str(self.src), "--block", "b", "--out", str(self.tmp / "o"),
+                    "--hours", self.HOUR, "2026-09-20T06", "--threads", "4"])
+
     def test_rows_equal_convert_py_select_and_output_is_idempotent(self):
         import duckdb
-        man1 = A.convert(str(self.src), "fixture-blk", self.tmp / "t1", [self.HOUR], threads=2)
-        man2 = A.convert(str(self.src), "fixture-blk", self.tmp / "t2", [self.HOUR], threads=1)
+        man1 = A.convert(str(self.src), "fixture-blk", self.tmp / "t1", [self.HOUR])  # two independent runs
+        man2 = A.convert(str(self.src), "fixture-blk", self.tmp / "t2", [self.HOUR])
         self.assertEqual(man1["bad"], [])
         self.assertEqual([f["sha256"] for f in man1["files"]], [f["sha256"] for f in man2["files"]])
         cols = A.pinned_cols()
@@ -257,6 +272,15 @@ class Convert(unittest.TestCase):
         self.assertNotIn("virtual_quote_reserves", t[0])
         ft = [f for f in man["files"] if f["kind"] == "trades"][0]
         self.assertEqual((ft["pumpswap_rows"], ft["pumpswap_rows_with_v"], ft["pumpswap_rows_mapped"]), (5, 4, 4))
+        # the v_ok sidecar: trades row order, the join keys, true exactly on the mapped rows
+        vok = pq.read_table(self.tmp / "t" / "v_ok" / f"{self.HOUR}.parquet").to_pylist()
+        self.assertEqual([(r["slot"], r["tx_index"], r["event_index"]) for r in vok],
+                         [(r["slot"], r["tx_index"], r["event_index"]) for r in t])
+        self.assertEqual([r["v_ok"] for r in vok], [True, True, True, True, False, False])
+        self.assertEqual(ft["v_ok_sha256"], A.sha256_file(self.tmp / "t" / "v_ok" / f"{self.HOUR}.parquet"))
+        man0 = A.convert(str(self.src), "fixture-blk", self.tmp / "t0", [self.HOUR])  # no event V: no sidecar
+        self.assertFalse((self.tmp / "t0" / "v_ok").exists())
+        self.assertNotIn("v_ok_sha256", [f for f in man0["files"] if f["kind"] == "trades"][0])
 
     def test_v0_is_the_first_print_even_when_s0_is_in_another_block(self):
         other = self.tmp / "other" / "trades" / "trades-2026-09-20T04.jsonl.zst"
@@ -289,17 +313,80 @@ class Convert(unittest.TestCase):
         ledger.write_text(json.dumps(FINAL_ROW) + "\n")
         looks = {"look1": (("blk-a", "2026-10-03T00", "2026-10-03T01"), ("blk-b", "2026-10-03T01", "2026-10-03T03"))}
         hb = ["2026-10-03T01"]
-        with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), mock.patch.dict(A.LOOKS, looks, clear=True):
+        with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), mock.patch.dict(A.LOOKS, looks, clear=True), \
+                mock.patch.dict(A.LOOK_TAPE, {"look1": str(self.tmp / "o")}, clear=True):
             kw = dict(look="look1", event_v=True, final_ledger=ledger)
             with self.assertRaisesRegex(A.Refused, "not closed"):  # 10-03T02 is allowlisted and still open
-                A.convert(str(b_dir), "blk-b", self.tmp / "o0", hb, now=datetime(2026, 10, 3, 2, 30, tzinfo=timezone.utc), **kw)
+                A.convert(str(b_dir), "blk-b", self.tmp / "o", hb, now=datetime(2026, 10, 3, 2, 30, tzinfo=timezone.utc), **kw)
             after = datetime(2026, 10, 25, tzinfo=timezone.utc)
             with self.assertRaisesRegex(A.Refused, "v0_files"):
-                A.convert(str(b_dir), "blk-b", self.tmp / "o1", hb, now=after, v0_files=[], **kw)
+                A.convert(str(b_dir), "blk-b", self.tmp / "o", hb, now=after, v0_files=[], **kw)
             man = A.convert(str(b_dir), "blk-b", self.tmp / "o", hb, now=after, **kw)
         self.assertEqual((man["v0_files"], man["v0_missing_hours"]), (2, ["2026-10-03T02"]))
         t = pq.read_table(self.tmp / "o" / "trades" / "2026-10-03T01.parquet").to_pylist()
         self.assertEqual([int(r["quote_reserve"]) for r in t], [9, 10])  # s0 in blk-a has no V: no V0, nothing mapped
+
+
+    def _look_fixture(self):
+        a_dir, b_dir = self.tmp / "blocks" / "blk-a", self.tmp / "blocks" / "blk-b"
+        ledger = self.tmp / "FINAL_READS.jsonl"
+        ledger.write_text(json.dumps(FINAL_ROW) + "\n")
+        looks = {"look1": (("blk-a", "2026-10-03T00", "2026-10-03T01"), ("blk-b", "2026-10-03T01", "2026-10-09T02"))}
+        return a_dir, b_dir, ledger, looks
+
+    def test_event_v_bad_line_is_a_bad_hour_not_a_crash(self):
+        from unittest import mock
+        # exploration mode: the call's own hour has a malformed line -> one bad hour, no exception
+        write_zst(self.src / "trades" / f"trades-{self.HOUR}.jsonl.zst",
+                  jl([trade(virtual_quote_reserves=17_000_000_000)]) + [b'{"venue": "pumpswap", "slot": }'])
+        man = A.convert(str(self.src), "fixture-blk", self.tmp / "t", [self.HOUR], event_v=True)
+        self.assertEqual(man["bad_hours"], [self.HOUR])
+        self.assertEqual([b["file"] for b in man["v0_bad"]], [str(A.src_file(str(self.src), "trades", self.HOUR))])
+        self.assertFalse((self.tmp / "t" / "trades" / f"{self.HOUR}.parquet").exists())
+        self.assertFalse((self.tmp / "t" / "v_ok" / f"{self.HOUR}.parquet").exists())
+        # look mode: a malformed line in another block's allowlisted hour does not raise; v0_bad names that file
+        a_dir, b_dir, ledger, looks = self._look_fixture()
+        bad_f = write_zst(a_dir / "trades" / "trades-2026-10-03T00.jsonl.zst",
+                          jl([trade(slot=50, quote_reserve=1)]) + [b'{"venue": "pumpswap", "slot": }'])
+        write_zst(b_dir / "trades" / "trades-2026-10-03T01.jsonl.zst",
+                  jl([trade(slot=100, quote_reserve=9, virtual_quote_reserves=17_000_000_000),
+                      trade(slot=101, quote_reserve=10, virtual_quote_reserves=17_003_000_000)]))
+        with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), mock.patch.dict(A.LOOKS, looks, clear=True), \
+                mock.patch.dict(A.LOOK_TAPE, {"look1": str(self.tmp / "o")}, clear=True):
+            man = A.convert(str(b_dir), "blk-b", self.tmp / "o", ["2026-10-03T01"], look="look1", event_v=True,
+                            final_ledger=ledger, now=datetime(2026, 10, 25, tzinfo=timezone.utc))
+        self.assertEqual(man["bad_hours"], [])
+        self.assertEqual([b["file"] for b in man["v0_bad"]], [str(bad_f)])
+        self.assertEqual(man["v0_files"], 1)
+        import pyarrow.parquet as pq
+        t = pq.read_table(self.tmp / "o" / "trades" / "2026-10-03T01.parquet").to_pylist()
+        self.assertEqual([int(r["quote_reserve"]) for r in t], [9, 10 + 3_000_000])  # V0 from blk-b's own s0
+
+    def test_look_guards_refuse_before_any_file_opens(self):
+        from unittest import mock
+        a_dir, b_dir, ledger, looks = self._look_fixture()
+        write_zst(b_dir / "trades" / "trades-2026-10-09T00.jsonl.zst", jl([trade()]))
+        tape = self.tmp / "look1" / "tape"
+        kw = dict(look="look1", final_ledger=ledger, now=datetime(2026, 10, 25, tzinfo=timezone.utc))
+        opened = mock.patch.object(A, "strict_scan", side_effect=AssertionError("a source file was opened"))
+        with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), mock.patch.dict(A.LOOKS, looks, clear=True), \
+                mock.patch.dict(A.LOOK_TAPE, {"look1": str(tape)}, clear=True), opened:
+            # (a) a V-covered hour without event V
+            with self.assertRaisesRegex(A.Refused, "event V is pinned for V-covered hours"):
+                A.convert(str(b_dir), "blk-b", tape, ["2026-10-09T00"], **kw)
+            # (b) a tape directory that is not the look's pinned one
+            with self.assertRaisesRegex(A.Refused, "R12: look1's tape is written only to"):
+                A.convert(str(b_dir), "blk-b", self.tmp / "elsewhere", ["2026-10-08T00"], **kw)
+            # (b) the pinned tape directory holds a file outside the allowlist (pass A would read it)
+            (tape / "trades").mkdir(parents=True)
+            (tape / "trades" / "2026-10-09T05.parquet").write_bytes(b"x")
+            with self.assertRaisesRegex(A.Refused, "outside look1's allowlist"):
+                A.convert(str(b_dir), "blk-b", tape, ["2026-10-08T00"], **kw)
+            (tape / "trades" / "2026-10-09T05.parquet").unlink()
+            (tape / "v_ok").mkdir()
+            (tape / "v_ok" / "2026-09-20T05.parquet").write_bytes(b"x")
+            with self.assertRaisesRegex(A.Refused, "outside look1's allowlist"):
+                A.convert(str(b_dir), "blk-b", tape, ["2026-10-08T00"], **kw)
 
 
 @unittest.skipUnless(HAVE_DUCKDB, "duckdb missing")
@@ -336,9 +423,19 @@ class LookAssembly(unittest.TestCase):
         con.execute(f"COPY (SELECT * FROM (VALUES ('a', 1), ('b', 2)) t(mint, mid)) TO '{p2}' (FORMAT parquet)")
         con.execute(f"COPY (SELECT * FROM (VALUES ('a', 1), ('b', 2), ('c', 3)) t(mint, mid)) TO '{lk}' (FORMAT parquet)")
         con.execute(f"COPY (SELECT * FROM (VALUES ('a', 1), ('c', 2), ('b', 3)) t(mint, mid)) TO '{bad}' (FORMAT parquet)")
-        self.assertEqual(A.check_mid_stable(lk, p2), {"p2_tokens": 2, "mid_changed_or_missing": 0})
+        sha = A.sha256_file(p2)
+        self.assertEqual(A.check_mid_stable(lk, p2, p2_sha256=sha), {"p2_tokens": 2, "mid_changed_or_missing": 0})
         with self.assertRaisesRegex(A.Refused, "mid"):
-            A.check_mid_stable(bad, p2)
+            A.check_mid_stable(bad, p2, p2_sha256=sha)
+        # a P2 file that is not the pinned one is refused, even when nothing moves
+        with self.assertRaisesRegex(A.Refused, "not the pinned"):
+            A.check_mid_stable(lk, p2)
+        with self.assertRaisesRegex(A.Refused, "not the pinned"):
+            A.check_mid_stable(lk, p2, p2_sha256="0" * 64)
+        empty = self.tmp / "empty.parquet"
+        con.execute(f"COPY (SELECT * FROM (VALUES ('a', 1)) t(mint, mid) WHERE false) TO '{empty}' (FORMAT parquet)")
+        with self.assertRaisesRegex(A.Refused, "holds no token"):
+            A.check_mid_stable(lk, empty, p2_sha256=A.sha256_file(empty))
 
 
 

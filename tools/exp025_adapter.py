@@ -16,13 +16,24 @@ What the adapter does that the September scripts did not (section 11.2, all pre-
   4. slot time is pass A's (pinned); nothing here.
   5. universe filter is the pinned 10_meta.py's; nothing here.
   6. allowlist: only a look's allowlisted hours (section 4) are materialised; any other October hour is refused (R12).
+     A look writes only to its pinned tape directory (LOOK_TAPE, the TAPE lines of patches/common2_look{1,2}.patch), and
+     only when that directory holds no file outside the look's allowlist (pass A skips missing hours, so a stray hour would
+     be read). A look's V-covered hours (>= V_COVER_START) are converted only with event V (section 2.4).
+
+Per-print V flag (asked by the read tool, #561): with event V, every trades hour also gets a sidecar
+`v_ok/<hour>.parquet`, in the trades file's row order, with `slot`, `tx_index`, `event_index` (for a join check) and
+`v_ok = venue = 'pumpswap' AND virtual_quote_reserves IS NOT NULL AND v0 IS NOT NULL` (false otherwise): exactly the
+rows whose quote_reserve was mapped. The trades files keep exactly the pinned convert.py columns.
+
+A V0 file that fails the strict-line check is left out of V0 and listed in the manifest's `v0_bad`; when it is one of the
+call's own hours, that hour is also a bad hour (R1). It never stops the convert.
 
 Seal (section 4). October hours are refused unless the DEC-016 FINAL ledger holds EXP-012's FINAL marker
 (`tools.cap_pick_gate_replay.require_final`), the hour is in the look's allowlist, the hour has closed, and the source is
 the pinned block directory. Exploration mode accepts only exploration-pool hours (never EXP-009 [09-15T12, 09-18T23),
 never >= 2026-09-25T07) from a path with no sealed part. Nothing here prices, labels or scores a row.
 
-  python3 tools/exp025_adapter.py convert --src DIR --block NAME --out TAPE_DIR --hours H0 H1 [--look look1|look2]
+  python3 tools/exp025_adapter.py convert --src DIR --block NAME --out TAPE_DIR --hours H0 H1 [--look look1|look2] [--event-v]
   python3 tools/exp025_adapter.py e0 --work /data/mal/exp025/e0/p3-0920 --record ARTIFACTS/exp025/e0/p3_e0_2026-09-20.json
 
 The E0 (section 10 P3) also runs the `mid` item (e0_mid): P2's universe.parquet (job #504, sha256 pinned below) against
@@ -70,6 +81,10 @@ SOURCES = {  # block -> pinned directory
     "forward-1002": "/data/mal/blocks/forward-1002",
     "forward-1002ev": "/data/mal/blocks/forward-1002ev",
     "walk2": "/data/mal/blocks/forward-1016",
+}
+LOOK_TAPE = {  # look -> the only tape directory it is written to: the TAPE lines of patches/common2_look{1,2}.patch (R12)
+    "look1": "/data/mal/exp025/look1/tape",
+    "look2": "/data/mal/exp025/look2/tape",
 }
 LOOKS = {  # section 4 allowlist per look: (block, first hour, end hour exclusive)
     "look1": (("forward-1002", "2026-10-02T15", "2026-10-09T00"),
@@ -311,6 +326,8 @@ def convert_hour(con, f: Path, kind: str, block: str, hour: str, out: Path, cols
     ev: dict = {}
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
+    vok = out.parent.parent / "v_ok" / out.name  # the per-print V flag sidecar (event V trades only)
+    vtmp = vok.with_name(vok.name + ".tmp")
     try:
         if kind == "trades" and v0_table is not None:
             spec_v = spec[:-1] + ",virtual_quote_reserves:'HUGEINT'}"
@@ -329,6 +346,10 @@ def convert_hour(con, f: Path, kind: str, block: str, hour: str, out: Path, cols
                 count(*) FILTER (WHERE r.venue = 'pumpswap' AND r.virtual_quote_reserves IS NOT NULL AND v.v0 IS NOT NULL)
                 FROM r LEFT JOIN {v0_table} v ON v.pool = r.pool""").fetchone()
             ev = {"pumpswap_rows": int(ps), "pumpswap_rows_with_v": int(wv), "pumpswap_rows_mapped": int(mp)}
+            vok.parent.mkdir(parents=True, exist_ok=True)
+            con.execute(f"COPY (SELECT r.slot, r.tx_index, r.event_index, coalesce(r.venue = 'pumpswap' AND "
+                        f"r.virtual_quote_reserves IS NOT NULL AND v.v0 IS NOT NULL, false) AS v_ok FROM r LEFT JOIN "
+                        f"{v0_table} v ON v.pool = r.pool ORDER BY r.rn__) TO {_q(vtmp)} (FORMAT parquet, COMPRESSION zstd)")
             con.execute("DROP TABLE r")
         else:
             con.execute(f"COPY (SELECT *, {_q(block)} AS block, {_q(hour)} AS hour FROM read_json({_q(f)}, "
@@ -336,11 +357,16 @@ def convert_hour(con, f: Path, kind: str, block: str, hour: str, out: Path, cols
             n = con.execute(f"SELECT count(*) FROM read_parquet({_q(tmp)})").fetchone()[0]
     except duckdb.Error as e:  # strict: no ignore_errors fallback (convert.py's LENIENT path is not taken)
         tmp.unlink(missing_ok=True)
+        vtmp.unlink(missing_ok=True)
         raise BadHour(f"{f}: strict read failed: {str(e)[:200]}") from None
     if n != n_lines:
         tmp.unlink(missing_ok=True)
+        vtmp.unlink(missing_ok=True)
         raise BadHour(f"{f}: {n} rows from {n_lines} lines")
     os.replace(tmp, out)
+    if vtmp.exists():
+        os.replace(vtmp, vok)
+        ev["v_ok_sha256"] = sha256_file(vok)
     return {"kind": kind, "hour": hour, "block": block, "src": str(f), "rows": int(n), "sha256": sha256_file(out), **ev}
 
 
@@ -349,6 +375,9 @@ def collect_v0(con, files: Sequence[Path], cols: dict[str, str]) -> str:
     arg_min_null keeps a NULL V at s0; plain arg_min skips NULL rows and would take V from a later print.
     Ties on (slot, tx_index, event_index) cannot occur for distinct prints."""
     spec_v = cols["trades"][:-1] + ",virtual_quote_reserves:'HUGEINT'}"
+    if not files:  # no readable V0 file: an empty map, so nothing is mapped
+        con.execute("CREATE OR REPLACE TABLE v0map (pool VARCHAR, v0 HUGEINT, first_slot BIGINT)")
+        return "v0map"
     lst = "[" + ",".join(_q(f) for f in files) + "]"
     con.execute(f"""CREATE OR REPLACE TABLE v0map AS
         SELECT pool, arg_min_null(virtual_quote_reserves, slot::HUGEINT * 10000000000 + coalesce(tx_index, 0)::HUGEINT * 100000
@@ -378,12 +407,13 @@ def look_trade_files(look: str, *, final_ledger: str | Path | None, now: datetim
 
 def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look: str | None = None,
             event_v: bool = False, v0_files: Sequence[str | Path] | None = None, final_ledger: str | Path | None = None,
-            threads: int = 4, now: datetime | None = None) -> dict:
+            now: datetime | None = None) -> dict:
     """Materialise `hours` of `src` into `out/{trades,creates,migrations}/<hour>.parquet`. Every hour is checked before any
     file is opened. With `event_v`, V0 is V at each pool's first print over the V0 files. In exploration mode they are
     `v0_files` (default: this call's trade files). In a look they are always every allowlisted trade hour of every block of
     the look (look_trade_files, each hour seal-checked first), never only this call's hours and never caller-given files;
-    so a pool whose s0 lies in a forward-1002 hour (no V there) gets no V0 and is left unmapped.
+    so a pool whose s0 lies in a forward-1002 hour (no V there) gets no V0 and is left unmapped. A V0 file that fails the
+    strict check is left out of V0 and listed in `v0_bad` (never a crash). Files are always written single-threaded.
     Returns the manifest (also written to out/manifest.json)."""
     for h in hours:
         if is_october(h):
@@ -392,6 +422,17 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
             if look is not None:
                 raise Refused(f"R12: {h} is not an October hour of {look}")
             check_exploration_hour(h, src)
+    if look is not None:  # look guards, before any source file is opened
+        allow = look_allowlist(look)
+        if not event_v and any(h >= V_COVER_START for h in hours):
+            raise Refused(f"R12: {look} hours from {V_COVER_START} are V-covered; section 2.4 event V is pinned for "
+                          f"V-covered hours (--event-v)")
+        if os.path.realpath(out) != os.path.realpath(LOOK_TAPE[look]):
+            raise Refused(f"R12: {look}'s tape is written only to {LOOK_TAPE[look]}, not {out}")
+        stray = sorted(str(p) for k in KINDS + ("v_ok",) for p in Path(out).glob(f"{k}/*.parquet") if p.stem not in allow)
+        if stray:
+            raise Refused(f"R12: {len(stray)} files in {out} are outside {look}'s allowlist (first {stray[0]}); section 4 "
+                          f"allows only allowlisted files in the tape")
     v0_missing: list[str] = []
     if look is not None and event_v:
         if v0_files is not None:
@@ -404,10 +445,24 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
     con = _connect(threads=1, tmp=str(out / "tmp_duck"))
     v0_table = None
     v0_n_files = 0
+    v0_bad: list[dict] = []
     if event_v:
+        import duckdb
         tf = list(v0_files) if v0_files is not None else [p for h in hours if (p := src_file(src, "trades", h))]
-        v0_table = collect_v0(con, tf, cols)
-        v0_n_files = len(tf)
+        spec_v = cols["trades"][:-1] + ",virtual_quote_reserves:'HUGEINT'}"
+        good = []
+        for p in tf:  # strict per V0 file: a bad one is left out and listed, never a crash (section 11.2 item 1, R1)
+            try:
+                nl = strict_scan(p)
+                n = con.execute(f"SELECT count(*) FROM read_json({_q(p)}, format='newline_delimited', compression='zstd', "
+                                f"columns={spec_v})").fetchone()[0]
+                if n != nl:
+                    raise BadHour(f"{p}: {n} rows from {nl} lines")
+                good.append(p)
+            except (BadHour, duckdb.Error) as e:
+                v0_bad.append({"file": str(p), "reason": str(e)[:200]})
+        v0_table = collect_v0(con, good, cols)
+        v0_n_files = len(good)
     rows, bad, missing = [], [], []
     for h in hours:
         for kind in KINDS:
@@ -420,11 +475,14 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
             except BadHour as e:
                 bad.append({"kind": kind, "hour": h, "reason": str(e)})
                 (out / kind / f"{h}.parquet").unlink(missing_ok=True)
+                if kind == "trades":
+                    (out / "v_ok" / f"{h}.parquet").unlink(missing_ok=True)
     con.close()
     shutil.rmtree(out / "tmp_duck", ignore_errors=True)
     man = {"schema": "exp025_adapter_manifest_v1", "block": block, "src": src, "look": look, "event_v": event_v,
            "hours": list(hours), "files": rows, "bad": bad, "missing": missing,
            "bad_hours": sorted({b["hour"] for b in bad}), "v0_files": v0_n_files, "v0_missing_hours": v0_missing,
+           "v0_bad": v0_bad,
            "adapter_blob": git_blob(__file__)}
     (out / "manifest.json").write_text(json.dumps(man, indent=1, sort_keys=True))
     return man
@@ -536,14 +594,21 @@ def append_tokens(exploration: str | Path, october: str | Path, out: str | Path,
             "october_dup_graduated": n_dup_grad, "sha256": sha}
 
 
-def check_mid_stable(look_universe: str | Path, p2_universe: str | Path) -> dict:
-    """P3 E0 item: every exploration token keeps P2's `mid` in the look's universe.parquet."""
+def check_mid_stable(look_universe: str | Path, p2_universe: str | Path = P2_UNIVERSE, *,
+                     p2_sha256: str = P2_UNIVERSE_SHA256) -> dict:
+    """P3 E0 item: every exploration token keeps P2's `mid` in the look's universe.parquet. The P2 file must be the
+    pinned one (sha256) and hold at least one token, so an empty or wrong P2 file cannot pass with 0 moved."""
+    got = sha256_file(p2_universe)
+    if got != p2_sha256:
+        raise Refused(f"P3: P2 universe.parquet sha256 {got} is not the pinned {p2_sha256}")
     import duckdb
     con = duckdb.connect()
     r = con.execute(f"""SELECT count(*) AS n, count(*) FILTER (WHERE l.mid IS DISTINCT FROM p.mid) AS moved
         FROM read_parquet({_q(p2_universe)}) p LEFT JOIN read_parquet({_q(look_universe)}) l USING (mint)""").fetchone()
     con.close()
     res = {"p2_tokens": int(r[0]), "mid_changed_or_missing": int(r[1])}
+    if not r[0]:
+        raise Refused("P3: the P2 universe.parquet holds no token")
     if r[1]:
         raise Refused(f"P3: {r[1]} exploration tokens change `mid` in the look universe")
     return res
@@ -637,7 +702,7 @@ def e0_mid(work: str | Path, appended_tokens: str | Path, *, exploration_sh: str
         q = _q(out["universe"])
         c["universe_sha256"] = sha256_file(out["universe"])
         try:
-            c["mid"], c["refused"] = check_mid_stable(out["universe"], p2_universe), None
+            c["mid"], c["refused"] = check_mid_stable(out["universe"], p2_universe, p2_sha256=p2_universe_sha256), None
         except Refused as e:
             c["mid"], c["refused"] = None, str(e)
         c["universe_rows"] = int(con.execute(f"SELECT count(*) FROM read_parquet({q})").fetchone()[0])
@@ -696,11 +761,12 @@ def run_e0(work: str | Path, record: str | Path, *, threads: int = 4) -> dict:
     work = Path(work)
     hours = hour_range(f"{E0_DAY}T00", "2026-09-21T00")
     tape = work / "tape"
-    man = convert(E0_SRC, E0_BLOCK, tape, hours, threads=threads)
-    idem = {}
-    for th in (threads, 1):  # idempotence on one real hour, two thread counts
-        m2 = convert(E0_SRC, E0_BLOCK, work / f"idem-{th}", [f"{E0_DAY}T05"], threads=th)
-        idem[str(th)] = {x["kind"]: x["sha256"] for x in m2["files"]}
+    man = convert(E0_SRC, E0_BLOCK, tape, hours)
+    idem = []
+    for i in (1, 2):  # idempotence on one real hour: two independent runs (files are written single-threaded)
+        m2 = convert(E0_SRC, E0_BLOCK, work / f"idem-run{i}", [f"{E0_DAY}T05"])
+        idem.append({x["kind"]: x["sha256"] for x in m2["files"]})
+    main_t05 = {x["kind"]: x["sha256"] for x in man["files"] if x["hour"] == f"{E0_DAY}T05"}
     con = _connect(threads=threads, tmp=str(work / "tmp_md5"))
     kinds = {}
     for kind in KINDS:
@@ -736,8 +802,8 @@ def run_e0(work: str | Path, record: str | Path, *, threads: int = 4) -> dict:
         "schema": "exp025_p3_e0_v1", "day": E0_DAY, "block": E0_BLOCK, "src": E0_SRC, "ref_tape": E0_REF_TAPE,
         "view_sha256_file": sha256_file(Path(E0_SRC) / "VIEW.sha256"),
         "bad_hours": man["bad_hours"], "missing": man["missing"], "kinds": kinds,
-        "idempotence_T05": {"by_threads": idem, "equal": len({json.dumps(v, sort_keys=True) for v in idem.values()}) == 1
-                            and idem[str(threads)] == {x["kind"]: x["sha256"] for x in man["files"] if x["hour"] == f"{E0_DAY}T05"}},
+        "idempotence_T05": {"runs": len(idem), "equal": bool(idem[0] == idem[1] == main_t05 and len(main_t05) == len(KINDS)),
+                            "sha256": main_t05, "note": "two independent runs and the main run; files are written single-threaded"},
         "tokens": {"adapter_md5": tk_ad, "ref_md5": tk_ref, "adapter_rows": n_ad, "ref_rows": n_ref, "equal": tk_ad == tk_ref and n_ad == n_ref,
                    "adapter_sha256": sha256_file(ad_sh / "tokens.parquet"), "ref_sha256": sha256_file(ref_sh / "tokens.parquet")},
         "bars_1m": {"adapter_md5": bars_ad, "ref_md5": bars_ref, "adapter_rows": nb_ad, "ref_rows": nb_ref, "equal": bars_ad == bars_ref},
@@ -771,7 +837,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     c.add_argument("--hours", nargs=2, required=True, metavar=("FIRST", "END_EXCL"))
     c.add_argument("--look", choices=sorted(LOOKS))
     c.add_argument("--event-v", action="store_true")
-    c.add_argument("--threads", type=int, default=4)
     e = sub.add_parser("e0")
     e.add_argument("--work", required=True)
     e.add_argument("--record", required=True)
@@ -779,7 +844,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         if a.cmd == "convert":
-            man = convert(a.src, a.block, a.out, hour_range(*a.hours), look=a.look, event_v=a.event_v, threads=a.threads)
+            man = convert(a.src, a.block, a.out, hour_range(*a.hours), look=a.look, event_v=a.event_v)
             print(json.dumps({"files": len(man["files"]), "bad_hours": man["bad_hours"], "missing": len(man["missing"])}))
         else:
             rec = run_e0(a.work, a.record, threads=a.threads)
