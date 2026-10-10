@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -948,7 +949,8 @@ def _counts(**kw):
     return out
 
 
-SYN_RECORD_KEYS = {"schema", "t_ms", "type", "day_first", "day_last", "partial", "held_back", "universe_total", "counts"}
+SYN_RECORD_KEYS = {"schema", "t_ms", "type", "day_first", "day_last", "partial", "held_back", "universe_total", "counts", "restart_in_span",
+                   "bootstrap_unclassified"}
 
 
 def _two_class(m, p):
@@ -975,8 +977,8 @@ def test_synthetic_class_goes_only_to_a_separate_counts_stream():
 
 
 def _settle(sh):
-    for _, _, _, fut in list(sh._cls_pending):
-        fut.result(timeout=5)
+    for job in list(sh._cls_pending):
+        assert job.ev.wait(timeout=5)
 
 
 SYN_POOLS = {"POOLcccc", "POOLbbbb"}
@@ -1100,6 +1102,92 @@ def test_slow_classifier_does_not_delay_the_pick_and_times_out_to_unclassified()
     assert started and len(started) <= 2
 
 
+HANG_RUNNER = r'''
+import json, sys, threading, time
+from pathlib import Path
+from tools import c1nf_shadow as cs
+from tools.test_c1nf_shadow import StubEngine, StubModel, mk_row, S0
+
+tip, out, model = sys.argv[1:4]
+cs.CLASSIFY_TIMEOUT_S = 0.3
+cs.build_engine = lambda ledger=None: StubEngine(lambda T: None)
+cs._lgb_loader = lambda p: StubModel()
+
+def append_after_bootstrap():
+    time.sleep(0.4)
+    bt = cs.now_ms() // 1000
+    row = mk_row(S0, block_time=bt, pool="POOLhang", mint="MINThang", t_recv_ms=1)
+    with open(Path(tip) / f"trades-{cs.hour_of(bt)}.jsonl", "a") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+threading.Thread(target=append_after_bootstrap, daemon=True).start()
+rc = cs.main(["--tip-dir", tip, "--out-dir", out, "--model", model, "--model-sha256", cs.sha256_file(model), "--bootstrap-hours", "0",
+              "--max-seconds", "1.5", "--poll-s", "0.05", "--no-seal", "--synthetic-classifier", "c1nf_hang_clf:hang"])
+print("main returned", rc, flush=True)
+sys.exit(rc)
+'''
+
+HANG_CLF = r'''
+import os, threading
+from pathlib import Path
+
+def hang(mint, pool):
+    Path(os.environ["C1NF_HANG_MARK"]).write_text(pool)
+    threading.Event().wait()                     # never returns: a lookup with no timeout of its own
+'''
+
+
+def test_process_exits_although_a_classifier_call_never_returns(tmp_path):
+    """Reviewer MEDIUM on 0b679c4: a ThreadPoolExecutor worker is joined at interpreter exit, so a classifier call that never returned kept the
+    process alive after c1nf_stop (a MiScusi job that never ends). The worker is a daemon thread now: main returns and the process exits."""
+    import subprocess
+    import sys
+
+    repo = Path(__file__).resolve().parent.parent
+    (tmp_path / "tip").mkdir()
+    (tmp_path / "runner.py").write_text(HANG_RUNNER)
+    (tmp_path / "c1nf_hang_clf.py").write_text(HANG_CLF)
+    (tmp_path / "m.txt").write_text("pinned")
+    mark = tmp_path / "called"
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "PYTHONPATH": f"{repo}{os.pathsep}{tmp_path}", "C1NF_HANG_MARK": str(mark)}
+    t0 = time.monotonic()
+    r = subprocess.run([sys.executable, str(tmp_path / "runner.py"), str(tmp_path / "tip"), str(tmp_path / "out"), str(tmp_path / "m.txt")],
+                       cwd=repo, env=env, capture_output=True, text=True, timeout=60)
+    took = time.monotonic() - t0
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert mark.read_text() == "POOLhang"                          # the classifier was really called, and never returned
+    assert "main returned 0" in r.stdout
+    assert took < 1.5 + 0.3 + 6.0                                  # max-seconds + the classify timeout + interpreter start-up margin
+    events = [json.loads(l) for p in (tmp_path / "out").glob("c1nf-events-*.jsonl") for l in p.read_text().splitlines()]
+    assert [e["type"] for e in events if e["type"] == "c1nf_stop"] == ["c1nf_stop"]
+    (sc,) = [json.loads(l) for p in (tmp_path / "out").glob("c1nf-synclass-*.jsonl") for l in p.read_text().splitlines()]
+    assert sc["held_back"] is True and sc["universe_total"] == 1   # one pool, timed out: unclassified, written without class counts
+
+
+def test_class_worker_is_one_daemon_thread_and_cancels_queued_jobs():
+    gate = threading.Event()
+    calls = []
+
+    def clf(m, p):
+        calls.append(p)
+        gate.wait(timeout=5)
+        return "synthetic"
+    w = cs.ClassWorker(clf)
+    assert w.thread.daemon is True
+    a, b = cs.ClassJob("A", "mA", "2026-10-10", time.monotonic()), cs.ClassJob("B", "mB", "2026-10-10", time.monotonic())
+    w.submit(a)
+    w.submit(b)
+    deadline = time.monotonic() + 5
+    while a.state != "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert w.cancel(b) is True and w.cancel(a) is False            # b never started; a is running
+    gate.set()
+    assert a.ev.wait(5) and a.state == "done" and a.result == "synthetic"
+    w.close()
+    w.thread.join(timeout=5)
+    assert not w.thread.is_alive() and calls == ["A"] and b.state == "cancelled"
+
+
 def test_no_classifier_call_during_the_bootstrap():
     asked = []
     sh, sink = mk_shadow(only_minute(10), classifier=lambda m, p: (asked.append(p), "synthetic")[1])
@@ -1110,6 +1198,70 @@ def test_no_classifier_call_during_the_bootstrap():
     sh.feed(mk_row(slot_of_sec(700), pool="POOLbbbb", mint="MINTbbbb"), "trades")   # not its first print: never asked later either
     sh.finish("test")
     assert asked == [POOL] and "POOLbbbb" not in sh._cls
+
+
+def test_restart_day_record_flags_the_restart_and_counts_bootstrap_pools():
+    """Reviewer LOW on 0b679c4: pools first seen during the bootstrap are never classified, so the restart day's record undercounts. It now
+    says so: restart_in_span and bootstrap_unclassified (pools of the resume day first seen in the bootstrap). Earlier days' bootstrap pools
+    are not reported by this run; bootstrap pools are never classified later."""
+    asked = []
+    sh, sink = mk_shadow(only_minute(10), classifier=lambda m, p: (asked.append(p), "synthetic" if p in SYN_POOLS else "non_synthetic")[1])
+    sh.decide_enabled = False                                      # the bootstrap
+    sh.feed(mk_row(S0 - 100_000, pool="POOLxxxx", mint="MINTxxxx", block_time=BT0 - 13 * 3600), "trades")   # 2026-09-03
+    sh.feed(mk_row(S0 - 10, pool="POOLyyyy", mint="MINTyyyy", block_time=BT0 - 4), "trades")                 # 2026-09-04
+    sh.feed(mk_row(S0 - 9, pool="POOLzzzz", mint="MINTzzzz", block_time=BT0 - 4), "trades")                  # 2026-09-04
+    sh.resume_after_bootstrap()
+    assert sh.decide_enabled is True and sh.last_T == (BT0 - 4) // 60 * 60
+    sh.feed(mk_row(S0, pool="POOLbbbb", mint="MINTbbbb"), "trades")
+    run_stream(sh, 700)
+    sh.feed(mk_row(slot_of_sec(700), pool="POOLyyyy", mint="MINTyyyy"), "trades")   # a bootstrap pool printing again: never asked
+    sh.finish("test")
+    assert sorted(asked) == sorted([POOL, "POOLbbbb"])
+    (rec,) = sink.of(cs.SYNCLASS_TYPE)
+    assert set(rec) == SYN_RECORD_KEYS
+    assert (rec["day_first"], rec["day_last"], rec["restart_in_span"], rec["bootstrap_unclassified"]) == ("2026-09-04", "2026-09-04", True, 2)
+    assert rec["universe_total"] == 2 and rec["counts"] == _counts(universe_synthetic=1, universe_non_synthetic=1)
+    assert "2026-09-03" not in json.dumps(sink.records)            # the earlier day's bootstrap pool is not reported by this run
+
+
+def test_restart_flag_stays_on_the_resume_days_span_only():
+    sh, sink, run, _ = _midnight_shadow(classifier=lambda m, p: "synthetic" if p in SYN_POOLS else "non_synthetic")
+    sh.decide_enabled = False
+    run(300)                                                       # POOL's first print is in the bootstrap (2026-10-09)
+    sh.resume_after_bootstrap()
+    for i, pool in enumerate(("POOLcccc", "POOLdddd")):            # 10-09 after the resume: one synthetic, one not
+        sh.feed(mk_row(S0 + 751 + i, pool=pool, mint="MINT" + pool[4:], block_time=OS_S - 660 + 301), "trades")
+    _settle(sh)
+    run(660 + 400)
+    for i, pool in enumerate(("POOLbbbb", "POOLeeee")):            # 10-10: one synthetic, one not
+        sh.feed(mk_row(S0 + 2700 + i, pool=pool, mint="MINT" + pool[4:], block_time=OS_S + 420 + i), "trades")
+    sh.finish("test")
+    recs = sink.of(cs.SYNCLASS_TYPE)
+    assert [(r["day_first"], r["day_last"], r["restart_in_span"], r["bootstrap_unclassified"], r["partial"]) for r in recs] == [
+        ("2026-10-09", "2026-10-09", True, 1, False), ("2026-10-10", "2026-10-10", False, 0, True)]
+    assert all(r["counts"] == _counts(universe_synthetic=1, universe_non_synthetic=1) for r in recs)
+    assert POOL not in sh._cls
+
+
+def test_restart_day_with_only_bootstrap_pools_is_merged_into_the_next_day():
+    sh, sink, run, _ = _midnight_shadow(classifier=lambda m, p: "synthetic" if p in SYN_POOLS else "non_synthetic")
+    sh.decide_enabled = False
+    run(300)
+    sh.resume_after_bootstrap()                                    # 10-09: no pool after the resume, one bootstrap pool
+    run(660 + 400)
+    assert sink.of(cs.SYNCLASS_TYPE) == []                         # 0 classified on 10-09: degenerate, held back
+    for i, pool in enumerate(("POOLbbbb", "POOLeeee")):
+        sh.feed(mk_row(S0 + 2700 + i, pool=pool, mint="MINT" + pool[4:], block_time=OS_S + 420 + i), "trades")
+    sh.finish("test")
+    (rec,) = sink.of(cs.SYNCLASS_TYPE)
+    assert (rec["day_first"], rec["day_last"], rec["restart_in_span"], rec["bootstrap_unclassified"]) == ("2026-10-09", "2026-10-10", True, 1)
+    assert rec["counts"] == _counts(universe_synthetic=1, universe_non_synthetic=1)
+
+
+def test_run_live_resumes_through_resume_after_bootstrap():
+    import inspect
+    src = inspect.getsource(cs.run_live)
+    assert "sh.resume_after_bootstrap()" in src and "sh.decide_enabled = True" not in src
 
 
 def test_cli_accepts_a_synthetic_classifier_spec():

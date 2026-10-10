@@ -49,16 +49,17 @@ from __future__ import annotations
 import argparse
 import bisect
 import collections
-import concurrent.futures
 import hashlib
 import importlib
 import json
 import math
 import os
+import queue
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -676,6 +677,64 @@ def cap_ok(h_top1: float) -> bool:
     return bool(math.isfinite(h) and float(np.float32(h)) <= H_TOP1_MAX)
 
 
+# ---- synthetic classifier worker ------------------------------------------------------------------------------------------------------------
+class ClassJob:
+    """One queued classification. `state` moves queued -> running -> done, or queued -> cancelled (never started); guarded by the worker's lock."""
+
+    __slots__ = ("pool", "mint", "day", "t0", "state", "result", "ev")
+
+    def __init__(self, pool: str, mint: str, day: str, t0: float) -> None:
+        self.pool, self.mint, self.day, self.t0 = pool, mint, day, t0
+        self.state, self.result = "queued", None
+        self.ev = threading.Event()
+
+
+class ClassWorker:
+    """Runs the synthetic classifier on ONE daemon thread fed by a queue (reviewer MEDIUM on 0b679c4). A daemon thread never holds the process:
+    a call that never returns (a lookup without its own timeout) is abandoned at interpreter exit, after finish() has written c1nf_stop. A
+    ThreadPoolExecutor worker is joined at exit, so the same hang kept the process alive until SIGKILL. One thread only: calls never overlap,
+    and a call stuck past its timeout leaves the later pools unclassified (they time out in the queue and are cancelled before they start)."""
+
+    def __init__(self, fn: Callable[[str, str], Any]) -> None:
+        self.fn = fn
+        self.lock = threading.Lock()
+        self.q: "queue.SimpleQueue[Optional[ClassJob]]" = queue.SimpleQueue()
+        self.thread = threading.Thread(target=self._run, name="c1nf-synclass", daemon=True)
+        self.thread.start()
+
+    def submit(self, job: ClassJob) -> None:
+        self.q.put(job)
+
+    def cancel(self, job: ClassJob) -> bool:
+        """True when the job had not started (it never will); False when it is running or done."""
+        with self.lock:
+            if job.state == "queued":
+                job.state = "cancelled"
+                job.ev.set()
+                return True
+            return False
+
+    def close(self) -> None:
+        self.q.put(None)                                   # the thread ends after its current call; a stuck call is abandoned at exit
+
+    def _run(self) -> None:
+        while True:
+            job = self.q.get()
+            if job is None:
+                return
+            with self.lock:
+                if job.state != "queued":
+                    continue
+                job.state = "running"
+            try:
+                res = self.fn(job.mint, job.pool)
+            except Exception:  # noqa: BLE001 - a failed lookup is unclassified, never a refusal
+                res = None
+            with self.lock:
+                job.result, job.state = res, "done"
+                job.ev.set()
+
+
 # ---- the shadow -----------------------------------------------------------------------------------------------------------------------------
 class Pending:
     __slots__ = ("pool", "mint", "T", "sd", "sd_bt", "pred", "pick_ms", "first_print_ms", "last_before", "prints", "slots", "sps", "gap", "done",
@@ -712,15 +771,18 @@ class Shadow:
         self.before_slot: dict[str, Print] = {}            # pool -> last print of an earlier slot than last_print's (decision state fallback)
         # synthetic class (EXP-025 Am.2 item 5): kept apart from every per-pool record; only per-UTC-day counts leave the process, in their
         # own stream (c1nf-synclass-*), written once per closed day and at stop. Never in the heartbeat, status.json or the counters.
-        # The classifier runs on one worker thread, never on the row / decision path; results are collected on the row thread once per new
-        # block time; no answer within classify_timeout_s (monotonic) is unclassified. Pools first seen during the bootstrap are not asked.
+        # The classifier runs on one daemon worker thread (ClassWorker), never on the row / decision path; results are collected on the row
+        # thread once per new block time; no answer within classify_timeout_s (monotonic) is unclassified. Pools first seen during the bootstrap
+        # are not asked; on the resume day they are counted as `bootstrap_unclassified` and that day's record carries `restart_in_span`.
         self.classifier = classifier
         self.classify_timeout_s = float(classify_timeout_s)
         self._cls: dict[str, str] = {}                      # pool -> class; read by nothing but the counter (classify once per pool)
         self._cls_counts: dict[str, collections.Counter] = {}
-        self._cls_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._cls_pending: list[tuple[str, str, float, concurrent.futures.Future]] = []   # (pool, day, monotonic submit time, future)
-        self._cls_carry: Optional[tuple[str, str, collections.Counter]] = None          # (day_first, day_last, counts) held back
+        self._cls_worker: Optional[ClassWorker] = None
+        self._cls_pending: list[ClassJob] = []
+        self._cls_boot: collections.Counter = collections.Counter()   # day -> pools first seen during the bootstrap (never classified)
+        self._cls_restart_days: set[str] = set()                       # the resume day of a (re)start
+        self._cls_carry: Optional[tuple[str, str, collections.Counter, int, bool]] = None   # (day_first, day_last, counts, boot, restart)
         self.pending: dict[str, list[Pending]] = collections.defaultdict(list)
         self.book: dict[str, float] = {}                   # mint -> estimated exit (stream seconds)
         self.gaps: list[tuple[int, int, str]] = []        # (lo_slot, hi_slot, kind)
@@ -747,42 +809,45 @@ class Shadow:
 
     # ---- synthetic class: counts only ----
     def _classify(self, pool: str, mint: str, bt: int) -> None:
-        """Queue one classification (once per pool, at its first print). Never called during the bootstrap; never blocks the row thread."""
-        if self.classifier is None or pool in self._cls or not self.decide_enabled:
+        """Queue one classification (once per pool, at its first print). Never asked during the bootstrap (the pool is only counted, by first
+        print day, for the resume day's `bootstrap_unclassified`); never blocks the row thread."""
+        if self.classifier is None or pool in self._cls:
+            return
+        if not self.decide_enabled:
+            self._cls_boot[day_of(bt)] += 1
             return
         self._cls[pool] = "queued"
-        if self._cls_pool is None:
-            self._cls_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="c1nf-synclass")
         try:
-            fut = self._cls_pool.submit(self.classifier, mint, pool)
+            if self._cls_worker is None:
+                self._cls_worker = ClassWorker(self.classifier)
+            job = ClassJob(pool, mint, day_of(bt), time.monotonic())
+            self._cls_worker.submit(job)
         except Exception:  # noqa: BLE001 - a pool that cannot be queued is unclassified, never a refusal
             self._cls[pool] = "unclassified"
             self._cls_count(day_of(bt), "universe_unclassified")
             return
-        self._cls_pending.append((pool, day_of(bt), time.monotonic(), fut))
+        self._cls_pending.append(job)
 
     def _collect_classes(self, wait_s: float = 0.0) -> None:
         """Count finished classifications; one past classify_timeout_s is unclassified (cancelled if not started). Blocks only when wait_s > 0
         (at stop), and then at most until each call's own timeout."""
         keep = []
-        for pool, day, t0, fut in self._cls_pending:
-            left = t0 + self.classify_timeout_s - time.monotonic()
-            if wait_s > 0 and not fut.done() and left > 0:
-                concurrent.futures.wait([fut], timeout=min(left, wait_s))
-            if fut.done():
-                try:
-                    cls = fut.result(timeout=0)
-                except Exception:  # noqa: BLE001 - a failed lookup is unclassified, never a refusal
-                    cls = "unclassified"
-            elif time.monotonic() - t0 > self.classify_timeout_s:
-                fut.cancel()
+        for job in self._cls_pending:
+            left = job.t0 + self.classify_timeout_s - time.monotonic()
+            if wait_s > 0 and not job.ev.is_set() and left > 0:
+                job.ev.wait(timeout=min(left, wait_s))
+            if job.ev.is_set():
+                cls = job.result if job.state == "done" else "unclassified"
+            elif time.monotonic() - job.t0 > self.classify_timeout_s:
+                if self._cls_worker is not None:
+                    self._cls_worker.cancel(job)
                 cls = "unclassified"
             else:
-                keep.append((pool, day, t0, fut))
+                keep.append(job)
                 continue
             cls = cls if isinstance(cls, str) and cls in SYN_CLASSES else "unclassified"
-            self._cls[pool] = cls
-            self._cls_count(day, f"universe_{cls}")
+            self._cls[job.pool] = cls
+            self._cls_count(job.day, f"universe_{cls}")
         self._cls_pending = keep
 
     def _cls_count(self, day: str, key: str) -> None:
@@ -800,32 +865,54 @@ class Shadow:
         waits while one of its classifications is pending. A degenerate span (_cls_degenerate) is held back and merged into the following
         day(s); a record covers [day_first, day_last]. At stop a span still degenerate is written with `held_back` and no class counts. No
         mint, pool, price or outcome field, and deliberately no pick count by class: per-day pick counts by class next to the real-time daily
-        outcomes would let an observer split outcomes by class, which EXP-025 Am.2 item 5 bars before the final look."""
-        pending_days = {d for _, d, _, _ in self._cls_pending}
+        outcomes would let an observer split outcomes by class, which EXP-025 Am.2 item 5 bars before the final look.
+
+        Restarts (reviewer LOW on 0b679c4): the span holding a (re)start's resume day carries `restart_in_span: true` and
+        `bootstrap_unclassified`, the pools of that day first seen during the bootstrap, which are never classified (the stop record of the run
+        before may already have counted them). `universe_total` and `counts` cover classified pools only. Bootstrap pools of earlier days are
+        not reported by this run."""
+        pending_days = {j.day for j in self._cls_pending}
         for day in sorted(self._cls_counts):
             if (upto_day is not None and day >= upto_day) or day in pending_days:
                 break
             cnt = self._cls_counts.pop(day)
+            restart = day in self._cls_restart_days
+            self._cls_restart_days.discard(day)
+            boot = int(self._cls_boot.pop(day, 0)) if restart else 0
             first = day
             if self._cls_carry is not None:
-                first, _, prev = self._cls_carry
-                cnt = prev + cnt
+                first, _, prev, prev_boot, prev_restart = self._cls_carry
+                cnt, boot, restart = prev + cnt, prev_boot + boot, prev_restart or restart
                 self._cls_carry = None
-            if sum(cnt.values()) == 0:
+            if sum(cnt.values()) == 0 and boot == 0:
                 continue
             if self._cls_degenerate(cnt):
-                self._cls_carry = (first, day, cnt)
+                self._cls_carry = (first, day, cnt, boot, restart)
                 continue
-            self._emit_cls(first, day, cnt, partial=bool(partial and upto_day is None), held_back=False)
+            self._emit_cls(first, day, cnt, boot, restart, partial=bool(partial and upto_day is None), held_back=False)
         if upto_day is None and self._cls_carry is not None:
-            first, last, cnt = self._cls_carry
+            first, last, cnt, boot, restart = self._cls_carry
             self._cls_carry = None
-            self._emit_cls(first, last, cnt, partial=bool(partial), held_back=True)
+            self._emit_cls(first, last, cnt, boot, restart, partial=bool(partial), held_back=True)
 
-    def _emit_cls(self, first: str, last: str, cnt: Mapping[str, int], *, partial: bool, held_back: bool) -> None:
+    def _emit_cls(self, first: str, last: str, cnt: Mapping[str, int], boot: int, restart: bool, *, partial: bool, held_back: bool) -> None:
         counts = None if held_back else {f"universe_{c}": int(cnt.get(f"universe_{c}", 0)) for c in SYN_CLASSES}
         self.emit({"type": SYNCLASS_TYPE, "day_first": first, "day_last": last, "partial": partial, "held_back": held_back,
-                   "universe_total": int(sum(cnt.values())), "counts": counts})
+                   "universe_total": int(sum(cnt.values())), "counts": counts, "restart_in_span": bool(restart),
+                   "bootstrap_unclassified": int(boot)})
+
+    def resume_after_bootstrap(self) -> None:
+        """End of the restart bootstrap: decisions resume at the next whole minute. For the class stream the resume day spans a (re)start: its
+        bootstrap pools stay unclassified and are reported on that day's record (bootstrap_unclassified, restart_in_span); the bootstrap counts
+        of earlier days are dropped (the run before covered those days, or nobody did)."""
+        self.decide_enabled = True
+        self.last_T = (self.hw_bt // 60 * 60) if self.hw_bt else None
+        if self.classifier is not None:
+            day = day_of(self.hw_bt if self.hw_bt is not None else self._wall() / 1000)
+            n = int(self._cls_boot.get(day, 0))
+            self._cls_boot = collections.Counter({day: n}) if n else collections.Counter()
+            self._cls_restart_days.add(day)
+            self._cls_counts.setdefault(day, collections.Counter())
 
     # ---- rows ----
     def feed(self, row: Mapping[str, Any], kind: Optional[str] = None) -> None:
@@ -1166,8 +1253,8 @@ class Shadow:
         if self.classifier is not None:
             self._collect_classes(wait_s=self.classify_timeout_s)
             self._flush_class_counts(None, partial=True)
-            if self._cls_pool is not None:
-                self._cls_pool.shutdown(wait=False, cancel_futures=True)
+            if self._cls_worker is not None:
+                self._cls_worker.close()                     # a daemon thread: a call still running cannot hold the process at exit
         self.emit({"type": "c1nf_stop", "reason": reason, "counters": dict(self.c)})
         self.heartbeat()
 
@@ -1474,7 +1561,7 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
     oracle = load_oracle(args.pick_oracle)
     seal_ms = None if args.no_seal else int(datetime.strptime(args.seal_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
     sh = Shadow(engine, models, sink, oracle=oracle, seal_start_ms=seal_ms, universe=Universe(canonical_pda_fn()), errors=errors,
-                classifier=load_oracle(args.synthetic_classifier))
+                classifier=load_oracle(args.synthetic_classifier), classify_timeout_s=CLASSIFY_TIMEOUT_S)
     tail = TipTail(args.tip_dir)
     gaps = GapTail(args.gaps_file) if args.gaps_file else None
     sh.emit({"type": "c1nf_start", "mode": "live", "tip_dir": str(args.tip_dir), "model_shas": models.shas, "seal_start_ms": seal_ms,
@@ -1495,8 +1582,7 @@ def run_live(args: argparse.Namespace, models: ModelSet, engine: Any, sink: Any)
             sh.feed(r, r["_k"])
         if Stop.flag:
             break
-    sh.decide_enabled = True
-    sh.last_T = (sh.hw_bt // 60 * 60) if sh.hw_bt else None
+    sh.resume_after_bootstrap()
     sh.c["bootstrap_rows"] = tail.rows_read
     held: list[dict] = []
     try:
