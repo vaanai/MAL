@@ -15,6 +15,9 @@
             decision-row md5 from the restart is equal and non-empty. Each restart comparison carries `feature_diff`: which of the 107
             features differ on decision rows from the restart, on how many rows and pools, by group, and by cause class (the mint's create
             or the creator's first create / graduation before the rebuild's first hour). Names and counts only, never a value.
+            `feature_diff.status` is "measured" only when some (T, pool) has a vector on both sides; otherwise "not_measured" with the
+            counts and a reason, never an empty feature list (job #535 compared 0 rows: the restarted run kept no vectors). The verdict
+            does not read it: it stays on the decision-row md5.
             Job #513 (window, 26 h): 223,998 decision rows on both sides, md5s differ, 260 non-held pick differences.
             --expire-s (default cs.EXPIRE_S, as run_live): engine.expire on the stream clock in every run (Shadow stream_expire_s); 0 = never.
 
@@ -77,12 +80,15 @@ class PicksSink(cs.MemorySink):
 class DecisionTap:
     """md5 over every decision row's (T, pool, feature_hash): each features_at answer that Shadow._decide counts in `decision_rows` (not None),
     whatever its wallet_ok, stage 1 or pick. Lines are "T,pool,feature_hash\\n" (T in seconds, feature_hash = sha256 of the float32 vector as
-    on a pick); the rows of one T are hashed sorted. With split_s, a second md5 covers the rows with T >= split_s."""
+    on a pick); the rows of one T are hashed sorted. With split_s, a second md5 covers the rows with T >= split_s.
+    keep (diagnostic, in memory): also keep each row's float32 vector for the feature diff, whether or not split_s is set. With split_s only
+    the rows with T >= split_s are kept (the uninterrupted run's tail); without it every decision row is (the restarted run, whose decisions
+    are off before the restart, so all of its rows are from the restart). #535 kept none of the restarted run's vectors: rows_compared 0."""
 
     def __init__(self, split_s: Optional[int] = None, keep: bool = False) -> None:
         self.split_s = split_s
-        self.keep = keep and split_s is not None
-        self.vecs: dict[tuple[int, str], bytes] = {}        # keep: (T, pool) -> float32 vector bytes, T >= split_s (diagnostic, in memory)
+        self.keep = keep
+        self.vecs: dict[tuple[int, str], bytes] = {}        # keep: (T, pool) -> float32 vector bytes
         self.info: dict[str, tuple] = {}                     # keep: pool -> (mint create bt, creator's first create / graduation bt)
         self._eng: Any = None
         self._all, self._tail = hashlib.md5(), hashlib.md5()
@@ -102,7 +108,7 @@ class DecisionTap:
             if f is not None:
                 v32 = np.asarray(f.vec).astype(np.float32)
                 self.add(T, pool, cs.feature_hash(v32))
-                if self.keep and T >= self.split_s:
+                if self.keep and (self.split_s is None or T >= self.split_s):
                     self.vecs[(int(T), pool)] = v32.tobytes()
                     if pool not in self.info:
                         self.info[pool] = pool_history(self._eng, f.mint)
@@ -145,12 +151,22 @@ def pool_history(eng: Any, mint: Optional[str]) -> tuple:
     return (int(info.cbt), int(min(firsts)) if firsts else None)
 
 
-def feature_diff(a: dict, b: dict, a_info: dict, rebuild_from_s: int) -> dict:
+def feature_diff(a: dict, b: dict, a_info: dict, rebuild_from_s: int, rows_ab: Optional[tuple[int, int]] = None) -> dict:
     """Decision rows from the restart, uninterrupted (a) against restarted (b): which features differ (bitwise float32, NaN == NaN), on how
     many rows and distinct pools, by feature group, and by cause class of the pool in the uninterrupted engine: `mint_create_before_rebuild`
     (its mint's create is older than the rebuild's first hour, or was never seen), `creator_history_before_rebuild` (its creator created or
-    graduated a mint before then), else `other`. Names and counts only."""
+    graduated a mint before then), else `other`. Names and counts only.
+
+    `status` is "measured" when at least one (T, pool) row has a vector on both sides. When none does, nothing was compared and the answer is
+    "not_measured": the dict then carries only the counts (rows_compared 0, only_a, only_b), never an empty `features_differ` list that reads as
+    "no feature differs". rows_ab = the decision-row counts of the two sides (from the tap); it only picks the `reason`."""
     from tools.c1nf_features import FEATURE_NAMES, feature_group
+
+    if not (set(a) & set(b)):
+        both_have_rows = rows_ab is not None and rows_ab[0] > 0 and rows_ab[1] > 0
+        return {"status": "not_measured", "rows_compared": 0, "only_a": len(a), "only_b": len(b), "rebuild_from_s": rebuild_from_s,
+                "reason": ("decision rows on both sides but no (T, pool) with a feature vector on both: vectors missing on a side"
+                           if both_have_rows else "a side has no decision rows or no kept vectors")}
 
     by_f: dict[str, list] = {}
     cause: dict[str, int] = {}
@@ -176,7 +192,7 @@ def feature_diff(a: dict, b: dict, a_info: dict, rebuild_from_s: int) -> dict:
     groups: dict[str, int] = {}
     for name in by_f:
         groups[feature_group(name)] = groups.get(feature_group(name), 0) + by_f[name][0]
-    return {"rows_compared": len(set(a) & set(b)), "only_a": len(set(a) - set(b)), "only_b": len(set(b) - set(a)), "rows_differ": n_diff,
+    return {"status": "measured", "rows_compared": len(set(a) & set(b)), "only_a": len(set(a) - set(b)), "only_b": len(set(b) - set(a)), "rows_differ": n_diff,
             "pools_differ": len(pools), "features_differ": sorted(by_f), "by_feature": {n: {"rows": e[0], "pools": len(e[1])} for n, e in sorted(by_f.items())},
             "by_group_rows": dict(sorted(groups.items())), "by_cause_rows": dict(sorted(cause.items())), "rebuild_from_s": rebuild_from_s}
 
@@ -385,7 +401,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             c["mode"], c["rebuild_from"] = mode, hrs[0]
             c["held_at_restart"] = len(ev["held_at_snap"] or [])
             c["decision_rows"] = compare_rows(ev["decision_rows"]["from_split"], rs["decision_rows"])
-            c["feature_diff"] = feature_diff(ev["vectors"], rs["vectors"], ev["pool_info"], int(_hour(hrs[0]).timestamp()))
+            c["feature_diff"] = feature_diff(ev["vectors"], rs["vectors"], ev["pool_info"], int(_hour(hrs[0]).timestamp()),
+                                             rows_ab=(c["decision_rows"]["a"]["n"], c["decision_rows"]["b"]["n"]))
             key = "restart" if (mode == "anchored" or args.restart_mode == "window") else "restart_window"
             out[key] = c
             out["runs"][name] = {k: v for k, v in rs.items() if k not in ("picks", "vectors", "pool_info")}
