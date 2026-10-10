@@ -30,10 +30,11 @@ D0 column rule (OCTOBER-DATA-QP-RULING.md section (1), "D0 bright lines": nothin
 computed). Every output column must be on `D0_GRADUATION_COLUMNS` or `D0_HOUR_COLUMNS` with its value kind. Any other
 column, a wrong kind, or a PostCompleteBuy amount from outside the curve-completing tx refuses the row (fail closed).
 Graduated-pool trade rows are masked to `POST_S0_COLUMNS` before any feature is computed, so the `side`,
-`sol_lamports`, `token_raw`, `quote_reserve`, `base_reserve` and `virtual_quote_reserves` of a post-s0 row reach no
-output column, and no signed or side-split quantity or buyback amount is written. The s0 row's PRE-trade reserves and
-V are the seed (fixed at s0). After s0, the one reader of the masked columns is the base-reserve chain check, an
-integrity counter whose totals go to the manifest only, never to a row. No price after s0, return, P&L, fill, exit,
+`sol_lamports`, `token_raw`, `quote_reserve`, `base_reserve`, `virtual_quote_reserves` and `ix_name` of a post-s0
+row reach no output column (`ix_name` is reduced to the multi-hop flag `_mh_ix` when the row is read), and no signed
+or side-split quantity or buyback amount is written. The s0 row's PRE-trade reserves and V are the seed (fixed at
+s0). After s0, the one reader of the masked columns is the base-reserve chain check, an integrity counter whose totals
+go to the manifest only, never to a row. No price after s0, return, P&L, fill, exit,
 mark or label is written. The synthetic class is a structure field; it is never joined to an outcome here, and a
 caller that joins it to one breaks EXP-024 Amendment 4 D1 for counted-window pools.
 
@@ -242,9 +243,10 @@ D0_HOUR_COLUMNS: dict[str, tuple[str, str]] = {
 }
 
 # A graduated pool's trade rows keep only these columns once s0 is found; POST_S0_MASKED never reach a feature.
-POST_S0_COLUMNS = ("slot", "tx_index", "event_index", "block_time", "trader", "ix_name", "mint", "quote_mint", "pool",
+POST_S0_COLUMNS = ("slot", "tx_index", "event_index", "block_time", "trader", "_mh_ix", "mint", "quote_mint", "pool",
                    "signature", "venue", "_ord", "_multi")
-POST_S0_MASKED = ("side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves")
+POST_S0_MASKED = ("side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves",
+                   "ix_name")
 
 # A column name carrying one of these words names a SOL, token, reserve, side or outcome quantity. Only the
 # fixed-at-or-before-s0 category may carry one (checked at import, and by the tests).
@@ -639,7 +641,7 @@ def read_lifecycle(sources: Sequence[HourSource]) -> Lifecycle:
 
 _KEEP = (
     "slot", "tx_index", "event_index", "block_time", "side", "trader", "sol_lamports", "token_raw", "quote_reserve",
-    "base_reserve", "virtual_quote_reserves", "ix_name", "mint", "quote_mint", "pool", "signature",
+    "base_reserve", "virtual_quote_reserves", "mint", "quote_mint", "pool", "signature",
 )
 
 
@@ -668,7 +670,7 @@ def _flush_tx(group: list[dict[str, Any]], st: Counter) -> None:
         st["tx_multi_row"] += 1
     if len(tokens) < len(group):
         st["tx_with_wsol_base_leg"] += 1
-    st["rows_ix_multihop"] += sum(1 for r in group if _is_multihop_ix(r.get("ix_name")))
+    st["rows_ix_multihop"] += sum(1 for r in group if r.get("_mh_ix"))
 
 
 def _is_multihop_ix(name: Any) -> bool:
@@ -710,6 +712,7 @@ def scan_trades_hour(args: tuple[str, str, dict[str, tuple[int, int]], int]) -> 
             group = []
             cur_sig = sig
         slim = {k: r.get(k) for k in _KEEP}
+        slim["_mh_ix"] = _is_multihop_ix(r.get("ix_name"))
         slim["venue"] = venue
         slim["_ord"] = ordinal
         group.append(slim)
@@ -1010,7 +1013,7 @@ def graduation_row(mint: str, lc: Lifecycle, mint_pools: Mapping[str, list], vma
     row.update(slot_micro(micro))
     row.update({
         "mh_n_prints_multi_tx": sum(1 for r in micro if r.get("_multi")),
-        "mh_n_ix_multihop": sum(1 for r in micro if _is_multihop_ix(r.get("ix_name"))),
+        "mh_n_ix_multihop": sum(1 for r in micro if r.get("_mh_ix")),
     })
     assert_d0_graduation(row)
     return row, integrity

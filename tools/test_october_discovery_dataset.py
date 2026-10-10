@@ -539,6 +539,8 @@ def perturb_post_s0(root: Path, *, seed: int = 7) -> int:
             if r.get("venue") != "pumpswap" or r.get("mint") not in grad:
                 continue
             r["side"] = "sell" if r["side"] == "buy" else "buy"
+            if not od._is_multihop_ix(r.get("ix_name")):
+                r["ix_name"] = r["side"]
             r["sol_lamports"] = rng.randrange(1, 10**12)
             r["token_raw"] = rng.randrange(1, 10**15)
             if r["pool"] in seen:
@@ -650,6 +652,7 @@ class TestD0Columns(unittest.TestCase):
         r = {"slot": 1, "trader": "t", "side": "buy", "sol_lamports": 5, "token_raw": 6, "quote_reserve": 7, "base_reserve": 8,
              "virtual_quote_reserves": 9}
         self.assertEqual(od.mask_post_s0(r), {"slot": 1, "trader": "t"})
+        assert "ix_name" not in od.mask_post_s0({"ix_name": "sell", "side": "sell", "slot": 1})
 
 
 if __name__ == "__main__":
