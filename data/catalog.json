@@ -1,7 +1,7 @@
 {
   "schema_version": "catalog.v1",
-  "generated_utc": "2026-10-10T10:18:23Z",
-  "ledger_sha256": "b80700478aadbf20c65c4e6f3a3c27c5ec925b4bde0ee815b6a6ba37b2d4178c",
+  "generated_utc": "2026-10-10T11:32:18Z",
+  "ledger_sha256": "4323a2f1beebdd1fbcc76be0f9b7311f09c9a2acbfee8c9aaea7404e241b40c2",
   "blocks": [
     {
       "name": "Oracle in-sample",
