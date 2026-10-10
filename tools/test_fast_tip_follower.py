@@ -864,25 +864,95 @@ def _signed_pool_account(v: int, n: int) -> bytes:
     return bytes(raw[:n])
 
 
-def test_decode_pool_virtual_is_signed_and_never_above_i64():
-    for n in (300, 301):
-        for v in (V_LAMPORTS, 0, -1, -5_000_000_000):
-            assert ftf.decode_pool_virtual(_signed_pool_account(v, n)) == v
-    big = bytearray(_signed_pool_account(0, 301))
-    big[245:261] = (2**63).to_bytes(16, "little")
-    assert ftf.decode_pool_virtual(bytes(big)) is None
+# Route 1 (quant-proof 10-10 r4): the single `virtual_quote_reserve` key keeps blob b6c0bb3's reading in
+# BOTH flag states: unsigned LE u64 at bytes 245..253 when len >= 253, else None. Pinned values below.
+U64 = 2**64
+B6C0BB3_BLOB = "b6c0bb3"
 
 
-def test_stamp_writes_true_signed_v_and_nothing_above_2_63(tmp_path):
-    f = _follower(tmp_path, Rpc(tip=4))
-    for n in (300, 301):
-        for v in (V_LAMPORTS, 0, -5_000_000_000):
-            f.v_cache.clear()
-            f._v_retry_at.clear()
-            got = ftf.decode_pool_virtual(_signed_pool_account(v, n))
-            f.v_lookup = lambda pools, got=got: {pools[0]: got}
-            rows = [{"venue": "pumpswap", "pool": "P"}, {"venue": "bonding", "pool": "P"}]
-            f._stamp_virtual(rows)
-            assert rows[0]["virtual_quote_reserve"] == v and type(v) is int
-            assert abs(rows[0]["virtual_quote_reserve"]) < 2**63
-            assert "virtual_quote_reserve" not in rows[1]
+def _b6c0bb3_reading(raw: bytes) -> int | None:
+    """A copy of what blob b6c0bb3 (parse_pool_account tail) gave, through the old follower's `v >= 0` check."""
+    if len(raw) < 243:
+        return None  # the old parser raised "pool account too short"
+    if len(raw) < 243 + 10:
+        return None  # no tail: no key
+    return int.from_bytes(raw[245:253], "little")
+
+
+# (stored V, account length) -> the old (b6c0bb3) single-key value, written out in full
+PINNED_OLD_V = [
+    (V_LAMPORTS, 253, 17_580_000_000),
+    (V_LAMPORTS, 301, 17_580_000_000),
+    (0, 300, 0),
+    (-1, 301, 18_446_744_073_709_551_615),
+    (-5_000_000_000, 253, 18_446_744_068_709_551_616),
+    (-5_000_000_000, 300, 18_446_744_068_709_551_616),
+    (-5_000_000_000, 301, 18_446_744_068_709_551_616),
+    (-17_584_317_180, 301, 18_446_744_056_125_234_436),
+    # i128 values that do not fit in i64: only the low 8 bytes were read
+    (2**63, 301, 9_223_372_036_854_775_808),
+    (-(2**63) - 1, 301, 9_223_372_036_854_775_807),
+    (2**64 + 7, 301, 7),
+    (-(2**100), 301, 0),
+]
+
+
+def test_decode_pool_virtual_pins_b6c0bb3_unsigned_reading():
+    for v, n, old in PINNED_OLD_V:
+        raw = _signed_pool_account(v, n)
+        got = ftf.decode_pool_virtual(raw)
+        assert got == old == _b6c0bb3_reading(raw) and type(got) is int, (v, n)
+        assert 0 <= got < U64
+    neg = ftf.decode_pool_virtual(_signed_pool_account(-5_000_000_000, 301))
+    assert neg >= 2**63  # a negative stored V is stamped as its unsigned reading: not negative, not None
+    for n in (0, 50, 242, 243, 245, 252):
+        assert ftf.decode_pool_virtual(_pool_account(V_LAMPORTS)[:n]) is None
+    assert ftf.decode_pool_virtual(_pool_account(V_LAMPORTS)[:253]) == V_LAMPORTS
+    assert ftf.decode_pool_virtual(bytearray(_signed_pool_account(-1, 301))) == U64 - 1
+    assert ftf.decode_pool_virtual(None) is None
+
+
+def test_decode_pool_virtual_equals_blob_b6c0bb3_when_available(tmp_path, monkeypatch):
+    """Load the real old pumpswap_tx blob and compare; skipped where the tree has no object store."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    try:
+        src = subprocess.run(["git", "cat-file", "-p", B6C0BB3_BLOB], capture_output=True, check=True,
+                             cwd=Path(ftf.__file__).resolve().parent, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("blob b6c0bb3 not available")
+    path = tmp_path / "pumpswap_tx_b6c0bb3.py"
+    path.write_bytes(src)
+    spec = importlib.util.spec_from_file_location("pumpswap_tx_b6c0bb3", path)
+    old = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, old)  # its dataclasses look the module up
+    spec.loader.exec_module(old)
+
+    def old_follower_v(raw):  # a25eb17's decode_pool_virtual over blob b6c0bb3
+        try:
+            v = old.parse_pool_account(raw).get("virtual_quote_reserves")
+        except (ValueError, TypeError):
+            return None
+        return int(v) if isinstance(v, int) and v >= 0 else None
+
+    cases = [_signed_pool_account(v, n) for v, n, _ in PINNED_OLD_V]
+    cases += [_pool_account(V_LAMPORTS)[:n] for n in (50, 242, 243, 252, 253)]
+    for raw in cases:
+        assert ftf.decode_pool_virtual(raw) == old_follower_v(raw)
+
+
+@pytest.mark.parametrize("event_v", [False, True])
+def test_stamp_keeps_old_unsigned_single_v_in_both_flag_states(tmp_path, event_v):
+    f = _follower(tmp_path, Rpc(tip=4), trade_event_v=event_v)
+    assert f.trade_event_v is event_v
+    for v, n, old in PINNED_OLD_V:
+        f.v_cache.clear()
+        f._v_retry_at.clear()
+        got = ftf.decode_pool_virtual(_signed_pool_account(v, n))
+        f.v_lookup = lambda pools, got=got: {pools[0]: got}
+        rows = [{"venue": "pumpswap", "pool": "P"}, {"venue": "bonding", "pool": "P"}]
+        f._stamp_virtual(rows)
+        assert rows[0]["virtual_quote_reserve"] == old and type(rows[0]["virtual_quote_reserve"]) is int
+        assert "virtual_quote_reserve" not in rows[1]

@@ -1,0 +1,221 @@
+{
+ "bad_hours": [],
+ "bars_1m": {
+  "adapter_md5": "689057c03c67db32dab52e61b1b8c538",
+  "adapter_rows": 711168,
+  "equal": true,
+  "ref_md5": "689057c03c67db32dab52e61b1b8c538",
+  "ref_rows": 711168
+ },
+ "blobs": {
+  "ARTIFACTS/exp025/event_v_map.py": "9771ec333046e065ce66921e88f4a893bd557aec",
+  "ARTIFACTS/exp025/ref/build_shared.py": "0b024e92f78e1f623b8167e4dcf713292c2bfff3",
+  "ARTIFACTS/exp025/ref/convert.py": "252c643276d0250cb48430da019b6afcd6bf7b25",
+  "ARTIFACTS/exp025/scripts/10_meta.py": "4583cf1220b90ef17139b94425efd67a5731a272",
+  "ARTIFACTS/exp025/scripts/common2.py": "abb36397fdb5f4655161ee3cdd9991f9f8c28e37",
+  "tools/exp025_adapter.py": "75ee1768ce57fecd58a32d95b180b2d5fb2955aa",
+  "tools/test_exp025_adapter.py": "87fbcf1da038edcf68ce804a9d2521246a46456e"
+ },
+ "block": "fast-pool-0918",
+ "day": "2026-09-20",
+ "event_v_fixture": {
+  "cmd": "python3 -m unittest tools.test_exp025.EventVMapping",
+  "ok": true,
+  "returncode": 0,
+  "tail": [
+   "OK"
+  ]
+ },
+ "idempotence_T05": {
+  "equal": true,
+  "note": "two independent runs and the main run; files are written single-threaded",
+  "runs": 2,
+  "sha256": {
+   "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
+   "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
+   "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
+  }
+ },
+ "interpreter": {
+  "duckdb": "1.5.6",
+  "pyarrow": "25.0.1",
+  "python": "3.12.3"
+ },
+ "kinds": {
+  "creates": {
+   "adapter_md5": "9e299075f571f98ebcf3c0ee086394e1",
+   "adapter_rows": 30771,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "9e299075f571f98ebcf3c0ee086394e1",
+   "ref_rows": 30771
+  },
+  "migrations": {
+   "adapter_md5": "f686647801b183d48c302ab8d69d779c",
+   "adapter_rows": 1189,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "f686647801b183d48c302ab8d69d779c",
+   "ref_rows": 1189
+  },
+  "trades": {
+   "adapter_md5": "9418a47dd39fbcd13bd143a5146dd187",
+   "adapter_rows": 26499051,
+   "equal": true,
+   "files": [
+    24,
+    24
+   ],
+   "ref_md5": "9418a47dd39fbcd13bd143a5146dd187",
+   "ref_rows": 26499051
+  }
+ },
+ "mid_check": {
+  "appended_source": "/data/mal/exp025/e0/p3-0920-r11/adapter-shared/tokens.parquet",
+  "appended_source_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb",
+  "cases": {
+   "earlier_shift": {
+    "append": {
+     "exploration_rows": 1419194,
+     "october_dup_graduated": 0,
+     "october_dup_mints_dropped": 0,
+     "october_rows": 73685,
+     "sha256": "3262809acc0a4f9f4b05a37b0bbac281f6359b6c1d5e89dac19befea9d6d72e1"
+    },
+    "mid": null,
+    "new_rows": {
+     "max_mid": 815,
+     "min_mid": 1,
+     "n": 815
+    },
+    "p2_mint_rows": 24319,
+    "p2_mint_rows_md5_equal": false,
+    "refused": "P3: 24319 exploration tokens change `mid` in the look universe",
+    "shift": {
+     "days": -365,
+     "ms_columns": [
+      "create_ms",
+      "grad_ms",
+      "complete_ms",
+      "bc_first_ms",
+      "bc_last_ms",
+      "ps_first_ms",
+      "ps_last_ms"
+     ],
+     "rows": 73685
+    },
+    "shift_days": -365,
+    "universe_rows": 25134,
+    "universe_sha256": "7009c90fe78134eed3f5ad5336b1eaccac9c863efabcf90aba26f38c674b90b8"
+   },
+   "later_shift": {
+    "append": {
+     "exploration_rows": 1419194,
+     "october_dup_graduated": 0,
+     "october_dup_mints_dropped": 0,
+     "october_rows": 73685,
+     "sha256": "1b8cab351b552aa16dbed0a5313aeec27b6b7dc8b341469385dbe826be27efe9"
+    },
+    "mid": {
+     "mid_changed_or_missing": 0,
+     "p2_tokens": 24319
+    },
+    "new_rows": {
+     "max_mid": 25134,
+     "min_mid": 24320,
+     "n": 815
+    },
+    "p2_mint_rows": 24319,
+    "p2_mint_rows_md5_equal": true,
+    "refused": null,
+    "shift": {
+     "days": 365,
+     "ms_columns": [
+      "create_ms",
+      "grad_ms",
+      "complete_ms",
+      "bc_first_ms",
+      "bc_last_ms",
+      "ps_first_ms",
+      "ps_last_ms"
+     ],
+     "rows": 73685
+    },
+    "shift_days": 365,
+    "universe_rows": 25134,
+    "universe_sha256": "3926d0766fc1806e72eba2abbc9b2b28b9fb326bd1ff2b0ebea6bcc28ba79916"
+   },
+   "same_day": {
+    "append": {
+     "exploration_rows": 1419194,
+     "october_dup_graduated": 1123,
+     "october_dup_mints_dropped": 73685,
+     "october_rows": 0,
+     "sha256": "47bab7f25b6dba8cef797b000a674039e9c5aba21a2439e70ca8e307a8f983f5"
+    },
+    "creates": {
+     "md5_equal": true,
+     "rows": [
+      1109020,
+      1109020
+     ]
+    },
+    "mid": {
+     "mid_changed_or_missing": 0,
+     "p2_tokens": 24319
+    },
+    "mkt": {
+     "md5_equal": true,
+     "rows": [
+      46558,
+      46558
+     ]
+    },
+    "new_rows": {
+     "max_mid": null,
+     "min_mid": null,
+     "n": 0
+    },
+    "p2_mint_rows": 24319,
+    "p2_mint_rows_md5_equal": true,
+    "refused": null,
+    "shift_days": 0,
+    "universe_rows": 24319,
+    "universe_sha256": "217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211"
+   }
+  },
+  "exploration_tokens": "/data/mal/hunt-shared/tokens.parquet",
+  "exploration_tokens_sha256": "2c01a6d4b140e3710f45234594881f9bb26428da101f4b426bafa68fbb2a2681",
+  "p2_rows": 24319,
+  "p2_rows_md5": "82ddaa4b339510c38881cf4a682a1748",
+  "p2_universe": "/data/mal/hunt-1008/c1nf-p2/work/universe.parquet",
+  "p2_universe_sha256": "217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211",
+  "pass": true
+ },
+ "missing": [],
+ "pass": true,
+ "pda_first_pool_match": {
+  "non_mayhem_completes": 897,
+  "pda_equals_tokens_pool": 875
+ },
+ "ref_tape": "/data/mal/audit-1008/tape",
+ "schema": "exp025_p3_e0_v1",
+ "seconds": 249.7,
+ "src": "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
+ "tokens": {
+  "adapter_md5": "88ce6423d480c3f74ef4e2a91448e55c",
+  "adapter_rows": 73685,
+  "adapter_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb",
+  "equal": true,
+  "ref_md5": "88ce6423d480c3f74ef4e2a91448e55c",
+  "ref_rows": 73685,
+  "ref_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb"
+ },
+ "view_sha256_file": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8"
+}
