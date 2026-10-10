@@ -78,6 +78,7 @@ HEUR_MAX_TOTAL = 17_700_000_000
 HEUR_WINDOW_S = 450  # the RULE used 1,600 slots (about 427 s at 267 ms); a time window survives the 200 ms switch
 DEFAULT_WINDOW_S = 900
 S0_LAG_MAX_S = 300  # rows are kept to complete + S0_LAG_MAX_S + window; a pool whose first print lags more is cut short
+KEEP_BEFORE_S = 5  # block_time is whole seconds; a pool print can carry the complete's second or one before it
 FINALIZE_MARGIN_S = 120  # a graduation is written once the hours read so far end this long after its last kept second
 FIRST_MIN_S = 60
 MICRO_S = 360
@@ -469,9 +470,10 @@ def _flush_tx(group: list[dict[str, Any]], st: Counter, ix_counts: Counter) -> N
             ix_counts[str(name)] += 1
 
 
-def scan_trades_hour(args: tuple[str, str, dict[str, int], int]) -> tuple[str, dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    """(hour, rows kept per pool, hour stats). Keeps PumpSwap rows of graduated mints up to complete + window."""
-    hour, path, grad_until, _window = args
+def scan_trades_hour(args: tuple[str, str, dict[str, tuple[int, int]], int]) -> tuple[str, dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """(hour, rows kept per pool, hour stats). Keeps PumpSwap rows of graduated mints with block_time in
+    [complete - KEEP_BEFORE_S, complete + S0_LAG_MAX_S + window] (the (lo, hi) span per mint)."""
+    hour, path, spans, _window = args
     keep: dict[str, list[dict[str, Any]]] = defaultdict(list)
     st: Counter = Counter()
     ix_counts: Counter = Counter()
@@ -504,9 +506,9 @@ def scan_trades_hour(args: tuple[str, str, dict[str, int], int]) -> tuple[str, d
         slim["_ord"] = ordinal
         group.append(slim)
         mint = r.get("mint")
-        if venue == "pumpswap" and mint in grad_until and r.get("pool"):
+        if venue == "pumpswap" and mint in spans and r.get("pool"):
             bt = r.get("block_time")
-            if isinstance(bt, int) and bt <= grad_until[mint]:
+            if isinstance(bt, int) and spans[mint][0] <= bt <= spans[mint][1]:
                 keep[r["pool"]].append(slim)  # same dict as in `group`, so _flush_tx's flags land on it
     if group:
         _flush_tx(group, st, ix_counts)
@@ -517,8 +519,7 @@ def scan_trades_hour(args: tuple[str, str, dict[str, int], int]) -> tuple[str, d
     stats["slot_span"] = (slot_max - slot_min + 1) if slot_min is not None else None
     stats["sec_per_slot_hour"] = round(3600.0 / stats["slot_span"], 6) if stats["slot_span"] else None
     stats["ix_name_top"] = dict(ix_counts.most_common(25))
-    out_keep = {pool: [{k: v for k, v in row.items()} for row in rows] for pool, rows in keep.items()}
-    return hour, out_keep, stats
+    return hour, dict(keep), stats
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -893,7 +894,8 @@ def build(roots: Sequence[Path], start: str, end: str, *, ledger: Path, ledger_h
 
     lc = read_lifecycle(sources)
     grad_until = {m: int(_bt(c) or 0) + S0_LAG_MAX_S + window_s for m, c in lc.completes.items()}
-    jobs = [(s.hour, str(s.files["trades"]), grad_until, window_s) for s in sources if s.root is not None]
+    spans = {m: (int(_bt(c) or 0) - KEEP_BEFORE_S, grad_until[m]) for m, c in lc.completes.items()}
+    jobs = [(s.hour, str(s.files["trades"]), spans, window_s) for s in sources if s.root is not None]
     pools_by_mint: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     hour_stats: list[dict[str, Any]] = []
     read_end_s = hour_start_s(end)
