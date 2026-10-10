@@ -113,5 +113,6 @@ Measured with this code (research-0, **synthetic** data only, `systemd-run --sco
   10-08. Raise it only after a measured nightly `peak_rss_mb`.
 
 `buy_lamports` and `sell_lamports` in the as-of saturate at int64 max: on research-0 the largest cumulative `buy_lamports`
-over 38 days was already 0.728 of int64 max (non-WSOL pools summed as lamports, kept from C1). `MANIFEST.json` `saturated`
+over 38 days was already 0.728 of int64 max (most likely non-WSOL pools whose amounts are summed as lamports, kept from C1;
+not checked per wallet). `MANIFEST.json` `saturated`
 counts the rows at the cap. `passa_matrix` does not read these columns.

@@ -57,10 +57,10 @@ column at a time straight into its .npy file (np.lib.format.open_memmap). Peak m
 th-sized columns (the union th, two masks, one output column), not the whole snapshot several
 times over, and a one-day incremental reads the previous snapshot through mmap. The bytes are the
 same as the earlier in-memory fold (tested).
-  * `buy_lamports`, `sell_lamports` in the as-of SATURATE at int64 max (2^63 - 1). Some wallets
-    in non-WSOL pools sum token units as lamports (see above); on research-0 the largest cumulative
-    buy_lamports over 38 days was already 0.728 of int64 max, so plain int64 addition would wrap
-    within weeks. Both columns are sums of non-negative numbers, so min(true sum, max) does not
+  * `buy_lamports`, `sell_lamports` in the as-of SATURATE at int64 max (2^63 - 1). On research-0
+    the largest cumulative buy_lamports over 38 days was already 0.728 of int64 max (most likely
+    non-WSOL pools whose amounts are summed as lamports, see above; not checked per wallet), so
+    plain int64 addition would wrap within weeks. Both columns are sums of non-negative numbers, so min(true sum, max) does not
     depend on the add order, and fold and incremental still give the same bytes. MANIFEST.json
     `saturated` counts the rows at the cap. Every other as-of column is checked for overflow and
     the build refuses if one wraps. passa_matrix reads none of the lamport columns.
