@@ -737,6 +737,10 @@ It carries **quant-proof's OK on its final head** and **the owner's approval**: 
 
 This clarification carries quant-proof's OK on its final head and merges before 2026-10-10T00:00Z.
 
+### Pointer (2026-10-10; not an amendment): seal end state and Amendment 4 D1
+
+This read's seal end states, and quant-proof's ruling that Amendment 4 item D1 lifts at EXP-024's end state (the full-universe book stays report-only; after a Look 1 PASS a synthetic split cannot widen the live universe), are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10" (rulings (3a) and (3b)); that text changes no rule, data, bar or timing of this read and releases no data.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`

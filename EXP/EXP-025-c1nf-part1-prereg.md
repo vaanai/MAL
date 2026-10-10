@@ -622,6 +622,11 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 
 **Why this cannot change a read.** EXP-025 sections 0, 3 and 7 fix the rule, data, analysis, pass bar and alpha pair. This amendment changes none of them, and it edits no pinned line, patch, hash or window. Section 5.1 already covers in-window decisions.
 
+### Pointer (2026-10-10; not an amendment): seal end state
+
+This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
+
+
 ## Sources
 
 `observe/trade_decode.py`, `observe/trade_store.py` and `tools/test_walk2_event_v.py` (Amendment 1); `/data/mal/hunt-1008/JUDGE-4.md` sections 3.3 and 3.4; `/data/mal/hunt-1008/c1nf-verify/VERIFY.md` and `v/results.json` (copied to `ARTIFACTS/exp025/verify/`); `/data/mal/hunt-1008/c1-cascade-postgrad/` (RULE.md, scripts, ml/); [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (template), [EXP-022](EXP-022-cap-pick-part1-prereg.md) sections 9 to 10, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-021](../DEC/DEC-021-champion-challenger.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.7, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), `docs/HANDOFF.md`; [DEC-026](../DEC/DEC-026-c1nf-live-canary.md) section 8 and Appendix A, `tools/c1nf_executor.py` (`PICK_WINDOW_START_MS`) and #503's `tools/c1nf_shadow.py` at `50eeaa1` (guard unchanged at `9a80398`) (`OUTCOME_START_MS`), MiScusi job #499 (Amendment 3).

@@ -446,15 +446,32 @@ class OracleAndPoolRecordTests(Case):
 
     def test_a_pick_is_sticky_in_the_oracle(self):
         a, b = "A" * 43 + "1", "B" * 43 + "2"
+        c = Clock()
         f = self.tmp / "picks.jsonl"
         f.write_text(json.dumps({"mint": a, "pick": True}) + "\n" + json.dumps({"mint": a, "pick": False}) + "\n"
-                     + json.dumps({"mint": b, "pick": False}) + "\n" + json.dumps({"mint": b, "pick": True}) + "\n")
-        o = h.JsonlPickOracle(f)
+                     + json.dumps({"mint": b, "pick": False}) + "\n" + json.dumps({"mint": b, "pick": True}) + "\n"
+                     + json.dumps({"hb": True, "t_ms": c()}) + "\n")
+        o = h.build_pick_oracle({"pick_file": str(f)}, now_ms=c)
         self.assertIs(o(a), True)  # a later false never undoes a true
         self.assertIs(o(b), True)
         with f.open("a") as fh:
             fh.write(json.dumps({"mint": a, "pick": False}) + "\n")
         self.assertIs(o(a), True)
+        c.t += 3_600_000
+        self.assertIs(o(a), True)  # a known pick stays a pick on a stale feed (it is refused either way)
+
+    def test_a_sealed_pool_record_is_skipped_without_a_per_mint_row(self):
+        # The shadow's close record of a CAP-PICK-sealed pool carries the pool-open fields only (tools/h5_shadow.py _close). With the real
+        # oracle, sealed means a pick (or never known not to be one): the executor must not write a row that names it (DEC-024 s6).
+        e = self.start()
+        sealed = {"type": "pool", "reason": "horizon", "sealed": True, "pool": POOL, "mint": "S" * 43 + "9", "s0": S0, "s0_t_recv_ms": T0,
+                  "s0_block_time": T0 // 1000, "announced_slot": S0 - 1, "s0_minus_announced_slots": 1, "v0": V, "sps_at_s0": SPS,
+                  "boost_pda": "P" * 44, "v": 1, "schema": "h5_shadow_v1", "t_ms": T0}
+        self.append(e, sealed, pool_row("H" * 43 + "6"))
+        e.ex.intent_tick()
+        self.assertNotIn("S" * 43 + "9", Path(e.ex.fills.path).read_text())
+        self.assertEqual(sorted(e.ex.counters.day(h.day_key(T0))["boost_s"]), ["H" * 43 + "6"])  # the unsealed record still counts
+        self.assertEqual(e.ledger("boost_row_ignored"), [])
 
     def test_a_restart_drains_the_file_it_was_reading_before_it_moves_to_the_newest_hour(self):
         d = self.tmp / "shadow"

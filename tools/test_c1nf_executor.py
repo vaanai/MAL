@@ -246,7 +246,12 @@ class LimitsTests(Case):
             self.assertEqual(cfg["feed_heartbeat_max_age_ms"], 150_000)
             for pinned in h5.PINNED_PATH_KEYS:
                 self.assertNotIn(pinned, cfg)
-        self.assertEqual({k: v for k, v in dry.items() if k != "mode"}, {k: v for k, v in live.items() if k not in ("mode", "end_ms")})
+        # DEC-026 Amendment 1 item B: the CAP-PICK oracle, bound read-only into the unit at /srv/mal-cap-pick (mal-c1nf-executor-cap-pick.conf).
+        # The keyless dry run has no pick_file (its round trips are before the seal window).
+        self.assertEqual(live["pick_file"], "/srv/mal-cap-pick/picks.jsonl")
+        self.assertNotIn("pick_file", dry)
+        self.assertEqual({k: v for k, v in dry.items() if k != "mode"},
+                         {k: v for k, v in live.items() if k not in ("mode", "end_ms", "pick_file")})
 
     def test_the_h5_module_is_h5s_again_after_every_use(self):
         before = {k: getattr(h5, k) for k in c.SCOPED_NAMES}
@@ -735,7 +740,10 @@ class SealTests(Case):
             e.fire(minute=minute)
             self.assertEqual(len(e.rpc.sent), expect_sent, name)
             self.assertEqual(e.refusals(), [], name)  # seal reasons are never ledgered per mint
-            self.assertEqual(e.ex.counters.seal_skips, 1 - expect_sent, name)
+            # a refusal on a pick is counted in this process only (#540: H5's SEAL_PICK_IN_PROCESS_ONLY); every other seal reason is a seal_skip
+            self.assertEqual(e.ex.counters.seal_skips, 0 if name == "pick" else 1 - expect_sent, name)
+            self.assertEqual(e.ex.seal_picks_in_process, 1 if name == "pick" else 0, name)
+            self.assertNotIn("seal_pick", e.ex.counters_path.read_text(), name)
 
     def test_an_oracle_hit_is_not_tracked_by_the_monitor(self):
         e = self.fresh("t", oracle=lambda m: True)

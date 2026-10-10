@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T08:20:24Z",
+ "updated_utc": "2026-10-10T10:38:17Z",
  "review_windows": [],
  "events": [
   {
@@ -562,6 +562,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261010-1040",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T10:38:17Z",
+   "text": "10-10 10:40Z: H5 still stopped (restart check 00:13Z needs all three BOOST medians at or above 337 s). Merged today: pick-oracle wiring (#540), the BOOST day-check tool (#538), Amendment 4 and 5, C1-NF executor/ops/ledger/features/oracle-fix/model pin, read-guard fix. C1-NF's deterministic rebuild passed (8,786 and 422, in band). Open blocker for C1-NF: live trades lack the per-print BOOST value; fix built (#554) and in proofs, hard latest 10-13T12Z. Formal-read tools for 10-16 are in build. Research rounds 3-4: 7 ideas killed; round 5 running."
+  },
   {
    "id": "s-20261010-0735-h5stop",
    "from": "claude",

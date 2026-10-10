@@ -1,6 +1,7 @@
 {
   "mode": "live",
   "intents_file": "/srv/mal-c1nf-shadow",
+  "pick_file": "/srv/mal-cap-pick/picks.jsonl",
   "state_dir": "/var/lib/mal-live/c1nf",
   "commitment": "confirmed",
   "poll_s": 5.0,
