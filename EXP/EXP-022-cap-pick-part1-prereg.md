@@ -782,6 +782,10 @@ No CAP-PICK outcome, paper-twin field or gate-log row was read to make this amen
 3. **No join before a look.** Before each look, no person, agent or job joins H5 records or the H5 wallet history to the replay's picks, or counts the overlap. A join is a breach under section 9.
 4. **Report-only count (section 13; never deciding).** After each look is written, report two numbers: the look's counted picks with an H5 live fill, and those with an H5 shadow outcome record. The report also says that H5's live fills on those mints are on the tape the read prices.
 
+### Pointer (2026-10-10; not an amendment): seal end state
+
+This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
+
 ### Amendment 7 (2026-10-10, before any counted hour and before the 2026-10-15T06:41Z daily A3 run; DRAFT, the owner's decision is OPEN): synthetic-migration pools stay in the universe, `synthetic_share_high` becomes report-only, and the class is sealed to counts
 
 ```
