@@ -27,6 +27,17 @@ duplicate.
 
 The key is read from HELIUS_API_KEY in the process environment (systemd EnvironmentFile=).
 URLs are never logged; every message goes through redact_rpc_url. Paper only.
+
+Event V (opt-in, off by default: --trade-event-v or MAL_TIP_TRADE_EVENT_V=1). Each trade row's own
+event-V keys (observe.trade_decode.EVENT_V_KEYS: the plural `virtual_quote_reserves`, `ix_name`,
+`creator_fee_unclaimed`, `buyback_fee`, `fee_recipient_zero`) are added by re-decoding that tx's logs with
+records_from_logs(..., event_v=True), the call rows_from_block makes in event-V mode, and copying the keys
+onto the row with the same (signature, event_index). Rows that came back through resolve_unresolved are
+covered. Nothing else in any row changes; creates, migrations, observe, skipped and gaps are untouched. A
+print without an event-V tail is counted (event_v_missing) and left without the keys; no V is ever carried
+from another print. The three decoder blobs are in status.json (decoder_blobs) and must equal
+PINNED_DECODER_BLOBS (job #433's, DEC-016:397) for the stamp to be the V that forward-1002ev holds.
+Deploy: docs/runbooks/tip-follower-event-v.md.
 """
 
 from __future__ import annotations
@@ -34,6 +45,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -47,7 +59,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from observe.trade_decode import decode_pool_account
+import observe.trade_decode as _trade_decode_mod
+import observe.trade_store as _trade_store_mod
+import tools.pump_history_backfill as _backfill_mod
+from observe.trade_decode import EVENT_V_KEYS, decode_pool_account, records_from_logs
 from tools.pumpswap_tx import parse_pool_account
 from tools.pump_history_backfill import (
     CreditBudget,
@@ -57,6 +72,7 @@ from tools.pump_history_backfill import (
     resolve_unresolved,
     rows_from_block,
     rpc_call,
+    tx_signature,
 )
 
 DEFAULT_OUT = "/var/lib/mal/sealed/fast-trades-tip"
@@ -73,6 +89,43 @@ BATCH_SLOTS = 20  # slots per tip poll, so the backlog check is re-run often
 KINDS = ("trades", "creates", "migrations")
 _FILE_RE = re.compile(r"^(trades|creates|migrations|skipped-slots)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
 _OBS_RE = re.compile(r"^observe-(\d{4}-\d{2}-\d{2})\.jsonl$")
+
+TRADE_EVENT_V_ENV = "MAL_TIP_TRADE_EVENT_V"
+# Job #433's decoder (forward-1002ev), by git blob sha, from DEC-016:397. The stamped event V equals the V
+# forward-1002ev and walk 2 hold only when the follower runs these blobs (quant-proof ruling 10-10, (a)).
+PINNED_DECODER_BLOBS = {
+    "observe/trade_decode.py": "238942a6b3c5425389eddfde4d11268c300acbec",
+    "observe/trade_store.py": "ea4e11eddf9f034e3bc7318ce8743337d753f350",
+    "tools/pump_history_backfill.py": "9a8bebb32adcf86de060b55f5a08110d11c0a550",
+}
+_DECODER_MODULES = (
+    ("observe/trade_decode.py", _trade_decode_mod),
+    ("observe/trade_store.py", _trade_store_mod),
+    ("tools/pump_history_backfill.py", _backfill_mod),
+)
+# A re-decoded record must agree with the row on these before its event-V keys are copied.
+EVENT_V_MATCH_KEYS = ("venue", "side", "pool", "sol_lamports")
+
+
+def git_blob_sha(data: bytes) -> str:
+    """git hash-object of a file's bytes (works on a `git archive` tree, which has no .git)."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def decoder_blobs() -> dict[str, str | None]:
+    """Blob sha of the decoder files this process actually imported (None if unreadable)."""
+    out: dict[str, str | None] = {}
+    for rel, mod in _DECODER_MODULES:
+        try:
+            out[rel] = git_blob_sha(Path(mod.__file__).read_bytes())
+        except (OSError, TypeError):
+            out[rel] = None
+    return out
+
+
+def env_flag(environ: Mapping[str, str], name: str = TRADE_EVENT_V_ENV) -> bool:
+    return str(environ.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
 
 # Fetcher contract: slot -> (block | None, code). block None with a code in SKIP_CODES is a
 # skipped slot. Anything else that is not a block raises TransientError.
@@ -236,8 +289,16 @@ class TipFollower:
         tip_poll_s: float = 0.0,
         summary_every_s: float = 60.0,
         log: Callable[[str], None] | None = None,
+        trade_event_v: bool = False,
     ) -> None:
         self.out_dir = out_dir
+        self.trade_event_v = bool(trade_event_v)
+        self.event_v_stamped = 0
+        self.event_v_missing = 0
+        self.event_v_missing_pumpswap = 0
+        self.event_v_mismatch = 0
+        self.event_v_errors = 0
+        self.decoder_blobs = decoder_blobs()
         self.creates_dir = creates_dir or (state_dir / "creates")
         self.state_dir = state_dir
         self.fetch = fetch
@@ -479,6 +540,8 @@ class TipFollower:
                 rows[kind] = list(decoded.get(kind) or [])
             rows["trades"].extend(ready)
             self._stamp_virtual(rows["trades"])
+            if self.trade_event_v:  # after `ready`: resolved rows are stamped too
+                self._stamp_event_v(block, slot, rows["trades"])
             for kind in KINDS:
                 for r in rows[kind]:
                     r["t_recv_ms"] = t_ms
@@ -545,6 +608,61 @@ class TipFollower:
             pool = r.get("pool")
             v = self.v_cache.get(pool) if isinstance(pool, str) else None
             r["virtual_quote_reserve"] = v if isinstance(v, int) else None
+
+    def _stamp_event_v(self, block: Mapping[str, Any], slot: int, trades: list[dict[str, Any]]) -> None:
+        """Copy each print's own EVENT_V_KEYS onto its trade row, matched by (signature, event_index).
+
+        The tx's logs are decoded again with records_from_logs(..., event_v=True), with the arguments
+        rows_from_block passes in event-V mode, except a throwaway pool_mints (the follower's pool cache
+        is not touched; event_index and the event-V keys do not depend on it). A record that disagrees
+        with the row on EVENT_V_MATCH_KEYS, or a key decoded twice, is a mismatch and is not stamped. A
+        print with no event-V tail is counted as missing and left without the keys: nothing is ever
+        filled from another print.
+        """
+        if not trades:
+            return
+        want = {r.get("signature") for r in trades}
+        index: dict[tuple[Any, Any], dict[str, Any] | None] = {}
+        failed: set[str] = set()
+        for tx in block.get("transactions") or []:
+            if not isinstance(tx, dict):
+                continue
+            meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+            if meta.get("err") is not None:
+                continue
+            sig = tx_signature(tx)
+            logs = meta.get("logMessages") or []
+            if not sig or sig not in want or not isinstance(logs, list):
+                continue
+            try:
+                recs = records_from_logs(
+                    logs, slot=slot, signature=sig, t_recv_ms=0, commitment="confirmed", feed=FEED,
+                    pool_mints={}, event_v=True,
+                )
+            except Exception as exc:  # never stop the feed over the optional keys
+                failed.add(sig)
+                self._log_limited("event_v", f"event-V decode failed in slot {slot}: {type(exc).__name__}")
+                continue
+            for rec in recs:
+                key = (sig, rec.get("event_index"))
+                index[key] = None if key in index else rec
+        for r in trades:
+            sig = r.get("signature")
+            if sig in failed:
+                self.event_v_errors += 1
+                continue
+            rec = index.get((sig, r.get("event_index")))
+            if rec is None or any(r.get(k) != rec.get(k) for k in EVENT_V_MATCH_KEYS):
+                self.event_v_mismatch += 1
+                continue
+            fields = {k: rec[k] for k in EVENT_V_KEYS if k in rec}
+            if r.get("venue") == "pumpswap" and "virtual_quote_reserves" not in fields:
+                self.event_v_missing_pumpswap += 1
+            if not fields:
+                self.event_v_missing += 1
+                continue
+            r.update(fields)
+            self.event_v_stamped += 1
 
     def _note_v(self, pool: str, v: int | None, now: float) -> None:
         """A known V is never overwritten by a failed or empty read. No V is not cached: retry with
@@ -624,6 +742,14 @@ class TipFollower:
             "block_lag_ms_p90": _pct(self._block_lags, 90),
             "fetch_ms_p50": _pct(self._fetch_ms, 50),
             "fetch_ms_p90": _pct(self._fetch_ms, 90),
+            "trade_event_v": self.trade_event_v,
+            "event_v_stamped": self.event_v_stamped,
+            "event_v_missing": self.event_v_missing,
+            "event_v_missing_pumpswap": self.event_v_missing_pumpswap,
+            "event_v_mismatch": self.event_v_mismatch,
+            "event_v_errors": self.event_v_errors,
+            "decoder_blobs": self.decoder_blobs,
+            "decoder_blobs_pinned": self.decoder_blobs == PINNED_DECODER_BLOBS,
         }
 
     def heartbeat(self, force: bool = False) -> None:
@@ -639,6 +765,8 @@ class TipFollower:
                     f"{k}={st[k]}" for k in (
                         "lag_slots", "block_lag_ms_p50", "block_lag_ms_p90", "fetch_ms_p50", "fetch_ms_p90",
                         "inflight", "backlog_jumps", "gaps", "skipped", "retries", "blocks", "credits_used")
+                    + (("event_v_stamped", "event_v_missing", "event_v_missing_pumpswap", "event_v_mismatch",
+                        "event_v_errors") if self.trade_event_v else ())
                 )
             )
 
@@ -881,9 +1009,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--max-retries", type=int, default=8)
     ap.add_argument("--backlog-slots", type=int, default=150)
     ap.add_argument("--credits-per-call", type=int, default=1)
+    ap.add_argument(
+        "--trade-event-v", action="store_true",
+        help=f"stamp each trade row's own event-V keys (off by default; also {TRADE_EVENT_V_ENV}=1)",
+    )
+    ap.add_argument(
+        "--check-decoder-pins", action="store_true",
+        help="print the imported decoder blobs; exit 0 only if they equal PINNED_DECODER_BLOBS (no RPC)",
+    )
     args = ap.parse_args(argv)
+    if args.check_decoder_pins:
+        blobs = decoder_blobs()
+        ok = blobs == PINNED_DECODER_BLOBS
+        print(json.dumps({"decoder_blobs": blobs, "pinned": ok}, sort_keys=True), flush=True)
+        return 0 if ok else 1
     if args.rps <= 0:
         ap.error("--rps must be > 0")
+    trade_event_v = bool(args.trade_event_v) or env_flag(os.environ)
     url, kind = resolve_rpc_url(None, os.environ)
     if kind != "helius":
         print("fast_tip_follower: HELIUS_API_KEY is not set; refusing the public RPC", file=sys.stderr)
@@ -901,7 +1043,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         backlog_slots=args.backlog_slots,
         fetch_workers=max(1, min(MAX_FETCH_WORKERS, args.fetch_workers)),
         tip_poll_s=0.4,
+        trade_event_v=trade_event_v,
     )
+    if trade_event_v:
+        print(
+            f"fast_tip_follower: trade_event_v=on decoder_blobs={json.dumps(follower.decoder_blobs, sort_keys=True)}"
+            f" pinned={follower.decoder_blobs == PINNED_DECODER_BLOBS}",
+            flush=True,
+        )
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
