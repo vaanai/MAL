@@ -28,6 +28,7 @@ PA, PB, PC, PD, PE = (f"POOLSENT{c}" for c in "ABCDE")
 VA0, VA1, VA2, VA3 = 17_580_000_101, 17_580_000_102, 17_580_000_103, 17_580_000_104
 VC_OUT = 20_000_000_777  # a known V outside [17.5, 17.7] SOL: kept here, dropped by the extractor's load_vmap
 VD, VD2, VE = 17_590_000_201, 17_590_000_202, 17_600_000_301
+PF, VF = "POOLSENTF", 17_640_000_501  # first seen in a fourth hour, two hours after the gap in the 4-hour test
 GA, ACCT_B, ACCT_E = 17_610_000_401, 17_620_000_402, 17_630_000_403
 
 
@@ -62,7 +63,7 @@ WORLD: dict[str, list[tuple[dict, int | None]]] = {
     ],
 }
 SENTINELS = ("POOLSENT", "SIGSENT", "MINTSENT", "TRADERSENT") + tuple(str(v) for v in
-                                                                     (VA0, VA1, VA2, VA3, VC_OUT, VD, VD2, VE, GA, ACCT_B, ACCT_E))
+                                                                     (VA0, VA1, VA2, VA3, VC_OUT, VD, VD2, VE, VF, GA, ACCT_B, ACCT_E))
 
 
 def base_hours(world=WORLD) -> dict[str, list[dict]]:
@@ -166,12 +167,32 @@ class EvTests(Base):
         self.join()
         out = self.root / "vmap.json"
         self.assertEqual(self.run_tool("ev", "--vjoin", str(self.vjoin), "--out", str(out)).rc, 0)
-        # PD and PE are first seen after the unread H1, which may hold their first print
+        # PD and PE are first seen in H2, the hour right after the unread H1, which may hold their first print
         self.assertEqual(self.vmap(out)["v"], {PA: VA1, PB: None, PC: VC_OUT, PD: None, PE: None})
         m = self.meta(out)
         self.assertEqual(m["counts"]["null_first_print_uncertain"], 2)
         self.assertEqual(m["first_gap_hour"], H1)
         self.assertEqual(m["base_hour_states"][H1], "base_not_sealed")
+
+    def test_first_print_two_hours_after_the_gap_keeps_its_v(self):
+        h3, hend4 = "2026-10-10T03", "2026-10-10T04"
+        world = {h: list(rows) for h, rows in WORLD.items()}
+        world[h3] = [(row(PF, 400, 0, 0, "SIGSENTf1", 11), VF)]
+        with mock.patch.multiple(M, FWD_TO=hend4, N_HOURS=4):
+            write_walk(self.base, base_hours(world), unsealed=(H1,))
+            write_walk(self.ev, ev_hours(world))
+            self.join(H0, hend4)
+            # the bad hour is H1 (index 1) alone: H0 is before it, H2 is right after it, H3 is two hours after it
+            sc = M.scan_first_prints(self.base, M.look1_hours())
+            self.assertEqual((sc.gap_at, sc.bad_at), (1, {1}))
+            self.assertEqual({p: sc.uncertain(p) for p in (PA, PB, PC, PD, PE, PF)},
+                             {PA: False, PB: False, PC: False, PD: True, PE: True, PF: False})
+            out = self.root / "vmap.json"
+            self.assertEqual(self.run_tool("ev", "--vjoin", str(self.vjoin), "--out", str(out)).rc, 0)
+        self.assertEqual(self.vmap(out)["v"], {PA: VA1, PB: None, PC: VC_OUT, PD: None, PE: None, PF: VF})
+        m = self.meta(out)
+        self.assertEqual(m["counts"], {"ev": 3, "null_first_print_uncertain": 2, "null_no_joined_v": 1})
+        self.assertEqual(m["first_gap_hour"], H1)
 
     def test_join_output_must_be_the_look1_join(self):
         write_walk(self.base, base_hours())
@@ -198,6 +219,32 @@ class EvTests(Base):
         r = self.run_tool("ev", "--vjoin", str(self.vjoin), "--out", str(self.root / "b.json"))
         self.assertEqual(r.rc, 2)
         self.assertIn("not the Look 1 join's", r.err)
+
+    def test_extra_jsonl_beside_the_zst_is_stray(self):
+        write_walk(self.base, base_hours())
+        write_walk(self.ev, ev_hours())
+        self.join()
+        self.assertTrue((self.vjoin / f"v-{H0}.jsonl.zst").is_file())
+        (self.vjoin / f"v-{H0}.jsonl").write_text(json.dumps({"slot": 1}) + "\n")  # a usable hour's name, not the file read
+        out = self.root / "vmap.json"
+        r = self.run_tool("ev", "--vjoin", str(self.vjoin), "--out", str(out))
+        self.assertEqual(r.rc, 2)
+        self.assertIn("not the Look 1 join's", r.err)
+        self.assertFalse(out.exists())
+
+    def test_ev_vjoin_dir_must_be_named_vjoin(self):
+        write_walk(self.base, base_hours())
+        write_walk(self.ev, ev_hours())
+        self.join()
+        (self.p5 / "cross_source.json").write_text(json.dumps({"line_a_pass": False}))
+        other = self.root / "elsewhere" / "vjoin2"  # its parent holds no cross_source.json: the line A check would be skipped
+        shutil.copytree(self.vjoin, other)
+        out = self.root / "vmap.json"
+        r = self.run_tool("ev", "--vjoin", str(other), "--out", str(out))
+        self.assertEqual(r.rc, 2)
+        self.assertIn("must be named", r.err)
+        self.assertFalse(out.exists())
+        self.assertFalse(M.meta_path(out).exists())
 
     def test_ev_refuses_after_line_a_failed(self):
         write_walk(self.base, base_hours())

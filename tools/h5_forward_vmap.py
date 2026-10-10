@@ -8,7 +8,8 @@ POOLS. Every PumpSwap pool (venue "pumpswap", pool a string) printed in forward-
 [2026-10-09T23, 2026-10-16T01) (EXP-024 section 3; the extractor's FWD_FROM/FWD_TO, boostfloor_read.READ_HOURS) is a key, because
 the extractor drops a pool that is absent from its vmap. A pool's FIRST print is its earliest row in those hours, in the order the
 extractor gives a path: (slot, tx_index, event_index, hour, line), a null tx_index or event_index last. No other hour is read, and
-there is no hour flag.
+there is no hour flag. This producer takes the earliest print anywhere in the 146 hours. The extractor's s0 is the earliest print at
+or after the mint's `complete` slot. The two differ only for a pool that printed before its mint's `complete`.
 
 ev (EXP-024 Am.1 source 1). V = the `virtual_quote_reserves` that `tools/forward_v_join.py join` (default `--emit v`) carried from
 forward-1002ev onto that first print, null when the join gave none (a refused or bad hour, or a row on its fallback list: unmatched, a
@@ -16,7 +17,8 @@ field that differs, or an ev row with no V). Before any row is read, the join's 
 146 hours on this base dir, its decoder pins are all ok, every v-<hour> file is for a usable hour and hashes to the report's sha256,
 and no refused hour has one. Sources 2 and 3 do not exist at this stage (P5 plans its fetches from the extract this map feeds), so
 nothing else fills a null; the extractor keeps a null-V pool as a candidate and #476 resolves V0 by the Am.1 order. If the P5 dir
-next to --vjoin already holds a cross_source.json whose line_a_pass is not true, ev refuses (use gettx).
+next to --vjoin already holds a cross_source.json whose line_a_pass is not true, ev refuses (use gettx). --vjoin must be named
+`vjoin` (p5/vjoin), so that this check reads the P5 dir's cross_source.json and not another directory's.
 
 gettx (the line-A fail branch). Am.1: "If line A fails, forward-1002ev is not used for Look 1: `getTransaction` (source 2, then
 source 3) is used for every print section 4 fetches (s0, the landing state, the exit state)". So the rebuild opens no ev byte and
@@ -34,10 +36,18 @@ keeps the ev map, so the branch is never chosen by effect), gettx_v.jsonl hashes
 account_v0.json exists (source 3 is part of the order, so this runs after `boostfloor_inputs account`). The extract is then re-run
 into a new dir with this map, before classify and P6.
 
+Pools with no source 2 or 3 record (`null_no_source`, e.g. pools the ev-based extract left out of the universe) become null-V
+candidates in the rebuilt extract. Before classify and P6, P5's s0 fetch and `account` must run again on the rebuilt extract into a
+new P5 dir, and gettx must be re-run on it. Otherwise those pools take section 4's missing-V rule. This is a manager step and is not
+done here.
+
 FIRST PRINT UNCERTAIN. A base hour that is not usable (forward_v_join.hour_state, strict=False, as the join reads base), that stops on
-a read error, or that holds an unreadable line can hide a pool's first print. A pool first seen in or after the first such hour, or a
-pool with a row that has no integer slot, has no known first print: ev gives it null; gettx skips source 2 (a print's V) and still
-takes source 3 (the pool's V0). Counted as first_print_uncertain.
+a read error, or that holds an unreadable line can hide a pool's first print. "Uncertain" means first seen in such a (non-ok) hour or
+in the hour right after one, or a pool with a row that has no integer slot. A pool first seen two or more hours after the first such
+hour keeps its V: the extractor's hole rule (h5_forward_extract.HOLE_RULE) drops a mint whose migration hour or the next hour is
+unusable, and a migration pool cannot print before its `complete`, so a pool the extract keeps does not have its first print hidden
+further back than the hour before the first one seen. ev gives an uncertain pool null; gettx skips source 2 (a print's V) and still
+takes source 3 (the pool's V0). Counted as first_print_uncertain. The meta's first_gap_hour is the first non-ok hour and nothing more.
 
 SEAL. Both modes refuse before opening anything unless the EXP-012 FINAL marker is in the external FINAL ledger
 (tools.forward_v_join.final_marker, the check the join and the extractor make). A path that names a sealed or forbidden block
@@ -141,13 +151,15 @@ class Scan:
     pools: set[str] = field(default_factory=set)
     unordered: set[str] = field(default_factory=set)
     states: dict[str, str] = field(default_factory=dict)
-    gap_at: int | None = None  # index of the first hour that is not fully read
+    gap_at: int | None = None  # index of the first hour that is not fully read (the meta's first_gap_hour only)
+    bad_at: set[int] = field(default_factory=set)  # indexes of every hour that is not fully read
     pumpswap_rows: int = 0
     pumpswap_no_pool: int = 0
 
     def uncertain(self, pool: str) -> bool:
+        """First seen in a non-ok hour or in the hour right after one (see the docstring), or no integer slot on some row."""
         f = self.first.get(pool)
-        return f is None or pool in self.unordered or (self.gap_at is not None and f.order[5] >= self.gap_at)
+        return f is None or pool in self.unordered or f.order[5] in self.bad_at or (f.order[5] - 1) in self.bad_at
 
 
 def _content(row: dict[str, Any]) -> list[Any] | None:
@@ -187,8 +199,10 @@ def scan_first_prints(base_dir: Path, hours: Sequence[str]) -> Scan:
                 s.states[h] = "ok" if rd.bad_lines == 0 else "bad_lines"
             except J.HourReadError:
                 s.states[h] = "read_error"
-        if s.states[h] != "ok" and s.gap_at is None:
-            s.gap_at = hi
+        if s.states[h] != "ok":
+            s.bad_at.add(hi)
+            if s.gap_at is None:
+                s.gap_at = hi
     return s
 
 
@@ -223,7 +237,8 @@ def check_join(vjoin: Path, hours: Sequence[str]) -> tuple[dict[str, Path], set[
         if shas.get(p.name) != J.sha256_file(p):
             raise Refused(f"{p.name} does not hash to the sha256 in join-report.json")
         files[h] = p
-    stray = sorted(p.name for p in vjoin.glob("v-*") if p.name[2:15] not in files)
+    # a v-<hour> file is stray unless it is the very file read for that hour (an extra v-<hour>.jsonl beside the .zst is refused)
+    stray = sorted(p.name for p in vjoin.glob("v-*") if p.name[2:15] not in files or p.name != files[p.name[2:15]].name)
     if stray:
         raise Refused(f"{len(stray)} v file(s) in {vjoin} are not the Look 1 join's")
     inputs = {"join-report.json": J.sha256_file(rep_path), "v_files": str(len(files))}
@@ -358,6 +373,9 @@ def run(mode: str, src: Path, out: Path) -> dict[str, Any]:
         check_path(Path(p))
     out = check_out(out)
     if mode == "ev":
+        if Path(src).name != "vjoin":
+            raise Refused("--vjoin must be named vjoin and sit inside the P5 dir (p5/vjoin), so that the line A check can read "
+                          "p5/cross_source.json")
         cs = Path(src).parent / "cross_source.json"  # Layout: p5/vjoin next to p5/cross_source.json
         if cs.is_file() and json.loads(cs.read_text(encoding="utf-8")).get("line_a_pass") is not True:
             raise Refused("P5 line A did not pass: Am.1 forbids forward-1002ev for Look 1; rebuild with `gettx`")
