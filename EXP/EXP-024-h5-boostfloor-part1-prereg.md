@@ -737,6 +737,33 @@ It carries **quant-proof's OK on its final head** and **the owner's approval**: 
 
 This clarification carries quant-proof's OK on its final head and merges before 2026-10-10T00:00Z.
 
+### Amendment 5 (G-v2; draft 2026-10-10, before the shadow has run the v2 computation on any pool and before any H5-BOOSTCLOCK v2 outcome exists): the v2 computation in the shadow, EXP-026's single read, and the v2 canary under DEC-028 Option B are declared exceptions to section 3
+
+**Gating.** This amendment must merge, with quant-proof's OK on its final head, **before the shadow runs the v2 computation (iter-r2 cell C10, "bx10") on any pool**. It merges with [EXP-026](EXP-026-h5-boostclock-v2-prereg.md) in one PR. Without it the v2 shadow does not start, EXP-026's W0 does not occur (EXP-026 P1), and no v2 canary sends under [DEC-028](../DEC/DEC-028-h5-v2-canary.md) Option B. DEC-027 §5.4's G1 is the model. It changes no EXP-024 parameter.
+
+**What was in view.** It is written with v1's October aggregate canary and shadow outcomes in view (the declared observation of section 3.1 and Amendments 2 and 3), and it says so. Its author opened no canary ledger, no shadow outcome record, no row of forward-1002, forward-1002ev or walk 2, and no forward-paper or runner output. No H5-BOOSTCLOCK v2 outcome exists on any pool at writing. It is not outcome-blind for v1, and it is written before any v2 outcome exists.
+
+- **(a) Scope.** These are declared exceptions to section 3's seal, for `rule_id` `H5-BOOSTCLOCK-v2` (rule block sha256 as merged in EXP-026 §2) and nothing else:
+  - (i) the shadow's computation of v2 exit decisions and v2 outcomes, for every pool from the v2 shadow's start, written only to EXP-026's withheld store (EXP-026 §3.3). Withheld files whose s0 hour is outside EXP-026's `[W0, E)` are never opened;
+  - (ii) EXP-026's single read of that store, for pools with s0 in `[W0, E)`, by `tools/exp026_read.py` under its lock;
+  - (iii) under DEC-028 Option B only, the real-time observation of the v2 canary's own fills, exits, wallet deltas and realized P&L, by the readers of DEC-024 §6.
+
+  EXP-024's read tool is excluded from all three, and its inputs are unchanged.
+- **(b) Look 1 and Look 2 as written.** Look 1 and Look 2 are always read and reported as written. They are never skipped, delayed, withdrawn, re-filed, re-scoped or re-thresholded because of anything v2, its shadow, its canary or EXP-026's verdict shows. The guard sentences of section 3.1 and Amendment 2 cover v2. No v2 result may change any EXP-024 parameter (rule, Q\* = 40, 330 s exit, 15% guard, 1.9 s deciding cell, windows, alpha, universe, classifier, kill rules). A v2 canary halt stops the v2 canary only.
+- **(c) Reports.** The Look 2 report states that EXP-026's verdict and v2's book were known before it (EXP-026 is read after the Look 1 report or Look 1's deadline, and usually before Look 2) and could have influenced later choices. Under DEC-028 Option B it also states that the v2 canary's outcomes were watched in real time, and lists the live rule (v1 or v2) per UTC date. The Look 1 report says the same if EXP-026 is read before it.
+- **(d) Section 3's premise.** Section 3 says the canary's sells "fall at s0 + 330 s or later, outside the rule's trigger window [0, 300] s". That premise fails for v2: a v2 sell can land before 300 s when τ\* fires early. **The conclusion still holds:** a v2 sell comes after the pool's only trigger (section 2, line 76: one trade per pool, first qualifying print), so it cannot create a trigger. Under DEC-028 Option B, the canary's 0.02 SOL sell shifts the tape that Look 1 or Look 2 prices at 330 s by the canary's own impact (about 0.05% of a pool with Q of about 40 SOL). Disclosed, not corrected.
+- **(e) The Look 2 flag does not reach v2.** Amendment 2's `--h5-look2-observed EXP-024-Am2` lifts the withholding of v1's records only. v2's outcome-bearing fields (exit-landing state, proceeds, P&L, legs, pressure inputs, the price strip after the v2 exit) go to the withheld store whatever the flag says. Under DEC-028 Option A, v2's decision fields are withheld too. Under Option B they are written in the clear only when the shadow is started with `--h5v2-live-exit DEC-028-B`, and they carry no price. **Joining a v2 exit slot to v1's price strip or exit ladder** before EXP-026's read is a breach of section 3 and of EXP-026 §3.3.
+- **(f) `boost_done` and the v2 slice stream never substitute for the A3 monitor.** The A3 monitor's flags and its last-slice median (sections 10 and 11) stay the only inputs to the halts and to NOT_DECIDABLE.
+- **(g) EXP-026 after W0.** EXP-026 is not withdrawn, re-scoped or delayed after its W0 for any reason other than an EXP-026 §7 NOT_DECIDABLE condition (EXP-026 §3.3). Under Option B, its report gives the share of counted pools the v2 canary traded and labels its verdict "v2 outcomes partly observed before the read".
+
+**A breach.** Computing, opening or printing a v2 outcome outside (a)(i)–(iii) for a pool with s0 in a look's counted window is a breach of section 3: it is recorded here, dated, and that look is reported compromised. A compromised read cannot support a live request.
+
+**Unchanged.** The CAP-PICK seal (EXP-022 section 9, DEC-024 section 6): the pick oracle seals a pool for every `rule_id`, v2 included, and its fail-closed rule stands. D1 (Amendment 4, line 691): no synthetic class is joined to any v2 outcome for a counted-window pool before Look 2 is read. The read tool's inputs and refusals. The rule, parameters, universe, gate statistics, look schedule, futility, kill rules, NOT_DECIDABLE conditions, windows, hours read, α of both looks and m. Nothing is added to EXP-024's family or to m: EXP-026's alpha is DEC-021 §8's fourth slot ([DEC-029](../DEC/DEC-029-exp026-alpha-slot.md), draft) or the owner's M2 line there.
+
+**Relation to G1.** If DEC-027's G1 is written later, it may cite this text. Neither widens the other.
+
+**Provenance.** A manager decision derived from the owner's 10-10 request to "try to make H5 work" (DEC-028 §0, as relayed), drafted 2026-10-10 for PR #542 after quant-proof's CHANGES review of 62cc971. The owner may revoke it before EXP-026's W0. A revocation stops the v2 shadow and the v2 canary, and does not undo the disclosures for anything already observed.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
