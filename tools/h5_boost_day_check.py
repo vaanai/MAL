@@ -10,7 +10,7 @@ day's hourly files, for two groups:
 SYN (synthetic is True) and OTHER (anything else) are reported too. Timing by class is a structure field, never an outcome (EXP-024 Am.4 D1).
 
 READING (the seal). Files <shadow-dir>/h5-shadow-<day>THH.jsonl, HH = 00..23. A line whose leading key says a type other than "pool" is
-counted by that type and never parsed. A pool line (or a line with no leading type key) is parsed with an object hook that keeps ONLY the
+counted as "other" and never parsed (`lines_by_type` is only {"pool": n, "other": m}: no outcome, trigger or strip count is printed). A pool line (or a line with no leading type key) is parsed with an object hook that keeps ONLY the
 keys in ALLOWED_KEYS as each object closes; no other field (outcome, trigger, min_q, triggered, fill, P&L) is kept, printed or logged.
 `gap` and `boost_src` are in the list: they are structure fields (the executor's own filter reads them), not outcomes.
 
@@ -40,7 +40,8 @@ JUDGING (DEC-024 Am.4 item 2, item 4, and the manager's stricter addition). Each
 `sudo -n test -e /var/lib/mal-live/h5/STOP`; both return codes are logged. This tool NEVER removes STOP.
 
 NO HIDDEN MISSING DATA. An hour path that exists (a symlink, a directory or any non-regular file included) but cannot be read raises
-InputError("unreadable_file"): exit 2, no verdict from partial data. Missing hour files are listed in `hours_missing`; resume refuses them.
+InputError("unreadable_file"): exit 2, no verdict from partial data. Missing hour files are listed in `hours_missing`; resume refuses them. In day and running modes
+"hours_missing" is also added to `reasons`, informational only (no verdict or exit-code change).
 
 CLOCK. The CLI has no clock flag. Tests call main(argv, now=...). A subprocess test may set the env var MAL_BDC_NOW (ISO-8601); the run is
 then stamped "now_overridden": true and resume_ok is impossible. Real runs use the system clock ("now_overridden": false).
@@ -108,7 +109,10 @@ def pick_seconds(rec: dict[str, Any]) -> float | None:
     for k in SEC_KEYS:
         v = rec.get(k)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
-            sec = float(v)
+            try:
+                sec = float(v)
+            except (OverflowError, ValueError, TypeError):  # an int too large for a float (10**400): a bad value, not a crash
+                return None
             if not math.isfinite(sec) or not (0.0 < sec < SEC_MAX):
                 return None
             return round(sec, 3)
@@ -142,8 +146,8 @@ def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] 
     if not os.path.isdir(shadow_dir):
         raise InputError("shadow_dir_missing")
     hours_read: list[int] = []
-    lines_by_type: dict[str, int] = {}
-    skipped = {"sealed": 0, "executor_filter": 0, "no_mint": 0, "bad_sec": 0, "dup_mint": 0, "bad_line": 0}
+    lines_by_type = {"pool": 0, "other": 0}  # seal hygiene: no per-type (outcome, trigger, strip) count is kept or printed
+    skipped ={"sealed": 0, "executor_filter": 0, "no_mint": 0, "bad_sec": 0, "dup_mint": 0, "bad_line": 0}
     filter_fail = {"reason": 0, "gap": 0, "boost_src": 0}  # each failing condition counted on its own; a record can fail several
     seen: dict[str, tuple[str, float]] = {}  # mint -> (class, sec)
     pool_records = 0
@@ -162,18 +166,16 @@ def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] 
                     continue
                 m = LEAD_TYPE_RE.match(raw)
                 if m is not None and m.group(1) != b"pool":
-                    t = m.group(1).decode("ascii")
-                    lines_by_type[t] = lines_by_type.get(t, 0) + 1
-                    continue  # counted by its leading type only, never parsed
+                    lines_by_type["other"] += 1
+                    continue  # counted as "other" by its leading type, never parsed
                 rec = parse(raw)
                 if rec is None:
                     skipped["bad_line"] += 1
                     continue
-                t = rec.get("type")
-                t = t if isinstance(t, str) and 0 < len(t) <= 40 else "?"
-                lines_by_type[t] = lines_by_type.get(t, 0) + 1
-                if t != "pool":
+                if rec.get("type") != "pool":
+                    lines_by_type["other"] += 1
                     continue
+                lines_by_type["pool"] += 1
                 pool_records += 1
                 if rec.get("sealed") is not False:
                     skipped["sealed"] += 1
@@ -201,7 +203,7 @@ def read_day(shadow_dir: str, day: str, parse: Callable[[bytes], dict[str, Any] 
         hours_read.append(h)
     if not hours_read:
         raise InputError("no_files")
-    return {"hours_read": hours_read, "lines_by_type": dict(sorted(lines_by_type.items())), "pool_records": pool_records,
+    return {"hours_read": hours_read, "lines_by_type": lines_by_type, "pool_records": pool_records,
             "skipped": skipped, "executor_filter_fail": filter_fail, "seen": seen}
 
 
@@ -452,6 +454,9 @@ def main(argv: list[str] | None = None, now: datetime | None = None, run: Callab
             reasons.append("other_section5_rules_and_stops_not_checked_here")
         rec["verdict"] = "resume_ok" if resume_ok else ("input_error" if input_error else "resume_not_ok")
 
+    if args.mode != "resume" and rec.get("hours_missing"):
+        # informational only, and appended AFTER the verdict is settled (running mode derives halt_due from `reasons`): no verdict or exit change
+        reasons.append("hours_missing")
     rec["halt_due"] = halt_due
     rec["reasons"] = reasons
     rec["place_stop_flag"] = bool(args.place_stop)

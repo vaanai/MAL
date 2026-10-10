@@ -136,9 +136,10 @@ def test_day_plain_under_30_and_low_is_not_judged(tmp_path, capsys):
 def test_day_both_at_or_above_337_no_halt(tmp_path, capsys):
     sh = tmp_path / "shadow"
     write_hour(sh, "2026-10-11", 5, many("p", 30, 337.0, "plain") + many("s", 30, 350.0, "syn"))
+    fill_hours(sh, "2026-10-11")  # a complete day: nothing missing, so no reasons
     code, rec = run(tmp_path, capsys, *DAY, now=N_DAY)
     assert code == 0 and rec["halt_due"] is False and rec["evaluated"] is True and rec["verdict"] == "no_halt"
-    assert rec["reasons"] == [] and rec["plain_judged"] is True
+    assert rec["reasons"] == [] and rec["hours_missing"] == [] and rec["plain_judged"] is True
 
 
 def test_day_median_is_exact_not_rounded(tmp_path, capsys):
@@ -269,13 +270,13 @@ N_RUN = utc("2026-10-11T12:00:00Z")
 def test_running_plain_below_335_halts(tmp_path, capsys):
     write_hour(tmp_path / "shadow", "2026-10-11", 4, many("p", 30, 334.9) + many("s", 60, 345.0, "syn"))
     code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
-    assert code == 3 and rec["reasons"] == ["plain_median_lt_335"]
+    assert code == 3 and rec["reasons"] == ["plain_median_lt_335", "hours_missing"]
 
 
 def test_running_all_below_335_halts(tmp_path, capsys):
     write_hour(tmp_path / "shadow", "2026-10-11", 4, many("p", 10, 340.0) + many("s", 30, 330.0, "syn"))
     code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
-    assert code == 3 and rec["reasons"] == ["all_median_lt_335"]  # plain n=10 is not judged
+    assert code == 3 and rec["reasons"] == ["all_median_lt_335", "hours_missing"]  # plain n=10 is not judged
 
 
 def test_running_under_30_not_judged_and_337_is_not_a_running_halt(tmp_path, capsys):
@@ -293,6 +294,46 @@ def test_running_no_files_is_input_error(tmp_path, capsys):
     (tmp_path / "shadow").mkdir()
     code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
     assert code == 2 and rec["error"] == "no_files" and rec["halt_due"] is False
+
+
+# --- hours_missing in day and running modes: informational only ---------------------------------------------------------------------
+def test_running_hours_missing_is_a_reason_but_never_a_halt(tmp_path, capsys):
+    sh = tmp_path / "shadow"
+    write_hour(sh, "2026-10-11", 4, many("p", 30, 340.0) + many("s", 30, 350.0, "syn"))
+    code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
+    assert code == 0 and rec["halt_due"] is False and rec["verdict"] == "no_halt" and rec["stop"] is None
+    assert rec["hours_read"] == [4] and len(rec["hours_missing"]) == 23 and rec["reasons"] == ["hours_missing"]
+    fill_hours(sh, "2026-10-11")  # same records, every hour present: same verdict and exit, no reason
+    code2, rec2 = run(tmp_path, capsys, *RUN, now=N_RUN)
+    assert (code2, rec2["halt_due"], rec2["verdict"]) == (code, rec["halt_due"], rec["verdict"])
+    assert rec2["hours_missing"] == [] and rec2["reasons"] == []
+
+
+def test_day_hours_missing_is_a_reason_but_changes_no_verdict_or_exit(tmp_path, capsys):
+    sh = tmp_path / "shadow"
+    write_hour(sh, "2026-10-11", 5, many("p", 30, 337.0) + many("s", 30, 350.0, "syn"))
+    code, rec = run(tmp_path, capsys, *DAY, now=N_DAY)
+    assert code == 0 and rec["halt_due"] is False and rec["verdict"] == "no_halt" and rec["evaluated"] is True
+    assert rec["reasons"] == ["hours_missing"] and rec["hours_missing"] == [h for h in range(24) if h != 5]
+    # a halt keeps its verdict and exit 3; hours_missing comes after the halt reasons
+    sh2 = tmp_path / "other" / "shadow"
+    write_hour(sh2, "2026-10-11", 5, many("p", 30, 336.0) + many("s", 30, 350.0, "syn"))
+    code2, rec2 = run(tmp_path / "other", capsys, *DAY, now=N_DAY)
+    assert code2 == 3 and rec2["verdict"] == "halt_due" and rec2["halt_due"] is True
+    assert rec2["reasons"] == ["plain_median_lt_337", "second_strike_after_first_strike_day", "hours_missing"]
+    # an unevaluated day keeps exit 5 (the previous day is evaluated here, so no second-unevaluated halt)
+    sh3 = tmp_path / "third" / "shadow"
+    write_hour(sh3, "2026-10-10", 5, many("p", 30, 340.0))
+    write_hour(sh3, "2026-10-11", 5, many("p", 10, 340.0))
+    code3, rec3 = run(tmp_path / "third", capsys, *DAY, now=N_DAY)
+    assert code3 == 5 and rec3["verdict"] == "unevaluated" and rec3["halt_due"] is False
+    assert rec3["reasons"] == ["unevaluated_lt_30_pools", "hours_missing"]
+
+
+def test_hours_missing_is_not_added_when_the_read_failed(tmp_path, capsys):
+    (tmp_path / "shadow").mkdir()
+    code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)  # no files: input error, no hours_missing key, no hours_missing reason
+    assert code == 2 and rec["reasons"] == ["no_files"] and "hours_missing" not in rec
 
 
 # --- resume mode --------------------------------------------------------------------------------------------------------------------
@@ -513,12 +554,26 @@ def test_non_pool_records_are_counted_never_parsed_and_never_printed(tmp_path, c
                             "gap": False, "boost_src": "pda", "synthetic_src": "rpc", "boost_last_slice_s": 342.0}, separators=(",", ":"))
     write_hour(tmp_path / "shadow", "2026-10-11", 9, pools, raw_lines=lines + [late_type, "{broken"])
     code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
-    assert rec["lines_by_type"] == {"excluded": 1, "outcome": 2, "pool": 32, "trigger": 1}
+    assert rec["lines_by_type"] == {"pool": 32, "other": 4}  # outcome x2, trigger, excluded: counted together, never by type
     assert rec["plain"]["n"] == 32 and rec["all"]["n"] == 32 and rec["skipped"]["bad_line"] == 1
     assert all(b'"type":"pool"' in r or r.startswith(b"{broken") for r in parsed) and len(parsed) == 33
     blob = (tmp_path / "log.jsonl").read_text()
     assert SENTINEL not in blob and "o1" not in blob and "t1" not in blob and "x1" not in blob
     assert "pnl" not in blob and "q_trigger" not in blob and "min_q" not in blob
+    assert all(f'"{w}"' not in blob for w in ("outcome", "trigger", "excluded", "strip"))  # no per-type name is printed
+
+
+def test_lines_by_type_is_only_pool_and_other(tmp_path, capsys):
+    """Seal hygiene: the only per-type output is {"pool", "other"}. Any non-pool line, however its type is spelled or placed, is "other"."""
+    sh = tmp_path / "shadow"
+    typeless = json.dumps({"mint": "nt", "sealed": False, "boost_last_slice_s": 340.0}, separators=(",", ":"))
+    odd_type = json.dumps({"mint": "ot", "type": 7, "sealed": False}, separators=(",", ":"))
+    lead_other = json.dumps({"type": "strip", "mint": "st"}, separators=(",", ":"))
+    write_hour(sh, "2026-10-11", 1, many("p", 30, 340.0), raw_lines=[typeless, odd_type, lead_other, "{broken", "   "])
+    code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
+    assert rec["lines_by_type"] == {"pool": 30, "other": 3} and list(rec["lines_by_type"]) == ["pool", "other"]
+    assert rec["skipped"]["bad_line"] == 1 and rec["pool_records"] == 30 and rec["plain"]["n"] == 30
+    assert rec["lines_by_type"]["pool"] == rec["pool_records"]
 
 
 def test_output_names_no_pool_or_mint(tmp_path, capsys):
@@ -555,6 +610,25 @@ def test_seconds_choice_mirrors_executor():
     assert p({"boost_last_slice_s": 0, "boost_last_slice_s_blocktime": 339}) is None  # first number out of range: no fall-through
     assert p({"boost_last_slice_s": 2000.0}) is None and p({"boost_last_slice_s": float("nan")}) is None
     assert p({"boost_last_slice_s": "340"}) is None and p({}) is None
+
+
+def test_seconds_too_large_for_a_float_is_none_not_a_crash():
+    """float(10**400) raises OverflowError; pick_seconds turns that into None (a bad value), and does not fall through to the next key."""
+    p = bdc.pick_seconds
+    assert p({"boost_last_slice_s": 10**400}) is None and p({"boost_last_slice_s": -(10**400)}) is None
+    assert p({"boost_last_slice_s": 10**400, "boost_last_slice_s_blocktime": 339.0}) is None  # first number is bad: no fall-through
+    assert p({"boost_last_slice_s": None, "boost_last_slice_s_blocktime": 10**400, "boost_last_slice_s_recv": 341.0}) is None
+
+
+def test_huge_int_seconds_in_a_file_is_counted_bad_sec_and_does_not_crash(tmp_path, capsys):
+    raw = '{"type":"pool","reason":"horizon","sealed":false,"mint":"hugeraw","synthetic":false,"synthetic_src":"rpc","gap":false,' \
+          '"boost_src":"pda","boost_last_slice_s":1' + "0" * 400 + "}"  # the literal integer 10**400 as it would sit in a shadow file
+    write_hour(tmp_path / "shadow", "2026-10-11", 2, [pool("big", 10**400), pool("neg", -(10**400)), pool("big2", 10**400,
+               boost_last_slice_s_blocktime=339.0)] + many("p", 30, 340.0), raw_lines=[raw])
+    code, rec = run(tmp_path, capsys, *RUN, now=N_RUN)
+    assert code == 0 and "error" not in rec
+    assert rec["skipped"]["bad_sec"] == 4 and rec["skipped"]["bad_line"] == 0 and rec["pool_records"] == 34
+    assert rec["plain"] == {"n": 30, "median_s": 340.0} and rec["all"]["n"] == 30 and rec["halt_due"] is False
 
 
 def test_classes():
