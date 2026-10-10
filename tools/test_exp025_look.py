@@ -526,5 +526,78 @@ class QuantProofR3(unittest.TestCase):
             self.assertEqual(r.stdout.strip(), R.tool_blob())
 
 
+
+@unittest.skipIf(np is None, "numpy/pandas/duckdb missing")
+class QuantProofR4(unittest.TestCase):
+    """r4: R8 runs before every readiness check, so a readiness item still unmet at the deadline ends the look (section 3, 11.4 R8)."""
+
+    UNMET = {
+        "FINAL marker absent (SEAL)": lambda F: os.remove(F.a.final_marker),
+        "FINAL ledger empty (SEAL)": lambda F: open(F.a.final_ledger, "w").close(),
+        "decoder blobs absent (R13)": lambda F: os.remove(F.a.decoder_blobs),
+        "E0 record for other code (R13)": lambda F: json.dump({"e0_pass": True, "tool_blob": "0" * 40},
+                                                              open(os.path.join(F.a.e0_dir, "p4_e0.json"), "w")),
+        "no look assembly": lambda F: os.remove(os.path.join(F.O, "look_assembly.json")),
+        "no R1 cross-check record": lambda F: os.remove(F.a.r1_crosscheck),
+        "no --oracle-live": lambda F: setattr(F.a, "oracle_live", None),
+        "no per-print v_ok": lambda F: setattr(F, "v_flag", False),
+    }
+
+    def test_r8_before_every_readiness_check(self):
+        for name, unmet in self.UNMET.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                F = Fixture(d); unmet(F)
+                with self.assertRaises(R.Refusal) as c:                                # before the deadline: not terminal
+                    K.run_look(1, F.a, F)
+                self.assertNotEqual(c.exception.code, "R8"); self.assertEqual(F.events(), ["ready"])
+                self.assertFalse(os.path.exists(os.path.join(F.O, "READ.lock")))
+                F.a.now = R.ep("2026-10-18T12:01")                                     # after the deadline, still unmet: R8 ends the look
+                rec = K.run_look(1, F.a, F)
+                self.assertEqual((rec["verdict"], rec["refused"], rec["phase"]), ("NOT_DECIDABLE", "R8", "deadline"))
+                self.assertEqual(F.events(), ["ready", "lock", "not_decidable"]); self.assertEqual(F.calls, []); self.assertEqual(F.priced, 0)
+                nd = R.ledger_events(F.a.ledger, 1)[-1]
+                self.assertEqual((nd["code"], nd["phase"]), ("R8", "deadline"))
+                self.assertEqual(json.load(open(os.path.join(F.O, "look1_result.json")))["refused"], "R8")
+                with self.assertRaises(R.Refusal) as c:                                # spent: no second terminal event
+                    K.run_look(1, F.a, F)
+                self.assertEqual(c.exception.code, "LOCK")
+                self.assertEqual(F.events(), ["ready", "lock", "not_decidable", "ready"])
+                # Look 1's R8 opens Look 2's gate; Look 2 past its own deadline with the same item unmet is NOT_DECIDABLE R8 too
+                F.a.o_dir = os.path.join(d, "look2"); F.a.now = R.ep("2026-10-26T12:01")
+                rec2 = K.run_look(2, F.a, F)
+                self.assertEqual((rec2["verdict"], rec2["refused"], rec2["look2_gate"]), ("NOT_DECIDABLE", "R8", "look1 not_decidable"))
+                self.assertEqual([e["event"] for e in R.ledger_events(F.a.ledger, 2)], ["lock", "not_decidable"])
+                self.assertTrue(os.path.exists(os.path.join(d, "look2", "READ.lock")))
+
+    def test_ready_mode_after_the_deadline_never_locks(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); F.a.now = R.ep("2026-10-18T12:01")
+            self.assertTrue(K.run_look(1, F.a, F, lock=False)["ready"])
+            self.assertEqual(F.events(), ["ready"]); self.assertFalse(os.path.exists(os.path.join(F.O, "READ.lock")))
+
+    def test_look2_after_a_look1_pass_is_look2_not_r8(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d)
+            self.assertEqual(K.run_look(1, F.a, F)["verdict"], "PASS")
+            F.a.o_dir = os.path.join(d, "look2"); F.a.now = R.ep("2026-10-26T12:01")    # past Look 2's deadline: still never runs
+            with self.assertRaises(R.Refusal) as c:
+                K.run_look(2, F.a, F)
+            self.assertEqual(c.exception.code, "LOOK2")
+            self.assertEqual([e["event"] for e in R.ledger_events(F.a.ledger, 2)], ["ready"])
+            self.assertFalse(os.path.exists(os.path.join(d, "look2", "READ.lock")))
+
+    def test_look2_before_look1_is_terminal_stays_not_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); F.a.o_dir = os.path.join(d, "look2"); F.a.now = R.ep("2026-10-26T12:01")
+            with self.assertRaises(R.Refusal) as c:
+                K.run_look(2, F.a, F)
+            self.assertEqual(c.exception.code, "NOT_READY")
+            self.assertEqual([e["event"] for e in R.ledger_events(F.a.ledger, 2)], ["ready"])
+            F.a.o_dir = F.O
+            self.assertEqual(K.run_look(1, F.a, F)["refused"], "R8")                    # running Look 1 now ends it (R8) ...
+            F.a.o_dir = os.path.join(d, "look2")
+            self.assertEqual(K.run_look(2, F.a, F)["refused"], "R8")                    # ... and Look 2 then ends too
+
+
 if __name__ == "__main__":
     unittest.main()

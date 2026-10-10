@@ -12,15 +12,22 @@ those files, of the R1 cross-check record, of look_assembly.json and of every ma
 Run it with the audit venv (numpy, pandas, duckdb); the two retrains run as subprocesses in the ML venv (numpy, lightgbm).
 
 Order. Nothing below prices a trade before every refusal that can be decided without a price has been decided.
+  Gate (not terminal; reads only LOOK_READS.jsonl and the look's READ.lock): Look 2 only, Look 1's terminal LOOK_READS event is
+    `not_decidable` or a `read` FAIL (NOT_READY if Look 1 has none; LOOK2 if Look 1 passed: Look 2 never runs, section 3); then no lock yet
+    (LOCK: a spent look is never run, or refused, twice).
+  R8 (`run` only, terminal, before every readiness check, quant-proof r4): now after the look's deadline (section 3 table) takes the lock and
+    writes `not_decidable` R8. Section 3: "a look not run by its deadline is NOT_DECIDABLE"; 11.4 R8: "P2 to P6 are not all met by their
+    deadlines". It reads the clock and LOOK_READS only (no tape, manifest or sealed file), so it needs no FINAL marker. A readiness item still
+    unmet at the deadline (FINAL marker, R13, assembly, cross-check, --oracle-live, `v_ok`) therefore ends the look instead of leaving it with
+    no terminal event, and Look 1's R8 opens Look 2's gate.
   Phase 0, readiness (not terminal, code NOT_READY unless named): section 0 lines, EXP file clean against HEAD, SHA256SUMS pins, the FINAL
-    marker and ledger entry and the end of the look's last allowlisted hour (LookGuard), R13 decoder blobs and E0 records, no lock yet, the
-    look assembly record of the adapter's look driver (NOT_READY if absent or invalid; R8 is the deadline refusal and spends the look),
-    --oracle-live given (NOT_READY: a forgotten flag must not turn into R7 and burn the look), the pinned patch applied (applied sha256 pinned),
-    the adapter's per-print V flag `v_ok` in every V-covered tape hour (NOT_READY: R3 and section 6 are per print; no manifest or hour proxy),
-    the R1 cross-check record (NOT_READY if absent). Look 2 only: Look 1's terminal LOOK_READS event is `not_decidable` or a `read` FAIL
-    (NOT_READY if Look 1 has none; LOOK2 if Look 1 passed: Look 2 never runs, section 3). None of these takes the lock.
+    marker and ledger entry and the end of the look's last allowlisted hour (LookGuard), R13 decoder blobs and E0 records, the look assembly
+    record of the adapter's look driver (NOT_READY if absent or invalid), --oracle-live given (NOT_READY: a forgotten flag must not turn into R7
+    and burn the look), the pinned patch applied (applied sha256 pinned), the adapter's per-print V flag `v_ok` in every V-covered tape hour
+    (NOT_READY: R3 and section 6 are per print; no manifest or hour proxy), the R1 cross-check record (NOT_READY if absent). None of these
+    takes the lock.
   Phase 1, outcome-blind data refusals before the lock (terminal: a refusal takes the lock and writes `not_decidable`, so the look cannot be
-    re-run on the same hours, section 11.5): R8 (`run` only, first: now after the look's deadline), R12 on the materialised tape directory
+    re-run on the same hours, section 11.5): R12 on the materialised tape directory
     (every O/tape/{trades,creates,migrations}/*.parquet hour allowlisted: pass A opens D T00 .. D+2 T01 as a black box), R12 (manifest block
     vs the allowlist), R1 hour level (bad + unwalked hours + forward-1002ev hours whose raw-JSONL cross-check 1:1 match rate is below 99.5% or
     missing, P6 item 3), R2 (PDA match, the
@@ -480,12 +487,21 @@ def run_look(look: int, a, steps=None, lock: bool = True) -> dict:
 def _run_look(look: int, a, S, lock: bool, rec: dict) -> dict:
     L = R.LOOKS[look]; O = a.o_dir or L["O"]; ledger = a.ledger
     log = os.path.join(O, "run_look.log")
-    # ---- phase 0: readiness (not terminal)
-    guard = S.preflight(look)
+    out_path = os.path.join(O, f"look{look}_result.json")
+    # ---- gate (not terminal): LOOK_READS and READ.lock only
     if look == 2:
         rec["look2_gate"] = look2_gate(ledger)                                         # section 3: only after Look 1 NOT_DECIDABLE / FAIL
     if os.path.exists(os.path.join(O, "READ.lock")) or any(e["event"] == "lock" for e in R.ledger_events(ledger, look)):
         raise R.Refusal("LOCK", f"look {look} is already locked (no resume)")
+    # ---- R8 (`run` only, terminal): before every readiness check, so a readiness item unmet at the deadline still ends the look (r4)
+    if lock:
+        now = a.now if a.now is not None else int(time.time())
+        if now > R.ep(L["deadline"]):
+            rec["phase"] = "deadline"
+            return _not_decidable(look, ledger, O, False, rec, "R8", f"now {R.hour_str(now)}Z is after look {look}'s deadline {L['deadline']}Z",
+                                  out_path)
+    # ---- phase 0: readiness (not terminal)
+    guard = S.preflight(look)
     A, mans = load_assembly(look, O)                                                   # NOT_READY if absent or invalid
     xc = load_crosscheck(a.r1_crosscheck)                                              # NOT_READY if absent (P6 item 3)
     if not getattr(a, "oracle_live", None):
@@ -497,15 +513,10 @@ def _run_look(look: int, a, S, lock: bool, rec: dict) -> dict:
     if nov:
         raise R.Refusal("NOT_READY", f"{len(nov)} V-covered tape hours have no per-print v_ok column (first {nov[0]}): R3 and section 6 need it")
     _, cmds = R.pipeline_commands(look)
-    out_path = os.path.join(O, f"look{look}_result.json")
     took = False
     try:
-        # ---- phase 1: outcome-blind data refusals (terminal)
+        # ---- phase 1: outcome-blind data refusals (terminal; R8 ran before phase 0)
         rec["phase"] = "pre-lock refusals"
-        if lock:                                                                       # R8: the deadline, first
-            now = a.now if a.now is not None else int(time.time())
-            if now > R.ep(L["deadline"]):
-                raise R.Refusal("R8", f"now {R.hour_str(now)}Z is after look {look}'s deadline {L['deadline']}Z")
         outside = tape_outside_allowlist(look, O)                                      # R12 on the materialised tape
         if outside:
             raise R.Refusal("R12", f"{len(outside)} tape files outside look {look}'s allowlist (first {outside[0]}): pass A would open them")
