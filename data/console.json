@@ -1,8 +1,43 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T18:11:21Z",
+ "updated_utc": "2026-10-10T20:16:30Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "p7-line2-fixed-1010",
+   "kind": "other",
+   "title": "Both formal reads' fee check fixed before any read data exists (EXP-024 #580, EXP-025 #579 merged)",
+   "detail": "Refetched 245 transactions to find the cause. Normal buys pay the fee on top of the curve cost, but the check assumed the fee came out of it. For 'exact-input' buys, the amount on the tape is what reaches the curve, not what the buyer paid. The new rule uses the chain's own relation on normal buys: 175 of 183 match on the declared hour (90% needed). Without the fix, both reads would have ended 'not decidable'. Quant-proof and reviewer signed off; the rule cannot be changed again.",
+   "atUtc": "2026-10-10T20:10:00Z"
+  },
+  {
+   "id": "boost-feefree-1010",
+   "kind": "other",
+   "title": "Checked on chain: October BOOST buys are still fee-free, so H5's BOOST detector stays exact",
+   "detail": "77 of 77 October BOOST slices across 5 pools paid zero fees, and a full pool's BOOST adds up to exactly 17.584505288 SOL, the same as in August and September. Other buy-volume signals read about 0.6% low, the same way in training and live; nothing is changed before the reads.",
+   "atUtc": "2026-10-10T20:00:00Z"
+  },
+  {
+   "id": "walkers-disk-1010",
+   "kind": "other",
+   "title": "Forward walks were blocked by a full disk since ~07Z; space freed with your OK, catch-up running",
+   "detail": "research-0 hit 95% and the walkers keep 20% free by design, so they refused every hour. About 175 GB of rebuildable data was deleted (list in DISK-CLEANUP-2026-10-10.md). Both walkers resumed at 20:05Z and should catch up by about 04:00Z, well before the 10-16 FINAL.",
+   "atUtc": "2026-10-10T20:05:00Z"
+  },
+  {
+   "id": "c1nf-mem-cause-1010",
+   "kind": "other",
+   "title": "C1-NF memory cause found: the engine kept ~25 h of every trade (~10 GB); a 1-hour window fix is being built with bit-identical proofs",
+   "detail": "A 48-hour September replay settled at about 9.8 GB against a 1.9 GB cap. The decision features only need the last hour, so the fix keeps one hour, packs the arrays and trims the ledger cache (estimate 1.0–1.5 GB). Every decision must be bit-identical to the old code before the 24 h soak restarts.",
+   "atUtc": "2026-10-10T19:30:00Z"
+  },
+  {
+   "id": "hunt-r6-r7-1010",
+   "kind": "other",
+   "title": "Research rounds 6 and 7: 5 ideas killed by their pre-set tests, 1 rug-filter procedure frozen for a read ~10-16/17",
+   "detail": "Killed: H5 re-entry after a refused buy, H5 holding winners past 330 s, two simpler C1-NF rules, and a pre-graduation tail entry. H5's current entry and 330 s exit stand. The funding-graph rug filter (your priority after 10-16) is frozen and waits for its data releases. Round 8 is running.",
+   "atUtc": "2026-10-10T20:00:00Z"
+  },
   {
    "id": "c1nf-soak-oom-1010",
    "kind": "other",
@@ -590,6 +625,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261010-2016",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T20:16:30Z",
+   "text": "10-10 20:16Z: both formal reads' fee check fixed and merged (#580, #579) before any read data exists. October BOOST confirmed fee-free on chain. Forward walks were blocked by a full disk; ~175 GB freed with your OK, catch-up running until ~04Z. C1-NF memory fix in build (cause: ~25 h of trades kept, ~10 GB). H5 stays stopped until tonight's 00:13Z check; you pre-authorized removing STOP if it passes. 3 live trades so far, +0.0052 SOL."
+  },
   {
    "id": "s-20261010-1811",
    "from": "claude",
