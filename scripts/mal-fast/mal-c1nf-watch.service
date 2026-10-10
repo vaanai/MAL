@@ -1,0 +1,46 @@
+[Unit]
+Description=MAL C1-NF watchdog (DEC-026 section 5): checks the C1-NF canary and posts alerts to Discord
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# /etc/mal-c1nf-watch/watch.env (root:root 0600 in a root:root 0700 dir) holds four lines: C1NF_WATCH_DISCORD_WEBHOOK=...,
+# C1NF_WATCH_FUNDED_SOL=<total SOL deposited>, C1NF_WATCH_SHADOW_DIR=/home/<jobuser>/data/c1nf-shadow, C1NF_WATCH_WALLET=<public address>,
+# and an optional fifth, C1NF_WATCH_A3_FILE=<absolute path of the A3 monitor's JSONL on this host> (DEC-026 section 7 rule 6).
+# It is read by systemd as root; the webhook URL is a secret and is never printed. No "-" prefix: a missing file fails the start.
+# This is NOT the H5 watchdog: its own env, state dir and timer (DEC-026 section 5). It reads nothing of H5's.
+EnvironmentFile=/etc/mal-c1nf-watch/watch.env
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-c1nf-watch)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-c1nf-watch/watch.env)" = 0:0:600'
+# Stdlib only, from the root-owned pinned tree, with -I -S. It reads state through c1nf-daily-check.py (nofollow reads, fixed paths) and
+# posts; it holds no wallet key, uses the public RPC for the balance, and writes only its own state dir. Both key directories (the
+# C1-NF second wallet and the H5/probe wallet) and every unit's credentials are fenced off: it never needs them.
+ExecStart=/usr/bin/python3 -I -S -B -u /usr/local/lib/mal-c1nf-exec/current/c1nf-watch.py
+StateDirectory=mal-c1nf-watch
+StateDirectoryMode=0700
+TimeoutStartSec=120
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+InaccessiblePaths=-/etc/mal-c1nf-key -/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=256M
+MemorySwapMax=0
+UMask=0077

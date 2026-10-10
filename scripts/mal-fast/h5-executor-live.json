@@ -1,0 +1,21 @@
+{
+  "mode": "live",
+  "intents_file": "/srv/mal-h5-shadow",
+  "state_dir": "/var/lib/mal-live/h5",
+  "commitment": "confirmed",
+  "poll_s": 5.0,
+  "intent_poll_ms": 25,
+  "rps": 8.0,
+  "buy_priority_lamports": 55000,
+  "jito_enabled": false,
+  "jito_tip_lamports": 0,
+  "entry_tolerance_bps": 1500,
+  "wallet_floor_lamports": 50000000,
+  "send_lead_ms": 500,
+  "exit_land_offset_s": 0.0,
+  "deadline_s": 400,
+  "sell_retries": 5,
+  "feed_heartbeat_max_age_ms": 150000,
+  "pick_file": "/srv/mal-h5-shadow/cap-pick/picks.jsonl",
+  "end_ms": 1792110600000
+}

@@ -563,6 +563,225 @@ No CAP-PICK outcome was computed or read to make this amendment.
 
 **Unchanged:** items 1, 3 and 4; the book; the pick rule and threshold; the looks; the gate.
 
+### Amendment 2 (2026-10-08, before any counted hour): EXP-024 (H5-BOOSTFLOOR) and walk 2
+
+No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged.
+
+[EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) is a separate DEC-014 family that takes DEC-021's second α slot ([DEC-021 Amendment 2](../DEC/DEC-021-champion-challenger.md), [DEC-023](../DEC/DEC-023-h5-family.md)). H5 prices the same V-band pools in the same first 330 s as CAP-PICK, so its outcomes overlap CAP-PICK's counted picks wherever the mints coincide. To keep section 9, these rules apply:
+1. **EXP-024 Look 2 waits.** It reads walk-2 hours `[2026-10-16T01, 2026-11-06T01)` only after EXP-022's read has ended: a PASS at some look, look 3 done or NOT_DECIDABLE, a halt, or a withdrawal. Its tool refuses a walk-2 hour until EXP-022's `LOOK_READS.jsonl` shows a terminal state, and it reads that state only. EXP-024's Look 1 reads forward-1002 hours and counts no walk-2 hour.
+2. **H5 trades exclude CAP-PICK picks.** From 2026-10-16T01 to the end of EXP-022's read, no H5 trade, live (DEC-024) or paper, is taken on a mint the EXP-022 gate picked, and no H5 record is joined to a CAP-PICK pick. No per-pool H5 P&L is produced before each CAP-PICK look. The gate's decisions are online, so the set is known in real time. The H5 side reads only the `mint` field of the decision-time intents, into memory, and writes no CAP-PICK field into any H5 record. If the pick feed is missing or stale for more than 60 s, H5 buys halt (fail closed; DEC-024 section 6). A breach is recorded here and the H5 read is reported compromised.
+3. **Walk 2 runs to at least 2026-11-06T02**, whatever EXP-022's status, so that EXP-024's Look 2 has its last hour. This does not extend EXP-022's counted window `[2026-10-16T01, 2026-11-06T01)`; hour 2026-11-06T01 stays read only for the exits of counted attempts.
+4. **Disclosure.** EXP-024's reads of walk 2 are non-owner reads of an EXP-022 block (ledger rule 3), made only after EXP-022's read has ended.
+
+### Amendment 3 (2026-10-08): E0 record (section 2.1)
+
+No outcome of a counted hour was opened, priced or printed to make this amendment. No parameter, rule, threshold, window, look, correction, gate or seal of this file changes. Two places where this record corrects section 9 or is stricter than section 2.1 are labelled (item 3 and item 5(b)).
+
+Every value below is copied from `/data/mal/exp022/e0-official/e0.json` (sha256 `83e26d70ad52d4aa8afdefc9f3d18a6057005861e66e281c8c898f61d889a03a`) or from the dry-run record named in item 5(a). The scorer inside E0 prices the picks of an exploration day and writes the P&L to its own `rows.csv`; the harness reads only the `mint`, `status` and `reason` columns, and no P&L of that run was read to write this amendment. Labels: **[measured]** is copied from a run record; **[pinned]** is a rule this amendment fixes; **[inferred]** is reasoned.
+
+**1. Result: E0 PASSED [measured].** `ok` is true, `dry_run` is false, `schema` is `cap_pick_e0_v1`, `e0_criterion` is `le60_either_plus_B_picks`.
+
+| Field | Value |
+| --- | --- |
+| Job and commit | MiScusi job #397, run 2026-10-08 on main `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` (the merge commit of #480; `origin_branches` is `["origin/main"]`; the harness refuses a dirty tree). `run` for the pinned view and day, no `--dry-run`. Job facts from the MiScusi job record, relayed by the manager: declared limit 28 GB (Amendment 1(e) had planned 16 GB) and 2 CPU; submitted and started 2026-10-08T20:50:17Z, ended 2026-10-08T21:17:34Z (27 min); MiScusi-reported peak 15 GB (cgroup, includes page cache); exit 0. `check` also exited 0. None of these is in `e0.json`. |
+| Record and log | `/data/mal/exp022/e0-official/e0.json`; log `/data/mal/exp022/e0-official.log` |
+| View and day | `explore-0814`, `2026-08-20`; both sides boot at 2026-08-20T00:00Z (`boot_ms` `1787184000000`) |
+| `VIEW.sha256` | `view_sha256` is the sha256 of each root's `VIEW.sha256` file (table below) |
+| Deciding set D | `n_decide_set` `889`; `n_A_decide` `889`; `n_B_decide` `889`; `n_create_ms_disagree` `0`; `n_diff_decide` `0` |
+| A = B on D | `md5_A_decide` = `md5_B_decide` = `bed92c12663932ea3696d7a26c8f7b18`; `equal_decide` true |
+| C = B picks in U | `md5_C` = `md5_Bpicks_U` = `196cbbd8597c771b6f781cda7657d983`; `n_C` `98`; `n_universe` `772`; `n_Bpicks_in_U` `98`; `n_Bpicks_not_in_U` `0`; `n_picks` (B) `98`; `equal_C` true |
+| Universe exclusions (none is a B pick) | `v_outside_band` `258`, `mayhem_unknown_no_create_event` `33`, `v_null_in_vmap` `1`; `excluded_picks_by_reason` `{}`; `picks_not_attempts` `{}` |
+| Scorer data counts | `migrations` `1064`; `mints_with_canonical_pool` `805`; `hours` `24`; `bad_reserves` `0`; `bad_json` `0`; `censored` `0`; `tape_coverage_short` `0`; `n_missing_v0` `0`; `skipped_incomplete_migrations` `0`; `scorer_days_skipped` `[]` |
+| Input row counts | A: `rows_fed` `10348158`, `create_rows` `40715`, `engine_gate_rows` `938`, `history_rows` `48606`, `staged_files` `27`. B: `trade_rows_t_recv_imputed` `10355611`, `create_rows_t_recv_imputed` `40715`, `history_rows` `48606`, `staged_files` `27`. As in Amendment 1(b), A is fed only the trade rows of mints that have a create in the day, so the two fed counts differ; any decision effect would show in the md5 (`n_diff_decide` `0`). |
+| Wall (s) | A `891.4`; B `667.3`; C `73.1`; total `1632.2` |
+
+`view_sha256` (explore-0814):
+
+| Root | sha256 of `VIEW.sha256` |
+| --- | --- |
+| `w1` | `918051f8e656421ed401a39b2e2e76344ef67c04d9216bbdfa5f76f66e86a016` |
+| `w2` | `e8feee31bb8b8cc699aba0dadc95af61ec6341456a7f3db916a5b190e091b23f` |
+| `w3` | `09e4d3672fe68c481398c2871068f23dc4653eb6cd6a0cb0f5bfcc0f3c7d9091` |
+| `w4` | `f60027edd8a07533a5e030ab276bda5abd31f578cf742df5e5f0e6d88cbe9d22` |
+| `w5` | `ac006f35bcbb7c8620da800c6187d958a2304468f27c86ceadbec9583ce4e530` |
+| `w6` | `2602e241a038965c5f6793323d8620bd89a8df40b27504d25d522e5f0802b170` |
+| `w7` | `346024b50d58e632a122cf138dc788bdd22231cc8e4b269442da463bb3638317` |
+
+- **Check flags, all true [measured].**
+  - In `e0.json` `checks`: `A_log_rows_equal_engine_rows`, `boot_history_equal`, `equal_C`, `equal_decide`, `imported_modules`, `no_unexpected_pick_exclusions`, `nonempty`, `pins`, `scorer_picks_in_input`.
+  - `python -m tools.cap_pick_e0 check e0.json` exits 0 (reported by the manager after the job). It was re-run for this amendment from a worktree at `ca556aae035a463b6d2cfec4978a41568fe08bae`, which has no diff to `tools/` or `ARTIFACTS/exp012/` against `6b9b4fc`. It exited 0 with `ok` true, and its recomputed parts all true: `criterion`, `equal_C`, `equal_decide`, `n_C_positive`, `no_import_mismatch`, `no_unexpected_pick_exclusions`, `not_a_dry_run`, `sanity`, `scope`, `scorer_mode`. `frozen_md5` ok, `imported_modules` ok with `n` 16, and each of the four pinned modules ok.
+- **Report only, never deciding [measured].** `equal_full` is false.
+  - Full lists: `n_A_full` `938`, `n_B_full` `938`, `md5_A_full` `d45c9093d00f64a7caab68f456eacb94`, `md5_B_full` `ccec85be7bd7ce351831011cb6f6d740`.
+  - Full-list mismatches: `n_gt60` `49` mints, all migrating more than 60 min after create on either side. `n_gt60_in_decide` is `0`. Also `n_picks_A` `103` against B's `98`, and `n_dead_B` `904` (mints created before the restart).
+  - `crosstab_gt60` (A label, then B label): A `below` and B `no_features` `44`; A `pick` and B `no_features` `5`.
+  - This is the artifact Amendment 1 describes: `replay_rows` runs without a live clock, so A seldom applies the 60-minute drop. The 5 A-only picks are not B picks and are outside D.
+
+**2. Code pins (section 2.1 item 4) [measured].** Blob shas are `git rev-parse 6b9b4fc:<path>`, and each equals the blob recorded in `e0.json` (checked for all 16 modules below when this amendment was written).
+
+- **The four pinned blobs at `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572`:**
+
+  | Path | Blob |
+  | --- | --- |
+  | `tools/forward_exp012_gate.py` | `c6868cb731d21123f002b3c2c8d3b51d60f7d5c0` |
+  | `tools/forward_paper.py` | `49cdfc61cfef264adb055821ba3b7a9bb33eb54d` |
+  | `tools/exploration_entry_model.py` | `6e3d33b1a710ace149afbccc0e823b6a12e70ec0` |
+  | `tools/cap_pick_gate_replay.py` | `7d208874c0306ae880b847c38daabffe9f8086b3` |
+
+- **`ARTIFACTS/exp012/FROZEN.md5`:** md5 `a01f05dfb1e622f78b2bba55d174be09` (expected `a01f05dfb1e622f78b2bba55d174be09`; `ok` true).
+- **Every `tools.*` module the run imported** (`imported_module_blobs`; `n_imported_modules` `16`; `imported_module_mismatches` `[]`; `scorer_imported_module_blobs` `{}`, because the scorer ran from the same tree):
+
+  | Module | Blob at the E0 commit | Imported by | Read-tool rule |
+  | --- | --- | --- | --- |
+  | `tools.cap_pick_e0` | `6d8d29383e1253b67f9ac955a7cd33d6f0df14b0` | A and B | recorded; harness only, not imported by the read |
+  | `tools.cap_pick_gate_replay` | `7d208874c0306ae880b847c38daabffe9f8086b3` | A and B | pinned (section 2.1 item 4) |
+  | `tools.cap_pick_score` | `b8e37774c4968e60345eb24a91ab2fefc4990464` | scorer | recorded; the read mode edits this file by design (6.1) |
+  | `tools.exploration_entry_model` | `6e3d33b1a710ace149afbccc0e823b6a12e70ec0` | A and B | pinned (section 2.1 item 4) |
+  | `tools.exploration_exits` | `42097768137131a7dd90a2240c8d3349676a72c1` | A and B | pinned |
+  | `tools.forward_exp012_gate` | `c6868cb731d21123f002b3c2c8d3b51d60f7d5c0` | A and B | pinned (section 2.1 item 4) |
+  | `tools.forward_paper` | `49cdfc61cfef264adb055821ba3b7a9bb33eb54d` | A and B | pinned (section 2.1 item 4) |
+  | `tools.funding_graph` | `2cb8c030497db37ddee95262042738cea482c199` | A and B | pinned |
+  | `tools.graduated_swing` | `2f7ee02bf7fc03f00bb3687bc9a4bf0ec1fd9f8a` | A and B | pinned |
+  | `tools.latency_curve` | `c194134b199d2d772a57d5a6a6cb3c5c3d25d669` | A, B and scorer | pinned |
+  | `tools.laya_v0` | `1f61d5d408e8a14bea39dda82beca47c6d2baae6` | A and B | pinned |
+  | `tools.paper_curve_math` | `42daf5adcdc1532cb29a6f5079997d25b10c86ea` | A, B and scorer | pinned |
+  | `tools.paper_fail_pressure` | `2a0d11e4462531e6e947a14f39d3afbad847caf5` | A and B | pinned |
+  | `tools.paper_price_path` | `8f551535acaa048996f110f4f30004d37b629b3b` | A, B and scorer | pinned |
+  | `tools.paper_tape_scoreboard` | `1955f45c4146e628ba0208cc3317a0f4f147aaf0` | A and B | pinned |
+  | `tools.tape_lines` | `810af3bc7520225bf861c70258fcfaf5914bab08` | A, B and scorer | pinned |
+
+- **Environment [measured].** Python `3.12.3` (`e0.json` `python`; `/data/mal/venv`, base interpreter `/usr/bin/python3.12` per `pyvenv.cfg`), lightgbm `4.7.0`, numpy `2.5.3`. The harness does not record the two package versions. They were read from `/data/mal/venv` with `python -I` on 2026-10-08 after the run. `site-packages` was last modified 2026-10-04T03:02:37Z, before the run, and the lightgbm and numpy `dist-info` directories date from 2026-10-01.
+- **Read-tool rules [pinned].** Section 12's "modules it imports hash to their recorded values" means these:
+  1. Each look runs in a worktree at a recorded commit where the four blobs, the ten other modules marked "pinned" and the md5 of `FROZEN.md5` equal the values above, both at `HEAD` and as the file Python loaded. The read tool refuses otherwise, and refuses a pinned module that is untracked or outside the worktree.
+  2. `tools.cap_pick_score` is the read tool's own file, so its blob differs from E0's by design. The read tool's merge-commit blob goes in the dated amendment that section 12 ("Commits") requires, and E0's blob `b8e37774c4968e60345eb24a91ab2fefc4990464` is the reference for 6.1. `tools.cap_pick_e0` is the harness; the read does not import it. Both are recorded as references and are not pinned for the read: `tools.cap_pick_score` because the read mode is an edit to that file, and `tools.cap_pick_e0` because the read never loads it.
+  3. A `tools.*` module the read imports that is not in this table is recorded with its blob in that same amendment. Each look and the read tool run in a worktree at a recorded commit where every pinned module's blob equals the value recorded here. The read tool refuses if any differs. Changes on `main` after the E0 commit `6b9b4fc` do not reach the read (section 2.1 item 4). This applies to all 14 pinned modules: the four section 2.1 blobs and the ten others marked "pinned".
+  4. The read tool records the Python, lightgbm and numpy versions at every look and refuses if any differs from the values above. A venv change needs a dated amendment, and an E0 re-run in the new environment, before the next look. The decision lists include `repr(score)`, so a library change can alter an md5. [This is a fail-closed choice made by this amendment; section 10's "Decision stability" would catch a drift only after the fact.]
+  5. The model md5 is read from the `FROZEN.md5` file at run time, and module constants can be edited at run time (notebook `n_XhHuUT1hSpMCkw`). Rules 1 and 4 are what stop either from changing silently.
+
+**3. Boot-staging hours for walk 2's first boot [read from the code and the #462 body and notebook `n_XhHuUT1hSpMCkw`; no forward-1002 file was opened; corrects the text of section 9].**
+
+Section 9 says the first boot reads "the creates of `[2026-10-15T00, 2026-10-16T01)` and the prints of hour `2026-10-16T00`". The real list starts three hours earlier:
+- **Staged creates.** `stage_creates` stages 27 forward-1002 creates hours for the 2026-10-16T00 boot: **2026-10-14T21, 2026-10-14T22, 2026-10-14T23, then 2026-10-15T00 to 2026-10-15T23.** The window is `boot - HIST_KEEP_MS - 1 h`, with `HIST_KEEP_MS` 25 h 5 min.
+  - `Exp012Online.preload` opens 26 of them (2026-10-14T22 to 2026-10-15T23). The 2026-10-14T21 file is staged, hashed and scanned, but none of its rows reach the history, because preload keeps rows from 2026-10-14T22:55.
+  - The E0 day's boots also stage 27 files (`staged_files` `27` on both sides), so the count is exercised on the exploration layout.
+- **Feed hour 2026-10-16T00.** The replay also feeds this forward-1002 hour: its creates (so mints created in it are in the library and get a decision) and its trades. The creates grant is `[2026-10-14T21, 2026-10-16T01)`. The trades grant is the single hour 2026-10-16T00.
+- **Second boot.** The 2026-10-17T00 boot reads forward-1002 creates 2026-10-15T21 to 2026-10-16T00 (the rest is walk 2). From the 2026-10-18T00 boot on, no forward-1002 file is read.
+- **Code.** `_staging_hours` and the grant constants `FWD1002_CREATES_HOURS` `("2026-10-14T21", "2026-10-16T01")`, `FWD1002_TRADES_HOURS` `("2026-10-16T00",)` and `FWD1002_BUFFER` `("2026-10-14T01", "2026-10-16T01")` in `tools/cap_pick_gate_replay.py` (blob `7d208874c0306ae880b847c38daabffe9f8086b3`). `HIST_KEEP_MS` in `tools/forward_exp012_gate.py` is `CREATOR_LOOKBACK_MS` (24 h, from `tools/exploration_entry_model.py`) plus `DROP_AFTER_CREATE_MS` (60 min) plus 5 min.
+- **All of these hours are inside the disclosed buffer `[2026-10-14T01, 2026-10-16T01)`** (DEC-021 section 3, EXP-012 Amendment 1). They are creates, plus the trades of hour 2026-10-16T00, read in grant mode, which refuses until the FINAL marker exists (`require_final`, #462).
+- **They are read at the 10-16 and 10-17 boots and at every look,** because each look re-derives every decision from the window start (section 10, "Decision stability").
+
+**4. Where the E0 C path (exploration adapter) differs from the read (walk2 adapter) [from #479's body, merge commit `d6b32af`; the scorer blob at E0 is `b8e37774c4968e60345eb24a91ab2fefc4990464`].** E0's C step runs `--exp022 --exp022-source exploration`. The read runs `walk2`.
+
+| # | Item | E0 C path (exploration) | The read (walk2) |
+| --- | --- | --- | --- |
+| 1 | Canonical pool | No migration event on the tape: the earliest V-band pool by s0, ties by pool name (G's rule) | The `pool` of the mint's `migration` event (inner-event rows included). The two differ when a mint has an earlier out-of-band pool and a later in-band one, or when the event's pool is not the earliest-printing pool |
+| 2 | WSOL | The pool's V is in `[17.5e9, 17.7e9]` in the static map (a proxy). A non-WSOL pool with V in the band would be an attempt (tested: `MintUsdc`) | The event's `quote_mint` is WSOL |
+| 3 | V0 | The static map `pool_v_0909.json` (an account read from 2026-10-06), not the V at the decision print | `virtual_quote_reserves` of the pool's first print (within-slot order slot, tx_index, event_index), the tape's pre-trade convention |
+| 4 | Missing V0 | Cannot occur. A pool with a null V in the map is excluded (`v_null_in_vmap`) because WSOL cannot be shown for it | Kept and scored at 17.5e9 and 17.7e9, taking the lower P&L per leg. `exp022.universe.missing_v0` reports the inputs of the look rule |
+| 5 | Counted window | None | s0 block_time in `[2026-10-16T01, 2026-11-06T01)` (a constant; `window` is a function argument for a narrower look end) |
+| 6 | Tape coverage (s0 + 6,900 slots) | Still drops (`censored_tape_coverage`, G's rule). Here the count is `0` | Report-only (`exp022.universe.report_only.tape_coverage_short`), because section 3 does not list it. So the E0 universe is smaller than the read's at the end of a day |
+| 7 | Pinned inputs | `--vmap` must be `/data/mal/pumpswap-virtual/pool_v_0909.json` (sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e`, `pools_in_band` `46534`); `--hour-sph-json` must be absent, so every hour is measured on its own tape rows and an unmeasurable hour refuses the run | No pin yet: the sealed slot-span source is the read tool's. The adapter is fixture-only today |
+
+  - **Same on both adapters:** the 80 s rule from the complete event's block_time replaces the draft's 400-slot rule (inclusive: 80 s in, 81 s out); mayhem is taken from the create (a mint with no create row is excluded as `mayhem_unknown_no_create_event`, and creates are read for the day and the two hours before it); `day` is the UTC date of s0's block_time; a mint whose s0 or complete block_time is missing is excluded as `block_time_missing`, an exclusion and not a refusal.
+  - **Bad-reserves picks** stay `status=attempt` in `universe.csv` with `priced=false` and `unpriced_reason=bad_reserves` on both adapters. They have no row in `rows.csv`, so the harness's C md5 would differ. `bad_reserves` was `0` on the E0 day.
+
+**5. Disclosures.**
+
+- **(a) Same-day dry-run precount.** A count-only dry run (`dry_run` true) on the E0 view and day was made before the official run. It is a second look at the E0 day, beyond Amendment 1's 2026-08-17 dry run. It is the only other run on 2026-08-20 that this amendment's sources record. It passed with the values below, so it is not a failed E0 followed by a retry. The code differences between the two runs add pins, columns, record fields and a guard; they change no deciding parameter and no A, B or C decision path [inferred from the diffs of `tools/cap_pick_score.py`, `86355b3` to `6b9b4fc`, and `tools/cap_pick_e0.py`, `5485459` to `6b9b4fc`].
+
+  | | Precount | Official |
+  | --- | --- | --- |
+  | Harness commit | `54854590e28645c53b0a65fa59bbb3fbe074b6f8` | `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` |
+  | Scorer commit | `86355b3083fde710e20c324eac15839881e71142` (from a separate clean checkout via `--scorer-repo`) | `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` (same tree) |
+  | Scorer blob | `42d48c04b7f6513034a49cd7a952bdd04782c1a9` | `b8e37774c4968e60345eb24a91ab2fefc4990464` |
+  | `md5_A_decide` = `md5_B_decide` | `bed92c12663932ea3696d7a26c8f7b18` | `bed92c12663932ea3696d7a26c8f7b18` |
+  | `md5_C` = `md5_Bpicks_U` | `196cbbd8597c771b6f781cda7657d983` | `196cbbd8597c771b6f781cda7657d983` |
+  | `n_C` / `n_universe` / `n_picks` / `n_picks_A` | `98` / `772` / `98` / `103` | `98` / `772` / `98` / `103` |
+  | `md5_A_full` / `md5_B_full` | `d45c9093d00f64a7caab68f456eacb94` / `ccec85be7bd7ce351831011cb6f6d740` | `d45c9093d00f64a7caab68f456eacb94` / `ccec85be7bd7ce351831011cb6f6d740` |
+  | `crosstab_gt60`, `n_gt60` | `{"below": {"no_features": 44}, "pick": {"no_features": 5}}`, `49` | `{"below": {"no_features": 44}, "pick": {"no_features": 5}}`, `49` |
+  | Wall (s) A / B / C / total | `1057.2` / `714.6` / `81.6` / `1853.8` | `891.4` / `667.3` / `73.1` / `1632.2` |
+
+  - **Every deciding value equals the official one.** The decide md5, the C md5, `n_C`, `n_universe`, the full-list md5s and the crosstab are the same.
+  - **What differed.**
+    - The scorer. Between its blobs the only change to `tools/cap_pick_score.py` is commit `be7cdb2` (quant-proof edits 1 and 2 on #479, comment 6068166437). It pins `--vmap` and `--hour-sph-json` for the exploration source and adds the `priced` and `unpriced_reason` columns to `universe.csv`. The precount already used the same map (path and sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e`) and had `bad_reserves` `0`, so no value moved on this day.
+    - The harness. Per #480's body, the later commits add record fields, a merge of `main` and the pick-exclusion guard (item (b)). The A, B and C code paths are unchanged. The precount's `imported_module_blobs` equal the official ones, except `tools.cap_pick_e0` and `tools.cap_pick_score`.
+    - `picks_sha256` of the B file: `22ef9459ea97e3d349085cef388654de76953eb6b9a7ac9733b0e97e619e0ead` for the precount and `15b822648061e7ce63ce47a88234f265fda298262513885a2e87ca3e83ff0c5a` for the official run. The two B files differ only in `wall_s` of the meta line (`714.6` against `667.3`); the other 1,842 records were compared line by line when this amendment was written and are identical.
+  - The precount's `e0.json` is in a scratch directory and is not an E0 record. The official run is.
+- **(b) The empty B-pick allowlist is a TIGHTENING of section 2.1 item 3 [pinned by #480].** Item 3 compares C with B's picks restricted to the section 3 universe, so a pick that section 3 excludes would drop out of both sides. The harness's `PICKS_NOT_ATTEMPT_ALLOWLIST` is empty. A B pick that is not an attempt, for any reason (a `picks_not_attempts` entry, or an excluded row of `universe.csv`), fails E0, and `mayhem_unknown_no_create_event` fails even if it were ever added. B decides only mints that have a create that day, so such a pick would be a scorer or layout error. `e0.json` records `picks_not_attempt_allowlist` `[]`, `forbidden_pick_reasons` `["mayhem_unknown_no_create_event"]`, `excluded_picks_by_reason` `{}` and `unexpected_pick_exclusions` `{}`. This is stricter on the E0 day only. In the read, a pick that section 3 excludes is still excluded, counted and reported.
+- **(c) The harness pins the scorer mode.** `SCORER_FLAGS` is `--exp022 --exp022-source exploration --book picks`, a module constant that is not a CLI option. A `--scorer-arg` that names or abbreviates `--exp022`, `--exp022-source`, `--book`, `--picks`, `--only-day` or `--out-dir` is refused, and `--scorer-arg` and `--scorer-repo` need `--dry-run`. In this run `scorer_extra_args` is `[]`, and the `e0.json` fields `scorer_flags` and `scorer_summary.mode` (`exp022`) and `.source` (`exploration`) are recomputed by `check`. The C command ran the seven `explore-0814` roots, `--only-day 2026-08-20`, with `-X importtime`.
+- **(d) The `pick_oracle` and the H5 seal during counting (Amendment 2 item 2; DEC-024 section 6).** From 2026-10-16T01 to the end of EXP-022's read, no H5 trade (live or paper) is taken on a mint the EXP-022 gate picked, and no H5 record is joined to a pick. H5 reads only the `mint` of the gate's decision-time intents into an in-process set. If the pick feed is missing or stale for more than 60 s, H5 buys halt. Per #484's PR body [from PR body; code not read] (the H5 executor; a draft, open at head `e436b28`, not on `main`), its seal rule refuses all buys from 2026-10-16T01:00Z until a boolean pick oracle exists, and the oracle reads only after the DEC-016 FINAL (the `FINAL_WRITTEN` marker file). It also refuses a mint on an oracle error, a non-boolean answer or an undecided mint; `pick_oracle(mint) -> bool` returns a boolean only, and a pick is refused. `docs/HANDOFF.md` says no boolean picks exporter exists yet, so live refuses every buy in the window until one does. E0 does not test this. It binds H5, not the EXP-022 read, and is listed here because Amendment 2 item 2 makes it part of CAP-PICK's seal.
+- **(e) What E0 does not show.**
+  - It runs the exploration adapter only. The walk2 adapter, the event-V decode and the migration events have never run on real data (item 4, row 7).
+  - No B pick was excluded by section 3, so E0 does not test what the scorer does with a pick that section 3 excludes. #479's fixture tests do.
+  - A and B both impute `t_recv_ms` as `block_time * 1000` (zero receive lag, disclosures 11 and 12). E0 compares two replays of one gate path, not live runner output, which stays sealed until the FINAL.
+  - The 60-minute boundary past 60:00 is untested (Amendment 1). One view and one day were run.
+  - E0 is an equivalence check. It says nothing about edge.
+
+**6. What the read tool (P4) must do before 2026-10-23T01 [pinned].** These add to section 12 and loosen nothing. Quant-proof on the read tool's PR checks each one. A look does not run without them (section 10, P4).
+
+- **6.1 Reproduce E0's C md5 at its merge commit.** At the read tool's merge commit, run E0's C step again on E0's inputs: the seven `explore-0814` roots with the `VIEW.sha256` hashes in item 1, `--only-day 2026-08-20`, the B file `/data/mal/exp022/e0-official/B.jsonl` (sha256 `15b822648061e7ce63ce47a88234f265fda298262513885a2e87ca3e83ff0c5a`), the map in item 4 row 7, and `--exp022 --exp022-source exploration --book picks`. Expected: the sorted attempt-mint list has md5 `196cbbd8597c771b6f781cda7657d983`, `n_C` `98`, `n_universe` `772`, exclusions `v_outside_band` `258`, `mayhem_unknown_no_create_event` `33` and `v_null_in_vmap` `1`, and no B pick outside U. The result goes in the read tool's PR and in the amendment that records its merge commit. This tests that the shared code did not regress; it does not test the walk2 adapter.
+- **6.2 Open items from #479's body ("Open for the read tool (P4)", comment 6068166437):**
+  1. Section 10: an unmeasurable hour must be EXCLUDED and counted against the 5% bad-hour ceiling, not refused. Its fallback must come from the sealed verify line. `--hour-sph-json` is unpinned for walk2 and sets k and the lag.
+  2. walk2 `tape_coverage_short`: exclude under section 10's coverage rule. Today such an attempt is priced at the last state plus rent.
+  3. A missing s0 block_time should refuse (section 4.4). Today it is an exclusion (`block_time_missing`).
+  4. Bad JSON lines are counted, not refused (section 10). `bad_reserves` has no exclusion or refusal rule yet; it is only flagged (`priced=false`).
+  5. The missing-V0 top-3 check ranks the min variant. It should rank the higher variant, so that NOT_DECIDABLE is not weakened. Fitting the pressure intercept on the lower-P&L variant is acceptable (ssb and nearby do not depend on V; only a guard flip changes membership). The read tool's amendment pins that choice.
+  6. The walk2 source allowlist: a section 12 hour allowlist, a source flag and a pin of the walk2 inputs. The cutoff (2026-10-02T10) and the "forward" path guard refuse walk-2 hours, so the walk2 adapter is fixture-only today. It also needs an outcome-blind, real-layout, count-only precount.
+  7. Conflicts #479 raised: refuse versus exclude for an unmeasurable hour (item 1 above), and V0 "at the decision print" read strictly (if the pool's first print carries no V, V0 is missing even when a later print has one).
+  8. Not built in #479, and section 12's own list: the section 8 correction (needs E1, n at least 20); the 24 h block clusters for the day-level t (7.2 vi); looks, alphas, futility, attempt coverage by hour, the bad-hour ceiling, bad-line refusal, decision stability and every section 12 refusal and hash; the section 13 report-only lines; the section 4.1 second source parsed from the verify line.
+- **6.3 Open items from notebook `n_XhHuUT1hSpMCkw` (the #462 merge, quant-proof comment 6066526609):** Each is implemented in the read tool. `tools/cap_pick_gate_replay.py` stays at blob `7d208874c0306ae880b847c38daabffe9f8086b3` (rule 1).
+  1. Turn a `Refused` into exit 3, and treat any other exception as an aborted look. Exit code 3 comes only from the CLI; grant mode is called from Python.
+  2. Refuse when `final_ledger_overridden` is set.
+  3. Pass days sorted, unique and contiguous (a repeated day raises `FileExistsError`).
+  4. Count `replayed_hours_not_in_grant`, `replayed_hours_without_creates` and `boots[].staging_hours_not_in_grant` as bad hours under section 10.
+  5. Require good creates hours across `[create - 24h, create)` for attempt coverage, because `creator_prior_mints_24h` depends on them.
+  6. Hash its imports and record the Python, lightgbm and numpy versions (item 2, rules 1 and 4).
+  7. Also from #462's body: read `meta.get("lenient_lines_skipped", 0)` (the key is absent when 0); and check the FINAL marker predicate against the real ledger entry once it exists, because it was only checked against the writer's code.
+- **6.4 From this amendment:** the pin rules in item 2, and the hours in item 3 as the exact forward-1002 allowlist (creates `[2026-10-14T21, 2026-10-16T01)` and the trades of hour 2026-10-16T00 only), with every other forward-1002 hour refused.
+
+**Unchanged:** the book; the pick rule and threshold; the counted window and looks; the seal; the correction; the gate; items 1 to 3 of section 2.1 as written (item 5(b) is stricter on the E0 day only); and the pinned line in section 0.
+
+### Amendment 4 (2026-10-09, before any counted hour): EXP-025 (C1-NF) reads walk 2 while EXP-022 counts
+
+No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged.
+
+[EXP-025](EXP-025-c1nf-part1-prereg.md) (C1-NF, [DEC-025](../DEC/DEC-025-c1nf-family.md)) is a separate DEC-014 family in its own alpha slot. If DEC-025 is merged, it reads walk-2 chain tape `[2026-10-16T01, 2026-10-24T02)` for its counted decisions `[2026-10-16T00, 2026-10-24T00)` **while EXP-022 is counting**. Ledger rule 3 requires this disclosure. To keep section 9:
+1. **Pick exclusion.** From 2026-10-16T01 to the end of EXP-022's read, every mint whose canonical pool first prints at or after 2026-10-16T01 is looked up with the boolean `pick_oracle(mint)` of Amendment 2 item 2 and Amendment 3 (d). A pick is removed from C1-NF's universe before its pass A runs, so no grid, candidate or outcome row is ever computed for it. The oracle's source is the union of the live intents and EXP-022's replay pick decisions at E0 commit `6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572` (Amendment 3), held as booleans only. C1-NF never prices a CAP-PICK pick, writes no CAP-PICK field into any C1-NF record, and joins none.
+2. **Fail closed.** A missing, stale, erroring, non-boolean or undecided oracle makes C1-NF's read NOT_DECIDABLE. It does not change anything in EXP-022.
+3. **No outcome opened.** C1-NF opens no CAP-PICK outcome row, no paper-twin field, and no `LOOK_READS.jsonl` field other than what the oracle contract defines. It reads chain tape only.
+4. **No effect on EXP-022.** EXP-022's picks, looks, gate and the walk-2 run to at least 2026-11-06T02 are unchanged. The exclusion costs C1-NF volume, not EXP-022 anything.
+5. **Order.** C1-NF has two looks. Its Look 1 reads walk-2 chain tape `[2026-10-16T01, 2026-10-17T02)` about 2026-10-17T03Z, before EXP-022's look 1 (day 7, 2026-10-23T01). Its Look 2, only if Look 1 did not pass, reads to 2026-10-24T02 about 2026-10-24T03Z, between EXP-022's look 1 and look 2. Neither prints a CAP-PICK field, and neither report is an input to any CAP-PICK look.
+
+### Amendment 5 (2026-10-09, before any counted hour and before the 2026-10-10T06:41Z daily A3 run): P2 is read as the last run; an erratum on the BOOST pin citation; the synthetic handling is not amended here
+
+No CAP-PICK outcome was computed or read to make this amendment, and no row of walk 2, forward-1002, forward-paper or a runner was opened. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged. **Line numbers below are those of this file on main at `ecdc7af`, before this amendment.**
+
+**Context (disclosed).** The daily A3 run of 2026-10-09T07:11:06Z (job #445) halted on `pins_changed` alone: the pump, PumpSwap and fees programs were redeployed at 2026-10-08T16:20Z. PR #517 (merged as `82cd674`) re-pins them and pins the three programdata hashes. At that run `synthetic_share_high` read 6/19 = 0.316, below the 0.35 line. One dry check, at 07:38:11Z, read 7/19 = 0.368 and halted on that flag. **The dry check is not the P2 run:** it used the unmerged pins of PR #517 and a scratch `--out`. It is disclosed here as it is in [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) Amendment 4, and it is not counted as an A3 run.
+
+**1. Clarification: P2 is the last run (not a change).** P2 (section 10, line 320) names the test: "The A3 monitor's **last** daily run before the first counted hour has no halt, and no core rule went unevaluated on two consecutive days." Section 11 (line 358, "Before counting. A halt withdraws CAP-PICK") is the consequence of that test. It is not a second, stricter test that every earlier run must pass. So:
+- **A reviewed re-pin plus a clean last run cures `pins_changed`.** The halt of 2026-10-09T07:11:06Z is cured by PR #517 (merged as `82cd674`) if the last run before 2026-10-16T01:00Z shows no halt.
+- **The reading cuts both ways.** A halt in the last run before the first counted hour withdraws CAP-PICK, whatever ran clean earlier.
+- The core-rule clause (two consecutive daily runs, line 357) is unchanged.
+- This is quant-proof's ruling of 2026-10-09, as the manager relayed it. It is recorded here before the 2026-10-10T06:41Z daily run. EXP-024 Amendment 4 records the same reading for its P2.
+
+**2. Erratum: the BOOST pins are cited by key.** Section 11, line 356 cites the BOOST pins at `tools/pump_structure_pins.json:41-42`. After PR #517 adds the six programdata hash lines, the same two pins sit at lines 47-48. **The values are unchanged: 17.585 SOL and 29 slices.** Read line 356 as citing the keys `boost.budget_sol` (17.585) and `boost.slices` (29) of `tools/pump_structure_pins.json`, whatever their line numbers. This is a citation fix with no change of value, and it holds on main from `82cd674`.
+
+**3. Not amended here: the synthetic handling. It is open.** This file keeps `synthetic_share_high` (above 0.35) among the halt flags (line 354), treats a synthetic pool that meets the conditions as an attempt (line 121, a reject at -55,000 lamports if it opens above the guard) and reports the count of synthetic pools (line 420). Quant-proof ruled that EXP-022 needs **its own separate amendment**, not a copy of EXP-024 Amendment 4, and that it must merge before the 2026-10-15T06:41Z daily run. **That amendment is open and is not made here.** Until it merges, those lines stand as written.
+
+### Amendment 6 (2026-10-10, before any counted hour; the manager's decision): the pick feed as built, and the replay-only residual
+
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled H5 executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
+
+No CAP-PICK outcome, paper-twin field or gate-log row was read to make this amendment. EXP-022's book, pick rule (section 2), counted window, looks, correction, gate and seal (section 9) are unchanged.
+
+1. **The feed.** Amendment 2 item 2 and Amendment 3 (d) say H5 reads only the `mint` of the decision-time intents. The feed as built is described in DEC-024 Amendment 6, from PR #509 and PR #540:
+   - An exporter reads the `mint` and `entered` of the frozen book's gate rows and the `mint` of its intents. It does so only after the DEC-016 FINAL marker exists and 2026-10-16T02:00:00Z, and it writes booleans.
+   - H5 and C1-NF read the booleans, with a staleness limit of no more than 60 s.
+   - False needs a scored gate row. Anything else is undecided and is refused (fail closed).
+   - The exporter prints no count that includes intents-file lines.
+2. **Meaning of "picked" in Amendment 2 item 2.** A mint the oracle answers True for at the H5 decision. The read's picks (section 2) are the walk-2 replay's picks and differ from the online set both ways (section 17 item 12). An H5 trade or shadow record on a replay-only pick, made under item 1, is a declared residual and not a breach.
+3. **No join before a look.** Before each look, no person, agent or job joins H5 records or the H5 wallet history to the replay's picks, or counts the overlap. A join is a breach under section 9.
+4. **Report-only count (section 13; never deciding).** After each look is written, report two numbers: the look's counted picks with an H5 live fill, and those with an H5 shadow outcome record. The report also says that H5's live fills on those mints are on the tape the read prices.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.

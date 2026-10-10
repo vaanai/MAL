@@ -1,0 +1,7 @@
+# tools/c1nf_wallet_ledger.py. duckdb is pinned: the wallet key is duckdb hash(trader), which the
+# tool refuses to use if its values differ from the 1.5.6 ones (HASH_VECTORS).
+duckdb==1.5.6
+numpy>=1.26
+# tests only: the parity test against the pinned EXP-025 script (tools/c1nf_wallet_det_pinned.py) needs pandas
+pytest
+pandas

@@ -11,9 +11,15 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
      `exp012_boot=(staged creates, 00:00Z)` (the hook that makes `replay_rows` boot as `main` does). Decisions are read from A's `exp012_gate` JsonlLog.
   B  `cap_pick_gate_replay.replay_view` for the day (what `cap_pick_gate_replay replay --view V --from-day D --to-day D` calls), daily restart on.
      B's file is written in the CLI's own layout (meta line, then `kind: decision` and `kind: dead` rows) and is the file the scorer reads.
-  C  the mints counted as attempts by `tools/cap_pick_score.py --book picks --picks <B file>`, against B's `pick` mints inside U, the attempt mints of the
-     same scorer run with `--book all` (same flags, same --picks, only --book differs). The scorer is run with `--only-day D` and the narrowest source
-     flags that cover the view (its roots, from `cap_pick_gate_replay.BLOCKS`), so it reads D's trade hours plus its own two look-ahead hours.
+  C  the scorer's EXP-022 mode, run ONCE: `tools/cap_pick_score.py --exp022 --exp022-source exploration --book picks --picks <B file> --only-day D` plus the
+     narrowest source flags that cover the view (its roots, from `cap_pick_gate_replay.BLOCKS`). `--exp022` forbids `--book all`, so U is no longer a second run:
+     C = the attempt mints in `rows.csv` (the pick attempts); U = the attempt mints in `universe.csv` (every mint the universe function saw, attempt or the
+     reason it is not); C must equal, by md5, B's `pick` mints inside U. `--exp022`, `--exp022-source exploration` and `--book picks` are module constants
+     (`SCORER_FLAGS`), never CLI-overridable: a `--scorer-arg` that names or abbreviates one of them (or `--picks`, `--only-day`, `--out-dir`) is refused even in a
+     dry run. The scorer's `summary.json` constants, source and adapter, universe counts, `picks_in_input` and `picks_not_attempts` (by reason) are copied into
+     `e0.json` (`scorer_summary`), with the bad-reserves count, the skipped days and the B picks absent from `universe.csv` (reason from `picks_not_attempts`);
+     U keeps every `status=attempt` row, so a pick the scorer drops after the universe (bad reserves) is IN U but not in `rows.csv`, and the C md5 differs
+     (fail-closed; listed in `U_pick_attempts_missing_from_rows`). Nothing of its P&L is read or copied (the harness reads only the `mint`, `status` and `reason` columns of its CSVs).
   Canonical decision list: one line per mint, sorted by mint, `mint<TAB>decision<TAB>mig_ms<TAB>repr(score)`, an empty field when the score is null.
   Both canonical files are built by `canon_lines`. Two versions of the A and B lists are written and hashed:
     full    every decided mint (`A.canon`, `B.canon`; `md5_A_full`, `md5_B_full`, `equal_full`). REPORT ONLY.
@@ -55,9 +61,16 @@ imported each. If the scorer runs from another tree (`--scorer-repo`, dry runs o
 `scorer_imported_module_blobs`. `check e0.json` verifies every recorded module against HEAD and the working copy of the given worktree (the scorer's
 too, with `--scorer-worktree`), not only the four pinned ones. `Bpicks_not_in_U` lists the B pick mints the scorer's universe lacks (report only).
 
-SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
+SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): the scorer read as many picks as B decided
+(`picks_in_input` = B's pick count); A's preload row count and staged file count
 equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty; and the scorer's `--book picks` list C has at
 least one mint (`n_C >= 1`: with an empty scorer universe C and B's picks in U are both empty, and their md5s match). `check` requires the recorded `n_C > 0`.
+
+PICK-EXCLUSION GUARD (quant-proof on #480). B decides only mints that have a create that day, so a B pick that the scorer does not count as an attempt can only be
+a scorer or layout error. `ok` and `check` FAIL if any B pick is in the scorer's `picks_not_attempts` (or is an excluded row of `universe.csv`) with a reason outside
+`PICKS_NOT_ATTEMPT_ALLOWLIST`, which is EMPTY. `mayhem_unknown_no_create_event` (`FORBIDDEN_PICK_REASONS`) is never allowable, whatever the allowlist says. The
+allowlist, the forbidden reasons, `excluded_picks_by_reason` and `unexpected_pick_exclusions` are recorded in `e0.json`; `check` recomputes the guard from them and
+requires the recorded allowlist to equal the constant.
 
 MEMORY: A peaked at 13.3 GB (sampled, lower bound) on 08-17; run E0 as a MiScusi job with mem 28 GB. `replay_rows` queues every print in the engine inbox
 before it drains (2 h of that day took 781 MB, 5 h took 2.1 GB), so A does not fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
@@ -105,6 +118,16 @@ PINNED_MODULES = ("tools/forward_exp012_gate.py", "tools/forward_paper.py", "too
 FROZEN_MD5_PATH = "ARTIFACTS/exp012/FROZEN.md5"
 FROZEN_MD5_EXPECTED = "a01f05dfb1e622f78b2bba55d174be09"
 SCORER_PATH = "tools/cap_pick_score.py"
+# The scorer mode E0 runs, as constants. Never a CLI option; `check_scorer_extra` refuses any --scorer-arg that names or abbreviates one of the PROTECTED flags.
+SCORER_SOURCE_NAME = "exploration"
+SCORER_FLAGS = ("--exp022", "--exp022-source", SCORER_SOURCE_NAME, "--book", "picks")
+SCORER_PROTECTED = ("--exp022", "--exp022-source", "--book", "--picks", "--only-day", "--out-dir")
+# data-coverage counts copied from the scorer summary (no outcome count, no P&L)
+SUMMARY_COUNT_KEYS = ("hours", "migrations", "mints_with_canonical_pool", "censored", "multipool", "bad_json", "skipped_incomplete_migrations", "bad_reserves",
+                      "attempts", "pick_attempts")
+# Reasons for which a B pick may be a non-attempt on an exploration day. EMPTY: B only decides mints with a create that day, so any such drop is a scorer error.
+PICKS_NOT_ATTEMPT_ALLOWLIST: tuple[str, ...] = ()
+FORBIDDEN_PICK_REASONS: tuple[str, ...] = ("mayhem_unknown_no_create_event",)  # never allowable, whatever the allowlist says
 SCORER_MODULE = "tools.cap_pick_score"
 # scorer source flag per view; "append" flags take one value per root, the others one directory
 SCORER_SOURCE: dict[str, tuple[str, str]] = {
@@ -264,7 +287,16 @@ def verify_imported_modules(e0: dict[str, Any], worktree: Path, scorer_worktree:
     return {"ok": not bad, "n": len(recorded) + len(srec), "bad": bad}
 
 
-SANITY_KEYS = ("boot_history_equal", "A_log_rows_equal_engine_rows", "nonempty")
+SANITY_KEYS = ("boot_history_equal", "A_log_rows_equal_engine_rows", "nonempty", "scorer_picks_in_input")
+
+
+def pick_exclusions_ok(e0: dict[str, Any]) -> bool:
+    """The guard, recomputed from the recorded fields: the recorded allowlist is the constant and no B pick has an unexpected exclusion."""
+    pna = (e0.get("scorer_summary") or {}).get("picks_not_attempts")
+    exc = e0.get("excluded_picks_by_reason")
+    if not isinstance(pna, dict) or not isinstance(exc, dict) or e0.get("picks_not_attempt_allowlist") != list(PICKS_NOT_ATTEMPT_ALLOWLIST):
+        return False
+    return not unexpected_pick_exclusions(pna, exc)
 
 
 def recompute_ok(e0: dict[str, Any]) -> dict[str, Any]:
@@ -274,10 +306,13 @@ def recompute_ok(e0: dict[str, Any]) -> dict[str, Any]:
         "equal_decide": e0.get("md5_A_decide") is not None and e0.get("md5_A_decide") == e0.get("md5_B_decide") and e0.get("n_create_ms_disagree") == 0,
         "equal_C": e0.get("md5_C") is not None and e0.get("md5_C") == e0.get("md5_Bpicks_U"),
         "sanity": all(chk.get(k) is True for k in SANITY_KEYS),
+        "scorer_mode": e0.get("scorer_flags") == list(SCORER_FLAGS) and (e0.get("scorer_summary") or {}).get("mode") == "exp022"
+        and (e0.get("scorer_summary") or {}).get("source") == SCORER_SOURCE_NAME,
         "n_C_positive": isinstance(e0.get("n_C"), int) and not isinstance(e0.get("n_C"), bool) and e0["n_C"] >= 1,
         "scope": e0.get("view") == E0_VIEW and e0.get("day") == E0_DAY,
         "not_a_dry_run": e0.get("dry_run") is False,
         "criterion": e0.get("e0_criterion") == E0_CRITERION,
+        "no_unexpected_pick_exclusions": pick_exclusions_ok(e0),
         "no_import_mismatch": e0.get("imported_module_mismatches") == [],
     }
     return {"parts": parts, "ok": all(parts.values())}
@@ -537,31 +572,93 @@ def scorer_source_flags(view: str, roots: Sequence[str]) -> list[str]:
     return [flag, parents.pop()]
 
 
-def scorer_cmd(view: str, roots: Sequence[str], day: str, picks: Path, out_dir: Path, book: str, extra: Sequence[str]) -> list[str]:
-    return [sys.executable, "-X", "importtime", "-m", SCORER_MODULE, *scorer_source_flags(view, roots), "--only-day", day, "--book", book, "--picks", str(picks),
+def check_scorer_extra(extra: Sequence[str]) -> None:
+    """Refuse a --scorer-arg that names, or is an abbreviation of, a protected scorer flag. The mode and the book are constants."""
+    for a in extra:
+        if not a.startswith("--"):
+            continue
+        name = a.split("=", 1)[0]
+        if any(name == p or (len(name) >= 3 and p.startswith(name)) for p in SCORER_PROTECTED):
+            raise E0Error(f"--scorer-arg {a!r} names or abbreviates a flag E0 fixes ({', '.join(SCORER_PROTECTED)})")
+
+
+def unexpected_pick_exclusions(*maps: dict[str, Any]) -> dict[str, list[str]]:
+    """{reason: mints} for every reason in the given {reason: [mints]} maps that is forbidden or not in the allowlist."""
+    out: dict[str, set[str]] = {}
+    for mp in maps:
+        for reason, mints in (mp or {}).items():
+            if reason in FORBIDDEN_PICK_REASONS or reason not in PICKS_NOT_ATTEMPT_ALLOWLIST:
+                out.setdefault(reason, set()).update(mints)
+    return {r: sorted(ms) for r, ms in sorted(out.items())}
+
+
+def scorer_cmd(view: str, roots: Sequence[str], day: str, picks: Path, out_dir: Path, extra: Sequence[str]) -> list[str]:
+    return [sys.executable, "-X", "importtime", "-m", SCORER_MODULE, *scorer_source_flags(view, roots), "--only-day", day, *SCORER_FLAGS, "--picks", str(picks),
             "--out-dir", str(out_dir), *extra]
 
 
 def read_rows_mints(path: Path) -> list[str]:
+    """The `mint` column of rows.csv, and nothing else (the other columns are the scorer's P&L)."""
     with path.open(newline="", encoding="utf-8") as fh:
         return [r["mint"] for r in csv.DictReader(fh)]
 
 
-def subprocess_scorer(scorer_repo: Path, view: str, roots: Sequence[str], day: str, picks: Path, out_dir: Path, book: str, extra: Sequence[str],
-                      log_path: Path) -> tuple[list[str], list[str]]:
-    """Run the scorer in `scorer_repo`; return (attempt mints in rows.csv order, the command)."""
-    cmd = scorer_cmd(view, roots, day, picks, out_dir, book, extra)
+def read_universe_csv(path: Path) -> tuple[list[str], dict[str, int], list[str], dict[str, str]]:
+    """(attempt mints, excluded count by reason, every mint in the file, excluded mint -> reason) from universe.csv: only `mint`, `status` and `reason` are read."""
+    attempts: list[str] = []
+    excluded: dict[str, int] = {}
+    seen: list[str] = []
+    excluded_mints: dict[str, str] = {}
+    with path.open(newline="", encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            seen.append(r["mint"])
+            if r["status"] == "attempt":
+                attempts.append(r["mint"])
+            elif r["status"] == "excluded":
+                excluded[r["reason"]] = excluded.get(r["reason"], 0) + 1
+                excluded_mints[r["mint"]] = r["reason"]
+            else:
+                raise E0Error(f"{path}: unknown status {r['status']!r} for mint {r['mint']}")
+    return attempts, dict(sorted(excluded.items())), seen, excluded_mints
+
+
+def scorer_summary_record(summary: dict[str, Any]) -> dict[str, Any]:
+    """The part of the scorer's summary.json that goes into e0.json: mode, source, constants, universe and pick accounting, data-coverage counts. No P&L, no
+    book statistics, no cell, no fill or exit count. Refuses a summary that is not the EXP-022 exploration mode."""
+    ex = summary.get("exp022") or {}
+    if summary.get("mode") != "exp022" or ex.get("source") != SCORER_SOURCE_NAME:
+        raise E0Error(f"scorer summary is mode {summary.get('mode')!r} source {ex.get('source')!r}; E0 needs exp022 / {SCORER_SOURCE_NAME}")
+    uni = ex.get("universe") or {}
+    counts = summary.get("counts") or {}
+    return {"mode": summary["mode"], "source": ex["source"], "adapter": ex.get("adapter"), "constants": ex.get("constants"), "flags_pinned": ex.get("flags_pinned"),
+            "universe": {"attempts_in_universe": uni.get("attempts_in_universe"), "pick_attempts": uni.get("pick_attempts"),
+                         "excluded_by_reason": uni.get("excluded_by_reason"),
+                         "tape_coverage_short": len((uni.get("report_only") or {}).get("tape_coverage_short") or []),
+                         "n_missing_v0": (uni.get("missing_v0") or {}).get("n_missing_v0")},
+            "picks_in_input": summary.get("picks_in_input"), "picks_not_attempts": summary.get("picks_not_attempts"),
+            "picks_sha256": (summary.get("picks") or {}).get("sha256"), "vmap": summary.get("vmap"), "sources": summary.get("sources"), "days": summary.get("days"),
+            "days_skipped_incomplete_migrations": summary.get("days_skipped_incomplete_migrations"),
+            "counts": {k: counts.get(k) for k in SUMMARY_COUNT_KEYS}}
+
+
+def subprocess_scorer(scorer_repo: Path, view: str, roots: Sequence[str], day: str, picks: Path, out_dir: Path, extra: Sequence[str],
+                      log_path: Path) -> dict[str, Any]:
+    """Run the scorer once in `scorer_repo`. Returns {"attempts": rows.csv mints in file order, "universe": attempt mints of universe.csv,
+    "excluded": count by reason, "summary": scorer_summary_record(...), "cmd": the command}."""
+    cmd = scorer_cmd(view, roots, day, picks, out_dir, extra)
     with log_path.open("w", encoding="utf-8") as lf:
         r = subprocess.run(cmd, cwd=str(scorer_repo), stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
     if r.returncode != 0:
-        raise E0Error(f"scorer --book {book} exited {r.returncode} (see {log_path})")
-    rows = out_dir / "rows.csv"
-    if not rows.is_file():
-        raise E0Error(f"scorer --book {book} wrote no rows.csv in {out_dir}")
-    return read_rows_mints(rows), cmd
+        raise E0Error(f"scorer exited {r.returncode} (see {log_path})")
+    for name in ("rows.csv", "universe.csv", "summary.json"):
+        if not (out_dir / name).is_file():
+            raise E0Error(f"scorer wrote no {name} in {out_dir}")
+    universe, excluded, seen, excluded_mints = read_universe_csv(out_dir / "universe.csv")
+    summary = scorer_summary_record(json.loads((out_dir / "summary.json").read_text(encoding="utf-8")))
+    return {"attempts": read_rows_mints(out_dir / "rows.csv"), "universe": universe, "universe_seen": seen, "excluded_mints": excluded_mints, "excluded": excluded, "summary": summary, "cmd": cmd}
 
 
-Scorer = Callable[[str, Path, Path], "tuple[list[str], list[str]]"]  # (book, picks file, out dir) -> (attempt mints, command)
+Scorer = Callable[[Path, Path], "dict[str, Any]"]  # (picks file, out dir) -> subprocess_scorer's result
 
 
 # ---- the run ------------------------------------------------------------------------------------------
@@ -601,6 +698,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     """The whole E0 for one view-day. Writes A.canon, B.canon, B.jsonl, C.list, Bpicks_in_U.list, the md5 files, diff.tsv (if A != B) and e0.json."""
     t_start = time.monotonic()
     check_scope(view, day, dry_run, scorer_extra, scorer_repo)
+    check_scorer_extra(scorer_extra)
     repo = repo or REPO
     if not dry_run and not skip_c and scorer is None:
         try:
@@ -669,26 +767,40 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     c: dict[str, Any] = {"skipped": True}
     scorer_root: Path = Path(repo)
     bpicks_missing: list[str] = []
-    n_c = 0
+    bpicks_absent: dict[str, str] = {}
+    u_missing_from_rows: list[str] = []
+    excluded_picks: dict[str, list[str]] = {}
+    unexpected: dict[str, list[str]] = {}
+    scorer_summary: dict[str, Any] = {}
+    not_attempts_by_reason: dict[str, int] = {}
+    n_c = n_universe = 0
     md5_c = md5_bu = None
     equal_c: bool | None = None
+    picks_in_input_ok = False
     if not skip_c:
         t = time.monotonic()
         scorer_root = Path(scorer_repo) if scorer_repo is not None else repo
         if scorer is None:
-            def scorer(book: str, picks: Path, odir: Path, _sr: Path = scorer_root) -> tuple[list[str], list[str]]:  # type: ignore[misc]
-                return subprocess_scorer(_sr, view, roots, day, picks, odir, book, scorer_extra, out / f"scorer_{book}.log")
-        all_mints, cmd_all = scorer("all", b_path, out / "scorer_all")
-        wall["C_all"] = round(time.monotonic() - t, 1)
-        t = time.monotonic()
-        pick_mints, cmd_picks = scorer("picks", b_path, out / "scorer_picks")
-        wall["C_picks"] = round(time.monotonic() - t, 1)
-        universe = set(all_mints)
-        c_list = sorted(pick_mints)
+            def scorer(picks: Path, odir: Path, _sr: Path = scorer_root) -> dict[str, Any]:  # type: ignore[misc]
+                return subprocess_scorer(_sr, view, roots, day, picks, odir, scorer_extra, out / "scorer_exp022.log")
+        res = scorer(b_path, out / "scorer_exp022")
+        wall["C"] = round(time.monotonic() - t, 1)
+        universe = set(res["universe"])
+        n_universe = len(universe)
+        c_list = sorted(res["attempts"])
         bu = sorted(m for m in b_picks if m in universe)
         n_c = len(c_list)
         c_text, bu_text = "".join(m + "\n" for m in c_list), "".join(m + "\n" for m in bu)
         bpicks_missing = sorted(m for m in b_picks if m not in universe)
+        seen = set(res.get("universe_seen", res["universe"]))
+        reason_of = {m: r for r, ms in ((res["summary"].get("picks_not_attempts") or {}).items()) for m in ms}
+        bpicks_absent = {m: reason_of.get(m, "no_reason_recorded") for m in b_picks if m not in seen}
+        u_missing_from_rows = sorted(set(bu) - set(c_list))
+        excl_mints = res.get("excluded_mints", {})
+        for m in b_picks:  # B's own pick set against the scorer's universe.csv, independent of the scorer's picks_not_attempts
+            if m in excl_mints:
+                excluded_picks.setdefault(excl_mints[m], []).append(m)
+        unexpected = unexpected_pick_exclusions(res["summary"].get("picks_not_attempts"), excluded_picks)
         _write(out / "Bpicks_not_in_U.list", "".join(m + "\n" for m in bpicks_missing))
         _write(out / "C.list", c_text)
         _write(out / "Bpicks_in_U.list", bu_text)
@@ -696,9 +808,12 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         _write(out / "C.md5", f"{md5_c}  C.list\n")
         _write(out / "Bpicks_in_U.md5", f"{md5_bu}  Bpicks_in_U.list\n")
         equal_c = md5_c == md5_bu
-        c = {"skipped": False, "n_universe": len(universe), "n_attempt_rows_all": len(all_mints), "n_attempt_rows_picks": len(pick_mints),
-             "n_C": len(c_list), "n_Bpicks_in_U": len(bu), "n_Bpicks_not_in_U": len(b_picks) - len(bu),
-             "scorer_repo": str(scorer_root), "scorer_extra_args": list(scorer_extra), "cmd_all": cmd_all, "cmd_picks": cmd_picks}
+        scorer_summary = res["summary"]
+        not_attempts_by_reason = {k: len(v) for k, v in sorted((scorer_summary.get("picks_not_attempts") or {}).items())}
+        picks_in_input_ok = scorer_summary.get("picks_in_input") == len(b_picks)
+        c = {"skipped": False, "n_universe": n_universe, "n_attempt_rows": len(res["attempts"]), "n_C": n_c, "n_Bpicks_in_U": len(bu),
+             "n_Bpicks_not_in_U": len(bpicks_missing), "excluded_by_reason": res["excluded"],
+             "scorer_repo": str(scorer_root), "scorer_extra_args": list(scorer_extra), "cmd": res["cmd"]}
         sr_state = scorer_state or (state if scorer_root.resolve() == Path(repo).resolve() else None)
         if sr_state is not None:
             c["scorer_head"] = sr_state["head"]
@@ -726,6 +841,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
         "A_log_rows_equal_engine_rows": len(a_gate_rows) == astats["engine_gate_rows"],
         "nonempty": bool(cmpd["a_decide"]) and bool(b_picks) and n_c >= 1,
+        "scorer_picks_in_input": picks_in_input_ok,
+        "no_unexpected_pick_exclusions": not unexpected,
     }
     wall["total"] = round(time.monotonic() - t_start, 1)
     e0: dict[str, Any] = {
@@ -735,7 +852,13 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "view_sha256": view_sha,
         "md5_A_decide": md5_ad, "md5_B_decide": md5_bd, "equal_decide": equal_decide,
         "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
-        "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c, "n_C": n_c,
+        "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c, "n_C": n_c, "n_universe": n_universe,
+        "scorer_flags": list(SCORER_FLAGS), "scorer_summary": scorer_summary, "picks_not_attempts_by_reason": not_attempts_by_reason,
+        "scorer_bad_reserves": (scorer_summary.get("counts") or {}).get("bad_reserves"),
+        "scorer_days_skipped": scorer_summary.get("days_skipped_incomplete_migrations"),
+        "Bpicks_absent_from_universe_csv": bpicks_absent, "U_pick_attempts_missing_from_rows": u_missing_from_rows,
+        "picks_not_attempt_allowlist": list(PICKS_NOT_ATTEMPT_ALLOWLIST), "forbidden_pick_reasons": list(FORBIDDEN_PICK_REASONS),
+        "excluded_picks_by_reason": {k: sorted(v) for k, v in sorted(excluded_picks.items())}, "unexpected_pick_exclusions": unexpected,
         "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_decide_set": cmpd["n_decide_set"], "n_A_decide": len(cmpd["a_decide"]), "n_B_decide": len(cmpd["b_decide"]),
         "n_gt60": len(cmpd["gt60"]), "n_gt60_in_decide": sum(1 for r in cmpd["gt60"] if r[5] == "yes"), "crosstab_gt60": cmpd["crosstab_gt60"],
         "n_diff_decide": len(cmpd["diff_decide"]),
@@ -759,7 +882,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     e0 = run_e0(args.view, args.day, Path(args.out), scorer_repo=Path(args.scorer_repo) if args.scorer_repo else None,
                 scorer_extra=args.scorer_arg or (), skip_c=args.skip_c, dry_run=args.dry_run)
     keys = ("view", "day", "commit", "e0_criterion", "md5_A_decide", "md5_B_decide", "equal_decide", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
-            "equal_C", "n_C", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
+            "equal_C", "n_C", "n_universe", "picks_not_attempts_by_reason", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
     print(json.dumps({k: e0[k] for k in keys}, indent=2, sort_keys=True))
     return 0 if e0["ok"] else 1
 
