@@ -27,7 +27,51 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-10 ~07:30Z (NEWEST, read first)
+### STATE 10-10 ~10:40Z (NEWEST, read first)
+
+**H5.**
+- **Status.** The canary is STOPPED (§5.1, since 07:15Z).
+- **Resume check:** one-shot at 10-11T00:13Z. It needs the executor, ALL and PLAIN medians all at or above 337 s (Am.4 + Am.5).
+- **Scheduled §5.1 checks:** `tools/h5_boost_day_check.py` (#538) runs in day mode at 00:21Z and in running mode every 6 h.
+- **The live config's end_ms is 10-16T00:30Z.** Extending it to the §4 cap of 10-23T19:29:53Z is the manager's reviewed step (Am.6 item 8). Not decided; ask the owner.
+- **Pick-oracle wiring merged** (#540; md5 job #498 75cb0b0c, 72/72; re-clearance #547). #543 and #546 hold DEC-024 Am.6 / EXP-022 Am.6.
+- **Shadow restart for the seal window:** cron b9a4cd49 at 10-15T21:37Z.
+  - It needs the CAP_PICK env per the runbook.
+  - bx10 stays OFF (#549: only H5_BX10_ENABLE=EXP-026 turns it on; md5 job #500).
+- **H5 v2 (BOOST-clock exit C10).**
+  - Research round 2 found it non-inferior and robust, but not a DEC-027 challenger.
+  - Draft PR #542 (EXP-026 + DEC-028 + DEC-029 + G-v2) waits on the owner: M1/M2 and DEC-028 A/B.
+  - The shadow variant #541 is merged and off by default.
+  - P(pass) is about 0.005-0.06: H5 cannot clear the gate in October.
+
+**C1-NF.**
+- **Merged:** #530, #531, #502, #506, #509, #544, #552 (oracle fix), #550 (model pin faf8a01f).
+- **P2 PASS** (job #504: 8,786 and 422, in band; amendment PR #558).
+- **Open:** #503 (shadow; parity harness re-run), #548 (EXP-025 Am.3), #555 (DEC-026 Am.2 text and stop table), #556 (own mal-c1nf user, security F2).
+- **BLOCKER, live event V.** Live tip rows lack event V. Option A (follower stamper, own tree) is PR #554, reviewed OK. Proofs P0/P2/P5 are running (workflow c1nf-event-v-proofs). Quant-proof's hard latest is 10-13T12Z; there is no silent switch to const V.
+- **Stop risk at zero edge:** P(total stop) is 0.57 by day 7 (QP-1010).
+
+**Formal reads before 10-16** (checklist: /data/mal/hunt-1008/h5-work/PRE-1016-CHECKLIST.md).
+- EXP-024 read tool (#476) + forward extractor + E0-H5: due 10-16T00:00Z.
+- EXP-025 P3 adapter + P4 read tool: due 10-16T01:00Z.
+- EXP-022 synthetic amendment: due before 10-15T06:41Z.
+- All of these are in build (workflow formal-read-tools-r1).
+- Jobs #433 (+24 h) and #382 (+48 h) are extended.
+
+**Research.**
+- Rounds 3-4: 7 families killed.
+- Round 5 (protocol-scheduled flows) is running.
+- Truncated logs lose about 0.03-0.06% of PumpSwap trades (known limitation; MULTIROUTE-1010.md).
+- Read guard fixed (#553, #557).
+- October data stays sealed under the current ledger (hunt-r3/october/READINESS.md). The owner must decide on carve-outs.
+
+**Owner decisions pending:**
+- H5 v2 M1/M2 and A/B;
+- end_ms to 10-23;
+- October carve-outs;
+- Helm: the mal-c1nf user, the second wallet and 0.5 SOL.
+
+### STATE 10-10 ~07:30Z (older)
 
 **H5 canary: STOPPED** (new buys) since 2026-10-10T07:15:10Z.
 - **Why.** DEC-024 §5.1 fired on the post-step A3 run of 07:11:07Z (job #478): median last slice 333 s after migrate, n=9, below 335 s.
