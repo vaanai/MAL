@@ -361,6 +361,29 @@ class Convert(unittest.TestCase):
         import pyarrow.parquet as pq
         t = pq.read_table(self.tmp / "o" / "trades" / "2026-10-03T01.parquet").to_pylist()
         self.assertEqual([int(r["quote_reserve"]) for r in t], [9, 10 + 3_000_000])  # V0 from blk-b's own s0
+        # a well-formed line whose value fails the cast (quant-proof r6): a bare count(*) is projected and lets it
+        # through to collect_v0, which raised; it is a bad hour (exploration) or a listed V0 file (look), never a crash
+        for i, bad in enumerate([{"slot": "notaslot"}, {"virtual_quote_reserves": "abc"}]):
+            with self.subTest(bad=bad):
+                src = self.tmp / f"te{i}"
+                f = write_zst(src / "trades" / f"trades-{self.HOUR}.jsonl.zst",
+                              jl([trade(virtual_quote_reserves=17_000_000_000), trade(**bad)]))
+                man = A.convert(str(src), "fixture-blk", self.tmp / f"te{i}-t", [self.HOUR], event_v=True)
+                self.assertEqual(man["bad_hours"], [self.HOUR])
+                self.assertEqual([b["file"] for b in man["v0_bad"]], [str(f)])
+                a_dir, b_dir, ledger, looks = self._look_fixture()
+                bad_f = write_zst(a_dir / "trades" / "trades-2026-10-03T00.jsonl.zst",
+                                  jl([trade(slot=50, quote_reserve=1), trade(**bad)]))
+                write_zst(b_dir / "trades" / "trades-2026-10-03T01.jsonl.zst",
+                          jl([trade(slot=100, quote_reserve=9, virtual_quote_reserves=17_000_000_000)]))
+                o = self.tmp / f"te{i}-o"
+                with mock.patch.dict(A.SOURCES, {"blk-a": str(a_dir), "blk-b": str(b_dir)}), \
+                        mock.patch.dict(A.LOOKS, looks, clear=True), \
+                        mock.patch.dict(A.LOOK_TAPE, {"look1": str(o)}, clear=True):
+                    man = A.convert(str(b_dir), "blk-b", o, ["2026-10-03T01"], look="look1", event_v=True,
+                                    final_ledger=ledger, now=datetime(2026, 10, 25, tzinfo=timezone.utc))
+                self.assertEqual(man["bad_hours"], [])
+                self.assertEqual([b["file"] for b in man["v0_bad"]], [str(bad_f)])
 
     def test_look_guards_refuse_before_any_file_opens(self):
         from unittest import mock

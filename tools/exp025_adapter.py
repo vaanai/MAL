@@ -454,8 +454,10 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
         for p in tf:  # strict per V0 file: a bad one is left out and listed, never a crash (section 11.2 item 1, R1)
             try:
                 nl = strict_scan(p)
-                n = con.execute(f"SELECT count(*) FROM read_json({_q(p)}, format='newline_delimited', compression='zstd', "
-                                f"columns={spec_v})").fetchone()[0]
+                # count(COLUMNS(*)) makes DuckDB cast every column value: a bare count(*) is projected away and lets a
+                # well-formed line with a bad value ("slot": "notaslot") through, which collect_v0 then raises on
+                n = con.execute(f"SELECT count(*), count(COLUMNS(*)) FROM read_json({_q(p)}, format='newline_delimited', "
+                                f"compression='zstd', columns={spec_v})").fetchone()[0]
                 if n != nl:
                     raise BadHour(f"{p}: {n} rows from {nl} lines")
                 good.append(p)
