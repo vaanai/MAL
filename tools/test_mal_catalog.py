@@ -41,9 +41,14 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
     assert by_name["Forward paper, kill review"].owner == "kill-review"
-    fast_exp011 = [b for b in blocks if b.owner == "EXP-011"][0]
-    assert fast_exp011.host == "fast"
-    assert (fast_exp011.start_hour, fast_exp011.end_hour_exclusive) == ("2026-09-09T12", "2026-09-15T12")
+    # The 09-09 block: EXP-011's spent holdout, moved to the exploration pool
+    # by the 2026-10-06 ledger edit (4 preconditions done). Its Owner cell
+    # still names "prior owner EXP-011" in parentheses; that is not the owner.
+    fast_0909 = [b for b in blocks if b.host == "fast" and b.start_hour == "2026-09-09T12"]
+    assert len(fast_0909) == 1
+    assert fast_0909[0].end_hour_exclusive == "2026-09-15T12"
+    assert fast_0909[0].owner == "exploration-pool"
+    assert not [b for b in blocks if b.owner == "EXP-011"]
     unassigned = by_name["Future fast backfill"]
     assert unassigned.owner == "unassigned"
     assert unassigned.start_hour is None
@@ -95,17 +100,47 @@ def test_exploration_fast_exp009_deny(blocks: list[Block]) -> None:
     assert any("EXP-009" in r for r in reasons)
 
 
-def test_exploration_fast_exp011_deny_and_confirmation_allow(blocks: list[Block]) -> None:
-    ok, reasons = _check(blocks, "exploration", "fast", "2026-09-10T00", "2026-09-10T01")
-    assert not ok
-    assert any("EXP-011" in r for r in reasons)
-
-    ok, reasons = _check(blocks, "confirmation-oneshot", "fast", "2026-09-10T00", "2026-09-10T01", exp_id="EXP-011")
+def test_exploration_fast_0909_block_allowed_after_move_to_pool(blocks: list[Block]) -> None:
+    # Regression: the ledger moved [2026-09-09T12, 2026-09-15T12) to the
+    # exploration pool on 2026-10-06, but the parser read "prior owner
+    # EXP-011" in the Owner cell's parenthetical and denied all 144 hours.
+    ok, reasons = _check(blocks, "exploration", "fast", "2026-09-09T12", "2026-09-15T12")
     assert ok, reasons
 
-    ok, reasons = _check(blocks, "confirmation-oneshot", "fast", "2026-09-10T00", "2026-09-10T01", exp_id="EXP-009")
+    # Spent: EXP-011 can no longer unlock it as a confirmation read, nor can any other id.
+    for exp in ("EXP-011", "EXP-009"):
+        ok, reasons = _check(blocks, "confirmation-oneshot", "fast", "2026-09-10T00", "2026-09-10T01", exp_id=exp)
+        assert not ok
+        assert any("exploration-pool" in r for r in reasons)
+
+    # The fix does not widen the pool: the EXP-009 hour after the block, and
+    # the unledgered hour before it on fast, stay denied.
+    ok, reasons = _check(blocks, "exploration", "fast", "2026-09-15T11", "2026-09-15T13")
     assert not ok
-    assert any("EXP-011" in r for r in reasons)
+    assert reasons == ["2026-09-15T12: owner=EXP-009 not allowed for role=exploration"]
+    ok, reasons = _check(blocks, "exploration", "fast", "2026-09-09T11", "2026-09-09T12")
+    assert not ok
+
+
+def test_cli_check_allows_0909_block_for_exploration(capsys: pytest.CaptureFixture[str]) -> None:
+    from tools.mal_catalog import main
+
+    rc = main(["check", "--role", "exploration", "--host", "fast", "--start", "2026-09-09T12", "--end", "2026-09-15T12", "--ledger", str(LEDGER_PATH)])
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "ALLOW"
+
+
+def test_real_ledger_owner_cells_that_open_with_the_pool_parse_as_the_pool(blocks: list[Block], ledger_text: str) -> None:
+    # Any row whose Owner cell opens with "exploration pool" is a pool row,
+    # whatever its parenthetical says about history; and no other row is.
+    from tools.mal_catalog import _table_rows
+
+    rows = _table_rows(ledger_text)
+    assert len(rows) == len(blocks)
+    for (name, _hours, _host, owner_cell, _status), b in zip(rows, blocks):
+        assert b.name == name
+        opens_with_pool = owner_cell.replace("**", "").strip().lower().startswith("exploration pool")
+        assert (b.owner == "exploration-pool") == opens_with_pool, (name, owner_cell, b.owner)
 
 
 def test_exploration_fast_unassigned_deny(blocks: list[Block]) -> None:
@@ -248,8 +283,11 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
 
     assert json.dumps(_stable(doc1), sort_keys=True) == json.dumps(_stable(doc2), sort_keys=True)
 
-    exp011_block = [b for b in doc1["blocks"] if b["owner"] == "EXP-011"][0]
-    assert exp011_block["access"] == {"exploration": False, "confirmation_oneshot_exp": "EXP-011"}
+    exp009_block = [b for b in doc1["blocks"] if b["owner"] == "EXP-009"][0]
+    assert exp009_block["access"] == {"exploration": False, "confirmation_oneshot_exp": "EXP-009"}
+    fast_0909 = [b for b in doc1["blocks"] if b["host"] == "fast" and b["hours"].get("start") == "2026-09-09T12"][0]
+    assert fast_0909["owner"] == "exploration-pool"
+    assert fast_0909["access"] == {"exploration": True, "confirmation_oneshot_exp": None}
     pool_block = [b for b in doc1["blocks"] if b["owner"] == "exploration-pool"][0]
     assert pool_block["access"]["exploration"] is True
     assert pool_block["access"]["confirmation_oneshot_exp"] is None
@@ -321,6 +359,18 @@ def test_normalize_owner_and_host_synthetic_cells() -> None:
     assert _normalize_owner("**reserved: the confirmation test after EXP-012**", row_name="x") == "reserved"
     assert _normalize_owner("**EXP-013** (reserved until sealed)", row_name="x") == "EXP-013"
     assert _normalize_owner("exploration pool", row_name="x") == "exploration-pool"
+    # A parenthetical is commentary: a prior owner named there is not the owner.
+    assert (
+        _normalize_owner("**exploration pool** (spent confirmation block; prior owner EXP-011, closed NOT_DECIDABLE)", row_name="x")
+        == "exploration-pool"
+    )
+    assert _normalize_owner("**EXP-013** (moved here from the exploration pool)", row_name="x") == "EXP-013"
+    assert _normalize_owner("EXP-012 book for `[2026-10-06T00, 2026-10-16T00)` (one read, see [DEC-016](../DEC/x.md))", row_name="x") == "EXP-012"
+    assert _normalize_owner("unassigned (was (nested) EXP-007)", row_name="x") == "unassigned"
+    # Two owners outside parentheses, or none, raise: the guard never guesses.
+    for cell in ("exploration pool, prior owner EXP-011", "EXP-011 and EXP-012", "kill review / exploration pool", "(EXP-011)"):
+        with pytest.raises(ValueError):
+            _normalize_owner(cell, row_name="x")
     assert _normalize_host("mal-research-0, three walkers", row_name="x") == "research"
     assert _normalize_host("mal-fast-0 (OVH)", row_name="x") == "fast"
     assert _normalize_host("mal-core-0", row_name="x") == "oracle"
