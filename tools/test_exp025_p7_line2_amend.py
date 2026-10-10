@@ -420,5 +420,112 @@ class Line2Driver(unittest.TestCase):
             self.P.line2_one(row, adapter, float(c["v"]), self.L2)
 
 
+CASES_EXP024 = os.path.join(ROOT, "tools", "fixtures", "p7_line2_buy_cases.json")   # EXP-024 Amendment 7's 38 cases (#580)
+EXP025_CASES_BLOB = "5f619ee0b31e80eba17622a43cda77107a31e50b"                      # Amendment 7 D
+EXP025_CASES_SHA256 = "e0497bbfbbca861d45e4252c65d897361313d1ce2b91b1f4982ac9d81e2e8fa4"
+
+
+class CrossImplementation(unittest.TestCase):
+    """The two P7 buy tier lines on each other's case tables (Amendment 7 D): this PR's module and driver on EXP-024's 38 cases, and EXP-024's
+    tools.boostfloor_inputs.tier_buy_one on this PR's 37. Every case must get its table's `expect` (hit | miss | skipped | excluded:<cause>; the
+    two tables use the same outcome words).
+
+    Schema mapping (the tables differ; nothing else is translated):
+      EXP-024 case -> EXP-025              sol, tok, q, b, v -> the same ints; Q = q + v (EXP-025: adapter quote_reserve + V0).
+                                           The sampled raw row is {side: buy, zero_sol}, plus ix_name unless ix_name_absent is true (then the key
+                                           is absent; an ix_name of null with ix_name_absent false is a present null). ppm: the case's tier_ppm
+                                           (the module test), or the read's own tier tier_ppm(exp025_read.fee(Q, b)) (the driver test, which also
+                                           checks it equals tier_ppm). chain_bps, note and old_relation are not read.
+      EXP-025 case -> EXP-024              key [slot, "M", sol, tok, q, b] (the tape content key), isbuy true, V = v; the P5 record is status ok,
+                                           fields_equal true, decoded {side: buy, zero_sol: true or None, ix_name if the case has that key}
+                                           (EXP-024's own case_row form). tier_buy_one takes its tier from (Q, b) itself; the case's ppm equals it
+                                           (Line2Module.test_both_helpers_give_each_case_its_tier). construction, qin, dev_e6 and in_denominator
+                                           are not read.
+    Neither table has a case that is both excluded and skipped, because the two tools apply those in opposite orders (EXP-025 the exclusion
+    first, from the raw row; EXP-024 the skip rule first, on tape fields)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load("exp025_p7_line2_amend_cross", os.path.join(ART, "p7_line2_amend.py"))
+        with open(CASES_EXP024) as fh:
+            cls.doc24 = json.load(fh)
+        with open(CASES) as fh:
+            cls.doc25 = json.load(fh)
+        cls.cases24, cls.cases25 = cls.doc24["cases"], cls.doc25["cases"]
+
+    @staticmethod
+    def raw_row_of_exp024(c) -> dict:
+        row = {"side": "buy", "zero_sol": c["zero_sol"]}
+        if not c["ix_name_absent"]:
+            row["ix_name"] = c["ix_name"]
+        return row
+
+    def test_the_tables_are_separate_files_and_this_prs_is_pinned(self):
+        self.assertNotEqual(os.path.realpath(CASES), os.path.realpath(CASES_EXP024))
+        self.assertEqual(git_blob(CASES), EXP025_CASES_BLOB)
+        self.assertEqual(sha(CASES), EXP025_CASES_SHA256)
+        self.assertEqual(len(self.cases25), 37)
+        self.assertEqual(self.doc24["tolerance_ppm_of_qin"], self.m.TOLERANCE_PER_QIN)
+        for c in self.cases24:
+            self.assertLessEqual({"name", "sol", "tok", "q", "b", "v", "ix_name", "ix_name_absent", "zero_sol", "tier_ppm", "expect"}, set(c), c)
+            self.assertFalse(c["ix_name_absent"] and c["ix_name"] is not None, c["name"])
+        outcomes = {"hit", "miss", "skipped"} | {"excluded:" + x for x in self.m.LINE2_BUY_EXCLUSIONS}
+        self.assertLessEqual({c["expect"] for c in self.cases24} | {c["expect"] for c in self.cases25}, outcomes)
+
+    def test_exp025_module_gives_each_exp024_case_its_expect(self):
+        """p7_line2_amend: line2_buy_exclusion on the raw row, then line2_buy_skip, then line2_buy_hit at the case's tier_ppm."""
+        for c in self.cases24:
+            why = self.m.line2_buy_exclusion(self.raw_row_of_exp024(c))
+            if why is not None:
+                got = "excluded:" + why
+            elif self.m.line2_buy_skip(c["sol"], c["tok"], c["b"]):
+                got = "skipped"
+            else:
+                got = "hit" if self.m.line2_buy_hit(c["sol"], c["tok"], c["q"] + c["v"], c["b"], c["tier_ppm"]) else "miss"
+            self.assertEqual(got, c["expect"], c["name"])
+        self.assertEqual(len(self.cases24), 38)
+
+    @unittest.skipUnless(HAVE_NP, "numpy missing")
+    def test_exp025_driver_gives_each_exp024_case_its_expect(self):
+        """exp025_p7.line2_one (the path the look runs, the tier from exp025_read.fee) on EXP-024's cases, with an adapter row that matches."""
+        import exp025_p7 as P
+        import exp025_read as R
+        L2 = P.load_line2_amend()
+        for c in self.cases24:
+            Q = c["q"] + c["v"]
+            self.assertEqual(L2.tier_ppm(R.fee(Q, c["b"])), c["tier_ppm"], c["name"])
+            row = dict(self.raw_row_of_exp024(c), slot=1, tx_index=0, event_index=0, pool="P")
+            adapter = {"pool": "P", "side": "buy", "quote_reserve": c["q"], "base_reserve": c["b"], "token_raw": c["tok"], "sol_lamports": c["sol"]}
+            side, hit, cause = P.line2_one(row, adapter, c["v"], L2)
+            got = ("excluded:" + cause if cause in L2.LINE2_BUY_EXCLUSIONS else "skipped") if hit is None else ("hit" if hit else "miss")
+            self.assertEqual((side, got), ("buy", c["expect"]), c["name"])
+
+    @unittest.skipUnless(HAVE_NP, "numpy missing")
+    def test_exp024_tier_buy_one_gives_each_exp025_case_its_expect(self):
+        """tools.boostfloor_inputs.tier_buy_one (EXP-024 Amendment 7 B.1: skip, unresolved, excluded, no V / non-int, relation) on this PR's 37."""
+        from tools import boostfloor_inputs as bi
+        from tools import boostfloor_read as br
+        for i, c in enumerate(self.cases25):
+            key = [100 + i, "M", c["sol"], c["tok"], c["q"], c["b"]]
+            decoded = {"side": "buy", "zero_sol": c["zero_sol"] or None}
+            if "ix_name" in c:
+                decoded["ix_name"] = c["ix_name"]
+            p5 = {"key": key, "status": "ok", "fields_equal": True, "decoded": decoded}
+            row = {"key": key, "isbuy": True, "ev_v": c["v"]}
+            k0 = br.content_key(*key)
+
+            def v_of(k, r, c=c, k0=k0):
+                self.assertEqual(k, k0)
+                return c["v"]
+
+            def rec_of(k, r, p5=p5, k0=k0):
+                self.assertEqual(k, k0)
+                return p5
+
+            got, _name = bi.tier_buy_one(row, v_of, rec_of)
+            self.assertEqual(got, c["expect"], c["name"])
+        self.assertEqual(len(self.cases25), 37)
+
+
 if __name__ == "__main__":
     unittest.main()
