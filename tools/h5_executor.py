@@ -70,6 +70,7 @@ from tools import probe_executor as pe
 from tools import probe_live as pl
 from tools import pumpswap_simulate as sim
 from tools import pumpswap_tx as tx
+from tools.cap_pick_oracle import PickOracle
 
 RULE_ID = "H5-BOOSTFLOOR-v1"
 TRIGGER_VARIANT = "pv"  # quote + the print's own V; the frozen rule's literal fixed V ("fv") is never traded
@@ -149,6 +150,8 @@ SEAL_START_MS = 1792112400000  # 2026-10-16T01:00:00Z
 ORACLE_EARLIEST_MS = 1792116000000  # 2026-10-16T02:00:00Z: the DEC-016 FINAL is written about now, not before
 SEAL_END_DEFAULT_MS = 1793930400000  # 2026-11-06T02:00:00Z. Config may move the end later, never earlier.
 SEAL_REASONS = frozenset({"seal_window_no_oracle", "seal_pick", "seal_oracle_error"})  # counted, never logged per mint
+PICK_STALE_S = 60.0  # DEC-024 s6: a pick feed missing or stale for more than 60 s halts buys (the oracle answers None: seal_oracle_error). Code constant.
+PICK_FEED_ALERT_MS = 600_000  # the pick_feed_unavailable alert, at most once per 10 minutes (no mint, no trigger: a feed fact only)
 
 # --- limits: code maxima, config can only lower (floors: config can only raise) ---------------------------------------
 H5_DEFAULT = {
@@ -782,47 +785,24 @@ def build_probe_cfg(cfg: dict[str, Any], h5: H5Limits, run_mode: str) -> dict[st
 
 # --- the pick oracle (EXP-022 seal): a boolean and nothing else ---------------------------------------------------------
 
-_MINT_RE = re.compile(r'"mint"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"')
-_PICK_RE = re.compile(r'"pick"\s*:\s*(true|false)')
+# tools.cap_pick_oracle.PickOracle reads the exporter's boolean feed ({"mint","pick","t_ms"} rows and heartbeats; no score, price or P&L ever
+# reaches it) with two regexes, never as JSON. oracle(mint) -> True (a pick; sticky), False (decided, not a pick), None (undecided, no heartbeat
+# within PICK_STALE_S, a missing file, or anything raised). _seal_reason refuses on True and on anything that is not a bool, so None is fail
+# closed: "If the pick feed is missing or stale for more than 60 s, H5 buys halt" (DEC-024 s6).
 
 
-class OracleUndecided(Exception):
-    """The picks file has no row for the mint: undecided, so the executor refuses (fail closed)."""
-
-
-class JsonlPickOracle:
-    """pick_oracle(mint) -> bool over a boolean-only picks file: one row per gate decision, {"mint": ..., "pick": true|false}.
-    The row is NOT parsed as JSON: two regexes pull the mint and the flag and nothing else of the line is read into a
-    value, so a score, P&L or position field in a richer file is never touched. A mint with no row raises OracleUndecided."""
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self._off = 0
-        self._ino: int | None = None
-        self._flags: dict[str, bool] = {}
-
-    def _refresh(self) -> None:
-        st = self.path.stat()
-        if self._ino != st.st_ino or st.st_size < self._off:
-            self._off, self._ino, self._flags = 0, st.st_ino, {}
-        with self.path.open("rb") as fh:
-            fh.seek(self._off)
-            data = fh.read(pe.MAX_READ_BYTES * 8)
-        end = data.rfind(b"\n")
-        if end < 0:
-            return
-        for raw in data[: end + 1].splitlines():
-            line = raw.decode("utf-8", "replace")
-            m, f = _MINT_RE.findall(line), _PICK_RE.findall(line)
-            if len(m) == 1 and len(f) == 1:
-                self._flags[m[0]] = self._flags.get(m[0], False) or f[0] == "true"  # a pick is sticky: a later pick:false row never undoes it
-        self._off += end + 1
-
-    def __call__(self, mint: str) -> bool:
-        self._refresh()
-        if mint not in self._flags:
-            raise OracleUndecided("undecided")
-        return self._flags[mint]
+def build_pick_oracle(cfg: dict[str, Any], now_ms: Callable[[], int] | None = None) -> PickOracle | None:
+    """The EXP-022 pick oracle from the config: `pick_file` (the exporter's live booleans file, which carries the heartbeat) and the optional
+    `pick_replay_files` (walk-2 replay booleans, OR-ed in). None when `pick_file` is not set: every buy in the seal window is then refused
+    (seal_window_no_oracle). The staleness limit is PICK_STALE_S, a code constant; config cannot move it."""
+    if not cfg.get("pick_file"):
+        return None
+    if not isinstance(cfg["pick_file"], str):
+        raise ValueError("pick_file must be a path")
+    replay = cfg.get("pick_replay_files") or []
+    if not isinstance(replay, (list, tuple)) or not all(isinstance(p, str) and p for p in replay):
+        raise ValueError("pick_replay_files must be a list of paths")
+    return PickOracle(live=[cfg["pick_file"]], replay=list(replay), stale_s=PICK_STALE_S, now_ms=now_ms)
 
 
 # --- H5's own precheck ------------------------------------------------------------------------------------------------------
@@ -878,7 +858,7 @@ def _h5_precheck_scope(run_mode: str):
 
 class H5Executor(pl.LiveExecutor):
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
-                 now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool] | None = None,
+                 now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
         self.h5cfg = cfg
         self.tier = "T0"  # the active tier (see the `h5` property); the file is read before every buy
@@ -948,6 +928,7 @@ class H5Executor(pl.LiveExecutor):
         ts0 = self.counters.tier_state
         self._tier_state_legacy = bool(ts0.get("tier")) and "realized_at_start" not in ts0  # counters from before the tier baselines were stored
         self._seal_logged_ms = 0
+        self._pick_alert_ms = -PICK_FEED_ALERT_MS
         self.save()  # state and counters exist on disk before the first ledger row, so the anti-reset guards hold from the first start
         self.counters.save(self.counters_path)
         self.paths = {"state_dir": str(Path(cfg["state_dir"])), "stop": str(run_path(cfg, "stop_file", "STOP", not self.dry_run)),
@@ -1113,6 +1094,10 @@ class H5Executor(pl.LiveExecutor):
         self._tier_step_down_due(name)
 
     def _seal_reason(self, trg: H5Trigger, now: int) -> str | None:
+        """EXP-022 s9 / DEC-024 s6. Outside [SEAL_START_MS, seal_end_ms) the oracle is not consulted. Inside it a buy goes ahead only on an
+        exact False: True (a pick), None (undecided, or the feed missing or stale > PICK_STALE_S), a non-bool or an exception all refuse.
+        Every seal reason is a count only, and _refuse asks again before it writes any per-mint refusal row, so a trigger an earlier check
+        refused is relabelled to its seal reason (no row) when the seal would refuse it too."""
         if not (SEAL_START_MS <= now < self.seal_end_ms):
             return None
         if self.pick_oracle is None or now < ORACLE_EARLIEST_MS or not Path(self.final_marker).is_file():
@@ -1252,6 +1237,10 @@ class H5Executor(pl.LiveExecutor):
                 self._alert("s0_anchor_refusals", "", count=len(self._anchor_refusal_ms), last_reason=reason)
 
     def _refuse(self, trg: H5Trigger, reason: str, **kw: Any) -> None:
+        if reason not in SEAL_REASONS:
+            sealed = self._seal_reason(trg, self.now_ms())
+            if sealed is not None:  # EXP-022 s9 / DEC-024 s6: a mint the seal would refuse (a pick, or not known to be a non-pick) never gets a
+                reason, kw = sealed, {}  # per-mint row, whatever check refused it first. The decision (refuse) is the same; only the label is.
         self._count_refusal(reason)
         if reason == SYNTHETIC_UNCONFIRMED:  # (only a trigger that skipped the parsers gets here; the parsers' refusals are counted in _bad_intent)
             self.counters.synthetic_unconfirmed += 1
@@ -1500,7 +1489,7 @@ class H5Executor(pl.LiveExecutor):
     def on_boost_row(self, mint: str, s0_slot: int | None, sps: float | None, last_slice_slot: int | None, last_slice_s: float | None) -> None:
         """BOOST last-slice timing of a closed tracked pool (seconds after s0). Every pool gets a ledger row; the halts judge the day, not the
         pool (a single early pool is noise: 27% of pools finish under 335 s while the median is 340 s):
-          (a) UTC-day median over >= 10 pools: < 335 s -> boost_median_lt_335; < 337 s on two UTC days -> boost_median_lt_337_twice;
+          (a) UTC-day median over >= BOOST_MEDIAN_MIN_POOLS (30) pools: < 335 s -> boost_median_lt_335; < 337 s on two UTC days -> boost_median_lt_337_twice;
           (c) structure floor: last slice < 300 s on 3 pools in one UTC day -> boost_structure_lt_300_x3;
           (b) the share of our landed sells whose pool's BOOST had already finished is judged in _pair_boost_with_sell."""
         sec = last_slice_s
@@ -1707,6 +1696,8 @@ class H5Executor(pl.LiveExecutor):
             elif rtype == "pool":  # per-pool close record: BOOST last-slice timing. The rule's own clock (slots x sps) first.
                 # Only a pool that ran its full horizon, with no feed gap, and whose BOOST identity is the vault PDA or the event authority
                 # (not the behavioural fallback) counts; a shutdown close, a gapped pool or a guessed BOOST wallet is ledgered and ignored.
+                if row.get("sealed") is True:  # a CAP-PICK-sealed pool (a pick, or never known not to be one): it carries no BOOST timing, and
+                    continue  # no per-mint row is written for it (EXP-022 s9, DEC-024 s6). The BOOST rules saw nothing from it before either.
                 if row.get("reason") != "horizon" or row.get("gap") is not False or row.get("boost_src") not in ("pda", "event_authority"):
                     self._log("boost_row_ignored", str(row.get("mint") or ""), why="not_horizon_clean_pda", reason_=row.get("reason"),
                               gap=row.get("gap"), boost_src=row.get("boost_src"))
@@ -2113,6 +2104,33 @@ class H5Executor(pl.LiveExecutor):
         if c.seal_skips != self._seal_logged and now - self._seal_logged_ms >= 60_000:
             self._seal_logged, self._seal_logged_ms = c.seal_skips, now
             self._log("seal_count", "", seal_skips=c.seal_skips)  # a count and nothing else
+        self._pick_feed_check(now)
+
+    def _pick_feed_check(self, now: int) -> None:
+        """DEC-024 s6: while the pick feed is missing or stale (> PICK_STALE_S) every buy in the seal window is refused; this makes that visible.
+        From ORACLE_EARLIEST_MS to the seal end, once FINAL_WRITTEN exists: alert `pick_feed_unavailable` (at most every 10 minutes) when no
+        oracle is configured or its live feed has no fresh heartbeat. It reads the feed's heartbeat only, never a mint, and no trigger is
+        involved, so the alert says nothing about any pick. An oracle without `staleness_s` (a test double) is not judged."""
+        if not (ORACLE_EARLIEST_MS <= now < self.seal_end_ms) or now - self._pick_alert_ms < PICK_FEED_ALERT_MS:
+            return
+        if not Path(self.final_marker).is_file():
+            return
+        age: float | None = None
+        if self.pick_oracle is None:
+            why = "no_oracle"
+        else:
+            fn = getattr(self.pick_oracle, "staleness_s", None)
+            if fn is None:
+                return
+            try:
+                age = fn()
+            except Exception:  # noqa: BLE001 - the check never stops the loop
+                age = None
+            if age is not None and age <= PICK_STALE_S:
+                return
+            why = "stale" if age is not None else "no_fresh_heartbeat"
+        self._pick_alert_ms = now
+        self._alert("pick_feed_unavailable", "", why=why, staleness_s=None if age is None else round(float(age), 1), stale_limit_s=PICK_STALE_S)
 
     def housekeeping(self, now: int) -> None:
         if not self.state.pending:
@@ -2466,7 +2484,11 @@ def main(argv: list[str] | None = None) -> int:
     lock_fd = acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")
     url: str | None = None
     try:
-        oracle = JsonlPickOracle(cfg["pick_file"]) if cfg.get("pick_file") else None
+        try:
+            oracle = build_pick_oracle(cfg)
+        except ValueError as exc:
+            print(f"h5_executor ALERT startup_refused pick_oracle_config ({exc})", flush=True)
+            return 2
         if mode == LIVE:
             why = start_refusal(cfg)
             if why:
