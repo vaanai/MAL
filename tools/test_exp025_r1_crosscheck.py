@@ -149,14 +149,18 @@ class BadHourTests(Base):
 
 class SealTests(Base):
     def _no_open(self):
+        self.opened = []
         def boom(*a, **k):
+            self.opened.append(a)                       # recorded, not only raised: run() turns an exception into exit 2
             raise AssertionError("a walk path was opened before the FINAL gate")
         return mock.patch.multiple(FVJ, check_hour=boom, hour_state=boom, hour_file=boom, RowReader=boom)
 
     def assert_refused(self):
         with self._no_open():
             rc, txt = self.run_x()
-        self.assertEqual(rc, 2); self.assertIn('"refused": true', txt); self.assertFalse(os.path.exists(self.out))
+        self.assertEqual(self.opened, [])
+        self.assertEqual(rc, 2); self.assertIn("sealed until the DEC-016 FINAL", txt); self.assertNotIn('"crash"', txt)
+        self.assertFalse(os.path.exists(self.out))
 
     def test_no_marker(self):
         self.marker.unlink(); self.assert_refused()
