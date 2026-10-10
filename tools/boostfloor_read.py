@@ -19,13 +19,18 @@ P6 class file. It refuses forward-1016, walk-2, fresh-*, forward-paper, runner, 
 allowlist (no `mal_catalog.check_read`: section 12, "Catalog"), any print outside the read hours, and Look 2 (walk-2 mode is a later PR).
 `classify` and `precount` compute no fill, exit or P&L: they never call the pricing functions (a test checks it).
 
-INPUT (forward mode; the extractor's meta/paths format, g_reachable_cap_book_rescore columns plus forward columns):
-  extract/meta/<day>.parquet   mint, pool, s0, v (V0 lamports, NaN when no source has it), blk == "forward-1002", mbt (block time of
-                               the `complete`), pcb (bool: a tape post_complete_buy row was seen), s0_sig, mig_sig, cmp_sig (may be "")
-  extract/paths/<day>.parquet  mint, slot, isbuy, sol, tok, q, b, th, bt (PRE-trade tape reserves, q without V), sig, ei (event_index)
-V source order (Am.1), per print, by (slot, signature, event_index): 1. forward-1002ev through `forward_v_join join` (only when P5 line A
-passed); 2. P5's getTransaction records; 3. the pool account (V0 only: an account read at >= 10-16 cannot give V(t) at a past print);
-4. none: the section 4 missing-V rule.
+INPUT (forward mode): exactly the columns `tools/h5_forward_extract.py forward` (#562) writes, checked by name (EXTRACT_*_COLUMNS):
+  extract/meta/<day>.parquet   mint, pool, mslot, mbt, s0, v, npools, blk, cslot, day, uncensored. v is the V0 of the extractor's --vmap,
+                               which keeps only V-range pools (#562 load_vmap), so a pool with no V0 is not in meta at all; blk must be
+                               "forward-1002"
+  extract/paths/<day>.parquet  mint, slot, isbuy, sol, tok, q, b, th, bt (PRE-trade tape reserves, q without V). There is no signature or
+                               event_index column, so a print is keyed by its content (slot, mint, sol, tok, q, b). `index_prints` maps
+                               that key to forward-1002's raw row (slot, signature, event_index) and its joined ev V. A key that two raw
+                               rows share is ambiguous: it gets no V (the missing-V rule) and no getTransaction record.
+V source order (Am.1), per print: 1. forward-1002ev through `forward_v_join join` (only when P5 line A passed); 2. P5's getTransaction
+records (`tools/boostfloor_inputs.py p5`), used only when the decode's (sol, tok, q, b) equal the tape's; 3. the pool account
+(`boostfloor_inputs account`; V0 only: an account read at >= 10-16 cannot give V(t) at a past print), then the extractor's vmap V0 (V0
+only); 4. none: the section 4 missing-V rule. Producers of the P5, P7, E1 and BOOST-PDA files: tools/boostfloor_inputs.py.
 
 OUTPUT. Verdict and report on stderr first, then (new, empty dir) report.json and rows.csv, then the `completed` ledger line.
 """
@@ -108,9 +113,17 @@ class Layout:
     @property
     def cross_source(self) -> Path: return self.p5 / "cross_source.json"  # {"line_a_pass": bool, counts...}
     @property
-    def gettx_v(self) -> Path: return self.p5 / "gettx_v.jsonl"  # {slot, signature, event_index, virtual_quote_reserves}
+    def gettx_v(self) -> Path: return self.p5 / "gettx_v.jsonl"  # boostfloor_inputs p5: {key, slot, signature, event_index, status, decoded}
     @property
     def account_v0(self) -> Path: return self.p5 / "account_v0.json"  # {pool: V0 lamports} from exp012_forward_vmap (v_base)
+    @property
+    def account_map(self) -> Path: return self.p5 / "account" / "map.json"  # exp012_forward_vmap fetch --new, at or after 10-16T00Z
+    @property
+    def line_a_sample(self) -> Path: return self.p5 / "line_a_sample.jsonl"  # the cross-source check's prints (ids in the file only)
+    @property
+    def p7_sample(self) -> Path: return self.p5 / "p7_sample.jsonl"  # P7's 1,000 prints, chosen outcome-blind by `inputs p5`
+    @property
+    def boost_pda(self) -> Path: return self.p5 / "boost_pda.jsonl"  # section 13: per-pool BOOST vault-authority slices (`inputs boost-pda`)
     @property
     def classes(self) -> Path: return self.root / "p6" / f"classes-look{self.look}.jsonl"  # {pool, mint, class, reason}
     @property
@@ -171,8 +184,15 @@ REPORT_ONLY = {  # section 13, never deciding: name -> price_cell keyword argume
     "D_only_a": dict(cell=(1.9, 0.55, False), corr="a"),
     "D_only_b": dict(cell=(1.9, 0.55, False), corr="b"),
 }
-NOT_COMPUTED = ("sell-retry stress", "START bound and worse of START/END", "BOOST last slice per pool (PDA) and the ended-before-exit share",
-                "detector vs PDA disagreement", "post-BOOST control [360, 600] s held to +840 s")  # section 13 items this build does not compute
+NOT_COMPUTED: tuple[str, ...] = ()  # section 13 items this build does not compute (none since the producers PR)
+SECTION13_ROWS = ("D_start", "D_worse_start_end", "D_sell_retry", "C_post_boost")  # report-only rows beyond REPORT_ONLY
+SELL_RETRY_S = 2.0  # sell-retry stress: a failed sell is retried every 2 s at +55,000 lamports
+SELL_RETRY_MAX = 30  # attempts priced (60 s); the probability mass left after attempt 30 is priced at attempt 30
+CONTROL_WINDOW_S = (360.0, 600.0)  # post-BOOST control: the trigger's price condition (a sell leaving Q <= 40 SOL) in [360, 600] s
+CONTROL_EXIT_S = 840.0  # ... held to s0 + 840 s (s0-relative, as the rule's 330 s exit). No BOOST-budget condition: BOOST is over by then
+BOOST_ENDED_MAX_SHARE = 0.15  # no-live: BOOST ended before our exit landed on > 15% of the traded pools (section 11)
+EXTRACT_META_COLUMNS = ("mint", "pool", "mslot", "mbt", "s0", "v", "npools", "blk", "cslot", "day", "uncensored")  # #562 meta, in order
+EXTRACT_PATHS_COLUMNS = ("mint", "slot", "isbuy", "sol", "tok", "q", "b", "th", "bt")  # #562 paths, in order
 GUARD = 0.15  # B2 min_out = floor(cp_buy_out(0.1 SOL, Q_i, B_i, tier) / 1.15)
 HAIRCUT = 1 - (1 - 0.002608) * (1 - 0.0016)  # correction (a), on sell proceeds after the pool fee
 E1_PROBE_STAKE = 50_000_000.0  # r-bar is per 0.05 SOL trip; (b) = max(0, -r-bar) * stake / 0.05 SOL (= -2 r-bar at 0.1 SOL)
@@ -399,7 +419,59 @@ def write_new(path: Path, data: bytes) -> None:
 
 
 # ---- V sources (Am.1) -----------------------------------------------------------------------------------------------------
-Key = tuple[int, str, int]
+Key = tuple[int, str, int, int, int, int]  # (slot, mint, sol, tok, q, b): a print's content. #562's paths carry no signature
+
+
+def content_key(slot: Any, mint: Any, sol: Any, tok: Any, q: Any, b: Any) -> Key:
+    return (int(slot), str(mint), *(int(x) if type(x) is int else int(round(float(x))) for x in (sol, tok, q, b)))  # type: ignore[return-value]
+
+
+def raw_key(r: Mapping[str, Any]) -> Key | None:
+    try:
+        return content_key(r["slot"], r["mint"], r["sol_lamports"], r["token_raw"], r["quote_reserve"], r["base_reserve"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class PrintRef:
+    slot: int
+    signature: str | None  # None: two raw rows share the content key (ambiguous: no V, no fetch)
+    event_index: int | None
+    ev_v: int | None  # forward-1002ev's V through the join; None when the join gave none
+
+
+def index_prints(base_dir: Path, vjoin_dir: Path, mints: set[str], hours: Sequence[str] = READ_HOURS,
+                 rows_of: Callable[[str], Iterable[Mapping[str, Any]]] | None = None) -> tuple[dict[Key, PrintRef], list[str]]:
+    """forward-1002's raw PumpSwap rows of `mints` in the read hours, by content key, with the joined ev V. It opens trade files, so callers
+    check the FINAL first. An hour that is not walked or stops on an unreadable line is listed and its rest skipped (Coverage marks it bad)."""
+    from tools import forward_v_join as J
+
+    refuse_name(base_dir)
+    refuse_name(vjoin_dir)
+    rows_of = rows_of or (lambda h: J.iter_joined_rows(base_dir, vjoin_dir, h))
+    out: dict[Key, PrintRef] = {}
+    skipped: list[str] = []
+    for h in hours:
+        refuse_hour(h)
+        try:
+            for r in rows_of(h):
+                if r.get("venue") != "pumpswap" or r.get("mint") not in mints:
+                    continue
+                k = raw_key(r)
+                if k is None:
+                    continue
+                v = r.get("virtual_quote_reserves")
+                ei = r.get("event_index")
+                ref = PrintRef(k[0], str(r.get("signature")), int(ei) if type(ei) is int else None, v if type(v) is int else None)
+                out[k] = PrintRef(k[0], None, None, None) if k in out else ref
+        except (J.HourReadError, ValueError):
+            skipped.append(h)
+    return out, skipped
+
+
+def ev_map(index: Mapping[Key, PrintRef]) -> dict[Key, int]:
+    return {k: r.ev_v for k, r in index.items() if r.ev_v is not None and r.signature is not None}
 
 
 @dataclass
@@ -408,56 +480,51 @@ class VSources:
     gettx: dict[Key, int]
     account_v0: dict[str, int]
 
-    def v(self, key: Key) -> tuple[float, str]:
+    def v(self, key: Any) -> tuple[float, str]:
         if self.ev is not None and key in self.ev:
             return float(self.ev[key]), "ev"
         if key in self.gettx:
             return float(self.gettx[key]), "gettx"
         return math.nan, "none"
 
-    def v0(self, key: Key, pool: str) -> tuple[float, str]:
+    def v0(self, key: Any, pool: str, vmap_v0: float = math.nan) -> tuple[float, str]:
         v, src = self.v(key)
         if src != "none":
             return v, src
         if pool in self.account_v0:
             return float(self.account_v0[pool]), "account"
+        if vmap_v0 == vmap_v0:
+            return float(vmap_v0), "extract_vmap"
         return math.nan, "none"
 
 
-def _rec_key(r: Mapping[str, Any]) -> Key | None:
-    try:
-        return int(r["slot"]), str(r["signature"]), int(r["event_index"])
-    except (KeyError, TypeError, ValueError):
-        return None
+def load_gettx(path: Path) -> dict[Key, int]:
+    """P5 source 2: a record gives V only when its fetch decoded the print and the decode's (sol, tok, q, b) equal the tape print's."""
+    out: dict[Key, int] = {}
+    if not path.is_file():
+        return out
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            r = json.loads(ln)
+            v = (r.get("decoded") or {}).get("virtual_quote_reserves")
+            if r.get("status") == "ok" and r.get("fields_equal") is True and type(v) is int:
+                out[content_key(*r["key"])] = v
+    return out
 
 
-def load_vsources(lay: Layout) -> VSources:
+def load_vsources(lay: Layout, index: Mapping[Key, PrintRef]) -> VSources:
     cs = json.loads(lay.cross_source.read_text(encoding="utf-8")) if lay.cross_source.is_file() else None
     if cs is None:
         raise Refused(f"P5 not done: {lay.cross_source} is missing (condition (e))")
-    ev: dict[Key, int] | None = None
-    if cs.get("line_a_pass") is True:
-        from tools.forward_v_join import RowReader, hour_file_named
-
-        ev = {}
-        for h in READ_HOURS:
-            f = hour_file_named(lay.vjoin, f"v-{h}")
-            if f is None:
-                continue
-            for r in RowReader(f):
-                k = _rec_key(r)
-                if k is not None and isinstance(r.get("virtual_quote_reserves"), int):
-                    ev[k] = int(r["virtual_quote_reserves"])
-    gettx: dict[Key, int] = {}
-    if lay.gettx_v.is_file():
-        for ln in lay.gettx_v.read_text(encoding="utf-8").splitlines():
-            if ln.strip():
-                r = json.loads(ln)
-                k = _rec_key(r)
-                if k is not None and isinstance(r.get("virtual_quote_reserves"), int):
-                    gettx[k] = int(r["virtual_quote_reserves"])
     acct = json.loads(lay.account_v0.read_text(encoding="utf-8")) if lay.account_v0.is_file() else {}
-    return VSources(ev, gettx, {str(k): int(v) for k, v in acct.items() if isinstance(v, int)})
+    return VSources(ev_map(index) if cs.get("line_a_pass") is True else None, load_gettx(lay.gettx_v),
+                    {str(k): int(v) for k, v in acct.items() if type(v) is int})
+
+
+def load_pda(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.is_file():
+        return {}
+    return {str(r["pool"]): r for r in (json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()) if "pool" in r}
 
 
 # ---- pools (extractor format) ---------------------------------------------------------------------------------------------
@@ -474,7 +541,9 @@ class FwdPool:
     path: bf.PoolPath
     vt: np.ndarray  # V(t) per print (the stored V of the print's event), NaN when no source has it
     vt_src: list[str] = field(default_factory=list)
-    sigs: dict[str, str] = field(default_factory=dict)  # s0_sig, mig_sig, cmp_sig from the tape (locate only, Am.4 B4)
+    sigs: dict[str, str] = field(default_factory=dict)  # locate hints for classify (Am.4 B4); #562's meta has none, so classify finds them
+    keys: list[Any] = field(default_factory=list)  # content key per print (index into P5's records)
+    pda: dict[str, Any] | None = None  # section 13: BOOST vault-authority slices (boost_pda.jsonl), report-only
 
 
 def classify_from(tape_pcb: bool, rpc_class: str | None) -> str:
@@ -508,6 +577,9 @@ def load_pools(lay: Layout, vs: VSources, classes: Mapping[str, str]) -> list[Fw
             continue
         refuse_day(day)
         meta, paths = pd.read_parquet(mp), pd.read_parquet(pp)
+        for f, df, cols in ((mp, meta, EXTRACT_META_COLUMNS), (pp, paths, EXTRACT_PATHS_COLUMNS)):
+            if tuple(df.columns) != cols:
+                raise Refused(f"{f}: columns {list(df.columns)} are not the extractor's {list(cols)} (#562)")
         if set(meta.blk.astype(str)) - {BLOCK}:
             raise Refused(f"{mp}: block {sorted(set(meta.blk.astype(str)) - {BLOCK})} refused (forward-1002 only)")
         if len(paths) and (int(paths.bt.min()) < lo or int(paths.bt.max()) >= hi):
@@ -520,12 +592,12 @@ def load_pools(lay: Layout, vs: VSources, classes: Mapping[str, str]) -> list[Fw
             g = groups.get(r.mint)
             if g is None:
                 continue
-            g = g[g.slot >= int(r.s0)].sort_values(["slot", "ei"], kind="stable")
+            g = g[g.slot >= int(r.s0)]  # the extractor's order (slot, tx_index, event_index, ...) is kept: no re-sort
             if not len(g):
                 continue
-            keys = list(zip(g.slot.astype(int), g.sig.astype(str), g.ei.astype(int)))
+            keys = [content_key(*t) for t in zip(g.slot, [r.mint] * len(g), g.sol, g.tok, g.q, g.b)]
             vv = [vs.v(k) for k in keys]
-            v0, v0_src = (float(r.v), "extract") if r.v == r.v else vs.v0(keys[0], str(r.pool))
+            v0, v0_src = vs.v0(keys[0], str(r.pool), float(r.v) if r.v == r.v else math.nan)
             pools.append(FwdPool(
                 mint=str(r.mint), pool=str(r.pool), s0=int(r.s0), s0_bt=int(g.bt.iloc[0]), mbt=int(r.mbt), v0=v0, v0_src=v0_src,
                 cls=classify_from(bool(getattr(r, "pcb", False)), classes.get(str(r.pool))),
@@ -533,8 +605,33 @@ def load_pools(lay: Layout, vs: VSources, classes: Mapping[str, str]) -> list[Fw
                                  isb=g.isbuy.values.astype(bool), sol=g.sol.values.astype(float), tok=g.tok.values.astype(float),
                                  th=g.th.values.astype(np.uint64), bt=g.bt.values.astype(np.int64)),
                 vt=np.array([x[0] for x in vv], float), vt_src=[x[1] for x in vv],
-                sigs={k: str(getattr(r, k, "") or "") for k in ("s0_sig", "mig_sig", "cmp_sig")}))
+                sigs={k: str(getattr(r, k, "") or "") for k in ("s0_sig", "mig_sig", "cmp_sig")}, keys=keys))
     return pools
+
+
+def extract_mints(lay: Layout) -> set[str]:
+    import pandas as pd
+
+    refuse_name(lay.extract)
+    out: set[str] = set()
+    for day in READ_DAYS:
+        mp = lay.extract / "meta" / f"{day}.parquet"
+        if mp.is_file():
+            refuse_day(day)
+            out.update(pd.read_parquet(mp, columns=["mint"]).mint.astype(str))
+    return out
+
+
+def forward_pools(lay: Layout, classes: Mapping[str, str], *, p5_stage: bool = False) -> tuple[list[FwdPool], dict[Key, PrintRef]]:
+    """Production loader: index the raw prints, take V by the source order, attach the BOOST PDA records. `p5_stage`: before P5 exists,
+    V is forward-1002ev's alone (Am.1: the cross-source sample's triggers are found with the joined V)."""
+    index, _ = index_prints(FORWARD_1002, lay.vjoin, extract_mints(lay))
+    vs = VSources(ev_map(index), {}, {}) if p5_stage else load_vsources(lay, index)
+    pools = load_pools(lay, vs, classes)
+    pda = load_pda(lay.boost_pda)
+    for p in pools:
+        p.pda = pda.get(p.pool)
+    return pools, index
 
 
 # ---- structure (no prices): universe, trigger, exclusions. Used by precount and look alike -------------------------------
@@ -659,8 +756,11 @@ def correction(proceeds: float, stake: float, rbar: float, which: str = "max") -
 
 
 def price_cell(p: FwdPool, s: Struct, cell: tuple[float, float, bool], *, rbar: float, stake: float = STAKE, literal_v0: bool = False,
-               corr: str = "max", exit_s: float = EXIT_S) -> dict[str, Any] | None:
-    """One pool, one leg. Lower P&L over the V0 cases (unknown V0) and the missing-V(t) cases (section 4). None: no exit after landing."""
+               corr: str = "max", exit_s: float = EXIT_S, bound: str = "end", sell_delay_slots: int = 0,
+               touch: set[int] | None = None) -> dict[str, Any] | None:
+    """One pool, one leg. Lower P&L over the V0 cases (unknown V0) and the missing-V(t) cases (section 4). None: no exit after landing.
+    bound "start" (section 13): our buy and sell land before every print of their slot. sell_delay_slots moves the sell (retry stress).
+    touch: collect the landing- and exit-state print indices and return None without pricing anything (P5's fetch plan)."""
     entry_s, lag_s, guard = cell
     sl, q, b = p.path.sl, p.path.q, p.path.b
     sol, isb = np.asarray(p.path.sol, float), p.path.isb
@@ -669,15 +769,18 @@ def price_cell(p: FwdPool, s: Struct, cell: tuple[float, float, bool], *, rbar: 
     best: dict[str, Any] | None = None
     for tr in s.trigs:
         landing = int(sl[tr.i]) + math.ceil(entry_s / s.sps - 1e-9)
-        xl = exit_slot + math.ceil(lag_s / s.sps - 1e-9)
+        xl = exit_slot + math.ceil(lag_s / s.sps - 1e-9) + sell_delay_slots
         if exit_slot <= landing:
             continue
 
         def st(slot: int) -> tuple[float, float, int]:
-            j = state_index(sl, slot)
+            j = state_index(sl, slot) if bound == "end" else int(np.searchsorted(sl, slot, "left"))
             return (float(q[j]), float(b[j]), j) if j < len(sl) else (float(qtp[-1]), float(btp[-1]), len(sl) - 1)
 
         (qe_t, be, je), (qx_t, bx, jx) = st(landing), st(xl)
+        if touch is not None:
+            touch.update((je, jx))
+            continue
         missing = False
         if literal_v0:
             cases = [(tr.v0, tr.v0)]
@@ -713,7 +816,7 @@ def apply_fail(rows: list[dict[str, Any]]) -> None:
     """Flat and pressure legs in place. The curve's intercept is refit on this cell's own sends (section 6). A reverted B2 buy is -55,000
     under both legs (section 5)."""
     if not rows:
-        return
+        return None
     curve = fit_curve([Pressure(int(r["ssb"]), int(r["nb_lamports"])) for r in rows])
     for r in rows:
         p = curve.p(Pressure(int(r["ssb"]), int(r["nb_lamports"])))
@@ -726,6 +829,99 @@ def apply_fail(rows: list[dict[str, Any]]) -> None:
 
 
 # ---- statistics (section 7) -----------------------------------------------------------------------------------------------
+    return curve
+
+
+# ---- section 13 (report-only, never deciding) -------------------------------------------------------------------------------
+def control_struct(p: FwdPool, s: Struct, good_hours: frozenset[str]) -> Struct | None:
+    """Post-BOOST control: the first sell in [360, 600] s that leaves Q (tape quote + V0) <= 40 SOL, held to s0 + 840 s, with D's entry and
+    lag. None when the pool has no such print, its hours to the control's exit are not all good, or it straddles the slot switch."""
+    if s.status not in ("trigger", "no_trigger"):
+        return None
+    sl, isb, sps = p.path.sl, p.path.isb, s.sps
+    last = p.s0 + int(round(CONTROL_EXIT_S / sps)) + math.ceil(CELLS["D"][1] / sps - 1e-9)
+    exit_bt = p.s0_bt + (last - p.s0) * sps
+    need = [_hour(t) for t in range(_ts(_hour(p.mbt)), int(exit_bt) + 1, 3600)] + [_hour(exit_bt)]
+    if any(h not in good_hours for h in need) or p.s0 < SLOT_SWITCH <= last:
+        return None
+    t = (sl - p.s0) * sps
+    trigs = []
+    for v0 in (V0_UNKNOWN_CASES if s.v0_unknown else (p.v0,)):
+        qpost, bpost = bf.post_trade_state(p.path.q + v0, p.path.b, isb, np.asarray(p.path.sol, float), p.path.tok)
+        idx = np.flatnonzero((qpost / 1e9 <= bf.Q_STAR_SOL) & (t >= CONTROL_WINDOW_S[0]) & (t <= CONTROL_WINDOW_S[1]) & (~isb))
+        if len(idx):
+            trigs.append(Trig(v0, int(idx[0]), qpost, bpost))
+    return Struct("trigger", s.date, sps, trigs, s.v0_unknown) if trigs else None
+
+
+def sell_retry(p: FwdPool, s: Struct, curve: Any, rbar: float) -> dict[str, Any] | None:
+    """Sell-retry stress on D: attempt k lands k * ceil(2 s / sps) slots after D's sell and fails with its own pressure p (D's refit curve,
+    the sell's landing slot); each retry adds 55,000 lamports. Expected P&L over the attempts; the mass left after the last attempt is priced
+    there. The buy's fail legs apply on top, as for every leg."""
+    step = math.ceil(SELL_RETRY_S / s.sps - 1e-9)
+    sl, isb, sol = p.path.sl, p.path.isb, np.asarray(p.path.sol, float)
+    first, total, mass, attempts = None, 0.0, 1.0, 0.0
+    for k in range(SELL_RETRY_MAX):
+        r = price_cell(p, s, CELLS["D"], rbar=rbar, sell_delay_slots=k * step)
+        if r is None:
+            return None
+        first = first or r
+        pk = 0.0 if k == SELL_RETRY_MAX - 1 else float(curve.p(Pressure(*(int(x) for x in bf.pressure_at(sl, isb, sol, r["exit_landing_slot"], s.sps)))))
+        total += mass * (1 - pk) * (r["pnl_lamports"] - k * PRIO)
+        attempts += mass * (1 - pk) * (k + 1)
+        mass *= pk
+    return {**first, "pnl_lamports": total, "sell_attempts_expected": attempts}
+
+
+def detector_vs_pda(p: FwdPool) -> str:
+    """The rule's tape detector against the per-pool PDA: agree when every detected BOOST buy's slot is a slot of the vault authority's
+    signature list (which also holds the funding migrate and 0-2 non-keeper txs, so it is a superset test)."""
+    pda = p.pda
+    sl, sol, isb = p.path.sl, np.asarray(p.path.sol, float), p.path.isb
+    det = bf.detect_boost_wallet(sl, p.s0, p.path.th, sol, isb)
+    if pda is None or "error" in pda:
+        return "pda_unknown"
+    slots = set(int(x) for x in pda.get("slice_slots") or [])
+    if det is None:
+        return "both_none" if not slots else "pda_only"
+    mine = set(int(x) for x in sl[(p.path.th == np.uint64(det)) & isb & ((sl - p.s0) <= bf.BOOST_WINDOW_SLOTS)])
+    if not slots:
+        return "detector_only"
+    return "agree" if mine <= slots else "disagree"
+
+
+def mechanism(d_rows: Sequence[Mapping[str, Any]], pools: Mapping[str, FwdPool]) -> dict[str, Any]:
+    """Section 13 mechanism on D's trades: each pool's BOOST last slice (PDA, verified keeper slice) against our exit landing time, the two
+    groups' means, and the detector-vs-PDA table. A pool with no slice at all had BOOST end at 0 s. An unknown pool counts as ended in the
+    upper share, which the no-live rule uses (it can only remove support)."""
+    groups: dict[str, list[Mapping[str, Any]]] = {"ended": [], "running": [], "unknown": []}
+    last: dict[str, float | None] = {}
+    table: dict[str, int] = {}
+    for r in d_rows:
+        p = pools[r["mint"]]
+        exit_bt = r["s0_bt"] + (r["exit_landing_slot"] - p.s0) * r["sps"]
+        pda = p.pda
+        if pda is None or "error" in pda or (not pda.get("no_slices") and pda.get("last_bt") is None):
+            g, lt = "unknown", None
+        else:
+            lt = float(p.s0_bt) if pda.get("no_slices") else float(pda["last_bt"])
+            g = "ended" if lt < exit_bt else "running"
+        groups[g].append(r)
+        last[r["mint"]] = None if lt is None else lt - p.s0_bt
+        k = detector_vs_pda(p)
+        table[k] = table.get(k, 0) + 1
+    n = len(d_rows)
+    known = len(groups["ended"]) + len(groups["running"])
+    means = {g: {leg: (float(np.mean([x[f"pnl_{leg}_lamports"] for x in rs]) / 1e9) if rs else None) for leg in ("flat", "press")}
+             for g, rs in groups.items()}
+    vals = sorted(v for v in last.values() if v is not None)
+    return {"n_trades": n, "ended_before_exit": len(groups["ended"]), "running_at_exit": len(groups["running"]), "unknown": len(groups["unknown"]),
+            "share_ended_known": len(groups["ended"]) / known if known else None,
+            "share_ended_upper": (len(groups["ended"]) + len(groups["unknown"])) / n if n else None, "group_mean_sol": means,
+            "last_slice_after_s0_s": {"n": len(vals), "median": float(np.median(vals)) if vals else None}, "detector_vs_pda": dict(sorted(table.items()))}
+
+
+
 def _betacf(a: float, b: float, x: float) -> float:
     tiny, qab, qap, qam = 1e-300, a + b, a + 1.0, a - 1.0
     c, d = 1.0, 1.0 - qab * x / qap
@@ -893,12 +1089,22 @@ def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
         report.update(verdict="NOT_DECIDABLE", reasons=pre, outcomes_computed=False)
         return report
     cells_rows: dict[str, list[dict[str, Any]]] = {c: [] for c in CELLS}
-    extra: dict[str, list[dict[str, Any]]] = {k: [] for k in REPORT_ONLY}
+    extra: dict[str, list[dict[str, Any]]] = {k: [] for k in list(REPORT_ONLY) + list(SECTION13_ROWS)}
+    traded: list[tuple[FwdPool, Struct]] = []
     for p in inp.pools:
         s = structure(p, inp.good_hours)
+        ctrl = control_struct(p, s, inp.good_hours)
+        if ctrl is not None:
+            r = price_cell(p, ctrl, CELLS["D"], rbar=inp.rbar, exit_s=CONTROL_EXIT_S)
+            if r is not None:
+                extra["C_post_boost"].append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
         if s.status != "trigger":
             continue
+        traded.append((p, s))
         base = dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt)
+        r = price_cell(p, s, CELLS["D"], rbar=inp.rbar, bound="start")
+        if r is not None:
+            extra["D_start"].append({**base, **r})
         for c, cell in CELLS.items():
             r = price_cell(p, s, cell, rbar=inp.rbar)
             if r is not None:
@@ -908,8 +1114,17 @@ def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
             r = price_cell(p, s, kw.pop("cell"), rbar=inp.rbar, **kw)
             if r is not None:
                 extra[name].append({**base, **r})
-    for rows in list(cells_rows.values()) + list(extra.values()):
-        apply_fail(rows)
+    by_end = {r["mint"]: r for r in cells_rows["D"]}
+    extra["D_worse_start_end"] = [dict(min((by_end[r["mint"]], r), key=lambda x: x["pnl_lamports"])) for r in extra["D_start"] if r["mint"] in by_end]
+    curves = {}
+    for name, rows in list(cells_rows.items()) + list(extra.items()):
+        curves[name] = apply_fail(rows)
+    if curves.get("D") is not None:
+        for p, s in traded:
+            r = sell_retry(p, s, curves["D"], inp.rbar)
+            if r is not None:
+                extra["D_sell_retry"].append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
+        apply_fail(extra["D_sell_retry"])
     stats = {c: {leg: leg_stats([r[f"pnl_{leg}_lamports"] for r in rows], [r["date"] for r in rows]) for leg in ("flat", "press")}
              for c, rows in cells_rows.items()}
     v = verdict(stats, LOOK1["alpha"])
@@ -946,7 +1161,11 @@ def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
                if rep_only.get("R_exit_340", {}).get(leg, {}).get("mean_sol", 0.0) <= 0]
     if not all(v["binding"]["B2"].values()):
         no_live.append("binding leg B2 failed")
-    report.update(no_live=no_live, not_computed_section13=list(NOT_COMPUTED))
+    mech = mechanism(cells_rows["D"], {p.mint: p for p, _ in traded})
+    if mech["share_ended_upper"] is not None and mech["share_ended_upper"] > BOOST_ENDED_MAX_SHARE:
+        no_live.append(f"BOOST ended before our exit on {mech['ended_before_exit']} + {mech['unknown']} unknown of {mech['n_trades']} "
+                       f"traded pools (> 15%, unknown counted as ended)")
+    report.update(no_live=no_live, not_computed_section13=list(NOT_COMPUTED), mechanism=mech)
     report.update(verdict=v["verdict"], decision=v, cells=stats, report_only=rep_only, rows_md5=rows_md5(cells_rows), outcomes_computed=True,
                   n_rows={c: len(r) for c, r in cells_rows.items()})
     report["_rows"] = {**cells_rows, **extra}
@@ -1088,7 +1307,7 @@ def production_inputs(lay: Layout) -> LookInputs:
     if not lay.precount.is_file():
         raise Refused(f"P6 not done: {lay.precount} is missing (condition (e))")
     good, bad = _good_bad(FORWARD_1002)
-    pools = load_pools(lay, load_vsources(lay), load_classes(lay.classes))
+    pools, _ = forward_pools(lay, load_classes(lay.classes))
     return LookInputs(pools, good, bad, rbar, e1_n, a3, p7, json.loads(lay.precount.read_text(encoding="utf-8")))
 
 
@@ -1129,7 +1348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if lay.classes.exists():
                 raise Refused(f"{lay.classes} exists: classes are written once")
             good, _ = _good_bad(FORWARD_1002)
-            pools = load_pools(lay, load_vsources(lay), {})
+            pools = load_pools(lay, VSources(None, {}, {}), {})  # V0 from the extractor's vmap; classify needs no P5 file
             recs = classify_pools(M.RpcClient(M.DEFAULT_RPC, max_calls=60_000), pools)
             write_new(lay.classes, "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs).encode())
             counts: dict[str, int] = {}
@@ -1139,7 +1358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if a.cmd == "precount":
             good, bad = _good_bad(FORWARD_1002)
-            pc = precount(load_pools(lay, load_vsources(lay), load_classes(lay.classes)), good, bad)
+            pc = precount(forward_pools(lay, load_classes(lay.classes))[0], good, bad)
             text = json.dumps(pc, indent=1, sort_keys=True)
             print(text)
             write_new(lay.precount, (text + "\n").encode())
