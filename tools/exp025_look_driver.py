@@ -40,6 +40,14 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
      (each manifest's kind/hour files, plus v_ok/<hour> for the trades files of event-V manifests), NOT_READY otherwise:
      convert never deletes an earlier assembly's file for an allowlisted hour whose source file is now missing, which the
      runner would count unwalked (R1) while pass A still read it.
+  4b. History (section 11.2 items 2 and 3; always in look mode): copy_p2_history copies P2's 36 out/mout files and 36 wl days
+     from P2's working directory (P2_SRC) into <O>/out/mout and <O>/wl, each file's sha256 checked against Amendment 4's
+     mout_sha256.txt / wl_sha256.txt (whose own sha256 is pinned in P2_HISTORY); a file already there with the right hash is
+     kept; leftover *.tmp and every non-P2 wl day are removed. build_wl_days then deletes and rebuilds every October wl day
+     (OCT_WL_FIRST to the day before LOOKS[look]['end']) with the pinned ledger/01_wallet_daily_det.py (sha256 checked
+     against SHA256SUMS) on <O>/tape/trades, after checking every input trades file against this assembly's manifests
+     (sha256_with_v_ok for merged files). The provenance (the script's sha256; per day the input files' sha256s, the
+     wallet-row count and the output's sha256) goes into the record's history.wl_provenance. NOT_READY on any mismatch.
   5. V0 rows: V at each pool's first print over the same V0 files the adapter's convert used (look_trade_files minus the
      manifests' v0_bad), via the adapter's collect_v0. In a look, every event-V manifest must list the same v0_bad files and
      have v0_files equal to the driver's V0 file count (NOT_READY otherwise: tokens.v0_lamports would not be the V0 the tape's
@@ -51,16 +59,14 @@ Order (`look`). Nothing October is opened before every check that needs no Octob
   6. <O>/hunt-shared/tokens.parquet = append_tokens(exploration tokens.parquet, sha256 pinned, then the October rows);
      <O>/hunt-shared/bars_1m/<block> = symlinks to the exploration block directories and the October ones (a block name in
      both refuses at a look).
-  7. Look mode: check_look_history (section 11.2 items 2 and 3) refuses NOT_READY unless <O>/out/mout holds exactly P2's 36
+  7. check_look_history (section 11.2 items 2 and 3) refuses NOT_READY unless <O>/out/mout holds exactly P2's 36
      mout files with Amendment 4's mout_sha256.txt hashes (12_passC reads out/mout/*.parquet) and <O>/wl holds exactly P2's
      36 days per wl_sha256.txt plus one file per October date from 2026-10-02 to the day before LOOKS[look]['end']
-     (11_passA lists O/wl). Their counts and sha256s go into the record.
+     (11_passA lists O/wl), each October day with the sha256 step 4b's ledger run wrote. Counts and sha256s go into the record.
   8. <O>/look_assembly.json, written atomically, then exp025_look.load_assembly(look, O) on it (the runner's own check).
 
-Not done here: copying P2's out/mout and wl days into the look's O, and building the October wl days with the pinned
-ledger/01_wallet_daily_det.py on O/tape/trades (section 11.2 items 2 and 3) come in a follow-up PR. Until then step 7
-refuses NOT_READY in look mode and the driver writes no look_assembly.json for a look. Also not here: the R1 cross-check
-record, P7. The driver prices, labels and picks nothing; stdout carries counts only (no pool, mint, V0, pick, label, fill,
+Not here: the R1 cross-check record, P7, and any October pass-A output in out/mout (the runner writes it inside the lock;
+a non-P2 file in out/mout at assembly time refuses NOT_READY). The driver prices, labels and picks nothing; stdout carries counts only (no pool, mint, V0, pick, label, fill,
 exit or P&L).
 
 `e0` runs steps 4 to 6 and 8 in exploration mode (adapter convert with look=None: exploration hours only, sealed paths refused)
@@ -68,7 +74,9 @@ on the adapter E0's own inputs (exp025_adapter.E0_SRC / E0_BLOCK, day E0_DAY) in
 exp025_look.load_assembly accepts the record and that exp025_look.hour_status refuses it R12 (its hours are not a look's).
 The E0 day has no virtual_quote_reserves (it predates event V), so its vmap is empty and every v_ok is false. The E0
 record also carries october_tokens_sha256 and v_ok_missing (the E0 tape's trades files with no v_ok column, by
-parquet_schema); `pass` needs v_ok_missing == 0.
+parquet_schema); `pass` needs v_ok_missing == 0. The E0 also runs step 4b with no October day (P2's history copied into
+E0_O, check_look_history on it) and runs build_wl_days on the E0 tape's own E0_DAY into <E0_O>/assembly/e0-wl (never wl/):
+`pass` needs that day's sha256 to equal P2's wl_sha256.txt entry for E0_DAY.
 Run with the audit venv (/data/mal/audit-1008/venv/bin/python: duckdb, pyarrow, numpy).
 """
 from __future__ import annotations
@@ -77,6 +85,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +108,8 @@ P2_HISTORY = {
     "wl": ("/data/mal/c1nf/p2/wl_sha256.txt", "026310101a60f8a6d7c1c34f4c38374ca5015d6d7f42d907adaee2c0cd2d6431"),
 }
 P2_DAYS = 36
+P2_SRC = "/data/mal/hunt-1008/c1nf-p2"   # P2's working directory (out/mout, wl), kept for look assembly (Amendment 4)
+LEDGER_REL = "ledger/01_wallet_daily_det.py"   # the pinned deterministic wallet ledger (ARTIFACTS/exp025, SHA256SUMS)
 OCT_WL_FIRST = "2026-10-02"   # the first October tape date (forward-1002 from 10-02T15)
 SRC_OF_BLOCK = {b: s for s, b in L.BLOCK_OF_SOURCE.items()}
 
@@ -197,18 +208,123 @@ def _p2_manifest(kind: str) -> tuple:
     return path, pinned, rows
 
 
-def check_look_history(look: int, O: str) -> dict:
-    """Section 11.2 items 2 and 3, in look mode before look_assembly.json is written. NOT_READY unless
-    (a) O/out/mout holds exactly P2's 36 mout files, each with mout_sha256.txt's hash (12_passC reads out/mout/*.parquet), and
-    (b) O/wl holds exactly P2's 36 days per wl_sha256.txt plus one file per October date from OCT_WL_FIRST to the day before
-        LOOKS[look]['end'] (11_passA lists O/wl: no wl/ crashes pass A inside the lock; a missing day is silent
-        creator-history and new-wallet drift).
-    The October days are checked for presence only and their sha256 recorded; building them with the pinned
-    ledger/01_wallet_daily_det.py on O/tape/trades is the follow-up PR's. Returns counts and sha256s for the record."""
+def _hist_dirs(root: str) -> dict:
+    """Where pass C (out/mout) and pass A (wl) read the history, under P2's working directory or a look's O."""
+    return {"mout": os.path.join(root, "out", "mout"), "wl": os.path.join(root, "wl")}
+
+
+def copy_p2_history(O: str, src: str = P2_SRC) -> dict:
+    """Section 11.2 items 2-3, part (a): P2's 36 out/mout files and 36 wl days, from P2's working directory (Amendment 4: kept
+    for look assembly) into O/out/mout and O/wl, each checked against Amendment 4's manifests (_p2_manifest: the manifest's
+    own sha256 is pinned). A destination file that already has the manifest's hash (and is not a symlink) is kept; any other is
+    replaced: the source must have the manifest's hash, it is copied to <name>.tmp, the copy re-hashed, then os.replace.
+    Leftover *.tmp files go, and in O/wl every *.parquet that is not one of P2's days goes too (October days are rebuilt by
+    build_wl_days from this assembly's tape; anything else in wl would be read by 11_passA). Nothing outside O/out/mout and
+    O/wl is written, and the source is only read. NOT_READY on any hash mismatch."""
     out = {}
-    for kind, d in (("mout", os.path.join(O, "out", "mout")), ("wl", os.path.join(O, "wl"))):
+    sd, dd = _hist_dirs(src), _hist_dirs(O)
+    for kind in ("mout", "wl"):
         path, pinned, p2 = _p2_manifest(kind)
-        want = set(p2) | ({f"{x}.parquet" for x in look_october_wl_days(look)} if kind == "wl" else set())
+        d = dd[kind]
+        os.makedirs(d, exist_ok=True)
+        removed = 0
+        for n in sorted(os.listdir(d)):
+            if n.endswith(".tmp") or (kind == "wl" and n.endswith(".parquet") and n not in p2):
+                os.unlink(os.path.join(d, n))
+                removed += 1
+        copied = kept = 0
+        for n, h in sorted(p2.items()):
+            dst = os.path.join(d, n)
+            if os.path.isfile(dst) and not os.path.islink(dst) and A.sha256_file(dst) == h:
+                kept += 1
+                continue
+            s = os.path.join(sd[kind], n)
+            if not os.path.isfile(s) or A.sha256_file(s) != h:
+                raise R.Refusal("NOT_READY", f"P2's {kind} file {s} is missing or differs from {os.path.basename(path)}")
+            tmp = dst + ".tmp"
+            if os.path.lexists(dst) and not os.path.isfile(dst):
+                raise R.Refusal("NOT_READY", f"{dst} is not a file")
+            shutil.copyfile(s, tmp)
+            if A.sha256_file(tmp) != h:
+                os.unlink(tmp)
+                raise R.Refusal("NOT_READY", f"the copy of {s} does not hash to {os.path.basename(path)}'s {h[:8]}")
+            os.replace(tmp, dst)
+            copied += 1
+        out[kind] = {"src": sd[kind], "dir": d, "copied": copied, "kept": kept, "removed": removed}
+    return out
+
+
+def _manifest_trades_sha(mans) -> dict:
+    """{hour: sha256 of tape/trades/<hour>.parquet as this assembly left it} (sha256_with_v_ok for merged files)."""
+    return {f["hour"]: f.get("sha256_with_v_ok") or f["sha256"] for m in mans for f in m.get("files", []) if f.get("kind") == "trades"}
+
+
+def build_wl_days(O: str, tape: str, mans, days, *, out_dir: str | None = None) -> dict:
+    """Section 11.2 items 2-3, part (b): one wl/<day>.parquet per day in `days` (a look: OCT_WL_FIRST to the day before
+    LOOKS[look]['end']) with the pinned ledger/01_wallet_daily_det.py (sha256 checked against SHA256SUMS before it runs) on
+    tape/trades, written to out_dir (default O/wl). Every day's output is deleted first (the pinned script skips an existing
+    day, so a re-assembly would otherwise keep a day built from an earlier tape). NOT_READY unless the ledger script is the
+    pinned one, every day has at least one trades hour in the tape, every input file hashes to this assembly's manifest
+    (sha256_with_v_ok for merged files), the script exits 0, reports the same file count per day, and writes every day.
+    Returns the provenance for the record: the script and its sha256, per day the input files' sha256s, the wallet-row count
+    the script prints, and the output's sha256."""
+    script = A.ART / LEDGER_REL
+    pinned = A.pinned_sha(LEDGER_REL)
+    got = A.sha256_file(script)
+    if got != pinned:
+        raise R.Refusal("NOT_READY", f"{LEDGER_REL}: sha256 {got[:8]} is not the pinned {pinned[:8]}")
+    out_dir = out_dir or os.path.join(O, "wl")
+    trades = os.path.join(tape, "trades")
+    want = _manifest_trades_sha(mans)
+    prov = {"ledger_script": LEDGER_REL, "ledger_script_sha256": got, "tape": trades, "out": out_dir, "days": {}}
+    names = sorted(os.listdir(trades)) if os.path.isdir(trades) else []
+    for d in days:
+        hrs = [n[:-8] for n in names if n.startswith(f"{d}T") and n.endswith(".parquet")]
+        if not hrs:
+            raise R.Refusal("NOT_READY", f"no trades hour of {d} in {trades}: its wl day cannot be built")
+        ins = {h: A.sha256_file(os.path.join(trades, f"{h}.parquet")) for h in hrs}
+        bad = [h for h in hrs if ins[h] != want.get(h)]
+        if bad:
+            raise R.Refusal("NOT_READY", f"{len(bad)} trades files of {d} differ from this assembly's manifests (first {bad[0]})")
+        prov["days"][d] = {"inputs": {f"trades/{h}.parquet": ins[h] for h in hrs}}
+    if not days:
+        return prov
+    os.makedirs(out_dir, exist_ok=True)
+    for d in days:
+        Path(out_dir, f"{d}.parquet").unlink(missing_ok=True)
+        Path(out_dir, f"{d}.parquet.tmp").unlink(missing_ok=True)
+    tmpd = os.path.join(O, "assembly", "tmp_wl")
+    cmd = [sys.executable, str(script), "--tape", trades, "--out", out_dir, "--tmp", tmpd, "--threads", str(THREADS)]
+    r = subprocess.run(cmd + [x for d in days for x in ("--day", d)], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    shutil.rmtree(tmpd, ignore_errors=True)
+    if r.returncode != 0:
+        tail = (r.stderr.strip().splitlines() or [""])[-1][:200]
+        raise R.Refusal("NOT_READY", f"{LEDGER_REL} exited {r.returncode}: {tail}")
+    printed = {p[0]: p for p in (ln.split() for ln in r.stdout.splitlines()) if len(p) == 4 and p[0] in prov["days"]}
+    for d in days:
+        p = os.path.join(out_dir, f"{d}.parquet")
+        if d not in printed or not os.path.isfile(p):
+            raise R.Refusal("NOT_READY", f"{LEDGER_REL} wrote no wl day {d}")
+        if int(printed[d][1]) != len(prov["days"][d]["inputs"]):
+            raise R.Refusal("NOT_READY", f"{LEDGER_REL} read {printed[d][1]} trades files for {d}, not "
+                                         f"{len(prov['days'][d]['inputs'])}")
+        prov["days"][d].update(wallet_rows=int(printed[d][2]), sha256=A.sha256_file(p))
+    return prov
+
+
+def check_look_history(look: int, O: str, october_days=None, wl_prov: dict | None = None) -> dict:
+    """Section 11.2 items 2 and 3, before look_assembly.json is written. NOT_READY unless
+    (a) O/out/mout holds exactly P2's 36 mout files, each with mout_sha256.txt's hash (12_passC reads out/mout/*.parquet), and
+    (b) O/wl holds exactly P2's 36 days per wl_sha256.txt plus one file per date of october_days (default: the look's,
+        OCT_WL_FIRST to the day before LOOKS[look]['end']; the E0 passes none) (11_passA lists O/wl: no wl/ crashes pass A
+        inside the lock; a missing day is silent creator-history and new-wallet drift), and
+    (c) with wl_prov (build_wl_days' provenance), each October day's sha256 is the one the pinned ledger just wrote.
+    Returns counts and sha256s for the record."""
+    october_days = look_october_wl_days(look) if october_days is None else list(october_days)
+    out = {}
+    for kind, d in _hist_dirs(O).items():
+        path, pinned, p2 = _p2_manifest(kind)
+        want = set(p2) | ({f"{x}.parquet" for x in october_days} if kind == "wl" else set())
         have = {n for n in os.listdir(d) if n.endswith(".parquet")} if os.path.isdir(d) else set()
         miss, extra = sorted(want - have), sorted(have - want)
         if miss or extra:
@@ -218,8 +334,13 @@ def check_look_history(look: int, O: str) -> dict:
         bad = sorted(n for n, h in p2.items() if sha[n] != h)
         if bad:
             raise R.Refusal("NOT_READY", f"{d}: {len(bad)} of P2's files differ from {os.path.basename(path)} (first {bad[0]})")
+        oct_sha = {n: sha[n] for n in sorted(sha) if n not in p2}
+        if kind == "wl" and wl_prov is not None:
+            built = {f"{x}.parquet": v.get("sha256") for x, v in wl_prov["days"].items()}
+            if built != oct_sha:
+                raise R.Refusal("NOT_READY", f"{d}: the October days on disk are not the ones {LEDGER_REL} just built")
         out[kind] = {"dir": d, "files": len(sha), "p2_files": len(p2), "p2_manifest": path, "p2_manifest_sha256": pinned,
-                     "october_files": len(sha) - len(p2), "october_sha256": {n: sha[n] for n in sorted(sha) if n not in p2}}
+                     "october_files": len(oct_sha), "october_sha256": oct_sha}
     return out
 
 
@@ -267,8 +388,11 @@ def link_bars(ex_dir: str, oct_dir: str, out: str, *, allow_dup: bool = False) -
 
 # ----------------------------------------------------------------------------------------------------------------- assembly
 def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger, now, exploration: bool = False,
-             exploration_sh: str = A.EXPLORATION_SH, exploration_sha256: str = A.EXPLORATION_TOKENS_SHA256) -> dict:
-    """Steps 4 to 8 of the module docstring. lookname None = exploration mode (adapter convert with look=None)."""
+             exploration_sh: str = A.EXPLORATION_SH, exploration_sha256: str = A.EXPLORATION_TOKENS_SHA256,
+             history: bool | None = None, p2_src: str = P2_SRC) -> dict:
+    """Steps 4 to 8 of the module docstring. lookname None = exploration mode (adapter convert with look=None).
+    history (step 4b): always in look mode; in exploration mode only when asked (the E0), with no October wl day."""
+    history = True if not exploration else bool(history)
     Path(O, "look_assembly.json").unlink(missing_ok=True)   # a failed re-assembly must leave no record of the old tape
     asm = os.path.join(O, "assembly")
     os.makedirs(asm, exist_ok=True)
@@ -284,6 +408,10 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
     listed = {f"{f['kind']}/{f['hour']}.parquet" for m in mans for f in m.get("files", [])} | {f"v_ok/{f['hour']}.parquet" for m in mans if m.get("event_v") for f in m.get("files", []) if f.get("kind") == "trades"}
     on_disk = {f"{k}/{n}" for k in A.KINDS + ("v_ok",) if os.path.isdir(os.path.join(tape, k)) for n in os.listdir(os.path.join(tape, k)) if n.endswith(".parquet")}
     if on_disk != listed: raise R.Refusal("NOT_READY", f"tape: {len(on_disk - listed)} files in no manifest of this assembly, {len(listed - on_disk)} listed files absent")
+    if history:   # step 4b (section 11.2 items 2-3): P2's history copied in, the October wl days built from this tape
+        oct_days = [] if exploration else look_october_wl_days(look_label)
+        hist_copy = copy_p2_history(O, p2_src)
+        wl_prov = build_wl_days(O, tape, mans, oct_days)
     paths = []
     for (blk, *_), m in zip(plan, mans):
         p = os.path.join(asm, f"manifest-{blk}.json")
@@ -343,8 +471,10 @@ def assemble(look_label: int, O: str, tape: str, plan, *, lookname, final_ledger
         "october_tokens_sha256": A.sha256_file(tok), "bars_1m": bars,
         "blobs": {"tools/exp025_look_driver.py": A.git_blob(__file__), "tools/exp025_adapter.py": A.git_blob(A.__file__)},
     }
-    if not exploration:   # section 11.2 items 2-3: no record until O holds the history pass A / pass C read
-        rec["history"] = check_look_history(look_label, O)
+    if history:   # section 11.2 items 2-3: no record until O holds the history pass A / pass C read
+        rec["history"] = check_look_history(look_label, O, oct_days, wl_prov)
+        rec["history"]["copy"] = hist_copy
+        rec["history"]["wl_provenance"] = wl_prov
     _write_json(os.path.join(O, "look_assembly.json"), rec)
     L.load_assembly(look_label, O)   # the runner's own validation of what was just written
     return rec
@@ -392,8 +522,12 @@ def drive_e0(o_dir: str = E0_O) -> dict:
         raise R.Refusal("SEAL", f"{o_dir} is inside a look's O")
     hours = A.hour_range(f"{A.E0_DAY}T00", "2026-09-21T00")
     plan = [(A.E0_BLOCK, A.E0_SRC, hours, True)]
-    rec = assemble(1, o_dir, os.path.join(o_dir, "tape"), plan, lookname=None, final_ledger=None, now=None, exploration=True)
+    rec = assemble(1, o_dir, os.path.join(o_dir, "tape"), plan, lookname=None, final_ledger=None, now=None, exploration=True,
+                   history=True)
     _, mans = L.load_assembly(1, o_dir)
+    # the build_wl_days path on the E0 tape: the pinned ledger on E0_DAY (into a scratch dir, never O/wl) against P2's own day
+    e0_wl = build_wl_days(o_dir, os.path.join(o_dir, "tape"), mans, [A.E0_DAY], out_dir=os.path.join(o_dir, "assembly", "e0-wl"))
+    p2_day = _p2_manifest("wl")[2].get(f"{A.E0_DAY}.parquet")
     try:
         L.hour_status(1, mans, {})
         hs = None
@@ -404,9 +538,18 @@ def drive_e0(o_dir: str = E0_O) -> dict:
           "vmap_pools": rec["vmap"]["pools"], "pumpswap_rows": rec["pumpswap_rows"], "pumpswap_rows_with_v": rec["pumpswap_rows_with_v"],
           "bars_1m": rec["bars_1m"], "blobs": rec["blobs"],
           "assembly_sha256": A.sha256_file(os.path.join(o_dir, "look_assembly.json")),
-          "october_tokens_sha256": rec["october_tokens_sha256"], "v_ok_missing": v_ok_missing(os.path.join(o_dir, "tape"))}
+          "october_tokens_sha256": rec["october_tokens_sha256"], "v_ok_missing": v_ok_missing(os.path.join(o_dir, "tape")),
+          "history": {k: {x: rec["history"][k][x] for x in ("files", "p2_files", "october_files", "p2_manifest_sha256")}
+                      for k in ("mout", "wl")},
+          "history_copy": rec["history"]["copy"], "history_wl_provenance": rec["history"]["wl_provenance"],
+          "e0_wl_day": {"day": A.E0_DAY, "inputs": len(e0_wl["days"][A.E0_DAY]["inputs"]),
+                        "wallet_rows": e0_wl["days"][A.E0_DAY]["wallet_rows"], "sha256": e0_wl["days"][A.E0_DAY]["sha256"],
+                        "ledger_script_sha256": e0_wl["ledger_script_sha256"], "p2_sha256": p2_day,
+                        "equals_p2": e0_wl["days"][A.E0_DAY]["sha256"] == p2_day}}
     e0["pass"] = bool(hs == "R12" and rec["blocks"][0]["bad_hours"] == 0 and rec["blocks"][0]["files"] == 3 * len(hours)
-                      and rec["append_tokens"]["october_rows"] == 0 and e0["v_ok_missing"] == 0)
+                      and rec["append_tokens"]["october_rows"] == 0 and e0["v_ok_missing"] == 0
+                      and all(e0["history"][k]["files"] == P2_DAYS and e0["history"][k]["october_files"] == 0 for k in ("mout", "wl"))
+                      and e0["e0_wl_day"]["equals_p2"])
     _write_json(os.path.join(o_dir, E0_RECORD), e0)
     return e0
 
@@ -431,7 +574,9 @@ def main(argv=None) -> int:
             return 0
         e0 = drive_e0()
         print(json.dumps({k: e0[k] for k in ("pass", "load_assembly", "manifests", "hour_status_on_exploration_hours", "blocks",
-                                             "completes", "vmap_pools", "pumpswap_rows", "pumpswap_rows_with_v", "bars_1m")}))
+                                             "completes", "vmap_pools", "pumpswap_rows", "pumpswap_rows_with_v", "bars_1m",
+                                             "history", "history_copy")} | {"e0_wl_day": {k: e0["e0_wl_day"][k] for k in
+                                                                            ("day", "inputs", "wallet_rows", "equals_p2")}}))
         return 0 if e0["pass"] else 1
     except (R.Refusal, A.Refused) as e:
         print(f"REFUSED: {e}", file=sys.stderr)

@@ -188,38 +188,40 @@ class Assembly(unittest.TestCase):
             return real(tape, hour)
         return mock.patch.object(D, "merge_v_ok", side_effect=spy)
 
-    def make_history(self, october=True):
-        """Fixture P2 mout / wl manifests (36 days each) and O/out/mout, O/wl matching them; returns P2_HISTORY."""
+    def make_history(self):
+        """A fixture P2 working directory (self.tmp/p2: out/mout and wl, 36 days each) and its two manifests; returns the
+        P2_HISTORY to patch in."""
         hist = {}
-        for kind, d in (("mout", self.O / "out" / "mout"), ("wl", self.O / "wl")):
+        self.p2 = self.tmp / "p2"
+        for kind, d in (("mout", self.p2 / "out" / "mout"), ("wl", self.p2 / "wl")):
             d.mkdir(parents=True, exist_ok=True)
             lines = []
             for i in range(D.P2_DAYS):
                 n = f"{D.R.date_str(D.R.ep('2026-08-14T00') + 86400 * i)}.parquet"
                 (d / n).write_text(f"{kind}{i}\n")
                 lines.append(f"{D.A.sha256_file(d / n)}  {n}")
-            if kind == "wl" and october:
-                for x in D.look_october_wl_days(1):
-                    (d / f"{x}.parquet").write_text(f"oct {x}\n")
             m = self.tmp / f"{kind}_sha256.txt"
             m.write_text("\n".join(lines) + "\n")
             hist[kind] = (str(m), D.A.sha256_file(m))
         return hist
 
-    def run_look_assemble(self, hist):
+    def run_look_assemble(self, hist, days=None):
         """Look-mode assemble on the fixture hour: convert runs the real adapter convert in exploration mode, look_trade_files
-        gives the fixture trades file, build_shared is the stub."""
+        gives the fixture trades file, build_shared is the stub, the October wl days are `days` (default: the fixture hour's
+        day, which the fixture P2 days 08-14..09-18 do not hold) and the ledger is the real pinned script."""
         real = D.A.convert
         trades = D.A.src_file(str(self.src), "trades", self.HOUR)
 
         def conv(src, blk, out, hours, *, look, event_v, final_ledger, now):
             return real(src, blk, out, hours, event_v=event_v)
         plan = [("fixture-blk", str(self.src), [self.HOUR], True)]
+        days = [self.HOUR[:10]] if days is None else list(days)
         with mock.patch.object(D.A, "convert", side_effect=conv), mock.patch.dict(D.P2_HISTORY, hist), \
                 mock.patch.object(D.A, "look_trade_files", return_value=([trades], [])), \
-                mock.patch.object(D.A, "build_shared", self.fake_build()):
+                mock.patch.object(D.A, "build_shared", self.fake_build()), \
+                mock.patch.object(D, "look_october_wl_days", return_value=days):
             return D.assemble(1, str(self.O), str(self.O / "tape"), plan, lookname="look1", final_ledger=None, now=None,
-                              exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
+                              exploration_sh=str(self.sh), exploration_sha256=self.sh_sha, p2_src=str(self.p2))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -309,39 +311,105 @@ class Assembly(unittest.TestCase):
         with self.assertRaises(D.R.Refusal):   # a second merge on a file that already has v_ok
             D.merge_v_ok(str(tape), self.HOUR)
 
-    def test_look_mode_needs_the_history_before_any_record(self):
-        hist = self.make_history()
-        shutil.rmtree(self.O / "wl")
-        with self.assertRaises(D.R.Refusal) as cm:
-            self.run_look_assemble(hist)
-        self.assertEqual(cm.exception.code, "NOT_READY")
-        self.assertFalse((self.O / "look_assembly.json").exists())
+    def test_look_mode_copies_p2_history_and_builds_the_october_wl_days(self):
         hist = self.make_history()
         rec = self.run_look_assemble(hist)
         self.assertTrue((self.O / "look_assembly.json").exists())
         self.assertEqual(rec["mode"], "look")
         h = rec["history"]
         self.assertEqual((h["mout"]["files"], h["mout"]["october_files"]), (36, 0))
-        self.assertEqual((h["wl"]["p2_files"], h["wl"]["october_files"]), (36, len(D.look_october_wl_days(1))))
-        self.assertEqual(D.look_october_wl_days(1)[0], "2026-10-02")
-        self.assertEqual(D.look_october_wl_days(1)[-1], "2026-10-16")
+        self.assertEqual((h["wl"]["files"], h["wl"]["p2_files"], h["wl"]["october_files"]), (37, 36, 1))
+        self.assertEqual({k: (v["copied"], v["kept"]) for k, v in h["copy"].items()}, {"mout": (36, 0), "wl": (36, 0)})
+        for kind, d in (("mout", self.O / "out" / "mout"), ("wl", self.O / "wl")):   # byte copies of the P2 files
+            for n in os.listdir(self.p2 / ("out/mout" if kind == "mout" else "wl")):
+                self.assertFalse((d / n).is_symlink())
+                self.assertEqual(D.A.sha256_file(d / n), D.A.sha256_file(self.p2 / ("out/mout" if kind == "mout" else "wl") / n))
+        # provenance: the pinned ledger script, the merged trades file it read (as the manifest records it), the day it wrote
+        prov = h["wl_provenance"]
+        self.assertEqual(prov["ledger_script_sha256"], D.A.pinned_sha(D.LEDGER_REL))
+        day = self.HOUR[:10]
+        f = self.O / "tape" / "trades" / f"{self.HOUR}.parquet"
+        man = json.loads((self.O / "assembly" / "manifest-fixture-blk.json").read_text())
+        tf = [x for x in man["files"] if x["kind"] == "trades"][0]
+        self.assertEqual(prov["days"][day]["inputs"], {f"trades/{self.HOUR}.parquet": tf["sha256_with_v_ok"]})
+        self.assertEqual(tf["sha256_with_v_ok"], D.A.sha256_file(f))
+        wl = self.O / "wl" / f"{day}.parquet"
+        self.assertEqual(prov["days"][day]["sha256"], D.A.sha256_file(wl))
+        self.assertEqual(h["wl"]["october_sha256"], {f"{day}.parquet": D.A.sha256_file(wl)})
+        cols, got = self.rows(wl)
+        self.assertEqual(cols, ["th", "n", "nm", "nbond", "buy", "sell", "nwin", "nrt", "cash"])
+        self.assertEqual(prov["days"][day]["wallet_rows"], len(got))
+        self.assertGreater(len(got), 0)
+        self.assertFalse((self.O / "assembly" / "tmp_wl").exists())
         A_, _ = D.L.load_assembly(1, str(self.O))
         self.assertEqual(A_["history"], h)
-        for name, break_it in (("an October wl day missing", lambda: (self.O / "wl" / "2026-10-16.parquet").unlink()),
-                               ("a P2 mout file changed", lambda: (self.O / "out" / "mout" / "2026-08-14.parquet").write_text("x")),
-                               ("an extra mout file", lambda: (self.O / "out" / "mout" / "2026-10-10.parquet").write_text("x"))):
+        self.assertEqual(D.look_october_wl_days(1)[0], "2026-10-02")
+        self.assertEqual(D.look_october_wl_days(1)[-1], "2026-10-16")
+
+    def test_reassembly_rebuilds_october_wl_days_and_repairs_p2_copies(self):
+        hist = self.make_history()
+        first = self.run_look_assemble(hist)["history"]
+        day = f"{self.HOUR[:10]}.parquet"
+        (self.O / "wl" / day).write_text("stale October day\n")             # the pinned ledger would skip it
+        (self.O / "wl" / "2026-10-30.parquet").write_text("not a day of this look\n")
+        (self.O / "wl" / "2026-08-20.parquet.tmp").write_text("left over\n")
+        (self.O / "out" / "mout" / "2026-08-14.parquet").write_text("changed\n")
+        second = self.run_look_assemble(hist)["history"]
+        self.assertEqual((second["copy"]["mout"]["copied"], second["copy"]["mout"]["kept"]), (1, 35))
+        self.assertEqual((second["copy"]["wl"]["copied"], second["copy"]["wl"]["kept"], second["copy"]["wl"]["removed"]), (0, 36, 3))
+        self.assertEqual(second["wl"]["october_sha256"], first["wl"]["october_sha256"])   # idempotent
+        self.assertEqual(second["wl_provenance"]["days"], first["wl_provenance"]["days"])
+        self.assertFalse((self.O / "wl" / "2026-10-30.parquet").exists())
+
+    def test_history_mismatches_refuse_before_any_record(self):
+        cases = (("a P2 source file differs from its manifest", lambda h: (self.p2 / "wl" / "2026-08-20.parquet").write_text("x"), None),
+                 ("a manifest that is not the pinned one", lambda h: h.update(wl=(h["wl"][0], "0" * 64)), None),
+                 ("a manifest with 35 files", lambda h: (Path(h["mout"][0]).write_text("".join(Path(h["mout"][0]).read_text().splitlines(True)[:35])),
+                                                         h.update(mout=(h["mout"][0], D.A.sha256_file(h["mout"][0])))), None),
+                 ("an extra mout file", lambda h: ((self.O / "out" / "mout").mkdir(parents=True), (self.O / "out" / "mout" / "2026-10-10.parquet").write_text("x")), None),
+                 ("an October day with no tape hour", lambda h: None, [self.HOUR[:10], "2026-09-21"]))
+        for name, break_it, days in cases:
             with self.subTest(name):
+                shutil.rmtree(self.O, ignore_errors=True)
+                self.O.mkdir()
+                (self.O / "look_assembly.json").write_text("{}\n")
                 hist = self.make_history()
-                break_it()
+                break_it(hist)
                 with self.assertRaises(D.R.Refusal) as cm:
-                    self.run_look_assemble(hist)
+                    self.run_look_assemble(hist, days)
                 self.assertEqual(cm.exception.code, "NOT_READY")
                 self.assertFalse((self.O / "look_assembly.json").exists())   # E3: the earlier record is gone too
-                (self.O / "out" / "mout" / "2026-10-10.parquet").unlink(missing_ok=True)
-        hist = self.make_history()
-        hist["wl"] = (hist["wl"][0], "0" * 64)   # a manifest that is not the pinned one
-        with self.assertRaises(D.R.Refusal):
-            self.run_look_assemble(hist)
+
+    def test_build_wl_days_refusals(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        tape = self.tmp / "t"
+        (tape / "trades").mkdir(parents=True)
+        f = tape / "trades" / f"{self.HOUR}.parquet"
+        pq.write_table(pa.table({"trader": ["W"], "mint": ["M"], "venue": ["pumpswap"], "side": ["buy"], "sol_lamports": [5]}), f)
+        good = [{"files": [{"kind": "trades", "hour": self.HOUR, "sha256": D.A.sha256_file(f)}]}]
+        out = self.tmp / "wl"
+        day = self.HOUR[:10]
+        prov = D.build_wl_days(str(self.tmp), str(tape), good, [day], out_dir=str(out))
+        self.assertEqual(prov["days"][day]["wallet_rows"], 1)
+        self.assertEqual(D.build_wl_days(str(self.tmp), str(tape), good, [], out_dir=str(out))["days"], {})
+        fail = mock.Mock(return_value=mock.Mock(returncode=1, stdout="", stderr="boom"))
+        for name, kw, patches in (
+                ("the ledger script is not the pinned one", {}, [mock.patch.object(D.A, "pinned_sha", return_value="0" * 64)]),
+                ("a trades file differs from the manifest", {"mans": [{"files": [{"kind": "trades", "hour": self.HOUR, "sha256": "0" * 64}]}]}, []),
+                ("a trades hour in no manifest", {"mans": []}, []),
+                ("the ledger exits non-zero", {}, [mock.patch.object(D.subprocess, "run", fail)]),
+                ("the ledger writes no day", {}, [mock.patch.object(D.subprocess, "run", mock.Mock(return_value=mock.Mock(returncode=0, stdout="done\n", stderr="")))])):
+            with self.subTest(name):
+                for p in patches:
+                    p.start()
+                try:
+                    with self.assertRaises(D.R.Refusal) as cm:
+                        D.build_wl_days(str(self.tmp), str(tape), kw.get("mans", good), [day], out_dir=str(out))
+                finally:
+                    for p in patches:
+                        p.stop()
+                self.assertEqual(cm.exception.code, "NOT_READY")
 
     def test_tape_file_in_no_manifest_refuses_before_any_record(self):
         """A file left by an earlier assembly for an allowlisted hour (e.g. a walk-2 hour re-walked between two assemblies,
@@ -394,7 +462,8 @@ class Assembly(unittest.TestCase):
                          "v0_bad": [{"file": str(f), "reason": "strict"} for f in bad]})
         ltf = mock.Mock(return_value=(list(self.V0_FILES), []))
         with mock.patch.object(D.A, "convert", side_effect=mans), mock.patch.object(D.A, "look_trade_files", ltf), \
-                mock.patch.object(D.A, "collect_v0", collect):
+                mock.patch.object(D.A, "collect_v0", collect), mock.patch.object(D, "copy_p2_history", return_value={}), \
+                mock.patch.object(D, "build_wl_days", return_value={"days": {}}):   # step 4b has its own tests
             D.assemble(1, str(self.O), str(self.O / "tape"), self.V0_PLAN, lookname="look1", final_ledger="L", now=None,
                        exploration_sh=str(self.sh), exploration_sha256=self.sh_sha)
         return ltf
