@@ -110,8 +110,8 @@ def replay(day: str, h_from: str, out: str, max_hours: int | None = None) -> Non
     U = con.execute(f"SELECT mid, mint, pool, v, g, gday, ch FROM '{VER}/work/universe.parquet'").df()
     UD = U[U.gday == day]
     pool2mid = dict(zip(U.pool, U.mid))
-    eng = cf.FeatureEngine(ledger=ParquetLedger(con, day, day_hrs, UD))
-    for pool, v in con.execute(f"SELECT pool, v0_lamports FROM '{SH}/tokens.parquet' WHERE pool IS NOT NULL AND v0_lamports BETWEEN 17.5e9 AND 17.7e9").fetchall():
+    eng = cf.FeatureEngine(ledger=ParquetLedger(con, day, day_hrs, UD), v_source="const")   # exploration tape: V(t) = V0
+    for pool, v in con.execute(f"SELECT pool, v0_lamports FROM '{SH}/tokens.parquet' WHERE pool IS NOT NULL AND v0_lamports IS NOT NULL").fetchall():   # the engine checks the band
         eng.set_pool_v(pool, v)
     ck = con.execute(f"SELECT block_time bt, min(slot) s FROM read_parquet({sql_list([f'{TAPE}/trades/{h}.parquet' for h in hrs])}) WHERE block_time IS NOT NULL GROUP BY 1 ORDER BY 1").fetchnumpy()
     CK_BT, CK_S = np.asarray(ck["bt"], dtype=np.int64), np.asarray(ck["s"], dtype=np.int64)
