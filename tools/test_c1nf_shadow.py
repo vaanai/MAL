@@ -2242,3 +2242,144 @@ def test_twin_guards_on_the_pick_state_and_records_where_the_batch_spot_disagree
     assert end["guarded"] is True                                  # the deciding 0.25 SOL cell: batch spot, unchanged
     assert end["canary"]["guarded"] is False and end["canary"]["guarded_at_batch_spot"] is True
     assert end["canary"]["pnl_505k"] == pytest.approx(end["canary"]["proceeds"] - 50_000_000 - 2 * 505_000)
+
+
+# ---- memory Build-A (job #608): ledger memo size, one cached ledger day, malloc_trim, heartbeat memory fields ------------------------------
+def test_pread_snapshot_default_cache_is_200k_and_lookups_are_equal_across_cache_sizes(tmp_path):
+    from tools import c1nf_wallet_ledger as L
+
+    assert cs.LEDGER_CACHE_MAX == 200_000
+    root = _fixture_root(tmp_path, np.arange(10, 6000, 3, dtype=np.uint64))
+    led = L.AsofLedger.open_for_day(root, FIX_DAY)
+    default = cs._PreadSnapshot.from_ledger(led, int)
+    assert default._cache_max == cs.LEDGER_CACHE_MAX
+    assert cs.AsofDirLedger(root, hash_fn=int).snapshot_for_day(FIX_DAY)._cache_max == cs.LEDGER_CACHE_MAX     # the live path's snapshot
+    rng = np.random.default_rng(5)
+    probes = [str(int(x)) for x in rng.integers(0, 6100, 3000)]                 # repeats; known (1 in 3) and unknown wallets
+    ref = [_bits(cs._AsofSnapshot(led, int).get(p)) for p in probes]
+    assert sum(r is not None for r in ref) > 500
+    for snap in [default] + [cs._PreadSnapshot.from_ledger(led, int, cache_max=m) for m in (0, 1, 3, 500_000, 10**9)]:
+        assert [_bits(snap.get(p)) for p in probes] == ref                       # a pure memo: same values, bit for bit, at any size
+        assert len(snap._cache) <= snap._cache_max + 1
+        snap.close()
+
+
+def test_build_engine_keeps_one_ledger_day_and_the_engine_default_stays_two():
+    from tools import c1nf_features as cf
+
+    assert cs.LIVE_LEDGER_KEEP_DAYS == 1
+    for mode in (cf.V_EVENT, cf.V_CONST):
+        assert cs.build_engine(None, v_source=mode).ledger_keep_days == 1        # run_live and c1nf_vmode_parity
+    assert cf.FeatureEngine(v_source=cf.V_CONST).ledger_keep_days == 2           # c1nf_parity builds the engine itself: unchanged
+
+
+def test_build_engine_turns_the_print_window_on_and_the_engine_default_stays_off():
+    from tools import c1nf_features as cf
+
+    assert cs.LIVE_PRINT_WINDOW is True
+    for mode in (cf.V_EVENT, cf.V_CONST):
+        assert cs.build_engine(None, v_source=mode).print_window is True         # run_live, run_replay and c1nf_vmode_parity
+    assert cf.FeatureEngine(v_source=cf.V_CONST).print_window is False           # c1nf_parity: deferred T after a lagged expire, unchanged
+
+
+def test_stream_expire_trims_the_engine_window_before_the_minute_it_decides_and_no_decision_violates_it():
+    """Shadow._on_clock: _expire(k * 600) runs before _decide(Tc) with Tc >= k * 600, so the windowed engine never answers a T whose look-back
+    reaches a dropped print. Real engine, real stream expiry, 2 h 10 min of prints on one pool: prints are dropped, window_violation stays 0
+    in the engine and in the heartbeat, and the decided T never goes below an expire instant."""
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    sh = cs.Shadow(cs.build_engine(None, v_source=cs.V_SOURCE_REPLAY), models, sink, replay=True, seal_start_ms=None, stream_expire_s=cs.EXPIRE_S)
+    for h in range(4):
+        sh.clock.hour_sps[cs.hour_of(BT0 + 3600 * h)] = SPS
+    eng = sh.engine
+    order = []
+    real_expire, real_fa = eng.expire, eng.features_at
+    eng.expire = lambda now_bt, *a, **k: (order.append(("expire", now_bt)), real_expire(now_bt, *a, **k))[1]
+    eng.features_at = lambda pool, T, sd=None, **k: (order.append(("T", T)), real_fa(pool, T, sd, **k))[1]
+    sh.feed({"type": "complete", "mint": MINT, "slot": S0, "block_time": BT0}, "migrations")
+    run_stream(sh, 7800)
+    exp = [t for k, t in order if k == "expire"]
+    assert len(exp) >= 12 and eng.stats["window_dropped_prints"] > 0 and eng.stats["window_violation"] == 0
+    last = None
+    for k, t in order:
+        if k == "expire":
+            last = t
+        elif last is not None:
+            assert t >= last
+    assert sum(1 for k, _ in order if k == "T") > 100 and sh.c["feature_errors"] == 0
+    hb = sh.heartbeat()
+    assert hb["window_violation"] == 0 and hb["held_prints"] <= (3600 + cs.EXPIRE_S) / SPS + 1 < sh.c["rows"] - 1      # 1 h + one expire step
+
+
+def test_malloc_trim_is_guarded(monkeypatch):
+    import ctypes
+
+    assert cs.malloc_trim() in (True, False)                                     # this host (glibc: True); never raises
+
+    def boom(_n):
+        raise OSError("trim failed")
+
+    monkeypatch.setattr(cs, "_MALLOC_TRIM", boom)
+    assert cs.malloc_trim() is False
+    monkeypatch.setattr(cs, "_MALLOC_TRIM", False)
+    assert cs.malloc_trim() is False
+    monkeypatch.setattr(cs, "_MALLOC_TRIM", None)                                # a host without libc: looked up once, then False
+
+    def no_libc(*_a, **_k):
+        raise OSError("no libc")
+
+    monkeypatch.setattr(ctypes, "CDLL", no_libc)
+    assert cs.malloc_trim() is False and cs._MALLOC_TRIM is False
+
+
+def test_stream_expire_trims_after_the_engine_expire_and_a_failing_trim_never_stops_it(monkeypatch):
+    sh, _ = mk_shadow(only_minute(10), stream_expire_s=600)
+    calls = []
+    sh.engine.expire = lambda now_bt: calls.append(("expire", now_bt)) or 0
+    monkeypatch.setattr(cs, "malloc_trim", lambda: calls.append(("trim",)) or True)
+    sh._expire(BT0 + 600)
+    assert calls == [("expire", BT0 + 600), ("trim",)] and sh.c["malloc_trim"] == 1
+    monkeypatch.setattr(cs, "malloc_trim", lambda: False)
+    sh._expire(BT0 + 1200)
+    assert sh.c["malloc_trim_unavailable"] == 1
+
+    def boom():
+        raise RuntimeError("trim")
+
+    monkeypatch.setattr(cs, "malloc_trim", boom)
+    sh._expire(BT0 + 1800)
+    assert sh.c["malloc_trim_unavailable"] == 2 and sh.c["stream_expires"] == 3 and sh.c["expire_errors"] == 0
+    monkeypatch.undo()
+    sh2, _ = mk_shadow(only_minute(10), stream_expire_s=600)                     # through the stream clock, with the real trim
+    run_stream(sh2, 1500)
+    assert sh2.c["stream_expires"] >= 2 and sh2.c["malloc_trim"] + sh2.c["malloc_trim_unavailable"] == sh2.c["stream_expires"]
+
+
+def test_proc_mem_kb_reads_rss_anon_and_vm_hwm(tmp_path):
+    f = tmp_path / "status"
+    f.write_text("Name:\tpython3\nVmPeak:\t 999 kB\nVmHWM:\t  123456 kB\nVmRSS:\t   100 kB\nRssAnon:\t   65432 kB\nRssFile:\t 7 kB\n")
+    assert cs.proc_mem_kb(str(f)) == {"RssAnon": 65432, "VmHWM": 123456}
+    assert cs.proc_mem_kb(str(tmp_path / "missing")) == {}
+    (tmp_path / "bad").write_text("RssAnon:\t\n")
+    assert cs.proc_mem_kb(str(tmp_path / "bad")) == {}
+
+
+def test_heartbeat_carries_memory_fields():
+    sh, sink = mk_shadow(only_minute(10))                                          # stub engine: no held_sizes, no stats
+    hb = sh.heartbeat()
+    assert hb["held_prints"] is None and hb["held_pairs"] is None and hb["window_violation"] == 0
+    rec = sink.of("c1nf_heartbeat")[-1]
+    assert {k: v for k, v in rec.items() if k not in cs.PICK_ENVELOPE} == hb and json.loads(json.dumps(rec)) == rec
+    assert {"rss_anon_kb", "vm_hwm_kb", "held_prints", "held_pairs", "window_violation"} <= set(rec)
+    if os.path.exists("/proc/self/status"):
+        assert isinstance(hb["rss_anon_kb"], int) and hb["rss_anon_kb"] > 0 and hb["vm_hwm_kb"] >= hb["rss_anon_kb"]
+    real = _real_shadow("const")
+    eng = real.engine
+    eng.set_pool_v(POOL, V0)
+    eng.on_graduation(MINT, BT0)
+    for i, w in enumerate(("w1", "w2", "w1")):
+        eng.on_trade("pumpswap", MINT, w, True, 1e9, 1e12, Q0 + i * 1e9, B0, POOL, S0 + i, BT0 + 1 + i)
+    hb = real.heartbeat()
+    assert (hb["held_prints"], hb["held_pairs"], hb["window_violation"]) == (3, 2, 0)
+    eng.stats["window_violation"] += 2                                             # the counter Build-B adds; read as is
+    assert real.heartbeat()["window_violation"] == 2

@@ -31,6 +31,7 @@ Event API (one call per decoded row, in (slot, tx_index, event_index) order):
     set_pool_v(pool, v_lamports)                       "const" mode only: the pool's V0
 Query:
     features_at(pool, T, sd=None) -> Features | None   None = pool not in the universe, not alive at T, bad, or no clock entry >= T
+                                                       (print_window: also a T below the last expire's window, counted window_violation)
     alive_pools(T)                                     eligible pools inside the decision window of T
     health()                                           every counter (dropped rows by reason, pool rejections by reason, ledger state,
                                                        state sizes); nothing is dropped without a counter. strict=True raises instead.
@@ -50,6 +51,11 @@ Differences a live engine cannot avoid (all measured in tools/c1nf_parity.py, no
   * Memory is bounded (expire): ungraduated mints idle for PRUNE_BONDING_IDLE_S lose their bonding-trader set (bc_n_traders becomes NaN
     if such a mint later graduates, counted `bc_traders_pruned_graduated`); mints idle for PRUNE_INFO_IDLE_S are forgotten and a later pool
     of such a mint is rejected (`info_pruned`); windowed as-of tables keep TABLE_KEEP_S; creator histories keep exact counts.
+    Opt-in print window (`FeatureEngine(print_window=True)`, the live shadow's build_engine; off by default, so tools/c1nf_parity is
+    unchanged): expire(now_bt) drops each registered pool's prints with block_time < now_bt - PRINT_WINDOW_S (at least the last print stays).
+    features_at reads no print older than T - 3600 apart from scalars the pool keeps, so every answer with T >= that now_bt is bit-equal to
+    the unwindowed engine's; a T whose look-back reaches the dropped prints is counted (`window_violation`, strict=True raises) and answered
+    None, never computed on a partial window.
   * Only numpy is used on the hot path (no pandas).
 """
 from __future__ import annotations
@@ -61,6 +67,7 @@ import importlib.util
 import math
 import re
 import time
+from array import array
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
@@ -79,15 +86,24 @@ CONST_V_KEYS = ("v_lamports", "virtual_quote_reserve", "virtual_quote_reserves")
 V_PENDING_MAX_S = 900                   # "const": hold a pool's prints this long for its V0 (the tip follower retries V at 30 s .. 300 s)
 V_PENDING_MAX_ROWS = 20_000
 LEDGER_RETRY_S = (5.0, 300.0)           # first retry after a missing snapshot, cap (doubling); monotonic seconds
+LEDGER_KEEP_DAYS = 2                    # ledger snapshots cached (UTC days). c1nf_parity defers evaluations past midnight: 2. A live caller,
+                                        # whose decision T only moves forward, passes 1 (tools/c1nf_shadow.build_engine)
 PRUNE_BONDING_IDLE_S = 24 * 3600        # ungraduated mint with no bonding trade for this long: drop its trader set
 PRUNE_INFO_IDLE_S = 3 * 86400           # ungraduated mint with no bonding trade or create for this long: forget it
 TABLE_KEEP_S = 2 * 86400 + 4 * 3600     # windowed as-of tables (nar_*, mk_*): longest window 24 h + pool life 25 h + margin
+PRINT_WINDOW_S = 3600                   # features_at's longest look-back (i60: first print with block_time >= T - 3600): the opt-in print window
+NO_BUY = 1 << 60                        # _Pool.fbuy of a trader with no buy yet (was seen_buy.get(trader, 1 << 60))
 ART_EXP025 = Path(__file__).resolve().parent.parent / "ARTIFACTS" / "exp025"
 TRADE_FIELDS = ("mint", "trader", "sol_lamports", "token_raw")
 
 
 class RowError(ValueError):
     """strict=True: a row the engine cannot ingest (it is counted under the same reason when strict=False)."""
+
+
+class WindowViolation(RuntimeError):
+    """strict=True: features_at was asked for a T whose 60-min look-back reaches prints the print window already dropped (strict=False counts
+    `window_violation` and answers None)."""
 
 
 _EVM: Any = None
@@ -365,27 +381,57 @@ class _Info:
         self.revived = False       # this mint was forgotten (PRUNE_INFO_IDLE_S) and seen again: its pool is rejected (`info_pruned`)
 
 
+def _isb_code(isb: Any) -> int:
+    """The byte stored in `_Pool.isb` for one print's is_buy value. Every read of the column gives what the value itself gave when the column
+    was a list: truthiness is `code & 1`, and `code == want` (want True or False) is `isb == want`. 0 = False, 1 = True, 2 = falsy but not
+    == False (None: a null side), 3 = truthy but not == True. A bool or numpy bool is always 0 or 1."""
+    if isb == True:  # noqa: E712 - equality, not identity: numpy bool and 1 count
+        return 1
+    if isb == False:  # noqa: E712
+        return 0
+    return 3 if isb else 2
+
+
 class _Pool:
-    __slots__ = ("pool", "mint", "V", "creator", "slot", "bt", "isb", "sol", "tok", "q", "b", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss",
-                 "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "lp", "am_hi", "am_lo", "hold", "seen_any", "seen_buy", "first_slot",
-                 "first_bt", "g0", "eligible", "bad", "bad_reason", "est", "outcome", "dead", "n_final")
+    """One pool's prints, as typed columns (memory, job #608): array('q') for slot and bt, a bytearray of _isb_code for isb, array('d') for the
+    floats (a double round-trips exactly, and every sum is formed in the same order as with lists, so every value is bit-equal). Kept as
+    scalars: q0 (the first print's quote_reserve as ingested), p0 (its price, ppre[0]) and lp_last (log price of the last print; only lp[j-1]
+    and lp[n-1] were read). Not kept: per-print q and b (never read), seen_any (its keys were exactly the traders seen).
+
+    Print k (absolute: 0 = the pool's first print) is at index k - off of the per-print columns (slot, bt, isb, sol, tok, tid, qpre, ppre,
+    hprev, csl, am_hi, am_lo); the cumulative columns cs_* hold one entry more (cs[k - off] = sum over prints [0, k)). off = 0 unless the
+    engine's print window dropped a prefix (trim): then the off dropped prints all had bt < cut. n() is the absolute count.
+    Traders (one string per pool and trader): ids in first-occurrence order (tids: trader -> id, names: id -> trader), so id < cs_any[k] is
+    exactly "seen in prints [0, k)" and dicts keyed by id iterate in the order the trader strings did. hold (running token balance) and fbuy
+    (absolute index of the trader's first buy, NO_BUY if none) are indexed by id; hprev[k - off] = hold[tid] before print k, so the holder
+    state at i1 < n rolls back from hold exactly (the same floats the old rebuild from print 0 summed)."""
+    __slots__ = ("pool", "mint", "V", "creator", "slot", "bt", "isb", "sol", "tok", "q0", "p0", "tid", "qpre", "ppre", "hprev", "cs_vol", "cs_bs",
+                 "cs_ss", "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb", "csl", "lp_last", "am_hi", "am_lo", "tids", "names", "hold", "fbuy",
+                 "off", "cut", "first_slot", "first_bt", "g0", "eligible", "bad", "bad_reason", "est", "outcome", "dead", "n_final")
+    PER_PRINT = ("slot", "bt", "isb", "sol", "tok", "tid", "qpre", "ppre", "hprev", "csl", "am_hi", "am_lo")
+    CUMULATIVE = ("cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any", "cs_crs", "cs_crb")
 
     def __init__(self, pool: str, mint: str, V: float, creator: Optional[str]) -> None:
         self.pool, self.mint, self.V, self.creator = pool, mint, float(V), creator
-        self.slot: list[int] = []; self.bt: list[int] = []; self.isb: list[bool] = []; self.sol: list[float] = []; self.tok: list[float] = []
-        self.q: list[float] = []; self.b: list[float] = []; self.th: list[str] = []
-        self.qpre: list[float] = []; self.ppre: list[float] = []
-        self.cs_vol = [0.0]; self.cs_bs = [0.0]; self.cs_ss = [0.0]; self.cs_nb = [0.0]; self.cs_new = [0.0]; self.cs_any = [0.0]
-        self.cs_crs = [0.0]; self.cs_crb = [0.0]
-        self.csl: list[float] = []; self.lp: list[float] = []; self.am_hi = [NAN]; self.am_lo = [NAN]
-        self.hold: dict[str, float] = {}; self.seen_any: dict[str, int] = {}; self.seen_buy: dict[str, int] = {}
+        self.slot = array("q"); self.bt = array("q"); self.isb = bytearray(); self.sol = array("d"); self.tok = array("d")
+        self.q0: Optional[float] = None; self.p0 = NAN; self.tid = array("i")
+        self.qpre = array("d"); self.ppre = array("d"); self.hprev = array("d")
+        self.cs_vol = array("d", [0.0]); self.cs_bs = array("d", [0.0]); self.cs_ss = array("d", [0.0]); self.cs_nb = array("d", [0.0])
+        self.cs_new = array("d", [0.0]); self.cs_any = array("d", [0.0]); self.cs_crs = array("d", [0.0]); self.cs_crb = array("d", [0.0])
+        self.csl = array("d"); self.lp_last = NAN; self.am_hi = array("d", [NAN]); self.am_lo = array("d", [NAN])
+        self.tids: dict[Any, int] = {}; self.names: list[Any] = []; self.hold = array("d"); self.fbuy = array("q")
+        self.off = 0; self.cut: Optional[int] = None
         self.first_slot = None; self.first_bt = None; self.g0 = None; self.eligible = None; self.bad = False; self.bad_reason = None
         self.est = None            # (q_incl_V, b, price) after the last ingested print, fee-model estimate; None = invalid
         self.outcome = None        # (max6, end6) over p_grad, once the first print with bt >= g0 + 6 h is ingested
         self.dead = False; self.n_final = 0
 
+    def n(self) -> int:
+        """Prints ingested (absolute, the window's dropped prefix included)."""
+        return self.off + len(self.slot)
+
     def add(self, slot: int, bt: Optional[int], isb: bool, sol: float, tok: float, q: float, b: float, th: str) -> None:
-        j = len(self.slot)
+        j = self.off + len(self.slot)                # absolute index of this print (the window keeps >= 1 print, so bt[-1] exists when j)
         if self.first_slot is None:
             self.first_slot = slot
         if bt is None:
@@ -398,54 +444,74 @@ class _Pool:
         if not (qp > 0 and b > 0 and math.isfinite(qp) and math.isfinite(b)):
             self.bad = True
         p = qp / b if b else NAN
-        self.slot.append(slot); self.bt.append(btv); self.isb.append(isb); self.sol.append(sol); self.tok.append(tok)
-        self.q.append(q); self.b.append(b); self.th.append(th); self.qpre.append(qp); self.ppre.append(p)
+        if j == 0:
+            self.q0 = q
+            self.p0 = p
+        self.slot.append(slot); self.bt.append(btv); self.isb.append(_isb_code(isb)); self.sol.append(sol); self.tok.append(tok)
+        self.qpre.append(qp); self.ppre.append(p)
         self.cs_vol.append(self.cs_vol[-1] + sol)
         self.cs_bs.append(self.cs_bs[-1] + (sol if isb else 0.0))
         self.cs_ss.append(self.cs_ss[-1] + (0.0 if isb else sol))
         self.cs_nb.append(self.cs_nb[-1] + (1.0 if isb else 0.0))
-        first_any = th not in self.seen_any
+        t = self.tids.get(th)
+        first_any = t is None                        # the first print of this trader in the pool
         if first_any:
-            self.seen_any[th] = j
-        first_buy = isb and th not in self.seen_buy
+            t = self.tids[th] = len(self.names)
+            self.names.append(th); self.hold.append(0.0); self.fbuy.append(NO_BUY)
+        self.tid.append(t)
+        first_buy = isb and self.fbuy[t] == NO_BUY
         if first_buy:
-            self.seen_buy[th] = j
+            self.fbuy[t] = j
         self.cs_new.append(self.cs_new[-1] + (1.0 if first_buy else 0.0))
         self.cs_any.append(self.cs_any[-1] + (1.0 if first_any else 0.0))
         is_cr = self.creator is not None and th == self.creator
         self.cs_crs.append(self.cs_crs[-1] + (tok if (is_cr and not isb) else 0.0))
         self.cs_crb.append(self.cs_crb[-1] + (tok if (is_cr and isb) else 0.0))
-        self.hold[th] = self.hold.get(th, 0.0) + (tok if isb else -tok)
+        hp = self.hold[t]                            # 0.0 for a new trader: the old hold.get(th, 0.0)
+        self.hprev.append(hp)
+        self.hold[t] = hp + (tok if isb else -tok)
         lpj = math.log(p) if p > 0 else NAN
         if j == 0:
             self.csl.append(0.0)
         else:
-            d = lpj - self.lp[j - 1]
-            self.csl.append(self.csl[j - 1] + d * d)
-            self.am_hi.append(p if j == 1 else max(self.am_hi[j - 1], p))
-            self.am_lo.append(p if j == 1 else min(self.am_lo[j - 1], p))
-        self.lp.append(lpj)
+            d = lpj - self.lp_last
+            self.csl.append(self.csl[-1] + d * d)                                       # csl[j - 1]
+            self.am_hi.append(p if j == 1 else max(self.am_hi[-1], p))                  # am_hi[j - 1]
+            self.am_lo.append(p if j == 1 else min(self.am_lo[-1], p))
+        self.lp_last = lpj
         if isb:
             qf, bf = qp + sol * (1 - G_FEE), b - tok
         else:
             qf, bf = qp - sol / (1 - G_FEE), b + tok
         self.est = (qf, bf, qf / bf) if (qf > 0 and bf > 0 and math.isfinite(qf) and math.isfinite(bf)) else None
         if self.outcome is None and self.g0 is not None and j >= 1 and btv >= self.g0 + OUTCOME_S and not self.bad:
-            self.outcome = (self.am_hi[j] / self.ppre[0], self.ppre[j] / self.ppre[0])
+            self.outcome = (self.am_hi[-1] / self.p0, self.ppre[-1] / self.p0)                 # am_hi[j], ppre[j], ppre[0]
 
     def outcome_now(self) -> Optional[tuple[float, float]]:
         """6 h outcome: exact once a print at/after g0 + 6 h is ingested, else the estimate from the current state."""
         if self.outcome is not None:
             return self.outcome
-        n = len(self.slot)
-        if self.bad or n < 2 or self.est is None:
+        if self.bad or self.n() < 2 or self.est is None:
             return None
-        return (max(self.am_hi[n - 1], self.est[2]) / self.ppre[0], self.est[2] / self.ppre[0])
+        return (max(self.am_hi[-1], self.est[2]) / self.p0, self.est[2] / self.p0)            # am_hi[n - 1], ppre[0]
+
+    def trim(self, cut: int) -> int:
+        """Print window: drop the prefix of prints with bt < cut, always keeping the last print (add reads bt[-1], csl[-1], am_*[-1], the
+        cs_*[-1]; _on_ps reads slot[-1]). bt is non-decreasing (running max; _register rewrote a null first bt before any trim). Returns the
+        number of prints dropped; self.cut is the highest cut that dropped any."""
+        r = min(bisect.bisect_left(self.bt, cut), len(self.slot) - 1)
+        if r <= 0:
+            return 0
+        for a in self.PER_PRINT + self.CUMULATIVE:
+            del getattr(self, a)[:r]
+        self.off += r
+        if self.cut is None or cut > self.cut:
+            self.cut = cut
+        return r
 
     def free(self) -> None:
-        self.n_final = len(self.slot)
-        for a in ("slot", "bt", "isb", "sol", "tok", "q", "b", "th", "qpre", "ppre", "cs_vol", "cs_bs", "cs_ss", "cs_nb", "cs_new", "cs_any",
-                  "cs_crs", "cs_crb", "csl", "lp", "am_hi", "am_lo", "hold", "seen_any", "seen_buy"):
+        self.n_final = self.n()
+        for a in self.PER_PRINT + self.CUMULATIVE + ("tids", "names", "hold", "fbuy"):
             setattr(self, a, None)
         self.dead = True
 
@@ -458,9 +524,19 @@ def _nanmedian(a: np.ndarray) -> float:
 class FeatureEngine:
     def __init__(self, ledger: Optional[LedgerProvider] = None, *, v_source: str, strict: bool = False,
                  ledger_retry_s: tuple[float, float] = LEDGER_RETRY_S, prune_bonding_idle_s: Optional[int] = PRUNE_BONDING_IDLE_S,
-                 prune_info_idle_s: Optional[int] = PRUNE_INFO_IDLE_S, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 prune_info_idle_s: Optional[int] = PRUNE_INFO_IDLE_S, monotonic: Callable[[], float] = time.monotonic,
+                 ledger_keep_days: int = LEDGER_KEEP_DAYS, print_window: bool = False) -> None:
+        """print_window (opt-in, off by default): expire(now_bt) drops each registered pool's prints with block_time < now_bt - PRINT_WINDOW_S
+        (module docstring). Only for a caller whose decision T never goes below the last expire's now_bt (the live shadow: Shadow._on_clock
+        expires at k * 600 <= the minute it decides next). c1nf_parity evaluates deferred T after a lagged expire and keeps it off."""
         if v_source not in V_SOURCES:
             raise ValueError(f"v_source must be one of {V_SOURCES}, got {v_source!r}")
+        if isinstance(ledger_keep_days, bool) or not isinstance(ledger_keep_days, int) or ledger_keep_days < 1:
+            raise ValueError(f"ledger_keep_days must be an int >= 1, got {ledger_keep_days!r}")
+        if not isinstance(print_window, bool):
+            raise ValueError(f"print_window must be a bool, got {print_window!r}")
+        self.ledger_keep_days = ledger_keep_days
+        self.print_window = print_window
         self.v_source = v_source
         self.strict = strict
         self._map_q = pinned_event_v_map().map_quote_reserve if v_source == V_EVENT else None
@@ -537,6 +613,16 @@ class FeatureEngine:
                 "w_c": sum(len(v) for v in self._w_c.values()), "w_g": sum(len(v) for v in self._w_g.values()),
                 "s_c": sum(len(v) for v in self._s_c.values()), "all_c": len(self._all_c), "all_g": len(self._all_g),
                 "by_cr": sum(len(v) for v in self._by_cr.values()), "g_cr": sum(len(v) for v in self._g_cr.values()), "clock": len(self.clock.bts)}
+
+    def held_sizes(self) -> dict:
+        """What drives memory (job #608): prints held in the per-print columns of the pools not yet freed (the window only, when it is on),
+        and their (pool, trader) pairs."""
+        prints = pairs = 0
+        for P in self._pools.values():
+            if P.slot is not None:
+                prints += len(P.slot)
+                pairs += len(P.names)
+        return {"held_prints": prints, "held_pairs": pairs}
 
     # ------------------------------------------------------------------ events
     def set_pool_v(self, pool: str, v_lamports: Optional[float]) -> None:
@@ -812,7 +898,7 @@ class FeatureEngine:
         if P.bad:
             self.stats["rows_on_bad_pool"] += 1
             return
-        if P.slot and slot < P.slot[-1]:
+        if P.slot and slot < P.slot[-1]:                 # the window keeps the last print: slot[-1] is the pool's last slot
             self.stats["out_of_order_rows"] += 1
             self._mark_bad(P, "out_of_order")
             return
@@ -863,7 +949,9 @@ class FeatureEngine:
         """Free pool arrays older than the decision window (keep the 6 h outcome for the creator record), and bound every other table:
         market minutes (market_keep_s), rejected pools (24 h), held "const" pools (V_PENDING_MAX_S), idle ungraduated mints (bonding-trader
         set after prune_bonding_idle_s, the whole mint after prune_info_idle_s), graduated mints after their pool's life, windowed as-of
-        tables (TABLE_KEEP_S), the slot clock (3 h). Returns pools freed."""
+        tables (TABLE_KEEP_S), the slot clock (3 h). With print_window, the prints of every registered pool with block_time
+        < now_bt - PRINT_WINDOW_S (at least the last print stays; a pool whose graduation is unknown is never registered and keeps all of its
+        prints until it is freed at first_bt + 6 h). Returns pools freed."""
         n = 0
         for pid in [p for p, P in self._pools.items() if (P.g0 is not None and now_bt > P.g0 + GRID_END + 3600) or
                     (P.g0 is None and P.first_bt is not None and now_bt > P.first_bt + 6 * 3600)]:
@@ -872,6 +960,14 @@ class FeatureEngine:
                 P.outcome = P.outcome_now()
             P.free(); n += 1
             self._rejected[pid] = now_bt                 # later prints of a freed pool are ignored (not a rejection: not counted)
+        if self.print_window:
+            cut = int(now_bt) - PRINT_WINDOW_S
+            dropped = 0
+            for P in self._pools.values():
+                if P.eligible is True and not P.dead and P.slot:
+                    dropped += P.trim(cut)
+            if dropped:
+                self.stats["window_dropped_prints"] += dropped
         for m in [m for m in self._mk if m < now_bt - market_keep_s]:
             del self._mk[m]
         for p in [p for p, bt in self._rejected.items() if bt < now_bt - 86400]:
@@ -918,11 +1014,13 @@ class FeatureEngine:
     def alive_pools(self, T: int) -> list[str]:
         return [pid for pid, P in self._pools.items() if P.eligible and P.g0 is not None and P.g0 + GRID_START <= T <= P.g0 + GRID_END]
 
-    def _ledger_for(self, day: str):
-        """The snapshot for `day`, or None. A present snapshot is cached (two days, so deferred evaluations do not thrash); None and a
-        provider error are never cached: the provider is asked again after ledger_retry_s[0] seconds, doubling up to ledger_retry_s[1]."""
+    def _ledger_for(self, day: str, keep_days: Optional[int] = None):
+        """The snapshot for `day`, or None. A present snapshot is cached (keep_days days, default self.ledger_keep_days = 2, so deferred
+        evaluations do not thrash; a live caller keeps 1); None and a provider error are never cached: the provider is asked again after
+        ledger_retry_s[0] seconds, doubling up to ledger_retry_s[1]. A day dropped from the cache is opened again if asked for: same values."""
         if self.ledger is None:
             return None
+        keep = self.ledger_keep_days if keep_days is None else keep_days
         snap = self._ledger_cache.get(day)
         if snap is not None:
             return snap
@@ -945,8 +1043,8 @@ class FeatureEngine:
             self.stats["ledger_missing"] += 1
             return None
         self._ledger_next.pop(day, None)
-        if len(self._ledger_cache) >= 2:
-            for d in sorted(self._ledger_cache)[:-1]:
+        if len(self._ledger_cache) >= keep:                  # keep - 1 days stay beside the new one (keep 2: the latest day, as before)
+            for d in sorted(self._ledger_cache)[:len(self._ledger_cache) - keep + 1]:
                 del self._ledger_cache[d]
         self._ledger_cache[day] = snap
         return snap
@@ -970,10 +1068,18 @@ class FeatureEngine:
                 next_state = (float(self._map_q(int(next_state[0]), int(next_state[2]), int(P.V))), next_state[1])
             elif len(next_state) != 2:
                 raise ValueError('"const" mode: next_state = (quote_reserve, base_reserve)')
-        n = len(P.slot)
-        i1 = bisect.bisect_left(P.slot, sd)
+        # Absolute print indices (i1, i5, .., n) as before; a column is read at index - off (the print window's dropped prefix, 0 when off).
+        off = P.off
+        n = off + len(P.slot)
+        if off and T - PRINT_WINDOW_S < P.cut:            # the look-back would reach dropped prints: never answer on a partial window
+            self.stats["window_violation"] += 1
+            if self.strict:
+                raise WindowViolation(f"{pool}: T {T} looks back to {T - PRINT_WINDOW_S}, prints with block_time < {P.cut} were dropped")
+            return None
+        bl = bisect.bisect_left
+        i1 = off + bl(P.slot, sd)                        # every dropped print has bt < cut <= T - 3600, so each bisect is off + the window's
         bt = P.bt
-        i60 = min(bisect.bisect_left(bt, T - 3600), i1)
+        i60 = min(off + bl(bt, T - 3600), i1)
         if i1 - i60 <= 0:
             return None
         est = P.est
@@ -983,23 +1089,24 @@ class FeatureEngine:
         if i1 == n and est is None:
             return None
         g0 = P.g0
-        bl = bisect.bisect_left
-        i1m = min(bl(bt, T - 60), i1); i5 = min(bl(bt, T - 300), i1); i10 = min(bl(bt, T - 600), i1); i15 = min(bl(bt, T - 900), i1)
+        i1m = min(off + bl(bt, T - 60), i1); i5 = min(off + bl(bt, T - 300), i1); i10 = min(off + bl(bt, T - 600), i1)
+        i15 = min(off + bl(bt, T - 900), i1)
+        a1, a1m, a5, a10, a15, a60 = i1 - off, i1m - off, i5 - off, i10 - off, i15 - off, i60 - off     # >= 0: i60 >= off
         V = P.V
 
         def price(i: int) -> float:
-            return P.ppre[i] if i < n else est[2]
+            return P.ppre[i - off] if i < n else est[2]
 
-        qstate = P.qpre[i1] if i1 < n else est[0]
+        qstate = P.qpre[a1] if i1 < n else est[0]
         spot = price(i1)
         cv, cb, cs_ = P.cs_vol, P.cs_bs, P.cs_ss
-        v1 = (cv[i1] - cv[i1m]) / 1e9; v5 = (cv[i1] - cv[i5]) / 1e9; v15 = (cv[i1] - cv[i15]) / 1e9; v60 = (cv[i1] - cv[i60]) / 1e9
-        bs5 = (cb[i1] - cb[i5]) / 1e9; ss5 = (cs_[i1] - cs_[i5]) / 1e9
-        bsp5 = (cb[i5] - cb[i10]) / 1e9; ssp5 = (cs_[i5] - cs_[i10]) / 1e9
-        nb5 = P.cs_nb[i1] - P.cs_nb[i5]; n5 = float(i1 - i5)
-        new5 = P.cs_new[i1] - P.cs_new[i5]; newp5 = P.cs_new[i5] - P.cs_new[i10]
+        v1 = (cv[a1] - cv[a1m]) / 1e9; v5 = (cv[a1] - cv[a5]) / 1e9; v15 = (cv[a1] - cv[a15]) / 1e9; v60 = (cv[a1] - cv[a60]) / 1e9
+        bs5 = (cb[a1] - cb[a5]) / 1e9; ss5 = (cs_[a1] - cs_[a5]) / 1e9
+        bsp5 = (cb[a5] - cb[a10]) / 1e9; ssp5 = (cs_[a5] - cs_[a10]) / 1e9
+        nb5 = P.cs_nb[a1] - P.cs_nb[a5]; n5 = float(i1 - i5)
+        new5 = P.cs_new[a1] - P.cs_new[a5]; newp5 = P.cs_new[a5] - P.cs_new[a10]
         qreal = (qstate - V) / 1e9
-        p5, p15, p60, p_grad = price(i5), price(i15), price(i60), P.ppre[0]
+        p5, p15, p60, p_grad = price(i5), price(i15), price(i60), P.p0
         surge = v5 / (v60 / 12.0 + 0.05)
         net5 = bs5 - ss5; netp5 = bsp5 - ssp5
         f: dict[str, float] = dict(age=float(T - g0), v1=v1, v5=v5, v15=v15, v60=v60, bs5=bs5, ss5=ss5, net5=net5, netp5=netp5, nb5=nb5, n5=n5,
@@ -1011,42 +1118,46 @@ class FeatureEngine:
         if not pre:
             return self._finish(P, T, sd, i1, f, False, led)
         # ---- trajectory shape
-        hi = spot if i1 - 1 < 1 else max(P.am_hi[i1 - 1], spot)
-        lo = spot if i1 - 1 < 1 else min(P.am_lo[i1 - 1], spot)
+        hi = spot if i1 - 1 < 1 else max(P.am_hi[a1 - 1], spot)          # i1 - 1 >= i60 >= off: in the window
+        lo = spot if i1 - 1 < 1 else min(P.am_lo[a1 - 1], spot)
 
         def csl_at(k: int) -> float:
             if k < n:
-                return P.csl[k]
-            d = math.log(est[2]) - P.lp[n - 1]
-            return P.csl[n - 1] + d * d
+                return P.csl[k - off]
+            d = math.log(est[2]) - P.lp_last                   # lp[n - 1]
+            return P.csl[-1] + d * d                           # csl[n - 1]
 
         c1 = csl_at(i1)
         f["r_ath"] = spot / hi; f["r_atl"] = spot / lo; f["ath_grad"] = hi / p_grad
         f["vol15"] = math.sqrt(max(c1 - csl_at(i15), 0.0) / max(i1 - i15, 1))
         f["vol60"] = math.sqrt(max(c1 - csl_at(i60), 0.0) / max(i1 - i60, 1))
-        f["ncum"] = float(i1); f["ntr_cum"] = P.cs_any[i1]; f["vcum"] = cv[i1] / 1e9
-        isb, sol, th = P.isb, P.sol, P.th
-        f["maxbuy5"] = (max((sol[k] if isb[k] else 0.0) for k in range(i5, i1)) / 1e9) if i1 > i5 else 0.0
+        f["ncum"] = float(i1); f["ntr_cum"] = P.cs_any[a1]; f["vcum"] = cv[a1] / 1e9
+        isb, sol, tid = P.isb, P.sol, P.tid
+        f["maxbuy5"] = (max((sol[k] if isb[k] & 1 else 0.0) for k in range(a5, a1)) / 1e9) if i1 > i5 else 0.0
         f["avgbuy5"] = bs5 / max(nb5, 1); f["buyshare5"] = bs5 / max(v5, 1e-9)
-        f["cr_sold"] = P.cs_crs[i1] / 1e15; f["cr_bought"] = P.cs_crb[i1] / 1e15
-        # ---- holders (PumpSwap flows only)
+        f["cr_sold"] = P.cs_crs[a1] / 1e15; f["cr_bought"] = P.cs_crb[a1] / 1e15
+        # ---- holders (PumpSwap flows only). hold is indexed by trader id (first-occurrence order, as the old dict iterated)
         if i1 == n:
             hold = P.hold
-        else:
-            hold = {}
-            for k in range(i1):
-                hold[th[k]] = hold.get(th[k], 0.0) + (P.tok[k] if isb[k] else -P.tok[k])
-        pos = np.sort(np.array([x for x in hold.values() if x > 0], dtype=np.float64))[::-1]
+        else:                                            # the state after prints [0, i1): the traders seen there are ids < cs_any[i1]; roll
+            m = int(P.cs_any[a1])                        # each one's balance back to before its first print at or after i1 (exact floats)
+            hold = P.hold[:m]
+            hp = P.hprev
+            for k in range(len(tid) - 1, a1 - 1, -1):
+                t = tid[k]
+                if t < m:
+                    hold[t] = hp[k]
+        pos = np.sort(np.array([x for x in hold if x > 0], dtype=np.float64))[::-1]
         tot = pos.sum() if len(pos) else 0.0
         f["h_npos"] = float(len(pos))
         f["h_top1"] = float(pos[:1].sum() / tot) if tot > 0 else NAN
         f["h_top5"] = float(pos[:5].sum() / tot) if tot > 0 else NAN
         f["h_top10"] = float(pos[:10].sum() / tot) if tot > 0 else NAN
         f["h_pos_frac_supply"] = float(tot / 1e15)
-        sidx = [k for k in range(i5, i1) if not isb[k]]
+        sidx = [k for k in range(a5, a1) if not (isb[k] & 1)]
         if sidx:
-            sb = P.seen_buy
-            num = np.array([sol[k] for k in sidx if sb.get(th[k], 1 << 60) >= i1], dtype=np.float64).sum()
+            fb = P.fbuy                                  # absolute index of each trader's first buy, NO_BUY (1 << 60) if none
+            num = np.array([sol[k] for k in sidx if fb[tid[k]] >= i1], dtype=np.float64).sum()
             den = np.array([sol[k] for k in sidx], dtype=np.float64).sum()
             f["sell_curveholder_share"] = float(num / max(den, 1))
         else:
@@ -1057,15 +1168,17 @@ class FeatureEngine:
                 skill_sol = {}
                 for side, want in (("b", True), ("s", False)):
                     pre_ = f"w{side}{wname}_"
-                    acc: dict[str, float] = {}
-                    for k in range(ia, i1):
+                    acc: dict[int, float] = {}                    # by trader id: the same first-occurrence order as by trader string
+                    for k in range(ia - off, a1):
                         if isb[k] == want:
-                            acc[th[k]] = acc.get(th[k], 0.0) + sol[k]
+                            t = tid[k]
+                            acc[t] = acc.get(t, 0.0) + sol[k]
                     if not acc:
                         f[pre_ + "n"] = 0.0; skill_sol[side] = 0.0
                         continue
-                    users = list(acc)
-                    usol = np.array([acc[u] for u in users], dtype=np.float64)
+                    names = P.names
+                    users = [names[t] for t in acc]
+                    usol = np.array([acc[t] for t in acc], dtype=np.float64)          # users' order
                     if hasattr(led, "lookup_many"):               # AsofLedgerAdapter: one vectorised lookup per window
                         known, st = led.lookup_many(users)
                         known = np.asarray(known, dtype=bool); st = np.array(st, dtype=np.float64)

@@ -20,6 +20,10 @@
             does not read it: it stays on the decision-row md5.
             Job #513 (window, 26 h): 223,998 decision rows on both sides, md5s differ, 260 non-held pick differences.
             --expire-s (default cs.EXPIRE_S, as run_live): engine.expire on the stream clock in every run (Shadow stream_expire_s); 0 = never.
+  float64   (job #608) Every run also reports `decision_rows_f64`: the same decision-row md5 over the sha256 of each row's float64 vector, and
+            `engine_window` (the engine's print-window counters: window_dropped_prints, window_violation). The identity and restart sections
+            carry a `decision_rows_f64` comparison. Reported only, never read by the verdict: the cross-head bit-equality proof runs this
+            same file on both heads and compares the float64 md5s.
 
 --ledger-root is REQUIRED: the #502 as-of root (tools/c1nf_wallet_ledger.py output, docs/runbooks/c1nf-wallet-ledger.md) holding
 asof/asof-<--day>, built from exploration days only. Without it every decision row is wallet_ok=False (`no_wallet_ledger`), nothing is picked,
@@ -81,6 +85,9 @@ class DecisionTap:
     """md5 over every decision row's (T, pool, feature_hash): each features_at answer that Shadow._decide counts in `decision_rows` (not None),
     whatever its wallet_ok, stage 1 or pick. Lines are "T,pool,feature_hash\\n" (T in seconds, feature_hash = sha256 of the float32 vector as
     on a pick); the rows of one T are hashed sorted. With split_s, a second md5 covers the rows with T >= split_s.
+    float64 (job #608, the cross-head bit-equality proof): the same lines with the sha256 of the float64 vector bytes (vector_hash64) are
+    hashed alongside into summary_f64(), reported as `decision_rows_f64`. The float32 md5 can hide a float64 difference; this one cannot.
+    It is reported only: verdict() still reads the float32 decision rows, so a run's PASS/FAIL is unchanged.
     keep (diagnostic, in memory): also keep each row's float32 vector for the feature diff, whether or not split_s is set. With split_s only
     the rows with T >= split_s are kept (the uninterrupted run's tail); without it every decision row is (the restarted run, whose decisions
     are off before the restart, so all of its rows are from the restart). #535 kept none of the restarted run's vectors: rows_compared 0."""
@@ -92,9 +99,11 @@ class DecisionTap:
         self.info: dict[str, tuple] = {}                     # keep: pool -> (mint create bt, creator's first create / graduation bt)
         self._eng: Any = None
         self._all, self._tail = hashlib.md5(), hashlib.md5()
-        self.n = self.n_tail = 0
+        self._all64, self._tail64 = hashlib.md5(), hashlib.md5()
+        self.n = self.n_tail = self.n64 = self.n64_tail = 0
         self._T: Optional[int] = None
         self._buf: list[str] = []
+        self._buf64: list[str] = []
 
     def wrap(self, fn: Callable[..., Any], engine: Any = None) -> Callable[..., Any]:
         self._eng = engine
@@ -107,7 +116,7 @@ class DecisionTap:
                 return res
             if f is not None:
                 v32 = np.asarray(f.vec).astype(np.float32)
-                self.add(T, pool, cs.feature_hash(v32))
+                self.add(T, pool, cs.feature_hash(v32), vector_hash64(f.vec))
                 if self.keep and (self.split_s is None or T >= self.split_s):
                     self.vecs[(int(T), pool)] = v32.tobytes()
                     if pool not in self.info:
@@ -116,21 +125,32 @@ class DecisionTap:
 
         return features_at
 
-    def add(self, T: int, pool: str, fh: str) -> None:
+    def add(self, T: int, pool: str, fh: str, fh64: Optional[str] = None) -> None:
         if T != self._T:
             self.flush()
             self._T = T
         self._buf.append(f"{T},{pool},{fh}\n")
+        if fh64 is not None:
+            self._buf64.append(f"{T},{pool},{fh64}\n")
 
     def flush(self) -> None:
+        tail = self.split_s is not None and self._T is not None and self._T >= self.split_s
         if self._buf:
             b = "".join(sorted(self._buf)).encode()
             self._all.update(b)
             self.n += len(self._buf)
-            if self.split_s is not None and self._T is not None and self._T >= self.split_s:
+            if tail:
                 self._tail.update(b)
                 self.n_tail += len(self._buf)
+        if self._buf64:
+            b = "".join(sorted(self._buf64)).encode()
+            self._all64.update(b)
+            self.n64 += len(self._buf64)
+            if tail:
+                self._tail64.update(b)
+                self.n64_tail += len(self._buf64)
         self._buf = []
+        self._buf64 = []
 
     def summary(self) -> dict:
         self.flush()
@@ -138,6 +158,19 @@ class DecisionTap:
         if self.split_s is not None:
             out["from_split"] = {"n": self.n_tail, "md5": self._tail.hexdigest()}
         return out
+
+    def summary_f64(self) -> dict:
+        """As summary(), over the float64 vector hashes (reported as `decision_rows_f64`; never read by verdict())."""
+        self.flush()
+        out: dict[str, Any] = {"n": self.n64, "md5": self._all64.hexdigest()}
+        if self.split_s is not None:
+            out["from_split"] = {"n": self.n64_tail, "md5": self._tail64.hexdigest()}
+        return out
+
+
+def vector_hash64(vec: Any) -> str:
+    """sha256 of the feature vector as little-endian float64 bytes (the engine's own values, before the float32 export)."""
+    return hashlib.sha256(np.asarray(vec, dtype="<f8").tobytes()).hexdigest()
 
 
 def pool_history(eng: Any, mint: Optional[str]) -> tuple:
@@ -282,12 +315,15 @@ def run_rows(engine: Any, models: cs.ModelSet, batches: Iterable[Sequence[dict]]
     sh.finish("replay_end")
     health = engine.health() if hasattr(engine, "health") else {}
     rows = tap.summary()
+    rows64 = tap.summary_f64()
+    stats = health.get("stats") if isinstance(health, dict) else None
     counters = {k: int(sh.c[k]) for k in COUNTERS + ("stream_expires", "expire_errors")}
     vecs, info = tap.vecs, tap.info
     tap._eng = None
     return {"picks": sink.of("c1nf_pick"), "held_at_snap": held, "counters": counters, "decision_rows": rows, "vectors": vecs, "pool_info": info,
-            "tap_matches_counter": rows["n"] == counters["decision_rows"], "universe": dict(sh.universe.counts),
+            "decision_rows_f64": rows64, "tap_matches_counter": rows["n"] == counters["decision_rows"], "universe": dict(sh.universe.counts),
             "engine_pool_rejects": health.get("pool_rejects"), "outcomes_dropped": sink.outcomes_dropped,
+            "engine_window": {k: int((stats or {}).get(k, 0)) for k in ("window_dropped_prints", "window_violation")},
             "seconds": round(time.monotonic() - t0, 1)}
 
 
@@ -387,6 +423,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.what in ("all", "identity"):
         out["identity"] = compare(const["picks"], ev["picks"])
         out["identity"]["decision_rows"] = compare_rows(const["decision_rows"], {k: ev["decision_rows"][k] for k in ("n", "md5")})
+        out["identity"]["decision_rows_f64"] = compare_rows({k: const["decision_rows_f64"][k] for k in ("n", "md5")},
+                                                            {k: ev["decision_rows_f64"][k] for k in ("n", "md5")})     # reported, not in verdict()
         out["runs"]["const"] = {k: v for k, v in const.items() if k not in ("picks", "pool_info")}
         del const
     if args.what in ("all", "restart"):
@@ -401,6 +439,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             c["mode"], c["rebuild_from"] = mode, hrs[0]
             c["held_at_restart"] = len(ev["held_at_snap"] or [])
             c["decision_rows"] = compare_rows(ev["decision_rows"]["from_split"], rs["decision_rows"])
+            c["decision_rows_f64"] = compare_rows(ev["decision_rows_f64"]["from_split"], rs["decision_rows_f64"])    # reported, not in verdict()
             c["feature_diff"] = feature_diff(ev["vectors"], rs["vectors"], ev["pool_info"], int(_hour(hrs[0]).timestamp()),
                                              rows_ab=(c["decision_rows"]["a"]["n"], c["decision_rows"]["b"]["n"]))
             key = "restart" if (mode == "anchored" or args.restart_mode == "window") else "restart_window"
