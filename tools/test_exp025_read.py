@@ -291,5 +291,57 @@ class PricingLayerFixture(unittest.TestCase):
                 R.price_rows(rows, d, R.ExplorationGuard())
 
 
+@unittest.skipIf(np is None, "numpy missing")
+class Refusals114(unittest.TestCase):
+    """A refusal test for every count-only item of section 11.4 the tool checks itself (R7, R9, R12, R13 are above)."""
+
+    def test_r1(self):
+        hrs = R.ledger_counted_hours(1)
+        self.assertEqual((hrs[0], hrs[-1]), ("2026-10-02T15", "2026-10-17T01"))
+        k = R.r1_bad_hours(1, set(hrs[:6]), [[hrs[0]], [hrs[100]]] + [[hrs[200]]] * 40)       # 6 bad of 347 (1.7%) is allowed
+        self.assertEqual(k.tolist()[:2], [False, True])
+        with self.assertRaises(R.Refusal) as c:
+            R.r1_bad_hours(1, set(hrs[:6]), [[hrs[0]]] * 3 + [[hrs[200]]] * 40)                 # 3 of 43 attempts excluded (> 5%)
+        self.assertEqual(c.exception.code, "R1")
+        with self.assertRaises(R.Refusal):
+            R.r1_bad_hours(1, set(hrs[:7]), [])                                                   # 7 of 347 > 2%
+
+    def test_r2_r3_r6(self):
+        R.share_refusals(0.95, 0.95, 17, 346)
+        for args, code in (((0.949, 1.0, 0, 346), "R2"), ((1.0, 0.949, 0, 346), "R3"), ((1.0, 1.0, 18, 346), "R6")):
+            with self.assertRaises(R.Refusal) as c:
+                R.share_refusals(*args)
+            self.assertEqual(c.exception.code, code)
+
+    def test_r4_and_no_r5(self):
+        d1 = {f"2026-10-{x}": 18 for x in range(10, 17)}
+        R.r4_precount(1, d1)
+        R.r4_precount(1, {**d1, "2026-10-10": 100000})                                       # R5: a flood is never a refusal
+        with self.assertRaises(R.Refusal) as c:
+            R.r4_precount(1, {k: 12 for k in d1})                                            # 84 < 90
+        self.assertEqual(c.exception.code, "R4")
+        with self.assertRaises(R.Refusal):
+            R.r4_precount(1, {"2026-10-10": 50, "2026-10-11": 50, "2026-10-12": 50, "2026-10-13": 50})   # 4 of 7 dates
+
+    def test_r14(self):
+        R.r14_p7((1000, 1000, 500, 500), (800, 1000, 480, 500))
+        with self.assertRaises(R.Refusal) as c:
+            R.r14_p7((980, 1000, 500, 500), (800, 1000, 480, 500))
+        self.assertEqual(c.exception.code, "R14")
+        with self.assertRaises(R.Refusal):
+            R.r14_p7((0, 0, 500, 500), (800, 1000, 480, 500))
+
+    @unittest.skipIf(pd is None, "pandas missing")
+    def test_mid_continuity(self):
+        with tempfile.TemporaryDirectory() as d:
+            p2, lk = os.path.join(d, "p2.parquet"), os.path.join(d, "look.parquet")
+            pd.DataFrame(dict(mid=[1, 2], mint=["a", "b"])).to_parquet(p2)
+            pd.DataFrame(dict(mid=[1, 2, 3], mint=["a", "b", "oct"])).to_parquet(lk)
+            self.assertEqual(R.check_mid_continuity(lk, p2), 2)
+            pd.DataFrame(dict(mid=[1, 2, 3], mint=["a", "oct", "b"])).to_parquet(lk)
+            with self.assertRaises(R.Refusal):
+                R.check_mid_continuity(lk, p2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -656,6 +656,86 @@ def r11_missing_v(df, bi, Lg, tag, n_total) -> None:
             raise Refusal("R11", f"a missing-V trade is among the top 3 of the {leg} leg")
 
 
+# ----------------------------------------------------------------------------------------------------------------- section 11.4 checks (counts only)
+def ledger_counted_hours(look: int):
+    """R1's denominator: the ledger and counted hours [2026-10-02T15, look hours_end)."""
+    return [hour_str(h) for h in range(ep("2026-10-02T15"), ep(LOOKS[look]["hours_end"]), 3600)]
+
+
+def r1_bad_hours(look: int, bad_hours, attempt_hours) -> np.ndarray:
+    """R1. bad_hours: set of 'YYYY-MM-DDTHH' that are bad or unverified (unwalked forward-1002ev hours and hours whose raw-JSONL 1:1 match
+    rate is below 99.5% included). attempt_hours: per counted attempt, the hours it needs (create hour .. landing + 300 s + 60 s).
+    Refuses if more than 2% of the ledger and counted hours are bad, or more than 5% of attempts need a bad hour. Returns the keep mask."""
+    hrs = ledger_counted_hours(look); bad = set(bad_hours)
+    nb = sum(1 for h in hrs if h in bad)
+    if nb > 0.02 * len(hrs):
+        raise Refusal("R1", f"{nb} of {len(hrs)} ledger and counted hours are bad or unverified")
+    keep = np.array([not (set(a) & bad) for a in attempt_hours], bool)
+    if len(keep) and (~keep).sum() > 0.05 * len(keep):
+        raise Refusal("R1", f"{int((~keep).sum())} of {len(keep)} attempts need a bad hour")
+    return keep
+
+
+def share_refusals(pda_match: float, v_coverage: float, fallback_hours: int, n_hours: int) -> None:
+    """R2 (PDA canonical-pool match >= 95% of non-Mayhem completes), R3 (per-print V coverage >= 95%), R6 (<= 5% nearest-hour slot-time fallback)."""
+    if not pda_match >= 0.95:
+        raise Refusal("R2", f"PDA canonical-pool match {pda_match:.4f} < 0.95")
+    if not v_coverage >= 0.95:
+        raise Refusal("R3", f"per-print V coverage {v_coverage:.4f} < 0.95")
+    if n_hours <= 0 or fallback_hours > 0.05 * n_hours:
+        raise Refusal("R6", f"{fallback_hours} of {n_hours} hours use the slot-time fallback")
+
+
+def r4_precount(look: int, kept_by_date: dict) -> None:
+    """R4: the precount's kept selections (exploration-only model, section 11.3) over the look's dates. R5: never a refusal on a high count."""
+    L = LOOKS[look]
+    dates = [date_str(x) for x in range(ep(L["start"]), ep(L["end"]), 86400)]
+    tot = sum(int(kept_by_date.get(d, 0)) for d in dates); nd = sum(1 for d in dates if kept_by_date.get(d, 0) > 0)
+    if tot < L["min_kept"] or nd < L["min_dates"]:
+        raise Refusal("R4", f"kept {tot} (min {L['min_kept']}), dates with a kept selection {nd} of {len(dates)} (min {L['min_dates']})")
+
+
+def r14_p7(cp: tuple, fee_line: tuple) -> None:
+    """R14: both P7 lines (event_v_map.p7_all_pass; an empty side fails)."""
+    spec = importlib.util.spec_from_file_location("event_v_map_exp025", os.path.join(ART, "event_v_map.py"))
+    m = importlib.util.module_from_spec(spec); sys.modules["event_v_map_exp025"] = m; spec.loader.exec_module(m)
+    if not m.p7_all_pass(cp, fee_line):
+        raise Refusal("R14", "P7 pricing check failed")
+
+
+def check_mid_continuity(look_universe: str, p2_universe: str) -> int:
+    """P3/P4 E0 item (section 11.2): every exploration token keeps P2's `mid` in the look's universe.parquet. Returns the count checked."""
+    import pandas as pd
+    a = pd.read_parquet(look_universe, columns=["mid", "mint"]); b = pd.read_parquet(p2_universe, columns=["mid", "mint"])
+    m = b.merge(a, on="mint", how="left", suffixes=("_p2", "_look"))
+    bad = int((m.mid_look.isna() | (m.mid_look != m.mid_p2)).sum())
+    if bad:
+        raise Refusal("R13", f"{bad} exploration tokens change mid in the look universe")
+    return int(len(m))
+
+
+REPORT_CELLS = (  # section 8 legs, report-only: (name, latency, bound, lag, fee, rent)
+    ("full_gate_1.9s", "b", "END", "l055", F505, RENT), ("start_bound", "p", "START", "l055", F505, RENT),
+    ("worst_in_slot", "p", "WORST", "l055", F505, RENT), ("sell_lag_2s", "p", "END", "l2", F505, RENT),
+    ("sell_lag_5s", "p", "END", "l5", F505, RENT), ("fee_55000", "p", "END", "l055", F55, RENT), ("no_rent", "p", "END", "l055", F505, 0))
+
+
+def report_only(stage2_rows, priced, h_top5=None) -> dict:
+    """Section 8 (never deciding): the farm check (no cap), caps 0.3 / 0.7 and h_top5 <= 0.5, and the REPORT_CELLS legs."""
+    cap = _cap(); out = {}
+    h1 = stage2_rows.f_h_top1.values
+    variants = {"farm_no_cap": np.ones(len(h1), bool), "cap_0.3": cap.keep_mask(h1, 0.3), "cap_0.7": cap.keep_mask(h1, 0.7)}
+    if h_top5 is not None:
+        variants["h_top5_0.5"] = cap.keep_mask(h_top5, 0.5)
+    for name, km in variants.items():
+        df, bi, Lg, _ = deciding_book(stage2_rows.assign(sel=stage2_rows.sel2.values & km), priced)
+        out[name] = {k: stats(Lg[k], df.day.values[bi]) for k in ("flat", "press")}
+    for name, lat, bnd, lag, f, rent in REPORT_CELLS:
+        df, bi, Lg, _ = deciding_book(stage2_rows.assign(sel=stage2_rows.sel2.values & cap.keep_mask(h1)), priced, lat, bnd, lag, f, rent)
+        out[name] = {k: stats(Lg[k], df.day.values[bi]) for k in ("flat", "press")}
+    return out
+
+
 def cmd_check(a) -> int:
     codes = []
     try:
@@ -685,15 +765,17 @@ def cmd_read(a) -> int:
     counted = (rows.t >= ep(L["start"])) & (rows.t < ep(L["end"]))
     stage2 = counted & rows.pred.notna() & (rows.pred > cfg["threshold"])
     rows["sel"] = cap.apply_cap_before_book(rows.f_h_top1.values, stage2.values)
+    rows["sel2"] = stage2.values
     sel = rows[rows.sel].copy()
     sel["day"] = [date_str(x) for x in sel.t]
+    st2 = rows[rows.sel2].copy(); st2["day"] = [date_str(x) for x in st2.t]
     rec = dict(look=a.look, decisions_md5=decisions_md5(sel.mint, sel.t), n_kept=int(len(sel)))
     if a.look == 2 and a.look1_record:          # R9: Look 2 re-derives Look 1's decisions
         l1 = json.load(open(a.look1_record)); s1 = sel[sel.t < ep(LOOKS[1]["end"])]
         if decisions_md5(s1.mint, s1.t) != l1["decisions_md5"]:
             raise Refusal("R9", "Look 2's re-derivation of Look 1's decisions differs")
     src = lambda h: next(s for s, x, y in L["allow"] if ep(x) <= ep(h) < ep(y)) if any(ep(x) <= ep(h) < ep(y) for _, x, y in L["allow"]) else "outside"
-    priced = price_rows(sel[["idx", "t", "mint", "pool", "v", "g", "gday"]], os.path.join(O, "tape", "trades"), guard, hour_source=src)
+    priced = price_rows(st2[["idx", "t", "mint", "pool", "v", "g", "gday"]], os.path.join(O, "tape", "trades"), guard, hour_source=src)
     sel = sel.assign(sel=True)
     out = {}
     for lat in ("p", "b"):
@@ -706,7 +788,7 @@ def cmd_read(a) -> int:
     alpha = float(SECTION0[L["alpha_key"]])
     dec = decide(a.look, out["p"]["flat"], out["p"]["press"], out["p"]["by_date"]["flat"], out["p"]["by_date"]["press"],
                  out["b"]["flat"], out["b"]["press"], alpha)
-    rec.update(decision=dec, cells=out)
+    rec.update(decision=dec, cells=out, report_only=report_only(st2, priced, st2.f_h_top5.values if "f_h_top5" in st2 else None))
     json.dump(rec, open(a.out, "w"), indent=1, default=float)
     with open(LOOK_LEDGER, "a") as f:
         f.write(json.dumps(dict(look=a.look, event="read", verdict=dec["verdict"], decisions_md5=rec["decisions_md5"],
