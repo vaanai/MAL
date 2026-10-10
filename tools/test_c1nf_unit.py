@@ -149,7 +149,7 @@ def test_launcher_run_tool_is_c1nfs_sell_and_close_only(tmp_path):
 def test_cap_pick_template_and_fill(tmp_path):
     """DEC-026 Amendment 1 item B: the CAP-PICK oracle directory, bound read-only at /srv/mal-cap-pick (the H5 shadow-feed pattern)."""
     assert chk.problems(CAPF, "cap-pick")  # the unfilled template is invalid on purpose
-    good = CAPF.replace(b"__CAP_PICK_DIR__", b"/home/claude/data/cap-pick-oracle")
+    good = CAPF.replace(b"__CAP_PICK_DIR__", b"/home/claude/data/h5-shadow/cap-pick")  # the one exporter's CAP_PICK_OUT (H5's pick_file reads it too)
     assert chk.problems(good, "cap-pick") == []
     for bad in (b"/home/claude/.claude/cap-pick-oracle", b"/home/claude/../root/cap-pick-oracle", b"/srv/mal-cap-pick-src/cap-pick",
                 b"/home/claude/data/c1nf-shadow", b"/home/claude/data/cap-pick-oracle /etc", b"/var/lib/mal-live/cap-pick"):
