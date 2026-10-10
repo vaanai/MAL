@@ -1068,7 +1068,7 @@ def e0_reference(conf: Path, day: str) -> list[tuple[str, str, str, int]]:
 
 
 E0_REF_LEG = {"p": "primary", "b": "binding"}  # s14_boostdip.py labels (read from the 09-20 rows, job #522 diagnosis)
-E0_REF_STAKE = {"1": "0.1", "25": "0.25"}  # s14 stake labels; the pnl of every row equals ours under this map (checked on 09-20)
+E0_REF_STAKE = {"01": "0.1", "025": "0.25"}  # s14 stake labels; the pnl of every row equals ours under this map (checked on 09-20)
 
 
 # ---- CLI ------------------------------------------------------------------------------------------------------------------
