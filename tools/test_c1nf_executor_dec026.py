@@ -17,12 +17,15 @@ from tools import h5_executor as h5
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
 from tools.cap_pick_oracle import PickOracle
+from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from tools.test_c1nf_executor import MINUTE, STAKE, TEST_KP, TEST_SHA, Case, Env, H5Rpc, outcome, touch_streams, write_stream
 from tools.test_h5_executor import MINT, POOL, QREAL, sell_args
 from tools.test_probe_executor import BASE0, T0, V
 
 SOL = 1_000_000_000
+# Read before any test patches it (Case.setUp pins a throwaway key in its place): the value the deployed tree carries.
+PINNED_C1NF_WALLET = c.C1NF_WALLET_PUBKEY
 
 
 class TierCase(Case):
@@ -727,3 +730,84 @@ class Round3FixTests(TierCase):
             self.assertEqual(c.C1NFExecutor.__dict__[name].__module__, "tools.c1nf_executor", name)
         self.assertEqual((h5.SELL_RESERVE_LAMPORTS, h5.H5_DEFAULT["escalated_priority_lamports"]), (1_000_000, 150_000))
         self.assertEqual(h5.balance_need(STAKE, 505_000, 0, 0, 50_000_000), 103_610_000)  # H5's function, unchanged
+
+
+class WalletPinTests(Case):
+    """DEC-026 section 5 / runbook Step 2 (Helm, 2026-10-10): the second wallet's PUBLIC key, pinned as code. Only public keys appear here."""
+
+    HELM_STEP2 = "CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5"
+
+    def test_the_pin_is_helms_address_a_valid_32_byte_key_and_not_h5s(self):
+        self.assertEqual(PINNED_C1NF_WALLET, self.HELM_STEP2)
+        src = (Path(c.__file__).read_text())
+        self.assertEqual(src.count(f'C1NF_WALLET_PUBKEY: str | None = "{self.HELM_STEP2}"'), 1)  # the module line itself, not a patched value
+        key = Pubkey.from_string(PINNED_C1NF_WALLET)
+        self.assertEqual(len(bytes(key)), 32)
+        self.assertEqual(str(key), PINNED_C1NF_WALLET)  # canonical base58, round trips
+        self.assertNotEqual(PINNED_C1NF_WALLET, c.H5_WALLET_PUBKEY)
+        self.assertNotEqual(bytes(key), bytes(Pubkey.from_string(c.H5_WALLET_PUBKEY)))
+        self.assertEqual(c.H5_WALLET_PUBKEY, "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk")
+
+    def test_with_the_real_pin_only_that_key_passes_and_h5s_never(self):
+        with mock.patch.object(c, "C1NF_WALLET_PUBKEY", PINNED_C1NF_WALLET):
+            self.assertIsNone(c.wallet_refusal(PINNED_C1NF_WALLET))
+            self.assertEqual(c.wallet_refusal(c.H5_WALLET_PUBKEY), "wallet_is_h5")
+            self.assertEqual(c.wallet_refusal(str(TEST_KP.pubkey())), "wallet_not_pinned_c1nf")
+            self.assertEqual(c.wallet_refusal(str(Keypair().pubkey())), "wallet_not_pinned_c1nf")
+            root = self.tmp / "repo"
+            (root / "EXP").mkdir(parents=True)
+            (root / c.EXP025_PART1).write_text("# EXP-025")
+            self.make_live_ok()
+            cfg = {"state_dir": str(c.LIVE_STATE_DIR), "end_ms": c.C1NF_END_MAX_MS, "intents_file": "/x"}
+            self.assertIsNone(c.start_refusal(cfg, root))  # wallet_unpinned no longer stops the start; the key check below does
+            with self.assertRaises(SystemExit) as cm:  # the executor itself refuses a keyed start with another key
+                Env(self.tmp, self.state_dir)
+            self.assertIn("wallet_not_pinned_c1nf", str(cm.exception))
+        for unpinned in (None, "", c.H5_WALLET_PUBKEY):  # the refusal paths stay: no pin, or H5's key as the pin
+            with mock.patch.object(c, "C1NF_WALLET_PUBKEY", unpinned):
+                self.assertEqual(c.start_refusal(cfg, root), "wallet_unpinned", unpinned)
+
+    def _main_live(self, kp: Keypair) -> tuple[int, str]:
+        """c1nf_executor.main --live --once with every start check passing and `kp` as the systemd credential (a throwaway key)."""
+        root = self.tmp / "repo"
+        (root / "EXP").mkdir(parents=True, exist_ok=True)
+        (root / c.EXP025_PART1).write_text("# EXP-025")
+        self.make_live_ok()
+        live = json.loads((Path(__file__).resolve().parent.parent / "scripts/mal-fast/c1nf-executor-live.json").read_text())
+        cfg_path = self.tmp / "cfg-live.json"
+        cfg_path.write_text(json.dumps({**live, "state_dir": str(c.LIVE_STATE_DIR), "intents_file": str(self.tmp / "intents"),
+                                        "pick_file": str(self.tmp / "picks.jsonl")}))
+        cred = self.tmp / "cred"
+        cred.mkdir(exist_ok=True)
+        (cred / c.CREDENTIAL_NAME).unlink(missing_ok=True)
+        (cred / c.CREDENTIAL_NAME).write_text(json.dumps(list(bytes(kp))))
+        os.chmod(cred / c.CREDENTIAL_NAME, 0o400)
+        pl = __import__("tools.probe_live", fromlist=["x"])
+        out = io.StringIO()
+        with mock.patch.object(h5, "repo_root", return_value=root), mock.patch.object(pl, "harden_process"), \
+                mock.patch.object(pe, "rpc_env_problem", return_value=None), \
+                mock.patch.object(pe, "ProbeRpc", side_effect=AssertionError("an RPC client was built before the wallet check")), \
+                mock.patch.object(c, "C1NFExecutor", side_effect=AssertionError("the executor was built before the wallet check")), \
+                mock.patch.dict(os.environ, {"HELIUS_API_KEY": "k", "CREDENTIALS_DIRECTORY": str(cred)}), contextlib.redirect_stdout(out):
+            rc = c.main(["--config", str(cfg_path), "--live", "--once"])
+        self.assertNotIn(json.dumps(list(bytes(kp))), out.getvalue())
+        return rc, out.getvalue()
+
+    def test_main_live_with_a_credential_for_another_key_refuses_before_any_rpc(self):
+        with mock.patch.object(c, "C1NF_WALLET_PUBKEY", PINNED_C1NF_WALLET):
+            rc, out = self._main_live(Keypair())
+        self.assertEqual(rc, 2)
+        self.assertIn("startup_refused wallet_not_pinned_c1nf", out)
+
+    def test_main_live_with_h5s_key_as_the_credential_refuses(self):
+        kp = Keypair()  # stands in for H5's key: no test has H5's secret, so H5's public constant is pointed at this throwaway key
+        with mock.patch.object(c, "C1NF_WALLET_PUBKEY", PINNED_C1NF_WALLET), mock.patch.object(c, "H5_WALLET_PUBKEY", str(kp.pubkey())):
+            rc, out = self._main_live(kp)
+        self.assertEqual(rc, 2)
+        self.assertIn("startup_refused wallet_is_h5", out)
+
+    def test_main_live_gets_past_the_wallet_check_only_with_the_pinned_key(self):
+        kp = Keypair()  # the pin pointed at a throwaway key: the start reaches the executor (patched to stop there), so the check is what refused above
+        with mock.patch.object(c, "C1NF_WALLET_PUBKEY", str(kp.pubkey())), self.assertRaises(AssertionError) as cm:
+            self._main_live(kp)
+        self.assertIn("RPC client was built before the wallet check", str(cm.exception))

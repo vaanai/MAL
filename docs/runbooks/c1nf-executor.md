@@ -4,7 +4,16 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 
 **Status of this runbook.** It was written without host access, from DEC-026 and the H5 runbook (see "Not verified" at the end). The executor module and its two configs (`tools/c1nf_executor.py`, `c1nf-executor.json`, `c1nf-executor-live.json`) come from the executor PR #530 (branch `claude/c1nf-executor-v2`, reference sha `32265af`), which was not merged when this was written. The launcher (`c1nf_exec_launcher.py`), the base unit (`mal-c1nf-executor.service`), the live and shadow-feed drop-ins, `check-c1nf-unit.py` and the rescue tool `tools/c1nf_sell_and_close.py` are in this runbook's PR (#531), built from H5's. The installer needs both PRs in one sha. **Which sha: only the one the manager names in a PR comment after DEC-026 section 11 item 9 is merged.** Until then the installer refuses (`<file> is missing or empty at <sha>`).
 
-**Two wallets, one host.** Nothing here reads, writes, stops or restarts anything of H5's: not its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, pinned tree, `TIER` or watchdog. **Do not remove the wallet-wide `/var/lib/mal-live/STOP` for C1-NF's sake.** While it is there, this unit cannot send (DEC-026 section 5).
+**Progress on `mal-fast-0` (Helm's report, relayed by the owner on 2026-10-10 ~22:45Z).** Helm's Steps 1 to 3b are done, run from this runbook at `8636426`. Nothing from Step 4 on has started; the wallet is not funded. What Helm reported:
+
+- **Step 2.** Public address `CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5` (32 bytes; differs from H5's `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`). `solana-keygen` is not installed on fast-0, so Helm made the keypair with `solders.Keypair()` from H5's venv. The key is `/etc/mal-c1nf-key/c1nf-wallet.json`, root:root 0400 (225 bytes, a 64-byte JSON keypair), in a root:root 0700 directory. It was never printed and is not funded. The address is pinned as `C1NF_WALLET_PUBKEY` by PR `claude/c1nf-wallet-pin` ("Before Helm starts", item 1).
+- **Step 3.** The auditd rule `-w /etc/mal-c1nf-key/c1nf-wallet.json -p rwa -k mal-c1nf-key` is in `/etc/audit/rules.d/mal-c1nf-key.rules` and loaded (16 rules before, 17 after, none changed).
+- **Step 3b.** `uid=997(mal-c1nf) gid=986(mal-c1nf) groups=986(mal-c1nf)`, shell `nologin`, no home. `getfacl` on `/var/lib/mal-live` shows `user:mal-c1nf:--x` and `mask::--x`, and its mode now shows 710, as Step 3b predicts.
+- **H5 untouched.** H5's wallet key, `TIER`, `LIVE_OK`, unit files, drop-ins and `watch.env` have the same hashes and mtimes before and after. The H5 unit stayed active (0 restarts). The only differences are the mode of `/var/lib/mal-live` (above) and H5's own `state-live.json`, which its executor rewrites.
+- **STOP files.** The wallet-wide `/var/lib/mal-live/STOP` is **absent**: Helm removed it at H5's go-live, 2026-10-09T19:29:31Z (H5 runbook Step 11). H5's own `/var/lib/mal-live/h5/STOP` (2026-10-10T07:15Z) is present. Neither `HALT` exists. The manager's decision: the wallet-wide `STOP` is **not** recreated for C1-NF (see "Two wallets, one host").
+- Helm's backups and rollback notes are in `/root/c1nf-prep/` on fast-0.
+
+**Two wallets, one host.** Nothing here reads, writes, stops or restarts anything of H5's: not its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, pinned tree, `TIER` or watchdog. **The wallet-wide `/var/lib/mal-live/STOP` is absent and stays absent for C1-NF.** Helm removed it at H5's go-live (2026-10-09T19:29:31Z, H5 runbook Step 11). Do not recreate it to hold or stop C1-NF: it stops H5 too. C1-NF cannot trade without its own pinned install (with the `c1nf-wallet` credential) and `LIVE_OK`; a missing `TIER` means T1, the lowest tier, so `TIER` is not a start gate. It is stopped with its own `/var/lib/mal-live/c1nf/STOP`. The wallet-wide `STOP` (and `HALT`) stay available as the shared emergency switch for both units; the executor still honours them (DEC-026 section 5).
 
 ## Who does what
 
@@ -28,7 +37,7 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 | Second wallet key (never printed, never in a repo) | `/etc/mal-c1nf-key/c1nf-wallet.json`, root:root 0400, in `/etc/mal-c1nf-key` root:root 0700 |
 | How the key reaches the unit | Only the live drop-in's `LoadCredential=c1nf-wallet:/etc/mal-c1nf-key/c1nf-wallet.json`. No other unit has this credential. This unit never gets `probe-wallet` (H5's) |
 | The unit's Unix user | `mal-c1nf` (system user and group, no home, `nologin`), never H5's `mal-live`. One uid per wallet: systemd makes `/run/credentials/<unit>/` readable by the unit's `User=`, so a shared user could read the other wallet's key (DEC-026 note 2026-10-10, security review F2) |
-| The wallet's **public** address, as code | `C1NF_WALLET_PUBKEY` in `tools/c1nf_executor.py`. `None` until a reviewed PR pins Helm's address. Live refuses to start without it (`startup_refused wallet_unpinned`) and refuses any other key, H5's above all (`wallet_is_h5`, `wallet_not_pinned_c1nf`). The rescue tool checks the same pin |
+| The wallet's **public** address, as code | `C1NF_WALLET_PUBKEY` in `tools/c1nf_executor.py`, pinned to Helm's Step 2 address `CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5` (2026-10-10). Without a pin (`None`, or H5's address) live refuses to start (`startup_refused wallet_unpinned`) and refuses any other key, H5's above all (`wallet_is_h5`, `wallet_not_pinned_c1nf`). The rescue tool checks the same pin |
 | The model's sha256, as code | `C1NF_MODEL_SHA256` in `tools/c1nf_executor.py` (DEC-026 section 11 item 12). Empty: live refuses to start (`model_unpinned`). A pick or shadow heartbeat naming another model latches `model_sha_mismatch` |
 | Pinned tree (root:root, one per sha, never changed) | `/usr/local/lib/mal-c1nf-exec/<sha>/`, `current` -> `<sha>`, venv at `/usr/local/lib/mal-c1nf-exec/venv` |
 | Base unit (keyless dry run), written only by the installer | `/etc/systemd/system/mal-c1nf-executor.service` |
@@ -41,7 +50,7 @@ The C1-NF live measurement canary: 0.05 SOL per trade, on a **second wallet**, o
 | `LIVE_OK` (the gate the executor cannot create) | `/etc/mal-c1nf/LIVE_OK`: a regular file, root:root, mode **exactly 0644**, no symlink, parent `/etc/mal-c1nf` root:root 0755 |
 | `TIER` | `/etc/mal-c1nf/TIER`, the same checks, content exactly `T1` or `T2`. Missing, invalid or inactive (`T2` today) means T1 (the lowest). The C1-NF table, not H5's |
 | C1-NF's `STOP`, `HALT`, `FINAL_WRITTEN` | `/var/lib/mal-live/c1nf/STOP`, `/var/lib/mal-live/c1nf/HALT`, `/var/lib/mal-live/c1nf/FINAL_WRITTEN` (the executor only tests that they exist) |
-| Wallet-wide `STOP`, `HALT` (shared with H5) | `/var/lib/mal-live/STOP`, `/var/lib/mal-live/HALT`. The executor honours both. The `STOP` there stays until H5's Step 11 |
+| Wallet-wide `STOP`, `HALT` (shared with H5) | `/var/lib/mal-live/STOP`, `/var/lib/mal-live/HALT`. The executor honours both. The `STOP` there was removed at H5's go-live (2026-10-09T19:29:31Z, H5 Step 11) and is absent; it is not recreated for C1-NF (it stops H5 too) and stays available as the shared emergency switch |
 | Picks the executor reads, inside the unit | `/srv/mal-c1nf-shadow` (config `intents_file`): the C1-NF shadow's output directory (#503), three hourly streams `c1nf-picks-*`, `c1nf-events-*`, `c1nf-outcomes-*` |
 | CAP-PICK oracle file (from 2026-10-16T01Z) | Config `pick_file` = `/srv/mal-cap-pick/picks.jsonl` in the live config (DEC-026 Amendment 1 item B; not in the keyless dry-run config). Inside the unit it is the exporter's `$CAP_PICK_OUT/picks.jsonl`, bound read-only by `20-cap-pick.conf`. Without a readable, fresh file every pick in the seal window is refused |
 | Root-only Helius env, shared with the probe and H5 | `/etc/mal-probe-rpc/helius.env` (root:root 0600 in a root:root 0700 dir). No Jito, Sender, LaserStream or paid RPC |
@@ -65,7 +74,7 @@ DEC-026 Amendment 1 item B. The executor reads the oracle at the fixed in-unit p
 
 Helm's Step 2 (the keypair) comes first: the public address must be in the code before the sha is named.
 
-1. **The wallet pin.** After Helm gives the public address (Step 2), a reviewed PR sets `C1NF_WALLET_PUBKEY` in `tools/c1nf_executor.py` to it. Check it differs from H5's `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`.
+1. **The wallet pin.** After Helm gives the public address (Step 2), a reviewed PR sets `C1NF_WALLET_PUBKEY` in `tools/c1nf_executor.py` to it. Check it differs from H5's `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`. Helm gave `CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5` on 2026-10-10; PR `claude/c1nf-wallet-pin` pins it.
 2. **The model pin** (DEC-026 section 11 item 12): a reviewed PR sets `C1NF_MODEL_SHA256` to the pinned model's sha256, the one the shadow writes as `model_sha`.
 3. **The CAP-PICK inputs, before 2026-10-16T01Z:** #509 merged; its exporter running as a MiScusi job with an explicit `CAP_PICK_OUT` (see "The CAP-PICK exporter for C1-NF" below), and that directory created before the unit starts; Helm's `20-cap-pick.conf` (Step 5) binding it read-only at `/srv/mal-cap-pick`, where the live config's `pick_file` (`/srv/mal-cap-pick/picks.jsonl`) reads it; and `FINAL_WRITTEN` (see "Stop, halt, status"). Without them the canary pauses at 10-16T01Z; it does not trade blind. Give Helm the absolute `CAP_PICK_OUT` path with the shadow directory (item 6).
 4. **The sha**, in a PR comment, after the executor PR and this PR are both merged. It must contain `EXP/EXP-025-c1nf-part1-prereg.md`, and its `c1nf-executor-live.json` must hold the stake, priority, `end_ms` and `state_dir` of DEC-026 section 6. The installer refuses otherwise.
@@ -95,9 +104,9 @@ sudo -n /usr/bin/dd iflag=nofollow status=none if=/var/lib/mal-live/c1nf/live/st
 
 Steps 3 to 5 run in one root shell (`sudo -i`) from `/root`. The others use `sudo` per command.
 
-**Step 1. Do not touch H5.** Leave its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, watchdog and `TIER` alone. Leave the wallet-wide `/var/lib/mal-live/STOP` in place.
+**Step 1. Do not touch H5.** Leave its unit, wallet, key, `/etc/mal-h5`, `/var/lib/mal-live/h5`, watchdog and `TIER` alone. Leave the wallet-wide `/var/lib/mal-live/STOP` as it is: it has been absent since H5's go-live (2026-10-09T19:29:31Z, H5 Step 11). Do not recreate it for C1-NF: it would stop H5 too. *Done 2026-10-10 (Helm).*
 
-**Step 2. Create the second keypair.** Never print it. Never put it in a repo.
+**Step 2. Create the second keypair.** Never print it. Never put it in a repo. *Done 2026-10-10 (Helm): `solana-keygen` is not installed on fast-0, so the keypair was made with `solders.Keypair()` from H5's venv; same file, owner and modes as below. Public address `CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5`.*
 
 ```
 sudo install -d -m 0700 -o root -g root /etc/mal-c1nf-key
@@ -110,7 +119,7 @@ sudo stat -c '%U:%G %a %n' /etc/mal-c1nf-key /etc/mal-c1nf-key/c1nf-wallet.json
 
 Use whatever key tool Helm prefers. The result must be a JSON keypair file the executor loads, as the probe key is. **Check that the address differs from the H5 wallet `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`.** Keep the withdraw address with Helm (DEC-019 section 6 item 6). Then wait for the manager's sha: it must carry this address as `C1NF_WALLET_PUBKEY` ("Before Helm starts", item 1).
 
-**Step 3. Auditd watch on the new key** (as for the probe key):
+**Step 3. Auditd watch on the new key** (as for the probe key). *Done 2026-10-10 (Helm): rule loaded, 16 rules before, 17 after.*
 
 ```
 auditctl -w /etc/mal-c1nf-key/c1nf-wallet.json -p rwa -k mal-c1nf-key
@@ -118,7 +127,7 @@ echo '-w /etc/mal-c1nf-key/c1nf-wallet.json -p rwa -k mal-c1nf-key' > /etc/audit
 #   expect: auditctl -l | grep mal-c1nf-key prints the rule
 ```
 
-**Step 3b. The unit's own system user** (DEC-026 note 2026-10-10, security review F2). The C1-NF unit runs as `mal-c1nf`, never as H5's `mal-live`: systemd makes a unit's `/run/credentials/<unit>/` readable by its `User=`, so one shared user would let either executor read the other wallet's key. The installer creates none of this: it refuses if the user or group is missing, has `mal-live`'s uid, or is in the `mal-live` group. Nothing of H5's changes.
+**Step 3b. The unit's own system user** (DEC-026 note 2026-10-10, security review F2). The C1-NF unit runs as `mal-c1nf`, never as H5's `mal-live`: systemd makes a unit's `/run/credentials/<unit>/` readable by its `User=`, so one shared user would let either executor read the other wallet's key. The installer creates none of this: it refuses if the user or group is missing, has `mal-live`'s uid, or is in the `mal-live` group. Nothing of H5's changes. *Done 2026-10-10 (Helm): uid 997, gid 986, the ACL entry and mask as expected, `/var/lib/mal-live` now shows mode 710.*
 
 ```
 useradd --system --no-create-home --shell /usr/sbin/nologin --user-group mal-c1nf
@@ -244,7 +253,7 @@ systemd-run --wait --quiet -p User=mal-live /usr/bin/test -r /run/credentials/ma
 
 If either `expect 1` line prints 0, one user can read the other wallet's key: remove `LIVE_OK` and stop the C1-NF unit (nothing is open yet), and tell the manager.
 
-While the wallet-wide `/var/lib/mal-live/STOP` is there the unit still sends nothing, and the daily check says `c1nf_idle` ("the wallet-wide STOP exists"). That is expected until H5's Step 11. It is not Helm's to remove for C1-NF.
+The wallet-wide `/var/lib/mal-live/STOP` has been absent since H5's go-live (2026-10-09T19:29:31Z, H5 Step 11), so it does not hold C1-NF back. Do not recreate it to hold C1-NF: it stops H5 too. If it is ever placed as the shared emergency switch, this unit sends nothing while it is there and the daily check says `c1nf_idle` ("the wallet-wide STOP exists").
 
 ## Tier steps (DEC-026 section 10)
 
@@ -276,7 +285,7 @@ A plain file, never a symlink (a dangling link does not count as existing). The 
 
 Latched live halts (the executor at `32265af`): `fill_selection_adverse` (rule 1), `landing_p50_gt_1_9s` and `out_of_rule_entry` (rule 3), `stuck_position` (rule 4: a position not closed by its buy's landing + 600 s; the emergency sell at landing + 370 s is only ledgered, `emergency_deadline_passed`), `model_sha_mismatch` (rule 7). Late sells (rule 5) are an alert, never a halt. Rule 2's twin divergence is not built.
 
-The wallet-wide `/var/lib/mal-live/{STOP,HALT}` also stop C1-NF. They stop H5 too, so the C1-NF files are the ones to use.
+The wallet-wide `/var/lib/mal-live/{STOP,HALT}` also stop C1-NF. They stop H5 too, so the C1-NF files are the ones to use. Both are absent today (the `STOP` since 2026-10-09T19:29:31Z); they are the shared emergency switch for both units.
 
 ## Daily check (manager) and the watchdog
 
@@ -331,7 +340,8 @@ Wind-down, `systemctl stop mal-c1nf-executor`, then `ln -sfn <previous sha> /usr
 - A key, a webhook or a withdraw address in a repo file, a PR, a note or a chat line.
 - The H5 key for C1-NF, or the C1-NF key for H5. One credential per unit.
 - H5's sell-and-close tool against the C1-NF wallet (see Sell-and-close).
-- Removing the wallet-wide `STOP` for C1-NF's sake.
+- Creating the wallet-wide `/var/lib/mal-live/STOP` (or `HALT`) to stop or hold C1-NF alone: it stops H5 too. Use `/var/lib/mal-live/c1nf/STOP`. The wallet-wide files are only the shared emergency switch for both units.
+- Removing the wallet-wide `STOP` (or `HALT`) for C1-NF's sake when it is in place as the shared emergency switch.
 - `LIVE_OK` before the manager's written go, or `TIER` = `T2` without the owner's dated line.
 - Restarting the live unit with `open` or `pending` above 0 after `LIVE_OK` is removed: it will not start, and nothing sells.
 - Running the executor, `--clear-halt` or `--mark-closed` as root (root-owned files in the state dir fail the start precheck) or as H5's `mal-live` (it cannot reach the state dir). They run as `mal-c1nf`. `--status` runs as `mal-c1nf` too (Step 9); as root it only reads, but no sudoers line allows that.
@@ -351,6 +361,6 @@ Wind-down, `systemctl stop mal-c1nf-executor`, then `ln -sfn <previous sha> /usr
 - **The rescue tool** (`tools/c1nf_sell_and_close.py`) was tested offline only, with a fake RPC and throwaway keys (its sell path is H5's tested code). It was never run against the chain or as root. It needs the security review of DEC-026 section 11 item 9 with the executor.
 - The base unit hides H5's state dir, `/etc/mal-h5`, `/etc/mal-probe` and H5's pinned tree (`InaccessiblePaths=`). That the C1-NF executor needs none of them was read from v2's code (it repoints `LIVE_OK` and `TIER` to `/etc/mal-c1nf`), not run in the sandbox. The keyless dry run under the unit is the check.
 - The shadow-feed checker accepts a source directory named `c1nf-shadow*` under `/home/<user>/`. The real #503 output directory name was not checked; if it differs, the checker's pattern follows it.
-- **The own user (DEC-026 note 2026-10-10, security review F2)** was written without host access. Not run on fast-0: `useradd`, the search-only ACL on `/var/lib/mal-live` (and whether `setfacl` is installed there), the `chown` of an existing `/var/lib/mal-live/c1nf`, the `--status` reads as `mal-c1nf` (from a working directory `mal-c1nf` may not be able to read), whether `systemd-run --wait --quiet` returns the command's exit code on fast-0's systemd, and how that systemd sets the owner and mode of `/run/credentials/<unit>/`. The positive controls in Steps 6 and 11 show the last two. That the executor needs nothing under `/var/lib/mal-live` beyond its own state dir and the wallet-wide `STOP`/`HALT` was read from the code (`_c1nf_precheck` skips the probe's state cross-check), not run; the keyless dry run (Step 7) is the check.
-- The key-tool commands in Step 2 and the sandbox values in Step 6 are proposals; Helm owns the exact install (DEC-026 section 5).
+- **The own user (DEC-026 note 2026-10-10, security review F2)** was written without host access. Run on fast-0 since (Helm, 2026-10-10, Step 3b): `useradd` (uid 997, gid 986) and the search-only ACL on `/var/lib/mal-live` (`user:mal-c1nf:--x`, `mask::--x`, mode shown as 710, as predicted). Still not run on fast-0: the `chown` of an existing `/var/lib/mal-live/c1nf`, the `--status` reads as `mal-c1nf` (from a working directory `mal-c1nf` may not be able to read), whether `systemd-run --wait --quiet` returns the command's exit code on fast-0's systemd, and how that systemd sets the owner and mode of `/run/credentials/<unit>/`. The positive controls in Steps 6 and 11 show the last two. That the executor needs nothing under `/var/lib/mal-live` beyond its own state dir and the wallet-wide `STOP`/`HALT` was read from the code (`_c1nf_precheck` skips the probe's state cross-check), not run; the keyless dry run (Step 7) is the check.
+- The key-tool commands in Step 2 and the sandbox values in Step 6 are proposals; Helm owns the exact install (DEC-026 section 5). On fast-0 Helm made the key with `solders.Keypair()` (2026-10-10), not `solana-keygen`. That the executor's `load_probe_key` reads that file was not run against it (the key stays root-only until Step 11's credential).
 - The pinned model file itself (DEC-026 section 11 item 12) is not installed by this installer; the executor pins only its sha256 (`C1NF_MODEL_SHA256`) and checks the shadow's `model_sha`.
