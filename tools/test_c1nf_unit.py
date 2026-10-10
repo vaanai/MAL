@@ -60,6 +60,17 @@ def test_base_unit_is_keyless_and_c1nf_scoped():
     assert "InaccessiblePaths=-/var/lib/mal-live/h5 -/etc/mal-h5 -/etc/mal-probe -/usr/local/lib/mal-h5-exec" in lines
 
 
+def test_base_unit_runs_as_its_own_user_never_h5s():
+    """DEC-026 note 2026-10-10 (security review F2): systemd makes /run/credentials/<unit>/ readable by the unit's User=, so the two
+    key-holding units need two users. C1-NF is mal-c1nf; H5's unit (not edited here) stays mal-live."""
+    lines = [ln for ln in BASE.decode().split("\n") if ln and not ln.startswith("#")]
+    assert [ln for ln in lines if ln.startswith("User=")] == ["User=mal-c1nf"]
+    assert not any(ln.startswith(("Group=", "SupplementaryGroups=", "DynamicUser=")) for ln in lines)
+    assert b"User=" not in DROPIN and b"Group=" not in DROPIN  # the live drop-in cannot switch the user back
+    h5_users = [ln for ln in (MF / "mal-h5-executor.service").read_text().split("\n") if ln.startswith("User=")]
+    assert h5_users == ["User=mal-live"]
+
+
 @pytest.mark.parametrize("mutation", [
     (b"ReadWritePaths=/var/lib/mal-live/c1nf", b"ReadWritePaths=/var/lib/mal-live"),
     (b"ReadWritePaths=/var/lib/mal-live/c1nf", b"ReadWritePaths=/var/lib/mal-live/h5"),
@@ -67,7 +78,11 @@ def test_base_unit_is_keyless_and_c1nf_scoped():
     (b"ProtectHome=tmpfs", b"ProtectHome=read-only"),
     (b"c1nf-executor.json", b"h5-executor.json"),
     (b"[Service]\n", b"[Service]\nLoadCredential=c1nf-wallet:/etc/mal-c1nf-key/c1nf-wallet.json\n"),
-    (b"User=mal-live", b"User =mal-live"),
+    (b"User=mal-c1nf", b"User =mal-c1nf"),
+    (b"User=mal-c1nf", b"User=mal-live"),  # H5's user: one uid per wallet (DEC-026 note 2026-10-10, F2)
+    (b"User=mal-c1nf", b"User=root"),
+    (b"User=mal-c1nf\n", b"User=mal-c1nf\nSupplementaryGroups=mal-live\n"),
+    (b"User=mal-c1nf\n", b"User=mal-c1nf\nGroup=mal-live\n"),
     (b"\n", b"\r\n"),
 ])
 def test_base_mutations_refuse(mutation):
