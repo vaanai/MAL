@@ -500,14 +500,21 @@ def check_mid_stable(look_universe: str | Path, p2_universe: str | Path) -> dict
 
 # ------------------------------------------------------------------------------------------------ md5 over rows
 def rows_md5(con, files: Sequence[str | Path]) -> tuple[str, int]:
-    """md5 over the rows of `files` as '|'-joined text, sorted (order-independent: convert.py wrote with
-    preserve_insertion_order=false, so its file order is not a pin)."""
+    """md5 over the rows of `files`: each row as its columns' text joined by '|' (NULL as \\N), the rows sorted
+    (order-independent: convert.py wrote with preserve_insertion_order=false, so its file order is not a pin), each row
+    followed by a newline. Streamed in batches, so a whole day fits (DuckDB sorts with spill)."""
     lst = "[" + ",".join(_q(f) for f in files) + "]"
     rel = f"read_parquet({lst})"
     names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()]
     expr = " || '|' || ".join(f"coalesce(CAST({c} AS VARCHAR), '\\N')" for c in names)
-    r = con.execute(f"SELECT md5(string_agg(x, chr(10) ORDER BY x)), count(*) FROM (SELECT {expr} AS x FROM {rel})").fetchone()
-    return r[0], int(r[1])
+    h = hashlib.md5()
+    n = 0
+    reader = con.execute(f"SELECT {expr} AS x FROM {rel} ORDER BY x").fetch_record_batch(500_000)
+    for batch in reader:
+        xs = batch.column(0).to_pylist()
+        n += len(xs)
+        h.update(("\n".join(xs) + "\n").encode() if xs else b"")
+    return h.hexdigest(), n
 
 
 # ------------------------------------------------------------------------------------------------ E0 on 2026-09-20
