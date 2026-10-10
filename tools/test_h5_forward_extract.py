@@ -69,6 +69,24 @@ def write_raw(root: Path, fix=FIX) -> dict[tuple[str, str], Path]:
     return out
 
 
+class LoadVmapTest(unittest.TestCase):
+    def test_null_kept_known_out_of_band_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "v.json"
+            p.write_text(json.dumps({"v": {"PA": V_IN, "PB": V_OUT, "PZ": None, "LO": X.V_LO, "HI": X.V_HI,
+                                           "BELOW": X.V_LO - 1, "ABOVE": X.V_HI + 1}}))
+            self.assertEqual(X.load_vmap(p), {"PA": V_IN, "PZ": None, "LO": X.V_LO, "HI": X.V_HI})
+            p.write_text('{"v": {"PN": NaN}}')
+            self.assertEqual(X.load_vmap(p), {"PN": None})
+            p.write_text(json.dumps({"v": {"PS": "17580000000"}}))
+            with self.assertRaises(X.Refused):
+                X.load_vmap(p)
+
+    def test_role_says_null_kept(self):
+        self.assertIn("null-V pool is kept", X.VMAP_ROLE)
+        self.assertIn("not an Am.1 V0 source", X.VMAP_ROLE)
+
+
 @unittest.skipUnless(HAVE, "needs duckdb 1.5.6 and zstd")
 class ExtractTest(unittest.TestCase):
     def setUp(self):
@@ -101,6 +119,42 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(paths, [("A", 1005, False), ("A", 1005, True), ("A", 1010, True)])
         cols = [r[0] for r in c.execute(f"DESCRIBE SELECT * FROM '{out}/paths/2026-09-20.parquet'").fetchall()]
         self.assertEqual(cols, ["mint", "slot", "isbuy", "sol", "tok", "q", "b", "th", "bt"])
+
+    def test_null_v_pool_kept_with_null_v_known_out_of_band_dropped(self):
+        # C: only a null-V pool. D: a null-V pool first (s0 4002), then a V-range pool (4005). E: only a known
+        # out-of-band pool. F: only a pool absent from the vmap.
+        fix = {h: {k: list(rows) for k, rows in kinds.items()} for h, kinds in FIX.items()}
+        fix["2026-09-20T00"]["trades"] += [tr("C", "PN", 3001, 0, 0), tr("D", "PN2", 4002, 0, 0), tr("D", "PD", 4005, 0, 0),
+                                           tr("E", "PO", 5001, 0, 0), tr("F", "PX", 6001, 0, 0)]
+        fix["2026-09-20T00"]["migrations"] += [mg("C", 3000), mg("D", 4000), mg("E", 5000), mg("F", 6000)]
+        files = write_raw(self.tmp / "raw2", fix)
+        vm = self.tmp / "vmap-null.json"
+        vm.write_text(json.dumps({"v": {"PA": V_IN, "PB": V_OUT, "PN": None, "PN2": None, "PD": V_IN, "PO": V_OUT}}))
+        out = self.tmp / "out-null"
+        con = X.connect(duckdb, out / "tmp", memory="1GB", threads=2)
+        for (kind, hour), p in sorted(files.items()):
+            X.convert_hour(con, "fast-pool-0918", kind, hour, p, out / "tape")
+        stats = X.extract_day(con, out / "tape", out, "2026-09-20", X.load_vmap(vm))
+        con.close()
+        c = duckdb.connect()
+        meta = c.execute(f"SELECT mint, pool, mslot, s0, v, npools FROM '{out}/meta/2026-09-20.parquet'").fetchall()
+        # D's v is its own (null) V, not PD's: the reference's arg_min(v, s0) would have returned V_IN here.
+        self.assertEqual(meta, [("A", "PA", 1000, 1005, V_IN, 1), ("C", "PN", 3000, 3001, None, 1),
+                                ("D", "PN2", 4000, 4002, None, 2)])
+        self.assertEqual((stats["migs"], stats["canon_null_v"], stats["canon_null_v_multipool"]), (6, 2, 1))
+        paths = c.execute(f"SELECT DISTINCT mint, slot FROM '{out}/paths/2026-09-20.parquet' WHERE mint IN ('C','D') ORDER BY 1, 2").fetchall()
+        self.assertEqual(paths, [("C", 3001), ("D", 4002)])  # canonical pool rows only
+        # the column list and type #476 checks (EXTRACT_META_COLUMNS) are unchanged; v stays BIGINT
+        desc = c.execute(f"DESCRIBE SELECT * FROM '{out}/meta/2026-09-20.parquet'").fetchall()
+        self.assertEqual([r[0] for r in desc], ["mint", "pool", "mslot", "mbt", "s0", "v", "npools", "blk", "cslot", "day", "uncensored"])
+        self.assertEqual(dict((r[0], r[1]) for r in desc)["v"], "BIGINT")
+        try:
+            import pandas as pd
+        except ImportError:  # pragma: no cover
+            return
+        df = pd.read_parquet(out / "meta" / "2026-09-20.parquet")
+        got = {r.mint: (float(r.v) if r.v == r.v else None) for r in df.itertuples(index=False)}  # #476's NaN test
+        self.assertEqual(got, {"A": float(V_IN), "C": None, "D": None})
 
     def test_rerun_is_md5_identical(self):
         self.run_both(self.tmp / "o1")
@@ -224,6 +278,8 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(man["days"], ["2026-09-19", "2026-09-20"])
         self.assertEqual(man["excluded_hole_mints_by_day"], {"2026-09-19": 0, "2026-09-20": 0})
         self.assertEqual(man["vmap_role"], X.VMAP_ROLE)
+        self.assertEqual((man["vmap_pools_in_range"], man["vmap_pools_null_v_kept"]), (1, 1))
+        self.assertEqual(man["canon_null_v_by_day"], {"2026-09-19": [0, 0], "2026-09-20": [0, 0]})
         self.assertIn("not an Am.1 V0 source", man["vmap_role"])
         self.assertEqual(man["blobs"]["tools/forward_v_join.py"], X.git_blob_sha(X.REPO / "tools/forward_v_join.py"))
         ref = self.tmp / "ref"
