@@ -200,7 +200,7 @@ def frame_rows(ctx: dict, pools) -> list:
     import pandas as pd
     con = _con()
     con.register("pp", pd.DataFrame({"pool": sorted(pools)}))
-    out, intern = [], sys.intern
+    out, intern, keyless = [], sys.intern, 0
     for h, p in ctx["hours"]:
         if not p:
             continue
@@ -210,8 +210,14 @@ def frame_rows(ctx: dict, pools) -> list:
             if not chunk:
                 break
             for pool, side, slot, txi, evi, zs, ix in chunk:
+                if slot is None or txi is None or evi is None:
+                    keyless += 1
+                    continue
                 out.append(Row((intern(pool), intern(side) if side else side, slot, txi, evi, zs, intern(ix) if ix else ix, h)))
     con.close()
+    ctx["keyless"] = keyless
+    if keyless and ctx["mode"] == "look":     # the walker writes slot, tx_index and event_index on every row: a keyless row has no frame place
+        raise P7Refusal("NOT_READY", f"{keyless} PumpSwap rows of V0 pools have no (slot, tx_index, event_index): the frame cannot be ordered")
     return out
 
 
@@ -424,7 +430,7 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
     with open(out_prints, "x") as fh:
         for p in prints:
             fh.write(json.dumps(p, sort_keys=True) + "\n")
-    counts = dict(frame_n=draw["frame_n"], sample_n=len(main), topup_n=len(topup), transactions=len(sigs),
+    counts = dict(frame_n=draw["frame_n"], keyless_dropped=ctx.get("keyless", 0), sample_n=len(main), topup_n=len(topup), transactions=len(sigs),
                   line1=dict(sell_n=t1["sell_n"], sell_ok=t1["sell_ok"], sell_share=_share(t1["sell_ok"], t1["sell_n"]), buy_n=t1["buy_n"],
                              buy_ok=t1["buy_ok"], buy_share=_share(t1["buy_ok"], t1["buy_n"]), excluded=t1["excluded"],
                              excluded_by=t1["excluded_by"], ix_not_listed_by=t1["ix_not_listed_by"],

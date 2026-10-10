@@ -171,6 +171,20 @@ class DriverTests(unittest.TestCase):
                        FakeFetch(self.txs))
         self.assertEqual(rec["counts"]["frame_n"], len(self.tape))
 
+    def test_keyless_row_refuses_a_look_and_is_dropped_and_counted_in_e0(self):
+        tape = self.tape + [dict(self.tape[0], tx_index=None, slot=3, signature="keyless")]
+        with self.assertRaises(R.Refusal) as cm:
+            P.run_p7(self.ctx(tape=tape, adapter=[self._adapter_row(t) for t in self.tape]), FakeFetch(self.txs))
+        self.assertEqual(cm.exception.code, "NOT_READY")
+        sub = tempfile.mkdtemp(dir=self.tmp)
+        self.tmp, keep = sub, self.tmp
+        try:
+            c = dict(self.ctx(tape=tape, adapter=[self._adapter_row(t) for t in self.tape]), mode="e0")
+            rec = P.run_p7(c, FakeFetch(self.txs))
+        finally:
+            self.tmp = keep
+        self.assertEqual((rec["counts"]["keyless_dropped"], rec["counts"]["frame_n"]), (1, len(self.tape)))
+
     # -- line 2 ---------------------------------------------------------------------------------------------------------------------------------
     def test_line2_counts_on_the_main_sample(self):
         rec = P.run_p7(self.ctx(), FakeFetch(self.txs))
