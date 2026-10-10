@@ -1,12 +1,17 @@
 """bx10: the report-only paper exit variant of tools/h5_shadow.py (cell C10 of H5-BOOSTCLOCK-EXIT, FREEZE.md s2). Synthetic fixtures only."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
 import random
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tools import h5_shadow as h5
@@ -111,6 +116,7 @@ def bx_tape(amt: int, n: int, extra: tuple = ()):
 
 
 def run_tape(t: Tape, **kw):
+    kw.setdefault("bx10_enabled", True)  # bx10 is off by default (EXP-026 flag); the tests of the variant itself switch it on
     eng, out = make_engine(**kw)
     announce(eng)
     for r in t.rows:
@@ -224,6 +230,116 @@ class EngineTests(unittest.TestCase):
         with mock.patch.object(h5, "H5_LOOK2_END_MS", 10**15):  # the synthetic tape is in 2027, past the declared window's end
             _, out = run_tape(bx_tape(SOL, 18), h5_look2_start_ms=0, h5_look2_observed=True)
         self.assertEqual((len(types(out, "outcome")), len(types(out, "outcome_bx10"))), (2, 2))
+
+
+TAPES = ((SOL, 18), (SOL // 2, 30), (SOL, 0))
+
+
+class DefaultOffTests(unittest.TestCase):
+    """bx10 is a declared flag (EXP-026), off by default: with it off the shadow does no bx10 work and every other record is unchanged."""
+
+    def test_flag_off_writes_no_bx10_record_of_any_kind(self):
+        eng, out = make_engine()  # no kwarg at all: the default
+        self.assertIs(eng.bx10_enabled, False)
+        announce(eng)
+        for r in bx_tape(SOL, 18).rows:
+            eng.on_trade(r)
+        eng.close_all("shutdown")
+        self.assertGreater(len(types(out, "outcome")), 0)  # v1 does produce outcomes on this tape: the absence below is the flag's doing
+        self.assertFalse([r for r in out if "bx10" in r["type"] or r.get("rule") == "bx10"])
+        self.assertFalse([k for k in eng.counters if "bx10" in k])
+
+    def test_flag_off_computes_nothing(self):
+        def boom(*a, **k):
+            raise AssertionError("bx10 work with the flag off")
+        with mock.patch.object(h5, "bx10_exit", boom), mock.patch.object(h5, "project_e", boom), \
+                mock.patch.object(h5.Engine, "_bx10_slices", boom), mock.patch.object(h5.Engine, "_resolve_bx10", boom):
+            for amt, n in TAPES:
+                _, out = run_tape(bx_tape(amt, n), bx10_enabled=False)
+                self.assertGreater(len(types(out, "outcome")), 0)
+                self.assertEqual(types(out, "outcome_bx10"), [])  # a raise inside _resolve_bx10 would have left an error record
+
+    def test_v1_records_and_counters_are_byte_identical_flag_off_vs_on(self):
+        for amt, n in TAPES:
+            eng_on, on = run_tape(bx_tape(amt, n), bx10_enabled=True)
+            eng_off, off = run_tape(bx_tape(amt, n), bx10_enabled=False)
+            self.assertEqual(len(types(on, "outcome_bx10")), len(types(on, "outcome")))
+            self.assertEqual([json.dumps(r, sort_keys=True) for r in on if r["type"] != "outcome_bx10"], [json.dumps(r, sort_keys=True) for r in off])
+            self.assertEqual(dict(eng_on.counters), dict(eng_off.counters))
+
+    def test_only_the_literal_flag_turns_it_on(self):
+        self.assertTrue(h5.bx10_flag("EXP-026"))
+        self.assertEqual(h5.BX10_ENABLE_REF, "EXP-026")
+        for bad in (None, "", "1", "0", "yes", "true", "True", "on", "exp-026", "EXP-026 ", " EXP-026", "EXP-026x", "EXP-026,x", "EXP-024-Am2", "EXP-027"):
+            self.assertFalse(h5.bx10_flag(bad), repr(bad))  # a wrong value is off, not an error
+
+    def test_the_engine_takes_the_boolean_only(self):
+        for wrong in ("EXP-026", "1", 1, "true", None):
+            self.assertIs(make_engine(bx10_enabled=wrong)[0].bx10_enabled, False, repr(wrong))
+        self.assertIs(make_engine(bx10_enabled=True)[0].bx10_enabled, True)
+
+    def test_the_command_line_parses_any_value_and_only_the_literal_is_on(self):
+        ap = h5.build_parser()
+        self.assertIsNone(ap.parse_args([]).bx10_enable)
+        for v in ("EXP-026", "1", ""):
+            self.assertEqual(ap.parse_args(["--bx10-enable", v]).bx10_enable, v)  # parsed, never refused (the engine flag is h5.bx10_flag(v))
+
+    # ---- run_live: the start record names the state ----------------------------------------------------------------------------------
+    def run_live(self, extra):
+        d = tempfile.mkdtemp(dir="/tmp", prefix="h5-bx10-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        args = h5.build_parser().parse_args(["--out-dir", d, "--sockets", "3", *extra])
+        built = []
+        real = h5.Engine
+
+        def spy(*a, **k):
+            built.append(k.get("bx10_enabled"))
+            return real(*a, **k)
+
+        async def no_feed(*a, **k):
+            return None
+
+        with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None), mock.patch.object(h5, "Engine", spy):
+            self.assertEqual(asyncio.run(h5.run_live(args)), 0)
+        rows = [json.loads(line) for f in sorted(Path(d).glob("h5-shadow-*.jsonl")) for line in f.read_text().splitlines()]
+        return [r for r in rows if r["type"] == "start"][0], built
+
+    def test_the_start_record_names_the_flag_state_and_the_engine_follows_it(self):
+        start, built = self.run_live([])
+        self.assertIs(start["bx10"], False)
+        self.assertEqual(built, [False])
+        start, built = self.run_live(["--bx10-enable", "EXP-026"])
+        self.assertIs(start["bx10"], True)
+        self.assertEqual(built, [True])
+        for wrong in ("1", "exp-026", "true"):
+            with self.assertLogs("mal.h5_shadow", level="WARNING"):
+                start, built = self.run_live(["--bx10-enable", wrong])
+            self.assertIs(start["bx10"], False, wrong)
+            self.assertEqual(built, [False], wrong)
+
+    # ---- the wrapper -----------------------------------------------------------------------------------------------------------------
+    def test_the_wrapper_passes_the_flag_only_when_set_and_says_what_is_on(self):
+        d = tempfile.mkdtemp(dir="/tmp", prefix="h5-bx10-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        fake = Path(d) / "fakepy"
+        fake.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\n')
+        fake.chmod(0o755)
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        for shell in ("sh", "bash"):
+            base = {"PATH": os.environ["PATH"], "HOME": d, "H5_OUT_DIR": d + "/out", "H5_PYTHON": str(fake)}
+            r = subprocess.run([shell, str(script)], env=base, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))
+            self.assertIn("bx10=off", r.stdout)
+            self.assertNotIn("--bx10-enable", r.stdout.split("ARGV:")[1])
+            for value, state in (("EXP-026", "on"), ("1", "off"), ("exp-026", "off")):
+                r = subprocess.run([shell, str(script)], env={**base, "H5_BX10_ENABLE": value}, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, (shell, value, r.stderr))  # a wrong value is not refused
+                self.assertIn(f"bx10={state}", r.stdout, (shell, value))
+                self.assertIn(f"--bx10-enable {value}", r.stdout.split("ARGV:")[1], (shell, value))
+            r = subprocess.run([shell, str(script)], env={**base, "H5_BX10_ENABLE": ""}, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))
+            self.assertIn("bx10=off", r.stdout)
+            self.assertNotIn("--bx10-enable", r.stdout.split("ARGV:")[1])  # set but empty = not declared
 
 
 if __name__ == "__main__":
