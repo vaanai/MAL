@@ -1063,7 +1063,12 @@ def e0_reference(conf: Path, day: str) -> list[tuple[str, str, str, int]]:
 
     df = pd.read_parquet(conf, columns=["day", "mint", "D", "leg", "H", "stake", "pnl"])
     df = df[(df.day == day) & (df.H.astype(str) == "end") & (df.D == bf.Q_STAR_SOL)]
-    return [(str(r.mint), str(r.leg), f"{float(r.stake):g}", int(round(float(r.pnl)))) for r in df.itertuples(index=False)]
+    return [(str(r.mint), E0_REF_LEG.get(str(r.leg), str(r.leg)), E0_REF_STAKE.get(str(r.stake), str(r.stake)), int(round(float(r.pnl))))
+            for r in df.itertuples(index=False)]
+
+
+E0_REF_LEG = {"p": "primary", "b": "binding"}  # s14_boostdip.py labels (read from the 09-20 rows, job #522 diagnosis)
+E0_REF_STAKE = {"1": "0.1", "25": "0.25"}  # s14 stake labels; the pnl of every row equals ours under this map (checked on 09-20)
 
 
 # ---- CLI ------------------------------------------------------------------------------------------------------------------
