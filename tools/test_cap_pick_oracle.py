@@ -644,8 +644,16 @@ def test_from_env_caps_staleness_at_60_s(tmp_path):
     live = write(tmp_path / "p.jsonl", [co.heartbeat_row(1)])
     base = {"CAP_PICK_LIVE": str(live), "CAP_PICK_FINAL_MARKER": str(tmp_path / "m")}
     assert co.from_env(base).stale_s == 60.0
-    for raw, want in (("10", 10.0), ("60", 60.0), ("61", 60.0), ("3600", 60.0), ("inf", 60.0), ("nan", 60.0), ("abc", 60.0), ("", 60.0)):
+    for raw, want in (("10", 10.0), ("60", 60.0), ("61", 60.0), ("3600", 60.0), ("", 60.0)):
         assert co.from_env({**base, "CAP_PICK_STALE_S": raw}).stale_s == want, raw
+    for raw in ("inf", "-inf", "nan", "abc"):  # a configuration error: from_env raises, the lazy C1-NF oracle answers None (refuse)
+        with pytest.raises(ValueError):
+            co.from_env({**base, "CAP_PICK_STALE_S": raw})
+        lazy = co._LazyEnvOracle()
+        with pytest.MonkeyPatch.context() as mp:
+            for k, v in {**base, "CAP_PICK_STALE_S": raw}.items():
+                mp.setenv(k, v)
+            assert lazy(mint(47)) is None and lazy.suppress(mint(47)) is True and lazy.staleness_s() is None
 
 
 def test_a_nan_staleness_limit_fails_closed(tmp_path):
