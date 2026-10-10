@@ -42,7 +42,7 @@ LIVE_CFG = {"mode": "live", "state_dir": dc.C1NF_DIR, "stake_lamports": 50_000_0
             "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000,
             # claude/c1nf-executor-v2 @ 32265af, scripts/mal-fast/c1nf-executor-live.json
             "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000,
-            # NOT in v2's live config at 32265af (the #509 open item); a healthy canary inside the seal window needs one
+            # DEC-026 Amendment 1 item B (scripts/mal-fast/c1nf-executor-live.json); a healthy canary inside the seal window needs one
             "pick_file": "/srv/mal-cap-pick/picks.jsonl"}
 A3_PATH = "/data/mal/structure-monitor/daily.jsonl"
 
@@ -699,3 +699,21 @@ def test_watch_units_pass_their_allowlist_and_h5_units_do_not():
     assert ok == [0, 0]
     assert subprocess.run([sys.executable, "-I", str(chk), "--watch-service", str(FAST / "mal-h5-watch.service")], capture_output=True).returncode == 1
     assert b"/etc/mal-c1nf-key" in WSVC  # the second wallet's key directory is fenced off from the root watchdog
+
+
+CAP_PICK = b"[Service]\nBindReadOnlyPaths=-/home/claude/data/cap-pick-oracle:/srv/mal-cap-pick\n"
+
+
+def test_cap_pick_dropin_is_allowed_and_checked():
+    """DEC-026 Amendment 1 item B: 20-cap-pick.conf is an expected drop-in, and it must pass check-c1nf-unit.py --cap-pick."""
+    real = dc.load_unit_checker(FAST)  # the real check-c1nf-unit.py, not FakeChecker
+    host = FakeHost()
+    host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]
+    host.files[dc.DROPIN_CAP_PICK] = CAP_PICK
+    assert "c1nf_unit_files" not in alerts(go(host, checker=real)[1])
+    for bad in (CAP_PICK.replace(b"/srv/mal-cap-pick", b"/srv/mal-c1nf-shadow"), CAP_PICK.replace(b"/home/claude/data", b"/var/lib/mal"),
+                FEED):
+        host = FakeHost()
+        host.dropins = [dc.DROPIN_LIVE, dc.DROPIN_FEED, dc.DROPIN_CAP_PICK]
+        host.files[dc.DROPIN_CAP_PICK] = bad
+        assert "c1nf_unit_files" in alerts(go(host, checker=real)[1]), bad

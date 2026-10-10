@@ -24,6 +24,7 @@ h5chk = _load("check_h5_unit_for_c1nf_test", "check-h5-unit.py")
 BASE = (MF / "mal-c1nf-executor.service").read_bytes()
 DROPIN = (MF / "mal-c1nf-executor-live-pinned.conf").read_bytes()
 FEED = (MF / "mal-c1nf-executor-shadow-feed.conf").read_bytes()
+CAPF = (MF / "mal-c1nf-executor-cap-pick.conf").read_bytes()
 
 
 def test_committed_files_pass():
@@ -143,3 +144,31 @@ def test_launcher_run_tool_is_c1nfs_sell_and_close_only(tmp_path):
         assert r.returncode == 1 and "--run-tool needs one of: sell_and_close" in r.stderr, bad
     r = go("--status")
     assert "ran executor" in r.stderr
+
+
+def test_cap_pick_template_and_fill(tmp_path):
+    """DEC-026 Amendment 1 item B: the CAP-PICK oracle directory, bound read-only at /srv/mal-cap-pick (the H5 shadow-feed pattern)."""
+    assert chk.problems(CAPF, "cap-pick")  # the unfilled template is invalid on purpose
+    good = CAPF.replace(b"__CAP_PICK_DIR__", b"/home/claude/data/cap-pick-oracle")
+    assert chk.problems(good, "cap-pick") == []
+    for bad in (b"/home/claude/.claude/cap-pick-oracle", b"/home/claude/../root/cap-pick-oracle", b"/srv/mal-cap-pick-src/cap-pick",
+                b"/home/claude/data/c1nf-shadow", b"/home/claude/data/cap-pick-oracle /etc", b"/var/lib/mal-live/cap-pick"):
+        assert chk.problems(CAPF.replace(b"__CAP_PICK_DIR__", bad), "cap-pick"), bad
+    assert chk.problems(good.replace(b":/srv/mal-cap-pick", b":/srv/mal-c1nf-shadow"), "cap-pick")
+    assert chk.problems(good.replace(b"BindReadOnlyPaths=", b"BindPaths="), "cap-pick")  # never writable
+    assert chk.problems(good + b"BindReadOnlyPaths=-/home/claude/data/cap-pick2:/srv/mal-cap-pick\n", "cap-pick")
+    # the two binds are not interchangeable
+    assert chk.problems(good, "shadow-feed")
+    assert chk.problems(FEED.replace(b"__SHADOW_DIR__", b"/home/claude/data/c1nf-shadow"), "cap-pick")
+    p = tmp_path / "20-cap-pick.conf"
+    p.write_bytes(good)
+    assert chk.main(["check-c1nf-unit.py", "--cap-pick", str(p)]) == 0
+    p.write_bytes(CAPF)
+    assert chk.main(["check-c1nf-unit.py", "--cap-pick", str(p)]) == 1
+
+
+def test_cap_pick_dest_matches_live_pick_file():
+    import json
+    live = json.loads((MF / "c1nf-executor-live.json").read_text())
+    assert live["pick_file"] == chk.CAP_PICK_DEST + "/picks.jsonl"
+    assert "pick_file" not in json.loads((MF / "c1nf-executor.json").read_text())  # the keyless dry run runs before the seal window
