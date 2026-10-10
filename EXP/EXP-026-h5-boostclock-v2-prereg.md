@@ -1,6 +1,6 @@
 # EXP-026: H5-BOOSTCLOCK v2 forward paper read, pre-registration
 
-**Draft. It must merge, with quant-proof's OK on its final head, before the v2 shadow starts.** Written 2026-10-10. To write it, no row of a sealed block, forward-1002, forward-1002ev, walk 2, the fast-0 tip archive, forward-paper or runner output was opened, and no October outcome, canary record or shadow outcome record was read. Its inputs are the iter-r2 directory `/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/` (`FREEZE.md`, `REPORT.md` with quant-proof's verification appended, `bc_rule.py`, `s01_sim.py`), [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md), [DEC-024](../DEC/DEC-024-h5-live-canary.md), [DEC-027](../DEC/DEC-027-h5-champion-challenger.md), the source of `tools/h5_shadow.py` and `tools/h5_executor.py`, and `docs/HANDOFF.md`. This file is docs only. The shadow change, the read tool and the count job are separate PRs (section 13). Nothing in this file says or implies that any book is positive. **A fail is the likely outcome** (section 11).
+**Draft. It must merge, with quant-proof's OK on its final head, before the v2 shadow starts.** Written 2026-10-10. To write it, no row of a sealed block, forward-1002, forward-1002ev, walk 2, the fast-0 tip archive, forward-paper or runner output was opened, and no October outcome, canary record or shadow outcome record was read. Its inputs are the iter-r2 directory `/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/` (`FREEZE.md`, `REPORT.md` with quant-proof's verification appended, `bc_rule.py`, `s01_sim.py`), [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md), [DEC-024](../DEC/DEC-024-h5-live-canary.md), [DEC-027](../DEC/DEC-027-h5-champion-challenger.md), the source of `tools/h5_shadow.py` and `tools/h5_executor.py`, and `docs/HANDOFF.md`. This file is docs only. The shadow change, the read tool and the count job are separate PRs (section 13). Nothing in this file says or implies that any book is positive. **A FAIL is the expected outcome, and a PASS would be weak evidence** (section 11). Revised 2026-10-10 for quant-proof's CHANGES review of 62cc971 (items 1-9 applied; the α route of section 10 is quant-proof's M1; the companion G-v2 is EXP-024 Amendment 5 and the α slot is [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md), both drafts in this PR).
 
 | Field | Value |
 | --- | --- |
@@ -8,10 +8,10 @@
 | **Status** | **draft**. Nothing run. The window opens no earlier than the merge instant + 24 h (section 0). |
 | **Declared (UTC)** | 2026-10-10 (draft). |
 | **Parent** | iter-r2 H5-BOOSTCLOCK-EXIT, cell **C10**: `FREEZE.md` (sha256 `5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0`, written 2026-10-10T08:06:52Z before any exit P&L), `REPORT.md` (exploration; quant-proof verified: "holds on its own frozen rule", no DEC-027 candidate, "Registration: Not justified" as a challenger or a paired new-DEC test; section 1 says why this file is filed anyway). Base rule: H5-BOOSTFLOOR v1 (`h5-flows/RULE.md`, sha256 `c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c`). |
-| **Rules** | [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md), [DEC-021](../DEC/DEC-021-champion-challenger.md) §1 and §8, [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-024](../DEC/DEC-024-h5-live-canary.md) §5, §6, Amendments 2, 4 and 5, [DEC-027](../DEC/DEC-027-h5-champion-challenger.md) §3(b), §4, §5.3, §5.4, [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) §3, §3.1, §5–§7, §11, Amendments 2–4 (D1), [EXP-022](EXP-022-cap-pick-part1-prereg.md) §9. The live decision is [DEC-028](../DEC/DEC-028-h5-v2-canary.md) (draft). |
+| **Rules** | [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md), [DEC-021](../DEC/DEC-021-champion-challenger.md) §1, §8 and Amendments 2-4, [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, the α slot), [DEC-023](../DEC/DEC-023-h5-family.md), [DEC-024](../DEC/DEC-024-h5-live-canary.md) §5, §6, Amendments 2, 4 and 5, [DEC-027](../DEC/DEC-027-h5-champion-challenger.md) §3(b), §4, §5.3, §5.4, [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) §3, §3.1, §5–§7, §11, Amendments 2–4 (D1) and Amendment 5 (G-v2, draft), [EXP-022](EXP-022-cap-pick-part1-prereg.md) §9. The live decision is [DEC-028](../DEC/DEC-028-h5-v2-canary.md) (draft). |
 | **Hypothesis** | The frozen H5-BOOSTCLOCK v2 book (v1's trigger, entry and fills; the C10 exit) has mean SOL per trade > 0 at 0.1 SOL on plain October pools in the window, under both fail models, and clears the lab's promotion gate on that window. |
 | **Kill condition** | The read does not pass (section 5), or a structure halt or a NOT_DECIDABLE condition (section 7), or a precondition fails (section 6). **One read, at one instant.** No retune, no re-read, no rescue hours. |
-| **Expected outcome** | **FAIL is likely.** This file's estimate is P(pass) ≈ 0.03, range 0.01–0.06 [est] (section 11). |
+| **Expected outcome** | **FAIL is expected.** P(pass) ≈ 0.005–0.03 under M2, ≤ 0.01 under M1 [quant-proof resampling, section 11]. At a true +4 to +6% the read has about 1–6% power, so a FAIL is expected whether or not v2 is positive. A PASS is weak evidence: under M2 a pass at a true mean of 0 is about as likely as a pass at +4%. |
 | **Tools** | **Shadow:** `tools/h5_shadow.py` with the v2 rule registered (section 13). **Read:** `tools/exp026_read.py` (new, section 8). **Count job:** section 3.2. **Halt:** `tools/pump_structure_monitor.py` (A3), the blob EXP-024 §10 pins. |
 
 **Labels.** [measured] is copied from a cited file that computed it. Exploration arithmetic is measured arithmetic, not evidence of edge. [inferred] is reasoned. [pinned] is a design value this file fixes; it is not evidence. [est] is an estimate.
@@ -23,12 +23,14 @@ EXP026_RULE_ID: H5-BOOSTCLOCK-v2
 EXP026_WINDOW_RULE: W0 = first full UTC hour at or after (merge instant + 24 h), and not before every section 6.1 item holds
 EXP026_WINDOW_CAP_H: 336
 EXP026_LAST_W0: 2026-10-23T00
+EXP026_ALPHA_ROUTE: M1
 ```
 
 - **Format.** Each line matches exactly once, as written. The read tool refuses unless they do and unless this file is clean against HEAD. The values never change after merge.
 - **W0 [pinned].** The window opens at the first full UTC hour at or after the merge instant of this file plus 24 h. If any section 6.1 item does not hold then, W0 is the first full UTC hour after they all hold. **Never earlier.** The manager records the merge instant (`date -u`) and W0 in a dated line under "Window record" at the end of this file, before W0, from the merge record and the shadow's start record only.
 - **Why +24 h.** The shadow must already be running the merged rule, with its md5 proof recorded, before the first counted hour. 24 h covers the restart, a keyless check of the v2 records and the companion merges. No pool with s0 before W0 is ever scored for EXP-026, even to "see how it would have done". Doing so is a breach (section 3.3).
-- **Withdrawal.** If W0 has not occurred by **2026-10-23T00:00Z**, EXP-026 is withdrawn before counting and no outcome is read. A re-filing needs a new file and new hours.
+- **α route [pinned].** `M1` (section 10). It reads `M2` only if [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) records the owner's M2 line before this file merges. It is set before merge and never changes.
+- **Withdrawal.** If W0 has not occurred by **2026-10-23T00:00Z**, EXP-026 is withdrawn before counting and no outcome is read. A re-filing needs a new file and new hours. **After W0, EXP-026 is never withdrawn, re-scoped or delayed for any reason other than a section 7 NOT_DECIDABLE condition** (section 3.3).
 
 ## 1. Family, status, and what this is not
 
@@ -100,9 +102,9 @@ v1's, unchanged. Only the exit trigger changes.
 
 ### 3.2 Window and stopping rule
 
-- **Counted trade.** A v2 trade counts if its pool's s0 (block time of the canonical pool's first print) is at or after W0, the pool is plain (section 4), its trigger record is not `excluded`, its pool close record has `reason` "horizon" and `gap` false, and the hours from its trigger to its exit landing are good (no gap record, no missing heartbeat).
+- **Counted trade.** A v2 trade counts if its pool's s0 (block time of the canonical pool's first print) is at or after W0, the pool is plain (section 4), its trigger record is not `excluded`, its pool close record has `reason` "horizon" and `gap` false, and the hours from its trigger to its exit landing are good (no gap record, no missing heartbeat). A pool sealed by the CAP-PICK oracle or its stub is excluded. An hour is not bad because its pools are sealed.
 - **Stopping instant E [pinned].** E is the first full UTC hour boundary h after W0 at which the counted trades with s0 in [W0, h) number **at least 100** and fall on **at least 5 distinct UTC dates**. If that has not happened by **W0 + 336 h (14 days)** or by **2026-11-06T00:00Z**, whichever is earlier, E is that instant. Pools with s0 at or after E are never scored.
-- **The count job** (a MiScusi job, hourly) reads only the decision-time and structure fields of trigger and pool records (`mint`, `pool`, `s0`, trigger slot, `synthetic`, `synthetic_src`, `excluded`, `gap`, `reason`, `boost_src`) and the hour health records. It appends one line per hour to `/home/claude/data/exp026/counts.jsonl`: counted trades per date, dates, good and bad hours, and whether E is reached. It opens no outcome and no withheld file. A count is not an outcome.
+- **The count job** (a MiScusi job, hourly) reads only the decision-time and structure fields of trigger and pool records (`mint`, `pool`, `s0`, trigger slot, `synthetic`, `synthetic_src`, `excluded`, `gap`, `reason`, `boost_src`) and the hour health records. It appends one line per hour to `/home/claude/data/exp026/counts.jsonl`: counted trades per date, dates, good and bad hours (bad means a gap record or a missing heartbeat, never a seal), sealed-pool counts, and whether E is reached. It opens no outcome and no withheld file. A count is not an outcome.
 - **The read instant.** One read, after all of: E has passed; every pool with s0 before E has its close record; the section 6.2 items hold; and the EXP-024 Look 1 report is written or 2026-10-17T12:00Z has passed, whichever is first (so no EXP-026 result exists while Look 1 is unread, as DEC-027 §6 item 6). **Deadline: E + 48 h**, or 2026-10-19T12:00Z if that is later. A read not run by its deadline is NOT_DECIDABLE, and the window is spent.
 
 ### 3.3 Outcomes withheld until the single read (the proposed option)
@@ -112,9 +114,9 @@ v1's, unchanged. Only the exit trigger changes.
 - **The withheld store.** `<out-dir>/withheld-exp026/h5v2-<UTC hour>.jsonl`, mode 0600, one file per hour. At each hour close the shadow writes that file's sha256 into a clear `withheld_manifest` record in the normal hourly file. The read tool refuses if any hash differs. Helm is asked (not required) to put an auditd watch on the directory, as on the key.
 - **v2 decision records.** Under DEC-028 Option A (no v2 live), v2's exit decision (tau\*, the exit trigger slot, k, P_k and its inputs) also goes to the withheld store. Under DEC-028 Option B the executor must act on it, so the shadow writes it in the clear only if started with `--h5v2-live-exit DEC-028-B` (logged in the start record). It carries no price.
 - **The ban.** Before the read instant, no person, agent or job computes, opens or prints a v2 outcome (exit-state price, proceeds, P&L, mean, CI, day sign, win or loss, or a paired difference against v1) for any pool with s0 at or after W0, from any source. That includes **joining a v2 exit slot to v1's price strip or exit ladder**. v1's ladder (310, 320, 330 s …) is observed in real time under DEC-024 §6 and brackets most v2 exits; reading v1's records as DEC-024 allows is not a breach, and the join is.
-- **Allowed before the read:** the section 3.2 counts; the A3 monitor's flags and values; hour health; BOOST timing fields of pool records (last slice, slice count), which are structure; the share of v2 exits that fired before the cap and the share that landed after the pool's last slice, **as counts from timing fields only** (these feed DEC-028 Option B's halts); v1's records as DEC-024 §6 allows.
+- **Allowed before the read:** the section 3.2 counts; the A3 monitor's flags and values; hour health; BOOST timing fields of pool records (last slice, slice count), which are structure; under DEC-028 Option B only, and for the canary's own positions only (its halts 1(a) and 7): the share of v2 exits that fired before the cap and the share that landed after the pool's last slice, as counts from timing fields. Under Option A, v2 decision fields are withheld and no such share is computed before the read; v1's records as DEC-024 §6 allows.
 - **A breach** is recorded here, dated, and the read is reported compromised. A compromised read cannot support a live request.
-- **No peeking, and why it matters here.** The stopping rule is count-based and fixed, and the read runs once, so interim looks could not move the read. They could still move choices around it (withdrawing the file, the owner's live choice). The store makes that impossible for v2's own book.
+- **No peeking, and why it matters here.** The stopping rule is count-based and fixed, and the read runs once, so interim looks could not move the read. They could still move choices around it (withdrawing the file, the owner's live choice). Under DEC-028 Option A, the store makes that impossible for v2's own book. Under Option B it does not: the v2 canary trades most counted pools and its outcomes are watched in real time. The read then reports the share of counted pools the canary traded, and labels the verdict "v2 outcomes partly observed before the read". **After W0, EXP-026 is not withdrawn, re-scoped or delayed for any reason other than a section 7 NOT_DECIDABLE condition.** If the share or the label is missing from the report, or EXP-026 is withdrawn, re-scoped or delayed after W0 for any other reason, that is a breach and the read is reported compromised.
 
 **Options considered and not proposed:**
 - **Real-time observation of v2's shadow outcomes** (as EXP-024 §3.1 and Amendment 2 do for v1). Rejected. It invites peeking at the gate statistics while the window runs, and v2 needs no live P&L watch under Option A.
@@ -122,21 +124,22 @@ v1's, unchanged. Only the exit trigger changes.
 
 ### 3.4 EXP-024's seals and the declared observation
 
-- **EXP-024 §3 seal.** It bars computing an H5 trigger outcome for an October V-range pool in its first 360 s from any source, except the declared observation. v2 trades v1's trigger, so the shadow's withheld v2 computation and EXP-026's single read are H5 trigger outcomes for pools inside Look 1's window `[2026-10-10T00, 2026-10-16T00)` and Look 2's added window `[2026-10-16T00, 2026-11-06T00)`. **They need a companion EXP-024 amendment** ("G-v2", section 13), merged with quant-proof's OK before the v2 shadow starts. Without it the v2 shadow does not start and W0 does not occur.
-- **What G-v2 must say** (DEC-027 §5.4 G1 is the model; one amendment may serve both if it names `H5-BOOSTCLOCK-v2`):
-  - (a) The shadow's withheld v2 computation and EXP-026's single read, for pools with s0 in [W0, E), are declared exceptions to §3. EXP-024's read tool is excluded from them, and its inputs are unchanged.
+- **EXP-024 §3 seal.** It bars computing an H5 trigger outcome for an October V-range pool in its first 360 s from any source, except the declared observation. v2 trades v1's trigger, so the shadow's withheld v2 computation and EXP-026's single read are H5 trigger outcomes for pools inside Look 1's window `[2026-10-10T00, 2026-10-16T00)` and Look 2's added window `[2026-10-16T00, 2026-11-06T00)`. **They need a companion EXP-024 amendment, G-v2.** It is drafted in this PR as EXP-024 Amendment 5 ([EXP-024](EXP-024-h5-boostfloor-part1-prereg.md), Amendment 5, G-v2) and merges with this file, with quant-proof's OK, before the shadow runs the v2 computation on any pool. Without it the v2 shadow does not start and W0 does not occur.
+- **What G-v2 says** (DEC-027 §5.4 G1 is the model):
+  - (a) The shadow's withheld v2 computation, for every pool from the v2 shadow's start, and EXP-026's single read, for pools with s0 in [W0, E), are declared exceptions to §3. Withheld hour files outside [W0, E) are never opened. EXP-024's read tool is excluded from them, and its inputs are unchanged.
   - (b) Look 1 and Look 2 are always read and reported as written. They are never skipped, delayed, re-scoped or re-thresholded because of anything v2, its shadow, its canary or EXP-026's verdict shows.
   - (c) The Look 2 report (and the Look 1 report, if EXP-026 were read first) states that EXP-026's verdict and v2's book were known before it and could have influenced later choices.
   - (d) Under DEC-028 Option B, the v2 canary's own outcomes are observed in real time, as v1's are (§3.1, Amendment 2), and EXP-026 is read as written whatever they show.
-  - (e) EXP-024 §3's premise that the canary's sells "fall at s0 + 330 s or later" fails for v2. Its conclusion still holds: a v2 sell comes after the pool's first qualifying print, which is the only trigger the pool ever has, so it cannot create a trigger.
+  - (e) EXP-024 §3's premise that the canary's sells "fall at s0 + 330 s or later" fails for v2. Its conclusion still holds: a v2 sell comes after the pool's first qualifying print, which is the only trigger the pool ever has, so it cannot create a trigger. A v2 sell can land before 300 s when τ\* fires early. It still comes after the pool's only trigger (EXP-024 line 76, one trade per pool, first qualifying print). Under Option B, the canary's 0.02 SOL sell shifts the tape that Look 1 or Look 2 prices at 330 s by the canary's own impact. Disclosed, not corrected.
   - (f) Written with v1's October aggregate outcomes in view (the declared observation), and before any v2 outcome exists.
+  - (g) EXP-024 Amendment 2's `--h5-look2-observed` flag never lifts v2's withholding, and `boost_done` and the v2 slice stream never substitute for the A3 monitor.
 - **Timing.** By section 3.2, EXP-026 is not read before the Look 1 report or Look 1's deadline. It will usually be read before Look 2 (about 11-06), so its verdict is known before Look 2. That is the (c) disclosure, and Look 2 is read as written.
 - **The declared observation is not widened by this file** for v2's paper book. v1's canary and shadow outcomes stay observed as DEC-024 §6 says.
 
 ### 3.5 CAP-PICK and D1
 
 - **CAP-PICK seal** (EXP-022 §9, DEC-024 §6). From 2026-10-16T01 to the end of EXP-022's read: no v2 trade, paper or live, on a mint the EXP-022 gate picked; no v2 record joined to a pick; no per-pool v2 P&L for a pick before each CAP-PICK look. The pick oracle seals a pool for every rule, and the shadow writes no v2 record, clear or withheld, for a sealed pool. The fail-closed rule (feed missing or stale for more than 60 s) stands.
-- **The oracle dependency.** While the pick oracle is a stub, the shadow seals every pool from 2026-10-16T01 (DEC-024 §6, "Dependency"). **No EXP-026 trade accrues from 10-16T01 until PR #509 is merged and wired in.** Section 11 counts the cost.
+- **The oracle dependency.** While the pick oracle is a stub, the shadow seals every pool from 2026-10-16T01 (DEC-024 §6, "Dependency"). **No EXP-026 trade accrues from 10-16T01 until PR #509 is merged and wired in.** Section 11 counts the cost. Stub-sealed pools are not counted and never make an hour bad (sections 3.2 and 7), so a stub that is never replaced ends in a FAIL on item 1 at E, not in NOT_DECIDABLE.
 - **D1** (EXP-024 Amendment 4, line 691). No synthetic class is joined to any v2 outcome for a counted-window pool before Look 2 is read. The read prices plain pools only. It computes no outcome for a synthetic or unclassified pool, writes no class column and splits no outcome by class. Restricting the population, as EXP-024 Amendment 4 does, is not a split.
 
 ## 4. Universe and pricing
@@ -160,10 +163,13 @@ v1's, unchanged. Only the exit trigger changes.
 4. Total SOL > 0 after removing the top 3 trades.
 5. Total SOL > 0 after removing the best UTC date. **Binding.**
 6. **B1 and B2**, each with the correction, under both fail legs: mean > 0 and total > 0 after removing the top 3 trades. **Binding.**
+7. **The α item (section 10). Binding.**
+   - **M1** (`EXP026_ALPHA_ROUTE: M1`, the default): the EXP-024 §7 item 6 day-level t, computed exactly as there (UTC-date clusters; a date with no trades is dropped; W dates, df = W − 1; m_d the mean SOL per trade on date d; sd the sample SD of the W date means, ddof 1; t = mean(m_d) / (sd / √W); p = P(T_{W−1} ≥ t), one-sided), with **p ≤ 0.025** under both fail legs (the larger p decides).
+   - **M2** (only if the pinned line reads `M2`, which needs the owner's M2 line in DEC-029): the date-cluster CI90 lower bound > 0 (`common.gate`, 1,000 date resamples, seed 1), under both fail legs. The report labels any M2 PASS "gate-only, outside DEC-021 §8".
 
-Items 1–4 are the lab's promotion gate, as CLAUDE.md states it. Items 5 and 6 can only turn a pass into a fail: item 5 is the lab's top-day check (a concentrated book is not called positive), and item 6 exists because any live buy carries the guard and may land late. **Otherwise: FAIL.** A NOT_DECIDABLE read is not a pass.
+Items 1–4 are the lab's promotion gate, as CLAUDE.md states it. Items 5, 6 and 7 can only turn a pass into a fail: item 5 is the lab's top-day check (a concentrated book is not called positive), and item 6 exists because any live buy carries the guard and may land late. **Otherwise: FAIL.** A NOT_DECIDABLE read is not a pass.
 
-**Reported, never deciding:** the paired difference against v1 (section 9); the EXP-024 §7 item 6 day-level t at α 0.025 (see section 10 on the open choice); the trade-level one-sided bootstrap p (10,000 draws, seed 1); the date-cluster CI90 (`common.gate`, 1,000 date resamples, seed 1).
+**Reported, never deciding:** the paired difference against v1 (section 9); the trade-level one-sided bootstrap p (10,000 draws, seed 1); under M1, the date-cluster CI90 (`common.gate`, 1,000 date resamples, seed 1); under M2, the day-level t.
 
 ## 6. Preconditions
 
@@ -173,7 +179,7 @@ Items 1–4 are the lab's promotion gate, as CLAUDE.md states it. Items 5 and 6 
 - **P1.** G-v2, the companion EXP-024 amendment (section 3.4), is merged with quant-proof's OK.
 - **P2. md5 decision-equivalence on 2026-09-20** (fast-pool-0918; the day DEC-024 Amendment 1 item 3 and DEC-027 §4 item 3 use; exploration tape, not evidence of edge). The shadow's engine in replay mode, on the build that will run:
   - v1's trigger list still hashes to **`75cb0b0c585bc2479137cae31330e73e`** (72 decisions), so adding v2 cannot move v1;
-  - **v2's exit decisions** hash equal to the frozen code's: one line per decision, `mint,trigger_slot,landing_slot,early_exit,exit_trigger_slot`, sorted by mint, md5 over the lines. The frozen side is `bc_rule.cad_exit` and `s01_sim.cad_slot` run on the same pools at the 1.9 s leg with OFF 10, CAP 330, OBS 1.35;
+  - **v2's exit decisions** hash equal to the frozen code's: one line per decision, `mint,trigger_slot,landing_slot,early_exit,exit_trigger_slot`, sorted by mint, md5 over the lines. The frozen side is `bc_rule.cad_exit` and `s01_sim.cad_slot` run on the same pools at the 1.9 s leg with OFF 10, CAP 330, OBS 1.35. Both sides take the same per-pool inputs: the shadow's vault-identified slice list and sps on 09-20. Separately recorded, counts only: the 09-20 pools whose vault slice list differs from `bc_common`'s 1,600-slot hindsight detector, and the pools whose sps differs by more than 1% from the path-wide value;
   - the B1 decision list is hashed the same way and recorded;
   - quant-proof re-runs the proof on the final head. Job id, head and both md5s go in the Window record.
 - **P3. Brute-force check.** τ\* re-derived on a 0.01 s grid for every 09-20 decision and for at least 900 synthetic slice lists, 0 mismatches (the REPORT.md check, repeated on the live code).
@@ -193,11 +199,15 @@ Items 1–4 are the lab's promotion gate, as CLAUDE.md states it. Items 5 and 6 
 
 **NOT_DECIDABLE** (not a pass) if any of these holds:
 - any of the five A3 halt flags fires inside [W0, E), above all `boost_budget_or_slices_changed` (E assumes a 17.585 SOL budget);
-- more than 5% of the window's hours are bad;
+- more than 5% of the window's hours are bad (a gap record or a missing heartbeat; a CAP-PICK seal, by the oracle or its stub, never makes an hour bad);
 - B4 disagrees with the shadow on more than 1% of counted pools;
 - E1's n is below 20;
 - a withheld file fails its hash, or a withheld hour is missing for an hour with counted trades;
 - the read is not run by its deadline.
+
+**Seals never turn a FAIL into NOT_DECIDABLE.** Sealed pools are excluded from the count (section 3.2). If n is below 100 at E because pools were sealed, the verdict is FAIL on item 1.
+
+**No other exit after W0.** Apart from the conditions above, EXP-026 is not withdrawn, re-scoped or delayed after W0 (section 3.3).
 
 A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before any outcome is opened (a P7–P11 refusal) it also spends the window, because v2 is not re-filed on these hours.
 
@@ -217,7 +227,7 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - **Lock and ledger.** An O_EXCL lock before the first withheld file is opened. `started`, `completed` or `aborted` lines in `/data/mal/exp026/READS.jsonl`. It refuses a second run.
 - **No overrides.** Sections 4, 5 and 7 are constants.
 - **Order.** It prints the verdict and the report to stderr before writing any file.
-- **Disclosure.** The report says: v1's canary and shadow outcomes were observed in real time for the same pools (DEC-024 §6); under DEC-028 Option B, so were the v2 canary's; v2's own paper outcomes were withheld until this read.
+- **Disclosure.** The report says: v1's canary and shadow outcomes were observed in real time for the same pools (DEC-024 §6); under DEC-028 Option B, so were the v2 canary's, and the report gives the share of counted pools the v2 canary traded and labels the verdict "v2 outcomes partly observed before the read" (section 3.3); v2's own paper outcomes were withheld until this read. Under M2 it labels a PASS "gate-only, outside DEC-021 §8".
 
 ## 9. Report-only (never deciding)
 
@@ -225,15 +235,16 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - **The realized shift**, next to the paired effect (REPORT.md §7): the window's plain-pool median BOOST last slice against September's 342.9–347.4 s (VERIFY), and the share of plain pools whose last slice is before 329.5 s, against September's 0.1026 (S4-equivalent) and 0.2239 (S8-equivalent) [measured, REPORT.md claim 6].
 - **Exit mechanics:** share of early exits; τ\* distribution; exits landing after the last slice; projection error (actual last slice minus P_k at the decision).
 - **Legs:** the receive-time decision; OBS 2.45 s; the rule's 1.3 s entry; START bound; stake 0.02 SOL (the canary's size, with fixed costs at 0.55% of stake); no correction; a sell-retry stress (p per sell, retries every 2 s at +55,000 lamports).
-- **Statistics:** per-date table; median; mean without the top 5% of trades; share of P&L from trades above +100% gross; first-half and second-half means; the day-level t.
+- **Statistics:** per-date table; median; mean without the top 5% of trades; share of P&L from trades above +100% gross; first-half and second-half means; the day-level t under M2 (binding under M1, section 5 item 7).
 
 ## 10. Multiplicity
 
 - **The H5 exit family so far: 20 selectable exit rules** — iter-r1 sell-budget (6 cells), VERIFY's exit grid (7 exit times, 310–350 s), iter-r2 (7 cells: F300, F315, F320, F325, C5, C10, C15). REPORT.md counts iter-r1 as 14 arm cells, which gives "at least 28". iter-r2 alone computed 148 arm-level P&L cells on top of 8 v1 control books per part. C10 is the best of 7 (of 3 cadence cells) and of at least 20 exit rules. **H5 itself is the best of at least 23 hunt families** (JUDGE.md:58).
 - **The confirmation tape is not independent.** VERIFY generated the BOOST-end hypothesis on it, and its exit grid was known before iter-r2's freeze. m ≥ 14 from EXP-024's merge, about 37 counting untracked readers (EXP-024 §9). That is why only fresh forward hours can decide.
-- **No α slot is free.** The promotion gate's CI90 lower bound is a one-sided 5% bootstrap test. DEC-021 §8 holds the promotion-eligible October families at ≤ 0.05 in total, and both 0.025 slots are taken (EXP-022; EXP-024 through DEC-023). **A PASS here clears the promotion gate as CLAUDE.md writes it, but it adds a promotion-eligible read above DEC-021 §8's budget.** This draft uses the gate as the deciding bar, as the request specifies. **Open choice, fixed before merge** (quant-proof and the owner):
-  - **M2 (as drafted).** Gate only. A DEC-021 §8 amendment records EXP-026 as outside the slot accounting and states that the lab-wide October error rises above 0.05.
-  - **M1 (stricter).** Add the day-level t (EXP-024 §7 item 6) as a binding item at α 0.025, with a third DEC-021 §8 slot granted by the owner. It lowers P(pass) further (section 11).
+- **No α slot is free.** The promotion gate's CI90 lower bound is a one-sided 5% bootstrap test, so a PASS here is a promotion-eligible read. DEC-021 §8 gave two slots of 0.025 ("This DEC covers at most 2 walks… A third walk needs a new DEC"); Amendment 2 gave slot 2 to EXP-024 and Amendment 3 gave slot 3 to EXP-025 (DEC-025), so the promotion-eligible October families are now bounded by 0.075, and Amendment 3 says "A fourth slot needs a new DEC". An amendment that records EXP-026 "outside the slot accounting" is not allowed under §8 (quant-proof, 10-10).
+- **M1 is the default.** Add the EXP-024 §7 item 6 day-level t as binding item 7, at α 0.025, under both fail legs (section 5). The slot needs a new DEC, as DEC-021 §8 requires, with the owner's dated line: [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, in this PR) opens §8's fourth slot for EXP-026 only, which raises the October bound from 0.075 to 0.10. If the owner refuses that slot, the owner may choose M2 only in that new DEC, by a dated line stating that the October promotion-eligible error exceeds DEC-021 §8's bound. Under M2, the date-cluster CI90 lower bound > 0 (`common.gate`, 1,000 date resamples, seed 1, both legs) becomes binding item 7. The report labels any M2 PASS "gate-only, outside DEC-021 §8".
+- **This file does not merge** until DEC-029 carries the owner's line and `EXP026_ALPHA_ROUTE` (section 0) matches it.
+- EXP-026 and EXP-024 Look 2 score largely the same pools with the same trigger. The paired gap is about 0.3–3 pp against a per-trade SD of about 99 pp, so EXP-026 is, to first order, a further look at the H5 trigger. Its α belongs to the H5 family (DEC-023). Under M1 the H5 family's promotion-eligible α is 0.050: EXP-024's 0.025 (0.020 + 0.005, unchanged) and this slot's 0.025.
 - **EXP-024 is untouched.** Its k = 1, α 0.020 / 0.005 and m are unchanged. EXP-026 is a separate read, not a look of EXP-024.
 - **No `data/tries.jsonl` line at registration.** The 20 exit tries are counted here.
 
@@ -246,24 +257,27 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - **Where October sits.** 10-10's plain-pool share before 329.5 s, about 0.151 (DEC-024 Amendment 5, partial day), lies between September's S4 (0.1026) and S8 (0.2239) equivalents. That puts the paired gain at about **+1.39 to +3.21 pp before shrinkage**. After shrinkage (best of 7, in-sample tape, family of ≥ 20), expect **about +0.5 to +2 pp** [est].
 - **v2's own level.** EXP-024 §15 puts v1's central October flat mean at about +2 to +4% before the correction. v2 adds the shrunk gain above, so **about +2.5 to +5.5% before the −0.8 pp correction stand-in** [est]. JUDGE.md's prior that October's mean is > 0 is 0.35 for v1; v2's is not much higher, about 0.40 [est].
 
-**Power at n = 100** [inferred, normal approximation; not a simulation]:
-- With a per-trade SD of about 0.45 × stake (assumed, not measured here; H5's tails are heavy: 5.78% of confirmation trades carry 110.2% of flat P&L, EXP-024 §16 item 8), the trade-level CI90 lower bound clears 0 only if the realized net mean is above about **+7.4% of stake**.
-- The pressure leg runs about 1.5 pp below flat, and the correction takes about 0.8 pp, so the pressure leg alone passes item 3 with probability about Φ((μ − 9.7) / 4.5), where μ is the true flat mean before the correction:
+**Power at n = 100** [measured by quant-proof resampling, 2026-10-10. Method: iter-r2 C10 U confirmation rows (n = 1,121, mean p 0.289) shifted to a true flat mean μ before the correction; −0.8 pp correction; date effect N(0, σ_d); 100 trades over Poisson(8 or 16 a day) dates; seed-1, 1,000-draw CI; items 1–5 and B2 under both fail legs. B1 is not modelled, so these figures are upper bounds. Script: quant-proof's `exp026_power.py` and its `_sigd15` variant, in the reviewing session's scratchpad (not in the repo); they read only the iter-r2 `sim_conf.parquet` rows already read for iter-r2 (September).]
+- Per-trade SD is 0.99 × stake flat and 0.82 × stake pressure (0.87 and 0.78 on B2). At n = 100 the CI90 lower bound clears 0 only above about +16.3% (flat) and +13.5% (pressure) of stake.
+- Resampled P(pass) under M2, at 8 or 16 trades a day (each cell is the range over the two rates):
 
-  | μ (flat, before correction) | +2% | +3% | +4% | +6% | +8% |
-  | --- | ---: | ---: | ---: | ---: | ---: |
-  | P(item 3, pressure leg) | 0.04 | 0.07 | 0.10 | 0.21 | 0.35 |
+  | Date effect σ_d | μ = 0 | +2% | +4% | +6% | +8% | +12% |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 3 pp | 0.000–0.001 | 0.002–0.003 | 0.005–0.006 | 0.010–0.017 | 0.051–0.054 | 0.27–0.28 |
+  | 15 pp | 0.005–0.017 | — | 0.025–0.063 | — | 0.12–0.16 | — |
 
-- Items 2, 4, 5 and 6 cut that further. Ex-top-3 alone is hard at n = 100 when a few trades carry the book. Taking about half [inferred]: P(pass | μ = +4%) ≈ 0.05, P(pass | μ = +6%) ≈ 0.10.
+- September's date-mean SD is 20.6 pp, so the 15 pp row is the realistic one. On that row, a pass when μ = 0 is about as likely as a pass when μ = +4%.
+- Under M1, P(pass) ≤ 0.002 at μ ≤ 0 and ≤ 0.02 for μ up to +8%.
+- The previous draft's figures (a per-trade SD of 0.45 × stake, P(pass) ≈ 0.05 at μ = +4% and 0.10 at +6%) were about 10 times too high. They are withdrawn.
 - **Feasibility.** The 100 trades need the CAP-PICK oracle wired in (section 3.5). Without it, only [W0, 2026-10-16T01) accrues: about 3–4 days at 8–16 plain triggers a day, 25–65 trades, a FAIL on item 1 [inferred]. The plain trigger rate itself is thin: about 16 a day rests on 7 triggers in 10.3 h, and quant-proof puts the executor at about 8 a day (DEC-027 §5.1).
-- **Overall: P(pass) ≈ 0.03, range 0.01–0.06** [est]: about 0.40 × 0.05–0.10, times the chance the oracle is wired in time. **The expected outcome is FAIL.**
-- **Before merge,** quant-proof is asked to run a resampling power check on these legs (as EXP-024 §15's `h5_power5.py`, on the iter-r2 `sim_conf.parquet` C10 rows, n = 100, both rates). This author could not run one on this host (no pandas). It changes no rule.
+- **Overall: P(pass) ≈ 0.005–0.03 under M2 and ≤ 0.01 under M1, before the oracle factor** [est], and lower again if the oracle is not wired in time (Feasibility, above). **A FAIL is expected.** A FAIL says v2 cannot clear the gate on 100 trades, not that v2 is negative. **A PASS is weak evidence:** under M2 it has a material chance of being a false pass, and under M1 its power is at most about 2%.
+- **The resampling power check** was done by quant-proof, 2026-10-10 (above). It changes no rule.
 - **If it passed** [est]: at T1 (0.10 SOL), 8–16 trades a day and a net +2 to +3%, about 0.016–0.05 SOL a day. That is small against the owner's October target.
 
 ## 12. Disclosures: what was in view
 
 1. **iter-r2's outputs**, including every cell's discovery and confirmation numbers, the decomposition, the false-alarm case and quant-proof's verification. The confirmation tape (09-03..09-25) is in-sample for the lab.
-2. **October BOOST timing (structure, no outcome):** DEC-024 Amendment 5's plain and all-pool medians and shares (job #482), the A3 run #478 (median 333 s after migrate, n = 9) and its reconciliation, the task text's plain-pool day median of about 337 s on 10-10.
+2. **October BOOST timing (structure, no outcome):** DEC-024 Amendment 5's plain and all-pool medians and shares (job #482), the A3 run #478 (median 333 s after migrate, n = 9) and its reconciliation, DEC-024 Amendment 5's 10-10 00–07Z plain-pool median of 336.435 s over 159 pools (partial day), share before 329.5 s 0.151.
 3. **v1's October aggregate canary and shadow outcomes** were observable to the manager under DEC-024 §6. This author opened none: no canary ledger, no shadow outcome record. The canary's 3 trades and +0.005199 SOL realized at STOP are quoted from DEC-024's halt record, where they are labelled not evidence.
 4. **No v2 outcome on any October pool exists.** v2 has not run on live triggers.
 5. **The draft was written after v1's §5.1 halt and because of it** (section 1).
@@ -272,12 +286,12 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 
 | By | Item |
 | --- | --- |
-| before merge | quant-proof OK on this file's final head, including the section 11 power check and the M1/M2 choice (section 10). |
-| before merge | The DEC-021 §8 amendment for the chosen M1 or M2 (owner). |
-| before W0 | **G-v2**, the EXP-024 amendment of section 3.4 (P1). It may be one text with DEC-027's G1. |
+| before merge | quant-proof OK on this file's final head and the rule block sha256. The section 11 power check is done (quant-proof, 10-10). |
+| before merge | [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, in this PR): the owner's dated M1 or M2 line, and DEC-021 Amendment 4 (in this PR) if M1. `EXP026_ALPHA_ROUTE` set to match. |
+| with this file | **G-v2**, EXP-024 Amendment 5 (draft, in this PR; section 3.4, P1). It merges before the shadow runs the v2 computation on any pool. |
 | before W0 | The shadow build (P4) with the md5 proof (P2) and the brute-force check (P3); reviewer pass. |
 | before W0 | The count job (P6). |
-| before W0 | A [DEC-023](../DEC/DEC-023-h5-family.md) note: a second rule in the H5 family, its read, and the α route chosen in section 10. |
+| before merge | The [DEC-023](../DEC/DEC-023-h5-family.md) note (a second rule in the H5 family, its read and its α route) is DEC-029 section 0. |
 | before W0 | An `EXP/README.md` row (in this PR). |
 | before the read | `tools/exp026_read.py` (P7) with quant-proof's OK; E1 (P9). |
 | any time | [DEC-028](../DEC/DEC-028-h5-v2-canary.md) (draft): the owner's choice between Option A and Option B. |
@@ -300,4 +314,5 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) (§0–§16, Amendments 1–4), [DEC-024](../DEC/DEC-024-h5-live-canary.md) (§4–§8, Amendments 1–5, halt record), [DEC-027](../DEC/DEC-027-h5-champion-challenger.md), [EXP-022](EXP-022-cap-pick-part1-prereg.md) §9.
 - `tools/h5_shadow.py` (header, record types, seals) and `tools/h5_executor.py` (exit timer, BOOST rules), read as code only.
 - `docs/HANDOFF.md`, STATE 10-10 ~07:30Z.
-- No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or canary or shadow outcome record was opened to write this file.
+- quant-proof's CHANGES review of #542 at 62cc971 (10-10), including its resampling power check.
+- No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or canary or shadow outcome record was opened to write this file or its revision.

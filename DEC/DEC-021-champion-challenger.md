@@ -145,3 +145,10 @@ Drafted 2026-10-09. The owner's OK on DEC-025 item O1 (a third slot, two looks) 
 
 - **Section 8 (cumulative error).** Slot 1 is EXP-022, slot 2 is EXP-024 (Amendment 2). **Slot 3, alpha 0.025, is the register of [DEC-025](DEC-025-c1nf-family.md) section 2**, split over two looks (0.005 and 0.020, pinned in EXP-025 section 0), and whose only member at this amendment is [EXP-025](../EXP/EXP-025-c1nf-part1-prereg.md). The overall rate across the promotion-eligible October families is then bounded by 0.075, not 0.05. A fourth slot needs a new DEC.
 - **Unchanged.** EXP-022's thresholds, counted window and seal; EXP-024's 0.020 / 0.005 split. Sections 2, 3, 6 and 7 do not apply to EXP-025 (it is not a challenger to a champion). As in Amendment 1 and Amendment 2, no backward-block PASS is required; a pass leads only to the DEC-018 path and the owner's yes.
+
+## Amendment 4 (draft 2026-10-10): a fourth alpha slot for EXP-026 (H5-BOOSTCLOCK v2), under DEC-029's M1 only
+
+Drafted 2026-10-10 for PR #542. It takes effect on merge only if [DEC-029](DEC-029-exp026-alpha-slot.md) carries the owner's dated line choosing M1, with quant-proof OK on its final head. Under M2 it does not take effect and no slot is opened. No hour was read to write it.
+
+- **Section 8 (cumulative error).** Slots 1 to 3 are EXP-022, EXP-024 (Amendment 2) and EXP-025 (Amendment 3). **Slot 4, alpha 0.025, is [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) only**, one read, deciding by its section 5 item 7 (the day-level t at p ≤ 0.025, both fail legs). The overall rate across the promotion-eligible October families is then bounded by 0.10, not 0.075. A fifth slot needs a new DEC.
+- **Unchanged.** EXP-022's thresholds, counted window and seal; EXP-024's 0.020 / 0.005 split; EXP-025's register and its (0.005, 0.020) pair. Sections 2, 3, 6 and 7 do not apply to EXP-026 (it is not a challenger to a champion). As in Amendments 1 to 3, no backward-block PASS is required; a pass leads only to the DEC-018 path and the owner's yes.

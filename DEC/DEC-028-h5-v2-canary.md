@@ -2,17 +2,17 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Draft, 2026-10-10. For the owner's choice between Option A and Option B.** Nothing is decided by this file and no live send happens under it. It takes effect on merge, with quant-proof's OK on its final head and the owner's dated line (section 9). Option B also needs its own override line (section 3.1). |
+| **Status** | **Draft, 2026-10-10. For the owner's choice between Option A and Option B.** Nothing is decided by this file and no live send happens under it. It takes effect on merge, with quant-proof's OK on its final head and the owner's dated line (section 9). Option B also needs its own override line (section 3.1). Revised 2026-10-10 for quant-proof's CHANGES review of 62cc971 (items 10-13 applied, and Option B's seal consequence for EXP-026 made explicit in sections 3.1 and 7). |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-10-10 |
-| **Builds on** | [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) (the v2 rule and its read), [DEC-024](DEC-024-h5-live-canary.md) (the v1 canary: §4 limits, §5 halts, §6 seals, §7 override, Amendments 1–5, halt record), [DEC-027](DEC-027-h5-champion-challenger.md) (§0, §3(b), §7), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md), [DEC-021](DEC-021-champion-challenger.md) §7, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) §3, §3.1, Amendments 2 and 4, [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) §9. |
+| **Builds on** | [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) (the v2 rule and its read), [DEC-024](DEC-024-h5-live-canary.md) (the v1 canary: §4 limits, §5 halts, §6 seals, §7 override, Amendments 1–5, halt record), [DEC-027](DEC-027-h5-champion-challenger.md) (§0, §3(b), §7), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md), [DEC-021](DEC-021-champion-challenger.md) §7, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) §3, §3.1, Amendments 2 and 4, Amendment 5 (G-v2, draft), [DEC-029](DEC-029-exp026-alpha-slot.md) (draft, EXP-026's α slot), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) §9. |
 | **Amends** | **Option A:** nothing until EXP-026 passes. **Option B only:** DEC-024 §4's "Rule" row, so that the `h5` executor profile on the DEC-024 probe wallet may trade H5-BOOSTCLOCK v2 instead of v1, for the v2 canary in section 3 and nothing else. |
 | **Does not amend** | The promotion gate for any book. EXP-024 (rule, looks, α, seal, read tool) and EXP-026 (rule, window, bar, read). EXP-022 and its CAP-PICK seal. DEC-027's switching rule and its k cap. **v1's STOP under DEC-024 §5.1 and its resume rules (Amendments 4 and 5).** DEC-024 §4's 14-day duration. |
 
 ## 0. Why this exists (2026-10-10)
 
 - **v1's canary is STOPPED.** DEC-024 §5.1 fired at 2026-10-10T07:11:07Z, and STOP was placed at 07:15:10Z (DEC-024 halt record). At STOP: 3 trades at 0.02 SOL, +0.005199 SOL realized, 3 sells landed, 0 late. That is not evidence (DEC-024 §2, §4).
-- **BOOST ends earlier in October.** On 10-10 the plain-pool day median of the BOOST last slice is about 337 s after s0, and the share of plain pools whose BOOST ends before 329.5 s is about 0.15 (DEC-024 Amendment 5: 0.151 over 159 plain pools, 00–07Z, partial day). v1 exits at a fixed s0 + 330 s, so on those pools it sells after BOOST and into the cliff.
+- **BOOST ends earlier in October.** On 10-10 the plain-pool median BOOST last slice was 336.435 s over 159 pools, 00–07Z (partial day), and the share of plain pools whose BOOST ended before 329.5 s was 0.151 (DEC-024 Amendment 5). v1 exits at a fixed s0 + 330 s, so on those pools it sells after BOOST and into the cliff.
 - **Research round 2 found C10** (`/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/REPORT.md`, with quant-proof's verification): exit at the projected last BOOST slice minus 10 s, using only slices seen at least 1.35 s earlier, capped at 330 s.
   - Non-inferior to v1 unstressed (paired +0.2788 / +0.2620 pp, flat / pressure) [measured, exploration].
   - Robust to an earlier BOOST end: v1 loses about 2.9 pp at an 8 s shift and C10 does not [measured, exploration]. Quant-proof: that robustness is true by construction (it follows the slices), and 89.5% of the S8 gain is v1's own loss.
@@ -40,7 +40,7 @@
   - the owner's yes, in a dated line. Size above T0 follows DEC-020 and the owner's ladder.
 - **After a FAIL:** v2 is retired (EXP-026 §7). No live v2.
 - **Timeline** [est]. Merge about 10-11; W0 about 10-12; 100 trades by about 10-18 at 16 plain triggers a day, or about 10-25 at 8 a day, **only if the CAP-PICK pick oracle (#509) is wired in by 10-16T01** (otherwise trades stop accruing then and the read at about 10-26 fails on n). The read follows within 48 h. A live v2 under Option A would start about 10-20 to 10-28 at the earliest.
-- **Odds** [est, EXP-026 §11]: P(pass) about 0.03. **Under Option A, the likely result is no live v2 in October.**
+- **Odds** [EXP-026 §11, quant-proof resampling]: P(pass) about 0.005–0.03 (M2; ≤ 0.01 under M1, the default). At a true +4–6% the read has about 1–6% power, so a FAIL is expected whether or not v2 is positive, and a PASS would be weak evidence. **Under Option A, the likely result is no live v2 in October.**
 - **Cost:** builder time and reviews only. $0 extra, 0 Helius credits.
 
 ## 3. Option B: an owner-override live canary of v2 at T0 0.02 SOL
@@ -55,6 +55,9 @@
   ```
 
   The form to fill: `<date> (owner, in session, asked by <manager>). Question: "<verbatim>". Answer: "<verbatim>". MiScusi notebook <id>.`
+
+  The question shown to the owner must include, verbatim: "H5-BOOSTCLOCK v2 has not passed the promotion gate, its own read is expected to fail, and it would trade real money in the BOOST regime that halted v1. CLAUDE.md says live trading does not start until a book clears the promotion gate and the owner approves; this answer overrides that for v2's T0 canary only." It must also include, verbatim: "Under Option B, the v2 canary's outcomes are watched in real time on most of the pools EXP-026 counts, so EXP-026's read is labelled partly observed, and it is reported compromised if that label, the traded share or the no-withdrawal rule is missing." A line whose question lacks either sentence does not count.
+- **What B costs EXP-026 (the seal consequence).** The v2 canary (2 open positions, 30 attempts a day) trades most of the 8–16 plain triggers a day that EXP-026 counts, and its fills, exits and wallet deltas are watched in real time (section 7). So under Option B, v2's own book is largely observed before EXP-026's read, and the store cannot keep it blind. **Without quant-proof's fix, that read would be compromised.** The fix (EXP-026 §3.3, §8, G-v2 item (d)) is all of: the observation is declared in G-v2 before any v2 send; the read reports the share of counted pools the canary traded; it labels its verdict "v2 outcomes partly observed before the read"; and EXP-026 is not withdrawn, re-scoped or delayed after W0 for any reason other than an EXP-026 §7 NOT_DECIDABLE condition. If any of these fails, EXP-026's read is reported compromised, and a compromised read cannot support a live request. Under Option A none of this applies: v2's outcomes stay withheld until the read.
 - **What the override does not cover.** Any step above T0. A scale-up of v2 before an EXP-026 PASS would need a further, separate dated line, which this DEC does not propose. The owner's 10-09 ladder and DEC-024 Amendment 3's T1 terms were given for v1 and do not carry over.
 
 ### 3.2 Limits (code constants; config may only lower them)
@@ -68,7 +71,7 @@
 | Daily stop | realized loss of **0.08 SOL** in a UTC day |
 | Total stop | min(0.12 SOL, 35% of the wallet when T0 started), about **0.1045 SOL**. **The counters continue from v1's run** (DEC-027 §7 item 6: a new rule never starts with a fresh allowance) |
 | Priority, guard, sell ladder | DEC-024 §4 unchanged: 55,000 lamports per send; buy `min_out` at the trigger print's post-trade price ÷ 1.15; sell `min_out` 0.85, then 0.65 after 2 reverts or once s0 + 345 s has passed; never `min_out` 0 |
-| Duration | **ends at DEC-024's 14-day end** (14 days from the canary's first send, about 2026-10-23T19:30Z), and at the executor's `end_ms` if that is earlier. **Not extended here**; an extension is the owner's decision by a dated line |
+| Duration | **ends at DEC-024's 14-day end** (14 days from the canary's first send, about 2026-10-23T19:30Z), and at the executor's `end_ms` if that is earlier. **Never extended past that end under this DEC.** Any v2 live trading after it needs a new DEC (and, before an EXP-026 PASS, a new override) |
 | Files | `LIVE_OK`, `STOP`, `HALT`, `TIER` as DEC-024 §4. The exit mode is a compiled-in constant of the pinned install, or DEC-027 §7's `VARIANT` file if that selector is built first. Only Helm changes either |
 | Wallet | the DEC-019 probe wallet `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk` on `mal-fast-0`, held by Helm. The manager never sees the key (DEC-019 §5) |
 | Funding | what the wallet holds now, about 0.3039 SOL (HANDOFF, STATE 10-10 ~07:30Z). The +0.5 SOL T1 top-up of DEC-024 Amendment 3's addendum is **not** sent under Option B |
@@ -140,7 +143,7 @@ Any of these halts new buys at once (`STOP`). Open positions still exit by v2's 
 
 **Owner:**
 - Choose Option B, and write `OWNER_OVERRIDE_V2_CONFIRMED` in section 3.1.
-- Confirm the section 3.2 limits, and that the 14-day end is not extended.
+- Confirm the section 3.2 limits, and that the 14-day end is not extended (this DEC cannot extend it).
 - Decide the open questions in section 9.
 
 **Helm:**
@@ -156,27 +159,28 @@ Any of these halts new buys at once (`STOP`). Open positions still exit by v2's 
 
 - **EXP-024 Look 1 and Look 2** are read as written whatever v2, its shadow or its canary shows (G-v2 item b). A v2 canary halt stops only the v2 canary.
 - **Declared observation.** Under Option B the v2 canary's own fills, exits and wallet deltas for pools with s0 in Look 1's or Look 2's window are observed in real time, by the readers DEC-024 §6 names. This is declared in G-v2 item (d) before any v2 send. The wallet is public on chain, so anyone can compute its P&L. The v2 canary cannot trade a pool with s0 at or after 2026-11-06T00, because it ends about 10-23.
-- **EXP-026's withheld paper book** stays withheld under both options (EXP-026 §3.3). The v2 canary's observed trades are a subset of the same pools. That is disclosed in the EXP-026 report and does not change it.
+- **EXP-026's withheld paper book** stays withheld under both options (EXP-026 §3.3). The v2 canary trades most of the same pools, so under Option B v2's own book is largely observed before EXP-026's read. EXP-026 reports that share, labels its verdict accordingly, and cannot be withdrawn after W0 (EXP-026 §3.3). If any of that is missing, the read is reported compromised (section 3.1, "What B costs EXP-026").
 - **CAP-PICK.** From 2026-10-16T01 to the end of EXP-022's read: no v2 trade on a pick, no v2 record joined to a pick, the oracle fails closed (EXP-022 §9, DEC-024 §6).
 - **D1.** No synthetic class is joined to any v2 outcome before Look 2 is read. The v2 canary trades plain pools only, and its records carry the class only as the pre-buy filter.
 
 ## 8. Recommendation
 
-- **Option A is the lab's path.** v2's evidence is exploration only. Its unstressed gain does not replicate on discovery, its stressed gain is true by construction, and EXP-026 is expected to fail (P(pass) about 0.03).
+- **Option A is the lab's path.** v2's evidence is exploration only. Its unstressed gain does not replicate on discovery, its stressed gain is true by construction, and EXP-026 is expected to fail: P(pass) about 0.005–0.03 (quant-proof resampling). At a true +4–6% the read has about 1–6% power, so a FAIL is expected whether or not v2 is positive.
 - **Option B is a measurement buy, not an income step.** It is worth choosing only if the owner wants live data on the slice-timed exit before 10-23 (stream latency, decision-to-send time, sells landing before BOOST ends), and accepts that a v2 rule goes live in the regime that halted v1, before its read. Its worst case is the total stop, about 0.1045 SOL, plus at most 0.04 SOL open.
 - **Either way**, the live-side build of section 5 is the same work, and building it keyless now costs no SOL.
 
 ## 9. Open for the owner
 
 1. **Option A or Option B.**
-2. **If B:** the override line in section 3.1, in your own words, and the section 3.2 limits. B stays at T0, and the 14-day end stays at about 10-23.
+2. **If B:** the override line in section 3.1, in your own words, and the section 3.2 limits. B stays at T0, and it ends at the 14-day end, about 10-23; this DEC does not extend it.
 3. **v1.** v1 stays STOPPED unless DEC-024 Amendments 4 and 5 allow a resume. Under B, v1 and v2 never run together (section 3.4). Do you prefer v1's resume, if it becomes allowed, or v2 under B?
-4. **EXP-026's α route** (EXP-026 §10): M2, the promotion gate only, as requested (it adds a promotion-eligible read above DEC-021 §8's 0.05 budget, disclosed), or M1, a binding day-level t at α 0.025 with a third slot (stricter, lower odds).
+4. **EXP-026's α route** (EXP-026 §10, [DEC-029](DEC-029-exp026-alpha-slot.md)). **M1 is the default** (quant-proof): a binding day-level t at α 0.025, in DEC-021 §8's fourth slot, opened by DEC-029 with your dated line; the October bound goes from 0.075 to 0.10. M2 (the gate only, a PASS labelled "gate-only, outside DEC-021 §8") only if you refuse that slot, by your dated line in DEC-029 stating that the October promotion-eligible error then exceeds DEC-021 §8's bound. EXP-026 does not merge without one of the two lines.
 
 ## Sources
 
 - `/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/REPORT.md` (with quant-proof's verification) and `FREEZE.md`.
-- [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md), [DEC-024](DEC-024-h5-live-canary.md) (§4–§8, Amendments 1–5, halt record), [DEC-027](DEC-027-h5-champion-challenger.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) §9, DEC-018, DEC-019, DEC-020, DEC-021 §7.
+- quant-proof's CHANGES review of #542 at 62cc971 (10-10).
+- [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md), [DEC-029](DEC-029-exp026-alpha-slot.md), [DEC-024](DEC-024-h5-live-canary.md) (§4–§8, Amendments 1–5, halt record), [DEC-027](DEC-027-h5-champion-challenger.md), [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) §9, DEC-018, DEC-019, DEC-020, DEC-021 §7.
 - `tools/h5_shadow.py` and `tools/h5_executor.py` (`HOLD_S`, `on_boost_row`, `bvs_n`, `bvs_before`, the wall-clock exit stages), read as code only.
 - `docs/HANDOFF.md`, STATE 10-10 ~07:30Z (wallet, canary at STOP, landing time).
 - No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or canary or shadow outcome record was opened to write this file.
