@@ -782,6 +782,184 @@ No CAP-PICK outcome, paper-twin field or gate-log row was read to make this amen
 3. **No join before a look.** Before each look, no person, agent or job joins H5 records or the H5 wallet history to the replay's picks, or counts the overlap. A join is a breach under section 9.
 4. **Report-only count (section 13; never deciding).** After each look is written, report two numbers: the look's counted picks with an H5 live fill, and those with an H5 shadow outcome record. The report also says that H5's live fills on those mints are on the tape the read prices.
 
+### Amendment 7 (2026-10-10, before any counted hour and before the 2026-10-15T06:41Z daily A3 run; DRAFT, the owner's decision is OPEN): synthetic-migration pools stay in the universe, `synthetic_share_high` becomes report-only, and the class is sealed to counts
+
+```
+OWNER_SYNTHETIC_DECISION_EXP022: OPEN
+```
+
+**The owner line is OPEN.** The owner made both earlier synthetic decisions, one family at a time, and they went opposite ways. H5 excludes synthetic pools (MiScusi notebook `n_xtknDqL-ychBNg`; [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) Amendment 4). C1-NF keeps them (`OWNER_SYNTHETIC_DECISION_EXP025` in [EXP-025](EXP-025-c1nf-part1-prereg.md) Amendment 2). Neither decision covers EXP-022. Item 0 gives the question to put to the owner. Until the line above records the owner's answer, nothing in this amendment applies.
+
+**Written** 2026-10-10T11:03Z (`date -u`). That is before 2026-10-16T01:00Z, so no counted hour exists. **Line numbers below are those of this file on main at `13fa26c`, before this amendment.**
+
+**This amendment is blind to every CAP-PICK outcome. It is not outcome-blind.**
+- No CAP-PICK outcome of a counted hour exists, because counting starts at 2026-10-16T01 (section 0).
+- To write it, the author opened no row, report or scratch file of walk 2, forward-1002, forward-1002ev, forward-paper, the paper twin, a runner, the pick oracle, the H5 shadow or canary, or C1-NF. The author computed no CAP-PICK, H5 or C1-NF outcome.
+- **Inputs:**
+  - this file;
+  - EXP-024 Amendment 4 and its Clarification 1;
+  - EXP-025 Amendment 2;
+  - DEC-026 §9.3;
+  - `tools/pump_structure_monitor.py` and `tools/synthetic_class.py`;
+  - `docs/HANDOFF.md`;
+  - the audit (SYN, JUDGE);
+  - the MiScusi notebook entries on the synthetic decisions;
+  - the four records of `/data/mal/structure-monitor/daily.jsonl`. Of those records, only `run_utc` and `halt.flags.synthetic_share_high` were read.
+- **The pick set was not classified.** No CAP-PICK pick on any October hour was classified, counted by class or opened. Nobody knows what share of CAP-PICK's picks is synthetic.
+
+**What was in view (disclosed)** [measured; `/data/mal/structure-monitor/daily.jsonl`, from the `synthetic_share_high` reason string]
+
+| `run_utc` | Job | `synthetic_share_high` | Under line 354 |
+|---|---|---|---|
+| 2026-10-08T10:25:10Z | #383 | 0/16 = 0.000 | clear (before the 2026-10-08T16:20Z redeploy) |
+| 2026-10-09T07:11:06Z | #445 | 6/19 = 0.316 | clear |
+| 2026-10-09T19:23:02Z | #449 (EXP-024's official P2 run) | **6/17 = 0.353** | **fired** |
+| 2026-10-10T07:11:07Z | #478 | 4/18 = 0.222 | clear |
+
+- **The 19:23:02Z run fired `synthetic_share_high`.** Under line 354 that run was a halt. It does not withdraw CAP-PICK, because P2 reads only the last run before 2026-10-16T01:00Z (Amendment 5 item 1). It is disclosed here because the pre-10-16 checklist lists only the 0.316 and 0.222 readings.
+- The dry check of 2026-10-09T07:38:11Z read 7/19 = 0.368. It is not an A3 run (Amendment 5).
+- **H5's structure measurement** (counts only; `/data/mal/hunt-1008/h5-work/synthetic-1009/REPORT.md`, notebook `n_KqwGD1bzt_lbpg`; this author read the notebook summary):
+  - 35.0% of 160 graduations after the redeploy were synthetic.
+  - On the same set, the monitor's 10-signature window reads 28.6%, so the monitor undercounts.
+
+#### 0. The choice, and the question for the owner
+
+**Why a choice is needed** [inferred]
+- As written, this file keeps synthetic pools in the book (line 121: "attempts … never dropped") and halts on their share (line 354).
+- With the share near the 0.35 line, the halt mostly measures sampling noise. The monitor samples 16 to 19 graduations, so one more synthetic pool moves the reading by about 0.06.
+- **Binomial estimate** [inferred, not a forecast]. Assume each run is an independent draw at a fixed share:
+
+  | True share in the monitor's sample | One run fires (n = 16–19) | At least one of 21 daily runs fires |
+  |---|---|---|
+  | 0.20 | 0.05–0.11 | 0.67–0.90 |
+  | 0.25 | 0.14–0.24 | 0.96–1.00 |
+  | 0.30 | 0.28–0.40 | about 1.00 |
+
+- **Before counting:** if the flag fires on the last run (the 2026-10-15 run), CAP-PICK is withdrawn (P2).
+- **After counting starts:** if the flag fires on any daily run, counting is suspended and every later look is NOT_DECIDABLE (lines 359-365).
+
+**Where the halt came from (disclosed).**
+- The audit's A3 rule set says "synthetic share >35% for 2 days" (SYN:258, D11). Line 354 adopted the monitor's single-run flag instead.
+- The audit's risk table says what to do if synthetic migration is adopted: "The guard rejects more and whales vanish from the decoded tape. Re-specify the guard against the pool-open price, as a new EXP" (SYN:554).
+- **Only option (c) below follows every line of this file and the audit's plan.** Options (a) and (b) both drop the halt, after the readings above were seen.
+
+**The options**
+
+| | (a) Keep the pools; the flag is report-only; class-count seal | (b) Exclude the pools with the classifier | (c) No amendment |
+|---|---|---|---|
+| Line 121 ("attempts … never dropped") | Stands as written | Replaced: synthetic and unclassified pools are dropped | Stands |
+| JUDGE §4 item 6, binding (JUDGE:205, "Synthetic-migration pools above the seed count as rejects at −fee") | Kept | Overridden | Kept |
+| Line 354 halt | Report-only | Report-only (the class is out of the book) | A halt, as written |
+| Book = live-gate picks + on-chain min_out (section 1, section 4.3) | Unchanged | Gains a filter that neither the gate nor `tools/probe_executor.py` has. A live CAP-PICK would first need a decision-time classifier with its own equivalence proof, as H5's executor got (#519) | Unchanged |
+| New refusal | None | NOT_DECIDABLE if unclassified attempts are more than 1% of the look's attempts (EXP-024 Am.4 B3) | None |
+| Read tool (P4, due 2026-10-23T01) | Classifies for counts only. A failed fetch prints `unclassified` | Classifies every attempt before scoring. `getTransaction` and the signature walks are on the deciding path | No change |
+| Attempts | Unchanged | Fall by the synthetic share of picks (not known) | Unchanged |
+| Population read | October's, including a class that the exploration evidence never contained (0 of 61 graduations before the redeploy) | Matches the exploration evidence (0 synthetic pools) | October's, until the near-certain halt |
+| Likely end | A verdict at a look | A verdict, or NOT_DECIDABLE on unclassified pools | Withdrawn at P2, or halted after counting starts. Then A12, or a new EXP (SYN:554) |
+
+**Of (a) and (b), (a) fits EXP-022's text.**
+1. **Line 121 already answers the question.** It was merged on 2026-10-08 at 15:14Z (#464, `30aafef`), about an hour before the 16:20Z redeploy. At that time synthetic migration was "deployed but unused (0/10, 0/37). If adopted, pools open above the seed" (SYN:104). The file chose then to keep such pools as attempts, to price them through the guard, and never to drop one. That choice carries out binding JUDGE §4 item 6. Option (b) reverses both. Option (a) keeps both.
+2. **The book is the live gate's picks with an on-chain min_out** (section 1, section 4.3), and neither the gate nor the executor takes a class input. Under (a), the paper book stays what a live CAP-PICK would send. Under (b), it does not.
+3. **(a) is the smaller change.** It touches the halt list only. (b) also rewrites the universe, adds a refusal and puts RPC classification on the read's deciding path.
+
+**What (a) gives up, stated plainly.** Line 354 was the file's halt for a rise in the synthetic share, and the audit's plan for adoption was to halt and re-specify (SYN:554). Option (a) removes that halt after the readings above were seen. That is a loosening of a halt, not a clarification. It is made blind to CAP-PICK outcomes, but not blind to the share.
+
+**The owner's earlier decisions point to (a), but they do not decide it.** Each earlier decision matched the family's live path:
+- **H5 excluded the pools,** and its executor refuses the class (#519).
+- **C1-NF kept the pools,** and its canary trades them (DEC-026 §9.3). The owner's C1-NF basis had three parts:
+  - no A3 halt that a rising share could fire;
+  - the cost in n;
+  - the live path trades the same population.
+
+CAP-PICK has no live path today (the probe stopped 10-07), and its book has no class input. That is the C1-NF pattern, so (a) applies here. Of the three parts of the C1-NF basis:
+- **No A3 halt:** this holds for CAP-PICK only after item A2 below.
+- **The cost in n:** this applies, because P(pass) is about 5–7% (section 14).
+- **Same population:** this applies.
+
+The owner has not decided EXP-022, so the line stays OPEN.
+
+**Question for the owner** (suggested; the manager asks it):
+> "CAP-PICK (EXP-022) starts counting at 10-16T01. Its own text keeps synthetic pools in the book, priced through the guard. But its A3 rules also halt the test whenever one daily sample of about 18 graduations reads above 35% synthetic. At today's share, a halt on one of the 21 daily runs is near-certain, and the 10-15 run alone could withdraw it. Keep the pools in and make the share report-only (Recommended), exclude them as H5 does, or leave EXP-022 as written? The decision must merge before 10-15T06:41Z."
+
+#### A. What option (a) sets
+
+**A1. The universe is unchanged.** Line 121 stands as written. A synthetic pool that meets section 3 is an attempt. If it opens above the guard, it is a reject at −55,000 lamports (section 4.3). It is never dropped. "Synthetic" in this file means the class defined in item A3.
+
+**A2. The A3 halt list has five flags.**
+- **The five flags:** `pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early` and `boost_budget_or_slices_changed`. A core rule left unevaluated on two consecutive daily runs is also still a halt (line 357, unchanged).
+- **Where "halt" means only these:**
+  - P2 (line 320);
+  - section 7.1 (d) (line 216);
+  - "Before counting" (line 358);
+  - "After counting starts" (lines 359-365).
+- **How a run is read.** The five flags are read one by one from the record's `halt.flags`, never from `halt.any`, which also counts the sixth flag. A run on which `synthetic_share_high` is the only flag that fired counts as a run with no halt.
+- **`synthetic_share_high` is recorded and reported, and never decides.** Each look prints every daily run's reading in its window as n_syn/n_chk, report-only.
+- **The monitor does not change.** `tools/pump_structure_monitor.py` stays blob `1ca0a88cecf0853d94336ea046ba1a910b79f198` and the pins stay blob `7486f57f372e79c7d852f9cb70991d20043d4a8f` (on main at `13fa26c`). The monitor still computes the flag.
+
+**A3. The class count (section 13, line 420, now defined).**
+- **The classifier:**
+  - EXP-024 Amendment 4 B1: the PostCompleteBuyEvent discriminator alone, in the curve-completing tx or the migrate tx;
+  - B2: a tape `post_complete_buy` row can only mark a pool synthetic, and only a located and read tx settles non-synthetic;
+  - Clarification 1 B4: the transaction search, with its caps.
+- **The code:** `tools/synthetic_class.py` `classify_pool`, blob `930c8caa5d55a68e7886828b0e171acf107a2af1` on main at `13fa26c`. The read tool records the blob it imports.
+- **What is printed.** At each look, by UTC date of s0, the number of attempts that are synthetic, non-synthetic and unclassified. Counts only.
+- **Unclassified attempts stay in the book.** A failed fetch, or any unclassified share, never makes a look NOT_DECIDABLE or late. If classification cannot finish, the affected attempts print as `unclassified` and the look runs on schedule.
+- **No item reads the counts.** Nothing in sections 7, 10, 11 or 12 reads them. Each look's report records the Helius credits that classification used (CLAUDE.md, Credits).
+
+**A4. The class-count seal (adds to section 9).**
+- **The breach.** Before the final verdict of the read is written, joining synthetic class to any CAP-PICK outcome is a breach of section 9.
+  - "The final verdict" means look 3, or the last look that runs, or a pass or halt that ends the read.
+  - The class may come from any source: item A3, the A3 monitor's sample, the H5 shadow or executor, `tools/h5_synthetic_audit.py`, the C1-NF class stream, or the tape.
+  - An outcome is a fill, reject, guard-reject count, exit, P&L, mean, CI, day sign, win or loss, or any field derived from one.
+- **Between looks:**
+  - No person, agent or job computes the class of a counted CAP-PICK pick or attempt.
+  - No one joins any class stream to the pick set or to the pick oracle's True mints, even for counts.
+  - Only the sealed look does this, and it prints counts by class and date only.
+  - The reason: under line 121, an attempt's class may say something about its guard result, so a class count of counted picks could stand in for an outcome count [inferred].
+- **Inside a look.** The report prints the guard-reject share (line 420) and the class counts as separate totals. It prints no cross-tab of class against reject, fill, exit or P&L. The read tool writes no per-attempt class field into any file that carries an outcome field.
+- **When there is a breach,** it is recorded here, dated, and the read is reported compromised (section 9).
+- **After the final verdict** is written and recorded, a split by class may be printed, labelled report-only. It never decides, never re-scopes a look and never seeds a re-read.
+
+**A5. What the read then measures.**
+- The verdict is CAP-PICK's result on October's population, synthetic pools included. The exploration evidence and the A2 kill check (P6, on exploration rows) contain none. Every look report says so.
+- Whether the gate's features on a synthetic mint include the PostCompleteBuy buy is not checked here [not measured]. The book is the gate as it runs on the walk-2 tape, under E0's decision equivalence (section 2.1).
+- Section 14's power arithmetic is not re-run.
+
+**A6. Multiplicity.** Unchanged. This amendment adds no arm, cell, look or α.
+
+#### B. If the owner answers (b) or (c)
+
+- **(b), exclude.** This amendment does not take effect. A replacement Amendment 7 must be drafted and get quant-proof's OK before 2026-10-15T06:41Z. It would need to:
+  - supersede line 121's "never dropped";
+  - apply the item A3 classifier to every attempt before scoring, and exclude synthetic and unclassified attempts from every leg;
+  - make unclassified attempts above 1% of the look's attempts a NOT_DECIDABLE condition (section 10, "At every look");
+  - use the A2 five-flag halt list, the A3 per-date counts and the A4 seal;
+  - state that the book then differs from the live gate and executor.
+- **(c), as written.** This amendment does not take effect. Lines 121, 354 and 420 stand (Amendment 5 item 3).
+
+#### C. Conditions for this amendment to take effect
+
+All of these must hold:
+1. The owner line above reads (a), with the date and the notebook reference. The manager records it there.
+2. Quant-proof's OK is posted on the final head.
+3. It merged before the 2026-10-15T06:41Z daily A3 run started.
+
+If it merges after that run has started, it does not take effect, and lines 121, 354 and 420 stand. When it takes effect, it closes Amendment 5 item 3.
+
+**Not changed.**
+- The book, the pick rule and E0.
+- The universe conditions of section 3, including line 121.
+- V0 and the missing-V0 rule.
+- The guard, entry, exit, cap, costs, rent, stake, fail legs and pressure.
+- The section 8 correction.
+- The gate statistics, the looks, futility, α and multiplicity.
+- The counting-start line (section 0) and the windows.
+- The seal of section 9, apart from item A4.
+- Every NOT_DECIDABLE condition.
+- The core-rule clause.
+- The monitor and pins blobs.
+- Amendments 1 to 6.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
