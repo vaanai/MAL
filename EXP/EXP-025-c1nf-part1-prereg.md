@@ -1000,6 +1000,26 @@ The code is on branch `claude/exp025-p7-line2-amend` at `efbc185772aec93231739f8
   - Buys 175/183 (`buy` 144/152, `buy_v2` 31/31). Excluded 388: `buy_exact_quote_in` 354, `buy_exact_quote_in_v2` 33, `multi_hop_swap` 1. Skipped 0. Sells 392/429 in the driver's sell form.
   - **Per print it is identical to #625's `detail.jsonl`** (sha256 `f995d1d4ba54f8057eb6b15447fff5394f4ce852b6cb8d79ede01c9bdbdd93bf`) on all 183 comparable buys, in order: slot, event index, name, sol, qin, tier and hit, with 0 mismatches.
   - This is in-sample (E). It checks the code path on the real layout; it is not evidence for the rule.
+- **Joint parity at both PR heads: MiScusi job #639.** It ran on mal-fast-0 (role ops, 800 MB cap, peak 69 MB, exit 0, verdict PASS) from 2026-10-10T19:48:00Z to 19:48:09Z, with 0 credits and no RPC.
+  - **Code run.** This branch at `795a20118a3f78d388108bf6128c1460ade32956` and EXP-024's `claude/exp024-tier-lines-amend` at `300129f8751e8d1a711fecc66742d9ba6721d4c8`, each from its own `git archive` tree and in its own process, plus main `822cefb` for the sells. The job refused to start unless both heads, its script (sha256 `34c3147a7c8a464cd467528c547f3e223099ebd2ab069702ad8abd81d58e5ec4`, in the job command) and the three input files below matched.
+    - This file: `tools/exp025_p7.line2_tally` → `line2_one` → `p7_line2_amend`, loaded through `load_line2_amend`, so the run checked the module sha256 `1908931c…` and the driver blob `26f47531…`. The adapter row is the tape row with `quote_reserve` = q + V and V0 = 0, as in #625 and #631. The tape rows give no unique integer `tx_index`, so the adapter rows were keyed by a per-row index; `line2_one` does not read that key.
+    - EXP-024: `tools/boostfloor_inputs.tier_lines` and `tier_buy_one` at blob `edf0d2d7…`, with the tape row standing in for the P5 decode, as in #632 part A.
+  - **Inputs (sha256).**
+    - #598's prints file `p7-tip-prints.jsonl`: `187beaaa0d79ae925a9956f514d60c0b6dcffce803017af463aba59407418fcb`.
+    - The tip tape hour `trades-2026-10-10T15.jsonl`: `03606a81ca48ca552adfb04e7479f0cc74986ab001d0650fab97a11a4f1996d4` (992,481 lines; 1,000 of 1,000 main keys joined).
+    - #625's `detail.jsonl`: `f995d1d4ba54f8057eb6b15447fff5394f4ce852b6cb8d79ede01c9bdbdd93bf`. #625's `summary.json`: `9cabf076d2e8f4a62c27ac2f35c046de69a5a9c82b5f3053f301fc684ae6ce2a`.
+  - **Counts, the same for both implementations.**
+    - Comparable buys 183: 175 hits (`buy` 144/152, `buy_v2` 31/31) and 8 misses.
+    - Excluded 388: `buy_exact_quote_in` 354, `buy_exact_quote_in_v2` 33, `multi_hop_swap` 1 (`ix_not_listed`). Skipped 0.
+    - This file's misses by cause (`no_adapter_row`, `identity_mismatch`, `field_missing`, `degenerate`) are all 0. EXP-024's unresolved, no-V and non-integer counts are all 0.
+  - **Per print, both implementations are identical to #625's `detail.jsonl`** on all 183 comparable buys, in order. The fields compared are slot, event index, name, sol, qin, tier ppm and hit, with 0 mismatches in either implementation. Between the two implementations, all 571 buys get the same class (hit, miss or the same exclusion cause), and all 429 sells get the same outcome.
+  - **Sells are unchanged, print by print.**
+    - This file's driver gives 392/429 both at the head and at main `822cefb` (blob `182cc406…`), equal on every sell.
+    - EXP-024's `tier_lines` gives 392/429 both at the head and at main (blob `482c73b0…`), equal on every sell.
+    - The 390/429 that #598 and #625 report for EXP-025 comes from the tip tool's rounded sell form (`tip_event_v_p7.line2_exp025_counts`, unchanged). This job reproduced it as 390/429. The driver's own form gives 392.
+  - **Line 2 on these prints:** fee `[392, 429, 175, 183]`, and `event_v_map.p7_pass` returns true.
+  - **Record:** `~/data/p7l2-parity-both-20261010/parity.json` on mal-fast-0, sha256 `e73bbee17ad11bec57a4038f9b7593cd3b3d9961823d04dd9ca7662f4251d2b0`. The joined tape rows carry signatures, so they were deleted after the run.
+  - This is in-sample (E). It checks both code paths on the real tape layout. It is not evidence for the rule.
 - **Tests** at `efbc185` (audit venv): `tools/test_exp025_p7_line2_amend.py` has 29 tests and `tools/test_exp025_p7.py` 28, all OK; the module's file also passes under `/data/mal/venv` pytest. With `tools.test_exp025`, `test_exp025_p7_buy_amend`, `test_exp025_look`, `test_exp025_read`, `test_exp025_look_driver`, `test_exp025_adapter` and `test_exp025_r1_crosscheck`, 268 tests pass. `sha256sum -c ARTIFACTS/exp025/SHA256SUMS` gives 36 OK. The tests cover:
   - an edited module, or an edited `p7_buy_amend.py`, is refused;
   - the integer edge: |dev| = 100·qin hits and 101 misses, on both sides;
