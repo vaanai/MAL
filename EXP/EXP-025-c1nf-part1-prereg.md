@@ -755,7 +755,7 @@ Nothing else changes: the rule, the cap, the threshold, the patches' content, th
 
 ### Amendment 6 (written 2026-10-10T14:19:17Z, from `date -u`; before any October row is read for a look; it must merge before any look's P7 sample is drawn and before 2026-10-16T01:00Z): P7 line 1, buy side, per the quant-proof ruling QP-P7-1010
 
-Outcome-blind. It follows the quant-proof ruling of 2026-10-10 (about 14:00Z), `/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md`, sha256 `bf298d8ad516bbc69b59bbba6c32dfcbde5f3cd2a3a5efd4fc17b85033a2bafc` [measured 2026-10-10T14:18Z], items 2 to 4. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, no October tape row was read, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are the ruling, the manager's brief that quotes the tip-check counts in C (this text copies them, as EXP-024 Amendment 6 does, and did not reopen the job outputs), the module branch `claude/exp025-p7-buy-amend` at `0c8327e`, and `ARTIFACTS/exp025/event_v_map.py`, `tools/exp025_read.py` and `tools/exp025_look.py` on main `f0787ea`. It is numbered after Amendment 5, which is in the same draft PR (#567). Amendments take numbers in merge order.
+Outcome-blind in its inputs (see C, "Outcome records in existence", for EXP-025 Amendment 3 item 6). It follows the quant-proof ruling of 2026-10-10 (about 14:00Z), `/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md`, sha256 `bf298d8ad516bbc69b59bbba6c32dfcbde5f3cd2a3a5efd4fc17b85033a2bafc` [measured 2026-10-10T14:18Z], items 2 to 4. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, a forward-paper book, a runner, the canary or the shadow was opened, no October tape row was read, and no October label, C1-NF selection, fill, exit or P&L was computed or read. Its inputs are the ruling, the manager's brief that quotes the tip-check counts in C (this text copies them, as EXP-024 Amendment 6 does, and did not reopen the job outputs), the module branch `claude/exp025-p7-buy-amend` at `0c8327e`, and `ARTIFACTS/exp025/event_v_map.py`, `tools/exp025_read.py` and `tools/exp025_look.py` on main `f0787ea`. It is numbered after Amendment 5, which is in the same draft PR (#567). Amendments take numbers in merge order.
 
 #### A. The rule (the ruling's text, quoted)
 
@@ -814,7 +814,7 @@ The rule lives in a new module, `ARTIFACTS/exp025/p7_buy_amend.py`. It comes fro
 - It loads the module only after checking the module's sha256 against `ed3005f0…`, the `SHA256SUMS` line. `check_pins()` does not cover this file, because `PINNED_SCRIPTS` is unchanged.
 - A driver that decides a buy by the forward law, or by any other copy of the rule, is not running P7.
 
-**Tests.** `tools/test_exp025_p7_buy_amend.py` at `0c8327e` has 15 tests, covering the ruling's shared cases:
+**Tests.** `tools/test_exp025_p7_buy_amend.py` at `0c8327e` has 15 tests, covering the ruling's shared cases (at `a20f32e`, after test-only commits from quant-proof's reviews, it has 19; `p7_buy_amend.py` is unchanged there, blob `24dc5ede`, sha256 `ed3005f0…`):
 - `event_v_map.py` is untouched, and an edited copy is refused.
 - The frame, main draw, tolerance and pass are reused unchanged.
 - A dust exact-out buy misses under the forward law and hits under the inverse law.
@@ -845,9 +845,10 @@ The rule lives in a new module, `ARTIFACTS/exp025/p7_buy_amend.py`. It comes fro
   - #576 shaped this amendment. Re-scoring #576 under it is a diagnostic only, never an acceptance.
   - 154 of #576's 165 forward-law buy hits have never been checked under the inverse law.
   - No `buy_v2` print has been checked under the inverse law; all 11 refetched hits were `buy`.
-  - Not recorded here: how many distinct pools the eight ~5 bp `multi_hop_swap` misses span (ruling item 4). The whitelist does not depend on that count.
+  - Distinct pools (ruling item 4; MiScusi job #592, counts only, recorded 2026-10-10T14:38Z by the manager): the 9 `multi_hop_swap` misses span 6 distinct pools (the 2 dust misses, 1 pool). A constant ~5 bp gap across several pools is a fee, not a Q error of one pool. The whitelist does not depend on that count.
 - **Overlap.** These prints sit inside both reads' October hours (EXP-025's V-covered hours start 2026-10-09T00). So the same transactions are in forward-1002ev's hours, and a look's P7 sample can draw them.
 - **When.** Written while the declared observations run: EXP-024 section 3.1 and its Amendments 2 and 3, and EXP-025 section 5.1 and its Amendment 3.
+- **Outcome records in existence (EXP-025 Amendment 3 item 6; added by the manager 2026-10-10T14:38Z, quant-proof's caution on #571).** Two live-shadow smoke runs on October tip prints preceded this text: MiScusi job #568 (OOM-killed in its bootstrap at 13:38:34Z, before any decision) and job #584 (scratch out dir `/home/claude/data/c1nf-shadow-smoke2-1010`, started 2026-10-10T13:54Z, `--max-seconds 1800`), which may have computed shadow outcome records for October decisions. None was opened, printed or read: only whitelisted start/stop/heartbeat counters (bootstrap, error and expiry counts) were printed. Under Amendment 3 item 6 the Look reports list this amendment as written after shadow outcomes could exist and do not call it outcome-blind; its inputs contain no outcome.
 - **Inputs.** The inputs of the check and of this amendment contain no outcome. The ruling (item 3) finds that no label, fill, exit, P&L, mean, CI or day sign was computed. No C1-NF selection, canary record or shadow record was read.
 
 #### D. Line 2 (the fee tier): not changed, never yet measured on October prints
