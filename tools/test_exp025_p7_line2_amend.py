@@ -1,7 +1,8 @@
 """Tests for ARTIFACTS/exp025/p7_line2_amend.py: EXP-025 P7 line 2 (fee tier), buy side, amended (Amendment 7 B).
 
-Synthetic integer cases (tools/fixtures/p7_line2_buy_cases.json, shared with EXP-024's tier lines) and the public-chain fixtures kept in the repo
-(tools/fixtures/walk2_event_v). No network, no /data/mal path, no forward, walk, tape or October row.
+Synthetic integer cases (tools/fixtures/p7_line2_buy_cases_exp025.json, 37 cases; EXP-024's own 38 are tools/fixtures/p7_line2_buy_cases.json,
+and CrossImplementation runs each tool on the other's table) and the public-chain fixtures kept in the repo (tools/fixtures/walk2_event_v).
+No network, no /data/mal path, no forward, walk, tape or October row.
 Run: /data/mal/audit-1008/venv/bin/python -m unittest tools.test_exp025_p7_line2_amend (or /data/mal/venv/bin/python -m pytest -q <this file>;
 the driver tests that need it are skipped without numpy)."""
 from __future__ import annotations
@@ -19,7 +20,7 @@ import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ART = os.path.join(ROOT, "ARTIFACTS", "exp025")
-CASES = os.path.join(ROOT, "tools", "fixtures", "p7_line2_buy_cases.json")
+CASES = os.path.join(ROOT, "tools", "fixtures", "p7_line2_buy_cases_exp025.json")          # this PR's 37 cases (Amendment 7 D)
 FIX = os.path.join(ROOT, "tools", "fixtures", "walk2_event_v")
 for _p in (ROOT, os.path.join(ROOT, "tools")):
     if _p not in sys.path:
@@ -197,7 +198,8 @@ class Line2Module(unittest.TestCase):
             self.m.buy_quote_in(Q, b, b)
 
     def test_fixture_cases_in_exp025_order(self):
-        """Every shared case decides as the fixture says (EXP-024's tier lines must give the same hit, miss, skipped and excluded)."""
+        """Every case decides as the fixture says (CrossImplementation checks that EXP-024's tier_buy_one gives the same hit, miss, skipped
+        and excluded)."""
         self.assertEqual(self.doc["schema"], "p7_line2_buy_cases_v1")
         kinds = {}
         for c in self.cases:
