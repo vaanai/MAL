@@ -741,88 +741,110 @@ This clarification carries quant-proof's OK on its final head and merges before 
 
 This read's seal end states, and quant-proof's ruling that Amendment 4 item D1 lifts at EXP-024's end state (the full-universe book stays report-only; after a Look 1 PASS a synthetic split cannot widen the live universe), are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10" (rulings (3a) and (3b)); that text changes no rule, data, bar or timing of this read and releases no data.
 
-### Amendment 5 (2026-10-10, DRAFT; the manager fills every TBD after the merges, and it must merge before 2026-10-16T00:00Z): the P3 and P4 record (tool pins, merge commits, E0-H5), the extractor's V map, and parse_failed hours
+### Amendment 5 (2026-10-10T13:06Z; it must merge before 2026-10-16T00:00Z): the P3 and P4 record (tool pins, merge commits, E0-H5), the extractor's V map, and parse_failed hours
 
-Outcome-blind. To draft it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the repo at main `9d099f1`, the heads of #476 (`b3dbc80`), #562 (merged) and #566 (`810221d`), the MiScusi records of jobs #538, #540 and #546, and those jobs' E0 record files on exploration day 2026-09-20. It records what section 10 (P3, P4) and section 12 require. It changes no rule, parameter, window, leg, threshold or refusal.
+Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the repo at main `742d7c9` (with #476 merged as `42c1e41`, #562 as `0ef32e2` and #566 as `737c307`), the MiScusi records of jobs #538, #546 and #551, and the E0 record files those jobs wrote on exploration day 2026-09-20. It records what section 10 (P3, P4) and section 12 require. It changes no rule, parameter, window, leg, threshold or refusal.
 
-**Status at drafting.** P3 is not met yet. #476 is a draft: it is not merged and has no quant-proof OK. This amendment takes effect only when four things are true: every TBD below is filled, the manager has checked each blob against merged main, quant-proof has posted OK on the final head, and it merges before 2026-10-16T00:00Z. If any of these misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1.
+**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Items D (who writes the forward vmap) and E (whether a `parse_failed` hour counts as bad) stay OPEN for the manager. Neither changes a pin.
 
 #### A. The pin line (section 10 P4 item 3; section 12 "the E0-H5 blobs match")
 
-The read tool's `parse_p3_pins` (`tools/boostfloor_read.py`, #476) refuses unless exactly one line of this file starts with the prefix. That line must give all eight keys as `key=path@<40-hex blob>`, and seven of the paths are fixed in the tool (`P3_PIN_PATHS`). `check_pins` then compares each blob with the look worktree's file, and `check_clean` requires each file to be clean against HEAD. The line below uses the blobs at drafting. **TBD (manager):** after the last of #476 and #566 merges, run `python -m tools.boostfloor_read pins` on merged main, which prints `{key: path@blob}`. Replace any blob that changed. If a blob changed after its E0 run, re-run that E0 at the new blob first (P4: "Each look runs in a worktree where they match").
+`integrity()` in `tools/boostfloor_read.py` runs, in order: `check_count_start`; `parse_p3_pins`, which refuses unless exactly one line of this file starts with the prefix and gives all eight keys as `key=path@<40-hex blob>`, seven of whose paths are fixed in `P3_PIN_PATHS`; `check_clean` (this file, the monitor and every pinned path clean against HEAD); `check_pins` (each blob equals the look worktree's file); `check_monitor` (`tools/pump_structure_monitor.py` at `1ca0a88c…`, Am.4 B1, which is also its blob on main `742d7c9`); and `check_frozen` (section 2).
 
 ```
-EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@f92abdd695067e4a0fa50f9b2d76789800704bf9 score_module=tools/boostfloor_score.py@e63cca50b367f7d9b8bdf782429f4f0618c5cc87 latency_curve=tools/latency_curve.py@c194134b199d2d772a57d5a6a6cb3c5c3d25d669 paper_curve_math=tools/paper_curve_math.py@42daf5adcdc1532cb29a6f5079997d25b10c86ea extractor=tools/h5_forward_extract.py@da81a2fa91a994136903affb3a082a0c7ff865c6 v_join=tools/forward_v_join.py@8b60e5bf5fc8a45b28a587b96a01aa20a07df2ad synthetic_class=tools/synthetic_class.py@930c8caa5d55a68e7886828b0e171acf107a2af1 inputs=tools/boostfloor_inputs.py@082a3bb5b9af62f1bff576e4e1d17c9b79dc58b1
+EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408f0dd9454678 score_module=tools/boostfloor_score.py@e63cca50b367f7d9b8bdf782429f4f0618c5cc87 latency_curve=tools/latency_curve.py@c194134b199d2d772a57d5a6a6cb3c5c3d25d669 paper_curve_math=tools/paper_curve_math.py@42daf5adcdc1532cb29a6f5079997d25b10c86ea extractor=tools/h5_forward_extract.py@92d070f53d521445e5a4e2c84c8f871a1026b026 v_join=tools/forward_v_join.py@8b60e5bf5fc8a45b28a587b96a01aa20a07df2ad synthetic_class=tools/synthetic_class.py@930c8caa5d55a68e7886828b0e171acf107a2af1 inputs=tools/boostfloor_inputs.py@adef463e0258b522318eb2c8b9051516b4776685
 ```
 
-| Key | Path | Blob at drafting | Taken from | Final |
-| --- | --- | --- | --- | --- |
-| `read_tool` | `tools/boostfloor_read.py` | `f92abdd6…` | #476 head `b3dbc80`; equals job #540's `read_tool_blob` | TBD: #476 merged |
-| `score_module` | `tools/boostfloor_score.py` | `e63cca50…` | #476 head `b3dbc80` | TBD: #476 merged |
-| `latency_curve` | `tools/latency_curve.py` | `c194134b…` | main `9d099f1`; #476 does not change it | check on merged main |
-| `paper_curve_math` | `tools/paper_curve_math.py` | `42daf5ad…` | main `9d099f1`; #476 does not change it | check on merged main |
-| `extractor` | `tools/h5_forward_extract.py` | `da81a2fa…` | main `9d099f1` (#562 merged); equals the blob at job #538's commit `38c3c73` | **TBD:** `92d070f53d521445e5a4e2c84c8f871a1026b026` if #566 merges at `810221d` (job #546's blob) |
-| `v_join` | `tools/forward_v_join.py` | `8b60e5bf…` | main `9d099f1`; #476 does not change it | check on merged main |
-| `synthetic_class` | `tools/synthetic_class.py` | `930c8caa…` | main `9d099f1`; #476 does not change it | check on merged main |
-| `inputs` | `tools/boostfloor_inputs.py` | `082a3bb5…` | #476 head `b3dbc80` (producer of the P5, P7, E1 and BOOST-PDA files) | TBD: #476 merged |
+| Key | Path | Blob on main `742d7c9` | E0 run at this blob |
+| --- | --- | --- | --- |
+| `read_tool` | `tools/boostfloor_read.py` | `fefe0c15…` | job #551 at `3f2e26c`: the record's `read_tool_blob` |
+| `score_module` | `tools/boostfloor_score.py` | `e63cca50…` | job #551 at `3f2e26c`: the same blob in that tree |
+| `latency_curve` | `tools/latency_curve.py` | `c194134b…` | job #546: the record's `blobs` |
+| `paper_curve_math` | `tools/paper_curve_math.py` | `42daf5ad…` | job #546: the record's `blobs` |
+| `extractor` | `tools/h5_forward_extract.py` | `92d070f5…` (#566) | job #546 at `810221d`: the record's `blobs`, `extractor_dirty` false |
+| `v_join` | `tools/forward_v_join.py` | `8b60e5bf…` | job #546: the record's `blobs` |
+| `synthetic_class` | `tools/synthetic_class.py` | `930c8caa…` | no E0 covers it (classify only) |
+| `inputs` | `tools/boostfloor_inputs.py` | `adef463e…` | job #551 at `3f2e26c`: the blob its log prints |
+
+**Check.** On the head that adds this amendment (main `742d7c9` merged in; the branch changes only the two EXP files), `python -m tools.boostfloor_read pins` printed the seven fixed paths with the blobs above and accepted the line, and `integrity()` passed on mal-research-0 (count start, pin line, clean, pins, monitor, frozen). The PR body records the output.
 
 #### B. Merge commits (section 10 P3)
 
-| PR | What | Head at drafting | Merge commit | quant-proof OK on the final head |
+| PR | What | Final head | Merge commit | quant-proof OK on the final head |
 | --- | --- | --- | --- | --- |
-| #476 | read tool (forward mode), #476 module, inputs producer | `b3dbc80` (draft) | **TBD** | **TBD** (link) |
-| #562 | forward extractor and E0-H5 | `38c3c73` | `0ef32e254ac9f7c85bb752e37f6418afa761729d` | TBD (link) |
-| #566 | extractor: keep null-V0 pools, fix the `cp1` v pairing | `810221d` (open) | **TBD**, or "not merged" (then the extractor row of A stays `da81a2fa…`) | TBD (link) |
+| #476 | read tool (forward mode), #476 module, inputs producer | `3f2e26c` (job #551's code; same three blobs as main) | `42c1e41ff28ec068bc0315a4bc247c35abab68ff` | **TBD (manager):** link |
+| #562 | forward extractor and E0-H5 | `38c3c73` | `0ef32e254ac9f7c85bb752e37f6418afa761729d` | **TBD (manager):** link |
+| #566 | extractor: keep null-V0 pools, fix the `cp1` v pairing | `810221d` (job #546's code; same extractor blob as main) | `737c3078e4bb27def876cdc16c35fa6bdaa5faaf` | **TBD (manager):** link |
 
-**Catalog (section 12).** At `b3dbc80` the read tool does not call `mal_catalog.check_read`. Its docstring says it allowlists exactly the section 3 hours. So #465 is not a precondition. **TBD (manager):** confirm this on the merged head.
+**Catalog (section 12).** On main `742d7c9` the read tool does not call `mal_catalog.check_read`. The only mention is its docstring, which says it allowlists exactly the section 3 hours. So #465 is not a precondition.
 
 #### C. E0-H5 records (section 10 P4), exploration day 2026-09-20, fast-pool-0918
 
-- **VIEW.sha256** of the pinned day: `05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8`, as job #538's record reports it (`view_sha256`).
-- **P4.1, extractor: MiScusi job #538.** It ran on mal-research-0 at code `38c3c73` (the #562 head, merged as `0ef32e2`) with extractor blob `da81a2fa…`, a 12 GB cap and a 9.6 GB peak. Verdict: **PASS**.
+- **VIEW.sha256** of the pinned day: `05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8`, the `view_sha256` of jobs #546 and #538.
+- **P4.1, extractor: MiScusi job #546. This is the E0-H5 record the forward run uses.** It ran `h5_forward_extract e0` on mal-research-0 at code `810221d6147f26d6031fcc1a6a535f75d6cce85a` (the #566 head, merged as `737c307`). The record's `blobs` give the extractor `92d070f5…`, `forward_v_join` `8b60e5bf…`, `latency_curve` `c194134b…` and `paper_curve_math` `42daf5ad…`, all equal to A, with `extractor_dirty` false. Resources: an 8 GB cap and an 8.0 GB peak, equal to the cap, so the forward run uses at least 12 GB. Verdict: **PASS**.
   - meta: rows_md5 `bf9c1f61ed80c1c32a0b05d70f849751` equals the reference, 815/815 rows.
   - paths: rows_md5 `d6e0b8e345757b7f3fc8b8cb9fdb4e41` equals the reference, 5,383,117/5,383,117 rows.
   - Order check: ok. 25 groups and 269 rows moved, all inside open ties. 0 groups moved outside open ties, and the (mint, slot) sequence has 0 differences.
-  - Record: `/data/mal/exp024/e0-h5-38c3c73/E0-H5.json`, sha256 `67ff0c7a0013a4ba5cc5f0fc38368798b5bc92796c802f009cf54869eedb9ee8` [measured 2026-10-10].
-  - **If #566 merges (TBD):** use MiScusi job #546 instead. It ran at `810221d` with extractor blob `92d070f5…` and an 8 GB cap, and its peak was 8.0 GB, equal to the cap, so the forward run should use 12 GB. #566's PR body reports the same md5s and row counts, and `canon_null_v` = 0 on 09-20. Record: `/data/mal/exp024/e0-h5-810221d/E0-H5.json`, sha256 `ec4eb87428528a0c37430309b2954cf6d0011e2ce9ab6a1a4b11b69444702d0f` [file sha256 measured 2026-10-10; md5s copied from #566]. Forward mode accepts only an E0 record written by the extractor blob it runs, so this record then replaces #538's for the forward run.
-- **P4.2, read tool: MiScusi job #540.** It ran `boostfloor_read e0` on mal-research-0 at code `b3dbc80` with an 8 GB cap and exited 0.
-  - n_tool 288 = n_ref 288.
+  - `canon_null_v` 0, `canon_null_v_multipool` 0, `vmap_pools_null_v_kept` 321. The E0 vmap is `/data/mal/pumpswap-virtual/pool_v_0909.json`, sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e`.
+  - Record: `/data/mal/exp024/e0-h5-810221d/E0-H5.json`, sha256 `ec4eb87428528a0c37430309b2954cf6d0011e2ce9ab6a1a4b11b69444702d0f` [measured 2026-10-10T13:05Z; equals the job log].
+  - Forward mode accepts only an E0 record written by the extractor blob it runs, so this record, not #538's, goes to `--e0-record`.
+- **Job #538** is kept as history. It ran at `38c3c73` (the #562 head) with extractor blob `da81a2fa…`, which is no longer the pinned blob. It had the same verdict, md5s and row counts. Record: `/data/mal/exp024/e0-h5-38c3c73/E0-H5.json`, sha256 `67ff0c7a0013a4ba5cc5f0fc38368798b5bc92796c802f009cf54869eedb9ee8` [measured 2026-10-10T13:05Z].
+- **P4.2, read tool: MiScusi job #551.** It ran `boostfloor_read e0` on mal-research-0 at code `3f2e26c3958a327c24bdd134c19ffdda9079423f` (the #476 head after the quant-proof r4 edits) with an 8 GB cap, a 1.5 GB peak, and exit 0.
+  - `equal` true: n_tool 288 = n_ref 288.
   - md5_tool = md5_ref = `328264a4f22176f7048d9f7719ae930b`, over (mint, leg, stake, pnl rounded to the lamport) of the `boostdip_frozen_conf.parquet` rows with `H == 'end'` on 2026-09-20.
-  - `conf_sha256` `a4798efaa362122e1866db6ca0c34c4b75a17aba6f9a6ffd5940515808c977ca`; `read_tool_blob` `f92abdd695067e4a0fa50f9b2d76789800704bf9`.
-  - The record is the job's `e0.json` in its MiScusi output directory. **TBD (manager):** copy it to a backed-up path and record its sha256 here. If #476's read-tool blob changes before merge, re-run this E0 at the merged blob and replace this entry.
-- **P4.3, blobs:** the extractor, the read tool, `tools/latency_curve.py`, `tools/paper_curve_math.py` and #476's module are the A line.
+  - `conf_sha256` `a4798efaa362122e1866db6ca0c34c4b75a17aba6f9a6ffd5940515808c977ca`; `read_tool_blob` `fefe0c156ce75839cf973da82e408f0dd9454678`. The job log prints `inputs` blob `adef463e0258b522318eb2c8b9051516b4776685`. Both equal A.
+  - The record is the job's `e0.json` in its MiScusi output directory. Its file sha256 was not measured here.
+  - It replaces job #540 (code `b3dbc80`, read-tool blob `f92abdd6…`, same n and md5), whose blob is no longer pinned.
+- **P4.3, blobs:** the extractor, the read tool, `tools/latency_curve.py`, `tools/paper_curve_math.py` and #476's module are the A line, and the E0 runs above ran at those blobs.
 
-#### D. The extractor's `--vmap` for the forward run [OPEN for the manager]
+#### D. The extractor's `--vmap` for the forward run
 
-**What the extractor uses it for.** In forward mode the extractor uses `--vmap` for one thing: choosing the canonical pool. That is the first V-range pool after `complete`, or the first null-V pool once #566 merges. The extractor copies the value into `meta.v`. The value is not an Am.1 V0 source. The extractor's `VMAP_ROLE` says so, and the read tool uses the vmap V0 only in P5 fetch planning and `classify`, never in `precount` or `look`.
+**What the extractor uses it for.** In forward mode, `--vmap` does one thing: it chooses the canonical pool, which is the first V-range or null-V pool after `complete` (#566). The value is copied into `meta.v`. It is not an Am.1 V0 source (`VMAP_ROLE`). The read tool uses it only in P5 fetch planning and `classify` (`VSources.vmap_fallback`), never in `precount` or `look`.
 
-**What Am.1 implies (my reading).** Section 4 defines V0 as the virtual quote reserve at s0, decoded from the s0 print's trade event. Am.1 makes forward-1002ev, through `tools/forward_v_join.py join`, the first source. So the vmap that matches the rule has one entry for every PumpSwap pool with a print in the extractor's hours:
-- the value is the joined forward-1002ev `virtual_quote_reserves` of that pool's **first print** (a PRE-trade value; pending fees are 0 at a fresh pool's first print), taken from the same join output that P5(a) records;
-- the value is **null** wherever the join gives that print no V: the fallback list, a bad or unwalked ev hour, or an ev row without V. Under #566 a null-V pool is kept as V-unknown, and the read tool resolves it by the Am.1 order or the section 4 missing-V rule.
+**The manager's choice (2026-10-10).** The forward vmap is Am.1's first source. Every PumpSwap pool with a print in the extract's hours gets one entry:
+- the joined forward-1002ev `virtual_quote_reserves` at that pool's **first print** (a PRE-trade value);
+- **null** where the join gives that print no V: the fallback list, a refused, bad or unwalked ev hour, or an ev row without V.
 
-Open:
-1. **Producer.** No tool on main or in #476 writes this file. Option (i) is a new outcome-blind step that reads the P5(a) join output after the FINAL, prints counts only and records its sha256; this is what Am.1 implies. Option (ii) is the pool-account map (`tools/exp012_forward_vmap.py`, Am.1 source 3). That map holds V plus the pending counters at fetch time (at or after 10-16T00Z), not V at s0, so (ii) would choose canonical pools by a later state. **OPEN:** the manager names the file and its producer. The forward manifest records the file's `vmap_sha256`.
-2. **Absent is not null.** The extractor drops a pool that is absent from the vmap before meta (#566 open item 1). The file must therefore list every PumpSwap pool printing in the extractor's hours, with null where V is unknown. **OPEN:** alternatively, the extractor treats an absent pool as null. That is a one-line change and the manager's call.
-3. **Order [my reading, OPEN to confirm].** Each step needs the one before it:
-   1. P5(a) `forward_v_join join`;
-   2. the vmap;
-   3. the forward extract, with the E0 record of the extractor blob it runs;
-   4. `boostfloor_inputs p5`, which plans its fetches from the extract;
-   5. `classify`;
-   6. P6 `precount`.
-   All of these run after the FINAL (A) and compute no outcome.
+Null-V0 pools stay in, per #566: `load_vmap` keeps a null as V-unknown, the pool reaches meta with `v` null, and the read tool resolves it by the Am.1 order, else by the section 4 missing-V rule. A known V outside [17.5, 17.7] SOL is dropped, as before.
+
+**Does main `742d7c9` support it? Not end to end.**
+- The extractor reads a static file shaped `{"v": {pool: lamports|null}}` (`load_vmap`).
+- `forward_v_join join --emit v` writes the V fields per matched row, keyed by (slot, signature, event_index), plus the fallback list. It writes no per-pool map.
+- No tool on main reduces the join output to `{pool: V at the pool's first print | null}`.
+
+**So, what is used: nothing yet.** The forward extract runs with the chosen vmap only after a small, outcome-blind producer merges. That producer reads the P5(a) join output and the forward-1002 PumpSwap prints after the FINAL, writes the map, prints counts only (pools, null-V pools) and records the map's sha256. The forward manifest records it as `vmap_sha256`. **TBD (manager):** the producer PR, and its blob recorded in the P6 precount amendment. It is not an `integrity()` key, so the A line does not change.
+
+Not used, with reasons:
+- `pool_v_0909.json` is the E0 map, a 2026-09-09 snapshot. October pools are absent from it, and the extractor drops absent pools.
+- The pool-account map from `exp012_forward_vmap fetch --new` is the only file in the extractor's shape that main can write for October pools. Its raw `v` is the stored V at fetch time (at or after 2026-10-16T00Z), pending counters included. It is not V at s0, so it would choose canonical pools by a later state. **OPEN:** the manager may still name it as the fallback if no producer merges in time. That would be a different V from the choice above, and it needs its own amendment line before the extract.
+
+**Order [OPEN to confirm].** Each step needs the one before it:
+1. P5(a) `forward_v_join join`;
+2. the vmap producer;
+3. the forward extract, with job #546's E0 record;
+4. `boostfloor_inputs p5`, which plans its fetches from the extract;
+5. `classify`;
+6. P6 `precount`.
+
+All of these run after the FINAL (A), and none computes an outcome.
 
 #### E. Disclosure: parse_failed hours
 
-**How the two tools differ.** In forward mode the extractor drops an hour when duckdb cannot parse its raw file (strict lines). It records the reason `parse_failed`, removes the hour's parquet, and writes the reason to `manifest.json` (`hour_reasons`, `reason_counts`). Its hole rule then excludes every mint whose migration hour, or the next hour, is unusable. The read tool does not use that manifest. Its good and bad hours come from `tools/forward_v_join.hour_state(..., strict=True)` on forward-1002 (`_good_bad`). `hour_state` checks that the hour is sealed, its last verify line, the trades sha256, duplicates and `bad_lines`. It does not parse the file with duckdb.
+**How the two tools differ.** In forward mode, the extractor drops an hour when duckdb cannot parse its raw file (strict lines). It records the reason `parse_failed`, removes the hour's parquet, and writes the reason to `manifest.json` (`hour_reasons`, `reason_counts`). Its hole rule then excludes every mint whose migration hour, or the next hour, is unusable.
 
-**The effect.** Suppose `hour_state` calls an hour `ok` but the extractor dropped it as `parse_failed`. The read tool counts that hour as good in section 4's "more than 5% of the look's window hours are bad" test, yet the hour contributes no meta or paths rows. So the bad-hour share can be understated by the number of such hours. Pools with s0 in that hour, or whose window runs into it, are then missing from the universe without being counted as excluded.
+The read tool on main `742d7c9` does not read that manifest. Its good and bad hours come from `_good_bad`, which calls `tools/forward_v_join.hour_state(..., strict=True)` on forward-1002. `hour_state` checks that the hour is sealed, its last verify line, the trades sha256, duplicates and `bad_lines`. It does not parse the file with duckdb.
 
-**Reporting [pre-declared; outcome-blind; it adds nothing to a verdict].** The P6 precount amendment records two counts: the extractor manifest's `reason_counts`, and the number of hours that `hour_state` calls `ok` and the manifest calls `parse_failed`. **OPEN:** the manager decides whether such an hour also counts as bad in the 5% test, before P6 and without any outcome. That would need a #476 change or a rule written here. If the count is 0, the question is moot.
+**The effect.** Suppose `hour_state` calls an hour `ok` but the extractor dropped it as `parse_failed`. Then the read tool counts that hour as good in section 4's "more than 5% of the look's window hours are bad" test, yet the hour contributes no meta or paths rows. The bad-hour share is understated by the number of such hours. Pools with s0 in that hour, or whose window runs into it, are missing from the universe without being counted as excluded.
+
+**Reporting [pre-declared; outcome-blind; it adds nothing to a verdict].** The P6 precount amendment records two counts:
+- the extractor manifest's `reason_counts`;
+- the number of hours that `hour_state` calls `ok` and the manifest calls `parse_failed`.
+
+**OPEN:** the manager decides, before P6 and without any outcome, whether such an hour also counts as bad in the 5% test. That would need a read-tool change or a rule written here. If the count is 0, the question is moot.
 
 #### F. Not changed
 
-Nothing else changes: the rule, the parameters, the universe (apart from the pending #566 decision recorded in D), the trigger, the pricing, the costs, the legs, the gate statistics, the look schedule, futility, multiplicity, the kill rules, the refusals and the section 0 counting start. This draft adds no reader and opens no sealed block.
+Nothing else changes: the rule, the parameters, the universe (apart from the #566 null-V decision recorded in D), the trigger, the pricing, the costs, the legs, the gate statistics, the look schedule, futility, multiplicity, the kill rules, the refusals and the section 0 counting start. This amendment adds no reader and opens no sealed block.
 
 ## Sources
 

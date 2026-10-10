@@ -699,54 +699,58 @@ Numbered after Amendment 3 (#548, open when this was written). Amendments take n
 - It is not the canary's model pin. #550 trains on VERIFY's arrays, and a model built on P2's arrays needs its own pin and dated line.
 - Quant-proof reviewed it on head `f7da961` (2026-10-10). The run matches section 10 P2, with the `common2.py` retarget disclosed above. The count step is count-only. The bands and hashes check against the files.
 
-### Amendment 5 [number TBD at merge: open #548 holds Amendment 3 and open #558 holds Amendment 4] (2026-10-10, DRAFT; the manager fills every TBD after the merges, and it must merge before 2026-10-16T01:00Z): the P3 and P4 pins (October adapter, read tool)
+### Amendment 5 (2026-10-10T13:06Z; it must merge before 2026-10-16T01:00Z): the P3 and P4 pins (October adapter, read tool)
 
-Outcome-blind. To draft it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, C1-NF selection, fill or P&L was computed or read. Its inputs are the heads of #563 and #561, the MiScusi records of jobs #537 and #541, and those jobs' E0 record files on exploration day 2026-09-20. It records what section 10 P3 and P4 require. It changes no rule, cap, threshold, leg, patch or refusal.
+Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, C1-NF selection, fill or P&L was computed or read. Its inputs are main `742d7c9`, the head of #563, the MiScusi records of jobs #550 and #555, and those jobs' E0 record files on exploration day 2026-09-20. It records what section 10 P3 and P4 require. It changes no rule, cap, threshold, leg, patch or refusal. The number is 5 because Amendment 3 (#548, `ee173d1`) and Amendment 4 (#558, `54f1628`) are on main.
 
-**Status at drafting.** P3 and P4 are not met yet: #563 and #561 are not merged, and neither has quant-proof OK. P2 (Amendment 4, #558) is open too, and P3's `mid` check depends on P2. This amendment takes effect only when three things are true: every TBD below is filled, the manager has checked each blob against merged main, and it merges before 2026-10-16T01:00Z. If that misses, section 10 makes the walk-2 part NOT_DECIDABLE, and section 11.5 spends the look.
+**Status at writing (2026-10-10T13:06Z).** P4's tool is merged: #561 is `742d7c9`. P3's tool is not: #563 is open. This amendment takes effect when three things are true: the #563 TBD below is filled with its merge commit and the blob is checked on merged main; quant-proof has posted OK on its final head; and it merges before 2026-10-16T01:00Z. If that misses, section 10 makes the walk-2 part NOT_DECIDABLE, and section 11.5 spends the look.
 
 #### A. P3: October adapter (section 11.2)
 
 | Item | Value |
 | --- | --- |
-| PR | #563 `claude/exp025-october-adapter`, head `bad950361580ec2865d58884f6f1222c6642221d` |
-| Pinned blob | `tools/exp025_adapter.py` `20ba1c02f01e18e90eef3633a8d6ddd9e8e572a2` (at `bad9503`) |
-| Merge commit | **TBD** |
-| quant-proof OK on the final head | **TBD** (link) |
+| PR | #563 `claude/exp025-october-adapter`, open, head `f393a2026414b5b686840977c8b97c729397590f` at 2026-10-10T13:04Z |
+| Pinned blob | `tools/exp025_adapter.py` `75ee1768ce57fecd58a32d95b180b2d5fb2955aa` (at `f393a20`, and at `4df999a`, job #555's code) |
+| Test blob | `tools/test_exp025_adapter.py` `87fbcf1da038edcf68ce804a9d2521246a46456e` (the same at both commits) |
+| Merge commit | **TBD-563-MERGE (manager):** not merged at writing. Fill it with the merge commit and confirm `git rev-parse <merge>:tools/exp025_adapter.py` = `75ee1768…`. If the blob differs, re-run the E0 at the merged blob and replace the E0 entry below. |
+| quant-proof OK on the final head | **TBD (manager):** link |
 
-**E0 on 2026-09-20: MiScusi job #537.** It ran on mal-research-0 at code `996fa29`. The adapter blob at `996fa29` is `20ba1c02…`, equal to the `bad9503` head's, and the record's own `blobs` entry says the same. Resources: a 16 GB cap and an 11 GB peak. Verdict: **PASS**.
+**E0 on 2026-09-20: MiScusi job #555.** It ran on mal-research-0 at code `4df999a30150` (the quant-proof r6 edit 1). Its result check confirmed that the record's `blobs` entries for the adapter and its test equal the files it ran (`fresh` true). Resources: a 16 GB cap and a 10 GB peak. Verdict: **PASS**.
 - Rows equal by md5: trades, creates and migrations against `ref/convert.py`, and `tokens` against `ref/build_shared.py`.
 - The section 2.4 event-V fixture: ok.
-- Idempotence: equal.
-- The `mid` check: pass. `p2_rows` 24,319, `later_new_rows` 815, `bad_hours` 0.
-- Record: `/data/mal/exp025/e0/p3_e0_2026-09-20.json`, sha256 `f2b9e7ea98c9c9236b7677fde9e82b1b29d1941523f0ac93f646e27143514fdf` [measured 2026-10-10]. Its `view_sha256_file` is `05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8`.
+- Idempotence: equal. Two independent runs plus the main run gave sha256 trades `ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a`, creates `cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83` and migrations `89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d`.
+- The `mid` check: pass. `p2_rows` 24,319; `later_new_rows` 815 (mid 24,320 to 25,134); `bad_hours` 0.
+- The record's other `blobs` equal main `742d7c9`: `ARTIFACTS/exp025/event_v_map.py` `9771ec33…`, `ref/build_shared.py` `0b024e92…`, `ref/convert.py` `252c6432…`, `scripts/10_meta.py` `4583cf12…` and `scripts/common2.py` `abb36397…`.
+- Record: `/data/mal/exp025/e0/p3_e0_2026-09-20.json`, sha256 `7974bf1536c235b2dd922b283c48372a113f4c82b8328e92e052f7c2eae6a195` [measured 2026-10-10T13:05Z; equals the job log]. The next adapter run writes over that path, so a copy is kept at `/data/mal/exp025/e0/p3_e0_2026-09-20.job555.json`, with the same sha256 [measured 2026-10-10T13:06Z]. The job also copied the record to its MiScusi output directory.
+- It replaces job #537 (code `996fa29`, adapter blob `20ba1c02…`), whose blob is no longer the #563 head's.
 
-**TBD (manager):**
-- Every adapter run writes over this record path; the job keeps the previous record under a `.jobNNN` name. Copy the record to a backed-up path and confirm its sha256 there.
-- Confirm that #537's `mid` check used the P2 artifacts that Amendment 4 (#558) pins. That was not checked here. If it did not, re-run this E0 after #558 merges.
-- If the adapter blob changes before merge, re-run the E0 at the merged blob and replace this entry.
+**TBD (manager):** confirm that #555's `mid` check used the P2 artifacts that Amendment 4 pins. That was not checked here: Amendment 4 records hashes and counts, and none of them was compared with the record's `p2_rows`.
 
 #### B. P4: read tool
 
 | Item | Value |
 | --- | --- |
-| PR | #561 `claude/exp025-read-tool`, head `93bed0064274159dc2ae2a9d9b05e9c2b9871839` (draft) |
-| Pinned blob | `tools/exp025_read.py` `10d7beeb27533ebd1918c432da5a2170947db6f7` (at `93bed00`) |
-| Merge commit | **TBD** |
-| quant-proof OK on the final head | **TBD** (link) |
+| PR | #561 `claude/exp025-read-tool` |
+| Pinned blob | `tools/exp025_read.py` `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c` (main `742d7c9`) |
+| Merge commit | `742d7c92def3173fc3892459bd2e81fcf24a02c6` |
+| quant-proof OK on the final head | **TBD (manager):** link |
 
-**E0 on 2026-09-20: MiScusi job #541.** It ran on mal-research-0 at code `8b953c6`. The read-tool blob at `8b953c6` is `10d7beeb…`, equal to the `93bed00` head's. Resources: a 6 GB cap and a 1.3 GB peak. Verdict: **PASS**.
-- Pricing to the lamport (quant-proof R11): the md5 over (mint, decision time, leg, pnl in lamports) is `7d5eb193a13495b84b06ac64f50049c8` for `verify/v2_sim.py` with `verify/v3_report.py`, and the same for the read tool. That day has 34 C1-NF selections (`n_c1nf_day` 34), and the job priced 657 rows. `pool_mismatch_v2` is 0, and `lamport_all_tags` is true.
+**E0 on 2026-09-20: MiScusi job #550.** It ran `exp025_read.py e0 --day 2026-09-20 --rerun-v2` on mal-research-0 at the #561 head after the quant-proof r3 edits. Resources: an 8 GB cap, a 1.7 GB peak, and exit 0. Verdict: **PASS**.
+- The record's `code_head` is `efd11b4c038d7d08ef0d529154eab73c30ad398f`. Its `tool_blob` is `c5b3c460ae5486a5ae1491b6f204fffe7bdb8b4c`, which equals the pinned blob.
+- Pricing to the lamport (quant-proof R11): the md5 over (mint, decision time, leg, pnl in lamports) is `7d5eb193a13495b84b06ac64f50049c8` for `verify/v2_sim.py` with `verify/v3_report.py`, and the same for the read tool. `n_c1nf_day` is 34, `rows_priced` 657, `pool_mismatch_v2` 0, and `lamport_all_tags` true.
 - Statistics equal to `verify/v3_report.py` on all eight tags: `p` and `b`, each for `END_l055_55` and `END_l055_505`, each with and without rent.
-- Record: `/data/mal/exp025/e0/p4_r6/p4_e0.json`, sha256 `143328696e21e99a5e578ee0e3b326e84dad29698a7ddcf894b114c7011befd0` [measured 2026-10-10]. Its `v2_rerun.sha256` is `177af784cdd23d39915187f2be60764b50b43da01f33d8c98008f777acbc8ffa`.
+- The record's `pins` (sha256): `verify/v2_sim.py` `11fc04b82be2dc4e5f4db1cccd9eb9bdc770bcd29099c4dc63bca518f3a42954`, `verify/v3_report.py` `053d77fed713ac35eed57d2035fc38c4b9756dde633c33044b99193994c4c6af` and `c1nf_cap.py` `e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6`.
+- Record: `/data/mal/exp025/e0/p4_r3qp/p4_e0.json`, sha256 `383d2707f48f365b50ca7ff9aa98979b910f53a7fb2b6461a56f9155ba2c78c5` [measured 2026-10-10T13:05Z; equals the job log].
+- It replaces job #541 (code `8b953c6`, tool blob `10d7beeb…`), whose blob is no longer main's.
 
-**TBD (manager):**
-- Only the read-tool file's blob was compared here. The read tool also needs the adapter, the two pinned patches (`patches/common2_look{1,2}.patch`) and pinned pass A; their blobs at `8b953c6` were not compared with the final merge. Pin them here, or re-run this E0 on merged main.
-- Copy the record to a backed-up path.
+**The read tool's other inputs.**
+- The two look patches have the same blob at `efd11b4` and on main `742d7c9`: `ARTIFACTS/exp025/patches/common2_look1.patch` `dc82fbf0…` and `common2_look2.patch` `8a4fac90…`. The tool also pins their sha256 in its own code, so the tool blob covers them.
+- The adapter is not in the `efd11b4` tree, so it did not feed this E0. It is pinned by A.
+- **TBD (manager):** pinned pass A was not compared here.
 
 #### C. Not changed
 
-Nothing else changes: the rule, the cap, the threshold, the patches' content, the event-V mapping, the legs, the statistics, the looks, alpha, the refusals R1–R14 and the section 0 counting start. This draft adds no reader and opens no sealed block.
+Nothing else changes: the rule, the cap, the threshold, the patches' content, the event-V mapping, the legs, the statistics, the looks, alpha, the refusals R1–R14 and the section 0 counting start. This amendment adds no reader and opens no sealed block.
 
 ## Sources
 
