@@ -754,9 +754,12 @@ class CliTests(Base):
                                                  "no_ix_name": {}, "ix_not_listed": {}})
         self.assertEqual(set(d["excluded_by"]), set(p7.buy_amend().P7_RAW_EXCLUSIONS))
         self.assertEqual(d["p7_buy_amend_sha256"], AMEND_SHA256)
-        for rule in ("line2_exp025", "line2_exp024"):  # reported on the 3-print main draw, never scored
+        for rule in ("line2_exp025",):  # reported on the 3-print main draw, never scored
             self.assertEqual((d[rule]["prints"], d[rule]["sell"]["n"], d[rule]["buy"]["n"], d[rule]["scored"]), (3, 1, 2, False), rule)
             self.assertEqual(set(d[rule]["by_ix_name"]), {p7.NO_NAME, "buy", "buy_exact_quote_in"}, rule)
+        # EXP-024 Amendment 7 makes tools.boostfloor_inputs.tier_lines take a required P5-record argument. This tool (blob 4503a916, the
+        # one #598 accepted) is not edited, so its report-only line2_exp024 now degrades to the exception type; line 1 and `pass` are untouched.
+        self.assertEqual(d["line2_exp024"], {"error": "TypeError", "scored": False})
         self.assertEqual(d["window"], {"start": START, "end": END, "field": "t_recv_ms"})
         self.assertEqual(d["decoder_blob"], p7.DECODER_BLOB)
         self.assertIs(d["decoder_blob_pinned"], True)
@@ -1176,7 +1179,12 @@ class Line2Tests(unittest.TestCase):
             self.assertAlmostEqual(tier(q, b), bf.tier_fee(q, b), places=12, msg=mcap_sol)
 
     def test_both_rules_count_per_side_and_per_ix_name_and_are_not_scored(self):
-        for rule in ("exp025", "exp024"):
+        # EXP-024 Amendment 7: tools.boostfloor_inputs.tier_lines needs the P5 record argument this tool (blob 4503a916, not edited) does
+        # not pass, so its report-only exp024 line 2 is a TypeError, reported by type (_line2_or_error); exp025 is unchanged
+        with self.assertRaises(TypeError):
+            p7.line2_report(self.rows(), "exp024")
+        self.assertEqual(p7._line2_or_error(self.rows(), "exp024"), {"error": "TypeError", "scored": False})
+        for rule in ("exp025",):
             r = p7.line2_report(self.rows(), rule)
             self.assertEqual((r["prints"], r["fields_missing"], r["scored"]), (6, 1, False), rule)
             self.assertEqual((r["sell"]["n"], r["sell"]["match"], r["sell"]["need"]), (2, 1, 0.75), rule)
@@ -1192,7 +1200,7 @@ class Line2Tests(unittest.TestCase):
     def test_line2_passes_on_the_tier_and_uses_the_prints_own_v(self):
         rows = self.rows()
         ok = [rows[0], rows[2], rows[5]]  # the on-tier sell and the two on-tier buys
-        for rule in ("exp025", "exp024"):
+        for rule in ("exp025",):  # exp024: a TypeError since EXP-024 Amendment 7 (see the test above)
             self.assertIs(p7.line2_report(ok, rule)["line_pass"], True, rule)
             no_v = [dict(r, virtual_quote_reserves=0) for r in ok]  # the vault alone: the price level is 30% off
             r = p7.line2_report(no_v, rule)
@@ -1200,9 +1208,11 @@ class Line2Tests(unittest.TestCase):
 
     def test_a_sell_with_base_reserve_zero_is_a_reported_line2_error_never_a_crash(self):
         rows = self.rows() + [self.row("sell", 1_000, 1_000, base_reserve=0)]
-        with self.assertRaises(ZeroDivisionError):  # the real trigger: tools.boostfloor_inputs.tier_fee divides by base_reserve
+        # since EXP-024 Amendment 7 the real exp024 helper raises TypeError (a required argument) before it reaches base_reserve 0;
+        # the ZeroDivisionError path is still covered by the mocked helper in the main-flow test
+        with self.assertRaises(TypeError):
             p7.line2_report(rows, "exp024")
-        self.assertEqual(p7._line2_or_error(rows, "exp024"), {"error": "ZeroDivisionError", "scored": False})
+        self.assertEqual(p7._line2_or_error(rows, "exp024"), {"error": "TypeError", "scored": False})
 
     def test_line2_does_not_change_pass(self):
         tally = {"sell_n": 100, "sell_ok": 100, "buy_n": 100, "buy_ok": 100, "excluded": 0,
@@ -1210,7 +1220,7 @@ class Line2Tests(unittest.TestCase):
         h = p7.parse_utc("2026-10-10T16:00:00Z")
         kw = dict(window=(h, h + 3_600_000), frame_info={"frame_n": 200, "unstamped_canonical_n": 0}, main_n=200, topup_n=0,
                   extras={"tx_n": 200, "decode_errors": 0}, credits=200, errors={}, prints_sha256=None, blob=p7.DECODER_BLOB)
-        failing = {"exp025": p7.line2_report(self.rows(), "exp025"), "exp024": p7.line2_report(self.rows(), "exp024")}
+        failing = {"exp025": p7.line2_report(self.rows(), "exp025"), "exp024": p7._line2_or_error(self.rows(), "exp024")}
         self.assertIs(failing["exp025"]["line_pass"], False)
         for line2 in (None, failing):
             s = p7.summarize(tally, **kw, line2=line2)
