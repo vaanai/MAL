@@ -13,8 +13,8 @@
   "ARTIFACTS/exp025/ref/convert.py": "252c643276d0250cb48430da019b6afcd6bf7b25",
   "ARTIFACTS/exp025/scripts/10_meta.py": "4583cf1220b90ef17139b94425efd67a5731a272",
   "ARTIFACTS/exp025/scripts/common2.py": "abb36397fdb5f4655161ee3cdd9991f9f8c28e37",
-  "tools/exp025_adapter.py": "20ba1c02f01e18e90eef3633a8d6ddd9e8e572a2",
-  "tools/test_exp025_adapter.py": "eaa7f4ffa6b5739ee2ad806ed6a7ad7207fbeb67"
+  "tools/exp025_adapter.py": "46802234ebfdd51e62213a6af603727ce1316696",
+  "tools/test_exp025_adapter.py": "0f7bd38f7ad7a284a067ed14643415d5884a2d12"
  },
  "block": "fast-pool-0918",
  "day": "2026-09-20",
@@ -27,19 +27,14 @@
   ]
  },
  "idempotence_T05": {
-  "by_threads": {
-   "1": {
-    "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
-    "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
-    "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
-   },
-   "4": {
-    "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
-    "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
-    "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
-   }
-  },
-  "equal": true
+  "equal": true,
+  "note": "two independent runs and the main run; files are written single-threaded",
+  "runs": 2,
+  "sha256": {
+   "creates": "cb718b3f4188d25568dff4cb796c4a95d4b5e0169f429771210df889ed71bc83",
+   "migrations": "89e12f491fa8c75cbd4c2eb5eacdd11950afa36bff20e5c8fbc5f8094560475d",
+   "trades": "ac3d0feb20b75c175f7622b188f18ccbde993d528ec09c6ec0175c3f89270c8a"
+  }
  },
  "interpreter": {
   "duckdb": "1.5.6",
@@ -82,7 +77,7 @@
   }
  },
  "mid_check": {
-  "appended_source": "/data/mal/exp025/e0/p3-0920-r5/adapter-shared/tokens.parquet",
+  "appended_source": "/data/mal/exp025/e0/p3-0920-r10/adapter-shared/tokens.parquet",
   "appended_source_sha256": "26b20e9257103bfa92a1d541346b1e23bfa97451523bff53c37b94b277e1ffbb",
   "cases": {
    "earlier_shift": {
@@ -211,7 +206,7 @@
  },
  "ref_tape": "/data/mal/audit-1008/tape",
  "schema": "exp025_p3_e0_v1",
- "seconds": 267.4,
+ "seconds": 262.0,
  "src": "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
  "tokens": {
   "adapter_md5": "88ce6423d480c3f74ef4e2a91448e55c",
