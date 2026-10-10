@@ -5,7 +5,8 @@ Raw walker hour files (`{trades,creates,migrations}/<kind>-<hour>.jsonl.zst`) ->
 (EXP-024 RULE, "Universe"). The two stages are the ones that made that reference, kept verbatim:
 
   1. convert: /data/mal/audit-1008/convert.py (raw JSONL.zst -> hourly Parquet, same column types, plus `block`
-     and `hour`). One change: strict lines. A file duckdb cannot parse is a refusal; there is no lenient retry.
+     and `hour`). One change: strict lines. A file duckdb cannot parse is never retried leniently: in e0 it is a
+     refusal; in forward its hour is dropped as `parse_failed`.
   2. extract: /data/mal/audit-1008/work/g_reachable_cap_book_rescore/extract.py (per UTC day: `complete`
      migrations, the first V-range PumpSwap pool, the window [mslot, mslot+7300), creates of the day and the day
      before, trades of the day plus the next two hours, ordered (slot, tx_index, event_index)). Same SQL.
@@ -25,9 +26,19 @@ Modes (constants only; no CLI override of hours, sources, window or V range):
            (tools/forward_v_join.final_marker, the same check the V join uses). Then refuses unless --e0-record is
            a PASS written by this extractor's current blob under the pinned duckdb. Each hour must be sealed and
            verified with strict lines (tools/forward_v_join.hour_state), and its creates/migrations files must hash
-           to the hour's verify line; an hour that is not is left out and its reason code recorded. --vmap is the V
-           map (same JSON shape as pool_v_0909.json: {"v": {pool: lamports|null}}); its sha256 is recorded.
-           Writes <out>/manifest.json. Prints counts only.
+           to the hour's verify line; an hour that is not is left out and its reason code recorded. A duckdb parse
+           or conversion error in any kind of an hour drops that whole hour (reason `parse_failed`, its parquet
+           removed); any other error (out of memory, I/O) refuses the whole run. Hole rule (outcome-blind; it reads
+           only which hours are usable): a mint whose migration hour or the next hour is not usable is excluded,
+           because its [mslot, mslot+7300) window (at most ~49 min, so at most two hours) could run into the hole
+           and give a truncated path; per-day counts go to the manifest. --vmap is the V map (same JSON shape as
+           pool_v_0909.json: {"v": {pool: lamports|null}}); its sha256 is recorded.
+           Writes <out>/manifest.json (with the blobs of this tool and of tools/forward_v_join.py). Prints counts only.
+
+meta.v. The --vmap value is used for one thing: choosing the canonical pool (the first V-range pool after `complete`,
+EXP-024 "Universe"). It is copied into meta.v because the reference format has that column. It is NOT an Am.1 V0
+source: the read tool (#476) takes V0 and V(t) only from the Am.1 order (forward-1002ev join, getTransaction, the
+pool account) and otherwise applies the section 4 missing-V rule. The manifest says so (`vmap_role`).
 
 Seal. This tool computes no trigger, fill, exit or P&L, and joins nothing to outcomes. It never reads sealed blocks,
 forward-1002ev, walk 2, forward-paper or runner paths. `th` is duckdb's hash(trader); it depends on the duckdb
@@ -84,13 +95,25 @@ FORBIDDEN_PARTS = ("fresh-0802", "fresh-0808", "fresh-0828", "forward-1002ev", "
                    "forward-paper", "runner", "/.e" "nv")
 EXP009 = ("2026-09-15T12", "2026-09-18T23")
 
-# Blobs EXP-024 P4.3 records next to the extractor's own. #476's module is not on main; it is recorded when present.
-RECORDED_BLOBS = ("tools/h5_forward_extract.py", "tools/latency_curve.py", "tools/paper_curve_math.py",
-                  "tools/h5_boostfloor_score.py")
+# Blobs EXP-024 P4.3 records next to the extractor's own, plus tools/forward_v_join.py (the FINAL gate and hour_state
+# this tool calls). #476's modules are not on main; each is recorded when present (null otherwise).
+RECORDED_BLOBS = ("tools/h5_forward_extract.py", "tools/forward_v_join.py", "tools/latency_curve.py",
+                  "tools/paper_curve_math.py", "tools/boostfloor_score.py", "tools/boostfloor_read.py",
+                  "tools/boostfloor_inputs.py")
+VMAP_ROLE = ("canonical-pool selection only (first V-range pool after complete); meta.v is not an Am.1 V0 source: "
+             "the read tool takes V0/V(t) from forward-1002ev, then getTransaction, then the pool account, else the "
+             "section 4 missing-V rule")
+HOLE_RULE = "mint excluded when its migration hour or the next hour is not usable (window <= 7300 slots, two hours)"
+# duckdb errors that mean "this file's lines do not parse into the pinned columns" (checked on duckdb 1.5.6).
+PARSE_MESSAGES = ("Malformed JSON", "JSON transform error")
 
 
 class Refused(Exception):
     """A refusal before or instead of a run. Exit 2."""
+
+
+class ParseFailed(Refused):
+    """A raw file whose lines do not parse (strict lines). E0: a refusal. Forward: the hour is dropped (`parse_failed`)."""
 
 
 # ---- small helpers -----------------------------------------------------------------------------------------------
@@ -192,20 +215,42 @@ def connect(duckdb: Any, tmp: Path, memory: str = "4GB", threads: int = 4) -> An
     return con
 
 
+def is_parse_error(e: BaseException) -> bool:
+    """A duckdb parse or conversion error of the file's lines. Anything else (out of memory, I/O, SQL) is not."""
+    import duckdb
+    if isinstance(e, duckdb.ConversionException):
+        return True
+    return isinstance(e, duckdb.InvalidInputException) and any(m in str(e) for m in PARSE_MESSAGES)
+
+
 def convert_hour(con: Any, block: str, kind: str, hour: str, src: Path, tape: Path) -> Path:
     check_source(src)
     od = tape / kind
     od.mkdir(parents=True, exist_ok=True)
     out = od / f"{hour}.parquet"
-    comp = "zstd" if src.name.endswith(".zst") else "none"
+    comp = "zstd" if src.name.endswith(".zst") else "uncompressed"  # duckdb 1.5.6 has no 'none'
     try:
         con.execute(f"COPY (SELECT *, '{block}' AS block, '{hour}' AS hour FROM read_json('{src}', "
                     f"format='newline_delimited', compression='{comp}', columns={COLS[kind]})) "
                     f"TO '{out}.tmp' (FORMAT parquet, COMPRESSION zstd)")
     except Exception as e:  # strict lines: no lenient retry
-        raise Refused(f"strict lines: {kind} {hour} does not parse ({type(e).__name__})") from None
+        Path(f"{out}.tmp").unlink(missing_ok=True)
+        if is_parse_error(e):
+            raise ParseFailed(f"strict lines: {kind} {hour} does not parse ({type(e).__name__})") from None
+        raise Refused(f"convert {kind} {hour} failed ({type(e).__name__}); not a parse error, whole run refused") from None
     os.rename(f"{out}.tmp", out)
     return out
+
+
+def drop_hour(tape: Path, hour: str) -> None:
+    """Forward: remove every parquet (and partial .tmp) already written for `hour`, so a dropped hour is wholly absent."""
+    for kind in KINDS:
+        for suffix in ("", ".tmp"):
+            (tape / kind / f"{hour}.parquet{suffix}").unlink(missing_ok=True)
+
+
+def next_hour(hour: str) -> str:
+    return (datetime.strptime(hour, "%Y-%m-%dT%H") + timedelta(hours=1)).strftime("%Y-%m-%dT%H")
 
 
 # ---- stage 2: extract (SQL verbatim from g_reachable_cap_book_rescore/extract.py) --------------------------------
@@ -214,7 +259,10 @@ def L(fs: Sequence[str]) -> str:
     return "['" + "','".join(fs) + "']"
 
 
-def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int]) -> dict[str, Any] | None:
+def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int],
+                usable: set[str] | None = None) -> dict[str, Any] | None:
+    """`usable` (forward only): the usable hours. A mint whose migration hour or the next hour is not in it is
+    excluded before pool selection (the hole rule). None (E0): no exclusion, the reference's rows."""
     T = str(tape)
     hours = sorted(p.name[:13] for p in (tape / "trades").glob("*.parquet"))
     hs = set(hours)
@@ -238,7 +286,14 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int])
     t0 = time.time()
     for tb in ("mig", "cp", "cp1", "cr", "meta"):
         con.execute(f"DROP TABLE IF EXISTS {tb}")
-    con.execute(f"CREATE TABLE mig AS SELECT mint, min(slot) mslot, min(block_time) mbt, arg_min(block, slot) blk FROM read_parquet({L(mf)}) WHERE type='complete' GROUP BY mint")
+    con.execute(f"CREATE TABLE mig AS SELECT mint, min(slot) mslot, min(block_time) mbt, arg_min(block, slot) blk, arg_min(hour, slot) mhour FROM read_parquet({L(mf)}) WHERE type='complete' GROUP BY mint")
+    excluded = 0
+    if usable is not None:  # hole rule: decided by usable hours alone, before any pool or trade is looked at
+        bad = sorted(h for (h,) in con.execute("SELECT DISTINCT mhour FROM mig").fetchall()
+                     if h not in usable or next_hour(h) not in usable)
+        if bad:
+            excluded = con.execute("SELECT count(*) FROM mig WHERE list_contains(?, mhour)", [bad]).fetchone()[0]
+            con.execute("DELETE FROM mig WHERE list_contains(?, mhour)", [bad])
     blk = con.execute("SELECT any_value(blk) FROM mig").fetchone()[0]
     oracle = (blk == "oracle-insample-0922")
     # Determinism (the one change to the SQL): the reference's key (slot, tx_index, event_index) has ties and nulls
@@ -266,7 +321,7 @@ def extract_day(con: Any, tape: Path, out: Path, day: str, vmap: dict[str, int])
     os.rename(pout + ".tmp", pout)
     s = con.execute("SELECT count(*), sum(uncensored::int), sum((npools>1)::int), sum((cslot IS NOT NULL)::int) FROM meta").fetchone()
     return {"day": day, "blk": blk, "order": "oracle_order" if oracle else "tx_order",
-            "migs": con.execute("SELECT count(*) FROM mig").fetchone()[0],
+            "migs": con.execute("SELECT count(*) FROM mig").fetchone()[0], "excluded_hole_mints": excluded,
             "canon_uncens_multipool_hascreate": list(s), "secs": round(time.time() - t0, 1)}
 
 
@@ -467,11 +522,18 @@ def run_forward(out: Path, vmap_path: Path, e0_record: Path) -> int:
         if reason == "ok":
             usable.append((h, files))
     con = connect(duckdb, out / "tmp")
+    ok_hours: list[str] = []
     for h, files in usable:
-        for kind, p in files.items():
-            convert_hour(con, FWD_BLOCK, kind, h, p, out / "tape")
-    days = sorted({h[:10] for h, _ in usable})
-    stats = [extract_day(con, out / "tape", out, d, vmap) for d in days]
+        try:
+            for kind, p in files.items():
+                convert_hour(con, FWD_BLOCK, kind, h, p, out / "tape")
+        except ParseFailed:  # a bad hour (section 11 tolerates up to 5%); any other error refuses the run
+            drop_hour(out / "tape", h)
+            reasons[h] = "parse_failed"
+            continue
+        ok_hours.append(h)
+    days = sorted({h[:10] for h in ok_hours})
+    stats = [extract_day(con, out / "tape", out, d, vmap, usable=set(ok_hours)) for d in days]
     con.close()
     md5s = {}
     for d in days:
@@ -486,15 +548,19 @@ def run_forward(out: Path, vmap_path: Path, e0_record: Path) -> int:
         "kind": "EXP-024 forward extractor", "block": FWD_BLOCK, "walk_dir": str(FWD_DIR), "hours": [FWD_FROM, FWD_TO],
         "hour_reasons": reasons, "reason_counts": counts, "days": days,
         "skipped_days": [s["day"] for s in stats if s and s.get("skipped")],
+        "hole_rule": HOLE_RULE,
+        "excluded_hole_mints_by_day": {s["day"]: s["excluded_hole_mints"] for s in stats if s and not s.get("skipped")},
         "vmap": str(vmap_path), "vmap_sha256": sha256_file(vmap_path), "vmap_pools_in_range": len(vmap),
+        "vmap_role": VMAP_ROLE,
         "final_marker": {k: marker.get(k) for k in ("written_utc", "ts", "final") if k in marker},
         "e0_record": str(e0_record), "e0_record_sha256": sha256_file(e0_record), "e0_view_sha256": e0.get("view_sha256"),
         "outputs": md5s, "duckdb": duckdb.__version__, "git": git_head(), "blobs": blob_record(),
         "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     write_excl(out / "manifest.json", man)
-    print(f"forward extract: hours {len(hours)}, usable {len(usable)}, reasons {json.dumps(counts, sort_keys=True)}, "
-          f"days {len(days)}, skipped {len(man['skipped_days'])}, manifest sha256 {sha256_file(out / 'manifest.json')}")
+    print(f"forward extract: hours {len(hours)}, usable {len(ok_hours)}, reasons {json.dumps(counts, sort_keys=True)}, "
+          f"days {len(days)}, skipped {len(man['skipped_days'])}, "
+          f"hole-excluded {sum(man['excluded_hole_mints_by_day'].values())}, manifest sha256 {sha256_file(out / 'manifest.json')}")
     return 0
 
 

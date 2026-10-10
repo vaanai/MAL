@@ -146,11 +146,52 @@ class ExtractTest(unittest.TestCase):
         self.assertNotEqual(X.canonical_md5(duckdb, p1, None)["rows_md5"], X.canonical_md5(duckdb, p2, None)["rows_md5"])
 
     def test_strict_lines_refuse(self):
-        bad = self.tmp / "raw" / "trades" / "trades-2026-09-20T02.jsonl"
-        bad.write_text('{"venue": "pumpswap", "slot": \n', encoding="utf-8")
         con = X.connect(duckdb, self.tmp / "t", memory="1GB", threads=1)
-        with self.assertRaises(X.Refused):
-            X.convert_hour(con, "fast-pool-0918", "trades", "2026-09-20T02", bad, self.tmp / "o" / "tape")
+        tape = self.tmp / "o" / "tape"
+        # malformed JSON and a type that does not convert: ParseFailed (a Refused in e0), no parquet or .tmp left
+        for i, line in enumerate(('{"venue": "pumpswap", "slot": \n', '{"venue": "pumpswap", "slot": "abc"}\n')):
+            bad = self.tmp / "raw" / "trades" / f"trades-2026-09-20T0{2 + i}.jsonl"
+            bad.write_text(line, encoding="utf-8")
+            with self.assertRaises(X.ParseFailed):
+                X.convert_hour(con, "fast-pool-0918", "trades", f"2026-09-20T0{2 + i}", bad, tape)
+        self.assertEqual(list((tape / "trades").iterdir()), [])
+        self.assertTrue(issubclass(X.ParseFailed, X.Refused))
+        # an uncompressed file that parses converts (duckdb 1.5.6 needs compression='uncompressed', not 'none')
+        good = self.tmp / "raw" / "trades" / "trades-2026-09-20T05.jsonl"
+        good.write_text(json.dumps(tr("A", "PA", 1, 0, 0)) + "\n", encoding="utf-8")
+        self.assertTrue(X.convert_hour(con, "fast-pool-0918", "trades", "2026-09-20T05", good, tape).is_file())
+        # an I/O error (corrupt zstd frame, missing file) is not a parse error: a plain Refused, whole run
+        corrupt = self.tmp / "raw" / "trades" / "trades-2026-09-20T06.jsonl.zst"
+        corrupt.write_bytes(b"not a zstd frame")
+        for src in (corrupt, self.tmp / "raw" / "trades" / "missing.jsonl.zst"):
+            with self.assertRaises(X.Refused) as cm:
+                X.convert_hour(con, "fast-pool-0918", "trades", "2026-09-20T06", src, tape)
+            self.assertNotIsInstance(cm.exception, X.ParseFailed)
+
+    def test_hole_rule_excludes_by_usable_hours_only(self):
+        out = self.tmp / "o"
+        con = X.connect(duckdb, out / "tmp", memory="1GB", threads=2)
+        for (kind, hour), p in sorted(self.files.items()):
+            X.convert_hour(con, "fast-pool-0918", kind, hour, p, out / "tape")
+        vm = self.tmp / "vmap-fixture.json"
+        vm.write_text(json.dumps(VMAP))
+        hours = {"2026-09-19T23", "2026-09-20T00", "2026-09-20T01"}
+        full = X.extract_day(con, out / "tape", self.tmp / "full", "2026-09-20", X.load_vmap(vm), usable=hours)
+        # T01 not usable: A and B migrate in T00, so both are excluded, whatever their pools or trades
+        hole = X.extract_day(con, out / "tape", self.tmp / "hole", "2026-09-20", X.load_vmap(vm),
+                             usable=hours - {"2026-09-20T01"})
+        con.close()
+        self.assertEqual((full["excluded_hole_mints"], full["migs"]), (0, 2))
+        self.assertEqual((hole["excluded_hole_mints"], hole["migs"]), (2, 0))
+        c = duckdb.connect()
+        self.assertEqual(c.execute(f"SELECT count(*) FROM '{self.tmp}/hole/meta/2026-09-20.parquet'").fetchone()[0], 0)
+        self.assertEqual(c.execute(f"SELECT count(*) FROM '{self.tmp}/hole/paths/2026-09-20.parquet'").fetchone()[0], 0)
+        # with every hour usable the rows equal the e0 path (usable=None)
+        ref = self.tmp / "ref"
+        self.run_both(ref)
+        for part, order in (("meta", X.META_ORDER), ("paths", None)):
+            self.assertEqual(X.canonical_md5(duckdb, self.tmp / "full" / part / "2026-09-20.parquet", order)["rows_md5"],
+                             X.canonical_md5(duckdb, ref / part / "2026-09-20.parquet", order)["rows_md5"])
 
     def test_forbidden_source(self):
         with self.assertRaises(X.Refused):
@@ -158,7 +199,8 @@ class ExtractTest(unittest.TestCase):
         with self.assertRaises(X.Refused):
             X.check_source(Path("/data/mal/blocks/fresh-0828/w1"))
 
-    def test_forward_end_to_end_on_fixture_walk(self):
+    def forward(self, out: Path) -> dict:
+        """run_forward on the fixture walk (self.files as walked; the verify lines hash the files as they are now)."""
         walk = self.tmp / "raw"
         (walk / "checkpoint.json").write_text(json.dumps({"hours": {h: {"status": "sealed"} for h in FIX}}))
         lines = [{"hour": h, "issues": [], "content": {},
@@ -171,13 +213,19 @@ class ExtractTest(unittest.TestCase):
                                   "blobs": {"tools/h5_forward_extract.py": X.git_blob_sha(X.REPO / "tools/h5_forward_extract.py")}}))
         vm = self.tmp / "vmap.json"
         vm.write_text(json.dumps(VMAP))
-        out = self.tmp / "fwd"
         with mock.patch.multiple(X, FWD_DIR=walk, FINAL_LEDGER=ledger, FWD_FROM="2026-09-19T23", FWD_TO="2026-09-20T03"):
-            rc = X.run_forward(out, vm, e0)
-        self.assertEqual(rc, 0)
-        man = json.loads((out / "manifest.json").read_text())
+            self.assertEqual(X.run_forward(out, vm, e0), 0)
+        return json.loads((out / "manifest.json").read_text())
+
+    def test_forward_end_to_end_on_fixture_walk(self):
+        out = self.tmp / "fwd"
+        man = self.forward(out)
         self.assertEqual(man["reason_counts"], {"ok": 3, "not_walked": 1})
         self.assertEqual(man["days"], ["2026-09-19", "2026-09-20"])
+        self.assertEqual(man["excluded_hole_mints_by_day"], {"2026-09-19": 0, "2026-09-20": 0})
+        self.assertEqual(man["vmap_role"], X.VMAP_ROLE)
+        self.assertIn("not an Am.1 V0 source", man["vmap_role"])
+        self.assertEqual(man["blobs"]["tools/forward_v_join.py"], X.git_blob_sha(X.REPO / "tools/forward_v_join.py"))
         ref = self.tmp / "ref"
         self.run_both(ref)
         for part, order in (("meta", X.META_ORDER), ("paths", None)):
@@ -188,6 +236,28 @@ class ExtractTest(unittest.TestCase):
                 self.assertEqual(got, want)
         c = duckdb.connect()
         self.assertEqual(c.execute(f"SELECT blk FROM '{out}/meta/2026-09-20.parquet'").fetchall(), [("forward-1002",)])
+
+    def test_forward_parse_failed_hour_is_dropped_and_holes_exclude(self):
+        # T01's migrations file does not parse (its sha still matches the verify line): the whole hour is dropped,
+        # T01's trades parquet (written first) is removed, and A and B (migrated in T00) are excluded by the hole rule
+        p = self.files[("migrations", "2026-09-20T01")]
+        raw = p.with_suffix("")
+        raw.write_text('{"type": "complete", "slot": \n', encoding="utf-8")
+        subprocess.run(["zstd", "-q", "--rm", "-f", str(raw)], check=True)
+        out = self.tmp / "fwd"
+        man = self.forward(out)
+        self.assertEqual(man["reason_counts"], {"ok": 2, "parse_failed": 1, "not_walked": 1})
+        self.assertEqual(man["hour_reasons"]["2026-09-20T01"], "parse_failed")
+        self.assertEqual(man["excluded_hole_mints_by_day"], {"2026-09-19": 0, "2026-09-20": 2})
+        self.assertEqual(sorted(q.name for q in (out / "tape").rglob("2026-09-20T01*")), [])
+        c = duckdb.connect()
+        self.assertEqual(c.execute(f"SELECT count(*) FROM '{out}/meta/2026-09-20.parquet'").fetchone()[0], 0)
+
+    def test_forward_other_convert_error_refuses_the_run(self):
+        with mock.patch.object(X, "convert_hour", side_effect=X.Refused("convert trades x failed (IOException)")):
+            with self.assertRaisesRegex(X.Refused, "IOException"):
+                self.forward(self.tmp / "fwd")
+        self.assertFalse((self.tmp / "fwd" / "manifest.json").exists())
 
     def test_forward_hour_needs_creates_and_migrations_sha(self):
         walk = self.tmp / "raw"
