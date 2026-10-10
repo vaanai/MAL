@@ -535,6 +535,78 @@ OWNER_SYNTHETIC_DECISION_EXP025: 2026-10-09 (owner, in session, asked by manager
 
 This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
 
+### Amendment 4 (written 2026-10-10T10:34:03Z, from `date -u`; before 2026-10-16T01:00Z; outcome-blind, counts and hashes only): the P2 deterministic rebuild record
+
+Numbered after Amendment 3 (#548, open when this was written). Amendments take numbers in merge order: if this merges before #548, the manager renames this heading to Amendment 3, and #548's to Amendment 4, at merge. The written instants stay as they are. This amendment records P2 (section 10) and the hashes that section 2.3 says a dated amendment records. It changes no rule, cap, threshold, feature or band.
+
+**What ran [measured].** MiScusi job **#504** (`j_zbuqJu4lySNRfw`), on `mal-research-0`, role `exploration`, 6 CPU, 40 GB memory cap (peak 9.2 GB), 2 pass-A workers, repo at `b17dc0b`. It ran 38 minutes, ended 2026-10-10T10:33:22Z with exit 0, and ran once. It read the exploration tape only (`/data/mal/audit-1008/tape`, `/data/mal/hunt-shared`).
+- **Script.** `run_p2.sh` (sha256 `20c8ac02950d734616ce4aaeb546bd53a9a9ea401804072b6e8c7f3302744f9a`). It runs the steps of `verify/run_rebuild.sh` in the same order: ledger, `10_meta.py`, `11_passA.py` per day (the 36 days of C1's `logs/A_*.log`, 2 workers, the same memory and load wait), `12_passC.py` (2 chunks), `14_export.py`, `16_confirm.py`. It differs in five places:
+  1. **Ledger.** `ledger/01_wallet_daily_det.py` replaces `01_wallet_daily.py`. Its arguments are `--tape /data/mal/audit-1008/tape/trades --out <W>/wl --tmp <W>/tmp_duck`, with its defaults of 3 threads and 6 GB. Those are the original step's tape, output, temp directory and settings.
+  2. **Working directory.** `W = /data/mal/hunt-1008/c1nf-p2`, a new directory. The script refuses to run if `wl/`, `out/cand/`, `out/candx/` or either npz already holds output. The only patch is the `common2.py` hunk of `verify/PATCHES.diff` (`O` and `TMP`), with its target changed from `/data/mal/hunt-1008/c1nf-verify` to `W`. **Why it is not applied verbatim:** verbatim, it points at VERIFY's directory. The ledger step skips any day already in `wl/`, and `run_rebuild.sh` skips any day already in `out/cand/`, so the run would reuse VERIFY's non-deterministic ledger and pass-A output. The `01_wallet_daily.py` hunk of `PATCHES.diff` is not applied, because that step is replaced and the deterministic ledger takes its paths as arguments. The diff applied is `common2_p2.diff` (sha256 `baa3870187d04a95f190c35eb595375e01f51daa5317950e4fcf3690cce9d42d`), with two changed lines.
+  3. **`rule.json`** is copied from `ARTIFACTS/exp025/` (sha256 `e158e0b9…c5c196`, equal to C1's `ml/rule.json`, checked) instead of C1's directory.
+  4. **No P&L printed.** `16_confirm.py`'s stdout stays in `logs/confirm_primary.log`. The script does not print it, and the writer did not open it.
+  5. **Count step.** `p2_counts.py` (sha256 `a385abbad97b96103822b81492d23986e5f3df716db85adfd801a07acc1556c6`) follows the confirmation part of VERIFY's `v/v1_wf.py`. It re-runs the walk-forward with the pinned `mlcommon` (`lgb_params`: `deterministic=True`, seed 1, 3 threads) and `rule.json` (it asserts `model = lgb`, `exit = E3` and cap 0.5). From the pinned scorer's `confirm_primary_trades.npz` it opens only the `idx` array. It applies `c1nf_cap.apply_cap_before_book` before `mlcommon.book` (leg `p`, E3) and prints counts only.
+- **Staged files (sha256; `staged_sha256.txt`, checked by `sha256sum -c` at job start).** Every pinned file equals section 2.3. Only `common2.py` is patched.
+
+| File in `W` | sha256 |
+| --- | --- |
+| `scripts/common2.py` (**patched**: `O`, `TMP`) | `737631fbdb7e5367b71f86283a6575795574b7b68634fdde29d80b826ecf931f` |
+| `scripts/01_wallet_daily_det.py` | `bc1838f10ff1798dec1e896da34d1a82b9707b404d2e36de317edf0034bf3be5` |
+| `scripts/10_meta.py` | `5a25d0b122b5835ccea30922e73ce62a83e0a66af10d4f923495a09b7ba3346e` |
+| `scripts/11_passA.py` | `24b1822e35a3b96337f8205370accc8eb9862d8411c9fda68296fb040ea79122` |
+| `scripts/12_passC.py` | `22e6329415d40243ddcfab1b3f1793b25fd251cb9bf52be7e76e29300d6d0946` |
+| `scripts/14_export.py` | `7dc2d151094defa349353fccdfdb92a6b542c9fa03828ad7dc77a3b3aecee868` |
+| `scripts/16_confirm.py` | `c2fc497f141a9e650238beba26c4627eb51053a31e0e161ce6612cfc819ba0ae` |
+| `scripts/mlcommon.py` | `bf783986e338cd924c2a99c5fbd3df2d5ec24d765772e654f44b5e63f4dca46f` |
+| `scripts/c1nf_cap.py` | `e0335aeba5a9abec509e5e70d1070c77fd9e524b31456cb6c9ebdd7fc4ba6ba6` |
+| `ml/rule.json` | `e158e0b9069a7db98a26c55b68f74055f44611330b2c636e68f37e4379c5c196` |
+
+**Acceptance (section 10 P2) [measured, job #504; counts only].**
+
+| Count | Band | Rebuilt n | In band |
+| --- | --- | --- | --- |
+| Unconstrained primary at 1.3 s (leg `p`, E3; the pinned `16_confirm.py` book) | 8,797 ± 3%, so 8,534 to 9,060 | **8,786** | yes |
+| C1-NF book, spec order (`h_top1` ≤ 0.5 and not NaN, before the per-mint book) | 400 to 440 | **422** | yes |
+
+- **P2 is accepted.** P2 does not withdraw C1-NF. Acceptance shows reproducibility only. It says nothing about P&L, and no P&L was computed for this record.
+- The count step's recount of the primary equals the pinned scorer's book row for row: 8,786 rows with the same indices.
+- Other counts: 806,592 discovery rows and 625,889 confirmation rows; 21 confirmation days; 49,738 stage-2 selections (rows, before the book), of which 1,515 survive the cap.
+- VERIFY's rebuild on the non-deterministic ledger had 8,797 (C1's file 8,799) and 419. This one has 11 fewer primary trades and 3 more C1-NF trades. That spread is what the ledger change can produce (section 11.1: `cash` sign flips change the `skill` feature) [inferred; not analysed further].
+
+**The read's training set [measured; section 2.3].** These replace VERIFY's `disc.npz` / `conf.npz` (`4b68d55b…` / `0dc37940…`), which stay reference only.
+
+| File | sha256 |
+| --- | --- |
+| `ml/disc.npz` | `c4138e08675e17a3d139ed946ea308835d9faa6e87a36948f15fd92952dfa61f` |
+| `ml/conf.npz` | `87bba5689a5968a9e9fb39735768e6a673d6de92929bdc29adcc5f315baf4026` |
+| `ml/confirm_primary.json` (the pinned `16_confirm.py` primary; holds P&L, hashed and copied, not opened) | `0b5c2bbc58bafa45cf1eb46b157671532b34361bbb9caf20bbfa1eec0a2f1fd5` |
+| `ml/confirm_primary_trades.npz` (the same; only `idx` was opened, by the count step) | `404a0df40bd5395e89d12f663d3c3fa69bebc394fac25969989231d27b6a8033` |
+| `scripts/16_confirm.py` (pinned, unedited) | `c2fc497f141a9e650238beba26c4627eb51053a31e0e161ce6612cfc819ba0ae` |
+
+**Look-directory inputs (section 11.2) [measured].**
+- Exploration `hunt-shared/tokens.parquet`: `2c01a6d4b140e3710f45234594881f9bb26428da101f4b426bafa68fbb2a2681`.
+- P2 `work/universe.parquet` (the `mid` reference for P3's E0): `217110887c88d4332d54e3c65e3b0475214d49804d72e42d47154145ef86e211`.
+- P2's 36 deterministic `wl/` days: manifest `wl_sha256.txt` (sha256 `026310101a60f8a6d7c1c34f4c38374ca5015d6d7f42d907adaee2c0cd2d6431`), 36 files with 36 distinct hashes.
+- P2's `out/mout/`: manifest `mout_sha256.txt` (sha256 `64239ce8d5f1e7e21bdc228f83c49fcab3b4847ff762570b03bd77eb718d913c`), 36 files.
+- Cross-check with section 11.1: `wl/2026-09-20.parquet` has sha256 `123487ab288c389efd47effc3ae7c15acac4b8402a4789b9b8937d761df6a9c5`, equal to the determinism check's file.
+
+**Backed-up copy.** The job copied these files to `/data/mal/c1nf/p2/` and checked the copies with `sha256sum -c`:
+- `disc.npz`, `conf.npz`, `confirm_primary.json`, `confirm_primary_trades.npz`, `rule.json`, `p2_counts.json` (counts only);
+- the manifests `p2_outputs_sha256.txt`, `staged_sha256.txt`, `wl_sha256.txt`, `mout_sha256.txt`, `shared_sha256.txt`;
+- `run_p2.sh`, `p2_counts.py`, `common2_p2.diff`.
+
+`/data/mal/c1nf` has no `.nobackup` marker, while `/data/mal/hunt-1008` has one. `/data` is in the nightly restic set (`mal-backup.timer`, about 03:17Z, `--exclude-if-present .nobackup`) [measured 2026-10-10]. No snapshot holds these files yet: they were written at 10:33Z, after the 2026-10-10T03:17Z run, and that run failed (`Fatal: unable to save snapshot`; the target reported `no space left on device`). Until a snapshot that contains `/data/mal/c1nf/p2/` is confirmed, the copy is on local disk only. The manager records that snapshot's id, checked with `restic ls`, in a dated line before 2026-10-16T01:00Z. The working directory `/data/mal/hunt-1008/c1nf-p2` (2.7 GB, including `wl/` and `out/mout/`) is kept for look assembly.
+
+**Outcome-blindness.**
+- Neither the job log nor the job result holds a P&L, return, fill or exit value of the rebuild, and the writer printed or opened none. The job log and result hold only counts and hashes.
+- Looking for how 8,797 and 419 were defined, the writer saw numbers in `verify/VERIFY.md`. Those are exploration-pool numbers already published in the repo and cited by this file, and no seal covers them.
+- No sealed block was opened. Neither was any forward-1002 or forward-1002ev file, walk 2, any October label, or any forward-paper, canary or shadow output.
+
+**What this does not do.**
+- It runs no October step. The look patches of section 2.4 belong to the read tool (P4).
+- It is not P3 or P4.
+- It is not the canary's model pin. #550 trains on VERIFY's arrays, and a model built on P2's arrays needs its own pin and dated line.
+- Quant-proof reviewed it on head `f7da961` (2026-10-10). The run matches section 10 P2, with the `common2.py` retarget disclosed above. The count step is count-only. The bands and hashes check against the files.
 
 ## Sources
 
