@@ -16,11 +16,12 @@
 #
 # Environment (all optional except CAP_PICK_FINAL_MARKER):
 #   CAP_PICK_FINAL_MARKER  REQUIRED: the FINAL marker path ($HOME/data/cap-pick-oracle/FINAL_WRITTEN; the H5 shadow uses the same path; it is
-#                       outside the shadow directory on purpose, so the executor's bind does not carry it)
+#                       outside the shadow directory on purpose, so the executor's bind does not carry it). Every reader that is given a
+#                       marker must be able to stat it; the executor uses its own /var/lib/mal-live/h5/FINAL_WRITTEN
 #   CAP_PICK_OUT        output dir, default $HOME/data/h5-shadow/cap-pick (manager decision on #540): picks.jsonl lives here, inside the H5
 #                       shadow directory, so the executor unit's existing read-only bind shows it as /srv/mal-h5-shadow/cap-pick/picks.jsonl,
-#                       which is the pick_file of both pinned executor configs. The hourly-file patterns of the executor and the daily check
-#                       do not match the subdirectory.
+#                       which is the pick_file of both pinned executor configs (the executor cannot see $HOME/data itself: ProtectHome=tmpfs).
+#                       The hourly-file patterns of the executor and the daily check do not match the subdirectory.
 #   CAP_PICK_GATE_LOG   default /var/lib/mal/paper/fast-forward-paper/exp012-gate.jsonl
 #   CAP_PICK_INTENTS    default /var/lib/mal/paper/fast-forward-paper/intents.jsonl
 #   CAP_PICK_PYTHON     default python3
@@ -39,7 +40,7 @@ OUT="${CAP_PICK_OUT:-$HOME/data/h5-shadow/cap-pick}"
 PY="${CAP_PICK_PYTHON:-python3}"
 MARKER="${CAP_PICK_FINAL_MARKER:-}"
 [ -n "$MARKER" ] || { echo "refusing: set CAP_PICK_FINAL_MARKER (no runner file is read before the FINAL marker exists)" >&2; exit 2; }
-mkdir -p "$OUT" || { echo "refusing: cannot create $OUT" >&2; exit 2; }
+# No mkdir here: nothing, not even the output directory, is created before the FINAL gate opens (the exporter creates it after the gate).
 
 if [ -n "${CAP_PICK_REPLAY_IN:-}" ]; then
   [ -r "$CAP_PICK_REPLAY_IN" ] || { echo "refusing: replay input not readable" >&2; exit 2; }

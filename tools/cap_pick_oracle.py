@@ -12,16 +12,23 @@ Two halves.
        {"mint":"<base58>","pick":true|false,"t_ms":<exporter wall clock, ms>}      one per gate decision
        {"hb":true,"t_ms":<exporter wall clock, ms>}                                 staleness heartbeat
 
-   Nothing else ever leaves the exporter: no score, no feature, no price, no P&L, no outcome, no decision time. A source line is NOT parsed
+   Nothing else ever leaves the exporter: no score, no feature, no price, no P&L, no outcome. `t_ms` is the exporter's own write clock
+   (close to the runner's decision time, never an outcome); the runner's decision_t_ms is not copied. A source line is NOT parsed
    as JSON. Two regexes pull the mint and the flag (the approach of the H5 executor's first pick reader); the rest of the line is never
    read into a value. A line with zero or two mints, or zero or two flags, is rejected and only counted.
 
    Source kinds (all are decision records; none is a position, fill, P&L or outcome file):
-     gate     `exp012-gate.jsonl`, schema forward_paper_exp012_gate_v1: one row per gate decision. pick = its `entered` flag
-              (the model gate passed; the same label the replay calls "pick"). A row that mentions gate_error is skipped
-              (undecided, fail closed).
-     intents  `intents.jsonl`, rows with schema forward_paper_intent_v1 (DEC-024 section 6 "decision-time intents"): pick = true.
-              forward_paper_arm_v1 rows in the same file are ignored.
+     gate     `exp012-gate.jsonl`, schema forward_paper_exp012_gate_v1, of book CAP_PICK_BOOK (exp012_migrate_tp50_sl30) ONLY: one
+              row per gate decision. entered:true -> pick = true (the model gate passed; the label the replay calls "pick").
+              entered:false -> pick = false ONLY when the row carries a computed (numeric) score. A row with a null or non-finite
+              score (no_features, no_bond_history, ...) is rejected and the mint stays undecided: offline may still score and pick it
+              (tools/forward_exp012_gate.py notes 5 and 6; quant-proof (b) on #509). A row that mentions gate_error is skipped
+              (undecided, fail closed). A row of any other book, or with two book keys, is rejected and only counted, so a second or
+              re-pointed book never answers for the frozen book's mints (reviewer item 1 on #509).
+     intents  `intents.jsonl`, rows with schema forward_paper_intent_v1 of book CAP_PICK_BOOK (DEC-024 section 6 "decision-time
+              intents"): pick = true. forward_paper_arm_v1 rows and other books are ignored. Intent and arm rows move with the paper
+              twin's risk checks (EXP-022 section 9 seals the twin), so NO printed count includes an intents-file line or error, and
+              `--intents` is refused without `--gate-log` (decisions_written stays a gate-decision count; quant-proof E1 on #509).
      replay   a `cap_pick_gate_replay_v1` decision list (EXP-022 section 2; the E0-pinned commit
               6b9b4fc14bbfb69f04ee1bf2b2c50b1d3cab1572): kind "decision" -> pick = entered; kind "dead" (pre-restart) -> pick = false.
 
@@ -38,7 +45,8 @@ Two halves.
 
 2. READER (`PickOracle`), shared by the shadow, the executor and the C1-NF shadow. `PickOracle(mint) -> bool | None`.
      True   some source said pick. STICKY: a later false never undoes it, and it survives file rotation inside the process.
-     False  at least one source decided the mint and no source picked it.
+     False  at least one source decided the mint not-pick (a scored gate row of the frozen book, or a replay row) and no source
+            picked it.
      None   undecided (no source has a row), OR the live feed is stale (no heartbeat within `stale_s`, default 60 s), OR the
             FINAL marker is not there, OR anything raised. A known True still answers True when stale (it can never flip).
    Every caller treats None as REFUSE. The union of several sources is the point: the live file (online decisions) plus the replay file
@@ -56,7 +64,8 @@ Two halves.
                      s0, which would seal every pool: see TIMING). PR claude/h5-oracle-wire.
      C1-NF shadow    --pick-oracle tools.cap_pick_oracle:default_oracle        # reads the CAP_PICK_* environment below
    Environment for `default_oracle` / `from_env()`: CAP_PICK_LIVE and CAP_PICK_REPLAY (os.pathsep lists), CAP_PICK_FINAL_MARKER
-   (REQUIRED: without it the oracle answers None for everything), CAP_PICK_STALE_S (default 60).
+   (REQUIRED: without it the oracle answers None for everything), CAP_PICK_STALE_S (default 60 and CAPPED at 60: EXP-022 Am.2 item 2,
+   Am.4 item 2; an unparsable or non-finite value is 60).
 
 No key, no RPC, no transaction. It reads decision records only, never prints a mint or a flag, and prints counts only.
 """
@@ -65,6 +74,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import stat
@@ -75,6 +85,7 @@ from typing import Callable, Iterable, Iterator, Sequence
 
 PICKS_SCHEMA_NOTE = "rows are exactly {mint,pick,t_ms} or {hb,t_ms}; see the module docstring"
 STALE_S_DEFAULT = 60.0
+STALE_S_MAX = 60.0  # EXP-022 Am.2 item 2: the feed is stale after 60 s; no environment value raises it
 HB_S_DEFAULT = 5.0
 POLL_S_DEFAULT = 0.2
 MAX_CHUNK = 8 * 1024 * 1024  # bytes per read call
@@ -97,6 +108,13 @@ _REPLAY_DEAD_RE = re.compile(r'"kind"\s*:\s*"dead"')
 _HB_RE = re.compile(r'"hb"\s*:\s*true')
 _TMS_RE = re.compile(r'"t_ms"\s*:\s*([0-9]{1,16})\b')
 _GATE_ERROR = '"gate_error"'
+# EXP-022's frozen book. Gate and intent rows of any other book are rejected (reviewer item 1 on #509; quant-proof E3).
+CAP_PICK_BOOK = "exp012_migrate_tp50_sl30"
+_BOOK_TAG_RE = re.compile(r'"book"\s*:\s*"%s"' % re.escape(CAP_PICK_BOOK))
+_BOOK_KEY_RE = re.compile(r'"book"\s*:')
+# A gate row says not-pick only with a computed score (quant-proof (b) on #509). Tag tests: no score value is read.
+_SCORE_KEY_RE = re.compile(r'"score"\s*:')
+_SCORE_NUM_RE = re.compile(r'"score"\s*:\s*-?[0-9]')
 
 SOURCE_KINDS = ("gate", "intents", "replay")
 
@@ -104,14 +122,27 @@ SOURCE_KINDS = ("gate", "intents", "replay")
 # --- the narrow parser ---------------------------------------------------------------------------------------------------
 
 
+def _frozen_book(line: str) -> bool:
+    """Exactly one `book` key, and it names CAP_PICK_BOOK. A tag test: no value is read."""
+    return len(_BOOK_KEY_RE.findall(line)) == 1 and _BOOK_TAG_RE.search(line) is not None
+
+
 def extract(kind: str, line: str) -> tuple[str, bool] | None:
     """(mint, pick) from one decision-record line, or None. The line is not parsed as JSON and nothing else of it is read into a value."""
     if kind == "gate":
-        if not _GATE_TAG_RE.search(line) or _GATE_ERROR in line:
+        if not _GATE_TAG_RE.search(line) or _GATE_ERROR in line or not _frozen_book(line):
             return None
-        flag_re = _ENTERED_RE
+        m, f = _MINT_RE.findall(line), _ENTERED_RE.findall(line)
+        if len(m) != 1 or len(f) != 1:
+            return None
+        if f[0] == "true":
+            return m[0], True
+        # not-pick only on a computed score: one `score` key whose value starts like a number (null, NaN, Infinity: undecided)
+        if len(_SCORE_KEY_RE.findall(line)) != 1 or not _SCORE_NUM_RE.search(line):
+            return None
+        return m[0], False
     elif kind == "intents":
-        if not _INTENT_TAG_RE.search(line):
+        if not _INTENT_TAG_RE.search(line) or not _frozen_book(line):
             return None
         m = _MINT_RE.findall(line)
         return (m[0], True) if len(m) == 1 else None
@@ -248,6 +279,8 @@ def run_export(sources: Sequence[tuple[str, str | Path]], out: str | Path, *, fi
             raise ValueError(f"unknown source kind {kind!r}")
     if not sources:
         raise ValueError("no source")
+    if any(k == "intents" for k, _ in sources) and not any(k == "gate" for k, _ in sources):
+        raise ValueError("an intents source needs a gate source (decisions_written must stay a gate-decision count; EXP-022 s9)")
     counts = {"lines": 0, "rejected": 0, "source_errors": 0, "passes": 0, "final_wait_s": 0}
     t_start = clock()
     if not final_gate_open(final_marker, clock()):
@@ -272,18 +305,20 @@ def run_export(sources: Sequence[tuple[str, str | Path]], out: str | Path, *, fi
         while True:
             all_ok = True
             for kind, tail in tails:
+                counted = kind != "intents"  # quant-proof E1: no printed count includes an intents-file line or error (EXP-022 s9)
                 try:
                     lines, reset = tail.read_new()
                 except OSError:
                     all_ok = False
-                    counts["source_errors"] += 1
+                    if counted:
+                        counts["source_errors"] += 1
                     continue
                 for ln in lines:
-                    counts["lines"] += 1
                     hit = extract(kind, ln)
-                    if hit is None:
-                        counts["rejected"] += 1
-                    else:
+                    if counted:
+                        counts["lines"] += 1
+                        counts["rejected"] += hit is None
+                    if hit is not None:
                         writer.decision(*hit)
             counts["passes"] += 1
             if live and all_ok and (last_hb is None or clock() - last_hb >= hb_s * 1000):
@@ -379,7 +414,7 @@ class PickOracle:
                     s.refresh(self._true)
             if mint in self._true:
                 return True
-            if age is None or age > self.stale_s:
+            if age is None or not age <= self.stale_s:  # NaN-safe: anything but a fresh age is stale
                 self.counters["stale"] += 1
                 return None
             if any(mint in s.flags for s in self._src):
@@ -395,6 +430,17 @@ class PickOracle:
         return mint is None or self(mint) is not False
 
 
+def stale_s_from_env(raw: str | None) -> float:
+    """CAP_PICK_STALE_S, capped at STALE_S_MAX (quant-proof E2 on #509). Missing, unparsable or non-finite -> STALE_S_DEFAULT."""
+    try:
+        v = STALE_S_DEFAULT if raw is None or str(raw).strip() == "" else float(raw)
+    except (TypeError, ValueError):
+        return STALE_S_DEFAULT
+    if not math.isfinite(v):
+        return STALE_S_DEFAULT
+    return min(v, STALE_S_MAX)
+
+
 def from_env(environ: dict[str, str] | None = None) -> "PickOracle | _ClosedOracle":
     env = os.environ if environ is None else environ
     live = [p for p in env.get("CAP_PICK_LIVE", "").split(os.pathsep) if p]
@@ -402,7 +448,7 @@ def from_env(environ: dict[str, str] | None = None) -> "PickOracle | _ClosedOrac
     marker = env.get("CAP_PICK_FINAL_MARKER", "")
     if not live or not marker:
         return _ClosedOracle()
-    return PickOracle(live, replay, stale_s=float(env.get("CAP_PICK_STALE_S", STALE_S_DEFAULT)), final_marker=marker)
+    return PickOracle(live, replay, stale_s=stale_s_from_env(env.get("CAP_PICK_STALE_S")), final_marker=marker)
 
 
 class _ClosedOracle:
@@ -450,7 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("export", help="tail decision records and append boolean rows to picks.jsonl")
     e.add_argument("--gate-log", action="append", default=[], metavar="PATH", help="exp012-gate.jsonl of the live gate runner (repeatable)")
-    e.add_argument("--intents", action="append", default=[], metavar="PATH", help="intents.jsonl of the live gate runner (repeatable)")
+    e.add_argument("--intents", action="append", default=[], metavar="PATH",
+                   help="intents.jsonl of the live gate runner (repeatable; needs --gate-log; its lines are never counted in the output)")
     e.add_argument("--replay", action="append", default=[], metavar="PATH", help="a cap_pick_gate_replay_v1 decision list (repeatable)")
     e.add_argument("--out", required=True, help="the append-only booleans file")
     e.add_argument("--final-marker", required=True, metavar="PATH",
@@ -477,6 +524,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sources = [("gate", p) for p in a.gate_log] + [("intents", p) for p in a.intents] + [("replay", p) for p in a.replay]
     if not sources:
         print("refusing: give at least one of --gate-log, --intents, --replay", file=sys.stderr)
+        return 2
+    if a.intents and not a.gate_log:
+        print("refusing: --intents needs --gate-log (decisions_written must stay a gate-decision count; EXP-022 s9)", file=sys.stderr)
         return 2
     missing = [k for k, p in sources if not Path(p).is_file()]
     if missing:
