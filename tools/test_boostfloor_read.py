@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import math
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -839,13 +840,22 @@ class Producers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             src, dest = Path(d) / "cal.json", Path(d) / "e1" / "calibration.json"
             src.write_text(json.dumps({"aggregate": {"faa3192": {"pnl_gap_lamports_live_minus_sim": {"n": 25, "mean": -384022.0}}}}))
+            with self.assertRaises(br.Refused):  # written before 2026-10-16T06:13Z: not the cron run's record (section 8.1(c))
+                bi.e1_copy(src, dest)
+            self.assertFalse(dest.exists())
+            after = bi.E1_NOT_BEFORE.timestamp()
+            os.utime(src, (after - 1, after - 1))
+            with self.assertRaises(br.Refused):
+                bi.e1_copy(src, dest)
+            os.utime(src, (after, after))
             r = bi.e1_copy(src, dest)
-            self.assertEqual((r["n"], r["n_ge_20"]), (25, True))
+            self.assertEqual((r["n"], r["n_ge_20"], r["source"]), (25, True, str(src)))
             self.assertEqual(dest.read_bytes(), src.read_bytes())
             self.assertEqual(br.read_e1(dest), (25, -384022.0))
             with self.assertRaises(br.Refused):
                 bi.e1_copy(src, dest)  # written once
             src.write_text(json.dumps({"aggregate": {"faa3192": {"pnl_gap_lamports_live_minus_sim": {"n": None, "mean": 1}}}}))
+            os.utime(src, (after + 60, after + 60))
             with self.assertRaises(br.Refused):
                 bi.e1_copy(src, Path(d) / "e1b.json")
             with self.assertRaises(br.Refused):
@@ -899,6 +909,140 @@ class Producers(unittest.TestCase):
                     self.assertEqual(bi.main(argv), 2)
             with self.assertRaises(SystemExit):
                 bi.main(["p5", "--look", "1", "--n", "50"])
+
+
+# ---- quant-proof r4 required edits (2026-10-10) --------------------------------------------------------------------------------
+class R4Edits(unittest.TestCase):
+    def _run(self, lay, inp):
+        return LockAndLedger()._run(lay, inp)
+
+    def test_unevaluated_two_runs_is_a_halt_and_closes_look2(self):  # edit 1
+        for a3 in ({"unevaluated_two_runs": ["2026-10-12T06:41:00Z boost_budget"]}, {"halts": ["2026-10-12T06:41:00Z boost_budget"]}):
+            with tempfile.TemporaryDirectory() as d:
+                lay = br.Layout(Path(d), 1)
+                with mock.patch.object(br, "price_cell", side_effect=AssertionError("priced")):
+                    self._run(lay, LockAndLedger()._inputs(_pools(20, 6), a3=a3))
+                ev = br.ledger_events(lay.ledger)
+                self.assertEqual(ev[-1]["verdict"], "NOT_DECIDABLE_HALT")
+                with self.assertRaises(br.Refused):
+                    br.ledger_allows(ev, 2)
+
+    def test_p7_fail_closes_look2(self):  # edit 2
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            self._run(lay, LockAndLedger()._inputs(_pools(20, 6), p7=False))
+            ev = br.ledger_events(lay.ledger)[-1]
+            self.assertEqual((ev["verdict"], ev["p7_failed"], ev["futility"]), ("NOT_DECIDABLE", True, False))
+            self.assertTrue(any(r.startswith("P7") for r in ev["reasons"]))
+            with self.assertRaises(br.Refused):
+                br.ledger_allows([ev], 2)
+
+    def test_futility_under_missing_v_closes_look2(self):  # edit 2: a missing-V NOT_DECIDABLE no longer hides futility
+        real = br.verdict
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            with mock.patch.object(br, "verdict", side_effect=lambda c, a: {**real(c, a), "verdict": "FAIL_FUTILITY", "futility": True}), \
+                    mock.patch.object(br, "missing_v_check", return_value=["missing V on 2 of 120 D trades (> 1%)"]):
+                self._run(lay, LockAndLedger()._inputs(_pools(20, 6)))
+            ev = br.ledger_events(lay.ledger)[-1]
+            self.assertEqual((ev["verdict"], ev["futility"], ev["p7_failed"]), ("NOT_DECIDABLE", True, False))
+            self.assertEqual(ev["reasons"], ["missing V on 2 of 120 D trades (> 1%)"])
+            with self.assertRaises(br.Refused):
+                br.ledger_allows([ev], 2)
+        br.ledger_allows([{"experiment": "EXP-024", "look": 1, "event": "completed", "verdict": "FAIL", "futility": False, "p7_failed": False}], 2)
+        for k in ("futility", "p7_failed"):
+            with self.assertRaises(br.Refused):
+                br.ledger_allows([{"experiment": "EXP-024", "look": 1, "event": "completed", "verdict": "NOT_DECIDABLE", k: True}], 2)
+
+    def test_report_only_crash_still_writes_the_verdict(self):  # edit 3
+        with tempfile.TemporaryDirectory() as d0:
+            lay0 = br.Layout(Path(d0), 1)
+            self._run(lay0, LockAndLedger()._inputs(_pools(20, 6)))
+            base = json.loads((lay0.out / "report.json").read_text())
+        real_stats = br.report_only_stats
+
+        def stats(c, rows):
+            if c == "R_exit_340":
+                raise RuntimeError("stats")
+            return real_stats(c, rows)
+
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            with mock.patch.object(br, "mechanism", side_effect=RuntimeError("mech")), \
+                    mock.patch.object(br, "control_struct", side_effect=RuntimeError("ctrl")), \
+                    mock.patch.object(br, "report_only_stats", side_effect=stats):
+                rc, _ = self._run(lay, LockAndLedger()._inputs(_pools(20, 6)))
+            self.assertEqual(rc, 0)
+            self.assertEqual([e["event"] for e in br.ledger_events(lay.ledger)], ["started", "completed"])
+            rep = json.loads((lay.out / "report.json").read_text())
+            for k in ("verdict", "decision", "cells", "rows_md5", "n_rows"):
+                self.assertEqual(rep[k], base[k])
+            self.assertEqual(set(rep["report_only_errors"]), {"C_post_boost", "report_only:R_exit_340", "mechanism"})
+            self.assertEqual(rep["report_only_errors"]["mechanism"], "RuntimeError: mech")
+            self.assertIn("section 13 not computed", rep["no_live"])
+            self.assertNotIn("C_post_boost", rep["report_only"])
+            self.assertIsNone(rep["mechanism"])
+            self.assertNotIn("C_post_boost", (lay.out / "rows.csv").read_text())
+        self.assertEqual(base["report_only_errors"], {})
+        self.assertNotIn("section 13 not computed", base["no_live"])
+
+    def _production(self, d, recorded_delta=0):
+        lay = br.Layout(Path(d), 1)
+        pools = _pools(20, 6)
+        pc = br.precount(pools, GOOD, [])
+        pc["triggers"] += recorded_delta
+        for f, data in ((lay.p7, {"pass": True}), (lay.precount, pc), (lay.e1, {"x": 1})):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+        a3 = {"halts": [], "unevaluated_two_runs": [], "last_slice_median_s": 340.0, "runs": 7, "synthetic_share_high": []}
+        patches = [mock.patch.object(br, "read_e1", return_value=(25, RBAR)), mock.patch.object(br, "a3_conditions", return_value=a3),
+                   mock.patch.object(br, "_good_bad", return_value=(GOOD, [])), mock.patch.object(br, "load_classes", return_value={}),
+                   mock.patch.object(br, "forward_pools", return_value=(pools, {}))]
+        return lay, patches
+
+    def test_precount_mismatch_refused_before_the_lock(self):  # edit 4
+        with tempfile.TemporaryDirectory() as d:
+            lay, patches = self._production(d, recorded_delta=1)
+            with contextlib.ExitStack() as st:
+                for pt in patches:
+                    st.enter_context(pt)
+                with self.assertRaises(br.Refused):
+                    br.run_look(lay, lambda: br.production_inputs(lay), ident={"head": "x"}, now=datetime(2026, 10, 16, 8, tzinfo=timezone.utc),
+                                log=lambda s: None)
+            self.assertFalse(lay.lock.exists())
+            self.assertEqual(br.ledger_events(lay.ledger), [])
+        with tempfile.TemporaryDirectory() as d:
+            lay, patches = self._production(d)
+            with contextlib.ExitStack() as st:
+                for pt in patches:
+                    st.enter_context(pt)
+                inp = br.production_inputs(lay)
+            self.assertEqual(inp.e1_sha256, br.sha256_file(lay.e1))  # edit 6: E1's sha256 rides into the report
+            rep = br.compute_look(inp, lambda s: None)
+            self.assertEqual(rep["e1"]["sha256"], br.sha256_file(lay.e1))
+
+    def test_producers_run_integrity_and_record_the_head(self):  # edit 5
+        from tools import forward_v_join as J
+
+        out = io.StringIO()
+        with mock.patch.object(J, "final_marker", return_value=None), mock.patch.object(br, "integrity", return_value={"head": "f" * 40}), \
+                mock.patch.object(bi, "e1_copy", return_value={"n": 25}), contextlib.redirect_stdout(out):
+            self.assertEqual(bi.main(["e1", "--source", "/tmp/x.json"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["head"], "f" * 40)
+        with mock.patch.object(J, "final_marker", return_value=None), mock.patch.object(br, "integrity", side_effect=br.Refused("dirty")), \
+                mock.patch.object(bi, "e1_copy", side_effect=AssertionError("ran")), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(bi.main(["e1", "--source", "/tmp/x.json"]), 2)
+
+    def test_monitor_blob(self):  # edit 7
+        br.check_monitor(br.REPO)
+        self.assertEqual(br.git_blob(br.REPO / br.MONITOR_PATH), "1ca0a88cecf0853d94336ea046ba1a910b79f198")
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(br.Refused):
+                br.check_monitor(Path(d))
+            (Path(d) / "tools").mkdir()
+            (Path(d) / br.MONITOR_PATH).write_bytes((br.REPO / br.MONITOR_PATH).read_bytes() + b"# edit\n")
+            with self.assertRaises(br.Refused):
+                br.check_monitor(Path(d))
 
 
 if __name__ == "__main__":

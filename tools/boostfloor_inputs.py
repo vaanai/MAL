@@ -10,8 +10,9 @@ section 8) and the section 13 BOOST PDA fetch. Outcome-blind: they compute no fi
 
 Order after the EXP-012 FINAL (A): forward_v_join join (into p5/vjoin); h5_forward_extract forward (into look1/extract); boostfloor_read
 classify; p5; account; p7; boost-pda; boostfloor_read precount; e1; boostfloor_read look. Every mode refuses before the FINAL marker
-is in the external FINAL ledger, refuses Look 2, writes each file once (O_EXCL), and takes no flag that changes a number. `e1` takes one
-path, the E1 record to copy.
+is in the external FINAL ledger, refuses Look 2, runs boostfloor_read.integrity() (prereg pins, monitor blob, frozen files) and records
+the head in its output, writes each file once (O_EXCL), and takes no flag that changes a number. `e1` takes one path, the E1 record to
+copy; it refuses a file written before 2026-10-16T06:13Z (section 8.1(c), the cron run).
 
 What P5 fetches (getTransaction, maxSupportedTransactionVersion 1, finalized; decoded with observe/trade_decode.records_from_logs
 event_v=True, rows keyed by (slot, signature, event_index)):
@@ -58,6 +59,7 @@ MAX_CALLS = 30_000
 PDA_SIG_LIMIT = 100
 PDA_VERIFY_FETCHES = 8
 ACCOUNT_NOT_BEFORE = "2026-10-16T00:00:00Z"  # section 4: the account map is fetched at or after this instant
+E1_NOT_BEFORE = datetime(2026, 10, 16, 6, 13, tzinfo=timezone.utc)  # section 8.1(c): the E1 record is the cron run's, written at or after
 DECODED_FIELDS = ("side", "ix_name", "sol_lamports", "token_raw", "quote_reserve", "base_reserve", "virtual_quote_reserves",
                   "pool_quote_amount", "zero_sol", "pool", "mint")
 
@@ -317,6 +319,10 @@ def pda_record(rpc: Any, pool: str, mint: str, authority_key: str | None) -> dic
 # ---- E1 ---------------------------------------------------------------------------------------------------------------------
 def e1_copy(src: Path, dest: Path) -> dict[str, Any]:
     br.refuse_name(src)
+    if not src.is_file():
+        raise br.Refused(f"{src} is not a file")
+    if src.stat().st_mtime < E1_NOT_BEFORE.timestamp():
+        raise br.Refused(f"{src} was written before {E1_NOT_BEFORE.isoformat()} (section 8.1(c): the cron run's E1 record only)")
     if dest.exists():
         raise br.Refused(f"{dest} exists: E1 is recorded once")
     raw = src.read_bytes()
@@ -324,7 +330,8 @@ def e1_copy(src: Path, dest: Path) -> dict[str, Any]:
     if type(agg.get("n")) is not int or not isinstance(agg.get("mean"), (int, float)):
         raise br.Refused(f"{src}: aggregate.faa3192.pnl_gap_lamports_live_minus_sim has no integer n and numeric mean")
     br.write_new(dest, raw)
-    return {"n": agg["n"], "n_ge_20": agg["n"] >= br.E1_MIN_N, "source_sha256": hashlib.sha256(raw).hexdigest(), "sha256": br.sha256_file(dest)}
+    return {"n": agg["n"], "n_ge_20": agg["n"] >= br.E1_MIN_N, "source": str(src), "source_sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": br.sha256_file(dest)}
 
 
 # ---- CLI --------------------------------------------------------------------------------------------------------------------
@@ -398,6 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from tools.forward_v_join import final_marker
 
         final_marker(br.FINAL_LEDGER)
+        ident = br.integrity()  # the prereg's pins, the monitor blob and the frozen files: every output carries the head it ran at
         lay = br.Layout.for_look(br.ROOT, 1)
         if a.cmd == "e1":
             res = e1_copy(a.source, lay.e1)
@@ -431,6 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 br.write_new(lay.boost_pda, _jsonl(recs))
                 res = {"pools": len(recs), "errors": sum("error" in r for r in recs), "authority_found": key is not None,
                        "sha256": br.sha256_file(lay.boost_pda)}
+        res["head"] = ident["head"]
         print(json.dumps(res, indent=1, sort_keys=True, default=str))
         return 0
     except br.Refused as e:

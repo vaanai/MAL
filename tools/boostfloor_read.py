@@ -300,6 +300,18 @@ def check_frozen(h5_flows: Path) -> None:
             raise Refused(f"section 2: {p} does not hash to {want[:12]}...")
 
 
+MONITOR_PATH = "tools/pump_structure_monitor.py"
+MONITOR_BLOB = "1ca0a88cecf0853d94336ea046ba1a910b79f198"  # Am.4 B1 and section 10: the classifier and the A3 flag meanings
+
+
+def check_monitor(repo: Path) -> None:
+    """Am.4 B1 / section 10: `classify` runs the monitor through synthetic_class, and the A3 flags mean what this blob writes."""
+    p = repo / MONITOR_PATH
+    got = git_blob(p) if p.is_file() else None
+    if got != MONITOR_BLOB:
+        raise Refused(f"{MONITOR_PATH} is blob {got}, not {MONITOR_BLOB} (Am.4 B1, section 10)")
+
+
 def check_clean(repo: Path, rel_paths: Iterable[str]) -> None:
     for rel in rel_paths:
         r = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--", rel], capture_output=True, text=True, timeout=60)
@@ -311,11 +323,12 @@ def integrity(repo: Path = REPO, h5_flows: Path = H5_FLOWS) -> dict[str, Any]:
     text = (repo / PREREG).read_text(encoding="utf-8")
     check_count_start(text)
     pins = parse_p3_pins(text)
-    check_clean(repo, [PREREG] + [p for p, _ in pins.values()])
+    check_clean(repo, [PREREG, MONITOR_PATH] + [p for p, _ in pins.values()])
     check_pins(pins, repo)
+    check_monitor(repo)
     check_frozen(h5_flows)
     head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60).stdout.strip()
-    return {"head": head, "pins": {k: f"{p}@{b}" for k, (p, b) in sorted(pins.items())}}
+    return {"head": head, "pins": {k: f"{p}@{b}" for k, (p, b) in sorted(pins.items())}, "monitor": f"{MONITOR_PATH}@{MONITOR_BLOB}"}
 
 
 # ---- conditions (section 8.1) ---------------------------------------------------------------------------------------------
@@ -387,8 +400,13 @@ def ledger_allows(events: Sequence[Mapping[str, Any]], look: int) -> None:
             continue
         if e.get("look") == look and e.get("event") == "started":
             raise Refused(f"Look {look} already started at {e.get('utc')}: a look runs once")
-        if e.get("event") == "completed" and e.get("verdict") in ("PASS", "FAIL_FUTILITY", "NOT_DECIDABLE_HALT") and look > e.get("look", 0):
+        if e.get("event") != "completed" or look <= e.get("look", 0):
+            continue
+        if e.get("verdict") in ("PASS", "FAIL_FUTILITY", "NOT_DECIDABLE_HALT"):
             raise Refused(f"Look {look}: refused after Look {e.get('look')} ended {e.get('verdict')}")
+        if e.get("futility") is True or e.get("p7_failed") is True:  # section 8.3 futility; section 10, a failed P7 closes both looks
+            raise Refused(f"Look {look}: refused after Look {e.get('look')} ended {e.get('verdict')} with futility={e.get('futility')} "
+                          f"p7_failed={e.get('p7_failed')}")
 
 
 def append_event(path: Path, rec: Mapping[str, Any]) -> None:
@@ -1058,6 +1076,7 @@ class LookInputs:
     a3: dict[str, Any]
     p7_pass: bool
     precount_file: dict[str, Any] | None
+    e1_sha256: str | None = None  # sha256 of e1/calibration.json, carried into the report's e1 block
 
 
 def not_decidable_reasons(pc: Mapping[str, Any], a3: Mapping[str, Any], p7_pass: bool) -> list[str]:
@@ -1080,97 +1099,142 @@ def not_decidable_reasons(pc: Mapping[str, Any], a3: Mapping[str, Any], p7_pass:
     return why
 
 
+def _guard(report: dict[str, Any], name: str, fn: Callable[[], Any]) -> Any:
+    """Section 13 is report-only: an exception there is recorded in report_only_errors and the block is left out. It never aborts the look."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 - report-only code never decides or burns the look
+        report.setdefault("report_only_errors", {})[name] = f"{type(e).__name__}: {e}"
+        return None
+
+
+def report_only_stats(c: str, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Section 13 statistics of one row set (report-only)."""
+    out: dict[str, Any] = {}
+    for leg in ("flat", "press"):
+        x = np.asarray([r[f"pnl_{leg}_lamports"] for r in rows], float)
+        if len(x):
+            bm = boot_means(x / 1e9, REPORT_P_DRAWS, BOOT_SEED)
+            cl = bf.gate_stats(x, [r["date"] for r in rows], STAKE)
+            stake = REPORT_ONLY.get(c, {}).get("stake", STAKE)
+            order = np.argsort([r["s0_bt"] for r in rows], kind="stable")
+            xs, half = x[order], len(x) // 2
+            win = np.minimum(x, stake)  # winsorised at +100% of the stake
+            wdays: dict[str, float] = {}
+            for r, w in zip(rows, win):
+                wdays[r["date"]] = wdays.get(r["date"], 0.0) + w
+            gross = np.array([r["gross"] for r in rows])
+            keep = np.sort(x)[: len(x) - int(math.floor(0.05 * len(x)))]
+            out[leg] = dict(trade_boot_p_le_0=float((bm <= 0).mean()), date_cluster_ci90_pct=[cl["ci5_pct"], cl["ci95_pct"]],
+                            n=int(len(x)), mean_sol=float(x.mean() / 1e9), median_sol=float(np.median(x) / 1e9),
+                            winsor100_mean_sol=float(win.mean() / 1e9), winsor100_dates_pos=sum(d > 0 for d in wdays.values()),
+                            mean_ex_top5pct_sol=float(keep.mean() / 1e9) if len(keep) else None,
+                            pnl_share_gross_gt_100pct=float(x[gross > 1.0].sum() / x.sum()) if x.sum() != 0 else None,
+                            first_half_mean_sol=float(xs[:half].mean() / 1e9) if half else None,
+                            second_half_mean_sol=float(xs[half:].mean() / 1e9), stake_lamports=stake)
+    out["reverted"] = sum(r["reverted"] for r in rows)
+    out["v_missing"] = sum(r["v_missing"] for r in rows)
+    return out
+
+
 def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
-    """Everything after the lock. Prices only when no pre-outcome NOT_DECIDABLE condition holds."""
+    """Everything after the lock. Prices only when no pre-outcome NOT_DECIDABLE condition holds. The verdict is computed before any section 13
+    (report-only) code runs, and an exception in section 13 is recorded, never raised."""
     pc = precount(inp.pools, inp.good_hours, inp.bad_hours)
     if inp.precount_file is not None and inp.precount_file != pc:
         raise Refused("P6: the recorded precount differs from the look's own recount (same hours, same files): refusing")
     pre = not_decidable_reasons(pc, inp.a3, inp.p7_pass)
-    report: dict[str, Any] = {"schema": SCHEMA, "experiment": EXP_ID, "look": 1, "precount": pc, "a3": inp.a3, "e1": {"n": inp.e1_n, "rbar": inp.rbar},
+    report: dict[str, Any] = {"schema": SCHEMA, "experiment": EXP_ID, "look": 1, "precount": pc, "a3": inp.a3, "e1": {"n": inp.e1_n, "rbar": inp.rbar, "sha256": inp.e1_sha256},
                               "disclosure": DISCLOSURE}
     if pre:
         report.update(verdict="NOT_DECIDABLE", reasons=pre, outcomes_computed=False)
         return report
+    # deciding: D, B1 and B2 are priced, failed, scored and checked before any section 13 code runs
+    structs = [(p, structure(p, inp.good_hours)) for p in inp.pools]
     cells_rows: dict[str, list[dict[str, Any]]] = {c: [] for c in CELLS}
-    extra: dict[str, list[dict[str, Any]]] = {k: [] for k in list(REPORT_ONLY) + list(SECTION13_ROWS)}
     traded: list[tuple[FwdPool, Struct]] = []
-    for p in inp.pools:
-        s = structure(p, inp.good_hours)
-        ctrl = control_struct(p, s, inp.good_hours)
-        if ctrl is not None:
-            r = price_cell(p, ctrl, CELLS["D"], rbar=inp.rbar, exit_s=CONTROL_EXIT_S)
-            if r is not None:
-                extra["C_post_boost"].append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
+    for p, s in structs:
         if s.status != "trigger":
             continue
         traded.append((p, s))
         base = dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt)
-        r = price_cell(p, s, CELLS["D"], rbar=inp.rbar, bound="start")
-        if r is not None:
-            extra["D_start"].append({**base, **r})
         for c, cell in CELLS.items():
             r = price_cell(p, s, cell, rbar=inp.rbar)
             if r is not None:
                 cells_rows[c].append({**base, **r})
-        for name, kw0 in REPORT_ONLY.items():
-            kw = dict(kw0)
-            r = price_cell(p, s, kw.pop("cell"), rbar=inp.rbar, **kw)
-            if r is not None:
-                extra[name].append({**base, **r})
-    by_end = {r["mint"]: r for r in cells_rows["D"]}
-    extra["D_worse_start_end"] = [dict(min((by_end[r["mint"]], r), key=lambda x: x["pnl_lamports"])) for r in extra["D_start"] if r["mint"] in by_end]
-    curves = {}
-    for name, rows in list(cells_rows.items()) + list(extra.items()):
-        curves[name] = apply_fail(rows)
-    if curves.get("D") is not None:
-        for p, s in traded:
-            r = sell_retry(p, s, curves["D"], inp.rbar)
-            if r is not None:
-                extra["D_sell_retry"].append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
-        apply_fail(extra["D_sell_retry"])
+    curves = {c: apply_fail(rows) for c, rows in cells_rows.items()}
     stats = {c: {leg: leg_stats([r[f"pnl_{leg}_lamports"] for r in rows], [r["date"] for r in rows]) for leg in ("flat", "press")}
              for c, rows in cells_rows.items()}
     v = verdict(stats, LOOK1["alpha"])
     mv = missing_v_check(cells_rows)
     if mv:
         v = {**v, "verdict": "NOT_DECIDABLE", "reasons": mv}
+    report.update(verdict=v["verdict"], decision=v, cells=stats, rows_md5=rows_md5(cells_rows), outcomes_computed=True,
+                  n_rows={c: len(r) for c, r in cells_rows.items()}, report_only_errors={})
+    # section 13, report-only: every block is guarded, so an exception there is recorded and never aborts or decides the look
+    extra: dict[str, list[dict[str, Any]]] = {}
+
+    def failed(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        apply_fail(rows)
+        return rows
+
+    def c_post_boost() -> list[dict[str, Any]]:
+        out = []
+        for p, s in structs:
+            ctrl = control_struct(p, s, inp.good_hours)
+            if ctrl is not None:
+                r = price_cell(p, ctrl, CELLS["D"], rbar=inp.rbar, exit_s=CONTROL_EXIT_S)
+                if r is not None:
+                    out.append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
+        return failed(out)
+
+    def priced(cell: tuple[float, float, bool], **kw: Any) -> list[dict[str, Any]]:
+        out = []
+        for p, s in traded:
+            r = price_cell(p, s, cell, rbar=inp.rbar, **kw)
+            if r is not None:
+                out.append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
+        return failed(out)
+
+    def worse_start_end() -> list[dict[str, Any]]:
+        by_end = {r["mint"]: r for r in cells_rows["D"]}
+        return failed([dict(min((by_end[r["mint"]], r), key=lambda x: x["pnl_lamports"])) for r in extra["D_start"] if r["mint"] in by_end])
+
+    def d_sell_retry() -> list[dict[str, Any]]:
+        out = []
+        if curves.get("D") is not None:
+            for p, s in traded:
+                r = sell_retry(p, s, curves["D"], inp.rbar)
+                if r is not None:
+                    out.append({**dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt), **r})
+        return failed(out)
+
+    blocks: list[tuple[str, Callable[[], list[dict[str, Any]]]]] = [("C_post_boost", c_post_boost),
+                                                                     ("D_start", lambda: priced(CELLS["D"], bound="start"))]
+    for name, kw0 in REPORT_ONLY.items():
+        kw = dict(kw0)
+        blocks.append((name, lambda cell=kw.pop("cell"), kw=kw: priced(cell, **kw)))
+    blocks += [("D_worse_start_end", worse_start_end), ("D_sell_retry", d_sell_retry)]
+    for name, fn in blocks:
+        rows = _guard(report, name, fn)
+        if rows is not None:
+            extra[name] = rows
     rep_only: dict[str, Any] = {}
     for c, rows in list(cells_rows.items()) + list(extra.items()):
-        rep_only[c] = {}
-        for leg in ("flat", "press"):
-            x = np.asarray([r[f"pnl_{leg}_lamports"] for r in rows], float)
-            if len(x):
-                bm = boot_means(x / 1e9, REPORT_P_DRAWS, BOOT_SEED)
-                cl = bf.gate_stats(x, [r["date"] for r in rows], STAKE)
-                stake = REPORT_ONLY.get(c, {}).get("stake", STAKE)
-                order = np.argsort([r["s0_bt"] for r in rows], kind="stable")
-                xs, half = x[order], len(x) // 2
-                win = np.minimum(x, stake)  # winsorised at +100% of the stake
-                wdays = {}
-                for r, w in zip(rows, win):
-                    wdays[r["date"]] = wdays.get(r["date"], 0.0) + w
-                gross = np.array([r["gross"] for r in rows])
-                keep = np.sort(x)[: len(x) - int(math.floor(0.05 * len(x)))]
-                rep_only[c][leg] = dict(trade_boot_p_le_0=float((bm <= 0).mean()), date_cluster_ci90_pct=[cl["ci5_pct"], cl["ci95_pct"]],
-                                        n=int(len(x)), mean_sol=float(x.mean() / 1e9), median_sol=float(np.median(x) / 1e9),
-                                        winsor100_mean_sol=float(win.mean() / 1e9), winsor100_dates_pos=sum(v > 0 for v in wdays.values()),
-                                        mean_ex_top5pct_sol=float(keep.mean() / 1e9) if len(keep) else None,
-                                        pnl_share_gross_gt_100pct=float(x[gross > 1.0].sum() / x.sum()) if x.sum() != 0 else None,
-                                        first_half_mean_sol=float(xs[:half].mean() / 1e9) if half else None,
-                                        second_half_mean_sol=float(xs[half:].mean() / 1e9), stake_lamports=stake)
-        rep_only[c]["reverted"] = sum(r["reverted"] for r in rows)
-        rep_only[c]["v_missing"] = sum(r["v_missing"] for r in rows)
+        st = _guard(report, f"report_only:{c}", lambda c=c, rows=rows: report_only_stats(c, rows))
+        if st is not None:
+            rep_only[c] = st
+    mech = _guard(report, "mechanism", lambda: mechanism(cells_rows["D"], {p.mint: p for p, _ in traded}))
     no_live = [f"340 s exit leg mean <= 0 ({leg})" for leg in ("flat", "press")
                if rep_only.get("R_exit_340", {}).get(leg, {}).get("mean_sol", 0.0) <= 0]
     if not all(v["binding"]["B2"].values()):
         no_live.append("binding leg B2 failed")
-    mech = mechanism(cells_rows["D"], {p.mint: p for p, _ in traded})
-    if mech["share_ended_upper"] is not None and mech["share_ended_upper"] > BOOST_ENDED_MAX_SHARE:
+    if mech is not None and mech["share_ended_upper"] is not None and mech["share_ended_upper"] > BOOST_ENDED_MAX_SHARE:
         no_live.append(f"BOOST ended before our exit on {mech['ended_before_exit']} + {mech['unknown']} unknown of {mech['n_trades']} "
                        f"traded pools (> 15%, unknown counted as ended)")
-    report.update(no_live=no_live, not_computed_section13=list(NOT_COMPUTED), mechanism=mech)
-    report.update(verdict=v["verdict"], decision=v, cells=stats, report_only=rep_only, rows_md5=rows_md5(cells_rows), outcomes_computed=True,
-                  n_rows={c: len(r) for c, r in cells_rows.items()})
+    if "R_exit_340" not in rep_only or mech is None:  # live support fails closed
+        no_live.append("section 13 not computed")
+    report.update(no_live=no_live, not_computed_section13=list(NOT_COMPUTED), mechanism=mech, report_only=rep_only)
     report["_rows"] = {**cells_rows, **extra}
     return report
 
@@ -1214,10 +1278,14 @@ def run_look(lay: Layout, inp_fn: Callable[[], LookInputs], *, ident: Mapping[st
     if rows:
         write_new(lay.out / "rows.csv", rows_csv(rows))
     v = report["verdict"]
-    if v == "NOT_DECIDABLE" and report.get("a3", {}).get("halts"):
+    a3r = report.get("a3", {})
+    if v == "NOT_DECIDABLE" and (a3r.get("halts") or a3r.get("unevaluated_two_runs")):  # section 11: an A3 halt leaves no later look
         v = "NOT_DECIDABLE_HALT"
     append_event(lay.ledger, {**base, "event": "completed", "utc": datetime.now(timezone.utc).isoformat(), "verdict": v,
-                              "report_sha256": hashlib.sha256((text + "\n").encode()).hexdigest(), "rows_md5": report.get("rows_md5")})
+                              "report_sha256": hashlib.sha256((text + "\n").encode()).hexdigest(), "rows_md5": report.get("rows_md5"),
+                              "futility": bool(report.get("decision", {}).get("futility")),
+                              "p7_failed": any(r.startswith("P7") for r in report.get("reasons", [])),
+                              "reasons": report.get("reasons") or report.get("decision", {}).get("reasons")})
     return 0
 
 
@@ -1309,9 +1377,12 @@ def production_inputs(lay: Layout) -> LookInputs:
     p7 = json.loads(lay.p7.read_text(encoding="utf-8")).get("pass") is True
     if not lay.precount.is_file():
         raise Refused(f"P6 not done: {lay.precount} is missing (condition (e))")
+    recorded = json.loads(lay.precount.read_text(encoding="utf-8"))
     good, bad = _good_bad(FORWARD_1002)
     pools, _ = forward_pools(lay, load_classes(lay.classes))
-    return LookInputs(pools, good, bad, rbar, e1_n, a3, p7, json.loads(lay.precount.read_text(encoding="utf-8")))
+    if precount(pools, good, bad) != recorded:  # counts only; refused before the lock, so Look 1 is not burnt
+        raise Refused("P6: the recorded precount differs from a recount on the look's own inputs: refused before the lock")
+    return LookInputs(pools, good, bad, rbar, e1_n, a3, p7, recorded, sha256_file(lay.e1))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
