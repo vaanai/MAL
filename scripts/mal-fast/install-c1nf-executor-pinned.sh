@@ -19,7 +19,7 @@
 # It also refuses unless the live config at <sha> holds DEC-026 section 6's stake (0.05 SOL), priority (505,000 lamports), end_ms
 # (2026-10-24T00:30Z) and state_dir (/var/lib/mal-live/c1nf), Jito off with a zero tip, and no wider buy guard or feed line.
 # DEPENDENCY: tools/c1nf_executor.py and the two JSON configs come from the executor PR (#530, claude/c1nf-executor-v2, reference sha
-# 8ea24e6); the launcher, the base unit, the live and shadow-feed drop-ins, check-c1nf-unit.py and the root rescue tool
+# 32265af); the launcher, the base unit, the live and shadow-feed drop-ins, check-c1nf-unit.py and the root rescue tool
 # tools/c1nf_sell_and_close.py are in the ops PR (#531, built from H5's). MODULES below is the import closure of tools.c1nf_executor and
 # tools.c1nf_sell_and_close (both on top of H5's modules; tools/h5_sell_and_close.py is in it only as the rescue tool's library, and the
 # launcher never runs it); tools/test_c1nf_ops.py checks it once tools/c1nf_executor.py is on the branch. A sha without every file

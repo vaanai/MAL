@@ -17,7 +17,7 @@ FAST = ROOT / "scripts/mal-fast"
 INST = FAST / "install-c1nf-executor-pinned.sh"
 MAKE = FAST / "make-c1nf-manifest.sh"
 TEXT = INST.read_text()
-# Files the executor PR (#530, claude/c1nf-executor-v2 @ 8ea24e6) ships: the module and the two JSON configs, nothing else. Everything else the
+# Files the executor PR (#530, claude/c1nf-executor-v2 @ 32265af) ships: the module and the two JSON configs, nothing else. Everything else the
 # installer names (the launcher, the base unit, both drop-ins, check-c1nf-unit.py and the rescue tool included) must already be in this tree.
 FROM_EXECUTOR_PR = {"tools/c1nf_executor.py", "scripts/mal-fast/c1nf-executor-live.json", "scripts/mal-fast/c1nf-executor.json"}
 OURS = ("scripts/mal-fast/c1nf-watch.py", "scripts/mal-fast/c1nf-daily-check.py", "scripts/mal-fast/check-c1nf-watch-unit.py",
@@ -91,7 +91,7 @@ def _config_check() -> str:
 
 
 GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
-        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 8ea24e6
+        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 32265af
 
 
 @pytest.mark.parametrize("change,ok", [({}, True), ({"stake_lamports": 100_000_000}, False), ({"buy_priority_lamports": 55_000}, False),
@@ -171,4 +171,4 @@ def test_runbook_paths_match_the_daily_check():
     spec.loader.exec_module(dc)
     for path in (dc.FINAL_MARKER, dc.LIVE_OK, dc.TIER_FILE, dc.KEY_PATH, f"{dc.C1NF_DIR}/STOP", f"{dc.C1NF_DIR}/HALT", dc.UNIT_FILE):
         assert path in RUNBOOK, path
-    assert "c1nf-extra.json" in RUNBOOK and "8ea24e6" in RUNBOOK and "156a941" not in RUNBOOK
+    assert "c1nf-extra.json" in RUNBOOK and "32265af" in RUNBOOK and "156a941" not in RUNBOOK

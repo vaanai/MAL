@@ -52,7 +52,7 @@ look; this check and the watchdog print nothing by class. Concretely:
                 --a3-file it says so in an INFO line: the manager's daily A3 run is then the only rule 6 check.
 
 DEPENDENCY. The file names in the state dir, the halt names, the skip-reason names and the live-config keys follow the executor PR #530
-(claude/c1nf-executor-v2) at 8ea24e6 (built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl, and
+(claude/c1nf-executor-v2) at 32265af (built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl, and
 its own live/c1nf-extra.json). If the merged executor differs, this file follows it before the install; tools/test_c1nf_daily_check.py
 pins them in one place.
 """
@@ -86,7 +86,7 @@ WATCH_TIMER = "mal-c1nf-watch.timer"
 C1NF_DIR = "/var/lib/mal-live/c1nf"
 LIVE_DIR = f"{C1NF_DIR}/live"
 STATE_FILE = f"{LIVE_DIR}/state-live.json"
-COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (8ea24e6) reuses H5Counters and its file name inside the C1-NF state dir
+COUNTERS_FILE = f"{LIVE_DIR}/h5-counters.json"  # v2 (32265af) reuses H5Counters and its file name inside the C1-NF state dir
 LEDGER_FILE = f"{LIVE_DIR}/h5-ledger.jsonl"
 EXTRA_FILE = f"{LIVE_DIR}/c1nf-extra.json"  # v2's C1NFExtra beside the counters; only EXTRA_KEYS are ever looked at
 FINAL_MARKER = f"{C1NF_DIR}/FINAL_WRITTEN"  # H5's seal marker in the C1-NF state dir (the manager touches it after the DEC-016 FINAL)
@@ -139,7 +139,7 @@ END_MS = calendar.timegm((2026, 10, 24, 0, 30, 0)) * 1000  # 2026-10-24T00:30Z (
 SEAL_START_S = calendar.timegm((2026, 10, 16, 1, 0, 0))  # CAP-PICK seal: the oracle fails closed from here (DEC-026 section 9.1)
 SEAL_WARN_S = 24 * 3600  # the seal inputs (pick_file) are alerted from this long before SEAL_START_S
 # live-config key -> (rule, value). "eq": must be present and equal. "le"/"ge": absent means the code constant applies; present may only be
-# lower (le) or higher (ge). Key names are claude/c1nf-executor-v2's (8ea24e6).
+# lower (le) or higher (ge). Key names are claude/c1nf-executor-v2's (32265af).
 ENTRY_TOLERANCE_BPS = 1500  # the 1.15x buy guard (DEC-026 section 6); config may only tighten it
 FEED_HEARTBEAT_MAX_AGE_MS = 150_000  # rule 7's 150 s feed line; config may only tighten it
 CONFIG_RULES = {
@@ -174,14 +174,14 @@ NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"
 CLASS_RE = re.compile(r"synth|migration_class|mig_class", re.I)
 CLASS_ALLOWED = ("synthetic_share_high",)  # the A3 structure flag: a share of graduations, alert only (DEC-026 section 7 rule 6)
 
-# Live halts the C1-NF executor latches (v2 at 8ea24e6; the rest of H5's latches are closed or replaced there). Unknown names are still
+# Live halts the C1-NF executor latches (v2 at 32265af; the rest of H5's latches are closed or replaced there). Unknown names are still
 # shown if name-shaped and class-free. NOT latched by the executor, so not here: rule 2's twin divergence (not built) and rule 6's A3 halts
 # (see A3 below: alerted by this check with --a3-file, acted on by the manager).
 HALT_MEANING = {
     "fill_selection_adverse": "unfilled picks beat filled ones by more than 3 pp over the last 30 monitored picks with outcomes (rule 1)",
     "landing_p50_gt_1_9s": "rolling landing p50 above 1.9 s over 20 landed buys (rule 3)",
     "out_of_rule_entry": "a buy landed more than 5 s after SD_slot (rule 3)",
-    "stuck_position": "a sell not landed by the exit plan's deadline (rule 4; v2 at 8ea24e6 latches at landing + 370 s, DEC-026 says + 600 s)",
+    "stuck_position": "a position not closed by its buy's landing + 600 s (rule 4; the emergency sell at landing + 370 s is only ledgered)",
     "model_sha_mismatch": "a pick or a shadow heartbeat names a model sha256 other than the pinned one (rule 7)",
 }
 # A3 structure monitor (DEC-026 section 7 rule 6), read only with --a3-file, through these fixed keys of its newest JSONL record.
@@ -203,6 +203,9 @@ BUDGET_STOPS = {
 ALERT_MEANING = {
     "synthetic_share_high": "A3 structure share above 0.35: recorded and alerted only, not a C1-NF halt (DEC-026 section 7 rule 6); no outcome is split by class",
     "exit_late_share_gt_10pct": "more than 10% of the last 20 landed sells landed after landing + 305 s (DEC-026 section 7 rule 5: alert only, no halt)",
+    "seal_oracle_missing": "at start: the run reaches 2026-10-16T01Z and the config has no pick_file, so every buy from then is refused (DEC-026 section 9.1)",
+    "seal_final_marker_missing": "at start: FINAL_WRITTEN is absent past the oracle's earliest instant, so every buy in the seal window is refused",
+    "c1nf_extra_reset": "c1nf-extra.json is gone while the counters show the executor ran (a dry run goes on; live refuses to start)",
     "tier_file_problem": "the TIER file failed the executor's checks; it runs T1 meanwhile",
     "feed_stale": "the shadow heartbeat is older than 150 s: every pick is refused (rule 7)",
     "boost_disabled": "BOOST regime alert (alert only for C1-NF, rule 6)",
@@ -210,7 +213,7 @@ ALERT_MEANING = {
     "boost_budget_or_slices_changed": "BOOST regime alert (alert only for C1-NF, rule 6)",
 }
 # DEC-026 section 6 buy guard, fail closed: a pick without the decision-time state (q_lamports, base_reserve, v_lamports, state_slot). v2
-# (8ea24e6) refuses it as bad_pick:ref_state_missing (absent) or bad_pick:ref_state (invalid), and a pick without a 64-hex model_sha as
+# (32265af) refuses it as bad_pick:ref_state_missing (absent) or bad_pick:ref_state (invalid), and a pick without a 64-hex model_sha as
 # bad_pick:model_sha; the bad_pick:missing_* / bad_intent:missing_* forms are matched too (H5's / #504's spelling of an absent key).
 GUARD_INPUT_REFUSALS = ("bad_pick:ref_state_missing", "bad_pick:ref_state", "bad_pick:model_sha")
 GUARD_INPUT_PREFIXES = ("bad_pick:missing_", "bad_intent:missing_")
@@ -872,7 +875,12 @@ def check_c1nf_state(host: Host, rep: Report, funded: int | None, wallet: str, e
         rep.alert("c1nf_live_halt", "latched: " + (", ".join(f"{n} ({HALT_MEANING[n]})" if n in HALT_MEANING else n for n in halt_names) or "a halt")
                   + " (new buys stop; cleared only by --clear-halt, never followed by a retune)")
     report_tier(rep, counters, tier_file, unit, now)
-    check_late_sells(rep, {k: v for k, v in (_json(host, EXTRA_FILE) or {}).items() if k in EXTRA_KEYS})
+    extra = _json(host, EXTRA_FILE)
+    if extra is None and any(counters.get(k) for k in ("tail_path", "landing_s", "sells_landed", "plans")):  # v2's extra_reset_problem, by truth only
+        rep.alert("c1nf_extra_missing", f"{EXTRA_FILE} is gone while the counters show the executor ran: live refuses to start (c1nf_extra_missing), "
+                                        "and the cooldown clock, the fill-selection window, the late-sell window and the outcomes offset would reset. "
+                                        "Restore the file; never delete it")
+    check_late_sells(rep, {k: v for k, v in (extra or {}).items() if k in EXTRA_KEYS})
     stop = effective_total_stop(funded)
     rep.info(f"total stop: min(0.30, 0.35 x funded) = {stop / LAMPORTS:.3f} SOL; realized {realized / LAMPORTS:+.6f} uses "
              f"{max(0, -realized) / stop * 100:.1f}% of it; daily stop {DAILY_STOP_LAMPORTS / LAMPORTS:.2f} SOL")

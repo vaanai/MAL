@@ -40,9 +40,9 @@ WTMR = (FAST / "mal-c1nf-watch.timer").read_bytes()
 WATCH_SVC, WATCH_TMR = dc.WATCH_FILES[0][0], dc.WATCH_FILES[1][0]
 LIVE_CFG = {"mode": "live", "state_dir": dc.C1NF_DIR, "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
             "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000,
-            # claude/c1nf-executor-v2 @ 8ea24e6, scripts/mal-fast/c1nf-executor-live.json
+            # claude/c1nf-executor-v2 @ 32265af, scripts/mal-fast/c1nf-executor-live.json
             "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000,
-            # NOT in v2's live config at 8ea24e6 (the #509 open item); a healthy canary inside the seal window needs one
+            # NOT in v2's live config at 32265af (the #509 open item); a healthy canary inside the seal window needs one
             "pick_file": "/srv/mal-cap-pick/picks.jsonl"}
 A3_PATH = "/data/mal/structure-monitor/daily.jsonl"
 
@@ -374,7 +374,7 @@ def test_budget_stop_and_feed_refusals():
 
 
 def v2_refusal(t_ms: int, reason: str, i: int = 0) -> list[dict]:
-    """What v2 (8ea24e6) writes for one refusal: C1NFExecutor._refuse -> H5's skip row, then _set_status's pick_status row, same reason."""
+    """What v2 (32265af) writes for one refusal: C1NFExecutor._refuse -> H5's skip row, then _set_status's pick_status row, same reason."""
     return [{"kind": "skip", "ts_ms": t_ms, "mint": f"M{i}", "reason": reason},
             {"kind": "pick_status", "ts_ms": t_ms, "mint": f"M{i}", "pick_id": f"p{i}", "status": "unfilled", "reason": reason, "monitored": True}]
 
@@ -535,6 +535,25 @@ def test_extra_file_is_read_through_fixed_keys_only():
     assert out_a == out_b and "pre_window x4, seal_bad_pick x1; shadow outcomes without the pinned leg x2" in out_a
     assert "12.5" not in out_b and not re.search("synth", out_b.replace("synthetic_share_high", ""), re.I)
     assert dc.EXTRA_FILE in dc.PRIV_READ and dc.EXTRA_FILE in dc.PRIV_STAT
+
+
+def test_extra_file_gone_after_a_run_alerts():
+    host = FakeHost()
+    del host.files[dc.EXTRA_FILE]
+    host.files[dc.COUNTERS_FILE] = json.dumps({"halts": {}, "sells_landed": 0, "plans": {}}).encode()
+    assert "c1nf_extra_missing" not in alerts(go(host)[1])  # the counters show no run yet (v2's extra_reset_problem: nothing to guard)
+    host.files[dc.COUNTERS_FILE] = json.dumps({"halts": {}, "sells_landed": 3, "tail_path": "/srv/mal-c1nf-shadow/c1nf-picks-x.jsonl"}).encode()
+    assert "c1nf_extra_missing" in alerts(go(host)[1])
+
+
+def test_executor_start_alerts_have_a_meaning():
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger({"kind": "alert", "ts_ms": ms(NOW - 60), "alert": "seal_oracle_missing"},
+                                        {"kind": "alert", "ts_ms": ms(NOW - 60), "alert": "seal_final_marker_missing"},
+                                        {"kind": "decision", "ts_ms": ms(NOW - 40)})
+    rc, out = go(host)
+    assert {"c1nf_executor_alert_seal_oracle_missing", "c1nf_executor_alert_seal_final_marker_missing"} <= set(alerts(out))
+    assert "every buy from then is refused" in out and "every buy in the seal window is refused" in out
 
 
 def test_halt_meaning_lists_only_what_the_executor_latches():
