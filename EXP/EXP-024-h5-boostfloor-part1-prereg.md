@@ -745,7 +745,7 @@ This read's seal end states, and quant-proof's ruling that Amendment 4 item D1 l
 
 Outcome-blind. To write it, no row, report or scratch file of forward-1002, forward-1002ev or walk 2 was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the repo at main `742d7c9` (with #476 merged as `42c1e41`, #562 as `0ef32e2` and #566 as `737c307`), the MiScusi records of jobs #538, #546 and #551, and the E0 record files those jobs wrote on exploration day 2026-09-20. It records what section 10 (P3, P4) and section 12 require. It changes no rule, parameter, window, leg, threshold or refusal.
 
-**Status.** Every blob below is the blob on main `742d7c9`, from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Every blob in A is also unchanged on main `b63555b` (merged into this branch; checked 2026-10-10T13:34Z) and on main `dbf2780`, which adds #568 (merged into this branch; `git rev-parse origin/main:<path>` equals each A blob for all eight keys, and `git diff --name-status dbf2780^ dbf2780` lists only the two new files `tools/h5_forward_vmap.py` and `tools/test_h5_forward_vmap.py`; checked 2026-10-10T13:55Z). Items D (the forward vmap) and E (`parse_failed` hours) record the manager's decisions, declared before any October data is read.
+**Status.** Every blob below is the blob on main `742d7c9` (except `inputs`, which Amendment 6 replaces in this same A line), from `git ls-tree origin/main` at 2026-10-10T13:06Z. This amendment takes effect when quant-proof has posted OK on its final head and it merges before 2026-10-16T00:00Z. If either misses, section 10 P3 withdraws H5, and section 11 "Spending" (from 2026-10-10T00Z) spends Look 1. Every blob in A is also unchanged on main `b63555b` (merged into this branch; checked 2026-10-10T13:34Z) and on main `dbf2780`, which adds #568 (merged into this branch; `git rev-parse origin/main:<path>` equals each A blob for all eight keys, and `git diff --name-status dbf2780^ dbf2780` lists only the two new files `tools/h5_forward_vmap.py` and `tools/test_h5_forward_vmap.py`; checked 2026-10-10T13:55Z). Items D (the forward vmap) and E (`parse_failed` hours) record the manager's decisions, declared before any October data is read.
 
 **What would change a pin.** The pins are the eight blobs of the A line.
 - A change to the read tool, for example to apply item E in code, changes the `read_tool` blob. That needs a new A line, a P4.2 E0 re-run at the new blob, and an amendment merged before 2026-10-16T00:00Z. This amendment makes no such change: E is applied from P6's counts.
@@ -757,7 +757,7 @@ Outcome-blind. To write it, no row, report or scratch file of forward-1002, forw
 `integrity()` in `tools/boostfloor_read.py` runs, in order: `check_count_start`; `parse_p3_pins`, which refuses unless exactly one line of this file starts with the prefix and gives all eight keys as `key=path@<40-hex blob>`, seven of whose paths are fixed in `P3_PIN_PATHS`; `check_clean` (this file, the monitor and every pinned path clean against HEAD); `check_pins` (each blob equals the look worktree's file); `check_monitor` (`tools/pump_structure_monitor.py` at `1ca0a88c…`, Am.4 B1, which is also its blob on main `742d7c9`); and `check_frozen` (section 2).
 
 ```
-EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408f0dd9454678 score_module=tools/boostfloor_score.py@e63cca50b367f7d9b8bdf782429f4f0618c5cc87 latency_curve=tools/latency_curve.py@c194134b199d2d772a57d5a6a6cb3c5c3d25d669 paper_curve_math=tools/paper_curve_math.py@42daf5adcdc1532cb29a6f5079997d25b10c86ea extractor=tools/h5_forward_extract.py@92d070f53d521445e5a4e2c84c8f871a1026b026 v_join=tools/forward_v_join.py@8b60e5bf5fc8a45b28a587b96a01aa20a07df2ad synthetic_class=tools/synthetic_class.py@930c8caa5d55a68e7886828b0e171acf107a2af1 inputs=tools/boostfloor_inputs.py@adef463e0258b522318eb2c8b9051516b4776685
+EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408f0dd9454678 score_module=tools/boostfloor_score.py@e63cca50b367f7d9b8bdf782429f4f0618c5cc87 latency_curve=tools/latency_curve.py@c194134b199d2d772a57d5a6a6cb3c5c3d25d669 paper_curve_math=tools/paper_curve_math.py@42daf5adcdc1532cb29a6f5079997d25b10c86ea extractor=tools/h5_forward_extract.py@92d070f53d521445e5a4e2c84c8f871a1026b026 v_join=tools/forward_v_join.py@8b60e5bf5fc8a45b28a587b96a01aa20a07df2ad synthetic_class=tools/synthetic_class.py@930c8caa5d55a68e7886828b0e171acf107a2af1 inputs=tools/boostfloor_inputs.py@482c73b0b1a51ed438ba06584310389d2fbc1721
 ```
 
 | Key | Path | Blob on main `742d7c9` | E0 run at this blob |
@@ -769,7 +769,7 @@ EXP024_P3_PINS: read_tool=tools/boostfloor_read.py@fefe0c156ce75839cf973da82e408
 | `extractor` | `tools/h5_forward_extract.py` | `92d070f5…` (#566) | job #546 at `810221d`: the record's `blobs`, `extractor_dirty` false |
 | `v_join` | `tools/forward_v_join.py` | `8b60e5bf…` | job #546: the record's `blobs` |
 | `synthetic_class` | `tools/synthetic_class.py` | `930c8caa…` | no E0 covers it (classify only) |
-| `inputs` | `tools/boostfloor_inputs.py` | `adef463e…` | job #551 at `3f2e26c`: the blob its log prints |
+| `inputs` | `tools/boostfloor_inputs.py` | `482c73b0…` (Amendment 6; on main `742d7c9` it was `adef463e…`) | P4.2 E0 re-run at the Amendment 6 head: pending, to be recorded before 2026-10-16T00:00Z (job #551 at `3f2e26c` ran the old blob `adef463e…`) |
 
 **Check.** On the head that adds this amendment (main `742d7c9` merged in; the branch changes only the two EXP files), `python -m tools.boostfloor_read pins` printed the seven fixed paths with the blobs above and accepted the line, and `integrity()` passed on mal-research-0 (count start, pin line, clean, pins, monitor, frozen). The PR body records the output.
 
@@ -799,7 +799,7 @@ Each link is the manager's merge comment on that PR, which records quant-proof's
 - **P4.2, read tool: MiScusi job #551.** It ran `boostfloor_read e0` on mal-research-0 at code `3f2e26c3958a327c24bdd134c19ffdda9079423f` (the #476 head after the quant-proof r4 edits) with an 8 GB cap, a 1.5 GB peak, and exit 0.
   - `equal` true: n_tool 288 = n_ref 288.
   - md5_tool = md5_ref = `328264a4f22176f7048d9f7719ae930b`, over (mint, leg, stake, pnl rounded to the lamport) of the `boostdip_frozen_conf.parquet` rows with `H == 'end'` on 2026-09-20.
-  - `conf_sha256` `a4798efaa362122e1866db6ca0c34c4b75a17aba6f9a6ffd5940515808c977ca`; `read_tool_blob` `fefe0c156ce75839cf973da82e408f0dd9454678`. The job log prints `inputs` blob `adef463e0258b522318eb2c8b9051516b4776685`. Both equal A.
+  - `conf_sha256` `a4798efaa362122e1866db6ca0c34c4b75a17aba6f9a6ffd5940515808c977ca`; `read_tool_blob` `fefe0c156ce75839cf973da82e408f0dd9454678`. The job log prints `inputs` blob `adef463e0258b522318eb2c8b9051516b4776685`. Both equaled A as first written; Amendment 6 replaces the `inputs` blob, so #551 no longer covers `inputs`, and the P4.2 E0 is re-run at the Amendment 6 head.
   - Record: the job's `e0.json` in its MiScusi output directory, `/home/claude/.miscusi/jobs/j_vz_rlwvrMJWXSQ/out/e0.json` on mal-research-0, sha256 `839548727f5b29b256b0f892a441704fd7968fe688e8829ad30023bc648c852c` [measured 2026-10-10T13:34Z; its content equals the JSON the job log prints].
   - It replaces job #540 (code `b3dbc80`, read-tool blob `f92abdd6…`, same n and md5), whose blob is no longer pinned.
 - **P4.3, blobs:** the extractor, the read tool, `tools/latency_curve.py`, `tools/paper_curve_math.py` and #476's module are the A line, and the E0 runs above ran at those blobs.
@@ -896,6 +896,52 @@ Disclosed, not covered by the count: the extractor's hole rule already removes e
 #### F. Not changed
 
 Nothing else changes: the rule, the parameters, the universe (apart from the #566 null-V decision recorded in D), the trigger, the pricing, the costs, the legs, the gate statistics, the look schedule, futility, multiplicity, the kill rules, the refusals and the section 0 counting start. This amendment adds no reader and opens no sealed block.
+
+### Amendment 6 (2026-10-10T14:16Z; it must merge before 2026-10-16T00:00Z and before any look's P7 sample is drawn): P7 line B, buy side, per the quant-proof ruling QP-P7-1010
+
+Outcome-blind. It follows the quant-proof ruling of 2026-10-10 (about 14:00Z), `/data/mal/hunt-1008/c1nf-verify/QP-P7-1010.md`, sha256 `bf298d8ad516bbc69b59bbba6c32dfcbde5f3cd2a3a5efd4fc17b85033a2bafc`, items 2 and 3. To write it, no row, report or scratch file of forward-1002, forward-1002ev, walk 2, forward-paper, a runner, the canary or the shadow was opened, and no October label, H5 trigger, fill, exit or P&L was computed or read. Its inputs are the ruling and the manager's brief that quotes the tip-check counts below; this text copies those counts and did not reopen the job outputs.
+
+#### A. The rule (the ruling's text, quoted)
+
+> **P7 line 1 (EXP-025) / line B (EXP-024), buy side, amended [pinned]. Sells unchanged.**
+> 1. *Comparable buys.* A sampled buy is comparable only if it has no `zero_sol` and its `ix_name` is exactly `buy` or `buy_v2`. Every other buy is in neither denominator, with cause `buy_exact_quote_in` (prefix), `no_ix_name` (missing/null/empty), or `ix_not_listed` (any other name, `multi_hop_swap` included). EXP-025 decides from the sampled tape row before any fetch; EXP-024 decides from the raw decode's `ix_name` (forward-1002 rows carry none; it is the instruction name and carries no outcome). Counts are printed per cause and, within `ix_not_listed`, per name.
+> 2. *Law.* A comparable buy matches if the raw event's `pool_quote_amount` is within tolerance of `ceil(Q·token_raw / (base_reserve − token_raw))`, in integers `-((-Q*token_raw) // (base_reserve - token_raw))`. Q = `quote_reserve_mapped + V0` (EXP-025; vault + V(t) with V0 = 0 in the tip check) or `quote_reserve + V` (EXP-024); `base_reserve` and `token_raw` are the raw event's. `base_reserve <= token_raw` is a miss. This **replaces** the forward law for buys; the forward law is not an alternative.
+> 3. *Tolerance.* Constants unchanged: 1 bp (EXP-025 of actual; EXP-024 of the law, as now) or 2 units, the units now lamports on both sides.
+> 4. *Unchanged:* sell law and match, the 1,000-print draw and frame, the 99% bars, EXP-025's top-up to 100 comparable buys (its candidates follow item 1), unresolved = miss (EXP-025), and the consequences (R14; EXP-024 both looks NOT_DECIDABLE).
+
+**For EXP-024 this replaces the buys bullet of Amendment 1's line B** ("buys, excluding every buy whose `ix_name` starts with `buy_exact_quote_in` ... A buy with no `ix_name` is not comparable"). The sells bullet, the print population (the 300 cross-source prints plus P7's 1,000 sampled prints), the 99% bar per side, "a side with no comparable event fails that side", and "if either side fails, P7 fails and both looks are NOT_DECIDABLE" stand.
+
+**Unresolved = miss (the ruling's "Also needed"; it can only remove support).** Every line B print is scored. A print with no `gettx_v.jsonl` record, a record whose status is not `ok` (`absent`, `fetch_failed:*`, `no_raw_ref`), a decode with no buy/sell side, or a comparable event whose law fields (`quote_reserve`, `base_reserve`, `virtual_quote_reserves`, `pool_quote_amount`, `token_raw`) are not all integers is a comparable **miss**. Its side is the decode's when there is one, else the tape side; a print whose tape side is unknown is a miss on both sides. An unresolved buy cannot be excluded, because its `ix_name` is not known. Before this amendment `p7_check` dropped sampled keys with no record, `line_b` skipped every status other than `ok`, and a comparable event with a non-integer field was "not comparable".
+
+#### B. The code (the `inputs` pin)
+
+`tools/boostfloor_inputs.py` goes from blob `adef463e…` (main `742d7c9`) to `482c73b0b1a51ed438ba06584310389d2fbc1721`. The single A line of Amendment 5 is updated in place, because `parse_p3_pins` refuses a second line. No other A-line key changes.
+- `buy_exclusion` decides from the raw decode, in this order: `zero_sol` (the "no `zero_sol`" of item 1), `buy_exact_quote_in` (prefix, v1 and v2), `no_ix_name` (missing, null or empty), `ix_not_listed` (any other name, compared exactly, so `Buy` is not `buy`). `buy_law` is the item 2 integer law and returns no value (a miss) when `base_reserve <= token_raw`. `within_b` is the unchanged tolerance: within 2 lamports, or within 1 bp of the law.
+- `line_b` output adds, for buys, `excluded_by` (per cause), `ix_not_listed_by_name`, `by_ix_name` (n and matches for `buy` and `buy_v2`, reported separately as ruling item 4 asks), `unresolved` per side, and `side_unknown`. The `p7` mode prints those counts and the file sha256 to stdout. No id is printed.
+- `p7_check` scores the union of the line A sample and the P7 sample, taking each key's tape side from `p7_sample.jsonl` first, then `line_a_sample.jsonl`. P5 now writes `isbuy` on each `line_a_sample.jsonl` row (from the extract's `isbuy`, as for `p7_sample.jsonl`). P5 has not run.
+- The tier lines (section 10 P7), line A, P5's plan and fetch, the account, BOOST PDA and E1 modes are unchanged.
+- Tests (`tools/test_boostfloor_read.py`, the ruling's shared cases): a dust exact-out buy that the forward law misses hits under the inverse law; exact-in buys hit (`buy` and `buy_v2`, including about 4,898 lamports); 5 bp of fee inside `pool_quote_amount` misses; an LP-sized (20 bp) offset and a gross-vault column (3% above Q) miss on buys, and both miss on sells; `base_reserve <= token_raw` misses; `multi_hop_swap`, an unknown name, the exact-in family, a missing, null or empty name, and `zero_sol` are excluded with per-cause and per-name counts; unresolved prints (no record, `absent`, `fetch_failed`, a null V) are misses on their side; and `p7_check` keeps a sampled key whose record is missing.
+
+**What this needs.** A new `inputs` blob means the P4.2 E0 (the #551 form, `boostfloor_read e0`) is re-run at this amendment's head and recorded in this file before 2026-10-16T00:00Z (ruling item 2, "EXP-024"). `python -m tools.boostfloor_read pins` must exit 0 on the head that merges.
+
+#### C. Disclosure (ruling item 3)
+
+- **What was run.** An outcome-blind law-match check on tip-tape prints, which the tip-follower event-V runbook (steps 7–8) required: MiScusi jobs #573 (crashed, no result), #576, #583, #585, #586 and #587. Window `[2026-10-10T13:17:18Z, 13:35:00Z)`. 1,174 Helius credits in total.
+- **Counts (#576).** Sells 400/400 within tolerance. Comparable buys under the old pinned rule 165/176 (0.9375), with 424 excluded buys (400 + 176 + 424 = 1,000). Of the 11 buy misses, 9 were `multi_hop_swap` (about 5 bp ×8, about 100 bp ×1) and 2 were dust exact-out `buy` prints (1.603 bp and 4.767 bp, inside the exact-out rounding bound of about 2.0 bp and 6.0 bp at qin of about 4,898 and 1,660 lamports). The frame by `ix_name`: `buy` 20,418; `buy_v2` 4,137; `multi_hop_swap` 1,523; `buy_exact_quote_in` 61,219; `buy_exact_quote_in_v2` 3,152; sells 65,822 (156,271 in all).
+- **In-sample.** #576 shaped this amendment. Re-scoring #576 under it is a diagnostic only. 154 of #576's 165 forward-law buy hits have never been checked under the inverse law, and no `buy_v2` print has been checked under it (all 11 refetched hits were `buy`). If `buy_v2` misses later, it is not dropped from the whitelist after the fact.
+- **Overlap.** These prints sit inside both reads' October hours, so the same transactions are in forward-1002ev's hours.
+- **When.** Written while the declared observations run (EXP-024 section 3.1 and Amendments 2 and 3; EXP-025 section 5.1 and its Amendment 3).
+- **Inputs.** The check's inputs and this amendment's inputs contain no outcome. No label, fill, exit, P&L, mean, CI or day sign was computed, and the H5 trade set was not priced.
+
+#### D. Conditions
+
+This amendment takes effect only if quant-proof posts OK on its final head and it merges before any look's P7 sample is drawn and before 2026-10-16T00:00Z. After a P7 sample is drawn, no further amendment of line B. If it does not take effect, line B stays as Amendment 1 pinned it, and P7 is run and reported under that rule.
+
+#### E. Unchanged
+
+The sell law and its match, the tolerance constants (1 bp of the law or 2 units), the 99% bar per side, the line B population (the 300 cross-source prints plus P7's 1,000 sampled prints), the 1,000-print draw and its frame, line A, the tier lines and their 75% and 90% bars, and the consequence (if either side fails, P7 fails and both looks are NOT_DECIDABLE). Also unchanged: every other A-line blob, the rule, the parameters, the universe, the trigger, the pricing, the costs, the legs, the gate statistics, the windows, the look schedule, futility, multiplicity, the kill rules and the section 0 counting start. This amendment adds no reader and opens no sealed block.
+
+**Not addressed here (ruling item 4).** The tier lines have never run on October prints. The ruling asks for one outcome-blind run on a fresh window before 2026-10-15 and, if they fail, an amendment only under the same discipline. That is separate from this amendment.
 
 ## Sources
 
