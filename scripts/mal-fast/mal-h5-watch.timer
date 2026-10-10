@@ -1,0 +1,11 @@
+[Unit]
+Description=MAL H5 watchdog every 5 minutes (DEC-024 section 8)
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
