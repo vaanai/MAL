@@ -457,6 +457,9 @@ def test_wrapper_is_posix_sh_and_runs_end_to_end(tmp_path, marker):
     assert {(x["mint"], x["pick"]) for x in got if "mint" in x} == {(a, True), (b, False)}
     assert any("hb" in x for x in got)
     assert a not in r.stdout + r.stderr  # no mint is printed
+    # umask 022 in the wrapper: the executor (mal-live, through the shadow bind) can read the file, and nothing in it is group-writable
+    assert (os.stat(tmp_path / "out").st_mode & 0o777, os.stat(tmp_path / "out" / "picks.jsonl").st_mode & 0o777) == (0o755, 0o644)
+    assert "$HOME/data/h5-shadow/cap-pick}" in text  # the default output dir is under the shadow directory (pick_file of the pinned configs)
     # a missing gate log is refused before anything starts
     env2 = {**env, "CAP_PICK_GATE_LOG": str(tmp_path / "missing.jsonl")}
     assert subprocess.run(["sh", str(sh), "--once"], env=env2, capture_output=True, text=True).returncode == 2

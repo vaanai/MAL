@@ -46,6 +46,12 @@ unless the process was started with --h5-look2-observed EXP-024-Am2 (declared ob
 Trigger records, which carry the decision-time state the executor needs, are still written for such pools. The CAP-PICK seal (from
 2026-10-16T01Z) applies on top and does not depend on the flag: a pick stays fully sealed.
 
+CAP-PICK PICK ORACLE (EXP-022 section 9, DEC-024 section 6). From 2026-10-16T01Z a pool is written in full only while the CAP-PICK oracle
+(tools.cap_pick_oracle.PickOracle, from CAP_PICK_LIVE / CAP_PICK_REPLAY / CAP_PICK_FINAL_MARKER) says its mint is NOT a pick. The answer has three
+states and is asked at each decision point: a pick is sealed for good; "not a pick" lets the pool through; "no answer" (the live gate decides
+after the pool's first print, or the feed is stale > 60 s) seals it for now, and a trigger that fires then is withheld for good. Without the
+environment the always-true stub seals every pool in the window, as before. With the oracle the sealed_hour `decisions` count is withheld.
+
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
 against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
 
@@ -90,6 +96,7 @@ from observe.trade_decode import (
     records_from_logs,
 )
 from observe.link_state import GAP_EDGES_MS, REL_SILENT_MS_DEFAULT, SILENT_MS_DEFAULT
+from tools.cap_pick_oracle import PickOracle, from_env as cap_pick_from_env
 from tools.paper_curve_math import pumpswap_sol_fee_ppm
 from tools.pump_structure_monitor import (  # pure python; the classifier semantics are the monitor's, not re-implemented here
     DEFAULT_RPC,
@@ -223,9 +230,26 @@ def clean(obj: Any) -> Any:
 
 
 def cap_pick_seal_oracle_stub(mint: str | None) -> bool:
-    """Placeholder pick oracle: True = suppress. Inside the seal window every mint is treated as a possible pick, so everything is suppressed
-    until a real oracle (the pick set, known to the sealed reader only) replaces this."""
+    """Placeholder pick oracle: True = suppress. Inside the seal window every mint is treated as a possible pick, so everything is suppressed.
+    run_live uses it only when the CAP-PICK oracle is not configured (cap_pick_oracle_from_env)."""
     return True
+
+
+def cap_pick_oracle_from_env(environ: dict[str, str] | None = None) -> tuple[PickOracle | None, dict[str, Any]]:
+    """The CAP-PICK pick oracle for run_live, from the same environment as the C1-NF shadow (tools.cap_pick_oracle.from_env): CAP_PICK_LIVE
+    and CAP_PICK_REPLAY (os.pathsep lists), CAP_PICK_FINAL_MARKER (required), CAP_PICK_STALE_S (default 60). (oracle, start-record info).
+    Not configured -> (None, ...): the engine keeps the always-true stub and seals every pool from 2026-10-16T01Z (fail closed)."""
+    env = os.environ if environ is None else environ
+    try:
+        o = cap_pick_from_env(env)
+    except (ValueError, OSError) as exc:  # e.g. CAP_PICK_STALE_S not a number
+        return None, {"oracle": "stub_always_true", "why": f"cap_pick_env_error:{type(exc).__name__}"}
+    if not isinstance(o, PickOracle):
+        return None, {"oracle": "stub_always_true", "why": "CAP_PICK_LIVE and CAP_PICK_FINAL_MARKER are not both set"}
+    o.stale_s = min(o.stale_s, 60.0)  # DEC-024 s6: never trust a feed older than 60 s here, whatever CAP_PICK_STALE_S says (lower is allowed)
+    n_live = len([p for p in env.get("CAP_PICK_LIVE", "").split(os.pathsep) if p])
+    n_rep = len([p for p in env.get("CAP_PICK_REPLAY", "").split(os.pathsep) if p])
+    return o, {"oracle": "cap_pick_oracle", "live_files": n_live, "replay_files": n_rep, "final_marker": True, "stale_s": o.stale_s}
 
 
 def project_e(t: Sequence[float], a: Sequence[float]) -> float:
@@ -785,7 +809,10 @@ class Pool:
         self.post_cnt: collections.Counter = collections.Counter()
         self.pre_excess = 0
         self.s0_reanchored_slots = 0  # a print below s0 arrived late and s0 moved down by this many slots (only done before any trigger)
-        self.sealed_cache: bool | None = None
+        self.sealed_cache: bool | None = None  # a FINAL CAP-PICK verdict (legacy hook: the first answer; pick oracle: a pick, or no mint)
+        self.seal_window: bool | None = None  # inside the CAP-PICK window, judged once at the s0 the pool has when first asked
+        self.sealed_noted = False  # counted in the sealed_hour aggregate already
+        self.skip_withheld: dict | None = None  # a skipped_no_sps record held while the pick oracle had no answer (written if the pool unseals)
         self.h5_sealed_cache: bool | None = None
         self.skip_logged = False
         self.excluded: str | None = None  # "synthetic" | "unclassified" once a trigger of this pool was withheld (sticky: no variant of it fires later)
@@ -805,7 +832,8 @@ class Engine:
         clock: SlotClock | None = None,
         wall: Callable[[], int] = now_ms,
         pda_fn: Callable[[str], str] | None = None,
-        suppress_outcome: Callable[[str | None], bool] | None = None,  # seal oracle: True = withhold this mint's outcome / strip
+        suppress_outcome: Callable[[str | None], bool] | None = None,  # legacy seal hook: True = withhold this mint's outcome / strip (frozen)
+        pick_oracle: Callable[[str], bool | None] | None = None,  # the CAP-PICK oracle, three states (tools.cap_pick_oracle.PickOracle); wins over suppress_outcome
         seal_start_ms: int | None = SEAL_START_MS,  # None disables the seal (replay of exploration data)
         h5_look2_start_ms: int | None = H5_LOOK2_START_MS,  # None disables the H5 Look-2 outcome seal (tests on synthetic 2027 times)
         h5_look2_observed: bool = False,  # True only with the declared observation of EXP-024 Amendment 2 (run_live validates the reference)
@@ -820,6 +848,7 @@ class Engine:
             from tools.pump_structure_monitor import boost_vault_authority as pda_fn  # pure python, no network
         self.pda_fn = pda_fn
         self.suppress_outcome, self.seal_start_ms = suppress_outcome, seal_start_ms
+        self.pick_oracle = pick_oracle
         self.h5_look2_start_ms, self.h5_look2_observed = h5_look2_start_ms, bool(h5_look2_observed)
         self.pools: dict[str, Pool] = {}
         self.announced: collections.OrderedDict[str, tuple[int, int, str | None, str | None]] = collections.OrderedDict()
@@ -1044,14 +1073,15 @@ class Engine:
         p.sps0 = self._sps(p)
         self.pools[pool] = p
         self.counters["pools_tracked"] += 1
-        if self._sealed(p):
-            self._note_sealed_pool(p.s0_recv_ms)
+        if self._sealed(p) and p.sealed_cache is True:  # a final verdict at s0 (always so with the legacy hook); a pick oracle's pool that is
+            self._note_sealed_pool(p.s0_recv_ms)  # not known yet at s0 (the usual case: the gate decides after the first print) is counted at close
+            p.sealed_noted = True
         elif self._h5_sealed(p):
             self.counters["h5_look2_sealed_pools"] += 1  # a pool count only; its trigger records are still written
         if mint and len(self.mint_pools.get(mint, ())) > 1:
             p.gaps.append({"kind": "ambiguous_mint"})
-        if mint and not self._sealed(p):  # still unclassified at s0: ask the RPC fallback (async; a no-op if it was already asked at the announcement)
-            self.request_class(mint)
+        if mint and p.sealed_cache is not True:  # still unclassified at s0: ask the RPC fallback (async; a no-op if it was already asked at the announcement)
+            self.request_class(mint)  # (a pool whose pick verdict is still open is asked too: it may turn out a non-pick and trigger)
         if ann is not None and self.last_flag_gap_ms is not None and ann[1] < self.last_flag_gap_ms:
             p.gaps.append({"kind": "announced_before_gap"})  # first prints may have been lost in a gap between the CreatePool and this s0
         return p
@@ -1130,7 +1160,8 @@ class Engine:
         """A print with a slot below s0 arrived after s0 was set (the pool's true first print was delivered late). Before any trigger this is a
         pure reorder across slots and s0 moves down to it (safe: sells already evaluated against the later s0 had a smaller t, so none that
         qualifies under the true s0 was skipped). After a trigger the exit plan is already anchored on the old s0, so the pool is flagged."""
-        if p.trig and not self._sealed(p):  # a sealed pool has no exit plan: its path must not depend on whether it triggered
+        real_trigger = any("slot" in r for r in p.trig.values())  # a trigger record went out (with a pick oracle, a pool may seal only after it)
+        if real_trigger or (p.trig and not self._sealed(p)):  # a sealed pool has no exit plan: its path must not depend on whether it triggered
             p.gaps.append({"kind": "slot_below_s0", "s0": p.s0, "slot": pr.slot})
             self.counters["slot_below_s0_after_trigger"] += 1
             return
@@ -1208,6 +1239,8 @@ class Engine:
     # ---- trigger --------------------------------------------------------------------------------------------
     def _eval(self, p: Pool, pr: Pr, idx: int) -> None:
         sealed = self._sealed(p)
+        if not sealed:
+            self._flush_withheld_skip(p)
         if len(p.trig) == len(VARIANTS) and not sealed:  # a sealed pool keeps evaluating, so nothing it does depends on whether it triggered
             return
         sps = self._sps(p)
@@ -1219,13 +1252,16 @@ class Engine:
                 spent, ident, src = self.boost_spent(p)
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
+                    rec = {"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
+                           "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
+                           "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src}
                     if self._sealed(p):  # EXP-022 s9: no per-pool trace of a decision; only the unlabelled hourly aggregate
                         self._note_sealed_decision(p.s0_recv_ms)
+                        if p.sealed_cache is None:  # pick oracle, no answer yet: held, and written once the pool is known to be a non-pick, so
+                            p.skip_withheld = rec  # the executor still refuses this pool's later triggers (sps_skipped_pool) exactly as before
                         return
                     self.counters["skipped_no_sps_would_trigger"] += 1
-                    self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
-                               "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
-                               "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src})
+                    self.emit(rec)
             return
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
@@ -1244,6 +1280,15 @@ class Engine:
             if pr.q_post(var, p.v0) / 1e9 <= Q_STAR_SOL:
                 self._fire(p, pr, idx, var, sps, t, spent, ident, src)
 
+    def _flush_withheld_skip(self, p: Pool) -> None:
+        """A skipped_no_sps record held while the pick oracle had no answer, written now that the pool is known to be a non-pick (before any
+        later record of the pool, so the executor learns the skip before a trigger). Only the caller's verdict is used: it is unsealed."""
+        if p.skip_withheld is None:
+            return
+        rec, p.skip_withheld = p.skip_withheld, None
+        self.counters["skipped_no_sps_would_trigger"] += 1
+        self.emit({**rec, "withheld_pick_pending": True})
+
     def _fire(self, p: Pool, pr: Pr, idx: int, var: str, sps: float, t: float, spent: int, ident: str | None, src: str) -> None:
         k_p = math.ceil(ENTRY_S["primary"] / sps - 1e-9)
         k_b = math.ceil(ENTRY_S["binding"] / sps - 1e-9)
@@ -1254,7 +1299,9 @@ class Engine:
             self._probe_links(self.wall())  # a half-open or flapping socket seen since the last 5 s look must show on THIS trigger
         detect = self.wall()  # after the probe, so detect_lag_ms includes its cost
         if sealed:  # EXP-022 s9 (from 2026-10-16T01Z): no per-pool trigger record, no counters, no pending outcome, no strip
-            p.trig[var] = {"sealed": True}
+            # A pick oracle that has no answer yet (the gate has not decided, or its feed is stale) seals this trigger for good: it is never
+            # written later (the executor would buy late). The stub remembers that, for the close record if the pool turns out a non-pick.
+            p.trig[var] = {"sealed": True, "pick_pending": True} if p.sealed_cache is None else {"sealed": True}
             self._note_sealed_decision(p.s0_recv_ms)
             return
         syn, syn_src = self._syn(p)
@@ -1315,9 +1362,11 @@ class Engine:
     def _resolve(self, p: Pool, pend: dict, final: bool) -> None:
         if pend not in p.pending:
             return
+        if self._sealed(p) and p.sealed_cache is None and not final and not self._h5_sealed(p):
+            return  # a pick oracle with no answer right now (its feed went stale after the trigger): keep the outcome pending; at close it is dropped
         p.pending.remove(pend)
-        if self._sealed(p) or self._h5_sealed(p):  # unreachable for a sealed pool (_fire creates no pending outcome); silent if it ever happens
-            return
+        if self._sealed(p) or self._h5_sealed(p):  # a sealed pool's _fire creates no pending outcome; with a pick oracle a pool can seal after its
+            return  # trigger (a later pick row): the outcome is then withheld, silently
         var, sps, X_exit = pend["variant"], pend["sps"], pend["exit_land"]
         complete = (self.hw_slot is not None and self.hw_slot >= pend["resolve_at"]) or not final
         legs: dict[str, Any] = {}
@@ -1417,25 +1466,47 @@ class Engine:
 
     def _sealed(self, p: Pool) -> bool:
         """True when this pool's post-decision states must not be written. Fail closed: no mint, no oracle, or an oracle that raises inside
-        the window all suppress. Before the window nothing is suppressed."""
+        the window all suppress. Before the window nothing is suppressed. Whether the pool is inside the window is judged once, at the s0 it
+        has when first asked.
+
+        Legacy hook (`suppress_outcome`): the first answer is frozen. Pick oracle (`pick_oracle`, three states): the live CAP-PICK gate decides
+        after the pool's first print (300 ms holdback, tape, exporter poll), so at s0 the answer is usually None. Freezing that would seal every
+        pool, so only a pick (True) is frozen; False lets the pool through for now and None seals it for now, and both are asked again at the
+        next decision point. A trigger that fires while the answer is None is withheld for good (_fire)."""
         if p.sealed_cache is not None:
             return p.sealed_cache
-        p.sealed_cache = self._sealed_now(p)
-        return p.sealed_cache
+        sealed, final = self._sealed_now(p)
+        if final:
+            p.sealed_cache = sealed
+        return sealed
 
-    def _sealed_now(self, p: Pool) -> bool:
+    def _sealed_now(self, p: Pool) -> tuple[bool, bool]:
+        """(sealed, final)."""
         if self.seal_start_ms is None:
-            return False
-        t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
-        if t < self.seal_start_ms:
-            return False
-        if p.mint is None or self.suppress_outcome is None:
-            return True
+            return False, True
+        if p.seal_window is None:
+            t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
+            p.seal_window = t >= self.seal_start_ms
+        if not p.seal_window:
+            return False, True
+        if p.mint is None:
+            return True, True
+        if self.pick_oracle is not None:
+            try:
+                ans = self.pick_oracle(p.mint)
+            except Exception:  # noqa: BLE001 - fail closed (PickOracle itself never raises)
+                self.counters["seal_oracle_errors"] += 1
+                return True, False
+            if ans is True:
+                return True, True  # a pick never flips back
+            return ans is not False, False  # False: through for now; None or a non-bool: sealed for now
+        if self.suppress_outcome is None:
+            return True, True
         try:
-            return bool(self.suppress_outcome(p.mint))
+            return bool(self.suppress_outcome(p.mint)), True
         except Exception:  # noqa: BLE001 - fail closed
             self.counters["seal_oracle_errors"] += 1
-            return True
+            return True, True
 
     def _h5_sealed(self, p: Pool) -> bool:
         """True when this pool's outcome-bearing records are withheld by the H5 seal of EXP-024 Look 2's added window: its s0 block time is at or
@@ -1491,8 +1562,13 @@ class Engine:
             self._resolve(p, pend, final=True)
         sealed = self._sealed(p)
         h5s = self._h5_sealed(p)
+        if not sealed:
+            self._flush_withheld_skip(p)
         self._emit_strip(p, sealed or h5s)
         if sealed:  # EXP-022 s9: only what was known when the pool opened, before any decision print; nothing here can differ with the decision
+            if not p.sealed_noted:  # a pick oracle's pool that sealed after s0 (or never got an answer) is counted under its open hour now
+                self._note_sealed_pool(p.s0_recv_ms)
+                p.sealed_noted = True
             self.emit({"type": "pool", "reason": reason, "sealed": True, "pool": p.pool, "mint": p.mint, "s0": p.s0_open, "s0_t_recv_ms": p.s0_recv_ms,
                        "s0_block_time": p.s0_ts_open, "announced_slot": p.announced_slot,
                        "s0_minus_announced_slots": None if p.announced_slot is None else p.s0_open - p.announced_slot, "v0": p.v0, "sps_at_s0": p.sps0,
@@ -1536,6 +1612,9 @@ class Engine:
         }
         if h5s:
             rec["h5_look2_sealed"] = True  # min_q withheld; no outcome and no strip were written for this pool
+        pending = sorted(v for v, r in p.trig.items() if r.get("pick_pending"))
+        if pending:  # a non-pick whose trigger fired before the pick oracle had an answer: in `triggered`, but no trigger record was written
+            rec["trigger_withheld_pick_pending"] = pending
         self.emit(rec)
         p.closed = True
         del self.pools[p.pool]
@@ -1595,7 +1674,9 @@ class Engine:
     def _flush_sealed_hours(self, now_ms_: int, final: bool = False) -> None:
         """One unlabelled record for EVERY UTC hour from the seal start (or from the process start, if later), whether or not it has any sealed pool:
         how many sealed pools opened in it and how many decisions their pools took (trigger or skipped candidates, counted under the pool's open hour).
-        `decisions` is the string "<5" below 5. An hour is reported only once WALL_CLOSE has passed for every pool that could have opened in it, so
+        `decisions` is the string "<5" below 5, and the string "withheld" whenever a pick oracle is wired (see the comment below). With a pick
+        oracle a pool is counted in `pools_opened` when its verdict is final: at s0 for a pick known then, else at close if it closed sealed. A pool
+        closes within WALL_CLOSE of its s0, so the count lands before its hour is reported. An hour is reported only once WALL_CLOSE has passed for every pool that could have opened in it, so
         the existence of a record says nothing. No pool, mint, slot or variant. The current hour is reported only on shutdown, flagged partial; so
         is any earlier hour whose WALL_CLOSE wait had not run out at shutdown (close_all closed its pools early). Hours are per run: a restart
         writes a second record for its first hour and none for the downtime hours, so a reader sums sealed_hour records by hour."""
@@ -1607,7 +1688,10 @@ class Engine:
             h = self._sealed_cursor
             opened, n = self._sealed_hours.pop(h, [0, 0])
             hour = datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H")
-            self.emit({"type": "sealed_hour", "hour": hour, "pools_opened": opened, "decisions": n if n >= SEALED_MIN_COUNT else f"<{SEALED_MIN_COUNT}",
+            # With a pick oracle the sealed pools are the CAP-PICK picks, so their H5 decision count (a trigger means the pool drained) would be
+            # an outcome-linked count of counted picks: EXP-022 s9 lets monitoring print only hour counts and gate decision counts. Withheld.
+            dec = "withheld" if self.pick_oracle is not None else (n if n >= SEALED_MIN_COUNT else f"<{SEALED_MIN_COUNT}")
+            self.emit({"type": "sealed_hour", "hour": hour, "pools_opened": opened, "decisions": dec,
                        "partial": bool(final and (h + 1) * 3_600_000 + int(WALL_CLOSE_S * 1000) > int(now_ms_))})
             self._sealed_cursor += 1
 
@@ -1998,8 +2082,12 @@ async def run_live(args: argparse.Namespace) -> int:
     rpc_url = check_rpc_url(getattr(args, "rpc_url", None) or DEFAULT_RPC)
     classifier = SynClassifier()
     fallback = RpcFallback(classifier, rpc_url)
-    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, h5_look2_observed=look2_ref is not None,
-                    classifier=classifier)
+    pick_oracle, seal_info = cap_pick_oracle_from_env()
+    if pick_oracle is None:
+        log.warning("CAP-PICK pick oracle not configured (%s): every pool with s0 from %s is sealed (fail closed); set CAP_PICK_LIVE and "
+                    "CAP_PICK_FINAL_MARKER", seal_info.get("why"), iso_from_ms(SEAL_START_MS))
+    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, pick_oracle=pick_oracle,
+                    h5_look2_observed=look2_ref is not None, classifier=classifier)
     engine.syn_request = fallback.request
     engine.on_error = errlog.log
     if look2_ref is not None:
@@ -2017,7 +2105,7 @@ async def run_live(args: argparse.Namespace) -> int:
 
     engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
-                 "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, "oracle": "stub_always_true"},
+                 "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, **seal_info},
                  "h5_look2": look2_start_info(look2_ref),
                  "synthetic_gate": {"rule": "no buy on a synthetic or unclassified pool (EXP-024 Am.4)", "sources": ["ws", "rpc"], "ws_program": "pump.fun logsSubscribe",
                                     "syn_sockets": getattr(args, "syn_sockets", 1), "rpc": "public getSignaturesForAddress+getTransaction", "rpc_attempt_delays_s": list(RPC_ATTEMPT_DELAYS_S)}})

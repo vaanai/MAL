@@ -18,6 +18,12 @@
 #                   get trigger records only, and pools with s0 >= 2026-11-06T00Z get them even with the flag. Any other value is refused.
 #                   CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says. A MiScusi resume or re-run must set the variable again:
 #                   the daily check alerts when the newest start record of a shadow running past 2026-10-16T00Z shows h5_look2.observed false.
+#   CAP_PICK_LIVE, CAP_PICK_REPLAY, CAP_PICK_FINAL_MARKER, CAP_PICK_STALE_S
+#                   the CAP-PICK pick oracle (tools/cap_pick_oracle.py; passed through unchanged). CAP_PICK_LIVE is the exporter's picks.jsonl,
+#                   CAP_PICK_REPLAY the replay booleans (os.pathsep lists), CAP_PICK_FINAL_MARKER the marker the manager writes after the DEC-016
+#                   FINAL (the same path the exporter job waits on). Without CAP_PICK_LIVE and CAP_PICK_FINAL_MARKER every pool with s0 from
+#                   2026-10-16T01Z is sealed (no trigger record: the executor buys nothing). CAP_PICK_STALE_S may only tighten the 60 s limit.
+#                   The start record's seal.oracle says which one ran ("cap_pick_oracle" or "stub_always_true"). A resume must set them again.
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 #   H5_SYN_SOCKETS  logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed, default 1; the RPC fallback covers a miss)
 #   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
