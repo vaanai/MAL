@@ -358,7 +358,9 @@ def convert(src: str, block: str, out: str | Path, hours: Sequence[str], *, look
             check_exploration_hour(h, src)
     cols = pinned_cols()
     out = Path(out)
-    con = _connect(threads=threads, tmp=str(out / "tmp_duck"))
+    # one thread: DuckDB's parallel parquet writer cuts row groups by thread count (E0 job #520: 4 vs 1 thread gave
+    # equal rows but different file sha256), so the files are written single-threaded to be byte-stable.
+    con = _connect(threads=1, tmp=str(out / "tmp_duck"))
     v0_table = None
     if event_v:
         tf = list(v0_files) if v0_files is not None else [p for h in hours if (p := src_file(src, "trades", h))]
