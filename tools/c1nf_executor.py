@@ -30,7 +30,7 @@ with its tier-start baseline, STOP / HALT (state dir and wallet-wide), the latch
             last 20 landed sells past landing + 305 s.
   balance   H5's balance guard with the per-exit reserve raised from 1,000,000 to one escalated send + base fee (1,015,000; c1nf_exit_reserve).
   wallet    Live refuses to start when the credential holds H5's wallet (H5_WALLET_PUBKEY) or anything but the pinned C1-NF wallet
-            (C1NF_WALLET_PUBKEY; unset until Helm gives the public key, so live cannot start before that line is a reviewed code change).
+            (C1NF_WALLET_PUBKEY; pinned 2026-10-10 to the public key Helm gave at runbook Step 2. None would refuse every live start).
   gates     EXP-025 Part 1 in the tree (not EXP-024).
   seal      H5's boolean pick oracle from 2026-10-16T01Z, asked about EVERY mint (wider than EXP-025 section 5.3's keying, fail safe); only an
             exact False lets a buy go ahead: a pick (True), undecided (None), a stale or missing feed, an exception or a non-boolean is no buy.
@@ -104,9 +104,9 @@ PICK_WINDOW_START_MS = 1791590400000  # 2026-10-10T00:00Z = #503 OUTCOME_START_M
 FEED_HEARTBEAT_MAX_AGE_MS = 150_000  # DEC-026 section 7 rule 7. Config may only lower it; 0 or absent means this (never "off")
 GAP_LOOKBACK_S = 60.0  # a c1nf_gap whose slot range overlaps [SD_slot - 60 s, SD_slot] refuses the pick: the minute's features may miss prints
 GAPS_KEEP = 200
-# The wallets (DEC-026 section 5). Public keys only. H5's wallet is never C1-NF's; C1-NF's own public key is pinned when Helm gives it.
+# The wallets (DEC-026 section 5). Public keys only. H5's wallet is never C1-NF's. C1-NF's: Helm's runbook Step 2, 2026-10-10 (made on mal-fast-0)
 H5_WALLET_PUBKEY = "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # DEC-024 / DEC-019 probe wallet
-C1NF_WALLET_PUBKEY: str | None = None  # <HELM FILLS> (DEC-026 section 5 table). None: live refuses to start
+C1NF_WALLET_PUBKEY: str | None = "CKAc6ZiAC7dWBs4XScujGauaqzgFMoCMPwvxF7cuKGw5"  # DEC-026 section 5. None or H5's: wallet_unpinned, live refuses
 # The pinned model (DEC-026 section 11 item 12, 2026-10-10): ARTIFACTS/c1nf_model/c1nf_model_exp36.txt, built by tools/c1nf_model_pin.py from the frozen
 # EXP-025 recipe on the 36 exploration days only (manifest.json; tools/test_c1nf_model_pin.py checks this set equals the manifest). Empty: live refuses.
 C1NF_MODEL_SHA256: frozenset[str] = frozenset({"faf8a01f5fb5019a3c26affc7de49f47270e7b6717eea34767bfcdc759399478"})
