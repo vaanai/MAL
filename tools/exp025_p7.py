@@ -152,8 +152,9 @@ def e0_context() -> dict:
 
 
 def check_materialised(ctx: dict) -> None:
-    if ctx.get("assembly") and not os.path.exists(ctx["assembly"]):
-        raise P7Refusal("NOT_READY", "look_assembly.json is missing: the look's tape is not materialised")
+    if ctx.get("assembly"):                               # the runner's own check: schema exp025_look_assembly_v1, look 'look{N}', >= 1 manifest
+        import exp025_look as LK
+        LK.load_assembly(ctx["look"], os.path.dirname(ctx["assembly"]))
     if not os.path.exists(ctx["tokens"]):
         raise P7Refusal("NOT_READY", "the look's tokens.parquet is not materialised")
     if not any(os.path.exists(os.path.join(ctx["tape"], f"{h}.parquet")) for h, _ in ctx["hours"]):
@@ -465,7 +466,8 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
                                rps=getattr(fetch, "rps", None), unit=f"exp025_p7 {ctx['mode']} (getTransaction, Helius key of {HELIUS_ENV})"))
     rec = dict(schema=ctx["schema"], look=ctx["look"], mode=ctx["mode"], cp=cp, fee=fee, p7_all_pass=bool(EV.p7_all_pass(tuple(cp), tuple(fee))),
                counts=counts, prints=out_prints, prints_sha256=_sha256(out_prints),
-               pins=dict(p7_buy_amend_sha256=_sha256(amend_path), event_v_map_sha256=AM.EVENT_V_MAP_SHA256, decoder_blob=git_blob(decoder_path)),
+               pins=dict(p7_buy_amend_sha256=_sha256(amend_path), event_v_map_sha256=AM.EVENT_V_MAP_SHA256, decoder_blob=git_blob(decoder_path),
+                         look_assembly_sha256=_sha256(ctx["assembly"]) if ctx.get("assembly") else None),
                written_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     with open(out_json, "x") as fh:
         json.dump(rec, fh, indent=1, sort_keys=True)
@@ -489,6 +491,9 @@ def main(argv=None, *, fetch=None, now: int | None = None) -> int:
     except R.Refusal as e:
         print(json.dumps({"refused": e.code, "reason": str(e)[:300]}))
         return 2
+    except Exception as e:                                # counts only (section 10, Amendment 1): no message, no traceback
+        print(json.dumps({"refused": "CRASH", "type": type(e).__name__}))
+        return 3
     print(json.dumps(rec["counts"], sort_keys=True))
     return 0
 

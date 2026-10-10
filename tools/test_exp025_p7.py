@@ -79,7 +79,8 @@ class DriverTests(unittest.TestCase):
             "quote_reserve": q, "venue": "pumpswap"}
 
     def ctx(self, tape=None, adapter=None, tokens=True, assembly=True, extra_pools=None, dtype="float64"):
-        """The adapter's token_raw, quote_reserve and base_reserve are written as `dtype`: float64 (DOUBLE) by default, the real layout."""
+        """The adapter's token_raw, quote_reserve and base_reserve are written as `dtype`: float64 (DOUBLE) by default, the real layout.
+        assembly=True writes a valid look_assembly.json (schema exp025_look_assembly_v1, look1, one adapter manifest); a string is written as is."""
         import pandas as pd
         tape = self.tape if tape is None else tape
         adapter = [self._adapter_row(t) for t in tape] if adapter is None else adapter
@@ -102,8 +103,15 @@ class DriverTests(unittest.TestCase):
             pools = dict(self.v0, **(extra_pools or {}))
             pd.DataFrame({"pool": list(pools), "v0_lamports": pd.array(list(pools.values()), dtype="Int64")}).to_parquet(tok, index=False)
         asm = os.path.join(self.tmp, "O", "look_assembly.json")
-        if assembly:
-            open(asm, "w").write("{}")
+        if isinstance(assembly, str):
+            with open(asm, "w") as fh:
+                fh.write(assembly)
+        elif assembly:
+            man = os.path.join(self.tmp, "O", "manifest-0.json")
+            with open(man, "w") as fh:
+                json.dump({"schema": "exp025_adapter_manifest_v1"}, fh)
+            with open(asm, "w") as fh:
+                json.dump({"schema": "exp025_look_assembly_v1", "look": "look1", "manifests": [man]}, fh)
         return dict(mode="look", look=1, schema=P.SCHEMA, hours=[(HOUR, raw)], tape=td, tokens=tok, assembly=asm,
                     out=os.path.join(self.tmp, "O", "p7"))
 
@@ -240,6 +248,22 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(rec["fee"], [1, 2, 1, 2])
         self.assertEqual(l2["buy_by_ix_name"], {"buy": {"n": 1, "ok": 1}, "buy_exact_quote_in_v2": {"n": 1, "ok": 0}})
 
+    def test_line2_runs_on_the_main_draw_only_when_a_topup_exists(self):
+        """Main draw of n=2 out of the four: the buy top-up is non-empty and line 2 still tallies exactly the main sample (Amendment 6 D)."""
+        real_load = P.load_amend
+
+        def small(*a, **k):
+            m = real_load(*a, **k)
+            orig = m.p7_raw_draw
+            m.p7_raw_draw = lambda rows, v0: orig(rows, v0, n=2)
+            return m
+
+        with mock.patch.object(P, "load_amend", side_effect=small):
+            rec = P.run_p7(self.ctx(), FakeFetch(self.txs))
+        c, l2 = rec["counts"], rec["counts"]["line2"]
+        self.assertGreater(c["topup_n"], 0)
+        self.assertEqual(l2["sell_n"] + l2["buy_n"] + l2["buy_skipped"] + l2["neither"], c["sample_n"])
+
     def test_line2_real_fixtures_match_the_tier_and_a_shifted_fee_misses(self):
         for t in self.tape:
             if (t.get("ix_name") or "").startswith("buy_exact") or t["tx_index"] == 6:
@@ -344,7 +368,7 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(P.git_blob(P.DECODER_PATH), P.DECODER_BLOB)
 
     def test_not_materialised_refuses(self):
-        for kw in (dict(tokens=False), dict(assembly=False)):
+        for kw in (dict(tokens=False), dict(assembly=False), dict(assembly="{}")):
             sub = tempfile.mkdtemp(dir=self.tmp)
             self.tmp, keep = sub, self.tmp
             try:
@@ -370,12 +394,25 @@ class DriverTests(unittest.TestCase):
             opened.append(str(path))
             return real_open(path, *a, **k)
 
+        import exp025_adapter as AD
         f = FakeFetch(self.txs)
         with mock.patch("builtins.open", spy), mock.patch.object(P, "frame_rows", side_effect=AssertionError("opened")), \
-                mock.patch.object(P, "v0_map", side_effect=AssertionError("opened")):
+                mock.patch.object(P, "v0_map", side_effect=AssertionError("opened")), \
+                mock.patch.object(AD, "src_file", side_effect=AssertionError("sealed path touched before the guard")):
             self.assertEqual(P.main(["run", "--look", "1"], fetch=f), 2)
         self.assertEqual([p for p in opened if p.startswith("/data/")], [])
         self.assertEqual(f.calls, [])
+
+    def test_crash_prints_type_only_exit_3(self):
+        """Any non-Refusal exception: stdout is {'refused': 'CRASH', 'type': ...}; no message, no traceback, no pool or slot."""
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(P, "look_context", side_effect=KeyError(("POOLADDR", 1))), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(P.main(["run", "--look", "1"], fetch=FakeFetch(self.txs)), 3)
+        self.assertNotIn("POOLADDR", out.getvalue() + err.getvalue())
+        self.assertEqual(json.loads(out.getvalue()), {"refused": "CRASH", "type": "KeyError"})
 
     def test_fetcher_three_attempts_then_fetch_failed_and_credits(self):
         def boom(body):
