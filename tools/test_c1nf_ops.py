@@ -17,13 +17,13 @@ FAST = ROOT / "scripts/mal-fast"
 INST = FAST / "install-c1nf-executor-pinned.sh"
 MAKE = FAST / "make-c1nf-manifest.sh"
 TEXT = INST.read_text()
-# Files the executor PR (claude/c1nf-executor-v2 @ 156a941) ships: the module and the two JSON configs, nothing else. Everything else the
-# installer names (the launcher, the base unit, both drop-ins and check-c1nf-unit.py included) must already be in this tree.
+# Files the executor PR (#530, claude/c1nf-executor-v2 @ 8ea24e6) ships: the module and the two JSON configs, nothing else. Everything else the
+# installer names (the launcher, the base unit, both drop-ins, check-c1nf-unit.py and the rescue tool included) must already be in this tree.
 FROM_EXECUTOR_PR = {"tools/c1nf_executor.py", "scripts/mal-fast/c1nf-executor-live.json", "scripts/mal-fast/c1nf-executor.json"}
 OURS = ("scripts/mal-fast/c1nf-watch.py", "scripts/mal-fast/c1nf-daily-check.py", "scripts/mal-fast/check-c1nf-watch-unit.py",
         "scripts/mal-fast/mal-c1nf-watch.service", "scripts/mal-fast/mal-c1nf-watch.timer", "EXP/EXP-025-c1nf-part1-prereg.md",
         "scripts/mal-fast/c1nf_exec_launcher.py", "scripts/mal-fast/mal-c1nf-executor.service", "scripts/mal-fast/check-c1nf-unit.py",
-        "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf", "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf")
+        "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf", "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf", "tools/c1nf_sell_and_close.py")
 
 
 def var(name: str) -> str:
@@ -91,7 +91,7 @@ def _config_check() -> str:
 
 
 GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
-        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 156a941
+        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 8ea24e6
 
 
 @pytest.mark.parametrize("change,ok", [({}, True), ({"stake_lamports": 100_000_000}, False), ({"buy_priority_lamports": 55_000}, False),
@@ -139,4 +139,14 @@ def _closure(starts: list[str]) -> set[str]:
 def test_modules_are_the_import_closure_once_the_executor_is_here():
     if not (ROOT / "tools/c1nf_executor.py").is_file():
         pytest.skip("tools/c1nf_executor.py is not on this branch yet (executor PR claude/c1nf-executor-v2)")
-    assert set(var("MODULES").split()) == _closure(["tools/c1nf_executor.py", "tools/h5_sell_and_close.py"])
+    assert set(var("MODULES").split()) == _closure(["tools/c1nf_executor.py", "tools/c1nf_sell_and_close.py"])
+
+
+def test_smoke_import_is_the_c1nf_modules():
+    imports = re.findall(r'import (tools\.\S+, tools\.\S+)" "\$', TEXT)
+    assert imports == ["tools.c1nf_executor, tools.c1nf_sell_and_close"] * 2, imports
+
+
+def test_rescue_tool_closure_is_in_modules_without_the_executor():
+    # on this branch alone: everything the rescue tool imports (h5_sell_and_close and the probe modules) is installed
+    assert _closure(["tools/c1nf_sell_and_close.py"]) - {"tools/c1nf_executor.py"} <= set(var("MODULES").split())

@@ -104,11 +104,12 @@ def test_feed_dest_matches_v2_config_intents_file():
             assert json.loads(p.read_text())["intents_file"] == chk.SHADOW_DEST
 
 
-def test_launcher_runs_c1nf_executor_only():
+def test_launcher_runs_c1nf_modules_only():
     src = (MF / "c1nf_exec_launcher.py").read_text()
-    assert 'MODULE = "tools.c1nf_executor"' in src
-    assert "h5_sell_and_close" not in src and "tools.h5_executor\"" not in src
-    assert "runpy.run_module(MODULE" in src
+    code = "\n".join(ln for ln in src.split('"""')[2].splitlines() if not ln.lstrip().startswith("#"))
+    assert 'MODULE = "tools.c1nf_executor"' in code and 'TOOLS = {"sell_and_close": "tools.c1nf_sell_and_close"}' in code
+    assert "h5_sell_and_close" not in code and "tools.h5_executor" not in code  # H5's tool is never offered for the second wallet
+    assert "runpy.run_module(MODULE" in code
 
 
 def test_launcher_refuses_foreign_tools_package(tmp_path):
@@ -118,14 +119,27 @@ def test_launcher_refuses_foreign_tools_package(tmp_path):
     assert r.returncode != 0  # no tools/ beside it: import fails, nothing runs
 
 
-def test_launcher_refuses_run_tool(tmp_path):
+def _fake_tree(tmp_path):
     (tmp_path / "launcher.py").write_bytes((MF / "c1nf_exec_launcher.py").read_bytes())
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "__init__.py").write_text("")
     (tools / "c1nf_executor.py").write_text("raise SystemExit('ran executor')\n")
-    r = subprocess.run([sys.executable, "-I", "-B", str(tmp_path / "launcher.py"), "--run-tool", "sell_and_close"], capture_output=True,
-                       text=True)
-    assert r.returncode == 1 and "no --run-tool" in r.stderr
-    r = subprocess.run([sys.executable, "-I", "-B", str(tmp_path / "launcher.py"), "--status"], capture_output=True, text=True)
+    (tools / "c1nf_sell_and_close.py").write_text("import sys\nraise SystemExit('ran c1nf sell_and_close ' + ' '.join(sys.argv[1:]))\n")
+    (tools / "h5_sell_and_close.py").write_text("raise SystemExit('ran H5 sell_and_close')\n")
+    return tmp_path / "launcher.py"
+
+
+def test_launcher_run_tool_is_c1nfs_sell_and_close_only(tmp_path):
+    launcher = _fake_tree(tmp_path)
+
+    def go(*argv):
+        return subprocess.run([sys.executable, "-I", "-B", str(launcher), *argv], capture_output=True, text=True)
+
+    r = go("--run-tool", "sell_and_close", "--mint", "M")
+    assert r.returncode == 1 and "ran c1nf sell_and_close --mint M" in r.stderr and "H5" not in r.stderr
+    for bad in (("--run-tool",), ("--run-tool", "h5_sell_and_close"), ("--run-tool", "withdraw")):
+        r = go(*bad)
+        assert r.returncode == 1 and "--run-tool needs one of: sell_and_close" in r.stderr, bad
+    r = go("--status")
     assert "ran executor" in r.stderr

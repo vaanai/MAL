@@ -18,10 +18,12 @@
 # LoadCredential=c1nf-wallet) is never installed here: Helm installs it from the verified <sha>/ copy (docs/runbooks/c1nf-executor.md).
 # It also refuses unless the live config at <sha> holds DEC-026 section 6's stake (0.05 SOL), priority (505,000 lamports), end_ms
 # (2026-10-24T00:30Z) and state_dir (/var/lib/mal-live/c1nf), Jito off with a zero tip, and no wider buy guard or feed line.
-# DEPENDENCY: tools/c1nf_executor.py and the two JSON configs come from the executor PR (claude/c1nf-executor-v2, reference sha 156a941);
-# the launcher, the base unit, the live and shadow-feed drop-ins and check-c1nf-unit.py are in this PR (built from H5's). MODULES below
-# matches v2's import closure at 156a941 (tools.c1nf_executor on top of tools.h5_executor); tools/test_c1nf_ops.py checks it once
-# tools/c1nf_executor.py is on the branch. A sha without every file refuses ("missing or empty").
+# DEPENDENCY: tools/c1nf_executor.py and the two JSON configs come from the executor PR (#530, claude/c1nf-executor-v2, reference sha
+# 8ea24e6); the launcher, the base unit, the live and shadow-feed drop-ins, check-c1nf-unit.py and the root rescue tool
+# tools/c1nf_sell_and_close.py are in the ops PR (#531, built from H5's). MODULES below is the import closure of tools.c1nf_executor and
+# tools.c1nf_sell_and_close (both on top of H5's modules; tools/h5_sell_and_close.py is in it only as the rescue tool's library, and the
+# launcher never runs it); tools/test_c1nf_ops.py checks it once tools/c1nf_executor.py is on the branch. A sha without every file
+# refuses ("missing or empty").
 set -euo pipefail
 # A root script must not inherit the caller's search path, working directory or Python environment: install, mv, sha256sum, awk, find,
 # chown and systemctl resolve from this PATH only, and `python3 -m venv` would otherwise put the current directory first on sys.path.
@@ -39,7 +41,7 @@ case "$MANIFEST" in "" | /*) ;; *) MANIFEST="$ORIG_PWD/$MANIFEST" ;; esac
 [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || { echo "refusing: the manifest argument is mandatory (usage: $0 <full-sha> <manifest>)" >&2; exit 1; }
 DEST=/usr/local/lib/mal-c1nf-exec
 UNIT=mal-c1nf-executor
-MODULES="tools/__init__.py tools/c1nf_executor.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
+MODULES="tools/__init__.py tools/c1nf_executor.py tools/c1nf_sell_and_close.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
 EXTRA="scripts/mal-fast/c1nf_exec_launcher.py:launcher.py scripts/mal-fast/c1nf-executor-live.json:c1nf-executor-live.json scripts/mal-fast/c1nf-executor.json:c1nf-executor.json scripts/mal-fast/mal-c1nf-executor-live-pinned.conf:mal-c1nf-executor-live-pinned.conf scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf:mal-c1nf-executor-shadow-feed.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt scripts/mal-fast/c1nf-watch.py:c1nf-watch.py scripts/mal-fast/c1nf-daily-check.py:c1nf-daily-check.py scripts/mal-fast/check-c1nf-watch-unit.py:check-c1nf-watch-unit.py scripts/mal-fast/mal-c1nf-watch.service:mal-c1nf-watch.service scripts/mal-fast/mal-c1nf-watch.timer:mal-c1nf-watch.timer EXP/EXP-025-c1nf-part1-prereg.md:EXP/EXP-025-c1nf-part1-prereg.md"
 BASE_UNIT_SRC="scripts/mal-fast/mal-c1nf-executor.service"
@@ -247,7 +249,7 @@ chown -R root:root "$STAGE" "$VENV_NEW"
 CHECK="$HERE/check-h5-exec-tree.sh"
 "$CHECK" "$STAGE" "$VENV_NEW" || { echo "refusing: staged tree or venv failed the permission/symlink check; nothing was installed" >&2; exit 1; }
 # Smoke import from the staged tree with the new venv, before anything is moved.
-"$VENV_NEW/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.c1nf_executor, tools.h5_sell_and_close" "$STAGE"
+"$VENV_NEW/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.c1nf_executor, tools.c1nf_sell_and_close" "$STAGE"
 
 # Point of no return: put the sha dir and the venv in place (unit is stopped), then verify. The previous
 # venv is kept as venv.old until the final checks pass so a failure can be rolled back.
@@ -302,7 +304,7 @@ chown -R root:root "$DEST/$COMMIT" "$DEST/venv" || rollback "chown failed"
 "$CHECK" "$DEST/$COMMIT" "$DEST/venv" || rollback "post-move permission/symlink check failed"
 verify_tree "$DEST/$COMMIT" check || rollback "post-move hash check failed"
 # Final smoke import from the final locations, before the pointer moves.
-"$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.c1nf_executor, tools.h5_sell_and_close" "$DEST/$COMMIT" \
+"$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.c1nf_executor, tools.c1nf_sell_and_close" "$DEST/$COMMIT" \
   || rollback "final smoke import failed"
 # Base unit (the unit is stopped), BEFORE the pointer moves: stage as .new, keep the previous as .old, rename into place,
 # daemon-reload. Root-owned, from the manifest-checked and allowlist-checked blob of this commit.
