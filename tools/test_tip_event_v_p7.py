@@ -133,6 +133,10 @@ class Base(unittest.TestCase):
         write_hour(self.trades, hour, rows)
         return p7.build_frame(self.trades, T0, p7.parse_utc(END), self.canon)
 
+    def close_window(self) -> None:
+        """A row after --end in the next hour's file: the follower's t_recv_ms is non-decreasing, so this proves the window is on disk."""
+        write_hour(self.trades, "2026-10-10T14", [self.sell_tape(signature="After" + "1" * 83, t_recv_ms=p7.parse_utc(END) + 5000)])
+
     def sell_tape(self, **kw) -> dict:
         return tape_of(self.sell_doc, mint=self.sell_mint, **kw)
 
@@ -220,11 +224,13 @@ class FrameTests(Base):
         self.assertEqual(info["files_read"], 2)
         self.assertEqual(info["canonical_pumpswap_n"], 4)  # sell, buy, stripped, bool V; `before` and `at_end` are outside [start, end)
         self.assertEqual(info["hours_missing"], [])
+        self.assertIs(info["window_closed"], True)  # `at_end` has t_recv_ms == end
 
     def test_missing_hour_is_reported_not_hidden(self):
         write_hour(self.trades, "2026-10-10T13", [self.sell_tape()])
         _, info = p7.build_frame(self.trades, T0, p7.parse_utc(END), self.canon)
         self.assertEqual(info["hours_missing"], ["2026-10-10T14"])
+        self.assertIs(info["window_closed"], False)
 
     def test_sorted_by_slot_signature_event_index_and_the_tx_index_field_is_the_signature(self):
         rows = [
@@ -347,6 +353,7 @@ class DrawTests(Base):
 
     def test_the_draw_runs_before_any_fetch(self):
         write_hour(self.trades, "2026-10-10T13", self._rows(50, {1, 2, 3}))
+        self.close_window()
         order = []
         real_draw = p7.draw
 
@@ -650,6 +657,7 @@ class CliTests(Base):
         for k in td.EVENT_V_KEYS:
             self.rows[3].pop(k, None)
         write_hour(self.trades, "2026-10-10T13", self.rows)
+        self.close_window()
         self.txs = {self.sell_doc["signature"]: tx_of(self.sell_doc), self.buy_doc["signature"]: tx_of(self.buy_doc)}
         self.argv = ["--trades-dir", str(self.trades), "--start", START, "--end", END, "--helius-env", str(self.env)]
 
@@ -805,6 +813,38 @@ class CliTests(Base):
         self.refused(["--out-dir", str(self.out), "--end", START])
         self.refused(["--out-dir", str(self.out), "--start", "yesterday"])
         self.assertFalse(self.out.exists())
+
+    def test_refuses_an_open_window_and_a_row_at_or_after_end_closes_it(self):
+        (self.trades / "trades-2026-10-10T14.jsonl").unlink()  # nothing at or after END on disk
+        for extra in (["--dry-run"], ["--out-dir", str(self.out)]):
+            self.assertIn("not closed", self.refused(extra))
+        self.assertFalse(self.out.exists())
+        before = self.sell_tape(signature="Before" + "1" * 82, t_recv_ms=p7.parse_utc(END) - 1)
+        write_hour(self.trades, "2026-10-10T14", [before])  # a row just before END does not close it
+        self.assertIn("not closed", self.refused(["--dry-run"]))
+        at_end = self.sell_tape(signature="AtEnd" + "1" * 83, t_recv_ms=p7.parse_utc(END))
+        write_hour(self.trades, "2026-10-10T14", [before, at_end])  # t_recv_ms == END closes it (>=)
+        rc, out, err = self.go(["--dry-run"])
+        self.assertEqual(rc, 0, err)
+        self.assertIs(json.loads(out)["frame"]["window_closed"], True)
+
+    def test_a_non_pumpswap_row_after_end_closes_the_window(self):
+        (self.trades / "trades-2026-10-10T14.jsonl").unlink()
+        bonding = {"venue": "pump_bonding", "slot": 9, "signature": "Bond" + "1" * 84, "event_index": 0, "t_recv_ms": p7.parse_utc(END) + 1}
+        write_hour(self.trades, "2026-10-10T14", [bonding])
+        self.assertNotIn(b"pumpswap", (self.trades / "trades-2026-10-10T14.jsonl").read_bytes())
+        rc, out, err = self.go(["--dry-run"])
+        self.assertEqual(rc, 0, err)
+
+    def test_an_end_on_the_hour_is_closed_only_by_a_row_in_the_next_hours_file(self):
+        (self.trades / "trades-2026-10-10T14.jsonl").unlink()
+        hour_end = ["--end", "2026-10-10T14:00:00Z"]
+        self.assertIn("not closed", self.refused(["--dry-run"] + hour_end))
+        edge = p7.parse_utc("2026-10-10T14:00:00Z")
+        write_hour(self.trades, "2026-10-10T14", [self.sell_tape(signature="Edge" + "1" * 84, t_recv_ms=edge + 500)])
+        rc, out, err = self.go(["--dry-run"] + hour_end)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["frame_n"], 3)  # the row after the end is read to close the window and is not in the frame
 
     def test_refuses_when_the_frame_passes_max_frame_rows_even_for_a_dry_run(self):
         for extra in (["--dry-run"], ["--out-dir", str(self.out)]):

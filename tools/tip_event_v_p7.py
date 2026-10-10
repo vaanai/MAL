@@ -31,7 +31,9 @@ Counts only. stdout shows no signature, pool, mint, amount, price or reserve. Pe
 <out-dir>/p7-tip-prints.jsonl and the summary to <out-dir>/p7-tip.json, which carries that file's sha256. The RPC URL and key are held in
 memory and never printed, logged or written; errors are reduced to a type or a status code.
 
-Refuses (exit 2) unless observe/trade_decode.py is git blob 238942a6b3c5425389eddfde4d11268c300acbec (job #433's decoder) and ARTIFACTS/exp025/
+Refuses (exit 2) when the window is not closed (no row with t_recv_ms >= --end on disk: the follower writes it non-decreasing, so one later row
+proves every earlier row is written; pick an --end a few minutes in the past) and when the frame passes --max-frame-rows (default 1,200,000, about
+1.1 GB at ~923 B per row; checked while reading, before the sort). Also refuses unless observe/trade_decode.py is git blob 238942a6b3c5425389eddfde4d11268c300acbec (job #433's decoder) and ARTIFACTS/exp025/
 event_v_map.py matches ARTIFACTS/exp025/SHA256SUMS. Run it from a full checkout: the follower's own source tree holds only tools/ and observe/.
 Exit 0 means the check ran to the end; the verdict is `pass` in the JSON. No file under /var/lib/mal is written. Paper only.
 """
@@ -44,6 +46,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -83,6 +86,7 @@ KEY_NAME = "(slot, signature, event_index)"
 _FRAME_FIELDS = ("slot", "signature", "event_index", "pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve",
                  "virtual_quote_reserves", "ix_name", "zero_sol")
 _HOUR_MS = 3_600_000
+_T_RECV_RE = re.compile(rb'"t_recv_ms"\s*:\s*(\d+)')
 
 
 class Refused(Exception):
@@ -187,7 +191,11 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
     stats: Counter = Counter()
     missing: list[str] = []
     frame: list[dict] = []
-    for hour in hours_in(start_ms, end_ms):
+    # The follower writes t_recv_ms non-decreasing, so one row at or after end_ms on disk proves every earlier row is on disk: the window is
+    # closed. The hour that holds end_ms is read too (end_ms + 1 pulls in the next file when end_ms is on the hour), only to look for such a row.
+    end_hour = hours_in(end_ms, end_ms + 1)[0]
+    closed = False
+    for hour in hours_in(start_ms, end_ms + 1):
         path = trades_dir / f"trades-{hour}.jsonl"
         if not path.is_file():
             missing.append(hour)
@@ -197,6 +205,9 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
             for raw in fh:
                 stats["lines"] += 1
                 if b"pumpswap" not in raw:
+                    if not closed and hour >= end_hour:  # a bonding row closes the window too; earlier hours cannot hold one
+                        m = _T_RECV_RE.search(raw)
+                        closed = bool(m) and int(m.group(1)) >= end_ms
                     continue
                 try:
                     row = json.loads(raw)
@@ -209,6 +220,8 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
                 if not _is_int(t):
                     stats["no_t_recv_ms"] += 1
                     continue
+                if t >= end_ms:
+                    closed = True
                 if not (start_ms <= t < end_ms):
                     continue
                 stats["pumpswap_in_window"] += 1
@@ -257,7 +270,7 @@ def build_frame(trades_dir: Path, start_ms: int, end_ms: int, canonical: Callabl
         "no_t_recv_ms": stats["no_t_recv_ms"], "pumpswap_in_window": stats["pumpswap_in_window"],
         "no_mint_or_pool": stats["no_mint_or_pool"], "non_canonical": stats["non_canonical"],
         "canonical_pumpswap_n": stats["canonical_pumpswap_n"], "unstamped_canonical_n": stats["unstamped_canonical_n"],
-        "bad_key": stats["bad_key"], "duplicate_keys_dropped": stats["duplicate_keys_dropped"],
+        "bad_key": stats["bad_key"], "duplicate_keys_dropped": stats["duplicate_keys_dropped"], "window_closed": closed,
         "frame_n": len(unique), "frame_with_tx_index_n": stats["frame_with_tx_index_n"],  # counted before duplicate removal
     }
     return unique, info
@@ -490,6 +503,9 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
             url = helius_http_url(key)
 
     frame, info = build_frame(Path(args.trades_dir), start_ms, end_ms, canonical, args.max_frame_rows)
+    if not info["window_closed"]:
+        raise Refused("the window is not closed: no row at or after --end is on disk yet, so the last rows of the window may not be written. "
+                      "Use an --end a few minutes in the past")
     main_rows, topup_rows = draw(frame)  # both before any fetch
     sampled = [("main", r) for r in main_rows] + [("topup", r) for r in topup_rows]
     plan = _plan(sampled)
