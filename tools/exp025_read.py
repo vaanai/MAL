@@ -11,7 +11,7 @@ Subcommands
   check     outcome-blind precondition check for a look (section 0 lines, pins, patches, FINAL marker, look instant, decoder blobs, E0 records).
             Prints refusal codes only.
   retrain   the daily expanding retrain (ML venv: numpy + lightgbm). Writes predictions for the counted dates; prints counts only.
-  read      the one locked read of a look (audit venv). Refuses unless every precondition holds; takes the lock first; no resume after the lock.
+  The one locked read of a look is `tools/exp025_look.py run` (it takes the lock, runs the refusals before any P&L, then read_after_lock here).
 
 Seal (EXP-025 section 4, 5.3, 11.4): every tape hour this tool opens goes through a Guard. Before the FINAL marker and the look instant, any
 October hour (forward-1002, forward-1002ev, walk 2) is refused; after them only the look's allowlisted hours open (R12). The tool never opens
@@ -235,13 +235,15 @@ def check_decoder_blobs(path: str) -> None:
 
 
 def check_e0_records(e0_dir: str = E0_DIR) -> None:
-    """R13: the P3 and P4 E0 records exist and say equal."""
-    for name in ("p3_e0.json", "p4_e0.json"):
-        p = os.path.join(e0_dir, name)
-        if not os.path.exists(p):
-            raise Refusal("R13", f"{name} missing")
-        if json.load(open(p)).get("e0_pass") is not True:
-            raise Refusal("R13", f"{name} does not record e0_pass true")
+    """R13: the P3 and P4 E0 records exist and say equal. P3 (#563) writes p3_e0_<day>.json with `pass`; P4 writes p4_e0.json with `e0_pass`."""
+    for pre in ("p3_e0", "p4_e0"):
+        names = sorted(n for n in (os.listdir(e0_dir) if os.path.isdir(e0_dir) else ()) if n.startswith(pre) and n.endswith(".json"))
+        if not names:
+            raise Refusal("R13", f"{pre} record missing")
+        for n in names:
+            d = json.load(open(os.path.join(e0_dir, n)))
+            if not (d.get("e0_pass") is True or d.get("pass") is True):
+                raise Refusal("R13", f"{n} does not record a pass")
 
 
 # ----------------------------------------------------------------------------------------------------------------- book, legs, statistics
@@ -403,7 +405,7 @@ def _hours_for_group(gday: str, tmax: int):
     return hrs
 
 
-def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None, lats=LATS, lags=LAGS, hour_source=None):
+def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None, lats=LATS, lags=LAGS, hour_source=None, vmiss_hours=None):
     """The pricing layer (EXP-025 section 6): v2_sim.py's fill and exit arithmetic on the hunt-layout trade table.
 
     rows: DataFrame with idx, t, mint, pool (canonical, from the universe: PDA in October), v (V0 = tokens.v0_lamports), g (graduation time), gday.
@@ -411,6 +413,9 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
     Optional adapter column `v_ok` (bool): False on a print whose V(t) was not decoded; a trade whose landing or exit state is such a print is
     priced at the lower P&L of pending 0 and pending PENDING_MAX at the exit (section 6), and flagged vmiss_<tag>.
     hour_source(hour) -> source name for the guard (default: `source` for every hour).
+    vmiss_hours: hours whose PumpSwap prints are not all V-mapped by the adapter (its manifest: event_v false, or pumpswap_rows_with_v <
+    pumpswap_rows; see tools/exp025_look.hour_status). Without a `v_ok` column every print of such an hour counts as V-missing (fail closed:
+    the lower-P&L rule of section 6). A `v_ok` column, when the adapter writes one, takes precedence.
     Returns a DataFrame keyed by idx with g_/pnl_/xt_ per tag (pnl GROSS of send fees), ssb_/nearby_ per latency, pool_match, err."""
     import duckdb
     import pandas as pd
@@ -428,7 +433,15 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
             assert_not_closed(f)
         L = "['" + "','".join(fs) + "']"
         cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({L})").fetchall()]
-        vcol = ", v_ok vok" if "v_ok" in cols else ""
+        vmh = set(vmiss_hours or ())
+        if "v_ok" in cols:
+            vcol = ", v_ok vok"
+        elif vmh:
+            if "hour" not in cols:
+                raise Refusal("R3", "no per-print V status: the trade table has neither v_ok nor hour")
+            vcol = ", hour hr"
+        else:
+            vcol = ""
         mm = pd.DataFrame({"mint": Rg.mint.unique()})
         con.register("mm", mm)
         P = con.execute(f"""SELECT mint, pool, slot, block_time bt, tx_index ti, event_index ei, file_row_number frn, side = 'buy' isb, sol_lamports sol,
@@ -479,7 +492,8 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
             bt = np.where(np.isnan(btr), -np.inf, btr); bt[0] = bt[0] if np.isfinite(bt[0]) else float(Rm.g.iloc[0]); bt = np.maximum.accumulate(bt)
             isb = Pm.isb.values.astype(bool); sol = Pm.sol.values.astype(float); tok = Pm.tok.values.astype(float)
             Qp = Pm.q.values.astype(float) + Vp; Bp = Pm.b.values.astype(float)
-            vok = Pm.vok.fillna(False).values.astype(bool) if "vok" in Pm else np.ones(len(Pm), bool)
+            vok = (Pm.vok.fillna(False).values.astype(bool) if "vok" in Pm else ~Pm.hr.astype(str).isin(vmh).values if "hr" in Pm
+                   else np.ones(len(Pm), bool))
             Bl = Bp[-1] - tok[-1] if isb[-1] else Bp[-1] + tok[-1]
             Ql = Qp[-1] * Bp[-1] / Bl
             SQ = np.append(Qp, Ql); SB = np.append(Bp, Bl); SV = np.append(vok, vok[-1])
@@ -589,19 +603,58 @@ def cmd_retrain(a) -> int:
 
 
 # ----------------------------------------------------------------------------------------------------------------- look read
-def take_lock(look: int, ledger: str = LOOK_LEDGER) -> str:
-    """One locked read per look; no resume after the lock (section 10)."""
-    lock = os.path.join(LOOKS[look]["O"], "READ.lock")
+TERMINAL_EVENTS = ("read", "not_decidable")
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def ledger_event(ledger: str, look: int, event: str, **kw) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(ledger)), exist_ok=True)
+    with open(ledger, "a") as f:
+        f.write(json.dumps(dict(look=look, event=event, at=_now_iso(), **kw), sort_keys=True, default=str) + "\n")
+        f.flush(); os.fsync(f.fileno())
+
+
+def ledger_events(ledger: str, look: int) -> list:
+    if not os.path.exists(ledger):
+        return []
+    return [e for e in (json.loads(x) for x in open(ledger) if x.strip()) if e.get("look") == look]
+
+
+def take_lock(look: int, ledger: str = LOOK_LEDGER, o_dir: str | None = None, job: str | None = None) -> str:
+    """One locked read per look; no resume after the lock (section 10). O_EXCL lock file in the look's O plus a `lock` line in LOOK_READS.jsonl
+    (token, MiScusi job, repo head). Refuses (LOCK) if the lock file exists or the ledger already holds a lock for the look. Returns the lock path."""
+    lock = os.path.join(o_dir or LOOKS[look]["O"], "READ.lock")
     os.makedirs(os.path.dirname(lock), exist_ok=True)
+    if any(e["event"] == "lock" for e in ledger_events(ledger, look)):
+        raise Refusal("LOCK", f"{ledger} already holds a lock for look {look} (no resume)")
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
     except FileExistsError:
         raise Refusal("LOCK", f"{lock} exists: look {look} was already started (no resume)")
+    token = os.urandom(8).hex()
     with os.fdopen(fd, "w") as f:
-        f.write(_dt.datetime.now(_dt.timezone.utc).isoformat() + "\n")
-    with open(ledger, "a") as f:
-        f.write(json.dumps(dict(look=look, event="lock", at=_dt.datetime.now(_dt.timezone.utc).isoformat())) + "\n")
+        f.write(json.dumps(dict(token=token, at=_now_iso())) + "\n")
+    head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+    ledger_event(ledger, look, "lock", token=token, job=job or os.environ.get("MISCUSI_JOB_ID", ""), head=head)
     return lock
+
+
+def require_lock(look: int, ledger: str = LOOK_LEDGER, o_dir: str | None = None) -> str:
+    """The read steps run only under a lock this job holds: the lock file exists, its token is the ledger's one lock token, and the ledger has
+    no terminal event (read / not_decidable) for the look. Returns the token."""
+    lock = os.path.join(o_dir or LOOKS[look]["O"], "READ.lock")
+    if not os.path.exists(lock):
+        raise Refusal("LOCK", f"{lock} is absent: the read runs only inside the locked job (tools/exp025_look.py run)")
+    tok = json.loads(open(lock).readline())["token"]
+    ev = ledger_events(ledger, look)
+    if [e.get("token") for e in ev if e["event"] == "lock"] != [tok]:
+        raise Refusal("LOCK", "the lock file's token is not the ledger's one lock token")
+    if any(e["event"] in TERMINAL_EVENTS for e in ev):
+        raise Refusal("LOCK", f"look {look} already has a terminal event (no second read)")
+    return tok
 
 
 def decisions_md5(mints, ts) -> str:
@@ -727,12 +780,14 @@ def report_only(stage2_rows, priced, h_top5=None) -> dict:
     variants = {"farm_no_cap": np.ones(len(h1), bool), "cap_0.3": cap.keep_mask(h1, 0.3), "cap_0.7": cap.keep_mask(h1, 0.7)}
     if h_top5 is not None:
         variants["h_top5_0.5"] = cap.keep_mask(h_top5, 0.5)
-    for name, km in variants.items():
-        df, bi, Lg, _ = deciding_book(stage2_rows.assign(sel=stage2_rows.sel2.values & km), priced)
-        out[name] = {k: stats(Lg[k], df.day.values[bi]) for k in ("flat", "press")}
-    for name, lat, bnd, lag, f, rent in REPORT_CELLS:
-        df, bi, Lg, _ = deciding_book(stage2_rows.assign(sel=stage2_rows.sel2.values & cap.keep_mask(h1)), priced, lat, bnd, lag, f, rent)
-        out[name] = {k: stats(Lg[k], df.day.values[bi]) for k in ("flat", "press")}
+    cells = [(name, km, ("p", "END", "l055", F505, RENT)) for name, km in variants.items()]
+    cells += [(name, cap.keep_mask(h1), (lat, bnd, lag, f, rent)) for name, lat, bnd, lag, f, rent in REPORT_CELLS]
+    for name, km, spec in cells:
+        try:   # report-only: a cell that cannot be priced is recorded and never turns into a refusal of the look
+            df, bi, Lg, _ = deciding_book(stage2_rows.assign(sel=stage2_rows.sel2.values & km), priced, *spec)
+            out[name] = {k: stats(Lg[k], df.day.values[bi]) for k in ("flat", "press")}
+        except Exception as e:  # noqa: BLE001
+            out[name] = dict(error=f"{type(e).__name__}: {e}"[:300])
     return out
 
 
@@ -748,53 +803,59 @@ def cmd_check(a) -> int:
     return 0 if not codes else 2
 
 
-def cmd_read(a) -> int:
-    """The one locked read (audit venv). Inputs prepared inside the same locked MiScusi job: the patched pass-A run on the look's O
-    (pipeline_commands), the retrain predictions (cmd_retrain), the October export rows. Prints the decision and writes the result JSON."""
+def read_after_lock(look: int, rows, preds, guard, out_path: str, *, o_dir: str | None = None, ledger: str = LOOK_LEDGER,
+                    look1_record: str | None = None, vmiss_hours=None, price_fn=None) -> dict:
+    """The P&L part of the one locked read. Called only by tools/exp025_look.py `run`, after the lock and after every outcome-blind refusal
+    (R1 hours, R2, R3, R6, R7, R12, R13, R14 before the lock; R4 precount and R1 attempts after it). Order here: selection (threshold, cap,
+    R1 attempt exclusion via rows.r1_keep) -> R9 -> pricing (R12 on every hour) -> R11 -> section 7 -> report-only. A Refusal propagates to the
+    runner, which records it as NOT_DECIDABLE. rows: build_rows' frame (idx, t, mid, mint, pool, v, g, gday, f_h_top1[, f_h_top5, r1_keep]).
+    preds: mapping with t, mid, pred (the labelled daily retrain)."""
     import pandas as pd
-    section0_lines(open(EXP_FILE).read()); exp_clean_against_head(); check_pins()
-    guard = LookGuard(a.look, None, a.final_marker, a.final_ledger)
-    check_decoder_blobs(a.decoder_blobs); check_e0_records()
-    take_lock(a.look)
-    L = LOOKS[a.look]; O = L["O"]; cap = _cap()
-    rows = pd.read_parquet(a.rows)        # idx, t, mid, mint, pool, v, g, gday, f_h_top1, ssb_p, nearby_p, ssb_b, nearby_b (from the October export)
-    pr = np.load(a.preds)
-    P = pd.DataFrame({"t": pr["t"], "mid": pr["mid"], "pred": pr["pred"]})
-    rows = rows.merge(P, on=["t", "mid"], how="left")
+    require_lock(look, ledger, o_dir)
+    L = LOOKS[look]; O = o_dir or L["O"]; cap = _cap(); price_fn = price_fn or price_rows
+    P = pd.DataFrame({"t": np.asarray(preds["t"], np.int64), "mid": np.asarray(preds["mid"], np.int64), "pred": np.asarray(preds["pred"], float)})
+    rows = rows.merge(P, on=["t", "mid"], how="left", validate="one_to_one")
     cfg = json.load(open(os.path.join(ART, "rule.json")))
     counted = (rows.t >= ep(L["start"])) & (rows.t < ep(L["end"]))
-    stage2 = counted & rows.pred.notna() & (rows.pred > cfg["threshold"])
-    rows["sel"] = cap.apply_cap_before_book(rows.f_h_top1.values, stage2.values)
-    rows["sel2"] = stage2.values
-    sel = rows[rows.sel].copy()
-    sel["day"] = [date_str(x) for x in sel.t]
-    st2 = rows[rows.sel2].copy(); st2["day"] = [date_str(x) for x in st2.t]
-    rec = dict(look=a.look, decisions_md5=decisions_md5(sel.mint, sel.t), n_kept=int(len(sel)))
-    if a.look == 2 and a.look1_record:          # R9: Look 2 re-derives Look 1's decisions
-        l1 = json.load(open(a.look1_record)); s1 = sel[sel.t < ep(LOOKS[1]["end"])]
+    stage2 = (counted & rows.pred.notna() & (rows.pred > cfg["threshold"])).values
+    capk = cap.apply_cap_before_book(rows.f_h_top1.values, stage2)
+    r1k = rows.r1_keep.values.astype(bool) if "r1_keep" in rows else np.ones(len(rows), bool)
+    rows["sel"] = capk & r1k
+    rows["sel2"] = stage2 & r1k
+    rows["day"] = [date_str(x) for x in rows.t]
+    sel = rows[rows.sel].copy(); st2 = rows[rows.sel2].copy()
+    rec = dict(look=look, decisions_md5=decisions_md5(sel.mint, sel.t), n_kept=int(len(sel)), n_r1_excluded=int((capk & ~r1k).sum()),
+               n_stage2=int(stage2.sum()))
+    if look == 2:          # R9: Look 2 re-derives Look 1's decisions
+        if not look1_record:
+            raise Refusal("R9", "Look 2 needs Look 1's record to re-derive its decisions")
+        l1 = json.load(open(look1_record)); s1 = sel[sel.t < ep(LOOKS[1]["end"])]
         if decisions_md5(s1.mint, s1.t) != l1["decisions_md5"]:
             raise Refusal("R9", "Look 2's re-derivation of Look 1's decisions differs")
-    src = lambda h: next(s for s, x, y in L["allow"] if ep(x) <= ep(h) < ep(y)) if any(ep(x) <= ep(h) < ep(y) for _, x, y in L["allow"]) else "outside"
-    priced = price_rows(st2[["idx", "t", "mint", "pool", "v", "g", "gday"]], os.path.join(O, "tape", "trades"), guard, hour_source=src)
+
+    def src(h):
+        return next((s_ for s_, x, y in L["allow"] if ep(x) <= ep(h) < ep(y)), "outside")
+    priced = price_fn(st2[["idx", "t", "mint", "pool", "v", "g", "gday"]], os.path.join(O, "tape", "trades"), guard, hour_source=src,
+                      vmiss_hours=vmiss_hours)
     sel = sel.assign(sel=True)
     out = {}
     for lat in ("p", "b"):
         df, bi, Lg, tag = deciding_book(sel, priced, lat=lat)
-        if lat == "p":
-            r11_missing_v(df, bi, Lg, tag, len(bi))
+        r11_missing_v(df, bi, Lg, tag, len(bi))
         days = df.day.values[bi]
         out[lat] = dict(flat=stats(Lg["flat"], days), press=stats(Lg["press"], days),
                         by_date={k: {d: (float(Lg[k][days == d].sum()), int((days == d).sum())) for d in sorted(set(days))} for k in ("flat", "press")})
     alpha = float(SECTION0[L["alpha_key"]])
-    dec = decide(a.look, out["p"]["flat"], out["p"]["press"], out["p"]["by_date"]["flat"], out["p"]["by_date"]["press"],
+    dec = decide(look, out["p"]["flat"], out["p"]["press"], out["p"]["by_date"]["flat"], out["p"]["by_date"]["press"],
                  out["b"]["flat"], out["b"]["press"], alpha)
-    rec.update(decision=dec, cells=out, report_only=report_only(st2, priced, st2.f_h_top5.values if "f_h_top5" in st2 else None))
-    json.dump(rec, open(a.out, "w"), indent=1, default=float)
-    with open(LOOK_LEDGER, "a") as f:
-        f.write(json.dumps(dict(look=a.look, event="read", verdict=dec["verdict"], decisions_md5=rec["decisions_md5"],
-                                at=_dt.datetime.now(_dt.timezone.utc).isoformat())) + "\n")
-    print(json.dumps(dict(look=a.look, verdict=dec["verdict"])))
-    return 0
+    rec.update(decision=dec, verdict=dec["verdict"], cells=out)
+    try:
+        rec["report_only"] = report_only(st2, priced, st2.f_h_top5.values if "f_h_top5" in st2 else None)
+    except Exception as e:  # noqa: BLE001 - report-only never decides
+        rec["report_only"] = dict(error=f"{type(e).__name__}: {e}"[:300])
+    json.dump(rec, open(out_path, "w"), indent=1, default=float)
+    ledger_event(ledger, look, "read", verdict=dec["verdict"], decisions_md5=rec["decisions_md5"], result=out_path)
+    return rec
 
 
 def pipeline_commands(look: int, py: str = "/data/mal/audit-1008/venv/bin/python"):
@@ -930,20 +991,16 @@ def main(argv=None) -> int:
     sp = ap.add_subparsers(dest="cmd", required=True)
     e = sp.add_parser("e0"); e.add_argument("--day", default="2026-09-20"); e.add_argument("--tape", default="/data/mal/audit-1008/tape/trades")
     e.add_argument("--out-dir", required=True); e.add_argument("--ref-sim"); e.add_argument("--rerun-v2", action="store_true")
-    for name in ("check", "read"):
-        c = sp.add_parser(name); c.add_argument("--look", type=int, choices=(1, 2), required=True)
-        c.add_argument("--final-marker", default=FINAL_MARKER); c.add_argument("--final-ledger", default=FINAL_LEDGER)
-        c.add_argument("--decoder-blobs")
-        if name == "read":
-            c.add_argument("--rows", required=True); c.add_argument("--preds", required=True); c.add_argument("--out", required=True)
-            c.add_argument("--look1-record")
+    c = sp.add_parser("check"); c.add_argument("--look", type=int, choices=(1, 2), required=True)
+    c.add_argument("--final-marker", default=FINAL_MARKER); c.add_argument("--final-ledger", default=FINAL_LEDGER)
+    c.add_argument("--decoder-blobs")
     r = sp.add_parser("retrain"); r.add_argument("--look", type=int, choices=(1, 2), required=True)
     r.add_argument("--disc", default=f"{P2_BACKUP}/disc.npz"); r.add_argument("--conf", default=f"{P2_BACKUP}/conf.npz")
     r.add_argument("--october", required=True); r.add_argument("--gtime", required=True); r.add_argument("--out", required=True)
     r.add_argument("--exploration-only", action="store_true")
     a = ap.parse_args(argv)
     try:
-        return {"e0": cmd_e0, "check": cmd_check, "read": cmd_read, "retrain": cmd_retrain}[a.cmd](a)
+        return {"e0": cmd_e0, "check": cmd_check, "retrain": cmd_retrain}[a.cmd](a)
     except Refusal as e:
         print(json.dumps(dict(refused=e.code, reason=str(e))))
         return 2
