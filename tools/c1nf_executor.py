@@ -1047,11 +1047,11 @@ class C1NFExecutor(h5.H5Executor):
                 continue
             est = self.slots.est(now, plan["sps"])
             if stuck_due(plan, est, now):
-                pos["c1nf_stuck_latched"] = True
-                self.save()
                 self._latch(STUCK_HALT, position_mint=mint, why="not_closed_by_landing_600s", est_slot=est,
                             stuck_slot=plan["s0_slot"] + int(round(STUCK_S / plan["sps"])), landing_slot=plan["s0_slot"],
                             sell_attempts=pos.get("sell_attempts", 0), abandoned=bool(pos.get("abandoned")), sell_pending=mint in self.state.pending)
+                pos["c1nf_stuck_latched"] = True  # after the latch is on disk: a crash in between re-latches (a no-op), never skips it
+                self.save()
 
     def _balance_refusal(self, now: int) -> str | None:
         """H5's balance guard (h5.balance_need, unchanged) with the per-exit reserve raised to c1nf_exit_reserve: one escalated send of this
