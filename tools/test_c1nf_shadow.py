@@ -58,12 +58,13 @@ class StubEngine:
     def __init__(self, decide=None):
         self.decide = decide or (lambda T: (True, 0.1))
         self.trades, self.blocks, self.graduations, self.creates, self.v_set, self.asked = [], [], [], [], [], []
+        self.v_events = []
 
     def on_block(self, slot, bt): self.blocks.append((slot, bt))
     def on_create(self, *a): self.creates.append(a)
     def on_graduation(self, mint, bt): self.graduations.append((mint, bt))
     def set_pool_v(self, pool, v): self.v_set.append((pool, v))
-    def on_trade(self, *a): self.trades.append(a)
+    def on_trade(self, *a, v_event=None): self.trades.append(a); self.v_events.append(v_event)
     def expire(self, now_bt): return 0
     def alive_pools(self, T): return [POOL] if self.decide(T) is not None else []
 
@@ -679,7 +680,7 @@ def test_run_live_smoke_with_stub_engine(tmp_path, monkeypatch):
     eng = StubEngine(lambda T: (True, 0.1) if T == T_target else None)
     f = tmp_path / "m.txt"
     f.write_text("pinned")
-    monkeypatch.setattr(cs, "build_engine", lambda ledger=None: eng)
+    monkeypatch.setattr(cs, "build_engine", lambda ledger=None, v_source=None: eng)
     monkeypatch.setattr(cs, "_lgb_loader", lambda path: StubModel(0.07))
     out = tmp_path / "out"
     rc = cs.main(["--tip-dir", str(tip), "--out-dir", str(out), "--model", str(f), "--model-sha256", hashlib.sha256(b"pinned").hexdigest(),
@@ -809,8 +810,34 @@ def test_asof_dir_ledger_refuses_to_start_when_the_duckdb_hash_pin_fails(tmp_pat
         raise PinRefused("duckdb hash() differs from the pinned function")
 
     _fake_duckdb_and_ledger(monkeypatch, check_hash_pin)
-    with pytest.raises(PinRefused):                    # at construction: not inside snapshot_for_day, where it would be ledger_errors + no picks
+    with pytest.raises(cs.Refused, match="PinRefused.*differs from the pinned"):   # at construction, as the shadow's Refused (main exits 3)
         cs.AsofDirLedger(tmp_path)
+
+
+def test_asof_dir_ledger_refuses_to_start_without_duckdb(tmp_path, monkeypatch):
+    _fake_duckdb_and_ledger(monkeypatch, lambda c: None)
+    monkeypatch.setitem(sys.modules, "duckdb", None)   # `import duckdb` raises ImportError
+    with pytest.raises(cs.Refused, match="duckdb"):
+        cs.AsofDirLedger(tmp_path)
+
+
+def test_main_exits_3_not_a_traceback_when_the_hash_pin_or_duckdb_fails(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "m.txt"
+    f.write_text("pinned")
+    argv = ["--out-dir", str(tmp_path / "o"), "--model", str(f), "--model-sha256", hashlib.sha256(b"pinned").hexdigest(),
+            "--ledger-root", str(tmp_path / "ledger"), "--no-seal"]
+    monkeypatch.setattr(cs, "_lgb_loader", lambda path: StubModel())
+
+    def bad_pin(con):
+        raise RuntimeError("duckdb hash() differs from the pinned function")
+
+    _fake_duckdb_and_ledger(monkeypatch, bad_pin)
+    assert cs.main(argv) == cs.EXIT_REFUSED
+    assert "refusing:" in capsys.readouterr().err
+    monkeypatch.setitem(sys.modules, "duckdb", None)
+    assert cs.main(argv) == cs.EXIT_REFUSED
+    assert "refusing:" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()               # nothing was started
 
 
 def test_asof_dir_ledger_default_hash_is_built_from_the_pinned_connection(tmp_path, monkeypatch):
@@ -820,6 +847,62 @@ def test_asof_dir_ledger_default_hash_is_built_from_the_pinned_connection(tmp_pa
     assert checked == [con]                            # the pin was checked, once, on the connection the hash runs on
     assert led.hash_fn("anyone") == 7
     assert led.snapshot_for_day("2026-10-10").get("anyone") == (10.0, 2.0, 1.5, 3.0, 4.0, 5.0, 9.0)
+
+
+def _real_shadow(v_source):
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    return cs.Shadow(cs.build_engine(None, v_source=v_source), models, sink, seal_start_ms=None)
+
+
+def test_build_engine_builds_the_real_feature_engine_in_both_modes():
+    from tools import c1nf_features as cf
+
+    assert (cs.V_SOURCE_LIVE, cs.V_SOURCE_REPLAY) == (cf.V_EVENT, cf.V_CONST) == ("event", "const")
+    for mode in (cf.V_EVENT, cf.V_CONST):
+        eng = cs.build_engine(None, v_source=mode)
+        assert type(eng) is cf.FeatureEngine and eng.v_source == mode        # no stub
+    with pytest.raises(TypeError):                                           # no default: a caller must choose
+        cs.build_engine(None)
+
+
+def test_main_picks_the_v_source_from_the_mode(tmp_path, monkeypatch):
+    f = tmp_path / "m.txt"
+    f.write_text("pinned")
+    monkeypatch.setattr(cs, "_lgb_loader", lambda path: StubModel())
+    seen = []
+    real_build = cs.build_engine
+
+    def spy(ledger=None, *, v_source):
+        seen.append(v_source)
+        real_build(ledger, v_source=v_source)                                # the real constructor accepts it
+        raise cs.Refused("spy: stop before any run")
+
+    monkeypatch.setattr(cs, "build_engine", spy)
+    base = ["--out-dir", str(tmp_path / "o"), "--model", str(f), "--model-sha256", hashlib.sha256(b"pinned").hexdigest(), "--no-seal"]
+    assert cs.main(base + ["--tip-dir", str(tmp_path)]) == cs.EXIT_REFUSED
+    assert cs.main(base + ["--replay-from", "2026-09-04T12"]) == cs.EXIT_REFUSED
+    assert seen == ["event", "const"]
+
+
+def test_real_engine_event_mode_needs_the_rows_event_v_and_const_mode_takes_the_tip_v():
+    """One PumpSwap print through Shadow._on_trade into the real engine. Live ("event"): the pool is accepted only when the row carries
+    `virtual_quote_reserves`; the tip follower's `virtual_quote_reserve` alone is not event V, so the pool is rejected `v0_missing` (counted,
+    fail closed). Replay ("const"): the tip/hunt V0 goes through set_pool_v and the same row is accepted."""
+    row = mk_row(S0)
+    assert cs.event_v_of({"virtual_quote_reserves": 17_580_000_000.0}) == 17_580_000_000 and cs.event_v_of(row) is None
+    assert cs.event_v_of({"virtual_quote_reserves": True}) is None and cs.event_v_of({"virtual_quote_reserves": float("nan")}) is None
+
+    live = _real_shadow("event")
+    live._on_trade(dict(row, virtual_quote_reserves=int(V0)), row["slot"], row["block_time"])
+    assert live.engine.health()["pool_rejects"] == {}
+    bare = _real_shadow("event")
+    bare._on_trade(row, row["slot"], row["block_time"])                      # tip key only
+    assert bare.engine.health()["pool_rejects"] == {"v0_missing": 1}
+
+    replay = _real_shadow("const")
+    replay._on_trade(row, row["slot"], row["block_time"])
+    assert replay.engine.health()["pool_rejects"] == {}
 
 
 class WalletEngine(StubEngine):
@@ -1301,7 +1384,7 @@ from tools.test_c1nf_shadow import StubEngine, StubModel, mk_row, S0
 
 tip, out, model = sys.argv[1:4]
 cs.CLASSIFY_TIMEOUT_S = 0.3
-cs.build_engine = lambda ledger=None: StubEngine(lambda T: None)
+cs.build_engine = lambda ledger=None, v_source=None: StubEngine(lambda T: None)
 cs._lgb_loader = lambda p: StubModel()
 
 def append_after_bootstrap():

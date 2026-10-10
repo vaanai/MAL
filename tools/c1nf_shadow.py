@@ -451,6 +451,20 @@ class SlotTime:
         del self.bts[:i]
 
 
+def event_v_of(row: Mapping[str, Any]) -> Optional[int]:
+    """The print's own pre-trade event V (`virtual_quote_reserves`, lamports, signed) as an int, else None. This is the key the "event" engine reads;
+    the tip follower's `virtual_quote_reserve` is one cached pool-account read and is not it, so a row that lacks this key gives None and the
+    engine rejects the pool (`v0_missing`) or marks it bad (`v_missing`): counted, never priced on a stale V. Ignored by a "const" engine."""
+    v = row.get("virtual_quote_reserves")
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and math.isfinite(v) and v.is_integer():
+        return int(v)
+    return None
+
+
 # ---- universe -------------------------------------------------------------------------------------------------------------------------------
 def v_of(row: Mapping[str, Any]) -> Optional[float]:
     """Per-print virtual quote reserve (lamports). The tip follower stamps `virtual_quote_reserve`; the walker's event-V rows use
@@ -1003,7 +1017,7 @@ class Shadow:
                 self.engine.set_pool_v(pool, v)
             side = row.get("side")
             self.engine.on_trade(venue, mint, row.get("trader"), side == "buy", row.get("sol_lamports"), row.get("token_raw"), row.get("quote_reserve"),
-                                 row.get("base_reserve"), pool, slot, bt)
+                                 row.get("base_reserve"), pool, slot, bt, v_event=event_v_of(row))
             pr = Print(slot, bt, side == "buy", _pos(row.get("sol_lamports")), _pos(row.get("token_raw")), _pos(row.get("quote_reserve")),
                        _pos(row.get("base_reserve")), v, side_ok=side in ("buy", "sell"))
             if pool not in self.first_ms:
@@ -1481,12 +1495,15 @@ class AsofDirLedger:
     braces over open_for_day's own check). Any other error propagates (the engine counts it as ledger_errors and retries).
 
     hash_fn=None (production) builds the duckdb hash HERE, after #502's check_hash_pin: a duckdb other than the pinned one (or none) raises at
-    construction, so the run stops at start instead of picking on all-NaN wallet features."""
+    construction as the shadow's Refused (main() exits 3), so the run stops at start instead of picking on all-NaN wallet features."""
 
     def __init__(self, root: str | Path, open_for_day: Optional[Callable[[Path, str], Any]] = None,
                  hash_fn: Optional[Callable[[str], int]] = None) -> None:
         if hash_fn is None:
-            hash_fn = _duck_hash()  # at start: a wrong or missing duckdb stops the run here, not inside snapshot_for_day (-> ledger_errors, no picks)
+            try:
+                hash_fn = _duck_hash()  # at start: a wrong or missing duckdb stops the run here, not inside snapshot_for_day (-> ledger_errors, no picks)
+            except Exception as exc:  # noqa: BLE001 - #502's Refused (hash pin), ImportError (no duckdb), or a duckdb failure: all are "cannot start"
+                raise Refused(f"wallet ledger needs the pinned duckdb hash: {type(exc).__name__}: {exc}") from exc
         self.root, self.hash_fn = Path(root), hash_fn
         if open_for_day is None:
             from tools.c1nf_wallet_ledger import AsofLedger  # PR #502
@@ -1530,10 +1547,15 @@ def canonical_pda_fn() -> Optional[Callable[[str], Optional[str]]]:
         return None
 
 
-def build_engine(ledger: Any = None) -> Any:
-    from tools.c1nf_features import FeatureEngine  # the parallel builder's module
+V_SOURCE_LIVE, V_SOURCE_REPLAY = "event", "const"   # tools.c1nf_features.V_EVENT / V_CONST (a test pins the equality)
 
-    return FeatureEngine(ledger=ledger)
+
+def build_engine(ledger: Any = None, *, v_source: str) -> Any:
+    """The real tools.c1nf_features.FeatureEngine (#506). v_source has no default there and none here: "event" for live (every PumpSwap print
+    carries its own pre-trade event V, `virtual_quote_reserves`), "const" for exploration-tape replay (one V0 per pool, set_pool_v)."""
+    from tools.c1nf_features import FeatureEngine  # #506
+
+    return FeatureEngine(ledger=ledger, v_source=v_source)
 
 
 # ---- replay (exploration tape, read-only) ---------------------------------------------------------------------------------------------------
@@ -1734,7 +1756,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return EXIT_USAGE
         ledger = AsofDirLedger(args.ledger_root) if args.ledger_root else None
         sink = JsonlSink(args.out_dir)
-        engine = build_engine(ledger)
+        engine = build_engine(ledger, v_source=V_SOURCE_REPLAY if args.replay_from else V_SOURCE_LIVE)
         if args.replay_from:
             return run_replay(args, models, engine, sink)
         return run_live(args, models, engine, sink)
