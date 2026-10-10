@@ -176,7 +176,7 @@ class P7BuyAmend(unittest.TestCase):
 
     def test_inverse_law_replaces_the_forward_law_it_is_not_an_alternative(self):
         """An exact-in buy where one base unit costs far more than a lamport: the forward law hits it exactly, the inverse law misses by 4.1955 bp.
-        Kills an 'either law' implementation (inverse hit OR forward hit), guarded or not."""
+        Kills an unguarded 'either law' (inverse hit OR forward hit); the guarded variants and buy_v2 are covered by test_no_guarded_either_law_and_buy_v2_uses_the_inverse_law."""
         q, b, qin = 75_000_000_000, 1_000_000, 100_000_000
         q_mapped = q - self.V0
         self.assertGreater(q // b, 1)                                                        # a base unit costs about 75,000 lamports
@@ -191,6 +191,24 @@ class P7BuyAmend(unittest.TestCase):
         self.assertEqual(self.m.cp_buy_quote_in(q_mapped, self.V0, b, t), 99_958_045)        # 41,955 lamports short: 4.1955 bp of actual
         self.assertFalse(self.m.p7_raw_hit("buy", raw, q_mapped, self.V0))                   # the inverse law alone decides
         self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))
+
+    def test_no_guarded_either_law_and_buy_v2_uses_the_inverse_law(self):
+        """Forward-law hits that the inverse law misses, in the two regimes the 4.1955 bp case does not cover (dust; Q/B < 1), for buy and
+        buy_v2. Kills an either-law guarded by size or by Q/B, and a forward law kept for buy_v2."""
+        for ix in ("buy", "buy_v2"):
+            b = 100_000_000                                                                  # dust exact-in, a base unit costs about 753 lamports
+            for qin, t, inv in ((1_660, 2, 1_506), (4_898, 6, 4_518)):
+                self.assertEqual(b * qin // (self._q() + qin), t)
+                raw = dict(self._base("buy"), base_reserve=b, token_raw=t, pool_quote_amount=qin, sol_lamports=qin, ix_name=ix)
+                row = self._adapter(raw)
+                self.assertEqual(self.m.cp_buy_quote_in(row["quote_reserve"], self.V0, b, t), inv)
+                self.assertEqual(self.ev.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "hit", None))
+                self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))
+            raw = self._buy(token_raw=self.BASE // 2, ix_name=ix)                            # whale exact-out, Q/B < 1
+            self.assertEqual(raw["pool_quote_amount"], self._q())
+            row = self._adapter(raw, quote_reserve=self._adapter(raw)["quote_reserve"] + self._q() * 15 // 100_000)   # column 1.5 bp of Q high
+            self.assertEqual(self.ev.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "hit", None))    # forward sees ~0.75 bp
+            self.assertEqual(self.m.p7_raw_check(self._tape(raw), raw, row, self.V0), ("buy", "miss", None))    # inverse sees 1.5 bp
 
     def test_inverse_law_is_an_exact_integer_ceil(self):
         """Integer ceil, not float: math.ceil(q * t / (b - t)) gives 2**59 here."""
