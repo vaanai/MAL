@@ -430,5 +430,53 @@ class LockAndLedger(unittest.TestCase):
         br.ledger_allows([{"experiment": "EXP-022", "look": 1, "event": "started"}], 1)
 
 
+class E0AndClassify(unittest.TestCase):
+    def test_e0_rows_equal_score_pool_to_the_lamport(self):
+        path = tb.make_pool(tb.POOL)
+        got = br.e0_rows([("M1", "fast-pool-0918", tb.S0, tb.V, path)])
+        ref = [("M1", r["leg"], f"{float(r['stake_sol']):g}", int(round(r["pnl_nofail_lamports"])))
+               for r in bf.score_pool(path, tb.S0, tb.V).rows]
+        self.assertEqual(sorted(got), sorted(ref))
+        self.assertEqual(len(got), 4)
+        self.assertEqual(br.e0_md5(got), br.e0_md5(list(reversed(ref))))
+        self.assertEqual(br.e0_rows([("M2", "x", tb.S0, tb.V, tb.make_pool(tb.POOL[:5] + [(1000, False, 0.1, 15.0, 109)]))]), [])
+
+    def test_report_only_legs_are_not_deciding(self):
+        self.assertTrue({"R_exit_340", "R_stake_0p25", "D_literal_v0", "D_only_a", "D_only_b"} <= set(br.REPORT_ONLY))
+        self.assertFalse(set(br.REPORT_ONLY) & set(br.CELLS))
+        p = make_fwd()
+        s = br.structure(p, GOOD)
+        a = br.price_cell(p, s, (1.9, 0.55, False), rbar=RBAR, exit_s=340.0)
+        self.assertEqual(a["exit_landing_slot"] - S0, 850 + 2)  # round(340 / 0.4) + ceil(0.55 / 0.4)
+
+    def test_classify_pools(self):
+        calls = []
+
+        def fake(rpc, **kw):
+            calls.append(kw["pool"])
+            if kw["pool"] == "PE":
+                raise RuntimeError("rpc down")
+            return {"class": "non_synthetic", "reason": "ok"}
+
+        pools = [make_fwd(mint="A"), make_fwd(mint="T", cls="synthetic"), make_fwd(mint="E"),
+                 make_fwd(mint="O", bt0=br._ts("2026-10-16T00")), make_fwd(mint="R", v0=17.9e9), make_fwd(mint="N", v0=float("nan"))]
+        recs = {r["mint"]: r for r in br.classify_pools(object(), pools, classify=fake)}
+        self.assertEqual(set(recs), {"A", "T", "E", "N"})  # outside the window and out of V range are not classified
+        self.assertEqual((recs["T"]["class"], recs["E"]["class"], recs["A"]["class"]), ("synthetic", "unclassified", "non_synthetic"))
+        self.assertNotIn("PT", calls)  # the tape already marked it synthetic
+
+    def test_look_report_has_no_live_and_report_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            lay = br.Layout(Path(d), 1)
+            inp = LockAndLedger()._inputs(_pools(20, 6))
+            with contextlib.redirect_stderr(io.StringIO()):
+                br.run_look(lay, lambda: inp, ident={}, now=datetime(2026, 10, 16, 8, tzinfo=timezone.utc), log=lambda s: None)
+            rep = json.loads((lay.out / "report.json").read_text())
+            self.assertIn("R_exit_340", rep["report_only"])
+            self.assertIn("winsor100_mean_sol", rep["report_only"]["D"]["flat"])
+            self.assertIsInstance(rep["no_live"], list)
+            self.assertEqual(len(rep["not_computed_section13"]), len(br.NOT_COMPUTED))
+
+
 if __name__ == "__main__":
     unittest.main()

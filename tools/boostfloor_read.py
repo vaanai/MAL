@@ -160,6 +160,19 @@ CELLS = {  # name: (entry s, sell lag s, guard)
     "B2": (1.9, 0.55, True),
 }
 REPORT_LEGS = {"R_rule_1p3": (1.3, 0.55, False)}  # section 13: the rule's original entry (report-only)
+REPORT_ONLY = {  # section 13, never deciding: name -> price_cell keyword arguments (correction "max" unless named)
+    "R_rule_1p3": dict(cell=(1.3, 0.55, False)),
+    "R_1p9_lag1p35": dict(cell=(1.9, 1.35, False)),
+    "R_3p0_lag0p55": dict(cell=(3.0, 0.55, False)),
+    **{f"R_exit_{x}": dict(cell=(1.9, 0.55, False), exit_s=float(x)) for x in (310, 320, 335, 340, 345, 350)},
+    **{f"R_stake_{k}": dict(cell=(1.9, 0.55, False), stake=v) for k, v in (("0p05", 5e7), ("0p25", 2.5e8), ("0p5", 5e8))},
+    "D_literal_v0": dict(cell=(1.9, 0.55, False), literal_v0=True),
+    "D_no_correction": dict(cell=(1.9, 0.55, False), corr="none"),
+    "D_only_a": dict(cell=(1.9, 0.55, False), corr="a"),
+    "D_only_b": dict(cell=(1.9, 0.55, False), corr="b"),
+}
+NOT_COMPUTED = ("sell-retry stress", "START bound and worse of START/END", "BOOST last slice per pool (PDA) and the ended-before-exit share",
+                "detector vs PDA disagreement", "post-BOOST control [360, 600] s held to +840 s")  # section 13 items this build does not compute
 GUARD = 0.15  # B2 min_out = floor(cp_buy_out(0.1 SOL, Q_i, B_i, tier) / 1.15)
 HAIRCUT = 1 - (1 - 0.002608) * (1 - 0.0016)  # correction (a), on sell proceeds after the pool fee
 E1_PROBE_STAKE = 50_000_000.0  # r-bar is per 0.05 SOL trip; (b) = max(0, -r-bar) * stake / 0.05 SOL (= -2 r-bar at 0.1 SOL)
@@ -461,6 +474,7 @@ class FwdPool:
     path: bf.PoolPath
     vt: np.ndarray  # V(t) per print (the stored V of the print's event), NaN when no source has it
     vt_src: list[str] = field(default_factory=list)
+    sigs: dict[str, str] = field(default_factory=dict)  # s0_sig, mig_sig, cmp_sig from the tape (locate only, Am.4 B4)
 
 
 def classify_from(tape_pcb: bool, rpc_class: str | None) -> str:
@@ -518,7 +532,8 @@ def load_pools(lay: Layout, vs: VSources, classes: Mapping[str, str]) -> list[Fw
                 path=bf.PoolPath(sl=g.slot.values.astype(np.int64), q=g.q.values.astype(float), b=g.b.values.astype(float),
                                  isb=g.isbuy.values.astype(bool), sol=g.sol.values.astype(float), tok=g.tok.values.astype(float),
                                  th=g.th.values.astype(np.uint64), bt=g.bt.values.astype(np.int64)),
-                vt=np.array([x[0] for x in vv], float), vt_src=[x[1] for x in vv]))
+                vt=np.array([x[0] for x in vv], float), vt_src=[x[1] for x in vv],
+                sigs={k: str(getattr(r, k, "") or "") for k in ("s0_sig", "mig_sig", "cmp_sig")}))
     return pools
 
 
@@ -570,16 +585,22 @@ def structure(p: FwdPool, good_hours: frozenset[str]) -> Struct:
         return Struct("coverage", d, sps, v0_unknown=v0_unknown)
     if p.s0 < SLOT_SWITCH <= last_exit:
         return Struct("slot_switch", d, sps, v0_unknown=v0_unknown)
-    isb, sol = p.path.isb, np.asarray(p.path.sol, float)
+    trigs = find_triggers(p, sps, V0_UNKNOWN_CASES if v0_unknown else (p.v0,))
+    return Struct("trigger" if trigs else "no_trigger", d, sps, trigs, v0_unknown)
+
+
+def find_triggers(p: FwdPool, sps: float, v0s: Sequence[float]) -> list[Trig]:
+    """The rule's trigger on tape quote + V0 (section 4, pinned), once per V0 case. No price is computed."""
+    sl, isb, sol = p.path.sl, p.path.isb, np.asarray(p.path.sol, float)
     boost = bf.detect_boost_wallet(sl, p.s0, p.path.th, sol, isb)
     spent = bf.boost_spent(p.path.th, sol, boost)
     trigs = []
-    for v0 in (V0_UNKNOWN_CASES if v0_unknown else (p.v0,)):
+    for v0 in v0s:
         qpost, bpost = bf.post_trade_state(p.path.q + v0, p.path.b, isb, sol, p.path.tok)
         i = bf.find_trigger(sl, p.s0, sps, isb, qpost, spent)
         if i is not None:
             trigs.append(Trig(v0, i, qpost, bpost))
-    return Struct("trigger" if trigs else "no_trigger", d, sps, trigs, v0_unknown)
+    return trigs
 
 
 def precount(pools: Sequence[FwdPool], good_hours: frozenset[str], bad_hours: Sequence[str]) -> dict[str, Any]:
@@ -638,13 +659,13 @@ def correction(proceeds: float, stake: float, rbar: float, which: str = "max") -
 
 
 def price_cell(p: FwdPool, s: Struct, cell: tuple[float, float, bool], *, rbar: float, stake: float = STAKE, literal_v0: bool = False,
-               corr: str = "max") -> dict[str, Any] | None:
+               corr: str = "max", exit_s: float = EXIT_S) -> dict[str, Any] | None:
     """One pool, one leg. Lower P&L over the V0 cases (unknown V0) and the missing-V(t) cases (section 4). None: no exit after landing."""
     entry_s, lag_s, guard = cell
     sl, q, b = p.path.sl, p.path.q, p.path.b
     sol, isb = np.asarray(p.path.sol, float), p.path.isb
     qtp, btp = bf.post_trade_state(q, b, isb, sol, p.path.tok)  # tape-only post-trade, for the state after the last print
-    exit_slot = p.s0 + int(round(EXIT_S / s.sps))
+    exit_slot = p.s0 + int(round(exit_s / s.sps))
     best: dict[str, Any] | None = None
     for tr in s.trigs:
         landing = int(sl[tr.i]) + math.ceil(entry_s / s.sps - 1e-9)
@@ -872,19 +893,18 @@ def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
         report.update(verdict="NOT_DECIDABLE", reasons=pre, outcomes_computed=False)
         return report
     cells_rows: dict[str, list[dict[str, Any]]] = {c: [] for c in CELLS}
-    extra: dict[str, list[dict[str, Any]]] = {"R_rule_1p3": [], "D_literal_v0": [], "D_no_correction": [], "D_only_a": [], "D_only_b": []}
+    extra: dict[str, list[dict[str, Any]]] = {k: [] for k in REPORT_ONLY}
     for p in inp.pools:
         s = structure(p, inp.good_hours)
         if s.status != "trigger":
             continue
-        base = dict(mint=p.mint, date=s.date)
+        base = dict(mint=p.mint, date=s.date, s0_bt=p.s0_bt)
         for c, cell in CELLS.items():
             r = price_cell(p, s, cell, rbar=inp.rbar)
             if r is not None:
                 cells_rows[c].append({**base, **r})
-        for name, kw in (("R_rule_1p3", dict(cell=REPORT_LEGS["R_rule_1p3"])), ("D_literal_v0", dict(cell=CELLS["D"], literal_v0=True)),
-                         ("D_no_correction", dict(cell=CELLS["D"], corr="none")), ("D_only_a", dict(cell=CELLS["D"], corr="a")),
-                         ("D_only_b", dict(cell=CELLS["D"], corr="b"))):
+        for name, kw0 in REPORT_ONLY.items():
+            kw = dict(kw0)
             r = price_cell(p, s, kw.pop("cell"), rbar=inp.rbar, **kw)
             if r is not None:
                 extra[name].append({**base, **r})
@@ -904,10 +924,29 @@ def compute_look(inp: LookInputs, log: Callable[[str], None]) -> dict[str, Any]:
             if len(x):
                 bm = boot_means(x / 1e9, REPORT_P_DRAWS, BOOT_SEED)
                 cl = bf.gate_stats(x, [r["date"] for r in rows], STAKE)
+                stake = REPORT_ONLY.get(c, {}).get("stake", STAKE)
+                order = np.argsort([r["s0_bt"] for r in rows], kind="stable")
+                xs, half = x[order], len(x) // 2
+                win = np.minimum(x, stake)  # winsorised at +100% of the stake
+                wdays = {}
+                for r, w in zip(rows, win):
+                    wdays[r["date"]] = wdays.get(r["date"], 0.0) + w
+                gross = np.array([r["gross"] for r in rows])
+                keep = np.sort(x)[: len(x) - int(math.floor(0.05 * len(x)))]
                 rep_only[c][leg] = dict(trade_boot_p_le_0=float((bm <= 0).mean()), date_cluster_ci90_pct=[cl["ci5_pct"], cl["ci95_pct"]],
-                                        n=int(len(x)), mean_sol=float(x.mean() / 1e9), median_sol=float(np.median(x) / 1e9))
+                                        n=int(len(x)), mean_sol=float(x.mean() / 1e9), median_sol=float(np.median(x) / 1e9),
+                                        winsor100_mean_sol=float(win.mean() / 1e9), winsor100_dates_pos=sum(v > 0 for v in wdays.values()),
+                                        mean_ex_top5pct_sol=float(keep.mean() / 1e9) if len(keep) else None,
+                                        pnl_share_gross_gt_100pct=float(x[gross > 1.0].sum() / x.sum()) if x.sum() != 0 else None,
+                                        first_half_mean_sol=float(xs[:half].mean() / 1e9) if half else None,
+                                        second_half_mean_sol=float(xs[half:].mean() / 1e9), stake_lamports=stake)
         rep_only[c]["reverted"] = sum(r["reverted"] for r in rows)
         rep_only[c]["v_missing"] = sum(r["v_missing"] for r in rows)
+    no_live = [f"340 s exit leg mean <= 0 ({leg})" for leg in ("flat", "press")
+               if rep_only.get("R_exit_340", {}).get(leg, {}).get("mean_sol", 0.0) <= 0]
+    if not all(v["binding"]["B2"].values()):
+        no_live.append("binding leg B2 failed")
+    report.update(no_live=no_live, not_computed_section13=list(NOT_COMPUTED))
     report.update(verdict=v["verdict"], decision=v, cells=stats, report_only=rep_only, rows_md5=rows_md5(cells_rows), outcomes_computed=True,
                   n_rows={c: len(r) for c, r in cells_rows.items()})
     report["_rows"] = {**cells_rows, **extra}
@@ -960,6 +999,73 @@ def run_look(lay: Layout, inp_fn: Callable[[], LookInputs], *, ident: Mapping[st
     return 0
 
 
+# ---- classify (Am.4 B1-B4) and E0 (P4 item 2) ------------------------------------------------------------------------------
+def in_universe(p: FwdPool) -> bool:
+    """s0 in Look 1's counted window and V0 in range, or V0 unknown (section 4: such a pool may qualify)."""
+    return _ts(LOOK1["count_lo"]) <= p.s0_bt < _ts(LOOK1["count_hi"]) and (not (p.v0 == p.v0) or _in_vrange(p.v0))
+
+
+def classify_pools(rpc: Any, pools: Sequence[FwdPool], classify: Callable[..., dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """One record per universe pool. The tape can only mark synthetic, so a pool the tape marks needs no call. Reads no outcome."""
+    if classify is None:
+        from tools.synthetic_class import classify_pool as classify
+    out = []
+    for p in pools:
+        if not in_universe(p):
+            continue
+        if p.cls == "synthetic":
+            out.append({"pool": p.pool, "mint": p.mint, "class": "synthetic", "reason": "tape_post_complete_buy"})
+            continue
+        try:
+            r = classify(rpc, mint=p.mint, pool=p.pool, s0_sig=p.sigs.get("s0_sig") or None, tape_migrate_sig=p.sigs.get("mig_sig") or None,
+                         tape_complete_sig=p.sigs.get("cmp_sig") or None)
+            out.append({"pool": p.pool, "mint": p.mint, "class": r["class"], "reason": r.get("reason")})
+        except Exception as e:  # noqa: BLE001 - a failed fetch after retries leaves the pool unclassified (B3)
+            out.append({"pool": p.pool, "mint": p.mint, "class": "unclassified", "reason": f"error:{type(e).__name__}"})
+    return out
+
+
+E0_DAY = "2026-09-20"  # pinned E0-H5 day (section 10), fast-pool-0918
+E0_CONF = H5_FLOWS / "out" / "boostdip_frozen_conf.parquet"
+E0_LEGS = (("primary", (1.3, 0.55, False)), ("binding", (1.9, 0.55, False)))
+
+
+def e0_rows(items: Iterable[tuple[str, str, int, float, bf.PoolPath]]) -> list[tuple[str, str, str, int]]:
+    """The read tool's pricing core on exploration pools, in the rule's literal pricing (V0, no correction, no fail mix): (mint, leg, stake,
+    pnl rounded to the lamport) for both of the rule's legs and both stakes. `items` are boostfloor_score.load_day tuples."""
+    out = []
+    for mint, _blk, s0, v, path in items:
+        sl = path.sl
+        if len(sl) < bf.MIN_PATH_PRINTS or np.any(np.diff(sl) < 0):
+            continue
+        sps = bf.seconds_per_slot(sl, path.bt)
+        if not bf.sps_ok(sps):
+            continue
+        p = FwdPool(mint, "", s0, int(path.bt[0]), 0, v, "meta", "non_synthetic", path, np.full(len(sl), v))
+        trigs = find_triggers(p, sps, (v,))
+        if not trigs:
+            continue
+        st = Struct("trigger", "", sps, trigs)
+        for leg, cell in E0_LEGS:
+            for label, stake in bf.STAKES_LAMPORTS:
+                r = price_cell(p, st, cell, rbar=0.0, stake=stake, literal_v0=True, corr="none")
+                if r is not None:
+                    out.append((mint, leg, f"{float(label):g}", int(round(r["pnl_lamports"]))))
+    return out
+
+
+def e0_md5(rows: Iterable[tuple[str, str, str, int]]) -> str:
+    return hashlib.md5("".join(f"{m},{leg},{st},{pnl}\n" for m, leg, st, pnl in sorted(rows)).encode()).hexdigest()
+
+
+def e0_reference(conf: Path, day: str) -> list[tuple[str, str, str, int]]:
+    import pandas as pd
+
+    df = pd.read_parquet(conf, columns=["day", "mint", "D", "leg", "H", "stake", "pnl"])
+    df = df[(df.day == day) & (df.H.astype(str) == "end") & (df.D == bf.Q_STAR_SOL)]
+    return [(str(r.mint), str(r.leg), f"{float(r.stake):g}", int(round(float(r.pnl)))) for r in df.itertuples(index=False)]
+
+
 # ---- CLI ------------------------------------------------------------------------------------------------------------------
 def _good_bad(walk: Path) -> tuple[frozenset[str], list[str]]:
     st = hour_states(walk, READ_HOURS)
@@ -985,6 +1091,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("pins")
+    sub.add_parser("e0")
     for c in ("classify", "precount", "look"):
         sub.add_parser(c).add_argument("--look", type=int, required=True)
     a = ap.parse_args(argv)
@@ -996,14 +1103,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({k: f"{p}@{git_blob(REPO / p)}" for k, p in sorted(P3_PIN_PATHS.items())}, indent=1))
             parse_p3_pins(text)
             return 0
+        if a.cmd == "e0":  # P4 item 2, exploration day only; #476's refusals apply to the day and the work dir
+            bf.refuse_day(E0_DAY)
+            mine = e0_rows(bf.load_day(Path(bf.DEFAULT_WORK_DIR), E0_DAY))
+            ref = e0_reference(E0_CONF, E0_DAY)
+            res = {"day": E0_DAY, "n_tool": len(mine), "n_ref": len(ref), "md5_tool": e0_md5(mine), "md5_ref": e0_md5(ref),
+                   "conf_sha256": sha256_file(E0_CONF), "read_tool_blob": git_blob(Path(__file__))}
+            res["equal"] = res["md5_tool"] == res["md5_ref"]
+            print(json.dumps(res, indent=1, sort_keys=True))
+            return 0 if res["equal"] else 1
         refuse_look(a.look)
         from tools.forward_v_join import final_marker
 
         final_marker(FINAL_LEDGER)
         lay = Layout.for_look(ROOT, a.look)
         ident = integrity()
-        if a.cmd == "classify":
-            raise Refused("classify: RPC wiring is the next step (HANDOFF); use synthetic_class.classify_pool per pool into a new classes file")
+        if a.cmd == "classify":  # public RPC only (the monitor's client and default URL; Helius refused there)
+            from tools import pump_structure_monitor as M
+
+            if lay.classes.exists():
+                raise Refused(f"{lay.classes} exists: classes are written once")
+            good, _ = _good_bad(FORWARD_1002)
+            pools = load_pools(lay, load_vsources(lay), {})
+            recs = classify_pools(M.RpcClient(M.DEFAULT_RPC, max_calls=60_000), pools)
+            write_new(lay.classes, "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs).encode())
+            counts: dict[str, int] = {}
+            for r in recs:
+                counts[r["class"]] = counts.get(r["class"], 0) + 1
+            print(json.dumps({"pools": len(recs), "by_class": counts, "sha256": sha256_file(lay.classes)}, indent=1, sort_keys=True))
+            return 0
         if a.cmd == "precount":
             good, bad = _good_bad(FORWARD_1002)
             pc = precount(load_pools(lay, load_vsources(lay), load_classes(lay.classes)), good, bad)
