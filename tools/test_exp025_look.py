@@ -30,10 +30,12 @@ TAGS = [f"{lat}_END_{lg}" for lat in ("p", "b") for lg in ("l055", "l2", "l5")] 
 class Fixture:
     """A synthetic look 1: 3 exploration tokens (mid 1..3) and 20 October tokens per counted date, one decision row each."""
 
-    def __init__(self, d, r2_share=0.99, drop_hours=(), bad_hours=(), wrong_block=None, pred=0.05, oracle_ans=False, fail_cmd=None):
+    def __init__(self, d, r2_share=0.99, drop_hours=(), bad_hours=(), wrong_block=None, pred=0.05, oracle_ans=False, fail_cmd=None,
+                 r3_share=0.99, v_flag=True):
         self.d = d; self.O = os.path.join(d, "look1"); os.makedirs(self.O)
         self.calls, self.priced = [], 0
-        self.pred, self.oracle_ans, self.fail_cmd = pred, oracle_ans, fail_cmd
+        self.pred, self.oracle_ans, self.fail_cmd, self.r3_share, self.v_flag = pred, oracle_ans, fail_cmd, r3_share, v_flag
+        self.r3_pools = None
         mk, lg = os.path.join(d, "FINAL_WRITTEN"), os.path.join(d, "FINAL_READS.jsonl")
         open(mk, "w").close(); open(lg, "w").write('{"x":1}\n')
         blobs = os.path.join(d, "blobs.json"); json.dump({"forward-1002ev": "a" * 40, "walk2": "a" * 40}, open(blobs, "w"))
@@ -66,9 +68,10 @@ class Fixture:
         self.p2 = os.path.join(d, "p2_universe.parquet"); self.U.iloc[:3].to_parquet(self.p2, index=False)
         self.X = pd.DataFrame(dict(mid=[r["mid"] for r in octo], t=[int(r["g"]) + 120 for r in octo]))
         self.X["h_top1"] = np.where(self.X.mid % 10 == 0, 0.7, 0.3); self.X["h_top5"] = 0.6
+        self.X["wb5_n"] = 4; self.X["wb5_new"] = 0.25; self.X["ws5_n"] = 2; self.X["ws5_new"] = 0.5   # 3 + 1 of 6 wallets known: 2/3
         self.a = types.SimpleNamespace(now=R.ep("2026-10-17T03"), final_marker=mk, final_ledger=lg, decoder_blobs=blobs, e0_dir=e0, p7=p7,
                                        p2_universe=self.p2, ledger=os.path.join(d, "LOOK_READS.jsonl"), o_dir=self.O, look1_record=None,
-                                       oracle_live=None, oracle_replay=None, oracle_stale_s=None)
+                                       oracle_live=[os.path.join(d, "live.jsonl")], oracle_replay=None, oracle_stale_s=None)
 
     # ---- the Steps interface
     def preflight(self, look):
@@ -105,6 +108,14 @@ class Fixture:
     def oracle(self):
         return lambda mint: self.oracle_ans
 
+    def v_flag_missing(self, look, tape_dir, guard):
+        return [] if self.v_flag else ["2026-10-09T00"]
+
+    def r3_coverage(self, look, tape_dir, pools, guard):
+        self.calls.append("r3"); self.r3_pools = list(pools)
+        return dict(share=self.r3_share, n=1000, n_v=int(self.r3_share * 1000), basis="fixture",
+                    by_date={d: dict(prints=100, with_v=int(self.r3_share * 100), share=self.r3_share) for d in DATES})
+
     def price_fn(self, rows, tape_dir, guard, hour_source=None, vmiss_hours=None):
         self.priced += 1
         out = []
@@ -136,6 +147,12 @@ class LockedRun(unittest.TestCase):
             pc = json.load(open(os.path.join(F.O, "precount.json")))
             self.assertEqual(sum(v["kept"] for v in pc["dates"].values()), 126)          # 140 selections minus the 14 capped (h_top1 0.7)
             self.assertFalse(any(k in json.dumps(pc) for k in ("pnl", "mean", "ciT", "days_pos")))
+            self.assertAlmostEqual(pc["shares"]["ledger_coverage"], 4 / 6); self.assertEqual(pc["shares"]["v_coverage"], 0.99)
+            day = pc["dates"]["2026-10-12"]
+            self.assertAlmostEqual(day["ledger_coverage"], 4 / 6); self.assertAlmostEqual(day["ledger_coverage_kept"], 4 / 6)
+            self.assertEqual((day["ledger_wallets"], day["rows_without_ledger"], day["v_coverage"]), (120, 0, 0.99))
+            self.assertLess(F.calls.index("r3"), F.calls.index("11_passA.py"))                # R3 after 10_meta, before the lock
+            self.assertEqual(len(F.r3_pools), 143)
             res = json.load(open(rec["result"]))
             self.assertEqual(res["n_kept"], 126); self.assertIn("report_only", res)
             with self.assertRaises(R.Refusal) as c:
@@ -181,6 +198,27 @@ class RefusalsBeforeAnyPnl(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._nd(Fixture(d, oracle_ans=None), "R7", False)
 
+    def test_r7_oracle_constructor_error_or_stale_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = types.SimpleNamespace(oracle_live=[os.path.join(d, "live.jsonl")], oracle_replay=None, final_marker=None, oracle_stale_s="x")
+            never = types.SimpleNamespace(oracle_live=[os.path.join(d, "never_beat.jsonl")], oracle_replay=None, final_marker=None,
+                                          oracle_stale_s=None)
+            for a in (bad, never):
+                with self.assertRaises(R.Refusal) as c:
+                    K.Steps(a).oracle()
+                self.assertEqual(c.exception.code, "R7")
+
+            class Built(Fixture):
+                def oracle(self):
+                    return K.Steps(bad).oracle()
+            self._nd(Built(d), "R7", False)                                               # terminal, as section 11.4 says
+
+    def test_r3_from_the_tape_before_the_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d, r3_share=0.94)
+            self._nd(F, "R3", False)
+            self.assertIn("10_meta.py", F.calls)
+
     def test_r14_p7_missing(self):
         with tempfile.TemporaryDirectory() as d:
             F = Fixture(d); os.remove(F.a.p7)
@@ -208,7 +246,8 @@ class NotTerminal(unittest.TestCase):
             F = Fixture(d); os.remove(F.a.final_marker)
             with self.assertRaises(R.Refusal) as c:
                 K.run_look(1, F.a, F)
-            self.assertEqual(c.exception.code, "SEAL"); self.assertEqual(F.events(), [])
+            self.assertEqual(c.exception.code, "SEAL"); self.assertEqual(F.events(), ["ready"])
+            self.assertFalse(os.path.exists(os.path.join(F.O, "READ.lock")))
 
     def test_ready_mode_never_locks(self):
         with tempfile.TemporaryDirectory() as d:
@@ -218,14 +257,43 @@ class NotTerminal(unittest.TestCase):
             with self.assertRaises(R.Refusal) as c:
                 K.run_look(1, G.a, G, lock=False)
             self.assertEqual(c.exception.code, "R2")
-            self.assertEqual(F.events() + G.events(), []); self.assertEqual(F.calls + G.calls, [])
+            self.assertEqual(F.events() + G.events(), ["ready", "ready"]); self.assertEqual(F.calls + G.calls, [])
+            ef, eg = R.ledger_events(F.a.ledger, 1)[0], R.ledger_events(G.a.ledger, 1)[0]
+            self.assertEqual((ef["mode"], ef["ok"], ef["code"]), ("ready", True, None))
+            self.assertEqual((eg["mode"], eg["ok"], eg["code"]), ("ready", False, "R2"))
+            self.assertEqual(ef["hours"]["fallback"], 0); self.assertIn("manifest_v_share", ef["hours"]); self.assertEqual(eg["r2_share"], 0.5)
 
     def test_tool_crash_before_lock_is_not_terminal(self):
         with tempfile.TemporaryDirectory() as d:
             F = Fixture(d, fail_cmd="10_meta.py")
             with self.assertRaises(R.Refusal) as c:
                 K.run_look(1, F.a, F)
-            self.assertEqual(c.exception.code, "RUN"); self.assertEqual(F.events(), [])
+            self.assertEqual(c.exception.code, "RUN"); self.assertEqual(F.events(), ["ready"])
+            self.assertEqual(R.ledger_events(F.a.ledger, 1)[0]["mode"], "run")
+
+    def _not_ready(self, F, lock=True):
+        with self.assertRaises(R.Refusal) as c:
+            K.run_look(1, F.a, F, lock=lock)
+        self.assertEqual(c.exception.code, "NOT_READY")
+        self.assertEqual(F.events(), ["ready"]); self.assertEqual(F.priced, 0)
+        self.assertFalse(os.path.exists(os.path.join(F.O, "READ.lock")))
+        return c.exception
+
+    def test_missing_oracle_flag_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); F.a.oracle_live = None
+            self.assertIn("--oracle-live", str(self._not_ready(F))); self.assertEqual(F.calls, [])
+
+    def test_no_per_print_v_flag_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            for lock in (True, False):
+                F = Fixture(os.path.join(d, str(lock)) if os.makedirs(os.path.join(d, str(lock))) is None else d, v_flag=False)
+                self.assertIn("v_ok", str(self._not_ready(F, lock)))
+
+    def test_missing_assembly_is_not_ready_not_r8(self):
+        with tempfile.TemporaryDirectory() as d:
+            F = Fixture(d); os.remove(os.path.join(F.O, "look_assembly.json"))
+            self._not_ready(F)
 
 
 @unittest.skipIf(np is None, "numpy/pandas/duckdb missing")
@@ -238,23 +306,51 @@ class AdapterInterface(unittest.TestCase):
             hs = K.hour_status(1, mans)
             self.assertEqual(hs["unwalked"], ["2026-10-12T03"]); self.assertIn("2026-10-12T03", hs["bad"])
             self.assertEqual(hs["vmiss"], [mans[1]["files"][-1]["hour"]])
-            self.assertLess(hs["v_coverage"], 1.0)
+            self.assertLess(hs["manifest_v_share"], 1.0); self.assertNotIn("v_coverage", hs)
             self.assertFalse(any(h < K.V_COVER_START for h in hs["vmiss"]))             # forward-1002 hours carry no counted price
 
-    def test_price_rows_vmiss_hours_from_the_hour_column(self):
+    def test_price_rows_has_no_hour_level_v_proxy(self):
         P = PricingLayerFixture()
         with tempfile.TemporaryDirectory() as d:
             P._tape(d)
             for f in os.listdir(d):
                 df = pd.read_parquet(os.path.join(d, f)); df["hour"] = f[:-8]; df.to_parquet(os.path.join(d, f), index=False)
             base = R.price_rows(P._rows(), d, R.ExplorationGuard()).iloc[0]
-            vm = R.price_rows(P._rows(), d, R.ExplorationGuard(), vmiss_hours={"2026-09-20T00"}).iloc[0]
-            self.assertFalse(bool(base.vmiss_p_END_l055)); self.assertTrue(bool(vm.vmiss_p_END_l055))
-            self.assertLess(vm.pnl_p_END_l055, base.pnl_p_END_l055)
-            d2 = os.path.join(d, "nohour"); P._tape(d2)
+            self.assertFalse(bool(base.vmiss_p_END_l055))                                 # no v_ok, no vmiss hours: the E0 path, unchanged
+            with self.assertRaises(R.Refusal) as c:                                        # the hour column is no longer a V status
+                R.price_rows(P._rows(), d, R.ExplorationGuard(), vmiss_hours={"2026-09-20T00"})
+            self.assertEqual(c.exception.code, "NOT_READY")
+            d2 = os.path.join(d, "vok"); P._tape(d2, v_ok=lambda df: df.block_time < R.ep("2026-09-20T00") + 1300)
+            a = R.price_rows(P._rows(), d2, R.ExplorationGuard()).iloc[0]
+            b = R.price_rows(P._rows(), d2, R.ExplorationGuard(), vmiss_hours={"2026-09-20T00"}).iloc[0]
+            self.assertTrue(bool(a.vmiss_p_END_l055))                                      # per print, from v_ok
+            self.assertEqual((a.pnl_p_END_l055, bool(a.vmiss_p_END_l055)), (b.pnl_p_END_l055, bool(b.vmiss_p_END_l055)))
+
+    def test_r3_and_v_flag_from_the_tape(self):
+        with tempfile.TemporaryDirectory() as d:
+            class G:
+                def check_hour(self, s, h):
+                    pass
+            t0 = R.ep("2026-10-09T00")
+            # T00: universe pool P1 has 4 PumpSwap prints (3 with V) and one bonding print; non-universe P9 has 5 PumpSwap prints, none with V
+            pd.DataFrame(dict(venue=["pumpswap"] * 9 + ["bonding"], pool=["P1"] * 4 + ["P9"] * 5 + ["P1"], block_time=t0 + np.arange(10),
+                              v_ok=[True, True, True, False] + [False] * 5 + [False])).to_parquet(os.path.join(d, "2026-10-09T00.parquet"), index=False)
+            pd.DataFrame(dict(venue=["pumpswap"], pool=["P1"], block_time=[t0 + 3600])).to_parquet(os.path.join(d, "2026-10-09T01.parquet"), index=False)
+            self.assertEqual(K.v_flag_missing(1, d, G()), ["2026-10-09T01"])
+            pd.DataFrame(dict(venue=["pumpswap"], pool=["P1"], block_time=[t0 + 3600], v_ok=[True])).to_parquet(
+                os.path.join(d, "2026-10-09T01.parquet"), index=False)
+            self.assertEqual(K.v_flag_missing(1, d, G()), [])
+            r3 = K.r3_coverage(1, d, ["P1"], G())
+            self.assertEqual((r3["n"], r3["n_v"], r3["share"]), (5, 4, 0.8))                # the manifest share would be 4 / 10
+            self.assertEqual(r3["by_date"], {"2026-10-09": dict(prints=5, with_v=4, share=0.8)})
             with self.assertRaises(R.Refusal) as c:
-                R.price_rows(P._rows(), d2, R.ExplorationGuard(), vmiss_hours={"2026-09-20T00"})
+                R.r3_v_coverage(r3["share"])
             self.assertEqual(c.exception.code, "R3")
+            self.assertIsNone(K.r3_coverage(1, d, [], G())["share"])
+
+    def test_landing_pad_covers_one_slot_over_1_9_s(self):
+        h = R.ep("2026-10-10T01")
+        self.assertIn("2026-10-10T01", K.attempt_hours(h - 7200, h - 362))              # 1.9 s + 0.5 s + 360 s crosses the hour
 
     def test_fallback_hours_follow_pass_a_clock_rule(self):
         with tempfile.TemporaryDirectory() as d:

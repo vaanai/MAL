@@ -80,7 +80,8 @@ PINNED_SCRIPTS = ("scripts/common2.py", "scripts/10_meta.py", "scripts/11_passA.
 
 
 class Refusal(Exception):
-    """NOT_DECIDABLE / refused. `code` is the section 11.4 code (R1..R14) or SEAL / LOCK / PIN / SECTION0."""
+    """NOT_DECIDABLE / refused. `code` is the section 11.4 code (R1..R14) or SEAL / LOCK / PIN / SECTION0 / NOT_READY (a readiness gap that is
+    not a section 11.4 refusal: the look is not run and not spent, tools/exp025_look.py)."""
 
     def __init__(self, code: str, msg: str):
         super().__init__(f"{code}: {msg}")
@@ -410,12 +411,13 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
 
     rows: DataFrame with idx, t, mint, pool (canonical, from the universe: PDA in October), v (V0 = tokens.v0_lamports), g (graduation time), gday.
     tape_dir: <O>/tape/trades (hunt layout, ref/convert.py TR_COLS; quote_reserve is already the event-V-mapped value in October).
-    Optional adapter column `v_ok` (bool): False on a print whose V(t) was not decoded; a trade whose landing or exit state is such a print is
-    priced at the lower P&L of pending 0 and pending PENDING_MAX at the exit (section 6), and flagged vmiss_<tag>.
+    Adapter column `v_ok` (bool): False on a print whose V(t) was not decoded; a trade whose landing or exit state is such a print is
+    priced at the lower P&L of pending 0 and pending PENDING_MAX at the exit (section 6, per trade), and flagged vmiss_<tag>.
     hour_source(hour) -> source name for the guard (default: `source` for every hour).
-    vmiss_hours: hours whose PumpSwap prints are not all V-mapped by the adapter (its manifest: event_v false, or pumpswap_rows_with_v <
-    pumpswap_rows; see tools/exp025_look.hour_status). Without a `v_ok` column every print of such an hour counts as V-missing (fail closed:
-    the lower-P&L rule of section 6). A `v_ok` column, when the adapter writes one, takes precedence.
+    vmiss_hours: hours whose PumpSwap prints are not all V-mapped by the adapter (its manifest; see tools/exp025_look.hour_status). When it is
+    non-empty the trade table must carry `v_ok`, or the call refuses NOT_READY: there is no hour-level fallback, because counting every print
+    of such an hour as V-missing (one V-less print of a non-universe pool is enough) is not section 6's per-trade rule and inflates R11.
+    Without `v_ok` and without vmiss_hours (the September E0 tape) every print counts as V-decoded.
     Returns a DataFrame keyed by idx with g_/pnl_/xt_ per tag (pnl GROSS of send fees), ssb_/nearby_ per latency, pool_match, err."""
     import duckdb
     import pandas as pd
@@ -437,9 +439,8 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
         if "v_ok" in cols:
             vcol = ", v_ok vok"
         elif vmh:
-            if "hour" not in cols:
-                raise Refusal("R3", "no per-print V status: the trade table has neither v_ok nor hour")
-            vcol = ", hour hr"
+            raise Refusal("NOT_READY", f"{len(vmh)} hours hold V-less PumpSwap prints and the trade table has no per-print v_ok column "
+                                       "(the hour-level proxy is not used)")
         else:
             vcol = ""
         mm = pd.DataFrame({"mint": Rg.mint.unique()})
@@ -492,8 +493,7 @@ def price_rows(rows, tape_dir: str, guard, source: str = "exploration", con=None
             bt = np.where(np.isnan(btr), -np.inf, btr); bt[0] = bt[0] if np.isfinite(bt[0]) else float(Rm.g.iloc[0]); bt = np.maximum.accumulate(bt)
             isb = Pm.isb.values.astype(bool); sol = Pm.sol.values.astype(float); tok = Pm.tok.values.astype(float)
             Qp = Pm.q.values.astype(float) + Vp; Bp = Pm.b.values.astype(float)
-            vok = (Pm.vok.fillna(False).values.astype(bool) if "vok" in Pm else ~Pm.hr.astype(str).isin(vmh).values if "hr" in Pm
-                   else np.ones(len(Pm), bool))
+            vok = Pm.vok.fillna(False).values.astype(bool) if "vok" in Pm else np.ones(len(Pm), bool)
             Bl = Bp[-1] - tok[-1] if isb[-1] else Bp[-1] + tok[-1]
             Ql = Qp[-1] * Bp[-1] / Bl
             SQ = np.append(Qp, Ql); SB = np.append(Bp, Bl); SV = np.append(vok, vok[-1])
@@ -729,12 +729,19 @@ def r1_bad_hours(look: int, bad_hours, attempt_hours) -> np.ndarray:
     return keep
 
 
-def share_refusals(pda_match: float, v_coverage: float, fallback_hours: int, n_hours: int) -> None:
-    """R2 (PDA canonical-pool match >= 95% of non-Mayhem completes), R3 (per-print V coverage >= 95%), R6 (<= 5% nearest-hour slot-time fallback)."""
+def r3_v_coverage(v_coverage) -> None:
+    """R3: per-print V coverage on canonical-pool prints of universe pools >= 95% (tools/exp025_look.r3_coverage measures it from v_ok)."""
+    if v_coverage is None or not v_coverage >= 0.95:
+        raise Refusal("R3", f"per-print V coverage {v_coverage if v_coverage is None else round(float(v_coverage), 4)} < 0.95")
+
+
+def share_refusals(pda_match: float, v_coverage, fallback_hours: int, n_hours: int) -> None:
+    """R2 (PDA canonical-pool match >= 95% of non-Mayhem completes), R3 (per-print V coverage >= 95%; skipped when v_coverage is None, as
+    tools/exp025_look.py decides R3 later, on the look universe's pools), R6 (<= 5% nearest-hour slot-time fallback)."""
     if not pda_match >= 0.95:
         raise Refusal("R2", f"PDA canonical-pool match {pda_match:.4f} < 0.95")
-    if not v_coverage >= 0.95:
-        raise Refusal("R3", f"per-print V coverage {v_coverage:.4f} < 0.95")
+    if v_coverage is not None:
+        r3_v_coverage(v_coverage)
     if n_hours <= 0 or fallback_hours > 0.05 * n_hours:
         raise Refusal("R6", f"{fallback_hours} of {n_hours} hours use the slot-time fallback")
 
