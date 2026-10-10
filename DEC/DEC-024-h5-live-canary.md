@@ -365,9 +365,10 @@ The ruling's other points, recorded here:
   - 3 trades at 0.02 SOL;
   - realized +0.005199 SOL;
   - 3 sells landed, 0 late.
-- **Formal tests are unaffected.**
-  - EXP-024 Look 1: the five A3 halt flags were all clear on this run (`boost_last_slice_early` halts below 315 s), so Look 1 is unaffected.
+- **Formal tests.**
+  - EXP-024 Look 1: no A3 halt flag fired (`boost_last_slice_early` halts below 315 s), so Look 1 is not halted. This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check.
   - EXP-022: all six flags were clear.
+- **Other canary halts.** `program_changed` (a canary live halt under Amendment 2 item 4) was clear: 3 programdata hashes unchanged.
 
 ## Open for the owner
 

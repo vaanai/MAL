@@ -39,7 +39,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - wallet about 0.3039 SOL;
   - 0 late sells;
   - landing about 0.87 s.
-- **Formal tests unaffected.** The A3 flags were all clear: EXP-024 Look 1 still counts from 10-10T00Z, and EXP-022's six flags are clear.
+- **Formal tests.** No A3 halt flag fired, so EXP-024 Look 1 is not halted (it counts from 10-10T00Z). This run's 333 s is one of the daily medians in EXP-024 §11's 330 s window check. EXP-022's six flags are clear. `program_changed` was clear.
 - **To resume** (after the owner's amendment): `sudo rm /var/lib/mal-live/h5/STOP` on fast-0 in a MiScusi job, then check that `--status` shows `stop_file=False`.
 - **Minor, for the pre-10-16 reinstall:** the `on_boost_row` docstring says ">= 10 pools" while the code uses 30.
 
