@@ -45,8 +45,10 @@ FIRST PRINT UNCERTAIN. A base hour that is not usable (forward_v_join.hour_state
 a read error, or that holds an unreadable line can hide a pool's first print. "Uncertain" means first seen in such a (non-ok) hour or
 in the hour right after one, or a pool with a row that has no integer slot. A pool first seen two or more hours after the first such
 hour keeps its V: the extractor's hole rule (h5_forward_extract.HOLE_RULE) drops a mint whose migration hour or the next hour is
-unusable, and a migration pool cannot print before its `complete`, so a pool the extract keeps does not have its first print hidden
-further back than the hour before the first one seen. ev gives an uncertain pool null; gettx skips source 2 (a print's V) and still
+unusable, and a migration pool cannot print before its `complete`, so a kept mint's migration pool does not have its first print
+hidden further back than the hour before the first one seen. This does not hold for another pool of the mint that printed before
+`complete`: its first print can sit in any earlier bad hour, and its V is already not taken at s0 (see POOLS). ev gives an
+uncertain pool null; gettx skips source 2 (a print's V) and still
 takes source 3 (the pool's V0). Counted as first_print_uncertain. The meta's first_gap_hour is the first non-ok hour and nothing more.
 
 SEAL. Both modes refuse before opening anything unless the EXP-012 FINAL marker is in the external FINAL ledger
