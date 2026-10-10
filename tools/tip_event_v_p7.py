@@ -12,7 +12,8 @@ instead of a look's adapter column.
 Amended acceptance (ruling item 1, one run). Before H, #570 and the amendment module are pushed and the window [H, H+1h) is declared in the PR
 and a notebook entry; H is the first full UTC hour at least 10 minutes after the push. The run on that window passes only if
   - sells >= 99% and buys >= 99% under within_tolerance (1 bp or 2 units);
-  - there are at least 100 comparable buys (this tool's `pass` includes it: `acceptance.buy_n_at_least_100`);
+  - there are at least 100 comparable buys (this tool's `pass` includes it: `acceptance.buy_n_at_least_100`), and the window is one full
+    UTC hour (`acceptance.one_full_utc_hour`; that it was declared before H is checked in the PR, not here);
   - over the window the follower's mismatch, errors and missing_pumpswap counters are all 0, with no new backlog_jump or unfetchable rows
     (the follower's counters, read beside this output; this tool does not see them);
   - the output shows n and hits per ix_name, and exclusions per cause and per name (`by_ix_name`, `excluded_by`, `excluded_by_name`).
@@ -58,7 +59,7 @@ ARTIFACTS/exp025/event_v_map.py; both files are sha-pinned in ARTIFACTS/exp025/S
        line2_exp024: tools.boostfloor_inputs.tier_lines as written, V = the print's own stamp.
      A zero buy (sol <= 0, tok <= 0 or tok >= b) is skipped, as tier_lines does. Line 2 does not change `pass`: acceptance is line 1.
 
-Counts only. stdout shows no signature, pool, mint, amount, price or reserve. Per-print outcomes (signature, line, outcome, reason) go to
+Counts only. stdout shows no signature, pool, mint, amount, price or reserve. Per-print outcomes (signature, ix_name, line, outcome, reason) go to
 <out-dir>/p7-tip-prints.jsonl and the summary to <out-dir>/p7-tip.json, which carries that file's sha256. The RPC URL and key are held in
 memory and never printed, logged or written; errors are reduced to a type or a status code.
 
@@ -99,7 +100,6 @@ from tools.pump_history_backfill import RateLimiter, helius_http_url  # noqa: E4
 
 DEFAULT_TRADES_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 DEFAULT_HELIUS_ENV = "/var/lib/mal/fast-listener/helius.env"
-DEFAULT_START = "2026-10-10T13:17:18Z"  # the follower restarted with --trade-event-v at 13:17:17Z
 DEFAULT_RPS = 5.0
 # The frame is held in memory at about 923 B per row (the reviewer's measurement on #570). 1,200,000 rows is about 1.1 GB, under the 1.2 GB
 # budget; 2,000,000 would be about 1.8 GB, too close on mal-fast-0 (one heavy job at a time, user-1002.slice).
@@ -621,6 +621,7 @@ def summarize(tally: Mapping[str, Any], *, window: tuple[int, int], frame_info: 
     assert tally["unresolved"]["no_adapter_row"] == 0  # the adapter row is built from the tape row, so it always exists
     line1 = bool(am.p7_raw_pass(dict(tally)))
     enough = tally["buy_n"] >= am.P7_RAW_BUY_MIN_COMPARABLE
+    one_hour = window[0] % _HOUR_MS == 0 and window[1] - window[0] == _HOUR_MS  # the declared form [H, H+1h)
     line2 = line2 or {}
     return {
         "tool": "tools/tip_event_v_p7.py",
@@ -651,9 +652,10 @@ def summarize(tally: Mapping[str, Any], *, window: tuple[int, int], frame_info: 
         "decode_errors": extras["decode_errors"],
         "credits": credits,
         "fetch_errors": dict(errors),
-        "acceptance": {"line1_pass": line1, "buy_n_at_least_100": enough,
+        "acceptance": {"line1_pass": line1, "buy_n_at_least_100": enough, "one_full_utc_hour": one_hour,
+                       "declared_before_h": "not checked here: the PR and notebook entry must name [H, H+1h) before H",
                        "not_seen_here": "follower counters mismatch/errors/missing_pumpswap = 0, no new backlog_jump or unfetchable rows"},
-        "pass": line1 and enough,
+        "pass": line1 and enough and one_hour,
         "line2_exp025": line2.get("exp025"),
         "line2_exp024": line2.get("exp024"),
         "prints_file": OUT_PRINTS,
@@ -666,7 +668,7 @@ def print_rows(sampled: Sequence[tuple[str, dict]], results: Sequence[tuple]) ->
     lines = []
     for (name, row), (line, outcome, reason) in zip(sampled, results):
         lines.append(json.dumps({"set": name, "slot": row["slot"], "signature": row["signature"], "event_index": row["event_index"],
-                                 "line": line, "outcome": outcome, "reason": reason}, sort_keys=True, separators=(",", ":")))
+                                 "ix_name": _name(row), "line": line, "outcome": outcome, "reason": reason}, sort_keys=True, separators=(",", ":")))
     return ("\n".join(lines) + "\n").encode() if lines else b""
 
 
@@ -766,7 +768,7 @@ def run(args: argparse.Namespace, *, call: Callable[[str], Any] | None = None, c
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Outcome-blind P7 line-1 check on the tip follower's event-V stamp (counts only).")
     ap.add_argument("--trades-dir", default=DEFAULT_TRADES_DIR, help="the follower's --out directory (trades-<hour>.jsonl)")
-    ap.add_argument("--start", default=DEFAULT_START, help="window start, UTC, inclusive (t_recv_ms)")
+    ap.add_argument("--start", required=True, help="window start H, UTC, inclusive (t_recv_ms); the acceptance run is the declared [H, H+1h)")
     ap.add_argument("--end", required=True, help="window end, UTC, exclusive (t_recv_ms)")
     ap.add_argument("--out-dir", default=None, help="new directory for p7-tip.json and p7-tip-prints.jsonl (required unless --dry-run)")
     ap.add_argument("--helius-env", default=DEFAULT_HELIUS_ENV, help="env file with HELIUS_API_KEY; the key and URL are never printed")

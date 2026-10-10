@@ -276,7 +276,7 @@ class FrameTests(Base):
     def test_default_ceiling_keeps_the_frame_near_1_1_gb(self):
         self.assertEqual(p7.DEFAULT_MAX_FRAME_ROWS, 1_200_000)
         self.assertLess(p7.DEFAULT_MAX_FRAME_ROWS * 923, 1.2e9)  # ~923 B per frame row (reviewer's measurement on #570)
-        self.assertEqual(p7.build_parser().parse_args(["--end", END]).max_frame_rows, p7.DEFAULT_MAX_FRAME_ROWS)
+        self.assertEqual(p7.build_parser().parse_args(["--start", START, "--end", END]).max_frame_rows, p7.DEFAULT_MAX_FRAME_ROWS)
 
     def test_frame_rows_keep_only_what_the_check_reads(self):
         (row,), _ = self.frame_of([self.sell_tape()])
@@ -767,7 +767,9 @@ class CliTests(Base):
         self.assertEqual(len(lines), 3)
         self.assertEqual({(x["line"], x["outcome"], x["reason"]) for x in lines},
                          {("sell", "hit", None), ("buy", "hit", None), (None, "excluded", "buy_exact_quote_in")})
-        self.assertEqual(set(lines[0]), {"set", "slot", "signature", "event_index", "line", "outcome", "reason"})
+        self.assertEqual(set(lines[0]), {"set", "slot", "signature", "event_index", "ix_name", "line", "outcome", "reason"})
+        self.assertEqual(sorted(x["ix_name"] for x in lines), sorted([p7.NO_NAME, "buy", "buy_exact_quote_in"]))
+        self.assertIs(d["acceptance"]["one_full_utc_hour"], False)  # 13:17:18 to 14:30:00 is not the declared [H, H+1h) form
 
     def test_stdout_stderr_and_summary_carry_no_signature_pool_mint_amount_or_key(self):
         rc, out, err = self.go(["--out-dir", str(self.out)], _call=lambda sig: self.txs[sig])
@@ -904,6 +906,9 @@ class CliTests(Base):
         with self.assertRaises(SystemExit):
             with contextlib.redirect_stderr(io.StringIO()):
                 p7.main(["--dry-run"])
+        with self.assertRaises(SystemExit):  # --start has no default: the acceptance run names its declared H
+            with contextlib.redirect_stderr(io.StringIO()):
+                p7.main(["--dry-run", "--end", END])
         shutil.rmtree(self.trades)
         self.assertIn("trades-dir", self.refused(["--dry-run"]))
 
@@ -958,7 +963,7 @@ class AmendPinTests(unittest.TestCase):
         with self._fresh(root), mock.patch.object(p7, "build_frame", lambda *a, **k: self.fail("no tape is read after a refusal")):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                rc = p7.main(["--end", END, "--dry-run", "--trades-dir", str(root)])
+                rc = p7.main(["--start", START, "--end", END, "--dry-run", "--trades-dir", str(root)])
         self.assertEqual(rc, 2)
         self.assertIn("refused", err.getvalue())
 
@@ -1170,7 +1175,8 @@ class Line2Tests(unittest.TestCase):
     def test_line2_does_not_change_pass(self):
         tally = {"sell_n": 100, "sell_ok": 100, "buy_n": 100, "buy_ok": 100, "excluded": 0,
                  "excluded_by": {c: 0 for c in p7.buy_amend().P7_RAW_EXCLUSIONS}, "unresolved": {r: 0 for r in p7.event_v_map().P7_RAW_REASONS}}
-        kw = dict(window=(T0, T0 + 3_600_000), frame_info={"frame_n": 200, "unstamped_canonical_n": 0}, main_n=200, topup_n=0,
+        h = p7.parse_utc("2026-10-10T16:00:00Z")
+        kw = dict(window=(h, h + 3_600_000), frame_info={"frame_n": 200, "unstamped_canonical_n": 0}, main_n=200, topup_n=0,
                   extras={"tx_n": 200, "decode_errors": 0}, credits=200, errors={}, prints_sha256=None, blob=p7.DECODER_BLOB)
         failing = {"exp025": p7.line2_report(self.rows(), "exp025"), "exp024": p7.line2_report(self.rows(), "exp024")}
         self.assertIs(failing["exp025"]["line_pass"], False)
@@ -1180,6 +1186,9 @@ class Line2Tests(unittest.TestCase):
         s = p7.summarize(dict(tally, buy_n=99, buy_ok=99), **kw, line2=failing)
         self.assertIs(s["pass"], False)  # 99 comparable buys is short of 100 even at 100%
         self.assertIs(s["acceptance"]["line1_pass"], True)
+        for window in ((h + 60_000, h + 3_660_000), (h, h + 1_800_000), (h, h + 7_200_000)):  # not one full UTC hour
+            s = p7.summarize(tally, **dict(kw, window=window), line2=failing)
+            self.assertEqual((s["pass"], s["acceptance"]["one_full_utc_hour"], s["acceptance"]["line1_pass"]), (False, False, True), window)
 
 
 if __name__ == "__main__":
