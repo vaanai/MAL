@@ -116,6 +116,7 @@ HEARTBEAT_S = 60.0
 EXPIRE_S = 600                        # engine.expire on the STREAM clock: at every block time crossing a multiple of this (#503 item 7)
 LEDGER_CACHE_MAX = 200_000            # _PreadSnapshot: memo of wallet lookups, cleared past this (job #608: was 500_000, ~457 B per entry)
 LIVE_LEDGER_KEEP_DAYS = 1             # build_engine: ledger snapshots the engine keeps (decision T only moves forward here; FeatureEngine default 2)
+LIVE_PRINT_WINDOW = True              # build_engine: the engine's 1 h print window (job #608; FeatureEngine default off, so c1nf_parity is unchanged)
 ANCHOR_FILE = "c1nf-anchor.json"      # run_live: the history anchor hour; every (re)start bootstraps from it (#503 item 7)
 MAX_BOOTSTRAP_HOURS = 21 * 24         # run_live refuses to start when the anchor is older than this (a manager resets the anchor)
 HOLD_MS = 600                        # live: feed rows only once t_recv_ms is this old, so the three kinds of one block arrive together
@@ -2028,10 +2029,14 @@ def build_engine(ledger: Any = None, *, v_source: str) -> Any:
     """The real tools.c1nf_features.FeatureEngine (#506). v_source has no default there and none here: "event" for live (every PumpSwap print
     carries its own pre-trade event V, `virtual_quote_reserves`), "const" for exploration-tape replay (one V0 per pool, set_pool_v).
     The shadow's decision T only moves forward (Shadow._decide), so the engine keeps one day's ledger snapshot (LIVE_LEDGER_KEEP_DAYS): the
-    same values as the default two (a dropped day is reopened if ever asked for), one snapshot's memo less (job #608)."""
+    same values as the default two (a dropped day is reopened if ever asked for), one snapshot's memo less (job #608).
+    Print window (LIVE_PRINT_WINDOW, job #608): every engine.expire(now_bt) drops each registered pool's prints older than now_bt - 3600 s.
+    Shadow._on_clock runs _expire(k * EXPIRE_S) before _decide(Tc) with Tc = bt // 60 * 60 >= k * EXPIRE_S, and T never goes back, so no
+    decision looks back past a dropped print: every answer is bit-equal to the unwindowed engine's. A T that would is counted in the
+    engine's `window_violation` (heartbeat) and answered None. run_live, run_replay and tools/c1nf_vmode_parity build the engine here."""
     from tools.c1nf_features import FeatureEngine  # #506
 
-    return FeatureEngine(ledger=ledger, v_source=v_source, ledger_keep_days=LIVE_LEDGER_KEEP_DAYS)
+    return FeatureEngine(ledger=ledger, v_source=v_source, ledger_keep_days=LIVE_LEDGER_KEEP_DAYS, print_window=LIVE_PRINT_WINDOW)
 
 
 # ---- replay (exploration tape, read-only) ---------------------------------------------------------------------------------------------------

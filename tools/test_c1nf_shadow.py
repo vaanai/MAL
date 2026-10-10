@@ -2273,6 +2273,44 @@ def test_build_engine_keeps_one_ledger_day_and_the_engine_default_stays_two():
     assert cf.FeatureEngine(v_source=cf.V_CONST).ledger_keep_days == 2           # c1nf_parity builds the engine itself: unchanged
 
 
+def test_build_engine_turns_the_print_window_on_and_the_engine_default_stays_off():
+    from tools import c1nf_features as cf
+
+    assert cs.LIVE_PRINT_WINDOW is True
+    for mode in (cf.V_EVENT, cf.V_CONST):
+        assert cs.build_engine(None, v_source=mode).print_window is True         # run_live, run_replay and c1nf_vmode_parity
+    assert cf.FeatureEngine(v_source=cf.V_CONST).print_window is False           # c1nf_parity: deferred T after a lagged expire, unchanged
+
+
+def test_stream_expire_trims_the_engine_window_before_the_minute_it_decides_and_no_decision_violates_it():
+    """Shadow._on_clock: _expire(k * 600) runs before _decide(Tc) with Tc >= k * 600, so the windowed engine never answers a T whose look-back
+    reaches a dropped print. Real engine, real stream expiry, 2 h 10 min of prints on one pool: prints are dropped, window_violation stays 0
+    in the engine and in the heartbeat, and the decided T never goes below an expire instant."""
+    sink = cs.MemorySink()
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": str(__file__), "sha256": sha_of(__file__)}], loader=lambda p: StubModel())
+    sh = cs.Shadow(cs.build_engine(None, v_source=cs.V_SOURCE_REPLAY), models, sink, replay=True, seal_start_ms=None, stream_expire_s=cs.EXPIRE_S)
+    for h in range(4):
+        sh.clock.hour_sps[cs.hour_of(BT0 + 3600 * h)] = SPS
+    eng = sh.engine
+    order = []
+    real_expire, real_fa = eng.expire, eng.features_at
+    eng.expire = lambda now_bt, *a, **k: (order.append(("expire", now_bt)), real_expire(now_bt, *a, **k))[1]
+    eng.features_at = lambda pool, T, sd=None, **k: (order.append(("T", T)), real_fa(pool, T, sd, **k))[1]
+    sh.feed({"type": "complete", "mint": MINT, "slot": S0, "block_time": BT0}, "migrations")
+    run_stream(sh, 7800)
+    exp = [t for k, t in order if k == "expire"]
+    assert len(exp) >= 12 and eng.stats["window_dropped_prints"] > 0 and eng.stats["window_violation"] == 0
+    last = None
+    for k, t in order:
+        if k == "expire":
+            last = t
+        elif last is not None:
+            assert t >= last
+    assert sum(1 for k, _ in order if k == "T") > 100 and sh.c["feature_errors"] == 0
+    hb = sh.heartbeat()
+    assert hb["window_violation"] == 0 and hb["held_prints"] <= (3600 + cs.EXPIRE_S) / SPS + 1 < sh.c["rows"] - 1      # 1 h + one expire step
+
+
 def test_malloc_trim_is_guarded(monkeypatch):
     import ctypes
 
