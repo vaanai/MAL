@@ -14,11 +14,14 @@ Rule (EXP/EXP-025-c1nf-part1-prereg.md section 10 P7, Amendment 1, Amendment 6):
     confirmed, maxSupportedTransactionVersion 1; at most 3 attempts per transaction; one fetch per transaction) decoded by
     observe.trade_decode.records_from_logs(event_v=True) at blob 238942a6 (refused otherwise), keyed by event_index. The adapter row is the
     row of the look's materialised tape/trades/<hour>.parquet at (slot, tx_index, event_index). Unresolved = miss. Tally: p7_raw_tally.
-  Line 2 (fee tier, section 10 P7 line 2), on the main 1,000 only, from the adapter row (the row pass A prices) and V0, with event_v_map's
-    fee helpers (within_bp at P7_TOLERANCE_BP; the bars are p7_pass's) and the read tool's fee tier (exp025_read.fee, tier at Q = q + V0, B):
-      sell: sol_lamports vs gross - ceil(gross * tier), gross = event_v_map.cp_sell_gross_quote_out(q, V0, B, token_raw)
-      buy : sol_lamports vs net + ceil(net * tier),     net   = p7_buy_amend.cp_buy_quote_in(q, V0, B, token_raw)   (the implied tier fee)
-    Every sampled sell / buy of the 1,000 is in its denominator; one that cannot be evaluated is a miss, counted per cause (LINE2_CAUSES).
+  Line 2 (fee tier, section 10 P7 line 2: "(EXP-024 section 10 P7)"), on the main 1,000 only, in the form tools/boostfloor_inputs.py
+    tier_lines computes, from the adapter row (the row pass A prices) and V0. Q = quote_reserve_mapped + V0, b = base_reserve, tok = token_raw,
+    sol = sol_lamports, f = float(exp025_read.fee(Q, b)) (the read's own tier), BP = 1e-4 (1 bp):
+      sell: E = Q * tok / (b + tok) * (1 - f); hit iff E > 0 and |sol - E| <= BP * E
+      buy : skipped (not in buy_n; counted as buy_skipped) if sol <= 0 or tok <= 0 or tok >= b; else hit iff |(1 - tok * Q / (b - tok) / sol) - f| <= BP
+    A buy that pays its fee on net (implied fee f / (1 + f)) misses at canonical tiers of about 1% and above (Amendment 6 D: "That is a miss").
+    no_adapter_row, identity_mismatch and field_missing are misses in the denominator (EXP-024: "a print without V is a miss"), counted per
+    cause (LINE2_CAUSES); a sell whose formula is undefined (b <= 0 or b + tok <= 0: the tier divides by b) is a miss counted as `degenerate`.
 
 Seal. `run` refuses (exit 2) before it opens any October, tape, token or block path unless exp025_read.LookGuard passes (the DEC-016 FINAL
 marker and its ledger entry, and the look's last allowlisted hour has ended), and refuses if the look's tape/tokens are not materialised.
@@ -67,7 +70,9 @@ RAW_COLS = ("{venue:'VARCHAR',pool:'VARCHAR',side:'VARCHAR',slot:'BIGINT',tx_ind
 RAW_FIELDS = ("pool", "side", "slot", "tx_index", "event_index", "signature", "sol_lamports", "token_raw", "quote_reserve", "base_reserve",
               "virtual_quote_reserves", "ix_name", "zero_sol")
 ADAPTER_FIELDS = ("slot", "tx_index", "event_index", "pool", "side", "sol_lamports", "token_raw", "quote_reserve", "base_reserve")
-LINE2_CAUSES = ("no_adapter_row", "identity_mismatch", "field_missing", "zero_sol", "degenerate")
+LINE2_CAUSES = ("no_adapter_row", "identity_mismatch", "field_missing", "degenerate")
+LINE2_SKIPPED = "buy_skipped"
+LINE2_BP = 1e-4                                                                     # tier_lines BP: 1 bp
 GET_TX_OPTS = {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 1}
 
 
@@ -243,6 +248,12 @@ def full_rows(ctx: dict, sample: list) -> list:
     return [got[(r["slot"], r["tx_index"], r["event_index"], r["pool"])] for r in sample]
 
 
+def _int_exact(x):
+    """tools/exp025_adapter.py:321 writes token_raw, quote_reserve and base_reserve as DOUBLE (convert.py's writer). An integral double with
+    |x| <= 2**53 is that integer exactly. Any other value stays as it is, which makes it field_missing."""
+    return int(x) if isinstance(x, float) and x.is_integer() and abs(x) <= 2**53 else x
+
+
 def adapter_rows(ctx: dict, sample: list) -> dict:
     """{(slot, tx_index, event_index): adapter row} from the look's materialised tape/trades/<hour>.parquet, per sampled print's hour.
     Several rows at one key: the one with the sampled print's pool, else the first."""
@@ -262,7 +273,7 @@ def adapter_rows(ctx: dict, sample: list) -> dict:
         q = (f"SELECT {', '.join('t.' + c for c in ADAPTER_FIELDS)} FROM read_parquet(?) t "
              "JOIN kk USING (slot, tx_index, event_index) ORDER BY t.slot, t.tx_index, t.event_index")
         for rec in con.execute(q, [f]).fetchall():
-            d = dict(zip(ADAPTER_FIELDS, rec))
+            d = {k: _int_exact(v) for k, v in zip(ADAPTER_FIELDS, rec)}
             key = (d["slot"], d["tx_index"], d["event_index"])
             if key not in out or (out[key]["pool"] != want_pool[key] and d["pool"] == want_pool[key]):
                 out[key] = d
@@ -326,16 +337,9 @@ def decode(signature: str, res: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------------------------- line 2
-def _ceil_frac(x: int, ppm: int) -> int:
-    return -((-int(x) * int(ppm)) // 1_000_000)
-
-
-def tier_ppm(Q: int, B: int) -> int:
-    return int(round(float(R.fee(Q, B)) * 1_000_000))
-
-
-def line2_one(EV, AM, row: dict, adapter: dict | None, v0: int) -> tuple:
-    """(side, hit, cause) of one sampled print of the 1,000 for the fee-tier line; side None when it is neither a sell nor a buy."""
+def line2_one(row: dict, adapter: dict | None, v0: int) -> tuple:
+    """(side, hit, cause) of one sampled print of the 1,000 for the fee-tier line, in tools/boostfloor_inputs.py tier_lines' form.
+    side None: neither a sell nor a buy. hit None with cause LINE2_SKIPPED: a buy tier_lines skips (not in the denominator)."""
     side = row.get("side")
     if side not in ("sell", "buy"):
         return None, False, None
@@ -347,28 +351,31 @@ def line2_one(EV, AM, row: dict, adapter: dict | None, v0: int) -> tuple:
     if any(not (isinstance(x, int) and not isinstance(x, bool)) for x in vals):
         return side, False, "field_missing"
     q, b, tok, sol = vals
-    if row.get("zero_sol") or sol <= 0:
-        return side, False, "zero_sol"
-    if b <= 0 or tok <= 0 or q + v0 <= 0 or (side == "buy" and tok >= b):
+    Q = q + v0
+    if side == "buy":
+        if sol <= 0 or tok <= 0 or tok >= b:
+            return side, None, LINE2_SKIPPED
+        f = float(R.fee(Q, b))
+        return side, bool(abs((1 - tok * Q / (b - tok) / sol) - f) <= LINE2_BP), None
+    if b <= 0 or b + tok <= 0:
         return side, False, "degenerate"
-    ppm = tier_ppm(q + v0, b)
-    if side == "sell":
-        gross = EV.cp_sell_gross_quote_out(q, v0, b, tok)
-        model = gross - _ceil_frac(gross, ppm)
-    else:
-        net = AM.cp_buy_quote_in(q, v0, b, tok)
-        model = net + _ceil_frac(net, ppm)
-    return side, bool(EV.within_bp(sol, model, EV.P7_TOLERANCE_BP)), None
+    f = float(R.fee(Q, b))
+    E = Q * tok / (b + tok) * (1 - f)
+    return side, bool(E > 0 and abs(sol - E) <= LINE2_BP * E), None
 
 
-def line2_tally(EV, AM, main: list, adapters: dict, v0_by_pool: dict) -> tuple:
-    t = {"sell_n": 0, "sell_ok": 0, "buy_n": 0, "buy_ok": 0, "neither": 0, "miss_by": {c: 0 for c in LINE2_CAUSES}, "buy_by_ix_name": {}}
+def line2_tally(main: list, adapters: dict, v0_by_pool: dict) -> tuple:
+    t = {"sell_n": 0, "sell_ok": 0, "buy_n": 0, "buy_ok": 0, "neither": 0, "buy_skipped": 0, "miss_by": {c: 0 for c in LINE2_CAUSES},
+         "buy_by_ix_name": {}}
     per = []
     for r in main:
-        side, hit, cause = line2_one(EV, AM, r, adapters.get((r["slot"], r["tx_index"], r["event_index"])), v0_by_pool[r["pool"]])
+        side, hit, cause = line2_one(r, adapters.get((r["slot"], r["tx_index"], r["event_index"])), v0_by_pool[r["pool"]])
         per.append((side, hit, cause))
         if side is None:
             t["neither"] += 1
+            continue
+        if cause == LINE2_SKIPPED:
+            t["buy_skipped"] += 1
             continue
         t[side + "_n"] += 1
         t[side + "_ok"] += int(hit)
@@ -379,6 +386,15 @@ def line2_tally(EV, AM, main: list, adapters: dict, v0_by_pool: dict) -> tuple:
         if cause:
             t["miss_by"][cause] += 1
     return t, per
+
+
+# ------------------------------------------------------------------------------------------------------------------- diagnosis
+def identity_mismatch_fields(AM, tape_row: dict, raw: dict | None, adapter: dict | None) -> list:
+    """Diagnosis only (not deciding; counts): which identity fields differ on a line-1 identity_mismatch, in p7_raw_check's three groups."""
+    raw, adapter = raw or {}, adapter or {}
+    return ([f"raw_vs_tape:{k}" for k in AM.P7_RAW_IDENTITY_FIELDS if raw.get(k) != tape_row.get(k)]
+            + [f"adapter_vs_tape:{k}" for k in AM.P7_RAW_ADAPTER_KEY if adapter.get(k) != tape_row.get(k)]
+            + [f"adapter_vs_raw:{k}" for k in AM.P7_RAW_ADAPTER_FIELDS if adapter.get(k) != raw.get(k)])
 
 
 # ------------------------------------------------------------------------------------------------------------------- the run
@@ -409,7 +425,7 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
     for s in sigs:                                             # one fetch per transaction, in sample order
         res = fetch(s)
         fetched[s] = decode(s, res) if res is not None else None
-    checked, prints = [], []
+    checked, prints, idm = [], [], {}
     for which, r in sample:
         key = (r["slot"], r["tx_index"], r["event_index"])
         recs = fetched.get(r.get("signature"))
@@ -417,11 +433,14 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
         raw = recs.get(r["event_index"]) if recs else None
         res = AM.p7_raw_check(r, raw, adapters.get(key), v0[r["pool"]], fetch_failed=failed)
         checked.append((r, res))
+        if res[1] == "unresolved" and res[2] == "identity_mismatch":
+            for k in identity_mismatch_fields(AM, r, raw, adapters.get(key)):
+                idm[k] = idm.get(k, 0) + 1
         prints.append(dict(draw=which, hour=r["_hour"], slot=r["slot"], tx_index=r["tx_index"], event_index=r["event_index"],
                            signature=r.get("signature"), side=r.get("side"), ix_name=r.get("ix_name"),
                            line1=dict(line=res[0], outcome=res[1], reason=res[2])))
     t1 = AM.p7_raw_tally(checked)
-    t2, per2 = line2_tally(EV, AM, main, adapters, v0)
+    t2, per2 = line2_tally(main, adapters, v0)
     for p, (side, hit, cause) in zip(prints, per2):       # main prints come first, in order
         p["line2"] = dict(side=side, hit=hit, cause=cause)
     cp = [t1["sell_ok"], t1["sell_n"], t1["buy_ok"], t1["buy_n"]]
@@ -435,9 +454,11 @@ def run_p7(ctx: dict, fetch, *, frame_fn=None, amend_path: str = AMEND_PATH, dec
                              buy_ok=t1["buy_ok"], buy_share=_share(t1["buy_ok"], t1["buy_n"]), excluded=t1["excluded"],
                              excluded_by=t1["excluded_by"], ix_not_listed_by=t1["ix_not_listed_by"],
                              buy_exact_quote_in_by=t1["buy_exact_quote_in_by"], buy_by_ix=t1["buy_by_ix"], unresolved=t1["unresolved"],
+                             identity_mismatch_by_field=dict(sorted(idm.items())),
                              pass_=bool(EV.p7_cp_pass(*cp))),
                   line2=dict(sell_n=t2["sell_n"], sell_ok=t2["sell_ok"], sell_share=_share(t2["sell_ok"], t2["sell_n"]), buy_n=t2["buy_n"],
-                             buy_ok=t2["buy_ok"], buy_share=_share(t2["buy_ok"], t2["buy_n"]), neither=t2["neither"], miss_by=t2["miss_by"],
+                             buy_ok=t2["buy_ok"], buy_share=_share(t2["buy_ok"], t2["buy_n"]), neither=t2["neither"], buy_skipped=t2["buy_skipped"],
+                             miss_by=t2["miss_by"],
                              buy_by_ix_name=t2["buy_by_ix_name"],
                              pass_=bool(EV.p7_pass(*fee))),
                   credits=dict(get_transaction_calls=getattr(fetch, "credits", None), failed_calls=getattr(fetch, "failed_calls", None),
