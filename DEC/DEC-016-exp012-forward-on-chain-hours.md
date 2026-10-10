@@ -53,6 +53,10 @@ Its paper rows are compared with the forward scorer's rows for the same mints, t
 - About 9.7M credits/month go to the forward walk while it runs. Report: unit (MiScusi job id), credits per day, and what it enables (forward book plus continuous chain truth).
 - If the owner declines, no forward walk runs, and EXP-012's forward book waits for the runner track and a gate-grade feed, as DEC-015 planned.
 
+## Pointer (2026-10-10; not an amendment): seal end state
+
+This decision's seal end states (FINAL (A), and if (A) passes the single (B) run and the Amendment 3(a) re-score) and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of the FINAL and releases no data. (Placed here, not at the end, because Amendment 9's Log at the end is append-only.)
+
 ## Amendment 1 (2026-10-02): one pre-registered read, a full-day clock, and what a PASS does and does not support
 
 This follows a `quant-proof` review of the design. It is fixed before any forward hour is walked.
