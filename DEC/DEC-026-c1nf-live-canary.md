@@ -709,10 +709,12 @@ Why it is accepted for now: low severity, and the fix is in signing code H5 shar
 - `tools/c1nf_features.py`: `8d7be366` → `d6c87354a520ea25efc59975d7d041570d8226f7`.
 - `tools/c1nf_vmode_parity.py`: `f5766c41` → `1574573ed10c663784f4678d04c251e96ff8460b`.
 
-**Why.** Job #608 (item-15 soak at 09b4389, operations-only) was OOM-killed at 18:06:01Z. Its process anon-rss was 1,939,888 kB and cgroup anon 1,987,047,424 B at the 1,945,600 kB limit, growing about 400 MB/h. The engine kept every canonical in-band print of each pool until g0 + 25 h, at about 1,051 B per print. Replay #621 (48 h, 2026-09-19/20 exploration tape) reached RssAnon 9,796,372 kB, with VmHWM 10,736,316 kB.
+**Why.** Job #608 (item-15 soak at 09b4389, operations-only) was OOM-killed at 18:06:01Z. Its process anon-rss was 1,939,888 kB and cgroup anon 1,987,047,424 B at the 1,945,600 kB limit, growing about 400 MB/h. The engine kept every canonical in-band print of each pool until g0 + 25 h, at about 1,051 B per print. Replay #621 (48 h, 2026-09-19/20 exploration tape) reached RssAnon 9,796,372 kB, with VmHWM 10,736,316 kB (job #621's result metrics: `RssAnon_end_kb` 9800292 at the last sample, `VmHWM_kb` 10736316).
 
 **What #582 changes.** It changes memory only:
-- **F1:** a 1 h print window. Off by default in `FeatureEngine`; on only through `cs.build_engine`, used by `run_live` and `c1nf_vmode_parity`, so `c1nf_parity` is unchanged. A look-back past a dropped print counts `window_violation` and answers None.
+- **F1:** a 1 h print window. Off by default in `FeatureEngine`; on only through `cs.build_engine`, so `c1nf_parity` is unchanged.
+  - `build_engine` is used by `run_live`, `c1nf_vmode_parity` and the shadow's replay mode (`tools/c1nf_shadow.py:2279`). Replay mode never calls the engine's `expire`, which is where the window drops prints (the #621 measurement report; the #582 body). So the window drops nothing there, but it is on. Item 14's replay-mode decision md5 must still run at this head.
+  - A look-back past a dropped print counts `window_violation` and answers None.
 - **F2:** typed columns, with q, b, seen_any and the per-print lp dropped.
 - **F3:** per-pool trader ids.
 - **F4:** live keeps 1 ledger day; `_PreadSnapshot` memo cap 200k.
@@ -720,9 +722,10 @@ Why it is accepted for now: low severity, and the fix is in signing code H5 shar
 
 The model, threshold, features, decision logic, `OUTCOME_START_MS` and the record contract are unchanged. The record changes are additions only:
 - heartbeat: `rss_anon_kb`, `vm_hwm_kb`, `held_prints`, `held_pairs`, `window_violation`;
-- shadow counters: `malloc_trim`, `malloc_trim_unavailable`.
+- shadow counters: `malloc_trim`, `malloc_trim_unavailable`;
+- in `tools/c1nf_vmode_parity.py`'s summary: `decision_rows_f64` and `engine_window` (`verdict()` still reads the float32 rows).
 
-**Proofs** (PR #582 comment 6102366435; reviewer OK 6102420479 and quant-proof OK 6102424925, both at cf686467):
+**Proofs.** The proof table is PR #582 comment 6102366435. Quant-proof gave OK_WITH_FIXES at cf686467 (comment 6102420479), and so did the reviewer (comment 6102424925). Neither asked for a new head. main `da9b5b0` has the same three tool blobs as cf686467, so the proofs apply to it.
 - **md5 decision equivalence on 2026-09-20,** `c1nf_vmode_parity` anchored, the same tool blob `1574573e` on both heads. OLD is 09b4389 (#642), whose blobs equal 822cefb and main 38dec78. NEW is cf68646 (#643). Equal on both:
   - decision rows 437,281: float32 `287e6bca6193705d483714296abdba41`, float64 `70d7340b6f8bbf7e185c3de2e52931d1`;
   - picks 2,161: `93c5af1a0354217fc10879fd9afdf7d4`;
@@ -732,7 +735,9 @@ The model, threshold, features, decision logic, `OUTCOME_START_MS` and the recor
   - The new head dropped 16,621,527 prints with window_violation 0. The runs used the stub model (pred 0.05); the float64 vectors are bit-equal, so the pinned model sees the same inputs.
 - **Memory, 48 sim hours, window on, 1.9 GB cap, job #653: PASS** under the rule written before the first run (VmHWM ≤ 1,500,000 kB; slope h25–48 ≤ 20,000 kB/h; window_violation 0; errors 0).
   - VmHWM 1,022,988 kB. RssAnon 735,984 → 896,232 kB from h25 to h48, a slope of 7,424.5 kB/h. 0 errors.
-  - It fed the pre-serialised row stream (`harness_wp`, #652, round-trip exact, 26,480,626 rows). The pandas harnesses ran out of memory in the harness process itself: #644, #645 and #648, with controls #649 and #650.
+  - It fed the pre-serialised row stream (`harness_wp`, #652, round-trip exact, 26,480,626 rows). The pandas harnesses ran out of memory in the harness process itself at the 1.9 GB cap: #644 and #648. The no-feed controls #645 (1.9 GB, OOM) and #649 (4 GB; VmHWM 1,617,344 kB) show that the harness alone exceeds the cap.
+  - Two diagnostic runs at a 4 GB cap **failed** the pre-declared rule because of harness memory: #647 (VmHWM 3,323,432 kB) and #650 (VmHWM 2,337,560 kB, slope 11,672.9 kB/h).
+  - #653 ran on mal-research-0, not mal-fast-0. Its MiScusi cgroup peak reads 1.9 GB because of page cache from the 2.4 GB of row files; the process VmHWM was 1,022,988 kB and nothing was killed. mal-fast-0's limit is 1,945,600 kB, the limit #608 was killed at.
 - **Unit tests:** 352 passed, 2 skipped (#641); 355 passed with duckdb (#646); executor and model_pin 82 passed.
 
 **Not measured.** Do not claim any of these:
@@ -742,14 +747,22 @@ The model, threshold, features, decision logic, `OUTCOME_START_MS` and the recor
 - a real-tape `c1nf_parity` md5 with the window off and F2/F3 on (only the synthetic cross-head twin covers it);
 - the one-day ledger keep across a UTC midnight on real tape (synthetic test only).
 
-**Item-15 soak rules at this head** (quant-proof and reviewer, PR #582):
-- (a) The heartbeat `window_violation` stays 0. Any non-zero value voids bit-equality from that minute and stops item 15's clock.
-- (b) From hour 25, RssAnon grows at most 20 MB/h over any 24 h.
-- (c) Alert when RssAnon reaches 1.5 GB.
-- (d) `malloc_trim_unavailable` is 0 on fast-0.
-- (e) MemoryPeak and RssAnon are recorded at every start (checklist item 2).
+**Item-15 soak rules at this head** (quant-proof's fix 4 on PR #582, comment 6102420479; recorded in DEC-026 and LAB_STATE):
+- (a) The heartbeat's `window_violation` must stay 0. Any non-zero value means a decision differed from main. It voids bit-equality from that minute and stops item 15's clock until it is explained.
+- (b) From hour 25, RssAnon may grow at most 20 MB/h over any 24 h.
+- (c) An RssAnon alert at 1.5 GB, below the 1.9 GB cap.
+- (d) `malloc_trim_unavailable` must be 0 on fast-0.
+- (e) MemoryPeak and RssAnon are recorded per start (checklist item 2).
+- Also measured during the soak: `malloc_trim` wall time, compared through pick latency on the tenth minutes (not-measured list above).
 
-The item-15 clock starts at this soak's start. The event-V P7 amended PASS (2026-10-10T16:10:46Z, job #598) precedes it. The restart is recorded in LAB_STATE. The creator-anchor note of 13:11:59Z still applies: the anchor stays 2026-10-09T12.
+The item-15 clock starts at this soak's start. The event-V P7 amended PASS (2026-10-10T16:10:46Z, job #598) precedes it. The restart will be recorded in LAB_STATE when it starts. The soak checklist of the 13:11:59Z note applies in full:
+- item 1, the replay-vs-live first-hour check after the first real restart;
+- item 2, the per-start record;
+- item 3, repeat picks on held mints.
+
+The creator-anchor note of 13:11:59Z still applies. The restart replays from the anchor already in the out dir's `c1nf-anchor.json`, `bootstrap_anchor` 2026-10-09T12, which is what job #609's per-start record printed for #608's two starts.
+
+(Quant-proof OK_WITH_FIXES on #582 at cf686467, 2026-10-10, comment 6102420479; reviewer OK_WITH_FIXES at cf686467, comment 6102424925.)
 
 ## Appendix A. Draft EXP-025 amendment for the canary (not applied; its own PR into `EXP/EXP-025-c1nf-part1-prereg.md`)
 
