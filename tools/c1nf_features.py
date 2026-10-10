@@ -56,12 +56,12 @@ from __future__ import annotations
 
 import bisect
 import collections
-from array import array
 import hashlib
 import importlib.util
 import math
 import re
 import time
+from array import array
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
