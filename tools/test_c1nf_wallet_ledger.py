@@ -6,6 +6,7 @@ Run with a Python that has pytest, numpy and duckdb 1.5.6, for example
 
 from __future__ import annotations
 
+import datetime as dt
 import itertools
 import json
 import random
@@ -27,7 +28,7 @@ MINTS = [f"MINT{i:02d}pump" for i in range(9)] + [L.WSOL_MINT]
 TRADERS = [f"TRADER{i:03d}" + "x" * 30 for i in range(60)]
 
 
-def make_rows(seed: int, n: int = 2500) -> list[dict]:
+def make_rows(seed: int, n: int = 2500, null_trader: bool = False) -> list[dict]:
     rng = random.Random(seed)
     rows = []
     for i in range(n):
@@ -45,7 +46,9 @@ def make_rows(seed: int, n: int = 2500) -> list[dict]:
         )
     # rows the ledger must ignore or treat specially
     rows.append({"venue": "other_venue", "mint": MINTS[0], "trader": TRADERS[0], "side": "buy", "sol_lamports": 999, "signature": f"o{seed}", "event_index": 0})
-    rows.append({"venue": "pumpswap", "mint": MINTS[1], "trader": None, "side": "buy", "sol_lamports": 777, "signature": f"n{seed}", "event_index": 0})
+    rows.append({"venue": "other_venue", "mint": MINTS[0], "trader": None, "side": "buy", "sol_lamports": 9, "signature": f"on{seed}", "event_index": 0})
+    if null_trader:  # a venue row with a NULL trader: refused by default (the pinned script would keep it)
+        rows.append({"venue": "pumpswap", "mint": MINTS[1], "trader": None, "side": "buy", "sol_lamports": 777, "signature": f"n{seed}", "event_index": 0})
     rows.append({"venue": "pumpswap", "mint": MINTS[2], "trader": TRADERS[1], "side": None, "sol_lamports": 555, "signature": f"s{seed}", "event_index": 0})
     return rows
 
@@ -156,13 +159,31 @@ def test_hash_pin_and_refusal(monkeypatch):
 
 
 def test_tape_day_matches_integer_reference(tmp_path):
-    rows = make_rows(1)
-    res = build_tape_day(tmp_path, "out", rows)
+    rows = make_rows(1, null_trader=True)
+    res = build_tape_day(tmp_path, "out", rows, allow_null_trader=True)
     assert res["status"] == "built" and res["hours"] == 3
     arrays = L.load_daily(L.daily_paths(tmp_path / "out", DAY)[0])
     assert daily_to_ref(arrays) == reference(rows)
-    assert res["rows"]["rows_null_trader"] == 1  # the NULL trader row is dropped and counted
+    assert res["rows"]["rows_null_trader"] == 1  # with the flag the NULL trader row is dropped and counted
+    man = json.loads(L.daily_paths(tmp_path / "out", DAY)[1].read_text())
+    assert man["meta"]["rows"]["rows_null_trader"] == 1
     L.validate_daily(arrays)
+
+
+def test_null_trader_is_refused_by_default(tmp_path, capsys):
+    """Review 1, NULL-trader filter: the pinned script keeps NULL traders as hash(NULL); we refuse instead of drifting."""
+    rows = make_rows(1, 300, null_trader=True)
+    with pytest.raises(L.Refused, match="NULL trader"):
+        build_tape_day(tmp_path, "out", rows)
+    assert not (tmp_path / "out" / "daily").exists() or not list((tmp_path / "out" / "daily").iterdir())
+    base = ["day", "--day", DAY, "--adapter", "tape", "--tape-dir", str(tmp_path / "tape"), "--out-root", str(tmp_path / "cli")]
+    assert L.main(base) == 3
+    assert "NULL trader" in capsys.readouterr().err
+    assert L.main(base + ["--allow-null-trader"]) == 0
+    # a NULL trader outside the two venues is ignored, as in the pinned script (no refusal, no count)
+    ok = make_rows(2, 300)
+    assert any(r["trader"] is None for r in ok)
+    assert build_tape_day(tmp_path / "x", "out", ok)["rows"]["rows_null_trader"] == 0
 
 
 def test_bit_identical_across_order_chunking_and_threads(tmp_path):
@@ -562,3 +583,340 @@ def test_rollup_require_prev_day(tmp_path, capsys):
     assert L.main(["rollup", "--day", "2026-10-06", "--out-root", root, *base]) == 0
     assert L.main(["rollup", "--day", "2026-10-07", "--require-prev-day", "--out-root", root, *base]) == 0
     capsys.readouterr()
+
+
+# --------------------------------------------------------------------------------------------
+# round-1 review fixes (PR #502): bounded as-of memory, pruning, staleness, atomicity, checks
+# --------------------------------------------------------------------------------------------
+
+
+def _old_reduce_sorted(th, cols):
+    """The pre-review in-memory fold (53da60f), kept here as the byte reference for the streamed build."""
+    if len(th) == 0:
+        return {"th": th.astype(np.uint64), **{c: np.zeros(0, np.int64) for c in cols}}
+    order = np.argsort(th, kind="stable")
+    ths = th[order]
+    starts = np.concatenate(([0], np.flatnonzero(ths[1:] != ths[:-1]) + 1))
+    out = {"th": ths[starts]}
+    for c, v in cols.items():
+        out[c] = np.add.reduceat(v[order], starts).astype(np.int64, copy=False)
+    return out
+
+
+def _old_merge_asof(prev, daily):
+    d_cols = {c: daily[c] for c in L.DAILY_COLS}
+    d_cols["buy_q"] = L.grid_units(daily["buy_lamports"])
+    d_cols["cash_q"] = L.grid_units(daily["cash_lamports"])
+    d_cols["ndays"] = np.ones(len(daily["th"]), np.int64)
+    if prev is None:
+        return _old_reduce_sorted(daily["th"], d_cols)
+    th = np.concatenate([prev["th"], daily["th"]])
+    return _old_reduce_sorted(th, {c: np.concatenate([prev[c], d_cols[c]]) for c in L.ASOF_COLS})
+
+
+def _old_files_sha(cum, d: Path) -> dict[str, str]:
+    d.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for name in ("th",) + L.ASOF_COLS:
+        np.save(d / f"{name}.npy", np.ascontiguousarray(cum[name]), allow_pickle=False)
+        out[f"{name}.npy"] = L.file_sha256(d / f"{name}.npy")
+    return out
+
+
+def write_daily(root: Path, day: str, arrays: dict) -> None:
+    """A daily file plus the manifest field the as-of step reads (no duckdb, any wallet count)."""
+    npz, man = L.daily_paths(root, day)
+    npz.parent.mkdir(parents=True, exist_ok=True)
+    L.write_npz_deterministic(npz, arrays)
+    man.write_text(json.dumps({"content_sha256": L.content_sha256(arrays)}))
+
+
+def rand_daily(rng, universe: np.ndarray, k: int) -> dict:
+    th = np.sort(rng.choice(universe, size=k, replace=False)).astype(np.uint64)
+    buy = rng.integers(0, 10**12, k, dtype=np.int64)
+    sell = rng.integers(0, 10**12, k, dtype=np.int64)
+    nm = rng.integers(1, 9, k, dtype=np.int64)
+    nrt = rng.integers(0, 9, k, dtype=np.int64) % (nm + 1)
+    return {
+        "th": th, "n": nm + rng.integers(0, 40, k, dtype=np.int64), "nm": nm, "nbond": rng.integers(0, 2, k, dtype=np.int64),
+        "nwin": nrt // 2, "nrt": nrt, "buy_lamports": buy, "sell_lamports": sell, "cash_lamports": sell - buy,
+    }
+
+
+def _universe(rng, n: int) -> np.ndarray:
+    u = rng.integers(0, 2**64 - 1, n, dtype=np.uint64, endpoint=True)
+    return np.unique(np.concatenate([u, np.array([0, 1, 2**63, 2**64 - 1], np.uint64)]))
+
+
+def test_merge_th_edges():
+    a = np.array([5, 10, 20], np.uint64)
+    for b, want in (
+        ([], [5, 10, 20]),
+        ([1, 2], [1, 2, 5, 10, 20]),
+        ([25, 30], [5, 10, 20, 25, 30]),
+        ([5, 10, 20], [5, 10, 20]),
+        ([0, 5, 7, 11, 12, 20, 2**64 - 1], [0, 5, 7, 10, 11, 12, 20, 2**64 - 1]),
+    ):
+        u, is_new = L._merge_th(a, np.array(b, np.uint64))
+        assert u.tolist() == want and u.dtype == np.uint64
+        assert sorted(u[is_new].tolist()) == sorted(set(b) - set(a.tolist()))
+    u, is_new = L._merge_th(np.zeros(0, np.uint64), np.array([3, 4], np.uint64))
+    assert u.tolist() == [3, 4] and is_new.all()
+
+
+def test_streamed_asof_equals_the_old_in_memory_fold_bytes(tmp_path):
+    """Review 1, as-of memory: the column-streamed merge gives the bytes of the old fold, incrementally and from scratch."""
+    rng = np.random.default_rng(11)
+    uni = _universe(rng, 6000)
+    root = tmp_path / "root"
+    days = [f"2026-09-{d:02d}" for d in range(1, 7)]
+    dailies = []
+    for d, k in zip(days, (3000, 1, 2500, 0, 10, 3500)):  # a one-wallet day, an empty day, heavy overlap
+        a = rand_daily(rng, uni, k)
+        write_daily(root, d, a)
+        dailies.append(a)
+    cum = None
+    for i in range(len(days)):
+        nxt = (dt.date.fromisoformat(days[i]) + dt.timedelta(days=1)).isoformat()
+        cum = _old_merge_asof(cum, dailies[i])
+        want = _old_files_sha(cum, tmp_path / f"ref-{nxt}")
+        inc = L.build_asof(root, nxt)
+        assert inc["mode"] == ("fold" if i == 0 else "incremental")
+        assert json.loads((L.asof_dir(root, nxt) / "MANIFEST.json").read_text())["files"] == want, nxt
+    fold = L.build_asof(root, "2026-09-07", force=True, use_prev=False)
+    assert fold["mode"] == "fold" and fold["content_sha256"] == inc["content_sha256"]
+    assert json.loads((L.asof_dir(root, "2026-09-07") / "MANIFEST.json").read_text())["files"] == want
+    led = L.AsofLedger.open(L.asof_dir(root, "2026-09-07"), verify=True)
+    assert led.manifest["saturated"] == {"buy_lamports": 0, "sell_lamports": 0}
+
+
+def test_streamed_asof_memory_is_bounded(tmp_path):
+    """Review 1, as-of memory: a one-day incremental over a large snapshot allocates a few th-sized arrays, not the
+    snapshot several times over (the old fold peaked at about 3.3x the snapshot on research-0)."""
+    import tracemalloc
+
+    rng = np.random.default_rng(12)
+    n = 300_000
+    uni = np.unique(rng.integers(0, 2**64 - 1, 2 * n, dtype=np.uint64))
+    root = tmp_path / "root"
+    write_daily(root, "2026-09-01", rand_daily(rng, uni, n))
+    write_daily(root, "2026-09-02", rand_daily(rng, uni, 20_000))
+    L.build_asof(root, "2026-09-02")
+    snap_bytes = sum(p.stat().st_size for p in L.asof_dir(root, "2026-09-02").glob("*.npy"))
+    tracemalloc.start()
+    try:
+        res = L.build_asof(root, "2026-09-03")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert res["mode"] == "incremental"
+    assert peak < 0.35 * snap_bytes, (peak, snap_bytes)
+
+
+def test_lamport_columns_saturate_and_other_columns_refuse_to_wrap(tmp_path):
+    """Found while fixing review 1: research-0's cumulative buy_lamports was 0.728 of int64 max after 38 days; plain int64
+    addition would wrap. buy/sell saturate (order-independent), signed columns refuse."""
+    big = L.I64_MAX - 10
+    th = np.array([7, 9], np.uint64)
+
+    def day(buy, sell, cash=None):
+        buy, sell = np.array(buy, np.int64), np.array(sell, np.int64)
+        one = np.ones(2, np.int64)
+        return {"th": th, "n": one, "nm": one, "nbond": 0 * one, "nwin": 0 * one, "nrt": 0 * one, "buy_lamports": buy,
+                "sell_lamports": sell, "cash_lamports": sell - buy if cash is None else np.array(cash, np.int64)}
+
+    shas = []
+    for order, root in (((0, 1, 2), tmp_path / "a"), ((2, 1, 0), tmp_path / "b")):
+        src = [day([big, 5], [0, 5], cash=[0, 0]), day([100, 5], [big, 5], cash=[0, 0]), day([3, 5], [100, 5], cash=[0, 0])]
+        for k, i in enumerate(order):
+            write_daily(root, f"2026-09-0{k + 1}", src[i])
+        inc = [L.build_asof(root, f"2026-09-0{k}") for k in (2, 3, 4)][-1]
+        fold = L.build_asof(root, "2026-09-04", force=True, use_prev=False)
+        assert inc["mode"] == "incremental" and inc["content_sha256"] == fold["content_sha256"]
+        led = L.AsofLedger.open(L.asof_dir(root, "2026-09-04"))
+        assert led.cols["buy_lamports"].tolist() == [L.I64_MAX, 15]
+        assert led.cols["sell_lamports"].tolist() == [L.I64_MAX, 15]
+        assert led.manifest["saturated"] == {"buy_lamports": 1, "sell_lamports": 1}
+        shas.append(led.manifest["content_sha256"])
+    assert shas[0] == shas[1]
+    # cash is signed: it is not saturated, a wrap is refused and nothing is written
+    root = tmp_path / "c"
+    write_daily(root, "2026-09-01", day([0, 0], [0, 0], cash=[big, 0]))
+    write_daily(root, "2026-09-02", day([0, 0], [0, 0], cash=[100, 0]))
+    with pytest.raises(L.Refused, match="cash_lamports overflows"):
+        L.build_asof(root, "2026-09-03")
+    assert not list((root / "asof").glob("asof-2026-09-03*"))
+
+
+def test_keep_asof_prunes_old_snapshots_but_never_the_new_one_or_its_base(tmp_path):
+    """Review 1, pruning: --keep-asof N after a successful build."""
+    rng = np.random.default_rng(13)
+    uni = _universe(rng, 500)
+    root = tmp_path / "root"
+    for d in range(1, 7):
+        write_daily(root, f"2026-09-0{d}", rand_daily(rng, uni, 100))
+    for d in range(2, 7):
+        L.build_asof(root, f"2026-09-0{d}")
+    assert L.list_asof_days(root) == [f"2026-09-0{d}" for d in range(2, 7)]
+    assert L.prune_asof(root, 0) == [] and len(L.list_asof_days(root)) == 5  # 0 keeps all
+    assert L.prune_asof(root, 2, protect=["2026-09-06", "2026-09-05"]) == ["2026-09-02", "2026-09-03", "2026-09-04"]
+    assert L.list_asof_days(root) == ["2026-09-05", "2026-09-06"]
+    # keep 1 still keeps the incremental base of the snapshot just built
+    assert L.main(["asof", "--day", "2026-09-07", "--out-root", str(root), "--keep-asof", "1"]) == 0
+    assert L.list_asof_days(root) == ["2026-09-06", "2026-09-07"]
+
+
+def test_rollup_prunes_by_default_and_reports_memory(tmp_path, capsys):
+    tip = tmp_path / "tip"
+    days = ["2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07"]
+    for i, d in enumerate(days):
+        write_tip_day(tip, d, make_rows(40 + i, 60))
+    write_tip_hour(tip, "2026-10-08T00", make_rows(50, 3))
+    root = tmp_path / "root"
+    base = ["--out-root", str(root), "--tip-dir", str(tip), "--threads", "1", "--mem-gb", "1", "--tmp-dir", str(tmp_path / "duck")]
+    for d in days:
+        assert L.main(["rollup", "--day", d, *base]) == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["peak_rss_mb"] > 0 and out["pruned_asof"] == ["2026-10-05"]
+    assert L.list_asof_days(root) == ["2026-10-06", "2026-10-07", "2026-10-08"]  # default keep 3
+
+
+def test_force_replace_swaps_atomically_and_cleans_crash_leftovers(tmp_path, monkeypatch):
+    """Review 1, atomicity (c): a replaced snapshot is renamed aside first and removed only after the new one is in."""
+    rng = np.random.default_rng(14)
+    uni = _universe(rng, 300)
+    root = tmp_path / "root"
+    for d in (1, 2):
+        write_daily(root, f"2026-09-0{d}", rand_daily(rng, uni, 80))
+    L.build_asof(root, "2026-09-03")
+    target = L.asof_dir(root, "2026-09-03")
+    # leftovers of a crashed run are removed by the next build (it holds the lock)
+    (root / "asof" / "asof-2026-09-03.tmp424242").mkdir()
+    (root / "asof" / "asof-2026-09-02.old424242").mkdir()
+    seen = []
+    real_rmtree = L.shutil.rmtree
+
+    def rmtree(p, *a, **k):
+        seen.append((Path(p).name, (target / "MANIFEST.json").is_file()))
+        return real_rmtree(p, *a, **k)
+
+    monkeypatch.setattr(L.shutil, "rmtree", rmtree)
+    assert L.build_asof(root, "2026-09-03", force=True)["status"] == "built"
+    old = [s for s in seen if ".old" in s[0] and "424242" not in s[0]]
+    assert old and all(live for _, live in old)  # the target held the new snapshot when the old one was removed
+    assert sorted(p.name for p in (root / "asof").iterdir()) == ["asof-2026-09-03"]
+    L.AsofLedger.open(target, verify=True)
+
+
+def test_lock_refuses_a_second_writer(tmp_path):
+    import fcntl
+
+    rng = np.random.default_rng(15)
+    root = tmp_path / "root"
+    write_daily(root, "2026-09-01", rand_daily(rng, _universe(rng, 100), 50))
+    with open(root / ".lock", "a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # another process's build, as far as flock can tell
+        with pytest.raises(L.Refused, match="held by another"):
+            L.build_asof(root, "2026-09-02")
+        assert L.main(["asof", "--day", "2026-09-02", "--out-root", str(root)]) == 3
+    assert L.build_asof(root, "2026-09-02")["status"] == "built"  # released
+    with L.root_lock(root):  # re-entrant inside one process
+        assert L.build_asof(root, "2026-09-02")["status"] == "exists"
+
+
+def test_consumer_staleness_guard(tmp_path):
+    """Review 1, consumer contract: a decision on day D must use asof-D; before the nightly build it is a refusal."""
+    rng = np.random.default_rng(16)
+    root = tmp_path / "root"
+    write_daily(root, "2026-10-06", rand_daily(rng, _universe(rng, 100), 50))
+    L.build_asof(root, "2026-10-07")
+    led = L.AsofLedger.open_for_day(root, "2026-10-07", verify=True)
+    assert led.asof_day == "2026-10-07" and led.require_asof_day("2026-10-07") is led
+    with pytest.raises(L.StaleLedger, match="newest: 2026-10-07"):
+        L.AsofLedger.open_for_day(root, "2026-10-08", retries=2, wait_s=0.0)  # 10-08 between 00:00Z and the rollup
+    with pytest.raises(L.StaleLedger, match="not for decision day 2026-10-08"):
+        led.require_asof_day("2026-10-08")
+    assert issubclass(L.StaleLedger, L.Refused)
+
+
+def test_check_command(tmp_path, capsys):
+    """Review 1, runbook alerting and seeding: `check` exits 3 on a missing snapshot, a bad daily file, or growth."""
+    rng = np.random.default_rng(17)
+    uni = _universe(rng, 400)
+    root = tmp_path / "root"
+    for d in (1, 2):
+        write_daily(root, f"2026-09-0{d}", rand_daily(rng, uni, 100))
+    L.build_asof(root, "2026-09-03")
+    r = str(root)
+    assert L.main(["check", "--out-root", r, "--asof-day", "2026-09-03", "--verify", "--daily"]) == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["daily_verified"] == 2 and out["asof"]["asof_day"] == "2026-09-03" and out["asof"]["verified"]
+    wallets = out["asof"]["wallets"]
+    assert L.main(["check", "--out-root", r, "--asof-day", "2026-09-04"]) == 3  # the nightly did not run
+    assert L.main(["check", "--out-root", r, "--max-wallets", str(wallets - 1)]) == 3
+    assert L.main(["check", "--out-root", r, "--max-wallets", str(wallets)]) == 0
+    # a copied-in daily file that does not match its manifest fails the seeding check
+    L.daily_paths(root, "2026-09-02")[1].write_text(json.dumps({"content_sha256": "0" * 64}))
+    capsys.readouterr()
+    assert L.main(["check", "--out-root", r, "--daily"]) == 3
+    assert "content hash" in capsys.readouterr().err
+
+
+def test_wl_parquet_written_before_manifest_and_on_rerun(tmp_path, monkeypatch):
+    """Review 1, idempotency (a): the manifest is the commit marker; a rerun writes a missing wl parquet."""
+    tape = tmp_path / "tape"
+    write_tape(tape, DAY, make_rows(18, 400))
+    L.build_day(DAY, "tape", tmp_path / "ref", tape_dir=tape, wl_parquet_dir=tmp_path / "ref_wl")
+    ref_sha = L.file_sha256(tmp_path / "ref_wl" / f"{DAY}.parquet")
+    # built without the parquet, rerun with it: the parquet comes from the npz, same bytes as a fresh build
+    L.build_day(DAY, "tape", tmp_path / "a", tape_dir=tape)
+    res = L.build_day(DAY, "tape", tmp_path / "a", tape_dir=tape, wl_parquet_dir=tmp_path / "a_wl")
+    assert res["status"] == "exists" and res["wl_parquet"].startswith("written")
+    assert L.file_sha256(tmp_path / "a_wl" / f"{DAY}.parquet") == ref_sha
+    # a refused parquet leaves the day unfinished (no manifest), so a plain rerun builds it
+    real = L.write_wl_parquet
+
+    def refuse(*a, **k):
+        raise L.Refused("SQL grid columns differ (simulated)")
+
+    monkeypatch.setattr(L, "write_wl_parquet", refuse)
+    with pytest.raises(L.Refused, match="simulated"):
+        L.build_day(DAY, "tape", tmp_path / "b", tape_dir=tape, wl_parquet_dir=tmp_path / "b_wl")
+    assert not L.daily_paths(tmp_path / "b", DAY)[1].exists()
+    monkeypatch.setattr(L, "write_wl_parquet", real)
+    res = L.build_day(DAY, "tape", tmp_path / "b", tape_dir=tape, wl_parquet_dir=tmp_path / "b_wl")
+    assert res["status"] == "built" and L.file_sha256(tmp_path / "b_wl" / f"{DAY}.parquet") == ref_sha
+
+
+def test_recheck_and_force_on_a_changed_source(tmp_path, capsys):
+    """Review 1, idempotency (b): exit 4 for a daily whose rebuild differs; --force replaces it and records the old hash."""
+    rows = make_rows(19, 400)
+    tape = tmp_path / "tape"
+    write_tape(tape, DAY, rows)
+    root = tmp_path / "o"
+    first = L.build_day(DAY, "tape", root, tape_dir=tape)
+    npz_bytes = L.daily_paths(root, DAY)[0].read_bytes()
+    base = ["day", "--day", DAY, "--adapter", "tape", "--tape-dir", str(tape), "--out-root", str(root)]
+    assert L.main(base + ["--recheck"]) == 0
+    assert json.loads(capsys.readouterr().out.strip())["status"] == "rechecked_same"
+    shutil.rmtree(tape)
+    write_tape(tape, DAY, rows[:-50])  # the source changed
+    assert L.main(base) == 0  # a plain rerun does not rebuild
+    assert json.loads(capsys.readouterr().out.strip())["status"] == "exists"
+    assert L.main(base + ["--recheck"]) == 4
+    assert "nothing written" in capsys.readouterr().err
+    assert L.daily_paths(root, DAY)[0].read_bytes() == npz_bytes
+    assert L.main(base + ["--force"]) == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "rebuilt" and out["replaced_content_sha256"] == first["content_sha256"]
+    assert json.loads(L.daily_paths(root, DAY)[1].read_text())["replaced_content_sha256"] == first["content_sha256"]
+    other = ["day", "--day", "2026-09-11", "--adapter", "tape", "--tape-dir", str(tape), "--out-root", str(root), "--recheck"]
+    assert L.main(other) == 3  # nothing to recheck
+
+
+def test_spill_cap_is_an_option(tmp_path):
+    """Review 1, pruning item: the duckdb spill cap is a CLI option with a small default (was 40 GB, hard-coded)."""
+    con = L.connect(threads=1, mem_gb=1, tmp_dir=tmp_path / "duck", max_temp_gb=2)
+    assert con.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0] == "1.8 GiB"  # 2e9 bytes
+    p = L.build_parser().parse_args(["rollup", "--day", DAY, "--out-root", str(tmp_path)])
+    assert p.max_temp_gb == L.DEFAULT_MAX_TEMP_GB == 8.0 and p.keep_asof == L.DEFAULT_KEEP_ASOF == 3
