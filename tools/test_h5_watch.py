@@ -133,6 +133,22 @@ def test_a_failed_post_keeps_the_state_so_the_alert_is_tried_again(tmp_path):
     assert go(h, st, good, NOW + 300) == 0 and len(good.posts) == 1 and "h5_halt_file" in good.posts[0][1]
 
 
+def test_the_idle_ledger_alert_resolves_in_a_quiet_market_and_an_unledgered_trigger_is_posted(tmp_path):
+    """2026-10-11: h5_idle_ledger fired at ~00:25Z with no plain pool drained in 6 h (jobs #672-#676). The shadow now decides."""
+    from tools.test_h5_daily_check import SHADOW_DIR, T, idle_world, quiet_pools, s_trigger
+
+    env = {**ENV, "H5_WATCH_SHADOW_DIR": SHADOW_DIR}
+    st = tmp_path / "state.json"
+    st.write_text(json.dumps({"active": {"h5_idle_ledger": {"first": T - 600, "last_post": T - 600}}, "restarts": 0, "stop": False, "ts": T - 300}))
+    p = Poster()
+    h = idle_world(*quiet_pools())
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    assert [c for _, c in p.posts] == ["[H5 watch] RESOLVED h5_idle_ledger"]
+    h = idle_world(*quiet_pools(), s_trigger(T - 3600))
+    assert hw.run(h, env, p, st, T + 300, balance_fn=lambda w, e: h.balance_lamports) == 0
+    assert len(p.posts) == 2 and "ALERT h5_idle_ledger: the detector wrote 1 plain trigger(s)" in p.posts[1][1] and "SECRET" not in p.posts[1][1]
+
+
 def test_missing_or_bad_webhook_posts_nothing_and_never_prints_the_secret(tmp_path, capsys):
     p = Poster()
     for env in ({**ENV, "H5_WATCH_DISCORD_WEBHOOK": ""}, {k: v for k, v in ENV.items() if k != "H5_WATCH_DISCORD_WEBHOOK"},
