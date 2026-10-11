@@ -32,6 +32,10 @@
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 #   H5_SYN_SOCKETS  logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed, default 1; the RPC fallback covers a miss)
 #   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
+#   H5_TIP_DIR      REPORT-ONLY tip union (trade-rate phase 0): the tip follower's dir, read incrementally for tracked pools to write
+#                   base_breaks_unresolved_settled_union, base_union and base_unmatched_* next to the existing fields. No decision reads them.
+#                   Default /var/lib/mal/sealed/fast-trades-tip; "off" leaves the flag out (records byte-identical to a build without it).
+#                   Must be an absolute path without "..". A missing or stale dir is not an error: the fields go null.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -83,7 +87,14 @@ fi
 if [ -n "${H5_MAX_SECONDS:-}" ]; then
   set -- "$@" --max-seconds "$H5_MAX_SECONDS"
 fi
+TIP="${H5_TIP_DIR:-/var/lib/mal/sealed/fast-trades-tip}"
+case "$TIP" in
+  off) ;;
+  *..*|"") echo "h5-shadow: refusing H5_TIP_DIR=$TIP" >&2; exit 2 ;;
+  /*) set -- "$@" --tip-dir "$TIP" ;;
+  *) echo "h5-shadow: refusing H5_TIP_DIR=$TIP (not absolute)" >&2; exit 2 ;;
+esac
 BX10=off
 if [ "${H5_BX10_ENABLE:-}" = "EXP-026" ]; then BX10=on; fi
-echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, tip_union=$TIP, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 exec env PYTHONPATH="$ROOT" "$PY" -m tools.h5_shadow "$@"
