@@ -130,7 +130,7 @@ If v2's code is not reviewed and installed when v1 halts, B waits for it, up to 
 
 **EXP-026's seal from the switch.** Until the switch, Option A's rules of EXP-026 §3.3 apply, and v2's decision records stay withheld. From the switch instant, Option B's rules apply: the shadow restarts with `--h5v2-live-exit DEC-028-B`, the canary's own outcomes are observed (G-v2 item (a)(iii)), and EXP-026's report gives the switch instant, the traded share and the label (section 3.1, "What B costs EXP-026"). The trigger depends on v1's BOOST-timing halt and not on any v2 outcome, so choosing B ahead of time moves no choice onto v2's book.
 
-**EXP-024 Look 1.** Under [DEC-024 Amendment 8](DEC-024-h5-live-canary.md) item 1 (draft, PR on `claude/dec024-owner-1011`), a Look 1 FAIL keeps H5 at T0 through 10-23 for execution measurement only. That covers whichever H5 rule the profile then trades, v1 or v2 under this section. Neither is ever a book.
+**EXP-024 Look 1.** Under [DEC-024 Amendment 8](DEC-024-h5-live-canary.md) item 1 (draft, PR #595), a Look 1 FAIL keeps H5 at T0 through 10-23 for execution measurement only. That covers whichever H5 rule the profile then trades, v1 or v2 under this section. Neither is ever a book.
 
 ## 4. Live halts under Option B (DEC-024 §5, adapted to v2)
 
