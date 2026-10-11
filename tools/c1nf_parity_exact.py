@@ -47,7 +47,7 @@ Outputs in --out-dir (which must be empty or absent):
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 --probe-lookahead --out-dir OUT_P
       (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
   python tools/c1nf_parity_exact.py cross-compare REPLAY506.npz OUT_A/parity-stage1-exact.npz [--skip-wallet] [--json J]
-      (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
+      (QP's 09-20 cross-harness check: #506's replay npz against run A's stage-1 vectors; exit 0 only on 0 differing rows)
 
 Exploration tape only: tools.c1nf_shadow.refuse_replay runs before any read (exploration hours, forbidden path tokens). No CAP-PICK oracle,
 no seal (replay). Heavy runs are MiScusi jobs, memory-capped; this file does not decide the cap.
