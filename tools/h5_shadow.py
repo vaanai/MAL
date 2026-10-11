@@ -72,13 +72,26 @@ base_breaks_unresolved_settled, the feed's own view of the pool's base chain. Wi
 trades-<UTC hour>.jsonl (TipTail: incremental, on the event loop, a byte search per line and a JSON parse only for a tracked pool's row) and
 keeps, per tracked pool, the same multiset check on the UNION of feed prints and tip rows keyed by (signature, event_index) (UnionChain).
 Trigger and pool records then carry base_breaks_unresolved_settled_union (null when the tip is stale, unreadable, starting or broken) and
-base_union {status, ws_only, tip_only, both, both_diff, dup, tip_first_slot, tip_hw_slot, tip_lag_slots}; pool records also carry
-base_unmatched_ws / base_unmatched_union (up to 20 unmatched prints each, so missing-vs-extra can be settled offline). The tip tape is not chain
-truth either (it misses prints in some pools); the union does not see a dropped head, and s0, BOOST spent/identity and the first qualifying sell
-still come from the feed. Without --tip-dir every record is byte-identical to a build without this code. A sealed pool's record carries none
-of the union fields: CAP-PICK-sealed, and H5 Look-2-sealed (h5_look2_sealed; that record stays exactly as without the union). hb / status carry
-tip_union: the reader's health (status, resets on truncation / rotation, error counts, rate-limited error log) and mem, a memory self-report of
-the union structures next to the process RSS.
+base_union {status, ws_only, tip_only, both, both_diff, dup, tip_first_slot, ...}; pool records also carry base_unmatched_ws /
+base_unmatched_union (up to 20 unmatched prints each, so missing-vs-extra can be settled offline). The tip tape is not chain truth either (it
+misses prints in some pools); the union does not see a dropped head, and s0, BOOST spent/identity and the first qualifying sell still come from
+the feed. Without --tip-dir every record is byte-identical to a build without this code.
+DECISION TIME, enforced in code (UnionChain.line / ahead): a tip row is admitted into a pool's union only once that pool's feed has printed at
+its slot or later; rows above that line wait in the pool's `ahead` heap. So the TRIGGER record's union fields (the settled union value and
+tip_only, both, dup, both_diff, tip_first_slot, ws_only) count only tip rows at slot <= the trigger print's slot, also when the tip leads the
+feed. When the trigger print is a slot regress below rows already admitted, the fields are null with status "regress". The trigger record's
+base_union carries the reader's health as tip_hw_slot_global / tip_lag_slots_global: the reader's high-water over ALL pools at the detect
+instant (and the feed's high-water minus it), relabelled because they are not filtered to the trigger slot. The POOL CLOSE record admits every
+tip row read so far first, so its union fields (tip_hw_slot, tip_lag_slots included) are exactly those of the eager union.
+SEALED: a CAP-PICK-sealed pool's records carry none of the union fields. An H5 Look-2-sealed pool's POOL CLOSE record carries none either (it
+stays exactly as without the union); its trigger record keeps the decision-time ones above. hb / status carry tip_union: the reader's health
+(status, resets on truncation / rotation, error counts, rate-limited error log) and mem, a memory self-report of the union structures next to
+the process RSS. PRE-TRADE fields of the trigger record, for any comparison with the tip's row of the same (signature, event_index) (the record
+carries the trigger print's own event_index; a replay row's comes from tape_event_index): real_quote_pre (quote_reserve) and base_pre
+(base_reserve) are the PumpSwap row's reserves BEFORE the trade, the convention of the feed and of the tip's PumpSwap rows (bonding-curve rows
+are POST-trade: never compare across venues without checking); q_pv_pre_sol / q_fv_pre_sol add V; v_print is the print's virtual reserve.
+q_trigger_sol, q_pv_post_sol and q_fv_post_sol are POST-trade. The start record's code_sha is the git sha of the running checkout (null if
+unknown); DEC-024's phase-2 data clock counts from it.
 
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
 against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
@@ -99,11 +112,14 @@ import asyncio
 import base64
 import bisect
 import collections
+import heapq
 import json
 import logging
 import math
 import os
+import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -218,7 +234,7 @@ TIP_POLL_S = 0.25  # tip poll interval; a full chunk is followed at once by the 
 TIP_CHUNK_BYTES = 128 * 1024  # one read per file per step: ~150 rows, a fraction of a millisecond of filtering
 TIP_LINE_MAX = 64 * 1024  # a partial line longer than this is dropped (corrupt tail)
 TIP_PENDING_MAX = 5_000  # tip rows buffered per announced-but-not-yet-tracked pool (the tip lags the feed, so this is normally empty)
-UNION_SETTLE_SCAN_MAX = 256  # slots above the settle line scanned incrementally; more than this recomputes in full
+UNION_SETTLE_SCAN_MAX = 256  # slots above the settle line scanned incrementally; more than this: null at a trigger, a full count at pool close
 UNMATCHED_MAX = 20  # unmatched prints listed per pool-close record (per view)
 TIP_ERR_LOG_EVERY_S = 600.0  # tip_follow: the first error of each class goes to the error log, then at most one per class per this many s
 # hb memory self-report of the union structures (tip_union.mem): bytes per item, measured with tracemalloc on synthetic chains (88-char
@@ -424,7 +440,7 @@ def fill_round_trip(qe: float, be: float, qx: float, bx: float, stake: float) ->
 class Pr:
     """One PumpSwap print of a tracked pool."""
 
-    __slots__ = ("slot", "buy", "trader", "sol", "tok", "q", "v", "b", "dq", "db", "kept", "recv_ms", "ts", "sig", "v_missing", "ukey")
+    __slots__ = ("slot", "buy", "trader", "sol", "tok", "q", "v", "b", "dq", "db", "kept", "recv_ms", "ts", "sig", "v_missing", "ukey", "ei")
 
     def __init__(self, **kw: Any) -> None:
         for k in self.__slots__:
@@ -820,9 +836,17 @@ class UnionChain:
     kept (it comes from the canonical block) and both_diff counts it. Counts are kept incrementally (pre_excess as in Engine._base_chain, with
     exact removals), so the settled value costs O(members in the last SETTLE_SLOTS slots) at a trigger, not O(prints). The pool-close fields
     (unmatched lists, ws_only_sig_on_tip) are O(members): 0.23 ms at 2,600 prints, linear, so a few ms on a 50k-print pool, once per pool. Never
-    read by a decision."""
+    read by a decision.
 
-    __slots__ = ("m", "pre", "post", "excess", "by_slot", "max_slot", "n", "both_diff", "dup", "tip_first_slot", "broken")
+    Decision time: add_ws / add_tip keep an admission line, the highest slot of the pool's feed prints. A tip row above it waits in `ahead` (a
+    heap by slot, O(log n) per row) and is admitted once a feed print reaches its slot (or by flush() at pool close). So at a trigger every
+    member's slot is <= the line <= the feed's high-water, the settled value takes the incremental path (O(members in the last SETTLE_SLOTS
+    slots)), and the counts hold only tip rows at slot <= the line. The final state does not depend on admission order (the tip's version of a
+    key wins whichever source came first; dup counts repeats per source), unless the tip delivers one key twice with different contents, which a
+    tape of canonical blocks cannot."""
+
+    __slots__ = ("m", "pre", "post", "excess", "by_slot", "max_slot", "n", "both_diff", "dup", "tip_first_slot", "broken", "line", "ahead", "seq",
+                 "tip_max_slot")
 
     def __init__(self) -> None:
         self.m: dict[tuple, list] = {}  # key -> [pre base, post base, slot, mask]
@@ -836,6 +860,34 @@ class UnionChain:
         self.dup = 0  # the same key twice from the same source (ignored)
         self.tip_first_slot: int | None = None
         self.broken = False
+        self.line: int | None = None  # admission line: the highest slot of the pool's feed prints (None before the first)
+        self.ahead: list = []  # heap of (slot, seq, key, pre base, post base): tip rows above the line, not yet in the union
+        self.seq = 0
+        self.tip_max_slot: int | None = None  # highest slot of an admitted tip row (member or dup)
+
+    def add_ws(self, key: tuple, bpre: int, bpost: int, slot: int) -> None:
+        """A feed print: raise the admission line to its slot (admitting the tip rows waiting at or below it), then add it."""
+        if self.line is None or slot > self.line:
+            self.line = slot
+            self._admit(slot)
+        self.add(key, bpre, bpost, slot, UNION_WS)
+
+    def add_tip(self, key: tuple, bpre: int, bpost: int, slot: int) -> None:
+        """A tip row: into the union if the pool's feed has printed at its slot or later, else held in `ahead`."""
+        if self.line is None or slot > self.line:
+            heapq.heappush(self.ahead, (slot, self.seq, key, bpre, bpost))
+            self.seq += 1
+            return
+        self.add(key, bpre, bpost, slot, UNION_TIP)
+
+    def _admit(self, line: int | None) -> None:
+        while self.ahead and (line is None or self.ahead[0][0] <= line):
+            slot, _, key, bpre, bpost = heapq.heappop(self.ahead)
+            self.add(key, bpre, bpost, slot, UNION_TIP)
+
+    def flush(self) -> None:
+        """Pool close: admit every held tip row (the close record is the eager union of everything read)."""
+        self._admit(None)
 
     def _inc(self, bpre: int, bpost: int) -> None:
         self.pre[bpre] += 1
@@ -855,8 +907,11 @@ class UnionChain:
         self.pre[bpre] -= 1
 
     def add(self, key: tuple, bpre: int, bpost: int, slot: int, src: int) -> None:
-        if src == UNION_TIP and (self.tip_first_slot is None or slot < self.tip_first_slot):
-            self.tip_first_slot = slot
+        if src == UNION_TIP:
+            if self.tip_first_slot is None or slot < self.tip_first_slot:
+                self.tip_first_slot = slot
+            if self.tip_max_slot is None or slot > self.tip_max_slot:
+                self.tip_max_slot = slot
         cur = self.m.get(key)
         if cur is None:
             self.m[key] = [bpre, bpost, slot, src]
@@ -883,13 +938,17 @@ class UnionChain:
                 if self.max_slot is None or slot > self.max_slot:
                     self.max_slot = slot
 
-    def settled(self, hw_slot: int | None) -> int:
+    def settled(self, hw_slot: int | None, full: bool = True) -> int | None:
         """Engine.unresolved_settled's arithmetic on the union: pre bases of members at slot <= hw - SETTLE_SLOTS need a matching post base
-        (posts of every member count); one chain head is subtracted."""
+        (posts of every member count); one chain head is subtracted. Members more than UNION_SETTLE_SCAN_MAX slots above the settle line (the
+        tip leading the feed) need a full O(members) count: done only with full=True (pool close); full=False (a trigger) returns None
+        instead. A trigger never gets there: admission keeps every member at or below the feed's high-water."""
         if hw_slot is None or self.max_slot is None or self.max_slot <= hw_slot - SETTLE_SLOTS:
             return max(0, self.excess - 1)
         lo = hw_slot - SETTLE_SLOTS
         if self.max_slot - lo > UNION_SETTLE_SCAN_MAX:
+            if not full:
+                return None
             pres = collections.Counter(v[0] for v in self.m.values() if v[2] <= lo)
             return max(0, sum(max(0, n - self.post[b]) for b, n in pres.items()) - 1)
         ex, taken = self.excess, collections.Counter()
@@ -1196,9 +1255,11 @@ class Engine:
         kept = 0
         if row.get("fee_recipient_zero"):
             kept = int(row.get("protocol_fee") or 0) + int(row.get("creator_fee") or 0)
+        ei = row["tape_event_index"] if "tape_event_index" in row else row.get("event_index")  # a replay row's own position (see _boost_slice)
         pr = Pr(slot=slot, buy=buy, trader=row.get("trader") or "", sol=int(row["sol_lamports"]), tok=int(row["token_raw"]), q=q, v=v, b=b, dq=dq,
                 db=db, kept=kept, recv_ms=recv_ms, ts=ts, sig=row.get("signature"), v_missing=v_raw is None,
-                ukey=None if self.tip is None else _ukey(row))  # the union key only exists with the union on (no per-print cost when off)
+                ukey=None if self.tip is None else _ukey(row),  # the union key only exists with the union on (no per-print cost when off)
+                ei=ei if isinstance(ei, int) and not isinstance(ei, bool) else None)
         self._on_print(p, pr)
         if buy:
             self._boost_slice(p, pr, row)
@@ -1333,7 +1394,18 @@ class Engine:
         if u is None or u.broken:
             return
         try:
-            u.add(item[0], item[1], item[2], item[3], src)
+            (u.add_ws if src == UNION_WS else u.add_tip)(item[0], item[1], item[2], item[3])  # decision time: see UnionChain
+        except Exception:  # noqa: BLE001
+            u.broken = True
+            self.counters["union_errors"] += 1
+
+    def _union_flush(self, p: Pool) -> None:
+        """Pool close: admit the tip rows still held above the pool's admission line. Fail-soft like _union_add."""
+        u = p.union
+        if u is None or u.broken or not u.ahead:
+            return
+        try:
+            u.flush()
         except Exception:  # noqa: BLE001
             u.broken = True
             self.counters["union_errors"] += 1
@@ -1368,7 +1440,7 @@ class Engine:
     def union_mem(self) -> dict:
         """Memory self-report of the report-only union for hb / status (O(open pools), once a minute): sizes of the union structures, an
         estimate in MB from the measured per-item bytes, and the process's own RSS / RssAnon / VmHWM (kB, /proc/self/status) next to it."""
-        pools = members = slots = keys = broken = 0
+        pools = members = slots = keys = broken = ahead = 0
         for p in self.pools.values():
             u = p.union
             if u is None:
@@ -1378,27 +1450,49 @@ class Engine:
                 broken += 1
                 continue
             members += len(u.m)
+            ahead += len(u.ahead)
             slots += len(u.by_slot)
             keys += len(u.pre) + len(u.post)
         pend = sum(len(v) for v in self.tip_pending.values())
-        est = members * UNION_MEMBER_BYTES_EST + pend * UNION_PENDING_ROW_BYTES_EST
+        est = members * UNION_MEMBER_BYTES_EST + (pend + ahead) * UNION_PENDING_ROW_BYTES_EST
         return {"union_pools": pools, "union_broken_pools": broken, "union_members": members, "union_slots": slots, "union_counter_keys": keys,
-                "pending_pools": len(self.tip_pending), "pending_rows": pend, "est_mb": round(est / 1e6, 1), **_proc_mem()}
+                "union_ahead_rows": ahead, "pending_pools": len(self.tip_pending), "pending_rows": pend, "est_mb": round(est / 1e6, 1), **_proc_mem()}
 
-    def _union_fields(self, p: Pool) -> dict:
-        """base_breaks_unresolved_settled_union (null unless the tip is fresh and the pool's union is intact) plus the source counts."""
+    def _union_fields(self, p: Pool, trig_slot: int | None = None) -> dict:
+        """base_breaks_unresolved_settled_union (null unless the tip is fresh and the pool's union is intact) plus the source counts.
+        trig_slot None: the pool close (every tip row read so far is admitted first; tip_hw_slot / tip_lag_slots as in phase 0). trig_slot set:
+        a trigger, decision time only: the counts and the settled value hold only tip rows at slot <= trig_slot (UnionChain admission); if an
+        admitted tip row is above it (the trigger print is a slot regress) every count is null and status is "regress". The reader's own
+        high-water is not filtered: it is written as tip_hw_slot_global / tip_lag_slots_global."""
         try:
             tip = self.tip
             st = tip.status(self.hw_slot)
             u = p.union
             if u is None or u.broken:
                 st = "error"
-            val = u.settled(self.hw_slot) if st == "ok" else None
-            info = {"status": st, "ws_only": None if u is None else u.n[UNION_WS], "tip_only": None if u is None else u.n[UNION_TIP],
-                    "both": None if u is None else u.n[UNION_BOTH], "both_diff": None if u is None else u.both_diff,
-                    "dup": None if u is None else u.dup, "tip_first_slot": None if u is None else u.tip_first_slot,
-                    "tip_hw_slot": tip.hw_slot,
-                    "tip_lag_slots": None if tip.hw_slot is None or self.hw_slot is None else self.hw_slot - tip.hw_slot}
+            lag = None if tip.hw_slot is None or self.hw_slot is None else self.hw_slot - tip.hw_slot
+            if trig_slot is None:
+                self._union_flush(p)
+                if u is not None and u.broken:
+                    st = "error"
+                val = u.settled(self.hw_slot) if st == "ok" else None
+                info = {"status": st, "ws_only": None if u is None else u.n[UNION_WS], "tip_only": None if u is None else u.n[UNION_TIP],
+                        "both": None if u is None else u.n[UNION_BOTH], "both_diff": None if u is None else u.both_diff,
+                        "dup": None if u is None else u.dup, "tip_first_slot": None if u is None else u.tip_first_slot,
+                        "tip_hw_slot": tip.hw_slot, "tip_lag_slots": lag}
+                return {UNION_FIELD: val, "base_union": info}
+            cnt = u
+            if u is not None and u.tip_max_slot is not None and u.tip_max_slot > trig_slot:
+                st, cnt = "regress", None
+            val = None
+            if st == "ok":
+                val = u.settled(self.hw_slot, full=False)  # never None here: admission keeps every member <= the feed's high-water
+                if val is None:
+                    st = "ahead"
+            info = {"status": st, "ws_only": None if cnt is None else cnt.n[UNION_WS], "tip_only": None if cnt is None else cnt.n[UNION_TIP],
+                    "both": None if cnt is None else cnt.n[UNION_BOTH], "both_diff": None if cnt is None else cnt.both_diff,
+                    "dup": None if cnt is None else cnt.dup, "tip_first_slot": None if cnt is None else cnt.tip_first_slot,
+                    "tip_hw_slot_global": tip.hw_slot, "tip_lag_slots_global": lag}
         except Exception:  # noqa: BLE001 - a report-only field may never take the trigger or the close down
             self.counters["union_errors"] += 1
             return {UNION_FIELD: None, "base_union": {"status": "error"}}
@@ -1636,7 +1730,7 @@ class Engine:
             return
         rec = {
             "type": "trigger", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "s0_t_recv_ms": p.s0_recv_ms,
-            "slot": pr.slot, "signature": pr.sig, "t_since_s0_s": t, "sps": sps,
+            "slot": pr.slot, "signature": pr.sig, "event_index": pr.ei, "t_since_s0_s": t, "sps": sps,
             "block_time": pr.ts, "t_recv_ms": pr.recv_ms, "t_recv": iso_from_ms(pr.recv_ms), "t_detect_ms": detect,
             "detect_lag_ms": detect - pr.recv_ms,
             "q_trigger_sol": pr.q_post(var, p.v0) / 1e9, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9, "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9,
@@ -1656,8 +1750,8 @@ class Engine:
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
             "synthetic": False, "synthetic_src": syn_src,
         }
-        if self.tip is not None:  # report-only, after every decision field is set; O(recent prints), never raises
-            rec.update(self._union_fields(p))
+        if self.tip is not None:  # report-only, after every decision field is set; O(recent prints), never raises; decision time only
+            rec.update(self._union_fields(p, pr.slot))
         p.trig[var] = rec
         if self._h5_sealed(p):  # EXP-024 Look 2's added window without the declared observation: the decision-time record only, no ladder, no outcome
             rec["h5_look2_sealed"] = True
@@ -2341,13 +2435,20 @@ class TipTail:
     rate-limited error log. When a read finds no new bytes the open file is checked against its path: a new inode (rotation) reopens the path
     from its start, a size below the read offset (truncation: fast_tip_follower cuts a crashed slot write back to its pre-write size, a line
     boundary) reopens it at the new end with the partial line dropped. Both count a reset; rows read twice are absorbed as `dup`. Not detected:
-    a truncation followed by enough new bytes to pass the old offset before the next poll (0.25 s)."""
+    a truncation followed by enough new bytes to pass the old offset before the next poll (0.25 s).
+    Offsets: each hour keeps the byte offset of its first unconsumed line (offs). After a read error the file is reopened THERE, so no row is
+    delivered twice and an hour is never re-read from byte 0; a file present at the first poll that could not be opened then starts at its size
+    at that poll (stat) or, if even that failed, at its end. Whenever a file is (re)opened at an offset that is not a line start (the end of a
+    file being written, a truncation cut inside a line, a dropped over-long line) the first fragment, up to and including the next newline, is
+    dropped (fragments_dropped), never parsed as a row."""
 
     def __init__(self, tip_dir: str | Path, on_row: Callable[[dict], None], interested: Callable[[str], bool], *, wall: Callable[[], int] = now_ms,
                  chunk: int = TIP_CHUNK_BYTES) -> None:
         self.dir = Path(tip_dir)
         self.on_row, self.interested, self.wall, self.chunk = on_row, interested, wall, chunk
-        self.files: dict[str, list] = {}  # hour -> [fd, partial line]
+        self.files: dict[str, list] = {}  # hour -> [fd, partial line, file offset read up to, skipping the first fragment]
+        self.offs: dict[str, int] = {}  # hour -> file offset of the first unconsumed line (where a reopen starts)
+        self.end_hours: set[str] = set()  # hours present at the first poll whose open and stat both failed: opened at their end later
         self.started = False
         self.hw_slot: int | None = None  # highest slot of the last complete line read (any pool)
         self.last_line_ms: int | None = None  # wall time a line was last read
@@ -2367,10 +2468,14 @@ class TipTail:
             except OSError:
                 pass
 
+    def _path(self, hour: str) -> Path:
+        return self.dir / f"trades-{hour}.jsonl"
+
     def _open(self, hour: str, whence: int | None, offset: int = 0) -> list | str | None:
-        """Open one hour file: [fd, partial] (whence None = from the start), None when it does not exist, an error class name on an OS error."""
+        """Open one hour file: [fd, partial, offset, skip] (whence None = from the start), None when it does not exist, an error class name on an
+        OS error. skip is True when the offset is not a line start (the byte before it is not a newline)."""
         try:
-            fd = os.open(self.dir / f"trades-{hour}.jsonl", os.O_RDONLY)
+            fd = os.open(self._path(hour), os.O_RDONLY)
         except FileNotFoundError:
             return None
         except OSError as e:
@@ -2378,14 +2483,16 @@ class TipTail:
             self.c["open_errors"] += 1
             return type(e).__name__
         try:
-            if whence is not None:
-                os.lseek(fd, offset, whence)
+            pos = 0 if whence is None else os.lseek(fd, offset, whence)
+            skip = pos > 0 and os.pread(fd, 1, pos - 1) != b"\n"
         except OSError as e:
             os.close(fd)
             self.last_exc = e
             self.c["open_errors"] += 1
             return type(e).__name__
-        ent = self.files[hour] = [fd, b""]
+        ent = self.files[hour] = [fd, b"", pos, skip]
+        self.offs[hour] = pos
+        self.end_hours.discard(hour)
         self.c["files_opened"] += 1
         return ent
 
@@ -2396,7 +2503,7 @@ class TipTail:
             fst = os.fstat(ent[0])
             pos = os.lseek(ent[0], 0, os.SEEK_CUR)
             try:
-                pst = os.stat(self.dir / f"trades-{hour}.jsonl")
+                pst = os.stat(self._path(hour))
             except FileNotFoundError:
                 return None  # removed: keep the open file until its hour leaves the window
         except OSError as e:
@@ -2410,6 +2517,7 @@ class TipTail:
         else:
             return None
         self._close_fd(hour)
+        self.offs[hour] = off  # a failed reopen is retried there on the next poll
         self.c["resets"] += 1
         self.c[kind] += 1
         got = self._open(hour, whence, off)
@@ -2421,6 +2529,9 @@ class TipTail:
         want = [self._hour(now - 3_600_000), self._hour(now)]
         for hour in [h for h in self.files if h not in want]:
             self._close_fd(hour)
+        for hour in [h for h in self.offs if h not in want]:
+            del self.offs[hour]
+        self.end_hours &= set(want)
         try:
             is_dir = self.dir.is_dir()  # py3.12: PermissionError (not False) when a parent cannot be traversed
         except OSError as e:
@@ -2435,7 +2546,18 @@ class TipTail:
         for hour in want:
             ent = self.files.get(hour)
             if ent is None:
-                ent = self._open(hour, None if self.started else os.SEEK_END)
+                off = self.offs.get(hour)
+                if off is not None:  # reopened after an error or a failed reset: at the saved line start, never at byte 0
+                    ent = self._open(hour, os.SEEK_SET, off)
+                elif not self.started or hour in self.end_hours:
+                    ent = self._open(hour, os.SEEK_END)
+                    if isinstance(ent, str) and not self.started:  # present but not openable at the first poll: start at its size now
+                        try:
+                            self.offs[hour] = os.stat(self._path(hour)).st_size
+                        except OSError:
+                            self.end_hours.add(hour)
+                else:
+                    ent = self._open(hour, None)
                 if isinstance(ent, str):
                     err = ent
                     continue
@@ -2446,7 +2568,7 @@ class TipTail:
             except OSError as e:
                 err, self.last_exc = type(e).__name__, e
                 self.c["read_errors"] += 1
-                self._close_fd(hour)
+                self._close_fd(hour)  # offs[hour] still holds the first unconsumed line: the next poll reopens there
                 continue
             if not data:
                 reset = self._check_reset(hour, ent)
@@ -2455,11 +2577,24 @@ class TipTail:
                 continue
             more = more or len(data) >= self.chunk
             self.c["bytes"] += len(data)
-            lines = (ent[1] + data).split(b"\n")
+            ent[2] += len(data)
+            buf = ent[1] + data
+            if ent[3]:  # not at a line start: drop the first fragment
+                i = buf.find(b"\n")
+                if i < 0:
+                    ent[1] = b""
+                    self.offs[hour] = ent[2]
+                    continue
+                buf = buf[i + 1:]
+                ent[3] = False
+                self.c["fragments_dropped"] += 1
+            lines = buf.split(b"\n")
             ent[1] = lines.pop()
             if len(ent[1]) > TIP_LINE_MAX:
                 ent[1] = b""
+                ent[3] = True  # the rest of that line is dropped too, up to its newline
                 self.c["long_lines_dropped"] += 1
+            self.offs[hour] = ent[2] - len(ent[1])
             if lines:
                 self._lines(lines)
         self.started = True
@@ -2530,22 +2665,24 @@ async def tip_follow(tail: TipTail, stop: asyncio.Event, *, poll_s: float = TIP_
         except Exception:  # noqa: BLE001 - the error log itself may fail; the tail goes on
             pass
 
-    while not stop.is_set():
-        try:
-            while tail.poll() and not stop.is_set():
-                await asyncio.sleep(0)
-        except Exception as exc:  # noqa: BLE001
-            tail.c["poll_errors"] += 1
-            tail.err = type(exc).__name__
-            report(exc)
-        if tail.last_exc is not None:  # an OS error poll counted and absorbed (status "unreadable", or a skipped file)
-            exc, tail.last_exc = tail.last_exc, None
-            report(exc)
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=poll_s)
-        except asyncio.TimeoutError:
-            pass
-    tail.close()
+    try:
+        while not stop.is_set():
+            try:
+                while tail.poll() and not stop.is_set():
+                    await asyncio.sleep(0)
+            except Exception as exc:  # noqa: BLE001
+                tail.c["poll_errors"] += 1
+                tail.err = type(exc).__name__
+                report(exc)
+            if tail.last_exc is not None:  # an OS error poll counted and absorbed (status "unreadable", or a skipped file)
+                exc, tail.last_exc = tail.last_exc, None
+                report(exc)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=poll_s)
+            except asyncio.TimeoutError:
+                pass
+    finally:  # a cancelled task (CancelledError at an await) closes its file descriptors too
+        tail.close()
 
 
 class ReplayTip:
@@ -2710,6 +2847,25 @@ def look2_start_info(look2_ref: str | None) -> dict:
             "observed": look2_ref is not None, "amendment_ref": look2_ref}
 
 
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def code_sha(environ: dict[str, str] | None = None, *, git_dir: str | Path | None = None) -> str | None:
+    """The git sha of the running checkout, for the start record's code_sha: H5_CODE_SHA (scripts/research/h5-shadow.sh sets it from
+    `git rev-parse HEAD` of its checkout) when it is a 40-hex sha, else `git rev-parse HEAD` of this module's checkout, else None. Never raises."""
+    env = os.environ if environ is None else environ
+    v = (env.get("H5_CODE_SHA") or "").strip().lower()
+    if _SHA_RE.fullmatch(v):
+        return v
+    try:
+        r = subprocess.run(["git", "-C", str(git_dir or Path(__file__).resolve().parent), "rev-parse", "HEAD"], capture_output=True, text=True,
+                           timeout=5, stdin=subprocess.DEVNULL)
+        v = r.stdout.strip().lower()
+        return v if r.returncode == 0 and _SHA_RE.fullmatch(v) else None
+    except Exception:  # noqa: BLE001 - no git, a timeout, not a checkout: unknown
+        return None
+
+
 async def run_live(args: argparse.Namespace) -> int:
     out_dir = check_out_dir(args.out_dir or DEFAULT_OUT_DIR)
     sink = JsonlSink(out_dir)
@@ -2746,7 +2902,7 @@ async def run_live(args: argparse.Namespace) -> int:
         source_ref["source"] = build_source(args.ws_url or [], args.sockets, args.commitment)
         return source_ref["source"]
 
-    engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
+    engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "code_sha": code_sha(), "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, **seal_info},
                  "h5_look2": look2_start_info(look2_ref),

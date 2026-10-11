@@ -2004,7 +2004,8 @@ class LinkStateRound6Tests(unittest.TestCase):
         eng.close_all("t")
         envelope = {"v", "schema", "t_ms"}
         added = {"synthetic", "synthetic_src"}  # EXP-024 Am.4: additive keys on both records; the executor reads by key, so adding them breaks nothing there
-        self.assertEqual(set(types(out, "trigger")[0]) - envelope, set(fx["trigger"]) | added)
+        trig_added = {"event_index"}  # the trigger print's own event_index (#596 follow-up, QP #600 N2): additive, the executor reads by key
+        self.assertEqual(set(types(out, "trigger")[0]) - envelope, set(fx["trigger"]) | added | trig_added)
         self.assertEqual(set(types(out, "pool")[0]) - envelope, set(fx["pool"]) | added)
 
     def test_the_stale_comment_is_gone(self):
