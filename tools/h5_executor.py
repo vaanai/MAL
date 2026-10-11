@@ -151,7 +151,7 @@ V2_KMIN = 3  # slices needed before a projection exists (BX10_KMIN)
 V2_CAP_S = HOLD_S  # v1's exit (s0 + 330 s); the rule never exits later
 EXP026_FILE = "EXP/EXP-026-h5-boostclock-v2-prereg.md"  # live v2 needs the frozen rule in the deployed tree ...
 DEC028_FILE = "DEC/DEC-028-h5-v2-canary.md"  # ... and the owner's override line filled in this file
-DEC028_OVERRIDE_RE = re.compile(r"^\s*OWNER_OVERRIDE_V2_CONFIRMED:\s*\S", re.M)
+DEC028_OVERRIDE_RE = re.compile(r"^[ \t]*OWNER_OVERRIDE_V2_CONFIRMED:[ \t]*\S", re.M)  # text on the same line (the draft's line is empty)
 SCHEMA_BOOST_SLICE = "h5_boost_slice_v1"
 V2_BOOST_SRC = ("pda", "event_authority")  # the per-pool vault identity; a behavioural guess is never used for a live exit
 V2_SELL_AFTER_BOOST_N, V2_SELL_AFTER_BOOST_FRAC = 20, 0.15  # s4.1(a): > 15% of a rolling 20 paired sells at or after the last slice
@@ -1695,6 +1695,8 @@ class H5Executor(pl.LiveExecutor):
     def on_boost_slice(self, row: dict[str, Any]) -> None:
         """One BOOST buy in a tracked pool (the shadow's `boost_slice` record, or a flat h5_boost_slice_v1 row). Structure only, no price.
         Kept per pool (slices before our buy count: the projection uses every slice since s0); a re-reported slice is counted once."""
+        if self.exit_mode != EXIT_MODE_V2:  # the caller checks too; kept so no path holds a slice in a v1 build
+            return
         mint, slot, txi, evi, recv = row.get("mint"), row.get("slot"), row.get("tx_index"), row.get("event_index"), row.get("t_recv_ms")
         lam = row.get("lamports")
         sol = row.get("sol")
@@ -2326,7 +2328,7 @@ class H5Executor(pl.LiveExecutor):
         rec = {
             "kind": "sell", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": pos["pool"], "snap_slot": snap.slot if snap else None,
             "decision_t_ms": now, "receive_ms": now, "tokens": bal, "q_out": quote or 0, "min_out": min_out,
-            "reason": "h5_emergency" if emergency else ("h5_v2_exit" if (pos["h5"].get("v2") or {}).get("fired") else "h5_timed_exit"), "ret": ret, "sends": 0, **self._exit_fields("full"),
+            "reason": "h5_emergency" if emergency else "h5_timed_exit", "ret": ret, "sends": 0, **self._exit_fields("full"),
             "balance_source": bsrc, "h5": {"level": level, "emergency": emergency, "priority": prio},
         }
         self.armed[mint] = {"p": rec, "armed_ms": now, "level": level, "emergency": emergency}
@@ -2350,6 +2352,8 @@ class H5Executor(pl.LiveExecutor):
         if rec is None:
             return  # exit_tick latches stuck_position at the deadline whether or not a sell could be built
         rec["decision_t_ms"] = rec["receive_ms"] = now
+        if not emergency and (pos["h5"].get("v2") or {}).get("fired"):  # v2 only (a v1 position has no "v2" record)
+            rec["reason"] = "h5_v2_exit"
         pos["exit_reason"] = rec["reason"]
         self.state.pending[mint] = rec
         self.save()  # write-ahead
