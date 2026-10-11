@@ -380,3 +380,30 @@ def test_run_replay_mode_builds_exact_shadow_for_one_call_and_restores_shadow(mo
     assert sh is None and type(built[-1]) is cs.Shadow and cs.Shadow is orig
     with pytest.raises(ValueError):
         px.ExactShadow(live, _models(), cs.MemorySink(), replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY)
+
+
+def test_cross_compare_counts_differing_rows_by_feature_on_shared_stage1_rows(tmp_path):
+    n = len(FEATURE_NAMES)
+    assert sum(not px.wallet_feature(x) for x in FEATURE_NAMES) == 65             # QP: the 65 non-wallet columns
+    base = np.arange(3 * n, dtype=np.float64).reshape(3, n) / 7.0
+    base[0, 0] = np.nan
+    r506 = {"exact_pool": np.array(["A", "B", "C"]), "exact_T": np.array([60, 60, 120]), "exact_stage1": np.array([True, True, False]),
+            "exact_vec": base}
+    v = base.astype(np.float32)
+    s594 = {"pool": np.array(["A", "B", "C"]), "T": np.array([60, 60, 120]), "vec": v.copy()}
+    out = px.cross_compare(r506, s594)
+    assert out == {"shared_rows": 2, "only_506": 0, "only_594": 1, "columns": n, "rows_differing": 0, "by_feature": {}}
+    w = next(j for j, x in enumerate(FEATURE_NAMES) if px.wallet_feature(x))
+    c = FEATURE_NAMES.index("cr_known_out")
+    s594["vec"][1, c] += 1
+    s594["vec"][0, w] = np.nextafter(s594["vec"][0, w], np.float32(np.inf))      # 1 float32 ulp is a difference
+    out = px.cross_compare(r506, s594)
+    assert out["rows_differing"] == 2 and out["by_feature"] == {"cr_known_out": 1, FEATURE_NAMES[w]: 1}
+    out = px.cross_compare(r506, s594, skip_wallet=True)
+    assert out["columns"] == 65 and out["rows_differing"] == 1 and out["by_feature"] == {"cr_known_out": 1}
+    np.savez(tmp_path / "a.npz", **r506)
+    np.savez(tmp_path / "b.npz", **s594)
+    assert px.main(["cross-compare", str(tmp_path / "a.npz"), str(tmp_path / "b.npz"), "--json", str(tmp_path / "o.json")]) == px.EXIT_EXACT_CHECK
+    s594["vec"] = v
+    np.savez(tmp_path / "c.npz", **s594)
+    assert px.main(["cross-compare", str(tmp_path / "a.npz"), str(tmp_path / "c.npz")]) == cs.EXIT_OK

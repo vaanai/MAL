@@ -46,6 +46,8 @@ Outputs in --out-dir (which must be empty or absent):
       --model-manifest M.json --ledger-root ROOT --out-dir OUT_A
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 --probe-lookahead --out-dir OUT_P
       (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
+  python tools/c1nf_parity_exact.py cross-compare REPLAY506.npz OUT_A/parity-stage1-exact.npz [--skip-wallet] [--json J]
+      (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
 
 Exploration tape only: tools.c1nf_shadow.refuse_replay runs before any read (exploration hours, forbidden path tokens). No CAP-PICK oracle,
 no seal (replay). Heavy runs are MiScusi jobs, memory-capped; this file does not decide the cap.
@@ -346,6 +348,32 @@ def read_picks(out_dir: str | Path) -> list[dict]:
     return out
 
 
+# ---- the cross-harness check (QP on ab1df5f: before run A) -------------------------------------------------------------------------------
+WALLET_PREFIXES = ("wb5_", "ws5_", "wb15_", "ws15_", "sk_net")
+
+
+def wallet_feature(name: str) -> bool:
+    return name.startswith(WALLET_PREFIXES)
+
+
+def cross_compare(replay506: Mapping[str, Any], stage1_594: Mapping[str, Any], *, skip_wallet: bool = False) -> dict:
+    """#506's `replay --day D` npz (exact_pool, exact_T, exact_stage1, exact_vec) against this harness's parity-stage1-exact.npz (pool, T,
+    vec float32) on the shared stage-1 (pool, T) rows: float32 vectors, NaN equal to NaN, the differing-row count per feature name.
+    skip_wallet: compare only the 65 non-wallet columns (when the two runs did not read the same as-of ledger). Opens no outcome."""
+    from tools.c1nf_features import FEATURE_NAMES
+
+    a = {(str(p), int(t)): i for i, (p, t, s1) in enumerate(zip(replay506["exact_pool"], replay506["exact_T"], replay506["exact_stage1"])) if s1}
+    b = {(str(p), int(t)): i for i, (p, t) in enumerate(zip(stage1_594["pool"], stage1_594["T"]))}
+    shared = sorted(set(a) & set(b))
+    cols = [j for j, n in enumerate(FEATURE_NAMES) if not (skip_wallet and wallet_feature(n))]
+    A = np.asarray(replay506["exact_vec"], dtype=np.float64)[[a[k] for k in shared]][:, cols].astype(np.float32) if shared else np.zeros((0, len(cols)), np.float32)
+    B = np.asarray(stage1_594["vec"], dtype=np.float32)[[b[k] for k in shared]][:, cols] if shared else np.zeros((0, len(cols)), np.float32)
+    diff = ~((A == B) | (np.isnan(A) & np.isnan(B)))
+    by = {FEATURE_NAMES[j]: int(diff[:, i].sum()) for i, j in enumerate(cols)}
+    return {"shared_rows": len(shared), "only_506": len(set(a) - set(b)), "only_594": len(set(b) - set(a)), "columns": len(cols),
+            "rows_differing": int(diff.any(axis=1).sum()), "by_feature": {n: c for n, c in by.items() if c}}
+
+
 # ---- inputs -----------------------------------------------------------------------------------------------------------------------------
 def pool_v_from_tokens(tokens: str) -> dict[str, float]:
     """The same pool -> V0 map tools.c1nf_shadow.run_replay builds (V band applied)."""
@@ -399,7 +427,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def main_cross(argv: Sequence[str]) -> int:
+    p = argparse.ArgumentParser(prog="c1nf_parity_exact.py cross-compare")
+    p.add_argument("replay506", help="tools/c1nf_parity.py replay --day D output (npz)")
+    p.add_argument("stage1_594", help="this harness's parity-stage1-exact.npz")
+    p.add_argument("--skip-wallet", action="store_true", help="the 65 non-wallet columns only")
+    p.add_argument("--json")
+    a = p.parse_args(argv)
+    out = cross_compare(np.load(a.replay506, allow_pickle=False), np.load(a.stage1_594, allow_pickle=False), skip_wallet=a.skip_wallet)
+    if a.json:
+        Path(a.json).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    print(json.dumps(out, sort_keys=True))
+    return cs.EXIT_OK if out["rows_differing"] == 0 and out["shared_rows"] > 0 else EXIT_EXACT_CHECK
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["cross-compare"]:
+        return main_cross(argv[1:])
     args = build_parser().parse_args(argv)
     hours = cs.replay_hours(args.replay_from, args.replay_hours)
     try:
