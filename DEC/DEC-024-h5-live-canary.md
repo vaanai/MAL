@@ -529,13 +529,15 @@ Section 6 says the executor "reads only the `mint` field of the decision-time in
 
 **Amendment 6, re-clearance record (2026-10-10T09:32:14Z).** Quant-proof re-cleared #540 at `bea3f30` (a merge of main `b5ba835` into `4feec6d`). The executor, pinned configs, oracle wrapper and seal code are identical to `4feec6d`. The shadow adds #541's report-only `outcome_bx10` behind the same CAP-PICK and H5 Look-2 seals. md5 decision-equivalence at `bea3f30`: `75cb0b0c585bc2479137cae31330e73e`, 72/72 (MiScusi job #498, 25-hour replay 2026-09-20T00..2026-09-21T00). Merged as `288f490`.
 
-## Amendment 8 (2026-10-11, the owner's decisions; written before EXP-024's Look 1 read and blind to its outcome; no canary ledger, shadow outcome record or Look 1 statistic was read to write it): a Look 1 FAIL keeps T0 for execution measurement, the resume after a benign program upgrade, and a pointer to the v2 pre-authorization
+## Amendment 7 (2026-10-11, the owner's decisions; written before EXP-024's Look 1 read and blind to its outcome; no canary ledger, shadow outcome record or Look 1 statistic was read to write it): a Look 1 FAIL keeps T0 for execution measurement, the resume after a benign program upgrade, and a pointer to the v2 pre-authorization
 
 OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the manager). Four questions, each answered with the recommended option. MiScusi notebook n_soP9VudXSnG4Jw holds the verbatim questions, option texts and answers. The instant is the session's timestamp on the owner's answer.
 
 **Written** 2026-10-11T03:45:37Z (`date -u`). Main was `5ebc7ca` and v1 was trading at T0 (resumed 2026-10-11T00:15:06.586Z, Amendment 4 item 4). The executor's `end_ms` is 2026-10-23T19:29:53Z (Amendment 6 item 8, PR #591, named sha `f873aac`).
 
-**Numbering.** The manager's brief numbers this Amendment 8. Main holds Amendments 1 to 6 at writing.
+**Numbering.** Main holds Amendments 1 to 6 at writing, and no open PR proposes an Amendment 7, so this is Amendment 7. Its first draft (`f618f8e`) numbered it 8 from the manager's brief; it was renumbered 2026-10-11, and DEC-028 §3.5 (PR #542) cites it as Amendment 7.
+
+**Revised** 2026-10-11T05:32:25Z (`date -u`) for quant-proof's check of `f618f8e` (OK_WITH_FIXES): item 1's last bullet, and item 2's review items 4 and 6 and resume steps 1 and 3. Every change is stricter or a clarification. No canary ledger, shadow outcome record or Look 1 statistic was read for the revision.
 
 ### 1. A Look 1 FAIL keeps H5 at T0 for execution measurement only (section 5)
 
@@ -547,7 +549,7 @@ OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the m
   - **Every section 5 halt as amended stays live.** That includes section 5.1 under Amendments 4 and 5, every A3 halt flag, `program_changed`, the stuck-position rule and divergence. Every other stop stays. So do section 4's limits, including the daily stop, the total stop (the counters continue) and the 2-open and 30-a-day caps.
   - **Seals unchanged.** Section 6, the CAP-PICK seal (Amendment 6) and EXP-024 Amendment 4's D1 all stand.
 - **What it is not.** It is not evidence and never a book. EXP-024's FAIL retires v1 as a candidate, and this item does not soften that. Reports after the FAIL label the canary "execution measurement after an EXP-024 Look 1 FAIL; not a book". No report may say the canary shows a profit or an edge. It changes no EXP-024 parameter, look or read.
-- **Which rule it covers.** It covers the `h5` profile at T0 whichever H5 rule it trades: v1, or v2 if DEC-028 §3.5's pre-authorized switch has happened (item 3). That matches the owner's two answers, which both run H5 at 0.02 SOL until 10-23 [manager's reading, for quant-proof].
+- **Which rule it covers.** It covers the `h5` profile at T0 whichever H5 rule it trades: v1, or v2 if DEC-028 §3.5's pre-authorized switch has happened (item 3). That matches the owner's two answers, which both run H5 at 0.02 SOL until 10-23 [manager's reading, accepted by quant-proof at `f618f8e`]. **It waives only the EXP-024 Look 1 FAIL stop** of section 5. If v2 is the rule traded, its halts are DEC-028 §4's (section 5.1 is report-only for v2), and an EXP-026 FAIL still ends v2 at the next 00:00Z after the read (DEC-028 §4's stops).
 
 ### 2. Resume after a pump.fun program upgrade (section 5.6), after the manager's mechanism review
 
@@ -560,20 +562,22 @@ OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the m
   1. **What changed.** Which programs, the deploy slots and signer, the upgrade authority, the programdata sha256 against the pins, account sizes (pump Global), and the public docs and IDL commits.
   2. **Layouts.** The executor's PumpSwap `buy`, `sell` and `buy_exact_quote_in` account lists. The decoder's event offsets (BuyEvent, SellEvent, V). That Q = quote + V still matches the vault's pre-trade balance.
   3. **Fees unchanged.** The three pinned config accounts (bonding FeeConfig, PumpSwap FeeConfig, PumpSwap GlobalConfig) have sha256 equal to `tools/pump_structure_pins.json`. That fixes the fee tiers, bps, recipients and the boost flag. Any difference sends the decision to the owner.
-  4. **BOOST unchanged.** This means all of the following:
-     - **InitBoost** is still a PumpSwap instruction in the migrate transaction of non-mayhem WSOL graduations, on at least 80% of the sample (A3 `boost_share_low` clear).
+  4. **BOOST unchanged.** **Post-upgrade evidence only:** every check in this item uses only graduations migrated after the new deploy slot (the latest redeployed program's), at least **15** of them; a graduation migrated before that slot never counts. "Pre-upgrade" below means the last 4 A3 runs before the deploy slot. BOOST unchanged means all of the following:
+     - **InitBoost** is still a PumpSwap instruction in the migrate transaction of non-mayhem WSOL graduations, on at least 80% of the post-upgrade sample (A3 `boost_share_low` evaluated and clear).
      - **Slices** are still PumpSwap `BoostBuyAndBurn` transactions signed by the boost-vault PDA (`["boost_vault", pool]`, PumpSwap), and still pay zero fees. That was 77/77 slices on 10-10, job #638.
      - **GlobalConfig** is still 949 bytes, with `boost_enabled` (byte 939) = 1 and `boost_authority` (bytes 907..939) unchanged.
-     - **Budget:** the full-pool BOOST total is still **17.585 SOL** (pinned `budget_sol` 17.585; 17,584,505,288 lamports on 10-10, job #638).
-     - **Slices per pool:** 29–30 (pinned 29). A3 `boost_budget_or_slices_changed` is clear (±20%).
-     - **Slice cadence:** the median slice interval is inside [6, 24] s (September 12.06 s). The last-slice median after migrate is compared with the runs before the upgrade, as the template's section 4 does. `boost_last_slice_early` is clear.
-     - **If any of these differs, BOOST has changed.** H5 stays stopped until the owner decides.
+     - **Budget:** the post-upgrade median full-pool BOOST total is within **±1% of 17.585 SOL** (pinned `budget_sol` 17.585; 17,584,505,288 lamports on 10-10, job #638).
+     - **Slices per pool:** 29–30 (pinned 29).
+     - **Slice cadence:** the post-upgrade median slice interval is within **±10% of the pre-upgrade median** (the same measure on the pre-upgrade runs' graduations; September's was 12.06 s). DEC-028's [6, 24] s band is a v2 halt band and does not show cadence unchanged.
+     - **Last slice:** the post-upgrade median last slice after migrate lies within **[min − 5 s, max + 5 s]** of the 4 pre-upgrade A3 run medians.
+     - **A3's flags are necessary, not sufficient.** `boost_budget_or_slices_changed` (±20%) and `boost_last_slice_early` (315 s) must be evaluated and clear, but the bands above are the test.
+     - **If any of these is outside its band, BOOST has changed.** H5 stays stopped until the owner decides.
   5. **H5's inputs unchanged** [manager's addition, stricter]. The quantities the rule reads are unchanged: Q = quote + V, s0 as the first PumpSwap print, and the plain/synthetic class (Amendment 2). A change here, such as 10-08's synthetic migrations, also sends the decision to the owner. A population shift that leaves these unchanged is reported to the owner with the resume.
-  6. **Executor.** A keyless dry run on the live programs, with at least 5 simulated buy and sell round trips and 0 simulate errors (the template's residual risk 6).
+  6. **Executor.** A keyless dry run on the live programs, with at least 5 simulated buy and sell round trips and 0 simulate errors (the template's residual risk 6). **Fees behave the same:** in that dry run, every simulated buy and sell event's fee bps (LP, protocol, creator) equals the tier the pinned PumpSwap FeeConfig gives that pool. Equal config sha256s (item 3) pin the fee parameters, not a redeployed program's fee computation, so this check is needed too. Any mismatch sends the decision to the owner. The check is keyless and outcome-blind, and reads no tape.
 - **The resume steps, in order.**
-  1. The review finds items 3–6 unchanged.
+  1. The review finds items 2–6 unchanged. **A layout change (item 2) is not resumed under this item.** It needs a reviewed code PR with an md5 decision-equivalence proof and a Helm reinstall, outside this item, and H5 stays stopped until then.
   2. Re-pin PR: `tools/pump_structure_monitor.py --write-pins`, with the three program sha256s, citing the review. It merges with quant-proof's OK.
-  3. An A3 run after the re-pin is clean on the five H5 halt flags (`pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed`), and `program_changed` is clear.
+  3. An A3 run after the re-pin is clean on the five H5 halt flags (`pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed`), and `program_changed` is clear. **Clean means evaluated and clear, on post-upgrade graduations only:** the run's whole BOOST sample migrated after the new deploy slot, it has at least 15 such graduations, and all five flags are evaluated. The monitor sets `MIN_BOOST_POOLS = 3` and reports an unevaluated flag as `False` (`tools/pump_structure_monitor.py`), so a run whose flags rest on fewer pools, on pre-upgrade pools, or on none does not count.
   4. No other section 5 rule or stop is active.
   5. The manager removes `STOP` in a MiScusi job and records here the instant, the review file, the re-pin commit and the A3 job. The owner is told with a MiScusi notebook entry and the Console.
 - **What it does not change.** It resumes the canary only. EXP-024's A3 rule is EXP-024's own: inside a counted window, a `pins_changed` flag ends the read NOT_DECIDABLE, with no resumption if the monitor clears. EXP-022's own A3 rules also stand. This item cures neither, and a resumed canary does not revive either read. Amendment 3's T1 conditions are unchanged. No retune follows a halt (section 5).
@@ -582,6 +586,7 @@ OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the m
 
 - The owner chose DEC-028 Option A, with a pre-authorized Option B. The terms are in DEC-028 §3.5 (`DEC/DEC-028-h5-v2-canary.md`, draft, PR #542; not on main at writing). If v1 is halted by a section 5.1 BOOST-timing halt, H5-BOOSTCLOCK v2 may go live at T0 0.02 SOL on this wallet, with section 4's caps and the counters continued, until 2026-10-23T19:29:53Z. That needs v2's live sell code reviewed and one Helm reinstall.
 - **Here, nothing changes for v1.** A section 5.1 halt of v1 is recorded under this DEC as usual, and v1's resume rules (Amendments 4 and 5) stand. v2 is a new rule pre-registered in EXP-026, not a retune of v1 (DEC-028 §1). v1 and v2 are never live together (DEC-028 §3.4).
+- The owner also confirmed DEC-028 §3.1's two required sentences verbatim, recorded there as `OWNER_OVERRIDE_V2_SENTENCES_CONFIRMED` (2026-10-11T05:26:36Z, MiScusi notebook n_fZNH1URVIkXIJQ).
 - **Until DEC-028 merges** with quant-proof's OK on its final head, this pointer authorizes nothing.
 
 ## Open for the owner
