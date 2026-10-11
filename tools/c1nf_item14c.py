@@ -47,7 +47,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,7 +153,12 @@ def build_stub_spec(rows: list[dict[str, Any]], profile: str) -> dict[str, Any]:
     if profile not in PROFILES:
         raise SystemExit(f"unknown stub profile {profile!r}")
     c = STUB_CONSTANTS
-    table = [r[2] for r in synthetic_limits_layout()] if profile == PROFILE_SYNTH else None
+    table = None
+    if profile == PROFILE_SYNTH:
+        layout = synthetic_limits_layout()
+        if [(int(r["decision_T_ms"]), str(r["mint"])) for r in rows] != [(t, m) for t, m, _r in layout]:
+            raise SystemExit("the synthetic-limits profile only describes the synthetic-limits file")
+        table = [r[2] for r in layout]
     picks = []
     for i, r in enumerate(rows):
         t, mint = int(r["decision_T_ms"]), str(r["mint"])
@@ -432,8 +436,6 @@ def parse_reason_lines(text: str) -> Counter:
 def run_once(closure: Path, picks_path: Path, spec_path: Path, work: Path, end_ms: int | None) -> dict[str, Any]:
     if work.exists():
         raise SystemExit(f"refused: {work} exists")
-    for name in list(os.environ):
-        pass
     removed = sorted(n for n in os.environ if n.startswith(ENV_PREFIXES))
     for n in removed:
         del os.environ[n]
@@ -503,8 +505,18 @@ def run_once(closure: Path, picks_path: Path, spec_path: Path, work: Path, end_m
         "result": {"lines": lines.count("\n"), "md5": hashlib.md5(lines.encode()).hexdigest(), "sha256": hashlib.sha256(lines.encode()).hexdigest(),
                    "accepted": sum(1 for o in out if o[2] == "accepted"), "skipped_reasons": dict(sorted(parse_reason_lines(lines).items()))},
         "timing_audit": audit,
+        "input_rewrites": ["SD_slot and state_slot are renumbered onto the stub chain (SD_slot = chain slot of decision_T + 200 ms, the pick's own SD - state gap kept)"],
     }
+    reasons_seen = set(parse_reason_lines(lines))
+    parse_refusals = sorted(x for x in reasons_seen if x.startswith("bad_pick:") or x in ("pre_window", "unparsed"))
+    outside = sorted(reasons_seen - set(parse_refusals) - set(c.STOP_REASONS) - set(c.BOOK_REASONS))  # the executor's own enumerated sets
+    meta["reasons"] = {"in_executor_stop_set": sorted(reasons_seen & set(c.STOP_REASONS)), "in_executor_book_set": sorted(reasons_seen & set(c.BOOK_REASONS)),
+                       "parse_refusals": parse_refusals, "outside_both_sets": outside}
     problems = []
+    if outside:
+        problems.append(f"reasons outside the executor's stop and book sets (a harness fault, not a limit): {outside}")
+    if audit["separation_violations"]:  # the comparison with the reference would depend on a few hundred ms of scheduling: not a pass
+        problems.append("ambiguous timing: " + "; ".join(audit["separation_violations"][:5]))
     if net.calls:
         problems.append(f"{net.calls} socket calls")
     if leaks["hits"]:
@@ -605,8 +617,6 @@ class Driver:
         for a in accepted:
             if abs(a["close_ms"] % DAY_MS) <= tol or abs(a["close_ms"] % DAY_MS - DAY_MS) <= tol:
                 self.audit["separation_violations"].append(f"the close of pick {a['idx']} is within {tol} ms of UTC midnight")
-        if self.audit["separation_violations"]:
-            raise StubError("ambiguous timing: " + "; ".join(self.audit["separation_violations"][:5]))
 
 
 # --- commands -------------------------------------------------------------------------------------------------------------------------------------------------
@@ -671,6 +681,8 @@ def cmd_prove(a: argparse.Namespace) -> int:
         raise SystemExit(f"refused: {work} exists")
     work.mkdir(parents=True)
     picks = Path(a.picks)
+    if a.end_ms is None and a.profile == PROFILE_SYNTH:
+        a.end_ms = SYNTH_LIMITS_END_MS
     spec = build_stub_spec(read_pick_rows(picks), a.profile)
     spec_path = work / "spec.json"
     spec_path.write_text(canon(spec))
