@@ -18,20 +18,25 @@ strike. `tools/h5_boost_day_check.py` judges the shadow's figures (ALL and PLAIN
                      the executor's own invariant stands in (it sets boost_median only once 30 pools closed): "pools_source": "boost_s" |
                      "executor_invariant". The median is the executor's stored figure (rounded to 3 decimals), the same value its own
                      twice-latch compares.
-                     A day is UNEVALUATED when it has an entry without a median or with fewer than 30 pools, or when it has NO entry while
-                     the executor was running that day. "Running that day" comes from the unit's own transition times
-                     (`systemctl show mal-h5-executor.service`, no sudo): its last active span overlaps D -> ran; its last inactive span
-                     covers all of D -> did not run ("not_running", not unevaluated); anything else (unit unreadable, not loaded, history
-                     not covering D) counts as ran, so the doubt errs toward STOP.
+                     A day is UNEVALUATED when it has an entry without a median or with fewer than 30 pools, or when it has NO entry,
+                     whatever the unit's state: DEC-024 Am.4 item 2 says "a completed day with fewer than 30 pools is unevaluated", and a
+                     day the executor was down has 0 pools on its count (manager's decision on PR #593, round 15: the literal rule).
+                     For a day without an entry the record also carries "executor_ran" ("yes" | "no" | "unknown", with "ran_why"), read
+                     from the unit's own transition times (`systemctl show mal-h5-executor.service`, no sudo, at most once per run). It is
+                     a REPORTED field only: it never changes the day's status, the verdict or the exit code.
                      halt_due when (a) D is evaluated and its median < 337.0 s (reason executor_median_lt_337), or (b) D is unevaluated
                      and D-1 is also unevaluated, with D-1 after FIRST_STRIKE_DAY (reason two_consecutive_unevaluated_days: DEC-024 Am.4
                      item 2's "two consecutive unevaluated days halt", on the executor's measure). The two reasons stay distinct: DEC-028
                      section 3.5 says (b) is not an Option B trigger. D = 10-11 can only halt on (a): 10-10 is not after the first-strike
                      day. Otherwise D unevaluated is exit 5, D evaluated at or above 337.0 s is exit 0.
 --mode running --day TODAY
-                     REPORT ONLY: the executor's running median for today (days[TODAY].boost_median, set once 30 pools closed) and its pool
-                     count. The running 335 s rule is the executor's own latch (boost_median_lt_335); this mode never places STOP and
-                     refuses --place-stop. Exit 0 (read and reported) or 2 (input error).
+                     The executor's running median for today (days[TODAY].boost_median, set once 30 pools closed) and its pool count.
+                     DEC-024 Am.5 item 6 (the executor's figure at every scheduled run; Am.4 item 2's "below 335 s halts at any time"):
+                     halt_due when today is evaluated (a finite median over >= 30 pools, as in day mode) and the median is below 335.0 s,
+                     reason executor_running_median_lt_335 (distinct from the day reasons: DEC-028 section 3.5's trigger is "STOP placed",
+                     and each STOP record names its own rule). The executor's own boost_median_lt_335 latch stops buys too; this places
+                     STOP besides. A running line is never final (it never settles a day). Exit 0 (no halt, or fewer than 30 pools so
+                     far: an early-day count is not a failure), 3, 6 or 2 as below; never 5.
 --dry-read           (with --mode day or running) reads the counters exactly as an enforcing run does, for ANY valid day (also 10-10 and
                      earlier, also today), prints the would-be verdict ("verdict": "dry_read", "would_verdict", "would_halt_due"), places
                      no STOP (refuses --place-stop), never writes --log (so it never counts as a final line) and exits 0 when the read
@@ -43,7 +48,7 @@ strike. `tools/h5_boost_day_check.py` judges the shadow's figures (ALL and PLAIN
                      logged without --place-stop, dry-read lines, or lines written under MAL_BDC_NOW are not final. Prints one JSON line;
                      exit 0 when decided, 1 when not. The loop uses it so that a catch-up after an outage never re-places STOP for a day
                      whose verdict is already recorded (a STOP the manager removed after an owner decision stays removed).
---place-stop: only with this flag, only in day mode and only when halt_due: `sudo -n touch /var/lib/mal-live/h5/STOP`, then
+--place-stop: only with this flag, in day or running mode, and only when halt_due: `sudo -n touch /var/lib/mal-live/h5/STOP`, then
 `sudo -n test -e` it. This tool NEVER removes STOP.
 
 OUTPUT (day and running mode). One compact JSON line on stdout, appended to --log (a path under /data/mal/structure-monitor/ is refused).
@@ -63,7 +68,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 TOOL = "h5_exec_day_check"
-VERSION = 2
+VERSION = 3
 COUNTERS_PATH = "/var/lib/mal-live/h5/live/h5-counters.json"
 DD_ARGV = ("sudo", "-n", "/usr/bin/dd", "iflag=nofollow", "status=none", f"if={COUNTERS_PATH}")  # the allowlisted read, exactly
 STOP_PATH = "/var/lib/mal-live/h5/STOP"
@@ -81,8 +86,9 @@ UNIT = "mal-h5-executor.service"
 SYSTEMCTL_ARGV = ("/usr/bin/systemctl", "show", "--no-pager",
                   "--property=LoadState,ActiveState,ActiveEnterTimestamp,ActiveExitTimestamp,InactiveEnterTimestamp,InactiveExitTimestamp", UNIT)
 SYSTEMCTL_ENV = {"PATH": "/usr/bin:/bin", "TZ": "UTC", "LC_ALL": "C", "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"}  # timestamps in UTC
-RUNNING_LATCH_S = 335.0  # the executor's BOOST_MEDIAN_HALT_S: its own running latch; reported, never enforced here
+RUNNING_LATCH_S = 335.0  # the executor's BOOST_MEDIAN_HALT_S: below this on today's running median (>= 30 pools) places STOP
 PAIR_REASON = "two_consecutive_unevaluated_days"
+RUNNING_REASON = "executor_running_median_lt_335"
 
 
 class InputError(Exception):
@@ -162,8 +168,8 @@ def unit_props(run: Callable[..., Any]) -> dict[str, str] | None:
 
 
 def ran_on(props: dict[str, str] | None, d: date, now_s: float) -> tuple[str, str]:
-    """Was the executor unit up during UTC day d? ("yes" | "no" | "unknown", why). Only "no" spares a day without an entry; "unknown"
-    is treated as "yes" by the caller (the doubt errs toward STOP)."""
+    """Was the executor unit up during UTC day d? ("yes" | "no" | "unknown", why). Reported only: a day without an entry is
+    unevaluated whatever this says."""
     if props is None:
         return "unknown", "unit_unreadable"
     if props.get("LoadState") != "loaded":
@@ -191,7 +197,8 @@ def ran_on(props: dict[str, str] | None, d: date, now_s: float) -> tuple[str, st
 
 
 def classify(counters: dict[str, Any], d: date, unit: Callable[[], dict[str, str] | None], now_s: float) -> dict[str, Any]:
-    """One completed day on the executor's measure: evaluated | unevaluated | not_running (no entry, unit down all day)."""
+    """One completed day on the executor's measure: evaluated | unevaluated. No entry is unevaluated whatever the unit state (Am.4
+    item 2, literal); the unit's state is reported as executor_ran."""
     fig = day_figures(counters, d.isoformat())
     out: dict[str, Any] = {"day": d.isoformat(), "executor": fig}
     if evaluated(fig):
@@ -200,9 +207,7 @@ def classify(counters: dict[str, Any], d: date, unit: Callable[[], dict[str, str
         out.update({"status": "unevaluated", "why": "unevaluated_lt_30_pools"})
     else:
         ran, why = ran_on(unit(), d, now_s)
-        out.update({"executor_ran": ran, "ran_why": why})
-        out.update({"status": "not_running", "why": "executor_not_running_on_day"} if ran == "no" else
-                   {"status": "unevaluated", "why": "no_executor_day_entry"})
+        out.update({"executor_ran": ran, "ran_why": why, "status": "unevaluated", "why": "no_executor_day_entry"})
     return out
 
 
@@ -262,13 +267,14 @@ def decided(log_path: str, tool: str, day: str) -> dict[str, Any] | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="H5 executor completed-day BOOST median check (DEC-024 5.1, Am.4 item 2, Am.5 item 6). Never removes STOP.")
+    p = argparse.ArgumentParser(description="Never removes STOP. H5 executor BOOST median check, completed day and running "
+                                            "(DEC-024 5.1, Am.4 item 2, Am.5 item 6).")
     p.add_argument("--mode", required=True, choices=("day", "running", "decided"))
     p.add_argument("--day", required=True, help="YYYY-MM-DD: day mode, a completed UTC day after 2026-10-10; running mode, today")
     p.add_argument("--log", help="day/running: append one JSON line per run (created if missing; required unless --dry-read); "
                                  "decided: the log to search")
     p.add_argument("--tool", choices=DECIDED_TOOLS, help="decided mode: whose day lines to look for")
-    p.add_argument("--place-stop", action="store_true", help="day mode, when halt_due: sudo -n touch the H5 STOP, then test it")
+    p.add_argument("--place-stop", action="store_true", help="day or running mode, when halt_due: sudo -n touch the H5 STOP, then test it")
     p.add_argument("--dry-read", action="store_true", help="read and report the would-be verdict for any day; no STOP, no log line")
     return p
 
@@ -325,8 +331,6 @@ def main(argv: list[str] | None = None, now: datetime | None = None, run: Callab
         return _fail(rec, "bad_date", log)
     if dry and args.place_stop:
         return _fail(rec, "dry_read_never_places_stop", log)
-    if args.mode == "running" and args.place_stop:
-        return _fail(rec, "place_stop_not_in_running_mode", log)  # the running 335 s rule is the executor's own latch
     if not dry:
         if args.mode == "running" and d != now_dt.date():
             return _fail(rec, "running_day_not_today", log)
@@ -341,11 +345,14 @@ def main(argv: list[str] | None = None, now: datetime | None = None, run: Callab
 
     if args.mode == "running":
         fig = day_figures(counters, d.isoformat())
-        rec.update({"executor": fig, "report_only": True, "executor_latch_s": RUNNING_LATCH_S,
-                    "running_lt_latch": None if fig["median_s"] is None else fig["median_s"] < RUNNING_LATCH_S,
-                    "verdict": "dry_read" if dry else "report", "halt_due": False, "stop": None, "exit": EXIT_OK})
-        _emit(rec, log)
-        return EXIT_OK
+        lt = None if fig["median_s"] is None else fig["median_s"] < RUNNING_LATCH_S
+        judged = evaluated(fig)
+        halt_due = bool(judged and lt)
+        rec["thresholds"]["running_s"] = RUNNING_LATCH_S
+        rec.update({"executor": fig, "executor_latch_s": RUNNING_LATCH_S, "running_lt_latch": lt, "evaluated": judged,
+                    "reasons": [RUNNING_REASON] if halt_due else ([] if judged else ["running_lt_30_pools"]),
+                    "place_stop_flag": bool(args.place_stop)})
+        return _finish(rec, args, run, log, dry, halt_due, judged, EXIT_OK)
 
     _unit: list[dict[str, str] | None] = []
 
@@ -377,8 +384,14 @@ def main(argv: list[str] | None = None, now: datetime | None = None, run: Callab
         rec["unit"] = {k: _unit[0].get(k) for k in ("LoadState", "ActiveState", "ActiveEnterTimestamp", "ActiveExitTimestamp",
                                                      "InactiveEnterTimestamp", "InactiveExitTimestamp")}
     judged = cur["status"] == "evaluated"
-    verdict = "halt_due" if halt_due else ("no_halt" if judged else "unevaluated")
     rec.update({"day_status": cur["status"], "evaluated": judged, "reasons": reasons, "place_stop_flag": bool(args.place_stop)})
+    return _finish(rec, args, run, log, dry, halt_due, judged, EXIT_UNEVALUATED)
+
+
+def _finish(rec: dict[str, Any], args: argparse.Namespace, run: Callable[..., Any], log: str | None, dry: bool, halt_due: bool,
+            judged: bool, unevaluated_code: int) -> int:
+    """The verdict, STOP (only with --place-stop and halt_due), the exit code and the one line. Day and running mode alike."""
+    verdict = "halt_due" if halt_due else ("no_halt" if judged else "unevaluated")
     if dry:
         rec.update({"verdict": "dry_read", "would_verdict": verdict, "would_halt_due": halt_due, "halt_due": False, "stop": None,
                     "exit": EXIT_OK})
@@ -389,7 +402,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None, run: Callab
     if halt_due:
         code = EXIT_HALT_STOP_UNVERIFIED if (rec["stop"] is not None and not rec["stop"]["present"]) else EXIT_HALT
     else:
-        code = EXIT_OK if judged else EXIT_UNEVALUATED
+        code = EXIT_OK if judged else unevaluated_code
     rec["exit"] = code
     _emit(rec, log)
     return code

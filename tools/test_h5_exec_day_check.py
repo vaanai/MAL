@@ -147,22 +147,80 @@ UNIT_DOWN_1011 = {"LoadState": "loaded", "ActiveState": "active", "ActiveEnterTi
                   "InactiveExitTimestamp": "Mon 2026-10-12 09:59:59 UTC"}
 
 
-def test_no_entry_while_the_unit_was_down_all_day_is_not_unevaluated(tmp_path: Path) -> None:
-    """Stopped 10-10T21Z, started 10-12T10Z with few pools: 10-11 is not_running, so the restart day alone does not halt."""
+def test_no_entry_while_the_unit_was_down_all_day_is_unevaluated(tmp_path: Path) -> None:
+    """Stopped 10-10T21Z, started 10-12T10Z with 12 pools. DEC-024 Am.4 item 2, literal (manager's decision, PR #593 round 15): 10-11 has
+    0 pools on the executor's count, so it is unevaluated whatever the unit state, and with 10-12 it is a pair: halt. The unit state is
+    only reported (executor_ran)."""
     fake = FakeRun(days_counters(d11=None, d12=pools(12, None)), unit=UNIT_DOWN_1011)
     rc, rec, _ = run_day(tmp_path, fake, day="2026-10-12", now=NOW_13)
-    assert rc == 5 and stop_calls(fake) == []
-    assert rec["prev_day"]["status"] == "not_running" and rec["prev_day"]["executor_ran"] == "no"
+    assert rc == 3 and rec["reasons"] == ["two_consecutive_unevaluated_days"] and rec["stop"]["present"] is True
+    assert stop_calls(fake) == [("sudo", "-n", "touch", "/var/lib/mal-live/h5/STOP"), ("sudo", "-n", "test", "-e", "/var/lib/mal-live/h5/STOP")]
+    assert rec["prev_day"]["status"] == "unevaluated" and rec["prev_day"]["why"] == "no_executor_day_entry"
+    assert rec["prev_day"]["executor_ran"] == "no"  # reported, never a reason to spare the day
     assert rec["unit"]["ActiveEnterTimestamp"] == "Mon 2026-10-12 10:00:00 UTC"
 
 
-def test_a_day_without_entry_while_down_is_exit_5_and_not_a_pair(tmp_path: Path) -> None:
-    unit = {"LoadState": "loaded", "ActiveState": "inactive", "ActiveEnterTimestamp": "Thu 2026-10-01 09:00:00 UTC",
-            "ActiveExitTimestamp": "Sun 2026-10-11 23:00:00 UTC", "InactiveEnterTimestamp": "Sun 2026-10-11 23:00:01 UTC",
-            "InactiveExitTimestamp": "Thu 2026-10-01 08:59:59 UTC"}
-    fake = FakeRun(days_counters(d11=pools(5, None), d12=None), unit=unit)
+UNIT_DOWN_1212 = {"LoadState": "loaded", "ActiveState": "inactive", "ActiveEnterTimestamp": "Thu 2026-10-01 09:00:00 UTC",
+                  "ActiveExitTimestamp": "Sun 2026-10-11 23:00:00 UTC", "InactiveEnterTimestamp": "Sun 2026-10-11 23:00:01 UTC",
+                  "InactiveExitTimestamp": "Thu 2026-10-01 08:59:59 UTC"}
+
+
+def test_a_day_without_entry_while_down_pairs_with_an_unevaluated_day_before(tmp_path: Path) -> None:
+    fake = FakeRun(days_counters(d11=pools(5, None), d12=None), unit=UNIT_DOWN_1212)
     rc, rec, _ = run_day(tmp_path, fake, day="2026-10-12", now=NOW_13)
-    assert rc == 5 and rec["day_status"] == "not_running" and rec["reasons"] == ["executor_not_running_on_day"] and "prev_day" not in rec
+    assert rc == 3 and rec["day_status"] == "unevaluated" and rec["reasons"] == ["two_consecutive_unevaluated_days"]
+    assert rec["executor_ran"] == "no" and rec["ran_why"] == "unit_inactive_all_day" and rec["stop"]["present"] is True
+    assert unit_calls(fake) == 1
+
+
+def test_a_day_without_entry_while_down_alone_is_exit_5(tmp_path: Path) -> None:
+    fake = FakeRun(days_counters(d11=pools(40, 339.0), d12=None), unit=UNIT_DOWN_1212)
+    rc, rec, _ = run_day(tmp_path, fake, day="2026-10-12", now=NOW_13)
+    assert rc == 5 and rec["day_status"] == "unevaluated" and rec["reasons"] == ["no_executor_day_entry"] and stop_calls(fake) == []
+    assert rec["prev_day"]["status"] == "evaluated" and rec["executor_ran"] == "no"
+
+
+def _ent(n: int, med: float | None = None) -> dict:
+    return {"boost_lt300": [], "boost_median": med, "boost_s": {f"m{i}": 330.0 for i in range(n)}}
+
+
+# quant-proof's round-2 probes (PR #593), as tests: the unit was down; each case halts under the literal Am.4 item 2.
+DOWN_1213 = {"LoadState": "loaded", "ActiveState": "active", "ActiveEnterTimestamp": "Wed 2026-10-14 20:00:00 UTC",
+             "ActiveExitTimestamp": "Mon 2026-10-12 22:00:00 UTC", "InactiveEnterTimestamp": "Mon 2026-10-12 22:00:01 UTC",
+             "InactiveExitTimestamp": "Wed 2026-10-14 19:59:59 UTC"}
+
+
+def test_probe_5_pools_then_unit_down_with_no_entry_halts_at_the_next_check(tmp_path: Path) -> None:
+    """10-11 evaluated (338 s over 500), 10-12 5 pools, 10-13 the unit down all day (no entry), 10-14 8 pools after a 20:00Z restart.
+    The 10-13T00:21Z check (day 10-12) is exit 5; the 10-14T00:21Z check (day 10-13) halts (rc 3, STOP placed); so does 10-15's."""
+    c = days_counters(d11=_ent(500, 338.0), d12=_ent(5), d14=_ent(8))
+    got = []
+    for day, now in (("2026-10-12", datetime(2026, 10, 13, 0, 21, tzinfo=timezone.utc)),
+                     ("2026-10-13", datetime(2026, 10, 14, 0, 21, tzinfo=timezone.utc)),
+                     ("2026-10-14", datetime(2026, 10, 15, 0, 21, tzinfo=timezone.utc))):
+        fake = FakeRun(c, unit=DOWN_1213)
+        rc, rec, _ = run_day(tmp_path, fake, day=day, now=now)
+        got.append((rc, rec["verdict"], rec["reasons"], len(stop_calls(fake))))
+        if day == "2026-10-13":
+            assert rec["executor_ran"] == "no" and rec["prev_day"]["status"] == "unevaluated" and rec["stop"]["present"] is True
+    assert got == [(5, "unevaluated", ["unevaluated_lt_30_pools"], 0),
+                   (3, "halt_due", ["two_consecutive_unevaluated_days"], 2),
+                   (3, "halt_due", ["two_consecutive_unevaluated_days"], 2)]
+
+
+def test_probe_unit_down_then_9_pools_halts(tmp_path: Path) -> None:
+    """10-11 evaluated, 10-12 the unit down all day (no entry), 10-13 9 pools after an 18:00Z restart: the 10-14T00:21Z check halts."""
+    unit = dict(DOWN_1213, ActiveEnterTimestamp="Tue 2026-10-13 18:00:00 UTC", ActiveExitTimestamp="Sun 2026-10-11 22:00:00 UTC",
+                InactiveEnterTimestamp="Sun 2026-10-11 22:00:01 UTC", InactiveExitTimestamp="Tue 2026-10-13 17:59:59 UTC")
+    fake = FakeRun(days_counters(d11=_ent(500, 338.0), d13=_ent(9)), unit=unit)
+    rc, rec, _ = run_day(tmp_path, fake, day="2026-10-13", now=datetime(2026, 10, 14, 0, 21, tzinfo=timezone.utc))
+    assert rc == 3 and rec["verdict"] == "halt_due" and rec["reasons"] == ["two_consecutive_unevaluated_days"]
+    assert rec["prev_day"]["status"] == "unevaluated" and rec["prev_day"]["executor_ran"] == "no" and rec["stop"]["present"] is True
+
+
+def test_classify_has_no_not_running_status() -> None:
+    src = (ROOT / "tools" / "h5_exec_day_check.py").read_text()
+    assert "not_running" not in src and "executor_not_running_on_day" not in src
 
 
 @pytest.mark.parametrize("unit,unit_rc", [({}, 1), ({"LoadState": "not-found", "ActiveState": "inactive"}, 0),
@@ -197,22 +255,51 @@ def test_ran_on(props, want) -> None:
     assert x.ran_on(props, datetime(2026, 10, 11).date(), NOW_13.timestamp())[0] == want
 
 
-# ---- running mode: report only ----
+# ---- running mode: DEC-024 Am.5 item 6, the executor's running median below 335 s over >= 30 pools places STOP ----
 
-def test_running_mode_reports_the_executor_running_median_and_never_touches_stop(tmp_path: Path) -> None:
-    fake = FakeRun(days_counters(d12=pools(31, 334.0)))
+AT_0547 = datetime(2026, 10, 12, 5, 47, tzinfo=timezone.utc)
+
+
+def run_running(tmp_path: Path, fake: FakeRun, place: bool = True) -> tuple[int, dict]:
     log = tmp_path / "exec-day.jsonl"
-    rc = x.main(["--mode", "running", "--day", "2026-10-12", "--log", str(log)], now=datetime(2026, 10, 12, 5, 47, tzinfo=timezone.utc), run=fake)
-    rec = json.loads(log.read_text())
-    assert rc == 0 and rec["verdict"] == "report" and rec["report_only"] is True and rec["halt_due"] is False
-    assert rec["executor"]["median_s"] == 334.0 and rec["executor"]["pools"] == 31 and rec["running_lt_latch"] is True
-    assert stop_calls(fake) == [] and unit_calls(fake) == 0
-    assert x.decided(str(log), x.TOOL, "2026-10-12") is None  # a running line never settles a day
+    rc = x.main(["--mode", "running", "--day", "2026-10-12", "--log", str(log)] + (["--place-stop"] if place else []), now=AT_0547, run=fake)
+    return rc, json.loads(log.read_text().splitlines()[-1])
+
+
+def test_running_median_below_335_over_30_pools_places_stop(tmp_path: Path) -> None:
+    fake = FakeRun(days_counters(d12=pools(31, 334.999)))
+    rc, rec = run_running(tmp_path, fake)
+    assert rc == 3 and rec["verdict"] == "halt_due" and rec["halt_due"] is True and rec["running_lt_latch"] is True
+    assert rec["reasons"] == ["executor_running_median_lt_335"]  # distinct from the day reasons (DEC-028 s3.5)
+    assert rec["executor"]["median_s"] == 334.999 and rec["executor"]["pools"] == 31 and rec["stop"]["present"] is True
+    assert stop_calls(fake) == [("sudo", "-n", "touch", "/var/lib/mal-live/h5/STOP"), ("sudo", "-n", "test", "-e", "/var/lib/mal-live/h5/STOP")]
+    assert unit_calls(fake) == 0
+    assert x.decided(str(tmp_path / "exec-day.jsonl"), x.TOOL, "2026-10-12") is None  # a running line never settles a day
+
+
+@pytest.mark.parametrize("fig,verdict", [
+    (pools(31, 335.0), "no_halt"),       # at 335.0: no halt
+    (pools(29, 300.0), "unevaluated"),   # fewer than 30 pools: never judged, exit 0 (an early-day count is not a failure)
+    (pools(5, None), "unevaluated"),
+    (None, "unevaluated"),               # no entry yet today
+])
+def test_running_mode_without_a_due_halt_is_exit_0_and_touches_nothing(tmp_path: Path, fig, verdict) -> None:
+    fake = FakeRun(days_counters(d12=fig))
+    rc, rec = run_running(tmp_path, fake)
+    assert rc == 0 and rec["verdict"] == verdict and rec["halt_due"] is False and rec["stop"] is None and stop_calls(fake) == []
+
+
+def test_running_halt_without_place_stop_is_exit_3_and_unverified_is_exit_6(tmp_path: Path) -> None:
+    fake = FakeRun(days_counters(d12=pools(31, 334.0)))
+    rc, rec = run_running(tmp_path, fake, place=False)
+    assert rc == 3 and rec["stop"] is None and stop_calls(fake) == []
+    rc, rec = run_running(tmp_path, FakeRun(days_counters(d12=pools(31, 334.0)), test_rc=1))
+    assert rc == 6 and rec["stop"]["present"] is False
 
 
 @pytest.mark.parametrize("argv,err", [
     (["--mode", "running", "--day", "2026-10-11"], "running_day_not_today"),
-    (["--mode", "running", "--day", "2026-10-12", "--place-stop"], "place_stop_not_in_running_mode"),
+    (["--mode", "running", "--day", "2026-10-11", "--place-stop"], "running_day_not_today"),
 ])
 def test_running_mode_refusals(tmp_path: Path, argv, err) -> None:
     fake = FakeRun(days_counters(d12=pools(31, 334.0)))
