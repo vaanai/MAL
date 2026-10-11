@@ -61,6 +61,11 @@ class RecordTests(unittest.TestCase):
         sl = types(out, "boost_slice")
         self.assertEqual([(r["tx_index"], r["event_index"]) for r in sl], [(1, 0), (2, 0), (3, 0), (4, 0)])
 
+    def test_tape_position_missing_on_the_tape_is_null(self):
+        """The audit tape's tx_index is float64 with NaN on some rows (897 of 893,816 PumpSwap rows in 2026-09-20T12; md5 proof job #720
+        failed on int(NaN)): the replay loader passes None, never raises."""
+        self.assertEqual([h5._opt_int(x) for x in (float("nan"), 3.0, None, 7, "x")], [None, 3, None, 7, None])
+
     def test_event_authority_source(self):
         t = Tape()
         t.row(1000, "buy", "A", SOL // 10)

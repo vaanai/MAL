@@ -2276,10 +2276,18 @@ def replay_rows(tape_dir: str, work_dir: str, hours: Sequence[str]) -> tuple[Ite
                     "venue": "pumpswap", "pool": r.pool, "slot": int(r.slot), "side": r.side, "trader": r.trader, "sol_lamports": int(r.sol_lamports),
                     "token_raw": int(r.token_raw), "quote_reserve": int(r.quote_reserve), "base_reserve": int(r.base_reserve),
                     "virtual_quote_reserves": meta[r.pool]["v"], "event_ts": int(r.block_time), "t_recv_ms": int(r.block_time) * 1000,
-                    "signature": None, "mint": meta[r.pool]["mint"], "tx_index": int(r.tx_index), "event_index": int(r.event_index),
+                    "signature": None, "mint": meta[r.pool]["mint"], "tx_index": _opt_int(r.tx_index), "event_index": _opt_int(r.event_index),
                 }
 
     return gen(), meta, sps_pool
+
+
+def _opt_int(x: Any) -> int | None:
+    """A tape position (tx_index / event_index) as an int, or None where the tape has none (NaN): boost_slice records only, never a decision."""
+    try:
+        return None if x is None or x != x else int(x)
+    except (TypeError, ValueError):
+        return None
 
 
 def shuffle_within_slot(rows: Iterable[dict], seed: int) -> Iterator[dict]:
