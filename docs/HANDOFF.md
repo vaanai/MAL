@@ -36,6 +36,19 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - `h5_detector_missed`, `h5_unclassified_drains`;
   - `h5_idle_ledger`: not tracking, fail-closed, or the 24 h backstop.
   The watch now posts whole-line chunks of at most 1,900 chars. Quant-proof OK at adf48b0 and at b9724dd. **It ships only with Helm's pre-10-16 pinned reinstall, which must happen before 10-16T01Z.** The h5-watch.py and h5-daily-check.py at the sha named for that reinstall must include 1103fc0.
+- **H5 reinstall NAMED: `f873aac3a07b52ba03c0c13db675051a88e21b38`** (#591). It carries:
+  - end_ms 2026-10-23T19:29:53Z (owner);
+  - max_days 14 (manager, under the owner's delegation);
+  - #540 seal and #589 watch.
+  Manifest sha256 `1c877e2a…a7d6` (25 lines) is on PR #499. Proofs: md5 #691 75cb0b0c 72/72; quant-proof OK at 1538d6e and 5302cbe. Helm installs while open=0, before 2026-10-16T01Z.
+- **Seal-window ops still owed by the manager** (readiness audit gaps 3–9; crons scheduled 10-11):
+  - the picks exporter submit;
+  - after the DEC-016 FINAL row, the two FINAL_WRITTEN markers (not before);
+  - long time limits for the shadow and the exporter;
+  - a gate-runner liveness check (counts only);
+  - the shadow restart env (CAP_PICK_LIVE, CAP_PICK_FINAL_MARKER, H5_LOOK2_OBSERVED=EXP-024-Am2, same H5_OUT_DIR, bx10 off);
+  - if the reinstall slips past 00:45Z, stop the af02e90 mal-h5-watch.timer before 01Z (QP).
+  Recurring crons expire after 7 days, so they are recreated on 10-15.
 - **From here, the second strike.** A completed UTC day from 10-11 on below 337 s (executor, or plain over ≥ 30) halts. The 00:21Z day check enforces this with `--place-stop`. The 23:47Z running check of 10-10 did not run.
 - **Disk.** The 2.8 GB `/data/mal/hunt-1008/tmp` spill was deleted with the owner's OK. The cited verifier files moved first to `t-uninformed-sell-reversion/verify-uninformed/`. research-0 is at 76%.
 - **Walkers.** #382 and #433 are through 10-10T18; catch-up is due ~04Z.
