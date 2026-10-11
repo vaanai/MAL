@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Draft, 2026-10-10. The owner chose M1 on 2026-10-11 (section 3), with a disclosure on the question's wording that quant-proof rules on.** It takes effect on merge, with quant-proof's OK on its final head and the owner's line. [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) does not merge without it. No hour was read to write it. |
+| **Status** | **Draft, 2026-10-10. The owner chose M1 on 2026-10-11 (section 3). Quant-proof ruled at `2f8c94a` that the line counts, on one condition to be met before EXP-026's W0 (section 3, "What follows").** It takes effect on merge, with quant-proof's OK on its final head and the owner's line. [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) does not merge without it. No hour was read to write it. |
 | **Decider** | Vaan (owner) for the slot or for M2. The Claude manager runs the rest. |
 | **Date** | 2026-10-10 |
 | **Builds on** | [DEC-021](DEC-021-champion-challenger.md) §8 and Amendments 2 and 3, [DEC-023](DEC-023-h5-family.md), [DEC-025](DEC-025-c1nf-family.md) §2, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) §7 item 6 and §9, [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) §0, §5, §10 and §11, quant-proof's CHANGES review of PR #542 at 62cc971. |
@@ -51,7 +51,10 @@ The question shown to the owner must state, verbatim: "M1 opens a fourth alpha s
   - It said "adds a 4th 2.5% luck-budget slot". It did not state that the October bound goes from 0.075 to 0.10. The increment it named, 0.025, is the same.
   - It called the binding item "a day-by-day consistency check". **The binding item is the EXP-024 §7 item 6 day-level t** (EXP-026 §5 item 7): a one-sided t on the W per-UTC-date mean SOL per trade, df = W − 1, p ≤ 0.025 under both fail legs. It is **not** a rule that every day, or a set share of days, is positive. No per-day sign rule is added by M1. The gate's own "majority of days positive" (EXP-026 §5) is unchanged.
   - Its M2 text did not say that the October promotion-eligible error then exceeds DEC-021 §8's bound.
-- **What follows.** The line is recorded as the owner gave it. M1 is the stricter of the two routes for EXP-026's pass, and the pinned `EXP026_ALPHA_ROUTE: M1` already matches. Quant-proof's check of the final head rules whether the line stands as recorded, or whether the owner is first shown the required text. Showing it is a disclosure. The route could still change then, because no v2 outcome exists before W0.
+- **What follows: quant-proof's ruling (check of `2f8c94a`).** **The M1 line counts.** Each omitted fact either follows from what was shown, or would only favour M1: the named +0.025 slot on the 0.075 bound gives the 0.10 bound, and M2's bound excess argues only against M2. M1 is also the stricter route on EXP-026's pass. The pinned `EXP026_ALPHA_ROUTE: M1` already matches. This ruling is the one exception to "A line whose question lacks that text does not count" above: it covers the 2026-10-11 line only, and only with the condition below.
+  - **Condition, before W0.** The owner is sent this section's required text verbatim, plus the correction that M1's binding item is the day-level t at p ≤ 0.025 on both fail legs, not a per-day sign rule. It goes as a MiScusi notebook entry and a Console `for_you` item. The manager records the sending here: its date (`date -u`), the notebook id and the Console item. **Not yet sent at this head.**
+  - **If the owner switches to M2 before W0,** this DEC, EXP-026 §0's `EXP026_ALPHA_ROUTE` and DEC-021 Amendment 4 are amended before W0 (section 2's last bullet applies).
+  - **After W0 the route is fixed.** No v2 outcome exists before W0, so a switch before it moves no choice onto v2's book.
 
 **Then, before EXP-026 merges:** its pinned line `EXP026_ALPHA_ROUTE` (EXP-026 §0) is set to the chosen route. Under M1, DEC-021 Amendment 4 merges in the same PR. **At this head:** `EXP026_ALPHA_ROUTE: M1` (unchanged, it matches), and DEC-021 Amendment 4 stays in the PR.
 
