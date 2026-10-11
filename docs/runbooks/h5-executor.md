@@ -540,7 +540,7 @@ Latched live halts (the ledger gets a `halt_latched` row; new buys stop; only `-
 | `late_sells_gt_5pct` | more than 5% of landed sells late |
 | `pre_unlinked_share` | triggers traded although their predecessor print may be missing (`trigger_pre_unlinked` on the decision row) are more than 15% of landed buys, judged from 20 landed |
 
-H5-BOOSTCLOCK v2 exit halts (DEC-028 section 4, Option B). They exist only in a build whose compiled-in `EXIT_MODE` is `"v2"`; the shipped build is `"v1"` and never latches them. In a v2 build `boost_median_lt_335` and `boost_median_lt_337_twice` are report-only (a `v2_report_only` ledger row once per day), and the late-sell rule above also counts a sell landing more than 3 s after its v2 exit trigger:
+H5-BOOSTCLOCK v2 exit halts (DEC-028 section 4, Option B). They exist only in a build whose compiled-in `EXIT_MODE` is `"v2"`; the shipped build is `"v1"` and never latches them. In a v2 build `boost_median_lt_335`, `boost_median_lt_337_twice` and v1's cumulative rule (b) `boost_before_sell_gt_15pct` are report-only (a `v2_report_only` ledger row once per day; the rolling-20 `v2_sell_after_boost_gt_15pct` replaces rule (b), DEC-028 s4.1(a)), and the late-sell rule above also counts a sell landing more than 3 s after its v2 exit trigger:
 
 | Name | Meaning |
 | --- | --- |
@@ -548,7 +548,9 @@ H5-BOOSTCLOCK v2 exit halts (DEC-028 section 4, Option B). They exist only in a 
 | `v2_plain_median_lt_330` | a completed UTC day's plain-pool BOOST last-slice median below 330 s, over at least 30 plain pools (outside the tested range) |
 | `v2_projection_inputs` | a completed UTC day, over at least 30 plain pools whose BOOST completed: median BOOST total outside [17.5, 17.7] SOL, or median slice interval outside [6, 24] s |
 | `v2_slice_stream_stale` | more than 2 of our positions in a UTC day saw no BOOST slice for more than 45 s while BOOST still had budget |
-| `v2_slice_lag_gt_1_35s` | the median slice receive lag (receive time minus block time) over the day's traded pools above 1.35 s |
+| `v2_slice_lag_gt_1_35s` | the median slice receive lag (the shadow's receive time minus block time) over the day's traded pools above 1.35 s. The executor-side lag (when the executor read the slice, minus block time) is logged beside it (`day_seen_lag_median_s` on `v2_pool_closed`, `max_seen_lag_s` on `v2_exit_decision`) and is not a halt |
+
+A v2 position has no early exit, and sells at v1's s0 + 330 s, when (`v2_fallback_330`, field `why`): the pool has no s0 wall anchor (`no_s0_wall`); the position was open across a restart (`restart_after_s0`); the process started after the pool's s0 (`started_after_s0`); the pool's held slices were evicted (`slices_evicted`); or a feed gap came after the pool's s0 (`feed_gap`). C1-NF pins its own exit mode to v1 (`C1NFExecutor.EXIT_MODE_PIN`), so a v2 tree never changes C1-NF's exit.
 
 Executor `alert` rows the daily check and the watchdog forward as `h5_executor_alert_<name>` (Discord included), with these meanings:
 

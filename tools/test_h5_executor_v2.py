@@ -16,7 +16,9 @@ from pathlib import Path
 from unittest import mock
 
 from tools import h5_executor as h
+from tools import c1nf_executor as c1
 from tools import h5_shadow as shadow
+from tools import test_c1nf_executor as c1test
 from tools.test_h5_executor import MINT, POOL, S0, SPS, TRIG_SLOT, Case
 
 BC_RULE = Path("/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/bc_rule.py")
@@ -60,6 +62,14 @@ class V2Case(Case):
         p = mock.patch.object(h, "EXIT_MODE", self.mode)
         p.start()
         self.addCleanup(p.stop)
+
+    def env(self, started_before_s0: bool = True, **kw):
+        """As Case.env; by default the process "started" before the pools' s0 (the fixtures' s0 is 100 s before the trigger, and the executor
+        is built at the trigger's wall time), so the started_after_s0 fallback does not apply unless a test asks for it."""
+        e = super().env(**kw)
+        if started_before_s0:
+            e.ex._v2_start_ms = e.clock() - 1_000_000
+        return e
 
     def run_until_sell(self, e, sched: list[tuple[int, int]], until: int = C + 20, deliver_from: int | None = None, lag: int = LAG) -> int | None:
         """Step the chain one slot at a time, delivering each slice `lag` slots after its slot (or not before `deliver_from`), running the
@@ -175,6 +185,14 @@ class OffTests(V2Case):
             e.ex.on_boost_row(f"m{i}", None, None, None, 320.0)
         self.assertIn("boost_median_lt_335", e.ex.counters.halts)
 
+    def test_v1_cumulative_rule_b_still_latches_in_v1(self):
+        e = self.env()
+        e.ex.counters.bvs_n, e.ex.counters.bvs_before = 20, 4
+        e.ex.counters.sell_land_s["m"] = 300.0
+        e.ex.on_boost_row("m", None, None, None, 320.0)
+        self.assertEqual(e.ex.counters.halts["boost_before_sell_gt_15pct"]["n"], 21)
+        self.assertEqual(e.ex.counters.v2, {})
+
 
 def e_end() -> int:
     return 1_900_000_000_000
@@ -289,6 +307,49 @@ class V2ExitTests(V2Case):
         e.ex.intent_tick()
         self.assertEqual(self.run_until_sell(e, boost_schedule(0.7)), e.plan()["send_slot"])
         self.assertEqual([r["why"] for r in e.ledger("v2_fallback_330")], ["feed_gap"])
+
+    def test_process_started_after_s0_falls_back_to_330(self):
+        e = self.env(started_before_s0=False)  # the executor started after this pool's s0: the slices before that were never read here
+        e.open_position()  # a position opened AFTER the start (not one recovered across it)
+        self.assertNotIn(MINT, e.ex._v2_recovered)
+        self.assertEqual(self.run_until_sell(e, boost_schedule(0.7)), e.plan()["send_slot"])  # v1's slot, not the rule's s0 + 1390
+        self.assertEqual([r["why"] for r in e.ledger("v2_fallback_330")], ["started_after_s0"])
+        self.assertEqual(e.ledger("v2_exit_decision"), [])
+
+    def test_process_started_after_s0_with_only_late_slices(self):
+        """The probe of the #597 review: 9 early slices lost, the rest received; no partial-list decision, the fallback is logged."""
+        e = self.env(started_before_s0=False)
+        e.open_position()
+        sched = boost_schedule(0.7)
+        self.assertEqual(self.run_until_sell(e, sched[9:]), e.plan()["send_slot"])
+        self.assertEqual([r["why"] for r in e.ledger("v2_fallback_330")], ["started_after_s0"])
+
+    def test_evicted_pool_falls_back_to_330(self):
+        e = self.env()
+        sched = boost_schedule(0.7)
+        with mock.patch.object(h, "V2_SLICE_POOLS_KEEP", 2):
+            e.ex.on_boost_slice(slice_row(e, *sched[0]))  # our pool's first slice, before any position: not busy
+            for i in range(3):  # three other pools push it out
+                row = slice_row(e, *sched[0])
+                row.update(mint=f"other{i}", pool=f"otherpool{i}")
+                e.ex.on_boost_slice(row)
+            self.assertNotIn(MINT, e.ex._v2_slices)
+            self.assertIn(MINT, e.ex._v2_evicted)
+            e.open_position()
+            self.assertEqual(self.run_until_sell(e, sched[1:]), e.plan()["send_slot"])
+        self.assertEqual([r["why"] for r in e.ledger("v2_fallback_330")], ["slices_evicted"])
+
+    def test_slice_on_another_pool_is_ignored(self):
+        e = self.env()
+        e.open_position()
+        row = slice_row(e, S0, 700_000_000)
+        row["pool"] = "SomeOtherPool1111111111111111111111111111111"
+        e.ex.on_boost_slice(row)
+        row = slice_row(e, S0 + 60, 700_000_000)
+        row.pop("pool")
+        e.ex.on_boost_slice(row)
+        self.assertNotIn(MINT, e.ex._v2_slices)
+        self.assertEqual([r["why"] for r in e.ledger("v2_slice_ignored")], ["pool_mismatch", "no_pool"])
 
     def test_restart_with_an_open_position_falls_back_to_330(self):
         e = self.env()
@@ -453,6 +514,39 @@ class V2HaltTests(V2Case):
         e.ex._v2_close("b")  # day median of 1.5, 1.2, 0.5, 2.0, 1.4 = 1.4 s
         self.assertEqual(e.ex.counters.halts["v2_slice_lag_gt_1_35s"]["median_s"], 1.4)
 
+    def test_executor_side_lag_is_logged_beside_the_shadows(self):
+        e = self.env()
+        e.ex._v2_slices["a"] = {"sl": {(1, 0, 0): (1, 1_500, 0, 1_900), (2, 0, 0): (1, 1_200, 0, 2_600), (3, 0, 0): (1, 500, 0, 700)}}
+        e.ex._v2_close("a")
+        row = e.ledger("v2_pool_closed")[0]
+        self.assertEqual((row["day_lag_median_s"], row["day_seen_lag_median_s"], row["pool_seen_lag_median_s"]), (1.2, 1.9, 1.9))
+        self.assertNotIn("v2_slice_lag_gt_1_35s", e.ex.counters.halts)  # the halt is judged on the shadow's receive lag (DEC-028 s4.7)
+        self.assertEqual(e.ex.counters.day(h.day_key(e.clock()))["v2"]["seen_lag_median"], 1.9)
+
+    def test_exit_decision_logs_the_executor_side_lag(self):
+        e = self.env()
+        e.open_position()
+        self.run_until_sell(e, boost_schedule(0.7))
+        d = e.ledger("v2_exit_decision")[0]
+        self.assertEqual(d["max_recv_lag_s"], LAG * 0.2)  # the shadow's t_recv_ms - block time
+        self.assertIsNotNone(d["max_seen_lag_s"])
+        self.assertGreaterEqual(d["max_seen_lag_s"], d["max_recv_lag_s"])  # we read a slice no earlier than the shadow received it
+        self.assertIn("median_seen_lag_s", d)
+
+    def test_v1_cumulative_rule_b_does_not_latch_in_v2(self):
+        """The #597 review probe: v1's tally 4/20 (the Option B trigger, cleared at the reinstall), then one good v2 sell landing 20 s
+        before the last slice. v1's cumulative rule would re-latch at n=21 (share 0.1905); in v2 the rolling 20 replaces it."""
+        e = self.env()
+        e.ex.counters.bvs_n, e.ex.counters.bvs_before = 20, 4
+        e.ex.counters.sell_land_s["m"] = 300.0
+        e.ex.on_boost_row("m", None, None, None, 320.0)  # the last slice 20 s after our sell landed: a good sell
+        self.assertEqual((e.ex.counters.bvs_n, e.ex.counters.bvs_before), (21, 4))  # the tally still runs (reported)
+        self.assertNotIn("boost_before_sell_gt_15pct", e.ex.counters.halts)
+        self.assertEqual([r["reason"] for r in e.ledger("v2_report_only")], ["boost_before_sell_gt_15pct"])
+        self.assertEqual(e.ex.counters.v2["pairs"], [False])
+        self.assertNotIn("v2_sell_after_boost_gt_15pct", e.ex.counters.halts)
+        self.assertIn("boost_before_sell_gt_15pct", h.V2_REPORT_ONLY)
+
     def test_v1_median_lines_are_report_only_in_v2(self):
         e = self.env()
         for i in range(h.BOOST_MEDIAN_MIN_POOLS):
@@ -476,3 +570,39 @@ class V2HaltTests(V2Case):
         e = self.env()
         st = e.ledger("start")[-1]
         self.assertEqual((st["rule"], st["exit_mode"]), (h.RULE_ID_V2, "v2"))
+
+
+# --- C1-NF: the v2 switch never reaches it (review of #597, fix 3) ---------------------------------------------------------------
+
+
+class C1NFPinTests(c1test.Case):
+    """A tree with H5's EXIT_MODE = "v2" must leave C1-NF on its own (v1-shaped) exit: no stamp, no slices, no v2 sell-landing call."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(h, "EXIT_MODE", h.EXIT_MODE_V2)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_c1nf_pins_v1(self):
+        self.assertEqual(c1.C1NFExecutor.EXIT_MODE_PIN, h.EXIT_MODE_V1)
+        self.assertIsNone(h.H5Executor.EXIT_MODE_PIN)
+        e = self.env()
+        self.assertEqual(e.ex.exit_mode, h.EXIT_MODE_V1)
+        self.assertNotIn("exit_mode", e.ledger("start")[0])
+
+    def test_c1nf_position_is_not_stamped_and_ignores_slices(self):
+        e = self.env()
+        pos = e.open_position()
+        self.assertNotIn("exit_rule", pos["h5"])
+        self.assertNotIn("exit_rule", e.ex.counters.plans[c1test.MINT])
+        e.ex.on_boost_slice({"type": "boost_slice", "mint": c1test.MINT, "pool": c1test.POOL, "slot": 1, "tx_index": 0, "event_index": 0,
+                             "lamports": 700_000_000, "block_time_ms": e.clock(), "t_recv_ms": e.clock(), "boost_src": "pda"})
+        self.assertEqual(e.ex._v2_slices, {})
+        self.assertFalse([r for r in e.ledger() if str(r.get("kind", "")).startswith("v2_")])
+
+    def test_c1nf_in_a_v2_tree_without_the_pin_would_be_stamped(self):
+        """The pin is what keeps it out: without it the subclass inherits H5's v2 mode (the bug the review found)."""
+        with mock.patch.object(c1.C1NFExecutor, "EXIT_MODE_PIN", None):
+            e = self.env()
+            self.assertEqual(e.ex.exit_mode, h.EXIT_MODE_V2)

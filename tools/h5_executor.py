@@ -46,12 +46,15 @@ deployed tree and DEC-028's OWNER_OVERRIDE_V2_CONFIRMED line filled. In v2 mode:
   type "boost_slice"  (or flat h5_boost_slice_v1) one BOOST buy in a tracked pool: mint, pool, slot, tx_index, event_index, lamports (or sol),
                       block_time (s) or block_time_ms, t_recv_ms, boost_src ("pda" or "event_authority"; anything else is not used)
   Each position opened in v2 mode is stamped exit_rule H5-BOOSTCLOCK-v2 and leaves by that rule: an early sell at the rule's exit trigger slot
-  (tools/h5_boostclock.py, the projected last BOOST slice minus 10 s, from slices RECEIVED and usable 1.35 s after their slot), never later than
-  v1's s0 + 330 s timer, which stays armed. No slices, fewer than 3, a feed gap or a restart after the pool's s0: no early exit (330 s).
-  Halts (DEC-028 s4): v2_sell_after_boost_gt_15pct (rolling 20), v2_plain_median_lt_330 (completed day, >= 30 plain pools),
+  (v2_cad_exit in this file, the projected last BOOST slice minus 10 s, from slices RECEIVED and usable 1.35 s after their slot), never later
+  than v1's s0 + 330 s timer, which stays armed. No slices, fewer than 3, a feed gap, a restart or process start after the pool's s0, or the
+  pool's slices evicted: no early exit (330 s).
+  Halts (DEC-028 s4): v2_sell_after_boost_gt_15pct (rolling 20; it replaces v1's cumulative rule (b), boost_before_sell_gt_15pct, which is
+  report-only in v2 mode), v2_plain_median_lt_330 (completed day, >= 30 plain pools),
   v2_projection_inputs (completed day: median BOOST total outside [17.5, 17.7] SOL or median slice interval outside [6, 24] s over >= 30 plain
   completed pools), late sells (> 3 s after the v2 exit trigger, or after s0 + 335 s), v2_slice_stream_stale (> 2 positions a day),
   v2_slice_lag_gt_1_35s (median receive lag over the day's traded pools). The 335 s and 337 s day-median lines are report-only in v2 mode.
+  C1-NF (tools/c1nf_executor.py) pins its own exit mode to v1 (EXIT_MODE_PIN): this switch never reaches it.
 """
 
 from __future__ import annotations
@@ -161,8 +164,12 @@ V2_INTERVAL_LO_S, V2_INTERVAL_HI_S = 6.0, 24.0  # ... or median slice interval o
 V2_LATE_AFTER_TRIGGER_S = 3.0  # s4.2: a sell landing more than this after its v2 exit trigger (or after s0 + 335 s) is late
 V2_STALE_S, V2_STALE_MAX_PER_DAY = 45.0, 2  # s4.7: no slice for > 45 s while budget is left, on > 2 positions in a UTC day
 V2_LAG_MEDIAN_MAX_S = 1.35  # s4.7: median slice receive lag (receive - block time) over the day's traded pools
-V2_REPORT_ONLY = frozenset({"boost_median_lt_335", "boost_median_lt_337_twice"})  # DEC-028 s4.1: reported, not halts, in v2 mode
+# DEC-028 s4.1: reported (once a UTC day), not halts, in v2 mode. boost_before_sell_gt_15pct is v1's CUMULATIVE rule (b): s4.1(a)'s rolling 20
+# (v2_sell_after_boost_gt_15pct) replaces it, and the counters continue from v1's run, so v1's tally (the likely Option B trigger) would
+# otherwise re-latch on v2's first paired sell, good or bad.
+V2_REPORT_ONLY = frozenset({"boost_median_lt_335", "boost_median_lt_337_twice", "boost_before_sell_gt_15pct"})
 V2_SLICE_POOLS_KEEP = 512  # pools whose slices are held (the newest; slices before the buy count, so every tracked pool is kept)
+V2_EVICTED_KEEP = 4_096  # evicted pools remembered (each then has no early exit)
 V2_LAG_KEEP = 5_000
 
 
@@ -717,7 +724,7 @@ class H5Counters:
         for old in sorted(self.days)[:-3]:
             self.days[old].pop("boost_s", None)  # the raw list is only needed for the current day's median; the median stays
             self.days[old].pop("boost_lt300", None)
-            for k in ("plain", "lag"):  # v2 only: the raw per-pool lists; the day's medians stay
+            for k in ("plain", "lag", "seen_lag"):  # v2 only: the raw per-pool lists; the day's medians stay
                 (self.days[old].get("v2") or {}).pop(k, None)
         body = {k: v for k, v in self.__dict__.items() if k != "v2" or v}
         _atomic_json(path, {"schema": "h5_counters_v1", **body})
@@ -981,6 +988,9 @@ def _h5_precheck_scope(run_mode: str):
 
 
 class H5Executor(pl.LiveExecutor):
+    # A subclass that trades its own rule pins its exit mode here, whatever H5's EXIT_MODE is (C1-NF pins v1: DEC-028 Option B is H5-only).
+    EXIT_MODE_PIN: str | None = None
+
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
@@ -1021,14 +1031,16 @@ class H5Executor(pl.LiveExecutor):
         self.slots = SlotClock()
         self.pool_cache: dict[str, tuple[tx.PoolState, int]] = {}
         self.armed: dict[str, dict[str, Any]] = {}
-        if EXIT_MODE not in (EXIT_MODE_V1, EXIT_MODE_V2):
-            raise SystemExit(f"EXIT_MODE {EXIT_MODE!r} is not v1 or v2")
-        self.exit_mode = EXIT_MODE  # compiled in (DEC-028 s5 item 3); a position leaves by the rule stamped on it (exit_rule), whatever this is
+        mode = EXIT_MODE if self.EXIT_MODE_PIN is None else self.EXIT_MODE_PIN
+        if mode not in (EXIT_MODE_V1, EXIT_MODE_V2):
+            raise SystemExit(f"EXIT_MODE {mode!r} is not v1 or v2")
+        self.exit_mode = mode  # compiled in (DEC-028 s5 item 3); a position leaves by the rule stamped on it (exit_rule), whatever this is
         self._v2_slices: dict[str, dict[str, Any]] = {}  # v2 only: mint -> {"sl": {(slot, tx_index, event_index): (lamports, recv_ms, block_ms, seen_ms)}, ...}
         self._v2_recovered = set(self.state.open) | set(self.state.pending)  # positions from before this start: their earlier slices are gone
         self._v2_last_gap_ms = -1  # the last feed gap that lost coverage: a pool open across it has no early exit
         self._v2_reported: set[tuple[str, str]] = set()
         self._v2_start_ms = self.now_ms()  # slices are read from here on; a position needs its pool's slices since s0
+        self._v2_evicted: dict[str, None] = {}  # pools whose held slices were dropped (V2_SLICE_POOLS_KEEP): a later list is partial
         self.feed_gap = False
         self._gap_until_ms = 0
         self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
@@ -1682,9 +1694,9 @@ class H5Executor(pl.LiveExecutor):
         c.save(self.counters_path)
         self._log("boost_vs_sell", mint, before=boost <= landing, boost_s=boost, landing_s=round(landing, 3), n=c.bvs_n, before_n=c.bvs_before,
                   share=round(share, 4))
-        if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
+        if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:  # in v2 mode a report, not a halt (V2_REPORT_ONLY)
             self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
-        if self.exit_mode == EXIT_MODE_V2:
+        if self.exit_mode == EXIT_MODE_V2:  # DEC-028 s4.1(a): the rolling 20 is v2's rule (b)
             self._v2_pair(mint, boost <= landing)
 
     # -- H5-BOOSTCLOCK v2 exit (DEC-028 Option B). Reached only in v2 mode or for a position stamped exit_rule H5-BOOSTCLOCK-v2. -------------
@@ -1712,6 +1724,13 @@ class H5Executor(pl.LiveExecutor):
             why = "bad_size"
         elif row.get("boost_src") not in V2_BOOST_SRC:
             why = "not_vault_identity"
+        elif not isinstance(row.get("pool"), str) or not row["pool"]:
+            why = "no_pool"
+        else:  # the slice must be on the pool this mint's slices (and our position) are on: no cross-pool mix
+            held = (self._v2_slices.get(mint) or {}).get("pool")
+            ours = (self.state.open.get(mint) or self.state.pending.get(mint) or {}).get("pool")
+            if (held is not None and row["pool"] != held) or (ours is not None and row["pool"] != ours):
+                why = "pool_mismatch"
         if why is not None:
             return self._log("v2_slice_ignored", str(mint or ""), why=why)
         now = self.now_ms()
@@ -1721,6 +1740,9 @@ class H5Executor(pl.LiveExecutor):
             busy = set(self.state.open) | set(self.state.pending)
             for old in [k for k in self._v2_slices if k not in busy][: max(0, len(self._v2_slices) - V2_SLICE_POOLS_KEEP)]:
                 del self._v2_slices[old]
+                self._v2_evicted[old] = None
+            while len(self._v2_evicted) > V2_EVICTED_KEEP:
+                self._v2_evicted.pop(next(iter(self._v2_evicted)))
         key = (slot, txi, evi)
         if key in ent["sl"]:
             return
@@ -1741,12 +1763,16 @@ class H5Executor(pl.LiveExecutor):
             return "no_s0_wall"
         if mint in self._v2_recovered:
             return "restart_after_s0"  # the slices read before this start are not kept across it
+        if wall0 < self._v2_start_ms:
+            return "started_after_s0"  # the pool's s0 came before this process started: its earlier slices were never read here
+        if mint in self._v2_evicted:
+            return "slices_evicted"  # the pool's held slices were dropped to bound memory: the rebuilt list is partial
         if self._v2_last_gap_ms >= wall0:
             return "feed_gap"
         return None
 
     def _v2_tick(self, mint: str, pos: dict[str, Any], plan: dict[str, Any], est: int | None, now: int) -> tuple[bool, bool]:
-        """(arm, send) for a v2 position from the rule (tools/h5_boostclock.py) on the slices received so far. v1's stages stay armed in
+        """(arm, send) for a v2 position from the rule (v2_cad_exit, this file) on the slices received so far. v1's stages stay armed in
         exit_tick: this only adds an earlier exit. Once fired, the sell stays due (a failed sell is retried, as v1's past its send stage)."""
         h = pos["h5"]
         v = h.setdefault("v2", {})
@@ -1784,12 +1810,14 @@ class H5Executor(pl.LiveExecutor):
         arm = now >= arm_w or (est is not None and est >= e_slot - ceil_slots(self.h5.arm_lead_ms / 1000.0, sps) and now >= arm_w - EARLY_TOLERANCE_MS)
         if send:
             used = [val for k_, val in sl[: v["k"]]]
-            lags = [(r - b) / 1000.0 for _l, r, b, _s in used if b is not None]
+            lags = [(r - b) / 1000.0 for _l, r, b, _s in used if b is not None]  # the shadow's receive lag (t_recv_ms - block time)
+            seen = [(s_ - b) / 1000.0 for _l, _r, b, s_ in used if b is not None]  # ours: when this executor read it (seen_ms - block time)
             v.update(fired=True, fired_ms=now, fired_est_slot=est)
             self._log("v2_exit_decision", mint, rule=RULE_ID_V2, tau_s=v["tau_s"], k_slices=v["k"], proj_last_slice_s=v["proj_s"],
                       exit_trigger_slot=e_slot, v1_exit_slot=v2_v1_exit_slot(s0, sps, x), landing_slot=x, est_slot=est,
                       ms_after_trigger_wall=now - tw, slices_held=len(sl), spent_lamports=sum(val[0] for _, val in sl[: v["k"]]),
-                      max_recv_lag_s=round(max(lags), 3) if lags else None, off_s=V2_OFF_S, obs_s=V2_OBS_S, kmin=V2_KMIN)
+                      max_recv_lag_s=round(max(lags), 3) if lags else None, max_seen_lag_s=round(max(seen), 3) if seen else None,
+                      median_seen_lag_s=round(statistics.median(seen), 3) if seen else None, off_s=V2_OFF_S, obs_s=V2_OBS_S, kmin=V2_KMIN)
             self.save()
         return arm, send
 
@@ -1856,14 +1884,19 @@ class H5Executor(pl.LiveExecutor):
         """Our v2 position on this pool closed: its slices' receive lags join the day's traded-pool lags (DEC-028 s4.7: median above 1.35 s
         halts), and the pool's slices are dropped."""
         ent = self._v2_slices.pop(mint, None)
-        lags = [round((r - b) / 1000.0, 3) for _l, r, b, _s in (ent or {}).get("sl", {}).values() if b is not None]
+        vals = [v_ for v_ in (ent or {}).get("sl", {}).values() if v_[2] is not None]
+        lags = [round((r - b) / 1000.0, 3) for _l, r, b, _s in vals]  # the shadow's receive lag: the DEC-028 s4.7 halt is judged on this
+        seen = [round((s_ - b) / 1000.0, 3) for _l, _r, b, s_ in vals]  # ours (seen_ms - block time): logged beside it, not a halt
         now = self.now_ms()
         d = self.counters.day(day_key(now)).setdefault("v2", {})
         d["lag"] = [*d.get("lag", []), *lags][-V2_LAG_KEEP:]
+        d["seen_lag"] = [*d.get("seen_lag", []), *seen][-V2_LAG_KEEP:]
         d["lag_pools"] = d.get("lag_pools", 0) + 1
         med = round(statistics.median(d["lag"]), 3) if d["lag"] else None
         d["lag_median"] = med
-        self._log("v2_pool_closed", mint, slices=len(lags), day_lag_median_s=med, day_pools=d["lag_pools"])
+        d["seen_lag_median"] = round(statistics.median(d["seen_lag"]), 3) if d["seen_lag"] else None
+        self._log("v2_pool_closed", mint, slices=len(lags), day_lag_median_s=med, day_seen_lag_median_s=d["seen_lag_median"],
+                  pool_seen_lag_median_s=round(statistics.median(seen), 3) if seen else None, day_pools=d["lag_pools"])
         self.counters.save(self.counters_path)
         if med is not None and med > V2_LAG_MEDIAN_MAX_S:
             self._latch("v2_slice_lag_gt_1_35s", day=day_key(now), median_s=med, pools=d["lag_pools"], slices=len(d["lag"]))
