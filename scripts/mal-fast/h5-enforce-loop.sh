@@ -87,6 +87,8 @@
 # day D >= FIRST_DAY whose 00:21Z slot has already passed (at most the last 13 days: the executor keeps its last 14 day keys including
 # today, so today-14 and its D-1 may be pruned and would read as a false "no entry" pair), each skipped when
 # exec-day.jsonl already holds a final verdict for D. Then it goes on from now; earlier shadow slots are the session crons' job.
+# The state file is not written during this catch-up (also not by the stop-unverified flag or a quit), so a catch-up cut short is run
+# again from the start on the next start; a day whose check exited 6 is not final, so it is judged again and sets the flag again.
 #
 # DRY RUN. `sh h5-enforce-loop.sh --dry-run` prints the schedule from now (or H5_ENFORCE_NOW, a dry-run-only test clock) to END with
 # the exact command of each check. It runs nothing and writes nothing.
@@ -329,7 +331,9 @@ if [ -r "$STATE" ]; then
   fi
 fi
 [ -n "$LAST_DONE" ] || LAST_DONE=$START_E
+CATCHING_UP=0
 save_state() {
+  [ "$CATCHING_UP" -eq 0 ] || return 0   # a fresh-start catch-up cut short must run again (see CATCH-UP)
   if ! { printf '%s %s %s %s %s %s %s %s %s %s\n' "$LAST_DONE" "$RUNS" "$HALTS" "$UNVERIFIED" "$TOOL_ERRORS" "$SKIPS" "$LAST_FAIL_S" "$LAST_FAIL_RC" "$SU_S" "$SU_KEYS" > "$STATE.tmp" \
       && mv -f "$STATE.tmp" "$STATE"; } 2>/dev/null; then
     hb warn ",\"warning\":\"state_write_failed\""
@@ -510,12 +514,13 @@ catch_up_exec() {
   catchup_range
   [ "$CU_FROM" -le "$CU_LAST" ] || return 0
   hb catch_up ",\"check\":\"exec\",\"from\":\"$(dayof "$CU_FROM")\",\"to\":\"$(dayof "$CU_LAST")\""
-  _ce=$CU_FROM
+  _ce=$CU_FROM; CATCHING_UP=1
   while [ "$_ce" -le "$CU_LAST" ]; do
     quit_if_asked
     day_check $(( _ce + 86400 + DAY_OFF )) "$(dayof "$_ce")" exec
     _ce=$(( _ce + 86400 ))
   done
+  CATCHING_UP=0
 }
 
 [ "$RESUMED" = true ] || catch_up_exec

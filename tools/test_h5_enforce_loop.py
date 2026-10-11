@@ -403,6 +403,18 @@ def test_fresh_start_catches_up_the_executor_figure_for_every_undecided_day(tmp_
     assert [(r["check"], r["day"]) for r in hb if r["event"] == "skip"] == [("exec", days[1])]
 
 
+def test_a_quit_during_the_fresh_start_catch_up_writes_no_state(tmp_path: Path) -> None:
+    """rc 6 in the catch-up, then a quit: exit 4, and no state file, so the next start runs the whole catch-up again."""
+    env, now, _ = _catch_up_setup(tmp_path, 6, H5_ENFORCE_RETRIES="0", STUB_QUIT_ON="exec:day",
+                                  STUB_QUIT_FILE=str(tmp_path / "daily" / "enforce-loop.quit"))
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    env["H5_ENFORCE_FIRST_DAY"] = day_of(now - now % 86400 - 4 * 86400)
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert len(_calls(tmp_path)) == 1 and _heartbeat(tmp_path)[-1]["event"] == "quit_stop_unverified"
+    assert not (tmp_path / "ckpt" / "h5-enforce-loop.state").exists()
+
+
 def test_fresh_start_catch_up_is_capped_at_13_days(tmp_path: Path) -> None:
     """The executor keeps sorted(days)[-14:] including today: today-14 and its D-1 may be pruned (a false 'no entry' pair), so 13."""
     env, now, _ = _catch_up_setup(tmp_path, 0)
