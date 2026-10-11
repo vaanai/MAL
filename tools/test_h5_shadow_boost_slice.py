@@ -194,5 +194,60 @@ class PickOracleTests(unittest.TestCase):
         self.assertEqual(types(out, "boost_slice"), [])
 
 
+class UnionIndependenceTests(unittest.TestCase):
+    """The report-only tip union (#596) and the slice stream (#598) are independent. A replay row keeps the union key #596 gave it
+    (replay_sig, event_index 0) and carries the tape's block position for boost_slice in tx_index / tape_event_index."""
+
+    @staticmethod
+    def replay_shaped(t: Tape, evi=lambda i: i % 3) -> list[dict]:
+        rows = []
+        for i, r in enumerate(t.rows):  # as replay_rows yields them
+            rows.append(dict(r, signature=None, event_index=0, replay_sig=f"H:{i}", tx_index=i, tape_event_index=evi(i)))
+        return rows
+
+    def replay(self, lag, slices=True, evi=lambda i: i % 3):
+        t = tape()
+        meta = {POOL: {"s0": 1000, "v": t.v, "mint": MINT}}
+        eng, out = make_engine()
+        if lag is not None:
+            eng.tip = h5.ReplayTip(lag)
+        if slices:
+            h5.replay(self.replay_shaped(t, evi), meta, eng)
+        else:
+            with mock.patch.object(h5.Engine, "_boost_slice", lambda *a: None):
+                h5.replay(self.replay_shaped(t, evi), meta, eng)
+        return out
+
+    def test_slices_carry_the_tape_position_not_the_union_key(self):
+        sl = types(self.replay(lag=0), "boost_slice")
+        self.assertEqual([(r["tx_index"], r["event_index"], r["signature"]) for r in sl], [(i, i % 3, None) for i in (1, 2, 3, 4)])
+
+    def test_tape_position_none_stays_none(self):
+        """A NaN event_index on the tape (None after _opt_int) is null on the slice, never the union key's 0."""
+        sl = types(self.replay(lag=0, evi=lambda i: None), "boost_slice")
+        self.assertEqual({r["event_index"] for r in sl}, {None})
+
+    def test_slices_identical_with_the_union_on_or_off(self):
+        off = types(self.replay(lag=None), "boost_slice")
+        self.assertEqual(len(off), 4)
+        for lag in (0, 3):
+            self.assertEqual(types(self.replay(lag=lag), "boost_slice"), off)
+
+    def test_union_records_identical_with_the_slice_stream_on_or_off(self):
+        for lag in (0, 3):
+            on = self.replay(lag=lag)
+            self.assertTrue(types(on, "boost_slice"))
+            self.assertEqual([r for r in on if r["type"] != "boost_slice"], self.replay(lag=lag, slices=False))
+
+    def test_union_key_is_unchanged_full_overlap(self):
+        """Every replay print is matched to its own tip row on the union key (replay_sig, 0): the tape position is not part of it."""
+        t = tape()
+        (pool,) = types(self.replay(lag=0), "pool")
+        self.assertEqual(pool["base_union"]["both"], len(t.rows))
+        self.assertEqual((pool["base_union"]["ws_only"], pool["base_union"]["tip_only"]), (0, 0))
+        self.assertTrue(all(row["event_index"] == 0 for row in self.replay_shaped(t)))
+        self.assertEqual({h5._ukey(r)[1] for r in self.replay_shaped(t)}, {0})
+
+
 if __name__ == "__main__":
     unittest.main()

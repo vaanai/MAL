@@ -38,12 +38,31 @@ Alternative flat rows, same meaning, for tests and other detectors:
   h5_boost_v1   mint, s0_slot, sps, last_slice_slot and/or last_slice_s   BOOST last-slice timing per tracked pool
   h5_watch_v1   mint, pool                     optional: pool first seen, lets us pre-fetch static accounts
 The same entry points exist as callbacks: handle_trigger(H5Trigger), on_feed_status(gap), on_boost_row(...).
+
+H5-BOOSTCLOCK v2 exit (DEC-028 Option B, EXP-026 rule C10). OFF in this build: EXIT_MODE is a compiled-in constant ("v1"), never config
+(DEC-028 s3.2, s5 item 3). With it off nothing below runs and v1 is unchanged: no slice is kept, no v2 field is written, no v2 halt exists.
+Set to "v2" only by the pinned install the manager names for Option B (after v1 halts on BOOST timing); live v2 also needs EXP-026 in the
+deployed tree and DEC-028's OWNER_OVERRIDE_V2_CONFIRMED line filled. In v2 mode:
+  type "boost_slice"  (or flat h5_boost_slice_v1) one BOOST buy in a tracked pool: mint, pool, slot, tx_index (replay tape) and/or signature
+                      (the live feed has no block position: the shadow writes tx_index null there), event_index, lamports (or sol),
+                      block_time (s) or block_time_ms, t_recv_ms, boost_src ("pda" or "event_authority"; anything else is not used)
+  Each position opened in v2 mode is stamped exit_rule H5-BOOSTCLOCK-v2 and leaves by that rule: an early sell at the rule's exit trigger slot
+  (v2_cad_exit in this file, the projected last BOOST slice minus 10 s, from slices RECEIVED and usable 1.35 s after their slot), never later
+  than v1's s0 + 330 s timer, which stays armed. No slices, fewer than 3, a feed gap, a restart or process start after the pool's s0, or the
+  pool's slices evicted: no early exit (330 s).
+  Halts (DEC-028 s4): v2_sell_after_boost_gt_15pct (rolling 20; it replaces v1's cumulative rule (b), boost_before_sell_gt_15pct, which is
+  report-only in v2 mode), v2_plain_median_lt_330 (completed day, >= 30 plain pools),
+  v2_projection_inputs (completed day: median BOOST total outside [17.5, 17.7] SOL or median slice interval outside [6, 24] s over >= 30 plain
+  completed pools), late sells (> 3 s after the v2 exit trigger, or after s0 + 335 s), v2_slice_stream_stale (> 2 positions a day),
+  v2_slice_lag_gt_1_35s (median receive lag over the day's traded pools). The 335 s and 337 s day-median lines are report-only in v2 mode.
+  C1-NF (tools/c1nf_executor.py) pins its own exit mode to v1 (EXIT_MODE_PIN): this switch never reaches it.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import contextlib
 import fcntl
 import hashlib
@@ -57,7 +76,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 from solders.hash import Hash
@@ -123,6 +142,89 @@ BOOST_ABSURD_POOLS = 3  # ... when it happens on this many pools in one UTC day 
 BOOST_BEFORE_SELL_FRAC = 0.15  # share of our landed sells whose pool's BOOST last slice was at or before the sell's landing -> halt above this
 BOOST_BEFORE_SELL_MIN_SELLS = 20  # ... judged once this many landed sells have a known BOOST last slice (boost_before_sell_gt_15pct)
 BOOST_SEEN_KEEP = 300  # pools remembered, to pair a pool's BOOST time with our sell on it
+
+# --- H5-BOOSTCLOCK v2 exit (DEC-028 Option B, owner pre-authorization 2026-10-11, MiScusi notebook n_soP9VudXSnG4Jw). OFF: EXIT_MODE is v1. ----
+EXIT_MODE_V1, EXIT_MODE_V2 = "v1", "v2"
+EXIT_MODE = EXIT_MODE_V1  # compiled-in, never config (DEC-028 s3.2, s5 item 3). Only the pinned Option B install the manager names sets "v2".
+RULE_ID_V2 = "H5-BOOSTCLOCK-v2"
+V2_BUDGET_LAMPORTS = 17_585_000_000  # BOOST's TWAP budget the projection assumes (17.585 SOL)
+V2_DONE_LAMPORTS = 50_000_000  # budget left below this: the last slice has been seen (0.05 SOL)
+V2_OFF_S = 10.0  # exit this long before the projected last BOOST slice (C10; tools/h5_shadow.py BX10_OFF_S)
+V2_OBS_S = 1.35  # a slice at pool time t is usable for a decision at tau >= t + this (1.9 s entry latency - 0.55 s send-to-land; BX10_OBS_S)
+V2_KMIN = 3  # slices needed before a projection exists (BX10_KMIN)
+V2_CAP_S = HOLD_S  # v1's exit (s0 + 330 s); the rule never exits later
+EXP026_FILE = "EXP/EXP-026-h5-boostclock-v2-prereg.md"  # live v2 needs the frozen rule in the deployed tree ...
+DEC028_FILE = "DEC/DEC-028-h5-v2-canary.md"  # ... and the owner's override line filled in this file
+DEC028_OVERRIDE_RE = re.compile(r"^[ \t]*OWNER_OVERRIDE_V2_CONFIRMED:[ \t]*\S", re.M)  # text on the same line (the draft's line is empty)
+SCHEMA_BOOST_SLICE = "h5_boost_slice_v1"
+V2_BOOST_SRC = ("pda", "event_authority")  # the per-pool vault identity; a behavioural guess is never used for a live exit
+V2_SELL_AFTER_BOOST_N, V2_SELL_AFTER_BOOST_FRAC = 20, 0.15  # s4.1(a): > 15% of a rolling 20 paired sells at or after the last slice
+V2_PLAIN_MEDIAN_MIN_S, V2_PLAIN_MIN_POOLS = 330.0, 30  # s4.1(b): a completed day's plain-pool median below 330 s over >= 30 plain pools
+V2_TOTAL_SOL_LO, V2_TOTAL_SOL_HI = 17.5, 17.7  # s4.1(d): completed day, >= 30 plain completed pools: median BOOST total outside this ...
+V2_INTERVAL_LO_S, V2_INTERVAL_HI_S = 6.0, 24.0  # ... or median slice interval outside this
+V2_LATE_AFTER_TRIGGER_S = 3.0  # s4.2: a sell landing more than this after its v2 exit trigger (or after s0 + 335 s) is late
+V2_STALE_S, V2_STALE_MAX_PER_DAY = 45.0, 2  # s4.7: no slice for > 45 s while budget is left, on > 2 positions in a UTC day
+V2_LAG_MEDIAN_MAX_S = 1.35  # s4.7: median slice receive lag (receive - block time) over the day's traded pools
+# DEC-028 s4.1: reported (once a UTC day), not halts, in v2 mode. boost_before_sell_gt_15pct is v1's CUMULATIVE rule (b): s4.1(a)'s rolling 20
+# (v2_sell_after_boost_gt_15pct) replaces it, and the counters continue from v1's run, so v1's tally (the likely Option B trigger) would
+# otherwise re-latch on v2's first paired sell, good or bad.
+V2_REPORT_ONLY = frozenset({"boost_median_lt_335", "boost_median_lt_337_twice", "boost_before_sell_gt_15pct"})
+V2_SLICE_POOLS_KEEP = 512  # pools whose slices are held (the newest; slices before the buy count, so every tracked pool is kept)
+V2_EVICTED_KEEP = 4_096  # evicted pools remembered (each then has no early exit)
+V2_LAG_KEEP = 5_000
+
+
+# --- the H5-BOOSTCLOCK v2 rule (EXP-026 section 2, iter-r2 cell C10). A port of the frozen bc_rule.py (sha256 6b3de49e...2651d): project_E ->
+# v2_project_e, cad_exit -> v2_cad_exit; the same steps as tools/h5_shadow.py's report-only bx10 (project_e, bx10_exit). The tests pin all three
+# to each other (tools/test_h5_executor_v2.py). Kept in this file, not in a new module, so the pinned H5 and C1-NF installers' import closures do
+# not change. Pure: pool-clock seconds after s0 (t = (slot - s0) * sps), lamports, no price.
+
+def v2_project_e(t: Sequence[float], a: Sequence[float]) -> float:
+    """Projected last BOOST slice time (s after s0) from the k >= 2 slices seen so far (times t, lamports a)."""
+    k = len(t)
+    d = sorted(t[i] - t[i - 1] for i in range(1, k))
+    m = len(d)
+    med = d[m // 2] if m % 2 else (d[m // 2 - 1] + d[m // 2]) / 2
+    tot = float(sum(a))
+    rem = max(0.0, V2_BUDGET_LAMPORTS - tot)
+    if rem < V2_DONE_LAMPORTS:
+        return t[-1]
+    return t[-1] + math.floor(rem / (tot / k)) * med
+
+
+def v2_cad_exit(t: Sequence[float], a: Sequence[float], tmin: float, cap: float = V2_CAP_S, off: float = V2_OFF_S, obs: float = V2_OBS_S,
+             kmin: int = V2_KMIN) -> tuple[float, bool, int, float | None]:
+    """tau* = inf{tau >= tmin : k(tau) >= kmin and tau >= P_E(k(tau)) - off}, capped at cap. t sorted ascending (s after s0).
+    Returns (tau*, fired before the cap, k slices used, projection used or None)."""
+    n = len(t)
+    if n < kmin:
+        return cap, False, n, None
+    ob = [x + obs for x in t]
+    k = max(kmin, bisect.bisect_right(ob, tmin))
+    while k <= n:
+        start = max(tmin, ob[k - 1])
+        end = ob[k] if k < n else math.inf
+        proj = v2_project_e(t[:k], a[:k])
+        cand = max(start, proj - off)
+        if cand < end:
+            return (cand, True, k, proj) if cand < cap else (cap, False, k, proj)
+        if end >= cap:
+            return cap, False, k, proj
+        k += 1
+    return cap, False, n, None
+
+
+def v2_v1_exit_slot(s0: int, sps: float, x_slot: int) -> int:
+    """C = max(s0 + round(330 s / sps), X + 1): v1's exit trigger slot (python round, as the frozen scorer)."""
+    return max(s0 + int(round(V2_CAP_S / sps)), x_slot + 1)
+
+
+def v2_exit_trigger_slot(s0: int, sps: float, x_slot: int, tau: float, fired: bool) -> int:
+    """The rule's exit trigger slot: early -> min(max(s0 + ceil(tau* / sps - 1e-9), X + 1), C); no early exit -> C."""
+    c = v2_v1_exit_slot(s0, sps, x_slot)
+    if not fired:
+        return c
+    return min(max(s0 + math.ceil(tau / sps - 1e-9), x_slot + 1), c)
 
 # --- exit timing and entry age (review of 86a224b) ----------------------------------------------------------------------------
 SPS_TOLERANCE = 0.01  # a trigger whose sps is more than 1% from the one we measure is refused; an open plan is rebuilt past the same drift
@@ -260,6 +362,8 @@ class H5Limits:
         if cfg.get("jito_enabled") or (cfg.get("jito_tip_lamports") or 0) != 0:
             raise ValueError("jito tips are not supported in this build (jito_enabled must be false, jito_tip_lamports 0)")
         fixed = ("late_sell_min_n", "sell_priority_lamports", "escalated_priority_lamports")  # code constants: no config at all
+        if "exit_mode" in cfg:  # DEC-028 s5 item 3: the exit rule is compiled in (EXIT_MODE), never a runtime config
+            raise ValueError("exit_mode is not configurable")
         for key in fixed:
             if key in cfg:
                 raise ValueError(f"{key} is not configurable")
@@ -606,6 +710,7 @@ class H5Counters:
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
     synthetic_unconfirmed: int = 0  # trigger records refused because `synthetic` was not the literal false (a detector without the classifier, or a bug)
     excluded: dict[str, int] = field(default_factory=dict)  # the detector's `excluded` records by reason (synthetic | unclassified | other): pools kept out
+    v2: dict[str, Any] = field(default_factory=dict)  # v2 exit mode only (rolling sell-vs-BOOST pairs); empty and not written in v1
 
     def day(self, key: str) -> dict[str, Any]:
         d = self.days.setdefault(key, {"trades": 0, "realized": 0})
@@ -620,7 +725,10 @@ class H5Counters:
         for old in sorted(self.days)[:-3]:
             self.days[old].pop("boost_s", None)  # the raw list is only needed for the current day's median; the median stays
             self.days[old].pop("boost_lt300", None)
-        _atomic_json(path, {"schema": "h5_counters_v1", **self.__dict__})
+            for k in ("plain", "lag", "seen_lag"):  # v2 only: the raw per-pool lists; the day's medians stay
+                (self.days[old].get("v2") or {}).pop(k, None)
+        body = {k: v for k, v in self.__dict__.items() if k != "v2" or v}
+        _atomic_json(path, {"schema": "h5_counters_v1", **body})
 
     @classmethod
     def load(cls, path: Path, run_mode: str) -> "H5Counters":
@@ -757,6 +865,24 @@ def start_refusal(cfg: dict[str, Any], root: Path | None = None) -> str | None:
         return "exp024_part1_missing"
     if cfg.get("end_ms") is None:
         return "end_ms_missing"
+    if EXIT_MODE != EXIT_MODE_V1:  # v1 (this build): nothing more is checked
+        return v2_start_refusal(root)
+    return None
+
+
+def v2_start_refusal(root: Path) -> str | None:
+    """Live v2 (DEC-028 Option B) also needs the frozen rule (EXP-026) in the deployed tree and the owner's override line in DEC-028."""
+    if EXIT_MODE != EXIT_MODE_V2:
+        return "exit_mode_unknown"
+    try:
+        exp = root / EXP026_FILE
+        if not (exp.is_file() and not exp.is_symlink() and exp.stat().st_size > 0):
+            return "exp026_missing"
+        dec = root / DEC028_FILE
+        if not (dec.is_file() and not dec.is_symlink() and DEC028_OVERRIDE_RE.search(dec.read_text())):
+            return "dec028_override_missing"
+    except OSError:
+        return "v2_start_files_unreadable"
     return None
 
 
@@ -863,6 +989,9 @@ def _h5_precheck_scope(run_mode: str):
 
 
 class H5Executor(pl.LiveExecutor):
+    # A subclass that trades its own rule pins its exit mode here, whatever H5's EXIT_MODE is (C1-NF pins v1: DEC-028 Option B is H5-only).
+    EXIT_MODE_PIN: str | None = None
+
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
@@ -903,6 +1032,16 @@ class H5Executor(pl.LiveExecutor):
         self.slots = SlotClock()
         self.pool_cache: dict[str, tuple[tx.PoolState, int]] = {}
         self.armed: dict[str, dict[str, Any]] = {}
+        mode = EXIT_MODE if self.EXIT_MODE_PIN is None else self.EXIT_MODE_PIN
+        if mode not in (EXIT_MODE_V1, EXIT_MODE_V2):
+            raise SystemExit(f"EXIT_MODE {mode!r} is not v1 or v2")
+        self.exit_mode = mode  # compiled in (DEC-028 s5 item 3); a position leaves by the rule stamped on it (exit_rule), whatever this is
+        self._v2_slices: dict[str, dict[str, Any]] = {}  # v2 only: mint -> {"sl": {(slot, tx_index, event_index): (lamports, recv_ms, block_ms, seen_ms)}, ...}
+        self._v2_recovered = set(self.state.open) | set(self.state.pending)  # positions from before this start: their earlier slices are gone
+        self._v2_last_gap_ms = -1  # the last feed gap that lost coverage: a pool open across it has no early exit
+        self._v2_reported: set[tuple[str, str]] = set()
+        self._v2_start_ms = self.now_ms()  # slices are read from here on; a position needs its pool's slices since s0
+        self._v2_evicted: dict[str, None] = {}  # pools whose held slices were dropped (V2_SLICE_POOLS_KEEP): a later list is partial
         self.feed_gap = False
         self._gap_until_ms = 0
         self.no_sps_pools: set[str] = set()  # pools the detector skipped for want of an sps: never traded
@@ -942,10 +1081,10 @@ class H5Executor(pl.LiveExecutor):
                       "halt": str(run_path(cfg, "halt_file", "HALT", not self.dry_run)), "final_marker": str(self.final_marker),
                       "live_ok": str(LIVE_OK_PATH) if not self.dry_run else None, "intents": str(self.intents_path),
                       "wallet_stop": str(Path(pe.LIVE_DIR) / "STOP"), "wallet_halt": str(Path(pe.LIVE_DIR) / "HALT"), "tier_file": str(self._tier_path())}
-        self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
+        self._log("start", "", rule=RULE_ID if self.exit_mode == EXIT_MODE_V1 else RULE_ID_V2, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms,
-                  config_clamps=self._config_clamps())
+                  config_clamps=self._config_clamps(), **({} if self.exit_mode == EXIT_MODE_V1 else {"exit_mode": self.exit_mode}))
         self._clamp_alert("start")
         if self._tier_state_legacy:
             self._alert("tier_state_legacy", "", tier=self.counters.tier_state.get("tier"),
@@ -1092,6 +1231,12 @@ class H5Executor(pl.LiveExecutor):
         """Latch a live halt: new buys stop, the reason goes to the ledger, and it survives a restart. Cleared only by
         --clear-halt (a ledgered, manual step), never by the executor."""
         if name in self.counters.halts:
+            return
+        if self.exit_mode == EXIT_MODE_V2 and name in V2_REPORT_ONLY:  # DEC-028 s4.1: reported every day, not a halt for v2
+            key = (name, day_key(self.now_ms()))
+            if key not in self._v2_reported:
+                self._v2_reported.add(key)
+                self._log("v2_report_only", "", reason=name, **detail)
             return
         now = self.now_ms()
         self.counters.halts[name] = {"ts_ms": now, **detail}
@@ -1382,7 +1527,7 @@ class H5Executor(pl.LiveExecutor):
             st.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
         self.counters.plans[trg.mint] = {"trigger": trg.public(), "plan": plan.public(), "min_out": terms["min_out"],  # durable before the send
-                                         "tolerance_bps": self.h5.entry_tolerance_bps}
+                                         "tolerance_bps": self.h5.entry_tolerance_bps, **self._v2_stamp()}
         spend = self.h5.stake_lamports
         st.pending[trg.mint] = {
             "kind": "buy", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": trg.pool, "snap_slot": trg.trigger_slot,
@@ -1392,7 +1537,8 @@ class H5Executor(pl.LiveExecutor):
             "base_ata": str(tx.ata(self.user, ps.base_mint, ps.base_token_program)), "base_mint": str(ps.base_mint),
             "base_tp": str(ps.base_token_program), "sends": 0, "seen_ms": seen_ms, "state_ms": now, "state_slot": trg.trigger_slot,
             "built_ms": t_built, "runner_latency": None,
-            "h5": {"trigger": trg.public(), "plan": plan.public(), "min_out": terms["min_out"], "tolerance_bps": self.h5.entry_tolerance_bps},
+            "h5": {"trigger": trg.public(), "plan": plan.public(), "min_out": terms["min_out"], "tolerance_bps": self.h5.entry_tolerance_bps,
+                   **self._v2_stamp()},
         }
         self.save()
         self.counters.save(self.counters_path)
@@ -1445,7 +1591,7 @@ class H5Executor(pl.LiveExecutor):
         if res.get("err") is None:  # a virtual position, so the exit timer and max_open are exercised
             self.state.open[trg.mint] = {
                 "mint": trg.mint, "pool": trg.pool, "t_entry_ms": now, "tokens": terms["expected_tokens"], "net_in": terms["net_in"],
-                "mark": terms["mark"], "spend": self.h5.stake_lamports, "virtual": True, "h5": {"trigger": trg.public(), "plan": plan.public()},
+                "mark": terms["mark"], "spend": self.h5.stake_lamports, "virtual": True, "h5": {"trigger": trg.public(), "plan": plan.public(), **self._v2_stamp()},
                 "base_mint": str(ps.base_mint), "base_ata": str(tx.ata(self.user, ps.base_mint, ps.base_token_program)),
                 "base_tp": str(ps.base_token_program), "sell_attempts": 0,
             }
@@ -1549,8 +1695,262 @@ class H5Executor(pl.LiveExecutor):
         c.save(self.counters_path)
         self._log("boost_vs_sell", mint, before=boost <= landing, boost_s=boost, landing_s=round(landing, 3), n=c.bvs_n, before_n=c.bvs_before,
                   share=round(share, 4))
-        if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
+        if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:  # in v2 mode a report, not a halt (V2_REPORT_ONLY)
             self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
+        if self.exit_mode == EXIT_MODE_V2:  # DEC-028 s4.1(a): the rolling 20 is v2's rule (b)
+            self._v2_pair(mint, boost <= landing)
+
+    # -- H5-BOOSTCLOCK v2 exit (DEC-028 Option B). Reached only in v2 mode or for a position stamped exit_rule H5-BOOSTCLOCK-v2. -------------
+    def _v2_stamp(self) -> dict[str, Any]:
+        """The exit rule stamped on the pending buy, its durable plan and the position. Nothing in v1 mode (v1 records are unchanged)."""
+        return {} if self.exit_mode == EXIT_MODE_V1 else {"exit_rule": RULE_ID_V2}
+
+    def on_boost_slice(self, row: dict[str, Any]) -> None:
+        """One BOOST buy in a tracked pool (the shadow's `boost_slice` record, or a flat h5_boost_slice_v1 row). Structure only, no price.
+        Kept per pool (slices before our buy count: the projection uses every slice since s0); a re-reported slice is counted once."""
+        if self.exit_mode != EXIT_MODE_V2:  # the caller checks too; kept so no path holds a slice in a v1 build
+            return
+        mint, slot, txi, evi, recv = row.get("mint"), row.get("slot"), row.get("tx_index"), row.get("event_index"), row.get("t_recv_ms")
+        sig = row.get("signature") if isinstance(row.get("signature"), str) else ""
+        lam = row.get("lamports")
+        sol = row.get("sol")
+        if lam is None and isinstance(sol, (int, float)) and not isinstance(sol, bool) and math.isfinite(sol):
+            lam = int(round(sol * 1e9))
+        bt = row.get("block_time_ms") if _is_int(row.get("block_time_ms")) else (row["block_time"] * 1000 if _is_int(row.get("block_time")) else None)
+        why = None
+        if not isinstance(mint, str) or not mint:
+            why = "no_mint"
+        elif not (_is_int(slot) and (_is_int(txi) or sig) and _is_int(evi) and _is_int(recv)):  # a print's identity: tx_index or signature
+            why = "bad_position_or_time"
+        elif not _is_int(lam) or lam <= 0:
+            why = "bad_size"
+        elif row.get("boost_src") not in V2_BOOST_SRC:
+            why = "not_vault_identity"
+        elif not isinstance(row.get("pool"), str) or not row["pool"]:
+            why = "no_pool"
+        else:  # the slice must be on the pool this mint's slices (and our position) are on: no cross-pool mix
+            held = (self._v2_slices.get(mint) or {}).get("pool")
+            ours = (self.state.open.get(mint) or self.state.pending.get(mint) or {}).get("pool")
+            if (held is not None and row["pool"] != held) or (ours is not None and row["pool"] != ours):
+                why = "pool_mismatch"
+        if why is not None:
+            return self._log("v2_slice_ignored", str(mint or ""), why=why)
+        now = self.now_ms()
+        ent = self._v2_slices.get(mint)
+        if ent is None:
+            ent = self._v2_slices[mint] = {"pool": row.get("pool"), "sl": {}}
+            busy = set(self.state.open) | set(self.state.pending)
+            for old in [k for k in self._v2_slices if k not in busy][: max(0, len(self._v2_slices) - V2_SLICE_POOLS_KEEP)]:
+                del self._v2_slices[old]
+                self._v2_evicted[old] = None
+            while len(self._v2_evicted) > V2_EVICTED_KEEP:
+                self._v2_evicted.pop(next(iter(self._v2_evicted)))
+        key = (slot, txi if _is_int(txi) else -1, sig, evi)  # one type per position, so the slot sort never compares None with an int
+        if key in ent["sl"]:
+            return
+        ent["sl"][key] = (lam, recv, bt, now)
+        ent["seen_ms"] = now
+        pos = self.state.open.get(mint)
+        v = ((pos or {}).get("h5") or {}).get("v2") or {}
+        if v.get("fired") and pos["h5"]["trigger"]["sps"]:  # a slice the decision should have had (usable before it) came in after it
+            trg = pos["h5"]["trigger"]
+            t_i = (slot - trg["s0_slot"]) * trg["sps"]
+            if t_i + V2_OBS_S <= v["tau_s"]:
+                self._log("v2_slice_after_decision", mint, slice_s=round(t_i, 3), tau_s=v["tau_s"], recv_ms=recv)
+
+    def _v2_fallback(self, mint: str, plan: dict[str, Any]) -> str | None:
+        """Why this position may not use the slice list (then v1's 330 s timer is its only exit): None = it may."""
+        wall0 = plan.get("s0_wall_ms")
+        if wall0 is None:
+            return "no_s0_wall"
+        if mint in self._v2_recovered:
+            return "restart_after_s0"  # the slices read before this start are not kept across it
+        if wall0 < self._v2_start_ms:
+            return "started_after_s0"  # the pool's s0 came before this process started: its earlier slices were never read here
+        if mint in self._v2_evicted:
+            return "slices_evicted"  # the pool's held slices were dropped to bound memory: the rebuilt list is partial
+        if self._v2_last_gap_ms >= wall0:
+            return "feed_gap"
+        return None
+
+    def _v2_tick(self, mint: str, pos: dict[str, Any], plan: dict[str, Any], est: int | None, now: int) -> tuple[bool, bool]:
+        """(arm, send) for a v2 position from the rule (v2_cad_exit, this file) on the slices received so far. v1's stages stay armed in
+        exit_tick: this only adds an earlier exit. Once fired, the sell stays due (a failed sell is retried, as v1's past its send stage)."""
+        h = pos["h5"]
+        v = h.setdefault("v2", {})
+        if v.get("fired"):
+            return False, True
+        if h.get("immediate_exit") or h.get("no_plan"):
+            return False, False
+        trg = h["trigger"]
+        s0, sps = trg["s0_slot"], trg["sps"]
+        ent = self._v2_slices.get(mint)
+        sl = sorted(ent["sl"].items()) if ent else []
+        self._v2_stale_check(mint, pos, ent, sl, now)
+        fb = self._v2_fallback(mint, plan)
+        if fb is not None:
+            if v.get("fallback") != fb:
+                v["fallback"] = fb
+                self._log("v2_fallback_330", mint, why=fb)
+                self.save()
+            return False, False
+        x = h.get("buy_landed_slot") or trg["trigger_slot"]  # X: our buy's landing slot (a dry run has none: the trigger slot)
+        if v.get("_n") != len(sl) or v.get("_x") != x:  # recomputed only when a slice arrived or the buy landed
+            t = [(k[0] - s0) * sps for k, _ in sl]
+            a = [val[0] for _, val in sl]
+            tau, fired, k, proj = v2_cad_exit(t, a, (x - s0) * sps)
+            trig_slot = v2_exit_trigger_slot(s0, sps, x, tau, fired)
+            early = fired and trig_slot < v2_v1_exit_slot(s0, sps, x)
+            tw = plan["s0_wall_ms"] + int(round((trig_slot - s0) * sps * 1000))
+            v.update(_n=len(sl), _x=x, tau_s=round(tau, 4), k=k, proj_s=None if proj is None else round(proj, 4), trigger_slot=trig_slot,
+                     trigger_wall_ms=tw, early=early)
+        if not v["early"]:
+            return False, False
+        e_slot, tw = v["trigger_slot"], v["trigger_wall_ms"]
+        send = now >= tw or (est is not None and est >= e_slot and now >= tw - EARLY_TOLERANCE_MS)  # as _due: the wall bounds the slot plan
+        arm_w = tw - self.h5.arm_lead_ms
+        arm = now >= arm_w or (est is not None and est >= e_slot - ceil_slots(self.h5.arm_lead_ms / 1000.0, sps) and now >= arm_w - EARLY_TOLERANCE_MS)
+        if send:
+            used = [val for k_, val in sl[: v["k"]]]
+            lags = [(r - b) / 1000.0 for _l, r, b, _s in used if b is not None]  # the shadow's receive lag (t_recv_ms - block time)
+            seen = [(s_ - b) / 1000.0 for _l, _r, b, s_ in used if b is not None]  # ours: when this executor read it (seen_ms - block time)
+            v.update(fired=True, fired_ms=now, fired_est_slot=est)
+            self._log("v2_exit_decision", mint, rule=RULE_ID_V2, tau_s=v["tau_s"], k_slices=v["k"], proj_last_slice_s=v["proj_s"],
+                      exit_trigger_slot=e_slot, v1_exit_slot=v2_v1_exit_slot(s0, sps, x), landing_slot=x, est_slot=est,
+                      ms_after_trigger_wall=now - tw, slices_held=len(sl), spent_lamports=sum(val[0] for _, val in sl[: v["k"]]),
+                      max_recv_lag_s=round(max(lags), 3) if lags else None, max_seen_lag_s=round(max(seen), 3) if seen else None,
+                      median_seen_lag_s=round(statistics.median(seen), 3) if seen else None, off_s=V2_OFF_S, obs_s=V2_OBS_S, kmin=V2_KMIN)
+            self.save()
+        return arm, send
+
+    def _v2_stale_check(self, mint: str, pos: dict[str, Any], ent: dict[str, Any] | None, sl: list, now: int) -> None:
+        """DEC-028 s4.7: no slice seen for more than 45 s while BOOST still has budget and our position is open: counted once per position;
+        more than 2 such positions in a UTC day halts."""
+        v = pos["h5"]["v2"]
+        if v.get("stale") or mint in self.state.pending:
+            return
+        if sum(val[0] for _, val in sl) >= V2_BUDGET_LAMPORTS - V2_DONE_LAMPORTS:
+            return  # BOOST is done: silence is expected
+        ref = max(int((ent or {}).get("seen_ms") or 0), int(pos.get("t_entry_ms") or 0), self._v2_start_ms)
+        if now - ref <= V2_STALE_S * 1000:
+            return
+        v["stale"] = True
+        d = self.counters.day(day_key(now)).setdefault("v2", {})
+        d["stale"] = d.get("stale", 0) + 1
+        self._log("v2_slice_stream_stale", mint, silent_s=round((now - ref) / 1000, 3), slices_held=len(sl), day_count=d["stale"])
+        self.counters.save(self.counters_path)
+        self.save()
+        if d["stale"] > V2_STALE_MAX_PER_DAY:
+            self._latch("v2_slice_stream_stale", day=day_key(now), positions=d["stale"])
+
+    def _v2_sell_fields(self, pos: dict[str, Any], sent_ms: int | None) -> dict[str, Any]:
+        """Extra ledger fields on a v2 position's sell (none for v1): the decision, and decision-to-send ms (DEC-028 s5 item 5)."""
+        h = pos.get("h5") or {}
+        if h.get("exit_rule") != RULE_ID_V2:
+            return {}
+        v = h.get("v2") or {}
+        out = {"exit_rule": RULE_ID_V2, "v2_fired": bool(v.get("fired")), "v2_fallback": v.get("fallback")}
+        if v.get("fired"):
+            out.update(v2_trigger_slot=v.get("trigger_slot"), v2_tau_s=v.get("tau_s"),
+                       ms_decision_to_send=(sent_ms - v["fired_ms"]) if sent_ms is not None and v.get("fired_ms") is not None else None)
+        return out
+
+    def _v2_late(self, h: dict[str, Any], plan: dict[str, Any], landed_slot: int, landing_wall: int | None) -> tuple[bool, dict[str, Any]]:
+        """DEC-028 s4.2: late when the sell lands more than 3 s after its v2 exit trigger (the v2 trigger, or v1's s0 + 330 s when v2 did
+        not fire). The s0 + 335 s line is v1's check, kept by the caller."""
+        v = h.get("v2") or {}
+        sps = h["trigger"]["sps"]
+        if v.get("fired"):
+            trig_slot, trig_wall = v["trigger_slot"], v.get("trigger_wall_ms")
+        else:
+            trig_slot = plan["exit_slot"]
+            trig_wall = None if plan.get("s0_wall_ms") is None else plan["s0_wall_ms"] + int(HOLD_S * 1000)
+        if landing_wall is not None and trig_wall is not None:
+            after = (landing_wall - trig_wall) / 1000.0
+        else:
+            after = (landed_slot - trig_slot) * sps
+        late = after > V2_LATE_AFTER_TRIGGER_S
+        return late, {"exit_rule": RULE_ID_V2, "v2_fired": bool(v.get("fired")), "v2_trigger_slot": trig_slot,
+                      "v2_after_trigger_s": round(after, 3), "v2_late": late}
+
+    def _v2_pair(self, mint: str, after_boost: bool) -> None:
+        """DEC-028 s4.1(a): over a rolling 20 landed sells paired with their pool's BOOST last slice, more than 15% at or after it halts."""
+        c = self.counters
+        pairs = [*c.v2.get("pairs", []), bool(after_boost)][-V2_SELL_AFTER_BOOST_N:]
+        c.v2["pairs"] = pairs
+        c.save(self.counters_path)
+        if len(pairs) >= V2_SELL_AFTER_BOOST_N and sum(pairs) / len(pairs) > V2_SELL_AFTER_BOOST_FRAC:
+            self._latch("v2_sell_after_boost_gt_15pct", n=len(pairs), after=sum(pairs), share=round(sum(pairs) / len(pairs), 4))
+
+    def _v2_close(self, mint: str) -> None:
+        """Our v2 position on this pool closed: its slices' receive lags join the day's traded-pool lags (DEC-028 s4.7: median above 1.35 s
+        halts), and the pool's slices are dropped."""
+        ent = self._v2_slices.pop(mint, None)
+        vals = [v_ for v_ in (ent or {}).get("sl", {}).values() if v_[2] is not None]
+        lags = [round((r - b) / 1000.0, 3) for _l, r, b, _s in vals]  # the shadow's receive lag: the DEC-028 s4.7 halt is judged on this
+        seen = [round((s_ - b) / 1000.0, 3) for _l, _r, b, s_ in vals]  # ours (seen_ms - block time): logged beside it, not a halt
+        now = self.now_ms()
+        d = self.counters.day(day_key(now)).setdefault("v2", {})
+        d["lag"] = [*d.get("lag", []), *lags][-V2_LAG_KEEP:]
+        d["seen_lag"] = [*d.get("seen_lag", []), *seen][-V2_LAG_KEEP:]
+        d["lag_pools"] = d.get("lag_pools", 0) + 1
+        med = round(statistics.median(d["lag"]), 3) if d["lag"] else None
+        d["lag_median"] = med
+        d["seen_lag_median"] = round(statistics.median(d["seen_lag"]), 3) if d["seen_lag"] else None
+        self._log("v2_pool_closed", mint, slices=len(lags), day_lag_median_s=med, day_seen_lag_median_s=d["seen_lag_median"],
+                  pool_seen_lag_median_s=round(statistics.median(seen), 3) if seen else None, day_pools=d["lag_pools"])
+        self.counters.save(self.counters_path)
+        if med is not None and med > V2_LAG_MEDIAN_MAX_S:
+            self._latch("v2_slice_lag_gt_1_35s", day=day_key(now), median_s=med, pools=d["lag_pools"], slices=len(d["lag"]))
+
+    def _v2_pool_row(self, row: dict[str, Any]) -> None:
+        """A clean closed pool (the caller's filter: horizon, no gap, vault identity). Plain pools only (synthetic is the literal false) feed
+        the day's v2 checks: the last-slice median (s4.1(b)) and, over pools whose BOOST completed (vault below 0.05 SOL), the BOOST total and
+        slice-interval medians (s4.1(d)). A pool's interval is its mean slice gap, (last - first) / (n - 1), from the pool row."""
+        mint = str(row.get("mint") or "")
+        busy = mint in self.state.open or mint in self.state.pending
+        if not busy:
+            self._v2_slices.pop(mint, None)
+        if row.get("synthetic") is not False:
+            return
+        num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)  # noqa: E731
+        last, first, n, tot, rem = (row.get(k) for k in ("boost_last_slice_s", "boost_first_slice_s", "boost_slices", "boost_total_sol",
+                                                         "boost_vault_remaining_sol"))
+        if not num(last):
+            return
+        now = self.now_ms()
+        d = self.counters.day(day_key(now)).setdefault("v2", {})
+        plain = d.setdefault("plain", {})
+        if mint in plain:
+            return
+        interval = (last - first) / (n - 1) if num(first) and _is_int(n) and n >= 2 else None
+        complete = num(rem) and rem * 1e9 < V2_DONE_LAMPORTS
+        plain[mint] = [round(float(last), 3), float(tot) if num(tot) else None, None if interval is None else round(interval, 4), bool(complete)]
+        d["plain_n"] = len(plain)
+        if len(plain) >= V2_PLAIN_MIN_POOLS:
+            d["plain_median"] = round(statistics.median(x[0] for x in plain.values()), 3)
+        comp = [x for x in plain.values() if x[3] and x[1] is not None and x[2] is not None]
+        d["complete_n"] = len(comp)
+        if len(comp) >= V2_PLAIN_MIN_POOLS:
+            d["total_median_sol"] = round(statistics.median(x[1] for x in comp), 4)
+            d["interval_median_s"] = round(statistics.median(x[2] for x in comp), 4)
+        self.counters.save(self.counters_path)
+        self._v2_day_checks()
+
+    def _v2_day_checks(self) -> None:
+        """Completed UTC days only (a running day's median dips and recovers): s4.1(b) plain median below 330 s over >= 30 plain pools;
+        s4.1(d) median BOOST total outside [17.5, 17.7] SOL or median slice interval outside [6, 24] s over >= 30 plain completed pools."""
+        today = day_key(self.now_ms())
+        for k in sorted(self.counters.days):
+            d = self.counters.days[k].get("v2") or {}
+            if k >= today or not d:
+                continue
+            if d.get("plain_median") is not None and d.get("plain_n", 0) >= V2_PLAIN_MIN_POOLS and d["plain_median"] < V2_PLAIN_MEDIAN_MIN_S:
+                self._latch("v2_plain_median_lt_330", day=k, median_s=d["plain_median"], pools=d["plain_n"])
+            if d.get("complete_n", 0) >= V2_PLAIN_MIN_POOLS and d.get("total_median_sol") is not None:
+                tot, iv = d["total_median_sol"], d["interval_median_s"]
+                if not (V2_TOTAL_SOL_LO <= tot <= V2_TOTAL_SOL_HI) or not (V2_INTERVAL_LO_S <= iv <= V2_INTERVAL_HI_S):
+                    self._latch("v2_projection_inputs", day=k, total_median_sol=tot, interval_median_s=iv, pools=d["complete_n"])
 
     def _count_accepted(self, unlinked: bool = False) -> None:
         self._hour_roll(self.now_ms())
@@ -1698,6 +2098,8 @@ class H5Executor(pl.LiveExecutor):
                 else:
                     self._gap_until_ms = self.now_ms() + self.h5.gap_hold_ms
                     self._log("feed_gap", "", gap=True, kind_=row.get("kind"))
+                    if self.exit_mode == EXIT_MODE_V2:
+                        self._v2_last_gap_ms = self.now_ms()
             elif rtype == "hb":
                 self.feed_last_ms = self.now_ms()
             elif rtype == "skipped_no_sps":  # the detector could not time this pool: a later trigger on it is refused
@@ -1719,7 +2121,12 @@ class H5Executor(pl.LiveExecutor):
                     v = row.get(k)
                     if isinstance(v, (int, float)) and not isinstance(v, bool):
                         self.on_boost_row(str(row.get("mint") or ""), None, None, None, float(v))
+                        if self.exit_mode == EXIT_MODE_V2:
+                            self._v2_pool_row(row)
                         break
+            elif rtype == "boost_slice" or schema == SCHEMA_BOOST_SLICE:  # v2 only; v1 ignores these rows as it always did
+                if self.exit_mode == EXIT_MODE_V2:
+                    self.on_boost_slice(row)
             elif schema == SCHEMA_FEED:
                 self.on_feed_status(bool(row.get("gap")))
             elif schema == SCHEMA_BOOST:
@@ -1786,6 +2193,9 @@ class H5Executor(pl.LiveExecutor):
             plan = self._maybe_replan(pos, now) or plan
             dead, esc = self._due(plan, "deadline", est, now), self._due(plan, "escalate", est, now)
             send = self._due(plan, "send", est, now) or bool(pos["h5"].get("immediate_exit"))
+            v2_arm = False
+            if pos["h5"].get("exit_rule") == RULE_ID_V2 and not send:  # never for a v1 position: v1 is the code above, unchanged
+                v2_arm, send = self._v2_tick(mint, pos, plan, est, now)
             pend = self.state.pending.get(mint)
             if pend is not None:
                 if pend["kind"] == "sell":
@@ -1797,7 +2207,7 @@ class H5Executor(pl.LiveExecutor):
                 self._fire_sell(mint, pos, est, emergency=True)
             elif send:
                 self._fire_sell(mint, pos, est, emergency=False)
-            elif self._due(plan, "arm", est, now) and not self.dry_run:  # a dry run has nothing to precompute: it cannot sign
+            elif (self._due(plan, "arm", est, now) or v2_arm) and not self.dry_run:  # a dry run has nothing to precompute: it cannot sign
                 armed = self.armed.get(mint)
                 if armed is None or now - armed["armed_ms"] > MAX_ARM_AGE_MS:
                     if now - self._last_sell_try.get(mint, 0) >= 500:
@@ -1977,6 +2387,8 @@ class H5Executor(pl.LiveExecutor):
         if rec is None:
             return  # exit_tick latches stuck_position at the deadline whether or not a sell could be built
         rec["decision_t_ms"] = rec["receive_ms"] = now
+        if not emergency and (pos["h5"].get("v2") or {}).get("fired"):  # v2 only (a v1 position has no "v2" record)
+            rec["reason"] = "h5_v2_exit"
         pos["exit_reason"] = rec["reason"]
         self.state.pending[mint] = rec
         self.save()  # write-ahead
@@ -1986,13 +2398,13 @@ class H5Executor(pl.LiveExecutor):
         plan = pos["h5"]["plan"]
         self._log("sell_sent", mint, level=rec["h5"]["level"], emergency=emergency, est_slot=est, send_slot=plan["send_slot"],
                   land_slot=plan["land_slot"], deadline_slot=plan["deadline_slot"], min_out=rec["min_out"], priority_lamports=rec["h5"]["priority"],
-                  signature=rec["signature"], sent_ms=rec.get("first_send_ms"))
+                  signature=rec["signature"], sent_ms=rec.get("first_send_ms"), **self._v2_sell_fields(pos, rec.get("first_send_ms")))
 
     def _dry_sell(self, mint: str, pos: dict[str, Any], est: int, emergency: bool) -> None:
         """Outcome-blind: simulate the sell shape against live state and log only err, CU, slot and timing. No quote, no P&L."""
         snap, _pool, _err = self._snapshot(mint, self.exit_commitment)
         row: dict[str, Any] = {"emergency": emergency, "est_slot": est, "send_slot": pos["h5"]["plan"]["send_slot"], "land_slot": pos["h5"]["plan"]["land_slot"],
-                               "late_slots": est - pos["h5"]["plan"]["send_slot"], "sent": False}
+                               "late_slots": est - pos["h5"]["plan"]["send_slot"], "sent": False, **self._v2_sell_fields(pos, self.now_ms())}
         if snap is not None and snap.quote_priced is not None:
             msg, _tok, _min = pe.sell_probe_message(snap, self.user, pos["spend"], self.slip_bps, self.h5.sell_priority_lamports)
             try:
@@ -2003,6 +2415,8 @@ class H5Executor(pl.LiveExecutor):
         else:
             row.update(err="no_snapshot")
         self._log("dry_sell", mint, **row)
+        if pos["h5"].get("exit_rule") == RULE_ID_V2:
+            self._v2_close(mint)
         del self.state.open[mint]
         self.save()
 
@@ -2063,6 +2477,7 @@ class H5Executor(pl.LiveExecutor):
         before = self.state.realized_lamports
         pos = self.state.open.get(mint)
         plan = (pos or {}).get("h5", {}).get("plan")
+        h5pos = (pos or {}).get("h5") or {}
         priors = list(p.get("prior") or [])
         super()._finish_sell(mint, p, m)
         self._bal = None
@@ -2070,10 +2485,15 @@ class H5Executor(pl.LiveExecutor):
         if priors:
             self._settle_priors(mint, priors)  # superseded signatures that landed with an error paid their fee
         if m.get("err") is None and plan is not None and mint not in self.state.open and m.get("slot"):
-            self._note_sell_landing(mint, plan, m["slot"], bool(p.get("h5", {}).get("emergency")))
+            if h5pos.get("exit_rule") != RULE_ID_V2:  # v1 (and the C1-NF subclass, which overrides _note_sell_landing): the call as it was
+                self._note_sell_landing(mint, plan, m["slot"], bool(p.get("h5", {}).get("emergency")))
+            else:
+                self._note_sell_landing(mint, plan, m["slot"], bool(p.get("h5", {}).get("emergency")), v2=h5pos)
+                self._v2_close(mint)
 
-    def _note_sell_landing(self, mint: str, plan: dict[str, Any], landed_slot: int, emergency: bool) -> None:
-        """Halt rule: more than 5% of our landed sells landing after s0 + 335 s (strictly more than 5%)."""
+    def _note_sell_landing(self, mint: str, plan: dict[str, Any], landed_slot: int, emergency: bool, v2: dict[str, Any] | None = None) -> None:
+        """Halt rule: more than 5% of our landed sells landing after s0 + 335 s (strictly more than 5%). A v2 position (v2 = its h5 record)
+        is also late when it lands more than 3 s after its exit trigger: the v2 trigger slot, or v1's s0 + 330 s when v2 did not fire."""
         c = self.counters
         c.plans.pop(mint, None)  # the position is closed
         c.sells_landed += 1
@@ -2088,9 +2508,13 @@ class H5Executor(pl.LiveExecutor):
         c.sell_land_s[mint] = landing_s  # paired with the pool's BOOST last slice when that is known
         while len(c.sell_land_s) > BOOST_SEEN_KEEP:
             c.sell_land_s.pop(next(iter(c.sell_land_s)))
+        extra: dict[str, Any] = {}
+        if v2 is not None:
+            late_v2, extra = self._v2_late(v2, plan, landed_slot, landing_wall)
+            late = late or late_v2
         c.sells_late += 1 if late else 0
         self._log("exit_landing", mint, landed_slot=landed_slot, exit_slot=plan["exit_slot"], land_slot=plan["land_slot"],
-                  error_slots=landed_slot - plan["land_slot"], late=late, emergency=emergency, landing_s=round(landing_s, 3))
+                  error_slots=landed_slot - plan["land_slot"], late=late, emergency=emergency, landing_s=round(landing_s, 3), **extra)
         c.save(self.counters_path)
         if c.sells_landed >= LATE_SELL_MIN_N and c.sells_late / c.sells_landed > LATE_SELL_FRAC:
             self._latch("late_sells_gt_5pct", late=c.sells_late, landed=c.sells_landed)
