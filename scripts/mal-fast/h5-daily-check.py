@@ -198,6 +198,12 @@ HALT_MEANING = {
     "landing_median_gt_3s": "median trigger-to-landing above 3 s",
     "late_sells_gt_5pct": "more than 5% of landed sells late",
     "pre_unlinked_share": "triggers traded although their predecessor print may be missing are more than 15% of landed buys (judged from 20 landed)",
+    # H5-BOOSTCLOCK v2 exit (DEC-028 section 4): latched only by a build whose compiled-in EXIT_MODE is "v2" (the shipped build is "v1")
+    "v2_sell_after_boost_gt_15pct": "v2: over a rolling 20 paired sells, more than 15% landed at or after the pool's BOOST last slice",
+    "v2_plain_median_lt_330": "v2: a completed UTC day's plain-pool BOOST last-slice median below 330 s (at least 30 plain pools)",
+    "v2_projection_inputs": "v2: a completed UTC day's median BOOST total outside [17.5, 17.7] SOL or median slice interval outside [6, 24] s",
+    "v2_slice_stream_stale": "v2: no BOOST slice for more than 45 s on more than 2 open positions in a UTC day",
+    "v2_slice_lag_gt_1_35s": "v2: median BOOST slice receive lag over the day's traded pools above 1.35 s",
 }
 # Executor budget stops, written as `skip` rows (reason=...) for every trigger refused while they are in force (DEC-024 section 8: "stop fired").
 BUDGET_STOPS = {

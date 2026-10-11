@@ -626,6 +626,10 @@ def credential_path() -> str:
 
 
 class C1NFExecutor(h5.H5Executor):
+    # C1-NF trades its own exit, never H5's v2 BOOST-clock rule: pinned to v1 whatever H5's compiled EXIT_MODE is (DEC-028 Option B is an
+    # H5-only switch; review of #597). A C1-NF position is never stamped exit_rule H5-BOOSTCLOCK-v2 and never reads a boost_slice row.
+    EXIT_MODE_PIN = h5.EXIT_MODE_V1
+
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], keypair: Keypair | None, *,
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
