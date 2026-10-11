@@ -395,11 +395,14 @@ def s_trigger(t: float, pool: str = "POOLSECRET1", variant: str = "pv", syntheti
             "t_detect_ms": ms(t), "q_trigger_sol": 37.25, "synthetic": synthetic, "synthetic_src": "rpc", "v": 1, "t_ms": ms(t)}
 
 
-def s_pool(t: float, n: int, min_q=61.5, triggered=(), synthetic=False, src="rpc", sealed=False, look2=False) -> dict:
+def s_pool(t: float, n: int, min_q=61.5, triggered=(), synthetic=False, src="rpc", sealed=False, look2=False, sps=0.217, gap=False) -> dict:
+    """A shadow `pool` close record. sps_at_s0 0.217 s/slot (the usual since go-live): min_q's 1500 slots end at 325.5 s, within 330 s."""
     if sealed:  # the EXP-022 s9 close record: no min_q, no triggered, no class
-        return {"type": "pool", "reason": "done", "sealed": True, "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "v": 1, "t_ms": ms(t)}
-    rec = {"type": "pool", "reason": "done", "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "min_q_pv_sol": min_q, "min_q_fv_sol": min_q,
-           "sealed": False, "triggered": list(triggered), "synthetic": synthetic, "synthetic_src": src, "v": 1, "t_ms": ms(t)}
+        return {"type": "pool", "reason": "done", "sealed": True, "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "sps_at_s0": sps, "v": 1,
+                "t_ms": ms(t)}
+    rec = {"type": "pool", "reason": "done", "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "sps_at_s0": sps, "min_q_pv_sol": min_q,
+           "min_q_fv_sol": min_q, "sealed": False, "triggered": list(triggered), "synthetic": synthetic, "synthetic_src": src, "gap": gap, "v": 1,
+           "t_ms": ms(t)}
     if look2:  # EXP-024 Look 2's seal: the shadow writes min_q None with this flag (a number here tests the flag alone)
         rec["h5_look2_sealed"] = True
     return rec
@@ -514,18 +517,26 @@ def test_idle_ledger_a_seal_count_row_accounts_for_the_triggers_before_it(tmp_pa
     assert alerts(out) == ["h5_idle_unledgered"] and "wrote 1 plain pv trigger(s)" in out  # the newer one came after the newest seal_count row
 
 
+MISSED = ("plain pool(s) drained to <= 40 SOL (min_q_pv_sol) without a pv trigger in the last 6 h, each with no gap and its 1500-slot min_q "
+          "window ending by 330 s (sps_at_s0); at least 2 needed (the rule fires only within 300 s with BOOST still buying, so one pool can "
+          "drain legitimately just after: check the shadow before calling it a detector fault)")
+AMBIGUOUS = ("ambiguous (drained to <= 40 SOL without a pv trigger, but with a gap, no sps_at_s0, or a 1500-slot min_q window past 330 s: "
+             "possibly a drain after the rule's 300 s; never counted as missed)")
+
+
 def test_idle_ledger_drained_plain_pool_without_a_trigger_is_a_detector_miss(tmp_path):
     base = quiet_pools()
     h = idle_world(*base, s_pool(T - 3600, 500, min_q=38.2), s_pool(T - 1800, 501, min_q=40.0))
     rc, out = go(h, tmp=tmp_path / "two", now=T)
     assert rc == 1 and alerts(out) == ["h5_detector_missed"], out
-    assert "2 plain pool(s) drained to <= 40 SOL (min_q_pv_sol) without a pv trigger in the last 6 h" in out and no_per_pool_values(out)
+    assert "ALERT h5_detector_missed: 2 " + MISSED in out and no_per_pool_values(out)
+    other = s_pool(T - 1800, 501, min_q=40.0)  # a second missed candidate: one alone is an INFO (IDLE_MISSED_MIN)
     no_key = {k: v for k, v in s_pool(T - 3600, 500, min_q=39.0).items() if k != "triggered"}
-    rc, out = go(idle_world(*base, no_key), tmp=tmp_path / "missing_key", now=T)
-    assert alerts(out) == ["h5_detector_missed"] and "1 plain pool(s)" in out
+    rc, out = go(idle_world(*base, no_key, other), tmp=tmp_path / "missing_key", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "2 plain pool(s)" in out
     # #589 review F4: the executor trades pv only, so a pool drained on pv with only an fv trigger is a pv miss
-    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=20.0, triggered=["fv"])), tmp=tmp_path / "fv_only", now=T)
-    assert alerts(out) == ["h5_detector_missed"] and "1 plain pool(s)" in out
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=20.0, triggered=["fv"]), other), tmp=tmp_path / "fv_only", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "2 plain pool(s)" in out
     for name, rec in {"triggered": s_pool(T - 3600, 500, min_q=12.0, triggered=["fv", "pv"]), "pv only": s_pool(T - 3600, 500, min_q=12.0, triggered=["pv"]),
                       "above Q*": s_pool(T - 3600, 500, min_q=40.01), "synthetic": s_pool(T - 3600, 500, min_q=20.0, synthetic=True),
                       "not rpc": s_pool(T - 3600, 500, min_q=20.0, src="ws"), "sealed": s_pool(T - 3600, 500, sealed=True),
@@ -540,6 +551,56 @@ def test_idle_ledger_drained_plain_pool_without_a_trigger_is_a_detector_miss(tmp
     # an unledgered trigger outranks a miss: one alert, the executor's
     rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=38.2), s_trigger(T - 3600)), tmp=tmp_path / "both", now=T)
     assert alerts(out) == ["h5_idle_unledgered"] and "executor is not reading" in out
+
+
+def test_idle_ledger_one_missed_candidate_is_info_and_slow_slots_or_gaps_are_ambiguous(tmp_path):
+    """MiScusi jobs #681/#682: min_q_pv covers the first 1500 slots after s0, the rule only 300 s. On 2026-10-09 10Z-14Z (0.265-0.270 s/slot,
+    a window of about 400 s) 20 plain pools drained to <= 40 SOL with an empty `triggered`, all after 300 s; a 21st at 18Z had sps 0.2212
+    (331.8 s) and a gap. Since go-live, 23/23 drained plain pools triggered pv. Such pools are ambiguous: judged, never missed."""
+    base = quiet_pools()
+    # one missed candidate alone: an INFO naming it, not an alert (a single pool can drain legitimately up to 30 s past the rule window)
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=38.2)), tmp=tmp_path / "one", now=T)
+    assert rc == 0 and alerts(out) == [], out
+    assert (QUIET + "109 plain pools closed with a min_q, 1 missed candidate(s) (drained to <= 40 SOL without a pv trigger; h5_detector_missed "
+            "needs 2); ") in out and "ambiguous" not in out and no_per_pool_values(out)
+    # the #681 shape: 20 slow-slot pools (0.267 s/slot), min_q 30, untriggered: ambiguous, never missed
+    slow = [s_pool(T - 3600 - 60 * i, 500 + i, min_q=30.0, sps=0.267) for i in range(20)]
+    rc, out = go(idle_world(*base, *slow), tmp=tmp_path / "slow", now=T)
+    assert rc == 0 and alerts(out) == [], out
+    assert QUIET + "128 plain pools closed with a min_q, 20 " + AMBIGUOUS + "; " in out and no_per_pool_values(out)
+    # ... and alongside one missed candidate, both are counted; it still takes 2 candidates to alert
+    rc, out = go(idle_world(*base, *slow, s_pool(T - 1800, 600, min_q=10.0)), tmp=tmp_path / "slow_and_one", now=T)
+    assert alerts(out) == [] and ("129 plain pools closed with a min_q, 1 missed candidate(s) (drained to <= 40 SOL without a pv trigger; "
+                                  "h5_detector_missed needs 2); 20 " + AMBIGUOUS) in out, out
+    rc, out = go(idle_world(*base, *slow, s_pool(T - 1800, 600, min_q=10.0), s_pool(T - 1700, 601, min_q=10.0)), tmp=tmp_path / "slow_and_two", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "ALERT h5_detector_missed: 2 " + MISSED in out, out
+    # each of these, twice (so two would alert if they were missed): ambiguous
+    for name, kw in {"sps 0.267": {"sps": 0.267}, "sps 0.2212 (331.8 s)": {"sps": 0.2212}, "gap True": {"gap": True},
+                     "gap True, fast slots": {"gap": True, "sps": 0.2}, "sps None": {"sps": None}, "sps a string": {"sps": "0.217"},
+                     "gap None": {"gap": None}}.items():
+        recs = [s_pool(T - 3600 - i, 500 + i, min_q=30.0, **kw) for i in range(2)]
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / re.sub(r"\W", "_", name), now=T)
+        assert rc == 0 and alerts(out) == [] and "110 plain pools closed with a min_q, 2 " + AMBIGUOUS in out, (name, out)
+    for name, drop in {"no sps_at_s0": "sps_at_s0", "no gap": "gap"}.items():
+        recs = [{k: v for k, v in s_pool(T - 3600 - i, 500 + i, min_q=30.0).items() if k != drop} for i in range(2)]
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert alerts(out) == [] and "2 " + AMBIGUOUS in out, (name, out)
+    # 330 s exactly (0.22 s/slot) is inside the bound: missed
+    rc, out = go(idle_world(*base, *(s_pool(T - 3600 - i, 500 + i, min_q=30.0, sps=0.22) for i in range(2))), tmp=tmp_path / "edge", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "2 " + MISSED in out
+    # a numeric min_q above 40 is quiet whatever the window (the min over 400 s bounds the min over 300 s from below), and so is a gapped one;
+    # a drained pool with a pv trigger is triggered whatever its window or gap
+    for name, recs in {"slow quiet": quiet_pools(sps=0.267), "gapped quiet": quiet_pools(gap=True),
+                       "slow triggered": (*base, *(s_pool(T - 3600 - i, 500 + i, min_q=30.0, sps=0.267, gap=True, triggered=["pv"]) for i in range(2)))}.items():
+        rc, out = go(idle_world(*recs), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert rc == 0 and alerts(out) == [] and "none drained to <= 40 SOL without a pv trigger" in out and "ambiguous" not in out, (name, out)
+    counts = dc.shadow_idle_counts(idle_world(*quiet_pools(sps=0.267)), SHADOW_DIR, T)[0]
+    assert (counts["judged"], counts["missed"], counts["ambiguous"]) == (108, 0, 0)
+    # ambiguous pools count toward the judged quorum (30), withheld ones do not
+    rc, out = go(idle_world(*quiet_pools(29), s_pool(T - 600, 500, min_q=30.0, sps=0.267)), tmp=tmp_path / "quorum", now=T)
+    assert alerts(out) == [] and "30 plain pools closed with a min_q, 1 " + AMBIGUOUS in out, out
+    rc, out = go(idle_world(*quiet_pools(29), s_pool(T - 600, 500, min_q=None)), tmp=tmp_path / "quorum_withheld", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "only 29 of 30 plain pool closes carry a min_q_pv_sol" in out
 
 
 def test_idle_ledger_a_window_of_withheld_min_q_is_not_a_quiet_market(tmp_path):
@@ -665,6 +726,19 @@ def test_idle_constants_follow_the_shadow_and_the_executor():
     from tools import h5_shadow
 
     assert dc.Q_STAR_SOL == h5_shadow.Q_STAR_SOL
+    # min_q_pv's window is an inline literal in the shadow's _on_print: pinned by its line, which must still set min_q_pv
+    lines = (ROOT / "tools/h5_shadow.py").read_text().splitlines()
+    at = [i for i, line in enumerate(lines) if f"if pr.slot - p.s0 <= {dc.IDLE_MINQ_SLOTS}:" in line]
+    assert len(at) == 1 and lines[at[0] + 1].strip().startswith("p.min_q_pv = qpv if p.min_q_pv is None else min(p.min_q_pv, qpv)")
+    shadow = "\n".join(lines)
+    assert shadow.count("p.min_q_pv = ") == 1  # nothing else moves min_q_pv
+    # the trigger window (300 s) the 330 s bound leaves 30 s past, and the pool-close fields the miss test reads (from _close's plain record)
+    assert (h5_shadow.T_MIN_S, h5_shadow.T_MAX_S) == (0.0, 300.0)
+    assert (dc.IDLE_MINQ_SLOTS, dc.IDLE_MINQ_WINDOW_MAX_S, dc.IDLE_MISSED_MIN) == (1500, 330.0, 2)
+    close = shadow.split("    def _close(self, p: Pool, reason: str) -> None:\n", 1)[1].split("\n    def ", 1)[0]
+    plain = close.split("        rec = {\n", 1)[1]
+    assert all(f in plain for f in ('"sps_at_s0": p.sps0,', '"gap": bool(p.gaps),', '"min_q_pv_sol": None if (sealed or h5s or p.min_q_pv is None) '
+                                                                                      'else p.min_q_pv / 1e9,'))
     ex = (ROOT / "tools/h5_executor.py").read_text()
     assert f'\nTRIGGER_VARIANT = "{dc.SHADOW_TRIGGER_VARIANT}"' in ex and f'\nSYNTHETIC_SRC_OK = "{dc.SHADOW_PLAIN_SRC}"' in ex
     assert f'self._log("{dc.IDLE_SEAL_KIND}", "", seal_skips=' in ex  # the executor's count row for seal refusals
@@ -687,7 +761,7 @@ def test_shadow_idle_counts_reads_real_shadow_records_only_in_the_window_and_nev
         fh.write('{"type":"pool","reason":"done","synthetic":false,"synthetic_src":"rpc","min_q_pv_sol":3')  # a line still being written
     counts, why = dc.shadow_idle_counts(dc.Host(), str(d), T)
     assert counts == {"files": 5, "hours": 7, "missing": 2, "unledgered": 1, "triggers_window": 1, "plain_pools": 41, "plain_recent": 17,
-                      "judged": 41, "drained_untriggered": 1, "sealed": 0}, why
+                      "judged": 41, "missed": 1, "ambiguous": 0, "sealed": 0}, why
     # looking further back for triggers (B1) reads the older files for triggers only: the window's pool counts do not change
     back = dc.shadow_idle_counts(dc.Host(), str(d), T, T - 11 * 3600)[0]
     assert back == {**counts, "files": 6, "unledgered": 2}
