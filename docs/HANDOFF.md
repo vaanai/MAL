@@ -27,7 +27,21 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-11 ~06:10Z (NEWEST, read first)
+### STATE 10-11 ~06:35Z (NEWEST, read first; adds to 06:10Z below)
+
+- **Merged, each with QP OK and Reviewer OK posted on the PR at the exact head first:**
+  - #600 (`3406cb0`): DEC-024 phase-2 gate rule note.
+  - #598 (`9377ef5`): shadow boost_slice records, md5 75cb0b0c 72/72 with the union off and on (job #722).
+  - #542 (`a62fdef`): EXP-026 / DEC-028 / DEC-029 M1. #542 was a draft and was marked ready first.
+- **DEC-029 §3 notice posted:** notebook n_-tUOOJ2mZvBXeQ, Console fy-20261011-0632-dec029-m1. Recorded in DEC-029 §3.
+- **#596 reviewer pass posted:** OK_WITH_FIXES (comment 6106138254).
+- **Union follow-up PR is next.** Brief: scratchpad union-followup-brief.md. Restrict trigger-time union fields to slot <= trigger slot; re-open at the hour's byte offset; drop the truncation fragment; remove the O(n) fallback when the tip leads; launcher default union OFF; code sha in the start record; event_index in trigger records; docstring.
+- **Fix round 3 (wf_2bc95721-c75):**
+  - #593: the literal Am.4 unevaluated-day rule (unit down = unevaluated), sticky stop-unverified flag, time limit to END, STOP below 335 on the executor running median, catch-up cap 13.
+  - #594: creator history from tape start (gap hours skipped, decisions off); GO-PLAN 7a / 14(a) re-declared.
+- **H5 06:17Z running check:** no_halt; plain 339.8385 s, n 106. Status: 5 attempts, 0 open, 2 today.
+
+### STATE 10-11 ~06:10Z (older)
 
 **H5.**
 - v1 is LIVE at T0 (resumed 00:15:06Z). The reinstall is **named f873aac** (manifest on PR #499): end_ms 2026-10-23T19:29:53Z, max_days 14, the #540 seal and the #589 watch. Helm installs it while open=0, before 2026-10-16T01Z.
