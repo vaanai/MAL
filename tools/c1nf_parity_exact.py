@@ -47,7 +47,8 @@ Outputs in --out-dir (which must be empty or absent):
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 --probe-lookahead --out-dir OUT_P
       (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
   python tools/c1nf_parity_exact.py cross-compare REPLAY506.npz OUT_A/parity-stage1-exact.npz [--skip-wallet] [--json J]
-      (QP's 09-20 cross-harness check: #506's replay npz against run A's stage-1 vectors; exit 0 only on 0 differing rows)
+      (QP's 09-20 cross-harness check: #506's replay npz against the stage-1 vectors of a #594 exact run whose decisions cover all of #506's
+      rows; exit 0 only if shared_rows > 0, rows_differing == 0, only_506 == 0 and only_594 == 0, reported with by_feature)
 
 Exploration tape only: tools.c1nf_shadow.refuse_replay runs before any read (exploration hours, forbidden path tokens). No CAP-PICK oracle,
 no seal (replay). Heavy runs are MiScusi jobs, memory-capped; this file does not decide the cap.
@@ -358,20 +359,41 @@ def wallet_feature(name: str) -> bool:
 
 def cross_compare(replay506: Mapping[str, Any], stage1_594: Mapping[str, Any], *, skip_wallet: bool = False) -> dict:
     """#506's `replay --day D` npz (exact_pool, exact_T, exact_stage1, exact_vec) against this harness's parity-stage1-exact.npz (pool, T,
-    vec float32) on the shared stage-1 (pool, T) rows: float32 vectors, NaN equal to NaN, the differing-row count per feature name.
-    skip_wallet: compare only the 65 non-wallet columns (when the two runs did not read the same as-of ledger). Opens no outcome."""
+    vec float32): float32 vectors on the shared stage-1 (pool, T) rows, NaN equal to NaN, the differing-row count per feature name, and the
+    two stage-1 MEMBERSHIP counts (QP on 626973f: stage-1 membership is a float32 function of v5, surge, new5 and qreal, which are pool-state
+    features read at the next print, so a state difference can move a row out of stage 1 on one side and out of the shared set):
+      only_506  #506 stage-1 rows that are not #594 stage-1 rows;
+      only_594  #594 stage-1 rows whose (pool, T) is one of #506's decision keys (exact_pool/exact_T, any stage-1 flag) but is not a #506
+                stage-1 row. #594 rows outside #506's key set (the other graduation days a continuous run also decides) are counted in
+                only_594_outside_506_keys and do not gate; only_594_outside_on_506_pools is the part of those on #506's own pools.
+    `pass` (the exit-0 rule) = shared_rows > 0 and rows_differing == 0 and only_506 == 0 and only_594 == 0 and no duplicate (pool, T) key on
+    either side. skip_wallet: compare only the 65 non-wallet columns (when the two runs did not read the same as-of ledger). Opens no
+    outcome."""
     from tools.c1nf_features import FEATURE_NAMES
 
-    a = {(str(p), int(t)): i for i, (p, t, s1) in enumerate(zip(replay506["exact_pool"], replay506["exact_T"], replay506["exact_stage1"])) if s1}
-    b = {(str(p), int(t)): i for i, (p, t) in enumerate(zip(stage1_594["pool"], stage1_594["T"]))}
+    keys506 = [(str(p), int(t)) for p, t in zip(replay506["exact_pool"], replay506["exact_T"])]
+    s1_506 = [bool(x) for x in replay506["exact_stage1"]]
+    keys594 = [(str(p), int(t)) for p, t in zip(stage1_594["pool"], stage1_594["T"])]
+    all506 = set(keys506)
+    a = {k: i for i, (k, s1) in enumerate(zip(keys506, s1_506)) if s1}
+    b = {k: i for i, k in enumerate(keys594)}
     shared = sorted(set(a) & set(b))
+    in_506_keys = {k for k in b if k in all506}
+    outside = set(b) - all506
+    pools506 = {k[0] for k in all506}
     cols = [j for j, n in enumerate(FEATURE_NAMES) if not (skip_wallet and wallet_feature(n))]
     A = np.asarray(replay506["exact_vec"], dtype=np.float64)[[a[k] for k in shared]][:, cols].astype(np.float32) if shared else np.zeros((0, len(cols)), np.float32)
     B = np.asarray(stage1_594["vec"], dtype=np.float32)[[b[k] for k in shared]][:, cols] if shared else np.zeros((0, len(cols)), np.float32)
     diff = ~((A == B) | (np.isnan(A) & np.isnan(B)))
     by = {FEATURE_NAMES[j]: int(diff[:, i].sum()) for i, j in enumerate(cols)}
-    return {"shared_rows": len(shared), "only_506": len(set(a) - set(b)), "only_594": len(set(b) - set(a)), "columns": len(cols),
-            "rows_differing": int(diff.any(axis=1).sum()), "by_feature": {n: c for n, c in by.items() if c}}
+    out = {"shared_rows": len(shared), "stage1_506": len(a), "stage1_594": len(b), "decision_keys_506": len(all506),
+           "only_506": len(set(a) - set(b)), "only_594": len(in_506_keys - set(a)),
+           "only_594_outside_506_keys": len(outside), "only_594_outside_on_506_pools": sum(1 for k in outside if k[0] in pools506),
+           "duplicate_keys_506": len(keys506) - len(all506), "duplicate_keys_594": len(keys594) - len(b),
+           "columns": len(cols), "rows_differing": int(diff.any(axis=1).sum()), "by_feature": {n: c for n, c in by.items() if c}}
+    out["pass"] = bool(out["shared_rows"] > 0 and out["rows_differing"] == 0 and out["only_506"] == 0 and out["only_594"] == 0
+                       and out["duplicate_keys_506"] == 0 and out["duplicate_keys_594"] == 0)
+    return out
 
 
 # ---- inputs -----------------------------------------------------------------------------------------------------------------------------
@@ -438,7 +460,7 @@ def main_cross(argv: Sequence[str]) -> int:
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
     print(json.dumps(out, sort_keys=True))
-    return cs.EXIT_OK if out["rows_differing"] == 0 and out["shared_rows"] > 0 else EXIT_EXACT_CHECK
+    return cs.EXIT_OK if out["pass"] else EXIT_EXACT_CHECK
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

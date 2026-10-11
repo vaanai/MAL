@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections import defaultdict
 
@@ -382,28 +383,70 @@ def test_run_replay_mode_builds_exact_shadow_for_one_call_and_restores_shadow(mo
         px.ExactShadow(live, _models(), cs.MemorySink(), replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY)
 
 
+def _cc_fixture():
+    n = len(FEATURE_NAMES)
+    base = np.arange(4 * n, dtype=np.float64).reshape(4, n) / 7.0
+    base[0, 0] = np.nan
+    r506 = {"exact_pool": np.array(["A", "B", "C", "D"]), "exact_T": np.array([60, 60, 120, 60]),
+            "exact_stage1": np.array([True, True, False, True]), "exact_vec": base}
+    # #594 (a continuous run) also decides E, a pool of another graduation day: outside #506's key set, it does not gate
+    vec = np.vstack([base[[0, 1, 3]], np.full((1, n), 5.0)]).astype(np.float32)
+    s594 = {"pool": np.array(["A", "B", "D", "E"]), "T": np.array([60, 60, 60, 60]), "vec": vec}
+    return r506, s594
+
+
 def test_cross_compare_counts_differing_rows_by_feature_on_shared_stage1_rows(tmp_path):
     n = len(FEATURE_NAMES)
     assert sum(not px.wallet_feature(x) for x in FEATURE_NAMES) == 65             # QP: the 65 non-wallet columns
-    base = np.arange(3 * n, dtype=np.float64).reshape(3, n) / 7.0
-    base[0, 0] = np.nan
-    r506 = {"exact_pool": np.array(["A", "B", "C"]), "exact_T": np.array([60, 60, 120]), "exact_stage1": np.array([True, True, False]),
-            "exact_vec": base}
-    v = base.astype(np.float32)
-    s594 = {"pool": np.array(["A", "B", "C"]), "T": np.array([60, 60, 120]), "vec": v.copy()}
+    r506, s594 = _cc_fixture()
+    v = s594["vec"].copy()
     out = px.cross_compare(r506, s594)
-    assert out == {"shared_rows": 2, "only_506": 0, "only_594": 1, "columns": n, "rows_differing": 0, "by_feature": {}}
+    assert out == {"shared_rows": 3, "stage1_506": 3, "stage1_594": 4, "decision_keys_506": 4, "only_506": 0, "only_594": 0,
+                   "only_594_outside_506_keys": 1, "only_594_outside_on_506_pools": 0, "duplicate_keys_506": 0, "duplicate_keys_594": 0,
+                   "columns": n, "rows_differing": 0, "by_feature": {}, "pass": True}
     w = next(j for j, x in enumerate(FEATURE_NAMES) if px.wallet_feature(x))
     c = FEATURE_NAMES.index("cr_known_out")
     s594["vec"][1, c] += 1
     s594["vec"][0, w] = np.nextafter(s594["vec"][0, w], np.float32(np.inf))      # 1 float32 ulp is a difference
     out = px.cross_compare(r506, s594)
-    assert out["rows_differing"] == 2 and out["by_feature"] == {"cr_known_out": 1, FEATURE_NAMES[w]: 1}
+    assert out["rows_differing"] == 2 and out["by_feature"] == {"cr_known_out": 1, FEATURE_NAMES[w]: 1} and not out["pass"]
     out = px.cross_compare(r506, s594, skip_wallet=True)
-    assert out["columns"] == 65 and out["rows_differing"] == 1 and out["by_feature"] == {"cr_known_out": 1}
+    assert out["columns"] == 65 and out["rows_differing"] == 1 and out["by_feature"] == {"cr_known_out": 1} and not out["pass"]
     np.savez(tmp_path / "a.npz", **r506)
     np.savez(tmp_path / "b.npz", **s594)
     assert px.main(["cross-compare", str(tmp_path / "a.npz"), str(tmp_path / "b.npz"), "--json", str(tmp_path / "o.json")]) == px.EXIT_EXACT_CHECK
+    assert json.loads((tmp_path / "o.json").read_text())["by_feature"] == {"cr_known_out": 1, FEATURE_NAMES[w]: 1}
     s594["vec"] = v
     np.savez(tmp_path / "c.npz", **s594)
     assert px.main(["cross-compare", str(tmp_path / "a.npz"), str(tmp_path / "c.npz")]) == cs.EXIT_OK
+
+
+def test_cross_compare_fails_on_stage1_membership_differences_with_zero_differing_rows(tmp_path):
+    """QP on 626973f: a state difference that moves a row out of stage 1 on one side drops it from the shared rows; rows_differing stays 0
+    and the check must still fail. Both membership counts gate the exit; #594 rows outside #506's decision keys do not."""
+    r506, s594 = _cc_fixture()
+    np.savez(tmp_path / "r.npz", **r506)
+    # (ii) a #506 stage-1 row (D, 60) that #594 did not keep as stage 1
+    drop = {"pool": s594["pool"][[0, 1, 3]], "T": s594["T"][[0, 1, 3]], "vec": s594["vec"][[0, 1, 3]]}
+    out = px.cross_compare(r506, drop)
+    assert out["rows_differing"] == 0 and out["shared_rows"] == 2 and out["only_506"] == 1 and out["only_594"] == 0 and not out["pass"]
+    np.savez(tmp_path / "d.npz", **drop)
+    assert px.main(["cross-compare", str(tmp_path / "r.npz"), str(tmp_path / "d.npz"), "--skip-wallet"]) == px.EXIT_EXACT_CHECK
+    # (iii) a #594 stage-1 row (C, 120) that #506 decided but did not mark stage 1
+    extra = {"pool": np.append(s594["pool"], "C"), "T": np.append(s594["T"], 120),
+             "vec": np.vstack([s594["vec"], r506["exact_vec"][2:3].astype(np.float32)])}
+    out = px.cross_compare(r506, extra)
+    assert out["rows_differing"] == 0 and out["only_506"] == 0 and out["only_594"] == 1 and out["only_594_outside_506_keys"] == 1
+    assert not out["pass"]
+    np.savez(tmp_path / "e.npz", **extra)
+    assert px.main(["cross-compare", str(tmp_path / "r.npz"), str(tmp_path / "e.npz")]) == px.EXIT_EXACT_CHECK
+    # a #594 row on one of #506's pools at a minute #506 never decides: outside the key set, reported, not gating
+    late = {"pool": np.append(s594["pool"], "A"), "T": np.append(s594["T"], 999960), "vec": np.vstack([s594["vec"], s594["vec"][:1]])}
+    out = px.cross_compare(r506, late)
+    assert out["only_594"] == 0 and out["only_594_outside_506_keys"] == 2 and out["only_594_outside_on_506_pools"] == 1 and out["pass"]
+    # a duplicate (pool, T) key would hide a row: fail closed
+    dup = {"pool": np.append(s594["pool"], "A"), "T": np.append(s594["T"], 60), "vec": np.vstack([s594["vec"], s594["vec"][:1]])}
+    out = px.cross_compare(r506, dup)
+    assert out["duplicate_keys_594"] == 1 and not out["pass"]
+    # no shared row is never a pass
+    assert not px.cross_compare(r506, {"pool": np.array(["E"]), "T": np.array([60]), "vec": s594["vec"][3:]})["pass"]
