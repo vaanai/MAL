@@ -669,3 +669,71 @@ def test_shadow_and_feature_engine_blobs_are_unchanged():
     here = Path(px.__file__).resolve().parent
     assert px.git_blob(here / "c1nf_shadow.py") == "c2dafcdcdc69f7f0269746431c01755dc7f45e4b"
     assert px.git_blob(here / "c1nf_features.py") == "d6c87354a520ea25efc59975d7d041570d8226f7"
+
+
+# ---- tape NULL rows (2026-10-11) -----------------------------------------------------------------------------------------------------
+def _write_hour(tmp_path, sub, h, rows):
+    import pandas as pd
+
+    d = tmp_path / "tape" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows)
+    for c in ("slot", "block_time", "tx_index", "event_index", "base_reserve"):
+        if c in df:
+            df[c] = df[c].astype("Int64")      # nullable int64, as the tape writer stores it
+    df.to_parquet(d / f"{h}.parquet")
+    return d / f"{h}.parquet"
+
+
+def test_tape_null_filter_drops_only_null_rows_and_keeps_exact_ints(tmp_path):
+    import pandas as pd
+
+    big = 999_999_999_999_999                       # above 2**53 would lose precision as float; this one must stay an exact int
+    rows = [dict(slot=455_000_001, block_time=1_757_660_000, tx_index=3, event_index=0, mint="M1", base_reserve=big),
+            dict(slot=None, block_time=None, tx_index=None, event_index=None, mint=None, base_reserve=None),
+            dict(slot=455_000_002, block_time=1_757_660_001, tx_index=0, event_index=1, mint="M2", base_reserve=7)]
+    f = _write_hour(tmp_path, "creates", "2026-09-12T07", rows)
+    raw = pd.read_parquet(f)
+    assert raw["slot"].dtype.kind == "f" or str(raw["slot"].dtype) == "Int64"   # unfiltered: float (or nullable) because of the NULL
+    px.TAPE_NULL_ROWS.clear()
+    with px.tape_null_filter():
+        got = pd.read_parquet(f).to_dict("records")
+        sub = pd.read_parquet(f, columns=["slot", "block_time", "mint"])
+    assert pd.read_parquet is not None and pd.read_parquet(f) is not None   # restored after the block
+    assert [r["mint"] for r in got] == ["M1", "M2"]
+    assert all(type(r["slot"]) is int and type(r["block_time"]) is int for r in got)
+    assert got[0]["base_reserve"] == big and type(got[0]["base_reserve"]) is int
+    assert list(sub.columns) == ["slot", "block_time", "mint"] and len(sub) == 2
+    assert sum(px.TAPE_NULL_ROWS.values()) == 2 and str(f) in px.TAPE_NULL_ROWS
+
+
+def test_tape_null_filter_leaves_a_clean_file_byte_for_byte_the_same_path(tmp_path):
+    import pandas as pd
+
+    rows = [dict(slot=455_000_001 + i, block_time=1_757_660_000 + i, tx_index=i, event_index=0, mint=f"M{i}") for i in range(5)]
+    f = _write_hour(tmp_path, "trades", "2026-09-12T06", rows)
+    a = pd.read_parquet(f)
+    px.TAPE_NULL_ROWS.clear()
+    with px.tape_null_filter():
+        b = pd.read_parquet(f)
+    pd.testing.assert_frame_equal(a, b)
+    assert not px.TAPE_NULL_ROWS
+
+
+def test_shadow_tape_rows_survive_a_null_create_under_the_filter(tmp_path):
+    rows_c = [dict(slot=455_000_001, block_time=1_757_660_000, tx_index=0, event_index=0, mint="MC", creator="CR", name="n", symbol="s",
+                   is_mayhem_mode=False),
+              dict(slot=None, block_time=None, tx_index=None, event_index=None, mint=None, creator=None, name=None, symbol=None,
+                   is_mayhem_mode=None)]
+    _write_hour(tmp_path, "creates", "2026-09-12T07", rows_c)
+    _write_hour(tmp_path, "migrations", "2026-09-12T07", [dict(type="complete", mint="MX", slot=455_000_003, block_time=1_757_660_002,
+                                                               tx_index=0, event_index=0)])
+    _write_hour(tmp_path, "trades", "2026-09-12T07", [dict(venue="pump_bonding", mint="MC", pool=None, slot=455_000_002, block_time=1_757_660_001,
+                                                           tx_index=0, event_index=0)])
+    with pytest.raises(TypeError):
+        list(cs.tape_rows(str(tmp_path / "tape"), ["2026-09-12T07"], {}, {}))      # the bug: sorting (None, ...) against ints
+    with px.tape_null_filter():
+        out = list(cs.tape_rows(str(tmp_path / "tape"), ["2026-09-12T07"], {}, {}))
+    rows = out[0]
+    assert [(r["_k"], r["slot"]) for r in rows] == [("creates", 455_000_001), ("trades", 455_000_002), ("migrations", 455_000_003)]
+    assert all(type(r["slot"]) is int for r in rows)

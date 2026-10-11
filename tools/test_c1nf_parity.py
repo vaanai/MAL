@@ -154,3 +154,26 @@ def test_cli_requires_matching_out_flag():
         cp.main(["replay", "--days", "2026-08-15"])
     with pytest.raises(SystemExit):
         cp.main(["replay", "--day", "2026-08-15"])
+
+
+def test_rows_without_slot_or_block_time_are_skipped_like_the_shadow(tape, capsys):
+    """The exploration tape has 3 all-NULL rows (creates and trades 2026-09-12T07, trades 2026-09-15T03); MiScusi #752 crashed sorting one.
+    Shadow.feed drops a row whose slot or block_time is not an int (rows_bad), so the replay must too: adding such rows changes nothing."""
+    d = DAYS[0]
+    cp.replay(d, "2026-08-14T12", str(tape / "clean.npz"))
+    con = duckdb.connect()
+    h = sorted(p.stem for p in (tape / "tape" / "trades").glob("*.parquet"))[3]
+    for sub in ("creates", "trades", "migrations"):
+        f = tape / "tape" / sub / f"{h}.parquet"
+        tmp = tape / f"{sub}.tmp.parquet"
+        extra = "SELECT NULL::BIGINT AS slot" if sub != "migrations" else "SELECT 'complete' AS type, NULL::BIGINT AS slot"
+        con.execute(f"COPY (SELECT * FROM read_parquet('{f}') UNION ALL BY NAME {extra}) TO '{tmp}' (FORMAT parquet)")
+        tmp.replace(f)
+    capsys.readouterr()
+    cp.replay(d, "2026-08-14T12", str(tape / "nulls.npz"))
+    assert "null-slot/time rows skipped 3" in capsys.readouterr().out
+    A, B = np.load(tape / "clean.npz", allow_pickle=False), np.load(tape / "nulls.npz", allow_pickle=False)
+    assert set(A.files) == set(B.files)
+    for k in A.files:
+        if k != "seconds":
+            assert _same(A[k], B[k]), k

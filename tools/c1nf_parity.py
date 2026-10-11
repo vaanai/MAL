@@ -155,7 +155,7 @@ def replay_days(days: list[str], h_from: str, outs: dict[str, str], max_hours: i
     elig: dict[str, set] = {d: set() for d in days}
     pend: dict[str, list] = {}
     gday: dict[str, str] = {}
-    back = 0; last_slot = -1; di = 0; nrows = 0
+    back = 0; last_slot = -1; di = 0; nrows = 0; null_skipped = 0
 
     def rec(r: "cf.Features"):
         return (r.pool, r.t, r.pre, r.stage1, r.h_top1, r.cap_ok, r.get("v5"), r.get("surge"), r.get("new5"), r.get("qreal"), r.vec if r.pre else None)
@@ -197,14 +197,22 @@ def replay_days(days: list[str], h_from: str, outs: dict[str, str], max_hours: i
             if end_hour_of(d) <= h:
                 flush(d)
         sp = []
-        for r in con.execute(f"SELECT slot, mint, creator, name, symbol, is_mayhem_mode, block_time FROM '{TAPE}/creates/{h}.parquet' ORDER BY slot, tx_index, event_index").fetchall():
+        # A row with no slot or no block_time is skipped, as the shadow does (`Shadow.feed` counts it in rows_bad and returns). The
+        # exploration tape has 3 such rows, all-NULL placeholders (creates 2026-09-12T07 x1, trades 2026-09-12T07 x1 and 2026-09-15T03 x1);
+        # sorting them crashed the 10-11 7a replay (MiScusi #752). The batch keys creates and trades by mint, so it never sees them either.
+        null_skipped += sum(con.execute(f"SELECT count(*) FROM '{TAPE}/{k}/{h}.parquet' WHERE slot IS NULL OR block_time IS NULL").fetchone()[0]
+                            for k in ("creates", "migrations", "trades"))
+        for r in con.execute(f"SELECT slot, mint, creator, name, symbol, is_mayhem_mode, block_time FROM '{TAPE}/creates/{h}.parquet' "
+                             f"WHERE slot IS NOT NULL AND block_time IS NOT NULL ORDER BY slot, tx_index, event_index").fetchall():
             sp.append((r[0], 0, r))
-        for r in con.execute(f"SELECT slot, mint, block_time FROM '{TAPE}/migrations/{h}.parquet' WHERE type = 'complete' ORDER BY slot, tx_index, event_index").fetchall():
+        for r in con.execute(f"SELECT slot, mint, block_time FROM '{TAPE}/migrations/{h}.parquet' WHERE type = 'complete' "
+                             f"AND slot IS NOT NULL AND block_time IS NOT NULL ORDER BY slot, tx_index, event_index").fetchall():
             sp.append((r[0], 1, r))
         sp.sort(key=lambda x: (x[0], x[1]))
         si = 0
         res = con.execute(f"""SELECT venue, mint, trader, (side = 'buy') isb, sol_lamports, token_raw, quote_reserve, base_reserve, pool, slot, block_time
                               FROM read_parquet('{TAPE}/trades/{h}.parquet', file_row_number=true)
+                              WHERE slot IS NOT NULL AND block_time IS NOT NULL
                               ORDER BY slot, tx_index, CASE WHEN tx_index IS NULL THEN file_row_number ELSE event_index END""")
         lastbt = 0
         while True:
@@ -251,7 +259,7 @@ def replay_days(days: list[str], h_from: str, outs: dict[str, str], max_hours: i
               f"sizes {eng.state_sizes()}", flush=True)
     for d in sorted(open_days):
         flush(d)
-    print(f"replay done: rows {nrows:,} backwards-slot rows {back} health {json.dumps(eng.health()['pool_rejects'])} {time.time()-t0:.0f}s", flush=True)
+    print(f"replay done: rows {nrows:,} null-slot/time rows skipped {null_skipped} backwards-slot rows {back} health {json.dumps(eng.health()['pool_rejects'])} {time.time()-t0:.0f}s", flush=True)
 
 
 def stats_block(A: np.ndarray, B: np.ndarray, names, f32_ref: bool = False) -> dict:
