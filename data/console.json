@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T03:55:00Z",
+ "updated_utc": "2026-10-11T06:10:00Z",
  "review_windows": [],
  "events": [
   {
@@ -8,7 +8,8 @@
    "kind": "decision",
    "title": "H5 reinstall version named (f873aac): trades to 10-23, CAP-PICK seal code, clearer alerts",
    "detail": "End time moved from 10-16 00:30Z to 10-23 19:29Z (your choice), and the 10-day trading limit raised to 14 (within the rules) so the end time is what stops it. Decisions replay identically (72/72), quant-proof OK. Helm installs it when nothing is open, before 10-16 01Z.",
-   "atUtc": "2026-10-11T03:55:00Z"
+   "atUtc": "2026-10-11T03:25:00Z",
+   "approx": true
   },
   {
    "id": "h5-idle-alert-1011",
@@ -528,7 +529,7 @@
   {
    "id": "fy-20261011-0355-helm-reinstall",
    "from": "claude",
-   "atUtc": "2026-10-11T03:55:00Z",
+   "atUtc": "2026-10-11T03:25:00Z",
    "text": "For Helm: the H5 reinstall version is named. Install sha f873aac3a07b52ba03c0c13db675051a88e21b38; the manifest (sha256 1c877e2aefc582cd223d03da6c98c8889a458aa205940d04060d5966f821a7d6, 25 lines, per-file hashes) is on PR #499. Install whenever --status shows open=0 pending=0, any time before 2026-10-16T01:00Z (10-15 6 PM PT). Check every per-file hash, then run the keyless start check. Change nothing else (TIER, LIVE_OK, STOP, wallet-wide files). It moves the end time to 10-23 19:29Z, allows 14 days, and adds the CAP-PICK seal code and the improved alert check. A second, smaller reinstall (more trades taken) may follow in a day or two."
   },
   {
@@ -677,6 +678,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261011-0610",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-11T06:10:00Z",
+   "text": "06:10Z: H5 is trading at 0.02. Helm has the reinstall version (f873aac): trades to 10-23, 14-day limit. Your decisions are recorded: keep 0.02 on a 'stop' read, v2 on paper with an automatic switch to live if v1 halts on boost timing (both statements confirmed), and resume after reviewed upgrades. Merged: the H5 amendment, the trade-rate detector field (information only) and the v2 sell code (off). I merged three PRs before posting their reviews on GitHub; the reviews are now posted, with that disclosed. Big-win research found no surviving strategy. A new lead, buying routed through quote coins, gets a count check after the 10-16 read. C1-NF go-live is not before about 10-13."
+  },
   {
    "id": "s-20261011-0016",
    "from": "claude",
