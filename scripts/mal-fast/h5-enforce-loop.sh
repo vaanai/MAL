@@ -33,8 +33,8 @@
 #   /usr/bin/python3 -I tools/h5_exec_day_check.py --mode day --day 2026-10-10 --dry-read
 # (reads like an enforcing run, prints the would-be verdict, never places STOP, never writes a log line; exit 0 = the read worked).
 #
-# WHAT IT NEVER DOES. It never removes, moves or rewrites STOP; it does not name the STOP path at all. Only the tools' own --place-stop
-# touches STOP (`sudo -n touch`, then `sudo -n test -e`), and only when a tool finds a halt due. A STOP that already exists is touched
+# WHAT IT NEVER DOES. It never removes, moves or rewrites STOP; its code never names the STOP path (only this header does, for the
+# manager's hand check under STOP UNVERIFIED). Only the tools' own --place-stop touches STOP (`sudo -n touch`, then `sudo -n test -e`), and only when a tool finds a halt due. A STOP that already exists is touched
 # again (mtime only; the executor reads STOP by existence), so running alongside the session crons is harmless.
 #
 # CATCH-UP NEVER RE-DECIDES A DAY. Before each day check the loop asks `h5_exec_day_check.py --mode decided` whether that check's log
@@ -53,9 +53,14 @@
 # STOP UNVERIFIED (sticky). Any run that exits 6 (halt due, STOP NOT verified) adds its key check:mode:day to the flag, at once and in the
 # state file. A key is cleared only by a later run of the SAME check, mode and day that exits 3 with "present":true, or, for a day check,
 # by a final line for that day (exit 0 or 5 from a later run, or the `decided` query finding one). Nothing else clears it: not a give-up,
-# not a quit, not a restart, not time. While it is set, the beat carries stop_unverified_s (when it was first set), _n and _first;
-# --check-beat prints ALERT stop_unverified (exit 1) with no time limit; a quit exits 4 (quit_stop_unverified, MiScusi result ok:false);
-# reaching END exits 4 with ok:false. The manager verifies STOP by hand (`sudo -n test -e /var/lib/mal-live/h5/STOP`).
+# not a quit, not a restart (resumed or fresh), not time. While it is set, the beat carries stop_unverified_s (when it was first set),
+# _n, _first and _keys (all keys, comma-separated); --check-beat prints ALERT stop_unverified (exit 1) with no time limit, and an
+# ALERT loop_exited after a signal or an error names it too (stop_unverified=<n> first=<key>); a quit exits 4 (quit_stop_unverified,
+# MiScusi result ok:false); reaching END exits 4 with ok:false. The flag lives in the state file and in the beat: a resume reads the
+# state file; a FRESH start (no readable state file) takes it over from the beat file (keys from stop_unverified_keys; a beat written
+# before that field gives its _first key, plus unknown:beat:key when _n says there were more), and takes over last_fail_s/_rc too. A key
+# taken over is cleared like any other (an exec day key also by the fresh-start catch-up below). Only a hand-made state file clears an
+# unknown key. The manager verifies STOP by hand (`sudo -n test -e /var/lib/mal-live/h5/STOP`).
 #
 # SIGNALS. Every tool runs in the background and the loop waits on it, so TERM/INT/HUP are handled at once, also while a tool runs: the
 # loop forwards TERM to the running tool (timeout passes it on), writes a "signal" line and exits 143.
@@ -69,7 +74,8 @@
 # up) the event is quit_stop_unverified, the loop exits 4, MiScusi's result says ok:false, and --check-beat prints ALERT
 # quit_stop_unverified (exit 1) with no time limit: verify STOP by hand before anything else. Otherwise wait for `--check-beat` to print
 # "EXITED event=quit" (or cancel the job) before installing v2 on the same state dir. A quit file present at start makes the loop exit
-# at once, so the manager removes it (his own file, not STOP) before resubmitting. The loop never deletes it.
+# at once (event quit_stop_unverified and exit 4 when the flag is set, also when a fresh start took it over from the beat), so the
+# manager removes it (his own file, not STOP) before resubmitting. The loop never deletes it.
 #
 # HEARTBEAT. (a) One JSON line per action (start, wait, alive, run, skip, retry, gave_up, quit, end, signal, warn) to stdout (the job log)
 # and to H5_ENFORCE_HEARTBEAT. (b) The BEAT file (H5_ENFORCE_BEAT, default $HOME/data/h5-daily/enforce-loop.beat): one JSON object,
@@ -78,15 +84,19 @@
 # last_fail_s/last_fail_rc, stop_unverified_s/_n/_first. The manager's cron runs
 #   sh scripts/mal-fast/h5-enforce-loop.sh --check-beat
 # which prints one line and exits 0 (OK, or EXITED after end/quit) or 1 (ALERT: beat missing or unreadable, stale, exited on a signal or
-# an error, the STOP-UNVERIFIED flag set (no time limit), or a check whose last try failed within the last 24 h, also after end/quit).
+# an error (the line names the STOP-UNVERIFIED flag when it is set), the STOP-UNVERIFIED flag set (no time limit), or a check whose last
+# try failed within the last 24 h, also after end/quit).
 #
 # CATCH-UP (resumable). The last finished slot is kept in H5_ENFORCE_STATE (default $MISCUSI_CHECKPOINT_DIR/h5-enforce-loop.state).
 # On a restart every missed day slot is run late (minus the checks already decided, above); a missed running slot runs only if it is
 # still the same UTC day and no later running slot of that day has also passed (else "skip"; the day check covers that day).
 # FRESH START (no state file): before its first wait the loop runs the executor-figure day check (1), oldest first, for every completed
-# day D >= FIRST_DAY whose 00:21Z slot has already passed (at most the last 13 days: the executor keeps its last 14 day keys including
-# today, so today-14 and its D-1 may be pruned and would read as a false "no entry" pair), each skipped when
-# exec-day.jsonl already holds a final verdict for D. Then it goes on from now; earlier shadow slots are the session crons' job.
+# day D >= FIRST_DAY whose 00:21Z slot has already passed and D >= today-12, each skipped when exec-day.jsonl already holds a final
+# verdict for D. Why today-12: the executor keeps sorted(days)[-14:] INCLUDING today's key, so the oldest key it may still hold is
+# today-13, and the pair rule reads D and D-1; D-1 >= today-13 means D >= today-12 (an older D-1 may be pruned and would read as a false
+# "no entry" pair). That is 12 days after 00:21Z, 11 before. "today" is the start's UTC day; a catch-up still running after the next
+# 00:00Z could reach one day past the cap, which errs toward STOP. A start at or after END runs no catch-up. Then it goes on from now;
+# earlier shadow slots are the session crons' job.
 # The state file is not written during this catch-up (also not by the stop-unverified flag or a quit), so a catch-up cut short is run
 # again from the start on the next start; a day whose check exited 6 is not final, so it is judged again and sets the flag again.
 #
@@ -97,7 +107,7 @@
 set -u
 
 LOOP=h5_enforce_loop
-LOOP_V=3
+LOOP_V=4
 MODE=run
 case "${1:-}" in
   --dry-run) MODE=dry ;;
@@ -138,6 +148,7 @@ RUN_OFFS="20820 42420 64020 85620"            # 05:47Z 11:47Z 17:47Z 23:47Z
 FAIL_ALERT_S=86400
 
 is_uint() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+is_key() { case "$1" in exec:day:????-??-??|exec:running:????-??-??|shadow:day:????-??-??|shadow:running:????-??-??) return 0 ;; *) return 1 ;; esac; }
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 dayof() { date -u -d "@$1" +%Y-%m-%d; }
 now_s() { date -u +%s; }
@@ -159,7 +170,12 @@ if [ "$MODE" = check ]; then
     case "$_ev" in
       end|quit) ;;
       quit_stop_unverified) echo "ALERT quit_stop_unverified first=${_suf:-none} n=${_sun:-0} last_fail_rc=$_lfrc at=$(iso "$_at") (a halt was due and the stop file was NOT verified when the loop quit; verify it by hand)"; exit 1 ;;
-      *) echo "ALERT loop_exited event=$_ev at=$(iso "$_at")"; exit 1 ;;
+      *) if [ "$_su" -gt 0 ]; then   # a signal or an error while the sticky flag is set: name it here too (no time limit either way)
+           echo "ALERT loop_exited event=$_ev at=$(iso "$_at") stop_unverified=${_sun:-0} first=${_suf:-none} since=$(iso "$_su") (a halt was due and the stop file was NOT verified; verify it by hand)"
+         else
+           echo "ALERT loop_exited event=$_ev at=$(iso "$_at")"
+         fi
+         exit 1 ;;
     esac
   fi
   if [ "$_su" -gt 0 ]; then   # sticky: no time limit
@@ -189,14 +205,31 @@ beat() {  # beat EVENT: replace the one-line liveness file atomically
     *) _bs=$(( 2 * CHUNK_S + BEAT_GRACE_S )) ;;
   esac
   _bst=$(( _bn + _bs ))
-  if ! { printf '{"tool":"%s","v":%s,"at_s":%s,"stale_at_s":%s,"state":"%s","event":"%s","last_fail_s":%s,"last_fail_rc":%s,"stop_unverified_s":%s,"stop_unverified_n":%s,"stop_unverified_first":"%s","pid":%s,"at":"%s","stale_at":"%s","next":"%s"}\n' \
-      "$LOOP" "$LOOP_V" "$_bn" "$_bst" "$BEAT_STATE" "$1" "$LAST_FAIL_S" "$LAST_FAIL_RC" "$SU_S" "$(su_n)" "$(su_first)" "$$" "$(iso "$_bn")" "$(iso "$_bst")" "$NEXT_ISO" > "$BEAT.tmp" \
+  if ! { printf '{"tool":"%s","v":%s,"at_s":%s,"stale_at_s":%s,"state":"%s","event":"%s","last_fail_s":%s,"last_fail_rc":%s,"stop_unverified_s":%s,"stop_unverified_n":%s,"stop_unverified_first":"%s","stop_unverified_keys":"%s","pid":%s,"at":"%s","stale_at":"%s","next":"%s"}\n' \
+      "$LOOP" "$LOOP_V" "$_bn" "$_bst" "$BEAT_STATE" "$1" "$LAST_FAIL_S" "$LAST_FAIL_RC" "$SU_S" "$(su_n)" "$(su_first)" "$(printf '%s' "$SU_KEYS" | tr ' ' ',')" "$$" "$(iso "$_bn")" "$(iso "$_bst")" "$NEXT_ISO" > "$BEAT.tmp" \
       && mv -f "$BEAT.tmp" "$BEAT"; } 2>/dev/null; then
     [ "$BEAT_OK" -eq 0 ] || echo "{\"tool\":\"$LOOP\",\"warning\":\"beat_write_failed\"}" >&2
     BEAT_OK=0
   fi
 }
 die() { echo "{\"tool\":\"$LOOP\",\"v\":$LOOP_V,\"event\":\"error\",\"error\":\"$1\"}"; BEAT_STATE=exited; beat error; exit 2; }
+SU_FROM=none   # where the sticky flag came from at start: none | beat (a fresh start took it over) | state (a resume)
+seed_from_beat() {  # an existing beat's flag and last failure, taken over at once (a readable state file replaces them below)
+  [ -r "$BEAT" ] || return 0
+  _sl=$(head -n 1 "$BEAT" 2>/dev/null)
+  _sf=$(printf '%s\n' "$_sl" | jfield last_fail_s); _sr=$(printf '%s\n' "$_sl" | jfield last_fail_rc)
+  if is_uint "$_sf" && is_uint "$_sr"; then LAST_FAIL_S=$_sf; LAST_FAIL_RC=$_sr; fi
+  _ss=$(printf '%s\n' "$_sl" | jfield stop_unverified_s)
+  is_uint "$_ss" && [ "$_ss" -gt 0 ] || return 0
+  _skeys=$(printf '%s\n' "$_sl" | sed -n 's/.*"stop_unverified_keys":"\([A-Za-z0-9_:.,-]*\)".*/\1/p' | head -n 1)
+  [ -n "$_skeys" ] || _skeys=$(printf '%s\n' "$_sl" | jfield stop_unverified_first)   # a beat written before the keys field
+  _sc=$(printf '%s\n' "$_sl" | jfield stop_unverified_n); is_uint "$_sc" || _sc=1
+  SU_S=$_ss; SU_KEYS=""
+  for _x in $(printf '%s' "$_skeys" | tr ',' ' '); do is_key "$_x" && SU_KEYS="${SU_KEYS:+$SU_KEYS }$_x"; done
+  if [ -z "$SU_KEYS" ] || [ "$(su_n)" -lt "$_sc" ]; then SU_KEYS="${SU_KEYS:+$SU_KEYS }unknown:beat:key"; fi   # stays set (the sticky flag, header)
+  SU_FROM=beat
+}
+[ "$MODE" != run ] || seed_from_beat
 
 # ---- config checks (the loop's own errors: exit 2) ----
 date -u -d @0 +%s >/dev/null 2>&1 || die gnu_date_required
@@ -226,14 +259,16 @@ next_slot() {
 }
 slot_mode() { if [ $(( $1 % 86400 )) -eq "$DAY_OFF" ]; then echo day; else echo running; fi; }
 # catchup_range: the fresh-start catch-up days, CU_FROM..CU_LAST (day starts; empty when CU_FROM > CU_LAST): every completed day
-# >= FIRST_DAY whose 00:21Z slot is at or before START_E (the loop itself runs slots strictly after START_E), at most the last 13 (the
-# executor keeps sorted(days)[-14:] including today: today-14 and its D-1 may already be pruned and would read as a false pair)
-CATCHUP_MAX_DAYS=13
+# >= FIRST_DAY whose 00:21Z slot is at or before START_E (the loop itself runs slots strictly after START_E) and D >= today-12 (the
+# executor keeps sorted(days)[-14:] INCLUDING today's key, so the oldest key it may hold is today-13; the pair rule reads D-1, and
+# D-1 >= today-13 means D >= today-12). Empty when START_E is at or after END_E.
+CATCHUP_OLDEST_BACK=12
 catchup_range() {
   _t0=$(( START_E - START_E % 86400 ))
   if [ $(( START_E % 86400 )) -lt "$DAY_OFF" ]; then CU_LAST=$(( _t0 - 2 * 86400 )); else CU_LAST=$(( _t0 - 86400 )); fi
-  CU_FROM=$FIRST_E; _lim=$(( CU_LAST - (CATCHUP_MAX_DAYS - 1) * 86400 ))
+  CU_FROM=$FIRST_E; _lim=$(( _t0 - CATCHUP_OLDEST_BACK * 86400 ))
   [ "$CU_FROM" -ge "$_lim" ] || CU_FROM=$_lim
+  [ "$START_E" -lt "$END_E" ] || CU_LAST=$(( CU_FROM - 86400 ))   # a start at or after END: no catch-up
 }
 
 # cmd_text CHECK MODE DAY: the command, as words (paths are the operator's own, no spaces expected)
@@ -314,15 +349,15 @@ SHADOW_PRESENT=false; [ -d "$SHADOW_DIR" ] && SHADOW_PRESENT=true
 
 # state: LAST_DONE RUNS HALTS UNVERIFIED TOOL_ERRORS SKIPS [LAST_FAIL_S LAST_FAIL_RC [SU_S [SU_KEY...]]]
 LAST_DONE=""; RUNS=0; HALTS=0; UNVERIFIED=0; TOOL_ERRORS=0; SKIPS=0; RESUMED=false
-is_key() { case "$1" in exec:day:????-??-??|exec:running:????-??-??|shadow:day:????-??-??|shadow:running:????-??-??) return 0 ;; *) return 1 ;; esac; }
 if [ -r "$STATE" ]; then
   _g=""; _h=""; _i=""; _j=""
   read -r _a _b _c _d _e _f _g _h _i _j < "$STATE" || true
   if is_uint "${_a:-}" && is_uint "${_b:-}" && is_uint "${_c:-}" && is_uint "${_d:-}" && is_uint "${_e:-}" && is_uint "${_f:-}"; then
     LAST_DONE=$_a; RUNS=$_b; HALTS=$_c; UNVERIFIED=$_d; TOOL_ERRORS=$_e; SKIPS=$_f; RESUMED=true
+    LAST_FAIL_S=0; LAST_FAIL_RC=0; SU_S=0; SU_KEYS=""; SU_FROM=none   # the state file, not the beat, on a resume
     if is_uint "${_g:-}" && is_uint "${_h:-}"; then LAST_FAIL_S=$_g; LAST_FAIL_RC=$_h; fi
     if is_uint "${_i:-}" && [ "${_i:-0}" -gt 0 ]; then
-      SU_S=$_i
+      SU_S=$_i; SU_FROM=state
       for _x in ${_j:-}; do is_key "$_x" && SU_KEYS="${SU_KEYS:+$SU_KEYS }$_x"; done
       [ -n "$SU_KEYS" ] || SU_KEYS="unknown:state:key"   # a set flag whose keys cannot be read stays set (only a hand-made state clears it)
     fi
@@ -385,7 +420,7 @@ quit_if_asked() {  # the manager's quit file: exit cleanly (never deletes it); 4
   exit "$_qrc"
 }
 
-hb start ",\"git\":\"$GIT_SHA\",\"tool_md5\":\"$TOOL_MD5\",\"exec_tool_md5\":\"$EXEC_MD5\",\"end\":\"$(iso "$END_E")\",\"first_day\":\"$FIRST_DAY\",\"resumed\":$RESUMED,\"last_done\":\"$(iso "$LAST_DONE")\",\"shadow_dir_present\":$SHADOW_PRESENT,\"check_log\":\"$CHECK_LOG\",\"exec_log\":\"$EXEC_LOG\",\"state\":\"$STATE\",\"beat\":\"$BEAT\",\"quit_file\":\"$QUIT\"$(counts)"
+hb start ",\"git\":\"$GIT_SHA\",\"tool_md5\":\"$TOOL_MD5\",\"exec_tool_md5\":\"$EXEC_MD5\",\"end\":\"$(iso "$END_E")\",\"first_day\":\"$FIRST_DAY\",\"resumed\":$RESUMED,\"stop_unverified_from\":\"$SU_FROM\",\"stop_unverified_keys\":\"$SU_KEYS\",\"last_done\":\"$(iso "$LAST_DONE")\",\"shadow_dir_present\":$SHADOW_PRESENT,\"check_log\":\"$CHECK_LOG\",\"exec_log\":\"$EXEC_LOG\",\"state\":\"$STATE\",\"beat\":\"$BEAT\",\"quit_file\":\"$QUIT\"$(counts)"
 quit_if_asked
 progress "started; next $(iso "$(next_slot "$LAST_DONE")")"
 

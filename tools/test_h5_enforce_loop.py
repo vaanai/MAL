@@ -415,16 +415,147 @@ def test_a_quit_during_the_fresh_start_catch_up_writes_no_state(tmp_path: Path) 
     assert not (tmp_path / "ckpt" / "h5-enforce-loop.state").exists()
 
 
-def test_fresh_start_catch_up_is_capped_at_13_days(tmp_path: Path) -> None:
-    """The executor keeps sorted(days)[-14:] including today: today-14 and its D-1 may be pruned (a false 'no entry' pair), so 13."""
+def test_fresh_start_catch_up_starts_at_today_minus_12(tmp_path: Path) -> None:
+    """The executor keeps sorted(days)[-14:] INCLUDING today: the oldest key it may hold is today-13, and the pair rule reads D-1, so
+    D >= today-12 (quant-proof O2 / reviewer O3 on #593): 12 days after 00:21Z, 11 before."""
     env, now, _ = _catch_up_setup(tmp_path, 0)
     (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()  # FIRST_DAY stays 2000-01-01
     cp = run([], env)
     assert cp.returncode == 0, cp.stdout + cp.stderr
     calls = _calls(tmp_path)
-    assert len(calls) == 13 and all(k == "exec" and m == "day" for k, m, _ in calls)
-    last = day_of(now - now % 86400 - (86400 if now % 86400 >= DAY_OFF else 2 * 86400))
-    assert calls[-1][2] == last and calls[0][2] == day_of(now - now % 86400 - (13 if now % 86400 >= DAY_OFF else 14) * 86400)
+    after = now % 86400 >= DAY_OFF
+    assert len(calls) == (12 if after else 11) and all(k == "exec" and m == "day" for k, m, _ in calls)
+    last = day_of(now - now % 86400 - (86400 if after else 2 * 86400))
+    assert calls[-1][2] == last and calls[0][2] == day_of(now - now % 86400 - 12 * 86400)
+
+
+@pytest.mark.parametrize("now,first,last", [
+    ("2026-10-26T00:10:00Z", "2026-10-14", "2026-10-24"),  # before 00:21Z: today-12 .. today-2
+    ("2026-10-26T00:30:00Z", "2026-10-14", "2026-10-25"),  # after: today-12 .. yesterday
+])
+def test_dry_run_catch_up_cap(tmp_path: Path, now: str, first: str, last: str) -> None:
+    cp = run(["--dry-run"], env_for(tmp_path, H5_ENFORCE_NOW=now, H5_ENFORCE_FIRST_DAY="2026-10-01", H5_ENFORCE_END="2026-11-30T00:00:00Z"))
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    days = [l.split()[3][4:] for l in cp.stdout.splitlines() if l.startswith("CATCHUP ")]
+    assert days[0] == first and days[-1] == last and len(days) == len(set(days)) == int(last[-2:]) - int(first[-2:]) + 1
+
+
+def test_no_catch_up_at_or_after_end(tmp_path: Path) -> None:
+    """Reviewer O3's repro: a fresh start at 10-26T00:10Z (after END) listed a catch-up from 10-12. Now nothing, in dry-run and run."""
+    cp = run(["--dry-run"], env_for(tmp_path, H5_ENFORCE_NOW="2026-10-26T00:10:00Z"))
+    assert cp.returncode == 0 and not any(l.startswith("CATCHUP ") for l in cp.stdout.splitlines())
+    assert cp.stdout.splitlines()[-1] == "END 2026-10-24T00:00:00Z slots=0 commands=0 skip=0 fresh_start_catch_up=0"
+    env, now, _ = _catch_up_setup(tmp_path, 6)
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    env["H5_ENFORCE_END"] = iso(now - 3600)
+    cp = run([], env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert _calls(tmp_path) == [] and [r["event"] for r in _heartbeat(tmp_path)] == ["start", "end"]
+
+
+def _write_beat(tmp_path: Path, **fields) -> None:
+    now = int(time.time())
+    beat = {"tool": "h5_enforce_loop", "v": 3, "at_s": now - 60, "stale_at_s": now - 60, "state": "exited", "event": "quit_stop_unverified",
+            "last_fail_s": 0, "last_fail_rc": 0, "stop_unverified_s": 0, "stop_unverified_n": 0, "stop_unverified_first": "", "pid": 1}
+    beat.update(fields)
+    (tmp_path / "daily" / "enforce-loop.beat").write_text(json.dumps(beat, separators=(",", ":")) + "\n")
+
+
+@pytest.mark.parametrize("keys_field,n,keys,first", [
+    ("shadow:running:2026-10-12,exec:day:2026-10-11", 2, "shadow:running:2026-10-12,exec:day:2026-10-11", "shadow:running:2026-10-12"),
+    (None, 2, "exec:day:2026-10-11,unknown:beat:key", "exec:day:2026-10-11"),  # a v3 beat (no keys field): _first plus a placeholder
+    (None, 1, "exec:day:2026-10-11", "exec:day:2026-10-11"),
+])
+def test_fresh_start_takes_the_flag_over_from_the_beat_and_a_quit_at_start_exits_4(tmp_path: Path, keys_field, n: int, keys: str,
+                                                                                  first: str) -> None:
+    """Reviewer O2 / quant-proof O1 on #593: no state file, a beat with the flag set and the quit file present. Before: exit 0, event
+    quit, stop_unverified_s 0. Now the flag, its keys and last_fail are taken over: exit 4, quit_stop_unverified, the alert stays."""
+    env, now, _ = _catch_up_setup(tmp_path, 3)
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    extra = {"stop_unverified_keys": keys_field} if keys_field else {}
+    _write_beat(tmp_path, stop_unverified_s=now - 7200, stop_unverified_n=n, stop_unverified_first=first, last_fail_s=now - 3600,
+                last_fail_rc=6, **extra)
+    (tmp_path / "daily" / "enforce-loop.quit").write_text("")
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    hb = _heartbeat(tmp_path)
+    assert [r["event"] for r in hb] == ["start", "quit_stop_unverified"] and _calls(tmp_path) == []
+    assert hb[0]["resumed"] is False and hb[0]["stop_unverified_from"] == "beat" and hb[0]["stop_unverified_keys"] == keys.replace(",", " ")
+    beat = _beat(tmp_path)
+    assert (beat["state"], beat["event"], beat["stop_unverified_s"], beat["stop_unverified_n"]) == ("exited", "quit_stop_unverified", now - 7200, n)
+    assert beat["stop_unverified_first"] == first and beat["stop_unverified_keys"] == keys
+    assert (beat["last_fail_s"], beat["last_fail_rc"]) == (now - 3600, 6)
+    assert json.loads((tmp_path / "result.json").read_text())["ok"] is False
+    chk = run(["--check-beat"], env)
+    assert chk.returncode == 1 and chk.stdout.startswith(f"ALERT quit_stop_unverified first={first} n={n}"), chk.stdout
+
+
+def test_quant_proof_o1_rerun_after_a_catch_up_quit_keeps_the_alert(tmp_path: Path) -> None:
+    """quant-proof O1 on #593: no state, a catch-up exec day check rc 6 that gives up, then the quit file: exit 4. A rerun with the quit
+    file still present used to exit 0 and rewrite the beat to quit with stop_unverified_s 0. Now it exits 4 again and keeps the flag."""
+    env, now, _ = _catch_up_setup(tmp_path, 6, H5_ENFORCE_RETRIES="0", STUB_QUIT_ON="exec:day",
+                                  STUB_QUIT_FILE=str(tmp_path / "daily" / "enforce-loop.quit"))
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    env["H5_ENFORCE_FIRST_DAY"] = day_of(now - now % 86400 - 4 * 86400)
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    b1 = _beat(tmp_path)
+    assert b1["stop_unverified_s"] > 0 and not (tmp_path / "ckpt" / "h5-enforce-loop.state").exists()
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert len(_calls(tmp_path)) == 1 and [r["event"] for r in _heartbeat(tmp_path)][-2:] == ["start", "quit_stop_unverified"]
+    b2 = _beat(tmp_path)
+    assert b2["event"] == "quit_stop_unverified" and b2["stop_unverified_s"] == b1["stop_unverified_s"]
+    assert b2["stop_unverified_keys"] == b1["stop_unverified_keys"] == b1["stop_unverified_first"]
+    chk = run(["--check-beat"], env)
+    assert chk.returncode == 1 and chk.stdout.startswith(f"ALERT quit_stop_unverified first={b1['stop_unverified_first']} n=1"), chk.stdout
+
+
+def test_a_readable_state_file_wins_over_the_beat(tmp_path: Path) -> None:
+    """A resume reads the state file only: a hand-made state with the flag clear is how the manager clears it after a hand check."""
+    env, now, _ = _catch_up_setup(tmp_path, 3)
+    _write_beat(tmp_path, stop_unverified_s=now - 7200, stop_unverified_n=1, stop_unverified_first="exec:day:2026-10-11",
+                stop_unverified_keys="exec:day:2026-10-11", last_fail_s=now - 3600, last_fail_rc=6)
+    (tmp_path / "daily" / "enforce-loop.quit").write_text("")
+    cp = run([], env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    hb = _heartbeat(tmp_path)
+    assert [r["event"] for r in hb] == ["start", "quit"] and hb[0]["resumed"] is True and hb[0]["stop_unverified_from"] == "none"
+    beat = _beat(tmp_path)
+    assert (beat["stop_unverified_s"], beat["stop_unverified_keys"], beat["last_fail_s"]) == (0, "", 0)
+
+
+def test_a_key_taken_over_from_the_beat_is_cleared_by_the_catch_up(tmp_path: Path) -> None:
+    """A taken-over exec day key is cleared like any other: here the catch-up's `decided` query finds a final line for that day."""
+    env, now, _ = _catch_up_setup(tmp_path, 0)
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    d = day_of(now - now % 86400 - 3 * 86400)
+    env["H5_ENFORCE_FIRST_DAY"] = d
+    (tmp_path / "daily" / "exec-day.jsonl").write_text(
+        json.dumps({"tool": "h5_exec_day_check", "mode": "day", "day": d, "exit": 0, "verdict": "no_halt"}) + "\n")
+    _write_beat(tmp_path, stop_unverified_s=now - 7200, stop_unverified_n=1, stop_unverified_first=f"exec:day:{d}",
+                stop_unverified_keys=f"exec:day:{d}")
+    cp = run([], env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    hb = _heartbeat(tmp_path)
+    assert hb[0]["stop_unverified_from"] == "beat" and [r.get("key") for r in hb if r["event"] == "stop_verified"] == [f"exec:day:{d}"]
+    assert hb[-1]["event"] == "end" and _beat(tmp_path)["stop_unverified_s"] == 0
+    assert run(["--check-beat"], env).stdout.startswith("EXITED event=end")
+
+
+def test_an_error_exit_keeps_the_beat_flag_and_check_beat_names_it(tmp_path: Path) -> None:
+    """Reviewer O1 on #593: an exit on an error (or a signal) used to print only 'ALERT loop_exited', never naming the flag."""
+    env, now, _ = _catch_up_setup(tmp_path, 0, H5_ENFORCE_EXEC_TOOL=str(tmp_path / "missing.py"))
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    _write_beat(tmp_path, stop_unverified_s=now - 7200, stop_unverified_n=1, stop_unverified_first="exec:day:2026-10-11",
+                stop_unverified_keys="exec:day:2026-10-11")
+    cp = run([], env)
+    assert cp.returncode == 2 and '"error":"exec_tool_missing"' in cp.stdout, cp.stdout + cp.stderr
+    beat = _beat(tmp_path)
+    assert (beat["event"], beat["stop_unverified_s"], beat["stop_unverified_keys"]) == ("error", now - 7200, "exec:day:2026-10-11")
+    chk = run(["--check-beat"], env)
+    assert chk.returncode == 1 and chk.stdout.startswith("ALERT loop_exited event=error at=")
+    assert f" stop_unverified=1 first=exec:day:2026-10-11 since={iso(now - 7200)} " in chk.stdout, chk.stdout
 
 
 def test_quit_between_the_exec_and_shadow_day_checks(tmp_path: Path) -> None:
@@ -624,6 +755,10 @@ def test_sigterm_while_a_tool_runs_is_prompt_and_stops_the_tool(tmp_path: Path) 
     ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": -3600, "last_fail_rc": 6}, 1, "ALERT check_failed rc=6"),
     ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": -90000, "last_fail_rc": 6}, 0, "OK state=waiting"),
     ({"state": "exited", "event": "error", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0}, 1, "ALERT loop_exited event=error"),
+    # reviewer O1 on #593: a signal or error exit with the flag set names it (the state after a MiScusi time-limit kill)
+    ({"state": "exited", "event": "signal", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0,
+      "stop_unverified_s": -3600, "stop_unverified_n": 2, "stop_unverified_first": "exec:running:2026-10-12"}, 1,
+     "ALERT loop_exited event=signal"),
     ({"state": "exited", "event": "end", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0}, 0, "EXITED event=end"),
     # an unverified STOP at quit never ages out (last_fail 2 days ago still alerts)
     ({"state": "exited", "event": "quit_stop_unverified", "at_s": -10, "stale_at_s": -10, "last_fail_s": -172800, "last_fail_rc": 6}, 1,
@@ -656,6 +791,11 @@ def test_check_beat(tmp_path: Path, beat, rc: int, prefix: str) -> None:
             bf.write_text(beat + "\n")
     cp = run(["--check-beat"], env)
     assert cp.returncode == rc and cp.stdout.startswith(prefix), cp.stdout + cp.stderr
+    flag_set = isinstance(beat, dict) and isinstance(beat.get("stop_unverified_s"), int) and beat["stop_unverified_s"] > 0
+    if flag_set:
+        assert f"first={beat['stop_unverified_first']}" in cp.stdout, cp.stdout  # every alert with the flag set names it
+    if flag_set and prefix.startswith("ALERT loop_exited"):
+        assert f" stop_unverified={beat['stop_unverified_n']} " in cp.stdout, cp.stdout
 
 
 if __name__ == "__main__":
