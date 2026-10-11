@@ -518,6 +518,15 @@ Section 6 says the executor "reads only the `mint` field of the decision-time in
      - The H5 shadow is the canary's paper twin. It keeps running through Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and items 2, 3 and 5 govern which of its records it writes in the seal window. Until PR #540 is merged and the shadow restarted on it, the shadow seals every pool in the seal window (section 6, Dependency).
      - Any executor that runs in the seal window (an `end_ms` after 2026-10-16T01:00Z) must carry items 2, 3 and 5 (PR #540 or a later head with the same seal code).
 
+**Item 8 record (2026-10-11, the owner's choice; the manager's step).** Written 2026-10-11T02:55:40Z (`date -u`).
+- **The owner's answer.** On 2026-10-11, in session, the manager asked "Should the reinstall extend its end time to the 14-day cap?" and the owner answered "Extend to 10-23 (Recommended)".
+- **The change.** `scripts/mal-fast/h5-executor-live.json` `end_ms` goes from 1792110600000 (2026-10-16T00:30Z) to 1792783793000 (2026-10-23T19:29:53Z). That is section 4's cap: 14 days from the first send, 2026-10-09T19:29:53Z (Go-live record). No other limit, stop, tier or rule changes.
+- **The duration is not extended.** Section 4's 14-day cap and the 2026-10-10 bullet above stand. The new `end_ms` equals the cap and is not later. A run past it is the owner's decision (section 4).
+- **The seal.** The new `end_ms` is after 2026-10-16T01:00Z, so the executor runs in the seal window. The executor at the named sha carries items 2, 3 and 5: the PR #540 seal code, merged as `288f490` and re-cleared by quant-proof (record below). Item 8 requires this for any `end_ms` after 2026-10-16T01:00Z.
+- **When it takes effect.** Only at Helm's pinned reinstall at the sha the manager names, before 2026-10-16T01:00Z, while the bot has nothing open. Until then the installed `af02e90` executor keeps `end_ms` 2026-10-16T00:30Z.
+- **What binds first at this head.** `end_ms` is the instant stop. The duration stop is separate: `max_days` is a code constant of 10 days from the executor's first buy attempt (`H5_DEFAULT`, `tools/h5_executor.py`; config may only lower it). This record does not change it. It falls at the live state's `first_attempt_ms` plus 10 days, at or after 2026-10-19T19:29:53Z, which is before the new `end_ms`. So at this head the executor stops new buys at `max_days` (reason `max_days`), not at `end_ms`, unless a reviewed code change raises `max_days`. Section 4 allows at most 14 days.
+- **md5 decision-equivalence.** [PROOF: job #..., md5 ...]
+
 **Amendment 6, re-clearance record (2026-10-10T09:32:14Z).** Quant-proof re-cleared #540 at `bea3f30` (a merge of main `b5ba835` into `4feec6d`). The executor, pinned configs, oracle wrapper and seal code are identical to `4feec6d`. The shadow adds #541's report-only `outcome_bx10` behind the same CAP-PICK and H5 Look-2 seals. md5 decision-equivalence at `bea3f30`: `75cb0b0c585bc2479137cae31330e73e`, 72/72 (MiScusi job #498, 25-hour replay 2026-09-20T00..2026-09-21T00). Merged as `288f490`.
 
 ## Open for the owner
