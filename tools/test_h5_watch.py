@@ -133,8 +133,10 @@ def test_a_failed_post_keeps_the_state_so_the_alert_is_tried_again(tmp_path):
     assert go(h, st, good, NOW + 300) == 0 and len(good.posts) == 1 and "h5_halt_file" in good.posts[0][1]
 
 
-def test_the_idle_ledger_alert_resolves_in_a_quiet_market_and_an_unledgered_trigger_is_posted(tmp_path):
-    """2026-10-11: h5_idle_ledger fired at ~00:25Z with no plain pool drained in 6 h (jobs #672-#676). The shadow now decides."""
+def test_the_idle_ledger_alert_becomes_h5_idle_quiet_in_a_quiet_market_and_an_unledgered_trigger_is_posted(tmp_path):
+    """2026-10-11: h5_idle_ledger fired at ~00:25Z with no plain pool drained in 6 h (jobs #672-#676). The shadow now names the cause, and
+    (round 4 on #589) every branch alerts: a quiet market is the h5_idle_quiet ALERT. A name change posts RESOLVED for the old name and NEW for
+    the new one at once; h5_idle_quiet is repeated every 6 h while it stays, like every alert."""
     from tools.test_h5_daily_check import SHADOW_DIR, T, idle_world, quiet_pools, s_trigger
 
     env = {**ENV, "H5_WATCH_SHADOW_DIR": SHADOW_DIR}
@@ -143,10 +145,23 @@ def test_the_idle_ledger_alert_resolves_in_a_quiet_market_and_an_unledgered_trig
     p = Poster()
     h = idle_world(*quiet_pools())
     assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
-    assert [c for _, c in p.posts] == ["[H5 watch] RESOLVED h5_idle_ledger"]
+    quiet = ("ALERT h5_idle_quiet: probably a quiet market, not a fault: no plain trigger in 6 h; 108 plain pool closes, none drained to <= 40 SOL "
+             "in a judgeable window. It clears at the next plain trigger; if nothing is acted on for 24 h, h5_idle_ledger (backstop) follows.")
+    assert [c for _, c in p.posts] == ["[H5 watch] " + quiet + "\nRESOLVED h5_idle_ledger"], p.posts
+    assert list(json.loads(st.read_text())["active"]) == ["h5_idle_quiet"]
+    # not posted again before 6 h, posted again at 6 h
+    p = Poster()
+    assert hw.run(h, env, p, st, T + 60, balance_fn=lambda w, e: h.balance_lamports) == 0 and p.posts == []
+    st.write_text(json.dumps({"active": {"h5_idle_quiet": {"first": T - 6 * 3600, "last_post": T - 6 * 3600}}, "restarts": 0, "stop": False,
+                              "ts": T - 300}))
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    assert [c for _, c in p.posts] == ["[H5 watch] " + quiet] and json.loads(st.read_text())["active"]["h5_idle_quiet"] == {"first": T - 6 * 3600, "last_post": T}
+    # the cause changes to an unledgered trigger: RESOLVED h5_idle_quiet and NEW h5_idle_unledgered in the same post
+    p = Poster()
     h = idle_world(*quiet_pools(), s_trigger(T - 3600))
     assert hw.run(h, env, p, st, T + 300, balance_fn=lambda w, e: h.balance_lamports) == 0
-    assert len(p.posts) == 2 and "ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s)" in p.posts[1][1] and "SECRET" not in p.posts[1][1]
+    assert len(p.posts) == 1 and "ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s)" in p.posts[0][1] and "SECRET" not in p.posts[0][1]
+    assert p.posts[0][1].splitlines()[-1] == "RESOLVED h5_idle_quiet", p.posts
     # #589 review F6: the cause changing from the fail-closed alert to an unledgered trigger is posted at once, not at the 6 h repeat
     st.write_text(json.dumps({"active": {"h5_idle_ledger": {"first": T - 600, "last_post": T - 600}}, "restarts": 0, "stop": False, "ts": T - 300}))
     p = Poster()
