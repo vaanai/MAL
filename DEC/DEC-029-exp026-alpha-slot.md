@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Draft, 2026-10-10. For the owner's dated line (section 3).** It takes effect on merge, with quant-proof's OK on its final head and the owner's line. [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) does not merge without it. No hour was read to write it. |
+| **Status** | **Draft, 2026-10-10. The owner chose M1 on 2026-10-11 (section 3), with a disclosure on the question's wording that quant-proof rules on.** It takes effect on merge, with quant-proof's OK on its final head and the owner's line. [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) does not merge without it. No hour was read to write it. |
 | **Decider** | Vaan (owner) for the slot or for M2. The Claude manager runs the rest. |
 | **Date** | 2026-10-10 |
 | **Builds on** | [DEC-021](DEC-021-champion-challenger.md) §8 and Amendments 2 and 3, [DEC-023](DEC-023-h5-family.md), [DEC-025](DEC-025-c1nf-family.md) §2, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) §7 item 6 and §9, [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) §0, §5, §10 and §11, quant-proof's CHANGES review of PR #542 at 62cc971. |
@@ -36,14 +36,24 @@
 The line below holds the owner's choice. Nothing else fills it, and until a line is there, EXP-026 does not merge.
 
 ```
-OWNER_ALPHA_ROUTE_CONFIRMED:
+OWNER_ALPHA_ROUTE_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the manager). Route: M1. Question: "For v2's own formal test, which statistical budget route: M1 (stricter: adds a 4th 2.5% luck-budget slot plus a day-by-day consistency check) or M2 (no new slot; a pass is labelled outside October's budget)?" Answer: "M1 (Recommended)". MiScusi notebook n_soP9VudXSnG4Jw.
 ```
 
 The form to fill: `<date> (owner, in session, asked by <manager>). Route: M1 | M2. Question: "<verbatim>". Answer: "<verbatim>". MiScusi notebook <id>.`
 
 The question shown to the owner must state, verbatim: "M1 opens a fourth alpha slot of 0.025 for EXP-026, which raises the bound on a false promotion across October's promotion-eligible families from 0.075 to 0.10, and adds a binding day-level t that lowers EXP-026's pass odds to at most about 0.01. M2 opens no slot, reads EXP-026 on the promotion gate only, labels any pass 'gate-only, outside DEC-021 §8', and accepts that the October error then exceeds DEC-021 §8's bound." A line whose question lacks that text does not count.
 
-**Then, before EXP-026 merges:** its pinned line `EXP026_ALPHA_ROUTE` (EXP-026 §0) is set to the chosen route. Under M1, DEC-021 Amendment 4 merges in the same PR.
+**Record of the 2026-10-11 answer.**
+
+- **The instant** is the session's timestamp on the owner's answer. The notebook entry (n_soP9VudXSnG4Jw) gives the verbatim questions and option texts. Its title says about 03:50Z.
+- **The two options as shown.** "M1 (Recommended)": "Quant-proof's default. Keeps October's records honest; a pass is unlikely either way (at most about 1%), so it costs nothing that earns money." "M2": "Slightly higher pass chance (about 0.5–3%), but most of that extra chance is luck, so a pass wouldn't justify putting money behind it."
+- **Disclosure: the question did not carry the required text above.** It differs from it in three ways.
+  - It said "adds a 4th 2.5% luck-budget slot". It did not state that the October bound goes from 0.075 to 0.10. The increment it named, 0.025, is the same.
+  - It called the binding item "a day-by-day consistency check". **The binding item is the EXP-024 §7 item 6 day-level t** (EXP-026 §5 item 7): a one-sided t on the W per-UTC-date mean SOL per trade, df = W − 1, p ≤ 0.025 under both fail legs. It is **not** a rule that every day, or a set share of days, is positive. No per-day sign rule is added by M1. The gate's own "majority of days positive" (EXP-026 §5) is unchanged.
+  - Its M2 text did not say that the October promotion-eligible error then exceeds DEC-021 §8's bound.
+- **What follows.** The line is recorded as the owner gave it. M1 is the stricter of the two routes for EXP-026's pass, and the pinned `EXP026_ALPHA_ROUTE: M1` already matches. Quant-proof's check of the final head rules whether the line stands as recorded, or whether the owner is first shown the required text. Showing it is a disclosure. The route could still change then, because no v2 outcome exists before W0.
+
+**Then, before EXP-026 merges:** its pinned line `EXP026_ALPHA_ROUTE` (EXP-026 §0) is set to the chosen route. Under M1, DEC-021 Amendment 4 merges in the same PR. **At this head:** `EXP026_ALPHA_ROUTE: M1` (unchanged, it matches), and DEC-021 Amendment 4 stays in the PR.
 
 ## 4. What this DEC is not
 

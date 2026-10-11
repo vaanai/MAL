@@ -245,7 +245,7 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - **The confirmation tape is not independent.** VERIFY generated the BOOST-end hypothesis on it, and its exit grid was known before iter-r2's freeze. m ≥ 14 from EXP-024's merge, about 37 counting untracked readers (EXP-024 §9). That is why only fresh forward hours can decide.
 - **No α slot is free.** The promotion gate's CI90 lower bound is a one-sided 5% bootstrap test, so a PASS here is a promotion-eligible read. DEC-021 §8 gave two slots of 0.025 ("This DEC covers at most 2 walks… A third walk needs a new DEC"); Amendment 2 gave slot 2 to EXP-024 and Amendment 3 gave slot 3 to EXP-025 (DEC-025), so the promotion-eligible October families are now bounded by 0.075, and Amendment 3 says "A fourth slot needs a new DEC". An amendment that records EXP-026 "outside the slot accounting" is not allowed under §8 (quant-proof, 10-10).
 - **M1 is the default.** Add the EXP-024 §7 item 6 day-level t as binding item 7, at α 0.025, under both fail legs (section 5). The slot needs a new DEC, as DEC-021 §8 requires, with the owner's dated line: [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, in this PR) opens §8's fourth slot for EXP-026 only, which raises the October bound from 0.075 to 0.10. If the owner refuses that slot, the owner may choose M2 only in that new DEC, by a dated line stating that the October promotion-eligible error exceeds DEC-021 §8's bound. Under M2, the date-cluster CI90 lower bound > 0 (`common.gate`, 1,000 date resamples, seed 1, both legs) becomes binding item 7. The report labels any M2 PASS "gate-only, outside DEC-021 §8".
-- **This file does not merge** until DEC-029 carries the owner's line and `EXP026_ALPHA_ROUTE` (section 0) matches it.
+- **This file does not merge** until DEC-029 carries the owner's line and `EXP026_ALPHA_ROUTE` (section 0) matches it. **Recorded 2026-10-11: M1** (DEC-029 §3, with its disclosure on the question's wording). `EXP026_ALPHA_ROUTE: M1` matches. M1's binding item is the day-level t of section 5 item 7, not a rule that every day is positive.
 - EXP-026 and EXP-024 Look 2 score largely the same pools with the same trigger. The paired gap is about 0.3–3 pp against a per-trade SD of about 99 pp, so EXP-026 is, to first order, a further look at the H5 trigger. Its α belongs to the H5 family (DEC-023). Under M1 the H5 family's promotion-eligible α is 0.050: EXP-024's 0.025 (0.020 + 0.005, unchanged) and this slot's 0.025.
 - **EXP-024 is untouched.** Its k = 1, α 0.020 / 0.005 and m are unchanged. EXP-026 is a separate read, not a look of EXP-024.
 - **No `data/tries.jsonl` line at registration.** The 20 exit tries are counted here.
@@ -289,14 +289,14 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 | By | Item |
 | --- | --- |
 | before merge | quant-proof OK on this file's final head and the rule block sha256. The section 11 power check is done (quant-proof, 10-10). |
-| before merge | [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, in this PR): the owner's dated M1 or M2 line, and DEC-021 Amendment 4 (in this PR) if M1. `EXP026_ALPHA_ROUTE` set to match. |
+| before merge | [DEC-029](../DEC/DEC-029-exp026-alpha-slot.md) (draft, in this PR): the owner's dated M1 or M2 line, and DEC-021 Amendment 4 (in this PR) if M1. `EXP026_ALPHA_ROUTE` set to match. **Done 2026-10-11: M1**, Amendment 4 kept, the pinned line matches. |
 | with this file | **G-v2**, EXP-024 Amendment 8 (draft, in this PR; section 3.4, P1). It merges before the shadow runs the v2 computation on any pool. |
 | before W0 | The shadow build (P4) with the md5 proof (P2) and the brute-force check (P3); reviewer pass. |
 | before W0 | The count job (P6). |
 | before merge | The [DEC-023](../DEC/DEC-023-h5-family.md) note (a second rule in the H5 family, its read and its α route) is DEC-029 section 0. |
 | before W0 | An `EXP/README.md` row (in this PR). |
 | before the read | `tools/exp026_read.py` (P7) with quant-proof's OK; E1 (P9). |
-| any time | [DEC-028](../DEC/DEC-028-h5-v2-canary.md) (draft): the owner's choice between Option A and Option B. |
+| any time | [DEC-028](../DEC/DEC-028-h5-v2-canary.md) (draft): the owner's choice between Option A and Option B. **Decided 2026-10-11:** Option A now, plus a pre-authorized Option B that starts only after v1 is halted by a DEC-024 §5.1 BOOST-timing halt (DEC-028 §3.5). Section 3.3's Option A rules apply until that switch instant, and its Option B rules apply from it. The report gives the switch instant (or "no switch"), and computes the traded share over the counted pools with s0 at or after it. |
 
 ## 14. Out of scope
 

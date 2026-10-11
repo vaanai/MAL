@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Draft, 2026-10-10. For the owner's choice between Option A and Option B.** Nothing is decided by this file and no live send happens under it. It takes effect on merge, with quant-proof's OK on its final head and the owner's dated line (section 9). Option B also needs its own override line (section 3.1). Revised 2026-10-10 for quant-proof's CHANGES review of 62cc971 (items 10-13 applied, and Option B's seal consequence for EXP-026 made explicit in sections 3.1 and 7). |
+| **Status** | **Draft, 2026-10-10. The owner chose on 2026-10-11 (section 3.5, lines in sections 3.1 and 9): Option A now, plus a pre-authorized Option B that starts only after v1 is halted by a DEC-024 §5.1 BOOST-timing halt.** No live send happens under this file until section 3.5's conditions all hold. It takes effect on merge, with quant-proof's OK on its final head and the owner's dated line (section 9). Option B also needs its own override line (section 3.1). Revised 2026-10-10 for quant-proof's CHANGES review of 62cc971 (items 10-13 applied, and Option B's seal consequence for EXP-026 made explicit in sections 3.1 and 7). |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-10-10 |
 | **Builds on** | [EXP-026](../EXP/EXP-026-h5-boostclock-v2-prereg.md) (the v2 rule and its read), [DEC-024](DEC-024-h5-live-canary.md) (the v1 canary: §4 limits, §5 halts, §6 seals, §7 override, Amendments 1–5, halt record), [DEC-027](DEC-027-h5-champion-challenger.md) (§0, §3(b), §7), [DEC-018](DEC-018-live-trial-readiness.md), [DEC-019](DEC-019-execution-probe.md), [DEC-020](DEC-020-size-step-proposal.md), [DEC-021](DEC-021-champion-challenger.md) §7, [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) §3, §3.1, Amendments 2 and 4, Amendment 8 (G-v2, draft), [DEC-029](DEC-029-exp026-alpha-slot.md) (draft, EXP-026's α slot), [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md) §9. |
@@ -19,6 +19,7 @@
   - **Not a DEC-027 challenger:** it misses the +3.0 pp pressure floor at +2.9425 pp. Quant-proof recommended parking it as a challenger.
 - **The owner (10-10)** asked to "try to make H5 work", keep moving fast, and keep the bar.
 - **v1's 14-day cap is not extended.** It ends 14 days after the canary's first send, about **2026-10-23T19:30Z**.
+- **Update 2026-10-11.** v1 resumed at **2026-10-11T00:15:06.586Z** under DEC-024 Amendment 4 item 4 (resume record there). The executor's `end_ms` is now **2026-10-23T19:29:53Z**, the 14-day cap (owner, 2026-10-11; PR #591, named sha `f873aac`). The owner chose Option A plus a pre-authorized Option B (section 3.5).
 
 **EXP-026** pre-registers v2 (v1's trigger, entry and fills with C10's exit) and its one forward paper read against the promotion gate. This DEC is about what may trade **live** in the meantime.
 
@@ -51,12 +52,14 @@
 - **It needs a new override.** DEC-024 §7's `OWNER_OVERRIDE_CONFIRMED` was given for "this one strategy", v1. DEC-027 §0 already reads it as not extending to a new rule. A v2 canary before an EXP-026 pass is an owner override of the CLAUDE.md promotion rule for **H5-BOOSTCLOCK v2's live canary only**. It requires the owner's explicit written confirmation, recorded in this file by a dated line before any v2 send. The promotion gate is unchanged for every other book, and EXP-026's read stays binding as written. The canary is labelled an unpromoted trial in every report, and no report of it says the book passed or is positive. The line below holds the owner's confirmation. Nothing else fills it, and until a line is there, there is no v2 send.
 
   ```
-  OWNER_OVERRIDE_V2_CONFIRMED:
+  OWNER_OVERRIDE_V2_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the manager). Pre-authorized, conditional (section 3.5). Question: "H5 v2 (same buys, sells about 10 s before boost's projected end) can run on paper only (A), or live on H5's wallet at 0.02 SOL (B, an override of the promotion gate). Recommendation: paper now, and pre-authorize the switch to live v2 at 0.02 SOL automatically if v1 gets halted by the boost-timing rule. Which?" Answer: "Paper now + auto-live (Recommended)". MiScusi notebook n_soP9VudXSnG4Jw.
   ```
 
   The form to fill: `<date> (owner, in session, asked by <manager>). Question: "<verbatim>". Answer: "<verbatim>". MiScusi notebook <id>.`
 
   The question shown to the owner must include, verbatim: "H5-BOOSTCLOCK v2 has not passed the promotion gate, its own read is expected to fail, and it would trade real money in the BOOST regime that halted v1. CLAUDE.md says live trading does not start until a book clears the promotion gate and the owner approves; this answer overrides that for v2's T0 canary only." It must also include, verbatim: "Under Option B, the v2 canary's outcomes are watched in real time on most of the pools EXP-026 counts, so EXP-026's read is labelled partly observed, and it is reported compromised if that label, the traded share or the no-withdrawal rule is missing." A line whose question lacks either sentence does not count.
+
+  **Disclosure (2026-10-11).** The question above named B "an override of the promotion gate" and stated the stake and the trigger. It did not carry either required sentence. It did not say that v2's own read is expected to fail, that B trades in the BOOST regime that halted v1, or what B costs EXP-026's read. The owner's pre-authorization is recorded as the owner's decision. To meet this section's text before any v2 send, the Helm reinstall request that B needs (section 3.5) carries both sentences verbatim. The owner relays that request, and the manager records the relay here with its date. Quant-proof's check of the final head rules whether that meets this section, or whether the owner must answer the two sentences first.
 - **What B costs EXP-026 (the seal consequence).** The v2 canary (2 open positions, 30 attempts a day) trades most of the 8–16 plain triggers a day that EXP-026 counts, and its fills, exits and wallet deltas are watched in real time (section 7). So under Option B, v2's own book is largely observed before EXP-026's read, and the store cannot keep it blind. **Without quant-proof's fix, that read would be compromised.** The fix (EXP-026 §3.3, §8, G-v2 items (a)(iii) and (g)) is all of: the observation is declared in G-v2 before any v2 send; the read reports the share of counted pools the canary traded; it labels its verdict "v2 outcomes partly observed before the read"; and EXP-026 is not withdrawn, re-scoped or delayed after W0 for any reason other than an EXP-026 §7 NOT_DECIDABLE condition. If any of these fails, EXP-026's read is reported compromised, and a compromised read cannot support a live request. Under Option A none of this applies: v2's outcomes stay withheld until the read.
 - **What the override does not cover.** Any step above T0. A scale-up of v2 before an EXP-026 PASS would need a further, separate dated line, which this DEC does not propose. The owner's 10-09 ladder and DEC-024 Amendment 3's T1 terms were given for v1 and do not carry over.
 
@@ -71,7 +74,7 @@
 | Daily stop | realized loss of **0.08 SOL** in a UTC day |
 | Total stop | min(0.12 SOL, 35% of the wallet when T0 started), about **0.1045 SOL**. **The counters continue from v1's run** (DEC-027 §7 item 6: a new rule never starts with a fresh allowance) |
 | Priority, guard, sell ladder | DEC-024 §4 unchanged: 55,000 lamports per send; buy `min_out` at the trigger print's post-trade price ÷ 1.15; sell `min_out` 0.85, then 0.65 after 2 reverts or once s0 + 345 s has passed; never `min_out` 0 |
-| Duration | **ends at DEC-024's 14-day end** (14 days from the canary's first send, about 2026-10-23T19:30Z), and at the executor's `end_ms` if that is earlier. **Never extended past that end under this DEC.** Any v2 live trading after it needs a new DEC (and, before an EXP-026 PASS, a new override) |
+| Duration | **ends at DEC-024's 14-day end** (14 days from the canary's first send, about 2026-10-23T19:30Z), and at the executor's `end_ms` if that is earlier (`end_ms` is 2026-10-23T19:29:53Z from PR #591). **Never extended past that end under this DEC.** Any v2 live trading after it needs a new DEC (and, before an EXP-026 PASS, a new override) |
 | Files | `LIVE_OK`, `STOP`, `HALT`, `TIER` as DEC-024 §4. The exit mode is a compiled-in constant of the pinned install, or DEC-027 §7's `VARIANT` file if that selector is built first. Only Helm changes either |
 | Wallet | the DEC-019 probe wallet `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk` on `mal-fast-0`, held by Helm. The manager never sees the key (DEC-019 §5) |
 | Funding | what the wallet holds now, about 0.3039 SOL (HANDOFF, STATE 10-10 ~07:30Z). The +0.5 SOL T1 top-up of DEC-024 Amendment 3's addendum is **not** sent under Option B |
@@ -93,6 +96,41 @@
 - The executor trades one exit rule. Option B replaces v1's exit mode on the `h5` profile; it does not add a second rule.
 - If the owner resumes v1 under DEC-024 Amendment 4 or 5, Option B stops at the next 00:00Z with 0 open positions and Helm reinstalls or rewrites the mode to v1.
 - A return to v1 is a fail-safe, not a switch, and DEC-027's one-switch limit does not count it.
+
+### 3.5 The owner's choice (2026-10-11): Option A now, and a pre-authorized Option B
+
+**What the owner chose.** Option A from now on: v2 runs on paper beside v1, and its live sell code is built and reviewed keyless (section 5). On top of that, the owner pre-authorized Option B, which starts on one trigger only. The owner's line is in section 3.1. The option text was: "v2 runs on paper beside v1 now. Its live sell code is built and reviewed in the meantime. If v1 halts on boost timing, v2 goes live at 0.02 SOL on the same wallet and loss caps (about 0.10 SOL total), until 10-23. That needs one Helm reinstall then."
+
+**The trigger.** v1 is halted (`STOP` placed) under DEC-024 §5.1, as amended by DEC-024 Amendment 4 item 2 and Amendment 5 item 1, by one of its BOOST-timing clauses:
+- the day-median lines: the executor's or the plain-pool median below 335 s, or the second completed day below 337 s;
+- rule (b): BOOST over before our sell on more than 15% of at least 20 paired sells;
+- rule (c): a last slice below 300 s on 3 pools in a day;
+- the A3 backstop: an A3 run whose median last slice after migrate is below 330 s.
+
+**What is not a trigger** [manager's reading, for quant-proof]:
+- §5.1's "two consecutive unevaluated days" clause. It halts on missing data, not on BOOST timing.
+- Any other DEC-024 §5 rule (late sells, slow landing, divergence, a stuck position, structure, including `program_changed`, `pins_changed` and every A3 halt flag), and any DEC-024 stop: `toggle_boost`, a seal breach, the 14-day end.
+- A STOP that the owner, Helm or the manager places for any other reason.
+- A §5.1 halt that fires together with any of the above. The other halt governs, and B does not start.
+
+**What B is, once triggered.** Section 3's v2 canary, unchanged:
+- T0 0.02 SOL only, on the same wallet, with section 3.2's limits. The counters continue from v1's run, so the total stop is about 0.10 SOL over both rules (the option text's "about 0.10 SOL total").
+- It ends at the 14-day end, **2026-10-23T19:29:53Z** (`end_ms` 1792783793000, PR #591, named sha `f873aac`). It is never extended under this DEC.
+- T1 stays blocked. The +0.5 SOL top-up is not sent.
+
+**What B still needs before its first send.** The trigger does not skip anything in sections 3.3 and 6:
+- EXP-026 and G-v2 (EXP-024 Amendment 8) merged;
+- v2's live sell code (section 5 items 1–6) built, with a `reviewer` pass, a security review and quant-proof on the md5 proof (section 5 item 7);
+- v1 STOPPED with 0 open positions, and no A3 halt flag showing;
+- **one Helm pinned reinstall** (section 5 item 8) with the v2 exit mode, then `LIVE_OK` only after the install is checked;
+- the two section 3.1 sentences, sent verbatim in the request to Helm, which the owner relays (section 3.1, "Disclosure").
+If v2's code is not reviewed and installed when v1 halts, B waits for it, up to the 14-day end. Nothing is rushed past a review because the trigger fired.
+
+**Never while v1 is live.** This matches section 3.3. B is a replacement after v1's halt, not a second rule (section 3.4). If v1 is later resumed under DEC-024's own resume rules, section 3.4 applies, and B stops at the next 00:00Z with 0 open positions.
+
+**EXP-026's seal from the switch.** Until the switch, Option A's rules of EXP-026 §3.3 apply, and v2's decision records stay withheld. From the switch instant, Option B's rules apply: the shadow restarts with `--h5v2-live-exit DEC-028-B`, the canary's own outcomes are observed (G-v2 item (a)(iii)), and EXP-026's report gives the switch instant, the traded share and the label (section 3.1, "What B costs EXP-026"). The trigger depends on v1's BOOST-timing halt and not on any v2 outcome, so choosing B ahead of time moves no choice onto v2's book.
+
+**EXP-024 Look 1.** Under [DEC-024 Amendment 8](DEC-024-h5-live-canary.md) item 1 (draft, PR on `claude/dec024-owner-1011`), a Look 1 FAIL keeps H5 at T0 through 10-23 for execution measurement only. That covers whichever H5 rule the profile then trades, v1 or v2 under this section. Neither is ever a book.
 
 ## 4. Live halts under Option B (DEC-024 §5, adapted to v2)
 
@@ -170,6 +208,12 @@ Any of these halts new buys at once (`STOP`). Open positions still exit by v2's 
 - **Either way**, the live-side build of section 5 is the same work, and building it keyless now costs no SOL.
 
 ## 9. Open for the owner
+
+**Answered 2026-10-11 (owner, in session, 2026-10-11T03:35:22Z, MiScusi notebook n_soP9VudXSnG4Jw).** Items 1, 2 and 4 are answered below. Item 3 is answered by section 3.5: v1 keeps running under its own rules, and v2 replaces it only after a §5.1 BOOST-timing halt.
+
+```
+OWNER_DEC028_CHOICE: 2026-10-11T03:35:22Z (owner, in session, asked by the manager). Option A now, plus Option B pre-authorized on a DEC-024 §5.1 BOOST-timing halt of v1 (section 3.5). Answer: "Paper now + auto-live (Recommended)". MiScusi notebook n_soP9VudXSnG4Jw.
+```
 
 1. **Option A or Option B.**
 2. **If B:** the override line in section 3.1, in your own words, and the section 3.2 limits. B stays at T0, and it ends at the 14-day end, about 10-23; this DEC does not extend it.
