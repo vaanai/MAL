@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools import h5_shadow as h5
-from tools.test_h5_shadow import MINT, POOL, SOL, Tape, announce, boost_buys, drain, make_engine, types
+from tools.test_h5_shadow import MINT, POOL, SOL, Tape, announce, boost_buys, drain, make_engine, types  # noqa: F401
 
 NEW_KEYS = {h5.UNION_FIELD, "base_union", "base_unmatched_ws_n", "base_unmatched_ws", "base_unmatched_union_n", "base_unmatched_union"}
 
@@ -378,26 +378,54 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(a.tip_dir)
         self.assertIsNone(a.replay_tip_lag_slots)
 
-    def test_wrapper_passes_tip_dir_by_default_off_disables_bad_refused(self):
+    def test_wrapper_union_off_by_default_explicit_dir_with_readable_precheck(self):
         import shutil
         import subprocess
 
         d = tempfile.mkdtemp(dir="/tmp", prefix="h5-tip-")
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         fake = Path(d) / "fakepy"
-        fake.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\n')
+        fake.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\nprintf "SHA:%s\\n" "$H5_CODE_SHA"\n')
         fake.chmod(0o755)
+        tip = Path(d) / "tip"
+        tip.mkdir()
+        empty = Path(d) / "tip-empty"
+        empty.mkdir()
+        (tip / "trades-2027-01-01T11.jsonl").write_text("")
+        newest = tip / "trades-2027-01-01T12.jsonl"
+        newest.write_text("")
         script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        head = subprocess.run(["git", "-C", str(script.parent), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+        def argv(r):
+            return r.stdout.split("ARGV:")[1].split("\n")[0]
+
         for shell in ("sh", "bash"):
             base = {"PATH": os.environ["PATH"], "HOME": d, "H5_OUT_DIR": d + "/out", "H5_PYTHON": str(fake)}
-            r = subprocess.run([shell, str(script)], env=base, capture_output=True, text=True)
+            for env in ({}, {"H5_TIP_DIR": "off"}, {"H5_TIP_DIR": ""}):  # unset, "off" and empty: OFF
+                r = subprocess.run([shell, str(script)], env={**base, **env}, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, (shell, env, r.stderr))
+                self.assertNotIn("--tip-dir", argv(r), (shell, env))
+                self.assertIn("tip_union=off", r.stdout)
+            r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": str(tip)}, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, (shell, r.stderr))
-            self.assertIn(f"--tip-dir {h5.TIP_DIR_DEFAULT}", r.stdout.split("ARGV:")[1])
-            r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": "off"}, capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, (shell, r.stderr))
-            self.assertNotIn("--tip-dir", r.stdout.split("ARGV:")[1])
-            r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": "/tmp/tipx"}, capture_output=True, text=True)
-            self.assertIn("--tip-dir /tmp/tipx", r.stdout.split("ARGV:")[1])
+            self.assertIn(f"--tip-dir {tip}", argv(r))
+            self.assertIn(f"tip_union=on:{tip}", r.stdout)
+            self.assertEqual(r.stdout.split("SHA:")[1].split("\n")[0], head)  # the start record's code_sha comes from here
+            self.assertRegex(head, "^[0-9a-f]{40}$")
+            r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": str(empty)}, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))  # fail-soft: no trades file -> the union stays OFF, logged
+            self.assertNotIn("--tip-dir", argv(r))
+            self.assertIn("starting with the union OFF", r.stderr)
+            if os.geteuid() != 0:  # root passes test -r on a 000 file
+                newest.chmod(0)
+                try:
+                    r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": str(tip)}, capture_output=True, text=True)
+                finally:
+                    newest.chmod(0o644)
+                self.assertEqual(r.returncode, 0, (shell, r.stderr))
+                self.assertNotIn("--tip-dir", argv(r))
+                self.assertIn(f"newest trades-*.jsonl there ({newest}) is not readable", r.stderr)
             for bad in ("rel/dir", "/var/lib/mal/../x"):
                 r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": bad}, capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2, (shell, bad))
@@ -604,7 +632,10 @@ class TipTailResilienceTests(unittest.TestCase):
         eng.on_trade(t.rows[0])
         eng.on_tip_row(t.rows[1])
         eng.on_tip_row(t.rows[1])
-        self.assertEqual(eng.pools[POOL].union.dup, 1)
+        u = eng.pools[POOL].union
+        self.assertEqual((u.dup, len(u.ahead)), (0, 2))  # above the feed's line (decision time): held, not counted yet
+        eng.on_trade(t.rows[1])
+        self.assertEqual((u.dup, len(u.ahead), u.n[h5.UNION_BOTH]), (1, 0, 1))
 
     def test_rotation_reopens_from_the_start(self):
         self.path.write_text(line("WANT", 1, "old"))
@@ -626,6 +657,375 @@ class TipTailResilienceTests(unittest.TestCase):
         self.tail.poll()
         self.assertEqual(self.tail.c["resets"], 0)
         self.assertIsNone(self.tail.err)
+
+
+def lead_rows(pool=POOL, slots=(1205, 1206, 1207), pre0=None, post0=None):
+    """Tip-only rows (keys the feed never has) at the given slots, a little chain of their own; the first one's post base is post0 if given."""
+    out, b = [], (pre0 if pre0 is not None else 7 * 10**13)
+    for i, sl in enumerate(slots):
+        nb = post0 if (i == 0 and post0 is not None) else b - 1000
+        out.append({"venue": "pumpswap", "pool": pool, "slot": sl, "side": "buy", "token_raw": b - nb, "base_reserve": b, "signature": f"lead{sl}",
+                    "event_index": 0})
+        b = nb
+    return out
+
+
+UNION_COUNT_KEYS = ("ws_only", "tip_only", "both", "both_diff", "dup", "tip_first_slot")
+
+
+class DecisionTimeUnionTests(unittest.TestCase):
+    """Follow-up of #596 (reviewer fix 1, QP #600, DEC-024 phase-2 note item 5): a trigger record's union counts only tip rows at slot <= the
+    trigger print's slot; the pool close record is the eager union of everything read."""
+
+    def feed(self, lead=(), lead_before_trigger=True, skip=(3,), tip_skip=(3,), rows=None, close=True, tip=None):
+        eng, out = make_engine()
+        eng.tip = tip or FakeTip("ok", 2000)
+        announce(eng)
+        t = rows or pool_rows(drain_slot=1200)
+        n = len(t.rows)
+        log = []  # arrival order for the eager reference: (key, pre, post, slot, src)
+        for i, r in enumerate(t.rows):
+            if i == n - 1 and lead_before_trigger:
+                for x in lead:
+                    eng.on_tip_row(x)
+                    log.append(x)
+            if i not in skip:
+                eng.on_trade(r)
+                log.append(("ws", r))
+            if i + 1 < n and i not in tip_skip:
+                eng.on_tip_row(r)
+                log.append(r)
+        if not lead_before_trigger:
+            for x in lead:
+                eng.on_tip_row(x)
+                log.append(x)
+        if close:
+            eng.close_all("test")
+        return eng, out, t, log
+
+    @staticmethod
+    def eager(log):
+        """The phase-0 (eager) union of the same arrivals, built with UnionChain.add directly."""
+        u = h5.UnionChain()
+        for x in log:
+            if isinstance(x, tuple):
+                r = x[1]
+                tok = r["token_raw"]
+                bpre = r["base_reserve"]
+                u.add((r["signature"], r.get("event_index")), bpre, bpre + (-tok if r["side"] == "buy" else tok), r["slot"], h5.UNION_WS)
+            else:
+                bpre = x["base_reserve"]
+                u.add((x["signature"], x.get("event_index")), bpre, bpre + (-x["token_raw"] if x["side"] == "buy" else x["token_raw"]), x["slot"],
+                      h5.UNION_TIP)
+        return u
+
+    def test_tip_leading_rows_never_reach_the_trigger_record(self):
+        _, base, t, _ = self.feed()
+        (trig0,) = [r for r in types(base, "trigger") if r["variant"] == "pv"]
+        self.assertEqual(trig0["slot"], 1200)
+        self.assertEqual(trig0[h5.UNION_FIELD], 1)  # the print at index 3 is on neither source: a real break
+        fill = t.rows[4]["base_reserve"]  # a tip-only row whose post base is the unmatched pre: would close the break if it were counted
+        lead = lead_rows(post0=fill)
+        eng, out, _, log = self.feed(lead=lead)
+        (trig,) = [r for r in types(out, "trigger") if r["variant"] == "pv"]
+        self.assertEqual(trig[h5.UNION_FIELD], 1)
+        self.assertEqual(trig["base_union"], trig0["base_union"])
+        self.assertEqual(trig["base_union"]["tip_only"], 0)
+        self.assertEqual(trig["base_union"]["tip_first_slot"], 1000)
+        self.assertEqual((trig["base_union"]["tip_hw_slot_global"], trig["base_union"]["tip_lag_slots_global"]), (2000, 1200 - 2000))
+        self.assertNotIn("tip_hw_slot", trig["base_union"])
+        for k in UNION_COUNT_KEYS + ("status",):
+            self.assertIn(k, trig["base_union"])
+        # the eager (phase-0) union at the trigger would have read the lead rows: what this fix removes
+        pre = self.eager(log[:-1])
+        self.assertEqual((pre.n[h5.UNION_TIP], pre.tip_first_slot), (3, 1000))
+        self.assertEqual(pre.settled(1200), 0)
+        # pool close: unchanged, the eager union of every row read
+        (pool,) = types(out, "pool")
+        ref = self.eager(log)
+        bu = pool["base_union"]
+        self.assertEqual([bu[k] for k in UNION_COUNT_KEYS], [ref.n[h5.UNION_WS], ref.n[h5.UNION_TIP], ref.n[h5.UNION_BOTH], ref.both_diff, ref.dup,
+                                                              ref.tip_first_slot])
+        self.assertEqual(bu["tip_only"], 3)
+        self.assertEqual(pool[h5.UNION_FIELD], ref.settled(eng.hw_slot))
+        self.assertEqual((bu["tip_hw_slot"], bu["tip_lag_slots"]), (2000, 1200 - 2000))
+        self.assertEqual(pool["base_unmatched_union_n"], ref.unmatched()[0])
+        # every decision field and every non-union key is the same as without the lead rows
+        self.assertEqual(strip_new(out), strip_new(base))
+
+    def test_equal_slot_tip_rows_count_and_later_ones_do_not(self):
+        lead = lead_rows(slots=(1200, 1201))
+        _, out, _, _ = self.feed(lead=lead)
+        (trig,) = [r for r in types(out, "trigger") if r["variant"] == "pv"]
+        self.assertEqual(trig["base_union"]["tip_only"], 1)  # the row at the trigger slot is admitted by the trigger print itself
+        self.assertEqual(trig["base_union"]["status"], "ok")
+        (pool,) = types(out, "pool")
+        self.assertEqual(pool["base_union"]["tip_only"], 2)
+
+    def test_lead_rows_arriving_after_the_trigger_change_nothing_in_it(self):
+        _, a, _, _ = self.feed(lead=lead_rows(), lead_before_trigger=True)
+        _, b, _, _ = self.feed(lead=lead_rows(), lead_before_trigger=False)
+        ta = [r for r in a if r["type"] == "trigger"]
+        tb = [r for r in b if r["type"] == "trigger"]
+        self.assertEqual(ta, tb)
+        self.assertEqual(types(a, "pool"), types(b, "pool"))
+
+    def test_slot_regress_trigger_is_null_not_look_ahead(self):
+        t = Tape()
+        t.row(1000, "buy", "SNIPER", SOL // 5)
+        for i in range(1, 8):
+            t.row(1000 + 10 * i, "buy", f"T{i}", SOL // 20)
+        boost_buys(t, 1000)
+        t.rows.sort(key=lambda r: r["slot"])
+        _fix_chain(t)
+        t.row(1203, "buy", "LATE", SOL // 100)  # arrives before the drain print but at a later slot: the drain is a slot regress
+        drain(t, 1200, 35.0)
+        for lead_slot, want in ((1202, "regress"), (1200, "ok")):
+            _, out, _, _ = self.feed(lead=lead_rows(slots=(lead_slot,)), rows=t, skip=(), tip_skip=(len(t.rows) - 2,))
+            (trig,) = [r for r in types(out, "trigger") if r["variant"] == "pv"]
+            self.assertEqual(trig["slot"], 1200)
+            bu = trig["base_union"]
+            self.assertEqual(bu["status"], want, lead_slot)
+            if want == "regress":
+                self.assertIsNone(trig[h5.UNION_FIELD])
+                self.assertEqual([bu[k] for k in UNION_COUNT_KEYS], [None] * len(UNION_COUNT_KEYS))
+            else:
+                self.assertEqual(bu["tip_only"], 1)
+
+    def test_far_lead_takes_the_incremental_path_at_the_trigger(self):
+        far = 1200 + h5.UNION_SETTLE_SCAN_MAX + 100
+        eng, out, t, log = self.feed(lead=lead_rows(slots=(far,)), close=False)
+        self.assertEqual(eng.union_mem()["union_ahead_rows"], 1)
+        (trig,) = [r for r in types(out, "trigger") if r["variant"] == "pv"]
+        self.assertEqual((trig["base_union"]["status"], trig[h5.UNION_FIELD]), ("ok", 1))
+        calls = []
+        real = h5.UnionChain.settled
+
+        def spy(self_, hw, full=True):
+            calls.append(full)
+            return real(self_, hw, full)
+
+        with mock.patch.object(h5.UnionChain, "settled", spy):
+            eng.close_all("test")
+        (pool,) = types(out, "pool")
+        self.assertEqual(calls, [True])  # the close may count in full, once per pool
+        self.assertEqual(pool[h5.UNION_FIELD], self.eager(log).settled(eng.hw_slot))
+        self.assertEqual(pool["base_union"]["tip_only"], 1)
+        u = h5.UnionChain()
+        u.add(("a", 0), 100, 90, 10, h5.UNION_WS)
+        u.add(("b", 0), 90, 80, 10 + h5.UNION_SETTLE_SCAN_MAX + 50, h5.UNION_TIP)
+        self.assertIsNone(u.settled(12, full=False))  # never a full O(members) count on the trigger path
+
+    def test_admission_order_gives_the_eager_union_and_keeps_tip_members_below_the_line(self):
+        rng = random.Random(11)
+        for trial in range(300):
+            c = chain(rng.randint(1, 50), seed=trial)
+            ev = []
+            for it in c:
+                for src in rng.sample([h5.UNION_WS, h5.UNION_TIP], 2):
+                    if rng.random() < 0.8:
+                        ev.append((src, it))
+                    if rng.random() < 0.05:
+                        ev.append((src, it))  # a repeat (dup)
+            rng.shuffle(ev)
+            ev.sort(key=lambda e: e[1][3] + (rng.randint(-3, 3) if e[0] == h5.UNION_TIP else 0))  # the tip sometimes leads, sometimes lags
+            u, ref = h5.UnionChain(), h5.UnionChain()
+            for src, (key, bpre, bpost, slot) in ev:
+                (u.add_ws if src == h5.UNION_WS else u.add_tip)(key, bpre, bpost, slot)
+                ref.add(key, bpre, bpost, slot, src)
+                if u.line is not None:
+                    self.assertTrue(all(v[2] <= u.line for v in u.m.values() if v[3] & h5.UNION_TIP), trial)
+                    self.assertTrue(u.tip_max_slot is None or u.tip_max_slot <= u.line)
+            u.flush()
+            self.assertEqual((u.m, u.n, u.dup, u.both_diff, u.tip_first_slot, u.excess),
+                             (ref.m, ref.n, ref.dup, ref.both_diff, ref.tip_first_slot, ref.excess), trial)
+            if c:
+                for hw in (c[-1][3], c[-1][3] + 2, c[0][3]):
+                    self.assertEqual(u.settled(hw), ref.settled(hw))
+
+    def test_event_index_is_the_trigger_prints_own(self):
+        t = pool_rows(drain_slot=1200)
+        t.rows[-1]["event_index"] = 3
+        for tip in (None, FakeTip("ok", 2000)):
+            eng, out = make_engine()
+            eng.tip = tip
+            announce(eng)
+            for r in t.rows:
+                eng.on_trade(r)
+            trig = [r for r in types(out, "trigger")]
+            self.assertTrue(trig)
+            for r in trig:
+                self.assertEqual((r["signature"], r["event_index"]), (t.rows[-1]["signature"], 3))
+                keys = list(r)
+                self.assertEqual(keys[keys.index("signature") + 1], "event_index")
+        t.rows[-1]["tape_event_index"] = 9  # a replay row: its own position rides in tape_event_index (the union key's event_index is 0)
+        t.rows[-1]["event_index"] = 0
+        eng, out = make_engine()
+        announce(eng)
+        for r in t.rows:
+            eng.on_trade(r)
+        self.assertEqual({r["event_index"] for r in types(out, "trigger")}, {9})
+        t.rows[-1].pop("tape_event_index")
+        t.rows[-1]["event_index"] = None
+        eng, out = make_engine()
+        announce(eng)
+        for r in t.rows:
+            eng.on_trade(r)
+        self.assertEqual({r["event_index"] for r in types(out, "trigger")}, {None})
+
+
+class TipTailOffsetTests(unittest.TestCase):
+    """Follow-up of #596 (reviewer fix 2 and 3): a transient error reopens at the saved offset; a reopen inside a line drops the fragment."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.dir = Path(self.td.name)
+        self.now = [int(datetime(2027, 1, 1, 12, 30, tzinfo=timezone.utc).timestamp() * 1000)]
+        self.rows = []
+        self.tail = h5.TipTail(self.dir, self.rows.append, lambda p: p == "WANT", wall=lambda: self.now[0], chunk=4096)
+        self.path = self.dir / "trades-2027-01-01T12.jsonl"
+
+    def tearDown(self):
+        self.tail.close()
+        self.td.cleanup()
+
+    def drain_polls(self, n=50):
+        for _ in range(n):
+            self.tail.poll()
+
+    def test_read_error_mid_hour_delivers_each_row_exactly_once(self):
+        self.tail.poll()  # the file appears after the start: read from byte 0
+        sigs = [f"r{i:02d}" for i in range(51)]
+        self.path.write_text("".join(line("WANT", 100 + i, s) for i, s in enumerate(sigs)))
+        real, calls = os.read, [0]
+
+        def flaky(fd, n):
+            calls[0] += 1
+            if calls[0] == 2:  # the second chunk: the first left a partial line behind
+                raise OSError(5, "Input/output error")
+            return real(fd, n)
+
+        with mock.patch.object(h5.os, "read", flaky):
+            self.tail.poll()
+            self.assertGreater(self.tail.stats()["partial_bytes"], 0)
+            self.tail.poll()  # the read error: fd closed
+            self.assertEqual(self.tail.c["read_errors"], 1)
+            self.assertEqual(self.tail.err, "OSError")
+            self.drain_polls()
+        self.assertEqual([r["signature"] for r in self.rows], sigs)  # 51 rows, each once (before the fix: 72 on_row calls)
+        self.assertEqual(self.tail.c["files_opened"], 2)
+        self.assertEqual(self.tail.c["parse_errors"], 0)
+        self.assertEqual(self.tail.c["fragments_dropped"], 0)
+        self.assertIsNone(self.tail.err)
+
+    def test_open_error_at_the_first_poll_starts_at_that_size_not_byte_0(self):
+        self.path.write_text(line("WANT", 1, "old1") + line("WANT", 2, "old2"))
+        real = os.open
+        with mock.patch.object(h5.os, "open", side_effect=PermissionError(13, "Permission denied")):
+            self.tail.poll()
+        self.assertEqual(self.tail.err, "PermissionError")
+        with open(self.path, "a") as f:
+            f.write(line("WANT", 3, "new"))
+        self.assertIs(h5.os.open, real)
+        self.drain_polls(3)
+        self.assertEqual([r["signature"] for r in self.rows], ["new"])  # the backlog present at the start is not re-read
+        self.assertIsNone(self.tail.err)
+
+    def test_truncation_inside_a_line_drops_the_fragment(self):
+        self.tail.poll()
+        a, b = line("WANT", 10, "a"), line("WANT", 11, "b")
+        self.path.write_text(a + b)
+        self.tail.poll()
+        self.assertEqual([r["signature"] for r in self.rows], ["a", "b"])
+        with open(self.path, "r+b") as fh:
+            fh.truncate(len(a) + 7)  # a cut that is not a line boundary
+        self.tail.poll()
+        self.assertEqual(self.tail.c["resets_truncated"], 1)
+        with open(self.path, "a") as f:
+            f.write(line("WANT", 12, "x")[30:] + line("WANT", 13, "d"))  # the rest of a line, then a whole one
+        self.drain_polls(3)
+        self.assertEqual([r["signature"] for r in self.rows], ["a", "b", "d"])
+        self.assertEqual((self.tail.c["fragments_dropped"], self.tail.c["parse_errors"]), (1, 0))
+
+    def test_truncation_at_a_line_boundary_keeps_the_next_line(self):
+        self.tail.poll()
+        a, b = line("WANT", 10, "a"), line("WANT", 11, "b")
+        self.path.write_text(a + b)
+        self.tail.poll()
+        with open(self.path, "r+b") as fh:
+            fh.truncate(len(a))
+        self.tail.poll()
+        with open(self.path, "a") as f:
+            f.write(line("WANT", 12, "c"))
+        self.drain_polls(3)
+        self.assertEqual([r["signature"] for r in self.rows], ["a", "b", "c"])
+        self.assertEqual(self.tail.c["fragments_dropped"], 0)
+
+    def test_tip_follow_closes_its_fds_when_cancelled(self):
+        self.path.write_text(line("WANT", 1, "x"))
+
+        async def go():
+            stop = asyncio.Event()
+            task = asyncio.create_task(h5.tip_follow(self.tail, stop, poll_s=0.01))
+            for _ in range(100):
+                await asyncio.sleep(0.005)
+                if self.tail.files:
+                    break
+            self.assertTrue(self.tail.files)
+            fds = [e[0] for e in self.tail.files.values()]
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            return fds
+
+        fds = asyncio.run(go())
+        self.assertEqual(self.tail.files, {})
+        for fd in fds:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+
+class CodeShaTests(unittest.TestCase):
+    def test_env_sha_then_git_then_null(self):
+        self.assertEqual(h5.code_sha({"H5_CODE_SHA": "A" * 40}), "a" * 40)
+        here = Path(h5.__file__).resolve().parent
+        import subprocess
+
+        head = subprocess.run(["git", "-C", str(here), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(h5.code_sha({"H5_CODE_SHA": "not-a-sha"}), head)
+        self.assertEqual(h5.code_sha({}), head)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(h5.code_sha({}, git_dir=d))  # not a checkout: unknown
+        with mock.patch.object(h5.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertIsNone(h5.code_sha({}))
+
+    def test_start_record_carries_code_sha(self):
+        import shutil
+
+        d = tempfile.mkdtemp(dir="/tmp", prefix="h5-sha-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+
+        async def no_feed(*a, **k):
+            return None
+
+        for env, want in (({"H5_CODE_SHA": "b" * 40}, "b" * 40),):
+            args = h5.build_parser().parse_args(["--out-dir", d, "--sockets", "3"])
+            with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None), \
+                    mock.patch.dict(os.environ, env):
+                self.assertEqual(asyncio.run(h5.run_live(args)), 0)
+            rows = [json.loads(x) for f in sorted(Path(d).glob("h5-shadow-*.jsonl")) for x in f.read_text().splitlines()]
+            (start,) = [r for r in rows if r["type"] == "start"]
+            self.assertEqual(start["code_sha"], want)
+            keys = list(start)
+            self.assertEqual(keys[keys.index("rule_sha256") + 1], "code_sha")
+        with mock.patch.object(h5, "code_sha", lambda: None):
+            args = h5.build_parser().parse_args(["--out-dir", d + "/2", "--sockets", "3"])
+            with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None):
+                self.assertEqual(asyncio.run(h5.run_live(args)), 0)
+            rows = [json.loads(x) for f in sorted(Path(d + "/2").glob("h5-shadow-*.jsonl")) for x in f.read_text().splitlines()]
+            (start,) = [r for r in rows if r["type"] == "start"]
+            self.assertIn("code_sha", start)
+            self.assertIsNone(start["code_sha"])
 
 
 if __name__ == "__main__":

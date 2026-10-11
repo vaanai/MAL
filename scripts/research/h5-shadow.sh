@@ -34,8 +34,12 @@
 #   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
 #   H5_TIP_DIR      REPORT-ONLY tip union (trade-rate phase 0): the tip follower's dir, read incrementally for tracked pools to write
 #                   base_breaks_unresolved_settled_union, base_union and base_unmatched_* next to the existing fields. No decision reads them.
-#                   Default /var/lib/mal/sealed/fast-trades-tip; "off" leaves the flag out (records byte-identical to a build without it).
-#                   Must be an absolute path without "..". A missing or stale dir is not an error: the fields go null.
+#                   OFF unless set to an absolute path without ".." (e.g. /var/lib/mal/sealed/fast-trades-tip): unset, empty or "off" leaves
+#                   the flag out (records byte-identical to a build without it). Precheck (metadata only, no content read): the newest
+#                   trades-*.jsonl in the dir must pass `test -r` for the user running the job, else the shadow logs why and starts with the
+#                   union OFF (fail-soft; restart with the permission fixed to turn it on). A dir that goes stale later is not an error: the
+#                   fields go null.
+#   H5_CODE_SHA     set by this script to `git rev-parse HEAD` of the checkout (empty if unknown); the start record's code_sha.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -87,14 +91,27 @@ fi
 if [ -n "${H5_MAX_SECONDS:-}" ]; then
   set -- "$@" --max-seconds "$H5_MAX_SECONDS"
 fi
-TIP="${H5_TIP_DIR:-/var/lib/mal/sealed/fast-trades-tip}"
+TIP="${H5_TIP_DIR:-off}"
+TIP_STATE=off
 case "$TIP" in
   off) ;;
-  *..*|"") echo "h5-shadow: refusing H5_TIP_DIR=$TIP" >&2; exit 2 ;;
-  /*) set -- "$@" --tip-dir "$TIP" ;;
+  *..*) echo "h5-shadow: refusing H5_TIP_DIR=$TIP" >&2; exit 2 ;;
+  /*)
+    NEWEST=""
+    for f in "$TIP"/trades-*.jsonl; do
+      [ -e "$f" ] && NEWEST="$f"
+    done
+    if [ -n "$NEWEST" ] && [ -r "$NEWEST" ]; then
+      set -- "$@" --tip-dir "$TIP"
+      TIP_STATE="on:$TIP"
+    else
+      echo "h5-shadow: tip union requested (H5_TIP_DIR=$TIP) but the newest trades-*.jsonl there (${NEWEST:-none found}) is not readable by $(id -un): starting with the union OFF" >&2
+    fi
+    ;;
   *) echo "h5-shadow: refusing H5_TIP_DIR=$TIP (not absolute)" >&2; exit 2 ;;
 esac
+H5_CODE_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 BX10=off
 if [ "${H5_BX10_ENABLE:-}" = "EXP-026" ]; then BX10=on; fi
-echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, tip_union=$TIP, python=$PY, head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-exec env PYTHONPATH="$ROOT" "$PY" -m tools.h5_shadow "$@"
+echo "h5-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, tip_union=$TIP_STATE, python=$PY, head=${H5_CODE_SHA:-unknown}"
+exec env PYTHONPATH="$ROOT" H5_CODE_SHA="$H5_CODE_SHA" "$PY" -m tools.h5_shadow "$@"
