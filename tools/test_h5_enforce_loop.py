@@ -54,6 +54,8 @@ line = json.dumps(rec, separators=(",", ":"))
 with open(args[args.index("--log") + 1], "a") as fh:
     fh.write(line + "\n")
 print(line)
+if os.environ.get("STUB_QUIT_ON") == kind + ":" + mode:
+    open(os.environ["STUB_QUIT_FILE"], "w").close()
 sys.exit(rc)
 '''
 
@@ -131,10 +133,19 @@ def test_dry_run_schedule(tmp_path: Path) -> None:
     assert cp.returncode == 0, cp.stdout + cp.stderr
     lines = cp.stdout.splitlines()
     slots = [l for l in lines if l.startswith("SLOT ")]
+    assert not any(l.startswith("CATCHUP ") for l in lines)  # nothing to catch up before 10-12T00:21Z
     assert slots[0] == (f"SLOT 2026-10-10T23:47:00Z running day=2026-10-10 check=shadow run: /usr/bin/python3 -I tools/h5_boost_day_check.py "
                         f"--shadow-dir {home}/data/h5-shadow --mode running --day 2026-10-10 --place-stop --log {home}/data/h5-daily/boost-day.jsonl")
-    assert slots[1] == "SLOT 2026-10-11T00:21:00Z day day=2026-10-10 skip:before_first_day"
-    assert slots[2].startswith("SLOT 2026-10-11T05:47:00Z running day=2026-10-11 check=shadow run: ")
+    assert slots[1] == (f"SLOT 2026-10-10T23:47:00Z running day=2026-10-10 check=exec run: /usr/bin/python3 -I tools/h5_exec_day_check.py "
+                        f"--mode running --day 2026-10-10 --log {home}/data/h5-daily/exec-day.jsonl")  # report only: no --place-stop
+    assert slots[2] == "SLOT 2026-10-11T00:21:00Z day day=2026-10-10 skip:before_first_day"
+    assert slots[3].startswith("SLOT 2026-10-11T05:47:00Z running day=2026-10-11 check=shadow run: ")
+    # the executor's figure at EVERY slot: the running report, and from 10-12 a second chance for yesterday's day check
+    running_slots = sorted({l.split()[1] for l in slots if " running " in l})
+    assert all(sum(1 for l in slots if l.split()[1] == t and " check=exec run: " in l and "--mode running" in l) == 1 for t in running_slots)
+    rechecks = [l for l in slots if " check=exec-recheck run: " in l]
+    assert len(rechecks) == 12 * 4 and rechecks[0].startswith("SLOT 2026-10-12T05:47:00Z running day=2026-10-11 check=exec-recheck run: ")
+    assert all("--mode day" in l and "--place-stop" in l for l in rechecks)
     i = slots.index(f"SLOT 2026-10-12T00:21:00Z day day=2026-10-11 check=exec run: /usr/bin/python3 -I tools/h5_exec_day_check.py "
                     f"--mode day --day 2026-10-11 --place-stop --log {home}/data/h5-daily/exec-day.jsonl")
     assert slots[i + 1] == (f"SLOT 2026-10-12T00:21:00Z day day=2026-10-11 check=shadow run: /usr/bin/python3 -I tools/h5_boost_day_check.py "
@@ -144,7 +155,8 @@ def test_dry_run_schedule(tmp_path: Path) -> None:
     for check in ("exec", "shadow"):
         days = [l.split()[3] for l in slots if " day day=" in l and f" check={check} run: " in l]
         assert days == [f"day=2026-10-{d:02d}" for d in range(11, 23)]  # 10-11 .. 10-22; 10-23's is after END
-    assert lines[-1] == "END 2026-10-24T00:00:00Z slots=66 commands=77 skip=1"
+    # 12 day slots x 2 + 5 running slots before 10-12 x 2 + 48 running slots x 3 (recheck, shadow, exec report)
+    assert lines[-1] == "END 2026-10-24T00:00:00Z slots=66 commands=178 skip=1 fresh_start_catch_up=0"
     assert not (tmp_path / "daily").exists() and not (tmp_path / "ckpt").exists(), "a dry run writes nothing"
 
 
@@ -153,17 +165,25 @@ def test_dry_run_commands_parse_with_the_real_tools(tmp_path: Path) -> None:
     from tools.h5_boost_day_check import build_parser as shadow_parser
     from tools.h5_exec_day_check import build_parser as exec_parser
 
-    cp = run(["--dry-run"], env_for(tmp_path, H5_ENFORCE_NOW="2026-10-11T04:00:00Z"))
+    cp = run(["--dry-run"], env_for(tmp_path, H5_ENFORCE_NOW="2026-10-13T04:00:00Z"))
     rows = [l for l in cp.stdout.splitlines() if " run: " in l]
-    assert rows
+    catch = [l for l in rows if l.startswith("CATCHUP ")]
+    assert [l.split()[3] for l in catch] == ["day=2026-10-11", "day=2026-10-12"]  # a fresh start judges the executor's figure for both
+    assert cp.stdout.splitlines()[-1].endswith(" fresh_start_catch_up=2")
     for l in rows:
         slot_day = l.split()[3][4:]
         words = l.split(" run: ", 1)[1].split()
         assert words[:2] == ["/usr/bin/python3", "-I"]
-        if " check=exec " in l:
+        if " check=exec" in l:
             assert words[2] == "tools/h5_exec_day_check.py"
             a = exec_parser().parse_args(words[3:])
-            assert a.mode == "day" and a.place_stop is True and a.day == slot_day and a.log == str(tmp_path / "daily" / "exec-day.jsonl")
+            assert a.day == slot_day and a.log == str(tmp_path / "daily" / "exec-day.jsonl") and a.dry_read is False
+            if " running " in l and " check=exec run: " in l:
+                assert a.mode == "running" and a.place_stop is False and l.split()[1][:10] == slot_day
+            else:
+                assert a.mode == "day" and a.place_stop is True
+                if " check=exec-recheck " in l:
+                    assert day_of(int(datetime.fromisoformat(l.split()[1].replace("Z", "+00:00")).timestamp()) - 86400) == slot_day
         else:
             assert words[2] == "tools/h5_boost_day_check.py"
             a = shadow_parser().parse_args(words[3:])
@@ -214,9 +234,10 @@ def _catch_up_setup(tmp_path: Path, stub_rc: int, **extra: str) -> tuple[dict[st
     return env, now, last_done
 
 
-def _expected(now: int, last_done: int) -> list[tuple[str, str, str]]:
+def _expected(now: int, last_done: int, exec_rc: int) -> list[tuple[str, str, str]]:
     """Every past day slot runs (late) the exec check, then the shadow check, for the previous day; a past running slot runs only if it is
-    today's and the last past one, pinned to today."""
+    today's and the last past one, pinned to today: first yesterday's exec day check again unless its log already holds a final line
+    (the stub's exec rc 0, 3 or 5), then the shadow running check, then the exec running report."""
     out: list[tuple[str, str, str]] = []
     t = last_done
     while True:
@@ -227,7 +248,9 @@ def _expected(now: int, last_done: int) -> list[tuple[str, str, str]]:
             d = day_of(s - DAY_OFF - 86400)
             out += [("exec", "day", d), ("shadow", "day", d)]
         elif day_of(s) == day_of(now) and not (next_slot(s) <= now and next_slot(s) % 86400 != DAY_OFF):
-            out.append(("shadow", "running", day_of(now)))
+            if exec_rc not in (0, 3, 5):
+                out.append(("exec", "day", day_of(s - 86400)))
+            out += [("shadow", "running", day_of(now)), ("exec", "running", day_of(now))]
         t = s
 
 
@@ -256,12 +279,14 @@ def test_catch_up_retries_and_counts(tmp_path: Path, stub_rc: int) -> None:
     env, now, last_done = _catch_up_setup(tmp_path, stub_rc)
     cp = run([], env)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    exp = _expected(now, last_done)
+    exp = _expected(now, last_done, stub_rc)
     tries = 1 if stub_rc in (0, 3) else 1 + RETRIES  # any rc but 0 and 3 is re-run
     assert _calls(tmp_path) == [c for c in exp for _ in range(tries)]
-    assert sum(1 for k, m, _ in exp if k == "exec") == (3 if now % 86400 > DAY_OFF else 2)  # the two back days, and today's once past
-    for args in (json.loads(l)[1:] for l in (tmp_path / "calls.jsonl").read_text().splitlines()):
-        assert "--place-stop" in args
+    assert sum(1 for k, m, _ in exp if (k, m) == ("shadow", "day")) == (3 if now % 86400 > DAY_OFF else 2)  # two back days, today's once past
+    for row in (json.loads(l) for l in (tmp_path / "calls.jsonl").read_text().splitlines()):
+        args = row[1:]
+        report = row[0] == "exec" and args[args.index("--mode") + 1] == "running"
+        assert ("--place-stop" in args) is not report  # the exec running report never places STOP
         assert args[args.index("--log") + 1] in (str(tmp_path / "daily" / "boost-day.jsonl"), str(tmp_path / "daily" / "exec-day.jsonl"))
     hb = _heartbeat(tmp_path)
     assert hb[0]["event"] == "start" and hb[0]["resumed"] is True and hb[-1]["event"] == "end"
@@ -292,7 +317,7 @@ def test_exec_figure_runs_even_when_the_shadow_check_fails(tmp_path: Path) -> No
     env, now, last_done = _catch_up_setup(tmp_path, 0, STUB_RC_EXEC="3", STUB_RC_SHADOW="2")
     cp = run([], env)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    exp = _expected(now, last_done)
+    exp = _expected(now, last_done, 3)
     calls = _calls(tmp_path)
     assert [c for c in calls if c[0] == "exec"] == [c for c in exp if c[0] == "exec"]  # rc 3 (STOP verified): never re-run
     assert [c for c in calls if c[0] == "shadow"] == [c for c in exp if c[0] == "shadow" for _ in range(1 + RETRIES)]
@@ -300,7 +325,7 @@ def test_exec_figure_runs_even_when_the_shadow_check_fails(tmp_path: Path) -> No
 
 def test_catch_up_does_not_redecide_a_logged_day(tmp_path: Path) -> None:
     env, now, last_done = _catch_up_setup(tmp_path, 3)
-    exp = _expected(now, last_done)
+    exp = _expected(now, last_done, 3)
     d1, d2 = sorted({d for k, m, d in exp if m == "day"})[:2]
     daily = tmp_path / "daily"
     (daily / "boost-day.jsonl").write_text(
@@ -312,12 +337,13 @@ def test_catch_up_does_not_redecide_a_logged_day(tmp_path: Path) -> None:
     assert cp.returncode == 0, cp.stdout + cp.stderr
     assert _calls(tmp_path) == [c for c in exp if c[2] != d1 or c[1] == "running"]  # d1 decided by both; d2's unverified halt is re-judged
     skips = [r for r in _heartbeat(tmp_path) if r["event"] == "skip" and r["reason"] == "day_verdict_already_logged"]
-    assert sorted((r["check"], r["day"]) for r in skips) == [("exec", d1), ("shadow", d1)]
+    rechecked = [] if not any(m == "running" for _, m, _ in exp) else [("exec", day_of(now - 86400))]  # today's running slot: already final
+    assert sorted((r["check"], r["day"]) for r in skips) == sorted([("exec", d1), ("shadow", d1)] + rechecked)
 
 
 def test_stop_not_verified_gives_up_after_bounded_retries_with_backoff(tmp_path: Path) -> None:
     env, now, last_done = _catch_up_setup(tmp_path, 6, H5_ENFORCE_RETRY_S="1", H5_ENFORCE_RETRIES="2", H5_ENFORCE_CHUNK_S="1")
-    exp = _expected(now, last_done)[:2]
+    exp = _expected(now, last_done, 6)[:2]
     env["H5_ENFORCE_END"] = iso(next_slot(last_done) + 1)  # one slot only: the first day slot's two checks
     t0 = time.time()
     cp = run([], env, timeout=60)
@@ -332,20 +358,72 @@ def test_hung_tool_is_killed_and_the_loop_goes_on(tmp_path: Path) -> None:
     env, now, last_done = _catch_up_setup(tmp_path, 0, H5_ENFORCE_TOOL_TIMEOUT_S="1", H5_ENFORCE_RETRIES="0", STUB_SLEEP="30")
     cp = run([], env, timeout=120)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    exp = _expected(now, last_done)
+    exp = _expected(now, last_done, 124)
     runs = [r for r in _heartbeat(tmp_path) if r["event"] == "run"]
     assert len(runs) == len(exp) and all(r["rc"] == 124 and r["verdict"] == "none" for r in runs)
     assert json.loads((tmp_path / "result.json").read_text())["metrics"]["tool_errors"] == len(exp)
 
 
-def test_fresh_start_does_not_catch_up(tmp_path: Path) -> None:
+def test_fresh_start_catches_up_the_executor_figure_for_every_undecided_day(tmp_path: Path) -> None:
+    """No state file: the exec day check for each completed day >= FIRST_DAY whose 00:21Z slot passed, oldest first, minus decided days;
+    no shadow catch-up (the session crons' job)."""
     env, now, _ = _catch_up_setup(tmp_path, 0)
     (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()
+    t0 = now - now % 86400
+    env["H5_ENFORCE_FIRST_DAY"] = day_of(t0 - 4 * 86400)
+    days = [day_of(t0 - k * 86400) for k in (4, 3, 2)] + ([day_of(t0 - 86400)] if now % 86400 >= DAY_OFF else [])
+    (tmp_path / "daily" / "exec-day.jsonl").write_text(
+        json.dumps({"tool": "h5_exec_day_check", "mode": "day", "day": days[1], "exit": 5, "verdict": "unevaluated"}) + "\n")
     cp = run([], env)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    assert _calls(tmp_path) == []  # earlier slots are the session crons' job
+    assert _calls(tmp_path) == [("exec", "day", d) for d in days if d != days[1]]
     hb = _heartbeat(tmp_path)
     assert hb[0]["resumed"] is False and hb[-1]["event"] == "end"
+    cu = [r for r in hb if r["event"] == "catch_up"]
+    assert len(cu) == 1 and cu[0]["from"] == days[0] and cu[0]["to"] == days[-1]
+    assert [(r["check"], r["day"]) for r in hb if r["event"] == "skip"] == [("exec", days[1])]
+
+
+def test_fresh_start_catch_up_is_capped_at_14_days(tmp_path: Path) -> None:
+    env, now, _ = _catch_up_setup(tmp_path, 0)
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()  # FIRST_DAY stays 2000-01-01
+    cp = run([], env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    calls = _calls(tmp_path)
+    assert len(calls) == 14 and all(k == "exec" and m == "day" for k, m, _ in calls)
+
+
+def test_quit_between_the_exec_and_shadow_day_checks(tmp_path: Path) -> None:
+    env, now, last_done = _catch_up_setup(tmp_path, 0, STUB_QUIT_ON="exec:day", STUB_QUIT_FILE=str(tmp_path / "daily" / "enforce-loop.quit"))
+    cp = run([], env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert _calls(tmp_path) == _expected(now, last_done, 0)[:1]  # the shadow day check of that slot never starts
+    assert [r["event"] for r in _heartbeat(tmp_path)][-1] == "quit"
+
+
+@pytest.mark.parametrize("stub_rc,loop_rc,event,alert", [
+    (6, 4, "quit_stop_unverified", "ALERT quit_stop_unverified rc=6"),
+    (2, 0, "quit", "ALERT check_failed rc=2"),
+])
+def test_a_quit_never_hides_a_pending_failure(tmp_path: Path, stub_rc: int, loop_rc: int, event: str, alert: str) -> None:
+    """The quit lands while a failed check waits to retry: its rc becomes last_fail; rc 6 (STOP not verified) exits 4 and alerts."""
+    env, _, _ = _catch_up_setup(tmp_path, stub_rc, H5_ENFORCE_RETRY_S="30", H5_ENFORCE_CHUNK_S="1")
+    p = subprocess.Popen([SH, str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+    hbf = tmp_path / "daily" / "enforce-loop.jsonl"
+    deadline = time.time() + 20
+    while time.time() < deadline and not (hbf.exists() and '"event":"retry"' in hbf.read_text()):
+        time.sleep(0.1)
+    (tmp_path / "daily" / "enforce-loop.quit").write_text("")
+    out, _ = p.communicate(timeout=20)
+    assert p.returncode == loop_rc, out
+    last = _heartbeat(tmp_path)[-1]
+    assert last["event"] == event and last["pending_rc"] == stub_rc
+    beat = _beat(tmp_path)
+    assert beat["state"] == "exited" and beat["event"] == event and beat["last_fail_rc"] == stub_rc and beat["last_fail_s"] > 0
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["ok"] is (stub_rc != 6)
+    chk = run(["--check-beat"], env)
+    assert chk.returncode == 1 and chk.stdout.startswith(alert), chk.stdout
 
 
 def test_quit_file_at_start_exits_0_before_any_check(tmp_path: Path) -> None:
@@ -437,6 +515,9 @@ def test_sigterm_while_a_tool_runs_is_prompt_and_stops_the_tool(tmp_path: Path) 
     ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": -90000, "last_fail_rc": 6}, 0, "OK state=waiting"),
     ({"state": "exited", "event": "error", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0}, 1, "ALERT loop_exited event=error"),
     ({"state": "exited", "event": "end", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0}, 0, "EXITED event=end"),
+    # an unverified STOP at quit never ages out (last_fail 2 days ago still alerts)
+    ({"state": "exited", "event": "quit_stop_unverified", "at_s": -10, "stale_at_s": -10, "last_fail_s": -172800, "last_fail_rc": 6}, 1,
+     "ALERT quit_stop_unverified rc=6"),
 ])
 def test_check_beat(tmp_path: Path, beat, rc: int, prefix: str) -> None:
     env = env_for(tmp_path)
