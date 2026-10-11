@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T06:10:00Z",
+ "updated_utc": "2026-10-11T06:32:10Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "merge-598-542-600-1011",
+   "kind": "decision",
+   "title": "Merged: v2 pre-registration (EXP-026/DEC-028/DEC-029 M1), v2 exit records in the shadow, and the trade-rate rule note",
+   "detail": "#542 (EXP-026 v2 rules, DEC-028: paper now, live v2 only if v1 halts on boost timing; DEC-029 M1), #598 (shadow boost_slice records, decisions unchanged: md5 75cb0b0c 72/72 with the union off and on), #600 (DEC-024: any later change to H5's trade filter needs your decision and is judged on mechanism and counts only). Each had quant-proof and reviewer OK posted on GitHub before merge.",
+   "atUtc": "2026-10-11T06:31:44Z"
+  },
   {
    "id": "h5-reinstall-named-1011",
    "kind": "decision",
@@ -527,6 +534,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261011-0632-dec029-m1",
+   "from": "claude",
+   "atUtc": "2026-10-11T06:32:10Z",
+   "text": "For you (information only; no action): what M1 means for v2's formal test. DEC-029 requires this notice now that EXP-026 has merged (#542, 06:31Z). Required text: \"M1 opens a fourth alpha slot of 0.025 for EXP-026, which raises the bound on a false promotion across October's promotion-eligible families from 0.075 to 0.10, and adds a binding day-level t that lowers EXP-026's pass odds to at most about 0.01. M2 opens no slot, reads EXP-026 on the promotion gate only, labels any pass 'gate-only, outside DEC-021 §8', and accepts that the October error then exceeds DEC-021 §8's bound.\" Correction: the 10-11 question called M1's binding item 'a day-by-day consistency check'. It is a one-sided t-test on the per-day mean SOL per trade (p ≤ 0.025 under both fail models), not a rule that every day must be positive. Your M1 answer counts (quant-proof), and the route stays M1. Notebook n_-tUOOJ2mZvBXeQ."
+  },
+  {
    "id": "fy-20261011-0355-helm-reinstall",
    "from": "claude",
    "atUtc": "2026-10-11T03:25:00Z",
@@ -678,6 +691,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261011-0632",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-11T06:32:10Z",
+   "text": "06:32Z: merged #600 (rule for any later trade-filter change, fixed before data), #598 (v2 exit records, decisions unchanged) and #542 (v2 pre-registration, M1), each with quant-proof and reviewer OK posted on GitHub first. H5 06:17Z check: no halt (plain median today 339.8 s over 106 pools), 5 buys so far, nothing open. Still in fix round 3: #593 (halt-rule enforcement job) and #594 (C1-NF safety check). Next: the trade-rate measurement follow-up, then an early restart of H5's paper copy."
+  },
   {
    "id": "s-20261011-0610",
    "from": "claude",
