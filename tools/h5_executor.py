@@ -43,7 +43,8 @@ H5-BOOSTCLOCK v2 exit (DEC-028 Option B, EXP-026 rule C10). OFF in this build: E
 (DEC-028 s3.2, s5 item 3). With it off nothing below runs and v1 is unchanged: no slice is kept, no v2 field is written, no v2 halt exists.
 Set to "v2" only by the pinned install the manager names for Option B (after v1 halts on BOOST timing); live v2 also needs EXP-026 in the
 deployed tree and DEC-028's OWNER_OVERRIDE_V2_CONFIRMED line filled. In v2 mode:
-  type "boost_slice"  (or flat h5_boost_slice_v1) one BOOST buy in a tracked pool: mint, pool, slot, tx_index, event_index, lamports (or sol),
+  type "boost_slice"  (or flat h5_boost_slice_v1) one BOOST buy in a tracked pool: mint, pool, slot, tx_index (replay tape) and/or signature
+                      (the live feed has no block position: the shadow writes tx_index null there), event_index, lamports (or sol),
                       block_time (s) or block_time_ms, t_recv_ms, boost_src ("pda" or "event_authority"; anything else is not used)
   Each position opened in v2 mode is stamped exit_rule H5-BOOSTCLOCK-v2 and leaves by that rule: an early sell at the rule's exit trigger slot
   (v2_cad_exit in this file, the projected last BOOST slice minus 10 s, from slices RECEIVED and usable 1.35 s after their slot), never later
@@ -1710,6 +1711,7 @@ class H5Executor(pl.LiveExecutor):
         if self.exit_mode != EXIT_MODE_V2:  # the caller checks too; kept so no path holds a slice in a v1 build
             return
         mint, slot, txi, evi, recv = row.get("mint"), row.get("slot"), row.get("tx_index"), row.get("event_index"), row.get("t_recv_ms")
+        sig = row.get("signature") if isinstance(row.get("signature"), str) else ""
         lam = row.get("lamports")
         sol = row.get("sol")
         if lam is None and isinstance(sol, (int, float)) and not isinstance(sol, bool) and math.isfinite(sol):
@@ -1718,7 +1720,7 @@ class H5Executor(pl.LiveExecutor):
         why = None
         if not isinstance(mint, str) or not mint:
             why = "no_mint"
-        elif not (_is_int(slot) and _is_int(txi) and _is_int(evi) and _is_int(recv)):
+        elif not (_is_int(slot) and (_is_int(txi) or sig) and _is_int(evi) and _is_int(recv)):  # a print's identity: tx_index or signature
             why = "bad_position_or_time"
         elif not _is_int(lam) or lam <= 0:
             why = "bad_size"
@@ -1743,7 +1745,7 @@ class H5Executor(pl.LiveExecutor):
                 self._v2_evicted[old] = None
             while len(self._v2_evicted) > V2_EVICTED_KEEP:
                 self._v2_evicted.pop(next(iter(self._v2_evicted)))
-        key = (slot, txi, evi)
+        key = (slot, txi if _is_int(txi) else -1, sig, evi)  # one type per position, so the slot sort never compares None with an int
         if key in ent["sl"]:
             return
         ent["sl"][key] = (lam, recv, bt, now)

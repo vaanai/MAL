@@ -284,6 +284,28 @@ class V2ExitTests(V2Case):
         e.ex.on_boost_slice(dict(r))
         self.assertEqual(len(e.ex._v2_slices[MINT]["sl"]), 1)
 
+    def test_live_shadow_record_shape_is_accepted(self):
+        """The shadow's live boost_slice (claude/h5-shadow-boost-slice): tx_index null, a signature, block_time in seconds, plus its extra
+        fields. Deduplicated on (slot, signature, event_index); a row with neither tx_index nor signature has no identity and is ignored."""
+        e = self.env()
+        e.open_position()
+        sched = boost_schedule(0.7)
+        for i, (s, lam) in enumerate(sched[:3]):
+            r = slice_row(e, s, lam)
+            bt_s = r.pop("block_time_ms") // 1000
+            r.update(tx_index=None, signature=f"sig{i}", block_time=bt_s, sol=lam / 1e9, s0=S0, t_i_s=(s - S0) * SPS, sps=SPS, boost_id="PDA",
+                     boost_n=i + 1, boost_spent_sol=0.7 * (i + 1), schema="h5_shadow_v1", v=1, t_ms=e.clock())
+            e.ex.on_boost_slice(r)
+            e.ex.on_boost_slice(dict(r))  # re-reported: counted once
+        held = e.ex._v2_slices[MINT]["sl"]
+        self.assertEqual(sorted(k[0] for k in held), [s for s, _ in sched[:3]])
+        self.assertEqual({v_[2] % 1000 for v_ in held.values()}, {0})  # block_time seconds -> ms
+        r = slice_row(e, sched[3][0], sched[3][1])
+        r.update(tx_index=None, signature=None)
+        e.ex.on_boost_slice(r)
+        self.assertEqual(len(held), 3)
+        self.assertEqual([x["why"] for x in e.ledger("v2_slice_ignored")], ["bad_position_or_time"])
+
     def test_slices_through_the_intents_file(self):
         e = self.env()
         path = Path(e.conf["intents_file"])
