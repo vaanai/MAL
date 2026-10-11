@@ -589,18 +589,37 @@ OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the m
 - The owner also confirmed DEC-028 §3.1's two required sentences verbatim, recorded there as `OWNER_OVERRIDE_V2_SENTENCES_CONFIRMED` (2026-10-11T05:26:36Z, MiScusi notebook n_fZNH1URVIkXIJQ).
 - **Until DEC-028 merges** with quant-proof's OK on its final head, this pointer authorizes nothing.
 
-**Phase-2 gate rule (2026-10-11, the manager; written before any side-by-side union data is read).** Written 2026-10-11T06:07:44Z (`date -u`); main was `10fab0a`. No union field, `base_union` count, tip row, shadow record, canary ledger or outcome was read to write it. It authorizes nothing.
+## Manager note (2026-10-11, the manager; stricter only): phase-2 gate rule for the union field
+
+Written before any side-by-side union data was read. First written 2026-10-11T06:07:44Z (`date -u`) on main `10fab0a`. Revised 2026-10-11T06:18:49Z after quant-proof's review of PR #600: item 4's sealed-record sentence corrected, plus tightenings only. No union field, `base_union` count, tip row, shadow record, canary ledger or outcome was read to write it. It authorizes nothing. It changes no rule in section 5, section 6, Amendment 6 or Amendment 7.
 
 1. **What is live.** PR #596 (`5f6b304`) adds report-only fields to shadow records: `base_breaks_unresolved_settled_union`, `base_union` and `base_unmatched_*`. No decision reads them. The live executor's gate is unchanged: it refuses on the feed's own `base_breaks_unresolved_settled` (`bad_intent:base_breaks_unresolved_settled`, `tools/h5_executor.py`).
-2. **Phase 2 is a live decision change.** Any change that makes the executor gate on `base_breaks_unresolved_settled_union` or on any union-derived field ("phase 2") changes a live executor/shadow decision inside Look 2's window `[2026-10-16T00, 2026-11-06T00)` and the seal window (from 2026-10-16T01:00Z). Before merge it needs **all** of: the owner's dated decision; a DEC-024 amendment; an md5 decision-equivalence proof or a declared decision-change proof (which decisions change, and that no other does); and quant-proof's OK posted on the PR, on its final head.
-3. **The acceptance rule, fixed now; it may only be tightened.** A phase-2 proposal may use only mechanism and counts:
-   - union status and coverage: the share of records with `base_union.status` `ok`, tip lag (`tip_lag_slots`), the `ws_only`, `tip_only` and `both` counts, `ws_only_sig_on_tip`, and the two decoders' `event_index` agreement;
-   - the gate's pass and refuse counts with the union view against the websocket view;
-   - price accuracy: the trigger print's q and base against the tip's row for the same print.
+2. **Phase 2 is a live decision change.** Any change that makes the executor gate on `base_breaks_unresolved_settled_union` or on any union-derived field ("phase 2") changes live executor and shadow decisions. That holds whenever it merges: in Look 1's window while the canary is live, in Look 2's added window `[2026-10-16T00, 2026-11-06T00)` (DEC-024 section 6, EXP-024 Amendment 2), and in the seal window from 2026-10-16T01:00Z. Before merge it needs **all** of:
+   - the owner's dated decision;
+   - a DEC-024 amendment;
+   - the md5 decision-equivalence replay every runner change carries;
+   - **and** a declared decision-change account: which live decisions change, and that no other does;
+   - quant-proof's OK posted on the PR, on its final head.
+3. **The acceptance rule is fixed now and may only be tightened.** A phase-2 proposal may use only mechanism and counts:
+   - **union status and coverage:**
+     - the share of records whose `base_union.status` is `ok`;
+     - tip lag (`tip_lag_slots`);
+     - the `ws_only`, `tip_only` and `both` counts, and `ws_only_sig_on_tip`;
+     - whether the two decoders agree on `event_index`;
+   - **the gate's pass and refuse counts** under the union view against the websocket view;
+   - **price accuracy:** only the trigger print's own pre-trade q and base in the trigger record, against the tip's row for the same `(signature, event_index)`. Never the landing-slot state, the entry fill, the exit, the ladder or any later print.
 
-   It never uses, computes or looks at which triggers won or lost, fills, P&L or any other outcome.
-4. **Data before any proposal.** At least 24 h of union data, with `base_union.status` `ok` on at least 90% of the trigger records in it, and the decoders' `event_index` agreement measured on live data (a replay uses the tape as its own tip, so it cannot measure it). No sealed record (CAP-PICK, H5 Look 2) is opened for any count here; such records carry no union fields.
-5. **No look-ahead.** The trigger-time union fields count only tip rows at or below the trigger print's slot, once the follow-up PR that enforces it is merged. Until that PR is merged, no phase-2 proposal may be made.
+   It never uses, computes or looks at which triggers won or lost, fills, P&L or any other outcome. No count here is joined to the replay pick list or to any CAP-PICK pick set (DEC-024 Amendment 6 item 4(a); EXP-022 Amendment 6 item 3). A replay-only pick's trigger record is the declared residual.
+4. **Data before any proposal.**
+   - **Duration:** at least 24 h of union data, counted only from the shadow's restart on the merged follow-up PR in item 5, as shown by the sha in that restart's start record.
+   - **Coverage:** `base_union.status` is `ok` on at least 90% of the trigger records in that data.
+   - **Decoder agreement:** whether the two decoders agree on `event_index`, measured on live data. A replay uses the tape as its own tip, so it cannot measure this.
+   - **Sealed records:** none is opened for any count here (CAP-PICK sealed or H5 Look-2 sealed).
+     - A CAP-PICK-sealed record carries no union fields.
+     - An H5 Look-2-sealed pool's close record carries none either.
+     - That pool's trigger record (`h5_look2_sealed: true`) keeps the decision-time `base_breaks_unresolved_settled_union` and `base_union`, and no count here uses it.
+     - Counts filter on `sealed` and `h5_look2_sealed`, never on whether a field is present.
+5. **No look-ahead.** The trigger-time union fields count only tip rows at or below the trigger print's slot once the follow-up PR that enforces this is merged and installed in the shadow. Until then, no phase-2 proposal may be made. Union data from before that install is not counted toward item 4: it can include tip rows above the trigger slot.
 
 ## Open for the owner
 
