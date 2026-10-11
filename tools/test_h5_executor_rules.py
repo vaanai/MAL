@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -1052,10 +1053,26 @@ class SafetyTests(Case):
         self.assertEqual(dry["mode"], "dryrun")
         self.assertEqual(live["mode"], "live")
         self.assertNotIn("end_ms", dry)
-        self.assertEqual(live["end_ms"], 1792110600000)  # 2026-10-16T00:30:00Z: ends before the EXP-022 seal window opens
-        self.assertLess(live["end_ms"], h.SEAL_START_MS)
+        # DEC-024 Amendment 6 item 8 record (owner, 2026-10-11): end_ms is section 4's cap, exactly 14 days from the first send
+        # (2026-10-09T19:29:53Z), never later. It lies inside the EXP-022 seal window, so this executor must carry the seal (items 2, 3, 5):
+        # the pick oracle below, and a seal end that covers the whole run.
+        first_send_ms = int(datetime.datetime(2026, 10, 9, 19, 29, 53, tzinfo=datetime.timezone.utc).timestamp()) * 1000
+        self.assertEqual(live["end_ms"], 1792783793000)  # 2026-10-23T19:29:53Z
+        self.assertEqual(live["end_ms"], first_send_ms + 14 * 86_400_000)
+        self.assertEqual(h.H5Limits.from_config(live).end_ms, 1792783793000)  # the executor takes it as shipped
+        self.assertGreater(live["end_ms"], h.SEAL_START_MS)
+        self.assertLessEqual(live["end_ms"], h.SEAL_END_DEFAULT_MS)
+        # max_days is section 4's 14-day cap (raised from 10 in PR #591 so the duration stop does not cut the run short of end_ms). It is a code
+        # maximum: a config may lower it, never raise it. Counted from first_attempt_ms (at or after the first send), so end_ms binds first.
+        self.assertEqual(h.H5_DEFAULT["max_days"], 14)
+        self.assertEqual(h.H5_MAX["max_days"], 14)
+        self.assertEqual(h.H5Limits.from_config(live).max_days, 14)
+        self.assertNotIn("max_days", live)
+        self.assertEqual(h.H5Limits.from_config({**live, "max_days": 7}).max_days, 7)
+        self.assertEqual(h.H5Limits.from_config({**live, "max_days": 30}).max_days, 14)  # clamped to the code maximum, never raised
+        self.assertGreaterEqual(first_send_ms + int(h.H5_DEFAULT["max_days"] * 86_400_000), live["end_ms"])
         self.assertEqual((live["intents_file"], dry["intents_file"]), ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow"))
-        # the CAP-PICK exporter's live booleans, under the shadow bind (CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick); end_ms is unchanged
+        # the CAP-PICK exporter's live booleans, under the shadow bind (CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick)
         self.assertEqual((live["pick_file"], dry["pick_file"]), ("/srv/mal-h5-shadow/cap-pick/picks.jsonl",) * 2)
         self.assertIsNotNone(h.build_pick_oracle(live))
         # 2.5 x the shadow's 60 s heartbeat period: one late or missed heartbeat does not refuse buys, a feed that has gone quiet does

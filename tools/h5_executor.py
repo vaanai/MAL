@@ -160,9 +160,11 @@ PICK_FEED_ALERT_MS = 600_000  # the pick_feed_unavailable alert, at most once pe
 # --- limits: code maxima, config can only lower (floors: config can only raise) ---------------------------------------
 H5_DEFAULT = {
     "stake_lamports": 20_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 80_000_000,
-    "total_loss_lamports": 120_000_000, "max_attempts": 150, "max_days": 10, "buy_priority_lamports": 55_000,
+    "total_loss_lamports": 120_000_000, "max_attempts": 150, "max_days": 14, "buy_priority_lamports": 55_000,
     "sell_priority_lamports": 55_000, "escalated_priority_lamports": 150_000, "entry_tolerance_bps": 1500,
 }
+# max_days 14 = DEC-024 section 4's cap ("at most 14 days from the first send"); it was 10 until PR #591 (DEC-024 Am.6 item 8 record, 2026-10-11).
+# It counts from first_attempt_ms, which is at or after the first send, so the live end_ms (the cap) binds first.
 H5_MAX = dict(H5_DEFAULT)  # the defaults ARE the maxima (review of 86a224b): config can only tighten. Loosening is a reviewed code change.
 
 # --- the scale ladder (owner decision) -----------------------------------------------------------------------------------------
