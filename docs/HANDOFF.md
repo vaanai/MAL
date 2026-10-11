@@ -27,7 +27,43 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-11 ~00:20Z (NEWEST, read first)
+### STATE 10-11 ~06:10Z (NEWEST, read first)
+
+**H5.**
+- v1 is LIVE at T0 (resumed 00:15:06Z). The reinstall is **named f873aac** (manifest on PR #499): end_ms 2026-10-23T19:29:53Z, max_days 14, the #540 seal and the #589 watch. Helm installs it while open=0, before 2026-10-16T01Z.
+- The red-team (/data/mal/hunt-1008/push-r11/h5-redteam/REDTEAM.md) rates a §5.1 BOOST halt before 10-23 as likely.
+- **Owner decisions 10-11** (notebook n_soP9VudXSnG4Jw, n_fZNH1URVIkXIJQ, n_Z69jRvirhW_HyQ):
+  - Look 1 FAIL keeps T0 for execution measurement (DEC-024 Am.7, #595).
+  - v2: paper now (DEC-028 A), with live v2 at 0.02 pre-authorized if v1 halts on BOOST timing. Both §3.1 sentences were confirmed at 05:26:36Z.
+  - M1.
+  - Resume after a manager-reviewed benign upgrade (Am.7).
+  - The owner delegates within-cap decisions to the manager.
+- **Merged:** #595 Am.7; #596 shadow union p0 (report-only); #597 v2 live sell (compiled-in switch OFF, not installed).
+- **Process miss:** #595, #596 and #597 were merged in one burst before their quant-proof and review verdicts were on the PRs. The verdicts were posted after merge with a disclosure (#596 comment 6106092571; #595, #597). #596's reviewer pass was owed and is running.
+- **Open (fix round 2):** #598 (shadow boost_slice; conflicts after #596, being remade), #542 (v2 records), #593 (enforce loop), #594 (C1-NF parity). Merge each only after its verdict is posted on the PR.
+- **Warden #596 follow-ups.**
+  - A DEC-024 phase-2 gate-rule note (PR) is going in before any side-by-side data is read.
+  - A follow-up PR, after #598, will restrict the trigger-time union fields to tip rows at or below the trigger slot.
+  - The shadow restart keeps the union ON only if the reviewer pass and that follow-up are done; otherwise `H5_TIP_DIR=off` (cron 5e37ded9).
+- **Seal-window crons:**
+  - 5e37ded9: 10-15T21:37Z restart and exporter.
+  - 40b156a7: 10-16T00:43Z reinstall gate.
+  - 402b117e: 10-16T02:07Z markers after the FINAL.
+  - fdf10236: 10-21 job extensions.
+  - 48d39be6 and 15fd15fc: recurring-cron renewal on 10-13 and 10-17; prompts at /data/mal/hunt-1008/ops/recurring-crons-1011.json.
+
+**C1-NF.** Soak #658 is healthy and its 24 h mark is 21:43:37Z today. Go-live is not before about 10-13: the item 13/14 replays and QP's agreement on the exact switch (#594) come first. Plan: /data/mal/hunt-1008/push-r11/c1nf-readiness/GO-PLAN.md.
+
+**Research.**
+- bigwin-r12/r13/r14 (JUDGE-12/13/14): every big-win line is DEAD on explore-0814 (ladders lose to fixed exits; the left tail kills), and attention Route A is DEAD (retention 72/100).
+- F1f quote-coin sink is GO-STEP1: a count-only DECLARE after the DEC-016 FINAL; the D0 loader and a dry pass are owed before 10-16.
+
+**Ops.**
+- Disk: 83.8 GiB of rebuildable intermediates deleted (owner OK); room above the walker reserve is 105 GB.
+- The nightly tip-tape archive #713 had mismatched=0.
+- **Correction:** the #592 console and HANDOFF entries stamped 03:55Z were posted at about 03:25Z.
+
+### STATE 10-11 ~00:20Z (older)
 
 - **H5 resumed at 2026-10-11T00:15:06.586Z** (job #669). DEC-024 Am.4 item 4 and Am.5 item 1 held at 00:13:56Z (job #667): executor day 10-10 median 339.573 s over 580 pools; tool all 339.5735 s (n 580) and plain 337.772 s (n 411); halts none; no A3 run since 07:14Z; 0 late sells; nothing stuck. The daily check read ALERTS=0 after removal; its single earlier alert was `h5_idle` from the STOP itself. The owner pre-authorized the removal. Helm did nothing. The wallet-wide STOP stays absent and is NOT recreated. Record: DEC-024 Am.4 item 4 "Resume record".
 - **H5 watch false alarm and fix.** At about 00:25Z `h5_idle_ledger` fired. This was a quiet market, not a fault: no plain pool drained to 40 SOL or below from 19Z to 00Z, and since go-live 23 of 23 drained plain pools triggered (jobs #672-#676 and #681-#682). The fix, #589 (merged as 1103fc0), keeps every branch an alert and names the cause:
