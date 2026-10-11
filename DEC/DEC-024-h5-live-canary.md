@@ -621,6 +621,15 @@ Written before any side-by-side union data was read. First written 2026-10-11T06
      - Counts filter on `sealed` and `h5_look2_sealed`, never on whether a field is present.
 5. **No look-ahead.** The trigger-time union fields count only tip rows at or below the trigger print's slot once the follow-up PR that enforces this is merged and installed in the shadow. Until then, no phase-2 proposal may be made. Union data from before that install is not counted toward item 4: it can include tip rows above the trigger slot.
 
+**Addendum (2026-10-11T07:10Z, the manager; stricter only, records the install).**
+- **The follow-up of item 5.** It is #602, merged as `b65e2ec`.
+  - It was installed in the shadow restart of 2026-10-11T07:05:48.244Z (MiScusi #735), from a clean checkout of `b65e2ec` (0 porcelain lines).
+  - The start record carries code_sha `b65e2ec3b315dde2c6728f2b8e9054f6ac6ac05e`.
+  - Item 4's 24 h counts from that instant.
+- **Naming.** In trigger records, `base_union.tip_lag_slots` is now `tip_lag_slots_global`, and `tip_hw_slot` is now `tip_hw_slot_global`. Pool close records keep `tip_lag_slots`. Item 3's "tip lag" means the same measure under either name, and a count must name the field it uses.
+- **Status.** A trigger record whose `base_union.status` is `regress` or `ahead` counts as **not** `ok` in item 4's 90% share.
+- **Clean checkout.** A later reinstall of the shadow that is to count toward item 4 records an empty `git status --porcelain` with its start.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.

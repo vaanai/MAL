@@ -27,7 +27,22 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-11 ~06:35Z (NEWEST, read first; adds to 06:10Z below)
+### STATE 10-11 ~07:10Z (NEWEST, read first; adds to 06:35Z below)
+
+- **Merged** (QP OK and Reviewer OK posted on each PR at its exact head first):
+  - #601 records (`790eb7b`);
+  - #593 enforce loop (`1117ed0`);
+  - #594 C1-NF parity, creator history from tape start (`8c88fa3`);
+  - #602 union decision-time (`b65e2ec`).
+- **Enforce loop: MiScusi #729**, 315 h limit, END 10-24T00Z, state `~/data/h5-daily/enforce-loop.state`. Dry reads ok (job #728); `--check-beat` OK (job #730). Cron 2ba821d3 was replaced by 081c1307, which adds `--check-beat`. **Before Option B:** quit the loop and delete the `--place-stop` crons (DEC-028 §4).
+- **H5 shadow restarted 07:05:48Z as MiScusi #735** at `b65e2ec`, with the union ON, bx10 ON and the CAP-PICK oracle env. It replaces #454; the executor was flat and was not restarted. Limit extended to 13 days. Union readings run as one-shots 2730f19d (+1 h), 2fd6897a (+6 h) and 9d51b8a0 (+24 h), posted on #596. Reader: `/data/mal/hunt-1008/ops/union-read.cmd`. Cron 5e37ded9 (10-15T21:37Z) now only verifies and submits the exporter.
+- **Tip-follower memory is flat over 12 h** (#627, n_1ubrxz1MBTTW2A).
+- **Running: wf_626cbed1-fa0.**
+  - The v2 Option-B readiness audit. Not yet built: `h5_boostclock.py`, the `exit_decision` and `boost_done` records, P2, P3 and P5, the dry run and the security review.
+  - The C1-NF go-path: venv, memory-slope probe, EXPIRE-DESIGN. The history feed is estimated at 127–158 GB, above 64G.
+  - The #593 follow-up PR.
+
+### STATE 10-11 ~06:35Z (older)
 
 - **Merged, each with QP OK and Reviewer OK posted on the PR at the exact head first:**
   - #600 (`3406cb0`): DEC-024 phase-2 gate rule note.
