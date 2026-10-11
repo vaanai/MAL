@@ -10,6 +10,7 @@ import os
 import random
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -400,6 +401,231 @@ class CliTests(unittest.TestCase):
             for bad in ("rel/dir", "/var/lib/mal/../x"):
                 r = subprocess.run([shell, str(script)], env={**base, "H5_TIP_DIR": bad}, capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2, (shell, bad))
+
+
+class H5SealedUnionTests(unittest.TestCase):
+    """EXP-024 Look-2-sealed pools (h5_look2_sealed): the pool record stays exactly as without the union; the trigger keeps the decision-time fields."""
+
+    def run_pool(self, tip, skip=(3,)):
+        eng, out = make_engine(h5_look2_start_ms=0)  # synthetic 2027 times are past H5_LOOK2_END_MS: sealed whatever the flag says
+        if tip is not None:
+            eng.tip = tip
+        announce(eng)
+        t = pool_rows()
+        for i, r in enumerate(t.rows):
+            if i not in skip:
+                eng.on_trade(r)
+            if tip is not None and i + 1 < len(t.rows):
+                eng.on_tip_row(t.rows[i])
+        eng.close_all("test")
+        return out
+
+    def test_sealed_pool_record_identical_to_union_off(self):
+        off = self.run_pool(None)
+        (pool_off,) = types(off, "pool")
+        self.assertTrue(pool_off["h5_look2_sealed"])
+        for tip in (FakeTip("ok", 2000), FakeTip("stale"), FakeTip("raise")):
+            on = self.run_pool(tip)
+            (pool_on,) = types(on, "pool")
+            self.assertEqual(json.dumps(pool_on, sort_keys=True), json.dumps(pool_off, sort_keys=True))  # exact: not one key added
+            self.assertFalse(NEW_KEYS & set(pool_on))
+            self.assertEqual(strip_new(on), strip_new(off))
+
+    def test_sealed_trigger_keeps_decision_time_union_only(self):
+        on = self.run_pool(FakeTip("ok", 2000))
+        (trig,) = [r for r in types(on, "trigger") if r["variant"] == "pv"]
+        self.assertTrue(trig["h5_look2_sealed"])
+        self.assertEqual(trig[h5.UNION_FIELD], 0)
+        self.assertNotIn("base_unmatched_ws", trig)
+        self.assertNotIn("base_unmatched_union", trig)
+
+    def test_unsealed_pool_still_carries_the_union(self):
+        eng, out = make_engine()
+        eng.tip = FakeTip("ok", 2000)
+        announce(eng)
+        for r in pool_rows().rows:
+            eng.on_trade(r)
+        eng.close_all("test")
+        (pool,) = types(out, "pool")
+        self.assertNotIn("h5_look2_sealed", pool)
+        self.assertIn("base_unmatched_ws", pool)
+
+
+class UnionMemoryTests(unittest.TestCase):
+    def test_hb_mem_self_report(self):
+        eng, out = make_engine()
+        self.assertNotIn("tip_union", h5.status_snapshot(eng, None, None))  # off: hb / status unchanged
+        eng.tip = FakeTip("ok", 2000)
+        announce(eng)
+        t = pool_rows()
+        for r in t.rows[:10]:
+            eng.on_trade(r)
+            eng.on_tip_row(r)
+        mem = h5.status_snapshot(eng, None, None)["tip_union"]["mem"]
+        u = eng.pools[POOL].union
+        self.assertEqual((mem["union_pools"], mem["union_members"]), (1, len(u.m)))
+        self.assertEqual(mem["union_slots"], len(u.by_slot))
+        self.assertEqual(mem["union_counter_keys"], len(u.pre) + len(u.post))
+        self.assertEqual(mem["est_mb"], round(len(u.m) * h5.UNION_MEMBER_BYTES_EST / 1e6, 1))
+        if Path("/proc/self/status").exists():
+            self.assertGreater(mem["rss_kb"], 0)
+            self.assertGreaterEqual(mem["hwm_kb"], mem["rss_kb"])
+        u.broken = True
+        self.assertEqual(h5.status_snapshot(eng, None, None)["tip_union"]["mem"]["union_broken_pools"], 1)
+
+    def test_proc_mem_missing_file_is_null(self):
+        self.assertEqual(h5._proc_mem("/nonexistent/status"), {"rss_kb": None, "rss_anon_kb": None, "hwm_kb": None})
+
+    def test_union_key_only_built_when_on(self):
+        eng, _ = make_engine()
+        announce(eng)
+        t = pool_rows()
+        eng.on_trade(t.rows[0])
+        self.assertIsNone(eng.pools[POOL].prints[0].ukey)
+        eng2, _ = make_engine()
+        eng2.tip = FakeTip("ok")
+        announce(eng2)
+        eng2.on_trade(t.rows[0])
+        self.assertEqual(eng2.pools[POOL].prints[0].ukey, (t.rows[0]["signature"], 0))
+
+
+class TipTailResilienceTests(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.dir = Path(self.td.name)
+        self.now = [int(datetime(2027, 1, 1, 12, 30, tzinfo=timezone.utc).timestamp() * 1000)]
+        self.rows = []
+        self.tail = h5.TipTail(self.dir, self.rows.append, lambda p: p == "WANT", wall=lambda: self.now[0], chunk=4096)
+        self.path = self.dir / "trades-2027-01-01T12.jsonl"
+
+    def tearDown(self):
+        self.tail.close()
+        self.td.cleanup()
+
+    def test_permission_error_on_dir_is_unreadable_and_logged_once_per_window(self):
+        clock = [1000.0]
+        logs = []
+        with mock.patch.object(Path, "is_dir", side_effect=PermissionError(13, "Permission denied")):
+            self.assertFalse(self.tail.poll())  # no raise
+            self.assertEqual(self.tail.status(1), "unreadable")
+            self.assertEqual(self.tail.err, "PermissionError")
+
+            seen = {}
+
+            async def go():
+                stop = asyncio.Event()
+                task = asyncio.create_task(h5.tip_follow(self.tail, stop, poll_s=0.005, on_error=lambda e, ctx: logs.append((e, ctx)),
+                                                         log_every_s=600.0, clock=lambda: clock[0]))
+                await asyncio.sleep(0.15)
+                seen["first"] = (len(logs), self.tail.c["errors_log_suppressed"])
+                clock[0] += 601.0
+                await asyncio.sleep(0.05)
+                stop.set()
+                await task
+
+            asyncio.run(go())
+            self.assertEqual(seen["first"][0], 1)  # dozens of polls, one error log line
+            self.assertGreater(seen["first"][1], 3)
+            self.assertIsInstance(logs[0][0], PermissionError)
+            self.assertEqual(logs[0][1], {"where": "tip_follow", "suppressed_since_last": 0})
+            self.assertGreater(self.tail.c["dir_errors"], 3)
+            self.assertEqual(len(logs), 2)  # one more after the window, carrying the count suppressed since
+            self.assertEqual(logs[1][1]["suppressed_since_last"], seen["first"][1])
+        eng, out = make_engine()
+        eng.tip = self.tail
+        announce(eng)
+        with mock.patch.object(Path, "is_dir", side_effect=PermissionError(13, "Permission denied")):
+            self.tail.poll()
+            for r in pool_rows().rows:
+                eng.on_trade(r)
+        (trig,) = [r for r in types(out, "trigger") if r["variant"] == "pv"]
+        self.assertIsNone(trig[h5.UNION_FIELD])
+        self.assertEqual(trig["base_union"]["status"], "unreadable")
+
+    @unittest.skipIf(os.geteuid() == 0, "root traverses a 000 dir")
+    def test_real_untraversable_parent(self):
+        parent = self.dir / "locked"
+        (parent / "tip").mkdir(parents=True)
+        tail = h5.TipTail(parent / "tip", lambda r: None, lambda p: True, wall=lambda: self.now[0])
+        logs = []
+
+        async def go():
+            stop = asyncio.Event()
+            task = asyncio.create_task(h5.tip_follow(tail, stop, poll_s=0.005, on_error=lambda e, ctx: logs.append(e)))
+            await asyncio.sleep(0.1)
+            stop.set()
+            await task
+
+        parent.chmod(0)
+        try:
+            asyncio.run(go())
+        finally:
+            parent.chmod(0o755)
+        self.assertEqual((tail.status(1), tail.err), ("unreadable", "PermissionError"))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(tail.c["poll_errors"], 0)  # absorbed in poll: no traceback per poll
+
+    def test_failing_error_log_does_not_stop_the_tail(self):
+        def bad_log(e, ctx):
+            raise OSError("disk full")
+
+        async def go():
+            stop = asyncio.Event()
+            with mock.patch.object(Path, "is_dir", side_effect=PermissionError(13, "x")):
+                task = asyncio.create_task(h5.tip_follow(self.tail, stop, poll_s=0.005, on_error=bad_log))
+                await asyncio.sleep(0.03)
+                stop.set()
+                await task
+
+        asyncio.run(go())
+        self.assertEqual(self.tail.c["errors_logged"], 1)
+
+    def test_truncation_reopens_at_the_cut_and_drops_the_partial(self):
+        self.tail.poll()  # start: the file does not exist yet, so it is read from its start once it appears
+        a, b = line("WANT", 10, "a"), line("WANT", 11, "b")
+        self.path.write_text(a + b + line("WANT", 12, "c")[:15])  # a crashed slot write: "c" is partial
+        self.tail.poll()
+        self.assertEqual([r["signature"] for r in self.rows], ["a", "b"])
+        with open(self.path, "r+b") as fh:  # fast_tip_follower's recovery: cut back to the pre-write size of slot 11
+            fh.truncate(len(a))
+        self.tail.poll()
+        self.assertEqual((self.tail.c["resets"], self.tail.c["resets_truncated"]), (1, 1))
+        self.assertEqual(self.tail.stats()["partial_bytes"], 0)
+        with open(self.path, "a") as f:  # slot 11 rewritten, then slot 12
+            f.write(b + line("WANT", 12, "c"))
+        self.tail.poll()
+        self.assertEqual([r["signature"] for r in self.rows], ["a", "b", "b", "c"])  # "b" twice: the union counts it as dup
+        self.assertEqual(self.tail.c["parse_errors"], 0)
+        self.assertIsNone(self.tail.err)
+        eng, _ = make_engine()
+        eng.tip = FakeTip("ok")
+        announce(eng)
+        t = pool_rows()
+        eng.on_trade(t.rows[0])
+        eng.on_tip_row(t.rows[1])
+        eng.on_tip_row(t.rows[1])
+        self.assertEqual(eng.pools[POOL].union.dup, 1)
+
+    def test_rotation_reopens_from_the_start(self):
+        self.path.write_text(line("WANT", 1, "old"))
+        self.tail.poll()  # present at start: read from its end
+        self.assertEqual(self.rows, [])
+        tmp = self.dir / "next.tmp"
+        tmp.write_text(line("WANT", 20, "n1") + line("WANT", 21, "n2"))
+        os.replace(tmp, self.path)
+        self.tail.poll()  # EOF on the old inode: the path has a new one
+        self.assertEqual((self.tail.c["resets"], self.tail.c["resets_rotated"]), (1, 1))
+        self.tail.poll()
+        self.assertEqual([r["signature"] for r in self.rows], ["n1", "n2"])
+
+    def test_removed_file_kept_until_its_hour_leaves(self):
+        self.tail.poll()
+        self.path.write_text(line("WANT", 5, "x"))
+        self.tail.poll()
+        self.path.unlink()
+        self.tail.poll()
+        self.assertEqual(self.tail.c["resets"], 0)
+        self.assertIsNone(self.tail.err)
 
 
 if __name__ == "__main__":
