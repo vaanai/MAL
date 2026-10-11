@@ -1062,6 +1062,15 @@ class SafetyTests(Case):
         self.assertEqual(h.H5Limits.from_config(live).end_ms, 1792783793000)  # the executor takes it as shipped
         self.assertGreater(live["end_ms"], h.SEAL_START_MS)
         self.assertLessEqual(live["end_ms"], h.SEAL_END_DEFAULT_MS)
+        # max_days is section 4's 14-day cap (raised from 10 in PR #591 so the duration stop does not cut the run short of end_ms). It is a code
+        # maximum: a config may lower it, never raise it. Counted from first_attempt_ms (at or after the first send), so end_ms binds first.
+        self.assertEqual(h.H5_DEFAULT["max_days"], 14)
+        self.assertEqual(h.H5_MAX["max_days"], 14)
+        self.assertEqual(h.H5Limits.from_config(live).max_days, 14)
+        self.assertNotIn("max_days", live)
+        self.assertEqual(h.H5Limits.from_config({**live, "max_days": 7}).max_days, 7)
+        self.assertEqual(h.H5Limits.from_config({**live, "max_days": 30}).max_days, 14)  # clamped to the code maximum, never raised
+        self.assertGreaterEqual(first_send_ms + int(h.H5_DEFAULT["max_days"] * 86_400_000), live["end_ms"])
         self.assertEqual((live["intents_file"], dry["intents_file"]), ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow"))
         # the CAP-PICK exporter's live booleans, under the shadow bind (CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick)
         self.assertEqual((live["pick_file"], dry["pick_file"]), ("/srv/mal-h5-shadow/cap-pick/picks.jsonl",) * 2)
