@@ -529,6 +529,61 @@ Section 6 says the executor "reads only the `mint` field of the decision-time in
 
 **Amendment 6, re-clearance record (2026-10-10T09:32:14Z).** Quant-proof re-cleared #540 at `bea3f30` (a merge of main `b5ba835` into `4feec6d`). The executor, pinned configs, oracle wrapper and seal code are identical to `4feec6d`. The shadow adds #541's report-only `outcome_bx10` behind the same CAP-PICK and H5 Look-2 seals. md5 decision-equivalence at `bea3f30`: `75cb0b0c585bc2479137cae31330e73e`, 72/72 (MiScusi job #498, 25-hour replay 2026-09-20T00..2026-09-21T00). Merged as `288f490`.
 
+## Amendment 8 (2026-10-11, the owner's decisions; written before EXP-024's Look 1 read and blind to its outcome; no canary ledger, shadow outcome record or Look 1 statistic was read to write it): a Look 1 FAIL keeps T0 for execution measurement, the resume after a benign program upgrade, and a pointer to the v2 pre-authorization
+
+OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the manager). Four questions, each answered with the recommended option. MiScusi notebook n_soP9VudXSnG4Jw holds the verbatim questions, option texts and answers. The instant is the session's timestamp on the owner's answer.
+
+**Written** 2026-10-11T03:45:37Z (`date -u`). Main was `5ebc7ca` and v1 was trading at T0 (resumed 2026-10-11T00:15:06.586Z, Amendment 4 item 4). The executor's `end_ms` is 2026-10-23T19:29:53Z (Amendment 6 item 8, PR #591, named sha `f873aac`).
+
+**Numbering.** The manager's brief numbers this Amendment 8. Main holds Amendments 1 to 6 at writing.
+
+### 1. A Look 1 FAIL keeps H5 at T0 for execution measurement only (section 5)
+
+- **The question, verbatim:** "If H5's 10-16 read comes back 'stop' (its October average at or below zero), H5's rules end new buys the next day unless you keep it running at the smallest size (0.02 SOL) to keep measuring how live trading behaves. Decide now, before the read, so the choice can't be swayed by the result?"
+- **The answer:** "Keep it at 0.02 SOL (Recommended)". **The option text:** "H5 keeps trading at 0.02 SOL through 10-23 for execution data (fills, landing speed, sells), with all halts and loss stops kept. Expected cost is tiny if the edge is near zero. The +0.5 SOL step-up stays blocked."
+- **What it changes.** One stop in section 5 reads: "EXP-024 Look 1 is a FAIL: new buys stop at the next 00:00Z after the Look 1 report, unless the owner extends the canary for execution measurement only." This is that extension. It was decided before the read, so it cannot depend on the result. On a Look 1 FAIL (EXP-024 §8.3: the flat and pressure means on D both ≤ 0), new buys do **not** stop at the next 00:00Z, and the canary continues on these terms:
+  - **T0 only, 0.02 SOL per entry.** T1 stays blocked: Amendment 3's step-up is not taken, and the +0.5 SOL top-up is not sent.
+  - **Through the 14-day end only.** That is 2026-10-23T19:29:53Z (`end_ms`), or `max_days` if it binds first. This item does not extend the duration.
+  - **Every section 5 halt as amended stays live.** That includes section 5.1 under Amendments 4 and 5, every A3 halt flag, `program_changed`, the stuck-position rule and divergence. Every other stop stays. So do section 4's limits, including the daily stop, the total stop (the counters continue) and the 2-open and 30-a-day caps.
+  - **Seals unchanged.** Section 6, the CAP-PICK seal (Amendment 6) and EXP-024 Amendment 4's D1 all stand.
+- **What it is not.** It is not evidence and never a book. EXP-024's FAIL retires v1 as a candidate, and this item does not soften that. Reports after the FAIL label the canary "execution measurement after an EXP-024 Look 1 FAIL; not a book". No report may say the canary shows a profit or an edge. It changes no EXP-024 parameter, look or read.
+- **Which rule it covers.** It covers the `h5` profile at T0 whichever H5 rule it trades: v1, or v2 if DEC-028 §3.5's pre-authorized switch has happened (item 3). That matches the owner's two answers, which both run H5 at 0.02 SOL until 10-23 [manager's reading, for quant-proof].
+
+### 2. Resume after a pump.fun program upgrade (section 5.6), after the manager's mechanism review
+
+- **The question, verbatim:** "If pump.fun upgrades its programs again, H5 halts automatically ('program changed'). May H5 resume once I've reviewed that the upgrade doesn't change the boost mechanics H5 depends on, without asking you each time?"
+- **The answer:** "Yes, after my review (Recommended)". **The option text:** "I review the change, using the same template as the 10-08 redeploy. If boost and fees behave the same, I resume H5 and tell you. Anything that changes boost keeps H5 stopped until you decide."
+- **Scope.** A STOP placed because the pump (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`), PumpSwap (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`) or fees (`pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ`) program was redeployed. The A3 monitor shows this as `program_changed` (programdata sha256 against the pins) and as `pins_changed` from a changed deploy slot.
+  - **Not in scope: a changed config account.** If the bonding FeeConfig, PumpSwap FeeConfig or PumpSwap GlobalConfig sha256 differs from its pin, that is a change to fees or BOOST by definition. H5 stays stopped until the owner decides.
+  - **Not in scope: any other halt that fires with the upgrade.** That includes another A3 flag, section 5.1, landing, late sells or a stuck position. Each keeps its own resume rule.
+- **The review.** The template is `ARTIFACTS/lab/a3-repin-2026-10-09-program-upgrade-review.md` (the 10-08 redeploy). The review is outcome-blind: no canary ledger, shadow outcome record or paper twin is read for it (EXP-024 Amendment 3). It is written to `/data/mal/hunt-1008/h5-work/PROGRAM-UPGRADE-<date>.md`, and a copy goes in `ARTIFACTS/lab/`.
+  1. **What changed.** Which programs, the deploy slots and signer, the upgrade authority, the programdata sha256 against the pins, account sizes (pump Global), and the public docs and IDL commits.
+  2. **Layouts.** The executor's PumpSwap `buy`, `sell` and `buy_exact_quote_in` account lists. The decoder's event offsets (BuyEvent, SellEvent, V). That Q = quote + V still matches the vault's pre-trade balance.
+  3. **Fees unchanged.** The three pinned config accounts (bonding FeeConfig, PumpSwap FeeConfig, PumpSwap GlobalConfig) have sha256 equal to `tools/pump_structure_pins.json`. That fixes the fee tiers, bps, recipients and the boost flag. Any difference sends the decision to the owner.
+  4. **BOOST unchanged.** This means all of the following:
+     - **InitBoost** is still a PumpSwap instruction in the migrate transaction of non-mayhem WSOL graduations, on at least 80% of the sample (A3 `boost_share_low` clear).
+     - **Slices** are still PumpSwap `BoostBuyAndBurn` transactions signed by the boost-vault PDA (`["boost_vault", pool]`, PumpSwap), and still pay zero fees. That was 77/77 slices on 10-10, job #638.
+     - **GlobalConfig** is still 949 bytes, with `boost_enabled` (byte 939) = 1 and `boost_authority` (bytes 907..939) unchanged.
+     - **Budget:** the full-pool BOOST total is still **17.585 SOL** (pinned `budget_sol` 17.585; 17,584,505,288 lamports on 10-10, job #638).
+     - **Slices per pool:** 29–30 (pinned 29). A3 `boost_budget_or_slices_changed` is clear (±20%).
+     - **Slice cadence:** the median slice interval is inside [6, 24] s (September 12.06 s). The last-slice median after migrate is compared with the runs before the upgrade, as the template's section 4 does. `boost_last_slice_early` is clear.
+     - **If any of these differs, BOOST has changed.** H5 stays stopped until the owner decides.
+  5. **H5's inputs unchanged** [manager's addition, stricter]. The quantities the rule reads are unchanged: Q = quote + V, s0 as the first PumpSwap print, and the plain/synthetic class (Amendment 2). A change here, such as 10-08's synthetic migrations, also sends the decision to the owner. A population shift that leaves these unchanged is reported to the owner with the resume.
+  6. **Executor.** A keyless dry run on the live programs, with at least 5 simulated buy and sell round trips and 0 simulate errors (the template's residual risk 6).
+- **The resume steps, in order.**
+  1. The review finds items 3–6 unchanged.
+  2. Re-pin PR: `tools/pump_structure_monitor.py --write-pins`, with the three program sha256s, citing the review. It merges with quant-proof's OK.
+  3. An A3 run after the re-pin is clean on the five H5 halt flags (`pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed`), and `program_changed` is clear.
+  4. No other section 5 rule or stop is active.
+  5. The manager removes `STOP` in a MiScusi job and records here the instant, the review file, the re-pin commit and the A3 job. The owner is told with a MiScusi notebook entry and the Console.
+- **What it does not change.** It resumes the canary only. EXP-024's A3 rule is EXP-024's own: inside a counted window, a `pins_changed` flag ends the read NOT_DECIDABLE, with no resumption if the monitor clears. EXP-022's own A3 rules also stand. This item cures neither, and a resumed canary does not revive either read. Amendment 3's T1 conditions are unchanged. No retune follows a halt (section 5).
+
+### 3. Pointer: H5 v2's pre-authorized Option B (DEC-028)
+
+- The owner chose DEC-028 Option A, with a pre-authorized Option B. The terms are in DEC-028 §3.5 (`DEC/DEC-028-h5-v2-canary.md`, draft, PR #542; not on main at writing). If v1 is halted by a section 5.1 BOOST-timing halt, H5-BOOSTCLOCK v2 may go live at T0 0.02 SOL on this wallet, with section 4's caps and the counters continued, until 2026-10-23T19:29:53Z. That needs v2's live sell code reviewed and one Helm reinstall.
+- **Here, nothing changes for v1.** A section 5.1 halt of v1 is recorded under this DEC as usual, and v1's resume rules (Amendments 4 and 5) stand. v2 is a new rule pre-registered in EXP-026, not a retune of v1 (DEC-028 §1). v1 and v2 are never live together (DEC-028 §3.4).
+- **Until DEC-028 merges** with quant-proof's OK on its final head, this pointer authorizes nothing.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
