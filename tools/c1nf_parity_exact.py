@@ -361,7 +361,8 @@ class ExactShadow(cs.Shadow):
             minutes = self.c["minutes"]
             eng.only_pools, eng.inject, self._clock_ms_override = [pool], {pool: (q, b)}, int(bt) * 1000
             try:
-                cs.Shadow._decide(self, T, sd, bt)
+                super()._decide(T, sd, bt)                    # the base class bound at definition: during run_replay_mode the
+                                                              # module-global cs.Shadow is the factory function, not the class
             finally:
                 eng.only_pools, eng.inject, self._clock_ms_override = None, None, None
             self.c["minutes"] = minutes                       # the minute was counted once, at T

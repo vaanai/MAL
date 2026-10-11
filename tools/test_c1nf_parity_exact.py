@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -450,3 +451,221 @@ def test_cross_compare_fails_on_stage1_membership_differences_with_zero_differin
     assert out["duplicate_keys_594"] == 1 and not out["pass"]
     # no shared row is never a pass
     assert not px.cross_compare(r506, {"pool": np.array(["E"]), "T": np.array([60]), "vec": s594["vec"][3:]})["pass"]
+
+
+# ---- creator history from tape start (QP round 2 on 39a06b4, blocking item 1) ------------------------------------------------------------
+def test_history_hours_skip_the_tape_gaps_and_stop_before_the_segment_start():
+    s3 = px.history_hours("2026-09-18T23")
+    assert len(s3) == 336 + 288 and s3[0] == px.TAPE_START == "2026-08-14T12" and s3[-1] == "2026-09-15T11"
+    assert s3 == sorted(set(s3))
+    assert not [h for h in s3 if "2026-08-28T12" <= h < "2026-09-03T12" or "2026-09-15T12" <= h < "2026-09-18T23"]   # gap hours skipped
+    assert "2026-08-28T11" in s3 and "2026-09-03T12" in s3
+    assert px.hour_runs(s3) == [["2026-08-14T12", "2026-08-28T11"], ["2026-09-03T12", "2026-09-15T11"]]
+    assert px.history_hours("2026-09-03T12") == s3[:336]
+    assert px.history_hours("2026-08-14T12") == [] and px.history_hours("2026-09-18T23", px.HISTORY_NONE) == []
+    assert px.history_hours("2026-09-20T00") == s3 + cs.replay_hours("2026-09-18T23", 25)        # mid-segment: S3's own earlier hours too
+    cs.refuse_replay([], px.feed_plan("2026-09-18T23", 152).hours)                               # every fed hour is an exploration hour
+    with pytest.raises(ValueError):
+        px.history_hours("2026-09-18T23", "segment")
+    p = px.feed_plan("2026-09-18T23", 75)
+    assert p.hours == s3 + cs.replay_hours("2026-09-18T23", 75) and len(p.hours) == 699 and p.decide_from == "2026-09-18T23"
+    assert len(px.feed_plan("2026-09-18T23", 152).hours) == 776 and len(px.feed_plan("2026-09-03T12", 288).hours) == 624
+    assert px.feed_plan("2026-09-18T23", 75, decide_from="2026-09-20T00").decide_from == "2026-09-20T00"   # a later decide_from holds
+    assert px.feed_plan("2026-09-18T23", 75, decide_from="2026-09-04T00").decide_from == "2026-09-18T23"   # never inside the history
+    assert px.feed_plan("2026-09-18T23", 75, px.HISTORY_NONE).decide_from is None                          # the cold start, unchanged
+    assert px.feed_plan("2026-08-14T12", 10).decide_from is None and px.feed_plan("2026-08-14T12", 10).history_hours == []
+
+
+def _ep(h, sec=0):
+    return int(px._hour_dt(h).timestamp()) + sec
+
+
+HSLOT0 = 9_000_000                                # 1 slot per second from tape start
+HC, HQ, HR, HS, HP, HQP, HPP, HMX = "CREATORh", "MINThqqq", "MINThrrr", "MINThsss", "MINThppp", "POOLhqqq", "POOLhppp", "MINThxxx"
+H_S1, H_S2, H_S3 = _ep("2026-08-20T00"), _ep("2026-09-10T00"), _ep("2026-09-19T00")   # S1 and S2 are history; S3 decides
+H_SEG = _ep("2026-09-18T23")
+
+
+def _hrow(bt, k, **kw):
+    r = {"_k": k, "slot": HSLOT0 + bt - _ep(px.TAPE_START), "block_time": bt, "tx_index": kw.pop("tx", 1), "event_index": 0}
+    r.update(kw)
+    return r
+
+
+def _hps(bt, pool, mint, trader, buy, q, b):
+    return cs.stamp_replay_v(_hrow(bt, "trades", venue="pumpswap", pool=pool, mint=mint, trader=trader, side="buy" if buy else "sell",
+                                   sol_lamports=2e8, token_raw=1e12, quote_reserve=q, base_reserve=b), V0, event_v=False)
+
+
+def _hclock(t0, t1):
+    return [_hrow(t, "trades", tx=0, venue="pump_bonding", mint=HMX, trader="bx", side="buy", sol_lamports=1e6, token_raw=1e9,
+                  quote_reserve=30e9, base_reserve=1e15, pool=None) for t in range(t0, t1, 30)]
+
+
+def _hpool(g, pool, mint, n_late=0):
+    """A graduated pool's prints from g: three opening prints, twelve from g + 700, and n_late more at g + 6 h + 60 (its 6 h outcome)."""
+    rows, q, b = [], 85e9, 2e14
+    pts = [(g + 7, "p0", True), (g + 60, "p1", True), (g + 120, "p2", False)] + [(g + 700 + 15 * k, f"n{k}", True) for k in range(12)]
+    pts += [(g + 21660 + 60 * k, f"l{k}", k % 2 == 0) for k in range(n_late)]
+    for t, tr, buy in pts:
+        rows.append(_hps(t, pool, mint, tr, buy, q, b))
+        q, b = (q + 2e8, b - 1e12) if buy else (q - 2e8, b + 1e12)
+    return rows
+
+
+def _htape():
+    """Creator HC: Q (created, graduated, priced past g + 6 h) and R (created only) in S1, S (created only) in S2, and P in S3, the decision
+    segment. A whole-minute clock runs while Q is alive in S1 (so a run that decided in the history would decide Q) and while P is alive."""
+    gq, gp = H_S1 + 10, H_S3 + 100
+    rows = [_hrow(H_S1, "creates", mint=HQ, creator=HC, name="dog moon", symbol="DOG", is_mayhem_mode=False),
+            _hrow(H_S1 + 5, "creates", mint=HR, creator=HC, name="cat moon", symbol="CAT", is_mayhem_mode=False),
+            _hrow(gq, "migrations", type="complete", mint=HQ),
+            _hrow(H_S2, "creates", mint=HS, creator=HC, name="dog star", symbol="DOGST", is_mayhem_mode=False),
+            _hrow(H_S3 + 5, "creates", mint=HP, creator=HC, name="dog sun", symbol="DOGS", is_mayhem_mode=False),
+            _hrow(gp, "migrations", type="complete", mint=HP)]
+    rows += _hpool(gq, HQP, HQ, n_late=3) + _hpool(gp, HPP, HP) + _hclock(H_S1 + 20, H_S1 + 3000) + _hclock(H_S3 + 20, H_S3 + 3000)
+    rows.sort(key=cs.row_key)
+    creates = [(HQ, H_S1), (HR, H_S1 + 5), (HS, H_S2), (HP, H_S3 + 5)]
+    grads = [(HQ, gq), (HP, gp)]
+    return rows, creates, grads
+
+
+class _Frame:
+    """The three tokens.parquet columns cs.run_replay reads, for a test venv without pandas."""
+
+    def __init__(self, cols):
+        self.cols = cols
+
+    def __getattr__(self, k):
+        return self.__dict__["cols"][k]
+
+    def __getitem__(self, mask):
+        return _Frame({k: v[np.asarray(mask)] for k, v in self.cols.items()})
+
+
+def _hrun(tmp_path, monkeypatch, mode, plan, rows):
+    """cs.run_replay through px.run_replay_mode on an in-memory tape: tape_rows yields each asked hour's rows; returns what was asked."""
+    import sys
+    import types
+
+    by_hour = defaultdict(list)
+    for r in rows:
+        by_hour[cs.hour_of(r["block_time"])].append(r)
+    asked = {"rows": [], "sps": []}
+
+    def tape_rows(tape_dir, hours, pool_v, pool_of_mint, *, event_v=False):
+        asked["rows"] = list(hours)
+        for h in hours:
+            yield [dict(r) for r in by_hour.get(h, [])]
+
+    def hour_sps(tape_dir, hours):
+        asked["sps"] = list(hours)
+        return {h: 1.0 for h in hours}
+
+    fake_pd = types.ModuleType("pandas")
+    fake_pd.read_parquet = lambda path, columns=None: _Frame({"mint": np.array([HQ, HP], dtype=object), "pool": np.array([HQP, HPP], dtype=object),
+                                                              "v0_lamports": np.array([V0, V0])})
+    monkeypatch.setitem(sys.modules, "pandas", fake_pd)
+    monkeypatch.setattr(cs, "tape_rows", tape_rows)
+    monkeypatch.setattr(cs, "hour_sps_from_tape", hour_sps)
+    made, real = [], cs.Shadow
+
+    def rec(*a, **k):
+        s = real(*a, **k)
+        made.append(s)
+        return s
+
+    monkeypatch.setattr(cs, "Shadow", rec)
+    pool_v = {HQP: V0, HPP: V0}
+    la = _la([r for h in plan.decide_hours for r in by_hour.get(h, [])], pool_v) if mode == px.STATE_EXACT else None
+    eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode=mode, lookahead=la)
+    seen = _capture(eng, force_stage1=True)
+    out = tmp_path / f"{mode}-{plan.history}-{plan.decide_from}"
+    out.mkdir()
+    args = px.build_parser().parse_args(["--state-mode", mode, "--replay-from", plan.decide_hours[0], "--replay-hours", str(len(plan.decide_hours)),
+                                         "--model", "m", "--model-sha256", "x", "--out-dir", str(out)])
+    sink = cs.MemorySink()
+    rc, xsh = px.run_replay_mode(args, _models(), eng, sink, plan)
+    sh = xsh if xsh is not None else made[0]
+    assert rc == cs.EXIT_OK and cs.replay_hours is not None and cs.replay_hours("2026-09-04T00", 2) == ["2026-09-04T00", "2026-09-04T01"]
+    return seen, sink, sh, asked, eng
+
+
+CR_COLS = ("cr_prev_creates", "cr_prev_grads", "cr_known_out", "cr_lmax6", "cr_lend6", "cr_big6")
+
+
+@pytest.mark.parametrize("mode", [px.STATE_LIVE, px.STATE_EXACT])
+def test_history_feed_gives_the_tape_start_creator_history_and_makes_no_decision_before_the_segment(tmp_path, monkeypatch, mode):
+    rows, creates, grads = _htape()
+    plan = px.feed_plan("2026-09-18T23", 3)                                  # history: S1 + S2 (624 h); decisions 09-18T23 .. 09-19T01
+    seen, sink, sh, asked, eng = _hrun(tmp_path, monkeypatch, mode, plan, rows)
+    assert asked["rows"] == asked["sps"] == plan.hours and len(plan.hours) == 627          # gap hours never asked
+    fi = {n: j for j, n in enumerate(FEATURE_NAMES)}
+    vec = lambda s: np.frombuffer(s[5], dtype=np.float64)                                  # noqa: E731
+    p_rows = [s for s in seen if s[0] == HPP]
+    assert len(p_rows) > 30 and {s[0] for s in seen} == {HPP}                              # Q, alive in S1, is never decided
+    # the creator record is computed on real stage-1 rows (the recorder's rows; _capture forces the flag on every row)
+    s1 = [(int(r[2]), r[5].astype(np.float64)) for r in eng.stage1_rows]
+    assert len(s1) >= 3 and {r[0] for r in eng.stage1_rows} == {HPP}
+    # 12_passC.py:59-62 on every create of the tape: prior creates of the creator before P's create; graduations before T, own excluded
+    cbt_p = dict(creates)[HP]
+    for T, v in s1:
+        assert v[fi["cr_prev_creates"]] == sum(1 for m, c in creates if c < cbt_p) == 3
+        assert v[fi["cr_prev_grads"]] == sum(1 for m, g in grads if g < T) - (1 if dict(grads)[HP] < T else 0) == 1
+        assert v[fi["cr_known_out"]] == 1.0 and all(np.isfinite(v[fi[c]]) for c in ("cr_lmax6", "cr_lend6", "cr_big6"))
+    # no decision, stage-1 row, deferral, pick or book entry during the history feed
+    assert min(s[1] for s in seen) >= H_SEG and min(r[2] for r in eng.stage1_rows) >= H_SEG
+    picks = sink.of("c1nf_pick")
+    assert picks and all(p["decision_T_ms"] >= H_SEG * 1000 and p["mint"] == HP for p in picks)
+    assert set(sh.book) == {HP} and min(sh.book.values()) >= H_SEG
+    if mode == px.STATE_EXACT:
+        rep = sh.exact_report()
+        assert rep["ok"] and rep["deferred"] > 0 and rep["resolved"] == rep["deferred"], rep
+    # the same rows fed with decisions on everywhere (a plain tape-start run): Q is decided and picked in S1, and P's vectors are equal
+    every = px.FeedPlan(px.HISTORY_TAPE_START, plan.history_hours, plan.decide_hours, None)
+    a_seen, a_sink, a_sh, _, _ = _hrun(tmp_path, monkeypatch, mode, every, rows)
+    assert any(s[0] == HQP and s[1] < H_SEG for s in a_seen) and any(p["mint"] == HQ for p in a_sink.of("c1nf_pick")) and HQ in a_sh.book
+    a_p = {(s[0], s[1]): s for s in a_seen if s[0] == HPP}
+    assert {(s[0], s[1]) for s in p_rows} <= set(a_p)
+    for s in p_rows:
+        assert np.array_equal(vec(s), vec(a_p[(s[0], s[1])]), equal_nan=True)
+    # the cold start (--history none, the run before this change): P's creator record is empty, and only the creator columns move
+    cold = px.feed_plan("2026-09-18T23", 3, px.HISTORY_NONE)
+    c_seen, _, _, c_asked, c_eng = _hrun(tmp_path, monkeypatch, mode, cold, rows)
+    assert c_asked["rows"] == cs.replay_hours("2026-09-18T23", 3)
+    c_s1 = {int(r[2]): r[5].astype(np.float64) for r in c_eng.stage1_rows if r[0] == HPP}
+    assert sorted(c_s1) == [T for T, _ in s1]                               # the creator record is not a stage-1 input: the same rows
+    moved = {n for n, j in fi.items() for T, v in s1 if not np.array_equal(v[j], c_s1[T][j], equal_nan=True)}
+    assert {"cr_prev_creates", "cr_prev_grads", "cr_known_out"} <= moved <= set(CR_COLS), moved
+    assert all(c_s1[T][fi["cr_prev_creates"]] == 0 and c_s1[T][fi["cr_known_out"]] == 0 for T, _ in s1)
+
+
+def test_main_feeds_the_history_by_default_and_records_it(tmp_path, monkeypatch):
+    got = {}
+
+    def fake(args, models, engine, sink, plan=None):
+        got["plan"], got["decide_from"] = plan, args.decide_from
+        return cs.EXIT_OK, None
+
+    monkeypatch.setattr(px, "run_replay_mode", fake)
+    monkeypatch.setattr(cs.ModelSet, "single", classmethod(lambda cls, path, sha, loader=None: _models()))
+    tok = tmp_path / "tokens.parquet"
+    tok.write_bytes(b"x")
+    out = tmp_path / "o"
+    base = ["--state-mode", "live", "--replay-from", "2026-09-18T23", "--replay-hours", "75", "--decide-to", "2026-09-22T00",
+            "--model", "m", "--model-sha256", "x", "--tokens", str(tok)]
+    assert px.main(base + ["--out-dir", str(out)]) == cs.EXIT_OK
+    plan = got["plan"]
+    assert plan.decide_from == "2026-09-18T23" and len(plan.history_hours) == 624 and len(plan.hours) == 699 and got["decide_from"] is None
+    summ = json.loads((out / "parity-summary-live.json").read_text())
+    assert summ["history"]["convention"] == "tape-start" and summ["history"]["hours"] == 624 and summ["hours_fed"] == 699
+    assert summ["decide_from_effective"] == "2026-09-18T23" and summ["decide_from"] is None and summ["hours"] == ["2026-09-18T23", "2026-09-22T01"]
+    assert px.main(base + ["--history", "none", "--out-dir", str(tmp_path / "n")]) == cs.EXIT_OK
+    assert got["plan"].history_hours == [] and got["plan"].decide_from is None
+
+
+def test_shadow_and_feature_engine_blobs_are_unchanged():
+    """The harness changes neither the soak's pinned shadow blob (MiScusi #658) nor the feature engine (14(b) at these blobs)."""
+    here = Path(px.__file__).resolve().parent
+    assert px.git_blob(here / "c1nf_shadow.py") == "c2dafcdcdc69f7f0269746431c01755dc7f45e4b"
+    assert px.git_blob(here / "c1nf_features.py") == "d6c87354a520ea25efc59975d7d041570d8226f7"
