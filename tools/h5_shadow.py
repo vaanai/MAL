@@ -22,7 +22,17 @@ evaluated on every print, each fires at most once per pool, and every record car
 
 OUTPUT. <out-dir>/h5-shadow-<UTC hour>.jsonl, strict JSON lines flushed per line (tools/tape_lines.py clean), and h5-shadow-status.json
 (atomic). Record types: start, trigger, outcome, outcome_bx10, pool (EVERY tracked pool, with the BOOST last-slice time relative to s0), gap,
-hb, stop.
+hb, stop, boost_slice.
+
+BOOST SLICE STREAM (DEC-028 section 5 item 1; record-only, no price). One `boost_slice` record per BOOST buy in a tracked pool, written as the
+print is processed: pool, mint, s0, slot, tx_index (replay tape; null on the live feed, which has no block position), event_index, signature,
+lamports, sol, block_time (s), t_recv_ms, t_i_s (pool clock, (slot - s0) * sps, null without an sps), sps, boost_src, boost_id, boost_n and
+boost_spent_sol (that signer's buys and cumulative spend so far). Only buys signed by the pool's vault identity are written (boost_src "pda" or
+"event_authority": protocol addresses known before any of their buys); a behavioural guess never is. The H5 executor's v2 exit (DEC-028
+Option B) reads these; v1 ignores them. Seals, as for the trigger record: a CAP-PICK-sealed pool has none (a pool the pick oracle has no answer
+for yet has its slices held in memory, written with withheld_pick_pending once it is known to be a non-pick, dropped if it is a pick); an H5
+Look-2-sealed pool has them, flagged h5_look2_sealed (its trigger and pool records, which carry its BOOST timing, are written too). No decision
+record changes: nothing here feeds a trigger, an outcome or a pool record.
 A gap record (slot jump, silence, feed restart) also flags every pool open at the time (gap=true on its pool/trigger/outcome records); an
 hour with a gap record or a missing hb is a bad hour.
 
@@ -819,6 +829,7 @@ class Pool:
         self.seal_window: bool | None = None  # inside the CAP-PICK window, judged once at the s0 the pool has when first asked
         self.sealed_noted = False  # counted in the sealed_hour aggregate already
         self.skip_withheld: dict | None = None  # a skipped_no_sps record held while the pick oracle had no answer (written if the pool unseals)
+        self.slices_withheld: list[dict] = []  # boost_slice records held while the pick oracle had no answer (written if the pool unseals)
         self.h5_sealed_cache: bool | None = None
         self.skip_logged = False
         self.excluded: str | None = None  # "synthetic" | "unclassified" once a trigger of this pool was withheld (sticky: no variant of it fires later)
@@ -1046,6 +1057,8 @@ class Engine:
         pr = Pr(slot=slot, buy=buy, trader=row.get("trader") or "", sol=int(row["sol_lamports"]), tok=int(row["token_raw"]), q=q, v=v, b=b, dq=dq,
                 db=db, kept=kept, recv_ms=recv_ms, ts=ts, sig=row.get("signature"), v_missing=v_raw is None)
         self._on_print(p, pr)
+        if buy:
+            self._boost_slice(p, pr, row)
 
     def _maybe_track(self, row: dict, slot: int, recv_ms: int) -> Pool | None:
         pool = row["pool"]
@@ -1249,6 +1262,7 @@ class Engine:
         sealed = self._sealed(p)
         if not sealed:
             self._flush_withheld_skip(p)
+            self._flush_withheld_slices(p)
         if len(p.trig) == len(VARIANTS) and not sealed:  # a sealed pool keeps evaluating, so nothing it does depends on whether it triggered
             return
         sps = self._sps(p)
@@ -1296,6 +1310,49 @@ class Engine:
         rec, p.skip_withheld = p.skip_withheld, None
         self.counters["skipped_no_sps_would_trigger"] += 1
         self.emit({**rec, "withheld_pick_pending": True})
+
+    # ---- BOOST slice stream (DEC-028 s5 item 1) ----------------------------------------------------------------
+    def _boost_slice(self, p: Pool, pr: Pr, row: dict) -> None:
+        """One `boost_slice` record for a buy signed by the pool's vault identity (see BOOST SLICE STREAM in the module doc). Structure only:
+        no price, no quote state. Nothing here changes a decision: the signer stats were updated by _boost_update already, and the slot rate is
+        read without _sps() (which sets p.sps_last, a field of the pool record)."""
+        if not pr.trader:
+            return
+        if p.boost_auth and pr.trader == p.boost_auth:  # the order boost_identity uses
+            src = "event_authority"
+        elif p.pda and pr.trader == p.pda:
+            src = "pda"
+        else:
+            return  # not the vault: a behavioural guess is never a live exit input
+        st = p.traders.get(pr.trader)
+        sps = self.sps_fn(p) if self.sps_fn else self.clock.sps()
+        txi, evi = row.get("tx_index"), row.get("event_index")
+        isint = lambda x: isinstance(x, int) and not isinstance(x, bool)  # noqa: E731
+        rec = {"type": "boost_slice", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "tx_index": txi if isint(txi) else None,
+               "event_index": evi if isint(evi) else None, "signature": pr.sig, "lamports": int(pr.sol), "sol": pr.sol / 1e9, "block_time": pr.ts,
+               "t_recv_ms": pr.recv_ms, "t_i_s": round((pr.slot - p.s0) * sps, 4) if sps_ok(sps) else None, "sps": sps if sps_ok(sps) else None,
+               "boost_src": src, "boost_id": pr.trader, "boost_n": None if st is None else st[0],
+               "boost_spent_sol": None if st is None else st[1] / 1e9}
+        if self._sealed(p):  # CAP-PICK (EXP-022 s9): no per-pool trace of a sealed pool
+            if p.sealed_cache is None:  # pick oracle, no answer yet: held, and written once the pool is known to be a non-pick
+                p.slices_withheld.append(rec)
+            else:
+                p.slices_withheld = []
+            return
+        self._flush_withheld_slices(p)
+        if self._h5_sealed(p):  # judged at the pool's open already (an unsealed pool always is): asking here changes nothing
+            rec["h5_look2_sealed"] = True
+        self.emit(rec)
+
+    def _flush_withheld_slices(self, p: Pool) -> None:
+        """boost_slice records held while the pick oracle had no answer, written now that the pool is known to be a non-pick (the caller's
+        verdict), in slot order, before any later record of the pool. Their t_recv_ms is the shadow's receive time, not the write time."""
+        if not p.slices_withheld:
+            return
+        held, p.slices_withheld = p.slices_withheld, []
+        h5s = self._h5_sealed(p)
+        for rec in held:
+            self.emit({**rec, "withheld_pick_pending": True, **({"h5_look2_sealed": True} if h5s else {})})
 
     def _fire(self, p: Pool, pr: Pr, idx: int, var: str, sps: float, t: float, spent: int, ident: str | None, src: str) -> None:
         k_p = math.ceil(ENTRY_S["primary"] / sps - 1e-9)
@@ -1575,6 +1632,9 @@ class Engine:
         h5s = self._h5_sealed(p)
         if not sealed:
             self._flush_withheld_skip(p)
+            self._flush_withheld_slices(p)
+        else:
+            p.slices_withheld = []
         self._emit_strip(p, sealed or h5s)
         if sealed:  # EXP-022 s9: only what was known when the pool opened, before any decision print; nothing here can differ with the decision
             if not p.sealed_noted:  # a pick oracle's pool that sealed after s0 (or never got an answer) is counted under its open hour now
@@ -2216,7 +2276,7 @@ def replay_rows(tape_dir: str, work_dir: str, hours: Sequence[str]) -> tuple[Ite
                     "venue": "pumpswap", "pool": r.pool, "slot": int(r.slot), "side": r.side, "trader": r.trader, "sol_lamports": int(r.sol_lamports),
                     "token_raw": int(r.token_raw), "quote_reserve": int(r.quote_reserve), "base_reserve": int(r.base_reserve),
                     "virtual_quote_reserves": meta[r.pool]["v"], "event_ts": int(r.block_time), "t_recv_ms": int(r.block_time) * 1000,
-                    "signature": None, "mint": meta[r.pool]["mint"],
+                    "signature": None, "mint": meta[r.pool]["mint"], "tx_index": int(r.tx_index), "event_index": int(r.event_index),
                 }
 
     return gen(), meta, sps_pool
