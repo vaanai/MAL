@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from collections import Counter
 import json
 from datetime import datetime, timezone
 
@@ -32,6 +33,12 @@ def ledger_line(name: str, *, synthetic, kind="decision", ts=TS, **extra) -> str
            "stake_lamports": 20_000_000, "expected_tokens": 123, "min_out": 99, "plan": {"pool": "PLAN-POOL", "exit_price": SECRETS[0], "nested": {"signature": SECRETS[3]}},
            "fill_price": SECRETS[0], "pnl_lamports": SECRETS[1], "size": SECRETS[2], "anchor": {"mint": "ANCHOR-MINT", "slot": 5}, **extra}
     return json.dumps(row)
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_sleep(monkeypatch):
+    """The RPC-error retry waits 60 s and 180 s by default; no test waits for real."""
+    monkeypatch.setattr(au, "_SLEEP", lambda w: None)
 
 
 def run(monkeypatch, capsys, argv, rpc=None, stdin=""):
@@ -426,3 +433,89 @@ def test_the_global_call_cap_is_computed_from_the_row_count_unless_given(monkeyp
     run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "77"], None, ledger)
     assert seen[-1]["max_calls"] == 77
     assert run(monkeypatch, capsys, ["--date", DAY, "--ledger", "-", "--max-calls", "0"], None, ledger)[0] == 2
+
+
+# ---- RPC-error retries (2026-10-11) ----------------------------------------------------------------------------------
+
+def _seq_classify(results):
+    calls = {"n": 0}
+
+    def classify(r):
+        i = min(calls["n"], len(results) - 1)
+        calls["n"] += 1
+        res = results[i]
+        if isinstance(res, Exception):
+            raise res
+        return res
+
+    return classify, calls
+
+
+UNC_RPC = {"class": sc.CLASS_UNCLASSIFIED, "reason": "fetch_failed:migrate:RpcError", "event_seen_any": False}
+NON = {"class": sc.CLASS_NON_SYNTHETIC, "reason": "", "event_seen_any": False}
+
+
+def test_a_transient_rpc_failure_is_retried_and_then_agrees_on_the_second_look():
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    classify, calls = _seq_classify([UNC_RPC, NON])
+    waits = []
+    retried = Counter()
+    out = au.run_audit(rows, DAY, classify, second_run=True, retry_waits=(60.0, 180.0), sleep=waits.append, retried=retried)
+    assert out["n_disagree"] == 0 and out["halt"] is False
+    assert calls["n"] == 2 and waits == [60.0] and retried["attempts"] == 1
+
+
+def test_a_persistent_rpc_failure_still_counts_after_every_wait_fail_closed():
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    classify, calls = _seq_classify([UNC_RPC])
+    waits = []
+    second = au.run_audit(rows, DAY, classify, second_run=True, retry_waits=(60.0, 180.0), sleep=waits.append)
+    assert second["n_disagree"] == 1 and second["halt"] is True
+    assert calls["n"] == 3 and waits == [60.0, 180.0]
+    classify, calls = _seq_classify([UNC_RPC])
+    first = au.run_audit(rows, DAY, classify, retry_waits=(1.0,), sleep=lambda w: None)
+    assert first["n_unclassified_now"] == 1 and first["n_disagree"] == 0 and calls["n"] == 2
+
+
+def test_an_unreachable_node_raised_from_classify_is_retried_too():
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    classify, calls = _seq_classify([au.M.RpcUnreachable("x"), NON])
+    out = au.run_audit(rows, DAY, classify, second_run=True, retry_waits=(5.0,), sleep=lambda w: None)
+    assert out["n_disagree"] == 0 and calls["n"] == 2
+
+
+@pytest.mark.parametrize("reason", ["tx_missing:migrate", "fetch_failed:signatures:PoolCallBudgetExceeded", "no_pool_or_mint",
+                                    "fetch_failed:migrate:CallBudgetExceeded"])
+def test_non_rpc_reasons_are_not_retried(reason):
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    classify, calls = _seq_classify([{"class": sc.CLASS_UNCLASSIFIED, "reason": reason, "event_seen_any": False}, NON])
+    waits = []
+    out = au.run_audit(rows, DAY, classify, second_run=True, retry_waits=(60.0,), sleep=waits.append)
+    assert out["n_disagree"] == 1 and calls["n"] == 1 and waits == []
+
+
+def test_a_real_disagreement_is_never_retried_away():
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    classify, calls = _seq_classify([{"class": sc.CLASS_SYNTHETIC, "reason": "", "event_seen_any": True}, NON])
+    out = au.run_audit(rows, DAY, classify, retry_waits=(60.0, 180.0), sleep=lambda w: None)
+    assert out["n_disagree"] == 1 and calls["n"] == 1
+
+
+def test_parse_waits_and_the_default():
+    assert au.parse_waits("60,180") == (60.0, 180.0)
+    assert au.parse_waits("0") == () and au.parse_waits("") == ()
+    with pytest.raises(ValueError):
+        au.parse_waits("601")
+    assert au.RETRY_WAITS_DEFAULT == (60.0, 180.0)
+
+
+def test_main_uses_the_retry_waits_and_reports_only_a_count(monkeypatch, capsys):
+    waits = []
+    monkeypatch.setattr(au, "_SLEEP", waits.append)
+    results = iter([UNC_RPC, NON])
+    monkeypatch.setattr(au.sc, "classify_pool", lambda *a, **k: next(results))
+    rows = [{"pool": "p1", "mint": "m1", "synthetic": False, "synthetic_src": "rpc", "signature": "s1"}]
+    stdin = "\n".join(json.dumps(r) for r in rows) + "\n"
+    rc, out, err = run(monkeypatch, capsys, ["--decisions", "-", "--date", DAY, "--no-expect-ledger", "--retry-waits", "7"], rpc=object(), stdin=stdin)
+    assert rc == 0 and json.loads(out.strip().splitlines()[-1])["n_disagree"] == 0
+    assert waits == [7.0] and "rpc_retry_attempts=1" in err and "p1" not in err and "m1" not in err

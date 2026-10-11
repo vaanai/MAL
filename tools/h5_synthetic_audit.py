@@ -30,6 +30,13 @@ FAIL CLOSED ON UNCLASSIFIED POOLS. A pool B4 cannot classify today is counted in
 counts as a disagreement (a halt, exit 3), and so does any other disagreement found on that second look. Those pools are in n_pools and
 n_disagree, never in n_unclassified_now. The output keys stay the five.
 
+RPC-ERROR RETRIES (2026-10-11). A pool left unclassified only because a fetch failed on an RPC error (`RpcError` / `RpcUnreachable` in its
+reason) is classified again after each wait in --retry-waits (default 60 s, then 180 s) before it is counted. Any other reason
+(missing tx, budget, no pool or mint) is not retried. A pool still unclassified after the waits is counted exactly as before (fail
+closed). Why: on 2026-10-11 two 10-09 pools that the 10-10 run had classified (0 disagreements) hit public-RPC errors on the second
+look and halted the canary (job #745); the same audit re-run with slower pacing classified both, 0 disagreements (job #747).
+stderr adds `rpc_retry_attempts=<n>` (a count, no ids).
+
 `signature` on a decision row is the signature of OUR buy transaction, not of the trigger print (the ledger carries no trigger
 signature). It is used as B4's `before` anchor. B4 says "before the s0 print's signature"; our buy is after s0, so this window is a
 SUPERSET of B4's: the migrate tx is older than both, so it is still found, but a pool with more than `cap` (1,000) signatures between
@@ -68,6 +75,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
@@ -79,6 +87,7 @@ from tools import synthetic_class as sc
 KEEP_KEYS = ("pool", "mint", "synthetic", "synthetic_src", "signature")  # the only fields ever kept
 SELECTOR_KEYS = ("kind", "ts_ms")  # read to choose rows, then discarded
 OUTPUT_KEYS = ("date", "n_pools", "n_disagree", "n_unclassified_now", "halt")
+_SLEEP: Callable[[float], None] = time.sleep  # the retry wait; tests replace it
 _READ = frozenset(KEEP_KEYS) | frozenset(SELECTOR_KEYS)
 
 DEFAULT_RPC_HOST = "api.mainnet-beta.solana.com"
@@ -178,11 +187,26 @@ def shadow_class(synthetic: Any) -> str | None:
     return None
 
 
+TRANSIENT_MARKS = ("RpcError", "RpcUnreachable")  # a fetch that failed on an RPC error, not a pool B4 found unclassifiable
+RETRY_WAITS_DEFAULT = (60.0, 180.0)
+
+
+def is_transient(res: Mapping[str, Any]) -> bool:
+    """An unclassified result whose reason is an RPC error or an unreachable node. Budget, missing-tx and every other reason are not retried."""
+    if res.get("class") in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
+        return False
+    reason = str(res.get("reason") or "")
+    return any(m in reason for m in TRANSIENT_MARKS)
+
+
 def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[Mapping[str, Any]], Mapping[str, Any]],
-              reasons: Counter | None = None, *, second_run: bool = False) -> dict[str, Any]:
+              reasons: Counter | None = None, *, second_run: bool = False, retry_waits: Sequence[float] = (),
+              sleep: Callable[[float], None] = time.sleep, retried: Counter | None = None) -> dict[str, Any]:
     """`classify(row)` returns classify_pool's dict (`class`, `reason`, `event_seen_any`). Rows are grouped by pool; a row with no pool or
     mint cannot be classified. `reasons` (if given) counts the reasons of the unclassified pools: no ids.
-    `second_run`: the re-audit of the previous day. A pool still unclassified is a disagreement (and not an n_unclassified_now)."""
+    `second_run`: the re-audit of the previous day. A pool still unclassified is a disagreement (and not an n_unclassified_now).
+    `retry_waits`: a pool left unclassified only by an RPC error (is_transient) is classified again after each wait in turn, until it is
+    classified or the waits run out. Only then is it counted (fail closed as before). `retried` counts the extra attempts: no ids."""
     pools: dict[str, list[Mapping[str, Any]]] = {}
     for i, r in enumerate(rows):
         pools.setdefault(r.get("pool") or f"?row{i}", []).append(r)
@@ -191,10 +215,14 @@ def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[
         first = rs[0]
         res: Mapping[str, Any] = {"class": sc.CLASS_UNCLASSIFIED, "reason": "no_pool_or_mint", "event_seen_any": False}
         if first.get("pool") and first.get("mint"):
-            try:
-                res = classify(first)
-            except Exception as exc:  # noqa: BLE001  (a lookup that blows up is an unclassified pool, not a crash; the type goes to stderr)
-                res = {"class": sc.CLASS_UNCLASSIFIED, "reason": f"classify_error:{type(exc).__name__}", "event_seen_any": False}
+            res = _classify_once(classify, first)
+            for wait in retry_waits:
+                if not is_transient(res):
+                    break
+                if retried is not None:
+                    retried["attempts"] += 1
+                sleep(wait)
+                res = _classify_once(classify, first)
         cls = res.get("class")
         if cls in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
             if {shadow_class(r.get("synthetic")) for r in rs} != {cls}:
@@ -209,6 +237,24 @@ def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[
         if res.get("event_seen_any") is True and {shadow_class(r.get("synthetic")) for r in rs} != {sc.CLASS_SYNTHETIC}:
             n_disagree += 1  # B4 saw the event in a readable located tx (the other tx is unreadable) and the shadow did not say synthetic: plain, or no class
     return {"date": date, "n_pools": len(pools), "n_disagree": n_disagree, "n_unclassified_now": n_unclassified, "halt": n_disagree > 0}
+
+
+def _classify_once(classify: Callable[[Mapping[str, Any]], Mapping[str, Any]], row: Mapping[str, Any]) -> Mapping[str, Any]:
+    try:
+        return classify(row)
+    except Exception as exc:  # noqa: BLE001  (a lookup that blows up is an unclassified pool, not a crash; the type goes to stderr)
+        return {"class": sc.CLASS_UNCLASSIFIED, "reason": f"classify_error:{type(exc).__name__}", "event_seen_any": False}
+
+
+def parse_waits(text: str) -> tuple[float, ...]:
+    """'60,180' -> (60.0, 180.0); '' or '0' -> () (no retry). Each wait must be between 0 and 600 s."""
+    text = text.strip()
+    if text in ("", "0"):
+        return ()
+    waits = tuple(float(x) for x in text.split(","))
+    if any(not 0 <= w <= 600 for w in waits):
+        raise ValueError("each retry wait must be between 0 and 600 s")
+    return waits
 
 
 # ---- RPC guard and budget --------------------------------------------------------------------------------------------
@@ -296,6 +342,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--rpc-url", default=M.DEFAULT_RPC, help="public mainnet RPC (default %(default)s)")
     p.add_argument("--allow-rpc-host", action="append", default=[], metavar="HOST", help="another public RPC host to allow (repeatable)")
     p.add_argument("--min-interval", type=float, default=0.5, help=f"seconds between RPC calls (not below {MIN_INTERVAL_FLOOR})")
+    p.add_argument("--retry-waits", default=",".join(f"{w:g}" for w in RETRY_WAITS_DEFAULT),
+                   help="seconds to wait before each re-try of a pool left unclassified only by an RPC error (comma list; '0' = no retry)")
     p.add_argument("--max-calls", type=int, default=None, help="hard cap on RPC calls in all, retries included (default: rows x 2 x --max-calls-per-pool + 500)")
     p.add_argument("--max-calls-per-pool", type=int, default=MAX_CALLS_PER_POOL_DEFAULT, help="calls one pool may use for the pool-address search; the audit-only fallback gets the same again")
     p.add_argument("--cap", type=int, default=sc.CAP_DEFAULT, help="signatures per search (B4: 1000)")
@@ -362,9 +410,17 @@ def main(argv: Sequence[str] | None = None, *, rpc: Any = None) -> int:
         return sc.classify_pool(budget, mint=r["mint"], pool=r["pool"], before_sig=r.get("signature"), cap=args.cap, audit_fallback=True,
                                  before_fallback=budget.reset)
 
+    try:
+        waits = parse_waits(args.retry_waits)
+    except ValueError:
+        print("usage: --retry-waits must be a comma list of seconds between 0 and 600", file=sys.stderr)
+        return 2
     reasons: Counter = Counter()
-    today = run_audit(rows, args.date, classify, reasons)
-    second = run_audit(prev_rows, prev, classify, reasons, second_run=True)
+    retried: Counter = Counter()
+    today = run_audit(rows, args.date, classify, reasons, retry_waits=waits, sleep=_SLEEP, retried=retried)
+    second = run_audit(prev_rows, prev, classify, reasons, second_run=True, retry_waits=waits, sleep=_SLEEP, retried=retried)
+    if retried:
+        print(f"rpc_retry_attempts={retried['attempts']}", file=sys.stderr)
     n_disagree = today["n_disagree"] + second["n_disagree"]
     out = {"date": args.date, "n_pools": today["n_pools"] + second["n_pools"], "n_disagree": n_disagree,
            "n_unclassified_now": today["n_unclassified_now"], "halt": n_disagree > 0}
