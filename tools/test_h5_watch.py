@@ -133,6 +133,42 @@ def test_a_failed_post_keeps_the_state_so_the_alert_is_tried_again(tmp_path):
     assert go(h, st, good, NOW + 300) == 0 and len(good.posts) == 1 and "h5_halt_file" in good.posts[0][1]
 
 
+def test_long_runs_are_split_into_whole_line_posts_so_no_alert_line_is_cut_and_counted_as_posted():
+    """Review of #589: post_discord cuts at MAX_CONTENT and the run marks every line posted, so one long post could drop a later ALERT."""
+    lines = [f"ALERT a{i}: " + "x" * 700 for i in range(6)] + ["RESOLVED h5_idle_ledger"]
+    posts = hw.chunks(lines)
+    assert len(posts) > 1 and all(len(c) <= hw.MAX_CONTENT and c.startswith(hw.POST_PREFIX) for c in posts)
+    got = [ln for c in posts for ln in c[len(hw.POST_PREFIX):].split("\n")]
+    assert got == lines  # every line once, whole, in order
+    assert hw.chunks(["ALERT a: short", "RESOLVED b"]) == [hw.POST_PREFIX + "ALERT a: short\nRESOLVED b"]  # one post as before
+    assert hw.chunks([]) == []
+    room = hw.MAX_CONTENT - len(hw.POST_PREFIX)
+    exact = "y" * room
+    assert hw.chunks([exact, "z"]) == [hw.POST_PREFIX + exact, hw.POST_PREFIX + "z"]
+    (cut,) = hw.chunks(["ALERT huge: " + "q" * 5000])
+    assert len(cut) == hw.MAX_CONTENT and cut.endswith(hw.TRUNCATED)
+
+
+def test_a_run_posts_every_chunk_and_a_failure_on_a_later_chunk_keeps_the_state(tmp_path, monkeypatch):
+    h, st = world(), tmp_path / "state.json"
+    h.files[f"{H5}/HALT"] = b""
+    real = hw.decide
+    monkeypatch.setattr(hw, "decide", lambda a, o, s, n: (lambda r: (r[0] + [f"EVENT filler {i}: " + "f" * 800 for i in range(4)], r[1]))(real(a, o, s, n)))
+    p = Poster()
+    assert go(h, st, p) == 0 and len(p.posts) >= 2 and all(len(c) <= hw.MAX_CONTENT for _, c in p.posts)
+    assert "ALERT h5_halt_file" in p.posts[0][1] and sum(c.count("EVENT filler") for _, c in p.posts) == 4
+
+    class FailSecond(Poster):
+        def __call__(self, webhook, content):
+            if self.posts:
+                raise RuntimeError("post failed (URLError)")
+            self.posts.append((webhook, content))
+
+    st2 = tmp_path / "state2.json"
+    f = FailSecond()
+    assert go(world(files={**h.files}), st2, f) == 1 and len(f.posts) == 1 and not st2.exists()  # retried in full next run
+
+
 def test_the_idle_ledger_alert_becomes_h5_idle_quiet_in_a_quiet_market_and_an_unledgered_trigger_is_posted(tmp_path):
     """2026-10-11: h5_idle_ledger fired at ~00:25Z with no plain pool drained in 6 h (jobs #672-#676). The shadow now names the cause, and
     (round 4 on #589) every branch alerts: a quiet market is the h5_idle_quiet ALERT. A name change posts RESOLVED for the old name and NEW for
