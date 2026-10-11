@@ -26,7 +26,8 @@
 #
 # TOOL VERDICTS ARE NOT LOOP ERRORS. The tool's exit codes (0 no_halt, 2 input error, 3 halt_due + STOP verified, 5 unevaluated,
 # 6 halt_due + STOP NOT verified) are logged and the loop goes on. On 6 the tool is re-run up to H5_ENFORCE_STOP_RETRIES times,
-# H5_ENFORCE_RETRY_S apart. Exit codes of this loop: 0 reached END; 2 its own config or preflight error; 143 a signal.
+# H5_ENFORCE_RETRY_S apart. Each run is capped at H5_ENFORCE_TOOL_TIMEOUT_S (default 1800 s; 0 = no cap) by coreutils timeout
+# (rc 124, counted as a tool error). Exit codes of this loop: 0 reached END; 2 its own config or preflight error; 143 a signal.
 #
 # DRY RUN. `sh h5-enforce-loop.sh --dry-run` prints the schedule from now (or H5_ENFORCE_NOW, a dry-run-only test clock) to END with
 # the exact command for each slot. It runs nothing and writes nothing.
@@ -62,6 +63,7 @@ STOP_RETRIES=${H5_ENFORCE_STOP_RETRIES:-3}
 RETRY_S=${H5_ENFORCE_RETRY_S:-60}
 ALIVE_S=${H5_ENFORCE_ALIVE_S:-3600}
 CHUNK_S=${H5_ENFORCE_CHUNK_S:-300}
+TOOL_TIMEOUT_S=${H5_ENFORCE_TOOL_TIMEOUT_S:-1800}   # a hung run must not swallow later slots: killed runs log rc 124 (137 after -k)
 
 DAY_OFF=1260                                  # 00:21Z
 RUN_OFFS="20820 42420 64020 85620"            # 05:47Z 11:47Z 17:47Z 23:47Z
@@ -77,7 +79,7 @@ date -u -d @0 +%s >/dev/null 2>&1 || die gnu_date_required
 case "$FIRST_DAY" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) die bad_first_day ;; esac
 FIRST_E=$(date -u -d "${FIRST_DAY}T00:00:00Z" +%s 2>/dev/null) || die bad_first_day
 END_E=$(date -u -d "$END_ISO" +%s 2>/dev/null) || die bad_end
-for _n in "$STOP_RETRIES" "$RETRY_S" "$ALIVE_S" "$CHUNK_S"; do is_uint "$_n" || die bad_number; done
+for _n in "$STOP_RETRIES" "$RETRY_S" "$ALIVE_S" "$CHUNK_S" "$TOOL_TIMEOUT_S"; do is_uint "$_n" || die bad_number; done
 [ "$CHUNK_S" -ge 1 ] || die bad_number
 [ -z "${MAL_BDC_NOW+x}" ] || die mal_bdc_now_set          # the tool's test clock must never reach an enforcement run
 if [ "$DRY" -eq 1 ] && [ -n "${H5_ENFORCE_NOW:-}" ]; then
@@ -151,6 +153,7 @@ progress() {  # progress NOTE
 
 mkdir -p "$(dirname "$HB_FILE")" "$(dirname "$CHECK_LOG")" "$(dirname "$STATE")" 2>/dev/null || die mkdir_failed
 [ -x "$PY" ] || die python_missing
+command -v timeout >/dev/null 2>&1 || die timeout_missing
 cd "$REPO" || die repo_cd_failed
 [ -r "$TOOL" ] || die tool_missing
 "$PY" -I "$TOOL" --help >/dev/null 2>&1 || die tool_help_failed
@@ -210,9 +213,9 @@ run_tool() {
   _try=0
   while :; do
     if [ "$_mode" = day ]; then
-      _out=$("$PY" -I "$TOOL" --shadow-dir "$SHADOW_DIR" --mode day --day "$_day" --place-stop --log "$CHECK_LOG" 2>&1)
+      _out=$(timeout -k 30 "$TOOL_TIMEOUT_S" "$PY" -I "$TOOL" --shadow-dir "$SHADOW_DIR" --mode day --day "$_day" --place-stop --log "$CHECK_LOG" 2>&1)
     else
-      _out=$("$PY" -I "$TOOL" --shadow-dir "$SHADOW_DIR" --mode running --place-stop --log "$CHECK_LOG" 2>&1)
+      _out=$(timeout -k 30 "$TOOL_TIMEOUT_S" "$PY" -I "$TOOL" --shadow-dir "$SHADOW_DIR" --mode running --place-stop --log "$CHECK_LOG" 2>&1)
     fi
     _rc=$?
     [ -z "$_out" ] || printf '%s\n' "$_out"

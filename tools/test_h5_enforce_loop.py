@@ -32,8 +32,10 @@ if args == ["--help"]:
     sys.exit(0)
 with open(os.environ["STUB_CALLS"], "a") as fh:
     fh.write(json.dumps(args) + "\n")
+import time
+time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
 mode = args[args.index("--mode") + 1]
-day = args[args.index("--day") + 1] if "--day" in args else "today"
+day =args[args.index("--day") + 1] if "--day" in args else "today"
 rc = int(os.environ.get("STUB_RC", "0"))
 verdict = {0: "no_halt", 2: "input_error", 3: "halt_due", 5: "unevaluated", 6: "halt_due"}.get(rc, "crash")
 rec = {"tool": "h5_boost_day_check", "v": 2, "mode": mode, "day": day, "verdict": verdict, "halt_due": rc in (3, 6),
@@ -233,6 +235,16 @@ def test_stop_not_verified_is_retried(tmp_path: Path) -> None:
     assert sum(1 for r in hb if r["event"] == "retry") == 2 * len(exp)
     res = json.loads((tmp_path / "result.json").read_text())
     assert res["metrics"]["stop_unverified"] == 3 * len(exp)
+
+
+def test_hung_tool_is_killed_and_the_loop_goes_on(tmp_path: Path) -> None:
+    env, now, last_done = _catch_up_setup(tmp_path, 0, H5_ENFORCE_TOOL_TIMEOUT_S="1", STUB_SLEEP="30")
+    cp = run([], env, timeout=120)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    exp = _expected(now, last_done)
+    runs = [r for r in _heartbeat(tmp_path) if r["event"] == "run"]
+    assert len(runs) == len(exp) and all(r["rc"] == 124 and r["verdict"] == "none" for r in runs)
+    assert json.loads((tmp_path / "result.json").read_text())["metrics"]["tool_errors"] == len(exp)
 
 
 def test_fresh_start_does_not_catch_up_and_resume_does(tmp_path: Path) -> None:
