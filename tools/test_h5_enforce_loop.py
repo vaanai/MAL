@@ -46,6 +46,14 @@ if os.environ.get("STUB_PID"):
 time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
 day = args[args.index("--day") + 1] if "--day" in args else "none"
 rc = int(os.environ.get("STUB_RC_" + kind.upper(), os.environ.get("STUB_RC", "0")))
+seq = os.environ.get("STUB_RC_SEQ")
+if seq and os.path.exists(seq):  # a queue of rcs, one per check run, then STUB_RC
+    with open(seq) as fh:
+        q = fh.read().split()
+    if q:
+        rc = int(q[0])
+        with open(seq, "w") as fh:
+            fh.write(" ".join(q[1:]))
 verdict = {0: "no_halt", 2: "input_error", 3: "halt_due", 5: "unevaluated", 6: "halt_due"}.get(rc, "crash")
 tool = "h5_exec_day_check" if kind == "exec" else "h5_boost_day_check"
 rec = {"tool": tool, "v": 2, "mode": mode, "day": day, "now_overridden": False, "verdict": verdict, "halt_due": rc in (3, 6),
@@ -116,7 +124,7 @@ def test_never_removes_or_names_stop_and_runs_tools_promptly() -> None:
     code = code_lines()
     assert not re.search(r"\brm\b|\bunlink\b", code), "the loop must not remove anything"
     assert "/var/lib/mal-live" not in code and "STOP" not in code, "only the tools' --place-stop touch STOP"
-    assert code.count("--place-stop") == 4  # exec day and shadow day/running, run and dry-run text of each
+    assert code.count("--place-stop") == 4  # exec day/running and shadow day/running, run and dry-run text of each
     # every tool run is in the background under `timeout --foreground` (signals handled at once; a group kill reaches the tool)
     assert re.search(r'timeout --foreground -k 30 "\$TOOL_TIMEOUT_S" "\$@" > "\$OUT_FILE" 2>&1 &\n\s+TOOL_PID=\$!', code)
     assert "$(timeout" not in code
@@ -137,7 +145,7 @@ def test_dry_run_schedule(tmp_path: Path) -> None:
     assert slots[0] == (f"SLOT 2026-10-10T23:47:00Z running day=2026-10-10 check=shadow run: /usr/bin/python3 -I tools/h5_boost_day_check.py "
                         f"--shadow-dir {home}/data/h5-shadow --mode running --day 2026-10-10 --place-stop --log {home}/data/h5-daily/boost-day.jsonl")
     assert slots[1] == (f"SLOT 2026-10-10T23:47:00Z running day=2026-10-10 check=exec run: /usr/bin/python3 -I tools/h5_exec_day_check.py "
-                        f"--mode running --day 2026-10-10 --log {home}/data/h5-daily/exec-day.jsonl")  # report only: no --place-stop
+                        f"--mode running --day 2026-10-10 --place-stop --log {home}/data/h5-daily/exec-day.jsonl")  # Am.5 item 6: < 335 s
     assert slots[2] == "SLOT 2026-10-11T00:21:00Z day day=2026-10-10 skip:before_first_day"
     assert slots[3].startswith("SLOT 2026-10-11T05:47:00Z running day=2026-10-11 check=shadow run: ")
     # the executor's figure at EVERY slot: the running report, and from 10-12 a second chance for yesterday's day check
@@ -179,7 +187,7 @@ def test_dry_run_commands_parse_with_the_real_tools(tmp_path: Path) -> None:
             a = exec_parser().parse_args(words[3:])
             assert a.day == slot_day and a.log == str(tmp_path / "daily" / "exec-day.jsonl") and a.dry_read is False
             if " running " in l and " check=exec run: " in l:
-                assert a.mode == "running" and a.place_stop is False and l.split()[1][:10] == slot_day
+                assert a.mode == "running" and a.place_stop is True and l.split()[1][:10] == slot_day
             else:
                 assert a.mode == "day" and a.place_stop is True
                 if " check=exec-recheck " in l:
@@ -278,15 +286,14 @@ def _beat(tmp_path: Path) -> dict:
 def test_catch_up_retries_and_counts(tmp_path: Path, stub_rc: int) -> None:
     env, now, last_done = _catch_up_setup(tmp_path, stub_rc)
     cp = run([], env)
-    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert cp.returncode == (4 if stub_rc == 6 else 0), cp.stdout + cp.stderr  # END with the stop-unverified flag set: exit 4
     exp = _expected(now, last_done, stub_rc)
     tries = 1 if stub_rc in (0, 3) else 1 + RETRIES  # any rc but 0 and 3 is re-run
     assert _calls(tmp_path) == [c for c in exp for _ in range(tries)]
     assert sum(1 for k, m, _ in exp if (k, m) == ("shadow", "day")) == (3 if now % 86400 > DAY_OFF else 2)  # two back days, today's once past
     for row in (json.loads(l) for l in (tmp_path / "calls.jsonl").read_text().splitlines()):
         args = row[1:]
-        report = row[0] == "exec" and args[args.index("--mode") + 1] == "running"
-        assert ("--place-stop" in args) is not report  # the exec running report never places STOP
+        assert "--place-stop" in args  # every check, also the exec running median (Am.5 item 6)
         assert args[args.index("--log") + 1] in (str(tmp_path / "daily" / "boost-day.jsonl"), str(tmp_path / "daily" / "exec-day.jsonl"))
     hb = _heartbeat(tmp_path)
     assert hb[0]["event"] == "start" and hb[0]["resumed"] is True and hb[-1]["event"] == "end"
@@ -295,19 +302,31 @@ def test_catch_up_retries_and_counts(tmp_path: Path, stub_rc: int) -> None:
     assert [(r["check"], r["mode"], r["day"]) for r in runs] == [c for c in exp for _ in range(tries)]
     assert sum(1 for r in hb if r["event"] == "retry") == len(exp) * (tries - 1)
     assert sum(1 for r in hb if r["event"] == "gave_up") == (0 if stub_rc in (0, 3) else len(exp))
-    m = json.loads((tmp_path / "result.json").read_text())["metrics"]
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["ok"] is (stub_rc != 6)
+    m = res["metrics"]
     assert m["runs"] == len(runs)
     assert m["tool_errors"] == (len(runs) if stub_rc in (1, 2) else 0)  # rc 2 is a tool error
     assert m["halt_due_runs"] == (len(runs) if stub_rc in (3, 6) else 0)
     assert m["stop_unverified"] == (len(runs) if stub_rc == 6 else 0)
+    keys = [f"{k}:{md}:{d}" for k, md, d in exp]
+    assert m["stop_unverified_open"] == (len(set(keys)) if stub_rc == 6 else 0)
     state = (tmp_path / "ckpt" / "h5-enforce-loop.state").read_text().split()
-    assert len(state) == 8 and now - 86400 < int(state[0]) < next_slot(now)
+    assert now - 86400 < int(state[0]) < next_slot(now)
+    if stub_rc == 6:
+        assert int(state[8]) > 0 and state[9:] == list(dict.fromkeys(keys))  # every unverified check, kept in the state file
+    else:
+        assert state[8:] == ["0"]
     beat = _beat(tmp_path)
     assert beat["state"] == "exited" and beat["event"] == "end"
     assert beat["last_fail_rc"] == (0 if stub_rc in (0, 3) else stub_rc)
+    assert (beat["stop_unverified_s"] > 0) is (stub_rc == 6) and beat["stop_unverified_n"] == m["stop_unverified_open"]
     chk = run(["--check-beat"], env)
     if stub_rc in (0, 3):
         assert chk.returncode == 0 and chk.stdout.startswith("EXITED event=end"), chk.stdout
+    elif stub_rc == 6:
+        assert chk.returncode == 1 and chk.stdout.startswith(f"ALERT stop_unverified since="), chk.stdout
+        assert f"first={keys[0]} " in chk.stdout
     else:
         assert chk.returncode == 1 and chk.stdout.startswith(f"ALERT check_failed rc={stub_rc}"), chk.stdout
     json.loads((tmp_path / "progress.json").read_text())
@@ -347,7 +366,7 @@ def test_stop_not_verified_gives_up_after_bounded_retries_with_backoff(tmp_path:
     env["H5_ENFORCE_END"] = iso(next_slot(last_done) + 1)  # one slot only: the first day slot's two checks
     t0 = time.time()
     cp = run([], env, timeout=60)
-    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert cp.returncode == 4, cp.stdout + cp.stderr  # END with the stop-unverified flag set
     retries = [r for r in _heartbeat(tmp_path) if r["event"] == "retry"]
     assert [r["in_s"] for r in retries] == [1, 2, 1, 2]  # 1 s, then 2 s, per check
     assert time.time() - t0 >= 6
@@ -384,13 +403,16 @@ def test_fresh_start_catches_up_the_executor_figure_for_every_undecided_day(tmp_
     assert [(r["check"], r["day"]) for r in hb if r["event"] == "skip"] == [("exec", days[1])]
 
 
-def test_fresh_start_catch_up_is_capped_at_14_days(tmp_path: Path) -> None:
+def test_fresh_start_catch_up_is_capped_at_13_days(tmp_path: Path) -> None:
+    """The executor keeps sorted(days)[-14:] including today: today-14 and its D-1 may be pruned (a false 'no entry' pair), so 13."""
     env, now, _ = _catch_up_setup(tmp_path, 0)
     (tmp_path / "ckpt" / "h5-enforce-loop.state").unlink()  # FIRST_DAY stays 2000-01-01
     cp = run([], env)
     assert cp.returncode == 0, cp.stdout + cp.stderr
     calls = _calls(tmp_path)
-    assert len(calls) == 14 and all(k == "exec" and m == "day" for k, m, _ in calls)
+    assert len(calls) == 13 and all(k == "exec" and m == "day" for k, m, _ in calls)
+    last = day_of(now - now % 86400 - (86400 if now % 86400 >= DAY_OFF else 2 * 86400))
+    assert calls[-1][2] == last and calls[0][2] == day_of(now - now % 86400 - (13 if now % 86400 >= DAY_OFF else 14) * 86400)
 
 
 def test_quit_between_the_exec_and_shadow_day_checks(tmp_path: Path) -> None:
@@ -402,7 +424,7 @@ def test_quit_between_the_exec_and_shadow_day_checks(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("stub_rc,loop_rc,event,alert", [
-    (6, 4, "quit_stop_unverified", "ALERT quit_stop_unverified rc=6"),
+    (6, 4, "quit_stop_unverified", "ALERT quit_stop_unverified first=exec:day:"),
     (2, 0, "quit", "ALERT check_failed rc=2"),
 ])
 def test_a_quit_never_hides_a_pending_failure(tmp_path: Path, stub_rc: int, loop_rc: int, event: str, alert: str) -> None:
@@ -424,6 +446,82 @@ def test_a_quit_never_hides_a_pending_failure(tmp_path: Path, stub_rc: int, loop
     assert res["ok"] is (stub_rc != 6)
     chk = run(["--check-beat"], env)
     assert chk.returncode == 1 and chk.stdout.startswith(alert), chk.stdout
+
+
+def _age_beat(tmp_path: Path, secs: int) -> None:
+    beat = _beat(tmp_path)
+    for k in ("at_s", "stale_at_s", "last_fail_s", "stop_unverified_s"):
+        if beat.get(k):
+            beat[k] -= secs
+    (tmp_path / "daily" / "enforce-loop.beat").write_text(json.dumps(beat, separators=(",", ":")) + "\n")
+
+
+def test_gave_up_rc6_then_quit_exits_4_and_alerts_without_time_limit(tmp_path: Path) -> None:
+    """quant-proof's round-2 probe: exec day check rc 6, gave_up (no retries), then the quit file. Before: exit 0, event quit, ok:true,
+    and the alert lapsed after 24 h. Now the sticky flag makes it quit_stop_unverified, exit 4, ok:false, alerting with no time limit."""
+    env, now, last_done = _catch_up_setup(tmp_path, 6, H5_ENFORCE_RETRIES="0", STUB_QUIT_ON="exec:day",
+                                          STUB_QUIT_FILE=str(tmp_path / "daily" / "enforce-loop.quit"))
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    hb = _heartbeat(tmp_path)
+    assert [r["event"] for r in hb][-3:] == ["run", "gave_up", "quit_stop_unverified"]
+    d = _expected(now, last_done, 6)[0][2]
+    assert hb[-1]["pending_rc"] is None and hb[-1]["stop_unverified_keys"] == f"exec:day:{d}"
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["ok"] is False and res["metrics"]["stop_unverified_open"] == 1
+    for age in (0, 90000, 30 * 86400):
+        _age_beat(tmp_path, age)
+        chk = run(["--check-beat"], env)
+        assert chk.returncode == 1 and chk.stdout.startswith(f"ALERT quit_stop_unverified first=exec:day:{d} n=1"), chk.stdout
+
+
+def test_gave_up_rc6_without_quit_alerts_past_24h_and_end_exits_4(tmp_path: Path) -> None:
+    """quant-proof's second probe: rc 6, gave_up, then END after the first slot. Before: exit 0, ok:true, alert gone after 24 h."""
+    env, now, last_done = _catch_up_setup(tmp_path, 6, H5_ENFORCE_RETRIES="0")
+    env["H5_ENFORCE_END"] = iso(next_slot(last_done) + 1)
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert [r["event"] for r in _heartbeat(tmp_path)][-1] == "end"
+    assert json.loads((tmp_path / "result.json").read_text())["ok"] is False
+    for age in (0, 90000):
+        _age_beat(tmp_path, age)
+        chk = run(["--check-beat"], env)
+        assert chk.returncode == 1 and chk.stdout.startswith("ALERT stop_unverified since="), chk.stdout
+
+
+@pytest.mark.parametrize("seq,retries,cleared,check", [
+    ("6 3", "1", True, "EXITED event=end"),          # the same check and day, retried: STOP verified present -> cleared
+    ("6 0", "1", True, "EXITED event=end"),          # the same day check, retried: a final line (no halt) -> cleared
+    ("6 5", "1", True, "ALERT check_failed rc=5"),   # a final line (unevaluated) clears the flag; rc 5 still gave up (24 h alert)
+    ("6 6", "1", False, "ALERT stop_unverified"),    # never verified; later checks of other days (rc 3 present) do not clear it
+    ("6 2", "1", False, "ALERT stop_unverified"),    # an input error is not a final line
+])
+def test_stop_unverified_flag_is_cleared_only_by_its_own_check_and_day(tmp_path: Path, seq: str, retries: str, cleared: bool,
+                                                                      check: str) -> None:
+    (tmp_path / "seq").write_text(seq)
+    env, now, last_done = _catch_up_setup(tmp_path, 3, H5_ENFORCE_RETRIES=retries, STUB_RC_SEQ=str(tmp_path / "seq"))
+    cp = run([], env)
+    assert cp.returncode == (0 if cleared else 4), cp.stdout + cp.stderr
+    d = _expected(now, last_done, 3)[0][2]
+    hb = _heartbeat(tmp_path)
+    assert [(r["event"], r.get("key")) for r in hb if r["event"] == "stop_verified"] == ([("stop_verified", f"exec:day:{d}")] if cleared else [])
+    beat = _beat(tmp_path)
+    assert (beat["stop_unverified_s"] == 0) is cleared and beat["stop_unverified_first"] == ("" if cleared else f"exec:day:{d}")
+    chk = run(["--check-beat"], env)
+    assert chk.returncode == (0 if check.startswith("EXITED") else 1) and chk.stdout.startswith(check), chk.stdout
+
+
+def test_stop_unverified_flag_survives_a_restart(tmp_path: Path) -> None:
+    """The flag is in the state file: a resumed loop keeps alerting and quits with exit 4."""
+    env, now, last_done = _catch_up_setup(tmp_path, 0)
+    since = now - 3600
+    (tmp_path / "ckpt" / "h5-enforce-loop.state").write_text(f"{last_done} 0 0 1 0 0 {since} 6 {since} shadow:running:2026-10-12 exec:day:2026-10-11\n")
+    (tmp_path / "daily" / "enforce-loop.quit").write_text("")
+    cp = run([], env)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert _heartbeat(tmp_path)[-1]["stop_unverified_keys"] == "shadow:running:2026-10-12 exec:day:2026-10-11"
+    beat = _beat(tmp_path)
+    assert beat["stop_unverified_s"] == since and beat["stop_unverified_n"] == 2 and beat["stop_unverified_first"] == "shadow:running:2026-10-12"
 
 
 def test_quit_file_at_start_exits_0_before_any_check(tmp_path: Path) -> None:
@@ -517,7 +615,18 @@ def test_sigterm_while_a_tool_runs_is_prompt_and_stops_the_tool(tmp_path: Path) 
     ({"state": "exited", "event": "end", "at_s": -10, "stale_at_s": -10, "last_fail_s": 0, "last_fail_rc": 0}, 0, "EXITED event=end"),
     # an unverified STOP at quit never ages out (last_fail 2 days ago still alerts)
     ({"state": "exited", "event": "quit_stop_unverified", "at_s": -10, "stale_at_s": -10, "last_fail_s": -172800, "last_fail_rc": 6}, 1,
-     "ALERT quit_stop_unverified rc=6"),
+     "ALERT quit_stop_unverified first="),
+    # the sticky stop-unverified flag alerts with no time limit, in any state, also after END
+    ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": -172800, "last_fail_rc": 6,
+      "stop_unverified_s": -172800, "stop_unverified_n": 1, "stop_unverified_first": "exec:day:2026-10-12"}, 1,
+     "ALERT stop_unverified since="),
+    ({"state": "exited", "event": "end", "at_s": -10, "stale_at_s": -10, "last_fail_s": -172800, "last_fail_rc": 6,
+      "stop_unverified_s": -172800, "stop_unverified_n": 2, "stop_unverified_first": "shadow:running:2026-10-12"}, 1,
+     "ALERT stop_unverified since="),
+    ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": 0, "last_fail_rc": 0,
+      "stop_unverified_s": 0, "stop_unverified_n": 0, "stop_unverified_first": ""}, 0, "OK state=waiting"),
+    ({"state": "waiting", "event": "alive", "at_s": -10, "stale_at_s": 600, "last_fail_s": 0, "last_fail_rc": 0,
+      "stop_unverified_s": "x"}, 1, "ALERT beat_unreadable"),
 ])
 def test_check_beat(tmp_path: Path, beat, rc: int, prefix: str) -> None:
     env = env_for(tmp_path)
@@ -528,6 +637,8 @@ def test_check_beat(tmp_path: Path, beat, rc: int, prefix: str) -> None:
             now = int(time.time())
             beat = dict(beat, at_s=now + beat["at_s"], stale_at_s=now + beat["stale_at_s"],
                         last_fail_s=(now + beat["last_fail_s"]) if beat["last_fail_s"] else 0)
+            if isinstance(beat.get("stop_unverified_s"), int) and beat["stop_unverified_s"]:
+                beat["stop_unverified_s"] += now
             bf.write_text(json.dumps({"tool": "h5_enforce_loop", "v": 2, **beat}, separators=(",", ":")) + "\n")
         else:
             bf.write_text(beat + "\n")
