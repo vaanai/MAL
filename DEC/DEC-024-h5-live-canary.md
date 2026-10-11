@@ -589,6 +589,19 @@ OWNER_H5_1011_CONFIRMED: 2026-10-11T03:35:22Z (owner, in session, asked by the m
 - The owner also confirmed DEC-028 §3.1's two required sentences verbatim, recorded there as `OWNER_OVERRIDE_V2_SENTENCES_CONFIRMED` (2026-10-11T05:26:36Z, MiScusi notebook n_fZNH1URVIkXIJQ).
 - **Until DEC-028 merges** with quant-proof's OK on its final head, this pointer authorizes nothing.
 
+**Phase-2 gate rule (2026-10-11, the manager; written before any side-by-side union data is read).** Written 2026-10-11T06:07:44Z (`date -u`); main was `10fab0a`. No union field, `base_union` count, tip row, shadow record, canary ledger or outcome was read to write it. It authorizes nothing.
+
+1. **What is live.** PR #596 (`5f6b304`) adds report-only fields to shadow records: `base_breaks_unresolved_settled_union`, `base_union` and `base_unmatched_*`. No decision reads them. The live executor's gate is unchanged: it refuses on the feed's own `base_breaks_unresolved_settled` (`bad_intent:base_breaks_unresolved_settled`, `tools/h5_executor.py`).
+2. **Phase 2 is a live decision change.** Any change that makes the executor gate on `base_breaks_unresolved_settled_union` or on any union-derived field ("phase 2") changes a live executor/shadow decision inside Look 2's window `[2026-10-16T00, 2026-11-06T00)` and the seal window (from 2026-10-16T01:00Z). Before merge it needs **all** of: the owner's dated decision; a DEC-024 amendment; an md5 decision-equivalence proof or a declared decision-change proof (which decisions change, and that no other does); and quant-proof's OK posted on the PR, on its final head.
+3. **The acceptance rule, fixed now; it may only be tightened.** A phase-2 proposal may use only mechanism and counts:
+   - union status and coverage: the share of records with `base_union.status` `ok`, tip lag (`tip_lag_slots`), the `ws_only`, `tip_only` and `both` counts, `ws_only_sig_on_tip`, and the two decoders' `event_index` agreement;
+   - the gate's pass and refuse counts with the union view against the websocket view;
+   - price accuracy: the trigger print's q and base against the tip's row for the same print.
+
+   It never uses, computes or looks at which triggers won or lost, fills, P&L or any other outcome.
+4. **Data before any proposal.** At least 24 h of union data, with `base_union.status` `ok` on at least 90% of the trigger records in it, and the decoders' `event_index` agreement measured on live data (a replay uses the tape as its own tip, so it cannot measure it). No sealed record (CAP-PICK, H5 Look 2) is opened for any count here; such records carry no union fields.
+5. **No look-ahead.** The trigger-time union fields count only tip rows at or below the trigger print's slot, once the follow-up PR that enforces it is merged. Until that PR is merged, no phase-2 proposal may be made.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
