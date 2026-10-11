@@ -385,6 +385,54 @@ class ExactShadow(cs.Shadow):
         return r
 
 
+# ---- tape NULL rows (2026-10-11) --------------------------------------------------------------------------------------------------------
+# The exploration tape has 3 all-NULL placeholder rows (creates 2026-09-12T07 x1, trades 2026-09-12T07 x1, trades 2026-09-15T03 x1). pandas reads
+# an int column holding one NULL as float64, so in those 3 hour files EVERY row's slot and block_time become floats: Shadow.feed then drops the
+# whole hour as rows_bad (it needs int), and tape_rows' sort on (None, ...) raises first (the NULL create). Live tip rows never have this. For the
+# replay this harness drops just the NULL rows before the shadow's own reader converts the file: a file whose slot and block_time have no NULL
+# is passed to pandas untouched (byte-for-byte the same path); a file with NULLs is filtered in pyarrow, written to memory and handed to the same
+# pandas call, so every other row keeps its exact int64 values. Counts per file go to the summary (`tape_null_rows_dropped`).
+TAPE_NULL_ROWS: collections.Counter = collections.Counter()
+
+
+def _null_row_filtering_read_parquet(orig: Any) -> Any:
+    def read_parquet(path: Any, *a: Any, **kw: Any) -> Any:
+        if not isinstance(path, (str, os.PathLike)) or not str(path).endswith(".parquet"):
+            return orig(path, *a, **kw)
+        import io
+
+        import pyarrow.compute as pc
+        import pyarrow.parquet as pq
+
+        tbl = pq.read_table(path, columns=kw.get("columns"))
+        if "slot" not in tbl.column_names or "block_time" not in tbl.column_names:
+            return orig(path, *a, **kw)
+        ok = pc.and_(pc.is_valid(tbl["slot"]), pc.is_valid(tbl["block_time"]))
+        n_bad = len(tbl) - int(pc.sum(pc.cast(ok, "int64")).as_py() or 0)
+        if n_bad == 0:
+            return orig(path, *a, **kw)
+        TAPE_NULL_ROWS[str(path)] += n_bad
+        buf = io.BytesIO()
+        pq.write_table(pq.read_table(path).filter(ok), buf)
+        buf.seek(0)
+        return orig(buf, *a, **kw)
+    return read_parquet
+
+
+class tape_null_filter:
+    """Context: pandas.read_parquet drops the tape's NULL slot/block_time rows (see above) inside the block, and is restored after."""
+
+    def __enter__(self) -> "tape_null_filter":
+        import pandas as pd
+
+        self._pd, self._orig = pd, pd.read_parquet
+        pd.read_parquet = _null_row_filtering_read_parquet(self._orig)  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._pd.read_parquet = self._orig  # type: ignore[assignment]
+
+
 def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngine, sink: Any,
                     plan: Optional[FeedPlan] = None) -> tuple[int, Optional[ExactShadow]]:
     """tools.c1nf_shadow.run_replay for both modes (the same tape rows, Shadow arguments and finish). Exact mode builds ExactShadow in place
@@ -394,6 +442,7 @@ def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngi
     one call (any other question raises) and restored after, as Shadow is."""
     run_args = args
     orig_rh = cs.replay_hours
+    null_filter = tape_null_filter().__enter__()  # this call only; restored below
     if plan is not None:
         run_args = argparse.Namespace(**vars(args))
         run_args.decide_from = plan.decide_from
@@ -426,6 +475,7 @@ def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngi
         return rc, made[0]
     finally:
         cs.replay_hours = orig_rh  # type: ignore[assignment]
+        null_filter.__exit__(None, None, None)
 
 
 # ---- P3's list --------------------------------------------------------------------------------------------------------------------------
@@ -595,7 +645,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     t0 = time.time()
     la = None
     if args.state_mode == STATE_EXACT or args.probe_lookahead:
-        la = lookahead_from_tape(args.replay_tape, hours, pool_v_from_tokens(args.tokens))
+        with tape_null_filter():
+            la = lookahead_from_tape(args.replay_tape, hours, pool_v_from_tokens(args.tokens))
         probe = {"rows": la.rows, "pools": len(la._idx), "index_bytes": la.nbytes(), "seconds": round(time.time() - t0, 1), "VmHWM_kb": vm_hwm_kb(),
                  "hours": [hours[0], hours[-1]], "history": plan.report()}
         print("lookahead " + json.dumps(probe), flush=True)
@@ -621,6 +672,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     here = Path(__file__).resolve()
     tools_dir = here.parent
     summary = {
+        "tape_null_rows_dropped": {Path(k).parent.name + "/" + Path(k).name: int(v) for k, v in sorted(TAPE_NULL_ROWS.items())},
         "state_mode": args.state_mode, "hours": [hours[0], hours[-1]], "replay_hours": args.replay_hours, "decide_from": args.decide_from,
         "decide_to": args.decide_to, "decide_from_effective": plan.decide_from, "history": plan.report(), "hours_fed": len(plan.hours),
         "exit": rc, "seconds": round(time.time() - t0, 1), "VmHWM_kb": vm_hwm_kb(),
