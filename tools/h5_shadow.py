@@ -2656,7 +2656,8 @@ def replay_rows(tape_dir: str, work_dir: str, hours: Sequence[str]) -> tuple[Ite
                     "token_raw": int(r.token_raw), "quote_reserve": int(r.quote_reserve), "base_reserve": int(r.base_reserve),
                     "virtual_quote_reserves": meta[r.pool]["v"], "event_ts": int(r.block_time), "t_recv_ms": int(r.block_time) * 1000,
                     "signature": None, "mint": meta[r.pool]["mint"],
-                    "event_index": int(r.event_index), "replay_sig": f"{int(r.slot)}:{int(r.tx_index)}",  # union key only (no record carries them)
+                    # union key only (no record carries them); the tape row's index is unique per hour, and tx_index / event_index can be NaN
+                    "event_index": 0, "replay_sig": f"{h}:{r.Index}",
                 }
 
     return gen(), meta, sps_pool
