@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (his words are in section 1).** The limits below are the manager's terms for his confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
+| **Status** | **Proposed 2026-10-08; the owner approved the canary in principle the same day (the owner's words are in section 1).** The limits below are the manager's terms for the owner's confirmation. It takes effect on merge, with quant-proof OK on its final head. **No live send** until every item in section 8 is done, and never before [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) Part 1 is merged. |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-10-08 |
 | **Builds on** | [DEC-019](DEC-019-execution-probe.md) (probe wallet, custody, executor), DEC-020, DEC-021 §7, [DEC-023](DEC-023-h5-family.md), EXP-024, EXP-022 §9 |
@@ -344,6 +344,7 @@ DEC-024 §5.1 FIRED at 2026-10-10T07:11:07Z.
 - **Why it fires.** s0 is at or after the migrate tx, so the median after the first print is at most 333 s. That is below 335 s.
 - **Two-run clause.** This run is also the first post-step run below 337 s.
 - **STOP.** Placed at 07:15:10Z (job #479; open 0, pending 0).
+- **Resumed.** STOP removed at 2026-10-11T00:15:06.586Z under Amendment 4 item 4 and Amendment 5 item 1 (see the resume record under Amendment 4 item 4). This halt stays recorded as the first strike.
 - **Clearing.** DEC-024 has no clearing rule for a §5 halt. STOP stays until the owner records a dated amendment that:
   - names the §5.1 measure from that instant forward;
   - does not reclassify this halt;
@@ -403,6 +404,12 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - The manager then removes STOP in a MiScusi job and records here the instant and 10-10's median.
    - If 10-10 completes below 337 s, or with fewer than 30 pools, there is no resume under this amendment.
    - Meeting item 4 **does** resolve the 10-10 halt for section 7 and Amendment 3 item 2 (the owner's second answer). The T0 → T1 step still needs Amendment 3's other conditions: 20 landed buys, landing p50 ≤ 3.0 s, canary and twin means not negative, and Look 1 not negative if read.
+   - **Resume record (2026-10-11, the manager).** Item 4 and Amendment 5 item 1 both held, so the manager removed `/var/lib/mal-live/h5/STOP` at **2026-10-11T00:15:06.586Z** (MiScusi job #669: `rm` rc 0, then `--status` `stop_file=False halt_file=False`, `halts=[]`, open 0, pending 0; the wallet-wide `STOP` and `HALT` and H5's `HALT` absent). The owner pre-authorized this removal in session on 2026-10-10, conditional on this check passing; Helm took no action. The figures, read at 00:13:56Z (job #667, main `8b40475`):
+     - **Executor (this item's measure):** day 10-10 median **339.573 s over 580 pools**; `boost_lt300` 0 that day; latched halts none.
+     - **`tools/h5_boost_day_check.py --mode resume --day 2026-10-10` (Amendment 5 item 6):** all 24 hour files read, executor filter applied (137 pool records out on `gap`, one of them also on `boost_src`), day keyed by file hour. All **339.5735 s, n 580**; plain **337.772 s, n 411**; synthetic 341.727 s, n 169. Verdict `resume_ok`.
+     - **No other section 5 rule or stop since 07:15Z.** No A3 run after the 07:14Z one (the next is 2026-10-11T06:41Z); `program_changed` clear; 0 late sells; no stuck position. The running checks at 12:17Z and 18:18Z read `no_halt` (plain 337.068 s, n 234, and 337.254 s, n 315). The 23:47Z running check did not run; the resume read above covers the whole completed day.
+     - **The daily check.** Before removal it read ALERTS=1, a single alert, `h5_idle` ("LIVE_OK is present but the canary is not trading: STOP exists"), which is the STOP itself. 20 s after removal it read ALERTS=0.
+     - **From here.** Amendment 4 item 2 and Amendment 5 item 1 apply as written: a completed UTC day from 10-11 on below 337 s (executor, or plain over at least 30 plain pools) is the second strike and halts; below 335 s halts at any time.
 5. **Not changed:** the section 4 limits, the other section 5 rules, the section 6 seals, EXP-024 and EXP-022. Canary results are not evidence.
 
 ## Amendment 5 (2026-10-10T08:15Z, the manager's decision; stricter only; written after the section 5.1 halt and after Amendment 4): plain pools, reconciliation, enforcement
@@ -422,6 +429,7 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
      - A running plain median below 335 s halts at any time.
    - **Fewer than 30 plain pools.** Plain is not judged that day. Amendment 4's all-pool rule still applies.
    - **Resume.** Amendment 4 item 4's resume also requires day 10-10's plain median at or above 337 s over at least 30 plain pools. Fewer than 30 means no resume.
+     Met on 2026-10-11: plain 337.772 s over 411 plain pools (Amendment 4 item 4's resume record).
 2. **Why.** The executor's day median counts synthetic pools, which H5 never trades. Measured (MiScusi job #482; shadow records, not the executor's exact filter):
 
    | Window | Pool set | n | Median | Share before 329.5 s |
@@ -471,6 +479,55 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - EXP-024 and EXP-022.
 
    Canary results are not evidence.
+
+## Amendment 6 (2026-10-10, the manager's decision; written before 2026-10-16T01:00Z, before any counted CAP-PICK hour and before any H5 trade in the seal window; no CAP-PICK outcome, paper-twin field or gate-log row was read to write it): the pick feed as built (section 6)
+
+**Written** 2026-10-10T09:01:46Z (`date -u`). That is before 2026-10-16T01:00Z, and before the exporter job or a reinstalled executor is deployed: PR #509 (head `3a6dae3`) and PR #540 (head `e7312eb`) are open and unmerged at this instant. The text is quant-proof's ruling on those two heads (2026-10-10). Item 8 is the manager's record of the duration and `end_ms`. Implemented and cleared by quant-proof at #509 `8b3ce7c` and #540 `4feec6d`.
+
+Section 6 says the executor "reads only the `mint` field of the decision-time intents into an in-process set". The feed as built (PR #509 `tools/cap_pick_oracle.py`, wired by PR #540) differs as follows. Items 1 to 3 and 5 to 6 are stricter for H5. Item 4 is declared here.
+
+1. **Exporter.** A MiScusi job (`cap_pick_oracle.py export`) reads the paper runner's `exp012-gate.jsonl` and `intents.jsonl`. It reads only:
+   - the `mint` and `entered` of `forward_paper_exp012_gate_v1` rows of book `exp012_migrate_tp50_sl30`;
+   - the `mint` of `forward_paper_intent_v1` rows of that book;
+   - any walk-2 replay decision list.
+
+   It extracts only those values, with fixed patterns, and parses no other part of a line. It writes `{mint, pick, t_ms}` rows and `{hb, t_ms}` heartbeats to `picks.jsonl`. It opens no source before the FINAL marker exists and 2026-10-16T02:00:00Z (DEC-016 Amendment 2). It prints no count that includes intents-file lines.
+2. **Readers.** The H5 executor and the H5 shadow read only `picks.jsonl` and the replay boolean files, through `PickOracle`, into memory. The answer has three states:
+   - **True:** any source picked the mint. True is sticky.
+   - **False:** a gate row with a computed score decided not-pick, and no source picked it.
+   - **None:** anything else. This includes no row, a gate row with no score, a feed stale for more than 60 s, no FINAL marker, or an error.
+3. **Rule.** In the seal window:
+   - The executor buys only on an exact False. True, None, a non-boolean or an error all refuse, so an undecided mint is never bought.
+   - The shadow writes a pool's outcome-bearing records only on an exact False at each decision point. A trigger that fires on None is withheld for good.
+4. **Residual (declared).** EXP-022's counted picks are the walk-2 replay's picks (EXP-022 section 2). They are not known at H5 decision time, and they differ from the online set both ways (EXP-022 section 17 item 12; not measured on October data). H5, live or shadow, can therefore trade or record a mint the live gate scored below threshold that the replay later picks.
+
+   For EXP-022 Amendment 2 item 2, "a mint the EXP-022 gate picked" means a mint the oracle answers True for at the H5 decision. A trade or record on a replay-only pick made under item 3 is not a breach. These hold:
+   - (a) Before each CAP-PICK look, no person, agent or job joins any H5 executor record, H5 shadow record or the wallet history to the replay pick list or to any CAP-PICK pick set, or counts the overlap. A join is a breach.
+   - (b) After each look is written, a count-only step reports two numbers: how many counted picks in the look's window have an H5 live fill, and how many have an H5 shadow outcome record. Both go into the CAP-PICK look report and the EXP-024 report. They change no computation, threshold or verdict.
+   - (c) The report states that H5's own live fills on such mints are on the walk-2 tape the CAP-PICK read prices.
+5. **Records and counts.**
+   - A pool the oracle never cleared closes with a `sealed: true` record that holds only open-time fields. It marks "pick or undecided" by mint, with no outcome. Section 6 seals outcomes and joins, not pick identity.
+   - `sealed_hour` prints `pools_opened` and the string "withheld" for `decisions`, because an H5 decision on a pick is outcome-linked.
+   - For the same reason, no executor ledger row, counter, alert or log holds a `seal_pick` count before EXP-022's read ends.
+6. **Markers.** The manager creates `~/data/cap-pick-oracle/FINAL_WRITTEN` and `/var/lib/mal-live/h5/FINAL_WRITTEN` only after the DEC-016 FINAL row is in `/data/mal/exp012-forward/FINAL_READS.jsonl`. The creation instant (`date -u`) is recorded in LAB_STATE.
+7. **Unchanged.** The 60 s fail-closed halt, the seal window, the breach consequence, and every other rule in section 6.
+8. **Duration and `end_ms` (recorded; nothing here changes them).**
+   - **The owner did not extend the 14-day duration** (section 4). The owner's words, 2026-10-10 about 08:35Z: "Don't extend the trial I think, let's keep things moving" (MiScusi notebook decision entry "OWNER 2026-10-10 ~08:35Z: do not extend H5's 14-day trial", id n_FdE6WF1rhq8-Hw, confirmed by the manager who created it). Section 4's cap stands.
+   - **The live config's `end_ms` is 2026-10-16T00:30Z at this writing.** From that instant the installed v1 executor refuses every new buy (`end_instant`, `tools/h5_executor.py`). So it stops buying 30 minutes before the seal window opens at 2026-10-16T01:00Z. Extending `end_ms`, at most to section 4's cap of 2026-10-23T19:29:53Z, is a reviewed config change plus a reinstall (the manager's step); a run past that cap is the owner's decision (section 4). 2026-10-16T00:30Z is earlier than that cap (14 days from the first send, 2026-10-09T19:29:53Z).
+   - **The oracle wiring still matters.**
+     - The H5 shadow is the canary's paper twin. It keeps running through Look 2's added window `[2026-10-16T00, 2026-11-06T00)`, and items 2, 3 and 5 govern which of its records it writes in the seal window. Until PR #540 is merged and the shadow restarted on it, the shadow seals every pool in the seal window (section 6, Dependency).
+     - Any executor that runs in the seal window (an `end_ms` after 2026-10-16T01:00Z) must carry items 2, 3 and 5 (PR #540 or a later head with the same seal code).
+
+**Item 8 record (2026-10-11, the owner's choice; the manager's step).** Written 2026-10-11T02:55:40Z (`date -u`).
+- **The owner's answer.** On 2026-10-11, in session, the manager asked "Should the reinstall extend its end time to the 14-day cap?" and the owner answered "Extend to 10-23 (Recommended)".
+- **The change (PR #591).** `scripts/mal-fast/h5-executor-live.json` `end_ms` goes from 1792110600000 (2026-10-16T00:30Z) to 1792783793000 (2026-10-23T19:29:53Z). That is section 4's cap: 14 days from the first send, 2026-10-09T19:29:53Z (Go-live record). No other limit, stop, tier or rule changes.
+- **The duration is not extended.** Section 4's 14-day cap and the 2026-10-10 bullet above stand. The new `end_ms` equals the cap and is not later. A run past it is the owner's decision (section 4).
+- **The seal.** The new `end_ms` is after 2026-10-16T01:00Z, so the executor runs in the seal window. The executor at the named sha carries items 2, 3 and 5: the PR #540 seal code, merged as `288f490` and re-cleared by quant-proof (record below). Item 8 requires this for any `end_ms` after 2026-10-16T01:00Z.
+- **When it takes effect.** Only at Helm's pinned reinstall at the sha the manager names, before 2026-10-16T01:00Z, while the bot has nothing open. Until then the installed `af02e90` executor keeps `end_ms` 2026-10-16T00:30Z.
+- **What binds first: max_days raised to 14 (the manager's decision under the owner's delegation).** `max_days` is a separate duration stop: a code constant counted from the executor's first buy attempt (`H5_DEFAULT`, `tools/h5_executor.py`; config may only lower it). It was 10 days, which would have stopped new buys at or after 2026-10-19T19:29:53Z, before the new `end_ms`. The manager asked the owner whether to raise it to 14. The owner answered: "You can chose based on whatever you think is going to get us to our goal honestly. ... Decisions like these you can make more autonomously, just let me know." (MiScusi notebook decisions n_u3ZVBw_dYwYvHA for the end time and n_Z69jRvirhW_HyQ for this). PR #591 raises `max_days` to 14, which is section 4's cap ("at most 14 days from the first send (code constant)"). `first_attempt_ms` is at or after the first send, so `end_ms` (the cap) binds first, and nothing runs past section 4's cap. No other limit, stop or tier changes.
+- **Proofs.** The shadow detector is unchanged by this PR. md5 decision-equivalence on the 25-hour replay 2026-09-20T00..2026-09-21T00 (the same as job #498): `75cb0b0c585bc2479137cae31330e73e`, 72/72, MiScusi job #691 at `1538d6e` (PASS). The executor's one-constant change (`max_days` 10 to 14) is covered by `tools/test_h5_executor_rules.py::test_shipped_configs`: the constant, the clamp, and that `end_ms` binds first. The H5 suites pass: 1078 passed, 15 skipped.
+
+**Amendment 6, re-clearance record (2026-10-10T09:32:14Z).** Quant-proof re-cleared #540 at `bea3f30` (a merge of main `b5ba835` into `4feec6d`). The executor, pinned configs, oracle wrapper and seal code are identical to `4feec6d`. The shadow adds #541's report-only `outcome_bx10` behind the same CAP-PICK and H5 Look-2 seals. md5 decision-equivalence at `bea3f30`: `75cb0b0c585bc2479137cae31330e73e`, 72/72 (MiScusi job #498, 25-hour replay 2026-09-20T00..2026-09-21T00). Merged as `288f490`.
 
 ## Open for the owner
 

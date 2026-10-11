@@ -27,7 +27,144 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-10 ~07:30Z (NEWEST, read first)
+### STATE 10-11 ~00:20Z (NEWEST, read first)
+
+- **H5 resumed at 2026-10-11T00:15:06.586Z** (job #669). DEC-024 Am.4 item 4 and Am.5 item 1 held at 00:13:56Z (job #667): executor day 10-10 median 339.573 s over 580 pools; tool all 339.5735 s (n 580) and plain 337.772 s (n 411); halts none; no A3 run since 07:14Z; 0 late sells; nothing stuck. The daily check read ALERTS=0 after removal; its single earlier alert was `h5_idle` from the STOP itself. The owner pre-authorized the removal. Helm did nothing. The wallet-wide STOP stays absent and is NOT recreated. Record: DEC-024 Am.4 item 4 "Resume record".
+- **H5 watch false alarm and fix.** At about 00:25Z `h5_idle_ledger` fired. This was a quiet market, not a fault: no plain pool drained to 40 SOL or below from 19Z to 00Z, and since go-live 23 of 23 drained plain pools triggered (jobs #672-#676 and #681-#682). The fix, #589 (merged as 1103fc0), keeps every branch an alert and names the cause:
+  - `h5_idle_quiet`: a quiet market;
+  - `h5_idle_unledgered`: the executor is not reading. Pre-seal only; it is off from 2026-10-16T01Z with no automatic end (quant-proof seal ruling);
+  - `h5_detector_missed`, `h5_unclassified_drains`;
+  - `h5_idle_ledger`: not tracking, fail-closed, or the 24 h backstop.
+  The watch now posts whole-line chunks of at most 1,900 chars. Quant-proof OK at adf48b0 and at b9724dd. **It ships only with Helm's pre-10-16 pinned reinstall, which must happen before 10-16T01Z.** The h5-watch.py and h5-daily-check.py at the sha named for that reinstall must include 1103fc0.
+- **H5 reinstall NAMED: `f873aac3a07b52ba03c0c13db675051a88e21b38`** (#591). It carries:
+  - end_ms 2026-10-23T19:29:53Z (owner);
+  - max_days 14 (manager, under the owner's delegation);
+  - #540 seal and #589 watch.
+  Manifest sha256 `1c877e2a…a7d6` (25 lines) is on PR #499. Proofs: md5 #691 75cb0b0c 72/72; quant-proof OK at 1538d6e and 5302cbe. Helm installs while open=0, before 2026-10-16T01Z.
+- **Seal-window ops still owed by the manager** (readiness audit gaps 3–9; crons scheduled 10-11):
+  - the picks exporter submit;
+  - after the DEC-016 FINAL row, the two FINAL_WRITTEN markers (not before);
+  - long time limits for the shadow and the exporter;
+  - a gate-runner liveness check (counts only);
+  - the shadow restart env (CAP_PICK_LIVE, CAP_PICK_FINAL_MARKER, H5_LOOK2_OBSERVED=EXP-024-Am2, same H5_OUT_DIR, bx10 off);
+  - if the reinstall slips past 00:45Z, stop the af02e90 mal-h5-watch.timer before 01Z (QP).
+  Recurring crons expire after 7 days, so they are recreated on 10-15.
+- **From here, the second strike.** A completed UTC day from 10-11 on below 337 s (executor, or plain over ≥ 30) halts. The 00:21Z day check enforces this with `--place-stop`. The 23:47Z running check of 10-10 did not run.
+- **Disk.** The 2.8 GB `/data/mal/hunt-1008/tmp` spill was deleted with the owner's OK. The cited verifier files moved first to `t-uninformed-sell-reversion/verify-uninformed/`. research-0 is at 76%.
+- **Walkers.** #382 and #433 are through 10-10T18; catch-up is due ~04Z.
+- **C1-NF.** Soak #658 runs to 10-11T21:43:37Z, with monitors #659 and #662. Then come DEC-026 §11, naming the sha to Helm for Step 4, the owner's 0.5 SOL funding, and a written go.
+
+### STATE 10-10 ~20:30Z (older)
+
+**Merged since 10:40Z:**
+- #570: the tip-event-V P7 acceptance tool.
+- #578: PASS record.
+- #580: EXP-024 Am.7, line-2 buy rule.
+- #579: EXP-025 Am.7 and Am.8, line 2 plus pins of the look driver, R1 and P7 driver.
+- #581: test.
+- Main is f0c25ef. Merged-main suites OK, 36/36 ARTIFACTS/exp025 checksums, boostfloor pins rc 0.
+
+**Event-V feed accepted.** The amended P7 line 1 passed on the declared hour [15:00, 16:00Z): sells 429/429, buys 183/183 (job #598). PASS instant 16:10:46Z.
+
+**P7 line 2 (fee tier) buy side was broken in both reads; amended before any read data existed.** Mechanism from 245 refetched prints, #623/#624:
+- Exact-out buys pay the fee on top of the curve input: sol = qin + Σceil(qin·bps).
+- For exact-in buys, tape sol is the net curve input, so they are excluded.
+- New rule: |sol·1e6 − qin·(1e6+ppm)| ≤ 100·qin on buy/buy_v2, 1 bp, bars unchanged. It scores 175/183 on the declared hour (in-sample diagnostic). Line 2 is never amended again.
+- New pins:
+  - EXP-024 inputs edf0d2d7, E0 #637 PASS;
+  - EXP-025 p7_line2_amend 39fc4e99 / sha256 1908931c, driver exp025_p7 26f47531, E0 #630, parity #631/#639;
+  - look driver 8d7d7f41 (E0 #613), R1 16691502 (fixtures only).
+
+**Exact-in audit.** Exact-in tape sol is net (bytes 112).
+- BOOST is fee-free in August, September and October (#628, #629, #638: 77/77 October slices, full-pool total 17,584,505,288 lamports), so H5's detector and `spent` are exact.
+- Non-BOOST buy-volume features (H5 nb; C1-NF v*, wallet ledger) read about 0.6% low, the same way in training and live.
+- **Freeze:** no decoder, ledger or feature change before the reads. The read reports disclose this.
+- Any later gross-up uses bytes 64 or 104, never ix_name. An ix_name gross-up would push BOOST to 17.80 SOL, over the 17.7 cap.
+
+**C1-NF shadow memory.**
+- Soak #608 OOM'd at 18:06:01Z.
+- Replay #621: as written, it settles at about 9–11 GB (every print kept until g0+25 h, about 1,051 B/print).
+- Workflow c1nf-mem-fix (w7tp263ox) is building F1–F5 on branch claude/c1nf-mem-window:
+  - F1: an opt-in 1 h print window;
+  - F2: typed columns;
+  - F3: trader ids;
+  - F4: today-only ledger snapshot, cache 200k;
+  - F5: malloc_trim plus memory heartbeat fields.
+- Proofs: a twin-engine property test, an md5 decision-equivalence on 09-20 (old vs new head), and a 48 h memory proof under 1.9 GB.
+- After merge: a DEC-026 note, then restart the item-15 24 h soak (clock starts at the soak start). Then send Helm the mal-c1nf user and second-wallet spec.
+
+**research-0 disk.**
+- / reached 95%. tools/pump_history_backfill keeps a 20% reserve, so the forward walks #382/#433 refused every hour from about 07Z.
+- The owner approved deleting about 175 GB of rebuildable data; record at /data/mal/hunt-1008/DISK-CLEANUP-2026-10-10.md. h2-wallets/data/prints is gone; rebuild it before any h2 re-run.
+- Walkers resumed 20:05Z, catch-up about 04Z. Watcher alerts below 12 GB of room.
+- The OOM kills Helm saw were jobs at their own declared caps. Declare caps from measured peaks.
+
+**H5.**
+- STOPPED since 07:15Z. 3 live trades, +0.005199 SOL.
+- 18:18Z running check: ALL 338.759 s (n 436), PLAIN 337.254 s (n 315).
+- **Owner pre-authorized STOP removal** if the 00:13Z resume check passes (executor, ALL and PLAIN each ≥ 337; halts=[]; ALERTS=0; no other §5 rule fired). The manager removes STOP (`sudo -n rm /var/lib/mal-live/h5/STOP`), verifies stop_file=False, records it, and pings the owner so Helm knows.
+- T1 needs 20 landed buys, the owner's direct OK and +0.5 SOL.
+
+**Tip follower memory.** anon was 724 MB at 14:40Z and 799 MB at 18:40Z (~19 MB/h), against a cgroup max of 2 GiB. Sampler job #627 is collecting 12 h; decide on a fix or a planned restart before about 10-13.
+
+**Research.**
+- r6 (JUDGE-6) and r7 (JUDGE-7): 5 KILL, 1 PREP-READY (funding-graph rug veto, D1 read about 10-16/17 after 4 releases).
+- The H5 rule search on explore-0814 is closed.
+- r8 (wyqseyioz) is running: rug-veto fixes plus a stage-2 DECLARE, and the October structure check guarding H5 constants before T1.
+- r8-h2-wallet-d1-look is deferred until the walkers catch up.
+
+**Credits today (Helius).**
+- Acceptance and line 2: #598 612, #623 245.
+- Exact-in audit: #628 290, #629 290.
+- BOOST check: #638 93.
+- EXP-025 E0: #630 400.
+- The walkers continue at about 18k per hour each.
+
+### STATE 10-10 ~10:40Z
+
+**H5.**
+- **Status.** The canary is STOPPED (§5.1, since 07:15Z).
+- **Resume check:** one-shot at 10-11T00:13Z. It needs the executor, ALL and PLAIN medians all at or above 337 s (Am.4 + Am.5).
+- **Scheduled §5.1 checks:** `tools/h5_boost_day_check.py` (#538) runs in day mode at 00:21Z and in running mode every 6 h.
+- **The live config's end_ms is 10-16T00:30Z.** Extending it to the §4 cap of 10-23T19:29:53Z is the manager's reviewed step (Am.6 item 8). Not decided; ask the owner.
+- **Pick-oracle wiring merged** (#540; md5 job #498 75cb0b0c, 72/72; re-clearance #547). #543 and #546 hold DEC-024 Am.6 / EXP-022 Am.6.
+- **Shadow restart for the seal window:** cron b9a4cd49 at 10-15T21:37Z.
+  - It needs the CAP_PICK env per the runbook.
+  - bx10 stays OFF (#549: only H5_BX10_ENABLE=EXP-026 turns it on; md5 job #500).
+- **H5 v2 (BOOST-clock exit C10).**
+  - Research round 2 found it non-inferior and robust, but not a DEC-027 challenger.
+  - Draft PR #542 (EXP-026 + DEC-028 + DEC-029 + G-v2) waits on the owner: M1/M2 and DEC-028 A/B.
+  - The shadow variant #541 is merged and off by default.
+  - P(pass) is about 0.005-0.06: H5 cannot clear the gate in October.
+
+**C1-NF.**
+- **Merged:** #530, #531, #502, #506, #509, #544, #552 (oracle fix), #550 (model pin faf8a01f).
+- **P2 PASS** (job #504: 8,786 and 422, in band; amendment PR #558).
+- **Open:** #503 (shadow; parity harness re-run), #548 (EXP-025 Am.3), #555 (DEC-026 Am.2 text and stop table), #556 (own mal-c1nf user, security F2).
+- **BLOCKER, live event V.** Live tip rows lack event V. Option A (follower stamper, own tree) is PR #554, reviewed OK. Proofs P0/P2/P5 are running (workflow c1nf-event-v-proofs). Quant-proof's hard latest is 10-13T12Z; there is no silent switch to const V.
+- **Stop risk at zero edge:** P(total stop) is 0.57 by day 7 (QP-1010).
+
+**Formal reads before 10-16** (checklist: /data/mal/hunt-1008/h5-work/PRE-1016-CHECKLIST.md).
+- EXP-024 read tool (#476) + forward extractor + E0-H5: due 10-16T00:00Z.
+- EXP-025 P3 adapter + P4 read tool: due 10-16T01:00Z.
+- EXP-022 synthetic amendment: due before 10-15T06:41Z.
+- All of these are in build (workflow formal-read-tools-r1).
+- Jobs #433 (+24 h) and #382 (+48 h) are extended.
+
+**Research.**
+- Rounds 3-4: 7 families killed.
+- Round 5 (protocol-scheduled flows) is running.
+- Truncated logs lose about 0.03-0.06% of PumpSwap trades (known limitation; MULTIROUTE-1010.md).
+- Read guard fixed (#553, #557).
+- October data stays sealed under the current ledger (hunt-r3/october/READINESS.md). The owner must decide on carve-outs.
+
+**Owner decisions pending:**
+- H5 v2 M1/M2 and A/B;
+- end_ms to 10-23;
+- October carve-outs;
+- Helm: the mal-c1nf user, the second wallet and 0.5 SOL.
+
+### STATE 10-10 ~07:30Z (older)
 
 **H5 canary: STOPPED** (new buys) since 2026-10-10T07:15:10Z.
 - **Why.** DEC-024 §5.1 fired on the post-step A3 run of 07:11:07Z (job #478): median last slice 333 s after migrate, n=9, below 335 s.

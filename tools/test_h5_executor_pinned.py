@@ -194,7 +194,12 @@ def test_pinned_configs_agree_with_the_unit_and_the_feed_template():
     assert live["state_dir"] == dry["state_dir"] == "/var/lib/mal-live/h5"
     assert live["intents_file"] == dry["intents_file"] == "/srv/mal-h5-shadow"
     assert FEED.read_text().rstrip().endswith(":/srv/mal-h5-shadow")
-    assert "key_path" not in live and "pick_file" not in live
+    assert "key_path" not in live
+    # the CAP-PICK exporter writes $HOME/data/h5-shadow/cap-pick/picks.jsonl (CAP_PICK_OUT): the shadow bind carries it into the unit as a
+    # subdirectory, which the executor's and the daily check's hourly-file patterns do not match
+    assert live["pick_file"] == dry["pick_file"] == "/srv/mal-h5-shadow/cap-pick/picks.jsonl"
+    assert "pick_replay_files" not in live and "pick_replay_files" not in dry
+    assert not re.match(r"^h5-shadow-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$", Path(live["pick_file"]).parent.name)
     # the five tier-scaled limits belong to the executor's tier table (8dbb886): a config that sets one turns the ladder off for T1/T2
     assert not {"stake_lamports", "max_open", "max_trades_per_day", "daily_loss_lamports", "total_loss_lamports"} & (set(live) | set(dry))
 

@@ -1,0 +1,45 @@
+{
+  "CANARY_STAKE_LAMPORTS": 50000000,
+  "EVENT_TYPES": [
+    "c1nf_gap",
+    "c1nf_heartbeat",
+    "c1nf_start",
+    "c1nf_stop"
+  ],
+  "OUTCOME_FIELDS": [
+    "type",
+    "mint",
+    "pool",
+    "decision_T_ms",
+    "SD_slot",
+    "complete",
+    "legs"
+  ],
+  "OUTCOME_START_MS": 1791590400000,
+  "PICK_FIELDS": [
+    "type",
+    "mint",
+    "pool",
+    "decision_T_ms",
+    "SD_slot",
+    "pred",
+    "h_top1",
+    "stage1",
+    "feature_hash",
+    "model_sha",
+    "q_lamports",
+    "base_reserve",
+    "v_lamports",
+    "state_slot"
+  ],
+  "PREFIX": {
+    "c1nf_outcome": "c1nf-outcomes",
+    "c1nf_pick": "c1nf-picks",
+    "c1nf_synclass_counts": "c1nf-synclass"
+  },
+  "PRIMARY_LAT": 1.3,
+  "SEND_FEES": {
+    "505k": 505000,
+    "55k": 55000
+  }
+}

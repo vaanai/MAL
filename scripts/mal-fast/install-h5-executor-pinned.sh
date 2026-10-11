@@ -39,7 +39,7 @@ case "$MANIFEST" in "" | /*) ;; *) MANIFEST="$ORIG_PWD/$MANIFEST" ;; esac
 DEST=/usr/local/lib/mal-h5-exec
 UNIT=mal-h5-executor
 PROBE_UNIT=mal-probe-executor
-MODULES="tools/__init__.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
+MODULES="tools/__init__.py tools/cap_pick_oracle.py tools/h5_executor.py tools/h5_sell_and_close.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/probe_withdraw.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
 EXTRA="scripts/mal-fast/h5_exec_launcher.py:launcher.py scripts/mal-fast/h5-executor-live.json:h5-executor-live.json scripts/mal-fast/h5-executor.json:h5-executor.json scripts/mal-fast/mal-h5-executor-live-pinned.conf:mal-h5-executor-live-pinned.conf scripts/mal-fast/mal-h5-executor-shadow-feed.conf:mal-h5-executor-shadow-feed.conf scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt scripts/mal-fast/h5-watch.py:h5-watch.py scripts/mal-fast/h5-daily-check.py:h5-daily-check.py scripts/mal-fast/mal-h5-watch.service:mal-h5-watch.service scripts/mal-fast/mal-h5-watch.timer:mal-h5-watch.timer EXP/EXP-024-h5-boostfloor-part1-prereg.md:EXP/EXP-024-h5-boostfloor-part1-prereg.md"
 BASE_UNIT_SRC="scripts/mal-fast/mal-h5-executor.service"

@@ -105,7 +105,8 @@ def test_refusal_and_halt_alerts_reach_discord_and_the_sealed_stub_does_not(tmp_
 # --- the final configs and the runbook -----------------------------------------------------------------------------------------
 
 def test_pinned_configs_are_the_executor_branchs_final_ones():
-    """9c5618b: intents_file, heartbeat 150000, live end_ms 2026-10-16T00:30Z, code constants not configurable, LIVE_OK pinned."""
+    """9c5618b: intents_file, heartbeat 150000, code constants not configurable, LIVE_OK pinned. Live end_ms: 2026-10-16T00:30Z at 9c5618b, then
+    2026-10-23T19:29:53Z (DEC-024 section 4's 14-day cap; Amendment 6 item 8 record, owner 2026-10-11)."""
     live = json.loads((FAST / "h5-executor-live.json").read_text())
     dry = json.loads((FAST / "h5-executor.json").read_text())
     for cfg in (live, dry):
@@ -117,8 +118,10 @@ def test_pinned_configs_are_the_executor_branchs_final_ones():
         for tier, table in h5_executor.TIERS.items():  # and what is shipped clamps no tier below its table (what config_clamps_tier would report)
             lim = h5_executor.H5Limits.from_config(cfg, tier)
             assert all(getattr(lim, k) == v for k, v in table.items()), tier
-    assert live["end_ms"] == 1792110600000 and "end_ms" not in dry
-    assert datetime.datetime.fromtimestamp(live["end_ms"] / 1000, datetime.timezone.utc).isoformat() == "2026-10-16T00:30:00+00:00"
+    assert live["end_ms"] == 1792783793000 and "end_ms" not in dry
+    assert datetime.datetime.fromtimestamp(live["end_ms"] / 1000, datetime.timezone.utc).isoformat() == "2026-10-23T19:29:53+00:00"
+    first_send = datetime.datetime(2026, 10, 9, 19, 29, 53, tzinfo=datetime.timezone.utc)  # DEC-024 go-live record
+    assert live["end_ms"] == int((first_send + datetime.timedelta(days=14)).timestamp() * 1000)  # the cap, never later
     for key in ("late_sell_min_n", "sell_priority_lamports", "escalated_priority_lamports"):
         try:
             h5_executor.H5Limits.from_config({**live, key: 1})
@@ -130,7 +133,7 @@ def test_pinned_configs_are_the_executor_branchs_final_ones():
 
 def test_runbook_states_the_final_facts():
     t = RUNBOOK.read_text()
-    assert t.count("d3b69d0") >= 3 and "or later" in t and "2026-10-16T00:30Z" in t and "1792110600000" in t
+    assert t.count("d3b69d0") >= 3 and "or later" in t and "2026-10-23T19:29:53Z" in t and "1792783793000" in t
     assert "s0_recv_late" in t and "s0_unverifiable" in t and "bad_intent:suppressed" in t and "h5_feed_schema" in t and "h5_s0_refusals" in t
     for name in set(re.findall(r'_latch\("([a-z0-9_]+)"', EXECUTOR_SRC)):
         assert f"`{name}`" in t, name  # every latched halt is in the runbook's table

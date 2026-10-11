@@ -1,8 +1,99 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T08:20:24Z",
+ "updated_utc": "2026-10-11T03:55:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-reinstall-named-1011",
+   "kind": "decision",
+   "title": "H5 reinstall version named (f873aac): trades to 10-23, CAP-PICK seal code, clearer alerts",
+   "detail": "End time moved from 10-16 00:30Z to 10-23 19:29Z (your choice), and the 10-day trading limit raised to 14 (within the rules) so the end time is what stops it. Decisions replay identically (72/72), quant-proof OK. Helm installs it when nothing is open, before 10-16 01Z.",
+   "atUtc": "2026-10-11T03:55:00Z"
+  },
+  {
+   "id": "h5-idle-alert-1011",
+   "kind": "other",
+   "title": "H5 watch 'idle' alert at 00:25Z was a quiet market, not a fault; the alert now names its cause (#589)",
+   "detail": "No plain pool drained to the trigger price from 19Z to 00Z. Every drained plain pool since go-live triggered (23 of 23), and every trigger reached the executor's ledger. The fix keeps every case an alert but names it: h5_idle_quiet (probably a quiet market), executor not reading (until 10-16T01Z only, because of the CAP-PICK seal), detector missed, unclassified drains, not tracking, and the 24 h backstop. It ships with Helm's reinstall before 10-16.",
+   "atUtc": "2026-10-11T02:38:14Z"
+  },
+  {
+   "id": "h5-resume-1011",
+   "kind": "decision",
+   "title": "H5 canary resumed at 00:15Z: day 10-10 cleared the 337 s line on all three measures",
+   "detail": "STOP removed at 2026-10-11T00:15:06Z (job #669) under DEC-024 Amendment 4 item 4 and Amendment 5 item 1, which you pre-authorized. Day 10-10 medians (job #667): executor 339.573 s over 580 pools; all pools 339.5735 s (580); plain pools 337.772 s (411). No halts, no late sells, nothing stuck; the daily check reads ALERTS=0. From 10-11 on, one completed day below 337 s halts it again.",
+   "atUtc": "2026-10-11T00:15:06Z"
+  },
+  {
+   "id": "c1nf-soak-restart-1010",
+   "kind": "other",
+   "title": "C1-NF 24 h soak restarted on the memory-fixed code (21:43Z); it must run clean to 10-11 21:43Z",
+   "detail": "The fix keeps only the last hour of trades per pool; every decision was proven bit-identical to the old code on a September day, and a 48 h replay stayed at 1.0 GB peak under the 1.9 GB cap. Early reading during start-up: 226 MB of program memory. Two monitors stop the clock on any rule breach (memory at 1.5 GB, growth over 20 MB/h, any decision difference).",
+   "atUtc": "2026-10-10T21:43:37Z"
+  },
+  {
+   "id": "p7-line2-fixed-1010",
+   "kind": "other",
+   "title": "Both formal reads' fee check fixed before any read data exists (EXP-024 #580, EXP-025 #579 merged)",
+   "detail": "Refetched 245 transactions to find the cause. Normal buys pay the fee on top of the curve cost, but the check assumed the fee came out of it. For 'exact-input' buys, the amount on the tape is what reaches the curve, not what the buyer paid. The new rule uses the chain's own relation on normal buys: 175 of 183 match on the declared hour (90% needed). Without the fix, both reads would have ended 'not decidable'. Quant-proof and reviewer signed off; the rule cannot be changed again.",
+   "atUtc": "2026-10-10T20:10:00Z"
+  },
+  {
+   "id": "boost-feefree-1010",
+   "kind": "other",
+   "title": "Checked on chain: October BOOST buys are still fee-free, so H5's BOOST detector stays exact",
+   "detail": "77 of 77 October BOOST slices across 5 pools paid zero fees, and a full pool's BOOST adds up to exactly 17.584505288 SOL, the same as in August and September. Other buy-volume signals read about 0.6% low, the same way in training and live; nothing is changed before the reads.",
+   "atUtc": "2026-10-10T20:00:00Z"
+  },
+  {
+   "id": "walkers-disk-1010",
+   "kind": "other",
+   "title": "Forward walks were blocked by a full disk since ~07Z; space freed with your OK, catch-up running",
+   "detail": "research-0 hit 95% and the walkers keep 20% free by design, so they refused every hour. About 175 GB of rebuildable data was deleted (list in DISK-CLEANUP-2026-10-10.md). Both walkers resumed at 20:05Z and should catch up by about 04:00Z, well before the 10-16 FINAL.",
+   "atUtc": "2026-10-10T20:05:00Z"
+  },
+  {
+   "id": "c1nf-mem-cause-1010",
+   "kind": "other",
+   "title": "C1-NF memory cause found: the engine kept ~25 h of every trade (~10 GB); a 1-hour window fix is being built with bit-identical proofs",
+   "detail": "A 48-hour September replay settled at about 9.8 GB against a 1.9 GB cap. The decision features only need the last hour, so the fix keeps one hour, packs the arrays and trims the ledger cache (estimate 1.0–1.5 GB). Every decision must be bit-identical to the old code before the 24 h soak restarts.",
+   "atUtc": "2026-10-10T19:30:00Z"
+  },
+  {
+   "id": "hunt-r6-r7-1010",
+   "kind": "other",
+   "title": "Research rounds 6 and 7: 5 ideas killed by their pre-set tests, 1 rug-filter procedure frozen for a read ~10-16/17",
+   "detail": "Killed: H5 re-entry after a refused buy, H5 holding winners past 330 s, two simpler C1-NF rules, and a pre-graduation tail entry. H5's current entry and 330 s exit stand. The funding-graph rug filter (your priority after 10-16) is frozen and waits for its data releases. Round 8 is running.",
+   "atUtc": "2026-10-10T20:00:00Z"
+  },
+  {
+   "id": "c1nf-soak-oom-1010",
+   "kind": "other",
+   "title": "C1-NF shadow soak stopped: ran out of memory after 2 h 55 m (1.9 GB cap); memory fix in progress before the 24 h soak restarts",
+   "detail": "Job #608 (operations-only) grew about 400 MB/h of program memory, in step with the number of pools it tracks (about 210 new pools/h since event-V started at 13:17Z). No trading was involved and no result was read. A code audit plus a memory replay on September exploration data is finding the cause and the steady-state size; the 24 h soak (DEC-026 item 15) restarts on a fixed, reviewed head.",
+   "atUtc": "2026-10-10T18:06:01Z"
+  },
+  {
+   "id": "tipfollower-p7-pass-1010",
+   "kind": "other",
+   "title": "Event-V feed accepted: the corrected price-law check passed on a pre-declared hour (sells 429/429, buys 183/183)",
+   "detail": "Window 15:00-16:00Z, declared at 14:40Z before it started; checked once after it closed (job #598, 612 transactions, 612 credits). 0 unresolved prints, 0 feed mismatches or errors, no new feed gaps. The feed now counts. Separate finding from the same run: the fee-tier check (line 2) fails on buys for both formal reads (139/571 = 24%, need 90%); sells pass (91%). Most misses (387 of 432) are exact-input buys; the cause is being checked on refetched transactions, and any amendment is written before any read data exists (deadline 10-16 00:00Z).",
+   "atUtc": "2026-10-10T16:10:46Z"
+  },
+  {
+   "id": "tipfollower-p7-fail-1010",
+   "kind": "other",
+   "title": "Event-V feed: the price-law acceptance check failed on 6% of buys; the feed stays on but counts for nothing until a corrected check passes",
+   "detail": "Sells 400 of 400 matched; buys 165 of 176. The 11 misses are not a feed error: 9 are multi-hop router buys that carry a small fee the check didn't model, 2 are tiny buys where rounding exceeds 1 bp. The same flaw sits in the formal 10-16/10-17 reads' pricing check and would have voided them, so it is being fixed there too, before any data is read. Quant-proof: keep the feed, re-check on a fresh hour under the corrected rule by 10-12 20:00Z, else roll back.",
+   "atUtc": "2026-10-10T14:00:00Z"
+  },
+  {
+   "id": "tipfollower-eventv-1010",
+   "kind": "other",
+   "title": "Live feed now carries the pool's event V (needed for C1-NF): tip follower restarted 13:17:17Z on its own code tree",
+   "detail": "First 10 minutes: 172,014 prints stamped, 0 mismatches, 0 errors, 0 PumpSwap prints missing V; no new feed gaps; lag 2 slots. The paper runner and its code were not touched. One acceptance check (a 1,000-print price-law sample) is still to run; if it fails, the change is rolled back today.",
+   "atUtc": "2026-10-10T13:17:17Z"
+  },
   {
    "id": "h5-am5-1010",
    "kind": "other",
@@ -435,6 +526,30 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261011-0355-helm-reinstall",
+   "from": "claude",
+   "atUtc": "2026-10-11T03:55:00Z",
+   "text": "For Helm: the H5 reinstall version is named. Install sha f873aac3a07b52ba03c0c13db675051a88e21b38; the manifest (sha256 1c877e2aefc582cd223d03da6c98c8889a458aa205940d04060d5966f821a7d6, 25 lines, per-file hashes) is on PR #499. Install whenever --status shows open=0 pending=0, any time before 2026-10-16T01:00Z (10-15 6 PM PT). Check every per-file hash, then run the keyless start check. Change nothing else (TIER, LIVE_OK, STOP, wallet-wide files). It moves the end time to 10-23 19:29Z, allows 14 days, and adds the CAP-PICK seal code and the improved alert check. A second, smaller reinstall (more trades taken) may follow in a day or two."
+  },
+  {
+   "id": "fy-20261011-0238-helm-watch",
+   "from": "claude",
+   "atUtc": "2026-10-11T02:38:14Z",
+   "text": "For Helm: the 00:25Z H5 watch alert h5_idle_ledger was a quiet market, not a fault (no plain pool drained to the trigger price from 19Z to 00Z; the detector and executor are consistent). No action now. It clears (RESOLVED) at the next plain trigger and may repost every 6 h until then. The improved check (#589, main 1103fc0) ships with the pre-10-16 pinned reinstall, which must happen before 10-16T01Z. The manager will name the sha."
+  },
+  {
+   "id": "fy-20261011-0016-helm-h5",
+   "from": "claude",
+   "atUtc": "2026-10-11T00:16:30Z",
+   "text": "For Helm: H5's own STOP (/var/lib/mal-live/h5/STOP) was removed by the manager at 2026-10-11T00:15:06Z under DEC-024 Amendment 4 item 4 (owner pre-authorized). No action needed. Do not recreate the wallet-wide /var/lib/mal-live/STOP. TIER stays T0, and LIVE_OK is untouched."
+  },
+  {
+   "id": "fy-20261010-2155-helm-c1nf",
+   "from": "claude",
+   "atUtc": "2026-10-10T21:55:00Z",
+   "text": "For Helm (C1-NF prep only; runbook docs/runbooks/c1nf-executor.md on main, 'Helm's steps, in order'): Step 1 don't touch H5 (unit, wallet, key, /etc/mal-h5, /var/lib/mal-live/h5, TIER; leave the wallet-wide STOP). Step 2 create the second keypair at /etc/mal-c1nf-key/c1nf-wallet.json (root 0400 in a 0700 dir) and send the manager ONLY its public address (must differ from H5's 5n95HyhZ…Sugk). Step 3 auditd watch on it. Step 3b create system user mal-c1nf with the search-only ACL u:mal-c1nf:--x on /var/lib/mal-live. Everything from Step 4 (install, drop-ins, LIVE_OK, TIER) waits for the manager's named sha: after a reviewed PR pins the public address and the 24 h soak passes (no earlier than 10-11 21:43Z). Your 0.5 SOL funding (Step 10) only when the manager asks."
+  },
+  {
    "id": "fy-h5-51-resume",
    "from": "claude",
    "text": "H5 restart check at 00:13Z (about 5:13 PM PT): needs three BOOST medians for 10-10 at or above 337 s: the bot's own figure (Amendment 4) plus the all-coin and plain-coin checks (the manager's stricter Amendment 5). Plain coins read 336.4 s so far today, so the restart may not happen. Separately, research is exploring a new rule whose exit is timed off BOOST itself; it would need its own pre-registration and test, and it does not change H5 v1. A clean restart counts as resolved for the 0.10 SOL step, which still needs 20 landed buys, landing p50 at most 3.0 s, the canary's and the paper twin's means not negative, and your +0.5 SOL top-up.",
@@ -562,6 +677,34 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261011-0016",
+   "from": "claude",
+   "kind": "decision",
+   "atUtc": "2026-10-11T00:16:30Z",
+   "text": "00:15Z: H5 is trading again. Day 10-10 closed at 339.573 s (executor, 580 pools), 339.5735 s (all, 580) and 337.772 s (plain, 411), each over the 337 s line, with no halts or other stops, so I removed STOP as you pre-authorized (job #669); the daily check now reads ALERTS=0. Helm needs to do nothing, and the wallet-wide STOP stays off. A completed day from 10-11 on below 337 s stops it again. Also deleted the 2.8 GB spill (cited files kept); disk is at 76%."
+  },
+  {
+   "id": "s-20261010-2016",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T20:16:30Z",
+   "text": "10-10 20:16Z: both formal reads' fee check fixed and merged (#580, #579) before any read data exists. October BOOST confirmed fee-free on chain. Forward walks were blocked by a full disk; ~175 GB freed with your OK, catch-up running until ~04Z. C1-NF memory fix in build (cause: ~25 h of trades kept, ~10 GB). H5 stays stopped until tonight's 00:13Z check; you pre-authorized removing STOP if it passes. 3 live trades so far, +0.0052 SOL."
+  },
+  {
+   "id": "s-20261010-1811",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T18:11:21Z",
+   "text": "10-10 18:11Z: Event-V feed ACCEPTED: the corrected price-law check passed on the hour declared in advance, 15:00-16:00Z (sells 429/429, buys 183/183; job #598). Same run: the fee-tier check fails on buys for both formal reads (24% vs 90% needed); an amendment is due before 10-16 00:00Z, written before any read data exists. C1-NF shadow soak #608 hit its 1.9 GB memory cap after 2 h 55 m (about 400 MB/h growth, tracking new pools); the fix is being diagnosed, and the 24 h soak restarts on a fixed head. Merged today after review: the three EXP-025 look tools (#574, #575, #577) and the shadow memory fixes (#571, #576)."
+  },
+  {
+   "id": "s-20261010-1040",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-10T10:38:17Z",
+   "text": "10-10 10:40Z: H5 still stopped (restart check 00:13Z needs all three BOOST medians at or above 337 s). Merged today: pick-oracle wiring (#540), the BOOST day-check tool (#538), Amendment 4 and 5, C1-NF executor/ops/ledger/features/oracle-fix/model pin, read-guard fix. C1-NF's deterministic rebuild passed (8,786 and 422, in band). Open blocker for C1-NF: live trades lack the per-print BOOST value; fix built (#554) and in proofs, hard latest 10-13T12Z. Formal-read tools for 10-16 are in build. Research rounds 3-4: 7 ideas killed; round 5 running."
+  },
   {
    "id": "s-20261010-0735-h5stop",
    "from": "claude",

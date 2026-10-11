@@ -23,7 +23,35 @@ is never echoed into an alert. A failing `sudo -n` is an ALERT (sudo_unavailable
   UNMANAGED     live state with open or pending positions while the unit is not active with --live (alert h5_positions_unmanaged).
   IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); a shadow directory created AFTER the unit started (the unit's
                 bind points at nothing or at the old directory); LIVE_OK present but the unit not active and enabled, the running ExecStart
-                without --live, or STOP present (the H5 one or the wallet-wide one); LIVE_OK older than 6 h with no buy/skip/decision row.
+                without --live, or STOP present (the H5 one or the wallet-wide one); LIVE_OK older than 6 h with no buy/skip/decision row
+                (main's h5_idle_ledger rule). ROUND 4 ON #589: every branch of that idle judgement ALERTS, and nothing main alerts on is
+                ever an INFO; the shadow's own hourly files (counts only) only choose the NAME, which tells the cause. h5_idle_quiet is the
+                expected label in a quiet market. The names, checked in this order:
+                  h5_idle_ledger          (fail closed) the ledger has no row at all; or (24 h backstop, once LIVE_OK is older than 24 h) the
+                                          newest buy/skip/decision row is older than 24 h whatever the shadow shows (a ledger tail that does
+                                          not reach back 24 h leaves the backstop unjudged); or a shadow file is unreadable
+                  h5_idle_unledgered      before 2026-10-16T01Z only (the watchdog's clock): a plain pv trigger more than 5 min old and newer
+                                          than the ledger's newest buy/skip/decision row (looking back up to 24 h). From 2026-10-16T01Z on (no
+                                          automatic end) that judgement, its trigger count and the shadow's trigger records are off, because a
+                                          seal_pick leaves no row and counting shadow triggers against the ledger would count seal_picks
+                                          (DEC-024 Am.6 items 4(a) and 5)
+                  h5_detector_missed      2 or more missed candidates in 6 h: plain pools drained to <= 40 SOL without a pv trigger (no
+                                          `excluded` record), each with no gap and its 1500-slot min_q window ending by 330 s (at the larger
+                                          of sps_at_s0 and sps_last), or with an sps_at_s0 the shadow's sps_ok refuses (gap or no gap), plus
+                                          the pools with a skipped_no_sps record (other drained, untriggered pools are ambiguous: a possible
+                                          drain after the rule's 300 s, never a miss)
+                  h5_unclassified_drains  2 or more plain pools drained to <= 40 SOL whose `excluded` record has a reason other than
+                                          "synthetic" (unclassified at decision time): the canary got nothing from them; one is named in
+                                          whichever alert fires. A synthetic exclusion is skipped silently
+                  h5_idle_ledger          an hour of the 6 h window has no file (fail closed); fewer than 30 plain pool closes in 6 h, or
+                                          fewer than 10 in the newest 2 h (the detector is not tracking pools); fewer than 30 closes carry a
+                                          min_q (withheld; fail closed)
+                  h5_idle_quiet           otherwise: "probably a quiet market, not a fault" with the counts (one missed candidate, the ambiguous
+                                          pools and one unclassified drain are named in it). It clears at the next ledgered row, or changes
+                                          name; after 24 h idle the h5_idle_ledger backstop follows. Before the seal it says "no plain trigger
+                                          in 6 h"; in the seal window "ledger idle 6 h", with no word "trigger" and no trigger count
+                The residuals earlier reviews left behind the old "quiet market" INFO (a late pick oracle in the seal window, a common-mode
+                Q error, an executor stuck in a quiet market) are therefore alerts now, as h5_idle_quiet.
   LOOK 2 FLAG   from 2026-10-16T00Z to 2026-11-06T00Z with LIVE_OK present: the newest `start` record in the shadow directory must show
                 h5_look2.observed true (EXP-024 Amendment 2). Without it the shadow withholds the outcomes of every pool in that window, the
                 canary has no paper twin and the divergence halt (DEC-024 section 5 item 4) can never fire. A MiScusi resume must set
@@ -45,6 +73,7 @@ import grp
 import hashlib
 import importlib.util
 import json
+import math
 import mmap
 import os
 import pwd
@@ -89,15 +118,71 @@ BASE_TOLERANCE = 5_000_000  # fees in flight, dust
 FEED_STALE_S = 600  # the newest hourly shadow file must have been written to within 10 minutes
 BIND_SLACK_S = 5  # a shadow directory born more than this after the unit started is not what the unit's bind shows
 WATCH_STATE_STALE_S = 15 * 60
-IDLE_LEDGER_S = 6 * 3600  # LIVE_OK older than this and no buy/skip/decision row newer than this: the canary is idle
+IDLE_LEDGER_S = 6 * 3600  # LIVE_OK older than this and no buy/skip/decision row newer than this: the canary may be idle (the shadow decides)
+IDLE_LEDGER_MAX_S = 24 * 3600  # backstop, once LIVE_OK is older than this: a newest buy/skip/decision row older than this alerts whatever the shadow
+# shows. It is also how far back a plain trigger newer than that row is looked for (B1 on #589: a stuck executor must not age out of a 6 h window).
 IDLE_KINDS = ("buy", "skip", "decision")
+# EXP-022 s9 seal (quant-proof QP-B1/B3 on #589). From 2026-10-16T01Z the unledgered judgement and its trigger count are off, because a
+# seal_pick leaves no row (tools/h5_executor.py _refuse writes nothing for it) and counting shadow triggers against the ledger would count
+# seal_picks: executor-picked mints that drained (DEC-024 Amendment 6 items 4(a) and 5; section 6; EXP-022 section 9). From
+# IDLE_SEAL_START_S (SEAL_START_MS / 1000 in tools/h5_executor.py; a test keeps them equal), judged by the WATCHDOG'S OWN CLOCK `now` and
+# never by a pool's s0, check_canary_idle skips the whole trigger-against-ledger judgement: no h5_idle_unledgered, no trigger count, no
+# trigger wording in any line it prints, and shadow_idle_counts does not read the shadow's `trigger` records at all and returns no trigger
+# count. There is NO automatic end (not the executor's seal_end_ms either): the switch is lifted only by a reviewed change after EXP-022's
+# end state is recorded. In the seal window liveness rests on h5_feed_stale / h5_feed_bind_stale, h5_idle, the plain-pool quorum,
+# h5_detector_missed and h5_unclassified_drains (shadow-only facts about non-sealed pools, no trigger count), the 24 h backstop, and
+# h5_idle_quiet: every branch of the idle judgement alerts (round 4 on #589), worded on the ledger and pool closes only.
+IDLE_SEAL_START_S = 1_792_112_400  # 2026-10-16T01:00:00Z
+# Before IDLE_SEAL_START_S only: an EXP-022 seal refusal (seal_window_no_oracle, seal_oracle_error) writes no per-mint row, only this count
+# row, at most once a minute, so a plain trigger detected before the newest one is not counted as unledgered (kept for a skewed clock).
+IDLE_SEAL_KIND = "seal_count"
+IDLE_TRIGGER_GRACE_S = 300  # a plain trigger younger than this may still be on its way to the executor: not yet counted as unledgered
+# Fewer plain pool closes than IDLE_MIN_PLAIN_POOLS in the 6 h window, or than IDLE_RECENT_MIN_PLAIN_POOLS in its newest IDLE_RECENT_S: the
+# detector is not tracking pools. Since go-live (2026-10-09T19:29Z, job #679): 14-33 per full hour, >= 34 in any 2 and >= 108 in any 6 full hours.
+IDLE_MIN_PLAIN_POOLS = 30
+IDLE_RECENT_S = 2 * 3600
+IDLE_RECENT_MIN_PLAIN_POOLS = 10
+Q_STAR_SOL = 40.0  # the rule's trigger level (Q_STAR_SOL in tools/h5_shadow.py; a test keeps them equal)
+# A pool close's min_q_pv_sol is its lowest pv Q over the first IDLE_MINQ_SLOTS slots after s0 (the literal in tools/h5_shadow.py _on_print,
+# `pr.slot - p.s0 <= 1500`; a test pins it). The rule fires only on a sell within 300 s of s0 (T_MAX_S there). At sps seconds per slot the
+# min_q window is 1500 * sps s: about 325 s at 0.217 s/slot, about 400 s at 0.267. A drained pool (min_q <= Q_STAR_SOL) without a pv trigger
+# (the pv rule did not fire on it) is a missed candidate:
+#   - when its sps_at_s0 fails the shadow's own sps_ok (not a finite number, or not in the open interval (SPS_LO, SPS_HI)), gap or no gap: the
+#     rule cannot fire without sps (#589 review R-B1). So is every pool with a `skipped_no_sps` record in the window (union by pool);
+#   - else when the window, at the larger of sps_at_s0 and sps_last (when sps_last is a finite number too; #589 review R-F), ends by
+#     IDLE_MINQ_WINDOW_MAX_S (0.22 s/slot or less) and the pool had no gap.
+# Otherwise the drain may have come after 300 s (or in a gap) and the pool is ambiguous: judged (it counts toward the quorum), never a miss. A
+# pool with an `excluded` record is neither (R-F): its trigger was withheld at decision time, and it can still close plain with an empty
+# `triggered`. Only reason IDLE_EXCLUDED_SKIP_REASON ("synthetic") is skipped silently. A drained close whose pool was excluded for any other
+# reason ("unclassified": the shadow's RPC classifier had no answer at decision time, yet the pool closed plain) is unclassified_drained:
+# IDLE_MISSED_MIN of them are h5_unclassified_drains (#589 review R-F2), one is named in whichever alert fires. A min_q above Q_STAR_SOL is
+# quiet whatever the window: the min over a longer window bounds the min over the first 300 s from below.
+# MiScusi jobs #681/#682 (mal-fast-0): on 2026-10-09 10Z-14Z the slot time was 0.265-0.270 s and 20 plain pools drained to <= 40 with an empty
+# `triggered`, all late drains in (300 s, 400 s]; a 21st at 18Z had sps 0.2212 (window 331.8 s) and a gap.
+IDLE_MINQ_SLOTS = 1500
+IDLE_MINQ_WINDOW_MAX_S = 330.0
+SPS_LO, SPS_HI = 0.15, 0.6  # the shadow's sps_ok open interval (SPS_LO, SPS_HI in tools/h5_shadow.py; a test keeps them equal)
+# An `excluded` record comes at most about WALL_CLOSE_S (430 s in tools/h5_shadow.py) before its pool's close: the files are read from the hour
+# of (window start - this), so a pool closing early in the window still has its exclusion seen.
+IDLE_EXCLUDED_LEAD_S = 600
+IDLE_EXCLUDED_SKIP_REASON = "synthetic"  # the one `excluded` reason that is skipped silently (_exclude in tools/h5_shadow.py; a test pins it)
+# Even inside that bound one pool can drain legitimately between 300 s and 1500 * sps_at_s0 (up to 30 s past the rule window), so
+# h5_detector_missed needs at least IDLE_MISSED_MIN missed candidates; one alone is counted in whichever idle alert fires (round 4 on #589:
+# never an INFO), usually h5_idle_quiet. The same threshold holds for h5_unclassified_drains. Since go-live (2026-10-09T19:29Z, sps 0.215-0.223)
+# every drained plain pool triggered pv: 23/23, and 0 drained-untriggered pools in 640 (#681/#682).
+IDLE_MISSED_MIN = 2
+SHADOW_TRIGGER_VARIANT = "pv"  # the only variant the executor acts on (TRIGGER_VARIANT in tools/h5_executor.py); "fv" records are never ledgered
+SHADOW_PLAIN_SRC = "rpc"  # a plain pool is only ever confirmed by an RPC read (SYNTHETIC_SRC_OK in tools/h5_executor.py)
 MAX_READ = 8 * 1024 * 1024  # a bigger file is reported (unsafe_path), never read: the watchdog has 256 MB
+# Measured on mal-fast-0 2026-10-11T01:01Z (job #679): 317,561 B, 1,583 rows in 29.5 h (200.6 B/row; 206,923 B in the last 24 h; busiest hour
+# 173 rows). 4,000,000 B is about 19 days at the last day's rate and 4.8 days at the busiest hour's rate sustained (the backstop needs 1 day).
 LEDGER_TAIL = 4_000_000
 HOURLY_RE = r"^h5-shadow-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$"
 # EXP-024 Amendment 2: the declared observation covers pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z). These mirror H5_LOOK2_START_MS and
 # H5_LOOK2_END_MS in tools/h5_shadow.py (a test keeps them equal). The shadow writes one `start` record per process start, first key "type".
 LOOK2_START_S, LOOK2_END_S = 1_792_108_800, 1_793_923_200
 START_MARK = b'{"type":"start"'
+TRIGGER_MARK = b'{"type":"trigger"'  # a shadow trigger record as JsonlSink writes it (compact, "type" first): skipped unparsed in the seal window
 START_SCAN_FILES = 400  # newest hourly files searched for a start record (about 16 days; a shadow job's limit is shorter)
 START_LINE_MAX = 65_536
 ACTIVE_STATES = {"active", "activating", "reloading", "deactivating"}
@@ -795,19 +880,305 @@ def check_canary_idle(host: Host, rep: Report, unit: UnitInfo, live_ok: bool, sh
     if why:
         rep.alert("h5_idle", "LIVE_OK is present but the canary is not trading: " + "; ".join(why))
     t = host.mtime(LIVE_OK)
-    if t is not None and now - t > IDLE_LEDGER_S:
-        ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL) or b""
-        last = 0
-        for line in ledger.splitlines():
+    if t is None or now - t <= IDLE_LEDGER_S:
+        return
+    seal = idle_sealed(now)  # QP-B1/B3 on #589: from 2026-10-16T01Z by THIS clock, no trigger is judged against the ledger (IDLE_SEAL_START_S)
+    ledger = host.read(f"{H5_DIR}/live/h5-ledger.jsonl", LEDGER_TAIL)
+    last_ms, oldest_ms, seal_ms = ledger_idle_span(ledger or b"")
+    if last_ms is not None and now - last_ms / 1000 <= IDLE_LEDGER_S:
+        return
+    gate_h, hours = int((now - t) // 3600), IDLE_LEDGER_S // 3600
+    old = (f"LIVE_OK is {gate_h} h old and the live ledger has no buy, skip or decision row in the last {hours} h: "
+           + ("the canary has acted on nothing (feed, detector or executor)" if seal else "the canary sees no triggers (feed, detector or executor)"))
+    if oldest_ms is None:  # no ledger, or not one row in it (the executor writes a `start` row when it starts): nothing to judge the shadow against
+        rep.alert("h5_idle_ledger", old + " (the live ledger is missing or holds no row: the shadow was not consulted)")
+        return
+    whole = len(ledger or b"") < LEDGER_TAIL  # the tail is the whole file
+    # The newest buy/skip/decision row: the one in the tail (the tail holds the newest bytes). With none there: no such row at all if the whole
+    # file was read, else one older than the tail's oldest row (its age unknown). `since_ms`: no such row is newer than this.
+    since_ms = last_ms if last_ms is not None else None if whole else oldest_ms
+    # The 24 h backstop, once LIVE_OK is older than 24 h. Known stale: the newest row is older than 24 h, or there is none and the whole file was
+    # read or the tail reaches back 24 h. A short tail with no such row leaves it unknown: not fired from that alone (the shadow still decides).
+    if now - t > IDLE_LEDGER_MAX_S:
+        if last_ms is not None:
+            stale = now - last_ms / 1000 > IDLE_LEDGER_MAX_S
+        else:
+            stale = whole or oldest_ms / 1000 <= now - IDLE_LEDGER_MAX_S
+            if not stale:
+                rep.info(f"the live ledger tail ({LEDGER_TAIL} bytes) reaches back less than {IDLE_LEDGER_MAX_S // 3600} h and holds no buy, skip or "
+                         "decision row: the 24 h backstop was not judged")
+        if stale:
+            rep.alert("h5_idle_ledger", f"LIVE_OK is {gate_h} h old and the live ledger has no buy, skip or decision row in the last "
+                                        f"{IDLE_LEDGER_MAX_S // 3600} h (the 24 h backstop, whatever the shadow shows): the canary has acted on "
+                                        "nothing for a day (feed, detector or executor)")
+            return
+    if seal:
+        # The EXP-022 seal window (IDLE_SEAL_START_S, no automatic end): the trigger-against-ledger judgement is skipped whole. The shadow's
+        # trigger records are not read, nothing below counts or names one; only pool closes, exclusions and skipped_no_sps records are read.
+        counts, why = shadow_idle_counts(host, shadow_dir, now)
+    else:
+        # A plain trigger is unledgered when it is newer than every row that could account for it: the newest buy/skip/decision row, the newest
+        # seal_count row (a seal refusal is counted, not ledgered), LIVE_OK itself, and at most IDLE_LEDGER_MAX_S back.
+        trig_lo = max(t, now - IDLE_LEDGER_MAX_S, *(ms / 1000 for ms in (since_ms, seal_ms) if ms is not None))
+        counts, why = shadow_idle_counts(host, shadow_dir, now, trig_lo)
+    if counts is None:  # fail closed: the old alert
+        rep.alert("h5_idle_ledger", f"{old} (the shadow window could not be judged: {why})")
+        return
+    # Round 4 on #589: every branch below ALERTS. Nothing main (fd90376) alerts on becomes an INFO: three review rounds each found a fault
+    # hidden behind the old "quiet market" INFO (a late RPC classifier, a late pick oracle in the seal window, a common-mode Q error, an
+    # executor stuck in a quiet market). The name tells the cause; h5_idle_quiet is the expected label in a quiet market.
+    pv, q, rh = SHADOW_TRIGGER_VARIANT, f"{Q_STAR_SOL:g}", IDLE_RECENT_S // 3600
+    unc = counts["unclassified_drained"]  # R-F2: drained plain closes of pools the shadow excluded as unclassified (not synthetic)
+    if unc == 1:  # named in whichever alert fires; never in an all-clear
+        unc_note = (f"; 1 plain pool close drained to <= {q} SOL after the shadow kept it out as unclassified at decision time "
+                    f"(h5_unclassified_drains needs {IDLE_MISSED_MIN})")
+    elif unc:  # an alert that outranks h5_unclassified_drains still names them
+        unc_note = (f"; {unc} plain pool closes drained to <= {q} SOL after the shadow kept them out as unclassified at decision time "
+                    "(check the shadow's RPC classifier)")
+    else:
+        unc_note = ""
+    if not seal and counts["unledgered"]:
+        back = -int(-(now - trig_lo) // 3600)  # whole hours, rounded up
+        rep.alert("h5_idle_unledgered", f"the detector wrote {counts['unledgered']} plain {pv} trigger(s) in the last {back} h, more than "
+                                        f"{IDLE_TRIGGER_GRACE_S // 60} min ago and after the live ledger's newest buy, skip or decision row, and the "
+                                        "ledger has no row for them: the executor is not reading the feed (bind, tail or crash)" + unc_note)
+    elif counts["missed"] >= IDLE_MISSED_MIN:
+        nosps = f" ({counts['missed_nosps']} with no usable sps)" if counts["missed_nosps"] else ""
+        rep.alert("h5_detector_missed", f"{counts['missed']} pool(s) in the last {hours} h are missed candidates{nosps}: plain closes drained to "
+                                        f"<= {q} SOL (min_q_pv_sol) without the {pv} rule firing, with no gap and the {IDLE_MINQ_SLOTS}-slot min_q "
+                                        f"window ending by {IDLE_MINQ_WINDOW_MAX_S:g} s (at the larger of sps_at_s0 and sps_last) or with sps_at_s0 "
+                                        f"not in ({SPS_LO:g}, {SPS_HI:g}) s/slot, and pools with a skipped_no_sps record (the rule cannot fire "
+                                        f"without sps); at least {IDLE_MISSED_MIN} needed (the rule fires only within 300 s with BOOST still buying, "
+                                        "so one pool can drain legitimately just after: check the shadow before calling it a detector fault)" + unc_note)
+    elif unc >= IDLE_MISSED_MIN:  # R-F2, the same text in the seal window (it holds no trigger word)
+        rep.alert("h5_unclassified_drains", f"{unc} plain pool closes drained to <= {q} SOL after the shadow kept them out as unclassified at decision "
+                                            "time: the canary got nothing from them; check the shadow's RPC classifier")
+    elif counts["missing"]:
+        rep.alert("h5_idle_ledger", f"{old} (the shadow window could not be judged: {counts['missing']} of its {counts['hours']} hourly files are "
+                                    "missing, the detector wrote nothing for a whole hour)" + unc_note)
+    elif counts["plain_pools"] < IDLE_MIN_PLAIN_POOLS or counts["plain_recent"] < IDLE_RECENT_MIN_PLAIN_POOLS:
+        sealed = (f"; {counts['sealed']} EXP-022 sealed close(s) not counted (a pick, or no pick-oracle answer at close)"
+                  if counts["sealed"] else "")
+        lead = "no missed drain" if seal else "no unledgered trigger and no missed drain"
+        rep.alert("h5_idle_ledger", f"{lead}, but {counts['plain_pools']} plain pool(s) closed in {hours} h and "
+                                    f"{counts['plain_recent']} in the last {rh} h (at least {IDLE_MIN_PLAIN_POOLS} and {IDLE_RECENT_MIN_PLAIN_POOLS} "
+                                    f"expected){sealed}: the detector is not tracking pools" + unc_note)
+    elif counts["judged"] < IDLE_MIN_PLAIN_POOLS:
+        rep.alert("h5_idle_ledger", f"{old} (the shadow window could not be judged: only {counts['judged']} of {counts['plain_pools']} plain pool "
+                                    f"closes carry a min_q_pv_sol, {counts['plain_pools'] - counts['judged']} withheld)" + unc_note)
+    else:
+        # h5_idle_quiet (round 4, M1): an ALERT, not an INFO. In the seal window no word "trigger" and no trigger count (QP-B1/B3).
+        m, a, n = counts["missed"], counts["ambiguous"], counts["judged"]
+        if not seal and counts["triggers_window"]:
+            lead = (f"probably not a fault: the {counts['triggers_window']} plain {pv} trigger(s) in {hours} h all came before the executor's newest "
+                    "seal_count row (EXP-022 seal refusals are counted, not ledgered)")
+        else:
+            lead = ("probably a quiet market, " + ("but not an all-clear" if (m or unc) else "not a fault") + ": "
+                    + (f"ledger idle {hours} h" if seal else f"no plain trigger in {hours} h"))
+        withheld = counts["plain_pools"] - n
+        body = f"{n} plain pool closes" + (f" ({withheld} more with min_q withheld, not judged)" if withheld else "") + ", "
+        if m:  # fewer than IDLE_MISSED_MIN: counted here, never an all-clear (#589 review R-F)
+            body += (f"{m} missed candidate(s) (no gap and a min_q window ending by {IDLE_MINQ_WINDOW_MAX_S:g} s, or no usable sps; "
+                     f"h5_detector_missed needs {IDLE_MISSED_MIN})")
+        else:
+            body += f"none drained to <= {q} SOL in a judgeable window"
+        if a:
+            body += (f"; {a} ambiguous (a gap or a {IDLE_MINQ_SLOTS}-slot min_q window past {IDLE_MINQ_WINDOW_MAX_S:g} s: possibly a drain "
+                     "after the rule's 300 s; never counted as missed)")
+        day = IDLE_LEDGER_MAX_S // 3600
+        clears = (f"It clears when the canary next acts; after {day} h idle, h5_idle_ledger (backstop) follows." if seal else
+                  f"It clears at the next plain trigger; if nothing is acted on for {day} h, h5_idle_ledger (backstop) follows.")
+        rep.alert("h5_idle_quiet", f"{lead}; {body}{unc_note}. {clears}")
+
+
+def idle_sealed(now: float) -> bool:
+    """True from IDLE_SEAL_START_S on, by the watchdog's own clock (never a pool's s0). No end: see IDLE_SEAL_START_S."""
+    return now >= IDLE_SEAL_START_S
+
+
+def ledger_idle_span(ledger: bytes) -> tuple[float | None, float | None, float | None]:
+    """(ts_ms of the newest buy/skip/decision row, ts_ms of the oldest row of any kind, ts_ms of the newest seal_count row) in a ledger tail;
+    None where there is none. A torn first line (the tail cut mid-row) does not parse and is skipped, and so is a row whose ts_ms is not a
+    finite number (json reads NaN and Infinity: an Infinity row must not make a silent ledger look fresh)."""
+    last = oldest = seal = None
+    for line in ledger.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        ts = row.get("ts_ms") if isinstance(row, dict) else None
+        if not _is_finite(ts):
+            continue
+        oldest = ts if oldest is None else min(oldest, ts)
+        kind = row.get("kind")
+        if kind in IDLE_KINDS:
+            last = ts if last is None else max(last, ts)
+        elif kind == IDLE_SEAL_KIND:
+            seal = ts if seal is None else max(seal, ts)
+    return last, oldest, seal
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _is_finite(v) -> bool:
+    return _is_num(v) and math.isfinite(v)
+
+
+def _sps_usable(v) -> bool:
+    """The shadow's sps_ok (tools/h5_shadow.py) for a value read from JSON: a finite number in the open interval (SPS_LO, SPS_HI)."""
+    return _is_finite(v) and SPS_LO < v < SPS_HI
+
+
+def shadow_hour_path(shadow_dir: str, hour: int) -> str:
+    return os.path.join(shadow_dir, time.strftime("h5-shadow-%Y-%m-%dT%H.jsonl", time.gmtime(hour * 3600)))
+
+
+def shadow_window_paths(shadow_dir: str, now: float) -> list[str]:
+    """The hourly shadow files covering [now - IDLE_LEDGER_S, now]: every UTC hour from that of the window's start to the current one (7)."""
+    return [shadow_hour_path(shadow_dir, h) for h in range(int((now - IDLE_LEDGER_S) // 3600), int(now // 3600) + 1)]
+
+
+def shadow_idle_counts(host: Host, shadow_dir: str, now: float, trig_lo: float | None = None) -> tuple[dict[str, int] | None, str]:
+    """Counts from the shadow's hourly files, or (None, why) when they cannot be read. Read through Host.read: lstat first (a symlink, a
+    hard-linked file, a non-regular file or one over MAX_READ is refused), then O_NOFOLLOW; one file in memory at a time. Only counts leave
+    here. No mint, pool, Q value or other per-pool field is printed or kept (pool names live in local sets, for uniqueness and joins).
+    Before IDLE_SEAL_START_S (by `now`, the watchdog's clock) only:
+      unledgered           distinct pools with a plain `trigger` record of the traded variant (synthetic the literal False) whose t_detect_ms
+                           (else t_recv_ms) is in (trig_lo, now - IDLE_TRIGGER_GRACE_S]. trig_lo (default: the window's start) is where the
+                           caller's ledger stops accounting for triggers; files back to its hour are read (at most 25), for triggers and
+                           exclusions only. The executor ledgers every plain pv trigger it reads, a refusal (STOP included) as a skip row
+      triggers_window      the same, over [now - IDLE_LEDGER_S, now - IDLE_TRIGGER_GRACE_S] whatever trig_lo is
+    From IDLE_SEAL_START_S on (no end) neither key is returned, trig_lo is ignored, and no `trigger` record is read: a line that starts as one
+    is skipped unparsed, and a parsed one is dropped (QP-B1/B3 on #589: a seal_pick leaves no ledger row).
+    Over the window [now - IDLE_LEDGER_S, now] (by the record's t_ms):
+      plain_pools          `pool` close records: not sealed, synthetic the literal False, synthetic_src "rpc"
+      plain_recent         of those, closed in the newest IDLE_RECENT_S
+      judged               of those, min_q_pv_sol a number and not h5_look2_sealed (the shadow withholds min_q for a Look-2-sealed pool).
+                           Above Q_STAR_SOL is quiet whatever the window; <= Q_STAR_SOL with the traded variant in `triggered` is triggered
+                           (`triggered` only classifies a close: no count of triggered pools is kept or returned)
+      missed               distinct pools: of the judged, min_q_pv_sol <= Q_STAR_SOL, the traded variant not in `triggered` (empty or missing
+                           included), the pool without an `excluded` record, and either sps_at_s0 failing the shadow's sps_ok (gap or no gap)
+                           or IDLE_MINQ_SLOTS * max(sps_at_s0, sps_last) <= IDLE_MINQ_WINDOW_MAX_S (sps_at_s0 alone when sps_last is not a
+                           finite number) with gap the literal False; plus every pool with a `skipped_no_sps` record in the window
+      missed_nosps         of the missed, those for want of sps (sps_at_s0 failing sps_ok, or a skipped_no_sps record)
+      ambiguous            the other drained, untriggered, not-excluded judged closes not already missed (a gap, or a min_q window past
+                           330 s: possibly a drain after the rule's 300 s): judged, never missed
+      unclassified_drained distinct pools (R-F2): of the judged, min_q_pv_sol <= Q_STAR_SOL, the traded variant not in `triggered`, and the
+                           pool with an `excluded` record whose reason is not IDLE_EXCLUDED_SKIP_REASON ("unclassified", or none named),
+                           not already missed (a skipped_no_sps record); never missed, ambiguous or quiet
+      sealed               EXP-022 sealed close records (no min_q, no triggered, no class): a count only
+      hours / missing      the window's hourly files, and how many do not exist (the current hour's may be absent for its first FEED_STALE_S)
+    `excluded` records (synthetic or unclassified pools) are never counted as activity; they are read from every file read (the files start
+    at the hour of the window's start - IDLE_EXCLUDED_LEAD_S) only to keep their pools out of missed and ambiguous, with the reason kept per
+    pool: a synthetic one is skipped silently, any other reason makes a drained close unclassified_drained."""
+    seal = idle_sealed(now)
+    win_lo = now - IDLE_LEDGER_S
+    win_lo_ms, recent_lo_ms = win_lo * 1000, (now - IDLE_RECENT_S) * 1000
+    win_h, now_h = int(win_lo // 3600), int(now // 3600)
+    first_h = int((win_lo - IDLE_EXCLUDED_LEAD_S) // 3600)
+    if not seal:
+        trig_lo = max(win_lo if trig_lo is None else trig_lo, now - IDLE_LEDGER_MAX_S)
+        trig_lo_ms, hi_ms = trig_lo * 1000, (now - IDLE_TRIGGER_GRACE_S) * 1000
+        first_h = min(first_h, int(trig_lo // 3600))  # at most 25 files
+    trig: set = set()
+    trig_win: set = set()
+    excluded: dict = {}  # pool -> the reasons of its `excluded` records (R-F2: only IDLE_EXCLUDED_SKIP_REASON is skipped silently)
+    skipped: set = set()
+    drained: list = []  # (pool, sps_at_s0, sps_last, gap) of the judged closes drained without a pv trigger: classified once every exclusion is in
+    plain = recent = judged = sealed = files = win_files = missing = 0
+    for h in range(first_h, now_h + 1):
+        path, in_win = shadow_hour_path(shadow_dir, h), h >= win_h
+        try:
+            raw = host.read(path)
+        except (SudoError, Unsafe) as exc:
+            return None, str(exc)  # names the path and why, never content
+        except OSError as exc:
+            return None, f"{os.path.basename(path)}: {type(exc).__name__}"
+        if raw is None:
+            if in_win and not (h == now_h and now - h * 3600 < FEED_STALE_S):
+                missing += 1
+            continue
+        files += 1
+        win_files += in_win
+        for line in raw.splitlines():
+            if seal and line.startswith(TRIGGER_MARK):
+                continue  # the seal window: a trigger record is not even parsed
+            if not ((in_win and b'"pool"' in line) or b'"excluded"' in line or (not seal and b'"trigger"' in line)):
+                continue  # hb, gap, outcome ...: not parsed
             try:
-                row = json.loads(line)
+                rec = json.loads(line)
             except ValueError:
+                continue  # a line still being written
+            if not isinstance(rec, dict):
                 continue
-            if isinstance(row, dict) and row.get("kind") in IDLE_KINDS and isinstance(row.get("ts_ms"), (int, float)):
-                last = max(last, row["ts_ms"] / 1000.0)
-        if now - last > IDLE_LEDGER_S:
-            rep.alert("h5_idle_ledger", f"LIVE_OK is {int((now - t) // 3600)} h old and the live ledger has no buy, skip or decision row in the last "
-                                        f"{IDLE_LEDGER_S // 3600} h: the canary sees no triggers (feed, detector or executor)")
+            kind = rec.get("type")
+            if kind == "trigger":
+                if seal:
+                    continue  # never read in the seal window (one not written with "type" first is dropped here, unused)
+                if rec.get("variant") != SHADOW_TRIGGER_VARIANT or rec.get("synthetic") is not False:
+                    continue
+                ts = rec.get("t_detect_ms") if _is_num(rec.get("t_detect_ms")) else rec.get("t_recv_ms")
+                if not _is_num(ts) or ts > hi_ms:
+                    continue
+                if ts > trig_lo_ms:
+                    trig.add(str(rec.get("pool")))
+                if ts >= win_lo_ms:
+                    trig_win.add(str(rec.get("pool")))
+            elif kind == "excluded":
+                if isinstance(rec.get("pool"), str):
+                    excluded.setdefault(rec["pool"], set()).add(rec.get("reason") if isinstance(rec.get("reason"), str) else None)
+            elif kind == "skipped_no_sps" and in_win:
+                t_ms = rec.get("t_ms")
+                if not (_is_num(t_ms) and t_ms < win_lo_ms):
+                    skipped.add(rec["pool"] if isinstance(rec.get("pool"), str) else object())  # no pool name: counted, never merged
+            elif kind == "pool" and in_win:
+                t_ms = rec.get("t_ms")
+                if _is_num(t_ms) and t_ms < win_lo_ms:  # the window's first file: closed before the window
+                    continue
+                if rec.get("sealed") is True:
+                    sealed += 1
+                    continue
+                if rec.get("synthetic") is not False or rec.get("synthetic_src") != SHADOW_PLAIN_SRC:
+                    continue
+                plain += 1
+                if (t_ms >= recent_lo_ms) if _is_num(t_ms) else (h + 1) * 3600 > now - IDLE_RECENT_S:
+                    recent += 1
+                q = rec.get("min_q_pv_sol")
+                if not _is_num(q) or rec.get("h5_look2_sealed") is True:
+                    continue  # withheld: neither drained nor not drained
+                judged += 1
+                tr = rec.get("triggered")
+                if q > Q_STAR_SOL or (isinstance(tr, list) and SHADOW_TRIGGER_VARIANT in tr):
+                    continue  # quiet (whatever the window), or triggered
+                pool = rec["pool"] if isinstance(rec.get("pool"), str) else object()
+                drained.append((pool, rec.get("sps_at_s0"), rec.get("sps_last"), rec.get("gap")))
+    hours = now_h - win_h + 1
+    if not win_files:
+        return None, f"no h5-shadow-<hour>.jsonl in {shadow_dir} for the last {IDLE_LEDGER_S // 3600} h"
+    inwin: set = set()
+    nosps: set = set(skipped)
+    amb: set = set()
+    unc: set = set()
+    for pool, sps0, sps_last, gap in drained:
+        reasons = excluded.get(pool)
+        if reasons:  # R-F: its trigger was withheld at decision time (it may close plain, triggered [])
+            if reasons - {IDLE_EXCLUDED_SKIP_REASON}:
+                unc.add(pool)  # R-F2: excluded for another reason (unclassified, or none named) yet closed plain and drained: the canary got nothing
+            continue  # synthetic: withheld by design
+        if not _sps_usable(sps0):
+            nosps.add(pool)  # R-B1: the rule cannot fire without sps, gap or no gap
+            continue
+        sps = max(sps0, sps_last) if _is_finite(sps_last) else sps0
+        (inwin if IDLE_MINQ_SLOTS * sps <= IDLE_MINQ_WINDOW_MAX_S and gap is False else amb).add(pool)
+    missed = inwin | nosps
+    out = {"files": files, "hours": hours, "missing": missing, "plain_pools": plain, "plain_recent": recent, "judged": judged,
+           "missed": len(missed), "missed_nosps": len(nosps), "ambiguous": len(amb - missed), "unclassified_drained": len(unc - missed),
+           "sealed": sealed}
+    if not seal:
+        out.update(unledgered=len(trig), triggers_window=len(trig_win))
+    return out, ""
 
 
 def check_look2_flag(host: Host, rep: Report, live_ok: bool, shadow_dir: str, now: float) -> None:

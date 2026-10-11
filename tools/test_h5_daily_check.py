@@ -2,12 +2,15 @@
 against a temp dir and a recording fake of sudo for the reads. No sudo, no network, no key."""
 from __future__ import annotations
 
+import calendar
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -356,6 +359,7 @@ def test_idle_canary_alerts(tmp_path):
 
     rc, out = run("silent", silent)
     assert "h5_idle_ledger" in alerts(out)
+    assert "the shadow window could not be judged" in out  # no shadow file for the window: the old alert (fail closed)
     rc, out = run("talking", lambda h: (silent(h), h.files.__setitem__(f"{H5}/live/h5-ledger.jsonl", h.files[f"{H5}/live/h5-ledger.jsonl"] + ledger({"kind": "skip", "ts_ms": int((NOW - 3600) * 1000)}))))
     assert "h5_idle_ledger" not in alerts(out)
     rc, out = run("young_gate", lambda h: (silent(h), h.mtimes.__setitem__(dc.LIVE_OK, NOW - 3600))[0])
@@ -366,6 +370,789 @@ def test_idle_canary_alerts(tmp_path):
         assert "h5_watch_timer" in alerts(out)
     rc, out = run("watch_missing", lambda h: setattr(h, "watch_props", {"LoadState": "not-found", "ActiveState": "inactive", "UnitFileState": ""}))
     assert "h5_watch_timer" in alerts(out)
+
+
+# ---- h5_idle_ledger judged against the shadow (2026-10-11: a quiet market raised it at ~00:25Z; jobs #672-#676) -----------------
+SHADOW_DIR = "/nowhere"  # what go() passes as --shadow-dir
+# The EXP-022 seal window of the idle check (dc.IDLE_SEAL_START_S, pinned to tools/h5_executor.py SEAL_START_MS): from this instant, by the
+# watchdog's clock, no trigger is judged against the ledger (QP-B1/B3 on #589). The worlds that need h5_idle_unledgered run before it.
+SEAL_START = calendar.timegm((2026, 10, 16, 1, 0, 0))
+T = calendar.timegm((2026, 10, 15, 0, 25, 0))  # before the seal; 25 minutes into an hour, like the 00:25Z alert: the 6 h window spans 7 hourly files
+T_SEAL = SEAL_START + 25 * 60  # 2026-10-16T01:25Z: in the seal window
+T_SEAL_LAST = calendar.timegm((2026, 11, 6, 1, 25, 0))  # the last hour before the executor's default seal_end_ms (2026-11-06T02Z)
+T_LATE = NOW + 25 * 60  # 2027-01-15T08:25Z: after any default seal end; the switch has no automatic end
+OLD_IDLE = "the live ledger has no buy, skip or decision row in the last 6 h: the canary sees no triggers (feed, detector or executor)"
+OLD_IDLE_SEAL = "the live ledger has no buy, skip or decision row in the last 6 h: the canary has acted on nothing (feed, detector or executor)"
+# Round 4 on #589: every branch of the idle judgement ALERTS; the quiet-market branch is h5_idle_quiet, never an INFO.
+QUIET = "ALERT h5_idle_quiet: probably a quiet market, not a fault: no plain trigger in 6 h; "
+QUIET_SEAL = "ALERT h5_idle_quiet: probably a quiet market, not a fault: ledger idle 6 h; "
+NOT_CLEAR = "ALERT h5_idle_quiet: probably a quiet market, but not an all-clear: no plain trigger in 6 h; "  # a missed candidate or unclassified drain
+NOT_CLEAR_SEAL = "ALERT h5_idle_quiet: probably a quiet market, but not an all-clear: ledger idle 6 h; "
+NONE_DRAINED = "none drained to <= 40 SOL in a judgeable window"
+CLEARS = ". It clears at the next plain trigger; if nothing is acted on for 24 h, h5_idle_ledger (backstop) follows."
+CLEARS_SEAL = ". It clears when the canary next acts; after 24 h idle, h5_idle_ledger (backstop) follows."
+CAND = "missed candidate(s) (no gap and a min_q window ending by 330 s, or no usable sps; h5_detector_missed needs 2)"
+AMBIGUOUS = "ambiguous (a gap or a 1500-slot min_q window past 330 s: possibly a drain after the rule's 300 s; never counted as missed)"
+UNC_ONE = "1 plain pool close drained to <= 40 SOL after the shadow kept it out as unclassified at decision time (h5_unclassified_drains needs 2)"
+# the alert family of the idle judgement: main's h5_idle_ledger and the names it splits into
+IDLE_ALERTS = {"h5_idle_ledger", "h5_idle_unledgered", "h5_detector_missed", "h5_unclassified_drains", "h5_idle_quiet"}
+
+
+def ms(t: float) -> int:
+    return int(t * 1000)
+
+
+def shadow_files(*recs, directory: str = SHADOW_DIR) -> dict[str, bytes]:
+    """Records grouped into the shadow's hourly files by their t_ms (compact JSON, "type" first, as JsonlSink writes them)."""
+    out: dict[str, bytes] = {}
+    for r in recs:
+        path = f"{directory}/h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(r['t_ms'] / 1000))}.jsonl"
+        out[path] = out.get(path, b"") + (json.dumps(r, separators=(",", ":")) + "\n").encode()
+    return out
+
+
+def s_trigger(t: float, pool: str = "POOLSECRET1", variant: str = "pv", synthetic=False) -> dict:
+    return {"type": "trigger", "variant": variant, "pool": pool, "mint": "MINTSECRET" + pool, "s0": 1, "t_recv_ms": ms(t) - 40,
+            "t_detect_ms": ms(t), "q_trigger_sol": 37.25, "synthetic": synthetic, "synthetic_src": "rpc", "v": 1, "t_ms": ms(t)}
+
+
+def s_pool(t: float, n: int, min_q=61.5, triggered=(), synthetic=False, src="rpc", sealed=False, look2=False, sps=0.217, gap=False,
+           sps_last=None) -> dict:
+    """A shadow `pool` close record. sps_at_s0 0.217 s/slot (the usual since go-live): min_q's 1500 slots end at 325.5 s, within 330 s."""
+    if sealed:  # the EXP-022 s9 close record: no min_q, no triggered, no class
+        return {"type": "pool", "reason": "done", "sealed": True, "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "sps_at_s0": sps, "v": 1,
+                "t_ms": ms(t)}
+    rec = {"type": "pool", "reason": "done", "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "sps_at_s0": sps, "sps_last": sps_last,
+           "min_q_pv_sol": min_q, "min_q_fv_sol": min_q, "sealed": False, "triggered": list(triggered), "synthetic": synthetic,
+           "synthetic_src": src, "gap": gap, "v": 1, "t_ms": ms(t)}
+    if look2:  # EXP-024 Look 2's seal: the shadow writes min_q None with this flag (a number here tests the flag alone)
+        rec["h5_look2_sealed"] = True
+    return rec
+
+
+def s_excluded(t: float, n: int, reason: str = "unclassified") -> dict:
+    """The shadow's `excluded` record (_exclude): a trigger withheld because the pool was synthetic or unclassified at decision time."""
+    return {"type": "excluded", "reason": reason, "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "s0": 1, "slot": 2, "v": 1, "t_ms": ms(t)}
+
+
+def s_skipped(t: float, n: int) -> dict:
+    """The shadow's `skipped_no_sps` record (_eval): a would-be trigger candidate the rule could not judge for want of sps."""
+    return {"type": "skipped_no_sps", "pool": f"POOLSECRET{n}", "mint": f"MINTSECRET{n}", "s0": 1, "slot": 400, "slot_offset": 399, "sps": None,
+            "t_recv_ms": ms(t) - 40, "signature": "SIGSECRET", "q_pv_post_sol": 38.2, "q_fv_post_sol": 38.2, "boost_spent_sol": 1.0,
+            "boost_src": "pda", "v": 1, "t_ms": ms(t)}
+
+
+def spread(n: int, older_s: float, newer_s: float, first: int = 0, now: float = T, **kw) -> list[dict]:
+    """n plain pool closes evenly in [now - older_s, now - newer_s], not drained (min_q 41-90 SOL)."""
+    step = (older_s - newer_s) / max(1, n - 1)
+    return [s_pool(now - older_s + i * step, first + i, **{"min_q": 41.0 + i % 50, **kw}) for i in range(n)]
+
+
+def quiet_pools(n: int = 108, now: float = T, **kw) -> list[dict]:
+    """n plain pool closes spread over the 6 h before `now`, none drained to <= 40 SOL (108: 19Z-00Z on 2026-10-10, job #676)."""
+    return spread(n, 6 * 3600 - 60, 60, now=now, **kw)
+
+
+def idle_world(*recs, ledger_rows=None, now: float = T, cls=None) -> FakeHost:
+    """LIVE_OK 28 h old; the ledger's newest buy/skip/decision row 19 h old with feed rows since (the 2026-10-11 ledger: boost_last_slice,
+    feed_gap ... and no buy, skip or decision row); the shadow from `recs`; the feed, the watchdog and the shadow directory's birth at `now`."""
+    h = (cls or FakeHost)()
+    h.mtimes[dc.LIVE_OK] = now - 28 * 3600
+    h.feed = ("h5-shadow-hour.jsonl", now - 60)
+    h.birth_t = now - 86400  # older than the unit's current run (an hour): the unit's bind is the real directory
+    h.files[dc.WATCH_STATE] = json.dumps({"ts": now - 120}).encode()
+    rows = ledger_rows if ledger_rows is not None else (
+        {"kind": "start", "user": dc.WALLET, "ts_ms": ms(now - 28 * 3600)}, {"kind": "decision", "ts_ms": ms(now - 20 * 3600)},
+        {"kind": "skip", "reason": "stop_file", "ts_ms": ms(now - 19 * 3600)}, {"kind": "boost_last_slice", "ts_ms": ms(now - 7200)},
+        {"kind": "boost_row_ignored", "ts_ms": ms(now - 3600)}, {"kind": "feed_reconnect", "ts_ms": ms(now - 600)}, {"kind": "feed_gap", "ts_ms": ms(now - 60)})
+    h.files[f"{H5}/live/h5-ledger.jsonl"] = ledger(*rows)
+    h.files.update(shadow_files(*recs))
+    return h
+
+
+def no_per_pool_values(out: str) -> bool:
+    return "SECRET" not in out and "37.25" not in out and "38.2" not in out and "61.5" not in out
+
+
+def unc_alert(n: int) -> str:
+    return (f"ALERT h5_unclassified_drains: {n} plain pool closes drained to <= 40 SOL after the shadow kept them out as unclassified at decision "
+            "time: the canary got nothing from them; check the shadow's RPC classifier")
+
+
+def lines_of(out: str) -> list[str]:
+    return out.splitlines()
+
+
+def missed_alert(n: int, nosps: int = 0) -> str:
+    return (f"ALERT h5_detector_missed: {n} pool(s) in the last 6 h are missed candidates" + (f" ({nosps} with no usable sps)" if nosps else "")
+            + ": plain closes drained to <= 40 SOL (min_q_pv_sol) without the pv rule firing, with no gap and the 1500-slot min_q window ending by "
+              "330 s (at the larger of sps_at_s0 and sps_last) or with sps_at_s0 not in (0.15, 0.6) s/slot, and pools with a skipped_no_sps record "
+              "(the rule cannot fire without sps); at least 2 needed (the rule fires only within 300 s with BOOST still buying, so one pool can "
+              "drain legitimately just after: check the shadow before calling it a detector fault)")
+
+
+def test_idle_ledger_in_a_quiet_market_is_the_h5_idle_quiet_alert(tmp_path):
+    """Round 4 on #589 (M1): the quiet-market branch ALERTS as h5_idle_quiet (it was an INFO). Three review rounds each found a fault hidden
+    behind that INFO; the watchdog posts it when new and every 6 h, and it clears at the next ledgered row."""
+    excluded = [{"type": "excluded", "reason": "synthetic", "pool": f"POOLSECRETX{i}", "mint": "MINTSECRETX", "s0": 1, "slot": 2, "v": 1,
+                 "t_ms": ms(T - 3600 * i)} for i in range(1, 6)]  # synthetic exclusions: silent by design, never activity
+    hb = [{"type": "hb", "counters": {"triggers_pv": 9, "pools_tracked": 400, "excluded_synthetic": 41}, "v": 1, "t_ms": ms(T - 60 * i)} for i in range(1, 60)]
+    h = idle_world(*quiet_pools(), *excluded, *hb, s_pool(T - 3000, 900, min_q=30.0, synthetic=True, src="ws"),  # synthetic, drained: not plain
+                   s_pool(T - 2000, 901, sealed=True))  # sealed: no min_q, skipped
+    rc, out = go(h, tmp=tmp_path, now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"], out
+    assert ("ALERT h5_idle_quiet: probably a quiet market, not a fault: no plain trigger in 6 h; 108 plain pool closes, none drained to <= 40 SOL in "
+            "a judgeable window. It clears at the next plain trigger; if nothing is acted on for 24 h, h5_idle_ledger (backstop) follows.") in lines_of(out)
+    assert not [x for x in lines_of(out) if x.startswith("INFO") and "quiet" in x] and no_per_pool_values(out)
+
+
+def test_idle_ledger_plain_triggers_without_a_ledger_row_mean_the_executor_is_not_reading(tmp_path):
+    base = quiet_pools()
+    h = idle_world(*base, s_trigger(T - 3 * 3600), s_trigger(T - 3 * 3600 + 0.4, variant="fv"),  # one pool, both variants: counted once
+                   s_trigger(T - 2 * 3600, pool="POOLSECRET2"), s_trigger(T - 2 * 3600, pool="POOLSECRET2"))
+    rc, out = go(h, tmp=tmp_path / "two", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_unledgered"], out
+    assert ("the detector wrote 2 plain pv trigger(s) in the last 19 h, more than 5 min ago and after the live ledger's newest buy, skip or decision "
+            "row, and the ledger has no row for them: the executor is not reading the feed (bind, tail or crash)") in out
+    assert no_per_pool_values(out)
+    no_detect = {k: v for k, v in s_trigger(T - 3600).items() if k != "t_detect_ms"}  # t_recv_ms is the fallback
+    rc, out = go(idle_world(*base, no_detect), tmp=tmp_path / "recv", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"] and "wrote 1 plain pv trigger(s)" in out
+    # not counted: the fv variant alone (the executor never trades it), a trigger not marked plain, one still in flight (5 min grace),
+    # one before the ledger's newest skip row (19 h ago), and a drained-and-triggered pool's close record with no trigger record
+    for name, rec in {"fv only": s_trigger(T - 3 * 3600, variant="fv"), "synthetic null": s_trigger(T - 3 * 3600, synthetic=None),
+                      "synthetic true": s_trigger(T - 3 * 3600, synthetic=True), "in flight": s_trigger(T - 200),
+                      "before the newest row": s_trigger(T - 19 * 3600 - 300), "close only": s_pool(T - 3600, 999, min_q=12.0, triggered=["fv", "pv"])}.items():
+        rc, out = go(idle_world(*base, rec), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert alerts(out) == ["h5_idle_quiet"] and QUIET in out, (name, out)
+    rc, out = go(idle_world(*base, s_trigger(T - 301)), tmp=tmp_path / "grace_edge", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"]  # just past the grace
+
+
+def test_idle_ledger_an_unledgered_trigger_older_than_6_h_still_alerts(tmp_path):
+    """#589 review B1: a stuck executor whose last unledgered trigger is more than 6 h old must not read as a quiet market. The probe: last
+    decision 20 h ago, one plain pv trigger 7 h ago with no ledger row, 108 quiet plain pools, LIVE_OK 28 h old."""
+    rows = ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(T - 28 * 3600)}, {"kind": "decision", "ts_ms": ms(T - 20 * 3600)},
+            {"kind": "feed_gap", "ts_ms": ms(T - 60)})
+    rc, out = go(idle_world(*quiet_pools(), s_trigger(T - 7 * 3600), ledger_rows=rows), tmp=tmp_path / "7h", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_unledgered"] and "quiet market" not in out, out
+    assert "wrote 1 plain pv trigger(s) in the last 20 h" in out and no_per_pool_values(out)
+    rc, out = go(idle_world(*quiet_pools(), s_trigger(T - 20 * 3600 + 60), ledger_rows=rows), tmp=tmp_path / "20h", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"]  # a minute after the newest decision row
+    rc, out = go(idle_world(*quiet_pools(), s_trigger(T - 20 * 3600 - 60), ledger_rows=rows), tmp=tmp_path / "before", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out  # before it: that row may be its own
+    h = idle_world(*quiet_pools(), s_trigger(T - 7 * 3600), ledger_rows=rows)
+    h.mtimes[dc.LIVE_OK] = T - 6.5 * 3600  # the gate opened after the trigger: the live executor was never meant to see it
+    rc, out = go(h, tmp=tmp_path / "pre_gate", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out
+    # no buy, skip or decision row at all (the whole file read), LIVE_OK 20 h old: looked for back to the gate
+    rows = ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(T - 20 * 3600)}, {"kind": "feed_gap", "ts_ms": ms(T - 60)})
+    h = idle_world(*quiet_pools(), s_trigger(T - 15 * 3600), ledger_rows=rows)
+    h.mtimes[dc.LIVE_OK] = T - 20 * 3600
+    rc, out = go(h, tmp=tmp_path / "none", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"] and "in the last 20 h" in out
+    # never further back than 24 h, whatever the caller asks (the 24 h backstop has an older case)
+    for t_trig in (T - 25 * 3600, T - 24 * 3600 - 60):  # in an older hour's file, and in the oldest file read but before the 24 h
+        assert dc.shadow_idle_counts(idle_world(s_trigger(t_trig), *quiet_pools()), SHADOW_DIR, T, T - 26 * 3600)[0]["unledgered"] == 0
+    assert dc.shadow_idle_counts(idle_world(s_trigger(T - 24 * 3600 + 60), *quiet_pools()), SHADOW_DIR, T, T - 26 * 3600)[0]["unledgered"] == 1
+
+
+def test_idle_ledger_a_seal_count_row_accounts_for_the_triggers_before_it(tmp_path):
+    """#589 review F5: the executor's EXP-022 seal refuses a trigger with a count (a `seal_count` row), not a skip row. QP-B4 (4): a world
+    that needs the unledgered judgement runs before 2026-10-16T01Z (T); from then on the judgement is off (QP-B1/B3), checked below."""
+    def sealed_rows(now, t_seal):
+        return ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(now - 28 * 3600)}, {"kind": "decision", "ts_ms": ms(now - 20 * 3600)},
+                {"kind": "seal_count", "seal_skips": 4, "ts_ms": ms(t_seal)}, {"kind": "feed_gap", "ts_ms": ms(now - 60)})
+
+    trig = (s_trigger(T - 3 * 3600), s_trigger(T - 2 * 3600, pool="POOLSECRET2"))
+    rc, out = go(idle_world(*quiet_pools(), *trig, ledger_rows=sealed_rows(T, T - 2 * 3600 + 30)), tmp=tmp_path / "after", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"], out
+    assert ("ALERT h5_idle_quiet: probably not a fault: the 2 plain pv trigger(s) in 6 h all came before the executor's newest seal_count row "
+            "(EXP-022 seal refusals are counted, not ledgered); 108 plain pool closes, " + NONE_DRAINED + CLEARS) in lines_of(out)
+    assert no_per_pool_values(out)
+    rc, out = go(idle_world(*quiet_pools(), *trig, ledger_rows=sealed_rows(T, T - 2.5 * 3600)), tmp=tmp_path / "between", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"] and "wrote 1 plain pv trigger(s)" in out  # the newer one came after the newest seal_count row
+    # the same two worlds in the seal window: no trigger is judged or counted, whatever the seal_count row says
+    trig = (s_trigger(T_SEAL - 3 * 3600), s_trigger(T_SEAL - 2 * 3600, pool="POOLSECRET2"))
+    for name, t_seal in {"after": T_SEAL - 2 * 3600 + 30, "between": T_SEAL - 2.5 * 3600}.items():
+        h = idle_world(*quiet_pools(now=T_SEAL), *trig, ledger_rows=sealed_rows(T_SEAL, t_seal), now=T_SEAL)
+        rc, out = go(h, tmp=tmp_path / f"seal_{name}", now=T_SEAL)
+        assert rc == 1 and alerts(out) == ["h5_idle_quiet"], (name, out)
+        assert QUIET_SEAL + "108 plain pool closes, " + NONE_DRAINED + CLEARS_SEAL in lines_of(out)
+        assert "trigger" not in out.lower() and "seal_count" not in out and no_per_pool_values(out), (name, out)
+
+
+def test_idle_ledger_in_the_exp022_seal_window_judges_no_trigger_against_the_ledger(tmp_path, monkeypatch):
+    """QP-B1/B3/B4 on #589: from 2026-10-16T01Z a healthy executor leaves a shadow plain pv trigger without a ledger row only on seal_pick
+    (_refuse writes nothing for it), so counting triggers against the ledger would count executor-picked mints that drained (DEC-024 Am.6 items
+    4(a) and 5). From then on, by the watchdog's clock and with no automatic end, the judgement is skipped whole: no h5_idle_unledgered, no
+    trigger count, no trigger wording, and no trigger record read."""
+    def world(now, t_trig):  # a plain pv trigger older than 5 min, no ledger row after it, 6 h (here 19 h) of ledger silence, 108 quiet pools
+        return idle_world(*quiet_pools(now=now), s_trigger(t_trig), now=now)
+
+    # (2) before the seal window the world alerts, up to the last second before it
+    for name, now in {"T": T, "last second": SEAL_START - 1}.items():
+        rc, out = go(world(now, now - 3600), tmp=tmp_path / f"pre_{name.replace(' ', '_')}", now=now)
+        assert rc == 1 and alerts(out) == ["h5_idle_unledgered"] and "wrote 1 plain pv trigger(s)" in out, (name, out)
+    # (1) inside [2026-10-16T01Z, 2026-11-06T02Z), and after it (no automatic end): suppressed, the pool-close h5_idle_quiet ALERT (round 4),
+    # the word "trigger" nowhere
+    for name, now in {"seal": T_SEAL, "mid": T_SEAL + 10 * 86400, "last hour": T_SEAL_LAST, "2027": T_LATE}.items():
+        rc, out = go(world(now, now - 3600), tmp=tmp_path / f"in_{name.replace(' ', '_')}", now=now)
+        assert rc == 1 and alerts(out) == ["h5_idle_quiet"], (name, out)
+        assert ("ALERT h5_idle_quiet: probably a quiet market, not a fault: ledger idle 6 h; 108 plain pool closes, none drained to <= 40 SOL in a "
+                "judgeable window. It clears when the canary next acts; after 24 h idle, h5_idle_ledger (backstop) follows.") in lines_of(out), (name, out)
+        assert "trigger" not in out.lower() and no_per_pool_values(out), (name, out)
+    rc, out = go(world(SEAL_START, SEAL_START - 3600), tmp=tmp_path / "first_second", now=SEAL_START)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET_SEAL in out and "trigger" not in out.lower(), out
+    # (3) a trigger detected before 01:00Z and judged after it: suppressed (keyed on the watchdog's clock, not on the trigger's or a pool's time)
+    rc, out = go(world(T_SEAL, SEAL_START - 600), tmp=tmp_path / "straddle", now=T_SEAL)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"] and "trigger" not in out.lower(), out
+    # nothing returned carries a trigger count, and no trigger record is parsed: neither the type-first form JsonlSink writes nor another order
+    other_order = {"variant": "pv", **s_trigger(T_SEAL - 1800, pool="POOLSECRET3")}  # "type" not first: parsed, then dropped unused
+    h = idle_world(*quiet_pools(now=T_SEAL), s_trigger(T_SEAL - 3600), other_order, now=T_SEAL)
+    parsed: list[str] = []
+    real_loads = dc.json.loads
+    monkeypatch.setattr(dc.json, "loads", lambda s, *a, **k: (parsed.append(s if isinstance(s, str) else s.decode()), real_loads(s, *a, **k))[1])
+    counts, why = dc.shadow_idle_counts(h, SHADOW_DIR, T_SEAL, T_SEAL - 20 * 3600)  # a trig_lo passed anyway is ignored
+    monkeypatch.undo()
+    assert counts is not None and "unledgered" not in counts and "triggers_window" not in counts, (counts, why)
+    assert not [p for p in parsed if p.startswith('{"type":"trigger"')] and len([p for p in parsed if '"trigger"' in p]) == 1
+    assert counts == dc.shadow_idle_counts(idle_world(*quiet_pools(now=T_SEAL), now=T_SEAL), SHADOW_DIR, T_SEAL)[0]  # as if there were none
+    pre = dc.shadow_idle_counts(world(T, T - 3600), SHADOW_DIR, T)[0]
+    assert (pre["unledgered"], pre["triggers_window"]) == (1, 1)
+    # the seal window reads no file older than the window (the pre-seal look-back is for triggers): an unreadable one 10 h back is not opened
+    h = world(T_SEAL, T_SEAL - 3600)
+    h.files[dc.shadow_hour_path(SHADOW_DIR, int((T_SEAL - 10 * 3600) // 3600))] = b""
+    h.unreadable[dc.shadow_hour_path(SHADOW_DIR, int((T_SEAL - 10 * 3600) // 3600))] = PermissionError(13, "Permission denied")
+    rc, out = go(h, tmp=tmp_path / "old_unreadable", now=T_SEAL)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET_SEAL in out, out
+    h = world(T, T - 3600)  # ... while before the seal it is read (for triggers), so the same file fails the check closed
+    h.unreadable[dc.shadow_hour_path(SHADOW_DIR, int((T - 10 * 3600) // 3600))] = PermissionError(13, "Permission denied")
+    rc, out = go(h, tmp=tmp_path / "old_unreadable_pre", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "PermissionError" in out
+
+
+def test_idle_ledger_in_the_seal_window_keeps_the_shadow_only_alerts_without_trigger_words(tmp_path):
+    """In the seal window liveness rests on the plain-pool quorum, h5_detector_missed (shadow-only facts about non-sealed pools), the fail-closed
+    old alert and the 24 h backstop: each still fires, and none prints the word "trigger" or a count of triggered pools."""
+    base = quiet_pools(now=T_SEAL)
+    # `triggered` still classifies a close (a drained pool with pv in it is not missed), but no count of triggered pools is printed: the line
+    # for 108 quiet + 2 drained-and-triggered closes is the line for 110 quiet ones
+    trig2 = [s_pool(T_SEAL - 3600 - i, 500 + i, min_q=12.0, triggered=["pv"]) for i in range(2)]
+    rc, out = go(idle_world(*base, *trig2, now=T_SEAL), tmp=tmp_path / "triggered", now=T_SEAL)
+    quiet2 = [s_pool(T_SEAL - 3600 - i, 500 + i) for i in range(2)]  # the same closes, not drained
+    rc2, out2 = go(idle_world(*base, *quiet2, now=T_SEAL), tmp=tmp_path / "quiet2", now=T_SEAL)
+    line = [x for x in out.splitlines() if x.startswith(QUIET_SEAL)]
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"] and line == [x for x in out2.splitlines() if x.startswith(QUIET_SEAL)], (out, out2)
+    assert line == [QUIET_SEAL + "110 plain pool closes, " + NONE_DRAINED + CLEARS_SEAL] and "trigger" not in out.lower()
+    # two drained closes without pv: h5_detector_missed, worded on pool closes
+    drained = [s_pool(T_SEAL - 3600 - i, 500 + i, min_q=30.0) for i in range(2)]
+    rc, out = go(idle_world(*base, *drained, now=T_SEAL), tmp=tmp_path / "missed", now=T_SEAL)
+    assert rc == 1 and alerts(out) == ["h5_detector_missed"] and missed_alert(2) in out and "trigger" not in out.lower(), out
+    # one: named in the h5_idle_quiet ALERT, which is not worded as an all-clear
+    rc, out = go(idle_world(*base, drained[0], now=T_SEAL), tmp=tmp_path / "one", now=T_SEAL)
+    assert alerts(out) == ["h5_idle_quiet"] and (NOT_CLEAR_SEAL + "109 plain pool closes, 1 " + CAND + CLEARS_SEAL) in lines_of(out), out
+    assert "not a fault" not in out and "trigger" not in out.lower()
+    # skipped_no_sps records (non-sealed pools only) count in the seal window too
+    rc, out = go(idle_world(*base, s_skipped(T_SEAL - 3600, 700), s_skipped(T_SEAL - 1800, 701), now=T_SEAL), tmp=tmp_path / "nosps", now=T_SEAL)
+    assert alerts(out) == ["h5_detector_missed"] and missed_alert(2, 2) in out and "trigger" not in out.lower(), out
+    # too few plain closes: the not-tracking alert without "no unledgered trigger"
+    rc, out = go(idle_world(*quiet_pools(29, now=T_SEAL), now=T_SEAL), tmp=tmp_path / "few", now=T_SEAL)
+    assert alerts(out) == ["h5_idle_ledger"] and ("ALERT h5_idle_ledger: no missed drain, but 29 plain pool(s) closed in 6 h and 10 in the last 2 h "
+                                                  "(at least 30 and 10 expected): the detector is not tracking pools") in out, out
+    assert "trigger" not in out.lower()
+    # fail closed (no shadow file, a missing hour, withheld min_q, no ledger row): the old alert, worded without "triggers"
+    h = idle_world(*quiet_pools(200, now=T_SEAL), now=T_SEAL)
+    h.files.pop(sorted(dc.shadow_window_paths(SHADOW_DIR, T_SEAL))[3])
+    for name, world in {"no shadow": idle_world(now=T_SEAL), "missing hour": h, "withheld": idle_world(*quiet_pools(now=T_SEAL, min_q=None), now=T_SEAL),
+                        "no ledger row": idle_world(*base, ledger_rows=(), now=T_SEAL)}.items():
+        rc, out = go(world, tmp=tmp_path / name.replace(" ", "_"), now=T_SEAL)
+        assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and OLD_IDLE_SEAL in out and "trigger" not in out.lower(), (name, out)
+    # the 24 h backstop
+    old = ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(T_SEAL - 28 * 3600)}, {"kind": "decision", "ts_ms": ms(T_SEAL - 25 * 3600)})
+    rc, out = go(idle_world(*base, s_trigger(T_SEAL - 3600), ledger_rows=old, now=T_SEAL), tmp=tmp_path / "backstop", now=T_SEAL)
+    assert alerts(out) == ["h5_idle_ledger"] and "24 h backstop" in out and "trigger" not in out.lower(), out
+
+
+def test_idle_ledger_drained_plain_pool_without_a_trigger_is_a_detector_miss(tmp_path):
+    base = quiet_pools()
+    h = idle_world(*base, s_pool(T - 3600, 500, min_q=38.2), s_pool(T - 1800, 501, min_q=40.0))
+    rc, out = go(h, tmp=tmp_path / "two", now=T)
+    assert rc == 1 and alerts(out) == ["h5_detector_missed"], out
+    assert missed_alert(2) in out and no_per_pool_values(out)
+    other = s_pool(T - 1800, 501, min_q=40.0)  # a second missed candidate: one alone is an INFO (IDLE_MISSED_MIN)
+    no_key = {k: v for k, v in s_pool(T - 3600, 500, min_q=39.0).items() if k != "triggered"}
+    rc, out = go(idle_world(*base, no_key, other), tmp=tmp_path / "missing_key", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "2 pool(s) in the last 6 h are missed candidates" in out
+    # #589 review F4: the executor trades pv only, so a pool drained on pv with only an fv trigger is a pv miss
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=20.0, triggered=["fv"]), other), tmp=tmp_path / "fv_only", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and "2 pool(s) in the last 6 h are missed candidates" in out
+    for name, rec in {"triggered": s_pool(T - 3600, 500, min_q=12.0, triggered=["fv", "pv"]), "pv only": s_pool(T - 3600, 500, min_q=12.0, triggered=["pv"]),
+                      "above Q*": s_pool(T - 3600, 500, min_q=40.01), "synthetic": s_pool(T - 3600, 500, min_q=20.0, synthetic=True),
+                      "not rpc": s_pool(T - 3600, 500, min_q=20.0, src="ws"), "sealed": s_pool(T - 3600, 500, sealed=True),
+                      "before the window": s_pool(T - 6 * 3600 - 60, 500, min_q=20.0)}.items():
+        rc, out = go(idle_world(*base, rec), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert alerts(out) == ["h5_idle_quiet"] and QUIET in out and "withheld" not in out, (name, out)
+    # min_q withheld (None, not a number, a bool) or Look-2-sealed: not judged either way, and said so
+    for name, rec in {"min_q withheld": s_pool(T - 3600, 500, min_q=None), "not a number": s_pool(T - 3600, 500, min_q="12"),
+                      "a bool": s_pool(T - 3600, 500, min_q=True), "look2": s_pool(T - 3600, 500, min_q=12.0, look2=True)}.items():
+        rc, out = go(idle_world(*base, rec), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert alerts(out) == ["h5_idle_quiet"], (name, out)
+        assert QUIET + "108 plain pool closes (1 more with min_q withheld, not judged), " + NONE_DRAINED + CLEARS in lines_of(out), (name, out)
+    # an unledgered trigger outranks a miss: one alert, the executor's
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=38.2), s_trigger(T - 3600)), tmp=tmp_path / "both", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"] and "executor is not reading" in out
+
+
+def test_idle_ledger_one_missed_candidate_is_named_in_h5_idle_quiet_and_slow_slots_or_gaps_are_ambiguous(tmp_path):
+    """MiScusi jobs #681/#682: min_q_pv covers the first 1500 slots after s0, the rule only 300 s. On 2026-10-09 10Z-14Z (0.265-0.270 s/slot,
+    a window of about 400 s) 20 plain pools drained to <= 40 SOL with an empty `triggered`, all after 300 s; a 21st at 18Z had sps 0.2212
+    (331.8 s) and a gap. Since go-live, 23/23 drained plain pools triggered pv. Such pools are ambiguous: judged, never missed."""
+    base = quiet_pools()
+    # one missed candidate alone: not h5_detector_missed (a single pool can drain legitimately up to 30 s past the rule window), but named in
+    # the h5_idle_quiet ALERT (round 4: never an INFO), which is not worded as an all-clear (#589 review R-F)
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=38.2)), tmp=tmp_path / "one", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"], out
+    assert (NOT_CLEAR + "109 plain pool closes, 1 " + CAND + CLEARS) in lines_of(out)
+    assert "not a fault" not in out and "ambiguous" not in out and no_per_pool_values(out)
+    # the #681 shape: 20 slow-slot pools (0.267 s/slot), min_q 30, untriggered: ambiguous, never missed
+    slow = [s_pool(T - 3600 - 60 * i, 500 + i, min_q=30.0, sps=0.267) for i in range(20)]
+    rc, out = go(idle_world(*base, *slow), tmp=tmp_path / "slow", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"], out
+    assert QUIET + "128 plain pool closes, " + NONE_DRAINED + "; 20 " + AMBIGUOUS + CLEARS in lines_of(out), out
+    assert no_per_pool_values(out)
+    # ... and alongside one missed candidate, both are counted; it still takes 2 candidates to alert
+    rc, out = go(idle_world(*base, *slow, s_pool(T - 1800, 600, min_q=10.0)), tmp=tmp_path / "slow_and_one", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and (NOT_CLEAR + "129 plain pool closes, 1 " + CAND + "; 20 " + AMBIGUOUS + CLEARS) in lines_of(out), out
+    rc, out = go(idle_world(*base, *slow, s_pool(T - 1800, 600, min_q=10.0), s_pool(T - 1700, 601, min_q=10.0)), tmp=tmp_path / "slow_and_two", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and missed_alert(2) in out, out
+    # each of these, twice (so two would alert if they were missed): ambiguous
+    for name, kw in {"sps 0.267": {"sps": 0.267}, "sps 0.2212 (331.8 s)": {"sps": 0.2212}, "gap True": {"gap": True},
+                     "gap True, fast slots": {"gap": True, "sps": 0.2}, "gap None": {"gap": None}}.items():
+        recs = [s_pool(T - 3600 - i, 500 + i, min_q=30.0, **kw) for i in range(2)]
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / re.sub(r"\W", "_", name), now=T)
+        assert rc == 1 and alerts(out) == ["h5_idle_quiet"], (name, out)
+        assert QUIET + "110 plain pool closes, " + NONE_DRAINED + "; 2 " + AMBIGUOUS + CLEARS in lines_of(out), (name, out)
+    rc, out = go(idle_world(*base, *({k: v for k, v in s_pool(T - 3600 - i, 500 + i, min_q=30.0).items() if k != "gap"} for i in range(2))),
+                 tmp=tmp_path / "no_gap_key", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and "; 2 " + AMBIGUOUS + CLEARS in out, out
+    # 330 s exactly (0.22 s/slot) is inside the bound: missed
+    rc, out = go(idle_world(*base, *(s_pool(T - 3600 - i, 500 + i, min_q=30.0, sps=0.22) for i in range(2))), tmp=tmp_path / "edge", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and missed_alert(2) in out
+    # a numeric min_q above 40 is quiet whatever the window (the min over 400 s bounds the min over 300 s from below), and so is a gapped one;
+    # a drained pool with a pv trigger is triggered whatever its window or gap
+    for name, recs in {"slow quiet": quiet_pools(sps=0.267), "gapped quiet": quiet_pools(gap=True),
+                       "slow triggered": (*base, *(s_pool(T - 3600 - i, 500 + i, min_q=30.0, sps=0.267, gap=True, triggered=["pv"]) for i in range(2)))}.items():
+        rc, out = go(idle_world(*recs), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert rc == 1 and alerts(out) == ["h5_idle_quiet"] and NONE_DRAINED + CLEARS in out and "ambiguous" not in out, (name, out)
+    counts = dc.shadow_idle_counts(idle_world(*quiet_pools(sps=0.267)), SHADOW_DIR, T)[0]
+    assert (counts["judged"], counts["missed"], counts["ambiguous"]) == (108, 0, 0)
+    # ambiguous pools count toward the judged quorum (30), withheld ones do not
+    rc, out = go(idle_world(*quiet_pools(29), s_pool(T - 600, 500, min_q=30.0, sps=0.267)), tmp=tmp_path / "quorum", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET + "30 plain pool closes, " + NONE_DRAINED + "; 1 " + AMBIGUOUS + CLEARS in lines_of(out), out
+    rc, out = go(idle_world(*quiet_pools(29), s_pool(T - 600, 500, min_q=None)), tmp=tmp_path / "quorum_withheld", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "only 29 of 30 plain pool closes carry a min_q_pv_sol" in out
+
+
+def test_idle_ledger_a_drained_pool_with_no_usable_sps_is_a_missed_candidate(tmp_path):
+    """#589 review R-B1: the rule cannot fire without sps (the shadow's sps_ok: a finite number in the open interval (0.15, 0.6)). A drained,
+    untriggered, plain close whose sps_at_s0 fails it is a missed candidate, gap or no gap; so is every pool with a skipped_no_sps record."""
+    base = quiet_pools()
+    for name, kw in {"sps None": {"sps": None}, "sps 0.7": {"sps": 0.7}, "sps a string": {"sps": "0.217"}, "sps a bool": {"sps": True},
+                     "sps NaN": {"sps": float("nan")}, "sps 0.15 (open)": {"sps": 0.15}, "sps 0.6 (open)": {"sps": 0.6}, "sps 0.1": {"sps": 0.1},
+                     "sps None with a gap": {"sps": None, "gap": True}, "sps 0.7 with sps_last 0.2": {"sps": 0.7, "sps_last": 0.2}}.items():
+        recs = [s_pool(T - 3600 - i, 500 + i, min_q=30.0, **kw) for i in range(2)]
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / re.sub(r"\W", "_", name), now=T)
+        assert rc == 1 and alerts(out) == ["h5_detector_missed"] and missed_alert(2, 2) in out and no_per_pool_values(out), (name, out)
+    rc, out = go(idle_world(*base, *({k: v for k, v in s_pool(T - 3600 - i, 500 + i, min_q=30.0).items() if k != "sps_at_s0"} for i in range(2))),
+                 tmp=tmp_path / "no_sps_key", now=T)
+    assert alerts(out) == ["h5_detector_missed"] and missed_alert(2, 2) in out, out
+    # one alone: named in h5_idle_quiet
+    rc, out = go(idle_world(*base, s_pool(T - 3600, 500, min_q=30.0, sps=None)), tmp=tmp_path / "one", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"] and NOT_CLEAR + "109 plain pool closes, 1 " + CAND + CLEARS in lines_of(out), out
+    # two pools with a skipped_no_sps record: an alert, whatever their closes say (here none in the window)
+    rc, out = go(idle_world(*base, s_skipped(T - 3600, 700), s_skipped(T - 1800, 701)), tmp=tmp_path / "skipped", now=T)
+    assert rc == 1 and alerts(out) == ["h5_detector_missed"] and missed_alert(2, 2) in out and no_per_pool_values(out), out
+    # union by pool: a skipped_no_sps pool whose close is also a no-sps (or in-window) candidate counts once; two records of one pool count once
+    for name, recs in {"close too": (s_skipped(T - 3600, 700), s_pool(T - 3300, 700, min_q=30.0, sps=None)),
+                       "in-window close too": (s_skipped(T - 3600, 700), s_pool(T - 3300, 700, min_q=30.0)),
+                       "ambiguous close too": (s_skipped(T - 3600, 700), s_pool(T - 3300, 700, min_q=30.0, gap=True)),
+                       "twice": (s_skipped(T - 3600, 700), s_skipped(T - 3500, 700))}.items():
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / name.replace(" ", "_").replace("-", "_"), now=T)
+        assert alerts(out) == ["h5_idle_quiet"] and NOT_CLEAR in out and ", 1 " + CAND + CLEARS in out and "ambiguous" not in out, (name, out)
+    # a skipped_no_sps record before the window is not counted
+    rc, out = go(idle_world(*base, s_skipped(T - 6 * 3600 - 60, 700), s_skipped(T - 1800, 701)), tmp=tmp_path / "skipped_old", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and ", 1 " + CAND + CLEARS in out, out
+    counts = dc.shadow_idle_counts(idle_world(*base, s_skipped(T - 3600, 700), s_pool(T - 3300, 701, min_q=30.0)), SHADOW_DIR, T)[0]
+    assert (counts["missed"], counts["missed_nosps"], counts["ambiguous"]) == (2, 1, 0)
+
+
+def test_idle_ledger_excluded_pools_and_sps_last_in_the_miss_test(tmp_path):
+    """#589 review R-F: a pool excluded at decision time can close plain with an empty `triggered`: never missed or ambiguous. A synthetic
+    exclusion is skipped silently; any other reason is an unclassified drain (R-F2, round 4 M2; see the next test). The 1500-slot window is
+    judged at the larger of sps_at_s0 and sps_last when both are finite numbers."""
+    base = quiet_pools()
+    drained = [s_pool(T - 3600 - i, 500 + i, min_q=30.0) for i in range(2)]  # would be h5_detector_missed
+    syn = [s_excluded(T - 3600 - 200 - i, 500 + i, reason="synthetic") for i in range(2)]
+    rc, out = go(idle_world(*base, *syn, *drained), tmp=tmp_path / "synthetic", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_quiet"], out
+    assert QUIET + "110 plain pool closes, " + NONE_DRAINED + CLEARS in lines_of(out) and "unclassified" not in out and no_per_pool_values(out)
+    rc, out = go(idle_world(*base, *[s_excluded(T - 3600 - 200 - i, 500 + i) for i in range(2)], *drained), tmp=tmp_path / "unclassified", now=T)
+    assert rc == 1 and alerts(out) == ["h5_unclassified_drains"] and unc_alert(2) in lines_of(out) and no_per_pool_values(out), out
+    # one excluded of two drained: the other is one missed candidate, named in h5_idle_quiet with the exclusion (unclassified) or without it
+    rc, out = go(idle_world(*base, s_excluded(T - 3800, 500), *drained), tmp=tmp_path / "one_excluded", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and NOT_CLEAR + "110 plain pool closes, 1 " + CAND + "; " + UNC_ONE + CLEARS in lines_of(out), out
+    rc, out = go(idle_world(*base, s_excluded(T - 3800, 500, reason="synthetic"), *drained), tmp=tmp_path / "one_excluded_syn", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and NOT_CLEAR + "110 plain pool closes, 1 " + CAND + CLEARS in lines_of(out), out
+    # an exclusion just before the window, for a pool that closes in it (the window's start 3 min into its hour): still seen
+    t3 = T - 22 * 60  # 00:03Z: the window starts at 18:03Z
+    early = [s_pool(t3 - 6 * 3600 + 100 + i, 500 + i, min_q=30.0) for i in range(2)]
+    exc = [s_excluded(t3 - 6 * 3600 - 300 + i, 500 + i) for i in range(2)]  # 17:58Z: the hour before the window's first
+    exc_syn = [{**r, "reason": "synthetic"} for r in exc]
+    for now, tag in ((t3, "pre"), (SEAL_START + 63 * 60, "seal")):  # 00:03Z before the seal, 02:03Z in it
+        shift = now - t3
+
+        def moved(recs):
+            return [{**r, "t_ms": r["t_ms"] + ms(shift)} for r in recs]
+
+        rc, out = go(idle_world(*quiet_pools(now=now - 240), *moved(early), *moved(exc_syn), now=now), tmp=tmp_path / f"lead_{tag}", now=now)
+        assert alerts(out) == ["h5_idle_quiet"] and NONE_DRAINED in out, (tag, out)
+        rc, out = go(idle_world(*quiet_pools(now=now - 240), *moved(early), *moved(exc), now=now), tmp=tmp_path / f"lead_{tag}_unc", now=now)
+        assert alerts(out) == ["h5_unclassified_drains"] and unc_alert(2) in lines_of(out), (tag, out)
+        rc, out = go(idle_world(*quiet_pools(now=now - 240), *moved(early), now=now), tmp=tmp_path / f"lead_{tag}_none", now=now)
+        assert alerts(out) == ["h5_detector_missed"], (tag, out)  # without the exclusions: two candidates
+    # sps_last: the window at max(sps_at_s0, sps_last)
+    for name, (sps_last, want) in {"slower last (400 s)": (0.267, "ambiguous"), "faster last": (0.2, "missed"), "last None": (None, "missed"),
+                                   "last a string": ("0.3", "missed"), "last NaN": (float("nan"), "missed"), "last Infinity": (float("inf"), "missed"),
+                                   "last a bool": (True, "missed"),
+                                   "last 0.2212 (331.8 s)": (0.2212, "ambiguous")}.items():
+        recs = [s_pool(T - 3600 - i, 500 + i, min_q=30.0, sps_last=sps_last) for i in range(2)]
+        rc, out = go(idle_world(*base, *recs), tmp=tmp_path / re.sub(r"\W", "_", name), now=T)
+        if want == "missed":
+            assert alerts(out) == ["h5_detector_missed"] and missed_alert(2) in out, (name, out)
+        else:
+            assert alerts(out) == ["h5_idle_quiet"] and QUIET + "110 plain pool closes, " + NONE_DRAINED + "; 2 " + AMBIGUOUS + CLEARS in lines_of(out), (name, out)
+
+
+def test_idle_ledger_unclassified_exclusions_that_drain_alert(tmp_path):
+    """Round 4 on #589, M2 (review R-F2): the reason of each `excluded` record is kept per pool and only "synthetic" is skipped. A drained,
+    plain, non-sealed close whose pool the shadow kept out for any other reason ("unclassified": its RPC classifier had no answer at decision
+    time, yet the pool closed plain) is unclassified_drained, never missed, ambiguous or quiet: the canary got nothing from it. 2 or more:
+    h5_unclassified_drains, before the seal and in the seal window (where the output holds no word "trigger"); exactly 1: named in whichever
+    alert fires."""
+    for now, tag in ((T, "pre"), (T_SEAL, "seal")):
+        base = quiet_pools(now=now)
+        drained = [s_pool(now - 3600 - i, 500 + i, min_q=30.0) for i in range(2)]
+        unc = [s_excluded(now - 3600 - 200 - i, 500 + i) for i in range(2)]
+        rc, out = go(idle_world(*base, *unc, *drained, now=now), tmp=tmp_path / f"two_{tag}", now=now)
+        assert rc == 1 and alerts(out) == ["h5_unclassified_drains"] and unc_alert(2) in lines_of(out), (tag, out)
+        assert no_per_pool_values(out) and (tag == "pre" or "trigger" not in out.lower()), (tag, out)
+        # like h5_detector_missed, 2 or more outrank the h5_idle_ledger cases that follow it (here too few plain closes: 27 quiet + 2 drained)
+        rc, out = go(idle_world(*quiet_pools(27, now=now), *unc, *drained, now=now), tmp=tmp_path / f"two_few_{tag}", now=now)
+        assert alerts(out) == ["h5_unclassified_drains"] and unc_alert(2) in lines_of(out), (tag, out)
+        # no reason named, or one that is not a string: not "synthetic", so counted
+        odd = [{k: v for k, v in unc[0].items() if k != "reason"}, {**unc[1], "reason": 7}]
+        rc, out = go(idle_world(*base, *odd, *drained, now=now), tmp=tmp_path / f"odd_{tag}", now=now)
+        assert alerts(out) == ["h5_unclassified_drains"] and unc_alert(2) in lines_of(out), (tag, out)
+        # a pool with both a synthetic and an unclassified record: another reason exists, so counted
+        both = [*unc, *(s_excluded(now - 3600 - 100 - i, 500 + i, reason="synthetic") for i in range(2))]
+        rc, out = go(idle_world(*base, *both, *drained, now=now), tmp=tmp_path / f"both_{tag}", now=now)
+        assert alerts(out) == ["h5_unclassified_drains"], (tag, out)
+        # exactly 1: named in h5_idle_quiet (never an all-clear)
+        rc, out = go(idle_world(*base, unc[0], drained[0], now=now), tmp=tmp_path / f"one_{tag}", now=now)
+        head = NOT_CLEAR if tag == "pre" else NOT_CLEAR_SEAL
+        assert rc == 1 and alerts(out) == ["h5_idle_quiet"], (tag, out)
+        assert head + "109 plain pool closes, " + NONE_DRAINED + "; " + UNC_ONE + (CLEARS if tag == "pre" else CLEARS_SEAL) in lines_of(out), (tag, out)
+        assert "not a fault" not in out and (tag == "pre" or "trigger" not in out.lower()), (tag, out)
+        # a synthetic exclusion is still skipped silently
+        syn = [s_excluded(now - 3600 - 200 - i, 500 + i, reason="synthetic") for i in range(2)]
+        rc, out = go(idle_world(*base, *syn, *drained, now=now), tmp=tmp_path / f"syn_{tag}", now=now)
+        assert alerts(out) == ["h5_idle_quiet"] and (QUIET if tag == "pre" else QUIET_SEAL) + "110 plain pool closes, " + NONE_DRAINED in out, (tag, out)
+        assert "unclassified" not in out, (tag, out)
+        # not drained (min_q above 40), triggered, synthetic-sourced or sealed closes of excluded pools are not unclassified drains
+        for name, rec in {"quiet": s_pool(now - 3600, 500, min_q=41.0), "triggered": s_pool(now - 3600, 500, min_q=12.0, triggered=["pv"]),
+                          "ws": s_pool(now - 3600, 500, min_q=12.0, src="ws"), "sealed": s_pool(now - 3600, 500, sealed=True)}.items():
+            for k in (500, 501):
+                rec2 = {**rec, "pool": f"POOLSECRET{k}"}
+                counts = dc.shadow_idle_counts(idle_world(*base, *unc, rec2, now=now), SHADOW_DIR, now)[0]
+                assert counts["unclassified_drained"] == 0, (tag, name, counts)
+        # one unclassified drain alongside another alert is named in that alert
+        rc, out = go(idle_world(*base, unc[0], drained[0], *(s_pool(now - 1800 - i, 600 + i, min_q=10.0) for i in range(2)), now=now),
+                     tmp=tmp_path / f"with_missed_{tag}", now=now)
+        assert alerts(out) == ["h5_detector_missed"] and missed_alert(2) + "; " + UNC_ONE in lines_of(out), (tag, out)
+        rc, out = go(idle_world(*quiet_pools(28, now=now), unc[0], drained[0], now=now), tmp=tmp_path / f"with_few_{tag}", now=now)
+        assert alerts(out) == ["h5_idle_ledger"], (tag, out)
+        assert [x for x in lines_of(out) if x.startswith("ALERT h5_idle_ledger")][0].endswith("the detector is not tracking pools; " + UNC_ONE), (tag, out)
+    # before the seal, an unledgered trigger outranks them, and names them (two: "check the shadow's RPC classifier")
+    base = quiet_pools()
+    drained = [s_pool(T - 3600 - i, 500 + i, min_q=30.0) for i in range(2)]
+    unc = [s_excluded(T - 3600 - 200 - i, 500 + i) for i in range(2)]
+    rc, out = go(idle_world(*base, *unc, *drained, s_trigger(T - 3600, pool="POOLSECRET900")), tmp=tmp_path / "with_unledgered", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"], out
+    assert [x for x in lines_of(out) if x.startswith("ALERT h5_idle_unledgered")][0].endswith(
+        "(bind, tail or crash); 2 plain pool closes drained to <= 40 SOL after the shadow kept them out as unclassified at decision time (check the "
+        "shadow's RPC classifier)"), out
+    # a pool with a skipped_no_sps record is missed by that record: not also an unclassified drain
+    counts = dc.shadow_idle_counts(idle_world(*base, *unc, *drained, s_skipped(T - 3600, 500)), SHADOW_DIR, T)[0]
+    assert (counts["missed"], counts["unclassified_drained"]) == (1, 1), counts
+
+
+def test_idle_ledger_a_window_of_withheld_min_q_is_not_a_quiet_market(tmp_path):
+    """#589 review B2: a pool whose min_q the shadow withholds (h5_look2_sealed; every pool from 2026-11-06T00Z) cannot show a missed drain, so
+    it does not count toward the quiet verdict: too few judged pools keep the old alert."""
+    for name, recs in {"all None": quiet_pools(min_q=None), "all look2": quiet_pools(look2=True),
+                       "29 judged": (*quiet_pools(79, min_q=None), *spread(29, 5 * 3600, 600, first=500))}.items():
+        rc, out = go(idle_world(*recs), tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and OLD_IDLE in out and "quiet market" not in out, (name, out)
+        judged = 29 if name == "29 judged" else 0
+        assert f"(the shadow window could not be judged: only {judged} of 108 plain pool closes carry a min_q_pv_sol, {108 - judged} withheld)" in out
+    rc, out = go(idle_world(*quiet_pools(78, min_q=None), *spread(30, 5 * 3600, 600, first=500)), tmp=tmp_path / "30", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET + "30 plain pool closes (78 more with min_q withheld, not judged), " + NONE_DRAINED + CLEARS in lines_of(out)
+
+
+def test_idle_ledger_too_few_plain_pools_means_the_detector_is_not_tracking(tmp_path):
+    rc, out = go(idle_world(*spread(19, 6 * 3600 - 60, 2 * 3600 + 60), *spread(10, 2 * 3600 - 60, 60, first=100)), tmp=tmp_path / "29", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_ledger"], out
+    assert ("no unledgered trigger and no missed drain, but 29 plain pool(s) closed in 6 h and 10 in the last 2 h (at least 30 and 10 expected): "
+            "the detector is not tracking pools") in out
+    rc, out = go(idle_world(*spread(20, 6 * 3600 - 60, 2 * 3600 + 60), *spread(10, 2 * 3600 - 60, 60, first=100)), tmp=tmp_path / "30", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET + "30 plain pool closes, " + NONE_DRAINED + CLEARS in lines_of(out), out
+    counts = dc.shadow_idle_counts(idle_world(*spread(20, 6 * 3600 - 60, 2 * 3600 + 60), *spread(10, 2 * 3600 - 60, 60, first=100)), SHADOW_DIR, T)[0]
+    assert (counts["plain_pools"], counts["plain_recent"]) == (30, 10)
+    # #589 review F3: a detector that writes hb but stopped tracking 2 h ago (plenty of closes before that) is seen within ~2 h, not 6
+    rc, out = go(idle_world(*spread(100, 6 * 3600 - 60, 2 * 3600 + 60), *spread(9, 2 * 3600 - 60, 60, first=200)), tmp=tmp_path / "starved", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "but 109 plain pool(s) closed in 6 h and 9 in the last 2 h" in out
+    others = (s_pool(T - 600, 900, synthetic=True), s_pool(T - 600, 901, synthetic=None), s_pool(T - 600, 902, src=None),
+              {"type": "excluded", "reason": "synthetic", "pool": "POOLSECRETX", "v": 1, "t_ms": ms(T - 600)})
+    rc, out = go(idle_world(*quiet_pools(29), *others), tmp=tmp_path / "others", now=T)
+    assert "but 29 plain pool(s)" in out and "sealed" not in out  # synthetic, unclassified and ws-sourced closes and exclusions are not plain pools
+    # EXP-022 sealed closes (from 2026-10-16T01Z) are not plain pools either; their count says why the plain count is low
+    rc, out = go(idle_world(*quiet_pools(29), *(s_pool(T - 600 - i, 950 + i, sealed=True) for i in range(70))), tmp=tmp_path / "sealed", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "but 29 plain pool(s)" in out
+    assert "; 70 EXP-022 sealed close(s) not counted (a pick, or no pick-oracle answer at close): the detector is not tracking pools" in out
+
+
+def test_idle_ledger_unreadable_or_missing_shadow_keeps_the_old_alert(tmp_path):
+    rc, out = go(idle_world(), tmp=tmp_path / "none", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and OLD_IDLE in out, out
+    assert "(the shadow window could not be judged: no h5-shadow-<hour>.jsonl in /nowhere for the last 6 h)" in out
+    for name, exc in {"link": dc.Unsafe("/nowhere/h5-shadow-x.jsonl is not a regular file (link)"),
+                      "sudo": dc.SudoError("read /nowhere/h5-shadow-x.jsonl: not a path the privileged calls are allowed for"),
+                      "oserror": PermissionError(13, "Permission denied")}.items():
+        h = idle_world(*quiet_pools())
+        h.unreadable[sorted(p for p in h.files if p.startswith(SHADOW_DIR + "/"))[2]] = exc  # one file of the window
+        rc, out = go(h, tmp=tmp_path / name, now=T)
+        assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and OLD_IDLE in out and "quiet market" not in out, (name, out)
+    assert "PermissionError" in out
+
+
+def test_idle_ledger_a_missing_hour_in_the_window_keeps_the_old_alert(tmp_path):
+    """#589 review F2: the detector down for a whole hour of the window (back now): the window was not seen, so it is not called quiet."""
+    paths = sorted(dc.shadow_window_paths(SHADOW_DIR, T))
+    for k in (0, 3):  # the window's first (partial) hour, and one in the middle
+        h = idle_world(*quiet_pools(200))
+        h.files.pop(paths[k])
+        rc, out = go(h, tmp=tmp_path / f"gap{k}", now=T)
+        assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and OLD_IDLE in out and "quiet market" not in out, (k, out)
+        assert "(the shadow window could not be judged: 1 of its 7 hourly files are missing, the detector wrote nothing for a whole hour)" in out
+    h = idle_world(*quiet_pools(200), s_trigger(T - 3600))
+    h.files.pop(paths[3])
+    rc, out = go(h, tmp=tmp_path / "gap_and_trigger", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"]  # a trigger it did see without a ledger row still says so
+    # the current hour's file may not exist yet in its first FEED_STALE_S (the next hb writes it): not missing
+    t2 = T - 22 * 60
+    rc, out = go(idle_world(*quiet_pools(now=t2 - 240), now=t2), tmp=tmp_path / "young_hour", now=t2)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out, out
+    counts = dc.shadow_idle_counts(idle_world(*quiet_pools(now=t2 - 240), now=t2), SHADOW_DIR, t2)[0]
+    assert (counts["files"], counts["hours"], counts["missing"]) == (6, 7, 0), counts
+
+
+def test_idle_ledger_the_current_hour_missing_more_than_10_min_into_the_hour_keeps_the_old_alert(tmp_path):
+    """Round 4 on #589, M3: the current hour's file is excused only for its first FEED_STALE_S (10 min). Missing later than that, the detector
+    wrote nothing this hour: the window is not fully seen and the old alert is kept (fail closed), before the seal and in it."""
+    for base_t, tag in ((T, "pre"), (T_SEAL, "seal")):
+        hour = base_t // 3600 * 3600
+        for into, missing in ((25 * 60, True), (10 * 60, True), (10 * 60 + 1, True), (10 * 60 - 1, False), (3 * 60, False)):
+            now = hour + into
+            h = idle_world(*quiet_pools(200, now=hour - 60), now=now)  # every pool closed before this hour: its file is never written
+            assert dc.shadow_hour_path(SHADOW_DIR, int(now // 3600)) not in h.files
+            rc, out = go(h, tmp=tmp_path / f"{tag}_{into}", now=now)
+            if missing:
+                assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and "quiet market" not in out, (tag, into, out)
+                assert "(the shadow window could not be judged: 1 of its 7 hourly files are missing, the detector wrote nothing for a whole hour)" in out
+                assert (OLD_IDLE if tag == "pre" else OLD_IDLE_SEAL) in out, (tag, into, out)
+            else:
+                assert alerts(out) == ["h5_idle_quiet"], (tag, into, out)
+            assert dc.shadow_idle_counts(h, SHADOW_DIR, now)[0]["missing"] == int(missing), (tag, into)
+
+
+def test_idle_ledger_missing_or_empty_ledger_keeps_the_old_alert(tmp_path):
+    """#589 review F1: with no ledger row at all there is nothing to judge the shadow against (the executor writes `start` when it starts)."""
+    for name, body in {"deleted": None, "empty": b"", "torn": b'{"kind":"sta', "no ts": ledger({"kind": "start"})}.items():
+        h = idle_world(*quiet_pools())
+        h.mtimes[dc.LIVE_OK] = T - 10 * 3600
+        if body is None:
+            h.files.pop(f"{H5}/live/h5-ledger.jsonl")
+        else:
+            h.files[f"{H5}/live/h5-ledger.jsonl"] = body
+        rc, out = go(h, tmp=tmp_path / name.replace(" ", "_"), now=T)
+        assert rc == 1 and "h5_idle_ledger" in alerts(out) and "quiet market" not in out, (name, out)
+        assert "LIVE_OK is 10 h old and " + OLD_IDLE + " (the live ledger is missing or holds no row: the shadow was not consulted)" in out
+
+
+def test_idle_ledger_a_row_with_a_non_finite_ts_is_no_row(tmp_path):
+    """Round 4 on #589, M3: json reads NaN and Infinity. A buy/skip/decision row with ts_ms Infinity must not make a silent ledger look fresh,
+    and a NaN must not poison the newest-row or oldest-row span: such a row is skipped like a torn one."""
+    for name, bad in {"Infinity": b'{"kind":"decision","ts_ms":Infinity}\n', "NaN": b'{"kind":"decision","ts_ms":NaN}\n',
+                      "-Infinity": b'{"kind":"skip","ts_ms":-Infinity}\n'}.items():
+        h = idle_world(*quiet_pools())
+        good = h.files[f"{H5}/live/h5-ledger.jsonl"]
+        for order, body in {"last": good + bad, "first": bad + good}.items():
+            h.files[f"{H5}/live/h5-ledger.jsonl"] = body
+            assert dc.ledger_idle_span(body) == dc.ledger_idle_span(good), (name, order)
+            rc, out = go(h, tmp=tmp_path / f"{name.replace('-', 'm')}_{order}", now=T)
+            assert rc == 1 and alerts(out) == ["h5_idle_quiet"], (name, order, out)
+    only = b'{"kind":"start","ts_ms":Infinity}\n{"kind":"decision","ts_ms":NaN}\n'
+    assert dc.ledger_idle_span(only) == (None, None, None)
+    h = idle_world(*quiet_pools())
+    h.files[f"{H5}/live/h5-ledger.jsonl"] = only
+    rc, out = go(h, tmp=tmp_path / "only", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "(the live ledger is missing or holds no row: the shadow was not consulted)" in out, out
+
+
+def test_idle_ledger_24_h_backstop(tmp_path, monkeypatch):
+    quiet = quiet_pools()
+    old = ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(T - 28 * 3600)}, {"kind": "decision", "ts_ms": ms(T - 25 * 3600)}, {"kind": "feed_gap", "ts_ms": ms(T - 60)})
+    rc, out = go(idle_world(*quiet, ledger_rows=old), tmp=tmp_path / "old", now=T)
+    assert rc == 1 and alerts(out) == ["h5_idle_ledger"] and "quiet market" not in out, out
+    assert "no buy, skip or decision row in the last 24 h (the 24 h backstop, whatever the shadow shows)" in out
+    h = idle_world(*quiet, ledger_rows=old)
+    h.mtimes[dc.LIVE_OK] = T - 20 * 3600  # the gate is younger than 24 h: the 6 h logic alone
+    rc, out = go(h, tmp=tmp_path / "young", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out
+    feed_only = ({"kind": "start", "user": dc.WALLET, "ts_ms": ms(T - 28 * 3600)},
+                 *({"kind": "feed_gap", "ts_ms": ms(T - 3600 * k)} for k in range(27, 0, -1)))
+    rc, out = go(idle_world(*quiet, ledger_rows=feed_only), tmp=tmp_path / "never", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "24 h backstop" in out  # the whole ledger was read: no such row at all
+
+    class Tail(FakeHost):  # the real Host's tail: the last `tail` bytes, the first row torn
+        def read(self, path, tail=None):
+            raw = super().read(path, tail)
+            return raw[-tail:] if raw is not None and tail else raw
+
+    row = len(ledger({"kind": "feed_gap", "ts_ms": ms(T - 3600)}))
+    monkeypatch.setattr(dc, "LEDGER_TAIL", row * 10 + 7)  # about the last 10 hours of this ledger
+    rc, out = go(idle_world(*quiet, ledger_rows=feed_only, cls=Tail), tmp=tmp_path / "short_tail", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out, out  # the newest row is unknown: the backstop is not fired from that alone
+    assert "reaches back less than 24 h and holds no buy, skip or decision row: the 24 h backstop was not judged" in out
+    # ... but a trigger newer than the tail's oldest row is unledgered for sure (a row for it would be in the tail)
+    rc, out = go(idle_world(*quiet, s_trigger(T - 8 * 3600), ledger_rows=feed_only, cls=Tail), tmp=tmp_path / "short_tail_trigger", now=T)
+    assert alerts(out) == ["h5_idle_unledgered"] and "in the last 10 h" in out, out
+    rc, out = go(idle_world(*quiet, s_trigger(T - 12 * 3600), ledger_rows=feed_only, cls=Tail), tmp=tmp_path / "short_tail_older", now=T)
+    assert alerts(out) == ["h5_idle_quiet"] and QUIET in out  # older than the tail: its row may be before it
+    monkeypatch.setattr(dc, "LEDGER_TAIL", row * 26 + 7)  # back to T - 26 h
+    rc, out = go(idle_world(*quiet, ledger_rows=feed_only, cls=Tail), tmp=tmp_path / "long_tail", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "24 h backstop" in out
+    monkeypatch.setattr(dc, "LEDGER_TAIL", row * 10 + 7)  # a short tail that holds an old decision row: the newest is known
+    stale = ({"kind": "decision", "ts_ms": ms(T - 25 * 3600)}, *({"kind": "feed_gap", "ts_ms": ms(T - 3600 * k)} for k in range(9, 0, -1)))
+    rc, out = go(idle_world(*quiet, ledger_rows=stale, cls=Tail), tmp=tmp_path / "known", now=T)
+    assert alerts(out) == ["h5_idle_ledger"] and "24 h backstop" in out
+
+
+def test_idle_constants_follow_the_shadow_and_the_executor():
+    from tools import h5_executor, h5_shadow
+
+    assert dc.Q_STAR_SOL == h5_shadow.Q_STAR_SOL
+    # the EXP-022 seal switch of the idle check is the executor's seal start (QP-B1/B3 on #589), 2026-10-16T01:00:00Z
+    assert dc.IDLE_SEAL_START_S * 1000 == h5_executor.SEAL_START_MS and dc.IDLE_SEAL_START_S == SEAL_START
+    assert not dc.idle_sealed(SEAL_START - 1) and dc.idle_sealed(SEAL_START) and dc.idle_sealed(h5_executor.SEAL_END_DEFAULT_MS / 1000 + 365 * 86400)
+    # the shadow's sps_ok interval (R-B1), and the lead before the window for exclusions (a pool closes at most WALL_CLOSE_S after s0)
+    assert (dc.SPS_LO, dc.SPS_HI) == (h5_shadow.SPS_LO, h5_shadow.SPS_HI) == (0.15, 0.6)
+    assert all(dc._sps_usable(v) == h5_shadow.sps_ok(v) for v in (0.1501, 0.217, 0.5999, 0.15, 0.6, 0.1, 0.7, None))
+    assert h5_shadow.WALL_CLOSE_S < dc.IDLE_EXCLUDED_LEAD_S == 600
+    # min_q_pv's window is an inline literal in the shadow's _on_print: pinned by its line, which must still set min_q_pv
+    lines = (ROOT / "tools/h5_shadow.py").read_text().splitlines()
+    at = [i for i, line in enumerate(lines) if f"if pr.slot - p.s0 <= {dc.IDLE_MINQ_SLOTS}:" in line]
+    assert len(at) == 1 and lines[at[0] + 1].strip().startswith("p.min_q_pv = qpv if p.min_q_pv is None else min(p.min_q_pv, qpv)")
+    shadow = "\n".join(lines)
+    assert shadow.count("p.min_q_pv = ") == 1  # nothing else moves min_q_pv
+    # the trigger window (300 s) the 330 s bound leaves 30 s past, and the pool-close fields the miss test reads (from _close's plain record)
+    assert (h5_shadow.T_MIN_S, h5_shadow.T_MAX_S) == (0.0, 300.0)
+    assert (dc.IDLE_MINQ_SLOTS, dc.IDLE_MINQ_WINDOW_MAX_S, dc.IDLE_MISSED_MIN) == (1500, 330.0, 2)
+    close = shadow.split("    def _close(self, p: Pool, reason: str) -> None:\n", 1)[1].split("\n    def ", 1)[0]
+    plain = close.split("        rec = {\n", 1)[1]
+    assert all(f in plain for f in ('"sps_at_s0": p.sps0, "sps_last": p.sps_last,', '"gap": bool(p.gaps),',
+                                    '"min_q_pv_sol": None if (sealed or h5s or p.min_q_pv is None) else p.min_q_pv / 1e9,',
+                                    '"triggered": None if sealed else sorted(v for v, r in p.trig.items() if "excluded" not in r),'))
+    # the record types the miss test reads besides the closes: an exclusion (pool named) and a skipped_no_sps (pool named, non-sealed only)
+    assert 'self.emit({"type": "excluded", "reason": reason, "pool": p.pool,' in shadow
+    # R-F2: the shadow's two exclusion reasons; only the synthetic one is skipped silently
+    assert f'self._exclude(p, pr, var, "{dc.IDLE_EXCLUDED_SKIP_REASON}" if syn else "unclassified")' in shadow and shadow.count("self._exclude(") == 1
+    assert 'rec = {"type": "skipped_no_sps", "pool": p.pool,' in shadow
+    ex = (ROOT / "tools/h5_executor.py").read_text()
+    assert f'\nTRIGGER_VARIANT = "{dc.SHADOW_TRIGGER_VARIANT}"' in ex and f'\nSYNTHETIC_SRC_OK = "{dc.SHADOW_PLAIN_SRC}"' in ex
+    assert f'self._log("{dc.IDLE_SEAL_KIND}", "", seal_skips=' in ex  # the executor's count row for seal refusals
+    assert (dc.IDLE_LEDGER_S, dc.IDLE_LEDGER_MAX_S, dc.IDLE_TRIGGER_GRACE_S, dc.IDLE_MIN_PLAIN_POOLS, dc.IDLE_RECENT_S, dc.IDLE_RECENT_MIN_PLAIN_POOLS) == (
+        6 * 3600, 24 * 3600, 300, 30, 2 * 3600, 10)
+    assert [os.path.basename(p) for p in dc.shadow_window_paths("/d", T)] == [
+        f"h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(T - 6 * 3600 + 3600 * k))}.jsonl" for k in range(7)]
+    assert dc.TRIGGER_MARK == b'{"type":"trigger"'
+
+
+def test_shadow_idle_counts_reads_real_shadow_records_only_in_the_window_and_never_follows_a_link(tmp_path):
+    from tools import h5_shadow
+
+    d = tmp_path / "h5-shadow"
+    sink = h5_shadow.JsonlSink(d)
+    for r in (s_trigger(T - 3600), s_trigger(T - 3600 + 1, variant="fv"), *(s_pool(T - 3600 * (i % 5) - 100, i) for i in range(40)),
+              s_pool(T - 600, 99, min_q=39.0), s_trigger(T - 10 * 3600, pool="POOLSECRET7"), s_pool(T - 10 * 3600, 98, min_q=1.0)):  # the last two: before the window
+        sink.write(r)
+    sink.close()
+    with open(d / f"h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(T))}.jsonl", "a") as fh:
+        fh.write('{"type":"pool","reason":"done","synthetic":false,"synthetic_src":"rpc","min_q_pv_sol":3')  # a line still being written
+    counts, why = dc.shadow_idle_counts(dc.Host(), str(d), T)
+    assert counts == {"files": 5, "hours": 7, "missing": 2, "unledgered": 1, "triggers_window": 1, "plain_pools": 41, "plain_recent": 17,
+                      "judged": 41, "missed": 1, "missed_nosps": 0, "ambiguous": 0, "unclassified_drained": 0, "sealed": 0}, why
+    # looking further back for triggers (B1) reads the older files for triggers only: the window's pool counts do not change
+    back = dc.shadow_idle_counts(dc.Host(), str(d), T, T - 11 * 3600)[0]
+    assert back == {**counts, "files": 6, "unledgered": 2}
+    early = d / f"h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(T - 10 * 3600))}.jsonl"
+    early.unlink()
+    early.symlink_to(tmp_path / "elsewhere.jsonl")  # outside the window: never opened
+    assert dc.shadow_idle_counts(dc.Host(), str(d), T)[0] == counts
+    counts_b, why = dc.shadow_idle_counts(dc.Host(), str(d), T, T - 11 * 3600)  # ... unless the trigger look-back reaches it: refused, not followed
+    assert counts_b is None and "is not a regular file (link)" in why
+    inside = d / f"h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(T - 3600))}.jsonl"
+    (tmp_path / "real.jsonl").write_bytes(inside.read_bytes())
+    inside.unlink()
+    inside.symlink_to(tmp_path / "real.jsonl")
+    counts2, why = dc.shadow_idle_counts(dc.Host(), str(d), T)
+    assert counts2 is None and "is not a regular file (link)" in why and "SECRET" not in why
+    inside.unlink()
+    os.link(tmp_path / "real.jsonl", inside)
+    counts3, why = dc.shadow_idle_counts(dc.Host(), str(d), T)
+    assert counts3 is None and "hard links" in why
+    assert dc.shadow_idle_counts(dc.Host(), str(tmp_path / "nope"), T) == (None, f"no h5-shadow-<hour>.jsonl in {tmp_path / 'nope'} for the last 6 h")
+
+
+def test_shadow_idle_counts_in_the_seal_window_on_real_shadow_records(tmp_path):
+    """QP-B1/B3: the same reader on real JsonlSink output in the seal window: no trigger key, the trigger records change nothing, and a file
+    before the window (where the pre-seal look-back would go for triggers) is never opened, even as a symlink."""
+    from tools import h5_shadow
+
+    d = tmp_path / "h5-shadow"
+    sink = h5_shadow.JsonlSink(d)
+    recs = [*(s_pool(T_SEAL - 3600 * (i % 5) - 100, i) for i in range(40)), s_pool(T_SEAL - 600, 99, min_q=39.0),
+            s_excluded(T_SEAL - 900, 98), s_pool(T_SEAL - 700, 98, min_q=1.0), s_skipped(T_SEAL - 1200, 97)]
+    for r in (*recs, s_trigger(T_SEAL - 3600), s_trigger(T_SEAL - 1800, pool="POOLSECRET5")):
+        sink.write(r)
+    sink.close()
+    counts, why = dc.shadow_idle_counts(dc.Host(), str(d), T_SEAL, T_SEAL - 11 * 3600)
+    assert counts == {"files": 5, "hours": 7, "missing": 2, "plain_pools": 42, "plain_recent": 18, "judged": 42, "missed": 2, "missed_nosps": 1,
+                      "ambiguous": 0, "unclassified_drained": 1, "sealed": 0}, why  # pool 98: excluded as unclassified (the default), then drained
+    early = d / f"h5-shadow-{time.strftime('%Y-%m-%dT%H', time.gmtime(T_SEAL - 10 * 3600))}.jsonl"
+    early.symlink_to(tmp_path / "elsewhere.jsonl")
+    assert dc.shadow_idle_counts(dc.Host(), str(d), T_SEAL, T_SEAL - 11 * 3600)[0] == counts
 
 
 def test_live_ok_is_the_root_owned_gate_in_etc_mal_h5(tmp_path):
@@ -659,6 +1446,34 @@ def shadow_line(**kw) -> str:
     return json.dumps({"type": "start", "v": 1, "t_ms": 1, **kw}, separators=(",", ":")) + "\n"
 
 
+def test_the_cap_pick_subdirectory_is_ignored_and_raises_no_feed_alert(tmp_path):
+    # CAP_PICK_OUT=$HOME/data/h5-shadow/cap-pick: the exporter's subdirectory sits in the shadow directory. It is never an hourly file, never
+    # makes a dead detector look fresh, and never by itself raises an h5_feed_* alert.
+    d = tmp_path / "h5-shadow"
+    (d / "cap-pick").mkdir(parents=True)
+    hour = d / "h5-shadow-2026-10-16T03.jsonl"
+    hour.write_text(shadow_line(h5_look2={"observed": False}) + '{"type":"hb"}\n')
+    (d / "cap-pick" / "picks.jsonl").write_text(shadow_line(h5_look2={"observed": True}) + '{"hb":true,"t_ms":1}\n')
+    os.utime(d / "cap-pick" / "picks.jsonl", (NOW, NOW))
+    os.utime(d / "cap-pick", (NOW, NOW))
+    assert dc.Host().newest_hourly(str(d))[0] == hour.name
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+
+    class H(FakeHost):
+        newest_hourly = dc.Host.newest_hourly
+
+    os.utime(hour, (NOW - 60, NOW - 60))
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "fresh")
+    assert not [a for a in alerts(out) if a.startswith("h5_feed")], out
+    assert f"shadow feed fresh ({hour.name}, 60 s)" in out
+    os.utime(hour, (NOW - 11 * 60, NOW - 11 * 60))  # the detector stopped; the exporter still writes
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "stale")
+    assert "h5_feed_stale" in alerts(out) and hour.name in out and "cap-pick" not in out
+    hour.unlink()
+    rc, out = go(H(), "--shadow-dir", str(d), tmp=tmp_path / "none")
+    assert "h5_feed_stale" in alerts(out) and "no h5-shadow-<hour>.jsonl" in out
+
+
 def test_newest_shadow_start_reads_the_last_start_record_of_the_newest_file_that_has_one(tmp_path):
     d = tmp_path
     (d / "h5-shadow-2026-10-16T01.jsonl").write_text(shadow_line(h5_look2={"observed": False}) + '{"type":"hb"}\n')
@@ -711,3 +1526,62 @@ def test_script_is_read_only_and_keyless():
     assert src.count("self._sudo(") == 3  # sudo runs only these three calls, built from fixed paths
     assert 'self._sudo("/usr/bin/true")' in src and "self._sudo(*stat_argv(path))" in src and "self._sudo(*dd_argv(path))" in src
     assert "iflag=nofollow" in src and "O_NOFOLLOW" in src
+
+
+# ---- round 4 on #589: never quieter than main ---------------------------------------------------------------------------------------------
+def main_idle_ledger_fires(h, now: float) -> bool:
+    """main's (fd90376) h5_idle_ledger rule as it read there, with its literals: the unit installed and LIVE_OK present (the gate), LIVE_OK
+    older than 6 h, and no buy/skip/decision row with a numeric ts_ms newer than 6 h in the ledger tail. Nothing of the shadow is consulted."""
+    if not h.exists(dc.LIVE_OK) or h.h5_props.get("LoadState") != "loaded":
+        return False
+    t = h.mtime(dc.LIVE_OK)
+    if t is None or not now - t > 6 * 3600:
+        return False
+    ledger = h.read(f"{H5}/live/h5-ledger.jsonl", dc.LEDGER_TAIL) or b""
+    last = 0
+    for line in ledger.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("kind") in ("buy", "skip", "decision") and isinstance(row.get("ts_ms"), (int, float)):
+            last = max(last, row["ts_ms"] / 1000.0)
+    return now - last > 6 * 3600
+
+
+# Every idle test that judges worlds through go(...): the ones above, and any added later before this line (the selection is by name).
+IDLE_WORLD_TESTS = sorted(n for n, f in list(globals().items())
+                          if n.startswith("test_idle") and callable(f) and n != "test_idle_constants_follow_the_shadow_and_the_executor")
+SEAL_WORLD_TESTS = {n for n in IDLE_WORLD_TESTS if "T_SEAL" in inspect.getsource(globals()[n]) or "SEAL_START" in inspect.getsource(globals()[n])}
+
+
+def test_never_quieter_than_main_covers_the_idle_tests():
+    assert len(IDLE_WORLD_TESTS) >= 18 and len(SEAL_WORLD_TESTS) >= 6, (IDLE_WORLD_TESTS, SEAL_WORLD_TESTS)
+    assert {"test_idle_canary_alerts", "test_idle_ledger_in_a_quiet_market_is_the_h5_idle_quiet_alert",
+            "test_idle_ledger_unclassified_exclusions_that_drain_alert", "test_idle_ledger_24_h_backstop"} <= set(IDLE_WORLD_TESTS)
+
+
+@pytest.mark.parametrize("name", IDLE_WORLD_TESTS)
+def test_never_quieter_than_main(name, tmp_path, monkeypatch):
+    """Round 4 on #589: over every world the idle tests build and judge, before the seal and in the seal window, whenever main's rule would
+    alert (LIVE_OK older than 6 h and no buy/skip/decision row in 6 h) this code raises SOME alert of the idle family (h5_idle_ledger,
+    h5_idle_unledgered, h5_detector_missed, h5_unclassified_drains, h5_idle_quiet) and exits 1. The test is re-run with go() wrapped; its own
+    assertions still hold. A world main is silent on is not constrained here."""
+    seen = {"pre": 0, "seal": 0}
+    real_go = go
+
+    def checked_go(host, *extra, tmp, now=NOW, **kw):
+        fires = main_idle_ledger_fires(host, now)
+        rc, out = real_go(host, *extra, tmp=tmp, now=now, **kw)
+        if fires:
+            assert rc == 1 and set(alerts(out)) & IDLE_ALERTS, (name, now, out)
+            seen["seal" if now >= SEAL_START else "pre"] += 1
+        return rc, out
+
+    monkeypatch.setitem(globals(), "go", checked_go)
+    test = globals()[name]
+    with pytest.MonkeyPatch.context() as inner:  # the test's own monkeypatch (one test calls undo() on it): never this one's
+        given = {"tmp_path": tmp_path, "monkeypatch": inner}
+        test(**{k: given[k] for k in inspect.signature(test).parameters})
+    assert seen["pre"] + seen["seal"] > 0, (name, seen)  # not vacuous: main fires on at least one of its worlds
+    assert name not in SEAL_WORLD_TESTS or seen["seal"] > 0, (name, seen)

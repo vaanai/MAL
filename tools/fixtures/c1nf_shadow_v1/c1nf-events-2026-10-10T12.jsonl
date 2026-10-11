@@ -1,0 +1,2 @@
+{"schema":"c1nf_shadow_v1","t_ms":1791633600100,"type":"c1nf_heartbeat","hw_slot":100000,"hw_bt":1791633600,"last_decided_T":1791633540,"stream_lag_s":0.8,"pending":0,"pools_alive":12,"counters":{"picks":0},"universe":{"pools":12},"model_shas":["abababababababababababababababababababababababababababababababab"],"rule":"C1-NF EXP-025","uptime_s":120.0}
+{"schema":"c1nf_shadow_v1","t_ms":1791633659000,"type":"c1nf_gap","kind":"follower_gap","slot_from":100250,"slot_to":100260,"reason":"backlog_jump"}

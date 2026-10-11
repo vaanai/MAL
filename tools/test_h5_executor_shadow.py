@@ -6,6 +6,7 @@ parser tests here are the ones that fail."""
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -214,6 +215,30 @@ class ShadowFlowTests(Case):
         self.assertEqual(e.ex._tail_path, new)
         self.assertEqual(sorted(e.ex.counters.day(h.day_key(T0))["boost_s"]), ["A" * 43 + "1", "B" * 43 + "2", "C" * 43 + "3"])  # all three, old hour first
         self.assertEqual(e.ex.counters.halts, {})  # three pools: no day median yet
+
+    def test_the_cap_pick_subdirectory_is_not_an_hourly_file(self):
+        # The pinned configs set pick_file=/srv/mal-h5-shadow/cap-pick/picks.jsonl: the exporter's subdirectory rides the same bind. It is
+        # never the newest hour (even written last), its rows are never read as shadow records, and the oracle reads it as its pick file.
+        d = self.tmp / "shadow"
+        (d / "cap-pick").mkdir(parents=True)
+        hour = d / "h5-shadow-2026-10-06T15.jsonl"
+        hour.write_text("")
+        picks = d / "cap-pick" / "picks.jsonl"
+        e = self.env(intents_file=str(d), pick_file=str(picks))
+        e.ex.intent_tick()
+        pick = "P" * 43 + "9"
+        picks.write_text(json.dumps({"mint": pick, "pick": True}) + "\n" + json.dumps({"hb": True, "t_ms": e.clock()}) + "\n")
+        os.utime(picks, (e.clock() / 1000 + 60, e.clock() / 1000 + 60))  # the newest entry by mtime
+        e.ex._glob_ms = 0
+        self.assertEqual(e.ex._resolve_intents(), hour)
+        self.append(e, pool_row("A" * 43 + "1", boost_last_slice_s=336.0), path=hour)
+        e.ex.intent_tick()
+        self.assertEqual(e.ex._tail_path, hour)
+        self.assertEqual(list(e.ex.counters.day(h.day_key(T0))["boost_s"]), ["A" * 43 + "1"])
+        self.assertNotIn(pick, "".join(p.read_text() for p in self.tmp.rglob("*.jsonl") if "cap-pick" not in p.parts))  # never copied out
+        o = h.build_pick_oracle({"pick_file": str(picks)}, now_ms=e.clock)
+        self.assertIs(o(pick), True)
+        self.assertIsNone(o("A" * 43 + "1"))  # not in the feed: undecided, refused inside the window
 
     def test_directory_with_no_shadow_file_yet_is_quiet(self):
         d = self.tmp / "empty"

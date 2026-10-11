@@ -1,0 +1,11 @@
+[Unit]
+Description=MAL C1-NF watchdog every 5 minutes (DEC-026 section 5)
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

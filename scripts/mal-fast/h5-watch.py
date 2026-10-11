@@ -36,6 +36,8 @@ REPEAT_S = 6 * 3600
 WATCH_WINDOW_HOURS = "6"
 WEBHOOK_RE = re.compile(r"^https://(?:discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$")
 MAX_CONTENT = 1900
+POST_PREFIX = "[H5 watch] "
+TRUNCATED = " [line cut: over one post]"
 WEBHOOK_VAR = "H5_WATCH_DISCORD_WEBHOOK"
 
 
@@ -133,6 +135,27 @@ def decide(alerts: dict[str, str], obs: dict, state: dict, now: float) -> tuple[
                     "tier_change_ts": newest, "ts": now}
 
 
+def chunks(lines: list[str], prefix: str = POST_PREFIX) -> list[str]:
+    """The posts for one run: whole lines, each post within MAX_CONTENT. post_discord cuts a post at MAX_CONTENT and the run then counts every
+    line as posted, so one long post could drop a later ALERT line for REPEAT_S (review of #589: the idle lines grew to about 700 chars). A
+    single line longer than a post is cut with a marker; no line the checks build comes close."""
+    room = MAX_CONTENT - len(prefix)
+    out: list[str] = []
+    cur = ""
+    for line in lines:
+        if len(line) > room:
+            line = line[: room - len(TRUNCATED)] + TRUNCATED
+        cand = line if not cur else cur + "\n" + line
+        if cur and len(cand) > room:
+            out.append(prefix + cur)
+            cur = line
+        else:
+            cur = cand
+    if cur:
+        out.append(prefix + cur)
+    return out
+
+
 def summary(obs: dict, n_alerts: int, n_lines: int) -> str:
     f = obs.get("facts") or {}
     age = f.get("feed_age_s")
@@ -152,7 +175,8 @@ def run(host, env: dict[str, str], post: Callable[[str, str], None], state_path:
     lines, new_state = decide(alerts, obs, state, now)
     if lines:
         try:
-            post(webhook, "[H5 watch] " + "\n".join(lines))
+            for content in chunks(lines):
+                post(webhook, content)
         except RuntimeError as exc:
             print(f"h5_watch: {exc}", file=sys.stderr)  # state is not advanced: the same lines are tried again next run
             return 1

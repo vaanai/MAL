@@ -15,5 +15,6 @@
   "exit_land_offset_s": 0.0,
   "deadline_s": 400,
   "sell_retries": 5,
-  "feed_heartbeat_max_age_ms": 150000
+  "feed_heartbeat_max_age_ms": 150000,
+  "pick_file": "/srv/mal-h5-shadow/cap-pick/picks.jsonl"
 }
