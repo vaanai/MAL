@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections import defaultdict
 
 import numpy as np
 import pytest
 
 from tools import c1nf_parity_exact as px
 from tools import c1nf_shadow as cs
-from tools.c1nf_features import FeatureEngine
+from tools import c1nf_parity as cp
+from tools.c1nf_features import FEATURE_NAMES, FeatureEngine
 from tools.test_c1nf_shadow import BT0, MINT, POOL, SPS, V0
 from tools.test_c1nf_vmode_parity import _batches, _models
 
@@ -52,11 +54,12 @@ def _capture(eng, force_stage1=False):
     return seen
 
 
-def _run(eng, rows, force_stage1=False):
+def _run(eng, rows, force_stage1=False, hour_sps=None):
     seen = _capture(eng, force_stage1)
     sink = cs.MemorySink()
-    sh = cs.Shadow(eng, _models(), sink, replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY)
-    sh.clock.hour_sps = {cs.hour_of(BT0): SPS, cs.hour_of(BT0 + 3600): SPS}
+    cls = px.ExactShadow if getattr(eng, "state_mode", None) == px.STATE_EXACT else cs.Shadow   # run_replay_mode's choice
+    sh = cls(eng, _models(), sink, replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY)
+    sh.clock.hour_sps = hour_sps or {cs.hour_of(BT0): SPS, cs.hour_of(BT0 + 3600): SPS}
     for r in rows:
         sh.feed(r, r["_k"])
     sh.finish("end")
@@ -129,9 +132,11 @@ def test_exact_mode_feeds_the_next_prints_pre_trade_state_and_changes_only_the_s
     la = _la(rows)
     live_seen, live_sink, _ = _run(px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="live"), rows, force_stage1=True)
     eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="exact", lookahead=la)
-    ex_seen, ex_sink, _ = _run(eng, rows, force_stage1=True)
+    ex_seen, ex_sink, ex_sh = _run(eng, rows, force_stage1=True)
     assert [s[:3] for s in ex_seen] == [s[:3] for s in live_seen]              # same decisions (pool, T, SD)
     assert eng.exact_injected == len(ex_seen) and la.c["hit"] == len(ex_seen)
+    rep = ex_sh.exact_report()                                                  # the pool prints every slot: each deferral resolves at SD
+    assert rep["ok"] and rep["deferred"] == rep["resolved"] == len(ex_seen) and rep["outcomes_not_priced"] >= 1
     # each exact answer equals the base engine asked with the next print's pre-trade reserves, computed independently
     ref = cs.build_engine(_Ledger(), v_source=cs.V_SOURCE_REPLAY)
     want = {}
@@ -211,3 +216,167 @@ def test_lookahead_from_tape_matches_add_rows(tmp_path):
     b = _la(rows)
     assert a.rows == b.rows and all(np.array_equal(x, y) for x, y in zip(a._idx[POOL], b._idx[POOL]))
     assert not math.isnan(a.next_state(POOL, rows[5]["slot"])[0])
+
+
+# ---- cross-harness: run A's evaluation point is #506's (tools/c1nf_parity.py:225-230) ----------------------------------------------------
+# One creator C with two graduated mints. Q (graduated at t=10) prints once, so at P's decisions its 6 h outcome is unknown
+# (outcome_now: fewer than 2 prints) and P's cr_known_out is 0. Q prints again (at or after g0 + 6 h) AFTER P's SD and BEFORE P's next
+# print: at #506's evaluation point Q.outcome is exact and cr_known_out is 1, cr_lmax6 / cr_lend6 / cr_big6 are set.
+XS, XBT = 5_000_000, BT0                          # slot = XS + t, block_time = XBT + t (1 slot per second)
+XC, XQ, XP, XQP, XPP, XMX = "CREATORc", "MINTqqqq", "MINTpppp", "POOLqqqq", "POOLpppp", "MINTxxxx"
+X_GQ, X_GP = 10, 21650                            # graduation offsets; Q's g0 + 6 h = 21610 <= every T of P's grid
+X_Q2, X_PNEXT, X_END = 22850, 23150, 23400        # Q's second print; P's next print after its quiet spell; end of the fixture
+
+
+def _xrow(t, k, **kw):
+    r = {"_k": k, "slot": XS + t, "block_time": XBT + t, "tx_index": kw.pop("tx", 1), "event_index": 0}
+    r.update(kw)
+    return r
+
+
+def _xps(t, pool, mint, trader, buy, sol, tok, q, b):
+    return cs.stamp_replay_v(_xrow(t, "trades", venue="pumpswap", pool=pool, mint=mint, trader=trader, side="buy" if buy else "sell",
+                                   sol_lamports=sol, token_raw=tok, quote_reserve=q, base_reserve=b), V0, event_v=False)
+
+
+def _xrows():
+    rows = [_xrow(0, "creates", mint=XQ, creator=XC, name="dog moon", symbol="DOG", is_mayhem_mode=False),
+            _xrow(5, "creates", mint=XP, creator=XC, name="dog sun", symbol="DOGS", is_mayhem_mode=False),
+            _xrow(X_GQ, "migrations", type="complete", mint=XQ),
+            _xps(15, XQP, XQ, "qa", True, 1e8, 1e11, 85e9, 2e14),
+            _xrow(X_GP, "migrations", type="complete", mint=XP),
+            _xps(X_Q2, XQP, XQ, "qb", False, 1e8, 1e11, 95e9, 1.9e14)]
+    q, b = 85e9, 2e14
+    pts = [(X_GP + 7, "p0", True), (X_GP + 60, "p1", True), (X_GP + 120, "p2", False)]
+    pts += [(X_GP + 700 + 15 * k, f"n{k}", True) for k in range(12)]
+    pts += [(X_PNEXT, "late", True), (X_PNEXT + 60, "late2", False), (X_PNEXT + 120, "late3", True)]
+    for t, tr, buy in pts:
+        rows.append(_xps(t, XPP, XP, tr, buy, 2e8, 1e12, q, b))
+        q, b = (q + 2e8, b - 1e12) if buy else (q - 2e8, b + 1e12)
+    for t in range(20, X_END, 30):                # the clock: a bonding print every 30 s (every whole minute has a row at T)
+        rows.append(_xrow(t, "trades", tx=0, venue="pump_bonding", mint=XMX, trader="bx", side="buy", sol_lamports=1e6, token_raw=1e9,
+                          quote_reserve=30e9, base_reserve=1e15, pool=None))
+    rows.sort(key=cs.row_key)
+    return rows
+
+
+def _ref506(rows, la):
+    """tools/c1nf_parity.py replay_days' loop (lines 158-246), on in-memory rows: decisions at every whole minute with SD = the least trade
+    slot with block_time >= T, evaluated live; each one again at the pool's next PumpSwap print, before on_trade, with that print's
+    (quote_reserve, base_reserve); the hourly expire(lastbt - 86400, market_keep_s=1e9). Also returns the pre-fix #594 answer (the
+    look-ahead state injected at SD), to show the fixture separates the two."""
+    eng = FeatureEngine(ledger=_Ledger(), v_source="const")
+    for pool in (XQP, XPP):
+        eng.set_pool_v(pool, V0)
+    trades = [r for r in rows if r["_k"] == "trades"]
+    first = {}
+    for r in trades:
+        first[r["block_time"]] = min(first.get(r["block_time"], 1 << 62), r["slot"])
+    cbt = np.array(sorted(first), dtype=np.int64)
+    cs_ = np.array([first[x] for x in cbt], dtype=np.int64)
+    Ts = np.arange((int(cbt[0]) + 59) // 60 * 60, int(cbt[-1]) + 1, 60, dtype=np.int64)
+    sds = cs_[np.clip(np.searchsorted(cbt, Ts, "left"), 0, len(cs_) - 1)]
+    order = np.lexsort((Ts, sds))
+    dec = list(zip(sds[order].tolist(), Ts[order].tolist()))
+    live, exact, old, pend = {}, {}, {}, defaultdict(list)
+    di, hour, lastbt = 0, None, 0
+    for r in rows:
+        h = r["block_time"] // 3600
+        if hour is not None and h != hour and lastbt:
+            eng.expire(lastbt - 86400, market_keep_s=10 ** 9)
+        hour = h
+        if r["_k"] == "creates":
+            eng.on_create(r["mint"], r["creator"], r["name"], r["symbol"], r["block_time"], r["is_mayhem_mode"])
+            continue
+        if r["_k"] == "migrations":
+            eng.on_graduation(r["mint"], r["block_time"])
+            continue
+        slot = r["slot"]
+        while di < len(dec) and dec[di][0] <= slot:
+            sd, T = dec[di]
+            di += 1
+            for pid in eng.alive_pools(T):
+                if T > cp.t_end_of(eng._pools[pid].g0):
+                    continue
+                f = eng.features_at(pid, T, sd)
+                if f is None:
+                    continue
+                live[(pid, T)] = f.vec.copy()
+                pend[pid].append((T, sd))
+                ns = la.next_state(pid, sd, px.horizon_bt(eng._pools[pid].g0))
+                o = eng.features_at(pid, T, sd, next_state=ns) if ns is not None else f
+                old[(pid, T)] = o.vec.copy()
+        if r["venue"] == "pumpswap" and r["pool"] in pend:
+            for T, sd in pend.pop(r["pool"]):
+                f = eng.features_at(r["pool"], T, sd, next_state=(r["quote_reserve"], r["base_reserve"]))
+                if f is not None:
+                    exact[(r["pool"], T)] = f.vec.copy()
+        eng.on_trade(r["venue"], r["mint"], r["trader"], r["side"] == "buy", r["sol_lamports"], r["token_raw"], r["quote_reserve"],
+                     r["base_reserve"], r.get("pool"), slot, r["block_time"])
+        lastbt = r["block_time"]
+    return {k: exact.get(k, v) for k, v in live.items()}, old
+
+
+def test_exact_mode_equals_506s_harness_on_every_feature_including_the_creator_record():
+    rows = _xrows()
+    pool_v = {XQP: V0, XPP: V0}
+    ref, old = _ref506(rows, _la(rows, pool_v))
+    fi = {n: j for j, n in enumerate(FEATURE_NAMES)}
+    ck = fi["cr_known_out"]
+    moved = [k for k in ref if k[0] == XPP and ref[k][ck] == 1.0 and old[k][ck] == 0.0]
+    assert len(moved) >= 3                                       # the fixture separates "creator record at SD" from #506's point
+    for k in moved:
+        for n in ("cr_lmax6", "cr_lend6", "cr_big6"):
+            assert np.isnan(old[k][fi[n]]) and not np.isnan(ref[k][fi[n]]), n
+
+    la = _la(rows, pool_v)
+    eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="exact", lookahead=la)
+    hs = {cs.hour_of(XBT + 3600 * i): 1.0 for i in range(8)}
+    seen, sink, sh = _run(eng, rows, force_stage1=True, hour_sps=hs)
+    got = {(p, T): np.frombuffer(v, dtype=np.float64) for p, T, _, _, _, v in seen}
+    assert set(got) == set(ref) and len(got) > 30                # the same decision rows (pool, T)
+    bad = {n: sum(not np.array_equal(got[k][j], ref[k][j], equal_nan=True) for k in ref) for n, j in fi.items()}
+    assert sum(bad.values()) == 0, {n: c for n, c in bad.items() if c}
+    for k in moved:                                              # bit-equal, as float32 too (P3's matched-row bar)
+        assert np.array_equal(got[k].astype(np.float32), ref[k].astype(np.float32), equal_nan=True)
+    rep = sh.exact_report()
+    assert rep["ok"] and rep["deferred"] >= len(moved) and rep["resolved"] == rep["deferred"] and rep["row_state_mismatch"] == 0
+    picks = sink.of("c1nf_pick")
+    deferred_picks = [p for p in picks if X_GP + 600 <= p["decision_T_ms"] // 1000 - XBT < X_PNEXT]
+    assert deferred_picks and all(0 <= p["t_ms"] - p["decision_T_ms"] < 60_000 for p in picks)   # stamped at the decision row, not the print
+    assert sink.of("c1nf_outcome") == []                                   # exact mode prices no outcome
+
+
+def test_exact_mode_defers_only_pools_with_a_next_print_and_keeps_the_book_order():
+    rows = _xrows()
+    la = _la(rows, {XQP: V0, XPP: V0})
+    eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="exact", lookahead=la)
+    seen, sink, sh = _run(eng, rows, force_stage1=True, hour_sps={cs.hour_of(XBT + 3600 * i): 1.0 for i in range(8)})
+    rep = sh.exact_report()
+    assert rep["decided_at_sd"] > 0 and rep["deferred"] > 0                # Q after its last print and P after X_PNEXT + 120: live at SD
+    ts = [p["decision_T_ms"] for p in sink.of("c1nf_pick") if p["mint"] == XP]
+    assert ts == sorted(ts) and all(b - a >= 60_000 for a, b in zip(ts, ts[1:]))
+    live_eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="live")
+    lseen, _, lsh = _run(live_eng, rows, force_stage1=True, hour_sps={cs.hour_of(XBT + 3600 * i): 1.0 for i in range(8)})
+    assert sorted(s[:3] for s in seen) == sorted(s[:3] for s in lseen)        # the same (pool, T, SD) rows, decided at another point
+    for k in ("minutes", "decision_rows", "stage1", "not_decidable"):           # every minute and row is counted once, as in live
+        assert sh.c[k] == lsh.c[k], k
+
+
+def test_run_replay_mode_builds_exact_shadow_for_one_call_and_restores_shadow(monkeypatch):
+    built = []
+
+    def fake_run_replay(args, models, engine, sink):
+        built.append(cs.Shadow(engine, models, sink, replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY))
+        return cs.EXIT_OK
+
+    monkeypatch.setattr(cs, "run_replay", fake_run_replay)
+    orig = cs.Shadow
+    eng = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="exact", lookahead=_la([]))
+    rc, sh = px.run_replay_mode(None, _models(), eng, cs.MemorySink())
+    assert rc == cs.EXIT_OK and isinstance(sh, px.ExactShadow) and built == [sh] and cs.Shadow is orig
+    live = px.StateModeEngine(_Ledger(), v_source=cs.V_SOURCE_REPLAY, state_mode="live")
+    rc, sh = px.run_replay_mode(None, _models(), live, cs.MemorySink())
+    assert sh is None and type(built[-1]) is cs.Shadow and cs.Shadow is orig
+    with pytest.raises(ValueError):
+        px.ExactShadow(live, _models(), cs.MemorySink(), replay=True, seal_start_ms=None, v_source=cs.V_SOURCE_REPLAY)

@@ -8,22 +8,39 @@ would move the soak's pinned blob (c2dafcdc, MiScusi #658). This harness leaves 
 
   * `--state-mode live`  runs tools.c1nf_shadow.run_replay itself, with an engine built exactly as tools.c1nf_shadow.build_engine builds it
                          (same class, ledger_keep_days and print_window). Its picks are the shadow's replay picks by construction (tested).
-  * `--state-mode exact` runs the same run_replay with one difference: the engine's features_at gets `next_state` = the pre-trade
-                         (quote_reserve, base_reserve) of the pool's first canonical PumpSwap print with slot >= SD, read from a look-ahead
-                         index built from the same tape hours before the replay starts. No print with slot >= SD before the batch's horizon
-                         (graduation day D + 2 days, 02:00Z; tools/c1nf_parity.end_hour_of) leaves next_state None, so the decision is the
-                         live one, as in #506's harness ("no later print for the pool in the window -> exact == live").
+  * `--state-mode exact`  runs the same run_replay, with the evaluation point of #506's harness (tools/c1nf_parity.py:225-230). That
+                         harness evaluates every decision live at SD and, for a pool that prints again before the batch's horizon
+                         (graduation day D + 2 days, 02:00Z; tools/c1nf_parity.end_hour_of), re-evaluates it when that next print
+                         arrives, before the print is ingested, with next_state = the print's PRE-trade (quote_reserve, base_reserve).
+                         Every other table is read at that moment too: the creator record (_passc: cr_known_out, cr_lmax6, cr_lend6,
+                         cr_big6 read Q.outcome or Q.outcome_now() of the creator's other pools, which a print of Q between SD and P's
+                         next print changes), the market minutes, the create, graduation and narrative lists. ExactShadow does the same:
+                         at decision time it asks a look-ahead index (built from the same tape hours before the replay) whether the
+                         pool has a print with slot >= SD before the horizon. If not (or that print's state is not a valid state), the
+                         pool is decided at SD, live, as #506 keeps the live row ("no later print for the pool in the window -> exact
+                         == live"). If so, the decision is DEFERRED: it runs, through the shadow's own Shadow._decide (model, PRED_MIN,
+                         cap, seal, book, decision state, pick schema unchanged), when the pool's next PumpSwap row reaches _on_trade,
+                         before Shadow._on_trade ingests it, with that row's (quote_reserve, base_reserve) as next_state.
+                         The book stays the shadow's: a mint's deferred decisions resolve in T order, before any later decision of the
+                         same pool, and keep their own T, SD and decision bt (book, pick t_ms). The pool's decision state (its last
+                         print with slot < SD) is unchanged, since no print of the pool arrives in between. Exact mode prices no
+                         outcome (a deferred Pending would see prints a live one never sees): no c1nf_outcome record is written.
+                         Cross-harness equality on a synthetic creator fixture: tools/test_c1nf_parity_exact.py.
 
-The look-ahead is resolved at decision time, so the shadow's own book (one position per mint, re-entry at the estimated exit + 60 s), seal
-guard, decision-state record and pick schema run unchanged in both modes. #506's harness instead evaluates exact rows later, when the next
-print arrives; the pool's own state is the same in both (prints with slot < SD), and run A's market and creator tables are those at SD.
+Not part of the evaluation point, and shared by run A and run B (the cross-harness check on 09-20 measures them): the shadow's SD (the
+slot of the first row of a new minute) against #506's (the least trade slot with block_time >= T), the row order inside a slot (row_key
+against #506's creates-trades-migrations order), and #506's hourly expire (pools freed at g0 + 49 h, outcome frozen) where replay never
+expires.
 
 Outputs in --out-dir (which must be empty or absent):
   c1nf-prewindow-picks-*.jsonl, c1nf-*.jsonl     the shadow's own sink (every replay pick is a pre-window pick)
   parity-stage1-<mode>.npz                       every stage-1 decision row with a wallet snapshot: pool, mint, T, sd, h_top1, vec (float32)
   parity-summary-<mode>.json                     mode, input sha256s and git blobs, look-ahead counters, engine health, picks per UTC day,
                                                  and P3's list md5 (lines `mint,decision_T_ms,SD_slot`, sorted, newline-terminated) per day
-                                                 and overall. It opens no outcome or P&L column.
+                                                 and overall, BEFORE tie removal (P3 recomputes it after removing boundary ties and
+                                                 their book cascades unless both sides have 0 ties). It opens no outcome or P&L column.
+                                                 Exact mode adds `exact`: deferred / resolved / unresolved decisions and row-vs-index
+                                                 state mismatches; a run with an unresolved deferral or a mismatch exits 1.
 
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 \
       --model-manifest M.json --ledger-root ROOT --out-dir OUT_A
@@ -36,6 +53,7 @@ no seal (replay). Heavy runs are MiScusi jobs, memory-capped; this file does not
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import math
@@ -56,6 +74,9 @@ from tools.c1nf_features import FeatureEngine, utc_day  # noqa: E402
 STATE_LIVE, STATE_EXACT = "live", "exact"
 STATE_MODES = (STATE_LIVE, STATE_EXACT)
 HORIZON_DAYS, HORIZON_HOUR = 2, 2              # tools/c1nf_parity.end_hour_of: the batch loads D00 .. D+2 T01 for graduation day D
+EXACT_LEDGER_KEEP_DAYS = 3                     # a deferred decision of day D can resolve on D+2 while T moves on: keep 3 as-of snapshots so the
+                                               # engine does not reopen one per minute (FeatureEngine._ledger_for: a reopened day has the same values)
+EXIT_EXACT_CHECK = 1                           # exact mode: an unresolved deferral or a row/index state mismatch
 
 
 def horizon_bt(g0: Optional[int]) -> Optional[int]:
@@ -154,7 +175,9 @@ class Lookahead:
 
 class StateModeEngine(FeatureEngine):
     """tools.c1nf_features.FeatureEngine with the shadow's build_engine settings, plus the state-mode switch and a stage-1 recorder.
-    live: features_at is the base method, unchanged. exact: next_state comes from the look-ahead (None when it has no answer)."""
+    live: features_at and alive_pools are the base methods, unchanged. exact: ExactShadow sets `only_pools` (alive_pools restricted to a
+    subset, in the base order) and `inject` ({pool: next_state} for the deferred decision it is resolving); nothing else differs, except
+    that exact mode keeps EXACT_LEDGER_KEEP_DAYS as-of snapshots (the same values)."""
 
     def __init__(self, ledger: Any = None, *, v_source: str, state_mode: str, lookahead: Optional[Lookahead] = None, record: bool = True) -> None:
         if state_mode not in STATE_MODES:
@@ -163,24 +186,138 @@ class StateModeEngine(FeatureEngine):
             raise ValueError("state_mode 'exact' needs a look-ahead index")
         if state_mode == STATE_EXACT and v_source != cs.V_SOURCE_REPLAY:
             raise ValueError("state_mode 'exact' is defined for the exploration replay (v_source 'const') only")
-        super().__init__(ledger=ledger, v_source=v_source, ledger_keep_days=cs.LIVE_LEDGER_KEEP_DAYS, print_window=cs.LIVE_PRINT_WINDOW)
+        keep = EXACT_LEDGER_KEEP_DAYS if state_mode == STATE_EXACT else cs.LIVE_LEDGER_KEEP_DAYS
+        super().__init__(ledger=ledger, v_source=v_source, ledger_keep_days=keep, print_window=cs.LIVE_PRINT_WINDOW)
         self.state_mode, self.lookahead, self.record = state_mode, lookahead, record
         self.stage1_rows: list[tuple[str, Optional[str], int, int, float, np.ndarray]] = []
         self.exact_injected = 0
+        self.only_pools: Optional[Sequence[str]] = None
+        self.inject: Optional[dict[str, tuple[float, float]]] = None
+
+    def alive_pools(self, T: int) -> list[str]:
+        base = super().alive_pools(T)
+        if self.only_pools is None:
+            return base
+        keep = set(self.only_pools)
+        return [p for p in base if p in keep]
 
     def features_at(self, pool: str, T: int, sd: Optional[int] = None, next_state: Optional[tuple] = None) -> Any:
-        if self.state_mode == STATE_EXACT and next_state is None:
-            sd_ = sd if sd is not None else self.clock.decision_slot(int(T))
-            P = self._pools.get(pool)
-            if sd_ is not None and P is not None:
-                next_state = self.lookahead.next_state(pool, int(sd_), horizon_bt(P.g0))  # type: ignore[union-attr]
-                if next_state is not None:
-                    self.exact_injected += 1
+        if next_state is None and self.inject is not None:
+            next_state = self.inject.get(pool)
+            if next_state is not None:
+                self.exact_injected += 1
         res = super().features_at(pool, T, sd, next_state=next_state) if next_state is not None else super().features_at(pool, T, sd)
         if self.record and res is not None and res.stage1 and res.wallet_ok is not False:
             self.stage1_rows.append((res.pool, getattr(res, "mint", None), int(res.t), int(res.sd), float(res.h_top1),
                                      np.asarray(res.vec, dtype=np.float32).copy()))
         return res
+
+
+class ExactShadow(cs.Shadow):
+    """Run A's evaluation point (module docstring): a decision whose pool prints again (slot >= SD, before the horizon, valid state) is
+    deferred to that print and resolved through Shadow._decide itself, so the decision code is the shadow's, byte for byte."""
+
+    def __init__(self, engine: Any, *a: Any, **kw: Any) -> None:
+        if getattr(engine, "state_mode", None) != STATE_EXACT:
+            raise ValueError("ExactShadow needs a StateModeEngine in state mode 'exact'")
+        super().__init__(engine, *a, **kw)
+        self.lookahead: Lookahead = engine.lookahead
+        self.deferred: dict[str, list[tuple[int, int, int, tuple[float, float]]]] = {}
+        self.xc: collections.Counter = collections.Counter()
+        self._clock_ms_override: Optional[int] = None
+
+    def clock_ms(self) -> int:
+        return self._clock_ms_override if self._clock_ms_override is not None else super().clock_ms()
+
+    def _decide(self, T: int, sd: int, bt: int) -> None:
+        eng = self.engine
+        now: list[str] = []
+        for pool in eng.alive_pools(T):
+            P = eng._pools.get(pool)
+            ns = self.lookahead.next_state(pool, int(sd), horizon_bt(P.g0)) if P is not None else None
+            if ns is not None and not (ns[0] + P.V > 0 and ns[1] > 0):   # features_at would answer None there; #506 keeps the live row
+                self.xc["invalid_next_state_live"] += 1
+                ns = None
+            if ns is None:
+                now.append(pool)
+            else:
+                self.deferred.setdefault(pool, []).append((int(T), int(sd), int(bt), ns))
+                self.xc["deferred"] += 1
+        self.xc["decided_at_sd"] += len(now)
+        eng.only_pools = now
+        try:
+            super()._decide(T, sd, bt)
+        finally:
+            eng.only_pools = None
+
+    def _on_trade(self, row: Mapping[str, Any], slot: int, bt: int) -> None:
+        if row.get("venue") == "pumpswap":
+            pool = row.get("pool")
+            if pool is not None and self.deferred.get(pool):
+                self._resolve_deferred(pool, row, slot)
+        super()._on_trade(row, slot, bt)
+
+    def _resolve_deferred(self, pool: str, row: Mapping[str, Any], slot: int) -> None:
+        """#506 (tools/c1nf_parity.py:225-230): every pending decision of the pool, at its next PumpSwap print, before on_trade, with the
+        row's own (quote_reserve, base_reserve). The row must be the print the look-ahead named (counted; the run exits 1 if not)."""
+        keep: list[tuple[int, int, int, tuple[float, float]]] = []
+        eng = self.engine
+        for T, sd, bt, ns in self.deferred.pop(pool):
+            if slot < sd:                                     # cannot happen in slot order; kept for the print it was deferred to
+                keep.append((T, sd, bt, ns))
+                continue
+            q, b = _num(row.get("quote_reserve")), _num(row.get("base_reserve"))
+            if q is None or b is None or (q, b) != (float(ns[0]), float(ns[1])):
+                self.xc["row_state_mismatch"] += 1
+                if q is None or b is None:
+                    continue
+            minutes = self.c["minutes"]
+            eng.only_pools, eng.inject, self._clock_ms_override = [pool], {pool: (q, b)}, int(bt) * 1000
+            try:
+                cs.Shadow._decide(self, T, sd, bt)
+            finally:
+                eng.only_pools, eng.inject, self._clock_ms_override = None, None, None
+            self.c["minutes"] = minutes                       # the minute was counted once, at T
+            self.xc["resolved"] += 1
+        if keep:
+            self.deferred[pool] = keep
+
+    def _resolve(self, pend: Any, final: bool) -> None:
+        pend.done = True                                      # exact mode prices no outcome (module docstring)
+        self.xc["outcomes_not_priced"] += 1
+
+    def finish(self, reason: str = "end") -> None:
+        self.xc["unresolved"] = sum(len(v) for v in self.deferred.values())
+        super().finish(reason)
+
+    def exact_report(self) -> dict:
+        r: dict[str, Any] = {k: int(self.xc.get(k, 0)) for k in ("deferred", "resolved", "unresolved", "decided_at_sd", "invalid_next_state_live",
+                                                                "row_state_mismatch", "outcomes_not_priced")}
+        r["ok"] = r["unresolved"] == 0 and r["row_state_mismatch"] == 0 and r["deferred"] == r["resolved"]
+        return r
+
+
+def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngine, sink: Any) -> tuple[int, Optional[ExactShadow]]:
+    """tools.c1nf_shadow.run_replay for both modes (the same tape rows, Shadow arguments and finish). Exact mode builds ExactShadow in place
+    of Shadow for this one call (run_replay constructs `Shadow` by its module-global name); live mode is cs.run_replay, untouched."""
+    if engine.state_mode != STATE_EXACT:
+        return cs.run_replay(args, models, engine, sink), None
+    made: list[ExactShadow] = []
+    orig = cs.Shadow
+
+    def factory(*a: Any, **kw: Any) -> ExactShadow:
+        sh = ExactShadow(*a, **kw)
+        made.append(sh)
+        return sh
+
+    cs.Shadow = factory  # type: ignore[assignment,misc]
+    try:
+        rc = cs.run_replay(args, models, engine, sink)
+    finally:
+        cs.Shadow = orig  # type: ignore[misc]
+    if len(made) != 1:
+        raise RuntimeError(f"run_replay built {len(made)} shadows, expected 1")
+    return rc, made[0]
 
 
 # ---- P3's list --------------------------------------------------------------------------------------------------------------------------
@@ -293,9 +430,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     engine = StateModeEngine(ledger, v_source=cs.V_SOURCE_REPLAY, state_mode=args.state_mode, lookahead=la)
     sink = cs.JsonlSink(out)
     try:
-        rc = cs.run_replay(args, models, engine, sink)
+        rc, xsh = run_replay_mode(args, models, engine, sink)
     finally:
         sink.close()
+    exact = xsh.exact_report() if xsh is not None else None
+    if exact is not None and not exact["ok"] and rc == cs.EXIT_OK:
+        rc = EXIT_EXACT_CHECK
     rows = engine.stage1_rows
     np.savez_compressed(out / f"parity-stage1-{args.state_mode}.npz", pool=np.array([r[0] for r in rows]), mint=np.array([r[1] or "" for r in rows]),
                         T=np.array([r[2] for r in rows], dtype=np.int64), sd=np.array([r[3] for r in rows], dtype=np.int64),
@@ -310,7 +450,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "sha256": {"tokens": sha256_file(args.tokens), "model_manifest": sha256_file(args.model_manifest) if args.model_manifest else None,
                    "models": models.shas},
         "lookahead": None if la is None else {"rows": la.rows, "pools": len(la._idx), "index_bytes": la.nbytes(), **la.c},
-        "exact_injected": engine.exact_injected, "stage1_rows": len(rows), "engine_health": cs.clean(engine.health()),
+        "exact_injected": engine.exact_injected, "exact": exact, "stage1_rows": len(rows), "engine_health": cs.clean(engine.health()),
         "p3": p3_md5(read_picks(out)),
     }
     try:
@@ -319,7 +459,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         summary["git_head"] = None
     (out / f"parity-summary-{args.state_mode}.json").write_text(json.dumps(cs.clean(summary), indent=1, sort_keys=True) + "\n")
     print(f"done: mode {args.state_mode} picks {summary['p3']['n']} md5 {summary['p3']['md5']} stage1 {len(rows)} "
-          f"exact_injected {engine.exact_injected} {summary['seconds']}s VmHWM {summary['VmHWM_kb']} kB", flush=True)
+          f"exact_injected {engine.exact_injected} exact {json.dumps(exact)} {summary['seconds']}s VmHWM {summary['VmHWM_kb']} kB", flush=True)
     return rc
 
 
