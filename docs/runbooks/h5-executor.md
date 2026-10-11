@@ -540,6 +540,16 @@ Latched live halts (the ledger gets a `halt_latched` row; new buys stop; only `-
 | `late_sells_gt_5pct` | more than 5% of landed sells late |
 | `pre_unlinked_share` | triggers traded although their predecessor print may be missing (`trigger_pre_unlinked` on the decision row) are more than 15% of landed buys, judged from 20 landed |
 
+H5-BOOSTCLOCK v2 exit halts (DEC-028 section 4, Option B). They exist only in a build whose compiled-in `EXIT_MODE` is `"v2"`; the shipped build is `"v1"` and never latches them. In a v2 build `boost_median_lt_335` and `boost_median_lt_337_twice` are report-only (a `v2_report_only` ledger row once per day), and the late-sell rule above also counts a sell landing more than 3 s after its v2 exit trigger:
+
+| Name | Meaning |
+| --- | --- |
+| `v2_sell_after_boost_gt_15pct` | over a rolling 20 landed sells paired with their pool's BOOST last slice, more than 15% landed at or after it |
+| `v2_plain_median_lt_330` | a completed UTC day's plain-pool BOOST last-slice median below 330 s, over at least 30 plain pools (outside the tested range) |
+| `v2_projection_inputs` | a completed UTC day, over at least 30 plain pools whose BOOST completed: median BOOST total outside [17.5, 17.7] SOL, or median slice interval outside [6, 24] s |
+| `v2_slice_stream_stale` | more than 2 of our positions in a UTC day saw no BOOST slice for more than 45 s while BOOST still had budget |
+| `v2_slice_lag_gt_1_35s` | the median slice receive lag (receive time minus block time) over the day's traded pools above 1.35 s |
+
 Executor `alert` rows the daily check and the watchdog forward as `h5_executor_alert_<name>` (Discord included), with these meanings:
 
 | Alert | Meaning |
