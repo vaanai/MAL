@@ -133,6 +133,82 @@ def test_a_failed_post_keeps_the_state_so_the_alert_is_tried_again(tmp_path):
     assert go(h, st, good, NOW + 300) == 0 and len(good.posts) == 1 and "h5_halt_file" in good.posts[0][1]
 
 
+def test_long_runs_are_split_into_whole_line_posts_so_no_alert_line_is_cut_and_counted_as_posted():
+    """Review of #589: post_discord cuts at MAX_CONTENT and the run marks every line posted, so one long post could drop a later ALERT."""
+    lines = [f"ALERT a{i}: " + "x" * 700 for i in range(6)] + ["RESOLVED h5_idle_ledger"]
+    posts = hw.chunks(lines)
+    assert len(posts) > 1 and all(len(c) <= hw.MAX_CONTENT and c.startswith(hw.POST_PREFIX) for c in posts)
+    got = [ln for c in posts for ln in c[len(hw.POST_PREFIX):].split("\n")]
+    assert got == lines  # every line once, whole, in order
+    assert hw.chunks(["ALERT a: short", "RESOLVED b"]) == [hw.POST_PREFIX + "ALERT a: short\nRESOLVED b"]  # one post as before
+    assert hw.chunks([]) == []
+    room = hw.MAX_CONTENT - len(hw.POST_PREFIX)
+    exact = "y" * room
+    assert hw.chunks([exact, "z"]) == [hw.POST_PREFIX + exact, hw.POST_PREFIX + "z"]
+    (cut,) = hw.chunks(["ALERT huge: " + "q" * 5000])
+    assert len(cut) == hw.MAX_CONTENT and cut.endswith(hw.TRUNCATED)
+
+
+def test_a_run_posts_every_chunk_and_a_failure_on_a_later_chunk_keeps_the_state(tmp_path, monkeypatch):
+    h, st = world(), tmp_path / "state.json"
+    h.files[f"{H5}/HALT"] = b""
+    real = hw.decide
+    monkeypatch.setattr(hw, "decide", lambda a, o, s, n: (lambda r: (r[0] + [f"EVENT filler {i}: " + "f" * 800 for i in range(4)], r[1]))(real(a, o, s, n)))
+    p = Poster()
+    assert go(h, st, p) == 0 and len(p.posts) >= 2 and all(len(c) <= hw.MAX_CONTENT for _, c in p.posts)
+    assert "ALERT h5_halt_file" in p.posts[0][1] and sum(c.count("EVENT filler") for _, c in p.posts) == 4
+
+    class FailSecond(Poster):
+        def __call__(self, webhook, content):
+            if self.posts:
+                raise RuntimeError("post failed (URLError)")
+            self.posts.append((webhook, content))
+
+    st2 = tmp_path / "state2.json"
+    f = FailSecond()
+    assert go(world(files={**h.files}), st2, f) == 1 and len(f.posts) == 1 and not st2.exists()  # retried in full next run
+
+
+def test_the_idle_ledger_alert_becomes_h5_idle_quiet_in_a_quiet_market_and_an_unledgered_trigger_is_posted(tmp_path):
+    """2026-10-11: h5_idle_ledger fired at ~00:25Z with no plain pool drained in 6 h (jobs #672-#676). The shadow now names the cause, and
+    (round 4 on #589) every branch alerts: a quiet market is the h5_idle_quiet ALERT. A name change posts RESOLVED for the old name and NEW for
+    the new one at once; h5_idle_quiet is repeated every 6 h while it stays, like every alert."""
+    from tools.test_h5_daily_check import SHADOW_DIR, T, idle_world, quiet_pools, s_trigger
+
+    env = {**ENV, "H5_WATCH_SHADOW_DIR": SHADOW_DIR}
+    st = tmp_path / "state.json"
+    st.write_text(json.dumps({"active": {"h5_idle_ledger": {"first": T - 600, "last_post": T - 600}}, "restarts": 0, "stop": False, "ts": T - 300}))
+    p = Poster()
+    h = idle_world(*quiet_pools())
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    quiet = ("ALERT h5_idle_quiet: probably a quiet market, not a fault: no plain trigger in 6 h; 108 plain pool closes, none drained to <= 40 SOL "
+             "in a judgeable window. It clears at the next plain trigger; if nothing is acted on for 24 h, h5_idle_ledger (backstop) follows.")
+    assert [c for _, c in p.posts] == ["[H5 watch] " + quiet + "\nRESOLVED h5_idle_ledger"], p.posts
+    assert list(json.loads(st.read_text())["active"]) == ["h5_idle_quiet"]
+    # not posted again before 6 h, posted again at 6 h
+    p = Poster()
+    assert hw.run(h, env, p, st, T + 60, balance_fn=lambda w, e: h.balance_lamports) == 0 and p.posts == []
+    st.write_text(json.dumps({"active": {"h5_idle_quiet": {"first": T - 6 * 3600, "last_post": T - 6 * 3600}}, "restarts": 0, "stop": False,
+                              "ts": T - 300}))
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    assert [c for _, c in p.posts] == ["[H5 watch] " + quiet] and json.loads(st.read_text())["active"]["h5_idle_quiet"] == {"first": T - 6 * 3600, "last_post": T}
+    # the cause changes to an unledgered trigger: RESOLVED h5_idle_quiet and NEW h5_idle_unledgered in the same post
+    p = Poster()
+    h = idle_world(*quiet_pools(), s_trigger(T - 3600))
+    assert hw.run(h, env, p, st, T + 300, balance_fn=lambda w, e: h.balance_lamports) == 0
+    assert len(p.posts) == 1 and "ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s)" in p.posts[0][1] and "SECRET" not in p.posts[0][1]
+    assert p.posts[0][1].splitlines()[-1] == "RESOLVED h5_idle_quiet", p.posts
+    # #589 review F6: the cause changing from the fail-closed alert to an unledgered trigger is posted at once, not at the 6 h repeat
+    st.write_text(json.dumps({"active": {"h5_idle_ledger": {"first": T - 600, "last_post": T - 600}}, "restarts": 0, "stop": False, "ts": T - 300}))
+    p = Poster()
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    posted = p.posts[0][1].splitlines() if len(p.posts) == 1 else [c for _, c in p.posts]
+    assert any(line.endswith("ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s) in the last 19 h, more than 5 min ago and after the "
+                             "live ledger's newest buy, skip or decision row, and the ledger has no row for them: the executor is not reading the feed "
+                             "(bind, tail or crash)") for line in posted), posted
+    assert any(line.endswith("RESOLVED h5_idle_ledger") for line in posted), posted
+
+
 def test_missing_or_bad_webhook_posts_nothing_and_never_prints_the_secret(tmp_path, capsys):
     p = Poster()
     for env in ({**ENV, "H5_WATCH_DISCORD_WEBHOOK": ""}, {k: v for k, v in ENV.items() if k != "H5_WATCH_DISCORD_WEBHOOK"},
