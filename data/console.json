@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T00:16:30Z",
+ "updated_utc": "2026-10-11T02:38:14Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-idle-alert-1011",
+   "kind": "other",
+   "title": "H5 watch 'idle' alert at 00:25Z was a quiet market, not a fault; the alert now names its cause (#589)",
+   "detail": "No plain pool drained to the trigger price from 19Z to 00Z. Every drained plain pool since go-live triggered (23 of 23), and every trigger reached the executor's ledger. The fix keeps every case an alert but names it: h5_idle_quiet (probably a quiet market), executor not reading (until 10-16T01Z only, because of the CAP-PICK seal), detector missed, unclassified drains, not tracking, and the 24 h backstop. It ships with Helm's reinstall before 10-16.",
+   "atUtc": "2026-10-11T02:38:14Z"
+  },
   {
    "id": "h5-resume-1011",
    "kind": "decision",
@@ -511,6 +518,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261011-0238-helm-watch",
+   "from": "claude",
+   "atUtc": "2026-10-11T02:38:14Z",
+   "text": "For Helm: the 00:25Z H5 watch alert h5_idle_ledger was a quiet market, not a fault (no plain pool drained to the trigger price from 19Z to 00Z; the detector and executor are consistent). No action now. It clears (RESOLVED) at the next plain trigger and may repost every 6 h until then. The improved check (#589, main 1103fc0) ships with the pre-10-16 pinned reinstall, which must happen before 10-16T01Z. The manager will name the sha."
+  },
   {
    "id": "fy-20261011-0016-helm-h5",
    "from": "claude",

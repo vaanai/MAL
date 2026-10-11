@@ -30,6 +30,12 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 ### STATE 10-11 ~00:20Z (NEWEST, read first)
 
 - **H5 resumed at 2026-10-11T00:15:06.586Z** (job #669). DEC-024 Am.4 item 4 and Am.5 item 1 held at 00:13:56Z (job #667): executor day 10-10 median 339.573 s over 580 pools; tool all 339.5735 s (n 580) and plain 337.772 s (n 411); halts none; no A3 run since 07:14Z; 0 late sells; nothing stuck. The daily check read ALERTS=0 after removal; its single earlier alert was `h5_idle` from the STOP itself. The owner pre-authorized the removal. Helm did nothing. The wallet-wide STOP stays absent and is NOT recreated. Record: DEC-024 Am.4 item 4 "Resume record".
+- **H5 watch false alarm and fix.** At about 00:25Z `h5_idle_ledger` fired. This was a quiet market, not a fault: no plain pool drained to 40 SOL or below from 19Z to 00Z, and since go-live 23 of 23 drained plain pools triggered (jobs #672-#676 and #681-#682). The fix, #589 (merged as 1103fc0), keeps every branch an alert and names the cause:
+  - `h5_idle_quiet`: a quiet market;
+  - `h5_idle_unledgered`: the executor is not reading. Pre-seal only; it is off from 2026-10-16T01Z with no automatic end (quant-proof seal ruling);
+  - `h5_detector_missed`, `h5_unclassified_drains`;
+  - `h5_idle_ledger`: not tracking, fail-closed, or the 24 h backstop.
+  The watch now posts whole-line chunks of at most 1,900 chars. Quant-proof OK at adf48b0 and at b9724dd. **It ships only with Helm's pre-10-16 pinned reinstall, which must happen before 10-16T01Z.** The h5-watch.py and h5-daily-check.py at the sha named for that reinstall must include 1103fc0.
 - **From here, the second strike.** A completed UTC day from 10-11 on below 337 s (executor, or plain over ≥ 30) halts. The 00:21Z day check enforces this with `--place-stop`. The 23:47Z running check of 10-10 did not run.
 - **Disk.** The 2.8 GB `/data/mal/hunt-1008/tmp` spill was deleted with the owner's OK. The cited verifier files moved first to `t-uninformed-sell-reversion/verify-uninformed/`. research-0 is at 76%.
 - **Walkers.** #382 and #433 are through 10-10T18; catch-up is due ~04Z.
