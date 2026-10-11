@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T06:32:10Z",
+ "updated_utc": "2026-10-11T07:10:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-shadow-restart-1011",
+   "kind": "decision",
+   "title": "H5's paper copy restarted early: trade-rate measurement on, v2 paper on, halt rule enforced by a dedicated job",
+   "detail": "07:05Z: H5's paper copy (the detector that feeds the live bot) restarted on the reviewed code (#602): the trade-rate measurement is on (information only, never used for decisions), v2's exit runs on paper, and the CAP-PICK settings are in place before 10-16. The live bot kept running; nothing was open. Same decisions as before (72/72). The automatic halt rule now runs as its own job until 10-24 (#593). Memory readings at +1 h, +6 h and +24 h against pre-set rollback limits.",
+   "atUtc": "2026-10-11T07:05:48Z"
+  },
   {
    "id": "merge-598-542-600-1011",
    "kind": "decision",
@@ -691,6 +698,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261011-0710",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-11T07:10:00Z",
+   "text": "07:10Z: merged #593 (halt-rule enforcement job, now running to 10-24), #594 (C1-NF exact-match check) and #602 (trade-rate measurement fix, Warden's item). Restarted H5's paper copy early with the measurement and v2 paper on, so the 24 h of data for any trade-rate proposal starts now instead of 10-15. Live H5: 5 buys, nothing open, no halt (median 339.6 s today). Next: v2 readiness (so a v1 halt does not leave H5 idle) and C1-NF's memory problem (the history replay needs more than 64 GB)."
+  },
   {
    "id": "s-20261011-0632",
    "from": "claude",
