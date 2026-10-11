@@ -27,7 +27,15 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
   - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-### STATE 10-10 ~20:30Z (NEWEST, read first)
+### STATE 10-11 ~00:20Z (NEWEST, read first)
+
+- **H5 resumed at 2026-10-11T00:15:06.586Z** (job #669). DEC-024 Am.4 item 4 and Am.5 item 1 held at 00:13:56Z (job #667): executor day 10-10 median 339.573 s over 580 pools; tool all 339.5735 s (n 580) and plain 337.772 s (n 411); halts none; no A3 run since 07:14Z; 0 late sells; nothing stuck. The daily check read ALERTS=0 after removal; its single earlier alert was `h5_idle` from the STOP itself. The owner pre-authorized the removal. Helm did nothing. The wallet-wide STOP stays absent and is NOT recreated. Record: DEC-024 Am.4 item 4 "Resume record".
+- **From here, the second strike.** A completed UTC day from 10-11 on below 337 s (executor, or plain over ≥ 30) halts. The 00:21Z day check enforces this with `--place-stop`. The 23:47Z running check of 10-10 did not run.
+- **Disk.** The 2.8 GB `/data/mal/hunt-1008/tmp` spill was deleted with the owner's OK. The cited verifier files moved first to `t-uninformed-sell-reversion/verify-uninformed/`. research-0 is at 76%.
+- **Walkers.** #382 and #433 are through 10-10T18; catch-up is due ~04Z.
+- **C1-NF.** Soak #658 runs to 10-11T21:43:37Z, with monitors #659 and #662. Then come DEC-026 §11, naming the sha to Helm for Step 4, the owner's 0.5 SOL funding, and a written go.
+
+### STATE 10-10 ~20:30Z (older)
 
 **Merged since 10:40Z:**
 - #570: the tip-event-V P7 acceptance tool.

@@ -344,6 +344,7 @@ DEC-024 §5.1 FIRED at 2026-10-10T07:11:07Z.
 - **Why it fires.** s0 is at or after the migrate tx, so the median after the first print is at most 333 s. That is below 335 s.
 - **Two-run clause.** This run is also the first post-step run below 337 s.
 - **STOP.** Placed at 07:15:10Z (job #479; open 0, pending 0).
+- **Resumed.** STOP removed at 2026-10-11T00:15:06.586Z under Amendment 4 item 4 and Amendment 5 item 1 (see the resume record under Amendment 4 item 4). This halt stays recorded as the first strike.
 - **Clearing.** DEC-024 has no clearing rule for a §5 halt. STOP stays until the owner records a dated amendment that:
   - names the §5.1 measure from that instant forward;
   - does not reclassify this halt;
@@ -403,6 +404,12 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
    - The manager then removes STOP in a MiScusi job and records here the instant and 10-10's median.
    - If 10-10 completes below 337 s, or with fewer than 30 pools, there is no resume under this amendment.
    - Meeting item 4 **does** resolve the 10-10 halt for section 7 and Amendment 3 item 2 (the owner's second answer). The T0 → T1 step still needs Amendment 3's other conditions: 20 landed buys, landing p50 ≤ 3.0 s, canary and twin means not negative, and Look 1 not negative if read.
+   - **Resume record (2026-10-11, the manager).** Item 4 and Amendment 5 item 1 both held, so the manager removed `/var/lib/mal-live/h5/STOP` at **2026-10-11T00:15:06.586Z** (MiScusi job #669: `rm` rc 0, then `--status` `stop_file=False halt_file=False`, `halts=[]`, open 0, pending 0; the wallet-wide `STOP` and `HALT` and H5's `HALT` absent). The owner pre-authorized this removal in session on 2026-10-10, conditional on this check passing; Helm took no action. The figures, read at 00:13:56Z (job #667, main `8b40475`):
+     - **Executor (this item's measure):** day 10-10 median **339.573 s over 580 pools**; `boost_lt300` 0 that day; latched halts none.
+     - **`tools/h5_boost_day_check.py --mode resume --day 2026-10-10` (Amendment 5 item 6):** all 24 hour files read, executor filter applied (137 pool records out on `gap`, one of them also on `boost_src`), day keyed by file hour. All **339.5735 s, n 580**; plain **337.772 s, n 411**; synthetic 341.727 s, n 169. Verdict `resume_ok`.
+     - **No other section 5 rule or stop since 07:15Z.** No A3 run after the 07:14Z one (the next is 2026-10-11T06:41Z); `program_changed` clear; 0 late sells; no stuck position. The running checks at 12:17Z and 18:18Z read `no_halt` (plain 337.068 s, n 234, and 337.254 s, n 315). The 23:47Z running check did not run; the resume read above covers the whole completed day.
+     - **The daily check.** Before removal it read ALERTS=1, a single alert, `h5_idle` ("LIVE_OK is present but the canary is not trading: STOP exists"), which is the STOP itself. 20 s after removal it read ALERTS=0.
+     - **From here.** Amendment 4 item 2 and Amendment 5 item 1 apply as written: a completed UTC day from 10-11 on below 337 s (executor, or plain over at least 30 plain pools) is the second strike and halts; below 335 s halts at any time.
 5. **Not changed:** the section 4 limits, the other section 5 rules, the section 6 seals, EXP-024 and EXP-022. Canary results are not evidence.
 
 ## Amendment 5 (2026-10-10T08:15Z, the manager's decision; stricter only; written after the section 5.1 halt and after Amendment 4): plain pools, reconciliation, enforcement
@@ -422,6 +429,7 @@ The verbatim questions, options and option descriptions are in MiScusi notebook 
      - A running plain median below 335 s halts at any time.
    - **Fewer than 30 plain pools.** Plain is not judged that day. Amendment 4's all-pool rule still applies.
    - **Resume.** Amendment 4 item 4's resume also requires day 10-10's plain median at or above 337 s over at least 30 plain pools. Fewer than 30 means no resume.
+     Met on 2026-10-11: plain 337.772 s over 411 plain pools (Amendment 4 item 4's resume record).
 2. **Why.** The executor's day median counts synthetic pools, which H5 never trades. Measured (MiScusi job #482; shadow records, not the executor's exact filter):
 
    | Window | Pool set | n | Median | Share before 329.5 s |

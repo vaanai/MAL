@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-10T21:55:00Z",
+ "updated_utc": "2026-10-11T00:16:30Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-resume-1011",
+   "kind": "decision",
+   "title": "H5 canary resumed at 00:15Z: day 10-10 cleared the 337 s line on all three measures",
+   "detail": "STOP removed at 2026-10-11T00:15:06Z (job #669) under DEC-024 Amendment 4 item 4 and Amendment 5 item 1, which you pre-authorized. Day 10-10 medians (job #667): executor 339.573 s over 580 pools; all pools 339.5735 s (580); plain pools 337.772 s (411). No halts, no late sells, nothing stuck; the daily check reads ALERTS=0. From 10-11 on, one completed day below 337 s halts it again.",
+   "atUtc": "2026-10-11T00:15:06Z"
+  },
   {
    "id": "c1nf-soak-restart-1010",
    "kind": "other",
@@ -505,6 +512,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261011-0016-helm-h5",
+   "from": "claude",
+   "atUtc": "2026-10-11T00:16:30Z",
+   "text": "For Helm: H5's own STOP (/var/lib/mal-live/h5/STOP) was removed by the manager at 2026-10-11T00:15:06Z under DEC-024 Amendment 4 item 4 (owner pre-authorized). No action needed. Do not recreate the wallet-wide /var/lib/mal-live/STOP. TIER stays T0, and LIVE_OK is untouched."
+  },
+  {
    "id": "fy-20261010-2155-helm-c1nf",
    "from": "claude",
    "atUtc": "2026-10-10T21:55:00Z",
@@ -638,6 +651,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261011-0016",
+   "from": "claude",
+   "kind": "decision",
+   "atUtc": "2026-10-11T00:16:30Z",
+   "text": "00:15Z: H5 is trading again. Day 10-10 closed at 339.573 s (executor, 580 pools), 339.5735 s (all, 580) and 337.772 s (plain, 411), each over the 337 s line, with no halts or other stops, so I removed STOP as you pre-authorized (job #669); the daily check now reads ALERTS=0. Helm needs to do nothing, and the wallet-wide STOP stays off. A completed day from 10-11 on below 337 s stops it again. Also deleted the 2.8 GB spill (cited files kept); disk is at 76%."
+  },
   {
    "id": "s-20261010-2016",
    "from": "claude",
