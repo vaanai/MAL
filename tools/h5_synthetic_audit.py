@@ -216,6 +216,7 @@ def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[
         res: Mapping[str, Any] = {"class": sc.CLASS_UNCLASSIFIED, "reason": "no_pool_or_mint", "event_seen_any": False}
         if first.get("pool") and first.get("mint"):
             res = _classify_once(classify, first)
+            seen = res.get("event_seen_any") is True
             for wait in retry_waits:
                 if not is_transient(res):
                     break
@@ -223,6 +224,9 @@ def run_audit(rows: Sequence[Mapping[str, Any]], date: str, classify: Callable[[
                     retried["attempts"] += 1
                 sleep(wait)
                 res = _classify_once(classify, first)
+                seen = seen or res.get("event_seen_any") is True
+            if seen and res.get("class") not in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
+                res = {**res, "event_seen_any": True}  # sticky: a retry never hides an event an earlier attempt saw
         cls = res.get("class")
         if cls in (sc.CLASS_SYNTHETIC, sc.CLASS_NON_SYNTHETIC):
             if {shadow_class(r.get("synthetic")) for r in rs} != {cls}:

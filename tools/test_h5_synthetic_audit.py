@@ -519,3 +519,12 @@ def test_main_uses_the_retry_waits_and_reports_only_a_count(monkeypatch, capsys)
     rc, out, err = run(monkeypatch, capsys, ["--decisions", "-", "--date", DAY, "--no-expect-ledger", "--retry-waits", "7"], rpc=object(), stdin=stdin)
     assert rc == 0 and json.loads(out.strip().splitlines()[-1])["n_disagree"] == 0
     assert waits == [7.0] and "rpc_retry_attempts=1" in err and "p1" not in err and "m1" not in err
+
+
+def test_an_event_seen_on_an_earlier_attempt_is_not_hidden_by_a_retry():
+    rows = [{"pool": "p", "mint": "m", "synthetic": False}]
+    seen = {"class": sc.CLASS_UNCLASSIFIED, "reason": "fetch_failed:completing:RpcError", "event_seen_any": True}
+    later = {"class": sc.CLASS_UNCLASSIFIED, "reason": "fetch_failed:migrate:RpcError", "event_seen_any": False}
+    classify, calls = _seq_classify([seen, later, later])
+    out = au.run_audit(rows, DAY, classify, retry_waits=(1.0, 2.0), sleep=lambda w: None)
+    assert calls["n"] == 3 and out["n_unclassified_now"] == 1 and out["n_disagree"] == 1
