@@ -146,7 +146,16 @@ def test_the_idle_ledger_alert_resolves_in_a_quiet_market_and_an_unledgered_trig
     assert [c for _, c in p.posts] == ["[H5 watch] RESOLVED h5_idle_ledger"]
     h = idle_world(*quiet_pools(), s_trigger(T - 3600))
     assert hw.run(h, env, p, st, T + 300, balance_fn=lambda w, e: h.balance_lamports) == 0
-    assert len(p.posts) == 2 and "ALERT h5_idle_ledger: the detector wrote 1 plain trigger(s)" in p.posts[1][1] and "SECRET" not in p.posts[1][1]
+    assert len(p.posts) == 2 and "ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s)" in p.posts[1][1] and "SECRET" not in p.posts[1][1]
+    # #589 review F6: the cause changing from the fail-closed alert to an unledgered trigger is posted at once, not at the 6 h repeat
+    st.write_text(json.dumps({"active": {"h5_idle_ledger": {"first": T - 600, "last_post": T - 600}}, "restarts": 0, "stop": False, "ts": T - 300}))
+    p = Poster()
+    assert hw.run(h, env, p, st, T, balance_fn=lambda w, e: h.balance_lamports) == 0
+    posted = p.posts[0][1].splitlines() if len(p.posts) == 1 else [c for _, c in p.posts]
+    assert any(line.endswith("ALERT h5_idle_unledgered: the detector wrote 1 plain pv trigger(s) in the last 19 h, more than 5 min ago and after the "
+                             "live ledger's newest buy, skip or decision row, and the ledger has no row for them: the executor is not reading the feed "
+                             "(bind, tail or crash)") for line in posted), posted
+    assert any(line.endswith("RESOLVED h5_idle_ledger") for line in posted), posted
 
 
 def test_missing_or_bad_webhook_posts_nothing_and_never_prints_the_secret(tmp_path, capsys):
