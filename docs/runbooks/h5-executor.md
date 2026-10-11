@@ -657,8 +657,8 @@ From the first live day, once a day (after 00:30Z, for the UTC day that ended), 
 
   ```sh
   set -eu
-  cd "$HOME/MAL"
-  PY=/data/mal/venv/bin/python
+  cd "$HOME/MAL"           # or the MiScusi job's own checkout of main
+  PY=/usr/bin/python3      # standard library only; mal-fast-0 has no /data/mal/venv (job #744 exited 127 on it, 2026-10-11)
   DAY=$(date -u -d yesterday +%F)
   umask 077
   D=$(mktemp -d)
@@ -675,6 +675,7 @@ From the first live day, once a day (after 00:30Z, for the UTC day that ended), 
   Use `.../dryrun/h5-ledger.jsonl` for a dry run. `--date` is the UTC day whose decisions are audited (step 1 filters on the row's `ts_ms`).
 - **Fields read from the ledger** (decision rows only, `kind == "decision"`): `pool`, `mint`, `synthetic`, `synthetic_src`, `signature` are kept; `kind` and `ts_ms` are read to pick the rows and thrown away. No other field of any row is kept, written or printed (no fill, size, exit, price or P&L field, none of the nested objects). The projected files have those five keys and nothing else; they are deleted when the job ends. `signature` is OUR buy transaction's signature, used as B4's `before` anchor (the ledger carries no trigger-print signature). That window is a superset of B4's "before s0". A pool with more than 1,000 signatures between its migrate transaction and our buy, or a buy that never landed (the node answers -32020 to its `before`), fails the pool-address search; the audit then uses its audit-only fallback, which is not part of B4: it searches the bonding-curve address newest-first, with no `before`, for the migrate transaction, and goes on as B4. A pool that is still unclassified after that is counted below.
 - **Output**, one line on stdout, these keys only: `{"date":"2026-10-12","n_pools":N,"n_disagree":N,"n_unclassified_now":N,"halt":false}`. `n_pools` counts the pools of DAY and of the re-audited day. No pool, mint, signature or per-pool class is printed. stderr has `n_lines_read`, the rows kept, and the unclassified pools counted by reason (the re-audited day's under `reaudit:`); no ids. The job log must not be post-processed to add one.
+- **RPC-error retries (from 2026-10-11).** A pool left unclassified only by a public-RPC error is classified again after 60 s and then 180 s (`--retry-waits`) before it counts. A pool still unclassified after that counts exactly as before. On 2026-10-11 two 10-09 pools that had agreed on the 10-10 run hit RPC errors on the second look and stopped the canary (job #745, STOP 12:50:06Z); the same audit with slower pacing found 0 disagreements (job #747), and the owner resumed H5 at 15:43:38Z. stderr shows `rpc_retry_attempts=<n>`.
 - **Exit codes.**
   - `3` = `n_disagree > 0` = a live halt. DEC-024 section 5 requires `STOP` (no new buys) at once on any halt, so place `STOP` first, per "Stop, halt, status", and then tell the owner and Helm. `STOP` is not the manager's call to delay. Whether to also place `HALT` (it freezes everything, sells included, while positions are open) is the manager's call. Do not look up which pool it was by joining the class to a fill or P&L.
   - `5` = `n_unclassified_now > 0` and no disagreement: an alert, and the job shows as failed. There is no halt yet, and no rerun clears it. The same pools are re-audited by the next daily run (the previous-day look in step 2), and a pool that is still unclassified then counts as a disagreement: exit 3, `STOP`. Do not wave an exit 5 away.

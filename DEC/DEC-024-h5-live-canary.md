@@ -371,6 +371,19 @@ The ruling's other points, recorded here:
   - EXP-022: all six flags were clear.
 - **Other canary halts.** `program_changed` (a canary live halt under Amendment 2 item 4) was clear: 3 programdata hashes unchanged.
 
+## Halt record: section 5.6, 2026-10-11 (synthetic-class audit), and the owner's resume
+
+- **Halt.** The daily synthetic-class audit (Amendment 2, Clarification 1), job #745, ran at main `87d956b` on DAY 2026-10-10 with the re-audit of 2026-10-09. It printed `{"date":"2026-10-10","n_pools":3,"n_disagree":2,"n_unclassified_now":0,"halt":true}` and exited 3.
+  - Both "disagreements" were the two 2026-10-09 pools.
+  - Their stderr reasons: `reaudit:fetch_failed:migrate:RpcError;…` and `reaudit:fetch_failed:signatures:pool:RpcError;…`. Both pools were unclassified on the second look because the public RPC returned errors.
+  - The day before, the 10-10 run had classified both and found `n_disagree` 0.
+- **STOP.** The manager placed `/var/lib/mal-live/h5/STOP` at once, at **2026-10-11T12:50:06.694Z** (MiScusi job #746: touch rc 0, test present; `--status` stop_file=True, open 0, pending 0). HALT was not placed: nothing was open.
+- **Investigation (evidence only, not a clearance).** Job #747 ran the same audit on the same ledger with `--min-interval 1.0`: `{"date":"2026-10-10","n_pools":3,"n_disagree":0,"n_unclassified_now":0,"halt":false}`. All three pools classified and agreed with the shadow's class.
+- **No written resume path.** This DEC had none for a §5.6 audit halt. The manager put the choice to the owner (MiScusi question q_IKDh83qq9-6gpw: resume now, recommended; or wait for a tool fix).
+- **Owner's decision.** At about 2026-10-11T15:40Z, in session, the owner answered: "Resume H5". The STOP was removed at **2026-10-11T15:43:38.903Z** (MiScusi job #750: wallet-wide STOP and HALT absent, H5 HALT absent, `rm` rc 0, then `--status` stop_file=False halt_file=False, open 0, pending 0, unit active).
+- **Fix.** `tools/h5_synthetic_audit.py` now re-classifies a pool left unclassified only by an RPC error (`RpcError` or `RpcUnreachable`) after 60 s and then 180 s before counting it. Every other reason, and a pool still unclassified after the waits, counts exactly as before. Also, the runbook's audit procedure now uses `/usr/bin/python3`; job #744 had exited 127 on the missing `/data/mal/venv`.
+- **Unchanged.** What counts as a disagreement; §5.6; the STOP-at-once rule. This record changes no section 5 rule. Section 5.1's strike count is unaffected: this is a §5.6 halt.
+
 ## Amendment 4 (2026-10-10T07:27:25Z, the owner's decision; written after the section 5.1 halt of 2026-10-10T07:11:07Z): the section 5.1 measure
 
 OWNER_51_MEASURE_CONFIRMED: 2026-10-10T07:27:25Z (owner, in session, asked by manager9).
