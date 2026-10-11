@@ -200,6 +200,7 @@ class EngineUnionTests(unittest.TestCase):
         row = [r for r in pool["base_unmatched_ws"] if r[0] == missed_next["signature"]]
         self.assertEqual(row, [[missed_next["signature"], 0, missed_next["slot"], True, True]])  # on the tip; a tip-only row is its predecessor
         self.assertEqual(pool["base_unmatched_union_n"], 1)  # the head only
+        self.assertEqual(pool["base_union"]["ws_only_sig_on_tip"], 0)
         self.assertEqual(pool["base_unmatched_union"][0][0], t.rows[0]["signature"])
 
     def test_stale_or_broken_tip_is_null_and_trigger_still_written(self):

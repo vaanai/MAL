@@ -57,6 +57,16 @@ states and is asked at each decision point: a pick is sealed for good; "not a pi
 after the pool's first print, or the feed is stale > 60 s) seals it for now, and a trigger that fires then is withheld for good. Without the
 environment the always-true stub seals every pool in the window, as before. With the oracle the sealed_hour `decisions` count is withheld.
 
+TIP UNION (REPORT-ONLY, trade-rate phase 0; off unless --tip-dir is given, and then no decision reads it). The executor gates on
+base_breaks_unresolved_settled, the feed's own view of the pool's base chain. With --tip-dir the shadow also tails the tip follower's hourly
+trades-<UTC hour>.jsonl (TipTail: incremental, on the event loop, a byte search per line and a JSON parse only for a tracked pool's row) and
+keeps, per tracked pool, the same multiset check on the UNION of feed prints and tip rows keyed by (signature, event_index) (UnionChain).
+Trigger and pool records then carry base_breaks_unresolved_settled_union (null when the tip is stale, unreadable, starting or broken) and
+base_union {status, ws_only, tip_only, both, both_diff, dup, tip_first_slot, tip_hw_slot, tip_lag_slots}; pool records also carry
+base_unmatched_ws / base_unmatched_union (up to 20 unmatched prints each, so missing-vs-extra can be settled offline). The tip tape is not chain
+truth either (it misses prints in some pools); the union does not see a dropped head, and s0, BOOST spent/identity and the first qualifying sell
+still come from the feed. Without --tip-dir every record is byte-identical to a build without this code.
+
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
 against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
 
@@ -1368,6 +1378,11 @@ class Engine:
                     pred = u.post[int(r.b)] > p.post_cnt[int(r.b)]
                 rows.append([r.ukey[0], r.ukey[1], r.slot, on_tip, pred])
             out["base_unmatched_ws_n"], out["base_unmatched_ws"] = len(ws), rows
+            if u is not None and not u.broken and isinstance(out.get("base_union"), dict):
+                # a feed print whose signature IS on the tip under another event_index would read as ws_only + tip_only: count them, so a
+                # key mismatch between the two decoders cannot pass for a feed defect
+                tip_sigs = {k[0] for k, v in u.m.items() if v[3] & UNION_TIP}
+                out["base_union"]["ws_only_sig_on_tip"] = sum(1 for k, v in u.m.items() if v[3] == UNION_WS and k[0] in tip_sigs)
             if u is not None and not u.broken:
                 out["base_unmatched_union_n"], out["base_unmatched_union"] = u.unmatched()
             else:
