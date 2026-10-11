@@ -32,6 +32,23 @@ slot of the first row of a new minute) against #506's (the least trade slot with
 against #506's creates-trades-migrations order), and #506's hourly expire (pools freed at g0 + 49 h, outcome frozen) where replay never
 expires.
 
+Creator history (QP round 2 on 39a06b4, blocking item 1; `--history`, default `tape-start`). The frozen scorer counts creator history from tape
+start: ARTIFACTS/exp025/scripts/10_meta.py writes every create of hunt-shared tokens.parquet (has_create) to creates.parquet, and 12_passC.py
+builds by_cr, g_cr and m_cr from it with no segment filter (cr_prev_creates, cr_prev_grads, cr_known_out, cr_lmax6, cr_lend6, cr_big6). The
+engine counts a creator only from its own first row, and the shadow's replay reads one contiguous run of hours, so a replay that starts at a
+later segment's start drops that history. Convention: a run first feeds the HISTORY, every exploration-tape hour from tape start (TAPE_START,
+2026-08-14T12) up to --replay-from, in order, gap hours skipped (the tape has no file for them), with decisions OFF: the effective decide_from
+is --replay-from (or a later --decide-from), so no decision, stage-1 row, deferral, pick or book entry is made before it. Then it decides from
+--replay-from, and the book starts there. S2 (09-03T12, 288 h) feeds 336 history hours first, S3 (09-18T23, 152 h) 624, so 776 tape hours in
+all. It is still tools.c1nf_shadow.run_replay itself: run_replay_mode swaps cs.replay_hours for that one call so it returns the history hours
+followed by the --replay-from hours (all exploration hours; refuse_replay checks every one), and passes the effective decide_from. The
+look-ahead index is built from the --replay-from hours only (no decision is deferred before them, and a later print has a later slot).
+Gap creates: hunt-shared tokens.parquet (sha256 2c01a6d4...) holds 0 has_create rows with create_ms in 08-28T12..09-03T12 or 09-15T12..09-18T23
+(and 0 before 08-14T12 or at/after 09-25T07; 1,109,020 in the three segments; counted 2026-10-11 from create_ms and creator only), so skipping
+the gap hours drops no create the frozen scorer counts. `--history none` is the run before this change (history from --replay-from); it is not
+P3's convention. #506's harness (tools/c1nf_parity.py replay) streams the tape's hour files from --from-hour (default 2026-08-14T12), so it
+skips the same gap hours.
+
 Outputs in --out-dir (which must be empty or absent):
   c1nf-prewindow-picks-*.jsonl, c1nf-*.jsonl     the shadow's own sink (every replay pick is a pre-window pick)
   parity-stage1-<mode>.npz                       every stage-1 decision row with a wallet snapshot: pool, mint, T, sd, h_top1, vec (float32)
@@ -39,16 +56,21 @@ Outputs in --out-dir (which must be empty or absent):
                                                  and P3's list md5 (lines `mint,decision_T_ms,SD_slot`, sorted, newline-terminated) per day
                                                  and overall, BEFORE tie removal (P3 recomputes it after removing boundary ties and
                                                  their book cascades unless both sides have 0 ties). It opens no outcome or P&L column.
+                                                 `history` (convention, hours fed before --replay-from, their contiguous runs),
+                                                 `decide_from_effective` and `hours_fed` record the creator-history feed.
                                                  Exact mode adds `exact`: deferred / resolved / unresolved decisions and row-vs-index
                                                  state mismatches; a run with an unresolved deferral or a mismatch exits 1.
 
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 \
       --model-manifest M.json --ledger-root ROOT --out-dir OUT_A
+      (feeds S1's 336 hours as history, decisions off, then decides 09-03T12 .. 09-15T11)
   python tools/c1nf_parity_exact.py --state-mode exact --replay-from 2026-09-03T12 --replay-hours 288 --probe-lookahead --out-dir OUT_P
       (builds the look-ahead index only, prints its size and the process VmHWM, writes parity-lookahead-probe.json, and exits)
   python tools/c1nf_parity_exact.py cross-compare REPLAY506.npz OUT_A/parity-stage1-exact.npz [--skip-wallet] [--json J]
       (QP's 09-20 cross-harness check: #506's replay npz against the stage-1 vectors of a #594 exact run whose decisions cover all of #506's
-      rows; exit 0 only if shared_rows > 0, rows_differing == 0, only_506 == 0 and only_594 == 0, reported with by_feature)
+      rows; exit 0 only if shared_rows > 0, rows_differing == 0, only_506 == 0 and only_594 == 0, reported with by_feature;
+      only_594_outside_on_506_pools is reported and does not gate the exit code: GO-PLAN 2.4 requires
+      it to be 0, or each (pool, T) listed and classified, before run A)
 
 Exploration tape only: tools.c1nf_shadow.refuse_replay runs before any read (exploration hours, forbidden path tokens). No CAP-PICK oracle,
 no seal (replay). Heavy runs are MiScusi jobs, memory-capped; this file does not decide the cap.
@@ -66,7 +88,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 import numpy as np
 
@@ -80,6 +102,68 @@ HORIZON_DAYS, HORIZON_HOUR = 2, 2              # tools/c1nf_parity.end_hour_of: 
 EXACT_LEDGER_KEEP_DAYS = 3                     # a deferred decision of day D can resolve on D+2 while T moves on: keep 3 as-of snapshots so the
                                                # engine does not reopen one per minute (FeatureEngine._ledger_for: a reopened day has the same values)
 EXIT_EXACT_CHECK = 1                           # exact mode: an unresolved deferral or a row/index state mismatch
+TAPE_START = cs.EXPLORATION[0][0]              # 2026-08-14T12: the frozen scorer's creator history starts here (10_meta.py, 12_passC.py)
+HISTORY_TAPE_START, HISTORY_NONE = "tape-start", "none"
+HISTORY_MODES = (HISTORY_TAPE_START, HISTORY_NONE)
+
+
+def _hour_dt(h: str) -> datetime:
+    return datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+
+
+def is_exploration_hour(h: str) -> bool:
+    return any(lo <= h < hi for lo, hi in cs.EXPLORATION)
+
+
+def history_hours(replay_from: str, history: str = HISTORY_TAPE_START) -> list[str]:
+    """The creator-history feed (module docstring): every exploration-tape hour in [TAPE_START, replay_from), in order, gap hours skipped.
+    `none`: no history (the run starts cold at replay_from)."""
+    if history not in HISTORY_MODES:
+        raise ValueError(f"history must be one of {HISTORY_MODES}, got {history!r}")
+    if history == HISTORY_NONE:
+        return []
+    n = int((_hour_dt(replay_from) - _hour_dt(TAPE_START)).total_seconds() // 3600)
+    return [h for h in cs.replay_hours(TAPE_START, max(n, 0)) if is_exploration_hour(h)]
+
+
+def hour_runs(hours: Sequence[str]) -> list[list[str]]:
+    """[first, last] of each run of consecutive hours."""
+    out: list[list[str]] = []
+    prev: Optional[datetime] = None
+    for h in hours:
+        t = _hour_dt(h)
+        if prev is not None and t - prev == timedelta(hours=1):
+            out[-1][1] = h
+        else:
+            out.append([h, h])
+        prev = t
+    return out
+
+
+class FeedPlan(NamedTuple):
+    """What one run feeds: the history hours (decisions off), then the --replay-from hours (decisions from `decide_from`)."""
+    history: str
+    history_hours: list
+    decide_hours: list
+    decide_from: Optional[str]
+
+    @property
+    def hours(self) -> list[str]:
+        return list(self.history_hours) + list(self.decide_hours)
+
+    def report(self) -> dict:
+        return {"convention": self.history, "tape_start": TAPE_START, "hours": len(self.history_hours),
+                "runs": hour_runs(self.history_hours), "decide_from_effective": self.decide_from, "hours_fed": len(self.hours)}
+
+
+def feed_plan(replay_from: str, replay_hours: int, history: str = HISTORY_TAPE_START, decide_from: Optional[str] = None) -> FeedPlan:
+    """With a history, decisions start at replay_from (or at a later decide_from): none is made during the history feed."""
+    decide = cs.replay_hours(replay_from, replay_hours)
+    hist = history_hours(replay_from, history)
+    eff = decide_from
+    if hist and (decide_from is None or decide_from < replay_from):
+        eff = replay_from
+    return FeedPlan(history, hist, decide, eff)
 
 
 def horizon_bt(g0: Optional[int]) -> Optional[int]:
@@ -300,27 +384,47 @@ class ExactShadow(cs.Shadow):
         return r
 
 
-def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngine, sink: Any) -> tuple[int, Optional[ExactShadow]]:
+def run_replay_mode(args: argparse.Namespace, models: Any, engine: StateModeEngine, sink: Any,
+                    plan: Optional[FeedPlan] = None) -> tuple[int, Optional[ExactShadow]]:
     """tools.c1nf_shadow.run_replay for both modes (the same tape rows, Shadow arguments and finish). Exact mode builds ExactShadow in place
-    of Shadow for this one call (run_replay constructs `Shadow` by its module-global name); live mode is cs.run_replay, untouched."""
-    if engine.state_mode != STATE_EXACT:
-        return cs.run_replay(args, models, engine, sink), None
-    made: list[ExactShadow] = []
-    orig = cs.Shadow
+    of Shadow for this one call (run_replay constructs `Shadow` by its module-global name); live mode is cs.run_replay, untouched.
+    With a plan (main always passes one), the same call feeds plan.hours (the history, then the --replay-from hours) with decide_from =
+    plan.decide_from: run_replay asks `replay_hours(args.replay_from, args.replay_hours)` by its module-global name, which is swapped for this
+    one call (any other question raises) and restored after, as Shadow is."""
+    run_args = args
+    orig_rh = cs.replay_hours
+    if plan is not None:
+        run_args = argparse.Namespace(**vars(args))
+        run_args.decide_from = plan.decide_from
+        want, fed = (args.replay_from, int(args.replay_hours)), plan.hours
 
-    def factory(*a: Any, **kw: Any) -> ExactShadow:
-        sh = ExactShadow(*a, **kw)
-        made.append(sh)
-        return sh
+        def plan_hours(first: str, n: int) -> list[str]:
+            if (first, int(n)) != want:
+                raise RuntimeError(f"replay_hours({first!r}, {n}) is not this run's ({want})")
+            return list(fed)
 
-    cs.Shadow = factory  # type: ignore[assignment,misc]
+        cs.replay_hours = plan_hours  # type: ignore[assignment]
     try:
-        rc = cs.run_replay(args, models, engine, sink)
+        if engine.state_mode != STATE_EXACT:
+            return cs.run_replay(run_args, models, engine, sink), None
+        made: list[ExactShadow] = []
+        orig = cs.Shadow
+
+        def factory(*a: Any, **kw: Any) -> ExactShadow:
+            sh = ExactShadow(*a, **kw)
+            made.append(sh)
+            return sh
+
+        cs.Shadow = factory  # type: ignore[assignment,misc]
+        try:
+            rc = cs.run_replay(run_args, models, engine, sink)
+        finally:
+            cs.Shadow = orig  # type: ignore[misc]
+        if len(made) != 1:
+            raise RuntimeError(f"run_replay built {len(made)} shadows, expected 1")
+        return rc, made[0]
     finally:
-        cs.Shadow = orig  # type: ignore[misc]
-    if len(made) != 1:
-        raise RuntimeError(f"run_replay built {len(made)} shadows, expected 1")
-    return rc, made[0]
+        cs.replay_hours = orig_rh  # type: ignore[assignment]
 
 
 # ---- P3's list --------------------------------------------------------------------------------------------------------------------------
@@ -442,10 +546,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-sha256")
     p.add_argument("--model-manifest", help='JSON {"models":[{"from_day","file","sha256"}]} (item 13: 21 walk-forward files)')
     p.add_argument("--ledger-root", help="tools/c1nf_wallet_ledger.py output root (asof/asof-<day>)")
-    p.add_argument("--decide-from")
+    p.add_argument("--decide-from", help="decisions from this hour; with a history, never before --replay-from")
     p.add_argument("--decide-to")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--probe-lookahead", action="store_true", help="build the look-ahead index only, report its size and VmHWM, and exit")
+    p.add_argument("--history", choices=HISTORY_MODES, default=HISTORY_TAPE_START,
+                   help="tape-start (default, P3's convention): feed every exploration hour from 2026-08-14T12 to --replay-from first, gap "
+                        "hours skipped, decisions off; none: start cold at --replay-from")
     return p
 
 
@@ -468,9 +575,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if argv[:1] == ["cross-compare"]:
         return main_cross(argv[1:])
     args = build_parser().parse_args(argv)
-    hours = cs.replay_hours(args.replay_from, args.replay_hours)
+    plan = feed_plan(args.replay_from, args.replay_hours, args.history, args.decide_from)
+    hours = plan.decide_hours                                 # the look-ahead index reads these only
     try:
-        cs.refuse_replay([args.replay_tape, args.out_dir, args.tokens] + [x for x in (args.model, args.model_manifest, args.ledger_root) if x], hours)
+        cs.refuse_replay([args.replay_tape, args.out_dir, args.tokens] + [x for x in (args.model, args.model_manifest, args.ledger_root) if x],
+                         plan.hours)
     except cs.Refused as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return cs.EXIT_REFUSED
@@ -487,7 +596,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.state_mode == STATE_EXACT or args.probe_lookahead:
         la = lookahead_from_tape(args.replay_tape, hours, pool_v_from_tokens(args.tokens))
         probe = {"rows": la.rows, "pools": len(la._idx), "index_bytes": la.nbytes(), "seconds": round(time.time() - t0, 1), "VmHWM_kb": vm_hwm_kb(),
-                 "hours": [hours[0], hours[-1]]}
+                 "hours": [hours[0], hours[-1]], "history": plan.report()}
         print("lookahead " + json.dumps(probe), flush=True)
         if args.probe_lookahead:
             (out / "parity-lookahead-probe.json").write_text(json.dumps(probe, indent=1) + "\n")
@@ -497,7 +606,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     engine = StateModeEngine(ledger, v_source=cs.V_SOURCE_REPLAY, state_mode=args.state_mode, lookahead=la)
     sink = cs.JsonlSink(out)
     try:
-        rc, xsh = run_replay_mode(args, models, engine, sink)
+        rc, xsh = run_replay_mode(args, models, engine, sink, plan)
     finally:
         sink.close()
     exact = xsh.exact_report() if xsh is not None else None
@@ -512,7 +621,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     tools_dir = here.parent
     summary = {
         "state_mode": args.state_mode, "hours": [hours[0], hours[-1]], "replay_hours": args.replay_hours, "decide_from": args.decide_from,
-        "decide_to": args.decide_to, "exit": rc, "seconds": round(time.time() - t0, 1), "VmHWM_kb": vm_hwm_kb(),
+        "decide_to": args.decide_to, "decide_from_effective": plan.decide_from, "history": plan.report(), "hours_fed": len(plan.hours),
+        "exit": rc, "seconds": round(time.time() - t0, 1), "VmHWM_kb": vm_hwm_kb(),
         "blobs": {n: git_blob(tools_dir / n) for n in ("c1nf_shadow.py", "c1nf_features.py", "c1nf_parity_exact.py")},
         "sha256": {"tokens": sha256_file(args.tokens), "model_manifest": sha256_file(args.model_manifest) if args.model_manifest else None,
                    "models": models.shas},
@@ -525,7 +635,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except (OSError, subprocess.SubprocessError):
         summary["git_head"] = None
     (out / f"parity-summary-{args.state_mode}.json").write_text(json.dumps(cs.clean(summary), indent=1, sort_keys=True) + "\n")
-    print(f"done: mode {args.state_mode} picks {summary['p3']['n']} md5 {summary['p3']['md5']} stage1 {len(rows)} "
+    print(f"done: mode {args.state_mode} history {args.history} ({len(plan.history_hours)} h, decide_from {plan.decide_from}) picks {summary['p3']['n']} md5 {summary['p3']['md5']} stage1 {len(rows)} "
           f"exact_injected {engine.exact_injected} exact {json.dumps(exact)} {summary['seconds']}s VmHWM {summary['VmHWM_kb']} kB", flush=True)
     return rc
 
