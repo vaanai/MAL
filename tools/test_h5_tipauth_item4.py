@@ -601,7 +601,7 @@ class TestDeterminismAndCli(Base):
         out = self.d / "result.json"
         so, se = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(so), contextlib.redirect_stderr(se):
-            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA, "--out", str(out), "--table"])
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA, "--out", str(out), "--table"], now_ms=T0 + 100 * H)
         self.assertEqual(rc, 0)
         self.assertEqual(so.getvalue(), out.read_text())
         self.assertIn("tool_rules_clear", se.getvalue())
@@ -642,7 +642,7 @@ class TestRound2(Base):
         for args in (["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H)],
                      ["--shadow-dir", str(self.d), "--since-ms", str(T0), "--expect-code-sha", SHA]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
-                T.main(args)
+                T.main(args, now_ms=T0 + 100 * H)
             self.assertEqual(cm.exception.code, 2)
 
     # change 2
@@ -831,7 +831,7 @@ class TestRound2(Base):
         write(self.d, [start(sha=SHA)])
         so = io.StringIO()
         with contextlib.redirect_stdout(so):
-            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 7 * H), "--expect-code-sha", SHA])
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 7 * H), "--expect-code-sha", SHA], now_ms=T0 + 100 * H)
         self.assertEqual(rc, 4)
         self.assertFalse(json.loads(so.getvalue())["verdict"]["tool_rules_clear"])
         so = io.StringIO()
@@ -839,6 +839,39 @@ class TestRound2(Base):
             rc = T.main(["--schedule", "--since-ms", "1791797643640"])
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(so.getvalue())["until_ms_instants"][:4], [1791819243640, 1791884043640, 1791927243640, 1791970443640])
+
+    def test_instant_not_yet_120s_in_the_past_refused(self):
+        import contextlib
+        import io
+        write(self.d, [start(sha=SHA), trig(), hb(MID)])
+        u = T0 + 24 * H
+        args = ["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(u), "--expect-code-sha", SHA]
+        out = self.d / "early.json"
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(args + ["--out", str(out)], now_ms=u + T.SETTLE_MS - 1)
+        self.assertEqual(rc, 4)
+        self.assertFalse(out.exists())
+        j = json.loads(so.getvalue())
+        self.assertEqual(j["verdict"]["blocking_reasons"], ["until_ms_not_reached"])
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(args + ["--out", str(out)], now_ms=u + T.SETTLE_MS)
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.exists())
+
+    def test_sealed_part_of_c7f_fails_closed(self):
+        for k, vals in (("sealed", [1, 0, "yes", True]), ("h5_look2_sealed", ["true", 1, True])):
+            for v in vals:
+                r = trig()
+                r[k] = v
+                self.assertEqual(T.would_pass(r), (False, "sealed_record"), (k, v))
+        for v in (False, None):
+            for k in ("sealed", "h5_look2_sealed"):
+                r = trig()
+                r[k] = v
+                self.assertEqual(T.would_pass(r), (True, "ok"), (k, v))
+        self.assertEqual(T.would_pass(trig()), (True, "ok"))
 
     def test_earlier_start_before_t0_is_not_a_second_start(self):
         t0, early = 1791797643640, 1791796005847
@@ -855,13 +888,13 @@ class TestRound2(Base):
         import io
         so = io.StringIO()
         with contextlib.redirect_stdout(so):
-            rc = T.main(["--shadow-dir", str(self.d / "nope"), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA])
+            rc = T.main(["--shadow-dir", str(self.d / "nope"), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA], now_ms=T0 + 100 * H)
         self.assertEqual(rc, 3)
         self.assertFalse(json.loads(so.getvalue())["verdict"]["tool_rules_clear"])
         write(self.d, [trig()])
         so = io.StringIO()
         with contextlib.redirect_stdout(so):
-            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA])
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA], now_ms=T0 + 100 * H)
         self.assertEqual(rc, 2)
         j = json.loads(so.getvalue())
         self.assertIn("error", j)

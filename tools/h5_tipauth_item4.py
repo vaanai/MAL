@@ -21,7 +21,7 @@ bytes that are not UTF-8 are counted under bad_line and the line is skipped; a m
 
 THE PEEKING RULE (quant-proof comment 6121547427, section 4; the tool is not run exactly once, it is run on a fixed schedule and one read decides):
   1. Scheduled instants, as --until-ms: +6 h (interim), +24 h, +36 h, +48 h, then every 12 h, each counted from --since-ms (T0); `--schedule` prints them.
-     Each run starts after its instant. No other run.
+     Each run starts at least 120 s after its instant; the tool refuses earlier. No other run.
   2. The deciding read is the first scheduled instant from +24 h at which the tool's own duration line is met. Nobody chooses it.
   3. Exactly-0 rules (consistency, any would-pass left D, census found) are cumulative from the origin. A failure at any read, interim included, is
      final. A counterexample survives a restart: "no proposal on this definition" holds until the definition is tightened by amendment.
@@ -37,6 +37,10 @@ Round 3 (PR #613; quant-proof comment 6121641942 on PR #614, "Required changes" 
   R2 C7 record self-consistency (a margin, b slots, c cover, d dropped_list, e union_ne_ws, f sealed + pv only), each part reported alone and together.
   R12 one predicate: would_pass(trigger_record) -> (bool, reason) below is a pure function; its reason strings and their ORDER are those of the executor's
   tipauth_gate (origin/claude/h5-exec-tipauth-gate tools/h5_executor.py) so a later cross-test can assert 0 disagreements on (bool, reason).
+  Sealed in C7 (f) means anything but absent, null or false (round 4, quant-proof comment 6121865997).
+Round 4 (PR #613): EXIT CODE. The exit code says only that the tool ran (0), or why it did not (2 no start, 3 missing dir, 4 refused instant). It is NOT
+  a verdict: a wrong --expect-code-sha, a failed threshold or tool_rules_clear false all still exit 0. Read verdict.tool_rules_clear and every
+  threshold from the JSON on stdout.
   would-pass is pv-only (C7 f); fv triggers that pass everything else are reported separately as "not eligible: variant".
 """
 from __future__ import annotations
@@ -49,10 +53,12 @@ import math
 import re
 import statistics
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 TOOL = "h5_tipauth_item4"
+SETTLE_MS = 120_000  # a run starts at least this long after its scheduled instant
 SPEC = {"round3": "PR #610 comment 6121123397", "round2": "PR #610 comment 6120949717", "round1": "PR #610 comment 6120633640",
         "pr613_round2": "PR #613 comment 6121547427 (quant-proof), 6121321849 (reviewer)"}
 
@@ -71,7 +77,7 @@ HB_HOLE_MS = 600_000  # a heartbeat hole longer than this is not covered time
 INT_BOUND = 2 ** 63  # a counter / slot / index beyond this is not an integer for this tool (keeps every sum and median finite)
 SCHEDULE_OFFSETS_H = (6, 24, 36, 48)  # +6 h is the interim read; then every 12 h after +48 h
 SCHEDULE_HELP = ("Print the fixed --until-ms instants computed from --since-ms (T0) and exit (quant-proof comment 6121547427, section 4): "
-                 "T0+6h (interim, not the deciding read), T0+24h, T0+36h, T0+48h, then every 12 h. Each run starts after its instant. No other run. "
+                 "T0+6h (interim, not the deciding read), T0+24h, T0+36h, T0+48h, then every 12 h. Each run starts at least 120 s after its instant (earlier is refused, exit 4). No other run. "
                  "The tool REFUSES (exit 4, JSON error) any --until-ms that is not one of these instants. The deciding read is the first instant from +24h "
                  "at which the duration line is met. See the module docstring for the peeking rule.")
 
@@ -407,8 +413,8 @@ def gate_fails(rec: Any) -> frozenset:
     uv = rec.get(UNION_FIELD)
     if not (_i(uv) and _i(ws) and uv == ws):
         f.add("union_ne_ws")
-    # C7 (f). The tool also skips sealed records before it gets here (flag(): anything but absent / null / False) and counts them.
-    if rec.get("h5_look2_sealed") is True or rec.get("sealed") is True:
+    # C7 (f). The sealed part fails closed like the tool's own skip: a record is sealed if either flag is anything but absent, null or false.
+    if flag(rec.get("h5_look2_sealed")) or flag(rec.get("sealed")):
         f.add("sealed_record")
     if rec.get("variant") != "pv":
         f.add("variant_not_pv")
@@ -719,7 +725,7 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
     # conditions
     conds = [(v, conditions(v)) for v in trig]
     wp = [v for v, c in conds if would_pass_view(c)]  # == [v for v in trig if would_pass(raw)[0]]; pv only by construction (C7 f)
-    fv_not_eligible = sum(1 for v, c in conds if v["fails"] == {"variant_not_pv"})
+    fv_not_eligible = sum(1 for v, c in conds if v["fails"] == frozenset({"variant_not_pv"}))
     c14 = [(v, c) for v, c in conds if c["C1"] and c["C2"] and c["C3"] and c["C4"]]
     sub = collections.Counter()
     for v, c in c14:
@@ -907,8 +913,9 @@ def error_result(msg: str, code: str) -> dict:
     return {"tool": TOOL, "error": msg, "verdict": {"tool_rules_clear": False, "blocking_reasons": [code], "thresholds": {}, "outside_tool_pending": OUTSIDE}}
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+def main(argv: list[str] | None = None, now_ms: int | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
+                                 epilog="EXIT CODE: 0 means only that the tool ran (2 no start record, 3 missing directory, 4 refused instant). It is not a verdict: read verdict.tool_rules_clear and each threshold from the JSON on stdout.")
     ap.add_argument("--shadow-dir")
     ap.add_argument("--since-ms", type=int)
     ap.add_argument("--until-ms", type=int, help="REQUIRED. Upper bound of the read (also the scheduled instant); see --schedule.")
@@ -927,6 +934,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"{name} is required")
     if not on_schedule(a.since_ms, a.until_ms):
         res = error_result(f"--until-ms {a.until_ms} is not a scheduled instant for --since-ms {a.since_ms} (use --schedule)", "until_ms_not_on_schedule")
+        sys.stdout.write(dumps(res))
+        return 4
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    if now_ms < a.until_ms + SETTLE_MS:
+        res = error_result(f"--until-ms {a.until_ms} is not yet {SETTLE_MS} ms in the past (now {now_ms}): each run starts after its instant", "until_ms_not_reached")
         sys.stdout.write(dumps(res))
         return 4
     if not re.fullmatch(r"[0-9a-f]{40}", a.expect_code_sha):
