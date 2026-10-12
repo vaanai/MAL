@@ -195,6 +195,7 @@ C1NF_MAX = dict(C1NF_DEFAULT)  # the defaults ARE the maxima, as in H5: loosenin
 assert all(C1NF_DEFAULT[k] == v for k, v in C1NF_TIERS[C1NF_LOWEST_TIER].items())
 NOT_CONFIGURABLE = ("trigger_variant", "exit_land_offset_s", "deadline_s", "max_trigger_age_ms", "late_sell_min_n", "sell_priority_lamports",
                     "escalated_priority_lamports", "intents_glob")  # H5's knobs for another rule, this rule's constants, the pinned stream names
+C1NF_MAX_TRIGGER_AGE_MS = 10_000  # C1-NF keeps H5's former pre-send trigger age limit; H5's 3_500 (PRESEND_MAX_TRIGGER_AGE_MS) is not C1-NF's and is not shared
 FORBIDDEN_TRUTHY = ("jito_enabled",)
 
 _H5_PRECHECK = h5.h5_precheck
@@ -257,7 +258,8 @@ def c1nf_limits(cfg: dict[str, Any], tier: str = C1NF_LOWEST_TIER) -> h5.H5Limit
         raise ValueError("feed_heartbeat_max_age_ms must be an int >= 0 (0 means the code's 150 s)")
     with h5_scope(table=True):
         lim = h5.H5Limits.from_config(cfg, tier)
-    return replace(lim, end_ms=min(lim.end_ms if lim.end_ms is not None else C1NF_END_MAX_MS, C1NF_END_MAX_MS))
+    return replace(lim, end_ms=min(lim.end_ms if lim.end_ms is not None else C1NF_END_MAX_MS, C1NF_END_MAX_MS),
+                   max_trigger_age_ms=C1NF_MAX_TRIGGER_AGE_MS)
 
 
 def heartbeat_max_age_ms(cfg: dict[str, Any]) -> int:

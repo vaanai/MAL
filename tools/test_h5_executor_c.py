@@ -389,7 +389,7 @@ class TriggerFidelityTests(Case):
         e = self.env()
         e.fire(block_time=T0 // 1000 - 13)
         self.assertEqual(e.refusals(), ["stale_trigger"])
-        e.fire(block_time=T0 // 1000 - 12)  # block_time is whole seconds: 2 s of slack on top of the 10 s limit
+        e.fire(block_time=T0 // 1000 - 5)  # block_time is whole seconds: 2 s of slack on top of the 3.5 s pre-send limit
         self.assertEqual(len(e.rpc.sent), 1)
 
     def test_the_vendored_records_carry_every_key_the_executor_reads(self):
