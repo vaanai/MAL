@@ -329,9 +329,9 @@ class SlotRateTests(Case):
 
     def test_a_trigger_is_refused_when_the_chain_has_moved_on_since_the_trigger_print(self):
         e = self.env()
-        e.fire(trigger_slot=e.rpc.slot - 51, s0_slot=e.rpc.slot - 551)  # 51 slots = 10.2 s old on the chain, though the detector's clock is fresh
+        e.fire(trigger_slot=e.rpc.slot - 19, s0_slot=e.rpc.slot - 519)  # 19 slots = 3.8 s old on the chain (limit ceil(3.5 s / 0.2) = 18), though the detector's clock is fresh
         self.assertEqual(e.refusals(), ["stale_trigger_chain"])
-        e.fire(trigger_slot=e.rpc.slot - 50, s0_slot=e.rpc.slot - 550)
+        e.fire(trigger_slot=e.rpc.slot - 18, s0_slot=e.rpc.slot - 518)
         self.assertEqual(len(e.rpc.sent), 1)
 
     def switch_world(self, old: float, new: float, switch_at: int) -> Env:
