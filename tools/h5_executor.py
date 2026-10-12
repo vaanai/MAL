@@ -2541,6 +2541,13 @@ class H5Executor(pl.LiveExecutor):
             return "tipauth:unavailable"
         return self._tipauth_availability() or None
 
+    def _log(self, kind: str, mint: str, **kw: Any) -> None:
+        """Every ledger row of a trade admitted by the tipauth path carries gate_path. A mint that was never admitted that way (every
+        websocket-path trade, with the switch off or on) gets nothing added: those rows are byte-identical to main's."""
+        if mint and mint in self._tipauth_mints and "gate_path" not in kw:
+            kw["gate_path"] = GATE_PATH_TIPAUTH
+        super()._log(kind, mint, **kw)
+
     def _tipauth_admit(self, mint: str) -> None:
         self._tipauth_mints.add(mint)
         self.counters.tipauth["mints"] = sorted(self._tipauth_mints)
