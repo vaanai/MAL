@@ -76,6 +76,15 @@ base_union {status, ws_only, tip_only, both, both_diff, dup, tip_first_slot, ...
 base_unmatched_union (up to 20 unmatched prints each, so missing-vs-extra can be settled offline). The tip tape is not chain truth either (it
 misses prints in some pools); the union does not see a dropped head, and s0, BOOST spent/identity and the first qualifying sell still come from
 the feed. Without --tip-dir every record is byte-identical to a build without this code.
+TIP-AUTHORITATIVE VIEW (REPORT-ONLY; base_breaks_unresolved_settled_tipauth and base_tipauth, on the same records as the union fields and sealed
+exactly like them; no decision reads them, and a gate on them is a DEC-024 phase-2 change). The union only ADDS rows, so it cannot remove a
+"phantom": a swap notice the public logsSubscribe feed delivered for a transaction that is not on the finalized chain (it shares its pre base
+with a real print and adds one unmatched pre base). The tip tape comes from finalized blocks, so below its high-water it is canonical. The
+tipauth value is the settled count of the union MINUS D = websocket-only members, at a slot in [tip_first_slot, min(tip high-water, decision
+slot) - TIPAUTH_MARGIN_SLOTS], whose signature has no tip row in this pool under any event_index. A real print the tip missed is dropped too
+and breaks the chain (fail closed), so a tipauth value of 0 also proves no interior real print was dropped. Definition, margin justification
+(from tools/fast_tip_follower.py), null statuses and the limits of the completeness argument: Engine._tipauth_fields. base_tipauth also
+carries dropped_n / first / last slot, kept_ws_only_* counts, and the mechanism counts dropped_sells_n / dropped_boost_n.
 DECISION TIME, enforced in code (UnionChain.line / ahead): a tip row is admitted into a pool's union only once that pool's feed has printed at
 its slot or later; rows above that line wait in the pool's `ahead` heap. So the TRIGGER record's union fields (the settled union value and
 tip_only, both, dup, both_diff, tip_first_slot, ws_only) count only tip rows at slot <= the trigger print's slot, also when the tip leads the
@@ -234,6 +243,9 @@ TIP_POLL_S = 0.25  # tip poll interval; a full chunk is followed at once by the 
 TIP_CHUNK_BYTES = 128 * 1024  # one read per file per step: ~150 rows, a fraction of a millisecond of filtering
 TIP_LINE_MAX = 64 * 1024  # a partial line longer than this is dropped (corrupt tail)
 TIP_PENDING_MAX = 5_000  # tip rows buffered per announced-but-not-yet-tracked pool (the tip lags the feed, so this is normally empty)
+TIPAUTH_FIELD = "base_breaks_unresolved_settled_tipauth"
+TIPAUTH_MARGIN_SLOTS = 4  # see UnionChain.settled_without: a slot is "covered" only at or below (tip high-water - this)
+TIPAUTH_WSONLY_MAX = 20_000  # more websocket-only members than this in one pool: the tip-authoritative field is null ("big")
 UNION_SETTLE_SCAN_MAX = 256  # slots above the settle line scanned incrementally; more than this: null at a trigger, a full count at pool close
 UNMATCHED_MAX = 20  # unmatched prints listed per pool-close record (per view)
 TIP_ERR_LOG_EVERY_S = 600.0  # tip_follow: the first error of each class goes to the error log, then at most one per class per this many s
@@ -846,7 +858,7 @@ class UnionChain:
     tape of canonical blocks cannot."""
 
     __slots__ = ("m", "pre", "post", "excess", "by_slot", "max_slot", "n", "both_diff", "dup", "tip_first_slot", "broken", "line", "ahead", "seq",
-                 "tip_max_slot")
+                 "tip_max_slot", "wsonly", "tip_sig")
 
     def __init__(self) -> None:
         self.m: dict[tuple, list] = {}  # key -> [pre base, post base, slot, mask]
@@ -864,13 +876,16 @@ class UnionChain:
         self.ahead: list = []  # heap of (slot, seq, key, pre base, post base): tip rows above the line, not yet in the union
         self.seq = 0
         self.tip_max_slot: int | None = None  # highest slot of an admitted tip row (member or dup)
+        self.wsonly: dict[tuple, Any] = {}  # key -> meta (is_sell, trader) | None, of every member that is websocket-only RIGHT NOW (tipauth)
+        self.tip_sig: set = set()  # signatures of every admitted tip row, under any event_index (tipauth: a key mismatch is not a phantom)
 
-    def add_ws(self, key: tuple, bpre: int, bpost: int, slot: int) -> None:
-        """A feed print: raise the admission line to its slot (admitting the tip rows waiting at or below it), then add it."""
+    def add_ws(self, key: tuple, bpre: int, bpost: int, slot: int, meta: Any = None) -> None:
+        """A feed print: raise the admission line to its slot (admitting the tip rows waiting at or below it), then add it. meta is an optional
+        small tuple (is_sell, trader) kept for websocket-only members only (report-only mechanism counts of tipauth)."""
         if self.line is None or slot > self.line:
             self.line = slot
             self._admit(slot)
-        self.add(key, bpre, bpost, slot, UNION_WS)
+        self.add(key, bpre, bpost, slot, UNION_WS, meta)
 
     def add_tip(self, key: tuple, bpre: int, bpost: int, slot: int) -> None:
         """A tip row: into the union if the pool's feed has printed at its slot or later, else held in `ahead`."""
@@ -906,8 +921,10 @@ class UnionChain:
             self.excess -= 1
         self.pre[bpre] -= 1
 
-    def add(self, key: tuple, bpre: int, bpost: int, slot: int, src: int) -> None:
+    def add(self, key: tuple, bpre: int, bpost: int, slot: int, src: int, meta: Any = None) -> None:
         if src == UNION_TIP:
+            self.tip_sig.add(key[0])
+            self.wsonly.pop(key, None)
             if self.tip_first_slot is None or slot < self.tip_first_slot:
                 self.tip_first_slot = slot
             if self.tip_max_slot is None or slot > self.tip_max_slot:
@@ -920,6 +937,8 @@ class UnionChain:
             if self.max_slot is None or slot > self.max_slot:
                 self.max_slot = slot
             self.n[src] += 1
+            if src == UNION_WS:
+                self.wsonly[key] = meta
             return
         if cur[3] & src:
             self.dup += 1
@@ -959,6 +978,61 @@ class UnionChain:
                     ex -= 1
                 taken[b] += 1
         return max(0, ex - 1)
+
+    def settled_without(self, hw_slot: int | None, drop: Sequence[tuple], full: bool = True) -> int | None:
+        """REPORT-ONLY tip-authoritative variant of settled(): the same multiset arithmetic over the members MINUS `drop` (keys of members), with
+        no mutation of the union (local deltas on the touched base values only). Cost: O(|drop| + members in the settle window), no recompute.
+        Returns what settled() would return on a union that never held the dropped members; with an empty `drop` it is settled() exactly.
+        None under the same condition as settled(full=False)."""
+        if not drop:
+            return self.settled(hw_slot, full)
+        dset = set(drop)
+        dpre: collections.Counter = collections.Counter()
+        dpost: collections.Counter = collections.Counter()
+        for k in dset:
+            v = self.m[k]
+            dpre[v[0]] += 1
+            dpost[v[1]] += 1
+        ex = self.excess
+        for b in set(dpre) | set(dpost):  # excess is a sum over base values: only the touched ones change
+            ex += max(0, self.pre[b] - dpre[b] - (self.post[b] - dpost[b])) - max(0, self.pre[b] - self.post[b])
+        if hw_slot is None or self.max_slot is None or self.max_slot <= hw_slot - SETTLE_SLOTS:
+            return max(0, ex - 1)
+        lo = hw_slot - SETTLE_SLOTS
+        if self.max_slot - lo > UNION_SETTLE_SCAN_MAX:
+            if not full:
+                return None
+            pres = collections.Counter(v[0] for k, v in self.m.items() if v[2] <= lo and k not in dset)
+            return max(0, sum(max(0, n - (self.post[b] - dpost[b])) for b, n in pres.items()) - 1)
+        taken: collections.Counter = collections.Counter()
+        for s in range(lo + 1, self.max_slot + 1):
+            for k in self.by_slot.get(s, ()):
+                if k in dset:
+                    continue
+                b = self.m[k][0]
+                if self.pre[b] - dpre[b] - taken[b] > self.post[b] - dpost[b]:
+                    ex -= 1
+                taken[b] += 1
+        return max(0, ex - 1)
+
+    def tipauth_drop(self, cover_lo: int, cover_hi: int) -> tuple[list, dict] | None:
+        """The dropped set D of the tip-authoritative view (see Engine._tipauth_fields) and the counts of the websocket-only members kept, or
+        None above TIPAUTH_WSONLY_MAX websocket-only members. D = websocket-only members at a slot in [cover_lo, cover_hi] whose signature has
+        no tip row in this pool under any event_index. O(websocket-only members)."""
+        if len(self.wsonly) > TIPAUTH_WSONLY_MAX:
+            return None
+        drop, before, above, on_tip = [], 0, 0, 0
+        for k in self.wsonly:
+            sl = self.m[k][2]
+            if sl < cover_lo:
+                before += 1
+            elif sl > cover_hi:
+                above += 1
+            elif k[0] in self.tip_sig:
+                on_tip += 1
+            else:
+                drop.append(k)
+        return drop, {"kept_ws_only_before_cover": before, "kept_ws_only_above_cover": above, "kept_ws_only_sig_on_tip": on_tip}
 
     def unmatched(self, limit: int = UNMATCHED_MAX) -> tuple[int, list]:
         """Members whose pre base has more pres than posts on the union (the chain head is one of them), earliest first, at most `limit`:
@@ -1366,7 +1440,7 @@ class Engine:
             self._below_s0(p, pr)
         self._base_chain(p, pr)
         if p.union is not None:
-            self._union_add(p, (pr.ukey, int(pr.b), int(pr.b_post), pr.slot), UNION_WS)
+            self._union_add(p, (pr.ukey, int(pr.b), int(pr.b_post), pr.slot), UNION_WS, (not pr.buy, pr.trader))
         p.prints.append(pr)
         qpv, qfv = pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)
         if pr.slot - p.s0 <= 1500:  # first 300 s at the fastest slot time the rule allows (0.2 s); a monitoring field only
@@ -1388,13 +1462,16 @@ class Engine:
         return max(0, sum(max(0, n - posts.get(v, 0)) for v, n in pres.items()) - 1)
 
     # ---- report-only tip union (phase 0; never read by a decision) --------------------------------------------
-    def _union_add(self, p: Pool, item: tuple, src: int) -> None:
+    def _union_add(self, p: Pool, item: tuple, src: int, meta: Any = None) -> None:
         """Fail-soft: an error marks the pool's union broken (its field goes null) and never reaches the print or trigger path."""
         u = p.union
         if u is None or u.broken:
             return
         try:
-            (u.add_ws if src == UNION_WS else u.add_tip)(item[0], item[1], item[2], item[3])  # decision time: see UnionChain
+            if src == UNION_WS:  # decision time: see UnionChain
+                u.add_ws(item[0], item[1], item[2], item[3], meta)
+            else:
+                u.add_tip(item[0], item[1], item[2], item[3])
         except Exception:  # noqa: BLE001
             u.broken = True
             self.counters["union_errors"] += 1
@@ -1480,7 +1557,7 @@ class Engine:
                         "both": None if u is None else u.n[UNION_BOTH], "both_diff": None if u is None else u.both_diff,
                         "dup": None if u is None else u.dup, "tip_first_slot": None if u is None else u.tip_first_slot,
                         "tip_hw_slot": tip.hw_slot, "tip_lag_slots": lag}
-                return {UNION_FIELD: val, "base_union": info}
+                return {UNION_FIELD: val, "base_union": info, **self._tipauth_fields(p, tip, st, val, None)}
             cnt = u
             if u is not None and u.tip_max_slot is not None and u.tip_max_slot > trig_slot:
                 st, cnt = "regress", None
@@ -1495,8 +1572,92 @@ class Engine:
                     "tip_hw_slot_global": tip.hw_slot, "tip_lag_slots_global": lag}
         except Exception:  # noqa: BLE001 - a report-only field may never take the trigger or the close down
             self.counters["union_errors"] += 1
-            return {UNION_FIELD: None, "base_union": {"status": "error"}}
-        return {UNION_FIELD: val, "base_union": info}
+            return {UNION_FIELD: None, "base_union": {"status": "error"}, TIPAUTH_FIELD: None, "base_tipauth": {"status": "error", "margin_slots": TIPAUTH_MARGIN_SLOTS}}
+        return {UNION_FIELD: val, "base_union": info, **self._tipauth_fields(p, tip, st, val, trig_slot)}
+
+    def _tipauth_fields(self, p: Pool, tip: Any, st: str, union_val: int | None, trig_slot: int | None) -> dict:
+        """REPORT-ONLY, never read by a decision. base_breaks_unresolved_settled_tipauth: the settled count of the union MINUS the websocket
+        prints the tip tape contradicts (UnionChain.settled_without), plus base_tipauth with the evidence. Written exactly where the union fields
+        are (trigger and pool close; absent on a CAP-PICK-sealed record and on an H5 Look-2-sealed pool-close record, present on a Look-2-sealed
+        trigger record, whose union fields are the decision-time ones).
+
+        Why. The public logsSubscribe feed delivers swap notices for transactions that are not on the finalized chain ("phantoms"). A phantom
+        shares its pre-trade base with a real print, so it adds one unmatched pre base; a union can only ADD rows and never removes it. The tip
+        tape is built from finalized blocks, so below its high-water it is the canonical source.
+
+        D, the dropped set: members that are (1) websocket-only, (2) at a slot in the covered range [cover_lo, cover_hi], and (3) whose signature
+        has no tip row in this pool under any event_index (a websocket print whose signature IS on the tip under another event_index is a decoder
+        key mismatch, not a phantom: kept, counted in kept_ws_only_sig_on_tip). cover_lo = this pool's first admitted tip row (tip_first_slot;
+        websocket-only prints before it are kept: the tip may simply not have been following the pool yet). cover_hi = min(the tip reader's
+        high-water slot, the decision slot) - TIPAUTH_MARGIN_SLOTS (a pool close has no decision slot: the reader's high-water alone).
+
+        Fail closed. A REAL websocket-only print the tip missed inside the covered range is dropped too, and dropping a real interior print
+        breaks the chain (its successor's pre base loses its post base), so the value rises. A complete tipauth chain (value 0) therefore also
+        proves that no interior real print was dropped; only a real print at the very end of the chain (no successor) can vanish unnoticed, as
+        in every view. Inside a tip gap (fast_tip_follower writes a "backlog_jump" range to gaps.jsonl and has NO rows for those slots) the real
+        websocket prints are dropped and the chain breaks: the intended direction. The reader cannot tell a gap from a quiet slot, so this is
+        not detected separately.
+
+        Why TIPAUTH_MARGIN_SLOTS = 4 (SETTLE_SLOTS + 2). Read from tools/fast_tip_follower.py: slots are committed STRICTLY in slot order (the
+        parallel fetch only prefetches; _step_parallel commits last_done + 1 only, and a contradicted skip is refetched and written before the
+        block that contradicted it), and one block's rows are appended to the hourly file with one flushed write, the checkpoint moving on only
+        after it. So a reader that has read a complete line of slot S has every row of every slot < S (the file is append-only and in order);
+        slot S itself may still be partly visible (a block's write can be read mid-way; TipTail holds a partial last line back but not the
+        block's other lines). That needs 1 slot of margin. Two further slots are kept on top because (a) rows of slot S - 1 can still be a
+        poll behind when the reader reads the previous hour's file before the current hour's one and the previous file has more than one chunk
+        (TIP_CHUNK_BYTES) waiting at an hour boundary: TipTail.hw_slot is the max over files, not per file, so completeness below hw - margin is
+        NOT PROVEN there, only made unlikely; (b) SETTLE_SLOTS: the settled count itself ignores the last SETTLE_SLOTS slots below the feed
+        high-water. Not proven from the code and so not claimed: the hour-boundary case above; a tip row lost to TIP_PENDING_MAX or to a
+        TipTail reset (truncation not noticed); resolve_unresolved rows (they are written in the same block write, so they follow the rule).
+        A phantom inside the margin, or above cover_hi, is not dropped: the field then reads like the union (conservative).
+
+        Null (status says why): the tip is not "ok" (that status itself), the union is broken (error), the trigger print is a slot regress
+        (regress), no admitted tip row in this pool (no_tip_rows), cover_hi < cover_lo (no_cover), more than TIPAUTH_WSONLY_MAX websocket-only
+        members (big), the settle window too long for an incremental count (ahead). Counts of dropped prints by kind (dropped_sells_n; and
+        dropped_boost_n, buys signed by the pool's BOOST identity as known at the time of the record) are mechanism counts for a later proposal.
+        Never raises: an error counts union_errors and gives a null field with status "error"."""
+        info: dict = {"status": st, "dropped_n": None, "dropped_first_slot": None, "dropped_last_slot": None, "cover_lo": None, "cover_hi": None,
+                      "kept_ws_only_before_cover": None, "kept_ws_only_above_cover": None, "kept_ws_only_sig_on_tip": None,
+                      "dropped_boost_n": None, "dropped_sells_n": None, "margin_slots": TIPAUTH_MARGIN_SLOTS}
+        try:
+            u = p.union
+            if st != "ok":
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            if u is None or u.broken:
+                info["status"] = "error"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            if union_val is None:
+                info["status"] = "ahead"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            if u.tip_first_slot is None or tip.hw_slot is None:
+                info["status"] = "no_tip_rows"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            lo = u.tip_first_slot
+            hi = (tip.hw_slot if trig_slot is None else min(tip.hw_slot, trig_slot)) - TIPAUTH_MARGIN_SLOTS
+            info["cover_lo"], info["cover_hi"] = lo, hi
+            if hi < lo:
+                info["status"] = "no_cover"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            got = u.tipauth_drop(lo, hi)
+            if got is None:
+                info["status"] = "big"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            drop, kept = got
+            val = u.settled_without(self.hw_slot, drop, full=trig_slot is None)
+            if val is None:
+                info["status"] = "ahead"
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            slots = [u.m[k][2] for k in drop]
+            ident = self.boost_identity(p)[0]
+            metas = [u.wsonly.get(k) for k in drop]
+            info.update(kept)
+            info.update({"dropped_n": len(drop), "dropped_first_slot": min(slots, default=None), "dropped_last_slot": max(slots, default=None),
+                         "dropped_sells_n": sum(1 for m in metas if m is not None and m[0]),
+                         "dropped_boost_n": sum(1 for m in metas if m is not None and not m[0] and ident is not None and m[1] == ident)})
+            return {TIPAUTH_FIELD: val, "base_tipauth": info}
+        except Exception:  # noqa: BLE001
+            self.counters["union_errors"] += 1
+            return {TIPAUTH_FIELD: None, "base_tipauth": {"status": "error", "margin_slots": TIPAUTH_MARGIN_SLOTS}}
 
     def _union_close_fields(self, p: Pool) -> dict:
         """Pool close: the union fields plus up to UNMATCHED_MAX unmatched prints of each view, so missing-vs-extra can be settled offline.
@@ -3114,7 +3275,9 @@ def run_replay(args: argparse.Namespace) -> int:
         for r in records:
             if r["type"] in ("trigger", "pool") and UNION_FIELD in r:
                 u = r[UNION_FIELD]
-                xt[f'{r["type"]}:ws{"0" if not r["base_breaks_unresolved_settled"] else "1+"}:union{"null" if u is None else ("0" if u == 0 else "1+")}'] += 1
+                ta = r.get(TIPAUTH_FIELD)  # report-only tipauth bucket, counts only
+                xt[f'{r["type"]}:ws{"0" if not r["base_breaks_unresolved_settled"] else "1+"}:union{"null" if u is None else ("0" if u == 0 else "1+")}'
+                   f':tipauth{"null" if ta is None else ("0" if ta == 0 else "1+")}'] += 1
         summary["tip_union"] = {**engine.tip.stats(), "crosstab": dict(sorted(xt.items()))}
     if args.compare_frozen:
         summary["compare"] = compare_frozen(records, meta, args.compare_frozen, args.compare_s0 or hours[0], hours)

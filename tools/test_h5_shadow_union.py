@@ -17,7 +17,7 @@ from pathlib import Path
 from tools import h5_shadow as h5
 from tools.test_h5_shadow import MINT, POOL, SOL, Tape, announce, boost_buys, drain, make_engine, types  # noqa: F401
 
-NEW_KEYS = {h5.UNION_FIELD, "base_union", "base_unmatched_ws_n", "base_unmatched_ws", "base_unmatched_union_n", "base_unmatched_union"}
+NEW_KEYS = {h5.UNION_FIELD, "base_union", h5.TIPAUTH_FIELD, "base_tipauth", "base_unmatched_ws_n", "base_unmatched_ws", "base_unmatched_union_n", "base_unmatched_union"}
 
 
 class FakeTip:
