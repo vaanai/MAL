@@ -29,7 +29,7 @@ Then read, as needed:
 4. **Shadow restarted twice on 10-12.** The first restart (job #810, 09:06:45Z) was replaced because its first log line read `porcelain_lines=1`. The second, **job #817 at 2026-10-12T09:34:03Z (T0 = 1791797643640)**, is the item-4 clock start (LAB_STATE rows; PR #610 comment 6121610196): at least 24 h AND at least 10 no-gap pv triggers with ws >=1.
 
 **What phase 2 still needs (none of it is done):**
-- the item-4 count (the three read tools are merged; the reads run at the fixed instants in "tipauth acceptance: how the reads run" below; no read has run yet),
+- the item-4 count (the three read tools are merged; the reads run at the fixed instants in "tipauth acceptance: how the reads run" below; the +6 h interim read ran on 10-12, see "tipauth reads so far" below),
 - a quant-proof review of that count,
 - an executor gate PR under conditions C1-C6, tagged `gate_path: "tipauth"`, with the switch-off rule (QP ruling D),
 - a DEC-024 amendment (Amendment 8),
@@ -129,7 +129,7 @@ Added since that file (tipauth, shadow job #817, read from T0 = 1791797643640 = 
 
 | Instant | Item | Action |
 | --- | --- | --- |
-| 10-12 15:34:03Z (+6 h, 1791819243640) | tipauth | Interim read. The item-4 tool refuses a run started before 15:36:04Z (exit 4 = not a run) |
+| 10-12 15:34:03Z (+6 h, 1791819243640) | tipauth | Interim read. **Done** (jobs #827, #828, #830; "tipauth reads so far" below). No further run at this instant |
 | 10-13 09:34:03Z (+24 h, 1791884043640) | tipauth | First instant that can be the deciding read |
 | 10-13 21:34:03Z (+36 h, 1791927243640) | tipauth | Read |
 | 10-14 09:34:03Z (+48 h, 1791970443640) | tipauth | Read; then every 12 h |
@@ -150,9 +150,20 @@ Tipauth path (not a fixed date): after >=24 h and >=10 no-gap pv triggers with w
 - RPC census (`tools/h5_tipauth_census.py`, #615): PR #615 comment 6122101184, including "check R" before any sentence.
 - Trigger print (`tools/h5_tipauth_trigger_print.py`, #616): PR #616 comment 6122332650 section 5. It requires a seal line in LAB_STATE with the first run (tool sha256, until-ms, output sha256). If any file has matches != lines_parsed, or bad or partial lines, it goes to quant-proof before quoting.
 
+**How to launch the tools (learned at +6 h).** Run each as a `mal-fast-0` ops job that writes nothing in its working directory, with `nice -n 19 ionice -c 3`, after checking the tool sha256 and 0 porcelain lines in the job itself. Item 4: `/usr/bin/python3 -I tools/h5_tipauth_item4.py ...` at `git_ref` main. Trigger print: `/usr/bin/python3 -m tools.h5_tipauth_trigger_print ...` from the checkout root at `git_ref` 7a90d027f70ec445bf32d5ce8af2fb6b45bfc3eb, **without `-I`** (with `-I` the import fails; job #829). Run `--help` first inside the job so a launcher failure exits before the run. A second launcher failure at one instant leaves no repeat; the read then moves to the next instant (quant-proof, PR #610 comment 6127657282). Job logs show about 3,700 characters, so read the out files back with small jobs that print chosen keys.
+
 **Peeking rule.** Read only at the fixed instants. The exactly-0 rules are cumulative across reads. The share rules apply at the deciding read only. The tools change only by tightening after the first run, never loosening.
 
 **Wording rule.** Counts only. An interim read is labelled "interim, not the deciding read". Never write "met", "clear", "passing" or "on track". Never state "phantom" or "not on chain" as a fact: say the public RPC did not return the signatures (asked twice, at least 10 minutes apart) and the controls were returned, which is consistent with not being on the finalized chain and is not proof. Never write "profitable".
+
+### tipauth reads so far
+
+**+6 h, 2026-10-12, INTERIM, not the deciding read** (`--until-ms 1791819243640`). The full record with paths, hashes and every count is in LAB_STATE under "2026-10-12 events"; PR #610 comment 6127603546; notebook n_L_X6dM9QjKBxDQ.
+
+- Item 4 (job #828): covered 5.9979 h; triggers 11 (pv 6, fv 5); closes 180; no-gap pv triggers with ws >= 1: 0; would-pass 0; consistency failing 0; item 5 `n_ok` 60, share 0.233333 (short: no result below 100).
+- Trigger print (job #830 after the failed launch #829): ws_pass n 5, equal 4, different 0, **absent 1**; would_pass n 0; refused n 1, equal 1. Scan check: matches equal lines_parsed in every file; bad, partial and unreadable lines 0.
+- **Owner flag: 1 of 5 ws-pass trigger prints has no row on the tip tape.** Cause not determined (four possible causes, listed in LAB_STATE). The absent count is cumulative from T0 and is carried by every later read. Told to the owner on 10-12 at about 15:45Z.
+- **Quant-proof ruling, PR #610 comment 6127657282.** No DEC-024 rule requires STOP or HALT; the canary continues at T0 on the manager's call. The owner wording to use is in section 2 of that comment (item 5 only in its own sentence, never next to a cause; no percentage; no "phantom", "ghost", "not on chain", "verified", "likely", "isolated"). Nothing more is looked at for that trigger until the follow-up tool is merged: `tools/h5_wspass_print_rpc.py` (spec in section 3: public RPC `getTransaction` at finalized on every ws-pass and refused trigger-print signature through the census tool's `ask` / `reask`, counts per class only, reading rule fixed in that section's "Reading rule, fixed now" table; needs the Reviewer's verdict and QP OK on the exact head, and its LAB_STATE line in the same PR). A T1 proposal must carry the count, its interim label and the undetermined cause; quant-proof recommends the RPC check before proposing T1. Proposed amendment, not in force: STOP when a ws-pass trigger print on which the executor sent a buy is absent at a scheduled read and not returned by the RPC check.
 
 ### Phase 2 still to build (none of it is done)
 
