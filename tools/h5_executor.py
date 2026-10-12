@@ -240,7 +240,7 @@ SUPERSEDE_MS = 2_000  # a sell with no status this long after it was first sent 
 BUY_REBROADCAST_MS = 3_000  # a buy is rebroadcast for this long after the decision, then left to expire
 LATE_SELL_MIN_N = 1  # literal reading of "more than 5% of sells": judged from the first landed sell. A code constant, not config.
 ENTRY_LATE_S = 5.0  # a buy landing later than this after the trigger print is out of the rule (the binding leg is 1.9 s)
-ENTRY_SEND_ALLOWANCE_S = 1.5  # time kept for build, send and landing after the pre-send checks; measured send path today: decision-to-send 221 ms, send-to-confirm 727 ms
+ENTRY_SEND_ALLOWANCE_S = 1.5  # nominal time left for build, send and landing after the pre-send checks. One measured path (2026-10-12): decision-to-send 221 ms, send-to-confirm 727 ms. The chain check rounds up, so it keeps ceil(5.0/sps) - ceil(3.5/sps) slots (6 slots = 1.31 s at sps 0.2187)
 PRESEND_MAX_TRIGGER_AGE_MS = int((ENTRY_LATE_S - ENTRY_SEND_ALLOWANCE_S) * 1000)  # 3_500: an older trigger could not land inside ENTRY_LATE_S, so no buy is sent (stricter only; config may shorten it)
 LATE_SELL_S = 335.0  # a sell landing after s0 + this is late
 LATE_SELL_FRAC = 0.05  # more than 5% of our landed sells late -> halt

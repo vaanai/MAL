@@ -76,3 +76,13 @@ class PresendAgeTests(Case):
         e = self.fresh("c19")
         e.fire(trigger_slot=e.rpc.slot - 19, s0_slot=e.rpc.slot - 519)  # 3.8 s
         self.assertEqual((e.refusals(), e.rpc.sent), (["stale_trigger_chain"], []))
+
+    def test_chain_boundary_at_the_events_sps_is_17_slots_pass_18_refused(self):
+        sps = 0.2187173840025174
+        self.assertEqual((h.ceil_slots(3.5, sps), h.ceil_slots(5.0, sps)), (17, 23))  # the pre-send limit and the entry window, in slots
+        e = self.fresh("e17")
+        e.fire(sps=sps, trigger_slot=e.rpc.slot - 17, s0_slot=e.rpc.slot - 517)
+        self.assertNotIn("stale_trigger_chain", e.refusals())  # (an sps_mismatch against the fixture's 0.2 chain may follow; the stale check is what is pinned)
+        e = self.fresh("e18")
+        e.fire(sps=sps, trigger_slot=e.rpc.slot - 18, s0_slot=e.rpc.slot - 518)
+        self.assertEqual((e.refusals(), e.rpc.sent), (["stale_trigger_chain"], []))
