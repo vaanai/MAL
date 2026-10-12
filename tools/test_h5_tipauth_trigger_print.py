@@ -7,9 +7,12 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
+import re
 import tempfile
 import time
 import unittest
+import collections
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -21,7 +24,17 @@ SINCE = T0
 UNTIL = SINCE + 24 * H  # a scheduled instant (+24 h)
 SHA = "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
 SLOT = 200
-HW_OK = SLOT + 4  # tip high-water minus 4 == trigger slot: decidable
+HW_OK = SLOT + 150  # tip high-water minus 150 == trigger slot: decidable
+
+
+_B58_FIX = str.maketrans({"0": "z", "O": "o", "I": "i", "l": "L"})
+
+
+def sg(name):
+    """A base58 signature (44 chars) derived from a short test name; None stays None."""
+    if not isinstance(name, str):
+        return name
+    return name.translate(_B58_FIX).rjust(44, "1")
 
 
 def recording_hook(seen: set):
@@ -59,11 +72,11 @@ def recording_hook(seen: set):
 
 def trg(sig="SIGA", pool="P1", ei=3, q=5_000, b=7_000, v=17_000, t=MID, slot=SLOT, **kw):
     """A would-pass pv trigger record carrying the trigger print's own keys (tools/h5_shadow.py:1941,1947)."""
-    return trig(t=t, pool=pool, slot=slot, signature=sig, event_index=ei, real_quote_pre=q, base_pre=b, v_print=v, **kw)
+    return trig(t=t, pool=pool, slot=slot, signature=sg(sig), event_index=ei, real_quote_pre=q, base_pre=b, v_print=v, **kw)
 
 
 def tip_row(sig="SIGA", pool="P1", ei=3, q=5_000, b=7_000, v=17_000, slot=SLOT, **kw):
-    r = {"v": 1, "type": "trade", "venue": "pumpswap", "side": "buy", "quote_reserve": q, "base_reserve": b, "pool": pool, "slot": slot, "signature": sig,
+    r = {"v": 1, "type": "trade", "venue": "pumpswap", "side": "buy", "quote_reserve": q, "base_reserve": b, "pool": pool, "slot": slot, "signature": sg(sig),
          "event_index": ei, "pnl_decoy": 99}
     if v is not None:
         r["virtual_quote_reserves"] = v
@@ -98,6 +111,10 @@ class Base(unittest.TestCase):
         else:
             (self.td / name).write_bytes(data)
 
+    def sd_reset(self):
+        for f in self.sd.iterdir():
+            f.unlink()
+
     def clear_tip(self):
         for f in self.td.iterdir():
             f.unlink()
@@ -121,7 +138,7 @@ class TestClassesAndOutcomes(Base):
         for ci, kw in enumerate(specs.values()):
             for oi, outcome in enumerate(("eq", "diff", "absent", "undet")):
                 sig, pl = f"S{ci}{oi}", f"P{ci}{oi}"
-                trigs.append(trg(sig=sig, pool=pl, slot=SLOT + (100 if outcome == "undet" else 0), **kw))
+                trigs.append(trg(sig=sig, pool=pl, slot=SLOT + (200 if outcome == "undet" else 0), **kw))
                 if outcome == "eq":
                     rows.append(tip_row(sig=sig, pool=pl))
                 elif outcome == "diff":
@@ -171,7 +188,7 @@ class TestClassesAndOutcomes(Base):
 
     def test_signature_inside_another_field_is_not_a_match(self):
         other = tip_row(sig="ZZZ", pool="P9")
-        other["note"] = '"signature":"SIGA"'  # JSON-escaped inside a string: not the byte pattern
+        other["note"] = '"signature":"' + sg("SIGA") + '"'  # inside a string value: not the byte pattern at a row's own key
         self.tip([other])
         self.assertEqual(self.run_([trg(sig="SIGA")])["classes"]["would_pass"]["absent"], 1)
 
@@ -179,11 +196,11 @@ class TestClassesAndOutcomes(Base):
 class TestUndetermined(Base):
     def test_tip_not_far_enough(self):
         self.tip([tip_row()])
-        self.assertEqual(self.run_([trg()], hw=SLOT + 3)["classes"]["would_pass"]["undetermined"], 1)
+        self.assertEqual(self.run_([trg()], hw=SLOT + 149)["classes"]["would_pass"]["undetermined"], 1)
 
     def test_exactly_at_margin_is_decided(self):
         self.tip([tip_row()])
-        self.assertEqual(self.run_([trg()], hw=SLOT + 4)["classes"]["would_pass"]["present_equal"], 1)
+        self.assertEqual(self.run_([trg()], hw=SLOT + 150)["classes"]["would_pass"]["present_equal"], 1)
 
     def test_only_the_triggers_own_high_water_counts(self):
         r = self.run_([trg()], hw=None)  # the record's tip_hw_slot_global is 154, below 204
@@ -235,13 +252,166 @@ class TestHourLookup(Base):
             with self.subTest(k=k):
                 self.assertEqual(self._one(T0 + k * H, late)["present_equal"], 1)
 
-    def test_previous_hour_and_third_hour_not_searched(self):
-        for hour in (T0 - H, T0 + 3 * H):
+    def test_print_in_previous_hour_found(self):
+        """Change 2: the row is only in the previous hour's file (trigger stamped just after an hour top)."""
+        self.tip([], hour_ms=T0)  # the trigger's own hour file exists and is empty
+        self.tip([tip_row()], hour_ms=T0 - H)
+        self.assertEqual(self.run_([trg(t=T0 + 2000)])["classes"]["would_pass"]["present_equal"], 1)
+
+    def test_two_hours_before_and_third_after_not_searched(self):
+        for hour in (T0 - 2 * H, T0 + 3 * H):
             with self.subTest(hour=hour):
-                self.assertEqual(self._one(hour, MID)["absent"], 1)
+                self.clear_tip()
+                self.tip([], hour_ms=T0)
+                self.tip([tip_row()], hour_ms=hour)
+                for f in self.sd.iterdir():
+                    f.unlink()
+                self.assertEqual(self.run_([trg(t=T0 + 2000)])["classes"]["would_pass"]["absent"], 1)
 
     def test_wanted_hours(self):
-        self.assertEqual(P.wanted_hours(T0 + 23 * H + 5), [hour_name(T0 + 23 * H), hour_name(T0 + 24 * H), hour_name(T0 + 25 * H)])
+        self.assertEqual(P.wanted_hours(T0 + 23 * H + 5), [hour_name(T0 + 22 * H), hour_name(T0 + 23 * H), hour_name(T0 + 24 * H), hour_name(T0 + 25 * H)])
+
+
+class TestRound2(Base):
+    def test_ws0_gap_true_is_refused_no_owner_flag(self):
+        self.tip([])
+        r = self.run_([trg(ws=0, uval=0, gap=True)])
+        self.assertEqual(r["classes"]["ws_pass"]["n"], 0)
+        self.assertEqual((r["classes"]["refused"]["n"], r["classes"]["refused"]["ws0_gap_not_false"]), (1, 1))
+        self.assertFalse(r["ws_pass_owner_flag"]["flag"])
+        self.assertNotIn("ws_pass_gap_not_false", I4.dumps(r))
+
+    def test_ws0_gap_false_is_ws_pass(self):
+        self.assertEqual(P.classify(trg(ws=0, uval=0, gap=False)), "ws_pass")
+        self.assertEqual(P.classify(trg(ws=0, uval=0, gap=None)), "refused")
+
+    def test_empty_tip_dir_is_undetermined_not_absent(self):
+        r = self.run_([trg(), trg(sig="W", pool="PW", ws=0, uval=0)])
+        for c in ("would_pass", "ws_pass"):
+            d = r["classes"][c]
+            self.assertEqual((d["absent"], d["undetermined"], d["undetermined_reasons"]), (0, 1, {"tip_hour_file_missing": 1}), c)
+        self.assertIsNone(r["trigger_print_rules_clear"])
+        self.assertFalse(r["ws_pass_owner_flag"]["flag"])
+
+    def test_only_an_older_hour_is_missing_own_hour(self):
+        self.tip([tip_row(sig="Z")], hour_ms=T0 - 5 * H)
+        self.assertEqual(self.run_([trg()])["classes"]["would_pass"]["undetermined_reasons"], {"tip_hour_file_missing": 1})
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read a chmod 000 file")
+    def test_unreadable_wanted_file_is_undetermined_with_hour_listed(self):
+        self.tip([tip_row()], hour_ms=T0)
+        self.tip([tip_row(sig="Z", pool="PZ")], hour_ms=T0 + H)
+        bad = self.td / f"trades-{hour_name(T0 + H)}.jsonl"
+        os.chmod(bad, 0)
+        try:
+            r = self.run_([trg(sig="Q", pool="PQ")])
+        finally:
+            os.chmod(bad, 0o600)
+        d = r["classes"]["would_pass"]
+        self.assertEqual((d["absent"], d["undetermined"], d["undetermined_reasons"]), (0, 1, {"tip_file_unreadable": 1}))
+        self.assertEqual(r["tip_scan"]["tip_files_unreadable_hours"], [hour_name(T0 + H)])
+        self.assertEqual(r["tip_scan"]["tip_file_unreadable"], 1)
+        self.assertIsNone(r["trigger_print_rules_clear"])
+
+    def test_non_string_pool_is_undetermined_in_its_class(self):
+        self.tip([tip_row(sig="A", pool="P1")])
+        r = self.run_([trg(sig="A", pool=None), trg(sig="B", pool=5), trg(sig="C", pool="")])
+        d = r["classes"]["would_pass"]
+        self.assertEqual((d["n"], d["undetermined"], d["present_equal"], d["absent"]), (3, 3, 0, 0))
+        self.assertEqual(d["undetermined_reasons"], {"bad_trigger_fields": 3})
+        self.assertIsNot(r["trigger_print_rules_clear"], True)
+        self.assertNotIn("record_pool_not_str", I4.dumps(r))
+
+    def test_margin_150(self):
+        self.tip([tip_row()])
+        self.assertEqual(self.run_([trg()], hw=SLOT + 149)["classes"]["would_pass"]["undetermined_reasons"], {"tip_not_far_enough": 1})
+        self.sd_reset()
+        self.assertEqual(self.run_([trg()], hw=SLOT + 150)["classes"]["would_pass"]["present_equal"], 1)
+        self.assertEqual(P.TIP_MARGIN_SLOTS, 150)
+
+    def test_non_base58_signature_undetermined(self):
+        bad = ["short", "0" * 44, "O" * 44, "I" * 44, "l" * 44, "a" * 31, "a" * 91, "a" * 43 + '"', "a" * 43 + "\\", "a" * 43 + "\n"]
+        self.tip([tip_row()])
+        trigs = [trg(sig=None, pool="Pe")]
+        for i, sig in enumerate(bad):
+            t = trg(pool=f"P{i}")
+            t["signature"] = sig
+            trigs.append(t)
+        d = self.run_(trigs)["classes"]["would_pass"]
+        self.assertEqual((d["n"], d["undetermined"], d["absent"]), (len(bad) + 1, len(bad) + 1, 0))
+        self.assertEqual(d["undetermined_reasons"], {"bad_trigger_fields": 1, "signature_not_base58": len(bad)})
+
+    def test_v_labels_and_different_count(self):
+        self.tip([tip_row(sig="A", v=1), tip_row(sig="B", pool="P2", v=None)])
+        r = self.run_([trg(sig="A"), trg(sig="B", pool="P2")])
+        self.assertEqual(r["would_pass_v_different_n"], 1)
+        self.assertEqual(r["v_labels"]["v_tip_key_absent"], "V not checked")
+        self.assertIn("V not checked", P.table(r))
+        self.assertIn("holds the proposal until quant-proof rules", P.__doc__)
+
+    def test_docstring_has_seal_and_peeking(self):
+        for needle in ("3. SEAL", "4. PEEKING", "Item 8 read (`tools/h5_tipauth_trigger_print.py` at `<sha>`)", "May not be said",
+                       "same --since-ms, --until-ms and sha as item 4's deciding read"):
+            self.assertIn(needle, P.__doc__)
+
+
+class TestSinglePass(Base):
+    def _fixture(self):
+        """30 signatures over 4 hour files: some present, some with a different row, some absent, some with two rows or two signature mentions in a line."""
+        trigs, per_file = [], collections.defaultdict(list)
+        for i in range(30):
+            sig, pl = f"S{i:02d}x", f"P{i}"
+            h = T0 + (i % 4 - 1) * H
+            trigs.append(trg(sig=sig, pool=pl, t=T0 + 600_000))
+            if i % 5 != 4:
+                per_file[h].append(tip_row(sig=sig, pool=pl, b=(7_001 if i % 7 == 0 else 7_000)))
+            if i % 9 == 0:
+                per_file[h].append(tip_row(sig=sig, pool=pl))
+            per_file[h].append(tip_row(sig=sig + "n", pool="X"))  # other rows in the file
+        per_file[T0].append({**tip_row(sig="S01x", pool="P1"), "also": '"signature":"' + sg("S02x") + '"'})  # one line with two wanted patterns
+        return trigs, per_file
+
+    def test_grouped_equals_per_signature(self):
+        trigs, per_file = self._fixture()
+        for h, rows in per_file.items():
+            self.tip(rows, hour_ms=h)
+        self.tip([], hour_ms=T0 + 2 * H)
+        sigs = sorted({t["signature"] for t in trigs})
+        files = sorted(self.td.iterdir())
+        self.assertEqual(len(files), 4)
+        for f in files:
+            grouped, ok, stat = P._scan_file(f, sigs, collections.Counter(), None)
+            self.assertTrue(ok)
+            single: dict = {}
+            for sig in sigs:
+                for k, v in P._scan_file(f, [sig], collections.Counter(), None)[0].items():
+                    single.setdefault(k, []).extend(v)
+            norm = lambda d: {k: sorted(json.dumps(r, sort_keys=True) for r in v) for k, v in d.items()}
+            self.assertEqual(norm(grouped), norm(single), f.name)
+            self.assertEqual(stat["signatures"], 30)
+            self.assertGreaterEqual(stat["matches"], stat["lines_parsed"])
+
+    def test_line_with_same_signature_twice_parsed_once(self):
+        row = tip_row(sig="A")
+        row["nested"] = {"signature": sg("A")}
+        self.tip([row])
+        counts = collections.Counter()
+        out, ok, stat = P._scan_file(self.td / f"trades-{hour_name(T0)}.jsonl", [sg("A")], counts, None)
+        self.assertEqual((len(out[sg("A")]), stat["lines_parsed"], stat["matches"]), (1, 1, 2))
+
+    def test_analyze_one_scan_per_file_and_logs_elapsed(self):
+        trigs, per_file = self._fixture()
+        for h, rows in per_file.items():
+            self.tip(rows, hour_ms=h)
+        logs: list = []
+        write(self.sd, [start(T0 + 1000, sha=SHA)] + trigs + [hbhw(T0 + 40 * 60_000, HW_OK)])
+        r = P.analyze(self.sd, self.td, SINCE, UNTIL, SHA, log=logs.append)
+        files = r["tip_scan"]["files"]
+        self.assertTrue(files)
+        self.assertEqual(len(logs), len(files))
+        self.assertTrue(all("elapsed_s=" in m for m in logs))
+        self.assertTrue(all("elapsed_s" not in v for v in files.values()))
+        self.assertTrue(all(v["signatures"] == 30 for v in files.values()))
 
 
 class TestEmptyAndThresholds(Base):
@@ -260,11 +430,12 @@ class TestEmptyAndThresholds(Base):
 
     def test_undetermined_blocks_even_if_rest_equal(self):
         self.tip([tip_row(sig="A")])
-        r = self.run_([trg(sig="A"), trg(sig="B", pool="P2", slot=SLOT + 50)])
+        r = self.run_([trg(sig="A"), trg(sig="B", pool="P2", slot=SLOT + 200)])
         self.assertIsNone(r["thresholds"]["would_pass_all_present_and_equal"]["met"])
 
     def test_failure_beats_undetermined(self):
-        r = self.run_([trg(sig="A"), trg(sig="B", pool="P2", slot=SLOT + 50)])
+        self.tip([])
+        r = self.run_([trg(sig="A"), trg(sig="B", pool="P2", slot=SLOT + 200)])
         self.assertIs(r["thresholds"]["would_pass_all_present_and_equal"]["met"], False)
 
     def test_wrong_code_sha_is_false(self):
@@ -289,6 +460,7 @@ class TestEmptyAndThresholds(Base):
         self.assertIn("interim_not_deciding_read", r["blocking_reasons"])
 
     def test_interim_with_a_failure_is_false(self):
+        self.tip([])
         self.assertIs(self.run_([trg()], until=SINCE + 6 * H)["trigger_print_rules_clear"], False)
 
     def test_no_proposal_key_and_label(self):
@@ -317,10 +489,6 @@ class TestSelection(Base):
         r = self.run_(recs)
         self.assertEqual(sum(r["classes"][c]["n"] for c in P.CLASSES), 1)
         self.assertEqual(r["skipped"]["sealed_trigger"], 2)
-
-    def test_gap_true_ws0_is_ws_pass_and_counted(self):
-        d = self.run_([trg(ws=0, uval=0, gap=True)])["classes"]["ws_pass"]
-        self.assertEqual((d["n"], d["ws_pass_gap_not_false"]), (1, 1))
 
     def test_ws_pass_failure_is_owner_flag_not_threshold(self):
         self.tip([tip_row(sig="W", pool="PW"), tip_row()])
@@ -364,7 +532,7 @@ class TestReadSafety(Base):
 
         self.tip([tip_row(sig="NOT1", pool="X"), tip_row(sig="A"), tip_row(sig="NOT2", pool="Y"), tip_row(sig="B", pool="Z")])
         self.run_([trg(sig="A")], hook=hook)
-        self.assertEqual(parsed, ["A"])
+        self.assertEqual(parsed, [sg("A")])
 
     def test_tip_dir_untouched(self):
         self.tip([tip_row()])
@@ -383,7 +551,7 @@ class TestReadSafety(Base):
         self.assertEqual(self.run_([trg()])["classes"]["would_pass"]["absent"], 1)
 
     def test_bad_tip_line_counted(self):
-        (self.td / f"trades-{hour_name(T0)}.jsonl").write_bytes(b'{"signature":"SIGA", broken\n')
+        (self.td / f"trades-{hour_name(T0)}.jsonl").write_bytes(('{"signature":"' + sg("SIGA") + '", broken\n').encode())
         r = self.run_([trg()])
         self.assertEqual((r["classes"]["would_pass"]["absent"], r["tip_scan"]["tip_bad_line"]), (1, 1))
 
