@@ -78,13 +78,15 @@ misses prints in some pools); the union does not see a dropped head, and s0, BOO
 the feed. Without --tip-dir every record is byte-identical to a build without this code.
 TIP-AUTHORITATIVE VIEW (REPORT-ONLY; base_breaks_unresolved_settled_tipauth and base_tipauth, on the same records as the union fields and sealed
 exactly like them; no decision reads them, and a gate on them is a DEC-024 phase-2 change). The union only ADDS rows, so it cannot remove a
-"phantom": a swap notice the public logsSubscribe feed delivered for a transaction that is not on the finalized chain (it shares its pre base
-with a real print and adds one unmatched pre base). The tip tape comes from finalized blocks, so below its high-water it is canonical. The
-tipauth value is the settled count of the union MINUS D = websocket-only members, at a slot in [tip_first_slot, min(tip high-water, decision
-slot) - TIPAUTH_MARGIN_SLOTS], whose signature has no tip row in this pool under any event_index. A real print the tip missed is dropped too
-and breaks the chain (fail closed), so a tipauth value of 0 also proves no interior real print was dropped. Definition, margin justification
-(from tools/fast_tip_follower.py), null statuses and the limits of the completeness argument: Engine._tipauth_fields. base_tipauth also
-carries dropped_n / first / last slot, kept_ws_only_* counts, and the mechanism counts dropped_sells_n / dropped_boost_n.
+"phantom": a swap notice the public logsSubscribe feed delivered that getTransaction (finalized) did not find (it shares its pre base with a real
+print and adds one unmatched pre base). Every tip row comes from a finalized block; that does not make the tape a complete record (a sample found
+3 of 50 websocket-only prints on the finalized chain). The tipauth value is the settled count of the union MINUS D = websocket-only members, at a
+slot in [tip_first_slot, min(tip high-water, decision slot) - TIPAUTH_MARGIN_SLOTS], whose signature has no tip row in this pool under any
+event_index. A value of 0 does NOT prove that no real print was dropped: a prefix run, a suffix run at pool close and an interior drop whose
+first kept successor sits in the settle window all read 0. base_tipauth.orphaned_by_drop_n (kept pre bases that lost their matching post base to
+D, no settle exemption) and tipauth_nosettle (the count with the exemption off) are the cross-checks for the last case. The field is null when
+a full tip chunk may be unread (status tip_pending). It is computed on the executor's buy path (cost bounded by TIPAUTH_WSONLY_MAX). Definition,
+margin justification (from tools/fast_tip_follower.py), null statuses and what is still open: Engine._tipauth_fields.
 DECISION TIME, enforced in code (UnionChain.line / ahead): a tip row is admitted into a pool's union only once that pool's feed has printed at
 its slot or later; rows above that line wait in the pool's `ahead` heap. So the TRIGGER record's union fields (the settled union value and
 tip_only, both, dup, both_diff, tip_first_slot, ws_only) count only tip rows at slot <= the trigger print's slot, also when the tip leads the
@@ -245,7 +247,9 @@ TIP_LINE_MAX = 64 * 1024  # a partial line longer than this is dropped (corrupt 
 TIP_PENDING_MAX = 5_000  # tip rows buffered per announced-but-not-yet-tracked pool (the tip lags the feed, so this is normally empty)
 TIPAUTH_FIELD = "base_breaks_unresolved_settled_tipauth"
 TIPAUTH_MARGIN_SLOTS = 4  # see UnionChain.settled_without: a slot is "covered" only at or below (tip high-water - this)
-TIPAUTH_WSONLY_MAX = 20_000  # more websocket-only members than this in one pool: the tip-authoritative field is null ("big")
+TIPAUTH_WSONLY_MAX = 3_000  # more websocket-only members than this in one pool: the tip-authoritative field is null ("big"). The field is computed
+# between detect and emit (the executor's buy path): measured worst case, every member websocket-only and droppable, 1 run best-of-5 on one
+# host: 20,000 -> 29.7 ms (too slow, so lowered), 5,000 -> 6.1 ms, 2,000 -> 2.3 ms
 UNION_SETTLE_SCAN_MAX = 256  # slots above the settle line scanned incrementally; more than this: null at a trigger, a full count at pool close
 UNMATCHED_MAX = 20  # unmatched prints listed per pool-close record (per view)
 TIP_ERR_LOG_EVERY_S = 600.0  # tip_follow: the first error of each class goes to the error log, then at most one per class per this many s
@@ -254,6 +258,10 @@ TIP_ERR_LOG_EVERY_S = 600.0  # tip_follow: the first error of each class goes to
 # for trend-reading; the process RSS / RssAnon / VmHWM next to it are the measured numbers.
 UNION_MEMBER_BYTES_EST = 512
 UNION_PENDING_ROW_BYTES_EST = 384
+# tipauth side tables (tracemalloc, 88-char signatures, shared strings): a wsonly dict entry with its meta tuple ~136 B, a tip_sig set entry
+# ~105 B; rounded up. Reported in hb as tip_union.mem.est_tipauth_mb, SEPARATE from est_mb (whose meaning is unchanged: members + pending rows).
+UNION_WSONLY_BYTES_EST = 160
+UNION_TIPSIG_BYTES_EST = 128
 ERROR_RECORDS_MAX = 20
 
 # ---- synthetic-migration class (EXP-024 Amendment 4 / DEC-024 Amendment 2): H5 buys nothing on a synthetic or unclassifiable pool ----------------
@@ -980,12 +988,23 @@ class UnionChain:
         return max(0, ex - 1)
 
     def settled_without(self, hw_slot: int | None, drop: Sequence[tuple], full: bool = True) -> int | None:
+        """The settled value of settled_without_detail (see there)."""
+        return self.settled_without_detail(hw_slot, drop, full)[0]
+
+    def settled_without_detail(self, hw_slot: int | None, drop: Sequence[tuple], full: bool = True) -> tuple[int | None, int, int]:
         """REPORT-ONLY tip-authoritative variant of settled(): the same multiset arithmetic over the members MINUS `drop` (keys of members), with
         no mutation of the union (local deltas on the touched base values only). Cost: O(|drop| + members in the settle window), no recompute.
-        Returns what settled() would return on a union that never held the dropped members; with an empty `drop` it is settled() exactly.
-        None under the same condition as settled(full=False)."""
+        Returns (settled, nosettle, orphaned):
+          settled   what settled() would return on a union that never held the dropped members (None under the same condition as
+                    settled(full=False)); with an empty `drop` it is settled() exactly;
+          nosettle  the same count with the settle exemption off entirely: every pre base of every kept member needs a matching post base,
+                    max(0, excess - 1) on the members minus `drop`;
+          orphaned  C5: over the base values `drop` touched, the sum of max(0, excess after - excess before), where excess(b) is
+                    max(0, pres(b) - posts(b)) and NO settle exemption applies: the number of kept pre bases (any slot, the trigger print
+                    included) that had a matching post base before the drop and lost it to `drop`. A phantom whose post base nobody
+                    uses orphans nothing; dropping a real print that a kept print follows orphans that print."""
         if not drop:
-            return self.settled(hw_slot, full)
+            return self.settled(hw_slot, full), max(0, self.excess - 1), 0
         dset = set(drop)
         dpre: collections.Counter = collections.Counter()
         dpost: collections.Counter = collections.Counter()
@@ -993,17 +1012,22 @@ class UnionChain:
             v = self.m[k]
             dpre[v[0]] += 1
             dpost[v[1]] += 1
-        ex = self.excess
+        ex, orphaned = self.excess, 0
         for b in set(dpre) | set(dpost):  # excess is a sum over base values: only the touched ones change
-            ex += max(0, self.pre[b] - dpre[b] - (self.post[b] - dpost[b])) - max(0, self.pre[b] - self.post[b])
+            before = max(0, self.pre[b] - self.post[b])
+            after = max(0, self.pre[b] - dpre[b] - (self.post[b] - dpost[b]))
+            ex += after - before
+            if after > before:
+                orphaned += after - before
+        nosettle = max(0, ex - 1)
         if hw_slot is None or self.max_slot is None or self.max_slot <= hw_slot - SETTLE_SLOTS:
-            return max(0, ex - 1)
+            return nosettle, nosettle, orphaned
         lo = hw_slot - SETTLE_SLOTS
         if self.max_slot - lo > UNION_SETTLE_SCAN_MAX:
             if not full:
-                return None
+                return None, nosettle, orphaned
             pres = collections.Counter(v[0] for k, v in self.m.items() if v[2] <= lo and k not in dset)
-            return max(0, sum(max(0, n - (self.post[b] - dpost[b])) for b, n in pres.items()) - 1)
+            return max(0, sum(max(0, n - (self.post[b] - dpost[b])) for b, n in pres.items()) - 1), nosettle, orphaned
         taken: collections.Counter = collections.Counter()
         for s in range(lo + 1, self.max_slot + 1):
             for k in self.by_slot.get(s, ()):
@@ -1013,7 +1037,7 @@ class UnionChain:
                 if self.pre[b] - dpre[b] - taken[b] > self.post[b] - dpost[b]:
                     ex -= 1
                 taken[b] += 1
-        return max(0, ex - 1)
+        return max(0, ex - 1), nosettle, orphaned
 
     def tipauth_drop(self, cover_lo: int, cover_hi: int) -> tuple[list, dict] | None:
         """The dropped set D of the tip-authoritative view (see Engine._tipauth_fields) and the counts of the websocket-only members kept, or
@@ -1517,7 +1541,7 @@ class Engine:
     def union_mem(self) -> dict:
         """Memory self-report of the report-only union for hb / status (O(open pools), once a minute): sizes of the union structures, an
         estimate in MB from the measured per-item bytes, and the process's own RSS / RssAnon / VmHWM (kB, /proc/self/status) next to it."""
-        pools = members = slots = keys = broken = ahead = 0
+        pools = members = slots = keys = broken = ahead = wsonly = tipsig = 0
         for p in self.pools.values():
             u = p.union
             if u is None:
@@ -1530,10 +1554,14 @@ class Engine:
             ahead += len(u.ahead)
             slots += len(u.by_slot)
             keys += len(u.pre) + len(u.post)
+            wsonly += len(u.wsonly)
+            tipsig += len(u.tip_sig)
         pend = sum(len(v) for v in self.tip_pending.values())
         est = members * UNION_MEMBER_BYTES_EST + (pend + ahead) * UNION_PENDING_ROW_BYTES_EST
         return {"union_pools": pools, "union_broken_pools": broken, "union_members": members, "union_slots": slots, "union_counter_keys": keys,
-                "union_ahead_rows": ahead, "pending_pools": len(self.tip_pending), "pending_rows": pend, "est_mb": round(est / 1e6, 1), **_proc_mem()}
+                "union_ahead_rows": ahead, "pending_pools": len(self.tip_pending), "pending_rows": pend, "est_mb": round(est / 1e6, 1),
+                "tipauth_wsonly": wsonly, "tipauth_tip_sigs": tipsig,
+                "est_tipauth_mb": round((wsonly * UNION_WSONLY_BYTES_EST + tipsig * UNION_TIPSIG_BYTES_EST) / 1e6, 1), **_proc_mem()}
 
     def _union_fields(self, p: Pool, trig_slot: int | None = None) -> dict:
         """base_breaks_unresolved_settled_union (null unless the tip is fresh and the pool's union is intact) plus the source counts.
@@ -1577,51 +1605,62 @@ class Engine:
 
     def _tipauth_fields(self, p: Pool, tip: Any, st: str, union_val: int | None, trig_slot: int | None) -> dict:
         """REPORT-ONLY, never read by a decision. base_breaks_unresolved_settled_tipauth: the settled count of the union MINUS the websocket
-        prints the tip tape contradicts (UnionChain.settled_without), plus base_tipauth with the evidence. Written exactly where the union fields
-        are (trigger and pool close; absent on a CAP-PICK-sealed record and on an H5 Look-2-sealed pool-close record, present on a Look-2-sealed
-        trigger record, whose union fields are the decision-time ones).
+        prints the tip tape does not contain (UnionChain.settled_without_detail), plus base_tipauth with the evidence. Written exactly where the
+        union fields are (trigger and pool close; absent on a CAP-PICK-sealed record and on an H5 Look-2-sealed pool-close record, present on a
+        Look-2-sealed trigger record, whose union fields are the decision-time ones). It is computed between detect and emit, i.e. on the
+        executor's buy path: TIPAUTH_WSONLY_MAX bounds its cost.
 
-        Why. The public logsSubscribe feed delivers swap notices for transactions that are not on the finalized chain ("phantoms"). A phantom
-        shares its pre-trade base with a real print, so it adds one unmatched pre base; a union can only ADD rows and never removes it. The tip
-        tape is built from finalized blocks, so below its high-water it is the canonical source.
+        Why. The public logsSubscribe feed delivers swap notices that getTransaction (finalized) did not find ("phantoms": measured on at least
+        28 distinct signatures, one public RPC; the name is the interpretation of "not found", D below is defined by absence from the tip, not by
+        that test). A phantom shares its pre-trade base with a real print, so it adds one unmatched pre base; a union can only ADD rows and never
+        removes it. Every tip row comes from a finalized block. That does NOT make the tape complete: the same sample found 3 of 50 websocket-only
+        prints on the finalized chain, and the tip misses prints in some pools. A dropped real print is the failure this view must not hide.
 
         D, the dropped set: members that are (1) websocket-only, (2) at a slot in the covered range [cover_lo, cover_hi], and (3) whose signature
         has no tip row in this pool under any event_index (a websocket print whose signature IS on the tip under another event_index is a decoder
-        key mismatch, not a phantom: kept, counted in kept_ws_only_sig_on_tip). cover_lo = this pool's first admitted tip row (tip_first_slot;
-        websocket-only prints before it are kept: the tip may simply not have been following the pool yet). cover_hi = min(the tip reader's
-        high-water slot, the decision slot) - TIPAUTH_MARGIN_SLOTS (a pool close has no decision slot: the reader's high-water alone).
+        key mismatch: kept, counted in kept_ws_only_sig_on_tip). cover_lo = this pool's first admitted tip row (tip_first_slot; websocket-only
+        prints before it are kept: the tip may not have been following the pool yet). cover_hi = min(the tip reader's high-water slot, the
+        decision slot) - TIPAUTH_MARGIN_SLOTS (a pool close has no decision slot: the reader's high-water alone).
 
-        Fail closed. A REAL websocket-only print the tip missed inside the covered range is dropped too, and dropping a real interior print
-        breaks the chain (its successor's pre base loses its post base), so the value rises. A complete tipauth chain (value 0) therefore also
-        proves that no interior real print was dropped; only a real print at the very end of the chain (no successor) can vanish unnoticed, as
-        in every view. Inside a tip gap (fast_tip_follower writes a "backlog_jump" range to gaps.jsonl and has NO rows for those slots) the real
-        websocket prints are dropped and the chain breaks: the intended direction. The reader cannot tell a gap from a quiet slot, so this is
-        not detected separately.
+        What a value of 0 does NOT prove. tipauth 0 does not prove that no real print was dropped. (a) A dropped real print at the START of the
+        chain is invisible: its successor's pre base simply becomes the head (a contiguous prefix run). (b) At a pool close a contiguous SUFFIX run
+        of dropped real prints is invisible too (at a trigger the trigger print, above cover_hi, protects the end). (c) A dropped real interior
+        print raises the value only if its first kept successor is OUTSIDE the settle window: when that successor is in the last SETTLE_SLOTS
+        slots its unmatched pre base is exempt, and the value stays 0 (the counterexample: A 1000->900, M 900->850 missing from both, N 850->800
+        dropped, T 800->700 the trigger print: union 1, tipauth 0). orphaned_by_drop_n closes (c): it counts the kept pre bases that had a
+        matching post base before the drop and lost it to D, with NO settle exemption (any slot, the trigger print included). tipauth_nosettle is
+        the tipauth count with the settle exemption off entirely. (d) An equal-value collision of two base reserves can mask a break (rare, not
+        measured). Inside a tip gap (fast_tip_follower writes a "backlog_jump" range to gaps.jsonl and has NO rows for those slots) real
+        websocket prints are dropped; an interior one breaks the chain (the intended direction), a prefix or suffix run does not. The reader cannot
+        tell a gap from a quiet slot.
 
-        Why TIPAUTH_MARGIN_SLOTS = 4 (SETTLE_SLOTS + 2). Read from tools/fast_tip_follower.py: slots are committed STRICTLY in slot order (the
-        parallel fetch only prefetches; _step_parallel commits last_done + 1 only, and a contradicted skip is refetched and written before the
-        block that contradicted it), and one block's rows are appended to the hourly file with one flushed write, the checkpoint moving on only
-        after it. So a reader that has read a complete line of slot S has every row of every slot < S (the file is append-only and in order);
-        slot S itself may still be partly visible (a block's write can be read mid-way; TipTail holds a partial last line back but not the
-        block's other lines). That needs 1 slot of margin. Two further slots are kept on top because (a) rows of slot S - 1 can still be a
-        poll behind when the reader reads the previous hour's file before the current hour's one and the previous file has more than one chunk
-        (TIP_CHUNK_BYTES) waiting at an hour boundary: TipTail.hw_slot is the max over files, not per file, so completeness below hw - margin is
-        NOT PROVEN there, only made unlikely; (b) SETTLE_SLOTS: the settled count itself ignores the last SETTLE_SLOTS slots below the feed
-        high-water. Not proven from the code and so not claimed: the hour-boundary case above; a tip row lost to TIP_PENDING_MAX or to a
-        TipTail reset (truncation not noticed); resolve_unresolved rows (they are written in the same block write, so they follow the rule).
-        A phantom inside the margin, or above cover_hi, is not dropped: the field then reads like the union (conservative).
+        Why TIPAUTH_MARGIN_SLOTS = 4 (SETTLE_SLOTS + 2), and what is closed. Read from tools/fast_tip_follower.py: slots are committed STRICTLY in
+        slot order (the parallel fetch only prefetches; _step_parallel commits last_done + 1 only; a contradicted skip is refetched and written
+        before the block that contradicted it), and a block's rows are appended to ONE hourly file with one flushed write before the checkpoint
+        moves. So in one file a complete line of slot S means every slot < S is already in it; slot S itself may be partly visible (1 slot of
+        margin); SETTLE_SLOTS and one more slot are kept on top. Consecutive slots can straddle trades-<H> and trades-<H+1>, and TipTail.hw_slot
+        is a max over files; that hole is CLOSED two ways: poll() re-reads the earlier hour after reading a later one that delivered lines (so
+        S - 1, written before S began, is in), and this field is null with status tip_pending while any open hour file's last read was a full
+        chunk (TipTail.pending(): unread bytes may remain). STILL OPEN, not closed by anything here: a tip row lost to TIP_PENDING_MAX (rows
+        buffered for a pool announced but not yet tracked), and a truncation of the tip file that TipTail does not notice. A phantom inside the
+        margin, or above cover_hi, is not dropped: the field then reads like the union (conservative).
 
-        Null (status says why): the tip is not "ok" (that status itself), the union is broken (error), the trigger print is a slot regress
-        (regress), no admitted tip row in this pool (no_tip_rows), cover_hi < cover_lo (no_cover), more than TIPAUTH_WSONLY_MAX websocket-only
-        members (big), the settle window too long for an incremental count (ahead). Counts of dropped prints by kind (dropped_sells_n; and
-        dropped_boost_n, buys signed by the pool's BOOST identity as known at the time of the record) are mechanism counts for a later proposal.
-        Never raises: an error counts union_errors and gives a null field with status "error"."""
+        Null (status says why): the tip is not "ok" (that status itself), tip_pending, the union is broken (error), the trigger print is a slot
+        regress (regress), no admitted tip row in this pool (no_tip_rows), cover_hi < cover_lo (no_cover), more than TIPAUTH_WSONLY_MAX websocket-
+        only members (big), the settle window too long for an incremental count (ahead). Mechanism counts for a later proposal: dropped_n and its
+        first / last slot, dropped_sells_n, dropped_boost_n (buys signed by the pool's BOOST identity as known at the time of the record), the
+        kept_ws_only_* counts, orphaned_by_drop_n, tipauth_nosettle. Never raises: an error counts union_errors and gives a null field with
+        status "error"."""
         info: dict = {"status": st, "dropped_n": None, "dropped_first_slot": None, "dropped_last_slot": None, "cover_lo": None, "cover_hi": None,
                       "kept_ws_only_before_cover": None, "kept_ws_only_above_cover": None, "kept_ws_only_sig_on_tip": None,
-                      "dropped_boost_n": None, "dropped_sells_n": None, "margin_slots": TIPAUTH_MARGIN_SLOTS}
+                      "dropped_boost_n": None, "dropped_sells_n": None, "orphaned_by_drop_n": None, "tipauth_nosettle": None,
+                      "margin_slots": TIPAUTH_MARGIN_SLOTS}
         try:
             u = p.union
             if st != "ok":
+                return {TIPAUTH_FIELD: None, "base_tipauth": info}
+            if getattr(tip, "pending", lambda: False)():  # a full chunk may be waiting in an open hour file: hw_slot may lead unread rows
+                info["status"] = "tip_pending"
                 return {TIPAUTH_FIELD: None, "base_tipauth": info}
             if u is None or u.broken:
                 info["status"] = "error"
@@ -1643,7 +1682,7 @@ class Engine:
                 info["status"] = "big"
                 return {TIPAUTH_FIELD: None, "base_tipauth": info}
             drop, kept = got
-            val = u.settled_without(self.hw_slot, drop, full=trig_slot is None)
+            val, nosettle, orphaned = u.settled_without_detail(self.hw_slot, drop, full=trig_slot is None)
             if val is None:
                 info["status"] = "ahead"
                 return {TIPAUTH_FIELD: None, "base_tipauth": info}
@@ -1651,7 +1690,7 @@ class Engine:
             ident = self.boost_identity(p)[0]
             metas = [u.wsonly.get(k) for k in drop]
             info.update(kept)
-            info.update({"dropped_n": len(drop), "dropped_first_slot": min(slots, default=None), "dropped_last_slot": max(slots, default=None),
+            info.update({"orphaned_by_drop_n": orphaned, "tipauth_nosettle": nosettle, "dropped_n": len(drop), "dropped_first_slot": min(slots, default=None), "dropped_last_slot": max(slots, default=None),
                          "dropped_sells_n": sum(1 for m in metas if m is not None and m[0]),
                          "dropped_boost_n": sum(1 for m in metas if m is not None and not m[0] and ident is not None and m[1] == ident)})
             return {TIPAUTH_FIELD: val, "base_tipauth": info}
@@ -2615,6 +2654,7 @@ class TipTail:
         self.last_line_ms: int | None = None  # wall time a line was last read
         self.err: str | None = None  # last poll's error ("no_dir", an OSError class name); cleared by a clean poll
         self.last_exc: BaseException | None = None  # the last OS error caught by poll, for tip_follow's rate-limited log (it clears it)
+        self.full: set[str] = set()  # hours whose last read returned a full chunk (see pending)
         self.c: collections.Counter = collections.Counter()
 
     @staticmethod
@@ -2622,6 +2662,7 @@ class TipTail:
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")
 
     def _close_fd(self, hour: str) -> None:
+        self.full.discard(hour)
         ent = self.files.pop(hour, None)
         if ent is not None:
             try:
@@ -2703,64 +2744,88 @@ class TipTail:
             self.err = "no_dir"
             self.c["no_dir_polls"] += 1
             return False
-        err, more = None, False
-        for hour in want:
-            ent = self.files.get(hour)
-            if ent is None:
-                off = self.offs.get(hour)
-                if off is not None:  # reopened after an error or a failed reset: at the saved line start, never at byte 0
-                    ent = self._open(hour, os.SEEK_SET, off)
-                elif not self.started or hour in self.end_hours:
-                    ent = self._open(hour, os.SEEK_END)
-                    if isinstance(ent, str) and not self.started:  # present but not openable at the first poll: start at its size now
-                        try:
-                            self.offs[hour] = os.stat(self._path(hour)).st_size
-                        except OSError:
-                            self.end_hours.add(hour)
-                else:
-                    ent = self._open(hour, None)
-                if isinstance(ent, str):
-                    err = ent
-                    continue
-                if ent is None:
-                    continue
-            try:
-                data = os.read(ent[0], self.chunk)
-            except OSError as e:
-                err, self.last_exc = type(e).__name__, e
-                self.c["read_errors"] += 1
-                self._close_fd(hour)  # offs[hour] still holds the first unconsumed line: the next poll reopens there
-                continue
-            if not data:
-                reset = self._check_reset(hour, ent)
-                if reset is not None:
-                    err = reset
-                continue
-            more = more or len(data) >= self.chunk
-            self.c["bytes"] += len(data)
-            ent[2] += len(data)
-            buf = ent[1] + data
-            if ent[3]:  # not at a line start: drop the first fragment
-                i = buf.find(b"\n")
-                if i < 0:
-                    ent[1] = b""
-                    self.offs[hour] = ent[2]
-                    continue
-                buf = buf[i + 1:]
-                ent[3] = False
-                self.c["fragments_dropped"] += 1
-            lines = buf.split(b"\n")
-            ent[1] = lines.pop()
-            if len(ent[1]) > TIP_LINE_MAX:
-                ent[1] = b""
-                ent[3] = True  # the rest of that line is dropped too, up to its newline
-                self.c["long_lines_dropped"] += 1
-            self.offs[hour] = ent[2] - len(ent[1])
-            if lines:
-                self._lines(lines)
+        err, more, delivered_at = None, False, 0
+        for i, hour in enumerate(want):
+            e, m, d = self._poll_hour(hour)
+            err, more = e or err, more or m
+            if d:
+                delivered_at = i  # the LAST file that delivered lines
+        if delivered_at > 0:
+            # Second pass over the EARLIER hours (tipauth, hour boundary). The follower writes slot S - 1 to trades-<H> and, after that write has
+            # returned, slot S to trades-<H+1>. If this poll read <H+1> after <H> and saw slot S, a read of <H> made AFTER it sees slot S - 1 and
+            # everything before: so hw_slot never leads a drained earlier file. Rows delivered here come within the same poll (no await between).
+            for hour in want[:delivered_at]:
+                e, m, _ = self._poll_hour(hour)
+                err, more = e or err, more or m
         self.started = True
         self.err = err
         return more
+
+    def _poll_hour(self, hour: str) -> tuple[str | None, bool, bool]:
+        """One read step of one hour file: (error class name | None, a full chunk came back, lines were delivered). Maintains self.full."""
+        ent = self.files.get(hour)
+        if ent is None:
+            off = self.offs.get(hour)
+            if off is not None:  # reopened after an error or a failed reset: at the saved line start, never at byte 0
+                ent = self._open(hour, os.SEEK_SET, off)
+            elif not self.started or hour in self.end_hours:
+                ent = self._open(hour, os.SEEK_END)
+                if isinstance(ent, str) and not self.started:  # present but not openable at the first poll: start at its size now
+                    try:
+                        self.offs[hour] = os.stat(self._path(hour)).st_size
+                    except OSError:
+                        self.end_hours.add(hour)
+            else:
+                ent = self._open(hour, None)
+            if isinstance(ent, str):
+                return ent, False, False
+            if ent is None:
+                self.full.discard(hour)
+                return None, False, False
+        try:
+            data = os.read(ent[0], self.chunk)
+        except OSError as e:
+            self.last_exc = e
+            self.c["read_errors"] += 1
+            self._close_fd(hour)  # offs[hour] still holds the first unconsumed line: the next poll reopens there
+            return type(e).__name__, False, False
+        if not data:
+            self.full.discard(hour)
+            reset = self._check_reset(hour, ent)
+            return (reset if reset is not None else None), False, False
+        if len(data) >= self.chunk:
+            self.full.add(hour)  # more may be waiting in this file: nothing about its tail is known
+        else:
+            self.full.discard(hour)
+        more = len(data) >= self.chunk
+        self.c["bytes"] += len(data)
+        ent[2] += len(data)
+        buf = ent[1] + data
+        if ent[3]:  # not at a line start: drop the first fragment
+            i = buf.find(b"\n")
+            if i < 0:
+                ent[1] = b""
+                self.offs[hour] = ent[2]
+                return None, more, False
+            buf = buf[i + 1:]
+            ent[3] = False
+            self.c["fragments_dropped"] += 1
+        lines = buf.split(b"\n")
+        ent[1] = lines.pop()
+        if len(ent[1]) > TIP_LINE_MAX:
+            ent[1] = b""
+            ent[3] = True  # the rest of that line is dropped too, up to its newline
+            self.c["long_lines_dropped"] += 1
+        self.offs[hour] = ent[2] - len(ent[1])
+        if lines:
+            self._lines(lines)
+        return None, more, bool(lines)
+
+    def pending(self) -> bool:
+        """True while any open hour file's last read was a full chunk (unread bytes may remain, so hw_slot may lead unread rows). tipauth reads
+        it: the field is null (status tip_pending) then. With it False, and the second pass of poll(), every open file was drained after the
+        latest read of any later hour file."""
+        return bool(self.full)
 
     def _lines(self, lines: list[bytes]) -> None:
         self.c["lines"] += len(lines)

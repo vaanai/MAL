@@ -39,6 +39,17 @@ def brute_settled(members: dict, hw: int | None) -> int:
     return max(0, sum(max(0, n - posts[b]) for b, n in pres.items()) - 1)
 
 
+def brute_orphaned(full, kept):
+    """Kept pre bases that had a matching post base before the drop and lost it: sum over bases of max(0, excess after - excess before), no
+    settle exemption. full / kept: key -> (pre, post, ...)."""
+    def ex(ms):
+        pre = collections.Counter(v[0] for v in ms.values())
+        post = collections.Counter(v[1] for v in ms.values())
+        return {b: max(0, pre[b] - post[b]) for b in set(pre) | set(post)}
+    a, b = ex(full), ex(kept)
+    return sum(max(0, b.get(x, 0) - a.get(x, 0)) for x in set(a) | set(b))
+
+
 def chain(n, seed=0, b0=10**12):
     """n prints of a complete base chain: (key, pre, post, slot)."""
     rng = random.Random(seed)
@@ -1245,6 +1256,8 @@ class TipAuthArithmeticTests(unittest.TestCase):
             D = {k for k, v in u.m.items() if v[3] == h5.UNION_WS and lo <= v[2] <= hi and k[0] not in tip_sigs}
             ref = {k: tuple(v[:3]) for k, v in u.m.items() if k not in D}
             self.assertEqual(f[h5.TIPAUTH_FIELD], brute_settled(ref, feed_hw), trial)
+            self.assertEqual(ta["tipauth_nosettle"], brute_settled(ref, None), trial)  # the settle exemption off entirely
+            self.assertEqual(ta["orphaned_by_drop_n"], brute_orphaned(u.m, ref), trial)
             self.assertEqual(ta["dropped_n"], len(D))
             self.assertEqual(u.settled(feed_hw, full=trig is None), val)  # no mutation
             checked += 1
@@ -1413,6 +1426,188 @@ class TipAuthEngineTests(unittest.TestCase):
         (pool,) = types(out, "pool")
         self.assertEqual(pool["base_tipauth"]["dropped_n"], 0)
         self.assertEqual(pool[h5.TIPAUTH_FIELD], pool[h5.UNION_FIELD])
+
+
+class PendingTip(FakeTip):
+    def __init__(self, pending, **kw):
+        super().__init__(**kw)
+        self._p = pending
+
+    def pending(self):
+        return self._p
+
+
+def qp_counterexample(with_m):
+    """Quant-proof's case: A (slot 100, 1000->900, feed+tip); M (900->850, missing from both, or on both when with_m); N (slot 102, 850->800,
+    feed only); T (slot 110, 800->700, the trigger print, feed only; feed high-water 110)."""
+    u = h5.UnionChain()
+    ws, tip = h5.UNION_WS, h5.UNION_TIP
+    u.add(("A", 0), 1000, 900, 100, ws, (False, "T"))
+    u.add(("A", 0), 1000, 900, 100, tip)
+    if with_m:
+        u.add(("M", 0), 900, 850, 101, ws, (False, "T"))
+        u.add(("M", 0), 900, 850, 101, tip)
+    u.add(("N", 0), 850, 800, 102, ws, (False, "T"))
+    u.add(("T", 0), 800, 700, 110, ws, (True, "T"))
+    return u
+
+
+class TipAuthOrphanTests(unittest.TestCase):
+    def test_qp_counterexample_is_caught_by_orphaned_by_drop(self):
+        for with_m in (False, True):
+            u = qp_counterexample(with_m)
+            f, val, _ = tipauth_fields(u, 110, 110, trig_slot=110)
+            ta = f["base_tipauth"]
+            self.assertEqual(ta["status"], "ok", with_m)
+            self.assertEqual(ta["dropped_n"], 1)  # N
+            self.assertEqual(val, 0 if with_m else 1)  # the union value: no feed miss reads 0, the miss of M reads 1
+            if not with_m:
+                self.assertEqual(val, 1)
+                self.assertEqual(f[h5.TIPAUTH_FIELD], 0)  # tipauth alone says 0 although a real print (N) was dropped
+            self.assertEqual(ta["orphaned_by_drop_n"], 1, with_m)  # T's pre base lost its matching post base to N
+            self.assertEqual(ta["tipauth_nosettle"], 1, with_m)  # the exemption off: the break is visible
+
+    def test_qp_counterexample_union_and_tipauth_values(self):
+        u = qp_counterexample(False)
+        self.assertEqual(u.settled(110), 1)
+        self.assertEqual(u.settled_without(110, [("N", 0)]), 0)
+        self.assertEqual(u.settled_without_detail(110, [("N", 0)]), (0, 1, 1))
+
+    def test_ordinary_phantom_orphans_nothing_even_with_prints_in_the_settle_window(self):
+        specs = lin() + [("late", 199, "both")]  # the last real print is inside the settle window (feed hw 200)
+        for ph_pre_of in (5, 11, 12):  # a mid print, the print before the window, the print IN the window
+            u, c = build(specs)
+            phantom(u, "ph", c[ph_pre_of][1], 150)  # shares R's pre base; its post base is matched by nobody
+            f, val, _ = tipauth_fields(u, FEED_HW, 195)
+            ta = f["base_tipauth"]
+            self.assertGreaterEqual(val, 1 if ph_pre_of != 12 else 0)
+            self.assertEqual((f[h5.TIPAUTH_FIELD], ta["dropped_n"], ta["orphaned_by_drop_n"]), (0, 1, 0), ph_pre_of)
+            self.assertEqual(ta["tipauth_nosettle"], 0)
+
+    def test_two_phantoms_at_one_base_orphan_nothing(self):
+        u, c = build(lin() + [("late", 199, "both")])
+        phantom(u, "p1", c[5][1], 140)
+        phantom(u, "p2", c[5][1], 141)
+        f, _, _ = tipauth_fields(u, FEED_HW, 195)
+        ta = f["base_tipauth"]
+        self.assertEqual((f[h5.TIPAUTH_FIELD], ta["dropped_n"], ta["orphaned_by_drop_n"], ta["tipauth_nosettle"]), (0, 2, 0, 0))
+
+    def test_dropped_print_that_was_the_only_predecessor_orphans_its_successor(self):
+        _, c = build(lin())
+        u = h5.UnionChain()
+        for key, a, b, sl in c:
+            if key[0] != "r6":  # r6 is on neither source
+                u.add(key, a, b, sl, h5.UNION_WS, (False, "T"))
+                u.add(key, a, b, sl, h5.UNION_TIP)
+        by_sig = {k[0]: (a, b) for k, a, b, _ in c}
+        phantom_pre = by_sig["r2"][0]
+        u.add(("fake", 0), phantom_pre, by_sig["r7"][0], 120, h5.UNION_WS, (False, "PH"))  # its post base is r7's pre base: it "bridges" the miss
+        self.assertEqual(u.settled(FEED_HW), 1)  # the phantom's own pre excess (shared with r2) stays; the bridge hides the miss of r6
+        f, _, _ = tipauth_fields(u, FEED_HW, 190)
+        ta = f["base_tipauth"]
+        self.assertEqual((ta["dropped_n"], ta["orphaned_by_drop_n"]), (1, 1))
+        self.assertGreaterEqual(f[h5.TIPAUTH_FIELD], 1)  # the miss of r6 is visible again once the bridge is dropped
+
+
+class TipTailPendingTests(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.dir = Path(self.td.name)
+        self.now = [int(datetime(2027, 1, 1, 13, 30, tzinfo=timezone.utc).timestamp() * 1000)]
+        self.rows = []
+        self.tail = h5.TipTail(self.dir, self.rows.append, lambda p: p == "WANT", wall=lambda: self.now[0], chunk=4096)
+        self.h12, self.h13 = self.dir / "trades-2027-01-01T12.jsonl", self.dir / "trades-2027-01-01T13.jsonl"
+        self.h12.write_text("")
+        self.h13.write_text("")
+        self.tail.poll()  # both present at the first poll: read from their ends
+
+    def tearDown(self):
+        self.tail.close()
+        self.td.cleanup()
+
+    def test_full_chunk_means_pending_until_drained(self):
+        with open(self.h13, "a") as f:
+            for i in range(120):
+                f.write(line("WANT", 100 + i, f"s{i}"))
+        self.assertTrue(self.tail.poll())
+        self.assertTrue(self.tail.pending())
+        n = 0
+        while self.tail.poll():
+            n += 1
+        self.assertGreaterEqual(n, 1)
+        self.assertFalse(self.tail.pending())
+        self.assertEqual(len(self.rows), 120)
+
+    def test_later_hour_read_is_followed_by_a_second_read_of_the_earlier_hour(self):
+        orig, state = self.tail._poll_hour, {"done": False}
+
+        def wrapped(hour):
+            out = orig(hour)
+            if hour.endswith("T13") and not state["done"]:
+                state["done"] = True
+                with open(self.h12, "a") as f:  # slot 10 lands in the earlier file AFTER the first read of it, before the second
+                    f.write(line("WANT", 10, "late"))
+            return out
+
+        with open(self.h13, "a") as f:
+            f.write(line("WANT", 11, "b"))
+        self.tail._poll_hour = wrapped
+        self.tail.poll()
+        self.assertEqual(sorted(r["signature"] for r in self.rows), ["b", "late"])
+        self.assertEqual(self.tail.hw_slot, 11)
+
+    def test_engine_field_null_while_pending(self):
+        t = TipAuthEngineTests()
+        for pend, want in ((True, "tip_pending"), (False, "ok")):
+            _, out = t.run_pool(PendingTip(pend, status="ok", hw_slot=2000), phantom_after=5)
+            trig = t.pv(out)
+            self.assertEqual(trig["base_tipauth"]["status"], want)
+            self.assertEqual(trig[h5.TIPAUTH_FIELD], None if pend else 0)
+
+
+class TipAuthMemoryAndCapTests(unittest.TestCase):
+    def test_hb_mem_reports_tipauth_separately_and_est_mb_is_unchanged(self):
+        eng, _ = make_engine()
+        eng.tip = FakeTip("ok", 2000)
+        announce(eng)
+        t = pool_rows()
+        for r in t.rows[:6]:
+            eng.on_trade(r)
+        for r in t.rows[:3]:
+            eng.on_tip_row(r)
+        m = eng.union_mem()
+        u = eng.pools[POOL].union
+        self.assertEqual(m["tipauth_wsonly"], len(u.wsonly))
+        self.assertEqual(m["tipauth_tip_sigs"], len(u.tip_sig))
+        self.assertGreaterEqual(m["est_tipauth_mb"], 0)
+        want = round((len(u.m) * h5.UNION_MEMBER_BYTES_EST + len(u.ahead) * h5.UNION_PENDING_ROW_BYTES_EST) / 1e6, 1)
+        self.assertEqual(m["est_mb"], want)  # same formula as before
+
+    def test_cap_worst_case_timing_probe(self):
+        """Printed, never asserted: every member websocket-only and droppable, at the cap."""
+        import time
+
+        n = h5.TIPAUTH_WSONLY_MAX
+        u = h5.UnionChain()
+        b = 10**14
+        for i in range(n):
+            u.add((f"{i:088d}", 0), b, b - 1000, 100 + i // 3, h5.UNION_WS, (False, "T"))
+            b -= 1000
+        u.add(("tipfirst", 0), 5, 6, 100, h5.UNION_TIP)
+        hw = 100 + n // 3 + 10
+        eng, _ = make_engine()
+        announce(eng)
+        eng.on_trade(pool_rows().rows[0])
+        p = eng.pools[POOL]
+        p.union, eng.hw_slot = u, hw
+        val = u.settled(hw, full=False)
+        best = 1e9
+        for _ in range(5):
+            t0 = time.perf_counter()
+            f = eng._tipauth_fields(p, FakeTip("ok", hw + 5), "ok", val, hw)
+            best = min(best, time.perf_counter() - t0)
+        print(f"\n[tipauth cap timing] {n} ws-only (all droppable): best of 5 {1000 * best:.2f} ms")
+        self.assertEqual((f["base_tipauth"]["status"], f["base_tipauth"]["dropped_n"]), ("ok", n))
 
 
 if __name__ == "__main__":
