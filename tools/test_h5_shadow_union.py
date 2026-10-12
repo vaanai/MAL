@@ -464,6 +464,8 @@ class H5SealedUnionTests(unittest.TestCase):
         (trig,) = [r for r in types(on, "trigger") if r["variant"] == "pv"]
         self.assertTrue(trig["h5_look2_sealed"])
         self.assertEqual(trig[h5.UNION_FIELD], 0)
+        self.assertIn(h5.TIPAUTH_FIELD, trig)  # the decision-time tipauth fields stay, like the union ones
+        self.assertEqual(trig["base_tipauth"]["status"], "ok")
         self.assertNotIn("base_unmatched_ws", trig)
         self.assertNotIn("base_unmatched_union", trig)
 
