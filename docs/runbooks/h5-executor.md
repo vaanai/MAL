@@ -508,7 +508,7 @@ Before installing v2, do these two steps in order. Repeat step (a) right before 
 
 **(a) No other §5.1 halt fired or is active from v1's §5.1 halt to the first v2 send.** Under DEC-028 §3.5, a halt that "fires or is active" in that interval fires together with v1's halt, and B does not start.
 
-- **Window start.** The window starts at **v1's last resume**, 2026-10-11T00:15:06Z (DEC-028 section 0; DEC-024 Amendment 4 item 4's resume record). If v1 is resumed again later, use that later instant. The window does not start at v1's halt: a §5.1 halt that fired after the resume and before v1's halt is still active at v1's halt, so it must be caught.
+- **Window start.** The window starts at **v1's last §5.1 resume** (DEC-024 Amendment 4 item 4 and Amendment 5 item 1), 2026-10-11T00:15:06Z (DEC-028 section 0). A resume from any other halt does not move it: not the 2026-10-11T15:43:38.903Z resume of the DEC-024 section 5.6 halt ("Section 5.1's strike count is unaffected"), and not an Amendment 7 item 2 resume. Only a later §5.1 resume moves it. The window does not start at v1's halt: a §5.1 halt that fired after the resume and before v1's halt is still active at v1's halt, so it must be caught.
 - **Seconds.** Give the instant with seconds. The logs stamp `now_utc` as `YYYY-MM-DDTHH:MM:SSZ`, and a minute-only bound sorts after every line from that same minute, so those lines would be dropped.
 
 On mal-fast-0:
@@ -529,16 +529,23 @@ for f in sys.argv[2:]:
 
 Reading the output:
 
+- **Blind spot 1: a day with no final verdict.** The one-liner prints only `halt_due` lines. A completed day in the window whose log has no final verdict (a tool error, or a give-up) prints nothing. For each completed day in the window and for both tools, run `--mode decided --day D --tool NAME` against that tool's log (see the tool's header). Exit 1 means no final verdict: judge that day by hand with `--dry-read`.
+- **Blind spot 2: the gap after step (b).** After step (b) the two logs get no new lines, so the repeat of step (a) right before the first v2 send cannot see a §5.1 line that was due in between, including `two_consecutive_unevaluated_days`. DEC-028 §3.5 counts a halt that "fires or is active at any time from v1's §5.1 halt to the first v2 send". For each completed day from the loop's last line to the first v2 send, run `--dry-read` with each tool and read `would_halt_due`. A `would_halt_due` of true counts as a halt in the window.
 - Each printed line is a `halt_due` line from the two §5.1 logs in the window. The logs hold structure fields only (medians, pool counts, reasons, stop).
 - If any line's reasons include `two_consecutive_unevaluated_days`, B does not start. That halt is not a trigger under §3.5, and it fires together with v1's halt.
 - Every other line must match one of §3.5's BOOST-timing trigger clauses. Judge each line against that list.
 - A last field of `False` means STOP was not verified for that line. Verify it by hand.
 - **What this covers.** The one-liner reads only the two §5.1 logs, `exec-day.jsonl` and `boost-day.jsonl`. It does not cover the other DEC-024 §5 rules and stops: late sells, slow landing, divergence, a stuck position, structure (including `program_changed`, `pins_changed` and every A3 halt flag), `toggle_boost`, a seal breach, EXP-022's 2026-10-16T01 preconditions and the 14-day end. It does not cover DEC-028 section 4's halts and stops either. Check those separately over the same window, from their own records: the executor's `--status` latched halts, the live ledger's `halt_latched` rows, the daily check and the watchdog.
 
-**(b) Stop every §5.1 enforcer, not only the loop.** §5.1 is report-only for v2 (DEC-028 §4), so nothing may place STOP on v2.
+**(b) Stop every §5.1 enforcer, not only the loop.** §5.1's 335 s and 337 s day-median lines are report-only for v2 (DEC-028 §4 item 1), so no §5.1 enforcer may place STOP on v2. Report-only is not unreported: DEC-028 §4 item 1 says they are reported every day.
+
+- **What reports them.** Run the same two tools without `--place-stop` (day mode, once per completed UTC day; `--dry-read` also places no STOP), and read the result. The executor's own `v2_report_only` ledger row is a second report.
+- **What enforces item 1(b).** DEC-028 §4 items 1(a) to 1(d) and 2 to 7 still halt v2. Item 1(b) is a completed UTC day whose plain-pool BOOST last-slice median is below 330 s over at least 30 plain pools. The `h5_boost_day_check.py --place-stop` cron computes that plain-pool day figure for v1, and step (b) deletes it. Before the first v2 send, name what enforces item 1(b) for v2 (the executor's own v2 latch, or a scheduled non-§5.1 check), and confirm it by reading the executor's `--status` or its ledger. If nothing does, do not install v2.
 
 - **The loop.** Run `touch ~/data/h5-daily/enforce-loop.quit`, then wait until `--check-beat` prints `EXITED event=quit`. An alert that names the stop-unverified flag means: verify STOP by hand first.
 - **The session crons.** Delete every cron that runs `tools/h5_boost_day_check.py … --place-stop` (day or running mode), and every cron that runs `h5_exec_day_check.py` with `--place-stop`. Then list the crons and confirm none is left.
+
+**If B does not start.** After step (b), the repeat of step (a) can fail, or v1's own resume rules can be met first (DEC-028 §3.4; §3.5, "If v1's own resume rules are met first"). DEC-024 Amendment 5 item 6 says enforcement is a scheduled job, not a manual read. Before any STOP removal that resumes v1, remove `~/data/h5-daily/enforce-loop.quit`, resubmit the loop with the same command (it resumes from its state file), and restore the deleted `--place-stop` crons.
 
 Then install v2, following DEC-028.
 
