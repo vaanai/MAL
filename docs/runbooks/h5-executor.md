@@ -494,6 +494,67 @@ sudo nsenter -t "$PID" -m /usr/bin/stat -c '%a %n' /srv/mal-h5-shadow/cap-pick/p
 
 Do not print `picks.jsonl` itself: it lists the picks by mint. A dead or stale exporter shows as the executor ALERT `pick_feed_unavailable` (no mint; the daily check shows it as `h5_executor_alert_pick_feed_unavailable`, and the watchdog posts it). The `cap-pick` subdirectory is not an hourly file: it never makes a stopped detector look fresh, and it raises no `h5_feed_*` alert by itself.
 
+## The §5.1 enforce loop and the Option B switch, §5.1 part (manager)
+
+`scripts/mal-fast/h5-enforce-loop.sh` runs DEC-024 §5.1's day checks (00:21Z) and running checks (05:47, 11:47, 17:47, 23:47Z) as one MiScusi job on fast-0, with `--place-stop`, until 2026-10-24T00:00Z. PR #593 merged it at 1117ed0; it runs as job #729 with `H5_ENFORCE_STATE=/home/claude/data/h5-daily/enforce-loop.state`, so a resubmit with the same command resumes from that file. The script's header is the full reference: `sh scripts/mal-fast/h5-enforce-loop.sh --help`.
+
+- **Liveness.** The manager's cron runs `cd ~/MAL && sh scripts/mal-fast/h5-enforce-loop.sh --check-beat` every 15 to 30 minutes. Exit 1 is an alert. A line that names the stop-unverified flag (`ALERT stop_unverified`, `ALERT quit_stop_unverified`, or `ALERT loop_exited ... stop_unverified=<n> first=<key>`) means a halt was due and STOP was not verified. Verify it by hand before anything else: `sudo -n test -e /var/lib/mal-live/h5/STOP && echo present`.
+- **Job time limit.** Right after a submit, read the job's limit with `miscusi_job_status`. If it is shorter than the time to END, run `miscusi_job_extend` at once, and before the shown limit runs out. Use hours = (minutes needed − shown limit in minutes) / 60, rounded up, and keep the total within MiScusi's 14-day maximum. A missed extension shows up as `ALERT loop_exited event=signal` (exit 143 at the kill) or `ALERT stale`.
+- **Fresh start.** A fresh start has no readable state file. It takes the stop-unverified flag and `last_fail` over from the beat file, so a restart never clears either one. Before its first wait, it runs the executor-figure day check for every completed day D from max(FIRST_DAY, today-12) to the last completed day. A day with a final verdict in `exec-day.jsonl` is skipped. A start at or after END runs no catch-up. This corrects #593's F5 line ("13 days"). The executor keeps `sorted(days)[-14:]` including today, so the oldest key it may hold is today-13. The pair rule reads D-1, so D must be today-12 or later.
+
+### Option B switch, §5.1 part (DEC-028 section 3.5)
+
+Before installing v2, do these two steps in order. Repeat step (a) right before the first v2 send.
+
+**(a) No other §5.1 halt fired or is active from v1's §5.1 halt to the first v2 send.** Under DEC-028 §3.5, a halt that "fires or is active" in that interval fires together with v1's halt, and B does not start.
+
+- **Window start.** The window starts at **v1's last resume**, 2026-10-11T00:15:06Z (DEC-028 section 0; DEC-024 Amendment 4 item 4's resume record). If v1 is resumed again later, use that later instant. The window does not start at v1's halt: a §5.1 halt that fired after the resume and before v1's halt is still active at v1's halt, so it must be caught.
+- **Seconds.** Give the instant with seconds. The logs stamp `now_utc` as `YYYY-MM-DDTHH:MM:SSZ`, and a minute-only bound sorts after every line from that same minute, so those lines would be dropped.
+
+On mal-fast-0:
+
+```
+V1_LAST_RESUME_UTC=2026-10-11T00:15:06Z
+/usr/bin/python3 -I -c 'import json, sys
+t = sys.argv[1]
+assert len(t) == 20 and t[10] == "T" and t[-1] == "Z", "give the instant as YYYY-MM-DDTHH:MM:SSZ"
+for f in sys.argv[2:]:
+    for l in open(f):
+        try: r = json.loads(l)
+        except ValueError: continue
+        if isinstance(r, dict) and r.get("halt_due") is True and str(r.get("now_utc", "")) >= t:
+            print(f.rsplit("/", 1)[-1], r.get("mode"), r.get("day"), r.get("now_utc"), r.get("reasons"), (r.get("stop") or {}).get("present"))' \
+  "$V1_LAST_RESUME_UTC" ~/data/h5-daily/exec-day.jsonl ~/data/h5-daily/boost-day.jsonl
+```
+
+Reading the output:
+
+- Each printed line is a `halt_due` line from the two §5.1 logs in the window. The logs hold structure fields only (medians, pool counts, reasons, stop).
+- If any line's reasons include `two_consecutive_unevaluated_days`, B does not start. That halt is not a trigger under §3.5, and it fires together with v1's halt.
+- Every other line must match one of §3.5's BOOST-timing trigger clauses. Judge each line against that list.
+- A last field of `False` means STOP was not verified for that line. Verify it by hand.
+- **What this covers.** The one-liner reads only the two §5.1 logs, `exec-day.jsonl` and `boost-day.jsonl`. It does not cover the other DEC-024 §5 rules and stops: late sells, slow landing, divergence, a stuck position, structure (including `program_changed`, `pins_changed` and every A3 halt flag), `toggle_boost`, a seal breach, EXP-022's 2026-10-16T01 preconditions and the 14-day end. It does not cover DEC-028 section 4's halts and stops either. Check those separately over the same window, from their own records: the executor's `--status` latched halts, the live ledger's `halt_latched` rows, the daily check and the watchdog.
+
+**(b) Stop every §5.1 enforcer, not only the loop.** §5.1 is report-only for v2 (DEC-028 §4), so nothing may place STOP on v2.
+
+- **The loop.** Run `touch ~/data/h5-daily/enforce-loop.quit`, then wait until `--check-beat` prints `EXITED event=quit`. An alert that names the stop-unverified flag means: verify STOP by hand first.
+- **The session crons.** Delete every cron that runs `tools/h5_boost_day_check.py … --place-stop` (day or running mode), and every cron that runs `h5_exec_day_check.py` with `--place-stop`. Then list the crons and confirm none is left.
+
+Then install v2, following DEC-028.
+
+**The executor's `boost_median_lt_335` latch is not the loop's (1x) check.**
+
+- The loop's (1x) check reads the executor's **stored** running median, `days[today].boost_median`, which the executor rounds with `round(med, 3)`. It reads it only at the four 6-hourly slots.
+- The executor latches `boost_median_lt_335` on the **unrounded** median, at every pool close (`tools/h5_executor.py`).
+- So two cases stop buys with no STOP file placed: a dip below 335 s that recovers before the next slot, and a median in [334.9995, 335.0).
+
+**Procedure.** The manager may see a `boost_median_lt_335` latch (a ledger `halt_latched` row, `--status` latched halts, or the watchdog or daily-check alert) while `sudo -n test -e /var/lib/mal-live/h5/STOP` fails.
+
+1. Place STOP by hand: `sudo touch /var/lib/mal-live/h5/STOP`, then run the test again.
+2. Record the instant.
+
+Only a STOP placed this way, on seeing the latch, makes the latch count as "STOP placed" for DEC-028 §3.5's trigger. A latch with no STOP file is not the trigger. Step (a) then runs as above, from v1's last resume.
+
 ## Daily check (manager, 12:17Z cron) and the watchdog
 
 `scripts/mal-fast/h5-daily-check.py` replaces the decommissioned-probe check (job #385's command). Read-only, no key, prints `INFO`/`OK`/`ALERT` lines and exits 1 on any alert. The watchdog (`h5-watch.py`, every 5 minutes) runs the same checks and posts the alerts to Discord; the daily run is the manager's own second look and also checks the probe's state.
