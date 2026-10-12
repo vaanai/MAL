@@ -659,7 +659,7 @@ Written before any side-by-side union data was read. First written 2026-10-11T06
 
 ### Phase note: pre-send trigger age limit (2026-10-12)
 
-On 2026-10-12 the live feed delivered a trigger print 5,419 ms after its chain time. The executor sent the buy and it landed 29 slots after the trigger. That is more than the 5 s entry window (`ENTRY_LATE_S`), so it was an `out_of_rule_entry`: an immediate exit and a latched halt. The old pre-send limit on trigger age was 10 s, so a trigger between about 4 s and 10 s late was bought although it could not land in the rule.
+On 2026-10-12 the live feed delivered a trigger print 5,419 ms after its chain time. The executor sent the buy and it landed 29 slots after the trigger. That is more than the 5 s entry window (`ENTRY_LATE_S`), so it was an `out_of_rule_entry`: an immediate exit and a latched halt. The old pre-send limit on trigger age was 10 s, so a trigger between about 4 s and 10 s late was bought although it could not land in the rule. This is the event in "Halt record: executor latch `out_of_rule_entry`, 2026-10-12, and the manager's clear".
 
 The change: the three existing stale checks (`stale_trigger` twice, `stale_trigger_chain`) now use `PRESEND_MAX_TRIGGER_AGE_MS` = 3_500 ms, which is `ENTRY_LATE_S` less a 1.5 s allowance for build, send and landing. A config value may shorten it and never lengthen it. The change only adds refusals. A trigger the old limit refused is still refused. C1-NF keeps its own 10 s value.
 
