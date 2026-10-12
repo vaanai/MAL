@@ -611,5 +611,290 @@ class TestDeterminismAndCli(Base):
         self.assertEqual(len(ids), len(set(ids)))
 
 
+class TestRound2(Base):
+    def analyze(self, recs, since=T0, until=None, sha=None):
+        write(self.d, recs)
+        return T.analyze(self.d, since, until, expect_code_sha=sha)
+
+    def reset(self):
+        self.tearDown()
+        self.setUp()
+
+    def th(self, r, name):
+        return r["verdict"]["thresholds"][name]
+
+    # change 1
+    def test_code_sha_threshold(self):
+        self.assertTrue(self.th(self.analyze([start(sha=SHA), trig()], sha=SHA), "origin_code_sha_matches")["met"])
+        self.reset()
+        r = self.analyze([start(sha="deadbeef"), trig()], sha=SHA)
+        self.assertFalse(self.th(r, "origin_code_sha_matches")["met"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
+        self.reset()
+        self.assertIsNone(self.th(self.analyze([start(sha=SHA)], sha=None), "origin_code_sha_matches")["met"])
+
+    def test_cli_requires_sha_and_until(self):
+        import contextlib
+        import io
+        write(self.d, [start(sha=SHA)])
+        for args in (["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H)],
+                     ["--shadow-dir", str(self.d), "--since-ms", str(T0), "--expect-code-sha", SHA]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                T.main(args)
+            self.assertEqual(cm.exception.code, 2)
+
+    # change 2
+    def test_item5_null_below_100_ok_closes(self):
+        none_bt = bt(status="no_tip_rows", dropped_n=None, dropped=None, dropped_first_slot=None, dropped_last_slot=None, orphaned_by_drop_n=None, tipauth_nosettle=None)
+        r = self.analyze([start()] + [pool(pool=f"n{i}", tval=None, btd=none_bt) for i in range(40)])
+        self.assertEqual(r["item5_tip_incompleteness"]["plain_pool_closes"]["n_ok"], 0)
+        self.assertIsNone(self.th(r, "tip_incompleteness_le_5pct")["met"])
+        self.reset()
+        r = self.analyze([start()] + [pool(pool=f"c{i}") for i in range(99)])
+        self.assertIsNone(self.th(r, "tip_incompleteness_le_5pct")["met"])
+        self.reset()
+        r = self.analyze([start()] + [pool(pool=f"c{i}") for i in range(100)])
+        self.assertTrue(self.th(r, "tip_incompleteness_le_5pct")["met"])
+
+    # change 3
+    def test_no_proposal_allowed_string(self):
+        r = self.analyze([start(), trig(), pool()])
+        self.assertNotIn("proposal_allowed", T.dumps(r))
+        self.assertIn("tool_rules_clear", r["verdict"])
+        self.assertIn("NOT a proposal verdict", T.table(r))
+
+    # change 4
+    def test_empty_classes_do_not_pass(self):
+        r = self.analyze([start(), trig(ws=0)])  # 0 would-pass
+        self.assertIsNone(self.th(r, "would_pass_pv_n_ge_1")["met"])
+        self.assertIsNone(self.th(r, "margin_no_would_pass_left_D")["met"])
+        self.assertIsNone(self.th(r, "would_pass_all_fully_enumerated")["met"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
+        self.reset()
+        r = self.analyze([start(), trig()])
+        self.assertTrue(self.th(r, "would_pass_pv_n_ge_1")["met"])
+        self.assertTrue(self.th(r, "would_pass_all_fully_enumerated")["met"])
+        self.assertIsNone(self.th(r, "margin_no_would_pass_left_D")["met"])  # would-pass entries never tested (no close)
+        self.assertEqual(r["item10_margin_test"]["would_pass_undetermined"], 1)
+
+    def test_would_pass_left_d_false_and_tested_true(self):
+        close = pool(ws=1, uval=1, tval=0, btd=bt(dropped_n=0, dropped=[], dropped_first_slot=None, dropped_last_slot=None, cover_hi=250))
+        r = self.analyze([start(), trig(), close])
+        self.assertFalse(self.th(r, "margin_no_would_pass_left_D")["met"])
+        self.reset()
+        r = self.analyze([start(), trig(), pool(ws=1, uval=1, tval=0, btd=bt(cover_hi=250))])
+        self.assertTrue(self.th(r, "margin_no_would_pass_left_D")["met"])
+        self.assertEqual(r["item10_margin_test"]["would_pass_tested"], 1)
+
+    # change 5
+    def test_distinct_entries_pv_fv_same_print(self):
+        closes = [pool(pool=f"P{i}", ws=1, uval=1, tval=0, btd=bt(cover_hi=250)) for i in range(60)]
+        trigs = []
+        for i in range(60):
+            trigs += [trig(pool=f"P{i}", variant="pv"), trig(pool=f"P{i}", variant="fv")]
+        trigs.append(trig(pool="L"))  # one pv-only pool whose entry left D
+        closes.append(pool(pool="L", ws=1, uval=1, tval=0, btd=bt(dropped_n=0, dropped=[], dropped_first_slot=None, dropped_last_slot=None, cover_hi=250)))
+        r = self.analyze([start()] + trigs + closes)
+        m = r["item10_margin_test"]
+        self.assertEqual((m["tested"], m["left_D"], m["tested_distinct"], m["left_D_distinct"]), (121, 1, 61, 1))
+        self.assertFalse(self.th(r, "margin_left_D_share_le_1pct")["met"])  # distinct count < 100: one left D fires
+
+    def test_distinct_same_print_counted_once(self):
+        c = pool(ws=1, uval=1, tval=0, btd=bt(dropped_n=0, dropped=[], dropped_first_slot=None, dropped_last_slot=None, cover_hi=250))
+        m = self.analyze([start(), trig(variant="pv"), trig(variant="fv"), c])["item10_margin_test"]
+        self.assertEqual((m["entries"], m["distinct_entries"], m["left_D_distinct"]), (2, 1, 1))
+
+    def test_fire_rule(self):
+        self.assertTrue(T.fire(99, 1))
+        self.assertFalse(T.fire(99, 0))
+        self.assertFalse(T.fire(200, 2))
+        self.assertTrue(T.fire(200, 3))
+
+    # change 6
+    def test_sealed_flags_fail_closed(self):
+        recs = [start(), trig(pool="a", sealed=1), trig(pool="b", sealed="yes"), trig(pool="c", h5_look2_sealed="true"), trig(pool="d", h5_look2_sealed=1),
+                trig(pool="e", sealed=False), trig(pool="f", sealed=None), pool(pool="g", sealed="yes"), pool(pool="h", sealed=0)]
+        r = self.analyze(recs)
+        self.assertEqual(r["records"]["triggers"], 2)
+        self.assertEqual(r["records"]["plain_pool_closes"], 0)
+        self.assertEqual((r["skipped"]["sealed_trigger"], r["skipped"]["h5_look2_sealed_trigger"]), (2, 2))
+        self.assertFalse(T.flag(None) or T.flag(False))
+        self.assertTrue(all(T.flag(x) for x in (True, 1, 0, "", "yes", [], {})))
+
+    # change 7
+    def test_coverage_three_valued(self):
+        r = self.analyze([start(), trig(pool="f", variant="fv", tval=None, btd=bt(status="tip_pending", dropped=None))])
+        self.assertIsNone(r["item2_coverage"]["tipauth_ok_share_nogap_pv_ws_ge1"])
+        self.assertFalse(self.th(r, "tipauth_ok_ge_90pct")["met"])  # known 0.0 fails though the other share is unknown
+        self.reset()
+        r = self.analyze([start(), trig(pool="f", variant="fv")])
+        self.assertIsNone(self.th(r, "tipauth_ok_ge_90pct")["met"])
+        self.assertIn("tipauth_ok_ge_90pct:short", r["verdict"]["blocking_reasons"])
+
+    # change 8
+    def test_non_str_pool_counted_and_left_out(self):
+        r = self.analyze([start(), trig(pool=["x"]), trig(pool=5), trig(pool={}), pool(pool=None), trig(pool="ok")])
+        self.assertEqual(r["records"]["triggers"], 1)
+        self.assertEqual(r["records"]["plain_pool_closes"], 0)
+        self.assertEqual(r["item4_consistency"]["checks"]["record_pool_not_str"]["n"], 4)
+        self.assertFalse(self.th(r, "consistency_all_zero")["met"])
+
+    def test_union_status_unhashable_and_entry_shapes(self):
+        r = self.analyze([start(), trig(bud=bu(status=["x"])), trig(pool="q", btd=bt(dropped=[["s", [1], 5]], dropped_n=1))])
+        self.assertEqual(r["item2_coverage"]["union_status_all_triggers"], {"['x']": 1, "ok": 1})
+        self.assertGreaterEqual(r["item4_consistency"]["checks"]["dropped_entry_malformed"]["n"], 1)
+
+    def test_margin_uses_first_close_only(self):
+        unusable = pool(t=MID + 1000, ws=1, uval=1, tval=0, btd=bt(cover_hi=190))  # cover_hi < trigger slot 200
+        usable = pool(t=MID + 2000, ws=1, uval=1, tval=0, btd=bt(cover_hi=250))
+        m = self.analyze([start(), trig(), unusable, usable])["item10_margin_test"]
+        self.assertEqual((m["undetermined"], m["still_dropped"]), (1, 0))
+
+    def test_malformed_close_last_entry_undetermined(self):
+        close = pool(ws=1, uval=1, tval=0, btd=bt(dropped_n=30, dropped=[["x", 0, 110], "tail"], cover_hi=250))
+        m = self.analyze([start(), trig(), close])["item10_margin_test"]
+        self.assertEqual((m["undetermined"], m["left_D"]), (1, 0))
+
+    def test_junk_fixtures_never_raise(self):
+        import random
+        rng = random.Random(1)
+        junk = [None, True, 0, -1, 1.5, "x", [], [1], [[1, 2, 3]], [["s", [1], 5]], {}, [["s", 0, 105], "tail"], 10 ** 30, float("nan"), float("inf")]
+
+        def paths(o):
+            out = []
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    out.append((o, k))
+                    out += paths(v)
+            return out
+        fpath = self.d / "h5-shadow-2025-10-09T08.jsonl"
+        n_junk = 0
+        for i in range(5000):
+            base = copy.deepcopy([start(), trig(pool="A"), trig(pool="A", variant="fv"),
+                                  pool(pool="A", ws=1, uval=1, tval=0, btd=bt(dropped_n=30, dropped=[["sigA", 0, 105]], cover_hi=250)),
+                                  pool(pool="B"), hb(MID), {"type": "gap", "kind": "x"}])
+            for _ in range(rng.randint(1, 3)):
+                rec = rng.choice(base[1:])
+                c, k = rng.choice([(c, k) for c, k in paths(rec) if k in T.ALLOWED_KEYS])
+                c[k] = copy.deepcopy(rng.choice(junk))
+                n_junk += 1
+            fpath.write_text("".join(json.dumps(r) + "\n" for r in base))
+            try:
+                res = T.analyze(self.d, T0, MID + H)
+                T.dumps(res)
+                T.table(res)
+            except Exception as e:  # noqa: BLE001
+                self.fail(f"fixture {i} raised {e!r}: {json.dumps(base)[:600]}")
+        self.assertGreater(n_junk, 5000)
+
+    # change 9
+    def test_emit_lag(self):
+        pre = [trig(T0 - 3600_000, pool="old", t_detect_ms=T0 - 3600_000 - 40), trig(T0 - 2 * 86_400_000, pool="older", t_detect_ms=0),
+               trig(T0 - 1000, pool="sealedold", t_detect_ms=T0 - 1000 - 9, sealed=True)]
+        recs = [start()] + pre + [trig(pool="a", t_detect_ms=MID - 25), trig(pool="b", t_detect_ms=MID - 75, tval=None, btd=bt(status="tip_pending", dropped=None)),
+                                  trig(pool="c", variant="fv", t_detect_ms=MID - 1)]
+        m = self.analyze(recs)["item9_timing_memory"]
+        self.assertEqual((m["emit_lag_ms"]["all_pv"]["n"], m["emit_lag_ms"]["all_pv"]["max"]), (2, 75))
+        self.assertEqual(m["emit_lag_ms"]["tipauth_ok"]["max"], 25)
+        self.assertEqual(m["emit_lag_ms"]["tipauth_not_ok"]["max"], 75)
+        self.assertEqual((m["emit_lag_ms_24h_before_origin"]["n"], m["emit_lag_ms_24h_before_origin"]["max"]), (1, 40))
+        self.assertIn("t_detect_ms", T.ALLOWED_KEYS)
+
+    # change 10
+    def test_covered_hours_subtracts_holes(self):
+        recs = [start(T0 + 1000), hb(T0 + 1000 + 60_000), trig(T0 + 2000 + 60_000), hb(T0 + 1000 + 25 * H)]
+        r = self.analyze(recs, until=T0 + 1000 + 25 * H)
+        w = r["window"]
+        self.assertAlmostEqual(w["elapsed_h"], 25.0, 3)
+        self.assertLess(w["covered_h"], 0.2)
+        self.assertEqual(w["n_holes"], 1)
+        self.assertFalse(self.th(r, "duration_24h_and_10_nogap_pv_ws_ge1")["met"])
+
+    def test_covered_hours_full_and_boundary(self):
+        w = T.covered(T0, T0 + 24 * H, [T0 + k * 300_000 for k in range(1, 289)])
+        self.assertEqual((w["covered_h"], w["n_holes"], w["hb_max_gap_ms"]), (24.0, 0, 300_000))
+        w = T.covered(T0, T0 + 1_200_001, [T0 + 600_000, T0 + 1_200_000])  # 600,000 is not a hole; the last 1 ms is not either
+        self.assertEqual(w["n_holes"], 0)
+        w = T.covered(T0, T0 + 600_001, [])
+        self.assertEqual(w["n_holes"], 1)
+
+    # change 11 and the schedule
+    def test_schedule_and_off_schedule_refused(self):
+        import contextlib
+        import io
+        self.assertEqual(T.schedule(1000)[:5], [1000 + 6 * H, 1000 + 24 * H, 1000 + 36 * H, 1000 + 48 * H, 1000 + 60 * H])
+        for u, ok in [(6, True), (24, True), (36, True), (48, True), (60, True), (72, True), (12, False), (30, False), (18, False), (25, False)]:
+            self.assertEqual(T.on_schedule(T0, T0 + u * H), ok, u)
+        self.assertFalse(T.on_schedule(T0, T0 + 24 * H + 1))
+        write(self.d, [start(sha=SHA)])
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 7 * H), "--expect-code-sha", SHA])
+        self.assertEqual(rc, 4)
+        self.assertFalse(json.loads(so.getvalue())["verdict"]["tool_rules_clear"])
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(["--schedule", "--since-ms", "1791797643640"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(so.getvalue())["until_ms_instants"][:4], [1791819243640, 1791884043640, 1791927243640, 1791970443640])
+
+    def test_earlier_start_before_t0_is_not_a_second_start(self):
+        t0, early = 1791797643640, 1791796005847
+        write(self.d, [start(early, SHA)], hour_ms=early - early % H)
+        write(self.d, [start(t0, SHA), trig(t0 + 5000)], hour_ms=t0 - t0 % H)
+        r = T.analyze(self.d, t0, t0 + 6 * H, expect_code_sha=SHA)
+        self.assertEqual(r["starts"]["n_starts_after_t0"], 1)
+        self.assertEqual(r["starts"]["origin_t_ms"], t0)
+        self.assertTrue(self.th(r, "single_start_after_t0")["met"])
+        self.assertTrue(self.th(r, "origin_code_sha_matches")["met"])
+
+    def test_exit_codes_no_start_and_missing_dir(self):
+        import contextlib
+        import io
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(["--shadow-dir", str(self.d / "nope"), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA])
+        self.assertEqual(rc, 3)
+        self.assertFalse(json.loads(so.getvalue())["verdict"]["tool_rules_clear"])
+        write(self.d, [trig()])
+        so = io.StringIO()
+        with contextlib.redirect_stdout(so):
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA])
+        self.assertEqual(rc, 2)
+        j = json.loads(so.getvalue())
+        self.assertIn("error", j)
+        self.assertFalse(j["verdict"]["tool_rules_clear"])
+
+    # change 12
+    def test_boost_src_split(self):
+        recs = [start(), trig(pool="a", boost_src="pda"), trig(pool="b", boost_src="none"), trig(pool="c", boost_src="none", variant="fv"), trig(pool="d", boost_src="behavioural")]
+        w = self.analyze(recs)["item6_would_pass"]
+        self.assertEqual(w["would_pass_by_boost_src"], {"none": 2, "pda": 1})
+        self.assertEqual(w["would_pass_pv_by_boost_src"], {"none": 1, "pda": 1})
+        self.assertTrue(T.conditions(T.view_record(trig(boost_src="none"), "trigger"))["C3"])
+
+    # reviewer notes
+    def test_non_utf8_line_counted_not_raised(self):
+        write(self.d, [start()])
+        with open(next(self.d.iterdir()), "ab") as fh:
+            fh.write(b'{"type": "hb", "t_ms": 1, "x": "\xff\xfe"}\n')
+        r = T.analyze(self.d, T0)
+        self.assertEqual((r["skipped"]["bad_line"], r["skipped"]["bad_line_not_utf8"]), (1, 1))
+
+    def test_snapshot_ignores_later_appends(self):
+        import collections
+        write(self.d, [start(), trig()])
+        snap = T.snapshot(T.hour_files(self.d, T0, None))
+        write(self.d, [start(T0 + 9999, "late"), trig(pool="late")])
+        self.assertEqual(len(list(T.iter_records(snap, collections.Counter(), None))), 2)
+
+    def test_union_errors_absent_counter_is_zero_sample(self):
+        h1 = hb(MID)
+        del h1["counters"]["union_errors"]
+        r = self.analyze([start(), h1, {"type": "hb", "t_ms": MID + 1000}, hb(MID + 2000, ue=2)])
+        c = r["item4_consistency"]
+        self.assertEqual((c["union_errors_hb_samples"], c["union_errors_hb_absent_counter_as_0"], c["checks"]["union_errors"]["n"]), (2, 1, 2))
+
+
 if __name__ == "__main__":
     unittest.main()

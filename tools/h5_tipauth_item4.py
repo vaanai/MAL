@@ -159,7 +159,7 @@ AMBIGUITIES = [
      "Item 8 and decision-to-send need the tip tape and the executor's records, outside what this tool may read: null, in outside_tool_pending. Change 9 adds the "
      "shadow-side lag t_ms - t_detect_ms (report only)."),
     ("A17", "RSS rule", "Item 9: 'rss against the 1.0 GB re-read rule'. Chosen: met only if the largest hb rss_kb * 1024 < 1,000,000,000."),
-    ("A18", "tool_rules_clear (replaces proposal_allowed, change 3)",
+    ("A18", "tool_rules_clear (replaces the old verdict key, change 3)",
      "Computed from the rules this tool owns only. true does NOT mean a proposal is allowed: outside_tool_pending (RPC census, item 8, decision-to-send, C6) is still "
      "open and listed. No empty class passes (change 4)."),
     ("A19", "Run window for non-start records", "A record belongs to the run if its integer t_ms is >= the origin start t_ms and <= --until-ms; records without an integer t_ms are counted and ignored."),
@@ -234,6 +234,17 @@ def snapshot(files: list[Path]) -> list[tuple[Path, int]]:
     return snap
 
 
+def _bad_const(x: str) -> Any:
+    raise ValueError("non-finite JSON constant")
+
+
+def _parse_float(x: str) -> float:
+    f = float(x)
+    if not math.isfinite(f):
+        raise ValueError("non-finite float")
+    return f
+
+
 def iter_records(snap: list[tuple[Path, int]], counts: collections.Counter, object_hook: Callable | None) -> Any:
     for f, size in snap:
         try:
@@ -255,7 +266,7 @@ def iter_records(snap: list[tuple[Path, int]], counts: collections.Counter, obje
                 counts["bad_line_not_utf8"] += 1
                 continue
             try:
-                rec = json.loads(line, object_hook=object_hook)
+                rec = json.loads(line, object_hook=object_hook, parse_constant=_bad_const, parse_float=_parse_float)  # NaN / Infinity: a bad line
             except (ValueError, RecursionError):
                 counts["bad_line"] += 1
                 continue
