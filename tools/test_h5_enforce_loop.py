@@ -683,6 +683,9 @@ def test_quit_file_at_start_exits_0_before_any_check(tmp_path: Path) -> None:
 
 def _popen_waiting(tmp_path: Path, **extra: str) -> tuple[subprocess.Popen, dict[str, str]]:
     ex, sh = _stubs(tmp_path)
+    # Pin FIRST_DAY to tomorrow (UTC) so no completed day is >= FIRST_DAY: the fresh-start catch-up is empty and the loop always waits,
+    # whatever today's date is (the default 2026-10-11 made this helper clock-dependent from 2026-10-12T00:21Z).
+    extra.setdefault("H5_ENFORCE_FIRST_DAY", day_of(int(time.time()) // 86400 * 86400 + 86400))
     env = env_for(tmp_path, H5_ENFORCE_TOOL=str(sh), H5_ENFORCE_EXEC_TOOL=str(ex), H5_ENFORCE_END=iso(int(time.time()) + 3 * 86400),
                   STUB_CALLS=str(tmp_path / "calls.jsonl"), REAL_EXEC=str(REAL_EXEC), **extra)
     p = subprocess.Popen([SH, str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
