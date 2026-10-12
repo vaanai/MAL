@@ -1,4 +1,4 @@
-# Manager handoff 2026-10-12 ~09:15Z (manager10 -> next manager)
+# Manager handoff 2026-10-12 ~10:30Z (manager10 -> next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Sources for every line are named in the records PR body. Nothing here is an edge claim, and no realized P&L number is written here on purpose.
 
@@ -9,9 +9,9 @@ Then read, as needed:
 - **EXP-022 CAP-PICK Part 1:** [EXP/EXP-022-cap-pick-part1-prereg.md](../EXP/EXP-022-cap-pick-part1-prereg.md).
 - **Tipauth count list and C1-C6:** PR #610 comment 6121123397 (QP OK, copyable block).
 
-## 1. Where things stand (2026-10-12 ~09:15Z)
+## 1. Where things stand (2026-10-12 ~10:30Z)
 
-**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1, and the step also needs the DEC-024 Am.3 item 2 conditions, quoted below: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway." End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #810.
+**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1, and the step also needs the DEC-024 Am.3 item 2 conditions, quoted below: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway." End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #817.
 
 **Research-0 froze and rebooted on 10-12.** It froze about 06:11Z and was rebooted at 07:29Z. manager10 took over from manager9. Every session cron died. `mal-fast-0` (H5 executor, shadow, enforce loop) was not affected. Walkers #382 and #433 auto-resumed. The crons were recreated as on-disk pointer prompts (section 2).
 
@@ -26,14 +26,16 @@ Then read, as needed:
    Cause: the public websocket delivers swap notices for transactions that are not on the finalized chain. Of the websocket-only prints sampled with the public RPC: 46 not found, 3 found, 1 error; the 46 come from two samples that may overlap, so read it as at least 28 distinct signatures not found. Controls (prints that are on the tip): 18 found, 0 not found, 2 errors. A union can only add rows, so no phase 2 on the union field.
 2. So PR #610 added a report-only field, `base_breaks_unresolved_settled_tipauth` (tip-authoritative check: websocket-only prints are left out where the tip tape covers the slots). **Merged as `5db78a663a0617527daacb22f5ce6c1a7e92dfa3` at head `3102581` after three rounds.** Verdicts on the PR: Reviewer OK 6121009783; md5 job #807 PASS 6121076394 (pv-trigger md5 `75cb0b0c585bc2479137cae31330e73e`, 72/72); QP OK 6121123397.
 3. **The field is report-only.** No trigger, gate or executor path reads it.
-4. **Shadow restarted 2026-10-12T09:06:45Z** (LAB_STATE row). The **item-4 clock starts at that instant**: at least 24 h AND at least 10 no-gap pv triggers with ws >=1.
+4. **Shadow restarted twice on 10-12.** The first restart (job #810, 09:06:45Z) was replaced because its first log line read `porcelain_lines=1`. The second, **job #817 at 2026-10-12T09:34:03Z (T0 = 1791797643640)**, is the item-4 clock start (LAB_STATE rows; PR #610 comment 6121610196): at least 24 h AND at least 10 no-gap pv triggers with ws >=1.
 
 **What phase 2 still needs (none of it is done):**
-- the item-4 count (read command `/data/mal/hunt-1008/ops/tipauth-read.cmd`; reads at +1 h ~10:07Z, +6 h ~15:07Z, +24 h 10-13 ~09:07Z),
+- the item-4 count (the three read tools are merged; the reads run at the fixed instants in "tipauth acceptance: how the reads run" below; no read has run yet),
 - a quant-proof review of that count,
 - an executor gate PR under conditions C1-C6, tagged `gate_path: "tipauth"`, with the switch-off rule (QP ruling D),
-- a DEC-024 amendment,
+- a DEC-024 amendment (Amendment 8),
 - Helm's pinned reinstall of the executor.
+
+The full list is under "Phase 2 still to build" in section 4.
 
 Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 10-14). **No claim that it adds trades or profit.** The manager cannot certify "profitable": H5 is not through its gate.
 
@@ -59,7 +61,7 @@ Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 1
 | Job / unit | Where | What |
 | --- | --- | --- |
 | H5 live executor (Helm-installed systemd unit, `LoadCredential`) | `mal-fast-0` | T0, 0.02 SOL, max 2 open. Not a MiScusi job. Reinstall gate on 10-16 00:43Z: confirm `f873aac3a07b52ba03c0c13db675051a88e21b38` is the live build (`--status`). |
-| #810 H5 shadow | `mal-fast-0`, 1.5 GB | Started 09:06:45Z on main `5db78a6` (shadow blob `918e76bc`). Replaced #735 (main b65e2ec, blob cb1deb4). Time limit 13 d. Feeds the executor through the `/srv/mal-h5-shadow` bind. |
+| #817 H5 shadow | `mal-fast-0`, 1.5 GB | Started 09:34:03Z (t_ms 1791797643640 = item-4 T0) on main `5db78a6` (shadow blob `918e76bc`), clean checkout (porcelain 0). Replaced #810 (09:06:45Z start, cancelled; its first log line had `porcelain_lines=1`), which had replaced #735 (main b65e2ec, blob cb1deb4). Time limit 13 d. Feeds the executor through the `/srv/mal-h5-shadow` bind. |
 | #729 enforce loop | `mal-fast-0` | Halt-rule enforcement (#593), to 10-24. |
 | #658 C1-NF soak, #662 monitor | `mal-fast-0` | Regime watch only now. #662 limit about 2026-10-17T22:00Z. |
 | #382 forward walk 1, #433 | `mal-research-0` | Auto-resumed after the reboot. Never open outputs before the FINAL. |
@@ -68,9 +70,9 @@ Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 1
 
 **Crons (session-only, 7-day expiry).** 6 recurring pointer prompts from `recurring-crons-1011.json`: 0a25dc0e 03:23 archive, 638333d8 12:17 health+audit, 5745877b 06:41 structure, 51b24359 00:21 day check, a4af36b3 at 5/11/17/23:47 running check, 14193fc2 00:16 ledger. Plus 9a5bfe76 09:13 housekeeping, a renewal one-shot 4c1103db for 10-18 12:07Z, and 15 seal-window one-shots from `oneshot-crons-1012.json`. Verify with CronList after any compaction. **If the session dies again, recreate from those two JSON files and SEAL-WINDOW-OPS-1012.md.**
 
-**Open PRs.** PR #611 at head 95634e2 (docs/test follow-ups to #603): Reviewer OK (comment 6121244434); quant-proof pass on that head pending (last QP verdict was CHANGES at c728d4f1, comment 6121212063); merge only with QP OK and Reviewer OK on the PR at the final head. In review: PR #613 (`claude/h5-tipauth-item4-count`, head cbb0920, frozen count-only item-4 read tool; reviewer and quant-proof passes running). The executor tipauth gate PR (branch `claude/h5-exec-tipauth-gate`, switch default OFF) is being built and is not open yet (no draft PR in `gh pr list` at the time of writing). #608 (C1-NF 14c, parked with C1-NF), #471, #465, #90 parked. #603 merged as `848bd3a`.
+**Open PRs.** Draft PR #614 (`claude/h5-exec-tipauth-gate`, head 0c4fccd, executor tipauth gate, switch `tipauth_gate` default OFF): Reviewer CHANGES (comment 6121596920) and QP CHANGES (comment 6121641942, R1-R12); round 2 is not done. #608 (C1-NF 14c, parked with C1-NF), #471, #465, #90 parked. Merged: #603 as `848bd3a`; #611 as `c7de29e` (Reviewer OK 6121326459, QP OK 6121333548 at 87ac510); the three count-only tools #613 `fd20fd5`, #615 `ca4fa6a`, #616 `7a90d02` (section 4).
 
-**Follow-ups to #603 (owed, in #611):** pin FIRST_DAY in `test_sigterm_while_waiting...` (it fails on main since 10-12T00:21Z), Option B runbook wording (3 items in QP comment 6120551060), and check the v2 latch for `boost_before_sell_gt_15pct` before any Option B (V2_REPORT_ONLY lists it though DEC-028 section 4 1(a) makes it v2's primary halt).
+**Follow-ups to #603:** the FIRST_DAY pin and the Option B runbook wording were done in #611 (merged `c7de29e`). Later-PR items from the quant-proof pass on #611, still owed: a failed running-mode slot has no step (a) rule; finding 5 (loop warn on resume); a DEC-028 manager's-reading line on `c.v2["pairs"]` before any v2 send; the executor 1(b) pool-set `synthetic_src == "rpc"` filter. Also check the v2 latch for `boost_before_sell_gt_15pct` before any Option B (V2_REPORT_ONLY lists it though DEC-028 section 4 1(a) makes it v2's primary halt).
 
 ## 3. Research results 10-12 (none is an edge claim)
 
@@ -79,11 +81,14 @@ Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 1
 - SB-H1 September count: THIN. 67 cheap-fee boosted custom-pair pools on 11 dates. Parked to the FINAL. `/data/mal/hunt-1008/search-h1-sept/REPORT.md`.
 - Search C, other venues: no BOOST-like forced buyer. `/data/mal/hunt-1008/search-c-other-venues/REPORT.md`.
 - Strategy library and nearest-to-live shortlist: `/data/mal/hunt-1008/library/` (first pass had errors, corrected; verify before quoting).
+- EXP-013 revive check: NOT FEASIBLE. `/data/mal/hunt-1008/revive-exp013/REPORT.md`.
+- G4 bankroll desk read: no capped result between 10 and 79 slots; three open items. `/data/mal/hunt-1008/library/G4-BANKROLL-1012.md`.
+- Seal-window drafts (FINAL job spec, markers, EXP-024 Look 1 chain, exporter, P4 read tool spec, (e') rehearsal, shadow limit): `/data/mal/hunt-1008/ops/seal-window-drafts/INDEX.md`.
 - F1f quote-coin Step 1: loader frozen 08:31:41Z, the real run is at the FINAL (one-shot 10-16 03:07Z). **It needs the owner's OK for RELEASE.json (and the F1 ledger release) before 10-16.** Ask the owner.
 
 ## 4. Next days: DEADLINE TABLE (UTC)
 
-Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WINDOW-OPS-1012.md`, with `#735` read as `#810` (the shadow was restarted) and the 10-13 09:17Z row expanded from the manager notes. The tipauth reads are in the second table.
+Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WINDOW-OPS-1012.md`, with `#735` read as `#817` (the shadow was restarted twice) and the 10-13 09:17Z row expanded from the manager notes. The tipauth reads are in the second table.
 
 | Instant | Item | One-line action |
 | --- | --- | --- |
@@ -96,7 +101,7 @@ Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WIND
 | 10-15 06:41Z | 2 | **P2 run**: all six flags for EXP-022; five for H5 |
 | 10-15 07:17Z | 2 | Read P2; if withdrawn decide walk 2 (G2.1), keep exporter + markers; record the withdrawal |
 | 10-15 ~20:00Z | 10 | #433 near 3.0M credits; cap 3.6M binds (owner OK on record) |
-| 10-15 21:37Z | 3 | Verify #810 start record `cap_pick_oracle 1 True`; `mkdir -p ~/data/cap-pick-oracle`; submit the one exporter job; extend its limit |
+| 10-15 21:37Z | 3 | Verify #817 start record `cap_pick_oracle 1 True`; `mkdir -p ~/data/cap-pick-oracle`; submit the one exporter job; extend its limit |
 | **10-15 23:00Z** | 1 | **Hard deadline** (e′): pass recorded in DEC-016, or the failure and its counts recorded |
 | 10-16 00:00Z | 6 | Last instant for an A11 DEC-016 amendment or a slot-span bound amendment (none planned) |
 | 10-16 00:23–00:30Z | 4 | Submit walk 2 (`bash scripts/research/forward-walk2.sh`, `{"start":"2026-10-16T01"}`, resumable, 10080 min, ~6 GB); needs a free Helius slot |
@@ -113,34 +118,60 @@ Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WIND
 | 10-17 ~22:00Z | 10 | C1-NF monitor #662 limit; chain a successor or stop |
 | **10-18 12:00Z** | 9a | **Hard deadline** EXP-025 Look 1 (a `run` after it locks and writes `not_decidable` R8) |
 | 10-18 12:07Z | 10 | Renew the recurring session crons (7-day expiry) |
-| 10-21 12:07Z | 10 | Extend #810, the exporter **and walk 2** |
+| 10-21 12:07Z | 10 | Extend #817, the exporter **and walk 2** |
 | ~10-23 00:30Z | 10 | Walk 2's first 7-day limit ends — must already be extended or resubmitted |
 | **10-23 01:00Z** | 9b | EXP-022 look 1 data end; needs P4 read tool merged (not built), E1 amendment, A2, hours through 10-23T01 sealed |
 | 10-23 19:29:53Z | 5, 10 | H5 `end_ms`: no new buys; delete the `21 0` and `47 …` crons; shadow restart window (14-day limit ~10-25T07Z) |
 | 10-24 ~03:00Z / 10-26 12:00Z | 9a | EXP-025 Look 2 earliest / deadline (only if Look 1 did not pass) |
 | 10-30 01:00Z | 9b | EXP-022 look 2 data end = last instant for a late look 1 |
 
-Added since that file (tipauth, shadow job #810, read from its restart instant 2026-10-12T09:06:45Z with `/data/mal/hunt-1008/ops/tipauth-read.cmd`):
+Added since that file (tipauth, shadow job #817, read from T0 = 1791797643640 = 2026-10-12T09:34:03Z; run rules in the next subsection):
 
 | Instant | Item | Action |
 | --- | --- | --- |
-| 10-12 ~10:07Z | tipauth | +1 h read (rss rule 1.0 GB) |
-| 10-12 ~15:07Z | tipauth | +6 h read |
-| 10-13 ~09:07Z | tipauth | +24 h read; item-4 count tool frozen before data accrues |
-| (old: 10-13 ~07Z) | union rss | The old "+48 h union rss re-read" targeted #735, which is cancelled. It is retargeted to #810: the rss reads are the +1 h, +6 h and +24 h reads above |
+| 10-12 15:34:03Z (+6 h, 1791819243640) | tipauth | Interim read. The item-4 tool refuses a run started before 15:36:04Z (exit 4 = not a run) |
+| 10-13 09:34:03Z (+24 h, 1791884043640) | tipauth | First instant that can be the deciding read |
+| 10-13 21:34:03Z (+36 h, 1791927243640) | tipauth | Read |
+| 10-14 09:34:03Z (+48 h, 1791970443640) | tipauth | Read; then every 12 h |
+| (old: 10-13 ~07Z) | union rss | The old "+48 h union rss re-read" targeted #735, which is cancelled. The rss rule (1.0 GB) is checked at the fixed reads above |
 
 Seal-window drafts for each gap: `/data/mal/hunt-1008/ops/seal-window-drafts/INDEX.md`. It lists 9 manager decisions and 11 document disagreements, to be put to one quant-proof ruling at the 10-13 09:17Z gaps-day.
 
 Tipauth path (not a fixed date): after >=24 h and >=10 no-gap pv triggers with ws >=1 (expect ~48 h), the phase-2 PR, DEC-024 amendment, decision-change account, QP on the final head, Helm reinstall. Live ~10-15/16.
 
+### tipauth acceptance: how the reads run
+
+**Fixed instants** (T0 = 1791797643640, job #817; quant-proof ruling 4, PR #613 comment 6121547427): +6 h `1791819243640` (interim), +24 h `1791884043640`, +36 h `1791927243640`, +48 h `1791970443640`, then every 12 h. No other runs.
+
+**Common arguments, every tool:** `--since-ms 1791797643640 --expect-code-sha 5db78a663a0617527daacb22f5ce6c1a7e92dfa3`. Add `--until-ms <the instant>`. Verify each tool's sha256 with `sha256sum` before a run (item-4 `8de7f91af873f651d2ed065deaa1f77eebf333f4f7250d1c7f779cfb2d032c65`, census `b5ea6a29bec0d4d23f99f9b421c9e63e1e8bff10f761deafd24dbdfd0b63101b`, trigger print `186275b1858a99ac4465d1eccea5943aae96c0d7a48f295db95fe7cc6a39ee58`). Run as fast-0 ops jobs at git_ref main, outputs under `/home/claude/data/h5-daily/tipauth/<until_ms>/` (never the job's cwd).
+
+**Where each tool's run rule lives:**
+- Item-4 count (`tools/h5_tipauth_item4.py`, #613): PR #613 comments 6121865997 and 6121945678. Exit 0 is not a verdict; read `verdict.tool_rules_clear`.
+- RPC census (`tools/h5_tipauth_census.py`, #615): PR #615 comment 6122101184, including "check R" before any sentence.
+- Trigger print (`tools/h5_tipauth_trigger_print.py`, #616): PR #616 comment 6122332650 section 5. It requires a seal line in LAB_STATE with the first run (tool sha256, until-ms, output sha256). If any file has matches != lines_parsed, or bad or partial lines, it goes to quant-proof before quoting.
+
+**Peeking rule.** Read only at the fixed instants. The exactly-0 rules are cumulative across reads. The share rules apply at the deciding read only. The tools change only by tightening after the first run, never loosening.
+
+**Wording rule.** Counts only. An interim read is labelled "interim, not the deciding read". Never write "met", "clear", "passing" or "on track". Never state "phantom" or "not on chain" as a fact: say the public RPC did not return the signatures (asked twice, at least 10 minutes apart) and the controls were returned, which is consistent with not being on the finalized chain and is not proof. Never write "profitable".
+
+### Phase 2 still to build (none of it is done)
+
+- PR #614 round 2: reviewer comment 6121596920 (rename `_tipauth_latch` so it does not match the HALT-name regex; merge main) and quant-proof comment 6121641942, R1-R12. The cross-test spec is in PR #613 comment 6121865997 section 3 (the watcher imports `would_pass`; one shared predicate).
+- The watcher tool `tools/h5_tipauth_watch.py` (spec in comment 6121641942, 2(c)).
+- The look-comparison tool (2(b) in the same comment).
+- The decision-change account tool.
+- DEC-024 Amendment 8 (skeleton in comment 6121641942). Section 3 needs the owner's dated acceptance; see the open question below.
+- Helm's pinned reinstall of the executor.
+
+**Open owner question `q_o1f3-Qvs1HbwYw`** (asked 2026-10-12 09:39 UTC, key DEC-024-Am8, decide by 2026-10-14T09:00Z): the owner's conditional pre-approval ("so long as trade quality isn't affected, and everything's still profitable") cannot be certified. The amendment needs the owner's dated acceptance of bounded-risk terms instead (0.02 SOL class stake, -0.04 SOL latch, about 0.06 SOL worst case, looks at 25, 50 and 100, n=1 switch-offs). The answer goes into Amendment 8 section 3 verbatim and dated. Include it in the morning update.
+
 ## 5. Owed
 
-- The count: tipauth reads at +1 h, +6 h, +24 h, then the item-4 count list (items 1-10 in comment 6121123397). C5 is three conditions: `orphaned_by_drop_n == 0`, `tipauth_nosettle == 0`, `dropped_first_slot > cover_lo`.
+- The count: tipauth reads at the fixed instants (section 4), then the item-4 count list (items 1-10 in comment 6121123397). C5 is three conditions: `orphaned_by_drop_n == 0`, `tipauth_nosettle == 0`, `dropped_first_slot > cover_lo`.
 - Phase-2 package (section 1), including the owner's verbatim Q&A in the amendment and the switch-off rule for tipauth-only trades.
-- Merge #611 after QP OK and Reviewer OK on the PR at its final head.
+- Phase 2 still to build (section 4), and the open owner question `q_o1f3-Qvs1HbwYw` (decide by 2026-10-14T09:00Z).
 - Owner: the F1f RELEASE.json OK before 10-16; a wake-up update (H5 status, fix timeline ~10-15/16 with Helm needed, what the searches found).
 - Records PR (this one) then `git -C ~/MAL pull --ff-only` on fast-0 (as a job) so the Console shows it; copy any result.v1 record to `~/data/results/`.
-- EXP-013 recount feasibility (`revive-exp013/`) and the seal-window drafts (`/data/mal/hunt-1008/ops/seal-window-drafts/INDEX.md`) were still pending at 09:10Z.
 - The research-0 watchdogs (disk, CPU guard, report sync) were background loops of the old session; verify they exist after the reboot (`pgrep -af 'df --output=pcent'`, `pgrep -af loadavg`) and restart if not.
 - Record every future mid-week shadow or runner restart in LAB_STATE.
 
@@ -151,6 +182,8 @@ Tipauth path (not a fixed date): after >=24 h and >=10 no-gap pv triggers with w
 - **EXP-024 declared observation.** Canary and shadow outcomes in Look 1's window [10-10, 10-16) are watched live. Look 1 is read and reported as written.
 - **Gate changes need the owner's dated decision.** Any later change to H5's trade filter is judged on mechanism and counts only (DEC-024 note, #600). A pre-approval does not execute itself.
 - **Pinned exit gates.** Post QP OK on the exact head and a Reviewer verdict ON THE PR before every merge, workflow verdicts too. Merge in a SEPARATE call with `--match-head-commit`; never `; gh pr merge` after a checkout or edit.
+- **Check jobs write nothing into the job's working directory** and run at a git ref different from the shadow's tree. A stray `st.out` from a flat-check job forced the second restart on 10-12.
+- **Agents never checkout or switch branches in `/home/claude/.miscusi/repos/vaanai/MAL`.** Use `git worktree add` in a scratch dir (a reviewer's `git checkout` there once left it detached). Check `git status` before any pull or merge.
 - **Shadow restart procedure.** Executor flat first (open 0, pending 0 via the `--status` job), cancel the old job, resubmit its exact command as a new MiScusi job (clean checkout, 0 porcelain lines, then extend the limit to 13 d), check the start record fields, write the LAB_STATE row.
 - **Hunts use exploration tape only.** Sealed blocks fresh-0802, fresh-0808 and fresh-0828 are never read.
 - **Reserve convention:** PumpSwap rows are PRE-trade with V; bonding rows are POST-trade.
