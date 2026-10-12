@@ -1,4 +1,4 @@
-# Manager handoff 2026-10-12 ~09:30Z (manager10 -> next manager)
+# Manager handoff 2026-10-12 ~09:15Z (manager10 -> next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Sources for every line are named in the records PR body. Nothing here is an edge claim, and no realized P&L number is written here on purpose.
 
@@ -9,7 +9,7 @@ Then read, as needed:
 - **EXP-022 CAP-PICK Part 1:** [EXP/EXP-022-cap-pick-part1-prereg.md](../EXP/EXP-022-cap-pick-part1-prereg.md).
 - **Tipauth count list and C1-C6:** PR #610 comment 6121123397 (QP OK, copyable block).
 
-## 1. Where things stand (2026-10-12 ~09:30Z)
+## 1. Where things stand (2026-10-12 ~09:15Z)
 
 **H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1. End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #810.
 
