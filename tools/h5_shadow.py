@@ -83,8 +83,8 @@ print and adds one unmatched pre base). Every tip row comes from a finalized blo
 3 of 50 websocket-only prints on the finalized chain). The tipauth value is the settled count of the union MINUS D = websocket-only members, at a
 slot in [tip_first_slot, min(tip high-water, decision slot) - TIPAUTH_MARGIN_SLOTS], whose signature has no tip row in this pool under any
 event_index. A value of 0 does NOT prove that no real print was dropped: a prefix run, a suffix run at pool close and an interior drop whose
-first kept successor sits in the settle window all read 0. base_tipauth.orphaned_by_drop_n (kept pre bases that lost their matching post base to
-D, no settle exemption) and tipauth_nosettle (the count with the exemption off) are the cross-checks for the last case. The field is null when
+first kept successor sits in the settle window all read 0. base_tipauth.orphaned_by_drop_n (a NET count per base value, no settle exemption) and tipauth_nosettle (the count with the exemption off)
+are cross-checks for the last case, not a proof; base_tipauth.dropped lists the first 20 members of D by slot. The field is null when
 a full tip chunk may be unread (status tip_pending). It is computed on the executor's buy path (cost bounded by TIPAUTH_WSONLY_MAX). Definition,
 margin justification (from tools/fast_tip_follower.py), null statuses and what is still open: Engine._tipauth_fields.
 DECISION TIME, enforced in code (UnionChain.line / ahead): a tip row is admitted into a pool's union only once that pool's feed has printed at
@@ -247,6 +247,7 @@ TIP_LINE_MAX = 64 * 1024  # a partial line longer than this is dropped (corrupt 
 TIP_PENDING_MAX = 5_000  # tip rows buffered per announced-but-not-yet-tracked pool (the tip lags the feed, so this is normally empty)
 TIPAUTH_FIELD = "base_breaks_unresolved_settled_tipauth"
 TIPAUTH_MARGIN_SLOTS = 4  # see UnionChain.settled_without: a slot is "covered" only at or below (tip high-water - this)
+TIPAUTH_DROPPED_LIST_MAX = 20  # base_tipauth.dropped: members of D listed (report-only); dropped_n is the full count
 TIPAUTH_WSONLY_MAX = 3_000  # more websocket-only members than this in one pool: the tip-authoritative field is null ("big"). The field is computed
 # between detect and emit (the executor's buy path): measured worst case, every member websocket-only and droppable, 1 run best-of-5 on one
 # host: 20,000 -> 29.7 ms (too slow, so lowered), 5,000 -> 6.1 ms, 2,000 -> 2.3 ms
@@ -1000,9 +1001,10 @@ class UnionChain:
           nosettle  the same count with the settle exemption off entirely: every pre base of every kept member needs a matching post base,
                     max(0, excess - 1) on the members minus `drop`;
           orphaned  C5: over the base values `drop` touched, the sum of max(0, excess after - excess before), where excess(b) is
-                    max(0, pres(b) - posts(b)) and NO settle exemption applies: the number of kept pre bases (any slot, the trigger print
-                    included) that had a matching post base before the drop and lost it to `drop`. A phantom whose post base nobody
-                    uses orphans nothing; dropping a real print that a kept print follows orphans that print."""
+                    max(0, pres(b) - posts(b)) and NO settle exemption applies. It is a NET count per base value: the net increase of
+                    unmatched pre bases over the base values `drop` touched. A loss is hidden when the same drop also removes a pre base of
+                    equal value, and a dropped head passes its exemption to a successor that was already unmatched. A phantom whose post
+                    base nobody uses orphans nothing."""
         if not drop:
             return self.settled(hw_slot, full), max(0, self.excess - 1), 0
         dset = set(drop)
@@ -1627,10 +1629,13 @@ class Engine:
         of dropped real prints is invisible too (at a trigger the trigger print, above cover_hi, protects the end). (c) A dropped real interior
         print raises the value only if its first kept successor is OUTSIDE the settle window: when that successor is in the last SETTLE_SLOTS
         slots its unmatched pre base is exempt, and the value stays 0 (the counterexample: A 1000->900, M 900->850 missing from both, N 850->800
-        dropped, T 800->700 the trigger print: union 1, tipauth 0). orphaned_by_drop_n closes (c): it counts the kept pre bases that had a
-        matching post base before the drop and lost it to D, with NO settle exemption (any slot, the trigger print included). tipauth_nosettle is
-        the tipauth count with the settle exemption off entirely. (d) An equal-value collision of two base reserves can mask a break (rare, not
-        measured). Inside a tip gap (fast_tip_follower writes a "backlog_jump" range to gaps.jsonl and has NO rows for those slots) real
+        dropped, T 800->700 the trigger print: union 1, tipauth 0). orphaned_by_drop_n and tipauth_nosettle are cross-checks for (c), and
+        they do NOT close it alone: orphaned_by_drop_n is the net increase of unmatched pre bases over the base values D touched (no settle
+        exemption); a loss is hidden when the same drop also removes a pre base of equal value, and a dropped head passes its exemption to a
+        successor that was already unmatched. tipauth_nosettle is the tipauth count with the settle exemption off entirely. (d) An equal-value
+        collision of two base reserves can mask a break (not measured; an exact round trip, buy X then sell X, returns the reserve to the same
+        value, so it is not rare by construction). base_tipauth.dropped lists the first TIPAUTH_DROPPED_LIST_MAX members of D by (slot,
+        event_index) as [signature, event_index, slot] so a census can look each up (null whenever dropped_n is null). Inside a tip gap (fast_tip_follower writes a "backlog_jump" range to gaps.jsonl and has NO rows for those slots) real
         websocket prints are dropped; an interior one breaks the chain (the intended direction), a prefix or suffix run does not. The reader cannot
         tell a gap from a quiet slot.
 
@@ -1639,7 +1644,8 @@ class Engine:
         before the block that contradicted it), and a block's rows are appended to ONE hourly file with one flushed write before the checkpoint
         moves. So in one file a complete line of slot S means every slot < S is already in it; slot S itself may be partly visible (1 slot of
         margin); SETTLE_SLOTS and one more slot are kept on top. Consecutive slots can straddle trades-<H> and trades-<H+1>, and TipTail.hw_slot
-        is a max over files; that hole is CLOSED two ways: poll() re-reads the earlier hour after reading a later one that delivered lines (so
+        is a max over files; that hole is closed two ways, as of the last poll and only if the follower writes slot S-1 to hour H before slot S to hour H+1
+        (read in the follower, not re-verified by test): poll() re-reads the earlier hour after reading a later one that delivered lines (so
         S - 1, written before S began, is in), and this field is null with status tip_pending while any open hour file's last read was a full
         chunk (TipTail.pending(): unread bytes may remain). STILL OPEN, not closed by anything here: a tip row lost to TIP_PENDING_MAX (rows
         buffered for a pool announced but not yet tracked), and a truncation of the tip file that TipTail does not notice. A phantom inside the
@@ -1654,7 +1660,7 @@ class Engine:
         info: dict = {"status": st, "dropped_n": None, "dropped_first_slot": None, "dropped_last_slot": None, "cover_lo": None, "cover_hi": None,
                       "kept_ws_only_before_cover": None, "kept_ws_only_above_cover": None, "kept_ws_only_sig_on_tip": None,
                       "dropped_boost_n": None, "dropped_sells_n": None, "orphaned_by_drop_n": None, "tipauth_nosettle": None,
-                      "margin_slots": TIPAUTH_MARGIN_SLOTS}
+                      "dropped": None, "margin_slots": TIPAUTH_MARGIN_SLOTS}
         try:
             u = p.union
             if st != "ok":
@@ -1690,6 +1696,8 @@ class Engine:
             ident = self.boost_identity(p)[0]
             metas = [u.wsonly.get(k) for k in drop]
             info.update(kept)
+            # REPORT-ONLY listing of D: the first TIPAUTH_DROPPED_LIST_MAX members by (slot, event_index); dropped_n stays the full count
+            info["dropped"] = [[k[0], k[1], u.m[k][2]] for k in sorted(drop, key=lambda k: (u.m[k][2], k[1] if isinstance(k[1], int) else -1, str(k[0])))[:TIPAUTH_DROPPED_LIST_MAX]]
             info.update({"orphaned_by_drop_n": orphaned, "tipauth_nosettle": nosettle, "dropped_n": len(drop), "dropped_first_slot": min(slots, default=None), "dropped_last_slot": max(slots, default=None),
                          "dropped_sells_n": sum(1 for m in metas if m is not None and m[0]),
                          "dropped_boost_n": sum(1 for m in metas if m is not None and not m[0] and ident is not None and m[1] == ident)})

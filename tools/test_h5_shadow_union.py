@@ -1297,6 +1297,90 @@ class TipAuthArithmeticTests(unittest.TestCase):
         self.assertEqual(f["base_tipauth"]["dropped_n"], len(u.wsonly))
 
 
+class TipAuthDroppedListTests(unittest.TestCase):
+    """base_tipauth.dropped: REPORT-ONLY listing of D, [signature, event_index, slot], first 20 by (slot, event_index)."""
+
+    @staticmethod
+    def many(n, reverse=True):
+        u, c = build(lin())
+        specs = [(f"ph{i:02d}", 101 + i, 0) for i in range(n)]
+        specs += [("tie_b", 130, 2), ("tie_a", 130, 1)]  # same slot: ordered by event_index
+        for sig, slot, ei in (reversed(specs) if reverse else specs):
+            u.add((sig, ei), c[5][1], c[5][1] + 7, slot, h5.UNION_WS, (False, "PH"))
+        return u
+
+    def test_content_and_order(self):
+        f, _, _ = tipauth_fields(self.many(5), FEED_HW, 190)
+        ta = f["base_tipauth"]
+        self.assertEqual(ta["dropped_n"], 7)
+        self.assertEqual(ta["dropped"], [["ph00", 0, 101], ["ph01", 0, 102], ["ph02", 0, 103], ["ph03", 0, 104], ["ph04", 0, 105],
+                                         ["tie_a", 1, 130], ["tie_b", 2, 130]])
+        self.assertEqual(f["base_tipauth"]["dropped"], tipauth_fields(self.many(5, reverse=False), FEED_HW, 190)[0]["base_tipauth"]["dropped"])
+
+    def test_cap_at_20_dropped_n_full(self):
+        f, _, _ = tipauth_fields(self.many(30), FEED_HW, 190)
+        ta = f["base_tipauth"]
+        self.assertEqual(ta["dropped_n"], 32)
+        self.assertEqual(len(ta["dropped"]), 20)
+        self.assertEqual([d[2] for d in ta["dropped"]], list(range(101, 121)))  # the 20 lowest slots
+
+    def test_empty_d_is_empty_list(self):
+        u, _ = build(lin())
+        f, _, _ = tipauth_fields(u, FEED_HW, 190)
+        self.assertEqual((f["base_tipauth"]["dropped_n"], f["base_tipauth"]["dropped"]), (0, []))
+
+    def test_null_when_d_not_computed(self):
+        u0, _ = build([("w0", 90, "ws")])
+        for f in (tipauth_fields(build(lin())[0], FEED_HW, 190, status="stale")[0], tipauth_fields(u0, FEED_HW, 190)[0],
+                  tipauth_fields(build(lin())[0], FEED_HW, 100 + MARGIN - 1)[0]):
+            self.assertIsNone(f["base_tipauth"]["dropped"])
+            self.assertIsNone(f["base_tipauth"]["dropped_n"])
+        with mock.patch.object(h5, "TIPAUTH_WSONLY_MAX", 4):
+            f, _, _ = tipauth_fields(self.many(5), FEED_HW, 190)
+        self.assertEqual(f["base_tipauth"]["status"], "big")
+        self.assertIsNone(f["base_tipauth"]["dropped"])
+
+    def test_every_slot_at_or_below_cover_hi(self):
+        u = self.many(5)
+        phantom(u, "late", build(lin())[1][5][1], 190 - MARGIN + 1)  # above cover_hi: kept, not listed
+        ta = tipauth_fields(u, FEED_HW, 190)[0]["base_tipauth"]
+        self.assertTrue(ta["dropped"])
+        self.assertTrue(all(d[2] <= ta["cover_hi"] for d in ta["dropped"]))
+        self.assertNotIn("late", [d[0] for d in ta["dropped"]])
+
+    def test_other_keys_identical_with_and_without_the_list(self):
+        def strip(f):
+            f = json.loads(json.dumps(f))
+            f["base_tipauth"].pop("dropped")
+            return json.dumps(f, sort_keys=True)
+        for mk in (lambda: self.many(5), lambda: self.many(30), lambda: build(lin())[0]):
+            with mock.patch.object(h5, "TIPAUTH_DROPPED_LIST_MAX", 0):
+                base, _, _ = tipauth_fields(mk(), FEED_HW, 190)
+            self.assertEqual(base["base_tipauth"]["dropped"], [] if base["base_tipauth"]["dropped_n"] is not None else None)
+            on, _, _ = tipauth_fields(mk(), FEED_HW, 190)
+            self.assertEqual(strip(base), strip(on))
+
+    def test_engine_trigger_and_close(self):
+        runner = TipAuthEngineTests()
+        _, out = runner.run_pool(FakeTip("ok", 2000), phantom_after=5)
+        trig = runner.pv(out)
+        (pool,) = types(out, "pool")
+        for rec in (trig, pool):  # the close also drops the trigger print (no tip row for it in this fixture): dropped_n is the list's length here
+            ta = rec["base_tipauth"]
+            self.assertEqual(ta["dropped_n"], len(ta["dropped"]))
+            self.assertIn("PHANTOM", [d[0] for d in ta["dropped"]])
+            self.assertEqual([d[2] for d in ta["dropped"]], sorted(d[2] for d in ta["dropped"]))
+            self.assertTrue(all(d[2] <= ta["cover_hi"] for d in ta["dropped"]))
+        self.assertEqual([d[0] for d in trig["base_tipauth"]["dropped"]], ["PHANTOM"])
+        with mock.patch.object(h5, "TIPAUTH_DROPPED_LIST_MAX", 0):
+            _, out0 = runner.run_pool(FakeTip("ok", 2000), phantom_after=5)
+        for a, b in ((runner.pv(out), runner.pv(out0)), (types(out, "pool")[0], types(out0, "pool")[0])):
+            a, b = json.loads(json.dumps(a)), json.loads(json.dumps(b))
+            a["base_tipauth"].pop("dropped")
+            b["base_tipauth"].pop("dropped")
+            self.assertEqual(a, b)
+
+
 class TipAuthEngineTests(unittest.TestCase):
     """The records through the engine with the pool_rows tape (13 prints, trigger at slot 1200). The tip delivers each print right after the feed
     (not the trigger print)."""
