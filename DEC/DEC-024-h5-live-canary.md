@@ -398,6 +398,27 @@ The ruling's other points, recorded here:
 - **Status.** H5 has not cleared the promotion gate.
 - **Owed (planned, not done).** A reviewed executor change that refuses, before send, a trigger too old to land within 5 s, with an md5 decision-equivalence proof, reviewer and quant-proof verdicts on the PR, then Helm's pinned reinstall. The manager will name this halt in any T1 proposal (manager's note; not a DEC-024 rule).
 
+### Counting rule for an out-of-rule buy (2026-10-12; proposed by the manager, in force only with quant-proof's OK on this text)
+
+Written 2026-10-12T18:54:11Z (`date -u`), after the owner's reviewer (Warden) pointed out on PR #621 that this DEC had no line for it. Main was `dc5d00f`.
+
+**Why a rule is needed.** The executor counts a landed buy before it judges lateness: `_note_landed_buy` and `_note_buy_landing` run first, and the `out_of_rule_entry` check comes after them (`tools/h5_executor.py`, the block after `pos["h5"] = {**h5, "buy_landed_slot": m["slot"]}`). So the 18:28Z buy is already in the executor's `landed_buys` count and in its landing series. This DEC did not say whether such a buy counts toward Amendment 3. Without a line, it could be kept or dropped after its result is known.
+
+**The rule.** A buy that lands and is then judged `out_of_rule_entry` is a canary trade like any other. It counts, with its own landing time and its own realized result, in every figure this DEC uses:
+1. Amendment 3 item 1's **20 landed buys**.
+2. The **landing p50** of section 5 item 3 and Amendment 3 item 2 (its trigger-to-landing time stays in the series).
+3. The **canary's realized mean per closed trade, after fees** (Amendment 3 item 2), and every loss stop and budget count of section 4.
+4. The **late-sell share** of section 5 item 2, as the executor counted its sell.
+5. The **shadow twin's mean "over the same trades"** (Amendment 3 item 2): the pool stays in the set, with whatever the registered twin read gives for it. If the twin read has no row for that pool, the step is not judged until the manager reports that fact and quant-proof rules on it; the trade is not removed to make the two sets match.
+
+It is never dropped, re-labelled or moved to a separate figure that a step, a stop or a halt is judged on. A report may add a line without such trades, labelled "excluding out-of-rule buys, report-only".
+
+**Scope.** Every `out_of_rule_entry` buy from go-live on, whatever its result. The 2026-10-12T18:28Z trade is the only one so far.
+
+**Disclosure (not blind).** The Console assistant's note, which the owner forwarded to the manager at about 18:30Z, stated that trade's loss. So the owner and the manager knew its sign before this rule was written. The manager and the agents did not open its fill, exit or P&L rows (jobs #857 to #860 read timing keys only). The trade was a loss with a slow landing, so counting it everywhere moves the landing p50 and the canary mean against the canary. The rule is the conservative reading and it is the same for a later out-of-rule buy that happens to win.
+
+**What this does not change.** No section 5 rule, no threshold, no stop. It adds no way to step. H5 has not cleared the promotion gate.
+
 ## Amendment 4 (2026-10-10T07:27:25Z, the owner's decision; written after the section 5.1 halt of 2026-10-10T07:11:07Z): the section 5.1 measure
 
 OWNER_51_MEASURE_CONFIRMED: 2026-10-10T07:27:25Z (owner, in session, asked by manager9).

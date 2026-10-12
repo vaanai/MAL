@@ -446,6 +446,8 @@ sudo -u mal-live /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/
 
 A halt is never followed by a retune. Do not clear one without telling the owner.
 
+**Before clearing `out_of_rule_entry` (manager's condition, DEC-024 halt record of 2026-10-12).** Check first whether the pre-send age limit fix is installed: `sudo grep -c PRESEND_MAX_TRIGGER_AGE_MS /usr/local/lib/mal-h5-exec/current/tools/h5_executor.py` must print at least 1 (it printed 0 on the installed tree `f873aac` on 2026-10-12, MiScusi job #878). If it prints 0 and this latch has already been cleared once since 2026-10-12T18:38:41Z (a `halt_cleared` row with `reason` `out_of_rule_entry` is in the live ledger), **do not clear it again**: H5 stays halted until Helm has installed the fix. The first clear, on 2026-10-12, skipped the Wind-down's gate step; do not repeat that. Do the Wind-down as written (close the gate, wait for `open=0 pending=0`), then stop the unit, clear, start, check `--status`, and only then reopen the gate.
+
 ## CAP-PICK: the exporter, the shadow restart and the two FINAL markers (manager)
 
 DEC-024 section 6 and EXP-022 section 9: from 2026-10-16T01:00Z the executor buys a mint only when the CAP-PICK oracle says it is **not** a pick; a pick, an undecided mint, a missing or stale (> 60 s) feed, or no `FINAL_WRITTEN` are all refused. The shadow seals the same pools. All steps below are the manager's, as the MiScusi job user on fast-0, with `SHADOW=$HOME/data/h5-shadow`. They do not change `end_ms`, and the 14-day run is not extended (owner, 10-10). The af02e90 install's `end_ms` (2026-10-16T00:30Z) stops it before the window opens. The pre-10-16 reinstall's live config carries `end_ms` 2026-10-23T19:29:53Z (section 4's cap; owner 2026-10-11, DEC-024 Amendment 6 item 8 record), so that executor buys inside the window, under the oracle, and the wiring below matters for the executor as well as the shadow.
@@ -614,7 +616,7 @@ Latched live halts (the ledger gets a `halt_latched` row; new buys stop; only `-
 | `boost_median_lt_337_twice` | day median below 337 s on two days |
 | `boost_before_sell_gt_15pct` | BOOST ended before our sell on more than 15% of sells |
 | `stuck_position` | a position not sold by its deadline (s0 + 400 s) |
-| `out_of_rule_entry` | a buy landed outside the rule's entry window |
+| `out_of_rule_entry` | a buy landed outside the rule's entry window. Latched and cleared once on 2026-10-12; a second latch before the pre-send age fix is installed is not cleared (see "Before clearing `out_of_rule_entry`" above). The buy still counts in every canary figure (DEC-024, "Counting rule for an out-of-rule buy") |
 | `landing_median_gt_3s` | median trigger-to-landing above 3 s |
 | `late_sells_gt_5pct` | more than 5% of landed sells late |
 | `pre_unlinked_share` | triggers traded although their predecessor print may be missing (`trigger_pre_unlinked` on the decision row) are more than 15% of landed buys, judged from 20 landed |
