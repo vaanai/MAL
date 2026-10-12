@@ -138,6 +138,8 @@ SUPERSEDE_MS = 2_000  # a sell with no status this long after it was first sent 
 BUY_REBROADCAST_MS = 3_000  # a buy is rebroadcast for this long after the decision, then left to expire
 LATE_SELL_MIN_N = 1  # literal reading of "more than 5% of sells": judged from the first landed sell. A code constant, not config.
 ENTRY_LATE_S = 5.0  # a buy landing later than this after the trigger print is out of the rule (the binding leg is 1.9 s)
+ENTRY_SEND_ALLOWANCE_S = 1.5  # nominal time left for build, send and landing after the pre-send checks. One measured path (2026-10-12): decision-to-send 221 ms, send-to-confirm 727 ms. The chain check rounds up, so it keeps ceil(5.0/sps) - ceil(3.5/sps) slots (6 slots = 1.31 s at sps 0.2187)
+PRESEND_MAX_TRIGGER_AGE_MS = int((ENTRY_LATE_S - ENTRY_SEND_ALLOWANCE_S) * 1000)  # 3_500: an older trigger could not land inside ENTRY_LATE_S, so no buy is sent (stricter only; config may shorten it)
 LATE_SELL_S = 335.0  # a sell landing after s0 + this is late
 LATE_SELL_FRAC = 0.05  # more than 5% of our landed sells late -> halt
 LANDING_MEDIAN_MAX_S = 3.0  # median trigger-to-landing over the last LANDING_WINDOW fills above this -> halt
@@ -231,7 +233,7 @@ class H5Limits:
     status_poll_ms: int = 500
     slot_poll_ms: int = 200
     slot_resync_ms: int = 20_000
-    max_trigger_age_ms: int = 10_000
+    max_trigger_age_ms: int = PRESEND_MAX_TRIGGER_AGE_MS
     pool_cache_ttl_ms: int = 600_000
     buy_cu_limit: int = tx.DEFAULT_BUY_CU_LIMIT
     sell_cu_limit: int = tx.DEFAULT_SELL_CU_LIMIT
@@ -276,7 +278,7 @@ class H5Limits:
         kw["status_poll_ms"] = num("status_poll_ms", 500, 250, 5_000)
         kw["slot_poll_ms"] = num("slot_poll_ms", 200, 100, 2_000)
         kw["slot_resync_ms"] = num("slot_resync_ms", 20_000, 1_000, 60_000)
-        kw["max_trigger_age_ms"] = num("max_trigger_age_ms", 10_000, 1_000, 10_000)
+        kw["max_trigger_age_ms"] = num("max_trigger_age_ms", PRESEND_MAX_TRIGGER_AGE_MS, 1_000, PRESEND_MAX_TRIGGER_AGE_MS)
         kw["pool_cache_ttl_ms"] = num("pool_cache_ttl_ms", 600_000, 60_000, 900_000)
         kw["buy_cu_limit"] = num("buy_cu_limit", tx.DEFAULT_BUY_CU_LIMIT, 50_000, 400_000)
         kw["sell_cu_limit"] = num("sell_cu_limit", tx.DEFAULT_SELL_CU_LIMIT, 50_000, 400_000)

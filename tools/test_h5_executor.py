@@ -269,7 +269,7 @@ class LimitsTests(Case):
         for k, cap in h.H5_MAX.items():
             self.assertEqual(getattr(l, k), cap, k)
         self.assertEqual(l.deadline_s, 400.0)
-        self.assertEqual(l.max_trigger_age_ms, 10_000)
+        self.assertEqual(l.max_trigger_age_ms, h.PRESEND_MAX_TRIGGER_AGE_MS)  # 3_500: the config's 10**9 is clamped to the pre-send limit
 
     def test_config_can_lower(self):
         l = h.H5Limits.from_config({"stake_lamports": 5_000_000, "max_open": 1, "daily_loss_lamports": 1})
@@ -540,7 +540,7 @@ class RefusalTests(Case):
             e = Env(sub)
             if setup:
                 setup(e)
-            e.fire(**({"decision_ms": T0 - 10_000} if name == "age" else {}))
+            e.fire(**({"decision_ms": T0 - h.PRESEND_MAX_TRIGGER_AGE_MS} if name == "age" else {}))
             self.assertEqual(e.refusals(), [], name)
             self.assertEqual(len(e.rpc.sent), 1, name)
 
