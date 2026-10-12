@@ -446,7 +446,13 @@ sudo -u mal-live /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/
 
 A halt is never followed by a retune. Do not clear one without telling the owner.
 
-**Before clearing `out_of_rule_entry` (manager's condition, DEC-024 halt record of 2026-10-12).** Check first whether the pre-send age limit fix is installed: `sudo grep -c PRESEND_MAX_TRIGGER_AGE_MS /usr/local/lib/mal-h5-exec/current/tools/h5_executor.py` must print at least 1 (it printed 0 on the installed tree `f873aac` on 2026-10-12, MiScusi job #878). If it prints 0 and this latch has already been cleared once since 2026-10-12T18:38:41Z (a `halt_cleared` row with `reason` `out_of_rule_entry` is in the live ledger), **do not clear it again**: H5 stays halted until Helm has installed the fix. The first clear, on 2026-10-12, skipped the Wind-down's gate step; do not repeat that. Do the Wind-down as written (close the gate, wait for `open=0 pending=0`), then stop the unit, clear, start, check `--status`, and only then reopen the gate.
+**Before clearing `out_of_rule_entry` (manager's condition, DEC-024 halt record of 2026-10-12).** This latch was cleared once, at 2026-10-12T18:38:41Z, with its cause still installed. Until the pre-send age fix is installed **it is not cleared again**: H5 stays halted until Helm has installed the fix. Read what the running executor uses from its newest `start` row:
+
+```
+sudo dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl | grep '"kind":"start"' | tail -n 1 | grep -o '"max_trigger_age_ms":[0-9]*'
+```
+
+The fix is installed only if this prints a value of 3500 or less. It prints 10000 on the tree installed on 2026-10-12 (`f873aac`; MiScusi job #884). No output, an error or a larger value means not installed. If the latch fires with the fix installed, the pre-send limit did not prevent a late landing: tell the owner, and do not clear it until quant-proof has read that trade's timing keys. Every clear follows the Wind-down as written. The first clear skipped its gate step; do not repeat that. Close the gate with `STOP` (the manager's file; only Helm re-creates `LIVE_OK`), wait for `open=0 pending=0`, stop the unit, clear, start, check `--status`, and only then remove `STOP`.
 
 ## CAP-PICK: the exporter, the shadow restart and the two FINAL markers (manager)
 
