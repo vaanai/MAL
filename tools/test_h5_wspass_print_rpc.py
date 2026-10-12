@@ -344,11 +344,11 @@ class TestAskAndReport(Base):
         self.setUp()
         self.two_rounds([sg("a2")])
         self.assertEqual(self.report()[0]["reading"], "no conclusion")
-        # every ws_pass not_returned is still allowed by (b) only if the rest are returned: here refused returned, so (b)
+        # 0 returned / 2 not_returned, refused returned: (b) needs exactly 1 not_returned and at least 1 returned (quant-proof, PR #619)
         self.tearDown()
         self.setUp()
         self.two_rounds([sg("r1")])
-        self.assertEqual(self.report()[0]["reading"], W.READING_ABSENT)
+        self.assertEqual(self.report()[0]["reading"], "no conclusion")
         # a would-pass print pending (never asked twice) blocks both readings
         self.tearDown()
         self.setUp()
@@ -360,6 +360,52 @@ class TestAskAndReport(Base):
         self.setUp()
         self.two_rounds([sg("r1")], ws_names=(), ref_names=("r1",))
         self.assertEqual(self.report()[0]["reading"], "no conclusion")
+
+    def test_reading_b_only_on_the_declared_split(self):
+        # quant-proof's table on PR #619: every row below is "no conclusion"
+        five = ("a1", "a2", "a3", "a4", "a5")
+        cases = [
+            (dict(found=[sg("a1"), sg("a2"), sg("a3"), sg("r1")], ws_names=five), "3 returned / 2 not_returned, refused returned"),
+            (dict(found=[sg("r1")], ws_names=five), "0 / 5, refused returned"),
+            (dict(found=[], ws_names=("a1",), ref_names=()), "0 / 1, no refused planned, nothing returned at all"),
+            (dict(found=[sg("a1"), sg("a2"), sg("a3"), sg("a4"), sg("r1")], ws_names=five, wp_names=("w1",)), "4 / 1, refused returned, a would_pass not_returned"),
+            (dict(found=[sg("a1"), sg("a2"), sg("a3"), sg("a4")], ws_names=five, ref_names=()), "4 / 1 with no refused planned"),
+        ]
+        for kw, label in cases:
+            with self.subTest(label):
+                self.tearDown()
+                self.setUp()
+                self.two_rounds(**kw)
+                self.assertEqual(self.report()[0]["reading"], "no conclusion")
+        # the declared row itself: 4 returned and 1 not_returned, refused 1 returned
+        self.tearDown()
+        self.setUp()
+        self.two_rounds([sg("a1"), sg("a2"), sg("a3"), sg("a4"), sg("r1")], ws_names=five)
+        rep = self.report()[0]
+        self.assertEqual((rep["classes"]["ws_pass"]["returned"], rep["classes"]["ws_pass"]["not_returned"]), (4, 1))
+        self.assertEqual(rep["reading"], W.READING_ABSENT)
+        self.assertEqual(rep["state_torn_lines_n"], 0)
+
+    def test_torn_state_line_gives_no_conclusion(self):
+        # every answer returned, one torn line in the state file
+        self.two_rounds([sg("a1"), sg("a2"), sg("r1")])
+        with open(self.out / C.STATE_NAME, "a", encoding="utf-8") as fh:
+            fh.write('{"sig": "' + sg("a1") + '", "result": "fou\n')
+        rep = self.report()[0]
+        self.assertEqual(rep["state_torn_lines_n"], 1)
+        self.assertEqual(rep["reading"], "no conclusion")
+
+    def test_null_torn_null_is_not_a_conclusion(self):
+        # a null, a torn line that may have been a `found`, then a null 1,200,000 ms after the first
+        self.full_plan()
+        self.ask(found=[sg("a1"), sg("r1")])
+        with open(self.out / C.STATE_NAME, "a", encoding="utf-8") as fh:
+            fh.write('{"sig": "' + sg("a2") + '", "result": "fou\n')
+        self.run_cmd("reask", Fake(found=[sg("a1"), sg("r1")]), Clock(T_ASK + 1_200_000))
+        rep = self.report()[0]
+        self.assertEqual(rep["state_torn_lines_n"], 1)
+        self.assertEqual(rep["classes"]["ws_pass"]["not_returned"], 1)
+        self.assertEqual(rep["reading"], "no conclusion")
 
     def test_reading_sentences_are_in_the_docstring_word_for_word(self):
         for s in (W.READING_ALL, W.READING_ABSENT):

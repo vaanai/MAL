@@ -36,9 +36,10 @@ the two asks >= 600,000 ms apart; an error is never not_returned; a signature no
 
 READING RULE, fixed before any ask (ruling table; `reading` is exactly one of these three sentences, chosen only by the conditions below; the first has
 the ws_pass count in place of {n}):
-  (a) every ws_pass returned (at least 1), no error and no pending in any class, nothing unaskable:
+  (a) every ws_pass returned (at least 1), no error and no pending in any class, nothing unaskable, no torn state line:
       "all {n} were returned at finalized commitment; the missing row is on the tape's side; it is not shown that the print's reserves were right"
-  (b) ws_pass not_returned >= 1, every other ws_pass returned, every refused returned, no error and no pending in any class, nothing unaskable:
+  (b) exactly 1 ws_pass not_returned, every other ws_pass returned (at least 1), at least 1 refused and every refused returned, no would_pass
+      not_returned, no error and no pending in any class, nothing unaskable, no torn state line:
       "consistent with a live-feed print for a transaction not in a finalized block; not proof; the count does not name which print"
   (c) anything else:
       "no conclusion"
@@ -228,7 +229,7 @@ def cmd_report(out_dir: Path) -> dict:
     meta = plan.get(META_KEY)
     if not isinstance(meta, dict) or meta.get("plan_selection_sha256") != selection_hash(meta):
         raise SystemExit("refused: plan is not this tool's, or its selection hash does not match")
-    rows = C.read_jsonl(out_dir / C.STATE_NAME)
+    rows, torn = C.read_jsonl_ex(out_dir / C.STATE_NAME)
     by = C.states_by_sig(rows)
     per: dict = {}
     for cls in CLASS_ORDER:
@@ -245,10 +246,11 @@ def cmd_report(out_dir: Path) -> dict:
         d["unaskable"] = meta["unaskable"][cls]
         per[cls] = d
     ws, rf = per["ws_pass"], per["refused"]
-    open_ = sum(per[c]["error"] + per[c]["pending"] + per[c]["unaskable"] for c in CLASS_ORDER)
+    open_ = sum(per[c]["error"] + per[c]["pending"] + per[c]["unaskable"] for c in CLASS_ORDER) + torn
     if ws["planned"] >= 1 and ws["returned"] == ws["planned"] and open_ == 0:
         reading = READING_ALL.format(n=ws["planned"])
-    elif ws["not_returned"] >= 1 and ws["returned"] + ws["not_returned"] == ws["planned"] and rf["returned"] == rf["planned"] and open_ == 0:
+    elif (ws["not_returned"] == 1 and ws["returned"] == ws["planned"] - 1 and ws["returned"] >= 1 and rf["planned"] >= 1
+          and rf["returned"] == rf["planned"] and per["would_pass"]["not_returned"] == 0 and open_ == 0):
         reading = READING_ABSENT
     else:
         reading = READING_NONE
@@ -256,7 +258,7 @@ def cmd_report(out_dir: Path) -> dict:
     return {"tool": TOOL, "spec": SPEC, "classes": per, "interim": interim, "interim_label": "interim, not the deciding read" if interim else None,
             "cross_class_duplicates": meta["cross_class_duplicates"], "tool_sha256": tool_sha(), "plan_tool_sha256": meta["tool_sha256"],
             "plan_selection_sha256": meta["plan_selection_sha256"], "plan_sha256": sha256_bytes((out_dir / C.PLAN_NAME).read_bytes()),
-            "reask_rounds_n": len({r.get("round") for r in rows if str(r.get("round")).startswith("reask")}), "reading": reading,
+            "reask_rounds_n": len({r.get("round") for r in rows if str(r.get("round")).startswith("reask")}), "state_torn_lines_n": torn, "reading": reading,
             "note": "a live-exposure check outside items 1 to 10: it can count against phase 2, never for it; exit 0 is not a verdict"}
 
 
