@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-12T16:41:46Z",
+ "updated_utc": "2026-10-12T18:41:45Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-out-of-rule-latch-1012",
+   "kind": "other",
+   "title": "H5 halted itself at 18:28 UTC; the manager cleared the halt at 18:38 UTC",
+   "detail": "At 18:28 UTC H5 halted itself on a buy that landed about 6.3 s after its signal (the limit is 5 s), because the live feed delivered that signal 5.4 s late. It sold at once. At 18:38 UTC the manager cleared the halt after checking that nothing was open. H5 trades again at the smallest stake (0.02 SOL). A fix that refuses such late signals before buying is owed and needs Helm's reinstall. If the same halt fires again before the fix, H5 stays stopped. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-12T18:41:45Z"
+  },
   {
    "id": "h5-wspass-rpc-check-1012",
    "kind": "result",
@@ -601,6 +608,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261012-1841-h5-latch",
+   "from": "claude",
+   "text": "H5 halted itself at 18:28 UTC on a buy that landed about 6.3 s after its signal. The limit is 5 s, because the live feed delivered that signal 5.4 s late. It sold at once. The manager cleared the halt at 18:38 UTC after checking that nothing was open. H5 trades again at the smallest stake. A fix that refuses such late signals before buying is owed and needs Helm's reinstall. If the same halt fires again before the fix, H5 stays stopped. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-12T18:41:45Z"
+  },
   {
    "id": "fy-20261012-1641-wspass-rpc",
    "from": "claude",
