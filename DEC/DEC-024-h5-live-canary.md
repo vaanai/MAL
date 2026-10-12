@@ -657,6 +657,14 @@ Written before any side-by-side union data was read. First written 2026-10-11T06
 - **Status.** A trigger record whose `base_union.status` is `regress` or `ahead` counts as **not** `ok` in item 4's 90% share.
 - **Clean checkout.** A later reinstall of the shadow that is to count toward item 4 records an empty `git status --porcelain` with its start.
 
+### Phase note: pre-send trigger age limit (2026-10-12)
+
+On 2026-10-12 the live feed delivered a trigger print 5,419 ms after its chain time. The executor sent the buy and it landed 29 slots after the trigger. That is more than the 5 s entry window (`ENTRY_LATE_S`), so it was an `out_of_rule_entry`: an immediate exit and a latched halt. The old pre-send limit on trigger age was 10 s, so a trigger between about 4 s and 10 s late was bought although it could not land in the rule.
+
+The change: the three existing stale checks (`stale_trigger` twice, `stale_trigger_chain`) now use `PRESEND_MAX_TRIGGER_AGE_MS` = 3_500 ms, which is `ENTRY_LATE_S` less a 1.5 s allowance for build, send and landing. A config value may shorten it and never lengthen it. The change only adds refusals. A trigger the old limit refused is still refused. C1-NF keeps its own 10 s value.
+
+It is not in force until Helm's pinned reinstall of the named sha. It is not a retune of the rule: the 5 s entry window, the halt, the exit logic and every rule threshold are unchanged. It needs "Reviewer OK" and "QP OK" on the exact head.
+
 ## Open for the owner
 
 1. **The 1 SOL scale-up route.** Answered 2026-10-08 on the `OWNER_OVERRIDE_CONFIRMED:` line in section 7 (see its provenance note). The trial's stake, open-position cap and stops at about 1 SOL were answered 2026-10-09 on the `OWNER_LADDER_CONFIRMED:` line (Amendment 3: T1 code-constant limits). Still open: T2 and anything above it.
