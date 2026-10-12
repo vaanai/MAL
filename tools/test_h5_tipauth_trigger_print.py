@@ -369,6 +369,7 @@ class TestSinglePass(Base):
                 per_file[h].append(tip_row(sig=sig, pool=pl))
             per_file[h].append(tip_row(sig=sig + "n", pool="X"))  # other rows in the file
         per_file[T0].append({**tip_row(sig="S01x", pool="P1"), "also": '"signature":"' + sg("S02x") + '"'})  # one line with two wanted patterns
+        per_file[T0].append({"nested": {"signature": sg("S02x")}, **tip_row(sig="S01x", pool="P1")})  # N1-style: a real second byte pattern before the row's own key
         return trigs, per_file
 
     def test_grouped_equals_per_signature(self):
@@ -390,6 +391,18 @@ class TestSinglePass(Base):
             self.assertEqual(norm(grouped), norm(single), f.name)
             self.assertEqual(stat["signatures"], 30)
             self.assertGreaterEqual(stat["matches"], stat["lines_parsed"])
+            if f.name == f"trades-{hour_name(T0)}.jsonl":
+                self.assertGreater(stat["matches"], stat["lines_parsed"])
+
+    def test_n1_nested_pattern_first_row_filed_under_own_signature(self):
+        self.tip([{"nested": {"signature": sg("SIGB")}, **tip_row(sig="SIGA")}])
+        r = self.run_([trg(sig="SIGA"), trg(sig="SIGB", pool="P2")])["classes"]["would_pass"]
+        self.assertEqual((r["present_equal"], r["absent"]), (1, 1))
+
+    def test_n2_nested_pattern_first_different_row_not_dropped(self):
+        self.tip([tip_row(sig="SIGA"), {"nested": {"signature": sg("SIGB")}, **tip_row(sig="SIGA", b=1)}])
+        r = self.run_([trg(sig="SIGA"), trg(sig="SIGB", pool="P2")])["classes"]["would_pass"]
+        self.assertEqual((r["present_different"], r["present_equal"]), (1, 0))
 
     def test_line_with_same_signature_twice_parsed_once(self):
         row = tip_row(sig="A")

@@ -169,10 +169,10 @@ def _scan_file(path: Path, sigs: list[str], counts: collections.Counter, object_
         return out, False, stat
     try:
         rx = re.compile(b'"signature":"(' + b"|".join(re.escape(sg.encode("ascii")) for sg in sorted(sigs, key=len, reverse=True)) + b')"')
+        wanted = set(sigs)
         seen_lines: set[int] = set()
         for m in rx.finditer(mm):
             stat["matches"] += 1
-            sig = m.group(1).decode("ascii")
             s = mm.rfind(b"\n", 0, m.start()) + 1
             if s in seen_lines:
                 continue
@@ -187,9 +187,10 @@ def _scan_file(path: Path, sigs: list[str], counts: collections.Counter, object_
                 counts["tip_bad_line"] += 1
                 continue
             stat["lines_parsed"] += 1
-            if isinstance(row, dict):
-                # a line is attributed to every wanted signature it holds as the row's own signature (the outcome re-checks the triple)
-                out.setdefault(sig, []).append({k: row.get(k) for k in TIP_ROW_KEYS})
+            own = row.get("signature") if isinstance(row, dict) else None
+            if isinstance(own, str) and own in wanted:
+                # filed under the row's OWN signature field, never under the pattern that matched first in the line
+                out.setdefault(own, []).append({k: row.get(k) for k in TIP_ROW_KEYS})
     finally:
         mm.close()
     stat["elapsed_s"] = time.monotonic() - t0
