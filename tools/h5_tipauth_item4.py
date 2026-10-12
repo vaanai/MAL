@@ -1,0 +1,603 @@
+#!/usr/bin/env python3
+"""H5 shadow, report-only tipauth field: the frozen ITEM-4 COUNT LIST (PR #610, quant-proof round 3, comment 6121123397; C5 and B' items from
+comment 6120949717; ruling B and the first list from comment 6120633640; the newest comment governs).
+
+COUNT-ONLY. It reads decision-time and bookkeeping fields of start / hb / trigger / pool / gap records of the H5 shadow's hourly files
+(h5-shadow-YYYY-MM-DDTHH.jsonl) and nothing else. No outcome, no fill, no P&L, no join to any pick set. No network call (the RPC census
+of item 7 is a later step: this tool only lists the signatures to look up). It is written before the data exists and may only be tightened.
+Where a definition in the comments is ambiguous it takes the STRICTER reading; the choices are listed in AMBIGUITIES below.
+
+The read is restricted by ALLOWED_KEYS (a flat allow-list of every key name the tool ever looks at, on any nesting level). The test
+tools/test_h5_tipauth_item4.py wraps every parsed object in a dict that records accesses and fails on any key outside the list.
+
+  python3 tools/h5_tipauth_item4.py --shadow-dir DIR --since-ms T0 [--until-ms T1] [--out FILE] [--table]
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import json
+import math
+import re
+import statistics
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+TOOL = "h5_tipauth_item4"
+SPEC = {"round3": "PR #610 comment 6121123397", "round2": "PR #610 comment 6120949717", "round1": "PR #610 comment 6120633640"}
+
+TIPAUTH_FIELD = "base_breaks_unresolved_settled_tipauth"
+UNION_FIELD = "base_breaks_unresolved_settled_union"
+WS_FIELD = "base_breaks_unresolved_settled"
+DROPPED_LIST_MAX = 20  # TIPAUTH_DROPPED_LIST_MAX in tools/h5_shadow.py
+RSS_LIMIT_BYTES = 1_000_000_000  # the 1.0 GB re-read rule (stricter of 1e9 and 2**30)
+HOUR_MS = 3_600_000
+BOUNDARY_MS = 120_000  # "within 2 minutes of a UTC hour boundary"
+MIN_HOURS, MIN_NOGAP_PV_WS1 = 24.0, 10
+COVERAGE_MIN, INCOMPLETE_MAX, LEFT_D_MAX, LEFT_D_MIN_TESTED = 0.90, 0.05, 0.01, 100
+
+# Every key name this tool ever reads, on any level (top level of a record, base_union, base_tipauth, hb counters / tip_union / mem).
+# No outcome, price, fill or P&L key is, or may be, in this set.
+ALLOWED_KEYS = frozenset({
+    # all records
+    "type", "t_ms", "sealed", "h5_look2_sealed",
+    # start
+    "code_sha", "rule",
+    # gap
+    "kind",
+    # trigger / pool (decision-time and bookkeeping)
+    "variant", "pool", "gap", "slot", "boost_src", WS_FIELD, UNION_FIELD, TIPAUTH_FIELD, "base_union", "base_tipauth",
+    # base_union
+    "status", "tip_only", "both_diff", "tip_first_slot",
+    # base_tipauth
+    "dropped_n", "dropped_first_slot", "dropped_last_slot", "cover_lo", "cover_hi", "kept_ws_only_before_cover", "kept_ws_only_above_cover",
+    "kept_ws_only_sig_on_tip", "dropped_boost_n", "dropped_sells_n", "orphaned_by_drop_n", "tipauth_nosettle", "dropped", "margin_slots",
+    # hb
+    "counters", "tip_union", "mem", "union_errors", "rss_kb", "rss_anon_kb", "hwm_kb", "est_mb", "est_tipauth_mb", "tipauth_wsonly",
+    "tipauth_tip_sigs", "union_members",
+})
+
+BU_KEYS = ("status", "tip_only", "both_diff", "tip_first_slot")
+BT_KEYS = ("status", "dropped_n", "dropped_first_slot", "dropped_last_slot", "cover_lo", "cover_hi", "kept_ws_only_before_cover",
+           "kept_ws_only_above_cover", "kept_ws_only_sig_on_tip", "dropped_boost_n", "dropped_sells_n", "orphaned_by_drop_n", "tipauth_nosettle",
+           "dropped", "margin_slots")
+HB_MEM_KEYS = ("rss_kb", "rss_anon_kb", "hwm_kb", "est_mb", "est_tipauth_mb", "tipauth_wsonly", "tipauth_tip_sigs", "union_members")
+
+AMBIGUITIES = [
+    ("A01", "Which start record, when more than one has t_ms >= T0",
+     "Round 3 / round 1: 'Counted only from the shadow restart ... (start record code_sha = that merge commit)'. Chosen: the LAST start record at or after T0 "
+     "is the run origin (stricter: a later restart resets the 24 h); all start t_ms and code_sha are reported; n_starts_after_t0 > 1 blocks proposal_allowed."),
+    ("A02", "Elapsed hours", "Item 1: 'at least 24 h from that start record'. Chosen: (largest t_ms of any used record, capped by --until-ms) minus the origin start t_ms."),
+    ("A03", "'trigger records' in the 90% coverage (item 2)", "Item 2: 'on at least 90% of trigger records'. Chosen: pv and fv triggers; both the share over ALL triggers and the "
+     "share over no-gap pv triggers with ws >= 1 must reach 90% (stricter). 'ok' needs status == 'ok' AND a non-null integer value."),
+    ("A04", "no-gap", "'gap false' is read as gap is exactly False; a missing or null gap is not no-gap."),
+    ("A05", "Union ok (item 2)", "Item 2: 'base_union.status ok on at least 90%'. Chosen: status == 'ok' and the union value base_breaks_unresolved_settled_union a non-null integer."),
+    ("A06", "Would-pass variants", "C1-C6 do not name a variant. Chosen: would-pass is computed over pv and fv triggers together (stricter for the 'any left D' and "
+     "'fully enumerated' rules); the pv-only count is reported next to it."),
+    ("A07", "C3 'boost_src is not behavioural'", "Chosen: boost_src must be present and a string other than 'behavioural' (a missing key fails C3)."),
+    ("A08", "C6 'v1 only'", "Not decidable from records. The start record 'rule' ids are reported; C6 is NOT applied and is listed as outside_tool_pending."),
+    ("A09", "'removes' per C condition (item 6)", "Reported three ways: sequential funnel C1..C4, C5a, C5b, C5c; leave-one-out (passes all others, fails this one); and for "
+     "C5 parts among C1-C4 triggers: failing the part at all, failing only that part, failing all three, failing any."),
+    ("A10", "Tip incompleteness share (item 5)", "Items 5 / B'5: share of ws-0 no-gap plain pool closes with tipauth >= 1 OR orphaned_by_drop_n >= 1. Chosen: the denominator "
+     "is closes with base_tipauth.status ok and a non-null value (stricter: nulls do not dilute); the share over all such closes is also reported. 'Plain pool close' = type pool, "
+     "unsealed, whatever the reason."),
+    ("A11", "Consistency checks apply to", "Every unsealed trigger and pool record that carries a base_tipauth dict. 'a base_tipauth without the dropped key' is counted literally "
+     "(an exception record counts here and in union_errors). A malformed dropped entry (not [sig, event_index, int slot]) is counted as its own violation. A missing trigger slot or "
+     "margin_slots when the trigger bound must be checked is a violation. union_errors = largest hb counters.union_errors in the run."),
+    ("A12", "'dropped_n <= 20 with last entry slot != dropped_last_slot'", "Also applied to an empty list: dropped_first_slot / dropped_last_slot must then be null (status ok)."),
+    ("A13", "Margin test denominator (item 10)", "'Tested' = entries classified still dropped or left D. Undetermined entries are reported and excluded from the denominator "
+     "(stricter: raises the share). An entry whose trigger has no close record with status ok and cover_hi >= trigger slot is undetermined (never silently skipped). The close used "
+     "is the first close of the pool with t_ms >= the trigger's. 'Left D' share > 1%: share of left D over tested; with fewer than 100 tested, one left D fires."),
+    ("A14", "'Fully enumerated' on a would-pass trigger", "dropped is a list and len(dropped) == dropped_n on the TRIGGER record (round 3 definition). Any failure is a consistency failure."),
+    ("A15", "Hour-boundary share", "Triggers (pv and fv, all statuses) with t_ms within 120 s of a UTC hour boundary; share with status tip_pending. Reported only; no threshold is declared."),
+    ("A16", "Item 8 (trigger print on the tip, equal pre-trade q and base) and item 9 decision-to-send ms", "Need the tip tape and the executor's records, outside the shadow "
+     "records this tool may read. Reported null; they are in outside_tool_pending and are not decided here."),
+    ("A17", "RSS rule", "Item 9: 'rss against the 1.0 GB re-read rule'. Chosen: met only if the largest hb rss_kb * 1024 < 1,000,000,000."),
+    ("A18", "proposal_allowed", "Computed from the rules this tool owns only. true does NOT mean a proposal is allowed: outside_tool_pending (RPC census, item 8, decision-to-send, C6) is "
+     "still open and listed."),
+    ("A19", "Run window for non-start records", "A record belongs to the run if its integer t_ms is >= the origin start t_ms and <= --until-ms; records without an integer t_ms are counted and ignored."),
+]
+
+
+def isint(x: Any) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def bucket(x: Any) -> str:
+    if not isint(x):
+        return "null"
+    return "0" if x == 0 else ("1+" if x > 0 else "neg")
+
+
+def share(a: int, b: int) -> float | None:
+    return None if b == 0 else round(a / b, 6)
+
+
+def summ(vals: list) -> dict:
+    ints = sorted(v for v in vals if isint(v))
+    n = len(ints)
+    out: dict = {"n": n, "non_int": len(vals) - n, "min": None, "median": None, "p90": None, "max": None, "sum": None}
+    if n:
+        out.update({"min": ints[0], "median": statistics.median(ints), "p90": ints[max(0, math.ceil(0.9 * n) - 1)], "max": ints[-1], "sum": sum(ints)})
+    return out
+
+
+# ---- reading --------------------------------------------------------------------------------------------------------------------------------
+
+_FILE_RE = re.compile(r"^h5-shadow-(\d{4})-(\d{2})-(\d{2})T(\d{2})\.jsonl$")
+
+
+def hour_files(shadow_dir: Path, since_ms: int, until_ms: int | None) -> list[Path]:
+    import calendar
+    out = []
+    for p in sorted(shadow_dir.iterdir()):
+        m = _FILE_RE.match(p.name)
+        if not m:
+            continue
+        y, mo, d, h = (int(g) for g in m.groups())
+        start = calendar.timegm((y, mo, d, h, 0, 0)) * 1000
+        if start + HOUR_MS <= since_ms - HOUR_MS or (until_ms is not None and start > until_ms):
+            continue  # one hour of slack before T0: a file is named by its hour of writing
+        out.append(p)
+    return out
+
+
+def iter_records(files: list[Path], counts: collections.Counter, object_hook: Callable | None) -> Any:
+    for f in files:
+        with open(f, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line, object_hook=object_hook)
+                except ValueError:
+                    counts["bad_line"] += 1
+                    continue
+                if not isinstance(rec, dict):
+                    counts["bad_line"] += 1
+                    continue
+                yield rec
+
+
+def view_sub(d: Any, keys: tuple, has_dropped: bool = False) -> dict | None:
+    if not isinstance(d, dict):
+        return None
+    v = {k: d.get(k) for k in keys}
+    if has_dropped:
+        v["_has_dropped"] = "dropped" in d
+    return v
+
+
+def view_record(rec: dict, typ: str) -> dict:
+    """The only place a trigger / pool record is read. Plain dict out."""
+    return {"type": typ, "pool": rec.get("pool"), "variant": rec.get("variant"), "t_ms": rec.get("t_ms"), "gap": rec.get("gap"), "slot": rec.get("slot"),
+            "boost_src": rec.get("boost_src"), "ws": rec.get(WS_FIELD), "uval": rec.get(UNION_FIELD), "tval": rec.get(TIPAUTH_FIELD),
+            "bu": view_sub(rec.get("base_union"), BU_KEYS), "bt": view_sub(rec.get("base_tipauth"), BT_KEYS, True)}
+
+
+# ---- conditions -----------------------------------------------------------------------------------------------------------------------------
+
+def bt_get(v: dict, k: str) -> Any:
+    return None if v["bt"] is None else v["bt"].get(k)
+
+
+def conditions(v: dict) -> dict[str, bool]:
+    """C1..C5 (C6 is not decidable from records). Strict: a missing or non-integer value fails."""
+    bt, bu = v["bt"], v["bu"]
+    c1 = (v["gap"] is False and bu is not None and bu.get("status") == "ok" and bt is not None and bt.get("status") == "ok"
+          and isint(v["tval"]) and v["tval"] == 0 and isint(v["ws"]) and v["ws"] >= 1)
+    c2 = bu is not None and isint(bu.get("tip_only")) and bu["tip_only"] == 0 and isint(bu.get("both_diff")) and bu["both_diff"] == 0
+    c3 = bt is not None and isint(bt.get("dropped_boost_n")) and bt["dropped_boost_n"] == 0 and isinstance(v["boost_src"], str) and v["boost_src"] != "behavioural"
+    dn = None if bt is None else bt.get("dropped_n")
+    c4 = bt is not None and isint(dn) and 1 <= dn <= 5 and isint(bt.get("kept_ws_only_sig_on_tip")) and bt["kept_ws_only_sig_on_tip"] == 0
+    c5a = bt is not None and isint(bt.get("orphaned_by_drop_n")) and bt["orphaned_by_drop_n"] == 0
+    c5b = bt is not None and isint(bt.get("tipauth_nosettle")) and bt["tipauth_nosettle"] == 0
+    c5c = bt is not None and isint(bt.get("dropped_first_slot")) and isint(bt.get("cover_lo")) and bt["dropped_first_slot"] > bt["cover_lo"]
+    return {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5a": c5a, "C5b": c5b, "C5c": c5c}
+
+
+def would_pass(c: dict) -> bool:
+    return all(c.values())
+
+
+def fully_enumerated(v: dict) -> bool:
+    bt = v["bt"]
+    return bt is not None and isinstance(bt.get("dropped"), list) and isint(bt.get("dropped_n")) and len(bt["dropped"]) == bt["dropped_n"]
+
+
+# ---- consistency (item 4) -------------------------------------------------------------------------------------------------------------------
+
+CONSIST_NAMES = [
+    "dropped_n0_tipauth_differs_from_union", "nonnull_tipauth_status_not_ok", "union_errors", "nosettle_below_tipauth", "orphaned_ge1_with_dropped_n0",
+    "ok_with_null_orphaned_nosettle_or_dropped_n", "notok_with_nonnull_orphaned_nosettle_or_dropped_n", "ok_dropped_not_list_of_min_dropped_n_20",
+    "notok_with_nonnull_dropped", "base_tipauth_without_dropped_key", "entry_slot_outside_cover", "trigger_entry_above_slot_minus_margin",
+    "first_entry_slot_ne_dropped_first_slot", "last_entry_slot_ne_dropped_last_slot", "repeated_signature_event_index", "dropped_entry_malformed",
+    "would_pass_trigger_not_fully_enumerated"]
+
+
+def consistency_record(v: dict, wp: bool) -> list[str]:
+    bt = v["bt"]
+    if bt is None:
+        return []
+    bad: list[str] = []
+    st, dn = bt.get("status"), bt.get("dropped_n")
+    ok = st == "ok"
+    if dn == 0 and isint(dn) and v["tval"] != v["uval"]:
+        bad.append("dropped_n0_tipauth_differs_from_union")
+    if v["tval"] is not None and not ok:
+        bad.append("nonnull_tipauth_status_not_ok")
+    if isint(bt.get("tipauth_nosettle")) and isint(v["tval"]) and bt["tipauth_nosettle"] < v["tval"]:
+        bad.append("nosettle_below_tipauth")
+    if isint(bt.get("orphaned_by_drop_n")) and bt["orphaned_by_drop_n"] >= 1 and dn == 0 and isint(dn):
+        bad.append("orphaned_ge1_with_dropped_n0")
+    trio = (bt.get("orphaned_by_drop_n"), bt.get("tipauth_nosettle"), dn)
+    if ok and any(x is None for x in trio):
+        bad.append("ok_with_null_orphaned_nosettle_or_dropped_n")
+    if not ok and any(x is not None for x in trio):
+        bad.append("notok_with_nonnull_orphaned_nosettle_or_dropped_n")
+    dl = bt.get("dropped")
+    if ok and not (isinstance(dl, list) and isint(dn) and len(dl) == min(dn, DROPPED_LIST_MAX)):
+        bad.append("ok_dropped_not_list_of_min_dropped_n_20")
+    if not ok and dl is not None:
+        bad.append("notok_with_nonnull_dropped")
+    if not bt.get("_has_dropped"):
+        bad.append("base_tipauth_without_dropped_key")
+    if isinstance(dl, list):
+        slots, keys, malformed = [], [], False
+        for e in dl:
+            if isinstance(e, list) and len(e) == 3 and isint(e[2]) and isinstance(e[0], str):
+                slots.append(e[2])
+                keys.append((e[0], e[1]))
+            else:
+                malformed = True
+        if malformed:
+            bad.append("dropped_entry_malformed")
+        lo, hi = bt.get("cover_lo"), bt.get("cover_hi")
+        if ok and slots and (not (isint(lo) and isint(hi)) or any(s < lo or s > hi for s in slots)):
+            bad.append("entry_slot_outside_cover")
+        if ok and v["type"] == "trigger" and slots:
+            mg = bt.get("margin_slots")
+            if not (isint(v["slot"]) and isint(mg)) or any(s > v["slot"] - mg for s in slots):
+                bad.append("trigger_entry_above_slot_minus_margin")
+        if ok and not malformed:
+            if (slots[0] if slots else None) != bt.get("dropped_first_slot"):
+                bad.append("first_entry_slot_ne_dropped_first_slot")
+            if isint(dn) and dn <= DROPPED_LIST_MAX and (slots[-1] if slots else None) != bt.get("dropped_last_slot"):
+                bad.append("last_entry_slot_ne_dropped_last_slot")
+        if len(set(keys)) != len(keys):
+            bad.append("repeated_signature_event_index")
+    if wp and not fully_enumerated(v):
+        bad.append("would_pass_trigger_not_fully_enumerated")
+    return bad
+
+
+# ---- the analysis ---------------------------------------------------------------------------------------------------------------------------
+
+def tri_cross() -> dict:
+    cells: collections.Counter = collections.Counter()
+    for ws in ("0", "1+"):
+        for un in ("0", "1+", "null"):
+            for ta in ("0", "1+", "null"):
+                for g in ("F", "T"):
+                    cells[f"ws={ws}|union={un}|tipauth={ta}|gap={g}"] = 0
+                    if un != "null":
+                        cells[f"ws={ws}|union={un}|tipauth={ta}|gap={g}|tip_first_slot=null"] = 0
+                        cells[f"ws={ws}|union={un}|tipauth={ta}|gap={g}|tip_first_slot=set"] = 0
+    return cells
+
+
+def cross_key(v: dict) -> list[str]:
+    g = "F" if v["gap"] is False else ("T" if v["gap"] is True else "null")
+    ub = bucket(v["uval"])
+    k = f"ws={bucket(v['ws'])}|union={ub}|tipauth={bucket(v['tval'])}|gap={g}"
+    out = [k]
+    if ub != "null":
+        tfs = None if v["bu"] is None else v["bu"].get("tip_first_slot")
+        out.append(k + ("|tip_first_slot=null" if tfs is None else "|tip_first_slot=set"))
+    return out
+
+
+def status_of(v: dict) -> str:
+    if v["bt"] is None:
+        return "missing"
+    s = v["bt"].get("status")
+    return "null" if s is None else str(s)
+
+
+def tip_ok(v: dict) -> bool:
+    return v["bt"] is not None and v["bt"].get("status") == "ok" and isint(v["tval"])
+
+
+def union_ok(v: dict) -> bool:
+    return v["bu"] is not None and v["bu"].get("status") == "ok" and isint(v["uval"])
+
+
+def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object_hook: Callable | None = None) -> dict:
+    counts: collections.Counter = collections.Counter()
+    files = hour_files(shadow_dir, since_ms, until_ms)
+    # pass 1: starts (t_ms >= T0). pass 2: the run's records. Two passes, because the origin is the LAST start and records precede nothing.
+    starts: list[dict] = []
+    for rec in iter_records(files, counts, object_hook):
+        if rec.get("type") == "start":
+            t = rec.get("t_ms")
+            if isint(t) and t >= since_ms and (until_ms is None or t <= until_ms):
+                starts.append({"t_ms": t, "code_sha": rec.get("code_sha"), "rule": rec.get("rule")})
+    starts.sort(key=lambda s: (s["t_ms"], str(s["code_sha"])))
+    res: dict = {"tool": TOOL, "spec": SPEC, "since_ms": since_ms, "until_ms": until_ms, "files": [p.name for p in files]}
+    res["starts"] = {"n_starts_after_t0": len(starts), "starts": starts, "origin_t_ms": starts[-1]["t_ms"] if starts else None,
+                     "distinct_code_sha": sorted({str(s["code_sha"]) for s in starts}), "rules": sorted({str(s["rule"]) for s in starts})}
+    res["ambiguities"] = [{"id": a, "topic": t, "choice": c} for a, t, c in AMBIGUITIES]
+    if not starts:
+        res["error"] = "no start record at or after --since-ms"
+        res["verdict"] = {"proposal_allowed": False, "blocking_reasons": ["no_start_record"], "thresholds": {}, "outside_tool_pending": OUTSIDE}
+        return res
+    origin = starts[-1]["t_ms"]
+
+    trig: list[dict] = []
+    pools: list[dict] = []
+    gap_kinds: collections.Counter = collections.Counter()
+    hbs: list[dict] = []
+    max_t = origin
+    for rec in iter_records(files, counts, object_hook):
+        t = rec.get("t_ms")
+        typ = rec.get("type")
+        if not isint(t):
+            counts["records_without_int_t_ms"] += 1
+            continue
+        if t < origin or (until_ms is not None and t > until_ms):
+            continue
+        if typ not in ("trigger", "pool", "gap", "hb"):
+            continue
+        max_t = max(max_t, t)
+        if typ in ("trigger", "pool"):
+            sl, h5 = rec.get("sealed") is True, rec.get("h5_look2_sealed") is True
+            if sl or h5:
+                counts[f"skipped_{typ}_sealed" if sl else f"skipped_{typ}_h5_look2_sealed"] += 1
+                if sl and h5:
+                    counts[f"skipped_{typ}_both_flags"] += 1
+                continue
+            (trig if typ == "trigger" else pools).append(view_record(rec, typ))
+        elif typ == "gap":
+            k = rec.get("kind")
+            gap_kinds[k if isinstance(k, str) else "null"] += 1
+        else:  # hb
+            ctr, tu = rec.get("counters"), rec.get("tip_union")
+            mem = tu.get("mem") if isinstance(tu, dict) else None
+            hbs.append({"t_ms": t, "union_errors": ctr.get("union_errors") if isinstance(ctr, dict) else None,
+                        **{k: (mem.get(k) if isinstance(mem, dict) else None) for k in HB_MEM_KEYS}})
+    end_t = max_t
+    res["window"] = {"origin_t_ms": origin, "last_t_ms": end_t, "elapsed_h": round((end_t - origin) / HOUR_MS, 4)}
+    res["skipped"] = {"sealed_trigger": counts["skipped_trigger_sealed"], "h5_look2_sealed_trigger": counts["skipped_trigger_h5_look2_sealed"],
+                      "sealed_pool": counts["skipped_pool_sealed"], "h5_look2_sealed_pool": counts["skipped_pool_h5_look2_sealed"],
+                      "both_flags": counts["skipped_trigger_both_flags"] + counts["skipped_pool_both_flags"], "bad_line": counts["bad_line"],
+                      "records_without_int_t_ms": counts["records_without_int_t_ms"]}
+    trig = [v for v in trig if v["variant"] in ("pv", "fv")]
+    res["records"] = {"triggers": len(trig), "triggers_pv": sum(1 for v in trig if v["variant"] == "pv"), "triggers_fv": sum(1 for v in trig if v["variant"] == "fv"),
+                      "plain_pool_closes": len(pools), "hb": len(hbs), "gap_records_by_kind": dict(sorted(gap_kinds.items()))}
+
+    pv = [v for v in trig if v["variant"] == "pv"]
+    nogap_pv_ws1 = [v for v in pv if v["gap"] is False and isint(v["ws"]) and v["ws"] >= 1]
+    # item 1
+    res["item1_duration"] = {"elapsed_h": res["window"]["elapsed_h"], "n_nogap_pv_ws_ge1": len(nogap_pv_ws1), "min_hours": MIN_HOURS, "min_triggers": MIN_NOGAP_PV_WS1}
+    # item 2
+    st_all = collections.Counter(status_of(v) for v in trig)
+    st_sel = collections.Counter(status_of(v) for v in nogap_pv_ws1)
+    bnd = [v for v in trig if isint(v["t_ms"]) and min(v["t_ms"] % HOUR_MS, HOUR_MS - v["t_ms"] % HOUR_MS) <= BOUNDARY_MS]
+    ust_all = collections.Counter((v["bu"] or {}).get("status") if v["bu"] is not None else "missing" for v in trig)
+    res["item2_coverage"] = {
+        "tipauth_status_all_triggers": dict(sorted(st_all.items())), "tipauth_status_nogap_pv_ws_ge1": dict(sorted(st_sel.items())),
+        "union_status_all_triggers": {str(k): n for k, n in sorted(ust_all.items(), key=lambda kv: str(kv[0]))},
+        "tipauth_ok_n_all": sum(1 for v in trig if tip_ok(v)), "tipauth_ok_share_all": share(sum(1 for v in trig if tip_ok(v)), len(trig)),
+        "tipauth_ok_n_nogap_pv_ws_ge1": sum(1 for v in nogap_pv_ws1 if tip_ok(v)),
+        "tipauth_ok_share_nogap_pv_ws_ge1": share(sum(1 for v in nogap_pv_ws1 if tip_ok(v)), len(nogap_pv_ws1)),
+        "union_ok_n_all": sum(1 for v in trig if union_ok(v)), "union_ok_share_all": share(sum(1 for v in trig if union_ok(v)), len(trig)),
+        "boundary_triggers_n": len(bnd), "boundary_tip_pending_n": sum(1 for v in bnd if status_of(v) == "tip_pending"),
+        "boundary_tip_pending_share": share(sum(1 for v in bnd if status_of(v) == "tip_pending"), len(bnd)),
+        "tip_pending_n_all": st_all.get("tip_pending", 0)}
+    # item 3
+    xt = {"pv_triggers": tri_cross(), "fv_triggers": tri_cross(), "plain_pool_closes": tri_cross()}
+    for v in trig:
+        for k in cross_key(v):
+            xt["pv_triggers" if v["variant"] == "pv" else "fv_triggers"][k] += 1
+    for v in pools:
+        for k in cross_key(v):
+            xt["plain_pool_closes"][k] += 1
+    res["item3_crosstab"] = {k: dict(sorted(c.items())) for k, c in xt.items()}
+    # conditions
+    conds = [(v, conditions(v)) for v in trig]
+    wp = [v for v, c in conds if would_pass(c)]
+    c14 = [(v, c) for v, c in conds if c["C1"] and c["C2"] and c["C3"] and c["C4"]]
+    sub = collections.Counter()
+    for v, c in c14:
+        bt = v["bt"]
+        dfs = None if not (isint(bt.get("dropped_first_slot")) and isint(bt.get("cover_lo"))) else bt["dropped_first_slot"] == bt["cover_lo"]
+        sub[f"orphaned={bucket(bt.get('orphaned_by_drop_n'))}|nosettle={bucket(bt.get('tipauth_nosettle'))}|dropped_first_slot_eq_cover_lo={dfs}"] += 1
+    res["item3_c1_c4_subtab"] = {"n_c1_c4": len(c14), "cells": dict(sorted(sub.items()))}
+    names = ["C1", "C2", "C3", "C4", "C5a", "C5b", "C5c"]
+    funnel, cur = [{"after": "all_triggers", "n": len(conds)}], conds
+    for nm in names:
+        cur = [(v, c) for v, c in cur if c[nm]]
+        funnel.append({"after": nm, "n": len(cur)})
+    loo = {nm: sum(1 for v, c in conds if all(c[o] for o in names if o != nm) and not c[nm]) for nm in names}
+    c5 = {"n_c1_c4": len(c14),
+          "fail_5a": sum(1 for v, c in c14 if not c["C5a"]), "fail_5b": sum(1 for v, c in c14 if not c["C5b"]), "fail_5c": sum(1 for v, c in c14 if not c["C5c"]),
+          "fail_only_5a": sum(1 for v, c in c14 if not c["C5a"] and c["C5b"] and c["C5c"]), "fail_only_5b": sum(1 for v, c in c14 if c["C5a"] and not c["C5b"] and c["C5c"]),
+          "fail_only_5c": sum(1 for v, c in c14 if c["C5a"] and c["C5b"] and not c["C5c"]),
+          "fail_all_three": sum(1 for v, c in c14 if not (c["C5a"] or c["C5b"] or c["C5c"])), "fail_any": sum(1 for v, c in c14 if not (c["C5a"] and c["C5b"] and c["C5c"]))}
+    res["item6_would_pass"] = {"would_pass_n_after_c1_c5": len(wp), "would_pass_pv_n": sum(1 for v in wp if v["variant"] == "pv"),
+                               "c6_applied": False, "funnel": funnel, "leave_one_out_removes": loo, "c5_parts": c5}
+    dist = lambda f, rows: summ([None if v["bt"] is None else v["bt"].get(f) for v in rows])  # noqa: E731
+    closes0 = [v for v in pools if tip_ok(v) and v["tval"] == 0]
+    fields = ["dropped_n", "dropped_sells_n", "dropped_boost_n", "kept_ws_only_before_cover", "kept_ws_only_above_cover", "kept_ws_only_sig_on_tip"]
+    res["item6_dropped_prints"] = {"on_would_pass_triggers": {f: dist(f, wp) for f in fields}, "on_tipauth0_closes": {"n": len(closes0), **{f: dist(f, closes0) for f in fields}},
+                                   "c1_c4_orphaned_by_drop_n": dict(sorted(collections.Counter(str((v["bt"] or {}).get("orphaned_by_drop_n")) for v, _ in c14).items())),
+                                   "c1_c4_tipauth_nosettle": dict(sorted(collections.Counter(str((v["bt"] or {}).get("tipauth_nosettle")) for v, _ in c14).items()))}
+    # item 4 consistency
+    wp_ids = {id(v) for v in wp}
+    cons: dict[str, dict] = {n: {"n": 0, "pools": []} for n in CONSIST_NAMES}
+    for v in trig + pools:
+        for b in consistency_record(v, id(v) in wp_ids):
+            cons[b]["n"] += 1
+            if len(cons[b]["pools"]) < 5:
+                cons[b]["pools"].append(str(v["pool"]))
+    ue = [h["union_errors"] for h in hbs if isint(h["union_errors"])]
+    cons["union_errors"]["n"] = max(ue) if ue else 0
+    res["item4_consistency"] = {"checks": cons, "total": sum(c["n"] for c in cons.values()), "union_errors_hb_samples": len(ue),
+                                "error_status_records": sum(1 for v in trig + pools if status_of(v) == "error")}
+    # item 5
+    def incomplete(rows: list[dict]) -> dict:
+        base = [v for v in rows if v["gap"] is False and isint(v["ws"]) and v["ws"] == 0]
+        okr = [v for v in base if tip_ok(v)]
+        inc = [v for v in okr if v["tval"] >= 1 or (isint(v["bt"].get("orphaned_by_drop_n")) and v["bt"]["orphaned_by_drop_n"] >= 1)]
+        dn1 = [v for v in okr if isint(v["bt"].get("dropped_n")) and v["bt"]["dropped_n"] >= 1]
+        return {"n_ws0_nogap": len(base), "n_ok": len(okr), "incomplete_n": len(inc), "incomplete_share_of_ok": share(len(inc), len(okr)),
+                "incomplete_share_of_all_ws0_nogap": share(len(inc), len(base)), "dropped_n_ge1_n": len(dn1), "dropped_n_ge1_share_of_ok": share(len(dn1), len(okr))}
+    res["item5_tip_incompleteness"] = {"plain_pool_closes": incomplete(pools), "triggers": incomplete(trig), "cap": INCOMPLETE_MAX}
+    # item 7 (list only)
+    wp_rows = [{"pool": v["pool"], "variant": v["variant"], "t_ms": v["t_ms"], "slot": v["slot"], "dropped_n": v["bt"].get("dropped_n"), "fully_enumerated": fully_enumerated(v),
+                "dropped": v["bt"].get("dropped")} for v in wp]
+    wp_rows.sort(key=lambda r: (str(r["pool"]), r["t_ms"], str(r["variant"])))
+    wp_sigs = sorted({e[0] for r in wp_rows if isinstance(r["dropped"], list) for e in r["dropped"] if isinstance(e, list) and e and isinstance(e[0], str)})
+    closes_ws1 = [v for v in pools if v["gap"] is False and isint(v["ws"]) and v["ws"] >= 1 and tip_ok(v) and v["tval"] == 0 and isinstance(v["bt"].get("dropped"), list)]
+    close_rows = sorted(({"pool": v["pool"], "t_ms": v["t_ms"], "dropped_n": v["bt"].get("dropped_n"), "partial": isint(v["bt"].get("dropped_n")) and v["bt"]["dropped_n"] > DROPPED_LIST_MAX,
+                          "dropped": v["bt"]["dropped"]} for v in closes_ws1), key=lambda r: (str(r["pool"]), r["t_ms"]))
+    fe = sum(1 for r in wp_rows if r["fully_enumerated"])
+    res["item7_census_input"] = {"network_calls": 0, "would_pass_n": len(wp_rows), "would_pass_fully_enumerated_n": fe, "would_pass_distinct_signatures_n": len(wp_sigs),
+                                 "would_pass_signatures": wp_sigs, "would_pass_triggers": wp_rows,
+                                 "tipauth0_ws_ge1_nogap_closes_n": len(close_rows), "tipauth0_ws_ge1_nogap_closes": close_rows,
+                                 "census_performed": False, "on_tip_controls": "not taken from records (outside the allow-list)"}
+    # item 10
+    closes_by_pool: dict[Any, list[dict]] = collections.defaultdict(list)
+    for v in pools:
+        closes_by_pool[v["pool"]].append(v)
+    for lst in closes_by_pool.values():
+        lst.sort(key=lambda v: v["t_ms"])
+    margin_rows, tcount = [], collections.Counter()
+    for v in trig:
+        bt = v["bt"]
+        if v["gap"] is not False or bt is None or bt.get("status") != "ok" or not isint(bt.get("dropped_n")) or bt["dropped_n"] < 1 or not isinstance(bt.get("dropped"), list):
+            continue
+        close = next((c for c in closes_by_pool.get(v["pool"], []) if c["t_ms"] >= v["t_ms"] and c["bt"] is not None and c["bt"].get("status") == "ok"
+                      and isint(c["bt"].get("cover_hi")) and isint(v["slot"]) and c["bt"]["cover_hi"] >= v["slot"]), None)
+        cl = None if close is None else close["bt"].get("dropped")
+        ckeys = set()
+        if isinstance(cl, list):
+            ckeys = {(e[0], e[1]) for e in cl if isinstance(e, list) and len(e) == 3}
+        is_wp = id(v) in wp_ids
+        for e in bt["dropped"]:
+            if not (isinstance(e, list) and len(e) == 3 and isint(e[2]) and isint(v["slot"])):
+                cls, delta = "undetermined", None
+            else:
+                delta = v["slot"] - e[2]
+                if not isinstance(cl, list) or not isint(close["bt"].get("dropped_n")):
+                    cls = "undetermined"
+                elif (e[0], e[1]) in ckeys:
+                    cls = "still_dropped"
+                elif close["bt"]["dropped_n"] <= DROPPED_LIST_MAX or (cl and isint(cl[-1][2]) and e[2] < cl[-1][2]):
+                    cls = "left_D"
+                else:
+                    cls = "undetermined"
+            tcount[cls] += 1
+            if is_wp:
+                tcount["wp_" + cls] += 1
+            margin_rows.append({"pool": v["pool"], "variant": v["variant"], "would_pass": is_wp, "signature": e[0] if isinstance(e, list) and e else None,
+                                "event_index": e[1] if isinstance(e, list) and len(e) > 1 else None, "trigger_slot_minus_entry_slot": delta, "class": cls})
+    margin_rows.sort(key=lambda r: (str(r["pool"]), str(r["variant"]), str(r["signature"]), str(r["event_index"])))
+    tested = tcount["still_dropped"] + tcount["left_D"]
+    res["item10_margin_test"] = {"entries": len(margin_rows), "still_dropped": tcount["still_dropped"], "left_D": tcount["left_D"], "undetermined": tcount["undetermined"],
+                                 "tested": tested, "left_D_share_of_tested": share(tcount["left_D"], tested),
+                                 "left_D_share_of_all_entries": share(tcount["left_D"], len(margin_rows)), "would_pass_left_D": tcount["wp_left_D"],
+                                 "would_pass_entries": sum(tcount["wp_" + k] for k in ("still_dropped", "left_D", "undetermined")), "rows": margin_rows}
+    # item 9
+    rss = [h["rss_kb"] for h in hbs if isint(h["rss_kb"])]
+    def col(k: str) -> list:
+        return [h[k] for h in hbs if isinstance(h[k], (int, float)) and not isinstance(h[k], bool)]
+    res["item9_timing_memory"] = {"hb_n": len(hbs), "rss_kb_max": max(rss) if rss else None, "rss_kb_last": rss[-1] if rss else None,
+                                  "rss_limit_bytes": RSS_LIMIT_BYTES, "rss_anon_kb_max": max(col("rss_anon_kb"), default=None), "hwm_kb_max": max(col("hwm_kb"), default=None),
+                                  "est_tipauth_mb_max": max(col("est_tipauth_mb"), default=None), "est_tipauth_mb_last": (col("est_tipauth_mb") or [None])[-1],
+                                  "est_mb_max": max(col("est_mb"), default=None), "tipauth_wsonly_max": max(col("tipauth_wsonly"), default=None),
+                                  "tipauth_tip_sigs_max": max(col("tipauth_tip_sigs"), default=None), "union_members_max": max(col("union_members"), default=None),
+                                  "decision_to_send_ms": None}
+    res["item8_trigger_print"] = {"computed": False, "reason": "needs the tip tape; outside the shadow records this tool may read"}
+    res["verdict"] = verdict(res)
+    return res
+
+
+OUTSIDE = ["item7_rpc_census", "item8_trigger_print", "item9_decision_to_send_ms", "C6_v1_only"]
+
+
+def verdict(r: dict) -> dict:
+    th: dict[str, dict] = {}
+    block: list[str] = []
+    def put(name: str, met: bool | None, **nums: Any) -> None:
+        th[name] = {"met": met, **nums}
+    i1, i2, i5, i9, i10, i4 = r["item1_duration"], r["item2_coverage"], r["item5_tip_incompleteness"], r["item9_timing_memory"], r["item10_margin_test"], r["item4_consistency"]
+    put("duration_24h_and_10_nogap_pv_ws_ge1", i1["elapsed_h"] >= MIN_HOURS and i1["n_nogap_pv_ws_ge1"] >= MIN_NOGAP_PV_WS1, elapsed_h=i1["elapsed_h"], n=i1["n_nogap_pv_ws_ge1"])
+    def ge(name: str, *shares: float | None) -> None:
+        met = None if any(s is None for s in shares) else all(s >= COVERAGE_MIN for s in shares)
+        put(name, met, shares=list(shares), min=COVERAGE_MIN)
+    ge("tipauth_ok_ge_90pct", i2["tipauth_ok_share_all"], i2["tipauth_ok_share_nogap_pv_ws_ge1"])
+    ge("union_ok_ge_90pct", i2["union_ok_share_all"])
+    put("consistency_all_zero", i4["total"] == 0, total=i4["total"], failing=sorted(k for k, c in i4["checks"].items() if c["n"]))
+    sh = i5["plain_pool_closes"]
+    worst = max([s for s in (sh["incomplete_share_of_ok"], sh["incomplete_share_of_all_ws0_nogap"]) if s is not None], default=None)
+    put("tip_incompleteness_le_5pct", None if worst is None else worst <= INCOMPLETE_MAX, share=worst, cap=INCOMPLETE_MAX, n_ok=sh["n_ok"])
+    put("margin_no_would_pass_left_D", i10["would_pass_left_D"] == 0, would_pass_left_D=i10["would_pass_left_D"], would_pass_entries=i10["would_pass_entries"])
+    tested, left = i10["tested"], i10["left_D"]
+    if left == 0:
+        m = True if tested > 0 else None
+    else:
+        m = not (left >= 1 if tested < LEFT_D_MIN_TESTED else (left / tested) > LEFT_D_MAX)
+    put("margin_left_D_share_le_1pct", m, tested=tested, left_D=left, share=i10["left_D_share_of_tested"], undetermined=i10["undetermined"])
+    wp = r["item7_census_input"]
+    put("would_pass_all_fully_enumerated", wp["would_pass_fully_enumerated_n"] == wp["would_pass_n"], n=wp["would_pass_n"], fully_enumerated=wp["would_pass_fully_enumerated_n"])
+    put("rss_below_1gb", None if i9["rss_kb_max"] is None else i9["rss_kb_max"] * 1024 < RSS_LIMIT_BYTES, rss_kb_max=i9["rss_kb_max"])
+    put("single_start_after_t0", r["starts"]["n_starts_after_t0"] == 1, n=r["starts"]["n_starts_after_t0"], distinct_code_sha=r["starts"]["distinct_code_sha"])
+    for name, t in th.items():
+        if t["met"] is False:
+            block.append(name)
+        elif t["met"] is None:
+            block.append(name + ":short")
+    return {"thresholds": th, "proposal_allowed": not block, "blocking_reasons": sorted(block), "outside_tool_pending": OUTSIDE,
+            "note": "A count of mechanism fields, not a result. proposal_allowed true means none of the rules this tool owns blocks; outside_tool_pending is still open."}
+
+
+def table(r: dict) -> str:
+    if "error" in r:
+        return r["error"]
+    v = r["verdict"]
+    rows = [f"starts after T0: {r['starts']['n_starts_after_t0']}  origin={r['starts']['origin_t_ms']}  elapsed_h={r['window']['elapsed_h']}  "
+            f"triggers={r['records']['triggers']}  closes={r['records']['plain_pool_closes']}  would-pass={r['item6_would_pass']['would_pass_n_after_c1_c5']}",
+            f"{'threshold':44s} {'met':6s} numbers"]
+    for k, t in sorted(v["thresholds"].items()):
+        rows.append(f"{k:44s} {str(t['met']):6s} " + json.dumps({a: b for a, b in t.items() if a != 'met'}, sort_keys=True))
+    rows.append(f"proposal_allowed={v['proposal_allowed']}  blocking={v['blocking_reasons']}  outside_tool_pending={v['outside_tool_pending']}")
+    return "\n".join(rows)
+
+
+def dumps(res: dict) -> str:
+    return json.dumps(res, sort_keys=True, indent=1, allow_nan=False) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--shadow-dir", required=True)
+    ap.add_argument("--since-ms", type=int, required=True)
+    ap.add_argument("--until-ms", type=int, default=None)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--table", action="store_true", help="short human table on stderr")
+    a = ap.parse_args(argv)
+    res = analyze(Path(a.shadow_dir), a.since_ms, a.until_ms)
+    text = dumps(res)
+    sys.stdout.write(text)
+    if a.out:
+        Path(a.out).write_text(text, encoding="utf-8")
+    if a.table:
+        sys.stderr.write(table(res) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
