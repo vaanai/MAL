@@ -11,7 +11,7 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-12 ~09:15Z)
 
-**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1. End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #810.
+**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1, and the step also needs the DEC-024 Am.3 item 2 conditions, quoted below: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway." End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #810.
 
 **Research-0 froze and rebooted on 10-12.** It froze about 06:11Z and was rebooted at 07:29Z. manager10 took over from manager9. Every session cron died. `mal-fast-0` (H5 executor, shadow, enforce loop) was not affected. Walkers #382 and #433 auto-resumed. The crons were recreated as on-disk pointer prompts (section 2).
 
@@ -37,6 +37,16 @@ Then read, as needed:
 
 Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 10-14). **No claim that it adds trades or profit.** The manager cannot certify "profitable": H5 is not through its gate.
 
+**Owner decisions still binding from the old handoff (10-11; quoted from the old HANDOFF on main and DEC-024):**
+- v2 pre-authorization: "v2: paper now (DEC-028 A), with live v2 at 0.02 pre-authorized if v1 halts on BOOST timing. Both §3.1 sentences were confirmed at 05:26:36Z." Not self-executing. Conditions are in DEC-028.
+- Option B prerequisite: "**Before Option B:** quit the loop and delete the `--place-stop` crons (DEC-028 §4)." The loop is enforce loop #729.
+- Second strike: "A completed UTC day from 10-11 on below 337 s (executor, or plain over ≥ 30) halts. The 00:21Z day check enforces this with `--place-stop`."
+- Scale ladder: "T0 0.02 → ~50 trades → T1 0.10 → ~25 trades → T2 0.30 → onward, 25–50 trades per step. No skipped steps." Later DEC-024 Am.3 puts the T0 to T1 step at 20 landed buys with the owner's top-up to about 1 SOL.
+- DEC-024 Am.3 item 2, "The step to T1 requires all of these at that point": "the landing p50 is at most 3.0 s over those 20 landed buys (section 5, item 3)"; "no live-halt rule and no stop that ends the canary has fired and is unresolved"; "the canary's realized mean per closed trade, after fees, is not below zero"; "the shadow twin's mean per trade over the same trades is not below zero"; "if EXP-024 Look 1 has been read, its deciding-cell flat and pressure means are not below zero (section 7)". Then: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway."
+- DEC-024 Am.7 item 1, on a Look 1 FAIL: "new buys do **not** stop at the next 00:00Z, and the canary continues on these terms: **T0 only, 0.02 SOL per entry.** T1 stays blocked: Amendment 3's step-up is not taken, and the +0.5 SOL top-up is not sent." Through 2026-10-23T19:29:53Z only, with every section 5 halt live. "Look 1 FAIL keeps T0 for execution measurement (DEC-024 Am.7, #595)."
+- October goal: "$1000 of REAL income by 10-31, with $400 as the minimum." This is the owner's target, not evidence.
+- Jobs, as of the old handoff (not re-verified now): #391 "T2 B90 full run (#471), 5 configs", "Report-only. Read the picks P2–P4 scopes against the §7 kill rule in `ARTIFACTS/lab/cap-pick-t2-boost-exit-predeclare-2026-10-08.md`". #394 "OpenRouter arm of the LLM trader", "**Done, dead** (notebook n_o6OGSKeiRBB5Rg)", "The LLM-trader line is closed."
+
 **Owner decisions on record 10-12:**
 - **Conditional pre-approval of the H5 trade-rate fix** (notebook n_RI3UsY-cJ_mGAA): "so long as trade quality isn't affected, and everything's still profitable". It is NOT self-executing. The DEC-024 amendment must quote the question and answer verbatim and restate the conditions, and the owner's dated decision still counts for any trade-filter change (DEC-024 note, #600).
 - **C1-NF canary shelved.** Soak #658 and monitor #662 continue as a regime watch. Revive at >=10 kept trades per day on 2 days.
@@ -58,7 +68,7 @@ Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 1
 
 **Crons (session-only, 7-day expiry).** 6 recurring pointer prompts from `recurring-crons-1011.json`: 0a25dc0e 03:23 archive, 638333d8 12:17 health+audit, 5745877b 06:41 structure, 51b24359 00:21 day check, a4af36b3 at 5/11/17/23:47 running check, 14193fc2 00:16 ledger. Plus 9a5bfe76 09:13 housekeeping, a renewal one-shot 4c1103db for 10-18 12:07Z, and 15 seal-window one-shots from `oneshot-crons-1012.json`. Verify with CronList after any compaction. **If the session dies again, recreate from those two JSON files and SEAL-WINDOW-OPS-1012.md.**
 
-**Open PRs.** #611 (docs/test follow-ups to #603; in review, QP CHANGES at c728d4f1 was the latest verdict I could see, merge only with QP OK and Reviewer OK on the PR at the exact head). #608 (C1-NF 14c, parked with C1-NF), #471, #465, #90 parked. #603 merged as `848bd3a`.
+**Open PRs.** PR #611 at head 95634e2 (docs/test follow-ups to #603): Reviewer OK (comment 6121244434); quant-proof pass on that head pending (last QP verdict was CHANGES at c728d4f1, comment 6121212063); merge only with QP OK and Reviewer OK on the PR at the final head. In review: PR #613 (`claude/h5-tipauth-item4-count`, head cbb0920, frozen count-only item-4 read tool; reviewer and quant-proof passes running). The executor tipauth gate PR (branch `claude/h5-exec-tipauth-gate`, switch default OFF) is being built and is not open yet (no draft PR in `gh pr list` at the time of writing). #608 (C1-NF 14c, parked with C1-NF), #471, #465, #90 parked. #603 merged as `848bd3a`.
 
 **Follow-ups to #603 (owed, in #611):** pin FIRST_DAY in `test_sigterm_while_waiting...` (it fails on main since 10-12T00:21Z), Option B runbook wording (3 items in QP comment 6120551060), and check the v2 latch for `boost_before_sell_gt_15pct` before any Option B (V2_REPORT_ONLY lists it though DEC-028 section 4 1(a) makes it v2's primary halt).
 
@@ -71,41 +81,55 @@ Realistic live date is about 10-15 or 10-16 (the owner was told ~10-15/16, not 1
 - Strategy library and nearest-to-live shortlist: `/data/mal/hunt-1008/library/` (first pass had errors, corrected; verify before quoting).
 - F1f quote-coin Step 1: loader frozen 08:31:41Z, the real run is at the FINAL (one-shot 10-16 03:07Z). **It needs the owner's OK for RELEASE.json (and the F1 ledger release) before 10-16.** Ask the owner.
 
-## 4. Next days: DEADLINE TABLE (UTC, from SEAL-WINDOW-OPS-1012.md)
+## 4. Next days: DEADLINE TABLE (UTC)
+
+Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WINDOW-OPS-1012.md`, with `#735` read as `#810` (the shadow was restarted) and the 10-13 09:17Z row expanded from the manager notes. The tipauth reads are in the second table.
+
+| Instant | Item | One-line action |
+| --- | --- | --- |
+| 10-12 (today) | 2 / finding 6 | Check a 10-12 A3 run exists in `daily.jsonl`; run the monitor today if not (two consecutive unevaluated days = halt) |
+| daily 06:41Z through 11-06 | 2, 8 | A3 structure monitor job (research-0, 300 MB, 20 min); read `halt.flags` one by one |
+| 10-13 09:17Z | — | "EXP-022 readiness" one-shot (no command written). Newer, from the manager notes: gaps-day resolves the open specs (FINAL job out-dir, the 4 FINAL_WRITTEN marker paths, (e') spec, exporter spec, EXP-024 Look 1 chain and pre-read amendment draft, EXP-025 run-or-record, EXP-022 P4 read tool builder); walk 2 runs regardless (EXP-022 Am.2 item 3) |
+| 10-14 10:07Z (old slot) | 1 | (e′) dry-run `merge --dry-run` on the ledgered V-map snapshots |
+| 10-14 11:23Z | 10 | Verify / extend #382 (own limit ~10-15T08:10Z before the +48 h) and #433 |
+| 10-14 12:41Z | — | "probe rent audit" one-shot (no command written) |
+| 10-15 06:41Z | 2 | **P2 run**: all six flags for EXP-022; five for H5 |
+| 10-15 07:17Z | 2 | Read P2; if withdrawn decide walk 2 (G2.1), keep exporter + markers; record the withdrawal |
+| 10-15 ~20:00Z | 10 | #433 near 3.0M credits; cap 3.6M binds (owner OK on record) |
+| 10-15 21:37Z | 3 | Verify #810 start record `cap_pick_oracle 1 True`; `mkdir -p ~/data/cap-pick-oracle`; submit the one exporter job; extend its limit |
+| **10-15 23:00Z** | 1 | **Hard deadline** (e′): pass recorded in DEC-016, or the failure and its counts recorded |
+| 10-16 00:00Z | 6 | Last instant for an A11 DEC-016 amendment or a slot-span bound amendment (none planned) |
+| 10-16 00:23–00:30Z | 4 | Submit walk 2 (`bash scripts/research/forward-walk2.sh`, `{"start":"2026-10-16T01"}`, resumable, 10080 min, ~6 GB); needs a free Helius slot |
+| 10-16 00:43Z | 5 | Reinstall gate: confirm f873aac is the live build (`--status`) |
+| **10-16 01:00Z** | 4, 5 | Walk 2 must have started (P3); seal window opens; every H5 buy refused until markers + exporter |
+| 10-16 ~02:00–02:10Z | 6 | FINAL: `score` then `report` (no `--strict-lines`); reported compromised |
+| right after the FINAL row, ≥ 02:00Z | 6 | Markers: h5 (`sudo touch`), job-user `cap-pick-oracle`, c1nf (decide), research-0 `/data/mal/exp012-forward/FINAL_WRITTEN` (decide); record `date -u` in LAB_STATE |
+| 10-16 ~03:00Z | 5, 6 | Check both markers, `picks.jsonl` 644, oracle `fresh: true`; #433 closes: credits + completion amendment; DEC-016 Am.9 Log line for walk 2's gitRef and blobs |
+| 10-16 06:13Z | 7 | E1 job (pinned command, new out-dir with no forbidden path fragment); n ≥ 20 |
+| 10-16 06:41Z | 8 | A3 run dated 10-16 (Look 1 condition (f)) |
+| 10-16 ~07:00Z → | 8 | EXP-024 chain: join → vmap ev → extract → classify → p5 → account → p7 → boost-pda → precount → e1 copy → amendment merged → `look --look 1` |
+| 10-17 02:00Z → ~03:00Z | 9a | EXP-025 Look 1 tools may start (R1 cross-check, P7, driver, `ready`, `run`) |
+| **10-17 12:00Z** | 8 | **Hard deadline** EXP-024 Look 1 (after it: NOT_DECIDABLE, window and α_1 spent) |
+| 10-17 ~22:00Z | 10 | C1-NF monitor #662 limit; chain a successor or stop |
+| **10-18 12:00Z** | 9a | **Hard deadline** EXP-025 Look 1 (a `run` after it locks and writes `not_decidable` R8) |
+| 10-18 12:07Z | 10 | Renew the recurring session crons (7-day expiry) |
+| 10-21 12:07Z | 10 | Extend #810, the exporter **and walk 2** |
+| ~10-23 00:30Z | 10 | Walk 2's first 7-day limit ends — must already be extended or resubmitted |
+| **10-23 01:00Z** | 9b | EXP-022 look 1 data end; needs P4 read tool merged (not built), E1 amendment, A2, hours through 10-23T01 sealed |
+| 10-23 19:29:53Z | 5, 10 | H5 `end_ms`: no new buys; delete the `21 0` and `47 …` crons; shadow restart window (14-day limit ~10-25T07Z) |
+| 10-24 ~03:00Z / 10-26 12:00Z | 9a | EXP-025 Look 2 earliest / deadline (only if Look 1 did not pass) |
+| 10-30 01:00Z | 9b | EXP-022 look 2 data end = last instant for a late look 1 |
+
+Added since that file (tipauth, shadow job #810, read from its restart instant 2026-10-12T09:06:45Z with `/data/mal/hunt-1008/ops/tipauth-read.cmd`):
 
 | Instant | Item | Action |
 | --- | --- | --- |
-| 10-12 (today) | A3 | Check a 10-12 run exists in `daily.jsonl`; run the monitor if not |
-| daily 06:41Z to 11-06 | A3 | Structure monitor job (research-0, 300 MB, 20 min); read `halt.flags` one by one |
-| 10-12 ~10:07Z / ~15:07Z | tipauth | +1 h and +6 h reads (rss rule 1.0 GB) |
+| 10-12 ~10:07Z | tipauth | +1 h read (rss rule 1.0 GB) |
+| 10-12 ~15:07Z | tipauth | +6 h read |
 | 10-13 ~09:07Z | tipauth | +24 h read; item-4 count tool frozen before data accrues |
-| 10-13 09:17Z | gaps-day | Resolves the open specs: FINAL job out-dir, the 4 FINAL_WRITTEN marker paths, (e') spec, exporter spec, EXP-024 Look 1 chain and pre-read amendment draft, EXP-025 run-or-record, EXP-022 P4 read tool builder; walk 2 runs regardless (EXP-022 Am.2 item 3) |
-| 10-13 ~07Z | union | rss re-read at about +48 h |
-| 10-14 10:07Z | (e') | Dry-run `merge --dry-run` on the ledgered V-map snapshots |
-| 10-14 11:23Z | #382 | Verify/extend #382 (own limit ~10-15T08:10Z) and #433 |
-| 10-15 06:41Z | P2 | P2 run: six flags for EXP-022, five for H5 |
-| 10-15 07:17Z | P2 | Read P2; if withdrawn decide walk 2, keep exporter and markers, record it |
-| 10-15 21:37Z | exporter | Verify the shadow start record `cap_pick_oracle 1 True` (now #810); `mkdir -p ~/data/cap-pick-oracle`; submit the one exporter job; extend its limit |
-| **10-15 23:00Z** | (e') | **Hard deadline**: pass recorded in DEC-016, or the failure and counts recorded |
-| 10-16 00:00Z | A11 | Last instant for a DEC-016 A11 or slot-span amendment (none planned) |
-| 10-16 00:23-00:30Z | walk 2 | `bash scripts/research/forward-walk2.sh`, `{"start":"2026-10-16T01"}`, resumable, 10080 min, ~6 GB; needs a free Helius slot |
-| 10-16 00:43Z | executor | Confirm f873aac is the live build (`--status`) |
-| **10-16 01:00Z** | seal | Walk 2 must have started; seal window opens; every H5 buy refused until markers and exporter |
-| 10-16 ~02:00-02:10Z | FINAL | `score` then `report` (no `--strict-lines`); reported compromised |
-| right after the FINAL row | markers | h5 (`sudo touch`), job-user `cap-pick-oracle`, c1nf, research-0 `/data/mal/exp012-forward/FINAL_WRITTEN`; record `date -u` in LAB_STATE |
-| 10-16 ~03:00Z | check | Both markers, `picks.jsonl` 644, oracle `fresh: true`; #433 closes (credits, completion amendment); DEC-016 Am.9 Log line |
-| 10-16 06:13Z | E1 | E1 job (pinned command, fresh out-dir); n >= 20 |
-| 10-16 06:41Z | A3 | Run dated 10-16 (Look 1 condition (f)) |
-| 10-17 02:00Z on | EXP-025 | Look 1 tools may start |
-| **10-17 12:00Z** | EXP-024 | **Hard deadline** Look 1 (after it: NOT_DECIDABLE) |
-| 10-17 ~22:00Z | #662 | Limit; chain a successor or stop |
-| **10-18 12:00Z** | EXP-025 | **Hard deadline** Look 1 |
-| 10-18 12:07Z | crons | Renew the recurring session crons |
-| 10-21 12:07Z | limits | Extend #810, the exporter and walk 2 |
-| 10-23 01:00Z | EXP-022 | Look 1 data end; needs the P4 read tool merged (not built), E1 amendment, A2 |
-| 10-23 19:29:53Z | H5 | `end_ms`: no new buys; shadow restart window (14-day limit) |
-| 10-24 / 10-26 | EXP-025 | Look 2 earliest / deadline (only if Look 1 did not pass) |
-| 10-30 01:00Z | EXP-022 | Look 2 data end |
+| (old: 10-13 ~07Z) | union rss | The old "+48 h union rss re-read" targeted #735, which is cancelled. It is retargeted to #810: the rss reads are the +1 h, +6 h and +24 h reads above |
+
+Seal-window drafts for each gap: `/data/mal/hunt-1008/ops/seal-window-drafts/INDEX.md`. It lists 9 manager decisions and 11 document disagreements, to be put to one quant-proof ruling at the 10-13 09:17Z gaps-day.
 
 Tipauth path (not a fixed date): after >=24 h and >=10 no-gap pv triggers with ws >=1 (expect ~48 h), the phase-2 PR, DEC-024 amendment, decision-change account, QP on the final head, Helm reinstall. Live ~10-15/16.
 
