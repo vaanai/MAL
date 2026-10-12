@@ -9,11 +9,11 @@ Then read, as needed:
 - **EXP-022 CAP-PICK Part 1:** [EXP/EXP-022-cap-pick-part1-prereg.md](../EXP/EXP-022-cap-pick-part1-prereg.md).
 - **Tipauth count list and C1-C6:** PR #610 comment 6121123397 (QP OK, copyable block).
 
-## 1. Where things stand (2026-10-12 ~10:30Z)
+## 1. Where things stand (2026-10-12 ~10:30Z; H5 halt paragraph 18:41Z)
 
 **H5 halted itself and the manager cleared the latch on 10-12.** The live executor latched `out_of_rule_entry` at 2026-10-12T18:28:02.667Z on a buy that landed 29 slots (about 6.3 s) after its trigger; the limit is 5 s, and the trigger reached the detector 5.4 s late. It sold at once. The manager cleared the latch at 18:38:41.306Z after checking nothing was open. No rule, config or code changed; tier stays T0. Owed: a reviewed pre-send age check (Helm's reinstall). If `out_of_rule_entry` latches again before that fix is installed, H5 stays halted. Full record: DEC-024 "Halt record: executor latch `out_of_rule_entry`, 2026-10-12, and the manager's clear"; LAB_STATE "2026-10-12 events (manager10)". H5 has not cleared the promotion gate.
 
-**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT. 20 landed buys are needed before T1, and the step also needs the DEC-024 Am.3 item 2 conditions, quoted below: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway." End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #817.
+**H5 is live at T0** (0.02 SOL per trade). As of 09:06Z 10-12: 7 attempts, 7 sells landed, no STOP/HALT (status at 18:35Z: attempts 11). 20 landed buys are needed before T1, and the step also needs the DEC-024 Am.3 item 2 conditions, quoted below: "If either mean is negative at 20 landed buys, there is no step. The manager reports, and only a new dated line from the owner can step anyway." End `2026-10-23T19:29:53Z`. Enforce loop job #729, shadow job #817.
 
 **Research-0 froze and rebooted on 10-12.** It froze about 06:11Z and was rebooted at 07:29Z. manager10 took over from manager9. Every session cron died. `mal-fast-0` (H5 executor, shadow, enforce loop) was not affected. Walkers #382 and #433 auto-resumed. The crons were recreated as on-disk pointer prompts (section 2).
 
@@ -180,7 +180,7 @@ Tipauth path (not a fixed date): after >=24 h and >=10 no-gap pv triggers with w
 - DEC-024 Amendment 8 (skeleton in comment 6121641942). Section 3 needs the owner's dated acceptance; see the open question below.
 - Helm's pinned reinstall of the executor.
 
-**Owner question `q_o1f3-Qvs1HbwYw`, CLOSED 10-12** (asked 2026-10-12 09:39 UTC, key DEC-024-Am8; the owner's answer is in the owner decisions list above): the owner's conditional pre-approval ("so long as trade quality isn't affected, and everything's still profitable") cannot be certified. The amendment needs the owner's dated acceptance of bounded-risk terms instead (0.02 SOL class stake, -0.04 SOL latch, about 0.06 SOL worst case, looks at 25, 50 and 100, n=1 switch-offs). The answer goes into Amendment 8 section 3 verbatim and dated. Include it in the morning update.
+**Owner question `q_o1f3-Qvs1HbwYw`, CLOSED 10-12** (asked 2026-10-12 09:39 UTC, key DEC-024-Am8; the owner's answer is in the owner decisions list above): the owner's conditional pre-approval ("so long as trade quality isn't affected, and everything's still profitable") cannot be certified. The amendment needs the owner's dated acceptance of bounded-risk terms instead (0.02 SOL class stake, -0.04 SOL latch, about 0.06 SOL worst case, looks at 25, 50 and 100, n=1 switch-offs). The answer goes into Amendment 8 section 3 verbatim and dated. Include it in the morning update. (answer received; Amendment 8 text owed)
 
 ## 5. Owed
 
