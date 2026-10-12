@@ -26,7 +26,7 @@ def bt(**kw):
 
 
 def bu(**kw):
-    d = {"status": "ok", "ws_only": 1, "tip_only": 0, "both": 5, "both_diff": 0, "dup": 0, "tip_first_slot": 100}
+    d = {"status": "ok", "ws_only": 1, "tip_only": 0, "both": 5, "both_diff": 0, "dup": 0, "tip_first_slot": 100, "tip_hw_slot_global": 154}
     d.update(kw)
     return d
 
@@ -203,7 +203,7 @@ class TestConditions(unittest.TestCase):
 
     def test_pass(self):
         c = T.conditions(self.v())
-        self.assertTrue(T.would_pass(c), c)
+        self.assertTrue(T.would_pass_view(c), c)
 
     def test_each_single_fail(self):
         cases = {
@@ -220,7 +220,7 @@ class TestConditions(unittest.TestCase):
             for kw in variants:
                 c = T.conditions(self.v(**kw))
                 self.assertFalse(c[cond], (cond, kw))
-                self.assertFalse(T.would_pass(c))
+                self.assertFalse(T.would_pass_view(c))
 
     def test_boundaries_c4(self):
         for n, ok in [(1, True), (5, True), (6, False)]:
@@ -230,7 +230,9 @@ class TestConditions(unittest.TestCase):
     def test_record_without_keys(self):
         r = {"type": "trigger", "variant": "pv", "pool": "p", "t_ms": 1}
         c = T.conditions(T.view_record(r, "trigger"))
-        self.assertFalse(any(c.values()))
+        self.assertFalse(any(v for k, v in c.items() if k not in ("C7f",)))
+        self.assertFalse(T.would_pass_view(c))
+        self.assertEqual(T.would_pass(r), (False, "ws_not_ge1"))
 
 
 class TestC5AndFunnel(Base):
@@ -241,19 +243,19 @@ class TestC5AndFunnel(Base):
                 trig(pool="c2", boost_src="behavioural")]
         r = self.run_tool(recs)
         w = r["item6_would_pass"]
-        self.assertEqual(w["would_pass_n_after_c1_c5"], 1)
+        self.assertEqual(w["would_pass_n"], 1)
         c5 = w["c5_parts"]
         self.assertEqual((c5["n_c1_c4"], c5["fail_5a"], c5["fail_5b"], c5["fail_5c"]), (5, 2, 2, 2))
         self.assertEqual((c5["fail_only_5a"], c5["fail_only_5b"], c5["fail_only_5c"], c5["fail_all_three"], c5["fail_any"]), (1, 1, 1, 1, 4))
         self.assertEqual(w["leave_one_out_removes"]["C3"], 1)
-        self.assertEqual([f["after"] for f in w["funnel"]], ["all_triggers", "C1", "C2", "C3", "C4", "C5a", "C5b", "C5c"])
-        self.assertEqual([f["n"] for f in w["funnel"]], [6, 6, 6, 5, 5, 4, 3, 1][:5] + [f["n"] for f in w["funnel"]][5:])
+        self.assertEqual([f["after"] for f in w["funnel"]], ["all_triggers"] + T.COND_NAMES)
         self.assertEqual(w["funnel"][-1]["n"], 1)
         self.assertFalse(w["c6_applied"])
 
     def test_pv_only_count(self):
         r = self.run_tool([start(), trig(pool="a"), trig(pool="b", variant="fv")])
-        self.assertEqual((r["item6_would_pass"]["would_pass_n_after_c1_c5"], r["item6_would_pass"]["would_pass_pv_n"]), (2, 1))
+        self.assertEqual((r["item6_would_pass"]["would_pass_n"], r["item6_would_pass"]["would_pass_pv_n"]), (1, 1))
+        self.assertEqual(r["item6_would_pass"]["fv_not_eligible_variant_n"], 1)
 
 
 class TestIncompleteness(Base):
@@ -476,7 +478,7 @@ class TestMemoryAndVerdict(Base):
         t = {"type": "trigger", "variant": "pv", "pool": "p", "t_ms": MID, "gap": False, "slot": 5, WS_FIELD_NAME: 1}
         r = self.run_tool([start(), t])
         self.assertEqual(r["item2_coverage"]["tipauth_status_all_triggers"], {"missing": 1})
-        self.assertEqual(r["item6_would_pass"]["would_pass_n_after_c1_c5"], 0)
+        self.assertEqual(r["item6_would_pass"]["would_pass_n"], 0)
 
 
 WS_FIELD_NAME = T.WS_FIELD
@@ -869,9 +871,9 @@ class TestRound2(Base):
     def test_boost_src_split(self):
         recs = [start(), trig(pool="a", boost_src="pda"), trig(pool="b", boost_src="none"), trig(pool="c", boost_src="none", variant="fv"), trig(pool="d", boost_src="behavioural")]
         w = self.analyze(recs)["item6_would_pass"]
-        self.assertEqual(w["would_pass_by_boost_src"], {"none": 2, "pda": 1})
-        self.assertEqual(w["would_pass_pv_by_boost_src"], {"none": 1, "pda": 1})
-        self.assertTrue(T.conditions(T.view_record(trig(boost_src="none"), "trigger"))["C3"])
+        self.assertEqual(w["would_pass_by_boost_src"], {"pda": 1})
+        self.assertEqual(w["would_pass_pv_by_boost_src"], {"pda": 1})
+        self.assertFalse(T.conditions(T.view_record(trig(boost_src="none"), "trigger"))["C3"])
 
     # reviewer notes
     def test_non_utf8_line_counted_not_raised(self):
@@ -894,6 +896,153 @@ class TestRound2(Base):
         r = self.analyze([start(), h1, {"type": "hb", "t_ms": MID + 1000}, hb(MID + 2000, ue=2)])
         c = r["item4_consistency"]
         self.assertEqual((c["union_errors_hb_samples"], c["union_errors_hb_absent_counter_as_0"], c["checks"]["union_errors"]["n"]), (2, 1, 2))
+
+
+class TestRound3(Base):
+    """PR #613 round 3: quant-proof PR #614 comment 6121641942 R1, R2 (C7 a-f), R12 (one importable predicate)."""
+
+    def wp(self, **kw):
+        return T.would_pass(trig(**kw))
+
+    def test_base_record_passes(self):
+        self.assertEqual(self.wp(), (True, "ok"))
+
+    def test_c3_allowlist(self):
+        for src in ("pda", "event_authority"):
+            self.assertEqual(self.wp(boost_src=src), (True, "ok"))
+        for src in ("none", "behavioural", "x", "", None, 1, True):
+            self.assertEqual(self.wp(boost_src=src), (False, "boost_src"), src)
+        r = trig()
+        del r["boost_src"]
+        self.assertEqual(T.would_pass(r), (False, "boost_src"))
+
+    def test_c7_each_subcondition_alone(self):
+        d2 = [["sigA", 0, 105], ["sigB", 1, 106]]
+        cases = {
+            "margin": [dict(btd=bt(margin_slots=3)), dict(btd=bt(margin_slots=5)), dict(btd=bt(margin_slots=None)), dict(btd=bt(margin_slots=4.0)),
+                       dict(btd=bt(margin_slots=True)), dict(btd=bt(margin_slots="4"))],
+            "slots": [dict(slot=153), dict(slot=None), dict(slot=True), dict(btd=bt(cover_lo=-1), bud=bu(tip_first_slot=-1)),
+                      dict(btd=bt(cover_hi=None)), dict(btd=bt(dropped_last_slot=None)), dict(btd=bt(dropped_last_slot=151, dropped=[["sigA", 0, 105]])),
+                      dict(btd=bt(dropped_last_slot=104, dropped_n=1))],
+            "cover": [dict(bud=bu(tip_first_slot=99)), dict(bud=bu(tip_first_slot=None)), dict(bud=bu(tip_hw_slot_global=155)), dict(bud=bu(tip_hw_slot_global=None)),
+                      dict(bud=bu(tip_hw_slot_global=True))],
+            "dropped_list": [dict(btd=bt(dropped=None)), dict(btd=bt(dropped=[])), dict(btd=bt(dropped=[["sigA", 0, 105], ["sigB", 0, 105]])),
+                             dict(btd=bt(dropped=[["", 0, 105]])), dict(btd=bt(dropped=[[1, 0, 105]])), dict(btd=bt(dropped=[["sigA", "0", 105]])),
+                             dict(btd=bt(dropped=[["sigA", 0, 105, 9]])), dict(btd=bt(dropped=[["sigA", 0, True]])), dict(btd=bt(dropped=("sigA", 0, 105))),
+                             dict(btd=bt(dropped=[["sigA", 0, 104]])), dict(btd=bt(dropped=[["sigA", 0, 106]])),
+                             dict(btd=bt(dropped=[["sigA", 0, 105], ["sigA", 0, 105]], dropped_n=2, dropped_last_slot=105)),
+                             dict(btd=bt(dropped=[["sigA", 0, 105], ["sigB", 0, 106]], dropped_n=2, dropped_last_slot=107)),
+                             dict(btd=bt(dropped=[["sigA", 0, 106], ["sigB", 0, 105]], dropped_n=2, dropped_last_slot=106))],
+            "union_ne_ws": [dict(uval=2), dict(uval=0), dict(uval=None), dict(uval=True), dict(uval=1.0)],
+            "sealed_record": [dict(h5_look2_sealed=True), dict(sealed=True)],
+            "variant_not_pv": [dict(variant="fv"), dict(variant=None), dict(variant="PV")],
+        }
+        for reason, variants in cases.items():
+            for kw in variants:
+                ok, why = self.wp(**kw)
+                self.assertFalse(ok, (reason, kw))
+                self.assertEqual(why, reason, kw)
+        # a consistent two-entry list passes; event_index None is a value
+        self.assertEqual(self.wp(btd=bt(dropped=d2, dropped_n=2, dropped_last_slot=106)), (True, "ok"))
+        self.assertEqual(self.wp(btd=bt(dropped=[["sigA", None, 105]])), (True, "ok"))
+
+    def test_slot_boundaries(self):
+        self.assertEqual(self.wp(slot=154, btd=bt(cover_hi=150), bud=bu(tip_hw_slot_global=154)), (True, "ok"))
+        self.assertEqual(self.wp(slot=154, btd=bt(cover_hi=151), bud=bu(tip_hw_slot_global=155))[1], "slots")  # cover_hi = slot - 3
+        self.assertEqual(self.wp(btd=bt(dropped_first_slot=105, dropped_last_slot=150, dropped=[["a", 0, 105], ["b", 0, 150]], dropped_n=2)), (True, "ok"))
+        # the tip high-water below the trigger slot sets cover_hi
+        self.assertEqual(self.wp(slot=500, btd=bt(cover_hi=150), bud=bu(tip_hw_slot_global=154)), (True, "ok"))
+        self.assertEqual(self.wp(slot=500, btd=bt(cover_hi=150), bud=bu(tip_hw_slot_global=160))[1], "cover")
+
+    def test_fv_never_would_pass(self):
+        self.assertEqual(self.wp(variant="fv"), (False, "variant_not_pv"))
+        r = self.run_tool([start(), trig(pool="a"), trig(pool="b", variant="fv"), trig(pool="c", variant="fv")])
+        w = r["item6_would_pass"]
+        self.assertEqual((w["would_pass_n"], w["would_pass_pv_n"], w["fv_not_eligible_variant_n"]), (1, 1, 2))
+
+    def test_reason_order_is_first_failing_in_executor_order(self):
+        self.assertEqual(T.GATE_REASONS[1:], ("ws_not_ge1", "gap", "union_missing", "tipauth_missing", "union_status", "tipauth_status", "value_not_zero",
+                                              "tip_only", "both_diff", "dropped_boost", "boost_src", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop",
+                                              "nosettle", "dropped_first_slot", "margin", "slots", "cover", "dropped_list", "union_ne_ws", "sealed_record",
+                                              "variant_not_pv"))
+        self.assertEqual(T.would_pass(None), (False, "not_a_record"))
+        self.assertEqual(T.would_pass([1]), (False, "not_a_record"))
+        self.assertEqual(self.wp(ws=0, gap=True, variant="fv", boost_src="none")[1], "ws_not_ge1")
+        self.assertEqual(self.wp(gap=True, variant="fv", boost_src="none")[1], "gap")
+        self.assertEqual(self.wp(variant="fv", boost_src="none", btd=bt(margin_slots=3))[1], "boost_src")
+        self.assertEqual(self.wp(variant="fv", btd=bt(margin_slots=3), uval=9)[1], "margin")
+        self.assertEqual(self.wp(variant="fv", uval=9)[1], "union_ne_ws")
+        self.assertEqual(self.wp(variant="fv", h5_look2_sealed=True)[1], "sealed_record")
+        r = trig()
+        r["base_union"] = None
+        self.assertEqual(T.would_pass(r)[1], "union_missing")
+        r = trig()
+        r["base_tipauth"] = []
+        self.assertEqual(T.would_pass(r)[1], "tipauth_missing")
+        self.assertEqual(self.wp(bud=bu(status="x"))[1], "union_status")
+        self.assertEqual(self.wp(btd=bt(status="x"))[1], "tipauth_status")
+        self.assertEqual(self.wp(tval=1)[1], "value_not_zero")
+        for kw, why in [(dict(bud=bu(tip_only=1)), "tip_only"), (dict(bud=bu(both_diff=1)), "both_diff"), (dict(btd=bt(dropped_boost_n=1)), "dropped_boost"),
+                        (dict(btd=bt(dropped_n=6)), "dropped_n"), (dict(btd=bt(kept_ws_only_sig_on_tip=1)), "kept_ws_only_sig_on_tip"),
+                        (dict(btd=bt(orphaned_by_drop_n=1)), "orphaned_by_drop"), (dict(btd=bt(tipauth_nosettle=1)), "nosettle"),
+                        (dict(btd=bt(dropped_first_slot=100)), "dropped_first_slot")]:
+            self.assertEqual(self.wp(**kw)[1], why, kw)
+
+    def test_view_and_function_agree_and_deterministic(self):
+        import random
+        rng = random.Random(1)
+        junk = [None, True, 0, 1, 4, -1, 99, 105, 150, 154, 200, "pda", "none", [], {}, [["sigA", 0, 105]], 1.5]
+        keys = ["gap", "slot", "boost_src", "variant", "base_breaks_unresolved_settled", T.UNION_FIELD, T.TIPAUTH_FIELD, "h5_look2_sealed", "sealed"]
+        for _ in range(3000):
+            r = copy.deepcopy(trig())
+            for _ in range(rng.randint(0, 3)):
+                if rng.random() < 0.5:
+                    r[rng.choice(keys)] = rng.choice(junk)
+                else:
+                    sub = r[rng.choice(["base_union", "base_tipauth"])]
+                    sub[rng.choice(sorted(sub))] = rng.choice(junk)
+            ok, why = T.would_pass(r)
+            c = T.conditions(T.view_record(r, "trigger"))
+            self.assertEqual(ok, T.would_pass_view(c))
+            self.assertEqual(ok, why == "ok")
+            self.assertEqual((ok, why), T.would_pass(copy.deepcopy(r)))
+
+    def test_funnel_and_c7_parts_report(self):
+        recs = [start(), trig(pool="ok"),
+                trig(pool="m", btd=bt(margin_slots=3)),
+                trig(pool="u", uval=2),
+                trig(pool="mu", btd=bt(margin_slots=3), uval=2),
+                trig(pool="n", boost_src="none"),
+                trig(pool="fv", variant="fv"),
+                trig(pool="dl", btd=bt(dropped=[["sigA", 0, 104]]))]
+        w = self.run_tool(recs)["item6_would_pass"]
+        self.assertEqual(w["would_pass_n"], 1)
+        self.assertEqual([f["after"] for f in w["funnel"]], ["all_triggers"] + T.COND_NAMES)
+        self.assertEqual(w["funnel"][-1]["n"], 1)
+        c7 = w["c7_parts"]
+        self.assertEqual(c7["n_c1_c5"], 6)  # ok, m, u, mu, fv, dl (the boost_src none trigger is removed at C3)
+        self.assertEqual((c7["fail_C7a"], c7["fail_C7e"], c7["fail_C7d"], c7["fail_C7f"]), (2, 2, 1, 1))
+        self.assertEqual((c7["fail_only_C7a"], c7["fail_only_C7e"], c7["fail_only_C7d"], c7["fail_only_C7f"]), (1, 1, 1, 1))
+        self.assertEqual(c7["fail_any"], 5)
+        self.assertEqual(c7["fail_all_six"], 0)
+        self.assertEqual((w["leave_one_out_removes"]["C3"], w["leave_one_out_removes"]["C7a"], w["leave_one_out_removes"]["C7f"]), (1, 1, 1))
+
+    def test_sealed_records_still_skipped_by_the_tool(self):
+        r = self.run_tool([start(), trig(pool="s", h5_look2_sealed=True), trig(pool="t", sealed=True), trig(pool="ok")])
+        self.assertEqual(r["item6_would_pass"]["would_pass_n"], 1)
+        self.assertEqual(r["skipped"]["h5_look2_sealed_trigger"] + r["skipped"]["sealed_trigger"], 2)
+
+    def test_junk_never_raises_in_predicate(self):
+        for junk in (None, 0, "x", [], {}, {"base_union": 5, "base_tipauth": "x"}, {"base_union": {}, "base_tipauth": {"dropped": [None, 3, [1]]}},
+                     trig(btd=bt(dropped=[[["x"], 0, 1]])), trig(btd=bt(dropped=[["a", [1], 1]]))):
+            self.assertFalse(T.would_pass(junk)[0])
+
+    def test_c7_key_in_allow_list(self):
+        self.assertIn("tip_hw_slot_global", T.ALLOWED_KEYS)
+        Tracking.log = set()
+        self.run_tool([start(), trig()], hook=Tracking)
+        self.assertEqual(Tracking.log - T.ALLOWED_KEYS, set())
+        self.assertIn("tip_hw_slot_global", Tracking.log)
 
 
 if __name__ == "__main__":

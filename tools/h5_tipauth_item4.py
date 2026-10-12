@@ -32,8 +32,12 @@ THE PEEKING RULE (quant-proof comment 6121547427, section 4; the tool is not run
   7. After the first read of any kind, the tool, the thresholds, C1 to C6, the margin and this schedule change only by tightening, through a PR with QP.
 (T0 for this count = 1791797643640, job #817, code_sha 5db78a66...; an earlier start at 1791796005847, job #810, lies before T0 and is outside the window.)
 
-Boost source: C3 passes for boost_src "none" (no BOOST buy attributed on the feed) by the letter of the rule. The would-pass counts are split by
-boost_src (item6_would_pass.would_pass_by_boost_src / would_pass_pv_by_boost_src) so C3 can be tightened to pda / event_authority without a recount.
+Round 3 (PR #613; quant-proof comment 6121641942 on PR #614, "Required changes" R1, R2, R12): C1-C7 here are the executor gate's conditions.
+  R1 C3 allowlist: boost_src in ("pda", "event_authority"); "none" and everything else fail C3.
+  R2 C7 record self-consistency (a margin, b slots, c cover, d dropped_list, e union_ne_ws, f sealed + pv only), each part reported alone and together.
+  R12 one predicate: would_pass(trigger_record) -> (bool, reason) below is a pure function; its reason strings and their ORDER are those of the executor's
+  tipauth_gate (origin/claude/h5-exec-tipauth-gate tools/h5_executor.py) so a later cross-test can assert 0 disagreements on (bool, reason).
+  would-pass is pv-only (C7 f); fv triggers that pass everything else are reported separately as "not eligible: variant".
 """
 from __future__ import annotations
 
@@ -97,7 +101,7 @@ ALLOWED_KEYS = frozenset({
     # trigger / pool (decision-time and bookkeeping)
     "variant", "pool", "gap", "slot", "boost_src", "t_detect_ms", WS_FIELD, UNION_FIELD, TIPAUTH_FIELD, "base_union", "base_tipauth",
     # base_union
-    "status", "tip_only", "both_diff", "tip_first_slot",
+    "status", "tip_only", "both_diff", "tip_first_slot", "tip_hw_slot_global",
     # base_tipauth
     "dropped_n", "dropped_first_slot", "dropped_last_slot", "cover_lo", "cover_hi", "kept_ws_only_before_cover", "kept_ws_only_above_cover",
     "kept_ws_only_sig_on_tip", "dropped_boost_n", "dropped_sells_n", "orphaned_by_drop_n", "tipauth_nosettle", "dropped", "margin_slots",
@@ -106,7 +110,7 @@ ALLOWED_KEYS = frozenset({
     "tipauth_tip_sigs", "union_members",
 })
 
-BU_KEYS = ("status", "tip_only", "both_diff", "tip_first_slot")
+BU_KEYS = ("status", "tip_only", "both_diff", "tip_first_slot", "tip_hw_slot_global")
 BT_KEYS = ("status", "dropped_n", "dropped_first_slot", "dropped_last_slot", "cover_lo", "cover_hi", "kept_ws_only_before_cover",
            "kept_ws_only_above_cover", "kept_ws_only_sig_on_tip", "dropped_boost_n", "dropped_sells_n", "orphaned_by_drop_n", "tipauth_nosettle",
            "dropped", "margin_slots")
@@ -127,11 +131,11 @@ AMBIGUITIES = [
     ("A04", "no-gap", "'gap false' is read as gap is exactly False; a missing or null gap is not no-gap."),
     ("A05", "Union ok (item 2)", "Item 2: 'base_union.status ok on at least 90%'. Chosen: status == 'ok' and the union value base_breaks_unresolved_settled_union a non-null integer."),
     ("A06", "Would-pass variants",
-     "C1-C6 do not name a variant. Chosen: would-pass is computed over pv and fv triggers together (stricter for the 'any left D' and 'fully enumerated' rules). "
-     "The number quoted as 'decisions that would change' is would_pass_pv_n ONLY: the executor acts on pv only. The pv plus fv sum is never called trades."),
-    ("A07", "C3 'boost_src is not behavioural'",
-     "Chosen: boost_src must be present and a string other than 'behavioural' (a missing key fails C3). boost_src 'none' (no BOOST buy attributed on the feed) passes C3 "
-     "by the letter; would_pass_by_boost_src and would_pass_pv_by_boost_src show the split so C3 can be tightened without a recount."),
+     "Round 3 (R2 C7 f): would-pass is pv-only, by construction (would_pass_n == would_pass_pv_n). A fv trigger that passes everything else is counted separately as "
+     "fv_not_eligible_variant_n ('not eligible: variant'). The executor acts on pv only. The pv plus fv sum is never called trades."),
+    ("A07", "C3 boost_src (R1, round 3)",
+     "boost_src must be one of 'pda', 'event_authority'. 'none' (no BOOST identity known, so dropped_boost_n is 0 by construction), 'behavioural', any other string and a "
+     "missing key fail C3. would_pass_by_boost_src stays reported."),
     ("A08", "C6 'v1 only'", "Not decidable from records. The start record 'rule' ids are reported; C6 is NOT applied and is listed as outside_tool_pending."),
     ("A09", "'removes' per C condition (item 6)",
      "Reported three ways: sequential funnel C1..C4, C5a, C5b, C5c; leave-one-out (passes all others, fails this one); and for C5 parts among C1-C4 triggers: "
@@ -289,7 +293,9 @@ def view_record(rec: dict, typ: str) -> dict:
     """The only place a trigger / pool record is read. Plain dict out."""
     return {"type": typ, "pool": rec.get("pool"), "variant": rec.get("variant"), "t_ms": rec.get("t_ms"), "gap": rec.get("gap"), "slot": rec.get("slot"),
             "boost_src": rec.get("boost_src"), "t_detect_ms": rec.get("t_detect_ms"), "ws": rec.get(WS_FIELD), "uval": rec.get(UNION_FIELD),
-            "tval": rec.get(TIPAUTH_FIELD), "bu": view_sub(rec.get("base_union"), BU_KEYS), "bt": view_sub(rec.get("base_tipauth"), BT_KEYS, True)}
+            "tval": rec.get(TIPAUTH_FIELD), "bu": view_sub(rec.get("base_union"), BU_KEYS), "bt": view_sub(rec.get("base_tipauth"), BT_KEYS, True),
+            # the one predicate, evaluated on the raw record here (the only place it is read): the set of failing GATE_REASONS names
+            "fails": gate_fails(rec) if typ == "trigger" else None}
 
 
 # ---- conditions -----------------------------------------------------------------------------------------------------------------------------
@@ -298,22 +304,139 @@ def bt_get(v: dict, k: str) -> Any:
     return None if v["bt"] is None else v["bt"].get(k)
 
 
+TIPAUTH_MARGIN_SLOTS = 4  # C7 (a): a change of margin is a new rule
+TIPAUTH_DROPPED_MAX = 5  # C4
+BOOST_SRC_OK = ("pda", "event_authority")  # C3 allowlist (R1)
+
+# The executor's order (tipauth_gate on origin/claude/h5-exec-tipauth-gate, C7 inserted after C5 as R2 says; C6 "rule v1" is not decidable from records:
+# the tool does not test it, a cross-test must feed rule v1). would_pass() returns the FIRST failing reason in this order.
+GATE_REASONS = ("not_a_record", "ws_not_ge1", "gap", "union_missing", "tipauth_missing", "union_status", "tipauth_status", "value_not_zero",
+                "tip_only", "both_diff", "dropped_boost", "boost_src", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop", "nosettle",
+                "dropped_first_slot", "margin", "slots", "cover", "dropped_list", "union_ne_ws", "sealed_record", "variant_not_pv")
+# condition -> reasons (the funnel / leave-one-out groups)
+GROUPS = {"C1": ("not_a_record", "ws_not_ge1", "gap", "union_missing", "tipauth_missing", "union_status", "tipauth_status", "value_not_zero"),
+          "C2": ("tip_only", "both_diff"), "C3": ("dropped_boost", "boost_src"), "C4": ("dropped_n", "kept_ws_only_sig_on_tip"),
+          "C5a": ("orphaned_by_drop",), "C5b": ("nosettle",), "C5c": ("dropped_first_slot",),
+          "C7a": ("margin",), "C7b": ("slots",), "C7c": ("cover",), "C7d": ("dropped_list",), "C7e": ("union_ne_ws",),
+          "C7f": ("sealed_record", "variant_not_pv")}
+COND_NAMES = list(GROUPS)
+C7_NAMES = ["C7a", "C7b", "C7c", "C7d", "C7e", "C7f"]
+
+
+def _i(x: Any) -> bool:
+    """An integer, not a bool, no magnitude bound (same as the executor's _is_int)."""
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _d0(x: Any) -> bool:
+    return _i(x) and x == 0
+
+
+def _dropped_list_ok(bt: dict, dn: Any, first: Any, last: Any) -> bool:
+    dl = bt.get("dropped")
+    if not isinstance(dl, list) or not _i(dn) or len(dl) != dn or not dl or not _i(first) or not _i(last):
+        return False
+    seen = set()
+    for e in dl:
+        if not (isinstance(e, list) and len(e) == 3 and isinstance(e[0], str) and e[0] != "" and (e[1] is None or _i(e[1])) and _i(e[2])):
+            return False
+        if not first <= e[2] <= last:
+            return False
+        if (e[0], e[1]) in seen:
+            return False
+        seen.add((e[0], e[1]))
+    return dl[0][2] == first and dl[-1][2] == last
+
+
+def gate_fails(rec: Any) -> frozenset:
+    """Every GATE_REASONS name whose condition fails on a trigger record. Pure, fail closed (a missing key, a null, a bool where an integer is wanted,
+    a non-dict anywhere is a failure), never raises. Reads only ALLOWED_KEYS."""
+    if not isinstance(rec, dict):
+        return frozenset(GATE_REASONS)
+    f: set = set()
+    ws, slot = rec.get(WS_FIELD), rec.get("slot")
+    bu, bt = rec.get("base_union"), rec.get("base_tipauth")
+    bu_d, bt_d = isinstance(bu, dict), isinstance(bt, dict)
+    g = (lambda k: bu.get(k)) if bu_d else (lambda k: None)
+    h = (lambda k: bt.get(k)) if bt_d else (lambda k: None)
+    if not (_i(ws) and ws >= 1):
+        f.add("ws_not_ge1")
+    if rec.get("gap") is not False:
+        f.add("gap")
+    if not bu_d:
+        f.add("union_missing")
+    if not bt_d:
+        f.add("tipauth_missing")
+    if g("status") != "ok":
+        f.add("union_status")
+    if h("status") != "ok":
+        f.add("tipauth_status")
+    if not _d0(rec.get(TIPAUTH_FIELD)):
+        f.add("value_not_zero")
+    if not _d0(g("tip_only")):
+        f.add("tip_only")
+    if not _d0(g("both_diff")):
+        f.add("both_diff")
+    if not _d0(h("dropped_boost_n")):
+        f.add("dropped_boost")
+    src = rec.get("boost_src")
+    if not (isinstance(src, str) and src in BOOST_SRC_OK):
+        f.add("boost_src")
+    dn = h("dropped_n")
+    if not (_i(dn) and 1 <= dn <= TIPAUTH_DROPPED_MAX):
+        f.add("dropped_n")
+    if not _d0(h("kept_ws_only_sig_on_tip")):
+        f.add("kept_ws_only_sig_on_tip")
+    if not _d0(h("orphaned_by_drop_n")):
+        f.add("orphaned_by_drop")
+    if not _d0(h("tipauth_nosettle")):
+        f.add("nosettle")
+    first, last, lo, hi = h("dropped_first_slot"), h("dropped_last_slot"), h("cover_lo"), h("cover_hi")
+    if not (_i(first) and _i(lo) and first > lo):
+        f.add("dropped_first_slot")
+    # C7 (a)-(e)
+    if not (_i(h("margin_slots")) and h("margin_slots") == TIPAUTH_MARGIN_SLOTS):
+        f.add("margin")
+    if not (all(_i(x) for x in (slot, lo, hi, first, last)) and 0 <= lo < first <= last <= hi <= slot - TIPAUTH_MARGIN_SLOTS):
+        f.add("slots")
+    tfs, hw = g("tip_first_slot"), g("tip_hw_slot_global")
+    if not (_i(lo) and _i(tfs) and tfs == lo and _i(hw) and _i(slot) and _i(hi) and hi == min(hw, slot) - TIPAUTH_MARGIN_SLOTS):
+        f.add("cover")
+    if not (bt_d and _dropped_list_ok(bt, dn, first, last)):
+        f.add("dropped_list")
+    uv = rec.get(UNION_FIELD)
+    if not (_i(uv) and _i(ws) and uv == ws):
+        f.add("union_ne_ws")
+    # C7 (f). The tool also skips sealed records before it gets here (flag(): anything but absent / null / False) and counts them.
+    if rec.get("h5_look2_sealed") is True or rec.get("sealed") is True:
+        f.add("sealed_record")
+    if rec.get("variant") != "pv":
+        f.add("variant_not_pv")
+    return frozenset(f)
+
+
+def would_pass(trigger_record: Any) -> tuple[bool, str]:
+    """The one would-pass predicate (C1-C5 and C7; C6 "rule v1" is not decidable from records). Pure, fail closed, never raises.
+    Returns (True, "ok") or (False, <first failing reason>), the reasons checked IN THIS ORDER (GATE_REASONS, the executor's tipauth_gate order,
+    C7 after C5): not_a_record, ws_not_ge1, gap, union_missing, tipauth_missing, union_status, tipauth_status, value_not_zero, tip_only, both_diff,
+    dropped_boost, boost_src, dropped_n, kept_ws_only_sig_on_tip, orphaned_by_drop, nosettle, dropped_first_slot, margin, slots, cover, dropped_list,
+    union_ne_ws, sealed_record, variant_not_pv."""
+    fails = gate_fails(trigger_record)
+    for r in GATE_REASONS:
+        if r in fails:
+            return False, r
+    return True, "ok"
+
+
 def conditions(v: dict) -> dict[str, bool]:
-    """C1..C5 (C6 is not decidable from records). Strict: a missing or non-integer value fails."""
-    bt, bu = v["bt"], v["bu"]
-    c1 = (v["gap"] is False and bu is not None and bu.get("status") == "ok" and bt is not None and bt.get("status") == "ok"
-          and isint(v["tval"]) and v["tval"] == 0 and isint(v["ws"]) and v["ws"] >= 1)
-    c2 = bu is not None and isint(bu.get("tip_only")) and bu["tip_only"] == 0 and isint(bu.get("both_diff")) and bu["both_diff"] == 0
-    c3 = bt is not None and isint(bt.get("dropped_boost_n")) and bt["dropped_boost_n"] == 0 and isinstance(v["boost_src"], str) and v["boost_src"] != "behavioural"
-    dn = None if bt is None else bt.get("dropped_n")
-    c4 = bt is not None and isint(dn) and 1 <= dn <= 5 and isint(bt.get("kept_ws_only_sig_on_tip")) and bt["kept_ws_only_sig_on_tip"] == 0
-    c5a = bt is not None and isint(bt.get("orphaned_by_drop_n")) and bt["orphaned_by_drop_n"] == 0
-    c5b = bt is not None and isint(bt.get("tipauth_nosettle")) and bt["tipauth_nosettle"] == 0
-    c5c = bt is not None and isint(bt.get("dropped_first_slot")) and isint(bt.get("cover_lo")) and bt["dropped_first_slot"] > bt["cover_lo"]
-    return {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5a": c5a, "C5b": c5b, "C5c": c5c}
+    """C1..C5 and C7a..C7f from the view's `fails` (C6 is not decidable from records). True = the condition holds."""
+    fails = v.get("fails")
+    if fails is None:
+        fails = frozenset(GATE_REASONS)
+    return {name: not any(r in fails for r in rs) for name, rs in GROUPS.items()}
 
 
-def would_pass(c: dict) -> bool:
+def would_pass_view(c: dict) -> bool:
     return all(c.values())
 
 
@@ -595,7 +718,8 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
     res["item3_crosstab"] = {k: dict(sorted(c.items())) for k, c in xt.items()}
     # conditions
     conds = [(v, conditions(v)) for v in trig]
-    wp = [v for v, c in conds if would_pass(c)]
+    wp = [v for v, c in conds if would_pass_view(c)]  # == [v for v in trig if would_pass(raw)[0]]; pv only by construction (C7 f)
+    fv_not_eligible = sum(1 for v, c in conds if v["fails"] == {"variant_not_pv"})
     c14 = [(v, c) for v, c in conds if c["C1"] and c["C2"] and c["C3"] and c["C4"]]
     sub = collections.Counter()
     for v, c in c14:
@@ -603,7 +727,7 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
         dfs = None if not (isint(bt.get("dropped_first_slot")) and isint(bt.get("cover_lo"))) else bt["dropped_first_slot"] == bt["cover_lo"]
         sub[f"orphaned={bucket(bt.get('orphaned_by_drop_n'))}|nosettle={bucket(bt.get('tipauth_nosettle'))}|dropped_first_slot_eq_cover_lo={dfs}"] += 1
     res["item3_c1_c4_subtab"] = {"n_c1_c4": len(c14), "cells": dict(sorted(sub.items()))}
-    names = ["C1", "C2", "C3", "C4", "C5a", "C5b", "C5c"]
+    names = COND_NAMES
     funnel, cur = [{"after": "all_triggers", "n": len(conds)}], conds
     for nm in names:
         cur = [(v, c) for v, c in cur if c[nm]]
@@ -614,10 +738,18 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
           "fail_only_5a": sum(1 for v, c in c14 if not c["C5a"] and c["C5b"] and c["C5c"]), "fail_only_5b": sum(1 for v, c in c14 if c["C5a"] and not c["C5b"] and c["C5c"]),
           "fail_only_5c": sum(1 for v, c in c14 if c["C5a"] and c["C5b"] and not c["C5c"]),
           "fail_all_three": sum(1 for v, c in c14 if not (c["C5a"] or c["C5b"] or c["C5c"])), "fail_any": sum(1 for v, c in c14 if not (c["C5a"] and c["C5b"] and c["C5c"]))}
-    res["item6_would_pass"] = {"would_pass_n_after_c1_c5": len(wp), "would_pass_pv_n": sum(1 for v in wp if v["variant"] == "pv"),
+    c15 = [(v, c) for v, c in c14 if c["C5a"] and c["C5b"] and c["C5c"]]
+    c7 = {"n_c1_c5": len(c15), "fail_any": sum(1 for v, c in c15 if not all(c[n] for n in C7_NAMES)),
+          "fail_all_six": sum(1 for v, c in c15 if not any(c[n] for n in C7_NAMES))}
+    for n in C7_NAMES:
+        c7["fail_" + n] = sum(1 for v, c in c15 if not c[n])
+        c7["fail_only_" + n] = sum(1 for v, c in c15 if not c[n] and all(c[o] for o in C7_NAMES if o != n))
+    res["item6_would_pass"] = {"would_pass_n": len(wp), "would_pass_pv_n": sum(1 for v in wp if v["variant"] == "pv"),
+                               "fv_not_eligible_variant_n": fv_not_eligible,
                                "would_pass_by_boost_src": dict(sorted(collections.Counter(str(v["boost_src"]) for v in wp).items())),
                                "would_pass_pv_by_boost_src": dict(sorted(collections.Counter(str(v["boost_src"]) for v in wp if v["variant"] == "pv").items())),
-                               "c6_applied": False, "funnel": funnel, "leave_one_out_removes": loo, "c5_parts": c5}
+                               "c6_applied": False, "conditions": COND_NAMES, "gate_reasons": list(GATE_REASONS), "funnel": funnel, "leave_one_out_removes": loo,
+                               "c5_parts": c5, "c7_parts": c7}
     dist = lambda f, rows: summ([None if v["bt"] is None else v["bt"].get(f) for v in rows])  # noqa: E731
     closes0 = [v for v in pools if tip_ok(v) and v["tval"] == 0]
     fields = ["dropped_n", "dropped_sells_n", "dropped_boost_n", "kept_ws_only_before_cover", "kept_ws_only_above_cover", "kept_ws_only_sig_on_tip"]
@@ -759,7 +891,7 @@ def table(r: dict) -> str:
         return r["error"]
     v = r["verdict"]
     rows = [f"starts after T0: {r['starts']['n_starts_after_t0']}  origin={r['starts']['origin_t_ms']}  elapsed_h={r['window']['elapsed_h']}  covered_h={r['window']['covered_h']}  "
-            f"triggers={r['records']['triggers']}  closes={r['records']['plain_pool_closes']}  would-pass={r['item6_would_pass']['would_pass_n_after_c1_c5']}",
+            f"triggers={r['records']['triggers']}  closes={r['records']['plain_pool_closes']}  would-pass={r['item6_would_pass']['would_pass_n']}",
             f"{'threshold':44s} {'met':6s} numbers"]
     for k, t in sorted(v["thresholds"].items()):
         rows.append(f"{k:44s} {str(t['met']):6s} " + json.dumps({a: b for a, b in t.items() if a != 'met'}, sort_keys=True))
