@@ -50,6 +50,9 @@ def pool(t=MID + 1000, pool="P1", ws=0, uval=0, tval=0, gap=False, btd=None, bud
     return r
 
 
+SHA = "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
+
+
 def start(t=T0 + 1000, sha="abc", rule="h5-v1"):
     return {"type": "start", "t_ms": t, "code_sha": sha, "rule": rule, "argv": ["x"]}
 
@@ -88,7 +91,7 @@ class TestWindowAndSealed(Base):
         self.assertEqual(r["starts"]["origin_t_ms"], T0 + 5000)
         self.assertEqual(r["records"]["triggers"], 1)
         self.assertFalse(r["verdict"]["thresholds"]["single_start_after_t0"]["met"])
-        self.assertFalse(r["verdict"]["proposal_allowed"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
         self.assertEqual(r["starts"]["distinct_code_sha"], ["a", "b"])
 
     def test_start_before_t0_ignored(self):
@@ -99,7 +102,7 @@ class TestWindowAndSealed(Base):
     def test_no_start(self):
         r = self.run_tool([trig()])
         self.assertIn("error", r)
-        self.assertFalse(r["verdict"]["proposal_allowed"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
 
     def test_sealed_records_skipped_and_counted(self):
         recs = [start(), trig(), trig(pool="S1", h5_look2_sealed=True), trig(pool="S2", sealed=True), pool(pool="P1"),
@@ -126,12 +129,12 @@ class TestWindowAndSealed(Base):
         with open(name, "a") as fh:
             fh.write("{not json\n")
         r = T.analyze(self.d, T0)
-        self.assertEqual(r["skipped"]["bad_line"], 2)  # once per pass
+        self.assertEqual(r["skipped"]["bad_line"], 1)  # counted once (second pass only)
 
 
 class TestItems(Base):
     def test_item1_duration_and_count(self):
-        recs = [start(T0 + 1000)] + [trig(T0 + 2000 + i, pool=f"P{i}") for i in range(10)] + [hb(T0 + 1000 + 24 * H)]
+        recs = [start(T0 + 1000)] + [trig(T0 + 2000 + i, pool=f"P{i}") for i in range(10)] + [hb(T0 + 1000 + k * 600_000) for k in range(1, 145)]
         r = self.run_tool(recs, until=T0 + 2000 + 24 * H)
         t = r["verdict"]["thresholds"]["duration_24h_and_10_nogap_pv_ws_ge1"]
         self.assertEqual(r["item1_duration"]["n_nogap_pv_ws_ge1"], 10)
@@ -256,20 +259,20 @@ class TestC5AndFunnel(Base):
 class TestIncompleteness(Base):
     def test_share_and_cap(self):
         # 20 ws0 closes ok: 1 with tipauth>=1, 1 with orphaned>=1 only -> 10% > 5%
-        closes = [pool(pool=f"c{i}") for i in range(18)]
-        closes.append(pool(pool="t", uval=1, tval=1, btd=bt(dropped_n=1)))
-        closes.append(pool(pool="o", btd=bt(orphaned_by_drop_n=1, dropped_n=1)))
+        closes = [pool(pool=f"c{i}") for i in range(90)]
+        closes += [pool(pool=f"t{i}", uval=1, tval=1, btd=bt(dropped_n=1)) for i in range(5)]
+        closes += [pool(pool=f"o{i}", btd=bt(orphaned_by_drop_n=1, dropped_n=1)) for i in range(5)]
         r = self.run_tool([start()] + closes)
         i5 = r["item5_tip_incompleteness"]["plain_pool_closes"]
-        self.assertEqual((i5["n_ok"], i5["incomplete_n"], i5["incomplete_share_of_ok"]), (20, 2, 0.1))
-        self.assertEqual(i5["dropped_n_ge1_n"], 2)
+        self.assertEqual((i5["n_ok"], i5["incomplete_n"], i5["incomplete_share_of_ok"]), (100, 10, 0.1))
+        self.assertEqual(i5["dropped_n_ge1_n"], 10)
         self.assertFalse(r["verdict"]["thresholds"]["tip_incompleteness_le_5pct"]["met"])
-        self.assertFalse(r["verdict"]["proposal_allowed"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
 
     def test_at_cap_is_met_and_nulls_do_not_dilute(self):
         none_bt = bt(status="no_tip_rows", dropped_n=None, dropped=None, dropped_first_slot=None, dropped_last_slot=None, orphaned_by_drop_n=None, tipauth_nosettle=None)
-        closes = [pool(pool=f"c{i}") for i in range(19)] + [pool(pool="t", uval=1, tval=1, btd=bt(dropped_n=1))]
-        closes += [pool(pool=f"n{i}", tval=None, btd=none_bt) for i in range(20)]
+        closes = [pool(pool=f"c{i}") for i in range(95)] + [pool(pool=f"t{i}", uval=1, tval=1, btd=bt(dropped_n=1)) for i in range(5)]
+        closes += [pool(pool=f"n{i}", tval=None, btd=none_bt) for i in range(100)]
         r = self.run_tool([start()] + closes)
         i5 = r["item5_tip_incompleteness"]["plain_pool_closes"]
         self.assertEqual(i5["incomplete_share_of_ok"], 0.05)
@@ -407,24 +410,36 @@ class TestMargin(Base):
         self.assertEqual(m["tested"], 1)
 
     def test_verdict_margin_share(self):
-        base = {"item1_duration": {"elapsed_h": 30, "n_nogap_pv_ws_ge1": 12}, "item2_coverage": {"tipauth_ok_share_all": 1.0, "tipauth_ok_share_nogap_pv_ws_ge1": 1.0, "union_ok_share_all": 1.0},
-                "item4_consistency": {"total": 0, "checks": {}}, "item5_tip_incompleteness": {"plain_pool_closes": {"incomplete_share_of_ok": 0.0, "incomplete_share_of_all_ws0_nogap": 0.0, "n_ok": 10}},
-                "item9_timing_memory": {"rss_kb_max": 1000}, "starts": {"n_starts_after_t0": 1, "distinct_code_sha": ["a"]},
-                "item7_census_input": {"would_pass_fully_enumerated_n": 3, "would_pass_n": 3}}
-        def v(tested, left, wpl=0):
+        base = {"item1_duration": {"covered_h": 30, "elapsed_h": 30, "n_nogap_pv_ws_ge1": 12}, "expect_code_sha": "a" * 40,
+                "item2_coverage": {"tipauth_ok_share_all": 1.0, "tipauth_ok_share_nogap_pv_ws_ge1": 1.0, "union_ok_share_all": 1.0},
+                "item4_consistency": {"total": 0, "checks": {}},
+                "item5_tip_incompleteness": {"plain_pool_closes": {"incomplete_share_of_ok": 0.0, "incomplete_share_of_all_ws0_nogap": 0.0, "n_ok": 100}},
+                "item9_timing_memory": {"rss_kb_max": 1000}, "starts": {"n_starts_after_t0": 1, "distinct_code_sha": ["a"], "origin_code_sha": "a" * 40},
+                "item7_census_input": {"would_pass_fully_enumerated_n": 3, "would_pass_n": 3}, "item6_would_pass": {"would_pass_pv_n": 3}}
+
+        def v(tested, left, wpl=0, td=None, ld=None, wpt=3):
+            td = tested if td is None else td
+            ld = left if ld is None else ld
             r = dict(base, item10_margin_test={"tested": tested, "left_D": left, "left_D_share_of_tested": None if not tested else left / tested, "undetermined": 0,
-                                                "would_pass_left_D": wpl, "would_pass_entries": 3})
+                                                "would_pass_left_D": wpl, "would_pass_entries": 3, "would_pass_tested": wpt, "would_pass_undetermined": 0,
+                                                "tested_distinct": td, "left_D_distinct": ld})
             return T.verdict(r)
-        self.assertTrue(v(200, 2)["thresholds"]["margin_left_D_share_le_1pct"]["met"])  # exactly 1%
-        self.assertFalse(v(200, 3)["thresholds"]["margin_left_D_share_le_1pct"]["met"])
-        self.assertFalse(v(99, 1)["thresholds"]["margin_left_D_share_le_1pct"]["met"])
-        self.assertTrue(v(99, 0)["thresholds"]["margin_left_D_share_le_1pct"]["met"])
-        self.assertIsNone(v(0, 0)["thresholds"]["margin_left_D_share_le_1pct"]["met"])
-        self.assertFalse(v(200, 0, wpl=1)["proposal_allowed"])
+        k = "margin_left_D_share_le_1pct"
+        self.assertTrue(v(200, 2)["thresholds"][k]["met"])  # exactly 1%
+        self.assertFalse(v(200, 3)["thresholds"][k]["met"])
+        self.assertFalse(v(99, 1)["thresholds"][k]["met"])
+        self.assertTrue(v(99, 0)["thresholds"][k]["met"])
+        self.assertIsNone(v(0, 0)["thresholds"][k]["met"])
+        # distinct counts also fire; duplicates cannot dilute the 100 floor
+        self.assertFalse(v(121, 1, td=61, ld=1)["thresholds"][k]["met"])
+        self.assertFalse(v(200, 0, wpl=1)["tool_rules_clear"])
         ok = v(200, 0)
-        self.assertTrue(ok["proposal_allowed"])
+        self.assertTrue(ok["tool_rules_clear"])
         self.assertEqual(ok["blocking_reasons"], [])
         self.assertIn("item7_rpc_census", ok["outside_tool_pending"])
+        # no pass on an empty would-pass class
+        self.assertIsNone(v(200, 0, wpt=0)["thresholds"]["margin_no_would_pass_left_D"]["met"])
+        self.assertFalse(v(200, 0, wpt=0)["tool_rules_clear"])
 
     def test_non_would_pass_left_d_reported_not_counted_as_wp(self):
         t = trig(ws=1, btd=bt(orphaned_by_drop_n=1, dropped=[["s", 0, 105]]))
@@ -446,7 +461,7 @@ class TestMemoryAndVerdict(Base):
     def test_no_hb_is_short(self):
         r = self.run_tool([start(), trig()])
         self.assertIsNone(r["verdict"]["thresholds"]["rss_below_1gb"]["met"])
-        self.assertFalse(r["verdict"]["proposal_allowed"])
+        self.assertFalse(r["verdict"]["tool_rules_clear"])
 
     def test_no_forbidden_word(self):
         r = self.run_tool([start(), trig()])
@@ -584,10 +599,11 @@ class TestDeterminismAndCli(Base):
         out = self.d / "result.json"
         so, se = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(so), contextlib.redirect_stderr(se):
-            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--out", str(out), "--table"])
+            rc = T.main(["--shadow-dir", str(self.d), "--since-ms", str(T0), "--until-ms", str(T0 + 24 * H), "--expect-code-sha", SHA, "--out", str(out), "--table"])
         self.assertEqual(rc, 0)
         self.assertEqual(so.getvalue(), out.read_text())
-        self.assertIn("proposal_allowed", se.getvalue())
+        self.assertIn("tool_rules_clear", se.getvalue())
+        self.assertIn("NOT a proposal verdict", se.getvalue())
         self.assertIn("ambiguities", json.loads(so.getvalue()))
 
     def test_ambiguities_listed_with_unique_ids(self):

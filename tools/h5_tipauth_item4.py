@@ -5,17 +5,41 @@ comment 6120949717; ruling B and the first list from comment 6120633640; the new
 COUNT-ONLY. It reads decision-time and bookkeeping fields of start / hb / trigger / pool / gap records of the H5 shadow's hourly files
 (h5-shadow-YYYY-MM-DDTHH.jsonl) and nothing else. No outcome, no fill, no P&L, no join to any pick set. No network call (the RPC census
 of item 7 is a later step: this tool only lists the signatures to look up). It is written before the data exists and may only be tightened.
-Where a definition in the comments is ambiguous it takes the STRICTER reading; the choices are listed in AMBIGUITIES below.
+Where a definition in the comments is ambiguous it takes the STRICTER reading; the choices are listed in AMBIGUITIES below (all RULED).
 
 The read is restricted by ALLOWED_KEYS (a flat allow-list of every key name the tool ever looks at, on any nesting level). The test
-tools/test_h5_tipauth_item4.py wraps every parsed object in a dict that records accesses and fails on any key outside the list.
+tools/test_h5_tipauth_item4.py wraps every parsed object in a dict that records accesses and fails on any key outside the list. That test is a
+floor, not a proof: it cannot see C-level bypasses (str(rec), ==, dict.get(rec, k), update, |) or a branch its fixture does not exercise.
 
-  python3 tools/h5_tipauth_item4.py --shadow-dir DIR --since-ms T0 [--until-ms T1] [--out FILE] [--table]
+  python3 tools/h5_tipauth_item4.py --shadow-dir DIR --since-ms T0 --until-ms T1 --expect-code-sha SHA40 [--out FILE] [--table]
+  python3 tools/h5_tipauth_item4.py --schedule
+
+Round 2 (PR #613, quant-proof comment 6121547427, changes 1-12; reviewer comment 6121321849): the verdict key is `tool_rules_clear` (NOT a
+proposal verdict: the RPC census, the trigger print, decision-to-send and C6 are outside this tool); --until-ms and --expect-code-sha are
+required; the file list and sizes are snapshotted once and read only up to those sizes, so a record appended during the run is not seen;
+bytes that are not UTF-8 are counted under bad_line and the line is skipped; a malformed record never raises (it is counted or undetermined).
+
+THE PEEKING RULE (quant-proof comment 6121547427, section 4; the tool is not run exactly once, it is run on a fixed schedule and one read decides):
+  1. Scheduled instants, as --until-ms: +6 h (interim), +24 h, +36 h, +48 h, then every 12 h, each counted from --since-ms (T0); `--schedule` prints them.
+     Each run starts after its instant. No other run.
+  2. The deciding read is the first scheduled instant from +24 h at which the tool's own duration line is met. Nobody chooses it.
+  3. Exactly-0 rules (consistency, any would-pass left D, census found) are cumulative from the origin. A failure at any read, interim included, is
+     final. A counterexample survives a restart: "no proposal on this definition" holds until the definition is tightened by amendment.
+  4. Share rules (90%, 5%, 1%) are judged at the deciding read only. A fail there is final for this restart. No extension to wash it out. A new
+     count needs a recorded code or config change that addresses the cause; the same head restarted to try again is not a fresh count.
+  5. A null (short) result extends to the next scheduled instant.
+  6. Every output is saved with --out, its sha256 goes in the notebook, none is deleted, and an interim one is labelled "interim, not the deciding read".
+  7. After the first read of any kind, the tool, the thresholds, C1 to C6, the margin and this schedule change only by tightening, through a PR with QP.
+(T0 for this count = 1791797643640, job #817, code_sha 5db78a66...; an earlier start at 1791796005847, job #810, lies before T0 and is outside the window.)
+
+Boost source: C3 passes for boost_src "none" (no BOOST buy attributed on the feed) by the letter of the rule. The would-pass counts are split by
+boost_src (item6_would_pass.would_pass_by_boost_src / would_pass_pv_by_boost_src) so C3 can be tightened to pda / event_authority without a recount.
 """
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import math
 import re
@@ -25,7 +49,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 TOOL = "h5_tipauth_item4"
-SPEC = {"round3": "PR #610 comment 6121123397", "round2": "PR #610 comment 6120949717", "round1": "PR #610 comment 6120633640"}
+SPEC = {"round3": "PR #610 comment 6121123397", "round2": "PR #610 comment 6120949717", "round1": "PR #610 comment 6120633640",
+        "pr613_round2": "PR #613 comment 6121547427 (quant-proof), 6121321849 (reviewer)"}
 
 TIPAUTH_FIELD = "base_breaks_unresolved_settled_tipauth"
 UNION_FIELD = "base_breaks_unresolved_settled_union"
@@ -33,9 +58,32 @@ WS_FIELD = "base_breaks_unresolved_settled"
 DROPPED_LIST_MAX = 20  # TIPAUTH_DROPPED_LIST_MAX in tools/h5_shadow.py
 RSS_LIMIT_BYTES = 1_000_000_000  # the 1.0 GB re-read rule (stricter of 1e9 and 2**30)
 HOUR_MS = 3_600_000
+DAY_MS = 86_400_000
 BOUNDARY_MS = 120_000  # "within 2 minutes of a UTC hour boundary"
 MIN_HOURS, MIN_NOGAP_PV_WS1 = 24.0, 10
 COVERAGE_MIN, INCOMPLETE_MAX, LEFT_D_MAX, LEFT_D_MIN_TESTED = 0.90, 0.05, 0.01, 100
+INCOMPLETE_MIN_OK = 100  # item 5: fewer ok closes than this is a null (short), not a pass
+HB_HOLE_MS = 600_000  # a heartbeat hole longer than this is not covered time
+INT_BOUND = 2 ** 63  # a counter / slot / index beyond this is not an integer for this tool (keeps every sum and median finite)
+SCHEDULE_OFFSETS_H = (6, 24, 36, 48)  # +6 h is the interim read; then every 12 h after +48 h
+SCHEDULE_HELP = ("Print the fixed --until-ms instants computed from --since-ms (T0) and exit (quant-proof comment 6121547427, section 4): "
+                 "T0+6h (interim, not the deciding read), T0+24h, T0+36h, T0+48h, then every 12 h. Each run starts after its instant. No other run. "
+                 "The tool REFUSES (exit 4, JSON error) any --until-ms that is not one of these instants. The deciding read is the first instant from +24h "
+                 "at which the duration line is met. See the module docstring for the peeking rule.")
+
+
+def schedule(since_ms: int, horizon_h: int = 24 * 14) -> list[int]:
+    hs = list(SCHEDULE_OFFSETS_H) + list(range(60, horizon_h + 1, 12))
+    return [since_ms + h * HOUR_MS for h in hs]
+
+
+def on_schedule(since_ms: int, until_ms: int) -> bool:
+    d = until_ms - since_ms
+    if d % HOUR_MS:
+        return False
+    h = d // HOUR_MS
+    return h == 6 or (h >= 24 and (h - 24) % 12 == 0)
+
 
 # Every key name this tool ever reads, on any level (top level of a record, base_union, base_tipauth, hb counters / tip_union / mem).
 # No outcome, price, fill or P&L key is, or may be, in this set.
@@ -47,7 +95,7 @@ ALLOWED_KEYS = frozenset({
     # gap
     "kind",
     # trigger / pool (decision-time and bookkeeping)
-    "variant", "pool", "gap", "slot", "boost_src", WS_FIELD, UNION_FIELD, TIPAUTH_FIELD, "base_union", "base_tipauth",
+    "variant", "pool", "gap", "slot", "boost_src", "t_detect_ms", WS_FIELD, UNION_FIELD, TIPAUTH_FIELD, "base_union", "base_tipauth",
     # base_union
     "status", "tip_only", "both_diff", "tip_first_slot",
     # base_tipauth
@@ -67,41 +115,68 @@ HB_MEM_KEYS = ("rss_kb", "rss_anon_kb", "hwm_kb", "est_mb", "est_tipauth_mb", "t
 AMBIGUITIES = [
     ("A01", "Which start record, when more than one has t_ms >= T0",
      "Round 3 / round 1: 'Counted only from the shadow restart ... (start record code_sha = that merge commit)'. Chosen: the LAST start record at or after T0 "
-     "is the run origin (stricter: a later restart resets the 24 h); all start t_ms and code_sha are reported; n_starts_after_t0 > 1 blocks proposal_allowed."),
-    ("A02", "Elapsed hours", "Item 1: 'at least 24 h from that start record'. Chosen: (largest t_ms of any used record, capped by --until-ms) minus the origin start t_ms."),
-    ("A03", "'trigger records' in the 90% coverage (item 2)", "Item 2: 'on at least 90% of trigger records'. Chosen: pv and fv triggers; both the share over ALL triggers and the "
-     "share over no-gap pv triggers with ws >= 1 must reach 90% (stricter). 'ok' needs status == 'ok' AND a non-null integer value."),
+     "is the run origin (stricter: a later restart resets the 24 h); all start t_ms and code_sha are reported; n_starts_after_t0 > 1 blocks tool_rules_clear. "
+     "A rerun with --since-ms at the later start is a new clock and needs its own clean-checkout record. The origin's code_sha must equal --expect-code-sha (change 1)."),
+    ("A02", "Elapsed and covered hours (replaced by change 10)",
+     "Item 1 uses covered_h: window_end = min(--until-ms, largest used t_ms); a hole is any interval longer than 600,000 ms between consecutive points of "
+     "[origin, hb t_ms..., window_end]; covered_h = (window_end - origin - sum(holes)) / 3,600,000. elapsed_h, covered_h, hb_max_gap_ms and n_holes are printed."),
+    ("A03", "'trigger records' in the 90% coverage (item 2)",
+     "Item 2: 'on at least 90% of trigger records'. Chosen: pv and fv triggers; both the share over ALL triggers and the share over no-gap pv triggers with ws >= 1 "
+     "must reach 90% (stricter). 'ok' needs status == 'ok' AND a non-null integer value. A known share below 90% is a fail even if the other share is null; null "
+     "only when no known share fails and one is unknown (change 7)."),
     ("A04", "no-gap", "'gap false' is read as gap is exactly False; a missing or null gap is not no-gap."),
     ("A05", "Union ok (item 2)", "Item 2: 'base_union.status ok on at least 90%'. Chosen: status == 'ok' and the union value base_breaks_unresolved_settled_union a non-null integer."),
-    ("A06", "Would-pass variants", "C1-C6 do not name a variant. Chosen: would-pass is computed over pv and fv triggers together (stricter for the 'any left D' and "
-     "'fully enumerated' rules); the pv-only count is reported next to it."),
-    ("A07", "C3 'boost_src is not behavioural'", "Chosen: boost_src must be present and a string other than 'behavioural' (a missing key fails C3)."),
+    ("A06", "Would-pass variants",
+     "C1-C6 do not name a variant. Chosen: would-pass is computed over pv and fv triggers together (stricter for the 'any left D' and 'fully enumerated' rules). "
+     "The number quoted as 'decisions that would change' is would_pass_pv_n ONLY: the executor acts on pv only. The pv plus fv sum is never called trades."),
+    ("A07", "C3 'boost_src is not behavioural'",
+     "Chosen: boost_src must be present and a string other than 'behavioural' (a missing key fails C3). boost_src 'none' (no BOOST buy attributed on the feed) passes C3 "
+     "by the letter; would_pass_by_boost_src and would_pass_pv_by_boost_src show the split so C3 can be tightened without a recount."),
     ("A08", "C6 'v1 only'", "Not decidable from records. The start record 'rule' ids are reported; C6 is NOT applied and is listed as outside_tool_pending."),
-    ("A09", "'removes' per C condition (item 6)", "Reported three ways: sequential funnel C1..C4, C5a, C5b, C5c; leave-one-out (passes all others, fails this one); and for "
-     "C5 parts among C1-C4 triggers: failing the part at all, failing only that part, failing all three, failing any."),
-    ("A10", "Tip incompleteness share (item 5)", "Items 5 / B'5: share of ws-0 no-gap plain pool closes with tipauth >= 1 OR orphaned_by_drop_n >= 1. Chosen: the denominator "
-     "is closes with base_tipauth.status ok and a non-null value (stricter: nulls do not dilute); the share over all such closes is also reported. 'Plain pool close' = type pool, "
-     "unsealed, whatever the reason."),
-    ("A11", "Consistency checks apply to", "Every unsealed trigger and pool record that carries a base_tipauth dict. 'a base_tipauth without the dropped key' is counted literally "
-     "(an exception record counts here and in union_errors). A malformed dropped entry (not [sig, event_index, int slot]) is counted as its own violation. A missing trigger slot or "
-     "margin_slots when the trigger bound must be checked is a violation. union_errors = largest hb counters.union_errors in the run."),
+    ("A09", "'removes' per C condition (item 6)",
+     "Reported three ways: sequential funnel C1..C4, C5a, C5b, C5c; leave-one-out (passes all others, fails this one); and for C5 parts among C1-C4 triggers: "
+     "failing the part at all, failing only that part, failing all three, failing any."),
+    ("A10", "Tip incompleteness share (item 5) (replaced by change 2)",
+     "Share of ws-0 no-gap plain pool closes with tipauth >= 1 OR orphaned_by_drop_n >= 1, over closes with base_tipauth.status ok and a non-null value (n_ok). "
+     "met is null when n_ok < 100 (INCOMPLETE_MIN_OK), else share_of_ok <= 5%. Both shares stay reported."),
+    ("A11", "Consistency checks apply to",
+     "Every unsealed trigger and pool record that carries a base_tipauth dict. 'a base_tipauth without the dropped key' is counted literally (an exception record "
+     "counts here and in union_errors). A malformed dropped entry (not [str, None-or-int, int slot]) is counted as its own violation. A missing trigger slot or "
+     "margin_slots when the trigger bound must be checked is a violation. union_errors = largest hb counters.union_errors in the run; an hb whose counters dict lacks "
+     "the key is a 0-valued sample, an hb whose value is present but not an integer counts as 1 (fail closed). A trigger or pool record whose pool is not a string is "
+     "left out of every count and counted in record_pool_not_str (must be 0)."),
     ("A12", "'dropped_n <= 20 with last entry slot != dropped_last_slot'", "Also applied to an empty list: dropped_first_slot / dropped_last_slot must then be null (status ok)."),
-    ("A13", "Margin test denominator (item 10)", "'Tested' = entries classified still dropped or left D. Undetermined entries are reported and excluded from the denominator "
-     "(stricter: raises the share). An entry whose trigger has no close record with status ok and cover_hi >= trigger slot is undetermined (never silently skipped). The close used "
-     "is the first close of the pool with t_ms >= the trigger's. 'Left D' share > 1%: share of left D over tested; with fewer than 100 tested, one left D fires."),
-    ("A14", "'Fully enumerated' on a would-pass trigger", "dropped is a list and len(dropped) == dropped_n on the TRIGGER record (round 3 definition). Any failure is a consistency failure."),
+    ("A13", "Margin test (item 10) (amended by changes 5 and 8)",
+     "'Tested' = entries classified still dropped or left D. Undetermined entries are reported and excluded from the denominator. The close used is the FIRST close of "
+     "the pool with t_ms >= the trigger's; if it is not status ok with integer cover_hi >= the trigger slot, all that trigger's entries are undetermined (no skipping "
+     "ahead). Distinct entries are keyed (pool, signature, event_index) (class: left D if any row is, else still dropped if any, else undetermined). "
+     "fire(t, l) = (l >= 1) if t < 100 else (l / t > 0.01); met is false if fire on the per-row counts or on the distinct counts."),
+    ("A14", "'Fully enumerated' on a would-pass trigger",
+     "dropped is a list and len(dropped) == dropped_n on the TRIGGER record (round 3 definition). Any failure is a consistency failure. With no would-pass trigger the "
+     "threshold is null (change 4)."),
     ("A15", "Hour-boundary share", "Triggers (pv and fv, all statuses) with t_ms within 120 s of a UTC hour boundary; share with status tip_pending. Reported only; no threshold is declared."),
-    ("A16", "Item 8 (trigger print on the tip, equal pre-trade q and base) and item 9 decision-to-send ms", "Need the tip tape and the executor's records, outside the shadow "
-     "records this tool may read. Reported null; they are in outside_tool_pending and are not decided here."),
+    ("A16", "Item 8 (trigger print on the tip, equal pre-trade q and base) and item 9 decision-to-send ms",
+     "Item 8 and decision-to-send need the tip tape and the executor's records, outside what this tool may read: null, in outside_tool_pending. Change 9 adds the "
+     "shadow-side lag t_ms - t_detect_ms (report only)."),
     ("A17", "RSS rule", "Item 9: 'rss against the 1.0 GB re-read rule'. Chosen: met only if the largest hb rss_kb * 1024 < 1,000,000,000."),
-    ("A18", "proposal_allowed", "Computed from the rules this tool owns only. true does NOT mean a proposal is allowed: outside_tool_pending (RPC census, item 8, decision-to-send, C6) is "
-     "still open and listed."),
+    ("A18", "tool_rules_clear (replaces proposal_allowed, change 3)",
+     "Computed from the rules this tool owns only. true does NOT mean a proposal is allowed: outside_tool_pending (RPC census, item 8, decision-to-send, C6) is still "
+     "open and listed. No empty class passes (change 4)."),
     ("A19", "Run window for non-start records", "A record belongs to the run if its integer t_ms is >= the origin start t_ms and <= --until-ms; records without an integer t_ms are counted and ignored."),
 ]
 
 
 def isint(x: Any) -> bool:
-    return isinstance(x, int) and not isinstance(x, bool)
+    return isinstance(x, int) and not isinstance(x, bool) and -INT_BOUND < x < INT_BOUND
+
+
+def flag(x: Any) -> bool:
+    """A sealed flag fails closed: anything but absent / null / False counts as sealed."""
+    return not (x is None or x is False)
+
+
+def entry_ok(e: Any) -> bool:
+    return isinstance(e, list) and len(e) == 3 and isinstance(e[0], str) and (e[1] is None or isint(e[1])) and isint(e[2])
 
 
 def bucket(x: Any) -> str:
@@ -123,6 +198,10 @@ def summ(vals: list) -> dict:
     return out
 
 
+def finite_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and abs(x) < 1e300
+
+
 # ---- reading --------------------------------------------------------------------------------------------------------------------------------
 
 _FILE_RE = re.compile(r"^h5-shadow-(\d{4})-(\d{2})-(\d{2})T(\d{2})\.jsonl$")
@@ -137,28 +216,53 @@ def hour_files(shadow_dir: Path, since_ms: int, until_ms: int | None) -> list[Pa
             continue
         y, mo, d, h = (int(g) for g in m.groups())
         start = calendar.timegm((y, mo, d, h, 0, 0)) * 1000
-        if start + HOUR_MS <= since_ms - HOUR_MS or (until_ms is not None and start > until_ms):
-            continue  # one hour of slack before T0: a file is named by its hour of writing
+        # one hour of slack before T0 (a file is named by its hour of writing) and 24 h more for the report-only pre-origin lag window
+        if start + HOUR_MS <= since_ms - DAY_MS - HOUR_MS or (until_ms is not None and start > until_ms):
+            continue
         out.append(p)
     return out
 
 
-def iter_records(files: list[Path], counts: collections.Counter, object_hook: Callable | None) -> Any:
+def snapshot(files: list[Path]) -> list[tuple[Path, int]]:
+    """File names and sizes, taken ONCE. Both passes read only up to these sizes."""
+    snap = []
     for f in files:
-        with open(f, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line, object_hook=object_hook)
-                except ValueError:
-                    counts["bad_line"] += 1
-                    continue
-                if not isinstance(rec, dict):
-                    counts["bad_line"] += 1
-                    continue
-                yield rec
+        try:
+            snap.append((f, f.stat().st_size))
+        except OSError:
+            continue
+    return snap
+
+
+def iter_records(snap: list[tuple[Path, int]], counts: collections.Counter, object_hook: Callable | None) -> Any:
+    for f, size in snap:
+        try:
+            with open(f, "rb") as fh:
+                data = fh.read(size)
+        except OSError:
+            counts["unreadable_file"] += 1
+            continue
+        for raw in data.split(b"\n"):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # errors="replace" would let a corrupt line parse; instead it is counted as a bad line and skipped
+                raw.decode("utf-8", errors="replace")
+                counts["bad_line"] += 1
+                counts["bad_line_not_utf8"] += 1
+                continue
+            try:
+                rec = json.loads(line, object_hook=object_hook)
+            except (ValueError, RecursionError):
+                counts["bad_line"] += 1
+                continue
+            if not isinstance(rec, dict):
+                counts["bad_line"] += 1
+                continue
+            yield rec
 
 
 def view_sub(d: Any, keys: tuple, has_dropped: bool = False) -> dict | None:
@@ -173,8 +277,8 @@ def view_sub(d: Any, keys: tuple, has_dropped: bool = False) -> dict | None:
 def view_record(rec: dict, typ: str) -> dict:
     """The only place a trigger / pool record is read. Plain dict out."""
     return {"type": typ, "pool": rec.get("pool"), "variant": rec.get("variant"), "t_ms": rec.get("t_ms"), "gap": rec.get("gap"), "slot": rec.get("slot"),
-            "boost_src": rec.get("boost_src"), "ws": rec.get(WS_FIELD), "uval": rec.get(UNION_FIELD), "tval": rec.get(TIPAUTH_FIELD),
-            "bu": view_sub(rec.get("base_union"), BU_KEYS), "bt": view_sub(rec.get("base_tipauth"), BT_KEYS, True)}
+            "boost_src": rec.get("boost_src"), "t_detect_ms": rec.get("t_detect_ms"), "ws": rec.get(WS_FIELD), "uval": rec.get(UNION_FIELD),
+            "tval": rec.get(TIPAUTH_FIELD), "bu": view_sub(rec.get("base_union"), BU_KEYS), "bt": view_sub(rec.get("base_tipauth"), BT_KEYS, True)}
 
 
 # ---- conditions -----------------------------------------------------------------------------------------------------------------------------
@@ -214,7 +318,7 @@ CONSIST_NAMES = [
     "ok_with_null_orphaned_nosettle_or_dropped_n", "notok_with_nonnull_orphaned_nosettle_or_dropped_n", "ok_dropped_not_list_of_min_dropped_n_20",
     "notok_with_nonnull_dropped", "base_tipauth_without_dropped_key", "entry_slot_outside_cover", "trigger_entry_above_slot_minus_margin",
     "first_entry_slot_ne_dropped_first_slot", "last_entry_slot_ne_dropped_last_slot", "repeated_signature_event_index", "dropped_entry_malformed",
-    "would_pass_trigger_not_fully_enumerated"]
+    "would_pass_trigger_not_fully_enumerated", "record_pool_not_str"]
 
 
 def consistency_record(v: dict, wp: bool) -> list[str]:
@@ -247,7 +351,7 @@ def consistency_record(v: dict, wp: bool) -> list[str]:
     if isinstance(dl, list):
         slots, keys, malformed = [], [], False
         for e in dl:
-            if isinstance(e, list) and len(e) == 3 and isint(e[2]) and isinstance(e[0], str):
+            if entry_ok(e):
                 slots.append(e[2])
                 keys.append((e[0], e[1]))
             else:
@@ -314,24 +418,83 @@ def union_ok(v: dict) -> bool:
     return v["bu"] is not None and v["bu"].get("status") == "ok" and isint(v["uval"])
 
 
-def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object_hook: Callable | None = None) -> dict:
+def covered(origin: int, window_end: int, hb_ts: list[int]) -> dict:
+    """Item 1 covered hours: every interval longer than HB_HOLE_MS between consecutive points of [origin, hb..., window_end] is a hole."""
+    pts = [origin] + sorted(t for t in hb_ts if origin <= t <= window_end) + [window_end]
+    gaps = [b - a for a, b in zip(pts, pts[1:])]
+    holes = [g for g in gaps if g > HB_HOLE_MS]
+    cov_ms = (window_end - origin) - sum(holes)
+    return {"elapsed_h": round((window_end - origin) / HOUR_MS, 4), "covered_h": round(cov_ms / HOUR_MS, 4), "hb_max_gap_ms": max(gaps) if gaps else 0,
+            "n_holes": len(holes), "hole_ms_total": sum(holes), "hb_hole_ms": HB_HOLE_MS}
+
+
+def classify_margin(trig: list[dict], pools: list[dict], wp_ids: set) -> dict:
+    closes_by_pool: dict[str, list[dict]] = collections.defaultdict(list)
+    for v in pools:
+        closes_by_pool[v["pool"]].append(v)
+    for lst in closes_by_pool.values():
+        lst.sort(key=lambda v: v["t_ms"])
+    rows, tcount = [], collections.Counter()
+    dist: dict[tuple, str] = {}
+    rank = {"undetermined": 0, "still_dropped": 1, "left_D": 2}
+    for v in trig:
+        bt = v["bt"]
+        if v["gap"] is not False or bt is None or bt.get("status") != "ok" or not isint(bt.get("dropped_n")) or bt["dropped_n"] < 1 or not isinstance(bt.get("dropped"), list):
+            continue
+        # the FIRST close at or after the trigger; if it is unusable the entries are undetermined (no skipping ahead)
+        close = next((c for c in closes_by_pool.get(v["pool"], []) if c["t_ms"] >= v["t_ms"]), None)
+        usable = (close is not None and close["bt"] is not None and close["bt"].get("status") == "ok" and isint(close["bt"].get("cover_hi"))
+                  and isint(v["slot"]) and close["bt"]["cover_hi"] >= v["slot"])
+        cl = close["bt"].get("dropped") if usable else None
+        cdn = close["bt"].get("dropped_n") if usable else None
+        ckeys = {(e[0], e[1]) for e in cl if entry_ok(e)} if isinstance(cl, list) else set()
+        is_wp = id(v) in wp_ids
+        for e in bt["dropped"]:
+            good = entry_ok(e)
+            delta = (v["slot"] - e[2]) if (good and isint(v["slot"])) else None
+            if not good or not isint(v["slot"]) or not usable or not isinstance(cl, list) or not isint(cdn):
+                cls = "undetermined"
+            elif (e[0], e[1]) in ckeys:
+                cls = "still_dropped"
+            elif cdn <= DROPPED_LIST_MAX or (cl and entry_ok(cl[-1]) and e[2] < cl[-1][2]):
+                cls = "left_D"
+            else:
+                cls = "undetermined"
+            tcount[cls] += 1
+            if is_wp:
+                tcount["wp_" + cls] += 1
+            if good:
+                k = (v["pool"], e[0], e[1])
+                if k not in dist or rank[cls] > rank[dist[k]]:
+                    dist[k] = cls
+            rows.append({"pool": v["pool"], "variant": v["variant"], "would_pass": is_wp, "signature": e[0] if good else None,
+                         "event_index": e[1] if good else None, "trigger_slot_minus_entry_slot": delta, "class": cls})
+    rows.sort(key=lambda r: (str(r["pool"]), str(r["variant"]), str(r["signature"]), str(r["event_index"])))
+    dc = collections.Counter(dist.values())
+    return {"rows": rows, "t": tcount, "distinct": dc, "distinct_n": len(dist)}
+
+
+def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object_hook: Callable | None = None, expect_code_sha: str | None = None) -> dict:
     counts: collections.Counter = collections.Counter()
     files = hour_files(shadow_dir, since_ms, until_ms)
-    # pass 1: starts (t_ms >= T0). pass 2: the run's records. Two passes, because the origin is the LAST start and records precede nothing.
+    snap = snapshot(files)
+    # pass 1: starts (t_ms >= T0). pass 2: the run's records. Both read the same snapshot (same bytes), because the origin is the LAST start.
     starts: list[dict] = []
-    for rec in iter_records(files, counts, object_hook):
+    for rec in iter_records(snap, collections.Counter(), object_hook):
         if rec.get("type") == "start":
             t = rec.get("t_ms")
             if isint(t) and t >= since_ms and (until_ms is None or t <= until_ms):
                 starts.append({"t_ms": t, "code_sha": rec.get("code_sha"), "rule": rec.get("rule")})
     starts.sort(key=lambda s: (s["t_ms"], str(s["code_sha"])))
-    res: dict = {"tool": TOOL, "spec": SPEC, "since_ms": since_ms, "until_ms": until_ms, "files": [p.name for p in files]}
+    res: dict = {"tool": TOOL, "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "spec": SPEC, "since_ms": since_ms, "until_ms": until_ms,
+                 "expect_code_sha": expect_code_sha, "files": [f.name for f, _ in snap], "file_sizes": {f.name: n for f, n in snap}}
     res["starts"] = {"n_starts_after_t0": len(starts), "starts": starts, "origin_t_ms": starts[-1]["t_ms"] if starts else None,
+                     "origin_code_sha": starts[-1]["code_sha"] if starts else None,
                      "distinct_code_sha": sorted({str(s["code_sha"]) for s in starts}), "rules": sorted({str(s["rule"]) for s in starts})}
-    res["ambiguities"] = [{"id": a, "topic": t, "choice": c} for a, t, c in AMBIGUITIES]
+    res["ambiguities"] = [{"id": a, "status": "RULED", "topic": t, "choice": c} for a, t, c in AMBIGUITIES]
     if not starts:
         res["error"] = "no start record at or after --since-ms"
-        res["verdict"] = {"proposal_allowed": False, "blocking_reasons": ["no_start_record"], "thresholds": {}, "outside_tool_pending": OUTSIDE}
+        res["verdict"] = {"tool_rules_clear": False, "blocking_reasons": ["no_start_record"], "thresholds": {}, "outside_tool_pending": OUTSIDE}
         return res
     origin = starts[-1]["t_ms"]
 
@@ -339,24 +502,34 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
     pools: list[dict] = []
     gap_kinds: collections.Counter = collections.Counter()
     hbs: list[dict] = []
+    pre_lag: list = []
     max_t = origin
-    for rec in iter_records(files, counts, object_hook):
+    for rec in iter_records(snap, counts, object_hook):
         t = rec.get("t_ms")
         typ = rec.get("type")
         if not isint(t):
             counts["records_without_int_t_ms"] += 1
             continue
-        if t < origin or (until_ms is not None and t > until_ms):
+        if t < origin:
+            # report-only: the 24 h before the origin, unsealed pv triggers, keys type / t_ms / sealed / h5_look2_sealed / variant / t_detect_ms only
+            if typ == "trigger" and t >= origin - DAY_MS and not (flag(rec.get("sealed")) or flag(rec.get("h5_look2_sealed"))) and rec.get("variant") == "pv":
+                td = rec.get("t_detect_ms")
+                pre_lag.append(t - td if isint(td) else None)
+            continue
+        if until_ms is not None and t > until_ms:
             continue
         if typ not in ("trigger", "pool", "gap", "hb"):
             continue
         max_t = max(max_t, t)
         if typ in ("trigger", "pool"):
-            sl, h5 = rec.get("sealed") is True, rec.get("h5_look2_sealed") is True
+            sl, h5 = flag(rec.get("sealed")), flag(rec.get("h5_look2_sealed"))
             if sl or h5:
                 counts[f"skipped_{typ}_sealed" if sl else f"skipped_{typ}_h5_look2_sealed"] += 1
                 if sl and h5:
                     counts[f"skipped_{typ}_both_flags"] += 1
+                continue
+            if not isinstance(rec.get("pool"), str):
+                counts["record_pool_not_str"] += 1
                 continue
             (trig if typ == "trigger" else pools).append(view_record(rec, typ))
         elif typ == "gap":
@@ -365,30 +538,34 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
         else:  # hb
             ctr, tu = rec.get("counters"), rec.get("tip_union")
             mem = tu.get("mem") if isinstance(tu, dict) else None
-            hbs.append({"t_ms": t, "union_errors": ctr.get("union_errors") if isinstance(ctr, dict) else None,
+            hbs.append({"t_ms": t, "has_counters": isinstance(ctr, dict), "union_errors": ctr.get("union_errors") if isinstance(ctr, dict) else None,
                         **{k: (mem.get(k) if isinstance(mem, dict) else None) for k in HB_MEM_KEYS}})
-    end_t = max_t
-    res["window"] = {"origin_t_ms": origin, "last_t_ms": end_t, "elapsed_h": round((end_t - origin) / HOUR_MS, 4)}
+    window_end = max_t if until_ms is None else min(until_ms, max_t)
+    cov = covered(origin, window_end, [h["t_ms"] for h in hbs])
+    res["window"] = {"origin_t_ms": origin, "last_t_ms": window_end, **cov}
     res["skipped"] = {"sealed_trigger": counts["skipped_trigger_sealed"], "h5_look2_sealed_trigger": counts["skipped_trigger_h5_look2_sealed"],
                       "sealed_pool": counts["skipped_pool_sealed"], "h5_look2_sealed_pool": counts["skipped_pool_h5_look2_sealed"],
                       "both_flags": counts["skipped_trigger_both_flags"] + counts["skipped_pool_both_flags"], "bad_line": counts["bad_line"],
-                      "records_without_int_t_ms": counts["records_without_int_t_ms"]}
-    trig = [v for v in trig if v["variant"] in ("pv", "fv")]
+                      "bad_line_not_utf8": counts["bad_line_not_utf8"], "unreadable_file": counts["unreadable_file"],
+                      "records_without_int_t_ms": counts["records_without_int_t_ms"], "record_pool_not_str": counts["record_pool_not_str"]}
+    variant_other = sum(1 for v in trig if not (v["variant"] == "pv" or v["variant"] == "fv"))
+    trig = [v for v in trig if v["variant"] == "pv" or v["variant"] == "fv"]
     res["records"] = {"triggers": len(trig), "triggers_pv": sum(1 for v in trig if v["variant"] == "pv"), "triggers_fv": sum(1 for v in trig if v["variant"] == "fv"),
-                      "plain_pool_closes": len(pools), "hb": len(hbs), "gap_records_by_kind": dict(sorted(gap_kinds.items()))}
+                      "triggers_variant_other": variant_other, "plain_pool_closes": len(pools), "hb": len(hbs), "gap_records_by_kind": dict(sorted(gap_kinds.items()))}
 
     pv = [v for v in trig if v["variant"] == "pv"]
     nogap_pv_ws1 = [v for v in pv if v["gap"] is False and isint(v["ws"]) and v["ws"] >= 1]
     # item 1
-    res["item1_duration"] = {"elapsed_h": res["window"]["elapsed_h"], "n_nogap_pv_ws_ge1": len(nogap_pv_ws1), "min_hours": MIN_HOURS, "min_triggers": MIN_NOGAP_PV_WS1}
+    res["item1_duration"] = {"elapsed_h": cov["elapsed_h"], "covered_h": cov["covered_h"], "hb_max_gap_ms": cov["hb_max_gap_ms"], "n_holes": cov["n_holes"],
+                             "n_nogap_pv_ws_ge1": len(nogap_pv_ws1), "min_hours": MIN_HOURS, "min_triggers": MIN_NOGAP_PV_WS1}
     # item 2
     st_all = collections.Counter(status_of(v) for v in trig)
     st_sel = collections.Counter(status_of(v) for v in nogap_pv_ws1)
     bnd = [v for v in trig if isint(v["t_ms"]) and min(v["t_ms"] % HOUR_MS, HOUR_MS - v["t_ms"] % HOUR_MS) <= BOUNDARY_MS]
-    ust_all = collections.Counter((v["bu"] or {}).get("status") if v["bu"] is not None else "missing" for v in trig)
+    ust_all = collections.Counter("missing" if v["bu"] is None else str(v["bu"].get("status")) for v in trig)
     res["item2_coverage"] = {
         "tipauth_status_all_triggers": dict(sorted(st_all.items())), "tipauth_status_nogap_pv_ws_ge1": dict(sorted(st_sel.items())),
-        "union_status_all_triggers": {str(k): n for k, n in sorted(ust_all.items(), key=lambda kv: str(kv[0]))},
+        "union_status_all_triggers": dict(sorted(ust_all.items())),
         "tipauth_ok_n_all": sum(1 for v in trig if tip_ok(v)), "tipauth_ok_share_all": share(sum(1 for v in trig if tip_ok(v)), len(trig)),
         "tipauth_ok_n_nogap_pv_ws_ge1": sum(1 for v in nogap_pv_ws1 if tip_ok(v)),
         "tipauth_ok_share_nogap_pv_ws_ge1": share(sum(1 for v in nogap_pv_ws1 if tip_ok(v)), len(nogap_pv_ws1)),
@@ -427,6 +604,8 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
           "fail_only_5c": sum(1 for v, c in c14 if c["C5a"] and c["C5b"] and not c["C5c"]),
           "fail_all_three": sum(1 for v, c in c14 if not (c["C5a"] or c["C5b"] or c["C5c"])), "fail_any": sum(1 for v, c in c14 if not (c["C5a"] and c["C5b"] and c["C5c"]))}
     res["item6_would_pass"] = {"would_pass_n_after_c1_c5": len(wp), "would_pass_pv_n": sum(1 for v in wp if v["variant"] == "pv"),
+                               "would_pass_by_boost_src": dict(sorted(collections.Counter(str(v["boost_src"]) for v in wp).items())),
+                               "would_pass_pv_by_boost_src": dict(sorted(collections.Counter(str(v["boost_src"]) for v in wp if v["variant"] == "pv").items())),
                                "c6_applied": False, "funnel": funnel, "leave_one_out_removes": loo, "c5_parts": c5}
     dist = lambda f, rows: summ([None if v["bt"] is None else v["bt"].get(f) for v in rows])  # noqa: E731
     closes0 = [v for v in pools if tip_ok(v) and v["tval"] == 0]
@@ -442,10 +621,18 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
             cons[b]["n"] += 1
             if len(cons[b]["pools"]) < 5:
                 cons[b]["pools"].append(str(v["pool"]))
-    ue = [h["union_errors"] for h in hbs if isint(h["union_errors"])]
+    cons["record_pool_not_str"]["n"] = counts["record_pool_not_str"]
+    # union_errors: an hb with a counters dict is one sample; an absent counter is a 0-valued sample; a present non-integer counts as 1 (fail closed)
+    ue = []
+    for h in hbs:
+        if h["has_counters"]:
+            u = h["union_errors"]
+            ue.append(0 if u is None else (u if isint(u) else 1))
     cons["union_errors"]["n"] = max(ue) if ue else 0
     res["item4_consistency"] = {"checks": cons, "total": sum(c["n"] for c in cons.values()), "union_errors_hb_samples": len(ue),
+                                "union_errors_hb_absent_counter_as_0": sum(1 for h in hbs if h["has_counters"] and h["union_errors"] is None),
                                 "error_status_records": sum(1 for v in trig + pools if status_of(v) == "error")}
+
     # item 5
     def incomplete(rows: list[dict]) -> dict:
         base = [v for v in rows if v["gap"] is False and isint(v["ws"]) and v["ws"] == 0]
@@ -454,7 +641,7 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
         dn1 = [v for v in okr if isint(v["bt"].get("dropped_n")) and v["bt"]["dropped_n"] >= 1]
         return {"n_ws0_nogap": len(base), "n_ok": len(okr), "incomplete_n": len(inc), "incomplete_share_of_ok": share(len(inc), len(okr)),
                 "incomplete_share_of_all_ws0_nogap": share(len(inc), len(base)), "dropped_n_ge1_n": len(dn1), "dropped_n_ge1_share_of_ok": share(len(dn1), len(okr))}
-    res["item5_tip_incompleteness"] = {"plain_pool_closes": incomplete(pools), "triggers": incomplete(trig), "cap": INCOMPLETE_MAX}
+    res["item5_tip_incompleteness"] = {"plain_pool_closes": incomplete(pools), "triggers": incomplete(trig), "cap": INCOMPLETE_MAX, "min_ok": INCOMPLETE_MIN_OK}
     # item 7 (list only)
     wp_rows = [{"pool": v["pool"], "variant": v["variant"], "t_ms": v["t_ms"], "slot": v["slot"], "dropped_n": v["bt"].get("dropped_n"), "fully_enumerated": fully_enumerated(v),
                 "dropped": v["bt"].get("dropped")} for v in wp]
@@ -469,57 +656,34 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
                                  "tipauth0_ws_ge1_nogap_closes_n": len(close_rows), "tipauth0_ws_ge1_nogap_closes": close_rows,
                                  "census_performed": False, "on_tip_controls": "not taken from records (outside the allow-list)"}
     # item 10
-    closes_by_pool: dict[Any, list[dict]] = collections.defaultdict(list)
-    for v in pools:
-        closes_by_pool[v["pool"]].append(v)
-    for lst in closes_by_pool.values():
-        lst.sort(key=lambda v: v["t_ms"])
-    margin_rows, tcount = [], collections.Counter()
-    for v in trig:
-        bt = v["bt"]
-        if v["gap"] is not False or bt is None or bt.get("status") != "ok" or not isint(bt.get("dropped_n")) or bt["dropped_n"] < 1 or not isinstance(bt.get("dropped"), list):
-            continue
-        close = next((c for c in closes_by_pool.get(v["pool"], []) if c["t_ms"] >= v["t_ms"] and c["bt"] is not None and c["bt"].get("status") == "ok"
-                      and isint(c["bt"].get("cover_hi")) and isint(v["slot"]) and c["bt"]["cover_hi"] >= v["slot"]), None)
-        cl = None if close is None else close["bt"].get("dropped")
-        ckeys = set()
-        if isinstance(cl, list):
-            ckeys = {(e[0], e[1]) for e in cl if isinstance(e, list) and len(e) == 3}
-        is_wp = id(v) in wp_ids
-        for e in bt["dropped"]:
-            if not (isinstance(e, list) and len(e) == 3 and isint(e[2]) and isint(v["slot"])):
-                cls, delta = "undetermined", None
-            else:
-                delta = v["slot"] - e[2]
-                if not isinstance(cl, list) or not isint(close["bt"].get("dropped_n")):
-                    cls = "undetermined"
-                elif (e[0], e[1]) in ckeys:
-                    cls = "still_dropped"
-                elif close["bt"]["dropped_n"] <= DROPPED_LIST_MAX or (cl and isint(cl[-1][2]) and e[2] < cl[-1][2]):
-                    cls = "left_D"
-                else:
-                    cls = "undetermined"
-            tcount[cls] += 1
-            if is_wp:
-                tcount["wp_" + cls] += 1
-            margin_rows.append({"pool": v["pool"], "variant": v["variant"], "would_pass": is_wp, "signature": e[0] if isinstance(e, list) and e else None,
-                                "event_index": e[1] if isinstance(e, list) and len(e) > 1 else None, "trigger_slot_minus_entry_slot": delta, "class": cls})
-    margin_rows.sort(key=lambda r: (str(r["pool"]), str(r["variant"]), str(r["signature"]), str(r["event_index"])))
-    tested = tcount["still_dropped"] + tcount["left_D"]
-    res["item10_margin_test"] = {"entries": len(margin_rows), "still_dropped": tcount["still_dropped"], "left_D": tcount["left_D"], "undetermined": tcount["undetermined"],
-                                 "tested": tested, "left_D_share_of_tested": share(tcount["left_D"], tested),
-                                 "left_D_share_of_all_entries": share(tcount["left_D"], len(margin_rows)), "would_pass_left_D": tcount["wp_left_D"],
-                                 "would_pass_entries": sum(tcount["wp_" + k] for k in ("still_dropped", "left_D", "undetermined")), "rows": margin_rows}
+    mg = classify_margin(trig, pools, wp_ids)
+    tc, dc = mg["t"], mg["distinct"]
+    tested = tc["still_dropped"] + tc["left_D"]
+    tested_d = dc["still_dropped"] + dc["left_D"]
+    res["item10_margin_test"] = {"entries": len(mg["rows"]), "still_dropped": tc["still_dropped"], "left_D": tc["left_D"], "undetermined": tc["undetermined"],
+                                 "tested": tested, "left_D_share_of_tested": share(tc["left_D"], tested),
+                                 "left_D_share_of_all_entries": share(tc["left_D"], len(mg["rows"])), "would_pass_left_D": tc["wp_left_D"],
+                                 "would_pass_entries": sum(tc["wp_" + k] for k in ("still_dropped", "left_D", "undetermined")),
+                                 "would_pass_tested": tc["wp_still_dropped"] + tc["wp_left_D"], "would_pass_undetermined": tc["wp_undetermined"],
+                                 "distinct_entries": mg["distinct_n"], "tested_distinct": tested_d, "left_D_distinct": dc["left_D"],
+                                 "still_dropped_distinct": dc["still_dropped"], "undetermined_distinct": dc["undetermined"],
+                                 "left_D_share_of_tested_distinct": share(dc["left_D"], tested_d), "rows": mg["rows"]}
     # item 9
     rss = [h["rss_kb"] for h in hbs if isint(h["rss_kb"])]
+
     def col(k: str) -> list:
-        return [h[k] for h in hbs if isinstance(h[k], (int, float)) and not isinstance(h[k], bool)]
+        return [h[k] for h in hbs if finite_num(h[k])]
+    lag = lambda rows: summ([v["t_ms"] - v["t_detect_ms"] if isint(v["t_detect_ms"]) else None for v in rows])  # noqa: E731
+    pvs = [v for v in trig if v["variant"] == "pv"]
     res["item9_timing_memory"] = {"hb_n": len(hbs), "rss_kb_max": max(rss) if rss else None, "rss_kb_last": rss[-1] if rss else None,
                                   "rss_limit_bytes": RSS_LIMIT_BYTES, "rss_anon_kb_max": max(col("rss_anon_kb"), default=None), "hwm_kb_max": max(col("hwm_kb"), default=None),
                                   "est_tipauth_mb_max": max(col("est_tipauth_mb"), default=None), "est_tipauth_mb_last": (col("est_tipauth_mb") or [None])[-1],
                                   "est_mb_max": max(col("est_mb"), default=None), "tipauth_wsonly_max": max(col("tipauth_wsonly"), default=None),
                                   "tipauth_tip_sigs_max": max(col("tipauth_tip_sigs"), default=None), "union_members_max": max(col("union_members"), default=None),
-                                  "decision_to_send_ms": None}
+                                  "decision_to_send_ms": None,
+                                  "emit_lag_ms": {"report_only": True, "all_pv": lag(pvs), "tipauth_ok": lag([v for v in pvs if tip_ok(v)]),
+                                                  "tipauth_not_ok": lag([v for v in pvs if not tip_ok(v)])},
+                                  "emit_lag_ms_24h_before_origin": {"report_only": True, **summ(pre_lag)}}
     res["item8_trigger_print"] = {"computed": False, "reason": "needs the tip tape; outside the shadow records this tool may read"}
     res["verdict"] = verdict(res)
     return res
@@ -528,31 +692,45 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int | None = None, object
 OUTSIDE = ["item7_rpc_census", "item8_trigger_print", "item9_decision_to_send_ms", "C6_v1_only"]
 
 
+def fire(t: int, left: int) -> bool:
+    return (left >= 1) if t < LEFT_D_MIN_TESTED else (left / t > LEFT_D_MAX)
+
+
 def verdict(r: dict) -> dict:
     th: dict[str, dict] = {}
     block: list[str] = []
+
     def put(name: str, met: bool | None, **nums: Any) -> None:
         th[name] = {"met": met, **nums}
     i1, i2, i5, i9, i10, i4 = r["item1_duration"], r["item2_coverage"], r["item5_tip_incompleteness"], r["item9_timing_memory"], r["item10_margin_test"], r["item4_consistency"]
-    put("duration_24h_and_10_nogap_pv_ws_ge1", i1["elapsed_h"] >= MIN_HOURS and i1["n_nogap_pv_ws_ge1"] >= MIN_NOGAP_PV_WS1, elapsed_h=i1["elapsed_h"], n=i1["n_nogap_pv_ws_ge1"])
+    put("duration_24h_and_10_nogap_pv_ws_ge1", i1["covered_h"] >= MIN_HOURS and i1["n_nogap_pv_ws_ge1"] >= MIN_NOGAP_PV_WS1, covered_h=i1["covered_h"],
+        elapsed_h=i1["elapsed_h"], n=i1["n_nogap_pv_ws_ge1"])
+    exp, got = r.get("expect_code_sha"), r["starts"].get("origin_code_sha")
+    put("origin_code_sha_matches", None if exp is None else got == exp, expected=exp, origin_code_sha=got)
+
     def ge(name: str, *shares: float | None) -> None:
-        met = None if any(s is None for s in shares) else all(s >= COVERAGE_MIN for s in shares)
+        known = [s for s in shares if s is not None]
+        met = False if any(s < COVERAGE_MIN for s in known) else (None if len(known) < len(shares) else True)
         put(name, met, shares=list(shares), min=COVERAGE_MIN)
     ge("tipauth_ok_ge_90pct", i2["tipauth_ok_share_all"], i2["tipauth_ok_share_nogap_pv_ws_ge1"])
     ge("union_ok_ge_90pct", i2["union_ok_share_all"])
     put("consistency_all_zero", i4["total"] == 0, total=i4["total"], failing=sorted(k for k, c in i4["checks"].items() if c["n"]))
     sh = i5["plain_pool_closes"]
-    worst = max([s for s in (sh["incomplete_share_of_ok"], sh["incomplete_share_of_all_ws0_nogap"]) if s is not None], default=None)
-    put("tip_incompleteness_le_5pct", None if worst is None else worst <= INCOMPLETE_MAX, share=worst, cap=INCOMPLETE_MAX, n_ok=sh["n_ok"])
-    put("margin_no_would_pass_left_D", i10["would_pass_left_D"] == 0, would_pass_left_D=i10["would_pass_left_D"], would_pass_entries=i10["would_pass_entries"])
-    tested, left = i10["tested"], i10["left_D"]
-    if left == 0:
-        m = True if tested > 0 else None
-    else:
-        m = not (left >= 1 if tested < LEFT_D_MIN_TESTED else (left / tested) > LEFT_D_MAX)
-    put("margin_left_D_share_le_1pct", m, tested=tested, left_D=left, share=i10["left_D_share_of_tested"], undetermined=i10["undetermined"])
+    inc = sh["incomplete_share_of_ok"]
+    put("tip_incompleteness_le_5pct", None if sh["n_ok"] < INCOMPLETE_MIN_OK else inc <= INCOMPLETE_MAX, share=inc,
+        share_of_all_ws0_nogap=sh["incomplete_share_of_all_ws0_nogap"], cap=INCOMPLETE_MAX, n_ok=sh["n_ok"], min_ok=INCOMPLETE_MIN_OK)
+    wpn = r["item6_would_pass"]["would_pass_pv_n"]
+    put("would_pass_pv_n_ge_1", True if wpn >= 1 else None, would_pass_pv_n=wpn)
+    wl, wt = i10["would_pass_left_D"], i10["would_pass_tested"]
+    put("margin_no_would_pass_left_D", False if wl >= 1 else (None if wt == 0 else True), would_pass_left_D=wl, would_pass_tested=wt,
+        would_pass_undetermined=i10["would_pass_undetermined"], would_pass_entries=i10["would_pass_entries"])
+    tested, left, tested_d, left_d = i10["tested"], i10["left_D"], i10["tested_distinct"], i10["left_D_distinct"]
+    m = False if (fire(tested, left) or fire(tested_d, left_d)) else (None if tested_d == 0 else True)
+    put("margin_left_D_share_le_1pct", m, tested=tested, left_D=left, share=i10["left_D_share_of_tested"], tested_distinct=tested_d, left_D_distinct=left_d,
+        undetermined=i10["undetermined"])
     wp = r["item7_census_input"]
-    put("would_pass_all_fully_enumerated", wp["would_pass_fully_enumerated_n"] == wp["would_pass_n"], n=wp["would_pass_n"], fully_enumerated=wp["would_pass_fully_enumerated_n"])
+    put("would_pass_all_fully_enumerated", None if wp["would_pass_n"] == 0 else wp["would_pass_fully_enumerated_n"] == wp["would_pass_n"], n=wp["would_pass_n"],
+        fully_enumerated=wp["would_pass_fully_enumerated_n"])
     put("rss_below_1gb", None if i9["rss_kb_max"] is None else i9["rss_kb_max"] * 1024 < RSS_LIMIT_BYTES, rss_kb_max=i9["rss_kb_max"])
     put("single_start_after_t0", r["starts"]["n_starts_after_t0"] == 1, n=r["starts"]["n_starts_after_t0"], distinct_code_sha=r["starts"]["distinct_code_sha"])
     for name, t in th.items():
@@ -560,20 +738,21 @@ def verdict(r: dict) -> dict:
             block.append(name)
         elif t["met"] is None:
             block.append(name + ":short")
-    return {"thresholds": th, "proposal_allowed": not block, "blocking_reasons": sorted(block), "outside_tool_pending": OUTSIDE,
-            "note": "A count of mechanism fields, not a result. proposal_allowed true means none of the rules this tool owns blocks; outside_tool_pending is still open."}
+    return {"thresholds": th, "tool_rules_clear": not block, "blocking_reasons": sorted(block), "outside_tool_pending": OUTSIDE,
+            "note": "A count of mechanism fields, not a result and NOT a proposal verdict. tool_rules_clear true means none of the rules this tool owns blocks; "
+                    "outside_tool_pending is still open."}
 
 
 def table(r: dict) -> str:
     if "error" in r:
         return r["error"]
     v = r["verdict"]
-    rows = [f"starts after T0: {r['starts']['n_starts_after_t0']}  origin={r['starts']['origin_t_ms']}  elapsed_h={r['window']['elapsed_h']}  "
+    rows = [f"starts after T0: {r['starts']['n_starts_after_t0']}  origin={r['starts']['origin_t_ms']}  elapsed_h={r['window']['elapsed_h']}  covered_h={r['window']['covered_h']}  "
             f"triggers={r['records']['triggers']}  closes={r['records']['plain_pool_closes']}  would-pass={r['item6_would_pass']['would_pass_n_after_c1_c5']}",
             f"{'threshold':44s} {'met':6s} numbers"]
     for k, t in sorted(v["thresholds"].items()):
         rows.append(f"{k:44s} {str(t['met']):6s} " + json.dumps({a: b for a, b in t.items() if a != 'met'}, sort_keys=True))
-    rows.append(f"proposal_allowed={v['proposal_allowed']}  blocking={v['blocking_reasons']}  outside_tool_pending={v['outside_tool_pending']}")
+    rows.append(f"tool_rules_clear={v['tool_rules_clear']} (NOT a proposal verdict) blocking={v['blocking_reasons']} open outside this tool={v['outside_tool_pending']}")
     return "\n".join(rows)
 
 
@@ -581,22 +760,48 @@ def dumps(res: dict) -> str:
     return json.dumps(res, sort_keys=True, indent=1, allow_nan=False) + "\n"
 
 
+def error_result(msg: str, code: str) -> dict:
+    return {"tool": TOOL, "error": msg, "verdict": {"tool_rules_clear": False, "blocking_reasons": [code], "thresholds": {}, "outside_tool_pending": OUTSIDE}}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--shadow-dir", required=True)
-    ap.add_argument("--since-ms", type=int, required=True)
-    ap.add_argument("--until-ms", type=int, default=None)
+    ap.add_argument("--shadow-dir")
+    ap.add_argument("--since-ms", type=int)
+    ap.add_argument("--until-ms", type=int, help="REQUIRED. Upper bound of the read (also the scheduled instant); see --schedule.")
+    ap.add_argument("--expect-code-sha", help="REQUIRED. 40 hex: the origin start record's code_sha must equal it (this count: 5db78a663a0617527daacb22f5ce6c1a7e92dfa3).")
     ap.add_argument("--out", default=None)
     ap.add_argument("--table", action="store_true", help="short human table on stderr")
+    ap.add_argument("--schedule", action="store_true", help=SCHEDULE_HELP)
     a = ap.parse_args(argv)
-    res = analyze(Path(a.shadow_dir), a.since_ms, a.until_ms)
+    if a.schedule:
+        if a.since_ms is None:
+            ap.error("--schedule needs --since-ms")
+        sys.stdout.write(json.dumps({"since_ms": a.since_ms, "until_ms_instants": schedule(a.since_ms), "interim": schedule(a.since_ms)[0]}, indent=1) + "\n")
+        return 0
+    for name, val in (("--shadow-dir", a.shadow_dir), ("--since-ms", a.since_ms), ("--until-ms", a.until_ms), ("--expect-code-sha", a.expect_code_sha)):
+        if val is None:
+            ap.error(f"{name} is required")
+    if not on_schedule(a.since_ms, a.until_ms):
+        res = error_result(f"--until-ms {a.until_ms} is not a scheduled instant for --since-ms {a.since_ms} (use --schedule)", "until_ms_not_on_schedule")
+        sys.stdout.write(dumps(res))
+        return 4
+    if not re.fullmatch(r"[0-9a-f]{40}", a.expect_code_sha):
+        ap.error("--expect-code-sha must be 40 lowercase hex characters")
+    d = Path(a.shadow_dir)
+    if not d.is_dir():
+        res = error_result(f"shadow directory missing: {a.shadow_dir}", "missing_directory")
+        code = 3
+    else:
+        res = analyze(d, a.since_ms, a.until_ms, expect_code_sha=a.expect_code_sha)
+        code = 2 if "error" in res else 0
     text = dumps(res)
     sys.stdout.write(text)
     if a.out:
         Path(a.out).write_text(text, encoding="utf-8")
     if a.table:
         sys.stderr.write(table(res) + "\n")
-    return 0
+    return code
 
 
 if __name__ == "__main__":
