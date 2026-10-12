@@ -1,8 +1,38 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T07:10:00Z",
+ "updated_utc": "2026-10-12T09:12:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "research0-freeze-1012",
+   "kind": "other",
+   "title": "Research server froze and was rebooted; a new manager took over",
+   "detail": "The research server (mal-research-0) froze about 06:11Z and was rebooted at 07:29Z. manager10 took over from manager9. The trading host (mal-fast-0) was not affected: the live bot, its paper copy and the halt-rule job kept running. The history walkers restarted by themselves. The scheduled checks were set up again from files on disk.",
+   "atUtc": "2026-10-12T07:29:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5-shadow-restart-1012",
+   "kind": "decision",
+   "title": "H5's paper copy restarted again to record a new check (report-only)",
+   "detail": "09:06Z: after the live bot was confirmed flat (nothing open, attempts 7, sells landed 7, no stop or halt), H5's paper copy was restarted on main 5db78a6 (#610). The new field only records what a stricter chain check would say. Nothing reads it for trading, and decisions are unchanged (72/72). The shadow was down between the cancel of the old copy (after the 09:06:17Z flat check) and 09:06:45Z. The 24-hour data clock for the trade-rate fix starts at 09:06:45Z.",
+   "atUtc": "2026-10-12T09:06:45Z"
+  },
+  {
+   "id": "merge-610-603-1012",
+   "kind": "decision",
+   "title": "Merged: the report-only chain check (#610) and the halt-job follow-ups (#603)",
+   "detail": "#603 merged as 848bd3a. #610 merged as 5db78a6 at head 3102581 after three review rounds. Reviewer OK, the decision-equivalence replay (job #807, 72/72) and quant-proof OK are posted on the PR.",
+   "atUtc": "2026-10-12T09:05:53Z"
+  },
+  {
+   "id": "union-reading-1012",
+   "kind": "result",
+   "title": "Second price feed would not have recovered any refused trade",
+   "detail": "At +24 h, the union check would have recovered 0 of the refused no-gap triggers. The cause: the public feed shows some swaps that are not on the finalized chain (at least 28 distinct signatures not found; the control prints were 18 found, 0 not found, 2 errors). A new report-only check that trusts the chain tape is now collecting data. It is not an edge claim.",
+   "atUtc": "2026-10-12T07:58:00Z",
+   "approx": true
+  },
   {
    "id": "h5-shadow-restart-1011",
    "kind": "decision",
@@ -359,9 +389,9 @@
    "id": "EXP-025",
    "title": "EXP-025 C1-NF (post-graduation momentum model + top-holder cap)",
    "stage": "pre-registered",
-   "note": "Looks about 10-17 and 10-24 on forward-1002ev. Synthetic pools kept (Am.2). Canary terms DEC-026: 0.05 SOL, 0.5 SOL wallet; build round 1 done, all PRs still need changes; live likely 10-15 to 10-17. September exploration +8.151% flat / +7.220% press (not out of sample).",
+   "note": "C1-NF canary SHELVED by the owner 10-12. The soak (#658) and its monitor (#662) continue as a regime watch; revive at 10 or more kept trades per day on 2 days. Older note: Looks about 10-17 and 10-24 on forward-1002ev. Synthetic pools kept (Am.2). Canary terms DEC-026: 0.05 SOL, 0.5 SOL wallet; build round 1 done, all PRs still need changes; live likely 10-15 to 10-17. September exploration +8.151% flat / +7.220% press (not out of sample).",
    "tag": {
-    "text": "building canary",
+    "text": "shelved",
     "tone": "muted"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-025-c1nf-part1-prereg.md"
@@ -541,6 +571,30 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261012-0912-update",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (no action needed except the F1f question in the last item of this group). The research server froze this morning and was rebooted. The live bot was not affected and nothing was lost. H5 is live at the small test size (0.02 SOL per trade): 7 attempts, 7 sells landed as of 09:06Z. It needs 20 landed buys before the next step. The fix to get H5 more trades is not done. The first idea (a second price feed) did not help, because the public feed shows some trades that never made it onto the chain. A stricter check is now being recorded, for information only. It needs at least 24 hours and at least 10 qualifying triggers (times the detector saw a tradeable setup that the current rule refused), then reviews, a rule change, and Helm must install the new rule. Realistic date: about 10-15 or 10-16. This does not say it will add trades or money."
+  },
+  {
+   "id": "fy-20261012-0912-preapproval",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (information only): you said the H5 trade-rate fix is fine \"so long as trade quality isn't affected, and everything's still profitable\". I recorded that as a conditional OK. It does not switch anything on by itself. The written amendment will repeat your conditions, and the checks will be reported before any change. I cannot say \"still profitable\": H5 has not passed its gate. Also recorded: the C1-NF canary is shelved (its watch job keeps running, and it is revived if it gets 10 or more kept trades per day on 2 days; kept trades are the trades the bot accepted). Until 10-16 the focus is H5 plus light research."
+  },
+  {
+   "id": "fy-20261012-0912-research",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (information only): the research from this morning found nothing to trade yet. Better exits for H5 (when the bot sells): no winner. Five new October ideas were listed and one was dropped. The best idea (BOOST on cheap custom pools: a buyer that buys whatever the price, on pools with low fees and a custom trading pair) has too few September examples (67 pools on 11 dates), so it waits for the 10-16 data. Other trading venues: no forced buyer like BOOST. A strategy library and a short list of what is closest to live are written down. None of this is a profit claim."
+  },
+  {
+   "id": "fy-20261012-0912-f1f",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "Question for you before 10-16: the quote-coin test (F1f) is ready and frozen. It is a count only: it looks for a new kind of buyer that buys whatever the price, created by pump.fun's October 7-8 update (pump-coin quote mints and multi-hop routing). Running it on the real data needs your OK on a release file (RELEASE.json), which is the written permission that unlocks the real data for this one count. If you say no, the F1f count does not run. The real run is planned for the 10-16 read. Please say yes or no before 10-16."
+  },
+  {
    "id": "fy-20261011-0632-dec029-m1",
    "from": "claude",
    "atUtc": "2026-10-11T06:32:10Z",
@@ -698,6 +752,20 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261012-0912",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "09:12Z: research server froze about 06:11Z and rebooted 07:29Z; the live H5 setup on the trading host was not affected. Merged #603 (848bd3a) and #610 (5db78a6, report-only chain check). Restarted H5's paper copy at 09:06:45Z so the 24 h clock for the trade-rate fix starts then. Live H5: 7 attempts, 7 sells landed, no stop or halt. Search A, Search B, the September count and the other-venues search are done: no survivor, nothing claimed. Next: the +1 h, +6 h and +24 h reads, then the review package for the fix. Realistic live date about 10-15 or 10-16."
+  },
+  {
+   "id": "s-20261012-0758-union",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-10-12T07:58:00Z",
+   "text": "Second-feed reading at +24 h (PR #596 comment 6120296558): a union check would have changed no live decision in 24 h. No-gap pv triggers: 3 with both feeds at 0, 0 with only the websocket seeing a break, 6 with both. With a feed gap: 1 / 1 / 0 (ws 0 union 0 / ws >=1 union 0 / ws >=1 union >=1). Cause: websocket prints not found on the finalized chain (at least 28 distinct signatures not found; controls 18 found, 0 not found, 2 errors). No phase 2 on the union field."
+  },
   {
    "id": "s-20261011-0710",
    "from": "claude",
