@@ -3172,7 +3172,8 @@ def mark_closed(cfg: dict[str, Any], mint: str, sig: str, rpc: Callable[[str, li
         H5Ledger(ledger_path, LIVE).write({
             "kind": "manual_close", "ts_ms": now, "mint": mint, "signature": sig, "landed_slot": res.get("slot"), "block_time": res.get("blockTime"),
             "tokens_sold": pre_amt - post_amt, "sol_delta_lamports": sol_delta, "fee_lamports": fee, "rent_refunded_lamports": ata_rent,
-            "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports})
+            "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports,
+            **({"gate_path": GATE_PATH_TIPAUTH} if mint in (counters.tipauth.get("mints") or []) else {})})  # this writer is not `_log`: it tags a tagged mint itself (R9 ii)
         print(f"h5_executor --mark-closed: {mint} closed by {sig}; realized {realized} lamports", flush=True)
         return 0
     finally:

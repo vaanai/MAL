@@ -1180,6 +1180,14 @@ class WatchTests(FlowCase):
         e.ex._tipauth_watch_cache = None
         self.assertEqual(e.ex._tipauth_availability(), "")
 
+    def test_the_watch_reason_vocabulary_is_the_ruled_one(self):
+        src = Path(h.__file__).read_text()
+        self.assertEqual(set(re.findall(r'"tipauth:watch_([a-z]+)"', src)), {"unset", "stale", "hold", "sha", "bad"})
+        self.assertIn('(None, "missing")', src)  # the sixth, `missing`, is built from the read's error code: tipauth:watch_<missing|bad>
+        self.assertIn('f"tipauth:watch_{err}"', src)
+        self.assertEqual((h.TIPAUTH_WATCH_SCHEMA, h.TIPAUTH_WATCH_CACHE_MS, h.TIPAUTH_WATCH_STALE_MS), ("h5_tipauth_watch_v1", 1_000, 180_000))
+        self.assertNotIn("tipauth_watch_stale_ms", src)  # a code constant, never a config key
+
     def test_the_stale_boundary_is_exactly_180000_ms(self):
         self.assertEqual(h.TIPAUTH_WATCH_STALE_MS, 180_000)
         e = self.watch_env(None)
@@ -1302,6 +1310,136 @@ class WatchTests(FlowCase):
         dec = e.ledger("decision")[0]
         self.assertNotIn("gate_path", dec)
         self.assertEqual(dec["stake_lamports"], 20_000_000)
+
+
+class LedgerTagTests(FlowCase):
+    """R9 (ii): every row of the ledger for a tagged mint carries gate_path = tipauth, in the live ledger and in the dry-run ledger, through the buy,
+    the sell, a buy that expires, a booked fee and a restart in between. Rows that name no mint (start, tier_change, hourly counts) carry none."""
+
+    ON = ON_CONF
+
+    def assert_tagged(self, e: Env, mint: str = MINT, want: tuple = ()) -> list[str]:
+        rows = [r for r in e.ledger() if r.get("mint") == mint]
+        for r in rows:
+            self.assertEqual(r.get("gate_path"), "tipauth", (r["kind"], r))
+        kinds = [r["kind"] for r in rows]
+        for k in want:
+            self.assertIn(k, kinds)
+        for r in e.ledger():
+            if not r.get("mint"):
+                self.assertNotIn("gate_path", r, r["kind"])  # a row with no mint is not a trade's row
+        return kinds
+
+    def test_live_ledger_buy_restart_failed_sell_fee_booking_restart_sell(self):
+        from tools.test_h5_executor_rules import SLIPPAGE_ERR
+        e = self.start(**self.ON)
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.ex = e.build()  # restart 1: the buy is in flight; the tag comes back from the counters file
+        self.assertIn(MINT, e.ex._tipauth_mints)
+        e.land_buy()
+        plan = e.plan()
+        e.at_slot(plan["send_slot"])
+        e.land_sell(plan["land_slot"], err=SLIPPAGE_ERR)  # a sell that lands with an error pays its fee
+        e.ex = e.build()  # restart 2: an open position, a failed sell behind it
+        e.ex._book_fee(MINT, 60_000, "superseded_failed")  # the fee of a superseded sell that failed on chain, booked as realized loss (a ledgered row)
+        e.at_slot(plan["send_slot"] + 2)
+        e.land_sell(plan["land_slot"] + 2)
+        self.assertNotIn(MINT, e.ex.state.open)
+        kinds = self.assert_tagged(e, want=("decision", "buy", "sell_sent", "sell", "sell_fee_booked", "exit_landing"))
+        self.assertGreaterEqual(len(kinds), 8)
+        self.assertEqual(self.counters(e)["tipauth"]["mints"], [MINT])
+
+    def test_live_ledger_an_expired_buy_and_the_alert_rows_of_a_tagged_mint(self):
+        e = self.start(**self.ON)
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.ex = e.build()  # restart while the buy is in flight
+        e.rpc.height = e.ex.state.pending[MINT]["lvbh"] + 1  # the blockhash is past its last valid height and no status ever shows
+        for _ in range(h.pl.EXPIRY_RECHECKS + 1):
+            e.clock.t += h.pl.EXPIRY_RECHECK_MS
+            e.ex.advance_pending()
+        self.assertNotIn(MINT, e.ex.state.pending)
+        e.ex._alert("test_alert", MINT, note="an alert about the tagged mint")
+        kinds = self.assert_tagged(e, want=("decision", "buy", "alert"))
+        self.assertEqual([r["fail_class"] for r in e.ledger("buy")], ["expired"])
+        self.assertIn(MINT, e.ex._tipauth_mints)  # the tag outlives the failed buy: a later row for the mint is still tagged
+        e.ex._log("late_note", MINT)
+        self.assertEqual(e.ledger("late_note")[0]["gate_path"], "tipauth")
+        self.assertEqual(kinds.count("decision"), 1)
+
+    def test_dry_run_ledger_decision_and_dry_sell_rows_are_tagged(self):
+        e = Env(self.tmp / "dry", live=False, **self.ON)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.ex = e.build()  # restart with the virtual position open
+        e.at_slot(e.plan()["send_slot"])
+        self.assertNotIn(MINT, e.ex.state.open)
+        self.assert_tagged(e, want=("decision", "dry_sell"))
+
+    def test_an_untagged_mint_in_the_same_ledger_stays_untagged(self):
+        e = self.start(**self.ON)
+        self.append(e, self.tip_row(e, base_breaks_unresolved_settled=0))
+        e.ex.intent_tick()
+        e.land_buy()
+        self.assertTrue(e.ledger())
+        for r in e.ledger():
+            self.assertNotIn("gate_path", r, r["kind"])
+
+    def test_the_only_ledger_writers_are_log_and_two_offline_commands(self):
+        """The audit behind R9 (ii): H5Ledger rows are written by `_log` (probe_executor.Executor._log, the one `self.fills.write`), by `mark_closed`
+        (a mint's row: it tags a tagged mint itself, tested below) and by `clear_halt` (mint ""). Nothing else in the executor, the probe base classes
+        or the sell-and-close tool writes the ledger."""
+        src = Path(h.__file__).read_text()
+        self.assertEqual(len(re.findall(r"(?<!class )H5Ledger\(", src)), 3)  # the executor's own (self.fills), mark_closed, clear_halt
+        self.assertIn("self.fills = H5Ledger(", src)
+        self.assertNotIn("fills.write", src)  # no direct write beside _log
+        for name in ("probe_executor.py", "probe_live.py", "h5_sell_and_close.py"):
+            text = (Path(h.__file__).parent / name).read_text()
+            self.assertEqual(len(re.findall(r"fills\.write\(", text)), 1 if name == "probe_executor.py" else 0, name)
+        self.assertEqual(len(re.findall(r'FillLog\(|H5Ledger\(|h5-ledger', (Path(h.__file__).parent / "h5_sell_and_close.py").read_text())), 0)
+
+
+class ManualCloseTagTests(FlowCase):
+    """`--mark-closed` writes its `manual_close` row without `_log`; for a tagged mint it carries the tag. (Its realized P&L still goes only to the daily
+    and run totals, not to the class sum: a sell-and-close of a tagged mint is a switch-off event, R11 and the runbook.)"""
+
+    def test_manual_close_of_a_tagged_mint_is_tagged_and_of_an_untagged_mint_is_not(self):
+        from tools import pumpswap_tx as tx
+        from tools.test_h5_executor import RENT
+        from tools.test_h5_executor_ops import SIG
+        from tools.test_probe_live import meta_result
+        import contextlib
+        import io
+        for tagged in (True, False):
+            e = Env(self.tmp / f"mc{tagged}", **(ON_CONF if tagged else {}))
+            Path(e.conf["intents_file"]).write_text("")
+            e.ex.intent_tick()
+            self.append(e, self.tip_row(e, base_breaks_unresolved_settled=1 if tagged else 0))
+            e.ex.intent_tick()
+            e.land_buy()
+            pos = e.ex.state.open[MINT]
+            res = meta_result(e.ex, MINT, delta=21_000_000 - 60_000 + RENT, fee=60_000, tok_delta=-pos["tokens"], ata_pre=RENT, ata_post=0, slot=200_000)
+            keys = res["transaction"]["message"]["accountKeys"]
+            keys.append(str(tx.PUMPSWAP_PROGRAM))
+            res["transaction"]["signatures"] = [SIG]
+            res["transaction"]["message"]["header"] = {"numRequiredSignatures": 1}
+            res["transaction"]["message"]["instructions"] = [{"programIdIndex": len(keys) - 1, "accounts": [], "data": ""}]
+            res["blockTime"] = T0 // 1000
+            e.rpc.txs[SIG] = res
+            e.rpc.accounts = {pos["base_ata"]: None}
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(h.mark_closed(e.conf, MINT, SIG, e.rpc, now_ms=T0 + 60_000), 0)
+            row = e.ledger("manual_close")[0]
+            self.assertEqual(row.get("gate_path"), "tipauth" if tagged else None, tagged)
+            if tagged:
+                for r in e.ledger():
+                    if r.get("mint") == MINT:
+                        self.assertEqual(r.get("gate_path"), "tipauth", r["kind"])
+            else:
+                self.assertTrue(all("gate_path" not in r for r in e.ledger()))
 
 
 class MainEnv(Env):
