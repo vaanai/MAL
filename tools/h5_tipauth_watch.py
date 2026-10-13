@@ -71,6 +71,9 @@ ROUND 2 (quant-proof 6152705289 R-A..R-F, reviewer 6152533574 B1, B2 and items 1
   I18 `shadow_stale`: no shadow hour file whose hour ended less than 10 minutes ago (a dead or mis-pointed --shadow-dir). `trigger_conflict`: two records with the same
       (pool, signature, event_index, slot) and different dropped / base_pre / real_quote_pre. A non-regular entry for a tape hour is unreadable, not missing. A line that
       starts with an hb / gap / unwatched-pool prefix but holds a `{"type":"trigger"` marker later in the line is a bad trigger line (a trigger glued to a torn line).
+  I20 (R-G) Within a cycle the dropped signatures are asked never-asked first, then least recently asked first (the latest logged ask of that signature, any
+      result; persisted in rpc_log.jsonl), ties by trigger time then signature. A control is asked just before the first signature that needs it, once per cycle, so
+      its place is that signature's; with one ask left a signature is asked without its control. The 10 asks, the pacing and the 10 minute / 20 s gates are unchanged.
   I19 A failed state.json write removes the old state.json (the executor then sees no file, not an old ok). A manager OFF landing before the rename is re-checked
       and written as off. The cycle schedule and the in-process 10-minute re-ask use the monotonic clock.
 """
@@ -786,6 +789,12 @@ class Watch:
                 self._mark("e1", t["tid"])
 
     # -- the public RPC --
+    @staticmethod
+    def ask_key(last_asked: int | None, t_known: int, sig: str) -> tuple[int, int, int, str]:
+        """R-G: the order of the asks in a cycle. A signature never asked goes before any retry; then the least recently asked (the instant of its last logged ask, from
+        rpc_log.jsonl, so the order survives a restart); ties by trigger time, then signature."""
+        return (0 if last_asked is None else 1, last_asked if last_asked is not None else 0, t_known, sig)
+
     def rpc_phase(self, deadline_ms: int) -> None:
         due: dict[str, tuple[int, list[str]]] = {}
         ctrl: dict[str, tuple[str, int]] = {}  # dropped signature -> (control signature, its slot): the print of the oldest usable trigger that dropped it
@@ -796,17 +805,15 @@ class Watch:
                 due[d[0]] = (min(cur[0], t_eff) if cur else t_eff, (cur[1] if cur else []) + [t["tid"]])
                 if t["fields_ok"] and isint(t["slot"]):
                     ctrl.setdefault(d[0], (t["signature"], t["slot"]))
-        asks = 0
-        controls: dict[tuple[str, int], int | None] = {}  # this cycle: control -> the instant it was found at its slot, or None
-        for sig in sorted(due, key=lambda s: (due[s][0], s)):
-            cls = rpc_class(self.rpc_rows.get(sig, []))
-            if cls == "found":
-                self.off_event(E3, f"{E3}|{sig}", {"signature": sig, "tids": due[sig][1], "answers": self.rpc_rows.get(sig, [])[-5:],
-                                                   "found_slot": next((a.get("slot") for a in self.rpc_rows.get(sig, []) if a.get("result") == "found"), None)})
-                continue
-            if cls == "not_found" or asks >= RPC_MAX_ASKS or self.now() > deadline_ms:
-                continue
+        pending: list[tuple[tuple[int, int, int, str], str]] = []  # (ask_key, signature) of every signature that may be asked now
+        for sig in sorted(due):
             ans = self.rpc_rows.get(sig, [])
+            cls = rpc_class(ans)
+            if cls == "found":  # a stored found decides at once, whatever is left of the cycle's asks
+                self.off_event(E3, f"{E3}|{sig}", {"signature": sig, "tids": due[sig][1], "answers": ans[-5:], "found_slot": next((a.get("slot") for a in ans if a.get("result") == "found"), None)})
+                continue
+            if cls == "not_found":
+                continue
             now = self.now()
             nulls = sorted(a["asked_ms"] for a in ans if counted_null(a))
             if nulls and now - nulls[0] < RPC_REASK_MS:
@@ -816,21 +823,31 @@ class Watch:
                 continue  # the same gap on the monotonic clock: a forward wall-clock step cannot make the second ask early
             if ans and now - max(a["asked_ms"] for a in ans) < RPC_ERROR_RETRY_MS:
                 continue  # an error (or an unverified null) is retried, but not every few milliseconds
+            pending.append((self.ask_key(max(a["asked_ms"] for a in ans) if ans else None, due[sig][0], sig), sig))
+        pending.sort()
+        asks = 0
+        controls: dict[tuple[str, int], int | None] = {}  # this cycle: control -> the instant it was found at its slot, or None
+        for _, sig in pending:
+            if asks >= RPC_MAX_ASKS or self.now() > deadline_ms:
+                break
             control_at: int | None = None
             if sig in ctrl:  # the control first, in this cycle: the same endpoint must find the trigger's own signature at the trigger's slot
                 if ctrl[sig] not in controls:
-                    if asks:
-                        self.sleep(RPC_PACE_S)
-                    c_ms = self.now()
-                    c_ans = self._ask(ctrl[sig][0])
-                    if c_ans is None:  # a past call is still stuck: ask nothing more this cycle
-                        break
-                    asks += 1
-                    append_jsonl(self.p["rpc"], {"sig": ctrl[sig][0], "role": "control", "control_slot": ctrl[sig][1], "asked_ms": c_ms, **c_ans})
-                    controls[ctrl[sig]] = c_ms if (c_ans.get("result") == "found" and c_ans.get("slot") == ctrl[sig][1]) else None
+                    if asks + 2 > RPC_MAX_ASKS:  # no room for the control and the signature: ask the signature alone (a found needs no control; a null is then unverified)
+                        controls[ctrl[sig]] = None
+                    else:
+                        if asks:
+                            self.sleep(RPC_PACE_S)
+                        c_ms = self.now()
+                        c_ans = self._ask(ctrl[sig][0])
+                        if c_ans is None:  # a past call is still stuck: ask nothing more this cycle
+                            break
+                        asks += 1
+                        append_jsonl(self.p["rpc"], {"sig": ctrl[sig][0], "role": "control", "control_slot": ctrl[sig][1], "asked_ms": c_ms, **c_ans})
+                        controls[ctrl[sig]] = c_ms if (c_ans.get("result") == "found" and c_ans.get("slot") == ctrl[sig][1]) else None
                 control_at = controls[ctrl[sig]]
-            if asks >= RPC_MAX_ASKS or self.now() > deadline_ms:
-                continue
+            if self.now() > deadline_ms:
+                break
             if asks:
                 self.sleep(RPC_PACE_S)
             asked_ms = self.now()

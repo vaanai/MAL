@@ -86,6 +86,7 @@ class Env(unittest.TestCase):
         self.rpc_fn = lambda sig, now: {"result": None}  # not found
         self.known_sigs: dict[str, int] = {}  # trigger print signatures written by shadow(): on chain at their slot, they are the controls of R-C
         self.control_mode = "found"  # found | other_slot | null | error
+        self.control_blind: set[str] = set()  # print signatures the endpoint never returns (it answers null for them)
         self.control_calls: list[tuple[int, str]] = []
         self.seq: list[str] = []
 
@@ -97,6 +98,8 @@ class Env(unittest.TestCase):
         self.seq.append(sig)
         if sig in self.known_sigs:  # a control: the trigger print's own signature
             self.control_calls.append((self.now(), sig))
+            if sig in self.control_blind:
+                return {"result": None}
             if self.control_mode == "found":
                 return {"result": {"slot": self.known_sigs[sig]}}
             if self.control_mode == "other_slot":
@@ -1328,6 +1331,92 @@ class TestRound2Hardening(Env):
         with mock.patch.object(W, "atomic_write", side_effect=OSError("full")):
             self.mk().cycle()
         self.assertTrue((self.out / "OFF").exists())
+
+
+class TestRpcOrder(Env):
+    """R-G (quant-proof 6153151256): a retry may not go ahead of a first ask. Within a cycle the dropped signatures are asked never-asked first, then least recently
+    asked first, ties by trigger time and then signature; the 10 asks per cycle, the pacing and the 10 minute / 20 s gates are unchanged."""
+
+    def probe(self):
+        """Quant-proof's probe: triggers 0 and 1 have prints the endpoint never returns (5 dropped signatures each); trigger 2 is newer, its print is returned and its
+        dropped signature is on chain."""
+        recs, tape = [], []
+        for i in (0, 1):
+            recs.append(trig(sig=f"SIG{i}", pool=f"Q{i}", t=NOW - 120_000 + i * 1000, dropped=[[f"A{i}X{j}", 0, 101 + j] for j in range(5)]))
+            tape.append(tape_row(sig=f"SIG{i}", pool=f"Q{i}"))
+        recs.append(trig(sig="SIG2", pool="Q2", t=NOW - 30_000, dropped=[["ONCHAIN", 0, 105]]))
+        tape.append(tape_row(sig="SIG2", pool="Q2"))
+        self.shadow([start(), *recs])
+        self.tape([*tape, tape_row(sig="FILLER", pool="PX", slot=210)])  # the high-water row comes last
+        self.control_blind = {"SIG0", "SIG1"}
+        self.rpc_fn = lambda sig, now: {"result": {"slot": 77}} if sig == "ONCHAIN" else {"result": None}
+
+    def test_a_newer_triggers_on_chain_signature_is_not_starved_by_retries_of_failing_controls(self):
+        self.probe()
+        w = self.mk()
+        asks = []
+        for _ in range(2):
+            before = len(self.calls) + len(self.control_calls)
+            st = w.cycle()
+            asks.append(len(self.calls) + len(self.control_calls) - before)
+            self.advance(30_000)
+        self.assertLessEqual(max(asks), W.RPC_MAX_ASKS)
+        self.assertIn("ONCHAIN", [s for _, s in self.calls])
+        self.assertEqual((st["verdict"], st["reason"]), ("off", f"off:{W.E3}"))  # by the second cycle, not an ok for 59 minutes
+
+    def test_the_order_survives_a_restart_and_first_asks_go_before_retries(self):
+        self.probe()
+        self.mk().cycle()
+        first = [s for _, s in self.calls]
+        self.assertEqual(first, [f"A0X{j}" for j in range(5)] + [f"A1X{j}" for j in range(3)])  # trigger time, then signature; 10 asks with the 2 controls
+        self.calls.clear()
+        self.advance(30_000)
+        w2 = self.mk()  # restart: the last-asked instants come from rpc_log.jsonl
+        st = w2.cycle()
+        second = [s for _, s in self.calls]
+        self.assertEqual(second[:3], ["A1X3", "A1X4", "ONCHAIN"])  # the never-asked signatures before any retry
+        self.assertEqual(second[3:6], ["A0X0", "A0X1", "A0X2"])  # then the least recently asked
+        self.assertEqual(st["verdict"], "off")
+
+    def test_ask_key_never_asked_first_then_oldest_last_asked_then_trigger_time_then_signature(self):
+        items = [(None, 9, "Z"), (100, 1, "A"), (None, 5, "B"), (50, 9, "Z"), (None, 5, "A"), (50, 2, "Y")]
+        got = sorted(items, key=lambda a: W.Watch.ask_key(*a))
+        self.assertEqual(got, [(None, 5, "A"), (None, 5, "B"), (None, 9, "Z"), (50, 2, "Y"), (50, 9, "Z"), (100, 1, "A")])
+
+    def test_a_control_with_one_ask_left_asks_the_dropped_signature_alone(self):
+        recs = [trig(sig=f"SIG{i}", pool=f"Q{i}", t=NOW - 120_000 + i * 1000, dropped=[[f"A{i}X{j}", 0, 101 + j] for j in range(c)]) for i, c in enumerate((4, 3, 2))]
+        self.shadow([start(), *recs])
+        self.tape([tape_row(sig=f"SIG{i}", pool=f"Q{i}") for i in range(3)] + [tape_row(sig="FILLER", pool="PX", slot=210)])
+        self.mk().cycle()
+        self.assertEqual(len(self.calls) + len(self.control_calls), W.RPC_MAX_ASKS)
+        self.assertEqual(self.seq[-1], "A2X0")  # 5 + 4 asks leave one: the third trigger's control does not fit, its first signature is asked alone
+        self.assertNotIn("SIG2", self.seq)
+
+    def test_with_an_honest_endpoint_nothing_starves(self):
+        n = 12
+        recs, closes, tape = [], [], []
+        for i in range(n):
+            d = [[f"D{i}X{j}", 0, 101 + j] for j in range(5)]
+            recs.append(trig(sig=f"SIG{i:02d}", pool=f"Q{i:02d}", t=NOW - 120_000 + i * 1000, dropped=d))
+            closes.append(close(pool=f"Q{i:02d}", dropped=d))
+            tape.append(tape_row(sig=f"SIG{i:02d}", pool=f"Q{i:02d}"))
+        self.shadow([start(), *recs, *closes])
+        self.tape([*tape, tape_row(sig="FILLER", pool="PX", slot=210)])
+        w = self.mk()
+        per_cycle, cleared_at = [], None
+        for k in range(80):
+            before = len(self.calls) + len(self.control_calls)
+            st = w.cycle()
+            per_cycle.append(len(self.calls) + len(self.control_calls) - before)
+            self.assertEqual(st["verdict"], "ok", (k, st))
+            if st["clear_n"] == n:
+                cleared_at = k
+                break
+            self.advance(30_000)
+        self.assertIsNotNone(cleared_at)
+        self.assertLessEqual(cleared_at, 40)
+        self.assertLessEqual(max(per_cycle), W.RPC_MAX_ASKS)
+        print(f"\nR-G honest endpoint: {n} triggers x 5 dropped signatures all clear at cycle {cleared_at} ({cleared_at * 30} s), {sum(per_cycle)} calls, max {max(per_cycle)} per cycle")
 
 
 class TestRpcControl(Env):
