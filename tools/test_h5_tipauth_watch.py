@@ -861,10 +861,6 @@ class TestNoOutcomeData(Env):
 
 
 class TestReadingDetails(Env):
-    def test_budgets_bound_the_gap_between_writes(self):
-        worst_cycle_ms = W.SHADOW_BUDGET_MS + W.START_BUDGET_MS + W.TAPE_BUDGET_MS + W.RPC_BUDGET_MS + int(W.RPC_TIMEOUT_S * 1000)
-        self.assertLessEqual(int(W.CYCLE_S * 1000) + worst_cycle_ms + 5_000, 60_000)  # start-to-start 30 s, a slow cycle after a fast one, 5 s of slack
-
     def test_missing_t_detect_ms_falls_back_to_t_ms_and_unknown_times_are_kept(self):
         a, b, c = trig(sig="F1", pool="F1", t=NOW - MIN), trig(sig="F2", pool="F2", t=T0 - MIN), trig(sig="F3", pool="F3")
         for r in (a, b, c):
@@ -970,6 +966,123 @@ class TestReadingDetails(Env):
         st = w.cycle()
         self.assertEqual((st["verdict"], st["shadow_sha"]), ("hold", None))
         self.assertIn("start_search_incomplete", st["reason"])
+
+
+class _Trickle:
+    """A real loopback HTTP server that sends a valid JSON-RPC answer one byte at a time (the reviewer's B2 probe): per-socket-operation timeouts never fire."""
+
+    def __init__(self, body: bytes, gap_s: float) -> None:
+        import socketserver
+        import threading
+        outer = self
+        self.accepted = 0
+        self.stop = threading.Event()
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                outer.accepted += 1
+                try:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = self.request.recv(4096)
+                        if not chunk:
+                            return
+                        data += chunk
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n" % len(body))
+                    for i in range(len(body)):
+                        if outer.stop.wait(gap_s):
+                            return
+                        self.request.sendall(body[i:i + 1])
+                except OSError:
+                    return
+
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        self.srv = Server(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.stop.set()
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class TestRpcTotalDeadline(Env):
+    """R-B (the reviewer's B2): one RPC call has a total deadline, so a server that trickles bytes cannot hold a cycle; a call past its deadline is an error, never a null."""
+    BODY = b'{"jsonrpc":"2.0","result":null,"id":1}'
+
+    def trickle(self, gap_s=0.15):
+        srv = _Trickle(self.BODY, gap_s)
+        self.addCleanup(srv.close)
+        return srv
+
+    def test_http_transport_has_a_total_deadline(self):
+        srv = self.trickle()
+        t0 = time.monotonic()
+        with self.assertRaises(Exception):
+            W.http_transport(srv.url, W.request_payload("X1"), 0.5)  # the answer needs about 5.7 s
+        self.assertLess(time.monotonic() - t0, 2.0)
+
+    def test_a_trickling_server_cannot_hold_a_cycle_and_its_answer_is_never_a_null(self):
+        srv = self.trickle()
+        self.baseline()
+        self.shadow([close()])
+        w = W.Watch(self.sd, self.tp, self.out, SHA, T0, srv.url, rpc=W.http_transport, now_ms=self.now, sleep=lambda s: None)
+        t0 = time.monotonic()
+        with mock.patch.object(W, "RPC_TIMEOUT_S", 0.3):
+            st = w.cycle()
+        self.assertLess(time.monotonic() - t0, 3.0)
+        self.assertEqual(self.state()["ts_ms"], st["ts_ms"])  # state.json was written
+        self.assertEqual(srv.accepted, 1)
+        rows = W.read_jsonl(self.out / "rpc_log.jsonl")
+        self.assertEqual([r["result"] for r in rows], ["error"])  # not a null, although the late answer would have been one
+        self.assertEqual(W.rpc_class(w.rpc_rows["DROPA"]), "error")
+
+    def test_a_blocked_transport_is_an_error_and_at_most_one_call_is_outstanding(self):
+        import threading
+        release = threading.Event()
+        self.addCleanup(release.set)
+        started = []
+
+        def blocked(url, payload, timeout):
+            started.append(payload["params"][0])
+            release.wait(5)
+            return {"result": None}  # the late answer, a null
+        self.baseline()
+        w = W.Watch(self.sd, self.tp, self.out, SHA, T0, URL, rpc=blocked, now_ms=self.now, sleep=lambda s: None)
+        t0 = time.monotonic()
+        with mock.patch.object(W, "RPC_TIMEOUT_S", 0.2):
+            w.cycle()
+            self.advance(W.RPC_ERROR_RETRY_MS)
+            w.cycle()  # the first call is still stuck: no second call is started
+        self.assertLess(time.monotonic() - t0, 3.0)
+        self.assertEqual(len(started), 1)
+        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl")], ["error"])
+        release.set()
+        time.sleep(0.3)  # the late answer arrives after its deadline and is dropped
+        self.assertEqual([r["result"] for r in w.rpc_rows["DROPA"]], ["error"])
+        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl")], ["error"])
+
+    def test_state_is_rewritten_never_more_than_60_seconds_apart_with_a_real_slow_socket(self):
+        """The spec bullet with the real clock and the constants scaled down by 100: a cycle every CYCLE_S, the worst gap is bounded by CYCLE_S + the cycle budgets."""
+        srv = self.trickle(gap_s=0.1)
+        self.baseline()
+        stamps: list[float] = [time.monotonic()]  # the instant the watch starts counts as the previous write
+        w = W.Watch(self.sd, self.tp, self.out, SHA, T0, srv.url, rpc=W.http_transport, now_ms=lambda: int(time.time() * 1000), sleep=time.sleep,
+                    log=lambda m: stamps.append(time.monotonic()))
+        with mock.patch.object(W, "CYCLE_S", 0.4), mock.patch.object(W, "RPC_TIMEOUT_S", 0.3), mock.patch.object(W, "RPC_ERROR_RETRY_MS", 1), \
+                mock.patch.object(W, "SHADOW_BUDGET_MS", 60), mock.patch.object(W, "START_BUDGET_MS", 30), mock.patch.object(W, "TAPE_BUDGET_MS", 50), mock.patch.object(W, "RPC_BUDGET_MS", 50):
+            w.run(max_cycles=4)
+        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+        self.assertEqual(len(stamps), 5)
+        self.assertLess(max(gaps), 0.4 + 0.3 + 1.0 + 0.5, gaps)  # 100 x smaller than the real 30 s + 24 s: no call took 20 s
+
+    def test_the_gap_arithmetic_counts_the_call_deadline_and_the_pacing_sleep(self):
+        worst_cycle_ms = W.SHADOW_BUDGET_MS + W.START_BUDGET_MS + W.TAPE_BUDGET_MS + W.RPC_BUDGET_MS + int((W.RPC_TIMEOUT_S + W.RPC_DEADLINE_GRACE_S) * 1000) + int(W.RPC_PACE_S * 1000)
+        self.assertLessEqual(int(W.CYCLE_S * 1000) + worst_cycle_ms + 4_000, 60_000)
 
 
 class TestStartRecordUnreadable(Env):

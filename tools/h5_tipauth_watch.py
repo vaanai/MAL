@@ -79,6 +79,7 @@ import re
 import signal
 import stat as stat_mod
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -92,10 +93,13 @@ SCHEMA = "h5_tipauth_watch_v1"
 STATE_KEYS = ("schema", "ts_ms", "verdict", "reason", "shadow_sha", "watched_n", "clear_n", "pending_n")
 HOUR_MS = 3_600_000
 CYCLE_S = 30.0  # a cycle starts every 30 s (start to start)
-# Every phase has a deadline, so a cycle ends within SHADOW + START + TAPE + RPC budgets + one RPC timeout + a chunk of disk work (about 24 s). A cycle that follows
-# a fast one is then at most 30 + 24 s after the previous write: state.json is never more than 60 s apart (a test pins the sum).
+# Every phase has a deadline, so a cycle ends within SHADOW + START + TAPE + RPC budgets + one RPC call (at most RPC_TIMEOUT_S + RPC_DEADLINE_GRACE_S, enforced by a
+# worker thread, not by the transport) + one pacing sleep + a chunk of disk work (about 25 s). A cycle that follows a fast one is then at most 30 + 25 s after the previous
+# write: state.json is never more than 60 s apart (a test pins the sum, and a test runs a real slow socket).
 SHADOW_BUDGET_MS, START_BUDGET_MS, TAPE_BUDGET_MS, RPC_BUDGET_MS = 6_000, 3_000, 5_000, 5_000
-RPC_TIMEOUT_S = 4.0
+RPC_TIMEOUT_S = 4.0  # the transport's total budget for one call (connect plus every read), and the per-operation socket timeout
+RPC_DEADLINE_GRACE_S = 1.0  # the worker thread running a call is waited for RPC_TIMEOUT_S + this; past it the call is an error and is never waited for again
+RPC_BODY_MAX = 8 * 1024 * 1024
 RPC_PACE_S = 0.5  # at most 2 asks a second
 RPC_MAX_ASKS = 10  # per cycle
 RPC_REASK_MS = 600_000  # a not-found is asked again at least 10 minutes later
@@ -200,10 +204,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def http_transport(url: str, payload: dict, timeout: float) -> Any:
+    """One getTransaction call with a TOTAL deadline of `timeout` seconds (R-B): the socket timeout is per operation, so the body is read in chunks against a monotonic
+    deadline and a size cap. A server that trickles bytes ends in TimeoutError, never in an answer. (The caller also runs this in a thread it stops waiting for.)"""
+    deadline = time.monotonic() + timeout
     opener = urllib.request.build_opener(NoRedirect)
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "User-Agent": "mal-h5-tipauth-watch/1"})
     with opener.open(req, timeout=timeout) as resp:  # noqa: S310 (https only, checked by validate_rpc_url)
-        return json.loads(resp.read().decode("utf-8"))
+        buf = bytearray()
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError("rpc total deadline")
+            chunk = resp.read1(65536)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > RPC_BODY_MAX:
+                raise ValueError("rpc answer too large")
+        if time.monotonic() > deadline:
+            raise TimeoutError("rpc total deadline")
+    return json.loads(bytes(buf).decode("utf-8"))
 
 
 def interpret(resp: Any) -> dict:
@@ -353,6 +372,7 @@ class Watch:
         self.start_complete = False
         self.start_unreadable = False
         self.hw: int | None = None
+        self._rpc_thread: threading.Thread | None = None  # the one outstanding RPC call, if a past one has not returned
         self._load()
 
     # -- persisted state --
@@ -718,18 +738,39 @@ class Watch:
                 continue  # an error is retried, but not every few milliseconds
             if asks:
                 self.sleep(RPC_PACE_S)
+            asked_ms = self.now()
+            ans_new = self._ask(sig)
+            if ans_new is None:  # a past call is still stuck: ask nothing more this cycle
+                break
             asks += 1
-            row = {"sig": sig, "asked_ms": self.now(), **self._ask(sig)}
+            row = {"sig": sig, "asked_ms": asked_ms, **ans_new}
             self.rpc_rows.setdefault(sig, []).append(row)
             append_jsonl(self.p["rpc"], row)
             if row["result"] == "found":
                 self.off_event(E3, f"{E3}|{sig}", {"signature": sig, "tids": due[sig][1], "answers": [row], "found_slot": row.get("slot")})
 
-    def _ask(self, sig: str) -> dict:
-        try:
-            return interpret(self.rpc(self.rpc_url, request_payload(sig), RPC_TIMEOUT_S))
-        except Exception as e:  # noqa: BLE001  (timeouts, HTTP errors, bad JSON, anything a transport raises)
-            return {"result": "error", "err": type(e).__name__}
+    def _ask(self, sig: str) -> dict | None:
+        """One RPC call in a daemon worker thread, waited for at most RPC_TIMEOUT_S + RPC_DEADLINE_GRACE_S (R-B). A call past that is an `error` (never a null), its late
+        answer is dropped, and no second call starts while it is still running (None: nothing was asked)."""
+        prev = self._rpc_thread
+        if prev is not None and prev.is_alive():
+            return None
+        box: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                box["r"] = interpret(self.rpc(self.rpc_url, request_payload(sig), RPC_TIMEOUT_S))
+            except Exception as e:  # noqa: BLE001  (timeouts, HTTP errors, bad JSON, anything a transport raises)
+                box["r"] = {"result": "error", "err": type(e).__name__}
+
+        th = threading.Thread(target=work, name="h5-tipauth-rpc", daemon=True)
+        self._rpc_thread = th
+        th.start()
+        th.join(RPC_TIMEOUT_S + RPC_DEADLINE_GRACE_S)
+        if th.is_alive():
+            return {"result": "error", "err": "deadline"}
+        r = box.get("r")
+        return r if isinstance(r, dict) else {"result": "error", "err": "no_result"}
 
     # -- verdict --
     def counts(self) -> tuple[int, int, int]:
