@@ -68,6 +68,7 @@ class Chain:
         gc = json.loads((FX / "config_accounts.json").read_text())
         self.config = gc["value"][2]
         self.n_sig = 0
+        self.fail: set[str] = set()  # getTransaction answers with a definitive JSON-RPC error for these signatures
         self.fee_list: list[dict] = []
 
     def sig(self) -> str:
@@ -96,6 +97,8 @@ class Chain:
             result = lst[: opts.get("limit", 1000)]
         elif meth == "getTransaction":
             self.tx_fetches[params[0]] += 1
+            if params[0] in self.fail:
+                return 200, {}, json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "constructed failure"}}).encode()
             result = self.txs.get(params[0])
         elif meth == "getMultipleAccounts":
             result = {"context": {"slot": 1}, "value": [self.accounts.get(a) for a in params[0]]}
@@ -190,7 +193,10 @@ def test_gap_of_303_s_and_late_last_slice_are_counted():
     assert g["n"] == 3 and g["n_gap_ge_60"] == 2 and g["n_last_gt_400"] == 1 and g["n_last_verified"] == 3
     gaps = {x["pool"]: x["largest_gap_s"] for x in g["pools_gap_ge_60"]}
     assert sorted(gaps.values()) == [290, 303]
-    assert rec["pools"][0]["last_slice_s"] in (450, 330, 50)
+    by_slot = {p["migrate_slot"]: p for p in rec["pools"]}
+    assert (by_slot[1000]["largest_gap_s"], by_slot[1000]["last_slice_s"]) == (303, 450)
+    assert (by_slot[1100]["largest_gap_s"], by_slot[1100]["last_slice_s"]) == (290, 330)
+    assert (by_slot[1200]["largest_gap_s"], by_slot[1200]["last_slice_s"]) == (10, 50)
 
 
 def test_exact_count_drops_a_non_keeper_transaction_from_29_to_28():
@@ -251,6 +257,94 @@ def test_no_exact_makes_no_exact_fields_and_fewer_calls():
     a = run(ch1, [(1000, 1000)], exact=False)
     b = run(ch2, [(1000, 1000)], exact=True)
     assert "exact" not in a and "exact_keeper_slices" not in a["pools"][0] and b["calls"] > a["calls"]
+
+
+def fee_sigs(ch):
+    return ch.lists[m.MIGRATION_FEE_ACCOUNT]
+
+
+def test_finder_rpc_error_stops_the_run(tmp_path):
+    ch = Chain()
+    add_pool(ch, 1, 1000, n_slices=5)
+    add_pool(ch, 2, 1001, n_slices=5)
+    ch.fail.add(fee_sigs(ch)[0]["signature"])
+    out = tmp_path / "o.jsonl"
+    rc = w.main(["--slot-range", "1000-1001", "--out", str(out)], client=client_for(ch), now=NOW)
+    rec = json.loads(out.read_text())
+    assert rc == 3 and rec["status"] == "stopped" and "RpcError" in rec["error"]
+
+
+def test_finder_counts_null_transactions_and_null_blocktime_candidates():
+    ch = Chain()
+    add_pool(ch, 1, 1000, n_slices=5)
+    add_pool(ch, 2, 1001, n_slices=5)
+    ch.txs.pop(fee_sigs(ch)[0]["signature"])  # first pool's migrate tx comes back null
+    ch.add(m.MIGRATION_FEE_ACCOUNT, 1002, None)  # a candidate in range with no blockTime
+    rec = run(ch, [(1000, 1002)], exact=False)
+    assert rec["status"] == "done" and rec["n_migrate_tx_null"] == 1 and rec["n_candidate_no_blocktime"] == 1
+    assert rec["n_migrate_found"] == 1 and rec["n_profiled"] == 1
+
+
+def test_eligible_pool_without_block_time_is_counted():
+    ch = Chain()
+    add_pool(ch, 1, 1000, n_slices=5)
+    add_pool(ch, 2, 1001, n_slices=5)
+    ch.txs[fee_sigs(ch)[0]["signature"]]["blockTime"] = 0
+    rec = run(ch, [(1000, 1001)], exact=False)
+    assert rec["n_no_block_time"] == 1 and rec["n_migrate_found"] == 2 and rec["n_profiled"] == 1
+
+
+def test_null_blocktime_in_a_signature_list_is_counted_and_blocks_fully_fetched():
+    ch = Chain()
+    pool = add_pool(ch, 1, 1000, n_slices=29)
+    ch.add(m.boost_vault_authority(pool), 1500, None)
+    rec = run(ch, [(1000, 1000)])
+    p = rec["pools"][0]
+    assert p["n_sig_no_blocktime"] == 1 and not p["fully_fetched"]
+    assert rec["n_sig_no_blocktime"] == 1 and rec["exact"]["n_fully_fetched"] == 0 and rec["exact"]["n_not_fully_fetched"] == 1
+
+
+def test_per_transaction_rpc_error_in_exact_mode_makes_the_pool_not_fully_fetched():
+    ch = Chain()
+    pool = add_pool(ch, 1, 1000, n_slices=29)
+    oldest_slice = sorted(ch.lists[m.boost_vault_authority(pool)], key=lambda x: x["slot"])[1]
+    ch.fail.add(oldest_slice["signature"])
+    rec = run(ch, [(1000, 1000)])
+    p = rec["pools"][0]
+    assert rec["status"] == "done" and p["n_missing_tx"] == 1 and not p["fully_fetched"] and p["exact_keeper_slices"] == 28
+    assert rec["exact"]["n_not_fully_fetched"] == 1 and rec["exact"]["n_fully_fetched"] == 0
+
+
+def test_truncation_is_reported_with_no_exact():
+    ch = Chain()
+    add_pool(ch, 1, 1000, n_slices=105)
+    add_pool(ch, 2, 1100, n_slices=29)
+    rec = run(ch, [(1000, 1100)], exact=False)
+    assert rec["n_truncated_at_100"] == 1 and sorted(p["truncated"] for p in rec["pools"]) == [False, True]
+
+
+def test_non_keeper_tx_inside_a_keeper_pause_hides_it_from_the_signature_gap_only():
+    ch = Chain()
+    add_pool(ch, 1, 1000, offsets=[10, 20, 100, 110], non_keeper=[60])
+    rec = run(ch, [(1000, 1000)])
+    p = rec["pools"][0]
+    assert p["largest_gap_s"] == 40 and p["largest_keeper_gap_s"] == 80 and p["fully_fetched"]
+    assert rec["gaps"]["n_gap_ge_60"] == 0 and rec["exact"]["n_keeper_gap_ge_60"] == 1
+
+
+def test_unexpected_exception_writes_a_stopped_record_and_exits_3(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise ValueError("constructed")
+
+    monkeypatch.setattr(w, "measure", boom)
+    out = tmp_path / "o.jsonl"
+    rc = w.main(["--slot-range", "1-2", "--out", str(out)], client=client_for(Chain()), now=NOW)
+    rec = json.loads(out.read_text())
+    assert rc == 3 and rec["status"] == "stopped" and rec["problem"] == "ValueError"
+
+
+def test_default_max_calls_is_5000():
+    assert w.parse_args(["--slot-range", "1-2", "--out", "x"]).max_calls == 5000
 
 
 def test_multiple_ranges_each_graduation_once():

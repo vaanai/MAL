@@ -15,13 +15,16 @@ bounded, and --max-calls is a hard cap: at the cap the run stops, writes the par
 exits 3. It never samples silently.
 
 Sample. Every successful migrate transaction on the migration fee account with slot in [min, max] (inclusive), taken
-the way the daily monitor takes them (tools/pump_structure_monitor.py, reused, not copied), kept when it is non-mayhem,
-WSOL-quoted and carries InitBoost. Anything older than the range is paged past; run it soon after the monitor record,
+the way the daily monitor reads one (tools/pump_structure_monitor.py: parse_migrate_tx, fetch_tx, annotate_mayhem and the
+RPC client are reused, not copied), kept when it is non-mayhem, WSOL-quoted and carries InitBoost. The finder itself
+(sample_range_sigs, find_migrations) is NEW code: the monitor's sample_graduations takes the N newest by block time, not a
+slot range. The tool stops (status "stopped") if GlobalConfig is not the 949-byte layout; the ad-hoc scripts read the keeper
+bytes regardless, so this is safer, not equal. Anything older than the range is paged past; run it soon after the monitor record,
 because each day of age adds signature pages.
 
 Two slice counts, do not mix them.
   sig_count             The signature-list count: every successful transaction on the pool's boost vault authority
-                        except the migrate. It is an UPPER BOUND: it can include 0-2 non-keeper transactions per pool
+                        except the migrate, capped at 100 listed entries. It is an UPPER BOUND: it can include 0-2 non-keeper transactions per pool
                         (2026-10-08 check). It is the monitor's own "slices" statistic.
   exact_keeper_slices   (--exact) Every transaction in that list is fetched. A slice is a BoostBuyAndBurn instruction
                         signed by GlobalConfig.boost_authority (the keeper). Non-keeper transactions are excluded.
@@ -32,13 +35,21 @@ Two slice counts, do not mix them.
                         exact tallies; it is counted in n_not_fully_fetched.
 
 Gaps. largest_gap_s is measured on SIGNATURE-LIST times (every successful transaction on the vault authority except the
-migrate, sorted by block time), not on verified keeper slices. last_slice_s is the block time of the newest keeper-signed
+migrate, sorted by block time), not on verified keeper slices. A non-keeper transaction inside a pause therefore HIDES it
+from largest_gap_s. In exact mode largest_keeper_gap_s (keeper slice times, fully fetched pools) is the check for that;
+summary n_keeper_gap_ge_60 counts it. last_slice_s is the block time of the newest keeper-signed
 BoostBuyAndBurn among the 8 newest listed transactions, minus the migrate block time (same rule as the monitor); None
 when none of the 8 qualifies.
 
 Reference readings recorded on 2026-10-13 with two ad-hoc scripts (not by this tool):
   pre-upgrade  (50 pools of the four A3 runs 2026-10-09..10-12): sig_count <= 28 on 6; largest gap >= 60 s on 0.
   post-upgrade (40 pools): sig_count <= 28 on 2; exact under 29 on 4 of 39 fully fetched; largest gap >= 60 s on 1.
+
+Nothing is dropped silently. Every drop is a count in the record: n_candidate_no_blocktime, n_migrate_tx_null,
+n_no_block_time (eligible graduation without a block time), per pool n_sig_no_blocktime (such a pool is not fully
+fetched), truncated / n_truncated_at_100 (list hit 100 entries; in either mode). n_migrate_found = n_profiled +
+n_no_block_time + (graduations excluded as mayhem, unknown-mayhem, not WSOL or without InitBoost; those four overlap).
+A "stopped" record, or ANY nonzero drop count, is not a reading: read status, calls and the drop counts first.
 
 Exit codes: 0 done, 3 stopped (call cap or unrecoverable RPC failure; partial record written), 2 usage error.
 Output is structure data only: no price, fill or outcome field exists in it.
@@ -58,7 +69,7 @@ from observe.trade_decode import decode_extra_event
 from tools import pump_structure_monitor as m
 
 SCHEMA = "boost_slice_watch.v1"
-DEFAULT_MAX_CALLS = 2500
+DEFAULT_MAX_CALLS = 5000
 DEFAULT_MIN_INTERVAL = 0.6
 SIG_PAGE = 1000
 MAX_PAGES = 30
@@ -171,7 +182,7 @@ def slice_row(tx: Mapping[str, Any], vault: str, authority: str) -> dict[str, An
     }
 
 
-def exact_pool(fetch: Fetcher, g: Mapping[str, Any], sigs: Sequence[Mapping[str, Any]], authority: str) -> dict[str, Any]:
+def exact_pool(fetch: Fetcher, g: Mapping[str, Any], sigs: Sequence[Mapping[str, Any]], authority: str, n_no_bt: int) -> dict[str, Any]:
     ordered = sorted(sigs, key=lambda x: (x["slot"], x.get("transactionIndex") or 0))
     truncated = len(sigs) >= LIST_LIMIT
     mig_identified = bool(ordered) and ordered[0]["signature"] == g["sig"] and ordered[0].get("err") is None
@@ -189,13 +200,16 @@ def exact_pool(fetch: Fetcher, g: Mapping[str, Any], sigs: Sequence[Mapping[str,
         rows.append(slice_row(tx, vault, authority))
     bbb = [r for r in rows if r["bbb"]]
     keeper = [r for r in bbb if r["signed"]]
+    kt = sorted(r["bt"] for r in keeper if r["bt"] is not None)
+    kgaps = [b - a for a, b in zip(kt, kt[1:])]
     return {
         "exact_keeper_slices": len(keeper),
         "keeper_signed": len(keeper),
         "zero_fee": sum(1 for r in keeper if r["zero_fee"]),
         "non_keeper_tx": len(rows) - len(keeper),
         "bbb_not_keeper_signed": len(bbb) - len(keeper),
-        "fully_fetched": (not truncated) and mig_identified and missing == 0,
+        "largest_keeper_gap_s": max(kgaps) if kgaps else 0,
+        "fully_fetched": (not truncated) and mig_identified and missing == 0 and n_no_bt == 0,
         "migrate_identified": mig_identified,
         "truncated": truncated,
         "n_missing_tx": missing,
@@ -206,6 +220,7 @@ def profile_pool(fetch: Fetcher, g: Mapping[str, Any], authority: str, exact: bo
     sigs = fetch.client.call("getSignaturesForAddress", [m.boost_vault_authority(g["pool"]), {"limit": LIST_LIMIT, "commitment": "finalized"}]) or []
     sl = [x for x in sigs if x.get("err") is None and x["signature"] != g["sig"] and x.get("blockTime") is not None]
     times = sorted(x["blockTime"] for x in sl)
+    n_no_bt = sum(1 for x in sigs if x.get("err") is None and x["signature"] != g["sig"] and x.get("blockTime") is None)
     gaps = [b - a for a, b in zip(times, times[1:])]
     sl.sort(key=lambda x: (x["slot"], x.get("transactionIndex") or 0), reverse=True)
     last_t = None
@@ -218,11 +233,13 @@ def profile_pool(fetch: Fetcher, g: Mapping[str, Any], authority: str, exact: bo
         "pool": g["pool"],
         "migrate_slot": g["slot"],
         "sig_count": len(times),
+        "truncated": len(sigs) >= LIST_LIMIT,
+        "n_sig_no_blocktime": n_no_bt,
         "largest_gap_s": max(gaps) if gaps else 0,
         "last_slice_s": (last_t - g["block_time"]) if last_t is not None else None,
     }
     if exact:
-        out.update(exact_pool(fetch, g, sigs, authority))
+        out.update(exact_pool(fetch, g, sigs, authority, n_no_bt))
     return out
 
 
@@ -245,16 +262,18 @@ def sample_range_sigs(client: m.RpcClient, ranges: Sequence[tuple[int, int]]) ->
     raise Stop(f"paging did not reach slot {lo} within {MAX_PAGES} pages")
 
 
-def find_migrations(fetch: Fetcher, sigs: Sequence[Mapping[str, Any]], lo: int, hi: int, seen: set[str]) -> list[dict[str, Any]]:
+def find_migrations(fetch: Fetcher, sigs: Sequence[Mapping[str, Any]], lo: int, hi: int, seen: set[str], counts: dict[str, int]) -> list[dict[str, Any]]:
+    """An RpcError on a candidate propagates (the run stops); null transactions and null blockTimes are counted."""
     grads = []
     for s in sigs:
-        if not (lo <= s["slot"] <= hi) or s.get("err") is not None or s.get("blockTime") is None:
+        if not (lo <= s["slot"] <= hi) or s.get("err") is not None:
             continue
-        try:
-            tx = fetch.tx(s["signature"])
-        except m.RpcError:
-            continue  # a definitive failure on one candidate: skipped, as the monitor skips it
+        if s.get("blockTime") is None:
+            counts["n_candidate_no_blocktime"] += 1
+            continue
+        tx = fetch.tx(s["signature"])
         if not tx:
+            counts["n_migrate_tx_null"] += 1
             continue
         g = m.parse_migrate_tx(tx)
         if g is None or g["mint"] in seen:
@@ -278,6 +297,8 @@ def summarize(pools: Sequence[Mapping[str, Any]], exact: bool) -> dict[str, Any]
     n_le = sum(1 for c in counts if c <= ROUGH_LE)
     out: dict[str, Any] = {
         "n_profiled": len(pools),
+        "n_truncated_at_100": sum(1 for p in pools if p.get("truncated")),
+        "n_sig_no_blocktime": sum(p.get("n_sig_no_blocktime", 0) for p in pools),
         "rough": {"n": len(pools), "n_le_28": n_le, "share_le_28": m.share(n_le, len(pools)), "min": min(counts, default=None), "median": med(counts), "max": max(counts, default=None)},
     }
     if exact:
@@ -293,6 +314,7 @@ def summarize(pools: Sequence[Mapping[str, Any]], exact: bool) -> dict[str, Any]
             "min": min(ec, default=None),
             "median": med(ec),
             "max": max(ec, default=None),
+            "n_keeper_gap_ge_60": sum(1 for p in ff if p["largest_keeper_gap_s"] >= GAP_PAUSE_S),
             "n_slices": sum(ec),
             "n_keeper_signed": sum(p["keeper_signed"] for p in ff),
             "n_zero_fee": sum(p["zero_fee"] for p in ff),
@@ -323,7 +345,7 @@ def measure(client: m.RpcClient, ranges: Sequence[tuple[int, int]], exact: bool,
     sigs = sample_range_sigs(client, ranges)
     seen: set[str] = set()
     for lo, hi in ranges:
-        grads = find_migrations(fetch, sigs, lo, hi, seen)
+        grads = find_migrations(fetch, sigs, lo, hi, seen, counts)
         counts["n_migrate_found"] += len(grads)
         m.annotate_mayhem(client, grads)
         counts["n_mayhem"] += sum(1 for g in grads if g.get("mayhem") is True)
@@ -331,19 +353,25 @@ def measure(client: m.RpcClient, ranges: Sequence[tuple[int, int]], exact: bool,
         counts["n_not_wsol"] += sum(1 for g in grads if not g["quote_wsol"])
         counts["n_no_init_boost"] += sum(1 for g in grads if not g["init_boost"])
         for g in grads:
-            if not (g["init_boost"] and g["quote_wsol"] and g.get("mayhem") is False and g.get("block_time")):
+            if not (g["init_boost"] and g["quote_wsol"] and g.get("mayhem") is False):
+                continue
+            if not g.get("block_time"):
+                counts["n_no_block_time"] += 1
                 continue
             pools.append(profile_pool(fetch, g, authority, exact))
 
 
 def run(client: m.RpcClient, ranges: Sequence[tuple[int, int]], *, exact: bool, now: float, record_run_utc: str | None) -> dict[str, Any]:
     pools: list[dict[str, Any]] = []
-    counts = Counter({"n_migrate_found": 0, "n_mayhem": 0, "n_mayhem_unknown": 0, "n_not_wsol": 0, "n_no_init_boost": 0})
-    status, error = "done", None
+    counts = Counter({"n_migrate_found": 0, "n_mayhem": 0, "n_mayhem_unknown": 0, "n_not_wsol": 0, "n_no_init_boost": 0,
+                      "n_candidate_no_blocktime": 0, "n_migrate_tx_null": 0, "n_no_block_time": 0})
+    status, error, problem = "done", None, None
     try:
         measure(client, ranges, exact, pools, counts)  # type: ignore[arg-type]
     except (m.CallBudgetExceeded, m.RpcUnreachable, m.RpcError, Stop) as exc:
         status, error = "stopped", f"{type(exc).__name__}: {str(exc)[:200]}"
+    except Exception as exc:  # any other failure: a visible stopped record, never a bare traceback with no record
+        status, error, problem = "stopped", type(exc).__name__, type(exc).__name__
     rec: dict[str, Any] = {
         "schema": SCHEMA,
         "tool_run_utc": m.iso(now),
@@ -356,9 +384,14 @@ def run(client: m.RpcClient, ranges: Sequence[tuple[int, int]], *, exact: bool, 
         "n_mayhem_unknown": counts["n_mayhem_unknown"],
         "n_not_wsol": counts["n_not_wsol"],
         "n_no_init_boost": counts["n_no_init_boost"],
+        "n_candidate_no_blocktime": counts["n_candidate_no_blocktime"],
+        "n_migrate_tx_null": counts["n_migrate_tx_null"],
+        "n_no_block_time": counts["n_no_block_time"],
     }
     if error:
         rec["error"] = error
+    if problem:
+        rec["problem"] = problem
     rec.update(summarize(pools, exact))
     rec["calls"] = client.total_calls
     rec["pools"] = pools
@@ -389,6 +422,9 @@ def summary_line(rec: Mapping[str, Any]) -> str:
     if "exact" in rec:
         e = rec["exact"]
         parts.append(f"exact: fully_fetched={e['n_fully_fetched']} not_fully={e['n_not_fully_fetched']} under29={e['n_under_29']} share={e['share_under_29']} median={e['median']}")
+    drops = {k: rec[k] for k in ("n_candidate_no_blocktime", "n_migrate_tx_null", "n_no_block_time", "n_truncated_at_100", "n_sig_no_blocktime") if rec.get(k)}
+    if drops:
+        parts.append(f"DROPS (not a reading): {drops}")
     parts.append(f"gaps: ge60={g['n_gap_ge_60']} last_gt_400={g['n_last_gt_400']} last_median={g['last_slice_median_s']}")
     return " | ".join(parts)
 
