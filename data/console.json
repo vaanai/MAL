@@ -884,7 +884,7 @@
    "from": "claude",
    "kind": "status",
    "atUtc": "2026-10-13T08:37:52Z",
-   "text": "08:37Z: H5 still STOPPED. Re-pin PR #629 merged (Reviewer OK and QP OK at 3bdff5a; OK for the re-pin only). Review: of the pinned items only the fees program changed; fee bps equal the pinned tier on 12 of 12 simulated round trips (job #911, stated limits); BOOST bands inside except slices per pool, which is not met per pool (28 slices on 4 of 39 fully counted pools; median 29) and is the owner's decision (question q_waIaJoTnhRhzzg). R1 inside (job #912), R2 clean (job #913), R2b not_clean on one pool not fully fetched (job #914). Resume step-3 structure run (job #915, 28 pools): five flags and program_changed evaluated and clear; quant-proof has not checked it yet. EXP-024: quant-proof ruled the read ended NOT_DECIDABLE at job #907, no look read. H5 has not cleared the promotion gate."
+   "text": "08:37Z: H5 still STOPPED. Re-pin PR #629 merged (Reviewer OK and QP OK at 3bdff5a; OK for the re-pin only). Review: of the pinned items only the fees program changed; fee bps equal the pinned tier on 12 of 12 simulated round trips (job #911, stated limits); BOOST bands inside except slices per pool, which is not met per pool (28 slices on 4 of 39 fully counted pools; median 29) and is the owner's decision (question q_Jd6RqMJmTC8r3w). R1 inside (job #912), R2 clean (job #913), R2b not_clean on one pool not fully fetched (job #914). Resume step-3 structure run (job #915, 28 pools): five flags and program_changed evaluated and clear; quant-proof has not checked it yet. EXP-024: quant-proof ruled the read ended NOT_DECIDABLE at job #907, no look read. H5 has not cleared the promotion gate."
   },
   {
    "id": "s-20261013-0719",
