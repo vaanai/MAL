@@ -734,6 +734,16 @@ class TestPlanFlags(Rule):
         with self.assertRaises(SystemExit):
             W.main(["report", "--out-dir", str(self.tmp / "o3")])
 
+    def test_a_plan_whose_count_exceeds_triggers_n_is_refused_even_if_rehashed(self):
+        self.full_plan()
+        pl = json.loads((self.out / C.PLAN_NAME).read_text())
+        pl["wspass"]["tape_absent"]["ws_pass"] = 3  # 2 ws-pass triggers
+        pl["wspass"]["plan_selection_sha256"] = W.selection_hash(pl["wspass"])
+        (self.out / C.PLAN_NAME).write_text(C.dumps(pl))
+        with self.assertRaises(SystemExit) as cm:
+            W.main(["report", "--out-dir", str(self.out)])
+        self.assertIn("malformed", str(cm.exception))
+
     def test_flags_belong_to_plan_only(self):
         self.full_plan()
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

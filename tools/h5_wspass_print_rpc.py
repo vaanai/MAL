@@ -315,7 +315,7 @@ def _meta(plan: dict) -> dict:
     if not ok:
         raise SystemExit("refused: plan is not this tool's, or its selection hash does not match")
     ta = meta.get("tape_absent")
-    if ta is not None and not (isinstance(ta, dict) and set(ta) == set(CLASS_ORDER) and all(C.isint(v) and 0 <= v for v in ta.values())):
+    if ta is not None and not (isinstance(ta, dict) and set(ta) == set(CLASS_ORDER) and all(C.isint(v) and 0 <= v <= meta["triggers_n"][c] for c, v in ta.items())):
         raise SystemExit("refused: the plan's tape-absent counts are malformed")
     return meta
 
