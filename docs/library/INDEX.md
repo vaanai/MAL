@@ -103,7 +103,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-R2.SB-H4` | SB-H4: fee liquidation in quote coins | Search B October structure (R2) | Needs a ruling on side-split sells. K0 DROP if the median full day has fewer than 20 sweep or payout events. |
 | `lib-c-R2.SB-H6` | SB-H6: V-floor on custom-pair pools (extra) | Search B October structure (R2) | not in source |
 | `lib-c-R2.SB-H8` | SB-H8: 200 ms slots as a fill-cost parameter (extra) | Search B October structure (R2) | Kill count (prints per active slot within +-10%) via r8/r9 octstruct cell 5, after the FINAL. |
-| `lib-c-R3.tipauth` | tipauth (tip-authoritative base check) | H5 trade-rate levers (R3) | Note: 2026-10-13: the executor gate (PR #614, merged as bb28b57) and the offline watch tool (PR #635, merged as bf06e7d) are on main with the switch OFF; nothing is installed or enabled. In the 24 h before 18:49Z the canary made 2 decisions, and 13 of its 20 refusals were bad_intent:base_breaks_unresolved_settled (the others: price_moved x2, feed_gap x2, stale_trigger x2, bad_intent:s0_minus_announced_slots x1). … |
+| `lib-c-R3.tipauth` | tipauth (tip-authoritative base check) | H5 trade-rate levers (R3) | Note: 2026-10-13: gate code (PR #614) and watch tool (PR #635) are on main with the switch OFF; nothing installed or enabled. Still required before enabling: acceptance counts, a parser differential against the installed build, the look-comparison tool, two daily-check alerts, Amendment 8 with the owner's dated acceptance, Helm's install. In the 24 h before 18:49Z: 2 decisions; 13 of 20 refusals were … |
 
 ## Owner ideas
 
@@ -232,7 +232,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `w3-entry6-sim-1` | ENTRY6-S1H v0: +6 min entry on high buy share, take profit 2.0x, stop 0.7x, 24 h | `dead-as-frozen` | "DEAD": all 20 kill-bar checks failed; mean -10.895% (Aug, flat) and -6.150% (Sep, flat) of stake; stop exits realized a median of -91.1% and -92.1% of stake with a 2.0 s sell lag |
+| `w3-entry6-sim-1` | ENTRY6-S1H v0: +6 min entry on high buy share, take profit 2.0x, stop 0.7x, 24 h | `dead-as-frozen` | "DEAD": all 20 kill-bar checks failed; mean -10.895% (Aug, flat) and -6.150% (Sep, flat) of stake; stop exits realized a median of -91.1% and -92.1% of stake with a 2.0 s sell lag (provisional: a … |
 
 ### w2-mayhem-grads (1)
 
