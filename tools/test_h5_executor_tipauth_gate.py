@@ -887,6 +887,81 @@ class ClassStateTests(FlowCase):
         self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
 
 
+class ClassHaltTests(FlowCase):
+    """R6: the class does not loosen an existing halt. A tagged landed buy is out of landed_buys / pre_unlinked_landed (the pre_unlinked_share halt) and
+    in the landing-median halt, the trade and attempt caps, and the daily and total stops."""
+
+    ON = {"tipauth_gate": "DEC-024-Am8"}
+    UNLINKED = {"base_breaks_unresolved": 1, "base_breaks_unresolved_settled": 0}
+    TAGGED = {"gate_path": "tipauth", "base_breaks_unresolved": 1, "base_breaks_unresolved_settled": 1}
+
+    def second(self, name: str, **kw) -> Env:
+        """Another executor in its own directory (a second world), started the way FlowCase.start starts one."""
+        e = Env(self.tmp / name, **kw)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        return e
+
+    def test_r6_a_tagged_landed_buy_is_not_in_landed_buys_or_pre_unlinked_landed_but_a_websocket_one_is(self):
+        e = self.start(**self.ON)
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.land_buy()
+        c = self.counters(e)
+        self.assertEqual((c["landed_buys"], c["pre_unlinked_landed"]), (0, 0))
+        self.assertEqual(c["tipauth"]["n_landed"], 1)  # the class counts it
+        ctl = self.second("ctl", **self.ON)  # a websocket-path buy (value 0) in the same setup is counted as before
+        self.append(ctl, self.tip_row(ctl, base_breaks_unresolved_settled=0))
+        ctl.ex.intent_tick()
+        ctl.land_buy()
+        self.assertEqual((self.counters(ctl)["landed_buys"], self.counters(ctl)["pre_unlinked_landed"]), (1, 0))
+
+    def test_r6_tagged_landings_do_not_dilute_the_pre_unlinked_share(self):
+        e = self.start(**self.ON)
+        e.ex.counters.landed_buys, e.ex.counters.pre_unlinked_landed = 100, 15  # exactly 15.0%: not above the limit
+        for _ in range(6):  # if these were counted, the next pre-unlinked buy would make 16 of 107 = 14.95% and the halt would not trip
+            e.ex._note_landed_buy(dict(self.TAGGED))
+        self.assertEqual((e.ex.counters.landed_buys, e.ex.counters.pre_unlinked_landed), (100, 15))
+        self.assertEqual(e.ex.counters.halts, {})
+        e.ex._note_landed_buy(dict(self.UNLINKED))  # 16 of 101 = 15.84% > 15%
+        self.assertEqual((e.ex.counters.landed_buys, e.ex.counters.pre_unlinked_landed), (101, 16))
+        self.assertIn("pre_unlinked_share", e.ex.counters.halts)
+
+    def test_r6_a_tagged_landing_is_still_in_the_landing_median_halt(self):
+        e = self.start(**self.ON)
+        e.ex.counters.landing_s = [5.0] * 9  # nine slow landings; the tenth is the tagged one
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.land_buy(slot=TRIG_SLOT + 20)
+        self.assertEqual(len(e.ex.counters.landing_s), 10)
+        self.assertIn("landing_median_gt_3s", e.ex.counters.halts)
+
+    def test_r6_a_tagged_trade_is_in_the_trade_and_attempt_caps(self):
+        e = self.start(max_trades_per_day=1, **self.ON)
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.land_buy()
+        now = e.clock()
+        self.assertEqual((e.ex.counters.day(h.day_key(now))["trades"], e.ex.counters.tier_attempts, e.ex.state.attempts), (1, 1, 1))
+        self.assertEqual(e.ex._budget_stop(now), "max_trades_day")
+        e2 = self.second("two", max_attempts=1, **self.ON)
+        self.append(e2, self.tip_row(e2))
+        e2.ex.intent_tick()
+        e2.land_buy()
+        self.assertEqual(e2.ex._budget_stop(e2.clock()), "max_attempts")
+
+    def test_r6_a_tagged_realized_loss_is_in_the_daily_and_total_stops(self):
+        e = self.start(**self.ON)
+        e.ex._tipauth_admit("TAGGED")
+        e.ex._refresh_tier(e.clock())
+        self.assertIsNone(e.ex._budget_stop(e.clock()))
+        e.ex._book_fee("TAGGED", 65_000_000, "test")  # -0.065 SOL and 0.02 SOL at risk: the T0 daily stop is 0.08
+        self.assertEqual(e.ex._budget_stop(e.clock()), "daily_loss_stop")
+        e.ex._book_fee("TAGGED", 45_000_000, "test")  # -0.11 SOL and 0.02 at risk: the T0 total stop is 0.12 (the check that runs first)
+        self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
+        self.assertEqual((e.ex.state.realized_lamports, e.ex.counters.tipauth["realized"]), (-110_000_000, -110_000_000))
+
+
 class MainEnv(Env):
     """The same fake world with main's executor (BASE_SHA) in it, for the off-path flow comparison."""
 

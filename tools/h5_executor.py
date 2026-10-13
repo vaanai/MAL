@@ -2688,8 +2688,12 @@ class H5Executor(pl.LiveExecutor):
         self.save()
 
     def _note_landed_buy(self, trigger: dict[str, Any]) -> None:
-        """Halt rule: pre-unlinked triggers (see pre_unlinked) above 15% of landed buys, judged from 20 landed buys on."""
+        """Halt rule: pre-unlinked triggers (see pre_unlinked) above 15% of landed buys, judged from 20 landed buys on.
+        A tipauth-class buy is not counted here (quant-proof R6): it has a websocket value >= 1, which pre_unlinked() never calls pre-unlinked, so it
+        could only raise the denominator and weaken this halt. It stays in the landing-median halt, the trade and attempt caps and the loss stops."""
         c = self.counters
+        if trigger.get("gate_path") == GATE_PATH_TIPAUTH:
+            return
         c.landed_buys += 1
         c.pre_unlinked_landed += 1 if pre_unlinked(trigger.get("base_breaks_unresolved"), trigger.get("base_breaks_unresolved_settled")) else 0
         c.save(self.counters_path)
