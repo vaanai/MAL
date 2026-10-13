@@ -32,6 +32,7 @@ from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_h5_executor_tiers import TierCase
 
 SOL = 1_000_000_000
+INSTALLED_SHA = "b7ddeb60aa4ced9243211775cf3d5a22ccc42dff"  # the installed build: head of claude/h5-exec-presend-age-install (cut from f873aac, never merged; that branch is not touched)
 BASE_SHA = "13e3f28"  # main at the second merge into this branch: the reference for the decision-equivalence corpus and the off-path flow
 WS = "bad_intent:base_breaks_unresolved_settled"  # the websocket refusal: the reason of every skip row this path touches, byte for byte (R3)
 MISSING = object()
@@ -402,19 +403,34 @@ def _load_main():
     return _MAIN_CACHE[0]
 
 
-def _load_main_uncached():
+def _load_ref_uncached(sha: str, modname: str):
     try:
-        src = subprocess.run(["git", "show", f"{BASE_SHA}:tools/h5_executor.py"], capture_output=True, check=True, cwd=Path(__file__).resolve().parents[1]).stdout
+        src = subprocess.run(["git", "show", f"{sha}:tools/h5_executor.py"], capture_output=True, check=True, cwd=Path(__file__).resolve().parents[1]).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
     d = tempfile.mkdtemp()
-    p = Path(d) / "h5_executor_main.py"
+    p = Path(d) / f"{modname}.py"
     p.write_bytes(src)
-    spec = importlib.util.spec_from_file_location("h5_executor_main", p)
+    spec = importlib.util.spec_from_file_location(modname, p)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["h5_executor_main"] = mod
+    sys.modules[modname] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_main_uncached():
+    return _load_ref_uncached(BASE_SHA, "h5_executor_main")
+
+
+_INSTALLED_CACHE: list = []
+
+
+def _load_installed():
+    """The executor that is running on the host (INSTALLED_SHA, the head of claude/h5-exec-presend-age-install, never merged), as a second reference
+    module. None when the git object is not available in this clone."""
+    if not _INSTALLED_CACHE:
+        _INSTALLED_CACHE.append(_load_ref_uncached(INSTALLED_SHA, "h5_executor_installed"))
+    return _INSTALLED_CACHE[0]
 
 
 class EquivalenceTests(unittest.TestCase):
@@ -1760,24 +1776,30 @@ class ManualCloseTagTests(FlowCase):
         self.fresh_watch(e)
         self.assertEqual(e.build()._tipauth_availability(), "")  # and the path is as available as before
 
-    def test_n2_with_the_switch_off_the_close_is_main_s_byte_for_byte(self):
-        main = _load_main()
-        if main is None:
-            self.skipTest(f"git object {BASE_SHA} not available")
-        self.patch_main(main)
-        MainEnv.MAIN = main
+    def close_equals_reference(self, which: str) -> None:
+        mod, cls, sha = (_load_main(), MainEnv, BASE_SHA) if which == "main" else (_load_installed(), InstalledEnv, INSTALLED_SHA)
+        if mod is None:
+            self.skipTest(f"commit {sha} ({which}) is not available in this clone; fetch it to run this comparison")
+        self.patch_main(mod)
+        cls.MAIN = mod
         got = {}
-        for name, E, module in (("main", MainEnv, main), ("head", Env, h), ("headk", Env, h)):
+        for name, E, module in ((which, cls, mod), ("head", Env, h), ("headk", Env, h)):
             conf = {"seed": b"\x07" * 32, **({"tipauth_gate": "DEC-024-am8"} if name == "headk" else {})}  # one wallet for all three; a key that does not match: still off
-            e, sig = self.world(f"n2o-{name}", E, tagged=False, pnl=-19_120_000, **conf)
+            e, sig = self.world(f"n2o-{which}-{name}", E, tagged=False, pnl=-19_120_000, **conf)
             self.assertEqual(self.mark(e, sig, module)[0], 0)
-            root = self.tmp / f"n2o-{name}"
+            root = self.tmp / f"n2o-{which}-{name}"
             got[name] = {str(f.relative_to(root)): re.sub(r'"inode":\s*\d+', '"inode":0', re.sub(r'"code_sha256":\s*"[0-9a-f]{64}"', "", f.read_text().replace(str(root), "<T>")))
                          for f in sorted((root / "state").rglob("*")) if f.is_file() and "lock" not in f.name}
-        self.assertGreater(len(got["main"]), 2)
+        self.assertGreater(len(got[which]), 2)
         for name in ("head", "headk"):
-            self.assertEqual(got[name], got["main"], name)
+            self.assertEqual(got[name], got[which], name)
         self.assertNotIn("tipauth", "".join(got["head"].values()))
+
+    def test_n2_with_the_switch_off_the_close_is_main_s_byte_for_byte(self):
+        self.close_equals_reference("main")
+
+    def test_n2_with_the_switch_off_the_close_is_the_installed_build_s_byte_for_byte(self):
+        self.close_equals_reference("installed")
 
 
 class OverheadTimingTests(FlowCase):
@@ -1823,7 +1845,7 @@ class OverheadTimingTests(FlowCase):
 
 
 class MainEnv(Env):
-    """The same fake world with main's executor (BASE_SHA) in it, for the off-path flow comparison."""
+    """The same fake world with a reference executor module in it (main's, BASE_SHA, or the installed build's, INSTALLED_SHA), for the off-path flow comparison."""
 
     MAIN = None
 
@@ -1840,18 +1862,49 @@ class MainEnv(Env):
             ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
 
 
+class InstalledEnv(MainEnv):
+    """The same, with the installed build's executor (INSTALLED_SHA)."""
+
+    MAIN = None
+
+
 class OffPathFlowTests(FlowCase):
-    """Quant-proof checklist item 4 (ii), in the unit-test form: the same scripted stream of trigger rows through main's module and the head's
+    """Quant-proof checklist item 4 (ii) and round 2 N3, in the unit-test form: the same scripted flows through a reference executor module and the head's
     module, switch off (no key, and a key that does not match), in dry-run and in the tests' live mode. The ledger rows, every state file and the
-    `--status` lines are equal. This is the flow part of the equivalence, not the whole of it (live RPC timing is not shown)."""
+    `--status` lines are equal. The flows: a 240-row stream with one buy and one sell, a buy that expires (restart while it is in flight, restart after),
+    and a sell that lands with an error, its fee booked, then the closing sell (a restart before each step). Two references: main (BASE_SHA, which
+    carries PR #597) and the installed build (INSTALLED_SHA, which does not); each is skipped, with the reason printed, only when its git object is not in
+    the clone. This is the flow part of the equivalence, not the whole of it (live RPC timing is not shown)."""
 
     N_ROWS = 240
+    SEED = b"\x07" * 32
+
+    def ws0(self, e: Env, **kw) -> dict:
+        return {**shadow_trigger(e.clock, **kw), **tip_fields(base_breaks_unresolved_settled=0)}
+
+    def put(self, e: Env, *rows) -> None:
+        with Path(e.conf["intents_file"]).open("a") as fh:
+            for r in rows:
+                fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+        e.ex.intent_tick()
+
+    def collect(self, e: Env, root: Path) -> dict:
+        def norm(text: str) -> str:  # the temp path; the sha of the source file (it must differ between two source files); the intents file's inode
+            text = re.sub(r'"code_sha256":\s*"[0-9a-f]{64}"', '"code_sha256":"<sha>"', text.replace(str(root), "<T>"))
+            return re.sub(r'"inode":\s*\d+', '"inode":0', text)  # (the file system's number for the intents file)
+
+        files = {str(f.relative_to(root)): norm(f.read_text()) for f in sorted((root / "state").rglob("*"))
+                 if f.is_file() and "lock" not in f.name and f.name != "H5_EXECUTOR.lock"}
+        status = [ln for ln in h.status_report(e.conf).splitlines() if ln.startswith(("[live]", "[dryrun]"))]
+        rows = [norm(json.dumps(r, sort_keys=True, separators=(",", ":"))) for r in e.ledger()]
+        return {"ledger": norm(json.dumps(e.ledger(), sort_keys=True, separators=(",", ":"))), "rows": rows, "files": files, "refusals": dict(e.ex.refusals),
+                "status": status, "n_ledger": len(rows)}
 
     def stream(self, E, root: Path, live: bool, **conf):
         from solders.keypair import Keypair
         from tools.test_h5_executor_shadow import pool_row
 
-        e = E(root, live=live, seed=b"\x07" * 32, **conf)
+        e = E(root, live=live, seed=self.SEED, **conf)
         Path(e.conf["intents_file"]).write_text("")
         e.ex.intent_tick()
         rng = random.Random(11)
@@ -1876,58 +1929,154 @@ class OffPathFlowTests(FlowCase):
                     "gap_f": {"type": "gap", "flags_pools": False, "kind": "redundant"}, "excl": {"type": "excluded", "reason": "synthetic", "mint": mints[0], "pool": "p"},
                     "nosps": {"type": "skipped_no_sps", "mint": mints[1]}, "pool": pool_row(MINT), "garbage": "{not json", "list": [1, 2]}[kind]
 
-        def write(rows):
-            with Path(e.conf["intents_file"]).open("a") as fh:
-                for r in rows:
-                    fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
-            e.ex.intent_tick()
-
-        write([row("hb"), row("ws0")])  # the one buy
+        self.put(e, row("hb"), row("ws0"))  # the one buy
         if live and MINT in e.ex.state.pending:
             e.land_buy()
         kinds = ["ws1pass"] * 6 + ["ws2fail"] * 3 + ["wsbad"] * 3 + ["other_mint"] * 4 + ["badfield"] * 2 + ["ws0"] * 2 + ["hb", "gap_t", "gap_f", "excl", "nosps", "pool", "garbage", "list"]
         for _ in range(self.N_ROWS // 8):
-            write([row(rng.choice(kinds)) for _ in range(8)])
+            self.put(e, *[row(rng.choice(kinds)) for _ in range(8)])
         if MINT in e.ex.state.open:
             e.at_slot(e.plan()["send_slot"])  # the exit: a sent sell (live) or a dry_sell
             if live and MINT in e.ex.state.pending:
                 e.land_sell(e.rpc.slot)
-        write([row(rng.choice(kinds)) for _ in range(8)])
+        self.put(e, *[row(rng.choice(kinds)) for _ in range(8)])
         e.jump(3_600_000)  # the hour rolls: the refusal counts are written
-        write([row("hb")])
-        def norm(text: str) -> str:  # the temp path; the sha of the source file (it must differ between two source files); the intents file's inode
-            text = re.sub(r'"code_sha256":\s*"[0-9a-f]{64}"', '"code_sha256":"<sha>"', text.replace(str(root), "<T>"))
-            return re.sub(r'"inode":\s*\d+', '"inode":0', text)  # (the file system's number for the intents file)
+        self.put(e, row("hb"))
+        return self.collect(e, root)
 
-        files = {str(f.relative_to(root)): norm(f.read_text()) for f in sorted((root / "state").rglob("*"))
-                 if f.is_file() and "lock" not in f.name and f.name != "H5_EXECUTOR.lock"}
-        status = [ln for ln in h.status_report(e.conf).splitlines() if ln.startswith(("[live]", "[dryrun]"))]
-        return {"ledger": norm(json.dumps(e.ledger(), sort_keys=True, separators=(",", ":"))), "files": files, "refusals": dict(e.ex.refusals), "status": status,
-                "n_ledger": len(e.ledger())}
+    def expired_buy(self, E, root: Path, **conf):
+        """N3: a buy whose blockhash expires with no status ever shown, a restart while it is in flight and one after, then the stream goes on (a refused
+        row, a second buy that lands and is sold, the hourly counts)."""
+        e = E(root, live=True, seed=self.SEED, **conf)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.put(e, self.ws0(e), {**shadow_trigger(e.clock, mint=OTHER_MINT), **tip_fields()})  # a buy, and a refused websocket-value-1 row beside it
+        e.ex = e.build()  # restart 1: the buy is in flight
+        e.rpc.height = e.ex.state.pending[MINT]["lvbh"] + 1
+        for _ in range(h.pl.EXPIRY_RECHECKS + 1):
+            e.clock.t += h.pl.EXPIRY_RECHECK_MS
+            e.ex.advance_pending()
+        e.ex = e.build()  # restart 2: the buy has expired
+        self.put(e, self.ws0(e), {**shadow_trigger(e.clock), **tip_fields()})
+        if MINT in e.ex.state.pending:
+            e.land_buy()
+            e.ex = e.build()
+            e.at_slot(e.plan()["send_slot"])
+            if MINT in e.ex.state.pending:
+                e.land_sell(e.rpc.slot)
+        e.jump(3_600_000)
+        self.put(e, {"type": "hb"})
+        return self.collect(e, root)
+
+    def failed_sell_fee(self, E, root: Path, **conf):
+        """N3: a sell that lands with an error pays its fee; the fee of a superseded sell is booked as a realized loss; then the closing sell. A restart
+        while the buy is in flight, one with the failed sell behind an open position, one after the fee is booked."""
+        from tools.test_h5_executor_rules import SLIPPAGE_ERR
+        e = E(root, live=True, seed=self.SEED, **conf)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.put(e, self.ws0(e))
+        e.ex = e.build()  # restart 1: the buy is in flight
+        e.land_buy()
+        plan = e.plan()
+        e.at_slot(plan["send_slot"])
+        e.land_sell(plan["land_slot"], err=SLIPPAGE_ERR)  # a sell that lands with an error pays its fee
+        e.ex = e.build()  # restart 2: an open position, a failed sell behind it
+        e.ex._book_fee(MINT, 60_000, "superseded_failed")  # booked as realized loss (a ledgered row)
+        e.ex = e.build()  # restart 3: the booking is in the counters file
+        e.at_slot(plan["send_slot"] + 2)
+        e.land_sell(plan["land_slot"] + 2)
+        self.put(e, {**shadow_trigger(e.clock), **tip_fields()}, self.ws0(e, mint=OTHER_MINT))
+        e.jump(3_600_000)
+        self.put(e, {"type": "hb"})
+        return self.collect(e, root)
+
+    def same(self, ref: dict, got: dict, name: str) -> None:
+        """Equal ledger rows (the first differing row is in the message), state files, refusal counts and status lines."""
+        for i, (a, b) in enumerate(zip(ref["rows"], got["rows"])):
+            self.assertEqual(b, a, f"{name}: ledger row {i} differs")
+        self.assertEqual(got["n_ledger"], ref["n_ledger"], name)
+        self.assertEqual(got["refusals"], ref["refusals"], name)
+        self.assertEqual(got["status"], ref["status"], name)
+        self.assertEqual(sorted(got["files"]), sorted(ref["files"]), name)
+        for f, text in ref["files"].items():
+            self.assertEqual(got["files"][f], text, (name, f))
+        self.assertEqual(got["ledger"], ref["ledger"], name)
+
+    def reference(self, which: str):
+        """(module, Env class) of the reference, or skip with the reason when its git object is not in this clone."""
+        if which == "main":
+            mod, cls, sha = _load_main(), MainEnv, BASE_SHA
+        else:
+            mod, cls, sha = _load_installed(), InstalledEnv, INSTALLED_SHA
+        if mod is None:
+            self.skipTest(f"git object {sha} ({which}) is not available in this clone; fetch it to run this comparison "
+                          "(the installed build is the head of branch claude/h5-exec-presend-age-install)")
+        self.patch_main(mod)
+        cls.MAIN = mod
+        return cls
+
+    def run_flow(self, which: str, flow: str, lives: tuple = (True,)) -> dict:
+        R = self.reference(which)
+        out = {}
+        for live in lives:
+            with self.subTest(reference=which, flow=flow, live=live):
+                args = (live,) if flow == "stream" else ()
+                make = getattr(self, flow)
+                ref = make(R, self.tmp / f"{which}-{flow}-{live}", *args)
+                a = make(Env, self.tmp / f"head-{which}-{flow}-{live}", *args)
+                b = make(Env, self.tmp / f"headk-{which}-{flow}-{live}", *args, tipauth_gate="DEC-024-am8")  # a key that does not match: still off
+                self.same(ref, a, f"{which}, no key, live={live}")
+                self.same(ref, b, f"{which}, non-matching key, live={live}")
+                self.assertGreater(ref["n_ledger"], 5)
+                self.assertNotIn("tipauth", a["ledger"] + json.dumps(a["files"]))
+                out[live] = ref
+        return out
+
+    def test_the_installed_reference_is_the_installed_build_and_not_main(self):
+        """Non-vacuity: the second reference really is a different file from main's (PR #597's v2 exit code is in main and not in the installed build)."""
+        main, inst = _load_main(), _load_installed()
+        if main is None or inst is None:
+            self.skipTest(f"commit {BASE_SHA} or {INSTALLED_SHA} is not available in this clone")
+        self.assertIsNot(main, inst)
+        self.assertNotEqual(Path(main.__file__).read_bytes(), Path(inst.__file__).read_bytes())
+        self.assertTrue(hasattr(main, "v2_cad_exit") and hasattr(main, "EXIT_MODE"))  # #597, "do not install"
+        self.assertFalse(hasattr(inst, "v2_cad_exit") or hasattr(inst, "EXIT_MODE"))
 
     def test_switch_off_rows_state_and_status_equal_mains(self):
-        main = _load_main()
-        if main is None:
-            self.skipTest(f"git object {BASE_SHA} not available")
-        self.patch_main(main)
-        MainEnv.MAIN = main
-        for live in (True, False):
-            with self.subTest(live=live):
-                m = self.stream(MainEnv, self.tmp / f"main{live}", live)
-                a = self.stream(Env, self.tmp / f"head{live}", live)
-                b = self.stream(Env, self.tmp / f"headk{live}", live, tipauth_gate="DEC-024-am8")  # a key that does not match: still off
-                for name, got in (("no key", a), ("non-matching key", b)):
-                    self.assertEqual(got["n_ledger"], m["n_ledger"], name)
-                    self.assertEqual(got["refusals"], m["refusals"], name)
-                    self.assertEqual(got["status"], m["status"], name)
-                    self.assertEqual(sorted(got["files"]), sorted(m["files"]), name)
-                    for f, text in m["files"].items():
-                        self.assertEqual(got["files"][f], text, (name, f))
-                    self.assertEqual(got["ledger"], m["ledger"], name)
-                self.assertGreater(m["n_ledger"], 100)
-                self.assertGreater(m["ledger"].count(f'"reason":"{WS}"'), 20)  # the stream exercises the refusal this change touches
-                self.assertIn('"kind":"decision"', m["ledger"])  # and a buy
-                self.assertNotIn("tipauth", a["ledger"] + json.dumps(a["files"]))
+        for live, m in self.run_flow("main", "stream", (True, False)).items():
+            self.assertGreater(m["n_ledger"], 100)
+            self.assertGreater(m["ledger"].count(f'"reason":"{WS}"'), 20)  # the stream exercises the refusal this change touches
+            self.assertIn('"kind":"decision"', m["ledger"])  # and a buy
+
+    def test_switch_off_rows_state_and_status_equal_the_installed_build(self):
+        for live, m in self.run_flow("installed", "stream", (True, False)).items():
+            self.assertGreater(m["n_ledger"], 100)
+            self.assertGreater(m["ledger"].count(f'"reason":"{WS}"'), 20)
+            self.assertIn('"kind":"decision"', m["ledger"])
+
+    def check_flow_content(self, flow: str, ref: dict) -> None:
+        text = ref["ledger"]
+        if flow == "expired_buy":
+            self.assertIn('"fail_class":"expired"', text)
+            self.assertIn('"kind":"decision"', text, re.findall(r'"kind":"([a-z_]+)"', text))
+            self.assertEqual(text.count('"kind":"start"'), 3)  # the initial start and the two restarts
+        else:
+            self.assertIn('"kind":"sell_fee_booked"', text)
+            self.assertIn('"kind":"sell"', text)
+        self.assertGreaterEqual(text.count(f'"reason":"{WS}"'), 1)  # the refusal this change touches is in the flow
+
+    def test_switch_off_expired_buy_equals_mains(self):
+        self.check_flow_content("expired_buy", self.run_flow("main", "expired_buy")[True])
+
+    def test_switch_off_fee_booking_and_failed_sell_equals_mains(self):
+        self.check_flow_content("failed_sell_fee", self.run_flow("main", "failed_sell_fee")[True])
+
+    def test_switch_off_expired_buy_equals_the_installed_build(self):
+        self.check_flow_content("expired_buy", self.run_flow("installed", "expired_buy")[True])
+
+    def test_switch_off_fee_booking_and_failed_sell_equals_the_installed_build(self):
+        self.check_flow_content("failed_sell_fee", self.run_flow("installed", "failed_sell_fee")[True])
 
 
 class RunbookTests(unittest.TestCase):
