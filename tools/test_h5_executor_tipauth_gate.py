@@ -1630,35 +1630,57 @@ class LedgerTagTests(FlowCase):
 
 
 class ManualCloseTagTests(FlowCase):
-    """`--mark-closed` writes its `manual_close` row without `_log`; for a tagged mint it carries the tag. (Its realized P&L still goes only to the daily
-    and run totals, not to the class sum: a sell-and-close of a tagged mint is a switch-off event, R11 and the runbook.)"""
+    """`--mark-closed` writes its `manual_close` row without `_log`; for a tagged mint it carries the tag (R9 ii) and, since quant-proof round 2 N2 (a
+    tightening of R11), it books the close in the class sum and latches the path with the reason `manual_close`. An untagged mint is unchanged."""
 
-    def test_manual_close_of_a_tagged_mint_is_tagged_and_of_an_untagged_mint_is_not(self):
+    def world(self, name: str, E=Env, *, tagged: bool, pnl: int | None = None, switch_on: bool = False, **conf):
+        """An executor with one open position (tagged by the tipauth path, or an ordinary websocket-path one) and the root sell that closes it, as the
+        RPC will return it. `pnl` fixes the realized P&L of that sell. Returns (env, signature)."""
         from tools import pumpswap_tx as tx
         from tools.test_h5_executor import RENT
         from tools.test_h5_executor_ops import SIG
         from tools.test_probe_live import meta_result
-        import contextlib
+        watch = self.tmp / f"{name}-watch.json"
+        on = {"tipauth_gate": "DEC-024-Am8", "tipauth_watch_file": str(watch), "tipauth_shadow_sha": SHADOW_SHA} if tagged or switch_on else {}
+        e = E(self.tmp / name, **on, **conf)
+        if on:
+            watch.write_text(json.dumps(watch_doc(e.clock())))
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.append(e, self.tip_row(e, base_breaks_unresolved_settled=1 if tagged else 0))
+        e.ex.intent_tick()
+        e.land_buy()
+        pos = e.ex.state.open[MINT]
+        delta = 21_000_000 - 60_000 + RENT if pnl is None else pos["buy_cost_lamports"] + int(pos.get("extra_cost") or 0) + pnl
+        res = meta_result(e.ex, MINT, delta=delta, fee=60_000, tok_delta=-pos["tokens"], ata_pre=RENT, ata_post=0, slot=200_000)
+        keys = res["transaction"]["message"]["accountKeys"]
+        keys.append(str(tx.PUMPSWAP_PROGRAM))
+        res["transaction"]["signatures"] = [SIG]
+        res["transaction"]["message"]["header"] = {"numRequiredSignatures": 1}
+        res["transaction"]["message"]["instructions"] = [{"programIdIndex": len(keys) - 1, "accounts": [], "data": ""}]
+        res["blockTime"] = T0 // 1000
+        e.rpc.txs[SIG] = res
+        e.rpc.accounts = {pos["base_ata"]: None}
+        return e, SIG
+
+    def mark(self, e: Env, sig: str, module=h) -> tuple[int, str]:
         import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = module.mark_closed(e.conf, MINT, sig, e.rpc, now_ms=T0 + 60_000)
+        return rc, out.getvalue()
+
+    def fresh_watch(self, e: Env) -> None:
+        Path(e.conf["tipauth_watch_file"]).write_text(json.dumps(watch_doc(e.clock())))
+
+    def files(self, e: Env) -> list[bytes]:
+        sd = Path(e.ex.counters_path).parent
+        return [(sd / n).read_bytes() for n in ("state-live.json", "h5-counters.json", "h5-ledger.jsonl")]
+
+    def test_manual_close_of_a_tagged_mint_is_tagged_and_of_an_untagged_mint_is_not(self):
         for tagged in (True, False):
-            e = Env(self.tmp / f"mc{tagged}", **(ON_CONF if tagged else {}))
-            Path(e.conf["intents_file"]).write_text("")
-            e.ex.intent_tick()
-            self.append(e, self.tip_row(e, base_breaks_unresolved_settled=1 if tagged else 0))
-            e.ex.intent_tick()
-            e.land_buy()
-            pos = e.ex.state.open[MINT]
-            res = meta_result(e.ex, MINT, delta=21_000_000 - 60_000 + RENT, fee=60_000, tok_delta=-pos["tokens"], ata_pre=RENT, ata_post=0, slot=200_000)
-            keys = res["transaction"]["message"]["accountKeys"]
-            keys.append(str(tx.PUMPSWAP_PROGRAM))
-            res["transaction"]["signatures"] = [SIG]
-            res["transaction"]["message"]["header"] = {"numRequiredSignatures": 1}
-            res["transaction"]["message"]["instructions"] = [{"programIdIndex": len(keys) - 1, "accounts": [], "data": ""}]
-            res["blockTime"] = T0 // 1000
-            e.rpc.txs[SIG] = res
-            e.rpc.accounts = {pos["base_ata"]: None}
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(h.mark_closed(e.conf, MINT, SIG, e.rpc, now_ms=T0 + 60_000), 0)
+            e, sig = self.world(f"mc{tagged}", tagged=tagged)
+            self.assertEqual(self.mark(e, sig)[0], 0)
             row = e.ledger("manual_close")[0]
             self.assertEqual(row.get("gate_path"), "tipauth" if tagged else None, tagged)
             if tagged:
@@ -1667,6 +1689,95 @@ class ManualCloseTagTests(FlowCase):
                         self.assertEqual(r.get("gate_path"), "tipauth", r["kind"])
             else:
                 self.assertTrue(all("gate_path" not in r for r in e.ledger()))
+
+    def test_n2_the_measured_case_a_tagged_manual_close_of_minus_19_120_000_books_the_class_sum_and_latches_the_path(self):
+        """The case quant-proof measured at the round-2 head: the class realized stayed 0 and the path was available after a restart with the same config."""
+        e, sig = self.world("n2", tagged=True, pnl=-19_120_000)
+        self.fresh_watch(e)
+        self.assertEqual(e.ex._tipauth_availability(), "")  # available before the close (the watch is ok, the exposure is inside the budget)
+        self.assertEqual(self.counters(e)["tipauth"].get("realized", 0), 0)
+        run_before = e.ex.state.realized_lamports
+        rc, out = self.mark(e, sig)
+        self.assertEqual(rc, 0)
+        row = e.ledger("manual_close")[0]
+        self.assertEqual(row["pnl_lamports"], -19_120_000)
+        c = self.counters(e)
+        self.assertEqual(c["tipauth"]["realized"], -19_120_000)  # the amount added to the run total: realized + extra_cost
+        st = h.pe.State.load(Path(e.ex.counters_path).parent / "state-live.json", "live")
+        self.assertEqual(st.realized_lamports - run_before, c["tipauth"]["realized"])
+        self.assertEqual(c["tipauth"]["latched"], {"reason": "manual_close", "ts_ms": T0 + 60_000})
+        kinds = [r["kind"] for r in e.ledger() if r["kind"] in ("manual_close", "tipauth_off")]
+        self.assertEqual(kinds, ["manual_close", "tipauth_off"])  # one tipauth_off row, after the manual_close row
+        off = e.ledger("tipauth_off")[0]
+        self.assertEqual((off["reason"], off["mint"], off["n_landed"], off["budget_lamports"]), ("manual_close", "", c["tipauth"]["n_landed"], 40_000_000))
+        self.assertIn("switched off", out)
+        # after it, and after a restart with the same config: unavailable; a trigger is refused with the latch and nothing is sent
+        self.fresh_watch(e)
+        ex2 = e.build()  # (the offline tool needs the lock, so the old process is gone: only a restarted executor reads the counters file)
+        self.assertEqual(ex2._tipauth_availability(), "tipauth:latched_off")
+        self.assertEqual(ex2.counters.tipauth["realized"], -19_120_000)
+        self.assertEqual(ex2.counters.tipauth["latched"]["reason"], "manual_close")
+        self.assertEqual(ex2.state.open, {})
+        sent = len(e.rpc.sent)
+        self.append(e, self.tip_row(e, mint=OTHER_MINT))
+        ex2.intent_tick()
+        self.assertEqual(self.skips(e)[-1], (WS, "tipauth:latched_off"))
+        self.assertEqual(len(e.rpc.sent), sent)
+        # the row has the keys of the executor's own tipauth_off row, so one reader serves both
+        e2 = self.start(**ON_CONF)
+        e2.ex._tipauth_off("class_loss_budget")
+        self.assertEqual(sorted(e2.ledger("tipauth_off")[0]), sorted(off))
+
+    def test_n2_a_path_that_is_already_latched_keeps_its_reason_and_gets_no_second_row_but_the_class_sum_moves(self):
+        e, sig = self.world("n2l", tagged=True, pnl=-5_000_000)
+        e.ex._tipauth_off("watch_off")
+        self.assertEqual(len(e.ledger("tipauth_off")), 1)
+        self.assertEqual(self.mark(e, sig)[0], 0)
+        c = self.counters(e)
+        self.assertEqual(c["tipauth"]["realized"], -5_000_000)
+        self.assertEqual(c["tipauth"]["latched"]["reason"], "watch_off")
+        self.assertEqual([r["reason"] for r in e.ledger("tipauth_off")], ["watch_off"])
+
+    def test_n2_a_refused_close_changes_nothing_and_latches_nothing(self):
+        e, sig = self.world("n2r", tagged=True, pnl=-19_120_000)
+        before = self.files(e)
+        self.assertEqual(self.mark(e, "X" * 87 + "2")[0], 1)  # no such transaction
+        self.assertEqual(self.files(e), before)
+        self.assertNotIn("latched", self.counters(e)["tipauth"])
+
+    def test_n2_an_untagged_mint_is_unchanged_with_the_switch_on(self):
+        e, sig = self.world("n2u", tagged=False, switch_on=True, pnl=-19_120_000)
+        before = self.counters(e)
+        self.assertNotIn("latched", before.get("tipauth", {}))
+        n_rows = len(e.ledger())
+        self.assertEqual(self.mark(e, sig)[0], 0)
+        after = self.counters(e)
+        self.assertEqual(after.get("tipauth"), before.get("tipauth"))  # the class state is what it was
+        self.assertEqual(after["days"][h.day_key(T0)]["realized"] - before["days"][h.day_key(T0)]["realized"], -19_120_000)  # the daily total moves as before
+        rows = e.ledger()
+        self.assertEqual([r["kind"] for r in rows[n_rows:]], ["manual_close"])  # one row, no tipauth_off
+        self.assertNotIn("gate_path", rows[-1])
+        self.fresh_watch(e)
+        self.assertEqual(e.build()._tipauth_availability(), "")  # and the path is as available as before
+
+    def test_n2_with_the_switch_off_the_close_is_main_s_byte_for_byte(self):
+        main = _load_main()
+        if main is None:
+            self.skipTest(f"git object {BASE_SHA} not available")
+        self.patch_main(main)
+        MainEnv.MAIN = main
+        got = {}
+        for name, E, module in (("main", MainEnv, main), ("head", Env, h), ("headk", Env, h)):
+            conf = {"seed": b"\x07" * 32, **({"tipauth_gate": "DEC-024-am8"} if name == "headk" else {})}  # one wallet for all three; a key that does not match: still off
+            e, sig = self.world(f"n2o-{name}", E, tagged=False, pnl=-19_120_000, **conf)
+            self.assertEqual(self.mark(e, sig, module)[0], 0)
+            root = self.tmp / f"n2o-{name}"
+            got[name] = {str(f.relative_to(root)): re.sub(r'"inode":\s*\d+', '"inode":0', re.sub(r'"code_sha256":\s*"[0-9a-f]{64}"', "", f.read_text().replace(str(root), "<T>")))
+                         for f in sorted((root / "state").rglob("*")) if f.is_file() and "lock" not in f.name}
+        self.assertGreater(len(got["main"]), 2)
+        for name in ("head", "headk"):
+            self.assertEqual(got[name], got["main"], name)
+        self.assertNotIn("tipauth", "".join(got["head"].values()))
 
 
 class OverheadTimingTests(FlowCase):
@@ -1826,7 +1937,8 @@ class RunbookTests(unittest.TestCase):
         for needle in ("tipauth_reason", "tipauth:look_ack_ahead", "not one of the executor's HALTs", "up to two stakes", "sell_and_close", "only `tipauth_look_ack: 50` releases it",
                        "drops the key at its first save", "`tipauth_off` row", "only while the switch is on", "not an object",
                        "is a switch-off event: Helm's restart after it is a reinstall without `tipauth_gate`", "tipauth:budget_at_risk", "`watch_off`",
-                       "tipauth:watch_<missing|stale|hold|sha|bad>", "tipauth:watch_unset", "180,000 ms", "h5_tipauth_watch_v1"):
+                       "tipauth:watch_<missing|stale|hold|sha|bad>", "tipauth:watch_unset", "180,000 ms", "h5_tipauth_watch_v1",
+                       "`--mark-closed` on a tagged mint", "latches the path (`tipauth.latched`, reason `manual_close`"):
             self.assertIn(needle, sec, needle)
         self.assertNotIn("class_loss_budget`", sec.split("## ")[1] if "## " in sec[3:] else sec)  # not added to the halt table
 

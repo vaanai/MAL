@@ -508,6 +508,7 @@ GATE_PATH_TIPAUTH = "tipauth"
 TIPAUTH_DROPPED_MAX = 5  # C4: 1 <= dropped_n <= 5. May only be lowered.
 TIPAUTH_STAKE_LAMPORTS = 20_000_000  # ruling D2: the class is 0.02 SOL at every tier
 TIPAUTH_LOSS_BUDGET_LAMPORTS = 40_000_000  # ruling D4: class realized at or below -0.04 SOL switches the path off (latched)
+TIPAUTH_MANUAL_CLOSE_REASON = "manual_close"  # N2: the latch reason of --mark-closed on a tagged mint (the offline tool books the close and switches the path off)
 TIPAUTH_LOOKS = (25, 50, 100)  # ruling D5: looks at this many landed tagged fills
 TIPAUTH_MARGIN_SLOTS = 4  # quant-proof R2 (a): the shadow's base_tipauth.margin_slots (tools/h5_shadow.py TIPAUTH_MARGIN_SLOTS). A different margin is a new rule and a new amendment.
 TIPAUTH_BOOST_SRC_OK = ("pda", "event_authority")  # quant-proof R1: the BOOST identities the executor trusts (the pool-row handler uses the same two); "none" and "behavioural" are not
@@ -3183,13 +3184,27 @@ def mark_closed(cfg: dict[str, Any], mint: str, sig: str, rpc: Callable[[str, li
         counters.day(day_key(when))["realized"] += realized + extra
         counters.plans.pop(mint, None)
         counters.sell_land_s.pop(mint, None)
+        tagged = mint in (counters.tipauth.get("mints") or [])  # a mint the tipauth path admitted (R9 ii tag; N2 class sum and latch). Untagged: nothing below runs.
+        newly_off = False
+        if tagged:  # quant-proof round 2, N2 (a tightening of R11): a manual close of a tagged mint is booked in the class sum, and it switches the path off
+            counters.tipauth["realized"] = int(counters.tipauth.get("realized") or 0) + realized + extra  # the amount added to st.realized_lamports above
+            if not counters.tipauth.get("latched"):
+                counters.tipauth["latched"] = {"reason": TIPAUTH_MANUAL_CLOSE_REASON, "ts_ms": now}
+                newly_off = True
         counters.save(counters_path)
-        H5Ledger(ledger_path, LIVE).write({
+        ledger = H5Ledger(ledger_path, LIVE)
+        ledger.write({
             "kind": "manual_close", "ts_ms": now, "mint": mint, "signature": sig, "landed_slot": res.get("slot"), "block_time": res.get("blockTime"),
             "tokens_sold": pre_amt - post_amt, "sol_delta_lamports": sol_delta, "fee_lamports": fee, "rent_refunded_lamports": ata_rent,
             "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports,
-            **({"gate_path": GATE_PATH_TIPAUTH} if mint in (counters.tipauth.get("mints") or []) else {})})  # this writer is not `_log`: it tags a tagged mint itself (R9 ii)
+            **({"gate_path": GATE_PATH_TIPAUTH} if tagged else {})})  # this writer is not `_log`: it tags a tagged mint itself (R9 ii)
+        if newly_off:  # the same row the executor's _tipauth_off writes (an offline tool has no alert channel; the row and the latch are the record)
+            ledger.write({"kind": "tipauth_off", "ts_ms": now, "mint": "", "book": "h5_boostfloor_v1", "reason": TIPAUTH_MANUAL_CLOSE_REASON,
+                          "n_landed": int(counters.tipauth.get("n_landed") or 0), "budget_lamports": TIPAUTH_LOSS_BUDGET_LAMPORTS})
         print(f"h5_executor --mark-closed: {mint} closed by {sig}; realized {realized} lamports", flush=True)
+        if newly_off:
+            print(f"h5_executor --mark-closed: {mint} was admitted by the tipauth path; the path is now switched off (latched, reason {TIPAUTH_MANUAL_CLOSE_REASON}); "
+                  "restart it only as a reinstall without tipauth_gate", flush=True)
         return 0
     finally:
         os.close(lock)
