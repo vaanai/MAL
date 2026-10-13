@@ -665,6 +665,59 @@ class TierStakeTests(TierCase):
                 self.assertEqual(e.ex.h5.stake_lamports, h.TIERS[tier]["stake_lamports"])  # the cap is gone after the trigger
                 self.assertIsNone(e.ex._stake_cap)
 
+    def _tagged_row(self, e: Env) -> None:
+        row = shadow_trigger(e.clock)
+        row.update(tip_fields())
+        with Path(e.conf["intents_file"]).open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+
+    def test_r5_a_tier_change_on_a_tagged_trigger_describes_the_tier_not_the_class_cap(self):
+        """T0 to T1 arriving on a tagged trigger: the tier_change row carries T1's own limits (stake 0.10 SOL), no config_clamps_tier is raised, and the
+        buy is the class stake (0.02 SOL)."""
+        from tools.test_h5_executor import buy_args
+        e = self.tier_env("T0", tipauth_gate="DEC-024-Am8")
+        e.ex._refresh_tier(e.clock())  # the T0 baseline (a non-tagged read: no cap in force)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.assertEqual(self.changes(e), [(None, "T0", None)])
+        self.write_tier("T1\n")
+        self._tagged_row(e)
+        e.ex.intent_tick()
+        self.assertEqual(self.changes(e), [(None, "T0", None), ("T0", "T1", None)])
+        row = e.ledger("tier_change")[-1]
+        self.assertEqual(row["limits"]["stake_lamports"], 100_000_000)
+        self.assertEqual(row["limits"], dataclasses.asdict(h.H5Limits.from_config(e.conf, "T1")))  # every field the tier's own
+        self.assertEqual(row["config_clamps"], {})
+        self.assertEqual(e.alerts("config_clamps_tier"), [])
+        dec = e.ledger("decision")
+        self.assertEqual((len(dec), dec[0]["gate_path"], dec[0]["stake_lamports"]), (1, "tipauth", 20_000_000))
+        self.assertEqual(buy_args(e.sent()[0])[0], 20_000_000)
+        self.assertEqual((e.ex.tier, e.ex.h5.stake_lamports, e.ex._stake_cap), ("T1", 100_000_000, None))
+
+    def test_r5_a_real_config_clamp_is_still_reported_on_a_tagged_trigger_and_the_cap_is_not_one(self):
+        e = self.tier_env("T0", tipauth_gate="DEC-024-Am8", stake_lamports=50_000_000, max_open=1)
+        e.ex._refresh_tier(e.clock())
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        self.write_tier("T1\n")
+        self._tagged_row(e)
+        e.ex.intent_tick()
+        want = {"stake_lamports": {"table": 100_000_000, "effective": 50_000_000}, "max_open": {"table": 3, "effective": 1}}
+        self.assertEqual(e.ledger("tier_change")[-1]["config_clamps"], want)
+        self.assertEqual(e.ledger("tier_change")[-1]["limits"]["stake_lamports"], 50_000_000)
+        self.assertEqual([a["clamps"] for a in e.alerts("config_clamps_tier")][-1], want)
+        self.assertEqual(e.ledger("decision")[0]["stake_lamports"], 20_000_000)  # the class stake is the smaller of the tier's and 0.02 SOL
+
+    def test_r5_the_description_of_the_tier_is_the_same_with_and_without_a_cap_in_force(self):
+        e = self.tier_env("T2", tipauth_gate="DEC-024-Am8", stake_lamports=250_000_000)
+        e.ex.tier = "T2"
+        plain = (dataclasses.asdict(e.ex._tier_h5()), e.ex._config_clamps())
+        e.ex._stake_cap = h.TIPAUTH_STAKE_LAMPORTS
+        self.assertEqual(e.ex.h5.stake_lamports, 20_000_000)  # sizing, budget and balance read the cap
+        self.assertEqual((dataclasses.asdict(e.ex._tier_h5()), e.ex._config_clamps()), plain)  # the description does not
+        self.assertEqual(plain[0]["stake_lamports"], 250_000_000)
+        self.assertEqual(e.ex._stake_cap, 20_000_000)  # and the cap is restored
+
     def test_a_ws0_trigger_keeps_the_tier_stake(self):
         e = self.tier_env("T1", tipauth_gate="DEC-024-Am8")
         Path(e.conf["intents_file"]).write_text("")

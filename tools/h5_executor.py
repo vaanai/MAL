@@ -1230,6 +1230,16 @@ class H5Executor(pl.LiveExecutor):
             return replace(lim, stake_lamports=self._stake_cap)
         return lim
 
+    def _tier_h5(self) -> H5Limits:
+        """The ACTIVE tier's own limits with the class stake cap NOT applied (quant-proof R5). What describes the tier (a `tier_change` row, the
+        config-clamp alert and row) reads this; the cap applies only to the trigger's sizing, budget, balance, at-risk and signer checks, which read
+        `self.h5`. Written as `self.h5` with the cap lifted so that a subclass that overrides `h5` (C1-NF) is described by its own limits, as before."""
+        cap, self._stake_cap = self._stake_cap, None
+        try:
+            return self.h5
+        finally:
+            self._stake_cap = cap
+
     # -- the scale ladder ----------------------------------------------------------------------------------------------------
     def _tier_path(self) -> Path:
         return TIER_FILE_PATH if not self.dry_run else Path(self.h5cfg["state_dir"]) / "TIER"
@@ -1264,13 +1274,13 @@ class H5Executor(pl.LiveExecutor):
         wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
         in_tier = self.counters.tier_attempts  # what the old tier used, for the ledger; the cap starts again from zero in the new one
         self.tier = tier
-        self.counters.max_total_loss_lamports = max(self.counters.max_total_loss_lamports, self.h5.total_loss_lamports)  # (persisted below)
+        self.counters.max_total_loss_lamports = max(self.counters.max_total_loss_lamports, self._tier_h5().total_loss_lamports)  # (persisted below)
         realized_at_start = self.state.realized_lamports  # the tier's loss allowance counts from here, not from the start of the run
         self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet, "realized_at_start": realized_at_start}
         self.counters.tier_attempts = 0
         self._tier_state_legacy = False  # a fresh baseline is stored now
         self.counters.save(self.counters_path)
-        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self.h5),
+        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self._tier_h5()),
                   open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts,
                   config_clamps=self._config_clamps())
         self._clamp_alert("tier_change")
@@ -1278,7 +1288,7 @@ class H5Executor(pl.LiveExecutor):
     def _config_clamps(self) -> dict[str, dict[str, int]]:
         """The tier-scaled limits that the config holds BELOW the active tier's table value (config can only tighten). A shipped config that sets
         them silently turns the ladder off: T1 and T2 would run at the config's numbers."""
-        lim = asdict(self.h5)
+        lim = asdict(self._tier_h5())  # the tier's own limits: a class stake cap on a tagged trigger is not a config clamp (R5)
         return {k: {"table": v, "effective": lim[k]} for k, v in TIERS[self.tier].items() if lim[k] < v}
 
     def _clamp_alert(self, when: str) -> None:
