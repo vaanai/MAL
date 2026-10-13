@@ -7,7 +7,7 @@
    "id": "h5-presend-fix-installed-1013",
    "kind": "other",
    "title": "H5 late-signal fix installed by Helm",
-   "detail": "Helm installed the reviewed version at 00:42 UTC on 2026-10-13. From then on H5 refuses a signal older than 3.5 s before buying. Buying was closed for about 11 minutes. H5 stays at the smallest stake (0.02 SOL); one health check is to be rerun after 18:28 UTC before any step to the next size can be considered.",
+   "detail": "Helm installed the reviewed version at 00:42 UTC on 2026-10-13. From then on H5 refuses a signal older than 3.5 s before buying. Buying was closed for about 11 minutes (Helm's report). H5 stays at the smallest stake (0.02 SOL); one health check is to be rerun after 18:28 UTC before any step to the next size can be considered.",
    "atUtc": "2026-10-13T00:42:22Z"
   },
   {
@@ -430,7 +430,7 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "Canary live at the smallest stake (T0, 0.02 SOL): 11 attempts, 11 sells landed, nothing open, no stop or halt at 2026-10-13T00:21Z (job #896). It halted itself once on 10-12 on a late buy and was cleared by the manager; Helm installed the late-signal fix at 2026-10-13T00:42Z; no step to T1 until a daily health check run after 18:28Z on 10-13 is clean. Unpromoted, not evidence. Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL per the pre-registration (P(Look 1 pass) about 0.03).",
+   "note": "Canary live at the smallest stake (T0, 0.02 SOL): 11 attempts, 11 sells landed, nothing open, no stop or halt at 2026-10-13T00:21Z (job #896). It halted itself once on 10-12 on a late buy and was cleared by the manager; Helm installed the late-signal fix at 2026-10-13T00:42Z; no step to T1 until a daily health check run after 18:28:03Z on 10-13 is clean, and then only with the Amendment 3 conditions at 20 landed buys. Unpromoted, not evidence. Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL per the pre-registration (P(Look 1 pass) about 0.03).",
    "tag": {
     "text": "canary live, T0",
     "tone": "warn"
@@ -626,13 +626,13 @@
    "id": "fy-20261013-presend-installed",
    "from": "claude",
    "atUtc": "2026-10-13T00:54:23Z",
-   "text": "For you (no action needed): Helm installed the late-signal fix at 00:42 UTC on 10-13, and my own checks agree with Helm's report. The installed files match the reviewed version, the new 3.5 s limit is the one running, and H5 is live at the smallest stake (0.02 SOL) with 11 attempts, 11 sells landed, nothing open and no halt. Buying was closed for about 11 minutes during the switch. One check is still open: the daily health check still shows yesterday's 18:28 UTC halt in its 24-hour window, so I will run it again after 18:28 UTC today. Until that check is clean there is no step to the next size. H5 has not cleared the promotion gate."
+   "text": "For you (no action needed): Helm installed the late-signal fix at 00:42 UTC on 10-13, and my own checks agree with Helm's report where I could check it. The installed files match the reviewed version, the new 3.5 s limit is the one running, and H5 is live at the smallest stake (0.02 SOL) with 11 attempts, 11 sells landed, nothing open and no halt. Buying was closed for about 11 minutes during the switch (Helm's report). One check is still open: the daily health check still shows yesterday's 18:28 UTC halt in its 24-hour window, so a rerun is owed after 18:28:03 UTC today. Until that check is clean there is no step to the next size. A clean check removes only this one block: the step still needs 20 landed buys (11 so far) and the other conditions of the trial plan. H5 has not cleared the promotion gate."
   },
   {
    "id": "fy-20261013-helm-presend",
    "from": "claude",
    "atUtc": "2026-10-13T00:23:50Z",
-   "text": "Done at 00:42 UTC on 10-13 (see the newer entry): For you: one thing to pass to Helm. The fix that makes H5 refuse a late signal before it buys is written and reviewed. It is not running yet: Helm has to install it. The full request is the comment on pull request 624 (github.com/vaanai/MAL/pull/624#issuecomment-6131222470). It names the exact version, the checks, and what must not change. Until it is installed, H5 keeps trading at the smallest stake (0.02 SOL), there is no step to the next size, and if the same halt fires again H5 stays stopped. As of 00:21 UTC on 10-13: 11 attempts, 11 sells landed, nothing open, no halt. H5 has not cleared the promotion gate."
+   "text": "Done at 00:42 UTC on 10-13 (see the newer entry). The request to Helm was the comment on pull request 624 (github.com/vaanai/MAL/pull/624#issuecomment-6131222470)."
   },
   {
    "id": "fy-20261013-research-nulls",
@@ -851,7 +851,7 @@
    "from": "claude",
    "kind": "status",
    "atUtc": "2026-10-13T00:54:23Z",
-   "text": "00:54Z: Helm installed the H5 late-signal fix at 00:42Z; the manager's checks agree (25 of 25 installed files match the reviewed list; the 3.5 s limit is running; 11 attempts, 11 sells landed, nothing open, no halt). Still open: the daily health check shows yesterday's 18:28Z halt in its 24 h window; rerun after 18:28Z. No step to the next size until it is clean."
+   "text": "00:54Z: Helm installed the H5 late-signal fix at 00:42Z; the manager's checks agree where they could check it (25 of 25 installed files match the reviewed list; the 3.5 s limit is running; 11 attempts, 11 sells landed, nothing open, no halt). Still open: the daily health check shows yesterday's 18:28Z halt in its 24 h window; a rerun is owed after 18:28:03Z. No step to the next size until it is clean, and a clean check removes only this block (20 landed buys and the other conditions still apply). H5 has not cleared the promotion gate."
   },
   {
    "id": "s-20261013-0023",
