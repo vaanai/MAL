@@ -1,8 +1,22 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T07:19:04Z",
+ "updated_utc": "2026-10-13T08:37:52Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "exp024-not-decidable-1013",
+   "kind": "decision",
+   "title": "EXP-024 (H5's formal October test) ended: not decidable",
+   "detail": "Quant-proof confirmed that the structure halt of 2026-10-13 (pump.fun fees program redeployed) ends EXP-024's read as not decidable, with no look read and nothing computed. It is neither a pass nor a fail. There is no later look and this version of H5 is not tested again. The record in the EXP-024 file is owed.",
+   "atUtc": "2026-10-13T07:52:48Z"
+  },
+  {
+   "id": "h5-repin-merged-1013",
+   "kind": "other",
+   "title": "H5: upgrade review done, re-pin merged, one decision open",
+   "detail": "The review of the fees-program upgrade is merged with the re-pin (pull request 629, reviewer and quant-proof OK). One check, slices per pool, is the owner's decision; H5 stays stopped until then and until the remaining resume steps are done.",
+   "atUtc": "2026-10-13T08:20:08Z"
+  },
   {
    "id": "h5-structure-stop-1013",
    "kind": "other",
@@ -437,9 +451,9 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "Canary STOPPED since 2026-10-13T07:14:44Z (job #908): the daily structure monitor (job #907) halted on pins_changed, the pump fees program having been redeployed on 2026-10-12T17:40:24Z. 11 attempts, 11 sells landed, nothing open. Resume only by DEC-024 Amendment 7 item 2 (mechanism review, re-pin with quant-proof's OK, one clean structure run). Smallest stake (T0, 0.02 SOL); it halted itself once on 10-12 on a late buy; Helm installed the late-signal fix at 2026-10-13T00:42Z. Unpromoted, not evidence. Look 1's window is [10-10, 10-16): section 11 as written ends the read NOT_DECIDABLE on a structure halt inside the window, with no later look (manager's reading; quant-proof's ruling owed; not yet recorded in the EXP file). Synthetic pools excluded (Am.4).",
+   "note": "Read ended NOT_DECIDABLE on 2026-10-13, no look read (quant-proof's ruling, PR #629): the daily structure monitor (job #907) flagged the pump fees program redeployed on 2026-10-12T17:40:24Z, inside Look 1's window [10-10, 10-16). Nothing was computed; it is neither a pass nor a FAIL; there is no later look and v1 is not re-filed. The record in the EXP file is owed. Canary: STOPPED since 2026-10-13T07:14:44Z; 11 attempts, 11 sells landed, nothing open. It ran at the smallest stake (T0, 0.02 SOL), halted itself once on 10-12 on a late buy, and Helm installed the late-signal fix at 2026-10-13T00:42Z. Synthetic pools excluded (Am.4). The upgrade review and the re-pin are merged; one band (slices per pool) is the owner's decision; resume only by DEC-024 Amendment 7 item 2 with every step done. If it resumes it is an execution measurement at T0 (0.02 SOL), not a book. Unpromoted, not evidence.",
    "tag": {
-    "text": "canary stopped (structure halt)",
+    "text": "not decidable; canary stopped",
     "tone": "warn"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
@@ -630,10 +644,16 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261013-h5-slices-decision",
+   "from": "claude",
+   "atUtc": "2026-10-13T08:37:52Z",
+   "text": "For you (a decision): H5 is still stopped, and one check from the upgrade review is yours to decide. The question is in MiScusi with the full counts (\"slices per pool\"). In short: after pump.fun's fees-program upgrade, BOOST made 28 small buys instead of 29 or 30 in 4 of the 39 pools counted completely; the middle value is 29. On the rough count (an upper bound, so \"28\" means 28 or fewer), 6 of the 50 pools in the four daily checks before the upgrade were at 28, so the every-pool reading was not met before the upgrade either; the middle value was 30 on those 50 pools and is 29 after. The counts do not show that 28-slice pools began with the upgrade, and they do not show that nothing moved. In the fresh structure check (28 pools) the rough counts ran from 26 to 31, middle value 29. The trial plan's line \"29–30 slices per pool\" does not say whether every pool or the middle value is meant; quant-proof ruled the stricter reading applies until you say otherwise. Option 1: resume once the other steps hold, reading that line on the middle value from now on. In future upgrade reviews single pools at 28 would then not keep H5 stopped. Option 2: stay stopped. Read per pool, the check also failed on pools from before the upgrade, so it keeps failing until BOOST stops producing 28-slice pools or you change the rule. Done so far: on 12 of 12 simulated round trips the fee rates equal the pinned tier (a small sample; what the new fees program does differently is not established), the other BOOST checks are inside their bands, the re-pin is merged with both reviews, and a fresh structure check (28 pools) shows the five halt flags and the program-change flag clear; quant-proof has not checked that run yet. Still owed before H5 could resume, besides your decision: quant-proof's check of that run, the DEC-024 records, the day checks and the other section 5 checks, and the removal of the stop. Separately, and whatever you choose: H5's formal October test (EXP-024) ended \"not decidable\" because of this upgrade, confirmed by quant-proof. Nothing was computed, so it is neither a pass nor a fail, and this version of H5 will not get a formal test. If H5 resumes, it is an execution measurement at 0.02 SOL, not a tested book. H5 has not cleared the promotion gate."
+  },
+  {
    "id": "fy-20261013-h5-structure-stop",
    "from": "claude",
    "atUtc": "2026-10-13T07:19:04Z",
-   "text": "For you: H5 is stopped since 07:14 UTC on 10-13. The daily structure check found that pump.fun redeployed its fees program on 10-12 at 17:40 UTC, and the trial rules require a stop when a pinned program changes. Nothing was open and nothing is pending (11 attempts, 11 sells landed). The other five structure checks were clear: BOOST is on, its budget and slice count match the pins, and the median last BOOST slice came 332 s after migration over 17 pools (the halt line is below 315 s). Resume follows the answer you gave on 10-11: I review that the upgrade leaves the BOOST mechanics and fees unchanged, re-pin with quant-proof's OK, get one clean structure run, then resume and tell you. If the review finds a change to fees or BOOST, H5 stays stopped until you decide. One more consequence: my reading of the rules is that a structure halt inside the counting week (10-10 to 10-16) ends H5's formal test (EXP-024) as not decidable, with no later look, even if the next check is clean. Quant-proof's ruling on that is owed, and the EXP file is not amended yet. CAP-PICK is not withdrawn; a halt in its last structure run before 10-16 01:00 UTC (the 10-15 run) would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
+   "text": "Update 08:37 UTC: the newer entry supersedes this one (EXP-024 is confirmed ended; the slice count is your decision). For you: H5 is stopped since 07:14 UTC on 10-13. The daily structure check found that pump.fun redeployed its fees program on 10-12 at 17:40 UTC, and the trial rules require a stop when a pinned program changes. Nothing was open and nothing is pending (11 attempts, 11 sells landed). The other five structure checks were clear: BOOST is on, its budget and slice count match the pins, and the median last BOOST slice came 332 s after migration over 17 pools (the halt line is below 315 s). Resume follows the answer you gave on 10-11: I review that the upgrade leaves the BOOST mechanics and fees unchanged, re-pin with quant-proof's OK, get one clean structure run, then resume and tell you. If the review finds a change to fees or BOOST, H5 stays stopped until you decide. One more consequence: my reading of the rules is that a structure halt inside the counting week (10-10 to 10-16) ends H5's formal test (EXP-024) as not decidable, with no later look, even if the next check is clean. Quant-proof's ruling on that is owed, and the EXP file is not amended yet. CAP-PICK is not withdrawn; a halt in its last structure run before 10-16 01:00 UTC (the 10-15 run) would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
   },
   {
    "id": "fy-20261013-presend-installed",
@@ -859,6 +879,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261013-0837",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T08:37:52Z",
+   "text": "08:37Z: H5 still STOPPED. Re-pin PR #629 merged (Reviewer OK and QP OK at 3bdff5a; OK for the re-pin only). Review: of the pinned items only the fees program changed; fee bps equal the pinned tier on 12 of 12 simulated round trips (job #911, stated limits); BOOST bands inside except slices per pool, which is not met per pool (28 slices on 4 of 39 fully counted pools; median 29) and is the owner's decision (question q_Jd6RqMJmTC8r3w). R1 inside (job #912), R2 clean (job #913), R2b not_clean on one pool not fully fetched (job #914). Resume step-3 structure run (job #915, 28 pools): five flags and program_changed evaluated and clear; quant-proof has not checked it yet. EXP-024: quant-proof ruled the read ended NOT_DECIDABLE at job #907, no look read. H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261013-0719",
    "from": "claude",
