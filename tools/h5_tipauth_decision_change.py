@@ -137,16 +137,21 @@ def load_git(sha: str, name: str) -> Loaded:
     return Loaded(load_executor(p.stdout, name, f"git:{sha}:tools/h5_executor.py"), hashlib.sha256(p.stdout).hexdigest(), f"git:{sha}")
 
 
+def has_param(fn: Callable, name: str) -> bool | None:
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+
+
 def check_shapes(base: Loaded, head: Loaded) -> None:
     for what, ld in (("base", base), ("head", head)):
         fn = getattr(ld.module, "parse_shadow_trigger", None)
         if not callable(fn):
             raise InputError(f"{what} executor has no parse_shadow_trigger", 7)
-    try:
-        params = inspect.signature(head.module.parse_shadow_trigger).parameters
-    except (TypeError, ValueError) as exc:
-        raise InputError("head parse_shadow_trigger has no readable signature", 7) from exc
-    if "tipauth" not in params:
+    if has_param(head.module.parse_shadow_trigger, "tipauth") is None:
+        raise InputError("head parse_shadow_trigger has no readable signature", 7)
+    if not has_param(head.module.parse_shadow_trigger, "tipauth"):
         raise InputError("head parse_shadow_trigger has no `tipauth` parameter: it is not a build that carries the path", 7)
 
 
@@ -261,8 +266,8 @@ def classify_ac(a: Outcome, c: Outcome, ws: str) -> str:
     if same(a, c):
         return "unchanged"
     a_ws = a.kind == "refuse" and a.label == ws
-    if a.kind == "pass" and c.kind != "pass":
-        return "pass_to_nonpass"
+    if a.kind == "pass":
+        return "pass_to_nonpass" if c.kind != "pass" else "other"  # a pass that stays a pass with other fields is an other change
     if c.kind == "pass":  # a is not a pass here
         ok = a_ws and c.fields.get("gate_path") == "tipauth"
         return "refusal_to_pass_ok" if ok else "refusal_to_pass_other"
@@ -414,7 +419,7 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int, expect_code_sha: str
             elif k == "ws_to_later_refusal":
                 ws_later_by_c[cc.label] += 1
             elif k in ("other", "refusal_to_pass_other"):
-                other_classes[(a.label, cc.label)] += 1
+                other_classes[(a.label, cc.label + (":fields_differ" if a.kind == cc.kind == "pass" else ""))] += 1
             if a.kind == "refuse" and a.label == ws_label and cc.kind == "raise":
                 c["ws_refusals_that_become_exceptions"] += 1
 
@@ -449,7 +454,7 @@ def analyze(shadow_dir: Path, since_ms: int, until_ms: int, expect_code_sha: str
     res: dict = {
         "tool": TOOL, "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "spec": SPEC,
         "inputs": {"since_ms": since_ms, "until_ms": until_ms, "expect_code_sha": expect_code_sha, "variant": variant},
-        "base": {"source": base.source, "sha256": base.sha256, "parse_has_tipauth_parameter": "tipauth" in inspect.signature(base_parse).parameters},
+        "base": {"source": base.source, "sha256": base.sha256, "parse_has_tipauth_parameter": has_param(base_parse, "tipauth")},
         "head": {"source": head.source, "sha256": head.sha256, "trigger_fields_only_in_head": only_head, "trigger_fields_only_in_base": only_base},
         "availability": {"tipauth_argument_for_C": avail, "source": avail_source},
         "window": {"n_starts_in_range": len(starts), "origin_t_ms": t0, "origin_code_sha": origin["code_sha"], "origin_code_sha_matches": True},

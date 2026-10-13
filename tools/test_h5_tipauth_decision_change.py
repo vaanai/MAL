@@ -137,6 +137,8 @@ def parse_shadow_trigger(row, variant="pv", tipauth=None):
         gate_path = "tipauth"
     elif PLANT == "p2r" and tipauth is not None and q == 15:
         return None, "tipauth:oops"
+    if PLANT == "c_fields" and tipauth is not None and q == 18:
+        return H5Trigger(row["mint"], row["pool"], q + 1, None), None
     if row.get("boom"):
         raise ValueError("boom")
     if row.get("late"):
@@ -455,6 +457,15 @@ class PlantedTests(Base):
         self.assertTrue(r["verdict"]["a_vs_b_default_zero_differences"])
         self.assertFalse(r["verdict"]["passes_to_refusals_zero"])
         self.assertTrue(r["verdict"]["other_changes_zero"])
+
+    def test_a_pass_that_stays_a_pass_with_other_fields_on_the_path_on_side_is_an_other_change(self):
+        g = Gen()
+        _, r, _ = self.run_tool(self.corpus(g, [g.trig(ws=0, uval=0, q=18), g.trig(ws=0, uval=0, q=2)]), head=head_src("c_fields"))
+        c = r["a_vs_c"]
+        self.assertEqual(c["other_changes"]["classes"], [{"a": "PASS", "c": "PASS:fields_differ", "n": 1}])
+        self.assertEqual((c["passes_to_refusals"]["total"], c["refusals_to_passes"]["total"], c["unchanged"]), (0, 0, 1))
+        self.assertTrue(r["verdict"]["a_vs_b_default_zero_differences"] and r["verdict"]["a_vs_b_tipauth_none_zero_differences"])
+        self.assertFalse(r["verdict"]["other_changes_zero"])
 
     def test_a_refusal_that_becomes_a_pass_from_another_reason_is_also_an_other_change(self):
         g = Gen()
