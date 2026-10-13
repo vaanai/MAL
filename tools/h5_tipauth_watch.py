@@ -342,7 +342,7 @@ class Watch:
         self.closes: dict[str, list[dict]] = {}
         self.offsets: dict[str, int] = {}
         self.bad_trigger_lines = 0
-        self.start_cache: dict[str, tuple[int, dict | None]] = {}
+        self.start_cache: dict[str, tuple[int, int, dict | None, bool, bool]] = {}
         self.resolved: dict[str, set[str]] = {"e1": set(), "e2": set()}
         self.rpc_rows: dict[str, list[dict]] = {}
         self.event_keys: set[str] = set()
@@ -351,6 +351,7 @@ class Watch:
         self.observed_sha: str | None = None
         self.caught_up = False
         self.start_complete = False
+        self.start_unreadable = False
         self.hw: int | None = None
         self._load()
 
@@ -523,23 +524,29 @@ class Watch:
                                                  "dropped": list(dl) if isinstance(dl, list) else None})
 
     # -- the shadow's newest start record --
-    def find_start(self, deadline_ms: int) -> tuple[dict | None, bool]:
-        """(newest start record, complete). Newest hour file first, at most START_SCAN_FILES files, a per-file cache so an unchanged file is not read twice."""
+    def find_start(self, deadline_ms: int) -> tuple[dict | None, bool, bool]:
+        """(newest start record, search complete, unreadable). Newest hour file first, at most START_SCAN_FILES files, a per-file cache so an unchanged file is not read twice.
+        UNREADABLE (R-A): a `start` marker (either spacing) newer than the newest valid start record, in its file or in any newer file, that is not a complete, parseable start
+        line at a line start. The search then stops: it never falls back to an older record's sha. Only a later valid start record (a shadow restart) clears it."""
         try:
             names = sorted((e.name for e in os.scandir(self.shadow_dir) if SHADOW_RE.match(e.name)), reverse=True)[:START_SCAN_FILES]
         except OSError:
-            return None, False
+            return None, False, False
         for name in names:
             if self.now() > deadline_ms:
-                return None, False
-            rec = self._start_in(self.shadow_dir / name, name)
-            if rec is _UNREADABLE:  # never fall back to an older file's start record
-                return None, False
+                return None, False, False
+            res = self._start_in(self.shadow_dir / name, name)
+            if res is _UNREADABLE:  # never fall back to an older file's start record
+                return None, False, False
+            rec, bad = res
+            if bad:
+                return None, True, True
             if rec is not None:
-                return rec, True
-        return None, True
+                return rec, True, False
+        return None, True, False
 
     def _start_in(self, path: Path, name: str) -> Any:
+        """(newest valid start record of the file or None, a marker newer than it could not be read) or _UNREADABLE (the file itself could not be read)."""
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # NONBLOCK: a FIFO in the directory must not stop the cycle
         except OSError:
@@ -549,39 +556,47 @@ class Watch:
             if not stat_mod.S_ISREG(st.st_mode):
                 return _UNREADABLE
             if st.st_size == 0:
-                return None
-            prev_to, prev_rec = self.start_cache.get(name, (0, None))
-            if st.st_size < prev_to:
-                prev_to, prev_rec = 0, None
-            if st.st_size == prev_to:
-                return prev_rec
+                self.start_cache.pop(name, None)
+                return None, False
+            prev_to, seen, prev_rec, prev_bad, prev_total = self.start_cache.get(name, (0, 0, None, False, False))
+            if st.st_size < seen:
+                prev_to, seen, prev_rec, prev_bad, prev_total = 0, 0, None, False, False
+            if st.st_size == seen:
+                return prev_rec, prev_total
             with mmap.mmap(fd, st.st_size, access=mmap.ACCESS_READ) as mm:
                 size = len(mm)
                 lo = (mm.rfind(b"\n", 0, prev_to) + 1) if prev_to else 0
                 end, found, scanned_to = size, None, size
+                bad_pos: list[int] = []
                 while True:
                     pos = max(mm.rfind(mk, lo, end) for mk in START_MARKS)
                     if pos < 0:
                         break
                     end = pos
-                    if pos != 0 and mm[pos - 1:pos] != b"\n":
-                        continue  # the marker text inside another record
                     eol = mm.find(b"\n", pos)
-                    if eol < 0:
-                        scanned_to = min(scanned_to, pos)  # a start line still being written: read again from here
+                    if eol < 0:  # no newline yet (a torn or a still-written line): not a start record, and read again from here
+                        scanned_to = min(scanned_to, pos)
+                        bad_pos.append(pos)
                         continue
-                    if eol - pos > START_LINE_MAX:
+                    if (pos != 0 and mm[pos - 1:pos] != b"\n") or eol - pos > START_LINE_MAX:  # inside another record / over the line cap
+                        bad_pos.append(pos)
                         continue
                     try:
                         rec = json.loads(mm[pos:eol])
                     except (ValueError, RecursionError):
+                        bad_pos.append(pos)
                         continue
                     if isinstance(rec, dict) and rec.get("type") == "start":
                         found = rec
                         break
+                    bad_pos.append(pos)
+            # Newest first and stopped at the first valid record: every bad marker seen is newer than the result. Markers before scanned_to are final (cached);
+            # those at or after it are looked at again next time.
             result = found if found is not None else prev_rec
-            self.start_cache[name] = (scanned_to, result)
-            return result
+            total = bool(bad_pos) or (found is None and prev_bad)
+            perm = any(p < scanned_to for p in bad_pos) or (found is None and prev_bad)
+            self.start_cache[name] = (scanned_to, size, result, perm, total)
+            return result, total
         except (OSError, ValueError):
             return _UNREADABLE
         finally:
@@ -730,7 +745,9 @@ class Watch:
         if os.path.lexists(self.p["hold"]):
             h.append("manual_hold")
         h += self.last_error
-        if self.observed_sha is None:
+        if self.start_unreadable:
+            h.append("start_record_unreadable")
+        elif self.observed_sha is None:
             h.append("no_start_record" if self.start_complete else "start_search_incomplete")
         elif self.observed_sha != self.shadow_sha:
             h.append("shadow_sha_mismatch")
@@ -792,10 +809,11 @@ class Watch:
         self.last_error = []
         self.caught_up = bool(self._guard("shadow", self.poll_shadow, t0 + SHADOW_BUDGET_MS, default=False))
         self._guard("closes", self.eval_closes)
-        rec = self._guard("start", self.find_start, self.now() + START_BUDGET_MS, default=(None, False))
+        rec = self._guard("start", self.find_start, self.now() + START_BUDGET_MS, default=(None, False, False))
         sha = rec[0].get("code_sha") if rec and rec[0] is not None else None
         self.observed_sha = sha if isinstance(sha, str) else None
         self.start_complete = bool(rec and rec[1])
+        self.start_unreadable = bool(rec and rec[2])
         self.hw = self._guard("tip_hw", self.tip_hw)
         self._guard("tape", self.tape_phase, self.now() + TAPE_BUDGET_MS)
         self._guard("rpc", self.rpc_phase, self.now() + RPC_BUDGET_MS)

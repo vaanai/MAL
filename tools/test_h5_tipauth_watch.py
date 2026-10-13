@@ -578,9 +578,14 @@ class TestHolds(Env):
         with mock.patch.object(W, "START_SCAN_FILES", 4):
             self.assertEqual(self.mk(from_ms=NOW - 4 * H).cycle()["shadow_sha"], SHA)
 
-    def test_start_marker_inside_another_record_is_not_a_start(self):
-        self.shadow([start(sha=SHA), {"type": "gap", "kind": "x", "note": '{"type": "start", "code_sha": "' + OTHER + '"}'}])
-        self.assertEqual(self.mk().cycle()["shadow_sha"], SHA)
+    def test_start_marker_inside_another_record_is_a_hold_not_a_skip(self):
+        """Round 2 (R-A): the old test pinned `ok` with the pinned sha here. A marker after the newest valid start that is not a complete start line holds."""
+        # json.dumps escapes quotes, so the marker can only be in a line by gluing: a complete record whose newline was lost, then a start record
+        self.shadow([start(sha=SHA)], raw_tail='{"type":"gap","kind":"x"}' + json.dumps(start(sha=OTHER)) + "\n")
+        st = self.mk().cycle()
+        self.assertEqual(st["verdict"], "hold")
+        self.assertIn("start_record_unreadable", st["reason"])
+        self.assertIsNone(st["shadow_sha"])
 
     def test_start_record_appended_later_is_seen_through_the_cache(self):
         self.shadow([start(sha=SHA)])
@@ -965,6 +970,105 @@ class TestReadingDetails(Env):
         st = w.cycle()
         self.assertEqual((st["verdict"], st["shadow_sha"]), ("hold", None))
         self.assertIn("start_search_incomplete", st["reason"])
+
+
+class TestStartRecordUnreadable(Env):
+    """R-A (the reviewer's B1, extended by quant-proof): a `start` marker after the newest valid start record that is not itself a complete, parseable start line at a
+    line start is a hold `start_record_unreadable`, in the same file and in any newer file, and the search never falls back to an older record's sha."""
+
+    def assert_unreadable(self, st):
+        self.assertEqual(st["verdict"], "hold", st)
+        self.assertIn("start_record_unreadable", st["reason"])
+        self.assertIsNone(st["shadow_sha"])  # never the pinned sha of an older record
+
+    def test_torn_hb_line_followed_by_a_start_on_another_sha_is_a_hold(self):
+        """The reviewer's probe: start (pinned sha), a watched trigger, a torn hb line with no newline, then a restart's start record (another sha) on the same line."""
+        self.shadow([start(), trig()], raw_tail='{"type":"hb","t_ms":17920000')
+        self.tape([tape_row(), tape_row(sig="FILLER", pool="PX", slot=210)])
+        self.shadow([start(sha=OTHER)])  # lands on the torn line, as JsonlSink.write appends with no newline guard
+        st = self.mk().cycle()
+        self.assert_unreadable(st)
+        self.assertEqual(r4_reader(self.out / "state.json", NOW, SHA), (False, "sha"))
+
+    def test_torn_gap_and_pool_fragments_followed_by_a_start_are_holds(self):
+        for frag in ('{"type":"gap","kind":"backlog_jump","t_ms":1792', '{"type": "gap", "kind": "x"', '{"type":"pool","pool":"P1","sl', '{"type":"trigger","pool":"P1","sl'):
+            with self.subTest(frag=frag):
+                self.setUp()
+                self.shadow([start(), trig()], raw_tail=frag)
+                self.shadow([start(sha=OTHER)])
+                self.assert_unreadable(self.mk().cycle())
+
+    def test_compact_and_spaced_markers_both_count(self):
+        for compact in (True, False):
+            with self.subTest(compact=compact):
+                self.setUp()
+                self.shadow([start()], compact=compact, raw_tail="{torn")
+                self.shadow([start(sha=OTHER)], compact=compact)
+                self.assert_unreadable(self.mk().cycle())
+
+    def test_a_hidden_marker_in_a_newer_file_does_not_fall_back_to_a_clean_older_file(self):
+        self.shadow([start(sha=SHA)], hour_ms=NOW - H)  # clean, pinned sha
+        self.shadow([{"type": "hb", "t_ms": NOW}], raw_tail='{"type":"hb","t_ms":1')  # newest file: no start record of its own
+        self.shadow([start(sha=OTHER)])
+        self.assert_unreadable(self.mk().cycle())
+
+    def test_marker_in_a_newer_file_inside_another_record(self):
+        self.shadow([start(sha=SHA)], hour_ms=NOW - H)
+        self.shadow([], raw_tail='{"type":"gap","kind":"x"}' + json.dumps(start(sha=OTHER)) + "\n")
+        self.assert_unreadable(self.mk().cycle())
+
+    def test_unterminated_start_line_holds_until_its_newline_arrives(self):
+        self.shadow([start(sha=SHA)])
+        f = self.sd / f"h5-shadow-{hname(NOW)}.jsonl"
+        line = json.dumps(start(sha=SHA, t=NOW + 1))
+        with open(f, "a") as fh:
+            fh.write(line[:30])
+        w = self.mk()
+        self.assert_unreadable(w.cycle())  # a start line is being written: not the older record
+        with open(f, "a") as fh:
+            fh.write(line[30:] + "\n")
+        st = w.cycle()
+        self.assertEqual((st["verdict"], st["shadow_sha"]), ("ok", SHA))  # the completed record is the newest valid one
+
+    def test_unparseable_oversize_and_foreign_type_start_lines_hold(self):
+        for raw in ('{"type":"start","code_sha":\n', '{"type":"start","type":"trigger"}\n', '{"type":"start","code_sha":"' + OTHER + '"} trailing\n'):
+            with self.subTest(raw=raw):
+                self.setUp()
+                self.shadow([start(sha=SHA)], raw_tail=raw)
+                self.assert_unreadable(self.mk().cycle())
+        self.setUp()
+        self.shadow([start(sha=SHA)])
+        self.shadow([], raw_tail=json.dumps(dict(start(sha=OTHER), pad="x" * 400)) + "\n")
+        with mock.patch.object(W, "START_LINE_MAX", 300):
+            self.assert_unreadable(self.mk().cycle())
+
+    def test_the_hold_survives_the_cache_and_a_restart_and_clears_only_with_a_later_valid_start(self):
+        self.shadow([start(sha=SHA), trig()], raw_tail='{"type":"hb","t_ms":17')
+        self.tape([tape_row(), tape_row(sig="FILLER", pool="PX", slot=210)])
+        self.shadow([start(sha=OTHER)])
+        w = self.mk()
+        for _ in range(3):  # unchanged file: the cached answer is still the hold
+            self.assert_unreadable(w.cycle())
+            self.advance(30_000)
+        self.shadow([{"type": "hb", "t_ms": NOW}])  # more lines after the hidden marker change nothing
+        self.assert_unreadable(w.cycle())
+        self.assert_unreadable(self.mk().cycle())  # a watch restart cannot clear it either
+        self.shadow([start(sha=SHA, t=NOW + 5)])  # the shadow restarted: a clean start record is the newest valid one
+        st = w.cycle()
+        self.assertEqual((st["verdict"], st["reason"], st["shadow_sha"]), ("ok", "ok", SHA))
+        self.assertEqual(self.mk().cycle()["verdict"], "ok")
+
+    def test_a_clean_newer_file_clears_a_hidden_marker_in_an_older_file(self):
+        self.shadow([start(sha=SHA)], hour_ms=NOW - H, raw_tail='{"type":"hb"')
+        self.shadow([start(sha=OTHER)], hour_ms=NOW - H)  # hidden in the older file
+        self.shadow([start(sha=SHA)])  # newer file, clean: it is the newest valid record and wins
+        self.assertEqual(self.mk(from_ms=NOW - 2 * H).cycle()["shadow_sha"], SHA)
+
+    def test_clean_files_and_unrelated_text_are_not_holds(self):
+        self.shadow([start(sha=SHA), {"type": "hb", "t_ms": NOW, "note": "restart"}, trig()], compact=True)
+        st = self.mk().cycle()
+        self.assertNotIn("start_record_unreadable", st["reason"])
+        self.assertEqual(st["shadow_sha"], SHA)
 
 
 if __name__ == "__main__":
