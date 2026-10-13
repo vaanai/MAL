@@ -1442,6 +1442,48 @@ class ManualCloseTagTests(FlowCase):
                 self.assertTrue(all("gate_path" not in r for r in e.ledger()))
 
 
+class OverheadTimingTests(FlowCase):
+    """Section 5 item 5, the unit part: what the path adds to one trigger's handling when the switch is on. By default a short sanity run; the number
+    for the PR is `H5_TIPAUTH_TIMING_N=100000 python -m pytest tools/test_h5_executor_tipauth_gate.py -k Overhead -s` (best of 5 x 100,000, one host).
+    It measures only the executor's own CPU time per trigger row: a passing record through `tipauth_gate`, the availability check with the watch file's
+    cached read, and both together. It says nothing about live decision-to-send latency, which is the manager's 24 h before / after measurement."""
+
+    @staticmethod
+    def best_of(fn, n: int, reps: int = 5) -> float:
+        import time
+        best = float("inf")
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            for _ in range(n):
+                fn()
+            best = min(best, time.perf_counter() - t0)
+        return best / n * 1e6  # microseconds per call
+
+    def test_per_trigger_overhead_with_the_path_on(self):
+        import platform
+        n = int(os.environ.get("H5_TIPAUTH_TIMING_N", "2000"))
+        e = self.start(**ON_CONF)
+        e.ex.tier = "T0"
+        rec = good()
+        self.assertEqual(e.ex._tipauth_availability(), "")  # the watch file is read once here; every call below is a cache hit
+        reads = e.ex._tipauth_watch_reads
+        gate = self.best_of(lambda: h.tipauth_gate(rec), n)
+        avail = self.best_of(e.ex._tipauth_availability, n)
+        both = self.best_of(lambda: (e.ex._tipauth_availability(), h.tipauth_gate(rec)), n)
+        self.assertEqual(e.ex._tipauth_watch_reads, reads)  # (a fixed fake clock: the cache never expires)
+        def uncached():
+            e.ex._tipauth_watch_cache = None
+            e.ex._tipauth_availability()
+        read = self.best_of(uncached, max(n // 10, 100))
+        cpu = next((ln.split(":", 1)[1].strip() for ln in Path("/proc/cpuinfo").read_text().splitlines() if ln.startswith("model name")), platform.processor()) \
+            if Path("/proc/cpuinfo").exists() else platform.processor()
+        print(f"\nH5_TIPAUTH_OVERHEAD best of 5 x {n}: tipauth_gate {gate:.3f} us/call; _tipauth_availability (cached watch read) {avail:.3f} us/call; "
+              f"both {both:.3f} us/trigger; availability with a real file read every call {read:.1f} us/call; "
+              f"host {platform.node()} {platform.machine()} {platform.system()} {platform.release()} python {platform.python_version()} cpu '{cpu}'")
+        for v in (gate, avail, both, read):  # a loose sanity bound, not a pass / fail on speed
+            self.assertLess(v, 5_000.0)
+
+
 class MainEnv(Env):
     """The same fake world with main's executor (BASE_SHA) in it, for the off-path flow comparison."""
 
