@@ -142,6 +142,13 @@ class Base(unittest.TestCase):
     def state_rows(self):
         return C.read_jsonl(self.out / C.STATE_NAME)
 
+    def asks(self, found=(), err=(), reask_err=(), rounds=3, transport=None):
+        """ask, then `rounds` re-ask rounds 600,000 ms apart (a round with nothing to re-ask writes no row). Signatures in `err` answer an error on every
+        call; those in `reask_err` answer an error on the re-asks only. `report` refuses before the 3 rounds while anything is pending or in error."""
+        self.run_cmd("ask", transport or Fake(found=found, err=err), Clock(T_ASK))
+        for i in range(1, rounds + 1):
+            self.run_cmd("reask", transport or Fake(found=found, err=list(err) + list(reask_err)), Clock(T_ASK + i * 600_000))
+
     def full_plan(self, ws_names=("a1", "a2"), ref_names=("r1",), wp_names=(), ta=(1, 0, 0)):
         recs = [ws(n) for n in ws_names] + [refused(n) for n in ref_names] + [would(n) for n in wp_names]
         self.shadow(recs)
@@ -277,34 +284,34 @@ class TestAskAndReport(Base):
 
     def test_not_returned_needs_two_nulls_600000_apart(self):
         self.full_plan(ws_names=("a1",), ref_names=())
-        self.ask()
-        rep, _ = self.report()
-        self.assertEqual((rep["classes"]["ws_pass"]["not_returned"], rep["classes"]["ws_pass"]["pending"]), (0, 1))
         for gap, want in ((599_999, "pending"), (600_000, "not_returned")):
+            # two nulls `gap` apart, then errors in the 2nd and 3rd re-ask round (so that the 3 rounds ran and `report` is allowed)
             rows = [{"asked_ms": T_ASK, "sig": sg("a1"), "round": "ask", "result": "null"},
-                    {"asked_ms": T_ASK + gap, "sig": sg("a1"), "round": "reask1", "result": "null"}]
+                    {"asked_ms": T_ASK + gap, "sig": sg("a1"), "round": "reask1", "result": "null"},
+                    {"asked_ms": T_ASK + gap + 1, "sig": sg("a1"), "round": "reask2", "result": "error", "err": "TimeoutError"},
+                    {"asked_ms": T_ASK + gap + 2, "sig": sg("a1"), "round": "reask3", "result": "error", "err": "TimeoutError"}]
             (self.out / C.STATE_NAME).write_text("".join(json.dumps(r) + "\n" for r in rows))
             rep, _ = self.report()
             self.assertEqual(rep["classes"]["ws_pass"][want], 1, gap)
+            self.assertEqual(rep["classes"]["ws_pass"]["returned"], 0)
 
     def test_error_never_becomes_not_returned(self):
         self.full_plan(ws_names=("a1",), ref_names=())
-        self.ask(err=[sg("a1")])
-        self.run_cmd("reask", Fake(err=[sg("a1")]), Clock(T_ASK + 10**7))
+        self.asks(err=[sg("a1")])
         rep, _ = self.report()
         d = rep["classes"]["ws_pass"]
         self.assertEqual((d["error"], d["not_returned"], d["returned"]), (1, 0, 0))
         self.assertEqual(rep["reading"], W.READING_NONE)
-        # one null plus errors is pending, still not not_returned
-        rows = [{"asked_ms": T_ASK, "sig": sg("a1"), "round": "ask", "result": "null"},
-                {"asked_ms": T_ASK + 10**7, "sig": sg("a1"), "round": "reask1", "result": "error", "err": "TimeoutError"}]
+        # one null plus errors in the 3 re-ask rounds is pending, still not not_returned
+        rows = [{"asked_ms": T_ASK, "sig": sg("a1"), "round": "ask", "result": "null"}] + [
+            {"asked_ms": T_ASK + i * 10**7, "sig": sg("a1"), "round": f"reask{i}", "result": "error", "err": "TimeoutError"} for i in (1, 2, 3)]
         (self.out / C.STATE_NAME).write_text("".join(json.dumps(r) + "\n" for r in rows))
         rep, _ = self.report()
         self.assertEqual((rep["classes"]["ws_pass"]["not_returned"], rep["classes"]["ws_pass"]["pending"]), (0, 1))
 
     def test_report_has_no_signature_pool_or_slot(self):
         self.full_plan(wp_names=("w1",))
-        self.ask(found=[sg("a1"), sg("r1")])
+        self.asks(found=[sg("a1"), sg("r1")])
         rep, text = self.report()
         for n in ("a1", "a2", "r1", "w1"):
             self.assertNotIn(sg(n), text)
@@ -326,13 +333,16 @@ class TestAskAndReport(Base):
 
     def test_counts_per_class(self):
         self.full_plan(ws_names=("a1", "a2", "a3"), ref_names=("r1", "r2"), wp_names=("w1",))
-        self.ask(found=[sg("a1"), sg("r1"), sg("w1")])
+        self.asks(found=[sg("a1"), sg("r1"), sg("w1")])
         rep, _ = self.report()
         self.assertEqual({k: rep["classes"][k]["asked"] for k in ("ws_pass", "refused", "would_pass")}, {"ws_pass": 3, "refused": 2, "would_pass": 1})
-        self.assertEqual((rep["classes"]["ws_pass"]["returned"], rep["classes"]["ws_pass"]["pending"]), (1, 2))
+        self.assertEqual((rep["classes"]["ws_pass"]["returned"], rep["classes"]["ws_pass"]["not_returned"], rep["classes"]["ws_pass"]["pending"]), (1, 2, 0))
 
     def test_unasked_signatures_are_pending(self):
         self.full_plan()
+        # r1 answered; its rows also name the 3 re-ask rounds, so `report` is allowed; the two ws-pass signatures have no row at all
+        rows = [{"asked_ms": T_ASK, "sig": sg("r1"), "round": r, "result": "found", "slot": SLOT_FOUND} for r in ("ask", "reask1", "reask2", "reask3")]
+        (self.out / C.STATE_NAME).write_text("".join(json.dumps(x) + "\n" for x in rows))
         rep, _ = self.report()
         self.assertEqual(rep["classes"]["ws_pass"], {"asked": 0, "returned": 0, "not_returned": 0, "error": 0, "pending": 2, "planned": 2, "unaskable": 0})
         self.assertEqual(rep["reading"], W.READING_NONE)
@@ -371,8 +381,9 @@ class TestAskAndReport(Base):
         self.tearDown()
         self.setUp()
         self.full_plan(wp_names=("w1",))
-        self.ask(found=[sg("a1"), sg("a2"), sg("r1")])
-        self.assertEqual(self.report()[0]["reading"], "no conclusion")
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], reask_err=[sg("w1")])  # w1: one null, then errors in the 3 re-ask rounds
+        rep = self.report()[0]
+        self.assertEqual((rep["classes"]["would_pass"]["pending"], rep["reading"]), (1, "no conclusion"))
         # no ws_pass at all
         self.tearDown()
         self.setUp()
@@ -523,17 +534,17 @@ class Script:
 
 
 class Rule(Base):
-    def scenario(self, ws=(15, 15), ref=(20, 20), wp=(1, 1), ta=(2, 3, 0), err=(), reask=True, extra=(), until=UNTIL, since=SINCE, now=NOW):
-        """(planned, returned) per class; the others answer null twice, 600,000 ms apart. `err` names raise a timeout on every ask."""
+    def scenario(self, ws=(15, 15), ref=(20, 20), wp=(1, 1), ta=(2, 3, 0), err=(), pend=(), extra=(), until=UNTIL, since=SINCE, now=NOW):
+        """(planned, returned) per class; the others answer null twice, 600,000 ms apart. `err` names raise a timeout on every call; `pend` names answer
+        null on the ask and an error on the re-asks (one null: pending). The ask is followed by the 3 re-ask rounds, so that `report` is allowed."""
         wsn, rfn, wpn = [f"a{i}" for i in range(ws[0])], [f"r{i}" for i in range(ref[0])], [f"p{i}" for i in range(wp[0])]
         self.shadow([ws_(n) for n in wsn] + [refused(n) for n in rfn] + [would(n) for n in wpn] + list(extra))
         code, _ = self.plan(ta=ta, until=until, since=since, now=now)
         self.assertEqual(code, 0)
         found = [sg(n) for n in wsn[:ws[1]] + rfn[:ref[1]] + wpn[:wp[1]]]
-        fake = lambda: Fake(found=found, err=[sg(n) for n in err])  # noqa: E731
-        self.run_cmd("ask", fake(), Clock(T_ASK))
-        if reask:
-            self.run_cmd("reask", fake(), Clock(T_ASK + 600_000))
+        self.run_cmd("ask", Fake(found=found, err=[sg(n) for n in err]), Clock(T_ASK))
+        for i in (1, 2, 3):
+            self.run_cmd("reask", Fake(found=found, err=[sg(n) for n in list(err) + list(pend)]), Clock(T_ASK + i * 600_000))
         return self.report()[0]
 
     def again(self):
@@ -614,10 +625,11 @@ class TestRuleSentences(Rule):
                 self.assertEqual(sum(rep["classes"][c]["not_returned"] for c in rep["classes"]), 0)
 
     def test_pending_is_no_conclusion_even_with_every_ws_pass_returned(self):
-        rep = self.scenario(reask=False, ws=(15, 14))  # ask only: the single null is pending
+        rep = self.scenario(ws=(15, 14), pend=["a14"])  # one null on the ask, errors on the 3 re-asks: pending
         self.check(rep, NONE, failed=["ws_pass_pending_above_0"])
+        self.assertEqual(rep["classes"]["ws_pass"]["pending"], 1)
         self.again()
-        self.check(self.scenario(reask=False, ws=(15, 15), ref=(20, 19)), NONE, failed=["refused_pending_above_0"])
+        self.check(self.scenario(ws=(15, 15), ref=(20, 19), pend=["r19"]), NONE, failed=["refused_pending_above_0"])
 
     def test_unaskable_and_torn_are_no_conclusion(self):
         rep = self.scenario(ws=(15, 15), extra=[{**ws_("u0"), "signature": None}])
@@ -752,10 +764,10 @@ class TestPlanFlags(Rule):
 
 class TestErrorClassesAndCodes(Rule):
     def rows(self, spec):
-        """spec: list of (name, asked_ms, result, err or None)"""
+        """spec: list of (name, asked_ms, result, err or None[, round])"""
         out = ""
-        for name, t, res, err in spec:
-            r = {"asked_ms": t, "sig": sg(name), "round": "ask", "result": res}
+        for name, t, res, err, *rnd in spec:
+            r = {"asked_ms": t, "sig": sg(name), "round": rnd[0] if rnd else "ask", "result": res}
             if err is not None:
                 r["err"] = err
             if res == "found":
@@ -767,12 +779,12 @@ class TestErrorClassesAndCodes(Rule):
         self.full_plan(ws_names=("a1", "a2", "a3", "a4", "a5"), ref_names=("r1", "r2"), wp_names=("w1",), ta=(1, 0, 0))
         long_name = "X" * 65
         self.rows([
-            ("a1", 1, "error", "TimeoutError"), ("a1", 2, "error", "rpc_error"),           # last answer rpc_error
+            ("a1", 1, "error", "TimeoutError"), ("a1", 2, "error", "rpc_error", "reask1"),  # last answer rpc_error
             ("a2", 1, "error", "HTTPError"),                                              # one error
             ("a3", 1, "error", "malformed"), ("a3", 2, "found", None),                    # an error, then found: an error answer, not a signature in error
             ("a4", 1, "error", "bad name; with spaces"),                                  # not a printable name
             ("a5", 1, "error", None),                                                     # no err
-            ("r1", 1, "error", long_name), ("r2", 1, "error", "malformed_result"),
+            ("r1", 1, "error", long_name, "reask2"), ("r2", 1, "error", "malformed_result", "reask3"),  # (the rounds named here let `report` run)
             ("w1", 1, "null", None), ("w1", 2, "error", "URLError"),                      # one null then an error: pending, one error answer
         ])
         rep = self.report()[0]
@@ -799,7 +811,7 @@ class TestErrorClassesAndCodes(Rule):
         script = {sg("a1"): ("raise", TimeoutError(secret)),
                   sg("a2"): ("resp", {"error": {"code": -32005, "message": secret, "data": {"x": secret}}}),
                   sg("a3"): ("raise", urllib.error.HTTPError("https://api.example/" + secret, 429, secret, {}, None))}
-        self.run_cmd("ask", Script(script, found=[sg("r1")]), Clock())
+        self.asks(transport=Script(script, found=[sg("r1")]))
         rep, text = self.report()
         for name in (C.STATE_NAME, C.LOG_NAME, W.SIDE_NAME, W.REPORT_NAME):
             self.assertNotIn(secret, (self.out / name).read_text(), name)
@@ -823,13 +835,16 @@ class TestErrorClassesAndCodes(Rule):
         # asked_ms is the state row's asked_ms (the census clock reading taken just before the call)
         self.assertEqual({(r["asked_ms"], r["sig"]) for r in side}, {(r["asked_ms"], r["sig"]) for r in self.state_rows()})
         self.assertEqual(len({r["asked_ms"] for r in side}), 5)
+        for i in (1, 2, 3):  # the 4 ws-pass signatures stay in error: re-asked in each of 3 rounds (`report` runs after the 3 rounds)
+            self.assertEqual(W.cmd_reask(self.out, Script(script, found=[sg("r1")]), lambda s: None, Tick(T_ASK + i * 700_000)), 4)
+        self.assertEqual({(r["asked_ms"], r["sig"]) for r in C.read_jsonl(self.out / W.SIDE_NAME)}, {(r["asked_ms"], r["sig"]) for r in self.state_rows()})
         rep = self.report()[0]
         w = rep["codes"]["ws_pass"]
-        self.assertEqual(w["http_status"], {"429": 1, "null": 3})
-        self.assertEqual(w["rpc_code"], {"-32005": 1, "null": 3})
-        self.assertEqual(w["rows_n"], 4)
+        self.assertEqual(w["http_status"], {"429": 4, "null": 12})
+        self.assertEqual(w["rpc_code"], {"-32005": 4, "null": 12})
+        self.assertEqual(w["rows_n"], 16)
         self.assertEqual(rep["codes"]["refused"]["http_status"], {"null": 1})
-        self.assertEqual(rep["side_file"], {"present": True, "rows_n": 5, "torn_lines_n": 0, "unknown_sig_rows_n": 0, "matches_state": True})
+        self.assertEqual(rep["side_file"], {"present": True, "rows_n": 17, "torn_lines_n": 0, "unknown_sig_rows_n": 0, "matches_state": True})
 
     def test_wrapper_returns_and_reraises_unchanged_and_survives_a_failed_append(self):
         resp = {"result": None}
@@ -894,7 +909,7 @@ class TestWriteOnceReport(Rule):
 
     def test_report_does_not_overwrite_a_file_created_in_between(self):
         self.full_plan()
-        self.run_cmd("ask", Fake(found=[sg("a1")]), Clock())
+        self.run_cmd("ask", Fake(found=[sg("a1"), sg("a2"), sg("r1")]), Clock())
         (self.out / W.REPORT_NAME).write_text("kept")
         with self.assertRaises(SystemExit):
             W.main(["report", "--out-dir", str(self.out)])
@@ -916,7 +931,8 @@ class TestWriteOnceReport(Rule):
         self.assertEqual(rep["triggers_n"], {"ws_pass": 2, "refused": 1, "would_pass": 0})
 
     def test_empty_state_has_no_asked_span(self):
-        self.full_plan()
+        self.shadow([])  # a plan with no trigger at all: nothing to ask, nothing pending
+        self.assertEqual(self.plan(ta=(0, 0, 0))[0], 0)
         rep = self.report()[0]
         self.assertEqual((rep["first_asked_ms"], rep["last_asked_ms"]), (None, None))
         self.assertEqual(rep["reading"], NONE)
@@ -924,7 +940,7 @@ class TestWriteOnceReport(Rule):
     def test_interim_label_and_fixed_note_at_36h(self):
         rep = self.scenario(until=UNTIL36, now=UNTIL36 + 10**7)
         self.assertFalse(rep["interim"])
-        self.assertEqual(rep["interim_label"], "interim, not the deciding read")
+        self.assertEqual(rep["interim_label"], "not the deciding read unless item 4's duration line is met at this until-ms")
         self.assertEqual(rep["interim_note"], "not the deciding read unless item 4's duration line is met at this until-ms")
         self.assertEqual(rep["reading"], S0_15)
         self.again()
@@ -1059,6 +1075,143 @@ class TestErrclassAndOldLayout(Rule):
         self.assertNotEqual(W.selection_hash({**body, "tape_absent": {"ws_pass": 1, "refused": 0, "would_pass": 0}}), old)
 
 
+class TestReportFinishGuard(Rule):
+    """Round 2, quant-proof blocking 1: `report` refuses, writes nothing and prints nothing while a signature is pending, never asked or in error and
+    fewer than 3 reask rounds ran; after 3 reask rounds it always runs."""
+
+    def assert_refused(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit) as cm:
+            W.main(["report", "--out-dir", str(self.out)])
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("not finished", str(cm.exception))
+        self.assertEqual(buf.getvalue(), "")
+        self.assertFalse((self.out / W.REPORT_NAME).exists())
+
+    def plan3(self, ta=(2, 0, 0)):
+        self.full_plan(ws_names=("a1", "a2", "a3"), ref_names=("r1",), ta=ta)
+
+    def test_no_ask_yet(self):
+        self.plan3()
+        self.assert_refused()
+
+    def test_ask_with_one_null(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], rounds=0)  # a3 answered null once
+        self.assert_refused()
+
+    def test_ask_with_one_error(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], err=[sg("a3")], rounds=0)
+        self.assert_refused()
+
+    def test_two_rounds_with_an_error_left(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], err=[sg("a3")], rounds=2)
+        self.assertEqual(len({r["round"] for r in self.state_rows() if r["round"].startswith("reask")}), 2)
+        self.assert_refused()
+
+    def test_the_sentence_is_not_lost_by_an_early_look(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], rounds=0)
+        self.assert_refused()  # a3 is pending
+        self.run_cmd("reask", Fake(found=[sg("a1"), sg("a2"), sg("r1")]), Clock(T_ASK + 600_000))  # a3 answers null a second time: not_returned
+        rep = self.report()[0]
+        self.assertEqual((rep["classes"]["ws_pass"]["returned"], rep["classes"]["ws_pass"]["not_returned"]), (2, 1))
+        self.assertEqual(rep["reading"], W.READING_S1_ONE.format(p=3, a=2) + ". " + W.READING_S1_TAIL_ONE.format(r=1, a=2))
+        self.assertTrue(rep["reading"].startswith("1 of 3 was not returned at finalized commitment"))
+        self.assertEqual(rep["failed_checks"], [])
+
+    def test_three_rounds_with_an_error_left_report_runs_with_no_conclusion(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], err=[sg("a3")])
+        rep = self.report()[0]
+        self.assertEqual(rep["reask_rounds_n"], 3)
+        self.assertEqual(rep["reading"], NONE)
+        self.assertIn("ws_pass_error_above_0", rep["failed_checks"])
+
+    def test_a_null_on_the_ask_and_an_error_on_each_of_three_reasks(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], reask_err=[sg("a3")])
+        rep = self.report()[0]
+        self.assertEqual((rep["reask_rounds_n"], rep["classes"]["ws_pass"]["pending"]), (3, 1))
+        self.assertEqual(rep["reading"], NONE)
+        self.assertIn("ws_pass_pending_above_0", rep["failed_checks"])
+
+    def test_every_print_returned_on_the_ask_needs_no_reask(self):
+        self.plan3(ta=(2, 0, 0))
+        self.asks(found=[sg("a1"), sg("a2"), sg("a3"), sg("r1")], rounds=0)
+        rep = self.report()[0]
+        self.assertEqual(rep["reask_rounds_n"], 0)
+        self.assertEqual(rep["reading"], W.READING_ALL_MANY.format(n=3, a=2))
+
+    def test_a_refusal_does_not_use_up_the_one_report(self):
+        self.plan3()
+        self.asks(found=[sg("a1"), sg("a2"), sg("r1")], rounds=0)
+        self.assert_refused()
+        self.assert_refused()
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), sorted([C.PLAN_NAME, C.STATE_NAME, C.LOG_NAME, W.SIDE_NAME]))
+
+
+class TestReadingConditionAndOperatorChecks(Rule):
+    COND = 'a sentence other than "no conclusion" holds only if every line of operator_checks holds; one failure gives "no conclusion", with the counts and the failed check'
+    CHECKS = [
+        "every job exited 0; tool_sha256 equals the merged tool sha recorded at merge",
+        "plan_sha256 equals the plan_sha256 printed by the plan job",
+        "plan triggers_n equals the class counts of the trigger-print run of the same until-ms as recorded in LAB_STATE",
+        "tape_absent equals the absent counts of that trigger-print run as recorded in LAB_STATE",
+        "that trigger-print record shows differ 0 and undetermined 0 in every class",
+        "wc -l of the state file equals the sum of the calls of the ask and reask jobs",
+        "the last reask printed calls 0, or reask_rounds_n is 3",
+    ]
+
+    def test_reading_condition_is_always_present_beside_a_sentence_and_beside_no_conclusion(self):
+        rep = self.scenario()
+        self.assertEqual(rep["reading"], S0_15)
+        self.assertEqual(rep["reading_condition"], self.COND)
+        self.again()
+        rep = self.scenario(ws=(15, 12))
+        self.assertEqual(rep["reading"], NONE)
+        self.assertEqual(rep["reading_condition"], self.COND)
+        self.assertEqual(W.READING_CONDITION, self.COND)
+
+    def test_operator_checks_are_the_seven_lines_in_order(self):
+        self.assertEqual(W.OPERATOR_CHECKS, self.CHECKS)
+        rep = self.scenario()
+        self.assertEqual(rep["operator_checks"], self.CHECKS)
+        self.assertEqual(len(rep["operator_checks"]), 7)
+
+    def test_a_wrong_typed_tape_absent_count_is_what_operator_check_4_is_for(self):
+        # typed (3, 3, 0) where the record says (2, 3, 0): the tool prints a sentence it cannot call wrong, and the report says it depends on check 4
+        rep = self.scenario(ws=(15, 13), ref=(20, 17), ta=(3, 3, 0))
+        self.assertEqual(rep["failed_checks"], [])
+        self.assertTrue(rep["reading"].startswith("2 of 15 were not returned"))
+        self.assertIn("tape_absent equals the absent counts of that trigger-print run as recorded in LAB_STATE", rep["operator_checks"])
+        self.assertIn("every line of operator_checks holds", rep["reading_condition"])
+        self.assertEqual(rep["tape_absent"], {"ws_pass": 3, "refused": 3, "would_pass": 0})
+
+    def test_the_docstring_names_the_new_checks_and_the_condition(self):
+        doc = " ".join(W.__doc__.split())
+        for s in ("`tape_absent` equal to the absent counts of that run as recorded in LAB_STATE", "`plan_sha256` equal to the one printed by the plan job",
+                  'The report carries `reading_condition`: a sentence other than "no conclusion" holds only if every line of `operator_checks` holds.',
+                  "`report` refuses, writes nothing and prints nothing while a signature is pending, never asked or in error and fewer than 3 reask rounds ran; "
+                  "after 3 reask rounds it always runs.",
+                  '`interim_label` is "interim, not the deciding read" when `interim` is true and "not the deciding read unless item 4\'s duration line is met at '
+                  'this until-ms" when it is false; `interim_note` is always the latter.'):
+            self.assertIn(s, doc)
+
+    def test_lab_state_carries_the_guard_the_label_rule_and_the_operator_checks(self):
+        lab = " ".join((Path(W.__file__).resolve().parent.parent / "LAB_STATE.md").read_text(encoding="utf-8").split())
+        for s in ("`report` refuses, writes nothing and prints nothing while a signature is pending, never asked or in error and fewer than 3 reask rounds ran.",
+                  '`interim_label` is "interim, not the deciding read" when until minus since is under 24 h, and otherwise "not the deciding read unless item 4\'s '
+                  'duration line is met at this until-ms"; `interim_note` is always the latter.',
+                  "The checks it cannot see are printed as `operator_checks` (7 lines: job exits and tool sha, plan_sha256, triggers_n, tape_absent, differ and "
+                  "undetermined, state line count, reask end), and the report carries `reading_condition`.",
+                  'If one fails, what is quoted is "no conclusion" with the counts and the failed check, and the tool\'s sentence is not quoted.',
+                  ", amended 2026-10-13T"):
+            self.assertIn(s, lab)
+
+
 class TestDeclaredSentences(Rule):
     CONSTANTS = ("READING_ALL", "READING_ALL_MANY", "READING_ABSENT", "READING_S1_ONE", "READING_S1_MANY", "READING_S1_TAIL_ONE", "READING_S1_TAIL_MANY", "READING_S2",
                  "EXTRA_REFUSED", "INTERIM_LABEL", "INTERIM_NOTE")
@@ -1090,25 +1243,6 @@ class TestDeclaredSentences(Rule):
             self.assertIn(s, doc)
             self.assertIn(s, lab)
         self.assertIn(CANARY, lab)
-
-    def test_lab_state_bullet_position_start_and_end(self):
-        lab = self.lab().split("\n")
-        head = ("**ws-pass trigger-print RPC check, rule for a read with more than one print without a tape row, declared before any ask "
-                "(quant-proof, PR #610 comment 6156017843, section 1).**")
-        starts = [i for i, ln in enumerate(lab) if ln.startswith("- (written ") and head in ln]
-        self.assertEqual(len(starts), 1)
-        i = starts[0]
-        self.assertRegex(lab[i], r"^- \(written 2026-10-\d\dT\d\d:\d\d:\d\dZ\) \*\*ws-pass trigger-print RPC check, rule for")
-        run6h = [j for j, ln in enumerate(lab) if ln.startswith("- **ws-pass trigger-print RPC check, run on the +6 h read")]
-        self.assertEqual(len(run6h), 1)
-        j = i - 1
-        while lab[j].startswith("  "):  # the sub-bullets of the +6 h bullet end right above the new bullet
-            j -= 1
-        self.assertEqual(j, run6h[0])
-        k = i + 1
-        while lab[k].startswith("  "):
-            k += 1
-        self.assertEqual(lab[k - 1].strip(), "- " + CANARY)
 
 
 if __name__ == "__main__":

@@ -51,7 +51,8 @@ class asked, returned, not_returned, error, pending; `error_classes` (signatures
 `error_answers` (all error answers, by error class), with the printable names `rpc_error`, `malformed`, `malformed_result`, an exception class name that
 matches ^[A-Za-z_][A-Za-z0-9_]{0,63}$, or `other`; the side-file counts; `state_sha256`, `first_asked_ms`, `last_asked_ms`. not_returned = null twice with
 the two asks >= 600,000 ms apart; an error is never not_returned; a signature not yet asked, or with one null, is pending. `report` is served only for a
-plan of this layout; for a plan of the older layout (no tape-absent counts, no side file) it refuses and `errclass` is the command.
+plan of this layout; for a plan of the older layout (no tape-absent counts, no side file) it refuses and `errclass` is the command. `report` refuses, writes
+nothing and prints nothing while a signature is pending, never asked or in error and fewer than 3 reask rounds ran; after 3 reask rounds it always runs.
 
 READING RULE (quant-proof, PR #610 comment 6156017843 section 1), declared before any ask of the read it is first used on. Per class: N = not_returned,
 A = the number of prints without a tape row at the trigger-print run of the same until-ms (the three plan flags).
@@ -62,7 +63,9 @@ Preconditions for any sentence. One failure gives "no conclusion", and the repor
   - A for the ws-pass class at least 1 (the check is for a read on which the ws-pass absent count rose).
   The operator checks that the tool cannot see are listed in the report as `operator_checks`: R1 to R5 of PR #619 comment 6127897922 section D (R5 as
   amended: `interim` false is expected at the +36 h read; the label stays "interim, not the deciding read"), plan `triggers_n` equal to the class counts
-  of the trigger-print run, and that run showing differ 0 and undetermined 0 in every class.
+  of the trigger-print run, `tape_absent` equal to the absent counts of that run as recorded in LAB_STATE, `plan_sha256` equal to the one printed by the plan
+  job, and that run showing differ 0 and undetermined 0 in every class. The report carries `reading_condition`: a sentence other than "no conclusion" holds
+  only if every line of `operator_checks` holds.
 `reading` is exactly one of the following. At the +36 h read the ws-pass tape-absent count is 2 of 15, the refused 3 of 20, the would-pass 0 of 1:
   S0 (every ws-pass print returned, whatever the refused and would-pass not_returned counts are; a return needs no control):
       "all 15 were returned at finalized commitment; the 2 missing rows are on the tape's side; it is not shown that the prints' reserves were right"
@@ -97,8 +100,8 @@ The general forms, the constants of this file (P = ws-pass prints planned, A = w
       "{k} of the {r} refused prints were not returned ({a} of the {r} have no tape row); the cause is not determined."
 Disclosure: this rule is written after this read's tape counts (2 of 15, 3 of 20) and the +6 h RPC split (2 returned, 3 error) were known, and before any RPC
 answer for this read. The check can count against phase 2 and against the live rule, never for either.
-The interim fields: `interim` is true when until minus since is under 24 h; `interim_label` is always "interim, not the deciding read"; `interim_note` is
-always "not the deciding read unless item 4's duration line is met at this until-ms".
+The interim fields: `interim` is true when until minus since is under 24 h; `interim_label` is "interim, not the deciding read" when `interim` is true
+and "not the deciding read unless item 4's duration line is met at this until-ms" when it is false; `interim_note` is always the latter.
 
 ERRCLASS (`errclass --out-dir D`): for a finished out-dir of the older layout (a plan made by an older tool sha). No network call, nothing written in D.
 It prints the per-class counts, `error_classes`, `error_answers`, `plan_sha256`, `state_sha256`, `first_asked_ms`, `last_asked_ms`, and no `reading`.
@@ -159,9 +162,12 @@ EXTRA_REFUSED = "{k} of the {r} refused prints were not returned ({a} of the {r}
 INTERIM_LABEL = "interim, not the deciding read"
 INTERIM_NOTE = "not the deciding read unless item 4's duration line is met at this until-ms"
 NOTE = "a live-exposure check outside items 1 to 10: it can count against phase 2 and against the live rule, never for either; exit 0 is not a verdict"
+READING_CONDITION = 'a sentence other than "no conclusion" holds only if every line of operator_checks holds; one failure gives "no conclusion", with the counts and the failed check'
 OPERATOR_CHECKS = [
     "every job exited 0; tool_sha256 equals the merged tool sha recorded at merge",
+    "plan_sha256 equals the plan_sha256 printed by the plan job",
     "plan triggers_n equals the class counts of the trigger-print run of the same until-ms as recorded in LAB_STATE",
+    "tape_absent equals the absent counts of that trigger-print run as recorded in LAB_STATE",
     "that trigger-print record shows differ 0 and undetermined 0 in every class",
     "wc -l of the state file equals the sum of the calls of the ask and reask jobs",
     "the last reask printed calls 0, or reask_rounds_n is 3",
@@ -538,6 +544,9 @@ def cmd_report(out_dir: Path) -> dict:
         raise SystemExit("refused: a report already exists in this out-dir (write-once)")
     rows, torn, state_sha = _state(out_dir)
     per, ecls, eans = tally(plan, meta, rows)
+    rounds = len({r.get("round") for r in rows if str(r.get("round")).startswith("reask")})
+    if rounds < C.REASK_MAX and any(per[c]["pending"] or per[c]["error"] for c in CLASS_ORDER):
+        raise SystemExit("refused: the asks are not finished (a signature is pending, never asked or in error, and fewer than 3 reask rounds ran): no report is written")
     in_plan = {s for k in ("A", "B", "C") for s in plan["sets"][k]}
     outside = sum(1 for r in rows if r.get("sig") not in in_plan)
     plan_tool = meta["tool_sha256"]
@@ -546,12 +555,12 @@ def cmd_report(out_dir: Path) -> dict:
     first, last = _asked_span(rows)
     interim = (meta["until_ms"] - meta["since_ms"]) < DAY_MS
     rep = {"tool": TOOL, "spec": SPEC, "classes": per, "error_classes": ecls, "error_answers": eans, "codes": codes, "side_file": side,
-           "tape_absent": meta["tape_absent"], "triggers_n": meta["triggers_n"], "interim": interim, "interim_label": INTERIM_LABEL, "interim_note": INTERIM_NOTE,
+           "tape_absent": meta["tape_absent"], "triggers_n": meta["triggers_n"], "interim": interim, "interim_label": INTERIM_LABEL if interim else INTERIM_NOTE, "interim_note": INTERIM_NOTE,
            "cross_class_duplicates": meta["cross_class_duplicates"], "tool_sha256": tool_sha(), "plan_tool_sha256": plan_tool,
            "plan_selection_sha256": meta["plan_selection_sha256"], "plan_sha256": sha256_bytes((out_dir / C.PLAN_NAME).read_bytes()),
            "state_sha256": state_sha, "first_asked_ms": first, "last_asked_ms": last,
-           "reask_rounds_n": len({r.get("round") for r in rows if str(r.get("round")).startswith("reask")}), "state_torn_lines_n": torn,
-           "reading": reading, "reading_extra": extra, "failed_checks": failed, "operator_checks": OPERATOR_CHECKS, "note": NOTE}
+           "reask_rounds_n": rounds, "state_torn_lines_n": torn,
+           "reading": reading, "reading_extra": extra, "failed_checks": failed, "reading_condition": READING_CONDITION, "operator_checks": OPERATOR_CHECKS, "note": NOTE}
     try:
         _write_private(out_dir / REPORT_NAME, C.dumps(rep).encode("utf-8"))  # exclusive create
     except FileExistsError:
