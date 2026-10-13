@@ -846,5 +846,117 @@ class TestNoOutcomeData(Env):
             self.assertNotIn(needle, code.replace("flag(rec.get(\"sealed\"))", ""))
 
 
+class TestReadingDetails(Env):
+    def test_budgets_bound_the_gap_between_writes(self):
+        worst_cycle_ms = W.SHADOW_BUDGET_MS + W.START_BUDGET_MS + W.TAPE_BUDGET_MS + W.RPC_BUDGET_MS + int(W.RPC_TIMEOUT_S * 1000)
+        self.assertLessEqual(int(W.CYCLE_S * 1000) + worst_cycle_ms + 5_000, 60_000)  # start-to-start 30 s, a slow cycle after a fast one, 5 s of slack
+
+    def test_missing_t_detect_ms_falls_back_to_t_ms_and_unknown_times_are_kept(self):
+        a, b, c = trig(sig="F1", pool="F1", t=NOW - MIN), trig(sig="F2", pool="F2", t=T0 - MIN), trig(sig="F3", pool="F3")
+        for r in (a, b, c):
+            del r["t_detect_ms"]
+        del c["t_ms"]
+        self.shadow([start(), a, b, c])
+        w = self.mk(from_ms=T0)
+        w.cycle()
+        self.assertEqual(sorted(t["signature"] for t in w.trig.values()), ["F1", "F3"])  # the record with no time at all is watched (the stricter set)
+        self.assertIn("trigger_unverifiable", self.state()["reason"])  # and it cannot be matched, so it holds
+
+    def test_explicit_false_seal_flags_are_unsealed(self):
+        self.shadow([start(), trig(sealed=False, h5_look2_sealed=False), trig(sig="N2", pool="N2", sealed=None)])
+        w = self.mk()
+        w.cycle()
+        self.assertEqual(len(w.trig), 2)
+
+    def test_hb_and_gap_lines_are_not_read_even_if_garbled(self):
+        self.baseline()
+        self.shadow([], raw_tail='{"type":"hb","note":"trigger" garbled\n{"type": "gap", "x": "trigger" nope\n')
+        self.assertEqual(self.mk().cycle()["verdict"], "ok")
+
+    def test_close_of_an_unwatched_pool_is_not_parsed_but_a_watched_one_is(self):
+        self.baseline()
+        self.shadow([close(pool="OTHERPOOL", dropped=[], dropped_n=0), close()])
+        w = self.mk()
+        with mock.patch.object(w, "_on_pool", wraps=w._on_pool) as on_pool:
+            w.cycle()
+        self.assertEqual(on_pool.call_count, 1)
+        self.assertEqual(self.state()["verdict"], "ok")
+
+    def test_a_sealed_close_is_ignored(self):
+        self.baseline()
+        self.shadow([close(dropped=[], dropped_n=0, sealed=True)])
+        self.assertEqual(self.mk().cycle()["verdict"], "ok")  # not read as a left-D close
+
+    def test_reading_in_small_chunks_and_an_oversize_line(self):
+        self.baseline()
+        with mock.patch.object(W, "READ_CHUNK", 700):
+            w = self.mk()
+            st = w.cycle()
+        self.assertEqual(st["verdict"], "hold")  # a line longer than a whole chunk is skipped unread, and the watch holds
+        self.assertIn("bad_trigger_line", st["reason"])
+        self.setUp()
+        self.baseline()
+        with mock.patch.object(W, "READ_CHUNK", 4096):
+            w = self.mk()
+            for _ in range(3):
+                st = w.cycle()
+        self.assertEqual((st["watched_n"], st["verdict"]), (1, "ok"))
+
+    def test_truncated_file_is_read_again_without_counting_twice(self):
+        self.baseline()
+        w = self.mk()
+        w.cycle()
+        f = self.sd / f"h5-shadow-{hname(NOW)}.jsonl"
+        f.write_text(json.dumps(start()) + "\n" + json.dumps(trig()) + "\n")
+        st = w.cycle()
+        self.assertEqual(st["watched_n"], 1)
+
+    def test_tape_scan_finds_rows_across_chunk_boundaries_and_stops_at_the_deadline(self):
+        rows = [tape_row(sig=f"FILL{i:03d}", pool="PX", slot=100 + i) for i in range(60)] + [tape_row()]
+        self.tape(rows)
+        f = self.tp / f"trades-{hname(NOW)}.jsonl"
+        with mock.patch.object(W, "SCAN_CHUNK", 150):
+            got, status, partial = W.scan_tape_file(f, ["SIGT1", "FILL030"], NOW + 10**9, self.now)
+        self.assertEqual((status, sorted(got)), ("ok", ["FILL030", "SIGT1"]))
+        self.assertEqual(got["SIGT1"][0]["base_reserve"], 7000)
+        with mock.patch.object(W, "SCAN_CHUNK", 150):
+            got, status, partial = W.scan_tape_file(f, ["SIGT1"], NOW - 1, self.now)
+        self.assertEqual((status, got), ("incomplete", {}))
+        self.assertEqual(W.scan_tape_file(self.tp / "absent.jsonl", ["SIGT1"], NOW + 10**9, self.now)[1], "unreadable")
+
+    def test_a_signature_inside_another_field_is_not_a_row(self):
+        self.shadow([start(), trig()])
+        self.tape([tape_row(sig="SIGT1X", pool="P1"), tape_row(sig="FILLER", pool="PX", slot=210, note='"signature":"SIGT1"')])
+        self.mk().cycle()
+        self.assertEqual(self.state()["verdict"], "off")  # no row whose own signature is SIGT1: a longer signature, and the text inside another field, are not it
+        self.assertEqual(self.events()[0]["evidence"]["kind"], "no_row")
+
+    def test_high_water_is_the_last_complete_row_of_the_newest_hour(self):
+        f = self.tp / f"trades-{hname(NOW)}.jsonl"
+        self.assertIsNone(W.last_complete_row_slot(f))
+        self.tape([tape_row(sig=f"R{i}", slot=100 + i, pad="x" * 400) for i in range(1000)])
+        self.assertEqual(W.last_complete_row_slot(f), 1099)  # a file longer than the tail window: the first line of the tail is partial and dropped
+        with open(f, "a") as fh:
+            fh.write('{"slot":5000,"signature":"HALF')
+        self.assertEqual(W.last_complete_row_slot(f), 1099)  # the half-written last line is not a row
+        w = self.mk()
+        self.assertEqual(w.tip_hw(), 1099)
+        self.t[0] = NOW + H  # next hour, no file yet: the previous hour's
+        self.assertEqual(w.tip_hw(), 1099)
+        self.t[0] = NOW + 3 * H
+        self.assertIsNone(w.tip_hw())
+
+    def test_start_record_read_error_never_falls_back_to_an_older_file(self):
+        self.shadow([start(sha=SHA)], hour_ms=NOW - H)
+        self.shadow([start(sha=OTHER)])
+        w = self.mk()
+        newest = self.sd / f"h5-shadow-{hname(NOW)}.jsonl"
+        newest.unlink()
+        os.mkfifo(newest)  # not a regular file
+        st = w.cycle()
+        self.assertEqual((st["verdict"], st["shadow_sha"]), ("hold", None))
+        self.assertIn("start_search_incomplete", st["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

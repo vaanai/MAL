@@ -91,9 +91,11 @@ TOOL = "h5_tipauth_watch"
 SCHEMA = "h5_tipauth_watch_v1"
 STATE_KEYS = ("schema", "ts_ms", "verdict", "reason", "shadow_sha", "watched_n", "clear_n", "pending_n")
 HOUR_MS = 3_600_000
-CYCLE_S = 30.0  # a cycle every 30 s; state.json is never more than 60 s apart (the cycle's phases have deadlines that sum to about 30 s)
-SHADOW_BUDGET_MS, START_BUDGET_MS, TAPE_BUDGET_MS, RPC_BUDGET_MS = 8_000, 4_000, 8_000, 8_000
-RPC_TIMEOUT_S = 5.0
+CYCLE_S = 30.0  # a cycle starts every 30 s (start to start)
+# Every phase has a deadline, so a cycle ends within SHADOW + START + TAPE + RPC budgets + one RPC timeout + a chunk of disk work (about 24 s). A cycle that follows
+# a fast one is then at most 30 + 24 s after the previous write: state.json is never more than 60 s apart (a test pins the sum).
+SHADOW_BUDGET_MS, START_BUDGET_MS, TAPE_BUDGET_MS, RPC_BUDGET_MS = 6_000, 3_000, 5_000, 5_000
+RPC_TIMEOUT_S = 4.0
 RPC_PACE_S = 0.5  # at most 2 asks a second
 RPC_MAX_ASKS = 10  # per cycle
 RPC_REASK_MS = 600_000  # a not-found is asked again at least 10 minutes later
@@ -104,7 +106,7 @@ E2_HOLD_MS = 3_600_000
 E2_TAPE_MAX_MS = 2 * HOUR_MS
 START_SCAN_FILES = 400  # as the daily check: newest hour files searched for a start record
 START_LINE_MAX = 1_000_000
-READ_CHUNK = 8 * 1024 * 1024
+READ_CHUNK = 4 * 1024 * 1024
 SCAN_CHUNK = 32 * 1024 * 1024
 TIP_TAIL_BYTES = 262_144
 TIP_HOURS_BEFORE, TIP_HOURS_AHEAD = 1, 2  # as tools/h5_tipauth_trigger_print.py
@@ -113,6 +115,7 @@ SHADOW_RE = re.compile(r"^h5-shadow-(\d{4})-(\d{2})-(\d{2})T(\d{2})\.jsonl$")
 SIG_SAFE = re.compile(r"[A-Za-z0-9]{1,100}")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SKIP_PREFIXES = (b'{"type":"hb"', b'{"type": "hb"', b'{"type":"gap"', b'{"type": "gap"')
+POOL_PREFIXES = (b'{"type":"pool"', b'{"type": "pool"')
 START_MARKS = (b'{"type":"start"', b'{"type": "start"')
 _UNREADABLE = object()
 E1, E2, E3 = "trigger_print_not_on_tip", "dropped_on_tip", "dropped_on_chain"
@@ -229,10 +232,25 @@ def rpc_class(answers: list[dict]) -> str:
 
 # ---- tip tape ---------------------------------------------------------------------------------------------------------------------------------
 
+def open_regular(path: Path) -> Any:
+    """Open read-only WITHOUT blocking, and only a regular file (a FIFO would block the whole cycle, a device would lie). Raises OSError otherwise."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat_mod.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {path.name}")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def last_complete_row_slot(path: Path) -> int | None:
     """The slot of the last complete, parseable row of a tape hour file, from its last TIP_TAIL_BYTES. None if there is none."""
     try:
-        with open(path, "rb") as fh:
+        with open_regular(path) as fh:
             size = fh.seek(0, 2)
             if size == 0:
                 return None
@@ -266,7 +284,7 @@ def scan_tape_file(path: Path, sigs: list[str], deadline_ms: int, now_ms: Callab
     rows: dict[str, list[dict]] = {}
     partial: set[str] = set()
     try:
-        with open(path, "rb") as fh:
+        with open_regular(path) as fh:
             size = os.fstat(fh.fileno()).st_size
             if size == 0:
                 return rows, "ok", partial
@@ -320,6 +338,7 @@ class Watch:
         self.p = {k: self.out_dir / v for k, v in FILES.items()}
         self.trig: dict[str, dict] = {}  # W, by tid
         self.pool_tids: dict[str, list[str]] = {}
+        self.pool_bytes: list[bytes] = []  # the watched pool addresses; a pool-close line with none of them in it is not parsed (a watched pool's close always holds its address)
         self.closes: dict[str, list[dict]] = {}
         self.offsets: dict[str, int] = {}
         self.bad_trigger_lines = 0
@@ -418,8 +437,9 @@ class Watch:
         for name in names:
             path = self.shadow_dir / name
             try:
-                size = path.stat().st_size
-            except OSError:
+                with open_regular(path) as fh:
+                    size = os.fstat(fh.fileno()).st_size
+            except OSError:  # a FIFO, a directory, a vanished file: an unread file is a hold
                 caught = False
                 continue
             off = self.offsets.get(name, 0)
@@ -430,7 +450,7 @@ class Watch:
                     caught = False
                     break
                 try:
-                    with open(path, "rb") as fh:
+                    with open_regular(path) as fh:
                         fh.seek(off)
                         data = fh.read(min(size - off, READ_CHUNK))
                 except OSError:
@@ -452,6 +472,8 @@ class Watch:
     def _line(self, line: bytes) -> None:
         line = line.strip()
         if not line or line.startswith(SKIP_PREFIXES):
+            return
+        if line.startswith(POOL_PREFIXES) and not any(b in line for b in self.pool_bytes):
             return
         try:
             rec = json.loads(line)
@@ -487,6 +509,8 @@ class Watch:
                           "t_ms": tm, "t_eff": t_eff, "dropped": dropped, "fields_ok": fields_ok}
         if isinstance(pool, str):
             self.pool_tids.setdefault(pool, []).append(tid)
+            if pool.encode("utf-8") not in self.pool_bytes:
+                self.pool_bytes.append(pool.encode("utf-8"))
 
     def _on_pool(self, rec: dict) -> None:
         pool = rec.get("pool")
@@ -517,7 +541,7 @@ class Watch:
 
     def _start_in(self, path: Path, name: str) -> Any:
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # NONBLOCK: a FIFO in the directory must not stop the cycle
         except OSError:
             return _UNREADABLE
         try:
