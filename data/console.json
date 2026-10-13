@@ -1,8 +1,118 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-11T07:10:00Z",
+ "updated_utc": "2026-10-13T09:48:28Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-resumed-1013",
+   "kind": "other",
+   "title": "H5 resumed at the smallest stake after the structure stop",
+   "detail": "STOP was removed at 09:44:43 UTC on 2026-10-13 after the upgrade review, the owner's decision on the slice-count band and quant-proof's checklist. H5 trades at 0.02 SOL as an execution measurement; its formal October test (EXP-024) ended not decidable with no look read. It was stopped from 07:14:44 UTC.",
+   "atUtc": "2026-10-13T09:44:43Z"
+  },
+  {
+   "id": "exp024-not-decidable-1013",
+   "kind": "decision",
+   "title": "EXP-024 (H5's formal October test) ended: not decidable",
+   "detail": "Quant-proof confirmed that the structure halt of 2026-10-13 (pump.fun fees program redeployed) ends EXP-024's read as not decidable, with no look read and nothing computed. It is neither a pass nor a fail. There is no later look and this version of H5 is not tested again. The record in the EXP-024 file is owed.",
+   "atUtc": "2026-10-13T07:52:48Z"
+  },
+  {
+   "id": "h5-repin-merged-1013",
+   "kind": "other",
+   "title": "H5: upgrade review done, re-pin merged, one decision open",
+   "detail": "The review of the fees-program upgrade is merged with the re-pin (pull request 629, reviewer and quant-proof OK). One check, slices per pool, is the owner's decision; H5 stays stopped until then and until the remaining resume steps are done.",
+   "atUtc": "2026-10-13T08:20:08Z"
+  },
+  {
+   "id": "h5-structure-stop-1013",
+   "kind": "other",
+   "title": "H5 stopped: pump.fun fees program redeployed",
+   "detail": "The daily structure check (07:11 UTC, 2026-10-13) halted on a changed program pin: the pump.fun fees program was redeployed on 2026-10-12 at 17:40:24 UTC. The manager placed STOP at 07:14:44 UTC with nothing open and nothing pending. The other five structure checks were clear. Resume needs the manager's mechanism review, a re-pin with quant-proof's OK and one clean structure run (DEC-024 Amendment 7 item 2).",
+   "atUtc": "2026-10-13T07:14:44Z"
+  },
+  {
+   "id": "h5-presend-fix-installed-1013",
+   "kind": "other",
+   "title": "H5 late-signal fix installed by Helm",
+   "detail": "Helm installed the reviewed version at 00:42 UTC on 2026-10-13. From then on H5 refuses a signal older than 3.5 s before buying. Buying was closed for about 11 minutes (Helm's report). H5 stays at the smallest stake (0.02 SOL); one health check is to be rerun after 18:28 UTC before any step to the next size can be considered.",
+   "atUtc": "2026-10-13T00:42:22Z"
+  },
+  {
+   "id": "h5-presend-fix-merged-1012",
+   "kind": "other",
+   "title": "H5 late-signal fix merged; Helm's install requested",
+   "detail": "The check that refuses a signal older than 3.5 s before buying was merged on 2026-10-12 (pull request 622). It is not running: the request to Helm for the install is on pull request 624. Until then H5 stays at the smallest stake.",
+   "atUtc": "2026-10-12T19:33:08Z"
+  },
+  {
+   "id": "h5-out-of-rule-latch-1012",
+   "kind": "other",
+   "title": "H5 halted itself at 18:28 UTC; the manager cleared the halt at 18:38 UTC",
+   "detail": "At 18:28 UTC H5 halted itself on a buy that landed about 6.3 s after its signal (the limit is 5 s), because the live feed delivered that signal 5.4 s late. It sold at once. At 18:38 UTC the manager cleared the halt after checking that nothing was open. H5 trades again at the smallest stake (0.02 SOL). A fix that refuses such late signals before buying is owed and needs Helm's reinstall. If the same halt fires again before the fix, H5 stays stopped. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-12T18:41:45Z"
+  },
+  {
+   "id": "h5-wspass-rpc-check-1012",
+   "kind": "result",
+   "title": "Public-chain check on the flagged trigger print: no conclusion",
+   "detail": "Interim, not the deciding read. Follow-up on the trigger print that had no row on our tape: each of the 6 trigger-print signatures was asked of the public RPC at finalized commitment; not returned means no answer twice, at least 10 minutes apart. Counts: of the 5 that passed the live check, 2 were returned, 0 were not returned, and 3 were still an error after the last of three re-ask rounds; the 1 refused print was returned. The tool's reading is \"no conclusion\". The kind of error is not known, and the check is finished for this read. It says nothing about any trade's result, and H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-12T16:41:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5-tipauth-6h-interim-1012",
+   "kind": "result",
+   "title": "First interim count on the H5 trade-rate fix; one item flagged for you",
+   "detail": "Interim count, not the deciding read. In the first 6 hours of the current shadow run (2026-10-12, 09:34Z to 15:34Z) the shadow recorded 6 H5 trigger prints. 5 of them passed the check the live bot uses today (no feed gap, no unresolved base break). Whether the bot bought on any of them is not in this count. For 4 of the 5, our own tape of finalized blocks holds the same print with exactly equal reserves. For 1 of the 5, the tape holds no row for that print in the four hour-files searched. The cause is not determined. No-gap pv triggers with ws >= 1: 0 (interim, not the deciding read). Detector health: memory 384,568 kB against the 1.0 GB rule, second feed ok on 364 of 364 heartbeats.",
+   "atUtc": "2026-10-12T15:45:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5-count-tools-merged-1012",
+   "kind": "other",
+   "title": "Three counting tools merged before any data was read",
+   "detail": "Three read tools for the trade-rate fix were merged (#613, #615, #616), each after a code review and a quant-proof review on the PR. They only count: none reads a trade outcome, and none has been run on live data yet. The first read is the +6 h interim read, which is labelled as interim and decides nothing.",
+   "atUtc": "2026-10-12T10:27:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5-shadow-restart2-1012",
+   "kind": "decision",
+   "title": "H5's paper copy restarted a second time (same code)",
+   "detail": "The detector was restarted a second time because my own check job had left a stray file in its code folder; same code; about half an hour of the 24-hour watch was lost. The new copy (job 817) started at 09:34:03Z on the same merged code (5db78a6) from a clean folder, after the live bot was confirmed flat (nothing open, attempts 7, sells landed 7, no stop or halt). The 24-hour data clock for the trade-rate fix now starts at 09:34:03Z. The paper copy was down between the cancel of the first restart and 09:34:03Z.",
+   "atUtc": "2026-10-12T09:34:03Z"
+  },
+  {
+   "id": "research0-freeze-1012",
+   "kind": "other",
+   "title": "Research server froze and was rebooted; a new manager took over",
+   "detail": "The research server (mal-research-0) froze about 06:11Z and was rebooted at 07:29Z. manager10 took over from manager9. The trading host (mal-fast-0) was not affected: the live bot, its paper copy and the halt-rule job kept running. The history walkers restarted by themselves. The scheduled checks were set up again from files on disk.",
+   "atUtc": "2026-10-12T07:29:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5-shadow-restart-1012",
+   "kind": "decision",
+   "title": "H5's paper copy restarted again to record a new check (report-only)",
+   "detail": "09:06Z: after the live bot was confirmed flat (nothing open, attempts 7, sells landed 7, no stop or halt), H5's paper copy was restarted on main 5db78a6 (#610). The new field only records what a stricter chain check would say. Nothing reads it for trading, and decisions are unchanged (72/72). The shadow was down between the cancel of the old copy (after the 09:06:17Z flat check) and 09:06:45Z. The 24-hour data clock for the trade-rate fix starts at 09:06:45Z.",
+   "atUtc": "2026-10-12T09:06:45Z"
+  },
+  {
+   "id": "merge-610-603-1012",
+   "kind": "decision",
+   "title": "Merged: the report-only chain check (#610) and the halt-job follow-ups (#603)",
+   "detail": "#603 merged as 848bd3a. #610 merged as 5db78a6 at head 3102581 after three review rounds. Reviewer OK, the decision-equivalence replay (job #807, 72/72) and quant-proof OK are posted on the PR.",
+   "atUtc": "2026-10-12T09:05:53Z"
+  },
+  {
+   "id": "union-reading-1012",
+   "kind": "result",
+   "title": "Second price feed would not have recovered any refused trade",
+   "detail": "At +24 h, the union check would have recovered 0 of the refused no-gap triggers. The cause: the public feed shows some swaps that are not on the finalized chain (at least 28 distinct signatures not found; the control prints were 18 found, 0 not found, 2 errors). A new report-only check that trusts the chain tape is now collecting data. It is not an edge claim.",
+   "atUtc": "2026-10-12T07:58:00Z",
+   "approx": true
+  },
   {
    "id": "h5-shadow-restart-1011",
    "kind": "decision",
@@ -348,9 +458,9 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "Canary STOPPED (new buys) since 10-10T07:15:10Z under DEC-024 section 5.1 (A3 BOOST last-slice median 333 s < 335 s); resume needs a dated owner amendment. Before the stop: 3 trades at 0.02 SOL, +0.005199 SOL (unpromoted, not evidence). Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03).",
+   "note": "Read ended NOT_DECIDABLE on 2026-10-13, no look read (quant-proof's ruling; the A3 halt record is in the EXP file): the daily structure monitor (job #907) flagged the pump fees program redeployed on 2026-10-12T17:40:24Z, inside Look 1's window [10-10, 10-16). Nothing was computed; it is neither a pass nor a FAIL; there is no later look and v1 is not re-filed. Canary: live again at T0 (0.02 SOL) since 2026-10-13T09:44:43Z after a stop from 07:14:44Z, labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\"; 11 attempts, 11 sells landed, nothing open at the removal. It halted itself once on 10-12 on a late buy; Helm installed the late-signal fix at 2026-10-13T00:42Z. Synthetic pools excluded (Am.4). Unpromoted, not evidence.",
    "tag": {
-    "text": "canary stopped",
+    "text": "not decidable; canary live, T0",
     "tone": "warn"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
@@ -359,9 +469,9 @@
    "id": "EXP-025",
    "title": "EXP-025 C1-NF (post-graduation momentum model + top-holder cap)",
    "stage": "pre-registered",
-   "note": "Looks about 10-17 and 10-24 on forward-1002ev. Synthetic pools kept (Am.2). Canary terms DEC-026: 0.05 SOL, 0.5 SOL wallet; build round 1 done, all PRs still need changes; live likely 10-15 to 10-17. September exploration +8.151% flat / +7.220% press (not out of sample).",
+   "note": "C1-NF canary SHELVED by the owner 10-12. The soak (#658) and its monitor (#662) continue as a regime watch; revive at 10 or more kept trades per day on 2 days. Older note: Looks about 10-17 and 10-24 on forward-1002ev. Synthetic pools kept (Am.2). Canary terms DEC-026: 0.05 SOL, 0.5 SOL wallet; build round 1 done, all PRs still need changes; live likely 10-15 to 10-17. September exploration +8.151% flat / +7.220% press (not out of sample).",
    "tag": {
-    "text": "building canary",
+    "text": "shelved",
     "tone": "muted"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-025-c1nf-part1-prereg.md"
@@ -381,7 +491,7 @@
    "id": "EXP-022",
    "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
    "stage": "pre-registered",
-   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
+   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn. 2026-10-13: the structure monitor halted on a redeployed fees program (pins_changed); not fatal before counting. A halt in the last run before 10-16T01Z (the 10-15 06:41Z run) withdraws CAP-PICK, so the re-pin has to be in place before that run [manager's reading].",
    "tag": {
     "text": "kill test",
     "tone": "muted"
@@ -541,6 +651,102 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261013-h5-resumed",
+   "from": "claude",
+   "atUtc": "2026-10-13T09:48:28Z",
+   "text": "For you (last edited 10:01 UTC on quant-proof's review; no action needed; one question from 09:12 UTC is still open if anything in it changes your decision): H5 is trading again at the smallest stake (0.02 SOL) since 09:44 UTC on 10-13, labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". It was stopped for two and a half hours, from 07:14 UTC, after pump.fun's fees-program upgrade. Why it could resume: your decision on the slice count (read on the middle value), under the resume rule you set on 10-11, with quant-proof's checklist ticked item by item: the records merged with both reviews; the pool-by-pool count below the flag level; the timing checks, executor status and health check; the pool-class audit for 10-12 with 0 disagreements over 8 pools; the structure pins unchanged since the clean run. Your 09:12 UTC question had no reply when I read it at 09:44 UTC, after its 09:42:57 floor; I did not count silence as a second approval, and if anything in it changes your decision I stop H5 again at once. What you should know about this resume: (1) the 29–30 band is not met pool by pool: of the 39 pools counted completely after the upgrade, 4 had 28 (25 had 29, 10 had 30); the middle value is 29. Before the upgrade, on the rough count (each \"28\" there means 28 or fewer), 6 of the 50 pools of the four daily checks were at 28 and the middle value was 30. The counts do not show that 28-slice pools began with the upgrade, and they do not show that nothing moved. (2) In the check after the re-pin one pool had 26 or fewer (28 pools: 26 on 1, 28 on 1, 29 on 15, 30 on 9, 31 on 2); nothing before the upgrade was below 28 on that count. That count can read low for the number of pools under 29. (3) One of the 40 pools after the upgrade had a 303-second pause between slices and its last slice at 635 seconds; H5 sells at 330 seconds; no pause of 60 seconds or more and no last slice later than 400 seconds on the 50 pools before the upgrade or on the 28 of the later check. (4) The first 2.8 hours after the upgrade were not sampled. (5) Only the fees program changed; who executed the upgrade is not identified (the upgrade authority is unchanged), and what the new program does differently is not established. (6) Fees: on 12 of 12 simulated round trips the fee rates equalled the pinned tier. Limits: a small sample; tiers covered 0, 1, 9 and 24 only, with 18 of the 24 simulated events in the lowest tier; reported rates only; no simulated pool was inside its BOOST window; one RPC provider's simulation; the full list is in the review. The tool had run 4 times on the live programs before the declared run; 2 of those ended in its own FAIL (one before a decoder fix in the tool and with one mistyped address, both with non-canonical pools); in 3 simulations of the first run the fee rates were not read; runs 1 and 4 have no output file. (7) The 40th pool's count (29) is not confirmed complete, and the declared re-count printed \"not clean\" for that reason. The re-measurements ran on scripts that re-implement the review's originals; quant-proof compared them and accepted them, and that stays recorded as a deviation. (8) Population after the upgrade, reported, not judged: mayhem pools 21 of 64 against 5 of 20 before; non-WSOL 4 of 64 against 2 of 20; synthetic pools 6 of 40 and 1 of 21 against 4 of 19. (9) One buy was sent after the upgrade and before the stop, the 10-12 18:28 UTC late buy; its fees were not checked and it stays in every figure. (10) You answered the first version of my question; two sentences of mine in it were corrected afterwards and went to you at 09:12 UTC. The daily tracking you asked for starts with the 10-14 structure check: pools at 28 slices or fewer and at 27 or fewer (6 of 50 and 0 of 50 before the upgrade), pauses of 60 seconds or more and last slices later than 400 seconds (0 of 50 each before the upgrade). A flag is a message to you, never an automatic stop. The rule for when I flag you, with its limits, is point (6) of my 09:24 UTC entry below. H5's formal October test (EXP-024) ended not decidable with no look read: neither a pass nor a fail, and this version will not get a formal test. A step to a larger size is not near and would have no formal test behind it. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-h5-pre-removal",
+   "from": "claude",
+   "atUtc": "2026-10-13T09:24:51Z",
+   "text": "Update 09:44 UTC: the stop was removed after every check passed (see the newer entry). For you (reply only if it changes your decision): H5 is still stopped at this writing. Before the stop is removed, this is what you should have in front of you. (1) In the structure check run after the re-pin (28 pools) one pool had 26 slices or fewer. No pool among the 50 before the upgrade or the 40 examined after it was below 28 by the same signature-list count, so your reason \"28-slice pools existed before the upgrade\" does not cover that pool. Under your line it does not stop H5, because the middle value is 29. (2) Those 28 pools counted one by one (signature-list count, which can read low: on the 40 pools after the upgrade it gave 2 at 28 or fewer where the exact count gave 4 of 39): 26 on 1 pool, 28 on 1, 29 on 15, 30 on 9, 31 on 2; so 2 of 28 at 28 or fewer and 1 of 28 at 27 or fewer; no pause of 60 seconds or more; no last slice later than 400 seconds. The level at which I would have waited for your reply (9 or more of 28 at 28 or fewer, or any such pause, or any last slice later than 400 seconds) is not reached. (3) Of the 40 pools examined after the upgrade, 39 were counted completely (28 slices on 4, 29 on 25, 30 on 10); on the 40th, 29 slices were counted but the count is not confirmed complete, and the declared test printed \"not clean\" for that reason. (4) You answered the first version of the question, and your message in the session at 08:44:39 UTC sent that answer again. Two sentences of mine at the end of that version were corrected after it was sent. If either changes your decision, say so and H5 stays stopped. Both forms went to you at 09:12 UTC as a MiScusi question. (5) Your line as recorded reads the band on the middle value of the monitor's slice count over at least 15 pools examined after an upgrade; \"at least 15 pools\" and \"after an upgrade\" were added by quant-proof and were not in the option you chose; with fewer than 15, the every-pool reading applies. (6) The daily tracking you asked for starts with the daily structure check of 10-14. A flag is a message to you, never an automatic stop. I flag you when a daily run with at least 15 pools has 30% or more of them at 28 slices or fewer (before the upgrade: 6 of 50), or when the count pooled over the daily runs since 10-14 (all of them, or the latest 7) is above 6 of 50 by a one-sided Fisher exact test at p below 0.05, or when the pooled count at 27 or fewer is above the pre-upgrade 0 of 50 by the same test (a daily run with fewer than 15 pools is not evaluated for the daily part; its pools still enter the pooled counts); and when any pool shows a pause of 60 seconds or more or a last slice later than 400 seconds (before the upgrade: 0 of 50). Limits: the pooled test needs 9 of 28, 15 of 56, 28 of 112 or 47 of 196 pools at 28 or fewer, so a pooled share under about 24% is not flagged; and because it is repeated daily with no correction it sends a false flag more often than 1 time in 20. Every daily note carries the counts either way. (7) You wrote \"17.58 SOL\" per pool; measured are 17.5845 SOL used per pool on the 39 fully counted pools. What remains before removal: the pool-class audit for 10-12 (running), one final run of the status, timing and health checks, and the wait on the 09:12 UTC question (not before 09:42:57 UTC; a reply that withdraws or questions your decision means no removal). If any check fails, H5 stays stopped and I tell you. If H5 trades again, it is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\", at 0.02 SOL. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-h5-owner-decided",
+   "from": "claude",
+   "atUtc": "2026-10-13T08:50:52Z",
+   "text": "Superseded: H5 resumed at 09:44 UTC (see the newer entries). This entry was last edited at 09:18 UTC. For you (no action needed now): your decision on the slice count is recorded word for word in the trial plan (DEC-024): the 29–30 band is read on the middle value across pools, and H5 may resume if the other steps hold. H5 is still stopped at this moment. What remains before the stop is removed: the records with both reviews, a pool-by-pool count on the fresh structure run's 28 pools (at least one of them had 26 slices or fewer, lower than any pool counted before), a message to you with those counts (the two sentences of my question that I corrected after sending you the first version, which is the version you answered, went to you at 09:12 UTC as a MiScusi question), the pool-class audit for 10-12 (running), the timing checks and one daily health check run just before removal. If any of them fails, H5 stays stopped and I tell you. The two daily measures you asked for (pools under 29 slices; pauses of 60 seconds or more) start once the tracking tool (merged 2026-10-13 08:58 UTC, PR #631) has passed its declared comparison with the reference counts (job #919: running at this writing); before the upgrade they read 6 of 50 pools at 28 or fewer (by a rough slice count that can read high, so the number of pools under 29 before the upgrade is 6 or more) and 0 of 50 pools with such a pause. If H5 trades again, it is an execution measurement at 0.02 SOL: its formal October test (EXP-024) ended not decidable with no look read, so it is not a tested book. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-h5-slices-decision",
+   "from": "claude",
+   "atUtc": "2026-10-13T08:37:52Z",
+   "text": "Answered at about 08:44 UTC (see the newer entry). For you (a decision): H5 is still stopped, and one check from the upgrade review is yours to decide. The question is in MiScusi with the full counts (\"slices per pool\"). In short: after pump.fun's fees-program upgrade, BOOST made 28 small buys instead of 29 or 30 in 4 of the 39 pools counted completely; the middle value is 29. On the rough count (an upper bound, so \"28\" means 28 or fewer), 6 of the 50 pools in the four daily checks before the upgrade were at 28, so the every-pool reading was not met before the upgrade either; the middle value was 30 on those 50 pools and is 29 after. The counts do not show that 28-slice pools began with the upgrade, and they do not show that nothing moved. In the fresh structure check (28 pools) the rough counts ran from 26 to 31, middle value 29. The trial plan's line \"29–30 slices per pool\" does not say whether every pool or the middle value is meant; quant-proof ruled the stricter reading applies until you say otherwise. Option 1: resume once the other steps hold, reading that line on the middle value from now on. In future upgrade reviews single pools at 28 would then not keep H5 stopped. Option 2: stay stopped. Read per pool, the check also failed on pools from before the upgrade, so it keeps failing until BOOST stops producing 28-slice pools or you change the rule. Done so far: on 12 of 12 simulated round trips the fee rates equal the pinned tier (a small sample; what the new fees program does differently is not established), the other BOOST checks are inside their bands, the re-pin is merged with both reviews, and a fresh structure check (28 pools) shows the five halt flags and the program-change flag clear; quant-proof has not checked that run yet. Still owed before H5 could resume, besides your decision: quant-proof's check of that run, the DEC-024 records, the day checks and the other section 5 checks, and the removal of the stop. Separately, and whatever you choose: H5's formal October test (EXP-024) ended \"not decidable\" because of this upgrade, confirmed by quant-proof. Nothing was computed, so it is neither a pass nor a fail, and this version of H5 will not get a formal test. If H5 resumes, it is an execution measurement at 0.02 SOL, not a tested book. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-h5-structure-stop",
+   "from": "claude",
+   "atUtc": "2026-10-13T07:19:04Z",
+   "text": "Update 08:37 UTC: the newer entry supersedes this one (EXP-024 is confirmed ended; the slice count is your decision). For you: H5 is stopped since 07:14 UTC on 10-13. The daily structure check found that pump.fun redeployed its fees program on 10-12 at 17:40 UTC, and the trial rules require a stop when a pinned program changes. Nothing was open and nothing is pending (11 attempts, 11 sells landed). The other five structure checks were clear: BOOST is on, its budget and slice count match the pins, and the median last BOOST slice came 332 s after migration over 17 pools (the halt line is below 315 s). Resume follows the answer you gave on 10-11: I review that the upgrade leaves the BOOST mechanics and fees unchanged, re-pin with quant-proof's OK, get one clean structure run, then resume and tell you. If the review finds a change to fees or BOOST, H5 stays stopped until you decide. One more consequence: my reading of the rules is that a structure halt inside the counting week (10-10 to 10-16) ends H5's formal test (EXP-024) as not decidable, with no later look, even if the next check is clean. Quant-proof's ruling on that is owed, and the EXP file is not amended yet. CAP-PICK is not withdrawn; a halt in its last structure run before 10-16 01:00 UTC (the 10-15 run) would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-presend-installed",
+   "from": "claude",
+   "atUtc": "2026-10-13T00:54:23Z",
+   "text": "Superseded in part: H5 was stopped at 07:14 UTC on 10-13 (see the newer entry). For you (no action needed): Helm installed the late-signal fix at 00:42 UTC on 10-13, and my own checks agree with Helm's report where I could check it. The installed files match the reviewed version, the new 3.5 s limit is the one running, and H5 is live at the smallest stake (0.02 SOL) with 11 attempts, 11 sells landed, nothing open and no halt. Buying was closed for about 11 minutes during the switch (Helm's report). One check is still open: the daily health check still shows yesterday's 18:28 UTC halt in its 24-hour window, so a rerun is owed after 18:28:03 UTC today. Until that check is clean there is no step to the next size. A clean check removes only this one block: the step still needs 20 landed buys (11 so far) and the other conditions of the trial plan. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-helm-presend",
+   "from": "claude",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "Done at 00:42 UTC on 10-13 (see the newer entry). The request to Helm was the comment on pull request 624 (github.com/vaanai/MAL/pull/624#issuecomment-6131222470)."
+  },
+  {
+   "id": "fy-20261013-research-nulls",
+   "from": "claude",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "For you (information only): three ideas tested on 10-12 on old exploration data have a verdict, and none passes, and one was only counted. Haiku as the trader or as a veto: no lift shown (3 buys in 150 cards; the veto refused 36 of 36). Haiku judging coin names for big runs: dropped (7 of 49 against 242 of 951). Mayhem-mode flow: counted only; no verdict, because no trading rule was tested. A model trained to pick big winners: it fails five of its six bars set in advance. It had more trades at +100% of stake or more (85 of 3,494 against 24 of 2,986) but fails the declared bars: 3 of 28 days positive against 22 of 28 for the existing model. These are development counts on rebuilt data, not gate evidence. Next: the October data opens on 10-16 and the study queue for it is written."
+  },
+  {
+   "id": "fy-20261012-1841-h5-latch",
+   "from": "claude",
+   "text": "H5 halted itself at 18:28 UTC on a buy that landed about 6.3 s after its signal. The limit is 5 s, because the live feed delivered that signal 5.4 s late. It sold at once. The manager cleared the halt at 18:38 UTC after checking that nothing was open. H5 trades again at the smallest stake. A fix that refuses such late signals before buying is owed and needs Helm's reinstall. If the same halt fires again before the fix, H5 stays stopped. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-12T18:41:45Z"
+  },
+  {
+   "id": "fy-20261012-1641-wspass-rpc",
+   "from": "claude",
+   "text": "Interim, not the deciding read. Follow-up on the trigger print that had no row on our tape: each of the 6 trigger-print signatures was asked of the public RPC at finalized commitment; not returned means no answer twice, at least 10 minutes apart. Counts: of the 5 that passed the live check, 2 were returned, 0 were not returned, and 3 were still an error after the last of three re-ask rounds; the 1 refused print was returned. The tool's reading is \"no conclusion\". The kind of error is not known, and the check is finished for this read. It says nothing about any trade's result, and H5 has not cleared the promotion gate. The bot keeps running at 0.02 SOL per trade on the manager's call. Owed, not done: a reviewed change so the tool reports the kind of error as a count, and a quant-proof ruling on whether any further ask is allowed.",
+   "atUtc": "2026-10-12T16:41:00Z"
+  },
+  {
+   "id": "fy-20261012-1545-wspass-absent",
+   "from": "claude",
+   "text": "Interim count, not the deciding read. In the first 6 hours of the current shadow run (2026-10-12, 09:34Z to 15:34Z) the shadow recorded 6 H5 trigger prints. 5 of them passed the check the live bot uses today (no feed gap, no unresolved base break). Whether the bot bought on any of them is not in this count. For 4 of the 5, our own tape of finalized blocks holds the same print with exactly equal reserves. For 1 of the 5, the tape holds no row for that print in the four hour-files searched. The cause is not determined. It can be a trade our tape missed, a trade the tape holds under another pool or index, a row filed outside the hours searched, or a live-feed print for a transaction that is not in a finalized block. This count cannot tell these apart. It matters because the bot acts on the live feed's print. It says nothing about any trade's result, and H5 has not cleared the promotion gate. No written rule requires a stop, so the manager keeps the bot running at 0.02 SOL per trade. A small checking tool that asks the public chain about these 6 prints is allowed only after it is built and reviewed; until then nothing more is looked at for that trigger.",
+   "atUtc": "2026-10-12T15:45:00Z"
+  },
+  {
+   "id": "fy-20261012-1030-am8",
+   "from": "claude",
+   "text": "For you, a question is open in your Needs-you list (decide by 10-14 09:00Z). Your OK for the H5 trade-rate fix was conditional on trade quality not being affected and everything still being profitable. I cannot certify that condition, so I am asking you to accept plain bounded-risk terms instead: 0.02 SOL per trade, a switch-off at 0.04 SOL lost, about 0.06 SOL worst case plus fees, and pauses for review at 25, 50 and 100 trades. Your answer will be written into the amendment word for word with its date. Nothing is switched on until you answer.",
+   "atUtc": "2026-10-12T10:29:00Z"
+  },
+  {
+   "id": "fy-20261012-0912-update",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (no action needed except the F1f question in the last item of this group). The research server froze this morning and was rebooted. The live bot was not affected and nothing was lost. H5 is live at the small test size (0.02 SOL per trade): 7 attempts, 7 sells landed as of 09:06Z. It needs 20 landed buys before the next step. The fix to get H5 more trades is not done. The first idea (a second price feed) did not help, because the public feed shows some trades that never made it onto the chain. A stricter check is now being recorded, for information only. It needs at least 24 hours and at least 10 qualifying triggers (times the detector saw a tradeable setup that the current rule refused), then reviews, a rule change, and Helm must install the new rule. Realistic date: about 10-15 or 10-16. This does not say it will add trades or money."
+  },
+  {
+   "id": "fy-20261012-0912-preapproval",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (information only): you said the H5 trade-rate fix is fine \"so long as trade quality isn't affected, and everything's still profitable\". I recorded that as a conditional OK. It does not switch anything on by itself. The written amendment will repeat your conditions, and the checks will be reported before any change. I cannot say \"still profitable\": H5 has not passed its gate. Also recorded: the C1-NF canary is shelved (its watch job keeps running, and it is revived if it gets 10 or more kept trades per day on 2 days; kept trades are the trades the bot accepted). Until 10-16 the focus is H5 plus light research."
+  },
+  {
+   "id": "fy-20261012-0912-research",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "For you (information only): the research from this morning found nothing to trade yet. Better exits for H5 (when the bot sells): no winner. Five new October ideas were listed and one was dropped. The best idea (BOOST on cheap custom pools: a buyer that buys whatever the price, on pools with low fees and a custom trading pair) has too few September examples (67 pools on 11 dates), so it waits for the 10-16 data. Other trading venues: no forced buyer like BOOST. A strategy library and a short list of what is closest to live are written down. None of this is a profit claim."
+  },
+  {
+   "id": "fy-20261012-0912-f1f",
+   "from": "claude",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "Question for you before 10-16: the quote-coin test (F1f) is ready and frozen. It is a count only: it looks for a new kind of buyer that buys whatever the price, created by pump.fun's October 7-8 update (pump-coin quote mints and multi-hop routing). Running it on the real data needs your OK on a release file (RELEASE.json), which is the written permission that unlocks the real data for this one count. If you say no, the F1f count does not run. The real run is planned for the 10-16 read. Please say yes or no before 10-16."
+  },
+  {
    "id": "fy-20261011-0632-dec029-m1",
    "from": "claude",
    "atUtc": "2026-10-11T06:32:10Z",
@@ -698,6 +904,69 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261013-0948",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T09:48:28Z",
+   "text": "09:48Z: H5 RESUMED at T0: STOP removed 09:44:43Z (job #928; after: stop_file=False, attempts 11, open 0, pending 0, no halt). Before it: synthetic audit for 10-12 exit 0 (8 pools, 0 disagree, 0 unclassified; job #918), final checks (job #927), checks file sha256 6162dfd1…, owner question q_hw6mloW_n2goPQ open with no answer at 09:44:26Z (left open). Label: execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. The DEC-024 resume record is in review. Tipauth +24 h reads: not the deciding read (duration line not met: 23.99 covered hours of 24, and 3 qualifying triggers where 10 are needed). H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0924",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T09:24:51Z",
+   "text": "09:24Z: H5 still STOPPED. Records PR #632 merged (QP OK and Reviewer OK at 3a1847d): DEC-024 halt record with the owner's line, EXP-024 A3 halt record. Checklist item 5 (job #920, declared): the step-3 run's 28 pools by signature-list count: 26 on 1, 28 on 1, 29 on 15, 30 on 9, 31 on 2; no gap of 60 s or more; no last slice later than 400 s; flag level not reached. The tracking tool (PR #631 merged) matched the reference counts pool by pool on the declared fields in its declared comparison (job #919), with one difference outside them (a non-keeper count of 1 against 2). The pre-removal message to the owner is in the notebook (n_haAfEksjv72ZAg) and here. Remaining: synthetic audit for 10-12 (job #918, running), the final checks run, and the floor of 09:42:57Z on question q_hw6mloW_n2goPQ. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0850",
+   "from": "claude",
+   "kind": "decision",
+   "atUtc": "2026-10-13T08:50:52Z",
+   "text": "08:50Z: the owner decided the slices band (read on the median; resume once the other steps hold). H5 is still STOPPED: the DEC-024 halt record with the owner's line and the EXP-024 A3 halt record are in review; pre-removal checks are running as jobs (synthetic audit for 10-12 = job #918). Canary label from now on: execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0837",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T08:37:52Z",
+   "text": "08:37Z: H5 still STOPPED. Re-pin PR #629 merged (Reviewer OK and QP OK at 3bdff5a; OK for the re-pin only). Review: of the pinned items only the fees program changed; fee bps equal the pinned tier on 12 of 12 simulated round trips (job #911, stated limits); BOOST bands inside except slices per pool, which is not met per pool (28 slices on 4 of 39 fully counted pools; median 29) and is the owner's decision (question q_Jd6RqMJmTC8r3w). R1 inside (job #912), R2 clean (job #913), R2b not_clean on one pool not fully fetched (job #914). Resume step-3 structure run (job #915, 28 pools): five flags and program_changed evaluated and clear; quant-proof has not checked it yet. EXP-024: quant-proof ruled the read ended NOT_DECIDABLE at job #907, no look read. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0719",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T07:19:04Z",
+   "text": "07:19Z: H5 STOPPED at 07:14:44Z. The structure monitor (job #907) halted on pins_changed: pump fees program redeployed at slot 456132171 (2026-10-12T17:40:24Z); program_changed fired; the other five flags clear (last slice median 332 s, 17 pools). STOP verified (job #908): attempts 11, open 0, pending 0, no halt latched. One canary buy row is dated after the deploy instant (job #909, kind and time keys only). Resume path: DEC-024 Amendment 7 item 2 (review, re-pin with quant-proof's OK, clean A3 run). Manager's reading: EXP-024 section 11 ends the read NOT_DECIDABLE on an A3 halt inside Look 1's window; quant-proof's ruling on that reading is owed and the EXP file is not amended yet. CAP-PICK: a halt in the 10-15 06:41Z run would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0054",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T00:54:23Z",
+   "text": "00:54Z: Helm installed the H5 late-signal fix at 00:42Z; the manager's checks agree where they could check it (25 of 25 installed files match the reviewed list; the 3.5 s limit is running; 11 attempts, 11 sells landed, nothing open, no halt). Still open: the daily health check shows yesterday's 18:28Z halt in its 24 h window; a rerun is owed after 18:28:03Z. No step to the next size until it is clean, and a clean check removes only this block (20 landed buys and the other conditions still apply). H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "s-20261013-0023",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "00:21Z check: H5 live at 0.02 SOL, 11 attempts, 11 sells landed, nothing open, no stop or halt. The late-signal fix is merged (#622) and waits for Helm's install (request on #624). Research on 10-12: three lines have a verdict and none passes; Mayhem was counted only, no trading rule tested. Next: 09:17Z rule questions for the October opening; 09:34Z the +24 h tipauth read (first instant that can be the deciding read)."
+  },
+  {
+   "id": "s-20261012-0912",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-12T09:12:00Z",
+   "text": "09:12Z: research server froze about 06:11Z and rebooted 07:29Z; the live H5 setup on the trading host was not affected. Merged #603 (848bd3a) and #610 (5db78a6, report-only chain check). Restarted H5's paper copy at 09:06:45Z so the 24 h clock for the trade-rate fix starts then. Live H5: 7 attempts, 7 sells landed, no stop or halt. Search A, Search B, the September count and the other-venues search are done: no survivor, nothing claimed. Next: the +1 h, +6 h and +24 h reads, then the review package for the fix. Realistic live date about 10-15 or 10-16."
+  },
+  {
+   "id": "s-20261012-0758-union",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-10-12T07:58:00Z",
+   "text": "Second-feed reading at +24 h (PR #596 comment 6120296558): a union check would have changed no live decision in 24 h. No-gap pv triggers: 3 with both feeds at 0, 0 with only the websocket seeing a break, 6 with both. With a feed gap: 1 / 1 / 0 (ws 0 union 0 / ws >=1 union 0 / ws >=1 union >=1). Cause: websocket prints not found on the finalized chain (at least 28 distinct signatures not found; controls 18 found, 0 not found, 2 errors). No phase 2 on the union field."
+  },
   {
    "id": "s-20261011-0710",
    "from": "claude",

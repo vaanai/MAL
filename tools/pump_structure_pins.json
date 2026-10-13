@@ -1,8 +1,8 @@
 {
   "schema": "pump_structure_pins.v1",
   "note": "Written by tools/pump_structure_monitor.py --write-pins from a live public-RPC read. Re-pin only after reviewing the change that halted the monitor.",
-  "pinned_utc": "2026-10-09T07:36:13Z",
-  "pinned_at_slot": 454800888,
+  "pinned_utc": "2026-10-13T07:37:32Z",
+  "pinned_at_slot": 456362096,
   "accounts": {
     "bonding_fee_config": {
       "address": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
@@ -37,9 +37,9 @@
     },
     "fees": {
       "program_id": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
-      "deploy_slot": 454596501,
-      "deploy_utc": "2026-10-08T16:20:30Z",
-      "sha256": "4757ce83c3a2e1971f0d6042e8effb263b214c019ef40e2baec2bff643cc5732",
+      "deploy_slot": 456132171,
+      "deploy_utc": "2026-10-12T17:40:24Z",
+      "sha256": "3cf9ee9a380c0ced31171802d402551910ceb8c4819ede4ef44aaf63a12dbfac",
       "data_len": 948989
     }
   },

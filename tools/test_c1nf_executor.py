@@ -222,6 +222,12 @@ class LimitsTests(Case):
         lo = c.c1nf_limits({"stake_lamports": 5_000_000, "max_open": 1, "daily_loss_lamports": 1})
         self.assertEqual((lo.stake_lamports, lo.max_open, lo.daily_loss_lamports), (5_000_000, 1, 1))
 
+    def test_c1nf_keeps_the_former_10_s_pre_send_trigger_age_whatever_h5_does(self):
+        self.assertEqual(c.c1nf_limits({}).max_trigger_age_ms, 10_000)  # H5's default is now 3_500; C1-NF's behaviour is unchanged
+        self.assertEqual(c.C1NF_MAX_TRIGGER_AGE_MS, 10_000)
+        for tier in c.C1NF_TIERS:
+            self.assertEqual(c.c1nf_limits({}, tier).max_trigger_age_ms, 10_000, tier)
+
     def test_the_h5_rules_knobs_and_this_rules_constants_are_not_configurable(self):
         for key, val in (("exit_land_offset_s", 0.55), ("deadline_s", 370), ("trigger_variant", "pv"), ("max_trigger_age_ms", 3_000), ("late_sell_min_n", 1),
                          ("sell_priority_lamports", 55_000), ("escalated_priority_lamports", 150_000)):

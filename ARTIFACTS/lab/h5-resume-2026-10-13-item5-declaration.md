@@ -1,0 +1,11 @@
+# Checklist item 5: per-pool slice and pause counts on the pools of the resume step-3 run
+
+Written 2026-10-13T09:05:34Z (`date -u`), before the run. Required by quant-proof before `STOP` is removed (PR #632 comment 6142079418, section H, item 5).
+
+- **Why.** The step-3 A3 run (job #915, 28 profiled pools, slots 456357161 to 456374080) recorded a slice-count minimum of 26 by the signature-list count. The record holds the minimum, not the per-pool counts. No pool among the 50 before the deploy or the review's 40 after it is below 28 by that count.
+- **Runner.** `/data/mal/hunt-1008/h5-work/program-upgrade-1013/r1_cadence.py`, sha256 `314a576dd25728cf0dd057e02d5bd7732da2ba7d3030739776994ba3a052d07a` (the R1 runner, accepted by quant-proof in PR #629 comment 6141362129). `tools/boost_slice_watch.py` is not used here: its declared live comparison (job #919) has not finished at writing.
+- **Range.** `--ranges 456357161-456374080`, one run, MiScusi job on mal-research-0, public RPC, fresh cache directory, `--max-calls 2500`. The job prints this file's sha256 before the runner starts.
+- **Reported, from the runner's output file** (`union_pools`: per pool the signature-list slice count `n`, the slice times, the verified last slice): the number of pools reconstructed and profiled beside the record's 28 (a difference is reported, not adjusted); the signature-list count of every pool; the number at 28 or fewer and at 27 or fewer; the pools whose largest gap between consecutive signature-list times is 60 s or more; the pools whose last slice is later than 400 s after migrate. The runner's own `R1_TEST` line (the cadence test against 11.759 s) is not part of this item and is not used.
+- **Flag level (quant-proof's).** 9 or more of 28 pools at 28 or fewer (30%; on another reconstructed number of at least 15, 30% of it), or any pool with a gap of 60 s or more, or any pool with a last slice later than 400 s. At flag level the owner is told and `STOP` is not removed until the owner has replied. Below flag level the counts go to the owner in the pre-removal message and no reply is awaited.
+- **If the run does not finish.** A run that does not finish or reconstructs fewer than 15 pools is not a result; one further run is allowed; after that, report to quant-proof.
+- Outcome-blind: chain structure data only.

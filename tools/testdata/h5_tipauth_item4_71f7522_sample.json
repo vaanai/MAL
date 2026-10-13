@@ -1,0 +1,1206 @@
+{
+ "ambiguities": [
+  {
+   "choice": "Round 3 / round 1: 'Counted only from the shadow restart ... (start record code_sha = that merge commit)'. Chosen: the LAST start record at or after T0 is the run origin (stricter: a later restart resets the 24 h); all start t_ms and code_sha are reported; n_starts_after_t0 > 1 blocks tool_rules_clear. A rerun with --since-ms at the later start is a new clock and needs its own clean-checkout record. The origin's code_sha must equal --expect-code-sha (change 1).",
+   "id": "A01",
+   "status": "RULED",
+   "topic": "Which start record, when more than one has t_ms >= T0"
+  },
+  {
+   "choice": "Item 1 uses covered_h: window_end = min(--until-ms, largest used t_ms); a hole is any interval longer than 600,000 ms between consecutive points of [origin, hb t_ms..., window_end]; covered_h = (window_end - origin - sum(holes)) / 3,600,000. elapsed_h, covered_h, hb_max_gap_ms and n_holes are printed.",
+   "id": "A02",
+   "status": "RULED",
+   "topic": "Elapsed and covered hours (replaced by change 10)"
+  },
+  {
+   "choice": "Item 2: 'on at least 90% of trigger records'. Chosen: pv and fv triggers; both the share over ALL triggers and the share over no-gap pv triggers with ws >= 1 must reach 90% (stricter). 'ok' needs status == 'ok' AND a non-null integer value. A known share below 90% is a fail even if the other share is null; null only when no known share fails and one is unknown (change 7).",
+   "id": "A03",
+   "status": "RULED",
+   "topic": "'trigger records' in the 90% coverage (item 2)"
+  },
+  {
+   "choice": "'gap false' is read as gap is exactly False; a missing or null gap is not no-gap.",
+   "id": "A04",
+   "status": "RULED",
+   "topic": "no-gap"
+  },
+  {
+   "choice": "Item 2: 'base_union.status ok on at least 90%'. Chosen: status == 'ok' and the union value base_breaks_unresolved_settled_union a non-null integer.",
+   "id": "A05",
+   "status": "RULED",
+   "topic": "Union ok (item 2)"
+  },
+  {
+   "choice": "Round 3 (R2 C7 f): would-pass is pv-only, by construction (would_pass_n == would_pass_pv_n). A fv trigger that passes everything else is counted separately as fv_not_eligible_variant_n ('not eligible: variant'). The executor acts on pv only. The pv plus fv sum is never called trades.",
+   "id": "A06",
+   "status": "RULED",
+   "topic": "Would-pass variants"
+  },
+  {
+   "choice": "boost_src must be one of 'pda', 'event_authority'. 'none' (no BOOST identity known, so dropped_boost_n is 0 by construction), 'behavioural', any other string and a missing key fail C3. would_pass_by_boost_src stays reported.",
+   "id": "A07",
+   "status": "RULED",
+   "topic": "C3 boost_src (R1, round 3)"
+  },
+  {
+   "choice": "Not decidable from records. The start record 'rule' ids are reported; C6 is NOT applied and is listed as outside_tool_pending.",
+   "id": "A08",
+   "status": "RULED",
+   "topic": "C6 'v1 only'"
+  },
+  {
+   "choice": "Reported three ways: sequential funnel C1..C4, C5a, C5b, C5c; leave-one-out (passes all others, fails this one); and for C5 parts among C1-C4 triggers: failing the part at all, failing only that part, failing all three, failing any.",
+   "id": "A09",
+   "status": "RULED",
+   "topic": "'removes' per C condition (item 6)"
+  },
+  {
+   "choice": "Share of ws-0 no-gap plain pool closes with tipauth >= 1 OR orphaned_by_drop_n >= 1, over closes with base_tipauth.status ok and a non-null value (n_ok). met is null when n_ok < 100 (INCOMPLETE_MIN_OK), else share_of_ok <= 5%. Both shares stay reported.",
+   "id": "A10",
+   "status": "RULED",
+   "topic": "Tip incompleteness share (item 5) (replaced by change 2)"
+  },
+  {
+   "choice": "Every unsealed trigger and pool record that carries a base_tipauth dict. 'a base_tipauth without the dropped key' is counted literally (an exception record counts here and in union_errors). A malformed dropped entry (not [str, None-or-int, int slot]) is counted as its own violation. A missing trigger slot or margin_slots when the trigger bound must be checked is a violation. union_errors = largest hb counters.union_errors in the run; an hb whose counters dict lacks the key is a 0-valued sample, an hb whose value is present but not an integer counts as 1 (fail closed). A trigger or pool record whose pool is not a string is left out of every count and counted in record_pool_not_str (must be 0).",
+   "id": "A11",
+   "status": "RULED",
+   "topic": "Consistency checks apply to"
+  },
+  {
+   "choice": "Also applied to an empty list: dropped_first_slot / dropped_last_slot must then be null (status ok).",
+   "id": "A12",
+   "status": "RULED",
+   "topic": "'dropped_n <= 20 with last entry slot != dropped_last_slot'"
+  },
+  {
+   "choice": "'Tested' = entries classified still dropped or left D. Undetermined entries are reported and excluded from the denominator. The close used is the FIRST close of the pool with t_ms >= the trigger's; if it is not status ok with integer cover_hi >= the trigger slot, all that trigger's entries are undetermined (no skipping ahead). Distinct entries are keyed (pool, signature, event_index) (class: left D if any row is, else still dropped if any, else undetermined). fire(t, l) = (l >= 1) if t < 100 else (l / t > 0.01); met is false if fire on the per-row counts or on the distinct counts.",
+   "id": "A13",
+   "status": "RULED",
+   "topic": "Margin test (item 10) (amended by changes 5 and 8)"
+  },
+  {
+   "choice": "dropped is a list and len(dropped) == dropped_n on the TRIGGER record (round 3 definition). Any failure is a consistency failure. With no would-pass trigger the threshold is null (change 4).",
+   "id": "A14",
+   "status": "RULED",
+   "topic": "'Fully enumerated' on a would-pass trigger"
+  },
+  {
+   "choice": "Triggers (pv and fv, all statuses) with t_ms within 120 s of a UTC hour boundary; share with status tip_pending. Reported only; no threshold is declared.",
+   "id": "A15",
+   "status": "RULED",
+   "topic": "Hour-boundary share"
+  },
+  {
+   "choice": "Item 8 and decision-to-send need the tip tape and the executor's records, outside what this tool may read: null, in outside_tool_pending. Change 9 adds the shadow-side lag t_ms - t_detect_ms (report only).",
+   "id": "A16",
+   "status": "RULED",
+   "topic": "Item 8 (trigger print on the tip, equal pre-trade q and base) and item 9 decision-to-send ms"
+  },
+  {
+   "choice": "Item 9: 'rss against the 1.0 GB re-read rule'. Chosen: met only if the largest hb rss_kb * 1024 < 1,000,000,000.",
+   "id": "A17",
+   "status": "RULED",
+   "topic": "RSS rule"
+  },
+  {
+   "choice": "Computed from the rules this tool owns only. true does NOT mean a proposal is allowed: outside_tool_pending (RPC census, item 8, decision-to-send, C6) is still open and listed. No empty class passes (change 4).",
+   "id": "A18",
+   "status": "RULED",
+   "topic": "tool_rules_clear (replaces the old verdict key, change 3)"
+  },
+  {
+   "choice": "A record belongs to the run if its integer t_ms is >= the origin start t_ms and <= --until-ms; records without an integer t_ms are counted and ignored.",
+   "id": "A19",
+   "status": "RULED",
+   "topic": "Run window for non-start records"
+  }
+ ],
+ "expect_code_sha": "5db78a663a0617527daacb22f5ce6c1a7e92dfa3",
+ "file_sizes": {
+  "h5-shadow-2025-10-09T08.jsonl": 3226
+ },
+ "files": [
+  "h5-shadow-2025-10-09T08.jsonl"
+ ],
+ "item10_margin_test": {
+  "distinct_entries": 2,
+  "entries": 2,
+  "left_D": 0,
+  "left_D_distinct": 0,
+  "left_D_share_of_all_entries": 0.0,
+  "left_D_share_of_tested": null,
+  "left_D_share_of_tested_distinct": null,
+  "rows": [
+   {
+    "class": "undetermined",
+    "event_index": 1,
+    "pool": "PA",
+    "signature": "wpSigA",
+    "trigger_slot_minus_entry_slot": 94,
+    "variant": "pv",
+    "would_pass": true
+   },
+   {
+    "class": "undetermined",
+    "event_index": 0,
+    "pool": "PA",
+    "signature": "wpSigB",
+    "trigger_slot_minus_entry_slot": 95,
+    "variant": "pv",
+    "would_pass": true
+   }
+  ],
+  "still_dropped": 0,
+  "still_dropped_distinct": 0,
+  "tested": 0,
+  "tested_distinct": 0,
+  "undetermined": 2,
+  "undetermined_distinct": 2,
+  "would_pass_entries": 2,
+  "would_pass_left_D": 0,
+  "would_pass_tested": 0,
+  "would_pass_undetermined": 2
+ },
+ "item1_duration": {
+  "covered_h": 0.0011,
+  "elapsed_h": 0.0011,
+  "hb_max_gap_ms": 4000,
+  "min_hours": 24.0,
+  "min_triggers": 10,
+  "n_holes": 0,
+  "n_nogap_pv_ws_ge1": 1
+ },
+ "item2_coverage": {
+  "boundary_tip_pending_n": 0,
+  "boundary_tip_pending_share": 0.0,
+  "boundary_triggers_n": 1,
+  "tip_pending_n_all": 0,
+  "tipauth_ok_n_all": 1,
+  "tipauth_ok_n_nogap_pv_ws_ge1": 1,
+  "tipauth_ok_share_all": 1.0,
+  "tipauth_ok_share_nogap_pv_ws_ge1": 1.0,
+  "tipauth_status_all_triggers": {
+   "ok": 1
+  },
+  "tipauth_status_nogap_pv_ws_ge1": {
+   "ok": 1
+  },
+  "union_ok_n_all": 1,
+  "union_ok_share_all": 1.0,
+  "union_status_all_triggers": {
+   "ok": 1
+  }
+ },
+ "item3_c1_c4_subtab": {
+  "cells": {
+   "orphaned=0|nosettle=0|dropped_first_slot_eq_cover_lo=False": 1
+  },
+  "n_c1_c4": 1
+ },
+ "item3_crosstab": {
+  "fv_triggers": {
+   "ws=0|union=0|tipauth=0|gap=F": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=0|gap=T": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=F": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=T": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=F": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=T": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=F": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=T": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=F": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=T": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=null|tipauth=0|gap=F": 0,
+   "ws=0|union=null|tipauth=0|gap=T": 0,
+   "ws=0|union=null|tipauth=1+|gap=F": 0,
+   "ws=0|union=null|tipauth=1+|gap=T": 0,
+   "ws=0|union=null|tipauth=null|gap=F": 0,
+   "ws=0|union=null|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=F": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=0|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=F": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=null|tipauth=0|gap=F": 0,
+   "ws=1+|union=null|tipauth=0|gap=T": 0,
+   "ws=1+|union=null|tipauth=1+|gap=F": 0,
+   "ws=1+|union=null|tipauth=1+|gap=T": 0,
+   "ws=1+|union=null|tipauth=null|gap=F": 0,
+   "ws=1+|union=null|tipauth=null|gap=T": 0
+  },
+  "plain_pool_closes": {
+   "ws=0|union=0|tipauth=0|gap=F": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=0|gap=T": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=F": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=T": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=F": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=T": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=F": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=T": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=F": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=T": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=null|tipauth=0|gap=F": 0,
+   "ws=0|union=null|tipauth=0|gap=T": 0,
+   "ws=0|union=null|tipauth=1+|gap=F": 0,
+   "ws=0|union=null|tipauth=1+|gap=T": 0,
+   "ws=0|union=null|tipauth=null|gap=F": 0,
+   "ws=0|union=null|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=F": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=0|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=F": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F": 2,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=set": 2,
+   "ws=1+|union=1+|tipauth=0|gap=T": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=null|tipauth=0|gap=F": 0,
+   "ws=1+|union=null|tipauth=0|gap=T": 0,
+   "ws=1+|union=null|tipauth=1+|gap=F": 0,
+   "ws=1+|union=null|tipauth=1+|gap=T": 0,
+   "ws=1+|union=null|tipauth=null|gap=F": 0,
+   "ws=1+|union=null|tipauth=null|gap=T": 0
+  },
+  "pv_triggers": {
+   "ws=0|union=0|tipauth=0|gap=F": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=0|gap=T": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=F": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=1+|gap=T": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=F": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=0|tipauth=null|gap=T": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=F": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=0|gap=T": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=F": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=0|union=1+|tipauth=null|gap=T": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=0|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=0|union=null|tipauth=0|gap=F": 0,
+   "ws=0|union=null|tipauth=0|gap=T": 0,
+   "ws=0|union=null|tipauth=1+|gap=F": 0,
+   "ws=0|union=null|tipauth=1+|gap=T": 0,
+   "ws=0|union=null|tipauth=null|gap=F": 0,
+   "ws=0|union=null|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=F": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=0|gap=T": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=F": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=0|tipauth=null|gap=T": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=0|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F": 1,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=F|tip_first_slot=set": 1,
+   "ws=1+|union=1+|tipauth=0|gap=T": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=0|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=1+|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=F|tip_first_slot=set": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=null": 0,
+   "ws=1+|union=1+|tipauth=null|gap=T|tip_first_slot=set": 0,
+   "ws=1+|union=null|tipauth=0|gap=F": 0,
+   "ws=1+|union=null|tipauth=0|gap=T": 0,
+   "ws=1+|union=null|tipauth=1+|gap=F": 0,
+   "ws=1+|union=null|tipauth=1+|gap=T": 0,
+   "ws=1+|union=null|tipauth=null|gap=F": 0,
+   "ws=1+|union=null|tipauth=null|gap=T": 0
+  }
+ },
+ "item4_consistency": {
+  "checks": {
+   "base_tipauth_without_dropped_key": {
+    "n": 0,
+    "pools": []
+   },
+   "dropped_entry_malformed": {
+    "n": 0,
+    "pools": []
+   },
+   "dropped_n0_tipauth_differs_from_union": {
+    "n": 0,
+    "pools": []
+   },
+   "entry_slot_outside_cover": {
+    "n": 0,
+    "pools": []
+   },
+   "first_entry_slot_ne_dropped_first_slot": {
+    "n": 0,
+    "pools": []
+   },
+   "last_entry_slot_ne_dropped_last_slot": {
+    "n": 0,
+    "pools": []
+   },
+   "nonnull_tipauth_status_not_ok": {
+    "n": 0,
+    "pools": []
+   },
+   "nosettle_below_tipauth": {
+    "n": 0,
+    "pools": []
+   },
+   "notok_with_nonnull_dropped": {
+    "n": 0,
+    "pools": []
+   },
+   "notok_with_nonnull_orphaned_nosettle_or_dropped_n": {
+    "n": 0,
+    "pools": []
+   },
+   "ok_dropped_not_list_of_min_dropped_n_20": {
+    "n": 0,
+    "pools": []
+   },
+   "ok_with_null_orphaned_nosettle_or_dropped_n": {
+    "n": 0,
+    "pools": []
+   },
+   "orphaned_ge1_with_dropped_n0": {
+    "n": 0,
+    "pools": []
+   },
+   "record_pool_not_str": {
+    "n": 0,
+    "pools": []
+   },
+   "repeated_signature_event_index": {
+    "n": 0,
+    "pools": []
+   },
+   "trigger_entry_above_slot_minus_margin": {
+    "n": 0,
+    "pools": []
+   },
+   "union_errors": {
+    "n": 0,
+    "pools": []
+   },
+   "would_pass_trigger_not_fully_enumerated": {
+    "n": 0,
+    "pools": []
+   }
+  },
+  "error_status_records": 0,
+  "total": 0,
+  "union_errors_hb_absent_counter_as_0": 0,
+  "union_errors_hb_samples": 1
+ },
+ "item5_tip_incompleteness": {
+  "cap": 0.05,
+  "min_ok": 100,
+  "plain_pool_closes": {
+   "dropped_n_ge1_n": 0,
+   "dropped_n_ge1_share_of_ok": null,
+   "incomplete_n": 0,
+   "incomplete_share_of_all_ws0_nogap": null,
+   "incomplete_share_of_ok": null,
+   "n_ok": 0,
+   "n_ws0_nogap": 0
+  },
+  "triggers": {
+   "dropped_n_ge1_n": 0,
+   "dropped_n_ge1_share_of_ok": null,
+   "incomplete_n": 0,
+   "incomplete_share_of_all_ws0_nogap": null,
+   "incomplete_share_of_ok": null,
+   "n_ok": 0,
+   "n_ws0_nogap": 0
+  }
+ },
+ "item6_dropped_prints": {
+  "c1_c4_orphaned_by_drop_n": {
+   "0": 1
+  },
+  "c1_c4_tipauth_nosettle": {
+   "0": 1
+  },
+  "on_tipauth0_closes": {
+   "dropped_boost_n": {
+    "max": 0,
+    "median": 0.0,
+    "min": 0,
+    "n": 2,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "dropped_n": {
+    "max": 25,
+    "median": 13.0,
+    "min": 1,
+    "n": 2,
+    "non_int": 0,
+    "p90": 25,
+    "sum": 26
+   },
+   "dropped_sells_n": {
+    "max": 1,
+    "median": 1.0,
+    "min": 1,
+    "n": 2,
+    "non_int": 0,
+    "p90": 1,
+    "sum": 2
+   },
+   "kept_ws_only_above_cover": {
+    "max": 0,
+    "median": 0.0,
+    "min": 0,
+    "n": 2,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "kept_ws_only_before_cover": {
+    "max": 0,
+    "median": 0.0,
+    "min": 0,
+    "n": 2,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "kept_ws_only_sig_on_tip": {
+    "max": 0,
+    "median": 0.0,
+    "min": 0,
+    "n": 2,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "n": 2
+  },
+  "on_would_pass_triggers": {
+   "dropped_boost_n": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 1,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "dropped_n": {
+    "max": 2,
+    "median": 2,
+    "min": 2,
+    "n": 1,
+    "non_int": 0,
+    "p90": 2,
+    "sum": 2
+   },
+   "dropped_sells_n": {
+    "max": 1,
+    "median": 1,
+    "min": 1,
+    "n": 1,
+    "non_int": 0,
+    "p90": 1,
+    "sum": 1
+   },
+   "kept_ws_only_above_cover": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 1,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "kept_ws_only_before_cover": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 1,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   },
+   "kept_ws_only_sig_on_tip": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 1,
+    "non_int": 0,
+    "p90": 0,
+    "sum": 0
+   }
+  }
+ },
+ "item6_would_pass": {
+  "c5_parts": {
+   "fail_5a": 0,
+   "fail_5b": 0,
+   "fail_5c": 0,
+   "fail_all_three": 0,
+   "fail_any": 0,
+   "fail_only_5a": 0,
+   "fail_only_5b": 0,
+   "fail_only_5c": 0,
+   "n_c1_c4": 1
+  },
+  "c6_applied": false,
+  "c7_parts": {
+   "fail_C7a": 0,
+   "fail_C7b": 0,
+   "fail_C7c": 0,
+   "fail_C7d": 0,
+   "fail_C7e": 0,
+   "fail_C7f": 0,
+   "fail_all_six": 0,
+   "fail_any": 0,
+   "fail_only_C7a": 0,
+   "fail_only_C7b": 0,
+   "fail_only_C7c": 0,
+   "fail_only_C7d": 0,
+   "fail_only_C7e": 0,
+   "fail_only_C7f": 0,
+   "n_c1_c5": 1
+  },
+  "conditions": [
+   "C1",
+   "C2",
+   "C3",
+   "C4",
+   "C5a",
+   "C5b",
+   "C5c",
+   "C7a",
+   "C7b",
+   "C7c",
+   "C7d",
+   "C7e",
+   "C7f"
+  ],
+  "funnel": [
+   {
+    "after": "all_triggers",
+    "n": 1
+   },
+   {
+    "after": "C1",
+    "n": 1
+   },
+   {
+    "after": "C2",
+    "n": 1
+   },
+   {
+    "after": "C3",
+    "n": 1
+   },
+   {
+    "after": "C4",
+    "n": 1
+   },
+   {
+    "after": "C5a",
+    "n": 1
+   },
+   {
+    "after": "C5b",
+    "n": 1
+   },
+   {
+    "after": "C5c",
+    "n": 1
+   },
+   {
+    "after": "C7a",
+    "n": 1
+   },
+   {
+    "after": "C7b",
+    "n": 1
+   },
+   {
+    "after": "C7c",
+    "n": 1
+   },
+   {
+    "after": "C7d",
+    "n": 1
+   },
+   {
+    "after": "C7e",
+    "n": 1
+   },
+   {
+    "after": "C7f",
+    "n": 1
+   }
+  ],
+  "fv_not_eligible_variant_n": 0,
+  "gate_reasons": [
+   "not_a_record",
+   "ws_not_ge1",
+   "gap",
+   "union_missing",
+   "tipauth_missing",
+   "union_status",
+   "tipauth_status",
+   "value_not_zero",
+   "tip_only",
+   "both_diff",
+   "dropped_boost",
+   "boost_src",
+   "dropped_n",
+   "kept_ws_only_sig_on_tip",
+   "orphaned_by_drop",
+   "nosettle",
+   "dropped_first_slot",
+   "margin",
+   "slots",
+   "cover",
+   "dropped_list",
+   "union_ne_ws",
+   "sealed_record",
+   "variant_not_pv"
+  ],
+  "leave_one_out_removes": {
+   "C1": 0,
+   "C2": 0,
+   "C3": 0,
+   "C4": 0,
+   "C5a": 0,
+   "C5b": 0,
+   "C5c": 0,
+   "C7a": 0,
+   "C7b": 0,
+   "C7c": 0,
+   "C7d": 0,
+   "C7e": 0,
+   "C7f": 0
+  },
+  "would_pass_by_boost_src": {
+   "pda": 1
+  },
+  "would_pass_n": 1,
+  "would_pass_pv_by_boost_src": {
+   "pda": 1
+  },
+  "would_pass_pv_n": 1
+ },
+ "item7_census_input": {
+  "census_performed": false,
+  "network_calls": 0,
+  "on_tip_controls": "not taken from records (outside the allow-list)",
+  "tipauth0_ws_ge1_nogap_closes": [
+   {
+    "dropped": [
+     [
+      "cl00",
+      0,
+      101
+     ],
+     [
+      "cl01",
+      0,
+      102
+     ],
+     [
+      "cl02",
+      0,
+      103
+     ],
+     [
+      "cl03",
+      0,
+      104
+     ],
+     [
+      "cl04",
+      0,
+      105
+     ],
+     [
+      "cl05",
+      0,
+      106
+     ],
+     [
+      "cl06",
+      0,
+      107
+     ],
+     [
+      "cl07",
+      0,
+      108
+     ],
+     [
+      "cl08",
+      0,
+      109
+     ],
+     [
+      "cl09",
+      0,
+      110
+     ],
+     [
+      "cl10",
+      0,
+      111
+     ],
+     [
+      "cl11",
+      0,
+      112
+     ],
+     [
+      "cl12",
+      0,
+      113
+     ],
+     [
+      "cl13",
+      0,
+      114
+     ],
+     [
+      "cl14",
+      0,
+      115
+     ],
+     [
+      "cl15",
+      0,
+      116
+     ],
+     [
+      "cl16",
+      0,
+      117
+     ],
+     [
+      "cl17",
+      0,
+      118
+     ],
+     [
+      "cl18",
+      0,
+      119
+     ],
+     [
+      "cl19",
+      0,
+      120
+     ]
+    ],
+    "dropped_n": 25,
+    "partial": true,
+    "pool": "PC",
+    "t_ms": 1759996803000
+   },
+   {
+    "dropped": [
+     [
+      "clSmall",
+      0,
+      110
+     ]
+    ],
+    "dropped_n": 1,
+    "partial": false,
+    "pool": "PD",
+    "t_ms": 1759996804000
+   }
+  ],
+  "tipauth0_ws_ge1_nogap_closes_n": 2,
+  "would_pass_distinct_signatures_n": 2,
+  "would_pass_fully_enumerated_n": 1,
+  "would_pass_n": 1,
+  "would_pass_signatures": [
+   "wpSigA",
+   "wpSigB"
+  ],
+  "would_pass_triggers": [
+   {
+    "dropped": [
+     [
+      "wpSigB",
+      0,
+      105
+     ],
+     [
+      "wpSigA",
+      1,
+      106
+     ]
+    ],
+    "dropped_n": 2,
+    "fully_enumerated": true,
+    "pool": "PA",
+    "slot": 200,
+    "t_ms": 1759996802000,
+    "variant": "pv"
+   }
+  ]
+ },
+ "item8_trigger_print": {
+  "computed": false,
+  "reason": "needs the tip tape; outside the shadow records this tool may read"
+ },
+ "item9_timing_memory": {
+  "decision_to_send_ms": null,
+  "emit_lag_ms": {
+   "all_pv": {
+    "max": null,
+    "median": null,
+    "min": null,
+    "n": 0,
+    "non_int": 1,
+    "p90": null,
+    "sum": null
+   },
+   "report_only": true,
+   "tipauth_not_ok": {
+    "max": null,
+    "median": null,
+    "min": null,
+    "n": 0,
+    "non_int": 0,
+    "p90": null,
+    "sum": null
+   },
+   "tipauth_ok": {
+    "max": null,
+    "median": null,
+    "min": null,
+    "n": 0,
+    "non_int": 1,
+    "p90": null,
+    "sum": null
+   }
+  },
+  "emit_lag_ms_24h_before_origin": {
+   "max": null,
+   "median": null,
+   "min": null,
+   "n": 0,
+   "non_int": 0,
+   "p90": null,
+   "report_only": true,
+   "sum": null
+  },
+  "est_mb_max": 2.0,
+  "est_tipauth_mb_last": 1.5,
+  "est_tipauth_mb_max": 1.5,
+  "hb_n": 1,
+  "hwm_kb_max": 500010,
+  "rss_anon_kb_max": 499990,
+  "rss_kb_last": 500000,
+  "rss_kb_max": 500000,
+  "rss_limit_bytes": 1000000000,
+  "tipauth_tip_sigs_max": 4,
+  "tipauth_wsonly_max": 3,
+  "union_members_max": 7
+ },
+ "records": {
+  "gap_records_by_kind": {},
+  "hb": 1,
+  "plain_pool_closes": 2,
+  "triggers": 1,
+  "triggers_fv": 0,
+  "triggers_pv": 1,
+  "triggers_variant_other": 0
+ },
+ "since_ms": 1759996800000,
+ "skipped": {
+  "bad_line": 0,
+  "bad_line_not_utf8": 0,
+  "both_flags": 0,
+  "h5_look2_sealed_pool": 0,
+  "h5_look2_sealed_trigger": 0,
+  "record_pool_not_str": 0,
+  "records_without_int_t_ms": 0,
+  "sealed_pool": 0,
+  "sealed_trigger": 0,
+  "unreadable_file": 0
+ },
+ "spec": {
+  "pr613_round2": "PR #613 comment 6121547427 (quant-proof), 6121321849 (reviewer)",
+  "round1": "PR #610 comment 6120633640",
+  "round2": "PR #610 comment 6120949717",
+  "round3": "PR #610 comment 6121123397"
+ },
+ "starts": {
+  "distinct_code_sha": [
+   "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
+  ],
+  "n_starts_after_t0": 1,
+  "origin_code_sha": "5db78a663a0617527daacb22f5ce6c1a7e92dfa3",
+  "origin_t_ms": 1759996801000,
+  "rules": [
+   "h5-v1"
+  ],
+  "starts": [
+   {
+    "code_sha": "5db78a663a0617527daacb22f5ce6c1a7e92dfa3",
+    "rule": "h5-v1",
+    "t_ms": 1759996801000
+   }
+  ]
+ },
+ "tool": "h5_tipauth_item4",
+ "tool_sha256": "b7b47432dce93b9602c371dbc00b6811258ca733fbec23d0bd2b7e8a293ac6d9",
+ "until_ms": 1760083200000,
+ "verdict": {
+  "blocking_reasons": [
+   "duration_24h_and_10_nogap_pv_ws_ge1",
+   "margin_left_D_share_le_1pct:short",
+   "margin_no_would_pass_left_D:short",
+   "tip_incompleteness_le_5pct:short"
+  ],
+  "note": "A count of mechanism fields, not a result and NOT a proposal verdict. tool_rules_clear true means none of the rules this tool owns blocks; outside_tool_pending is still open.",
+  "outside_tool_pending": [
+   "item7_rpc_census",
+   "item8_trigger_print",
+   "item9_decision_to_send_ms",
+   "C6_v1_only"
+  ],
+  "thresholds": {
+   "consistency_all_zero": {
+    "failing": [],
+    "met": true,
+    "total": 0
+   },
+   "duration_24h_and_10_nogap_pv_ws_ge1": {
+    "covered_h": 0.0011,
+    "elapsed_h": 0.0011,
+    "met": false,
+    "n": 1
+   },
+   "margin_left_D_share_le_1pct": {
+    "left_D": 0,
+    "left_D_distinct": 0,
+    "met": null,
+    "share": null,
+    "tested": 0,
+    "tested_distinct": 0,
+    "undetermined": 2
+   },
+   "margin_no_would_pass_left_D": {
+    "met": null,
+    "would_pass_entries": 2,
+    "would_pass_left_D": 0,
+    "would_pass_tested": 0,
+    "would_pass_undetermined": 2
+   },
+   "origin_code_sha_matches": {
+    "expected": "5db78a663a0617527daacb22f5ce6c1a7e92dfa3",
+    "met": true,
+    "origin_code_sha": "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
+   },
+   "rss_below_1gb": {
+    "met": true,
+    "rss_kb_max": 500000
+   },
+   "single_start_after_t0": {
+    "distinct_code_sha": [
+     "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
+    ],
+    "met": true,
+    "n": 1
+   },
+   "tip_incompleteness_le_5pct": {
+    "cap": 0.05,
+    "met": null,
+    "min_ok": 100,
+    "n_ok": 0,
+    "share": null,
+    "share_of_all_ws0_nogap": null
+   },
+   "tipauth_ok_ge_90pct": {
+    "met": true,
+    "min": 0.9,
+    "shares": [
+     1.0,
+     1.0
+    ]
+   },
+   "union_ok_ge_90pct": {
+    "met": true,
+    "min": 0.9,
+    "shares": [
+     1.0
+    ]
+   },
+   "would_pass_all_fully_enumerated": {
+    "fully_enumerated": 1,
+    "met": true,
+    "n": 1
+   },
+   "would_pass_pv_n_ge_1": {
+    "met": true,
+    "would_pass_pv_n": 1
+   }
+  },
+  "tool_rules_clear": false
+ },
+ "window": {
+  "covered_h": 0.0011,
+  "elapsed_h": 0.0011,
+  "hb_hole_ms": 600000,
+  "hb_max_gap_ms": 4000,
+  "hole_ms_total": 0,
+  "last_t_ms": 1759996805000,
+  "n_holes": 0,
+  "origin_t_ms": 1759996801000
+ }
+}

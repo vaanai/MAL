@@ -1,0 +1,19 @@
+DECLARATION_SHA256 a60ab20f13e3804c2638d9014b29e8422568cbed6c55dc25dba3a897426b9ed4
+SCRIPT_SHA256 314a576dd25728cf0dd057e02d5bd7732da2ba7d3030739776994ba3a052d07a /data/mal/hunt-1008/h5-work/program-upgrade-1013/r1_cadence.py
+SCRIPT_SHA256 36eff6ab624d11ec59bc3e4deacce27e13748cb67435ec584e6955bd98f48c2c /data/mal/hunt-1008/h5-work/program-upgrade-1013/common.py
+SCRIPT_SHA256 ff85f14f5113ea1dc454cec10057d12ea5a1174865cd8c4f655ab84b428ea00d /home/claude/.miscusi/repos/vaanai/MAL/tools/pump_structure_monitor.py
+paged 11 pages, 11000 sigs, oldest slot 454863146, calls 12
+range 454967226-454970880 done, calls 68
+range 455160354-455165316 done, calls 119
+range 455553932-455561328 done, calls 180
+range 455961054-455969491 done, calls 226
+R1_STATUS done  calls 226
+R1_RANGE 454967226-454970880 migrate_found=20 eligible=15 profiled=15 last_n=15 last_median=342
+R1_RANGE 455160354-455165316 migrate_found=20 eligible=9 profiled=9 last_n=9 last_median=333
+R1_RANGE 455553932-455561328 migrate_found=20 eligible=18 profiled=18 last_n=18 last_median=339.5
+R1_RANGE 455961054-455969491 migrate_found=20 eligible=8 profiled=8 last_n=8 last_median=341.5
+R1_UNION n=50 n_interval=50 per_pool_interval_median=11.7324 band=[10.5592,12.9057] post_median=11.759
+R1_UNION_CONSECUTIVE gap_median=12 n_gaps=1427
+R1_GAPS union n=50 maxgap_ge_60=0 last_gt_400=0 (of last_n=50)
+R1_GAPS post40 n=40 maxgap_ge_60=1 last_gt_400=1 (of last_n=40)
+R1_TEST inside

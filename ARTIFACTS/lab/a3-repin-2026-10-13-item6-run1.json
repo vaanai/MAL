@@ -1,0 +1,641 @@
+{
+  "schema": "h5_upgrade_dryrun.v1",
+  "fee_config": {
+    "address": "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
+    "pinned_sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d",
+    "sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d"
+  },
+  "pools": [
+    {
+      "pool": "D4jdDGjFyVZso4sYmKVRqnbKczoURtRuYVcynTDHGVb8",
+      "sim_err": null,
+      "units_consumed": 209929,
+      "context_slot": 456361254,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "6sa9Sf1z1eGb1i4jhRZhzL1yb5cCnFV3t21Uo25jJfFm",
+      "sim_err": null,
+      "units_consumed": 203545,
+      "context_slot": 456361264,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          55
+        ],
+        "sell": [
+          20,
+          5,
+          55
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          55
+        ],
+        "sell": [
+          20,
+          5,
+          55
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 9,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "2ChJNh8mjX8dkZtM1e5kaUGswCtW1GFFfE5EwvgHZ4w2",
+      "sim_err": null,
+      "units_consumed": 193430,
+      "context_slot": 456361274,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "6XdSLSyqWSDQ748iRw6a4LsiSJXADAyx2Y8cFSci2a3J",
+      "sim_err": null,
+      "units_consumed": 196430,
+      "context_slot": 456361284,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "3Gkawhzb2sjwixXSats1oMRaC2SSGEPZMmSCKAUScyHt",
+      "sim_err": null,
+      "units_consumed": 196402,
+      "context_slot": 456361293,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          95
+        ],
+        "sell": [
+          20,
+          5,
+          95
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          95
+        ],
+        "sell": [
+          20,
+          5,
+          95
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 1,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "FknBQPKM2WsN8nn3q8K1W11fnnqEV2tvLNeu9atVLqn4",
+      "sim_err": null,
+      "units_consumed": 215930,
+      "context_slot": 456361303,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "DbZMpAFAatREVbu3WewxVxyxZUT5moUhs3PWFetFUaJW",
+      "sim_err": null,
+      "units_consumed": 190430,
+      "context_slot": 456361314,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "AnrCHvfJUzMtos8DGjpT2XKurVPPYAVLDturASNwXcd4",
+      "sim_err": null,
+      "units_consumed": 207640,
+      "context_slot": 456361323,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 24,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "WJieCbpb7BbcQdFrm1j86DkK3EK2HtWErj9fXTbx242",
+      "sim_err": null,
+      "units_consumed": 193430,
+      "context_slot": 456361333,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "ARd5zyCtLV1dsbfbuQUPzNPEPb4ZGCqk8e6xAyaVTyeV",
+      "sim_err": null,
+      "units_consumed": 202430,
+      "context_slot": 456361343,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "52sn87Ne3Td2EBpRKB1RVyNdyZ9Uc1Ujs5cCizB1cyc8",
+      "sim_err": null,
+      "units_consumed": 223430,
+      "context_slot": 456361352,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "H6wK6oQFa9iN63SdkziLBPrWxB4KDTJGRismgyf8rDRf",
+      "sim_err": null,
+      "units_consumed": 191930,
+      "context_slot": 456361362,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          2,
+          93,
+          30
+        ],
+        "sell": [
+          2,
+          93,
+          30
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "expected_tier_index": 0,
+      "fee_amount_consistent": {
+        "buy": [
+          true,
+          true,
+          true
+        ],
+        "sell": [
+          true,
+          true,
+          true
+        ]
+      },
+      "round_trip_ok": true,
+      "problem": null
+    }
+  ],
+  "summary": {
+    "round_trips_ok": 12,
+    "n_fee_match": 12,
+    "n_fee_mismatch": 0,
+    "n_sim_errors": 0,
+    "n_pools": 12,
+    "min_round_trips": 5,
+    "verdict": "PASS",
+    "tiers_covered": [
+      0,
+      1,
+      9,
+      24
+    ],
+    "fee_amount_legs_checked": 72,
+    "fee_amount_legs_consistent": 72,
+    "buy_slippage_bps": 300,
+    "sell_close_omitted": true
+  }
+}
