@@ -128,7 +128,7 @@ Copied row for row from the DEADLINE TABLE in `/data/mal/hunt-1008/ops/SEAL-WIND
 | 10-16 06:41Z | 8 | A3 run dated 10-16 (Look 1 condition (f)) |
 | 10-16 ~07:00Z → | 8 | EXP-024 chain: join → vmap ev → extract → classify → p5 → account → p7 → boost-pda → precount → e1 copy → amendment merged → `look --look 1` **[VOID 2026-10-13: EXP-024 ended NOT_DECIDABLE; record the one line of section 1.4 instead.]** |
 | 10-17 02:00Z → ~03:00Z | 9a | EXP-025 Look 1 tools may start (R1 cross-check, P7, driver, `ready`, `run`) |
-| **10-17 12:00Z** | 8 | **Hard deadline** EXP-024 Look 1 (after it: NOT_DECIDABLE, window and α_1 spent) |
+| **10-17 12:00Z** | 8 | **Hard deadline** EXP-024 Look 1 (after it: NOT_DECIDABLE, window and α_1 spent) **[VOID 2026-10-13: EXP-024 ended NOT_DECIDABLE; record the one line of section 1.4 instead.]** |
 | 10-17 ~22:00Z | 10 | C1-NF monitor #662 limit; chain a successor or stop |
 | **10-18 12:00Z** | 9a | **Hard deadline** EXP-025 Look 1 (a `run` after it locks and writes `not_decidable` R8) |
 | 10-18 12:07Z | 10 | Renew the recurring session crons (7-day expiry) |
