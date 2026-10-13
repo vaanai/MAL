@@ -3,8 +3,8 @@
 Saved by the manager from the session transcript (the `question` field of the two `miscusi_ask` calls), as quant-proof asked (PR #632 comment 6142079418, N7). The facts paragraph is quant-proof's (PR #629 comment 6141362129), with the third bullet under "After the upgrade" and the closing paragraphs written by the manager.
 
 - Version 1: MiScusi question `q_waIaJoTnhRhzzg`, sent 2026-10-13T08:37:03Z. The owner answered this version in MiScusi.
-- Version 2: MiScusi question `q_Jd6RqMJmTC8r3w`, sent 2026-10-13T08:43:24Z, replacing version 1 after the reviewer's findings on PR #630. The owner repeated the answer in the session at 08:44:39Z. Closed by the manager after that.
-- Option 1 reads the same in both versions and contains the words "the median of the monitor's per-pool slice count".
+- Version 2: MiScusi question `q_Jd6RqMJmTC8r3w`, sent 2026-10-13T08:43:24Z, replacing version 1 after the reviewer's findings on PR #630. It was not answered in MiScusi (state open at 08:44:30Z). The owner sent the answer to version 1 again in the session at 08:44:39Z, opening with "I answered the question in miscusi but maybe you didn't get it. Here it is:". Closed by the manager at 08:45:05Z.
+- Option 1 reads the same in both versions and contains the words "the median of the monitor's per-pool slice count" and does not contain "(the signature-list count, an upper bound) over the profiled post-upgrade pools, n ≥ 15".
 
 ## The two sentences that changed (the manager's own; no count changed)
 
