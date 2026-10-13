@@ -1555,7 +1555,9 @@ class RunbookTests(unittest.TestCase):
         t = (Path(__file__).resolve().parents[1] / "docs" / "runbooks" / "h5-executor.md").read_text()
         sec = t[t.index("## tipauth gate (OFF by default)"):]
         for needle in ("tipauth_reason", "tipauth:look_ack_ahead", "not one of the executor's HALTs", "up to two stakes", "sell_and_close", "only `tipauth_look_ack: 50` releases it",
-                       "drops the key at its first save", "`tipauth_off` row", "only while the switch is on", "not an object"):
+                       "drops the key at its first save", "`tipauth_off` row", "only while the switch is on", "not an object",
+                       "is a switch-off event: Helm's restart after it is a reinstall without `tipauth_gate`", "tipauth:budget_at_risk", "`watch_off`",
+                       "tipauth:watch_<missing|stale|hold|sha|bad>", "tipauth:watch_unset", "180,000 ms", "h5_tipauth_watch_v1"):
             self.assertIn(needle, sec, needle)
         self.assertNotIn("class_loss_budget`", sec.split("## ")[1] if "## " in sec[3:] else sec)  # not added to the halt table
 
