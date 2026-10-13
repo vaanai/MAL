@@ -2555,7 +2555,7 @@ class H5Executor(pl.LiveExecutor):
         self.counters.tipauth["mints"] = sorted(self._tipauth_mints)
         self.counters.save(self.counters_path)
 
-    def _tipauth_latch(self, reason: str) -> None:
+    def _tipauth_off(self, reason: str) -> None:
         t = self.counters.tipauth
         if t.get("latched"):
             return  # logged once; never cleared by the executor
@@ -2567,7 +2567,7 @@ class H5Executor(pl.LiveExecutor):
     def _tipauth_check_budget(self) -> None:
         t = self.counters.tipauth
         if not t.get("latched") and int(t.get("realized") or 0) <= -TIPAUTH_LOSS_BUDGET_LAMPORTS:
-            self._tipauth_latch("class_loss_budget")
+            self._tipauth_off("class_loss_budget")
 
     def _note_tipauth_landed(self, mint: str) -> None:
         """A tagged buy landed: count it. At the looks (25, 50, 100) write a counts-only row and pause the path until a human acknowledges it
