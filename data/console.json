@@ -1,8 +1,22 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T18:50:54Z",
+ "updated_utc": "2026-10-13T19:36:12Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-tipauth-gate-merged-1013",
+   "kind": "other",
+   "title": "H5 trade-rate gate code merged, switched off, not installed",
+   "detail": "The executor change (PR #614) and its watch tool (PR #635) are on main after three review rounds each, with the reviewer's verdict and quant-proof's OK on the exact heads. The switch is off by default, the installed build is unchanged and nothing is enabled. Among the things still required before it can be enabled: the acceptance counts, a comparison against the installed build on real trigger records, two more tools, a route decision for the install, 24 hours of live latency before and after, a rollback plan, the amendment with the owner's dated acceptance, and Helm's install. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-13T19:26:13Z"
+  },
+  {
+   "id": "idea-library-1013",
+   "kind": "other",
+   "title": "Idea library added to the repo",
+   "detail": "docs/library/INDEX.md lists the ideas converted from the 10-12 strategy library and the 2026-10-13 research: 129 library rows (1 live canary, 2 forward tests, 6 survivors not confirmed, 5 parked, 2 shelved, 27 never tested or desk-read, 86 dead or without a survivor), 74 new rows from the 2026-10-13 research, 2 owner ideas, and 42 further rows kept as duplicates. The two backlog files (150 proposed ideas) are not rows. The rows are a conversion by research agents. A judge sampled 20 and found 2 errors, and found 12 of 26 non-dead rows in one source file with a stale status; the corrections afterwards were made by agents and not re-checked by a judge, so numbers must be checked at each row's evidence path before they are quoted.",
+   "atUtc": "2026-10-13T19:26:13Z"
+  },
   {
    "id": "h5-t1-block-check-1013",
    "kind": "other",
@@ -657,6 +671,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261013-research-and-library",
+   "from": "claude",
+   "atUtc": "2026-10-13T19:26:13Z",
+   "text": "For you (two things need you, at the end): on your instruction of 17:20 UTC a swarm of 16 Haiku 5.5 research agents ran, two stronger-model judges checked their reports, and follow-up jobs ran on what survived the check. Plain results, none of them a claim that anything makes money: (1) Big moves exist every day (in August, 447 of 10,338 pools printed +500% within a day of a 6-minutes-after-graduation entry; these are prints, not fills), but none of the three entry-time splits tried (buy share, net SOL flow, seed ratio) separated the winners well enough to pass the bar set beforehand, and the one rule simulated with fills and fees (a single cell; both windows already seen) was dead on all 20 checks: its stop-loss exits realized a median loss of 91.1% of the stake in August and 92.1% in September. A judge has not yet checked the simulator, so treat that figure as provisional. The manager's reading, not a measurement: the fall from the stop level to the pool's floor is faster than a sell lands, which would mean small losses have to come from where the buy happens, not from a stop. (2) The two older lines nearest to live look small on a second read: G4-FLOORDIP's whole 15-day total at 0.1 SOL per trade was under 0.9 SOL under the flat 15% fail model and, in the verifier's book, is negative without its 20 largest trades, and FLOOR-OPTION fails its stress test. (3) The r4-b hourly top-10 book cannot be reproduced as built; the cause is found and it needs a deterministic rebuild before any forward test. (4) No new forced buyer like BOOST was confirmed on Solana or other chains; one web lead was wrong and is dropped. (5) The code for H5's trade-rate gate is merged, switched off and not installed; in the 24 hours before 18:49 UTC the canary made 2 decisions, and 13 of its 20 refusals were for the reason that gate addresses. (6) The idea library you asked for is in the repo at docs/library/INDEX.md. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate. Needs you: an Anthropic API key placed by Helm on mal-research-0 for the Haiku trader build, and a yes or no on asking Helm for a small funded test key for a landing-speed test (tips of about 0.0018 SOL)."
+  },
   {
    "id": "fy-20261013-h5-t1-block-check",
    "from": "claude",
