@@ -1,7 +1,8 @@
 """Tests for tools/pump_structure_monitor.py. Fixture-based: no network.
 
 Recorded fixtures (tools/fixtures/pump_structure_monitor/, public mainnet RPC, 2026-10-08; programdata.json re-recorded
-2026-10-09 after the 2026-10-08T16:20Z program redeploy so it matches the committed pins): config/gate/program
+2026-10-09 after the 2026-10-08T16:20Z program redeploy, and again 2026-10-13 after the 2026-10-12T17:40:24Z fees-program
+redeploy, so it matches the committed pins): config/gate/program
 accounts, programdata slices, performance samples, epoch info (all current state), and one 2026-09-20
 exploration-period pool (migrate tx, completing tx, BOOST signature list, Pool account). Constructed inputs are
 labelled as such: nothing on chain yet shows a PostCompleteBuyEvent or a PumpSwap v2 trade instruction in our
@@ -347,8 +348,9 @@ def test_programdata_and_program_accounts_recorded():
     vals = fx("config_accounts.json")["value"]
     assert [m.decode_program_account(m._account_bytes(v)) for v in vals[8:11]] == [
         "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu", "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc", "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw"]
-    # programdata.json was re-recorded on 2026-10-09 (after the 2026-10-08T16:20Z redeploy), so it carries the new deploy slots
-    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [454596459, 454596406, 454596501]
+    # programdata.json was re-recorded on 2026-10-09 (after the 2026-10-08T16:20Z redeploy) and on 2026-10-13 (after the
+    # 2026-10-12T17:40:24Z fees-program redeploy), so it carries the current deploy slots
+    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [454596459, 454596406, 456132171]
     assert m.decode_programdata_slot(bytes(45)) is None and m.decode_programdata_slot(None) is None
 
 

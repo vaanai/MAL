@@ -1,0 +1,38 @@
+DECLARATION_SHA256 e58f86b126a9a987590115defd3a556a5cdaf0b2e3ebe3b997074cb145307372
+SCRIPT_SHA256 03a03614067882e8e31c5786c57c34377c17482a18c7807ef6546a2b69ae2cb3 /data/mal/hunt-1008/h5-work/program-upgrade-1013/r2_slices.py
+SCRIPT_SHA256 36eff6ab624d11ec59bc3e4deacce27e13748cb67435ec584e6955bd98f48c2c /data/mal/hunt-1008/h5-work/program-upgrade-1013/common.py
+SCRIPT_SHA256 ff85f14f5113ea1dc454cec10057d12ea5a1174865cd8c4f655ab84b428ea00d /home/claude/.miscusi/repos/vaanai/MAL/tools/pump_structure_monitor.py
+SCRIPT_SHA256 1638468fcc83799951c2287c54ab71b0eb136167a7520c9de3f8a3bc5ad9f6a3 /home/claude/.miscusi/repos/vaanai/MAL/observe/trade_decode.py
+pool ArHMPHep slices=29 calls 33
+pool H6wK6oQF slices=29 calls 66
+pool F1wBbkTh slices=30 calls 99
+pool D4jdDGjF slices=28 calls 130
+pool 3Gkawhzb slices=30 calls 162
+pool HLaKoEZR slices=29 calls 193
+pool 7F1iiR8b slices=30 calls 226
+pool CGRDxvXH slices=28 calls 257
+pool 7TrSgMQf slices=29 calls 292
+pool EspT33XU slices=30 calls 326
+pool DbZMpAFA slices=30 calls 360
+pool AnrCHvfJ slices=28 calls 391
+pool ARd5zyCt slices=30 calls 424
+pool C43XByDY slices=29 calls 458
+pool 6sa9Sf1z slices=29 calls 490
+R2_STATUS done  calls 490
+R2_POOL ArHMPHepQHkU sigs=30 slices=29 signed=29 zero_fee=29 nonkeeper=1 maxgap=27 last_s=354 full=True
+R2_POOL H6wK6oQFa9iN sigs=30 slices=29 signed=29 zero_fee=29 nonkeeper=1 maxgap=13 last_s=331 full=True
+R2_POOL F1wBbkThWZWN sigs=30 slices=30 signed=30 zero_fee=30 nonkeeper=0 maxgap=303 last_s=635 full=True
+R2_POOL D4jdDGjFyVZs sigs=29 slices=28 signed=28 zero_fee=28 nonkeeper=1 maxgap=28 last_s=349 full=True
+R2_POOL 3Gkawhzb2sjw sigs=30 slices=30 signed=30 zero_fee=30 nonkeeper=0 maxgap=12 last_s=340 full=True
+R2_POOL HLaKoEZRc6zw sigs=29 slices=29 signed=29 zero_fee=29 nonkeeper=0 maxgap=13 last_s=329 full=True
+R2_POOL 7F1iiR8bDhC1 sigs=30 slices=30 signed=30 zero_fee=30 nonkeeper=0 maxgap=12 last_s=344 full=True
+R2_POOL CGRDxvXHtqBz sigs=28 slices=28 signed=28 zero_fee=28 nonkeeper=0 maxgap=27 last_s=335 full=True
+R2_POOL 7TrSgMQfLbgs sigs=32 slices=29 signed=29 zero_fee=29 nonkeeper=3 maxgap=12 last_s=329 full=True
+R2_POOL EspT33XU7PpX sigs=31 slices=30 signed=30 zero_fee=30 nonkeeper=1 maxgap=13 last_s=349 full=True
+R2_POOL DbZMpAFAatRE sigs=31 slices=30 signed=30 zero_fee=30 nonkeeper=1 maxgap=13 last_s=344 full=True
+R2_POOL AnrCHvfJUzMt sigs=28 slices=28 signed=28 zero_fee=28 nonkeeper=0 maxgap=28 last_s=342 full=True
+R2_POOL ARd5zyCtLV1d sigs=31 slices=30 signed=30 zero_fee=30 nonkeeper=1 maxgap=13 last_s=344 full=True
+R2_POOL C43XByDY276G sigs=31 slices=29 signed=29 zero_fee=29 nonkeeper=2 maxgap=12 last_s=329 full=True
+R2_POOL 6sa9Sf1z1eGb sigs=29 slices=29 signed=29 zero_fee=29 nonkeeper=0 maxgap=13 last_s=327 full=True
+R2_TOTALS {"pools": 15, "slices": 438, "keeper_signed": 438, "zero_fee": 438, "non_keeper_excluded": 11, "bbb_not_keeper_signed": 0, "fully_fetched": 15}
+R2_TEST clean

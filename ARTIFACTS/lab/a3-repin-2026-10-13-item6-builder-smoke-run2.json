@@ -1,0 +1,133 @@
+{
+  "schema": "h5_upgrade_dryrun.v1",
+  "fee_config": {
+    "address": "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
+    "pinned_sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d",
+    "sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d"
+  },
+  "pools": [
+    {
+      "pool": "5E8CCdcK6jM3Lp4DBNTHEDBWY5FMVEsgtLpMP3KP2e8H",
+      "sim_err": null,
+      "units_consumed": 207642,
+      "context_slot": 456358800,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "Ehc9crwfBLbk9e21BhnhUdHHAmrwkqY1uw1S46KDiwtG",
+      "sim_err": null,
+      "units_consumed": 212658,
+      "context_slot": 456358815,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          75
+        ],
+        "sell": [
+          20,
+          5,
+          75
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          75
+        ],
+        "sell": [
+          20,
+          5,
+          75
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "round_trip_ok": true,
+      "problem": null
+    },
+    {
+      "pool": "H7SopFMt5nyi9g264QxJpQjGoSJGt13mpVDCKVoe4ShM",
+      "sim_err": null,
+      "units_consumed": 189641,
+      "context_slot": 456358825,
+      "events_found": {
+        "buy": 1,
+        "sell": 1
+      },
+      "observed_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "expected_bps": {
+        "buy": [
+          20,
+          5,
+          5
+        ],
+        "sell": [
+          20,
+          5,
+          5
+        ]
+      },
+      "buy_match": true,
+      "sell_match": true,
+      "round_trip_ok": true,
+      "problem": null
+    }
+  ],
+  "summary": {
+    "round_trips_ok": 3,
+    "n_fee_match": 3,
+    "n_fee_mismatch": 0,
+    "n_sim_errors": 0,
+    "n_pools": 3,
+    "min_round_trips": 1,
+    "verdict": "PASS"
+  }
+}
