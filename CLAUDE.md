@@ -151,5 +151,6 @@ If a job uses Helius autoscaling (about 20M extra credits), the PR or the daily 
 | Leaving Cursor | [docs/MIGRATION-TO-CLAUDE.md](docs/MIGRATION-TO-CLAUDE.md) |
 | Plan and context | [docs/plan.md](docs/plan.md), [docs/project-context.md](docs/project-context.md) |
 | Research options | [docs/research/](docs/research/) |
+| Idea library (every idea, its status, why it stopped) | [docs/library/INDEX.md](docs/library/INDEX.md) |
 | Experiments | [EXP/](EXP/) |
 | SSH | [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md) |

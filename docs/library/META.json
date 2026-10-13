@@ -1,0 +1,21 @@
+{
+ "as_of": "2026-10-13T19:23:40Z",
+ "assembled_by": "manager10, from the SWARM-1013 files on mal-research-0 under /data/mal/hunt-1008/swarm-1013/",
+ "sources": [
+  "lib-a, lib-b, lib-c: conversion of /data/mal/hunt-1008/library/STRATEGY-LIBRARY.md (written 2026-10-12) into 170 rows by three Haiku 5.5 agents",
+  "judge-desk/JUDGE.md: a stronger-model judge sampled 20 of the 170 rows (2 errors) and listed mis-statused rows",
+  "w2-lib-a-redo: status redo of 26 rows with source lines, and 29 groups of duplicate rows",
+  "w2-lib-fix: the judge's listed corrections, each with its source line",
+  "inbox of 2026-10-13: the idea rows of the web agents (judged in judge-web/JUDGE.md), the pump IDL read, the Mayhem graduate count, the +6 min count table and the one simulated cell",
+  "assembly script: /data/mal/hunt-1008/swarm-1013/_manager/library/assemble.py"
+ ],
+ "rulings": [
+  "lib-a-A13 (uninformed-sell reversion): two correction passes disagreed. Kept the status-redo row: the walk-forward variant is a survivor that is not confirmed, the static model is WEAK and the thesis is DEAD. The row is a duplicate of lib-b-E2.",
+  "lib-a-A19 (outside attention): parked at family level, Route A dead; duplicate of lib-c-J2.",
+  "lib-c-Q1.EXP-024: EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; the row is a duplicate of the H5 row lib-c-K1.",
+  "Jupiter DCA and Recurring rows (web-forced-flows-1, web-forced-flows-12): shelved on the judge's finding that current orders are off-chain and private.",
+  "web-competitors-9 (BOOST ride): duplicate of the H5 row lib-c-K1.",
+  "Eight correction rows carry the note that the source did not support the judge; their status is the agent's reading of the source and they are open for a later check.",
+  "Not in this library as rows: the two backlog files (150 rows of proposed ideas, many of them the same lines as library rows), the regime panel's ten candidate signals (two of its columns were judged wrong or unusable), and the desk briefs' variant lists. They stay in the swarm directory."
+ ]
+}
