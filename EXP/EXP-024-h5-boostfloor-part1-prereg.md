@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-024-h5-boostfloor-part1-prereg` |
-| **Status** | **planned**. Counting starts at 2026-10-10T00 (section 0). |
+| **Status** | **planned**. Counting starts at 2026-10-10T00 (section 0). See the A3 halt record (2026-10-13) at the end of the Amendments. |
 | **Declared (UTC)** | 2026-10-08. It must merge before 2026-10-10T00:00Z. |
 | **Parent** | hunt-1008 / h5-flows: `RULE.md` (sha256 `c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c`), `REPORT.md`, `VERIFY.md` (adversarial verifier: not refuted). `/data/mal/hunt-1008/JUDGE.md` (ranks H5 first of the hunt-1 survivors). Repo port: draft PR #476 (`tools/boostfloor_score.py`, head `a9e23be`). |
 | **Rules** | [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md) (ledger, Holm, block budget, family lineage), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) (forward-1002, seal, FINAL; Am.7), [DEC-017](../DEC/DEC-017-forward-secondary-family.md) §2, [DEC-021](../DEC/DEC-021-champion-challenger.md) §8, Am.1 and Am.2, [DEC-023](../DEC/DEC-023-h5-family.md) (this family), [DEC-024](../DEC/DEC-024-h5-live-canary.md) (the measurement canary), [EXP-022](EXP-022-cap-pick-part1-prereg.md) §9 and Amendment 2, [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md). |
@@ -1106,6 +1106,51 @@ The sell tier line, line A and line B; the 1,000-print sample, its frame and the
 **Relation to G1.** If DEC-027's G1 is written later, it may cite this text. Neither widens the other.
 
 **Provenance.** A manager decision derived from the owner's 10-10 request to "try to make H5 work" (DEC-028 §0, as relayed), drafted 2026-10-10 for PR #542 after quant-proof's CHANGES review of 62cc971. The owner may revoke it before EXP-026's W0. A revocation stops the v2 shadow and the v2 canary, and does not undo the disclosures for anything already observed.
+
+### A3 halt record (2026-10-13): the read ended NOT_DECIDABLE; no look was read
+
+EXP024_READ_ENDED: NOT_DECIDABLE 2026-10-13 (A3 pins_changed inside Look 1's counted window; section 11)
+
+Written 2026-10-13T08:49:05Z (`date -u`). Outcome-blind: to write it, no row of forward-1002, forward-1002ev or walk 2 was opened, no canary
+ledger fill, exit or P&L row, no shadow outcome record and no paper twin was read, and no H5 outcome was computed.
+
+- The run. The daily A3 run, MiScusi job #907, started 2026-10-13T07:11:58Z (record run_utc 2026-10-13T07:11:58Z), at main
+  f231894c79174d0413860e3e3c6a7aa8a35210cc, monitor blob 1ca0a88cecf0853d94336ea046ba1a910b79f198 (the section 10 pin), pins blob
+  7486f57f372e79c7d852f9cb70991d20043d4a8f. Flags read one by one from halt.flags (Amendment 4 C1):
+  pins_changed HALT ("program_fees deploy_slot 454596501 -> 456132171 (2026-10-12T17:40:24Z)"). Evaluated and clear:
+  boost_disabled, boost_share_low (InitBoost on 17/17), boost_last_slice_early (median 332 s, 17 pools),
+  boost_budget_or_slices_changed. synthetic_share_high 3/20, recorded only. The monitor's program_changed watch
+  also fired (fees programdata sha256 4757ce83... -> 3cf9ee9a..., length unchanged); it is not one of the five.
+- The cause. The pump fees program pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ was redeployed at slot 456132171,
+  2026-10-12T17:40:24Z. The run that shows the flag started 13 h 31 min 34 s later.
+- The rule. Section 11: "Inside a counted window: the read ends NOT_DECIDABLE at that point unless it has already
+  passed. There is no later look, no retune, and no resumption if the monitor clears." The run is inside Look 1's
+  counted window [2026-10-10T00, 2026-10-16T00). No look had been read.
+- The point. The halting run (job #907). The deploy instant and the run instant are recorded above. Neither splits
+  the window: no hour before either is read, and no look is computed on part of the window.
+- What ends. Look 1 does not run. Look 2 does not run. Look 1's window and alpha_1 = 0.020 are spent (section 11,
+  Spending). alpha_2 = 0.005 is not used and is not moved to any other look, read or family by this record.
+  H5-BOOSTFLOOR v1 is not re-filed. The outcome is NOT_DECIDABLE: not a pass and not a FAIL.
+- What is not cured. The re-pin (PR #629) and any later clean A3 run do not resume this read (section 11; DEC-024
+  Amendment 7 item 2, "What it does not change").
+- What is not run. P5, the classification pass, P6, P7 and the read tool's look command are not run for this file.
+  /data/mal/exp024/LOOK_READS.jsonl is not edited. This record is the report.
+- The seal. Section 3's seal and Amendment 4 D1 stay in force. HOLDOUT_LEDGER's clarification of 2026-10-10 (3a)
+  does not list an A3 halt among this read's end states; the first listed state that can occur is "Look 2
+  NOT_DECIDABLE at 2026-11-14T00:00Z". No hour is released by this record. DEC-016 Amendment 7 is unchanged.
+- Disclosures a Look 1 report would have carried, recorded here because no such report will exist: the canary's and
+  the shadow detector's outcomes for pools in Look 1's window were observed in real time (section 3.1), and for
+  pools with s0 before 2026-10-10T00 from about 2026-10-08T21:30Z (Amendment 3); BOOST timing split by pool class
+  was observed for Look 1's window from 2026-10-10T00Z, never joined to an outcome (DEC-024 Amendment 5 item 8).
+  The halt was not caused by, and this record was not chosen because of, anything the canary or the shadow showed.
+- The canary. DEC-024 governs it. Its section 5 stop names a Look 1 FAIL; NOT_DECIDABLE is not a FAIL. A resume
+  under DEC-024 Amendment 7 item 2 does not revive this read. Every report labels the canary "execution
+  measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book".
+- Other reads. EXP-022's A3 rules are its own (its P2 reads the last daily run before 2026-10-16T01:00Z). EXP-025
+  has no A3 halt. EXP-026 section 7 has its own A3 line for [W0, E); this record does not rule on it.
+- Status. H5 has not cleared the promotion gate. This read cannot support a live request.
+
+Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2026-10-13 A3 halt". The text of this record is quant-proof's, with the write time, the record's `run_utc` and the commit filled in by the manager.
 
 ## Sources
 
