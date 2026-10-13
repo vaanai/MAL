@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,8 +29,16 @@ from tools.test_h5_tipauth_item4 import H, MID, T0, bt, hb, start, trig
 SHA = "5db78a663a0617527daacb22f5ce6c1a7e92dfa3"
 INSTALLED_SHA = "b7ddeb60aa4ced9243211775cf3d5a22ccc42dff"
 WS = "bad_intent:base_breaks_unresolved_settled"
-UNTIL = T0 + H - 1
+UNTIL = T0 + 6 * H  # item-4's +6 h instant for since = T0 (round 2, R1: the tool refuses any other)
+NOW = UNTIL + I4.SETTLE_MS  # the earliest wall-clock instant at which a run on UNTIL is allowed
 HEAD_REAL = Path(D.__file__).with_name("h5_executor.py")
+FIVE = ("a_vs_b_default_zero_differences", "a_vs_b_tipauth_none_zero_differences", "passes_to_refusals_zero", "other_changes_zero", "would_pass_disagreements_zero")
+SEVEN = (*FIVE, "item4_count_reconciles", "read_complete")
+
+
+def call_main(argv, now_ms=NOW):
+    """D.main with an injected clock (no test sleeps). now_ms=None reads the wall clock."""
+    return D.main(argv, now_ms=now_ms)
 
 FAKE_BASE = '''
 from dataclasses import dataclass
@@ -53,6 +62,8 @@ def parse_shadow_trigger(row, variant="pv"):
         return None, None
     if row.get("suppressed"):
         return None, "bad_intent:suppressed"
+    if row.get("rr"):
+        return None, "bad_intent:rr!"
     if not _isint(row.get("q")):
         return None, "bad_intent:q"
     ws = row.get("base_breaks_unresolved_settled")
@@ -105,12 +116,16 @@ def tipauth_gate(rec):
 
 
 def parse_shadow_trigger(row, variant="pv", tipauth=None):
+    if PLANT == "never_on":
+        tipauth = None  # a "path on" that does not engage
     if not isinstance(row, dict) or row.get("type") != "trigger" or row.get("variant") != variant:
         return None, None
     if row.get("suppressed"):
         if PLANT == "other_pass" and tipauth is not None:
             return H5Trigger(row["mint"], row["pool"], 1, "tipauth"), None
         return None, "bad_intent:suppressed"
+    if row.get("rr"):
+        return None, "bad_intent:rr?"
     if not _isint(row.get("q")):
         if PLANT == "other_reason" and tipauth is not None:
             return None, "bad_intent:q2"
@@ -213,10 +228,18 @@ class Base(unittest.TestCase):
         p.write_text(text)
         return p
 
+    def fill_hours(self, since: int = T0, until: int = UNTIL) -> None:
+        """An (empty) hour file for every hour of the window that has none: a complete layout, so read_complete is about the records."""
+        for h in range(since // H, until // H + 1):
+            name = "h5-shadow-" + time.strftime("%Y-%m-%dT%H", time.gmtime(h * H // 1000)) + ".jsonl"
+            (self.shadow / name).touch()
+
     def run_tool(self, items=None, base_src: str = FAKE_BASE, head: str | None = None, argv_extra=(), expect: str = SHA, since: int = T0, until: int = UNTIL,
-                 base_args=None, write: bool = True):
+                 base_args=None, write: bool = True, now_ms=NOW, fill: bool = True):
         if items is not None and write:
             write_hour(self.shadow, items)
+        if fill and self.shadow.is_dir():
+            self.fill_hours(since, until)
         self.n_run += 1
         base_p = self.put(f"base{self.n_run}.py", base_src)
         head_p = self.put(f"head{self.n_run}.py", head if head is not None else head_src())
@@ -224,7 +247,7 @@ class Base(unittest.TestCase):
                 *(base_args if base_args is not None else ["--base-file", str(base_p)]), "--head-file", str(head_p), *argv_extra]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            code = D.main(argv)
+            code = call_main(argv, now_ms)
         return code, json.JSONDecoder().raw_decode(buf.getvalue())[0], buf.getvalue()
 
 
@@ -257,7 +280,7 @@ class FakeCorpusTests(Base):
             self.assertEqual(ab[k]["records_compared"], 18)
             self.assertEqual(ab[k]["records_differ"], 0)
             self.assertEqual(ab[k]["difference_classes"], [])
-        self.assertEqual(self.res["verdict"], {k: True for k in D.VERDICT_KEYS})
+        self.assertEqual(self.res["verdict"], {k: True for k in SEVEN})
 
     def test_refusals_that_become_passes_and_the_rest_of_the_transition_table(self):
         c = self.res["a_vs_c"]
@@ -285,9 +308,9 @@ class FakeCorpusTests(Base):
     def test_the_item4_predicate_agrees(self):
         w = self.res["would_pass"]
         self.assertEqual(w["item4_predicate_true"], 8)
-        self.assertEqual(w["item4_predicate_true_by_c_outcome"], {"PASS": 6, "bad_intent:late": 2})
+        self.assertEqual(w["item4_predicate_true_by_c_outcome_all_unsealed"], {"PASS": 6, "bad_intent:late": 2})
         self.assertEqual((w["refusals_to_passes"], w["refusals_to_passes_item4_true"]), (6, 6))
-        self.assertEqual(w["disagreements"], {"became_pass_item4_false": 0, "item4_true_gate_refused": 0, "gate_reason_differs": 0, "total": 0})
+        self.assertEqual(w["disagreements"], {"became_pass_item4_false": 0, "item4_true_gate_refused": 0, "gate_reason_differs": 0, "gate_admitted_item4_false_later_refused": 0, "path_not_engaged": 0, "total": 0})
 
     def test_the_selection_equals_the_item4_tools(self):
         r4 = I4.analyze(self.shadow, T0, UNTIL, expect_code_sha=SHA)
@@ -298,8 +321,9 @@ class FakeCorpusTests(Base):
         se = r["records"]["sealed_excluded"]
         self.assertEqual((se["sealed"], se["h5_look2_sealed_only"], se["both_flags"]), (sk["sealed_trigger"], sk["h5_look2_sealed_trigger"], sk["both_flags"]))
 
-    def test_the_verdict_has_exactly_the_required_zero_booleans(self):
-        self.assertEqual(sorted(self.res["verdict"]), sorted(D.VERDICT_KEYS))
+    def test_the_verdict_has_exactly_the_seven_booleans(self):
+        self.assertEqual(sorted(self.res["verdict"]), sorted(SEVEN))
+        self.assertEqual(tuple(D.VERDICT_KEYS), SEVEN)
         self.assertTrue(all(isinstance(v, bool) for v in self.res["verdict"].values()))
 
     def test_no_forbidden_value_or_key_in_the_output(self):
@@ -354,7 +378,8 @@ class ScanTests(Base):
         g = Gen()
         _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(), hb(MID)])
         self.assertTrue(r["scan"]["trigger_pattern_matches_equal_trigger_records_parsed"])
-        self.assertEqual(r["scan"]["files"], ["h5-shadow-" + time.strftime("%Y-%m-%dT%H", time.gmtime(T0 // 1000)) + ".jsonl"])
+        self.assertIn("h5-shadow-" + time.strftime("%Y-%m-%dT%H", time.gmtime(T0 // 1000)) + ".jsonl", r["scan"]["files"])
+        self.assertEqual((r["scan"]["expected_hour_files"], r["scan"]["missing_hour_files"]), (7, 0))
 
     def test_last_line_without_newline_is_counted(self):
         g = Gen()
@@ -403,7 +428,7 @@ class ScanTests(Base):
             return real_open(file, *a, **k)
         argv = ["--shadow-dir", str(self.shadow), "--since-ms", str(T0), "--until-ms", str(UNTIL), "--expect-code-sha", SHA, "--base-file", str(base_p), "--head-file", str(head_p)]
         with mock.patch("builtins.open", spy), mock.patch("io.open", spy), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(D.main(argv), 0)
+            self.assertEqual(call_main(argv), 0)
         allowed = (str(self.shadow), str(base_p), str(head_p), str(Path(D.__file__)))
         outside = [p for p in seen if not p.startswith(allowed)]
         self.assertEqual(outside, [])
@@ -514,7 +539,7 @@ class PlantedTests(Base):
     def test_a_gate_whose_reason_differs_is_a_disagreement(self):
         g = Gen()
         _, r, _ = self.run_tool(self.corpus(g, [g.trig(gap=True), g.trig()]), head=head_src(gate="reason"))
-        self.assertEqual(r["would_pass"]["disagreements"], {"became_pass_item4_false": 0, "item4_true_gate_refused": 0, "gate_reason_differs": 1, "total": 1})
+        self.assertEqual(r["would_pass"]["disagreements"], {"became_pass_item4_false": 0, "item4_true_gate_refused": 0, "gate_reason_differs": 1, "gate_admitted_item4_false_later_refused": 0, "path_not_engaged": 0, "total": 1})
 
 
 class AvailabilityTests(Base):
@@ -522,22 +547,29 @@ class AvailabilityTests(Base):
         g = Gen()
         return self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig()], head=head_src(avail=avail))
 
-    def test_a_head_without_an_availability_function_gets_the_documented_empty_string(self):
+    def test_r4_a_head_without_an_availability_function_is_an_input_error(self):
         code, r, _ = self.run_av("none")
-        self.assertEqual(code, 0)
-        self.assertEqual(r["availability"]["tipauth_argument_for_C"], "")
-        self.assertIn("literal empty string", r["availability"]["source"])
-        self.assertEqual(r["a_vs_c"]["refusals_to_passes"]["total"], 1)
+        self.assertEqual(code, 7)
+        self.assertEqual(set(r), {"tool", "error", "exit_code"})
+        self.assertIn("_tipauth_availability", r["error"])
 
     def test_a_head_that_says_unavailable_on_an_all_clear_state_is_an_input_error(self):
         code, r, text = self.run_av("latched")
         self.assertEqual(code, 7)
         self.assertNotIn("records", r)
 
-    def test_an_availability_function_that_raises_is_reported(self):
+    def test_r4_an_availability_function_that_raises_is_an_input_error(self):
         code, r, _ = self.run_av("raises")
+        self.assertEqual(code, 7)
+        self.assertEqual(set(r), {"tool", "error", "exit_code"})
+        self.assertIn("RuntimeError", r["error"])
+
+    def test_the_heads_own_empty_string_is_the_on_state(self):
+        code, r, _ = self.run_av("clear")
         self.assertEqual(code, 0)
-        self.assertIn("raised RuntimeError", r["availability"]["source"])
+        self.assertEqual(r["availability"]["tipauth_argument_for_C"], "")
+        self.assertTrue(r["availability"]["source"].startswith("H5Executor._tipauth_availability on a stub"))
+        self.assertEqual(r["a_vs_c"]["refusals_to_passes"]["total"], 1)
 
 
 class InputErrorTests(Base):
@@ -580,7 +612,7 @@ class InputErrorTests(Base):
         write_hour(self.shadow, items)
         code, r, _ = self.run_tool(None, write=False, base_args=["--base-file", str(self.tmp / "missing.py")])
         self.assertEqual(code, 7)
-        code, r, _ = self.run_tool(None, write=False, head=FAKE_BASE)  # a head without the tipauth parameter
+        code, r, _ = self.run_tool(None, write=False, head=FAKE_BASE + "\n# other bytes\n")  # a head without the tipauth parameter
         self.assertEqual(code, 7)
         self.assertIn("tipauth", r["error"])
         code, r, _ = self.run_tool(None, write=False, head="raise RuntimeError('import failed')\n")
@@ -611,6 +643,268 @@ class InputErrorTests(Base):
     def test_the_head_file_defaults_to_this_checkouts_executor(self):
         self.assertEqual(D.HEAD_DEFAULT, D.ROOT / "tools" / "h5_executor.py")
         self.assertTrue(D.HEAD_DEFAULT.is_file())
+
+
+class ScheduleTests(Base):
+    """Round 2, R1: the item-4 schedule and settle rule (quant-proof comment 6153922480). The tool imports item4.on_schedule and item4.SETTLE_MS."""
+
+    def items(self):
+        g = Gen()
+        return [start(t=T0 + 1000, sha=SHA), g.trig()]
+
+    def test_r1_an_instant_off_the_item4_schedule_is_refused_with_no_counts_and_no_file(self):
+        out = self.tmp / "o.json"
+        write_hour(self.shadow, self.items())
+        for until in (T0 + H - 1, T0 + 5 * H, T0 + 6 * H + 1, T0 + 12 * H, T0 + 30 * 24 * H):
+            code, r, _ = self.run_tool(None, write=False, until=until, now_ms=until + 10**10, argv_extra=["--out", str(out)])
+            self.assertEqual(code, 8, until)
+            self.assertEqual(set(r), {"tool", "error", "exit_code"}, until)
+            self.assertFalse(out.exists())
+
+    def test_r1_every_scheduled_instant_is_accepted(self):
+        write_hour(self.shadow, self.items())
+        for until in I4.schedule(T0)[:6]:  # +6 h, +24 h, +36 h, +48 h, +60 h, +72 h
+            code, r, _ = self.run_tool(None, write=False, until=until, now_ms=until + I4.SETTLE_MS)
+            self.assertEqual(code, 0, until)
+
+    def test_r1_a_run_earlier_than_the_instant_plus_settle_is_refused(self):
+        write_hour(self.shadow, self.items())
+        out = self.tmp / "o.json"
+        for now in (UNTIL + I4.SETTLE_MS - 1, UNTIL, UNTIL - 5 * H):  # 1 ms short; at the instant; five hours ahead of the wall clock
+            code, r, _ = self.run_tool(None, write=False, now_ms=now, argv_extra=["--out", str(out)])
+            self.assertEqual(code, 8, now)
+            self.assertEqual(set(r), {"tool", "error", "exit_code"})
+            self.assertFalse(out.exists())
+        code, r, _ = self.run_tool(None, write=False, now_ms=UNTIL + I4.SETTLE_MS)
+        self.assertEqual(code, 0)
+
+    def test_r1_without_an_injected_clock_the_wall_clock_is_read(self):
+        write_hour(self.shadow, self.items())
+        code, r, _ = self.run_tool(None, write=False, now_ms=None)  # T0 is in 2025
+        self.assertEqual(code, 0)
+
+
+class AgreementTests(Base):
+    """Round 2, R2 with reviewer B1: the agreement check and the reconciliation with 5.1."""
+
+    def run_rows(self, rows, **kw):
+        return self.run_tool([start(t=T0 + 1000, sha=SHA), *rows], **kw)
+
+    def test_b1_a_path_that_never_engaged_is_a_disagreement(self):
+        g = Gen()
+        _, r, _ = self.run_rows([g.trig() for _ in range(3)] + [g.trig(late=True)], head=head_src("never_on"))
+        self.assertEqual(r["a_vs_c"]["refusals_to_passes"]["total"], 0)
+        self.assertEqual(r["records"]["ws_integer_ge_1"], 4)  # printed, so a vacuous run is visible
+        d = r["would_pass"]["disagreements"]
+        self.assertEqual((d["path_not_engaged"], d["total"]), (4, 4))
+        self.assertFalse(r["verdict"]["would_pass_disagreements_zero"])
+        self.assertFalse(r["verdict"]["item4_count_reconciles"])
+
+    def test_b1_a_websocket_setting_that_is_not_an_integer_stays_the_websocket_refusal_without_a_disagreement(self):
+        g = Gen()
+        _, r, _ = self.run_rows([g.trig(ws=None, uval=None), g.trig(ws="1", uval=1), g.trig(ws=True, uval=1)])
+        self.assertEqual(r["records"]["ws_integer_ge_1"], 0)
+        self.assertEqual(r["would_pass"]["disagreements"]["total"], 0)
+        self.assertTrue(r["verdict"]["would_pass_disagreements_zero"])
+
+    def test_r2a_the_gate_admits_what_the_predicate_refuses_and_a_later_check_then_refuses_it(self):
+        g = Gen()
+        _, r, _ = self.run_rows([g.trig(gap=True, late=True), g.trig(gap=True), g.trig()], head=head_src(gate="lenient"))
+        d = r["would_pass"]["disagreements"]
+        self.assertEqual(d["gate_admitted_item4_false_later_refused"], 1)
+        self.assertEqual(d["became_pass_item4_false"], 1)
+        self.assertEqual(d["total"], 2)
+        self.assertFalse(r["verdict"]["would_pass_disagreements_zero"])
+
+    def test_r2b_the_reconciliation_on_the_fake_corpus(self):
+        g = Gen()
+        _, r, _ = self.run_tool(fake_corpus(g))
+        rc = r["reconciliation"]
+        self.assertEqual((rc["item4_predicate_true"], rc["became_pass"], rc["remainder"]), (8, 6, 0))
+        self.assertEqual(rc["refused_by_later_check"], {"total": 2, "by_reason": {"bad_intent:late": 2}})
+        self.assertEqual(rc["refused_before_websocket_gate_unchanged"], {"total": 0, "by_reason": {}})
+        self.assertEqual(rc["refusals_to_passes_all_unsealed"], 6)
+        self.assertTrue(r["verdict"]["item4_count_reconciles"])
+        self.assertEqual(rc["item4_predicate_true"], r["would_pass"]["item4_predicate_true_in_item4_selection"])
+
+    def test_r2b_the_third_term_refused_before_the_websocket_gate_in_both_builds(self):
+        g = Gen()
+        rows = [g.trig() for _ in range(6)] + [g.trig(late=True), g.trig(late=True), g.trig(suppressed=True)]
+        _, r, _ = self.run_rows(rows)
+        rc = r["reconciliation"]
+        self.assertEqual((rc["item4_predicate_true"], rc["became_pass"], rc["refused_by_later_check"]["total"], rc["remainder"]), (9, 6, 2, 0))
+        self.assertEqual(rc["refused_before_websocket_gate_unchanged"], {"total": 1, "by_reason": {"bad_intent:suppressed": 1}})
+        self.assertTrue(r["verdict"]["item4_count_reconciles"])
+
+    def test_r2b_a_remainder_fails_the_boolean(self):
+        g = Gen()
+        _, r, _ = self.run_rows([g.trig(), g.trig(), g.trig(late=True)], head=head_src(gate="strict"))
+        rc = r["reconciliation"]
+        self.assertEqual((rc["item4_predicate_true"], rc["became_pass"], rc["remainder"]), (3, 0, 3))
+        self.assertFalse(r["verdict"]["item4_count_reconciles"])
+
+    def test_r2b_a_pass_outside_the_item4_selection_fails_the_boolean(self):
+        g = Gen()
+        _, r, _ = self.run_rows([g.trig(), g.trig(wobble=float("nan"))])  # the second is read as the executor reads it, and item 4 drops it
+        rc = r["reconciliation"]
+        self.assertEqual((rc["item4_predicate_true"], rc["became_pass"], rc["refusals_to_passes_all_unsealed"]), (1, 1, 2))
+        self.assertEqual(rc["outside_selection"], {"item4_predicate_true": 1, "by_c_outcome": {"PASS": 1}})
+        self.assertFalse(r["verdict"]["item4_count_reconciles"])
+
+
+class ReadCompleteTests(Base):
+    """Round 2, R3 with reviewer B2: read_complete. The five comparison booleans can stay true in every case below; that is the defect."""
+
+    def assert_incomplete(self, r):
+        self.assertTrue(all(r["verdict"][k] for k in FIVE), r["verdict"])
+        self.assertFalse(r["verdict"]["read_complete"])
+
+    def test_r3_the_clean_corpus_is_complete(self):
+        g = Gen()
+        _, r, _ = self.run_tool(fake_corpus(g))
+        self.assertTrue(r["verdict"]["read_complete"])
+        self.assertEqual((r["scan"]["expected_hour_files"], r["scan"]["missing_hour_files"], r["scan"]["snapshot_dropped_files"]), (7, 0, 0))
+
+    def test_r3_an_empty_read_is_incomplete(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(sealed=True), g.trig(h5_look2_sealed=True)])
+        self.assertEqual(r["records"]["unsealed_read"], 0)
+        self.assert_incomplete(r)
+
+    def test_r3_an_unreadable_hour_file_is_incomplete(self):
+        g = Gen()
+        write_hour(self.shadow, [start(t=T0 + 1000, sha=SHA), g.trig()])
+        write_hour(self.shadow, [g.trig() for _ in range(5)], hour_ms=T0 + H)
+        path = self.shadow / ("h5-shadow-" + time.strftime("%Y-%m-%dT%H", time.gmtime((T0 + H) // 1000)) + ".jsonl")
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o644)
+        if os.access(path, os.R_OK):
+            self.skipTest("running as a user that reads a mode 000 file")
+        _, r, _ = self.run_tool(None, write=False)
+        self.assertEqual(r["scan"]["unreadable_file"], 1)
+        self.assertEqual(r["records"]["unsealed_read"], 1)
+        self.assert_incomplete(r)
+
+    def test_r3_a_terminated_cut_off_trigger_line_is_incomplete(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(), '{"type": "trigger", "variant": "pv", "pool": "PO'])
+        self.assertFalse(r["scan"]["trigger_pattern_matches_equal_trigger_records_parsed"])
+        self.assert_incomplete(r)
+
+    def test_r3_an_unterminated_cut_off_last_line_is_counted_on_its_own_and_is_not_a_failure(self):
+        g = Gen()
+        write_hour(self.shadow, [start(t=T0 + 1000, sha=SHA), g.trig()])
+        with open(next(p for p in self.shadow.iterdir() if p.stat().st_size), "ab") as fh:
+            fh.write(b'{"type": "trigger", "variant": "pv", "pool": "PO')  # the shadow is mid-write; the executor acts only on terminated lines
+        _, r, _ = self.run_tool(None, write=False)
+        self.assertEqual(r["scan"]["unterminated_last_line_trigger_unparsed"], 1)
+        self.assertTrue(r["scan"]["trigger_pattern_matches_equal_trigger_records_parsed"])
+        self.assertTrue(r["verdict"]["read_complete"])
+
+    def test_r3_a_non_utf8_byte_that_breaks_a_trigger_line_is_incomplete(self):
+        g = Gen()
+        line = json.dumps(g.trig(ws=0, uval=0)).encode().replace(b'"variant"', b'\xff"variant"', 1)  # a stray byte between tokens: the line cannot parse
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(), line])
+        self.assertEqual(r["scan"]["bad_line_not_utf8"], 1)
+        self.assert_incomplete(r)
+
+    def test_r3_a_non_utf8_byte_inside_a_string_is_read_as_the_executor_reads_it(self):
+        g = Gen()
+        row = g.trig(ws=0, uval=0)
+        line = json.dumps(row).encode().replace(row["mint"].encode(), row["mint"].encode()[:5] + b"\xff" + row["mint"].encode()[5:], 1)
+        _, r, text = self.run_tool([start(t=T0 + 1000, sha=SHA), line])
+        self.assertEqual(r["records"]["unsealed_read"], 1)  # tail_lines decodes with errors="replace", so the executor parses it to a pass
+        self.assertEqual(r["records"]["not_utf8"], 1)
+        self.assertEqual(r["records"]["in_item4_selection"], 0)  # the item-4 loader drops it
+        self.assertEqual(r["a_vs_c"]["a_passes"], 1)
+        self.assertTrue(r["verdict"]["read_complete"])
+
+    def test_r3_a_missing_hour_file_inside_the_window_is_incomplete(self):
+        g = Gen()
+        write_hour(self.shadow, [start(t=T0 + 1000, sha=SHA), g.trig()])
+        for k in (2, 3, 4, 5, 6):  # hour 1 is missing
+            write_hour(self.shadow, [], hour_ms=T0 + k * H)
+        _, r, text = self.run_tool(None, write=False, fill=False)
+        self.assertEqual((r["scan"]["expected_hour_files"], r["scan"]["missing_hour_files"]), (7, 1))
+        self.assertIsInstance(r["scan"]["missing_hour_files"], int)  # a count, not names
+        self.assert_incomplete(r)
+
+    def test_r3_a_layout_with_only_the_first_hour_is_incomplete(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig()], fill=False)
+        self.assertEqual(r["scan"]["missing_hour_files"], 6)
+        self.assert_incomplete(r)
+
+    def test_r3_a_file_the_snapshot_drops_is_incomplete(self):
+        g = Gen()
+        write_hour(self.shadow, [start(t=T0 + 1000, sha=SHA), g.trig()])
+        self.fill_hours()
+        real = I4.snapshot
+        with mock.patch.object(I4, "snapshot", lambda files: real(files)[:-1]):  # a file whose stat failed is dropped silently by item 4's snapshot
+            _, r, _ = self.run_tool(None, write=False, fill=False)
+        self.assertEqual(r["scan"]["snapshot_dropped_files"], 1)
+        self.assert_incomplete(r)
+
+    def test_r3_a_trigger_without_an_integer_t_ms_is_incomplete(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(), dict(g.trig(), t_ms=None)])
+        self.assert_incomplete(r)
+
+
+class RoundTwoMiscTests(Base):
+    """Reviewer B3 and the non-blocking items."""
+
+    def items(self, g=None):
+        g = g or Gen()
+        return [start(t=T0 + 1000, sha=SHA), g.trig()]
+
+    def test_b3_a_base_equal_to_the_head_is_an_input_error(self):
+        same_file = self.put("same.py", head_src())
+        code, r, _ = self.run_tool(self.items(), base_args=["--base-file", str(same_file)], argv_extra=["--head-file", str(same_file)])
+        self.assertEqual(code, 7)
+        self.assertEqual(set(r), {"tool", "error", "exit_code"})
+        self.assertIn("same", r["error"])
+
+    def test_b3_the_same_bytes_under_two_names_are_the_same_build(self):
+        a, b = self.put("a.py", head_src()), self.put("b.py", head_src())
+        code, r, _ = self.run_tool(self.items(), base_args=["--base-file", str(a)], argv_extra=["--head-file", str(b)])
+        self.assertEqual(code, 7)
+
+    def test_b3_a_base_whose_parser_has_a_tipauth_parameter_is_an_input_error(self):
+        code, r, _ = self.run_tool(self.items(), base_src=head_src() + "\n# not the head's bytes\n")
+        self.assertEqual(code, 7)
+        self.assertIn("tipauth", r["error"])
+
+    def test_the_expected_sha256_of_the_base_and_the_head_are_enforced_when_given(self):
+        base_sha, head_sha = hashlib.sha256(FAKE_BASE.encode()).hexdigest(), hashlib.sha256(head_src().encode()).hexdigest()
+        code, r, _ = self.run_tool(self.items(), argv_extra=["--expect-base-sha256", base_sha, "--expect-head-sha256", head_sha])
+        self.assertEqual(code, 0)
+        for flag, val in (("--expect-base-sha256", "0" * 64), ("--expect-head-sha256", "f" * 64)):
+            code, r, _ = self.run_tool(None, write=False, argv_extra=[flag, val])
+            self.assertEqual(code, 7, flag)
+            self.assertEqual(set(r), {"tool", "error", "exit_code"})
+
+    def test_a_missing_out_directory_is_an_input_error_before_the_scan(self):
+        code, r, text = self.run_tool(self.items(), argv_extra=["--out", str(self.tmp / "no_such_dir" / "o.json")])
+        self.assertEqual(code, 6)
+        self.assertEqual(set(r), {"tool", "error", "exit_code"})
+        self.assertEqual(text.count("{"), 1)  # no counts were printed first
+
+    def test_reasons_are_compared_raw_not_as_cleaned_labels(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(ws=0, uval=0, rr=True)])
+        d = r["a_vs_b"]["head_path_off_default_call"]
+        self.assertEqual(d["records_differ"], 1)  # "bad_intent:rr!" against "bad_intent:rr?" print as the same label
+        self.assertFalse(r["verdict"]["a_vs_b_default_zero_differences"])
+
+    def test_reasons_by_count_on_each_side_and_both_raise_by_type(self):
+        g = Gen()
+        _, r, _ = self.run_tool([start(t=T0 + 1000, sha=SHA), g.trig(ws=0, uval=0), g.trig(ws=0, uval=0, boom=True), g.trig(ws=0, uval=0, boom=True), g.trig()])
+        ab = r["a_vs_b"]
+        self.assertEqual(ab["reasons_a"], {"PASS": 1, "raise:ValueError": 2, WS: 1})
+        for k in ("head_path_off_default_call", "head_path_off_tipauth_none"):
+            self.assertEqual(ab[k]["reasons_b"], {"PASS": 1, "raise:ValueError": 2, WS: 1})
+            self.assertEqual(ab[k]["both_raise_by_type"], {"raise:ValueError": 2})
 
 
 # ---- the real executor files ---------------------------------------------------------------------------------------------------------------------
@@ -701,18 +995,19 @@ class RealExecutorTests(Base):
         self.g = Gen()
         self.items, self.exp = real_corpus(self.g)
         write_hour(self.shadow, self.items)
+        self.fill_hours()
 
     def run_real(self, base_args, extra=()):
         argv = ["--shadow-dir", str(self.shadow), "--since-ms", str(T0), "--until-ms", str(UNTIL), "--expect-code-sha", SHA, *base_args, *extra]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            code = D.main(argv)
-        return code, json.loads(buf.getvalue()), buf.getvalue()
+            code = call_main(argv)
+        return code, json.JSONDecoder().raw_decode(buf.getvalue())[0], buf.getvalue()
 
     def test_installed_build_against_head_by_git_sha(self):
         code, r, text = self.run_real(["--base-git-sha", INSTALLED_SHA])
         self.assertEqual(code, 0)
-        self.assertEqual(r["verdict"], {k: True for k in D.VERDICT_KEYS}, json.dumps(r["a_vs_c"]["other_changes"]))
+        self.assertEqual(r["verdict"], {k: True for k in SEVEN}, json.dumps(r["a_vs_c"]["other_changes"]))
         self.assertEqual(r["base"]["sha256"], hashlib.sha256(self.installed_bytes).hexdigest())
         self.assertEqual(r["head"]["sha256"], hashlib.sha256(HEAD_REAL.read_bytes()).hexdigest())
         self.assertFalse(r["base"]["parse_has_tipauth_parameter"])
@@ -743,7 +1038,7 @@ class RealExecutorTests(Base):
         w = r["would_pass"]
         self.assertEqual(w["refusals_to_passes_item4_true"], e["admitted"])
         self.assertEqual(w["disagreements"]["total"], 0)
-        self.assertEqual(w["item4_predicate_true_by_c_outcome"].get("PASS"), e["admitted"])
+        self.assertEqual(w["item4_predicate_true_by_c_outcome_all_unsealed"].get("PASS"), e["admitted"])
 
     def test_the_selection_equals_the_item4_tools(self):
         _, r, _ = self.run_real(["--base-git-sha", INSTALLED_SHA])
@@ -764,12 +1059,22 @@ class RealExecutorTests(Base):
         self.assertEqual(r1["a_vs_b"], r2["a_vs_b"])
         self.assertEqual(r1["base"], r2["base"])
 
-    def test_head_against_head_has_no_path_off_difference(self):
-        _, r, _ = self.run_real(["--base-file", str(HEAD_REAL)])
-        self.assertTrue(r["base"]["parse_has_tipauth_parameter"])
-        self.assertEqual(r["base"]["sha256"], r["head"]["sha256"])
-        self.assertEqual(r["verdict"], {k: True for k in D.VERDICT_KEYS})  # A is the head's own default call here: A against B is the head against itself
-        self.assertEqual(r["a_vs_c"]["refusals_to_passes"]["total"], self.exp["admitted"])
+    def test_b3_the_head_given_as_the_base_is_an_input_error(self):
+        code, r, _ = self.run_real(["--base-file", str(HEAD_REAL)])
+        self.assertEqual(code, 7)
+        self.assertEqual(set(r), {"tool", "error", "exit_code"})
+
+    def test_the_rulings_worked_numbers_reconcile(self):
+        """Quant-proof round 2: 9 would-pass, 6 become passes, 2 refused by a later check, 1 (v_missing) refused before the websocket gate in both builds."""
+        _, r, _ = self.run_real(["--base-git-sha", INSTALLED_SHA])
+        rc = r["reconciliation"]
+        self.assertEqual(rc["item4_predicate_true"], 9)
+        self.assertEqual(rc["became_pass"], 6)
+        self.assertEqual(rc["refused_by_later_check"], {"total": 2, "by_reason": {"bad_intent:boost_spent": 1, "bad_intent:sps_span": 1}})
+        self.assertEqual(rc["refused_before_websocket_gate_unchanged"], {"total": 1, "by_reason": {"bad_intent:v_missing": 1}})
+        self.assertEqual(rc["remainder"], 0)
+        self.assertTrue(r["verdict"]["item4_count_reconciles"])
+        self.assertEqual(r["a_vs_c"]["refusals_to_passes"]["total"], 6)
 
     def test_a_gate_passing_record_whose_later_field_makes_the_parser_raise_is_an_other_change(self):
         g = Gen()
