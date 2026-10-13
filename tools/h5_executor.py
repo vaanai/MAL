@@ -2602,7 +2602,16 @@ class H5Executor(pl.LiveExecutor):
             ack = None
         if pause and ack != pause:  # a look is a human step: no automatic continuation; only the pending look's own number releases it (an old or smaller ack never does)
             return "tipauth:look_pending"
+        if int(t.get("realized") or 0) - self._tipauth_at_risk() <= -TIPAUTH_LOSS_BUDGET_LAMPORTS:  # R7: a hold, not a latch; it lifts when the exposure resolves
+            return "tipauth:budget_at_risk"
         return ""
+
+    def _tipauth_at_risk(self) -> int:
+        """What the open and in-flight TAGGED positions could still lose, on _budget_stop's arithmetic restricted to tagged mints: spend + extra_cost of each
+        open tagged position, plus the spend of each pending tagged buy. The stake of the trigger being judged is NOT included (quant-proof 3 (d))."""
+        tagged, st = self._tipauth_mints, self.state
+        return (sum(int(p.get("spend") or 0) + int(p.get("extra_cost") or 0) for m, p in st.open.items() if m in tagged)
+                + sum(int(p.get("spend") or 0) for m, p in st.pending.items() if p.get("kind") == "buy" and m in tagged))
 
     def _tipauth_recheck(self, trg: H5Trigger) -> str | None:
         if not self._tipauth_switch or trg.gate_path != GATE_PATH_TIPAUTH:

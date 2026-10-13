@@ -763,6 +763,74 @@ class ClassStateTests(FlowCase):
         self.assertEqual(e.rpc.sent, [])
         self.assertEqual(self.counters(e).get("halts") or {}, {})  # the class latch is a switch-off of the path, not one of the executor's HALTs
 
+    def test_r7_budget_at_risk_hold_is_exact_on_both_sides_counts_tagged_exposure_only_and_is_not_a_latch(self):
+        e = self.start(**self.ON)
+        self.admitted(e, ["M1", "M2"])
+        t, st = e.ex.counters.tipauth, e.ex.state
+        avail = e.ex._tipauth_availability
+        self.assertEqual(avail(), "")
+        t["realized"] = -39_999_999  # nothing at risk: the new stake is not part of at_risk, so this is not held
+        self.assertEqual(avail(), "")
+        t["realized"] = -20_000_000
+        st.open["M1"] = {"spend": 19_999_999, "extra_cost": 0}
+        self.assertEqual(avail(), "")  # -20,000,000 - 19,999,999 = -39,999,999: one lamport above the limit
+        st.open["M1"]["spend"] = 20_000_000
+        self.assertEqual(avail(), "tipauth:budget_at_risk")  # exactly -40,000,000: at or below holds
+        st.open["M1"] = {"spend": 10_000_000, "extra_cost": 9_999_999}  # open exposure is spend + extra_cost
+        self.assertEqual(avail(), "")
+        st.open["M1"]["extra_cost"] = 10_000_000
+        self.assertEqual(avail(), "tipauth:budget_at_risk")
+        st.open["M1"] = {"spend": 10_000_000, "extra_cost": 0}
+        st.pending["M2"] = {"kind": "buy", "spend": 9_999_999}  # a pending tagged buy counts its spend
+        self.assertEqual(avail(), "")
+        st.pending["M2"]["spend"] = 10_000_000
+        self.assertEqual(avail(), "tipauth:budget_at_risk")
+        st.pending["M2"]["kind"] = "sell"  # a pending sell is not a buy (its position is in `open` already)
+        self.assertEqual(avail(), "")
+        st.pending["M2"]["kind"] = "buy"
+        st.open["OTHER"] = {"spend": 500_000_000, "extra_cost": 500_000_000}  # websocket-path exposure is not the class's
+        st.pending["OTHER2"] = {"kind": "buy", "spend": 500_000_000}
+        self.assertEqual(avail(), "tipauth:budget_at_risk")
+        del st.open["M1"], st.pending["M2"]
+        self.assertEqual(avail(), "")  # the exposure resolved: the hold lifts, it was never a latch
+        self.assertNotIn("latched", t)
+        self.assertEqual(e.ledger("tipauth_off"), [])
+        self.assertEqual(e.alerts("tipauth_off"), [])
+        t["realized"] = +5_000_000  # a gain raises the margin again
+        st.open["M1"] = {"spend": 20_000_000, "extra_cost": 0}
+        self.assertEqual(avail(), "")
+        t["realized"] = -40_000_000  # the permanent latch is on realized only and still trips there
+        self.assertEqual(avail(), "tipauth:latched_off")
+        self.assertEqual(t["latched"]["reason"], "class_loss_budget")
+
+    def test_r7_the_hold_keeps_the_websocket_reason_and_the_cause_goes_in_tipauth_reason(self):
+        e = self.start(**self.ON)
+        self.admitted(e, ["M1"])
+        e.ex.counters.tipauth["realized"] = -20_000_000
+        e.ex.state.open["M1"] = {"spend": 20_000_000, "extra_cost": 0}
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:budget_at_risk")])  # R3
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(e.alerts(), [])
+        self.assertNotIn("tipauth_off", [r["kind"] for r in e.ledger()])
+        del e.ex.state.open["M1"]
+        self.append(e, self.tip_row(e, base_breaks_unresolved_settled=0))  # a websocket-value-0 trigger is not touched by the hold at any time
+        e.ex.intent_tick()
+        self.assertEqual(len(e.ledger("decision")), 1)
+
+    def test_r7_a_real_tagged_position_is_held_against_then_released_by_its_close(self):
+        e = self.start(**self.ON)
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        e.land_buy()
+        pos = e.ex.state.open[MINT]
+        self.assertEqual(e.ex._tipauth_at_risk(), int(pos["spend"]) + int(pos.get("extra_cost") or 0))
+        e.ex.counters.tipauth["realized"] = -(h.TIPAUTH_LOSS_BUDGET_LAMPORTS - e.ex._tipauth_at_risk())
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:budget_at_risk")
+        e.ex.counters.tipauth["realized"] += 1
+        self.assertEqual(e.ex._tipauth_availability(), "")
+
     def test_untagged_mints_do_not_count_toward_the_class(self):
         e = self.start(**self.ON)
         self.admitted(e, ["M1"])
