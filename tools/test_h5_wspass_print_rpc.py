@@ -10,8 +10,11 @@ import io
 import json
 import os
 import stat
+import socket
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -86,8 +89,20 @@ def recording_hook(seen: set):
     return lambda pairs: R(pairs)
 
 
+class NetworkAttempted(BaseException):
+    """A BaseException, so that the census `except Exception` cannot swallow it: a real network call fails the test."""
+
+
+def _no_network(*a, **k):
+    raise NetworkAttempted("a real network call was attempted")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
+        for target, name in ((urllib.request.OpenerDirector, "open"), (socket.socket, "connect"), (socket, "create_connection"), (socket, "getaddrinfo")):
+            p = mock.patch.object(target, name, _no_network)
+            p.start()
+            self.addCleanup(p.stop)
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
         self.tmp = Path(self._td.name)
@@ -98,9 +113,9 @@ class Base(unittest.TestCase):
     def shadow(self, recs, sha=SHA):
         write(self.sd, [start(T0 + 1000, sha=sha)] + list(recs))
 
-    def plan(self, since=SINCE, until=UNTIL, sha=SHA, now=NOW, out=None, hook=None):
+    def plan(self, since=SINCE, until=UNTIL, sha=SHA, now=NOW, out=None, hook=None, ta=(1, 0, 0)):
         argv = ["plan", "--shadow-dir", str(self.sd), "--since-ms", str(since), "--until-ms", str(until), "--expect-code-sha", sha,
-                "--out-dir", str(out or self.out)]
+                "--out-dir", str(out or self.out), "--tape-absent-ws", str(ta[0]), "--tape-absent-refused", str(ta[1]), "--tape-absent-would-pass", str(ta[2])]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             code = W.main(argv, now_ms=now, object_hook=hook)
@@ -114,7 +129,10 @@ class Base(unittest.TestCase):
                 code = W.main([cmd, "--out-dir", str(self.out)], transport=transport or Fake(), sleep=lambda s: None)
         return code, json.loads(buf.getvalue())
 
-    def report(self):
+    def report(self, fresh=True):
+        """Run `report`. The report file is write-once; a test that reports twice on one out-dir removes the file first (fresh=True)."""
+        if fresh and (self.out / W.REPORT_NAME).exists():
+            (self.out / W.REPORT_NAME).unlink()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             code = W.main(["report", "--out-dir", str(self.out)])
@@ -124,10 +142,10 @@ class Base(unittest.TestCase):
     def state_rows(self):
         return C.read_jsonl(self.out / C.STATE_NAME)
 
-    def full_plan(self, ws_names=("a1", "a2"), ref_names=("r1",), wp_names=()):
+    def full_plan(self, ws_names=("a1", "a2"), ref_names=("r1",), wp_names=(), ta=(1, 0, 0)):
         recs = [ws(n) for n in ws_names] + [refused(n) for n in ref_names] + [would(n) for n in wp_names]
         self.shadow(recs)
-        code, _ = self.plan()
+        code, _ = self.plan(ta=ta)
         self.assertEqual(code, 0)
 
 
@@ -222,7 +240,7 @@ class TestSelection(Base):
 
     def test_plan_files_private(self):
         self.full_plan()
-        for name in (C.PLAN_NAME, C.STATE_NAME, C.LOG_NAME):
+        for name in (C.PLAN_NAME, C.STATE_NAME, C.LOG_NAME, W.SIDE_NAME):
             self.assertEqual(stat.S_IMODE(os.stat(self.out / name).st_mode), 0o600, name)
 
 
@@ -303,7 +321,7 @@ class TestAskAndReport(Base):
         self.shadow([ws("a1")])
         with contextlib.redirect_stdout(buf):
             W.main(["plan", "--shadow-dir", str(self.sd), "--since-ms", str(SINCE), "--until-ms", str(UNTIL), "--expect-code-sha", SHA,
-                    "--out-dir", str(out2)], now_ms=NOW)
+                    "--out-dir", str(out2), "--tape-absent-ws", "1", "--tape-absent-refused", "0", "--tape-absent-would-pass", "0"], now_ms=NOW)
         self.assertNotIn(sg("a1"), buf.getvalue())
 
     def test_counts_per_class(self):
@@ -319,8 +337,8 @@ class TestAskAndReport(Base):
         self.assertEqual(rep["classes"]["ws_pass"], {"asked": 0, "returned": 0, "not_returned": 0, "error": 0, "pending": 2, "planned": 2, "unaskable": 0})
         self.assertEqual(rep["reading"], W.READING_NONE)
 
-    def two_rounds(self, found, ws_names=("a1", "a2"), ref_names=("r1",), wp_names=()):
-        self.full_plan(ws_names, ref_names, wp_names)
+    def two_rounds(self, found, ws_names=("a1", "a2"), ref_names=("r1",), wp_names=(), ta=(1, 0, 0)):
+        self.full_plan(ws_names, ref_names, wp_names, ta)
         self.ask(found=found)
         self.run_cmd("reask", Fake(found=found), Clock(T_ASK + 600_000))
 
@@ -358,8 +376,10 @@ class TestAskAndReport(Base):
         # no ws_pass at all
         self.tearDown()
         self.setUp()
-        self.two_rounds([sg("r1")], ws_names=(), ref_names=("r1",))
-        self.assertEqual(self.report()[0]["reading"], "no conclusion")
+        self.two_rounds([sg("r1")], ws_names=(), ref_names=("r1",), ta=(0, 0, 0))
+        rep = self.report()[0]
+        self.assertEqual(rep["reading"], "no conclusion")
+        self.assertIn("ws_pass_tape_absent_is_0", rep["failed_checks"])
 
     def test_reading_b_only_on_the_declared_split(self):
         # quant-proof's table on PR #619: every row below is "no conclusion"
