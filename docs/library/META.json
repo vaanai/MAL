@@ -1,5 +1,5 @@
 {
- "as_of": "2026-10-13T19:23:40Z",
+ "as_of": "2026-10-13T19:36:12Z",
  "assembled_by": "manager10, from the SWARM-1013 files on mal-research-0 under /data/mal/hunt-1008/swarm-1013/",
  "sources": [
   "lib-a, lib-b, lib-c: conversion of /data/mal/hunt-1008/library/STRATEGY-LIBRARY.md (written 2026-10-12) into 170 rows by three Haiku 5.5 agents",
@@ -16,6 +16,7 @@
   "Jupiter DCA and Recurring rows (web-forced-flows-1, web-forced-flows-12): shelved on the judge's finding that current orders are off-chain and private.",
   "web-competitors-9 (BOOST ride): duplicate of the H5 row lib-c-K1.",
   "Eight correction rows carry the note that the source did not support the judge; their status is the agent's reading of the source and they are open for a later check.",
-  "Not in this library as rows: the two backlog files (150 rows of proposed ideas, many of them the same lines as library rows), the regime panel's ten candidate signals (two of its columns were judged wrong or unusable), and the desk briefs' variant lists. They stay in the swarm directory."
+  "Not in this library as rows: the two backlog files (150 rows of proposed ideas, many of them the same lines as library rows), the regime panel's ten candidate signals (two of its columns were judged wrong or unusable), and the desk briefs' variant lists. They stay in the swarm directory.",
+  "lib-c-H3 and lib-a-A31 carry a reviewer's note of 2026-10-13: their status may not describe exactly what was run (H3: preparation jobs ran with no outcome read; A31: not confirmed that any data run exists)."
  ]
 }

@@ -36,6 +36,7 @@ STATUS = collections.OrderedDict([
 ])
 SECTIONS = ("library", "inbox-2026-10-13", "owner-ideas")
 H5_LABEL = "execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book"
+GATE_SENTENCE = "H5 has not cleared the promotion gate"
 
 
 class LibraryError(ValueError):
@@ -86,8 +87,10 @@ def validate(rows: list[dict]) -> None:
         if "duplicate_of" in seen[d]:
             raise LibraryError(f"row {r['id']!r}: duplicate_of {d!r} is itself a duplicate")
     for r in rows:
-        if r["status"] == "live-canary" and "duplicate_of" not in r and H5_LABEL not in r["why_stopped"]:
-            raise LibraryError(f"row {r['id']!r}: a live-canary row must carry the canary label in why_stopped")
+        if r["status"] == "live-canary" and "duplicate_of" not in r:
+            shown = r.get("manager_note") or r["why_stopped"]  # the text the page prints for this row
+            if H5_LABEL not in shown or GATE_SENTENCE not in shown:
+                raise LibraryError(f"row {r['id']!r}: a live-canary row must carry the canary label and the gate sentence in the text the page shows")
 
 
 def cell(text: str, limit: int = 0) -> str:
@@ -113,6 +116,12 @@ def stands(r: dict, limit: int) -> str:
     return cell(r.get("manager_note") or r["why_stopped"], limit)
 
 
+def with_note(text: str, r: dict, limit: int) -> str:
+    """A cell that never hides a manager's note: the note comes first, then the row's own text."""
+    note = r.get("manager_note")
+    return cell(f"Note: {note} {text}" if note else text, limit)
+
+
 def render(rows: list[dict], meta: dict) -> str:
     main = [r for r in rows if r["section"] == "library" and "duplicate_of" not in r]
     dups = [r for r in rows if "duplicate_of" in r]
@@ -126,8 +135,9 @@ def render(rows: list[dict], meta: dict) -> str:
     L += ["## Read this first", "",
           "- **Nothing on this page is a claim that a strategy makes money.** A book goes live only through the promotion gate and the owner's approval.",
           f"- **H5 is the only thing trading.** It is labelled \"{H5_LABEL}\". H5 has not cleared the promotion gate.",
-          "- **The library rows are a conversion, not a verified record.** Each row's `check` field in `ideas.jsonl` says who wrote it and how far it was checked. "
-          "Verify any number at the row's `evidence` path before quoting it.",
+          "- **The library rows are a conversion, not a verified record.** A judge sampled 20 of the 170 library rows and found 2 errors, rated one source file "
+          "not usable as it was, and listed rows with a stale status; the corrections were made by Haiku agents and were not judged again. "
+          "Each row's `check` field says who wrote it and how far it was checked. Verify any number at the row's `evidence` path before quoting.",
           "- Exploration results (statuses \"explored\") are on data the lab has already looked at. They are not out-of-sample evidence.", ""]
     L += ["## What the statuses mean", ""]
     L += table(("Status", "Meaning"), [(f"`{s}`", cell(m)) for s, m in STATUS.items()])
@@ -152,14 +162,15 @@ def render(rows: list[dict], meta: dict) -> str:
                 for r in by(main, "parked", "shelved")])
     L += ["## Never tested", ""]
     L += table(("Id", "Idea", "Family", "Next step"),
-               [(f"`{r['id']}`", cell(r["name"], 90), cell(r["family"], 50), cell(r["next_step"], 240))
+               [(f"`{r['id']}`", cell(r["name"], 90), cell(r["family"], 50), with_note(r["next_step"], r, 420))
                 for r in by(main, "untested", "desk-read")])
     L += ["## Owner ideas", ""]
     L += table(("Id", "Idea", "Status", "Where it stands", "Next step"),
                [(f"`{r['id']}`", cell(r["name"], 110), f"`{r['status']}`", stands(r, 420), cell(r["next_step"], 260)) for r in owner])
     L += ["## Inbox of 2026-10-13: new leads and same-day results", "",
-          "Rows written by research agents on 2026-10-13. The web rows were checked by a judge at report level, not row by row; "
-          "`check` in each row says which. A lead here is something to count, not something to trade.", ""]
+          "Rows written by research agents on 2026-10-13. A judge read each web agent's whole report and checked a list of claims "
+          "(judge-web/JUDGE.md, section B); it named what it did not check (section E). A row's own figures are checked only if they are on that list. "
+          "A lead here is something to count, not something to trade.", ""]
     groups: "collections.OrderedDict[str, list[dict]]" = collections.OrderedDict()
     for r in inbox:
         groups.setdefault(r["id"].rsplit("-", 1)[0], []).append(r)
@@ -170,7 +181,7 @@ def render(rows: list[dict], meta: dict) -> str:
     L += ["## Dead as frozen, and explored with no survivor", "",
           "\"Dead\" means that frozen version failed. A changed version is a new row with its own test.", ""]
     L += table(("Id", "Idea", "Status", "Why"),
-               [(f"`{r['id']}`", cell(r["name"], 90), f"`{r['status']}`", cell(r["why_stopped"], 200))
+               [(f"`{r['id']}`", cell(r["name"], 90), f"`{r['status']}`", with_note(r["why_stopped"], r, 380))
                 for r in by(main, "explored-no-survivor", "dead-as-frozen")])
     L += ["## Duplicate rows", "", "Kept for traceability to the source files. Each points at the row to read instead.", ""]
     L += table(("Id", "Idea", "Read instead"),

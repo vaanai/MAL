@@ -37,7 +37,8 @@ def test_committed_index_is_what_the_rows_render_to():
 def test_the_live_row_carries_the_canary_label_and_the_page_carries_the_gate_sentence():
     rows = li.load_rows(li.LIB / "ideas.jsonl")
     live = [r for r in rows if r["status"] == "live-canary" and "duplicate_of" not in r]
-    assert len(live) == 1 and li.H5_LABEL in live[0]["why_stopped"]
+    shown = live[0].get("manager_note") or live[0]["why_stopped"]
+    assert len(live) == 1 and li.H5_LABEL in shown and li.GATE_SENTENCE in shown
     page = (li.LIB / "INDEX.md").read_text(encoding="utf-8")
     assert li.H5_LABEL in page and "H5 has not cleared the promotion gate" in page
 
@@ -84,10 +85,29 @@ def test_duplicate_of_must_name_another_row_that_is_not_a_duplicate():
         li.validate([row(id="a"), row(id="b", duplicate_of="a"), row(id="c", duplicate_of="b")])
 
 
-def test_a_live_row_without_the_label_is_refused():
+LIVE_TEXT = li.H5_LABEL + ". " + li.GATE_SENTENCE + "."
+
+
+def test_a_live_row_without_the_label_and_gate_sentence_is_refused():
     with pytest.raises(li.LibraryError):
         li.validate([row(status="live-canary")])
-    li.validate([row(status="live-canary", why_stopped=li.H5_LABEL)])
+    with pytest.raises(li.LibraryError):
+        li.validate([row(status="live-canary", why_stopped=li.H5_LABEL)])  # the gate sentence is missing
+    li.validate([row(status="live-canary", why_stopped=LIVE_TEXT)])
+
+
+def test_the_label_is_checked_in_the_text_the_page_shows():
+    # the page prints manager_note when a row has one, so the label must be there, not only in why_stopped
+    with pytest.raises(li.LibraryError):
+        li.validate([row(status="live-canary", why_stopped=LIVE_TEXT, manager_note="a note without the label")])
+    li.validate([row(status="live-canary", why_stopped="w", manager_note=LIVE_TEXT)])
+
+
+def test_a_note_is_never_hidden_in_the_never_tested_and_dead_tables():
+    rows = [row(id="a", status="untested", manager_note="jobs ran, no outcome read"),
+            row(id="b", status="dead-as-frozen", manager_note="status may overstate")]
+    page = li.render(rows, META)
+    assert "Note: jobs ran, no outcome read n" in page and "Note: status may overstate w" in page
 
 
 def test_a_line_that_is_not_json_is_refused(tmp_path):
@@ -107,7 +127,7 @@ def test_cell_is_one_line_escapes_pipes_and_cuts_at_a_word():
 
 
 def test_render_puts_each_row_in_one_place_and_counts_it():
-    rows = [row(id="live", status="live-canary", why_stopped=li.H5_LABEL, manager_note="note today"),
+    rows = [row(id="live", status="live-canary", why_stopped="w", manager_note="note today " + LIVE_TEXT),
             row(id="dead", status="dead-as-frozen"), row(id="new", status="untested"),
             row(id="dup", status="untested", duplicate_of="new", duplicate_note="same"),
             row(id="web-thing-1", section="inbox-2026-10-13", status="desk-read"),
