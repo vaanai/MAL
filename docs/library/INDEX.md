@@ -103,7 +103,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-R2.SB-H4` | SB-H4: fee liquidation in quote coins | Search B October structure (R2) | Needs a ruling on side-split sells. K0 DROP if the median full day has fewer than 20 sweep or payout events. |
 | `lib-c-R2.SB-H6` | SB-H6: V-floor on custom-pair pools (extra) | Search B October structure (R2) | not in source |
 | `lib-c-R2.SB-H8` | SB-H8: 200 ms slots as a fill-cost parameter (extra) | Search B October structure (R2) | Kill count (prints per active slot within +-10%) via r8/r9 octstruct cell 5, after the FINAL. |
-| `lib-c-R3.tipauth` | tipauth (tip-authoritative base check) | H5 trade-rate levers (R3) | Note: 2026-10-13: gate code (PR #614) and watch tool (PR #635) are on main with the switch OFF; nothing installed or enabled. Still required before enabling: acceptance counts, a parser differential against the installed build, the look-comparison tool, two daily-check alerts, Amendment 8 with the owner's dated acceptance, Helm's install. In the 24 h before 18:49Z: 2 decisions; 13 of 20 refusals were … |
+| `lib-c-R3.tipauth` | tipauth (tip-authoritative base check) | H5 trade-rate levers (R3) | Note: 2026-10-13: gate code (PR #614) and watch tool (PR #635) are on main with the switch OFF; nothing installed or enabled. Still required before enabling: acceptance counts, a parser differential against the installed build, the look-comparison tool, two daily-check alerts, Amendment 8 with the owner's dated acceptance, Helm's install. In the 24 h before 18:49Z: 2 decisions; 13 of 20 refusals were bad_intent:base_breaks_unresolved_settled. Needs its own md5 replay, reviewer and quant-proof passes, then 24 h of side-by-side counts (comment). |
 
 ## Owner ideas
 
@@ -120,7 +120,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `web-forced-flows-1` | Jupiter DCA scheduled rounds | `shelved` | Judge, 2026-10-13: the lead is wrong as written. Current Jupiter recurring orders are stored off-chain and are private; only the unmaintained V1 keeps on-chain order accounts and it excludes … |
+| `web-forced-flows-1` | Jupiter DCA scheduled rounds | `shelved` | Judge, 2026-10-13: the lead is wrong as written. Current Jupiter recurring orders are stored off-chain and are private; only the unmaintained V1 keeps on-chain order accounts and it excludes Token-2022 mints. Original text: No pump-origin DCA order or round found; program id not on official page; scope conflict: 2023 … |
 | `web-forced-flows-2` | Boop graduation staker distribution | `desk-read` | Cadence, graduation condition and payout asset not stated; not a buyer per source; graduation link broken on docs root. |
 | `web-forced-flows-3` | Jupiter Lock and LaunchLab cliff releases | `desk-read` | Claim is optional; readability not stated; search-C cliff-veto kill rule applies (fewer than 5 team cliffs a week). |
 | `web-forced-flows-4` | Lending liquidation of memecoin collateral | `desk-read` | No pump-origin reserve found in Kamino, Loopscale or Jupiter Lend material read; bonus sources conflict (5-10% vs 3-6%). |
@@ -131,7 +131,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `web-forced-flows-9` | Believe creator-fee buyback flywheel | `desk-read` | Flywheel never published as live; no burn found in tracker. |
 | `web-forced-flows-10` | LetsBONK BONK buy-and-burn | `desk-read` | Conflicting sizes; on search-C dead list. |
 | `web-forced-flows-11` | Pump app limit orders | `desk-read` | No official mechanism; execution location unknown. |
-| `web-forced-flows-12` | Jupiter Recurring API | `shelved` | Judge, 2026-10-13: the lead is wrong as written. Current Jupiter recurring orders are stored off-chain and are private; only the unmaintained V1 keeps on-chain order accounts and it excludes … |
+| `web-forced-flows-12` | Jupiter Recurring API | `shelved` | Judge, 2026-10-13: the lead is wrong as written. Current Jupiter recurring orders are stored off-chain and are private; only the unmaintained V1 keeps on-chain order accounts and it excludes Token-2022 mints. Original text: Page states it is no longer actively maintained and superseded by DCA. |
 | `web-forced-flows-13` | Meteora partner-fee claims and MET buybacks | `desk-read` | Discretionary. |
 | `web-forced-flows-14` | cook.meme SOL lottery and DividendsBot on Bags | `desk-read` | Payout is SOL, not a token buy. |
 | `web-forced-flows-15` | Virtuals 30-day TWAP agent-token buyback | `desk-read` | One-off announcement; chain unconfirmed; not in pump-origin universe as sourced. |
@@ -232,7 +232,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `w3-entry6-sim-1` | ENTRY6-S1H v0: +6 min entry on high buy share, take profit 2.0x, stop 0.7x, 24 h | `dead-as-frozen` | "DEAD": all 20 kill-bar checks failed; mean -10.895% (Aug, flat) and -6.150% (Sep, flat) of stake; stop exits realized a median of -91.1% and -92.1% of stake with a 2.0 s sell lag (provisional: a … |
+| `w3-entry6-sim-1` | ENTRY6-S1H v0: +6 min entry on high buy share, take profit 2.0x, stop 0.7x, 24 h | `dead-as-frozen` | "DEAD": all 20 kill-bar checks failed; mean -10.895% (Aug, flat) and -6.150% (Sep, flat) of stake; stop exits realized a median of -91.1% and -92.1% of stake with a 2.0 s sell lag (provisional: a judge has not yet checked sim.py's stop-fill logic) |
 
 ### w2-mayhem-grads (1)
 

@@ -162,7 +162,7 @@ def render(rows: list[dict], meta: dict) -> str:
                 for r in by(main, "parked", "shelved")])
     L += ["## Never tested", ""]
     L += table(("Id", "Idea", "Family", "Next step"),
-               [(f"`{r['id']}`", cell(r["name"], 90), cell(r["family"], 50), with_note(r["next_step"], r, 420))
+               [(f"`{r['id']}`", cell(r["name"], 90), cell(r["family"], 50), with_note(r["next_step"], r, 560))
                 for r in by(main, "untested", "desk-read")])
     L += ["## Owner ideas", ""]
     L += table(("Id", "Idea", "Status", "Where it stands", "Next step"),
@@ -177,7 +177,7 @@ def render(rows: list[dict], meta: dict) -> str:
     for g, rs in groups.items():
         L += [f"### {g} ({len(rs)})", ""]
         L += table(("Id", "Idea", "Status", "Note"),
-                   [(f"`{r['id']}`", cell(r["name"], 100), f"`{r['status']}`", cell(r["why_stopped"], 200)) for r in rs])
+                   [(f"`{r['id']}`", cell(r["name"], 100), f"`{r['status']}`", cell(r["why_stopped"], 320)) for r in rs])
     L += ["## Dead as frozen, and explored with no survivor", "",
           "\"Dead\" means that frozen version failed. A changed version is a new row with its own test.", ""]
     L += table(("Id", "Idea", "Status", "Why"),
