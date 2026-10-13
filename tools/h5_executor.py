@@ -426,16 +426,20 @@ class H5Trigger:
     s0_minus_announced_slots: int | None = None
     synthetic: bool | None = None  # the detector's class of the pool: only the literal False is tradable (None = never confirmed -> refused)
     synthetic_src: str | None = None  # how the detector got it: only "rpc" is tradable (SYNTHETIC_SRC_OK); ledgered on the decision row
+    gate_path: str | None = None  # "tipauth" only for a trigger admitted by the tipauth gate; None (and never written anywhere) on the websocket path
 
     @property
     def pre_unlinked(self) -> bool:
         return pre_unlinked(self.base_breaks_unresolved, self.base_breaks_unresolved_settled)
 
     def public(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if d["gate_path"] is None:
+            del d["gate_path"]  # old-path rows and plans stay byte-identical
+        return d
 
     def log_fields(self) -> dict[str, Any]:
-        return {**{k: v for k, v in asdict(self).items() if k != "mint"}, "trigger_pre_unlinked": self.pre_unlinked}  # the ledger row carries the mint itself
+        return {**{k: v for k, v in asdict(self).items() if k != "mint" and (k != "gate_path" or v is not None)}, "trigger_pre_unlinked": self.pre_unlinked}  # the ledger row carries the mint itself
 
 
 def _is_int(v: Any) -> bool:
@@ -498,12 +502,125 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
                      synthetic=False, synthetic_src=_synthetic_src(row)), None
 
 
-def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | None, str | None]:
+# --- tipauth gate (DEC-024 phase 2, PR #610 quant-proof rounds 1-3). OFF by default; nothing here runs unless the config says so. -------------
+TIPAUTH_ENABLE_REF = "DEC-024-Am8"  # the only value of config `tipauth_gate` that enables the path (a DEC amendment reference, like H5_LOOK2_OBSERVED)
+GATE_PATH_TIPAUTH = "tipauth"
+TIPAUTH_DROPPED_MAX = 5  # C4: 1 <= dropped_n <= 5. May only be lowered.
+TIPAUTH_STAKE_LAMPORTS = 20_000_000  # ruling D2: the class is 0.02 SOL at every tier
+TIPAUTH_LOSS_BUDGET_LAMPORTS = 40_000_000  # ruling D4: class realized at or below -0.04 SOL switches the path off (latched)
+TIPAUTH_MANUAL_CLOSE_REASON = "manual_close"  # N2: the latch reason of --mark-closed on a tagged mint (the offline tool books the close and switches the path off)
+TIPAUTH_LOOKS = (25, 50, 100)  # ruling D5: looks at this many landed tagged fills
+TIPAUTH_MARGIN_SLOTS = 4  # quant-proof R2 (a): the shadow's base_tipauth.margin_slots (tools/h5_shadow.py TIPAUTH_MARGIN_SLOTS). A different margin is a new rule and a new amendment.
+TIPAUTH_BOOST_SRC_OK = ("pda", "event_authority")  # quant-proof R1: the BOOST identities the executor trusts (the pool-row handler uses the same two); "none" and "behavioural" are not
+TIPAUTH_WATCH_SCHEMA = "h5_tipauth_watch_v1"  # quant-proof R4: the state file the offline watch (tools/h5_tipauth_watch.py) writes; the schema is the contract
+TIPAUTH_WATCH_STALE_MS = 180_000  # R4: a watch state older than this is not an "ok" (code constant, not config: the pick feed's PICK_STALE_S pattern)
+TIPAUTH_WATCH_CACHE_MS = 1_000  # R4: the file is read at most once per second
+TIPAUTH_WATCH_MAX_BYTES = 65_536  # a state file is a few hundred bytes; anything bigger is not one
+TIPAUTH_WATCH_VERDICTS = ("ok", "hold", "off")
+TIPAUTH_SHA_RE = re.compile(r"[0-9a-f]{40}")  # the pinned shadow sha: 40 lowercase hex, nothing else
+BASE_BREAKS_WS_REFUSAL = "bad_intent:base_breaks_unresolved_settled"  # quant-proof R3: the reason of the websocket refusal; a tipauth cause rides in `tipauth_reason`, never in `reason`
+
+
+def _int0(v: Any) -> bool:
+    return _is_int(v) and v == 0
+
+
+def tipauth_gate(rec: Any, rule: str = "v1") -> tuple[bool, str]:
+    """C1-C6 of quant-proof's PR #610 round-3 comment (6121123397), on a shadow TRIGGER record. (ok, reason); reason is "ok" or `tipauth:<cond>`.
+    Pure and fail closed: a missing key, a null, a bool where an integer is wanted, a non-ok status or a non-dict is NOT a pass, each with its own
+    reason. Only the websocket value >= 1 case is asked about: a value of 0 never reaches this function (the websocket gate passes it as today)."""
+    if not isinstance(rec, dict):
+        return False, "tipauth:not_a_record"
+    ws = rec.get("base_breaks_unresolved_settled")
+    if not _is_int(ws) or ws < 1:
+        return False, "tipauth:ws_not_ge1"
+    if rec.get("gap") is not False:  # C1
+        return False, "tipauth:gap"
+    bu, bt = rec.get("base_union"), rec.get("base_tipauth")
+    if not isinstance(bu, dict):
+        return False, "tipauth:union_missing"
+    if not isinstance(bt, dict):
+        return False, "tipauth:tipauth_missing"
+    if bu.get("status") != "ok":
+        return False, "tipauth:union_status"
+    if bt.get("status") != "ok":
+        return False, "tipauth:tipauth_status"
+    if not _int0(rec.get("base_breaks_unresolved_settled_tipauth")):
+        return False, "tipauth:value_not_zero"
+    if not _int0(bu.get("tip_only")):  # C2
+        return False, "tipauth:tip_only"
+    if not _int0(bu.get("both_diff")):
+        return False, "tipauth:both_diff"
+    if not _int0(bt.get("dropped_boost_n")):  # C3
+        return False, "tipauth:dropped_boost"
+    src = rec.get("boost_src")
+    if not isinstance(src, str) or src not in TIPAUTH_BOOST_SRC_OK:  # R1: an allowlist; "none" (no BOOST identity known) made dropped_boost_n 0 by construction
+        return False, "tipauth:boost_src"
+    dn = bt.get("dropped_n")  # C4
+    if not _is_int(dn) or not 1 <= dn <= TIPAUTH_DROPPED_MAX:
+        return False, "tipauth:dropped_n"
+    if not _int0(bt.get("kept_ws_only_sig_on_tip")):
+        return False, "tipauth:kept_ws_only_sig_on_tip"
+    if not _int0(bt.get("orphaned_by_drop_n")):  # C5 (a)
+        return False, "tipauth:orphaned_by_drop"
+    if not _int0(bt.get("tipauth_nosettle")):  # C5 (b)
+        return False, "tipauth:nosettle"
+    first, lo = bt.get("dropped_first_slot"), bt.get("cover_lo")
+    if not _is_int(first) or not _is_int(lo) or not first > lo:  # C5 (c)
+        return False, "tipauth:dropped_first_slot"
+    if rule != EXIT_MODE_V1:  # C6
+        return False, "tipauth:rule_not_v1"
+    return _tipauth_consistent(rec, bu, bt)
+
+
+def _tipauth_consistent(rec: dict[str, Any], bu: dict[str, Any], bt: dict[str, Any]) -> tuple[bool, str]:
+    """C7 (quant-proof R2 a-f): the record agrees with itself and with the definitions of its fields, so a correct record never fails here. Each part
+    has its own reason. Fail closed: a missing, null, bool, float or string where an integer is wanted refuses."""
+    if not _is_int(bt.get("margin_slots")) or bt["margin_slots"] != TIPAUTH_MARGIN_SLOTS:  # (a)
+        return False, "tipauth:margin"
+    slot, lo, hi = rec.get("slot"), bt.get("cover_lo"), bt.get("cover_hi")  # (b)
+    first, last = bt.get("dropped_first_slot"), bt.get("dropped_last_slot")
+    if not all(_is_int(v) for v in (slot, lo, hi, first, last)) or not 0 <= lo < first <= last <= hi <= slot - TIPAUTH_MARGIN_SLOTS:
+        return False, "tipauth:slots"
+    tfs, hw = bu.get("tip_first_slot"), bu.get("tip_hw_slot_global")  # (c)
+    if not _is_int(tfs) or tfs != lo or not _is_int(hw) or hi != min(hw, slot) - TIPAUTH_MARGIN_SLOTS:
+        return False, "tipauth:cover"
+    dropped = bt.get("dropped")  # (d) dropped_n is an int in 1..5 here (C4)
+    if not isinstance(dropped, list) or len(dropped) != bt["dropped_n"]:
+        return False, "tipauth:dropped_list"
+    seen: set[tuple[str, int | None]] = set()
+    for e in dropped:
+        if not (isinstance(e, list) and len(e) == 3 and isinstance(e[0], str) and e[0] and (e[1] is None or _is_int(e[1])) and _is_int(e[2])
+                and first <= e[2] <= last and (e[0], e[1]) not in seen):
+            return False, "tipauth:dropped_list"
+        seen.add((e[0], e[1]))
+    if dropped[0][2] != first or dropped[-1][2] != last:
+        return False, "tipauth:dropped_list"
+    uw, ws = rec.get("base_breaks_unresolved_settled_union"), rec.get("base_breaks_unresolved_settled")  # (e)
+    if not _is_int(uw) or uw != ws:
+        return False, "tipauth:union_ne_ws"
+    if _sealed_flag(rec.get("h5_look2_sealed")) or _sealed_flag(rec.get("sealed")):  # (f) no paper twin exists for a sealed record
+        return False, "tipauth:sealed_record"
+    if rec.get("variant") != "pv":  # (f) the item-4 evidence is on pv triggers only (the parser and _tipauth_availability already hold this; one predicate says it too)
+        return False, "tipauth:variant_not_pv"
+    return True, "ok"
+
+
+def _sealed_flag(v: Any) -> bool:
+    """A sealed flag fails closed (as the item-4 tool's `flag`): anything but absent, null or the literal False counts as sealed, so a 1, a "yes", a 0 or an
+    empty list is sealed too. Identity, not equality: 0 == False but is not False."""
+    return not (v is None or v is False)
+
+
+def parse_shadow_trigger(row: Any, variant: str = "pv", tipauth: str | None = None) -> tuple[H5Trigger | None, str | None]:
     """A `type: "trigger"` record of tools/h5_shadow.py (PR #477) -> H5Trigger. Only the chosen Q variant is acted on ("pv": quote +
     the print's own V, the primary; "fv" is the rule's literal fixed V and is ignored here). Mapping, all from fields #477 writes:
       s0 -> s0_slot, slot -> trigger_slot, q_trigger_sol * 1e9 -> q_lamports (post-trade Q of that variant),
       base_pre + sell_token_raw -> base_reserve (a sell adds its tokens to the pool), v_print -> v_lamports, t_detect_ms -> decision_ms,
-      gap -> gap, synthetic (the literal false) -> synthetic, synthetic_src -> synthetic_src. (None, None) for any other record or the other variant."""
+      gap -> gap, synthetic (the literal false) -> synthetic, synthetic_src -> synthetic_src. (None, None) for any other record or the other variant.
+    `tipauth` is the tipauth path's availability, decided by the caller: None = the path is OFF (every decision here is exactly what it was without
+    the argument); "" = on and available; any other string = on but unavailable, that string is the refusal. It only ever changes the answer for an
+    integer base_breaks_unresolved_settled >= 1, and only from the refusal to an accept, through tipauth_gate()."""
     if not isinstance(row, dict) or row.get("type") != "trigger" or row.get("variant") != variant:
         return None, None
     if row.get("suppressed"):  # the sealed stub #477 writes from 2026-10-16T01Z: type, variant, pool, slot, suppressed ... and nothing to trade on
@@ -532,8 +649,16 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
         # 09-20 frozen triggers with a within-slot shuffle it passes 53/72, the unsettled field 13-15/72. Missing, null or anything but the
         # integer 0 refuses. The unsettled field and the raw base_breaks / slot_regress (which count reorders too) are ledgered, not gated.
         settled = row.get("base_breaks_unresolved_settled")
+        gate_path = None
         if not _is_int(settled) or settled != 0:
-            return None, "bad_intent:base_breaks_unresolved_settled"
+            if tipauth is None or not _is_int(settled) or settled < 1:
+                return None, "bad_intent:base_breaks_unresolved_settled"
+            if tipauth:  # the path is on but unavailable (latched off, a look pending, not v1): the reason says which
+                return None, tipauth
+            ok, why = tipauth_gate(row)
+            if not ok:
+                return None, why
+            gate_path = GATE_PATH_TIPAUTH
         unresolved = row.get("base_breaks_unresolved") if _is_int(row.get("base_breaks_unresolved")) else None
         reanchored = row.get("s0_reanchored_slots") if _is_int(row.get("s0_reanchored_slots")) else None  # s0 moved down by this many slots (ledgered)
         lag = row.get("s0_minus_announced_slots")  # how long after the pool's CreatePool the first print we call s0 came; null when never announced
@@ -555,7 +680,7 @@ def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | Non
             return None, bad
         raw = {k: row[k] for k in ("base_breaks", "slot_regress") if _is_int(row.get(k))}  # raw counts: ledgered on the decision row
         return replace(t, base_breaks_unresolved=unresolved, base_breaks_unresolved_settled=settled, s0_reanchored_slots=reanchored,
-                       s0_minus_announced_slots=lag, **raw), None
+                       s0_minus_announced_slots=lag, **({"gate_path": gate_path} if gate_path else {}), **raw), None
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
 
@@ -713,6 +838,7 @@ class H5Counters:
     synthetic_unconfirmed: int = 0  # trigger records refused because `synthetic` was not the literal false (a detector without the classifier, or a bug)
     excluded: dict[str, int] = field(default_factory=dict)  # the detector's `excluded` records by reason (synthetic | unclassified | other): pools kept out
     v2: dict[str, Any] = field(default_factory=dict)  # v2 exit mode only (rolling sell-vs-BOOST pairs); empty and not written in v1
+    tipauth: dict[str, Any] = field(default_factory=dict)  # tipauth class state (mints, n_landed, realized, looks, pause_look, latched); empty and not written until the path admits a trade
 
     def day(self, key: str) -> dict[str, Any]:
         d = self.days.setdefault(key, {"trades": 0, "realized": 0})
@@ -729,7 +855,7 @@ class H5Counters:
             self.days[old].pop("boost_lt300", None)
             for k in ("plain", "lag", "seen_lag"):  # v2 only: the raw per-pool lists; the day's medians stay
                 (self.days[old].get("v2") or {}).pop(k, None)
-        body = {k: v for k, v in self.__dict__.items() if k != "v2" or v}
+        body = {k: v for k, v in self.__dict__.items() if k not in ("v2", "tipauth") or v}
         _atomic_json(path, {"schema": "h5_counters_v1", **body})
 
     @classmethod
@@ -737,6 +863,8 @@ class H5Counters:
         if not path.exists():
             return cls(run_mode=run_mode)
         raw = json.loads(path.read_text())
+        if "tipauth" in raw and not isinstance(raw["tipauth"], dict):
+            raise SystemExit("counters file: tipauth is not an object; refusing to start")  # fail closed on a hand-edited file (the latch and the mint set live there)
         c = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
         if c.run_mode != run_mode:
             raise SystemExit(f"counters file run_mode {c.run_mode!r} does not match {run_mode!r}")
@@ -1000,6 +1128,7 @@ class H5Executor(pl.LiveExecutor):
         self.h5cfg = cfg
         self.tier = "T0"  # the active tier (see the `h5` property); the file is read before every buy
         self._tier_limits: dict[str, H5Limits] = {}
+        self._stake_cap: int | None = None  # set only while a tipauth-path trigger is handled (handle_trigger); None otherwise
         self._tier_problem: str | None = None
         self._stepdown_seen: set[tuple[str, str, str]] = set()
         self._t0_stop_seen: set[tuple[str, str]] = set()
@@ -1023,6 +1152,10 @@ class H5Executor(pl.LiveExecutor):
         self.fills = H5Ledger(sd / "h5-ledger.jsonl", self.run_mode)
         self.decisions = self.intents_path  # base-class messages name the file we actually tail
         self.counters = H5Counters.load(self.counters_path, self.run_mode)
+        self._tipauth_switch = cfg.get("tipauth_gate") == TIPAUTH_ENABLE_REF  # exactly the amendment reference; absent or anything else = OFF
+        self._tipauth_mints = set(self.counters.tipauth.get("mints") or [])
+        self._tipauth_watch_cache: tuple[int, Any] | None = None  # (read at ms, the file's parse or an error code): R4, read at most once per second
+        self._tipauth_watch_reads = 0  # how many times the watch file was opened (a test reads it; nothing else does)
         persisted = self.counters.tier_state.get("tier")
         if persisted in TIERS:
             self.tier = persisted  # a restart keeps the tier it was on; the file is re-read before the next buy
@@ -1102,7 +1235,19 @@ class H5Executor(pl.LiveExecutor):
         lim = self._tier_limits.get(self.tier)
         if lim is None:
             lim = self._tier_limits[self.tier] = H5Limits.from_config(self.h5cfg, self.tier)
+        if self._stake_cap is not None and lim.stake_lamports > self._stake_cap:  # a tipauth-path trigger being handled: its stake is the class stake
+            return replace(lim, stake_lamports=self._stake_cap)
         return lim
+
+    def _tier_h5(self) -> H5Limits:
+        """The ACTIVE tier's own limits with the class stake cap NOT applied (quant-proof R5). What describes the tier (a `tier_change` row, the
+        config-clamp alert and row) reads this; the cap applies only to the trigger's sizing, budget, balance, at-risk and signer checks, which read
+        `self.h5`. Written as `self.h5` with the cap lifted so that a subclass that overrides `h5` (C1-NF) is described by its own limits, as before."""
+        cap, self._stake_cap = self._stake_cap, None
+        try:
+            return self.h5
+        finally:
+            self._stake_cap = cap
 
     # -- the scale ladder ----------------------------------------------------------------------------------------------------
     def _tier_path(self) -> Path:
@@ -1138,13 +1283,13 @@ class H5Executor(pl.LiveExecutor):
         wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
         in_tier = self.counters.tier_attempts  # what the old tier used, for the ledger; the cap starts again from zero in the new one
         self.tier = tier
-        self.counters.max_total_loss_lamports = max(self.counters.max_total_loss_lamports, self.h5.total_loss_lamports)  # (persisted below)
+        self.counters.max_total_loss_lamports = max(self.counters.max_total_loss_lamports, self._tier_h5().total_loss_lamports)  # (persisted below)
         realized_at_start = self.state.realized_lamports  # the tier's loss allowance counts from here, not from the start of the run
         self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet, "realized_at_start": realized_at_start}
         self.counters.tier_attempts = 0
         self._tier_state_legacy = False  # a fresh baseline is stored now
         self.counters.save(self.counters_path)
-        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self.h5),
+        self._log("tier_change", "", from_tier=old, to_tier=tier, problem=problem, wallet_lamports=wallet, realized_at_start=realized_at_start, limits=asdict(self._tier_h5()),
                   open_positions=len(self.state.open), t2_impact_ok=T2_IMPACT_OK, attempts_in_old_tier=in_tier, lifetime_attempts=self.state.attempts,
                   config_clamps=self._config_clamps())
         self._clamp_alert("tier_change")
@@ -1152,7 +1297,7 @@ class H5Executor(pl.LiveExecutor):
     def _config_clamps(self) -> dict[str, dict[str, int]]:
         """The tier-scaled limits that the config holds BELOW the active tier's table value (config can only tighten). A shipped config that sets
         them silently turns the ladder off: T1 and T2 would run at the config's numbers."""
-        lim = asdict(self.h5)
+        lim = asdict(self._tier_h5())  # the tier's own limits: a class stake cap on a tagged trigger is not a config clamp (R5)
         return {k: {"table": v, "effective": lim[k]} for k, v in TIERS[self.tier].items() if lim[k] < v}
 
     def _clamp_alert(self, when: str) -> None:
@@ -1465,9 +1610,23 @@ class H5Executor(pl.LiveExecutor):
 
     @pe.critical
     def handle_trigger(self, trg: H5Trigger, seen_ms: int | None = None) -> None:
+        if trg.gate_path is None:  # the websocket path: exactly as before
+            return self._handle_trigger(trg, seen_ms)
+        self._stake_cap = TIPAUTH_STAKE_LAMPORTS  # the tipauth class is 0.02 SOL at every tier (ruling D2); self.h5.stake_lamports reads this
+        try:
+            return self._handle_trigger(trg, seen_ms)
+        finally:
+            self._stake_cap = None
+
+    def _handle_trigger(self, trg: H5Trigger, seen_ms: int | None = None) -> None:
         now = self.now_ms()
         self._refresh_tier(now)  # the ONE read of the tier file for this trigger: the limits below are the active tier's, and nothing re-reads it
         why = self._hard_refusal(trg, now)
+        extra: dict[str, Any] = {}
+        if not why and trg.gate_path is not None:
+            cause = self._tipauth_recheck(trg)  # defence in depth: a handed-in trigger tagged tipauth is judged against the switch, the latch and the rule again
+            if cause:
+                why, extra = BASE_BREAKS_WS_REFUSAL, {"tipauth_reason": cause}  # R3: the same row as the parse-time refusal
         if not why and self.tier == "T2" and not T2_IMPACT_OK:
             why = "t2_impact_unchecked"  # only reachable if T2_IMPACT_OK is set back to False (e.g. a live-fill impact finding): T2 is then refused again
         would: str | None = None
@@ -1486,7 +1645,7 @@ class H5Executor(pl.LiveExecutor):
         if not why:
             why = self._balance_refusal(now)
         if why:
-            return self._refuse(trg, why)
+            return self._refuse(trg, why, **extra)
         with self._prio():
             ps, err, snap = self._static_for(trg, now)
             if ps is None:
@@ -1528,6 +1687,8 @@ class H5Executor(pl.LiveExecutor):
         if st.first_attempt_ms is None:
             st.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
+        if getattr(trg, "gate_path", None) is not None:
+            self._tipauth_admit(trg.mint)  # durable before the send, so every row of this trade carries the tag
         self.counters.plans[trg.mint] = {"trigger": trg.public(), "plan": plan.public(), "min_out": terms["min_out"],  # durable before the send
                                          "tolerance_bps": self.h5.entry_tolerance_bps, **self._v2_stamp()}
         spend = self.h5.stake_lamports
@@ -1585,6 +1746,8 @@ class H5Executor(pl.LiveExecutor):
             self.state.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
         self._count_accepted(trg.pre_unlinked)
+        if getattr(trg, "gate_path", None) is not None:
+            self._tipauth_admit(trg.mint)
         self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
                   min_out=terms["min_out"], fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(),
                   would_have_halted=would, live_validate_err=validate_err, sim_tokens=sim_tokens, drift_vs_trigger=drift,
@@ -1959,14 +2122,14 @@ class H5Executor(pl.LiveExecutor):
         self._accepted_hour += 1
         self._pre_unlinked_hour += 1 if unlinked else 0
 
-    def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False) -> None:
+    def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False, **extra: Any) -> None:
         """A trigger record that cannot be traded on. Ledgered. A shadow record that LACKS a required key is a schema mismatch (a detector that is
         not on the head this executor reads): that alerts at the first record, rate-limited to one per SCHEMA_ALERT_WINDOW_MS, and is not part of
         the hourly count. A bad VALUE counts: more than BAD_INTENT_ALERT_N in an hour is an alert (a broken detector looks like this)."""
         now = self.now_ms()
         if why == SYNTHETIC_UNCONFIRMED:
             return self._synthetic_unconfirmed(row, now)
-        self._log("skip", str(row.get("mint") or ""), reason=why)
+        self._log("skip", str(row.get("mint") or ""), reason=why, **extra)  # `extra` (tipauth_reason) goes on the skip row only: not counted, not alerted on
         self._count_refusal(why)
         if shadow and why.startswith("bad_intent:missing_"):
             if now - self._schema_alert_ms >= SCHEMA_ALERT_WINDOW_MS:
@@ -2087,9 +2250,14 @@ class H5Executor(pl.LiveExecutor):
             schema = row.get("schema")
             rtype = row.get("type")
             if rtype == "trigger":  # tools/h5_shadow.py (PR #477)
-                trg, bad = parse_shadow_trigger(row, self.trigger_variant)
+                if self._tipauth_switch:
+                    trg, bad = parse_shadow_trigger(row, self.trigger_variant, tipauth=self._tipauth_availability())
+                else:
+                    trg, bad = parse_shadow_trigger(row, self.trigger_variant)  # switch off: the call is exactly main's
                 if trg is not None:
                     triggers.append(trg)
+                elif bad and bad.startswith("tipauth:"):  # R3: the skip row keeps main's reason byte for byte (the daily check's h5_feed_schema counts it); the cause is `tipauth_reason`
+                    self._bad_intent(row, BASE_BREAKS_WS_REFUSAL, shadow=True, tipauth_reason=bad)
                 elif bad:
                     self._bad_intent(row, bad, shadow=True)
             elif rtype == "gap":
@@ -2423,17 +2591,168 @@ class H5Executor(pl.LiveExecutor):
         self.save()
 
     # -- landing hooks: daily counters and the halt rules ------------------------------------------------------------------
-    def _book_realized(self, delta: int) -> None:
+    # -- tipauth class (DEC-024 phase 2; OFF unless config tipauth_gate == TIPAUTH_ENABLE_REF) -----------------------------------------
+    def _tipauth_availability(self) -> str:
+        """"" when the path may admit a trigger now; else the refusal reason. Called only with the switch on."""
+        if self.exit_mode != EXIT_MODE_V1:
+            return "tipauth:rule_not_v1"  # C6: v2 needs its own account
+        if self.trigger_variant != "pv":
+            return "tipauth:variant_not_pv"  # R2 (f): the evidence is on pv triggers only
+        self._tipauth_check_budget()
+        t = self.counters.tipauth
+        if t.get("latched"):
+            return "tipauth:latched_off"
+        why = self._tipauth_watch_check()  # R4: the offline watch's state file (an off verdict latches here, as the loss budget does)
+        if why:
+            return why
+        pause = t.get("pause_look")
+        if "tipauth_look_ack" in self.h5cfg:  # R8: an acknowledgement is absent, or a look that was already written; it can never be set ahead of the looks
+            ack = self.h5cfg["tipauth_look_ack"]
+            if not (_is_int(ack) and ack in (t.get("looks") or [])):
+                return "tipauth:look_ack_ahead"
+        else:
+            ack = None
+        if pause and ack != pause:  # a look is a human step: no automatic continuation; only the pending look's own number releases it (an old or smaller ack never does)
+            return "tipauth:look_pending"
+        if int(t.get("realized") or 0) - self._tipauth_at_risk() <= -TIPAUTH_LOSS_BUDGET_LAMPORTS:  # R7: a hold, not a latch; it lifts when the exposure resolves
+            return "tipauth:budget_at_risk"
+        return ""
+
+    def _tipauth_watch_read(self, now: int) -> tuple[Any, str | None]:
+        """(parsed JSON, None) or (None, "missing" | "bad"). The file is opened at most once per TIPAUTH_WATCH_CACHE_MS; the parse (or the error) is
+        what is cached, and the age of the state is judged against the current time on every call. A file that does not exist is `missing`; an
+        unreadable one (any other OS error), one that is not a regular file (a directory, a FIFO, a device), one over TIPAUTH_WATCH_MAX_BYTES, one that
+        is not JSON is `bad`. The open is non-blocking and the type is checked on the descriptor before any read, so a FIFO at the path cannot make
+        this call wait for a writer (this runs on the single-threaded trigger path); a symlink is followed, as `open()` did, and judged by its target."""
+        c = self._tipauth_watch_cache
+        if c is not None and 0 <= now - c[0] < TIPAUTH_WATCH_CACHE_MS:
+            return c[1]
+        self._tipauth_watch_reads += 1
+        res: tuple[Any, str | None]
+        fd = -1
+        try:
+            fd = os.open(self.h5cfg["tipauth_watch_file"], os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                res = (None, "bad")
+            else:
+                raw = b""
+                while len(raw) <= TIPAUTH_WATCH_MAX_BYTES:  # never more than the cap plus one byte is read, whatever the file's size
+                    chunk = os.read(fd, TIPAUTH_WATCH_MAX_BYTES + 1 - len(raw))
+                    if not chunk:
+                        break
+                    raw += chunk
+                res = (None, "bad") if len(raw) > TIPAUTH_WATCH_MAX_BYTES else (json.loads(raw), None)
+        except FileNotFoundError:
+            res = (None, "missing")
+        except Exception:  # unreadable, not UTF-8, not JSON, nested too deep: all the same answer
+            res = (None, "bad")
+        finally:
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        self._tipauth_watch_cache = (now, res)
+        return res
+
+    def _tipauth_watch_check(self) -> str:
+        """"" when the watch says the path may trade now (R4); else `tipauth:watch_<unset|missing|stale|hold|sha|bad>`, none of them latched.
+        One exception: a file of the right schema whose verdict is "off" latches the path for good (reason `watch_off`) and answers `latched_off`;
+        the off verdict is read before the age and the sha are judged, because latching on an old off is the cautious error.
+        Config (both required): `tipauth_watch_file`, a path; `tipauth_shadow_sha`, 40 lowercase hex, the sha the amendment pins for the shadow.
+        The file: a JSON object with schema h5_tipauth_watch_v1, an integer ts_ms with 0 <= now - ts_ms <= TIPAUTH_WATCH_STALE_MS, shadow_sha equal to
+        the pinned one, and verdict "ok". A ts_ms in the future (a clock fault) is `bad`, not `stale`."""
+        path, sha = self.h5cfg.get("tipauth_watch_file"), self.h5cfg.get("tipauth_shadow_sha")
+        if not (isinstance(path, str) and path) or not (isinstance(sha, str) and TIPAUTH_SHA_RE.fullmatch(sha)):
+            return "tipauth:watch_unset"
+        now = self.now_ms()
+        obj, err = self._tipauth_watch_read(now)
+        if err:
+            return f"tipauth:watch_{err}"
+        if not isinstance(obj, dict) or obj.get("schema") != TIPAUTH_WATCH_SCHEMA:
+            return "tipauth:watch_bad"
+        verdict = obj.get("verdict")
+        if verdict == "off":
+            self._tipauth_off("watch_off")
+            return "tipauth:latched_off"
+        ts, seen = obj.get("ts_ms"), obj.get("shadow_sha")
+        if not _is_int(ts) or verdict not in TIPAUTH_WATCH_VERDICTS or not isinstance(seen, str):
+            return "tipauth:watch_bad"
+        if now - ts < 0:
+            return "tipauth:watch_bad"
+        if now - ts > TIPAUTH_WATCH_STALE_MS:
+            return "tipauth:watch_stale"
+        if seen != sha:
+            return "tipauth:watch_sha"
+        if verdict != "ok":
+            return "tipauth:watch_hold"
+        return ""
+
+    def _tipauth_at_risk(self) -> int:
+        """What the open and in-flight TAGGED positions could still lose, on _budget_stop's arithmetic restricted to tagged mints: spend + extra_cost of each
+        open tagged position, plus the spend of each pending tagged buy. The stake of the trigger being judged is NOT included (quant-proof 3 (d))."""
+        tagged, st = self._tipauth_mints, self.state
+        return (sum(int(p.get("spend") or 0) + int(p.get("extra_cost") or 0) for m, p in st.open.items() if m in tagged)
+                + sum(int(p.get("spend") or 0) for m, p in st.pending.items() if p.get("kind") == "buy" and m in tagged))
+
+    def _tipauth_recheck(self, trg: H5Trigger) -> str | None:
+        if not self._tipauth_switch or trg.gate_path != GATE_PATH_TIPAUTH:
+            return "tipauth:unavailable"
+        return self._tipauth_availability() or None
+
+    def _log(self, kind: str, mint: str, **kw: Any) -> None:
+        """Every ledger row of a trade admitted by the tipauth path carries gate_path. A mint that was never admitted that way (every
+        websocket-path trade, with the switch off or on) gets nothing added: those rows are byte-identical to main's."""
+        if mint and mint in self._tipauth_mints and "gate_path" not in kw:
+            kw["gate_path"] = GATE_PATH_TIPAUTH
+        super()._log(kind, mint, **kw)
+
+    def _tipauth_admit(self, mint: str) -> None:
+        self._tipauth_mints.add(mint)
+        self.counters.tipauth["mints"] = sorted(self._tipauth_mints)
+        self.counters.save(self.counters_path)
+
+    def _tipauth_off(self, reason: str) -> None:
+        t = self.counters.tipauth
+        if t.get("latched"):
+            return  # logged once; never cleared by the executor
+        t["latched"] = {"reason": reason, "ts_ms": self.now_ms()}
+        self.counters.save(self.counters_path)
+        self._log("tipauth_off", "", reason=reason, n_landed=int(t.get("n_landed") or 0), budget_lamports=TIPAUTH_LOSS_BUDGET_LAMPORTS)
+        self._alert("tipauth_off", "", reason=reason)
+
+    def _tipauth_check_budget(self) -> None:
+        t = self.counters.tipauth
+        if not t.get("latched") and int(t.get("realized") or 0) <= -TIPAUTH_LOSS_BUDGET_LAMPORTS:
+            self._tipauth_off("class_loss_budget")
+
+    def _note_tipauth_landed(self, mint: str) -> None:
+        """A tagged buy landed: count it. At the looks (25, 50, 100) write a counts-only row and pause the path until a human acknowledges it
+        in the reviewed config (`tipauth_look_ack` set to this look's number exactly; any other value, a larger one included, refuses). The comparison itself (ruling D5) is offline; this decides nothing from outcomes."""
+        t = self.counters.tipauth
+        n = t["n_landed"] = int(t.get("n_landed") or 0) + 1
+        if n in TIPAUTH_LOOKS and n not in (t.get("looks") or []):
+            t["looks"] = [*(t.get("looks") or []), n]
+            t["pause_look"] = n
+            open_n = sum(1 for m in self.state.open if m in self._tipauth_mints)
+            self._log("tipauth_look", "", look=n, n_landed=n, n_open=open_n, n_closed=n - open_n,
+                      action="path paused; compare tagged vs websocket-pass fills (ruling D5), then set config tipauth_look_ack to this look's number exactly and reinstall")
+        self.counters.save(self.counters_path)
+
+    def _book_realized(self, delta: int, mint: str | None = None) -> None:
         if delta:
             self.counters.day(day_key(self.now_ms()))["realized"] += delta
+            tagged = mint is not None and mint in self._tipauth_mints
+            if tagged:
+                self.counters.tipauth["realized"] = int(self.counters.tipauth.get("realized") or 0) + delta  # the class sum (ruling D4)
             self.counters.save(self.counters_path)
+            if tagged:
+                self._tipauth_check_budget()
 
     @pe.critical
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         before = self.state.realized_lamports
         super()._finish_buy(mint, p, m)
         self._bal = None  # the balance moved
-        self._book_realized(self.state.realized_lamports - before)
+        self._book_realized(self.state.realized_lamports - before, mint)
         pos = self.state.open.get(mint)
         h5 = p.get("h5") or self.counters.plans.get(mint)
         if pos is None:
@@ -2443,6 +2762,8 @@ class H5Executor(pl.LiveExecutor):
             return
         pos["h5"] = {**h5, "buy_landed_slot": m["slot"]}
         self._note_landed_buy(h5["trigger"])
+        if h5["trigger"].get("gate_path") == GATE_PATH_TIPAUTH:
+            self._note_tipauth_landed(mint)
         if m.get("slot"):
             trg, plan = h5["trigger"], h5["plan"]
             self._note_buy_landing(trg["trigger_slot"], m["slot"], trg["sps"])
@@ -2456,8 +2777,12 @@ class H5Executor(pl.LiveExecutor):
         self.save()
 
     def _note_landed_buy(self, trigger: dict[str, Any]) -> None:
-        """Halt rule: pre-unlinked triggers (see pre_unlinked) above 15% of landed buys, judged from 20 landed buys on."""
+        """Halt rule: pre-unlinked triggers (see pre_unlinked) above 15% of landed buys, judged from 20 landed buys on.
+        A tipauth-class buy is not counted here (quant-proof R6): it has a websocket value >= 1, which pre_unlinked() never calls pre-unlinked, so it
+        could only raise the denominator and weaken this halt. It stays in the landing-median halt, the trade and attempt caps and the loss stops."""
         c = self.counters
+        if trigger.get("gate_path") == GATE_PATH_TIPAUTH:
+            return
         c.landed_buys += 1
         c.pre_unlinked_landed += 1 if pre_unlinked(trigger.get("base_breaks_unresolved"), trigger.get("base_breaks_unresolved_settled")) else 0
         c.save(self.counters_path)
@@ -2483,7 +2808,7 @@ class H5Executor(pl.LiveExecutor):
         priors = list(p.get("prior") or [])
         super()._finish_sell(mint, p, m)
         self._bal = None
-        self._book_realized(self.state.realized_lamports - before)
+        self._book_realized(self.state.realized_lamports - before, mint)
         if priors:
             self._settle_priors(mint, priors)  # superseded signatures that landed with an error paid their fee
         if m.get("err") is None and plan is not None and mint not in self.state.open and m.get("slot"):
@@ -2526,7 +2851,7 @@ class H5Executor(pl.LiveExecutor):
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
         before = self.state.realized_lamports
         super()._resolve_expired(mint, p)
-        self._book_realized(self.state.realized_lamports - before)
+        self._book_realized(self.state.realized_lamports - before, mint)
 
     # -- loop ----------------------------------------------------------------------------------------------------------------
     def prewarm(self) -> None:
@@ -2601,7 +2926,7 @@ class H5Executor(pl.LiveExecutor):
         if pos is not None:
             pos["extra_cost"] = int(pos.get("extra_cost") or 0) + fee
         self.state.realized_lamports -= fee
-        self._book_realized(-fee)
+        self._book_realized(-fee, mint)
         self._log("sell_fee_booked", mint, fee_lamports=fee, why=why)
 
     def _poll_priors(self) -> None:
@@ -2734,6 +3059,12 @@ def url_label(url: str | None) -> str | None:
     return f"{parts.scheme}://{parts.hostname}" if parts.hostname else "rpc"
 
 
+def tipauth_gate_state(cfg: dict[str, Any], c: "H5Counters") -> str:
+    if cfg.get("tipauth_gate") != TIPAUTH_ENABLE_REF:
+        return "off"
+    return "latched_off" if c.tipauth.get("latched") else "on"
+
+
 def status_report(cfg: dict[str, Any]) -> str:
     """Counters, limits and kill-file state from disk. No key, no RPC."""
     h5 = H5Limits.from_config(cfg)
@@ -2753,7 +3084,9 @@ def status_report(cfg: dict[str, Any]) -> str:
                      f"open={len(st.open)}/{h5.max_open} pending={len(st.pending)} today_trades={today.get('trades', 0)} "
                      f"today_realized_sol={today.get('realized', 0) / pe.LAMPORTS:.6f} halts={sorted(c.halts)} seal_skips={c.seal_skips} "
                      f"sells_landed={c.sells_landed} sells_late={c.sells_late} synthetic_unconfirmed={c.synthetic_unconfirmed} "
-                     f"excluded={sum(c.excluded.values())} ({','.join(f'{k}:{n}' for k, n in sorted(c.excluded.items())) or 'none'})")
+                     f"excluded={sum(c.excluded.values())} ({','.join(f'{k}:{n}' for k, n in sorted(c.excluded.items())) or 'none'})"
+                     + (f" tipauth_gate={tipauth_gate_state(cfg, c)} tipauth_n={int(c.tipauth.get('n_landed') or 0)}"
+                        if mode == LIVE and (cfg.get("tipauth_gate") == TIPAUTH_ENABLE_REF or c.tipauth) else ""))  # R10: nothing added while the path is off and has no state
     return "\n".join(lines)
 
 
@@ -2851,12 +3184,27 @@ def mark_closed(cfg: dict[str, Any], mint: str, sig: str, rpc: Callable[[str, li
         counters.day(day_key(when))["realized"] += realized + extra
         counters.plans.pop(mint, None)
         counters.sell_land_s.pop(mint, None)
+        tagged = mint in (counters.tipauth.get("mints") or [])  # a mint the tipauth path admitted (R9 ii tag; N2 class sum and latch). Untagged: nothing below runs.
+        newly_off = False
+        if tagged:  # quant-proof round 2, N2 (a tightening of R11): a manual close of a tagged mint is booked in the class sum, and it switches the path off
+            counters.tipauth["realized"] = int(counters.tipauth.get("realized") or 0) + realized + extra  # the amount added to st.realized_lamports above
+            if not counters.tipauth.get("latched"):
+                counters.tipauth["latched"] = {"reason": TIPAUTH_MANUAL_CLOSE_REASON, "ts_ms": now}
+                newly_off = True
         counters.save(counters_path)
-        H5Ledger(ledger_path, LIVE).write({
+        ledger = H5Ledger(ledger_path, LIVE)
+        ledger.write({
             "kind": "manual_close", "ts_ms": now, "mint": mint, "signature": sig, "landed_slot": res.get("slot"), "block_time": res.get("blockTime"),
             "tokens_sold": pre_amt - post_amt, "sol_delta_lamports": sol_delta, "fee_lamports": fee, "rent_refunded_lamports": ata_rent,
-            "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports})
+            "buy_cost_lamports": pos["buy_cost_lamports"], "pnl_lamports": realized, "realized_total_lamports": st.realized_lamports,
+            **({"gate_path": GATE_PATH_TIPAUTH} if tagged else {})})  # this writer is not `_log`: it tags a tagged mint itself (R9 ii)
+        if newly_off:  # the same row the executor's _tipauth_off writes (an offline tool has no alert channel; the row and the latch are the record)
+            ledger.write({"kind": "tipauth_off", "ts_ms": now, "mint": "", "book": "h5_boostfloor_v1", "reason": TIPAUTH_MANUAL_CLOSE_REASON,
+                          "n_landed": int(counters.tipauth.get("n_landed") or 0), "budget_lamports": TIPAUTH_LOSS_BUDGET_LAMPORTS})
         print(f"h5_executor --mark-closed: {mint} closed by {sig}; realized {realized} lamports", flush=True)
+        if newly_off:
+            print(f"h5_executor --mark-closed: {mint} was admitted by the tipauth path; the path is now switched off (latched, reason {TIPAUTH_MANUAL_CLOSE_REASON}); "
+                  "restart it only as a reinstall without tipauth_gate", flush=True)
         return 0
     finally:
         os.close(lock)
