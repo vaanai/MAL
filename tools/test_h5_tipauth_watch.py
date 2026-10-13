@@ -133,7 +133,7 @@ class Env(unittest.TestCase):
         return json.loads((self.out / "state.json").read_text())
 
     def events(self):
-        return W.read_jsonl(self.out / "events.jsonl")
+        return [e for e in W.read_jsonl(self.out / "events.jsonl") if e.get("event") != "verdict_change"]
 
     def advance(self, ms):
         self.t[0] += ms
@@ -670,12 +670,6 @@ class TestOffMarker(Env):
         self.assertTrue((self.out / "OFF").exists())
         self.assertEqual(r4_reader(self.out / "state.json", self.now(), SHA), (False, "off"))
 
-    def test_the_tool_never_removes_off(self):
-        src = inspect.getsource(W)
-        for needle in ("unlink", "os.remove", "rmtree", "os.rename"):
-            self.assertEqual(src.count(needle), 1 if needle == "unlink" else 0, needle)
-        self.assertIn("(out_dir / FILES[\"hold\"]).unlink()", src)  # the only removal in the module is the manual HOLD marker
-
     def test_off_marker_is_recreated_from_the_log_if_lost(self):
         self.trip()
         (self.out / "OFF").unlink()
@@ -743,7 +737,7 @@ class TestFreshness(Env):
             for _ in range(3):
                 w.cycle()
                 self.advance(30_000)
-        self.assertEqual(seen, [("state.json.tmp", "state.json")] * 3)
+        self.assertEqual(seen, [(f"state.json.{os.getpid()}.tmp", "state.json")] * 3)
         self.assertEqual(sorted(p.name for p in self.out.iterdir() if p.name.endswith(".tmp")), [])
 
     def test_state_is_rewritten_when_everything_fails(self):
@@ -1102,6 +1096,238 @@ class TestRpcTotalDeadline(Env):
     def test_the_gap_arithmetic_counts_the_call_deadline_and_the_pacing_sleep(self):
         worst_cycle_ms = W.SHADOW_BUDGET_MS + W.START_BUDGET_MS + W.TAPE_BUDGET_MS + W.RPC_BUDGET_MS + int((W.RPC_TIMEOUT_S + W.RPC_DEADLINE_GRACE_S) * 1000) + int(W.RPC_PACE_S * 1000)
         self.assertLessEqual(int(W.CYCLE_S * 1000) + worst_cycle_ms + 4_000, 60_000)
+
+
+class TestVerdictChangeRows(Env):
+    """R-F: every change of (verdict, reason) appends one `verdict_change` row to events.jsonl, with the trigger ids behind a per-trigger reason. state.json is unchanged."""
+
+    def changes(self):
+        return [e for e in W.read_jsonl(self.out / "events.jsonl") if e.get("event") == "verdict_change"]
+
+    def test_one_row_per_change_none_while_nothing_changes_and_rows_kept_across_a_restart(self):
+        self.baseline()
+        w = self.mk()
+        for _ in range(3):
+            w.cycle()
+            self.advance(30_000)
+        ch = self.changes()
+        self.assertEqual(len(ch), 1)
+        self.assertEqual((ch[0]["from"], ch[0]["to"], ch[0]["reason"], ch[0]["tids"], ch[0]["off"]), (None, "ok", "ok", [], False))
+        self.assertTrue(isint_(ch[0]["ts_ms"]))
+        self.mk().cycle()  # a restart in the same state: still one row
+        self.assertEqual(len(self.changes()), 1)
+        self.shadow([start(sha=OTHER, t=NOW + 1)])
+        w.cycle()
+        w.cycle()
+        ch = self.changes()
+        self.assertEqual([(c["from"], c["to"]) for c in ch], [(None, "ok"), ("ok", "hold")])
+        self.assertIn("shadow_sha_mismatch", ch[1]["reason"])
+        self.mk().cycle()
+        self.assertEqual(len(self.changes()), 2)
+        self.assertEqual(set(self.state()), set(W.STATE_KEYS))  # state.json keeps its schema
+
+    def test_a_per_trigger_reason_names_its_triggers(self):
+        self.shadow([start(), trig(sig="bad-sig!")])
+        self.mk().cycle()
+        ch = self.changes()
+        self.assertEqual(ch[-1]["to"], "hold")
+        self.assertIn("trigger_unverifiable", ch[-1]["reason"])
+        self.assertEqual(ch[-1]["tids"], ["P1|bad-sig!|3|200"])
+
+    def test_an_off_row_names_the_trigger(self):
+        self.shadow([start(), trig()])
+        self.tape([tape_row(sig="FILLER", pool="PX", slot=210)])
+        self.mk().cycle()
+        last = self.changes()[-1]
+        self.assertEqual((last["to"], last["tids"]), ("off", ["P1|SIGT1|3|200"]))
+
+    def test_the_tids_are_capped_at_20(self):
+        recs = [trig(sig=f"bad-{i}!", pool=f"Q{i}") for i in range(30)]
+        self.shadow([start(), *recs])
+        self.mk().cycle()
+        self.assertEqual(len(self.changes()[-1]["tids"]), 20)
+
+    def test_permanent_holds_are_visible_in_the_state_reason_and_in_a_row(self):
+        cases = {}
+
+        def i3():  # a torn trigger line
+            self.baseline()
+            self.shadow([], raw_tail='{"type":"trigger","pool":"P9","slot":\n')
+            return "bad_trigger_line"
+
+        def i4():  # an unmatchable trigger
+            self.shadow([start(), trig(sig="bad-sig!")])
+            return "trigger_unverifiable"
+
+        def i9():  # no start record at all
+            self.shadow([trig()])
+            return "no_start_record"
+
+        def i6():  # event 2 unresolved: no close for more than 60 minutes
+            self.baseline()
+            self.t[0] = NOW + 61 * MIN
+            return "event2_unresolved_60m"
+
+        def ra():  # a hidden start marker
+            self.shadow([start()], raw_tail="{torn")
+            self.shadow([start(sha=OTHER)])
+            return "start_record_unreadable"
+        for name, build in (("I3", i3), ("I4", i4), ("I9", i9), ("I6", i6), ("R-A", ra)):
+            with self.subTest(case=name):
+                self.setUp()
+                want = build()
+                st = self.mk().cycle()
+                self.assertEqual(st["verdict"], "hold", st)
+                self.assertIn(want, st["reason"])
+                self.assertIn(want, self.changes()[-1]["reason"])
+                cases[name] = st["reason"]
+
+
+def isint_(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+class TestRound2Hardening(Env):
+    """The reviewer's non-blocking items that make a wrong `ok` or a silent stall less possible."""
+
+    def test_item1_a_wall_clock_step_does_not_stall_the_schedule(self):
+        self.baseline()
+        sleeps = []
+        mono = [1000.0]
+
+        def sleep(s):
+            sleeps.append(s)
+            mono[0] += s
+        w = W.Watch(self.sd, self.tp, self.out, SHA, T0, URL, rpc=self.rpc, now_ms=self.now, sleep=sleep, mono=lambda: mono[0])
+        orig = w.cycle
+
+        def stepping():
+            st = orig()
+            self.t[0] -= 3_600_000  # the wall clock steps back one hour
+            return st
+        w.cycle = stepping
+        w.run(max_cycles=2)
+        self.assertLess(sum(sleeps), 31.0, sum(sleeps))  # scheduled on the monotonic clock: about 30 s, not 3,630 s
+
+    def test_item1_a_forward_wall_step_cannot_make_the_second_ask_early(self):
+        self.baseline()
+        self.shadow([close()])
+        mono = [1000.0]
+        w = W.Watch(self.sd, self.tp, self.out, SHA, T0, URL, rpc=self.rpc, now_ms=self.now, sleep=lambda s: None, mono=lambda: mono[0])
+        w.cycle()
+        self.advance(20 * MIN)  # the wall clock jumps forward 20 minutes; only 1 minute passed on the monotonic clock
+        mono[0] += 60.0
+        st = w.cycle()
+        self.assertEqual((len(self.calls), st["clear_n"]), (1, 0))
+        mono[0] += 600.0
+        self.assertEqual(w.cycle()["clear_n"], 1)
+
+    def test_item2_a_failed_state_write_never_leaves_an_old_ok_behind(self):
+        import errno
+        self.baseline()
+        w = self.mk()
+        self.assertEqual(w.cycle()["verdict"], "ok")
+        self.assertEqual(self.state()["verdict"], "ok")
+        self.tape([tape_row(sig="DROPA", pool="P1", ei=0, slot=105)])  # an off event in the next cycle
+        self.advance(30_000)
+        with mock.patch.object(W, "atomic_write", side_effect=OSError(errno.ENOSPC, "full")):
+            st = w.cycle()
+        self.assertEqual(st["verdict"], "off")
+        self.assertFalse((self.out / "state.json").exists())  # the executor sees no file, not the old ok
+
+    def test_item2_the_temp_name_is_per_process(self):
+        seen = []
+        real = os.replace
+        self.out.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(W.os, "replace", side_effect=lambda a, b: (seen.append(Path(a).name), real(a, b))[1]):
+            W.atomic_write(self.out / "state.json", "x")
+        self.assertEqual(seen, [f"state.json.{os.getpid()}.tmp"])
+
+    def test_item3_a_force_off_landing_before_the_replace_is_not_overwritten_with_ok(self):
+        self.baseline()
+        w = self.mk()
+        self.assertEqual(w.cycle()["verdict"], "ok")
+        real = os.fsync
+        done = []
+
+        def fsync(fd):
+            real(fd)
+            if not done and any(p.name.startswith("state.json.") and p.name.endswith(".tmp") for p in self.out.iterdir()):
+                done.append(1)  # --force-off lands after the verdict was computed, before the replace
+                (self.out / "OFF").write_text(json.dumps({"event": "manager_force_off"}) + "\n")
+        self.advance(30_000)
+        with mock.patch.object(W.os, "fsync", side_effect=fsync):
+            w.cycle()
+        self.assertEqual(done, [1])
+        self.assertEqual(self.state()["verdict"], "off")
+
+    def test_item4_a_dead_shadow_does_not_read_as_ok(self):
+        self.baseline()
+        w = self.mk()
+        self.assertEqual(w.cycle()["verdict"], "ok")
+        self.advance(H + 11 * MIN)  # no hour file for the current hour, 11 minutes into it
+        st = w.cycle()
+        self.assertEqual(st["verdict"], "hold")
+        self.assertIn("shadow_stale", st["reason"])
+
+    def test_item4_a_shadow_dir_with_only_old_files_holds(self):
+        self.shadow([start()], hour_ms=NOW - 5 * H)
+        st = self.mk(from_ms=NOW - 6 * H).cycle()
+        self.assertIn("shadow_stale", st["reason"])
+
+    def test_item5_a_duplicate_trigger_id_with_different_content_holds(self):
+        a, b = trig(), trig(dropped=[["DROPB", 0, 106]])
+        self.shadow([start(), a, b])
+        self.tape([tape_row(), tape_row(sig="FILLER", pool="PX", slot=210)])
+        st = self.mk().cycle()
+        self.assertEqual(st["verdict"], "hold")
+        self.assertIn("trigger_conflict", st["reason"])
+        self.setUp()
+        self.shadow([start(), trig(), trig()])  # the same record twice is not a conflict
+        self.tape([tape_row(), tape_row(sig="FILLER", pool="PX", slot=210)])
+        self.assertNotIn("trigger_conflict", self.mk().cycle()["reason"])
+
+    def test_item6_a_non_regular_entry_for_a_tape_hour_is_unreadable_not_missing(self):
+        self.shadow([start(), trig()])
+        self.tape([tape_row(sig="FILLER", pool="PX", slot=210)])  # no row for the trigger: event 1 would fire on a complete scan
+        os.mkfifo(self.tp / f"trades-{hname(NOW - H)}.jsonl")  # the previous hour is a FIFO
+        self.mk().cycle()
+        self.assertFalse((self.out / "OFF").exists())
+        self.assertEqual(self.state()["pending_n"], 1)
+
+    def test_item7_the_close_is_chosen_in_t_ms_order_not_file_order(self):
+        self.baseline()
+        late = close(t=NOW + 10 * MIN, dropped=[], dropped_n=0)  # would read as left D
+        early = close(t=NOW - 30_000)  # still dropped: the first close at or after the trigger
+        self.shadow([late, early])
+        st = self.mk().cycle()
+        self.assertEqual(st["verdict"], "ok")
+        self.assertIn("e2", [r["kind"] for r in W.read_jsonl(self.out / "resolved.jsonl")])
+
+    def test_a_trigger_hidden_behind_a_torn_hb_gap_or_pool_prefix_holds(self):
+        for frag in ('{"type":"hb","t_ms":179', '{"type": "gap", "kind"', '{"type":"pool","pool":"ZZ"'):
+            with self.subTest(frag=frag):
+                self.setUp()
+                self.baseline()
+                self.shadow([], raw_tail=frag)
+                self.shadow([trig(sig="HID1", pool="P9")])  # lands on the torn line
+                st = self.mk().cycle()
+                self.assertEqual(st["verdict"], "hold")
+                self.assertIn("bad_trigger_line", st["reason"])
+
+    def test_item11_off_is_never_the_target_of_a_removal(self):
+        for line in inspect.getsource(W).splitlines():
+            if any(k in line for k in ("unlink(", "os.remove", "os.rename", "rmtree")):
+                self.assertNotIn('FILES["off"]', line)
+                self.assertNotIn('p["off"]', line)
+        self.baseline()
+        self.mk().cycle()
+        W.main(["--out-dir", str(self.out), "--force-off", "t"], now_ms=self.now)
+        for cmd in (["--hold"], ["--release"]):
+            W.main(["--out-dir", str(self.out), *cmd], now_ms=self.now)
+        with mock.patch.object(W, "atomic_write", side_effect=OSError("full")):
+            self.mk().cycle()
+        self.assertTrue((self.out / "OFF").exists())
 
 
 class TestRpcControl(Env):

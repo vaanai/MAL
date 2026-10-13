@@ -53,13 +53,26 @@ INTERPRETATIONS (the spec leaves these open; each is the reading that produces h
   I5  Event 1 is final only on a COMPLETE scan: the own-hour tape file exists and every wanted file opened and was scanned to its end this cycle. A row that
       differs fires at once; "no row" and "all equal" need the complete scan. A tape check blocked for more than 10 minutes while the tip is past the
       trigger holds (`trigger_print_unverified`).
-  I6  A trigger whose event 2 is unresolved (no usable close, or all entries not classified) 60 minutes after its t_detect_ms holds (`event2_unresolved_60m`);
-      the tape check for it also continues for 2 hours after the close. t_detect_ms not an integer: t_ms is used; neither: the trigger counts as old.
+  I6  A trigger whose event 2 is unresolved (no usable close, or all entries not classified, or no complete tape search) 60 minutes after its t_detect_ms holds
+      (`event2_unresolved_60m`); the tape check for it runs until its close AND for 2 hours after the trigger, and longer for a trigger with no complete search
+      (round 2, R-D). t_detect_ms not an integer: t_ms is used; neither, or more than 60 s ahead of the clock (R-E): the trigger counts as old.
   I7  Ages are `now - t_detect_ms` of the record, not the instant the watch first saw it, so a restart never gives a trigger more time.
   I8  Dropped entries without an integer event_index (None) are matched by signature and pool only.
   I9  A tip directory or shadow directory that is not a directory holds.
   I10 --rpc-url must be https with no user info, query, fragment or path, and no "helius" in it: a keyed endpoint is refused before the first cycle.
   I11 `pending_n` = watched_n - clear_n. A trigger is clear only when event 1 is clear, event 2 is clear and every dropped signature is not-found-twice.
+ROUND 2 (quant-proof 6152705289 R-A..R-F, reviewer 6152533574 B1, B2 and items 1-11):
+  I14 A `start` marker newer than the newest valid start record that is not a complete, parseable start line at a line start holds (`start_record_unreadable`), in its
+      file or any newer file; the search never falls back to an older record. Only a later valid start record clears it.
+  I15 A null for a dropped signature counts only if the same endpoint found the trigger's own signature at its slot earlier in the same cycle (R-C); otherwise it is
+      stored `null_unverified` and counts as no answer. A stored `null` row without control keys does not count.
+  I16 A close record clears event 2 only after one complete tape search for the trigger's dropped signatures (resolved kind `e2s`; R-D).
+  I17 Every change of (verdict, reason) appends a `verdict_change` row (from, to, reason, tids, at most 20) to events.jsonl (R-F). state.json keeps its schema.
+  I18 `shadow_stale`: no shadow hour file whose hour ended less than 10 minutes ago (a dead or mis-pointed --shadow-dir). `trigger_conflict`: two records with the same
+      (pool, signature, event_index, slot) and different dropped / base_pre / real_quote_pre. A non-regular entry for a tape hour is unreadable, not missing. A line that
+      starts with an hb / gap / unwatched-pool prefix but holds a `{"type":"trigger"` marker later in the line is a bad trigger line (a trigger glued to a torn line).
+  I19 A failed state.json write removes the old state.json (the executor then sees no file, not an old ok). A manager OFF landing before the rename is re-checked
+      and written as off. The cycle schedule and the in-process 10-minute re-ask use the monotonic clock.
 """
 from __future__ import annotations
 
@@ -109,6 +122,8 @@ TIP_HOLD_MS = 600_000  # the tip not past a watched trigger after 10 minutes: ho
 E2_HOLD_MS = 3_600_000
 E2_TAPE_MAX_MS = 2 * HOUR_MS  # the tape check for event 2 runs this long after the trigger, and longer for a trigger with no complete search yet (R-D)
 FUTURE_SKEW_MS = 60_000  # a t_detect_ms further ahead of the clock than this counts as old (R-E)
+SHADOW_STALE_MS = 600_000  # no shadow hour file that ended less than this long ago: hold (a dead or mis-pointed --shadow-dir)
+TRIGGER_MARKS = (b'{"type":"trigger"', b'{"type": "trigger"')
 START_SCAN_FILES = 400  # as the daily check: newest hour files searched for a start record
 START_LINE_MAX = 1_000_000
 READ_CHUNK = 4 * 1024 * 1024
@@ -138,13 +153,29 @@ def wanted_hours(t_ms: int) -> list[str]:
     return [hour_name(t_ms + k * HOUR_MS) for k in range(-TIP_HOURS_BEFORE, TIP_HOURS_AHEAD + 1)]
 
 
-def atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+def atomic_write(path: Path, text: str, pre_replace: Callable[[], str | None] | None = None) -> None:
+    """Write by rename. The temp name is per process (the manager's --force-off may write the same file). `pre_replace` runs after the data is on disk and just before
+    the rename: it may return replacement text (used to re-check the OFF marker)."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+            alt = pre_replace() if pre_replace is not None else None
+            if alt is not None:
+                fh.seek(0)
+                fh.truncate()
+                fh.write(alt)
+                fh.flush()
+                os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def append_jsonl(path: Path, row: dict) -> bool:
@@ -358,10 +389,16 @@ def scan_tape_file(path: Path, sigs: list[str], deadline_ms: int, now_ms: Callab
 class Watch:
     def __init__(self, shadow_dir: Path, tip_dir: Path, out_dir: Path, shadow_sha: str, from_ms: int, rpc_url: str, *,
                  rpc: Callable[[str, dict, float], Any] = http_transport, now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-                 sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] | None = None) -> None:
+                 sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] | None = None, mono: Callable[[], float] | None = None) -> None:
         self.shadow_dir, self.tip_dir, self.out_dir = Path(shadow_dir), Path(tip_dir), Path(out_dir)
         self.shadow_sha, self.from_ms, self.rpc_url = shadow_sha, from_ms, rpc_url
         self.rpc, self.now, self.sleep, self.log = rpc, now_ms, sleep, log or (lambda m: None)
+        self.mono: Callable[[], float] = mono or (lambda: self.now() / 1000.0)  # schedule and in-process re-ask gap: a wall-clock step must not move them
+        self.first_null_mono: dict[str, float] = {}
+        self.conflicts: set[str] = set()
+        self.last_vr: tuple[str, str] | None = None
+        self.hold_tids: dict[str, list[str]] = {}
+        self.shadow_newest_end_ms: int | None = None
         self.p = {k: self.out_dir / v for k, v in FILES.items()}
         self.trig: dict[str, dict] = {}  # W, by tid
         self.pool_tids: dict[str, list[str]] = {}
@@ -399,6 +436,8 @@ class Watch:
                 self.event_keys.add(r["dedupe"])
             if r.get("off") is True:
                 off_rows.append(r)
+            if r.get("event") == "verdict_change" and isinstance(r.get("to"), str) and isinstance(r.get("reason"), str):
+                self.last_vr = (r["to"], r["reason"])
         if os.path.lexists(self.p["off"]):
             self.off_info = self._read_off()
         elif off_rows:  # the marker was lost but the log remembers: OFF survives
@@ -433,7 +472,8 @@ class Watch:
         """An off event: the OFF marker first, then the log row with its evidence (once per key, also across restarts)."""
         now = self.now()
         if self.off_info is None:
-            self.off_info = {"ts_ms": now, "event": name, "dedupe": key}
+            tids = evidence.get("tids") if isinstance(evidence.get("tids"), list) else ([evidence["tid"]] if isinstance(evidence.get("tid"), str) else [])
+            self.off_info = {"ts_ms": now, "event": name, "dedupe": key, "tids": [t for t in tids if isinstance(t, str)][:20]}
         self._ensure_off()
         if key not in self.event_keys:
             if append_jsonl(self.p["events"], {"ts_ms": now, "off": True, "event": name, "dedupe": key, "evidence": evidence}):
@@ -447,14 +487,18 @@ class Watch:
     # -- the shadow's hour files --
     def _shadow_files(self) -> list[str]:
         out = []
+        newest: int | None = None
         for e in os.scandir(self.shadow_dir):
             m = SHADOW_RE.match(e.name)
             if not m:
                 continue
             y, mo, d, h = (int(g) for g in m.groups())
-            if calendar.timegm((y, mo, d, h, 0, 0)) * 1000 + HOUR_MS <= self.from_ms - HOUR_MS:
+            start_ms = calendar.timegm((y, mo, d, h, 0, 0)) * 1000
+            if start_ms + HOUR_MS <= self.from_ms - HOUR_MS:
                 continue
             out.append(e.name)
+            newest = start_ms if newest is None else max(newest, start_ms)
+        self.shadow_newest_end_ms = None if newest is None else newest + HOUR_MS
         return sorted(out)
 
     def poll_shadow(self, deadline_ms: int) -> bool:
@@ -501,9 +545,11 @@ class Watch:
 
     def _line(self, line: bytes) -> None:
         line = line.strip()
-        if not line or line.startswith(SKIP_PREFIXES):
+        if not line:
             return
-        if line.startswith(POOL_PREFIXES) and not any(b in line for b in self.pool_bytes):
+        if line.startswith(SKIP_PREFIXES) or (line.startswith(POOL_PREFIXES) and not any(b in line for b in self.pool_bytes)):
+            if any(m in line[1:] for m in TRIGGER_MARKS):  # a trigger record glued onto a torn line: it would be hidden by the prefix
+                self.bad_trigger_lines += 1
             return
         try:
             rec = json.loads(line)
@@ -530,9 +576,12 @@ class Watch:
             return
         pool, sig, ei, slot = rec.get("pool"), rec.get("signature"), rec.get("event_index"), rec.get("slot")
         tid = f"{pool}|{sig}|{ei}|{slot}"
-        if tid in self.trig:
-            return
         dropped = [(e[0], e[1], e[2]) for e in rec["base_tipauth"]["dropped"]]  # would_pass guarantees a list of well-formed entries
+        if tid in self.trig:
+            old = self.trig[tid]
+            if old["dropped"] != dropped or old["base_pre"] != rec.get("base_pre") or old["real_quote_pre"] != rec.get("real_quote_pre"):
+                self.conflicts.add(tid)  # the second record's dropped signatures would never be asked: hold
+            return
         fields_ok = (isinstance(pool, str) and bool(pool) and isinstance(sig, str) and SIG_SAFE.fullmatch(sig) is not None and isint(ei) and isint(rec.get("base_pre"))
                      and isint(rec.get("real_quote_pre")) and isint(tm) and all(SIG_SAFE.fullmatch(d[0]) is not None for d in dropped))
         self.trig[tid] = {"tid": tid, "pool": pool, "signature": sig, "event_index": ei, "slot": slot, "base_pre": rec.get("base_pre"), "real_quote_pre": rec.get("real_quote_pre"),
@@ -644,7 +693,8 @@ class Watch:
     def classify_entry(t: dict, e: Any, closes: list[dict]) -> str:
         """Item 10's rule on the close record (tools/h5_tipauth_item4.classify_margin): open | still_dropped | left_D | undetermined."""
         tm = t["t_ms"]
-        close = next((c for c in closes if isint(c.get("t_ms")) and isint(tm) and c["t_ms"] >= tm), None)
+        ordered = sorted(closes, key=lambda c: c["t_ms"] if isint(c.get("t_ms")) else 1 << 62)  # by t_ms, as classify_margin does, not by file order
+        close = next((c for c in ordered if isint(c.get("t_ms")) and isint(tm) and c["t_ms"] >= tm), None)
         if close is None:
             return "open"
         usable = close["status"] == "ok" and isint(close["cover_hi"]) and isint(t["slot"]) and close["cover_hi"] >= t["slot"]
@@ -698,7 +748,8 @@ class Watch:
         for h in sorted(want):
             p = self.tip_dir / f"trades-{h}.jsonl"
             if not p.is_file():
-                status[h] = "compressed" if any((self.tip_dir / f"trades-{h}.jsonl{c}").exists() for c in COMPRESSED) else "missing"
+                status[h] = ("compressed" if any((self.tip_dir / f"trades-{h}.jsonl{c}").exists() for c in COMPRESSED)
+                             else ("unreadable" if os.path.lexists(p) else "missing"))  # a FIFO / directory / dangling link is not an absent hour
                 continue
             r, st, pt = scan_tape_file(p, sorted(want[h]), deadline_ms, self.now)
             status[h] = st
@@ -760,6 +811,9 @@ class Watch:
             nulls = sorted(a["asked_ms"] for a in ans if counted_null(a))
             if nulls and now - nulls[0] < RPC_REASK_MS:
                 continue  # a not-found is asked again no earlier than 10 minutes after the first counted one
+            fm = self.first_null_mono.get(sig)
+            if fm is not None and self.mono() - fm < RPC_REASK_MS / 1000.0:
+                continue  # the same gap on the monotonic clock: a forward wall-clock step cannot make the second ask early
             if ans and now - max(a["asked_ms"] for a in ans) < RPC_ERROR_RETRY_MS:
                 continue  # an error (or an unverified null) is retried, but not every few milliseconds
             control_at: int | None = None
@@ -792,6 +846,8 @@ class Watch:
             row = {"sig": sig, "asked_ms": asked_ms, **new}
             self.rpc_rows.setdefault(sig, []).append(row)
             append_jsonl(self.p["rpc"], row)
+            if counted_null(row):
+                self.first_null_mono.setdefault(sig, self.mono())
             if row["result"] == "found":
                 self.off_event(E3, f"{E3}|{sig}", {"signature": sig, "tids": due[sig][1], "answers": [row], "found_slot": row.get("slot")})
 
@@ -829,40 +885,56 @@ class Watch:
 
     def holds(self) -> list[str]:
         now, h = self.now(), []
+        self.hold_tids = {}
+
+        def add(code: str, tids: Any = ()) -> None:
+            h.append(code)
+            if tids:
+                self.hold_tids[code] = sorted(set(tids))[:20]
         if os.path.lexists(self.p["hold"]):
-            h.append("manual_hold")
-        h += self.last_error
+            add("manual_hold")
+        for e in self.last_error:
+            add(e)
         if self.start_unreadable:
-            h.append("start_record_unreadable")
+            add("start_record_unreadable")
         elif self.observed_sha is None:
-            h.append("no_start_record" if self.start_complete else "start_search_incomplete")
+            add("no_start_record" if self.start_complete else "start_search_incomplete")
         elif self.observed_sha != self.shadow_sha:
-            h.append("shadow_sha_mismatch")
+            add("shadow_sha_mismatch")
         if not self.shadow_dir.is_dir():
-            h.append("shadow_dir_missing")
+            add("shadow_dir_missing")
         if not self.tip_dir.is_dir():
-            h.append("tip_dir_missing")
+            add("tip_dir_missing")
         if not self.caught_up:
-            h.append("shadow_read_incomplete")
+            add("shadow_read_incomplete")
+        if self.shadow_newest_end_ms is None or now - self.shadow_newest_end_ms > SHADOW_STALE_MS:
+            add("shadow_stale")
         if self.bad_trigger_lines:
-            h.append("bad_trigger_line")
+            add("bad_trigger_line")
+        if self.conflicts:
+            add("trigger_conflict", self.conflicts)
         ws = list(self.trig.values())
-        if any(not t["fields_ok"] for t in ws):
-            h.append("trigger_unverifiable")
+        add_unv = [t["tid"] for t in ws if not t["fields_ok"]]
+        if add_unv:
+            add("trigger_unverifiable", add_unv)
         hw = self.hw
         pending1 = [t for t in ws if t["fields_ok"] and t["tid"] not in self.resolved["e1"] and self.age(t) > TIP_HOLD_MS]
-        if any(hw is None or hw - TIPAUTH_MARGIN_SLOTS < t["slot"] for t in pending1):
-            h.append("tip_not_past_trigger")
-        if any(hw is not None and hw - TIPAUTH_MARGIN_SLOTS >= t["slot"] for t in pending1):
-            h.append("trigger_print_unverified")
+        behind = [t["tid"] for t in pending1 if hw is None or hw - TIPAUTH_MARGIN_SLOTS < t["slot"]]
+        if behind:
+            add("tip_not_past_trigger", behind)
+        blocked = [t["tid"] for t in pending1 if hw is not None and hw - TIPAUTH_MARGIN_SLOTS >= t["slot"]]
+        if blocked:
+            add("trigger_print_unverified", blocked)
         sigs: dict[str, int] = {}
         for t in ws:
             for d in t["dropped"]:
                 sigs[d[0]] = min(sigs.get(d[0], 1 << 62), self.t_known(t) if self.t_known(t) is not None else 0)
-        if any(rpc_class(self.rpc_rows.get(s, [])) not in ("found", "not_found") and now - due > RPC_HOLD_MS for s, due in sigs.items()):
-            h.append("rpc_no_answer_60m")
-        if any(t["fields_ok"] and t["tid"] not in self.resolved["e2"] and self.age(t) > E2_HOLD_MS for t in ws):
-            h.append("event2_unresolved_60m")
+        bad_sigs = {sg for sg, due in sigs.items() if rpc_class(self.rpc_rows.get(sg, [])) not in ("found", "not_found") and now - due > RPC_HOLD_MS}
+        if bad_sigs:
+            add("rpc_no_answer_60m", [t["tid"] for t in ws if any(d[0] in bad_sigs for d in t["dropped"])])
+        e2 = [t["tid"] for t in ws if t["fields_ok"] and t["tid"] not in self.resolved["e2"] and self.age(t) > E2_HOLD_MS]
+        if e2:
+            add("event2_unresolved_60m", e2)
         return h
 
     def verdict(self) -> tuple[str, str]:
@@ -880,8 +952,25 @@ class Watch:
 
     def write_state(self, verdict: str, reason: str) -> dict:
         st = self.state(verdict, reason)
-        atomic_write(self.p["state"], json.dumps(st, sort_keys=True) + "\n")
+
+        def pre_replace() -> str | None:  # a --force-off landing after the verdict was computed is not overwritten with ok / hold
+            nonlocal st
+            if verdict != "off" and os.path.lexists(self.p["off"]):
+                st = self.state("off", f"off:{self._read_off().get('event') or 'marker'}")
+                return json.dumps(st, sort_keys=True) + "\n"
+            return None
+        atomic_write(self.p["state"], json.dumps(st, sort_keys=True) + "\n", pre_replace)
         return st
+
+    def log_change(self, v: str, r: str) -> None:
+        """R-F: one `verdict_change` row per change of (verdict, reason), with the trigger ids behind it (at most 20). Kept across restarts (the last row is read at load)."""
+        if self.last_vr == (v, r):
+            return
+        tids = list((self.off_info or {}).get("tids") or []) if v == "off" else sorted({t for ts in self.hold_tids.values() for t in ts})
+        row = {"ts_ms": int(self.now()), "off": False, "event": "verdict_change", "from": self.last_vr[0] if self.last_vr else None,
+               "from_reason": self.last_vr[1] if self.last_vr else None, "to": v, "reason": r, "tids": tids[:20]}
+        if append_jsonl(self.p["events"], row):
+            self.last_vr = (v, r)
 
     def _guard(self, name: str, fn: Callable, *a: Any, default: Any = None) -> Any:
         try:
@@ -910,20 +999,28 @@ class Watch:
             v, r = "hold", f"internal_error:verdict:{type(e).__name__}"
         try:
             st = self.write_state(v, r)
-        except Exception:  # noqa: BLE001  (the disk: nothing more can be done; the executor sees a stale file and refuses)
+        except Exception:  # noqa: BLE001  (the disk): remove the old state.json so the executor sees no file, not the previous ok
             st = self.state(v, r)
+            try:
+                os.unlink(self.p["state"])
+            except OSError:
+                pass
+        try:
+            self.log_change(v, r)
+        except Exception:  # noqa: BLE001
+            pass
         self.log(f"cycle ts_ms={st['ts_ms']} verdict={st['verdict']} reason={st['reason']} watched={st['watched_n']} clear={st['clear_n']} pending={st['pending_n']}")
         return st
 
     def run(self, once: bool = False, max_cycles: int | None = None, stop: Callable[[], bool] = lambda: False) -> None:
         n = 0
         while True:
-            t0 = self.now()
+            t0 = self.mono()
             self.cycle()
             n += 1
             if once or stop() or (max_cycles is not None and n >= max_cycles):
                 return
-            rest = CYCLE_S - (self.now() - t0) / 1000.0
+            rest = CYCLE_S - (self.mono() - t0)
             while rest > 0 and not stop():
                 step = min(1.0, rest)
                 self.sleep(step)
@@ -979,7 +1076,7 @@ def release(out_dir: Path, now_ms: int) -> bool:
 
 
 def main(argv: list[str] | None = None, *, rpc: Callable[[str, dict, float], Any] = http_transport, now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-         sleep: Callable[[float], None] = time.sleep) -> int:
+         sleep: Callable[[float], None] = time.sleep, mono: Callable[[], float] = time.monotonic) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], epilog="Exit: 0 ran; 2 bad arguments; 3 another watch holds this out-dir.")
     ap.add_argument("--shadow-dir")
     ap.add_argument("--tip-dir")
@@ -1027,7 +1124,7 @@ def main(argv: list[str] | None = None, *, rpc: Callable[[str, dict, float], Any
     stopping = {"v": False}
     for sg in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sg, lambda *_: stopping.update(v=True))  # no final state is written: a stopped watch must go stale
-    w = Watch(Path(a.shadow_dir), Path(a.tip_dir), out, a.shadow_sha, a.from_ms, a.rpc_url, rpc=rpc, now_ms=now_ms, sleep=sleep, log=lambda m: sys.stderr.write(m + "\n"))
+    w = Watch(Path(a.shadow_dir), Path(a.tip_dir), out, a.shadow_sha, a.from_ms, a.rpc_url, rpc=rpc, now_ms=now_ms, sleep=sleep, log=lambda m: sys.stderr.write(m + "\n"), mono=mono)
     w.run(once=a.once, stop=lambda: stopping["v"])
     return 0
 
