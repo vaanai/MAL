@@ -42,7 +42,43 @@ Expected tier (computed from account data read BEFORE the simulation, independen
   here read from the pinned FeeConfig account itself instead of the lab's constant table.
   The sell runs after the buy in the same transaction, so its reserves are post-buy: the sell's expected
   tier is taken from the executor's post-buy book (Q + net, b - out). If the pre-buy and post-buy tiers
-  differ the pool is `tier_boundary` and fails closed (pick another pool).
+  differ the pool is `tier_boundary` and fails closed (pick another pool). The snapshot is read at `confirmed` and
+  the simulation runs at `processed`, so a pool near a threshold can flip between them: that is a false FAIL, never
+  a false PASS.
+
+Verdict rules: at least 5 DISTINCT pools (duplicates are a usage error; `--min-round-trips` below 5 is a usage
+error), all with a clean decoded round trip, 0 simulate errors, 0 fee mismatches. A run on fewer than 5 pools ends
+FAIL / exit 3 with the per-pool records still printed. The summary carries `tiers_covered` (sorted distinct tier
+indexes of the pools that passed) and each pool carries `expected_tier_index`.
+
+Buy slippage: the live buy (`H5Executor._buy_message`) uses 0 bps. This dry run uses `--slippage-bps` (default 300,
+the `buy_slippage_bps` in the summary) because the pool snapshot and the simulation are different instants on a public
+RPC, and with 0 bps a tiny drift would revert the buy for a reason that has nothing to do with the upgrade. It changes
+only the min-out value. The compute-unit limits are the executor's own `H5Limits` defaults (checked at run time against
+the ones `sell_probe_message` uses); `track_volume` default is True, as in the executor. `sell_close_omitted: true`.
+
+Report-only fee amounts: per event and per fee leg (LP, protocol, creator) a boolean says whether the event's fee amount
+equals ceil(base * bps / 10^4) (base: buy = the event's offset-112 amount, sell = pool_quote_amount, see FEE_BASE_OFFSET).
+The summary has `fee_amount_legs_checked` and `fee_amount_legs_consistent`. This is REPORT-ONLY: it changes neither the
+verdict nor the exit code, and no amount is printed. The lab's own data shows the ceil relation holds on most but not
+all prints (EXP-024: 90-92 of 93 sampled prints per leg).
+
+Limits (quote them with any PASS):
+  1. It checks the events' reported bps, not the fee amounts charged (the amount check is report-only).
+  2. The tier is checked only for the tiers the sampled pools sit in: quote `tiers_covered`. If it is only [0], the
+     tier steps above the 420 SOL threshold were not exercised.
+  3. The market-cap formula is source-backed in structure and matches the chain on 237/245 prints in EXP-024; it is
+     not a formal specification.
+  4. The final base-token-account close of the live sell is omitted; the live sell shape is not byte-identical.
+  5. Buy slippage and CU as above; one transaction per pool, so the sell runs on post-buy reserves.
+  6. A `processed` simulation with a keyless public fee payer: no landing, priority-fee, tip, balance-floor or wallet test.
+  7. FeeConfig sha256 only (pinned address and bytes at run time); the other two config accounts and the program
+     hashes are other review items.
+  8. FeeConfig read, snapshot and simulation are different instants; a tier-boundary pool is rejected, a concurrent
+     change is not detected.
+  9. It proves nothing about BOOST (item 4) or H5's inputs (item 5).
+ 10. One RPC provider's simulation. Non-canonical, mayhem, holder-rewards and cashback coins are not modelled
+     (non-canonical pools are rejected).
 """
 
 from __future__ import annotations
@@ -62,7 +98,7 @@ from solders.pubkey import Pubkey
 from observe import trade_decode as td
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
-from tools.h5_executor import H5_DEFAULT
+from tools.h5_executor import H5_DEFAULT, H5Limits
 from tools.pumpswap_simulate import DEFAULT_ENV_FILE, DEFAULT_USER, LAMPORTS, load_rpc_url, redact_rpc_url
 
 ALLOWED_METHODS = frozenset({"getAccountInfo", "getMultipleAccounts", "simulateTransaction"})
@@ -71,10 +107,18 @@ DEFAULT_MIN_ROUND_TRIPS = 5
 DEFAULT_SLIPPAGE_BPS = 300
 DEFAULT_PINS = "tools/pump_structure_pins.json"
 EXIT_PASS, EXIT_FAIL, EXIT_USAGE, EXIT_DIFFERS = 0, 3, 2, 4
+DEC_MIN_ROUND_TRIPS = 5  # DEC-024 Am.7 item 6: a lower --min-round-trips is a usage error, never a PASS
 FORBIDDEN_KEY_PARTS = ("price", "quote", "amount", "pnl", "slippage")  # the output is outcome-blind by construction
+# Exact keys that contain a forbidden part but are not outcomes: an input parameter and report-only counts / booleans.
+ALLOWED_KEYS = frozenset({"buy_slippage_bps", "fee_amount_legs_checked", "fee_amount_legs_consistent", "fee_amount_consistent"})
 # Event byte offsets (with the 8-byte discriminator, as observe.trade_decode counts): the same three as
 # tools.boostfloor_inputs.FEE_BPS_OFFSETS (lp_fee_basis_points, protocol_fee_basis_points, coin_creator_fee_basis_points).
 FEE_BPS_OFFSETS = (72, 88, 344)
+FEE_AMOUNT_OFFSETS = (80, 96, 352)  # lp_fee, protocol_fee, coin_creator_fee (observe.trade_decode._decode_buy / _decode_sell)
+# Base of the report-only ceil relation, per side: buy_exact_quote_in -> the event's offset-112 amount (trade_decode.py:394, "sol_lamports",
+# the lab's relation in tools/boostfloor_inputs.py exact_in_raw: fee_i = ceil(sol * bps_i / 10^4)); sell -> pool_quote_amount at offset 64
+# (trade_decode.py:445, the gross that leaves the pool). Both held on every leg of the live pools of the 2026-10-13 smoke run.
+FEE_BASE_OFFSET = {"buy": 112, "sell": 64}
 EVENT_MIN_LEN = 352
 
 
@@ -116,6 +160,9 @@ class HttpRpc:
                 if isinstance(err, dict) and err.get("code") in (-32005, -32004, -32007, -32603):  # busy / not available: retry
                     continue
                 break
+            if resp.get("result") is None:
+                last = "no_result"
+                break
             return resp["result"]
         raise RpcError(redact_rpc_url(f"{method} failed after retries: {last}"))
 
@@ -124,7 +171,10 @@ def guarded(rpc: Callable[[str, list], dict]) -> Callable[[str, list], dict]:
     def call(method: str, params: list) -> dict:
         if method not in ALLOWED_METHODS:
             raise RpcError(f"method {method} is not allowed in this tool")
-        return rpc(method, params)
+        res = rpc(method, params)
+        if not isinstance(res, dict):  # no result / null result: fail closed with a label, never a traceback
+            raise RpcError(f"{method}: no result")
+        return res
 
     return call
 
@@ -152,18 +202,22 @@ def parse_fee_config(data: bytes) -> dict[str, Any]:
     return {"flat_bps": flat, "tiers": tiers}
 
 
-def tier_bps(tiers: list[tuple[int, tuple[int, int, int]]], q: int, b: int, supply: int) -> tuple[int, int, int]:
-    """The last tier whose lamport threshold <= mcap = Q * supply / b (the first tier when below all of them)."""
+def tier_index(tiers, q: int, b: int, supply: int) -> int:
+    """Index of the last tier whose lamport threshold <= mcap = Q * supply / b (0 when below all of them)."""
     if q <= 0 or b <= 0 or supply <= 0:
         raise ValueError("non-positive reserves or supply")
     mcap = q * supply // b
-    pick = tiers[0][1]
-    for thr, bps in tiers:
+    pick = 0
+    for i, (thr, _bps) in enumerate(tiers):
         if mcap >= thr:
-            pick = bps
+            pick = i
         else:
             break
-    return tuple(pick)  # type: ignore[return-value]
+    return pick
+
+
+def tier_bps(tiers, q: int, b: int, supply: int) -> tuple[int, int, int]:
+    return tuple(tiers[tier_index(tiers, q, b, supply)][1])  # type: ignore[return-value]
 
 
 def b64(v: dict | None) -> bytes | None:
@@ -206,7 +260,12 @@ def decode_events(inner: list[dict], account_keys: list[str], pool: str) -> dict
                 continue
             if td._pubkey(ev, 120) != pool:
                 continue
-            out[kind].append({"pool": pool, "bps": [int.from_bytes(ev[o : o + 8], "little") for o in FEE_BPS_OFFSETS]})
+            u64 = lambda o: int.from_bytes(ev[o : o + 8], "little")  # noqa: E731
+            bps = [u64(o) for o in FEE_BPS_OFFSETS]
+            base = u64(FEE_BASE_OFFSET[kind])
+            # Report-only: fee amount == ceil(base * bps / 10^4), one boolean per leg. The amounts themselves are dropped here.
+            ok = [u64(o) == -((-base * b) // 10_000) for o, b in zip(FEE_AMOUNT_OFFSETS, bps)]
+            out[kind].append({"pool": pool, "bps": bps, "fee_amount_consistent": ok})
     return out
 
 
@@ -225,6 +284,7 @@ def check_pool(rpc, pool: str, tiers, user: Pubkey, spend: int, slippage_bps: in
     rec: dict[str, Any] = {"pool": pool, "sim_err": None, "units_consumed": None, "context_slot": None,
                            "events_found": {"buy": 0, "sell": 0}, "observed_bps": {"buy": None, "sell": None},
                            "expected_bps": {"buy": None, "sell": None}, "buy_match": False, "sell_match": False,
+                           "expected_tier_index": None, "fee_amount_consistent": {"buy": None, "sell": None},
                            "round_trip_ok": False, "problem": None}
     try:
         snap = pe.fetch_snapshot(rpc, pool, "confirmed", user)
@@ -250,6 +310,7 @@ def check_pool(rpc, pool: str, tiers, user: Pubkey, spend: int, slippage_bps: in
         book_q, book_b = q + spend * (1_000_000 - fee) // 1_000_000, b - got
         exp_buy = tier_bps(tiers, q, b, supply)
         exp_sell = tier_bps(tiers, book_q, book_b, supply)
+        rec["expected_tier_index"] = tier_index(tiers, q, b, supply)
         rec["expected_bps"] = {"buy": list(exp_buy), "sell": list(exp_sell)}
         if exp_buy != exp_sell:
             rec["problem"] = "tier_boundary"
@@ -275,6 +336,7 @@ def check_pool(rpc, pool: str, tiers, user: Pubkey, spend: int, slippage_bps: in
         return rec
     ob, os_ = evs["buy"][0]["bps"], evs["sell"][0]["bps"]
     rec["observed_bps"] = {"buy": ob, "sell": os_}
+    rec["fee_amount_consistent"] = {"buy": evs["buy"][0]["fee_amount_consistent"], "sell": evs["sell"][0]["fee_amount_consistent"]}
     rec["buy_match"] = tuple(ob) == exp_buy
     rec["sell_match"] = tuple(os_) == exp_sell
     rec["round_trip_ok"] = True
@@ -285,18 +347,39 @@ def check_pool(rpc, pool: str, tiers, user: Pubkey, spend: int, slippage_bps: in
 
 
 def summarize(records: list[dict[str, Any]], min_round_trips: int) -> dict[str, Any]:
-    ok = sum(1 for r in records if r["round_trip_ok"])
+    ok = len({r["pool"] for r in records if r["round_trip_ok"]})  # DISTINCT pools: five copies of one pool are one round trip
     sim_errors = sum(1 for r in records if r["sim_err"] is not None or r["problem"] in ("sim_error", "no_sim_value") or (r["problem"] or "").startswith("error_"))
     # A pool that is not a clean decoded round trip is a mismatch too (fail closed): it cannot show its fees equal the tier.
     mismatch = sum(1 for r in records if not (r["round_trip_ok"] and r["buy_match"] and r["sell_match"]))
     match = sum(1 for r in records if r["round_trip_ok"] and r["buy_match"] and r["sell_match"])
+    min_round_trips = max(min_round_trips, DEC_MIN_ROUND_TRIPS)
     verdict = "PASS" if ok >= min_round_trips and sim_errors == 0 and mismatch == 0 and len(records) >= min_round_trips else "FAIL"
+    good = [r for r in records if r["round_trip_ok"] and r["buy_match"] and r["sell_match"]]
+    legs = [x for r in good for side in ("buy", "sell") for x in r["fee_amount_consistent"][side]]
     return {"round_trips_ok": ok, "n_fee_match": match, "n_fee_mismatch": mismatch, "n_sim_errors": sim_errors,
-            "n_pools": len(records), "min_round_trips": min_round_trips, "verdict": verdict}
+            "n_pools": len(records), "min_round_trips": min_round_trips, "verdict": verdict,
+            "tiers_covered": sorted({r["expected_tier_index"] for r in good}),
+            # REPORT-ONLY: never part of the verdict or the exit code.
+            "fee_amount_legs_checked": len(legs), "fee_amount_legs_consistent": sum(1 for x in legs if x)}
+
+
+def executor_cu_limits() -> tuple[int, int]:
+    """(buy, sell) compute-unit limits of the live executor's H5Limits defaults (what H5Executor._buy_message and the sell use)."""
+    import dataclasses
+
+    f = {x.name: x.default for x in dataclasses.fields(H5Limits)}
+    return int(f["buy_cu_limit"]), int(f["sell_cu_limit"])
 
 
 def run(rpc, pools: list[str], pins: dict, *, user: str = DEFAULT_USER, sol: float = DEFAULT_SOL,
         min_round_trips: int = DEFAULT_MIN_ROUND_TRIPS, slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> tuple[int, dict[str, Any]]:
+    if len(set(pools)) != len(pools):
+        raise SystemExit("duplicate --pool values: each pool counts once")
+    if min_round_trips < DEC_MIN_ROUND_TRIPS:
+        raise SystemExit(f"--min-round-trips below the DEC minimum {DEC_MIN_ROUND_TRIPS}")
+    cu_buy, cu_sell = executor_cu_limits()
+    if (cu_buy, cu_sell) != (tx.DEFAULT_BUY_CU_LIMIT, tx.DEFAULT_SELL_CU_LIMIT):  # sell_probe_message builds with the pumpswap_tx defaults
+        raise SystemExit("the executor's CU limits differ from the ones the probe message uses; update this tool")
     rpc = guarded(rpc)
     pin = ((pins.get("accounts") or {}).get("pumpswap_fee_config")) or {}
     want_sha, want_addr = pin.get("sha256"), pin.get("address")
@@ -316,6 +399,7 @@ def run(rpc, pools: list[str], pins: dict, *, user: str = DEFAULT_USER, sol: flo
     records = [check_pool(rpc, p, cfg["tiers"], Pubkey.from_string(user), spend, slippage_bps) for p in pools]
     out["pools"] = records
     out["summary"] = summarize(records, min_round_trips)
+    out["summary"].update(buy_slippage_bps=slippage_bps, sell_close_omitted=True)
     return (EXIT_PASS if out["summary"]["verdict"] == "PASS" else EXIT_FAIL), out
 
 
@@ -323,7 +407,7 @@ def forbidden_keys(obj: Any, path: str = "") -> list[str]:
     bad: list[str] = []
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if any(part in str(k).lower() for part in FORBIDDEN_KEY_PARTS):
+            if str(k) not in ALLOWED_KEYS and any(part in str(k).lower() for part in FORBIDDEN_KEY_PARTS):
                 bad.append(f"{path}/{k}")
             bad += forbidden_keys(v, f"{path}/{k}")
     elif isinstance(obj, list):
@@ -350,8 +434,10 @@ def main(argv: list[str] | None = None, *, rpc: Callable[[str, list], dict] | No
     try:
         for p in [*args.pool, args.user]:
             Pubkey.from_string(p)
-        if args.sol <= 0 or args.min_round_trips < 1:
-            raise ValueError("bad numeric argument")
+        if args.sol <= 0 or args.min_round_trips < DEC_MIN_ROUND_TRIPS:
+            raise ValueError(f"bad numeric argument (--min-round-trips floor is {DEC_MIN_ROUND_TRIPS})")
+        if len(set(args.pool)) != len(args.pool):
+            raise ValueError("duplicate --pool values")
         pins = json.loads(Path(args.pins).read_text())
         if rpc is None:
             rpc = HttpRpc(load_rpc_url(args.rpc, args.env_file))
@@ -364,8 +450,8 @@ def main(argv: list[str] | None = None, *, rpc: Callable[[str, list], dict] | No
     try:
         code, out = run(rpc, list(args.pool), pins, user=args.user, sol=args.sol, min_round_trips=args.min_round_trips,
                         slippage_bps=args.slippage_bps)
-    except RpcError as exc:  # the FeeConfig read itself failed after retries: fail closed
-        print(redact_rpc_url(f"rpc error: {exc}"), file=sys.stderr)
+    except (RpcError, KeyError, AttributeError, TypeError, IndexError) as exc:  # a failed or malformed RPC answer: fail closed, never a traceback
+        print(redact_rpc_url(f"rpc error: {type(exc).__name__}: {exc}"), file=sys.stderr)
         return EXIT_FAIL
     except SystemExit as exc:
         print(redact_rpc_url(str(exc)), file=sys.stderr)
