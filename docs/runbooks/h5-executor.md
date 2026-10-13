@@ -446,13 +446,13 @@ sudo -u mal-live /usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u /usr/local/
 
 A halt is never followed by a retune. Do not clear one without telling the owner.
 
-**Before clearing `out_of_rule_entry` (manager's condition, DEC-024 halt record of 2026-10-12).** This latch was cleared once, at 2026-10-12T18:38:41Z, with its cause still installed. Until the pre-send age fix is installed **it is not cleared again**: H5 stays halted until Helm has installed the fix. Read what the running executor uses from its newest `start` row:
+**Before clearing `out_of_rule_entry` (manager's condition, DEC-024 halt record of 2026-10-12).** This latch was cleared once, at 2026-10-12T18:38:41Z, with its cause still installed. While the pre-send age fix is not installed (the command below prints no value or a value above 3500) **it is not cleared again**: H5 stays halted. With the fix installed, the rule at the end of this paragraph applies. Read what the running executor uses from its newest `start` row:
 
 ```
 sudo dd iflag=nofollow status=none if=/var/lib/mal-live/h5/live/h5-ledger.jsonl | grep '"kind":"start"' | tail -n 1 | grep -o '"max_trigger_age_ms":[0-9]*'
 ```
 
-The fix is installed only if this prints a value of 3500 or less. It prints 10000 on the tree installed on 2026-10-12 (`f873aac`; MiScusi job #884). No output, an error or a larger value means not installed. If the latch fires with the fix installed, the pre-send limit did not prevent a late landing: tell the owner, and do not clear it until quant-proof has read that trade's timing keys. Every clear follows the Wind-down as written. The first clear skipped its gate step; do not repeat that. Close the gate with `STOP` (the manager's file; only Helm re-creates `LIVE_OK`), wait for `open=0 pending=0`, stop the unit, clear, start, check `--status`, and only then remove `STOP`.
+The fix is installed only if this prints a value of 3500 or less. It printed 10000 on the tree installed before Helm's 2026-10-13 reinstall (`f873aac`; MiScusi job #884). It prints 3500 since Helm's install of `b7ddeb6` on 2026-10-13 (start row 2026-10-13T00:42:22Z; MiScusi job #899; DEC-024 "Install record: pre-send trigger age limit, 2026-10-13"). Run the command before any clear all the same: a rollback to `f873aac` brings the old limit back. No output, an error or a larger value means not installed. If the latch fires with the fix installed, the pre-send limit did not prevent a late landing: tell the owner, and do not clear it until quant-proof has read that trade's timing keys and posted its ruling. Such a latch also blocks the T0 → T1 step until that ruling says it is resolved (DEC-024, "Install record: pre-send trigger age limit, 2026-10-13"). Every clear follows the Wind-down as written. The first clear skipped its gate step; do not repeat that. Close the gate with `STOP` (the manager's file; only Helm re-creates `LIVE_OK`), wait for `open=0 pending=0`, stop the unit, clear, start, check `--status`, and only then remove `STOP`.
 
 ## CAP-PICK: the exporter, the shadow restart and the two FINAL markers (manager)
 
@@ -622,7 +622,7 @@ Latched live halts (the ledger gets a `halt_latched` row; new buys stop; only `-
 | `boost_median_lt_337_twice` | day median below 337 s on two days |
 | `boost_before_sell_gt_15pct` | BOOST ended before our sell on more than 15% of sells |
 | `stuck_position` | a position not sold by its deadline (s0 + 400 s) |
-| `out_of_rule_entry` | a buy landed outside the rule's entry window. Latched and cleared once on 2026-10-12; a second latch before the pre-send age fix is installed is not cleared (see "Before clearing `out_of_rule_entry`" above). The buy still counts in every canary figure (DEC-024, "Counting rule for an out-of-rule buy") |
+| `out_of_rule_entry` | a buy landed outside the rule's entry window. Latched and cleared once on 2026-10-12; a second latch before the pre-send age fix is installed is not cleared; the fix is installed since 2026-10-13, and a latch with the fix installed is not cleared until quant-proof has read that trade's timing keys and posted its ruling (see "Before clearing `out_of_rule_entry`" above). The buy still counts in every canary figure (DEC-024, "Counting rule for an out-of-rule buy") |
 | `landing_median_gt_3s` | median trigger-to-landing above 3 s |
 | `late_sells_gt_5pct` | more than 5% of landed sells late |
 | `pre_unlinked_share` | triggers traded although their predecessor print may be missing (`trigger_pre_unlinked` on the decision row) are more than 15% of landed buys, judged from 20 landed |
