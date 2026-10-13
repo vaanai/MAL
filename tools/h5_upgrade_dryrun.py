@@ -190,8 +190,10 @@ def decode_events(inner: list[dict], account_keys: list[str], pool: str) -> dict
     out: dict[str, list[dict[str, Any]]] = {"buy": [], "sell": []}
     for grp in inner or []:
         for ix in grp.get("instructions", []):
+            # Public RPC nodes return the instruction with a base58 `programId`; others use the compiled `programIdIndex`.
             pid = ix.get("programIdIndex")
-            if not isinstance(pid, int) or pid >= len(account_keys) or account_keys[pid] != td.PUMPSWAP_PROGRAM:
+            prog = ix.get("programId") or (account_keys[pid] if isinstance(pid, int) and 0 <= pid < len(account_keys) else None)
+            if prog != td.PUMPSWAP_PROGRAM or not isinstance(ix.get("data"), str):
                 continue
             raw = td.b58decode(ix.get("data", ""))
             if raw is None or raw[:8] != td.ANCHOR_EVENT_IX_TAG or len(raw) < 16:

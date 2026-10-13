@@ -68,7 +68,8 @@ def event(kind: str, pool: str, bps) -> bytes:
 
 
 class FakeRpc:
-    def __init__(self, pools, *, sell_bps=None, sim_err=None, fee_cfg=FEE_CFG, observed=TIER0, drop_event=None):
+    def __init__(self, pools, *, sell_bps=None, sim_err=None, fee_cfg=FEE_CFG, observed=TIER0, drop_event=None, program_id_form=False):
+        self.program_id_form = program_id_form
         self.p = {x["pool"]: x for x in pools}
         self.sell_bps, self.sim_err, self.fee_cfg, self.observed, self.drop_event = sell_bps or {}, sim_err or {}, fee_cfg, observed, drop_event
         self.methods: list[str] = []
@@ -98,8 +99,12 @@ class FakeRpc:
                 pidx = keys.index(OWNER)
                 evs = [("buy", self.observed), ("sell", self.sell_bps.get(pool, self.observed))]
                 evs = [e for e in evs if e[0] != self.drop_event]
-                val["innerInstructions"] = [{"index": 5, "instructions": [
-                    {"programIdIndex": pidx, "accounts": [0], "data": td.b58encode(event(k, pool, b)), "stackHeight": 2} for k, b in evs]}]
+                if self.program_id_form:  # the public node's form: base58 programId, parsed token-program noise alongside
+                    ixs = [{"parsed": {"type": "getAccountDataSize"}, "program": "spl-token", "programId": str(tx.TOKEN_PROGRAM), "stackHeight": 2}]
+                    ixs += [{"programId": OWNER, "accounts": [], "data": td.b58encode(event(k, pool, b)), "stackHeight": 2} for k, b in evs]
+                else:
+                    ixs = [{"programIdIndex": pidx, "accounts": [0], "data": td.b58encode(event(k, pool, b)), "stackHeight": 2} for k, b in evs]
+                val["innerInstructions"] = [{"index": 5, "instructions": ixs}]
             return {"context": {"slot": 4242}, "value": val}
         raise AssertionError(method)
 
@@ -125,6 +130,11 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual((r["context_slot"], r["units_consumed"], r["events_found"]), (4242, 123456, {"buy": 1, "sell": 1}))
         self.assertTrue(set(fake.methods) <= d.ALLOWED_METHODS)
         self.assertEqual(d.forbidden_keys(out), [])
+
+    def test_programid_form_of_inner_instructions(self):
+        ps = self.pools()
+        code, out = run(FakeRpc(ps, program_id_form=True), ps)
+        self.assertEqual((code, out["summary"]["n_fee_match"]), (d.EXIT_PASS, 5))
 
     def test_transaction_is_executor_shaped(self):
         ps = self.pools(1)
