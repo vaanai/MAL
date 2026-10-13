@@ -562,7 +562,7 @@ def test_exit_selection_mismatch(tmp_path):
     led = good_ledger(tmp_path)
     # a ws-pass trigger record the plan does not have
     write(env.sd, [rec("ws", "late", BASE + 21, t=SINCE + 31 * 60_000)], hour_ms=SINCE)
-    refused(env, [led], 5)
+    assert "differs from the plan" in refused(env, [led], 5)["error"]
 
 
 def test_exit_selection_mismatch_when_a_planned_record_is_gone(tmp_path):
@@ -570,7 +570,7 @@ def test_exit_selection_mismatch_when_a_planned_record_is_gone(tmp_path):
     for f in env.sd.glob("h5-shadow-*.jsonl"):
         lines = [x for x in f.read_text().splitlines() if sg("a2") not in x]
         f.write_text("\n".join(lines) + "\n")
-    refused(env, [good_ledger(tmp_path)], 5)
+    assert "differs from the plan" in refused(env, [good_ledger(tmp_path)], 5)["error"]
 
 
 def test_exit_ws_pass_record_without_a_usable_join_key(tmp_path):
@@ -585,7 +585,7 @@ def test_exit_ws_pass_record_without_a_usable_join_key(tmp_path):
         f.write_text(f.read_text().replace(pool_of("a2"), "").replace('"pool":"",', '"pool":null,'))
     for f in env2.sd.glob("h5-shadow-*.jsonl"):
         assert pool_of("a2") not in f.read_text()
-    refused(env2, [good_ledger(tmp2)], 5)
+    assert "join key" in refused(env2, [good_ledger(tmp2)], 5)["error"]
 
 
 def test_exit_seal_boundary(tmp_path):

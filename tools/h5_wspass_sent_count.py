@@ -262,7 +262,7 @@ def ws_join_keys(shadow_dir: Path, since_ms: int, until_ms: int, ws_sigs: set[st
             continue
         pool, slot = rec.get("pool"), rec.get("slot")
         if not (isinstance(pool, str) and pool and I4.isint(slot)):
-            raise InputError("a ws-pass trigger record has no usable join key (pool, slot): the sent count could be too low", EXIT_SELECTION)
+            raise InputError("a ws-pass trigger record has no usable join key: the sent count could be too low", EXIT_SELECTION)
         keys[sig].add((pool, slot))
     if pv_n != pv_total or any(not v for v in keys.values()):
         raise InputError("the shadow selection differs from the plan's", EXIT_SELECTION)
