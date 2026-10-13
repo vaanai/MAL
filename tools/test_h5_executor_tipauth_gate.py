@@ -823,5 +823,113 @@ class ClassStateTests(FlowCase):
         self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
 
 
+class MainEnv(Env):
+    """The same fake world with main's executor (BASE_SHA) in it, for the off-path flow comparison."""
+
+    MAIN = None
+
+    def build(self):
+        ex = self.MAIN.H5Executor(self.rpc, self.conf, self.kp, now_ms=self.clock, pick_oracle=self.oracle, root=self.root)
+        self.seed_clock(ex)
+        return ex
+
+    def seed_clock(self, ex=None, back_s: int = 150) -> None:
+        ex = ex or self.ex
+        ex.slots = self.MAIN.SlotClock()
+        now = self.clock()
+        for k in range(back_s // 2, -1, -1):
+            ex.slots.observe(self.rpc.slot_at(now - k * 2_000), now - k * 2_000)
+
+
+class OffPathFlowTests(FlowCase):
+    """Quant-proof checklist item 4 (ii), in the unit-test form: the same scripted stream of trigger rows through main's module and the head's
+    module, switch off (no key, and a key that does not match), in dry-run and in the tests' live mode. The ledger rows, every state file and the
+    `--status` lines are equal. This is the flow part of the equivalence, not the whole of it (live RPC timing is not shown)."""
+
+    N_ROWS = 240
+
+    def stream(self, E, root: Path, live: bool, **conf):
+        from solders.keypair import Keypair
+        from tools.test_h5_executor_shadow import pool_row
+
+        e = E(root, live=live, seed=b"\x07" * 32, **conf)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        rng = random.Random(11)
+        mints = [str(Keypair.from_seed(bytes([i]) * 32).pubkey()) for i in range(1, 6)]
+
+        def row(kind: str):
+            if kind == "ws0":
+                return {**shadow_trigger(e.clock), **tip_fields(base_breaks_unresolved_settled=0)}
+            if kind == "ws1pass":
+                return {**shadow_trigger(e.clock), **tip_fields()}
+            if kind == "ws2fail":
+                r = {**shadow_trigger(e.clock), **tip_fields(base_breaks_unresolved_settled=2)}
+                r["base_tipauth"]["dropped_n"] = 9
+                return r
+            if kind == "wsbad":
+                return {**shadow_trigger(e.clock), **tip_fields(base_breaks_unresolved_settled=rng.choice([None, "1", True, -3, 1.0]))}
+            if kind == "other_mint":
+                return {**shadow_trigger(e.clock, mint=rng.choice(mints)), **tip_fields(base_breaks_unresolved_settled=rng.choice([0, 1, 4]))}
+            if kind == "badfield":
+                return {**shadow_trigger(e.clock), **tip_fields(base_breaks_unresolved_settled=0), rng.choice(["v_print", "sps", "base_pre", "slot"]): rng.choice([None, 0, "x"])}
+            return {"hb": {"type": "hb"}, "gap_t": {"type": "gap", "flags_pools": True, "kind": "ws_reconnect"},
+                    "gap_f": {"type": "gap", "flags_pools": False, "kind": "redundant"}, "excl": {"type": "excluded", "reason": "synthetic", "mint": mints[0], "pool": "p"},
+                    "nosps": {"type": "skipped_no_sps", "mint": mints[1]}, "pool": pool_row(MINT), "garbage": "{not json", "list": [1, 2]}[kind]
+
+        def write(rows):
+            with Path(e.conf["intents_file"]).open("a") as fh:
+                for r in rows:
+                    fh.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+            e.ex.intent_tick()
+
+        write([row("hb"), row("ws0")])  # the one buy
+        if live and MINT in e.ex.state.pending:
+            e.land_buy()
+        kinds = ["ws1pass"] * 6 + ["ws2fail"] * 3 + ["wsbad"] * 3 + ["other_mint"] * 4 + ["badfield"] * 2 + ["ws0"] * 2 + ["hb", "gap_t", "gap_f", "excl", "nosps", "pool", "garbage", "list"]
+        for _ in range(self.N_ROWS // 8):
+            write([row(rng.choice(kinds)) for _ in range(8)])
+        if MINT in e.ex.state.open:
+            e.at_slot(e.plan()["send_slot"])  # the exit: a sent sell (live) or a dry_sell
+            if live and MINT in e.ex.state.pending:
+                e.land_sell(e.rpc.slot)
+        write([row(rng.choice(kinds)) for _ in range(8)])
+        e.jump(3_600_000)  # the hour rolls: the refusal counts are written
+        write([row("hb")])
+        def norm(text: str) -> str:  # the temp path; the sha of the source file (it must differ between two source files); the intents file's inode
+            text = re.sub(r'"code_sha256":\s*"[0-9a-f]{64}"', '"code_sha256":"<sha>"', text.replace(str(root), "<T>"))
+            return re.sub(r'"inode":\s*\d+', '"inode":0', text)  # (the file system's number for the intents file)
+
+        files = {str(f.relative_to(root)): norm(f.read_text()) for f in sorted((root / "state").rglob("*"))
+                 if f.is_file() and "lock" not in f.name and f.name != "H5_EXECUTOR.lock"}
+        status = [ln for ln in h.status_report(e.conf).splitlines() if ln.startswith(("[live]", "[dryrun]"))]
+        return {"ledger": norm(json.dumps(e.ledger(), sort_keys=True, separators=(",", ":"))), "files": files, "refusals": dict(e.ex.refusals), "status": status,
+                "n_ledger": len(e.ledger())}
+
+    def test_switch_off_rows_state_and_status_equal_mains(self):
+        main = _load_main()
+        if main is None:
+            self.skipTest(f"git object {BASE_SHA} not available")
+        self.patch_main(main)
+        MainEnv.MAIN = main
+        for live in (True, False):
+            with self.subTest(live=live):
+                m = self.stream(MainEnv, self.tmp / f"main{live}", live)
+                a = self.stream(Env, self.tmp / f"head{live}", live)
+                b = self.stream(Env, self.tmp / f"headk{live}", live, tipauth_gate="DEC-024-am8")  # a key that does not match: still off
+                for name, got in (("no key", a), ("non-matching key", b)):
+                    self.assertEqual(got["n_ledger"], m["n_ledger"], name)
+                    self.assertEqual(got["refusals"], m["refusals"], name)
+                    self.assertEqual(got["status"], m["status"], name)
+                    self.assertEqual(sorted(got["files"]), sorted(m["files"]), name)
+                    for f, text in m["files"].items():
+                        self.assertEqual(got["files"][f], text, (name, f))
+                    self.assertEqual(got["ledger"], m["ledger"], name)
+                self.assertGreater(m["n_ledger"], 100)
+                self.assertGreater(m["ledger"].count(f'"reason":"{WS}"'), 20)  # the stream exercises the refusal this change touches
+                self.assertIn('"kind":"decision"', m["ledger"])  # and a buy
+                self.assertNotIn("tipauth", a["ledger"] + json.dumps(a["files"]))
+
+
 if __name__ == "__main__":
     unittest.main()
