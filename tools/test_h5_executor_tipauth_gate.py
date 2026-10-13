@@ -20,6 +20,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from solders.keypair import Keypair
+
 from tools import h5_executor as h
 from tools.test_h5_executor import MINT, T0, TRIG_SLOT, Case, Clock, Env
 from tools.test_h5_executor_shadow import shadow_trigger
@@ -29,6 +31,25 @@ SOL = 1_000_000_000
 BASE_SHA = "13e3f28"  # main at the second merge into this branch: the reference for the decision-equivalence corpus and the off-path flow
 WS = "bad_intent:base_breaks_unresolved_settled"  # the websocket refusal: the reason of every skip row this path touches, byte for byte (R3)
 MISSING = object()
+OTHER_MINT = str(Keypair().pubkey())  # a second, valid mint for tests that send two trigger rows
+SHADOW_SHA = "0123456789abcdef0123456789abcdef01234567"  # the pinned shadow sha of the tests (R4: 40 lowercase hex)
+WATCH_DIR = Path(tempfile.mkdtemp(prefix="tipauth-watch-test-"))  # one fresh "ok" state file shared by the tests that only need the path to be available
+WATCH_FILE = WATCH_DIR / "state.json"
+ON_CONF = {"tipauth_gate": "DEC-024-Am8", "tipauth_watch_file": str(WATCH_FILE), "tipauth_shadow_sha": SHADOW_SHA}  # the switch on, the watch configured
+
+
+def watch_doc(ts_ms: int = T0, verdict: str = "ok", **over) -> dict:
+    """What tools/h5_tipauth_watch.py writes (quant-proof 3 (c)): the h5_tipauth_watch_v1 state."""
+    return {"schema": "h5_tipauth_watch_v1", "ts_ms": ts_ms, "verdict": verdict, "reason": "", "shadow_sha": SHADOW_SHA, "watched_n": 3, "clear_n": 3, "pending_n": 0, **over}
+
+
+def setUpModule() -> None:
+    WATCH_FILE.write_text(json.dumps(watch_doc()))
+
+
+def tearDownModule() -> None:
+    WATCH_FILE.unlink(missing_ok=True)
+    WATCH_DIR.rmdir()
 
 
 def tip_fields(**over) -> dict:
@@ -542,7 +563,7 @@ class SwitchOffFlowTests(FlowCase):
         e.ex.counters.tipauth.update({"n_landed": 3, "mints": ["M1"]})
         e.ex.counters.save(e.ex.counters_path)
         self.assertIn(" tipauth_gate=off tipauth_n=3", h.status_report(e.conf))  # the flag is off but the class has state: say so
-        e2 = Env(self.tmp / "on", tipauth_gate="DEC-024-Am8")
+        e2 = Env(self.tmp / "on", **ON_CONF)
         self.assertIn(" tipauth_gate=on tipauth_n=0", h.status_report(e2.conf))  # on, no state yet
         e2.ex.counters.tipauth["latched"] = {"reason": "class_loss_budget", "ts_ms": 1}
         e2.ex.counters.save(e2.ex.counters_path)
@@ -553,7 +574,7 @@ class SwitchOffFlowTests(FlowCase):
 
 
 class SwitchOnFlowTests(FlowCase):
-    ON = {"tipauth_gate": "DEC-024-Am8"}
+    ON = ON_CONF
 
     def test_on_accepts_a_passing_ws_refusal_tags_every_row_and_sizes_at_0_02(self):
         e = self.start(**self.ON)
@@ -647,7 +668,7 @@ class TierStakeTests(TierCase):
         for tier in ("T0", "T1", "T2"):
             with self.subTest(tier=tier):
                 self.write_tier(tier + "\n")
-                e = Env(self.tmp / tier, tipauth_gate="DEC-024-Am8")
+                e = Env(self.tmp / tier, **ON_CONF)
                 e.rpc.balance = 10 * SOL
                 Path(e.conf["intents_file"]).write_text("")
                 e.ex.intent_tick()
@@ -675,7 +696,7 @@ class TierStakeTests(TierCase):
         """T0 to T1 arriving on a tagged trigger: the tier_change row carries T1's own limits (stake 0.10 SOL), no config_clamps_tier is raised, and the
         buy is the class stake (0.02 SOL)."""
         from tools.test_h5_executor import buy_args
-        e = self.tier_env("T0", tipauth_gate="DEC-024-Am8")
+        e = self.tier_env("T0", **ON_CONF)
         e.ex._refresh_tier(e.clock())  # the T0 baseline (a non-tagged read: no cap in force)
         Path(e.conf["intents_file"]).write_text("")
         e.ex.intent_tick()
@@ -695,7 +716,7 @@ class TierStakeTests(TierCase):
         self.assertEqual((e.ex.tier, e.ex.h5.stake_lamports, e.ex._stake_cap), ("T1", 100_000_000, None))
 
     def test_r5_a_real_config_clamp_is_still_reported_on_a_tagged_trigger_and_the_cap_is_not_one(self):
-        e = self.tier_env("T0", tipauth_gate="DEC-024-Am8", stake_lamports=50_000_000, max_open=1)
+        e = self.tier_env("T0", **ON_CONF, stake_lamports=50_000_000, max_open=1)
         e.ex._refresh_tier(e.clock())
         Path(e.conf["intents_file"]).write_text("")
         e.ex.intent_tick()
@@ -709,7 +730,7 @@ class TierStakeTests(TierCase):
         self.assertEqual(e.ledger("decision")[0]["stake_lamports"], 20_000_000)  # the class stake is the smaller of the tier's and 0.02 SOL
 
     def test_r5_the_description_of_the_tier_is_the_same_with_and_without_a_cap_in_force(self):
-        e = self.tier_env("T2", tipauth_gate="DEC-024-Am8", stake_lamports=250_000_000)
+        e = self.tier_env("T2", **ON_CONF, stake_lamports=250_000_000)
         e.ex.tier = "T2"
         plain = (dataclasses.asdict(e.ex._tier_h5()), e.ex._config_clamps())
         e.ex._stake_cap = h.TIPAUTH_STAKE_LAMPORTS
@@ -719,7 +740,7 @@ class TierStakeTests(TierCase):
         self.assertEqual(e.ex._stake_cap, 20_000_000)  # and the cap is restored
 
     def test_a_ws0_trigger_keeps_the_tier_stake(self):
-        e = self.tier_env("T1", tipauth_gate="DEC-024-Am8")
+        e = self.tier_env("T1", **ON_CONF)
         Path(e.conf["intents_file"]).write_text("")
         e.ex.intent_tick()
         row = shadow_trigger(e.clock)
@@ -731,7 +752,7 @@ class TierStakeTests(TierCase):
 
 
 class ClassStateTests(FlowCase):
-    ON = {"tipauth_gate": "DEC-024-Am8"}
+    ON = ON_CONF
 
     def admitted(self, e: Env, mints: list[str]) -> None:
         for m in mints:
@@ -959,7 +980,7 @@ class ClassHaltTests(FlowCase):
     """R6: the class does not loosen an existing halt. A tagged landed buy is out of landed_buys / pre_unlinked_landed (the pre_unlinked_share halt) and
     in the landing-median halt, the trade and attempt caps, and the daily and total stops."""
 
-    ON = {"tipauth_gate": "DEC-024-Am8"}
+    ON = ON_CONF
     UNLINKED = {"base_breaks_unresolved": 1, "base_breaks_unresolved_settled": 0}
     TAGGED = {"gate_path": "tipauth", "base_breaks_unresolved": 1, "base_breaks_unresolved_settled": 1}
 
@@ -1028,6 +1049,259 @@ class ClassHaltTests(FlowCase):
         e.ex._book_fee("TAGGED", 45_000_000, "test")  # -0.11 SOL and 0.02 at risk: the T0 total stop is 0.12 (the check that runs first)
         self.assertEqual(e.ex._budget_stop(e.clock()), "total_loss_stop")
         self.assertEqual((e.ex.state.realized_lamports, e.ex.counters.tipauth["realized"]), (-110_000_000, -110_000_000))
+
+
+class WatchTests(FlowCase):
+    """R4: the offline watch's state file (schema h5_tipauth_watch_v1) as a dead-man and the pin of the shadow sha."""
+
+    def conf(self, **over) -> dict:
+        return {"tipauth_gate": "DEC-024-Am8", "tipauth_watch_file": str(self.tmp / "watch.json"), "tipauth_shadow_sha": SHADOW_SHA, **over}
+
+    def watch_env(self, doc: dict | str | None = MISSING, **over) -> Env:
+        """An executor with the switch on and its own watch file; `doc` None / MISSING writes a fresh ok state (None writes no file at all)."""
+        e = self.start(**self.conf(**over))
+        if doc is not None:
+            self.put(e, watch_doc(e.clock()) if doc is MISSING else doc)
+        return e
+
+    def put(self, e: Env, doc: dict | str) -> None:
+        """Write the watch file and forget the executor's cached read (so the next availability call reads it)."""
+        Path(e.conf["tipauth_watch_file"]).write_text(doc if isinstance(doc, str) else json.dumps(doc))
+        e.ex._tipauth_watch_cache = None
+
+    def test_unset_when_either_key_is_missing_or_malformed(self):
+        for i, over in enumerate(({"tipauth_watch_file": MISSING}, {"tipauth_watch_file": ""}, {"tipauth_watch_file": None}, {"tipauth_watch_file": 5},
+                                  {"tipauth_watch_file": ["x"]}, {"tipauth_shadow_sha": MISSING}, {"tipauth_shadow_sha": None}, {"tipauth_shadow_sha": 5},
+                                  {"tipauth_shadow_sha": SHADOW_SHA.upper()}, {"tipauth_shadow_sha": SHADOW_SHA[:-1]}, {"tipauth_shadow_sha": SHADOW_SHA + "0"},
+                                  {"tipauth_shadow_sha": "g" * 40}, {"tipauth_shadow_sha": ""}, {"tipauth_shadow_sha": " " + SHADOW_SHA[1:]},
+                                  {"tipauth_shadow_sha": SHADOW_SHA + "\n"})):
+            conf = self.conf()
+            conf.update({k: v for k, v in over.items() if v is not MISSING})
+            for k, v in over.items():
+                if v is MISSING:
+                    del conf[k]
+            e = Env(self.tmp / f"u{i}", **conf)
+            Path(e.conf["intents_file"]).write_text("")
+            e.ex.intent_tick()
+            self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_unset", over)
+            self.append(e, self.tip_row(e))
+            e.ex.intent_tick()
+            self.assertEqual(self.skips(e), [(WS, "tipauth:watch_unset")], over)
+            self.assertEqual(e.rpc.sent, [])
+            self.assertNotIn("latched", e.ex.counters.tipauth)
+            self.assertEqual(e.ex._tipauth_watch_reads, 0)  # an unset watch reads nothing
+
+    def test_verdict_ok_makes_the_path_available_and_a_trigger_is_taken(self):
+        e = self.watch_env()
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(e.ledger("decision")[0]["gate_path"], "tipauth")
+
+    def test_verdict_hold_is_unavailable_and_not_latched(self):
+        e = self.watch_env(watch_doc(T0, "hold", reason="no definitive answer for a signature after 60 minutes"))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_hold")
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:watch_hold")])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertNotIn("latched", e.ex.counters.tipauth)
+        self.put(e, watch_doc(e.clock(), "ok"))  # the watch releases the hold: the path is back
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        self.assertEqual((e.ledger("tipauth_off"), e.alerts("tipauth_off")), ([], []))
+
+    def test_verdict_off_latches_for_good_with_watch_off_through_the_non_halt_mechanism(self):
+        e = self.watch_env(watch_doc(T0, "off", reason="dropped_on_tip"))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
+        off = e.ledger("tipauth_off")
+        self.assertEqual([r["reason"] for r in off], ["watch_off"])
+        self.assertEqual([a["reason"] for a in e.alerts("tipauth_off")], ["watch_off"])
+        self.assertEqual(self.counters(e)["tipauth"]["latched"]["reason"], "watch_off")
+        self.assertEqual(self.counters(e).get("halts") or {}, {})  # a switch-off of the path, not one of the executor's HALTs
+        self.append(e, self.tip_row(e))
+        e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:latched_off")])
+        self.assertEqual(e.rpc.sent, [])
+        self.put(e, watch_doc(e.clock(), "ok"))  # an ok afterwards does not clear it, in this process or after a restart
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
+        self.assertEqual(e.build()._tipauth_availability(), "tipauth:latched_off")
+        self.assertEqual(len(e.ledger("tipauth_off")), 1)  # logged once
+
+    def test_off_is_read_before_the_age_and_the_sha_are_judged(self):
+        for i, doc in enumerate((watch_doc(T0 - 10 * 3_600_000, "off"), watch_doc(T0, "off", shadow_sha="f" * 40), watch_doc(T0 + 10 ** 9, "off"),
+                                 {"schema": "h5_tipauth_watch_v1", "verdict": "off"}, watch_doc("x", "off", shadow_sha=None))):
+            e = self.second_world(f"o{i}", doc)  # an off of this schema latches whatever else the file says (or fails to say)
+            self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off", doc)
+            self.assertEqual(e.ex.counters.tipauth["latched"]["reason"], "watch_off")
+        e = self.second_world("other-schema", {"schema": "other", "verdict": "off", "ts_ms": T0, "shadow_sha": SHADOW_SHA})  # a file that is not this schema latches nothing
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+        self.assertNotIn("latched", e.ex.counters.tipauth)
+
+    def test_every_failure_string(self):
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        now = e.clock()
+        self.assertFalse(path.exists())
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_missing")
+        cases = [
+            ("not json", "{not json", "bad"), ("empty file", "", "bad"), ("a list", "[]", "bad"), ("a string", '"ok"', "bad"), ("null", "null", "bad"),
+            ("not utf-8", None, "bad"), ("nan ts", '{"schema": "h5_tipauth_watch_v1", "ts_ms": NaN, "verdict": "ok", "shadow_sha": "%s"}' % SHADOW_SHA, "bad"),
+            ("other schema", watch_doc(now, schema="h5_tipauth_watch_v2"), "bad"), ("no schema", {k: v for k, v in watch_doc(now).items() if k != "schema"}, "bad"),
+            ("no ts_ms", {k: v for k, v in watch_doc(now).items() if k != "ts_ms"}, "bad"), ("float ts_ms", watch_doc(float(now)), "bad"),
+            ("bool ts_ms", watch_doc(True), "bad"), ("string ts_ms", watch_doc(str(now)), "bad"), ("null ts_ms", watch_doc(None), "bad"),
+            ("no verdict", {k: v for k, v in watch_doc(now).items() if k != "verdict"}, "bad"), ("verdict OK", watch_doc(now, "OK"), "bad"),
+            ("verdict empty", watch_doc(now, ""), "bad"), ("verdict null", watch_doc(now, None), "bad"), ("verdict list", watch_doc(now, ["ok"]), "bad"),
+            ("verdict true", watch_doc(now, True), "bad"), ("no sha", {k: v for k, v in watch_doc(now).items() if k != "shadow_sha"}, "bad"),
+            ("sha null", watch_doc(now, shadow_sha=None), "bad"), ("sha int", watch_doc(now, shadow_sha=5), "bad"),
+            ("future ts_ms", watch_doc(now + 1), "bad"), ("far future ts_ms", watch_doc(now + 10 ** 12), "bad"),
+            ("stale", watch_doc(now - 180_001), "stale"), ("very stale", watch_doc(now - 86_400_000), "stale"), ("negative ts_ms", watch_doc(-1), "stale"),
+            ("sha differs", watch_doc(now, shadow_sha="f" * 40), "sha"), ("sha uppercase", watch_doc(now, shadow_sha=SHADOW_SHA.upper()), "sha"),
+            ("sha short", watch_doc(now, shadow_sha=SHADOW_SHA[:7]), "sha"), ("hold", watch_doc(now, "hold"), "hold"),
+            ("sha beats hold", watch_doc(now, "hold", shadow_sha="f" * 40), "sha"), ("stale beats sha", watch_doc(now - 200_000, shadow_sha="f" * 40), "stale"),
+            ("a very large file", " " * 70_000 + json.dumps(watch_doc(now)), "bad"),
+        ]
+        for name, doc, code in cases:
+            if doc is None:
+                path.write_bytes(b"\xff\xfe\x00{")
+            else:
+                path.write_text(doc if isinstance(doc, str) else json.dumps(doc))
+            e.ex._tipauth_watch_cache = None
+            self.assertEqual(e.ex._tipauth_availability(), f"tipauth:watch_{code}", name)
+            self.assertNotIn("latched", e.ex.counters.tipauth, name)
+        path.unlink()
+        path.mkdir()  # unreadable: a directory where the file should be
+        e.ex._tipauth_watch_cache = None
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+        self.assertNotIn("latched", e.ex.counters.tipauth)
+        self.assertEqual(e.ledger("tipauth_off"), [])
+        path.rmdir()
+        path.write_text(json.dumps(watch_doc(now)))  # and back to ok: nothing was latched on the way
+        e.ex._tipauth_watch_cache = None
+        self.assertEqual(e.ex._tipauth_availability(), "")
+
+    def test_the_stale_boundary_is_exactly_180000_ms(self):
+        self.assertEqual(h.TIPAUTH_WATCH_STALE_MS, 180_000)
+        e = self.watch_env(None)
+        now = e.clock()
+        self.put(e, watch_doc(now - 180_000))
+        self.assertEqual(e.ex._tipauth_availability(), "")  # an age of exactly 180,000 ms is fresh
+        e.clock.t += 1  # one millisecond later, inside the cache window: the age is judged against the clock on every call
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_stale")
+        self.put(e, watch_doc(e.clock() - 179_999))
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        self.put(e, watch_doc(e.clock() - 180_001))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_stale")
+
+    def test_a_ts_ms_in_the_future_is_not_fresh(self):
+        e = self.watch_env(None)
+        self.put(e, watch_doc(e.clock()))
+        self.assertEqual(e.ex._tipauth_availability(), "")  # now - ts_ms == 0 is allowed
+        self.put(e, watch_doc(e.clock() + 1))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+        self.put(e, watch_doc(e.clock() + 1_000))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+
+    def test_the_file_is_read_at_most_once_per_second(self):
+        e = self.watch_env()
+        self.assertEqual(e.ex._tipauth_watch_reads, 0)
+        for _ in range(5):  # five triggers' worth of availability checks within one second
+            self.assertEqual(e.ex._tipauth_availability(), "")
+        self.assertEqual(e.ex._tipauth_watch_reads, 1)
+        Path(e.conf["tipauth_watch_file"]).write_text(json.dumps(watch_doc(e.clock(), "hold")))  # a change inside the window is not seen yet
+        e.clock.t += 999
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        self.assertEqual(e.ex._tipauth_watch_reads, 1)
+        e.clock.t += 1  # 1,000 ms after the read: read again
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_hold")
+        self.assertEqual(e.ex._tipauth_watch_reads, 2)
+        for _ in range(3):
+            e.ex._tipauth_availability()
+        self.assertEqual(e.ex._tipauth_watch_reads, 2)
+        # through the real intake: two trigger rows in one second open the file once
+        e2 = self.second_world("c2")
+        real_open, opened = open, []
+
+        def spy(file, *a, **k):
+            if str(file) == e2.conf["tipauth_watch_file"]:
+                opened.append(file)
+            return real_open(file, *a, **k)
+
+        with mock.patch("builtins.open", spy):
+            self.append(e2, self.tip_row(e2), self.tip_row(e2, mint=OTHER_MINT))
+            e2.ex.intent_tick()
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(e2.ex._tipauth_watch_reads, 1)
+
+    def second_world(self, name: str, doc: dict | None = None) -> Env:
+        """Another executor in its own directory with its own watch file (a fresh ok state unless `doc` is given)."""
+        e = Env(self.tmp / name, **self.conf(tipauth_watch_file=str(self.tmp / f"{name}-watch.json")))
+        Path(e.conf["tipauth_watch_file"]).write_text(json.dumps(watch_doc(e.clock()) if doc is None else doc))
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        return e
+
+    def test_with_the_switch_off_the_file_is_never_read(self):
+        for i, over in enumerate(({}, {"tipauth_gate": "DEC-024-am8"}, {"tipauth_gate": True}, {"tipauth_gate": None})):
+            conf = self.conf(tipauth_watch_file=str(self.tmp / f"off{i}.json"), **over)
+            if not over:
+                del conf["tipauth_gate"]
+            Path(conf["tipauth_watch_file"]).write_text(json.dumps(watch_doc(T0, "off")))  # a file that would latch, if anything read it
+            real_open, opened = open, []
+
+            def spy(file, *a, _p=conf["tipauth_watch_file"], **k):
+                if str(file) == _p:
+                    opened.append(file)
+                return real_open(file, *a, **k)
+
+            with mock.patch("builtins.open", spy):
+                e = Env(self.tmp / f"off{i}", **conf)
+                Path(e.conf["intents_file"]).write_text("")
+                e.ex.intent_tick()
+                self.append(e, self.tip_row(e), self.tip_row(e, base_breaks_unresolved_settled=0))
+                e.ex.intent_tick()
+            self.assertEqual(opened, [], over)
+            self.assertEqual(e.ex._tipauth_watch_reads, 0)
+            self.assertNotIn("latched", e.ex.counters.tipauth)
+            self.assertEqual(e.ledger("tipauth_off"), [])
+            self.assertEqual(e.refusals(), [WS])  # main's refusal, no tipauth vocabulary
+            self.assertNotIn("tipauth_reason", e.ledger("skip")[0])
+
+    def test_the_order_of_the_unavailable_reasons(self):
+        e = self.watch_env(None)  # no file
+        e.ex.exit_mode = h.EXIT_MODE_V2
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:rule_not_v1")  # C6 first
+        e.ex.exit_mode = h.EXIT_MODE_V1
+        e.ex.trigger_variant = "fv"
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:variant_not_pv")
+        e.ex.trigger_variant = "pv"
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_missing")
+        e.ex.counters.tipauth["latched"] = {"reason": "class_loss_budget", "ts_ms": 1}
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")  # a latched path does not ask the watch
+        self.assertEqual(e.ex._tipauth_watch_reads, 1)
+        del e.ex.counters.tipauth["latched"]
+        self.put(e, watch_doc(e.clock()))
+        e.ex.counters.tipauth.update({"looks": [25], "pause_look": 25})
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:look_pending")  # the watch is ok: the look decides
+        self.put(e, watch_doc(e.clock(), "hold"))
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_hold")  # a held watch is asked before the look
+
+    def test_a_handed_in_tagged_trigger_is_judged_by_the_watch_again_at_handling_time(self):
+        e = self.watch_env()
+        trg, _ = h.parse_shadow_trigger(self.tip_row(e), "pv", "")
+        self.put(e, watch_doc(e.clock(), "hold"))  # the watch holds between the parse and the handling
+        e.ex.handle_trigger(trg)
+        self.assertEqual(self.skips(e), [(WS, "tipauth:watch_hold")])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_watch_state_does_not_touch_websocket_value_0_triggers(self):
+        e = self.watch_env(watch_doc(T0, "hold"))
+        self.append(e, self.tip_row(e, base_breaks_unresolved_settled=0))
+        e.ex.intent_tick()
+        self.assertEqual(e.refusals(), [])
+        dec = e.ledger("decision")[0]
+        self.assertNotIn("gate_path", dec)
+        self.assertEqual(dec["stake_lamports"], 20_000_000)
 
 
 class MainEnv(Env):

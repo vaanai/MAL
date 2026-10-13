@@ -511,6 +511,12 @@ TIPAUTH_LOSS_BUDGET_LAMPORTS = 40_000_000  # ruling D4: class realized at or bel
 TIPAUTH_LOOKS = (25, 50, 100)  # ruling D5: looks at this many landed tagged fills
 TIPAUTH_MARGIN_SLOTS = 4  # quant-proof R2 (a): the shadow's base_tipauth.margin_slots (tools/h5_shadow.py TIPAUTH_MARGIN_SLOTS). A different margin is a new rule and a new amendment.
 TIPAUTH_BOOST_SRC_OK = ("pda", "event_authority")  # quant-proof R1: the BOOST identities the executor trusts (the pool-row handler uses the same two); "none" and "behavioural" are not
+TIPAUTH_WATCH_SCHEMA = "h5_tipauth_watch_v1"  # quant-proof R4: the state file the offline watch (tools/h5_tipauth_watch.py) writes; the schema is the contract
+TIPAUTH_WATCH_STALE_MS = 180_000  # R4: a watch state older than this is not an "ok" (code constant, not config: the pick feed's PICK_STALE_S pattern)
+TIPAUTH_WATCH_CACHE_MS = 1_000  # R4: the file is read at most once per second
+TIPAUTH_WATCH_MAX_BYTES = 65_536  # a state file is a few hundred bytes; anything bigger is not one
+TIPAUTH_WATCH_VERDICTS = ("ok", "hold", "off")
+TIPAUTH_SHA_RE = re.compile(r"[0-9a-f]{40}")  # the pinned shadow sha: 40 lowercase hex, nothing else
 BASE_BREAKS_WS_REFUSAL = "bad_intent:base_breaks_unresolved_settled"  # quant-proof R3: the reason of the websocket refusal; a tipauth cause rides in `tipauth_reason`, never in `reason`
 
 
@@ -1147,6 +1153,8 @@ class H5Executor(pl.LiveExecutor):
         self.counters = H5Counters.load(self.counters_path, self.run_mode)
         self._tipauth_switch = cfg.get("tipauth_gate") == TIPAUTH_ENABLE_REF  # exactly the amendment reference; absent or anything else = OFF
         self._tipauth_mints = set(self.counters.tipauth.get("mints") or [])
+        self._tipauth_watch_cache: tuple[int, Any] | None = None  # (read at ms, the file's parse or an error code): R4, read at most once per second
+        self._tipauth_watch_reads = 0  # how many times the watch file was opened (a test reads it; nothing else does)
         persisted = self.counters.tier_state.get("tier")
         if persisted in TIERS:
             self.tier = persisted  # a restart keeps the tier it was on; the file is re-read before the next buy
@@ -2593,6 +2601,9 @@ class H5Executor(pl.LiveExecutor):
         t = self.counters.tipauth
         if t.get("latched"):
             return "tipauth:latched_off"
+        why = self._tipauth_watch_check()  # R4: the offline watch's state file (an off verdict latches here, as the loss budget does)
+        if why:
+            return why
         pause = t.get("pause_look")
         if "tipauth_look_ack" in self.h5cfg:  # R8: an acknowledgement is absent, or a look that was already written; it can never be set ahead of the looks
             ack = self.h5cfg["tipauth_look_ack"]
@@ -2604,6 +2615,59 @@ class H5Executor(pl.LiveExecutor):
             return "tipauth:look_pending"
         if int(t.get("realized") or 0) - self._tipauth_at_risk() <= -TIPAUTH_LOSS_BUDGET_LAMPORTS:  # R7: a hold, not a latch; it lifts when the exposure resolves
             return "tipauth:budget_at_risk"
+        return ""
+
+    def _tipauth_watch_read(self, now: int) -> tuple[Any, str | None]:
+        """(parsed JSON, None) or (None, "missing" | "bad"). The file is opened at most once per TIPAUTH_WATCH_CACHE_MS; the parse (or the error) is
+        what is cached, and the age of the state is judged against the current time on every call. A file that does not exist is `missing`; an
+        unreadable one (any other OS error), one over TIPAUTH_WATCH_MAX_BYTES, one that is not JSON is `bad`."""
+        c = self._tipauth_watch_cache
+        if c is not None and 0 <= now - c[0] < TIPAUTH_WATCH_CACHE_MS:
+            return c[1]
+        self._tipauth_watch_reads += 1
+        res: tuple[Any, str | None]
+        try:
+            with open(self.h5cfg["tipauth_watch_file"], "rb") as fh:
+                raw = fh.read(TIPAUTH_WATCH_MAX_BYTES + 1)
+            res = (None, "bad") if len(raw) > TIPAUTH_WATCH_MAX_BYTES else (json.loads(raw), None)
+        except FileNotFoundError:
+            res = (None, "missing")
+        except Exception:  # unreadable, not UTF-8, not JSON, nested too deep: all the same answer
+            res = (None, "bad")
+        self._tipauth_watch_cache = (now, res)
+        return res
+
+    def _tipauth_watch_check(self) -> str:
+        """"" when the watch says the path may trade now (R4); else `tipauth:watch_<unset|missing|stale|hold|sha|bad>`, none of them latched.
+        One exception: a file of the right schema whose verdict is "off" latches the path for good (reason `watch_off`) and answers `latched_off`;
+        the off verdict is read before the age and the sha are judged, because latching on an old off is the cautious error.
+        Config (both required): `tipauth_watch_file`, a path; `tipauth_shadow_sha`, 40 lowercase hex, the sha the amendment pins for the shadow.
+        The file: a JSON object with schema h5_tipauth_watch_v1, an integer ts_ms with 0 <= now - ts_ms <= TIPAUTH_WATCH_STALE_MS, shadow_sha equal to
+        the pinned one, and verdict "ok". A ts_ms in the future (a clock fault) is `bad`, not `stale`."""
+        path, sha = self.h5cfg.get("tipauth_watch_file"), self.h5cfg.get("tipauth_shadow_sha")
+        if not (isinstance(path, str) and path) or not (isinstance(sha, str) and TIPAUTH_SHA_RE.fullmatch(sha)):
+            return "tipauth:watch_unset"
+        now = self.now_ms()
+        obj, err = self._tipauth_watch_read(now)
+        if err:
+            return f"tipauth:watch_{err}"
+        if not isinstance(obj, dict) or obj.get("schema") != TIPAUTH_WATCH_SCHEMA:
+            return "tipauth:watch_bad"
+        verdict = obj.get("verdict")
+        if verdict == "off":
+            self._tipauth_off("watch_off")
+            return "tipauth:latched_off"
+        ts, seen = obj.get("ts_ms"), obj.get("shadow_sha")
+        if not _is_int(ts) or verdict not in TIPAUTH_WATCH_VERDICTS or not isinstance(seen, str):
+            return "tipauth:watch_bad"
+        if now - ts < 0:
+            return "tipauth:watch_bad"
+        if now - ts > TIPAUTH_WATCH_STALE_MS:
+            return "tipauth:watch_stale"
+        if seen != sha:
+            return "tipauth:watch_sha"
+        if verdict != "ok":
+            return "tipauth:watch_hold"
         return ""
 
     def _tipauth_at_risk(self) -> int:
