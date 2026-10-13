@@ -429,6 +429,15 @@ class TestOffEvent3AndRpc(Env):
         self.assertEqual((e["event"], e["evidence"]["signature"], e["evidence"]["found_slot"]), (W.E3, "DROPA", 12345))
         self.assertTrue(e["evidence"]["tids"])
 
+    def test_a_found_answer_from_before_a_restart_is_off(self):
+        self.baseline()
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "rpc_log.jsonl").write_text(json.dumps({"sig": "DROPA", "asked_ms": NOW - 5 * MIN, "result": "found", "slot": 77}) + "\n")
+        st = self.mk().cycle()
+        self.assertEqual((st["verdict"], st["reason"]), ("off", f"off:{W.E3}"))
+        self.assertEqual(self.calls, [])  # nothing asked: the stored answer decides
+        self.assertEqual(self.events()[0]["evidence"]["found_slot"], 77)
+
     def test_payload_is_get_transaction_finalized(self):
         seen = []
         self.rpc_fn = lambda sig, now: seen.append(sig) or {"result": None}
