@@ -6,6 +6,7 @@ records), the wiring in parse_shadow_trigger and the executor (switch off = main
 decision-equivalence replay of a synthetic corpus against main's parser (the file at the commit this change was cut from)."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import importlib.util
@@ -13,9 +14,12 @@ import json
 import os
 import random
 import re
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1228,18 +1232,234 @@ class WatchTests(FlowCase):
         self.assertEqual(e.ex._tipauth_watch_reads, 2)
         # through the real intake: two trigger rows in one second open the file once
         e2 = self.second_world("c2")
-        real_open, opened = open, []
-
-        def spy(file, *a, **k):
-            if str(file) == e2.conf["tipauth_watch_file"]:
-                opened.append(file)
-            return real_open(file, *a, **k)
-
-        with mock.patch("builtins.open", spy):
+        with self.watch_open_spy(e2.conf["tipauth_watch_file"]) as opened:
             self.append(e2, self.tip_row(e2), self.tip_row(e2, mint=OTHER_MINT))
             e2.ex.intent_tick()
         self.assertEqual(len(opened), 1)
         self.assertEqual(e2.ex._tipauth_watch_reads, 1)
+
+    @staticmethod
+    @contextlib.contextmanager
+    def deadline(seconds: int = 5):
+        """A call that would wait for a writer (a FIFO opened blocking) is cut by SIGALRM and fails the test instead of hanging the suite."""
+        if not hasattr(signal, "SIGALRM"):
+            raise unittest.SkipTest("no SIGALRM")
+
+        class Blocked(BaseException):  # not an Exception: the code under test has `except Exception` and must not be able to swallow the cut
+            pass
+
+        def fire(signum, frame):
+            raise Blocked(f"blocked for {seconds} s: the watch read waited on the file at the watch path")
+
+        old = signal.signal(signal.SIGALRM, fire)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+
+    @staticmethod
+    def open_fds() -> int:
+        return len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else -1
+
+    def test_a_fifo_at_the_watch_path_does_not_block_and_is_watch_bad_not_latched(self):
+        """Reviewer round 2, blocking: open() on a FIFO waits for a writer, and the availability check runs for every trigger row on the single-threaded
+        loop. The read opens non-blocking and checks the type on the descriptor first."""
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        os.mkfifo(path)
+        t0 = time.monotonic()
+        with self.deadline():
+            self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertNotIn("latched", e.ex.counters.tipauth)
+        self.assertEqual((e.ledger("tipauth_off"), e.alerts("tipauth_off")), ([], []))
+        # through the real intake: the trigger is refused with main's reason and the cause in tipauth_reason; nothing is sent; the loop returns
+        self.append(e, self.tip_row(e))
+        e.ex._tipauth_watch_cache = None
+        with self.deadline():
+            e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:watch_bad")])
+        self.assertEqual(e.rpc.sent, [])
+        # a writer that has put a perfectly good state into the pipe changes nothing: a FIFO is never read, so it is never believed
+        rd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            wr = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(wr, json.dumps(watch_doc(e.clock())).encode())
+                e.ex._tipauth_watch_cache = None
+                with self.deadline():
+                    self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+                self.assertEqual(os.read(rd, 1 << 16), json.dumps(watch_doc(e.clock())).encode())  # the executor left the bytes where they were
+            finally:
+                os.close(wr)
+        finally:
+            os.close(rd)
+        # the FIFO is replaced by a real state file: the path heals on the next read, nothing was latched on the way
+        path.unlink()
+        self.put(e, watch_doc(e.clock()))
+        self.assertEqual(e.ex._tipauth_availability(), "")
+
+    def test_other_files_that_are_not_regular_are_watch_bad_and_not_latched(self):
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        path.mkdir()
+        for name, make in (("directory", None), ("character device", "/dev/zero")):
+            if make:
+                path.rmdir() if path.is_dir() else path.unlink(missing_ok=True)
+                path.symlink_to(make)  # a symlink to a device: followed, then refused by type
+            e.ex._tipauth_watch_cache = None
+            with self.deadline():
+                self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad", name)
+            self.assertNotIn("latched", e.ex.counters.tipauth, name)
+        self.assertEqual(e.ledger("tipauth_off"), [])
+
+    def test_the_read_is_bounded_by_the_cap_whatever_the_size_of_the_file(self):
+        cap = h.TIPAUTH_WATCH_MAX_BYTES
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        body = json.dumps(watch_doc(e.clock()))
+
+        def with_size(n: int) -> str:
+            return body + " " * (n - len(body))  # trailing whitespace is valid JSON: only the size differs
+
+        real_read, asked, got = os.read, [], []
+
+        def spy(fd, n):
+            data = real_read(fd, n)
+            asked.append(n)
+            got.append(len(data))
+            return data
+
+        for size, want in ((cap - 1, ""), (cap, ""), (cap + 1, "tipauth:watch_bad"), (cap + 4096, "tipauth:watch_bad"), (10 * 1024 * 1024, "tipauth:watch_bad")):
+            path.write_text(with_size(size))
+            asked.clear()
+            got.clear()
+            e.ex._tipauth_watch_cache = None
+            with mock.patch.object(os, "read", spy):
+                self.assertEqual(e.ex._tipauth_availability(), want, size)
+            self.assertLessEqual(sum(got), cap + 1, size)  # never more than the cap plus one byte comes off the file
+            self.assertLessEqual(max(asked), cap + 1, size)
+            self.assertNotIn("latched", e.ex.counters.tipauth, size)
+
+    def test_a_symlink_is_followed_and_judged_by_its_target(self):
+        """What it does: nothing new. `open()` followed symlinks and so does the non-blocking open (no O_NOFOLLOW: neither verdict asked for it, and the
+        offline watch may write through a link). A link to a regular state file reads it; a link to anything that is not a regular file, a dangling link and a
+        link loop are refused like the target would be. Whoever can write the watch's directory can already write the state file itself."""
+        e = self.watch_env(None)
+        link = Path(e.conf["tipauth_watch_file"])
+        real = self.tmp / "real-state.json"
+        real.write_text(json.dumps(watch_doc(e.clock())))
+        link.symlink_to(real)
+        self.assertEqual(e.ex._tipauth_availability(), "")  # followed: the target's content decides
+        real.write_text(json.dumps(watch_doc(e.clock(), "hold")))
+        e.ex._tipauth_watch_cache = None
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_hold")
+        real.write_text(json.dumps(watch_doc(e.clock(), "off")))  # an off behind a link latches like an off in the file
+        e.ex._tipauth_watch_cache = None
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
+        # the other targets, each in a fresh world (the latch above is permanent)
+        e2 = self.second_world("sym2", None)
+        link2 = Path(e2.conf["tipauth_watch_file"])
+        link2.unlink()
+        fifo = self.tmp / "sym2-fifo"
+        os.mkfifo(fifo)
+        link2.symlink_to(fifo)
+        e2.ex._tipauth_watch_cache = None
+        with self.deadline():
+            self.assertEqual(e2.ex._tipauth_availability(), "tipauth:watch_bad")  # a link to a FIFO does not block either
+        link2.unlink()
+        link2.symlink_to(self.tmp / "nowhere.json")
+        e2.ex._tipauth_watch_cache = None
+        self.assertEqual(e2.ex._tipauth_availability(), "tipauth:watch_missing")  # dangling: the same answer as no file
+        link2.unlink()
+        link2.symlink_to(link2)  # a loop: ELOOP, not FileNotFoundError
+        e2.ex._tipauth_watch_cache = None
+        self.assertEqual(e2.ex._tipauth_availability(), "tipauth:watch_bad")
+        self.assertNotIn("latched", e2.ex.counters.tipauth)
+
+    def test_the_descriptor_is_closed_on_every_path(self):
+        if self.open_fds() < 0:
+            self.skipTest("no /proc/self/fd")
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        good_doc, cap = json.dumps(watch_doc(e.clock())), h.TIPAUTH_WATCH_MAX_BYTES
+
+        def make(kind: str) -> None:
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+            if kind == "fifo":
+                os.mkfifo(path)
+            elif kind == "dir":
+                path.mkdir()
+            elif kind == "ok":
+                path.write_text(good_doc)
+            elif kind == "big":
+                path.write_text(" " * (cap + 100))
+            elif kind == "not json":
+                path.write_text("{nope")
+            elif kind == "bytes":
+                path.write_bytes(b"\xff\xfe")
+            elif kind == "nested":
+                path.write_text("[" * 50_000)
+
+        before = self.open_fds()
+        for kind in ("ok", "fifo", "dir", "big", "not json", "bytes", "nested", "missing", "ok"):
+            for _ in range(20):
+                make(kind)
+                e.ex._tipauth_watch_cache = None
+                with self.deadline():
+                    e.ex._tipauth_availability()
+        self.assertEqual(self.open_fds(), before)
+
+    def test_a_bad_read_is_cached_for_the_same_second_as_a_good_one(self):
+        """The once-per-second rule holds for the new read, including when what is at the path is a FIFO: five checks in one second open it once."""
+        e = self.watch_env(None)
+        path = Path(e.conf["tipauth_watch_file"])
+        os.mkfifo(path)
+        with self.watch_open_spy(str(path)) as opened, self.deadline():
+            for _ in range(5):
+                self.assertEqual(e.ex._tipauth_availability(), "tipauth:watch_bad")
+            self.assertEqual((len(opened), e.ex._tipauth_watch_reads), (1, 1))
+            e.clock.t += 999
+            e.ex._tipauth_availability()
+            self.assertEqual((len(opened), e.ex._tipauth_watch_reads), (1, 1))
+            e.clock.t += 1
+            e.ex._tipauth_availability()
+            self.assertEqual((len(opened), e.ex._tipauth_watch_reads), (2, 2))
+        # and through the intake: two trigger rows in one second, one open
+        e2 = self.second_world("fifo2")
+        p2 = Path(e2.conf["tipauth_watch_file"])
+        p2.unlink()
+        os.mkfifo(p2)
+        e2.ex._tipauth_watch_cache = None
+        with self.watch_open_spy(str(p2)) as opened2, self.deadline():
+            self.append(e2, self.tip_row(e2), self.tip_row(e2, mint=OTHER_MINT))
+            e2.ex.intent_tick()
+        self.assertEqual(len(opened2), 1)
+        self.assertEqual(self.skips(e2), [(WS, "tipauth:watch_bad"), (WS, "tipauth:watch_bad")])
+
+    @staticmethod
+    @contextlib.contextmanager
+    def watch_open_spy(path: str):
+        """Yields the list of opens of `path` made by anything (builtins.open or os.open, which is what the executor's watch read uses)."""
+        real_open, real_os_open, opened = open, os.open, []
+
+        def spy(file, *a, **k):
+            if str(file) == path:
+                opened.append(file)
+            return real_open(file, *a, **k)
+
+        def os_spy(file, *a, **k):
+            if str(file) == path:
+                opened.append(file)
+            return real_os_open(file, *a, **k)
+
+        with mock.patch("builtins.open", spy), mock.patch.object(os, "open", os_spy):
+            yield opened
 
     def second_world(self, name: str, doc: dict | None = None) -> Env:
         """Another executor in its own directory with its own watch file (a fresh ok state unless `doc` is given)."""
@@ -1255,14 +1475,7 @@ class WatchTests(FlowCase):
             if not over:
                 del conf["tipauth_gate"]
             Path(conf["tipauth_watch_file"]).write_text(json.dumps(watch_doc(T0, "off")))  # a file that would latch, if anything read it
-            real_open, opened = open, []
-
-            def spy(file, *a, _p=conf["tipauth_watch_file"], **k):
-                if str(file) == _p:
-                    opened.append(file)
-                return real_open(file, *a, **k)
-
-            with mock.patch("builtins.open", spy):
+            with self.watch_open_spy(conf["tipauth_watch_file"]) as opened:
                 e = Env(self.tmp / f"off{i}", **conf)
                 Path(e.conf["intents_file"]).write_text("")
                 e.ex.intent_tick()

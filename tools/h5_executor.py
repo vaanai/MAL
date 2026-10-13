@@ -2620,20 +2620,35 @@ class H5Executor(pl.LiveExecutor):
     def _tipauth_watch_read(self, now: int) -> tuple[Any, str | None]:
         """(parsed JSON, None) or (None, "missing" | "bad"). The file is opened at most once per TIPAUTH_WATCH_CACHE_MS; the parse (or the error) is
         what is cached, and the age of the state is judged against the current time on every call. A file that does not exist is `missing`; an
-        unreadable one (any other OS error), one over TIPAUTH_WATCH_MAX_BYTES, one that is not JSON is `bad`."""
+        unreadable one (any other OS error), one that is not a regular file (a directory, a FIFO, a device), one over TIPAUTH_WATCH_MAX_BYTES, one that
+        is not JSON is `bad`. The open is non-blocking and the type is checked on the descriptor before any read, so a FIFO at the path cannot make
+        this call wait for a writer (this runs on the single-threaded trigger path); a symlink is followed, as `open()` did, and judged by its target."""
         c = self._tipauth_watch_cache
         if c is not None and 0 <= now - c[0] < TIPAUTH_WATCH_CACHE_MS:
             return c[1]
         self._tipauth_watch_reads += 1
         res: tuple[Any, str | None]
+        fd = -1
         try:
-            with open(self.h5cfg["tipauth_watch_file"], "rb") as fh:
-                raw = fh.read(TIPAUTH_WATCH_MAX_BYTES + 1)
-            res = (None, "bad") if len(raw) > TIPAUTH_WATCH_MAX_BYTES else (json.loads(raw), None)
+            fd = os.open(self.h5cfg["tipauth_watch_file"], os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                res = (None, "bad")
+            else:
+                raw = b""
+                while len(raw) <= TIPAUTH_WATCH_MAX_BYTES:  # never more than the cap plus one byte is read, whatever the file's size
+                    chunk = os.read(fd, TIPAUTH_WATCH_MAX_BYTES + 1 - len(raw))
+                    if not chunk:
+                        break
+                    raw += chunk
+                res = (None, "bad") if len(raw) > TIPAUTH_WATCH_MAX_BYTES else (json.loads(raw), None)
         except FileNotFoundError:
             res = (None, "missing")
         except Exception:  # unreadable, not UTF-8, not JSON, nested too deep: all the same answer
             res = (None, "bad")
+        finally:
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
         self._tipauth_watch_cache = (now, res)
         return res
 
