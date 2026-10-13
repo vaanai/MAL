@@ -592,9 +592,17 @@ def _tipauth_consistent(rec: dict[str, Any], bu: dict[str, Any], bt: dict[str, A
     uw, ws = rec.get("base_breaks_unresolved_settled_union"), rec.get("base_breaks_unresolved_settled")  # (e)
     if not _is_int(uw) or uw != ws:
         return False, "tipauth:union_ne_ws"
-    if rec.get("h5_look2_sealed") is True or rec.get("sealed") is True:  # (f) no paper twin exists for a sealed record
+    if _sealed_flag(rec.get("h5_look2_sealed")) or _sealed_flag(rec.get("sealed")):  # (f) no paper twin exists for a sealed record
         return False, "tipauth:sealed_record"
+    if rec.get("variant") != "pv":  # (f) the item-4 evidence is on pv triggers only (the parser and _tipauth_availability already hold this; one predicate says it too)
+        return False, "tipauth:variant_not_pv"
     return True, "ok"
+
+
+def _sealed_flag(v: Any) -> bool:
+    """A sealed flag fails closed (as the item-4 tool's `flag`): anything but absent, null or the literal False counts as sealed, so a 1, a "yes", a 0 or an
+    empty list is sealed too. Identity, not equality: 0 == False but is not False."""
+    return not (v is None or v is False)
 
 
 def parse_shadow_trigger(row: Any, variant: str = "pv", tipauth: str | None = None) -> tuple[H5Trigger | None, str | None]:

@@ -39,7 +39,7 @@ def tip_fields(**over) -> dict:
           "orphaned_by_drop_n": 0, "tipauth_nosettle": 0, "dropped": [["sig", 0, S - 20]], "margin_slots": 4}
     bu = {"status": "ok", "ws_only": 1, "tip_only": 0, "both": 5, "both_diff": 0, "tip_first_slot": S - 50, "tip_hw_slot_global": S + 3,
           "tip_lag_slots_global": 1}
-    rec = {"slot": S, "base_breaks_unresolved_settled": 1, "base_breaks_unresolved_settled_union": 1, "base_breaks_unresolved_settled_tipauth": 0,
+    rec = {"variant": "pv", "slot": S, "base_breaks_unresolved_settled": 1, "base_breaks_unresolved_settled_union": 1, "base_breaks_unresolved_settled_tipauth": 0,
            "base_union": bu, "base_tipauth": bt, "gap": False, "boost_src": "pda"}
     rec.update(over)
     return rec
@@ -288,6 +288,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(reason({**good(), "sealed": True}), "tipauth:sealed_record")
         for ok_v in (False, None):
             self.assertEqual(h.tipauth_gate({**good(), "h5_look2_sealed": ok_v, "sealed": ok_v}), (True, "ok"), ok_v)
+        for key in ("h5_look2_sealed", "sealed"):  # R12: a sealed flag fails closed like the item-4 tool's `flag`: anything but absent, null or the literal False
+            for bad in (True, 1, 0, 0.0, "", "yes", "false", [], {}, [False]):
+                self.assertEqual(reason({**good(), key: bad}), "tipauth:sealed_record", (key, bad))
+
+    def test_r12_variant_must_be_pv_in_the_one_predicate_too(self):
+        for bad in ("fv", "", None, 1, True, ["pv"], "PV"):
+            self.assertEqual(reason({**good(), "variant": bad}), "tipauth:variant_not_pv", repr(bad))
+        r = good()
+        del r["variant"]
+        self.assertEqual(reason(r), "tipauth:variant_not_pv")
 
     def test_every_reason_string_has_a_test_in_this_file(self):
         src = Path(h.__file__).read_text()
@@ -295,7 +305,8 @@ class GateTests(unittest.TestCase):
         in_gate = set(re.findall(r'return False, "tipauth:([a-z_0-9]+)"', body))
         self.assertEqual(in_gate, {"not_a_record", "ws_not_ge1", "gap", "union_missing", "tipauth_missing", "union_status", "tipauth_status", "value_not_zero",
                                    "tip_only", "both_diff", "dropped_boost", "boost_src", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop", "nosettle",
-                                   "dropped_first_slot", "rule_not_v1", "margin", "slots", "cover", "dropped_list", "union_ne_ws", "sealed_record"})
+                                   "dropped_first_slot", "rule_not_v1", "margin", "slots", "cover", "dropped_list", "union_ne_ws", "sealed_record",
+                                   "variant_not_pv"})
 
     def test_constants_are_the_ruled_ones(self):
         self.assertEqual((h.TIPAUTH_DROPPED_MAX, h.TIPAUTH_STAKE_LAMPORTS, h.TIPAUTH_LOSS_BUDGET_LAMPORTS, h.TIPAUTH_LOOKS),
