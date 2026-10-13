@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T09:48:28Z",
+ "updated_utc": "2026-10-13T18:50:54Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-t1-block-check-1013",
+   "kind": "other",
+   "title": "H5: the check asked for after the 10-13 install came back clean on its second run",
+   "detail": "The daily health check that the 10-13 install record asked for ran twice after 18:28 UTC on 2026-10-13. The first run (18:33 UTC) printed one alert, because the public balance lookup failed, so it did not count. The second run (18:49 UTC) printed no alert, showed the 3,500 ms limit in the start row and no halts, and the wallet reconciled with a gap of +0.000000 SOL. This removes one hold on the step to the next stake tier and nothing else: the canary has 13 landed buys against the 20 that step needs, and the other conditions stay. H5 trades at 0.02 SOL as an execution measurement; its formal October test (EXP-024) ended not decidable with no look read.",
+   "atUtc": "2026-10-13T18:49:17Z"
+  },
   {
    "id": "h5-resumed-1013",
    "kind": "other",
@@ -650,6 +657,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261013-h5-t1-block-check",
+   "from": "claude",
+   "atUtc": "2026-10-13T18:50:54Z",
+   "text": "For you (no action needed): the health check that had to come back clean after the 10-13 install did so on its second run. Run 1 at 18:33 UTC printed one alert (the public balance lookup failed), so by the rule it did not count and the alert was not argued away. Run 2 at 18:49 UTC printed no alert: the 3,500 ms limit is in the start row, there are no halts, and the wallet reconciled with a gap of +0.000000 SOL. Both runs, and the midday run that came too early to count, are recorded in LAB_STATE with their job numbers (#932, #936, #938). What this changes: one hold on the step to the next stake tier is gone. What it does not change: that step still needs 20 landed buys (13 so far) and the other conditions of the tier rule, and it goes to quant-proof before any ask to Helm. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate."
+  },
   {
    "id": "fy-20261013-h5-resumed",
    "from": "claude",
