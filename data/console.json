@@ -1,8 +1,30 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T22:10:22Z",
+ "updated_utc": "2026-10-13T23:31:22Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-wspass-rpc-36h-1013",
+   "kind": "result",
+   "title": "H5: follow-up check on the 36-hour read ended \"no conclusion\"",
+   "detail": "Interim, not the deciding read. Reading: \"no conclusion\". Method: each trigger-print signature was asked of the public RPC at finalized commitment; not returned means no answer twice, at least 10 minutes apart. ws-pass: asked 15, returned 10, not_returned 0, error 5, pending 0. refused: asked 20, returned 1, not_returned 0, error 19, pending 0. would-pass: asked 1, returned 0, not_returned 0, error 1, pending 0. 5 of the 15 ws-pass prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 5; code, over the 34 answers of the class: http_status 413 on 10, 429 on 6, none on 18; rpc_code -32015 on 8, none on 26). An error is never counted as not returned. The cause is not determined. 19 of the 20 refused prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 19; code, over the 78 answers of the class: http_status 429 on 70, 413 on 7, none on 1; rpc_code none recorded). An error is never counted as not returned. The cause is not determined. 1 of the 1 would-pass prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 1; code, over the 4 answers of the class: http_status 429 on 4; rpc_code none recorded). An error is never counted as not returned. The cause is not determined. It says nothing about any trade's result, and H5 has not cleared the promotion gate. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-13T23:28:24Z"
+  },
+  {
+   "id": "h5-am9-and-tools-merged-1013",
+   "kind": "other",
+   "title": "H5: stricter stop rule (DEC-024 Amendment 9) and two counting tools merged",
+   "detail": "DEC-024 Amendment 9 merged at 22:21 UTC with quant-proof's OK and the reviewer's OK: a stop when a reviewed check shows the bot sent a buy on a trigger print the public chain does not return. It cannot fire until a second tool exists, which is not built; until then it is reported as not evaluated. The follow-up check tool (22:45 UTC) and the diagnostic tool (22:51 UTC) were merged with both reviews. The tipauth path is not installed and its switch is off. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-13T22:51:13Z"
+  },
+  {
+   "id": "floor-judge-1013",
+   "kind": "result",
+   "title": "FLOOR-OPTION simulator judged: the exploration figure stands with sells capped at the pool's real SOL",
+   "detail": "Old exploration data only (August and September); not a gate result. Capping each simulated sell at the pool's real quote changed no trade: 0 of 104 filled confirmation trades and 0 of 179 filled discovery trades. Confirmation unchanged at +4.4670% over 112 trades, 11 of 12 days, total +0.5003 SOL at 0.1 SOL per trade, +0.3047 SOL without the top 3. The book still fails its stress test; no live sell was sent; October is not covered. A doubling within 24 hours was reached on 2 of 112 and 8 of 193 attempts.",
+   "atUtc": "2026-10-13T22:12:04Z",
+   "approx": true
+  },
   {
    "id": "h5-tipauth-36h-1013",
    "kind": "other",
@@ -679,6 +701,18 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261013-wspass-rpc-36h",
+   "from": "claude",
+   "atUtc": "2026-10-13T23:31:22Z",
+   "text": "For you (no action needed): the follow-up check on the 36-hour read ran tonight. Interim, not the deciding read. Reading: \"no conclusion\". Method: each trigger-print signature was asked of the public RPC at finalized commitment; not returned means no answer twice, at least 10 minutes apart. ws-pass: asked 15, returned 10, not_returned 0, error 5, pending 0. refused: asked 20, returned 1, not_returned 0, error 19, pending 0. would-pass: asked 1, returned 0, not_returned 0, error 1, pending 0. 5 of the 15 ws-pass prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 5; code, over the 34 answers of the class: http_status 413 on 10, 429 on 6, none on 18; rpc_code -32015 on 8, none on 26). An error is never counted as not returned. The cause is not determined. 19 of the 20 refused prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 19; code, over the 78 answers of the class: http_status 429 on 70, 413 on 7, none on 1; rpc_code none recorded). An error is never counted as not returned. The cause is not determined. 1 of the 1 would-pass prints ended in an error answer from the public RPC after 4 asks each (class: HTTPError 1; code, over the 4 answers of the class: http_status 429 on 4; rpc_code none recorded). An error is never counted as not returned. The cause is not determined. It says nothing about any trade's result, and H5 has not cleared the promotion gate. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-evening",
+   "from": "claude",
+   "atUtc": "2026-10-13T23:31:22Z",
+   "text": "For you (no action needed): what else happened on the evening of 10-13. (1) The stricter stop rule is in the trial plan (DEC-024 Amendment 9), merged with quant-proof's OK and the reviewer's OK. It cannot fire until a second tool exists, which is not built; until then it is reported as not evaluated, which is never the same as \"did not fire\". If you want it struck, a dated line from you does that. (2) Two counting tools were merged with both reviews: the follow-up check with its new reading rule, and a diagnostic for the tape-incompleteness line and the feed-gap flag. (3) Interim count, not the deciding read: the diagnostic's first run on the 36-hour window. Of the 295 pool closes the tape-incompleteness line applies to, 65 are counted. In all 65 the recount against our block tape dropped at least one live-feed print the tape does not hold: 38 closes had 1 such print, 10 had 2 to 5, 1 had 6 to 20 and 16 had more than 20; none of the other 230 closes had any. Of the 1,132 pool closes, 558 carry the feed-gap flag and 574 do not. Of the 36 triggers of the pv variant (the kind the live bot acts on), 16 carry it and 20 do not. Of the 762 slot-jump records, 469 have 30 to 59 missed slots, 271 have 60 to 149 and 22 have 150 to 599. The cause is not determined; no rule has changed and none is proposed. (4) A stronger-model judge checked the FLOOR-OPTION simulator on old exploration data: with every sell capped at the pool's real SOL no trade changed (0 of 104 and 0 of 179 filled trades), so the figure +4.4670% over 112 trades stands as an exploration figure. It still fails its stress test, no live sell was sent, and it is not a gate result. From the floor, a doubling within 24 hours was reached on 2 of 112 and 8 of 193 attempts. Next read of the gate's shadow test: 09:34 UTC on 10-14. The tipauth path is not installed and its switch is off. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate."
+  },
+  {
    "id": "fy-20261013-tipauth-36h",
    "from": "claude",
    "atUtc": "2026-10-13T21:58:39Z",
@@ -950,6 +984,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261013-2331",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T23:31:22Z",
+   "text": "23:31Z: merged with both verdicts: #640 DEC-024 Amendment 9 (c24b935; cannot fire until the sent-count tool exists), #641 RPC check tool rule 2 (4bd65b0, sha256 90ab40bd...5369), #642 item-5 and gap diagnostic (f42a446, sha256 282d6dde...4703). errclass on the +6 h out-dir (job #958): both hashes equal; ws_pass rpc_error 3 signatures, 12 answers. Diagnostic first run at +36 h (job #962), interim: totals equal item 4; incomplete 65 of n_ok 295 (dropped_n 1: 38, 2-5: 10, 6-20: 1, above 20: 16); pool closes gap true 558 of 1132; pv triggers gap true 16 of 36; slot_jump 762 (30-59: 469, 60-149: 271, 150-599: 22). RPC check on 1791927243640 (jobs #965, #967, #969, #970, #971, #972), interim: reading \"no conclusion\"; ws_pass asked 15 returned 10 not_returned 0 error 5; refused asked 20 returned 1 error 19; would_pass asked 1 error 1; final error class HTTPError; http_status 429 and 413; rpc_code -32015 on 8 ws_pass answers; finished, nothing further until quant-proof rules. Floor judge: FLOOR-OPTION v2 figure stands (exploration). The tipauth path is not installed and its switch is off. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261013-2158",
    "from": "claude",
