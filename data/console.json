@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-12T18:41:45Z",
+ "updated_utc": "2026-10-13T00:23:50Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-presend-fix-merged-1012",
+   "kind": "other",
+   "title": "H5 late-signal fix merged; Helm's install requested",
+   "detail": "The check that refuses a signal older than 3.5 s before buying was merged on 2026-10-12 (pull request 622). It is not running: the request to Helm for the install is on pull request 624. Until then H5 stays at the smallest stake.",
+   "atUtc": "2026-10-12T19:33:08Z"
+  },
   {
    "id": "h5-out-of-rule-latch-1012",
    "kind": "other",
@@ -416,9 +423,9 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "Canary STOPPED (new buys) since 10-10T07:15:10Z under DEC-024 section 5.1 (A3 BOOST last-slice median 333 s < 335 s); resume needs a dated owner amendment. Before the stop: 3 trades at 0.02 SOL, +0.005199 SOL (unpromoted, not evidence). Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL likely per the pre-registration (P(Look 1 pass) about 0.03).",
+   "note": "Canary live at the smallest stake (T0, 0.02 SOL): 11 attempts, 11 sells landed, nothing open, no stop or halt at 2026-10-13T00:21Z (job #896). It halted itself once on 10-12 on a late buy and was cleared by the manager; no step to T1 until Helm installs the late-signal fix. Unpromoted, not evidence. Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL per the pre-registration (P(Look 1 pass) about 0.03).",
    "tag": {
-    "text": "canary stopped",
+    "text": "canary live, T0",
     "tone": "warn"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
@@ -608,6 +615,18 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261013-helm-presend",
+   "from": "claude",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "For you: one thing to pass to Helm. The fix that makes H5 refuse a late signal before it buys is written and reviewed. It is not running yet: Helm has to install it. The full request is the comment on pull request 624 (github.com/vaanai/MAL/pull/624#issuecomment-6131222470). It names the exact version, the checks, and what must not change. Until it is installed, H5 keeps trading at the smallest stake (0.02 SOL), there is no step to the next size, and if the same halt fires again H5 stays stopped. As of 00:21 UTC on 10-13: 11 attempts, 11 sells landed, nothing open, no halt. H5 has not cleared the promotion gate."
+  },
+  {
+   "id": "fy-20261013-research-nulls",
+   "from": "claude",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "For you (information only): three ideas tested on 10-12 on old exploration data have a verdict, and none passes, and one was only counted. Haiku as the trader or as a veto: no lift shown (3 buys in 150 cards; the veto refused 36 of 36). Haiku judging coin names for big runs: dropped (7 of 49 against 242 of 951). Mayhem-mode flow: counted only; no verdict, because no trading rule was tested. A model trained to pick big winners: it fails five of its six bars set in advance. It had more trades at +100% of stake or more (85 of 3,494 against 24 of 2,986) but fails the declared bars: 3 of 28 days positive against 22 of 28 for the existing model. These are development counts on rebuilt data, not gate evidence. Next: the October data opens on 10-16 and the study queue for it is written."
+  },
   {
    "id": "fy-20261012-1841-h5-latch",
    "from": "claude",
@@ -814,6 +833,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261013-0023",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T00:23:50Z",
+   "text": "00:21Z check: H5 live at 0.02 SOL, 11 attempts, 11 sells landed, nothing open, no stop or halt. The late-signal fix is merged (#622) and waits for Helm's install (request on #624). Research on 10-12: three lines have a verdict and none passes; Mayhem was counted only, no trading rule tested. Next: 09:17Z rule questions for the October opening; 09:34Z the +24 h tipauth read (first instant that can be the deciding read)."
+  },
   {
    "id": "s-20261012-0912",
    "from": "claude",
