@@ -931,5 +931,15 @@ class OffPathFlowTests(FlowCase):
                 self.assertNotIn("tipauth", a["ledger"] + json.dumps(a["files"]))
 
 
+class RunbookTests(unittest.TestCase):
+    def test_the_runbook_says_what_the_code_does_on_these_points(self):
+        t = (Path(__file__).resolve().parents[1] / "docs" / "runbooks" / "h5-executor.md").read_text()
+        sec = t[t.index("## tipauth gate (OFF by default)"):]
+        for needle in ("tipauth_reason", "tipauth:look_ack_ahead", "not one of the executor's HALTs", "up to two stakes", "sell_and_close", "only `tipauth_look_ack: 50` releases it",
+                       "drops the key at its first save", "`tipauth_off` row", "only while the switch is on", "not an object"):
+            self.assertIn(needle, sec, needle)
+        self.assertNotIn("class_loss_budget`", sec.split("## ")[1] if "## " in sec[3:] else sec)  # not added to the halt table
+
+
 if __name__ == "__main__":
     unittest.main()
