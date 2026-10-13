@@ -12,29 +12,35 @@ import importlib.util
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import h5_executor as h
-from tools.test_h5_executor import MINT, T0, Case, Clock, Env
+from tools.test_h5_executor import MINT, T0, TRIG_SLOT, Case, Clock, Env
 from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_h5_executor_tiers import TierCase
 
 SOL = 1_000_000_000
-BASE_SHA = "5db78a6"  # main when this change was cut: the reference for the decision-equivalence corpus
+BASE_SHA = "13e3f28"  # main at the second merge into this branch: the reference for the decision-equivalence corpus and the off-path flow
+WS = "bad_intent:base_breaks_unresolved_settled"  # the websocket refusal: the reason of every skip row this path touches, byte for byte (R3)
+MISSING = object()
 
 
 def tip_fields(**over) -> dict:
     """The report-only fields of tools/h5_shadow.py (#610) for a trigger that meets C1-C6, with websocket value 1."""
-    bt = {"status": "ok", "dropped_n": 1, "dropped_first_slot": 101, "dropped_last_slot": 101, "cover_lo": 100, "cover_hi": 150,
+    S = TRIG_SLOT  # the slot of shadow_trigger(): cover_hi = min(tip high-water, slot) - 4 = S - 4 (C7)
+    bt = {"status": "ok", "dropped_n": 1, "dropped_first_slot": S - 20, "dropped_last_slot": S - 20, "cover_lo": S - 50, "cover_hi": S - 4,
           "kept_ws_only_before_cover": 0, "kept_ws_only_above_cover": 0, "kept_ws_only_sig_on_tip": 0, "dropped_boost_n": 0, "dropped_sells_n": 0,
-          "orphaned_by_drop_n": 0, "tipauth_nosettle": 0, "dropped": [["sig", 0, 101]], "margin_slots": 4}
-    bu = {"status": "ok", "ws_only": 1, "tip_only": 0, "both": 5, "both_diff": 0}
-    rec = {"base_breaks_unresolved_settled": 1, "base_breaks_unresolved_settled_tipauth": 0, "base_union": bu, "base_tipauth": bt, "gap": False,
-           "boost_src": "pda"}
+          "orphaned_by_drop_n": 0, "tipauth_nosettle": 0, "dropped": [["sig", 0, S - 20]], "margin_slots": 4}
+    bu = {"status": "ok", "ws_only": 1, "tip_only": 0, "both": 5, "both_diff": 0, "tip_first_slot": S - 50, "tip_hw_slot_global": S + 3,
+          "tip_lag_slots_global": 1}
+    rec = {"slot": S, "base_breaks_unresolved_settled": 1, "base_breaks_unresolved_settled_union": 1, "base_breaks_unresolved_settled_tipauth": 0,
+           "base_union": bu, "base_tipauth": bt, "gap": False, "boost_src": "pda"}
     rec.update(over)
     return rec
 
@@ -43,18 +49,43 @@ def good() -> dict:
     return tip_fields()
 
 
+def with_n(n: int) -> dict:
+    """A passing record whose D has n members (distinct signatures, increasing slots), first / last slot and the list agreeing."""
+    S = TRIG_SLOT
+    r = good()
+    bt = r["base_tipauth"]
+    bt["dropped_n"] = n
+    bt["dropped"] = [[f"sig{i}", i, S - 20 + i] for i in range(n)]
+    bt["dropped_first_slot"], bt["dropped_last_slot"] = S - 20, S - 20 + n - 1
+    return r
+
+
+def reason(r: dict, **kw) -> str:
+    return h.tipauth_gate(r, **kw)[1]
+
+
+def bt_set(**kw) -> dict:
+    r = good()
+    r["base_tipauth"].update(kw)
+    return r
+
+
+def bu_set(**kw) -> dict:
+    r = good()
+    r["base_union"].update(kw)
+    return r
+
+
 class GateTests(unittest.TestCase):
     def test_all_conditions_met_passes(self):
         self.assertEqual(h.tipauth_gate(good()), (True, "ok"))
         for n in (1, 2, 3, 4, 5):
-            r = good()
-            r["base_tipauth"]["dropped_n"] = n
-            self.assertTrue(h.tipauth_gate(r)[0], n)
+            self.assertEqual(h.tipauth_gate(with_n(n)), (True, "ok"), n)
         r = good()
         r["boost_src"] = "event_authority"
         self.assertTrue(h.tipauth_gate(r)[0])
         r = good()
-        r["base_breaks_unresolved_settled"] = 7  # any websocket value >= 1
+        r["base_breaks_unresolved_settled"] = r["base_breaks_unresolved_settled_union"] = 7  # any websocket value >= 1 (the union equals it, R2 e)
         self.assertTrue(h.tipauth_gate(r)[0])
 
     def test_each_single_condition_fails_with_its_own_reason(self):
@@ -81,8 +112,8 @@ class GateTests(unittest.TestCase):
             ("sig_on_tip", lambda r: r["base_tipauth"].update(kept_ws_only_sig_on_tip=1), "tipauth:kept_ws_only_sig_on_tip"),
             ("orphaned", lambda r: r["base_tipauth"].update(orphaned_by_drop_n=1), "tipauth:orphaned_by_drop"),
             ("nosettle", lambda r: r["base_tipauth"].update(tipauth_nosettle=1), "tipauth:nosettle"),
-            ("first_eq_lo", lambda r: r["base_tipauth"].update(dropped_first_slot=100), "tipauth:dropped_first_slot"),
-            ("first_lt_lo", lambda r: r["base_tipauth"].update(dropped_first_slot=99), "tipauth:dropped_first_slot"),
+            ("first_eq_lo", lambda r: r["base_tipauth"].update(dropped_first_slot=TRIG_SLOT - 50), "tipauth:dropped_first_slot"),
+            ("first_lt_lo", lambda r: r["base_tipauth"].update(dropped_first_slot=TRIG_SLOT - 51), "tipauth:dropped_first_slot"),
         ]
         reasons = set()
         for name, f, why in cases:
@@ -93,29 +124,35 @@ class GateTests(unittest.TestCase):
         ok, got = h.tipauth_gate(good(), rule="v2")
         self.assertEqual((ok, got), (False, "tipauth:rule_not_v1"))
 
-    def test_missing_null_wrong_type_and_exception_records_fail_closed(self):
-        used = {"": ["base_breaks_unresolved_settled", "gap", "base_union", "base_tipauth", "base_breaks_unresolved_settled_tipauth", "boost_src"],
-                "base_union": ["status", "tip_only", "both_diff"],
-                "base_tipauth": ["status", "dropped_boost_n", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop_n", "tipauth_nosettle",
-                                 "dropped_first_slot", "cover_lo"]}
-        for sub, keys in used.items():
-            for k in keys:
-                for how in ("missing", "null", "string", "bool_true", "float"):
-                    r = good()
-                    d = r[sub] if sub else r
-                    if how == "missing":
-                        del d[k]
-                    else:
-                        d[k] = {"null": None, "string": "ok", "bool_true": True, "float": 0.0}[how]
-                    ok, why = h.tipauth_gate(r)
-                    # any non-behavioural string is a valid boost_src; everything else here must fail
-                    if (sub, k, how) in (("", "boost_src", "string"), ("base_union", "status", "string"), ("base_tipauth", "status", "string")):
-                        self.assertTrue(ok)
-                        continue
-                    self.assertFalse(ok, (sub, k, how))
-                    self.assertTrue(why.startswith("tipauth:"), (sub, k, how, why))
+    def test_every_field_the_gate_reads_fails_closed_on_twelve_substitutions(self):
+        """The shape of quant-proof's section-1 run: single-field substitutions on a passing record. Every one refuses, each with a tipauth: reason."""
+        paths = [("", k) for k in ("slot", "base_breaks_unresolved_settled", "base_breaks_unresolved_settled_union", "base_breaks_unresolved_settled_tipauth",
+                                   "gap", "boost_src", "base_union", "base_tipauth")]
+        paths += [("base_union", k) for k in ("status", "tip_only", "both_diff", "tip_first_slot", "tip_hw_slot_global")]
+        paths += [("base_tipauth", k) for k in ("status", "dropped_boost_n", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop_n", "tipauth_nosettle",
+                                                 "dropped_first_slot", "dropped_last_slot", "cover_lo", "cover_hi", "margin_slots", "dropped")]
+        values = [MISSING, None, True, False, 0.0, 1.0, "0", "1", -1, [], {}, float("nan")]
+        n = 0
+        for sub, k in paths:
+            for v in values:
+                r = good()
+                d = r[sub] if sub else r
+                base = d[k]
+                if v is not MISSING and type(v) is type(base) and v == base:
+                    continue  # the same value as the passing record's
+                if v is MISSING:
+                    del d[k]
+                else:
+                    d[k] = v
+                ok, why = h.tipauth_gate(r)
+                self.assertFalse(ok, (sub, k, v))
+                self.assertTrue(why.startswith("tipauth:"), (sub, k, v, why))
+                n += 1
+        self.assertGreaterEqual(n, 200)
+
+    def test_non_record_inputs_and_the_error_records_of_the_shadow_fail_closed(self):
         for bad in (None, [], "x", 5, {}):
-            self.assertFalse(h.tipauth_gate(bad)[0])
+            self.assertEqual(h.tipauth_gate(bad)[0], False)
         exc = good()
         exc["base_tipauth"] = {"status": "error", "margin_slots": 4}  # the except path of h5_shadow: no other keys
         exc["base_breaks_unresolved_settled_tipauth"] = None
@@ -123,13 +160,148 @@ class GateTests(unittest.TestCase):
         exc2 = good()
         exc2["base_union"] = {"status": "error"}
         self.assertEqual(h.tipauth_gate(exc2), (False, "tipauth:union_status"))
-        bare = {"base_breaks_unresolved_settled": 2}
-        self.assertEqual(h.tipauth_gate(bare)[0], False)
+        self.assertEqual(h.tipauth_gate({"base_breaks_unresolved_settled": 2})[0], False)
         self.assertEqual(h.tipauth_gate({"base_breaks_unresolved_settled": 1, "gap": False})[1], "tipauth:union_missing")
+        for ws in (0, -1, None, 1.0, True, "1"):
+            r = good()
+            r["base_breaks_unresolved_settled"] = ws
+            self.assertEqual(reason(r), "tipauth:ws_not_ge1", ws)
+
+    def test_dropped_n_boundaries_0_1_5_6(self):
+        r = good()
+        r["base_tipauth"]["dropped_n"] = 0
+        self.assertEqual(reason(r), "tipauth:dropped_n")
+        self.assertTrue(h.tipauth_gate(with_n(1))[0])
+        self.assertTrue(h.tipauth_gate(with_n(5))[0])
+        self.assertEqual(reason(with_n(6)), "tipauth:dropped_n")
+
+    # --- R1: the boost_src allowlist ---------------------------------------------------------------------------------------
+    def test_r1_boost_src_is_an_allowlist(self):
+        for ok_src in ("pda", "event_authority"):
+            self.assertEqual(h.tipauth_gate({**good(), "boost_src": ok_src}), (True, "ok"))
+        for bad in ("none", "behavioural", "", "PDA", "0", "1", None, 0, 1, True, ["pda"], {"pda": 1}):
+            self.assertEqual(reason({**good(), "boost_src": bad}), "tipauth:boost_src", repr(bad))
+        r = good()
+        del r["boost_src"]
+        self.assertEqual(reason(r), "tipauth:boost_src")
+
+    # --- R2 (a) to (f): one test per reason string -------------------------------------------------------------------------
+    def test_r2a_margin(self):
+        self.assertEqual(h.TIPAUTH_MARGIN_SLOTS, 4)
+        for bad in (0, 3, 5, 4.0, True, "4", None, -4):
+            self.assertEqual(reason(bt_set(margin_slots=bad)), "tipauth:margin", repr(bad))
+        r = good()
+        del r["base_tipauth"]["margin_slots"]
+        self.assertEqual(reason(r), "tipauth:margin")
+        self.assertEqual(h.tipauth_gate(bt_set(margin_slots=4)), (True, "ok"))
+
+    def test_r2b_slots(self):
+        S = TRIG_SLOT
+        no_slot = good()
+        del no_slot["slot"]
+        no_last = good()
+        del no_last["base_tipauth"]["dropped_last_slot"]
+        cases = {
+            "slot_missing": no_slot, "slot_null": {**good(), "slot": None}, "slot_float": {**good(), "slot": float(S)}, "slot_bool": {**good(), "slot": True},
+            "hi_one_under_margin_top": bt_set(cover_hi=S - 3), "hi_above_slot": bt_set(cover_hi=S + 10), "hi_null": bt_set(cover_hi=None),
+            "hi_below_last": bt_set(cover_hi=S - 21), "hi_below_lo": bt_set(cover_hi=S - 60), "lo_negative": bt_set(cover_lo=-1),
+            "last_below_first": bt_set(dropped_last_slot=S - 21), "last_missing": no_last,
+            "last_null": bt_set(dropped_last_slot=None), "last_above_hi": bt_set(dropped_last_slot=S - 3),
+        }
+        for name, r in cases.items():
+            self.assertEqual(reason(r), "tipauth:slots", name)
+        # boundaries that pass: hi at slot-4, last at hi, first one above lo, lo at 0
+        r = good()
+        r["base_tipauth"].update(dropped_first_slot=S - 4, dropped_last_slot=S - 4, dropped=[["sig", 0, S - 4]])
+        self.assertEqual(h.tipauth_gate(r), (True, "ok"))  # dropped_last_slot == cover_hi
+        r = good()
+        r["base_tipauth"].update(dropped_first_slot=S - 49, dropped_last_slot=S - 49, dropped=[["sig", 0, S - 49]])
+        self.assertEqual(h.tipauth_gate(r), (True, "ok"))  # first == lo + 1
+        r = good()
+        r["base_tipauth"]["cover_lo"] = 0
+        r["base_union"]["tip_first_slot"] = 0
+        self.assertEqual(h.tipauth_gate(r), (True, "ok"))  # lo == 0
+
+    def test_r2c_cover(self):
+        S = TRIG_SLOT
+        no_hw = good()
+        del no_hw["base_union"]["tip_hw_slot_global"]
+        no_first = good()
+        del no_first["base_union"]["tip_first_slot"]
+        cases = {
+            "first_ne_lo": bu_set(tip_first_slot=S - 49), "first_null": bu_set(tip_first_slot=None), "first_float": bu_set(tip_first_slot=float(S - 50)),
+            "first_bool": bu_set(tip_first_slot=True), "hw_null": bu_set(tip_hw_slot_global=None), "hw_float": bu_set(tip_hw_slot_global=float(S + 3)),
+            "hw_str": bu_set(tip_hw_slot_global="x"), "hw_bool": bu_set(tip_hw_slot_global=True),
+            "hw_below_slot_hi_not_min": bu_set(tip_hw_slot_global=S - 1),  # min(hw, slot) - 4 = S - 5, the record says S - 4
+            "hi_ne_min": bt_set(cover_hi=S - 5), "hw_missing": no_hw, "first_missing": no_first,
+        }
+        for name, r in cases.items():
+            self.assertEqual(reason(r), "tipauth:cover", name)
+        for hw in (S, S + 1, S + 10**6):  # the high-water at or above the slot: the slot binds
+            self.assertEqual(h.tipauth_gate(bu_set(tip_hw_slot_global=hw)), (True, "ok"), hw)
+        r = good()  # the high-water below the slot binds instead, when the record says so
+        r["base_union"]["tip_hw_slot_global"] = S - 2
+        r["base_tipauth"]["cover_hi"] = S - 6
+        self.assertEqual(h.tipauth_gate(r), (True, "ok"))
+
+    def test_r2d_dropped_list(self):
+        S = TRIG_SLOT
+        r = good()
+        del r["base_tipauth"]["dropped"]
+        self.assertEqual(reason(r), "tipauth:dropped_list")
+        cases = {"null": None, "empty": [], "dict": {}, "str": "sig", "three_for_one": [["a", 0, S - 20], ["b", 1, S - 20], ["c", 2, S - 20]],
+                 "entry_not_list": ["sig"], "entry_short": [["sig", S - 20]], "entry_long": [["sig", 0, S - 20, 1]], "entry_dict": [{"s": 1}],
+                 "sig_empty": [["", 0, S - 20]], "sig_not_str": [[5, 0, S - 20]], "ei_str": [["sig", "0", S - 20]], "ei_float": [["sig", 0.0, S - 20]],
+                 "ei_bool": [["sig", True, S - 20]], "slot_float": [["sig", 0, float(S - 20)]], "slot_null": [["sig", 0, None]],
+                 "slot_below_first": [["sig", 0, S - 21]], "slot_above_last": [["sig", 0, S - 19]]}
+        for name, d in cases.items():
+            self.assertEqual(reason(bt_set(dropped=d)), "tipauth:dropped_list", name)
+        r2 = with_n(2)  # D of 2: first / last entry slots must equal dropped_first_slot / dropped_last_slot, and no key twice
+        self.assertEqual(h.tipauth_gate(r2), (True, "ok"))
+        r2["base_tipauth"]["dropped"] = [["a", 0, S - 20], ["a", 0, S - 19]]
+        self.assertEqual(reason(r2), "tipauth:dropped_list")  # repeated (signature, event_index)
+        r2["base_tipauth"]["dropped"] = [["a", 0, S - 20], ["a", 1, S - 19]]
+        self.assertEqual(h.tipauth_gate(r2), (True, "ok"))  # same signature, another event_index: two prints
+        r2["base_tipauth"]["dropped"] = [["a", None, S - 20], ["b", None, S - 19]]
+        self.assertEqual(h.tipauth_gate(r2), (True, "ok"))  # a null event_index is the shadow's own value for a print without one
+        r2["base_tipauth"]["dropped"] = [["a", 0, S - 20], ["b", 1, S - 20]]
+        self.assertEqual(reason(r2), "tipauth:dropped_list")  # the last entry's slot is not dropped_last_slot
+        r2["base_tipauth"]["dropped"] = [["a", 0, S - 19], ["b", 1, S - 19]]
+        self.assertEqual(reason(r2), "tipauth:dropped_list")  # the first entry's slot is not dropped_first_slot
+
+    def test_r2e_union_equals_websocket(self):
+        for bad in (MISSING, None, 0, 2, 1.0, True, "1", -1, [], {}):
+            r = good()
+            if bad is MISSING:
+                del r["base_breaks_unresolved_settled_union"]
+            else:
+                r["base_breaks_unresolved_settled_union"] = bad
+            self.assertEqual(reason(r), "tipauth:union_ne_ws", repr(bad))
+        r = good()
+        r["base_breaks_unresolved_settled"] = 3
+        self.assertEqual(reason(r), "tipauth:union_ne_ws")  # ws 3, union 1
+        r["base_breaks_unresolved_settled_union"] = 3
+        self.assertEqual(h.tipauth_gate(r), (True, "ok"))
+
+    def test_r2f_sealed_record(self):
+        self.assertEqual(reason({**good(), "h5_look2_sealed": True}), "tipauth:sealed_record")
+        self.assertEqual(reason({**good(), "sealed": True}), "tipauth:sealed_record")
+        for ok_v in (False, None):
+            self.assertEqual(h.tipauth_gate({**good(), "h5_look2_sealed": ok_v, "sealed": ok_v}), (True, "ok"), ok_v)
+
+    def test_every_reason_string_has_a_test_in_this_file(self):
+        src = Path(h.__file__).read_text()
+        body = src[src.index("def tipauth_gate"):src.index("def parse_shadow_trigger")]
+        in_gate = set(re.findall(r'return False, "tipauth:([a-z_0-9]+)"', body))
+        self.assertEqual(in_gate, {"not_a_record", "ws_not_ge1", "gap", "union_missing", "tipauth_missing", "union_status", "tipauth_status", "value_not_zero",
+                                   "tip_only", "both_diff", "dropped_boost", "boost_src", "dropped_n", "kept_ws_only_sig_on_tip", "orphaned_by_drop", "nosettle",
+                                   "dropped_first_slot", "rule_not_v1", "margin", "slots", "cover", "dropped_list", "union_ne_ws", "sealed_record"})
 
     def test_constants_are_the_ruled_ones(self):
         self.assertEqual((h.TIPAUTH_DROPPED_MAX, h.TIPAUTH_STAKE_LAMPORTS, h.TIPAUTH_LOSS_BUDGET_LAMPORTS, h.TIPAUTH_LOOKS),
                          (5, 20_000_000, 40_000_000, (25, 50, 100)))
+        self.assertEqual((h.TIPAUTH_MARGIN_SLOTS, h.TIPAUTH_BOOST_SRC_OK, h.BASE_BREAKS_WS_REFUSAL), (4, ("pda", "event_authority"), WS))
+        self.assertEqual(h.parse_shadow_trigger({**shadow_trigger(Clock()), "base_breaks_unresolved_settled": 1})[1], WS)  # the constant is the parser's string
         self.assertEqual(h.TIPAUTH_ENABLE_REF, "DEC-024-Am8")
         self.assertEqual(h.TIPAUTH_STAKE_LAMPORTS, h.TIERS["T0"]["stake_lamports"])
 
@@ -183,8 +355,18 @@ class ParseTests(unittest.TestCase):
         self.assertNotIn("gate_path", t.public())
 
 
+_MAIN_CACHE: list = []
+
+
 def _load_main():
     """main's executor (BASE_SHA), written to a temp module. None when the object is not available in this clone."""
+    if _MAIN_CACHE:
+        return _MAIN_CACHE[0]
+    _MAIN_CACHE.append(_load_main_uncached())
+    return _MAIN_CACHE[0]
+
+
+def _load_main_uncached():
     try:
         src = subprocess.run(["git", "show", f"{BASE_SHA}:tools/h5_executor.py"], capture_output=True, check=True, cwd=Path(__file__).resolve().parents[1]).stdout
     except (OSError, subprocess.CalledProcessError):
@@ -293,6 +475,17 @@ class FlowCase(Case):
     def counters(self, e: Env) -> dict:
         return json.loads(Path(e.ex.counters_path).read_text())
 
+    def patch_main(self, main) -> None:
+        """The same host stand-ins Case.setUp gives the head's module (LIVE_OK, tier file, owner ids), for main's separately loaded module."""
+        for attr in ("LIVE_OK_PATH", "TIER_FILE_PATH", "LIVE_OK_UID", "LIVE_OK_GID"):
+            patcher = mock.patch.object(main, attr, getattr(h, attr))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def skips(self, e: Env) -> list[tuple[str, str | None]]:
+        """(reason, tipauth_reason) of every skip row: the reason is main's string; the tipauth cause rides beside it (R3)."""
+        return [(r["reason"], r.get("tipauth_reason")) for r in e.ledger("skip")]
+
 
 class SwitchOffFlowTests(FlowCase):
     def test_off_refuses_ws_ge_1_exactly_as_main_with_no_tipauth_vocabulary(self):
@@ -319,14 +512,33 @@ class SwitchOffFlowTests(FlowCase):
         self.assertNotIn("gate_path", json.dumps(self.counters(e)))
         self.assertEqual(e.ledger("decision")[0]["stake_lamports"], h.TIERS["T0"]["stake_lamports"])
 
-    def test_off_the_status_line_says_off(self):
+    def test_off_the_status_line_is_main_s_byte_for_byte_r10(self):
         e = self.start()
         self.append(e, self.tip_row(e, base_breaks_unresolved_settled=0))
         e.ex.intent_tick()
         out = h.status_report(e.conf)
-        self.assertIn("tipauth_gate=off tipauth_n=0", out)
+        self.assertNotIn("tipauth", out)
         self.assertIn("[live] attempts=1 (lifetime; 1/150 in T0)", out)
-        self.assertNotIn("tipauth_gate", out.split("[dryrun]")[0].split("\n")[0])  # not on the header line
+        main = _load_main()
+        if main is not None:
+            self.patch_main(main)
+            keep = lambda t: [ln for ln in t.splitlines() if ln.startswith(("[live]", "[dryrun]"))]  # (the header's part1= reads a repo-relative file: main is loaded from a temp path)
+            self.assertEqual(keep(out), keep(main.status_report(e.conf)))
+            self.assertTrue(keep(out)[-1].startswith("[live]"))
+
+    def test_status_shows_the_path_only_when_the_switch_is_on_or_the_counters_hold_class_state_r10(self):
+        e = self.start()
+        e.ex.counters.tipauth.update({"n_landed": 3, "mints": ["M1"]})
+        e.ex.counters.save(e.ex.counters_path)
+        self.assertIn(" tipauth_gate=off tipauth_n=3", h.status_report(e.conf))  # the flag is off but the class has state: say so
+        e2 = Env(self.tmp / "on", tipauth_gate="DEC-024-Am8")
+        self.assertIn(" tipauth_gate=on tipauth_n=0", h.status_report(e2.conf))  # on, no state yet
+        e2.ex.counters.tipauth["latched"] = {"reason": "class_loss_budget", "ts_ms": 1}
+        e2.ex.counters.save(e2.ex.counters_path)
+        self.assertIn(" tipauth_gate=latched_off tipauth_n=0", h.status_report(e2.conf))
+        for bad in ("DEC-024-am8", True, "yes", ""):
+            e3 = Env(self.tmp / f"x{bad!r}".replace("'", ""), tipauth_gate=bad)
+            self.assertNotIn("tipauth", h.status_report(e3.conf), bad)
 
 
 class SwitchOnFlowTests(FlowCase):
@@ -364,22 +576,49 @@ class SwitchOnFlowTests(FlowCase):
         r["base_tipauth"]["tipauth_nosettle"] = 1
         self.append(e, r)
         e.ex.intent_tick()
-        self.assertEqual(e.refusals(), ["tipauth:nosettle"])
+        self.assertEqual(self.skips(e), [(WS, "tipauth:nosettle")])  # R3: main's reason byte for byte, the cause in tipauth_reason
         self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(e.ex._refusal_counts, {WS: 1})  # the hourly count (and so the daily check's h5_feed_schema) sees main's string only
 
     def test_on_v2_rule_makes_the_path_unavailable(self):
         e = self.start(**self.ON)
         e.ex.exit_mode = h.EXIT_MODE_V2
         self.append(e, self.tip_row(e))
         e.ex.intent_tick()
-        self.assertEqual(e.refusals(), ["tipauth:rule_not_v1"])
+        self.assertEqual(self.skips(e), [(WS, "tipauth:rule_not_v1")])
         self.assertEqual(e.rpc.sent, [])
+
+    def test_r2f_the_path_needs_the_pv_variant(self):
+        e = self.start(**self.ON)
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        e.ex.trigger_variant = "fv"
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:variant_not_pv")
+        self.append(e, self.tip_row(e, variant="fv"))
+        e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:variant_not_pv")])
+        self.assertEqual(e.rpc.sent, [])
+        e.ex.exit_mode = h.EXIT_MODE_V2  # the rule is asked first
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:rule_not_v1")
+
+    def test_r3_every_tipauth_refusal_keeps_main_s_reason_and_only_the_skip_row_carries_the_cause(self):
+        e = self.start(**self.ON)
+        bad = self.tip_row(e)
+        bad["base_tipauth"]["dropped_n"] = 9
+        old_style = self.tip_row(e, base_breaks_unresolved_settled=None)
+        self.append(e, bad, old_style)
+        e.ex.intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:dropped_n"), (WS, None)])  # a non-int ws is main's refusal with no tipauth key
+        for row in e.ledger():
+            if row["kind"] != "skip":
+                self.assertNotIn("tipauth_reason", row)
+        self.assertEqual(e.alerts(), [])
+        self.assertTrue(all(k == WS for k in e.ex._refusal_counts))
 
     def test_a_handed_in_tagged_trigger_is_rechecked(self):
         e = self.start()  # switch off
         trg, _ = h.parse_shadow_trigger(self.tip_row(e), "pv", "")
         e.ex.handle_trigger(trg)
-        self.assertEqual(e.refusals(), ["tipauth:unavailable"])
+        self.assertEqual(self.skips(e), [(WS, "tipauth:unavailable")])  # R3 holds for the recheck too
         self.assertEqual(e.rpc.sent, [])
 
     def test_global_limits_still_apply_max_open_and_stop(self):
@@ -456,8 +695,9 @@ class ClassStateTests(FlowCase):
         # a trigger now is refused with the latch reason
         self.append(e, self.tip_row(e))
         ex2.intent_tick()
-        self.assertEqual(e.refusals()[-1], "tipauth:latched_off")
+        self.assertEqual(self.skips(e)[-1], (WS, "tipauth:latched_off"))
         self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(self.counters(e).get("halts") or {}, {})  # the class latch is a switch-off of the path, not one of the executor's HALTs
 
     def test_untagged_mints_do_not_count_toward_the_class(self):
         e = self.start(**self.ON)
@@ -495,17 +735,17 @@ class ClassStateTests(FlowCase):
         self.assertEqual(ex2._tipauth_availability(), "tipauth:look_pending")
         self.append(e, self.tip_row(e))
         ex2.intent_tick()
-        self.assertEqual(e.refusals()[-1], "tipauth:look_pending")
-        # a smaller ack does not release it; the right one does (config, so a reviewed reinstall)
+        self.assertEqual(self.skips(e)[-1], (WS, "tipauth:look_pending"))
+        # an ack that is not a look already written is "ahead"; the pending look's own number releases it (config, so a reviewed reinstall)
         e.conf["tipauth_look_ack"] = 24
-        self.assertEqual(e.build()._tipauth_availability(), "tipauth:look_pending")
+        self.assertEqual(e.build()._tipauth_availability(), "tipauth:look_ack_ahead")
         e.conf["tipauth_look_ack"] = 25
         ex3 = e.build()
         self.assertEqual(ex3._tipauth_availability(), "")
         for i in range(26, 51):
             ex3._note_tipauth_landed(f"M{i}")
         self.assertEqual([r["look"] for r in e.ledger("tipauth_look")], [25, 50])
-        self.assertEqual(ex3._tipauth_availability(), "tipauth:look_pending")
+        self.assertEqual(ex3._tipauth_availability(), "tipauth:look_pending")  # the stale ack 25 does not satisfy look 50
         e.conf["tipauth_look_ack"] = 50
         ex4 = e.build()
         for i in range(51, 101):
@@ -515,6 +755,54 @@ class ClassStateTests(FlowCase):
         e.conf["tipauth_look_ack"] = 100
         self.assertEqual(e.build()._tipauth_availability(), "")
         self.assertEqual(self.counters(e)["tipauth"]["n_landed"], 100)
+
+    def test_r8_an_ack_cannot_be_set_ahead_of_the_looks(self):
+        e = self.start(**self.ON)
+        self.assertEqual(e.ex._tipauth_availability(), "")  # no ack at all: fine, and no look is pending
+        for ack in (100, 25, 0, -1, 25.0, True, "25", None, [25]):  # nothing written yet: every present value is ahead (null included)
+            e.conf["tipauth_look_ack"] = ack
+            self.assertEqual(e.build()._tipauth_availability(), "tipauth:look_ack_ahead", repr(ack))
+        e.conf["tipauth_look_ack"] = 100  # a config that ships 100 at install does not skip looks 25, 50 and 100
+        self.append(e, self.tip_row(e))
+        e.build().intent_tick()
+        self.assertEqual(self.skips(e), [(WS, "tipauth:look_ack_ahead")])
+        self.assertEqual(e.rpc.sent, [])
+        for i in range(1, 26):
+            e.ex._note_tipauth_landed(f"M{i}")
+        self.assertEqual(e.ex.counters.tipauth["looks"], [25])
+        for ack, want in ((100, "tipauth:look_ack_ahead"), (50, "tipauth:look_ack_ahead"), (24, "tipauth:look_ack_ahead"), (25, "")):
+            e.conf["tipauth_look_ack"] = ack
+            self.assertEqual(e.build()._tipauth_availability(), want, ack)
+
+    def test_r8_if_look_50_arrives_before_25_is_acked_both_rows_exist_and_only_50_releases(self):
+        e = self.start(**self.ON)
+        for i in range(1, 51):
+            e.ex._note_tipauth_landed(f"M{i}")
+        self.assertEqual([r["look"] for r in e.ledger("tipauth_look")], [25, 50])
+        self.assertEqual(e.ex.counters.tipauth["pause_look"], 50)
+        e.conf["tipauth_look_ack"] = 25
+        self.assertEqual(e.build()._tipauth_availability(), "tipauth:look_pending")  # a written look, but not the pending one
+        e.conf["tipauth_look_ack"] = 50
+        self.assertEqual(e.build()._tipauth_availability(), "")
+
+    def test_the_class_loss_switch_off_is_not_a_halt_name(self):
+        src = Path(h.__file__).read_text()
+        self.assertNotIn('_latch("class_loss_budget"', src)
+        self.assertIn('self._tipauth_off("class_loss_budget")', src)
+        self.assertFalse(any(m == "class_loss_budget" for m in re.findall(r'_latch\("([a-z0-9_]+)"', src)))
+
+    def test_a_non_dict_tipauth_in_the_counters_file_refuses_to_start(self):
+        e = self.start(**self.ON)
+        path = Path(e.ex.counters_path)
+        d = json.loads(path.read_text())
+        for bad in ([], "x", 5, None, ["mints"]):
+            path.write_text(json.dumps({**d, "tipauth": bad}))
+            with self.assertRaises(SystemExit):
+                h.H5Counters.load(path, "live")
+            with self.assertRaises(SystemExit):
+                e.build()
+        path.write_text(json.dumps({**d, "tipauth": {}}))
+        self.assertEqual(h.H5Counters.load(path, "live").tipauth, {})
 
     def test_a_look_is_written_once_even_if_the_count_is_replayed(self):
         e = self.start(**self.ON)

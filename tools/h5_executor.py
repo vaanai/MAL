@@ -509,6 +509,9 @@ TIPAUTH_DROPPED_MAX = 5  # C4: 1 <= dropped_n <= 5. May only be lowered.
 TIPAUTH_STAKE_LAMPORTS = 20_000_000  # ruling D2: the class is 0.02 SOL at every tier
 TIPAUTH_LOSS_BUDGET_LAMPORTS = 40_000_000  # ruling D4: class realized at or below -0.04 SOL switches the path off (latched)
 TIPAUTH_LOOKS = (25, 50, 100)  # ruling D5: looks at this many landed tagged fills
+TIPAUTH_MARGIN_SLOTS = 4  # quant-proof R2 (a): the shadow's base_tipauth.margin_slots (tools/h5_shadow.py TIPAUTH_MARGIN_SLOTS). A different margin is a new rule and a new amendment.
+TIPAUTH_BOOST_SRC_OK = ("pda", "event_authority")  # quant-proof R1: the BOOST identities the executor trusts (the pool-row handler uses the same two); "none" and "behavioural" are not
+BASE_BREAKS_WS_REFUSAL = "bad_intent:base_breaks_unresolved_settled"  # quant-proof R3: the reason of the websocket refusal; a tipauth cause rides in `tipauth_reason`, never in `reason`
 
 
 def _int0(v: Any) -> bool:
@@ -544,7 +547,7 @@ def tipauth_gate(rec: Any, rule: str = "v1") -> tuple[bool, str]:
     if not _int0(bt.get("dropped_boost_n")):  # C3
         return False, "tipauth:dropped_boost"
     src = rec.get("boost_src")
-    if not isinstance(src, str) or src == "behavioural":
+    if not isinstance(src, str) or src not in TIPAUTH_BOOST_SRC_OK:  # R1: an allowlist; "none" (no BOOST identity known) made dropped_boost_n 0 by construction
         return False, "tipauth:boost_src"
     dn = bt.get("dropped_n")  # C4
     if not _is_int(dn) or not 1 <= dn <= TIPAUTH_DROPPED_MAX:
@@ -560,6 +563,37 @@ def tipauth_gate(rec: Any, rule: str = "v1") -> tuple[bool, str]:
         return False, "tipauth:dropped_first_slot"
     if rule != EXIT_MODE_V1:  # C6
         return False, "tipauth:rule_not_v1"
+    return _tipauth_consistent(rec, bu, bt)
+
+
+def _tipauth_consistent(rec: dict[str, Any], bu: dict[str, Any], bt: dict[str, Any]) -> tuple[bool, str]:
+    """C7 (quant-proof R2 a-f): the record agrees with itself and with the definitions of its fields, so a correct record never fails here. Each part
+    has its own reason. Fail closed: a missing, null, bool, float or string where an integer is wanted refuses."""
+    if not _is_int(bt.get("margin_slots")) or bt["margin_slots"] != TIPAUTH_MARGIN_SLOTS:  # (a)
+        return False, "tipauth:margin"
+    slot, lo, hi = rec.get("slot"), bt.get("cover_lo"), bt.get("cover_hi")  # (b)
+    first, last = bt.get("dropped_first_slot"), bt.get("dropped_last_slot")
+    if not all(_is_int(v) for v in (slot, lo, hi, first, last)) or not 0 <= lo < first <= last <= hi <= slot - TIPAUTH_MARGIN_SLOTS:
+        return False, "tipauth:slots"
+    tfs, hw = bu.get("tip_first_slot"), bu.get("tip_hw_slot_global")  # (c)
+    if not _is_int(tfs) or tfs != lo or not _is_int(hw) or hi != min(hw, slot) - TIPAUTH_MARGIN_SLOTS:
+        return False, "tipauth:cover"
+    dropped = bt.get("dropped")  # (d) dropped_n is an int in 1..5 here (C4)
+    if not isinstance(dropped, list) or len(dropped) != bt["dropped_n"]:
+        return False, "tipauth:dropped_list"
+    seen: set[tuple[str, int | None]] = set()
+    for e in dropped:
+        if not (isinstance(e, list) and len(e) == 3 and isinstance(e[0], str) and e[0] and (e[1] is None or _is_int(e[1])) and _is_int(e[2])
+                and first <= e[2] <= last and (e[0], e[1]) not in seen):
+            return False, "tipauth:dropped_list"
+        seen.add((e[0], e[1]))
+    if dropped[0][2] != first or dropped[-1][2] != last:
+        return False, "tipauth:dropped_list"
+    uw, ws = rec.get("base_breaks_unresolved_settled_union"), rec.get("base_breaks_unresolved_settled")  # (e)
+    if not _is_int(uw) or uw != ws:
+        return False, "tipauth:union_ne_ws"
+    if rec.get("h5_look2_sealed") is True or rec.get("sealed") is True:  # (f) no paper twin exists for a sealed record
+        return False, "tipauth:sealed_record"
     return True, "ok"
 
 
@@ -814,6 +848,8 @@ class H5Counters:
         if not path.exists():
             return cls(run_mode=run_mode)
         raw = json.loads(path.read_text())
+        if "tipauth" in raw and not isinstance(raw["tipauth"], dict):
+            raise SystemExit("counters file: tipauth is not an object; refusing to start")  # fail closed on a hand-edited file (the latch and the mint set live there)
         c = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
         if c.run_mode != run_mode:
             raise SystemExit(f"counters file run_mode {c.run_mode!r} does not match {run_mode!r}")
@@ -1559,8 +1595,11 @@ class H5Executor(pl.LiveExecutor):
         now = self.now_ms()
         self._refresh_tier(now)  # the ONE read of the tier file for this trigger: the limits below are the active tier's, and nothing re-reads it
         why = self._hard_refusal(trg, now)
+        extra: dict[str, Any] = {}
         if not why and trg.gate_path is not None:
-            why = self._tipauth_recheck(trg)  # defence in depth: a handed-in trigger tagged tipauth is judged against the switch, the latch and the rule again
+            cause = self._tipauth_recheck(trg)  # defence in depth: a handed-in trigger tagged tipauth is judged against the switch, the latch and the rule again
+            if cause:
+                why, extra = BASE_BREAKS_WS_REFUSAL, {"tipauth_reason": cause}  # R3: the same row as the parse-time refusal
         if not why and self.tier == "T2" and not T2_IMPACT_OK:
             why = "t2_impact_unchecked"  # only reachable if T2_IMPACT_OK is set back to False (e.g. a live-fill impact finding): T2 is then refused again
         would: str | None = None
@@ -1579,7 +1618,7 @@ class H5Executor(pl.LiveExecutor):
         if not why:
             why = self._balance_refusal(now)
         if why:
-            return self._refuse(trg, why)
+            return self._refuse(trg, why, **extra)
         with self._prio():
             ps, err, snap = self._static_for(trg, now)
             if ps is None:
@@ -2056,14 +2095,14 @@ class H5Executor(pl.LiveExecutor):
         self._accepted_hour += 1
         self._pre_unlinked_hour += 1 if unlinked else 0
 
-    def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False) -> None:
+    def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False, **extra: Any) -> None:
         """A trigger record that cannot be traded on. Ledgered. A shadow record that LACKS a required key is a schema mismatch (a detector that is
         not on the head this executor reads): that alerts at the first record, rate-limited to one per SCHEMA_ALERT_WINDOW_MS, and is not part of
         the hourly count. A bad VALUE counts: more than BAD_INTENT_ALERT_N in an hour is an alert (a broken detector looks like this)."""
         now = self.now_ms()
         if why == SYNTHETIC_UNCONFIRMED:
             return self._synthetic_unconfirmed(row, now)
-        self._log("skip", str(row.get("mint") or ""), reason=why)
+        self._log("skip", str(row.get("mint") or ""), reason=why, **extra)  # `extra` (tipauth_reason) goes on the skip row only: not counted, not alerted on
         self._count_refusal(why)
         if shadow and why.startswith("bad_intent:missing_"):
             if now - self._schema_alert_ms >= SCHEMA_ALERT_WINDOW_MS:
@@ -2190,6 +2229,8 @@ class H5Executor(pl.LiveExecutor):
                     trg, bad = parse_shadow_trigger(row, self.trigger_variant)  # switch off: the call is exactly main's
                 if trg is not None:
                     triggers.append(trg)
+                elif bad and bad.startswith("tipauth:"):  # R3: the skip row keeps main's reason byte for byte (the daily check's h5_feed_schema counts it); the cause is `tipauth_reason`
+                    self._bad_intent(row, BASE_BREAKS_WS_REFUSAL, shadow=True, tipauth_reason=bad)
                 elif bad:
                     self._bad_intent(row, bad, shadow=True)
             elif rtype == "gap":
@@ -2528,13 +2569,20 @@ class H5Executor(pl.LiveExecutor):
         """"" when the path may admit a trigger now; else the refusal reason. Called only with the switch on."""
         if self.exit_mode != EXIT_MODE_V1:
             return "tipauth:rule_not_v1"  # C6: v2 needs its own account
+        if self.trigger_variant != "pv":
+            return "tipauth:variant_not_pv"  # R2 (f): the evidence is on pv triggers only
         self._tipauth_check_budget()
         t = self.counters.tipauth
         if t.get("latched"):
             return "tipauth:latched_off"
         pause = t.get("pause_look")
-        ack = self.h5cfg.get("tipauth_look_ack")
-        if pause and not (_is_int(ack) and ack >= pause):  # a look is a human step: no automatic continuation
+        if "tipauth_look_ack" in self.h5cfg:  # R8: an acknowledgement is absent, or a look that was already written; it can never be set ahead of the looks
+            ack = self.h5cfg["tipauth_look_ack"]
+            if not (_is_int(ack) and ack in (t.get("looks") or [])):
+                return "tipauth:look_ack_ahead"
+        else:
+            ack = None
+        if pause and ack != pause:  # a look is a human step: no automatic continuation; only the pending look's own number releases it (an old or smaller ack never does)
             return "tipauth:look_pending"
         return ""
 
@@ -2926,7 +2974,8 @@ def status_report(cfg: dict[str, Any]) -> str:
                      f"today_realized_sol={today.get('realized', 0) / pe.LAMPORTS:.6f} halts={sorted(c.halts)} seal_skips={c.seal_skips} "
                      f"sells_landed={c.sells_landed} sells_late={c.sells_late} synthetic_unconfirmed={c.synthetic_unconfirmed} "
                      f"excluded={sum(c.excluded.values())} ({','.join(f'{k}:{n}' for k, n in sorted(c.excluded.items())) or 'none'})"
-                     + (f" tipauth_gate={tipauth_gate_state(cfg, c)} tipauth_n={int(c.tipauth.get('n_landed') or 0)}" if mode == LIVE else ""))
+                     + (f" tipauth_gate={tipauth_gate_state(cfg, c)} tipauth_n={int(c.tipauth.get('n_landed') or 0)}"
+                        if mode == LIVE and (cfg.get("tipauth_gate") == TIPAUTH_ENABLE_REF or c.tipauth) else ""))  # R10: nothing added while the path is off and has no state
     return "\n".join(lines)
 
 
