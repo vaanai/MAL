@@ -913,6 +913,20 @@ class ClassStateTests(FlowCase):
         self.assertEqual(e.build()._tipauth_availability(), "")
         self.assertEqual(self.counters(e)["tipauth"]["n_landed"], 100)
 
+    def test_the_look_row_and_the_docstring_say_what_the_code_does_exact_number_not_greater_or_equal(self):
+        """Quant-proof round 2, N1: the ledger instruction and the docstring said `tipauth_look_ack >= look`; the code releases on equality only."""
+        e = self.start(**self.ON)
+        for i in range(1, 26):
+            e.ex._note_tipauth_landed(f"M{i}")
+        action = e.ledger("tipauth_look")[0]["action"]
+        self.assertNotIn(">=", action)
+        self.assertIn("tipauth_look_ack to this look's number exactly", action)
+        self.assertNotIn(">=", h.H5Executor._note_tipauth_landed.__doc__)
+        self.assertIn("this look's number exactly", h.H5Executor._note_tipauth_landed.__doc__)
+        for ack, want in ((26, "tipauth:look_ack_ahead"), (50, "tipauth:look_ack_ahead"), (25, "")):  # what the text says to do releases it; a larger number does not
+            e.conf["tipauth_look_ack"] = ack
+            self.assertEqual(e.build()._tipauth_availability(), want, ack)
+
     def test_r8_an_ack_cannot_be_set_ahead_of_the_looks(self):
         e = self.start(**self.ON)
         self.assertEqual(e.ex._tipauth_availability(), "")  # no ack at all: fine, and no look is pending

@@ -2725,7 +2725,7 @@ class H5Executor(pl.LiveExecutor):
 
     def _note_tipauth_landed(self, mint: str) -> None:
         """A tagged buy landed: count it. At the looks (25, 50, 100) write a counts-only row and pause the path until a human acknowledges it
-        in the reviewed config (`tipauth_look_ack` >= the look). The comparison itself (ruling D5) is offline; this decides nothing from outcomes."""
+        in the reviewed config (`tipauth_look_ack` set to this look's number exactly; any other value, a larger one included, refuses). The comparison itself (ruling D5) is offline; this decides nothing from outcomes."""
         t = self.counters.tipauth
         n = t["n_landed"] = int(t.get("n_landed") or 0) + 1
         if n in TIPAUTH_LOOKS and n not in (t.get("looks") or []):
@@ -2733,7 +2733,7 @@ class H5Executor(pl.LiveExecutor):
             t["pause_look"] = n
             open_n = sum(1 for m in self.state.open if m in self._tipauth_mints)
             self._log("tipauth_look", "", look=n, n_landed=n, n_open=open_n, n_closed=n - open_n,
-                      action="path paused; compare tagged vs websocket-pass fills (ruling D5), then set config tipauth_look_ack >= look and reinstall")
+                      action="path paused; compare tagged vs websocket-pass fills (ruling D5), then set config tipauth_look_ack to this look's number exactly and reinstall")
         self.counters.save(self.counters_path)
 
     def _book_realized(self, delta: int, mint: str | None = None) -> None:
