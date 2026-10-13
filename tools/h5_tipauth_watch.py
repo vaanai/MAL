@@ -107,7 +107,8 @@ RPC_ERROR_RETRY_MS = 20_000
 RPC_HOLD_MS = 3_600_000  # no definitive answer after 60 minutes: hold
 TIP_HOLD_MS = 600_000  # the tip not past a watched trigger after 10 minutes: hold
 E2_HOLD_MS = 3_600_000
-E2_TAPE_MAX_MS = 2 * HOUR_MS
+E2_TAPE_MAX_MS = 2 * HOUR_MS  # the tape check for event 2 runs this long after the trigger, and longer for a trigger with no complete search yet (R-D)
+FUTURE_SKEW_MS = 60_000  # a t_detect_ms further ahead of the clock than this counts as old (R-E)
 START_SCAN_FILES = 400  # as the daily check: newest hour files searched for a start record
 START_LINE_MAX = 1_000_000
 READ_CHUNK = 4 * 1024 * 1024
@@ -237,13 +238,20 @@ def interpret(resp: Any) -> dict:
     return {"result": "error", "err": "malformed_result"}
 
 
+def counted_null(a: dict) -> bool:
+    """R-C: a null counts as a not-found only if its row names a control: the trigger print's own signature, found by the same endpoint at the trigger's slot, asked before it."""
+    return (a.get("result") == "null" and isint(a.get("asked_ms")) and isinstance(a.get("control_sig"), str) and isint(a.get("control_slot"))
+            and isint(a.get("control_asked_ms")) and a["control_asked_ms"] <= a["asked_ms"])
+
+
 def rpc_class(answers: list[dict]) -> str:
-    """none | found | not_found | pending | error (h5_tipauth_census.classify, plus `none` for never asked)."""
+    """none | found | not_found | pending | error (h5_tipauth_census.classify, plus `none` for never asked). A null without its control (`null_unverified`, or a stored `null` row
+    with no control keys) is not a not-found: it counts as no answer."""
     if not answers:
         return "none"
     if any(a.get("result") == "found" for a in answers):
         return "found"
-    nulls = sorted(a["asked_ms"] for a in answers if a.get("result") == "null" and isint(a.get("asked_ms")))
+    nulls = sorted(a["asked_ms"] for a in answers if counted_null(a))
     if len(nulls) >= 2 and nulls[-1] - nulls[0] >= RPC_REASK_MS:
         return "not_found"
     return "pending" if nulls else "error"
@@ -362,7 +370,7 @@ class Watch:
         self.offsets: dict[str, int] = {}
         self.bad_trigger_lines = 0
         self.start_cache: dict[str, tuple[int, int, dict | None, bool, bool]] = {}
-        self.resolved: dict[str, set[str]] = {"e1": set(), "e2": set()}
+        self.resolved: dict[str, set[str]] = {"e1": set(), "e2": set(), "e2s": set()}  # e2s: one complete tape search for the trigger's dropped signatures (R-D)
         self.rpc_rows: dict[str, list[dict]] = {}
         self.event_keys: set[str] = set()
         self.off_info: dict | None = None
@@ -379,10 +387,11 @@ class Watch:
     def _load(self) -> None:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         for r in read_jsonl(self.p["resolved"]):
-            if r.get("kind") in ("e1", "e2") and isinstance(r.get("tid"), str):
+            if r.get("kind") in ("e1", "e2", "e2s") and isinstance(r.get("tid"), str):
                 self.resolved[r["kind"]].add(r["tid"])
         for r in read_jsonl(self.p["rpc"]):
-            if isinstance(r.get("sig"), str) and r.get("result") in ("found", "null", "error") and isint(r.get("asked_ms")):
+            if (isinstance(r.get("sig"), str) and r.get("role") != "control" and r.get("result") in ("found", "null", "null_unverified", "error")
+                    and isint(r.get("asked_ms"))):
                 self.rpc_rows.setdefault(r["sig"], []).append(r)
         off_rows = []
         for r in read_jsonl(self.p["events"]):
@@ -657,16 +666,23 @@ class Watch:
             if left:
                 self.off_event(E2, f"{E2}|{tid}|close", {"via": "close_record_left_D", "tid": tid, "pool": t["pool"], "slot": t["slot"], "left_D_entries": [list(e) for e in left],
                                                           "close_t_ms": next((c["t_ms"] for c in self.closes.get(t["pool"], []) if isint(c.get("t_ms")) and isint(t["t_ms"]) and c["t_ms"] >= t["t_ms"]), None)})
-            elif classes and all(c == "still_dropped" for c in classes):
+            elif classes and all(c == "still_dropped" for c in classes) and tid in self.resolved["e2s"]:  # R-D: never before one complete tape search
                 self._mark("e2", tid)
 
+    def t_known(self, t: dict) -> int | None:
+        """The trigger's detection time for ages, or None (infinitely old) when it is unknown or more than FUTURE_SKEW_MS ahead of the clock (R-E)."""
+        te = t["t_eff"]
+        return None if te is None or te > self.now() + FUTURE_SKEW_MS else te
+
     def age(self, t: dict) -> float:
-        return float("inf") if t["t_eff"] is None else max(0, self.now() - t["t_eff"])
+        te = self.t_known(t)
+        return float("inf") if te is None else max(0, self.now() - te)
 
     def tape_phase(self, deadline_ms: int) -> None:
         hw = self.hw
         e1_due = [t for t in self.trig.values() if t["fields_ok"] and t["tid"] not in self.resolved["e1"] and hw is not None and hw - TIPAUTH_MARGIN_SLOTS >= t["slot"]]
-        e2_due = [t for t in self.trig.values() if t["fields_ok"] and t["tid"] not in self.resolved["e2"] and self.age(t) <= E2_TAPE_MAX_MS]
+        e2_due = [t for t in self.trig.values() if t["fields_ok"] and t["tid"] not in self.resolved["e2"]
+                  and (self.age(t) <= E2_TAPE_MAX_MS or t["tid"] not in self.resolved["e2s"])]
         want: dict[str, set[str]] = {}
         for t in e1_due:
             for h in wanted_hours(t["t_ms"]):
@@ -690,10 +706,16 @@ class Watch:
             for sig, lst in r.items():
                 rows.setdefault(sig, []).extend(dict(x, hour=h) for x in lst)
         for t in e2_due:  # event 2 by the tape: a tip row, in this pool, for a signature the trigger dropped. A hit is valid on a partial scan.
+            hits = 0
             for d in t["dropped"]:
                 hit = [x for x in rows.get(d[0], []) if x["pool"] == t["pool"]]
                 if hit:
+                    hits += 1
                     self.off_event(E2, f"{E2}|{t['tid']}|{d[0]}", {"via": "tip_tape", "tid": t["tid"], "pool": t["pool"], "signature": d[0], "dropped_slot": d[2], "tip_rows": hit[:3]})
+            hours2 = wanted_hours(t["t_ms"])
+            dsigs = {d[0] for d in t["dropped"]}
+            if (not hits and status.get(hour_name(t["t_ms"])) == "ok" and all(status.get(h) in ("ok", "missing") for h in hours2) and not (partial & dsigs)):
+                self._mark("e2s", t["tid"])  # one complete search, no row in that pool: a close record may now clear event 2
         for t in e1_due:  # event 1
             own = hour_name(t["t_ms"])
             match = [x for x in rows.get(t["signature"], []) if x["pool"] == t["pool"] and isint(x["event_index"]) and x["event_index"] == t["event_index"]]
@@ -715,12 +737,16 @@ class Watch:
     # -- the public RPC --
     def rpc_phase(self, deadline_ms: int) -> None:
         due: dict[str, tuple[int, list[str]]] = {}
-        for t in self.trig.values():
+        ctrl: dict[str, tuple[str, int]] = {}  # dropped signature -> (control signature, its slot): the print of the oldest usable trigger that dropped it
+        for t in sorted(self.trig.values(), key=lambda t: (self.t_known(t) if self.t_known(t) is not None else 0, t["tid"])):
+            t_eff = self.t_known(t) if self.t_known(t) is not None else 0
             for d in t["dropped"]:
-                t_eff = t["t_eff"] if t["t_eff"] is not None else 0
                 cur = due.get(d[0])
                 due[d[0]] = (min(cur[0], t_eff) if cur else t_eff, (cur[1] if cur else []) + [t["tid"]])
+                if t["fields_ok"] and isint(t["slot"]):
+                    ctrl.setdefault(d[0], (t["signature"], t["slot"]))
         asks = 0
+        controls: dict[tuple[str, int], int | None] = {}  # this cycle: control -> the instant it was found at its slot, or None
         for sig in sorted(due, key=lambda s: (due[s][0], s)):
             cls = rpc_class(self.rpc_rows.get(sig, []))
             if cls == "found":
@@ -731,19 +757,39 @@ class Watch:
                 continue
             ans = self.rpc_rows.get(sig, [])
             now = self.now()
-            nulls = sorted(a["asked_ms"] for a in ans if a["result"] == "null")
+            nulls = sorted(a["asked_ms"] for a in ans if counted_null(a))
             if nulls and now - nulls[0] < RPC_REASK_MS:
-                continue  # a not-found is asked again no earlier than 10 minutes after the first
+                continue  # a not-found is asked again no earlier than 10 minutes after the first counted one
             if ans and now - max(a["asked_ms"] for a in ans) < RPC_ERROR_RETRY_MS:
-                continue  # an error is retried, but not every few milliseconds
+                continue  # an error (or an unverified null) is retried, but not every few milliseconds
+            control_at: int | None = None
+            if sig in ctrl:  # the control first, in this cycle: the same endpoint must find the trigger's own signature at the trigger's slot
+                if ctrl[sig] not in controls:
+                    if asks:
+                        self.sleep(RPC_PACE_S)
+                    c_ms = self.now()
+                    c_ans = self._ask(ctrl[sig][0])
+                    if c_ans is None:  # a past call is still stuck: ask nothing more this cycle
+                        break
+                    asks += 1
+                    append_jsonl(self.p["rpc"], {"sig": ctrl[sig][0], "role": "control", "control_slot": ctrl[sig][1], "asked_ms": c_ms, **c_ans})
+                    controls[ctrl[sig]] = c_ms if (c_ans.get("result") == "found" and c_ans.get("slot") == ctrl[sig][1]) else None
+                control_at = controls[ctrl[sig]]
+            if asks >= RPC_MAX_ASKS or self.now() > deadline_ms:
+                continue
             if asks:
                 self.sleep(RPC_PACE_S)
             asked_ms = self.now()
-            ans_new = self._ask(sig)
-            if ans_new is None:  # a past call is still stuck: ask nothing more this cycle
+            new = self._ask(sig)
+            if new is None:
                 break
             asks += 1
-            row = {"sig": sig, "asked_ms": asked_ms, **ans_new}
+            if new.get("result") == "null":  # a null counts only with its control; without one it is stored as unverified
+                if control_at is not None:
+                    new = dict(new, control_sig=ctrl[sig][0], control_slot=ctrl[sig][1], control_asked_ms=control_at)
+                else:
+                    new = {"result": "null_unverified"}
+            row = {"sig": sig, "asked_ms": asked_ms, **new}
             self.rpc_rows.setdefault(sig, []).append(row)
             append_jsonl(self.p["rpc"], row)
             if row["result"] == "found":
@@ -812,7 +858,7 @@ class Watch:
         sigs: dict[str, int] = {}
         for t in ws:
             for d in t["dropped"]:
-                sigs[d[0]] = min(sigs.get(d[0], 1 << 62), t["t_eff"] if t["t_eff"] is not None else 0)
+                sigs[d[0]] = min(sigs.get(d[0], 1 << 62), self.t_known(t) if self.t_known(t) is not None else 0)
         if any(rpc_class(self.rpc_rows.get(s, [])) not in ("found", "not_found") and now - due > RPC_HOLD_MS for s, due in sigs.items()):
             h.append("rpc_no_answer_60m")
         if any(t["fields_ok"] and t["tid"] not in self.resolved["e2"] and self.age(t) > E2_HOLD_MS for t in ws):
@@ -849,7 +895,6 @@ class Watch:
         t0 = self.now()
         self.last_error = []
         self.caught_up = bool(self._guard("shadow", self.poll_shadow, t0 + SHADOW_BUDGET_MS, default=False))
-        self._guard("closes", self.eval_closes)
         rec = self._guard("start", self.find_start, self.now() + START_BUDGET_MS, default=(None, False, False))
         sha = rec[0].get("code_sha") if rec and rec[0] is not None else None
         self.observed_sha = sha if isinstance(sha, str) else None
@@ -857,6 +902,7 @@ class Watch:
         self.start_unreadable = bool(rec and rec[2])
         self.hw = self._guard("tip_hw", self.tip_hw)
         self._guard("tape", self.tape_phase, self.now() + TAPE_BUDGET_MS)
+        self._guard("closes", self.eval_closes)  # after the tape phase: a close clears event 2 only after a complete tape search (R-D)
         self._guard("rpc", self.rpc_phase, self.now() + RPC_BUDGET_MS)
         try:
             v, r = self.verdict()

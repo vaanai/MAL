@@ -84,12 +84,26 @@ class Env(unittest.TestCase):
         self.t = [NOW]
         self.calls: list[tuple[int, str]] = []
         self.rpc_fn = lambda sig, now: {"result": None}  # not found
+        self.known_sigs: dict[str, int] = {}  # trigger print signatures written by shadow(): on chain at their slot, they are the controls of R-C
+        self.control_mode = "found"  # found | other_slot | null | error
+        self.control_calls: list[tuple[int, str]] = []
+        self.seq: list[str] = []
 
     def now(self):
         return self.t[0]
 
     def rpc(self, url, payload, timeout):
         sig = payload["params"][0]
+        self.seq.append(sig)
+        if sig in self.known_sigs:  # a control: the trigger print's own signature
+            self.control_calls.append((self.now(), sig))
+            if self.control_mode == "found":
+                return {"result": {"slot": self.known_sigs[sig]}}
+            if self.control_mode == "other_slot":
+                return {"result": {"slot": self.known_sigs[sig] + 1}}
+            if self.control_mode == "null":
+                return {"result": None}
+            raise ConnectionError("control down")
         self.calls.append((self.now(), sig))
         return self.rpc_fn(sig, self.now())
 
@@ -97,6 +111,9 @@ class Env(unittest.TestCase):
         return W.Watch(self.sd, self.tp, self.out, sha, from_ms, URL, rpc=self.rpc, now_ms=self.now, sleep=lambda s: None)
 
     def shadow(self, recs, hour_ms=NOW, compact=False, raw_tail=""):
+        for r in recs:
+            if isinstance(r, dict) and r.get("type") == "trigger" and isinstance(r.get("signature"), str):
+                self.known_sigs[r["signature"]] = r.get("slot")
         with open(self.sd / f"h5-shadow-{hname(hour_ms)}.jsonl", "a", encoding="utf-8") as fh:
             for r in recs:
                 fh.write((json.dumps(r, separators=(",", ":")) if compact else json.dumps(r)) + "\n")
@@ -299,7 +316,7 @@ class TestOffEvent1(Env):
         w = self.mk()
         w.cycle()
         self.assertEqual(self.events(), [])
-        self.assertEqual(W.read_jsonl(self.out / "resolved.jsonl")[0]["kind"], "e1")
+        self.assertIn("e1", [r["kind"] for r in W.read_jsonl(self.out / "resolved.jsonl")])
 
     def test_not_judged_until_the_tip_is_4_slots_past_the_trigger(self):
         self.shadow([start(), trig()])
@@ -444,7 +461,7 @@ class TestOffEvent3AndRpc(Env):
         self.baseline()
         with mock.patch.object(W, "request_payload", wraps=W.request_payload) as rp:
             self.mk().cycle()
-        self.assertEqual(rp.call_count, 1)
+        self.assertEqual(rp.call_count, 2)  # the control (the trigger print's own signature) and the dropped signature
         p = W.request_payload("X1")
         self.assertEqual((p["method"], p["params"][1]["commitment"]), ("getTransaction", "finalized"))
 
@@ -538,7 +555,7 @@ class TestOffEvent3AndRpc(Env):
         self.shadow([start(), *recs])
         self.tape([tape_row(sig="FILLER", pool="PX", slot=210)] + [tape_row(sig=f"SIG{i}", pool=f"Q{i}") for i in range(5)])
         self.mk().cycle()
-        self.assertEqual(len(self.calls), W.RPC_MAX_ASKS)
+        self.assertEqual(len(self.calls) + len(self.control_calls), W.RPC_MAX_ASKS)  # controls count against the per-cycle bound
 
 
 class TestHolds(Env):
@@ -747,7 +764,7 @@ class TestFreshness(Env):
         w.run(max_cycles=6)
         gaps = [b - a for a, b in zip(stamps, stamps[1:])]
         self.assertEqual(len(stamps), 6)
-        self.assertTrue(all(g == 30_000 for g in gaps), gaps)
+        self.assertTrue(all(29_000 <= g <= 30_000 for g in gaps), gaps)  # the first cycle's pacing sleep between its two RPC asks is counted in its length
         self.assertTrue(all(g <= 60_000 for g in gaps))
 
     def test_slow_phases_cannot_starve_the_state_write(self):
@@ -1036,8 +1053,8 @@ class TestRpcTotalDeadline(Env):
             st = w.cycle()
         self.assertLess(time.monotonic() - t0, 3.0)
         self.assertEqual(self.state()["ts_ms"], st["ts_ms"])  # state.json was written
-        self.assertEqual(srv.accepted, 1)
-        rows = W.read_jsonl(self.out / "rpc_log.jsonl")
+        self.assertEqual(srv.accepted, 2)  # the control, then the dropped signature
+        rows = [r for r in W.read_jsonl(self.out / "rpc_log.jsonl") if r["sig"] == "DROPA"]
         self.assertEqual([r["result"] for r in rows], ["error"])  # not a null, although the late answer would have been one
         self.assertEqual(W.rpc_class(w.rpc_rows["DROPA"]), "error")
 
@@ -1048,6 +1065,8 @@ class TestRpcTotalDeadline(Env):
         started = []
 
         def blocked(url, payload, timeout):
+            if payload["params"][0] == "SIGT1":  # the control answers at once
+                return {"result": {"slot": 200}}
             started.append(payload["params"][0])
             release.wait(5)
             return {"result": None}  # the late answer, a null
@@ -1060,11 +1079,11 @@ class TestRpcTotalDeadline(Env):
             w.cycle()  # the first call is still stuck: no second call is started
         self.assertLess(time.monotonic() - t0, 3.0)
         self.assertEqual(len(started), 1)
-        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl")], ["error"])
+        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl") if r["sig"] == "DROPA"], ["error"])
         release.set()
         time.sleep(0.3)  # the late answer arrives after its deadline and is dropped
         self.assertEqual([r["result"] for r in w.rpc_rows["DROPA"]], ["error"])
-        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl")], ["error"])
+        self.assertEqual([r["result"] for r in W.read_jsonl(self.out / "rpc_log.jsonl") if r["sig"] == "DROPA"], ["error"])
 
     def test_state_is_rewritten_never_more_than_60_seconds_apart_with_a_real_slow_socket(self):
         """The spec bullet with the real clock and the constants scaled down by 100: a cycle every CYCLE_S, the worst gap is bounded by CYCLE_S + the cycle budgets."""
@@ -1083,6 +1102,170 @@ class TestRpcTotalDeadline(Env):
     def test_the_gap_arithmetic_counts_the_call_deadline_and_the_pacing_sleep(self):
         worst_cycle_ms = W.SHADOW_BUDGET_MS + W.START_BUDGET_MS + W.TAPE_BUDGET_MS + W.RPC_BUDGET_MS + int((W.RPC_TIMEOUT_S + W.RPC_DEADLINE_GRACE_S) * 1000) + int(W.RPC_PACE_S * 1000)
         self.assertLessEqual(int(W.CYCLE_S * 1000) + worst_cycle_ms + 4_000, 60_000)
+
+
+class TestRpcControl(Env):
+    """R-C: a null for a dropped signature counts as a not-found only if, in the same cycle and before it, the same endpoint found the trigger's own signature at the
+    trigger record's slot. An endpoint that answers null for everything is blind: it never clears and ends in the 60 minute hold."""
+
+    def test_an_endpoint_that_answers_null_for_everything_never_clears(self):
+        self.baseline()
+        self.shadow([close()])
+        self.control_mode = "null"
+        w = self.mk()
+        for m in (0, 11, 12, 600):
+            self.t[0] = NOW + m * MIN
+            st = w.cycle()
+            self.assertEqual(st["clear_n"], 0, m)
+            if m < 60:
+                self.assertEqual(st["verdict"], "ok", (m, st))
+        self.assertEqual(st["verdict"], "hold")
+        self.assertIn("rpc_no_answer_60m", st["reason"])  # a blind endpoint ends here
+        self.assertEqual({r["result"] for r in w.rpc_rows["DROPA"]}, {"null_unverified"})
+        self.assertEqual(W.rpc_class(w.rpc_rows["DROPA"]), "error")
+
+    def test_control_found_then_two_nulls_ten_minutes_apart_clear_and_the_row_names_the_control(self):
+        self.baseline()
+        self.shadow([close()])
+        w = self.mk()
+        w.cycle()
+        self.advance(W.RPC_REASK_MS)
+        st = w.cycle()
+        self.assertEqual((st["verdict"], st["clear_n"]), ("ok", 1))
+        for row in w.rpc_rows["DROPA"]:
+            self.assertEqual((row["result"], row["control_sig"], row["control_slot"]), ("null", "SIGT1", 200))
+            self.assertLessEqual(row["control_asked_ms"], row["asked_ms"])
+        self.assertEqual(self.seq, ["SIGT1", "DROPA", "SIGT1", "DROPA"])  # the control is asked first, in the same cycle, every round
+
+    def test_a_control_that_errors_is_null_or_is_found_at_another_slot_does_not_count(self):
+        for mode in ("null", "error", "other_slot"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.baseline()
+                self.shadow([close()])
+                self.control_mode = mode
+                w = self.mk()
+                for _ in range(3):
+                    w.cycle()
+                    self.advance(W.RPC_REASK_MS)
+                st = w.cycle()
+                self.assertEqual(st["clear_n"], 0)
+                self.assertEqual(W.rpc_class(w.rpc_rows["DROPA"]), "error")
+                self.assertTrue(all(r["result"] == "null_unverified" for r in w.rpc_rows["DROPA"]))
+
+    def test_an_unverified_null_does_not_start_the_ten_minute_clock(self):
+        self.baseline()
+        self.shadow([close()])
+        self.control_mode = "null"
+        w = self.mk()
+        w.cycle()
+        self.control_mode = "found"  # the endpoint recovers 3 minutes later
+        self.advance(3 * MIN)
+        w.cycle()  # the first counted null
+        self.advance(9 * MIN)
+        self.assertEqual(w.cycle()["clear_n"], 0)  # 12 minutes after the unverified null, but only 9 after the first counted one
+        self.advance(MIN)
+        self.assertEqual(w.cycle()["clear_n"], 1)
+
+    def test_a_stored_null_without_control_keys_does_not_count(self):
+        self.baseline()
+        self.shadow([close()])
+        self.out.mkdir(parents=True, exist_ok=True)
+        rows = [{"sig": "DROPA", "asked_ms": NOW - 20 * MIN, "result": "null"}, {"sig": "DROPA", "asked_ms": NOW - 9 * MIN, "result": "null"},
+                {"sig": "DROPA", "asked_ms": NOW - 5 * MIN, "result": "null", "control_sig": "SIGT1"}]  # incomplete control keys
+        (self.out / "rpc_log.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        w = self.mk()
+        self.assertEqual(W.rpc_class(w.rpc_rows["DROPA"]), "error")
+        self.assertEqual(w.cycle()["clear_n"], 0)
+
+    def test_counted_nulls_survive_a_restart(self):
+        self.baseline()
+        self.shadow([close()])
+        self.mk().cycle()
+        first = W.read_jsonl(self.out / "rpc_log.jsonl")
+        self.assertTrue(any(r["sig"] == "DROPA" and r.get("control_sig") == "SIGT1" for r in first))
+        self.advance(W.RPC_REASK_MS)
+        self.assertEqual(self.mk().cycle()["clear_n"], 1)
+
+    def test_a_found_dropped_signature_needs_no_control(self):
+        self.baseline()
+        self.control_mode = "null"
+        self.rpc_fn = lambda sig, now: {"result": {"slot": 1}}
+        self.mk().cycle()
+        self.assertEqual(self.state()["reason"], f"off:{W.E3}")
+
+
+class TestEvent2NeedsATapeSearch(Env):
+    """R-D: a close record may clear event 2 only after one complete tape search for the trigger's dropped signatures (same cycle or earlier)."""
+
+    def test_trigger_and_close_read_in_the_same_cycle_still_search_the_tape(self):
+        self.baseline(extra_tape=[tape_row(sig="DROPA", pool="P1", ei=0, slot=105)])
+        self.shadow([close()])  # the close still lists DROPA
+        st = self.mk().cycle()
+        self.assertEqual((st["verdict"], st["reason"]), ("off", f"off:{W.E2}"))
+        self.assertEqual(self.events()[0]["evidence"]["via"], "tip_tape")
+
+    def test_the_same_tape_with_the_close_one_cycle_later_is_off_too(self):
+        self.baseline(extra_tape=[tape_row(sig="DROPA", pool="P1", ei=0, slot=105)])
+        self.assertEqual(self.mk().cycle()["verdict"], "off")
+
+    def test_a_usable_close_with_an_incomplete_search_does_not_clear_and_holds_at_60_minutes(self):
+        self.shadow([start(), trig(), close()])  # no tape at all: the own-hour file is missing, the search cannot be complete
+        w = self.mk()
+        w.cycle()
+        self.assertNotIn("e2", [r["kind"] for r in W.read_jsonl(self.out / "resolved.jsonl")])
+        self.advance(60 * MIN)
+        st = w.cycle()
+        self.assertEqual(st["verdict"], "hold")
+        self.assertIn("event2_unresolved_60m", st["reason"])
+
+    def test_the_first_complete_search_after_the_close_clears_it_and_survives_a_restart(self):
+        self.shadow([start(), trig(), close()])
+        w = self.mk()
+        w.cycle()
+        self.tape([tape_row(), tape_row(sig="FILLER", pool="PX", slot=210)])  # the tape file appears
+        self.advance(30_000)
+        st = w.cycle()
+        self.assertIn("e2", [r["kind"] for r in W.read_jsonl(self.out / "resolved.jsonl")])
+        self.assertEqual(st["verdict"], "ok")
+        for p in self.tp.iterdir():
+            p.unlink()  # the tape rotated away: the search on record is not repeated
+        self.advance(30_000)
+        self.assertEqual(self.mk().cycle()["verdict"], "ok")
+
+    def test_the_search_continues_past_two_hours_for_a_trigger_that_never_had_a_complete_one(self):
+        self.shadow([start(), trig(), close()])
+        w = self.mk()
+        w.cycle()
+        self.advance(3 * H)
+        self.tape([tape_row(sig="DROPA", pool="P1", ei=0, slot=105), tape_row(sig="FILLER", pool="PX", slot=210)])
+        st = w.cycle()
+        self.assertEqual((st["verdict"], st["reason"]), ("off", f"off:{W.E2}"))
+
+
+class TestFutureTriggerTime(Env):
+    """R-E: a t_detect_ms more than a minute ahead of the clock counts as old (infinite age), so the 10 and 60 minute holds can start."""
+
+    def test_a_trigger_time_400_days_ahead_holds(self):
+        self.shadow([start(), trig(t=NOW + 400 * 24 * H)])
+        self.tape([tape_row(sig="FILLER", pool="PX", slot=190)])  # the tip never passes the trigger
+        self.rpc_fn = lambda sig, now: (_ for _ in ()).throw(ConnectionError("down"))
+        w = self.mk()
+        for m in (0, 11, 61, 1440):
+            self.t[0] = NOW + m * MIN
+            st = w.cycle()
+            self.assertEqual(st["verdict"], "hold", m)
+            self.assertIn("tip_not_past_trigger", st["reason"])
+        self.assertIn("rpc_no_answer_60m", st["reason"])
+
+    def test_skew_up_to_a_minute_is_not_old_and_beyond_it_is(self):
+        self.shadow([start(), trig(t=NOW + 59_000)])
+        self.tape([tape_row(sig="FILLER", pool="PX", slot=190)])
+        self.assertEqual(self.mk().cycle()["verdict"], "ok")
+        self.setUp()
+        self.shadow([start(), trig(t=NOW + 61_050)])
+        self.tape([tape_row(sig="FILLER", pool="PX", slot=190)])
+        self.assertEqual(self.mk().cycle()["verdict"], "hold")
 
 
 class TestStartRecordUnreadable(Env):
