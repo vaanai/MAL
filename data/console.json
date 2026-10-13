@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T00:54:23Z",
+ "updated_utc": "2026-10-13T07:19:04Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-structure-stop-1013",
+   "kind": "other",
+   "title": "H5 stopped: pump.fun fees program redeployed",
+   "detail": "The daily structure check (07:11 UTC, 2026-10-13) halted on a changed program pin: the pump.fun fees program was redeployed on 2026-10-12 at 17:40:24 UTC. The manager placed STOP at 07:14:44 UTC with nothing open and nothing pending. The other five structure checks were clear. Resume needs the manager's mechanism review, a re-pin with quant-proof's OK and one clean structure run (DEC-024 Amendment 7 item 2).",
+   "atUtc": "2026-10-13T07:14:44Z"
+  },
   {
    "id": "h5-presend-fix-installed-1013",
    "kind": "other",
@@ -430,9 +437,9 @@
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
-   "note": "Canary live at the smallest stake (T0, 0.02 SOL): 11 attempts, 11 sells landed, nothing open, no stop or halt at 2026-10-13T00:21Z (job #896). It halted itself once on 10-12 on a late buy and was cleared by the manager; Helm installed the late-signal fix at 2026-10-13T00:42Z; no step to T1 until a daily health check run after 18:28:03Z on 10-13 is clean, and then only with the Amendment 3 conditions at 20 landed buys. Unpromoted, not evidence. Look 1 counts [10-10, 10-16) and is not halted (no A3 halt flag; this run's 333 s feeds its 330 s window check); Look 2 to 11-06. Synthetic pools excluded (Am.4). Expected FAIL per the pre-registration (P(Look 1 pass) about 0.03).",
+   "note": "Canary STOPPED since 2026-10-13T07:14:44Z (job #908): the daily structure monitor (job #907) halted on pins_changed, the pump fees program having been redeployed on 2026-10-12T17:40:24Z. 11 attempts, 11 sells landed, nothing open. Resume only by DEC-024 Amendment 7 item 2 (mechanism review, re-pin with quant-proof's OK, one clean structure run). Smallest stake (T0, 0.02 SOL); it halted itself once on 10-12 on a late buy; Helm installed the late-signal fix at 2026-10-13T00:42Z. Unpromoted, not evidence. Look 1's window is [10-10, 10-16): section 11 as written ends the read NOT_DECIDABLE on a structure halt inside the window, with no later look (manager's reading; quant-proof's ruling owed; not yet recorded in the EXP file). Synthetic pools excluded (Am.4).",
    "tag": {
-    "text": "canary live, T0",
+    "text": "canary stopped (structure halt)",
     "tone": "warn"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-h5-boostfloor-part1-prereg.md"
@@ -463,7 +470,7 @@
    "id": "EXP-022",
    "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
    "stage": "pre-registered",
-   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
+   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn. 2026-10-13: the structure monitor halted on a redeployed fees program (pins_changed); not fatal before counting. A halt in the last run before 10-16T01Z (the 10-15 06:41Z run) withdraws CAP-PICK, so the re-pin has to be in place before that run [manager's reading].",
    "tag": {
     "text": "kill test",
     "tone": "muted"
@@ -623,10 +630,16 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261013-h5-structure-stop",
+   "from": "claude",
+   "atUtc": "2026-10-13T07:19:04Z",
+   "text": "For you: H5 is stopped since 07:14 UTC on 10-13. The daily structure check found that pump.fun redeployed its fees program on 10-12 at 17:40 UTC, and the trial rules require a stop when a pinned program changes. Nothing was open and nothing is pending (11 attempts, 11 sells landed). The other five structure checks were clear: BOOST is on, its budget and slice count match the pins, and the median last BOOST slice came 332 s after migration over 17 pools (the halt line is below 315 s). Resume follows the answer you gave on 10-11: I review that the upgrade leaves the BOOST mechanics and fees unchanged, re-pin with quant-proof's OK, get one clean structure run, then resume and tell you. If the review finds a change to fees or BOOST, H5 stays stopped until you decide. One more consequence: my reading of the rules is that a structure halt inside the counting week (10-10 to 10-16) ends H5's formal test (EXP-024) as not decidable, with no later look, even if the next check is clean. Quant-proof's ruling on that is owed, and the EXP file is not amended yet. CAP-PICK is not withdrawn; a halt in its last structure run before 10-16 01:00 UTC (the 10-15 run) would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
+  },
+  {
    "id": "fy-20261013-presend-installed",
    "from": "claude",
    "atUtc": "2026-10-13T00:54:23Z",
-   "text": "For you (no action needed): Helm installed the late-signal fix at 00:42 UTC on 10-13, and my own checks agree with Helm's report where I could check it. The installed files match the reviewed version, the new 3.5 s limit is the one running, and H5 is live at the smallest stake (0.02 SOL) with 11 attempts, 11 sells landed, nothing open and no halt. Buying was closed for about 11 minutes during the switch (Helm's report). One check is still open: the daily health check still shows yesterday's 18:28 UTC halt in its 24-hour window, so a rerun is owed after 18:28:03 UTC today. Until that check is clean there is no step to the next size. A clean check removes only this one block: the step still needs 20 landed buys (11 so far) and the other conditions of the trial plan. H5 has not cleared the promotion gate."
+   "text": "Superseded in part: H5 was stopped at 07:14 UTC on 10-13 (see the newer entry). For you (no action needed): Helm installed the late-signal fix at 00:42 UTC on 10-13, and my own checks agree with Helm's report where I could check it. The installed files match the reviewed version, the new 3.5 s limit is the one running, and H5 is live at the smallest stake (0.02 SOL) with 11 attempts, 11 sells landed, nothing open and no halt. Buying was closed for about 11 minutes during the switch (Helm's report). One check is still open: the daily health check still shows yesterday's 18:28 UTC halt in its 24-hour window, so a rerun is owed after 18:28:03 UTC today. Until that check is clean there is no step to the next size. A clean check removes only this one block: the step still needs 20 landed buys (11 so far) and the other conditions of the trial plan. H5 has not cleared the promotion gate."
   },
   {
    "id": "fy-20261013-helm-presend",
@@ -846,6 +859,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261013-0719",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-13T07:19:04Z",
+   "text": "07:19Z: H5 STOPPED at 07:14:44Z. The structure monitor (job #907) halted on pins_changed: pump fees program redeployed at slot 456132171 (2026-10-12T17:40:24Z); program_changed fired; the other five flags clear (last slice median 332 s, 17 pools). STOP verified (job #908): attempts 11, open 0, pending 0, no halt latched. One canary buy row is dated after the deploy instant (job #909, kind and time keys only). Resume path: DEC-024 Amendment 7 item 2 (review, re-pin with quant-proof's OK, clean A3 run). Manager's reading: EXP-024 section 11 ends the read NOT_DECIDABLE on an A3 halt inside Look 1's window; quant-proof's ruling on that reading is owed and the EXP file is not amended yet. CAP-PICK: a halt in the 10-15 06:41Z run would withdraw it, so the re-pin has to be in place before that run [manager's reading]. H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261013-0054",
    "from": "claude",
