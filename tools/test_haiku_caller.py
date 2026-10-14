@@ -13,7 +13,6 @@ import stat
 import threading
 import time
 import traceback
-from pathlib import Path
 
 import pytest
 
@@ -182,7 +181,6 @@ def test_budget_boundary_equal_is_allowed_and_one_ulp_less_is_refused(monkeypatc
     worst = hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
     seed_ledger(tmp_path, 0.25)
     exact = 0.25 + worst
-    caller(tmp_path, budget=math.nextafter(exact, 0.0)).__class__  # constructing is fine
     with pytest.raises(hc.BudgetExceeded):
         caller(tmp_path, budget=math.nextafter(exact, 0.0)).call(**r)
     assert t.calls == []

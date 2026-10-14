@@ -508,7 +508,8 @@ class HaikuCaller:
         try:
             if not d.is_dir():
                 d.parent.mkdir(parents=True, exist_ok=True)
-                os.mkdir(d, 0o700)
+                with contextlib.suppress(FileExistsError):  # another process may create it first
+                    os.mkdir(d, 0o700)
             if not os.access(d, os.W_OK | os.X_OK):
                 raise OSError
         except OSError:
