@@ -1,0 +1,63 @@
+{
+ "new_pins": {
+  "pins_check": {
+   "changed": [],
+   "ok": [
+    "bonding_fee_config",
+    "pumpswap_fee_config",
+    "pumpswap_global_config",
+    "program_pump",
+    "program_pumpswap",
+    "program_fees"
+   ],
+   "unpinned": [],
+   "unread": []
+  },
+  "program_hashes": {
+   "changed": [],
+   "ok": [
+    "pump",
+    "pumpswap",
+    "fees"
+   ],
+   "unpinned": [],
+   "unread": []
+  }
+ },
+ "old_pins": {
+  "pins_check": {
+   "changed": [
+    "program_pump deploy_slot 454596459 -> 456494698 (2026-10-13T15:40:41Z)"
+   ],
+   "ok": [
+    "bonding_fee_config",
+    "pumpswap_fee_config",
+    "pumpswap_global_config",
+    "program_pumpswap",
+    "program_fees"
+   ],
+   "unpinned": [],
+   "unread": []
+  },
+  "program_hashes": {
+   "changed": [
+    {
+     "new_data_len": 10485760,
+     "new_deploy_slot": 456494698,
+     "new_sha256": "ba1f91ac91dd8c578fd069230601f090775b88acbeecd680bde10d90e3606671",
+     "old_data_len": 10485760,
+     "old_deploy_slot": 454596459,
+     "old_sha256": "8c8f6aae2324281b2199c4314e6a041b707ef0cb9bcb132c677b7bb6289d8772",
+     "program": "pump"
+    }
+   ],
+   "ok": [
+    "pumpswap",
+    "fees"
+   ],
+   "unpinned": [],
+   "unread": []
+  }
+ },
+ "record_run_utc": "2026-10-14T07:11:10Z"
+}

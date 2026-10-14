@@ -1,0 +1,94 @@
+{
+ "attempts": 6,
+ "block_time_max": 1791962648,
+ "block_time_min": 1791957118,
+ "by_method": {
+  "getMultipleAccounts": 2,
+  "getTransaction": 4
+ },
+ "curve_acct_found": 60,
+ "curve_quote_mint_matches_migration": {
+  "equal": 4,
+  "native_or_wsol": 56
+ },
+ "curve_space": {
+  "166": 60
+ },
+ "errs": {},
+ "graduate_depth": {
+  "other/depth=0": 2,
+  "other/depth=1": 2,
+  "wsol/depth=0": 56
+ },
+ "init_boost": {
+  "false": 18,
+  "true": 42
+ },
+ "mayhem": {
+  "False": 42,
+  "True": 18
+ },
+ "migrate_ix": {
+  "Migrate": 5,
+  "MigrateV2": 55
+ },
+ "n": 60,
+ "n_distinct_other_quote_mints": 4,
+ "non_wsol": [
+  {
+   "depth": 1,
+   "init_boost": true,
+   "mayhem": false,
+   "migrate_ix": "MigrateV2",
+   "quote_class": "other",
+   "quote_coin_depth": 0,
+   "quote_is_pump_coin": true,
+   "quote_mint": "E447xHwX...",
+   "sig": "2CU49bSJv8xb",
+   "slot": 456751899
+  },
+  {
+   "depth": 1,
+   "init_boost": true,
+   "mayhem": false,
+   "migrate_ix": "MigrateV2",
+   "quote_class": "other",
+   "quote_coin_depth": 0,
+   "quote_is_pump_coin": true,
+   "quote_mint": "HgTGdc29...",
+   "sig": "4LkxZ9FT8HR6",
+   "slot": 456745575
+  },
+  {
+   "depth": 0,
+   "init_boost": true,
+   "mayhem": false,
+   "migrate_ix": "MigrateV2",
+   "quote_class": "other",
+   "quote_coin_depth": null,
+   "quote_is_pump_coin": false,
+   "quote_mint": "DJTu7vi8...",
+   "sig": "4MkqsLQ3mdbk",
+   "slot": 456737304
+  },
+  {
+   "depth": 0,
+   "init_boost": true,
+   "mayhem": false,
+   "migrate_ix": "MigrateV2",
+   "quote_class": "other",
+   "quote_coin_depth": null,
+   "quote_is_pump_coin": false,
+   "quote_mint": "Xsf9mBkt...",
+   "sig": "655pSy5CiJek",
+   "slot": 456729213
+  }
+ ],
+ "quote_class": {
+  "other": 4,
+  "wsol": 56
+ },
+ "slot_max": 456754256,
+ "slot_min": 456728763,
+ "synthetic_hint_post_complete_in_tx": 0
+}
