@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-14T00:06:55Z",
+ "updated_utc": "2026-10-14T01:26:13Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-sent-count-36h-1014",
+   "kind": "other",
+   "title": "H5: sent-count tool merged and run once; DEC-024 Amendment 9 not evaluated on this check",
+   "detail": "The sent-count tool (PR #644) was merged at 01:18 UTC on 10-14 with the reviewer's verdict and quant-proof's OK on the same head, and ran once on the follow-up check of the 36-hour read (job #985). On this check the stop rule of DEC-024 Amendment 9 is not evaluated, because the check ended \"no conclusion\"; \"not evaluated\" is never \"did not fire\". The counts, with the tool's sentences and its limits text, are in the For-you entry fy-20261014-sent-count-36h and in LAB_STATE. It says nothing about what happened to any buy. H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-14T01:23:29Z"
+  },
   {
    "id": "h5-wspass-rpc-36h-1013",
    "kind": "result",
@@ -701,6 +708,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261014-sent-count-36h",
+   "from": "claude",
+   "atUtc": "2026-10-14T01:26:13Z",
+   "text": "For you (no action needed): the tool that counts, from the bot's own ledger, on how many of the checked prints a buy was sent is merged and ran once, on the follow-up check of the 36-hour read. Quant-proof's wording, with the tool's own sentences: Count from the bot's own ledger, joined to the 36-hour RPC check. Not a result. The bot's ledger shows a buy sent on 8 of the 15 ws-pass prints of this plan: 4 of the 10 returned, 0 of the 0 not returned, 4 of the 5 that ended in an error. The public RPC did not return 0 of the 15 ws-pass prints, so there is no count of buys on not-returned prints. An error is never counted as not returned. Whether those 4 transactions are in a finalized block is not determined. It is not shown that those prints' reserves were right. \"Shows a buy sent\" in these sentences means a live decision row for the print's pool and trigger slot whose sent_ms is an integer. The executor writes that row after the send call, and sent_ms is also set when the send call raised. So a count here is a lower bound of the buys sent where no row with a send time was written (a kill or an exception between the send and the ledger write; a first send after a row with a null sent_ms) and an upper bound where the send call raised. sent_count_may_be_low false does not exclude these. A count of 0 means no joined live decision row with a send time; it is never reported as \"no buy was sent\". The stop rule of DEC-024 Amendment 9 was not evaluated on this check, because the check ended \"no conclusion\". \"Not evaluated\" is not \"did not fire\". The tool's owner-at-once flag is false here only because this check has 0 not-returned prints (5 of its 15 ws-pass prints ended in an error); that is not a pass. This count fires nothing and has no use for T1, for phase 2 or for the live rule. It says nothing about what happened to any buy, and H5 has not cleared the promotion gate. H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book."
+  },
+  {
    "id": "fy-20261014-wspass-rpc-36h-ruling",
    "from": "claude",
    "atUtc": "2026-10-14T00:01:48Z",
@@ -990,6 +1003,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261014-0126",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-14T01:26:13Z",
+   "text": "01:26Z: PR #644 merged as 5ff2291 (QP OK 6158333628 and Reviewer OK 6158715762 at 16258bb); preflight job #982 ended with a collection error under /usr/bin/python3 (solders missing), job #984 under the venv interpreter gave 186 passed, quant-proof's ruling 6158764868 took the venv for the preflight and the run; the one sent-count run on 1791927243640 is job #985, exit 0, out sha256 f4f724df...0a0f, copy removed. DEC-024 Amendment 9 status on this check: \"not evaluated\", which is never \"did not fire\". The counts, the sentences and the limits text are in LAB_STATE and in Console entry fy-20261014-sent-count-36h. H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261014-0001",
    "from": "claude",
