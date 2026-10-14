@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-13T23:42:13Z",
+ "updated_utc": "2026-10-14T00:01:48Z",
  "review_windows": [],
  "events": [
   {
@@ -701,6 +701,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261014-wspass-rpc-36h-ruling",
+   "from": "claude",
+   "atUtc": "2026-10-14T00:01:48Z",
+   "text": "For you (no action needed): quant-proof has ruled on the follow-up check of the 36-hour read (the entry before this one, fy-20261013-wspass-rpc-36h). Interim, not the deciding read. Reading: \"no conclusion\". Quant-proof's summary, in its words: In plain counts: the check asked the public RPC 116 times about 36 trigger prints. 11 asks came back with the transaction: 10 of the 15 ws-pass prints and 1 of the 20 refused prints were returned. 105 asks came back with an error answer. 0 asks came back with the answer that the transaction is not there. So the check has no not-returned print, and for the 25 prints that ended in an error it has no answer at all. It does not settle the 2 ws-pass prints without a row on our block tape: the count does not say whether either is among the 10 returned or among the 5 that ended in an error. The cause of the errors is not determined. The stop rule of DEC-024 Amendment 9 was not evaluated on this check. \"Not evaluated\" is not \"did not fire\". Next: the same check runs once more, unchanged, on the 48-hour read (2026-10-14T09:34:03.640Z). If it again ends with an error, the check moves to a second, declared endpoint by a reviewed tool change. The canary continues at T0 by the manager's decision. No written rule requires a stop on these counts. The small stake is the only argument for continuing, and nothing in these counts says the 2 prints are harmless. An error is never counted as not returned. The tool that counts on how many such prints the bot sent a buy is in review and has not run. It says nothing about any trade's result, and H5 has not cleared the promotion gate. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\"."
+  },
+  {
    "id": "fy-20261013-wspass-rpc-36h",
    "from": "claude",
    "atUtc": "2026-10-13T23:31:22Z",
@@ -984,6 +990,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261014-0001",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-14T00:01:48Z",
+   "text": "00:01Z: quant-proof's ruling on the +36 h RPC check's counts is PR #610 comment 6157746243 (counts posted as 6157585465; PR #643 merged as 86d66a4). Interim, not the deciding read; reading \"no conclusion\". 116 answers: 11 found, 105 error answers, 0 null. An error is never counted as not returned. The cause is not determined. No tool change; one more plan, unchanged, on the +48 h read (1791970443640), planned. Sent-count tool: PR #644, in review, not merged, never run; DEC-024 Amendment 9 not evaluated, which is never \"did not fire\". Canary verdict unchanged. It says nothing about any trade's result. H5 is labelled \"execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book\". H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261013-2331",
    "from": "claude",
