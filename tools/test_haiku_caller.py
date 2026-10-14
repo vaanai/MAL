@@ -10,6 +10,8 @@ import json
 import math
 import os
 import stat
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -83,6 +85,19 @@ def rows_of(tmp_path) -> list[dict]:
     return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
 
 
+def settles(tmp_path) -> list[dict]:
+    return [r for r in rows_of(tmp_path) if r.get("kind") == "settle"]
+
+
+def reserves(tmp_path) -> list[dict]:
+    return [r for r in rows_of(tmp_path) if r.get("kind") == "reserve"]
+
+
+def charged(tmp_path) -> float:
+    """What counts against the budget: the sum of cost_usd over every row."""
+    return math.fsum(r["cost_usd"] for r in rows_of(tmp_path))
+
+
 def seed_ledger(tmp_path, *costs) -> None:
     with open(tmp_path / "ledger.jsonl", "a") as f:
         for c in costs:
@@ -107,11 +122,19 @@ def test_success_builds_request_and_writes_one_full_row(monkeypatch, tmp_path):
     # 1000*0.10 + 400*0.125 + 5000*0.01 + 200*0.50 = 300 micro-USD
     assert res.cost_usd == pytest.approx(3.0e-4, abs=1e-12) and res.spent_after == pytest.approx(3.0e-4, abs=1e-12)
     assert res.text == "hello" and res.attempts == 1 and not res.replayed
-    (row,) = rows_of(tmp_path)
+    reserve, row = rows_of(tmp_path)  # one reserve row, then one settle row, per HTTP attempt
+    assert reserve["kind"] == "reserve" and row["kind"] == "settle" and reserve["reservation_id"] == row["reservation_id"]
+    assert reserve["attempt"] == 1 and reserve["request_sha256"] == row["request_sha256"] and reserve["model"] == "claude-haiku-5-5"
+    assert reserve["cost_usd"] == hc.worst_case_cost(req()["system"], req()["messages"], 200, P)
+    assert not {"input_tokens", "output_tokens", "http_status", "stop_reason", "thinking"} & set(reserve)  # no usage on a reserve row
+    assert row["cost_basis"] == "usage"
+    # settle cost_usd = actual - reserved worst case. Here the fake usage is far above what max_tokens=200 would allow, so it is positive
+    assert row["cost_usd"] == pytest.approx(3.0e-4 - reserve["cost_usd"], abs=1e-12)
+    assert reserve["cost_usd"] + row["cost_usd"] == pytest.approx(3.0e-4, abs=1e-12)
     assert row["model"] == "claude-haiku-5-5" and row["http_status"] == 200 and row["request_id"] == "req_abc123"
     assert row["stop_reason"] == "end_turn" and row["attempt"] == 1 and row["thinking"] == {"type": "disabled"}
     assert (row["input_tokens"], row["output_tokens"], row["cache_creation_input_tokens"], row["cache_read_input_tokens"]) == (1000, 200, 400, 5000)
-    assert row["cost_usd"] == pytest.approx(3.0e-4, abs=1e-12)
+    assert charged(tmp_path) == pytest.approx(3.0e-4, abs=1e-12)
     assert row["request_sha256"] == hc.sha256_hex(c["body"]) and row["response_sha256"] is not None
     assert isinstance(row["latency_ms"], int) and row["latency_ms"] >= 0
     assert row["error_class"] is None and row["error_type"] is None and row["allow_model"] is None
@@ -123,8 +146,9 @@ def test_missing_usage_fields_count_as_zero_and_bad_ones_never_reduce_spend(monk
     install(monkeypatch, (200, {}, body))
     res = caller(tmp_path).call(**req())
     assert res.cost_usd == pytest.approx(100 * 0.10 / 1e6)
-    row = rows_of(tmp_path)[0]
+    row = settles(tmp_path)[0]
     assert row["output_tokens"] == 0 and row["cache_creation_input_tokens"] == 0 and row["cache_read_input_tokens"] == 0
+    assert charged(tmp_path) == pytest.approx(100 * 0.10 / 1e6)  # the bad usage values never lowered the charge
 
 
 def test_thinking_default_off_and_passthrough_and_omit(monkeypatch, tmp_path):
@@ -137,7 +161,7 @@ def test_thinking_default_off_and_passthrough_and_omit(monkeypatch, tmp_path):
     assert bodies[0]["thinking"] == {"type": "disabled"}
     assert bodies[1]["thinking"] == {"type": "enabled", "budget_tokens": 1024}
     assert "thinking" not in bodies[2]
-    assert [r["thinking"] for r in rows_of(tmp_path)] == [{"type": "disabled"}, {"type": "enabled", "budget_tokens": 1024}, None]
+    assert [r["thinking"] for r in settles(tmp_path)] == [{"type": "disabled"}, {"type": "enabled", "budget_tokens": 1024}, None]
 
 
 def test_temperature_is_sent_only_when_given(monkeypatch, tmp_path):
@@ -200,7 +224,7 @@ def test_budget_sums_across_two_ledger_instances(monkeypatch, tmp_path):
         a.call(**r)
     with pytest.raises(hc.BudgetExceeded):
         b.call(**r)
-    assert len(t.calls) == 2 and len(rows_of(tmp_path)) == 2
+    assert len(t.calls) == 2 and len(reserves(tmp_path)) == 2 and len(settles(tmp_path)) == 2
     assert hc.ledger_summary(tmp_path / "ledger.jsonl")["total_cost_usd"] == pytest.approx(4e-4)
 
 
@@ -235,7 +259,8 @@ def test_concurrent_callers_cannot_overspend_the_budget(monkeypatch, tmp_path):
     for th in threads:
         th.join()
     assert outcomes.count("ok") == 4 and outcomes.count("budget") == 4
-    assert len(n_calls) == 4 and len(rows_of(tmp_path)) == 4
+    assert len(n_calls) == 4 and len(reserves(tmp_path)) == 4 and len(settles(tmp_path)) == 4
+    assert charged(tmp_path) <= budget
 
 
 def test_budget_is_checked_again_before_every_retry_attempt(monkeypatch, tmp_path):
@@ -247,8 +272,8 @@ def test_budget_is_checked_again_before_every_retry_attempt(monkeypatch, tmp_pat
     with pytest.raises(hc.BudgetExceeded):
         caller(tmp_path, budget=1.0).call(**req(max_tokens=100_000))
     assert len(t.calls) == 1
-    rows = rows_of(tmp_path)
-    assert [r.get("http_status") for r in rows] == [200, 429]  # the other process's seeded row, then attempt 1's row; nothing for attempt 2
+    rows = rows_of(tmp_path)  # attempt 1's reserve, the other process's seeded row, attempt 1's settle; nothing for attempt 2
+    assert [r.get("kind") for r in rows] == ["reserve", None, "settle"] and rows[2]["http_status"] == 429
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, True, None])
@@ -289,9 +314,11 @@ def test_retry_on_429_then_200_gives_two_rows_and_the_2s_backoff(monkeypatch, tm
     sleeps: list = []
     res = caller(tmp_path, sleeps=sleeps).call(**req())
     assert len(t.calls) == 2 and sleeps == [2.0] and res.attempts == 2
-    first, second = rows_of(tmp_path)
-    assert (first["attempt"], first["http_status"], first["error_class"], first["error_type"], first["cost_usd"]) == (1, 429, "HTTPError", "rate_limit_error", 0.0)
-    assert (second["attempt"], second["http_status"], second["error_class"]) == (2, 200, None)
+    first, second = settles(tmp_path)
+    assert len(rows_of(tmp_path)) == 4 and len(reserves(tmp_path)) == 2
+    assert (first["attempt"], first["http_status"], first["error_class"], first["error_type"]) == (1, 429, "HTTPError", "rate_limit_error")
+    assert first["cost_basis"] == "http_error" and reserves(tmp_path)[0]["cost_usd"] + first["cost_usd"] == 0.0  # an error response nets to 0
+    assert (second["attempt"], second["http_status"], second["error_class"], second["cost_basis"]) == (2, 200, None, "usage")
     assert first["request_sha256"] == second["request_sha256"]
 
 
@@ -319,8 +346,12 @@ def test_timeouts_are_retried_and_recorded_with_no_status(monkeypatch, tmp_path)
     sleeps: list = []
     res = caller(tmp_path, sleeps=sleeps).call(**req())
     assert res.attempts == 3 and sleeps == [2.0, 8.0]
-    rows = rows_of(tmp_path)
-    assert [(r["http_status"], r["error_class"], r["cost_usd"], r["response_sha256"]) for r in rows[:2]] == [(None, "Timeout", 0.0, None), (None, "NetworkError", 0.0, None)]
+    rows = settles(tmp_path)
+    assert [(r["http_status"], r["error_class"], r["cost_usd"], r["cost_basis"], r["response_sha256"]) for r in rows[:2]] == [
+        (None, "Timeout", 0.0, "worst_case_no_response", None), (None, "NetworkError", 0.0, "worst_case_no_response", None)]
+    # a settle of 0.0 leaves the reserved worst case charged: two lost attempts cost two worst cases, plus the real third call
+    worst = hc.worst_case_cost(req()["system"], req()["messages"], 200, P)
+    assert charged(tmp_path) == pytest.approx(2 * worst + res.cost_usd)
 
 
 def test_no_retry_on_400_and_server_text_is_not_kept(monkeypatch, tmp_path):
@@ -332,17 +363,18 @@ def test_no_retry_on_400_and_server_text_is_not_kept(monkeypatch, tmp_path):
     assert e.exit_code == 5 and e.status == 400 and e.error_type == "invalid_request_error"
     assert len(t.calls) == 1 and sleeps == []
     assert SERVER_MSG_MARK not in str(e) and SERVER_MSG_MARK not in repr(e)
-    (row,) = rows_of(tmp_path)
-    assert row["http_status"] == 400 and row["error_class"] == "HTTPError" and row["error_type"] == "invalid_request_error" and row["cost_usd"] == 0.0
-    assert SERVER_MSG_MARK not in json.dumps(row)
+    (row,) = settles(tmp_path)
+    assert row["http_status"] == 400 and row["error_class"] == "HTTPError" and row["error_type"] == "invalid_request_error"
+    assert row["cost_basis"] == "http_error" and charged(tmp_path) == 0.0  # reserved, then settled back to 0
+    assert SERVER_MSG_MARK not in json.dumps(rows_of(tmp_path))
 
 
 def test_odd_error_types_and_request_ids_are_not_copied(monkeypatch, tmp_path):
     install(monkeypatch, (401, {"request-id": "bad id with spaces " + SERVER_MSG_MARK}, err_body("Invalid x-api-key " + SERVER_MSG_MARK)))
     with pytest.raises(hc.ApiError):
         caller(tmp_path).call(**req())
-    (row,) = rows_of(tmp_path)
-    assert row["request_id"] is None and row["error_type"] is None and SERVER_MSG_MARK not in json.dumps(row)
+    (row,) = settles(tmp_path)
+    assert row["request_id"] is None and row["error_type"] is None and SERVER_MSG_MARK not in json.dumps(rows_of(tmp_path))
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 404, 413])
@@ -350,15 +382,17 @@ def test_other_non_200_statuses_are_not_retried(monkeypatch, tmp_path, status):
     t = install(monkeypatch, (status, {}, b""))
     with pytest.raises(hc.ApiError) as ei:
         caller(tmp_path).call(**req())
-    assert ei.value.status == status and len(t.calls) == 1 and len(rows_of(tmp_path)) == 1
+    assert ei.value.status == status and len(t.calls) == 1 and len(settles(tmp_path)) == 1 and charged(tmp_path) == 0.0
 
 
 def test_200_with_a_body_that_is_not_json_is_an_api_error_with_a_row(monkeypatch, tmp_path):
     install(monkeypatch, (200, {}, b"<html>"))
     with pytest.raises(hc.ApiError):
         caller(tmp_path).call(**req())
-    (row,) = rows_of(tmp_path)
+    (row,) = settles(tmp_path)
     assert row["http_status"] == 200 and row["error_class"] == "MalformedResponse" and row["cost_usd"] == 0.0
+    assert row["cost_basis"] == "worst_case_unreadable_200"  # billed, usage unknown: the worst case stays charged
+    assert charged(tmp_path) == reserves(tmp_path)[0]["cost_usd"] > 0
 
 
 def test_unexpected_transport_exception_is_a_labelled_non_retried_error(monkeypatch, tmp_path):
@@ -366,7 +400,9 @@ def test_unexpected_transport_exception_is_a_labelled_non_retried_error(monkeypa
     with pytest.raises(hc.ApiError) as ei:
         caller(tmp_path).call(**req())
     assert FAKE_KEY not in str(ei.value) and len(t.calls) == 1
-    assert rows_of(tmp_path)[0]["error_class"] == "TransportError"
+    (row,) = settles(tmp_path)
+    assert row["error_class"] == "TransportError" and row["cost_basis"] == "worst_case_no_response"
+    assert charged(tmp_path) == reserves(tmp_path)[0]["cost_usd"] > 0
 
 
 def test_retries_exhausted(monkeypatch, tmp_path):
@@ -376,7 +412,227 @@ def test_retries_exhausted(monkeypatch, tmp_path):
         caller(tmp_path, sleeps=sleeps).call(**req())
     assert ei.value.exit_code == 6 and ei.value.attempts == 3 and ei.value.last_status == 503
     assert len(t.calls) == 3 and sleeps == [2.0, 8.0]  # no sleep after the last attempt
-    assert [r["attempt"] for r in rows_of(tmp_path)] == [1, 2, 3]
+    assert [r["attempt"] for r in settles(tmp_path)] == [1, 2, 3] and [r["attempt"] for r in reserves(tmp_path)] == [1, 2, 3]
+    assert charged(tmp_path) == 0.0  # three 503 responses: each settled back to 0
+
+
+# ---------------------------------------------------------------- reservation, then settlement
+
+class Killed(BaseException):
+    """Stands in for a process dying in the transport: a BaseException is not caught by the caller's `except Exception`."""
+
+
+def worst_of(r=None) -> float:
+    r = r or req()
+    return hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
+
+
+def test_a_200_settles_to_actual_cost_below_the_reserved_worst_case(monkeypatch, tmp_path):
+    install(monkeypatch, (200, {}, ok_body(input_tokens=10, output_tokens=5)))
+    res = caller(tmp_path).call(**req())
+    (reserve,), (settle,) = reserves(tmp_path), settles(tmp_path)
+    actual = (10 * 0.10 + 5 * 0.50) / 1e6
+    assert reserve["cost_usd"] == worst_of() and res.cost_usd == pytest.approx(actual)
+    assert settle["cost_usd"] < 0 and settle["cost_usd"] == pytest.approx(actual - worst_of())  # actual minus the reserved worst case
+    assert settle["cost_basis"] == "usage" and settle["reservation_id"] == reserve["reservation_id"]
+    assert charged(tmp_path) == pytest.approx(actual) and res.spent_after == pytest.approx(actual)
+
+
+def test_the_reserve_row_is_on_disk_before_the_request_is_sent(monkeypatch, tmp_path):
+    seen = []
+    install(monkeypatch, before=lambda n: seen.append(rows_of(tmp_path)))
+    caller(tmp_path).call(**req())
+    (rows_at_send,) = seen
+    assert len(rows_at_send) == 1 and rows_at_send[0]["kind"] == "reserve" and rows_at_send[0]["cost_usd"] == worst_of()
+
+
+def test_reservation_ids_are_fresh_per_attempt(monkeypatch, tmp_path):
+    install(monkeypatch, (503, {}, err_body("api_error")), (200, {}, ok_body()))
+    caller(tmp_path).call(**req())
+    ids = [r["reservation_id"] for r in reserves(tmp_path)]
+    assert len(ids) == 2 and len(set(ids)) == 2 and ids == [r["reservation_id"] for r in settles(tmp_path)]
+
+
+def test_a_process_dying_in_the_transport_leaves_the_worst_case_charged_and_a_later_call_sees_it(monkeypatch, tmp_path):
+    w = worst_of()
+    budget = 1.5 * w  # room for one worst case, not two
+    t = install(monkeypatch, Killed())
+    with pytest.raises(Killed):
+        caller(tmp_path, budget=budget).call(**req())
+    assert [r["kind"] for r in rows_of(tmp_path)] == ["reserve"]  # no settle row
+    assert charged(tmp_path) == w
+    s = hc.ledger_summary(tmp_path / "ledger.jsonl")
+    assert (s["reserved_unsettled_count"], s["reserved_unsettled_cost_usd"], s["total_cost_usd"]) == (1, w, w)
+    with pytest.raises(hc.BudgetExceeded):  # a fresh process: spent is already w, so w + w > 1.5 w
+        caller(tmp_path, budget=budget).call(**req())
+    assert len(t.calls) == 1 and len(rows_of(tmp_path)) == 1
+
+
+def test_a_really_killed_process_leaves_the_reservation_and_the_next_process_sees_it(tmp_path):
+    w = worst_of()
+    ledger = tmp_path / "ledger.jsonl"
+    killed = run_child("die", ledger, 1.5 * w, 1)
+    assert killed.returncode == 9  # os._exit inside the transport: no handler, no settle row, the flock dropped by the kernel
+    assert [r["kind"] for r in rows_of(tmp_path)] == ["reserve"] and charged(tmp_path) == w
+    after = run_child("ok", ledger, 1.5 * w, 1)
+    assert after.returncode == 0 and after.stdout.split() == ["0", "1"]  # 0 calls made, 1 refused
+    assert [r["kind"] for r in rows_of(tmp_path)] == ["reserve"]
+
+
+def test_timeouts_settle_at_worst_case_never_at_zero(monkeypatch, tmp_path):
+    w = worst_of()
+    budget = 3.5 * w
+    t = install(monkeypatch, TimeoutError(), TimeoutError(), TimeoutError())
+    with pytest.raises(hc.RetriesExhausted):
+        caller(tmp_path, budget=budget).call(**req())
+    assert [(r["cost_usd"], r["cost_basis"], r["http_status"]) for r in settles(tmp_path)] == [(0.0, "worst_case_no_response", None)] * 3
+    assert charged(tmp_path) == pytest.approx(3 * w)  # three lost attempts: three worst cases, not zero
+    with pytest.raises(hc.BudgetExceeded):  # 3w + w > 3.5w
+        caller(tmp_path, budget=budget).call(**req())
+    assert len(t.calls) == 3
+    s = hc.ledger_summary(tmp_path / "ledger.jsonl")
+    assert s["worst_case_settled_count"] == 3 and s["worst_case_settled_cost_usd"] == pytest.approx(3 * w)
+    assert s["settled_actual_cost_usd"] == 0.0 and s["reserved_unsettled_count"] == 0
+
+
+def test_if_the_reserve_row_cannot_be_written_nothing_is_sent(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+
+    def refuse(fd, row):
+        raise hc.LedgerError("cannot append to the ledger")
+
+    monkeypatch.setattr(hc.Ledger, "append_row", staticmethod(refuse))
+    with pytest.raises(hc.LedgerError):
+        caller(tmp_path).call(**req())
+    assert t.calls == [] and rows_of(tmp_path) == []
+
+
+def test_if_the_settle_row_cannot_be_written_the_worst_case_stays_charged(monkeypatch, tmp_path):
+    install(monkeypatch)
+    real = hc.Ledger.append_row
+
+    def flaky(fd, row):
+        if row["kind"] == "settle":
+            raise hc.LedgerError("cannot append to the ledger")
+        real(fd, row)
+
+    monkeypatch.setattr(hc.Ledger, "append_row", staticmethod(flaky))
+    with pytest.raises(hc.LedgerError):
+        caller(tmp_path).call(**req())
+    assert [r["kind"] for r in rows_of(tmp_path)] == ["reserve"] and charged(tmp_path) == worst_of()
+
+
+CHILD = """
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from tools import haiku_caller as hc
+mode, ledger, budget, n, request = sys.argv[2], sys.argv[3], float(sys.argv[4]), int(sys.argv[5]), json.loads(sys.argv[6])
+def ok(url, headers, body, timeout):
+    time.sleep(0.02)
+    return 200, {}, json.dumps({"content": [{"type": "text", "text": "x"}], "stop_reason": "end_turn",
+                                "usage": {"input_tokens": 0, "output_tokens": 400}}).encode()
+def die(url, headers, body, timeout):
+    os._exit(9)
+hc._http_post = die if mode == "die" else ok
+c = hc.HaikuCaller(ledger, budget, sleep=lambda s: None)
+done = refused = 0
+for _ in range(n):
+    try:
+        c.call(**request)
+        done += 1
+    except hc.BudgetExceeded:
+        refused += 1
+print(done, refused)
+"""
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def child_cmd(mode, ledger, budget, n):
+    return [sys.executable, "-c", CHILD, REPO, mode, str(ledger), repr(float(budget)), str(n), json.dumps(req())]
+
+
+def child_env():
+    return {**os.environ, hc.KEY_ENV: FAKE_KEY, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def run_child(mode, ledger, budget, n):
+    return subprocess.run(child_cmd(mode, ledger, budget, n), env=child_env(), cwd=REPO, capture_output=True, text=True, timeout=60)
+
+
+def test_three_real_processes_summing_reserve_and_settle_rows_stay_within_budget(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    w, actual = worst_of(), 2e-4  # the child's reply is 400 output tokens
+    budget = 4 * actual + w + actual / 2  # exactly five calls fit (spent 0..4 actual calls), the sixth check fails
+    procs = [subprocess.Popen(child_cmd("ok", ledger, budget, 4), env=child_env(), cwd=REPO, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) for _ in range(3)]
+    outs = [p.communicate(timeout=60) for p in procs]
+    assert [p.returncode for p in procs] == [0, 0, 0], outs
+    done = sum(int(o[0].split()[0]) for o in outs)
+    refused = sum(int(o[0].split()[1]) for o in outs)
+    assert (done, refused) == (5, 7)
+    assert len(reserves(tmp_path)) == 5 and len(settles(tmp_path)) == 5
+    assert charged(tmp_path) == pytest.approx(5 * actual) and charged(tmp_path) <= budget
+
+
+@pytest.mark.parametrize("rows", [
+    [{"kind": "settle", "reservation_id": "r1", "cost_usd": -0.4}],                                              # orphan settle
+    [{"kind": "settle", "reservation_id": "r1", "cost_usd": -0.4}, {"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}],  # settle first
+    [{"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}, {"kind": "settle", "reservation_id": "r1", "cost_usd": -0.4},
+     {"kind": "settle", "reservation_id": "r1", "cost_usd": 0.0}],                                               # settled twice
+    [{"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}, {"kind": "settle", "reservation_id": "r1", "cost_usd": -0.6}],   # nets below zero
+    [{"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}, {"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}],   # duplicate id
+    [{"kind": "reserve", "cost_usd": 0.5}],                                                                      # no id
+    [{"kind": "reserve", "reservation_id": "r1", "cost_usd": -0.5}],                                             # negative reserve
+    [{"kind": "refund", "cost_usd": -1.0}],                                                                      # unknown kind
+    [{"kind": "settle", "cost_usd": -0.1}],                                                                      # settle with no id
+    [{"kind": "reserve", "reservation_id": "r1", "cost_usd": 0.5}, {"kind": "settle", "reservation_id": ["r1"], "cost_usd": -0.1}],  # unhashable id
+])
+def test_a_ledger_whose_reserve_settle_rows_do_not_pair_up_fails_closed(monkeypatch, tmp_path, rows):
+    """No row may lower the spend below what was committed: a negative cost_usd is valid only as a settle of its own reservation."""
+    t = install(monkeypatch)
+    (tmp_path / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(hc.LedgerError):
+        caller(tmp_path).call(**req())
+    with pytest.raises(hc.LedgerError):
+        hc.ledger_summary(tmp_path / "ledger.jsonl")
+    assert t.calls == []
+
+
+def test_valid_pairs_including_a_settle_above_the_reserve_are_summed(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+    rows = [{"kind": "reserve", "reservation_id": "a", "cost_usd": 0.25}, {"kind": "settle", "reservation_id": "a", "cost_usd": -0.25},
+            {"kind": "reserve", "reservation_id": "b", "cost_usd": 0.25}, {"kind": "settle", "reservation_id": "b", "cost_usd": 0.5},
+            {"kind": "reserve", "reservation_id": "c", "cost_usd": 0.125}]
+    (tmp_path / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert hc.Ledger(tmp_path / "ledger.jsonl").spent() == 0.0 + 0.75 + 0.125
+    caller(tmp_path, budget=1.0).call(**req())  # 0.875 + a tiny worst case fits
+    with pytest.raises(hc.BudgetExceeded):
+        caller(tmp_path, budget=0.875).call(**req())
+    assert len(t.calls) == 1
+
+
+def test_ledger_summary_splits_settled_worst_case_and_unsettled(monkeypatch, tmp_path):
+    w = worst_of()
+    c = caller(tmp_path)
+    install(monkeypatch, (200, {}, ok_body(input_tokens=10, output_tokens=5)))
+    c.call(**req())                                                                    # settled from usage
+    install(monkeypatch, (400, {}, err_body("invalid_request_error")))
+    with pytest.raises(hc.ApiError):
+        c.call(**req())                                                                # HTTP error response: settled at 0
+    install(monkeypatch, ValueError("odd"))
+    with pytest.raises(hc.ApiError):
+        c.call(**req())                                                                # no response: settled at the worst case
+    install(monkeypatch, Killed())
+    with pytest.raises(Killed):
+        c.call(**req())                                                                # never settled
+    s = hc.ledger_summary(tmp_path / "ledger.jsonl")
+    actual = (10 * 0.10 + 5 * 0.50) / 1e6
+    assert s["calls"] == 4 and s["http_error_rows"] == 1 and s["transport_error_rows"] == 1
+    assert s["settled_actual_cost_usd"] == pytest.approx(actual)
+    assert (s["worst_case_settled_count"], s["worst_case_settled_cost_usd"]) == (1, pytest.approx(w))
+    assert (s["reserved_unsettled_count"], s["reserved_unsettled_cost_usd"]) == (1, pytest.approx(w))
+    assert s["total_cost_usd"] == pytest.approx(actual + 2 * w) and s["total_cost_usd"] == pytest.approx(charged(tmp_path))
+    assert s["tokens"]["input"] == 10 and s["tokens"]["output"] == 5 and s["median_latency_ms_200"] is not None
 
 
 # ---------------------------------------------------------------- replay and the text store
@@ -459,7 +715,7 @@ def test_allowed_other_model_is_sent_priced_with_the_given_table_and_recorded(mo
     prices = {"input": 3, "cache_write": 3.75, "cache_read": 0.3, "output": 15}
     res = caller(tmp_path, budget=10.0, model="claude-sonnet-x", allow_model="claude-sonnet-x", prices=prices).call(**req())
     assert json.loads(t.calls[0]["body"])["model"] == "claude-sonnet-x" and res.cost_usd == pytest.approx(3.0)
-    (row,) = rows_of(tmp_path)
+    (row,) = settles(tmp_path)
     assert row["model"] == "claude-sonnet-x" and row["allow_model"] == "claude-sonnet-x" and row["custom_prices"]["output"] == 15.0
 
 
@@ -519,6 +775,10 @@ def test_key_never_appears_anywhere_on_success_http_error_timeout_and_budget_pat
         with pytest.raises(hc.HaikuCallerError) as ei:
             api.call(**req(**kw))
         exc_texts += [str(ei.value), repr(ei.value), "".join(traceback.format_exception(ei.value))]
+    install(monkeypatch, Killed())  # a process dying mid-call: an unsettled reserve row, and the BaseException's own text
+    with pytest.raises(Killed) as ei:
+        api.call(**req(max_tokens=78))
+    exc_texts += [str(ei.value), repr(ei.value), "".join(traceback.format_exception(ei.value))]
     install(monkeypatch, (200, {}, ok_body()))
     res = api.call(**req(max_tokens=77))
     exc_texts.append(repr(res))
@@ -534,6 +794,8 @@ def test_key_never_appears_anywhere_on_success_http_error_timeout_and_budget_pat
     for name, data in on_disk:
         assert FAKE_KEY.encode() not in data, name
     assert any(name == "ledger.jsonl" for name, _ in on_disk)
+    kinds = [json.loads(x)["kind"] for x in ledger.read_text().splitlines()]  # the scan above covered reserve, settle and an unsettled reserve
+    assert kinds.count("reserve") > kinds.count("settle") and "settle" in kinds
 
 
 def test_ledger_and_stdout_contain_no_prompt_or_response_text(monkeypatch, tmp_path, capsys):
@@ -543,7 +805,7 @@ def test_ledger_and_stdout_contain_no_prompt_or_response_text(monkeypatch, tmp_p
     code = hc.main(["--request", str(rq), "--out", str(tmp_path / "out.json"), "--ledger", str(tmp_path / "ledger.jsonl"), "--budget-usd", "1"])
     assert code == 0
     ledger_text = (tmp_path / "ledger.jsonl").read_text()
-    assert PROMPT_MARK not in ledger_text and "RESPONSE-MARKER-99" not in ledger_text and len(ledger_text.splitlines()) == 1
+    assert PROMPT_MARK not in ledger_text and "RESPONSE-MARKER-99" not in ledger_text and len(ledger_text.splitlines()) == 2
     out = capsys.readouterr().out
     assert PROMPT_MARK not in out and "RESPONSE-MARKER-99" not in out
     assert "RESPONSE-MARKER-99" in (tmp_path / "out.json").read_text()  # the response goes to --out only
@@ -617,7 +879,7 @@ def test_cli_replay_prints_status_replay(monkeypatch, tmp_path, capsys):
     capsys.readouterr()
     assert hc.main(base + ["--replay-only"]) == 0
     line = capsys.readouterr().out.strip()
-    assert line.startswith("status=replay ") and "cost_usd=0.00000000" in line and len(rows_of(tmp_path)) == 1
+    assert line.startswith("status=replay ") and "cost_usd=0.00000000" in line and len(settles(tmp_path)) == 1
 
 
 def test_cli_bad_arguments_exit_2(monkeypatch, tmp_path, capsys):
@@ -688,7 +950,8 @@ def test_ledger_summary(tmp_path):
     assert hc.ledger_summary(tmp_path / "absent.jsonl") == {
         "calls": 0, "http_error_rows": 0, "transport_error_rows": 0,
         "tokens": {"input": 0, "output": 0, "cache_creation_input": 0, "cache_read_input": 0},
-        "total_cost_usd": 0.0, "median_latency_ms_200": None}
+        "total_cost_usd": 0.0, "settled_actual_cost_usd": 0.0, "worst_case_settled_count": 0, "worst_case_settled_cost_usd": 0.0,
+        "reserved_unsettled_count": 0, "reserved_unsettled_cost_usd": 0.0, "median_latency_ms_200": None}
 
 
 # ---------------------------------------------------------------- the real transport, against a loopback server only

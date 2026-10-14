@@ -16,30 +16,50 @@ only when it looks like a short snake_case token). Transport exceptions are caug
 original chained away, so no request header can travel in a traceback. Redirects are refused, because urllib would otherwise
 re-send the key header to wherever a redirect pointed.
 
-The hard stop. The server cannot enforce a spend limit, so this module does. A JSONL ledger (one row per HTTP attempt) and a
-budget_usd are required. Under an exclusive flock on <ledger>.lock, every attempt does: read the ledger, sum cost_usd over
-EVERY row (so the budget holds across runs and processes), compute a worst case for this attempt, and refuse with
-BudgetExceeded, without calling and without appending, if spent + worst case > budget. Otherwise it calls and appends the row
-before releasing the lock. The lock is held across the HTTP call on purpose: two processes cannot both pass the check and then
-both spend. The cost is that calls on one ledger are serial. Retry back-off sleeps are taken with the lock released.
+The hard stop. The server cannot enforce a spend limit, so this module does. A JSONL ledger and a budget_usd are required. Under
+an exclusive flock on <ledger>.lock, every HTTP attempt does: read the ledger, sum cost_usd over EVERY row (so the budget holds
+across runs and processes), compute a worst case for this attempt, and refuse with BudgetExceeded, without calling and without
+appending, if spent + worst case > budget. Otherwise it RESERVES, then calls, then SETTLES:
+  1. append a "reserve" row whose cost_usd is the attempt's worst case (fsynced before the request can leave the machine; if it
+     cannot be written, nothing is sent);
+  2. send the request;
+  3. append a "settle" row with the same reservation_id whose cost_usd is (what the attempt really cost - the reserved worst
+     case), usually negative.
+Spent is always the plain sum of cost_usd over all rows, so a reserve plus its settle adds up to the actual cost. When the actual
+cost is not known the settle row's cost_usd is 0.0 and the worst case simply stays charged (cost_basis below): a timeout, a dropped
+connection, any exception from the transport, a 200 whose body cannot be read. A process that dies between the reserve and the
+settle (SIGKILL, power loss, a KeyboardInterrupt in the transport) leaves the reserve row alone, and the worst case stays charged;
+that is intended, and ledger_summary reports it as reserved_unsettled. The lock is held across the HTTP call on purpose: two
+processes cannot both pass the check and then both spend. The cost is that calls on one ledger are serial. Retry back-off sleeps
+are taken with the lock released. Pre-request failures (bad arguments, a missing key, a budget refusal) write no rows.
 
 Worst case = ceil(utf-8 bytes of the system+messages JSON / 3) input tokens at the input rate + max_tokens at the output rate.
 One deliberate tightening of that formula: if the request carries a cache_control marker, the input part is priced at the
 (higher) cache-write rate, so a cache write cannot make the real charge exceed the estimate. Actual cost comes from the response
 usage fields (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens; a missing or invalid field is 0).
+If the real usage ever exceeds the estimate (a prompt that tokenises worse than 3 bytes per token), the settle row is positive and
+the ledger records the real cost; the check for the NEXT attempt then sees it.
 
-What the ledger cannot see: an attempt that returns no response (timeout, dropped connection) is recorded with cost_usd 0,
-because there is no usage to price. A request that the server finished and billed after we gave up is therefore not counted,
-and a process killed mid-call writes no row. Each is bounded by one request's worst case. The workspace spend limit the owner
-sets in the Anthropic console is the backstop for those; this module is the first stop, not the only one.
+What is still not covered: an HTTP error response (4xx/5xx with a body) is assumed not billed and settles to 0. The 1-hour cache
+write price is not in the table. The workspace spend limit the owner sets in the Anthropic console remains the backstop; this
+module is the first stop, not the only one.
 
-Ledger row (one per HTTP attempt, errors included). No prompt or response text is ever in it:
-  ts, model, request_sha256, response_sha256 (raw bytes, or null), http_status (null if no response), request_id (response header
-  request-id, if it looks like an id), stop_reason, input_tokens, output_tokens, cache_creation_input_tokens,
-  cache_read_input_tokens, cost_usd, latency_ms, attempt, thinking (the parameter exactly as sent, null if omitted),
-  allow_model, custom_prices, error_class, error_type.
+Ledger rows. A ledger is append-only JSONL; no prompt or response text is ever in it. Every row has kind and cost_usd. A row with no
+kind (not written by this module) is a plain cost row, cost_usd >= 0. A reader fails closed (LedgerError) on any row it cannot
+trust: bad JSON, unknown kind, a settle with no earlier reserve or settling twice, a reserve+settle pair that nets below 0.
+  reserve: kind, ts, reservation_id (fresh per attempt), model, request_sha256, attempt, cost_usd (the worst case). No usage.
+  settle: kind, ts, reservation_id, model, request_sha256, response_sha256 (raw bytes, or null), http_status (null if no
+  response), request_id (response header request-id, if it looks like an id), stop_reason, input_tokens, output_tokens,
+  cache_creation_input_tokens, cache_read_input_tokens, cost_usd (actual - reserved; 0.0 for the worst-case bases), cost_basis,
+  latency_ms, attempt, thinking (the parameter exactly as sent, null if omitted), allow_model, custom_prices, error_class,
+  error_type.
+  cost_basis: "usage" (200 with a readable body; actual cost from usage), "http_error" (an error response; actual 0),
+  "worst_case_no_response" (timeout, dropped connection, transport exception) or "worst_case_unreadable_200" (a 200 whose body is
+  not a JSON object; billed, usage unknown). The two worst_case bases leave the reserved worst case charged.
   error_class is one of null, "HTTPError", "Timeout", "NetworkError", "TransportError", "MalformedResponse"; error_type is the
   server's error.type or null.
+ledger_summary(path) reports total_cost_usd (what counts against the budget), settled_actual_cost_usd,
+worst_case_settled_count/_cost_usd and reserved_unsettled_count/_cost_usd separately; the first is exactly the sum of the other three.
 
 Retries. HTTP 429, 500, 502, 503, 529, a timeout and a dropped connection are retried, at most 3 attempts in total, sleeping 2 s
 then 8 s (or the retry-after header if it asks for longer, capped at 30 s). Any other non-200 status is not retried and raises
@@ -76,6 +96,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -337,7 +358,12 @@ class Ledger:
                 os.close(fd)  # closing the descriptor releases the flock
 
     def rows(self) -> list[dict]:
-        """Every row. A line that is not a JSON object with a finite cost_usd >= 0 raises LedgerError (fail closed)."""
+        """Every row, validated; anything unexpected raises LedgerError (fail closed, no call is made).
+
+        A row is a JSON object with a finite cost_usd and a kind: absent (a plain cost row, cost_usd >= 0), "reserve"
+        (cost_usd >= 0, a unique reservation_id) or "settle" (cost_usd may be negative: it is actual cost minus the reserved
+        worst case; it must name an earlier reserve row, only once, and the pair must not net below 0, so no row can
+        lower the spend below what was really committed). Any other kind is refused."""
         try:
             raw = self.path.read_bytes()
         except FileNotFoundError:
@@ -345,6 +371,8 @@ class Ledger:
         except OSError:
             raise LedgerError("cannot read the ledger") from None
         out = []
+        reserved: dict[str, float] = {}
+        settled: set[str] = set()
         for n, line in enumerate(raw.split(b"\n"), 1):
             if not line.strip():
                 continue
@@ -352,8 +380,23 @@ class Ledger:
                 row = json.loads(line)
             except ValueError:
                 raise LedgerError(f"ledger line {n} is not valid JSON; refusing to continue") from None
-            if not isinstance(row, dict) or not _is_num(row.get("cost_usd")) or row["cost_usd"] < 0:
+            if not isinstance(row, dict) or not _is_num(row.get("cost_usd")):
                 raise LedgerError(f"ledger line {n} has no valid cost_usd; refusing to continue")
+            kind, cost, rid = row.get("kind"), row["cost_usd"], row.get("reservation_id")
+            if kind is None:
+                ok = cost >= 0
+            elif kind == "reserve":
+                ok = cost >= 0 and isinstance(rid, str) and rid != "" and rid not in reserved
+                if ok:
+                    reserved[rid] = cost
+            elif kind == "settle":
+                ok = isinstance(rid, str) and rid in reserved and rid not in settled and reserved[rid] + cost >= 0
+                if ok:
+                    settled.add(rid)
+            else:
+                ok = False
+            if not ok:
+                raise LedgerError(f"ledger line {n} is not a valid {kind or 'cost'} row; refusing to continue")
             out.append(row)
         return out
 
@@ -377,23 +420,49 @@ class Ledger:
 
 
 def ledger_summary(path) -> dict:
-    """Totals over a ledger, for probes and the dashboard line. Raises LedgerError on a malformed row."""
+    """Totals over a ledger, for probes and the dashboard line. Raises LedgerError on a malformed row.
+
+    total_cost_usd is what counts against the budget (the sum of cost_usd over every row). It splits exactly into
+    settled_actual_cost_usd (attempts settled from a response: usage, or an HTTP error priced 0; plus plain cost rows),
+    worst_case_settled_cost_usd (attempts with no usable response, charged at their reserved worst case) and
+    reserved_unsettled_cost_usd (reservations with no settle row: a process died or was killed mid-call; still charged at
+    worst case). calls counts attempts started; the error and token counts and the latency median read the attempts that
+    have a settle row (or are plain rows)."""
     ledger = Ledger(path)
     with ledger.locked(exclusive=False):
         rows = ledger.rows()
+    reserves = {r["reservation_id"]: r for r in rows if r.get("kind") == "reserve"}
+    done = [r for r in rows if r.get("kind") != "reserve"]  # settle rows and plain rows: the finished attempts
+    settled_ids = {r["reservation_id"] for r in rows if r.get("kind") == "settle"}
     tokens = {"input": 0, "output": 0, "cache_creation_input": 0, "cache_read_input": 0}
-    for r in rows:
+    actual, worst_settled, worst_n = [], [], 0
+    for r in done:
         tokens["input"] += _tok(r.get("input_tokens"))
         tokens["output"] += _tok(r.get("output_tokens"))
         tokens["cache_creation_input"] += _tok(r.get("cache_creation_input_tokens"))
         tokens["cache_read_input"] += _tok(r.get("cache_read_input_tokens"))
-    lat200 = [r["latency_ms"] for r in rows if r.get("http_status") == 200 and _is_num(r.get("latency_ms"))]
+        if r.get("kind") == "settle":
+            charged = reserves[r["reservation_id"]]["cost_usd"] + r["cost_usd"]
+            if str(r.get("cost_basis", "")).startswith("worst_case"):
+                worst_settled.append(charged)
+                worst_n += 1
+            else:
+                actual.append(charged)
+        else:
+            actual.append(r["cost_usd"])
+    unsettled = [r["cost_usd"] for rid, r in reserves.items() if rid not in settled_ids]
+    lat200 = [r["latency_ms"] for r in done if r.get("http_status") == 200 and _is_num(r.get("latency_ms"))]
     return {
-        "calls": len(rows),
-        "http_error_rows": sum(1 for r in rows if r.get("http_status") is not None and r.get("http_status") != 200),
-        "transport_error_rows": sum(1 for r in rows if r.get("http_status") is None),
+        "calls": len(reserves) + sum(1 for r in done if r.get("kind") is None),
+        "http_error_rows": sum(1 for r in done if r.get("http_status") is not None and r.get("http_status") != 200),
+        "transport_error_rows": sum(1 for r in done if r.get("http_status") is None),
         "tokens": tokens,
         "total_cost_usd": math.fsum(r["cost_usd"] for r in rows),
+        "settled_actual_cost_usd": math.fsum(actual),
+        "worst_case_settled_count": worst_n,
+        "worst_case_settled_cost_usd": math.fsum(worst_settled),
+        "reserved_unsettled_count": len(unsettled),
+        "reserved_unsettled_cost_usd": math.fsum(unsettled),
         "median_latency_ms_200": statistics.median(lat200) if lat200 else None,
     }
 
@@ -615,7 +684,13 @@ class HaikuCaller:
             attempts=MAX_ATTEMPTS, last_status=last.status, last_error_class=last.error_class)
 
     def _attempt(self, attempt, key, body, body_bytes, sha, system, messages, max_tokens, thinking) -> _Outcome:
-        """One budget-checked, ledgered HTTP attempt, all under the exclusive ledger lock."""
+        """One budget-checked HTTP attempt, reserved then settled in the ledger, all under the exclusive ledger lock.
+
+        Order: check the budget; append a "reserve" row whose cost_usd is this attempt's worst case; only then send the
+        request; append a "settle" row whose cost_usd is (what the attempt really cost - the reserved worst case). With no
+        usable response (timeout, dropped connection, any exception from the transport, a 200 whose body cannot be read)
+        the settle row's cost_usd is 0.0, so the worst case stays charged. If the process dies between the two rows the
+        reserve row stays alone and the worst case stays charged, which is intended."""
         request_headers = {"x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json"}
         worst = worst_case_cost(system, messages, max_tokens, self.prices)
         with self.ledger.locked(exclusive=True):
@@ -624,6 +699,12 @@ class HaikuCaller:
                 raise BudgetExceeded(f"budget exceeded: spent={spent:.8f} + worst_case={worst:.8f} > budget={self.budget_usd:.8f} USD; no call made")
             fd = self.ledger.open_append()
             try:
+                reservation_id = uuid.uuid4().hex
+                Ledger.append_row(fd, {  # durable before the request can leave the machine; if this fails, nothing is sent
+                    "kind": "reserve", "ts": _utc_now(), "reservation_id": reservation_id, "model": self.model,
+                    "request_sha256": sha, "attempt": attempt, "cost_usd": worst})
+
+                # From here a request may be on the wire. Anything that stops us before the settle row leaves `worst` charged.
                 t0 = time.monotonic()
                 status, headers, raw, error_class = None, {}, None, None
                 try:
@@ -642,33 +723,42 @@ class HaikuCaller:
                     try:
                         parsed = json.loads(raw)
                         resp_json = parsed if isinstance(parsed, dict) else None
-                    except ValueError:
+                    except (ValueError, TypeError):
                         resp_json = None
                 if error_class is None:
                     if status != 200:
-                        error_class = "HTTPError"
+                        error_class, cost_basis = "HTTPError", "http_error"  # an error response is not billed: settles to 0
                     elif resp_json is None:
-                        error_class = "MalformedResponse"
+                        error_class, cost_basis = "MalformedResponse", "worst_case_unreadable_200"  # billed, usage unknown
+                    else:
+                        cost_basis = "usage"
+                else:
+                    cost_basis = "worst_case_no_response"
                 error_type = _server_error_type(resp_json) if error_class in ("HTTPError", "MalformedResponse") else None
 
-                counts = usage_counts(resp_json.get("usage")) if error_class is None else usage_counts(None)
-                cost = cost_from_usage(counts, self.prices) if error_class is None else 0.0
+                if cost_basis == "usage":
+                    counts = usage_counts(resp_json.get("usage"))
+                    charged = cost_from_usage(counts, self.prices)
+                else:
+                    counts = usage_counts(None)
+                    charged = 0.0 if cost_basis == "http_error" else worst
+                settle_delta = 0.0 if cost_basis.startswith("worst_case") else charged - worst
                 request_id = _safe_token(headers.get("request-id"))
-                stop_reason = _safe_token(resp_json.get("stop_reason")) if error_class is None else None
+                stop_reason = _safe_token(resp_json.get("stop_reason")) if cost_basis == "usage" else None
                 response_sha = sha256_hex(raw) if isinstance(raw, (bytes, bytearray)) else None
-                row = {
-                    "ts": _utc_now(), "model": self.model, "request_sha256": sha, "response_sha256": response_sha,
-                    "http_status": status if isinstance(status, int) else None, "request_id": request_id,
-                    "stop_reason": stop_reason, **counts, "cost_usd": cost, "latency_ms": latency_ms, "attempt": attempt,
+                http_status = status if isinstance(status, int) and not isinstance(status, bool) else None
+                Ledger.append_row(fd, {
+                    "kind": "settle", "ts": _utc_now(), "reservation_id": reservation_id, "model": self.model,
+                    "request_sha256": sha, "response_sha256": response_sha, "http_status": http_status,
+                    "request_id": request_id, "stop_reason": stop_reason, **counts, "cost_usd": settle_delta,
+                    "cost_basis": cost_basis, "latency_ms": latency_ms, "attempt": attempt,
                     "thinking": copy.deepcopy(thinking), "allow_model": self.allow_model,
                     "custom_prices": dict(self.prices) if self.custom_prices else None,
-                    "error_class": error_class, "error_type": error_type,
-                }
-                Ledger.append_row(fd, row)
+                    "error_class": error_class, "error_type": error_type})
             finally:
                 os.close(fd)
-        return _Outcome(status=row["http_status"], headers=headers, response=resp_json, error_class=error_class,
-                        error_type=error_type, cost_usd=cost, spent_after=spent + cost, latency_ms=latency_ms,
+        return _Outcome(status=http_status, headers=headers, response=resp_json, error_class=error_class,
+                        error_type=error_type, cost_usd=charged, spent_after=spent + charged, latency_ms=latency_ms,
                         response_sha256=response_sha, request_id=request_id)
 
 
