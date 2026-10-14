@@ -26,19 +26,50 @@ SERVER_MSG_MARK = "SERVER-TEXT-MARKER-k77"
 P = hc.PRICES[hc.DEFAULT_MODEL]
 
 
+class RealNetworkAttempt(BaseException):
+    """A BaseException on purpose: the caller's `except Exception` around the transport must not turn it into a quiet TransportError row."""
+
+
 @pytest.fixture(autouse=True)
 def _key(monkeypatch):
     monkeypatch.setenv(hc.KEY_ENV, FAKE_KEY)
 
 
-def ok_body(input_tokens=100, output_tokens=20, cache_creation=None, cache_read=None, text="hello", stop="end_turn") -> bytes:
+@pytest.fixture(autouse=True)
+def _no_real_transport(monkeypatch, request):
+    """Every test starts with the real _http_post replaced by a stub that raises, so a test that forgets install() cannot POST the
+    fake key to the real URL. The one test that exercises the real transport asks for the `loopback` fixture, which opts it out."""
+    if "loopback" in request.fixturenames:
+        return
+
+    def refuse(*args, **kwargs):
+        raise RealNetworkAttempt("a test reached the real _http_post; call install() first")
+
+    monkeypatch.setattr(hc, "_http_post", refuse)
+
+
+def ok_body(input_tokens=100, output_tokens=20, cache_creation=None, cache_read=None, text="hello", stop="end_turn",
+            model=hc.DEFAULT_MODEL, content=None) -> bytes:
     usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
     if cache_creation is not None:
         usage["cache_creation_input_tokens"] = cache_creation
     if cache_read is not None:
         usage["cache_read_input_tokens"] = cache_read
-    return json.dumps({"id": "msg_1", "type": "message", "role": "assistant", "model": hc.DEFAULT_MODEL,
-                       "content": [{"type": "text", "text": text}], "stop_reason": stop, "usage": usage}).encode()
+    return json.dumps({"id": "msg_1", "type": "message", "role": "assistant", "model": model,
+                       "content": content if content is not None else [{"type": "text", "text": text}],
+                       "stop_reason": stop, "usage": usage}).encode()
+
+
+ABSENT = object()
+
+
+def usage_body(usage) -> bytes:
+    """A readable 200 whose usage is exactly `usage` (or absent)."""
+    d = {"id": "msg_1", "type": "message", "role": "assistant", "model": hc.DEFAULT_MODEL,
+         "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn"}
+    if usage is not ABSENT:
+        d["usage"] = usage
+    return json.dumps(d).encode()
 
 
 def err_body(etype="rate_limit_error", msg=SERVER_MSG_MARK) -> bytes:
@@ -151,14 +182,56 @@ def test_success_builds_request_and_writes_one_full_row(monkeypatch, tmp_path):
     assert row["ts"].endswith("Z")
 
 
-def test_missing_usage_fields_count_as_zero_and_bad_ones_never_reduce_spend(monkeypatch, tmp_path):
-    body = json.dumps({"content": [], "stop_reason": "end_turn", "usage": {"input_tokens": 100, "output_tokens": -50, "cache_read_input_tokens": "x"}}).encode()
-    install(monkeypatch, (200, {}, body))
-    res = caller(tmp_path).call(**req())
-    assert res.cost_usd == pytest.approx(100 * 0.10 / 1e6)
-    row = settles(tmp_path)[0]
-    assert row["output_tokens"] == 0 and row["cache_creation_input_tokens"] == 0 and row["cache_read_input_tokens"] == 0
-    assert charged(tmp_path) == pytest.approx(100 * 0.10 / 1e6)  # the bad usage values never lowered the charge
+INVALID_USAGES = {
+    "absent": ABSENT,
+    "empty": {},
+    "null": None,
+    "list": [1, 2],
+    "floats": {"input_tokens": 1000.0, "output_tokens": 200.0},
+    "strings": {"input_tokens": "100", "output_tokens": "20"},
+    "missing_output_tokens": {"input_tokens": 100},
+    "missing_input_tokens": {"output_tokens": 20},
+    "negative_output": {"input_tokens": 100, "output_tokens": -50},
+    "negative_input": {"input_tokens": -1, "output_tokens": 20},
+    "bool_counts": {"input_tokens": True, "output_tokens": False},
+    "absurdly_large": {"input_tokens": 10**12, "output_tokens": 20},
+    "renamed_keys": {"prompt_tokens": 100, "completion_tokens": 20},
+    "cache_string": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": "x"},
+    "cache_negative": {"input_tokens": 100, "output_tokens": 20, "cache_creation_input_tokens": -5},
+    "cache_float": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 1.5},
+    "cache_null": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": None},
+}
+
+
+@pytest.mark.parametrize("usage", list(INVALID_USAGES.values()), ids=list(INVALID_USAGES))
+def test_a_200_without_a_valid_usage_keeps_the_worst_case_charged(monkeypatch, tmp_path, usage):
+    """A 200 is billed. If its usage cannot be trusted the cost is unknown, so the reserve must not be refunded."""
+    install(monkeypatch, (200, {"request-id": "req_u"}, usage_body(usage)))
+    res = caller(tmp_path).call(**req())  # the response is still returned
+    w = worst_of()
+    (reserve,), (settle,) = reserves(tmp_path), settles(tmp_path)
+    assert reserve["cost_usd"] == w and settle["cost_usd"] == 0.0 and settle["cost_basis"] == "worst_case_usage_invalid"
+    assert settle["http_status"] == 200 and settle["error_class"] is None
+    assert [settle[k] for k in hc.USAGE_KEYS] == [0, 0, 0, 0] and settle["input_tokens_over_bound"] is None
+    assert charged(tmp_path) == w and res.cost_usd == w and res.spent_after == w and res.text == "hello"
+    s = hc.ledger_summary(tmp_path / "ledger.jsonl")
+    assert (s["worst_case_settled_count"], s["settled_actual_cost_usd"]) == (1, 0.0) and s["worst_case_settled_cost_usd"] == w
+
+
+@pytest.mark.parametrize("usage", [
+    {"input_tokens": 0, "output_tokens": 0},
+    {"input_tokens": 100, "output_tokens": 20, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+    {"input_tokens": 100, "output_tokens": 20, "cache_creation_input_tokens": 7},
+    {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 9, "service_tier": "standard", "cache_creation": {"x": 1}},
+])
+def test_a_valid_usage_settles_to_actual_cost(monkeypatch, tmp_path, usage):
+    install(monkeypatch, (200, {}, usage_body(usage)))
+    caller(tmp_path).call(**req())
+    (settle,) = settles(tmp_path)
+    assert settle["cost_basis"] == "usage"
+    actual = (usage["input_tokens"] * 0.10 + usage["output_tokens"] * 0.50 + usage.get("cache_creation_input_tokens", 0) * 0.125
+              + usage.get("cache_read_input_tokens", 0) * 0.01) / 1e6
+    assert charged(tmp_path) == pytest.approx(actual, abs=1e-15)
 
 
 def test_thinking_default_off_and_passthrough_and_omit(monkeypatch, tmp_path):
@@ -318,6 +391,9 @@ def test_worst_case_formula_is_bytes_plus_margin_and_cache_control_uses_the_writ
     cbody = body_of(cached)
     cbytes = len(json.dumps(cbody, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     assert hc.worst_case_cost(cbody, P) == pytest.approx(((cbytes + 256) * 0.125 + 500 * 0.50) / 1e6)
+    odd = {"input": 1.0, "cache_write": 2.0, "cache_read": 3.0, "output": 4.0}  # a custom table need not have cache_read below cache_write
+    assert hc.worst_case_cost(cbody, odd) == pytest.approx(((cbytes + 256) * 3.0 + 500 * 4.0) / 1e6)
+    assert hc.worst_case_cost(body, odd) == pytest.approx(((nbytes + 256) * 1.0 + 500 * 4.0) / 1e6)  # no marker: the input rate only
 
 
 def test_worst_case_counts_utf8_bytes_of_the_whole_body_not_characters():
@@ -415,7 +491,7 @@ def test_odd_error_types_and_request_ids_are_not_copied(monkeypatch, tmp_path):
     with pytest.raises(hc.ApiError):
         caller(tmp_path).call(**req())
     (row,) = settles(tmp_path)
-    assert row["request_id"] is None and row["error_type"] is None and SERVER_MSG_MARK not in json.dumps(rows_of(tmp_path))
+    assert row["request_id"] == "invalid" and row["error_type"] is None and SERVER_MSG_MARK not in json.dumps(rows_of(tmp_path))
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 404, 413])
@@ -671,6 +747,270 @@ def test_ledger_summary_splits_settled_worst_case_and_unsettled(monkeypatch, tmp
     assert s["tokens"]["input"] == 10 and s["tokens"]["output"] == 5 and s["median_latency_ms_200"] is not None
 
 
+# ---------------------------------------------------------------- refusals before any reserve or call (size, cache ttl, non-text blocks)
+
+def padded_request(target_tokens: int) -> dict:
+    """A request whose worst-case input estimate is exactly target_tokens (bytes of the canonical body + 256)."""
+    base = hc.worst_case_input_tokens(body_of(req(system=None, messages=[{"role": "user", "content": ""}])))
+    pad = target_tokens - base
+    assert pad > 0
+    r = req(system=None, messages=[{"role": "user", "content": "a" * pad}])
+    assert hc.worst_case_input_tokens(body_of(r)) == target_tokens
+    return r
+
+
+def test_a_prompt_over_100000_tokens_is_refused_before_any_reserve_or_call(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+    assert hc.MAX_INPUT_TOKENS == 100_000
+    caller(tmp_path, budget=10.0).call(**padded_request(100_000))  # exactly at the limit: allowed
+    assert len(t.calls) == 1 and len(reserves(tmp_path)) == 1
+    rows_before = (tmp_path / "ledger.jsonl").read_bytes()
+    with pytest.raises(hc.PromptTooLarge) as ei:
+        caller(tmp_path, budget=10.0).call(**padded_request(100_001))
+    assert ei.value.exit_code == 7 and "100001" in str(ei.value)
+    assert len(t.calls) == 1 and (tmp_path / "ledger.jsonl").read_bytes() == rows_before  # nothing reserved, nothing sent
+
+
+def test_prompt_too_large_is_refused_even_with_a_huge_budget_and_before_the_key_and_replay(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+    monkeypatch.delenv(hc.KEY_ENV)
+    with pytest.raises(hc.PromptTooLarge):  # not MissingKey: the size check comes first
+        caller(tmp_path, budget=1e9, save_dir=tmp_path / "s", replay=True).call(**padded_request(100_001))
+    assert t.calls == [] and rows_of(tmp_path) == []
+
+
+def block_with_cache(ttl=ABSENT):
+    cc = {"type": "ephemeral"}
+    if ttl is not ABSENT:
+        cc["ttl"] = ttl
+    return {"type": "text", "text": "x", "cache_control": cc}
+
+
+def cache_request(where: str, ttl) -> dict:
+    if where == "message":
+        return req(messages=[{"role": "user", "content": [block_with_cache(ttl)]}])
+    if where == "system":
+        return req(system=[block_with_cache(ttl)])
+    cc = {"type": "ephemeral"} if ttl is ABSENT else {"type": "ephemeral", "ttl": ttl}
+    return req(messages=[{"role": "user", "content": "x", "cache_control": cc}])  # a marker placed on the message itself
+
+
+@pytest.mark.parametrize("where", ["message", "system", "message_level"])
+@pytest.mark.parametrize("ttl", ["1h", "10m", "5M", "", None, 300])
+def test_a_cache_control_ttl_other_than_5m_is_refused_before_anything_is_written(monkeypatch, tmp_path, where, ttl):
+    t = install(monkeypatch)
+    with pytest.raises(hc.UnsupportedRequest) as ei:
+        caller(tmp_path).call(**cache_request(where, ttl))
+    assert ei.value.exit_code == 2 and isinstance(ei.value, hc.BadArguments)
+    assert t.calls == [] and rows_of(tmp_path) == []
+
+
+@pytest.mark.parametrize("where", ["message", "system"])
+@pytest.mark.parametrize("ttl", [ABSENT, "5m"])
+def test_a_cache_control_with_no_ttl_or_5m_is_accepted(monkeypatch, tmp_path, where, ttl):
+    t = install(monkeypatch)
+    caller(tmp_path).call(**cache_request(where, ttl))
+    assert len(t.calls) == 1
+
+
+def test_a_cache_control_that_is_not_an_object_is_refused(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+    with pytest.raises(hc.UnsupportedRequest):
+        caller(tmp_path).call(**req(messages=[{"role": "user", "content": [{"type": "text", "text": "x", "cache_control": "ephemeral"}]}]))
+    assert t.calls == []
+
+
+BAD_BLOCKS = {
+    "image": {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+    "document": {"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hello"}},
+    "tool_use": {"type": "tool_use", "id": "t1", "name": "n", "input": {}},
+    "tool_result": {"type": "tool_result", "tool_use_id": "t1", "content": "x"},
+    "thinking": {"type": "thinking", "thinking": "x", "signature": "s"},
+    "no_type": {"text": "hi"},
+    "text_without_text": {"type": "text"},
+    "text_not_a_string": {"type": "text", "text": 5},
+}
+
+
+@pytest.mark.parametrize("where", ["messages", "system"])
+@pytest.mark.parametrize("block", list(BAD_BLOCKS.values()), ids=list(BAD_BLOCKS))
+def test_a_content_block_that_is_not_text_is_refused_in_system_and_in_messages(monkeypatch, tmp_path, where, block):
+    t = install(monkeypatch)
+    r = req(messages=[{"role": "user", "content": [{"type": "text", "text": "ok"}, block]}]) if where == "messages" else req(system=[block])
+    with pytest.raises(hc.UnsupportedRequest) as ei:
+        caller(tmp_path).call(**r)
+    assert ei.value.exit_code == 2
+    assert t.calls == [] and rows_of(tmp_path) == []
+
+
+@pytest.mark.parametrize("content", [[], None, 5, ["a bare string"], {"type": "text", "text": "x"}])
+def test_message_content_must_be_a_string_or_a_non_empty_list_of_text_blocks(monkeypatch, tmp_path, content):
+    t = install(monkeypatch)
+    with pytest.raises(hc.UnsupportedRequest):
+        caller(tmp_path).call(**req(messages=[{"role": "user", "content": content}]))
+    with pytest.raises(hc.BadArguments):  # a message that is not an object
+        caller(tmp_path).call(**req(messages=["just text"]))
+    assert t.calls == [] and rows_of(tmp_path) == []
+
+
+def test_text_blocks_in_system_and_messages_are_accepted(monkeypatch, tmp_path):
+    t = install(monkeypatch)
+    caller(tmp_path).call(**req(system=[{"type": "text", "text": "rank"}],
+                                messages=[{"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}]))
+    assert len(t.calls) == 1
+
+
+def test_cli_exit_codes_for_prompt_too_large_and_unsupported_requests(monkeypatch, tmp_path, capsys):
+    t = install(monkeypatch)
+    base = ["--out", str(tmp_path / "out.json"), "--ledger", str(tmp_path / "ledger.jsonl"), "--budget-usd", "100"]
+    for name, request, code in (("big", padded_request(100_001), 7),
+                                ("image", req(messages=[{"role": "user", "content": [BAD_BLOCKS["image"]]}]), 2),
+                                ("ttl", cache_request("message", "1h"), 2)):
+        rq = tmp_path / f"{name}.json"
+        rq.write_text(json.dumps(request))
+        assert hc.main(["--request", str(rq)] + base) == code, name
+    cap = capsys.readouterr()
+    assert "100001" in cap.err and cap.out == ""
+    assert t.calls == [] and rows_of(tmp_path) == [] and not (tmp_path / "out.json").exists()
+
+
+# ---------------------------------------------------------------- long context, probe fields, copied header and model values
+
+@pytest.mark.parametrize("usage,basis", [
+    ({"input_tokens": 100_000, "output_tokens": 5}, "usage"),
+    ({"input_tokens": 100_001, "output_tokens": 5}, "worst_case_long_context"),
+    ({"input_tokens": 60_000, "output_tokens": 5, "cache_read_input_tokens": 40_001}, "worst_case_long_context"),
+    ({"input_tokens": 1, "output_tokens": 5, "cache_creation_input_tokens": 100_000}, "worst_case_long_context"),
+])
+def test_usage_above_100000_input_tokens_is_never_recorded_at_the_normal_rate(monkeypatch, tmp_path, usage, basis):
+    install(monkeypatch, (200, {}, usage_body(usage)))
+    res = caller(tmp_path, budget=10.0).call(**req())
+    (settle,) = settles(tmp_path)
+    assert settle["cost_basis"] == basis and settle["http_status"] == 200 and settle["error_class"] is None
+    assert [settle[k] for k in hc.USAGE_KEYS] == [usage["input_tokens"], usage["output_tokens"],
+                                                  usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0)]
+    if basis == "usage":
+        assert settle["cost_usd"] > 0 and charged(tmp_path) == pytest.approx((100_000 * 0.10 + 5 * 0.50) / 1e6)
+    else:
+        assert settle["cost_usd"] == 0.0 and charged(tmp_path) == worst_of() == res.cost_usd  # the worst case stays; not the 0.10 rate
+        assert settle["input_tokens_over_bound"] is True
+
+
+def test_settle_row_records_response_model_thinking_block_and_whether_input_exceeded_the_bound(monkeypatch, tmp_path):
+    reserved_in = hc.worst_case_input_tokens(body_of())
+    think = [{"type": "thinking", "thinking": "secret reasoning", "signature": "sig"}, {"type": "text", "text": "answer"}]
+    redacted = [{"type": "redacted_thinking", "data": "xx"}, {"type": "text", "text": "answer"}]
+    install(monkeypatch,
+            (200, {}, ok_body(model="claude-haiku-5-5-20260101")),                                              # normal
+            (200, {}, ok_body(content=think, model="claude-haiku-5.5")),                                         # thinking block, a dot in the model id
+            (200, {}, ok_body(content=redacted)),                                                                # redacted thinking
+            (200, {}, ok_body(input_tokens=reserved_in, output_tokens=1)),                                       # exactly at the bound
+            (200, {}, ok_body(input_tokens=reserved_in + 1, output_tokens=1)),                                   # one over
+            (200, {}, ok_body(input_tokens=0, output_tokens=1, cache_creation=reserved_in, cache_read=1)))       # cache tokens count too
+    c = caller(tmp_path, budget=10.0)
+    for _ in range(6):
+        c.call(**req())
+    got = [(r["response_model"], r["thinking_block_present"], r["input_tokens_over_bound"]) for r in settles(tmp_path)]
+    assert got == [("claude-haiku-5-5-20260101", False, False), ("claude-haiku-5.5", True, False), ("claude-haiku-5-5", True, False),
+                   ("claude-haiku-5-5", False, False), ("claude-haiku-5-5", False, True), ("claude-haiku-5-5", False, True)]
+    assert "secret reasoning" not in (tmp_path / "ledger.jsonl").read_text()
+    # the flag is about input tokens alone: here the unused output allowance still covers the one extra input token, so the settle is
+    # negative; it is priced at its real usage either way
+    over = settles(tmp_path)[4]
+    assert over["cost_basis"] == "usage" and reserves(tmp_path)[4]["cost_usd"] + over["cost_usd"] == pytest.approx(((reserved_in + 1) * 0.10 + 0.50) / 1e6)
+
+
+def test_probe_fields_are_null_when_there_is_no_readable_200(monkeypatch, tmp_path):
+    c = caller(tmp_path, budget=10.0)
+    install(monkeypatch, (400, {}, err_body("invalid_request_error")))
+    with pytest.raises(hc.ApiError):
+        c.call(**req())
+    install(monkeypatch, TimeoutError(), TimeoutError(), TimeoutError())
+    with pytest.raises(hc.RetriesExhausted):
+        c.call(**req())
+    install(monkeypatch, (200, {}, b"<html>"))
+    with pytest.raises(hc.ApiError):
+        c.call(**req())
+    assert len(settles(tmp_path)) == 5
+    for row in settles(tmp_path):
+        assert (row["response_model"], row["thinking_block_present"], row["input_tokens_over_bound"]) == (None, None, None)
+    # a readable 200 with an unusable usage still records the model and the thinking flag, but not the bound flag
+    install(monkeypatch, (200, {}, usage_body({"input_tokens": "x"})))
+    c.call(**req())
+    last = settles(tmp_path)[-1]
+    assert (last["response_model"], last["thinking_block_present"], last["input_tokens_over_bound"]) == ("claude-haiku-5-5", False, None)
+
+
+@pytest.mark.parametrize("header,expected", [
+    (FAKE_KEY, "invalid"),                    # matches the id pattern, but it is the key
+    ("req_" + FAKE_KEY, "invalid"),           # contains the key
+    ("has space", "invalid"),
+    ("dotted.id", "invalid"),                 # request ids allow no dot
+    ("x" * 129, "invalid"),
+    ("", "invalid"),
+    ("réq", "invalid"),
+    ("req_011CTabc-DEF_1", "req_011CTabc-DEF_1"),
+    (None, None),                             # header absent
+])
+def test_the_request_id_header_is_recorded_only_if_it_looks_like_an_id_and_is_not_the_key(monkeypatch, tmp_path, header, expected):
+    headers = {} if header is None else {"request-id": header}
+    install(monkeypatch, (200, headers, ok_body()))
+    res = caller(tmp_path).call(**req())
+    (row,) = settles(tmp_path)
+    assert row["request_id"] == expected and res.request_id == expected
+    assert FAKE_KEY not in (tmp_path / "ledger.jsonl").read_text()
+
+
+def test_a_response_model_or_stop_reason_that_is_odd_or_the_key_is_recorded_as_invalid(monkeypatch, tmp_path):
+    install(monkeypatch, (200, {}, ok_body(model=FAKE_KEY, stop=FAKE_KEY)), (200, {}, ok_body(model="a b", stop="end turn")),
+            (200, {}, ok_body(model="claude-haiku-5.5", stop="max_tokens")))
+    c = caller(tmp_path)
+    for _ in range(3):
+        c.call(**req())
+    got = [(r["response_model"], r["stop_reason"]) for r in settles(tmp_path)]
+    assert got == [("invalid", "invalid"), ("invalid", "invalid"), ("claude-haiku-5.5", "max_tokens")]
+    assert FAKE_KEY not in (tmp_path / "ledger.jsonl").read_text()
+
+
+# ---------------------------------------------------------------- a damaged or hostile ledger never produces a traceback
+
+HOSTILE_LEDGERS = {
+    "int_beyond_float_range": b'{"cost_usd": 1' + b"0" * 400 + b"}\n",
+    "int_beyond_str_conversion_limit": b'{"cost_usd": ' + b"9" * 5000 + b"}\n",
+    "object_nested_too_deep": b'{"cost_usd": 0, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}\n",
+    "array_nested_too_deep": b"[" * 100_000 + b"]" * 100_000 + b"\n",
+    "infinite_literal": b'{"cost_usd": 1e999}\n',
+    "sum_beyond_float_range": b'{"cost_usd": 1e308}\n{"cost_usd": 1e308}\n',
+    "nul_bytes": b"\x00\x00\x00\n",
+    "torn_last_line": b'{"cost_usd": 0.1}\n{"kind":"reserve","reserv',
+    "invalid_utf8": b'\xff\xfe{"cost_usd": 0}\n',
+}
+
+
+@pytest.mark.parametrize("raw", list(HOSTILE_LEDGERS.values()), ids=list(HOSTILE_LEDGERS))
+def test_a_hostile_or_damaged_ledger_is_a_ledger_error_and_exit_2_never_a_traceback(monkeypatch, tmp_path, capsys, raw):
+    t = install(monkeypatch)
+    (tmp_path / "ledger.jsonl").write_bytes(raw)
+    with pytest.raises(hc.LedgerError):
+        caller(tmp_path, budget=1e9).call(**req())
+    with pytest.raises(hc.LedgerError):
+        hc.ledger_summary(tmp_path / "ledger.jsonl")
+    rq = tmp_path / "rq.json"
+    rq.write_text(json.dumps(req()))
+    code = hc.main(["--request", str(rq), "--out", str(tmp_path / "out.json"), "--ledger", str(tmp_path / "ledger.jsonl"), "--budget-usd", "1000000"])
+    err = capsys.readouterr().err
+    assert code == 2 and "Traceback" not in err and err.startswith("haiku_caller: ") and len(err.splitlines()) == 1
+    assert t.calls == [] and (tmp_path / "ledger.jsonl").read_bytes() == raw  # nothing appended
+
+
+# ---------------------------------------------------------------- the test-suite guard on the real transport
+
+def test_the_guard_stops_a_test_that_forgot_install(tmp_path):
+    with pytest.raises(RealNetworkAttempt):  # not swallowed into a quiet TransportError row by the caller
+        caller(tmp_path).call(**req())
+    assert [r["kind"] for r in rows_of(tmp_path)] == ["reserve"]
+
+
 # ---------------------------------------------------------------- replay and the text store
 
 def test_replay_hit_makes_no_call_and_no_ledger_row(monkeypatch, tmp_path):
@@ -747,10 +1087,10 @@ def test_other_model_is_refused_without_allow_model_and_a_price(monkeypatch, tmp
 
 
 def test_allowed_other_model_is_sent_priced_with_the_given_table_and_recorded(monkeypatch, tmp_path):
-    t = install(monkeypatch, (200, {}, ok_body(input_tokens=1_000_000, output_tokens=0)))
+    t = install(monkeypatch, (200, {}, ok_body(input_tokens=100_000, output_tokens=0)))
     prices = {"input": 3, "cache_write": 3.75, "cache_read": 0.3, "output": 15}
     res = caller(tmp_path, budget=10.0, model="claude-sonnet-x", allow_model="claude-sonnet-x", prices=prices).call(**req())
-    assert json.loads(t.calls[0]["body"])["model"] == "claude-sonnet-x" and res.cost_usd == pytest.approx(3.0)
+    assert json.loads(t.calls[0]["body"])["model"] == "claude-sonnet-x" and res.cost_usd == pytest.approx(0.3)
     (row,) = settles(tmp_path)
     assert row["model"] == "claude-sonnet-x" and row["allow_model"] == "claude-sonnet-x" and row["custom_prices"]["output"] == 15.0
 
@@ -815,6 +1155,10 @@ def test_key_never_appears_anywhere_on_success_http_error_timeout_and_budget_pat
     with pytest.raises(Killed) as ei:
         api.call(**req(max_tokens=78))
     exc_texts += [str(ei.value), repr(ei.value), "".join(traceback.format_exception(ei.value))]
+    install(monkeypatch, (200, {"request-id": FAKE_KEY}, ok_body()))  # a server header that echoes the key: it must not reach the ledger
+    echoed = api.call(**req(max_tokens=79))
+    assert echoed.request_id == "invalid"
+    exc_texts.append(repr(echoed))
     install(monkeypatch, (200, {}, ok_body()))
     res = api.call(**req(max_tokens=77))
     exc_texts.append(repr(res))

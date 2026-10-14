@@ -34,35 +34,56 @@ processes cannot both pass the check and then both spend. The cost is that calls
 are taken with the lock released. Pre-request failures (bad arguments, a missing key, a budget refusal) write no rows.
 
 Worst case = (UTF-8 bytes of the canonical request body + WORST_CASE_INPUT_MARGIN_TOKENS) input tokens at the input rate +
-max_tokens at the output rate. The input side is a true upper bound for text requests: a token never covers less than one byte, so
-input tokens <= bytes of the body (digit-heavy text included, where bytes/3 would under-count), and the 256-token margin covers
-the API's own formatting tokens. The output side is bounded by max_tokens, which includes any thinking. If the request carries a
-cache_control marker, the input part is priced at the (higher) cache-write rate, so a cache write cannot make the real charge
-exceed the bound. Not covered: images or documents (their tokens are not bounded by bytes; this module sends text only). Actual cost
-comes from the response usage fields (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens; a missing
-or invalid field is 0). If the real usage ever exceeded the bound, the settle row would be positive and the ledger would record the
-real cost; the check for the NEXT attempt then sees it.
+max_tokens at the output rate. The input side is an upper bound BY ARGUMENT, not by measurement: a token covers at least one byte,
+so input tokens <= bytes of the body, for text requests. The 256-token margin for the API's own formatting tokens is an
+assumption. Neither has been compared with real token counts; the first live probe is where that is checked (it is why the settle
+row records input_tokens_over_bound). The output side is bounded by max_tokens, which includes any thinking. If the request carries a
+cache_control marker, the input part is priced at the highest of the input, cache-write and cache-read rates.
+The bound is only claimed inside what the price table covers, so the module REFUSES, before any reserve or call, what it cannot
+price (nothing is written and nothing is sent):
+  - a request whose worst-case input estimate is over MAX_INPUT_TOKENS = 100,000 (PromptTooLarge, exit 7): above that the API
+    changes tier ($0.50 in / $2.50 out per million, from JUDGE.md) and the table has no such rate;
+  - a cache_control whose ttl is present and not "5m" (the 1-hour write rate is not in the table);
+  - any content block, in system or in messages, whose type is not "text" (images and documents are not bounded by bytes).
+The last two raise UnsupportedRequest (a BadArguments, exit 2).
+Actual cost comes from the response usage fields, and only from a valid usage: on a 200, usage must be a dict whose input_tokens and
+output_tokens are present ints >= 0 (not bool; at most 10**9) and whose cache_creation_input_tokens / cache_read_input_tokens, if
+present, are too. Anything else (no usage, floats, strings, a missing output_tokens, negatives) settles at the WORST CASE with
+cost_basis "worst_case_usage_invalid"; a valid usage that totals more than 100,000 input tokens (input + cache) also keeps the worst
+case, with "worst_case_long_context", and is never recorded at the 0.10 rate. If the real usage exceeds the reserve but not that, the
+settle row is positive, the ledger records the real cost, and the check for the NEXT attempt sees it.
 
-What is still not covered: an HTTP error response (4xx/5xx with a body) is assumed not billed and settles to 0. The 1-hour cache
-write price is not in the table. The workspace spend limit the owner sets in the Anthropic console remains the backstop; this
-module is the first stop, not the only one.
+What is still not covered. "Hard" means hard on the ledger. Whether the ledger matches the bill is not known: it rests on the price
+table, on error responses being unbilled, and on the usage shape, and is checked at the first probe against the Anthropic console.
+The workspace spend limit the owner sets in the console remains the backstop; this module is the first stop, not the only one.
 
 Ledger rows. A ledger is append-only JSONL; no prompt or response text is ever in it. Every row has kind and cost_usd. A row with no
-kind (not written by this module) is a plain cost row, cost_usd >= 0. A reader fails closed (LedgerError) on any row it cannot
-trust: bad JSON, unknown kind, a settle with no earlier reserve or settling twice, a reserve+settle pair that nets below 0.
+kind (not written by this module) is a plain cost row, cost_usd >= 0. A reader fails closed (LedgerError, exit 2, never a traceback)
+on any row it cannot trust: bad JSON, an absurd number, nesting too deep, unknown kind, a settle with no earlier reserve or settling
+twice, a reserve+settle pair that nets below 0.
   reserve: kind, ts, reservation_id (fresh per attempt), model, request_sha256, attempt, cost_usd (the worst case). No usage.
   settle: kind, ts, reservation_id, model, request_sha256, response_sha256 (raw bytes, or null), http_status (null if no
-  response), request_id (response header request-id, if it looks like an id), stop_reason, input_tokens, output_tokens,
+  response), request_id, stop_reason, response_model, thinking_block_present, input_tokens_over_bound, input_tokens, output_tokens,
   cache_creation_input_tokens, cache_read_input_tokens, cost_usd (actual - reserved; 0.0 for the worst-case bases), cost_basis,
   latency_ms, attempt, thinking (the parameter exactly as sent, null if omitted), allow_model, custom_prices, error_class,
   error_type.
-  cost_basis: "usage" (200 with a readable body; actual cost from usage), "http_error" (an error response; actual 0),
-  "worst_case_no_response" (timeout, dropped connection, transport exception) or "worst_case_unreadable_200" (a 200 whose body is
-  not a JSON object; billed, usage unknown). The two worst_case bases leave the reserved worst case charged.
+  request_id (header request-id), stop_reason and response_model (the response's model field) are copied only if they match a short
+  token pattern ([A-Za-z0-9_-], plus "." for the model, 1 to 128 characters) and do not contain the key; a value that is present but
+  fails is recorded as the string "invalid"; absent is null. thinking_block_present is true when the response has a thinking block;
+  input_tokens_over_bound is true when input + cache tokens exceed the reserved input tokens; both are null when there is no
+  readable 200 (the second also when usage is invalid).
+  cost_basis: "usage" (200 with a readable body and valid usage; actual cost from usage), "http_error" (an error response; actual
+  0), "worst_case_no_response" (timeout, dropped connection, transport exception), "worst_case_unreadable_200" (a 200 whose body is
+  not a JSON object; billed, usage unknown), "worst_case_usage_invalid" or "worst_case_long_context" (above). Every worst_case_*
+  basis leaves the reserved worst case charged.
   error_class is one of null, "HTTPError", "Timeout", "NetworkError", "TransportError", "MalformedResponse"; error_type is the
   server's error.type or null.
 ledger_summary(path) reports total_cost_usd (what counts against the budget), settled_actual_cost_usd,
 worst_case_settled_count/_cost_usd and reserved_unsettled_count/_cost_usd separately; the first is exactly the sum of the other three.
+Care of the ledger: never rotate, truncate or replace it (a new ledger resets the in-house cap; only the console limit spans
+ledgers). A torn last line (a crash mid-append) stops every call with LedgerError until a person removes that one line by hand;
+removing it leaves any reserve above it charged. The reserve/settle pairing is structural, not authenticated: anyone who can write the
+file can settle a reservation to zero. It is mode 600 for that reason.
 
 Retries. HTTP 429, 500, 502, 503, 529, a timeout and a dropped connection are retried, at most 3 attempts in total, sleeping 2 s
 then 8 s (or the retry-after header if it asks for longer, capped at 30 s). Any other non-200 status is not retried and raises
@@ -80,7 +101,8 @@ allow_model equal to it AND a price dict (per million tokens: input, cache_write
 model that is in the table is refused: the table is the one source of truth. Thinking defaults to {"type": "disabled"}
 (Haiku 5.5 thinks by default and thinking is billed as output); pass thinking=None to omit the parameter.
 
-Exit codes (CLI): 0 ok, 2 bad arguments / missing key / unusable ledger, 3 budget, 4 replay miss, 5 API error, 6 retries exhausted.
+Exit codes (CLI): 0 ok, 2 bad arguments / unsupported request / missing key / unusable ledger, 3 budget, 4 replay miss, 5 API error,
+6 retries exhausted, 7 prompt over 100,000 tokens.
 """
 from __future__ import annotations
 
@@ -124,14 +146,19 @@ RETRY_STATUSES = frozenset({429, 500, 502, 503, 529})
 # Input side of the worst case: a token covers at least one byte of text, so input tokens <= UTF-8 bytes of the canonical request
 # body. This fixed margin, in tokens, is added for the API's own formatting tokens (role markers, wrappers).
 WORST_CASE_INPUT_MARGIN_TOKENS = 256
+# Above this many input tokens the API changes price tier and the PRICES table has no rate, so such a request is refused.
+MAX_INPUT_TOKENS = 100_000
+MAX_COUNT = 10**9  # a usage count above this is not believed (and cannot overflow a float)
 
-EXIT_OK, EXIT_BAD_ARGS, EXIT_BUDGET, EXIT_REPLAY_MISS, EXIT_API_ERROR, EXIT_RETRIES = 0, 2, 3, 4, 5, 6
+EXIT_OK, EXIT_BAD_ARGS, EXIT_BUDGET, EXIT_REPLAY_MISS, EXIT_API_ERROR, EXIT_RETRIES, EXIT_PROMPT_TOO_LARGE = 0, 2, 3, 4, 5, 6, 7
 
 REQUEST_KEYS = frozenset({"system", "messages", "max_tokens", "temperature", "thinking"})
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 _KEY_OK = re.compile(r"^[\x21-\x7e]{1,512}$")
-_TOKEN_OK = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+_TOKEN_OK = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
+_REQUEST_ID_OK = re.compile(r"[A-Za-z0-9_\-]{1,128}")
+_MODEL_ID_OK = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _ERROR_TYPE_OK = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA_OK = re.compile(r"^[0-9a-f]{64}$")
 
@@ -153,6 +180,15 @@ class ModelRefused(BadArguments):
 
 class MissingKey(BadArguments):
     pass
+
+
+class UnsupportedRequest(BadArguments):
+    """A request this module cannot price or bound: a cache_control ttl other than 5m, or a content block that is not text."""
+
+
+class PromptTooLarge(HaikuCallerError):
+    """The worst-case input estimate is over MAX_INPUT_TOKENS. Raised before any reserve or call."""
+    exit_code = EXIT_PROMPT_TOO_LARGE
 
 
 class LedgerError(HaikuCallerError):
@@ -197,7 +233,7 @@ def canonical_bytes(obj) -> bytes:
     """The canonical JSON bytes: sort_keys, separators (",", ":"), UTF-8. Raises BadArguments if obj is not plain JSON."""
     try:
         return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, RecursionError):
         raise BadArguments("request is not plain JSON (non-serialisable value, NaN or Infinity)") from None
 
 
@@ -206,7 +242,12 @@ def sha256_hex(data: bytes) -> str:
 
 
 def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # an int too large for a float
+        return False
 
 
 def validate_prices(prices) -> dict:
@@ -245,6 +286,8 @@ def build_body(model, system, messages, max_tokens, temperature, thinking) -> di
         raise BadArguments("messages must be a non-empty list")
     if system is not None and not isinstance(system, (str, list)):
         raise BadArguments("system must be a string or a list of blocks")
+    if not all(isinstance(m, dict) for m in messages):
+        raise BadArguments("every message must be an object")
     if temperature is not None and (not _is_num(temperature) or not 0 <= temperature <= 1):
         raise BadArguments("temperature must be a number in [0, 1]")
     if thinking is not None and not isinstance(thinking, dict):
@@ -256,31 +299,85 @@ def build_body(model, system, messages, max_tokens, temperature, thinking) -> di
         body["temperature"] = temperature
     if thinking is not None:
         body["thinking"] = copy.deepcopy(thinking)
+    canonical_bytes(body)  # plain JSON, no cycles: the walks below rely on it
+    _check_supported(body)
     return body
+
+
+def _check_content(content, where: str) -> None:
+    if isinstance(content, str):
+        return
+    if not isinstance(content, list) or not content:
+        raise UnsupportedRequest(f"{where}: content must be a string or a non-empty list of text blocks")
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text" or not isinstance(block.get("text"), str):
+            raise UnsupportedRequest(f"{where}: only text content blocks are supported (no image, document, tool or thinking blocks)")
+
+
+def _check_supported(body: dict) -> None:
+    """Refuse what the price table and the bytes-bound cannot cover: non-text blocks, and any cache_control ttl other than 5m."""
+    if "system" in body:
+        _check_content(body["system"], "system")
+    for i, message in enumerate(body["messages"]):
+        _check_content(message.get("content"), f"messages[{i}]")
+    stack = [body]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "cache_control" in node:
+                cc = node["cache_control"]
+                if not isinstance(cc, dict):
+                    raise UnsupportedRequest("cache_control must be an object")
+                if "ttl" in cc and cc["ttl"] != "5m":
+                    raise UnsupportedRequest("cache_control ttl other than 5m is not supported (no 1-hour cache-write price in the table)")
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def worst_case_input_tokens(body: dict) -> int:
     """Upper bound on input tokens: UTF-8 bytes of the canonical request body + WORST_CASE_INPUT_MARGIN_TOKENS.
-    Holds for text requests (a token never covers less than one byte); not for images or documents, which this module does not send."""
+    An upper bound by argument (a token covers at least one byte), for text requests; not compared with real token counts.
+    The 256 is an assumption. build_body refuses images and documents, which the argument does not cover."""
     return len(canonical_bytes(body)) + WORST_CASE_INPUT_MARGIN_TOKENS
 
 
 def worst_case_cost(body: dict, prices: dict) -> float:
-    """USD upper bound for one attempt: worst_case_input_tokens(body) at the input rate (at the cache-write rate if the body
-    carries a cache_control marker) plus body["max_tokens"] at the output rate (max_tokens includes any thinking)."""
+    """USD upper bound for one attempt: worst_case_input_tokens(body) at the input rate (at the highest of the input, cache-write
+    and cache-read rates if the body carries a cache_control marker) plus body["max_tokens"] at the output rate."""
     in_rate = prices["input"]
     if b'"cache_control"' in canonical_bytes(body):
-        in_rate = max(in_rate, prices["cache_write"])
+        in_rate = max(in_rate, prices["cache_write"], prices["cache_read"])
     return (worst_case_input_tokens(body) * in_rate + body["max_tokens"] * prices["output"]) / 1e6
 
 
 def _tok(v) -> int:
+    """Lenient: a count or 0. Only for reading back our own ledger rows in ledger_summary, never for pricing a response."""
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
 
 
+def _valid_count(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= MAX_COUNT
+
+
+def parse_usage(usage):
+    """The four counts if usage is a dict with valid input_tokens and output_tokens (present ints >= 0, not bool), and valid
+    cache counts where present (an absent cache count is 0); otherwise None. A response without a valid usage cannot be priced."""
+    if not isinstance(usage, dict):
+        return None
+    if not (_valid_count(usage.get("input_tokens")) and _valid_count(usage.get("output_tokens"))):
+        return None
+    out = {"input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"]}
+    for k in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+        if k in usage and not _valid_count(usage[k]):
+            return None
+        out[k] = usage.get(k, 0)
+    return out
+
+
 def usage_counts(usage) -> dict:
-    u = usage if isinstance(usage, dict) else {}
-    return {k: _tok(u.get(k)) for k in USAGE_KEYS}
+    """parse_usage, or all zeros when the usage is invalid. For display only (CallResult.usage); the ledger prices from parse_usage."""
+    return parse_usage(usage) or {k: 0 for k in USAGE_KEYS}
 
 
 def cost_from_usage(counts: dict, prices: dict) -> float:
@@ -295,7 +392,15 @@ def _utc_now() -> str:
 
 
 def _safe_token(v, rx=_TOKEN_OK):
-    return v if isinstance(v, str) and rx.match(v) else None
+    return v if isinstance(v, str) and rx.fullmatch(v) else None
+
+
+def _safe_copy(v, rx, key):
+    """A value copied from the server into the ledger: None if absent, the value if it matches rx and does not contain the key,
+    otherwise the string "invalid"."""
+    if v is None:
+        return None
+    return v if isinstance(v, str) and rx.fullmatch(v) and key not in v else "invalid"
 
 
 def _server_error_type(resp_json):
@@ -392,6 +497,15 @@ class Ledger:
             return []
         except OSError:
             raise LedgerError("cannot read the ledger") from None
+        try:
+            return self._parse(raw)
+        except LedgerError:
+            raise
+        except Exception:  # OverflowError, RecursionError, MemoryError-like surprises from a hostile or damaged file: never a traceback
+            raise LedgerError("the ledger could not be parsed; refusing to continue") from None
+
+    @staticmethod
+    def _parse(raw: bytes) -> list[dict]:
         out = []
         reserved: dict[str, float] = {}
         settled: set[str] = set()
@@ -423,7 +537,10 @@ class Ledger:
         return out
 
     def spent(self) -> float:
-        return math.fsum(r["cost_usd"] for r in self.rows())
+        try:
+            return math.fsum(r["cost_usd"] for r in self.rows())
+        except (OverflowError, ValueError):  # a sum beyond float range
+            raise LedgerError("the ledger total is out of range; refusing to continue") from None
 
     def open_append(self) -> int:
         try:
@@ -446,13 +563,20 @@ def ledger_summary(path) -> dict:
 
     total_cost_usd is what counts against the budget (the sum of cost_usd over every row). It splits exactly into
     settled_actual_cost_usd (attempts settled from a response: usage, or an HTTP error priced 0; plus plain cost rows),
-    worst_case_settled_cost_usd (attempts with no usable response, charged at their reserved worst case) and
+    worst_case_settled_cost_usd (attempts with no usable response or usage, charged at their reserved worst case) and
     reserved_unsettled_cost_usd (reservations with no settle row: a process died or was killed mid-call; still charged at
     worst case). calls counts attempts started; the error and token counts and the latency median read the attempts that
     have a settle row (or are plain rows)."""
     ledger = Ledger(path)
     with ledger.locked(exclusive=False):
         rows = ledger.rows()
+    try:
+        return _summarise(rows)
+    except (OverflowError, ValueError):  # a sum beyond float range
+        raise LedgerError("the ledger totals are out of range") from None
+
+
+def _summarise(rows: list[dict]) -> dict:
     reserves = {r["reservation_id"]: r for r in rows if r.get("kind") == "reserve"}
     done = [r for r in rows if r.get("kind") != "reserve"]  # settle rows and plain rows: the finished attempts
     settled_ids = {r["reservation_id"] for r in rows if r.get("kind") == "settle"}
@@ -650,6 +774,10 @@ class HaikuCaller:
 
     def call(self, *, messages, max_tokens, system=None, temperature=None, thinking=DEFAULT_THINKING) -> CallResult:
         body = self._build_body(system, messages, max_tokens, temperature, thinking)
+        input_bound = worst_case_input_tokens(body)
+        if input_bound > MAX_INPUT_TOKENS:  # before the replay lookup, the reserve and the call: nothing is written or sent
+            raise PromptTooLarge(f"worst-case input estimate is {input_bound} tokens, over the {MAX_INPUT_TOKENS} the price table covers; "
+                                 f"nothing was reserved or sent")
         body_bytes = canonical_bytes(body)
         sha = sha256_hex(body_bytes)
 
@@ -695,9 +823,11 @@ class HaikuCaller:
         request; append a "settle" row whose cost_usd is (what the attempt really cost - the reserved worst case). With no
         usable response (timeout, dropped connection, any exception from the transport, a 200 whose body cannot be read)
         the settle row's cost_usd is 0.0, so the worst case stays charged. If the process dies between the two rows the
-        reserve row stays alone and the worst case stays charged, which is intended."""
+        reserve row stays alone and the worst case stays charged, which is intended. A 200 whose usage is not valid also keeps
+        the worst case (cost_basis worst_case_usage_invalid); the response is still returned."""
         request_headers = {"x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json"}
         worst = worst_case_cost(body, self.prices)
+        reserved_input_tokens = worst_case_input_tokens(body)
         with self.ledger.locked(exclusive=True):
             spent = self.ledger.spent()
             if not (spent + worst <= self.budget_usd):  # also refuses if anything is NaN
@@ -728,35 +858,51 @@ class HaikuCaller:
                     try:
                         parsed = json.loads(raw)
                         resp_json = parsed if isinstance(parsed, dict) else None
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, RecursionError):
                         resp_json = None
+                usage = None
+                readable = False  # a 200 whose body is a JSON object
                 if error_class is None:
                     if status != 200:
                         error_class, cost_basis = "HTTPError", "http_error"  # an error response is not billed: settles to 0
                     elif resp_json is None:
                         error_class, cost_basis = "MalformedResponse", "worst_case_unreadable_200"  # billed, usage unknown
                     else:
-                        cost_basis = "usage"
+                        readable = True
+                        usage = parse_usage(resp_json.get("usage"))
+                        if usage is None:  # a 200 is billed; without a usable usage the cost is unknown, so the worst case stays
+                            cost_basis = "worst_case_usage_invalid"
+                        elif usage["input_tokens"] + usage["cache_creation_input_tokens"] + usage["cache_read_input_tokens"] > MAX_INPUT_TOKENS:
+                            cost_basis = "worst_case_long_context"  # a tier the table has no price for: never recorded at the 0.10 rate
+                        else:
+                            cost_basis = "usage"
                 else:
                     cost_basis = "worst_case_no_response"
                 error_type = _server_error_type(resp_json) if error_class in ("HTTPError", "MalformedResponse") else None
 
+                counts = usage if usage is not None else {k: 0 for k in USAGE_KEYS}
                 if cost_basis == "usage":
-                    counts = usage_counts(resp_json.get("usage"))
                     charged = cost_from_usage(counts, self.prices)
                 else:
-                    counts = usage_counts(None)
                     charged = 0.0 if cost_basis == "http_error" else worst
                 settle_delta = 0.0 if cost_basis.startswith("worst_case") else charged - worst
-                request_id = _safe_token(headers.get("request-id"))
-                stop_reason = _safe_token(resp_json.get("stop_reason")) if cost_basis == "usage" else None
+                request_id = _safe_copy(headers.get("request-id"), _REQUEST_ID_OK, key)
+                stop_reason = _safe_copy(resp_json.get("stop_reason"), _TOKEN_OK, key) if readable else None
+                response_model = _safe_copy(resp_json.get("model"), _MODEL_ID_OK, key) if readable else None
+                blocks = resp_json.get("content") if readable else None
+                thinking_block_present = (any(isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking") for b in blocks)
+                                          if isinstance(blocks, list) else False) if readable else None
+                input_tokens_over_bound = (None if usage is None else
+                                           usage["input_tokens"] + usage["cache_creation_input_tokens"] + usage["cache_read_input_tokens"]
+                                           > reserved_input_tokens)
                 response_sha = sha256_hex(raw) if isinstance(raw, (bytes, bytearray)) else None
                 http_status = status if isinstance(status, int) and not isinstance(status, bool) else None
                 Ledger.append_row(fd, {
                     "kind": "settle", "ts": _utc_now(), "reservation_id": reservation_id, "model": self.model,
                     "request_sha256": sha, "response_sha256": response_sha, "http_status": http_status,
-                    "request_id": request_id, "stop_reason": stop_reason, **counts, "cost_usd": settle_delta,
-                    "cost_basis": cost_basis, "latency_ms": latency_ms, "attempt": attempt,
+                    "request_id": request_id, "stop_reason": stop_reason, "response_model": response_model,
+                    "thinking_block_present": thinking_block_present, "input_tokens_over_bound": input_tokens_over_bound,
+                    **counts, "cost_usd": settle_delta, "cost_basis": cost_basis, "latency_ms": latency_ms, "attempt": attempt,
                     "thinking": copy.deepcopy(body.get("thinking")), "allow_model": self.allow_model,
                     "custom_prices": dict(self.prices) if self.custom_prices else None,
                     "error_class": error_class, "error_type": error_type})
