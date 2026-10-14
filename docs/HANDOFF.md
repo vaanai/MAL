@@ -11,6 +11,13 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0 Update 2026-10-14T07:46:43Z (manager10): H5 STOPPED again; EXP-022's P2 is declared
+
+- **H5 STOPPED at 2026-10-14T07:14:07Z** (job #998) after the daily A3 run (job #996) flagged `pins_changed`: the pump program was redeployed at 2026-10-13T15:40:41Z. Five buys are dated after the deploy (DEC-024 halt record of 2026-10-14; they count in every figure). **STOP stays until at least 2026-10-16T01:00Z** (the manager's decision on quant-proof's "cheapest" path, PR #648 comment 6163455594 section 2). Any removal later follows that section's list.
+- **Re-pin PR #648** must merge with `Reviewer OK` and `QP OK` on its final head before the 2026-10-15 daily A3 run. **EXP-022 Amendment 7** declares that run as P2 and forbids any other monitor run between its start and 2026-10-16T01:00Z; item 4 (errored runs) waits for quant-proof's Q22 to Q25. A halt in P2 withdraws CAP-PICK.
+- **The 2026-10-15 A3 cron:** submit the declared P2 job (the command of EXP-022 Amendment 7 item 1, printing HEAD and the two blobs first). After it, the slices tracking job (`boost_slice_watch`, not a monitor run). No other `pump_structure_monitor` run until 2026-10-16T01:00Z.
+- **Haiku trader (paper):** API caller merged (PR #647, `e5b70b6`); Stage 1 August walks done (v0 failed, v1 passed the August screen; files under `/data/mal/hunt-1008/haiku-trader-v2/stage1/`); the September walk is next, with its own DECLARE. The Anthropic key is for the trader's own decisions only (owner, 2026-10-14).
+
 ### 1.1 H5 is live at T0 again, as an execution measurement
 
 - **State.** `STOP` was removed at **2026-10-13T09:44:43Z** (job #928): `stop_file=False halt_file=False live_ok=valid`, attempts 11, open 0/2, pending 0, halts=[]. Installed build `b7ddeb6` (pre-send limit 3500 ms). It was stopped from 07:14:44Z after the daily A3 monitor (job #907) flagged `pins_changed`: the pump fees program was redeployed on 2026-10-12T17:40:24Z.

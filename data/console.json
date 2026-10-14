@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-14T01:35:04Z",
+ "updated_utc": "2026-10-14T07:46:43Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "h5-stop-pump-redeploy-1014",
+   "kind": "other",
+   "title": "H5 stopped: pump.fun program redeployed (A3 pins_changed, 2026-10-14)",
+   "detail": "The daily A3 run (job #996) flagged pins_changed for the pump program (redeployed 2026-10-13T15:40:41Z); STOP placed 2026-10-14T07:14:07Z (job #998). Five buys were sent after the deploy and count in every figure (DEC-024 halt record of 2026-10-14). Re-pin PR #648 in review; EXP-022 P2 declared (Amendment 7). H5 stays stopped until at least 2026-10-16T01:00Z. H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-14T07:14:07Z"
+  },
   {
    "id": "h5-sent-count-36h-1014",
    "kind": "other",
@@ -708,6 +715,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261014-h5-stop-pump-redeploy",
+   "from": "claude",
+   "atUtc": "2026-10-14T07:46:43Z",
+   "text": "For you (no action needed): H5 is stopped again. The daily pump.fun structure check of 2026-10-14 (job #996, 07:11 UTC) found that pump.fun redeployed its main program at 2026-10-13 15:40:41 UTC, and by the rules the canary stopped at 07:14:07 UTC (job #998): nothing open, 17 buys so far, all 17 sold. Five of those buys were sent after the redeploy and before the check found it; by quant-proof's rule, written before anyone opened their results, they count in every figure. The other H5 checks were clear: BOOST on 13 of 13 recent graduations, median last slice 340 s after migrate, budget 17.586 SOL, median 29 slices. H5 stays stopped until at least 2026-10-16 01:00 UTC: from then the seal refuses every H5 buy anyway, so a resume now would buy for at most about 20 hours (quant-proof's \"cheapest\" path). The re-pin (PR #648) is in review; EXP-022 needs it merged and a clean structure check on 2026-10-15 (its declared P2 run), or CAP-PICK is withdrawn. First daily slices note: 13 pools; 3 at 28 slices or fewer, 1 at 27 or fewer; no long pause; no flag. H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate."
+  },
+  {
    "id": "fy-20261014-sent-count-36h",
    "from": "claude",
    "atUtc": "2026-10-14T01:26:13Z",
@@ -1003,6 +1016,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261014-0714",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-14T07:46:43Z",
+   "text": "07:14Z: A3 run job #996 halted on pins_changed (program_pump redeployed 2026-10-13T15:40:41Z); H5 STOP placed 07:14:07Z (job #998); 5 buys dated after the deploy (jobs #999, #1000, timing keys only); re-pin PR #648 in review; first daily slices note (job #997): no flag; EXP-022 P2 declared (Amendment 7, this PR). H5 stays stopped until at least 2026-10-16T01:00Z."
+  },
   {
    "id": "s-20261014-0126",
    "from": "claude",
