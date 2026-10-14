@@ -1,0 +1,158 @@
+{
+ "attempts_in_this_script": 0,
+ "n_graduates": 60,
+ "n_wsol": 56,
+ "n_wsol_nonmayhem": 38,
+ "other_V_lamport_units_of_quote_not_sol": [
+  5279014657058,
+  123778514805,
+  232925925,
+  6999947840
+ ],
+ "pool_len": {
+  "287": 1,
+  "301": 59
+ },
+ "pool_len_287": [
+  {
+   "mayhem": false,
+   "quote": "other",
+   "slot": 456751899
+  }
+ ],
+ "pool_quote_equals_migration_event_quote": 60,
+ "quote_class": {
+  "other": 4,
+  "wsol": 56
+ },
+ "same_sample_as_step5": true,
+ "wsol_V_in_band": 27,
+ "wsol_V_in_band_nonmayhem": 27,
+ "wsol_V_lamports": {
+  "max": 17584505289,
+  "median": 17450881058.5,
+  "min": -32934453
+ },
+ "wsol_V_outside_band": [
+  {
+   "V": -2246986,
+   "mayhem": true
+  },
+  {
+   "V": -9152896,
+   "mayhem": true
+  },
+  {
+   "V": 15304394250,
+   "mayhem": false
+  },
+  {
+   "V": -319687,
+   "mayhem": true
+  },
+  {
+   "V": -3756545,
+   "mayhem": true
+  },
+  {
+   "V": 17160776449,
+   "mayhem": false
+  },
+  {
+   "V": -1007270,
+   "mayhem": true
+  },
+  {
+   "V": 15997137896,
+   "mayhem": false
+  },
+  {
+   "V": -2092742,
+   "mayhem": true
+  },
+  {
+   "V": -32934453,
+   "mayhem": true
+  },
+  {
+   "V": -4417177,
+   "mayhem": true
+  },
+  {
+   "V": -2588976,
+   "mayhem": true
+  },
+  {
+   "V": 17339209298,
+   "mayhem": false
+  },
+  {
+   "V": 17484742012,
+   "mayhem": false
+  },
+  {
+   "V": 14798898601,
+   "mayhem": false
+  },
+  {
+   "V": -84797,
+   "mayhem": true
+  },
+  {
+   "V": 11563429661,
+   "mayhem": false
+  },
+  {
+   "V": 14126060637,
+   "mayhem": false
+  },
+  {
+   "V": 0,
+   "mayhem": true
+  },
+  {
+   "V": 0,
+   "mayhem": true
+  },
+  {
+   "V": -88983,
+   "mayhem": true
+  },
+  {
+   "V": -14667,
+   "mayhem": true
+  },
+  {
+   "V": -245451,
+   "mayhem": true
+  },
+  {
+   "V": 15853261017,
+   "mayhem": false
+  },
+  {
+   "V": 0,
+   "mayhem": true
+  },
+  {
+   "V": -84850,
+   "mayhem": true
+  },
+  {
+   "V": 14482189110,
+   "mayhem": false
+  },
+  {
+   "V": 17417020105,
+   "mayhem": false
+  },
+  {
+   "V": -83273,
+   "mayhem": true
+  }
+ ],
+ "wsol_mayhem_V_nonpositive": 18,
+ "wsol_nonmayhem_V_above_s0_range": 0,
+ "wsol_nonmayhem_V_below_band_lo": 11,
+ "wsol_nonmayhem_V_in_10_13_s0_range": 11
+}

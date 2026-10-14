@@ -1,0 +1,174 @@
+{
+ "global": {
+  "address": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+  "create_v2_enabled": 1,
+  "ctx_slot": 456754038,
+  "fee_basis_points": 95,
+  "initial_real_token_reserves": 793100000000000,
+  "initial_virtual_quote_reserves": 4292000000,
+  "initial_virtual_sol_reserves": 30000000000,
+  "initial_virtual_token_reserves": 1073000000000000,
+  "is_holder_reward_enabled": 1,
+  "last_byte_max_curve_depth": 2,
+  "len": 1088,
+  "mayhem_mode_enabled": 1,
+  "sha256": "dd2b9fa23e2e80d35a0f33329db5c7deb3e88d5ed73bceb1ffa397225f437f8b",
+  "sha256_first_1087": "6afa5f43e71cf99644f62568a48666fe970f8396a4c4d6bd144e14bcc522cc6f",
+  "whitelisted_quote_mints": [
+   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  ]
+ },
+ "pin_equal": {
+  "data_len": true,
+  "deploy_slot": true,
+  "sha256": true
+ },
+ "programdata": {
+  "address": "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu",
+  "ctx_slot": 456754029,
+  "deploy_slot": 456494698,
+  "lamports": 53268311040,
+  "len": 10485760,
+  "sha256": "ba1f91ac91dd8c578fd069230601f090775b88acbeecd680bde10d90e3606671",
+  "sha256_elf_after_45": "a8bc61552f2854e327189f623ae63e8855c3b673f9587993448f5fd167182cf1",
+  "upgrade_authority": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8"
+ },
+ "recent_sigs": [
+  {
+   "bt": 1791906041,
+   "err": null,
+   "sig": "2fAUGTBfLUViHGAq",
+   "slot": 456494698
+  },
+  {
+   "bt": 1791476417,
+   "err": null,
+   "sig": "hW3WpSaz6461nhXg",
+   "slot": 454596459
+  },
+  {
+   "bt": 1790956041,
+   "err": null,
+   "sig": "2kixZiEAdXoCuscb",
+   "slot": 452654932
+  },
+  {
+   "bt": 1790892679,
+   "err": null,
+   "sig": "2LZX8DS5uHBuAPq1",
+   "slot": 452417959
+  },
+  {
+   "bt": 1790880410,
+   "err": null,
+   "sig": "4NoRLKXo5EucKWhR",
+   "slot": 452372213
+  }
+ ],
+ "strings": {
+  "binary_instruction_names_not_in_idl": [
+   "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+   "AdminUpdateTokenIncentivesInstruction",
+   "BuyCreateV2Disabled",
+   "BuyExactQuoteInV2Instruction",
+   "BuyExactSolInInstruction",
+   "BuyV3Instruction",
+   "ClaimCashbackInstruction",
+   "CreateV2Instruction",
+   "DistributeCreatorFeesInstruction",
+   "DistributeFeeToHoldersInstruction",
+   "ExtendAccountInstruction",
+   "IdlCloseAccountInstruction",
+   "IdlCreateAccountInstruction",
+   "IdlSetBufferInstruction",
+   "IdlWriteInstruction",
+   "InitUserVolumeAccumulatorInstruction",
+   "InitializeQuoteControlInstruction",
+   "MigrateBondingCurveCreatorInstruction",
+   "MigrateInstruction",
+   "RemoveQuoteControlMintInstruction",
+   "RemoveQuoteMintInstruction",
+   "SellV3Instruction",
+   "SetCreatorInstruction",
+   "SetMaxCurveDepthInstruction",
+   "SetParamsInstruction",
+   "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredThe",
+   "SetReservedFeeRecipientsInstruction",
+   "SweepProtocolFeeInstruction",
+   "SyncUserVolumeAccumulatorInstruction",
+   "ToggleCashbackEnabledInstruction",
+   "UpdateBuybackConfigAn",
+   "UpdateCreatorFeeConfigInstruction",
+   "UpdateGlobalAuthorityInstruction"
+  ],
+  "errors_changed_in_docs_commit": {
+   "6100": {
+    "new_msg_in_binary": true,
+    "old_msg_in_binary": false
+   },
+   "6101": {
+    "new_msg_in_binary": true,
+    "old_msg_in_binary": false
+   },
+   "6105": {
+    "new_msg_in_binary": true,
+    "old_msg_in_binary": true
+   },
+   "6107": {
+    "new_msg_in_binary": true,
+    "old_msg_in_binary": false
+   },
+   "6109": {
+    "new_msg_in_binary": true,
+    "old_msg_in_binary": null
+   }
+  },
+  "idl_error_msgs_new_present": 110,
+  "idl_instructions_not_in_binary": [],
+  "n_binary_instruction_names": 34,
+  "n_idl_errors_new": 110,
+  "n_idl_instructions": 56,
+  "needles_instruction_count": {
+   "BuyExactQuoteInV2": 1,
+   "BuyExactQuoteInV3": 1,
+   "BuyV2": 1,
+   "BuyV3": 1,
+   "CreateV2": 1,
+   "MigrateV2": 1,
+   "MultiHopCurveSwap": 1,
+   "PostCompleteBuy": 0,
+   "SellV2": 1,
+   "SellV3": 1,
+   "SetMaxCurveDepth": 1,
+   "SweepCreatorFee": 1,
+   "SweepProtocolFee": 1
+  }
+ },
+ "upgrade_tx": {
+  "authority_in_keys": true,
+  "block_time": 1791906041,
+  "err": null,
+  "fee": 9589,
+  "inner_programs": [
+   "BPFLoaderUpgradeab1e11111111111111111111111"
+  ],
+  "sig": "2fAUGTBfLUViHGAq2hZKXHsvVXC6Lv1km3Pf6SLMrouyteWBSJifxwqoA7Srfs4seXh6c7kSsKuN7dmfJrRE9FFG",
+  "signers": [
+   "5sFJMw5dC59oKGKA9LgeYQCSmYS6rLeCegxMkcM2Pwby"
+  ],
+  "slot": 456494698,
+  "squads_in_keys": [
+   "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"
+  ],
+  "top_programs": [
+   "ComputeBudget111111111111111111111111111111",
+   "ComputeBudget111111111111111111111111111111",
+   "11111111111111111111111111111111",
+   "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"
+  ],
+  "upgraded_log": [
+   "Upgraded program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+  ],
+  "utc": "2026-10-13T15:40:41Z"
+ }
+}

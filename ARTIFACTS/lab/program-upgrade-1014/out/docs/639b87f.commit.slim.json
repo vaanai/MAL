@@ -1,0 +1,82 @@
+{
+ "sha": "639b87fb45c3adeffa6f7c4a1bf0cb85e392bf22",
+ "date": "2026-10-13T15:37:48Z",
+ "message": "docs: depth 2 pump coin quotes (create_v2 quote chain accounts), SDKs to pump-sdk 4.1.0 and pump-rust-client 0.4.1, pump and fee IDLs refreshed\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Bh5re6qWkihhmRHNg3SFv1",
+ "parents": [
+  "2293f9a66c654e9fe82dc5e8f4618538f24bb35f"
+ ],
+ "stats": {
+  "total": 529,
+  "additions": 456,
+  "deletions": 73
+ },
+ "n_files": 11,
+ "files": [
+  {
+   "filename": "README.md",
+   "status": "modified",
+   "additions": 10,
+   "deletions": 5
+  },
+  {
+   "filename": "docs/SYNTHETIC_MIGRATION.md",
+   "status": "modified",
+   "additions": 1,
+   "deletions": 1
+  },
+  {
+   "filename": "docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md",
+   "status": "modified",
+   "additions": 68,
+   "deletions": 18
+  },
+  {
+   "filename": "docs/instructions/MULTI_HOP_SWAP.md",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 2
+  },
+  {
+   "filename": "docs/instructions/PUMP_SWAP_TRADE_V2.md",
+   "status": "modified",
+   "additions": 1,
+   "deletions": 1
+  },
+  {
+   "filename": "docs/instructions/SWEEP_FEES.md",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 2
+  },
+  {
+   "filename": "docs/instructions/TRADE_V3.md",
+   "status": "modified",
+   "additions": 2,
+   "deletions": 2
+  },
+  {
+   "filename": "idl/pump.json",
+   "status": "modified",
+   "additions": 32,
+   "deletions": 21
+  },
+  {
+   "filename": "idl/pump.ts",
+   "status": "modified",
+   "additions": 32,
+   "deletions": 21
+  },
+  {
+   "filename": "idl/pump_fees.json",
+   "status": "modified",
+   "additions": 153,
+   "deletions": 0
+  },
+  {
+   "filename": "idl/pump_fees.ts",
+   "status": "modified",
+   "additions": 153,
+   "deletions": 0
+  }
+ ]
+}

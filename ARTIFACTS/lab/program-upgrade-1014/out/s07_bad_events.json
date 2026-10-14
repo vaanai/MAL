@@ -1,0 +1,133 @@
+{
+ "post": {
+  "bad": [
+   {
+    "disc": "bddb7fd34ee661ee",
+    "ix": [],
+    "len": 133,
+    "reason": "decode_none"
+   }
+  ],
+  "n_bad": 1,
+  "n_events_by_disc": {
+   "3e2f370aa503dc2a": 181,
+   "67f4521f2cf57777": 164,
+   "bddb7fd34ee661ee": 66
+  }
+ },
+ "pre": {
+  "bad": [
+   {
+    "disc": "bddb7fd34ee661ee",
+    "ix": [],
+    "len": 147,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "bddb7fd34ee661ee",
+    "ix": [],
+    "len": 147,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "bddb7fd34ee661ee",
+    "ix": [],
+    "len": 147,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "bddb7fd34ee661ee",
+    "ix": [],
+    "len": 133,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "3e2f370aa503dc2a",
+    "ix": [
+     "Sell"
+    ],
+    "len": 441,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "67f4521f2cf57777",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 489,
+    "reason": "decode_none"
+   }
+  ],
+  "n_bad": 6,
+  "n_events_by_disc": {
+   "3e2f370aa503dc2a": 237,
+   "67f4521f2cf57777": 173,
+   "bddb7fd34ee661ee": 67
+  }
+ },
+ "recent": {
+  "bad": [
+   {
+    "disc": "3e2f370aa503dc2a",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 441,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "67f4521f2cf57777",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 489,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "3e2f370aa503dc2a",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 441,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "67f4521f2cf57777",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 489,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "3e2f370aa503dc2a",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 441,
+    "reason": "decode_none"
+   },
+   {
+    "disc": "67f4521f2cf57777",
+    "ix": [
+     "Buy",
+     "Sell"
+    ],
+    "len": 489,
+    "reason": "decode_none"
+   }
+  ],
+  "n_bad": 6,
+  "n_events_by_disc": {
+   "3e2f370aa503dc2a": 137,
+   "67f4521f2cf57777": 129,
+   "bddb7fd34ee661ee": 40
+  }
+ }
+}

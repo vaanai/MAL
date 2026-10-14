@@ -1,0 +1,82 @@
+{
+ "fetched": {
+  "639b87f.diff": {
+   "bytes": 51475,
+   "saved_as": "out/docs/639b87f.diff",
+   "sha256": "1f18b4f6da8ff5ae9c1cde176c0c20bbaf818da995a9ba018a0faec939cf54e4"
+  },
+  "amm_new.json": {
+   "bytes": 191835,
+   "equal_to_first_round": true,
+   "first_round_sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+   "saved_as": "out/docs/amm_new.json.gz (gzip of the exact bytes)",
+   "sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+   "url_path": "pump-fun/pump-public-docs@639b87f/idl/pump_amm.json"
+  },
+  "amm_old.json": {
+   "bytes": 191835,
+   "equal_to_first_round": true,
+   "first_round_sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+   "saved_as": "out/docs/amm_old.json.gz (gzip of the exact bytes)",
+   "sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+   "url_path": "pump-fun/pump-public-docs@2293f9a/idl/pump_amm.json"
+  },
+  "commit.json": {
+   "bytes": 61242,
+   "equal_to_first_round": false,
+   "first_round_sha256": "bec341407ea844aaab3597f22d99b3aa073728f0d05560060263514d948b376c",
+   "sha256": "1455a6f227a02855ed769b357169c051a7995be5ece8ad15d61899458a4c6bc0"
+  },
+  "fees_new.json": {
+   "bytes": 136538,
+   "equal_to_first_round": true,
+   "first_round_sha256": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29",
+   "saved_as": "out/docs/fees_new.json.gz (gzip of the exact bytes)",
+   "sha256": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29",
+   "url_path": "pump-fun/pump-public-docs@639b87f/idl/pump_fees.json"
+  },
+  "fees_old.json": {
+   "bytes": 133483,
+   "equal_to_first_round": true,
+   "first_round_sha256": "f111d2e5c9aa3d4e64d6a4e6b6f34300ccb1eaf6abc46834fe491836dc90aa74",
+   "saved_as": "out/docs/fees_old.json.gz (gzip of the exact bytes)",
+   "sha256": "f111d2e5c9aa3d4e64d6a4e6b6f34300ccb1eaf6abc46834fe491836dc90aa74",
+   "url_path": "pump-fun/pump-public-docs@2293f9a/idl/pump_fees.json"
+  },
+  "pump_new.json": {
+   "bytes": 328788,
+   "equal_to_first_round": true,
+   "first_round_sha256": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+   "saved_as": "out/docs/pump_new.json.gz (gzip of the exact bytes)",
+   "sha256": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+   "url_path": "pump-fun/pump-public-docs@639b87f/idl/pump.json"
+  },
+  "pump_old.json": {
+   "bytes": 327956,
+   "equal_to_first_round": true,
+   "first_round_sha256": "6a19bad7758fb822cee79a91575e51a7bd60391c670200408676643e00a79a6d",
+   "saved_as": "out/docs/pump_old.json.gz (gzip of the exact bytes)",
+   "sha256": "6a19bad7758fb822cee79a91575e51a7bd60391c670200408676643e00a79a6d",
+   "url_path": "pump-fun/pump-public-docs@2293f9a/idl/pump.json"
+  }
+ },
+ "n_github_requests_this_script": 8,
+ "new": "639b87fb45c3adeffa6f7c4a1bf0cb85e392bf22",
+ "old": "2293f9a66c654e9fe82dc5e8f4618538f24bb35f",
+ "quote_phrase_added_line_counts": {
+  "A coin paired with a pump coin has the quote coin's depth plus one": 1,
+  "Depth 2 is enabled on October 13": 1,
+  "Q must not be a mayhem-mode coin": 1,
+  "Starting **October 13**": 1,
+  "The new coin cannot be in mayhem mode": 1,
+  "`@pump-fun/pump-sdk` 4.1.0": 8,
+  "`pump-rust-client` 0.4.1": 9,
+  "program's cap of 5": 5,
+  "up to 5 planned": 0
+ },
+ "repo": "pump-fun/pump-public-docs",
+ "s03_copies_equal": {
+  "new": true,
+  "old": true
+ }
+}

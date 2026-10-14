@@ -1,0 +1,33 @@
+{
+ "attempts": 8,
+ "by_method": {
+  "getAccountInfo": 3,
+  "getBlockTime": 1,
+  "getEpochInfo": 1,
+  "getMultipleAccounts": 2,
+  "getRecentPerformanceSamples": 1
+ },
+ "diff": {
+  "pinned_at_slot": [
+   456362096,
+   456753561
+  ],
+  "pinned_utc": [
+   "2026-10-13T07:37:32Z",
+   "2026-10-14T07:21:43Z"
+  ],
+  "programs.pump.deploy_slot": [
+   454596459,
+   456494698
+  ],
+  "programs.pump.deploy_utc": [
+   "2026-10-08T16:20:17Z",
+   "2026-10-13T15:40:41Z"
+  ],
+  "programs.pump.sha256": [
+   "8c8f6aae2324281b2199c4314e6a041b707ef0cb9bcb132c677b7bb6289d8772",
+   "ba1f91ac91dd8c578fd069230601f090775b88acbeecd680bde10d90e3606671"
+  ]
+ },
+ "unexpected": []
+}

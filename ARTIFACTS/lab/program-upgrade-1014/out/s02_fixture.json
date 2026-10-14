@@ -1,0 +1,19 @@
+{
+ "attempts": 1,
+ "ctx_slot": 456753674,
+ "deploy_slots": [
+  456494698,
+  454596406,
+  456132171
+ ],
+ "spaces": [
+  10485760,
+  10485760,
+  948989
+ ],
+ "upgrade_authority": [
+  "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8",
+  "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8",
+  "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8"
+ ]
+}

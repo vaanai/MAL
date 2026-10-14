@@ -1,0 +1,21 @@
+== Pool
+discriminator [241, 154, 109, 4, 17, 177, 109, 188]
+      8    1 pool_bump u8
+      9    2 index u16
+     11   32 creator pubkey
+     43   32 base_mint pubkey
+     75   32 quote_mint pubkey
+    107   32 lp_mint pubkey
+    139   32 pool_base_token_account pubkey
+    171   32 pool_quote_token_account pubkey
+    203    8 lp_supply u64
+    211   32 coin_creator pubkey
+    243    1 is_mayhem_mode bool
+    244    1 is_cashback_coin bool
+    245   16 virtual_quote_reserves i128
+    261    8 creator_fee_bps u64
+    269    1 can_edit_creator_fee bool
+    270    1 is_holder_reward bool
+    271    8 protocol_fees u64
+    279    8 creator_fees u64
+  total 287

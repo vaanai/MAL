@@ -1,0 +1,488 @@
+{
+ "deploy_slot": 456494698,
+ "post": {
+  "all_after_deploy_slot": true,
+  "by_class": {
+   "other": {
+    "by_migrate_ix": {
+     "MigrateV2": 4
+    },
+    "mint_amount": {
+     "equal_SEED_B": 0,
+     "max": 206699117917845,
+     "median": 199406186474061.0,
+     "min": 148176284572647,
+     "n": 4,
+     "top_values": [
+      [
+       148176284572647,
+       1
+      ],
+      [
+       206699117917845,
+       1
+      ],
+      [
+       196171133485084,
+       1
+      ]
+     ]
+    },
+    "n": 4,
+    "pool_base_vault_post": {
+     "equal_SEED_B": 0,
+     "max": 206699117917845,
+     "median": 199406186474061.0,
+     "min": 148176284572647,
+     "n": 4,
+     "n_missing": 0,
+     "top_values": [
+      [
+       148176284572647,
+       1
+      ],
+      [
+       206699117917845,
+       1
+      ],
+      [
+       196171133485084,
+       1
+      ]
+     ]
+    },
+    "pool_migration_fee": {
+     "max": 15000001,
+     "median": 15000001.0,
+     "min": 15000001,
+     "n": 4,
+     "top_values": [
+      [
+       15000001,
+       4
+      ]
+     ]
+    },
+    "pool_quote_vault_post": {
+     "equal_SEED_Q": 0,
+     "max": 30450099607626,
+     "median": 251358814967.0,
+     "min": 1013470221,
+     "mode_minus_SEED_Q": 30382693753763,
+     "n": 4,
+     "n_missing": 0,
+     "top_values": [
+      [
+       30450099607626,
+       1
+      ],
+      [
+       475163622321,
+       1
+      ],
+      [
+       1013470221,
+       1
+      ]
+     ]
+    },
+    "pool_vault_entries_pre_in_tx": {
+     "0": 4
+    },
+    "sol_amount": {
+     "equal_SEED_Q": 0,
+     "max": 35746949816194,
+     "median": 316763421548.0,
+     "min": 1260803465,
+     "n": 4,
+     "top_values": [
+      [
+       35746949816194,
+       1
+      ],
+      [
+       598970243262,
+       1
+      ],
+      [
+       1260803465,
+       1
+      ]
+     ]
+    },
+    "sol_amount_minus_fee": {
+     "equal_SEED_Q": 0,
+     "max": 35746934816193,
+     "median": 316748421547.0,
+     "min": 1245803464,
+     "n": 4
+    }
+   },
+   "wsol": {
+    "by_migrate_ix": {
+     "Migrate": 5,
+     "MigrateV2": 51
+    },
+    "mint_amount": {
+     "equal_SEED_B": 41,
+     "max": 206900000000000,
+     "median": 206900000000000.0,
+     "min": 195733742545754,
+     "n": 56,
+     "top_values": [
+      [
+       206900000000000,
+       41
+      ],
+      [
+       205001933174807,
+       3
+      ],
+      [
+       206268689931469,
+       1
+      ]
+     ]
+    },
+    "n": 56,
+    "pool_base_vault_post": {
+     "equal_SEED_B": 39,
+     "max": 206900000000000,
+     "median": 206900000000000.0,
+     "min": 193575320867010,
+     "n": 56,
+     "n_missing": 0,
+     "top_values": [
+      [
+       206900000000000,
+       39
+      ],
+      [
+       200387343883380,
+       2
+      ],
+      [
+       206268689931469,
+       1
+      ]
+     ]
+    },
+    "pool_migration_fee": {
+     "max": 15000001,
+     "median": 15000001.0,
+     "min": 15000001,
+     "n": 56,
+     "top_values": [
+      [
+       15000001,
+       56
+      ]
+     ]
+    },
+    "pool_quote_vault_post": {
+     "equal_SEED_Q": 0,
+     "max": 73260083429,
+     "median": 67405853768.0,
+     "min": 17441208,
+     "mode_minus_SEED_Q": -95,
+     "n": 56,
+     "n_missing": 0,
+     "top_values": [
+      [
+       67405853768,
+       17
+      ],
+      [
+       70168464108,
+       2
+      ],
+      [
+       166011124,
+       1
+      ]
+     ]
+    },
+    "pool_vault_entries_pre_in_tx": {
+     "0": 56
+    },
+    "sol_amount": {
+     "equal_SEED_Q": 0,
+     "max": 89838911320,
+     "median": 84990359056.0,
+     "min": 17441208,
+     "n": 56,
+     "top_values": [
+      [
+       84990359056,
+       18
+      ],
+      [
+       85777265694,
+       3
+      ],
+      [
+       166011124,
+       1
+      ]
+     ]
+    },
+    "sol_amount_minus_fee": {
+     "equal_SEED_Q": 0,
+     "max": 89823911319,
+     "median": 84975359055.0,
+     "min": 2441207,
+     "n": 56
+    }
+   }
+  },
+  "is_step5_sample": true,
+  "n": 60,
+  "n_cached_getTransaction_files_read": 97,
+  "slot_max": 456754256,
+  "slot_min": 456728763
+ },
+ "pre": {
+  "all_before_deploy_slot": true,
+  "by_class": {
+   "other": {
+    "by_migrate_ix": {
+     "MigrateV2": 6
+    },
+    "mint_amount": {
+     "equal_SEED_B": 1,
+     "max": 206900000000000,
+     "median": 205280220769882.0,
+     "min": 153879530823861,
+     "n": 6,
+     "top_values": [
+      [
+       153879530823861,
+       1
+      ],
+      [
+       206900000000000,
+       1
+      ],
+      [
+       205694913262986,
+       1
+      ]
+     ]
+    },
+    "n": 6,
+    "pool_base_vault_post": {
+     "equal_SEED_B": 1,
+     "max": 206900000000000,
+     "median": 205280220769882.0,
+     "min": 153879530823861,
+     "n": 6,
+     "n_missing": 0,
+     "top_values": [
+      [
+       153879530823861,
+       1
+      ],
+      [
+       206900000000000,
+       1
+      ],
+      [
+       205694913262986,
+       1
+      ]
+     ]
+    },
+    "pool_migration_fee": {
+     "max": 15000001,
+     "median": 15000001.0,
+     "min": 15000001,
+     "n": 6,
+     "top_values": [
+      [
+       15000001,
+       6
+      ]
+     ]
+    },
+    "pool_quote_vault_post": {
+     "equal_SEED_Q": 0,
+     "max": 22247582314918,
+     "median": 12746348275.0,
+     "min": 8261597,
+     "mode_minus_SEED_Q": 22180176461055,
+     "n": 6,
+     "n_missing": 0,
+     "top_values": [
+      [
+       22247582314918,
+       1
+      ],
+      [
+       8261597,
+       1
+      ],
+      [
+       25479763523,
+       1
+      ]
+     ]
+    },
+    "pool_vault_entries_pre_in_tx": {
+     "0": 6
+    },
+    "sol_amount": {
+     "equal_SEED_Q": 0,
+     "max": 26293634447326,
+     "median": 16047131150.5,
+     "min": 8261597,
+     "n": 6,
+     "top_values": [
+      [
+       26293634447326,
+       1
+      ],
+      [
+       8261597,
+       1
+      ],
+      [
+       32078056591,
+       1
+      ]
+     ]
+    },
+    "sol_amount_minus_fee": {
+     "equal_SEED_Q": 0,
+     "max": 26293619447325,
+     "median": 16032131149.5,
+     "min": -6738404,
+     "n": 6
+    }
+   },
+   "wsol": {
+    "by_migrate_ix": {
+     "Migrate": 10,
+     "MigrateV2": 68
+    },
+    "mint_amount": {
+     "equal_SEED_B": 69,
+     "max": 206900000000000,
+     "median": 206900000000000.0,
+     "min": 198986026420007,
+     "n": 78,
+     "top_values": [
+      [
+       206900000000000,
+       69
+      ],
+      [
+       205723153612750,
+       1
+      ],
+      [
+       206277434119649,
+       1
+      ]
+     ]
+    },
+    "n": 78,
+    "pool_base_vault_post": {
+     "equal_SEED_B": 64,
+     "max": 206900000000000,
+     "median": 206900000000000.0,
+     "min": 170381592971432,
+     "n": 78,
+     "n_missing": 0,
+     "top_values": [
+      [
+       206900000000000,
+       64
+      ],
+      [
+       205723153612750,
+       1
+      ],
+      [
+       185359750060980,
+       1
+      ]
+     ]
+    },
+    "pool_migration_fee": {
+     "max": 15000001,
+     "median": 15000001.0,
+     "min": 15000001,
+     "n": 78,
+     "top_values": [
+      [
+       15000001,
+       78
+      ]
+     ]
+    },
+    "pool_quote_vault_post": {
+     "equal_SEED_Q": 0,
+     "max": 85765094426,
+     "median": 67405853768.0,
+     "min": 8700479,
+     "mode_minus_SEED_Q": -95,
+     "n": 78,
+     "n_missing": 0,
+     "top_values": [
+      [
+       67405853768,
+       30
+      ],
+      [
+       67405856432,
+       1
+      ],
+      [
+       390386292,
+       1
+      ]
+     ]
+    },
+    "pool_vault_entries_pre_in_tx": {
+     "0": 78
+    },
+    "sol_amount": {
+     "equal_SEED_Q": 0,
+     "max": 88370553482,
+     "median": 84990359056.0,
+     "min": 8700479,
+     "n": 78,
+     "top_values": [
+      [
+       84990359056,
+       31
+      ],
+      [
+       84990359059,
+       2
+      ],
+      [
+       84990362415,
+       1
+      ]
+     ]
+    },
+    "sol_amount_minus_fee": {
+     "equal_SEED_Q": 0,
+     "max": 88355553481,
+     "median": 84975359055.0,
+     "min": -6299522,
+     "n": 78
+    }
+   }
+  },
+  "n": 84,
+  "n_cached_getTransaction_files_read": 573,
+  "slot_max": 456354425,
+  "slot_min": 456126828
+ },
+ "seed_constants": {
+  "SEED_B": 206900000000000,
+  "SEED_Q": 67405853863
+ }
+}

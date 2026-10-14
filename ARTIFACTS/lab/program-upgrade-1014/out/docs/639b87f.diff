@@ -1,0 +1,809 @@
+diff --git a/README.md b/README.md
+index e27e389..9f64c44 100644
+--- a/README.md
++++ b/README.md
+@@ -1,15 +1,20 @@
+ # pump-public-docs
+ 
++# New: Depth 2 Pump Coin Quotes (October 13)
++
++- **Pump coins paired with pump coins can be quote mints.** Starting **October 13**, `create_v2` can pair a new coin with a pump coin that is itself paired with a pump coin (SOL → A → B → C). You pass one extra group of remaining accounts for each coin below the quote coin, and the starting price is computed from the whole chain live. [Creating a coin paired with a pump coin](docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md#depth)
++- latest: [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0) · [`@pump-fun/pump-swap-sdk` 2.1.0](https://www.npmjs.com/package/@pump-fun/pump-swap-sdk/v/2.1.0) · [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1)
++
+ # New: Smaller Trades, Multi-Hop Swaps, Pump Coins as Quote Mints, Fees Kept on the Curve
+ 
+ - **Smaller trade instructions.** `buy_v3`, `sell_v3` and `buy_exact_quote_in_v3` on the bonding curve, and `buy_v2`, `sell_v2` and `buy_exact_quote_in_v2` on PumpSwap, do the same trades with 17 accounts, so more fits in one transaction. Same prices, same fees. All existing trade instructions keep working. [Bonding curve v3](docs/instructions/TRADE_V3.md) · [PumpSwap v2](docs/instructions/PUMP_SWAP_TRADE_V2.md)
+ - **Multi-hop swap.** One PumpSwap instruction, `multi_hop_swap`, trades through two or more pools and bonding curves in a row, for example SOL → coin A → coin B, with no token account for the middle coin. [Multi-hop swap](docs/instructions/MULTI_HOP_SWAP.md)
+-- **Any pump coin as a quote mint.** `create_v2` can pair a new coin with an existing pump coin. You pass the quote coin's bonding curve (and its pool, if it has migrated) as extra remaining accounts. [Creating a coin paired with a pump coin](docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md)
++- **Any pump coin as a quote mint.** `create_v2` can pair a new coin with an existing pump coin, up to depth 2. You pass the bonding curve (and the pool, if it has migrated) of the quote coin and of every coin below it as extra remaining accounts. [Creating a coin paired with a pump coin](docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md)
+ - **Fees stay on the curve and pool.** The new trades keep the protocol fee and the creator fee on the bonding curve or in the pool instead of paying them out on every trade. Anyone can pay them out with the permissionless `sweep_protocol_fee` / `sweep_creator_fee` instructions. Creators, CTOs and fee sharing must sweep the creator fee first. [Fee sweeps](docs/instructions/SWEEP_FEES.md)
+ - **Why `virtual_quote_reserves` goes negative.** Fees kept in a pool are subtracted from `virtual_quote_reserves`, so the price does not count them. If you already handle it as a signed value, this is not a breaking change for your quotes, and all existing trade instructions work the same way. [Virtual quote reserves and fees](docs/VIRTUAL_QUOTE_RESERVES_FEE_ADJUSTMENT.md)
+ - **Synthetic migration: the last buy on the curve has no max size.** With the v3 buys, the buy that empties the bonding curve can ask for more than what is left. It buys the rest from the tokens that would have gone into the PumpSwap pool, at that pool's price, and the pool later opens where that buy stopped. Only the buy that crosses the limit gets this; after it, no buys or sells are possible on the curve until the migration happens. [Synthetic migration](docs/SYNTHETIC_MIGRATION.md)
+ 
+-The IDLs and TypeScript types in [idl](idl) are updated with all of the above. SDK support: `@pump-fun/pump-sdk` 4.0.0, `@pump-fun/pump-swap-sdk` 2.1.0 and `pump-rust-client` 0.4.0, see [SDKs](#sdks).
++The IDLs and TypeScript types in [idl](idl) are updated with all of the above. SDK support: `@pump-fun/pump-sdk` 4.1.0, `@pump-fun/pump-swap-sdk` 2.1.0 and `pump-rust-client` 0.4.1, see [SDKs](#sdks).
+ 
+ # PumpSwap Update: Negative Virtual Quote Reserves (September 30)
+ 
+@@ -119,11 +124,11 @@ Currently, no quote mint other than native SOL can be used to create or trade co
+ 
+ ## SDKs
+ 
+-These releases include builders for everything in the new section at the top: v3 trades, PumpSwap v2 trades, multi-hop swaps, pump coins as quote mints and fee sweeps.
++These releases include builders for everything in the new section at the top: v3 trades, PumpSwap v2 trades, multi-hop swaps, pump coins as quote mints (including depth 2) and fee sweeps.
+ 
+-- `@pump-fun/pump-sdk` 4.0.0 (Pump program): https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0
++- `@pump-fun/pump-sdk` 4.1.0 (Pump program): https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0
+ - `@pump-fun/pump-swap-sdk` 2.1.0 (PumpSwap): https://www.npmjs.com/package/@pump-fun/pump-swap-sdk/v/2.1.0
+-- `pump-rust-client` 0.4.0 (both programs): https://crates.io/crates/pump-rust-client/0.4.0
++- `pump-rust-client` 0.4.1 (both programs): https://crates.io/crates/pump-rust-client/0.4.1
+ 
+ ## New docs
+ - Bonding curve trades v3: [docs/instructions/TRADE_V3.md](docs/instructions/TRADE_V3.md)
+diff --git a/docs/SYNTHETIC_MIGRATION.md b/docs/SYNTHETIC_MIGRATION.md
+index 6d23df6..1dcbb0e 100644
+--- a/docs/SYNTHETIC_MIGRATION.md
++++ b/docs/SYNTHETIC_MIGRATION.md
+@@ -37,7 +37,7 @@ buy_exact_quote_in_v3, net budget `in`: out   = floor((in - 1) * pool_base / (po
+ 
+ The bonding curve fee schedule applies to each part separately. The pool part is the same math as a PumpSwap buy on a fresh pool with those reserves.
+ 
+-The SDKs quote it for you: `getBuyV3QuoteAmountFromTokenAmount` and `getBuyV3TokenAmountFromQuoteAmount` in [`@pump-fun/pump-sdk` 4.0.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0) (they need the curve's base token balance, returned by `fetchBuyState` as `curveBaseTokenBalance`), and `buy_quote_bonding_curve_v3_sol_in` / `buy_quote_bonding_curve_v3_token_out` in [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0).
++The SDKs quote it for you: `getBuyV3QuoteAmountFromTokenAmount` and `getBuyV3TokenAmountFromQuoteAmount` in [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0) (they need the curve's base token balance, returned by `fetchBuyState` as `curveBaseTokenBalance`), and `buy_quote_bonding_curve_v3_sol_in` / `buy_quote_bonding_curve_v3_token_out` in [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1).
+ 
+ ## Events and state
+ 
+diff --git a/docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md b/docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md
+index 4580166..2d8d346 100644
+--- a/docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md
++++ b/docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md
+@@ -4,20 +4,34 @@
+ 
+ Below, **Q** is the pump coin you want to use as the quote mint.
+ 
++## Depth
++
++Every bonding curve stores a `depth`:
++
++- A coin paired with SOL, USDC or another listed quote mint has depth 0.
++- A coin paired with a pump coin has the quote coin's depth plus one.
++
++So for the chain SOL → A → B → C, A has depth 0, B has depth 1 and C has depth 2. B is "nested": its quote A is itself a pump coin.
++
++pump.fun sets how deep a new coin may go (`Global.max_curve_depth`). **Depth 2 is enabled on October 13**, so from then on Q can be a coin that is itself paired with a pump coin.
++
++A coin that pump.fun lists as a quote mint counts as depth 0 for its children, whatever its own depth, and works the normal way (see [Coin Creation](COIN_CREATION.md)). The extra accounts below are not read for it.
++
+ ## Which pump coins can be the quote
+ 
+-- Q must be paired with SOL or USDC (or another quote mint listed by pump.fun). A coin that is itself paired with a pump coin cannot be used as a quote yet; creation fails with `CurveDepthExceeded` (6105).
+ - Q must not be a mayhem-mode coin.
+-- Q can still be on its bonding curve, or already migrated to PumpSwap. If Q's curve is complete but the pool is not created yet, creation fails with `QuoteCurveAwaitingMigration` (6107). Retry after `migrate_v2` runs.
++- The bottom of Q's chain (the depth-0 coin) must be paired with SOL or USDC, or another quote mint listed by pump.fun. Otherwise creation fails with `QuoteBondingCurveNotEligible` (6100).
++- Every coin on Q's chain can still be on its bonding curve, or already migrated to PumpSwap. If any of them has a complete curve but no pool yet, creation fails with `QuoteCurveAwaitingMigration` (6107). Retry after `migrate_v2` runs.
+ - The new coin cannot be in mayhem mode (`MayhemModeQuoteMintNotAllowed`, 6071). Holder rewards work, and `creator_fee_bps` can be set, like on other custom pairs.
+-- If Q is listed by pump.fun as a quote mint, it works the normal way (see [Coin Creation](COIN_CREATION.md)) and the extra accounts below are not read.
+ 
+ ## Remaining accounts
+ 
+ Pass these after the 16 fixed accounts, in this order. Slots are positional.
+ 
++### Q's own group
++
+ | Index | Account                          | Seeds / derivation                                                                                                                                                                                                         | Required when                     |
+-| ----- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
++| ----- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+ | 0     | `quote_mint`                     | Q's mint.                                                                                                                                                                                                                  | Always                            |
+ | 1     | `associated_quote_bonding_curve` | Associated token account for Q, owned by the new `bonding_curve`, using Q's token program. Writable. Created by the instruction, paid by `user`.                                                                           | Always                            |
+ | 2     | `quote_token_program`            | Q's token program. Token-2022 (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`) for coins created with `create_v2`, SPL Token for older coins.                                                                                | Always                            |
+@@ -27,21 +41,56 @@ Pass these after the 16 fixed accounts, in this order. Slots are positional.
+ | 6     | `quote_pool_base_token_account`  | `quote_pool.pool_base_token_account`.                                                                                                                                                                                      | Only if Q has migrated            |
+ | 7     | `quote_pool_quote_token_account` | `quote_pool.pool_quote_token_account`.                                                                                                                                                                                     | Only if Q has migrated            |
+ 
+-If Q is still on its bonding curve, pass indexes 0 to 4 only. If Q has migrated, all 8 are required (`QuotePoolAccountsRequired`, 6101, otherwise).
++If Q is still on its bonding curve, its group is indexes 0 to 4 only. If Q has migrated, all 8 are required (`QuotePoolAccountsRequired`, 6101, otherwise).
++
++### One more group for each coin below Q
++
++If Q has depth 1 or more, keep going: add one group for each coin below Q, nearest first, down to the depth-0 coin. Each group has the same shape as Q's slots 4 to 7:
++
++| Offset | Account                     | Required when                      |
++| ------ | --------------------------- | ---------------------------------- |
++| +0     | that coin's bonding curve   | Always                             |
++| +1     | that coin's PumpSwap pool   | Only if that coin has migrated     |
++| +2     | its `pool_base_token_account`  | Only if that coin has migrated  |
++| +3     | its `pool_quote_token_account` | Only if that coin has migrated  |
++
++Groups are packed. A group starts right after the previous one ends: the next curve sits at index 5 when Q is still on its curve, and at index 8 when Q has migrated. The program finds the chain by itself from each curve's stored `quote_mint`; you only pass the accounts. A missing curve fails with `QuoteChainAccountsRequired` (6109); missing pool accounts for a migrated coin fail with `QuotePoolAccountsRequired` (6101).
++
++The number of groups is Q's depth plus one. A depth-0 Q has one group (its own). A depth-1 Q has two.
++
++### Example: depth 2
++
++Chain SOL → A → B. You create C paired with B. B has depth 1, so C will have depth 2.
++
++| Case                               | Remaining accounts                                                                                   |
++| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
++| B and A both on their curves       | `[0..4]` B's group, then `[5]` A's bonding curve.                                                    |
++| B migrated, A on its curve         | `[0..7]` B's group with its pool and vaults, then `[8]` A's bonding curve.                            |
++| B on its curve, A migrated         | `[0..4]` B's group, then `[5]` A's bonding curve, `[6]` A's pool, `[7]` A's base vault, `[8]` A's quote vault. |
++| B and A both migrated              | `[0..7]` B's group, then `[8..11]` A's curve, pool, base vault and quote vault.                        |
++
++Each pool is derived like Q's in the table above, with that coin in place of Q. Budget about 200k compute units. A long chain of migrated coins can exceed the legacy transaction size; use a v0 transaction with a lookup table in that case.
+ 
+ ## Starting price
+ 
+-The new coin's starting `virtual_quote_reserves` are not a fixed number. They are computed from Q's current reserves (Q's bonding curve, or Q's pool after migration), so that the new coin raises about as much as a normal SOL or USDC launch, just counted in Q.
++The new coin's starting `virtual_quote_reserves` are not a fixed number. They are computed from the live reserves of **every coin on Q's chain**, so that the new coin raises about as much as a normal SOL or USDC launch, just counted in Q.
++
++How it works, for SOL → A → B and a new coin C paired with B:
++
++1. Take the amount a normal launch raises by the time its curve sells out (about 85 SOL for a SOL launch).
++2. Buy A with that amount on A's own curve or pool, with no fees.
++3. Buy B with the A tokens that returns, on B's curve or pool.
++4. The B tokens that last buy returns are what C will raise. The stored `virtual_quote_reserves` are that raise scaled back to a starting seed, using the same ratio a normal curve has between its seed and its raise.
+ 
+-How it works: take the amount a normal launch raises by the time its curve sells out (about 85 SOL for a SOL launch). Buy Q with that amount on Q's own curve or pool, with no fees. The Q tokens that buy returns are what the new coin will raise. The stored `virtual_quote_reserves` are that raise scaled back to a starting seed, using the same ratio a normal curve has between its seed and its raise.
++For a depth-0 Q the chain is Q alone, so this is the same as before: one buy on Q.
+ 
+-Because the amount is priced through Q's curve, not at Q's spot price, the new coin never asks for more Q than that buy returns. So a young Q with a small supply works too; there is no supply check. The value is stored in `BondingCurve.virtual_quote_reserves` and reported in `CreateEvent.virtual_quote_reserves`. If Q is priced so high that the raise rounds down to nothing, creation fails with `QuoteReservesOutOfRange` (6104).
++Because each step is priced through that coin's curve or pool, not at its spot price, the new coin never asks for more than those buys return. When a buy on a curve goes past what the curve has left, it is priced the way [`buy_v3`](TRADE_V3.md) prices it: the rest of the curve at the end price, then the pool the migration would create (see [Synthetic migration](../SYNTHETIC_MIGRATION.md)). So the raise is always something the coin can actually sell. Nothing is pinned to an old price: every coin is read in the creating transaction. The value is stored in `BondingCurve.virtual_quote_reserves` and reported in `CreateEvent.virtual_quote_reserves`. If the chain is priced so high that the raise rounds down to nothing, creation fails with `QuoteReservesOutOfRange` (6104).
+ 
+ ## Trading the new coin
+ 
+ - Use [`buy_v3` / `sell_v3`](TRADE_V3.md) or [`buy_v2` / `sell_v2`](BUY.md) with `quote_mint` = Q and `quote_token_program` = Q's token program. The user needs a token account for Q.
+ - For the v3 trades, `buyback_fee_recipient` is a buyback fee recipient wallet's associated token account for Q. It may not exist yet for a new quote coin. Add a `createAssociatedTokenAccountIdempotent` instruction for it before the trade; anyone can pay the rent.
+-- To buy the new coin straight from SOL or USDC, use [`multi_hop_swap`](MULTI_HOP_SWAP.md): Q's bonding curve or PumpSwap pool is the first hop and the new coin's bonding curve is the second.
++- To buy the new coin straight from SOL or USDC, use [`multi_hop_swap`](MULTI_HOP_SWAP.md). For a depth-2 coin C the route is SOL → A → B → C: A's and B's bonding curves or pools are the first hops and C's bonding curve is the last.
+ 
+ ## Errors
+ 
+@@ -49,19 +98,20 @@ Because the amount is priced through Q's curve, not at Q's spot price, the new c
+ | ---- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
+ | 6063 | `UnsupportedQuoteMint`          | Q is not a listed quote mint and remaining account 3 or 4 is missing.                           |
+ | 6099 | `InvalidQuoteBondingCurve`      | Remaining account 4 is not Q's bonding curve.                                                  |
+-| 6100 | `QuoteBondingCurveNotEligible`  | Q is a mayhem coin, or Q's own quote mint is not listed.                                        |
+-| 6105 | `CurveDepthExceeded`            | Q is itself paired with a pump coin. Not allowed yet.                                          |
+-| 6107 | `QuoteCurveAwaitingMigration`   | Q's curve is complete but its pool does not exist yet. Retry after migration.                  |
+-| 6101 | `QuotePoolAccountsRequired`     | Q has migrated but remaining accounts 5 to 7 are missing.                                       |
+-| 6102 | `QuotePoolNotFound`             | Remaining account 5 is not a PumpSwap pool.                                                    |
+-| 6103 | `InvalidQuotePool`              | Remaining accounts 5 to 7 do not match Q's pool and vaults.                                     |
+-| 6104 | `QuoteReservesOutOfRange`       | The starting reserves computed from Q's reserves round down to zero.                           |
++| 6100 | `QuoteBondingCurveNotEligible`  | Q is a mayhem coin, or the depth-0 coin at the bottom of Q's chain is paired with a quote mint that is not listed. |
++| 6105 | `CurveDepthExceeded`            | The new coin would be deeper than pump.fun allows (`Global.max_curve_depth`), or deeper than 5. |
++| 6107 | `QuoteCurveAwaitingMigration`   | A coin on Q's chain has a complete curve but no pool yet. Retry after migration.               |
++| 6109 | `QuoteChainAccountsRequired`    | Q is nested and the bonding curve of a coin below Q is missing from the remaining accounts.     |
++| 6101 | `QuotePoolAccountsRequired`     | A coin on Q's chain has migrated but its pool, base vault or quote vault is missing.            |
++| 6102 | `QuotePoolNotFound`             | A pool slot is not a PumpSwap pool.                                                            |
++| 6103 | `InvalidQuotePool`              | A pool group does not match that coin's pool and vaults.                                       |
++| 6104 | `QuoteReservesOutOfRange`       | The starting reserves computed from the chain round down to zero.                              |
+ | 6071 | `MayhemModeQuoteMintNotAllowed` | `is_mayhem_mode` was `true`. Mayhem mode only works with SOL or USDC.                          |
+ 
+ ## SDKs
+ 
+-- TypeScript: [`@pump-fun/pump-sdk` 4.0.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0). `OnlinePumpSdk.resolveQuoteMint` recognises a pump coin quote (`source: "pumpCoin"`). Pass its `pumpQuote.accounts` to `createV2Instruction` or `createV2AndBuyV2Instructions` as `pumpQuote`, and its `pumpQuote.curve` to the quote functions. The refusals above map to typed errors such as `QuoteBondingCurveNotEligibleError` and `QuoteCurveAwaitingMigrationError`.
+-- Rust: [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0). `fetch_pump_quote_create` and `create_v2_pump_quote_accounts` resolve the quote coin's accounts for `create_v2`; `pump_quote_initial_virtual_quote_reserves` gives the starting reserves for quoting the first buy.
++- TypeScript: [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0). `OnlinePumpSdk.resolveQuoteMint` recognises a pump coin quote (`source: "pumpCoin"`) and `fetchPumpQuote` walks Q's whole chain for you. `pumpQuote.accounts.chain` holds one account group per coin below Q. Pass `pumpQuote.accounts` to `createV2Instruction` or `createV2AndBuyV2Instructions` as `pumpQuote`, and `pumpQuote.curve` (with its `chain`) to the quote functions. `MAX_CURVE_DEPTH` is the program's cap of 5. The refusals above map to typed errors such as `CurveDepthExceededError`, `QuoteBondingCurveNotEligibleError` and `QuoteCurveAwaitingMigrationError`.
++- Rust: [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1). `fetch_pump_quote_create` reads Q and every coin below it. `create_v2_pump_quote_accounts` takes one `(mint, pool)` entry per chain coin, Q first, and returns remaining accounts 4 onwards. `pump_quote_initial_virtual_quote_reserves(global, quote_control, chain)` gives the starting reserves and the new depth for quoting the first buy.
+ - IDL: [idl/pump.json](../../idl/pump.json), TypeScript types in [idl/pump.ts](../../idl/pump.ts).
+ 
+ ## Synthetic Migration
+diff --git a/docs/instructions/MULTI_HOP_SWAP.md b/docs/instructions/MULTI_HOP_SWAP.md
+index 9df9de4..c18f97c 100644
+--- a/docs/instructions/MULTI_HOP_SWAP.md
++++ b/docs/instructions/MULTI_HOP_SWAP.md
+@@ -130,8 +130,8 @@ The Pump program has a matching `multi_hop_curve_swap` instruction. It is only f
+ ## SDKs
+ 
+ - TypeScript, PumpSwap side: [`@pump-fun/pump-swap-sdk` 2.1.0](https://www.npmjs.com/package/@pump-fun/pump-swap-sdk/v/2.1.0). `onlineSdk.multiHopPoolHops` fetches the pool hops, `multiHopSwapQuote` gives `minAmountOut`, and `PUMP_AMM_SDK.multiHopSwapInstructions` builds the instruction.
+-- TypeScript, Pump side: [`@pump-fun/pump-sdk` 4.0.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0). `OnlinePumpSdk.resolveMultiHopRoute(path, side)` picks each hop's venue, `simulateMultiHopSwap` returns the amount out, and `PumpSdk.multiHopSwapInstructions` builds the swap, wrapping SOL in, closing the wrapped SOL account after, and creating the buyback recipient's token account when it is missing.
+-- Rust: [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0). `multi_hop_swap_instructions` with `MultiHopHop::pool` / `MultiHopHop::curve`, `quote_multi_hop_swap` for the route output, and `MULTI_HOP_COMPUTE_UNITS` for the compute budget.
++- TypeScript, Pump side: [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0). `OnlinePumpSdk.resolveMultiHopRoute(path, side)` picks each hop's venue, `simulateMultiHopSwap` returns the amount out, and `PumpSdk.multiHopSwapInstructions` builds the swap, wrapping SOL in, closing the wrapped SOL account after, and creating the buyback recipient's token account when it is missing.
++- Rust: [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1). `multi_hop_swap_instructions` with `MultiHopHop::pool` / `MultiHopHop::curve`, `quote_multi_hop_swap` for the route output, and `MULTI_HOP_COMPUTE_UNITS` for the compute budget.
+ - IDL: [idl/pump_amm.json](../../idl/pump_amm.json), TypeScript types in [idl/pump_amm.ts](../../idl/pump_amm.ts).
+ 
+ These releases support SOL-paired bonding curve hops too. The builders make sure the user's wrapped SOL ATA exists (created, not funded); a buy that starts on a SOL curve pays from the wallet's SOL, not from the wrapped SOL account, so the wallet needs `amount_in` plus rent, and a sell that ends on one is unwrapped like any other wrapped SOL output.
+diff --git a/docs/instructions/PUMP_SWAP_TRADE_V2.md b/docs/instructions/PUMP_SWAP_TRADE_V2.md
+index 4a4a766..b025634 100644
+--- a/docs/instructions/PUMP_SWAP_TRADE_V2.md
++++ b/docs/instructions/PUMP_SWAP_TRADE_V2.md
+@@ -101,7 +101,7 @@ The payouts show up later as `SweepPoolFeeEvent`. See [Fee sweeps](SWEEP_FEES.md
+ ## SDKs
+ 
+ - TypeScript: [`@pump-fun/pump-swap-sdk` 2.1.0](https://www.npmjs.com/package/@pump-fun/pump-swap-sdk/v/2.1.0). `buyV2Instructions`, `buyExactQuoteInV2Instructions` and `sellV2Instructions`. The high-level `buyBaseInput`, `buyQuoteInput`, `sellBaseInput` and `sellQuoteInput` builders take `{ v2: true }` and use v2 on pools that support it (`supportsTradeV2(pool)`), v1 elsewhere. Prices come from the same quote functions as v1.
+-- Rust: [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0). `buy_amm_v2_instructions`, `buy_exact_quote_in_amm_v2_instruction` and `sell_amm_v2_instructions`.
++- Rust: [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1). `buy_amm_v2_instructions`, `buy_exact_quote_in_amm_v2_instruction` and `sell_amm_v2_instructions`.
+ - IDL: [idl/pump_amm.json](../../idl/pump_amm.json), TypeScript types in [idl/pump_amm.ts](../../idl/pump_amm.ts).
+ 
+ ## Synthetic Migration
+diff --git a/docs/instructions/SWEEP_FEES.md b/docs/instructions/SWEEP_FEES.md
+index dfdf7ab..22f1046 100644
+--- a/docs/instructions/SWEEP_FEES.md
++++ b/docs/instructions/SWEEP_FEES.md
+@@ -117,9 +117,9 @@ For indexers: fee income is in the trade events (when it is charged), payouts ar
+ 
+ ## SDKs
+ 
+-- TypeScript, Pump: [`@pump-fun/pump-sdk` 4.0.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0). `sweepProtocolFeeInstruction` and `sweepCreatorFeeInstruction` for the curve, `sweepPoolCreatorFeeInstruction` for the pool's creator fee. `OnlinePumpSdk.adminCtoInstructions` and `buildDistributeCreatorFeesInstructions` prepend the sweeps for you when a bucket is not empty. Event decoders: `decodeSweepBondingCurveFeeEvent` and `decodeSweepPoolFeeEventAmm`.
++- TypeScript, Pump: [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0). `sweepProtocolFeeInstruction` and `sweepCreatorFeeInstruction` for the curve, `sweepPoolCreatorFeeInstruction` for the pool's creator fee. `OnlinePumpSdk.adminCtoInstructions` and `buildDistributeCreatorFeesInstructions` prepend the sweeps for you when a bucket is not empty. Event decoders: `decodeSweepBondingCurveFeeEvent` and `decodeSweepPoolFeeEventAmm`.
+ - TypeScript, PumpSwap: [`@pump-fun/pump-swap-sdk` 2.1.0](https://www.npmjs.com/package/@pump-fun/pump-swap-sdk/v/2.1.0). `sweepProtocolFeeInstruction` and `sweepCreatorFeeInstruction` for the pool, or `onlineSdk.sweepCreatorFeeInstruction(poolKey, payer)`.
+-- Rust: [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0). `sweep_creator_fee_instruction` (curve) and `sweep_pool_creator_fee_instruction` (pool). `distribute_creator_fees_v2_instructions` prepends the curve sweep for you.
++- Rust: [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1). `sweep_creator_fee_instruction` (curve) and `sweep_pool_creator_fee_instruction` (pool). `distribute_creator_fees_v2_instructions` prepends the curve sweep for you.
+ - IDL: [idl/pump.json](../../idl/pump.json) and [idl/pump_amm.json](../../idl/pump_amm.json).
+ 
+ ## Synthetic Migration
+diff --git a/docs/instructions/TRADE_V3.md b/docs/instructions/TRADE_V3.md
+index a66c45f..a50fc83 100644
+--- a/docs/instructions/TRADE_V3.md
++++ b/docs/instructions/TRADE_V3.md
+@@ -93,8 +93,8 @@ The payouts show up later as `SweepBondingCurveFeeEvent`. See [Fee sweeps](SWEEP
+ 
+ ## SDKs
+ 
+-- TypeScript: [`@pump-fun/pump-sdk` 4.0.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.0.0). `buyV3Instructions`, `buyExactQuoteInV3Instructions` and `sellV3Instructions` build the trade and create the buyback recipient's token account first when it is missing. `getBuyV3InstructionRaw`, `getBuyExactQuoteInV3InstructionRaw` and `getSellV3InstructionRaw` return the bare instruction. Quote with `getBuyV3QuoteAmountFromTokenAmount` and `getBuyV3TokenAmountFromQuoteAmount`.
+-- Rust: [`pump-rust-client` 0.4.0](https://crates.io/crates/pump-rust-client/0.4.0). `buy_v3_instructions`, `buy_exact_quote_in_v3_instructions` and `sell_v3_instructions` prepend the buyback token account create; the single `*_instruction` versions do not. Quote with `buy_quote_bonding_curve_v3_sol_in` and `buy_quote_bonding_curve_v3_token_out`.
++- TypeScript: [`@pump-fun/pump-sdk` 4.1.0](https://www.npmjs.com/package/@pump-fun/pump-sdk/v/4.1.0). `buyV3Instructions`, `buyExactQuoteInV3Instructions` and `sellV3Instructions` build the trade and create the buyback recipient's token account first when it is missing. `getBuyV3InstructionRaw`, `getBuyExactQuoteInV3InstructionRaw` and `getSellV3InstructionRaw` return the bare instruction. Quote with `getBuyV3QuoteAmountFromTokenAmount` and `getBuyV3TokenAmountFromQuoteAmount`.
++- Rust: [`pump-rust-client` 0.4.1](https://crates.io/crates/pump-rust-client/0.4.1). `buy_v3_instructions`, `buy_exact_quote_in_v3_instructions` and `sell_v3_instructions` prepend the buyback token account create; the single `*_instruction` versions do not. Quote with `buy_quote_bonding_curve_v3_sol_in` and `buy_quote_bonding_curve_v3_token_out`.
+ - IDL: [idl/pump.json](../../idl/pump.json), TypeScript types in [idl/pump.ts](../../idl/pump.ts).
+ 
+ ## Synthetic Migration
+diff --git a/idl/pump.json b/idl/pump.json
+index 2a54251..bb79d04 100644
+--- a/idl/pump.json
++++ b/idl/pump.json
+@@ -5282,24 +5282,30 @@
+         "mint Q, an optional fifth account, Q's own pump `bonding-curve` PDA, admits a pump coin as",
+         "the quote (`InvalidQuoteBondingCurve` if it is not that PDA; missing keeps",
+         "`UnsupportedQuoteMint`): the new curve's depth, Q's depth plus one, must not exceed",
+-        "`Global.max_curve_depth` (`CurveDepthExceeded`; 0 disables the path, 1 admits children of",
+-        "depth-0 coins only, up to 5 planned), and Q's curve must not be mayhem mode; a depth-0 Q",
+-        "must itself be quoted in SOL, a `Global`-whitelisted mint or a quote-control mint",
++        "`Global.max_curve_depth` or the program's cap of 5 (`CurveDepthExceeded`; 0 disables the",
++        "path, 1 admits children of depth-0 coins only), and Q's curve must not be mayhem mode",
+         "(`QuoteBondingCurveNotEligible`). The new curve's virtual quote reserves are then derived",
+-        "from Q's live reserves: the graduation raise of a Target — the seed a fresh curve in Q's",
+-        "own quote would get for a depth-0 Q, or Q's own stored `initial_virtual_quote_reserves`",
+-        "for a deeper Q (so every hop below Q is pinned at its creation and only Q is read) — is",
+-        "bought on Q's constant product, over Q's curve `virtual_token_reserves` and",
+-        "`virtual_quote_reserves` while Q's curve trades, or over Q's canonical pump-amm pool base",
+-        "vault balance and its quote vault balance plus `Pool.virtual_quote_reserves` once it is",
+-        "migrated (a complete Q not yet migrated fails `QuoteCurveAwaitingMigration`); the Q tokens",
+-        "that buy returns are the new curve's graduation raise and its seed is that raise scaled",
+-        "back by the curve's raise ratio. A migrated Q requires accounts six to eight: the pool",
+-        "(index 0 under pump's `pool-authority` PDA for Q, quote seed WSOL for a SOL-quoted Q) and",
+-        "its base and quote vaults (`QuotePoolAccountsRequired`, `QuotePoolNotFound`,",
+-        "`InvalidQuotePool`). The derived value must be at least 1 (`QuoteReservesOutOfRange`); its",
+-        "raise never exceeds Q's token side, so there is no supply bound. The new curve stores",
+-        "`depth = Q.depth + 1` and, like a quote-control coin, cannot be mayhem mode. The Token-2022",
++        "from the live reserves of every coin on Q's quote chain, Q down to its depth-0 root R (Q",
++        "itself at depth 1), whose own quote must be SOL, a `Global`-whitelisted mint or a",
++        "quote-control mint (`QuoteBondingCurveNotEligible`): the graduation raise of a Target, the",
++        "seed a fresh curve in R's quote would get today, is bought on R's constant product, the R",
++        "tokens that returns are bought on the next coin up, and so on to Q; the Q tokens the last",
++        "buy returns are the new curve's graduation raise and its seed is that raise scaled back by",
++        "the curve's raise ratio. Each coin is priced over its curve `virtual_token_reserves` and",
++        "`virtual_quote_reserves` while its curve trades, a buy past its real token reserves",
++        "completing the curve at the remainder's price and continuing in the pool the migration",
++        "would create (the migration deposit against the raise, as `buy_v3` does), or over its",
++        "canonical pump-amm pool base vault balance and its quote vault balance plus",
++        "`Pool.virtual_quote_reserves` once it is migrated (a complete coin not yet migrated fails",
++        "`QuoteCurveAwaitingMigration`). The chain",
++        "follows Q's group: one group per coin below Q, nearest first, each the coin's",
++        "`bonding-curve` PDA alone while it trades or that PDA followed by its pool (index 0 under",
++        "pump's `pool-authority` PDA for the coin, quote seed WSOL for a SOL-quoted coin) and the",
++        "pool's base and quote vaults once migrated, Q's own pool accounts being the sixth to",
++        "eighth (`QuoteChainAccountsRequired`, `QuotePoolAccountsRequired`, `QuotePoolNotFound`,",
++        "`InvalidQuotePool`). The derived value must be at least 1 (`QuoteReservesOutOfRange`); each",
++        "buy returns less than that coin's token side, so there is no supply bound. The new curve",
++        "stores `depth = Q.depth + 1` and, like a quote-control coin, cannot be mayhem mode. The Token-2022",
+         "native mint is rejected, and a Token-2022 quote mint may only carry the xStock operable",
+         "extension set (metadata pointer/metadata, permanent delegate, initialized default account",
+         "state, scaled UI amount, pausable, confidential-transfer mint, and a transfer hook with no",
+@@ -13185,12 +13191,12 @@
+     {
+       "code": 6100,
+       "name": "QuoteBondingCurveNotEligible",
+-      "msg": "Quote bonding curve is not eligible as a quote: mayhem mode, or a depth-0 coin whose own quote is not listed"
++      "msg": "Quote bonding curve is not eligible as a quote: mayhem mode, or the chain's depth-0 root is quoted in a mint no list admits"
+     },
+     {
+       "code": 6101,
+       "name": "QuotePoolAccountsRequired",
+-      "msg": "Quote bonding curve has migrated: pool and vault remaining accounts are required"
++      "msg": "A quote-chain bonding curve has migrated: its pool and vault remaining accounts are required"
+     },
+     {
+       "code": 6102,
+@@ -13210,7 +13216,7 @@
+     {
+       "code": 6105,
+       "name": "CurveDepthExceeded",
+-      "msg": "The new curve's depth (quote coin depth plus one) exceeds Global.max_curve_depth"
++      "msg": "The new curve's depth (quote coin depth plus one) exceeds Global.max_curve_depth or the program's cap of 5"
+     },
+     {
+       "code": 6106,
+@@ -13220,12 +13226,17 @@
+     {
+       "code": 6107,
+       "name": "QuoteCurveAwaitingMigration",
+-      "msg": "The quote coin's curve is complete but not yet migrated; retry once migrate_v2 creates its pool"
++      "msg": "A quote-chain coin's curve is complete but not yet migrated; retry once migrate_v2 creates its pool"
+     },
+     {
+       "code": 6108,
+       "name": "MultiHopMayhemCurveNotSupported",
+       "msg": "multi-hop: mayhem-mode curves are not routable; use the v2 instructions"
++    },
++    {
++      "code": 6109,
++      "name": "QuoteChainAccountsRequired",
++      "msg": "The quote coin is nested: a bonding curve remaining account is required for every coin on its quote chain down to the depth-0 root"
+     }
+   ],
+   "types": [
+diff --git a/idl/pump.ts b/idl/pump.ts
+index 77bbdb9..675ef0a 100644
+--- a/idl/pump.ts
++++ b/idl/pump.ts
+@@ -5288,24 +5288,30 @@ export type Pump = {
+         "mint Q, an optional fifth account, Q's own pump `bonding-curve` PDA, admits a pump coin as",
+         "the quote (`InvalidQuoteBondingCurve` if it is not that PDA; missing keeps",
+         "`UnsupportedQuoteMint`): the new curve's depth, Q's depth plus one, must not exceed",
+-        "`Global.max_curve_depth` (`CurveDepthExceeded`; 0 disables the path, 1 admits children of",
+-        "depth-0 coins only, up to 5 planned), and Q's curve must not be mayhem mode; a depth-0 Q",
+-        "must itself be quoted in SOL, a `Global`-whitelisted mint or a quote-control mint",
++        "`Global.max_curve_depth` or the program's cap of 5 (`CurveDepthExceeded`; 0 disables the",
++        "path, 1 admits children of depth-0 coins only), and Q's curve must not be mayhem mode",
+         "(`QuoteBondingCurveNotEligible`). The new curve's virtual quote reserves are then derived",
+-        "from Q's live reserves: the graduation raise of a Target — the seed a fresh curve in Q's",
+-        "own quote would get for a depth-0 Q, or Q's own stored `initial_virtual_quote_reserves`",
+-        "for a deeper Q (so every hop below Q is pinned at its creation and only Q is read) — is",
+-        "bought on Q's constant product, over Q's curve `virtual_token_reserves` and",
+-        "`virtual_quote_reserves` while Q's curve trades, or over Q's canonical pump-amm pool base",
+-        "vault balance and its quote vault balance plus `Pool.virtual_quote_reserves` once it is",
+-        "migrated (a complete Q not yet migrated fails `QuoteCurveAwaitingMigration`); the Q tokens",
+-        "that buy returns are the new curve's graduation raise and its seed is that raise scaled",
+-        "back by the curve's raise ratio. A migrated Q requires accounts six to eight: the pool",
+-        "(index 0 under pump's `pool-authority` PDA for Q, quote seed WSOL for a SOL-quoted Q) and",
+-        "its base and quote vaults (`QuotePoolAccountsRequired`, `QuotePoolNotFound`,",
+-        "`InvalidQuotePool`). The derived value must be at least 1 (`QuoteReservesOutOfRange`); its",
+-        "raise never exceeds Q's token side, so there is no supply bound. The new curve stores",
+-        "`depth = Q.depth + 1` and, like a quote-control coin, cannot be mayhem mode. The Token-2022",
++        "from the live reserves of every coin on Q's quote chain, Q down to its depth-0 root R (Q",
++        "itself at depth 1), whose own quote must be SOL, a `Global`-whitelisted mint or a",
++        "quote-control mint (`QuoteBondingCurveNotEligible`): the graduation raise of a Target, the",
++        "seed a fresh curve in R's quote would get today, is bought on R's constant product, the R",
++        "tokens that returns are bought on the next coin up, and so on to Q; the Q tokens the last",
++        "buy returns are the new curve's graduation raise and its seed is that raise scaled back by",
++        "the curve's raise ratio. Each coin is priced over its curve `virtual_token_reserves` and",
++        "`virtual_quote_reserves` while its curve trades, a buy past its real token reserves",
++        "completing the curve at the remainder's price and continuing in the pool the migration",
++        "would create (the migration deposit against the raise, as `buy_v3` does), or over its",
++        "canonical pump-amm pool base vault balance and its quote vault balance plus",
++        "`Pool.virtual_quote_reserves` once it is migrated (a complete coin not yet migrated fails",
++        "`QuoteCurveAwaitingMigration`). The chain",
++        "follows Q's group: one group per coin below Q, nearest first, each the coin's",
++        "`bonding-curve` PDA alone while it trades or that PDA followed by its pool (index 0 under",
++        "pump's `pool-authority` PDA for the coin, quote seed WSOL for a SOL-quoted coin) and the",
++        "pool's base and quote vaults once migrated, Q's own pool accounts being the sixth to",
++        "eighth (`QuoteChainAccountsRequired`, `QuotePoolAccountsRequired`, `QuotePoolNotFound`,",
++        "`InvalidQuotePool`). The derived value must be at least 1 (`QuoteReservesOutOfRange`); each",
++        "buy returns less than that coin's token side, so there is no supply bound. The new curve",
++        "stores `depth = Q.depth + 1` and, like a quote-control coin, cannot be mayhem mode. The Token-2022",
+         "native mint is rejected, and a Token-2022 quote mint may only carry the xStock operable",
+         "extension set (metadata pointer/metadata, permanent delegate, initialized default account",
+         "state, scaled UI amount, pausable, confidential-transfer mint, and a transfer hook with no",
+@@ -13191,12 +13197,12 @@ export type Pump = {
+     {
+       "code": 6100,
+       "name": "quoteBondingCurveNotEligible",
+-      "msg": "Quote bonding curve is not eligible as a quote: mayhem mode, or a depth-0 coin whose own quote is not listed"
++      "msg": "Quote bonding curve is not eligible as a quote: mayhem mode, or the chain's depth-0 root is quoted in a mint no list admits"
+     },
+     {
+       "code": 6101,
+       "name": "quotePoolAccountsRequired",
+-      "msg": "Quote bonding curve has migrated: pool and vault remaining accounts are required"
++      "msg": "A quote-chain bonding curve has migrated: its pool and vault remaining accounts are required"
+     },
+     {
+       "code": 6102,
+@@ -13216,7 +13222,7 @@ export type Pump = {
+     {
+       "code": 6105,
+       "name": "curveDepthExceeded",
+-      "msg": "The new curve's depth (quote coin depth plus one) exceeds Global.max_curve_depth"
++      "msg": "The new curve's depth (quote coin depth plus one) exceeds Global.max_curve_depth or the program's cap of 5"
+     },
+     {
+       "code": 6106,
+@@ -13226,12 +13232,17 @@ export type Pump = {
+     {
+       "code": 6107,
+       "name": "quoteCurveAwaitingMigration",
+-      "msg": "The quote coin's curve is complete but not yet migrated; retry once migrate_v2 creates its pool"
++      "msg": "A quote-chain coin's curve is complete but not yet migrated; retry once migrate_v2 creates its pool"
+     },
+     {
+       "code": 6108,
+       "name": "multiHopMayhemCurveNotSupported",
+       "msg": "multi-hop: mayhem-mode curves are not routable; use the v2 instructions"
++    },
++    {
++      "code": 6109,
++      "name": "quoteChainAccountsRequired",
++      "msg": "The quote coin is nested: a bonding curve remaining account is required for every coin on its quote chain down to the depth-0 root"
+     }
+   ],
+   "types": [
+diff --git a/idl/pump_fees.json b/idl/pump_fees.json
+index 8de5fc9..a06cfec 100644
+--- a/idl/pump_fees.json
++++ b/idl/pump_fees.json
+@@ -4544,6 +4544,112 @@
+           "type": "u8"
+         }
+       ]
++    },
++    {
++      "name": "withdraw",
++      "discriminator": [
++        183,
++        18,
++        70,
++        156,
++        148,
++        109,
++        161,
++        34
++      ],
++      "accounts": [
++        {
++          "name": "user",
++          "writable": true,
++          "signer": true
++        },
++        {
++          "name": "referral_vault",
++          "writable": true,
++          "pda": {
++            "seeds": [
++              {
++                "kind": "const",
++                "value": [
++                  114,
++                  101,
++                  102,
++                  101,
++                  114,
++                  114,
++                  97,
++                  108,
++                  45,
++                  118,
++                  97,
++                  117,
++                  108,
++                  116
++                ]
++              },
++              {
++                "kind": "account",
++                "path": "user"
++              }
++            ]
++          }
++        },
++        {
++          "name": "quote_mint",
++          "optional": true
++        },
++        {
++          "name": "vault_ata",
++          "writable": true,
++          "optional": true
++        },
++        {
++          "name": "user_ata",
++          "writable": true,
++          "optional": true
++        },
++        {
++          "name": "token_program",
++          "optional": true
++        },
++        {
++          "name": "system_program",
++          "address": "11111111111111111111111111111111"
++        },
++        {
++          "name": "event_authority",
++          "pda": {
++            "seeds": [
++              {
++                "kind": "const",
++                "value": [
++                  95,
++                  95,
++                  101,
++                  118,
++                  101,
++                  110,
++                  116,
++                  95,
++                  97,
++                  117,
++                  116,
++                  104,
++                  111,
++                  114,
++                  105,
++                  116,
++                  121
++                ]
++              }
++            ]
++          }
++        },
++        {
++          "name": "program"
++        }
++      ],
++      "args": []
+     }
+   ],
+   "accounts": [
+@@ -4938,6 +5044,19 @@
+         73,
+         243
+       ]
++    },
++    {
++      "name": "WithdrawEvent",
++      "discriminator": [
++        22,
++        9,
++        133,
++        26,
++        160,
++        44,
++        71,
++        192
++      ]
+     }
+   ],
+   "errors": [
+@@ -5115,6 +5234,16 @@
+       "code": 6034,
+       "name": "InvalidQuoteMint",
+       "msg": "quote_mint is not the bonding curve's quote mint"
++    },
++    {
++      "code": 6035,
++      "name": "IncompleteTokenAccounts",
++      "msg": "Token withdrawals need quote_mint, vault_ata, user_ata and token_program"
++    },
++    {
++      "code": 6036,
++      "name": "NothingToWithdraw",
++      "msg": "Nothing to withdraw"
+     }
+   ],
+   "types": [
+@@ -6367,6 +6496,30 @@
+           }
+         ]
+       }
++    },
++    {
++      "name": "WithdrawEvent",
++      "type": {
++        "kind": "struct",
++        "fields": [
++          {
++            "name": "timestamp",
++            "type": "i64"
++          },
++          {
++            "name": "user",
++            "type": "pubkey"
++          },
++          {
++            "name": "quote_mint",
++            "type": "pubkey"
++          },
++          {
++            "name": "amount",
++            "type": "u64"
++          }
++        ]
++      }
+     }
+   ],
+   "constants": [
+diff --git a/idl/pump_fees.ts b/idl/pump_fees.ts
+index d978f79..f3a9be9 100644
+--- a/idl/pump_fees.ts
++++ b/idl/pump_fees.ts
+@@ -4550,6 +4550,112 @@ export type PumpFees = {
+           "type": "u8"
+         }
+       ]
++    },
++    {
++      "name": "withdraw",
++      "discriminator": [
++        183,
++        18,
++        70,
++        156,
++        148,
++        109,
++        161,
++        34
++      ],
++      "accounts": [
++        {
++          "name": "user",
++          "writable": true,
++          "signer": true
++        },
++        {
++          "name": "referralVault",
++          "writable": true,
++          "pda": {
++            "seeds": [
++              {
++                "kind": "const",
++                "value": [
++                  114,
++                  101,
++                  102,
++                  101,
++                  114,
++                  114,
++                  97,
++                  108,
++                  45,
++                  118,
++                  97,
++                  117,
++                  108,
++                  116
++                ]
++              },
++              {
++                "kind": "account",
++                "path": "user"
++              }
++            ]
++          }
++        },
++        {
++          "name": "quoteMint",
++          "optional": true
++        },
++        {
++          "name": "vaultAta",
++          "writable": true,
++          "optional": true
++        },
++        {
++          "name": "userAta",
++          "writable": true,
++          "optional": true
++        },
++        {
++          "name": "tokenProgram",
++          "optional": true
++        },
++        {
++          "name": "systemProgram",
++          "address": "11111111111111111111111111111111"
++        },
++        {
++          "name": "eventAuthority",
++          "pda": {
++            "seeds": [
++              {
++                "kind": "const",
++                "value": [
++                  95,
++                  95,
++                  101,
++                  118,
++                  101,
++                  110,
++                  116,
++                  95,
++                  97,
++                  117,
++                  116,
++                  104,
++                  111,
++                  114,
++                  105,
++                  116,
++                  121
++                ]
++              }
++            ]
++          }
++        },
++        {
++          "name": "program"
++        }
++      ],
++      "args": []
+     }
+   ],
+   "accounts": [
+@@ -4944,6 +5050,19 @@ export type PumpFees = {
+         73,
+         243
+       ]
++    },
++    {
++      "name": "withdrawEvent",
++      "discriminator": [
++        22,
++        9,
++        133,
++        26,
++        160,
++        44,
++        71,
++        192
++      ]
+     }
+   ],
+   "errors": [
+@@ -5121,6 +5240,16 @@ export type PumpFees = {
+       "code": 6034,
+       "name": "invalidQuoteMint",
+       "msg": "quote_mint is not the bonding curve's quote mint"
++    },
++    {
++      "code": 6035,
++      "name": "incompleteTokenAccounts",
++      "msg": "Token withdrawals need quote_mint, vault_ata, user_ata and token_program"
++    },
++    {
++      "code": 6036,
++      "name": "nothingToWithdraw",
++      "msg": "Nothing to withdraw"
+     }
+   ],
+   "types": [
+@@ -6373,6 +6502,30 @@ export type PumpFees = {
+           }
+         ]
+       }
++    },
++    {
++      "name": "withdrawEvent",
++      "type": {
++        "kind": "struct",
++        "fields": [
++          {
++            "name": "timestamp",
++            "type": "i64"
++          },
++          {
++            "name": "user",
++            "type": "pubkey"
++          },
++          {
++            "name": "quoteMint",
++            "type": "pubkey"
++          },
++          {
++            "name": "amount",
++            "type": "u64"
++          }
++        ]
++      }
+     }
+   ],
+   "constants": [

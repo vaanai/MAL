@@ -1,0 +1,37 @@
+{
+ "by_http": {
+  "http=200": 138,
+  "http=429": 5
+ },
+ "by_method": {
+  "getAccountInfo": 6,
+  "getBlock": 19,
+  "getBlockTime": 1,
+  "getEpochInfo": 1,
+  "getMultipleAccounts": 11,
+  "getRecentPerformanceSamples": 1,
+  "getSignaturesForAddress": 3,
+  "getTransaction": 101
+ },
+ "by_script": {
+  "s01_write_pins": 8,
+  "s02_fixture": 1,
+  "s03_program_global": 5,
+  "s04_blocks": 22,
+  "s05_graduations": 107
+ },
+ "by_script_and_http": {
+  "s01_write_pins http=200": 8,
+  "s02_fixture http=200": 1,
+  "s03_program_global http=200": 5,
+  "s04_blocks http=200": 21,
+  "s04_blocks http=429": 1,
+  "s05_graduations http=200": 103,
+  "s05_graduations http=429": 4
+ },
+ "bytes_total": 126733392,
+ "first": "2026-10-14T07:21:43.637Z",
+ "last": "2026-10-14T07:26:50.564Z",
+ "n_attempts": 143,
+ "note": "round 1 made no Solana RPC call: this log has the same attempts as at the end of round 0"
+}
