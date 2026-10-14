@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import socket
 import stat
 import unittest
@@ -213,8 +214,9 @@ def test_each_rpc_status_sent_and_not_sent(tmp_path):
     assert r["report"]["reading_is_no_conclusion"] is True
     assert r["dec024_am9"] == {"operator_checks": "held", "evaluated": False, "fires": None, "status": "not evaluated", "owner_at_once": True,
                                "note": "STOP is placed by the manager (DEC-024 Amendment 9 item 4); exit 0 is not a verdict."}
-    assert r["sentences"] == ["The bot sent a buy on 3 of the 6 ws-pass prints of this plan: 1 of the 2 returned, 1 of the 2 not returned, 0 of the 1 that ended in an error.",
-                              "Of the 2 ws-pass prints the public RPC did not return, the bot sent a buy on 1.",
+    assert r["sentences"] == ["The bot's ledger shows a buy sent on 3 of the 6 ws-pass prints of this plan: 1 of the 2 returned, 1 of the 2 not returned, 0 of the 1 that ended in an error.",
+                              "The plan also holds 1 ws-pass prints still pending; the bot's ledger shows a buy sent on 1 of them.",
+                              "Of the 2 ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on 1.",
                               "It is not shown that those prints' reserves were right."]
     assert "sentence" not in r and "am9_reading" not in r
     assert set(r) == TOP_KEYS and set(ws) == WS_KEYS and set(r["dec024_am9"]) == AM9_KEYS and set(r["hashes"]) == HASH_KEYS
@@ -532,8 +534,8 @@ def test_dec024_am9_all_combinations(tmp_path, ta, checks, sent_a3, evaluated, f
     assert r["inputs"]["operator_checks"] == checks
     assert r["report"]["reading_is_no_conclusion"] is no_conclusion
     k = 1 if sent_a3 else 0
-    assert r["sentences"][:2] == [f"The bot sent a buy on {1 + k} of the 3 ws-pass prints of this plan: 1 of the 2 returned, {k} of the 1 not returned, 0 of the 0 that ended in an error.",
-                                  f"Of the 1 ws-pass prints the public RPC did not return, the bot sent a buy on {k}."]
+    assert r["sentences"][:2] == [f"The bot's ledger shows a buy sent on {1 + k} of the 3 ws-pass prints of this plan: 1 of the 2 returned, {k} of the 1 not returned, 0 of the 0 that ended in an error.",
+                                  f"Of the 1 ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on {k}."]  # no pending print here: no pending sentence
     if evaluated:
         assert rep["reading"] not in text  # the report's reading sentence is copied only as a boolean
     for t in (text, out.read_text()):  # N5: no output, anywhere, carries the phrase that a false would be copied as
@@ -558,18 +560,20 @@ def test_status_is_exactly_one_of_three_and_fires_follows_it():
 
 # ---- the fixed sentences --------------------------------------------------------------------------------------------------------------------------
 
-ALWAYS = "The bot sent a buy on {s} of the {p} ws-pass prints of this plan: {s_r} of the {r} returned, {s_n} of the {n} not returned, {s_e} of the {e} that ended in an error."
-N_SENT = "Of the {n} ws-pass prints the public RPC did not return, the bot sent a buy on {s_n}."
+ALWAYS = "The bot's ledger shows a buy sent on {s} of the {p} ws-pass prints of this plan: {s_r} of the {r} returned, {s_n} of the {n} not returned, {s_e} of the {e} that ended in an error."
+P_SENT = "The plan also holds {pd} ws-pass prints still pending; the bot's ledger shows a buy sent on {s_p} of them."
+N_SENT = "Of the {n} ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on {s_n}."
 N_ZERO = "The public RPC did not return 0 of the {p} ws-pass prints, so there is no count of buys on not-returned prints."
 E_SENT = "An error is never counted as not returned. Whether those {s_e} transactions are in a finalized block is not determined."
 R_SENT = "It is not shown that those prints' reserves were right."
 
 
 def test_sentence_texts_are_fixed_character_for_character():
-    assert S.SENT_ALWAYS == ALWAYS and S.SENT_N == N_SENT and S.SENT_N0 == N_ZERO and S.SENT_E == E_SENT and S.SENT_R == R_SENT
+    assert S.SENT_ALWAYS == ALWAYS and S.SENT_P == P_SENT and S.SENT_N == N_SENT and S.SENT_N0 == N_ZERO and S.SENT_E == E_SENT and S.SENT_R == R_SENT
     assert ALWAYS.format(s=3, p=6, s_r=1, r=2, s_n=1, n=2, s_e=0, e=1) == (
-        "The bot sent a buy on 3 of the 6 ws-pass prints of this plan: 1 of the 2 returned, 1 of the 2 not returned, 0 of the 1 that ended in an error.")
-    assert N_SENT.format(n=1, s_n=1) == "Of the 1 ws-pass prints the public RPC did not return, the bot sent a buy on 1."  # no pluralisation: "1 ... prints"
+        "The bot's ledger shows a buy sent on 3 of the 6 ws-pass prints of this plan: 1 of the 2 returned, 1 of the 2 not returned, 0 of the 1 that ended in an error.")
+    assert P_SENT.format(pd=2, s_p=1) == "The plan also holds 2 ws-pass prints still pending; the bot's ledger shows a buy sent on 1 of them."
+    assert N_SENT.format(n=1, s_n=1) == "Of the 1 ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on 1."  # no pluralisation: "1 ... prints"
     assert N_ZERO.format(p=1) == "The public RPC did not return 0 of the 1 ws-pass prints, so there is no count of buys on not-returned prints."
 
 
@@ -591,14 +595,21 @@ def all_returned_prints():
     ("n0_sr1", all_returned_prints(), [("a1", BASE + 1)],
      [ALWAYS.format(s=1, p=2, s_r=1, r=2, s_n=0, n=0, s_e=0, e=0), N_ZERO.format(p=2), R_SENT]),
     # N = 0, s_r 0 (nothing sent): only always and the N-zero sentence
-    ("n0_sr0", all_returned_prints(), [],
+    ("n0_sr0", all_returned_prints(), [("zzz", BASE + 99)],  # one live decision row on a key that matches no print: a real "sent 0", not a wrong file
      [ALWAYS.format(s=0, p=2, s_r=0, r=2, s_n=0, n=0, s_e=0, e=0), N_ZERO.format(p=2)]),
     # s_e >= 1, s_r 0: E sentence, no R sentence
+    # (the report holds 1 pending ws-pass print here, so the pending sentence is second, with 0)
     ("se1_sr0", prints_each_status(), [("err", BASE + 13)],
-     [ALWAYS.format(s=1, p=6, s_r=0, r=2, s_n=0, n=2, s_e=1, e=1), N_SENT.format(n=2, s_n=0), E_SENT.format(s_e=1)]),
-    # s_e >= 1 and s_r >= 1: both, in the order always, N, E, R
+     [ALWAYS.format(s=1, p=6, s_r=0, r=2, s_n=0, n=2, s_e=1, e=1), P_SENT.format(pd=1, s_p=0), N_SENT.format(n=2, s_n=0), E_SENT.format(s_e=1)]),
+    # s_e >= 1 and s_r >= 1: both, in the order always, pending, N, E, R
     ("se1_sr1", prints_each_status(), [("err", BASE + 13), ("ret", BASE + 11), ("not", BASE + 12)],
-     [ALWAYS.format(s=3, p=6, s_r=1, r=2, s_n=1, n=2, s_e=1, e=1), N_SENT.format(n=2, s_n=1), E_SENT.format(s_e=1), R_SENT]),
+     [ALWAYS.format(s=3, p=6, s_r=1, r=2, s_n=1, n=2, s_e=1, e=1), P_SENT.format(pd=1, s_p=0), N_SENT.format(n=2, s_n=1), E_SENT.format(s_e=1), R_SENT]),
+    # a buy on the pending print: the pending sentence is second and counts it; no E sentence (s_e 0)
+    ("sp1_sr1", prints_each_status(), [("pen", BASE + 14), ("ret", BASE + 11)],
+     [ALWAYS.format(s=2, p=6, s_r=1, r=2, s_n=0, n=2, s_e=0, e=1), P_SENT.format(pd=1, s_p=1), N_SENT.format(n=2, s_n=0), R_SENT]),
+    # a buy on the pending print and nothing else: no R sentence
+    ("sp1_sr0", prints_each_status(), [("pen", BASE + 14)],
+     [ALWAYS.format(s=1, p=6, s_r=0, r=2, s_n=0, n=2, s_e=0, e=1), P_SENT.format(pd=1, s_p=1), N_SENT.format(n=2, s_n=0)]),
 ])
 def test_which_sentences_appear_in_which_case(tmp_path, name, prints, rows, expected):
     env = Env(tmp_path, prints or prints_default())
@@ -610,6 +621,8 @@ def test_which_sentences_appear_in_which_case(tmp_path, name, prints, rows, expe
     assert out.read_text() == text
     assert (N_ZERO.format(p=r["ws_pass"]["planned"]) in r["sentences"]) is (r["report"]["ws_pass"]["not_returned"] == 0)
     assert any(x.startswith("Of the ") for x in r["sentences"]) is (r["report"]["ws_pass"]["not_returned"] >= 1)
+    assert (r["sentences"][1:2] == [P_SENT.format(pd=r["report"]["ws_pass"]["pending"], s_p=r["ws_pass"]["sent_by_rpc_status"]["pending"])]) is (r["report"]["ws_pass"]["pending"] >= 1)
+    assert sum(x.startswith("The plan also holds") for x in r["sentences"]) == (1 if r["report"]["ws_pass"]["pending"] >= 1 else 0)
     assert (E_SENT.format(s_e=1) in r["sentences"]) is (r["ws_pass"]["sent_by_rpc_status"]["error"] >= 1)
     assert (R_SENT in r["sentences"]) is (r["ws_pass"]["sent_by_rpc_status"]["returned"] >= 1)
     assert_clean(text)
@@ -618,18 +631,83 @@ def test_which_sentences_appear_in_which_case(tmp_path, name, prints, rows, expe
 def test_sentences_pin_the_unpluralised_words(tmp_path):
     # one print each: the words stay "prints", "returned", "transactions" whatever the integers
     s = S.sentences({"planned": 1, "sent": 1, "sent_by_rpc_status": {"returned": 0, "not_returned": 0, "error": 1, "pending": 0}},
-                    {"returned": 0, "not_returned": 0, "error": 1})
+                    {"returned": 0, "not_returned": 0, "error": 1, "pending": 0})
     assert s == [ALWAYS.format(s=1, p=1, s_r=0, r=0, s_n=0, n=0, s_e=1, e=1), N_ZERO.format(p=1), E_SENT.format(s_e=1)]
     assert "1 transactions" in s[2] and "1 ws-pass prints" in s[0]
+    s = S.sentences({"planned": 1, "sent": 1, "sent_by_rpc_status": {"returned": 0, "not_returned": 0, "error": 0, "pending": 1}},
+                    {"returned": 0, "not_returned": 0, "error": 0, "pending": 1})
+    assert s == [ALWAYS.format(s=1, p=1, s_r=0, r=0, s_n=0, n=0, s_e=0, e=0), P_SENT.format(pd=1, s_p=1), N_ZERO.format(p=1)]
+    assert "1 ws-pass prints still pending" in s[1]
+
+
+SENT_RE = re.compile(r"sent on (\d+) of the (\d+) ws-pass prints of this plan: (\d+) of the (\d+) returned, (\d+) of the (\d+) not returned, (\d+) of the (\d+) that ended")
+PEND_RE = re.compile(r"The plan also holds (\d+) ws-pass prints still pending; the bot's ledger shows a buy sent on (\d+) of them\.")
+
+
+def test_a_buy_on_a_pending_print_is_shown_and_the_sentences_add_up(tmp_path):
+    """C2 (quant-proof, PR #644 comment 6158160431): with a buy on a pending print the always sentence alone does not add up (S = s_r + s_n + s_e + s_p). The
+    pending sentence is printed second and makes it add up, on the page, for every status."""
+    env = Env(tmp_path, prints_each_status())
+    rows = [decision(pool_of(n), slot) for n, slot in (("ret", BASE + 11), ("not", BASE + 12), ("err", BASE + 13), ("pen", BASE + 14), ("ret2", BASE + 15))]
+    code, text, out = env.run([write_ledger(tmp_path / "led.jsonl", rows)])
+    assert code == 0, text
+    r = json.loads(text)
+    sent_s, pend_s = r["sentences"][0], r["sentences"][1]
+    assert sent_s == ALWAYS.format(s=5, p=6, s_r=2, r=2, s_n=1, n=2, s_e=1, e=1) and pend_s == P_SENT.format(pd=1, s_p=1)
+    S_, P_, s_r, R_, s_n, N_, s_e, E_ = (int(x) for x in SENT_RE.search(sent_s).groups())
+    pd, s_p = (int(x) for x in PEND_RE.fullmatch(pend_s).groups())
+    assert S_ == s_r + s_n + s_e + s_p == 5  # the buys add up on the page
+    assert P_ == R_ + N_ + E_ + pd == 6  # and so do the prints
+    assert r["ws_pass"]["sent_by_rpc_status"]["pending"] == s_p == 1
+    # the same case without a buy on the pending print: the sentence is still there, with 0, and the sum still holds
+    (tmp_path / "t2").mkdir()
+    env2 = Env(tmp_path / "t2", prints_each_status())
+    code, text, out = env2.run([write_ledger(tmp_path / "t2" / "led.jsonl", rows[:3])])
+    r2 = json.loads(text)
+    S_, _P, s_r, _R, s_n, _N, s_e, _E = (int(x) for x in SENT_RE.search(r2["sentences"][0]).groups())
+    pd, s_p = (int(x) for x in PEND_RE.fullmatch(r2["sentences"][1]).groups())
+    assert (S_, s_p) == (3, 0) and S_ == s_r + s_n + s_e + s_p
+    # no pending print in the report: no pending sentence
+    (tmp_path / "t3").mkdir()
+    env3 = Env(tmp_path / "t3", prints_default())
+    code, text, _o = env3.run([write_ledger(tmp_path / "t3" / "led.jsonl", [decision(pool_of("a1"), BASE + 1)])])
+    r3 = json.loads(text)
+    assert r3["report"]["ws_pass"]["pending"] == 0 and not any("still pending" in x for x in r3["sentences"])
+
+
+def test_the_old_wording_is_gone_and_a_zero_is_not_called_no_buy_outside_limits(tmp_path):
+    """C2: "the bot sent a buy on 0" and "no buy was sent" are not printed. The sentences say what the ledger shows; the one place that names "no buy was sent" is
+    the `limits` text, which says a 0 is never reported as that."""
+    cases = []
+    for i, (prints, names) in enumerate(((prints_default(), []), (prints_default(), [("a3", BASE + 3)]), (prints_each_status(), []),
+                                         (prints_each_status(), [("pen", BASE + 14), ("err", BASE + 13)]), (all_returned_prints(), []))):
+        d = tmp_path / f"c{i}"
+        d.mkdir()
+        env = Env(d, prints)
+        led = write_ledger(d / "led.jsonl", [decision(pool_of(n), slot) for n, slot in names] + [decision(pool_of("zzz"), BASE + 99)])
+        code, text, out = env.run([led])
+        assert code == 0, text
+        cases.append((text, out.read_text()))
+    for text, out_text in cases:
+        assert text == out_text
+        r = json.loads(text)
+        assert r["limits"] == S.LIMITS and '"no buy was sent"' in r["limits"]
+        rest = json.dumps({k: v for k, v in r.items() if k != "limits"})
+        assert "no buy was sent" not in rest and "The bot sent a buy on" not in text and "bot sent a buy" not in text
+        assert all(x.startswith(("The bot's ledger shows a buy sent on", "The plan also holds", "Of the ", "The public RPC did not return", "An error is never counted",
+                                 "It is not shown")) for x in r["sentences"])
+        assert "did not fire" not in text
+    for const in (S.SENT_ALWAYS, S.SENT_P, S.SENT_N, S.SENT_N0, S.SENT_E, S.SENT_R):
+        assert "bot sent a buy" not in const and "no buy was sent" not in const
 
 
 # ---- the limits of a count --------------------------------------------------------------------------------------------------------------------
 
 
 def test_limits_text_is_fixed_and_in_the_output_and_the_docstring(tmp_path):
-    assert S.LIMITS == ('"Sent a buy" in these sentences means a live decision row for the print\'s pool and trigger slot whose sent_ms is an integer. '
+    assert S.LIMITS == ('"Shows a buy sent" in these sentences means a live decision row for the print\'s pool and trigger slot whose sent_ms is an integer. '
                         'The executor writes that row after the send call, and sent_ms is also set when the send call raised. '
-                        'So a count here is a lower bound of the buys sent where the row was not written (a kill or an exception between the send and the ledger write; '
+                        'So a count here is a lower bound of the buys sent where no row with a send time was written (a kill or an exception between the send and the ledger write; '
                         'a first send after a row with a null sent_ms) and an upper bound where the send call raised. '
                         'sent_count_may_be_low false does not exclude these. '
                         'A count of 0 means no joined live decision row with a send time; it is never reported as "no buy was sent".')
@@ -662,7 +740,7 @@ def test_null_sent_ms_row_on_a_ws_pass_key_is_counted_apart_and_not_as_sent(tmp_
     assert r["ledger"]["live_sent_ms_not_int_join_keys_n"] == 3  # a3, a1 and the key that matches no print
     assert r["dec024_am9"]["owner_at_once"] is False  # a null row on a not-returned print is not a sent buy
     assert r["sent_count_may_be_low"] is False
-    assert r["sentences"][0].startswith("The bot sent a buy on 1 of the 3 ws-pass prints")
+    assert r["sentences"][0].startswith("The bot's ledger shows a buy sent on 1 of the 3 ws-pass prints")
     assert_clean(json.dumps(r))
 
 
@@ -863,10 +941,45 @@ def test_exit_decision_rows_but_none_live(tmp_path):
     nomark = decision(pool_of("a3"), BASE + 3)
     del nomark["mode"]
     refused(env, [write_ledger(tmp_path / "nomark.jsonl", [nomark])], 12)
-    # a ledger with no decision row at all is a real "sent 0"
-    nodec = write_ledger(tmp_path / "nodec.jsonl", [other("start"), other("fill")])
-    code, text, out = env.run([nodec])
-    assert code == 0 and result(out)["ws_pass"]["sent"] == 0 and result(out)["ledger"]["decision_rows"] == 0
+    # a ledger with decision rows of other modes only, beside a live one on another file: the live row anywhere in the files is enough
+    live_elsewhere = write_ledger(tmp_path / "live_elsewhere.jsonl", [decision(pool_of("zzz"), BASE + 99)])
+    code, text, out = env.run([dry, live_elsewhere])
+    assert code == 0 and result(out)["ws_pass"]["sent"] == 0 and result(out)["ledger"]["live_decision_rows"] == 1
+
+
+def test_exit_ledger_without_any_live_decision_row_is_never_sent_zero(tmp_path):
+    """C1 (quant-proof, PR #644 comment 6158160431): a ledger that holds rows and no live `decision` row is the wrong file or a changed `kind` / `mode`
+    key. It is refused (12) whether or not it holds other `decision` rows; it is never "sent 0". Exit 11 (no parsed row) still comes first."""
+    env = Env(tmp_path, prints_default())
+    # (a) rows of other kinds only
+    body = refused(env, [write_ledger(tmp_path / "nodec.jsonl", [other("fill"), other("exit")])], 12)
+    assert "no live decision row" in body["error"] and "never \"sent 0\"" in body["error"]
+    refused(env, [write_ledger(tmp_path / "nodec2.jsonl", [other("start"), other("fill"), other("send")])], 12)
+    # (b) a one-line file holding one JSON object without `kind`
+    one = tmp_path / "nokind.jsonl"
+    one.write_text(json.dumps({"schema": "h5_ledger_v1", "mode": "live", "pool": pool_of("a3"), "trigger_slot": BASE + 3, "sent_ms": SENT_MS}) + "\n")
+    assert len(one.read_text().splitlines()) == 1
+    refused(env, [one], 12)
+    # a decision row whose `kind` key was renamed is no decision row
+    renamed = decision(pool_of("a3"), BASE + 3)
+    renamed["type"] = renamed.pop("kind")
+    refused(env, [write_ledger(tmp_path / "renamed.jsonl", [renamed])], 12)
+    # rows of other kinds beside unparsable lines: rows were parsed, so it is 12 and not 11
+    refused(env, [write_ledger(tmp_path / "mixed.jsonl", [other("fill")], raw=["not json\n"])], 12)
+    # the files are judged together: another file with a live decision row makes the run a real "sent 0" or a real count
+    code, text, out = env.run([tmp_path / "nodec.jsonl", good_ledger(tmp_path)], out=tmp_path / "ok.json")
+    assert code == 0 and result(out)["ws_pass"]["sent"] == 1 and result(out)["ledger"]["other_kind_rows"] == 2
+    # exit 11 (a file with no parsed row) is checked file by file, while reading, and still comes before exit 12
+    (tmp_path / "e0.jsonl").write_bytes(b"")
+    (tmp_path / "junk.jsonl").write_text("not json\n[1]\n")
+    refused(env, [tmp_path / "e0.jsonl"], 11)
+    refused(env, [tmp_path / "junk.jsonl"], 11)
+    refused(env, [tmp_path / "nodec.jsonl", tmp_path / "e0.jsonl"], 11)  # a file of other kinds, then an empty one: 11, not 12
+    refused(env, [tmp_path / "e0.jsonl", tmp_path / "nodec.jsonl"], 11)
+    # a real "sent 0": a live decision row on a key that matches no print
+    zero = write_ledger(tmp_path / "zero.jsonl", [other("start"), decision(pool_of("zzz"), BASE + 99), other("fill")])
+    code, text, out = env.run([zero], out=tmp_path / "zero.json")
+    assert code == 0 and result(out)["ws_pass"]["sent"] == 0 and result(out)["ledger"]["live_decision_rows"] == 1
 
 
 def test_exit_usage(tmp_path):
@@ -1067,7 +1180,7 @@ class RealExecutorRowTests(RX.Case):
         assert r["ledger"]["live_sent_rows"] == 1 and r["ledger"]["live_sent_join_keys_n"] == 1 and r["sent_count_may_be_low"] is False
         # the real "real" print is not returned and the bot sent a buy on it: the condition is met and the owner is told at once
         assert r["dec024_am9"]["status"] == MET and r["dec024_am9"]["fires"] is True and r["dec024_am9"]["owner_at_once"] is True
-        assert r["sentences"][1] == "Of the 2 ws-pass prints the public RPC did not return, the bot sent a buy on 1."
+        assert r["sentences"][1] == "Of the 2 ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on 1."
 
     def test_a_send_that_raised_still_has_an_integer_sent_ms(self):
         # tools/probe_live.py LiveExecutor._send: first_send_ms is set after the except branch, so sent_ms is "a send was attempted"
@@ -1089,4 +1202,4 @@ class RealExecutorRowTests(RX.Case):
         sub.mkdir()
         env = Env(sub, prints_default(), ta=(2, 0, 0), extra=[rec("ws", "real", RX.TRIG_SLOT, t=SINCE + 30 * 60_000, pool=RX.POOL)])
         code, text, _o = env.run([Path(e.ex.fills.path)])
-        assert code == 12, text  # decision rows and none of them live
+        assert code == 12, text  # the ledger holds decision rows and none of them live

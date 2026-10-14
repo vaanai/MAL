@@ -13,7 +13,7 @@ rows and prints how many ws-pass prints were sent, by the print's RPC status. It
   checks of the RPC check's report, typed from the LAB_STATE record: the report cannot show them and this tool cannot see them (quant-proof, PR #610 comment
   6157746243 section 4). Both are required; both are echoed in the output.
 
-It reads (nothing else; it makes no network call, no ssh, and opens no tape, tip file, gate log, CAP-PICK file, paper twin, wallet or fill record):
+It reads (nothing else; it makes no network call, no ssh, and opens no tape, tip file, gate log, CAP-PICK file, paper twin or wallet file; the ledger it opens is the executor's own row log, which also holds send, fill, exit and alert rows, and of a row that is not a `decision` row it reads `kind` and nothing else):
   1. the RPC out-dir O: `wspass_report.json` (must exist: the check is finished), the plan file, the state file, by the names the RPC tool gives them;
   2. the shadow hour files in D, for the `pool` and `slot` of the trigger records of the plan's ws-pass signatures, and nothing of any other record;
   3. the live executor ledger, the `decision` rows only (see THE LEDGER).
@@ -52,10 +52,12 @@ SENT. A print is SENT when a LIVE `decision` row (`mode` exactly "live") has the
   (`live_decision_rows_sent_ms_not_int_join_key_unusable`) and does NOT set `sent_count_may_be_low`, which stays about sent rows.
 
 LIMITS (the module constant LIMITS and the top-level output key `limits`; fixed text, read it with every count):
-  "\"Sent a buy\" in these sentences means a live decision row for the print's pool and trigger slot whose sent_ms is an integer. The executor writes that row after
-  the send call, and sent_ms is also set when the send call raised. So a count here is a lower bound of the buys sent where the row was not written (a kill or an
-  exception between the send and the ledger write; a first send after a row with a null sent_ms) and an upper bound where the send call raised. sent_count_may_be_low
-  false does not exclude these. A count of 0 means no joined live decision row with a send time; it is never reported as \"no buy was sent\"."
+  "\"Shows a buy sent\" in these sentences means a live decision row for the print's pool and trigger slot whose sent_ms is an integer. The executor writes that row
+  after the send call, and sent_ms is also set when the send call raised. So a count here is a lower bound of the buys sent where no row with a send time was written
+  (a kill or an exception between the send and the ledger write; a first send after a row with a null sent_ms) and an upper bound where the send call raised.
+  sent_count_may_be_low false does not exclude these. A count of 0 means no joined live decision row with a send time; it is never reported as \"no buy was sent\"."
+  The sentences say "the bot's ledger shows a buy sent", not "the bot sent a buy": they report what the ledger shows, and a count of 0 is never printed as "the bot sent
+  a buy on 0". The `limits` text stays required with every copy of a sentence (a definition printed beside a sentence does not travel with a copy of it).
 
 RPC STATUS of a print is the state of its signature in the RPC out-dir, by the tool's own rule (tools.h5_tipauth_census `states_by_sig` / `classify`, the same
   mapping as `tally` of the RPC tool): returned (found), not_returned (null twice, at least 600,000 ms apart), error, pending (never asked, or one null).
@@ -83,11 +85,13 @@ OUTPUT (one JSON object on stdout and, once, in --out; counts and hashes only). 
   not_returned is 1 or more, whatever the reading and the flag. `note`: "STOP is placed by the manager (DEC-024 Amendment 9 item 4); exit 0 is not a
   verdict." This tool places nothing.
   `sentences`: a list built from the counts alone (P = ws-pass prints planned; R, N, E = the report's ws-pass returned, not_returned, error; S = sent;
-  s_r, s_n, s_e = sent by status), the words fixed whatever the integers, in this order: always "The bot sent a buy on S of the P ws-pass prints of this plan:
-  s_r of the R returned, s_n of the N not returned, s_e of the E that ended in an error."; when N is 1 or more "Of the N ws-pass prints the public RPC did not
-  return, the bot sent a buy on s_n."; when N is 0, instead of that one, "The public RPC did not return 0 of the P ws-pass prints, so there is no count of buys
-  on not-returned prints."; when s_e is 1 or more "An error is never counted as not returned. Whether those s_e transactions are in a finalized block is not
-  determined."; when s_r is 1 or more "It is not shown that those prints' reserves were right."
+  s_r, s_n, s_e, s_p = sent by status; pd = the report's ws-pass pending), the words fixed whatever the integers, in this order: always "The bot's ledger shows a buy
+  sent on S of the P ws-pass prints of this plan: s_r of the R returned, s_n of the N not returned, s_e of the E that ended in an error."; SECOND, when pd is 1 or
+  more (the report's ws-pass `pending`), "The plan also holds pd ws-pass prints still pending; the bot's ledger shows a buy sent on s_p of them." (so that S = s_r +
+  s_n + s_e + s_p adds up on the page); when N is 1 or more "Of the N ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on s_n."; when
+  N is 0, instead of that one, "The public RPC did not return 0 of the P ws-pass prints, so there is no count of buys on not-returned prints."; when s_e is 1 or
+  more "An error is never counted as not returned. Whether those s_e transactions are in a finalized block is not determined."; when s_r is 1 or more "It is not
+  shown that those prints' reserves were right."
   `limits`: the fixed LIMITS text (see above).
   `report`: `reading_is_no_conclusion` (the report's `reading` is copied only as that boolean) and the report's ws-pass counts.
   `shadow`, `ledger`: scan blocks. `hashes`: tool, report (recomputed here) and `expect_report_sha256` (as typed), plan, state (as the report names it, recomputed
@@ -111,7 +115,7 @@ EXIT CODES: 0 the tool ran (NOT a verdict; read `dec024_am9`). Non-zero prints a
   4 --since-ms, --until-ms or --expect-code-sha differs from the plan's; 5 the shadow selection differs from the plan's, or a ws-pass record cannot be joined;
   6 --out exists, or cannot be created or written; 7 --until-ms at or after the seal instant; 8 the ws-pass status totals differ from the report's, or the state
   file cannot be read as the RPC tool read it; 9 the plan or state file differs from the hash the report names; 10 a ledger file is unreadable;
-  11 a ledger file holds no row (an empty ledger is never "sent 0"); 12 the ledger holds `decision` rows and none is live (the wrong file, or a changed key);
+  11 a ledger file holds no row (an empty ledger is never "sent 0"); 12 the ledger holds no live `decision` row, whether or not it holds other `decision` rows (the wrong file, or a changed `kind` or `mode`; such a ledger is never "sent 0");
   13 the sha256 of the bytes of `wspass_report.json` differs from --expect-report-sha256 (checked as soon as the report is read, before the plan, the shadow or
   the ledger is opened; the seal check (7) is still first of all).
 
@@ -156,17 +160,18 @@ ABSENT = object()
 EXIT_USAGE, EXIT_NO_INPUT, EXIT_FLAGS, EXIT_SELECTION, EXIT_OUT, EXIT_SEAL, EXIT_TOTALS, EXIT_HASH = 2, 3, 4, 5, 6, 7, 8, 9
 EXIT_LEDGER_UNREADABLE, EXIT_LEDGER_EMPTY, EXIT_LEDGER_NO_LIVE, EXIT_REPORT_SHA = 10, 11, 12, 13
 
-# ---- the fixed sentences (quant-proof, PR #610 comment 6157746243 section 4): only the integers are substituted, the words never change ------------
-SENT_ALWAYS = ("The bot sent a buy on {s} of the {p} ws-pass prints of this plan: {s_r} of the {r} returned, {s_n} of the {n} not returned, "
+# ---- the fixed sentences (quant-proof, PR #610 comment 6157746243 section 4, amended by PR #644 comment 6158160431 C2): only the integers are substituted ----
+SENT_ALWAYS = ("The bot's ledger shows a buy sent on {s} of the {p} ws-pass prints of this plan: {s_r} of the {r} returned, {s_n} of the {n} not returned, "
                "{s_e} of the {e} that ended in an error.")
-SENT_N = "Of the {n} ws-pass prints the public RPC did not return, the bot sent a buy on {s_n}."
+SENT_P = "The plan also holds {pd} ws-pass prints still pending; the bot's ledger shows a buy sent on {s_p} of them."
+SENT_N = "Of the {n} ws-pass prints the public RPC did not return, the bot's ledger shows a buy sent on {s_n}."
 SENT_N0 = "The public RPC did not return 0 of the {p} ws-pass prints, so there is no count of buys on not-returned prints."
 SENT_E = "An error is never counted as not returned. Whether those {s_e} transactions are in a finalized block is not determined."
 SENT_R = "It is not shown that those prints' reserves were right."
 # ---- the limits of the count (the Reviewer's B1 and B2 on PR #644, comment 6157803918) -----------------------------------------------------------
-LIMITS = ("\"Sent a buy\" in these sentences means a live decision row for the print's pool and trigger slot whose sent_ms is an integer. "
+LIMITS = ("\"Shows a buy sent\" in these sentences means a live decision row for the print's pool and trigger slot whose sent_ms is an integer. "
           "The executor writes that row after the send call, and sent_ms is also set when the send call raised. "
-          "So a count here is a lower bound of the buys sent where the row was not written (a kill or an exception between the send and the ledger write; "
+          "So a count here is a lower bound of the buys sent where no row with a send time was written (a kill or an exception between the send and the ledger write; "
           "a first send after a row with a null sent_ms) and an upper bound where the send call raised. "
           "sent_count_may_be_low false does not exclude these. "
           "A count of 0 means no joined live decision row with a send time; it is never reported as \"no buy was sent\".")
@@ -422,8 +427,8 @@ def read_ledgers(paths: list[Path], hook: Callable | None) -> tuple[collections.
             raise InputError("a ledger file is unreadable", EXIT_LEDGER_UNREADABLE)
         info = read_ledger_file(p, hook, sent, nosend, total)
         files.append({"index": len(files), "sha256": info["sha256"], "records_parsed": info["records_parsed"], "bad_lines": info["bad_lines"]})
-    if total["decision_rows"] and not total["live_decision_rows"]:
-        raise InputError("the ledger holds decision rows and none is live: the wrong file, or the run-mode key changed", EXIT_LEDGER_NO_LIVE)
+    if not total["live_decision_rows"]:
+        raise InputError("the ledger holds no live decision row: the wrong file, or the kind or run-mode key changed; such a ledger is never \"sent 0\"", EXIT_LEDGER_NO_LIVE)
     return sent, nosend, total, files
 
 
@@ -465,6 +470,8 @@ def sentences(ws: dict, rep_ws: dict) -> list[str]:
     p, r, n, e = ws["planned"], rep_ws["returned"], rep_ws["not_returned"], rep_ws["error"]
     s_r, s_n, s_e = by["returned"], by["not_returned"], by["error"]
     out = [SENT_ALWAYS.format(s=ws["sent"], p=p, s_r=s_r, r=r, s_n=s_n, n=n, s_e=s_e, e=e)]
+    if rep_ws["pending"] >= 1:
+        out.append(SENT_P.format(pd=rep_ws["pending"], s_p=by["pending"]))
     out.append(SENT_N.format(n=n, s_n=s_n) if n >= 1 else SENT_N0.format(p=p))
     if s_e >= 1:
         out.append(SENT_E.format(s_e=s_e))
@@ -539,7 +546,7 @@ def main(argv: list[str] | None = None, shadow_hook: Callable | None = None, led
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], epilog="EXIT CODE: 0 the tool ran (not a verdict). 2 usage, 3 input directory or file missing, 4 flags differ from "
                                  "the plan, 5 shadow selection differs from the plan, 6 --out exists or cannot be written, 7 --until-ms at or after the seal instant, 8 status "
                                  "totals differ from the report, 9 plan or state hash differs from the report, 10 ledger unreadable, 11 ledger empty, 12 no live decision row "
-                                 "among decision rows, 13 the report file differs from --expect-report-sha256.")
+                                 "in the ledger, 13 the report file differs from --expect-report-sha256.")
     ap.add_argument("--rpc-out-dir", required=True, help="the finished RPC check's out-dir (wspass_report.json must exist)")
     ap.add_argument("--shadow-dir", required=True)
     ap.add_argument("--since-ms", type=int, required=True)
