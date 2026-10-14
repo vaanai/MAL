@@ -33,12 +33,15 @@ that is intended, and ledger_summary reports it as reserved_unsettled. The lock 
 processes cannot both pass the check and then both spend. The cost is that calls on one ledger are serial. Retry back-off sleeps
 are taken with the lock released. Pre-request failures (bad arguments, a missing key, a budget refusal) write no rows.
 
-Worst case = ceil(utf-8 bytes of the system+messages JSON / 3) input tokens at the input rate + max_tokens at the output rate.
-One deliberate tightening of that formula: if the request carries a cache_control marker, the input part is priced at the
-(higher) cache-write rate, so a cache write cannot make the real charge exceed the estimate. Actual cost comes from the response
-usage fields (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens; a missing or invalid field is 0).
-If the real usage ever exceeds the estimate (a prompt that tokenises worse than 3 bytes per token), the settle row is positive and
-the ledger records the real cost; the check for the NEXT attempt then sees it.
+Worst case = (UTF-8 bytes of the canonical request body + WORST_CASE_INPUT_MARGIN_TOKENS) input tokens at the input rate +
+max_tokens at the output rate. The input side is a true upper bound for text requests: a token never covers less than one byte, so
+input tokens <= bytes of the body (digit-heavy text included, where bytes/3 would under-count), and the 256-token margin covers
+the API's own formatting tokens. The output side is bounded by max_tokens, which includes any thinking. If the request carries a
+cache_control marker, the input part is priced at the (higher) cache-write rate, so a cache write cannot make the real charge
+exceed the bound. Not covered: images or documents (their tokens are not bounded by bytes; this module sends text only). Actual cost
+comes from the response usage fields (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens; a missing
+or invalid field is 0). If the real usage ever exceeded the bound, the settle row would be positive and the ledger would record the
+real cost; the check for the NEXT attempt then sees it.
 
 What is still not covered: an HTTP error response (4xx/5xx with a body) is assumed not billed and settles to 0. The 1-hour cache
 write price is not in the table. The workspace spend limit the owner sets in the Anthropic console remains the backstop; this
@@ -118,7 +121,9 @@ MAX_ATTEMPTS = 3
 BACKOFF_S = (2, 8)
 RETRY_AFTER_CAP_S = 30
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 529})
-BYTES_PER_TOKEN_ESTIMATE = 3
+# Input side of the worst case: a token covers at least one byte of text, so input tokens <= UTF-8 bytes of the canonical request
+# body. This fixed margin, in tokens, is added for the API's own formatting tokens (role markers, wrappers).
+WORST_CASE_INPUT_MARGIN_TOKENS = 256
 
 EXIT_OK, EXIT_BAD_ARGS, EXIT_BUDGET, EXIT_REPLAY_MISS, EXIT_API_ERROR, EXIT_RETRIES = 0, 2, 3, 4, 5, 6
 
@@ -232,24 +237,41 @@ def resolve_prices(model: str, allow_model, prices) -> tuple[dict, bool]:
     return validate_prices(prices), True
 
 
-def _prompt_bytes(system, messages) -> bytes:
-    payload = {"messages": messages}
+def build_body(model, system, messages, max_tokens, temperature, thinking) -> dict:
+    """The request body exactly as it is hashed and sent. Raises BadArguments on anything the API would reject out of hand."""
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise BadArguments("max_tokens is required and must be an integer >= 1")
+    if not isinstance(messages, list) or not messages:
+        raise BadArguments("messages must be a non-empty list")
+    if system is not None and not isinstance(system, (str, list)):
+        raise BadArguments("system must be a string or a list of blocks")
+    if temperature is not None and (not _is_num(temperature) or not 0 <= temperature <= 1):
+        raise BadArguments("temperature must be a number in [0, 1]")
+    if thinking is not None and not isinstance(thinking, dict):
+        raise BadArguments("thinking must be a dict, or None to omit it")
+    body = {"model": model, "max_tokens": max_tokens, "messages": copy.deepcopy(messages)}
     if system is not None:
-        payload["system"] = system
-    return canonical_bytes(payload)
+        body["system"] = copy.deepcopy(system)
+    if temperature is not None:
+        body["temperature"] = temperature
+    if thinking is not None:
+        body["thinking"] = copy.deepcopy(thinking)
+    return body
 
 
-def estimate_input_tokens(system, messages) -> int:
-    return math.ceil(len(_prompt_bytes(system, messages)) / BYTES_PER_TOKEN_ESTIMATE)
+def worst_case_input_tokens(body: dict) -> int:
+    """Upper bound on input tokens: UTF-8 bytes of the canonical request body + WORST_CASE_INPUT_MARGIN_TOKENS.
+    Holds for text requests (a token never covers less than one byte); not for images or documents, which this module does not send."""
+    return len(canonical_bytes(body)) + WORST_CASE_INPUT_MARGIN_TOKENS
 
 
-def worst_case_cost(system, messages, max_tokens: int, prices: dict) -> float:
-    """USD upper bound for one attempt: estimated input tokens plus max_tokens of output."""
-    raw = _prompt_bytes(system, messages)
+def worst_case_cost(body: dict, prices: dict) -> float:
+    """USD upper bound for one attempt: worst_case_input_tokens(body) at the input rate (at the cache-write rate if the body
+    carries a cache_control marker) plus body["max_tokens"] at the output rate (max_tokens includes any thinking)."""
     in_rate = prices["input"]
-    if b'"cache_control"' in raw:
+    if b'"cache_control"' in canonical_bytes(body):
         in_rate = max(in_rate, prices["cache_write"])
-    return (math.ceil(len(raw) / BYTES_PER_TOKEN_ESTIMATE) * in_rate + max_tokens * prices["output"]) / 1e6
+    return (worst_case_input_tokens(body) * in_rate + body["max_tokens"] * prices["output"]) / 1e6
 
 
 def _tok(v) -> int:
@@ -624,24 +646,7 @@ class HaikuCaller:
         return key
 
     def _build_body(self, system, messages, max_tokens, temperature, thinking) -> dict:
-        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
-            raise BadArguments("max_tokens is required and must be an integer >= 1")
-        if not isinstance(messages, list) or not messages:
-            raise BadArguments("messages must be a non-empty list")
-        if system is not None and not isinstance(system, (str, list)):
-            raise BadArguments("system must be a string or a list of blocks")
-        if temperature is not None and (not _is_num(temperature) or not 0 <= temperature <= 1):
-            raise BadArguments("temperature must be a number in [0, 1]")
-        if thinking is not None and not isinstance(thinking, dict):
-            raise BadArguments("thinking must be a dict, or None to omit it")
-        body = {"model": self.model, "max_tokens": max_tokens, "messages": copy.deepcopy(messages)}
-        if system is not None:
-            body["system"] = copy.deepcopy(system)
-        if temperature is not None:
-            body["temperature"] = temperature
-        if thinking is not None:
-            body["thinking"] = copy.deepcopy(thinking)
-        return body
+        return build_body(self.model, system, messages, max_tokens, temperature, thinking)
 
     def call(self, *, messages, max_tokens, system=None, temperature=None, thinking=DEFAULT_THINKING) -> CallResult:
         body = self._build_body(system, messages, max_tokens, temperature, thinking)
@@ -663,7 +668,7 @@ class HaikuCaller:
         key = self._api_key()
         last: _Outcome | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            out = self._attempt(attempt, key, body, body_bytes, sha, system, messages, max_tokens, thinking)
+            out = self._attempt(attempt, key, body, body_bytes, sha)
             if out.ok:
                 if self.save_dir is not None:
                     self._save(sha, body, out.response)
@@ -683,7 +688,7 @@ class HaikuCaller:
             f"retries exhausted after {MAX_ATTEMPTS} attempts (last: status={last.status} class={last.error_class})",
             attempts=MAX_ATTEMPTS, last_status=last.status, last_error_class=last.error_class)
 
-    def _attempt(self, attempt, key, body, body_bytes, sha, system, messages, max_tokens, thinking) -> _Outcome:
+    def _attempt(self, attempt, key, body, body_bytes, sha) -> _Outcome:
         """One budget-checked HTTP attempt, reserved then settled in the ledger, all under the exclusive ledger lock.
 
         Order: check the budget; append a "reserve" row whose cost_usd is this attempt's worst case; only then send the
@@ -692,7 +697,7 @@ class HaikuCaller:
         the settle row's cost_usd is 0.0, so the worst case stays charged. If the process dies between the two rows the
         reserve row stays alone and the worst case stays charged, which is intended."""
         request_headers = {"x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json"}
-        worst = worst_case_cost(system, messages, max_tokens, self.prices)
+        worst = worst_case_cost(body, self.prices)
         with self.ledger.locked(exclusive=True):
             spent = self.ledger.spent()
             if not (spent + worst <= self.budget_usd):  # also refuses if anything is NaN
@@ -752,7 +757,7 @@ class HaikuCaller:
                     "request_sha256": sha, "response_sha256": response_sha, "http_status": http_status,
                     "request_id": request_id, "stop_reason": stop_reason, **counts, "cost_usd": settle_delta,
                     "cost_basis": cost_basis, "latency_ms": latency_ms, "attempt": attempt,
-                    "thinking": copy.deepcopy(thinking), "allow_model": self.allow_model,
+                    "thinking": copy.deepcopy(body.get("thinking")), "allow_model": self.allow_model,
                     "custom_prices": dict(self.prices) if self.custom_prices else None,
                     "error_class": error_class, "error_type": error_type})
             finally:

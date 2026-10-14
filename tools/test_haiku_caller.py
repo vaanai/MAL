@@ -85,6 +85,16 @@ def rows_of(tmp_path) -> list[dict]:
     return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
 
 
+def body_of(r=None, model=hc.DEFAULT_MODEL) -> dict:
+    r = r or req()
+    return hc.build_body(model, r.get("system"), r["messages"], r["max_tokens"], r.get("temperature"), r.get("thinking", hc.DEFAULT_THINKING))
+
+
+def worst_of(r=None, prices=P, model=hc.DEFAULT_MODEL) -> float:
+    """The worst case the module reserves for request r."""
+    return hc.worst_case_cost(body_of(r, model), prices)
+
+
 def settles(tmp_path) -> list[dict]:
     return [r for r in rows_of(tmp_path) if r.get("kind") == "settle"]
 
@@ -125,7 +135,7 @@ def test_success_builds_request_and_writes_one_full_row(monkeypatch, tmp_path):
     reserve, row = rows_of(tmp_path)  # one reserve row, then one settle row, per HTTP attempt
     assert reserve["kind"] == "reserve" and row["kind"] == "settle" and reserve["reservation_id"] == row["reservation_id"]
     assert reserve["attempt"] == 1 and reserve["request_sha256"] == row["request_sha256"] and reserve["model"] == "claude-haiku-5-5"
-    assert reserve["cost_usd"] == hc.worst_case_cost(req()["system"], req()["messages"], 200, P)
+    assert reserve["cost_usd"] == worst_of()
     assert not {"input_tokens", "output_tokens", "http_status", "stop_reason", "thinking"} & set(reserve)  # no usage on a reserve row
     assert row["cost_basis"] == "usage"
     # settle cost_usd = actual - reserved worst case. Here the fake usage is far above what max_tokens=200 would allow, so it is positive
@@ -202,7 +212,7 @@ def test_budget_refusal_before_the_call_appends_nothing(monkeypatch, tmp_path):
 def test_budget_boundary_equal_is_allowed_and_one_ulp_less_is_refused(monkeypatch, tmp_path):
     t = install(monkeypatch)
     r = req()
-    worst = hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
+    worst = worst_of(r)
     seed_ledger(tmp_path, 0.25)
     exact = 0.25 + worst
     with pytest.raises(hc.BudgetExceeded):
@@ -215,7 +225,7 @@ def test_budget_boundary_equal_is_allowed_and_one_ulp_less_is_refused(monkeypatc
 def test_budget_sums_across_two_ledger_instances(monkeypatch, tmp_path):
     t = install(monkeypatch, *[(200, {}, ok_body(input_tokens=0, output_tokens=400))] * 5)  # 400 * 0.5 / 1e6 = 2e-4 each
     r = req()
-    worst = hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
+    worst = worst_of(r)
     budget = 2 * 2e-4 + worst - 1e-7  # two actual spends fit; at the third check spent + worst is just over
     a, b = caller(tmp_path, budget=budget), caller(tmp_path, budget=budget)
     a.call(**r)
@@ -231,7 +241,7 @@ def test_budget_sums_across_two_ledger_instances(monkeypatch, tmp_path):
 def test_concurrent_callers_cannot_overspend_the_budget(monkeypatch, tmp_path):
     """The check and the append sit under one flock with the HTTP call: 8 threads, each with its own fd, get exactly 4 calls."""
     r = req()
-    worst = hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
+    worst = worst_of(r)
     actual = 2e-4  # output_tokens 400
     budget = 3 * actual + worst + actual / 2  # spent 0, 1, 2, 3 actual calls pass; the fifth check fails
     lock = threading.Lock()
@@ -296,15 +306,46 @@ def test_unreadable_ledger_row_fails_closed_without_a_call(monkeypatch, tmp_path
     assert ei.value.exit_code == 2 and t.calls == []
 
 
-def test_worst_case_formula_and_cache_control_tightening():
-    msgs = [{"role": "user", "content": "x" * 300}]
-    raw = hc.canonical_bytes({"messages": msgs})
-    toks = math.ceil(len(raw) / 3)
-    assert hc.estimate_input_tokens(None, msgs) == toks
-    assert hc.worst_case_cost(None, msgs, 500, P) == pytest.approx((toks * 0.10 + 500 * 0.50) / 1e6)
-    cached = [{"role": "user", "content": [{"type": "text", "text": "x" * 300, "cache_control": {"type": "ephemeral"}}]}]
-    toks2 = hc.estimate_input_tokens(None, cached)
-    assert hc.worst_case_cost(None, cached, 500, P) == pytest.approx((toks2 * 0.125 + 500 * 0.50) / 1e6)
+def test_worst_case_formula_is_bytes_plus_margin_and_cache_control_uses_the_write_rate():
+    assert hc.WORST_CASE_INPUT_MARGIN_TOKENS == 256
+    r = req(system=None, messages=[{"role": "user", "content": "x" * 300}], max_tokens=500)
+    body = body_of(r)
+    nbytes = len(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    assert hc.worst_case_input_tokens(body) == nbytes + 256
+    assert hc.worst_case_cost(body, P) == pytest.approx(((nbytes + 256) * 0.10 + 500 * 0.50) / 1e6)
+    cached = req(system=None, messages=[{"role": "user", "content": [{"type": "text", "text": "x" * 300, "cache_control": {"type": "ephemeral"}}]}],
+                 max_tokens=500)
+    cbody = body_of(cached)
+    cbytes = len(json.dumps(cbody, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    assert hc.worst_case_cost(cbody, P) == pytest.approx(((cbytes + 256) * 0.125 + 500 * 0.50) / 1e6)
+
+
+def test_worst_case_counts_utf8_bytes_of_the_whole_body_not_characters():
+    plain = body_of(req(system=None, messages=[{"role": "user", "content": "a" * 100}]))
+    wide = body_of(req(system=None, messages=[{"role": "user", "content": "\u00e9" * 100}]))  # 2-byte characters; JSON-escaped as 6 bytes
+    assert hc.worst_case_input_tokens(wide) > hc.worst_case_input_tokens(plain) + 100
+
+
+def test_a_digit_heavy_prompt_is_reserved_at_no_less_than_bytes_plus_256_tokens_at_the_input_rate(monkeypatch, tmp_path):
+    """Digits can tokenise at about one token per character. bytes/3 would have under-reserved this; bytes + 256 does not."""
+    digits = " ".join(str(1_000_003 * i % 99_991) for i in range(1, 700))  # ~4 KB of numbers
+    r = req(system="rank these price rows", messages=[{"role": "user", "content": digits}], max_tokens=300)
+    n_digits = sum(ch.isdigit() for ch in digits)
+    # the model reads one token per digit and per space: a realistic worst case for numbers
+    worst_usage_tokens = len(digits)
+    t = install(monkeypatch, (200, {}, ok_body(input_tokens=worst_usage_tokens, output_tokens=300)))
+    caller(tmp_path).call(**r)
+    sent = t.calls[0]["body"]
+    (reserve,), (settle,) = reserves(tmp_path), settles(tmp_path)
+    floor = ((len(sent) + 256) * P["input"] + 300 * P["output"]) / 1e6
+    assert n_digits > 2500 and len(sent) > 3500
+    assert reserve["cost_usd"] >= floor - 1e-15  # input at no less than bytes + 256 tokens at the input rate
+    assert reserve["cost_usd"] == pytest.approx(floor)
+    old_estimate = (math.ceil(len(sent) / 3) * P["input"] + 300 * P["output"]) / 1e6
+    assert reserve["cost_usd"] > old_estimate
+    # the actual cost (one token per character, all of max_tokens) fits inside the reservation: the settle is not positive
+    assert settle["cost_basis"] == "usage" and settle["cost_usd"] <= 0
+    assert charged(tmp_path) == pytest.approx((worst_usage_tokens * P["input"] + 300 * P["output"]) / 1e6)
 
 
 # ---------------------------------------------------------------- retries
@@ -350,7 +391,7 @@ def test_timeouts_are_retried_and_recorded_with_no_status(monkeypatch, tmp_path)
     assert [(r["http_status"], r["error_class"], r["cost_usd"], r["cost_basis"], r["response_sha256"]) for r in rows[:2]] == [
         (None, "Timeout", 0.0, "worst_case_no_response", None), (None, "NetworkError", 0.0, "worst_case_no_response", None)]
     # a settle of 0.0 leaves the reserved worst case charged: two lost attempts cost two worst cases, plus the real third call
-    worst = hc.worst_case_cost(req()["system"], req()["messages"], 200, P)
+    worst = worst_of()
     assert charged(tmp_path) == pytest.approx(2 * worst + res.cost_usd)
 
 
@@ -420,11 +461,6 @@ def test_retries_exhausted(monkeypatch, tmp_path):
 
 class Killed(BaseException):
     """Stands in for a process dying in the transport: a BaseException is not caught by the caller's `except Exception`."""
-
-
-def worst_of(r=None) -> float:
-    r = r or req()
-    return hc.worst_case_cost(r["system"], r["messages"], r["max_tokens"], P)
 
 
 def test_a_200_settles_to_actual_cost_below_the_reserved_worst_case(monkeypatch, tmp_path):
