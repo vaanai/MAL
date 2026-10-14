@@ -1034,7 +1034,7 @@
    "from": "claude",
    "kind": "status",
    "atUtc": "2026-10-14T10:25:41Z",
-   "text": "09:37Z to 10:22Z: tipauth +48 h reads (jobs #1003 to #1012, interim); RPC check plan #1011, ask #1015, reasks #1016 to #1018, report #1019 (10:15:33Z): \"no conclusion\"; sent count #1022 (10:21:27Z to 10:21:34Z): Amendment 9 \"not evaluated\"; (e') dry run #1020 (10:08Z to 10:09:12Z) PASS (merge meta 1b90a045...e8be). H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate."
+   "text": "09:37Z to 10:22Z: tipauth +48 h reads (jobs #1003 to #1012, interim); RPC check plan #1011, ask #1015, reasks #1016 to #1018, report #1019 (ended 10:15:29Z by its printed end): \"no conclusion\"; sent count #1022 (10:21:27Z to 10:21:34Z): Amendment 9 \"not evaluated\"; (e') dry run #1020 (10:08Z to 10:09:12Z) PASS (merge meta 1b90a045...e8be). H5 is an execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. H5 has not cleared the promotion gate."
   },
   {
    "id": "s-20261014-0714",
