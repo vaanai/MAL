@@ -1,0 +1,21 @@
+instructions old 38 new 38 added [] removed []
+   changed excluding docs: []
+   changed including docs: []
+accounts old 7 new 7 added [] removed []
+   changed excluding docs: []
+   changed including docs: []
+events old 27 new 27 added [] removed []
+   changed excluding docs: []
+   changed including docs: []
+types old 40 new 40 added [] removed []
+   changed excluding docs: []
+   changed including docs: []
+errors old 88 new 88 added [] removed []
+   changed excluding docs: []
+   changed including docs: []
+address pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+metadata {'name': 'pump_amm', 'version': '0.1.0', 'spec': '0.1.0', 'description': 'Created with Anchor'} {'name': 'pump_amm', 'version': '0.1.0', 'spec': '0.1.0', 'description': 'Created with Anchor'}
+old Global ERR 'Global'
+old BondingCurve 8 + fields = 83 n_fields 9 last fields ['real_sol_reserves', 'token_total_supply', 'complete', 'creator', 'is_mayhem_mode', 'is_cashback_coin']
+new Global ERR 'Global'
+new BondingCurve 8 + fields = 83 n_fields 9 last fields ['real_sol_reserves', 'token_total_supply', 'complete', 'creator', 'is_mayhem_mode', 'is_cashback_coin']

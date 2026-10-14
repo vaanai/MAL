@@ -1,0 +1,67 @@
+== BondingCurve
+discriminator [23, 183, 248, 55, 96, 216, 172, 96]
+      8    8 virtual_token_reserves u64
+     16    8 virtual_quote_reserves u64
+     24    8 real_token_reserves u64
+     32    8 real_quote_reserves u64
+     40    8 token_total_supply u64
+     48    1 complete bool
+     49   32 creator pubkey
+     81    1 is_mayhem_mode bool
+     82    1 is_cashback_coin bool
+     83   32 quote_mint pubkey
+    115    8 creator_fee_bps u64
+    123    1 can_edit_creator_fee bool
+    124    1 is_holder_reward bool
+    125    8 creator_fee u64
+    133    8 protocol_fees u64
+    141    1 depth u8
+    142    8 initial_virtual_quote_reserves u64
+    150    8 post_complete_base_out u64
+    158    8 post_complete_quote_in u64
+  total 166
+== Global
+discriminator [167, 232, 232, 177, 200, 108, 114, 127]
+      8    1 initialized bool
+      9   32 authority pubkey
+     41   32 fee_recipient pubkey
+     73    8 initial_virtual_token_reserves u64
+     81    8 initial_virtual_sol_reserves u64
+     89    8 initial_real_token_reserves u64
+     97    8 token_total_supply u64
+    105    8 fee_basis_points u64
+    113   32 withdraw_authority pubkey
+    145    1 enable_migrate bool
+    146    8 pool_migration_fee u64
+    154    8 creator_fee_basis_points u64
+    162  224 fee_recipients {'array': ['pubkey', 7]}
+    386   32 set_creator_authority pubkey
+    418   32 admin_set_creator_authority pubkey
+    450    1 create_v2_enabled bool
+    451   32 whitelist_pda pubkey
+    483   32 reserved_fee_recipient pubkey
+    515    1 mayhem_mode_enabled bool
+    516  224 reserved_fee_recipients {'array': ['pubkey', 7]}
+    740    1 is_cashback_enabled bool
+    741  256 buyback_fee_recipients {'array': ['pubkey', 8]}
+    997    8 buyback_basis_points u64
+   1005    8 initial_virtual_quote_reserves u64
+   1013   32 whitelisted_quote_mints {'array': ['pubkey', 1]}
+   1045    1 creator_fee_configurable bool
+   1046    8 max_configurable_creator_fee_bps u64
+   1054   32 holder_reward_claim_authority pubkey
+   1086    1 is_holder_reward_enabled bool
+   1087    1 max_curve_depth u8
+  total 1088
+== CompletePumpAmmMigrationEvent
+discriminator None
+      8   32 user pubkey
+     40   32 mint pubkey
+     72    8 mint_amount u64
+     80    8 sol_amount u64
+     88    8 pool_migration_fee u64
+     96   32 bonding_curve pubkey
+    128    8 timestamp i64
+    136   32 pool pubkey
+    168   32 quote_mint pubkey
+  total 200

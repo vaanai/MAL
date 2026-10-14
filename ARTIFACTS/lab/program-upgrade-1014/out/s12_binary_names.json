@@ -1,0 +1,73 @@
+{
+ "bin_len": 10485760,
+ "bin_sha256": "ba1f91ac91dd8c578fd069230601f090775b88acbeecd680bde10d90e3606671",
+ "changed_error_messages": {
+  "6100": {
+   "new_text_count": 1,
+   "old_is_prefix_of_new": false,
+   "old_text_count": 0,
+   "old_text_occurrences_not_part_of_new_text": 0
+  },
+  "6101": {
+   "new_text_count": 1,
+   "old_is_prefix_of_new": false,
+   "old_text_count": 0,
+   "old_text_occurrences_not_part_of_new_text": 0
+  },
+  "6105": {
+   "new_text_count": 1,
+   "old_is_prefix_of_new": true,
+   "old_text_count": 1,
+   "old_text_occurrences_not_part_of_new_text": 0
+  },
+  "6107": {
+   "new_text_count": 1,
+   "old_is_prefix_of_new": false,
+   "old_text_count": 0,
+   "old_text_occurrences_not_part_of_new_text": 0
+  },
+  "6109": {
+   "new_text_count": 1
+  }
+ },
+ "equals_pin_sha256": true,
+ "instructions_with_bare_occurrence": 52,
+ "instructions_without_bare_occurrence": [
+  "AddQuoteControlMint",
+  "Buy",
+  "SetQuoteControlMintReserves",
+  "UpdateBuybackConfig"
+ ],
+ "n_idl_error_messages_new_text_present": 110,
+ "n_idl_errors_new": 110,
+ "n_idl_instructions": 56,
+ "prefix_names_and_bare_counts": {
+  "Buy": 0,
+  "ClaimCashback": 1,
+  "CollectCreatorFee": 1,
+  "Create": 1,
+  "DistributeCreatorFees": 1,
+  "Initialize": 1,
+  "Migrate": 1,
+  "Sell": 1
+ },
+ "unconfirmed_name_followed_by": {
+  "AddQuoteControlMint": [
+   "BuybackFeeRecipientNotAuthorizedA signer"
+  ],
+  "Buy": [
+   "CreateV2Disabled\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000AccountN",
+   "V2Instruction: BuyExactQuoteInV2Instruct",
+   "ExactQuoteInV2Instruction: SellV2Instruc",
+   "V3Instruction: BuyExactQuoteInV3Instruct",
+   "ExactQuoteInV3Instruction: SellV3Instruc",
+   "ExactSolInInstruction: SellInstruction: "
+  ],
+  "SetQuoteControlMintReserves": [
+   "NotAuthorizedAlreadyInitializedTooMuchSo"
+  ],
+  "UpdateBuybackConfig": [
+   "An owner constraint was violated\u00c6\u00faz\u00f3\u00be\u00db\u00ad:"
+  ]
+ }
+}
