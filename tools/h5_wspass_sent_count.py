@@ -31,8 +31,10 @@ THE LEDGER (fixed against tools/h5_executor.py and tools/probe_executor.py at th
   `trg.log_fields()` (h5_executor.py 441 to 442) is every field of the H5Trigger except `mint` (`H5Trigger`, lines 408 to 436), so the row carries `pool` and
   `trigger_slot`. `trigger_slot` is the shadow trigger record's `slot` (h5_executor.py 674: `"trigger_slot": row["slot"]`), `pool` is its `pool`.
   `sent_ms` is `first_send_ms` of the pending buy: an integer once a send was attempted (`first_send_ms` is also set when the `sendTransaction` call raised and a
-  `send_error` alert row was written, tools/probe_live.py `LiveExecutor._send`, lines 391 to 401); null if `_send` returned before any attempt (H5's `_send`,
-  h5_executor.py 1786 to 1804: a dry run, a HALT file, a kill or gate refusal, a rebroadcast window that has passed).
+  `send_error` alert row was written, tools/probe_live.py `LiveExecutor._send`, lines 391 to 401); null if `_send` returned before any attempt. H5's `_send`
+  (h5_executor.py 1786 to 1804) returns before any attempt on a dry run; on a HALT file (it logs `send_blocked` and leaves the pending buy in place, so
+  `_live_buy` then writes the live decision row with `sent_ms` null); on a kill or gate refusal of a first send (it pops the pending buy and `_live_buy` returns
+  before it writes a decision row); and on a rebroadcast past its window (it does not touch `first_send_ms`).
   The other `decision` row (h5_executor.py 1751 to 1754, `_dry_buy`) is written only by a dry run: `mode` is "dryrun", it has `sent=False` and no `sent_ms`.
   Keys read, and only these (LEDGER_KEYS): `kind` (of every row, read first), then for a `decision` row `mode`, and for a LIVE `decision` row (every one,
   whatever its `sent_ms`) `ts_ms`, `sent_ms`, `pool` and `trigger_slot`. A row of any other `kind` is skipped after `kind` is read. Never read: buy or sell

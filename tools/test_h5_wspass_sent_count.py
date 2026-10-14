@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import stat
+import unittest
 import urllib.request
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,7 @@ from tools import h5_tipauth_census as C
 from tools import h5_tipauth_trigger_print as TP
 from tools import h5_wspass_print_rpc as W
 from tools import h5_wspass_sent_count as S
+from tools import test_h5_executor as RX
 from tools import test_h5_wspass_print_rpc as RT
 from tools.test_h5_tipauth_item4 import H, MID, T0, start, trig, write
 
@@ -879,6 +881,92 @@ def test_exit_usage(tmp_path):
     refused(env, [led, led], 2)  # the same file twice
 
 
+@pytest.mark.parametrize("bad", ["", "A" * 64, "a" * 63, "a" * 65, "g" * 64, "a" * 32 + "A" + "a" * 31, " " + "a" * 63, "a" * 64 + "\n"])
+def test_exit_usage_report_sha_is_64_lowercase_hex(tmp_path, bad):
+    env = Env(tmp_path, prints_default())
+    out = tmp_path / "u.json"
+    with pytest.raises(SystemExit) as e:
+        S.main(env.argv([good_ledger(tmp_path)], out, report_sha=bad))
+    assert e.value.code == 2 and not out.exists()
+
+
+@pytest.mark.parametrize("flag", ["--expect-report-sha256", "--operator-checks"])
+def test_exit_usage_the_new_flags_are_required(tmp_path, flag):
+    env = Env(tmp_path, prints_default())
+    out = tmp_path / "u.json"
+    argv = env.argv([good_ledger(tmp_path)], out)
+    i = argv.index(flag)
+    del argv[i:i + 2]
+    with pytest.raises(SystemExit) as e:
+        S.main(argv)
+    assert e.value.code == 2 and not out.exists()
+
+
+@pytest.mark.parametrize("bad", ["", "HELD", "Held", "maybe", "held ", "true", "ok"])
+def test_exit_usage_operator_checks_is_held_or_failed(tmp_path, bad):
+    env = Env(tmp_path, prints_default())
+    out = tmp_path / "u.json"
+    with pytest.raises(SystemExit) as e:
+        S.main(env.argv([good_ledger(tmp_path)], out, checks=bad))
+    assert e.value.code == 2 and not out.exists()
+
+
+# ---- exit 13: the report file is the one the record names ---------------------------------------------------------------------------------------
+
+
+def test_exit_report_sha_mismatch_is_checked_when_the_report_is_read(tmp_path):
+    env = Env(tmp_path, prints_default())
+    led = good_ledger(tmp_path)
+    good = env.report_sha()
+    one_off = good[:-1] + ("0" if good[-1] != "0" else "1")
+    with mock.patch.object(S, "analyze", side_effect=AssertionError("the analysis ran")), mock.patch.object(S, "ledger_files", side_effect=AssertionError("ledger named")), \
+            mock.patch.object(S, "create_out", side_effect=AssertionError("--out created")):
+        for bad in ("0" * 64, one_off):
+            body = refused(env, [led], 13, report_sha=bad)
+            assert body["error"] == "the report file differs from --expect-report-sha256" and body["exit_code"] == 13
+        # before the plan flags, the shadow directory and the ledger are looked at: all three are wrong here and the answer is still 13
+        env.sd = tmp_path / "no-shadow"
+        refused(env, [tmp_path / "nope.jsonl"], 13, report_sha="e" * 64, since=SINCE + 1, sha="c" * 40)
+        # the seal check is still first of all; a report that is missing is still exit 3 (there is nothing to hash)
+        refused(env, [led], 7, report_sha="e" * 64, until=SEAL)
+        (env.rpc / W.REPORT_NAME).rename(tmp_path / "moved.json")
+        refused(env, [led], 3, report_sha="e" * 64)
+
+
+def test_report_sha_is_over_the_bytes_of_the_file(tmp_path):
+    env = Env(tmp_path, prints_default())
+    led = good_ledger(tmp_path)
+    rp = env.rpc / W.REPORT_NAME
+    old = env.report_sha()
+    rp.write_bytes(rp.read_bytes() + b"\n")  # the same JSON, one byte longer
+    refused(env, [led], 13, report_sha=old)
+    code, text, out = env.run([led], report_sha=env.report_sha())
+    assert code == 0, text
+    h = json.loads(text)["hashes"]
+    assert h["report_sha256"] == h["expect_report_sha256"] == sha_of(rp) != old
+
+
+def test_a_matching_hash_does_not_hide_the_other_refusals(tmp_path):
+    env = Env(tmp_path, prints_default())
+    rp = env.rpc / W.REPORT_NAME
+    rp.write_text("not json")
+    refused(env, [good_ledger(tmp_path)], 3)  # the hash is of the file as it is, so the next check is reached: the report is not readable as JSON
+    rp.write_text("not json")
+    refused(env, [good_ledger(tmp_path)], 13, report_sha="0" * 64)
+
+
+def test_the_rpc_tool_hashes_are_copied_not_judged(tmp_path):
+    env = Env(tmp_path, prints_default())
+    rp = env.rpc / W.REPORT_NAME
+    rep = json.loads(rp.read_text())
+    rep["tool_sha256"] = "f" * 64  # not the merged RPC tool's hash: the sent count copies it for the operator and does not refuse
+    rep["plan_tool_sha256"] = "not a hash"
+    rp.write_text(json.dumps(rep))
+    code, text, out = env.run([good_ledger(tmp_path)])
+    h = json.loads(text)["hashes"]
+    assert code == 0 and h["rpc_tool_sha256_in_report"] == "f" * 64 and h["rpc_plan_tool_sha256_in_report"] is None  # only 64 lowercase hex is copied
+
+
 def test_ledger_directory_means_the_executor_file_name_only(tmp_path):
     env = Env(tmp_path, prints_default())
     live = tmp_path / "state" / "live"
@@ -926,3 +1014,79 @@ def test_tool_does_not_import_or_name_forbidden_inputs():
     for banned in ("subprocess", "requests", "urllib", "socket", "ssh", "http_transport", "pnl", "q_out", "expected_tokens", "min_out"):
         assert banned not in code, banned
     assert "ssh" not in code
+
+
+# ---- the executor's side of the join: a rename there must fail a test here -------------------------------------------------------------------
+
+PINS = {
+    "tools/h5_executor.py": ['sent_ms=p.get("first_send_ms")', '"trigger_slot": row["slot"]', 'DRYRUN, LIVE = "dryrun", "live"',
+                             'self._log("decision", trg.mint, **trg.log_fields()', 'H5Ledger(sd / "h5-ledger.jsonl", self.run_mode)',
+                             'if k != "mint"'],
+    "tools/probe_executor.py": ['"mode": self.mode'],
+    "tools/probe_live.py": ['p.setdefault("first_send_ms", now)', 'self._alert("send_error", mint'],
+}
+
+
+@pytest.mark.parametrize("rel", sorted(PINS))
+def test_executor_source_still_has_the_fragments_the_join_relies_on(rel):
+    text = (S.ROOT / rel).read_text()
+    for frag in PINS[rel]:
+        assert frag in text, (rel, frag)
+    # the tool's own names for those fields are the same strings
+    assert (S.KEY_SENT, S.KEY_SLOT, S.KEY_POOL, S.KEY_MARKER, S.KEY_KIND) == ("sent_ms", "trigger_slot", "pool", "mode", "kind")
+    assert (S.DECISION, S.MODE_LIVE, S.MODE_DRYRUN, S.LEDGER_NAME) == ("decision", "live", "dryrun", "h5-ledger.jsonl")
+
+
+def test_executor_modes_and_ledger_name_are_the_tools():
+    from tools import h5_executor as h
+    assert (h.DRYRUN, h.LIVE) == (S.MODE_DRYRUN, S.MODE_LIVE)
+
+
+class RealExecutorRowTests(RX.Case):
+    """A live decision row written by the real H5Executor._live_buy path (the fake RPC and fixtures of tools/test_h5_executor.py), read by this tool's reader.
+    The shadow print sits on the executor's own pool and trigger slot, so the join is the real one end to end."""
+
+    def sent_count(self, e, checks="held"):
+        sub = self.tmp / "sc"
+        sub.mkdir()
+        t = SINCE + 30 * 60_000
+        env = Env(sub, prints_default(), ta=(2, 0, 0), extra=[rec("ws", "real", RX.TRIG_SLOT, t=t, pool=RX.POOL)])
+        ledger = Path(e.ex.fills.path)
+        assert ledger.name == S.LEDGER_NAME and ledger.parent.name == "live"
+        code, text, out = env.run([ledger], checks=checks)
+        assert code == 0, text
+        return json.loads(text)
+
+    def test_a_normal_live_buy_is_a_sent_row_on_its_pool_and_trigger_slot(self):
+        e = self.env()
+        e.fire()
+        dec = e.ledger("decision")[0]
+        assert dec["mode"] == "live" and isinstance(dec["sent_ms"], int) and dec["pool"] == RX.POOL and dec["trigger_slot"] == RX.TRIG_SLOT
+        r = self.sent_count(e)
+        assert r["ws_pass"]["sent"] == 1 and r["ws_pass"]["sent_by_rpc_status"] == {"returned": 0, "not_returned": 1, "error": 0, "pending": 0}
+        assert r["ledger"]["live_sent_rows"] == 1 and r["ledger"]["live_sent_join_keys_n"] == 1 and r["sent_count_may_be_low"] is False
+        # the real "real" print is not returned and the bot sent a buy on it: the condition is met and the owner is told at once
+        assert r["dec024_am9"]["status"] == MET and r["dec024_am9"]["fires"] is True and r["dec024_am9"]["owner_at_once"] is True
+        assert r["sentences"][1] == "Of the 2 ws-pass prints the public RPC did not return, the bot sent a buy on 1."
+
+    def test_a_send_that_raised_still_has_an_integer_sent_ms(self):
+        # tools/probe_live.py LiveExecutor._send: first_send_ms is set after the except branch, so sent_ms is "a send was attempted"
+        e = self.env()
+        e.rpc.send_fails = True
+        e.fire()
+        assert e.alerts("send_error"), "the send raised and a send_error alert row was written"
+        dec = e.ledger("decision")[0]
+        assert isinstance(dec["sent_ms"], int)
+        r = self.sent_count(e)
+        assert r["ws_pass"]["sent"] == 1  # the count says what the row says; LIMITS says this is an upper bound where the send call raised
+        assert r["ledger"]["other_kind_rows"] >= 1 and r["limits"] == S.LIMITS
+
+    def test_a_dry_run_executor_ledger_is_not_a_live_ledger(self):
+        e = self.env(live=False)
+        e.fire()
+        assert e.ledger("decision") and e.ledger("decision")[0]["mode"] == "dryrun"
+        sub = self.tmp / "sc"
+        sub.mkdir()
+        env = Env(sub, prints_default(), ta=(2, 0, 0), extra=[rec("ws", "real", RX.TRIG_SLOT, t=SINCE + 30 * 60_000, pool=RX.POOL)])
+        code, text, _o = env.run([Path(e.ex.fills.path)])
+        assert code == 12, text  # decision rows and none of them live
