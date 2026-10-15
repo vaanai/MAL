@@ -18,7 +18,7 @@ Read these at the start of a session, in this order:
 1. [LAB_STATE.md](LAB_STATE.md)
 2. [CONSTITUTION.md](CONSTITUTION.md)
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md)
-4. The active files in [DEC/](DEC/)
+4. The DEC sections that docs/HANDOFF.md names for the current work (not every DEC file in full)
 5. [docs/HOSTS.md](docs/HOSTS.md)
 
 Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS/daily/](ARTIFACTS/daily/). Lab notes are in [ARTIFACTS/lab/](ARTIFACTS/lab/).
@@ -77,18 +77,7 @@ These are the owner's instructions. They are not measurements.
 
 ## This week's clocks
 
-Do not score the void as if it were live.
-
-| Clock | Instant |
-| --- | --- |
-| Stale-fill void | 2026-09-25T19:00:00Z → 2026-09-27T06:58:12Z |
-| Clean forward paper | 2026-09-28T00:00:00Z |
-| Pressure-leg start (DEC-014 Amendment 3) | 2026-09-29T00:00:00Z |
-| Daily runner restart | every day, 00:00:00Z |
-| EXP-011 one-shot read (pre-reg + scorer merged in #164; read once when walker C completes) | about 2026-09-30T19–20Z |
-| Kill review | 2026-10-05T05:00:00Z |
-
-Three backward walkers run on `mal-fast-0`, splitting `[2026-09-09T12, 2026-09-19T01)` into non-overlapping blocks: `mal-fast-backfill` (walker 1) floored at 2026-09-15T12, `mal-fast-backfill-b` covering `[2026-09-12T12, 2026-09-15T12)`, and `mal-fast-backfill-c` covering `[2026-09-09T12, 2026-09-12T12)`. Each has its own credit cap. No hour is claimed by two walkers.
+Clocks change daily; they live in docs/HANDOFF.md (deadline table). Do not score the 2026-09-25T19:00Z → 2026-09-27T06:58:12Z stale-fill void as live.
 
 ## When you use a subagent
 
@@ -124,18 +113,11 @@ Push when the tests you ran are green. Do not sit on a day of uncommitted edits.
 - Record every mid-week runner restart in LAB_STATE.
 - `mal-fast-0` memory: one heavy replay job at a time, at most 2 workers, stream rows to disk, and check `systemctl show user-1002.slice -p MemoryCurrent` before starting a new one. Two concurrent multi-worker replay jobs caused an OOM and a reboot on 2026-09-29.
 - Never add forward books during a kill-review week.
+- Fixed-instant steps of a pre-registered read are backed by host-side MiScusi jobs (scheduled or chained with `after`), never by session crons alone; at session start run CronList and re-create crons from /data/mal/hunt-1008/ops/*crons*.json (lesson of 2026-10-15, EXP-022 P2).
 
 ## Current candidate
 
-The frozen migrate-direct cell (`migrate` × `tp50_sl30` × slot+1 start, direct) is **dead**: formal FAIL from the 2026-09-28T21:00Z one-shot, both fail models, every CI lower bound below 0. It is not refit. No more Helius credits go to it. See [LAB_STATE.md](LAB_STATE.md) for the numbers.
-
-The candidate is **EXP-011**, **pre-registered** in [#164](https://github.com/vaanai/MAL/pull/164): a frozen, leakage-ablated S2 entry-selection model at a fixed threshold. Its holdout `[2026-09-09T12, 2026-09-15T12)` is read **exactly once**, by `tools/exp011_score.py`, after both walkers finish. Evidence:
-
-- [EXP/EXP-011-migrate-entry-model-prereg.md](EXP/EXP-011-migrate-entry-model-prereg.md) (pre-registration, merged; frozen artifacts in `ARTIFACTS/exp011/`)
-- [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) (the exploration-pool B3 result the pre-registration follows)
-- The [#156](https://github.com/vaanai/MAL/pull/156) PR audit comment
-
-The B3 exploration result is not a promote by itself — it is exploration-pool evidence on data EXP-011 does not reuse. Numbers belong in LAB_STATE. Copy them from the files. Do not round them up.
+No book has cleared the promotion gate. Current state, candidates and clocks: [LAB_STATE.md](LAB_STATE.md) section "Now" and [docs/HANDOFF.md](docs/HANDOFF.md). History of past candidates (EXP-011 closed NOT_DECIDABLE 2026-09-30; the migrate-direct cell FAIL 2026-09-28; EXP-012; EXP-022 CAP-PICK withdrawn 2026-10-15): [ARTIFACTS/lab/lab-state-archive-2026-10.md](ARTIFACTS/lab/lab-state-archive-2026-10.md) and the EXP files.
 
 ## Credits
 
