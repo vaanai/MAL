@@ -264,6 +264,10 @@ DEC-014(a) disclosure. No forward outcome was read to make this amendment. The F
 - **Its readers, after the FINAL, are already disclosed:** [EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) Look 1 (through `tools/forward_v_join.py`; Amendment 3 above) and [EXP-025](EXP-025-c1nf-part1-prereg.md) (directly; Amendment 4 above). This amendment adds none.
 - The ledger records the copy in the Forward walk row.
 
+## Amendment 6 (2026-10-15): F1 exploration reads of the forward walk's D0 and D1
+
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). This amendment was written without reading any forward outcome. The owner's F1 ledger edit (HOLDOUT_LEDGER changelog, 2026-10-15) releases domains D0 (structure) and D1 (pre-graduation outcomes) of forward-1002 and forward-1002ev for exploration as a non-owner read. The release takes effect only once the EXP-012 FINAL marker is in `/data/mal/exp012-forward/FINAL_READS.jsonl`, and not before 2026-10-16T02:00Z. These reads do not open any file that DEC-016 Amendment 2 keeps closed (`OUT/rows.jsonl`, `OUT/scratch/*.jsonl`, a FINAL `report.json` / `report.md`). They do not open the (B) V-map files or `VBOOK_RUNS.jsonl`. They use no EXP-012 model, threshold, feature set or entered list, and they price no mint after its migrate tx. The FINAL's window, read, verdict, seal and tools, book (B) and the Amendment 3(a) re-score are unchanged. The FINAL remains reported compromised (DEC-016 Am.2). Released hours never confirm.
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
