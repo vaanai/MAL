@@ -39,8 +39,8 @@ Written 2026-10-15, after the research-0 outage. The inputs were a read-only inv
 
 1. **A goal-to-research target spec (the most important item).**
    - Daily SOL = trades/day × stake × net edge after fees and fails.
-   - $200/day is about 1–1.5 SOL/day (illustrative arithmetic, not a measured edge; SOL price assumed $130–$200), depending on the SOL price.
-   - Examples that reach it: 30 trades/day × 1 SOL × 4% net, or 100 trades/day × 0.5 SOL × 2.5% net.
+   - $200/day is about 1–1.5 SOL/day (SOL price assumed $130–$200), depending on the SOL price.
+   - Examples that reach it (illustrative arithmetic, not a measured edge): 30 trades/day × 1 SOL × 4% net, or 100 trades/day × 0.5 SOL × 2.5% net.
    - Today's capital is 1.29 SOL, so either the edge must hold at much larger stakes than we have tested (pump.fun pool depth and slippage set that limit), or capital must grow. Growth comes from the owner adding funds after a gate pass, or from compounding, which at realistic edges takes weeks.
    - Every library row and every hunt should be screened on three numbers before work starts: trades/day, edge at the target size under the pressure fail model, and the capital needed. A line that cannot reach about 0.3 SOL/day even if everything goes right is a learning line, not a profit line.
 2. **Capacity and slippage at size.** Most results are at 0.02–0.1 SOL. We have not measured how edge decays at 0.5–2 SOL on the lines that trade often (G4-FLOORDIP ~31/day, C1-NF ~20/day in September).
