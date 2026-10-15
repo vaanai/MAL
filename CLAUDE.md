@@ -18,7 +18,7 @@ Read these at the start of a session, in this order:
 1. [LAB_STATE.md](LAB_STATE.md)
 2. [CONSTITUTION.md](CONSTITUTION.md)
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md)
-4. The DEC sections that docs/HANDOFF.md names for the current work (not every DEC file in full)
+4. The DEC sections that docs/HANDOFF.md names for the current work (not every DEC file in full); with no HANDOFF, the DECs that LAB_STATE "Now" and its decisions index list as in effect
 5. [docs/HOSTS.md](docs/HOSTS.md)
 
 Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS/daily/](ARTIFACTS/daily/). Lab notes are in [ARTIFACTS/lab/](ARTIFACTS/lab/).
@@ -77,7 +77,7 @@ These are the owner's instructions. They are not measurements.
 
 ## This week's clocks
 
-Clocks change daily; they live in docs/HANDOFF.md (deadline table). Do not score the 2026-09-25T19:00Z → 2026-09-27T06:58:12Z stale-fill void as live.
+Clocks change daily; they live in docs/HANDOFF.md (deadline table), or in LAB_STATE "Now" when there is no HANDOFF. Do not score the 2026-09-25T19:00Z → 2026-09-27T06:58:12Z stale-fill void as live.
 
 ## When you use a subagent
 
