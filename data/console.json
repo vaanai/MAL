@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-14T10:40:19Z",
+ "updated_utc": "2026-10-15T19:15:32Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "exp022-withdrawn-1015",
+   "kind": "other",
+   "title": "EXP-022 CAP-PICK withdrawn before counting (P2 not met)",
+   "detail": "No P2 job started on 2026-10-15 and no backup ran at 12:00:00Z (the manager session's crons were lost when mal-research-0 was offline, about 2026-10-14T19:26Z to 2026-10-15T04:11Z). Under EXP-022 Amendment 7 item 4(c) the last daily run is the 2026-10-14T07:11:10Z run (pins_changed), so P2 is not met. CAP-PICK has not cleared the promotion gate. The withdrawal says nothing about whether it would have made money. The tipauth +60 h and +72 h reads were not run, and the reads are stopped while H5 is stopped. H5 has not cleared the promotion gate. Tipauth reads stopped (quant-proof D3), 2026-10-15T19:15:32Z. (1) The last read run is the +48 h read, which was interim: the item-4 duration line n 6 of 10; `tip_incompleteness_le_5pct` False with 112 of 507; item 5 False. (2) +60 h and +72 h not run (line above). (3) The reads are stopped by the manager's decision (manager11) while H5 is stopped, because no stop, step or resume item depends on them. (4) The DEC-024 Amendment 9 stop rule has not been evaluable on any read (\"Not evaluated\" is not \"did not fire\"). (5) If H5 resumes, a tipauth series restarts only from a new declared origin, never by joining reads across the gap. The decision was made with the +48 h interim counts already known. The +84 h read (until-ms 1792100043640, 2026-10-15T21:34:03.640Z) and every later scheduled read are not run. H5 is an execution measurement; not a book. H5 has not cleared the promotion gate.",
+   "atUtc": "2026-10-15T19:15:32Z"
+  },
   {
    "id": "h5-tipauth-48h-1014",
    "kind": "other",
@@ -561,10 +568,10 @@
   {
    "id": "EXP-022",
    "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
-   "stage": "pre-registered",
-   "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn. 2026-10-13: the structure monitor halted on a redeployed fees program (pins_changed); not fatal before counting. A halt in the last run before 10-16T01Z (the 10-15 06:41Z run) withdraws CAP-PICK, so the re-pin has to be in place before that run [manager's reading].",
+   "stage": "withdrawn before counting 2026-10-15 (P2 not met)",
+   "note": "Withdrawn before counting on 2026-10-15: P2 was not met (no P2 job by 08:11:00Z and no backup at 12:00:00Z; EXP-022 Amendment 7 item 4(b)-(c)). CAP-PICK has not cleared the promotion gate. The withdrawal says nothing about whether it would have made money. It returns only with a new dated amendment, the owner's decision and a later start.",
    "tag": {
-    "text": "kill test",
+    "text": "withdrawn",
     "tone": "muted"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-022-cap-pick-part1-prereg.md"
@@ -721,6 +728,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261015-cap-pick-withdrawn",
+   "from": "claude",
+   "atUtc": "2026-10-15T19:15:32Z",
+   "text": "CAP-PICK (EXP-022) is withdrawn before it started counting. Its rule needed a clean pump structure check on 15 October, about 07:11Z, or one backup check at 12:00Z. Neither ran. The scheduled tasks lived in the manager session that was lost when mal-research-0 went down for hardware work (about 14 Oct 19:26Z to 15 Oct 04:11Z), and they were not re-created when the host came back at 04:11Z. Under the rule written on 14 October (EXP-022 Amendment 7 item 4(c)), the last check is then the 14 October one, which had flagged the pump program redeploy, so the read is withdrawn. No CAP-PICK result was looked at, and nothing is known about whether it would make money. It can only come back with a new written amendment, your decision and a later start date. Walk 2 is still recorded as planned. The walk-2 block goes back to 'reserved' only by your ledger edit."
+  },
   {
    "id": "fy-20261014-tipauth-48h",
    "from": "claude",
@@ -1029,6 +1042,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261015-outage",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-15T19:15:32Z",
+   "text": "mal-research-0 outage (about 2026-10-14T19:26Z to 2026-10-15T04:11Z) and the manager10 session's lost crons: EXP-022 P2 not met, CAP-PICK withdrawn before counting (record on the EXP-022 file); tipauth +60 h and +72 h not run, reads stopped while H5 is stopped; DEC-016 Am.3 (a) item 2 values not computed; recovery jobs #1029 (tape archive catch-up) and #1031 (C1-NF ledger day 2026-10-14, exit 0). Nothing here says any book made money. H5 has not cleared the promotion gate. Tipauth reads stopped (quant-proof D3), 2026-10-15T19:15:32Z. (1) The last read run is the +48 h read, which was interim: the item-4 duration line n 6 of 10; `tip_incompleteness_le_5pct` False with 112 of 507; item 5 False. (2) +60 h and +72 h not run (line above). (3) The reads are stopped by the manager's decision (manager11) while H5 is stopped, because no stop, step or resume item depends on them. (4) The DEC-024 Amendment 9 stop rule has not been evaluable on any read (\"Not evaluated\" is not \"did not fire\"). (5) If H5 resumes, a tipauth series restarts only from a new declared origin, never by joining reads across the gap. The decision was made with the +48 h interim counts already known. The +84 h read (until-ms 1792100043640, 2026-10-15T21:34:03.640Z) and every later scheduled read are not run. H5 is an execution measurement; not a book. H5 has not cleared the promotion gate."
+  },
   {
    "id": "s-20261014-1016",
    "from": "claude",

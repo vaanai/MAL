@@ -798,6 +798,32 @@ No CAP-PICK outcome was computed or read to write this amendment, and no row of 
    (d) **Clean**, for P2 and for the Amendment 5 cure, means: `pins_changed`, `boost_disabled`, `boost_budget_or_slices_changed` and `synthetic_share_high` each with `evaluated` true and `halt` false, and neither core rule (`boost_share_low`, `boost_last_slice_early`) with `halt` true. A core rule with `evaluated` false is not a halt by itself: the 2026-10-14 run evaluated both, so it is one day (section 11). Any of the other four with `evaluated` false means the run does not show clean: the 2026-10-14 halt is not cured and CAP-PICK is withdrawn.
    (e) **The next day.** If a core rule is unevaluated in the P2 run and again in the 2026-10-16 daily run, that is a halt after counting starts (section 11, with that section's trigger hour).
 
+### P2 record (2026-10-15): P2 not met; CAP-PICK withdrawn before counting
+
+EXP022_WITHDRAWN: 2026-10-15 (P2 not met: no P2 job by 08:11:00Z and no backup at 12:00:00Z; Amendment 7 item 4(b)-(c))
+
+This is a record, not an amendment (the model is EXP-024's A3 halt record). Written 2026-10-15T19:15:32Z (manager11; the manager11 session started 2026-10-15T19:04:40Z). Authority: quant-proof ruling 2026-10-15, `/data/mal/hunt-1008/ops/QP-RULING-1015-outage.md` Part A.
+
+(a) **The outage.** mal-research-0 was offline for Mevspace hardware work from about 2026-10-14T19:26Z to 2026-10-15T04:11Z. `last -x reboot` also shows boots at 2026-10-14 15:46Z and 18:06Z. The current boot started at 2026-10-15T04:10:44Z. The manager10 session's crons were lost. No new crash dump exists (the newest in /var/crash is from 10-08).
+
+(b) **What did not run.** No P2 job started on 2026-10-15, and none by 08:11:00Z. No backup started at 12:00:00Z. No monitor run of any kind has happened since 2026-10-14T07:11:10Z (job #996). The host was up from 04:10:44Z, before both instants.
+
+(c) **The rule.** Amendment 7 item 4(b): "if no P2 job has started by 2026-10-15T08:11:00Z, exactly one backup run starts at 2026-10-15T12:00:00Z with the command of item 1 at main at its own start ... It is the only exception to item 2. There is no further retry." Amendment 7 item 4(c): "No summary from the backup: P2 is not met. The last daily run before the first counted hour is then the 2026-10-14T07:11:10Z run (job #996), read as it stands. Its `pins_changed` halt is not cured, because Amendment 5 item 1 cures `pins_changed` only with a reviewed re-pin plus a clean last run. CAP-PICK is withdrawn before counting. The 2026-10-14 record is not re-read against the new pins. 2026-10-15 counts as "not evaluated" under section 11." Section 10 P2: "The A3 monitor's last daily run before the first counted hour has no halt, and no core rule went unevaluated on two consecutive days (section 11)."
+
+(d) **The result.** P2 is not met. The 2026-10-14T07:11:10Z record (job #996, `pins_changed`: program_pump deploy_slot 454596459 -> 456494698, 2026-10-13T15:40:41Z) is read as it stands and is not re-read against the PR #648 pins. 2026-10-15 is "not evaluated" under section 11. **CAP-PICK is withdrawn before counting.** There is no re-run, and no later start without a new dated amendment and the owner (section 0). No text allows a late backup or any other late P2 run (ruling A2). No `tools/pump_structure_monitor.py` run of any kind starts before 2026-10-16T01:00:00Z (ruling A3).
+
+(e) **What does not run:** the P4 read tool; E1 for EXP-022 ("E1 not run (CAP-PICK withdrawn)"); the A2 kill check; looks 1, 2 and 3; the gate replay on walk 2; the P3 record; the E1 amendment; `/data/mal/exp022/LOOK_READS.jsonl` (not created and not edited).
+
+(f) **What still runs, each under its own text:** walk 2 (Amendment 2 item 3, "whatever EXP-022's status"); the exporter and markers 1 and 2 (the H5 executor's seal window is a code constant; DEC-024 Amendment 6 item 6); the DEC-016 FINAL.
+
+(g) **HOLDOUT_LEDGER.** EXP-022's end state is "withdrawal", recorded on main by this record. Section 16 and the walk-2 row: "if EXP-022 is withdrawn before counting, the owner goes back to reserved by ledger edit". That edit is the owner's; the manager does not make it. Until it is made, the walk-2 row is unchanged, and "Nothing reads it before an owner is named" applies to every reader the row does not already list.
+
+(h) **Outcome-blind statement.** To write this record, no CAP-PICK outcome, walk-2, forward-1002 or forward-1002ev row, paper-twin field, gate-log row or H5 record was opened.
+
+(i) **Label.** CAP-PICK has not cleared the promotion gate. The withdrawal says nothing about whether it would have made money.
+
+**Lesson (the cause of the miss).** Fixed-instant steps that settle a pre-registered read must not depend only on session crons. Each one needs a host-side job submitted ahead (MiScusi `after`/scheduled), or a written check at session start. Without that, a lost session voids the read, as it did here.
+
 ### Pointer (2026-10-10; not an amendment): seal end state
 
 This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
