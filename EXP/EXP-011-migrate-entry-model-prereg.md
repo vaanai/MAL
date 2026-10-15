@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-011-migrate-entry-model-prereg` |
-| **Status** | **planned** — pre-registration; the frozen model is trained on exploration data only, holdout is not read |
+| **Status** | **planned** — pre-registration; the frozen model is trained on exploration data only, holdout is not read — closed NOT_DECIDABLE 2026-09-30 (see LAB_STATE) |
 | **Owner seat** | Graph (measurement). `quant-proof` reviews before any sentence claims the gated book made money. |
 | **Started** | 2026-09-29 |
 | **Parent context** | Lane B3 (#156, `tools/exploration_entry_model_b3.py`, [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md)) found that S2 (an `lgb_medium` classifier on `P(pressure net > 0)`), taking the top 10% of migrate entries scored under exit `tp50_sl30`, is the best of 6 pre-stated screening cells (3 settings x 2 exits) over a 9-UTC-day leave-one-day-out. The manager+quant-proof audit on PR #156 found two of S2's 20 input features (`same_slot_buys`, `nearby_buy_sol`) are computed at the trade's own slot+1 landing — **after** the migrate decision time T, i.e. lookahead the model's no-lookahead test never covered. With those two features removed, the result **survives**: flat **+6.22%** (CI lo **+3.85%**), pressure **+3.59%** (CI lo **+2.06%**), ex-top-3 **+24.97 / +14.17 SOL**, **9/9 days** positive under both fail models (pooled top-10%, 9-day LODO). This file freezes that ablated model and pre-registers its one out-of-sample test. |

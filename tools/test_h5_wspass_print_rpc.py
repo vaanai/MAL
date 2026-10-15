@@ -1201,7 +1201,7 @@ class TestReadingConditionAndOperatorChecks(Rule):
             self.assertIn(s, doc)
 
     def test_lab_state_carries_the_guard_the_label_rule_and_the_operator_checks(self):
-        lab = " ".join((Path(W.__file__).resolve().parent.parent / "LAB_STATE.md").read_text(encoding="utf-8").split())
+        lab = " ".join(_lab_state_and_archive().split())
         for s in ("`report` refuses, writes nothing and prints nothing while a signature is pending, never asked or in error and fewer than 3 reask rounds ran.",
                   '`interim_label` is "interim, not the deciding read" when until minus since is under 24 h, and otherwise "not the deciding read unless item 4\'s '
                   'duration line is met at this until-ms"; `interim_note` is always the latter.',
@@ -1212,12 +1212,18 @@ class TestReadingConditionAndOperatorChecks(Rule):
             self.assertIn(s, lab)
 
 
+def _lab_state_and_archive():
+    """LAB_STATE.md plus its verbatim archive (dated sections moved there by the docs-slimming PR, 2026-10-15)."""
+    root = Path(W.__file__).resolve().parent.parent
+    return "\n".join((root / n).read_text(encoding="utf-8") for n in ("LAB_STATE.md", "ARTIFACTS/lab/lab-state-archive-2026-10.md"))
+
+
 class TestDeclaredSentences(Rule):
     CONSTANTS = ("READING_ALL", "READING_ALL_MANY", "READING_ABSENT", "READING_S1_ONE", "READING_S1_MANY", "READING_S1_TAIL_ONE", "READING_S1_TAIL_MANY", "READING_S2",
                  "EXTRA_REFUSED", "INTERIM_LABEL", "INTERIM_NOTE")
 
     def lab(self):
-        return (Path(W.__file__).resolve().parent.parent / "LAB_STATE.md").read_text(encoding="utf-8")
+        return _lab_state_and_archive()
 
     def test_every_constant_is_in_the_docstring_word_for_word(self):
         for name in self.CONSTANTS:
