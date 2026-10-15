@@ -11,6 +11,18 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0a Update 2026-10-15T19:15:32Z (manager11): outage, CAP-PICK withdrawn, tipauth reads stopped
+
+Authority: quant-proof ruling 2026-10-15, `/data/mal/hunt-1008/ops/QP-RULING-1015-outage.md`. The manager11 session started 2026-10-15T19:04:40Z.
+
+- **Outage.** mal-research-0 was offline for Mevspace hardware work from about 2026-10-14T19:26Z to 2026-10-15T04:11Z; the manager10 session's crons were lost. No P2 job and no 12:00:00Z backup ran. **EXP-022 P2 is not met and CAP-PICK is withdrawn before counting** (EXP-022 "P2 record (2026-10-15)", line `EXP022_WITHDRAWN:`). CAP-PICK has not cleared the promotion gate; the withdrawal says nothing about whether it would have made money. The walk-2 block goes back to "reserved" only by the owner's ledger edit.
+- **Recovery.** Tape archive catch-up job #1029 (mal-fast-0); C1-NF ledger day 2026-10-14 built late by job #1031 (exit 0); crons recreated by manager11 (LAB_STATE has the numbers).
+- **H5 STOP stays.** No monitor run of any kind before 2026-10-16T01:00:00Z (QP Part B). Helm's "a clean run before 01:00Z lets H5 trade again" is not correct under the merged text. The 10-16 daily A3 run can be resume step 3 only under B2 (it must meet H4 exactly, and it is one item of many).
+- **Tipauth reads stopped.** +60 h and +72 h were not run (crons lost); the reads are stopped by the manager's decision while H5 is stopped. The last read was +48 h, interim. The decision was made with the +48 h counts already known. See the LAB_STATE 2026-10-15 group.
+- **DEC-016 Am.3 (a) item 2 values: not computed** (no dated DEC-015 section 2.5 probation end in LAB_STATE; Log line written). **FINAL timing (C9):** not submitted on the clock at 02:03Z; only after the count-only pre-check shows every hour in [2026-10-04T00, 2026-10-16T01) sealed in `checkpoint.json` with an OK line in `verify.jsonl`. Do not cancel #382 before the FINAL ledger row exists.
+- **Tonight's order (the ruling's step list):** exporter job at 21:37Z (one job; verify #817 per C1 first); walk 2 at 00:23Z (check a Helius slot is free); executor check at 00:43Z (expect STOP; build `b7ddeb60aa4ced9243211775cf3d5a22ccc42dff`); FINAL only after the sealed-hours pre-check; markers per C5-C8 (never before the FINAL ledger row and 02:00:00Z); E1 not run (CAP-PICK withdrawn); no EXP-025 tool before Q2 and Q14-Q18 are ruled, needed by 2026-10-17T02:00:00Z.
+- **Lesson.** Fixed-instant steps must not depend only on session crons: each needs a host-side job submitted ahead, or a written check at session start.
+
 ### 1.0 Update 2026-10-14T07:46:43Z (manager10; amended 2026-10-14T07:54:33Z after Reviewer comment 6163603658 and quant-proof comment 6163627059 on PR #649, wording and Amendment 7 item 4 only): H5 STOPPED again; EXP-022's P2 is declared
 
 - **H5 STOPPED at 2026-10-14T07:14:07Z** (job #998) after the daily A3 run (job #996) flagged `pins_changed`: the pump program was redeployed at 2026-10-13T15:40:41Z. Five buys are dated after the deploy (DEC-024 halt record of 2026-10-14; they count in every figure). **STOP stays until at least 2026-10-16T01:00Z** (the manager's decision on quant-proof's "cheapest" path, PR #648 comment 6163455594 section 2). Any removal later follows that section's list.
