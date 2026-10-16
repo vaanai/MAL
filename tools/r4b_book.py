@@ -292,11 +292,11 @@ def fail_legs(pnl, filled, ssb, nearby, send=F.SEND_FEE_DECIDING, intercept=None
 
 
 def price_cell(Qe, Be, spot, Qx, Bx, ssb, nearby, stake=F.STAKE_LAMPORTS, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING,
-               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True):
+               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True, k_tol=F.K_TOL):
     """One latency cell: no-fail pnl, flat and pressure legs (intercept refit on this cell's fills)."""
     stake = np.broadcast_to(np.asarray(stake, float), np.shape(Qe)).copy()
     pnl, filled, st, bad, xbad, cause = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded,
-                                      return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
+                                      return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True, k_tol=k_tol)
     flat, press, c, p = fail_legs(pnl, filled, ssb, nearby, send)
     return {"nofail": pnl, "filled": filled, "stranded": st, "entry_invalid": bad, "exit_invalid": xbad, "exit_cause": cause, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
 

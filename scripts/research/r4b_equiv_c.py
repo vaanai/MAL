@@ -158,14 +158,14 @@ def cmp_ref(df, ref_path: str) -> dict:
     return o
 
 
-def deciding_cells(bk, Qx, Bx, ent, keep, rent, auto_stranded):
-    """Part B. Returns {version: {(leg, lat): stats}}. rent is passed explicitly: RENT_REPORT reproduces the VERIFY, RENT_DECIDING is the QP stack."""
+def deciding_cells(bk, Qx, Bx, ent, keep, rent, auto_stranded, k_tol=None):
+    """Part B. k_tol None = the VERIFY stack (no C8); F.K_TOL = the deciding stack incl. C8. Returns {version: {(leg, lat): stats}}. rent is passed explicitly: RENT_REPORT reproduces the VERIFY, RENT_DECIDING is the QP stack."""
     S = F.STAKE_LAMPORTS
     T0, mid = bk["T0"][keep], bk["mid"][keep]
     cells = {}
     for tag in ("13", "19"):
         e = {k: v[keep] for k, v in ent[tag].items()}
-        cells[tag] = (B.price_cell(e["Qe"], e["Be"], e["spot"], Qx[keep], Bx[keep], e["ssb"], e["nearby"], stake=S, rent=rent, auto_stranded=auto_stranded), e)
+        cells[tag] = (B.price_cell(e["Qe"], e["Be"], e["spot"], Qx[keep], Bx[keep], e["ssb"], e["nearby"], stake=S, rent=rent, auto_stranded=auto_stranded, k_tol=k_tol), e)
     out = {}
     for ver, (mints, dates) in (("dropped", ((DROP_MINT,), (DROP_DATE,))), ("undropped", ((), ()))):
         km = B.drop_trades(mid, T0, mints, dates)
@@ -305,7 +305,7 @@ def main(argv=None) -> int:
     for cell, st_ in nr0["dropped"].items():
         print("  C0", "/".join(cell), "n", st_["n"], "mean_pct", round(st_["mean_pct"], 6), "total_sol", round(st_["total_sol"], 6), "ci90_lo", round(st_["ci90_lo_sol"], 6),
               "ex_top3", round(st_["ex_top3_sol"], 6), "ex_best_date", round(st_["ex_best_date_sol"], 6), "t_dates", round(st_["t_dates"], 6))
-    nr = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_DECIDING, auto_stranded=True)
+    nr = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_DECIDING, auto_stranded=True, k_tol=F.K_TOL)
     print("PART C (rent refunded + AUTO-STRANDED rule: proceeds < one send => -stake - buy send - rent; report only, no REPORT to match)")
     for ver in ("dropped", "undropped"):
         for cell, st_ in nr[ver].items():
@@ -316,8 +316,22 @@ def main(argv=None) -> int:
                                   "t_block_sum": round(st_["t_block_sum"], 6), "p_block_sum": round(st_["p_block_sum"], 6), "W": st_["blocks_W"],
                                   "gate_numeric": st_["gate_numeric"]}))
     print("E-c trades table md5", A["md5_mine"], "| reference text md5", A["md5_ref_text"], "| identical text", A["text_identical"])
-    ok = bool(A["ok"] and okB and okC)
-    print("E-c", "PASS" if ok else "FAIL", "part A", A["ok"], "part B", okB)
+    # deciding stack incl. C8 (K_TOL): same engine and VERIFY cost stack as Part B plus the C8 k-fall rule. No REPORT comparison.
+    print("DECIDING STACK incl. C8 (K_TOL=%g): VERIFY costs (send 505,000, rent paid, haircut) + exit_invalid C2/C7/C8; report-only vs Part B undropped" % F.K_TOL)
+    dc = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_REPORT, auto_stranded=False, k_tol=F.K_TOL)
+    keys = ("mean_pct", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_date_sol", "t_dates")
+    okD = True
+    for ver in ("dropped", "undropped"):
+        for cell in cells[ver]:
+            s0, s1 = cells[ver][cell], dc[ver][cell]
+            print("  C8", ver, "/".join(cell), "entry_invalid", s1.get("entry_invalid"), "exit_invalid", s1.get("exit_invalid"), "by cause", s1.get("exit_invalid_by_cause"),
+                  "| new", [round(s1[k], 6) for k in keys], "| delta vs Part B", [round(s1[k] - s0[k], 6) for k in keys])
+            if ver == "dropped":
+                same = all(s1[k] == s0[k] for k in keys) and s1["n"] == s0["n"]
+                okD &= bool(same)
+    print("deciding-stack dropped cells equal Part B dropped cells (C8 changes nothing there):", okD)
+    ok = bool(A["ok"] and okB and okC and okD)
+    print("E-c", "PASS" if ok else "FAIL", "part A", A["ok"], "part B", okB, "dropped-equality", okD)
     return 0 if ok else 1
 
 
