@@ -133,10 +133,6 @@ def scenario() -> dict:
         mig += [complete(m, S + 900), migration(m, S + 900, pda_of(m))]
         cr.append(create(m))
         t3 += [trade(m, S + 910, 1, 0)]
-    # L: V0 missing on the s0 print
-    mig += [complete("ML", S + 1000), migration("ML", S + 1000, pda_of("ML"))]
-    cr.append(create("ML"))
-    t3 += [trade("ML", S + 1010, 1, 0, vq=None)]
     # N: no create row at all -> kept (NaN create constants downstream)
     mig += [complete("MN", S + 1100), migration("MN", S + 1100, pda_of("MN"))]
     t3 += [trade("MN", S + 1110, 1, 0)]
@@ -183,18 +179,18 @@ def test_membership_and_meta(walk, tmp_path):
 
 def test_stats_numbers(walk, tmp_path):
     st = build(walk, tmp_path)
-    non_mayhem = {"MA", "MB", "MC", "MD", "ME", "MF", "MG", "MH", "MJ", "MX", "MZ1", "MZ2", "ML", "MN"}
-    assert st["completes"] == 15 and st["mayhem"] == 1 and st["non_mayhem"] == len(non_mayhem) == 14
+    non_mayhem = {"MA", "MB", "MC", "MD", "ME", "MF", "MG", "MH", "MJ", "MX", "MZ1", "MZ2", "MN"}
+    assert st["completes"] == 14 and st["mayhem"] == 1 and st["non_mayhem"] == len(non_mayhem) == 13
     assert st["no_migration_event"] == 1 and st["non_wsol_quote"] == 1 and st["no_create"] == 1
     matched = non_mayhem - {"MB", "MC", "MJ"}
     assert st["pda_match"] == len(matched)
     assert st["pda_match_share"] == pytest.approx(len(matched) / len(non_mayhem))
     with_s0 = matched - {"MH"}
     assert st["with_s0"] == len(with_s0)
-    assert st["v0_missing"] == 1  # ML
-    in_band = with_s0 - {"ML", "MD", "MX"}
+    assert st["v0_missing"] == 0  # event mode refuses a null V instead
+    in_band = with_s0 - {"MD", "MX"}
     assert st["v0_in_band"] == len(in_band)
-    assert st["v0_band_share"] == pytest.approx(len(in_band) / (len(with_s0) - 1))
+    assert st["v0_band_share"] == pytest.approx(len(in_band) / len(with_s0))
     assert st["members"] == len(in_band)
 
 
@@ -477,3 +473,37 @@ def test_load_static_map_both_shapes(tmp_path):
     (tmp_path / "a.json").write_text(json.dumps({"fetched_utc": "x", "v": {"P1": 17600000000, "P2": None}}))
     (tmp_path / "b.json").write_text(json.dumps({"P1": 17600000000, "P2": None}))
     assert rl.load_static_map(tmp_path / "a.json") == rl.load_static_map(tmp_path / "b.json") == {"P1": 17600000000, "P2": None}
+
+
+def test_stats_null_txi_tie_groups_and_mixed_slots(tmp_path):
+    sc = scenario()
+    ms = S + 100
+    # MA: three null-tx rows sharing (slot, evi) = one tie group of 3; a second slot mixing null and non-null tx; a third with distinct evi (no tie)
+    sc[H3]["trades"] += [trade("MA", ms + 40, None, 0, sig="n1"), trade("MA", ms + 40, None, 0, sig="n2"), trade("MA", ms + 40, None, 0, sig="n3"),
+                         trade("MA", ms + 50, None, 0, sig="m1"), trade("MA", ms + 50, 3, 0, sig="m2"), trade("MA", ms + 60, None, 0, sig="p1"),
+                         trade("MA", ms + 60, None, 1, sig="p2")]
+    walk = make_walk(tmp_path / "w", sc)
+    st = build(walk, tmp_path)
+    assert st["null_txi_tie_groups"] == 1 and st["mixed_null_txi_slots"] == 1  # only ms+50 mixes null and non-null; ms+40 / ms+60 are all null
+
+
+def test_event_mode_refuses_null_vq_on_candidate_pool(tmp_path):
+    sc = scenario()
+    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, vq=None)]  # a window print of MA's PDA pool without event V
+    walk = make_walk(tmp_path / "w", sc)
+    refused(walk, tmp_path, "virtual_quote_reserves", canonical_fn=pda_of)
+
+
+def test_null_vq_on_other_pool_or_outside_window_is_not_refused(tmp_path):
+    sc = scenario()
+    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, pool="OTHER_POOL", vq=None), trade("MA", S + 100 + 7300, 1, 0, vq=None, bt=BT3 + 3700)]
+    walk = make_walk(tmp_path / "w", sc)
+    assert build(walk, tmp_path)["members"] == 7
+
+
+def test_static_map_does_not_refuse_null_vq(tmp_path):
+    sc = scenario()
+    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, vq=None)]
+    walk = make_walk(tmp_path / "w", sc)
+    st = build(walk, tmp_path, v_source="static_map", static_map={pda_of("MA"): V})
+    assert st["members"] == 1

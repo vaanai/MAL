@@ -263,6 +263,11 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         con.sql(f"""insert into cand select t.mint, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.signature, t.virtual_quote_reserves,
                     t.block_time, t.pool from t join m_comp c on t.mint=c.mint and t.pool=c.pda
                     where t.venue='pumpswap' and t.slot >= c.mslot and t.slot < c.mslot + {WINDOW_SLOTS}""")
+    if v_source == "event":
+        n_null = con.sql("select count(*) from cand where vq is null").fetchone()[0]
+        if n_null:
+            raise LayoutRefused(f"{n_null} PumpSwap print(s) of a candidate PDA pool in [mslot, mslot+{WINDOW_SLOTS}) have a null/missing virtual_quote_reserves "
+                                "(event V mode needs the event V on every such print)")
     con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, sig) rn from cand) where rn=1""")
     con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
                 group by 1 order by 1) to '{out_dir}/mkt_creates.parquet' (format parquet)""")
@@ -304,10 +309,21 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         if v_source == "event":
             vq_null_rows += con.sql(f"select count(*) from read_parquet('{o}') where vq is null").fetchone()[0]
 
+    tie = _txi_stats(con, out_dir)
     stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, vq_null_rows, duckdb.__version__)
+    stats.update(tie)
     (out_dir / "stats.json").write_text(json.dumps(stats, sort_keys=True, indent=1) + "\n", encoding="utf-8")
     con.close()
     return stats
+
+
+def _txi_stats(con: Any, out_dir: Path) -> dict[str, int]:
+    """Null tx_index (txi < 0 in ut) diagnostics over the member prints, same definitions as r4b_features.null_txi_tie_groups / mixed_null_txi_slots:
+    groups of >= 2 null-tx rows sharing (mid, slot, evi), and (mid, slot) cells mixing null and non-null tx_index."""
+    src = f"read_parquet('{out_dir}/ut/*.parquet')"
+    tie = con.sql(f"select count(*) from (select 1 from {src} where txi < 0 group by mid, slot, evi having count(*) > 1)").fetchone()[0]
+    mixed = con.sql(f"select count(*) from (select 1 from {src} group by mid, slot having bool_or(txi < 0) and bool_or(txi >= 0))").fetchone()[0]
+    return {"null_txi_tie_groups": int(tie), "mixed_null_txi_slots": int(mixed)}
 
 
 def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_pda_err: int, vq_null_rows: int, duckdb_version: str) -> dict[str, Any]:
