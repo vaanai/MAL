@@ -242,7 +242,7 @@ DEC-030 §3 excludes the H5 domain from push-family books "unless quant-proof ru
 
 ### 4.1 Window
 
-- **Counted window:** entry marks in `[W0, E − 1 h]`; hours read `[2026-10-16T01, E + 1 h)` (feature buffer before W0, counted from W0, exit horizon after E).
+- **Counted window:** entry marks in `[W0, E − 1 h]`; hours read `[2026-10-16T03, E + 3 h)` (the allowlist of section 3.4: feature buffer from H0 before W0, counted from W0, the exit horizon after E, and 2 extra trade hours).
 - **Blocks:** 24 h blocks from W0; block b holds attempts with entry mark T0 in `[W0 + 24h·b, W0 + 24h·(b+1))`.
 - **Calendar stop E = W0 + 480 h; N = 20, A = 125 checked inside the read; cap = E; exit horizon 1 h** (QP-4 §5 "STOP_MODE: calendar"; QP §3 and QP-FU §3 for N, A). These are stricter than DEC-030 §1a's floors (N ≥ 7, A ≥ 100, cap ≤ 21 d), as §1a allows a book to declare before W0.
 - **Expected attempts:** about 103 per day [inferred from FROZEN §6 and PLAN §4]; exploration attempts per day were 20 / 115 / 140 (min / median / max), CV 0.293 [measured, QP-4 §1]. So about 2,000 at E; N binds, not A.
@@ -251,13 +251,14 @@ DEC-030 §3 excludes the H5 domain from push-family books "unless quant-proof ru
 
 - **Attempt:** a buy triggered at an hour mark T0 in `[W0, E − 1 h]` for a top-10 token not held at T0, guarded buys included.
 - **Count job** (`tools/r4b_count.py`, an hourly host-side MiScusi job, 12 GB cap; PLAN §4). Because the stop is by calendar (QP-4 §5), the count job **computes no features, scores, ranks or attempts** (this settles PLAN §4's open ruling on post-entry prices of held tokens: they are never loaded before the read). It opens only allowlisted, sealed, strict-verified, sha256-matched hours and writes, to `/data/mal/r4b/counts.jsonl`, hour health (sealed, verified, bad), the structure precount items of section 8.1, and per mark the decision rows `(mint, T, sd)` with their md5. It never loads a price, side or reserve column of a row at slot ≥ sd(t) (only slot and block_time for the clock), and computes no landing state, guard, fill, exit or P&L. **It is outcome-blind and is not a "read"; it does not freeze k** (DEC-030 §1).
+- **Count job start.** The hourly count job runs on walk-2 hours **only after this file has merged**, so that no reader runs on walk 2 before registration. It is chained from W0, passes `--through-hour` = the latest sealed and verified hour, and never `--keep-scratch`. It refuses unless `counts.jsonl` has a line for every hour in `[H0, E]` and the extra hours are loaded (`extra_hours_loaded`); the read tool refuses a `counts.jsonl` that lacks any hour of `[H0, E]` (QP on #678).
 - **N and A** (blocks with attempts, attempts) are computed **inside the read**. Fewer than 20 or fewer than 125 is NOT_DECIDABLE, with no extension.
 - **The stop instant** E = W0 + 480 h is written in the ledger sub-entry at registration (Appendix A); the read records the N and A it found.
 
 ### 4.3 The read and its deadline
 
-- **One read, no interim looks** (DEC-030 §1a). It runs after E + 1 h is sealed and verified, the read tool is merged with QP OK on its head (sha256 in the Window record), E1 is recorded (section 5.1), and the section 5.3 record is in the ledger or its fallback applies.
-- **Deadline:** `EXP027_DEADLINE`. A read not completed by then is NOT_DECIDABLE, and the window is spent (checklist §1 d).
+- **One read, no interim looks** (DEC-030 §1a). It runs after E + 1 h is sealed and verified, the read tool is merged with QP OK on its head (sha256 pinned in section 2.2), the E1 mode of section 5.1.1 is pinned, and the section 5.3 record is in the ledger or its fallback applies.
+- **Deadline:** `EXP027_DEADLINE` (E + 48 h). A read not completed by then is NOT_DECIDABLE, and the window is spent (checklist §1 d). The tool enforces it: a read that starts, or forms its verdict, at or after E + 48 h is NOT_DECIDABLE. **Manager rule (pinned):** if a start after E + 48 h would also hit another refusal, the tool writes nothing; in that case the manager records NOT_DECIDABLE at the deadline in the Window record and the ledger, with the refusal reasons, and does not rerun. The record is the manager's dated line, not a tool output.
 - Fixed-instant steps (the count job, the read) run as host-side MiScusi jobs, never as session crons alone.
 
 ## 5. Cost stack (deciding, both latencies)
@@ -294,7 +295,7 @@ Quant-proof ruled "Rent: YES, the deciding stack is pinned without rent", on the
 
 > - (i) The EXP pins the sha256 of the sell builder that would trade r4-b, and requires the close in the same transaction. Without it, rent comes back into the deciding stack.
 > - (ii) The rent leg stays as report-only.
-> - (iii) Rent can strand on three kinds of position. Each is charged the full stake, the buy send, no sell send, and 2,039,280 rent:
+> - (iii) Rent can strand on three kinds of position. Each is charged the full stake, the buy send, no sell send, and 2,039,280 rent *(the figure is superseded for Token-2022 and unknown-program mints by the per-program rent below; the quote is kept verbatim)*:
 >   - an unpriced exit;
 >   - a base mint with a freeze authority or a Token-2022 extension that blocks close (for example withheld transfer fees);
 >   - simulated proceeds below one send fee.
@@ -380,7 +381,7 @@ The CI90 clause is unadjusted and on top (DEC-030 §1). The Bonferroni level onl
 5. More than 5% of the window's hours are bad after that re-walk (EXP-022 §10), or any hour in `[W0, E + 1 h)` is missing (FROZEN §4 refusal; stricter).
 6. An A3 structure-monitor halt (`tools/pump_structure_monitor.py`, the six flags of EXP-022 §11) fires between W0 and E.
 7. A pressure gap: any counted trade lacks its pressure-leg P&L (DEC-014, line 70).
-8. E1 is not recorded with n ≥ 20 before the read (DEC-021 Am.1 §4).
+8. E1: under mode `record`, no E1 record with n ≥ 20 before the read (DEC-021 Am.1 §4); under mode A or B (section 5.1.1) this clause does not apply.
 9. The read's decision-row md5 (`(mint, T, sd)`) for any mark differs from the count job's (PLAN §4).
 10. An hour outside the allowlist is opened by the read (EXP-025 R-terms; checklist §1 j).
 
@@ -394,25 +395,27 @@ A FAIL **retires r4-b**: no retune, no refit, no change to K, stake or threshold
 
 ### 8.1 Precount (count job, outcome-blind; re-checked by the read) — refuse if
 
-- any hour in `[2026-10-16T01, E + 1 h)` is not sealed, strict-verified (`exp012_forward.hour_problems(strict=True)`) or sha256-matched, or its parsed rows differ from `verify.jsonl` `content[sub].rows`;
+- any hour in the allowlist `[2026-10-16T03, E + 3 h)` is not sealed, strict-verified (`exp012_forward.hour_problems(strict=True)`) or sha256-matched, or its parsed rows differ from `verify.jsonl` `content[sub].rows`;
 - the PDA match is < 95% of non-Mayhem completes;
 - fewer than 100 hour marks have ≥ 10 live tokens;
 - a UTC date has graduations but 0 decisions;
 - an hour has unmeasurable SPH;
 - **a mixed (mint, slot) count > 0**: any mint whose slot holds both null and non-null `tx_index` prints (QP-4 §7);
 - **a v0_missing share > 2% on any read date**, the denominator being non-Mayhem, PDA-matched pools with an s0 (QP-3; QP-4 §7). Below that, a pool with missing V0 is a non-member;
-- **a member with any null-`vq` print** (null event V on a member pool's print; QP-3; QP-4 §7).
+- **a member with any null-`vq` print** (null event V on a member pool's print; QP-3; QP-4 §7);
+- **a create-row gap: on any complete counted UTC date, more than `NO_CREATE_MAX_SHARE` = 0.06 of member mints have no create row** (`tools/r4b_count.py`; QP ruling 1 on #676: exploration days reach 0.0513; a pinned constant, never tuned on results). Their create-derived constants are NaN downstream;
+- `counts.jsonl` lacks any hour of `[H0, E]`, or `extra_hours_loaded` is off (section 4.2).
 
 One tie-breaker throughout: (slot, coalesce(tx_index, −1), event_index, file_row_number) (section 3.2).
 
-It also reports (report-only): null-`tx_index` tie groups (section 3.2), the V0-band share, the v0_missing share per date, rows dropped by the s0 + 600 s rule, and live tokens and decision rows per mark. Reserve-discontinuity counts (section 3.5) are reported inside the read only.
+It also reports (report-only): null-`tx_index` tie groups (section 3.2) and, per date, the null-`txi` prints on members, the tie groups and tie mints, and the decision rows, top-10 picks and attempts on tie mints (never gating; section 10.7), the V0-band share, the v0_missing share per date, rows dropped by the s0 + 600 s rule, and live tokens and decision rows per mark. Reserve-discontinuity counts (section 3.5) are reported inside the read only.
 
 ### 8.2 Read tool — refuse unless
 
-- each pinned line matches once and this file is clean against HEAD;
+- each pinned line matches once, no value is a `TODO-` placeholder, and this file is clean against HEAD (tracked and equal to HEAD);
 - every code sha256 and model md5 of section 2.2 matches; E-a..E-d md5s are recorded; the decoder blobs equal walk 2's job ref;
-- the E1 record exists with n ≥ 20; input-view sha256s and the `data/tries.jsonl` entry exist; the mint-account file of section 5.2 (iii) exists and matches its pinned sha256;
-- only allowlisted hours are opened; a bad line refuses;
+- `EXP027_E1_MODE` equals the tool's `E1_MODE` (and, in mode `record` only, the E1 record exists with n ≥ 20); `EXP027_WALK_DIR` equals `/data/mal/blocks/forward-1016` and is the directory read; the sell-builder and A3-record files match their `path@sha256`; input-view sha256s and the `data/tries.jsonl` entry exist; the mint-account file of section 5.2 (iii) exists and matches its pinned sha256;
+- only allowlisted hours `[2026-10-16T03, E + 3 h)` are opened; a bad line refuses; the E + 48 h deadline holds (section 4.3);
 - an O_EXCL lock; `/data/mal/r4b/READS.jsonl` with started / completed / aborted; no second run; no CLI override; the verdict goes to stderr before any file write;
 - fills join outcomes only after E + 1 h is sealed.
 
@@ -430,6 +433,8 @@ Conventions: each cell is P(full pass): all 4 cells, the larger p decides, the f
 | 50% | .3245 | .2265 |
 | central 37.9% | .2535 | .1660 |
 | null | .0195 | .0110 |
+
+**E1 mode.** The table is the draft's stack. Under E1 mode B (section 5.1.1) the central-effect figure at k = 1 is .1650 (100 % .5390, 50 % .2245, null .0195); under mode A it is the table's. Power is report-only and decides nothing.
 
 **k-dependence.** k = 2 cuts every figure by about a third (QP-FU §3; the table above: .2535 → .1660 at the central effect). Plan for k = 2 (QP §3).
 
@@ -470,6 +475,14 @@ On 2026-10-16 a builder's scan read row TYPES and MINT COUNTS of `migrations-202
 - **Rugs:** 5.13% of positions lost ≥ 90% on the no-fail leg in development (FROZEN §7).
 - **The 10-02 upgrade and 10-13 redeploy** are not in development.
 
+### 10.4a Exit pricing and invalid states (QP on #679, #680)
+
+- **Exit price when the state goes ≤ 0 [pinned].** A held token whose exit state is invalid (reserve ≤ 0, tokens ≥ the pool's base, non-finite) is **a total loss of stake, priced stranded** (full stake, buy send, no sell send, the per-program rent of section 5.2); no last-valid-bid option.
+- **Exit cadence [pinned].** The book exits at **hour marks only** (`UNIVERSE_EXITS_AT_MARKS_ONLY`): a token that leaves the universe between marks is sold at the next mark by the rank / gap rule (`xs_book`), never in between.
+- **C8 / K_TOL [pinned].** An exit is `exit_invalid` (priced stranded) when Qx·Bx < Qe·Be·(1 − K_TOL), `K_TOL = 1e-3` (the constant-product k of a pool does not fall). The worst exploration drift was 2.92e-4; 1e-3 and 1e-2 flag the same single trip. **The rule was set after seeing exploration counts but not tuned to them:** 8 exploration trips sit below 1 − 1e-6 and 1 below 1 − 1e-3 (listed in QP's comment 6224978004). The read reports `exit_invalid` by cause (C2 state, C7, C8) in every cell and, report-only, the count of exits with k-ratio in [1 − 1e-3, 1 − 1e-6).
+- **Mint 16894 (post-hoc).** In exploration, mint 16894 has an invalid exit state ("k fell 14.6%, cause not established"). It was **dropped in the VERIFY baseline after seeing it** (post-hoc); the undropped totals are labelled report-only. QP's power table excludes it. In the forward read there is no drop: a mint 16894-like exit is `exit_invalid` and stranded by the rules above.
+- **Entry-state guard.** An invalid entry state is not priced as a fill (#680 `ef5107c`; an exploration-era bug had priced an invalid entry at +97 SOL).
+
 ### 10.5 Capital
 
 The book holds up to **2.5 SOL open** (10 × 0.25 SOL). The owner's capital was 1.29 SOL (QP §5), so a live trial would need owner capital beyond that; DEC-020 governs size. **A smaller K or stake is a new book** (QP §5), never a variant of this one.
@@ -478,10 +491,14 @@ The book holds up to **2.5 SOL open** (10 × 0.25 SOL). The owner's capital was 
 
 Nothing in this file says r4-b makes money. A PASS would be forward simulated paper, not money made, and leads only to the DEC-018 path and the owner's yes.
 
+### 10.7 Null-`tx_index` tie groups in the forward data
+
+The forward order key is total (section 3.2). The read reports, per date and report-only, never gating: null-`txi` prints on members, tie groups and tie mints, and decision rows, top-10 picks and attempts on tie mints (E-d found tie mints are 10.3–14.3% of decision rows in exploration, section 2.3.1). It also reports the mixed (mint, slot) count (a refusal if > 0, section 8.1).
+
 ## 11. Seal during the window
 
 - **Before the read**, no person, agent or job computes, opens or prints an r4-b outcome for any mark at or after W0: landing state, guard result, fill, exit state, proceeds, P&L, mean, CI, day or block sign, win or loss, from any source (walk 2, the tip tape, the live listener, RPC, a paper runner).
-- **Allowed before the read:** the count job's outputs (section 4.2); the mint-account structure fetch of section 5.2 (iii); hour counts (sealed, verified, bad); the precount; the A3 monitor's flags; the fee-arm verdict read of section 5.3 by a non-r4-b-outcome reader.
+- **Allowed before the read:** the count job's outputs (section 4.2); the mint-account structure fetch and census of section 5.2 (iii) (RPC only, no walk-2 outcome); hour counts (sealed, verified, bad); the precount; the A3 monitor's flags; the fee-arm verdict read of section 5.3 by a non-r4-b-outcome reader.
 - **A breach** is recorded here, dated, and the read is reported compromised. It never turns a FAIL into a NOT_DECIDABLE. A compromised read cannot support a live request.
 
 ## 12. Source conflicts and how this file resolves them
@@ -494,7 +511,7 @@ Nothing in this file says r4-b makes money. A PASS would be forward simulated pa
 | PLAN §4 open ruling: may the count job compute ranks from post-entry prices of held tokens? | Settled by the calendar stop: the count job computes no features, scores, ranks or attempts (section 4.2). |
 | PLAN §5 recommends ceil for k vs QP §2 np.round | **QP wins**: np.round (#673 pins it). |
 | PLAN §1/§5 SPH per decision hour vs QP §2 "slot_s per day" | **QP-4 §2**: 3600 / median of the date's hourly SPH (section 3.3). |
-| PLAN §8 item 3 (H0 = 10-16T03) vs QP §2 (pools ≥ 10-16T01) | **QP wins**: 10-16T01, with the breach-hour disclosure (section 10.3). |
+| PLAN §8 item 3 (H0 = 10-16T03) vs QP §2 (pools ≥ 10-16T01) | **H0 = 10-16T03** (revision 3, QP on #676 and #678: the count job's creates start at 10-16T03, so the 48 h ramp completes at 10-18T03 and `EARLIEST_W0` = 10-18T03). Hours 10-16T01 and T02 are never opened; the breach disclosure (section 10.3) stands. Supersedes revision 2's 10-16T01 / 10-18T01. |
 | #673 `day_t` on block sums vs DEC-021 Am.1 §5 (per-attempt block means) | **QP-4 §1**: per-attempt means decide; sums report-only; `book_stats` must change before the read tool's QP (section 6.2). |
 | FROZEN universe from graduation + 600 s vs QP D3 condition "decisions ≥ s0+600 s" | s0 + 600 s drop rule, confirmed by QP-4 §3 (section 3.4). |
 | #672 PR text (null `tx_index` sorted LAST after a reviewer fix) vs training's coalesce(−1) | **QP-4 §7**: nulls FIRST; the merged `forward_order` (`cf1eaac`) sorts nulls first; mixed (mint, slot) > 0 refuses. |
@@ -507,25 +524,20 @@ Nothing in this file says r4-b makes money. A PASS would be forward simulated pa
 
 ## 13. TO FILL
 
-**Before merge:**
-1. Code sha256: `<SHA256 at merge of layout>` (`tools/r4b_layout.py`, #674, QP CHANGES at `b5a2d45`) and `<SHA256 at merge of count>` (`tools/r4b_count.py` and wrapper) (section 2.2). #672 and #673 are filled from `origin/main`.
-2. E-d md5s (section 2.3).
-3. rb2 prediction-key sha256s and rb2 trades sha256 (section 2.2).
-4. TIERS sha256; decoder blob ids; input-view sha256s and the `data/tries.jsonl` entry.
-5. The sell builder path and sha256 (section 5.2 (i)); else rent is deciding.
-6. The catalog route: sub-entry support or pinned allowlist (section 8.2).
-7. The DEC-030 owner line and route; `EXP027_ROUTE` set accordingly (section 0.2).
+**Before merge** (revision 3 filled everything except these):
+1. **`TODO-OWNER`: `EXP027_E1_MODE`**, A or B, by the owner's answer to `q_Z3dGvhO1wJ87wg` (decide by 2026-10-18T00Z), with the one-line `E1_MODE` flip PR and, for B, the DEC-021 amendment (section 5.1.1).
+2. **`TODO-OWNER`: the DEC-030 owner line and route** (`q__jVaqpxB937kEg`); `EXP027_ROUTE` set accordingly (section 0.2). DEC-030 merges with the line before this file.
+3. **`TODO-after-E1-flip`: `EXP027_SHA256_R4B_READ`**, the sha256 of `tools/r4b_read.py` at the head that carries the E1 flip, with QP's delta pass (section 2.2).
+4. The sell builder confirmation (section 5.2 (i)): `tools/probe_live.py` is pinned; the manager confirms or replaces it.
+5. The catalog route: sub-entry support or a pinned allowlist (section 8.2). **TO FILL before merge:** which.
+6. The ledger edit of Appendix A (in this PR, after DEC-030 merges).
+7. rb2 prediction-key sha256s and the rb2 trades sha256 (section 2.2 "rb2 reproduction keys" is a QP §2 item; the E-c md5 `54052f79…` is pinned and these files are not on `origin/main`): record them here if they are to be cited, else state they are not.
 8. Job #1036's extension (due about 2026-10-22T19:21Z) and a walker credit cap that covers to 2026-11-16T01 (PLAN §8 item 10), recorded in the Window record.
+9. The merge instant in `[2026-10-18T02:00:00Z, 2026-10-26T23:59:59Z]`.
 
-**Before the read tool's QP:**
-9. The `book_stats` change to a pinned per-attempt-mean `t_block` (section 6.2), merged with QP OK; its `tools/r4b_book.py` sha256 replaces the `ea01143` value in section 2.2.
-10. The 160k power rerun on per-attempt means, if the 160k leg is to be quoted (section 9).
+**Done in revision 3:** layout, count, features, frozen, score and book sha256s (section 2.2); E-a..E-d md5s and the E-d record (2.3, 2.3.1); `EXP027_TIERS_SHA256`; `EXP027_WALK_DIR`; `EXP027_SELL_BUILDER`; per-program rent; Token-2022 allowlist and census provenance; H0 / `EARLIEST_W0` / allowlist `[H0, E + 3 h)`; `NO_CREATE_MAX_SHARE`; as-of mint filters; k-tie, C8 / K_TOL, mint 16894 and window-figure disclosures; `book_stats` per-attempt-mean `t_block` (#677, sha256 in 2.2).
 
-**Before the read (Window record, dated):**
-11. `<SHA256 at merge of read>` with QP OK on its head.
-12. The E1 record (path, sha256, n ≥ 20).
-13. The fee-arm verdict record (path, sha256) if section 5.3 applies, recorded in the ledger before the read lock.
-14. The mint-account file of section 5.2 (iii) (job id, sha256, RPC credits used).
+**Window record (dated, manager, from the merge record and job records only; each as a `KEY: value` line, once):** `EXP027_W0`, `EXP027_K`, `EXP027_DECODER_REF`, `EXP027_INPUT_VIEWS`, `EXP027_TRIES_ENTRY`, `EXP027_MINT_ACCOUNTS` (the post-E `members` run: job id, sha256, RPC credits), `EXP027_FEE_ARM` (`NONE` or `path@sha256`), `EXP027_A3_RECORD` (`path@sha256`, covering `[W0, E]`), and `EXP027_E1_RECORD` only if the tool is in mode `record`; plus the merge instant, E, the cap, and the 160k power rerun if that leg is to be quoted (section 9). The pre-W0 report-only `members` run and its credits are also noted there.
 
 **Settled by QP (no longer open):** LP tolerance "none" (section 3.5); slot_s rule (3.3); null ordering and refusals (3.2, 8.1); D3 drop rule (3.4); history NaN (3.4); `f_c_v` (3.6); count-job ranks (4.2, by the calendar stop); E1 ×5 (5.1); lag floor 0 (5.3); strand-class source (5.2); block means (6.2); owner sentence (9).
 
@@ -533,7 +545,7 @@ Nothing in this file says r4-b makes money. A PASS would be forward simulated pa
 
 DEC-030 is unmerged, so `docs/HOLDOUT_LEDGER.md` is **not edited in this draft**. Once DEC-030 merges with the owner's line, this text is added to the Forward walk 2 row's Status cell **in this PR**, with the bracketed values filled from the merge record, and this PR does not merge without it.
 
-> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`; never moved); calendar stop E = W0 + 480 h = `<E>` (`EXP027_STOP_RULE`); the read requires at least 20 blocks holding an attempt and at least 125 attempts, else NOT_DECIDABLE with no extension; window cap = E; exit horizon 1 h (the window with its exit horizon ends by `<E + 1 h>`, at or before 2026-11-16T01); k at registration `<k>`; route `<R1 | R2>`. Feature-buffer hours `[2026-10-16T01, W0)` are read for features only and never counted (2026-10-16T01 and T02 under the 2026-10-16 breach disclosure). Reads `/data/mal/blocks/forward-1016` only; universe pools created at or after 2026-10-16T01. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). N and A found at the read: *(added by the read)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k): *(added when it happens)*.
+> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`, not before 2026-10-18T03; never moved); calendar stop E = W0 + 480 h = `<E>` (`EXP027_STOP_RULE`); the read requires at least 20 blocks holding an attempt and at least 125 attempts, else NOT_DECIDABLE with no extension; window cap = E; exit horizon 1 h (the window with its exit horizon ends by `<E + 1 h>`, at or before 2026-11-16T01); k at registration `<k>`; route `<R1 | R2>`. Feature-buffer hours `[2026-10-16T03, W0)` (H0 = 2026-10-16T03) are read for features only and never counted; 2026-10-16T01 and T02 are not opened (2026-10-16 breach disclosure stands). Reads `/data/mal/blocks/forward-1016` only, hours `[2026-10-16T03, E + 3 h)`; universe pools created at or after 2026-10-16T03. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). N and A found at the read: *(added by the read)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k): *(added when it happens)*.
 
 Changelog line to add with it:
 
