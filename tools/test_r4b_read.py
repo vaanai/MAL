@@ -1362,6 +1362,7 @@ def test_failed_fetch_and_missing_mints_are_priced_at_the_higher_rent(tmp_path):
 EXP_REL = "EXP/EXP-027-r4b-walk2-prereg.md"
 BODY = "# EXP-027 fixture\n\n```\nEXP027_BOOK_ID: r4-b\nEXP027_K: TO FILL\n```\n\n"
 T_REG = 1_800_000_000
+W0_OK = ef.hour_key(datetime.fromtimestamp(T_REG, timezone.utc))  # T_REG is exactly on an hour: "at or after" is that same hour
 W_STARTED = datetime.fromtimestamp(T_REG + 10_000, timezone.utc)
 
 
@@ -1427,15 +1428,56 @@ def must_refuse(w, needle, started=W_STARTED):
 
 
 def test_window_guard_accepts_an_append_only_history(wrepo):
-    append_commit(wrepo, app_line("EXP027_W0", "2026-10-18T03"), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
     append_commit(wrepo, app_line("EXP027_K", "3"), T_REG + 200)
     probs, info = guard(wrepo)
     assert probs == [] and info["reg_commit"] == wrepo["reg"] and info["prefix_sha256"] == wrepo["prefix"]
     assert sorted(a["key"] for a in info["appended"]) == ["EXP027_K", "EXP027_W0"] and len(info["exp_sha256"]) == 64
 
 
-def test_window_guard_accepts_with_no_appends(wrepo):
-    assert guard(wrepo)[0] == []
+def test_window_guard_refuses_when_w0_is_absent(wrepo):
+    must_refuse(wrepo, "EXP027_W0 is absent")
+
+
+def test_window_guard_refuses_a_w0_that_does_not_match_the_recomputed_hour(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0", "2026-10-18T03"), T_REG + 100)
+    must_refuse(wrepo, f"!= {W0_OK}")
+
+
+def test_w0_from_commit_time_ceils_to_the_hour_and_floors_at_earliest_w0(monkeypatch):
+    monkeypatch.setattr(rr, "EARLIEST_W0", "2026-10-18T03")
+    t = int(datetime(2026, 10, 20, 5, tzinfo=timezone.utc).timestamp())
+    assert ef.hour_key(rr.w0_from_commit_time(t)) == "2026-10-20T05"  # on the hour: that hour
+    assert ef.hour_key(rr.w0_from_commit_time(t + 1)) == "2026-10-20T06"
+    assert ef.hour_key(rr.w0_from_commit_time(t - 1)) == "2026-10-20T05"
+    assert ef.hour_key(rr.w0_from_commit_time(int(datetime(2026, 10, 16, 23, 30, tzinfo=timezone.utc).timestamp()))) == "2026-10-18T03"  # floor
+
+
+@pytest.mark.parametrize("key,ok", [("EXP027_MERGE_INSTANT", True), ("EXP027_K", True), ("EXP027_POWER_160K", True), ("EXP027_DEADLINE_ND", True), ("EXP027_BREACH_1", True), ("EXP027_BREACH_9", True),
+                                    ("EXP027_WALK2_JOB_3", True), ("EXP027_MEMBERS_PREW0", True), ("EXP027_BREACH_10", False), ("EXP027_BREACH_0", False), ("EXP027_ROUTE", False),
+                                    ("EXP027_SHA256_R4B_READ", False), ("EXP027_WALK2_JOB_4", False), ("EXP027_E1_RECORD", True)])
+def test_window_key_allowlist(wrepo, key, ok):
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    append_commit(wrepo, app_line(key, "x"), T_REG + 200)
+    probs = guard(wrepo)[0]
+    assert (probs == []) if ok else any("closed Window-record key list" in x for x in probs)
+
+
+def test_e1_record_key_only_in_record_mode(wrepo, monkeypatch):
+    monkeypatch.setattr(rr, "E1_MODE", "A")
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_E1_RECORD", "x"), T_REG + 200)
+    must_refuse(wrepo, "EXP027_E1_RECORD, which is not in the closed")
+
+
+def test_allowlist_has_exactly_the_addendum_keys():
+    assert len(rr.WINDOW_KEYS) == 22 and "EXP027_BREACH_9" in rr.WINDOW_KEYS
+
+
+def test_window_guard_refuses_a_malformed_window_line(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    append_commit(wrepo, "exp027_k: 3 (appended 2026-10-18T03:05Z)\n", T_REG + 200)
+    must_refuse(wrepo, "not `KEY: value (appended")
 
 
 def test_window_guard_refuses_a_body_edit_after_reg(wrepo):
@@ -1475,7 +1517,8 @@ def test_window_guard_refuses_a_bad_line_format(wrepo):
 
 
 def test_window_guard_refuses_a_commit_at_or_after_started(wrepo):
-    append_commit(wrepo, app_line("EXP027_W0"), int(W_STARTED.timestamp()))  # equal to started: not earlier
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_K", "3"), int(W_STARTED.timestamp()))  # equal to started: not earlier
     must_refuse(wrepo, "not earlier than the read's start")
     assert guard(wrepo, W_STARTED + timedelta(seconds=1))[0] == []
 
@@ -1490,21 +1533,30 @@ def test_window_guard_refuses_head_not_descending_from_reg(wrepo):
     must_refuse(wrepo, "does not descend from the registration commit")
 
 
-@pytest.mark.parametrize("case", ["bad_reg", "bad_prefix", "reg_absent", "reg_twice", "reg_not_whole_line", "reg_short"])
+@pytest.mark.parametrize("case", ["bad_reg", "bad_prefix", "reg_absent", "reg_disagree", "reg_short", "reg_long", "prefix_disagree"])
 def test_window_guard_refuses_ledger_mismatches(wrepo, case):
     led, reg, pre = wrepo["ledger"], wrepo["reg"], wrepo["prefix"]
     good = led.read_text()
     bad, needle = {
         "bad_reg": (good.replace(reg, "a" * 40), "!= ledger EXP027_REG_COMMIT"),
         "bad_prefix": (good.replace(pre, "b" * 64), "!= ledger EXP027_PREFIX_SHA256"),
-        "reg_absent": ("# ledger\n", "EXP027_REG_COMMIT matches 0 times"),
-        "reg_twice": (good + f"EXP027_REG_COMMIT {reg}\n", "EXP027_REG_COMMIT matches 2 times"),
-        "reg_not_whole_line": (good.replace("EXP027_REG_COMMIT", "- EXP027_REG_COMMIT"), "EXP027_REG_COMMIT matches 0 times"),
-        "reg_short": (good.replace(reg, reg[:39]), "EXP027_REG_COMMIT matches 0 times"),
+        "reg_absent": ("# ledger\n", "EXP027_REG_COMMIT has no occurrence"),
+        "reg_disagree": (good + f"EXP027_REG_COMMIT {'c' * 40}\n", "EXP027_REG_COMMIT occurrences disagree"),
+        "reg_short": (good.replace(reg, reg[:39]), "EXP027_REG_COMMIT has no occurrence"),
+        "reg_long": (good.replace(reg, reg + "0"), "EXP027_REG_COMMIT has no occurrence"),
+        "prefix_disagree": (good + f"x EXP027_PREFIX_SHA256: `{'d' * 64}`\n", "EXP027_PREFIX_SHA256 occurrences disagree"),
     }[case]
     led.write_text(bad)
     gitc(wrepo["repo"], "commit", "-qam", "ledger edit", when=T_REG + 2)
     must_refuse(wrepo, needle)
+
+
+def test_ledger_tokens_are_found_anywhere_in_a_line_and_may_repeat(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    reg, pre = wrepo["reg"], wrepo["prefix"]
+    wrepo["ledger"].write_text(f"| Status | counted. `EXP027_REG_COMMIT` {reg} |\n> - registered. EXP027_REG_COMMIT `{reg}`, EXP027_PREFIX_SHA256: `{pre}`\nplaceholder EXP027_REG_COMMIT <sha>\nEXP027_PREFIX_SHA256 {pre}\nXEXP027_REG_COMMIT {'e' * 40}\n")
+    gitc(wrepo["repo"], "commit", "-qam", "ledger prose", when=T_REG + 2)
+    assert guard(wrepo)[0] == []  # a placeholder and a longer-identifier lookalike are not occurrences
 
 
 def test_window_guard_refuses_a_missing_or_uncommitted_ledger(wrepo):
@@ -1571,7 +1623,8 @@ def test_default_window_fn_and_ledger_constants():
     assert rr.Paths(Path("w")).ledger == rr.ROOT / "docs" / "HOLDOUT_LEDGER.md"
     probs, _ = rr.Deps().window_fn(Path("/nonexistent/EXP.md"), Path("/nonexistent/ledger.md"), W_STARTED)
     assert probs and "not inside the repo" in probs[0]
-    assert rr.LEDGER_REG_RE.pattern == r"^EXP027_REG_COMMIT ([0-9a-f]{40})[ \t]*$" and rr.LEDGER_PREFIX_RE.pattern == r"^EXP027_PREFIX_SHA256 ([0-9a-f]{64})[ \t]*$"
+    assert rr.LEDGER_REG_RE.pattern == r"(?<![A-Za-z0-9_])EXP027_REG_COMMIT[ :]+`?([0-9a-f]{40})(?![0-9a-f])`?"
+    assert rr.LEDGER_PREFIX_RE.pattern == r"(?<![A-Za-z0-9_])EXP027_PREFIX_SHA256[ :]+`?([0-9a-f]{64})(?![0-9a-f])`?"
 
 
 # ---- exact tries key, repo-root pins ---------------------------------------------------------------------------------------------------------------

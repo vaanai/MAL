@@ -216,8 +216,22 @@ WINDOW_HEADING_RE = re.compile(rb"^## Window record[ \t]*$", re.M)
 APPEND_LINE_RE = re.compile(r"^(EXP027_[A-Z0-9_]+): (.+) \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
 APPEND_SUFFIX_RE = re.compile(r" \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
 LEDGER_FILE = ROOT / "docs" / "HOLDOUT_LEDGER.md"
-LEDGER_REG_RE = re.compile(r"^EXP027_REG_COMMIT ([0-9a-f]{40})[ \t]*$", re.M)
-LEDGER_PREFIX_RE = re.compile(r"^EXP027_PREFIX_SHA256 ([0-9a-f]{64})[ \t]*$", re.M)
+# Addendum 1 C: a ledger token is found anywhere in a line (Status cell, changelog bullet), with optional backticks; at least one occurrence, all must agree.
+LEDGER_REG_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_REG_COMMIT[ :]+`?([0-9a-f]{40})(?![0-9a-f])`?")
+LEDGER_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_PREFIX_SHA256[ :]+`?([0-9a-f]{64})(?![0-9a-f])`?")
+# Addendum 1 A: the closed set of keys a Window-record line may carry (each at most once). EXP027_E1_RECORD only when E1_MODE is "record".
+WINDOW_KEYS = frozenset({"EXP027_MERGE_INSTANT", "EXP027_W0", "EXP027_K", "EXP027_INPUT_VIEWS", "EXP027_MINT_ACCOUNTS", "EXP027_FEE_ARM", "EXP027_A3_RECORD", "EXP027_E1_RECORD",
+                         "EXP027_WALK2_JOB_2", "EXP027_WALK2_JOB_3", "EXP027_MEMBERS_PREW0", "EXP027_POWER_160K", "EXP027_DEADLINE_ND"} | {f"EXP027_BREACH_{i}" for i in range(1, 10)})
+
+
+def window_keys_allowed() -> frozenset:
+    return WINDOW_KEYS if E1_MODE == "record" else WINDOW_KEYS - {"EXP027_E1_RECORD"}
+
+
+def w0_from_commit_time(ct: int) -> datetime:
+    """Addendum 1 B: the first UTC hour whose start is at or after the registration commit's committer time, floored at EARLIEST_W0."""
+    h = (ct + 3599) // 3600 * 3600
+    return max(datetime.fromtimestamp(h, timezone.utc), ef.hour_dt(EARLIEST_W0))
 ORIGIN_REF = "origin/main"
 
 
@@ -261,18 +275,21 @@ def body_prefix(blob: bytes) -> bytes | None:
 
 
 def ledger_values(ledger: Path) -> tuple[str | None, str | None, list[str]]:
-    """EXP027_REG_COMMIT and EXP027_PREFIX_SHA256 from the ledger: each a whole line matching the strict regex, exactly once."""
+    """EXP027_REG_COMMIT and EXP027_PREFIX_SHA256 from the ledger (Addendum 1 C): the token anywhere in a line, at least one occurrence, all occurrences agree."""
     if not Path(ledger).exists():
         return None, None, [f"{Path(ledger).name} does not exist"]
     text = Path(ledger).read_text(encoding="utf-8")
     probs, vals = [], []
     for name, rx in (("EXP027_REG_COMMIT", LEDGER_REG_RE), ("EXP027_PREFIX_SHA256", LEDGER_PREFIX_RE)):
-        m = rx.findall(text)
-        if len(m) != 1:
-            probs.append(f"{Path(ledger).name}: {name} matches {len(m)} times as a whole line (need exactly 1: `{rx.pattern}`)")
+        m = set(rx.findall(text))
+        if not m:
+            probs.append(f"{Path(ledger).name}: {name} has no occurrence (`{rx.pattern}`)")
+            vals.append(None)
+        elif len(m) > 1:
+            probs.append(f"{Path(ledger).name}: {name} occurrences disagree ({sorted(x[:12] for x in m)})")
             vals.append(None)
         else:
-            vals.append(m[0])
+            vals.append(next(iter(m)))
     return vals[0], vals[1], probs
 
 
@@ -323,6 +340,15 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
             probs.append(f"body prefix sha256 at HEAD {info['prefix_sha256']} != ledger EXP027_PREFIX_SHA256 {want_prefix}")
         if ph != pr:
             probs.append("the body prefix at HEAD differs from the body prefix at the registration commit")
+        # B: W0 recomputed from the registration commit's committer time
+        reg_ct = int(_git(repo, "show", "-s", "--format=%ct", reg).stdout.decode().strip())
+        w0_calc = ef.hour_key(w0_from_commit_time(reg_ct))
+        info["w0_recomputed"] = w0_calc
+        w0_val = exp_lines(head_bytes.decode("utf-8", "replace"))[0].get("EXP027_W0")
+        if w0_val is None:
+            probs.append("EXP027_W0 is absent from the EXP (the Window record must carry it)")
+        elif w0_val != w0_calc:
+            probs.append(f"EXP027_W0 {w0_val!r} != {w0_calc} (first UTC hour at or after the registration commit's committer time, floored at {EARLIEST_W0})")
         # 4 additions only, after the heading
         head_line = ph.count(b"\n") + 1  # 1-based line number of the heading at HEAD
         diff = _git(repo, "diff", "--no-ext-diff", "--no-renames", "--no-color", "--unified=0", reg, "HEAD", "--", rel).stdout.decode("utf-8", "replace")
@@ -357,6 +383,8 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
                 probs.append(f"commit {c[:12]} appends a line that is not `KEY: value (appended YYYY-MM-DDTHH:MMZ)`: {plus[0][:80]!r}")
                 continue
             key = mm.group(1)
+            if key not in window_keys_allowed():
+                probs.append(f"commit {c[:12]} appends key {key}, which is not in the closed Window-record key list")
             if key in seen:
                 probs.append(f"key {key} is appended more than once (commits {seen[key][:12]} and {c[:12]})")
             seen[key] = c
