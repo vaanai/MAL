@@ -34,7 +34,7 @@ DS = "forward-1002"
 H0, H1 = "2026-10-02T15", "2026-10-02T16"
 T0 = int(datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc).timestamp())
 NOW = datetime(2026, 10, 16, 5, 0, tzinfo=timezone.utc)
-CB = layer.COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW
+CB = 279_900_000_000_000  # == layer.COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW
 FORBIDDEN_EXTRAS = {"lp_fee": 7, "protocol_fee": 7, "creator_fee": 7, "pool": "POOLX", "pool_quote_amount": 7,
                     "virtual_quote_reserves": 7, "fm_buy_sol": 1.5, "fm_flow_sol": 1.5, "ix_name": "buy",
                     "buyback_fee": 7, "block_time": 1}
