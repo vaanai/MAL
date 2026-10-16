@@ -11,6 +11,35 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0c Update 2026-10-16T05:35:34Z (manager11): push day 1
+
+Source: the hunt reports and the judge file named in [ARTIFACTS/lab/push-2026-10-16.md](../ARTIFACTS/lab/push-2026-10-16.md). No sealed, forward, walk, shadow or October outcome row was opened. Nothing here says any book made money.
+
+- No library book reaches the goal on 1.29 SOL: the judge's shortlist is about 0.20–0.32 SOL/day after the capacity haircut.
+- Impact at size halves every line's reported exploration mean by about 0.1–1.7 SOL per trade. PumpSwap LP fee-minus-IL median is negative. Diversified wallet copy is not higher-capacity.
+- Details and sources: [ARTIFACTS/lab/push-2026-10-16.md](../ARTIFACTS/lab/push-2026-10-16.md). Library rows: section `push-1016` in [docs/library/INDEX.md](library/INDEX.md).
+
+Merged today (2026-10-16):
+- #651: Records 10-15 (manager11): EXP-022 P2 not met, CAP-PICK withdrawn before counting; tipauth reads stopped; DEC-016 Am.3 not computed.
+- #652: Ledger: F1 October release (owner OK 10-12), D0/D1 on forward-1002, effective at the DEC-016 FINAL row.
+- #653: Docs: slim the reload set (LAB_STATE history to archive, CLAUDE.md stale status replaced by pointers); audit 2026-10-15; no rule text changed.
+- #654: Records 10-16 (manager11): DEC-016 FINAL (A) FAIL, reported compromised; markers; walk 2 log line; #382/#433 close-out.
+- #655: F1: two catalog roles (oct-structure-d0, oct-pregrad-d1) + refusal tests.
+- #656: Records 10-16 (manager11): EXP-025 P5 not met, Look 1 NOT_DECIDABLE (R8).
+- #657: F1: migrate_sigs_from keeps migration/pool-create rows only; conflicting signatures refused (QP follow-up to #655).
+
+Open owner questions: q_Qj7YtTiY6Dl5aQ (reserve walk 2); q_TCMrhyP101jzLQ (EXP-026 + let the canary end); q_hw6mloW_n2goPQ (old, left open on purpose).
+
+Scheduled steps (instants):
+- EXP-025 Look 1 R8 run after 2026-10-18T12:00:00Z, and Look 2 R8 run after 2026-10-26T12:00:00Z (commands in the EXP-025 "P5 record (2026-10-16)").
+- EXP-026 W0 by 2026-10-23T00.
+- C1-NF jobs #658 / #662 limits about 2026-10-17T22Z.
+- Walk 2 #1036 limit about 2026-10-22T19:21Z (resubmit before).
+- Exporter #1034: replace after H5 end_ms 2026-10-23T19:29:53Z.
+- Recurring crons expire about 2026-10-22T19Z.
+
+Lesson: fixed-instant steps are backed by host-side jobs where possible (the FINAL chain #1037-#1040 is the model).
+
 ### 1.0b Update 2026-10-16T04:32:55Z (manager11): DEC-016 FINAL (A) written, FAIL, reported compromised
 
 Source: job log lines only. No row, report or forward data file was opened. Numbers and the Log: DEC-016 Log of 2026-10-16.
