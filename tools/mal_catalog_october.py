@@ -143,6 +143,21 @@ def check_columns(role: str, columns: Sequence[str]) -> list[str]:
     return out
 
 
+_LATCH: list[str] = []  # the one October role this process has been granted by check_read
+
+
+def _require_grant(role: str) -> None:
+    if role not in OCT_ROLES:
+        raise OctoberRefused(f"role {role!r} is not an October role")
+    if not _LATCH or _LATCH[0] != role:
+        raise OctoberRefused(f"no granted check_read for role={role} in this process (holds: {_LATCH or 'none'})")
+
+
+def migrate_sigs_from(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """mint -> signature of its migrate tx, from migrations/ rows (mint, signature). Feeds `mask_row`'s s0 rule."""
+    return {r["mint"]: r["signature"] for r in rows if r.get("mint") and r.get("signature")}
+
+
 def mask_row(role: str, row: Mapping[str, Any], migrate_sigs: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Column mask applied to every parsed line BEFORE any other use. Returns a new dict.
 
@@ -154,8 +169,7 @@ def mask_row(role: str, row: Mapping[str, Any], migrate_sigs: Mapping[str, str] 
     D1: `trade` rows keep `D1_ALLOWED_COLUMNS` only; every other type keeps identities only (and `check_rows`
     refuses it anyway). `fm_*` and the EVENT_V_KEYS (ix_name, creator_fee_unclaimed, buyback_fee,
     fee_recipient_zero, virtual_quote_reserves) are never kept on trade rows."""
-    if role not in OCT_ROLES:
-        raise OctoberRefused(f"role {role!r} is not an October role")
+    _require_grant(role)
     typ = row.get("type")
     if typ == "trade":
         keep = D0_RAW_COLUMNS if role == ROLE_OCT_D0 else D1_ALLOWED_COLUMNS
@@ -228,30 +242,35 @@ def check_rows(
         return [f"role {role!r} is not an October role"]
     out: list[str] = []
     for i, r in enumerate(rows):
-        mint = r.get("mint")
-        if r.get("type") != "trade":
-            out.append(f"row {i}: type {r.get('type')!r} is not a trade (post_complete_buy, fee sweeps ... refused)")
-            continue
-        if r.get("venue") != BONDING_VENUE:
-            out.append(f"row {i}: venue {r.get('venue')!r} is not {BONDING_VENUE} (pool trade)")
-            continue
-        if mint not in migrate_pos:
-            out.append(f"row {i}: mint {mint!r} has no migrate position (fail closed)")
-            continue
-        if mint not in complete_pos:
-            out.append(f"row {i}: mint {mint!r} has no complete position (fail closed)")
-            continue
-        try:
-            pos = (int(r["slot"]), int(r["event_index"]))
-        except (KeyError, TypeError, ValueError):
-            out.append(f"row {i}: no usable (slot, event_index)")
-            continue
-        mig, comp = migrate_pos[mint], complete_pos[mint]
-        if mig is not None and pos >= tuple(mig):
-            out.append(f"row {i}: at or after the migrate tx of {mint!r}")
-        if comp is not None and pos > tuple(comp):
-            out.append(f"row {i}: after the complete trade of {mint!r}")
+        _kind, msg = _d1_verdict(r, migrate_pos, complete_pos)
+        if msg:
+            out.append(f"row {i}: {msg}")
     return out
+
+
+# _d1_verdict kinds: "ok"; a skip reason (the row is out of scope and dropped); "hard" (the maps or the row are
+# broken: fail closed, never skipped).
+def _d1_verdict(r: Mapping[str, Any], migrate_pos: Mapping[str, tuple[int, int] | None],
+                complete_pos: Mapping[str, tuple[int, int] | None]) -> tuple[str, str]:
+    mint = r.get("mint")
+    if r.get("type") != "trade":
+        return "not_trade", f"type {r.get('type')!r} is not a trade (post_complete_buy, fee sweeps ... refused)"
+    if r.get("venue") != BONDING_VENUE:
+        return "pool_venue", f"venue {r.get('venue')!r} is not {BONDING_VENUE} (pool trade)"
+    if mint not in migrate_pos:
+        return "hard", f"mint {mint!r} has no migrate position (fail closed)"
+    if mint not in complete_pos:
+        return "hard", f"mint {mint!r} has no complete position (fail closed)"
+    try:
+        pos = (int(r["slot"]), int(r["event_index"]))
+    except (KeyError, TypeError, ValueError):
+        return "hard", "no usable (slot, event_index)"
+    mig, comp = migrate_pos[mint], complete_pos[mint]
+    if mig is not None and pos >= tuple(mig):
+        return "after_migrate", f"at or after the migrate tx of {mint!r}"
+    if comp is not None and pos > tuple(comp):
+        return "after_complete", f"after the complete trade of {mint!r}"
+    return "ok", ""
 
 
 def guarded_rows(
@@ -260,22 +279,30 @@ def guarded_rows(
     migrate_pos: Mapping[str, tuple[int, int] | None] | None = None,
     complete_pos: Mapping[str, tuple[int, int] | None] | None = None,
     migrate_sigs: Mapping[str, str] | None = None,
+    skipped: dict[str, int] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """The wrapper every loader must iterate through; it yields masked rows. D0: `mask_row` on each row. D1:
-    `check_rows` first (raises `OctoberRefused` on the first refused row; both maps are required), then `mask_row`.
-    `check_read` for oct-pregrad-d1 refuses unless a `migrate_pos` map is supplied. That the loader really iterates
-    through this wrapper is a review item, not code."""
+    """The wrapper every loader must iterate through; it yields masked rows. Raises `OctoberRefused` at once unless
+    this process holds a granted `check_read` for `role`. D0: `mask_row` on each row. D1: both maps are required;
+    a row that is out of scope (not a trade, pool venue, at/after the migrate tx, after `complete`) is SKIPPED and
+    counted by reason in `skipped` (pass a dict to read the counts); a mint missing from either map or a row without a
+    usable position still raises. That the loader really iterates through this wrapper is a review item, not code."""
+    _require_grant(role)
     if role == ROLE_OCT_D1 and (migrate_pos is None or complete_pos is None):
         raise OctoberRefused("oct-pregrad-d1 needs both migrate_pos and complete_pos")
+    return _guarded_iter(role, rows, migrate_pos, complete_pos, migrate_sigs, skipped)
+
+
+def _guarded_iter(role, rows, migrate_pos, complete_pos, migrate_sigs, skipped):
     for i, r in enumerate(rows):
         if role == ROLE_OCT_D1:
-            bad = check_rows(role, [r], migrate_pos, complete_pos)
-            if bad:
-                raise OctoberRefused(f"row {i}: {bad[0]}")
+            kind, msg = _d1_verdict(r, migrate_pos, complete_pos)
+            if kind == "hard":
+                raise OctoberRefused(f"row {i}: {msg}")
+            if kind != "ok":
+                if skipped is not None:
+                    skipped[kind] = skipped.get(kind, 0) + 1
+                continue
         yield mask_row(role, r, migrate_sigs)
-
-
-_LATCH: list[str] = []  # the one October role this process has been granted
 
 
 def _reset_latch_for_tests() -> None:
@@ -365,8 +392,8 @@ def check_read(
     returns False ("D0 and D1 never in one process"). A True result authorises the open only: rows must then go
     through `guarded_rows` (design choice: a D1 read is refused without `migrate_pos`; the guard cannot see the
     loader). It checks inputs only: joining D1 outputs to D0/D2/D3 outputs stays the caller's duty to refuse.
-    No cross-host tip-tape overlap check is done here (the ledger's code-mask bullet names one); it is not covered
-    by this module and needs its own tracked item."""
+    The ledger's cross-host tip-tape overlap check is moot here: `check_paths` refuses every path outside
+    `<blocks>/forward-1002[ev]/<kind>/<kind>-<hour>`, so no tip-tape path can be named."""
     if role in OCT_ROLES and _LATCH and _LATCH[0] != role:
         return False, [f"D0 and D1 never in one process (bright line 3): this process already holds {_LATCH[0]}"]
     ok, reasons = _check_read_impl(blocks, role, dataset, start_hour, end_hour_exclusive, columns, paths=paths,

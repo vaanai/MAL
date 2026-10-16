@@ -20,6 +20,19 @@ NOW = datetime(2026, 10, 16, 5, 0, tzinfo=timezone.utc)
 D0, D1 = oc.ROLE_OCT_D0, oc.ROLE_OCT_D1
 
 
+@pytest.fixture(autouse=True)
+def _clean_latch():
+    oc._reset_latch_for_tests()
+    yield
+    oc._reset_latch_for_tests()
+
+
+def _grant(role):
+    """Stand in for a granted check_read (the latch is what mask_row/guarded_rows consult)."""
+    oc._reset_latch_for_tests()
+    oc._LATCH.append(role)
+
+
 @pytest.fixture(scope="module")
 def blocks():
     return mc.parse_ledger((REPO_ROOT / "docs" / "HOLDOUT_LEDGER.md").read_text(encoding="utf-8"))
@@ -223,10 +236,10 @@ def test_d1_public_read_requires_migrate_map(blocks, tmp_path, monkeypatch):
 
 
 def test_guarded_rows_yields_early_rows_and_raises_on_post_migrate():
+    _grant(D1)
     it = oc.guarded_rows(D1, [_row(slot=99), _row(slot=100, ei=1)], {"M": (100, 1)}, {"M": None})
     assert next(it)["slot"] == 99
-    with pytest.raises(oc.OctoberRefused):
-        next(it)
+    assert list(it) == []  # the post-migrate row is skipped, not yielded
 
 
 # --- D0 column masks ---------------------------------------------------------
@@ -300,6 +313,7 @@ def test_d1_complete_pos_required_and_cutoff_enforced():
     assert oc.check_rows(D1, [_row(slot=150)], mig, {"M": (150, 0)}) == []
     assert "after the complete" in oc.check_rows(D1, [_row(slot=151)], mig, {"M": (150, 0)})[0]
     assert "no complete position" in oc.check_rows(D1, [_row(slot=1)], mig, {})[0]
+    _grant(D1)
     with pytest.raises(oc.OctoberRefused):
         list(oc.guarded_rows(D1, [_row(slot=1)], mig))  # guarded_rows without complete_pos
 
@@ -324,6 +338,7 @@ def _full_trade():
 
 
 def test_d0_post_s0_trade_row_keeps_identities_only():
+    _grant(D0)
     m = oc.mask_row(D0, _full_trade(), {"M": "S"})  # even in the migrate tx a trade row keeps no amount
     assert not set(m) & set(FORBIDDEN_TRADE_KEYS)
     assert {"mint", "trader", "pool", "slot", "signature", "event_ts"} <= set(m)
@@ -331,6 +346,7 @@ def test_d0_post_s0_trade_row_keeps_identities_only():
 
 
 def test_d1_mask_drops_pool_fees_and_event_v_keys_keeps_trade_fields():
+    _grant(D1)
     m = oc.mask_row(D1, _full_trade())
     for k in ("pool", "pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee", "virtual_quote_reserves",
               "ix_name", "creator_fee_unclaimed", "buyback_fee", "fm_flow_sol"):
@@ -341,10 +357,12 @@ def test_d1_mask_drops_pool_fees_and_event_v_keys_keeps_trade_fields():
 def test_init_boost_reserve_and_v_only_on_the_migrate_tx():
     row = {"type": "init_boost", "mint": "M", "signature": "S", "slot": 1, "event_index": 0, "event_ts": 1,
            "virtual_quote_reserves": 17, "quote_reserve": 9, "base_reserve": 8}
+    _grant(D0)
     assert oc.mask_row(D0, row, {"M": "S"})["virtual_quote_reserves"] == 17
     second = dict(row, signature="S2")
     assert "virtual_quote_reserves" not in oc.mask_row(D0, second, {"M": "S"})
     assert "quote_reserve" not in oc.mask_row(D0, row, None)  # no migrate map: nothing kept
+    _grant(D1)
     assert "virtual_quote_reserves" not in oc.mask_row(D1, row, {"M": "S"})  # D1 never keeps s0 fields
 
 
@@ -352,11 +370,53 @@ def test_init_boost_reserve_and_v_only_on_the_migrate_tx():
 def test_fee_and_boost_rows_keep_no_amounts(typ):
     row = {"type": typ, "mint": "M", "signature": "S", "slot": 1, "event_ts": 1, "amount": 5, "fee": 2,
            "quote_in": 3, "virtual_quote_reserves": 4}
+    _grant(D0)
     m = oc.mask_row(D0, row, {"M": "S"})
     assert set(m) == {"type", "mint", "signature", "slot", "event_ts"}
 
 
+def test_d1_guarded_rows_skips_out_of_scope_rows_and_counts_them():
+    _grant(D1)
+    mig, comp = {"M": (200, 0)}, {"M": (150, 0)}
+    rows = [_row(slot=10), _row(slot=11, type="post_complete_buy"), _row(slot=12, venue="pumpswap"),
+            _row(slot=160), _row(slot=250), _row(slot=13, type="sweep_curve_fee")]
+    counts: dict = {}
+    out = list(oc.guarded_rows(D1, rows, mig, comp, skipped=counts))
+    assert [r["slot"] for r in out] == [10]
+    assert counts == {"not_trade": 2, "pool_venue": 1, "after_complete": 1, "after_migrate": 1}
+
+
+def test_d1_guarded_rows_still_raises_on_missing_map_entry_or_bad_position():
+    _grant(D1)
+    with pytest.raises(oc.OctoberRefused):
+        list(oc.guarded_rows(D1, [_row(mint="X")], {"M": None}, {"M": None}))
+    with pytest.raises(oc.OctoberRefused):
+        list(oc.guarded_rows(D1, [_row(), _row(mint="M")], {"M": None}, {"X": None}))
+    bad = {"type": "trade", "mint": "M", "venue": "pump_bonding"}
+    with pytest.raises(oc.OctoberRefused):
+        list(oc.guarded_rows(D1, [bad], {"M": None}, {"M": None}))
+
+
+def test_mask_and_guarded_rows_need_a_grant_for_that_role():
+    with pytest.raises(oc.OctoberRefused):
+        oc.mask_row(D0, _full_trade())
+    with pytest.raises(oc.OctoberRefused):
+        oc.guarded_rows(D0, [_full_trade()])  # raises at call time, not on first next()
+    _grant(D1)
+    with pytest.raises(oc.OctoberRefused):
+        oc.mask_row(D0, _full_trade())
+    with pytest.raises(oc.OctoberRefused):
+        oc.guarded_rows(D0, [_full_trade()])
+    assert oc.mask_row(D1, _full_trade())
+
+
+def test_migrate_sigs_from_rows():
+    rows = [{"mint": "M", "signature": "S"}, {"mint": "N"}, {"signature": "Z"}]
+    assert oc.migrate_sigs_from(rows) == {"M": "S"}
+
+
 def test_guarded_rows_d0_masks_every_row():
+    _grant(D0)
     out = list(oc.guarded_rows(D0, [_full_trade()]))
     assert not set(out[0]) & set(FORBIDDEN_TRADE_KEYS)
 
