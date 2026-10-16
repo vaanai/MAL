@@ -53,7 +53,10 @@ _ARROW_RE = re.compile(rf"({HOUR_TOKEN})(?::(\d{{2}}))?Z?\s*(?:→|->)\s*({HOUR_
 _OLDER_THAN_RE = re.compile(rf"older than\s+({HOUR_TOKEN})", re.IGNORECASE)
 _EXP_OWNER_RE = re.compile(r"EXP-(\d+)")
 
-ROLES = ("exploration", "confirmation-oneshot", "ops")
+ROLE_OCT_D0 = "oct-structure-d0"
+ROLE_OCT_D1 = "oct-pregrad-d1"
+OCT_ROLES = (ROLE_OCT_D0, ROLE_OCT_D1)  # real guard: tools/mal_catalog_october.py
+ROLES = ("exploration", "confirmation-oneshot", "ops") + OCT_ROLES
 
 
 def _parse_hour(s: str) -> datetime:
@@ -300,6 +303,8 @@ def allowed(role: str, owner: str, exp_id: str | None = None) -> bool:
             and _EXP_ID_RE.fullmatch(exp_id) is not None
             and owner == exp_id
         )
+    if role in OCT_ROLES:
+        return False  # hour-only check never grants them; see tools/mal_catalog_october.py
     if role == "ops":
         return False
     return False
