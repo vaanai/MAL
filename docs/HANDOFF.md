@@ -11,6 +11,18 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0b Update 2026-10-16T04:32:55Z (manager11): DEC-016 FINAL (A) written, FAIL, reported compromised
+
+Source: job log lines only. No row, report or forward data file was opened. Numbers and the Log: DEC-016 Log of 2026-10-16.
+
+- **FINAL (A) written** at 2026-10-16T04:18:09Z by job #1038: `VERDICT: FAIL (forward simulated paper, not money made); n_entered=859`. Reported COMPROMISED (Am.2); no live support (Am.6 (g) D). EXP-012 was retired by the 10-08 audit. Not money made; no book has cleared the promotion gate.
+- **Markers.** Marker 4 `/data/mal/exp012-forward/FINAL_WRITTEN` at 04:18:53Z (job #1039); marker 3 at 04:18:58Z (job #1040: h5, c1nf, cap-pick-oracle files). Post-final checks #1047 rc=0 (fresh true, decided_mints 10374).
+- **F1 in effect.** D0/D1 on forward-1002 and forward-1002ev are released, but no D0/D1 read runs until the two catalog roles and refusal tests merge with quant-proof OK. Owed next.
+- **Walk 2** job #1036 is running (git_ref 578a63e, start 2026-10-16T01); the DEC-016 Log has the gitRef, pins exit 0 and the three blobs. **#382 cancelled** about 04:29:50Z (324 hours, credits_used 4,847,780). **#433 done** (169 hours, credits_used 2,754,540 of 3.6M). Exporter #1034 running (replace after the H5 end_ms, QP C1/Q11).
+- **Checks of the night:** executor seal check #1042 (stop_file=True, live_ok=valid, no halts); H5 day check D=2026-10-15 #1044 no_halt; C1-NF ledger day 2026-10-15 #1043 built; tape archive #1045 mismatched=0.
+- **Not run / still open:** EXP-024 Look 1 not run (NOT_DECIDABLE 2026-10-13); E1 not run (CAP-PICK withdrawn); the EXP-025 tool waits for Q2 and Q14-Q18 (needed by 2026-10-17T02:00:00Z); the completion amendment for #433 is owed only if EXP-025 reads.
+- **QP items 5 and 6 (PR #651)** are recorded in the LAB_STATE archive group of 2026-10-16.
+
 ### 1.0a Update 2026-10-15T19:15:32Z (manager11): outage, CAP-PICK withdrawn, tipauth reads stopped
 
 Authority: quant-proof ruling 2026-10-15, `/data/mal/hunt-1008/ops/QP-RULING-1015-outage.md`. The manager11 session started 2026-10-15T19:04:40Z.
