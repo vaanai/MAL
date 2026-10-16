@@ -130,3 +130,6 @@ def file_sha256(path: str) -> str:
         for b in iter(lambda: f.read(1 << 20), b""):
             h.update(b)
     return h.hexdigest()
+
+# Lower bound of the member-pool virtual SOL reserve V (lamports); equals tools/r4b_layout.V_LO. Q includes V, so Q < V_LO is a negative real quote reserve.
+V_LO = 17_500_000_000

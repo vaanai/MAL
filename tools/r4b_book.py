@@ -198,7 +198,7 @@ def attach_marks(mid, T1, mk_mid, mk_t, mk_Qx, mk_Bx):
 
 # ---------------------------------------------------------------------------------------------------------------- cost stack
 def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING, h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL,
-               guard_ratio=F.GUARD, stranded=None, auto_stranded=True, rent_stranded=F.RENT_STRANDED, return_stranded=False, return_invalid=False):
+               guard_ratio=F.GUARD, stranded=None, auto_stranded=True, rent_stranded=F.RENT_STRANDED, return_stranded=False, return_invalid=False, return_exit_invalid=False):
     """One PumpSwap round trip in lamports; returns (pnl, filled) or (pnl, filled, stranded) with return_stranded.
 
     (Qe, Be): pool state the buy lands on (PRE-trade, Q incl. V); spot: decision-time spot; (Qx, Bx): state the sell lands on.
@@ -209,28 +209,35 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
     Stranded (no sell lands): pnl = -stake - send (the buy) - rent_stranded, no sell send. A filled trade is stranded when the caller says so
     (`stranded`, a per-trade bool: unpriced exit, freeze authority, a Token-2022 extension that blocks close) or, with auto_stranded, when the
     simulated proceeds are below one send fee (the sell would not pay for itself). A guarded buy is never stranded (nothing was bought).
-    Invalid entry state (Qe <= 0, Be <= 0, NaN, or tokens <= 0 / non-finite after the entry formula): priced as stranded (stake lost, buy send,
-    rent_stranded, no sell send), flagged entry_invalid (return_invalid adds it as a last return value). The guard rule does not apply to it."""
+    Invalid entry state (entry_invalid): Qe < V_LO (17.5e9; Q includes V and V >= V_LO for every member pool, so less is a negative real quote
+    reserve; this also covers Qe <= 0 and NaN), Be <= 0 or NaN, spot non-finite or <= 0 (a NaN spot would switch the guard off), or tokens <= 0 /
+    non-finite after the entry formula. Priced as stranded (stake lost, buy send, rent_stranded, no sell send); the guard does not apply to it.
+    Invalid exit state (exit_invalid, only on a bought, valid-entry trip): tokens >= Bx, Qx < V_LO, or Qx/Bx non-finite. Same stranded price;
+    there is no max(Bx - tokens, 1) clamp. Flags come back as last return values: return_invalid (entry), then return_exit_invalid."""
     stake = np.asarray(stake, float)
     with np.errstate(all="ignore"):
+        Qe_, Be_, spot_ = np.asarray(Qe, float), np.asarray(Be, float), np.asarray(spot, float)
         f = fee_ppm(Qe, Be)
         net = stake * (1 - f / 1e6)
         tok = Be * net / (Qe + net)
-        bad = ~((np.asarray(Qe, float) > 0) & (np.asarray(Be, float) > 0) & np.isfinite(tok) & (tok > 0))
+        bad = ~((Qe_ >= F.V_LO) & (Be_ > 0) & np.isfinite(spot_) & (spot_ > 0) & np.isfinite(tok) & (tok > 0))
         guard = ((net / tok) / spot > guard_ratio) & ~bad
-    tokh = tok / (1 + h_in)
-    Qa = Qx + net
-    Ba = np.maximum(Bx - tok, 1.0)
-    gross = tokh * Qa / (Ba + tokh)
-    sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
+        Qx_, Bx_ = np.asarray(Qx, float), np.asarray(Bx, float)
+        xbad = ~((Qx_ >= F.V_LO) & np.isfinite(Bx_) & (tok < Bx_)) & ~bad & ~guard
+        tokh = tok / (1 + h_in)
+        Qa = Qx + net
+        Ba = np.where(xbad | bad, 1.0, Bx - tok)
+        gross = tokh * Qa / (Ba + tokh)
+    with np.errstate(all="ignore"):
+        sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
     st = np.zeros(np.shape(sv), bool)
     if stranded is not None:
         st = st | np.asarray(stranded, bool)
     if auto_stranded:
         st = st | (sv < send)
-    st = (st | bad) & ~guard
+    st = (st | bad | xbad) & ~guard
     pnl = np.where(guard, -float(send), np.where(st, -stake - send - rent_stranded, sv - stake - 2 * send - rent))
-    out = (pnl, ~guard) + ((st,) if return_stranded else ()) + ((bad,) if return_invalid else ())
+    out = (pnl, ~guard) + ((st,) if return_stranded else ()) + ((bad,) if return_invalid else ()) + ((xbad,) if return_exit_invalid else ())
     return out
 
 
@@ -279,10 +286,10 @@ def price_cell(Qe, Be, spot, Qx, Bx, ssb, nearby, stake=F.STAKE_LAMPORTS, send=F
                h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True):
     """One latency cell: no-fail pnl, flat and pressure legs (intercept refit on this cell's fills)."""
     stake = np.broadcast_to(np.asarray(stake, float), np.shape(Qe)).copy()
-    pnl, filled, st, bad = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded,
-                                      return_stranded=True, return_invalid=True)
+    pnl, filled, st, bad, xbad = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded,
+                                      return_stranded=True, return_invalid=True, return_exit_invalid=True)
     flat, press, c, p = fail_legs(pnl, filled, ssb, nearby, send)
-    return {"nofail": pnl, "filled": filled, "stranded": st, "entry_invalid": bad, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
+    return {"nofail": pnl, "filled": filled, "stranded": st, "entry_invalid": bad, "exit_invalid": xbad, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
 
 
 # ---------------------------------------------------------------------------------------------------------------- statistics
@@ -352,7 +359,7 @@ def block_means(x_lamports, T0, w0: int, block_s: int = 86400):
 
 
 def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = None, block_s: int = 86400, draws: int = F.BOOT_DRAWS,
-               seed: int = F.BOOT_SEED, daylist=None, entry_invalid=None):
+               seed: int = F.BOOT_SEED, daylist=None, entry_invalid=None, exit_invalid=None):
     """Gate statistics of one leg. pnl_lamports per trade; T0 entry mark (unix s); mid mint ids.
 
     n, dates (distinct UTC entry dates), days_pos (dates with total > 0; majority = days_pos * 2 > dates), mean_sol, mean_pct (of stake),
@@ -364,12 +371,15 @@ def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = N
     if w0 is None:
         raise ValueError("w0 is required (the read's W0); there is no default")
     ei = None if entry_invalid is None else int(np.asarray(entry_invalid, bool).sum())
+    xi = None if exit_invalid is None else int(np.asarray(exit_invalid, bool).sum())
     x = np.asarray(pnl_lamports, float)
     T0 = np.asarray(T0, np.int64)
     n = len(x)
     o = {"n": int(n)}
     if ei is not None:
         o["entry_invalid"] = ei
+    if xi is not None:
+        o["exit_invalid"] = xi
     if n == 0:
         return o
     stake = np.broadcast_to(np.asarray(stake, float), x.shape)
