@@ -435,13 +435,13 @@ def _lines(path: Path) -> Iterator[str]:
             yield from fh
 
 
-def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
-                      paths: Sequence[str | Path]) -> dict[str, tuple[int, int]]:
-    """mint -> (slot, event_index) of its migrate tx, from migrations/ hour files only, using only migration-type rows
-    (`_MIGRATE_SIG_TYPES`; other row types are ignored; migration rows in two slots for one mint are refused). This is the only D1 use of
-    migrations/ and keeps nothing but those three fields. It is gated like a D0 read (FINAL marker, clock, hours,
+def _identity_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
+                        paths: Sequence[str | Path], types: frozenset[str],
+                        ts_out: dict[str, int] | None = None) -> dict[str, tuple[int, int]]:
+    """mint -> (slot, event_index) from migrations/ hour files only, using only rows whose type is in `types` (other row
+    types are ignored; rows in two slots for one mint are refused). Gated like a D0 read (FINAL marker, clock, hours,
     paths) with the fixed real clock/ledger/root, but does not take the process latch (it feeds D1 by design).
-    Build it from the full tape through 2026-10-16T01 so that `None`/absent means "never migrated"."""
+    `ts_out`, when given, receives mint -> event_ts (an identity-class field) of the kept row."""
     ok, reasons = _check_read_impl(blocks, ROLE_OCT_D0, dataset, start_hour, end_hour_exclusive,
                                    ("mint", "slot", "event_index"), paths=paths, final_ledger=DEFAULT_FINAL_LEDGER,
                                    now=_now(), blocks_root=BLOCKS_ROOT)
@@ -455,7 +455,7 @@ def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_ho
             if not line.strip():
                 continue
             r = json.loads(line)
-            if r.get("type") not in _MIGRATE_SIG_TYPES:
+            if r.get("type") not in types:
                 continue  # other row types are ignored: they must never become the cutoff
             try:
                 mint, pos = r["mint"], (int(r["slot"]), int(r["event_index"]))
@@ -465,4 +465,30 @@ def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_ho
             if prev is not None and prev[0] != pos[0]:
                 raise OctoberRefused(f"{p}: mint {mint!r} has migration rows in two different slots")
             out[mint] = pos if prev is None else min(prev, pos)  # same tx: the earliest event is the cutoff
+            if ts_out is not None and (prev is None or pos <= prev):
+                ets = r.get("event_ts")
+                if not isinstance(ets, int) or isinstance(ets, bool):
+                    raise OctoberRefused(f"{p}: a kept row of mint {mint!r} has no integer event_ts")
+                ts_out[mint] = ets
     return out
+
+
+def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
+                      paths: Sequence[str | Path]) -> dict[str, tuple[int, int]]:
+    """mint -> (slot, event_index) of its migrate tx, from migrations/ hour files only, using only migration-type rows
+    (`_MIGRATE_SIG_TYPES`; other row types are ignored; migration rows in two slots for one mint are refused). This is the only D1 use of
+    migrations/ for the migrate cutoff and keeps nothing but those three fields. It is gated like a D0 read (FINAL marker, clock, hours,
+    paths) with the fixed real clock/ledger/root, but does not take the process latch (it feeds D1 by design).
+    Build it from the full tape through 2026-10-16T01 so that `None`/absent means "never migrated"."""
+    return _identity_positions(blocks, dataset, start_hour, end_hour_exclusive, paths, _MIGRATE_SIG_TYPES)
+
+
+def complete_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
+                       paths: Sequence[str | Path],
+                       ts_out: dict[str, int] | None = None) -> dict[str, tuple[int, int]]:
+    """mint -> (slot, event_index) of its `complete` row in migrations/ hour files (real layout: that dir holds one
+    type "complete" row per curve completion plus a few type "migration" rows). Same gate and the same three
+    identity fields as `migrate_positions`; every other row type is ignored. "Reached complete" is an allowed D1 label
+    (HOLDOUT_LEDGER D1 line 2). Needed because the completing buy shares its (slot, event_index) with the migrate row
+    for most migrated mints and the migrate cutoff (`pos >= migrate`) drops it from the trade stream."""
+    return _identity_positions(blocks, dataset, start_hour, end_hour_exclusive, paths, frozenset({"complete"}), ts_out)
