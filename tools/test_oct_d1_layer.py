@@ -387,6 +387,16 @@ class LayerTests(Base):
         self.assertEqual(rc, 2)
         self.assertIn("C2''", err)
 
+    def test_c2_double_prime_row_earlier_than_trade_refuses(self):
+        """QP probe: A's row at (101, 0) is before the trade-detected complete (102, 0). Detection must not be cut by
+        the row, so the disagreement is counted and the gate refuses."""
+        self.build(migs=self.migs_with(a_row=(101, 0)))
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 2)
+        self.assertIn("C2''", err)
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())["complete_detection"]
+        self.assertEqual((pc["c2_double_prime_mints_with_both"], pc["c2_double_prime_position_disagree"]), (2, 1))
+
     def test_complete_row_without_event_ts_refuses(self):
         self.build(migs=self.migs_with(a_ts=None))
         rc, err = self.precount_run()

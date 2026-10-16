@@ -547,7 +547,11 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
     complete_pos = _Positions(comp_rows)
     complete_info: dict[str, tuple[int, int, int]] = {  # mint -> (slot, ei, ms)
         m: (v[0], v[1], comp_ts[m] * 1000) for m, v in comp_rows.items()}
-    trade_pos: dict[str, tuple[int, int]] = {}
+    # Pass A detects against a map of TRADE-detected positions only (no complete rows): a row that sits earlier than the
+    # real completing buy must not cut that buy before detection, or C2'' could never see the disagreement (QP
+    # 6222603050). Pass B uses complete_pos (rows, else trade) for the label cut.
+    trade_map = _Positions()
+    trade_pos = trade_map.data
     trade_detected: set[str] = set()  # mints whose complete buy was found on the (guarded) trade stream
     det = {"exact": 0, "below": 0}
 
@@ -586,7 +590,7 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
         # pass A: guarded + masked rows of the hour (live migrate/complete maps), buffered as compact tuples (no dicts)
         skA: dict[str, int] = {}
         buf: list[tuple] = []
-        for r in oc.guarded_rows(ROLE, tracker.rows(tp, "trades"), migrate_pos, complete_pos, None, skA):
+        for r in oc.guarded_rows(ROLE, tracker.rows(tp, "trades"), migrate_pos, trade_map, None, skA):
             buf.append((r["mint"], r.get("trader"), r.get("side"), r.get("sol_lamports"), r.get("token_raw"),
                         r.get("quote_reserve"), r.get("base_reserve"), r["slot"], r["event_index"], r["event_ts"]))
         # complete detection on masked rows only
