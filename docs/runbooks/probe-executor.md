@@ -217,3 +217,7 @@ Never copy a withdraw address from transaction history (address-poisoning dust e
 ## Never
 
 Never print, copy or commit the key file. Never raise a limit in config: config can only lower the DEC-019 maxima. Probe fills are never a book and never count toward any gate.
+
+## 2b-feearm. Fee-arm probe (DEC-019 Amendment 2). DRAFT: NOT installed, needs quant-proof OK on the exact head and the owner dated OK
+
+Profile `feearm` (config `scripts/mal-fast/probe-executor-live-feearm.json`, drop-in `mal-probe-executor-live-pinned-feearm.conf`, both in the installer EXTRA list). Own state file `state-live-feearm.json`, own fill log `probe-fills-feearm.jsonl` (rows tagged `limits_profile:"feearm"` and carrying `fee_arm`). Hard cap 150,000,000 lamports in code (`FEEARM_SPEND_CAP_LAMPORTS`), stake 0.01 SOL, per-mint arms 500,000 vs 155,000 priority, end 2026-10-22T00:00Z. Install steps, stop rule, wallet-overlap rules and the H5 STOP check are in DEC-019 Amendment 2; this section adds nothing to them. Status prints a `feearm committed_cost_lamports=... sends=... arms=...` line. Stop: the wallet-wide `/var/lib/mal-live/STOP` / `HALT`.
