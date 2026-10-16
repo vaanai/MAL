@@ -449,7 +449,7 @@ def test_v0_missing_days_over_refused(tmp_path, loose):
 
 
 def test_no_create_share_constant_and_line_field(tmp_path, loose):
-    assert rc.NO_CREATE_MAX_SHARE == 0.005  # QP to confirm
+    assert rc.NO_CREATE_MAX_SHARE == 0.06  # QP ruling 1 (exploration days reach 0.0513)
     sc = stream(4)
     sc[hkey(1)]["creates"] = []  # M1 has no create row
     make_walk(tmp_path / "walk", sc)
@@ -468,9 +468,9 @@ def test_no_create_share_refused_per_complete_date():
         return {"hour": h, "mark_t": int(ef.hour_dt(h).timestamp()), "decision_rows": 3, "live_tokens": 3, "grad_hour": h, "grad_members": 100, "grad_members_no_create": nocre}
 
     ok = [ln(h, 0) for h in hs]
-    ok[3]["grad_members_no_create"] = 12  # 12 / 2400 = 0.5%: not above
+    ok[3]["grad_members_no_create"] = 144  # 144 / 2400 = 6.0%: not above
     assert rc.date_problems(ok, cfg, None) == []
-    ok[4]["grad_members_no_create"] = 1  # 13 / 2400 > 0.5%
+    ok[4]["grad_members_no_create"] = 1  # 145 / 2400 > 6%
     probs = rc.date_problems(ok, cfg, None)
     assert len(probs) == 1 and "no create row" in probs[0] and "2026-10-17" in probs[0]
 
@@ -481,3 +481,34 @@ def test_mixed_null_txi_slots_over_run_refused_via_stats(tmp_path, loose):
     with pytest.raises(rc.CountRefused) as ei:
         run(cfg_for(tmp_path), hkey(2))
     assert any("over the read hours" in r for r in ei.value.reasons)
+
+
+def test_incremental_run_to_e_equals_one_shot_run_to_e(tmp_path, loose):
+    """Reviewer note 5: several incremental runs ending at E give a byte-identical counts.jsonl to one run to E."""
+    make_walk(tmp_path / "walk", stream(26))
+    inc = cfg_for(tmp_path)
+    for through in (3, 9, 10, 17, 24):
+        run(inc, hkey(through))
+    make_walk(tmp_path / "walk_b", stream(26))
+    one = rc.Config(tmp_path / "walk_b", tmp_path / "counts_b", hkey(0), n_blocks=1, a_attempts=1)
+    run(one, hkey(24))
+    a = (tmp_path / "counts" / rc.COUNTS).read_text()
+    assert a == (tmp_path / "counts_b" / rc.COUNTS).read_text() and len(a.splitlines()) == 25
+
+
+def test_no_table_other_than_s0t_m0_m_holds_v(tmp_path):
+    """QP change A: V is masked at load. Every non-boolean V-like column of every table in the structure run is in s0t, m0 or m only; the hour table has vq_null."""
+    walk = make_walk(tmp_path / "w", scenario())
+    st = rl.build(walk, "2026-10-16T03", "2026-10-16T05", tmp_path / "slim", canonical_fn=pda_of, structure_only=True)
+    tables = {c.split(".")[0] for c in st["v_columns"]}
+    assert tables == {"s0t", "m0", "m"}, st["v_columns"]
+    assert sorted(st["v_columns"]) == ["m.v", "m0.v0", "s0t.vq"]
+    # the hour table `t` is gone with the connection; rebuild its load by hand to check its schema
+    con = duckdb.connect()
+    rl._load_trades(con, walk / "trades" / "trades-2026-10-16T03.jsonl.zst", 0, "x", rl.TRADE_COLS_STRUCT, True)
+    cols = [r[0] for r in con.sql("describe t").fetchall()]
+    assert "vq_null" in cols and "virtual_quote_reserves" not in cols
+    assert con.sql("select count(*) from t where vq_null and venue = 'pumpswap'").fetchone()[0] == 0
+    # full mode keeps V (the read tool needs it)
+    full = rl.build(walk, "2026-10-16T03", "2026-10-16T05", tmp_path / "full", canonical_fn=pda_of)
+    assert "v_columns" not in full

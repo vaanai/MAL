@@ -34,7 +34,14 @@ Grad-hour fields. The membership statistics of graduations in hour h-1 (PDA matc
 Pending tail (EXTRA_HOURS = 2). The last two loaded hours of a run are PENDING: not appended, listed in the status as pending_hours, written by a later run once
 two more hours are sealed and loaded (so a token completing near the end of the loaded range never silently loses membership in a counted line). The final two
 allowlisted hours are written with extra_hours_loaded < 2 recorded. Create rows: per complete counted UTC date the share of member mints with no create row must
-not exceed NO_CREATE_MAX_SHARE (0.005, QP to confirm).
+not exceed NO_CREATE_MAX_SHARE (0.06; QP ruling 1: exploration days reach 0.0513).
+
+V is masked at load: the hour table holds only the boolean vq_null (virtual_quote_reserves IS NULL), the candidate table has no V, and V0 is a targeted
+re-read of the s0 rows only (matched on the row number). No DuckDB table other than s0t, m0 and m holds a V value (a test pins the schemas), so spill files
+cannot hold V. SPH: cap_pick_score.measure_hour_sph reads only slot and block_time, by regex, from the head and tail of the hour file.
+
+THE READ MUST REFUSE if counts.jsonl lacks any hour in [H0, E], or if any line's extra_hours_loaded is not 2 (hours E-1 and E may carry 1 and 0, the final
+allowlisted hours; nothing else may differ), or if the config.json pins differ (QP ruling 2).
 
 Idempotent: a re-run rebuilds the adapter over [H0, through] and appends only hours not already in counts.jsonl; an existing line that differs from the rebuilt
 one is a REFUSAL (drift), not an overwrite. config.json pins W0, N, A, H0 and the sha256 of this file and r4b_layout.py on first write; a later run with
@@ -87,9 +94,9 @@ LIVE_WINDOW_S = 600
 TOP_K = 10
 MIN_PRINTS_DECISION = 3
 PDA_MIN_SHARE = 0.95
-# QP to confirm: the largest share, per complete counted UTC date, of in-universe (member) mints that have no create row. Their create-derived constants are NaN
+# QP ruling 1 (#676): 0.06, because exploration days measure up to 0.0513. The largest share, per complete counted UTC date, of in-universe (member) mints that have no create row. Their create-derived constants are NaN
 # downstream; above this the date is refused. A pinned constant, never tuned on results.
-NO_CREATE_MAX_SHARE = 0.005
+NO_CREATE_MAX_SHARE = 0.06
 # Hours that must be loaded AFTER an hour before its line is written. A token completing near the end of the loaded range could otherwise lose (or not yet have)
 # its membership (s0 print, V0 band) in a counted line. The last EXTRA_HOURS loaded hours of a run are PENDING: not appended, listed in the status, and written by
 # a later run once the hours after them are sealed and loaded. Exception: the last allowlisted hour (E) has no later hour to wait for; the lines of the final
