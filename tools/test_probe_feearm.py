@@ -11,7 +11,9 @@ from unittest import mock
 
 from tools import probe_executor as pe
 from tools.test_probe_executor import MINT, fills
-from tools.test_probe_live import land_sell, make_live, open_position, signal_buy
+from tools import probe_live as pl
+from tools.test_probe_executor import sig as mk_sig
+from tools.test_probe_live import land_sell, make_live, open_position, sell_stuck_helper, signal_buy
 
 CAP = pe.FEEARM_SPEND_CAP_LAMPORTS
 
@@ -23,7 +25,7 @@ class PureTests(unittest.TestCase):
                                      "loss_cap_lamports": 10**12, "max_sends": 10**6, "max_attempts": 10**6, "size_lamports": 10**9,
                                      "max_open": 9, "max_days": 99})
         self.assertEqual((lim.spend_cap_lamports, lim.loss_cap_lamports, lim.max_sends, lim.max_attempts), (CAP, CAP, 300, 150))
-        self.assertEqual((lim.size_lamports, lim.max_open, lim.max_days, lim.end_ms), (10_000_000, 2, 5, pe.FEEARM_END_MS))
+        self.assertEqual((lim.size_lamports, lim.max_open, lim.max_days, lim.end_ms), (5_000_000, 2, 5, pe.FEEARM_END_MS))
         low = pe.Limits.from_config({"limits_profile": "feearm", "end_ms": 5, "arm_seed": 1, "spend_cap_lamports": 1_000_000})
         self.assertEqual((low.spend_cap_lamports, low.end_ms), (1_000_000, 5))  # config may lower
         with self.assertRaises(ValueError):
@@ -62,7 +64,7 @@ class PureTests(unittest.TestCase):
         lim = pe.Limits.from_config({"limits_profile": "feearm", "end_ms": pe.FEEARM_END_MS, "arm_seed": 1})
         spend, pr = lim.size_lamports, 500_000
         wc = pe.feearm_new_buy_worst_case(spend, pr)
-        self.assertEqual(wc, 10_000_000 + 505_000 + 2_500_000 + 3 * 505_000)
+        self.assertEqual(wc, 5_000_000 + 505_000 + 2_500_000 + 3 * 505_000)
         st = pe.State(mode="live")
         st.open["A"] = {"buy_cost_lamports": 12_500_000, "sell_attempts": 0, "arm_priority": 155_000}
         base = pe.feearm_committed_cost(st)
@@ -84,17 +86,20 @@ class PureTests(unittest.TestCase):
     def test_sends_cap(self):
         lim = pe.Limits.from_config({"limits_profile": "feearm", "end_ms": pe.FEEARM_END_MS, "arm_seed": 1})
         st = pe.State(mode="live", feearm={"sends": 298})
-        self.assertIsNone(pe.feearm_buy_refusal(lim, st, 10_000_000, 155_000))
+        self.assertIsNone(pe.feearm_buy_refusal(lim, st, 5_000_000, 155_000))
         st.feearm["sends"] = 299
-        self.assertEqual(pe.feearm_buy_refusal(lim, st, 10_000_000, 155_000), "max_sends")
+        self.assertEqual(pe.feearm_buy_refusal(lim, st, 5_000_000, 155_000), "max_sends")
 
     def test_expected_cost_arithmetic_quoted_in_amendment_2(self):
         rt_control, rt_test = 2 * (5_000 + 500_000), 2 * (5_000 + 155_000)
         self.assertEqual((rt_control, rt_test), (1_010_000, 320_000))
-        price_pool = 489_000  # 0.01 SOL x 4.89% (probe-final mean loss 6.9% of stake less 2.02% fees)
+        price_pool = 244_500  # 0.005 SOL x 4.89% (probe-final mean loss 6.9% of stake less 2.02% fees)
         pair = rt_control + rt_test + 2 * price_pool
-        self.assertEqual(pair, 2_308_000)
-        self.assertEqual(CAP // pair, 64)  # pairs the cap pays for in expectation: about 64 per arm, not 100
+        self.assertEqual(pair, 1_819_000)
+        self.assertEqual(CAP // pair, 82)  # pairs the cap pays for in expectation
+        last_buy = pe.feearm_new_buy_worst_case(5_000_000, 500_000)
+        self.assertEqual(last_buy, 9_520_000)
+        self.assertEqual((CAP - last_buy) // pair, 77)  # about 75 to 77 per arm once the last buy's reservation is held back
 
 
 class ExecTests(unittest.TestCase):
@@ -181,7 +186,7 @@ class ExecTests(unittest.TestCase):
 
     def test_send_guard_blocks_first_send_of_buy_over_cap(self):
         ex, rpc, clock, kp, conf = self.mk()
-        p = {"kind": "buy", "spend": 10_000_000, "arm_priority": 500_000, "sends": 0}
+        p = {"kind": "buy", "spend": 5_000_000, "arm_priority": 500_000, "sends": 0}
         ex.state.pending["X"] = p
         ex.state.realized_lamports = -CAP
         ex._send(p, "X")
@@ -216,6 +221,56 @@ class ExecTests(unittest.TestCase):
         pe.State(mode="live", open={"M": {}}).save(self.tmp / "state-live-feearm.json")
         with self.assertRaises(SystemExit):
             make_live(self.tmp)  # dec019 profile
+
+    def test_estimated_meta_counts_the_rent_reserve_so_two_positions_cannot_cross_the_cap(self):
+        ex, rpc, clock, kp, conf = self.mk()
+        p = signal_buy(ex, clock)
+        rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        rpc.token_balance = 999
+        ex.advance_pending()
+        clock.t += pl.META_FALLBACK_MS
+        ex.advance_pending()  # no meta for 60 s: booked from the estimate
+        pos = ex.state.open[MINT]
+        fee = 5_000 + p["arm_priority"]
+        self.assertEqual(pos["buy_cost_lamports"], p["spend"] + fee + pe.FEEARM_RENT_RESERVE_LAMPORTS)
+        self.assertTrue([r for r in fills(conf) if r["kind"] == "buy"][-1]["estimated"])
+        committed = pe.feearm_committed_cost(ex.state, ex.sell_max_attempts)
+        arm1 = pe.feearm_pick(7, 1)
+        wc = pe.feearm_new_buy_worst_case(ex.limits.size_lamports, arm1[1], ex.sell_max_attempts)
+        # Without the reserve the position would look 2.5M cheaper: this realized loss puts the old accounting exactly AT the cap
+        # (admitted), so the real accounting is 2.5M over it and the second buy must be refused.
+        ex.state.realized_lamports = -(CAP - wc - (committed - pe.FEEARM_RENT_RESERVE_LAMPORTS))
+        pos["buy_cost_lamports"] -= pe.FEEARM_RENT_RESERVE_LAMPORTS  # the old (rent-blind) booking: exactly at the cap, admitted
+        self.assertIsNone(pe.feearm_buy_refusal(ex.limits, ex.state, ex.limits.size_lamports, arm1[1], ex.sell_max_attempts))
+        pos["buy_cost_lamports"] += pe.FEEARM_RENT_RESERVE_LAMPORTS  # the fixed booking: over the cap by the reserve, refused
+        self.assertEqual(pe.feearm_buy_refusal(ex.limits, ex.state, ex.limits.size_lamports, arm1[1], ex.sell_max_attempts), "spend_cap")
+
+    def test_stuck_then_abandoned_sells_stay_inside_the_cap_and_attempts_are_the_reserved_three(self):
+        ex, rpc, clock, kp, conf = self.mk(sell_retries=99, sell_max_attempts=99)
+        self.assertEqual((ex.sell_max_attempts, ex.sell_retries), (3, 3))  # config cannot exceed the 3 reserved
+        pos = open_position(ex, rpc, clock)
+        buy_cost = pos["buy_cost_lamports"]
+        clock.t += 31 * 60_000
+        sent = sell_stuck_helper(ex, rpc, clock, 100)
+        self.assertEqual(sent, 3)  # never more than the 3 reserved attempts
+        pos = ex.state.open[MINT]
+        self.assertEqual((pos["sell_attempts"], pos["stuck"], pos["abandoned"]), (3, True, True))
+        alerts = [r.get("alert") for r in fills(conf) if r["kind"] == "alert"]
+        self.assertIn("sell_stuck", alerts)
+        self.assertIn("sell_abandoned", alerts)
+        self.assertEqual(ex.state.realized_lamports, -3 * 505_000)  # each landed failed sell's fee, once
+        committed = pe.feearm_committed_cost(ex.state, ex.sell_max_attempts)
+        self.assertEqual(committed, buy_cost + 3 * 505_000)  # no double count, no sell reserve left on the abandoned position
+        arm1 = pe.feearm_pick(7, 1)
+        size = ex.limits.size_lamports
+        wc = pe.feearm_new_buy_worst_case(size, arm1[1], ex.sell_max_attempts)
+        ex.state.realized_lamports = -(CAP - wc - buy_cost)  # committed + worst case == CAP exactly
+        self.assertEqual(pe.feearm_committed_cost(ex.state, 3) + wc, CAP)
+        self.assertIsNone(pe.feearm_buy_refusal(ex.limits, ex.state, size, arm1[1], 3))
+        ex.state.realized_lamports -= 1
+        self.assertEqual(pe.feearm_buy_refusal(ex.limits, ex.state, size, arm1[1], 3), "spend_cap")
+        ex.handle_signal(mk_sig(ex, mint="11111111111111111111111111111112", t=clock()))  # an abandoned position halts new buys too
+        self.assertEqual(fills(conf)[-1]["reason"], "limit:sell_stuck")
 
 
 if __name__ == "__main__":

@@ -643,7 +643,10 @@ class LiveExecutor(pe.Executor):
         bal = self._ata_balance(p["base_ata"])
         if bal is None:
             return None
-        return {**base, "err": None, "sol_delta": -(p["spend"] + fee), "token_delta": bal}
+        cost = p["spend"] + fee
+        if self.fa is not None:  # feearm: the estimate cannot see the ATA rent, so hold the cap's whole rent reserve (QP 3)
+            cost += pe.FEEARM_RENT_RESERVE_LAMPORTS
+        return {**base, "err": None, "sol_delta": -cost, "token_delta": bal}
 
     def _fa_fees(self, m: dict[str, Any]) -> None:
         """feearm: running total of base + priority fees actually paid by landed transactions (reporting; the cap reads realized)."""

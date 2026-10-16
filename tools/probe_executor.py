@@ -179,11 +179,11 @@ DEC020_END_MS: int | None = None  # owner end instant, ms epoch UTC; None = dec0
 # these, never raise them. FEEARM_SPEND_CAP_LAMPORTS is the HARD 0.15 SOL cost cap (see feearm_committed_cost).
 FEEARM_SPEND_CAP_LAMPORTS = 150_000_000
 FEEARM_MAX = {
-    "max_attempts": 150,           # buy attempts; the spend cap binds first (about 65 per arm at the expected cost)
+    "max_attempts": 150,           # buy attempts; the net wallet-loss cap binds first (about 65 per arm at the expected cost)
     "max_open": 2,
     "loss_cap_lamports": FEEARM_SPEND_CAP_LAMPORTS,
     "max_days": 5,
-    "size_lamports": 10_000_000,   # 0.01 SOL
+    "size_lamports": 5_000_000,    # 0.005 SOL (QP 2: about 75 per arm under the cap)
     "priority_lamports": 500_000,  # the control arm; also the whitelist ceiling
     "spend_cap_lamports": FEEARM_SPEND_CAP_LAMPORTS,
     "max_sends": 300,              # transactions sent, buys and sells (rebroadcasts of one signed tx count once)
@@ -504,7 +504,7 @@ def feearm_sell_fee(priority: int) -> int:
 def feearm_committed_cost(st: "State", sell_attempts: int = FEEARM_SELL_ATTEMPTS) -> int:
     """Lamports of the wallet that are spent or at risk, worst case, right now. No fee is counted twice:
     - realized: `-st.realized_lamports` when negative. It already contains the base + priority fees, pool fees and price
-      moves of every closed round trip and every landed failed buy or sell. A net gain does not lower the cost (floor 0).
+      moves of every closed round trip and every landed failed buy or sell. The cost is the net realized loss, floored at 0 overall: a later win offsets an earlier loss and frees headroom.
     - every open position: buy_cost_lamports (stake + buy fees + ATA rent, all lost if the token goes to zero and the rent is
       stranded) plus the sell fees of the sell attempts it may still make (arm priority + base each).
     - every in-flight buy: stake + buy fee + RENT_RESERVE + the sell fees reserved for it.
@@ -527,7 +527,7 @@ def feearm_new_buy_worst_case(spend: int, priority: int, sell_attempts: int = FE
 
 def feearm_buy_refusal(limits: "Limits", st: "State", spend: int, priority: int, sell_attempts: int = FEEARM_SELL_ATTEMPTS) -> str | None:
     """None, or the reason a new buy must not be sent. The HARD cap: committed cost + this buy's worst case must not exceed
-    limits.spend_cap_lamports (<= FEEARM_SPEND_CAP_LAMPORTS in code). Also the total-sends cap: sends so far, this buy, and one
+    limits.spend_cap_lamports (<= FEEARM_SPEND_CAP_LAMPORTS in code). Also the (soft) sends cap: sends so far, this buy, and one
     sell for it and for every position that still has to sell, must fit max_sends."""
     if feearm_committed_cost(st, sell_attempts) + feearm_new_buy_worst_case(spend, priority, sell_attempts) > limits.spend_cap_lamports:
         return "spend_cap"
