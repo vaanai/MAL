@@ -33,14 +33,21 @@ create rows), no `fm_*`. Times are `event_ts * 1000` (whole seconds; `block_time
 Ordering uses (slot, event_index, arrival): `tx_index` is not on the D1 allowlist, so the mask drops it.
 
 Joining these outputs to any D0, D2 or D3 table of the same mint stays forbidden while a seal on that pool holds.
+
+Malformed lines (not valid JSON): counted and skipped per file and stream, never repaired; byte offsets go to
+SKIPPED_MALFORMED.json in --out; a file with more than min(10 lines, 0.01% of its lines) bad, or whose last line is bad,
+refuses the run (exit 2). Memory: one hour at a time, compact tuples and column lists, `--max-rss-gb` (default 10) self-check.
+`--precount` = the count-only mode for real files (SKIP_MALFORMED lines, hourly counts, input sha256s, no Parquet outputs).
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -76,6 +83,11 @@ _EXTRA_FORBIDDEN_OUT = ("pumpswap", "ps_", "v_lamports", "v0", "grad", "pool", "
 # `--precount` runs the passes up to this check and writes PRECOUNT.json (no Parquet outputs).
 MAX_MISSED_FRACTION = 0.005
 MIN_EXACT_FRACTION = 0.95
+# Counted-skip rule for malformed lines (proposed in the PR; QP-reviewed). A file is refused if its malformed lines exceed
+# min(MAX_MALFORMED_LINES_PER_FILE, floor(MAX_MALFORMED_FRACTION * its non-blank lines)), or if its last line is malformed.
+# On a 100k-line hour the two limits coincide (10 lines); on a short file the fraction makes ANY bad line a refusal.
+MAX_MALFORMED_LINES_PER_FILE = 10
+MAX_MALFORMED_FRACTION = 0.0001
 SKIP_KEYS = ("not_trade", "pool_venue", "after_migrate", "after_complete")
 STAGE_COLUMNS = ("mint", "trader", "is_buy", "lam", "tok", "q", "b", "slot", "ei", "ord", "seq", "ms", "price")
 CREATE_FIELDS = ("mint", "slot", "event_index", "event_ts")
@@ -108,33 +120,47 @@ class _Positions(Mapping):
         return len(self.data)
 
 
-def _lines_pyarrow(path: Path) -> Iterator[str]:
-    import pyarrow as pa
+def _raw_lines(path: Path) -> Iterator[bytes]:
+    """Raw lines of one hour file as bytes (split on b"\n" only; the terminator is kept), streamed in 1 MiB chunks.
+    zstandard when importable, else pyarrow. Bytes, so a bad UTF-8 byte stays inside its own line and byte offsets
+    are exact offsets in the decompressed stream."""
+    try:
+        import zstandard
+    except ImportError:
+        zstandard = None
+    if zstandard is not None and path.suffix == ".zst":
+        with open(path, "rb") as fh, zstandard.ZstdDecompressor().stream_reader(fh) as rd:
+            yield from _split_stream(rd)
+    elif zstandard is None and path.suffix == ".zst":
+        import pyarrow as pa
 
-    with pa.OSFile(str(path), "rb") as f:
-        s = pa.CompressedInputStream(f, "zstd") if path.suffix == ".zst" else f
-        buf = b""
-        while True:
-            chunk = s.read(1 << 20)
-            if not chunk:
-                break
-            parts = (buf + chunk).split(b"\n")
-            buf = parts.pop()
-            for p in parts:
-                yield p.decode("utf-8") + "\n"
-        if buf:
-            yield buf.decode("utf-8")
+        with pa.OSFile(str(path), "rb") as f, pa.CompressedInputStream(f, "zstd") as s:
+            yield from _split_stream(s)
+    else:
+        with open(path, "rb") as fh:
+            yield from _split_stream(fh)
+
+
+def _split_stream(s: Any) -> Iterator[bytes]:
+    buf = b""
+    while True:
+        chunk = s.read(1 << 20)
+        if not chunk:
+            break
+        parts = (buf + chunk).split(b"\n")
+        buf = parts.pop()
+        for p in parts:
+            yield p + b"\n"
+    if buf:
+        yield buf
 
 
 def _install_reader() -> str:
-    """Use the module's zstandard reader when importable, else pyarrow (the module-level `_lines` is what
-    `migrate_positions` calls, so one reader serves both)."""
     try:
         import zstandard  # noqa: F401
 
         return "zstandard"
     except ImportError:
-        oc._lines = _lines_pyarrow
         return "pyarrow"
 
 
@@ -188,14 +214,113 @@ def complete_gate_reasons(n_traded_migrated: int, n_missed: int, n_exact: int, n
     return out
 
 
-def _json_rows(path: Path) -> Iterator[dict[str, Any]]:
-    for n, line in enumerate(oc._lines(path), 1):
-        if not line.strip():
-            continue
-        try:
-            yield json.loads(line)
-        except ValueError:
-            raise LayerRefused(f"{path.name}: line {n} is not JSON (fail closed)") from None
+class MalformedTracker:
+    """Counted-skip rule for lines that are not valid JSON (QP-reviewed rule; never "repairs" a line).
+
+    Every line of every file read goes through `rows` (creates, trades) or `valid_lines` (migrations, feeding
+    `oc.migrate_positions`). A line that is not valid JSON (or not valid UTF-8, or not a JSON object) is counted per
+    file and per stream and skipped; its byte offset (in the decompressed stream) goes to the sidecar. At the end of
+    each file the file REFUSES (LayerRefused, exit 2) if
+      * bad lines > min(MAX_MALFORMED_LINES_PER_FILE, floor(MAX_MALFORMED_FRACTION * non-blank lines)), or
+      * the last non-blank line of the file is malformed (a hour file cut mid-line looks exactly like this)."""
+
+    def __init__(self) -> None:
+        self.files: list[dict[str, Any]] = []
+
+    def _scan(self, path: Path, stream: str) -> Iterator[tuple[bytes, Any]]:
+        n_lines = n_bad = 0
+        first_line, last_bad, off = 0, False, 0
+        offsets: list[dict[str, int]] = []
+        for i, raw in enumerate(_raw_lines(path), 1):
+            start, off = off, off + len(raw)
+            if not raw.strip():
+                continue
+            n_lines += 1
+            try:
+                obj = json.loads(raw.decode("utf-8"))
+                if not isinstance(obj, dict):
+                    raise ValueError("not an object")
+            except ValueError:  # includes UnicodeDecodeError and JSONDecodeError
+                n_bad += 1
+                last_bad = True
+                if not first_line:
+                    first_line = i
+                if len(offsets) <= MAX_MALFORMED_LINES_PER_FILE:  # bounded: a refusal follows past the limit anyway
+                    offsets.append({"line": i, "byte_offset": start, "bytes": len(raw)})
+                continue
+            last_bad = False
+            yield raw, obj
+        rec = {"file": path.name, "stream": stream, "n_lines": n_lines, "n_malformed": n_bad,
+               "first_line": first_line or None, "last_line_malformed": last_bad,
+               "offsets": offsets, "offsets_truncated": n_bad > len(offsets)}
+        self.files.append(rec)
+        if n_bad:
+            print(f"SKIP_MALFORMED file={path.name} n={n_bad} first_line={first_line}", flush=True)
+        reasons = malformed_refusal_reasons(n_lines, n_bad, last_bad)
+        if reasons:
+            raise LayerRefused(f"{path.name}: " + "; ".join(reasons) + " (fail closed)")
+
+    def rows(self, path: Path, stream: str) -> Iterator[dict[str, Any]]:
+        for _, obj in self._scan(path, stream):
+            yield obj
+
+    def valid_lines(self, path: Path, stream: str) -> Iterator[str]:
+        for raw, _ in self._scan(path, stream):
+            yield raw.decode("utf-8")
+
+    def totals(self) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for f in self.files:
+            t = out.setdefault(f["stream"], {"files": 0, "files_with_malformed": 0, "lines": 0, "malformed": 0})
+            t["files"] += 1
+            t["files_with_malformed"] += 1 if f["n_malformed"] else 0
+            t["lines"] += f["n_lines"]
+            t["malformed"] += f["n_malformed"]
+        return out
+
+    def report(self) -> dict[str, Any]:
+        return {"rule": {"max_malformed_lines_per_file": MAX_MALFORMED_LINES_PER_FILE,
+                         "max_malformed_fraction": MAX_MALFORMED_FRACTION,
+                         "offsets": "byte offsets of the line start in the decompressed stream"},
+                "totals": self.totals(), "files_with_malformed": [f for f in self.files if f["n_malformed"]]}
+
+    def print_totals(self) -> None:
+        for stream, t in sorted(self.totals().items()):
+            print(f"SKIP_MALFORMED_TOTAL stream={stream} files={t['files']} files_with_malformed={t['files_with_malformed']} "
+                  f"n={t['malformed']} of_lines={t['lines']}", flush=True)
+
+
+def malformed_refusal_reasons(n_lines: int, n_bad: int, last_line_bad: bool) -> list[str]:
+    """Reasons one file is refused under the counted-skip rule (empty = the file passes)."""
+    out: list[str] = []
+    allowed = min(MAX_MALFORMED_LINES_PER_FILE, int(MAX_MALFORMED_FRACTION * n_lines))
+    if n_bad > allowed:
+        out.append(f"{n_bad} malformed lines of {n_lines} exceed the limit {allowed} "
+                   f"(min of {MAX_MALFORMED_LINES_PER_FILE} lines and {MAX_MALFORMED_FRACTION:.2%} of lines)")
+    if last_line_bad:
+        out.append("the last line is malformed (possible truncation of a sealed hour)")
+    return out
+
+
+def _rss_gb() -> float:
+    """Peak RSS of this process in GB (ru_maxrss is KiB on Linux)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1 << 20)
+
+
+def check_rss(limit_gb: float, where: str) -> None:
+    rss = _rss_gb()
+    if rss > limit_gb:
+        raise LayerRefused(f"peak RSS {rss:.2f} GB exceeds --max-rss-gb {limit_gb} at {where}; aborted cleanly")
+
+
+def _trim() -> None:
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # return freed arenas to the OS (glibc only)
+    except (OSError, AttributeError):
+        pass
 
 
 def _stage_row(r: dict[str, Any], seq: int) -> dict[str, Any] | None:
@@ -220,7 +345,36 @@ def _merge_skips(into: dict[str, int], add: Mapping[str, int]) -> None:
         into[k] = into.get(k, 0) + v
 
 
+SIDECAR = "SKIPPED_MALFORMED.json"
+# Usage rules the QP review (comment 6210510054) requires in the output dir and in every hunt brief.
+README_USAGE = """# October D1 layer: usage rules (binding)
+
+1. Exploration only. Never confirmation or gate evidence for any October family.
+2. No join, by mint, trader, signature, slot or time, to any D0/D2/D3/D4 table, PumpSwap/pool/V/seed/synthetic/BOOST
+   data, EXP-012/024/025 outputs, C1-NF labels, H5 canary/shadow or walk 2, while any seal on that pool holds.
+3. Entry and exit are bonding prints of the same mint, and the exit is at or before the complete post-state. A position
+   open at the end is censored, never priced at a pool. "Migrated", "V-range" and any post-graduation return are not labels.
+4. `sol` and `price` are in quote units: quote_mint is masked, and non-WSOL curves are not excluded. There are no fees in
+   the data, so any P&L applies the lab's fee model explicitly. Same-slot order across transactions is not chronological.
+5. Read only a dir with MANIFEST.json and empty `gate_reasons`. Cite `complete_detection` with any result.
+6. Malformed input lines were counted and skipped, never repaired: see SKIPPED_MALFORMED.json and MANIFEST.malformed_lines.
+"""
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    """`_run` plus the malformed-line sidecar, which is written whether the run completes or refuses."""
+    tracker = MalformedTracker()
+    try:
+        return _run(args, tracker)
+    finally:
+        if tracker.files:
+            tracker.print_totals()
+            out = Path(args.out)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / SIDECAR).write_text(json.dumps(tracker.report(), indent=1, sort_keys=True), encoding="utf-8")
+
+
+def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
     import duckdb
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -229,6 +383,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     dataset, start, end = args.dataset, args.start, args.end
     out = Path(args.out)
     reader = _install_reader()
+    max_rss = float(args.max_rss_gb)
     hours = _hours(start, end)
     if not hours:
         raise LayerRefused("empty hour range")
@@ -256,6 +411,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                           "bc_first_base_reserve"])
 
     out.mkdir(parents=True, exist_ok=True)
+    if not args.precount:
+        (out / "README_D1_USAGE.md").write_text(README_USAGE, encoding="utf-8")
     stage = out / "tmp" / "stage"
     shutil.rmtree(out / "tmp", ignore_errors=True)
     stage.mkdir(parents=True)
@@ -264,11 +421,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     def hashed(p: Path, kind: str, hour: str) -> None:
         sha, n = _sha256(p)
         inputs.append({"path": str(p), "kind": kind, "hour": hour, "sha256": sha, "bytes": n})
+        print(f"input {kind} {hour} sha256={sha}", flush=True)
 
     # migrate map: the only use of migrations/ (mint, slot, event_index), from the full tape through 10-16T01
     for p, h in zip(mig_p, mig_hours):
         hashed(p, "migrations", h)
-    mig_filled.update(oc.migrate_positions(blocks, dataset, start, oc.FORWARD_END_EXCLUSIVE, mig_p))
+    # migrate_positions reads through oc._lines: hand it only the lines that are valid JSON objects (counted, per file)
+    real_lines = oc._lines
+    oc._lines = lambda path: tracker.valid_lines(Path(path), "migrations")
+    try:
+        mig_filled.update(oc.migrate_positions(blocks, dataset, start, oc.FORWARD_END_EXCLUSIVE, mig_p))
+    finally:
+        oc._lines = real_lines
+    check_rss(max_rss, "after the migrate map")
     migrate_pos = _Positions(mig_filled)
     complete_pos = _Positions()
     complete_info: dict[str, tuple[int, int, int]] = {}  # mint -> (slot, ei, ms)
@@ -283,7 +448,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         hashed(tp, "trades", h)
         hashed(cp, "creates", h)
         n_creates = 0
-        for r in _json_rows(cp):  # create rows: mask_row only (identities; creator/name/symbol are not in the mask)
+        for r in tracker.rows(cp, "creates"):  # create rows: mask_row only (identities; creator/name/symbol are not in the mask)
             m = oc.mask_row(ROLE, r)
             if m.get("type") != "create" or not isinstance(m.get("mint"), str):
                 n_create_other += 1
@@ -292,16 +457,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             key = (int(m["slot"]), int(m.get("event_index") or 0), int(m["event_ts"]))
             if m["mint"] not in creates or key < creates[m["mint"]]:
                 creates[m["mint"]] = key
-        # pass A: guarded + masked rows of the hour (live migrate/complete maps), buffered
+        # pass A: guarded + masked rows of the hour (live migrate/complete maps), buffered as compact tuples (no dicts)
         skA: dict[str, int] = {}
-        buf = list(oc.guarded_rows(ROLE, _json_rows(tp), migrate_pos, complete_pos, None, skA))
+        buf: list[tuple] = []
+        for r in oc.guarded_rows(ROLE, tracker.rows(tp, "trades"), migrate_pos, complete_pos, None, skA):
+            buf.append((r["mint"], r.get("trader"), r.get("side"), r.get("sol_lamports"), r.get("token_raw"),
+                        r.get("quote_reserve"), r.get("base_reserve"), r["slot"], r["event_index"], r["event_ts"]))
         # complete detection on masked rows only
         found: dict[str, tuple[int, int, int, int]] = {}
-        for r in buf:
-            b = r.get("base_reserve")
-            if r.get("side") == "buy" and isinstance(b, int) and b <= COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW:
-                pos = (int(r["slot"]), int(r["event_index"]), int(r["event_ts"]) * 1000, b)
-                m = r["mint"]
+        for t in buf:
+            b = t[6]
+            if t[2] == "buy" and isinstance(b, int) and b <= COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW:
+                pos = (int(t[7]), int(t[8]), int(t[9]) * 1000, b)
+                m = t[0]
                 if m not in found or pos[:2] < found[m][:2]:
                     found[m] = pos
         for m, pos in found.items():
@@ -310,25 +478,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             complete_pos.data[m] = pos[:2]
             complete_info[m] = pos[:3]
             det["exact" if pos[3] == COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW else "below"] += 1
+
+        def _again() -> Iterator[dict[str, Any]]:  # one dict at a time; mask_row is idempotent on these allowlisted keys
+            for t in buf:
+                d = {"type": "trade", "venue": oc.BONDING_VENUE}
+                d.update({k: v for k, v in zip(("mint", "trader", "side", "sol_lamports", "token_raw", "quote_reserve",
+                                                "base_reserve", "slot", "event_index", "event_ts"), t) if v is not None})
+                yield d
+
         # pass B: the same verdicts again with the complete positions known (drops rows after `complete`)
         skB: dict[str, int] = {}
-        kept = list(oc.guarded_rows(ROLE, buf, migrate_pos, complete_pos, None, skB))
-        _merge_skips(skipped, skA)
-        _merge_skips(skipped, skB)
-        recs = []
-        for i, r in enumerate(kept):
-            s = _stage_row(r, idx * 10_000_000 + i)
-            if s is None:
+        cols: dict[str, list] = {c: [] for c in STAGE_COLUMNS}
+        mints_h: set[str] = set()
+        for i, r in enumerate(oc.guarded_rows(ROLE, _again(), migrate_pos, complete_pos, None, skB)):
+            s_ = _stage_row(r, idx * 10_000_000 + i)
+            if s_ is None:
                 n_bad_reserves += 1
             else:
-                recs.append(s)
-        if recs:
-            tb = pa.table({c: [x[c] for x in recs] for c in STAGE_COLUMNS})
-            pq.write_table(tb, stage / f"{h}.parquet", compression="zstd", compression_level=3)
-        n_stage += len(recs)
-        coverage.append({"hour": h, "bonding_prints": len(recs), "mints_with_prints": len({x["mint"] for x in recs}),
+                for c in STAGE_COLUMNS:
+                    cols[c].append(s_[c])
+                mints_h.add(s_["mint"])
+        del buf
+        _merge_skips(skipped, skA)
+        _merge_skips(skipped, skB)
+        n_h = len(cols["mint"])
+        if n_h:
+            pq.write_table(pa.table(cols), stage / f"{h}.parquet", compression="zstd", compression_level=3)
+        n_stage += n_h
+        del cols
+        _trim()
+        check_rss(max_rss, f"hour {h}")
+        coverage.append({"hour": h, "bonding_prints": n_h, "mints_with_prints": len(mints_h),
                          "creates": n_creates, "completes": len(found)})
-        print(f"hour {h} prints={len(recs)} creates={n_creates} completes={len(found)}", flush=True)
+        print(f"hour {h} prints={n_h} creates={n_creates} completes={len(found)} peak_rss_gb={_rss_gb():.2f}", flush=True)
 
     con = duckdb.connect(str(out / "tmp" / "d1.duckdb"))
     con.execute(f"SET memory_limit='{args.memory_gb}GB'")
@@ -377,7 +559,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if args.precount:
             (out / "PRECOUNT.json").write_text(json.dumps({"complete_detection": detection, "n_staged_prints": n_stage,
                                                            "skipped_rows": skipped, "coverage_per_hour": coverage,
-                                                           "inputs": inputs}, indent=1, sort_keys=True), encoding="utf-8")
+                                                           "malformed_lines": tracker.report()["totals"],
+                                                           "peak_rss_gb": _rss_gb(), "inputs": inputs}, indent=1, sort_keys=True), encoding="utf-8")
         if gate:
             raise LayerRefused("complete-detection gate failed (no output written): " + "; ".join(gate))
         return {"precount": detection}
@@ -434,6 +617,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 FROM b LEFT JOIN n ON n.mint = b.mint AND n.minute_ms = b.minute_ms
                 ORDER BY b.mint, b.minute_ms""").fetch_arrow_table()
             write(bars, out / "bars_1m" / f"{day}.parquet")
+            check_rss(max_rss, f"day {day}")
             prints = con.execute("""
                 SELECT mint, slot, ei AS event_index, ms, seq, CASE WHEN is_buy THEN 'buy' ELSE 'sell' END AS side,
                        lam / 1e9 AS sol, lam AS sol_lamports, tok AS token_raw, q AS quote_reserve, b AS base_reserve,
@@ -460,6 +644,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "python": sys.version.split()[0], "pyarrow": pa.__version__, "duckdb": duckdb.__version__,
         "complete_rule": {"buy_with_base_reserve_at_or_below": COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW},
         "complete_detection": detection,
+        "malformed_lines": tracker.report()["totals"], "malformed_sidecar": SIDECAR, "peak_rss_gb": _rss_gb(),
         "skipped_rows": skipped, "skipped_bad_reserves": n_bad_reserves, "create_rows_not_type_create": n_create_other,
         "n_migrate_positions": len(mig_filled), "inputs": inputs, "row_counts": {k: v["rows"] for k, v in outputs.items()},
         "outputs": outputs, "coverage_per_hour": coverage,
@@ -493,10 +678,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--memory-gb", type=int, default=3)
     ap.add_argument("--threads", type=int, default=2)
+    ap.add_argument("--max-rss-gb", type=float, default=10.0,
+                    help="abort cleanly (exit 2) if the peak RSS of this process exceeds this many GB (checked per hour/day)")
     ap.add_argument("--precount", action="store_true",
                     help="stage and run the complete-detection gate only; write PRECOUNT.json, no Parquet outputs")
     a = ap.parse_args(argv)
-    for stale in ("MANIFEST.json", "PRECOUNT.json"):  # a failed rerun must not leave an old manifest in --out
+    for stale in ("MANIFEST.json", "PRECOUNT.json", SIDECAR, "README_D1_USAGE.md"):  # a failed rerun must not leave an old manifest in --out
         (Path(a.out) / stale).unlink(missing_ok=True)
     try:
         m = run(a)
