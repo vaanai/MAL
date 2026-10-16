@@ -221,3 +221,20 @@ Never print, copy or commit the key file. Never raise a limit in config: config 
 ## 2b-feearm. Fee-arm probe (DEC-019 Amendment 2). DRAFT: NOT installed, needs quant-proof OK on the exact head and the owner dated OK
 
 Profile `feearm` (config `scripts/mal-fast/probe-executor-live-feearm.json`, drop-in `mal-probe-executor-live-pinned-feearm.conf`, both in the installer EXTRA list). Own state file `state-live-feearm.json`, own fill log `probe-fills-feearm.jsonl` (rows tagged `limits_profile:"feearm"` and carrying `fee_arm`). Hard cap 150,000,000 lamports in code (`FEEARM_SPEND_CAP_LAMPORTS`), stake 0.005 SOL, per-mint arms 500,000 vs 155,000 priority, end 2026-10-22T00:00Z. Install steps, stop rule, wallet-overlap rules and the H5 STOP check are in DEC-019 Amendment 2; this section adds nothing to them. Status prints a `feearm committed_cost_lamports=... sends=... arms=...` line. Stop: the wallet-wide `/var/lib/mal-live/STOP` / `HALT`.
+
+### Watch (fee-arm manual stop conditions)
+
+`tools/feearm_watch.py` checks the three manual stops of DEC-019 Amendment 2 (more than 3 of the first 20 test-arm buys expired unlanded; any `unsafe_tx_refused`, `sell_stuck` or `sell_abandoned` alert; wallet balance more than 0.005 SOL away from start balance plus realized minus open cost). It is read-only, stdlib only, reads local copies, opens no key path, and prints counts plus the committed-cost/cap figure, never P&L. Exit 0 = `FEEARM_WATCH OK`, 3 = `FEEARM_WATCH STOP_RECOMMENDED reason=...`, 2 = unreadable input (fail loud). Run it as a MiScusi job on `mal-fast-0` (`sh`, no bash-isms). `BAL` and `START` are the public wallet balance now and at probe start, in lamports, read by the manager (leave both empty to skip the balance check):
+
+```
+set -eu
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+sudo -n dd iflag=nofollow status=none if=/var/lib/mal-live/state-live-feearm.json of="$T/state.json"
+sudo -n dd iflag=nofollow status=none if=/var/lib/mal-live/probe-fills-feearm.jsonl of="$T/ledger.jsonl"
+B=""; [ -n "${BAL:-}" ] && B="--balance-lamports $BAL --start-balance-lamports $START"
+rc=0; /data/mal/venv/bin/python -I "$HOME/MAL/tools/feearm_watch.py" --state "$T/state.json" --ledger "$T/ledger.jsonl" $B || rc=$?
+if [ "$rc" = 3 ]; then sudo -n touch /var/lib/mal-live/STOP; echo "FEEARM_WATCH STOP placed"; fi
+exit "$rc"
+```
+
+(`python3 -I` works the same; the tool needs only the standard library.) Alerts are rows of the one ledger (`"kind":"alert"`), so `--alerts` is only for a separate copy. On exit 3 the job touches the wallet-wide `STOP` (no new buys; exits and sells keep running) and reports; it never touches `HALT`. Per Amendment 2, the manager places STOP only together with a message to the owner, so the job's report is followed by that message. Exit 2 places nothing: investigate the input. Do not report P&L of the probe's intents from this output or the ledger.
