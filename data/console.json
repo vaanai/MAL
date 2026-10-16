@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-15T19:15:32Z",
+ "updated_utc": "2026-10-16T04:32:13Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "dec016-final-1016",
+   "kind": "other",
+   "title": "DEC-016 FINAL (A) written: FAIL, n_entered 859, reported compromised",
+   "detail": "Job #1038 (code_commit 578a63eac199c9175438e1ec651d1537944a89c5) wrote the FINAL at 2026-10-16T04:18:09Z: VERDICT FAIL on forward simulated paper (not money made), n_entered=859, n_total 10605 rows, 289 hours. Reported compromised (DEC-016 Amendment 2); no live support (Amendment 6 (g) D); EXP-012 was retired by the 2026-10-08 audit. Markers written at 2026-10-16T04:18:53Z to 04:18:58Z. F1 release condition met (D0 and D1 on forward-1002 and forward-1002ev); no D0 or D1 read runs until the two catalog roles and refusal tests merge with quant-proof OK. Walk 2 (job #1036) is running; job #382 cancelled at about 2026-10-16T04:29:50Z; job #433 done. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-16T04:32:13Z"
+  },
   {
    "id": "exp022-withdrawn-1015",
    "kind": "other",
@@ -580,7 +587,7 @@
    "id": "EXP-012",
    "title": "EXP-012 entry model (re-freeze)",
    "stage": "retired",
-   "note": "The 10-01 one-shot replay read passed the gate as configured, but the 10-08 audit shows the 10-01 pass was a scoring-setup artifact: +6.97% at k1 START vs +0.145% flat (+0.129% pressure) at realistic execution on the same 451 trades; at the gate setup even buy-all passes. The traded book (30-min hold, 0.05 SOL, 500k) is dead at realistic cost. Successor candidate: CAP-PICK (picks + seed guard + 300 s cap), weak, estimates only.",
+   "note": "The 10-01 one-shot replay read passed the gate as configured, but the 10-08 audit shows the 10-01 pass was a scoring-setup artifact: +6.97% at k1 START vs +0.145% flat (+0.129% pressure) at realistic execution on the same 451 trades; at the gate setup even buy-all passes. The traded book (30-min hold, 0.05 SOL, 500k) is dead at realistic cost. Successor candidate: CAP-PICK (picks + seed guard + 300 s cap), weak, estimates only. DEC-016 FINAL (A) 2026-10-16: FAIL, n_entered 859, reported compromised.",
    "tag": {
     "text": "pass was an artifact",
     "tone": "muted"
@@ -728,6 +735,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261016-dec016-final",
+   "from": "claude",
+   "atUtc": "2026-10-16T04:32:13Z",
+   "text": "The DEC-016 FINAL ran (EXP-012's one forward read on on-chain October hours, 6 to 16 October). Its verdict is FAIL on 859 entered trades of simulated forward paper; this is not money made or lost. It was reported compromised before it ran, gives no live support, and EXP-012 was already retired, so nothing changes in what we trade. What it unlocks: the October data you approved for research (F1) is now released for exploration, once two data-access filters are built and checked. No book has cleared the promotion gate."
+  },
   {
    "id": "fy-20261015-cap-pick-withdrawn",
    "from": "claude",
@@ -1042,6 +1055,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-final",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T04:32:13Z",
+   "text": "DEC-016 FINAL (A) written 2026-10-16T04:18:09Z by job #1038: FAIL on forward simulated paper (not money made), n_entered 859; reported compromised, no live support. Markers written (04:18:53Z to 04:18:58Z). F1 release condition met; D0 and D1 reads wait for the two catalog roles and their refusal tests. Walk 2 (job #1036) running; #382 cancelled at about 04:29:50Z (324 hours, credits_used 4,847,780); #433 done (169 hours, credits_used 2,754,540 of 3,600,000). Nothing here says any book made money. No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261015-outage",
    "from": "claude",
