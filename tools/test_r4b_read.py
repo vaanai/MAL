@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -121,7 +122,7 @@ def world(small, tmp_path_factory):
     mints["M1b"] = {"fetch_ok": False}  # a failed fetch is strand-class too
     (rec / "mints.json").write_text(json.dumps({"fetch_slot": 1, "mints": mints}))
     tries = rec / "tries.jsonl"
-    tries.write_text(json.dumps({"book": "r4-b", "exp": "EXP-027"}) + "\n")
+    tries.write_text(json.dumps({"config": {"key": "EXP-0271"}}) + "\n" + json.dumps({"config": {"key": "EXP-027"}, "tool": "x"}) + "\n")
     return {"root": root, "walk": walk, "counts": root / "counts", "rec": rec, "tries": tries, "ccfg": ccfg}
 
 
@@ -152,7 +153,7 @@ def mk(tmp_path, world, *, counts=None, exp_extra="", **over):
 
 def mkdeps(world, **kw):
     log: list[str] = []
-    d = dict(now_fn=lambda: HOUR0 + timedelta(hours=1 + 4 + 24), clean_fn=lambda p: [], decoder_fn=lambda ref: [], sph_fn=sph_ok, canonical_fn=pda_of,
+    d = dict(now_fn=lambda: HOUR0 + timedelta(hours=1 + 4 + 24), clean_fn=lambda p: [], window_fn=lambda e, l, st: ([], {"reg_commit": "r" * 40, "exp_sha256": "e" * 64, "prefix_sha256": "p" * 64, "appended": []}), decoder_fn=lambda ref: [], sph_fn=sph_ok, canonical_fn=pda_of,
              boosters_fn=lambda md: [FakeBooster()], models_check_fn=lambda md: [], head_fn=lambda: "deadbeef", stderr=log.append, memory_limit="2GB", threads=2,
              walk_pin=str(Path(world["walk"]).resolve()))
     d.update(kw)
@@ -453,7 +454,7 @@ def test_e1_record(tmp_path, world):
 
 def test_input_views_and_tries(tmp_path, world):
     refused(mk(tmp_path, world, EXP027_INPUT_VIEWS=f"{world['rec'] / 'view.txt'}@{'0' * 64}"), mkdeps(world), "input view")
-    refused(mk(tmp_path, world, EXP027_TRIES_ENTRY="EXP-999"), mkdeps(world), "no entry containing")
+    refused(mk(tmp_path, world, EXP027_TRIES_ENTRY="EXP-999"), mkdeps(world), "no entry whose key is exactly")
 
 
 def test_mint_account_file_pinned(tmp_path, world):
@@ -1355,3 +1356,266 @@ def test_failed_fetch_and_missing_mints_are_priced_at_the_higher_rent(tmp_path):
     t22a = np.array([{**t22}.get(m, True) for m in ("failed", "never_seen")], bool)
     pv = rr.price_variant(trip(strand_class=np.append(strand, False), rent_t22=np.append(t22a, False)), 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)
     assert pv["nofail"][0] == pv["nofail"][1] == -stake - send - 2_074_080
+
+
+# ---- window-record tamper evidence (EXP027-TAMPER-SPEC) on a temporary git repo with an origin/main ref ---------------------------------------------
+EXP_REL = "EXP/EXP-027-r4b-walk2-prereg.md"
+BODY = "# EXP-027 fixture\n\n```\nEXP027_BOOK_ID: r4-b\nEXP027_K: TO FILL\n```\n\n"
+T_REG = 1_800_000_000
+STARTED = datetime.fromtimestamp(T_REG + 10_000, timezone.utc)
+
+
+def gitc(repo, *a, when=None):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(repo), "GIT_CONFIG_GLOBAL": "/dev/null"}
+    if when is not None:
+        env["GIT_COMMITTER_DATE"] = env["GIT_AUTHOR_DATE"] = f"{when} +0000"
+    return subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, stdin=subprocess.DEVNULL, env=env, text=True).stdout.strip()
+
+
+def commit_exp(repo, text, when, msg="exp"):
+    (repo / EXP_REL).write_text(text)
+    gitc(repo, "add", EXP_REL)
+    gitc(repo, "commit", "-q", "-m", msg, when=when)
+
+
+def app_line(key, val="v", ts="2026-10-18T03:05Z"):
+    return f"{key}: {val} (appended {ts})\n"
+
+
+def publish(w):
+    gitc(w["repo"], "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+@pytest.fixture()
+def wrepo(tmp_path):
+    """repo with the EXP registered at reg (window record holds one placeholder line), the ledger committed after it, and origin/main = HEAD."""
+    repo = tmp_path / "wrepo"
+    (repo / "EXP").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    gitc(repo, "init", "-q", "-b", "main")
+    (repo / "seed").write_text("x")
+    gitc(repo, "add", "seed")
+    gitc(repo, "commit", "-q", "-m", "seed", when=T_REG - 100)
+    commit_exp(repo, BODY + "## Window record\n\nnothing appended yet\n", T_REG)
+    reg = gitc(repo, "rev-parse", "HEAD")
+    prefix_sha = hashlib.sha256(rr.body_prefix((repo / EXP_REL).read_bytes())).hexdigest()
+    (repo / "docs" / "HOLDOUT_LEDGER.md").write_text(f"# ledger\n\nEXP027_REG_COMMIT {reg}\nEXP027_PREFIX_SHA256 {prefix_sha}\n")
+    gitc(repo, "add", "docs")
+    gitc(repo, "commit", "-q", "-m", "ledger", when=T_REG + 1)
+    w = {"repo": repo, "reg": reg, "prefix": prefix_sha, "ledger": repo / "docs" / "HOLDOUT_LEDGER.md"}
+    publish(w)
+    return w
+
+
+def append_commit(w, line, when, pub=True):
+    p = w["repo"] / EXP_REL
+    p.write_text(p.read_text() + line)
+    gitc(w["repo"], "add", EXP_REL)
+    gitc(w["repo"], "commit", "-q", "-m", "append", when=when)
+    if pub:
+        publish(w)
+
+
+def guard(w, started=STARTED):
+    return rr.window_guard(w["repo"] / EXP_REL, started, w["repo"], w["ledger"])
+
+
+def must_refuse(w, needle, started=STARTED):
+    probs, _ = guard(w, started)
+    assert any(needle in x for x in probs), (needle, probs)
+    return probs
+
+
+def test_window_guard_accepts_an_append_only_history(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0", "2026-10-18T03"), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_K", "3"), T_REG + 200)
+    probs, info = guard(wrepo)
+    assert probs == [] and info["reg_commit"] == wrepo["reg"] and info["prefix_sha256"] == wrepo["prefix"]
+    assert sorted(a["key"] for a in info["appended"]) == ["EXP027_K", "EXP027_W0"] and len(info["exp_sha256"]) == 64
+
+
+def test_window_guard_accepts_with_no_appends(wrepo):
+    assert guard(wrepo)[0] == []
+
+
+def test_window_guard_refuses_a_body_edit_after_reg(wrepo):
+    commit_exp(wrepo["repo"], (wrepo["repo"] / EXP_REL).read_text().replace("TO FILL", "7"), T_REG + 50, "edit body")
+    publish(wrepo)
+    probs = must_refuse(wrepo, "body prefix sha256")
+    assert any("removes or changes" in x for x in probs)
+
+
+def test_window_guard_refuses_a_deletion_inside_the_window_record(wrepo):
+    commit_exp(wrepo["repo"], (wrepo["repo"] / EXP_REL).read_text().replace("nothing appended yet\n", ""), T_REG + 50, "delete")
+    publish(wrepo)
+    must_refuse(wrepo, "removes or changes")
+
+
+def test_window_guard_refuses_an_appended_line_later_deleted(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0"), T_REG + 100)
+    commit_exp(wrepo["repo"], (wrepo["repo"] / EXP_REL).read_text().replace(app_line("EXP027_W0"), ""), T_REG + 200, "delete again")
+    publish(wrepo)
+    must_refuse(wrepo, "must add exactly one non-empty line and remove none")  # the net diff is empty, the commit is not
+
+
+def test_window_guard_refuses_two_lines_in_one_commit(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0") + app_line("EXP027_K"), T_REG + 100)
+    must_refuse(wrepo, "adds 2")
+
+
+def test_window_guard_refuses_a_duplicate_key(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0", "a"), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_W0", "b"), T_REG + 200)
+    must_refuse(wrepo, "EXP027_W0 is appended more than once")
+
+
+def test_window_guard_refuses_a_bad_line_format(wrepo):
+    append_commit(wrepo, "EXP027_W0: 2026-10-18T03\n", T_REG + 100)
+    must_refuse(wrepo, "not `KEY: value (appended")
+
+
+def test_window_guard_refuses_a_commit_at_or_after_started(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0"), int(STARTED.timestamp()))  # equal to started: not earlier
+    must_refuse(wrepo, "not earlier than the read's start")
+    assert guard(wrepo, STARTED + timedelta(seconds=1))[0] == []
+
+
+def test_window_guard_refuses_head_not_descending_from_reg(wrepo):
+    repo = wrepo["repo"]
+    gitc(repo, "checkout", "-q", "--orphan", "other")
+    gitc(repo, "rm", "-rq", "--cached", ".")
+    (repo / "o").write_text("o")
+    gitc(repo, "add", "o")
+    gitc(repo, "commit", "-q", "-m", "unrelated root", when=T_REG + 5)
+    must_refuse(wrepo, "does not descend from the registration commit")
+
+
+@pytest.mark.parametrize("case", ["bad_reg", "bad_prefix", "reg_absent", "reg_twice", "reg_not_whole_line", "reg_short"])
+def test_window_guard_refuses_ledger_mismatches(wrepo, case):
+    led, reg, pre = wrepo["ledger"], wrepo["reg"], wrepo["prefix"]
+    good = led.read_text()
+    bad, needle = {
+        "bad_reg": (good.replace(reg, "a" * 40), "!= ledger EXP027_REG_COMMIT"),
+        "bad_prefix": (good.replace(pre, "b" * 64), "!= ledger EXP027_PREFIX_SHA256"),
+        "reg_absent": ("# ledger\n", "EXP027_REG_COMMIT matches 0 times"),
+        "reg_twice": (good + f"EXP027_REG_COMMIT {reg}\n", "EXP027_REG_COMMIT matches 2 times"),
+        "reg_not_whole_line": (good.replace("EXP027_REG_COMMIT", "- EXP027_REG_COMMIT"), "EXP027_REG_COMMIT matches 0 times"),
+        "reg_short": (good.replace(reg, reg[:39]), "EXP027_REG_COMMIT matches 0 times"),
+    }[case]
+    led.write_text(bad)
+    gitc(wrepo["repo"], "commit", "-qam", "ledger edit", when=T_REG + 2)
+    must_refuse(wrepo, needle)
+
+
+def test_window_guard_refuses_a_missing_or_uncommitted_ledger(wrepo):
+    wrepo["ledger"].write_text(wrepo["ledger"].read_text() + "\nedited, not committed\n")
+    must_refuse(wrepo, "differs from HEAD")
+    wrepo["ledger"].unlink()
+    must_refuse(wrepo, "does not exist")
+
+
+def test_window_guard_refuses_exp_blob_differing_from_origin_main(wrepo):
+    append_commit(wrepo, app_line("EXP027_W0"), T_REG + 100, pub=False)  # a well-formed append, but origin/main does not have it
+    must_refuse(wrepo, "differs from origin/main")
+
+
+def test_window_guard_refuses_when_origin_never_added_the_exp(wrepo):
+    gitc(wrepo["repo"], "update-ref", "refs/remotes/origin/main", f"{wrepo['reg']}~1")
+    must_refuse(wrepo, "no commit on origin/main added")
+
+
+def test_window_guard_refuses_a_merge_commit_touching_the_exp(wrepo):
+    repo = wrepo["repo"]
+    gitc(repo, "checkout", "-q", "-b", "side")
+    append_commit(wrepo, app_line("EXP027_W0"), T_REG + 100, pub=False)
+    gitc(repo, "checkout", "-q", "main")
+    append_commit(wrepo, app_line("EXP027_K"), T_REG + 110, pub=False)
+    try:
+        gitc(repo, "merge", "-q", "--no-ff", "-m", "merge", "side", when=T_REG + 120)
+    except subprocess.CalledProcessError:  # both sides appended at the end: conflict; resolve by keeping both lines
+        p = repo / EXP_REL
+        p.write_text("".join(x for x in p.read_text().splitlines(keepends=True) if not x.startswith(("<<<<<<<", "=======", ">>>>>>>"))))
+        gitc(repo, "add", EXP_REL)
+        gitc(repo, "commit", "-q", "-m", "merge", when=T_REG + 120)
+    publish(wrepo)
+    must_refuse(wrepo, "merge or root commit")
+
+
+def test_window_guard_refuses_an_addition_before_the_heading(wrepo):
+    commit_exp(wrepo["repo"], (wrepo["repo"] / EXP_REL).read_text().replace("```\n\n## Window", "```\n" + app_line("EXP027_W0") + "\n## Window"), T_REG + 50, "insert above")
+    publish(wrepo)
+    probs = must_refuse(wrepo, "body prefix sha256")
+    assert any("not an addition after" in x for x in probs)
+
+
+def test_exp_lines_strip_the_append_suffix_and_count_once():
+    text = BODY.replace("EXP027_K: TO FILL\n", "") + "## Window record\n\n" + app_line("EXP027_K", "3")
+    v, probs = rr.exp_lines(text)
+    assert v["EXP027_K"] == "3" and not any("EXP027_K" in x for x in probs)
+    dup = BODY.replace("TO FILL", "2") + "## Window record\n\n" + app_line("EXP027_K", "3")
+    assert any("EXP027_K: matches 2 times" in x for x in rr.exp_lines(dup)[1])  # a pin in the body cannot be re-set in the window record
+
+
+def test_preflight_refuses_on_window_guard(tmp_path, world):
+    refused(mk(tmp_path, world), mkdeps(world, window_fn=lambda e, l, st: (["window record: HEAD does not descend from the registration commit"], {})), "window record")
+
+
+def test_started_line_records_the_exp_sha256_and_registration_commit(tmp_path, world):
+    paths = mk(tmp_path, world)
+    rr.read(paths, mkdeps(world))
+    st = [e for e in rr.reads_events(paths.out_dir) if e["event"] == "started"][0]
+    assert st["reg_commit"] == "r" * 40 and st["exp_sha256"] == "e" * 64 and st["prefix_sha256"] == "p" * 64 and st["appended"] == []
+
+
+def test_default_window_fn_and_ledger_constants():
+    assert rr.Paths(Path("w")).ledger == rr.ROOT / "docs" / "HOLDOUT_LEDGER.md"
+    probs, _ = rr.Deps().window_fn(Path("/nonexistent/EXP.md"), Path("/nonexistent/ledger.md"), STARTED)
+    assert probs and "not inside the repo" in probs[0]
+    assert rr.LEDGER_REG_RE.pattern == r"^EXP027_REG_COMMIT ([0-9a-f]{40})[ \t]*$" and rr.LEDGER_PREFIX_RE.pattern == r"^EXP027_PREFIX_SHA256 ([0-9a-f]{64})[ \t]*$"
+
+
+# ---- exact tries key, repo-root pins ---------------------------------------------------------------------------------------------------------------
+def test_tries_key_is_an_exact_match():
+    m = rr.tries_entry_matches
+    assert m(json.dumps({"config": {"key": "EXP-027"}}), "EXP-027") and m(json.dumps({"key": "EXP-027"}), "EXP-027") and m(json.dumps({"data_key": "EXP-027"}), "EXP-027")
+    assert not m(json.dumps({"config": {"key": "EXP-0271"}}), "EXP-027") and not m(json.dumps({"note": "see EXP-027"}), "EXP-027")  # substring of a value
+    assert not m("EXP-027 not json", "EXP-027") and not m("[]", "EXP-027") and not m(json.dumps({"config": "EXP-027"}), "EXP-027")
+
+
+def test_pinned_file_resolves_relative_paths_against_the_repo_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "rec").mkdir(parents=True)
+    f = root / "rec" / "a.txt"
+    f.write_text("a")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(rr, "ROOT", root)
+    monkeypatch.chdir(elsewhere)
+    probs: list[str] = []
+    assert rr.pinned_file(f"rec/a.txt@{sha(f)}", "x", probs) == f and probs == []  # absent from the current directory, found under the root
+    assert rr.pinned_file(f"{f}@{sha(f)}", "x", probs) == f
+    (elsewhere / "rec").mkdir()
+    (elsewhere / "rec" / "a.txt").write_text("other")  # a same-named file in the cwd must not win
+    assert rr.pinned_file(f"rec/a.txt@{sha(f)}", "x", probs) == f and probs == []
+
+
+# ---- Token-2022 vs SPL rent through every stranded route (#684 nit) -------------------------------------------------------------------------------
+def test_rent_split_through_entry_invalid_exit_invalid_and_auto_stranded():
+    stake, send, t22 = FZ.STAKE_LAMPORTS, 505_000, np.array([True, False, True])
+    want = np.where(t22, rr.RENT_STRANDED_T22, rr.RENT_STRANDED_SPL)
+    ent = trip()["ent"][1.3]
+    bad_ent = trip(ent={1.3: [np.full(3, 1e9), ent[1], ent[2], ent[3]]}, rent_t22=t22)  # entry_invalid: Qe below V_LO
+    pv = rr.price_variant(bad_ent, 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)
+    assert pv["entry_invalid"].all() and pv["stranded"].all() and np.allclose(pv["nofail"], -stake - send - want)
+    pv = rr.price_variant(trip(Qx=np.full(3, np.nan), rent_t22=t22), 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)  # exit_invalid: a missing exit state (C2)
+    assert pv["exit_invalid"].all() and not pv["entry_invalid"].any() and np.allclose(pv["nofail"], -stake - send - want)
+    big = 2_000_000_000  # auto-stranded: the simulated proceeds are below one send fee
+    pv = rr.price_variant(trip(rent_t22=t22), 1.3, send=big, rent=0, auto=True, e1_penalty=0.0)
+    assert pv["stranded"].all() and not pv["entry_invalid"].any() and not pv["exit_invalid"].any() and np.allclose(pv["nofail"], -stake - big - want)
+    pr = rr.price_variant(bad_ent, 1.3, send=send, rent=FZ.RENT_REPORT, auto=True, e1_penalty=0.0)  # report-only rent leg: stranded rows pay their program's stranded rent, once
+    assert np.allclose(pr["nofail"], -stake - send - want)
+
+
+def test_rent_t22_trades_count_is_in_the_deciding_record(tmp_path, world):
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    assert isinstance(res["rent_t22_trades"], int) and 0 <= res["rent_t22_trades"] <= res["A_attempts"] and res["A_attempts"] > 0
