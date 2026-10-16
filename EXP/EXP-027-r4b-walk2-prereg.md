@@ -1,17 +1,17 @@
 # EXP-027: r4-b on Forward walk 2 (push-family book 1, DEC-030 slot 5), pre-registration
 
-**Draft. Not registered. Nothing has run.** Written 2026-10-16 (`date -u` 2026-10-16T19:58:25Z at the start of writing). To write it, no file under `/data/mal/blocks/` (forward-1002, forward-1002ev, forward-1016 or any sealed block), `/data/mal/exp012-forward`, or any shadow, canary, probe or walk output was opened. The inputs are text only:
+**Draft. Not registered. Nothing has run.** Written 2026-10-16 (`date -u` 2026-10-16T19:58:25Z at the start of writing). To write it, no file under `/data/mal/blocks/` (forward-1002, forward-1002ev, forward-1016 or any sealed block), `/data/mal/exp012-forward`, or any shadow, canary, probe or walk output was opened. Revision 2 (2026-10-16, after `date -u` 20:08Z) applies quant-proof's third and fourth passes on draft head `30f82fb` (calendar stop, per-attempt block-mean t, null ordering and refusals, slot_s, D3, LP, strand-class source, owner sentence) and fills the #672 / #673 sha256s from `origin/main`. The inputs are text only:
 
 | Input | sha256 at writing |
 | --- | --- |
 | [DEC-030](../DEC/DEC-030-walk2-push-slot.md) draft and DEC-021 Amendment 6 draft, branch `claude/dec030-walk2-push-slot` | (git blob on that branch) |
 | `/data/mal/hunt-1008/push-1016/WALK2-PREREG-CHECKLIST.md` | `26cfd7f4bf22dba43b39744eaaba449f73f3fce30335e61ecdb61d07542fbce7` |
 | `/data/mal/hunt-1008/laya-opt/FROZEN-r4-b.md` (cited `FROZEN:<line>`) | `cc626dde5c3e68222b1fcf066db19a6ce0a412a2e91507e941effd10d0aebc49` |
-| `/data/mal/hunt-1008/push-1016/hunt6/r4b-verify/QP-RULING-1016.md`, ruling and follow-up (cited `QP §n` and `QP-FU §n`) | `bf12e075f72087d984954b84e4806a522add905f48183391d809d5f3883904a5` |
+| `/data/mal/hunt-1008/push-1016/hunt6/r4b-verify/QP-RULING-1016.md`: ruling, follow-up, third pass and fourth pass (cited `QP §n`, `QP-FU §n`, `QP-3`, `QP-4 §n`) | `bf12e075f72087d984954b84e4806a522add905f48183391d809d5f3883904a5` (ruling and follow-up, revision 1); `209759e63fe0e62d2a46699ac1f5a88a510ecb9239033b2cf75b18cad28d69fa` (third and fourth passes appended, stamps corrected; revision 2 of this EXP) |
 | `/data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/PLAN.md` (cited `PLAN §n`) | `bb6a6876ad39fe35e8cce4b92cd7f7cfd840cf320248ff47ab998ab9f5ca3552` |
 | `/data/mal/hunt-1008/JUDGE-3.md` (line 248 only) | `e54fa0ae0053c6480b00105a0c110ddc6d985471061a22e5b27af9540b5752bb` |
-| PR #672 (features, E-a) head `8311d52`, PR #673 (core, E-b, E-c) head `34d2bf6`: PR bodies and `tools/r4b_book.py`, `tools/r4b_frozen.py` source | (git) |
-| [EXP-022](EXP-022-cap-pick-part1-prereg.md), [EXP-025](EXP-025-c1nf-part1-prereg.md), [EXP-026](EXP-026-h5-boostclock-v2-prereg.md), [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md), [DEC-019](../DEC/DEC-019-execution-probe.md) Am.2, [DEC-021](../DEC/DEC-021-champion-challenger.md), [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md) | (git, `origin/main` at `ee7bd45`) |
+| PR #672 (features, E-a; merged `cf1eaac`) and PR #673 (core, E-b, E-c; merged `ea01143`): PR bodies and source on `origin/main` | (git; sha256s in section 2.2) |
+| [EXP-022](EXP-022-cap-pick-part1-prereg.md), [EXP-025](EXP-025-c1nf-part1-prereg.md), [EXP-026](EXP-026-h5-boostclock-v2-prereg.md), [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md), [DEC-019](../DEC/DEC-019-execution-probe.md) Am.2, [DEC-021](../DEC/DEC-021-champion-challenger.md), [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md) | (git, `origin/main` at `cf1eaac`) |
 
 This file is docs only. The builder, scorer, xs engine, layout adapter, count job and read tool are separate PRs (section 2.2). Nothing in this file says or implies that r4-b makes money. **r4-b has zero out-of-sample trades and has not cleared the promotion gate** (QP §header). **A FAIL is the most likely outcome** (section 9).
 
@@ -25,10 +25,10 @@ This file is docs only. The builder, scorer, xs engine, layout adapter, count jo
 | **Rules** | DEC-014 (a), (b); DEC-021 §1, §4, §8, Amendments 1 (§4, §5 definitions), 5, 6 (draft); DEC-030 §1, §1a, §2 (R1), §2a, §3; DEC-019 Amendment 2 (the 160k condition only); HOLDOUT_LEDGER Rules item 5 (draft) and the Forward walk 2 row. |
 | **Hypothesis** | The frozen r4-b book (section 2) has mean SOL per attempt > 0 at 0.25 SOL per position on post-W0 walk-2 hours, under both fail models at both entry latencies (1.3 s and 1.9 s), on the deciding cost stack (section 5), and clears the promotion gate and the day-level test at 0.025/k (section 6). |
 | **Kill condition** | A FAIL (section 6) retires r4-b: no retune, no refit, no change to K or stake, no re-read (section 7.2). |
-| **Expected outcome** | **FAIL.** On the pinned stack, at N = 20 blocks, QP puts P(full pass) at about 0.24 at the central effect and 0.63 if all of the measured edge is real (k = 1); about a third less at k = 2 (section 9). P(pass) with no edge ≈ 0.022. |
+| **Expected outcome** | **FAIL.** On the pinned stack (per-attempt block-mean t, no rent, auto-stranded, 505k), at N = 20 blocks, QP puts P(full pass) at .2535 at the central effect and .6575 if all of the measured edge is real (k = 1); .1660 and .5265 at k = 2 (section 9). P(pass) with no edge .0195 (k = 1). |
 | **Tools** | Builder `tools/r4b_features.py` (#672), pins/scorer/book `tools/r4b_frozen.py`, `tools/r4b_score.py`, `tools/r4b_book.py` (#673), adapter `tools/r4b_layout.py`, count job `tools/r4b_count.py`, read `tools/r4b_read.py` (PLAN §2, §7). |
 
-**Labels.** [measured]: copied from a cited file that computed it; exploration arithmetic is measured arithmetic, not evidence of edge. [inferred]: reasoned. [pinned]: a design value this file fixes; not evidence. **QP to confirm**: a rule written here that quant-proof has not yet ruled on; it binds only as written in the merged head, and quant-proof's OK on that head is its confirmation.
+**Labels.** [measured]: copied from a cited file that computed it; exploration arithmetic is measured arithmetic, not evidence of edge. [inferred]: reasoned. [pinned]: a design value this file fixes; not evidence. Items once marked "QP to confirm" were ruled on by quant-proof's third and fourth passes (QP-3, QP-4) and are written here as ruled (section 13 lists them).
 
 ## 0. Status, registration, route and pinned lines
 
@@ -67,9 +67,9 @@ EXP027_FAMILY: DEC-030 slot 5, push-family book 1
 EXP027_ROUTE: R1
 EXP027_COUNT_START: W0 = the first full UTC hour strictly after this file's merge instant (date -u); never moved; refused if before 2026-10-18T01
 EXP027_LAST_W0: 2026-10-27T00
-EXP027_STOP_RULE: E = the first 24 h block boundary W0 + 24h*j at which at least 20 blocks from W0 hold an attempt and at least 125 attempts are counted
+EXP027_STOP_RULE: calendar stop E = W0 + 480 h; the read requires at least 20 blocks from W0 holding an attempt and at least 125 attempts, otherwise NOT_DECIDABLE with no extension
 EXP027_EXIT_HORIZON_H: 1
-EXP027_CAP_END: the earlier of W0 + 504 h and 2026-11-16T00
+EXP027_CAP_END: cap = E (= W0 + 480 h, at or before 2026-11-16T00)
 EXP027_DEADLINE: E + 48 h
 EXP027_ALPHA: 0.025/k, Bonferroni, k frozen at the first push-family read
 EXP027_DECISION_P: the largest p over the 4 cells (flat, pressure) x (1.3 s, 1.9 s) of the one-sided day-level t over 24 h blocks from W0, empty blocks dropped, df = W - 1
@@ -78,7 +78,7 @@ EXP027_RENT_DECIDING: 0 per filled trip under section 5.2 conditions (i)-(iii); 
 ```
 
 - **Format.** Each line matches `^<KEY>: ` exactly once in this file, as written. The read tool refuses unless each does and unless this file is clean against HEAD. The values never change after merge.
-- **Meaning.** `E` is the stop instant. The last entry mark is E − 1 h; every open position is sold at the E mark; hours are read to E + 1 h (the exit horizon). If E has not occurred by `EXP027_CAP_END`, the book is NOT_DECIDABLE (p = 1, stays in k). With the cap, the window plus its exit horizon ends by 2026-11-16T01 (DEC-030 §1a, §2a).
+- **Meaning.** `E` is the stop instant, fixed by the calendar (QP fourth pass §5, "STOP_MODE: calendar"). The last entry mark is E − 1 h; every open position is sold at the E mark; hours are read to E + 1 h (the exit horizon). The cap equals E. If, at the read, fewer than 20 blocks hold an attempt or fewer than 125 attempts are counted, the book is NOT_DECIDABLE (p = 1, stays in k), with no extension. Since W0 ≤ 2026-10-27T00, the window plus its exit horizon ends by 2026-11-16T01 (DEC-030 §1a, §2a). This calendar stop is outcome-blind by construction. It is DEC-030 §1a's stop rule with this book's declared N = 20, A = 125 and cap W0 + 480 h (stricter than §1a's floors N ≥ 7, A ≥ 100, cap ≤ 21 d): the first boundary with 20 blocks holding attempts cannot come before W0 + 480 h, and the cap is that boundary.
 - **k.** Under DEC-030 §1, k is the number of push-family books registered when the first push-family read starts (k = 1 if r4-b is alone then; 2 or 3 if more books have registered). After that instant k never changes. A FAIL or NOT_DECIDABLE push book stays in k at p = 1.
 
 ## 1. What this is and is not
@@ -111,15 +111,17 @@ EXP027_RENT_DECIDING: 0 per filled trip under section 5.2 conditions (i)-(iii); 
 | r4-b_seed5.txt | md5 `4938a1006addb81cc1586320d1a9abbe`, sha256 `2451d659cecd43f6a142f4e5efd018ed48e129ff827c0666956625a611f4c469` | FROZEN §2 |
 | features.txt | md5 `18531b0072d79a6127b5a4aea082d2c7`, sha256 `eb0f980d069b05a38d3e5a76d826274a3faaba312c012c99afd8e3dc825e576a` | FROZEN §2 |
 | equiv_fixture.npz | md5 `b59137e921895ac4ceef3c415da94b71`, sha256 `42704b0c69b9aa8660d1d36af5738a9965efb944f9b3f92d2633a0f362dae285` | FROZEN §2 |
-| Repo copies | `models/r4b/` (the five boosters, features.txt, the fixture), hashes equal to the rows above (#673) | #673 |
+| Repo copies | `models/r4b/` (the five boosters, features.txt, the fixture): `sha256sum` on `origin/main` (`ea01143`) equals each sha256 above, all seven files | #673; checked 2026-10-16 |
 | harness/specs/r4-b.py | md5 `6121a64775870521effbf7c34f4d00b8`, sha256 `e7761004e588911264d149555ccf2cbe04cb2f043ccb0a9f4566f090ba0f7c08` | FROZEN §1 |
 | harness/specs/S1.json (parent) | md5 `c976e08d6252c2f5e7674d1b19203ca3`, sha256 `477bae8b9c9d39cd15c287c4d626a4ce6ab94e8c9f361b1d2e44a874c6092d92` | FROZEN §1 |
 | 02_build.py (post-order-fix) | md5 `535ac7062ab0eb15c2d08bceb9175710` | FROZEN §1 |
 | judge/final_fit.py, judge/fit_lgb.py | md5 `ff229a86cdcd8f03c020017a8c0498b6`, `568b2ad97ebea3718b0e1149bb11f4e3` (record only; never re-run) | FROZEN §2 |
 | lightgbm | **4.7.0** (numpy 2.5.3 in the scoring venv) | FROZEN §2; PLAN §2 |
 | Score | raw mean over seeds 1..5 of `Booster.predict(X float64)` | FROZEN §1 |
-| `tools/r4b_features.py` (#672) | `<SHA256 at merge of #672>` **TO FILL** | |
-| `tools/r4b_frozen.py`, `tools/r4b_score.py`, `tools/r4b_book.py` (#673) | `<SHA256 at merge of #673>` **TO FILL** (one per file) | |
+| `tools/r4b_features.py` (#672, merged `cf1eaac`, QP OK at `fd28a05`) | sha256 `b533668b2fd57fdae66c99fc80d4a7a5c97162f2f070ca3d726f4f21f10d05bb` | `sha256sum` on `origin/main` |
+| `tools/r4b_frozen.py` (#673, merged `ea01143`, QP OK at `76a8fdd`) | sha256 `c5a3b145fe1f638743d4407dbe1b472604d027346c4df845aa0a3cbf760d64db` | `sha256sum` on `origin/main` |
+| `tools/r4b_score.py` (#673) | sha256 `737e40260bf6011d15f764e08d4a1b87afd33b62262d0600e42208fcf9d50c06` | `sha256sum` on `origin/main` |
+| `tools/r4b_book.py` (#673) | sha256 `31a127b0cfc47bf0f93edacdb771fb938c2b6fcb9a9e6f1e0ecf91dd95ab3242` at `ea01143`. **It must change before the read tool's QP:** `book_stats` needs a pinned `t_block` on per-attempt block means (section 6.2); the sha256 of the changed file is then recorded here before merge, or in the Window record before the read with QP OK on its head | `sha256sum` on `origin/main`; QP fourth pass §1 |
 | `tools/r4b_layout.py` (adapter) | `<SHA256 at merge of layout>` **TO FILL** | PLAN §7 task 4 |
 | `tools/r4b_count.py` and its wrapper | `<SHA256 at merge of count>` **TO FILL** | PLAN §7 task 6 |
 | `tools/r4b_read.py` and its wrapper | `<SHA256 at merge of read>` **TO FILL** (recorded in the Window record before the read, with QP OK on its head) | PLAN §7 task 7 |
@@ -136,9 +138,9 @@ EXP027_RENT_DECIDING: 0 per filled trip under section 5.2 conditions (i)-(iii); 
 
 | Proof | What | Result | Status |
 | --- | --- | --- | --- |
-| **E-a** | Port fed l3 `ut/` hours 2026-09-23T00..09-25T06 reproduces the fixture X (617 rows, `mid`, `T`, `sd` equal, X float32 byte-equal) | md5(X bytes) **`3e9bc6225377927682d80b9441391a96`** = fixture [measured, #672] | done (#672, unmerged) |
-| **E-b** | The 5 boosters on fixture X reproduce seed1..5 and `bag_score` | max abs diff 0.0; 617 rows, 52 with bag > 0 [measured, #673] | done (#673, unmerged) |
-| **E-c** | The xs engine, fed the rebuilt walk-forward bag (float32 ranking), reproduces the rebuilt **`results/r4-b-rb2`** trades (n **2,986**) | trades table (harness columns, `%.9g`) text-identical, md5 **`54052f798013a71e3a9f40e0d6830ac1`**; exits rank 2,956, gap 20, end 10; the four deciding cells equal the r4b-verify REPORT at 6 decimals [measured, #673] | done (#673, unmerged) |
+| **E-a** | Port fed l3 `ut/` hours 2026-09-23T00..09-25T06 reproduces the fixture X (617 rows, `mid`, `T`, `sd` equal, X float32 byte-equal) | md5(X bytes) **`3e9bc6225377927682d80b9441391a96`** = fixture [measured, #672] | done (#672, merged `cf1eaac`) |
+| **E-b** | The 5 boosters on fixture X reproduce seed1..5 and `bag_score` | max abs diff 0.0; 617 rows, 52 with bag > 0 [measured, #673] | done (#673, merged `ea01143`) |
+| **E-c** | The xs engine, fed the rebuilt walk-forward bag (float32 ranking), reproduces the rebuilt **`results/r4-b-rb2`** trades (n **2,986**) | trades table (harness columns, `%.9g`) text-identical, md5 **`54052f798013a71e3a9f40e0d6830ac1`**; exits rank 2,956, gap 20, end 10; the four deciding cells equal the r4b-verify REPORT at 6 decimals [measured, #673] | done (#673, merged `ea01143`) |
 | **E-d** | md5 decision-equivalence replay on clean-view explore-0814 w7→w4, `[08-14T12, 08-21T12)`, walker layout (static-map V, seg_end 08-28T12): I and X bytes equal l3 `feat/<day>.npz`; Qe/Be/spot/ssb/nearby equal `cache/l3/dec`; marks equal `cache/l3/marks`; PDA-vs-V-band mint list empty (or md5 taken without them); event-V injection test gives the same md5 | `<md5s>` **TO FILL** | not run |
 
 **FROZEN:123 is amended [pinned].** FROZEN:123's target "reproduces `results/r4-b/trades.csv.gz` (n 3,002)" **cannot be done** (QP §2: the 10-08 cache is deleted). The reproduction target is **`results/r4-b-rb2` (n 2,986), reproduced from the 5 rb2 prediction keys (sha256-pinned, section 2.2), md5 `54052f798013a71e3a9f40e0d6830ac1` of the trades table** (#673 E-c). The 10-08 `results/r4-b` file (n 3,002) stays on disk as a record and is not a target.
@@ -155,7 +157,7 @@ EXP027_RENT_DECIDING: 0 per filled trip under section 5.2 conditions (i)-(iii); 
 
 ## 3. Forward builder rules [pinned]
 
-These bind the adapter, builder, count job and read tool. They are QP §2's rules unless marked otherwise.
+These bind the adapter, builder, count job and read tool. They are QP §2's rules, as completed by QP-3 and QP-4, unless marked otherwise.
 
 ### 3.1 m_grads as of the decision
 
@@ -163,25 +165,26 @@ A graduation counts toward `f_m_grads_1h` and `f_m_grads_10m` at decision time T
 
 ### 3.2 Total order of prints
 
-Rows are ordered totally by **(slot, tx_index NULLS LAST, event_index, file_row_number)** (`forward_order`, #672). The precount reports the number of null-`tx_index` tie groups (`null_txi_tie_groups`) and of slots mixing null and non-null `tx_index` (`mixed_null_txi_slots`). **QP to confirm** whether a count > 0 of mixed slots refuses the read; this draft makes it report-only. Exploration had 0 mixed slots over all 36 l3 days [measured, #672].
+Rows are ordered totally by **(slot, coalesce(tx_index, −1), event_index, file_row_number)**: null `tx_index` sorts **first** within the slot, exactly as training (`01_extract.py`: `coalesce(tx_index,-1)`), and `file_row_number` is the **one tie-breaker** (QP-4 §7; QP-3 on #674; `forward_order` as merged in `cf1eaac`). The precount reports null-`tx_index` tie groups (`null_txi_tie_groups`). **A mixed (mint, slot) count > 0** (a mint's slot holding both null and non-null `tx_index`) **refuses the read** (section 8.1). Exploration had 0 mixed slots over all 36 l3 days [measured, #672].
 
 ### 3.3 Slot time and k
 
 - **Rounding:** **np.round** (half to even; at 200 ms slots 1.3 s = 6.5 slots → 6), `K_ROUNDING = "round"` (QP §2; #673). k = np.round(lat / slot_s), for lat = 1.3 s and 1.9 s. Not switched on results.
-- **slot_s per UTC day** (QP §2: "pin slot_s per day"): slot_s(date) = 3600·H / Σ SPH_h over the date's H hours, with SPH_h from `cap_pick_score.measure_hour_sph` (PLAN §1). An hour with unmeasurable SPH is a refusal. **QP to confirm** this day aggregation (PLAN §1 and §5 measure SPH per decision hour).
+- **slot_s per UTC date** (QP-4 §2): slot_s(date) = **3600 / median over the date's hours of SPH_h**, with SPH_h from `cap_pick_score.measure_hour_sph` (PLAN §1). k uses np.round. An hour with unmeasurable SPH is a refusal.
 - **Exit lag:** ceil(0.55 s / slot_s − 1e-9) slots, asserted ≥ 2 (3 at 200 ms).
 
 ### 3.4 Universe and hours
 
-- **Pools created at or after 2026-10-16T01:00Z only** (QP §2), so no forward-1002 hour (and no D2 hour) is ever read. Membership: PDA match and V0 in [17.5e9, 17.7e9] lamports (PLAN §1; the share outside the band is reported).
+- **Pools created at or after 2026-10-16T01:00Z only** (QP §2), so no forward-1002 hour (and no D2 hour) is ever read. Membership: PDA match and V0 in [17.5e9, 17.7e9] lamports (PLAN §1; the share outside the band is reported). **A pool with missing V0 is a non-member** (QP-3; QP-4 §7); the read refuses only if the missing-V0 share exceeds 2% on a read date (section 8.1). **A member with any null-V (`vq`) print refuses the read** (section 8.1).
+- **s0 window (disclosure, QP-3).** s0 is the first print of the PDA pool in `[mslot, mslot + 7300)` slots. At 200 ms slots that is about **1,460 s**, against about **2,200–2,900 s** in training (slower slots then). A pool whose first print falls later than the window has no s0 and is not a member. Not corrected.
 - **Directory.** Only `/data/mal/blocks/forward-1016` (the Forward walk 2 row). Never `forward-1002` or `forward-1002ev`, including any file there named for an hour at or after 2026-10-16T01.
 - **Feature-buffer hours** `[2026-10-16T01, W0)` are read for features, membership and the clock only, never counted, and only after this file merges. **2026-10-16T01 and 2026-10-16T02 are used as feature buffer** (the 2026-10-16 breach disclosure, section 10.3, requires saying so). Since W0 ≥ 2026-10-18T01, every pool in the universe has at most its first 48 h before W0, so the since-seed features have full history at W0.
-- **History before 2026-10-16T01 [PLAN §8 item 3; QP to confirm].** For a token created before 2026-10-16T01 whose pool was created after it, create-derived constants (`f_c_*` from bonding history, creator history) are NaN where their inputs lie before 2026-10-16T01; creator history (`f_cre_*`) uses walk-2 creates only. This is a train/serve skew (training saw full history) and is disclosed, not corrected.
-- **Decisions in the first 600 s of the pool [QP to confirm].** To meet the D3 condition (section 3.6), a decision row with T < block_time(s0) + 600 s is dropped before ranking (s0 = the first print of the PDA pool). The count of dropped rows is reported. FROZEN's grid starts at graduation + 600 s, so this can only remove rows.
+- **History before 2026-10-16T01 [PLAN §8 item 3; confirmed by QP-4].** For a token created before 2026-10-16T01 whose pool was created after it, create-derived constants (`f_c_*` from bonding history, creator history) are NaN where their inputs lie before 2026-10-16T01; creator history (`f_cre_*`) uses walk-2 creates only. This is a train/serve skew (training saw full history) and is disclosed, not corrected.
+- **Decisions in the first 600 s of the pool [confirmed, QP-4 §3].** To meet the D3 condition (section 3.6), a decision row with T < block_time(s0) + 600 s is dropped before ranking (s0 = the first print of the PDA pool). The count of dropped rows is reported. FROZEN's grid starts at graduation + 600 s, so this can only remove rows.
 
-### 3.5 LP Deposit/Withdraw [QP to confirm]
+### 3.5 LP Deposit/Withdraw [QP-4 §4]
 
-The decoder does not see PumpSwap LP Deposit/Withdraw (PLAN §8 item 5). **Rule:** a pool with such an event is **excluded from the point of the event**: no buy at any mark after the event, and a held position is sold at the next hour mark as a forced exit, priced on the tape like a rank exit. Detection, past-only: at a decision with slot sd, an LP event is detected when, for consecutive prints i, i+1 of the pool with slot < sd, the pre-trade reserves of print i+1 differ from the post-trade reserves implied by print i by more than `<tolerance>` **TO FILL** (or from a decoded LP instruction if the decoder gains one). Entry and mark states use each print's own pre-trade reserves, so they stay exact (PLAN §8 item 5). Excluded pools and forced exits are counted and reported.
+The decoder does not see PumpSwap LP Deposit/Withdraw (PLAN §8 item 5). **There is no exclusion rule** (QP-4 §4): a quarter to a third of mints show reserve discontinuities, mostly tape gaps, so an exclusion would cut the universe on noise. Entry and mark states use each print's own pre-trade reserves and event V, which is exact. **The detection tolerance is "none"**: no pool is excluded or force-sold for a discontinuity. Discontinuity counts (consecutive prints where the next print's pre-trade reserves differ from the previous print's implied post-trade reserves) at **> 1e-6 and > 1%** relative are **reported inside the read only**, never before it.
 
 ### 3.6 The H5 / D3 domain (QP ruling, quoted verbatim; supersedes JUDGE-3.md:248)
 
@@ -190,7 +193,7 @@ DEC-030 §3 excludes the H5 domain from push-family books "unless quant-proof ru
 > "QP's ruling: feature-only use by the frozen scorer at decisions ≥ s0+600 s is not D3 use. This holds only if no feature is a synthetic class or BOOST flag, and the read reports nothing restricted to [s0, s0+360)."
 
 - **This ruling supersedes JUDGE-3.md:248** ("... the since-seed features still carry pool-open information, so it also stays out of walk 2.").
-- **Conditions, as this file applies them:** (a) decisions at T ≥ block_time(s0) + 600 s only (section 3.4); (b) the 63 names in `features.txt` contain no synthetic-class feature and no BOOST flag [inferred from the names; `f_c_v` is the pool's V0 constant, **QP to confirm** it is not a BOOST flag]; (c) the read reports no quantity restricted to `[s0, s0+360)`; (d) no synthetic class is joined to any r4-b outcome.
+- **Conditions, as this file applies them:** (a) decisions at T ≥ block_time(s0) + 600 s only (section 3.4); (b) the 63 names in `features.txt` contain no synthetic-class feature and no BOOST flag [inferred from the names; `f_c_v` is the pool's V0 constant, confirmed by QP-4 as not a BOOST flag]; (c) the read reports no quantity restricted to `[s0, s0+360)`; (d) no synthetic class is joined to any r4-b outcome.
 - Because QP ruled this is not D3 use, the alpha stays in slot 5; it does not go to the H5 family (DEC-030 §3).
 
 ## 4. Data, window, stop rule, count job
@@ -199,15 +202,15 @@ DEC-030 §3 excludes the H5 domain from push-family books "unless quant-proof ru
 
 - **Counted window:** entry marks in `[W0, E − 1 h]`; hours read `[2026-10-16T01, E + 1 h)` (feature buffer before W0, counted from W0, exit horizon after E).
 - **Blocks:** 24 h blocks from W0; block b holds attempts with entry mark T0 in `[W0 + 24h·b, W0 + 24h·(b+1))`.
-- **N = 20, A = 125, cap 21 days, exit horizon 1 h** (QP §3 and QP-FU §3: "N=20, A=125, cap 21 d still recommended"). These are stricter than DEC-030 §1a's floors (N ≥ 7, A ≥ 100, cap ≤ 21 d), as §1a allows a book to declare before W0.
-- **Expected attempts** [inferred from FROZEN §6 and PLAN §4]: about 103 per day, so about 2,000 at E; N binds, not A.
+- **Calendar stop E = W0 + 480 h; N = 20, A = 125 checked inside the read; cap = E; exit horizon 1 h** (QP-4 §5 "STOP_MODE: calendar"; QP §3 and QP-FU §3 for N, A). These are stricter than DEC-030 §1a's floors (N ≥ 7, A ≥ 100, cap ≤ 21 d), as §1a allows a book to declare before W0.
+- **Expected attempts:** about 103 per day [inferred from FROZEN §6 and PLAN §4]; exploration attempts per day were 20 / 115 / 140 (min / median / max), CV 0.293 [measured, QP-4 §1]. So about 2,000 at E; N binds, not A.
 
 ### 4.2 Attempts and the count job
 
 - **Attempt:** a buy triggered at an hour mark T0 in `[W0, E − 1 h]` for a top-10 token not held at T0, guarded buys included.
-- **Count job** (`tools/r4b_count.py`, an hourly host-side MiScusi job, 12 GB cap; PLAN §4): opens only allowlisted, sealed, strict-verified, sha256-matched hours; writes per mark live tokens, decision rows, finite scores, attempt timestamps, blocks with attempts, attempts total, `stop_reached`, the md5 of the mark's decision lines, and the precount items of section 8.1, to `/data/mal/r4b/counts.jsonl`. It never loads a row at slot ≥ sd(t) except slot and block_time for the clock, and computes no landing state, guard, fill, exit or P&L. **It is outcome-blind and is not a "read"; it does not freeze k** (DEC-030 §1).
-- **Open item, QP to confirm before merge (PLAN §4 "OPEN QP RULING (blocking)").** Ranking at mark t needs features from prints before t, and for tokens held since t − 1 h those are post-entry prices (HL rule on post-entry columns). If quant-proof rules that the count job may not compute ranks, `EXP027_STOP_RULE` is replaced **before merge** by a fixed-calendar stop E = W0 + 480 h, with N ≥ 20 and A ≥ 125 checked inside the read (fewer is NOT_DECIDABLE). At about 103 attempts a day both stops give the same E unless a block is empty.
-- **The stop instant** is recorded in the ledger sub-entry (Appendix A) when the count job reports it, from the count file only.
+- **Count job** (`tools/r4b_count.py`, an hourly host-side MiScusi job, 12 GB cap; PLAN §4). Because the stop is by calendar (QP-4 §5), the count job **computes no features, scores, ranks or attempts** (this settles PLAN §4's open ruling on post-entry prices of held tokens: they are never loaded before the read). It opens only allowlisted, sealed, strict-verified, sha256-matched hours and writes, to `/data/mal/r4b/counts.jsonl`, hour health (sealed, verified, bad), the structure precount items of section 8.1, and per mark the decision rows `(mint, T, sd)` with their md5. It never loads a price, side or reserve column of a row at slot ≥ sd(t) (only slot and block_time for the clock), and computes no landing state, guard, fill, exit or P&L. **It is outcome-blind and is not a "read"; it does not freeze k** (DEC-030 §1).
+- **N and A** (blocks with attempts, attempts) are computed **inside the read**. Fewer than 20 or fewer than 125 is NOT_DECIDABLE, with no extension.
+- **The stop instant** E = W0 + 480 h is written in the ledger sub-entry at registration (Appendix A); the read records the N and A it found.
 
 ### 4.3 The read and its deadline
 
@@ -228,10 +231,10 @@ DEC-030 §3 excludes the H5 domain from push-family books "unless quant-proof ru
 | Exit | the mark state at clock_slot(t) + exit lag + 1 (section 3.3), END bound, at least 2 slots; past the loaded hours, the derived final state (`FINAL_FEE` 0.0125) | FROZEN §4; PLAN §5 |
 | Pricing | PumpSwap PRE-trade reserves incl. per-print event V; fee tier on (Q incl. V, B) per side; own buy re-injected; own sell impact | FROZEN §4 |
 | Live haircut | tokens received / 1.002608 (entry +26.08 bps) and proceeds × (1 − 0.0016) (sell −16 bps), the VERIFY formula as #673 implements it | DEC-021 §1, Am.1 §4 |
-| E1 penalty | each filled trip loses the **larger** of the haircut and max(0, −5·r̄), r̄ = E1's `pnl_gap_lamports_live_minus_sim` mean at 0.05 SOL scaled linearly to 0.25 SOL (×5) **[QP to confirm the scaling, PLAN §8 item 8]**; E1 record `<path, sha256, n>` **TO FILL before the read** | DEC-021 Am.1 §4; DEC-030 §3 |
+| E1 penalty | each filled trip loses the **larger** of the haircut and max(0, −5·r̄), r̄ = E1's `pnl_gap_lamports_live_minus_sim` mean at 0.05 SOL scaled linearly to 0.25 SOL (×5) [confirmed, QP-4]; E1 record `<path, sha256, n>` **TO FILL before the read** | DEC-021 Am.1 §4; DEC-030 §3 |
 | Flat fail leg | 0.85·pnl − 0.15·send | DEC-021 §1 |
 | Pressure fail leg | p = σ(c + 0.8·ln(1+ssb) + 0.35·ln(1+nearby/1e9)), c refit per cell so mean p over the cell's fills = 0.289; P&L = (1−p)·pnl − p·send; ssb = buys in slot x; nearby = buy SOL over slots [x − round(2/slot_s), x] | DEC-021 §1; #673 |
-| Strand class (iii) | section 5.2 | QP-FU §1a |
+| Strand class (iii) | section 5.2; auto-stranded is the deciding version | QP-FU §1a; QP-3 |
 
 ### 5.2 Rent: the deciding stack is pinned without rent (QP-FU §1a, conditions verbatim)
 
@@ -245,8 +248,8 @@ Quant-proof ruled "Rent: YES, the deciding stack is pinned without rent", on the
 >   - simulated proceeds below one send fee.
 >   The forward builder flags the first two from data known at decision time.
 
-- **(i) as pinned here.** Sell builder: `<path>` sha256 `<SHA256 of the sell builder that would trade r4-b>` **TO FILL before merge**; it must perform the sell and the ATA close in one transaction. If this is not filled in the merged head, `EXP027_RENT_DECIDING`'s second clause applies (2,039,280 per filled trip, deciding) and the power in section 9 is the "with rent" row.
-- **(iii) as pinned here.** A strand-class trip's deciding P&L = −250,000,000 − one send − 2,039,280. **QP to confirm** the data source for the freeze-authority / Token-2022 flag in the walk-2 layout (no mint-account field is listed in PLAN §1's layout); if no source exists before merge, the read refuses (it does not guess). QP estimates about 5.1% of fills are rug-class, so (iii) costs about 0.04 pp per trade.
+- **(i) as pinned here.** Sell builder: `<path>` sha256 `<SHA256 of the sell builder that would trade r4-b>` **TO FILL before merge**; it must perform the sell and the ATA close in one transaction. If this is not filled in the merged head, `EXP027_RENT_DECIDING`'s second clause applies (2,039,280 per filled trip, deciding), and power falls to about .0725 at the central effect (QP-FU §3, N = 20, k = 1, computed on block sums).
+- **(iii) as pinned here.** A strand-class trip's deciding P&L = −250,000,000 − one send − 2,039,280 (no sell send). **Auto-stranded is the deciding version** (QP-3): simulated proceeds below one send fee count as stranded, and the threshold follows the deciding send fee (505,000, or 160,000 under section 5.3); the no-auto version is report-only (#673 `round_trip(auto_stranded=True)`). An unpriced exit is stranded. **Freeze authority and Token-2022 extensions: source pinned (QP-4 §7).** A host-side MiScusi job fetches **each member mint account once** by RPC (`getAccountInfo`), records its freeze authority and Token-2022 extensions, and writes them with the fetch slot to a sha256-pinned file before the read. A mint with a freeze authority or a close-blocking extension (for example withheld transfer fees) is strand-class. **A failed fetch makes the mint strand-class; it is never a refusal.** This is a **structure read made by RPC**, not a walk-2 outcome; its RPC credits are recorded (job, credits, calls) in the Window record. QP estimates about 5.1% of fills are rug-class, so (iii) costs about 0.04 pp per trade.
 - **(ii)** The 2,039,280-per-filled-trip leg is reported, never deciding.
 
 ### 5.3 Conditional 160k send leg (QP-FU §2, exactly)
@@ -260,7 +263,7 @@ The deciding send fee becomes **160,000 lamports per send** (155,000 priority + 
 
 **Fallback:** a FAIL, a NOT_DECIDABLE, a missing record, or a verdict after the read start all leave the send fee at **505,000**. There is no partial version.
 
-**Lag shift [pinned].** Under the 160k leg, both entry latencies take the fee-arm's measured buy-lag shift: Δ = **Test B's one-sided 95% upper bound** (slots) of mean(test) − mean(control) (QP chose the upper bound). k = np.round(lat / slot_s + max(0, Δ)) for lat = 1.3 s and 1.9 s. **QP to confirm** the floor at 0 (a negative bound is not credited).
+**Lag shift [pinned].** Under the 160k leg, both entry latencies take the fee-arm's measured buy-lag shift: Δ = **Test B's one-sided 95% upper bound** (slots) of mean(test) − mean(control) (QP chose the upper bound). k = np.round(lat / slot_s + max(0, Δ)) for lat = 1.3 s and 1.9 s. The floor at 0 (a negative bound is not credited) is confirmed by QP-4.
 
 **Disclosure:** the fee-arm measured buys right after graduation, and carrying that over to a book that does not race is an assumption.
 
@@ -278,8 +281,8 @@ Four cells: {flat 15%, pressure scale 1} × {1.3 s, 1.9 s}, all on the deciding 
 
 **The one-sided day-level t over 24 h blocks from W0, empty blocks dropped, df = W − 1; the larger p of the 4 cells decides; pass iff that p ≤ 0.025/k** (`EXP027_DECISION_P`, `EXP027_ALPHA`).
 
-- Per cell: m_b = mean SOL per attempt in block b; W = number of blocks with at least one attempt; sd = sample SD of the W block means (ddof 1); t = mean(m_b) / (sd / √W); p = P(T_{W−1} ≥ t) (DEC-021 Amendment 1 §5, as DEC-030 §1 and §1a cite it; `cap_pick_score.t_sf`).
-- **Disclosure / QP to confirm:** #673's `day_t` is fed **block sums** (SOL per block), not per-attempt block means. The read tool must pass per-attempt block means as above, or quant-proof rules before merge that block sums meet DEC-030 and this bullet is changed before merge. QP's power tables and the in-sample day t (σ_d 0.869205 SOL) were computed on day totals [inferred from the units].
+- Per cell: **m_b = mean SOL per attempt in block b** (the per-attempt block MEAN, DEC-021:118, Amendment 1 §5; QP-4 §1); W = number of blocks with at least one attempt; sd = sample SD of the W block means (ddof 1); t = mean(m_b) / (sd / √W); p = P(T_{W−1} ≥ t) (`cap_pick_score.t_sf`). **Block sums (SOL per block) are report-only.**
+- **Code change required before the read tool's QP.** `tools/r4b_book.py` at `ea01143` feeds `day_t` the block **sums** (`t_block` in `book_stats`). `book_stats` must get a pinned `t_block` on per-attempt block means (sums kept as a report-only field) in its own PR, with tests and QP OK, before the read tool is submitted to quant-proof. The changed file's sha256 replaces the `ea01143` value in section 2.2.
 
 ### 6.3 Gate and binding terms (all on all 4 cells) [pinned]
 
@@ -303,7 +306,7 @@ The CI90 clause is unadjusted and on top (DEC-030 §1). The Bonferroni level onl
 
 ### 7.1 NOT_DECIDABLE (p = 1, stays in k; the window is spent)
 
-1. E has not occurred by `EXP027_CAP_END` (DEC-030 §1a).
+1. At the read, fewer than 20 blocks from W0 hold an attempt, or fewer than 125 attempts are counted (`EXP027_STOP_RULE`; no extension).
 2. Fewer than 100 trades on either fail-model leg at the read (DEC-030 §1a), with no extension.
 3. The read is not completed by `EXP027_DEADLINE`.
 4. A precount or read-tool refusal of section 8 that cannot be cleared outcome-blind (one outcome-blind re-walk of a bad hour is allowed before the read; its result stands).
@@ -311,7 +314,7 @@ The CI90 clause is unadjusted and on top (DEC-030 §1). The Bonferroni level onl
 6. An A3 structure-monitor halt (`tools/pump_structure_monitor.py`, the six flags of EXP-022 §11) fires between W0 and E.
 7. A pressure gap: any counted trade lacks its pressure-leg P&L (DEC-014, line 70).
 8. E1 is not recorded with n ≥ 20 before the read (DEC-021 Am.1 §4).
-9. The read's decision md5 for any mark differs from the count job's (PLAN §4).
+9. The read's decision-row md5 (`(mint, T, sd)`) for any mark differs from the count job's (PLAN §4).
 10. An hour outside the allowlist is opened by the read (EXP-025 R-terms; checklist §1 j).
 
 **Seals never turn a FAIL into NOT_DECIDABLE.** A breach (section 11) leaves the verdict as computed and labels the read compromised.
@@ -328,15 +331,20 @@ A FAIL **retires r4-b**: no retune, no refit, no change to K, stake or threshold
 - the PDA match is < 95% of non-Mayhem completes;
 - fewer than 100 hour marks have ≥ 10 live tokens;
 - a UTC date has graduations but 0 decisions;
-- an hour has unmeasurable SPH.
+- an hour has unmeasurable SPH;
+- **a mixed (mint, slot) count > 0**: any mint whose slot holds both null and non-null `tx_index` prints (QP-4 §7);
+- **a v0_missing share > 2% on any read date**, the denominator being non-Mayhem, PDA-matched pools with an s0 (QP-3; QP-4 §7). Below that, a pool with missing V0 is a non-member;
+- **a member with any null-`vq` print** (null event V on a member pool's print; QP-3; QP-4 §7).
 
-It also reports (report-only): null-`tx_index` tie groups and mixed slots (section 3.2), the V0-band share, rows dropped by the s0 + 600 s rule, LP-excluded pools, and live tokens / rows / finite scores per mark.
+One tie-breaker throughout: (slot, coalesce(tx_index, −1), event_index, file_row_number) (section 3.2).
+
+It also reports (report-only): null-`tx_index` tie groups (section 3.2), the V0-band share, the v0_missing share per date, rows dropped by the s0 + 600 s rule, and live tokens and decision rows per mark. Reserve-discontinuity counts (section 3.5) are reported inside the read only.
 
 ### 8.2 Read tool — refuse unless
 
 - each pinned line matches once and this file is clean against HEAD;
 - every code sha256 and model md5 of section 2.2 matches; E-a..E-d md5s are recorded; the decoder blobs equal walk 2's job ref;
-- the E1 record exists with n ≥ 20; input-view sha256s and the `data/tries.jsonl` entry exist;
+- the E1 record exists with n ≥ 20; input-view sha256s and the `data/tries.jsonl` entry exist; the mint-account file of section 5.2 (iii) exists and matches its pinned sha256;
 - only allowlisted hours are opened; a bad line refuses;
 - an O_EXCL lock; `/data/mal/r4b/READS.jsonl` with started / completed / aborted; no second run; no CLI override; the verdict goes to stderr before any file write;
 - fills join outcomes only after E + 1 h is sealed.
@@ -345,48 +353,29 @@ It also reports (report-only): null-`tx_index` tie groups and mixed slots (secti
 
 ## 9. Power (report-only; QP's simulations)
 
-Conventions: each cell is P(full pass): all 4 cells, the larger p decides, the full gate plus both drop terms, 2,000 day resamples, seed 1. Effect s is a share of the deciding-stack net mean.
+Conventions: each cell is P(full pass): all 4 cells, the larger p decides, the full gate plus both drop terms, 2,000 day resamples, seed 1. Effect s is a share of the deciding-stack net mean; the missing part comes off in SOL per trade.
 
-**QP ruling §3 (stack then with rent), k = 1:**
+**Deciding table: the pinned stack (per-attempt block-mean t, no rent, auto-stranded, 505k), N = 20** (QP-4 §1):
 
-| Effect | W=7 | W=10 | W=14 | W=21 |
-|---|---|---|---|---|
-| 100% | .0945 | .1555 | .2335 | .3435 |
-| 50% | .0470 | .0655 | .0780 | .0975 |
-| central 37.9% | .0380 | .0530 | .0570 | .0730 |
-| 0% (false pass) | .0200 | .0300 | .0250 | .0245 |
-
-At k = 2, W = 21: .2225 at 100%, .0635 at 50%. The drop terms change nothing.
-
-**QP follow-up §1b (the pinned stack: no rent, 505k sends), k = 1 / k = 2:**
-
-| s | W=7 | W=10 | W=14 | W=20 | W=21 |
-|---|---|---|---|---|---|
-| 100% | .1865/.1005 | .2975/.1935 | .4560/.3255 | .6325/.4945 | .6625/.5175 |
-| 50% | .0895/.0490 | .1460/.0870 | .2190/.1405 | .3095/.1980 | .3245/.2065 |
-| 37.9% | .0790/.0420 | .1225/.0690 | .1810/.1080 | .2400/.1520 | .2495/.1575 |
-| 0% (deciding edge) | .0445 | .0605 | .0700 | .0935 | .0915 |
-| null | .0200 | .0300 | .0250 | .0220 | .0245 |
-
-Means behind it: flat 2.2991% (1.3 s) and 2.2973% (1.9 s); pressure 1.7950% (1.3 s) and 1.8555% (1.9 s).
-
-**160k leg, N = 20, no rent** (pressure means 2.0311% / 2.0916%): .7550/.6275 at 100%, .4235/.3045 at 50%, .3530/.2350 at 37.9%; null .0220. These exclude the lag shift, so they are a ceiling. N = 14, same stack: .5640 / .3010 / .2480.
-
-**Central effect, k = 1** (QP-FU §3):
-
-| Stack | N=14 | N=20 |
+| Effect | k=1 | k=2 |
 |---|---|---|
-| No rent, 505k | .181 | .240 |
-| No rent, 160k | .248 | .353 |
-| With rent | .057 | .0725 |
+| 100% | .6575 | .5265 |
+| 50% | .3245 | .2265 |
+| central 37.9% | .2535 | .1660 |
+| null | .0195 | .0110 |
 
-**k-dependence.** k = 2 cuts every figure by about a third (QP-FU §3). Plan for k = 2 (QP §3).
+**k-dependence.** k = 2 cuts every figure by about a third (QP-FU §3; the table above: .2535 → .1660 at the central effect). Plan for k = 2 (QP §3).
 
-**Owner-facing line.** Quant-proof's line, verbatim (QP, "Owner line", written on the first table, before the follow-up):
+**160k leg.** The 160k figures have **not yet been recomputed on per-attempt means**; QP-4 §6: "The 160k figures must be rerun on means before they are quoted." None is quoted here.
 
-> "r4-b passed its exploration check on honest costs, but those are the days it was picked on, so it has zero out-of-sample trades and has not cleared the promotion gate. Even if its edge is real, a 3-week forward read passes about 7 to 34 % of the time (10 to 34 % if at least half the measured edge is real), so most likely it fails and is retired."
+**Superseded tables (kept for the record, not for decisions).** All were computed with the day t on block sums:
+- QP §3 (stack then with rent), k = 1, W = 7 / 10 / 14 / 21: 100% .0945 / .1555 / .2335 / .3435; 50% .0470 / .0655 / .0780 / .0975; 37.9% .0380 / .0530 / .0570 / .0730; null .0200 / .0300 / .0250 / .0245.
+- QP-FU §1b (no rent, 505k, no auto-stranded), W = 20, k = 1 / k = 2: 100% .6325 / .4945; 50% .3095 / .1980; 37.9% .2400 / .1520; null .0220.
+- QP-3 (no rent, auto-stranded, 505k), N = 20, k = 1 / k = 2: 100% .6160 / .4825; 50% .2985 / .1855; 37.9% .2255 / .1460; null .0220 / .0125.
 
-On the pinned stack of the follow-up (no rent, 505k, N = 20), the same sentence reads [from QP-FU §1b; **QP to confirm the wording**]: *"Even if its edge is real, a 20-day forward read passes about 24 to 63 % of the time with r4-b alone (about 15 to 49 % if a second push book registers); a book with no edge passes about 2 % of the time. Most likely it fails and is retired."*
+**Owner-facing sentence (QP-4 §6, exact):**
+
+> "r4-b has zero out-of-sample trades and has not cleared the promotion gate; its exploration result comes from the days it was picked on. On the pinned stack (505,000-lamport sends, rent refunded, stranded positions charged in full), a 20-day forward read passes about 25 % of the time at the judge's shrunk estimate of the edge and about 66 % if the whole measured edge is real (about 17 to 53 % if a second push book registers). A book with no edge passes about 2 % of the time. A FAIL retires the book, and unless nearly all of the measured edge is real, FAIL is the likely outcome."
 
 ## 10. Disclosures (DEC-030 §3; ledger rule 3)
 
@@ -405,9 +394,9 @@ On 2026-10-16 a builder's scan read row TYPES and MINT COUNTS of `migrations-202
 ### 10.4 Exploration evidence is in-sample for selection
 
 - **Zero out-of-sample trades.** Every figure is from exploration days that were in-sample for selection: **the best of 6 l3 variants, about 25 hunts on this window, deflated Sharpe 0.6224** on the deciding 1.9 s stack (FROZEN:175; QP §header). Under R1 there is no backward screen (DEC-030 §2, R1 "Cost"); the walk-2 read alone carries the winner's-curse risk.
-- **In-sample, the day-level test already fails** at 0.025: pressure 1.3 s t 1.9048, p 0.034; pressure 1.9 s p 0.0276 (QP §1, 27 traded days, after dropping 09-11 and mint 16894).
-- **Deciding-stack in-sample cells** (with rent, dropped sample n 2,879) [measured, #673 = r4b-verify REPORT]: mean % / total SOL / CI90 lo SOL per trade / ex-top-3 / ex-best-day / day t — flat 1.3 s 1.605794 / 11.557703 / 0.001337 / 8.303159 / 8.988099 / 2.112063; flat 1.9 s 1.603981 / 11.54465 / 0.00133 / 8.290106 / 8.97681 / 2.110699; pressure 1.3 s 1.215049 / 8.745313 / 0.000836 / 5.971927 / 6.565793 / 1.901402; pressure 1.9 s 1.275503 / 9.18043 / 0.000969 / 6.40146 / 7.009824 / 2.003766.
-- **fresh-0903** is −2.304792 SOL over 740 trades (QP §1, deciding stack); FROZEN reports −0.80917 SOL (deciding 1.9 s, 10-08 run), and the harness stack moved +0.78 → −0.14 between runs (section 2.4). Three figures, three stacks or runs; all negative or near zero on the deciding stack.
+- **In-sample day-level t, two stacks.** With rent and on block sums, the test fails at 0.025: pressure 1.3 s t 1.9048, p 0.034; pressure 1.9 s p 0.0276 (QP §1, 27 traded days, after dropping 09-11 and mint 16894). On the pinned stack (per-attempt block means, no rent, auto-stranded, 505k), pressure 1.3 s gives t 2.9459, p 0.0034 (QP-4 §1). Both are in-sample for selection and are not evidence.
+- **In-sample cells on the 10-16 VERIFY stack** (505k, with rent, day t on calendar dates; not the pinned stack; dropped sample n 2,879) [measured, #673 = r4b-verify REPORT]: mean % / total SOL / CI90 lo SOL per trade / ex-top-3 / ex-best-day / day t — flat 1.3 s 1.605794 / 11.557703 / 0.001337 / 8.303159 / 8.988099 / 2.112063; flat 1.9 s 1.603981 / 11.54465 / 0.00133 / 8.290106 / 8.97681 / 2.110699; pressure 1.3 s 1.215049 / 8.745313 / 0.000836 / 5.971927 / 6.565793 / 1.901402; pressure 1.9 s 1.275503 / 9.18043 / 0.000969 / 6.40146 / 7.009824 / 2.003766.
+- **fresh-0903** is −2.304792 SOL over 740 trades (QP §1, deciding stack); FROZEN reports −0.80917 SOL (deciding 1.9 s, 10-08 run), and it moved +0.78 → −0.14 between runs (section 2.4, stack as in the repro report). Three figures, three stacks or runs; all negative or near zero on the deciding stack.
 - **maxDD 3.149798 SOL**, more than the 2.5 SOL open (QP §1).
 - **The noise-draw disclosure** of section 2.4.
 - **Multiplicity:** DEC-014 m. This EXP adds 1 to m (Appendix A): r4-b's development read Aug–Sep exploration dates, counted conservatively as reading the 27 non-P1 dates.
@@ -425,56 +414,63 @@ Nothing in this file says r4-b makes money. A PASS would be forward simulated pa
 ## 11. Seal during the window
 
 - **Before the read**, no person, agent or job computes, opens or prints an r4-b outcome for any mark at or after W0: landing state, guard result, fill, exit state, proceeds, P&L, mean, CI, day or block sign, win or loss, from any source (walk 2, the tip tape, the live listener, RPC, a paper runner).
-- **Allowed before the read:** the count job's outputs (section 4.2); hour counts (sealed, verified, bad); the precount; the A3 monitor's flags; the fee-arm verdict read of section 5.3 by a non-r4-b-outcome reader.
+- **Allowed before the read:** the count job's outputs (section 4.2); the mint-account structure fetch of section 5.2 (iii); hour counts (sealed, verified, bad); the precount; the A3 monitor's flags; the fee-arm verdict read of section 5.3 by a non-r4-b-outcome reader.
 - **A breach** is recorded here, dated, and the read is reported compromised. It never turns a FAIL into a NOT_DECIDABLE. A compromised read cannot support a live request.
 
 ## 12. Source conflicts and how this file resolves them
 
 | Conflict | Resolution |
 | --- | --- |
-| Checklist §1 c (stop at ≥ 100 trades on ≥ 5 dates, cap W0 + 336 h) vs DEC-030 §1a (≥ N blocks with attempts and ≥ A attempts, cap ≤ 21 d) | **DEC-030 wins** (PLAN §8 item 7). N = 20, A = 125, cap 21 d. |
+| Checklist §1 c (stop at ≥ 100 trades on ≥ 5 dates, cap W0 + 336 h) vs DEC-030 §1a (≥ N blocks with attempts and ≥ A attempts, cap ≤ 21 d) | **DEC-030 wins** (PLAN §8 item 7). Calendar stop E = W0 + 480 h with N = 20, A = 125 checked in the read, cap = E (QP-4 §5). |
 | Checklist §2 (Holm across k) vs DEC-030 §1 (Bonferroni 0.025/k) | **DEC-030 wins**: Bonferroni. |
 | Checklist §1 d (deadline E + 48 h) | Not in conflict with DEC-030; adopted. |
-| PLAN §5 recommends ceil for k vs QP §2 np.round | **QP wins**: np.round (#673 already pins it). |
-| PLAN §1/§5 SPH per decision hour vs QP §2 "slot_s per day" | Day value pinned (section 3.3), **QP to confirm** the aggregation. |
+| PLAN §4 open ruling: may the count job compute ranks from post-entry prices of held tokens? | Settled by the calendar stop: the count job computes no features, scores, ranks or attempts (section 4.2). |
+| PLAN §5 recommends ceil for k vs QP §2 np.round | **QP wins**: np.round (#673 pins it). |
+| PLAN §1/§5 SPH per decision hour vs QP §2 "slot_s per day" | **QP-4 §2**: 3600 / median of the date's hourly SPH (section 3.3). |
 | PLAN §8 item 3 (H0 = 10-16T03) vs QP §2 (pools ≥ 10-16T01) | **QP wins**: 10-16T01, with the breach-hour disclosure (section 10.3). |
-| #673 `day_t` on block sums vs DEC-021 Am.1 §5 (per-attempt block means) | DEC text pinned (section 6.2); **QP to confirm**. |
-| FROZEN universe from graduation + 600 s vs QP D3 condition "decisions ≥ s0+600 s" | s0 + 600 s drop rule (section 3.4); **QP to confirm**. |
+| #673 `day_t` on block sums vs DEC-021 Am.1 §5 (per-attempt block means) | **QP-4 §1**: per-attempt means decide; sums report-only; `book_stats` must change before the read tool's QP (section 6.2). |
+| FROZEN universe from graduation + 600 s vs QP D3 condition "decisions ≥ s0+600 s" | s0 + 600 s drop rule, confirmed by QP-4 §3 (section 3.4). |
+| #672 PR text (null `tx_index` sorted LAST after a reviewer fix) vs training's coalesce(−1) | **QP-4 §7**: nulls FIRST; the merged `forward_order` (`cf1eaac`) sorts nulls first; mixed (mint, slot) > 0 refuses. |
+| LP Deposit/Withdraw: QP §4(d) "exclude or refuse" vs QP-4 §4 | **QP-4 wins**: no exclusion, tolerance "none", discontinuity counts report-only in the read (section 3.5). |
 | PLAN §5 haircut product approximation vs #673 VERIFY formula | #673 formula pinned (section 5.1). |
 | FROZEN:123 target n 3,002 vs rebuilt n 2,986 | Amended to rb2 (section 2.3), per QP §2. |
 | FROZEN:104 halves bar | Report-only on walk 2 (section 5.4); QP's power tables carry no halves bar. |
-| QP owner line (first table) vs follow-up stack | Both shown (section 9). |
-| Timestamps: QP ruling "~20:30Z", follow-up "~21:00Z" vs `date -u` 19:58Z at the start of this writing | Recorded only; the ruling texts were read from the file as found. |
+| QP owner line (first table) vs later stacks | QP-4 §6's exact sentence is used (section 9); the earlier line and tables are superseded. |
+| 160k power (QP-FU §2, QP-3) on block sums | Not quoted until rerun on means (QP-4 §6). |
 
 ## 13. TO FILL
 
 **Before merge:**
-1. Code sha256: `<SHA256 at merge of #672>`, `<SHA256 at merge of #673>` (three files), `<SHA256 at merge of layout>`, `<SHA256 at merge of count>` (section 2.2).
+1. Code sha256: `<SHA256 at merge of layout>` (`tools/r4b_layout.py`, #674, QP CHANGES at `b5a2d45`) and `<SHA256 at merge of count>` (`tools/r4b_count.py` and wrapper) (section 2.2). #672 and #673 are filled from `origin/main`.
 2. E-d md5s (section 2.3).
 3. rb2 prediction-key sha256s and rb2 trades sha256 (section 2.2).
 4. TIERS sha256; decoder blob ids; input-view sha256s and the `data/tries.jsonl` entry.
 5. The sell builder path and sha256 (section 5.2 (i)); else rent is deciding.
-6. The LP-event detection tolerance (section 3.5).
-7. The strand-class (iii) freeze-authority / Token-2022 data source (section 5.2).
-8. The catalog route: sub-entry support or pinned allowlist (section 8.2).
-9. The DEC-030 owner line and route; `EXP027_ROUTE` set accordingly (section 0.2).
-10. Job #1036's extension (due about 2026-10-22T19:21Z) and a walker credit cap that covers to 2026-11-16T01 (PLAN §8 item 10), recorded in the Window record.
-11. Quant-proof's rulings on every "QP to confirm" item: sections 3.2, 3.3, 3.4 (history, s0 + 600 s), 3.5, 3.6 (`f_c_v`), 4.2 (count job ranks), 5.1 (E1 scaling), 5.3 (lag floor), 6.2 (block means), 9 (owner line wording).
+6. The catalog route: sub-entry support or pinned allowlist (section 8.2).
+7. The DEC-030 owner line and route; `EXP027_ROUTE` set accordingly (section 0.2).
+8. Job #1036's extension (due about 2026-10-22T19:21Z) and a walker credit cap that covers to 2026-11-16T01 (PLAN §8 item 10), recorded in the Window record.
+
+**Before the read tool's QP:**
+9. The `book_stats` change to a pinned per-attempt-mean `t_block` (section 6.2), merged with QP OK; its `tools/r4b_book.py` sha256 replaces the `ea01143` value in section 2.2.
+10. The 160k power rerun on per-attempt means, if the 160k leg is to be quoted (section 9).
 
 **Before the read (Window record, dated):**
-12. `<SHA256 at merge of read>` with QP OK on its head.
-13. The E1 record (path, sha256, n ≥ 20).
-14. The fee-arm verdict record (path, sha256) if section 5.3 applies, recorded in the ledger before the read lock.
+11. `<SHA256 at merge of read>` with QP OK on its head.
+12. The E1 record (path, sha256, n ≥ 20).
+13. The fee-arm verdict record (path, sha256) if section 5.3 applies, recorded in the ledger before the read lock.
+14. The mint-account file of section 5.2 (iii) (job id, sha256, RPC credits used).
+
+**Settled by QP (no longer open):** LP tolerance "none" (section 3.5); slot_s rule (3.3); null ordering and refusals (3.2, 8.1); D3 drop rule (3.4); history NaN (3.4); `f_c_v` (3.6); count-job ranks (4.2, by the calendar stop); E1 ×5 (5.1); lag floor 0 (5.3); strand-class source (5.2); block means (6.2); owner sentence (9).
 
 ## Appendix A. Proposed ledger edit (Forward walk 2 Status cell; DEC-030 §2a)
 
 DEC-030 is unmerged, so `docs/HOLDOUT_LEDGER.md` is **not edited in this draft**. Once DEC-030 merges with the owner's line, this text is added to the Forward walk 2 row's Status cell **in this PR**, with the bracketed values filled from the merge record, and this PR does not merge without it.
 
-> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`; never moved); stop rule: the first 24 h block boundary from W0 with at least 20 blocks holding an attempt and at least 125 attempts (`EXP027_STOP_RULE`, outcome-blind count job `tools/r4b_count.py`); window cap `<the earlier of W0 + 21 d and 2026-11-16T00>`; exit horizon 1 h (the window with its exit horizon ends by `<cap + 1 h>`, at or before 2026-11-16T01); k at registration `<k>`; route `<R1 | R2>`. Feature-buffer hours `[2026-10-16T01, W0)` are read for features only and never counted (2026-10-16T01 and T02 under the 2026-10-16 breach disclosure). Reads `/data/mal/blocks/forward-1016` only; universe pools created at or after 2026-10-16T01. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). Stop instant: *(added when the stop rule fires)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k): *(added when it happens)*.
+> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`; never moved); calendar stop E = W0 + 480 h = `<E>` (`EXP027_STOP_RULE`); the read requires at least 20 blocks holding an attempt and at least 125 attempts, else NOT_DECIDABLE with no extension; window cap = E; exit horizon 1 h (the window with its exit horizon ends by `<E + 1 h>`, at or before 2026-11-16T01); k at registration `<k>`; route `<R1 | R2>`. Feature-buffer hours `[2026-10-16T01, W0)` are read for features only and never counted (2026-10-16T01 and T02 under the 2026-10-16 breach disclosure). Reads `/data/mal/blocks/forward-1016` only; universe pools created at or after 2026-10-16T01. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). N and A found at the read: *(added by the read)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k): *(added when it happens)*.
 
 Changelog line to add with it:
 
-> - <date> (W = <date -u>; [EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md), DEC-030 slot 5; no row's data was opened): **EXP-027 (r4-b) registered as push-family book 1 on Forward walk 2**, counted-window sub-entry in the Status cell (Rules item 5). W0 `<W0>`, cap `<cap>`, exit horizon 1 h, k `<k>`. m +1 (m >= 16). The Owner cell stays reserved.
+> - <date> (W = <date -u>; [EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md), DEC-030 slot 5; no row's data was opened): **EXP-027 (r4-b) registered as push-family book 1 on Forward walk 2**, counted-window sub-entry in the Status cell (Rules item 5). W0 `<W0>`, E = cap `<W0 + 480 h>`, exit horizon 1 h, k `<k>`. m +1 (m >= 16). The Owner cell stays reserved.
 
 ## Window record
 
