@@ -30,6 +30,8 @@ create rows), no `fm_*`. Times are `event_ts * 1000` (whole seconds; `block_time
 
     tokens_d1.parquet, bars_1m/<YYYY-MM-DD>.parquet, trades_d1/<YYYY-MM-DD>.parquet (per print), wallet_mint_d1.parquet, MANIFEST.json
 
+Ordering uses (slot, event_index, arrival): `tx_index` is not on the D1 allowlist, so the mask drops it.
+
 Joining these outputs to any D0, D2 or D3 table of the same mint stays forbidden while a seal on that pool holds.
 """
 
@@ -64,6 +66,16 @@ INPUT_COLUMNS = ("v", "type", "venue", "mint", "trader", "slot", "signature", "e
 # Output names refused on top of the module's own D1 mask (it is an allowlist for raw columns, a regex for names).
 _EXTRA_FORBIDDEN_OUT = ("pumpswap", "ps_", "v_lamports", "v0", "grad", "pool", "creator", "name", "symbol", "mayhem",
                         "fee", "fm_", "migrat", "synthetic", "boost")
+# Pre-declared hard stop for the curve-complete detection (stated in the PR body before any run). The run exits 2,
+# before any output is written, if ANY of these holds:
+#   (a) traded mints that have a migrate position but no detected complete exceed MAX_MISSED_FRACTION of the traded mints
+#       that have a migrate position (every migrated mint completed its curve first, so a miss means the rule failed);
+#   (b) the share of detected completes whose base_reserve equals the constant exactly is below MIN_EXACT_FRACTION
+#       (the completing buy leaves real_token_reserves 0, i.e. exactly the constant, so "below" means it does not fit);
+#   (c) there are traded migrated mints but no complete was detected at all.
+# `--precount` runs the passes up to this check and writes PRECOUNT.json (no Parquet outputs).
+MAX_MISSED_FRACTION = 0.005
+MIN_EXACT_FRACTION = 0.95
 SKIP_KEYS = ("not_trade", "pool_venue", "after_migrate", "after_complete")
 STAGE_COLUMNS = ("mint", "trader", "is_buy", "lam", "tok", "q", "b", "slot", "ei", "ord", "seq", "ms", "price")
 CREATE_FIELDS = ("mint", "slot", "event_index", "event_ts")
@@ -160,6 +172,20 @@ def _git_head() -> str:
                               timeout=30).stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def complete_gate_reasons(n_traded_migrated: int, n_missed: int, n_exact: int, n_below: int) -> list[str]:
+    """Reasons the complete-detection rule does not fit (empty = passes). See MAX_MISSED_FRACTION above."""
+    out: list[str] = []
+    n_det = n_exact + n_below
+    if n_traded_migrated and n_missed / n_traded_migrated > MAX_MISSED_FRACTION:
+        out.append(f"{n_missed} of {n_traded_migrated} traded migrated mints have no detected complete "
+                   f"(> {MAX_MISSED_FRACTION:.1%})")
+    if n_det and n_exact / n_det < MIN_EXACT_FRACTION:
+        out.append(f"only {n_exact} of {n_det} detected completes hit the constant exactly (< {MIN_EXACT_FRACTION:.0%})")
+    if n_traded_migrated and n_det == 0:
+        out.append("traded migrated mints exist but no complete was detected")
+    return out
 
 
 def _json_rows(path: Path) -> Iterator[dict[str, Any]]:
@@ -327,19 +353,42 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         con.execute("CREATE TABLE stage (mint VARCHAR, trader VARCHAR, is_buy BOOLEAN, lam BIGINT, tok BIGINT, q BIGINT, "
                     "b BIGINT, slot BIGINT, ei BIGINT, ord BIGINT, seq BIGINT, ms BIGINT, price DOUBLE)")
 
+    cm = pa.table({"mint": list(complete_info), "complete_slot": [v[0] for v in complete_info.values()],
+                   "complete_event_index": [v[1] for v in complete_info.values()],
+                   "complete_ms": [v[2] for v in complete_info.values()]},
+                  schema=pa.schema([("mint", pa.string()), ("complete_slot", pa.int64()),
+                                    ("complete_event_index", pa.int64()), ("complete_ms", pa.int64())]))
+    con.register("complete_t", cm)
+    n_traded_migrated, n_mig_no_complete = 0, 0
+    if have_stage and mig_filled:
+        con.register("mig_t", pa.table({"mint": list(mig_filled)}))
+        n_traded_migrated, n_mig_no_complete = con.execute(
+            "SELECT count(DISTINCT s.mint), count(DISTINCT s.mint) FILTER (WHERE s.mint NOT IN (SELECT mint FROM complete_t)) "
+            "FROM stage s JOIN mig_t USING (mint)").fetchone()
+    gate = complete_gate_reasons(n_traded_migrated, n_mig_no_complete, det["exact"], det["below"])
+    detection = {"mints_with_complete": len(complete_info), "exact_constant": det["exact"],
+                 "strictly_below_constant": det["below"], "traded_mints_with_migrate_pos": n_traded_migrated,
+                 "qa_traded_mints_with_migrate_pos_but_no_detected_complete": n_mig_no_complete,
+                 "rule": {"max_missed_fraction": MAX_MISSED_FRACTION, "min_exact_fraction": MIN_EXACT_FRACTION},
+                 "gate_reasons": gate}
+    if args.precount or gate:
+        con.close()
+        shutil.rmtree(out / "tmp", ignore_errors=True)
+        if args.precount:
+            (out / "PRECOUNT.json").write_text(json.dumps({"complete_detection": detection, "n_staged_prints": n_stage,
+                                                           "skipped_rows": skipped, "coverage_per_hour": coverage,
+                                                           "inputs": inputs}, indent=1, sort_keys=True), encoding="utf-8")
+        if gate:
+            raise LayerRefused("complete-detection gate failed (no output written): " + "; ".join(gate))
+        return {"precount": detection}
+
     # tokens_d1
     ct = pa.table({"mint": list(creates), "create_slot": [v[0] for v in creates.values()],
                    "create_event_index": [v[1] for v in creates.values()],
                    "create_ms": [v[2] * 1000 for v in creates.values()]},
                   schema=pa.schema([("mint", pa.string()), ("create_slot", pa.int64()),
                                     ("create_event_index", pa.int64()), ("create_ms", pa.int64())]))
-    cm = pa.table({"mint": list(complete_info), "complete_slot": [v[0] for v in complete_info.values()],
-                   "complete_event_index": [v[1] for v in complete_info.values()],
-                   "complete_ms": [v[2] for v in complete_info.values()]},
-                  schema=pa.schema([("mint", pa.string()), ("complete_slot", pa.int64()),
-                                    ("complete_event_index", pa.int64()), ("complete_ms", pa.int64())]))
     con.register("creates_t", ct)
-    con.register("complete_t", cm)
     tokens = con.execute("""
         WITH bc AS (SELECT mint, min(ms) AS bc_first_ms, max(ms) AS bc_last_ms,
                            sum(lam) FILTER (WHERE is_buy) / 1e9 AS bc_buy_sol, sum(lam) FILTER (WHERE NOT is_buy) / 1e9 AS bc_sell_sol,
@@ -402,12 +451,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         FROM stage GROUP BY trader, mint ORDER BY trader, mint""").fetch_arrow_table()
     write(wm, out / "wallet_mint_d1.parquet")
 
-    n_mig_no_complete = 0
-    if have_stage and mig_filled:
-        con.register("mig_t", pa.table({"mint": list(mig_filled)}))
-        n_mig_no_complete = con.execute(
-            "SELECT count(DISTINCT s.mint) FROM stage s JOIN mig_t USING (mint) "
-            "WHERE s.mint NOT IN (SELECT mint FROM complete_t)").fetchone()[0]
     con.close()
     shutil.rmtree(out / "tmp", ignore_errors=True)
 
@@ -416,9 +459,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "role": ROLE, "reader": reader, "resolved_gates": gates,
         "python": sys.version.split()[0], "pyarrow": pa.__version__, "duckdb": duckdb.__version__,
         "complete_rule": {"buy_with_base_reserve_at_or_below": COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW},
-        "complete_detection": {"mints_with_complete": len(complete_info), "exact_constant": det["exact"],
-                               "strictly_below_constant": det["below"],
-                               "qa_traded_mints_with_migrate_pos_but_no_detected_complete": n_mig_no_complete},
+        "complete_detection": detection,
         "skipped_rows": skipped, "skipped_bad_reserves": n_bad_reserves, "create_rows_not_type_create": n_create_other,
         "n_migrate_positions": len(mig_filled), "inputs": inputs, "row_counts": {k: v["rows"] for k, v in outputs.items()},
         "outputs": outputs, "coverage_per_hour": coverage,
@@ -452,12 +493,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--memory-gb", type=int, default=3)
     ap.add_argument("--threads", type=int, default=2)
+    ap.add_argument("--precount", action="store_true",
+                    help="stage and run the complete-detection gate only; write PRECOUNT.json, no Parquet outputs")
     a = ap.parse_args(argv)
+    for stale in ("MANIFEST.json", "PRECOUNT.json"):  # a failed rerun must not leave an old manifest in --out
+        (Path(a.out) / stale).unlink(missing_ok=True)
     try:
         m = run(a)
     except (LayerRefused, oc.OctoberRefused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
+    if "precount" in m:
+        print("precount", json.dumps(m["precount"], sort_keys=True))
+        return 0
     print(summary(m))
     return 0
 

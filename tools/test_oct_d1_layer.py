@@ -99,7 +99,7 @@ class Base(unittest.TestCase):
              trade("A", "w3", "buy", 102, 1, t + 31, b=CB),  # after the complete trade, same slot
              trade("A", "w3", "sell", 103, 0, t + 40, b=CB),
              trade("A", "p1", "buy", 104, 0, t + 50, venue="pumpswap", b=40_000_000_000_000)]  # pool row
-        b = [trade("B", "w1", "buy", 200, 0, t + 60),
+        b = [trade("B", "w1", "buy", 200, 0, t + 60, b=CB),  # B completes too (a migrated mint always did)
              trade("B", "w4", "sell", 201, 0, t + 61),
              trade("B", "w5", "buy", 300, 0, t + 70)]  # at/after B's migrate tx (300, 0)
         c = [trade("C", "w2", "buy", 400, 0, t + 80)]
@@ -141,8 +141,8 @@ class LayerTests(Base):
         self.assertEqual(tk["A"]["bc_sell_sol"], None)
         self.assertEqual(tk["A"]["create_ms"], (T0 + 1) * 1000)
         self.assertTrue(tk["A"]["has_create"])
-        self.assertEqual(tk["B"]["bc_n_trades"], 2)  # (300, 0) is the migrate tx: excluded
-        self.assertFalse(tk["B"]["reached_complete"])
+        self.assertEqual(tk["B"]["bc_n_trades"], 1)  # the sell after complete and (300, 0), the migrate tx, are out
+        self.assertTrue(tk["B"]["reached_complete"])
         self.assertFalse(tk["C"]["reached_complete"])
         self.assertFalse(tk["C"]["has_create"])
         self.assertEqual(tk["C"]["bc_n_trades"], 2)  # C never completes: next-hour sell is in
@@ -150,8 +150,9 @@ class LayerTests(Base):
         sk = m["skipped_rows"]
         self.assertEqual(sk["pool_venue"], 1)
         self.assertEqual(sk["after_migrate"], 2)  # B (300,0) and the next-hour print of migrated A
-        self.assertEqual(sk["after_complete"], 2)  # same-slot next event, later sell
-        self.assertEqual(m["complete_detection"]["exact_constant"], 1)
+        self.assertEqual(sk["after_complete"], 3)  # A: same-slot next event, later sell; B: the sell
+        self.assertEqual(m["complete_detection"]["exact_constant"], 2)
+        self.assertEqual(m["complete_detection"]["qa_traded_mints_with_migrate_pos_but_no_detected_complete"], 0)
 
     def test_forbidden_columns_and_values_never_reach_outputs(self):
         self.assertEqual(self.run_layer()[0], 0)
@@ -203,11 +204,11 @@ class LayerTests(Base):
         self.assertEqual(t.column_names, ["mint", "slot", "event_index", "ms", "seq", "side", "sol", "sol_lamports",
                                           "token_raw", "quote_reserve", "base_reserve", "price", "trader"])
         rows = t.to_pylist()
-        self.assertEqual(len(rows), 7)  # A 3 + B 2 + C 2; no pool, post-complete or post-migrate print
+        self.assertEqual(len(rows), 6)  # A 3 + B 1 + C 2; no pool, post-complete or post-migrate print
         self.assertFalse([r for r in rows if r["trader"] in ("p1", "w9", "w5")])
         self.assertEqual(rows, sorted(rows, key=lambda r: (r["slot"] * 100000 + r["event_index"], r["seq"])))
         m = json.loads((self.out / "MANIFEST.json").read_text())
-        self.assertEqual(m["bonding_prints_per_hour"], {H0: 6, H1: 1})
+        self.assertEqual(m["bonding_prints_per_hour"], {H0: 5, H1: 1})
         self.assertIn("NOT AVAILABLE", m["quote_mint"])
 
     def test_manifest_lists_sha256_for_every_input(self):
@@ -225,7 +226,7 @@ class LayerTests(Base):
             self.assertNotIn("pools", i["path"])
         self.assertEqual([c["hour"] for c in m["coverage_per_hour"]], [H0, H1])
         c0 = m["coverage_per_hour"][0]
-        self.assertEqual((c0["bonding_prints"], c0["mints_with_prints"], c0["creates"], c0["completes"]), (6, 3, 2, 1))
+        self.assertEqual((c0["bonding_prints"], c0["mints_with_prints"], c0["creates"], c0["completes"]), (5, 3, 2, 2))
         for k, v in m["outputs"].items():
             self.assertEqual(v["sha256"], sha(self.out / k))
         self.assertIn("tokens_d1.parquet", m["row_counts"])
@@ -302,6 +303,44 @@ class LayerTests(Base):
         rc, _, err = self.run_layer()
         self.assertEqual(rc, 2)
         self.assertIn("missing", err)
+
+    def test_gate_stops_when_a_migrated_mint_has_no_detected_complete(self):
+        (self.out).mkdir(parents=True)
+        (self.out / "MANIFEST.json").write_text("{}")  # stale manifest from an earlier run
+        self.build(trades1=[trade("D", "w1", "buy", 500, 0, T0 + 3700)],
+                   migs=[{"type": "migration", "mint": "A", "slot": 150, "event_index": 0},
+                         {"type": "migration", "mint": "B", "slot": 300, "event_index": 0},
+                         {"type": "migration", "mint": "D", "slot": 600, "event_index": 0}])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("complete-detection gate failed", err)
+        self.assertFalse((self.out / "tokens_d1.parquet").exists())
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_gate_stops_when_constant_does_not_fit(self):
+        rows = [trade("A", "w1", "buy", 100, 0, T0 + 10, b=CB - 5)]  # below, never exact
+        self.build(trades0=rows, trades1=[], migs=[{"type": "migration", "mint": "A", "slot": 150, "event_index": 0}])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("hit the constant exactly", err)
+
+    def test_precount_writes_counts_only(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--precount"])
+        self.assertEqual(rc, 0, err.getvalue())
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        self.assertEqual(pc["complete_detection"]["exact_constant"], 2)
+        self.assertFalse((self.out / "tokens_d1.parquet").exists())
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_gate_function(self):
+        self.assertEqual(layer.complete_gate_reasons(0, 0, 0, 0), [])
+        self.assertEqual(layer.complete_gate_reasons(1000, 5, 100, 0), [])
+        self.assertTrue(layer.complete_gate_reasons(1000, 6, 100, 0))
+        self.assertTrue(layer.complete_gate_reasons(1000, 0, 90, 10))
+        self.assertTrue(layer.complete_gate_reasons(10, 0, 0, 0))
 
     def test_output_column_guard(self):
         for bad in ("v_lamports", "ps_first_price", "pool", "creator", "fm_flow_sol", "grad_ms", "v0_lamports",

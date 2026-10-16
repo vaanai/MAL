@@ -419,6 +419,7 @@ def test_migrate_sigs_from_rows():
 
 def test_migrate_sigs_ignores_non_migration_rows():
     rows = [{"type": "trade", "mint": "M", "signature": "X"}, {"type": "init_boost", "mint": "M", "signature": "Y"},
+            {"type": "complete", "mint": "M", "signature": "C"},
             {"mint": "M", "signature": "W"}, {"type": "migration", "mint": "M", "signature": "S"}]
     assert oc.migrate_sigs_from(rows) == {"M": "S"}
 
@@ -454,7 +455,7 @@ def test_migrate_positions_keeps_three_fields_and_is_gated(blocks, tmp_path, mon
     monkeypatch.setattr(oc, "_now", lambda: NOW)
     f = _f(tmp_path, "forward-1002", "migrations", "2026-10-10T00", "migrations-2026-10-10T00.jsonl")
     f.parent.mkdir(parents=True)
-    f.write_text(json.dumps({"mint": "M", "slot": 7, "event_index": 2, "virtual_quote_reserves": 99}) + "\n")
+    f.write_text(json.dumps({"type": "migration", "mint": "M", "slot": 7, "event_index": 2, "virtual_quote_reserves": 99}) + "\n")
     args = (blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01")
     assert oc.migrate_positions(*args, [f]) == {"M": (7, 2)}
     walk2 = _f(tmp_path, "forward-1002", "migrations", "2026-10-16T01", "migrations-2026-10-16T01.jsonl")
@@ -465,6 +466,43 @@ def test_migrate_positions_keeps_three_fields_and_is_gated(blocks, tmp_path, mon
     monkeypatch.setattr(oc, "_now", lambda: datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc))
     with pytest.raises(oc.OctoberRefused):
         oc.migrate_positions(*args, [f])
+
+
+def _mig_file(tmp_path, monkeypatch, rows):
+    monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", _marker(tmp_path))
+    monkeypatch.setattr(oc, "BLOCKS_ROOT", tmp_path / "blocks")
+    monkeypatch.setattr(oc, "_now", lambda: NOW)
+    f = _f(tmp_path, "forward-1002", "migrations", "2026-10-10T00", "migrations-2026-10-10T00.jsonl")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return f
+
+
+@pytest.mark.parametrize("comp_ei", [0, 1, 5])  # below, equal to and above the completing trade's event_index (1)
+@pytest.mark.parametrize("order", ["comp_last", "comp_first"])
+def test_migrate_positions_ignores_complete_rows(blocks, tmp_path, monkeypatch, comp_ei, order):
+    comp = {"type": "complete", "mint": "M", "slot": 10, "event_index": comp_ei}
+    mig = {"type": "migration", "mint": "M", "slot": 12, "event_index": 3}
+    f = _mig_file(tmp_path, monkeypatch, [comp, mig] if order == "comp_first" else [mig, comp])
+    pos = oc.migrate_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f])
+    assert pos == {"M": (12, 3)}
+    trade = _row(slot=10, ei=1)  # the completing trade stays before the migrate cutoff whatever the complete row says
+    assert oc.check_rows(D1, [trade], pos, {"M": (10, 1)}) == []
+
+
+def test_migrate_positions_complete_only_means_never_migrated(blocks, tmp_path, monkeypatch):
+    f = _mig_file(tmp_path, monkeypatch, [{"type": "complete", "mint": "M", "slot": 10, "event_index": 0}])
+    assert oc.migrate_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f]) == {}
+
+
+def test_migrate_positions_conflicting_migration_rows_refused(blocks, tmp_path, monkeypatch):
+    f = _mig_file(tmp_path, monkeypatch, [{"type": "migration", "mint": "M", "slot": 12, "event_index": 3},
+                                          {"type": "pool_create", "mint": "M", "slot": 13, "event_index": 0}])
+    with pytest.raises(oc.OctoberRefused):
+        oc.migrate_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f])
+    f = _mig_file(tmp_path, monkeypatch, [{"type": "migration", "mint": "M", "slot": 12, "event_index": 3},
+                                          {"type": "pool_create", "mint": "M", "slot": 12, "event_index": 1}])
+    assert oc.migrate_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f]) == {"M": (12, 1)}
 
 
 def test_latch_one_october_role_per_process(blocks, tmp_path, monkeypatch):

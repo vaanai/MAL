@@ -153,9 +153,10 @@ def _require_grant(role: str) -> None:
         raise OctoberRefused(f"no granted check_read for role={role} in this process (holds: {_LATCH or 'none'})")
 
 
-# Row types that identify a mint's migrate tx: observe/trade_decode.py emits kind "create_pool" (the pump_amm
-# create-pool event inside the migrate tx), and migrations/ rows carry type "migration" / "pool_create".
-# init_boost, post_complete_buy and trades share that tx but are not the identity row, so they are ignored here.
+# Row types that identify a mint's migrate tx: migrations/ rows carry type "migration" (tools/pump_history_backfill.py
+# decode_migration_event) or "pool_create"; "create_pool" is a decoder `kind` (observe/trade_decode.py), kept here
+# defensively. A `complete` row (the curve-completing buy's event) is NOT a migrate row; init_boost, post_complete_buy
+# and trades share the migrate tx or the complete tx but are not the identity row, so they are ignored here.
 _MIGRATE_SIG_TYPES = frozenset({"create_pool", "migration", "pool_create"})
 
 
@@ -436,7 +437,8 @@ def _lines(path: Path) -> Iterator[str]:
 
 def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
                       paths: Sequence[str | Path]) -> dict[str, tuple[int, int]]:
-    """mint -> (slot, event_index) of its migrate tx, from migrations/ hour files only. This is the only D1 use of
+    """mint -> (slot, event_index) of its migrate tx, from migrations/ hour files only, using only migration-type rows
+    (`_MIGRATE_SIG_TYPES`; other row types are ignored; migration rows in two slots for one mint are refused). This is the only D1 use of
     migrations/ and keeps nothing but those three fields. It is gated like a D0 read (FINAL marker, clock, hours,
     paths) with the fixed real clock/ledger/root, but does not take the process latch (it feeds D1 by design).
     Build it from the full tape through 2026-10-16T01 so that `None`/absent means "never migrated"."""
@@ -453,8 +455,14 @@ def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_ho
             if not line.strip():
                 continue
             r = json.loads(line)
+            if r.get("type") not in _MIGRATE_SIG_TYPES:
+                continue  # other row types are ignored: they must never become the cutoff
             try:
-                out[r["mint"]] = (int(r["slot"]), int(r["event_index"]))
+                mint, pos = r["mint"], (int(r["slot"]), int(r["event_index"]))
             except (KeyError, TypeError, ValueError):
-                raise OctoberRefused(f"{p}: a migrations row lacks mint, slot or event_index") from None
+                raise OctoberRefused(f"{p}: a migration row lacks mint, slot or event_index") from None
+            prev = out.get(mint)
+            if prev is not None and prev[0] != pos[0]:
+                raise OctoberRefused(f"{p}: mint {mint!r} has migration rows in two different slots")
+            out[mint] = pos if prev is None else min(prev, pos)  # same tx: the earliest event is the cutoff
     return out
