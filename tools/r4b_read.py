@@ -108,9 +108,10 @@ E1_STAKE_LAMPORTS = 50_000_000  # R8: the E1 live-vs-sim gap was measured at thi
 E1_SCALE = float(FZ.STAKE_LAMPORTS) / E1_STAKE_LAMPORTS  # 250,000,000 / 50,000,000 = 5, fixed in code; the record cannot change it
 SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-# R11: deny by default. A Token-2022 mint is NOT strand-class only if EVERY extension is in this set. Empty until an outcome-blind RPC census of pre-walk
-# graduations fills it, before W0, in a change that also moves this file's pinned sha256.
-TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset()
+# R11: deny by default. A Token-2022 mint is NOT strand-class only if EVERY extension is in this set. Filled from the outcome-blind mint-account census
+# (tools/mint_account_fetch.py; /data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/mint-census/summary.json): 295 of 300 sampled mints are Token-2022 with exactly
+# metadataPointer + tokenMetadata, the other 5 are classic SPL; 0 have a freeze authority. Any other extension still strands, and so does a freeze authority.
+TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset({"metadataPointer", "tokenMetadata"})
 # E1 mode (owner decision pending; the EXP pins it with EXP027_E1_MODE, which must equal this constant):
 #   "A"      haircut only (no E1 penalty);
 #   "B"      a fixed charge of max(haircut, E1_FIXED_LAMPORTS) per filled, non-stranded trip;
