@@ -11,6 +11,15 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0g Update 2026-10-16T19:10Z (manager12): H5 tail and exit results, Haiku September FAIL, fee-probe state, breach record
+
+Source: [ARTIFACTS/lab/push-2026-10-16-evening.md](../ARTIFACTS/lab/push-2026-10-16-evening.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. No book has cleared the promotion gate.
+
+- **Results:** no H5 tail filter (1.42x on n) and no exit structure (best 1.13x on days-to-gate) makes H5 certifiable fast; the Haiku trader's September walk FAILED (no Stage 2); launchpad-landscape is web-only and shows no venue that makes money. QP's EXP-026 power desk (synthetic): plan on +2 to +5%.
+- **Fee-arm probe:** live at db4af222 since about 18:20Z but 0 buys are possible, because the intents carry no migration_slot (jobs #1072/#1073: 1,388 of 1,388 rows). Fix PR #669 merged as d29ae53. A reinstall needs the owner's OK (q_RA-Txtw4ncevOA, open).
+- **Breach record:** a diagnostic scan for PR #670 read row types and mint counts from forward-1002 migrations hours 2026-10-16T01 and T02 (QP ruling, PR #670 comment 6222506181: low severity, no read compromised, those hours can never be counted). Disclosed in the HOLDOUT_LEDGER changelog (2026-10-16), the Forward walk 2 Status cell and the EXP-025 "Breach disclosure" amendment. Any walk-2 pre-registration must cite it. Diagnostic scans filter by the validated hour range and call `check_read` before opening a file.
+- **D1 layer:** PR #670 needs B1 and B2 fixed and QP OK on the new head before the precount reruns.
+
 ### 1.0f Update 2026-10-16T18:20Z (manager12): push rounds 4-5, execution ops
 
 Source: [ARTIFACTS/lab/push-2026-10-16-round45.md](../ARTIFACTS/lab/push-2026-10-16-round45.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money; no book has cleared the promotion gate.
