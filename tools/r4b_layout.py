@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -75,6 +76,10 @@ TRADE_COLS = {
     "quote_reserve": "BIGINT", "base_reserve": "BIGINT", "pool": "VARCHAR", "slot": "BIGINT", "signature": "VARCHAR", "event_index": "INTEGER",
     "tx_index": "INTEGER", "block_time": "BIGINT", "virtual_quote_reserves": "BIGINT",
 }
+# structure_only (the outcome-blind count job, tools/r4b_count.py): the trade columns that are decision-time / structure fields. NO side, sol_lamports, token_raw,
+# quote_reserve, base_reserve, trader. virtual_quote_reserves is masked AT LOAD to the boolean vq_null in the hour table; the candidate table has no V; V0 is a
+# targeted re-read of the s0 rows only (s0t.vq). Only s0t, m0 and m hold a V value (stats["v_columns"] reports it).
+TRADE_COLS_STRUCT = {k: v for k, v in TRADE_COLS.items() if k in ("venue", "mint", "pool", "slot", "signature", "event_index", "tx_index", "block_time", "virtual_quote_reserves")}
 CREATE_COLS = {"type": "VARCHAR", "mint": "VARCHAR", "creator": "VARCHAR", "is_mayhem_mode": "BOOLEAN", "slot": "BIGINT", "block_time": "BIGINT"}
 MIG_COLS = {"type": "VARCHAR", "mint": "VARCHAR", "slot": "BIGINT", "block_time": "BIGINT", "tx_index": "INTEGER", "event_index": "INTEGER",
             "pool": "VARCHAR", "quote_mint": "VARCHAR"}
@@ -175,17 +180,30 @@ def _load(con: Any, table: str, path: Path, cols: Mapping[str, str], want_rows: 
         raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
 
 
-def _load_trades(con: Any, path: Path, hix: int, label: str) -> None:
-    """Load an hour's trades into temp table t with `frn` = hour_index * 1e10 + row number in the file (insertion order is preserved by DuckDB)."""
-    src = _read_json_sql(path, TRADE_COLS)
+def _load_trades(con: Any, path: Path, hix: int, label: str, cols: Mapping[str, str] | None = None, mask_v: bool = False) -> None:
+    """Load an hour's trades into temp table t with `frn` = hour_index * 1e10 + row number in the file (insertion order is preserved by DuckDB).
+    mask_v (structure mode): virtual_quote_reserves is replaced AT LOAD by the boolean `vq_null`; t never holds a V value."""
+    src = _read_json_sql(path, cols or TRADE_COLS)
+    star = "* exclude (virtual_quote_reserves), (virtual_quote_reserves is null) as vq_null" if mask_v else "*"
     try:
-        con.sql(f"create or replace temp table t as select {hix} * 10000000000 + (row_number() over () - 1) as frn, * from {src}")
+        con.sql(f"create or replace temp table t as select {hix} * 10000000000 + (row_number() over () - 1) as frn, {star} from {src}")
     except Exception as exc:
         raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
     _check_frn(con, path, hix, label)
 
 
 FRN_SAMPLE_EVERY = 100_000
+
+
+_RE_SLOT = re.compile(r'[,{]\s*"slot"\s*:\s*(-?\d+)')
+_RE_SIG = re.compile(r'[,{]\s*"signature"\s*:\s*"([^"\\]*)"')
+_RE_EVI = re.compile(r'[,{]\s*"event_index"\s*:\s*(-?\d+)')
+
+
+def _slot_sig_evi(line: str) -> tuple:
+    """(slot, signature, event_index) of a trade line by regex on the three fields only (no other field is parsed); a missing / null field is None."""
+    a, b, c = _RE_SLOT.search(line), _RE_SIG.search(line), _RE_EVI.search(line)
+    return (int(a.group(1)) if a else None, b.group(1) if b else None, int(c.group(1)) if c else None)
 
 
 def _check_frn(con: Any, path: Path, hix: int, label: str) -> None:
@@ -202,8 +220,7 @@ def _check_frn(con: Any, path: Path, hix: int, label: str) -> None:
         if not line.strip():
             continue
         if i in want_ord:
-            r = json.loads(line, strict=False)
-            seen[i] = (r.get("slot"), r.get("signature"), r.get("event_index"))
+            seen[i] = _slot_sig_evi(line)
         i += 1
     if i != n:
         raise LayoutRefused(f"{label}: frn_order: file has {i} rows but DuckDB loaded {n}")
@@ -238,8 +255,14 @@ def default_canonical() -> CanonFn:
 
 def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "event", static_map: Mapping[str, int | None] | None = None,
           canonical_fn: CanonFn | None = None, problems_fn: ProblemsFn | None = None, verify: Mapping[str, Mapping[str, Any]] | None = None,
-          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None) -> dict[str, Any]:
-    """Run the adapter. Returns the stats dict (also written to out_dir/stats.json)."""
+          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None, structure_only: bool = False, trade_end: str | None = None) -> dict[str, Any]:
+    """Run the adapter. Returns the stats dict (also written to out_dir/stats.json).
+
+    trade_end (exclusive hour key, default none): the lookahead trade hours past H1 are only loaded below it (the count job passes the end of its allowlist).
+
+    structure_only=True (the count job): trade rows are parsed with TRADE_COLS_STRUCT only; ut gets (mid, slot, txi, evi, bt) and bond / mkt / mkt_creates are not
+    written; the clock is. The V null refusal on member prints selects `virtual_quote_reserves IS NULL` only. meta, creators, m0.parquet (every completed mint
+    with pda_match / mayhem / s0 / v0) and stats.json are the same as in full mode."""
     import duckdb
 
     if v_source not in V_SOURCES:
@@ -249,6 +272,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     if v_source == "event" and static_map is not None:
         raise LayoutRefused("a static map was given with v_source=event; refusing to mix the V sources")
     walk_dir, out_dir = Path(walk_dir), Path(out_dir)
+    tcols = TRADE_COLS_STRUCT if structure_only else TRADE_COLS
     try:
         out_dir.resolve().relative_to(walk_dir.resolve())
     except ValueError:
@@ -262,6 +286,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     extras: list[str] = []
     for k in (1, 2):  # training loaded 2 trade hours past the last graduation hour
         eh = ef.hour_key(ef.hour_dt(h1) + timedelta(hours=k - 1))
+        if trade_end is not None and eh >= trade_end:
+            break
         if eh in sealed or (verify is not None and eh in verify):
             extras.append(eh)
         else:
@@ -270,7 +296,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         files.update(check_hours(walk_dir, extras, problems_fn, verify))
     trade_hours = hours + extras
     canon = canonical_fn or default_canonical()
-    for sub in ("ut", "bond", "clock", "mkt"):
+    for sub in (("ut", "clock") if structure_only else ("ut", "bond", "clock", "mkt")):
         (out_dir / sub).mkdir(parents=True, exist_ok=True)
 
     con = duckdb.connect()
@@ -311,10 +337,13 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     con.sql("create table m_comp as select c.*, p.pda from comp c left join pda p using(mint)")
 
     # ---- pass 1b: per hour, row-count check, clock + mkt output, s0 candidates
-    con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, vq bigint, bt bigint, pool varchar)")
+    if structure_only:  # no V in the candidate table; V0 is re-read from the s0 rows only (below)
+        con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, bt bigint, pool varchar)")
+    else:
+        con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, vq bigint, bt bigint, pool varchar)")
     n_trade_rows = 0
     for hix, h in enumerate(trade_hours):
-        _load_trades(con, files[h]["trades"], hix, h)
+        _load_trades(con, files[h]["trades"], hix, h, tcols, structure_only)
         got = con.sql("select count(*) from t").fetchone()[0]
         want = _hour_rows(files, table, h, "trades")
         if got != want:
@@ -322,15 +351,31 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         n_trade_rows += got
         con.sql(f"""copy (select block_time bt, min(slot) smin, max(slot) smax from t where block_time is not null group by 1 order by 1)
                     to '{out_dir}/clock/{h}.parquet' (format parquet)""")
-        con.sql(f"""copy (select (block_time//60)*60 AS mnt, sum((venue='pumpswap')::int)::double n_ps,
+        if not structure_only:
+            con.sql(f"""copy (select (block_time//60)*60 AS mnt, sum((venue='pumpswap')::int)::double n_ps,
                     sum(case when venue='pumpswap' then sol_lamports else 0 end)::double v_ps, sum((venue='pump_bonding')::int)::double n_bd,
                     sum(case when venue='pump_bonding' then sol_lamports else 0 end)::double v_bd
                     from t where block_time is not null group by 1 order by 1) to '{out_dir}/mkt/{h}.parquet' (format parquet)""")
-        con.sql(f"""insert into cand select t.mint, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.frn, t.virtual_quote_reserves,
+        vq_sel = "" if structure_only else "t.virtual_quote_reserves,"
+        con.sql(f"""insert into cand select t.mint, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.frn, {vq_sel}
                     t.block_time, t.pool from t join m_comp c on t.mint=c.mint and t.pool=c.pda
                     where t.venue='pumpswap' and t.slot >= c.mslot and t.slot < c.mslot + {WINDOW_SLOTS}""")
-    con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn from cand) where rn=1""")
-    con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
+    if structure_only:
+        con.sql("""create table s0t as select mint, slot s0, frn, null::bigint vq, false as matched from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn
+                   from cand) where rn=1""")
+        for hix, h in enumerate(trade_hours):  # targeted re-read over ALL loaded trade hours: ONLY the s0 rows' V (matched on frn, same assignment as _load_trades)
+            src = _read_json_sql(files[h]["trades"], {"slot": "BIGINT", "virtual_quote_reserves": "BIGINT"})
+            con.sql(f"""update s0t set vq = x.v, matched = true from (select frn, sl, v from (select {hix} * 10000000000 + (row_number() over () - 1) as frn, slot sl,
+                        virtual_quote_reserves v from {src}) where frn in (select frn from s0t)) x where s0t.frn = x.frn and s0t.s0 = x.sl""")
+        n_unmatched = con.sql("select count(*) from s0t where not matched").fetchone()[0]
+        if n_unmatched:
+            raise LayoutRefused(f"frn_order: {n_unmatched} s0 row(s) found no match (frn, slot) in the V0 re-read")
+        con.sql("alter table s0t drop column matched")
+        con.sql("alter table cand drop column frn")
+    else:
+        con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn from cand) where rn=1""")
+    if not structure_only:
+        con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
                 group by 1 order by 1) to '{out_dir}/mkt_creates.parquet' (format parquet)""")
 
     # ---- V0 and membership
@@ -352,14 +397,26 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
                 strftime(make_timestamp(mbt * 1000000), '%Y-%m-%d') as "day", pda_match from m0
                 where coalesce(mayhem,false) = false and mbt is not null and pda is not null and s0 is not null and v0 between {V_LO} and {V_HI} and {match_req}""")
     con.sql(f"""copy (select * from m order by mid) to '{out_dir}/meta.parquet' (format parquet)""")
+    con.sql(f"""copy (select mint, mbt, mslot, s0, v0, coalesce(mayhem,false) mayhem, pda_match, has_create from m0 order by mbt, mint) to '{out_dir}/m0.parquet' (format parquet)""")
     con.sql(f"""copy (select m.mid, cre.ch, cre.cbt, cre.cslot from m left join cre using(mint) order by m.mid) to '{out_dir}/creators.parquet' (format parquet)""")
 
     # ---- pass 2: ut and bond per hour
     vq_col = "t.virtual_quote_reserves" if v_source == "event" else "m.v"
     try:
         for hix, h in enumerate(trade_hours):
-            _load_trades(con, files[h]["trades"], hix, h)
+            _load_trades(con, files[h]["trades"], hix, h, tcols, structure_only)
             o = f"{out_dir}/ut/{h}.parquet"
+            if structure_only:
+                con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt
+                            from t join m on t.pool=m.pool and t.mint=m.mint
+                            where t.venue='pumpswap' and t.slot>=m.s0 and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S})
+                            order by m.mid, t.slot, txi, evi, t.frn) to '{o}' (format parquet)""")
+                n_null = con.sql(f"""select count(*) from t join m on t.pool=m.pool and t.mint=m.mint where t.venue='pumpswap' and t.slot>=m.s0
+                                     and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S}) and t.vq_null""").fetchone()[0]
+                if v_source == "event" and n_null:
+                    raise LayoutRefused(f"hour {h}: {n_null} print(s) of MEMBER pool(s) at/after s0 have a null/missing virtual_quote_reserves "
+                                        "(no dropping members afterwards, no forward-fill)")
+                continue
             con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt, (t.side='buy') isbuy,
                         t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq, (t.frn - {hix} * 10000000000)::bigint frn
                         from t join m on t.pool=m.pool and t.mint=m.mint
@@ -382,6 +439,10 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, duckdb.__version__)
     stats["trade_extra_hours"] = extras
     stats.update(tie)
+    if structure_only:  # every non-boolean V-like column of every table / view of this run (the test pins: only s0t, m0, m)
+        stats["v_columns"] = sorted(f"{t}.{c}" for t, c in con.sql(
+            """select table_name, column_name from information_schema.columns where data_type <> 'BOOLEAN'
+               and (column_name in ('v', 'v0', 'vq') or column_name like '%virtual%' or column_name like 'vq%')""").fetchall())
     (out_dir / "stats.json").write_text(json.dumps(stats, sort_keys=True, indent=1) + "\n", encoding="utf-8")
     con.close()
     return stats
