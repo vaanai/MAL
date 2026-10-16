@@ -206,10 +206,41 @@ class ExecTests(unittest.TestCase):
             self.mk(arm_seed=8)
         ex.state.pending.clear()
         ex.state.save(ex.state_path)
-        (self.tmp / "h5").mkdir()
-        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "state-live.json")
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "live" / "state-live.json")
         with self.assertRaises(SystemExit):
             self.mk()
+
+    def _h5_precheck(self):
+        d19 = pe.state_path_for(pe.LIVE_DIR, "live", "dec019")
+        pe.State(mode="live").save(d19)
+        return pe._feearm_precheck({"state_dir": str(self.tmp)}, d19, pe.state_path_for(pe.LIVE_DIR, "live", "dec020"))
+
+    def test_h5_state_path_is_the_real_one(self):
+        with mock.patch.object(pe, "LIVE_DIR", Path("/var/lib/mal-live")):
+            self.assertEqual(pe.LIVE_DIR / pe.H5_DIR_NAME / pe.H5_LIVE_STATE_REL, Path("/var/lib/mal-live/h5/live/state-live.json"))
+
+    def test_h5_open_at_real_path_refuses(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "live" / "state-live.json")
+        with self.assertRaises(SystemExit) as cm:
+            self._h5_precheck()
+        self.assertIn("h5 live state has 1 open", str(cm.exception))
+
+    def test_h5_flat_at_real_path_passes_old_wrong_path_ignored(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live").save(self.tmp / "h5" / "live" / "state-live.json")
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "state-live.json")
+        self.assertEqual(self._h5_precheck(), [])
+
+    def test_h5_dir_exists_but_state_missing_refuses(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        with self.assertRaises(SystemExit) as cm:
+            self._h5_precheck()
+        self.assertIn("missing", str(cm.exception))
+
+    def test_no_h5_dir_is_not_an_h5_install(self):
+        self.assertEqual(self._h5_precheck(), [])
 
     def test_fill_log_and_stop_files_are_fixed(self):
         with self.assertRaises(SystemExit):
