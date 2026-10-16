@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from tools.mal_catalog import (
     OCT_ROLES,
@@ -96,6 +96,10 @@ def _forbidden(role: str, col: str) -> bool:
     return bool(_D1_FORBIDDEN_RE.search(col))
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def check_columns(role: str, columns: Sequence[str]) -> list[str]:
     """Reasons for every column the role refuses (empty = all allowed). Fail closed: unknown = refused."""
     if role not in OCT_ROLES:
@@ -110,15 +114,40 @@ def check_columns(role: str, columns: Sequence[str]) -> list[str]:
     return out
 
 
-def check_paths(paths: Sequence[str | Path], root: Path = BLOCKS_ROOT) -> list[str]:
-    """Only `<root>/forward-1002` and `<root>/forward-1002ev` are readable. Every other path (fresh-*, truth-*,
-    exp011-*, forward-1016 = walk 2, a `..` or a symlink out) is refused. Never opens a path."""
-    roots = [(root / d).resolve() for d in DATASET_START]
+# Relative paths a role may open under a dataset dir: `<kind>/<kind>-<hour>.jsonl[.zst]`, hour inside the
+# validated window. Anything else is refused: stats-*.json, verify.jsonl, checkpoint.json, credit-probe.json and
+# pools/ (content not ruled on; pools/ and migrations/ carry post-migrate fields), and unknown names.
+# D0: creates/ and migrations/ (event existence, counts, times) and trades/ (only through the column mask).
+# D1: creates/ and trades/ only. D1 never opens migrations/ or pools/ (bright line (2)); the per-mint migrate map
+# it needs comes from a D0 step (migration identities and times are D0).
+ROLE_KINDS = {ROLE_OCT_D0: ("creates", "migrations", "trades"), ROLE_OCT_D1: ("creates", "trades")}
+_FILE_RE = re.compile(r"^(creates|migrations|trades)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
+
+
+def check_paths(role: str, dataset: str, paths: Sequence[str | Path], start_hour: str, end_hour_exclusive: str,
+                root: Path | None = None) -> list[str]:
+    """Each path must be `<root>/<dataset>/<kind>/<kind>-<hour>.jsonl[.zst]` with `kind` allowed for `role` and the
+    hour inside both the requested `[start, end)` and the dataset's released window (so forward-1002's walk-2 files
+    for 2026-10-16T01/T02 are refused). Symlinks and `..` are resolved first. Never opens a path."""
+    if role not in ROLE_KINDS:
+        return [f"role {role!r} is not an October role"]
+    base = ((root if root is not None else BLOCKS_ROOT) / dataset).resolve()
+    s, e = _parse_hour(start_hour), _parse_hour(end_hour_exclusive)
+    first, last = _parse_hour(DATASET_START[dataset]), _parse_hour(FORWARD_END_EXCLUSIVE)
     out: list[str] = []
     for p in paths:
-        rp = Path(p).resolve()
-        if not any(rp == r or r in rp.parents for r in roots):
-            out.append(f"path {str(p)!r} is not under {' or '.join(DATASET_START)} (sealed or unreleased)")
+        try:
+            rel = Path(p).resolve().relative_to(base)
+        except ValueError:
+            out.append(f"path {str(p)!r} is not under {dataset} (sealed or unreleased)")
+            continue
+        m = _FILE_RE.match(rel.name) if len(rel.parts) == 2 else None
+        if m is None or rel.parts[0] != m.group(1):
+            out.append(f"path {str(p)!r}: not a <kind>/<kind>-<hour> file (unknown name or kind is refused)")
+        elif m.group(1) not in ROLE_KINDS[role]:
+            out.append(f"path {str(p)!r}: {m.group(1)}/ may not be opened by role={role}")
+        elif not (max(s, first) <= _parse_hour(m.group(2)) < min(e, last)):
+            out.append(f"path {str(p)!r}: hour {m.group(2)} is outside the validated window (walk 2 or unreleased)")
     return out
 
 
@@ -131,7 +160,10 @@ def check_rows(
     """Row-level D1 guard (bright lines (1) and (2)). `migrate_pos` maps mint -> (slot, event_index) of that mint's
     migrate tx, or None if it never migrated; a mint missing from the map is refused. A row passes only if it is a
     `pump_bonding` row strictly before the migrate tx and, when `complete_pos` is given, at or before the `complete`
-    trade. D0 loads no trade rows at all, so it refuses every row."""
+    trade. D0 loads no trade rows at all, so it refuses every row.
+
+    `None` means "never migrated" and is correct ONLY if the caller built `migrate_pos` from the full tape through
+    2026-10-16T01 (a mint that migrates inside the window but after a truncated tape would otherwise pass)."""
     if role == ROLE_OCT_D0:
         return ["role oct-structure-d0 loads no trade rows (counts only)"]
     if role != ROLE_OCT_D1:
@@ -161,7 +193,24 @@ def check_rows(
     return out
 
 
-def check_read(
+class OctoberRefused(Exception):
+    """Raised by `guarded_rows` on the first row `check_rows` refuses."""
+
+
+def guarded_rows(role: str, rows: Iterable[Mapping[str, Any]], migrate_pos: Mapping[str, tuple[int, int] | None],
+                 complete_pos: Mapping[str, tuple[int, int] | None] | None = None) -> Iterator[Mapping[str, Any]]:
+    """The wrapper every D1 loader must iterate through: yields a row only after `check_rows` passed it, raises
+    `OctoberRefused` on the first refused row. `check_read` for oct-pregrad-d1 refuses unless a `migrate_pos` map is
+    supplied, so a D1 read has no way to be authorised without naming the map `guarded_rows` will enforce. That is the
+    enforceable part; that the loader really iterates through this wrapper is a review item, not code."""
+    for i, r in enumerate(rows):
+        bad = check_rows(role, [r], migrate_pos, complete_pos)
+        if bad:
+            raise OctoberRefused(f"row {i}: {bad[0]}")
+        yield r
+
+
+def _check_read_impl(
     blocks: list[Block],
     role: str,
     dataset: str,
@@ -170,9 +219,10 @@ def check_read(
     columns: Sequence[str],
     *,
     paths: Sequence[str | Path] = (),
-    final_ledger: Path = DEFAULT_FINAL_LEDGER,
-    now: datetime | None = None,
-    blocks_root: Path = BLOCKS_ROOT,
+    migrate_pos: Mapping[str, tuple[int, int] | None] | None = None,
+    final_ledger: Path,
+    now: datetime,
+    blocks_root: Path,
 ) -> tuple[bool, list[str]]:
     """Entry point for oct-structure-d0 / oct-pregrad-d1. Returns (True, []) or (False, every reason).
 
@@ -185,7 +235,7 @@ def check_read(
     if dataset not in DATASET_START:
         return False, [f"dataset {dataset!r} is not released (only {', '.join(DATASET_START)})"]
     reasons: list[str] = []
-    cur = now if now is not None else datetime.now(timezone.utc)
+    cur = now
     if cur < RELEASE_NOT_BEFORE:
         reasons.append(f"before {RELEASE_NOT_BEFORE:%Y-%m-%dT%H:%MZ}: the F1 release is not in effect")
     try:
@@ -213,5 +263,29 @@ def check_read(
             break
         h += timedelta(hours=1)
     reasons.extend(check_columns(role, columns))
-    reasons.extend(check_paths(paths, blocks_root))
+    if role == ROLE_OCT_D1 and migrate_pos is None:
+        reasons.append("role oct-pregrad-d1 needs a migrate_pos map (rows go through guarded_rows)")
+    reasons.extend(check_paths(role, dataset, paths, start_hour, end_hour_exclusive, blocks_root))
     return (not reasons), reasons
+
+
+def check_read(
+    blocks: list[Block],
+    role: str,
+    dataset: str,
+    start_hour: str,
+    end_hour_exclusive: str,
+    columns: Sequence[str],
+    *,
+    paths: Sequence[str | Path] = (),
+    migrate_pos: Mapping[str, tuple[int, int] | None] | None = None,
+) -> tuple[bool, list[str]]:
+    """PUBLIC entry point. The clock, the FINAL ledger path and the blocks root are fixed (real `datetime.now`,
+    `DEFAULT_FINAL_LEDGER`, `BLOCKS_ROOT`) and cannot be passed in; tests patch the module constants/`_now`.
+    A True result authorises the open only: oct-pregrad-d1 rows must then be iterated through `guarded_rows`
+    (design choice: `check_read` refuses a D1 read without `migrate_pos`; it cannot see the loader).
+    No cross-host tip-tape overlap check is done here (the ledger's code-mask bullet names one); it is not covered
+    by this module and needs its own tracked item."""
+    return _check_read_impl(blocks, role, dataset, start_hour, end_hour_exclusive, columns, paths=paths,
+                            migrate_pos=migrate_pos, final_ledger=DEFAULT_FINAL_LEDGER, now=_now(),
+                            blocks_root=BLOCKS_ROOT)
