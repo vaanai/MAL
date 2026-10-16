@@ -11,6 +11,16 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0f Update 2026-10-16T18:20Z (manager12): push rounds 4-5, execution ops
+
+Source: [ARTIFACTS/lab/push-2026-10-16-round45.md](../ARTIFACTS/lab/push-2026-10-16-round45.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money; no book has cleared the promotion gate.
+
+- **Rounds 4-5 result:** every fresh-pool long at MAL latency failed on the exploration tape (drain-escape best -5.11% per attempt at 0.25 SOL, dump-absorb, dev-events, crash-bounce-v2). Speed buys no line near the goal (speed-route). The Mayhem agent's direction is a coin flip unconditionally (pool-state dependence not tested). Manager's reading: the BOOST-floor family (H5) is the lab's strongest exploration line; a few other lines are small positives (LAYA r4-a +0.5335% at the 1.3 s press under haircut, crash-bounce mid fill +0.8270%) that fail the gate or kill rules; the custom-pair extension shrank to 47 tradeable trades (1.31/day) carried by 2 blocks, latest block -9.966%. PUMP buyback study: a continuous buyer, no window; not pursued. Pool sells are reserve-consistent.
+- **Fee-arm probe:** PR #662 merged (db4af222). Helm is installing exactly db4af222 with Gordon's corrected steps; owner go for live after a 1 h keyless dry run; ends by 2026-10-22T00:00Z. It is pending live; Helm confirms. The read-only watch (PR #665, 7c079bd) runs as a read-only job about every 2 h.
+- **Also merged:** H5-path fix #666 (b2fe44e, for a later install only); D1 layer repair #667 (f104cb3), precount job #1067. DEC-030 draft #664: QP OK at 7f5002c on the text, waiting on a candidate and the owner's line.
+- **Running, no result known:** an October D0 count of custom-pair BOOST graduations.
+- Library rows: section `push-1016-r45` (52 rows).
+
 ### 1.0e Update 2026-10-16T16:42Z (manager12): push round 3, OOM, takeover
 
 Source: [ARTIFACTS/lab/push-2026-10-16-round3.md](../ARTIFACTS/lab/push-2026-10-16-round3.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
