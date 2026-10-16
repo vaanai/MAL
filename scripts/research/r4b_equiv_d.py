@@ -56,6 +56,32 @@ def guard(p) -> Path:
     return Path(rp)
 
 
+MAX_CAP_BYTES = 24 * 10**9
+
+
+def memory_cap_problem() -> str | None:
+    """None if this process runs inside a cgroup (systemd scope) with a finite MemoryMax <= 24 GB at its own level or any parent, else the reason.
+    The wrapper scripts/research/r4b-equiv-d.sh also sets R4B_EQUIV_D_CAP=<bytes> as a marker, accepted only if no cgroup limit can be read."""
+    try:
+        path = next(ln.split(":", 2)[2].strip() for ln in open("/proc/self/cgroup") if ln.startswith("0::"))
+        cur = Path("/sys/fs/cgroup") / path.lstrip("/")
+        while True:
+            f = cur / "memory.max"
+            if f.is_file():
+                v = f.read_text().strip()
+                if v != "max":
+                    return None if int(v) <= MAX_CAP_BYTES else f"cgroup MemoryMax {int(v)} > {MAX_CAP_BYTES}"
+            if cur == Path("/sys/fs/cgroup") or cur.parent == cur:
+                break
+            cur = cur.parent
+    except (OSError, StopIteration, ValueError):
+        pass
+    m = os.environ.get("R4B_EQUIV_D_CAP", "")
+    if m.isdigit() and 0 < int(m) <= MAX_CAP_BYTES:
+        return None
+    return "no MemoryMax found: run inside `systemd-run --user --scope -p MemoryMax=20G ...` (scripts/research/r4b-equiv-d.sh)"
+
+
 def md5(a) -> str:
     return hashlib.md5(np.ascontiguousarray(a).tobytes()).hexdigest()
 
@@ -153,6 +179,25 @@ def _f(x):
     return np.nan if x is None or pd.isna(x) else float(x)
 
 
+def tie_info(U: dict, d0: int) -> dict:
+    """Tie groups of the PORT's own rows (independent of any mismatch): rows sharing (mid, slot, txi, evi) whose trade content (isbuy, sol, tok, q, b, th)
+    is not identical, i.e. where the within-key order changes the pool path. l3 ordered such rows with a non-total key (`order by mid, slot, txi, evi`)."""
+    import pandas as pd
+
+    df = pd.DataFrame({k: U[k] for k in ("mid", "slot", "txi", "evi", "bt", "isbuy", "sol", "tok", "q", "b", "th")})
+    key = ["mid", "slot", "txi", "evi"]
+    dd = df.drop_duplicates(key + ["isbuy", "sol", "tok", "q", "b", "th"])
+    n = dd.groupby(key).size()
+    g = n[n > 1].reset_index()[key]
+    if g.empty:
+        return {"mints": [], "groups": 0, "txi_values": [], "in_day_mints": 0}
+    hit = df.merge(g, on=key)
+    day_lo = d0
+    in_day = hit[(hit.bt >= day_lo) & (hit.bt < day_lo + 86400)]
+    return {"mints": sorted(int(x) for x in g.mid.unique()), "groups": int(len(g)), "txi_values": sorted(int(x) for x in g.txi.unique()),
+            "in_day_mints": int(in_day.mid.nunique())}
+
+
 def day_features(out: Path, day: str, prep, mcn, sph, use_event_v: bool, duck) -> dict:
     """The 02_build day loop on our ut/ files. Returns X, I, dec-state arrays and mark arrays, in l3's output order."""
     import pandas as pd
@@ -167,10 +212,11 @@ def day_features(out: Path, day: str, prep, mcn, sph, use_event_v: bool, duck) -
     d0 = int(pd.Timestamp(day, tz="UTC").timestamp())
     hrs = [h for h in (time.strftime("%Y-%m-%dT%H", time.gmtime(d0 + 3600 * i)) for i in range(0, 80)) if (out / "adapter" / "ut" / f"{h}.parquet").exists()]
     fl = ",".join(f"'{out}/adapter/ut/{h}.parquet'" for h in hrs)
-    U = duck.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th, vq, frn from read_parquet([{fl}], union_by_name=true) "
+    U = duck.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th, vq, frn, txi, evi from read_parquet([{fl}], union_by_name=true) "
                  f"where mid between {mlo} and {mhi} order by mid, slot, txi, evi, frn").fetchnumpy()
     U = {k: np.asarray(v) for k, v in U.items()}
     bounds = np.searchsorted(U["mid"], np.arange(mlo, mhi + 2))
+    ties = tie_info(U, d0)
     Xs, Is, dec, mk = [], [], [], []
     clock_bt, clock_slot = prep.clock_bt, prep.clock_slot
     for mid in [int(x) for x in sub.mid]:
@@ -202,7 +248,7 @@ def day_features(out: Path, day: str, prep, mcn, sph, use_event_v: bool, duck) -
         return {}
     dec = np.concatenate(dec)
     dec[:, 5:9] = dec[:, 5:9].astype(np.float32).astype(np.float64)  # l3 keeps ssb / nearby in the float32 Y array
-    return {"X": np.concatenate(Xs), "I": np.concatenate(Is), "dec": dec, "mk": np.concatenate(mk)}
+    return {"X": np.concatenate(Xs), "I": np.concatenate(Is), "dec": dec, "mk": np.concatenate(mk), "ties": ties}
 
 
 def _first_diff(a, b):
@@ -258,6 +304,9 @@ def compare_features(out: Path, days: list[str], use_event_v: bool) -> dict:
             # cache comparisons
             dc = pd.read_parquet(guard(LAYA / "cache/l3/dec" / f"{day}.parquet"),
                                  columns=["mid", "T", "sd", "Qe13", "Be13", "Qe19", "Be19", "spot", "y_p_ssb", "y_p_nearby", "y_b_ssb", "y_b_nearby"])
+            if len(dc) != len(d["I"]) or not (np.array_equal(dc.mid.to_numpy(np.int64), d["I"][:, 0]) and np.array_equal(dc["T"].to_numpy(np.int64), d["I"][:, 1])
+                                              and np.array_equal(dc.sd.to_numpy(np.int64), d["I"][:, 2])):
+                raise SystemExit(f"refused: {day}: the l3 dec parquet's own (mid, T, sd) columns do not equal the port's I; no comparison by position")
             ref = dc[["Qe13", "Be13", "Qe19", "Be19", "spot", "y_p_ssb", "y_p_nearby", "y_b_ssb", "y_b_nearby"]].to_numpy(np.float64)
             info["dec_rows_l3"] = len(ref)
             if len(ref) == len(d["dec"]):
@@ -283,6 +332,29 @@ def compare_features(out: Path, days: list[str], use_event_v: bool) -> dict:
                     info["marks_first_diff"] = {"row": fr, "mid": int(d["mk"][fr, 0]), "t": int(d["mk"][fr, 1])}
             else:
                 info["marks_rows_diff"] = abs(len(refm) - len(d["mk"])) or None
+            # scoped evidence: rows of mints without a content-differing tie group (tie set from the port's own rows)
+            tm = d["ties"]["mints"]
+            nt = ~np.isin(d["I"][:, 0], tm)
+            ntm = ~np.isin(refm[:, 0], tm) if len(refm) == len(d["mk"]) else None
+            Xl = np.asarray(z["X"], np.float32)
+            info["ties"] = {"window_80h_mints": len(tm), "in_day_mints": d["ties"]["in_day_mints"], "groups_window": d["ties"]["groups"],
+                            "txi_values": d["ties"]["txi_values"], "mints_sha256": hashlib.sha256(json.dumps(tm).encode()).hexdigest(), "mints": tm}
+            info["nontie"] = {"rows_kept": int(nt.sum()), "rows_excluded": int((~nt).sum()), "marks_rows_kept": int(ntm.sum()) if ntm is not None else None,
+                              "marks_rows_excluded": int((~ntm).sum()) if ntm is not None else None,
+                              "I_md5_port": md5(d["I"][nt]), "I_md5_l3": md5(z["I"][nt]),
+                              "X_md5_port": md5(d["X"][nt]), "X_md5_l3": md5(Xl[nt]),
+                              "dec_md5_port": md5(d["dec"][nt]), "dec_md5_l3": md5(ref[nt])}
+            if ntm is not None:
+                info["nontie"]["marks_md5_port"], info["nontie"]["marks_md5_l3"] = md5(d["mk"][ntm]), md5(refm[ntm])
+                info["marks_keys_equal"] = bool(np.array_equal(d["mk"][:, :2], refm[:, :2]))
+            bx = ~((d["X"] == Xl) | (np.isnan(d["X"]) & np.isnan(Xl)))
+            bdc = ~((d["dec"] == ref) | (np.isnan(d["dec"]) & np.isnan(ref)))
+            diff_mints = set(np.unique(d["I"][bx.any(axis=1) | bdc.any(axis=1), 0]).tolist())
+            if len(refm) == len(d["mk"]):
+                bmk = ~((d["mk"] == refm) | (np.isnan(d["mk"]) & np.isnan(refm)))
+                diff_mints |= set(np.unique(refm[bmk.any(axis=1), 0]).tolist())
+            info["differing_mints"] = len(diff_mints)
+            info["differing_mints_not_in_tie_set"] = len(diff_mints - set(tm))
             for k in parts:
                 parts[k].append(d[k])
         rows.append(info)
@@ -290,9 +362,13 @@ def compare_features(out: Path, days: list[str], use_event_v: bool) -> dict:
     return {"days": rows, "port_total_md5": tot}
 
 
-def verdict(rep_meta: dict, rep_feat: dict) -> tuple[bool, list[str]]:
+META_KEYS = ("only_ours", "only_g", "mismatch_mid", "mismatch_pool", "mismatch_mslot", "mismatch_mbt", "mismatch_s0", "mismatch_v", "mismatch_ch", "mismatch_cbt")
+
+
+def raw_status(rep_meta: dict, rep_feat: dict) -> tuple[bool, list[str]]:
+    """RAW: every md5 equal over all rows of l3 (expected FAIL on this block: l3's tie order is not reproducible). Also returns the problem list."""
     probs = []
-    for k in ("only_ours", "only_g", "mismatch_mid", "mismatch_pool", "mismatch_mslot", "mismatch_mbt", "mismatch_s0", "mismatch_v", "mismatch_ch", "mismatch_cbt"):
+    for k in META_KEYS:
         if rep_meta.get(k):
             probs.append(f"meta {k}={rep_meta[k]}")
     if rep_meta["pool_ne_pda_mints"]:
@@ -307,6 +383,36 @@ def verdict(rep_meta: dict, rep_feat: dict) -> tuple[bool, list[str]]:
     return (not probs), probs
 
 
+def scoped_status(rep_meta: dict, rep_feat: dict, injection_equal: bool | None) -> tuple[bool, list[str]]:
+    """SCOPED PASS iff: meta equal, PDA != V-band list empty, I equal on every day, the non-tie md5s of X, dec and marks equal on every day (and non-empty),
+    no differing mint outside the tie set, marks keys equal, and the event-V injection md5s equal. This is the exit status of the script."""
+    probs = []
+    for k in META_KEYS:
+        if rep_meta.get(k):
+            probs.append(f"meta {k}={rep_meta[k]}")
+    if rep_meta["pool_ne_pda_mints"]:
+        probs.append(f"{len(rep_meta['pool_ne_pda_mints'])} mints with G pool != PDA")
+    if not rep_feat["days"]:
+        probs.append("no days compared")
+    for d in rep_feat["days"]:
+        nt = d.get("nontie")
+        if d.get("I_equal") is not True:
+            probs.append(f"{d['day']}: I_equal={d.get('I_equal')}")
+        if not nt or not nt["rows_kept"]:
+            probs.append(f"{d['day']}: no non-tie rows")
+            continue
+        for k in ("I", "X", "dec", "marks"):
+            if nt.get(f"{k}_md5_port") is None or nt.get(f"{k}_md5_port") != nt.get(f"{k}_md5_l3"):
+                probs.append(f"{d['day']}: non-tie {k} md5 port {nt.get(k + '_md5_port')} != l3 {nt.get(k + '_md5_l3')}")
+        if d.get("differing_mints_not_in_tie_set"):
+            probs.append(f"{d['day']}: {d['differing_mints_not_in_tie_set']} differing mints outside the tie set")
+        if d.get("marks_keys_equal") is not True:
+            probs.append(f"{d['day']}: marks (mid, t) keys differ")
+    if injection_equal is not True:
+        probs.append(f"event-V injection md5 equal: {injection_equal}")
+    return (not probs), probs
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", required=True)
@@ -316,6 +422,10 @@ def main(argv=None) -> int:
     ap.add_argument("--days", default=",".join(GRAD_DAYS))
     ap.add_argument("--no-injection", action="store_true")
     a = ap.parse_args(argv)
+    why = memory_cap_problem()
+    if why:
+        print(f"refused: {why}")
+        return 4
     out = guard(a.out)
     out.mkdir(parents=True, exist_ok=True)
     with open("/proc/meminfo") as fh:
@@ -338,20 +448,27 @@ def main(argv=None) -> int:
     for d in rep["days"]:
         print("DAY", json.dumps(d, sort_keys=True), flush=True)
     print("TOTAL md5 (port, constant-V path)", json.dumps(rep["port_total_md5"], sort_keys=True))
-    ok, probs = verdict(rep_meta, rep)
+    raw_ok, raw_probs = raw_status(rep_meta, rep)
+    injection_equal = None
     if not a.no_injection:
         rep_ev = compare_features(out, days, use_event_v=True)
         inj = {k: (rep_ev["port_total_md5"].get(k) == rep["port_total_md5"].get(k)) for k in rep["port_total_md5"]}
         print("TOTAL md5 (port, event-V injection: vq = map V per print)", json.dumps(rep_ev["port_total_md5"], sort_keys=True))
         print("INJECTION md5 equal to constant-V path", json.dumps(inj, sort_keys=True))
-        if not all(inj.values()):
-            ok = False
-            probs.append(f"event-V injection md5 differs: {inj}")
-    (out / "report.json").write_text(json.dumps({"meta": rep_meta, "features": rep, "problems": probs}, sort_keys=True, indent=1, default=str) + "\n")
+        injection_equal = all(inj.values())
+    ok, probs = scoped_status(rep_meta, rep, injection_equal)
+    raw_counts = {d["day"]: {k: d.get(k) for k in ("X_rows_diff", "dec_rows_diff", "marks_rows_diff", "differing_mints")} for d in rep["days"]}
+    doc = {"meta": rep_meta, "features": rep, "raw": {"status": "PASS" if raw_ok else "FAIL", "problems": raw_probs, "diff_counts": raw_counts},
+           "scoped": {"status": "PASS" if ok else "FAIL", "problems": probs}, "injection_equal": injection_equal}
+    (out / "report.json").write_text(json.dumps(doc, sort_keys=True, indent=1, default=str) + "\n")
+    print("RAW diff counts", json.dumps(raw_counts, sort_keys=True))
+    for p in raw_probs:
+        print("RAW PROBLEM", p)
     for p in probs:
-        print("PROBLEM", p)
-    print("mismatches:", len(probs))
-    print("E-d", "PASS" if ok else "FAIL", "sec", round(time.time() - t0))
+        print("SCOPED PROBLEM", p)
+    print("E-d raw", "PASS" if raw_ok else "FAIL", "(expected FAIL on this block)")
+    print("E-d scoped", "PASS" if ok else "FAIL", "sec", round(time.time() - t0))
+    print("E-d", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 
