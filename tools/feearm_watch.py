@@ -52,6 +52,7 @@ def load_state(path: Path) -> dict[str, Any]:
         raise BadInput(f"state unreadable: {type(exc).__name__}") from None
     if not isinstance(st, dict):
         raise BadInput("state is not a JSON object")
+    st.setdefault("feearm", {})  # State.save omits an empty `feearm` (before the first buy): missing means {}
     for k in ("open", "pending", "feearm"):
         if not isinstance(st.get(k), dict):
             raise BadInput(f"state key {k!r} missing or not an object")
@@ -79,7 +80,8 @@ def load_ledger(path: Path) -> list[dict[str, Any]]:
 
 
 def committed_cost(st: dict[str, Any], sell_attempts: int) -> int:
-    """Same arithmetic as probe_executor.feearm_committed_cost (cross-checked in the tests)."""
+    """Same arithmetic as probe_executor.feearm_committed_cost (cross-checked in the tests). This is cap headroom only
+    (worst case still at risk against the 0.15 SOL cap), not a P&L figure."""
     def sell_fee(p: Any) -> int:
         return BASE_FEE + int(p)
     total = max(0, -_int(st["realized_lamports"], "realized_lamports"))
@@ -152,6 +154,10 @@ def analyse(state: dict[str, Any], rows: list[dict[str, Any]], *, cap: int, sell
     # most the pending buys' stake + fee + rent reserve, so the lower side of the band widens by exactly that.
     pending_slack = sum(int(p.get("spend", 0)) + BASE_FEE + int(p.get("arm_priority", CONTROL_PRIORITY)) + RENT_RESERVE for p in pending_buys)
 
+    # An open position's sell can land between the state copy and the balance read; the balance then rises by the sell's
+    # proceeds. Bound: that position's stake + rent reserve, so the HIGH side of the band widens by exactly that.
+    sell_slack = sum(int(p.get("spend", p.get("buy_cost_lamports", 0))) + RENT_RESERVE for p in state["open"].values())
+
     stops: list[str] = []
     if first_expired > MAX_EXPIRED:
         stops.append(f"test_arm_expired first{len(first)}={first_expired}>{MAX_EXPIRED}")
@@ -160,9 +166,10 @@ def analyse(state: dict[str, Any], rows: list[dict[str, Any]], *, cap: int, sell
             stops.append(f"alert_{t} count={alerts_total[t]}")
     mismatch: int | None = None
     if balance is not None and start_balance is not None:
+        # realized_lamports is SIGNED (negative = loss), so Am.2's "start minus realized" is start + realized here.
         expected = start_balance + int(state["realized_lamports"]) - open_cost
         diff = balance - expected                      # negative = wallet holds less than the books say
-        low, high = -pending_slack, 0
+        low, high = -pending_slack, sell_slack
         mismatch = 0 if low <= diff <= high else (diff - high if diff > high else diff - low)
         if abs(mismatch) > BALANCE_TOLERANCE_LAMPORTS:
             stops.append(f"balance_mismatch abs_lamports={abs(mismatch)}>{BALANCE_TOLERANCE_LAMPORTS}")

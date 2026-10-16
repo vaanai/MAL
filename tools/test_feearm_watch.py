@@ -104,8 +104,14 @@ class TestWatch(Run):
         rc, out = self.run_tool(st, [], *bad)
         self.assertEqual(rc, 3)
         self.assertIn("balance_mismatch abs_lamports=5000001", out)
-        high = ("--start-balance-lamports", str(start), "--balance-lamports", str(expected + 5_000_001))
+        # the high side is widened by the open position's stake + rent reserve (a sell may have landed since the copy)
+        high = ("--start-balance-lamports", str(start), "--balance-lamports", str(expected + 7_000_000 + 2_500_000 + 5_000_001))
         self.assertEqual(self.run_tool(st, [], *high)[0], 3)
+        high_ok = ("--start-balance-lamports", str(start), "--balance-lamports", str(expected + 5_000_001))
+        self.assertEqual(self.run_tool(st, [], *high_ok)[0], 0)
+        # no open position: a plain rise over the tolerance still fires
+        rise = ("--start-balance-lamports", str(start), "--balance-lamports", str(start - 1_000_000 + 5_000_001))
+        self.assertEqual(self.run_tool(state(realized=-1_000_000), [], *rise)[0], 3)
 
     def test_pending_buy_widens_lower_side_only(self):
         pend = {"M": dict(kind="buy", spend=5_000_000, arm_priority=155_000)}
@@ -113,6 +119,30 @@ class TestWatch(Run):
         landed_meanwhile = ("--start-balance-lamports", str(start), "--balance-lamports", str(start - 7_600_000))
         self.assertEqual(self.run_tool(state(pending=pend), [], *landed_meanwhile)[0], 0)
         self.assertEqual(self.run_tool(state(), [], *landed_meanwhile)[0], 3)
+
+    def test_missing_feearm_key_is_empty(self):
+        st = state()
+        del st["feearm"]  # State.save omits an empty feearm before the first buy
+        rc, out = self.run_tool(st, [])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("FEEARM_WATCH OK", out)
+
+    def test_sell_landing_raises_balance_high_side_widened(self):
+        pos = {"M": dict(buy_cost_lamports=7_000_000, spend=5_000_000, arm_priority=155_000, sell_attempts=0)}
+        start = 280_000_000
+        expected = start - 7_000_000
+        sold = ("--start-balance-lamports", str(start), "--balance-lamports", str(expected + 7_400_000))  # proceeds ~ stake+rent
+        self.assertEqual(self.run_tool(state(open_=pos), [], *sold)[0], 0)
+        rise = ("--start-balance-lamports", str(start), "--balance-lamports", str(start + 7_400_000))
+        self.assertEqual(self.run_tool(state(), [], *rise)[0], 3)  # nothing open: the same rise is a mismatch
+        over = ("--start-balance-lamports", str(start), "--balance-lamports", str(expected + 7_500_000 + 5_000_001))
+        self.assertEqual(self.run_tool(state(open_=pos), [], *over)[0], 3)
+
+    def test_low_side_not_widened_by_open_positions(self):
+        pos = {"M": dict(buy_cost_lamports=7_000_000, spend=5_000_000, arm_priority=155_000, sell_attempts=0)}
+        start = 280_000_000
+        low = ("--start-balance-lamports", str(start), "--balance-lamports", str(start - 7_000_000 - 5_000_001))
+        self.assertEqual(self.run_tool(state(open_=pos), [], *low)[0], 3)
 
     def test_balance_args_must_pair(self):
         rc, out = self.run_tool(state(), [], "--balance-lamports", "1")
