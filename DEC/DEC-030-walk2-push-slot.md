@@ -6,8 +6,8 @@
 | **Decider** | Vaan (owner) for the route (R1 or R2) and for the slot. The Claude manager runs the rest. |
 | **Date** | 2026-10-16 |
 | **Builds on** | [DEC-021](DEC-021-champion-challenger.md) §1, §2, §5, §8 and Amendments 1 to 4, [DEC-029](DEC-029-exp026-alpha-slot.md), [DEC-014](DEC-014-holdout-ledger-and-multiplicity.md) (a), (b), [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) (Forward walk 2 row; 2026-10-16 entry), quant-proof's walk-2 pre-registration checklist of 2026-10-16 (two blockers), [push-2026-10-16-round2](../ARTIFACTS/lab/push-2026-10-16-round2.md). |
-| **Amends** | DEC-021 §8, by its Amendment 6 (in this PR), for the push family only. Under R1 only: DEC-021 §2, by the same Amendment 6, for push-family books only. |
-| **Does not amend** | The promotion gate and its thresholds. The alpha, looks, windows and seals of EXP-022, EXP-024, EXP-025 and EXP-026. DEC-029. DEC-020. DEC-016 Am.2 and Am.3. |
+| **Amends** | By DEC-021 Amendment 6 (in this PR), for the push family only: §8 (slot 5); §3 (per-book W0 replaces the walk's first hour); §5 (day-level t, one read, replaces the 7-day bootstrap-p read); Amendment 1's "CAP-PICK alone" (superseded). Under R1 only: §2, and Amendment 5's "only through §2", for push-family books only. |
+| **Does not amend** | The promotion gate and its thresholds. DEC-021 §6 (does not apply to the push family) and §7 (its second branch applies; see section 1a). The alpha, looks, windows and seals of EXP-022, EXP-024, EXP-025 and EXP-026. DEC-029. DEC-020. DEC-016 Am.2 and Am.3. |
 
 ## 0. Why this exists
 
@@ -20,12 +20,25 @@ No frozen survivor exists today. This DEC prepares the slot and the route so tha
 
 ## 1. The slot
 
-- **Slot 5, alpha 0.025.** Its members are the **push family**: at most **3** books, each pre-registered by its own `EXP-###` on walk 2 hours, each frozen by md5, each merged before its counted window's first hour begins in real time (ledger row, Forward walk 2). One EXP is one book; retunes of a book are the same book (DEC-014 clarification). A fourth book needs a new DEC.
-- **Holm across the family.** Holm–Bonferroni across the k registered books at family alpha 0.025, on the **day-level p** with the DEC-021 §1 legs (flat 15% fail model and pressure-fail model at slope scale 1): each book's p is the **larger** of its two legs' p, and that decides. At k = 3 rank 1 needs p ≤ 0.00833, rank 2 needs 0.0125, rank 3 needs 0.025; at k = 1 the book needs p ≤ 0.025. Each book's own EXP fixes its day-level p exactly (24 h UTC blocks, W blocks, df = W − 1, as in DEC-021 Amendment 1 §5) and splits its level by Bonferroni if it takes more than one look. The trade-level p is report-only, because day clustering breaks it.
+- **Slot 5, alpha 0.025.** Its members are the **push family**: at most **3** books, each pre-registered by its own `EXP-###` on walk 2 hours, each frozen by md5, each merged before its own counted window's first hour (its W0, section 1a) begins in real time (ledger row, Forward walk 2). One EXP is one book; retunes of a book are the same book (DEC-014 clarification). A fourth book needs a new DEC.
+- **Bonferroni across the family (0.025/k), not Holm.** DEC-014 (b)'s Holm assumes all k p-values are read together at one review. Push books each have their own W0, window and deadline, so the ranks are not known at the first read. Two rules would be sound: (a) every book shares one decision instant, or (b) Bonferroni at 0.025/k per book. QP names no preference, so **this DEC pins (b)**, the simpler fail-safe: it does not depend on the order of reads or on any other book's p, and its level never depends on a rank. It is slightly conservative against Holm (at k = 3 every book needs p <= 0.00833, never 0.0125 or 0.025). If the owner prefers (a), the owner's line says so and a shared decision instant is pinned in each EXP; (b) is the default.
+  - **Level.** A book passes only if its day-level p <= 0.025/k, with the DEC-021 §1 legs (flat 15% fail model and pressure-fail model at slope scale 1): the **larger** of the two legs' p decides. k = 1 gives 0.025; k = 2 gives 0.0125; k = 3 gives 0.00833. Amendment 6 allows no interim look, so there is one read at the full 0.025/k.
+  - **k is frozen when the first push-family read starts.** "First read" means the first opening of any walk-2 outcome row by any push-family book's read tool (not a feature or tape-coverage check). From then on no book registers. The instant is recorded in the ledger's Forward walk 2 row.
+  - **Withdrawal and failure.** A book withdrawn before its own W0 leaves k, and 0.025/k is recomputed only if that happens before the first read. After the first read k never changes. A book that ends FAIL or NOT_DECIDABLE stays in k, counted as p = 1, so it cannot raise another book's level.
+  - **Day-level p.** Each book's EXP fixes it exactly (24 h UTC blocks, W blocks, df = W - 1, as in DEC-021 Amendment 1 §5). The trade-level and bootstrap p are report-only, because day clustering breaks them.
 - **The CI90 clause is on top and unadjusted.** The promotion gate's lower 90% CI bound (1,000 draws, seed 1) applies in full to each book, as do the other three gate items and both fail models. Holm only tightens the gate; it never loosens it.
 - **The new bound.** With five slots of 0.025, Bonferroni across them, the bound on a false promotion across the October promotion-eligible families rises from **0.10 to 0.125**. This is a real increase in the chance that a book with no edge is promoted by luck. This DEC does not hide it and does not offset it.
 - **Controls are not in k.** A reference or control arm that cannot promote is not counted (DEC-014 (b)). A candidate put forward for promotion is.
 - **What a PASS leads to.** Only the DEC-018 path and the owner's yes. A paper pass is not live evidence. Size stays governed by DEC-020.
+
+### 1a. Window, looks and DEC-021 sections 3, 5, 6, 7 (Amendment 6)
+
+- **Per-book W0 replaces "the first hour of the walk".** DEC-021 §3 requires the merge before 2026-10-16T01, which would bar every push book. For the push family, each book's counted window starts at its **W0**: the first full UTC hour after its pre-registration merges (with QP's OK on its exact head), never moved. Hours before W0 are never counted.
+- **One read, no interim looks, minimum window 14 UTC days.** The window is fixed in time. It and its exit horizon end by **2026-11-16T01**; a book whose W0 plus 14 days plus exit horizon passes that instant cannot register. The gate's 5-distinct-UTC-days item counts dates with attempts. A book with fewer than 10 day-blocks holding at least one attempt is NOT_DECIDABLE.
+- **§5 replaced.** The deciding p is the day-level one-sided t of DEC-021 Amendment 1 §5 (24 h UTC blocks from W0, blocks with no attempts dropped, df = W - 1). The 10,000-draw bootstrap p is report-only. The 7-day, migrations-sized, single bootstrap-p read of §5 does not apply.
+- **§6 does not apply.** A push-family book is not a challenger to a champion and has no paired sim arm.
+- **§7 takes its second branch.** The 10-16 FINAL is reported compromised (DEC-016 Am.2), so walk 2 has no gated champion. A pass is read as a primary-promotion result and leads only to the DEC-018 path and the pre-live checks at the book's own operating point.
+- **Amendment 1's "the walk-2 family is CAP-PICK alone / no other arm joins it" (DEC-021 lines 102 and 127) is superseded** for walk 2 by this DEC, because EXP-022 was withdrawn before counting on 2026-10-15.
 
 ## 2. The DEC-021 §2 question: R1 or R2
 
@@ -33,25 +46,43 @@ Both routes use the slot above. They differ only on §2's reserved-backward-bloc
 
 ### R1: exempt push-family books from the §2 PASS
 
+- **What R1 is.** A blanket exemption for up to 3 books that are **not yet designed**. DEC-021 Amendments 1 to 4 each exempted one named, already designed book. Under R1 it also overrides DEC-021 Amendment 5's sentence that a candidate built on released forward-1002 D0 or D1 data "reaches registration only through §2": for push-family books such a candidate may register on walk 2 with no backward PASS. Amendment 5's other terms stand (released hours are exploration and never confirm; every view listed with its sha256; every configuration in `data/tries.jsonl`). Under R2, Amendment 5 is unchanged.
 - **Reasons.**
-  - Walk 2 is itself fresh forward data, not exploration, not seen by the design, and read once. A push-family book's only confirmation is the walk-2 read.
-  - The backward blocks are short and low-powered. For RULE B, one block with the cost haircut, gate plus the p < 0.00147 bar, has power about 0.015 (about 1.5%); gate alone 0.133 ([push-2026-10-16-round2](../ARTIFACTS/lab/push-2026-10-16-round2.md), "Confirmation power"). A true edge would almost always fail such a pass, so §2 mostly removes real candidates while adding a day or two.
-  - DEC-021 Amendments 1 to 4 already exempted EXP-022, EXP-024, EXP-025 and EXP-026 for similar reasons.
-- **Cost.** One fewer independent confirmation. The walk-2 read alone carries the winner's-curse risk: a book chosen as the best of many exploration cells is read once, with no earlier out-of-sample screen to remove the luckiest. The slot's Holm threshold, the day-level p, the CI90 clause and the full gate are the only protection. The bound in section 1 does not change under R1; the weaker screen shows up as a higher share of false passes among the books that reach the read, not in the bound's formula.
-- **Rule under R1.** No backward-block PASS is required for a push-family book. Its exploration evidence is in-sample for the book's design and is never cited as confirmation. No sealed block is claimed.
+  - Walk 2 is fresh forward data, not exploration, and read once; from each book's W0 on it is unseen by that book's design. A push-family book's only confirmation is the walk-2 read.
+  - The backward blocks are short and low-powered. The only figure is for a RULE B-sized effect: one block with the cost haircut, gate plus the p < 0.00147 bar, has power about 0.015 (about 1.5%); gate alone 0.133 ([push-2026-10-16-round2](../ARTIFACTS/lab/push-2026-10-16-round2.md), "Confirmation power"). That figure is specific to a RULE B-sized effect and is not a power for any future book. At that size §2 removes almost every candidate, true or false, while adding a day or two.
+  - RULE B is **not a push candidate**: it FAILS under the haircut. It appears here only as the source of the power figure.
+- **Cost.** One fewer independent confirmation. The walk-2 read alone carries the winner's-curse risk: a book chosen as the best of many exploration cells is read once, with no earlier out-of-sample screen to remove the luckiest. The slot's Bonferroni level, the day-level p, the CI90 clause and the full gate are the only protection. The bound in section 1 does not change under R1; the weaker screen shows up as a higher share of false passes among the books that reach the read, not in the bound's formula.
+- **Rule under R1.** No backward-block PASS is required for a push-family book. Its exploration evidence is in-sample for the book's design and is never cited as confirmation. No sealed block is claimed. "Not seen by the design" holds only from each book's W0 on: walk-2 hours before W0 may already have been seen (disclosures in section 3), and a book's design must not use them.
 
 ### R2: keep §2
 
-- A push-family book must first PASS a one-shot read on a reserved, unread backward block under the promotion gate, with DEC-014's per-block terms (the block's Part 1 merged first, one block kept, and the book claiming it at p < 0.025/m with m at least 15 per the ledger). This costs about **1 to 2 days** before registration, and its power is low (about 1.5% for RULE B on one block).
-- Under R2, the Amendment 6 text for §2 is removed from the PR before merge; only the slot text enters DEC-021.
+- A push-family book must first PASS a one-shot read on a reserved, unread backward block under the promotion gate, with DEC-014's per-block terms: the block's Part 1 merged first, one block kept, and the book claiming it at p < 0.025/m.
+- **m.** The ledger's floor is **m >= 15** (12 frozen 2026-10-07; EXP-022, EXP-024, EXP-025 each add one). The round-2 bar p < 0.00147 equals 0.025/17, which implies m = 17; the ledger text records no source for two of those 17. **m = 17 is used until the ledger is edited** (the larger m is the safe one; the unlisted-reader count, about 37, would be stricter still). Each push-family EXP that reads the 27 non-P1 dates adds 1 (section 2a).
+- **Blocks.** The unread, unowned backward blocks are the Backup block `[2026-08-28T12, 2026-09-03T12)`, the Second backup `[2026-08-08T12, 2026-08-14T12)` and the Third backup `[2026-08-02T12, 2026-08-08T12)` (ledger rows; their text names possible claimants, not owners). Each family gets at most one block, and one block must stay unspent. **So R2 caps the push books at (unread blocks - 1) = 2, not 3**, unless the ledger gains a new block. No older block exists yet (the "Future fast backfill" row is unassigned).
+- **The blocks predate the system.** All three predate the 2026-10-02 upgrade and the 2026-10-13 redeploy, so a PASS on them says nothing about the system as it runs now.
+- **Cost and power.** About 1 to 2 days before registration, at low power (the 1.5% figure is RULE B-specific).
+- Under R2, Amendment 6's §2 bullet and its Amendment 5 override are removed from the PR before merge; the slot, W0, and §3 and §5 replacement text enter DEC-021.
+
+### 2a. Ledger recording (the ledger edit is made in each book's own PR)
+
+DEC-014 rule 1 allows one owner per block and catalog rule 5 allows no overlapping ranged rows, so the walk-2 row cannot take three owners. The rule, also written into `docs/HOLDOUT_LEDGER.md` (Rules, item 5):
+
+- The Forward walk 2 row's Owner cell stays "reserved". Each push-family book is recorded as a **counted-window sub-entry in that row's Status cell** (as the DEC-023 and DEC-025 counted readers are), not as a new table row: EXP number, W0, window end, exit horizon, k at registration. The edit is made **in that book's own pre-registration PR**, which does not merge without it.
+- Windows may overlap in time: the books share one slot and one family alpha. This is a push-family exception to one owner per block. No window, its exit horizon included, ends after **2026-11-16T01**.
+- **m.** Each push-family EXP that reads the 27 non-P1 dates adds 1 to m in the same PR.
+- The first push-family read instant (freezing k) is recorded in the Status cell when it happens.
+- **Walk-2 extension.** MiScusi job #1036 (the walk-2 follower) needs its time extension by about **2026-10-22T19:21Z**.
 
 ## 3. Scope and seals
 
 - **H5 domain excluded.** Push-family books may not use the H5 domain: the first 360 s of V-range pools, any join of a synthetic class to an outcome, or BOOST-timing outcomes (the sealed D3 domain, ledger 2026-10-15 entry). The exclusion stands unless quant-proof rules otherwise in writing before registration; if it does, alpha for that book goes to the H5 family under DEC-029's reading and this DEC is amended.
 - **EXP-026 is unaffected.** It reads the shadow and refuses walk 2 (EXP-026 sections 3 and 10). Its slot 4, alpha 0.025, one read, and its seals do not change. EXP-024's NOT_DECIDABLE Look 1 is not an end state for D3.
-- **Disclosure.** EXP-025's non-owner read of `[2026-10-16T01, 2026-10-24T02)` (ledger rule 3) is disclosed. Its looks ended NOT_DECIDABLE, and EXP-025 reads chain tape only.
+- **Disclosure (each book's EXP must repeat it; ledger rule 3).**
+  - EXP-025's non-owner read of `[2026-10-16T01, 2026-10-24T02)` is disclosed. Its Look 1 was NOT_DECIDABLE (R8, P5, 2026-10-16T04:51:17Z). Its **end state is not yet recorded**: "Look 2 refused" is recorded only after the R8 run after **2026-10-26T12:00Z** (LAB_STATE Now; ledger (3a)). Until then its seals and non-owner reads stand; this DEC does not call EXP-025 ended.
+  - The C1-NF shadow (MiScusi #658) and the monitor (#662) are **running over walk-2 hours** now. This DEC does not read them; each book's EXP must say whether it reads their output.
 - **Per-book terms stay in each EXP.** Each book's EXP pins its counted-window start (the first full UTC hour after its merge, never moved), its stop rule, deadline, cost floor (V pricing, exit lag 2, entry +26.08 bps, sell −16 bps or the larger E1 penalty, as DEC-021 Amendment 1 §4), NOT_DECIDABLE conditions, and kill rule (a FAIL retires the book with no retune and no re-read). This DEC fixes none of them.
-- **No claim.** Nothing here says a book makes money. No candidate is named. No book is registered by this DEC.
+- **No candidate is named. RULE B is not a candidate:** it FAILS under the haircut (push-2026-10-16-round2); its power figure is cited only as an example.
+- **No claim.** Nothing here says a book makes money. No book is registered by this DEC.
 
 ## 4. The owner's line
 
@@ -61,11 +92,13 @@ The line below holds the owner's choice. Nothing else fills it, and until a line
 OWNER_PUSH_SLOT_CONFIRMED: <PENDING; nothing fills this but the owner's answer>. Route: <R1 | R2 | NO SLOT>.
 ```
 
-The form to fill: `<date> (owner, in session, asked by <manager>). Route: R1 | R2 | NO SLOT. Question: "<verbatim>". Answer: "<verbatim>". MiScusi notebook <id>.`
+The form to fill: `<date> (owner, in session, asked by <manager>). Route: R1 | R2 | NO SLOT. Question: "<verbatim>". Answer: "<verbatim>". Options shown: "<verbatim R1 / R2 / NO SLOT texts>". MiScusi notebook <id>.`
 
-The question shown to the owner must state, verbatim:
+The question shown to the owner must state, verbatim (the same rule covers the option texts, below):
 
-"This opens a fifth alpha slot of 0.025 for up to three push-family books on walk 2 (a Holm test across the books on the day-level p, with the promotion gate's CI90 clause on top), which raises the bound on a false promotion across October's promotion-eligible families from 0.10 to 0.125. R1 exempts these books from DEC-021 section 2's requirement of a passing reserved backward block before registration: walk 2 is itself fresh forward data and the backward blocks are short and low-powered (about 1.5% power for one block on RULE B), but a book then has one fewer independent confirmation and its winner's-curse risk rests on the walk-2 read alone. R2 keeps the backward-block pass first, which adds about 1 to 2 days and has low power. Which route: R1, R2, or no slot?"
+"This opens a fifth alpha slot of 0.025 for up to three push-family books on walk 2. Each book is tested at 0.025/k (Bonferroni; k is frozen when the first push-family read starts; a failed or undecidable book counts as p = 1) on a day-level p, with the promotion gate's CI90 clause on top. This raises the bound on a false promotion across October's promotion-eligible families from 0.10 to 0.125. It also replaces DEC-021 section 3 (merge before 2026-10-16T01) with a per-book start hour, replaces section 5 (one 7-day bootstrap read) with a single 14-day day-level read, and supersedes Amendment 1's 'CAP-PICK alone'. R1 is a blanket exemption for up to three books that are not yet designed (earlier exemptions each named one designed book). It waives DEC-021 section 2's passing reserved backward block before registration, and it also overrides Amendment 5, so a candidate built on released October forward-1002 D0 or D1 data may register without that pass. The backward blocks are short and low-powered (about 1.5% power for one block, for a RULE B-sized effect only), so a pass removes almost every candidate, true or false; but under R1 a book has one fewer independent confirmation and its winner's-curse risk rests on the walk-2 read alone. R2 keeps the backward-block pass first (about 1 to 2 days; blocks that predate the 2026-10-02 upgrade and the 2026-10-13 redeploy; m = 17; at most two books, because one block must stay unspent). Which route: R1, R2, or no slot?"
+
+The verbatim rule covers the option texts too: the owner's line must record, verbatim, the R1, R2 and NO SLOT texts as shown to the owner. DEC-029's 2026-10-11 exception (recording the question by reference) does not carry over.
 
 A line whose question lacks that text does not count. An answer "NO SLOT" leaves slot 5 unopened and walk 2 without a registrable owner; this DEC then does not merge.
 
