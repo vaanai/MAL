@@ -7,10 +7,14 @@ would be "forward simulated paper, not money made".
 Order of events (the order is part of the contract; tests pin it)
   1. PREFLIGHT, before any outcome row is opened. Every reason is collected; on any reason: one REFUSED line on stderr, exit 2, NOTHING written.
        EXP pins (each EXP027_* line matches exactly once, file clean vs HEAD, route not PENDING, W0 / k / stop rule), code sha256 of every r4b module, model md5/sha256,
-       E-a..E-d md5 records, decoder blobs (walk 2's job ref), E1 record (sha256, n >= 20), input views and the data/tries.jsonl entry, the mint-account fetch file (sha256),
+       E-a..E-d md5 records, decoder blobs (walk 2's job ref), E1 record (sha256, n >= 20), input views and the data/tries.jsonl entry (exact key), the mint-account fetch file (sha256),
        the fee-arm record (sha256 if pinned), the calendar (E = W0 + 480 h has passed), every hour of the allowlist [H0, E + 3h) sealed / strict-verified / sha256- and
        row-count-matched, counts.jsonl covering every counted hour with equal hashes, the count job's aggregate precount refusals (PDA match < 95 %, < 100 marks with >= 10 live,
        a date with graduations and 0 decisions), mixed null tx_index, unmeasurable SPH, no earlier started / completed / aborted line, no lock file.
+     Window record (EXP027-TAMPER-SPEC; window_guard): the EXP's registration commit equals the ledger's EXP027_REG_COMMIT and HEAD descends from it; the EXP blob at HEAD equals
+       origin/main's; the body prefix (bytes before the line `## Window record`) hashes to the ledger's EXP027_PREFIX_SHA256 and equals the prefix at reg; reg..HEAD only adds lines
+       after the heading, one line per commit in the form `EXP027_KEY: value (appended YYYY-MM-DDTHH:MMZ)`, each key once, every commit earlier than `started`. The `started` line records
+       exp_sha256 and reg_commit.
      Pinned inputs (QP R4-R8, R10): the EXP file and the models dir are repo constants (no CLI flag); the EXP must be tracked by git and equal HEAD; the walk dir must be
        EXP027_WALK_DIR = /data/mal/blocks/forward-1016; EXP027_SELL_BUILDER and EXP027_A3_RECORD are path@sha256 pins; the E1 scale is 5 in code (the record must carry
        stake_lamports 50,000,000); the allowlist is [2026-10-16T03, E + 3h) and W0 >= 2026-10-18T03.
@@ -117,6 +121,8 @@ TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset({"metadataPointer", "tokenMetadat
 # the largest accounts of a census Token-2022 mint are owned by TokenzQd..., have data length 170 and extensions [immutableOwner] (PR body has mint, account, slot).
 # The frozen constants stay as they are (the frozen E-c replay uses them); this read prices a stranded position and the report-only rent leg by the mint's program.
 # A mint with an unknown program (failed fetch, not in the file) is stranded already and is priced at the higher figure.
+# Both figures are ABOVE current chain rent: 1,513,840 (Token-2022 170-byte ATA) and 1,488,440 (SPL 165-byte ATA) lamports on 2026-10-16. The pricing is therefore
+# conservative by about 0.5 million lamports per stranded position; it is kept as registered (the frozen constants feed the E-c replay).
 RENT_STRANDED_SPL = FZ.RENT_STRANDED      # 2_039_280, 165-byte SPL Token account
 RENT_STRANDED_T22 = (170 + 128) * 6960    # 2_074_080, 170-byte Token-2022 ATA (ImmutableOwner)
 RENT_REPORT_SPL = FZ.RENT_REPORT          # 2_039_280
@@ -204,11 +210,61 @@ def split_pair(val: str) -> tuple[str, str]:
 
 
 # ---- EXP pins ---------------------------------------------------------------------------------------------------------------------------------
+WINDOW_HEADING = "## Window record"
+WINDOW_HEADING_RE = re.compile(rb"^## Window record[ \t]*$", re.M)
+# The one append-line format (spec EXP027-TAMPER-SPEC item 5), also stated in the EXP text. A line in the Window record is KEY: value (appended YYYY-MM-DDTHH:MMZ).
+APPEND_LINE_RE = re.compile(r"^(EXP027_[A-Z0-9_]+): (.+) \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
+APPEND_SUFFIX_RE = re.compile(r" \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
+LEDGER_FILE = ROOT / "docs" / "HOLDOUT_LEDGER.md"
+# Addendum 2 L: a problem that only says "not written yet" (the ledger values before the post-merge ledger commit, EXP027_W0 before it is appended) carries this tag. The read
+# refuses on it like on any problem; `--check-window` lists it separately (exit 0).
+PENDING_TAG = "[pending] "
+SHA_PAIR_RE = re.compile(r"^([^;@\s][^;@]*)@([0-9a-f]{64})$")
+W0_VALUE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
+PATH_SHA_KEYS = frozenset({"EXP027_A3_RECORD", "EXP027_E1_RECORD", "EXP027_MINT_ACCOUNTS"})
+
+
+def window_value_problem(key: str, val: str) -> str | None:
+    """Addendum 2 G: the value format of an appended line. None if fine (keys without a stated format are not judged)."""
+    if key == "EXP027_W0":
+        return None if W0_VALUE_RE.match(val) and parse_hour(val) is not None else "must be exactly YYYY-MM-DDTHH"
+    if key == "EXP027_K":
+        return None if re.fullmatch(r"[1-9][0-9]*", val) else "must be a bare positive integer"
+    if key in PATH_SHA_KEYS:
+        return None if SHA_PAIR_RE.match(val) else "must be exactly path@sha256"
+    if key == "EXP027_INPUT_VIEWS":
+        items = val.split(";")
+        return None if all(SHA_PAIR_RE.match(x.strip()) for x in items) else "must be ';'-separated path@sha256"
+    if key == "EXP027_FEE_ARM":
+        return None if val == "NONE" or SHA_PAIR_RE.match(val) else "must be NONE or path@sha256"
+    return None
+# Addendum 1 C: a ledger token is found anywhere in a line (Status cell, changelog bullet), with optional backticks; at least one occurrence, all must agree.
+LEDGER_REG_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_REG_COMMIT[ :]+`?([0-9a-f]{40})(?![0-9a-f])`?")
+LEDGER_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_PREFIX_SHA256[ :]+`?([0-9a-f]{64})(?![0-9a-f])`?")
+# Addendum 1 A: the closed set of keys a Window-record line may carry (each at most once). EXP027_E1_RECORD only when E1_MODE is "record".
+WINDOW_KEYS = frozenset({"EXP027_MERGE_INSTANT", "EXP027_W0", "EXP027_K", "EXP027_INPUT_VIEWS", "EXP027_MINT_ACCOUNTS", "EXP027_FEE_ARM", "EXP027_A3_RECORD", "EXP027_E1_RECORD",
+                         "EXP027_WALK2_JOB_2", "EXP027_WALK2_JOB_3", "EXP027_MEMBERS_PREW0", "EXP027_POWER_160K", "EXP027_DEADLINE_ND"} | {f"EXP027_BREACH_{i}" for i in range(1, 10)})
+
+
+def window_keys_allowed() -> frozenset:
+    return WINDOW_KEYS if E1_MODE == "record" else WINDOW_KEYS - {"EXP027_E1_RECORD"}
+
+
+def w0_from_commit_time(ct: int) -> datetime:
+    """Addendum 1 B: the first UTC hour whose start is at or after the registration commit's committer time, floored at EARLIEST_W0."""
+    h = (ct + 3599) // 3600 * 3600
+    return max(datetime.fromtimestamp(h, timezone.utc), ef.hour_dt(EARLIEST_W0))
+ORIGIN_REF = "origin/main"
+
+
 def exp_lines(text: str) -> tuple[dict[str, str], list[str]]:
-    """Each EXP027_* key must match `^KEY: value$` exactly once. Returns (values, problems)."""
+    """Each EXP027_* key must match `^KEY: value$` exactly once in the whole file (body pins plus the Window record). A line in the Window record carries the suffix
+    ` (appended <UTC minute>Z)` (APPEND_LINE_RE); the suffix is not part of the value. Returns (values, problems)."""
     out, probs = {}, []
+    m0 = re.search(r"^## Window record[ \t]*$", text, flags=re.M)
+    body, window = (text, "") if m0 is None else (text[: m0.start()], text[m0.end():])
     for k in required_keys():
-        m = re.findall(rf"^{k}: (.*\S)\s*$", text, flags=re.M)
+        m = re.findall(rf"^{k}: (.*\S)\s*$", body, flags=re.M) + [APPEND_SUFFIX_RE.sub("", x) for x in re.findall(rf"^{k}: (.*\S)\s*$", window, flags=re.M)]
         if len(m) != 1:
             probs.append(f"EXP pin {k}: matches {len(m)} times (need exactly 1)")
         else:
@@ -225,6 +281,195 @@ def exp_clean_against_head(exp_file: Path = EXP_FILE, repo: Path = ROOT) -> list
         return [f"{Path(exp_file).name} is not tracked by git (git ls-files --error-unmatch failed)"]
     r = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--", str(exp_file)], stdin=subprocess.DEVNULL, timeout=60)
     return [] if r.returncode == 0 else [f"{Path(exp_file).name} differs from HEAD"]
+
+
+def _git(repo: Path, *args: str, ok: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
+    r = subprocess.run(["git", "-C", str(repo), *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+    if r.returncode not in ok:
+        raise RuntimeError(f"git {' '.join(args[:3])} failed (rc {r.returncode}): {r.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    return r
+
+
+def body_prefix(blob: bytes) -> bytes | None:
+    """The bytes up to the start of the line `## Window record`, not including that line. None unless the heading occurs exactly once."""
+    ms = list(WINDOW_HEADING_RE.finditer(blob))
+    return blob[: ms[0].start()] if len(ms) == 1 else None
+
+
+def ledger_values(ledger: Path) -> tuple[str | None, str | None, list[str]]:
+    """EXP027_REG_COMMIT and EXP027_PREFIX_SHA256 from the ledger (Addendum 1 C): the token anywhere in a line, at least one occurrence, all occurrences agree."""
+    if not Path(ledger).exists():
+        return None, None, [f"{Path(ledger).name} does not exist"]
+    text = Path(ledger).read_text(encoding="utf-8")
+    probs, vals = [], []
+    for name, rx in (("EXP027_REG_COMMIT", LEDGER_REG_RE), ("EXP027_PREFIX_SHA256", LEDGER_PREFIX_RE)):
+        m = set(rx.findall(text))
+        if not m:
+            probs.append(f"{PENDING_TAG}{Path(ledger).name}: {name} has no occurrence (`{rx.pattern}`)")
+            vals.append(None)
+        elif len(m) > 1:
+            probs.append(f"{Path(ledger).name}: {name} occurrences disagree ({sorted(x[:12] for x in m)})")
+            vals.append(None)
+        else:
+            vals.append(next(iter(m)))
+    return vals[0], vals[1], probs
+
+
+def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: Path = LEDGER_FILE, origin: str = ORIGIN_REF) -> tuple[list[str], dict[str, Any]]:
+    """EXP-027 window-record tamper evidence (spec EXP027-TAMPER-SPEC items 1-7 and Addenda 1-2). Returns (problems, info); every problem is a refusal before any sealed byte is
+    opened. Problems tagged PENDING_TAG are "not written yet" (still refusals for the read; `--check-window` lists them apart).
+    1 registration commit == ledger EXP027_REG_COMMIT and HEAD descends from it; 2 EXP blob at HEAD == blob at origin/main; 3 sha256 of the body prefix at HEAD == ledger
+    EXP027_PREFIX_SHA256 == prefix at reg; W0 recomputed; 4 reg..HEAD diff of the EXP has added lines only, all after the heading, LF only; 5 along main's FIRST-PARENT chain each
+    commit's diff against its first parent adds exactly one line in APPEND_LINE_RE with an allowed key and a valid value, each key once; 6 each such commit's committer time is
+    earlier than `started`; I the text after the heading at reg is only italic placeholder paragraphs."""
+    repo = Path(repo)
+    try:
+        rel = Path(exp_file).resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return [f"{Path(exp_file).name} is not inside the repo {repo}"], {}
+    want_reg, want_prefix, probs = ledger_values(ledger)
+    if not Path(ledger).exists():
+        return probs, {}
+    if exp_clean_against_head(ledger, repo):
+        probs.append(f"{Path(ledger).name} is untracked or differs from HEAD (the registration values must be committed)")
+    info: dict[str, Any] = {"exp_path": rel}
+    try:
+        # 1 registration commit
+        r = _git(repo, "log", "--first-parent", "--diff-filter=A", "--format=%H", origin, "--", rel).stdout.decode().split()
+        if not r:
+            return probs + [f"no commit on {origin} added {rel} (git log --first-parent --diff-filter=A is empty)"], info
+        reg = r[-1]
+        info["reg_commit"] = reg
+        if want_reg is not None and reg != want_reg:
+            probs.append(f"registration commit {reg} != ledger EXP027_REG_COMMIT {want_reg}")
+        anc = _git(repo, "merge-base", "--is-ancestor", reg, "HEAD", ok=(0, 1)).returncode
+        if anc != 0:
+            probs.append(f"HEAD does not descend from the registration commit {reg}")
+            return probs, info
+        # 2 blob at HEAD == blob at origin/main
+        head_blob = _git(repo, "rev-parse", f"HEAD:{rel}").stdout.decode().strip()
+        orig_blob = _git(repo, "rev-parse", f"{origin}:{rel}").stdout.decode().strip()
+        if head_blob != orig_blob:
+            probs.append(f"{rel} at HEAD ({head_blob[:12]}) differs from {origin} ({orig_blob[:12]})")
+        head_bytes = _git(repo, "cat-file", "blob", head_blob).stdout
+        reg_bytes = _git(repo, "show", f"{reg}:{rel}").stdout
+        info["exp_sha256"] = hashlib.sha256(head_bytes).hexdigest()
+        # H: the file ends with LF at every checked point
+        for name, blob in (("HEAD", head_bytes), ("the registration commit", reg_bytes)):
+            if not blob.endswith(b"\n"):
+                probs.append(f"{rel} at {name} does not end with a line feed")
+        # 3 body prefix
+        ph, pr = body_prefix(head_bytes), body_prefix(reg_bytes)
+        if ph is None or pr is None:
+            probs.append(f"'{WINDOW_HEADING}' must occur as a line exactly once in {rel} at HEAD and at the registration commit")
+            return probs, info
+        info["prefix_sha256"] = hashlib.sha256(ph).hexdigest()
+        if want_prefix is not None and info["prefix_sha256"] != want_prefix:
+            probs.append(f"body prefix sha256 at HEAD {info['prefix_sha256']} != ledger EXP027_PREFIX_SHA256 {want_prefix}")
+        if ph != pr:
+            probs.append("the body prefix at HEAD differs from the body prefix at the registration commit")
+        # I: at reg, the text after the heading is blank lines and at most ONE italic placeholder paragraph, and every non-blank LINE starts and ends with '*'
+        after = reg_bytes[len(pr):].decode("utf-8", "replace").split("\n", 1)[1] if b"\n" in reg_bytes[len(pr):] else ""
+        paras = [x for x in re.split(r"\n\s*\n", after) if x.strip()]
+        if len(paras) > 1:
+            probs.append("the Window record at the registration commit holds more than one placeholder paragraph")
+        for t in (ln.strip() for ln in after.split("\n") if ln.strip()):
+            if not (len(t) >= 2 and t.startswith("*") and t.endswith("*")):
+                probs.append(f"the Window record at the registration commit holds a line that is not an italic placeholder line (starts and ends with '*'): {t[:60]!r}")
+        # B: W0 recomputed from the registration commit's committer time
+        reg_ct = int(_git(repo, "show", "-s", "--format=%ct", reg).stdout.decode().strip())
+        w0_calc = ef.hour_key(w0_from_commit_time(reg_ct))
+        info["w0_recomputed"] = w0_calc
+        w0_val = exp_lines(head_bytes.decode("utf-8", "replace"))[0].get("EXP027_W0")
+        if w0_val is None:
+            probs.append(f"{PENDING_TAG}EXP027_W0 is absent from the EXP (the Window record must carry it)")
+        elif w0_val != w0_calc:
+            probs.append(f"EXP027_W0 {w0_val!r} != {w0_calc} (first UTC hour at or after the registration commit's committer time, floored at {EARLIEST_W0})")
+        # 4 additions only, after the heading
+        head_line = ph.count(b"\n") + 1  # 1-based line number of the heading at HEAD
+        diff = _git(repo, "diff", "--no-ext-diff", "--no-renames", "--no-color", "--unified=0", reg, "HEAD", "--", rel).stdout.decode("utf-8", "replace")
+        for ln in diff.split("\n"):
+            if ln.startswith("@@"):
+                m = re.match(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,\d+)? @@", ln)
+                old_n = (1 if m.group(1) is None else int(m.group(1))) if m else -1
+                if m is None or old_n != 0 or int(m.group(2)) <= head_line:
+                    probs.append(f"git diff {reg[:12]} HEAD has a hunk that is not an addition after the '{WINDOW_HEADING}' line: {ln[:80]}")
+            elif ln.startswith("-") and not ln.startswith("---"):
+                probs.append(f"git diff {reg[:12]} HEAD removes or changes a line: {ln[:80]!r}")
+            elif ln.startswith("\\"):
+                probs.append("the EXP's end-of-file newline changed between the registration commit and HEAD")
+        # 5 + 6 along main's first-parent chain, each commit judged by its diff against its first parent
+        rows = _git(repo, "log", "--first-parent", "--format=%H %ct %P", f"{reg}..HEAD", "--", rel).stdout.decode().splitlines()
+        seen: dict[str, str] = {}
+        info["appended"] = []
+        for row in rows:
+            parts = row.split()
+            c, ct, parents = parts[0], int(parts[1]), parts[2:]
+            if not parents:
+                probs.append(f"commit {c[:12]} touching {rel} is a root commit")
+                continue
+            d = _git(repo, "diff", "--unified=0", "--no-renames", "--no-ext-diff", "--no-color", f"{c}^1", c, "--", rel).stdout.decode("utf-8", "replace").split("\n")
+            d = [x for x in d if x != ""]
+            if not d:
+                continue  # an empty first-parent diff (e.g. a merge that does not change the EXP)
+            plus = [x[1:] for x in d if x.startswith("+") and not x.startswith("+++")]
+            minus = [x for x in d if x.startswith("-") and not x.startswith("---")]
+            if any(x.startswith("\\") for x in d):
+                probs.append(f"commit {c[:12]} changes the end-of-file newline of {rel}")
+                continue
+            if minus or len(plus) != 1 or not plus[0].strip():
+                probs.append(f"commit {c[:12]} touching {rel} must add exactly one non-empty line and remove none (adds {len(plus)}, removes {len(minus)})")
+                continue
+            if "\r" in plus[0]:
+                probs.append(f"commit {c[:12]} appends a line with a carriage return (single LF only)")
+                continue
+            mm = APPEND_LINE_RE.match(plus[0])
+            if mm is None:
+                probs.append(f"commit {c[:12]} appends a line that is not `KEY: value (appended YYYY-MM-DDTHH:MMZ)`: {plus[0][:80]!r}")
+                continue
+            key, val = mm.group(1), mm.group(2)
+            if key not in window_keys_allowed():
+                probs.append(f"commit {c[:12]} appends key {key}, which is not in the closed Window-record key list")
+            bad_val = window_value_problem(key, val)
+            if bad_val:
+                probs.append(f"commit {c[:12]}: {key} value {val[:60]!r} {bad_val}")
+            if key in seen:
+                probs.append(f"key {key} is appended more than once (commits {seen[key][:12]} and {c[:12]})")
+            seen[key] = c
+            if ct >= int(started.timestamp()):
+                probs.append(f"commit {c[:12]} (key {key}) has committer time {iso(datetime.fromtimestamp(ct, timezone.utc))}, not earlier than the read's start {iso(started)}")
+            info["appended"].append({"commit": c, "key": key, "committer_time": iso(datetime.fromtimestamp(ct, timezone.utc))})
+    except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
+        probs.append(f"window-record check could not run: {exc}")
+    return probs, info
+
+
+def head_matches_origin(repo: Path = ROOT, origin: str = ORIGIN_REF) -> list[str]:
+    """The read runs from the commit origin/main points at (the job fetches first). Not part of `--check-window`."""
+    try:
+        h = _git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+        o = _git(repo, "rev-parse", origin).stdout.decode().strip()
+    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+        return [f"cannot compare HEAD with {origin}: {exc}"]
+    return [] if h == o else [f"HEAD {h[:12]} != {origin} {o[:12]} (git fetch origin and run from the merged main)"]
+
+
+def check_window_cli(exp_file: Path = EXP_FILE, ledger: Path = LEDGER_FILE, repo: Path = ROOT, now: datetime | None = None, out: Callable[[str], None] = print) -> int:
+    """Addendum 2 L: the dry run. window_guard with started = now; opens no sealed data. Exit 1 on any VIOLATION, 0 otherwise (PENDING items are listed)."""
+    probs, info = window_guard(exp_file, now or now_utc(), repo, ledger)
+    pending = [x[len(PENDING_TAG):] for x in probs if x.startswith(PENDING_TAG)]
+    viol = [x for x in probs if not x.startswith(PENDING_TAG)]
+    if viol:
+        out(f"VIOLATIONS ({len(viol)}):")
+        for x in viol:
+            out(f"  - {x}")
+    if pending:
+        out(f"PENDING ({len(pending)}; the read refuses until these are written):")
+        for x in pending:
+            out(f"  - {x}")
+    if not viol and not pending:
+        out(f"OK: reg {info.get('reg_commit')}, {len(info.get('appended', []))} appended line(s)")
+    return 1 if viol else 0
 
 
 def parse_hour(s: str) -> datetime | None:
@@ -295,6 +540,8 @@ def pinned_file(val: str, label: str, probs: list[str]) -> Path | None:
         probs.append(f"{label}: {val!r} is not 'path@sha256'")
         return None
     path = Path(p)
+    if not path.is_absolute():
+        path = ROOT / path  # relative pins resolve against the repo root, never the current directory
     if not path.exists():
         probs.append(f"{label}: {p} does not exist")
         return None
@@ -377,6 +624,16 @@ def load_a3(v: Mapping[str, str], w0: datetime, e: datetime, probs: list[str]) -
     return inside
 
 
+def tries_entry_matches(line: str, key: str) -> bool:
+    """Exact key match on `config.key` only (Addendum 2 J), no substring and no other field."""
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return False
+    cfg = o.get("config") if isinstance(o, dict) else None
+    return isinstance(cfg, dict) and cfg.get("key") == key
+
+
 def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> dict[str, str]:
     out = {}
     for item in [x for x in v["EXP027_INPUT_VIEWS"].split(";") if x.strip()]:
@@ -386,13 +643,9 @@ def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> di
     if not out:
         probs.append("EXP027_INPUT_VIEWS lists no input view")
     key = v["EXP027_TRIES_ENTRY"]
-    ok = False
-    if tries_path.exists():
-        for ln in tries_path.read_text(encoding="utf-8").splitlines():
-            if ln.strip() and key in ln:
-                ok = True
+    ok = any(tries_entry_matches(ln, key) for ln in tries_path.read_text(encoding="utf-8").splitlines()) if tries_path.exists() else False
     if not ok:
-        probs.append(f"{tries_path} has no entry containing {key!r}")
+        probs.append(f"{tries_path} has no entry whose key is exactly {key!r} (`config.key` of a JSON line)")
     return out
 
 
@@ -531,6 +784,7 @@ class Paths:
     exp_file: Path = EXP_FILE
     tries: Path = TRIES
     models_dir: Path | None = None
+    ledger: Path = LEDGER_FILE
 
 
 @dataclass
@@ -539,6 +793,8 @@ class Deps:
 
     now_fn: Callable[[], datetime] = now_utc
     clean_fn: Callable[[Path], list[str]] = exp_clean_against_head
+    sync_fn: Callable[[], list[str]] = lambda: head_matches_origin()
+    window_fn: Callable[[Path, Path, datetime], tuple[list[str], dict[str, Any]]] = lambda exp, ledger, started: window_guard(exp, started, ROOT, ledger)
     decoder_fn: Callable[[str], list[str]] = lambda ref: rl.decoder_pin_problems(ref)
     problems_fn: rl.ProblemsFn | None = None
     verify: Mapping[str, Mapping[str, Any]] | None = None
@@ -589,6 +845,7 @@ class Plan:
     mint_info: dict[str, Any] = field(default_factory=dict)
     a3_halts: list = field(default_factory=list)
     rent_t22: dict[str, bool] = field(default_factory=dict)
+    window: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- preflight (nothing is written; no outcome row is opened) ---------------------------------------------------------------------------
@@ -607,6 +864,9 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
     v, p1 = exp_lines(text)
     probs += p1
     probs += deps.clean_fn(paths.exp_file)
+    wprobs, winfo = deps.window_fn(paths.exp_file, paths.ledger, started)
+    probs += wprobs
+    probs += deps.sync_fn()
     if len(v) != len(required_keys()):
         return None, {}, probs
     p2, P = pin_problems(v, deps.code_dir)
@@ -703,7 +963,7 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
             sph[h] = float(s)
     if probs or e1 is None or strand is None or count_cfg is None or sell is None or a3 is None:
         return None, fee, probs
-    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph, e + timedelta(hours=DEADLINE_HOURS), sell, mint_info, a3, rent_t22), fee, probs
+    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph, e + timedelta(hours=DEADLINE_HOURS), sell, mint_info, a3, rent_t22, winfo), fee, probs
 
 
 # ---- the computation -----------------------------------------------------------------------------------------------------------------------
@@ -1191,7 +1451,7 @@ def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -
             "sell_builder": plan.sell_builder, "walk_dir": str(Path(paths.walk_dir).resolve()),
             "keys": {"marks": len(marks), "not_subset_marks": len(notsub), "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok},
             "d3": {"dropped_rows": rep["d3_dropped"], "kept_pre_filter": rep["d3_kept_pre_filter"]}, "stranded_counts": stranded,
-            "strand_class_trades": int(strand_class.sum()), "mints": rep["mints"], "mints_with_rows": rep["mints_with_rows"],
+            "strand_class_trades": int(strand_class.sum()), "rent_t22_trades": int(rent_t22.sum()), "mints": rep["mints"], "mints_with_rows": rep["mints_with_rows"],
             "mint_accounts": {**plan.mint_info, "traded_mints": len(set(traded)), "traded_mints_missing_from_record": len(missing), "traded_trades_on_missing_mints": int(sum(1 for m in traded if m in set(missing)))},
             "report_only": {"files": "report-<step>.json and report-only.json in the out dir, written after this file; an error in a step is recorded there and never changes this file",
                             "steps": [n for n, _ in REPORT_STEP_NAMES]},
@@ -1433,7 +1693,8 @@ def read(paths: Paths, deps: Deps | None = None) -> dict[str, Any]:
     token = take_lock(out_dir)
     ledger_event(out_dir, "started", token=token, head=deps.head_fn(), job=os.environ.get("MISCUSI_JOB_ID", ""), w0=ef.hour_key(plan.w0), e=ef.hour_key(plan.e), k=plan.k,
                  send=fee["send"], fee_arm=fee.get("source"), code_sha256=plan.v and {m: plan.v[f"EXP027_SHA256_{m.upper()}"] for m in CODE_MODULES}, inputs=plan.inputs,
-                 sell_builder=plan.sell_builder, walk_dir=str(Path(paths.walk_dir).resolve()))
+                 sell_builder=plan.sell_builder, walk_dir=str(Path(paths.walk_dir).resolve()),
+                 exp_sha256=plan.window.get("exp_sha256"), reg_commit=plan.window.get("reg_commit"), prefix_sha256=plan.window.get("prefix_sha256"), appended=plan.window.get("appended"))
     ctx: ReadCtx | None = None
     try:
         early = []
@@ -1469,9 +1730,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--walk-dir", default=PINNED_WALK_DIR, help=f"Forward walk 2 dataset dir; anything but {PINNED_WALK_DIR} is refused")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT), help="READS.jsonl, READ.lock, result file")
     ap.add_argument("--counts-dir", default=str(DEFAULT_OUT), help="the count job's dir (counts.jsonl, config.json)")
+    ap.add_argument("--check-window", action="store_true", help="dry run of the Window-record tamper checks (started = now); opens no sealed data; exit 1 on VIOLATIONS, 0 on OK or PENDING")
     ap.add_argument("--memory-limit", default="6GB")
     ap.add_argument("--threads", type=int, default=4)
-    a = ap.parse_args(argv)  # no flag changes a pinned value; the EXP file and the models dir are repo constants
+    a = ap.parse_args(argv)
+    if a.check_window:
+        return check_window_cli()
+    # no flag changes a pinned value; the EXP file and the models dir are repo constants
     paths = Paths(Path(a.walk_dir), Path(a.out_dir), Path(a.counts_dir))
     deps = Deps(memory_limit=a.memory_limit, threads=a.threads)
     try:
