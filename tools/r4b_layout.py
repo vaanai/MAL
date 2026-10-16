@@ -75,6 +75,10 @@ TRADE_COLS = {
     "quote_reserve": "BIGINT", "base_reserve": "BIGINT", "pool": "VARCHAR", "slot": "BIGINT", "signature": "VARCHAR", "event_index": "INTEGER",
     "tx_index": "INTEGER", "block_time": "BIGINT", "virtual_quote_reserves": "BIGINT",
 }
+# structure_only (the outcome-blind count job, tools/r4b_count.py): the trade columns that are decision-time / structure fields. NO side, sol_lamports, token_raw,
+# quote_reserve, base_reserve, trader. virtual_quote_reserves is parsed only so that (a) the s0 print's V0 value (band membership, structure) and (b) the
+# boolean `virtual_quote_reserves IS NULL` of the member prints can be taken; no other V value is selected by any structure-mode output.
+TRADE_COLS_STRUCT = {k: v for k, v in TRADE_COLS.items() if k in ("venue", "mint", "pool", "slot", "signature", "event_index", "tx_index", "block_time", "virtual_quote_reserves")}
 CREATE_COLS = {"type": "VARCHAR", "mint": "VARCHAR", "creator": "VARCHAR", "is_mayhem_mode": "BOOLEAN", "slot": "BIGINT", "block_time": "BIGINT"}
 MIG_COLS = {"type": "VARCHAR", "mint": "VARCHAR", "slot": "BIGINT", "block_time": "BIGINT", "tx_index": "INTEGER", "event_index": "INTEGER",
             "pool": "VARCHAR", "quote_mint": "VARCHAR"}
@@ -175,9 +179,9 @@ def _load(con: Any, table: str, path: Path, cols: Mapping[str, str], want_rows: 
         raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
 
 
-def _load_trades(con: Any, path: Path, hix: int, label: str) -> None:
+def _load_trades(con: Any, path: Path, hix: int, label: str, cols: Mapping[str, str] | None = None) -> None:
     """Load an hour's trades into temp table t with `frn` = hour_index * 1e10 + row number in the file (insertion order is preserved by DuckDB)."""
-    src = _read_json_sql(path, TRADE_COLS)
+    src = _read_json_sql(path, cols or TRADE_COLS)
     try:
         con.sql(f"create or replace temp table t as select {hix} * 10000000000 + (row_number() over () - 1) as frn, * from {src}")
     except Exception as exc:
@@ -238,8 +242,12 @@ def default_canonical() -> CanonFn:
 
 def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "event", static_map: Mapping[str, int | None] | None = None,
           canonical_fn: CanonFn | None = None, problems_fn: ProblemsFn | None = None, verify: Mapping[str, Mapping[str, Any]] | None = None,
-          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None) -> dict[str, Any]:
-    """Run the adapter. Returns the stats dict (also written to out_dir/stats.json)."""
+          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None, structure_only: bool = False) -> dict[str, Any]:
+    """Run the adapter. Returns the stats dict (also written to out_dir/stats.json).
+
+    structure_only=True (the count job): trade rows are parsed with TRADE_COLS_STRUCT only; ut gets (mid, slot, txi, evi, bt) and bond / mkt / mkt_creates are not
+    written; the clock is. The V null refusal on member prints selects `virtual_quote_reserves IS NULL` only. meta, creators, m0.parquet (every completed mint
+    with pda_match / mayhem / s0 / v0) and stats.json are the same as in full mode."""
     import duckdb
 
     if v_source not in V_SOURCES:
@@ -249,6 +257,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     if v_source == "event" and static_map is not None:
         raise LayoutRefused("a static map was given with v_source=event; refusing to mix the V sources")
     walk_dir, out_dir = Path(walk_dir), Path(out_dir)
+    tcols = TRADE_COLS_STRUCT if structure_only else TRADE_COLS
     try:
         out_dir.resolve().relative_to(walk_dir.resolve())
     except ValueError:
@@ -270,7 +279,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         files.update(check_hours(walk_dir, extras, problems_fn, verify))
     trade_hours = hours + extras
     canon = canonical_fn or default_canonical()
-    for sub in ("ut", "bond", "clock", "mkt"):
+    for sub in (("ut", "clock") if structure_only else ("ut", "bond", "clock", "mkt")):
         (out_dir / sub).mkdir(parents=True, exist_ok=True)
 
     con = duckdb.connect()
@@ -314,7 +323,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, vq bigint, bt bigint, pool varchar)")
     n_trade_rows = 0
     for hix, h in enumerate(trade_hours):
-        _load_trades(con, files[h]["trades"], hix, h)
+        _load_trades(con, files[h]["trades"], hix, h, tcols)
         got = con.sql("select count(*) from t").fetchone()[0]
         want = _hour_rows(files, table, h, "trades")
         if got != want:
@@ -322,7 +331,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         n_trade_rows += got
         con.sql(f"""copy (select block_time bt, min(slot) smin, max(slot) smax from t where block_time is not null group by 1 order by 1)
                     to '{out_dir}/clock/{h}.parquet' (format parquet)""")
-        con.sql(f"""copy (select (block_time//60)*60 AS mnt, sum((venue='pumpswap')::int)::double n_ps,
+        if not structure_only:
+            con.sql(f"""copy (select (block_time//60)*60 AS mnt, sum((venue='pumpswap')::int)::double n_ps,
                     sum(case when venue='pumpswap' then sol_lamports else 0 end)::double v_ps, sum((venue='pump_bonding')::int)::double n_bd,
                     sum(case when venue='pump_bonding' then sol_lamports else 0 end)::double v_bd
                     from t where block_time is not null group by 1 order by 1) to '{out_dir}/mkt/{h}.parquet' (format parquet)""")
@@ -330,7 +340,10 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
                     t.block_time, t.pool from t join m_comp c on t.mint=c.mint and t.pool=c.pda
                     where t.venue='pumpswap' and t.slot >= c.mslot and t.slot < c.mslot + {WINDOW_SLOTS}""")
     con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn from cand) where rn=1""")
-    con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
+    if structure_only:
+        con.sql("alter table cand drop column vq")  # only the s0 value was needed (taken above); no other candidate V is kept
+    else:
+        con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
                 group by 1 order by 1) to '{out_dir}/mkt_creates.parquet' (format parquet)""")
 
     # ---- V0 and membership
@@ -352,14 +365,26 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
                 strftime(make_timestamp(mbt * 1000000), '%Y-%m-%d') as "day", pda_match from m0
                 where coalesce(mayhem,false) = false and mbt is not null and pda is not null and s0 is not null and v0 between {V_LO} and {V_HI} and {match_req}""")
     con.sql(f"""copy (select * from m order by mid) to '{out_dir}/meta.parquet' (format parquet)""")
+    con.sql(f"""copy (select mint, mbt, mslot, s0, v0, coalesce(mayhem,false) mayhem, pda_match, has_create from m0 order by mbt, mint) to '{out_dir}/m0.parquet' (format parquet)""")
     con.sql(f"""copy (select m.mid, cre.ch, cre.cbt, cre.cslot from m left join cre using(mint) order by m.mid) to '{out_dir}/creators.parquet' (format parquet)""")
 
     # ---- pass 2: ut and bond per hour
     vq_col = "t.virtual_quote_reserves" if v_source == "event" else "m.v"
     try:
         for hix, h in enumerate(trade_hours):
-            _load_trades(con, files[h]["trades"], hix, h)
+            _load_trades(con, files[h]["trades"], hix, h, tcols)
             o = f"{out_dir}/ut/{h}.parquet"
+            if structure_only:
+                con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt
+                            from t join m on t.pool=m.pool and t.mint=m.mint
+                            where t.venue='pumpswap' and t.slot>=m.s0 and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S})
+                            order by m.mid, t.slot, txi, evi, t.frn) to '{o}' (format parquet)""")
+                n_null = con.sql(f"""select count(*) from t join m on t.pool=m.pool and t.mint=m.mint where t.venue='pumpswap' and t.slot>=m.s0
+                                     and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S}) and t.virtual_quote_reserves is null""").fetchone()[0]
+                if v_source == "event" and n_null:
+                    raise LayoutRefused(f"hour {h}: {n_null} print(s) of MEMBER pool(s) at/after s0 have a null/missing virtual_quote_reserves "
+                                        "(no dropping members afterwards, no forward-fill)")
+                continue
             con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt, (t.side='buy') isbuy,
                         t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq, (t.frn - {hix} * 10000000000)::bigint frn
                         from t join m on t.pool=m.pool and t.mint=m.mint
