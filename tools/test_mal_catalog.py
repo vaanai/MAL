@@ -73,12 +73,20 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert fwd.owner != "exploration-pool"
     assert (fwd.start_hour, fwd.end_hour_exclusive) == ("2026-10-02T10", "2026-10-16T01")
     fwd2 = by_name["Forward walk 2"]
-    assert fwd2.owner == "EXP-022"  # named by the EXP-022 Part 1 pre-registration (CAP-PICK, DEC-021 Am.1), 2026-10-08
+    assert fwd2.owner == "reserved"  # EXP-022 (CAP-PICK) withdrawn before counting 2026-10-15; owner decision 2026-10-16
     assert (fwd2.start_hour, fwd2.end_hour_exclusive) == ("2026-10-16T01", "2026-11-16T01")
     assert fwd2.start_hour == fwd.end_hour_exclusive
 
 
 # --- check_read against the real ledger -----------------------------------
+
+
+def test_walk2_exp022_confirmation_oneshot_refused(blocks: list[Block]) -> None:
+    # EXP-022 was withdrawn before counting; walk 2 is reserved, so no id may confirm on it.
+    for exp in ("EXP-022", "EXP-012", None):
+        ok, reasons = _check(blocks, "confirmation-oneshot", "research", "2026-10-16T01", "2026-10-16T02", exp_id=exp)
+        assert not ok, exp
+        assert reasons
 
 
 def test_exploration_fast_precut_allow(blocks: list[Block]) -> None:
