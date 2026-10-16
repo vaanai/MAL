@@ -350,6 +350,142 @@ class LayerTests(Base):
         layer.check_output_columns(["mint", "reached_complete", "complete_ms", "new_buyer_share"])
 
 
+def write_raw_zst(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with pa.OSFile(str(path), "wb") as f:
+        with pa.CompressedOutputStream(f, "zstd") as z:
+            z.write(data)
+
+
+class MalformedTests(Base):
+    def lines_of(self, rows):
+        return [(json.dumps(r) + "\n").encode() for r in rows]
+
+    def put_trades(self, hour, lines):
+        write_raw_zst(self.root / DS / "trades" / f"trades-{hour}.jsonl.zst", b"".join(lines))
+
+    def rows0(self):
+        t = T0
+        return [trade("A", "w1", "buy", 100, 0, t + 10, b=CB), trade("C", "w2", "buy", 400, 0, t + 80),
+                trade("C", "w3", "buy", 401, 0, t + 81)]
+
+    def many(self, k):
+        return self.lines_of([trade("A", "w1", "buy", 100, i, T0 + 5, b=CB + 1) for i in range(k)])
+
+    def sidecar(self):
+        return json.loads((self.out / layer.SIDECAR).read_text())
+
+    def test_counts_skips_and_sidecar_offsets(self):
+        ls = self.lines_of(self.rows0())
+        bad1, bad2 = b'{"type": "trade", "mint": \n', b"not json at all\n"
+        self.put_trades(H0, [ls[0], bad1, ls[1], b"\n", bad2, ls[2]] + self.many(30_000))
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"SKIP_MALFORMED file=trades-{H0}.jsonl.zst n=2 first_line=2", stdout)
+        self.assertIn("SKIP_MALFORMED_TOTAL stream=trades files=2 files_with_malformed=1 n=2", stdout)
+        sc = self.sidecar()
+        (f,) = sc["files_with_malformed"]
+        self.assertEqual((f["stream"], f["n_malformed"], f["n_lines"], f["first_line"]), ("trades", 2, 30_005, 2))
+        off1 = len(ls[0])
+        off2 = off1 + len(bad1) + len(ls[1]) + 1
+        self.assertEqual([(o["line"], o["byte_offset"], o["bytes"]) for o in f["offsets"]],
+                         [(2, off1, len(bad1)), (5, off2, len(bad2))])
+        self.assertEqual(sc["totals"]["trades"]["malformed"], 2)
+        self.assertEqual(sc["rule"]["max_malformed_lines_per_file"], layer.MAX_MALFORMED_LINES_PER_FILE)
+        self.assertNotIn("not json at all", json.dumps(sc))  # offsets only, never line content
+        self.assertEqual(self.tokens()["C"]["bc_n_trades"], 3)  # the good rows are kept: 2 here + next-hour sell
+        m = json.loads((self.out / "MANIFEST.json").read_text())
+        self.assertEqual(m["malformed_lines"]["trades"]["malformed"], 2)
+        self.assertTrue((self.out / "README_D1_USAGE.md").exists())
+
+    def test_non_object_json_and_bad_utf8_are_malformed(self):
+        ls = self.lines_of(self.rows0())
+        self.put_trades(H0, [ls[0], b"[1, 2]\n", b"\xff\xfe{}\n", ls[1], ls[2]] + self.many(30_000))
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("n=2 first_line=2", stdout)
+
+    def test_migrations_and_creates_streams_are_counted_too(self):
+        ds = self.root / DS
+        mig = (json.dumps({"type": "migration", "mint": "B", "slot": 300, "event_index": 0}) + "\n").encode()
+        write_raw_zst(ds / "migrations" / f"migrations-{H0}.jsonl.zst", b"garbage\n" + mig)
+        write_raw_zst(ds / "creates" / f"creates-{H0}.jsonl.zst",
+                      b"{oops\n" + (json.dumps(create("A", 90, T0 + 1)) + "\n").encode() * 3)
+        self.put_trades(H0, self.lines_of(self.rows0()))
+        # 'garbage' is 1 bad line of 2: refused by the fraction limit, and the sidecar says which stream
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("migrations-", err)
+        self.assertEqual(self.sidecar()["files_with_malformed"][0]["stream"], "migrations")
+
+    def test_refusal_above_threshold_and_sidecar_still_written(self):
+        n = layer.MAX_MALFORMED_LINES_PER_FILE
+        good = self.many(100_000) + self.lines_of(self.rows0())  # 0.01% of 100003 = 10
+        self.put_trades(H0, good[:50_000] + [b"x\n"] * n + good[50_000:])
+        self.assertEqual(self.run_layer()[0], 0)
+        self.put_trades(H0, good[:50_000] + [b"x\n"] * (n + 1) + good[50_000:])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("exceed the limit", err)
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+        self.assertEqual(self.sidecar()["files_with_malformed"][0]["n_malformed"], n + 1)
+
+    def test_threshold_function(self):
+        f = layer.malformed_refusal_reasons
+        self.assertEqual(f(100_000, 10, False), [])
+        self.assertTrue(f(100_000, 11, False))
+        self.assertEqual(f(200_000, 10, False), [])  # 0.01% = 20 > 10 lines, so the line limit binds
+        self.assertTrue(f(200_000, 11, False))
+        self.assertTrue(f(5_000, 1, False))  # 0.01% of 5000 floors to 0: any bad line refuses
+        self.assertEqual(f(20_000, 2, False), [])
+        self.assertTrue(f(20_000, 3, False))
+        self.assertEqual(f(5, 0, False), [])
+        self.assertTrue(f(1_000_000, 0, True))  # last line bad always refuses
+        self.assertEqual((layer.MAX_MALFORMED_LINES_PER_FILE, layer.MAX_MALFORMED_FRACTION), (10, 0.0001))
+
+    def test_malformed_last_line_refuses(self):
+        ls = self.lines_of(self.rows0())
+        self.put_trades(H0, self.many(20_000) + ls + [b'{"type": "trade", "mint": "C", "sl'])  # cut mid-line
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("last line is malformed", err)
+        self.assertTrue(self.sidecar()["files_with_malformed"][0]["last_line_malformed"])
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_precount_mode_prints_skip_lines_and_input_hashes(self):
+        ls = self.lines_of(self.rows0())
+        self.put_trades(H0, [ls[0], b"bad\n", ls[1], ls[2]] + self.many(20_000))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--precount"])
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertIn("SKIP_MALFORMED file=", out.getvalue())
+        self.assertIn("sha256=", out.getvalue())
+        self.assertIn("resolved_gates", out.getvalue())
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        self.assertEqual(pc["malformed_lines"]["trades"]["malformed"], 1)
+        self.assertTrue((self.out / layer.SIDECAR).exists())
+        self.assertFalse((self.out / "README_D1_USAGE.md").exists())
+        self.assertFalse((self.out / "tokens_d1.parquet").exists())
+
+    def test_rss_self_check_aborts_cleanly(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--max-rss-gb", "0.0001"])
+        self.assertEqual(rc, 2)
+        self.assertIn("exceeds --max-rss-gb", err.getvalue())
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_readme_ships_with_full_run(self):
+        self.assertEqual(self.run_layer()[0], 0)
+        txt = (self.out / "README_D1_USAGE.md").read_text()
+        self.assertIn("Exploration only", txt)
+        self.assertIn("No join", txt)
+        self.assertEqual(json.loads((self.out / layer.SIDECAR).read_text())["files_with_malformed"], [])
+
+
 class OctoberRoleTests(unittest.TestCase):
     def test_existing_role_module_still_imports(self):
         self.assertEqual(oc.ROLE_OCT_D1, "oct-pregrad-d1")
