@@ -197,6 +197,8 @@ FEEARM_FILL_LOG = "probe-fills-feearm.jsonl"
 
 LIVE_DIR = Path("/var/lib/mal-live")  # FIXED. Handover and cross-profile checks read state only from here, never from cfg.
 
+H5_DIR_NAME = "h5"
+H5_LIVE_STATE_REL = "live/state-live.json"  # H5's real live state: /var/lib/mal-live/h5/live/state-live.json (docs/runbooks/h5-executor.md)
 DEFAULT_PROFILE = "dec019"
 PROFILES = ("dec019", "dec020", "feearm")
 
@@ -435,7 +437,12 @@ def _feearm_precheck(cfg: dict[str, Any], d19: Path, d20: Path) -> list[str]:
     counts = _live_state_open(d19)
     if counts is None:
         raise SystemExit(f"feearm refused: the dec019 live state {d19} is missing (its bought list seeds feearm's)")
-    others = {"dec019": counts, "dec020": _live_state_open(d20), "h5": _live_state_open(LIVE_DIR / "h5" / "state-live.json")}
+    h5_dir = LIVE_DIR / H5_DIR_NAME
+    h5_state = h5_dir / H5_LIVE_STATE_REL
+    h5_counts = _live_state_open(h5_state)
+    if h5_counts is None and h5_dir.exists():  # fail closed, like the dec019-missing refusal: H5 is installed but its open count is unknown
+        raise SystemExit(f"feearm refused: the H5 directory {h5_dir} exists but its live state {h5_state} is missing (cannot show H5 is flat)")
+    others = {"dec019": counts, "dec020": _live_state_open(d20), "h5": h5_counts}
     for name, c in others.items():
         if c and any(c):
             raise SystemExit(f"feearm refused: the {name} live state has {c[0]} open and {c[1]} pending position(s); "
