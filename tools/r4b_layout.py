@@ -167,6 +167,13 @@ def _utc_day(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def load_static_map(path: str | Path) -> dict[str, int | None]:
+    """pool_v_0909.json is {"fetched_utc": ..., "v": {pool: V}}; a bare {pool: V} json is accepted too."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    v = doc["v"] if isinstance(doc.get("v"), dict) else doc
+    return {k: (None if x is None else int(x)) for k, x in v.items()}
+
+
 def default_canonical() -> CanonFn:
     from tools.exp016_screen import canonical_pool_str
 
@@ -368,7 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--tmp-dir", default=None)
     ap.add_argument("--prep", action="store_true", help="also run the 02a prep step")
     a = ap.parse_args(argv)
-    smap = json.loads(Path(a.static_map).read_text(encoding="utf-8")) if a.static_map else None
+    smap = load_static_map(a.static_map) if a.static_map else None
     try:
         stats = build(Path(a.walk_dir), a.from_hour, a.to_hour, Path(a.out_dir), v_source=a.v_source, static_map=smap, memory_limit=a.memory_limit,
                       threads=a.threads, tmp_dir=Path(a.tmp_dir) if a.tmp_dir else None)

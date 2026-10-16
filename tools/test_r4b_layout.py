@@ -471,3 +471,9 @@ def test_decoder_pin_problems_reports_mismatch(monkeypatch):
 def test_cli_refusal_exit_code(walk, tmp_path, capsys):
     rc = rl.main(["--walk-dir", str(walk), "--from-hour", H3, "--to-hour", "2026-10-16T09", "--out-dir", str(tmp_path / "o")])
     assert rc == 2 and "refused" in capsys.readouterr().err
+
+
+def test_load_static_map_both_shapes(tmp_path):
+    (tmp_path / "a.json").write_text(json.dumps({"fetched_utc": "x", "v": {"P1": 17600000000, "P2": None}}))
+    (tmp_path / "b.json").write_text(json.dumps({"P1": 17600000000, "P2": None}))
+    assert rl.load_static_map(tmp_path / "a.json") == rl.load_static_map(tmp_path / "b.json") == {"P1": 17600000000, "P2": None}
