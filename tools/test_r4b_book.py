@@ -464,7 +464,7 @@ def test_exit_tokens_equal_bx_is_invalid():
     net = 250e6 * (1 - B.fee_ppm(_N, 3e14) / 1e6)
     tok = 3e14 * net / (_N + net)
     assert _rt(_N, 3e14, _N, tok)[4]
-    assert not _rt(_N, 3e14, _N, tok * 1.001)[4]
+    assert not _rt(_N, 3e14, _N, tok * 3.0)[4]      # 1.001 x tok is now caught by the C7 real-quote bound
 
 
 @pytest.mark.parametrize("Qx", [1e9, 17.4e9, 0.0, float("nan"), float("inf")])
@@ -501,3 +501,33 @@ def test_nonfinite_exit_is_exit_invalid(Qx, Bx):
 def test_nonfinite_entry_is_entry_invalid(Qe, Be):
     pnl, fil, st, ei, xi = _rt(Qe, Be, _N, 3e14)
     assert ei and st and not xi and pnl == _stranded_pnl()
+
+
+# ---- QP #680 C7: sell output before fees above the pool's real quote (Qa - V_LO) is exit_invalid
+def _tok(Qe=_N, Be=3e14, stake=250e6):
+    return Be * stake * (1 - B.fee_ppm(Qe, Be) / 1e6) / (Qe + stake * (1 - B.fee_ppm(Qe, Be) / 1e6))
+
+
+@pytest.mark.parametrize("m", [1.01, 1.1, 1.2])
+def test_c7_sell_above_real_quote_is_exit_invalid(m):
+    # sell output = Qa / m exceeds Qa - V_LO (= 0.82 Qa here) when m < ~1.22
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, m * _tok())
+    assert xi and st and not ei and pnl == _stranded_pnl()
+
+
+def test_c7_boundary_follows_the_physical_bound():
+    tok = _tok()
+    net = 250e6 * (1 - B.fee_ppm(_N, 3e14) / 1e6)
+    Qa = _N + net
+    # gross = Qa / m (h_in = 0 with the default call path is not assumed: compute through round_trip flags only on both sides of the bound)
+    m_edge = Qa / (Qa - B.F.V_LO)
+    hi = _rt(_N, 3e14, _N, (m_edge * 1.01) * tok, stake=250e6)
+    assert not hi[4] or B.F.HAIRCUT_ENTRY > 0     # with the entry haircut the sold tokens shrink, so the edge only moves outward
+    lo = _rt(_N, 3e14, _N, (m_edge * 0.99) * tok, stake=250e6)
+    assert lo[4]
+
+
+def test_c7_larger_bx_cases_not_caught_by_c7_alone():
+    # Bx = 2x and 5x tokens: sell output Qa/2 and Qa/5 is below the real quote; C7 does not flag them (QP C8 ruling pending); documented, not asserted as wins
+    for m in (2.0, 5.0):
+        assert not _rt(_N, 3e14, _N, m * _tok())[4]

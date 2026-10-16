@@ -213,7 +213,8 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
     reserve; this also covers Qe <= 0 and NaN), Be <= 0 or NaN, spot non-finite or <= 0 (a NaN spot would switch the guard off), or tokens <= 0 /
     non-finite after the entry formula. Priced as stranded (stake lost, buy send, rent_stranded, no sell send); the guard does not apply to it.
     Invalid exit state (exit_invalid, only on a bought, valid-entry trip): tokens >= Bx, Qx < V_LO, or Qx or Bx non-finite (inf or NaN). Same stranded price;
-    there is no max(Bx - tokens, 1) clamp. Flags come back as last return values: return_invalid (entry), then return_exit_invalid."""
+    there is no max(Bx - tokens, 1) clamp. Also exit_invalid: sell output before fees (tokens_sold x Qa / (Ba + tokens_sold)) above the pool's real
+    quote Qa - V_LO (Qa = Qx + net, the exit quote incl. the own-buy re-injection): a physical bound, no tolerance. Flags come back as last return values: return_invalid (entry), then return_exit_invalid."""
     stake = np.asarray(stake, float)
     with np.errstate(all="ignore"):
         Qe_, Be_, spot_ = np.asarray(Qe, float), np.asarray(Be, float), np.asarray(spot, float)
@@ -228,6 +229,7 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
         Qa = Qx + net
         Ba = np.where(xbad | bad, 1.0, Bx - tok)
         gross = tokh * Qa / (Ba + tokh)
+        xbad = xbad | (~bad & ~guard & ~(gross <= Qa - F.V_LO))      # physical bound: the sell cannot take more than the pool's real quote (Qa - V_LO)
     with np.errstate(all="ignore"):
         sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
     st = np.zeros(np.shape(sv), bool)
