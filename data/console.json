@@ -14,7 +14,7 @@
    "id": "ruleb-qp-1016",
    "kind": "result",
    "title": "LAYA RULE B pool entries: reproduces, fails at the DEC-021 live haircut; no EXP-027 now",
-   "detail": "Exploration, post-read subset. Rent refunded passes (1.3 s press +0.8334%, lo +0.000555). With the DEC-021 section 1 haircut it fails: 1.3 s press +0.5335%, lo -0.000192, ex-top-3 -0.176 SOL (QP ruling 2026-10-16T08:31:53Z). One-block confirmation power about 1.5%. Revive only with a mechanism adding at least about 0.4% per trade. Not gate evidence.",
+   "detail": "Exploration, post-read subset. Rent refunded passes (1.3 s press +0.8334%, lo +0.000555). With the DEC-021 section 1 haircut it fails: 1.3 s press +0.5335%, lo -0.000192, ex-top-3 -0.176 SOL (QP ruling 2026-10-16T08:31:53Z). One-block confirmation power about 1.5%. Revive trigger (manager's figure, not a QP threshold): a mechanism worth at least the 0.428% haircut plus 0.029% stranded rent per trade, shown outside 09-03..09-25; even then only an exploration pass. Best of about 90 cells, about 25 hunts on the window, post-read cut; exploration bootstrap p 0.0050 misses the 0.00147 bar. Not gate evidence.",
    "atUtc": "2026-10-16T08:31:53Z"
   },
   {
