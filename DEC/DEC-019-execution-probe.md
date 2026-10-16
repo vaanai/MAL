@@ -204,11 +204,11 @@ P_mig is a constant seed price (about 4.1078e-07 SOL per token: vault 67.4058 SO
 Starts in the next build. It changes no decision, so trades are not a separate section 7 group on account of it.
 
 
-## Amendment 2 (DRAFT 2026-10-16): fee-arm execution probe, 500,000 vs 155,000 priority, hard 0.15 SOL cap
+## Amendment 2 (2026-10-16; merged as db4af22, see status): fee-arm execution probe, 500,000 vs 155,000 priority, hard 0.15 SOL cap
 
 **Status update 2026-10-16: QP OK at 8f4f4a91833d2615907197d2cf496ff88d195fb7 (PR #662 comment 6220282777); Reviewer OK (comment 6220337804); merged as db4af222ebfb639b341dd6d883dbbff84cd90db7. Owner go: Owner (chat, 2026-10-16): "I gave helm the go to go live after the dry run." Helm installs at db4af22 with Gordon's corrected steps below.**
 
-**Status: DRAFT (as written before the two OKs above). Nothing runs before BOTH (a) `quant-proof` OK on the exact head sha (pending; re-pinned after each commit) and (b) the owner's OK, which is recorded: the owner relayed Helm's yes on 2026-10-16 at about 15:35Z ("worth a yes ... make sure the 0.15 SOL is a hard limit in the code, not just a goal"), recorded by manager11 (MiScusi question q_Ih-oH8wmvw9D2w, closed; notebook n_D_JV-tCOR9R-Nw). Scope: 0.15 SOL net wallet-loss cap, window ending 2026-10-22T00:00Z, no live-gate or book effect. The lab note must not report P&L of the probe's intents.** Helm installs only after the quant-proof OK on the final head is recorded in the PR. Code: `tools/probe_executor.py` and `tools/probe_live.py`, profile `feearm` (config `limits_profile: "feearm"`); tests `tools/test_probe_feearm.py`. Amendments 1 and 1a and every earlier section stand.
+*Original status paragraph, kept as written before the two OKs above (superseded by the status update):* Nothing runs before BOTH (a) `quant-proof` OK on the exact head sha (pending; re-pinned after each commit) and (b) the owner's OK, which is recorded: the owner relayed Helm's yes on 2026-10-16 at about 15:35Z ("worth a yes ... make sure the 0.15 SOL is a hard limit in the code, not just a goal"), recorded by manager11 (MiScusi question q_Ih-oH8wmvw9D2w, closed; notebook n_D_JV-tCOR9R-Nw). Scope: 0.15 SOL net wallet-loss cap, window ending 2026-10-22T00:00Z, no live-gate or book effect. The lab note must not report P&L of the probe's intents.** Helm installs only after the quant-proof OK on the final head is recorded in the PR. Code: `tools/probe_executor.py` and `tools/probe_live.py`, profile `feearm` (config `limits_profile: "feearm"`); tests `tools/test_probe_feearm.py`. Amendments 1 and 1a and every earlier section stand.
 
 ### Purpose
 An execution measurement, not a strategy. It asks one question: does a 155,000-lamport priority land as fast as the 500,000 the live sends have always paid? It makes **no P&L claim and no edge claim**, its trades never count toward any gate, and it is never a book. Basis: `/data/mal/hunt-1008/push-1016/hunt2/cost-floor/REPORT.md`. 124 of 124 live sends paid 505,000 and 122 landed; no landing rate exists at any other fee; Amendment 1's 150,000 was never installed.
@@ -282,7 +282,7 @@ The question is whether 155,000 lands **as well and as fast** as 500,000, so it 
 
 ### Stop rule
 - Automatic (code): the net wallet-loss cap (`spend_cap` in code); 150 buy attempts; 300 sends; realized loss 0.15 SOL; the end instant; STOP and HALT. Each halts new buys; exits continue.
-- Manual, by the manager or Helm, with a message to the owner: place STOP if more than 3 of the first 20 test-arm buys expire unlanded, on any `unsafe_tx_refused`, `sell_stuck` or `sell_abandoned` alert, or if the wallet balance differs from start balance minus realized minus open cost by more than 0.005 SOL.
+- Manual: the manager's read-only watch (`tools/feearm_watch.py`) only reports and recommends, with a message to the owner; **Helm creates `/var/lib/mal-live/STOP`** (the manager takes no STOP, HALT or unit action) if more than 3 of the first 20 test-arm buys expire unlanded, on any `unsafe_tx_refused`, `sell_stuck` or `sell_abandoned` alert, or if the wallet balance differs from start balance minus realized minus open cost by more than 0.005 SOL.
 - At the end: STOP in place, `--status` flat, unit stopped and its drop-in moved; H5's unit state restored (enabled, still STOPped) only if the owner or manager says so. A lab note with per-arm counts is reviewed by `quant-proof` before any sentence compares arms.
 
 ### What this does not settle
