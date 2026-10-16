@@ -11,11 +11,22 @@ behaviour when the exploration values are passed:
 * grid      2-min grid from ceil120(mbt + 600) to the end above; a decision exists iff the token printed in (T - 600, T).
 * features  use only prints with slot < sd, sd = clock_slot(T); market-minute features use complete minutes only.
 
-Off-by-default flag ``grads_asof`` (``Prep.gr_events``): m_grads_1h / m_grads_10m normally count the members' graduation times (GR = all
-members' mbt). A member is a mint whose V pool later printed (g_reachable extract), so whether a recent graduation is counted can depend
-on a pool print after T (r4b-verify REPORT, low CONCERN). With grads_asof=True the count comes from ``gr_events`` instead: the
-migration/complete event times of every graduation, independent of any later print. Default False reproduces the frozen features exactly.
-The flag changes the feature VALUES; it is a QP decision whether it may ever be used (the frozen models were trained without it).
+``grads_rule`` selects the m_grads_1h / m_grads_10m rule:
+
+* "frozen" (default): GR = all members' mbt, a graduation counts at T iff mbt < T. Membership means the V pool later printed, so a recent
+  graduation can count only because of a print after T (r4b-verify REPORT, low CONCERN). Byte-identical to the fixture.
+* "asof_pda_first_print" (forward rule, QP ruling 2026-10-16): a graduation counts at decision T iff mbt < T AND its canonical PDA pool's
+  first print has slot < sd(T). Raw migration events are NOT counted: pools that never print stay out, matching training. Needs
+  ``Prep.gr_first_slot`` (first-print slot per graduation, aligned with the mbt vector; NaN = never printed) or it raises ValueError.
+
+Creator hash ``ch``: forward inputs keep th / ch as uint64 end to end (bond_constants compares them exactly, as the training SQL did).
+Training (02_build) compared the uint64 print hashes with a pandas float64 ch, so numpy cast BOTH sides to float64 and hashes that
+collide after the 53-bit rounding matched. The frozen models were trained on those features, so ``mint_features`` applies the same float64
+cast at the feature boundary (cre_known, cre_sell_post, cre_buy_post) for any ch dtype. FLAG FOR QP: this is a training-fidelity choice,
+not an exactness one; the other uint64 uses (unique traders, bond sums) are exact in training and stay exact here.
+
+Print order in forward mode: (slot, tx_index, event_index, file_row_number) with null tx_index coalesced to -1 (see forward_order,
+null_txi_tie_groups).
 
 No tape or network access in this module.
 """
@@ -76,13 +87,30 @@ class Prep:
     nm: int                         # number of market minutes
     cum: dict = field(default_factory=dict)   # col -> cumsum array, a[i] = sum of minutes < m0 + 60*i
     gr: np.ndarray = None           # sorted mbt of all members (universe-conditioned)
-    gr_events: np.ndarray | None = None   # sorted complete-event time of every graduation (only for grads_asof=True)
+    gr_first_slot: np.ndarray | None = None   # first-print slot of each graduation's canonical pool, aligned with gr (asof rule)
+    _gc: dict = field(default_factory=dict, repr=False)
 
     def slot_at(self, t):
         """02_build clock_slot: first slot whose block_time >= t (clamped to the last known second)."""
         i = np.searchsorted(self.clock_bt, t, "left")
         i = np.minimum(i, len(self.clock_bt) - 1)
         return self.clock_slot[i]
+
+    def grads_asof(self, T, sd):
+        """(m_grads_1h, m_grads_10m) under the as-of rule: mbt in [T-w, T) and first-print slot < sd. Cached per (T, sd) grid point."""
+        if self.gr_first_slot is None:
+            raise ValueError("grads_rule='asof_pda_first_print' needs Prep.gr_first_slot (first-print slot of each graduation's PDA pool)")
+        out = np.zeros((2, len(T)), np.int64)
+        for i, (t, s) in enumerate(zip(T.tolist(), sd.tolist())):
+            key = (t, s)
+            v = self._gc.get(key)
+            if v is None:
+                lo1, lo2, hi = (np.searchsorted(self.gr, x, "left") for x in (t - 3600, t - 600, t))
+                fs = self.gr_first_slot
+                v = (int((fs[lo1:hi] < s).sum()), int((fs[lo2:hi] < s).sum()))   # NaN < s is False: never-printed pools stay out
+                self._gc[key] = v
+            out[0, i], out[1, i] = v
+        return out
 
     def mwin(self, col, t, w):
         """Complete minutes in [t - w, t)."""
@@ -91,7 +119,7 @@ class Prep:
         return self.cum[col][hi] - self.cum[col][lo]
 
 
-def build_prep(clock_bt, clock_slot, mnt, mkt_cols, gr, gr_events=None) -> Prep:
+def build_prep(clock_bt, clock_slot, mnt, mkt_cols, gr, gr_first_slot=None) -> Prep:
     """clock_bt/clock_slot: per-second min slot (01_extract clock, grouped as in 02a_prep). mnt: minute starts ascending; mkt_cols: dict
     n_ps, v_ps, n_bd, v_bd, n_cr aligned to mnt (n_cr already left-joined, 0 when absent)."""
     ckb = np.asarray(clock_bt, np.int64)
@@ -104,11 +132,13 @@ def build_prep(clock_bt, clock_slot, mnt, mkt_cols, gr, gr_events=None) -> Prep:
         a = np.zeros(nm + 1)
         a[1:][((mnt - m0) // 60).astype(int)] += np.asarray(mkt_cols[k], np.float64)
         cum[k] = np.cumsum(a)
-    return Prep(ckb, cks, m0, nm, cum, np.sort(np.asarray(gr).astype(np.int64)),
-                None if gr_events is None else np.sort(np.asarray(gr_events).astype(np.int64)))
+    gr = np.asarray(gr).astype(np.int64)
+    o = np.argsort(gr, kind="stable")
+    fs = None if gr_first_slot is None else np.asarray(gr_first_slot, np.float64)[o]
+    return Prep(ckb, cks, m0, nm, cum, gr[o], fs)
 
 
-def build_prep_from_rows(clock_rows, mkt_rows, creates_rows, gr, gr_events=None) -> Prep:
+def build_prep_from_rows(clock_rows, mkt_rows, creates_rows, gr, gr_first_slot=None) -> Prep:
     """02a_prep aggregation from per-hour rows: clock_rows (bt, smin) pairs -> min slot per second; mkt_rows (mnt, n_ps, v_ps, n_bd, v_bd)
     summed per minute; creates_rows (mnt, n_cr). All arguments are dicts of equal-length numpy arrays."""
     bt = np.asarray(clock_rows["bt"], np.int64)
@@ -129,7 +159,7 @@ def build_prep_from_rows(clock_rows, mkt_rows, creates_rows, gr, gr_events=None)
     okc = (pos < len(um)) & (um[np.minimum(pos, len(um) - 1)] == cm)
     ncr[pos[okc]] = np.asarray(creates_rows["n_cr"], np.float64)[okc]
     cols["n_cr"] = ncr
-    return build_prep(bt[first], smin[first], um, cols, gr, gr_events)
+    return build_prep(bt[first], smin[first], um, cols, gr, gr_first_slot)
 
 
 @dataclass
@@ -163,6 +193,42 @@ def bond_constants(bond_isbuy, bond_sol, bond_th, creator_hash, has_creator):
     return dict(nb=float(n), ntr=float(len(np.unique(th))), bbuy=float(sol[ib].sum()), bsell=float(sol[~ib].sum()), cre_sell=cre)
 
 
+def forward_order(slot, tx_index, event_index, frn):
+    """Total print order for forward mode: (slot, tx_index, event_index, file_row_number); null tx_index (None/NaN/negative) -> -1 so it
+    sorts first within the slot and never creates a tie (frn breaks it). Returns the permutation. frn must be non-null and, within equal
+    (slot, tx, evi), unique, otherwise ValueError (no silent ties)."""
+    slot = np.asarray(slot, np.int64)
+    txi = _coalesce_i(tx_index)
+    evi = _coalesce_i(event_index)
+    if frn is None or np.isnan(np.asarray(frn, float)).any():
+        raise ValueError("file_row_number is required for the forward print order")
+    frn = np.asarray(frn, np.int64)
+    perm = np.lexsort((frn, evi, txi, slot))
+    k = np.stack([slot, txi, evi, frn])[:, perm]
+    if len(perm) > 1 and (k[:, 1:] == k[:, :-1]).all(axis=0).any():
+        raise ValueError("duplicate (slot, tx_index, event_index, file_row_number): order is not total")
+    return perm
+
+
+def _coalesce_i(x):
+    a = np.asarray(x, float) if not isinstance(x, np.ndarray) or x.dtype.kind not in "iu" else x
+    if a.dtype.kind == "f":
+        a = np.where(np.isnan(a), -1, a)
+    return a.astype(np.int64)
+
+
+def null_txi_tie_groups(slot, tx_index, event_index) -> int:
+    """Precount helper: number of groups of >= 2 rows with null tx_index sharing (slot, event_index) (rows that would tie without frn)."""
+    slot = np.asarray(slot, np.int64)
+    a = np.asarray(tx_index, float)
+    null = np.isnan(a) | (a < 0)
+    if not null.any():
+        return 0
+    k = np.stack([slot[null], _coalesce_i(event_index)[null]], axis=1)
+    _, cnt = np.unique(k, axis=0, return_counts=True)
+    return int((cnt > 1).sum())
+
+
 def _prev_same(keys):
     n = len(keys)
     o = np.argsort(keys, kind="stable")
@@ -181,7 +247,7 @@ class MintResult:
 
 
 def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b, th, *, vq=None, seg_end=None,
-                  grads_asof: bool = False, return_state: bool = False) -> MintResult | None:
+                  grads_rule: str = "frozen", return_state: bool = False) -> MintResult | None:
     """Features for one mint at every decision on its 2-min grid (02_build per-mint loop).
 
     Arrays are the mint's canonical-pool prints ordered by (slot, tx_index, event_index[, frn]); ``ch`` is the creator hash (NaN/None if
@@ -238,7 +304,8 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     pS = _prev_same(th[sidx])
     cbt_nan = bool(np.isnan(r.cbt))
     ck = 1.0 if (ch is not None and not (isinstance(ch, float) and math.isnan(ch))) else 0.0
-    isc = (th == ch) if ck else np.zeros(n, bool)
+    # training compared uint64 th with a float64 ch: both sides were cast to float64 (53-bit rounding). Same cast here for any ch dtype.
+    isc = (th.astype(np.float64) == np.float64(ch)) if ck else np.zeros(n, bool)
     ccs = np.concatenate([[0], np.cumsum(np.where(isc & ~ib, so, 0))])
     ccb = np.concatenate([[0], np.cumsum(np.where(isc & ib, so, 0))])
     t_lo = ((mbt + 600 + 119) // 120) * 120
@@ -316,14 +383,14 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     hr = (T % 86400) / 3600.0
     F["hour_sin"] = np.sin(2 * np.pi * hr / 24)
     F["hour_cos"] = np.cos(2 * np.pi * hr / 24)
-    if grads_asof:
-        if prep.gr_events is None:
-            raise ValueError("grads_asof=True needs Prep.gr_events (complete-event times of every graduation)")
-        GR = prep.gr_events
+    if grads_rule == "frozen":
+        F["m_grads_1h"] = np.searchsorted(prep.gr, T, "left") - np.searchsorted(prep.gr, T - 3600, "left")
+        F["m_grads_10m"] = np.searchsorted(prep.gr, T, "left") - np.searchsorted(prep.gr, T - 600, "left")
+    elif grads_rule == "asof_pda_first_print":
+        g = prep.grads_asof(T, sd)
+        F["m_grads_1h"], F["m_grads_10m"] = g[0], g[1]
     else:
-        GR = prep.gr
-    F["m_grads_1h"] = np.searchsorted(GR, T, "left") - np.searchsorted(GR, T - 3600, "left")
-    F["m_grads_10m"] = np.searchsorted(GR, T, "left") - np.searchsorted(GR, T - 600, "left")
+        raise ValueError(f"unknown grads_rule {grads_rule!r}")
     F["m_vps_10m"] = prep.mwin("v_ps", T, 600) / 1e9
     F["m_nps_10m"] = prep.mwin("n_ps", T, 600)
     F["m_vbd_10m"] = prep.mwin("v_bd", T, 600) / 1e9

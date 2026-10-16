@@ -27,14 +27,14 @@ def slot_of_bt(b):
     return SLOT0 + (b - CLK0) * SPS
 
 
-def make_prep(gr=None, gr_events=None, end=MBT + 49 * 3600):
+def make_prep(gr=None, gr_first_slot=None, end=MBT + 49 * 3600):
     bt = np.arange(CLK0, end, dtype=np.int64)
     slot = slot_of_bt(bt)
     m0 = (CLK0 // 60) * 60
     mnt = np.arange(m0, end, 60, dtype=np.int64)
     n = len(mnt)
     cols = {"n_ps": np.ones(n), "v_ps": np.full(n, 2e9), "n_bd": np.full(n, 3.0), "v_bd": np.full(n, 5e8), "n_cr": np.full(n, 4.0)}
-    return rf.build_prep(bt, slot, mnt, cols, gr=np.array([MBT] if gr is None else gr), gr_events=gr_events)
+    return rf.build_prep(bt, slot, mnt, cols, gr=np.array([MBT] if gr is None else gr), gr_first_slot=gr_first_slot)
 
 
 def make_prints(n=1500, seed=3, gap=100, first=30):
@@ -224,24 +224,68 @@ def test_v0_sets_seed_price_and_c_v(prep):
     assert not np.array_equal(a.X[:, r_seed], b.X[:, r_seed])
 
 
-def test_grads_flag_default_matches_frozen_and_is_off(prep):
-    gr = np.array([MBT, MBT + 3000, MBT + 3300])
-    ev = np.array([MBT, MBT + 3000, MBT + 3300, MBT + 3400, MBT + 3500])   # two graduations whose pool never printed
-    p = make_prep(gr=gr, gr_events=ev)
+def test_grads_rule_frozen_default_and_asof(prep):
+    gr = np.array([MBT, MBT + 3000, MBT + 3300, MBT + 3400])
+    # first-print slots: grad 2 prints late (after the decision near it), grad 3 never prints (NaN)
+    fs = np.array([slot_of_bt(MBT + 10), slot_of_bt(MBT + 3000) + 2, slot_of_bt(MBT + 4000), np.nan])
+    p = make_prep(gr=gr, gr_first_slot=fs)
     pr = make_prints(gap=50)
     base = run(p, pr, seg_end=None)
-    default = run(p, pr, seg_end=None, grads_asof=False)
+    default = run(p, pr, seg_end=None, grads_rule="frozen")
     assert base.X.tobytes() == default.X.tobytes()
-    asof = run(p, pr, seg_end=None, grads_asof=True)
+    asof = run(p, pr, seg_end=None, grads_rule="asof_pda_first_print")
     g10, g1h = rf.FEATS.index("m_grads_10m"), rf.FEATS.index("m_grads_1h")
     others = [i for i in range(63) if i not in (g10, g1h)]
-    assert np.array_equal(base.X[:, others], asof.X[:, others], equal_nan=True)   # only the two grads columns may move
-    assert (asof.X[:, g1h] >= base.X[:, g1h]).all() and (asof.X[:, g1h] > base.X[:, g1h]).any()
-    T = base.I[:, 1]
-    # counts are strictly before T
-    assert base.X[T == T[0], g10][0] == np.sum((gr < T[0]) & (gr >= T[0] - 600))
+    assert np.array_equal(base.X[:, others], asof.X[:, others], equal_nan=True)
+    T, sd = base.I[:, 1], base.I[:, 2]
+    for i in range(len(T)):
+        want1 = sum(1 for g, f in zip(gr, fs) if T[i] - 3600 <= g < T[i] and f < sd[i])
+        want10 = sum(1 for g, f in zip(gr, fs) if T[i] - 600 <= g < T[i] and f < sd[i])
+        assert asof.X[i, g1h] == want1 and asof.X[i, g10] == want10
+        assert base.X[i, g1h] == sum(1 for g in gr if T[i] - 3600 <= g < T[i])
+    assert (asof.X[:, g1h] <= base.X[:, g1h]).all() and (asof.X[:, g1h] < base.X[:, g1h]).any()
+    # never-printed graduation is never counted
+    assert asof.X[:, g1h].max() <= 3
     with pytest.raises(ValueError):
-        run(make_prep(gr=gr), pr, seg_end=None, grads_asof=True)
+        run(make_prep(gr=gr), pr, seg_end=None, grads_rule="asof_pda_first_print")
+    with pytest.raises(ValueError):
+        run(p, pr, seg_end=None, grads_rule="nope")
+
+
+def test_forward_order_total_and_null_txi_groups():
+    slot = np.array([5, 5, 5, 5, 4])
+    txi = np.array([np.nan, np.nan, 3, np.nan, np.nan])
+    evi = np.array([1, 1, 0, 2, 0])
+    frn = np.array([40, 30, 20, 10, 50])
+    perm = rf.forward_order(slot, txi, evi, frn)
+    # null tx first within the slot, ordered by evi then frn: (evi1,frn30)=idx1,(evi1,frn40)=idx0,(evi2)=idx3, then tx 3
+    assert list(perm) == [4, 1, 0, 3, 2]
+    assert rf.null_txi_tie_groups(slot, txi, evi) == 1          # idx 0 and 1 share (slot 5, evi 1)
+    assert rf.null_txi_tie_groups(slot, np.array([1, 2, 3, 4, 5.0]), evi) == 0
+    with pytest.raises(ValueError):
+        rf.forward_order(slot, txi, evi, None)
+    with pytest.raises(ValueError):
+        rf.forward_order(slot, txi, evi, np.array([1, 1, 2, 3, 4]))   # duplicate (slot, null, evi, frn)
+
+
+def test_creator_hash_float64_cast_matches_training(prep):
+    pr = make_prints(n=600)
+    big = np.uint64(2**63 + 12345)                     # not exactly representable in float64
+    pr["th"] = pr["th"].copy()
+    pr["th"][::7] = big
+    pr["th"][3::7] = np.uint64(2**63 + 12345 + 1)      # distinct uint64, same float64 as `big`
+    c = const()
+    r_u64 = run(prep, pr, c=c, ch=big, seg_end=None)
+    r_f64 = run(prep, pr, c=c, ch=float(big), seg_end=None)          # training: pandas float64 ch
+    assert r_u64.X.tobytes() == r_f64.X.tobytes()
+    i = rf.FEATS.index("cre_sell_post")
+    # the colliding hash is treated as the creator, as in training
+    pr_b = dict(pr)
+    pr_b["th"] = pr["th"].copy()
+    pr_b["th"][3::7] = np.uint64(5)
+    r_exact = run(prep, pr_b, c=c, ch=big, seg_end=None)
+    ib = rf.FEATS.index("cre_buy_post")
+    assert r_u64.X[-1, ib] + r_u64.X[-1, i] > r_exact.X[-1, ib] + r_exact.X[-1, i]
 
 
 def test_degenerate_inputs_return_none(prep):
