@@ -411,7 +411,26 @@ def test_mask_and_guarded_rows_need_a_grant_for_that_role():
 
 
 def test_migrate_sigs_from_rows():
-    rows = [{"mint": "M", "signature": "S"}, {"mint": "N"}, {"signature": "Z"}]
+    rows = [{"type": "migration", "mint": "M", "signature": "S"}, {"type": "pool_create", "mint": "P", "signature": "T"},
+            {"type": "create_pool", "mint": "Q", "signature": "U"}, {"type": "migration", "mint": "N"},
+            {"type": "migration", "signature": "Z"}]
+    assert oc.migrate_sigs_from(rows) == {"M": "S", "P": "T", "Q": "U"}
+
+
+def test_migrate_sigs_ignores_non_migration_rows():
+    rows = [{"type": "trade", "mint": "M", "signature": "X"}, {"type": "init_boost", "mint": "M", "signature": "Y"},
+            {"mint": "M", "signature": "W"}, {"type": "migration", "mint": "M", "signature": "S"}]
+    assert oc.migrate_sigs_from(rows) == {"M": "S"}
+
+
+def test_migrate_sigs_conflicting_signatures_refused():
+    rows = [{"type": "migration", "mint": "M", "signature": "S"}, {"type": "pool_create", "mint": "M", "signature": "S2"}]
+    with pytest.raises(oc.OctoberRefused):
+        oc.migrate_sigs_from(rows)
+
+
+def test_migrate_sigs_identical_duplicates_fine():
+    rows = [{"type": "migration", "mint": "M", "signature": "S"}, {"type": "create_pool", "mint": "M", "signature": "S"}]
     assert oc.migrate_sigs_from(rows) == {"M": "S"}
 
 

@@ -153,9 +153,26 @@ def _require_grant(role: str) -> None:
         raise OctoberRefused(f"no granted check_read for role={role} in this process (holds: {_LATCH or 'none'})")
 
 
+# Row types that identify a mint's migrate tx: observe/trade_decode.py emits kind "create_pool" (the pump_amm
+# create-pool event inside the migrate tx), and migrations/ rows carry type "migration" / "pool_create".
+# init_boost, post_complete_buy and trades share that tx but are not the identity row, so they are ignored here.
+_MIGRATE_SIG_TYPES = frozenset({"create_pool", "migration", "pool_create"})
+
+
 def migrate_sigs_from(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
-    """mint -> signature of its migrate tx, from migrations/ rows (mint, signature). Feeds `mask_row`'s s0 rule."""
-    return {r["mint"]: r["signature"] for r in rows if r.get("mint") and r.get("signature")}
+    """mint -> signature of its migrate tx, from migration / pool-create rows only (`_MIGRATE_SIG_TYPES`).
+    Other row types are ignored. Identical duplicates are fine; two different signatures for one mint raise
+    OctoberRefused. Feeds `mask_row`'s s0 rule."""
+    out: dict[str, str] = {}
+    for r in rows:
+        if r.get("type") not in _MIGRATE_SIG_TYPES:
+            continue
+        mint, sig = r.get("mint"), r.get("signature")
+        if not mint or not sig:
+            continue
+        if out.setdefault(mint, sig) != sig:
+            raise OctoberRefused(f"mint {mint!r} has two different migrate signatures")
+    return out
 
 
 def mask_row(role: str, row: Mapping[str, Any], migrate_sigs: Mapping[str, str] | None = None) -> dict[str, Any]:
