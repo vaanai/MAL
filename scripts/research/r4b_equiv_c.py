@@ -114,8 +114,11 @@ def harness_table(bk, Qx, Bx, ent, score_r, keep):
     for tag in ("13", "19"):
         e = ent[tag]
         pnl, fil, bad, xbad = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0, auto_stranded=False,
-                                     return_invalid=True, return_exit_invalid=True)
-        print("E-c part A", tag, "entry_invalid", int(bad.sum()), "exit_invalid", int(xbad.sum()), "of", len(bad))
+                                     return_invalid=True, return_exit_invalid=True, k_tol=None)     # part A reproduces the HARNESS stack: C8 (deciding-stack rule) is off here
+        print("E-c part A", tag, "entry_invalid", int(bad.sum()), "exit_invalid", int(xbad.sum()), "of", len(bad), "(C8 off: harness reproduction)")
+        cz = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0, auto_stranded=False,
+                          return_exit_cause=True)[-1]
+        print("E-c part A", tag, "INFO exit_invalid by cause with C8 on (not used in the table):", {k: int((cz == v).sum()) for k, v in (("C2", 2), ("C7", 7), ("C8", 8))})
         flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_REPORT)
         res[tag] = dict(pnl=pnl, fil=fil, flat=flat, press=press, c=c, p=p)
     e13, r13 = ent["13"], res["13"]
@@ -177,7 +180,7 @@ def deciding_cells(bk, Qx, Bx, ent, keep, rent, auto_stranded):
             nstr = int(cell["stranded"][km].sum())
             flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_DECIDING)
             for leg, x in (("flat", flat), ("press", press)):
-                s = B.book_stats(x, T0[km], mid[km], S, w0=W0, daylist=daylist, entry_invalid=cell["entry_invalid"][km], exit_invalid=cell["exit_invalid"][km])
+                s = B.book_stats(x, T0[km], mid[km], S, w0=W0, daylist=daylist, entry_invalid=cell["entry_invalid"][km], exit_invalid=cell["exit_invalid"][km], exit_cause=cell["exit_cause"][km])
                 s["intercept"] = c
                 s["mean_p_fills"] = float(p[fil].mean())
                 s["guard_share"] = float(1 - fil.mean())
@@ -290,6 +293,9 @@ def main(argv=None) -> int:
     print("PART B (VERIFY stack: send 505,000, rent paid 2,039,280, haircut; vs r4b-verify REPORT)")
     for r in rows:
         print(" ", json.dumps(r))
+    for ver in cells:
+        for cell_, st_ in cells[ver].items():
+            print("E-c part B exit_invalid", ver, "/".join(cell_), "entry_invalid", st_.get("entry_invalid"), "exit_invalid", st_.get("exit_invalid"), "by cause", st_.get("exit_invalid_by_cause"))
     print("detail dropped press 1.3:", json.dumps({k: v for k, v in cells["dropped"][("press", "13")].items()}, default=float))
     nr0 = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_DECIDING, auto_stranded=False)
     okC = True

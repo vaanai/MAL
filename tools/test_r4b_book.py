@@ -170,7 +170,7 @@ def test_fee_tiers():
 def test_round_trip_matches_hand_calc_all_stacks():
     S = 250_000_000.0
     Qe, Be, spot = 8e10, 3e15, 8e10 / 3e15
-    Qx, Bx = 8.2e10, 2.9e15
+    Qx, Bx = 8.2e10, 2.95e15      # Qx*Bx >= Qe*Be (C8)
     for send, rent, hi, ho in ((55_000, 0.0, 0.0, 0.0), (505_000, 2_039_280, 0.002608, 0.0016), (55_000, 2_039_280, 0.0, 0.0)):
         pnl, fil = B.round_trip(np.array([S]), np.array([Qe]), np.array([Be]), np.array([spot]), np.array([Qx]), np.array([Bx]), send, rent, hi, ho)
         want, wf = hand_round_trip(S, Qe, Be, spot, Qx, Bx, send, rent, hi, ho)
@@ -454,9 +454,7 @@ def test_exit_with_bx_not_above_tokens_is_invalid(Bx):
     # Be 3e14 at Qe ~ 97.6 SOL, stake 0.25 SOL: tokens ~ 7.6e11
     pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, Bx)
     tok = 3e14 * 0.25e9 * (1 - B.fee_ppm(_N, 3e14) / 1e6) / (_N + 0.25e9)
-    if Bx > tok:
-        assert not xi
-    else:
+    if not (Bx > tok):
         assert xi and st and not ei and pnl == _stranded_pnl()
 
 
@@ -464,7 +462,7 @@ def test_exit_tokens_equal_bx_is_invalid():
     net = 250e6 * (1 - B.fee_ppm(_N, 3e14) / 1e6)
     tok = 3e14 * net / (_N + net)
     assert _rt(_N, 3e14, _N, tok)[4]
-    assert not _rt(_N, 3e14, _N, tok * 3.0)[4]      # 1.001 x tok is now caught by the C7 real-quote bound
+    assert not _rt(_N, 3e14, _N, 3e14)[4]            # tok x 1.001 and 3 x tok are now caught by C7 / C8
 
 
 @pytest.mark.parametrize("Qx", [1e9, 17.4e9, 0.0, float("nan"), float("inf")])
@@ -527,7 +525,75 @@ def test_c7_boundary_follows_the_physical_bound():
     assert lo[4]
 
 
-def test_c7_larger_bx_cases_not_caught_by_c7_alone():
-    # Bx = 2x and 5x tokens: sell output Qa/2 and Qa/5 is below the real quote; C7 does not flag them (QP C8 ruling pending); documented, not asserted as wins
+def test_c7_larger_bx_cases_are_caught_by_c8_not_c7():
     for m in (2.0, 5.0):
-        assert not _rt(_N, 3e14, _N, m * _tok())[4]
+        assert _rt(_N, 3e14, _N, m * _tok())[4]
+        assert _cause(_N, 3e14, _N, m * _tok()) == 8                 # sell output Qa/m is under the real quote: C7 holds, C8 flags
+
+
+# ---- QP C8 ruling: K_TOL = 1e-3 on Qx*Bx vs Qe*Be (V on both sides), cause recorded
+def _cause(Qe, Be, Qx, Bx, spot=None, stake=250e6, **kw):
+    spot = _N / 3e14 if spot is None else spot
+    o = B.round_trip(np.array([stake]), np.array([Qe], float), np.array([Be], float), np.array([spot], float), np.array([Qx], float),
+                     np.array([Bx], float), 505_000, 0.0, return_exit_cause=True, **kw)
+    return int(o[-1][0])
+
+
+def test_k_tol_pinned():
+    assert B.F.K_TOL == 1e-3
+
+
+@pytest.mark.parametrize("ratio,flagged", [(1.0, False), (0.9995, False), (0.99905, False), (0.998, True), (0.853789, True), (1.3, False)])
+def test_c8_k_ratio(ratio, flagged):
+    # Bx = ratio x Be at Qx = Qe, so Qx*Bx / (Qe*Be) = ratio; Be large enough that tokens < Bx and the real-quote bound holds
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, ratio * 3e14)
+    assert xi == flagged
+    if flagged:
+        assert st and not ei and pnl == _stranded_pnl() and _cause(_N, 3e14, _N, ratio * 3e14) == 8
+    else:
+        assert _cause(_N, 3e14, _N, ratio * 3e14) == 0 and pnl != _stranded_pnl()
+
+
+def test_c8_off_with_k_tol_none():
+    assert not _rt_k(None)
+
+
+def _rt_k(k):
+    o = B.round_trip(np.array([250e6]), np.array([_N]), np.array([3e14]), np.array([_N / 3e14]), np.array([_N]), np.array([0.5 * 3e14]), 505_000, 0.0,
+                     return_exit_invalid=True, k_tol=k)
+    return bool(o[-1][0])
+
+
+def test_c8_on_by_default():
+    assert _rt_k(B.F.K_TOL)
+
+
+def test_causes_c2_c7_c8_recorded_and_precedence():
+    tok = _tok()
+    assert _cause(_N, 3e14, _N, 0.5 * tok) == 2                # tokens >= Bx (also fails C8): C2 first
+    assert _cause(_N, 3e14, 1e9, 3e14) == 2                    # Qx below V_LO
+    assert _cause(_N, 3e14, _N, 1.01 * tok) == 7               # real-quote bound (also fails C8): C7 before C8
+    assert _cause(_N, 3e14, _N, 2 * tok) == 8
+    assert _cause(_N, 3e14, _N, 3e14) == 0
+
+
+def test_guarded_and_entry_invalid_never_exit_invalid():
+    for args in ((_N, 3e14, _N, 1.0), (_N, 3e14, _N, 0.5 * 3e14)):
+        pnl, fil, st, ei, xi = _rt(*args, spot=_N / 3e14 / 1.2)           # guarded
+        assert not fil and not xi and not st and not ei
+        assert _cause(*args, spot=_N / 3e14 / 1.2) == 0
+    for Qe in (1e9, float("nan")):
+        pnl, fil, st, ei, xi = _rt(Qe, 3e14, _N, 1.0)
+        assert ei and not xi and _cause(Qe, 3e14, _N, 1.0) == 0
+
+
+def test_book_stats_exit_invalid_by_cause():
+    T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800, 1_700_259_200])
+    o = B.book_stats(np.array([1e6, -2e6, 3e6, 1e6]), T0, np.arange(4), w0=1_700_000_000, exit_cause=np.array([0, 2, 8, 8], np.int8))
+    assert o["exit_invalid_by_cause"] == {"C2": 1, "C7": 0, "C8": 2}
+
+
+def test_price_cell_carries_exit_cause():
+    n = 2
+    c = B.price_cell(np.full(n, _N), np.full(n, 3e14), np.full(n, _N / 3e14), np.full(n, _N), np.array([3e14, 0.5 * 3e14]), np.zeros(n), np.zeros(n))
+    assert c["exit_cause"].tolist() == [0, 8] and c["exit_invalid"].tolist() == [False, True]

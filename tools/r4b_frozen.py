@@ -133,3 +133,6 @@ def file_sha256(path: str) -> str:
 
 # Lower bound of the member-pool virtual SOL reserve V (lamports); equals tools/r4b_layout.V_LO. Q includes V, so Q < V_LO is a negative real quote reserve.
 V_LO = 17_500_000_000
+
+# C8 (QP ruling, PR #680): exit_invalid when Qx*Bx < Qe*Be*(1 - K_TOL) on a bought valid-entry trip (V on both sides, float64).
+K_TOL = 1e-3
