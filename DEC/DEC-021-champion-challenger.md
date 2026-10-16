@@ -156,3 +156,11 @@ Drafted 2026-10-10 for PR #542. It takes effect on merge only if [DEC-029](DEC-0
 ## Amendment 5 (2026-10-15): a §1 carve-out for the F1 release of forward-1002 D0 and D1
 
 This amendment carries the owner's OK of 2026-10-12 ~18:19Z (MiScusi notebook n_OLnV5a4MFslEHw) on F1 of the October data memo. It was written outcome-blind, and no hour was read to write it. §1's sentence "No forward-walk hour is in any derivation" has one exception: domains D0 and D1 of the Forward walk row (forward-1002 and its forward-1002ev copy). They are released by the HOLDOUT_LEDGER changelog entry of 2026-10-15, under that entry's bright lines and code masks, and only from the instant it takes effect. A derivation on them is exploration. Every input view is listed with its sha256, and every configuration is logged in `data/tries.jsonl`. A candidate from such a derivation reaches registration only through §2, by a PASS on a reserved, unread block. Released hours never confirm. This carve-out covers no other domain, no other forward-walk hour and no hour of the Forward walk 2 row. §2, §3, §6, §8, every alpha slot, the promotion gate, and DEC-016 Am.2 and Am.3 are unchanged.
+
+## Amendment 6 (draft 2026-10-16): a fifth alpha slot for the walk-2 push family, under DEC-030 only
+
+Drafted 2026-10-16. It takes effect on merge only if [DEC-030](DEC-030-walk2-push-slot.md) carries the owner's dated line, with quant-proof OK on its final head. No hour was read to write it.
+
+- **Section 8 (cumulative error).** Slots 1 to 4 are EXP-022, EXP-024, EXP-025 and EXP-026 (Amendments 1 to 4). **Slot 5, alpha 0.025, is the push family of DEC-030**: at most 3 books pre-registered on walk 2 hours, Holm across them on the day-level p (larger leg p decides), the CI90 clause unadjusted on top. The overall rate across the promotion-eligible October families is then bounded by 0.125, not 0.10. A sixth slot needs a new DEC.
+- **Section 2 (route, as the owner's line chooses).** Under R1, push-family books need no backward-block PASS. Under R2, this bullet is removed before merge and section 2 applies to them unchanged.
+- **Unchanged.** The other four slots, the promotion gate, and sections 3, 6 and 7 as Amendments 1 to 4 left them.
