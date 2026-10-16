@@ -7,8 +7,7 @@ range [H0, H1) and emits exactly the intermediates of l3's `01_extract.py` / `02
     meta.parquet         mid, mint, pool, mslot, mbt, s0, v, day, pda_match        (members only; mid = row_number over (mbt, mint) - 1)
     creators.parquet     mid, ch (DuckDB hash(creator)), cbt, cslot
     mkt_creates.parquet  mnt, n_cr
-    ut/<hour>.parquet    mid, slot, txi, evi, bt, isbuy, sol, tok, q, b, th, vq   ordered (mid, slot, txi, evi)
-    bond/<hour>.parquet  mid, slot, bt, isbuy, sol, th
+    ut/<hour>.parquet    mid, slot, txi, evi, bt, isbuy, sol, tok, q, b, th, vq, frn   ordered (mid, slot, txi, evi, frn)    bond/<hour>.parquet  mid, slot, bt, isbuy, sol, th                            (ordered like ut, by the full key)
     clock/<hour>.parquet bt, smin, smax                                           (all trade rows, both venues)
     mkt/<hour>.parquet   mnt, n_ps, v_ps, n_bd, v_bd
     stats.json           the structure numbers for the precount (no outcome, no P&L)
@@ -27,13 +26,18 @@ Meta (PLAN section 1)
                 afterwards, no forward-fill).
   V0            `--v-source event`: the event V (`virtual_quote_reserves`) of that s0 print. `--v-source static_map`: the {pool: V} json (pool_v_0909.json),
                 EXPLORATION REPLAY ONLY (that tape has no migration event and no event V), and then ut.vq is the map's V for every row of the mint.
-  s0 window     7,300 slots is the frozen value. At 200 ms slots that is about 1,460 s, vs about 2,200-2,900 s on the (slower-slot) training tape: a slot-era
+  s0 window     7,300 slots is the frozen value. At 200 ms slots that is about 1,460 s, vs about 1,940-3,040 s on the training tape (265-416 ms slots): a slot-era
                 difference, disclosed, value kept.
   member        not mayhem (a missing create is kept: its create-derived constants are NaN downstream), s0 exists, V0 in [17.5e9, 17.7e9], and in event mode
                 pda_match. A missing V0 is NOT a member here; the count is in stats (`v0_missing`).
 
 Refusals (`LayoutRefused`, all before any intermediate is written): an hour not sealed / not OK in verify.jsonl under `exp012_forward.hour_problems(strict)`;
 a bad line (NUL / not JSON / not an object); a parsed row count that differs from verify.jsonl content[sub].rows; a missing migrations file.
+
+ut.frn (BIGINT NOT NULL) is the 0-based line number of the print within its hour file, as l3's 01d_extract_frn.py writes it; 02_build sorts
+`mid, slot, txi, evi, coalesce(frn,0)` and `r4b_features.forward_order` needs it. Trade window: besides [H0, H1) the adapter also loads the trades of the
+two hours after H1 when they are sealed (as training did), so a token completing near the end keeps its first print; those hours must pass the same checks
+(sealed but bad => refusal), unsealed ones are skipped; `trade_extra_hours` in stats lists those used. ut/bond/clock/mkt files are written for them too.
 
 No sealed path is special-cased here: the read tool owns the allowlist. Needs duckdb (/data/mal/audit-1008/venv); the PDA needs solders (/data/mal/venv), or
 pass `canonical_fn`.
@@ -59,8 +63,8 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
 V0_MISSING_REFUSE_SHARE = 0.02  # the precount refuses if any read day has a larger share of candidate PDA pools with a missing V0 (the EXP pins it)
 WINDOW_SLOTS = 7300  # s0 = first PDA-pool print in [mslot, mslot + 7300)
-S0_WINDOW_NOTE = ("the s0 window of 7,300 slots is about 1,460 s at 200 ms slots, vs about 2,200-2,900 s on the training tape "
-                  "(slot-era difference; frozen value kept)")
+S0_WINDOW_NOTE = ("the s0 window of 7,300 slots is about 1,460 s at 200 ms, vs about 1,940-3,040 s on the training tape "
+                  "(265-416 ms slots; slot-era difference; frozen value kept)")
 HORIZON_S = 52 * 3600 + 1800  # ut keeps prints with bt <= mbt + 52h + 1800 (l3 01_extract)
 V_SOURCES = ("event", "static_map")
 SUBS = ("trades", "creates", "migrations")
@@ -158,8 +162,10 @@ def _read_json_sql(path: Path, cols: Mapping[str, str]) -> str:
     return f"read_json('{path}', format='newline_delimited', columns={{{spec}}}, maximum_object_size=67108864)"
 
 
-def _load(con: Any, table: str, path: Path, cols: Mapping[str, str], want_rows: int, label: str, create: bool) -> None:
+def _load(con: Any, table: str, path: Path, cols: Mapping[str, str], want_rows: int, label: str, create: bool, hix: int | None = None) -> None:
     src = _read_json_sql(path, cols)
+    if hix is not None:  # add the file row number (hour index * 1e10 + line ordinal)
+        src = f"(select {hix} * 10000000000 + (row_number() over () - 1) as frn, * from {src})"
     try:
         if create:
             con.sql(f"create or replace temp table {table} as select * from {src}")
@@ -252,6 +258,17 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     hours = hour_range(h0, h1)
     files = check_hours(walk_dir, hours, problems_fn, verify)
     table = verify if verify is not None else ef.verified_hours(walk_dir, strict_bad_lines=True)
+    sealed = ef._sealed_hours(walk_dir)
+    extras: list[str] = []
+    for k in (1, 2):  # training loaded 2 trade hours past the last graduation hour
+        eh = ef.hour_key(ef.hour_dt(h1) + timedelta(hours=k - 1))
+        if eh in sealed or (verify is not None and eh in verify):
+            extras.append(eh)
+        else:
+            break
+    if extras:
+        files.update(check_hours(walk_dir, extras, problems_fn, verify))
+    trade_hours = hours + extras
     canon = canonical_fn or default_canonical()
     for sub in ("ut", "bond", "clock", "mkt"):
         (out_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -264,7 +281,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
 
     # ---- pass 1a: migrations and creates of all hours
     for i, h in enumerate(hours):
-        _load(con, "mig", files[h]["migrations"], MIG_COLS, 0, h, create=(i == 0))
+        _load(con, "mig", files[h]["migrations"], MIG_COLS, 0, h, create=(i == 0), hix=i)
         _load(con, "cre_raw", files[h]["creates"], CREATE_COLS, 0, h, create=(i == 0))
     # per-file parsed counts (DuckDB must agree with the line count, i.e. no line was silently dropped)
     for h in hours:
@@ -275,8 +292,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
             if got != want:
                 raise LayoutRefused(f"hour {h}: {sub} parsed {got} rows but verify.jsonl says rows={want}")
     con.sql("""create table comp as select mint, min(slot) mslot, min(block_time) mbt from mig where type='complete' and mint is not null group by 1""")
-    con.sql("""create table mev as select mint, arg_min(pool, (slot, coalesce(tx_index,0), coalesce(event_index,0))) pool,
-               arg_min(quote_mint, (slot, coalesce(tx_index,0), coalesce(event_index,0))) quote_mint from mig where type='migration' and mint is not null group by 1""")
+    con.sql("""create table mev as select mint, arg_min(pool, (slot, coalesce(tx_index,-1), coalesce(event_index,-1), frn)) pool,
+               arg_min(quote_mint, (slot, coalesce(tx_index,-1), coalesce(event_index,-1), frn)) quote_mint from mig where type='migration' and mint is not null group by 1""")
     con.sql("""create table cre as select mint, arg_min(is_mayhem_mode, slot) mayhem, any_value(hash(creator)) ch, min(block_time) cbt, min(slot) cslot
                from cre_raw where coalesce(type,'create')='create' and mint is not null group by 1""")
 
@@ -295,9 +312,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
 
     # ---- pass 1b: per hour, row-count check, clock + mkt output, s0 candidates
     con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, vq bigint, bt bigint, pool varchar)")
-    vq_null_rows = 0
     n_trade_rows = 0
-    for hix, h in enumerate(hours):
+    for hix, h in enumerate(trade_hours):
         _load_trades(con, files[h]["trades"], hix, h)
         got = con.sql("select count(*) from t").fetchone()[0]
         want = _hour_rows(files, table, h, "trades")
@@ -341,17 +357,17 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     # ---- pass 2: ut and bond per hour
     vq_col = "t.virtual_quote_reserves" if v_source == "event" else "m.v"
     try:
-        for hix, h in enumerate(hours):
+        for hix, h in enumerate(trade_hours):
             _load_trades(con, files[h]["trades"], hix, h)
             o = f"{out_dir}/ut/{h}.parquet"
             con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt, (t.side='buy') isbuy,
-                        t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq
+                        t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq, (t.frn - {hix} * 10000000000)::bigint frn
                         from t join m on t.pool=m.pool and t.mint=m.mint
                         where t.venue='pumpswap' and t.slot>=m.s0 and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S})
                         order by m.mid, t.slot, txi, evi, t.frn) to '{o}' (format parquet)""")
             con.sql(f"""copy (select m.mid, t.slot, t.block_time bt, (t.side='buy') isbuy, t.sol_lamports sol, hash(t.trader) th
                         from t join m on t.mint=m.mint where t.venue='pump_bonding' and t.slot < m.mslot + 1
-                        order by m.mid, t.slot, t.frn) to '{out_dir}/bond/{h}.parquet' (format parquet)""")
+                        order by m.mid, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.frn) to '{out_dir}/bond/{h}.parquet' (format parquet)""")
             if v_source == "event":
                 n_null = con.sql(f"select count(*) from read_parquet('{o}') where vq is null").fetchone()[0]
                 if n_null:
@@ -363,7 +379,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         raise
 
     tie = _txi_stats(con, out_dir)
-    stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, 0, duckdb.__version__)
+    stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, duckdb.__version__)
+    stats["trade_extra_hours"] = extras
     stats.update(tie)
     (out_dir / "stats.json").write_text(json.dumps(stats, sort_keys=True, indent=1) + "\n", encoding="utf-8")
     con.close()
@@ -379,7 +396,7 @@ def _txi_stats(con: Any, out_dir: Path) -> dict[str, int]:
     return {"null_txi_tie_groups": int(tie), "mixed_null_txi_slots": int(mixed)}
 
 
-def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_pda_err: int, vq_null_rows: int, duckdb_version: str) -> dict[str, Any]:
+def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_pda_err: int, duckdb_version: str) -> dict[str, Any]:
     """Structure numbers only (counts and shares). No outcome, no price."""
     q = lambda s: con.sql(s).fetchone()[0]  # noqa: E731
     n_comp = q("select count(*) from m0")
@@ -404,7 +421,7 @@ def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_p
         "pda_errors": n_pda_err, "no_migration_event": n_nomig, "non_wsol_quote": n_nonwsol,
         "pda_match": n_match, "pda_match_share": (n_match / n_non) if n_non else None,
         "with_s0": n_s0, "v0_missing": n_v0_missing, "v0_in_band": n_band, "v0_band_share": (n_band / (n_s0 - n_v0_missing)) if n_s0 - n_v0_missing else None,
-        "members": q("select count(*) from m"), "members_per_day": per_day, "vq_null_rows": vq_null_rows,
+        "members": q("select count(*) from m"), "members_per_day": per_day,
     }
 
 

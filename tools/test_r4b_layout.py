@@ -208,7 +208,7 @@ def test_ut_filters_and_order(walk, tmp_path):
     allrows = q(f"select mid, slot, txi, evi from '{out}/ut/{H3}.parquet'")
     assert allrows == sorted(allrows)
     cols = [r[0] for r in q(f"describe select * from '{out}/ut/{H3}.parquet'")]
-    assert cols == ["mid", "slot", "txi", "evi", "bt", "isbuy", "sol", "tok", "q", "b", "th", "vq"]
+    assert cols == ["mid", "slot", "txi", "evi", "bt", "isbuy", "sol", "tok", "q", "b", "th", "vq", "frn"]
 
 
 def test_horizon_drops_late_prints(tmp_path):
@@ -585,3 +585,76 @@ def test_stats_carry_s0_window_note(walk, tmp_path):
     st = build(walk, tmp_path)
     assert st["s0_window_note"] == rl.S0_WINDOW_NOTE and "1,460 s" in st["s0_window_note"]
     assert json.loads((tmp_path / "out" / "stats.json").read_text())["s0_window_note"] == rl.S0_WINDOW_NOTE
+
+
+def test_ut_frn_is_line_ordinal_forward_order_identity_and_02build_resort(tmp_path):
+    import numpy as np
+
+    from tools.r4b_features import forward_order
+
+    ms = S + 100
+    rows = [(ms + 20, 4, 1), (ms + 20, None, 0), (ms + 20, None, 0), (ms + 20, 2, 5), (ms + 20, None, 0), (ms + 19, 9, 9), (ms + 20, 4, 0)]
+    sc = scenario()
+    sc[H3]["trades"] += [trade("MA", sl, tx, ev, sol=1000 + i) for i, (sl, tx, ev) in enumerate(rows)]
+    walk = make_walk(tmp_path / "w", sc)
+    build(walk, tmp_path)
+    ut = f"{tmp_path}/out/ut/{H3}.parquet"
+    ordinal = {1000 + i: len([r for r in sc[H3]["trades"][:sc[H3]["trades"].index(r_)] if r.get("venue") == "pumpswap" or True]) for i, r_ in
+               enumerate(sc[H3]["trades"][-len(rows):])}
+    got = q(f"select sol, frn from read_parquet('{ut}') where sol >= 1000 and sol < 1100 and mid = 0")
+    assert all(f == ordinal[sol] for sol, f in got)  # frn = 0-based line number in the hour file
+    assert q(f"select count(*) from read_parquet('{ut}') where frn is null") == [(0,)]
+    for mid in {r[0] for r in q(f"select distinct mid from read_parquet('{ut}')")}:
+        cols = q(f"select slot, txi, evi, frn from read_parquet('{ut}') where mid = {mid}")
+        a = np.array(cols, dtype=np.int64)
+        assert list(forward_order(a[:, 0], a[:, 1], a[:, 2], a[:, 3])) == list(range(len(a)))  # identity on the output order
+    # 02_build.py:23-style re-sort keeps the file order on the null-tx tie
+    resorted = q(f"select sol from read_parquet('{ut}') where mid = 0 order by mid, slot, txi, evi, coalesce(frn,0)")
+    assert resorted == q(f"select sol from read_parquet('{ut}') where mid = 0")
+    tie = [sol for (sol,) in resorted if sol in (1001, 1002, 1004)]
+    assert tie == [1001, 1002, 1004]
+
+
+def test_migration_event_pick_uses_frn_on_null_tx_tie(tmp_path):
+    def sc_with(order):
+        sc = scenario()
+        ms = S + 1300
+        evs = {"good": migration("MP", ms, pda_of("MP"), tx=None), "bad": migration("MP", ms, "OTHER_P", tx=None)}
+        sc[H3]["migrations"] += [complete("MP", ms)] + [evs[k] for k in order]
+        sc[H3]["creates"] += [create("MP")]
+        sc[H3]["trades"] += [trade("MP", ms + 3, 1, 0)]
+        return sc
+
+    s1 = build(make_walk(tmp_path / "w1", sc_with(["good", "bad"])), tmp_path, "o1")
+    s2 = build(make_walk(tmp_path / "w2", sc_with(["bad", "good"])), tmp_path, "o2")
+    assert s1["members"] == 8 and s2["members"] == 7  # the first event in file order decides
+
+
+def test_bond_rows_sorted_by_full_key(tmp_path):
+    sc = scenario()
+    ms = S + 100
+    sc[H3]["trades"] += [trade("MA", ms - 5, 9, 0, venue="pump_bonding", trader="B8", sol=2), trade("MA", ms - 5, 3, 1, venue="pump_bonding", trader="B8", sol=3),
+                         trade("MA", ms - 5, 3, 0, venue="pump_bonding", trader="B8", sol=4)]
+    walk = make_walk(tmp_path / "w", sc)
+    build(walk, tmp_path)
+    got = [r[0] for r in q(f"select sol from '{tmp_path}/out/bond/{H3}.parquet' where mid = 0 and slot = {ms - 5}")]
+    assert got == [4, 3, 2]  # (tx 3, ev 0), (tx 3, ev 1), (tx 9)
+
+
+def test_no_vq_null_rows_stat(walk, tmp_path):
+    assert "vq_null_rows" not in build(walk, tmp_path)
+
+
+def test_trade_window_extends_two_hours_past_h1(tmp_path):
+    """MG's only PDA print is in the NEXT hour (H4); a build ending at H4 still sees it when H4 is sealed; unsealed => skipped; sealed-but-bad => refusal."""
+    walk = make_walk(tmp_path / "w", scenario())
+    st = rl.build(walk, H3, H4, tmp_path / "o1", canonical_fn=pda_of)
+    assert st["trade_extra_hours"] == [H4]
+    assert "MG" in {r[0] for r in q(f"select mint from '{tmp_path}/o1/meta.parquet'")}
+    assert (tmp_path / "o1" / "ut" / f"{H4}.parquet").exists()
+    walk2 = make_walk(tmp_path / "w2", scenario(), unsealed=(H4,))
+    st2 = rl.build(walk2, H3, H4, tmp_path / "o2", canonical_fn=pda_of)
+    assert st2["trade_extra_hours"] == [] and "MG" not in {r[0] for r in q(f"select mint from '{tmp_path}/o2/meta.parquet'")}
+    walk3 = make_walk(tmp_path / "w3", scenario(), rows_delta={(H4, "trades"): 1})
+    with pytest.raises(rl.LayoutRefused, match="rows="):
+        rl.build(walk3, H3, H4, tmp_path / "o3", canonical_fn=pda_of)
