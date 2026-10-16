@@ -430,3 +430,31 @@ def test_asof_equals_frozen_on_healthy_mint(prep):
     a = run(prep, pr, seg_end=None)
     b = run(prep, pr, seg_end=None, mint_filters="asof")
     assert a.X.tobytes() == b.X.tobytes() and np.array_equal(a.I, b.I)
+
+
+def test_asof_short_windows_ignore_a_later_null_block_time_print(prep):
+    pr = make_prints(n=300, gap=100, first=30)
+    base = run(prep, pr, seg_end=None)
+    tsl = rf.FEATS.index("t_since_last")
+    cand = np.nonzero(base.X[:, tsl] > 60)[0]              # marks whose last print is older than 60 s (btm lags the mark)
+    assert len(cand) > 5
+    i = int(cand[len(cand) // 2])
+    T, sd = int(base.I[i, 1]), int(base.I[i, 2])
+    k = int(np.searchsorted(pr["slot"], sd))               # prints before sd
+    # same tape plus one print AT slot sd whose block_time is null (carried as NaN)
+    ins = {kk: np.insert(v.astype(float) if kk == "bt" else v, k, v[k - 1]) for kk, v in pr.items()}
+    ins["slot"][k] = sd
+    ins["bt"][k] = np.nan
+    ins["q"][k] = ins["q"][k] * 1.5                          # distinct price, so a read of this print is visible
+    cut = {kk: v[:k] for kk, v in pr.items()}              # tape cut at the mark
+    ref = run(prep, cut, seg_end=None)
+    ri = int(np.nonzero(ref.I[:, 1] == T)[0][0])
+    fro = run(prep, ins, seg_end=None)
+    aso = run(prep, ins, seg_end=None, mint_filters="asof")
+    fi = int(np.nonzero(fro.I[:, 1] == T)[0][0])
+    ai = int(np.nonzero(aso.I[:, 1] == T)[0][0])
+    # asof row at T equals the row from the tape cut at T, for all 63 features
+    assert aso.X[ai].tobytes() == ref.X[ri].tobytes()
+    # frozen reads the later print through the short windows (the lookahead being fixed)
+    changed = [rf.FEATS[c] for c in range(63) if fro.X[fi, c].tobytes() != ref.X[ri, c].tobytes()]
+    assert any(c.startswith(("ret_", "np_", "rv_", "bv_", "sv_")) for c in changed), changed

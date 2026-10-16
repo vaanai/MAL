@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Report-only: impact of mint_filters="asof" vs "frozen" on exploration l3 decisions at hour marks (T % 3600 == 0).
+"""Report-only: impact of mint_filters="asof" vs "frozen" on exploration l3 decisions, on the full 2-min grid and at hour marks.
 
-Frozen rows come from the stored l3 feat/<day>.npz (the training/fixture rule). The frozen filter drops a mint at every mark if its whole
-tape has < 3 prints or any reserve state (pre-trade, or derived after the last print) is <= 0. The asof rule drops rows per mark instead.
-Relation used here (also unit-tested in tools/test_r4b_features.py):
-  * mints that pass the frozen filter: asof rows = frozen rows with np_all >= 3 (rows with < 3 prints before sd are removed);
-  * mints the frozen filter drops: asof rows are produced by running tools.r4b_features.mint_features(mint_filters="asof") on their prints
-    (the frozen run is asserted to return None for them).
-Rows common to both sets have identical X, hence identical scores: max |delta bag| over common rows is 0 by construction. The informative
-numbers are the rows added/removed, their scores, and the per-mark top-10 membership changes. The boosters were trained on these days
-(in-sample), so this is a sensitivity read, not evidence.
+Frozen rows come from the stored l3 feat/<day>.npz (the training/fixture rule). The frozen filter drops a mint at every mark if its whole tape
+has < 3 prints or any pre-trade reserve state, or the derived state after the LAST print, is <= 0. The asof rule drops rows per mark: >= 3
+prints before sd(T), no pre-trade state <= 0 and the derived post-state of the last print before sd(T) > 0; it also clamps the look-back
+windows to the prints before sd (see tools/r4b_features.py).
+
+Affected-mint set S = mints with any pre-trade state <= 0, or any derived post-state (of ANY print, not only the last) <= 0, or with a null block_time print (the window clamp), or dropped by the
+frozen filter. For S both modes are run through tools.r4b_features.mint_features on the mint's prints (the frozen run is checked against the
+stored rows). For every other mint: asof rows = stored frozen rows with np_all >= 3 (the only way a clean mint loses a row).
+Rows present in both sets are not assumed identical here: the clamp touches only marks whose next print has a null block_time, and the common
+rows' X is compared for the hour marks of S mints. The boosters were trained on these days (in-sample): a sensitivity read, not evidence.
 
   systemd-run --user --scope -q -p MemoryMax=20G -p MemorySwapMax=0 nice -n 10 timeout 1800 \
       /data/mal/c1nf-parity-venv/bin/python -I scripts/research/r4b_asof_filters_impact.py [out.json]
@@ -49,6 +50,10 @@ def bag(boosters, X):
     return np.mean([b.predict(X.astype(np.float64)) for b in boosters], axis=0)
 
 
+def keyset(I):
+    return set(zip(I[:, 0].tolist(), I[:, 1].tolist()))
+
+
 def main():
     import duckdb
     import lightgbm as lgb
@@ -59,37 +64,38 @@ def main():
     mcn = pd.read_pickle(L3 / "work" / "mintconst.pkl")
     c.register("meta", mcn[["mid", "v"]])
     ut = f"read_parquet('{L3}/ut/2026-0*.parquet', union_by_name=true)"
-    st = c.sql(f"""select u.mid, count(*) n, bool_or(u.q + m.v <= 0 or u.b <= 0) anybad,
+    postq = "case when u.isbuy then u.q + u.sol * (1 - 0.0125) else u.q - u.sol / (1 - 0.0125) end + m.v"
+    postb = "case when u.isbuy then u.b - u.tok else u.b + u.tok end"
+    st = c.sql(f"""select u.mid, count(*) n, bool_or(u.q + m.v <= 0 or u.b <= 0) anypre,
+        bool_or({postq} <= 0 or {postb} <= 0) anypost, sum((({postq}) <= 0 or ({postb}) <= 0)::int) npost, bool_or(u.bt is null) anynull,
         arg_max([u.isbuy::double, u.sol::double, u.tok::double, u.q::double, u.b::double], [u.slot, u.txi, u.evi, coalesce(u.frn, 0)]) lastrow
         from {ut} u join meta m using(mid) group by 1""").fetchall()
-    bad = {}
-    for mid, n, anybad, last in st:
-        lb = False
-        if n >= 3 and not anybad:
-            ib, so, tk, q, b = last
-            qL = q + so * (1 - 0.0125) if ib else q - so / (1 - 0.0125)
-            bL = b - tk if ib else b + tk
-            v = float(mcn.v[mid])
-            lb = (qL + v <= 0) or (bL <= 0)
-        if n < 3 or anybad or lb:
-            bad[int(mid)] = int(n)
-    print("min prints per mint", min(r[1] for r in st), "mints with n<5:", sum(1 for r in st if r[1] < 5), flush=True)
-    print("mints with prints", len(st), "frozen-dropped mints", len(bad), "of which n<3:", sum(1 for n in bad.values() if n < 3), flush=True)
+    S = {}
+    n_post_prints = 0
+    n_null = 0
+    for mid, n, anypre, anypost, npost, anynull, last in st:
+        n_null += int(bool(anynull))
+        n_post_prints += int(npost or 0)
+        if n < 3 or anypre or anypost or anynull:
+            S[int(mid)] = int(n)
+    print("mints with prints", len(st), "min prints", min(r[1] for r in st), "| affected mints S:", len(S),
+          "| prints with derived post-state <= 0:", n_post_prints, flush=True)
 
-    # frozen rows (hour marks)
-    Xs, Is = [], []
+    # stored frozen rows, full grid (I and np_all) and hour-mark X
+    n_all = rf.FEATS.index("np_all")
+    Is, Ns, XH, IH = [], [], [], []
     for f in sorted((L3 / "feat").glob("*.npz")):
         z = np.load(f, allow_pickle=True)
+        Is.append(z["I"])
+        Ns.append(z["X"][:, n_all].copy())
         sel = z["I"][:, 1] % 3600 == 0
-        Xs.append(z["X"][sel])
-        Is.append(z["I"][sel])
-    XF, IF = np.concatenate(Xs), np.concatenate(Is)
-    assert not (set(IF[:, 0].tolist()) & set(bad)), "a frozen-dropped mint has frozen rows"
-    n_all = rf.FEATS.index("np_all")
-    removed = XF[:, n_all] < 3
-    removed_mints = np.unique(IF[removed, 0])
+        XH.append(z["X"][sel])
+        IH.append(z["I"][sel])
+    IG, NG = np.concatenate(Is), np.concatenate(Ns)
+    XH, IH = np.concatenate(XH), np.concatenate(IH)
+    inS = np.isin(IG[:, 0], list(S))
+    inSH = np.isin(IH[:, 0], list(S))
 
-    # asof rows for frozen-dropped mints
     mk = np.load(L3 / "work" / "mkt.npz")
     prep = rf.build_prep(np.load(L3 / "work" / "clock_bt.npy"), np.load(L3 / "work" / "clock_slot.npy"), mk["mnt"],
                          {k: mk[k] for k in ("n_ps", "v_ps", "n_bd", "v_bd", "n_cr")}, gr=mcn.mbt.values.astype(np.int64))
@@ -97,17 +103,13 @@ def main():
     def f_or_nan(x):
         return np.nan if pd.isna(x) else float(x)
 
-    AX, AI = [], []
-    cand = [m for m, n in bad.items() if n >= 3]
-    ids = ",".join(str(m) for m in cand)
-    if cand:
-        U = c.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th from {ut} where mid in ({ids}) order by mid, slot, txi, evi, coalesce(frn, 0)").fetchnumpy()
-        U = {k: np.asarray(v) for k, v in U.items()}
-    else:
-        U = {"mid": np.zeros(0, np.int64)}
-    order = sorted(cand)
+    order = sorted(S)
+    ids = ",".join(str(m) for m in order)
+    U = c.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th from {ut} where mid in ({ids}) order by mid, slot, txi, evi, coalesce(frn, 0)").fetchnumpy()
+    U = {k: np.asarray(v) for k, v in U.items()}
     ends = np.searchsorted(U["mid"], order, side="right")
     starts = np.searchsorted(U["mid"], order, side="left")
+    FI, FX, AI, AX = [], [], [], []
     for mid, a, b in zip(order, starts, ends):
         r = mcn.loc[mid]
         se = seg_end_of(int(r.mbt))
@@ -116,28 +118,46 @@ def main():
         const = rf.MintConst(mid=mid, mbt=int(r.mbt), mslot=int(r.mslot), s0=int(r.s0), v=float(r.v), cbt=f_or_nan(r.cbt), has_creator=not pd.isna(r.ch),
                              nb=f_or_nan(r.nb), ntr=f_or_nan(r.ntr), bbuy=f_or_nan(r.bbuy), bsell=f_or_nan(r.bsell), cre_sell=f_or_nan(r.cre_sell))
         args = (prep, const, None if pd.isna(r.ch) else r.ch, *(U[k][a:b] for k in ("slot", "bt", "isbuy", "sol", "tok", "q", "b", "th")))
-        assert rf.mint_features(*args, seg_end=se) is None, mid
-        res = rf.mint_features(*args, seg_end=se, mint_filters="asof")
-        if res is None:
-            continue
-        sel = res.I[:, 1] % 3600 == 0
-        if sel.any():
-            AX.append(res.X[sel])
-            AI.append(res.I[sel])
-    XA = np.concatenate(AX) if AX else np.zeros((0, 63), np.float32)
-    IA = np.concatenate(AI) if AI else np.zeros((0, 3), np.int64)
-    added_mints = np.unique(IA[:, 0])
+        for mode, oi, ox in (("frozen", FI, FX), ("asof", AI, AX)):
+            res = rf.mint_features(*args, seg_end=se, mint_filters=mode)
+            if res is not None:
+                oi.append(res.I)
+                ox.append(res.X)
+    cat = lambda L, w: np.concatenate(L) if L else np.zeros((0, w), np.int64 if w == 3 else np.float32)   # noqa: E731
+    FIs, FXs, AIs, AXs = cat(FI, 3), cat(FX, 63), cat(AI, 3), cat(AX, 63)
+    # the frozen run on S mints must reproduce the stored frozen rows (key set)
+    assert keyset(FIs) == keyset(IG[inS]), "frozen re-run of S mints differs from stored rows"
 
+    # ---- sets on the full grid -----------------------------------------------------------------------------------------------------
+    keepG = ~inS & (NG >= 3)
+    removed_clean = ~inS & (NG < 3)
+    I_f = IG                                                       # frozen full grid
+    I_a = np.concatenate([IG[keepG], AIs])                         # asof full grid
+    kf, ka = keyset(I_f), keyset(I_a)
+    only_f, only_a = kf - ka, ka - kf
+
+    def split(keys):
+        hr = {k for k in keys if k[1] % 3600 == 0}
+        return len(keys), len(hr)
+
+    # ---- hour marks: scores and top-10 ---------------------------------------------------------------------------------------------
+    hF = FIs[:, 1] % 3600 == 0
+    hA = AIs[:, 1] % 3600 == 0
+    keepH = ~inSH & (XH[:, n_all] >= 3)
+    X_f, I_f_h = XH, IH
+    X_a = np.concatenate([XH[keepH], AXs[hA]])
+    I_a_h = np.concatenate([IH[keepH], AIs[hA]])
     boosters = [lgb.Booster(model_file=str(MODELS / f"r4-b_seed{s}.txt")) for s in range(1, 6)]
-    X_as = np.concatenate([XF[~removed], XA])
-    I_as = np.concatenate([IF[~removed], IA])
-    sF, sA = bag(boosters, XF), bag(boosters, X_as)
-    sRem, sAdd = sF[removed], sA[len(sF) - int(removed.sum()):]
-    # common rows: identical X -> identical score
-    common_delta = float(np.abs(sF[~removed] - sA[: int((~removed).sum())]).max())
+    sF, sA = bag(boosters, X_f), bag(boosters, X_a)
+    # common hour-mark rows: compare X for S mints (the clamp can change them) and scores
+    fmap = {(int(m), int(t)): i for i, (m, t) in enumerate(zip(I_f_h[:, 0], I_f_h[:, 1]))}
+    amap = {(int(m), int(t)): i for i, (m, t) in enumerate(zip(I_a_h[:, 0], I_a_h[:, 1]))}
+    common = [k for k in fmap if k in amap]
+    dmax = max((abs(float(sF[fmap[k]] - sA[amap[k]])) for k in common), default=0.0)
+    xdiff = sum(1 for k in common if X_f[fmap[k]].tobytes() != X_a[amap[k]].tobytes())
 
     per = []
-    for t in np.unique(np.concatenate([IF[:, 1], I_as[:, 1]])):
+    for t in np.unique(np.concatenate([I_f_h[:, 1], I_a_h[:, 1]])):
         def top(I, s):
             ix = np.nonzero(I[:, 1] == t)[0]
             if len(ix) == 0:
@@ -145,24 +165,24 @@ def main():
             o = np.lexsort((I[ix, 0], -s[ix]))[:10]
             return set(I[ix[o], 0].tolist())
 
-        a, b = top(IF, sF), top(I_as, sA)
-        per.append((int(t), len(a - b)))
+        per.append((int(t), len(top(I_f_h, sF) - top(I_a_h, sA))))
     ch = np.array([p[1] for p in per])
+    ng, nh = split(only_f)
+    nag, nah = split(only_a)
     out = {
-        "frozen_rows_hour_marks": int(len(IF)), "asof_rows_hour_marks": int(len(I_as)), "hour_marks": len(per),
-        "rows_removed_vs_frozen": int(removed.sum()), "rows_added_vs_frozen": int(len(IA)),
-        "mints_frozen_dropped": len(bad), "mints_frozen_dropped_n_lt_3": sum(1 for n in bad.values() if n < 3),
-        "mints_with_rows_removed": int(len(removed_mints)), "mints_with_rows_added": int(len(added_mints)),
-        "mints_affected_total": int(len(set(removed_mints.tolist()) | set(added_mints.tolist()))),
-        "max_abs_delta_bag_common_rows": common_delta,
-        "removed_rows_score_gt0": int((sRem > 0).sum()), "added_rows_score_gt0": int((sAdd > 0).sum()),
-        "removed_rows_score_max": float(sRem.max()) if len(sRem) else None, "added_rows_score_max": float(sAdd.max()) if len(sAdd) else None,
-        "marks_with_top10_change": int((ch > 0).sum()), "top10_members_changed_total": int(ch.sum()), "top10_members_changed_max": int(ch.max()),
-        "top10_change_hist": {str(k): int((ch == k).sum()) for k in range(0, 11)},
+        "mints_with_prints": len(st), "min_prints_per_mint": int(min(r[1] for r in st)), "prints_with_post_state_le0": n_post_prints, "mints_with_null_block_time": n_null,
+        "affected_mints_S": len(S), "affected_mints_S_with_stored_rows": int(len(np.unique(IG[inS, 0]))),
+        "grid_rows_frozen": len(kf), "grid_rows_asof": len(ka), "grid_only_frozen": ng, "grid_only_asof": nag,
+        "grid_only_frozen_from_S_mints": int(len({k for k in only_f if k[0] in S})), "grid_only_frozen_np_lt3_clean_mints": int(removed_clean.sum()),
+        "hour_rows_frozen": int(len(I_f_h)), "hour_rows_asof": int(len(I_a_h)), "hour_only_frozen": nh, "hour_only_asof": nah,
+        "S_mints_hour_rows_frozen": int(inSH.sum()), "S_mints_hour_rows_asof": int(len(AIs[hA])),
+        "hour_common_rows_with_different_X": int(xdiff), "max_abs_delta_bag_common_hour_rows": dmax,
+        "hour_marks": len(per), "marks_with_top10_change": int((ch > 0).sum()), "top10_members_changed_total": int(ch.sum()),
+        "top10_members_changed_max": int(ch.max()),
     }
     print(json.dumps(out, indent=1))
     if len(sys.argv) > 1:
-        Path(sys.argv[1]).write_text(json.dumps({**out, "per_mark": per}))
+        Path(sys.argv[1]).write_text(json.dumps({**out, "only_frozen": sorted(only_f)[:200], "only_asof": sorted(only_a)[:200], "per_mark": per}))
 
 
 if __name__ == "__main__":

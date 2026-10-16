@@ -276,7 +276,9 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     ``mint_filters``: "frozen" (default, training/fixture): the mint is dropped at EVERY mark if its whole tape has < 3 prints or any reserve
     state (incl. the derived state after its last print) is <= 0, so row existence at T can depend on prints after T (lookahead, QP ruling 4).
     "asof": rows are dropped per mark: a mark T needs >= 3 prints with slot < sd(T), no reserve state <= 0 among the pre-trade states of those
-    prints, and the derived post-state of the last of them > 0. Only prints before sd(T) matter.
+    prints, and the derived post-state of the last of them > 0. Only prints before sd(T) matter. Also under "asof" every look-back window
+    start is clamped to the number of prints before sd (jw = min(jw, j)), so a later print with a null block_time cannot enter the windows
+    (the clamp is part of "asof", not a separate flag; frozen is unchanged and byte-identical to training).
     """
     if mint_filters not in ("frozen", "asof"):
         raise ValueError(f"unknown mint_filters {mint_filters!r}")
@@ -368,6 +370,11 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     jw = {}
     for w in (60, 300, 900, 3600, 14400):
         jw[w] = np.searchsorted(btm, T - w, "left")
+    if asof_f:
+        # asof: a window start can never pass the decision's own print count j. Without this, a print AFTER the mark with a null
+        # block_time (btm carries the previous max) pushes searchsorted past j and the short windows read a later print (QP ruling 4).
+        for w in jw:
+            jw[w] = np.minimum(jw[w], j)
     for w in (60, 300, 900, 3600, 14400):
         k = jw[w]
         F[f"ret_{w}"] = P - np.where(k > 0, lpp[np.maximum(k - 1, 0)], math.log(seed_p))
