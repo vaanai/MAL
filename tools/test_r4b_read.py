@@ -122,7 +122,7 @@ def world(small, tmp_path_factory):
     mints["M1b"] = {"fetch_ok": False}  # a failed fetch is strand-class too
     (rec / "mints.json").write_text(json.dumps({"fetch_slot": 1, "mints": mints}))
     tries = rec / "tries.jsonl"
-    tries.write_text(json.dumps({"config": {"key": "EXP-0271"}}) + "\n" + json.dumps({"config": {"key": "EXP-027"}, "tool": "x"}) + "\n")
+    tries.write_text(json.dumps({"config": {"key": "r4b_exp027_family_x"}}) + "\n" + json.dumps({"config": {"key": "r4b_exp027_family"}, "tool": "x"}) + "\n")
     return {"root": root, "walk": walk, "counts": root / "counts", "rec": rec, "tries": tries, "ccfg": ccfg}
 
 
@@ -135,7 +135,7 @@ def exp_text(world, **over) -> str:
         "EXP027_SEND_FEE_LAMPORTS": "505000, or 160000 only under section 5.3", "EXP027_RENT_DECIDING": "0 per filled trip under section 5.2",
         "EXP027_W0": hkey(1), "EXP027_K": "1", "EXP027_DECODER_REF": "abc1234", "EXP027_TIERS_SHA256": rr.fee_tiers_sha256(),
         "EXP027_E1_RECORD": f"{rec / 'e1.json'}@{sha(rec / 'e1.json')}", "EXP027_INPUT_VIEWS": f"{rec / 'view.txt'}@{sha(rec / 'view.txt')}",
-        "EXP027_TRIES_ENTRY": "EXP-027", "EXP027_MINT_ACCOUNTS": f"{rec / 'mints.json'}@{sha(rec / 'mints.json')}", "EXP027_FEE_ARM": "NONE",
+        "EXP027_TRIES_ENTRY": "r4b_exp027_family", "EXP027_MINT_ACCOUNTS": f"{rec / 'mints.json'}@{sha(rec / 'mints.json')}", "EXP027_FEE_ARM": "NONE",
         "EXP027_E1_MODE": rr.E1_MODE, "EXP027_WALK_DIR": str(Path(world["walk"]).resolve()), "EXP027_SELL_BUILDER": f"{rec / 'sell.py'}@{sha(rec / 'sell.py')}", "EXP027_A3_RECORD": f"{rec / 'a3.json'}@{sha(rec / 'a3.json')}",
         "EXP027_E_A_MD5": "3e9bc6225377927682d80b9441391a96", "EXP027_E_B_MD5": "0" * 32, "EXP027_E_C_MD5": "54052f798013a71e3a9f40e0d6830ac1", "EXP027_E_D_MD5": "1" * 32,
     }
@@ -1362,7 +1362,7 @@ def test_failed_fetch_and_missing_mints_are_priced_at_the_higher_rent(tmp_path):
 EXP_REL = "EXP/EXP-027-r4b-walk2-prereg.md"
 BODY = "# EXP-027 fixture\n\n```\nEXP027_BOOK_ID: r4-b\nEXP027_K: TO FILL\n```\n\n"
 T_REG = 1_800_000_000
-STARTED = datetime.fromtimestamp(T_REG + 10_000, timezone.utc)
+W_STARTED = datetime.fromtimestamp(T_REG + 10_000, timezone.utc)
 
 
 def gitc(repo, *a, when=None):
@@ -1416,11 +1416,11 @@ def append_commit(w, line, when, pub=True):
         publish(w)
 
 
-def guard(w, started=STARTED):
+def guard(w, started=W_STARTED):
     return rr.window_guard(w["repo"] / EXP_REL, started, w["repo"], w["ledger"])
 
 
-def must_refuse(w, needle, started=STARTED):
+def must_refuse(w, needle, started=W_STARTED):
     probs, _ = guard(w, started)
     assert any(needle in x for x in probs), (needle, probs)
     return probs
@@ -1475,9 +1475,9 @@ def test_window_guard_refuses_a_bad_line_format(wrepo):
 
 
 def test_window_guard_refuses_a_commit_at_or_after_started(wrepo):
-    append_commit(wrepo, app_line("EXP027_W0"), int(STARTED.timestamp()))  # equal to started: not earlier
+    append_commit(wrepo, app_line("EXP027_W0"), int(W_STARTED.timestamp()))  # equal to started: not earlier
     must_refuse(wrepo, "not earlier than the read's start")
-    assert guard(wrepo, STARTED + timedelta(seconds=1))[0] == []
+    assert guard(wrepo, W_STARTED + timedelta(seconds=1))[0] == []
 
 
 def test_window_guard_refuses_head_not_descending_from_reg(wrepo):
@@ -1569,7 +1569,7 @@ def test_started_line_records_the_exp_sha256_and_registration_commit(tmp_path, w
 
 def test_default_window_fn_and_ledger_constants():
     assert rr.Paths(Path("w")).ledger == rr.ROOT / "docs" / "HOLDOUT_LEDGER.md"
-    probs, _ = rr.Deps().window_fn(Path("/nonexistent/EXP.md"), Path("/nonexistent/ledger.md"), STARTED)
+    probs, _ = rr.Deps().window_fn(Path("/nonexistent/EXP.md"), Path("/nonexistent/ledger.md"), W_STARTED)
     assert probs and "not inside the repo" in probs[0]
     assert rr.LEDGER_REG_RE.pattern == r"^EXP027_REG_COMMIT ([0-9a-f]{40})[ \t]*$" and rr.LEDGER_PREFIX_RE.pattern == r"^EXP027_PREFIX_SHA256 ([0-9a-f]{64})[ \t]*$"
 
@@ -1577,9 +1577,9 @@ def test_default_window_fn_and_ledger_constants():
 # ---- exact tries key, repo-root pins ---------------------------------------------------------------------------------------------------------------
 def test_tries_key_is_an_exact_match():
     m = rr.tries_entry_matches
-    assert m(json.dumps({"config": {"key": "EXP-027"}}), "EXP-027") and m(json.dumps({"key": "EXP-027"}), "EXP-027") and m(json.dumps({"data_key": "EXP-027"}), "EXP-027")
-    assert not m(json.dumps({"config": {"key": "EXP-0271"}}), "EXP-027") and not m(json.dumps({"note": "see EXP-027"}), "EXP-027")  # substring of a value
-    assert not m("EXP-027 not json", "EXP-027") and not m("[]", "EXP-027") and not m(json.dumps({"config": "EXP-027"}), "EXP-027")
+    assert m(json.dumps({"config": {"key": "r4b_exp027_family"}}), "r4b_exp027_family") and m(json.dumps({"key": "r4b_exp027_family"}), "r4b_exp027_family") and m(json.dumps({"data_key": "r4b_exp027_family"}), "r4b_exp027_family")
+    assert not m(json.dumps({"config": {"key": "r4b_exp027_family_x"}}), "r4b_exp027_family") and not m(json.dumps({"note": "see EXP-027"}), "r4b_exp027_family")  # substring of a value
+    assert not m("EXP-027 not json", "r4b_exp027_family") and not m("[]", "r4b_exp027_family") and not m(json.dumps({"config": "r4b_exp027_family"}), "r4b_exp027_family")
 
 
 def test_pinned_file_resolves_relative_paths_against_the_repo_root(tmp_path, monkeypatch):
