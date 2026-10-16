@@ -28,7 +28,11 @@ Merged today (2026-10-16):
 - #656: Records 10-16 (manager11): EXP-025 P5 not met, Look 1 NOT_DECIDABLE (R8).
 - #657: F1: migrate_sigs_from keeps migration/pool-create rows only; conflicting signatures refused (QP follow-up to #655).
 
-Open owner questions: q_Qj7YtTiY6Dl5aQ (reserve walk 2); q_TCMrhyP101jzLQ (EXP-026 + let the canary end); q_hw6mloW_n2goPQ (old, left open on purpose).
+Owner questions answered 2026-10-16 ~06:36Z (chat, notebook n_aPA3M4wwE7uxXA; owner's words: "in the 'waiting on you parts' yes to everything is reasonable, do what you think is best, let's move to hit our goals"): q_Qj7YtTiY6Dl5aQ closed (walk 2 reserved as the forward test block for the push's next candidate; ledger edited, no row opened); q_TCMrhyP101jzLQ closed (EXP-026 runs as registered, must reach W0 by 2026-10-23T00Z or it is withdrawn per its section 0; the 0.02 SOL H5 live canary stays stopped and ends on 10-23); q_hw6mloW_n2goPQ closed as superseded by q_TCMr (H5 stays stopped). The owner will add SOL behind a line that passes the gate (no amount given). No open owner questions from this list.
+
+A3 daily 2026-10-16 (job #1057, run 07:11:17Z): HALT none, all six flags evaluated and clear; last slice median 342.0 s (n 12). Record only: H5 stays stopped.
+
+EXP-024 Look 1: not run. The read ended NOT_DECIDABLE on 2026-10-13 (A3 pins_changed); nothing was computed.
 
 Scheduled steps (instants):
 - EXP-025 Look 1 R8 run after 2026-10-18T12:00:00Z, and Look 2 R8 run after 2026-10-26T12:00:00Z (commands in the EXP-025 "P5 record (2026-10-16)").
