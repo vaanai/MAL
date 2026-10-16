@@ -198,7 +198,7 @@ def attach_marks(mid, T1, mk_mid, mk_t, mk_Qx, mk_Bx):
 
 # ---------------------------------------------------------------------------------------------------------------- cost stack
 def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING, h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL,
-               guard_ratio=F.GUARD, stranded=None, auto_stranded=True, rent_stranded=F.RENT_STRANDED, return_stranded=False):
+               guard_ratio=F.GUARD, stranded=None, auto_stranded=True, rent_stranded=F.RENT_STRANDED, return_stranded=False, return_invalid=False, return_exit_invalid=False, k_tol=F.K_TOL, return_exit_cause=False):
     """One PumpSwap round trip in lamports; returns (pnl, filled) or (pnl, filled, stranded) with return_stranded.
 
     (Qe, Be): pool state the buy lands on (PRE-trade, Q incl. V); spot: decision-time spot; (Qx, Bx): state the sell lands on.
@@ -208,27 +208,46 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
     pnl = proceeds - stake - 2 x send - rent. With send 55,000, rent 0, h_in = h_out = 0 this is harness hlib.ps_round_trip bit for bit.
     Stranded (no sell lands): pnl = -stake - send (the buy) - rent_stranded, no sell send. A filled trade is stranded when the caller says so
     (`stranded`, a per-trade bool: unpriced exit, freeze authority, a Token-2022 extension that blocks close) or, with auto_stranded, when the
-    simulated proceeds are below one send fee (the sell would not pay for itself). A guarded buy is never stranded (nothing was bought)."""
+    simulated proceeds are below one send fee (the sell would not pay for itself). A guarded buy is never stranded (nothing was bought).
+    Invalid entry state (entry_invalid): Qe < V_LO (17.5e9; Q includes V and V >= V_LO for every member pool, so less is a negative real quote
+    reserve; this also covers Qe <= 0 and NaN), Be <= 0 or NaN, spot non-finite or <= 0 (a NaN spot would switch the guard off), or tokens <= 0 /
+    non-finite after the entry formula. Priced as stranded (stake lost, buy send, rent_stranded, no sell send); the guard does not apply to it.
+    Invalid exit state (exit_invalid, only on a bought, valid-entry trip): tokens >= Bx, Qx < V_LO, or Qx or Bx non-finite (inf or NaN). Same stranded price;
+    there is no max(Bx - tokens, 1) clamp. Also exit_invalid: sell output before fees (tokens_sold x Qa / (Ba + tokens_sold)) above the pool's real
+    quote Qa - V_LO (Qa = Qx + net, the exit quote incl. the own-buy re-injection): a physical bound, no tolerance. Also exit_invalid (C8, k_tol, default
+    K_TOL = 1e-3; None switches it off): Qx x Bx < Qe x Be x (1 - k_tol), float64, V on both sides (the constant-product k of a pool does not fall).
+    Flags come back as last return values: return_invalid (entry), return_exit_invalid, then return_exit_cause (int8 per trip: 0 none, 2 = C2 state,
+    7 = C7 real-quote bound, 8 = C8 k-fall; when several apply the first of C2, C7, C8 is recorded)."""
     stake = np.asarray(stake, float)
-    f = fee_ppm(Qe, Be)
-    net = stake * (1 - f / 1e6)
-    tok = Be * net / (Qe + net)
-    guard = (net / tok) / spot > guard_ratio
-    tokh = tok / (1 + h_in)
-    Qa = Qx + net
-    Ba = np.maximum(Bx - tok, 1.0)
-    gross = tokh * Qa / (Ba + tokh)
-    sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
+    with np.errstate(all="ignore"):
+        Qe_, Be_, spot_ = np.asarray(Qe, float), np.asarray(Be, float), np.asarray(spot, float)
+        f = fee_ppm(Qe, Be)
+        net = stake * (1 - f / 1e6)
+        tok = Be * net / (Qe + net)
+        bad = ~(np.isfinite(Qe_) & np.isfinite(Be_) & (Qe_ >= F.V_LO) & (Be_ > 0) & np.isfinite(spot_) & (spot_ > 0) & np.isfinite(tok) & (tok > 0))
+        guard = ((net / tok) / spot > guard_ratio) & ~bad
+        Qx_, Bx_ = np.asarray(Qx, float), np.asarray(Bx, float)
+        ok_in = ~bad & ~guard
+        c2 = ~(np.isfinite(Qx_) & (Qx_ >= F.V_LO) & np.isfinite(Bx_) & (tok < Bx_)) & ok_in
+        tokh = tok / (1 + h_in)
+        Qa = Qx + net
+        Ba = np.where(c2 | bad, 1.0, Bx - tok)
+        gross = tokh * Qa / (Ba + tokh)
+        c7 = ok_in & ~c2 & ~(gross <= Qa - F.V_LO)      # physical bound: the sell cannot take more than the pool's real quote (Qa - V_LO)
+        c8 = (ok_in & ~c2 & (Qx_ * Bx_ < Qe_ * Be_ * (1 - k_tol))) if k_tol is not None else np.zeros(np.shape(c2), bool)
+        cause = np.where(c2, 2, np.where(c7, 7, np.where(c8, 8, 0))).astype(np.int8)
+        xbad = cause > 0
+    with np.errstate(all="ignore"):
+        sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
     st = np.zeros(np.shape(sv), bool)
     if stranded is not None:
         st = st | np.asarray(stranded, bool)
     if auto_stranded:
         st = st | (sv < send)
-    st = st & ~guard
+    st = (st | bad | xbad) & ~guard
     pnl = np.where(guard, -float(send), np.where(st, -stake - send - rent_stranded, sv - stake - 2 * send - rent))
-    if return_stranded:
-        return pnl, ~guard, st
-    return pnl, ~guard
+    out = (pnl, ~guard) + ((st,) if return_stranded else ()) + ((bad,) if return_invalid else ()) + ((xbad,) if return_exit_invalid else ()) + ((cause,) if return_exit_cause else ())
+    return out
 
 
 def _sig(z):
@@ -273,12 +292,13 @@ def fail_legs(pnl, filled, ssb, nearby, send=F.SEND_FEE_DECIDING, intercept=None
 
 
 def price_cell(Qe, Be, spot, Qx, Bx, ssb, nearby, stake=F.STAKE_LAMPORTS, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING,
-               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True):
+               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True, k_tol=F.K_TOL):
     """One latency cell: no-fail pnl, flat and pressure legs (intercept refit on this cell's fills)."""
     stake = np.broadcast_to(np.asarray(stake, float), np.shape(Qe)).copy()
-    pnl, filled, st = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded, return_stranded=True)
+    pnl, filled, st, bad, xbad, cause = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded,
+                                      return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True, k_tol=k_tol)
     flat, press, c, p = fail_legs(pnl, filled, ssb, nearby, send)
-    return {"nofail": pnl, "filled": filled, "stranded": st, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
+    return {"nofail": pnl, "filled": filled, "stranded": st, "entry_invalid": bad, "exit_invalid": xbad, "exit_cause": cause, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
 
 
 # ---------------------------------------------------------------------------------------------------------------- statistics
@@ -332,22 +352,46 @@ def block_sums(x_lamports, T0, w0: int, block_s: int = 86400, drop_empty: bool =
     return ids, s[ids]
 
 
+def block_means(x_lamports, T0, w0: int, block_s: int = 86400):
+    """Mean pnl (SOL) per attempt in each 24 h block counted from w0; empty blocks are dropped. Returns (block ids, means, counts).
+    This is the DEC-021 Amendment 1 section 5 m_b."""
+    x = np.asarray(x_lamports, float) / 1e9
+    b = (np.asarray(T0, np.int64) - int(w0)) // int(block_s)
+    if len(b) and b.min() < 0:
+        raise ValueError("a trade starts before w0")
+    if not len(b):
+        return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
+    nb = int(b.max()) + 1
+    cnt = np.bincount(b, minlength=nb)
+    ids = np.flatnonzero(cnt > 0)
+    return ids, (np.bincount(b, x, minlength=nb)[ids] / cnt[ids]), cnt[ids]
+
+
 def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = None, block_s: int = 86400, draws: int = F.BOOT_DRAWS,
-               seed: int = F.BOOT_SEED, daylist=None):
+               seed: int = F.BOOT_SEED, daylist=None, entry_invalid=None, exit_invalid=None, exit_cause=None):
     """Gate statistics of one leg. pnl_lamports per trade; T0 entry mark (unix s); mid mint ids.
 
     n, dates (distinct UTC entry dates), days_pos (dates with total > 0; majority = days_pos * 2 > dates), mean_sol, mean_pct (of stake),
     total_sol, ci90_lo_sol (trade-level bootstrap, 1,000 draws, seed 1, 5th pct), ex_top3_sol (drop the 3 best trades),
-    ex_best_block_sol (24 h blocks from w0), ex_best_date_sol (UTC dates), ex_best_mint_sol, and the day-level t over 24 h blocks from w0
-    (empty blocks dropped, df = W - 1). w0 is required: None raises.
+    ex_best_block_sol (24 h blocks from w0), ex_best_date_sol (UTC dates), ex_best_mint_sol, and the deciding t_block over 24 h blocks from w0
+    (one-sided t of per-block MEAN pnl per attempt, empty blocks dropped, df = W - 1; t_block_sum is the report-only version on block sums). w0 is required: None raises.
     daylist: optional explicit list of UTC dates ('YYYY-MM-DD'); the calendar-date t is then also given as t_dates (empty listed dates count as 0,
     as the VERIFY re-score does)."""
     if w0 is None:
         raise ValueError("w0 is required (the read's W0); there is no default")
+    ei = None if entry_invalid is None else int(np.asarray(entry_invalid, bool).sum())
+    xi = None if exit_invalid is None else int(np.asarray(exit_invalid, bool).sum())
     x = np.asarray(pnl_lamports, float)
     T0 = np.asarray(T0, np.int64)
     n = len(x)
     o = {"n": int(n)}
+    if ei is not None:
+        o["entry_invalid"] = ei
+    if xi is not None:
+        o["exit_invalid"] = xi
+    if exit_cause is not None:
+        ec = np.asarray(exit_cause)
+        o["exit_invalid_by_cause"] = {"C2": int((ec == 2).sum()), "C7": int((ec == 7).sum()), "C8": int((ec == 8).sum())}
     if n == 0:
         return o
     stake = np.broadcast_to(np.asarray(stake, float), x.shape)
@@ -371,9 +415,14 @@ def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = N
     msum = np.bincount(minv, x) / 1e9
     o["ex_best_mint_sol"] = float(msum.sum() - msum.max())
     o["best_mint"] = int(mu[int(np.argmax(msum))])
+    # deciding statistic (DEC-021 Amendment 1 section 5): one-sided t on per-block MEAN pnl per attempt, empty blocks dropped, df = W - 1
+    _, bm, _ = block_means(x, T0, w0, block_s)
+    dm = day_t(bm)
+    o.update({"blocks_W": dm["W"], "block_df": dm["df"], "block_mean_sol": dm["mean_sol"], "block_sd_sol": dm["sd_sol"], "t_block": dm["t"],
+              "p_block": dm["p"]})
+    # report-only: the same t on block SUMS (not the deciding statistic)
     dt = day_t(bs)
-    o.update({"blocks_W": dt["W"], "block_df": dt["df"], "block_mean_sol": dt["mean_sol"], "block_sd_sol": dt["sd_sol"], "t_block": dt["t"],
-              "p_block": dt["p"]})
+    o.update({"block_sum_mean_sol": dt["mean_sol"], "block_sum_sd_sol": dt["sd_sol"], "t_block_sum": dt["t"], "p_block_sum": dt["p"]})
     if daylist is not None:
         lab = {d: i for i, d in enumerate(daylist)}
         missing = [d for d in ud if d not in lab]

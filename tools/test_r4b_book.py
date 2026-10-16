@@ -170,7 +170,7 @@ def test_fee_tiers():
 def test_round_trip_matches_hand_calc_all_stacks():
     S = 250_000_000.0
     Qe, Be, spot = 8e10, 3e15, 8e10 / 3e15
-    Qx, Bx = 8.2e10, 2.9e15
+    Qx, Bx = 8.2e10, 2.95e15      # Qx*Bx >= Qe*Be (C8)
     for send, rent, hi, ho in ((55_000, 0.0, 0.0, 0.0), (505_000, 2_039_280, 0.002608, 0.0016), (55_000, 2_039_280, 0.0, 0.0)):
         pnl, fil = B.round_trip(np.array([S]), np.array([Qe]), np.array([Be]), np.array([spot]), np.array([Qx]), np.array([Bx]), send, rent, hi, ho)
         want, wf = hand_round_trip(S, Qe, Be, spot, Qx, Bx, send, rent, hi, ho)
@@ -261,7 +261,8 @@ def test_stats_blocks_dates_and_day_t():
     assert s["ex_best_date_sol"] == pytest.approx(2.5) and s["ex_best_block_sol"] == pytest.approx(2.5)
     assert s["blocks_W"] == 5 and s["block_df"] == 4
     sums = np.array([1.0, 2.0, -0.5, 1.5, 0.5])
-    assert s["t_block"] == pytest.approx(sums.mean() / (sums.std(ddof=1) / math.sqrt(5)))
+    assert s["t_block_sum"] == pytest.approx(sums.mean() / (sums.std(ddof=1) / math.sqrt(5)))
+    assert s["t_block"] == pytest.approx(s["t_block_sum"])                                    # 2 attempts in every block: means = sums / 2, t is scale-free
     assert 0 < s["p_block"] < 0.5
     assert not s["gate_numeric"]                                                              # n < 100
     # the blocks are counted from w0, not from UTC midnight: shifting w0 by 13 h moves the 12:00 entries into the previous block
@@ -269,6 +270,25 @@ def test_stats_blocks_dates_and_day_t():
     assert s2["blocks_W"] == 5 and s2["total_sol"] == s["total_sol"]
     with pytest.raises(ValueError):
         B.book_stats(x, t0, mid, w0=w0 + 3 * 86400)                                           # entries before w0 are refused
+
+
+def test_t_block_is_on_per_attempt_block_means_not_sums():
+    w0 = 1_790_035_200 // 86400 * 86400
+    # block 0: 3 attempts 1,1,-1 (mean 1/3, sum 1); block 1 empty; block 2: 1 attempt 2; block 3: 2 attempts -1,-1 (mean -1, sum -2)
+    t0 = np.array([w0 + H, w0 + 2 * H, w0 + 3 * H, w0 + 2 * 86400 + H, w0 + 3 * 86400 + H, w0 + 3 * 86400 + 2 * H], np.int64)
+    x = np.array([1, 1, -1, 2, -1, -1], float) * 1e9
+    s = B.book_stats(x, t0, np.arange(6), w0=w0)
+    m = np.array([1 / 3, 2.0, -1.0])
+    t_hand = m.mean() / (m.std(ddof=1) / math.sqrt(3))
+    assert s["blocks_W"] == 3 and s["block_df"] == 2                                          # the empty block is dropped
+    assert s["block_mean_sol"] == pytest.approx(m.mean())
+    assert s["t_block"] == pytest.approx(t_hand)
+    assert s["p_block"] == pytest.approx(B.t_sf(t_hand, 2))
+    sm = np.array([1.0, 2.0, -2.0])
+    assert s["t_block_sum"] == pytest.approx(sm.mean() / (sm.std(ddof=1) / math.sqrt(3)))
+    assert abs(s["t_block_sum"] - s["t_block"]) > 0.1
+    ids, bm, cnt = B.block_means(x, t0, w0)
+    assert list(ids) == [0, 2, 3] and list(cnt) == [3, 1, 2] and bm == pytest.approx(m)
 
 
 def test_stats_block_boundary_differs_from_utc_date():
@@ -325,7 +345,7 @@ def test_normal_trade_deciding_has_no_rent_and_report_leg_has_rent():
 
 def test_auto_stranded_when_proceeds_below_one_send():
     S = np.array([250e6])
-    a = [np.array([x]) for x in (8e10, 3e15, 8e10 / 3e15, 1e6, 3e17)]     # exit pool has 100x the tokens: the sell returns almost nothing
+    a = [np.array([x]) for x in (8e10, 3e15, 8e10 / 3e15, 17.5e9, 3e19)]     # exit pool has 10^4 x the tokens (Qx at V_LO, valid): the sell returns almost nothing
     pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, return_stranded=True)
     assert fil[0] and st[0] and pnl[0] == -250e6 - 505_000 - 2_039_280
     pnl2, _, st2 = B.round_trip(S, *a, send=505_000, rent=0, auto_stranded=False, return_stranded=True)
@@ -340,3 +360,240 @@ def test_caller_stranded_and_guard_never_stranded():
     a[2] = a[2] / 1.2
     pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, stranded=np.array([True]), return_stranded=True)
     assert not fil[0] and not st[0] and pnl[0] == -505_000
+
+
+def _entry_case(Qe, Be, stake=250e6, send=505_000, rent=2_039_280):
+    Qx, Bx, spot = 8e10, 3e15, 8e10 / 3e15
+    return B.round_trip(np.array([stake]), np.array([Qe]), np.array([Be]), np.array([spot]), np.array([Qx]), np.array([Bx]),
+                        send, rent, return_stranded=True, return_invalid=True)
+
+
+@pytest.mark.parametrize("Qe,Be", [(0.0, 3e15), (-1e9, 3e15), (8e10, 0.0), (8e10, -3e15), (float("nan"), 3e15), (8e10, float("nan")),
+                                   (float("inf"), 3e15)])
+def test_invalid_entry_is_stranded(Qe, Be):
+    pnl, fil, st, bad = _entry_case(Qe, Be)
+    assert bad[0] and st[0]
+    assert pnl[0] == -250e6 - 505_000 - B.F.RENT_STRANDED
+
+
+def test_qp_probe_entry_below_net_stake_not_a_win():
+    S = 0.25e9
+    pnl, fil, st, bad = _entry_case(-0.9 * S, 3e15, stake=S, send=55_000, rent=0.0)
+    assert bad[0] and st[0] and pnl[0] == pytest.approx(-S - 55_000 - B.F.RENT_STRANDED)
+    assert pnl[0] < 0
+
+
+def test_valid_entry_unchanged_and_not_flagged():
+    pnl, fil, st, bad = _entry_case(8e10, 3e15)
+    want, wf = hand_round_trip(250e6, 8e10, 3e15, 8e10 / 3e15, 8e10, 3e15, 505_000, 2_039_280, B.F.HAIRCUT_ENTRY, B.F.HAIRCUT_SELL)
+    assert pnl[0] == pytest.approx(want, abs=1e-6)
+    assert not bad[0] and fil[0]
+    assert B.round_trip(np.array([250e6]), np.array([8e10]), np.array([3e15]), np.array([8e10 / 3e15]), np.array([8e10]), np.array([3e15]),
+                        505_000, 2_039_280)[0][0] == pnl[0]
+
+
+def test_guard_on_valid_entry_keeps_rule():
+    spot = np.array([8e10 / 3e15 / 1.2])
+    pnl, fil, st, bad = B.round_trip(np.array([250e6]), np.array([8e10]), np.array([3e15]), spot, np.array([8e10]), np.array([3e15]),
+                                     505_000, 2_039_280, return_stranded=True, return_invalid=True)
+    assert pnl[0] == -505_000 and not fil[0] and not st[0] and not bad[0]
+
+
+def test_book_stats_reports_entry_invalid_count():
+    x = np.array([1e6, -2e6, 3e6])
+    T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800])
+    o = B.book_stats(x, T0, np.array([1, 2, 3]), w0=1_700_000_000, entry_invalid=np.array([False, True, True]))
+    assert o["entry_invalid"] == 2
+    assert "entry_invalid" not in B.book_stats(x, T0, np.array([1, 2, 3]), w0=1_700_000_000)
+
+
+# ---- QP #680 C1-C4: V_LO floor on entry and exit, spot validity, exit with tokens >= Bx
+_V = 17.6e9
+_N = _V + 80e9
+
+
+def _rt(Qe, Be, Qx, Bx, spot=None, stake=250e6, send=505_000):
+    spot = _N / 3e14 if spot is None else spot
+    o = B.round_trip(np.array([stake]), np.array([Qe], float), np.array([Be], float), np.array([spot], float), np.array([Qx], float),
+                     np.array([Bx], float), send, 0.0, return_stranded=True, return_invalid=True, return_exit_invalid=True)
+    return o[0][0], o[1][0], o[2][0], o[3][0], o[4][0]
+
+
+def _stranded_pnl(stake=250e6, send=505_000):
+    return -stake - send - B.F.RENT_STRANDED
+
+
+def test_v_lo_matches_layout():
+    from tools import r4b_layout
+    assert B.F.V_LO == r4b_layout.V_LO == 17.5e9
+
+
+def test_normal_trip_flags_clear():
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, 3e14)
+    assert fil and not ei and not xi and pnl != _stranded_pnl()
+
+
+@pytest.mark.parametrize("Qe", [1.0, 1e3, 1e8, 1e9, 5e9, 17.4e9])
+def test_entry_below_v_lo_is_invalid_not_a_win(Qe):
+    pnl, fil, st, ei, xi = _rt(Qe, 3e14, _N, 3e14)
+    assert ei and st and not xi and pnl == _stranded_pnl()
+
+
+def test_entry_at_v_lo_is_valid():
+    assert not _rt(17.5e9, 3e14, _N, 3e14)[3]
+
+
+@pytest.mark.parametrize("spot", [float("nan"), 0.0, -1e-4, float("inf")])
+def test_bad_spot_is_entry_invalid(spot):
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, 3e14, spot=spot)
+    assert ei and st and pnl == _stranded_pnl()
+
+
+@pytest.mark.parametrize("Bx", [1e12, 7e11, 1e11, 1.0, 0.0, -5.0, float("nan")])
+def test_exit_with_bx_not_above_tokens_is_invalid(Bx):
+    # Be 3e14 at Qe ~ 97.6 SOL, stake 0.25 SOL: tokens ~ 7.6e11
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, Bx)
+    tok = 3e14 * 0.25e9 * (1 - B.fee_ppm(_N, 3e14) / 1e6) / (_N + 0.25e9)
+    if not (Bx > tok):
+        assert xi and st and not ei and pnl == _stranded_pnl()
+
+
+def test_exit_tokens_equal_bx_is_invalid():
+    net = 250e6 * (1 - B.fee_ppm(_N, 3e14) / 1e6)
+    tok = 3e14 * net / (_N + net)
+    assert _rt(_N, 3e14, _N, tok)[4]
+    assert not _rt(_N, 3e14, _N, 3e14)[4]            # tok x 1.001 and 3 x tok are now caught by C7 / C8
+
+
+@pytest.mark.parametrize("Qx", [1e9, 17.4e9, 0.0, float("nan"), float("inf")])
+def test_exit_qx_below_v_lo_or_nonfinite(Qx):
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, Qx, 3e14)
+    assert xi and st and pnl == _stranded_pnl()
+
+
+def test_guarded_buy_not_exit_invalid():
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, 1.0, spot=_N / 3e14 / 1.2)
+    assert pnl == -505_000 and not fil and not st and not ei and not xi
+
+
+def test_price_cell_and_book_stats_report_both_counts():
+    n = 3
+    Qe = np.array([_N, 1e9, _N])
+    Be = np.full(n, 3e14)
+    Qx = np.full(n, _N)
+    Bx = np.array([3e14, 3e14, 1.0])
+    c = B.price_cell(Qe, Be, np.full(n, _N / 3e14), Qx, Bx, np.zeros(n), np.zeros(n))
+    assert c["entry_invalid"].tolist() == [False, True, False] and c["exit_invalid"].tolist() == [False, False, True]
+    T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800])
+    o = B.book_stats(c["nofail"], T0, np.arange(n), w0=1_700_000_000, entry_invalid=c["entry_invalid"], exit_invalid=c["exit_invalid"])
+    assert o["entry_invalid"] == 1 and o["exit_invalid"] == 1
+
+
+@pytest.mark.parametrize("Qx,Bx", [(float("inf"), 3e14), (_N, float("inf")), (float("-inf"), 3e14), (_N, float("-inf")), (float("nan"), float("nan"))])
+def test_nonfinite_exit_is_exit_invalid(Qx, Bx):
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, Qx, Bx)
+    assert xi and st and not ei and pnl == _stranded_pnl()
+
+
+@pytest.mark.parametrize("Qe,Be", [(float("inf"), 3e14), (_N, float("inf")), (float("-inf"), 3e14), (_N, float("-inf")), (float("nan"), float("nan"))])
+def test_nonfinite_entry_is_entry_invalid(Qe, Be):
+    pnl, fil, st, ei, xi = _rt(Qe, Be, _N, 3e14)
+    assert ei and st and not xi and pnl == _stranded_pnl()
+
+
+# ---- QP #680 C7: sell output before fees above the pool's real quote (Qa - V_LO) is exit_invalid
+def _tok(Qe=_N, Be=3e14, stake=250e6):
+    return Be * stake * (1 - B.fee_ppm(Qe, Be) / 1e6) / (Qe + stake * (1 - B.fee_ppm(Qe, Be) / 1e6))
+
+
+@pytest.mark.parametrize("m", [1.01, 1.1, 1.2])
+def test_c7_sell_above_real_quote_is_exit_invalid(m):
+    # sell output = Qa / m exceeds Qa - V_LO (= 0.82 Qa here) when m < ~1.22
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, m * _tok())
+    assert xi and st and not ei and pnl == _stranded_pnl()
+
+
+def test_c7_boundary_follows_the_physical_bound():
+    tok = _tok()
+    net = 250e6 * (1 - B.fee_ppm(_N, 3e14) / 1e6)
+    Qa = _N + net
+    # gross = Qa / m (h_in = 0 with the default call path is not assumed: compute through round_trip flags only on both sides of the bound)
+    m_edge = Qa / (Qa - B.F.V_LO)
+    hi = _rt(_N, 3e14, _N, (m_edge * 1.01) * tok, stake=250e6)
+    assert not hi[4] or B.F.HAIRCUT_ENTRY > 0     # with the entry haircut the sold tokens shrink, so the edge only moves outward
+    lo = _rt(_N, 3e14, _N, (m_edge * 0.99) * tok, stake=250e6)
+    assert lo[4]
+
+
+def test_c7_larger_bx_cases_are_caught_by_c8_not_c7():
+    for m in (2.0, 5.0):
+        assert _rt(_N, 3e14, _N, m * _tok())[4]
+        assert _cause(_N, 3e14, _N, m * _tok()) == 8                 # sell output Qa/m is under the real quote: C7 holds, C8 flags
+
+
+# ---- QP C8 ruling: K_TOL = 1e-3 on Qx*Bx vs Qe*Be (V on both sides), cause recorded
+def _cause(Qe, Be, Qx, Bx, spot=None, stake=250e6, **kw):
+    spot = _N / 3e14 if spot is None else spot
+    o = B.round_trip(np.array([stake]), np.array([Qe], float), np.array([Be], float), np.array([spot], float), np.array([Qx], float),
+                     np.array([Bx], float), 505_000, 0.0, return_exit_cause=True, **kw)
+    return int(o[-1][0])
+
+
+def test_k_tol_pinned():
+    assert B.F.K_TOL == 1e-3
+
+
+@pytest.mark.parametrize("ratio,flagged", [(1.0, False), (0.9995, False), (0.99905, False), (0.998, True), (0.853789, True), (1.3, False)])
+def test_c8_k_ratio(ratio, flagged):
+    # Bx = ratio x Be at Qx = Qe, so Qx*Bx / (Qe*Be) = ratio; Be large enough that tokens < Bx and the real-quote bound holds
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, _N, ratio * 3e14)
+    assert xi == flagged
+    if flagged:
+        assert st and not ei and pnl == _stranded_pnl() and _cause(_N, 3e14, _N, ratio * 3e14) == 8
+    else:
+        assert _cause(_N, 3e14, _N, ratio * 3e14) == 0 and pnl != _stranded_pnl()
+
+
+def test_c8_off_with_k_tol_none():
+    assert not _rt_k(None)
+
+
+def _rt_k(k):
+    o = B.round_trip(np.array([250e6]), np.array([_N]), np.array([3e14]), np.array([_N / 3e14]), np.array([_N]), np.array([0.5 * 3e14]), 505_000, 0.0,
+                     return_exit_invalid=True, k_tol=k)
+    return bool(o[-1][0])
+
+
+def test_c8_on_by_default():
+    assert _rt_k(B.F.K_TOL)
+
+
+def test_causes_c2_c7_c8_recorded_and_precedence():
+    tok = _tok()
+    assert _cause(_N, 3e14, _N, 0.5 * tok) == 2                # tokens >= Bx (also fails C8): C2 first
+    assert _cause(_N, 3e14, 1e9, 3e14) == 2                    # Qx below V_LO
+    assert _cause(_N, 3e14, _N, 1.01 * tok) == 7               # real-quote bound (also fails C8): C7 before C8
+    assert _cause(_N, 3e14, _N, 2 * tok) == 8
+    assert _cause(_N, 3e14, _N, 3e14) == 0
+
+
+def test_guarded_and_entry_invalid_never_exit_invalid():
+    for args in ((_N, 3e14, _N, 1.0), (_N, 3e14, _N, 0.5 * 3e14)):
+        pnl, fil, st, ei, xi = _rt(*args, spot=_N / 3e14 / 1.2)           # guarded
+        assert not fil and not xi and not st and not ei
+        assert _cause(*args, spot=_N / 3e14 / 1.2) == 0
+    for Qe in (1e9, float("nan")):
+        pnl, fil, st, ei, xi = _rt(Qe, 3e14, _N, 1.0)
+        assert ei and not xi and _cause(Qe, 3e14, _N, 1.0) == 0
+
+
+def test_book_stats_exit_invalid_by_cause():
+    T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800, 1_700_259_200])
+    o = B.book_stats(np.array([1e6, -2e6, 3e6, 1e6]), T0, np.arange(4), w0=1_700_000_000, exit_cause=np.array([0, 2, 8, 8], np.int8))
+    assert o["exit_invalid_by_cause"] == {"C2": 1, "C7": 0, "C8": 2}
+
+
+def test_price_cell_carries_exit_cause():
+    n = 2
+    c = B.price_cell(np.full(n, _N), np.full(n, 3e14), np.full(n, _N / 3e14), np.full(n, _N), np.array([3e14, 0.5 * 3e14]), np.zeros(n), np.zeros(n))
+    assert c["exit_cause"].tolist() == [0, 8] and c["exit_invalid"].tolist() == [False, True]
