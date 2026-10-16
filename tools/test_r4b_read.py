@@ -112,10 +112,12 @@ def world(small, tmp_path_factory):
     rc.run(ccfg, sph_fn=sph_ok, canonical_fn=pda_of)
     rec = root / "rec"
     rec.mkdir()
-    (rec / "e1.json").write_text(json.dumps({"n": 25, "pnl_gap_lamports_live_minus_sim_mean": -100000.0}))
+    (rec / "e1.json").write_text(json.dumps({"n": 25, "stake_lamports": 50_000_000, "pnl_gap_lamports_live_minus_sim_mean": -100000.0}))
+    (rec / "sell.py").write_text("# stand-in for the pinned sell builder\n")
+    (rec / "a3.json").write_text(json.dumps({"schema": "r4b_a3_v1", "checked_from": "2026-10-16T00:00:00Z", "checked_through": "2026-10-16T23:00:00Z", "halts": [{"at": "2026-10-16T01:00:00Z", "reason": "before W0"}]}))
     (rec / "view.txt").write_text("input view\n")
-    mints = {f"M{i}{c}": {"fetch_ok": True} for i in range(NH) for c in "abc"}
-    mints["M1a"] = {"fetch_ok": True, "freeze_authority": "FRZ"}  # strand-class
+    mints = {f"M{i}{c}": {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM, "freeze_authority": None, "token2022_extensions": []} for i in range(NH) for c in "abc"}
+    mints["M1a"] = {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM, "freeze_authority": "FRZ"}  # strand-class
     mints["M1b"] = {"fetch_ok": False}  # a failed fetch is strand-class too
     (rec / "mints.json").write_text(json.dumps({"fetch_slot": 1, "mints": mints}))
     tries = rec / "tries.jsonl"
@@ -133,6 +135,7 @@ def exp_text(world, **over) -> str:
         "EXP027_W0": hkey(1), "EXP027_K": "1", "EXP027_DECODER_REF": "abc1234", "EXP027_TIERS_SHA256": rr.fee_tiers_sha256(),
         "EXP027_E1_RECORD": f"{rec / 'e1.json'}@{sha(rec / 'e1.json')}", "EXP027_INPUT_VIEWS": f"{rec / 'view.txt'}@{sha(rec / 'view.txt')}",
         "EXP027_TRIES_ENTRY": "EXP-027", "EXP027_MINT_ACCOUNTS": f"{rec / 'mints.json'}@{sha(rec / 'mints.json')}", "EXP027_FEE_ARM": "NONE",
+        "EXP027_WALK_DIR": str(Path(world["walk"]).resolve()), "EXP027_SELL_BUILDER": f"{rec / 'sell.py'}@{sha(rec / 'sell.py')}", "EXP027_A3_RECORD": f"{rec / 'a3.json'}@{sha(rec / 'a3.json')}",
         "EXP027_E_A_MD5": "3e9bc6225377927682d80b9441391a96", "EXP027_E_B_MD5": "0" * 32, "EXP027_E_C_MD5": "54052f798013a71e3a9f40e0d6830ac1", "EXP027_E_D_MD5": "1" * 32,
     }
     for m, h in code_shas().items():
@@ -150,7 +153,8 @@ def mk(tmp_path, world, *, counts=None, exp_extra="", **over):
 def mkdeps(world, **kw):
     log: list[str] = []
     d = dict(now_fn=lambda: HOUR0 + timedelta(hours=1 + 4 + 24), clean_fn=lambda p: [], decoder_fn=lambda ref: [], sph_fn=sph_ok, canonical_fn=pda_of,
-             boosters_fn=lambda md: [FakeBooster()], models_check_fn=lambda md: [], head_fn=lambda: "deadbeef", stderr=log.append, memory_limit="2GB", threads=2)
+             boosters_fn=lambda md: [FakeBooster()], models_check_fn=lambda md: [], head_fn=lambda: "deadbeef", stderr=log.append, memory_limit="2GB", threads=2,
+             walk_pin=str(Path(world["walk"]).resolve()))
     d.update(kw)
     dep = rr.Deps(**d)
     dep.log = log  # type: ignore[attr-defined]
@@ -167,6 +171,15 @@ def refused(paths, deps, *needles):
     return ei.value.reasons
 
 
+def main_events(out_dir):
+    """The read's own ledger lines (started / completed / aborted); report-only lines come after `completed` and are checked separately."""
+    return [e for e in rr.reads_events(out_dir) if not e["event"].startswith("report_")]
+
+
+def report(out_dir, step):
+    return json.loads((out_dir / ("report-" + step.replace(".", "_") + ".json")).read_text())
+
+
 def write_counts(cdir: Path, lines) -> None:
     (cdir / rc.COUNTS).write_text("".join(rc.stable_json(x) + "\n" for x in lines))
 
@@ -181,16 +194,21 @@ def test_read_end_to_end_and_order(tmp_path, world):
     assert seen["result_exists_at_verdict"] is False and seen["ledger"] == ["started"]  # verdict BEFORE any result file, after `started`
     assert seen["text"].startswith("VERDICT: ")
     ev = rr.reads_events(paths.out_dir)
-    assert [e["event"] for e in ev] == ["started", "completed"] and ev[0]["token"] == ev[1]["token"] == res["token"]
+    assert [e["event"] for e in ev[:2]] == ["started", "completed"] and ev[0]["token"] == ev[1]["token"] == res["token"]
+    assert all(e["event"] == "report_completed" for e in ev[2:]) and [e["step"] for e in ev[2:]] == [n for n, _ in rr.REPORT_STEP_NAMES]
     assert (paths.out_dir / rr.RESULT).exists() and ev[1]["result_sha256"] == sha(paths.out_dir / rr.RESULT)
     assert not (paths.out_dir / "scratch").exists()
     assert res["A_attempts"] > 0 and res["N_blocks_with_attempts"] == 1
     assert set(res["cells"]) == {"flat_1.3", "flat_1.9", "press_1.3", "press_1.9"} and all(c["n"] == res["A_attempts"] for c in res["cells"].values())
     assert res["keys"]["ok"] is True and res["keys"]["not_subset_marks"] == 0
     assert res["stack"]["send"] == 505_000 and res["stack"]["rent"] == 0 and res["fee_arm"]["source"] == "505k"
-    assert "report_only" in res and "lp_discontinuities" in res["report_only"] and any(k.startswith("rent:") for k in res["report_only"]["variants"])
-    assert any(k.startswith("lat4.0:") for k in res["report_only"]["variants"]) and any(k.startswith("send_55k:") for k in res["report_only"]["variants"])
-    assert any(k.startswith("no_auto_stranded:") for k in res["report_only"]["variants"])
+    assert not any(k in c for c in res["cells"].values() for k in rr.BLOCK_SUM_KEYS)  # block sums are report-only, in their own file
+    out = paths.out_dir
+    assert set(report(out, "block_sums")["data"]) == set(res["cells"]) and report(out, "lp_discontinuities")["data"]["pairs"] > 0
+    assert set(report(out, "rent")["data"]) == {"flat_1.3", "flat_1.9", "press_1.3", "press_1.9"} and set(report(out, "send_55k")["data"]) == set(report(out, "no_auto_stranded")["data"])
+    assert set(report(out, "lat4.0")["data"]) == {"flat_4.0", "press_4.0"}
+    idx = json.loads((out / "report-only.json").read_text())["report_only"]
+    assert set(idx) == {n for n, _ in rr.REPORT_STEP_NAMES} and all(v["status"] == "ok" for v in idx.values())
     assert res["d3"]["dropped_rows"] >= 0 and "not money made" in res["claim"]
     assert res["strand_class_trades"] == 2 and res["stranded_counts"] == {"flat_1.3": 2, "flat_1.9": 2}  # M1a (freeze authority) and M1b (failed fetch) were bought
     assert all(-30.0 < c["mean_pct"] < -10.0 for c in res["cells"].values())  # 2 of 12 trips lose the stake; the other 10 lose only fees
@@ -242,7 +260,7 @@ def test_verdict_is_printed_before_the_dual_run_starts(tmp_path, world, monkeypa
     deps.stderr = lambda s_: seen.update(frozen_at_verdict=len(frozen_calls), result_file=(paths.out_dir / rr.RESULT).exists())
     res = rr.read(paths, deps)
     assert seen == {"frozen_at_verdict": 0, "result_file": False} and len(frozen_calls) > 0
-    assert res["report_only"]["asof_vs_frozen"]["asof_only_rows"] >= 0
+    assert report(paths.out_dir, "asof_vs_frozen")["data"]["asof_only_rows"] >= 0
 
 
 def test_unpriced_exit_pays_the_rent_like_a_strand_class_mint():
@@ -268,18 +286,23 @@ def test_build_contradicting_counts_is_not_decidable_count_build_divergence(tmp_
 
     def build(*a, **k):
         st = real_build(*a, **k)
-        st["v0_missing_days_over"] = ["2026-10-16"]
+        if not k.get("structure_only"):  # the pre-lock structure pass is clean (it matches counts.jsonl); the full build after the lock contradicts it
+            st["v0_missing_days_over"] = ["2026-10-16"]
         return st
 
     monkeypatch.setattr(rl, "build", build)
     paths = mk(tmp_path, world)
     res = rr.read(paths, mkdeps(world))
     assert res["verdict"] == "NOT_DECIDABLE" and res["reasons"][0].startswith("count_build_divergence") and "v0-missing" in res["reasons"][0]
-    assert [e["event"] for e in rr.reads_events(paths.out_dir)] == ["started", "completed"] and (paths.out_dir / rr.RESULT).exists()
+    assert [e["event"] for e in rr.reads_events(paths.out_dir)] == ["started", "completed"] and (paths.out_dir / rr.RESULT).exists()  # no report-only steps after a divergence
 
 
 def test_layout_refusal_in_the_build_is_also_a_divergence(tmp_path, world, monkeypatch):
+    real_build = rl.build
+
     def build(*a, **k):
+        if k.get("structure_only"):
+            return real_build(*a, **k)
         raise rl.LayoutRefused("hour x: 3 print(s) of MEMBER pool(s) have a null virtual_quote_reserves")
 
     monkeypatch.setattr(rl, "build", build)
@@ -289,14 +312,15 @@ def test_layout_refusal_in_the_build_is_also_a_divergence(tmp_path, world, monke
 
 def test_report_only_asof_vs_frozen_null_bt_and_gap(tmp_path, world):
     res = rr.read(mk(tmp_path, world), mkdeps(world))
-    ro = res["report_only"]
-    d = ro["asof_vs_frozen"]
+    out = tmp_path / "out"
+    d = report(out, "asof_vs_frozen")["data"]
     assert "NOT removed" in d["note"] or "NOT" in d["note"]
     assert d["asof_only_entered_top10"] <= res["A_attempts"]
     for name, c in d["pnl_asof_only_trades"].items():
         assert c["n"] + d["pnl_other_trades"][name]["n"] == res["A_attempts"]
-    assert set(ro["null_block_time_prints_by_hour"]) <= set(rl.hour_range(rr.H0, hkey(8))) and all(v == 0 for v in ro["null_block_time_prints_by_hour"].values())
-    gap = res["keys"]["live_vs_decision_gap_by_mark"]
+    nb = report(out, "null_block_time")["data"]
+    assert set(nb) <= set(rl.hour_range(rr.H0, hkey(8))) and all(v == 0 for v in nb.values())
+    gap = report(out, "gap_table")["data"]
     assert set(gap) == {hkey(1), hkey(2), hkey(3), hkey(4)}  # marks in [W0, E - 1h]
     for g in gap.values():
         assert g["gap"] == g["live"] - g["decision_rows"] >= 0 and g["lt3_prints"] + g["d3_drop"] + g["no_feature_row"] == g["gap"]
@@ -311,11 +335,13 @@ def test_asof_only_rows_stay_in_the_book(tmp_path, world, monkeypatch):
             return None
         return orig(prep, c, *a, **k)
 
-    base = rr.read(mk(tmp_path / "a", world) if (tmp_path / "a").mkdir() is None else None, mkdeps(world))
+    (tmp_path / "a").mkdir()
+    base = rr.read(mk(tmp_path / "a", world), mkdeps(world))
     monkeypatch.setattr(rf, "mint_features", spy)
     (tmp_path / "b").mkdir()
     res = rr.read(mk(tmp_path / "b", world), mkdeps(world))
-    assert res["report_only"]["asof_vs_frozen"]["asof_only_rows"] >= 1 and res["report_only"]["asof_vs_frozen"]["frozen_only_rows"] == 0
+    d = report(tmp_path / "b" / "out", "asof_vs_frozen")["data"]
+    assert d["asof_only_rows"] >= 1 and d["frozen_only_rows"] == 0
     assert res["A_attempts"] == base["A_attempts"] and res["cells"]["flat_1.3"]["total_sol"] == base["cells"]["flat_1.3"]["total_sol"]
 
 
@@ -364,7 +390,7 @@ def test_stage_failure_writes_aborted_and_spends_the_read(tmp_path, world, monke
     def boom(*a, **k):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(rr, "run_read", boom)
+    monkeypatch.setattr(rr, "run_deciding", boom)
     with pytest.raises(RuntimeError):
         rr.read(paths, mkdeps(world))
     ev = rr.reads_events(paths.out_dir)
@@ -448,7 +474,7 @@ def test_w0_bounds(tmp_path, world, monkeypatch):
 def test_hour_not_sealed_or_row_mismatch(tmp_path, world):
     walk = make_walk(tmp_path / "w", stream(NH), unsealed=[hkey(6)], rows_delta={(hkey(7), "trades"): 3})
     paths = mk(tmp_path, {**world, "walk": walk})
-    r = refused(paths, mkdeps(world), "not sealed")
+    r = refused(paths, mkdeps({**world, "walk": walk}), "not sealed")
     assert any(hkey(7) in x and "rows=" in x for x in r)
 
 
@@ -456,7 +482,7 @@ def test_hour_not_sealed_or_row_mismatch(tmp_path, world):
 def test_exit_hour_and_extra_trade_hours_must_be_verified(tmp_path, world, bad):
     # E = hkey(5); the allowlist runs to E + 3h: hours 5, 6, 7 (the exit hour and the two extra trade hours) must all be sealed and verified
     walk = make_walk(tmp_path / "w", stream(NH), no_verify=[hkey(bad)])
-    refused(mk(tmp_path, {**world, "walk": walk}), mkdeps(world), hkey(bad))
+    refused(mk(tmp_path, {**world, "walk": walk}), mkdeps({**world, "walk": walk}), hkey(bad))
 
 
 def test_counts_must_cover_every_hour(tmp_path, world):
@@ -592,17 +618,27 @@ def test_no_cli_override_of_pinned_values(tmp_path):
             rr.main(["--help"])
     finally:
         argparse.ArgumentParser.add_argument = orig  # type: ignore[assignment]
-    assert flags - {"-h", "--help"} <= {"--walk-dir", "--out-dir", "--counts-dir", "--exp-file", "--models-dir", "--memory-limit", "--threads"}
-    for bad in ("--send-fee", "--k", "--w0", "--stop-hours", "--alpha", "--rent", "--latency"):
+    assert flags - {"-h", "--help"} == {"--walk-dir", "--out-dir", "--counts-dir", "--memory-limit", "--threads"}  # R4: no --exp-file, no --models-dir
+    for bad in ("--send-fee", "--k", "--w0", "--stop-hours", "--alpha", "--rent", "--latency", "--exp-file", "--models-dir"):
         with pytest.raises(SystemExit) as ei:
             rr.main(["--walk-dir", str(tmp_path), bad, "1"])
         assert ei.value.code == 2
 
 
-def test_main_exit_code_on_refusal(tmp_path, world, capsys):
-    paths = mk(tmp_path, world, EXP027_ROUTE="PENDING")
-    code = rr.main(["--walk-dir", str(world["walk"]), "--out-dir", str(paths.out_dir), "--counts-dir", str(world["counts"]), "--exp-file", str(paths.exp_file)])
-    assert code == 2 and "REFUSED:" in capsys.readouterr().err and not paths.out_dir.exists()
+def test_main_exit_code_on_refusal_and_fixed_paths(tmp_path, world, capsys, monkeypatch):
+    seen = {}
+    real_read = rr.read
+
+    def spy(paths, deps=None):
+        seen.update(paths=paths, deps=deps)
+        return real_read(paths, deps)
+
+    monkeypatch.setattr(rr, "read", spy)
+    out = tmp_path / "out"
+    code = rr.main(["--walk-dir", str(world["walk"]), "--out-dir", str(out), "--counts-dir", str(world["counts"])])
+    assert code == 2 and "REFUSED:" in capsys.readouterr().err and not out.exists()  # the repo has no EXP-027 with every pin yet (or a dirty one): refused, nothing written
+    assert seen["paths"].exp_file == rr.EXP_FILE and seen["paths"].models_dir is None and seen["deps"].walk_pin == rr.PINNED_WALK_DIR
+    assert rr.PINNED_WALK_DIR == "/data/mal/blocks/forward-1016"
 
 
 # ---- fee-arm record: the 160k switch -------------------------------------------------------------------------------------------------------------
@@ -697,11 +733,14 @@ def test_slot_s_by_date_uses_median_hourly_sph():
 
 def test_mint_accounts_strand_classes(tmp_path):
     p = tmp_path / "m.json"
-    p.write_text(json.dumps({"mints": {"ok": {"fetch_ok": True}, "freeze": {"fetch_ok": True, "freeze_authority": "X"}, "ext": {"fetch_ok": True, "token2022_extensions": ["transferFeeConfig"]},
-                                       "harmless": {"fetch_ok": True, "token2022_extensions": ["metadataPointer"]}, "failed": {"fetch_ok": False}}}))
+    p.write_text(json.dumps({"fetch_slot": 7, "mints": {"ok": {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM}, "freeze": {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM, "freeze_authority": "X"},
+                                       "ext": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "token2022_extensions": ["transferFeeConfig"]},
+                                       "harmless": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "token2022_extensions": ["metadataPointer"]}, "failed": {"fetch_ok": False}}}))
     probs: list[str] = []
-    got = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, probs)
-    assert probs == [] and got == {"ok": False, "freeze": True, "ext": True, "harmless": False, "failed": True}
+    got, info = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, probs)
+    # the allowlist is empty until the census: every Token-2022 mint with an extension is strand-class
+    assert probs == [] and got == {"ok": False, "freeze": True, "ext": True, "harmless": True, "failed": True}
+    assert info["fetch_slot"] == 7 and info["failed_fetch"] == 1 and info["failed_fetch_share"] == pytest.approx(0.2)
 
 
 def test_mark_lookup_unpriced_exit_is_nan():
@@ -823,5 +862,5 @@ def test_not_decidable_comes_before_the_gate(real):
 
 def test_pinned_constants_are_the_exp_values(real):
     assert (rr.STOP_HOURS, rr.MIN_BLOCKS, rr.MIN_ATTEMPTS, rr.GATE_N, rr.GATE_DATES, rr.ALPHA_FAMILY, rr.EXIT_HORIZON_H) == (480, 20, 125, 100, 5, 0.025, 1)
-    assert rr.H0 == "2026-10-16T03" == rc.H0 and rr.UNIVERSE_EXITS_AT_MARKS_ONLY is True and rr.EARLIEST_W0 == "2026-10-18T01" and rr.SEND_FEE_160K == 160_000 and FZ.SEND_FEE_DECIDING == 505_000 and FZ.RENT_DECIDING == 0
+    assert rr.H0 == "2026-10-16T03" == rc.H0 and rr.UNIVERSE_EXITS_AT_MARKS_ONLY is True and rr.EARLIEST_W0 == "2026-10-18T03" and rr.SEND_FEE_160K == 160_000 and FZ.SEND_FEE_DECIDING == 505_000 and FZ.RENT_DECIDING == 0
     assert FZ.K_ROUNDING == "round" and FZ.LATENCIES_S == (1.3, 1.9) and rr.EXTRA_TRADE_HOURS == 2

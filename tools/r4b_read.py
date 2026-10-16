@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +68,7 @@ SCHEMA = "r4b_read_v1"
 ROOT = Path(__file__).resolve().parents[1]
 EXP_FILE = ROOT / "EXP" / "EXP-027-r4b-walk2-prereg.md"
 DEFAULT_OUT = Path("/data/mal/r4b")
+PINNED_WALK_DIR = "/data/mal/blocks/forward-1016"  # R5: EXP-027 section 3.4 allows only this dataset directory (resolved); the line EXP027_WALK_DIR must equal it
 READS = "READS.jsonl"
 LOCK = "READ.lock"
 RESULT = "read-result.json"
@@ -80,7 +82,7 @@ EXTRA_TRADE_HOURS = 2  # hours after E's exit hour that are sealed and read (all
 EXIT_HORIZON_H = 1
 H0 = "2026-10-16T03"  # the count job's creates start (tools/r4b_count.H0); 10-16T01/T02 are never opened by the read
 UNIVERSE_EXITS_AT_MARKS_ONLY = True  # (f) the book is hourly: a token that leaves the universe between marks is sold at the NEXT mark by the rank / gap rule (xs_book), never in between
-EARLIEST_W0 = "2026-10-18T01"
+EARLIEST_W0 = "2026-10-18T03"  # R6: creates start at H0 = 10-16T03; the 48 h universe ramp completes at 10-18T03, so no earlier mark has a complete universe
 BLOCK_S = 86400
 MARK_S = 3600
 D3_DROP_S = 600  # decision rows with T < block_time(s0) + 600 s are dropped
@@ -89,10 +91,16 @@ GATE_DATES = 5
 ALPHA_FAMILY = 0.025
 SEND_FEE_160K = 160_000
 LP_TOLS = (1e-6, 1e-2)
-CLOSE_BLOCKING_EXT = frozenset({"transferFeeConfig", "transferHook", "confidentialTransferMint", "nonTransferable", "permanentDelegate", "mintCloseAuthority",
-                                "defaultAccountState", "pausableConfig"})  # report-only list is in the result; pinned here, QP to confirm
 LATS = FZ.LATENCIES_S
 LAT_REPORT_LONG = 4.0
+DEADLINE_HOURS = 48  # EXP027_DEADLINE = E + 48 h; a read that starts (or forms its verdict) at or after it is NOT_DECIDABLE (section 7.1.3)
+E1_STAKE_LAMPORTS = 50_000_000  # R8: the E1 live-vs-sim gap was measured at this stake
+E1_SCALE = float(FZ.STAKE_LAMPORTS) / E1_STAKE_LAMPORTS  # 250,000,000 / 50,000,000 = 5, fixed in code; the record cannot change it
+SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+# R11: deny by default. A Token-2022 mint is NOT strand-class only if EVERY extension is in this set. Empty until an outcome-blind RPC census of pre-walk
+# graduations fills it, before W0, in a change that also moves this file's pinned sha256.
+TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset()
 CODE_MODULES = ("r4b_frozen", "r4b_score", "r4b_book", "r4b_features", "r4b_layout", "r4b_count", "r4b_read")
 ARTIFACT_NAMES = tuple(FZ.ARTIFACT_MD5)
 
@@ -102,6 +110,7 @@ REQUIRED_KEYS = (
     # lines the manager adds at registration / before the read (the draft has them only as TO FILL prose)
     "EXP027_W0", "EXP027_K", "EXP027_DECODER_REF", "EXP027_TIERS_SHA256", "EXP027_E1_RECORD", "EXP027_INPUT_VIEWS", "EXP027_TRIES_ENTRY", "EXP027_MINT_ACCOUNTS",
     "EXP027_FEE_ARM", "EXP027_E_A_MD5", "EXP027_E_B_MD5", "EXP027_E_C_MD5", "EXP027_E_D_MD5",
+    "EXP027_WALK_DIR", "EXP027_SELL_BUILDER", "EXP027_A3_RECORD",  # R5, R7, R10
 ) + tuple(f"EXP027_SHA256_{m.upper()}" for m in CODE_MODULES)
 HEX64, HEX32 = re.compile(r"^[0-9a-f]{64}$"), re.compile(r"^[0-9a-f]{32}$")
 
@@ -172,9 +181,15 @@ def exp_lines(text: str) -> tuple[dict[str, str], list[str]]:
     return out, probs
 
 
-def exp_clean_against_head(exp_file: Path = EXP_FILE) -> list[str]:
-    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", "HEAD", "--", str(exp_file)], stdin=subprocess.DEVNULL, timeout=60)
-    return [] if r.returncode == 0 else [f"{exp_file.name} differs from HEAD"]
+def exp_clean_against_head(exp_file: Path = EXP_FILE, repo: Path = ROOT) -> list[str]:
+    """The EXP must exist, be TRACKED by git and equal HEAD. `git diff --quiet HEAD` alone returns 0 for an untracked or a missing file (QP R4), so tracking is checked first."""
+    if not Path(exp_file).exists():
+        return [f"{Path(exp_file).name} does not exist"]
+    tracked = subprocess.run(["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", str(exp_file)], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    if tracked.returncode != 0:
+        return [f"{Path(exp_file).name} is not tracked by git (git ls-files --error-unmatch failed)"]
+    r = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--", str(exp_file)], stdin=subprocess.DEVNULL, timeout=60)
+    return [] if r.returncode == 0 else [f"{Path(exp_file).name} differs from HEAD"]
 
 
 def parse_hour(s: str) -> datetime | None:
@@ -202,6 +217,8 @@ def pin_problems(v: Mapping[str, str], code_dir: Path) -> tuple[list[str], dict[
         probs.append("EXP027_SEND_FEE_LAMPORTS does not state 505000 / 160000")
     if not v.get("EXP027_RENT_DECIDING", "").startswith("0 "):
         probs.append("EXP027_RENT_DECIDING is not 0 per filled trip (rent deciding is not what this tool prices)")
+    if f"{DEADLINE_HOURS} h" not in v.get("EXP027_DEADLINE", ""):
+        probs.append(f"EXP027_DEADLINE does not state E + {DEADLINE_HOURS} h")
     w0 = parse_hour(v.get("EXP027_W0", ""))
     last = parse_hour(v.get("EXP027_LAST_W0", ""))
     if w0 is None:
@@ -267,8 +284,54 @@ def load_e1(v: Mapping[str, str], probs: list[str]) -> dict[str, Any] | None:
     if not isinstance(rbar, (int, float)) or isinstance(rbar, bool) or not math.isfinite(rbar):
         probs.append("E1 record has no numeric pnl_gap_lamports_live_minus_sim_mean")
         return None
-    scale = float(d.get("scale_to_stake", 5.0))  # 0.05 SOL measured, linear to 0.25 SOL (x5), QP-4
+    if d.get("stake_lamports") != E1_STAKE_LAMPORTS or isinstance(d.get("stake_lamports"), bool):
+        probs.append(f"E1 record stake_lamports is {d.get('stake_lamports')!r} (need {E1_STAKE_LAMPORTS}: the scale to the 0.25 SOL stake is fixed at {E1_SCALE:g} in code)")
+        return None
+    scale = E1_SCALE  # R8: never read from the record
     return {"n": n, "rbar_lamports": float(rbar), "scale": scale, "penalty_lamports": max(0.0, -scale * float(rbar)), "path": str(p), "sha256": split_pair(v["EXP027_E1_RECORD"])[1]}
+
+
+def load_sell_builder(v: Mapping[str, str], probs: list[str]) -> dict[str, str] | None:
+    """R7: rent 0 holds only because the sell tx closes the token ATA (EXP027_RENT_DECIDING condition i). The sell-builder file is pinned path@sha256, computed and matched."""
+    p = pinned_file(v["EXP027_SELL_BUILDER"], "sell builder", probs)
+    return None if p is None else {"path": str(p), "sha256": split_pair(v["EXP027_SELL_BUILDER"])[1]}
+
+
+def parse_iso(s: Any) -> datetime | None:
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_a3(v: Mapping[str, str], w0: datetime, e: datetime, probs: list[str]) -> list[dict[str, Any]] | None:
+    """R10: the A3 structure-monitor record (EXP section 7.1.6). {schema, checked_from, checked_through, halts: [{at, reason}]}. It must cover [W0, E]; a halt with W0 <= at <= E
+    makes the read NOT_DECIDABLE (returned here; the read writes that result after the lock). An unparsable record refuses."""
+    p = pinned_file(v["EXP027_A3_RECORD"], "A3 record", probs)
+    if p is None:
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        probs.append(f"A3 record {p} is not JSON")
+        return None
+    lo, hi = parse_iso(d.get("checked_from")), parse_iso(d.get("checked_through"))
+    halts = d.get("halts")
+    if lo is None or hi is None or not isinstance(halts, list):
+        probs.append("A3 record needs checked_from, checked_through (YYYY-MM-DDTHH:MM:SSZ) and a halts list")
+        return None
+    if lo > w0 or hi < e:
+        probs.append(f"A3 record covers [{iso(lo)}, {iso(hi)}], not [W0 {iso(w0)}, E {iso(e)}]")
+        return None
+    inside = []
+    for h in halts:
+        at = parse_iso(h.get("at")) if isinstance(h, dict) else None
+        if at is None:
+            probs.append(f"A3 record has a halt without a parsable 'at': {h!r}")
+            return None
+        if w0 <= at <= e:
+            inside.append({"at": iso(at), "reason": h.get("reason")})
+    return inside
 
 
 def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> dict[str, str]:
@@ -290,17 +353,41 @@ def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> di
     return out
 
 
-def load_mint_accounts(v: Mapping[str, str], probs: list[str]) -> dict[str, bool] | None:
-    """{mint: strand_class}. A mint absent from the file, a failed fetch, a freeze authority or a close-blocking Token-2022 extension is strand-class."""
+def mint_is_strand_class(r: Any, allow: frozenset | None = None) -> bool:
+    """R11, deny by default. NOT strand-class only if the fetch succeeded, there is no freeze authority, and the owner program is SPL Token, or Token-2022 with an extension
+    list (a list, possibly empty) every member of which is in the pinned allowlist. Anything else (unknown owner, missing field, malformed entry) is strand-class."""
+    allow = TOKEN2022_EXT_ALLOWLIST if allow is None else allow
+    if not isinstance(r, dict) or r.get("fetch_ok") is not True or r.get("freeze_authority"):
+        return True
+    owner = r.get("owner_program")
+    if owner == SPL_TOKEN_PROGRAM:
+        return False
+    if owner == TOKEN_2022_PROGRAM:
+        ext = r.get("token2022_extensions")
+        return not (isinstance(ext, list) and all(isinstance(x, str) and x in allow for x in ext))
+    return True
+
+
+def load_mint_accounts(v: Mapping[str, str], probs: list[str]) -> tuple[dict[str, bool], dict[str, Any]] | None:
+    """({mint: strand_class}, info). Schema: {fetch_slot, mints: {mint: {fetch_ok, owner_program, freeze_authority, token2022_extensions}}}. A mint that is not in the file is
+    strand-class (the read counts those, no silent default). info carries fetch_slot and the failed-fetch share."""
     p = pinned_file(v["EXP027_MINT_ACCOUNTS"], "mint-account file", probs)
     if p is None:
         return None
     d = json.loads(p.read_text(encoding="utf-8"))
-    out = {}
-    for mint, r in (d.get("mints") or {}).items():
-        ext = set(r.get("token2022_extensions") or [])
-        out[mint] = (not r.get("fetch_ok", False)) or bool(r.get("freeze_authority")) or bool(ext & CLOSE_BLOCKING_EXT)
-    return out
+    slot = d.get("fetch_slot")
+    if not isinstance(slot, int) or isinstance(slot, bool):
+        probs.append("mint-account file has no integer fetch_slot")
+        return None
+    mints = d.get("mints")
+    if not isinstance(mints, dict):
+        probs.append("mint-account file has no mints object")
+        return None
+    out = {m: mint_is_strand_class(r) for m, r in mints.items()}
+    failed = sum(1 for r in mints.values() if not isinstance(r, dict) or r.get("fetch_ok") is not True)
+    info = {"fetch_slot": slot, "mints_in_file": len(mints), "failed_fetch": failed, "failed_fetch_share": (failed / len(mints)) if mints else None,
+            "strand_class_in_file": int(sum(out.values())), "token2022_ext_allowlist": sorted(TOKEN2022_EXT_ALLOWLIST), "path": str(p), "sha256": split_pair(v["EXP027_MINT_ACCOUNTS"])[1]}
+    return out, info
 
 
 def fee_arm_decision(v: Mapping[str, str], started: datetime, probs: list[str]) -> dict[str, Any]:
@@ -408,6 +495,7 @@ class Deps:
     canonical_fn: rl.CanonFn | None = None
     boosters_fn: Callable[[str | None], list] = rs.load_boosters
     models_check_fn: Callable[[str | None], list[str]] | None = None
+    walk_pin: str = PINNED_WALK_DIR  # R5 (tests point it at their synthetic walk dir)
     head_fn: Callable[[], str] = lambda: subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
     stderr: Callable[[str], None] = lambda s: print(s, file=sys.stderr, flush=True)
     memory_limit: str = "6GB"
@@ -445,6 +533,10 @@ class Plan:
     strand: dict[str, bool]
     inputs: dict[str, str]
     sph: dict[str, float] = field(default_factory=dict)
+    deadline: datetime | None = None
+    sell_builder: dict[str, str] = field(default_factory=dict)
+    mint_info: dict[str, Any] = field(default_factory=dict)
+    a3_halts: list = field(default_factory=list)
 
 
 # ---- preflight (nothing is written; no outcome row is opened) ---------------------------------------------------------------------------
@@ -471,12 +563,17 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
     probs += deps.decoder_fn(v["EXP027_DECODER_REF"])
     e1 = load_e1(v, probs)
     inputs = check_inputs(v, paths.tries, probs)
-    strand = load_mint_accounts(v, probs)
+    mint_loaded = load_mint_accounts(v, probs)
+    strand, mint_info = mint_loaded if mint_loaded is not None else (None, {})
+    sell = load_sell_builder(v, probs)
     fee = fee_arm_decision(v, started, probs)
+    if v["EXP027_WALK_DIR"] != deps.walk_pin or Path(paths.walk_dir).resolve() != Path(deps.walk_pin).resolve() or Path(v["EXP027_WALK_DIR"]).resolve() != Path(deps.walk_pin).resolve():
+        probs.append(f"walk dir {Path(paths.walk_dir).resolve()} / EXP027_WALK_DIR {v['EXP027_WALK_DIR']!r} is not the pinned dataset {deps.walk_pin}")
     if "w0" not in P:
         return None, fee, probs
     w0 = P["w0"]
     e = w0 + timedelta(hours=STOP_HOURS)
+    a3 = load_a3(v, w0, e, probs)
     if deps.now_fn() < e:
         probs.append(f"the calendar stop E = {ef.hour_key(e)} has not passed")
     end = e + timedelta(hours=EXIT_HORIZON_H + EXTRA_TRADE_HOURS)
@@ -550,9 +647,9 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
             probs.append(f"hour {h}: slots-per-hour is unmeasurable")
         else:
             sph[h] = float(s)
-    if probs or e1 is None or strand is None or count_cfg is None:
+    if probs or e1 is None or strand is None or count_cfg is None or sell is None or a3 is None:
         return None, fee, probs
-    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph), fee, probs
+    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph, e + timedelta(hours=DEADLINE_HOURS), sell, mint_info, a3), fee, probs
 
 
 # ---- the computation -----------------------------------------------------------------------------------------------------------------------
@@ -678,9 +775,12 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
             sl = U["slot"][a:b]
             res = rf.mint_features(prep, const, None if pd.isna(r.ch) else r.ch, sl, U["bt"][a:b], U["isbuy"][a:b], U["sol"][a:b], U["tok"][a:b], U["q"][a:b],
                                    U["b"][a:b], U["th"][a:b], vq=U["vq"][a:b], seg_end=None, grads_rule="asof_pda_first_print", mint_filters="asof", return_state=True)
-            lpd = lp_discontinuities(U["isbuy"][a:b], U["tok"][a:b], U["b"][a:b], np.full(b - a, mid))
-            for kk in rep["lp"]:
-                rep["lp"][kk] += lpd[kk]
+            try:  # report-only: an LP-count failure is recorded (report step lp_discontinuities), never raised into the deciding pass
+                lpd = lp_discontinuities(U["isbuy"][a:b], U["tok"][a:b], U["b"][a:b], np.full(b - a, mid))
+                for kk in rep["lp"]:
+                    rep["lp"][kk] += lpd[kk]
+            except Exception as exc:  # noqa: BLE001
+                rep.setdefault("lp_error", f"{type(exc).__name__}: {exc}")
             if res is None:
                 continue
             T = res.I[:, 1]
@@ -805,7 +905,12 @@ def decide(cells: Mapping[str, Mapping[str, Any]], N: int, A: int, keys_ok: bool
 
 
 def diverged_result(plan: Plan, fee: Mapping[str, Any], reasons: Sequence[str]) -> dict[str, Any]:
-    return {"schema": SCHEMA, "verdict": "NOT_DECIDABLE", "reasons": ["count_build_divergence: " + r for r in reasons], "gate": {"pass": False, "decision_p": 1.0}, "N_blocks_with_attempts": 0,
+    return nd_result(plan, fee, ["count_build_divergence: " + r for r in reasons])
+
+
+def nd_result(plan: Plan, fee: Mapping[str, Any], reasons: Sequence[str]) -> dict[str, Any]:
+    """A NOT_DECIDABLE result that never opened an outcome row (late start, A3 halt) or whose build contradicted the count job."""
+    return {"schema": SCHEMA, "verdict": "NOT_DECIDABLE", "reasons": list(reasons), "gate": {"pass": False, "decision_p": 1.0}, "N_blocks_with_attempts": 0,
             "A_attempts": 0, "decision_p": 1.0, "alpha": ALPHA_FAMILY / plan.k, "k": plan.k, "w0": ef.hour_key(plan.w0), "e": ef.hour_key(plan.e), "cells": {}, "fee_arm": dict(fee),
             "report_only": {}, "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes"}
 
@@ -871,13 +976,87 @@ def dual_report(ao: list, fo: list, tr_mid, tr_T0, cell_pnl) -> dict[str, Any]:
     return dual
 
 
-def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps, on_verdict: Callable[[dict], None] | None = None) -> dict[str, Any]:
-    """Post-lock: build, score, book, price, stats, decision. Returns the result dict (nothing is written here except scratch)."""
+BLOCK_SUM_KEYS = ("block_sum_mean_sol", "block_sum_sd_sol", "t_block_sum", "p_block_sum")  # report-only (EXP 3.5): moved out of the deciding cells into the report file
+
+
+@dataclass
+class ReadCtx:
+    """What the report-only steps need after the verdict is written. Owns the scratch dir (removed by close())."""
+
+    scratch: Path
+    plan: Plan
+    fee: Mapping[str, Any]
+    deps: Deps
+    con: Any
+    rep: dict
+    tr: dict
+    tr_mid: np.ndarray
+    tr_T0: np.ndarray
+    cell_pnl: dict
+    cells_full: dict
+    slot_s: dict
+    e1p: float
+    send: int
+    lk: dict
+    dkeys: dict
+    mid_of: dict
+    plan_hours: list
+
+    def close(self) -> None:
+        try:
+            self.con.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if not self.deps.keep_scratch:
+            shutil.rmtree(self.scratch, ignore_errors=True)
+
+
+def clean_scratch(out_dir: Path) -> None:
+    """The scratch dir is pinned (out_dir/scratch). An OOM-killed run skips every `finally`; the read only gets here when no READS line exists, so nothing of value is in it."""
+    shutil.rmtree(Path(out_dir) / "scratch", ignore_errors=True)
+
+
+def structure_precheck(paths: Paths, plan: Plan, deps: Deps) -> None:
+    """R9 (QP rules Q2): BEFORE the lock, the structure-only build the count job repeats every hour, over the whole allowlist [H0, E + 3h) with trade_end E + 3h. It parses no side,
+    amount or token column. A structure refusal here refuses the read (nothing spent); the same refusal after the lock is count_build_divergence."""
+    out_dir = Path(paths.out_dir)
+    scratch = out_dir / "scratch"
+    if any(e.get("event") == "started" for e in reads_events(out_dir)):
+        raise ReadRefused(["a started line exists: the scratch dir is not cleaned and nothing is re-run"])
+    clean_scratch(out_dir)
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    end = ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1))
+    walk = Path(paths.walk_dir)
+    try:
+        stats = rl.build(walk, plan.hours[0], end, scratch, v_source="event", canonical_fn=deps.canonical_fn, problems_fn=deps.problems_fn, verify=deps.verify,
+                         memory_limit=deps.memory_limit, threads=deps.threads, tmp_dir=scratch / "tmp", structure_only=True, trade_end=end)
+        table = deps.verify if deps.verify is not None else ef.verified_hours(walk, strict_bad_lines=True)
+        _, probs = rc.structure_hour_lines(scratch, list(plan.hours), table, deps.sph_fn or rc.default_sph, walk, plan.count_cfg, stats)
+    except rl.LayoutRefused as exc:
+        raise ReadRefused(["structure pre-check (before the lock): " + r for r in exc.reasons]) from exc
+    finally:
+        if not deps.keep_scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+    if probs:
+        raise ReadRefused(["structure pre-check (before the lock): " + r for r in probs])
+
+
+def split_cells(cells: Mapping[str, Mapping[str, Any]]) -> tuple[dict, dict]:
+    deciding = {n: {k: v for k, v in s.items() if k not in BLOCK_SUM_KEYS} for n, s in cells.items()}
+    sums = {n: {k: s.get(k) for k in BLOCK_SUM_KEYS} for n, s in cells.items()}
+    return deciding, sums
+
+
+def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> tuple[dict[str, Any], ReadCtx | None]:
+    """Post-lock: build, score, book, price, stats, decision. Returns (deciding result, ctx for the report-only steps). Nothing is written except scratch. A failure here raises
+    (the caller writes `aborted`); a build that contradicts counts.jsonl returns a NOT_DECIDABLE count_build_divergence result and no ctx. Nothing report-only runs here
+    except the counters that fall out of the feature pass; every report-only computation is a ctx step."""
     out_dir = Path(paths.out_dir)
     scratch = out_dir / "scratch"
     shutil.rmtree(scratch, ignore_errors=True)
     w0, e = int(plan.w0.timestamp()), int(plan.e.timestamp())
     slot_s = slot_s_by_date(plan.sph)
+    con = None
     try:
         try:
             stats = rl.build(Path(paths.walk_dir), plan.hours[0], ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)), scratch, v_source="event", canonical_fn=deps.canonical_fn,
@@ -913,74 +1092,146 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps, on_ve
         md5_bad = [t for t in lk if rc.keys_md5([(m_, t) for m_ in lk[t]]) != by_hour[t]["live_md5"] or len(lk[t]) != by_hour[t]["live_tokens"]
                    or sum(1 for n_ in lk[t].values() if n_ >= rc.MIN_PRINTS_DECISION) != by_hour[t]["decision_rows"]]
         keys_ok = not notsub and not md5_bad
-        gap = {}
-        for t in sorted(lk):
-            if w0 <= t <= e - MARK_S:
-                g = gap_by_cause(lk[t], dkeys.get(t, set()), rep["d3_keys"], mid_of, t)
-                gap[ef.hour_key(datetime.fromtimestamp(t, tz=timezone.utc))] = {"live": len(lk[t]), "decision_rows": len(dkeys.get(t, ())), "gap": len(lk[t]) - len(dkeys.get(t, ())), **g}
-        null_bt = {}
-        for h in plan.hours:
-            f = scratch / "ut" / f"{h}.parquet"
-            if f.exists():
-                null_bt[h] = int(con.sql(f"select count(*) from read_parquet('{f}') where bt is null").fetchone()[0])
         # the book
         bkr = bk.xs_book(T, mid, score)
         t1 = np.where(bkr["reason"] == "end", e, bkr["T1"])
         row = bkr["row"]
         tr_mid, tr_T0 = bkr["mid"], bkr["T0"]
         Qx, Bx = mark_lookup(R.marks, tr_mid, t1)
-        strand_class = np.array([plan.strand.get(mint_of[int(m)], True) for m in tr_mid], bool)
+        traded = [mint_of[int(m)] for m in tr_mid]
+        missing = sorted({m for m in traded if m not in plan.strand})  # R11: a mint absent from the record is strand-class, and counted
+        strand_class = np.array([plan.strand.get(m, True) for m in traded], bool)
         tr = {"ent": {lat: [concat([p[i] for p in R.ent[lat]])[row] for i in range(4)] for lat in R.ent}, "spot": concat(R.spot)[row], "Qx": Qx, "Bx": Bx, "strand_class": strand_class}
         send = int(fee["send"])
         e1p = float(plan.e1["penalty_lamports"])
-        variants = {"deciding": dict(send=send, rent=FZ.RENT_DECIDING, auto=True)}
-        report_variants = {"rent": dict(send=send, rent=FZ.RENT_REPORT, auto=True), "no_auto_stranded": dict(send=send, rent=FZ.RENT_DECIDING, auto=False),
-                           "send_55k": dict(send=FZ.SEND_FEE_REPORT, rent=FZ.RENT_DECIDING, auto=True)}
-        cells, cell_pnl, rep_cells = {}, {}, {}
+        dec_kw = dict(send=send, rent=FZ.RENT_DECIDING, auto=True)
+        cells_full, cell_pnl = {}, {}
         for lat in LATS:
-            pv = price_variant(tr, lat, e1_penalty=e1p, **variants["deciding"])
+            pv = price_variant(tr, lat, e1_penalty=e1p, **dec_kw)
             cell_pnl[lat] = pv
             for leg in ("flat", "press"):
-                cells[f"{leg}_{lat}"] = cell_stats(pv[leg], tr_T0, tr_mid, w0)
+                cells_full[f"{leg}_{lat}"] = cell_stats(pv[leg], tr_T0, tr_mid, w0)
+        cells, _ = split_cells(cells_full)
         press_gap = any(not np.isfinite(cell_pnl[lat]["press"]).all() for lat in LATS)
-        for name, kw in report_variants.items():
-            for lat in LATS:
-                pv = price_variant(tr, lat, e1_penalty=e1p, **kw)
-                for leg in ("flat", "press"):
-                    rep_cells[f"{name}:{leg}_{lat}"] = cell_stats(pv[leg], tr_T0, tr_mid, w0)
-        pv4 = price_variant(tr, LAT_REPORT_LONG, e1_penalty=e1p, **variants["deciding"])
-        for leg in ("flat", "press"):
-            rep_cells[f"lat4.0:{leg}_{LAT_REPORT_LONG}"] = cell_stats(pv4[leg], tr_T0, tr_mid, w0)
         blocks_with = int(len(np.unique((tr_T0 - w0) // BLOCK_S))) if len(tr_T0) else 0
         A = int(len(tr_T0))
         alpha = ALPHA_FAMILY / plan.k
         dec = decide(cells, blocks_with, A, keys_ok, press_gap, alpha)
-        con.close()
+        if deps.now_fn() >= plan.deadline:  # R3: the clock is checked again when the verdict is formed
+            dec = {**dec, "verdict": "NOT_DECIDABLE", "reasons": [f"deadline: the verdict was formed at or after E + {DEADLINE_HOURS} h ({iso(plan.deadline)})"] + list(dec["reasons"])}
         stranded = {f"{leg}_{lat}": int(cell_pnl[lat]["stranded"].sum()) for lat in LATS for leg in ("flat",)}
         res = {
             "schema": SCHEMA, "verdict": dec["verdict"], "reasons": dec["reasons"], "gate": dec["gate"], "N_blocks_with_attempts": blocks_with, "A_attempts": A,
             "decision_p": dec["gate"]["decision_p"], "alpha": alpha, "k": plan.k, "w0": ef.hour_key(plan.w0), "e": ef.hour_key(plan.e), "cells": cells,
             "fee_arm": dict(fee), "e1": plan.e1, "stack": {"send": send, "rent": FZ.RENT_DECIDING, "auto_stranded": True, "latencies": list(LATS), "k_rounding": FZ.K_ROUNDING},
-            "keys": {"marks": len(marks), "not_subset_marks": len(notsub), "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok, "live_vs_decision_gap_by_mark": gap},
+            "sell_builder": plan.sell_builder, "walk_dir": str(Path(paths.walk_dir).resolve()),
+            "keys": {"marks": len(marks), "not_subset_marks": len(notsub), "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok},
             "d3": {"dropped_rows": rep["d3_dropped"], "kept_pre_filter": rep["d3_kept_pre_filter"]}, "stranded_counts": stranded,
             "strand_class_trades": int(strand_class.sum()), "mints": rep["mints"], "mints_with_rows": rep["mints_with_rows"],
-            "report_only": {"asof_vs_frozen": None, "null_block_time_prints_by_hour": null_bt, "variants": rep_cells, "lp_discontinuities": rep["lp"], "slot_s_by_date": slot_s,
-                            "note": "rent, no-auto-stranded, 55k, 4.0 s, block sums (block_sum_* inside every cell), LP discontinuity counts: report only, never deciding"},
+            "mint_accounts": {**plan.mint_info, "traded_mints": len(set(traded)), "traded_mints_missing_from_record": len(missing), "traded_trades_on_missing_mints": int(sum(1 for m in traded if m in set(missing)))},
+            "report_only": {"files": "report-<step>.json and report-only.json in the out dir, written after this file; an error in a step is recorded there and never changes this file",
+                            "steps": [n for n, _ in REPORT_STEP_NAMES]},
             "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes",
         }
-        if on_verdict is not None:
-            on_verdict(res)  # the verdict is printed BEFORE the report-only dual run starts (and before any result file)
-        ao, fo = dual_rows(scratch, plan, deps, rc.UNIVERSE_MIN_MBT)
-        res["report_only"]["asof_vs_frozen"] = dual_report(ao, fo, tr_mid, tr_T0, cell_pnl)
-        return res
+        ctx = ReadCtx(scratch, plan, fee, deps, con, rep, tr, tr_mid, tr_T0, cell_pnl, cells_full, slot_s, e1p, send, lk, dkeys, mid_of, list(plan.hours))
+        return res, ctx
     except CountBuildDivergence as exc:
-        res = diverged_result(plan, fee, exc.reasons)
-        if on_verdict is not None:
-            on_verdict(res)
-        return res
-    finally:
+        if con is not None:
+            con.close()
         if not deps.keep_scratch:
             shutil.rmtree(scratch, ignore_errors=True)
+        return diverged_result(plan, fee, exc.reasons), None
+    except BaseException:
+        if con is not None:
+            con.close()
+        if not deps.keep_scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+        raise
+
+
+# ---- report-only steps: each runs alone, in its own try/except, and writes its own file --------------------------------------------------------------
+REPORT_STEP_NAMES = (("rent", None), ("no_auto_stranded", None), ("send_55k", None), ("lat4.0", None), ("block_sums", None), ("lp_discontinuities", None),
+                     ("null_block_time", None), ("gap_table", None), ("asof_vs_frozen", None))
+
+
+def report_steps(c: ReadCtx) -> list[tuple[str, Callable[[], Any]]]:
+    w0 = int(c.plan.w0.timestamp())
+
+    def variant(kw: dict, lats: Sequence[float] = LATS) -> Callable[[], Any]:
+        def go() -> Any:
+            out = {}
+            for lat in lats:
+                pv = price_variant(c.tr, lat, e1_penalty=c.e1p, **kw)
+                for leg in ("flat", "press"):
+                    out[f"{leg}_{lat}"] = cell_stats(pv[leg], c.tr_T0, c.tr_mid, w0)
+            return out
+        return go
+
+    def block_sums() -> Any:
+        return split_cells(c.cells_full)[1]
+
+    def lp() -> Any:
+        if "lp_error" in c.rep:
+            raise RuntimeError(c.rep["lp_error"])
+        return c.rep["lp"]
+
+    def null_bt() -> Any:
+        out = {}
+        for h in c.plan_hours:
+            f = c.scratch / "ut" / f"{h}.parquet"
+            if f.exists():
+                out[h] = int(c.con.sql(f"select count(*) from read_parquet('{f}') where bt is null").fetchone()[0])
+        return out
+
+    def gap_table() -> Any:
+        e = int(c.plan.e.timestamp())
+        gap = {}
+        for t in sorted(c.lk):
+            if w0 <= t <= e - MARK_S:
+                g = gap_by_cause(c.lk[t], c.dkeys.get(t, set()), c.rep["d3_keys"], c.mid_of, t)
+                gap[ef.hour_key(datetime.fromtimestamp(t, tz=timezone.utc))] = {"live": len(c.lk[t]), "decision_rows": len(c.dkeys.get(t, ())), "gap": len(c.lk[t]) - len(c.dkeys.get(t, ())), **g}
+        return gap
+
+    def dual() -> Any:
+        ao, fo = dual_rows(c.scratch, c.plan, c.deps, rc.UNIVERSE_MIN_MBT)
+        return dual_report(ao, fo, c.tr_mid, c.tr_T0, c.cell_pnl)
+
+    return [("rent", variant(dict(send=c.send, rent=FZ.RENT_REPORT, auto=True))),
+            ("no_auto_stranded", variant(dict(send=c.send, rent=FZ.RENT_DECIDING, auto=False))),
+            ("send_55k", variant(dict(send=FZ.SEND_FEE_REPORT, rent=FZ.RENT_DECIDING, auto=True))),
+            ("lat4.0", variant(dict(send=c.send, rent=FZ.RENT_DECIDING, auto=True), (LAT_REPORT_LONG,))),
+            ("block_sums", block_sums), ("lp_discontinuities", lp), ("null_block_time", null_bt), ("gap_table", gap_table),
+            ("asof_vs_frozen", dual)]  # the doubled feature pass is last
+
+
+def run_report_only(out_dir: Path, c: ReadCtx, token: str, steps: Sequence[tuple[str, Callable[[], Any]]] | None = None) -> dict[str, Any]:
+    """After `completed`. Every step is its own try/except. A step writes report-<name>.json (O_EXCL, atomic) with its data or its error, a `report_completed` /
+    `report_failed` ledger line, and an entry in report-only.json. Nothing here can change the deciding result or its ledger line."""
+    index: dict[str, Any] = {}
+    for name, fn in (steps if steps is not None else report_steps(c)):
+        fname = "report-" + name.replace(".", "_") + ".json"
+        try:
+            data = fn()
+            write_once(out_dir / fname, {"schema": SCHEMA + "_report", "step": name, "token": token, "status": "ok", "data": data})
+            index[name] = {"status": "ok", "file": fname}
+            ledger_event(out_dir, "report_completed", token=token, step=name, file=fname)
+        except Exception as exc:  # noqa: BLE001 - report-only: recorded, never raised
+            err = f"{type(exc).__name__}: {exc}"
+            index[name] = {"status": "failed", "error": err, "file": None}
+            try:
+                write_once(out_dir / fname, {"schema": SCHEMA + "_report", "step": name, "token": token, "status": "failed", "error": err})
+                index[name]["file"] = fname
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ledger_event(out_dir, "report_failed", token=token, step=name, error=err)
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        write_once(out_dir / "report-only.json", {"schema": SCHEMA + "_report_index", "token": token, "report_only": index})
+    except Exception:  # noqa: BLE001
+        pass
+    return index
 
 
 # ---- orchestration ------------------------------------------------------------------------------------------------------------------------
@@ -994,48 +1245,90 @@ def emit_verdict(res: Mapping[str, Any], deps: Deps) -> None:
     deps.stderr("\n".join(lines))
 
 
+def write_once(path: Path, obj: Any) -> Path:
+    """Atomic, no-overwrite write (Rev1). Serialize FIRST (an unserializable value raises before any file exists), write a temp file in the same dir, fsync it, then os.link it to
+    the final name (fails with FileExistsError if the name exists: O_EXCL semantics), drop the temp name and fsync the dir. The final name is never half-written."""
+    path = Path(path)
+    text = json.dumps(obj, sort_keys=True, indent=1, default=_json_default) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o444)
+        os.link(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    return path
+
+
 def write_result(out_dir: Path, res: Mapping[str, Any]) -> Path:
-    p = out_dir / RESULT
-    fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(res, sort_keys=True, indent=1, default=_json_default) + "\n")
-    return p
+    return write_once(Path(out_dir) / RESULT, res)
 
 
 def read(paths: Paths, deps: Deps | None = None) -> dict[str, Any]:
-    """The whole read. Raises ReadRefused (nothing written) on a preflight refusal. After the lock, an exception writes an `aborted` line and re-raises."""
+    """The whole read. Raises ReadRefused (nothing written) on a preflight or structure-precheck refusal. After the lock, an exception before `completed` writes an `aborted` line
+    and re-raises. Order after the lock: verdict to stderr -> deciding result file -> `completed` -> report-only steps (each isolated; they cannot undo the above)."""
     deps = deps or Deps()
     out_dir = Path(paths.out_dir)
     started = deps.now_fn()
     plan, fee, reasons = preflight(paths, deps, started)
     if reasons or plan is None:
         raise ReadRefused(reasons or ["preflight failed"])
+    structure_precheck(paths, plan, deps)  # R9: refuses (nothing spent) on any structure refusal over [H0, E + 3h)
     token = take_lock(out_dir)
     ledger_event(out_dir, "started", token=token, head=deps.head_fn(), job=os.environ.get("MISCUSI_JOB_ID", ""), w0=ef.hour_key(plan.w0), e=ef.hour_key(plan.e), k=plan.k,
-                 send=fee["send"], fee_arm=fee.get("source"), code_sha256=plan.v and {m: plan.v[f"EXP027_SHA256_{m.upper()}"] for m in CODE_MODULES}, inputs=plan.inputs)
+                 send=fee["send"], fee_arm=fee.get("source"), code_sha256=plan.v and {m: plan.v[f"EXP027_SHA256_{m.upper()}"] for m in CODE_MODULES}, inputs=plan.inputs,
+                 sell_builder=plan.sell_builder, walk_dir=str(Path(paths.walk_dir).resolve()))
+    ctx: ReadCtx | None = None
     try:
-        res = run_read(paths, plan, fee, deps, on_verdict=lambda r: emit_verdict(r, deps))  # prints the verdict BEFORE any result file and before the dual run
+        early = []
+        if started >= plan.deadline:
+            early.append(f"deadline: the read started at {iso(started)}, at or after E + {DEADLINE_HOURS} h ({iso(plan.deadline)}); no outcome row was opened")
+        if plan.a3_halts:
+            early.append(f"a3_halt: {len(plan.a3_halts)} structure-monitor halt(s) inside [W0, E] (EXP 7.1.6): {plan.a3_halts[:3]}; no outcome row was opened")
+        if early:
+            res = nd_result(plan, fee, early)
+        else:
+            res, ctx = run_deciding(paths, plan, fee, deps)
         res["token"] = token
+        emit_verdict(res, deps)  # the verdict is printed BEFORE any result file
         rp = write_result(out_dir, res)
         ledger_event(out_dir, "completed", token=token, verdict=res["verdict"], result=str(rp), result_sha256=sha256_file(rp), N=res["N_blocks_with_attempts"], A=res["A_attempts"])
-        return res
     except BaseException as exc:  # noqa: BLE001 - the read is spent whatever happened
+        if ctx is not None:
+            ctx.close()
         reasons = exc.reasons if isinstance(exc, ReadRefused) else [f"{type(exc).__name__}: {exc}"]
         ledger_event(out_dir, "aborted", token=token, reasons=reasons)
         raise
+    try:
+        if ctx is not None:
+            res["report_only_index"] = run_report_only(out_dir, ctx, token)  # in memory only; the file on disk is already final
+    finally:
+        if ctx is not None:
+            ctx.close()
+    return res
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--walk-dir", required=True, help="Forward walk 2 dataset dir (D/): PATH of a pinned input")
+    ap.add_argument("--walk-dir", default=PINNED_WALK_DIR, help=f"Forward walk 2 dataset dir; anything but {PINNED_WALK_DIR} is refused")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT), help="READS.jsonl, READ.lock, result file")
     ap.add_argument("--counts-dir", default=str(DEFAULT_OUT), help="the count job's dir (counts.jsonl, config.json)")
-    ap.add_argument("--exp-file", default=str(EXP_FILE))
-    ap.add_argument("--models-dir", default=None)
     ap.add_argument("--memory-limit", default="6GB")
     ap.add_argument("--threads", type=int, default=4)
-    a = ap.parse_args(argv)  # no flag changes a pinned value
-    paths = Paths(Path(a.walk_dir), Path(a.out_dir), Path(a.counts_dir), Path(a.exp_file), TRIES, Path(a.models_dir) if a.models_dir else None)
+    a = ap.parse_args(argv)  # no flag changes a pinned value; the EXP file and the models dir are repo constants
+    paths = Paths(Path(a.walk_dir), Path(a.out_dir), Path(a.counts_dir))
     deps = Deps(memory_limit=a.memory_limit, threads=a.threads)
     try:
         res = read(paths, deps)
