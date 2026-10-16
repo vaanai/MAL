@@ -67,7 +67,7 @@ Both routes use the slot above. They differ only on §2's reserved-backward-bloc
 
 DEC-014 rule 1 allows one owner per block and catalog rule 5 allows no overlapping ranged rows, so the walk-2 row cannot take three owners. The rule, also written into `docs/HOLDOUT_LEDGER.md` (Rules, item 5):
 
-- The Forward walk 2 row's Owner cell stays "reserved". Each push-family book is recorded as a **counted-window sub-entry in that row's Status cell** (as the DEC-023 and DEC-025 counted readers are), not as a new table row: EXP number, W0, window end, exit horizon, k at registration. The edit is made **in that book's own pre-registration PR**, which does not merge without it.
+- The Forward walk 2 row's Owner cell stays "reserved". Each push-family book is recorded as a **counted-window sub-entry in that row's Status cell** (as the DEC-023 and DEC-025 counted readers are), not as a new table row: EXP number, W0, the window cap (the earlier of W0 + 21 days and 2026-11-16T01 minus the exit horizon), exit horizon, k at registration; the actual stop instant is added when the outcome-blind stop rule fires (it cannot be known at registration). The edit is made **in that book's own pre-registration PR**, which does not merge without it.
 - Windows may overlap in time: the books share one slot and one family alpha. This is a push-family exception to one owner per block. No window, its exit horizon included, ends after **2026-11-16T01**.
 - **m.** Each push-family EXP that reads the 27 non-P1 dates adds 1 to m in the same PR.
 - The first push-family read instant (freezing k) is recorded in the Status cell when it happens.
