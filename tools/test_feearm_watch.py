@@ -163,5 +163,35 @@ class TestWatch(Run):
         self.assertIn("over_cap=true", out)
 
 
+class TestStrictlyReadOnly(unittest.TestCase):
+    """Code-level guard: the tool may write only to --out and may not spawn processes (reports only; STOP/HALT/units are Helm's)."""
+
+    def test_no_subprocess_no_write_outside_out(self):
+        import ast
+        src = Path(fw.__file__).read_text()
+        tree = ast.parse(src)
+        imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        imported |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertFalse(imported & {"subprocess", "os", "shutil", "socket", "urllib", "requests", "ctypes", "pty", "tempfile"}, imported)
+        calls = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                f = n.func
+                calls.append((f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", ""), n))
+        names = {c[0] for c in calls}
+        self.assertFalse(names & {"system", "popen", "Popen", "run", "call", "check_call", "check_output", "exec", "eval", "__import__",
+                                  "unlink", "touch", "mkdir", "rename", "replace", "remove", "rmdir", "write_bytes", "chmod", "symlink_to"}, names)
+        writes = [n for nm, n in calls if nm == "write_text"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(ast.unparse(writes[0].func.value), "args.out")
+        for nm, n in calls:  # every open() / Path.open() is read-only (no mode argument, or "r")
+            if nm == "open":
+                modes = [a.value for a in n.args[:2] if isinstance(a, ast.Constant)] + [k.value.value for k in n.keywords if k.arg == "mode"]
+                self.assertTrue(all(m == "r" for m in modes), modes)
+        code = src.replace(ast.get_docstring(tree, clean=False) or "", "")
+        for banned in ("STOP\"", "HALT", "systemctl", "/var/lib/mal-live", "/etc/mal-probe", "touch"):
+            self.assertNotIn(banned, code)
+
+
 if __name__ == "__main__":
     unittest.main()

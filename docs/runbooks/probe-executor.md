@@ -232,9 +232,9 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 sudo -n dd iflag=nofollow status=none if=/var/lib/mal-live/state-live-feearm.json of="$T/state.json"
 sudo -n dd iflag=nofollow status=none if=/var/lib/mal-live/probe-fills-feearm.jsonl of="$T/ledger.jsonl"
 B=""; [ -n "${BAL:-}" ] && B="--balance-lamports $BAL --start-balance-lamports $START"
-rc=0; /data/mal/venv/bin/python -I "$HOME/MAL/tools/feearm_watch.py" --state "$T/state.json" --ledger "$T/ledger.jsonl" $B || rc=$?
-if [ "$rc" = 3 ]; then sudo -n touch /var/lib/mal-live/STOP; echo "FEEARM_WATCH STOP placed"; fi
-exit "$rc"
+/data/mal/venv/bin/python -I "$HOME/MAL/tools/feearm_watch.py" --state "$T/state.json" --ledger "$T/ledger.jsonl" $B
 ```
 
-(`python3 -I` works the same; the tool needs only the standard library.) Alerts are rows of the one ledger (`"kind":"alert"`), so `--alerts` is only for a separate copy. On exit 3 the job touches the wallet-wide `STOP` (no new buys; exits and sells keep running) and reports; it never touches `HALT`. Per Amendment 2, the manager places STOP only together with a message to the owner, so the job's report is followed by that message. Exit 2 places nothing: investigate the input. Do not report P&L of the probe's intents from this output or the ledger.
+(`python3 -I` works the same; the tool needs only the standard library; the job's exit code is the tool's, since it is the last command.) Alerts are rows of the one ledger (`"kind":"alert"`), so `--alerts` is only for a separate copy.
+
+**Read-only: reports only; STOP/HALT/unit decisions are Helm's.** The job never touches `STOP` or `HALT`, never stops or restarts a unit, and uses `sudo` only for the two read-only `dd` copies. On exit 3 it only prints `FEEARM_WATCH STOP_RECOMMENDED` lines; the manager then messages the owner, and Helm decides whether to place STOP. Exit 2 means unreadable input: investigate. Do not report P&L of the probe's intents from this output or the ledger.
