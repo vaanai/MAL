@@ -16,7 +16,7 @@ Then read, as needed:
 Source: the hunt reports and the judge file named in [ARTIFACTS/lab/push-2026-10-16.md](../ARTIFACTS/lab/push-2026-10-16.md). No sealed, forward, walk, shadow or October outcome row was opened. Nothing here says any book made money.
 
 - No library book reaches the goal on 1.29 SOL: the judge's shortlist is about 0.20–0.32 SOL/day after the capacity haircut.
-- Impact at size halves every line's edge by about 0.1–1.7 SOL per trade. PumpSwap LP fee-minus-IL median is negative. Diversified wallet copy is not higher-capacity.
+- Impact at size halves every line's reported exploration mean by about 0.1–1.7 SOL per trade. PumpSwap LP fee-minus-IL median is negative. Diversified wallet copy is not higher-capacity.
 - Details and sources: [ARTIFACTS/lab/push-2026-10-16.md](../ARTIFACTS/lab/push-2026-10-16.md). Library rows: section `push-1016` in [docs/library/INDEX.md](library/INDEX.md).
 
 Merged today (2026-10-16):
@@ -33,7 +33,7 @@ Open owner questions: q_Qj7YtTiY6Dl5aQ (reserve walk 2); q_TCMrhyP101jzLQ (EXP-0
 Scheduled steps (instants):
 - EXP-025 Look 1 R8 run after 2026-10-18T12:00:00Z, and Look 2 R8 run after 2026-10-26T12:00:00Z (commands in the EXP-025 "P5 record (2026-10-16)").
 - EXP-026 W0 by 2026-10-23T00.
-- C1-NF #658 / #662 limits about 2026-10-17T22Z.
+- C1-NF jobs #658 / #662 limits about 2026-10-17T22Z.
 - Walk 2 #1036 limit about 2026-10-22T19:21Z (resubmit before).
 - Exporter #1034: replace after H5 end_ms 2026-10-23T19:29:53Z.
 - Recurring crons expire about 2026-10-22T19Z.

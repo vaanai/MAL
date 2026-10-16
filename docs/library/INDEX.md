@@ -44,7 +44,7 @@ The file holds 263 rows: the 206 above and 53 rows kept only as duplicates of an
 
 | Id | Idea | Status | Where it stands | Next step |
 | --- | --- | --- | --- | --- |
-| `lib-c-K1` | H5 BOOSTFLOOR v1: drained-pool buy into BOOST, exit at 330 s | `live-canary` | 2026-10-13: live at T0 (0.02 SOL) since 09:44:43Z after the structure stop of 07:14:44Z; 13 attempts and 13 sells landed at 18:49Z (job #938). Canary label: execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. Gate code (PR #614) and watch tool (PR #635) merged with the switch OFF; nothing installed or enabled. H5 has not cleared the promotion gate. | Gate evidence should come from a forward, pre-registered read (walk-2 / October), not from the h5-flows report (library K1 caveat). |
+| `lib-c-K1` | H5 BOOSTFLOOR v1: drained-pool buy into BOOST, exit at 330 s | `live-canary` | 2026-10-13: live at T0 (0.02 SOL) since 09:44:43Z after the structure stop of 07:14:44Z; 13 attempts and 13 sells landed at 18:49Z (job #938). Canary label: execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. Gate code (PR #614) and watch tool (PR #635) merged with the switch OFF; nothing installed or enabled. H5 has not cleared the promotion gate. canary STOPPED since … | Gate evidence should come from a forward, pre-registered read (walk-2 / October), not from the h5-flows report (library K1 caveat). |
 | `lib-c-Q1.EXP-022` | EXP-022 CAP-PICK (Part 1 pre-registration) | `forward-test` | 2026-10-13: no outcome has been read. The counted window is walk 2, from 2026-10-16T01Z. Owed before it: the declaration of which daily structure run is the P2 run (the last one before 2026-10-16T01Z) and the walk-2 submit. The first look is scheduled for 2026-10-23. | Look dates 10-23T01, 10-30T01 and 11-06T01 (LAB_STATE line 108). A fail leads to A12, the cost wind-down, pre-agreed by the owner (audit O6). |
 | `lib-c-Q1.EXP-025` | EXP-025 C1-NF post-graduation momentum (two looks) | `forward-test` | 2026-10-13: no outcome has been read. Look 1 is scheduled for 2026-10-17T03Z on the event-V re-walk (job #433). The owner shelved the C1-NF book itself on 2026-10-12 as a regime watch; the registered read still runs as written. | Look 1 end 2026-10-17T00; count end 2026-10-24T00 (library Q1). |
 
@@ -389,7 +389,7 @@ Kept for traceability to the source files. Each points at the row to read instea
 | `web-competitors-9` | Post-graduation BOOST TWAP ride | `lib-c-K1` |
 | `cap-impact-1` | H5-BOOSTFLOOR v1 (BOOST-window shallow-pool buy, exit 330 s) | `lib-c-K1` |
 | `cap-impact-2` | l3 hourly top-10 cross-sectional book (xs10) | `lib-b-D5` |
-| `cap-impact-3` | Crash-bounce walk-forward (F4d) | `lib-c-F6.4` |
+| `cap-impact-3` | Crash-bounce walk-forward (F4d) | `lib-b-E2` |
 | `cap-impact-4` | C1-NF non-farm cascade (post-graduation) | `lib-c-P1` |
 | `h2-multi-1` | H2 Book A with a 10% per-wallet fill cap (diversified-count variant) | `lib-b-B2` |
 | `h2-multi-2` | H2 wider wallet list (top-N by copy-return t-stat, N > 50) | `lib-b-B2` |
