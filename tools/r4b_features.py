@@ -266,14 +266,23 @@ class MintResult:
 
 
 def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b, th, *, vq=None, seg_end=None,
-                  grads_rule: str = "frozen", return_state: bool = False) -> MintResult | None:
+                  grads_rule: str = "frozen", mint_filters: str = "frozen",
+                  return_state: bool = False) -> MintResult | None:
     """Features for one mint at every decision on its 2-min grid (02_build per-mint loop).
 
     Arrays are the mint's canonical-pool prints ordered by (slot, tx_index, event_index[, frn]); ``ch`` is the creator hash (NaN/None if
     unknown). ``vq``: per-print V (lamports, same length) or None for the constant c.v. Returns None where 02_build `continue`s.
+
+    ``mint_filters``: "frozen" (default, training/fixture): the mint is dropped at EVERY mark if its whole tape has < 3 prints or any reserve
+    state (incl. the derived state after its last print) is <= 0, so row existence at T can depend on prints after T (lookahead, QP ruling 4).
+    "asof": rows are dropped per mark: a mark T needs >= 3 prints with slot < sd(T), no reserve state <= 0 among the pre-trade states of those
+    prints, and the derived post-state of the last of them > 0. Only prints before sd(T) matter.
     """
+    if mint_filters not in ("frozen", "asof"):
+        raise ValueError(f"unknown mint_filters {mint_filters!r}")
+    asof_f = mint_filters == "asof"
     n = len(slot)
-    if n < 3:
+    if n < (1 if asof_f else 3):
         return None
     r = c
     V0 = float(r.v)
@@ -295,7 +304,12 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     bL = bb[-1] - tk[-1] if ib[-1] else bb[-1] + tk[-1]
     QX = np.append(q, qL) + np.append(vqa, vqa[-1])
     BX = np.append(bb, bL)
-    if (QX <= 0).any() or (BX <= 0).any():
+    if asof_f:
+        pre_bad = np.maximum.accumulate((QX[:n] <= 0) | (BX[:n] <= 0))      # any pre-trade state up to and including print i
+        qpost = np.where(ib, q + so * (1 - 0.0125), q - so / (1 - 0.0125)) + vqa
+        bpost = np.where(ib, bb - tk, bb + tk)
+        post_bad = (qpost <= 0) | (bpost <= 0)                              # derived state after print i
+    elif (QX <= 0).any() or (BX <= 0).any():
         return None
     # feature price after print i (approx post-trade, from the row itself)
     qp = np.where(ib, q + so * 0.99, q - so * 1.01) + vqa
@@ -337,6 +351,8 @@ def mint_features(prep: Prep, c: MintConst, ch, slot, bt, isbuy, sol, tok, q, b,
     ok = j > 0
     jj = np.maximum(j - 1, 0)
     ok &= (btm[jj] >= T - 600) & (btm[jj] < T)
+    if asof_f:
+        ok &= (j >= 3) & ~pre_bad[jj] & ~post_bad[jj]
     if not ok.any():
         return None
     T = T[ok]

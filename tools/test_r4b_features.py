@@ -363,3 +363,70 @@ def test_forward_order_on_synthetic_mint(prep):
     res2 = run(prep, back, seg_end=None)
     assert res is not None and res.X.tobytes() == res2.X.tobytes()
     assert rf.mixed_null_txi_slots(np.zeros(n, int), pr["slot"], txi) > 0
+
+
+# ---- mint_filters: frozen (whole-tape) vs asof (per mark) --------------------------------------------------------------------------
+def _sparse_start_prints():
+    """Prints at MBT+30, +130 (two before the first grid mark), then dense from MBT+900."""
+    pr = make_prints(n=300, gap=100, first=900)
+    for k in pr:
+        pr[k] = np.concatenate([make_prints(n=2, gap=100, first=30)[k], pr[k]])
+    return pr
+
+
+def test_asof_min_prints_counts_only_prints_before_sd(prep):
+    pr = _sparse_start_prints()
+    fro = run(prep, pr, seg_end=None)
+    aso = run(prep, pr, seg_end=None, mint_filters="asof")
+    t0 = ((MBT + 600 + 119) // 120) * 120
+    n_all = rf.FEATS.index("np_all")
+    assert fro.I[0, 1] == t0 and fro.X[0, n_all] == 2             # frozen keeps the mark with only 2 prints before it
+    assert t0 not in aso.I[:, 1]                                 # asof drops it
+    assert (aso.X[:, n_all] >= 3).all()
+    keep = fro.X[:, n_all] >= 3
+    assert aso.X.tobytes() == fro.X[keep].tobytes() and np.array_equal(aso.I, fro.I[keep])   # other rows byte-identical
+    # a mint with < 3 prints in total: dropped in both
+    assert run(prep, make_prints(n=2), seg_end=None, mint_filters="asof") is None
+
+
+def test_asof_reserve_check_ignores_states_after_the_mark(prep):
+    pr = make_prints(n=300, gap=100, first=30)
+    k = 200
+    bad = {kk: v.copy() for kk, v in pr.items()}
+    bad["q"][k] = -1e12
+    assert run(prep, bad, seg_end=None) is None                                    # frozen: dropped at every mark
+    aso = run(prep, bad, seg_end=None, mint_filters="asof")
+    assert aso is not None and len(aso.I) > 0
+    # rows exist only for marks whose prints-before-sd all precede the bad print
+    assert (aso.X[:, rf.FEATS.index("np_all")] <= k).all()
+    assert aso.I[:, 1].max() < pr["bt"][k] + 1
+    # and they equal the frozen run on the tape truncated at the bad print (same prints seen)
+    trunc = run(prep, {kk: v[:k] for kk, v in pr.items()}, seg_end=None)
+    k2 = np.isin(trunc.I[:, 1], aso.I[:, 1])
+    assert np.array_equal(trunc.I[k2], aso.I) and trunc.X[k2].tobytes() == aso.X.tobytes()
+    # the bad state counts at the marks after it
+    late = run(prep, bad, seg_end=None, mint_filters="asof")
+    assert not (late.I[:, 1] > pr["bt"][k]).any()
+
+
+def test_asof_post_state_of_last_print_and_unknown_option(prep):
+    pr = make_prints(n=300, gap=100, first=30)
+    pr["isbuy"] = pr["isbuy"].copy()
+    pr["isbuy"][150] = False
+    pr["sol"] = pr["sol"].copy()
+    pr["sol"][150] = int(pr["q"][150] * 2)                 # derived post-trade quote reserve <= 0 after print 150
+    aso = run(prep, pr, seg_end=None, mint_filters="asof")
+    j = aso.X[:, rf.FEATS.index("np_all")]
+    fro = run(prep, pr, seg_end=None)                      # frozen checks only the tape's final post-state, so it keeps these marks
+    jf = fro.X[:, rf.FEATS.index("np_all")]
+    assert (jf == 151).any() and (j != 151).all()          # asof drops exactly the marks whose last print is 150
+    assert len(aso.I) == len(fro.I) - int((jf == 151).sum())
+    with pytest.raises(ValueError):
+        run(prep, pr, seg_end=None, mint_filters="x")
+
+
+def test_asof_equals_frozen_on_healthy_mint(prep):
+    pr = make_prints(n=500, gap=100, first=30)
+    a = run(prep, pr, seg_end=None)
+    b = run(prep, pr, seg_end=None, mint_filters="asof")
+    assert a.X.tobytes() == b.X.tobytes() and np.array_equal(a.I, b.I)
