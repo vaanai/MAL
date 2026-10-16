@@ -111,6 +111,13 @@ TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 # R11: deny by default. A Token-2022 mint is NOT strand-class only if EVERY extension is in this set. Empty until an outcome-blind RPC census of pre-walk
 # graduations fills it, before W0, in a change that also moves this file's pinned sha256.
 TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset()
+# E1 mode (owner decision pending; the EXP pins it with EXP027_E1_MODE, which must equal this constant):
+#   "A"      haircut only (no E1 penalty);
+#   "B"      a fixed charge of max(haircut, E1_FIXED_LAMPORTS) per filled, non-stranded trip;
+#   "record" max(haircut, max(0, -5 * rbar)) from the pinned E1 record (n >= 20, stake 50,000,000).
+E1_MODE = "record"
+E1_FIXED_LAMPORTS = 1_920_110
+K_RATIO_NEAR_LO, K_RATIO_NEAR_HI = 1 - 1e-3, 1 - 1e-6  # report-only: exits whose k ratio sits just inside the C8 tolerance
 CODE_MODULES = ("r4b_frozen", "r4b_score", "r4b_book", "r4b_features", "r4b_layout", "r4b_count", "r4b_read")
 ARTIFACT_NAMES = tuple(FZ.ARTIFACT_MD5)
 
@@ -120,8 +127,15 @@ REQUIRED_KEYS = (
     # lines the manager adds at registration / before the read (the draft has them only as TO FILL prose)
     "EXP027_W0", "EXP027_K", "EXP027_DECODER_REF", "EXP027_TIERS_SHA256", "EXP027_E1_RECORD", "EXP027_INPUT_VIEWS", "EXP027_TRIES_ENTRY", "EXP027_MINT_ACCOUNTS",
     "EXP027_FEE_ARM", "EXP027_E_A_MD5", "EXP027_E_B_MD5", "EXP027_E_C_MD5", "EXP027_E_D_MD5",
-    "EXP027_WALK_DIR", "EXP027_SELL_BUILDER", "EXP027_A3_RECORD",  # R5, R7, R10
+    "EXP027_WALK_DIR", "EXP027_SELL_BUILDER", "EXP027_A3_RECORD", "EXP027_E1_MODE",  # R5, R7, R10, E1 mode
 ) + tuple(f"EXP027_SHA256_{m.upper()}" for m in CODE_MODULES)
+
+
+def required_keys() -> tuple[str, ...]:
+    """The E1 record line is required only in mode "record"."""
+    return tuple(k for k in REQUIRED_KEYS if not (k == "EXP027_E1_RECORD" and E1_MODE != "record"))
+
+
 HEX64, HEX32 = re.compile(r"^[0-9a-f]{64}$"), re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -182,7 +196,7 @@ def split_pair(val: str) -> tuple[str, str]:
 def exp_lines(text: str) -> tuple[dict[str, str], list[str]]:
     """Each EXP027_* key must match `^KEY: value$` exactly once. Returns (values, problems)."""
     out, probs = {}, []
-    for k in REQUIRED_KEYS:
+    for k in required_keys():
         m = re.findall(rf"^{k}: (.*\S)\s*$", text, flags=re.M)
         if len(m) != 1:
             probs.append(f"EXP pin {k}: matches {len(m)} times (need exactly 1)")
@@ -298,7 +312,15 @@ def load_e1(v: Mapping[str, str], probs: list[str]) -> dict[str, Any] | None:
         probs.append(f"E1 record stake_lamports is {d.get('stake_lamports')!r} (need {E1_STAKE_LAMPORTS}: the scale to the 0.25 SOL stake is fixed at {E1_SCALE:g} in code)")
         return None
     scale = E1_SCALE  # R8: never read from the record
-    return {"n": n, "rbar_lamports": float(rbar), "scale": scale, "penalty_lamports": max(0.0, -scale * float(rbar)), "path": str(p), "sha256": split_pair(v["EXP027_E1_RECORD"])[1]}
+    return {"mode": "record", "n": n, "rbar_lamports": float(rbar), "scale": scale, "penalty_lamports": max(0.0, -scale * float(rbar)), "path": str(p), "sha256": split_pair(v["EXP027_E1_RECORD"])[1]}
+
+
+def e1_fixed_mode(v: Mapping[str, str], probs: list[str]) -> dict[str, Any] | None:
+    """Modes A and B carry no record. The EXP line EXP027_E1_MODE must equal the tool's E1_MODE constant."""
+    if E1_MODE not in ("A", "B"):
+        probs.append(f"E1_MODE {E1_MODE!r} is not A, B or record")
+        return None
+    return {"mode": E1_MODE, "penalty_lamports": 0.0 if E1_MODE == "A" else float(E1_FIXED_LAMPORTS), "scale": None, "n": None}
 
 
 def load_sell_builder(v: Mapping[str, str], probs: list[str]) -> dict[str, str] | None:
@@ -565,13 +587,15 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
     v, p1 = exp_lines(text)
     probs += p1
     probs += deps.clean_fn(paths.exp_file)
-    if len(v) != len(REQUIRED_KEYS):
+    if len(v) != len(required_keys()):
         return None, {}, probs
     p2, P = pin_problems(v, deps.code_dir)
     probs += p2
     probs += (deps.models_check_fn or default_models_check)(str(paths.models_dir) if paths.models_dir else None)
     probs += deps.decoder_fn(v["EXP027_DECODER_REF"])
-    e1 = load_e1(v, probs)
+    if v["EXP027_E1_MODE"] != E1_MODE:
+        probs.append(f"EXP027_E1_MODE is {v['EXP027_E1_MODE']!r}, the tool is built for {E1_MODE!r}")
+    e1 = load_e1(v, probs) if E1_MODE == "record" else e1_fixed_mode(v, probs)
     inputs = check_inputs(v, paths.tries, probs)
     mint_loaded = load_mint_accounts(v, probs)
     strand, mint_info = mint_loaded if mint_loaded is not None else (None, {})
@@ -850,30 +874,28 @@ def mark_lookup(marks: list, mid: np.ndarray, t1: np.ndarray) -> tuple[np.ndarra
 
 
 def price_variant(tr: Mapping[str, np.ndarray], lat: float, *, send: int, rent: int, auto: bool, e1_penalty: float, stake: int = FZ.STAKE_LAMPORTS) -> dict[str, Any]:
-    """Deciding or report-only variant of one latency cell: no-fail, flat and pressure legs (intercept refit on this cell's fills). The E1 penalty is the larger of the
-    haircut and max(0, -5 rbar) per filled, non-stranded trip."""
+    """Deciding or report-only variant of one latency cell: no-fail, flat and pressure legs (intercept refit on this cell's fills). r4b_book.round_trip is called with its
+    DEFAULT k_tol (C8 on, FZ.K_TOL); an invalid entry state and an invalid exit state (C2 state, C7 real-quote bound, C8 k-fall; a missing exit mark is NaN, so C2)
+    are priced stranded (stake + buy send + RENT_STRANDED, no sell send) and flagged. The E1 charge is the larger of the haircut and `e1_penalty` per filled,
+    non-stranded trip (0 = haircut only)."""
     Qe, Be, ssb, nb_ = (tr["ent"][lat][i] for i in range(4))
-    Qx, Bx = tr["Qx"], tr["Bx"]
-    unpriced = ~(np.isfinite(Qx) & np.isfinite(Bx) & (Qx > 0) & (Bx > 0))  # (e) reserve state <= 0 or missing
-    Qx_, Bx_ = np.where(unpriced, 1.0, Qx), np.where(unpriced, 1.0, Bx)
     stranded = tr["strand_class"]
     stk = np.full(len(Qe), float(stake))
-    pnl, filled, st = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, stranded=stranded, auto_stranded=auto, return_stranded=True)
-    un = unpriced & filled  # a guarded (unfilled) buy has nothing to sell
-    pnl = np.where(un, -(stk + send) - FZ.RENT_STRANDED, pnl)  # stake + buy send + rent, no sell send (QP ruling iii, same as a strand-class mint); the trade stays in the book
-    st = st | un
+    kw = dict(stranded=stranded, auto_stranded=auto, return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
+    pnl, filled, st, bad, xbad, cause = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent, **kw)
     if e1_penalty > 0:
-        pnl0, _ = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto)
-        pnl0 = np.where(un, pnl, pnl0)
+        pnl0 = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto)[0]
         hair = pnl0 - pnl
         extra = np.where(filled & ~st, np.maximum(0.0, e1_penalty - hair), 0.0)
         pnl = pnl - extra
     flat, press, c, p = bk.fail_legs(pnl, filled, ssb, nb_, send)
-    return {"nofail": pnl, "flat": flat, "press": press, "filled": filled, "stranded": st, "intercept": c, "p": p}
+    return {"nofail": pnl, "flat": flat, "press": press, "filled": filled, "stranded": st, "intercept": c, "p": p, "entry_invalid": bad, "exit_invalid": xbad, "exit_cause": cause}
 
 
-def cell_stats(pnl, T0, mid, w0: int) -> dict[str, Any]:
-    return bk.book_stats(pnl, T0, mid, w0=w0)
+def cell_stats(pnl, T0, mid, w0: int, pv: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """book_stats of one leg; with pv, also entry_invalid, exit_invalid and exit_invalid_by_cause (C2 / C7 / C8) counts."""
+    extra = {} if pv is None else dict(entry_invalid=pv["entry_invalid"], exit_invalid=pv["exit_invalid"], exit_cause=pv["exit_cause"])
+    return bk.book_stats(pnl, T0, mid, w0=w0, **extra)
 
 
 def gate(cells: Mapping[str, Mapping[str, Any]], alpha: float) -> dict[str, Any]:
@@ -1011,6 +1033,9 @@ class ReadCtx:
     dkeys: dict
     mid_of: dict
     plan_hours: list
+    rows_mid: np.ndarray
+    rows_T: np.ndarray
+    rows_score: np.ndarray
 
     def close(self) -> None:
         try:
@@ -1120,7 +1145,7 @@ def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -
             pv = price_variant(tr, lat, e1_penalty=e1p, **dec_kw)
             cell_pnl[lat] = pv
             for leg in ("flat", "press"):
-                cells_full[f"{leg}_{lat}"] = cell_stats(pv[leg], tr_T0, tr_mid, w0)
+                cells_full[f"{leg}_{lat}"] = cell_stats(pv[leg], tr_T0, tr_mid, w0, pv)
         cells, _ = split_cells(cells_full)
         press_gap = any(not np.isfinite(cell_pnl[lat]["press"]).all() for lat in LATS)
         blocks_with = int(len(np.unique((tr_T0 - w0) // BLOCK_S))) if len(tr_T0) else 0
@@ -1143,7 +1168,7 @@ def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -
                             "steps": [n for n, _ in REPORT_STEP_NAMES]},
             "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes",
         }
-        ctx = ReadCtx(scratch, plan, fee, deps, con, rep, tr, tr_mid, tr_T0, cell_pnl, cells_full, slot_s, e1p, send, lk, dkeys, mid_of, list(plan.hours))
+        ctx = ReadCtx(scratch, plan, fee, deps, con, rep, tr, tr_mid, tr_T0, cell_pnl, cells_full, slot_s, e1p, send, lk, dkeys, mid_of, list(plan.hours), mid, T, score)
         return res, ctx
     except CountBuildDivergence as exc:
         if con is not None:
@@ -1160,7 +1185,7 @@ def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -
 
 
 # ---- report-only steps: each runs alone, in its own try/except, and writes its own file --------------------------------------------------------------
-REPORT_STEP_NAMES = (("rent", None), ("no_auto_stranded", None), ("send_55k", None), ("lat4.0", None), ("block_sums", None), ("lp_discontinuities", None),
+REPORT_STEP_NAMES = (("k_ratio_near_tolerance", None), ("null_txi_ties", None), ("rent", None), ("no_auto_stranded", None), ("send_55k", None), ("lat4.0", None), ("block_sums", None), ("lp_discontinuities", None),
                      ("null_block_time", None), ("gap_table", None), ("asof_vs_frozen", None))
 
 
@@ -1173,7 +1198,7 @@ def report_steps(c: ReadCtx) -> list[tuple[str, Callable[[], Any]]]:
             for lat in lats:
                 pv = price_variant(c.tr, lat, e1_penalty=c.e1p, **kw)
                 for leg in ("flat", "press"):
-                    out[f"{leg}_{lat}"] = cell_stats(pv[leg], c.tr_T0, c.tr_mid, w0)
+                    out[f"{leg}_{lat}"] = cell_stats(pv[leg], c.tr_T0, c.tr_mid, w0, pv)
             return out
         return go
 
@@ -1202,16 +1227,96 @@ def report_steps(c: ReadCtx) -> list[tuple[str, Callable[[], Any]]]:
                 gap[ef.hour_key(datetime.fromtimestamp(t, tz=timezone.utc))] = {"live": len(c.lk[t]), "decision_rows": len(c.dkeys.get(t, ())), "gap": len(c.lk[t]) - len(c.dkeys.get(t, ())), **g}
         return gap
 
+    def k_ratio() -> Any:
+        out = {}
+        for lat in LATS:
+            pv = c.cell_pnl[lat]
+            Qe, Be = np.asarray(c.tr["ent"][lat][0], float), np.asarray(c.tr["ent"][lat][1], float)
+            with np.errstate(all="ignore"):
+                r = (np.asarray(c.tr["Qx"], float) * np.asarray(c.tr["Bx"], float)) / (Qe * Be)
+            bought = pv["filled"] & ~pv["entry_invalid"] & np.isfinite(r)
+            near = bought & (r >= K_RATIO_NEAR_LO) & (r < K_RATIO_NEAR_HI)
+            out[str(lat)] = {"exits_in_window": int(near.sum()), "bought_valid_entry_exits": int(bought.sum()), "window": [K_RATIO_NEAR_LO, K_RATIO_NEAR_HI],
+                             "c8_flagged": int((pv["exit_cause"] == 8).sum())}
+        return out
+
+    def null_txi_ties() -> Any:
+        return null_txi_tie_report(c)
+
     def dual() -> Any:
         ao, fo = dual_rows(c.scratch, c.plan, c.deps, rc.UNIVERSE_MIN_MBT)
         return dual_report(ao, fo, c.tr_mid, c.tr_T0, c.cell_pnl)
 
-    return [("rent", variant(dict(send=c.send, rent=FZ.RENT_REPORT, auto=True))),
+    return [("k_ratio_near_tolerance", k_ratio), ("null_txi_ties", null_txi_ties), ("rent", variant(dict(send=c.send, rent=FZ.RENT_REPORT, auto=True))),
             ("no_auto_stranded", variant(dict(send=c.send, rent=FZ.RENT_DECIDING, auto=False))),
             ("send_55k", variant(dict(send=FZ.SEND_FEE_REPORT, rent=FZ.RENT_DECIDING, auto=True))),
             ("lat4.0", variant(dict(send=c.send, rent=FZ.RENT_DECIDING, auto=True), (LAT_REPORT_LONG,))),
             ("block_sums", block_sums), ("lp_discontinuities", lp), ("null_block_time", null_bt), ("gap_table", gap_table),
             ("asof_vs_frozen", dual)]  # the doubled feature pass is last
+
+
+def null_txi_tie_report(c: ReadCtx) -> dict[str, Any]:
+    """QP #681 (report-only, never removes a mint or a trade), per UTC date of [W0, E]: prints with a null tx_index (txi < 0) on member pools; content tie groups (same mid, slot,
+    txi, evi with more than one distinct (isbuy, sol, tok, q, b, th)) and the mints that have one; and, on the mints with a tie group anywhere in the window, the decision rows,
+    the top-10 picks (per mark: the 10 best scores, ties to the lower mint id) and the book attempts, by entry date. A print's date is its slot's clock time."""
+    w0, e = int(c.plan.w0.timestamp()), int(c.plan.e.timestamp())
+    work = c.scratch / "work"
+    ckb, cks = np.load(work / "clock_bt.npy"), np.load(work / "clock_slot.npy")
+    members = sorted(set(c.mid_of.values()))
+    con = c.con
+    con.sql("create or replace temp table memb(mid bigint)")
+    con.executemany("insert into memb values (?)", [(m,) for m in members])
+    ut = f"read_parquet('{c.scratch}/ut/*.parquet')"
+
+    def day_of(slots: np.ndarray):
+        t = ckb[np.minimum(np.searchsorted(cks, slots, "left"), len(cks) - 1)]
+        keep = (t >= w0) & (t <= e)
+        return keep, np.array([str(d) for d in bk.utc_dates(t)]) if len(t) else np.array([], str)
+
+    out: dict[str, dict[str, int]] = {}
+
+    def cell(d: str) -> dict[str, int]:
+        return out.setdefault(d, {"null_txi_prints": 0, "tie_groups": 0, "tie_mints": 0, "decision_rows_on_tie_mints": 0, "top10_picks_on_tie_mints": 0, "attempts_on_tie_mints": 0})
+
+    nul = con.sql(f"select slot, count(*) as n from {ut} where txi < 0 and mid in (select mid from memb) group by slot").fetchnumpy()
+    if len(nul["slot"]):
+        keep, days = day_of(np.asarray(nul["slot"], np.int64))
+        for d, n in zip(days[keep], np.asarray(nul["n"])[keep]):
+            cell(str(d))["null_txi_prints"] += int(n)
+    ties = con.sql(f"""select mid, slot from (select mid, slot, txi, evi from {ut} where mid in (select mid from memb) group by mid, slot, txi, evi
+                       having count(*) > 1 and count(distinct (isbuy, sol, tok, q, b, th)) > 1)""").fetchnumpy()
+    tie_mints: set[int] = set()
+    if len(ties["mid"]):
+        slots, mids = np.asarray(ties["slot"], np.int64), np.asarray(ties["mid"], np.int64)
+        keep, days = day_of(slots)
+        per_day: dict[str, set] = {}
+        for d, m in zip(days[keep], mids[keep]):
+            cell(str(d))["tie_groups"] += 1
+            per_day.setdefault(str(d), set()).add(int(m))
+            tie_mints.add(int(m))
+        for d, ms in per_day.items():
+            cell(d)["tie_mints"] = len(ms)
+    tm = np.array(sorted(tie_mints), np.int64)
+    rm, rT, rs_ = np.asarray(c.rows_mid, np.int64), np.asarray(c.rows_T, np.int64), np.asarray(c.rows_score, float)
+    if len(rm):
+        o = np.lexsort((rm, -rs_, rT))
+        Ts = rT[o]
+        first = np.r_[0, np.flatnonzero(np.diff(Ts)) + 1]
+        rank = np.arange(len(o)) - np.repeat(first, np.diff(np.r_[first, len(o)]))
+        top = np.zeros(len(rm), bool)
+        top[o[rank < 10]] = True
+        on_tie = np.isin(rm, tm)
+        rdays = np.array([str(x) for x in bk.utc_dates(rT)])
+        for d in np.unique(rdays):
+            sel = rdays == d
+            cell(str(d))["decision_rows_on_tie_mints"] += int((sel & on_tie).sum())
+            cell(str(d))["top10_picks_on_tie_mints"] += int((sel & on_tie & top).sum())
+    if len(c.tr_mid):
+        on_tie_t = np.isin(np.asarray(c.tr_mid, np.int64), tm)
+        dts = np.array([str(x) for x in bk.utc_dates(c.tr_T0)])
+        for d in np.unique(dts):
+            cell(str(d))["attempts_on_tie_mints"] += int(((dts == d) & on_tie_t).sum())
+    return {"by_date": out, "tie_mints_total": int(len(tm)), "note": "report only; no mint or trade is removed; top-10 picks are recomputed per mark from the scores (ties to the lower mint id)"}
 
 
 def run_report_only(out_dir: Path, c: ReadCtx, token: str, steps: Sequence[tuple[str, Callable[[], Any]]] | None = None) -> dict[str, Any]:

@@ -135,7 +135,7 @@ def exp_text(world, **over) -> str:
         "EXP027_W0": hkey(1), "EXP027_K": "1", "EXP027_DECODER_REF": "abc1234", "EXP027_TIERS_SHA256": rr.fee_tiers_sha256(),
         "EXP027_E1_RECORD": f"{rec / 'e1.json'}@{sha(rec / 'e1.json')}", "EXP027_INPUT_VIEWS": f"{rec / 'view.txt'}@{sha(rec / 'view.txt')}",
         "EXP027_TRIES_ENTRY": "EXP-027", "EXP027_MINT_ACCOUNTS": f"{rec / 'mints.json'}@{sha(rec / 'mints.json')}", "EXP027_FEE_ARM": "NONE",
-        "EXP027_WALK_DIR": str(Path(world["walk"]).resolve()), "EXP027_SELL_BUILDER": f"{rec / 'sell.py'}@{sha(rec / 'sell.py')}", "EXP027_A3_RECORD": f"{rec / 'a3.json'}@{sha(rec / 'a3.json')}",
+        "EXP027_E1_MODE": rr.E1_MODE, "EXP027_WALK_DIR": str(Path(world["walk"]).resolve()), "EXP027_SELL_BUILDER": f"{rec / 'sell.py'}@{sha(rec / 'sell.py')}", "EXP027_A3_RECORD": f"{rec / 'a3.json'}@{sha(rec / 'a3.json')}",
         "EXP027_E_A_MD5": "3e9bc6225377927682d80b9441391a96", "EXP027_E_B_MD5": "0" * 32, "EXP027_E_C_MD5": "54052f798013a71e3a9f40e0d6830ac1", "EXP027_E_D_MD5": "1" * 32,
     }
     for m, h in code_shas().items():
@@ -1196,7 +1196,6 @@ def test_missing_mints_are_strand_class_and_counted_in_the_result(tmp_path, worl
 
 
 # ---- R1 (r4b_book.round_trip entry guard is claude/r4b-entry-guard): read-level test that passes once it lands -------------------------------------
-@pytest.mark.xfail(reason="needs claude/r4b-entry-guard", strict=False)
 def test_non_positive_entry_state_is_a_total_loss_not_a_win():
     stake = FZ.STAKE_LAMPORTS
     t = trip()
@@ -1204,3 +1203,107 @@ def test_non_positive_entry_state_is_a_total_loss_not_a_win():
     pv = rr.price_variant(t, 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
     full = -stake - 505_000 - FZ.RENT_STRANDED
     assert pv["filled"].all() and pv["stranded"].all() and (pv["nofail"] == full).all()  # not +97 SOL
+
+
+# ======================================================================================================================================================
+# #680 guards (C2/C7/C8) in the deciding path, E1 modes, report-only tie / null-txi counts (QP #681)
+# ======================================================================================================================================================
+def test_deciding_path_runs_with_c8_on(tmp_path, world, monkeypatch):
+    assert FZ.K_TOL == 1e-3
+    calls = []
+    orig = bk.round_trip
+
+    def spy(*a, **k):
+        calls.append(k.get("k_tol", FZ.K_TOL))  # the default is what the book uses when the caller does not pass k_tol
+        return orig(*a, **k)
+
+    monkeypatch.setattr(bk, "round_trip", spy)
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    assert calls and all(k == FZ.K_TOL and k is not None for k in calls)
+    for name, c in res["cells"].items():  # every cell carries the invalid counts by cause
+        assert set(c["exit_invalid_by_cause"]) == {"C2", "C7", "C8"} and "entry_invalid" in c and "exit_invalid" in c, name
+        assert c["exit_invalid"] == sum(c["exit_invalid_by_cause"].values())
+
+
+def test_c8_k_fall_is_exit_invalid_and_stranded_in_price_variant():
+    stake = FZ.STAKE_LAMPORTS
+    tr = trip(Bx=np.array([2.5e14, 2.5e14 * (1 - 5e-3), 2.5e14 * (1 - 5e-4)]))  # k falls 0.5 % (C8), 0.05 % (inside the tolerance)
+    pv = rr.price_variant(tr, 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
+    assert pv["exit_cause"].tolist() == [0, 8, 0] and pv["exit_invalid"].tolist() == [False, True, False]
+    assert pv["nofail"][1] == -stake - 505_000 - FZ.RENT_STRANDED and pv["stranded"][1]
+    cs = rr.cell_stats(pv["flat"], np.array([1, 2, 3]) * 3600 + 1_800_000_000, np.arange(3), 1_800_000_000, pv)
+    assert cs["exit_invalid_by_cause"] == {"C2": 0, "C7": 0, "C8": 1} and cs["entry_invalid"] == 0 and cs["exit_invalid"] == 1
+
+
+def test_k_ratio_near_tolerance_counts_the_band():
+    from types import SimpleNamespace as NS
+
+    n = 6
+    Q0, B0 = 77e9, 2.5e14
+    ratios = np.array([1.0, 1 - 5e-4, 1 - 1e-3, 1 - 1e-6, 1 - 2e-6, 1 - 5e-3])  # band is [1 - 1e-3, 1 - 1e-6): rows 1, 2 and 4
+    tr = trip()
+    tr["ent"] = {1.3: [np.full(n, Q0), np.full(n, B0), np.zeros(n), np.zeros(n)], 1.9: [np.full(n, Q0), np.full(n, B0), np.zeros(n), np.zeros(n)]}
+    tr["spot"], tr["strand_class"] = np.full(n, Q0 / B0), np.zeros(n, bool)
+    tr["Qx"], tr["Bx"] = np.full(n, Q0), B0 * ratios
+    pnl = {lat: rr.price_variant(tr, lat, send=505_000, rent=0, auto=True, e1_penalty=0.0) for lat in rr.LATS}
+    ctx = NS(plan=NS(w0=datetime(2026, 10, 18, tzinfo=timezone.utc)), tr=tr, cell_pnl=pnl, send=505_000, e1p=0.0)
+    out = dict(rr.report_steps(ctx))["k_ratio_near_tolerance"]()
+    assert out["1.3"]["exits_in_window"] == 3 and out["1.3"]["c8_flagged"] == 1 and out["1.3"]["bought_valid_entry_exits"] == 6
+
+
+@pytest.fixture(scope="module")
+def world_ties(world, tmp_path_factory):
+    root = tmp_path_factory.mktemp("world_ties")
+    hours = stream(NH)
+    ms = s_of(1) + 100
+    hours[hkey(1)]["trades"] += [trade("M1c", ms + 50, None, 0, sol=1_000_000_000, sig="t1"), trade("M1c", ms + 50, None, 0, sol=2_000_000_000, sig="t2"),
+                                 trade("M1c", ms + 70, None, 0, sig="n1")]  # one tie group (differing content) and one lone null-txi print
+    walk = make_walk(root / "walk", hours)
+    rc.run(rc.Config(walk, root / "counts", hkey(1), n_blocks=1, a_attempts=1, h0=hkey(0)), sph_fn=sph_ok, canonical_fn=pda_of)
+    return {**world, "walk": walk, "counts": root / "counts"}
+
+
+def test_null_txi_and_tie_report_counts_without_removing_anything(tmp_path, world, world_ties):
+    (tmp_path / "a").mkdir()
+    base = rr.read(mk(tmp_path / "a", world), mkdeps(world))
+    (tmp_path / "b").mkdir()
+    paths = mk(tmp_path / "b", world_ties)
+    res = rr.read(paths, mkdeps(world_ties))
+    d = report(paths.out_dir, "null_txi_ties")["data"]
+
+    def tot(k):
+        return sum(v[k] for v in d["by_date"].values())
+
+    assert tot("null_txi_prints") == 3 and tot("tie_groups") == 1 and tot("tie_mints") == 1 and d["tie_mints_total"] == 1
+    assert tot("decision_rows_on_tie_mints") >= 1 and tot("attempts_on_tie_mints") <= res["A_attempts"] and tot("top10_picks_on_tie_mints") >= tot("attempts_on_tie_mints")
+    b = report(tmp_path / "a" / "out", "null_txi_ties")["data"]  # the no-tie world: zeros
+    assert all(v["null_txi_prints"] == 0 and v["tie_groups"] == 0 for v in b["by_date"].values()) and b["tie_mints_total"] == 0
+    assert base["A_attempts"] > 0
+
+
+# ---- E1 modes --------------------------------------------------------------------------------------------------------------------------------------
+def test_e1_mode_constant_default_and_exp_line(tmp_path, world):
+    assert rr.E1_MODE == "record" and rr.E1_FIXED_LAMPORTS == 1_920_110
+    refused(mk(tmp_path, world, EXP027_E1_MODE="B"), mkdeps(world), "EXP027_E1_MODE is 'B', the tool is built for 'record'")
+
+
+@pytest.mark.parametrize("mode", ["A", "B"])
+def test_e1_modes_a_and_b_need_no_record_and_pin_the_mode(tmp_path, world, monkeypatch, mode):
+    monkeypatch.setattr(rr, "E1_MODE", mode)
+    assert "EXP027_E1_RECORD" not in rr.required_keys()
+    refused(mk(tmp_path, world, EXP027_E1_RECORD=None, EXP027_E1_MODE="record"), mkdeps(world), f"EXP027_E1_MODE is 'record', the tool is built for '{mode}'")
+    res = rr.read(mk(tmp_path, world, EXP027_E1_RECORD=None, EXP027_E1_MODE=mode), mkdeps(world))
+    assert res["e1"]["mode"] == mode and res["e1"]["penalty_lamports"] == (0.0 if mode == "A" else 1_920_110.0)
+
+
+def test_e1_mode_b_charges_max_of_haircut_and_the_fixed_amount():
+    stake = FZ.STAKE_LAMPORTS
+    base = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)  # mode A: haircut only
+    low = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=1.0)
+    assert np.allclose(low["nofail"], base["nofail"])  # a charge below the haircut changes nothing
+    b = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=float(rr.E1_FIXED_LAMPORTS))
+    pnl0 = bk.round_trip(np.full(3, float(stake)), *trip()["ent"][1.3][:2], trip()["spot"], trip()["Qx"], trip()["Bx"], 505_000, 0, h_in=0.0, h_out=0.0)[0]
+    hair = pnl0 - base["nofail"]
+    assert np.allclose(b["nofail"], pnl0 - np.maximum(hair, rr.E1_FIXED_LAMPORTS))  # max(haircut, 1,920,110) per filled trip
+    s = rr.price_variant(trip(strand_class=np.array([True, False, False])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=float(rr.E1_FIXED_LAMPORTS))
+    assert s["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED  # a stranded trip is not charged again
