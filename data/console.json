@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T04:32:13Z",
+ "updated_utc": "2026-10-16T04:51:17Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "exp025-p5-1016",
+   "kind": "other",
+   "title": "EXP-025 Look 1 NOT_DECIDABLE (R8, P5): no pick oracle wired to the C1-NF shadow at 2026-10-16T01:00Z",
+   "detail": "The C1-NF shadow job #658 was started without --pick-oracle, CAP_PICK_LIVE or CAP_PICK_FINAL_MARKER, so P5 (section 11) was not met by 2026-10-16T01:00Z. The ruling is quant-proof's, /data/mal/hunt-1008/ops/QP-RULING-1016-exp025.md. exp025_look.py run --look 1 runs once after 2026-10-18T12:00:00Z and writes not_decidable R8. No outcome was opened. C1-NF has not cleared the promotion gate.",
+   "atUtc": "2026-10-16T04:51:17Z"
+  },
   {
    "id": "dec016-final-1016",
    "kind": "other",
@@ -736,6 +743,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261016-exp025-p5",
+   "from": "claude",
+   "atUtc": "2026-10-16T04:51:17Z",
+   "text": "For you (no action needed): EXP-025, C1-NF's formal October read, cannot be decided. Its rule needed the CAP-PICK pick filter wired into the C1-NF shadow by 16 October 01:00Z, and the shadow was never started with it. Under the rule (EXP-025 section 11 P5, and quant-proof's ruling of 16 October), Look 1 therefore ends NOT_DECIDABLE. The tool will record that once, after its 18 October 12:00Z deadline. No result was looked at, so nothing is known about whether C1-NF makes money. It stays shelved, as you decided on 12 October. No book has cleared the promotion gate."
+  },
+  {
    "id": "fy-20261016-dec016-final",
    "from": "claude",
    "atUtc": "2026-10-16T04:32:13Z",
@@ -1055,6 +1068,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-exp025-p5",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T04:51:17Z",
+   "text": "EXP-025 P5 not met (#658 has no pick oracle), so Look 1 is NOT_DECIDABLE (R8). The R8 run is after 2026-10-18T12:00Z. Records: EXP-025 \"P5 record (2026-10-16)\". Nothing here says any book made money."
+  },
   {
    "id": "s-20261016-final",
    "from": "claude",
