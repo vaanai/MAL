@@ -261,7 +261,8 @@ def test_stats_blocks_dates_and_day_t():
     assert s["ex_best_date_sol"] == pytest.approx(2.5) and s["ex_best_block_sol"] == pytest.approx(2.5)
     assert s["blocks_W"] == 5 and s["block_df"] == 4
     sums = np.array([1.0, 2.0, -0.5, 1.5, 0.5])
-    assert s["t_block"] == pytest.approx(sums.mean() / (sums.std(ddof=1) / math.sqrt(5)))
+    assert s["t_block_sum"] == pytest.approx(sums.mean() / (sums.std(ddof=1) / math.sqrt(5)))
+    assert s["t_block"] == pytest.approx(s["t_block_sum"])                                    # 2 attempts in every block: means = sums / 2, t is scale-free
     assert 0 < s["p_block"] < 0.5
     assert not s["gate_numeric"]                                                              # n < 100
     # the blocks are counted from w0, not from UTC midnight: shifting w0 by 13 h moves the 12:00 entries into the previous block
@@ -269,6 +270,25 @@ def test_stats_blocks_dates_and_day_t():
     assert s2["blocks_W"] == 5 and s2["total_sol"] == s["total_sol"]
     with pytest.raises(ValueError):
         B.book_stats(x, t0, mid, w0=w0 + 3 * 86400)                                           # entries before w0 are refused
+
+
+def test_t_block_is_on_per_attempt_block_means_not_sums():
+    w0 = 1_790_035_200 // 86400 * 86400
+    # block 0: 3 attempts 1,1,-1 (mean 1/3, sum 1); block 1 empty; block 2: 1 attempt 2; block 3: 2 attempts -1,-1 (mean -1, sum -2)
+    t0 = np.array([w0 + H, w0 + 2 * H, w0 + 3 * H, w0 + 2 * 86400 + H, w0 + 3 * 86400 + H, w0 + 3 * 86400 + 2 * H], np.int64)
+    x = np.array([1, 1, -1, 2, -1, -1], float) * 1e9
+    s = B.book_stats(x, t0, np.arange(6), w0=w0)
+    m = np.array([1 / 3, 2.0, -1.0])
+    t_hand = m.mean() / (m.std(ddof=1) / math.sqrt(3))
+    assert s["blocks_W"] == 3 and s["block_df"] == 2                                          # the empty block is dropped
+    assert s["block_mean_sol"] == pytest.approx(m.mean())
+    assert s["t_block"] == pytest.approx(t_hand)
+    assert s["p_block"] == pytest.approx(B.t_sf(t_hand, 2))
+    sm = np.array([1.0, 2.0, -2.0])
+    assert s["t_block_sum"] == pytest.approx(sm.mean() / (sm.std(ddof=1) / math.sqrt(3)))
+    assert abs(s["t_block_sum"] - s["t_block"]) > 0.1
+    ids, bm, cnt = B.block_means(x, t0, w0)
+    assert list(ids) == [0, 2, 3] and list(cnt) == [3, 1, 2] and bm == pytest.approx(m)
 
 
 def test_stats_block_boundary_differs_from_utc_date():
