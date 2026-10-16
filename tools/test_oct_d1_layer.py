@@ -350,6 +350,339 @@ class LayerTests(Base):
         layer.check_output_columns(["mint", "reached_complete", "complete_ms", "new_buyer_share"])
 
 
+def write_raw_zst(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with pa.OSFile(str(path), "wb") as f:
+        with pa.CompressedOutputStream(f, "zstd") as z:
+            z.write(data)
+
+
+def mk(i: int) -> str:
+    """A 40-char base58 mint (digits mapped to letters; no 0, O, I, l) so the strict mint regex can read it."""
+    return "".join("ABCDEFGHJK"[int(d)] for d in str(i)).rjust(40, "Z")
+
+
+LA, LC, LD = "A" * 40, "C" * 40, "D" * 40
+
+
+class MalformedTests(Base):
+    """QP comment 6220843906: R1 per file, R2 per stream, R3 last line, R4 taint exclusion, R5 sidecar."""
+
+    def setUp(self):
+        super().setUp()
+        self.build(trades0=[], trades1=[], migs=[])
+
+    def lines_of(self, rows):
+        return [(json.dumps(r) + "\n").encode() for r in rows]
+
+    def put(self, kind, hour, lines):
+        write_raw_zst(self.root / DS / kind / f"{kind}-{hour}.jsonl.zst", b"".join(lines))
+
+    def put_creates(self, hour, n, extra=(), start=0):
+        """n creates of pad mints (create-only mints count in the tokens_d1 mint total) plus extra raw lines."""
+        rows = [create(mk(i), 90 + i, T0 + 1) for i in range(start, start + n)]
+        self.put("creates", hour, self.lines_of(rows) + list(extra))
+
+    def good_trades(self):
+        t = T0
+        return self.lines_of([trade(LA, "w1", "buy", 100, 0, t + 10), trade(LC, "w2", "buy", 400, 0, t + 80),
+                              trade(LC, "w3", "buy", 401, 0, t + 81)])
+
+    def many(self, k, mint=LA):
+        return self.lines_of([trade(mint, "w1", "buy", 1000, i, T0 + 5, b=CB + 1) for i in range(k)])
+
+    def sidecar(self):
+        return json.loads((self.out / layer.SIDECAR).read_text())
+
+    def tokens_set(self):
+        return set(self.tokens())
+
+    def files_have_mint(self, mint):
+        found = []
+        for f in [self.out / "wallet_mint_d1.parquet", *sorted((self.out / "bars_1m").glob("*.parquet")),
+                  *sorted((self.out / "trades_d1").glob("*.parquet"))]:
+            found.append(mint in {r["mint"] for r in pq.read_table(f, columns=["mint"]).to_pylist()})
+        return any(found)
+
+    # ---- R1 / R2 / R3 -------------------------------------------------------------------------------------------
+    def test_rule_functions_use_integer_limits(self):
+        a, t = layer.allowed_malformed, layer.allowed_stream_total
+        self.assertEqual([a("creates", n) for n in (0, 1_500, 9_999, 10_000, 25_000, 100_000, 900_000)],
+                         [1, 1, 1, 1, 2, 10, 10])
+        self.assertEqual(a("trades", 1_500), 1)
+        self.assertEqual(a("migrations", 1_000_000), 0)
+        self.assertEqual([t(n) for n in (0, 199_999, 200_000, 1_000_000, 33_000_000)], [1, 1, 2, 10, 330])
+        f = layer.malformed_refusal_reasons
+        self.assertEqual(f("creates", 1_500, 1, False), [])
+        self.assertTrue(f("creates", 1_500, 2, False))
+        self.assertTrue(f("migrations", 50, 1, False))
+        self.assertTrue(f("trades", 1_000_000, 0, True))  # R3
+        self.assertTrue(f("trades", 1_000_000, 11, False))
+        self.assertEqual(f("trades", 1_000_000, 10, False), [])
+
+    def test_creates_1500_lines_one_bad_passes_two_refuse(self):
+        bad = b'{"type": "create", "mint": "%s", "sl\n' % LD.encode()
+        lines = self.lines_of([create(mk(i), 90 + i, T0 + 1) for i in range(750)]) + [bad] + \
+            self.lines_of([create(mk(i), 90 + i, T0 + 1) for i in range(750, 1499)])
+        self.assertEqual(len(lines), 1500)
+        self.put("creates", H0, lines)
+        self.put("trades", H0, self.good_trades())
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.sidecar()["creates_lost"], 1)
+        self.put("creates", H0, lines[:100] + [bad, bad] + lines[100:750] + lines[751:])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("exceed the limit 1 (creates)", err)
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+        self.assertEqual(self.sidecar()["files_with_malformed"][0]["n_malformed"], 2)  # sidecar still written
+
+    def test_migrations_one_bad_line_refuses(self):
+        mig = (json.dumps({"type": "migration", "mint": "B", "slot": 300, "event_index": 0}) + "\n").encode()
+        self.put("migrations", H0, [mig] * 5000 + [b"garbage\n"] + [mig])
+        self.put("trades", H0, self.good_trades())
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("(migrations)", err)
+        self.assertEqual(self.sidecar()["files_with_malformed"][0]["stream"], "migrations")
+
+    def test_stream_window_cap(self):
+        self.put_creates(H0, 800)
+        bad = b"{oops\n"
+        good = self.good_trades() + self.many(3000)
+        self.put("trades", H0, [good[0], bad] + good[1:])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 0, err)  # 1 bad line of ~3k: file allows 1, stream allows max(1, ...) = 1
+        self.put("trades", H0, [good[0], bad] + good[1:])
+        self.put("trades", H1, [good[0], bad] + good[1:])  # each file is within R1; the stream total 2 > 1 (R2)
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("stream trades: 2 malformed lines", err)
+        self.assertIn("window limit 1", err)
+
+    def test_malformed_last_line_refuses(self):
+        self.put_creates(H0, 800)
+        self.put("trades", H0, self.many(2000) + self.good_trades() + [b'{"type": "trade", "mint": "C", "sl'])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("last line is malformed", err)
+        self.assertTrue(self.sidecar()["files_with_malformed"][0]["last_line_malformed"])
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_non_object_json_and_bad_utf8_are_malformed(self):
+        self.put_creates(H0, 800)
+        g = self.good_trades()
+        self.put("trades", H0, [g[0], b"[1, 2]\n"] + g[1:] + self.many(100))
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("n=1 first_line=2", stdout)
+        self.put("trades", H0, [g[0], b"\xff\xfe{}\n"] + g[1:] + self.many(100))
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("n=1 first_line=2", stdout)
+
+    # ---- R4 -----------------------------------------------------------------------------------------------------
+    def test_decoded_mint_is_excluded_from_all_outputs(self):
+        self.put_creates(H0, 800, extra=self.lines_of([create(LC, 95, T0 + 2)]))
+        g = self.good_trades()
+        bad = b'{"type": "trade", "mint": "%s", "trader": "x", "mint": "%s", "sl\n' % (LC.encode(), LD.encode())
+        self.put("trades", H0, [g[0], bad] + g[1:])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        tk = self.tokens()
+        self.assertIn(LA, tk)
+        self.assertNotIn(LC, tk)  # not kept with missing fields: absent altogether
+        self.assertNotIn(LD, tk)
+        self.assertEqual(tk[LA]["bc_n_trades"], 1)
+        self.assertTrue(self.files_have_mint(LA))
+        self.assertFalse(self.files_have_mint(LC))
+        sc = self.sidecar()
+        self.assertEqual(sc["tainted_mints"], {LC: "decoded"})
+        m = json.loads((self.out / "MANIFEST.json").read_text())
+        self.assertEqual((m["n_excluded_mints"], m["trades_lost"], m["creates_lost"]), (1, 1, 0))
+        self.assertEqual(m["excluded_mints_with_no_detected_complete"], 0)
+
+    def test_trades_line_without_mint_taints_every_mint_with_prints_that_hour(self):
+        self.put_creates(H0, 800)
+        g = self.good_trades()
+        self.put("trades", H0, [g[0], b"not json\n"] + g[1:])
+        self.put("trades", H1, self.lines_of([trade(LD, "w5", "buy", 500, 0, T0 + 3700)]))
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        tk = self.tokens()
+        self.assertEqual({LA, LC} & set(tk), set())  # both printed in H0
+        self.assertIn(LD, tk)  # prints only in H1
+        self.assertEqual(self.sidecar()["tainted_mints"], {LA: "hour_fallback", LC: "hour_fallback"})
+        self.assertFalse(self.files_have_mint(LA))
+
+    def test_creates_line_without_mint_taints_no_create_mints_first_printed_in_hour_or_next(self):
+        self.put("creates", H0, [b"{broken\n"] + [ln for ln in self.lines_of([create(mk(i), 90 + i, T0 + 1) for i in range(800)])]
+                 + self.lines_of([create(LA, 95, T0 + 2)]))
+        mid = T0 + 3600 * 1 + 5  # first print in H1: inside [H0, H0 + 2 h)
+        late = T0 + 7200 + 5  # first print in H0 + 2 h: outside
+        self.put("trades", H0, self.lines_of([trade(LA, "w1", "buy", 100, 0, T0 + 10), trade(LC, "w2", "buy", 101, 0, mid)]))
+        self.put("trades", "2026-10-02T17", self.lines_of([trade(LD, "w3", "buy", 700, 0, late)]))
+        rc, _, err = self.run_layer(end="2026-10-02T18")
+        self.assertEqual(rc, 0, err)
+        tk = self.tokens()
+        self.assertIn(LA, tk)  # has a create: kept
+        self.assertTrue(tk[LA]["has_create"])
+        self.assertNotIn(LC, tk)  # no create, first print inside the window
+        self.assertIn(LD, tk)  # no create, first print outside it
+        self.assertFalse(tk[LD]["has_create"])
+        self.assertEqual(self.sidecar()["tainted_mints"], {LC: "hour_fallback"})
+
+    def test_more_than_half_percent_excluded_refuses(self):
+        g = self.good_trades()
+        bad = b'{"type": "trade", "mint": "%s", "sl\n' % LC.encode()
+        # mints in tokens_d1: LA, LC and n pad mints. One excluded: refuses iff 1 * 200 > n + 2.
+        self.put_creates(H0, 197)
+        self.put("trades", H0, [g[0], bad] + g[1:])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        self.assertIn("exceed 0.5%", err)
+        self.assertFalse((self.out / "tokens_d1.parquet").exists())
+        self.assertEqual(self.sidecar()["taint_summary"]["n_excluded_mints"], 1)  # sidecar written on refusal
+        self.put_creates(H0, 198)  # 200 mints: 1 * 200 > 200 is false
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+
+    def test_c_gate_is_computed_before_the_drop(self):
+        # B migrated, its only complete buy is on a lost line that names B: C1 still sees the miss (gate refuses), and the
+        # precount reports the excluded mint among the no-detected-complete ones.
+        B = "B" * 40
+        self.build(trades0=[], trades1=[], migs=[{"type": "migration", "mint": B, "slot": 300, "event_index": 0}])
+        self.put_creates(H0, 800)
+        bad = b'{"type": "trade", "mint": "%s", "sl\n' % B.encode()
+        self.put("trades", H0, self.lines_of([trade(B, "w1", "buy", 200, 0, T0 + 5)]) + [bad] + self.good_trades())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out), "--precount"])
+        self.assertEqual(rc, 2)  # 1 of 1 traded migrated mints has no detected complete: C1 fails, unchanged by the drop
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        self.assertEqual(pc["complete_detection"]["qa_traded_mints_with_migrate_pos_but_no_detected_complete"], 1)
+        self.assertEqual((pc["n_excluded_mints"], pc["excluded_mints_with_no_detected_complete"]), (1, 1))
+
+    # ---- R5 -----------------------------------------------------------------------------------------------------
+    def test_sidecar_fields_per_skipped_line(self):
+        self.put_creates(H0, 800)
+        g = self.good_trades()
+        bad = b'{"type": "trade", "mint": "%s", "x": {"mint":"%s"}, "mint": "%s", "sl\n' % (LC.encode(), LD.encode(), LC.encode())
+        self.put("trades", H0, [g[0], bad, g[1], g[2]])  # slots 100 | bad | 400, 401
+        rc, stdout, err = self.run_layer()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"SKIP_MALFORMED file=trades-{H0}.jsonl.zst n=1 first_line=2", stdout)
+        sc = self.sidecar()
+        (f,) = sc["files_with_malformed"]
+        (r,) = f["skipped_lines"]
+        self.assertEqual((f["stream"], f["n_malformed"], f["n_lines"], f["first_line"]), ("trades", 1, 4, 2))
+        self.assertEqual(r["line"], 2)
+        self.assertEqual(r["byte_offset"], len(g[0]))
+        self.assertEqual(r["bytes"], len(bad))
+        self.assertEqual(r["mints_decoded"], [LC, LD])
+        self.assertEqual(r["n_mint_matches"], 3)
+        self.assertEqual((r["prev_valid_slot"], r["next_valid_slot"]), (100, 400))
+        self.assertEqual((r["creates_lost"], r["trades_lost"]), (0, 1))
+        self.assertEqual((sc["creates_lost"], sc["trades_lost"]), (0, 1))
+        self.assertEqual(sc["tainted_mints"], {LC: "decoded"})
+        self.assertEqual(sc["rule"]["source"], "QP comment 6220843906")
+        self.assertNotIn("sl\\n", json.dumps(sc))  # offsets and mints, never line content
+        m = json.loads((self.out / "MANIFEST.json").read_text())
+        for k in ("creates_lost", "trades_lost", "n_excluded_mints", "excluded_mints_with_no_detected_complete"):
+            self.assertIn(k, m)
+        self.assertTrue((self.out / "README_D1_USAGE.md").exists())
+        self.assertIn("EXCLUDED", (self.out / "README_D1_USAGE.md").read_text())
+
+    def test_offsets_of_two_bad_lines_on_a_refusal(self):
+        self.put_creates(H0, 800)
+        g = self.good_trades()
+        bad1, bad2 = b'{"type": "trade", "mint": \n', b"not json at all\n"
+        self.put("trades", H0, [g[0], bad1, g[1], b"\n", bad2, g[2]])
+        rc, _, err = self.run_layer()
+        self.assertEqual(rc, 2)
+        (f,) = self.sidecar()["files_with_malformed"]
+        off1 = len(g[0])
+        off2 = off1 + len(bad1) + len(g[1]) + 1
+        self.assertEqual([(o["line"], o["byte_offset"], o["bytes"]) for o in f["skipped_lines"]],
+                         [(2, off1, len(bad1)), (5, off2, len(bad2))])
+        self.assertEqual([(o["prev_valid_slot"], o["next_valid_slot"]) for o in f["skipped_lines"]], [(100, 400), (400, 401)])
+        self.assertNotIn("not json at all", json.dumps(self.sidecar()))
+
+    # ---- memory and precount ------------------------------------------------------------------------------------
+    def test_rss_is_checked_inside_the_line_loop(self):
+        self.put("trades", H0, self.many(25))
+        calls: list[str] = []
+        with mock.patch.object(layer, "RSS_CHECK_EVERY_LINES", 10), \
+                mock.patch.object(layer, "check_rss", lambda lim, where: calls.append(where)):
+            self.assertEqual(self.run_layer()[0], 0)
+        self.assertIn(f"trades-{H0}.jsonl.zst line 10", calls)
+        self.assertIn(f"trades-{H0}.jsonl.zst line 20", calls)
+
+    def test_rss_self_check_aborts_cleanly(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--max-rss-gb", "0.0001"])
+        self.assertEqual(rc, 2)
+        self.assertIn("exceeds --max-rss-gb", err.getvalue())
+        self.assertFalse((self.out / "MANIFEST.json").exists())
+
+    def test_default_rss_limit_is_below_the_16gb_job_limit_with_margin(self):
+        ap_default = 13.0
+        with mock.patch.object(layer, "run", lambda a: self.assertEqual(a.max_rss_gb, ap_default) or {"precount": {}}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out), "--precount"])
+
+    def test_precount_mode_prints_skip_lines_and_input_hashes(self):
+        self.put_creates(H0, 800)
+        g = self.good_trades()
+        self.put("trades", H0, [g[0], b"bad\n", g[1], g[2]] + self.many(2000))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--precount"])
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertIn("SKIP_MALFORMED file=", out.getvalue())
+        self.assertIn("sha256=", out.getvalue())
+        self.assertIn("resolved_gates", out.getvalue())
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        self.assertEqual(pc["malformed_lines"]["trades"]["malformed"], 1)
+        self.assertEqual((pc["trades_lost"], pc["creates_lost"], pc["n_excluded_mints"]), (1, 0, 2))
+        self.assertTrue((self.out / layer.SIDECAR).exists())
+        self.assertFalse((self.out / "README_D1_USAGE.md").exists())
+        self.assertFalse((self.out / "tokens_d1.parquet").exists())
+
+    def test_readme_ships_with_full_run(self):
+        self.assertEqual(self.run_layer()[0], 0)
+        txt = (self.out / "README_D1_USAGE.md").read_text()
+        self.assertIn("Exploration only", txt)
+        self.assertIn("No join", txt)
+        self.assertEqual(json.loads((self.out / layer.SIDECAR).read_text())["files_with_malformed"], [])
+
+
+def rows_md5(out: Path) -> str:
+    """md5 over every output row of the D1 layer (tokens, wallet_mint, bars, trades), files in sorted order."""
+    h = hashlib.md5()
+    for f in [out / "tokens_d1.parquet", out / "wallet_mint_d1.parquet", *sorted((out / "bars_1m").glob("*.parquet")),
+              *sorted((out / "trades_d1").glob("*.parquet"))]:
+        h.update(f.name.encode())
+        for r in pq.read_table(f).to_pylist():
+            h.update(json.dumps(r, sort_keys=True, default=str).encode())
+    return h.hexdigest()
+
+
+# md5 of the output rows of the fixture below, produced by the code at cf73edd (before the QP rule change, no malformed lines).
+EQUIV_MD5 = "16577e35b4e4f2defb28a90127c0121b"
+
+
+class DecisionEquivalenceTests(Base):
+    def test_output_rows_unchanged_vs_cf73edd(self):
+        extra = [trade("D", None, "buy", 520, 0, T0 + 3720), trade("D", "w7", "sell", 521, 0, T0 + 3730, b=CB - 1)]
+        self.build(trades1=[trade("A", "w9", "buy", 500, 0, T0 + 3700), trade("C", "w2", "sell", 501, 0, T0 + 3710)] + extra)
+        self.assertEqual(self.run_layer()[0], 0)
+        self.assertEqual(rows_md5(self.out), EQUIV_MD5)
+
+
 class OctoberRoleTests(unittest.TestCase):
     def test_existing_role_module_still_imports(self):
         self.assertEqual(oc.ROLE_OCT_D1, "oct-pregrad-d1")
