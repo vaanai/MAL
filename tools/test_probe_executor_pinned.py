@@ -102,7 +102,8 @@ def test_installer_extra_files_exist_in_repo():
         assert (ROOT / src).is_file() and "/" not in dst
     assert {e.split(":")[1] for e in installer_var("EXTRA").split()} == {
         "launcher.py", "probe-executor-live.json", "probe-executor-live-dec020.json",
-        "mal-probe-executor-live-pinned-dec020.conf", "requirements-probe-exec.txt"}
+        "mal-probe-executor-live-pinned-dec020.conf", "probe-executor-live-feearm.json",
+        "mal-probe-executor-live-pinned-feearm.conf", "requirements-probe-exec.txt"}
 
 
 def test_requirements_pins_match_tools_requirements_and_are_hashed():
@@ -667,7 +668,7 @@ def test_dec020_pinned_set_and_drop_in():
     assert "scripts/mal-fast/probe-executor-live-dec020.json" in extra
     assert "scripts/mal-fast/probe-executor-live.json" in extra  # the current config is still pinned unchanged
     assert "scripts/mal-fast/mal-probe-executor-live-pinned-dec020.conf" in extra  # L7: the drop-in is manifest-verified
-    assert len(closure_files()) + len(extra) + 2 == 15  # + BASE_UNIT and CHECKER
+    assert len(closure_files()) + len(extra) + 2 == 17  # + BASE_UNIT and CHECKER (feearm adds two more)
     d20 = FAST / "mal-probe-executor-live-pinned-dec020.conf"
     a = [l for l in CONF.read_text().splitlines() if not l.startswith("#")]
     b = [l for l in d20.read_text().splitlines() if not l.startswith("#")]
@@ -705,3 +706,15 @@ def test_compare_executor_fills_script(tmp_path):
     fo.write_text(_json.dumps(a[0]) + "\n")
     fn.write_text(_json.dumps(b[0]) + "\n")
     assert mod.main([str(fo), str(fn)]) == 0
+
+
+def test_feearm_pinned_set_and_drop_in():
+    """DEC-019 Am.2: feearm config and drop-in are manifest-verified EXTRA files; the drop-in points at the feearm config."""
+    extra = installer_var("EXTRA")
+    assert "scripts/mal-fast/probe-executor-live-feearm.json" in extra
+    assert "scripts/mal-fast/mal-probe-executor-live-pinned-feearm.conf" in extra
+    a = (FAST / "mal-probe-executor-live-pinned-feearm.conf").read_text().splitlines()
+    assert any("probe-executor-live-feearm.json --live" in x for x in a if x.startswith("ExecStart=/"))
+    import json
+    cfg = json.loads((FAST / "probe-executor-live-feearm.json").read_text())
+    assert cfg["limits_profile"] == "feearm" and cfg["spend_cap_lamports"] == 150_000_000 and cfg["third_arm"] is False

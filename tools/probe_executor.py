@@ -30,6 +30,7 @@ import functools
 import json
 import math
 import os
+import random
 import re
 import sys
 import time
@@ -173,10 +174,31 @@ DEC020_MAX = {
 DEC020_STOPS: dict[str, float] = {"min_closed": 10, "entry_bps": -200.0, "exit_bps": -200.0, "min_attempts": 10, "max_fail_frac": 0.30}
 DEC020_END_MS: int | None = None  # owner end instant, ms epoch UTC; None = dec020 refuses (DEC-020 section 3 and 7)
 
+# DEC-019 Amendment 2 (fee-arm probe; DRAFT until quant-proof OK on the exact head and the owner's dated OK). Selected ONLY by
+# config `limits_profile: "feearm"`. Execution measurement, never a book, never a P&L claim. Same rule as above: config may lower
+# these, never raise them. FEEARM_SPEND_CAP_LAMPORTS is the HARD 0.15 SOL cost cap (see feearm_committed_cost).
+FEEARM_SPEND_CAP_LAMPORTS = 150_000_000
+FEEARM_MAX = {
+    "max_attempts": 150,           # buy attempts; the net wallet-loss cap binds first (about 65 per arm at the expected cost)
+    "max_open": 2,
+    "loss_cap_lamports": FEEARM_SPEND_CAP_LAMPORTS,
+    "max_days": 5,
+    "size_lamports": 5_000_000,    # 0.005 SOL (QP 2: about 75 per arm under the cap)
+    "priority_lamports": 500_000,  # the control arm; also the whitelist ceiling
+    "spend_cap_lamports": FEEARM_SPEND_CAP_LAMPORTS,
+    "max_sends": 300,              # transactions sent, buys and sells (rebroadcasts of one signed tx count once)
+}
+FEEARM_END_MS = 1792627200000  # 2026-10-22T00:00:00Z, the day before the stopped H5 canary may resume (2026-10-23). Config may lower it.
+FEEARM_ARMS: tuple[tuple[str, int], ...] = (("control", 500_000), ("test", 155_000))
+FEEARM_LOW_ARM = ("low", 15_000)  # only with config `third_arm: true` (default off)
+FEEARM_RENT_RESERVE_LAMPORTS = 2_500_000  # worst-case token+WSOL ATA rent held per position (observed charged: 1,513,840)
+FEEARM_SELL_ATTEMPTS = 3  # sell attempts reserved per position in the cost cap; config may lower, never raise
+FEEARM_FILL_LOG = "probe-fills-feearm.jsonl"
+
 LIVE_DIR = Path("/var/lib/mal-live")  # FIXED. Handover and cross-profile checks read state only from here, never from cfg.
 
 DEFAULT_PROFILE = "dec019"
-PROFILES = ("dec019", "dec020")
+PROFILES = ("dec019", "dec020", "feearm")
 
 
 def profile_spec(name: Any) -> tuple[dict[str, int], int]:
@@ -185,6 +207,8 @@ def profile_spec(name: Any) -> tuple[dict[str, int], int]:
         raise ValueError(f"unknown limits_profile {name!r} (known: {sorted(PROFILES)})")
     if name == "dec019":
         return DEC019_MAX, DEC019_END_MS
+    if name == "feearm":
+        return FEEARM_MAX, FEEARM_END_MS
     if DEC020_END_MS is None:
         raise ValueError("dec020 refused: owner end instant not set in code; DEC-020 section 3 and 7")
     return DEC020_MAX, DEC020_END_MS
@@ -225,6 +249,8 @@ class Limits:
     stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
     halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
     profile: str = DEFAULT_PROFILE
+    spend_cap_lamports: int = field(default=FEEARM_MAX["spend_cap_lamports"], repr=False)  # feearm only (clamped to FEEARM_MAX); unused by the other profiles
+    max_sends: int = field(default=FEEARM_MAX["max_sends"], repr=False)  # feearm only
     stops: tuple | None = field(default=None, repr=False, compare=False)  # dec020 only: sorted DEC020_STOPS items; None for dec019
 
     def __post_init__(self) -> None:
@@ -244,7 +270,7 @@ class Limits:
         if isinstance(e, bool) or not isinstance(e, (int, float)) or not math.isfinite(e) or e <= 0:
             raise ValueError("limit end_ms must be a finite positive number")
         object.__setattr__(self, "end_ms", min(int(e), end_ceiling))
-        if self.profile == DEFAULT_PROFILE:
+        if self.profile != "dec020":
             if self.stops is not None:
                 raise ValueError("stops exist only for the dec020 profile")
         else:
@@ -261,8 +287,12 @@ class Limits:
             kw["stop_file"] = str(cfg["stop_file"])
         if cfg.get("halt_file"):
             kw["halt_file"] = str(cfg["halt_file"])
-        if profile != DEFAULT_PROFILE:
+        if profile == "feearm":
+            feearm_config(cfg)  # raises ValueError on a bad seed / arm key / priority
+        if profile == "dec020":
             kw["stops"] = clamp_stops(cfg.get("dec020_stops"))
+        if profile == "feearm" and cfg.get("dec020_stops") is not None:
+            raise ValueError("dec020_stops does not apply to the feearm profile")
         return cls(**kw, profile=profile)
 
 
@@ -283,13 +313,14 @@ class State:
     bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= max_attempts entries, 90 under Amendment 1)
     max_seen_ms: int = 0  # live: highest clock reading seen; a clock stepping back fails closed
     dec020: dict[str, Any] = field(default_factory=dict)  # dec020 only: divergence/landing counters and latched stops; {} (and unwritten) for dec019
+    feearm: dict[str, Any] = field(default_factory=dict)  # feearm only: seed, per-mint arms, sends, fees paid; {} (and unwritten) for the other profiles
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         with tmp.open("w") as fh:
-            body = self.__dict__ if self.dec020 else {k: v for k, v in self.__dict__.items() if k != "dec020"}  # dec019 file unchanged
+            body = {k: v for k, v in self.__dict__.items() if not (k in ("dec020", "feearm") and not v)}  # dec019 file unchanged
             fh.write(json.dumps(body, separators=(",", ":")))
             fh.flush()
             os.fsync(fh.fileno())
@@ -348,6 +379,12 @@ def check_profile_files(cfg: dict[str, Any], limits: "Limits") -> None:
         raise SystemExit(f"{prof} refused: fill_log must resolve under {LIVE_DIR}")
     if fl.name == "probe-fills.jsonl":
         raise SystemExit(f"{prof} refused: fill_log must not be the dec019 probe's probe-fills.jsonl")
+    if prof == "feearm":
+        if fl.resolve() != (LIVE_DIR / FEEARM_FILL_LOG).resolve():
+            raise SystemExit(f"feearm refused: fill_log must be {LIVE_DIR / FEEARM_FILL_LOG}")
+        # The STOP and HALT files are the wallet-wide ones (the same files H5 and the old probe honour); config cannot redirect them.
+        if Path(limits.stop_file) != LIVE_DIR / "STOP" or Path(limits.halt_file) != LIVE_DIR / "HALT":
+            raise SystemExit(f"feearm refused: stop_file and halt_file must be {LIVE_DIR}/STOP and {LIVE_DIR}/HALT")
 
 
 def profile_precheck(cfg: dict[str, Any], mode: str) -> list[str]:
@@ -363,13 +400,23 @@ def profile_precheck(cfg: dict[str, Any], mode: str) -> list[str]:
         return []
     d19 = state_path_for(LIVE_DIR, "live", DEFAULT_PROFILE)
     d20 = state_path_for(LIVE_DIR, "live", "dec020")
+    dfa = state_path_for(LIVE_DIR, "live", "feearm")
     if limits.profile == DEFAULT_PROFILE:
         counts = _live_state_open(d20)
         if counts and any(counts):
             raise SystemExit(f"dec019 refused: the dec020 live state has {counts[0]} open and {counts[1]} pending "
                              "position(s); wind dec020 down to 0 open and 0 pending before running dec019")
+        counts = _live_state_open(dfa)
+        if counts and any(counts):
+            raise SystemExit(f"dec019 refused: the feearm live state has {counts[0]} open and {counts[1]} pending "
+                             "position(s); wind feearm down to 0 open and 0 pending before running dec019")
         return []
     check_profile_files(cfg, limits)
+    if limits.profile == "feearm":
+        return _feearm_precheck(cfg, d19, d20)
+    counts = _live_state_open(dfa)
+    if counts and any(counts):
+        raise SystemExit(f"{limits.profile} refused: the feearm live state has {counts[0]} open and {counts[1]} pending position(s)")
     counts = _live_state_open(d19)
     if counts is None:
         raise SystemExit(f"{limits.profile} refused: the dec019 live state {d19} is missing (DEC-020 3b needs it for the handover)")
@@ -377,6 +424,23 @@ def profile_precheck(cfg: dict[str, Any], mode: str) -> list[str]:
         raise SystemExit(f"{limits.profile} refused: the dec019 live state has {counts[0]} open and {counts[1]} pending "
                          "position(s); the 0.05 probe must be stopped with nothing open (DEC-020 section 3b)")
     if state_path_for(cfg["state_dir"], "live", limits.profile).exists():
+        return []
+    return list(State.load(d19, "live").bought)
+
+
+def _feearm_precheck(cfg: dict[str, Any], d19: Path, d20: Path) -> list[str]:
+    """feearm live start (keyless). The wallet is shared with the dec019/dec020 probe profiles and the H5 canary, so none of
+    their live states may hold an open or pending position. dec019's state must exist (the `bought` list seeds feearm's, so
+    a mint the old probe traded is never re-bought)."""
+    counts = _live_state_open(d19)
+    if counts is None:
+        raise SystemExit(f"feearm refused: the dec019 live state {d19} is missing (its bought list seeds feearm's)")
+    others = {"dec019": counts, "dec020": _live_state_open(d20), "h5": _live_state_open(LIVE_DIR / "h5" / "state-live.json")}
+    for name, c in others.items():
+        if c and any(c):
+            raise SystemExit(f"feearm refused: the {name} live state has {c[0]} open and {c[1]} pending position(s); "
+                             "the wallet must be flat before the fee-arm probe runs")
+    if state_path_for(cfg["state_dir"], "live", "feearm").exists():
         return []
     return list(State.load(d19, "live").bought)
 
@@ -390,6 +454,87 @@ def guard_live_state(mode: str, state_path: Path, fill_log: Path) -> None:
         for raw in fh:
             if b'"mode":"live"' in raw:
                 raise SystemExit("live state file missing but the fill log has live rows: refusing to start")
+
+
+# --- DEC-019 Amendment 2: fee-arm probe (pure; used by probe_live and the dry run) ----------------------------------------
+
+
+def feearm_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate the feearm-only config keys (keyless). Returns {seed, third_arm, sell_attempts}. Raises ValueError.
+    The arm table is CODE (FEEARM_ARMS), not config: `arms`/`fee_arms` keys are refused, and a `priority_lamports` other
+    than the control value is refused (it is the whitelist ceiling, so a lower value would refuse every control send)."""
+    for bad in ("arms", "fee_arms", "arm_priorities"):
+        if bad in cfg:
+            raise ValueError(f"feearm refused: config key {bad!r} is not allowed (the arm table is in code)")
+    pl = cfg.get("priority_lamports")
+    if pl is not None and pl != FEEARM_MAX["priority_lamports"]:
+        raise ValueError("feearm refused: priority_lamports must be absent or 500000 (the arms set the priority per mint)")
+    seed = cfg.get("arm_seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("feearm refused: arm_seed must be an explicit non-negative integer (logged with every row)")
+    third = cfg.get("third_arm", False)
+    if not isinstance(third, bool):
+        raise ValueError("feearm refused: third_arm must be true or false (default false)")
+    sa = cfg.get("feearm_sell_attempts", FEEARM_SELL_ATTEMPTS)
+    if isinstance(sa, bool) or not isinstance(sa, int) or not 1 <= sa <= FEEARM_SELL_ATTEMPTS:
+        raise ValueError(f"feearm refused: feearm_sell_attempts must be an integer in 1..{FEEARM_SELL_ATTEMPTS}")
+    return {"seed": seed, "third_arm": third, "sell_attempts": sa}
+
+
+def feearm_arm_table(third_arm: bool) -> tuple[tuple[str, int], ...]:
+    return FEEARM_ARMS + ((FEEARM_LOW_ARM,) if third_arm else ())
+
+
+def feearm_pick(seed: int, index: int, third_arm: bool = False) -> tuple[str, int]:
+    """Arm of the index-th buy attempt: blocked randomisation. Attempts are cut into blocks of len(arms); each block is an
+    independent seeded shuffle of the arms, so the split is exact after every full block and never off by more than one arm
+    inside a block. Deterministic in (seed, index) only: not a function of the mint, the time or the pool."""
+    table = feearm_arm_table(third_arm)
+    n = len(table)
+    rng = random.Random(f"feearm:{seed}:{index // n}")
+    order = list(range(n))
+    rng.shuffle(order)
+    return table[order[index % n]]
+
+
+def feearm_sell_fee(priority: int) -> int:
+    return tx.BASE_FEE_PER_SIGNATURE + int(priority)
+
+
+def feearm_committed_cost(st: "State", sell_attempts: int = FEEARM_SELL_ATTEMPTS) -> int:
+    """Lamports of the wallet that are spent or at risk, worst case, right now. No fee is counted twice:
+    - realized: `-st.realized_lamports` when negative. It already contains the base + priority fees, pool fees and price
+      moves of every closed round trip and every landed failed buy or sell. The cost is the net realized loss, floored at 0 overall: a later win offsets an earlier loss and frees headroom.
+    - every open position: buy_cost_lamports (stake + buy fees + ATA rent, all lost if the token goes to zero and the rent is
+      stranded) plus the sell fees of the sell attempts it may still make (arm priority + base each).
+    - every in-flight buy: stake + buy fee + RENT_RESERVE + the sell fees reserved for it.
+    An in-flight sell is its position (open), so it is already inside the open term."""
+    total = max(0, -int(st.realized_lamports))
+    for pos in st.open.values():
+        left = max(0, sell_attempts - int(pos.get("sell_attempts", 0)))
+        total += int(pos.get("buy_cost_lamports", 0)) + left * feearm_sell_fee(pos.get("arm_priority", FEEARM_MAX["priority_lamports"]))
+    for p in st.pending.values():
+        if p.get("kind") == "buy":
+            total += feearm_new_buy_worst_case(int(p["spend"]), int(p.get("arm_priority", FEEARM_MAX["priority_lamports"])), sell_attempts)
+    return total
+
+
+def feearm_new_buy_worst_case(spend: int, priority: int, sell_attempts: int = FEEARM_SELL_ATTEMPTS) -> int:
+    """Worst case of one more buy: the stake goes to zero, the buy fee is paid, ATA rent is stranded, and every reserved sell
+    attempt lands as a failure and pays its fee."""
+    return int(spend) + feearm_sell_fee(priority) + FEEARM_RENT_RESERVE_LAMPORTS + sell_attempts * feearm_sell_fee(priority)
+
+
+def feearm_buy_refusal(limits: "Limits", st: "State", spend: int, priority: int, sell_attempts: int = FEEARM_SELL_ATTEMPTS) -> str | None:
+    """None, or the reason a new buy must not be sent. The HARD cap: committed cost + this buy's worst case must not exceed
+    limits.spend_cap_lamports (<= FEEARM_SPEND_CAP_LAMPORTS in code). Also the (soft) sends cap: sends so far, this buy, and one
+    sell for it and for every position that still has to sell, must fit max_sends."""
+    if feearm_committed_cost(st, sell_attempts) + feearm_new_buy_worst_case(spend, priority, sell_attempts) > limits.spend_cap_lamports:
+        return "spend_cap"
+    sells_owed = len(st.open) + sum(1 for p in st.pending.values() if p.get("kind") == "buy")
+    if int(st.feearm.get("sends", 0)) + 2 + sells_owed > limits.max_sends:
+        return "max_sends"
+    return None
 
 
 # --- rpc: rate limit, backoff, labelled errors (never carries a URL or message) ---------------
@@ -1062,6 +1207,9 @@ class Executor:
         if self.mode == "live" and self.limits.profile != DEFAULT_PROFILE and first_start:
             self.state.bought = list(dict.fromkeys([*seed, *self.state.bought]))
             self.state.save(self.state_path)
+        self.fa: dict[str, Any] | None = feearm_config(cfg) if self.limits.profile == "feearm" else None
+        if self.fa is not None and self.state.feearm.get("seed", self.fa["seed"]) != self.fa["seed"]:
+            raise SystemExit("feearm refused: arm_seed differs from the seed stored in the state file (the seed never changes mid-run)")
         self.fills = FillLog(Path(cfg["fill_log"]), self.mode, self.limits.profile)
         self.user = Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER)  # public, read-only
         self.commitment = cfg.get("commitment", "confirmed")
@@ -1098,7 +1246,33 @@ class Executor:
 
     # -- helpers
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
+        if self.fa is not None:  # feearm: the arm is on EVERY row (null where the mint has none: a skip is not an attempt)
+            a = self.state.feearm.get("arms", {}).get(mint)
+            tag: dict[str, Any] = {"fee_arm": a["arm"] if a else None, "arm_priority_lamports": a["priority"] if a else None,
+                                   "arm_index": a["index"] if a else None, "arm_seed": self.fa["seed"]}
+            if kind in ("buy", "sell") and "landed" in kw:  # endpoint: landed | failed (on chain, err) | dropped (never landed)
+                tag["outcome"] = "landed" if kw["landed"] else ("dropped" if kw.get("fail_class") == "expired" else "failed")
+            kw = {**tag, **kw}
         self.fills.write({"kind": kind, "ts_ms": self.now_ms(), "mint": mint, "book": self.book, **kw})
+
+    def _fa_pick(self) -> tuple[str, int, int]:
+        """(arm, priority, index) the NEXT buy attempt would get. Not stored until the write-ahead."""
+        assert self.fa is not None
+        index = self.state.attempts
+        name, pr = feearm_pick(self.fa["seed"], index, self.fa["third_arm"])
+        return name, pr, index
+
+    def _fa_store(self, mint: str, arm: tuple[str, int, int]) -> None:
+        self.state.feearm.setdefault("seed", self.fa["seed"])  # type: ignore[index]
+        self.state.feearm.setdefault("arms", {})[mint] = {"arm": arm[0], "priority": arm[1], "index": arm[2]}
+
+    def _priority(self, mint: str) -> int:
+        """Priority lamports for this mint's sends: its arm under feearm, else the configured limit (all other profiles)."""
+        if self.fa is not None:
+            a = self.state.feearm.get("arms", {}).get(mint)
+            if a:
+                return int(a["priority"])
+        return self.limits.priority_lamports
 
     def _skip(self, sig: dict[str, Any], reason: str, **kw: Any) -> None:
         self._log("skip", sig["mint"], reason=reason, decision_t_ms=sig["decision_t_ms"], **kw)
@@ -1217,16 +1391,18 @@ class Executor:
         would = soft_stops(self.limits, self.state, now) if self.mode == MODE else []
         for w in would:
             self.state.would_halt[w] = self.state.would_halt.get(w, 0) + 1
+        if self.fa is not None:  # dry run of the feearm profile: same assignment, no cap enforcement (record-only, like the other stops)
+            self._fa_store(sig["mint"], self._fa_pick())
         self.state.attempts += 1
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.save()
-        msg = buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports)
+        msg = buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self._priority(sig["mint"]))
         validate_err = None
         try:  # would the live signer's whitelist accept this message? (a real-pool check during the dry run)
             from tools import probe_live
 
-            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self.limits.priority_lamports,
+            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self._priority(sig["mint"]),
                                         self.limits.size_lamports)
         except Exception as exc:
             validate_err = getattr(exc, "label", type(exc).__name__)
@@ -1246,7 +1422,7 @@ class Executor:
             seen_ms=sig.get("seen_ms"), state_ms=t_state, state_slot=snap.slot, built_ms=t_built, simulated_ms=t_sim,
             latency=sig.get("latency"), t_built_ms=t_built, t_sim_ms=t_sim, ms_decision_to_built=t_built - sig["decision_t_ms"],
             ms_built_to_sim=t_sim - t_built, spend_lamports=spend, slippage_bps=self.slip_bps,
-            priority_lamports=self.limits.priority_lamports, v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
+            priority_lamports=self._priority(sig["mint"]), v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
             base_reserve=snap.base_reserve, fee_ppm=q["fee_ppm"], expected_tokens=q["tokens"],
             sim_tokens=sim_tokens, would_have_halted=would, live_validate_err=validate_err, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
         )
@@ -1286,12 +1462,12 @@ class Executor:
         row: dict[str, Any] = dict(
             exit_reason=chk["reason"], ret=chk["ret"], t_entry_ms=pos["t_entry_ms"], hold_ms=now - pos["t_entry_ms"],
             pool=pos["pool"], tokens=pos["tokens"], spend_lamports=pos["spend"], quote_sol_out_lamports=chk["quote_out"],
-            pool_slot=snap.slot if snap else None, priority_lamports=self.limits.priority_lamports,
+            pool_slot=snap.slot if snap else None, priority_lamports=self._priority(mint),
             **self._exit_fields(kind),
         )
         err: Any = "no_snapshot"
         if snap is not None and snap.quote_priced is not None:
-            msg, sell_tokens, min_out = sell_probe_message(snap, self.user, pos["spend"], self.slip_bps, self.limits.priority_lamports)
+            msg, sell_tokens, min_out = sell_probe_message(snap, self.user, pos["spend"], self.slip_bps, self._priority(mint))
             t_built = self.now_ms()
             try:
                 res = sim_message(self.rpc, msg, self.user, [self.user])
@@ -1302,7 +1478,7 @@ class Executor:
         if chk["quote_out"] is not None:
             # Dry-run P&L is the V-priced quote less both priority fees and base fees. Pool fees are
             # inside the quote. Token/WSOL ATA rent is refunded on close and ignored.
-            fees = 2 * self.limits.priority_lamports + 2 * tx.BASE_FEE_PER_SIGNATURE
+            fees = 2 * self._priority(mint) + 2 * tx.BASE_FEE_PER_SIGNATURE
             pnl = chk["quote_out"] - pos["spend"] - fees
         else:
             pnl = None  # forced close with no price: labelled, and NOT booked into realized loss
@@ -1425,6 +1601,14 @@ def status_report(cfg: dict[str, Any]) -> str:
         exposure = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(
             int(p.get("spend") or 0) for p in st.pending.values() if p.get("kind") == "buy")
         lines.append(f"  open_exposure_sol={exposure / LAMPORTS:.6f} (cost of open + in-flight buys; the loss cap counts realized loss only)")
+        if lim.profile == "feearm":
+            sa = min(int(cfg.get("feearm_sell_attempts", FEEARM_SELL_ATTEMPTS)), FEEARM_SELL_ATTEMPTS)
+            fa = st.feearm
+            arms: dict[str, int] = {}
+            for v in fa.get("arms", {}).values():
+                arms[v["arm"]] = arms.get(v["arm"], 0) + 1
+            lines.append(f"  feearm committed_cost_lamports={feearm_committed_cost(st, sa)} spend_cap_lamports={lim.spend_cap_lamports} "
+                         f"sends={fa.get('sends', 0)}/{lim.max_sends} fees_paid_lamports={fa.get('fees_paid', 0)} arm_seed={fa.get('seed')} arms={arms}")
         for mint, pos in st.open.items():
             lines.append(f"  open {mint} tokens={pos.get('tokens')} spend={pos.get('spend')} stuck={bool(pos.get('stuck'))} "
                          f"abandoned={bool(pos.get('abandoned'))} sell_attempts={pos.get('sell_attempts', 0)}")

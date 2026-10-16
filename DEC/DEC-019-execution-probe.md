@@ -203,3 +203,84 @@ P_mig is a constant seed price (about 4.1078e-07 SOL per token: vault 67.4058 SO
 
 Starts in the next build. It changes no decision, so trades are not a separate section 7 group on account of it.
 
+
+## Amendment 2 (DRAFT 2026-10-16): fee-arm execution probe, 500,000 vs 155,000 priority, hard 0.15 SOL cap
+
+**Status: DRAFT. Nothing runs before BOTH (a) `quant-proof` OK on the exact head sha (pending; re-pinned after each commit) and (b) the owner's OK, which is recorded: the owner relayed Helm's yes on 2026-10-16 at about 15:35Z ("worth a yes ... make sure the 0.15 SOL is a hard limit in the code, not just a goal"), recorded by manager11 (MiScusi question q_Ih-oH8wmvw9D2w, closed; notebook n_D_JV-tCOR9R-Nw). Scope: 0.15 SOL net wallet-loss cap, window ending 2026-10-22T00:00Z, no live-gate or book effect. The lab note must not report P&L of the probe's intents.** Helm installs only after the quant-proof OK on the final head is recorded in the PR. Code: `tools/probe_executor.py` and `tools/probe_live.py`, profile `feearm` (config `limits_profile: "feearm"`); tests `tools/test_probe_feearm.py`. Amendments 1 and 1a and every earlier section stand.
+
+### Purpose
+An execution measurement, not a strategy. It asks one question: does a 155,000-lamport priority land as fast as the 500,000 the live sends have always paid? It makes **no P&L claim and no edge claim**, its trades never count toward any gate, and it is never a book. Basis: `/data/mal/hunt-1008/push-1016/hunt2/cost-floor/REPORT.md`. 124 of 124 live sends paid 505,000 and 122 landed; no landing rate exists at any other fee; Amendment 1's 150,000 was never installed.
+
+### Arms and randomisation
+| Arm | Priority per side | Base fee | Fee per send | Round trip |
+| --- | --- | --- | --- | --- |
+| control | 500,000 | 5,000 | 505,000 | 1,010,000 |
+| test | 155,000 | 5,000 | 160,000 | 320,000 |
+| low (only with `third_arm: true`, default **false**) | 15,000 | 5,000 | 20,000 | 40,000 |
+
+- Per mint, by **blocked randomisation** on the buy-attempt index: attempts are cut into blocks (2 arms, or 3 with the flag) and each block is an independent shuffle seeded by `random.Random("feearm:<seed>:<block>")`. The split is exact after every full block, deterministic in (seed, index), and not a function of the mint, time or pool.
+- The seed is explicit in the config (`arm_seed`), stored in the state file, and the executor refuses to start if it changes. The arm is written to the state file (write-ahead) and to an `arm_assigned` ledger row **before the first send**. The same arm is used for that mint's sell(s).
+- A refused buy (cap, STOP, stale signal) does not advance the index, so a cap refusal cannot select which arm gets traded.
+- The arm table is code (`FEEARM_ARMS`). Config keys `arms`, `fee_arms`, and any `priority_lamports` other than 500,000 are refused.
+
+### Endpoints
+Every ledger row of the profile carries `fee_arm`, `arm_priority_lamports`, `arm_index`, `arm_seed` (null arm on skip rows, which are not attempts). Per send (buy and sell rows): `outcome` = landed, failed (on chain, with `fail_class`) or dropped (expired, never landed); `landed_slot` and `slots_between` (landed slot minus the pool-state read slot of the decision, the quantity in the cost-floor report); `ms_decision_to_send`, `ms_send_to_confirm`; `fee_lamports`, `base_fee_lamports`, `priority_fee_lamports` as actually paid.
+
+### Pre-declared analysis (before any row is read): two non-inferiority tests
+The question is whether 155,000 lands **as well and as fast** as 500,000, so it is a non-inferiority question. Both tests are fixed here, with their margins, before any send. Test arm = 155,000; control arm = 500,000; the low arm (if ever enabled) is descriptive only.
+- **Test A, landing.** Unit = every send of the arm, buys and sells together (a rebroadcast of one signed tx counts once). Landed = on chain and successful; a send that failed on chain or expired unlanded is not landed and stays in the denominator. Statistic = landed share(test) minus landed share(control), one-sided 95% **lower bound** by the Newcombe-Wilson score method (Wilson interval per arm, z = 1.645). A holds if the lower bound is **> -5 percentage points**. About 116 sends per arm are needed (see Money for what the cap buys).
+- **Test B, lag.** Unit = every buy that landed, `slots_between` (landed slot minus the pool-state read slot of the decision). Statistic = mean(test) minus mean(control), 1,000 bootstrap draws (arms resampled separately), seed 1, one-sided 95% **upper bound** (95th percentile of the draws). B holds if the upper bound is **< +0.5 slot**. Control reference: mean 2.23 slots, sd about 0.69 (n = 61); at 58 buys per arm the standard error is about 0.13 and the bound about +0.21 if the arms are equal (about 99% power).
+- **PASS** = A holds and B holds. **FAIL** = the point estimate of A is at or below -5 pp, or the point estimate of B is at or above +0.5 slot. **NOT_DECIDABLE** = anything else (for example a point estimate inside the margin with a bound that is not). NOT_DECIDABLE is reported with the observed counts, both bounds and the point estimates; no decision, including a move to 155,000, rests on it.
+- **Secondary only:** two-sided Fisher exact on the share of buys landed at slot +1 (`slots_between == 1`; control was 4 of 61 = 6.6%, too small a share to detect a drop at any affordable n, so it is not the primary); share failed or dropped per arm; the slot-lag distribution. No secondary changes the verdict.
+- Reported by executor build sha, never pooled with any earlier probe, H5 or DEC-020 row, with the hour-of-day distribution of attempts. No extension past the cap, the end instant or the attempt cap.
+
+**What changes the floor.** Only a PASS on both tests moves the simulator send-cost floor to 160,000 lamports (155,000 priority + 5,000 base); any other result (FAIL or NOT_DECIDABLE) keeps 505,000. Wording for a PASS in the lab note: "At 155,000 priority, X/N sends landed vs Y/M at 500,000 (lower bound Z pp, margin -5); buy lag A vs B slots (upper bound C, margin +0.5). From DEC-019 Amendment 2, the simulator send cost is 160,000 lamports, and the measured lag shift is added. This is a cost input, not a P&L result. No book changes status, and no recomputed history counts as out-of-sample." The lab note must not report P&L of the probe's intents (`exp012_migrate_tp50_sl30`).
+
+### Limits (enforced in code; config may lower, never raise)
+| Limit | Value | Where |
+| --- | --- | --- |
+| **Hard net wallet-loss cap** | **150,000,000 lamports (0.15 SOL)** | `FEEARM_SPEND_CAP_LAMPORTS`, clamp in `Limits` |
+| Stake per buy | 5,000,000 lamports (0.005 SOL) | `FEEARM_MAX` |
+| Buy attempts | 150 | `FEEARM_MAX` |
+| Transactions sent (buys + sells; a rebroadcast of one signed tx counts once) | 300 (soft, see The cap) | `FEEARM_MAX`, checked at buy admission |
+| Max open | 2 | `FEEARM_MAX` |
+| Sell attempts reserved per position | 3 (config may lower) | `FEEARM_SELL_ATTEMPTS` |
+| Slippage | `DEFAULT_SLIPPAGE_CAP` 0.15 | unchanged |
+| Absolute end | 2026-10-22T00:00:00Z (`FEEARM_END_MS` 1792627200000); max_days 5 | code constant, config may lower |
+| Stop | wallet-wide `/var/lib/mal-live/STOP` (no new buys) and `HALT` (freeze); the profile refuses other paths | `check_profile_files` |
+
+**The cap (a net wallet-loss cap, not a total-spend cap).** Before every new buy, `committed cost + worst case of this buy` must be at most 150,000,000, else the buy is skipped with `limit:spend_cap` and nothing is signed. The first send of a buy re-checks and refuses (alert `spend_cap_send_blocked`) if the cap would be crossed.
+- committed cost = realized loss (net realized P&L if negative, floor 0; it already holds the base and priority fees, pool fees and price moves of every closed trip and landed failed send, so no fee is counted twice) + for each open position its `buy_cost_lamports` (stake, buy fee and ATA rent, all treated as lost and the rent as stranded) + the sell fees of its remaining reserved sell attempts + for each in-flight buy its full worst case.
+- worst case of one buy = stake + buy fee + 2,500,000 rent reserve + 3 x sell fee. Control: 5,000,000 + 505,000 + 2,500,000 + 1,515,000 = **9,520,000**. Test: 5,000,000 + 160,000 + 2,500,000 + 480,000 = **8,140,000**.
+- Sells are never refused (that would strand a position); their fees are inside the reservation. The cost is the net realized loss, floored at 0 overall: a later win offsets an earlier loss and frees headroom (wallet accounting, not "profits are ignored").
+- **The 300-send limit is soft.** It reserves one sell per open position at buy admission, but up to 3 sell attempts are allowed per position and sells are never refused, so total sends can pass 300 when sells fail. The binding limit is the net wallet-loss cap, which does reserve all 3 sell fees.
+- When the buy meta is only estimated (no usable meta for 60 s), `_fallback_buy_meta` books at least the 2,500,000 rent reserve in the position's `buy_cost_lamports`, so the cap cannot be under-counted by the missing ATA rent (tested with two such positions).
+- Separate guard, not counted: the executor refuses buys below size + 0.02 SOL of balance.
+
+### Money
+- **Stake 0.005 SOL** (QP's optional smaller stake, chosen so the per-arm count rises; the reviewer's 0.002 SOL is not used, so the buy-meta token delta and slippage checks stay meaningful). Landing does not depend on size; fees (0.32 to 1.01 M per trip) dominate. The selector is unchanged (EXP-012 ceiling-ledger migrate intents, `max_entry_k_slots` 8, `max_signal_age_s` 5): only the fee arms differ.
+- **Expected cost per trip.** Price and pool loss is the probe's measured mean at 0.05 SOL (6.9% of stake mean loss less the 2.02% fee share = 4.89%, probe-final), scaled to 0.005 SOL = 244,500. Control 1,010,000 + 244,500 = 1,254,500; test 320,000 + 244,500 = 564,500. One control + one test pair = **1,819,000**.
+- Pairs the cap pays for: 150,000,000 / 1,819,000 = 82.5; with the last buy's 9.52M reservation held back, **about 75 to 77 per arm**. Sends are about 2 per trip, so about 150 per arm, above the 116 per arm Test A needs; the 300-send limit binds at about the same point (it is soft, see Limits). The price/pool term comes from 61 trips at a different stake and could be worse; the cap, not the estimate, is the limit. **Worst case is 0.15 SOL by construction.**
+- Rent is refundable (net 0 on 61 of 61 trips) and is reserved only so the cap holds if a sell never lands.
+
+### Wallet and overlap with the stopped canary
+- The wallet is shared with the stopped H5 canary. Balance about 0.28 SOL (manager figure; Helm reads the public balance at install). The probe spends at most 0.15 SOL, so **at least about 0.13 SOL remains**. The floor includes open exposure: the cap already holds two open positions at worst case (2 x 9.52M = 19.04M at most), so wallet >= start balance - 0.15 SOL at every instant.
+- H5 has been stopped since 2026-10-14T07:14:07Z and may not resume before 2026-10-23; the probe's absolute end is 2026-10-22T00:00:00Z. Code guards: the feearm start refuses unless the dec019, dec020 and H5 (`/var/lib/mal-live/h5/state-live.json`) live states show 0 open and 0 pending; H5's own precheck loops over `PROFILES` and so refuses while a feearm position is open; the dec019 and dec020 profiles also refuse while one is open. H5's unit has `Conflicts=` with `mal-probe-executor`.
+- The wallet-wide `/var/lib/mal-live/STOP` also blocks H5 today, and the probe honours the same file, so Helm must remove it to start the probe. Before removing it: confirm `/var/lib/mal-live/h5/STOP` exists and the H5 unit is inactive and not enabled, so H5 stays blocked. Put the wallet-wide STOP back at the end.
+
+### Install (Helm, only after the two OKs)
+1. `--status` on the dec019 config: `open=0 pending=0`; same for dec020 and H5. Confirm `/var/lib/mal-live/h5/STOP` exists and `mal-h5-executor` is not active.
+2. Fresh root-owned clone at the reviewed head sha; a 17-line manifest (8 modules, 7 EXTRA, base unit, checker); `sudo scripts/mal-fast/install-probe-executor-pinned.sh <sha> <manifest>` (probe-executor.md section 2b).
+3. Keyless check: `--status` on `/usr/local/lib/mal-probe-exec/current/probe-executor-live-feearm.json`. Expect `limits_profile=feearm size_sol=0.005`, `precheck=ok`, and a `feearm committed_cost_lamports=0 spend_cap_lamports=150000000` line (the state file does not exist yet, so the feearm line appears after the first start).
+4. Pinned keyless dry run (probe-executor.md 2b) of at least 1 hour with 0 build errors. The dry run assigns arms and writes `feearm` rows to a scratch dir; it does not enforce the cap.
+5. Compare the dry run's arm sequence with `feearm_pick(20261016, i)` (seed in the config) and read the public balance.
+6. Install `mal-probe-executor-live-pinned-feearm.conf` from the verified sha dir as `live.conf`, `daemon-reload`, remove the wallet-wide `STOP` (above), start. Expect `mode=LIVE` and `profile='feearm'`.
+7. H5's daily check and watchdog alert on a probe drop-in, a credential or an active probe unit (`probe_live_dropin`, `probe_has_key`): Helm expects and acknowledges these for the window. Nothing else of H5 changes.
+
+### Stop rule
+- Automatic (code): the net wallet-loss cap (`spend_cap` in code); 150 buy attempts; 300 sends; realized loss 0.15 SOL; the end instant; STOP and HALT. Each halts new buys; exits continue.
+- Manual, by the manager or Helm, with a message to the owner: place STOP if more than 3 of the first 20 test-arm buys expire unlanded, on any `unsafe_tx_refused`, `sell_stuck` or `sell_abandoned` alert, or if the wallet balance differs from start balance minus realized minus open cost by more than 0.005 SOL.
+- At the end: STOP in place, `--status` flat, unit stopped and its drop-in moved, wallet-wide STOP restored. A lab note with per-arm counts is reviewed by `quant-proof` before any sentence compares arms.
+
+### What this does not settle
+One fee against one fee on a small sample. It says nothing about edge, pool-fee loss, or whether 155,000 is the cheapest safe fee. The venue fee (1.25% per side) is untouched.
