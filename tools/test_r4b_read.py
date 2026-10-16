@@ -737,9 +737,10 @@ def test_mint_accounts_strand_classes(tmp_path):
                                        "ext": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "token2022_extensions": ["transferFeeConfig"]},
                                        "harmless": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "token2022_extensions": ["metadataPointer"]}, "failed": {"fetch_ok": False}}}))
     probs: list[str] = []
-    got, info = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, probs)
+    got, info, t22 = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, probs)
     # census allowlist (metadataPointer + tokenMetadata): harmless is not strand-class, transferFeeConfig is
     assert probs == [] and got == {"ok": False, "freeze": True, "ext": True, "harmless": False, "failed": True}
+    assert t22 == {"ok": False, "freeze": False, "ext": True, "harmless": True, "failed": True}  # SPL Token only on a successful SPL fetch; everything else is the higher rent
     assert info["fetch_slot"] == 7 and info["failed_fetch"] == 1 and info["failed_fetch_share"] == pytest.approx(0.2)
 
 
@@ -754,7 +755,7 @@ def trip(**kw):
     n = 3
     Q0, B0 = 77e9, 2.5e14
     ent = {1.3: [np.full(n, Q0), np.full(n, B0), np.array([0.0, 2.0, 5.0]), np.array([0.0, 1e9, 3e9])]}
-    tr = {"ent": ent, "spot": np.full(n, Q0 / B0), "Qx": np.full(n, Q0), "Bx": np.full(n, B0), "strand_class": np.zeros(n, bool)}
+    tr = {"ent": ent, "spot": np.full(n, Q0 / B0), "Qx": np.full(n, Q0), "Bx": np.full(n, B0), "strand_class": np.zeros(n, bool), "rent_t22": np.zeros(n, bool)}
     tr.update(kw)
     return tr
 
@@ -1181,7 +1182,7 @@ def test_census_allowlist_default_behaviour():
     t = {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "freeze_authority": None}
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata"]}) is False  # the census shape
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["tokenMetadata", "metadataPointer"]}) is False
-    for bad in ("transferFeeConfig", "permanentDelegate", "transferHook", "defaultAccountState", "nonTransferable", "pausable"):
+    for bad in ("transferFeeConfig", "permanentDelegate", "transferHook", "defaultAccountState", "nonTransferable", "pausableConfig"):
         assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata", bad]}) is True
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata"], "freeze_authority": "F"}) is True
     spl = {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM, "freeze_authority": None, "token2022_extensions": []}
@@ -1254,7 +1255,7 @@ def test_k_ratio_near_tolerance_counts_the_band():
     ratios = np.array([1.0, 1 - 5e-4, 1 - 1e-3, 1 - 1e-6, 1 - 2e-6, 1 - 5e-3])  # band is [1 - 1e-3, 1 - 1e-6): rows 1, 2 and 4
     tr = trip()
     tr["ent"] = {1.3: [np.full(n, Q0), np.full(n, B0), np.zeros(n), np.zeros(n)], 1.9: [np.full(n, Q0), np.full(n, B0), np.zeros(n), np.zeros(n)]}
-    tr["spot"], tr["strand_class"] = np.full(n, Q0 / B0), np.zeros(n, bool)
+    tr["spot"], tr["strand_class"], tr["rent_t22"] = np.full(n, Q0 / B0), np.zeros(n, bool), np.zeros(n, bool)
     tr["Qx"], tr["Bx"] = np.full(n, Q0), B0 * ratios
     pnl = {lat: rr.price_variant(tr, lat, send=505_000, rent=0, auto=True, e1_penalty=0.0) for lat in rr.LATS}
     ctx = NS(plan=NS(w0=datetime(2026, 10, 18, tzinfo=timezone.utc)), tr=tr, cell_pnl=pnl, send=505_000, e1p=0.0)
@@ -1318,3 +1319,39 @@ def test_e1_mode_b_charges_max_of_haircut_and_the_fixed_amount():
     assert np.allclose(b["nofail"], pnl0 - np.maximum(hair, rr.E1_FIXED_LAMPORTS))  # max(haircut, 1,920,110) per filled trip
     s = rr.price_variant(trip(strand_class=np.array([True, False, False])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=float(rr.E1_FIXED_LAMPORTS))
     assert s["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED  # a stranded trip is not charged again
+
+
+def test_stranded_rent_is_priced_by_the_mints_token_program():
+    stake, send = FZ.STAKE_LAMPORTS, 505_000
+    assert rr.RENT_STRANDED_T22 == 2_074_080 == (170 + 128) * 6960 and rr.RENT_STRANDED_SPL == 2_039_280 == (165 + 128) * 6960
+    assert rr.RENT_REPORT_T22 == 2_074_080 and rr.RENT_REPORT_SPL == 2_039_280
+    assert FZ.RENT_STRANDED == FZ.RENT_REPORT == 2_039_280  # the frozen constants are untouched
+    base = rr.price_variant(trip(), 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)
+    # trade 0 strand-class Token-2022, trade 1 strand-class SPL, trade 2 filled (not strand-class, Token-2022)
+    pv = rr.price_variant(trip(strand_class=np.array([True, True, False]), rent_t22=np.array([True, False, True])), 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)
+    assert pv["nofail"][0] == -stake - send - 2_074_080
+    assert pv["nofail"][1] == -stake - send - 2_039_280
+    assert pv["nofail"][2] == base["nofail"][2] and not pv["stranded"][2]  # filled: deciding rent stays 0, whatever the program
+    # report-only rent leg: filled trips pay the rent of their program, stranded ones the stranded rent of theirs
+    rp = rr.price_variant(trip(strand_class=np.array([True, True, False]), rent_t22=np.array([True, False, True])), 1.3, send=send, rent=FZ.RENT_REPORT, auto=True, e1_penalty=0.0)
+    assert rp["nofail"][0] == -stake - send - 2_074_080 and rp["nofail"][1] == -stake - send - 2_039_280
+    assert rp["nofail"][2] == base["nofail"][2] - 2_074_080
+    rs = rr.price_variant(trip(rent_t22=np.array([False, False, True])), 1.3, send=send, rent=FZ.RENT_REPORT, auto=True, e1_penalty=0.0)
+    assert rs["nofail"][1] == base["nofail"][1] - 2_039_280 and rs["nofail"][2] == base["nofail"][2] - 2_074_080
+    with pytest.raises(ValueError):
+        rr.price_variant(trip(), 1.3, send=send, rent=12345, auto=True, e1_penalty=0.0)
+
+
+def test_failed_fetch_and_missing_mints_are_priced_at_the_higher_rent(tmp_path):
+    p = tmp_path / "m.json"
+    p.write_text(json.dumps({"fetch_slot": 7, "mints": {"spl": {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM}, "t22": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM,
+                                                         "token2022_extensions": ["metadataPointer", "tokenMetadata"]}, "failed": {"fetch_ok": False}, "odd": {"fetch_ok": True, "owner_program": "Other"}}}))
+    _, info, t22 = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, [])
+    assert t22 == {"spl": False, "t22": True, "failed": True, "odd": True} and info["rent_t22_in_file"] == 3
+    assert rr.mint_rent_is_t22(None) is True and rr.mint_rent_is_t22({"fetch_ok": "yes", "owner_program": rr.SPL_TOKEN_PROGRAM}) is True
+    # a failed-fetch trip: strand-class and Token-2022 rent, as the read builds the arrays (a mint absent from the file defaults to True)
+    stake, send = FZ.STAKE_LAMPORTS, 505_000
+    strand = np.array([True, True], bool)
+    t22a = np.array([{**t22}.get(m, True) for m in ("failed", "never_seen")], bool)
+    pv = rr.price_variant(trip(strand_class=np.append(strand, False), rent_t22=np.append(t22a, False)), 1.3, send=send, rent=0, auto=True, e1_penalty=0.0)
+    assert pv["nofail"][0] == pv["nofail"][1] == -stake - send - 2_074_080
