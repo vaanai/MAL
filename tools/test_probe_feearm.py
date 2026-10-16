@@ -304,5 +304,33 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(fills(conf)[-1]["reason"], "limit:sell_stuck")
 
 
+class ShippedFeearmConfigTests(unittest.TestCase):
+    """The shipped feearm config: entry-k guard off (the runner's intents carry no migration_slot), staleness still bounded."""
+    CFG = Path(__file__).resolve().parent.parent / "scripts/mal-fast/probe-executor-live-feearm.json"
+
+    def test_guard_off_and_limits_unchanged(self):
+        cfg = json.loads(self.CFG.read_text())
+        self.assertIsNone(pe.validate_max_entry_k(cfg.get("max_entry_k_slots")))
+        self.assertEqual(cfg["max_signal_age_s"], 5)
+        lim = pe.Limits.from_config(cfg)
+        self.assertEqual(lim.spend_cap_lamports, 150_000_000)
+        self.assertEqual((lim.size_lamports, lim.max_attempts, lim.max_open), (5_000_000, 150, 2))
+        self.assertEqual(cfg["arm_seed"], 20261016)
+        self.assertFalse(cfg["third_arm"])
+        self.assertEqual(pe.FEEARM_ARMS, (("control", 500_000), ("test", 155_000)))
+
+    def test_real_shaped_intent_not_refused_by_entry_k_but_stale_is(self):
+        cfg = json.loads(self.CFG.read_text())
+        max_k = pe.validate_max_entry_k(cfg.get("max_entry_k_slots"))
+        now = 1_760_000_000_000
+        sig = {"mint": MINT, "complete_slot": 400_000_000, "complete_ts": now // 1000 - 1, "decision_t_ms": now - 900,
+               "written_ms": now - 800, "lead_ms": 100}
+        self.assertNotIn("migration_slot", sig)
+        self.assertIsNone(pe.entry_k_refusal(sig, 400_000_010, max_k))
+        self.assertIn("entry_k unknown", pe.entry_k_refusal(sig, 400_000_010, 8))  # the old setting refused it
+        self.assertLessEqual(pe.signal_age_ms(sig, now), cfg["max_signal_age_s"] * 1000)
+        self.assertGreater(pe.signal_age_ms(sig, now + 6000), cfg["max_signal_age_s"] * 1000)
+
+
 if __name__ == "__main__":
     unittest.main()
