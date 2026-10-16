@@ -465,8 +465,11 @@ def _identity_positions(blocks: list[Block], dataset: str, start_hour: str, end_
             if prev is not None and prev[0] != pos[0]:
                 raise OctoberRefused(f"{p}: mint {mint!r} has migration rows in two different slots")
             out[mint] = pos if prev is None else min(prev, pos)  # same tx: the earliest event is the cutoff
-            if ts_out is not None and isinstance(r.get("event_ts"), (int, float)) and (prev is None or pos <= prev):
-                ts_out[mint] = int(r["event_ts"])
+            if ts_out is not None and (prev is None or pos <= prev):
+                ets = r.get("event_ts")
+                if not isinstance(ets, int) or isinstance(ets, bool):
+                    raise OctoberRefused(f"{p}: a kept row of mint {mint!r} has no integer event_ts")
+                ts_out[mint] = ets
     return out
 
 

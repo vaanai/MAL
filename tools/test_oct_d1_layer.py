@@ -110,7 +110,11 @@ class Base(unittest.TestCase):
         write_zst(ds / "trades" / f"trades-{H1}.jsonl.zst", rows1)
         write_zst(ds / "creates" / f"creates-{H0}.jsonl.zst", [create("A", 90, T0 + 1), create("B", 91, T0 + 2)])
         mig = migs if migs is not None else [{"type": "migration", "mint": "B", "slot": 300, "event_index": 0},
-                                              {"type": "migration", "mint": "A", "slot": 150, "event_index": 0}]
+                                              {"type": "migration", "mint": "A", "slot": 150, "event_index": 0},
+                                              {"type": "complete", "mint": "A", "slot": 102, "event_index": 0,
+                                               "event_ts": T0 + 30},
+                                              {"type": "complete", "mint": "B", "slot": 200, "event_index": 0,
+                                               "event_ts": T0 + 60}]
         write_zst(ds / "migrations" / f"migrations-{H0}.jsonl.zst", mig)
         if drop:
             (ds / drop[0] / f"{drop[0]}-{drop[1]}.jsonl.zst").unlink()
@@ -344,6 +348,83 @@ class LayerTests(Base):
         self.assertEqual(cd["qa_traded_mints_with_migrate_pos_but_no_detected_complete"], 0)
         self.assertEqual(cd["qa_traded_mints_with_migrate_pos_but_no_trade_detected_complete"], 1)  # A only
         self.assertEqual(cd["complete_rows_in_migrations"], 3)
+
+    def precount_run(self, end="2026-10-02T17"):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", end, "--out", str(self.out), "--precount"])
+        return rc, err.getvalue()
+
+    def migs_with(self, a_row=(102, 0), b_row=(200, 0), a_ts=T0 + 30, drop_rows=()):
+        rows = [{"type": "migration", "mint": "B", "slot": 300, "event_index": 0},
+                {"type": "migration", "mint": "A", "slot": 150, "event_index": 0}]
+        for m, pos, ts in (("A", a_row, a_ts), ("B", b_row, T0 + 60)):
+            if m in drop_rows:
+                continue
+            r = {"type": "complete", "mint": m, "slot": pos[0], "event_index": pos[1]}
+            if ts is not None:
+                r["event_ts"] = ts
+            rows.append(r)
+        return rows
+
+    def test_c2_prime_trade_detected_without_complete_row_refuses(self):
+        self.build(migs=self.migs_with(drop_rows=("A", "B")))
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 2)
+        self.assertIn("C2'", err)
+
+    def test_c2_prime_passes_when_rows_cover_the_trade_detected(self):
+        self.build(migs=self.migs_with())
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 0, err)
+        cd = json.loads((self.out / "PRECOUNT.json").read_text())["complete_detection"]
+        self.assertEqual((cd["c2_prime_trade_detected_without_complete_row"], cd["c2_double_prime_mints_with_both"],
+                          cd["c2_double_prime_position_disagree"]), (0, 2, 0))
+
+    def test_c2_double_prime_position_disagreement_refuses(self):
+        self.build(migs=self.migs_with(a_row=(103, 0)))  # A row is later than the trade-detected complete
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 2)
+        self.assertIn("C2''", err)
+
+    def test_complete_row_without_event_ts_refuses(self):
+        self.build(migs=self.migs_with(a_ts=None))
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 2)
+        self.assertIn("event_ts", err)
+
+    def test_complete_rows_are_capped_at_end(self):
+        migs = self.migs_with()
+        self.build(migs=migs)
+        write_zst(self.root / DS / "migrations" / f"migrations-{H1}.jsonl.zst",
+                  [{"type": "complete", "mint": "Z", "slot": 900, "event_index": 0, "event_ts": T0 + 3700}])
+        rc, err = self.precount_run(end=H1)  # window [H0, H1): the hour-H1 complete row is past --end
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads((self.out / "PRECOUNT.json").read_text())
+                         ["complete_detection"]["complete_rows_in_migrations"], 2)
+        rc, err = self.precount_run(end="2026-10-02T17")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads((self.out / "PRECOUNT.json").read_text())
+                         ["complete_detection"]["complete_rows_in_migrations"], 3)
+
+    def test_migrations_files_are_scanned_once(self):
+        rc, err = self.precount_run()
+        self.assertEqual(rc, 0, err)
+        n = len(layer._hours(H0, oc.FORWARD_END_EXCLUSIVE))
+        self.assertEqual(json.loads((self.out / layer.SIDECAR).read_text())["totals"]["migrations"]["files"], n)
+
+    def test_complete_rows_at_or_after_migrate_pos_are_reported(self):
+        self.build(migs=self.migs_with(b_row=(300, 0)))  # B: complete row on the migrate position
+        rc, err = self.precount_run()
+        self.assertIn(rc, (0, 2), err)
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        self.assertEqual(pc["complete_detection"]["complete_row_at_or_after_migrate_pos_cut_as_after_migrate"], 1)
+
+    def test_gate_function_cross_checks(self):
+        self.assertEqual(layer.complete_gate_reasons(0, 0, 200, 0, 1, 100, 0), [])
+        self.assertTrue(layer.complete_gate_reasons(0, 0, 200, 0, 2, 100, 0))
+        self.assertEqual(layer.complete_gate_reasons(0, 0, 0, 0, 0, 200, 1), [])
+        self.assertTrue(layer.complete_gate_reasons(0, 0, 0, 0, 0, 199, 1))
 
     def test_gate_stops_when_constant_does_not_fit(self):
         rows = [trade("A", "w1", "buy", 100, 0, T0 + 10, b=CB - 5)]  # below, never exact

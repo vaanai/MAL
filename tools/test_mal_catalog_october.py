@@ -506,6 +506,13 @@ def test_complete_positions_reads_complete_rows_only_with_event_ts(blocks, tmp_p
     assert oc.migrate_positions(*args) == {"M": (10, 1), "N": (12, 3)}
 
 
+@pytest.mark.parametrize("bad", [{}, {"event_ts": None}, {"event_ts": "5"}, {"event_ts": True}])
+def test_complete_positions_row_without_integer_event_ts_refused(blocks, tmp_path, monkeypatch, bad):
+    f = _mig_file(tmp_path, monkeypatch, [{"type": "complete", "mint": "M", "slot": 10, "event_index": 1, **bad}])
+    with pytest.raises(oc.OctoberRefused):
+        oc.complete_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f], {})
+
+
 def test_migrate_positions_conflicting_migration_rows_refused(blocks, tmp_path, monkeypatch):
     f = _mig_file(tmp_path, monkeypatch, [{"type": "migration", "mint": "M", "slot": 12, "event_index": 3},
                                           {"type": "pool_create", "mint": "M", "slot": 13, "event_index": 0}])
