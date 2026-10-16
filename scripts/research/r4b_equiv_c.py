@@ -194,7 +194,7 @@ def check_report(cells) -> tuple[bool, list]:
             n_ok = s["n"] == REPORT_N[ver]
             ok &= all(same) and n_ok
             rows.append({"version": ver, "cell": "/".join(cell), "n": s["n"], "n_ok": n_ok, "got": [round(g, 6) for g in got], "report": list(want),
-                         "equal6": same, "gate_numeric_block_stats": s["gate_numeric"], "t_block": s["t_block"], "p_block": s["p_block"],
+                         "equal6": same, "gate_numeric_block_stats": s["gate_numeric"], "t_block": s["t_block"], "p_block": s["p_block"], "t_block_sum": s["t_block_sum"],
                          "blocks_W": s["blocks_W"]})
     return ok, rows
 
@@ -305,6 +305,7 @@ def main(argv=None) -> int:
                                   "total_sol": round(st_["total_sol"], 6), "ci90_lo_sol": round(st_["ci90_lo_sol"], 6), "ex_top3_sol": round(st_["ex_top3_sol"], 6),
                                   "ex_best_date_sol": round(st_["ex_best_date_sol"], 6), "ex_best_block_sol": round(st_["ex_best_block_sol"], 6),
                                   "t_dates": round(st_["t_dates"], 6), "t_block": round(st_["t_block"], 6), "p_block": round(st_["p_block"], 6),
+                                  "t_block_sum": round(st_["t_block_sum"], 6), "p_block_sum": round(st_["p_block_sum"], 6), "W": st_["blocks_W"],
                                   "gate_numeric": st_["gate_numeric"]}))
     print("E-c trades table md5", A["md5_mine"], "| reference text md5", A["md5_ref_text"], "| identical text", A["text_identical"])
     ok = bool(A["ok"] and okB and okC)

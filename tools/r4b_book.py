@@ -332,14 +332,29 @@ def block_sums(x_lamports, T0, w0: int, block_s: int = 86400, drop_empty: bool =
     return ids, s[ids]
 
 
+def block_means(x_lamports, T0, w0: int, block_s: int = 86400):
+    """Mean pnl (SOL) per attempt in each 24 h block counted from w0; empty blocks are dropped. Returns (block ids, means, counts).
+    This is the DEC-021 Amendment 1 section 5 m_b."""
+    x = np.asarray(x_lamports, float) / 1e9
+    b = (np.asarray(T0, np.int64) - int(w0)) // int(block_s)
+    if len(b) and b.min() < 0:
+        raise ValueError("a trade starts before w0")
+    if not len(b):
+        return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
+    nb = int(b.max()) + 1
+    cnt = np.bincount(b, minlength=nb)
+    ids = np.flatnonzero(cnt > 0)
+    return ids, (np.bincount(b, x, minlength=nb)[ids] / cnt[ids]), cnt[ids]
+
+
 def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = None, block_s: int = 86400, draws: int = F.BOOT_DRAWS,
                seed: int = F.BOOT_SEED, daylist=None):
     """Gate statistics of one leg. pnl_lamports per trade; T0 entry mark (unix s); mid mint ids.
 
     n, dates (distinct UTC entry dates), days_pos (dates with total > 0; majority = days_pos * 2 > dates), mean_sol, mean_pct (of stake),
     total_sol, ci90_lo_sol (trade-level bootstrap, 1,000 draws, seed 1, 5th pct), ex_top3_sol (drop the 3 best trades),
-    ex_best_block_sol (24 h blocks from w0), ex_best_date_sol (UTC dates), ex_best_mint_sol, and the day-level t over 24 h blocks from w0
-    (empty blocks dropped, df = W - 1). w0 is required: None raises.
+    ex_best_block_sol (24 h blocks from w0), ex_best_date_sol (UTC dates), ex_best_mint_sol, and the deciding t_block over 24 h blocks from w0
+    (one-sided t of per-block MEAN pnl per attempt, empty blocks dropped, df = W - 1; t_block_sum is the report-only version on block sums). w0 is required: None raises.
     daylist: optional explicit list of UTC dates ('YYYY-MM-DD'); the calendar-date t is then also given as t_dates (empty listed dates count as 0,
     as the VERIFY re-score does)."""
     if w0 is None:
@@ -371,9 +386,14 @@ def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = N
     msum = np.bincount(minv, x) / 1e9
     o["ex_best_mint_sol"] = float(msum.sum() - msum.max())
     o["best_mint"] = int(mu[int(np.argmax(msum))])
+    # deciding statistic (DEC-021 Amendment 1 section 5): one-sided t on per-block MEAN pnl per attempt, empty blocks dropped, df = W - 1
+    _, bm, _ = block_means(x, T0, w0, block_s)
+    dm = day_t(bm)
+    o.update({"blocks_W": dm["W"], "block_df": dm["df"], "block_mean_sol": dm["mean_sol"], "block_sd_sol": dm["sd_sol"], "t_block": dm["t"],
+              "p_block": dm["p"]})
+    # report-only: the same t on block SUMS (not the deciding statistic)
     dt = day_t(bs)
-    o.update({"blocks_W": dt["W"], "block_df": dt["df"], "block_mean_sol": dt["mean_sol"], "block_sd_sol": dt["sd_sol"], "t_block": dt["t"],
-              "p_block": dt["p"]})
+    o.update({"block_sum_mean_sol": dt["mean_sol"], "block_sum_sd_sol": dt["sd_sol"], "t_block_sum": dt["t"], "p_block_sum": dt["p"]})
     if daylist is not None:
         lab = {d: i for i, d in enumerate(daylist)}
         missing = [d for d in ud if d not in lab]
