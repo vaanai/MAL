@@ -45,7 +45,7 @@ Source: `/data/mal/hunt-1008/push-1016/hunt5/launchpad-landscape/REPORT.md` (rea
 
 Quant-proof's analysis, copied from the MiScusi notebook text. It is a synthetic simulation, not a measurement on any tape.
 
-EXP-026's stop E = first hour with ≥100 trades on ≥5 dates (336 h is only the cap, EXP-026:106), so it reads at ~n 100; P(pass) ~.03 at +4%, ~.05–.06 at +8%, .07–.10 at +11%, .14–.18 at +16% (upper bounds, SD 100 pp); fixed 28 d .05–.09/.13–.24/.21–.42/.42–.74; stop at ≥250 trades on ≥7 dates (cap 35 d) .05–.06/.13–.15/.21–.25/.40–.49; days matter more than trades (day-level t binds); plan on +2 to +5%; a re-file needs a new file and hours, a new slot (DEC-029 amendment with the owner's line, or a fifth-slot DEC) and a new seal exception; QP: propose only if G0 shows unsealed pools and E1 is redefined in the same filing.
+EXP-026's stop E = first hour with ≥100 trades on ≥5 dates (336 h is only the cap, EXP-026:106), so it reads at ~n 100; P(pass), normal / skewed per-trade returns: .03 / .015 at +4%, .05–.06 / .03 at +8%, .07–.10 / .06 at +11%, .14–.18 / .11–.14 at +16% (upper bounds, SD 100 pp; +11% and +16% are winner's-curse figures; E1 and the oracle seal are not modelled); fixed 28 d .05–.09/.13–.24/.21–.42/.42–.74; stop at ≥250 trades on ≥7 dates (cap 35 d) .05–.06/.13–.15/.21–.25/.40–.49; days matter more than trades (day-level t binds); plan on +2 to +5%; a re-file needs a new file and hours, a new slot (DEC-029 amendment with the owner's line, or a fifth-slot DEC) and a new seal exception; QP: propose only if G0 shows unsealed pools and E1 is redefined in the same filing.
 
 ## (f) Fee-arm probe: live, but no buy is possible
 
@@ -57,13 +57,13 @@ EXP-026's stop E = first hour with ≥100 trades on ≥5 dates (336 h is only th
 ## (g) October D1 layer
 
 - Job #1067 refused on C2. Root cause and fix are in PR #670, with QP's ruling in its comment 6222506181: the old C2 (completes with no migrate position at most 0.5% of `mints_with_complete`) fails by construction on this layout (about 16,379 completes against 52 migration rows). QP retired it, on a structure count and not on an outcome, and declared C2' and C2'' in its place (integer arithmetic, 200x, computed before R4).
-- Blocking items B1 (C2' and C2'' with refusal tests) and B2 (a complete row without an integer `event_ts` must refuse) must be fixed and QP must OK the new head before the precount reruns. QP re-checked at 1764657 (comment 6222603050) and found one more blocking item: C2'' missed a complete row that sits EARLIER than the trade-detected complete (the harmful case), so precount #1074 (started at that head) was cancelled; the fix is with the builder, and the precount reruns only after QP OK on the fixed head. The manager then checks C1, C2', C2'', C3 and gates (a) to (c) in PRECOUNT.json before any full run. D1 is exploration only.
+- QP's B1 (C2' and C2'' with refusal tests) and B2 (a complete row without an integer `event_ts` must refuse) were fixed; QP's further B1 at 1764657 (comment 6222603050: C2'' missed a complete row EARLIER than the trade-detected complete) was fixed by detecting against a trade-only map, and precount #1074 at 1764657 was cancelled. PR #670 merged as 6b3e01d (QP OK 6222655533 and Reviewer OK 6222678801 at 2da1d1e). The real-layout precount #1076 runs at 2da1d1e; the manager checks C1, C2', C2'', C3 and gates (a) to (c) in PRECOUNT.json before any full run, which is a separate job. D1 is exploration only.
 - The same ruling records a low-severity breach: a diagnostic scan read row types and mint counts from two out-of-window walk-2 hours. Disclosure: HOLDOUT_LEDGER changelog of 2026-10-16, the Forward walk 2 Status cell, and the EXP-025 "Breach disclosure (2026-10-16T18:56Z)" amendment. No read is compromised.
 
 ## What it means (manager's reading)
 
 - No exit or tail filter makes H5 certifiable fast.
-- The day-level t's between-day dispersion sets about 13–14 days even at September's mean and rate.
+- The day-level t's between-day dispersion sets 12.09–13.68 days (h5-exit-sd, best variant vs v1) even at September's mean and rate.
 - The Haiku ranker shows no lift on September.
 - There is no case for a second venue's tape.
 
