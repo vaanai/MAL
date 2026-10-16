@@ -19,9 +19,16 @@ Meta (PLAN section 1)
   mslot / mbt   min slot / min block_time of the mint's `type=complete` rows.
   pool          the canonical pool = the PDA (`pumpswap_tx.canonical_pool`), computed from the mint alone.
   pda_match     the earliest `type=migration` event of the mint names pool == PDA and quote_mint == WSOL.
-  s0            slot of the first print of the PDA pool in [mslot, mslot + 7300), ordered (slot, tx_index, event_index, signature).
+  s0            slot of the first print of the PDA pool in [mslot, mslot + 7300), ordered like r4b_features.forward_order: (slot, tx_index, event_index, frn), a null tx_index
+                coalesced to -1 (sorts first), frn = the print's row number in its hour file (offset by the hour index, so it is total across hours).
+  V null rules (event mode): a null V0 (V on the s0 print) makes the pool a NON-member (l3 trained on pools with V present and in the band); the per-day
+                share of such candidate pools is reported (`v0_missing_share_by_day`, `v0_missing_days_over`) against V0_MISSING_REFUSE_SHARE, which the PRECOUNT
+                enforces (the adapter does not refuse on it). A null V on any print of a MEMBER pool at or after s0 REFUSES the build (no dropping a member
+                afterwards, no forward-fill).
   V0            `--v-source event`: the event V (`virtual_quote_reserves`) of that s0 print. `--v-source static_map`: the {pool: V} json (pool_v_0909.json),
                 EXPLORATION REPLAY ONLY (that tape has no migration event and no event V), and then ut.vq is the map's V for every row of the mint.
+  s0 window     7,300 slots is the frozen value. At 200 ms slots that is about 1,460 s, vs about 2,200-2,900 s on the (slower-slot) training tape: a slot-era
+                difference, disclosed, value kept.
   member        not mayhem (a missing create is kept: its create-derived constants are NaN downstream), s0 exists, V0 in [17.5e9, 17.7e9], and in event mode
                 pda_match. A missing V0 is NOT a member here; the count is in stats (`v0_missing`).
 
@@ -50,6 +57,7 @@ from tools.latency_curve import _hour_file  # noqa: E402
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
+V0_MISSING_REFUSE_SHARE = 0.02  # the precount refuses if any read day has a larger share of candidate PDA pools with a missing V0 (the EXP pins it)
 WINDOW_SLOTS = 7300  # s0 = first PDA-pool print in [mslot, mslot + 7300)
 HORIZON_S = 52 * 3600 + 1800  # ut keeps prints with bt <= mbt + 52h + 1800 (l3 01_extract)
 V_SOURCES = ("event", "static_map")
@@ -159,6 +167,15 @@ def _load(con: Any, table: str, path: Path, cols: Mapping[str, str], want_rows: 
         raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
 
 
+def _load_trades(con: Any, path: Path, hix: int, label: str) -> None:
+    """Load an hour's trades into temp table t with `frn` = hour_index * 1e10 + row number in the file (insertion order is preserved by DuckDB)."""
+    src = _read_json_sql(path, TRADE_COLS)
+    try:
+        con.sql(f"create or replace temp table t as select {hix} * 10000000000 + (row_number() over () - 1) as frn, * from {src}")
+    except Exception as exc:
+        raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
+
+
 def _hour_rows(files: Mapping[str, Mapping[str, Path]], verify: Mapping[str, Mapping[str, Any]], h: str, sub: str) -> int:
     return int(verify[h]["content"][sub]["rows"])
 
@@ -244,11 +261,11 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     con.sql("create table m_comp as select c.*, p.pda from comp c left join pda p using(mint)")
 
     # ---- pass 1b: per hour, row-count check, clock + mkt output, s0 candidates
-    con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, sig varchar, vq bigint, bt bigint, pool varchar)")
+    con.sql("create table cand(mint varchar, slot bigint, txi integer, evi integer, frn bigint, vq bigint, bt bigint, pool varchar)")
     vq_null_rows = 0
     n_trade_rows = 0
-    for h in hours:
-        _load(con, "t", files[h]["trades"], TRADE_COLS, 0, h, create=True)
+    for hix, h in enumerate(hours):
+        _load_trades(con, files[h]["trades"], hix, h)
         got = con.sql("select count(*) from t").fetchone()[0]
         want = _hour_rows(files, table, h, "trades")
         if got != want:
@@ -260,15 +277,10 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
                     sum(case when venue='pumpswap' then sol_lamports else 0 end)::double v_ps, sum((venue='pump_bonding')::int)::double n_bd,
                     sum(case when venue='pump_bonding' then sol_lamports else 0 end)::double v_bd
                     from t where block_time is not null group by 1 order by 1) to '{out_dir}/mkt/{h}.parquet' (format parquet)""")
-        con.sql(f"""insert into cand select t.mint, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.signature, t.virtual_quote_reserves,
+        con.sql(f"""insert into cand select t.mint, t.slot, coalesce(t.tx_index,-1), coalesce(t.event_index,-1), t.frn, t.virtual_quote_reserves,
                     t.block_time, t.pool from t join m_comp c on t.mint=c.mint and t.pool=c.pda
                     where t.venue='pumpswap' and t.slot >= c.mslot and t.slot < c.mslot + {WINDOW_SLOTS}""")
-    if v_source == "event":
-        n_null = con.sql("select count(*) from cand where vq is null").fetchone()[0]
-        if n_null:
-            raise LayoutRefused(f"{n_null} PumpSwap print(s) of a candidate PDA pool in [mslot, mslot+{WINDOW_SLOTS}) have a null/missing virtual_quote_reserves "
-                                "(event V mode needs the event V on every such print)")
-    con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, sig) rn from cand) where rn=1""")
+    con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn from cand) where rn=1""")
     con.sql(f"""copy (select (block_time//60)*60 AS mnt, count(*) n_cr from cre_raw where coalesce(type,'create')='create' and block_time is not null
                 group by 1 order by 1) to '{out_dir}/mkt_creates.parquet' (format parquet)""")
 
@@ -295,22 +307,30 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
 
     # ---- pass 2: ut and bond per hour
     vq_col = "t.virtual_quote_reserves" if v_source == "event" else "m.v"
-    for h in hours:
-        _load(con, "t", files[h]["trades"], TRADE_COLS, 0, h, create=True)
-        o = f"{out_dir}/ut/{h}.parquet"
-        con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt, (t.side='buy') isbuy,
-                    t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq
-                    from t join m on t.pool=m.pool and t.mint=m.mint
-                    where t.venue='pumpswap' and t.slot>=m.s0 and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S})
-                    order by m.mid, t.slot, txi, evi, t.signature) to '{o}' (format parquet)""")
-        con.sql(f"""copy (select m.mid, t.slot, t.block_time bt, (t.side='buy') isbuy, t.sol_lamports sol, hash(t.trader) th
-                    from t join m on t.mint=m.mint where t.venue='pump_bonding' and t.slot < m.mslot + 1
-                    order by m.mid, t.slot, t.signature) to '{out_dir}/bond/{h}.parquet' (format parquet)""")
-        if v_source == "event":
-            vq_null_rows += con.sql(f"select count(*) from read_parquet('{o}') where vq is null").fetchone()[0]
+    try:
+        for hix, h in enumerate(hours):
+            _load_trades(con, files[h]["trades"], hix, h)
+            o = f"{out_dir}/ut/{h}.parquet"
+            con.sql(f"""copy (select m.mid, t.slot, coalesce(t.tx_index,-1)::integer txi, coalesce(t.event_index,-1)::integer evi, t.block_time bt, (t.side='buy') isbuy,
+                        t.sol_lamports sol, t.token_raw::double tok, t.quote_reserve::double q, t.base_reserve::double b, hash(t.trader) th, {vq_col}::bigint vq
+                        from t join m on t.pool=m.pool and t.mint=m.mint
+                        where t.venue='pumpswap' and t.slot>=m.s0 and (t.block_time is null or t.block_time <= m.mbt + {HORIZON_S})
+                        order by m.mid, t.slot, txi, evi, t.frn) to '{o}' (format parquet)""")
+            con.sql(f"""copy (select m.mid, t.slot, t.block_time bt, (t.side='buy') isbuy, t.sol_lamports sol, hash(t.trader) th
+                        from t join m on t.mint=m.mint where t.venue='pump_bonding' and t.slot < m.mslot + 1
+                        order by m.mid, t.slot, t.frn) to '{out_dir}/bond/{h}.parquet' (format parquet)""")
+            if v_source == "event":
+                n_null = con.sql(f"select count(*) from read_parquet('{o}') where vq is null").fetchone()[0]
+                if n_null:
+                    raise LayoutRefused(f"hour {h}: {n_null} print(s) of MEMBER pool(s) at/after s0 have a null/missing virtual_quote_reserves "
+                                        "(no dropping members afterwards, no forward-fill)")
+    except LayoutRefused:
+        for f in ("meta.parquet", "creators.parquet"):  # an incomplete build must not look complete
+            (out_dir / f).unlink(missing_ok=True)
+        raise
 
     tie = _txi_stats(con, out_dir)
-    stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, vq_null_rows, duckdb.__version__)
+    stats = _stats(con, v_source, hours, n_trade_rows, n_pda_err, 0, duckdb.__version__)
     stats.update(tie)
     (out_dir / "stats.json").write_text(json.dumps(stats, sort_keys=True, indent=1) + "\n", encoding="utf-8")
     con.close()
@@ -340,7 +360,12 @@ def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_p
     n_v0_missing = q(f"select count(*) from m0 where {elig} and v0 is null")
     n_band = q(f"select count(*) from m0 where {elig} and v0 between {V_LO} and {V_HI}")
     per_day = dict(con.sql("select day, count(*) from m group by 1 order by 1").fetchall())
+    miss = {d: {"candidates": int(n), "v0_missing": int(k), "share": (k / n) if n else None} for d, n, k in con.sql(
+        f"""select strftime(make_timestamp(mbt * 1000000), '%Y-%m-%d') d, count(*), sum((v0 is null)::int) from m0 where {elig} and mbt is not null
+            group by 1 order by 1""").fetchall()}
     return {
+        "v0_missing_share_by_day": miss, "v0_missing_refuse_share": V0_MISSING_REFUSE_SHARE,
+        "v0_missing_days_over": sorted(d for d, r in miss.items() if r["share"] is not None and r["share"] > V0_MISSING_REFUSE_SHARE),
         "schema": SCHEMA, "v_source": v_source, "hours": [hours[0], hours[-1]], "n_hours": len(hours), "n_trade_rows": n_trade_rows, "duckdb": duckdb_version,
         "completes": n_comp, "mayhem": n_may, "non_mayhem": n_non, "no_create": q("select count(*) from m0 where not has_create"),
         "pda_errors": n_pda_err, "no_migration_event": n_nomig, "non_wsol_quote": n_nonwsol,

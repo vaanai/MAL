@@ -487,18 +487,55 @@ def test_stats_null_txi_tie_groups_and_mixed_slots(tmp_path):
     assert st["null_txi_tie_groups"] == 1 and st["mixed_null_txi_slots"] == 1  # only ms+50 mixes null and non-null; ms+40 / ms+60 are all null
 
 
-def test_event_mode_refuses_null_vq_on_candidate_pool(tmp_path):
+def test_event_mode_refuses_null_vq_on_member_print(tmp_path):
     sc = scenario()
-    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, vq=None)]  # a window print of MA's PDA pool without event V
+    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, vq=None)]  # MA is a member (s0 has V); a later print without event V
     walk = make_walk(tmp_path / "w", sc)
-    refused(walk, tmp_path, "virtual_quote_reserves", canonical_fn=pda_of)
+    refused(walk, tmp_path, "MEMBER")
+    assert not (tmp_path / "out" / "creators.parquet").exists()
 
 
-def test_null_vq_on_other_pool_or_outside_window_is_not_refused(tmp_path):
+def test_null_vq_on_non_member_pools_is_not_refused_and_day_share_is_flagged(tmp_path):
     sc = scenario()
-    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, pool="OTHER_POOL", vq=None), trade("MA", S + 100 + 7300, 1, 0, vq=None, bt=BT3 + 3700)]
+    ms = S + 1200
+    sc[H3]["trades"] += [trade("MA", S + 120, 1, 0, pool="OTHER_POOL", vq=None),  # not the PDA pool
+                         trade("MI", S + 711, 1, 0, vq=None)]  # mayhem pool, null V
+    sc[H3]["migrations"] += [complete("MQ", ms), migration("MQ", ms, pda_of("MQ"))]  # s0 print without V: V0 missing -> non-member
+    sc[H3]["creates"] += [create("MQ")]
+    sc[H3]["trades"] += [trade("MQ", ms + 5, 1, 0, vq=None), trade("MQ", ms + 6, 1, 0, vq=None)]
     walk = make_walk(tmp_path / "w", sc)
-    assert build(walk, tmp_path)["members"] == 7
+    st = build(walk, tmp_path)
+    assert st["members"] == 7 and st["v0_missing"] == 1
+    assert "MQ" not in {r[0] for r in q(f"select mint from '{tmp_path}/out/meta.parquet'")}
+    day = st["v0_missing_share_by_day"]["2026-10-16"]
+    assert day["v0_missing"] == 1 and day["share"] == pytest.approx(1 / day["candidates"]) and day["share"] > rl.V0_MISSING_REFUSE_SHARE
+    assert st["v0_missing_days_over"] == ["2026-10-16"] and rl.V0_MISSING_REFUSE_SHARE == 0.02
+
+
+def test_no_missing_v0_day_is_not_flagged(walk, tmp_path):
+    st = build(walk, tmp_path)
+    assert st["v0_missing_days_over"] == []
+
+
+def test_ordering_equals_r4b_features_forward_order(tmp_path):
+    """Within-slot order: (slot, tx_index with null -> -1 first, event_index, frn), the same as tools.r4b_features.forward_order."""
+    import numpy as np
+
+    from tools.r4b_features import forward_order
+
+    ms = S + 100
+    rows = [(ms + 20, 4, 1), (ms + 20, None, 0), (ms + 20, None, 0), (ms + 20, 2, 5), (ms + 20, None, 0), (ms + 19, 9, 9), (ms + 20, 4, 0), (ms + 21, None, 3)]
+    sc = scenario()
+    sc[H3]["trades"] += [trade("MA", sl, tx, ev, sol=1000 + i) for i, (sl, tx, ev) in enumerate(rows)]  # sol = the file position marker
+    walk = make_walk(tmp_path / "w", sc)
+    build(walk, tmp_path)
+    marker = {1000 + i for i in range(len(rows))}
+    got = [r[0] - 1000 for r in q(f"select sol from '{tmp_path}/out/ut/{H3}.parquet' where mid = 0") if r[0] in marker]
+    slot = np.array([r[0] for r in rows])
+    tx = np.array([np.nan if r[1] is None else r[1] for r in rows])
+    ev = np.array([r[2] for r in rows])
+    want = list(forward_order(slot, tx, ev, np.arange(len(rows))))
+    assert got == want and want.index(1) < want.index(2) < want.index(4)  # null-tx ties keep file order
 
 
 def test_static_map_does_not_refuse_null_vq(tmp_path):
