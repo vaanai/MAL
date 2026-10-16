@@ -5,7 +5,7 @@ Source: docs/HOLDOUT_LEDGER.md, the 2026-10-15 changelog entry (F1 release,
 "Code masks" bullet) and quant-proof's ruling
 /data/mal/hunt-1008/OCTOBER-DATA-QP-RULING.md. The hour-only
 `tools.mal_catalog.allowed()` never grants these roles; the only way in is
-`check_october_read`, which fails closed on every condition below.
+`check_read`, which fails closed on every condition below.
 
 Ruling, D0: "Nothing from which a post-s0 price can be computed". It has to be
 applied "as a rule on columns, not on key names". Forbidden: "loading the
@@ -25,13 +25,24 @@ Ruling, PR #545: the `fm_*` first-minute flow columns "must be dropped or moved
 to a D2/D3 role" before anything runs on an October hour. Both roles refuse them.
 
 Column masks are allowlists (a name not listed is refused), so a new or renamed
-column fails closed. Extending a list needs a quant-proof review.
+column fails closed. Extending a list needs a quant-proof review. `mask_row`
+applies the raw allowlist per row type to every parsed line before any other use.
 
-This module opens no data file. Call it before any file opens.
+Bright line (3), what is enforced and what is left. Enforced: a per-process
+latch (the first granted `check_read` fixes the process's October role; the
+other is refused), and D1 inputs are limited to hour files under trades/ and
+creates/ of the released dirs, so a D0 output file can never be a D1 input.
+Left to callers: the guard covers INPUTS only. Joining D1 outputs to any D0,
+D2 or D3 output downstream stays forbidden while any seal on that mint's pool
+holds.
+
+This module opens no data file except `migrate_positions` (migrations/ hour
+files, keeping only mint, slot, event_index). Call `check_read` before any open.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,14 +69,21 @@ BLOCKS_ROOT = Path("/data/mal/blocks")
 DEFAULT_FINAL_LEDGER = Path("/data/mal/exp012-forward/FINAL_READS.jsonl")
 BONDING_VENUE = "pump_bonding"  # observe.trade_decode.VENUE_BONDING
 
-# Identities, times and slot timing: shared by D0 and D1.
+
+class OctoberRefused(Exception):
+    """Raised by `mask_row` / `guarded_rows` / `migrate_positions` on a refusal."""
+
+
+# Identities, times and slot timing.
 _ID_COLUMNS = frozenset({
     "v", "type", "feed", "venue", "mint", "mint_source", "trader", "pool", "slot", "signature",
-    "event_index", "t_recv", "t_recv_ms", "event_ts", "commitment", "zero_sol",
+    "event_index", "t_recv", "t_recv_ms", "event_ts", "commitment",
 })
-# D0: events, counts, and things fixed at or before s0.
-D0_ALLOWED_COLUMNS = (_ID_COLUMNS - {"trader"}) | frozenset({
-    "quote_mint", "quote_is_wsol",
+# D0 RAW: what `mask_row` lets through from a parsed `trade` line. No side, amount, price, reserve, fee, zero_sol
+# or EVENT_V_KEYS key. `trader` is here so distinct-trader counts can be computed under the mask.
+D0_RAW_COLUMNS = _ID_COLUMNS | frozenset({"quote_mint", "quote_is_wsol"})
+# D0 DERIVED: names a D0 output table may carry (events, counts, times, things fixed at or before s0).
+D0_DERIVED_COLUMNS = frozenset({
     "n_trades", "n_traders", "n_multihop", "n_creates", "n_completes", "n_migrations", "n_pool_creates",
     "n_initboost_slices", "n_fee_claims", "n_buybacks",
     "t_create", "t_complete", "t_migrate", "t_pool_create", "t_initboost", "t_fee_claim", "t_buyback",
@@ -73,12 +91,20 @@ D0_ALLOWED_COLUMNS = (_ID_COLUMNS - {"trader"}) | frozenset({
     "v0", "seed_quote_reserve", "seed_base_reserve", "seed_market_cap_sol", "fee_tier",
     "synthetic_class", "post_complete_buy", "mayhem",
 })
+D0_ALLOWED_COLUMNS = D0_RAW_COLUMNS | D0_DERIVED_COLUMNS  # any column a D0 read may name
 # D1: bonding-curve trades before the migrate tx, plus labels that stop at `complete`.
 D1_ALLOWED_COLUMNS = (_ID_COLUMNS - {"pool"}) | frozenset({
-    "side", "sol_lamports", "token_raw", "sol", "token", "price_sol", "market_cap_sol",
+    "zero_sol", "side", "sol_lamports", "token_raw", "sol", "token", "price_sol", "market_cap_sol",
     "market_cap_supply_ui", "quote_reserve", "base_reserve",
     "reached_complete", "complete_slot", "complete_event_index",
 })
+# Non-trade row types keep identities and event_ts only (no amounts: ruling "buyback amounts after s0").
+_IDENT_ONLY = frozenset({"v", "type", "feed", "venue", "mint", "slot", "signature", "event_index", "t_recv",
+                         "t_recv_ms", "event_ts", "commitment"})
+# Kept only on a row of the mint's migrate tx (which is s0): seed reserves, V and the synthetic-buy amounts.
+_S0_FIELDS = frozenset({"virtual_quote_reserves", "quote_reserve", "base_reserve", "pool_quote_amount", "pool",
+                        "base_out", "quote_in"})
+_S0_TYPES = frozenset({"init_boost", "post_complete_buy", "create_pool", "migration", "pool_create"})
 # Refused for D1 whatever the allowlist says: nothing from the migrate tx onward.
 _D1_FORBIDDEN_RE = re.compile(
     r"flow|signed|_by_side|migrat|^s0|_s0$|^v0$|seed|synthetic|post_complete|boost|"
@@ -101,9 +127,12 @@ def _now() -> datetime:
 
 
 def check_columns(role: str, columns: Sequence[str]) -> list[str]:
-    """Reasons for every column the role refuses (empty = all allowed). Fail closed: unknown = refused."""
+    """Reasons for every column the role refuses (empty = all allowed). Fail closed: unknown = refused; an empty
+    column list is refused (a read that names no columns authorises nothing)."""
     if role not in OCT_ROLES:
         return [f"role {role!r} is not an October role"]
+    if not columns:
+        return ["no columns named (an empty column list is refused)"]
     allow = D0_ALLOWED_COLUMNS if role == ROLE_OCT_D0 else D1_ALLOWED_COLUMNS
     out: list[str] = []
     for col in columns:
@@ -114,12 +143,37 @@ def check_columns(role: str, columns: Sequence[str]) -> list[str]:
     return out
 
 
+def mask_row(role: str, row: Mapping[str, Any], migrate_sigs: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Column mask applied to every parsed line BEFORE any other use. Returns a new dict.
+
+    D0: `trade` rows keep `D0_RAW_COLUMNS` only (a post-s0 trade row keeps identities, nothing else).
+    Other row types keep identities and event_ts; `init_boost`, `post_complete_buy` and pool-create/migration rows
+    also keep `_S0_FIELDS`, but only when the row's signature equals that mint's migrate tx (`migrate_sigs`: mint ->
+    signature), i.e. at s0. A second init_boost slice therefore loses `virtual_quote_reserves`. Unknown types keep
+    identities only.
+    D1: `trade` rows keep `D1_ALLOWED_COLUMNS` only; every other type keeps identities only (and `check_rows`
+    refuses it anyway). `fm_*` and the EVENT_V_KEYS (ix_name, creator_fee_unclaimed, buyback_fee,
+    fee_recipient_zero, virtual_quote_reserves) are never kept on trade rows."""
+    if role not in OCT_ROLES:
+        raise OctoberRefused(f"role {role!r} is not an October role")
+    typ = row.get("type")
+    if typ == "trade":
+        keep = D0_RAW_COLUMNS if role == ROLE_OCT_D0 else D1_ALLOWED_COLUMNS
+    else:
+        keep = set(_IDENT_ONLY)
+        mint = row.get("mint")
+        if (role == ROLE_OCT_D0 and typ in _S0_TYPES and migrate_sigs is not None
+                and migrate_sigs.get(mint) is not None and row.get("signature") == migrate_sigs[mint]):
+            keep |= _S0_FIELDS
+    return {k: v for k, v in row.items() if k in keep and not k.startswith("fm_")}
+
+
 # Relative paths a role may open under a dataset dir: `<kind>/<kind>-<hour>.jsonl[.zst]`, hour inside the
-# validated window. Anything else is refused: stats-*.json, verify.jsonl, checkpoint.json, credit-probe.json and
-# pools/ (content not ruled on; pools/ and migrations/ carry post-migrate fields), and unknown names.
-# D0: creates/ and migrations/ (event existence, counts, times) and trades/ (only through the column mask).
+# validated window. Anything else is refused: stats-*.json, verify.jsonl, checkpoint.json, credit-probe.json,
+# pools/, events/ and unknown names.
+# D0: creates/ and migrations/ (event existence, counts, times) and trades/ (only through `mask_row`).
 # D1: creates/ and trades/ only. D1 never opens migrations/ or pools/ (bright line (2)); the per-mint migrate map
-# it needs comes from a D0 step (migration identities and times are D0).
+# it needs comes from `migrate_positions`, the only D1 use of migrations/.
 ROLE_KINDS = {ROLE_OCT_D0: ("creates", "migrations", "trades"), ROLE_OCT_D1: ("creates", "trades")}
 _FILE_RE = re.compile(r"^(creates|migrations|trades)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 
@@ -127,10 +181,13 @@ _FILE_RE = re.compile(r"^(creates|migrations|trades)-(\d{4}-\d{2}-\d{2}T\d{2})\.
 def check_paths(role: str, dataset: str, paths: Sequence[str | Path], start_hour: str, end_hour_exclusive: str,
                 root: Path | None = None) -> list[str]:
     """Each path must be `<root>/<dataset>/<kind>/<kind>-<hour>.jsonl[.zst]` with `kind` allowed for `role` and the
-    hour inside both the requested `[start, end)` and the dataset's released window (so forward-1002's walk-2 files
-    for 2026-10-16T01/T02 are refused). Symlinks and `..` are resolved first. Never opens a path."""
+    hour inside `[max(start, DATASET_START), min(end, 10-16T01))` (so forward-1002's walk-2 files for
+    2026-10-16T01/T02 are refused). The dataset dir must be the requested dataset. An empty `paths` is refused.
+    Symlinks and `..` are resolved first. Never opens a path."""
     if role not in ROLE_KINDS:
         return [f"role {role!r} is not an October role"]
+    if not paths:
+        return ["no paths named (an empty path list is refused)"]
     base = ((root if root is not None else BLOCKS_ROOT) / dataset).resolve()
     s, e = _parse_hour(start_hour), _parse_hour(end_hour_exclusive)
     first, last = _parse_hour(DATASET_START[dataset]), _parse_hour(FORWARD_END_EXCLUSIVE)
@@ -155,59 +212,79 @@ def check_rows(
     role: str,
     rows: Iterable[Mapping[str, Any]],
     migrate_pos: Mapping[str, tuple[int, int] | None],
-    complete_pos: Mapping[str, tuple[int, int] | None] | None = None,
+    complete_pos: Mapping[str, tuple[int, int] | None],
 ) -> list[str]:
     """Row-level D1 guard (bright lines (1) and (2)). `migrate_pos` maps mint -> (slot, event_index) of that mint's
-    migrate tx, or None if it never migrated; a mint missing from the map is refused. A row passes only if it is a
-    `pump_bonding` row strictly before the migrate tx and, when `complete_pos` is given, at or before the `complete`
-    trade. D0 loads no trade rows at all, so it refuses every row.
+    migrate tx, or None if it never migrated; `complete_pos` likewise for the `complete` trade (None = never
+    completed, the position is censored). A mint missing from either map is refused, and `complete_pos` is required.
+    A row passes only if `type == "trade"`, `venue == pump_bonding`, strictly before the migrate tx and at or before
+    the `complete` trade. D0 has no row-level refusal: its rows go through `mask_row` (see `guarded_rows`).
 
-    `None` means "never migrated" and is correct ONLY if the caller built `migrate_pos` from the full tape through
-    2026-10-16T01 (a mint that migrates inside the window but after a truncated tape would otherwise pass)."""
+    `None` in `migrate_pos` means "never migrated" and is correct ONLY if the caller built the map from the full
+    tape through 2026-10-16T01 (a mint that migrates after a truncated tape would otherwise pass)."""
     if role == ROLE_OCT_D0:
-        return ["role oct-structure-d0 loads no trade rows (counts only)"]
+        return []
     if role != ROLE_OCT_D1:
         return [f"role {role!r} is not an October role"]
     out: list[str] = []
     for i, r in enumerate(rows):
         mint = r.get("mint")
+        if r.get("type") != "trade":
+            out.append(f"row {i}: type {r.get('type')!r} is not a trade (post_complete_buy, fee sweeps ... refused)")
+            continue
         if r.get("venue") != BONDING_VENUE:
             out.append(f"row {i}: venue {r.get('venue')!r} is not {BONDING_VENUE} (pool trade)")
             continue
         if mint not in migrate_pos:
             out.append(f"row {i}: mint {mint!r} has no migrate position (fail closed)")
             continue
+        if mint not in complete_pos:
+            out.append(f"row {i}: mint {mint!r} has no complete position (fail closed)")
+            continue
         try:
             pos = (int(r["slot"]), int(r["event_index"]))
         except (KeyError, TypeError, ValueError):
             out.append(f"row {i}: no usable (slot, event_index)")
             continue
-        mig = migrate_pos[mint]
+        mig, comp = migrate_pos[mint], complete_pos[mint]
         if mig is not None and pos >= tuple(mig):
             out.append(f"row {i}: at or after the migrate tx of {mint!r}")
-        if complete_pos is not None:
-            if mint not in complete_pos:
-                out.append(f"row {i}: mint {mint!r} has no complete position (fail closed)")
-            elif complete_pos[mint] is not None and pos > tuple(complete_pos[mint]):
-                out.append(f"row {i}: after the complete trade of {mint!r}")
+        if comp is not None and pos > tuple(comp):
+            out.append(f"row {i}: after the complete trade of {mint!r}")
     return out
 
 
-class OctoberRefused(Exception):
-    """Raised by `guarded_rows` on the first row `check_rows` refuses."""
-
-
-def guarded_rows(role: str, rows: Iterable[Mapping[str, Any]], migrate_pos: Mapping[str, tuple[int, int] | None],
-                 complete_pos: Mapping[str, tuple[int, int] | None] | None = None) -> Iterator[Mapping[str, Any]]:
-    """The wrapper every D1 loader must iterate through: yields a row only after `check_rows` passed it, raises
-    `OctoberRefused` on the first refused row. `check_read` for oct-pregrad-d1 refuses unless a `migrate_pos` map is
-    supplied, so a D1 read has no way to be authorised without naming the map `guarded_rows` will enforce. That is the
-    enforceable part; that the loader really iterates through this wrapper is a review item, not code."""
+def guarded_rows(
+    role: str,
+    rows: Iterable[Mapping[str, Any]],
+    migrate_pos: Mapping[str, tuple[int, int] | None] | None = None,
+    complete_pos: Mapping[str, tuple[int, int] | None] | None = None,
+    migrate_sigs: Mapping[str, str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """The wrapper every loader must iterate through; it yields masked rows. D0: `mask_row` on each row. D1:
+    `check_rows` first (raises `OctoberRefused` on the first refused row; both maps are required), then `mask_row`.
+    `check_read` for oct-pregrad-d1 refuses unless a `migrate_pos` map is supplied. That the loader really iterates
+    through this wrapper is a review item, not code."""
+    if role == ROLE_OCT_D1 and (migrate_pos is None or complete_pos is None):
+        raise OctoberRefused("oct-pregrad-d1 needs both migrate_pos and complete_pos")
     for i, r in enumerate(rows):
-        bad = check_rows(role, [r], migrate_pos, complete_pos)
-        if bad:
-            raise OctoberRefused(f"row {i}: {bad[0]}")
-        yield r
+        if role == ROLE_OCT_D1:
+            bad = check_rows(role, [r], migrate_pos, complete_pos)
+            if bad:
+                raise OctoberRefused(f"row {i}: {bad[0]}")
+        yield mask_row(role, r, migrate_sigs)
+
+
+_LATCH: list[str] = []  # the one October role this process has been granted
+
+
+def _reset_latch_for_tests() -> None:
+    _LATCH.clear()
+
+
+def resolved_gates() -> dict[str, str]:
+    """The values `check_read` actually uses; print them in the job log (the clock, the FINAL ledger, the root)."""
+    return {"now": _now().isoformat(), "final_ledger": str(DEFAULT_FINAL_LEDGER), "blocks_root": str(BLOCKS_ROOT)}
 
 
 def _check_read_impl(
@@ -224,19 +301,19 @@ def _check_read_impl(
     now: datetime,
     blocks_root: Path,
 ) -> tuple[bool, list[str]]:
-    """Entry point for oct-structure-d0 / oct-pregrad-d1. Returns (True, []) or (False, every reason).
+    """Gates for oct-structure-d0 / oct-pregrad-d1 with caller-supplied clock, ledger and root: private, tests only.
+    Returns (True, []) or (False, every reason).
 
     Allowed only if ALL hold: known role and dataset; hours inside the dataset's released window and covered by the
     ledger's `Forward walk` row (owner EXP-012), never walk 2 (>= 2026-10-16T01); the clock is >= 2026-10-16T02:00Z;
-    `tools.forward_v_join.final_marker` accepts `final_ledger`; every column passes the role mask (no `fm_*`);
-    every path is under a released dataset dir. Row-level D1 limits: `check_rows`."""
+    `tools.forward_v_join.final_marker` accepts `final_ledger`; at least one column and every column passes the role
+    mask (no `fm_*`); at least one path and every path passes `check_paths`. No latch here."""
     if role not in OCT_ROLES:
         return False, [f"role {role!r} is not an October role"]
     if dataset not in DATASET_START:
         return False, [f"dataset {dataset!r} is not released (only {', '.join(DATASET_START)})"]
     reasons: list[str] = []
-    cur = now
-    if cur < RELEASE_NOT_BEFORE:
+    if now < RELEASE_NOT_BEFORE:
         reasons.append(f"before {RELEASE_NOT_BEFORE:%Y-%m-%dT%H:%MZ}: the F1 release is not in effect")
     try:
         from tools.forward_v_join import final_marker  # lazy: only this check needs observe/
@@ -277,15 +354,63 @@ def check_read(
     end_hour_exclusive: str,
     columns: Sequence[str],
     *,
-    paths: Sequence[str | Path] = (),
+    paths: Sequence[str | Path],
     migrate_pos: Mapping[str, tuple[int, int] | None] | None = None,
 ) -> tuple[bool, list[str]]:
     """PUBLIC entry point. The clock, the FINAL ledger path and the blocks root are fixed (real `datetime.now`,
     `DEFAULT_FINAL_LEDGER`, `BLOCKS_ROOT`) and cannot be passed in; tests patch the module constants/`_now`.
-    A True result authorises the open only: oct-pregrad-d1 rows must then be iterated through `guarded_rows`
-    (design choice: `check_read` refuses a D1 read without `migrate_pos`; it cannot see the loader).
+    Print `resolved_gates()` in the job log.
+
+    Latch (bright line 3): the first granted call fixes this process's October role; a later call for the other role
+    returns False ("D0 and D1 never in one process"). A True result authorises the open only: rows must then go
+    through `guarded_rows` (design choice: a D1 read is refused without `migrate_pos`; the guard cannot see the
+    loader). It checks inputs only: joining D1 outputs to D0/D2/D3 outputs stays the caller's duty to refuse.
     No cross-host tip-tape overlap check is done here (the ledger's code-mask bullet names one); it is not covered
     by this module and needs its own tracked item."""
-    return _check_read_impl(blocks, role, dataset, start_hour, end_hour_exclusive, columns, paths=paths,
-                            migrate_pos=migrate_pos, final_ledger=DEFAULT_FINAL_LEDGER, now=_now(),
-                            blocks_root=BLOCKS_ROOT)
+    if role in OCT_ROLES and _LATCH and _LATCH[0] != role:
+        return False, [f"D0 and D1 never in one process (bright line 3): this process already holds {_LATCH[0]}"]
+    ok, reasons = _check_read_impl(blocks, role, dataset, start_hour, end_hour_exclusive, columns, paths=paths,
+                                   migrate_pos=migrate_pos, final_ledger=DEFAULT_FINAL_LEDGER, now=_now(),
+                                   blocks_root=BLOCKS_ROOT)
+    if ok and not _LATCH:
+        _LATCH.append(role)
+    return ok, reasons
+
+
+def _lines(path: Path) -> Iterator[str]:
+    if path.suffix == ".zst":
+        import io
+
+        import zstandard  # lazy: only needed for real hour files
+
+        with open(path, "rb") as fh, zstandard.ZstdDecompressor().stream_reader(fh) as rd:
+            yield from io.TextIOWrapper(rd, encoding="utf-8")
+    else:
+        with open(path, encoding="utf-8") as fh:
+            yield from fh
+
+
+def migrate_positions(blocks: list[Block], dataset: str, start_hour: str, end_hour_exclusive: str,
+                      paths: Sequence[str | Path]) -> dict[str, tuple[int, int]]:
+    """mint -> (slot, event_index) of its migrate tx, from migrations/ hour files only. This is the only D1 use of
+    migrations/ and keeps nothing but those three fields. It is gated like a D0 read (FINAL marker, clock, hours,
+    paths) with the fixed real clock/ledger/root, but does not take the process latch (it feeds D1 by design).
+    Build it from the full tape through 2026-10-16T01 so that `None`/absent means "never migrated"."""
+    ok, reasons = _check_read_impl(blocks, ROLE_OCT_D0, dataset, start_hour, end_hour_exclusive,
+                                   ("mint", "slot", "event_index"), paths=paths, final_ledger=DEFAULT_FINAL_LEDGER,
+                                   now=_now(), blocks_root=BLOCKS_ROOT)
+    if not ok:
+        raise OctoberRefused("; ".join(reasons))
+    out: dict[str, tuple[int, int]] = {}
+    for p in paths:
+        if Path(p).parent.name != "migrations":
+            raise OctoberRefused(f"{p}: migrate_positions reads migrations/ files only")
+        for line in _lines(Path(p)):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            try:
+                out[r["mint"]] = (int(r["slot"]), int(r["event_index"]))
+            except (KeyError, TypeError, ValueError):
+                raise OctoberRefused(f"{p}: a migrations row lacks mint, slot or event_index") from None
+    return out

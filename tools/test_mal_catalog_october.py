@@ -32,7 +32,9 @@ def _marker(tmp_path: Path, doc: dict | None = None, raw: str | None = None) -> 
 
 
 def _read(blocks, tmp_path, role=D0, *, dataset="forward-1002", start="2026-10-09T00", end="2026-10-16T01",
-          columns=("mint", "slot"), ledger=None, now=NOW, paths=()):
+          columns=("mint", "slot"), ledger=None, now=NOW, paths=None):
+    if paths is None:
+        paths = [tmp_path / "blocks" / dataset / "trades" / "trades-2026-10-10T00.jsonl.zst"]
     return oc._check_read_impl(blocks, role, dataset, start, end, columns, paths=paths,
                                migrate_pos={} if role == D1 else None,
                                final_ledger=ledger if ledger is not None else _marker(tmp_path), now=now,
@@ -187,17 +189,22 @@ def test_public_api_takes_no_clock_ledger_or_root(blocks, tmp_path):
     forged = _marker(tmp_path, {"final": True})
     for kw in ({"now": datetime(2030, 1, 1, tzinfo=timezone.utc)}, {"final_ledger": forged}, {"blocks_root": tmp_path}):
         with pytest.raises(TypeError):
-            oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",), **kw)
+            oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",), paths=["x"], **kw)
 
 
 def test_public_api_uses_real_clock_and_fixed_ledger(blocks, tmp_path, monkeypatch):
     monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", tmp_path / "absent.jsonl")
     monkeypatch.setattr(oc, "_now", lambda: datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc))
-    ok, reasons = oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",))
+    ok, reasons = oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",), paths=["x"])
     assert ok is False and any("FINAL marker" in r for r in reasons) and any("release is not in effect" in r for r in reasons)
     monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", _marker(tmp_path))
     monkeypatch.setattr(oc, "_now", lambda: NOW)
-    assert oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",)) == (True, [])
+    monkeypatch.setattr(oc, "BLOCKS_ROOT", tmp_path / "blocks")
+    ok = [tmp_path / "blocks" / "forward-1002" / "trades" / "trades-2026-10-09T05.jsonl.zst"]
+    oc._reset_latch_for_tests()
+    assert oc.check_read(blocks, D0, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint",), paths=ok) == (True, [])
+    oc._reset_latch_for_tests()
+    assert set(oc.resolved_gates()) == {"now", "final_ledger", "blocks_root"}
 
 
 # --- N1: D1 needs the row-level guard -----------------------------------------
@@ -206,13 +213,17 @@ def test_public_api_uses_real_clock_and_fixed_ledger(blocks, tmp_path, monkeypat
 def test_d1_public_read_requires_migrate_map(blocks, tmp_path, monkeypatch):
     monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", _marker(tmp_path))
     monkeypatch.setattr(oc, "_now", lambda: NOW)
+    monkeypatch.setattr(oc, "BLOCKS_ROOT", tmp_path / "blocks")
+    oc._reset_latch_for_tests()
     args = (blocks, D1, "forward-1002", "2026-10-09T00", "2026-10-10T00", ("mint", "side"))
-    _reasons_have(oc.check_read(*args), "needs a migrate_pos map")
-    assert oc.check_read(*args, migrate_pos={"M": None}) == (True, [])
+    kw = {"paths": [tmp_path / "blocks" / "forward-1002" / "trades" / "trades-2026-10-09T05.jsonl.zst"]}
+    _reasons_have(oc.check_read(*args, **kw), "needs a migrate_pos map")
+    assert oc.check_read(*args, migrate_pos={"M": None}, **kw) == (True, [])
+    oc._reset_latch_for_tests()
 
 
 def test_guarded_rows_yields_early_rows_and_raises_on_post_migrate():
-    it = oc.guarded_rows(D1, [_row(slot=99), _row(slot=100, ei=1)], {"M": (100, 1)})
+    it = oc.guarded_rows(D1, [_row(slot=99), _row(slot=100, ei=1)], {"M": (100, 1)}, {"M": None})
     assert next(it)["slot"] == 99
     with pytest.raises(oc.OctoberRefused):
         next(it)
@@ -251,37 +262,147 @@ def test_d1_allows_prefix_columns_and_complete_label(blocks, tmp_path):
     assert _read(blocks, tmp_path, D1, columns=cols) == (True, [])
 
 
-def _row(mint="M", slot=100, ei=0, venue="pump_bonding"):
-    return {"mint": mint, "venue": venue, "slot": slot, "event_index": ei}
+def _row(mint="M", slot=100, ei=0, venue="pump_bonding", type="trade"):
+    return {"type": type, "mint": mint, "venue": venue, "slot": slot, "event_index": ei}
+
+
+NC = {"M": None}  # complete_pos: never completed
 
 
 def test_d1_rows_before_migrate_allowed_and_never_migrated_allowed():
-    assert oc.check_rows(D1, [_row(slot=99), _row(slot=100, ei=0)], {"M": (100, 1)}) == []
-    assert oc.check_rows(D1, [_row(slot=10**9)], {"M": None}) == []
+    assert oc.check_rows(D1, [_row(slot=99), _row(slot=100, ei=0)], {"M": (100, 1)}, NC) == []
+    assert oc.check_rows(D1, [_row(slot=10**9)], NC, NC) == []
 
 
 def test_d1_post_migrate_row_refused():
     for r in (_row(slot=100, ei=1), _row(slot=100, ei=2), _row(slot=101)):
-        reasons = oc.check_rows(D1, [r], {"M": (100, 1)})
+        reasons = oc.check_rows(D1, [r], {"M": (100, 1)}, NC)
         assert reasons and "at or after the migrate tx" in reasons[0]
 
 
 def test_d1_pool_trade_unknown_mint_and_bad_position_refused():
-    assert "pool trade" in oc.check_rows(D1, [_row(venue="pumpswap")], {"M": None})[0]
-    assert "fail closed" in oc.check_rows(D1, [_row(mint="X")], {"M": None})[0]
-    assert "usable" in oc.check_rows(D1, [{"mint": "M", "venue": "pump_bonding"}], {"M": None})[0]
+    assert "pool trade" in oc.check_rows(D1, [_row(venue="pumpswap")], NC, NC)[0]
+    assert "fail closed" in oc.check_rows(D1, [_row(mint="X")], NC, NC)[0]
+    bad = {"type": "trade", "mint": "M", "venue": "pump_bonding"}
+    assert "usable" in oc.check_rows(D1, [bad], NC, NC)[0]
 
 
-def test_d1_rows_after_complete_refused_when_complete_given():
+@pytest.mark.parametrize("typ", ["post_complete_buy", "sweep_curve_fee", "sweep_pool_fee", "boost_buy_and_burn", "init_boost"])
+def test_d1_non_trade_rows_refused_even_on_the_bonding_venue(typ):
+    reasons = oc.check_rows(D1, [_row(slot=1, type=typ)], NC, NC)
+    assert reasons and "is not a trade" in reasons[0]
+
+
+def test_d1_complete_pos_required_and_cutoff_enforced():
     mig = {"M": (200, 0)}
+    with pytest.raises(TypeError):
+        oc.check_rows(D1, [_row(slot=1)], mig)  # complete_pos is a required argument
     assert oc.check_rows(D1, [_row(slot=150)], mig, {"M": (150, 0)}) == []
     assert "after the complete" in oc.check_rows(D1, [_row(slot=151)], mig, {"M": (150, 0)})[0]
-    assert "fail closed" in oc.check_rows(D1, [_row(slot=1)], mig, {})[0]
+    assert "no complete position" in oc.check_rows(D1, [_row(slot=1)], mig, {})[0]
+    with pytest.raises(oc.OctoberRefused):
+        list(oc.guarded_rows(D1, [_row(slot=1)], mig))  # guarded_rows without complete_pos
 
 
-def test_d0_loads_no_trade_rows_and_other_roles_refused():
-    assert oc.check_rows(D0, [_row()], {"M": None})
-    assert oc.check_rows("exploration", [_row()], {"M": None})
+def test_other_roles_refused_by_check_rows():
+    assert oc.check_rows("exploration", [_row()], NC, NC)
+
+
+# --- item 5/6: mask_row by row type ---------------------------------------------
+
+FORBIDDEN_TRADE_KEYS = ("side", "sol_lamports", "token_raw", "sol", "token", "price_sol", "market_cap_sol",
+                        "quote_reserve", "base_reserve", "pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee",
+                        "zero_sol", "virtual_quote_reserves", "ix_name", "creator_fee_unclaimed", "buyback_fee",
+                        "fee_recipient_zero", "fm_flow_sol")
+
+
+def _full_trade():
+    r = {k: 1 for k in FORBIDDEN_TRADE_KEYS}
+    r.update(type="trade", venue="pumpswap", mint="M", trader="T", pool="P", slot=5, signature="S", event_index=0,
+             event_ts=1, quote_mint="Q", quote_is_wsol=True, v=1, feed="f", t_recv="x", t_recv_ms=1, commitment="c")
+    return r
+
+
+def test_d0_post_s0_trade_row_keeps_identities_only():
+    m = oc.mask_row(D0, _full_trade(), {"M": "S"})  # even in the migrate tx a trade row keeps no amount
+    assert not set(m) & set(FORBIDDEN_TRADE_KEYS)
+    assert {"mint", "trader", "pool", "slot", "signature", "event_ts"} <= set(m)
+    assert "trader" in oc.D0_RAW_COLUMNS and "zero_sol" not in oc.D0_ALLOWED_COLUMNS
+
+
+def test_d1_mask_drops_pool_fees_and_event_v_keys_keeps_trade_fields():
+    m = oc.mask_row(D1, _full_trade())
+    for k in ("pool", "pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee", "virtual_quote_reserves",
+              "ix_name", "creator_fee_unclaimed", "buyback_fee", "fm_flow_sol"):
+        assert k not in m
+    assert {"side", "sol_lamports", "quote_reserve", "base_reserve", "price_sol"} <= set(m)
+
+
+def test_init_boost_reserve_and_v_only_on_the_migrate_tx():
+    row = {"type": "init_boost", "mint": "M", "signature": "S", "slot": 1, "event_index": 0, "event_ts": 1,
+           "virtual_quote_reserves": 17, "quote_reserve": 9, "base_reserve": 8}
+    assert oc.mask_row(D0, row, {"M": "S"})["virtual_quote_reserves"] == 17
+    second = dict(row, signature="S2")
+    assert "virtual_quote_reserves" not in oc.mask_row(D0, second, {"M": "S"})
+    assert "quote_reserve" not in oc.mask_row(D0, row, None)  # no migrate map: nothing kept
+    assert "virtual_quote_reserves" not in oc.mask_row(D1, row, {"M": "S"})  # D1 never keeps s0 fields
+
+
+@pytest.mark.parametrize("typ", ["boost_buy_and_burn", "sweep_pool_fee", "sweep_curve_fee", "unknown_new_type"])
+def test_fee_and_boost_rows_keep_no_amounts(typ):
+    row = {"type": typ, "mint": "M", "signature": "S", "slot": 1, "event_ts": 1, "amount": 5, "fee": 2,
+           "quote_in": 3, "virtual_quote_reserves": 4}
+    m = oc.mask_row(D0, row, {"M": "S"})
+    assert set(m) == {"type", "mint", "signature", "slot", "event_ts"}
+
+
+def test_guarded_rows_d0_masks_every_row():
+    out = list(oc.guarded_rows(D0, [_full_trade()]))
+    assert not set(out[0]) & set(FORBIDDEN_TRADE_KEYS)
+
+
+# --- items 2, 3, 7 -------------------------------------------------------------
+
+
+def test_empty_paths_and_columns_refused(blocks, tmp_path):
+    _reasons_have(_read(blocks, tmp_path, paths=[]), "no paths named")
+    _reasons_have(_read(blocks, tmp_path, columns=()), "no columns named")
+
+
+def test_migrate_positions_keeps_three_fields_and_is_gated(blocks, tmp_path, monkeypatch):
+    monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", _marker(tmp_path))
+    monkeypatch.setattr(oc, "BLOCKS_ROOT", tmp_path / "blocks")
+    monkeypatch.setattr(oc, "_now", lambda: NOW)
+    f = _f(tmp_path, "forward-1002", "migrations", "2026-10-10T00", "migrations-2026-10-10T00.jsonl")
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"mint": "M", "slot": 7, "event_index": 2, "virtual_quote_reserves": 99}) + "\n")
+    args = (blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01")
+    assert oc.migrate_positions(*args, [f]) == {"M": (7, 2)}
+    walk2 = _f(tmp_path, "forward-1002", "migrations", "2026-10-16T01", "migrations-2026-10-16T01.jsonl")
+    with pytest.raises(oc.OctoberRefused):
+        oc.migrate_positions(*args, [walk2])
+    with pytest.raises(oc.OctoberRefused):
+        oc.migrate_positions(*args, [_f(tmp_path, "forward-1002", "trades", "2026-10-10T00")])
+    monkeypatch.setattr(oc, "_now", lambda: datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc))
+    with pytest.raises(oc.OctoberRefused):
+        oc.migrate_positions(*args, [f])
+
+
+def test_latch_one_october_role_per_process(blocks, tmp_path, monkeypatch):
+    monkeypatch.setattr(oc, "DEFAULT_FINAL_LEDGER", _marker(tmp_path))
+    monkeypatch.setattr(oc, "BLOCKS_ROOT", tmp_path / "blocks")
+    monkeypatch.setattr(oc, "_now", lambda: NOW)
+    oc._reset_latch_for_tests()
+    kw = {"paths": [_f(tmp_path, "forward-1002", "trades", "2026-10-10T00")]}
+    a = (blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01")
+    assert oc.check_read(blocks, D0, *a[1:], ("mint",), **kw) == (True, [])
+    ok, reasons = oc.check_read(blocks, D1, *a[1:], ("mint",), migrate_pos={}, **kw)
+    assert ok is False and any("never in one process" in r for r in reasons)
+    assert oc.check_read(blocks, D0, *a[1:], ("mint",), **kw)[0] is True  # same role again is fine
+    oc._reset_latch_for_tests()
+    assert oc.check_read(blocks, D1, *a[1:], ("mint",), migrate_pos={}, **kw)[0] is True
+    assert oc.check_read(blocks, D0, *a[1:], ("mint",), **kw)[0] is False
+    oc._reset_latch_for_tests()
 
 
 # --- the #545 fm_* columns, both roles ---------------------------------------
