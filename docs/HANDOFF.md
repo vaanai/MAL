@@ -11,6 +11,17 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0e Update 2026-10-16T16:42Z (manager12): push round 3, OOM, takeover
+
+Source: [ARTIFACTS/lab/push-2026-10-16-round3.md](../ARTIFACTS/lab/push-2026-10-16-round3.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
+
+- **Takeover.** At 2026-10-16T16:02:16Z the kernel OOM-killed a 110 GB python process (hunt4 drain-predictor `s3_feat.py`) in manager11's tmux, which ended the manager11 session. Manager12 started about 16:20Z. Crons were recreated from `/data/mal/hunt-1008/ops/crons-1016-manager12.json`. Hunt python runs under `systemd-run --user --scope -p MemoryMax=20G` (RULES.md SAFETY AMENDMENT).
+- **Round 3 result:** no strategy line reaches the cost-floor target; 39 of 40 sampled jumps are real pool drains. See the note.
+- **drain-predictor reported:** at s0+6 min the frozen filter removes 72.4% of drains but the kept set is -16.47% per trade (n 6,625, Sep TEST, 0.25 SOL), every block negative; see the lab note.
+- **In flight (results not known at writing):** drain-escape (new), dev-events, dump-absorb (REPORT.md a skeleton), and PR #662 (fee-arm probe, in review).
+- **Fastest fresh-data path for any survivor:** a pre-registration on walk 2 (job #1036, reserved 2026-10-16) merged before its counted window's first hour. Hours before the merge are never counted.
+- Library rows: section `push-1016-r3` (34 rows: 31 from round 3 plus 3 drain-predictor rows).
+
 ### 1.0d Update 2026-10-16T08:36Z (manager11): push round 2
 
 Source: [ARTIFACTS/lab/push-2026-10-16-round2.md](../ARTIFACTS/lab/push-2026-10-16-round2.md) and the files it names under `/data/mal/hunt-1008/push-1016/`. No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
