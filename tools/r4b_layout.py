@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -194,6 +195,17 @@ def _load_trades(con: Any, path: Path, hix: int, label: str, cols: Mapping[str, 
 FRN_SAMPLE_EVERY = 100_000
 
 
+_RE_SLOT = re.compile(r'[,{]\s*"slot"\s*:\s*(-?\d+)')
+_RE_SIG = re.compile(r'[,{]\s*"signature"\s*:\s*"([^"\\]*)"')
+_RE_EVI = re.compile(r'[,{]\s*"event_index"\s*:\s*(-?\d+)')
+
+
+def _slot_sig_evi(line: str) -> tuple:
+    """(slot, signature, event_index) of a trade line by regex on the three fields only (no other field is parsed); a missing / null field is None."""
+    a, b, c = _RE_SLOT.search(line), _RE_SIG.search(line), _RE_EVI.search(line)
+    return (int(a.group(1)) if a else None, b.group(1) if b else None, int(c.group(1)) if c else None)
+
+
 def _check_frn(con: Any, path: Path, hix: int, label: str) -> None:
     """Run-time guard: the rows at ordinals 0, last and every 100,000th, re-read from the file in Python, must equal (slot, signature, event_index) of the row
     DuckDB gave that frn. Any mismatch refuses ("frn_order"): the within-slot order would not be the file order."""
@@ -208,8 +220,7 @@ def _check_frn(con: Any, path: Path, hix: int, label: str) -> None:
         if not line.strip():
             continue
         if i in want_ord:
-            r = json.loads(line, strict=False)
-            seen[i] = (r.get("slot"), r.get("signature"), r.get("event_index"))
+            seen[i] = _slot_sig_evi(line)
         i += 1
     if i != n:
         raise LayoutRefused(f"{label}: frn_order: file has {i} rows but DuckDB loaded {n}")
@@ -244,8 +255,10 @@ def default_canonical() -> CanonFn:
 
 def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "event", static_map: Mapping[str, int | None] | None = None,
           canonical_fn: CanonFn | None = None, problems_fn: ProblemsFn | None = None, verify: Mapping[str, Mapping[str, Any]] | None = None,
-          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None, structure_only: bool = False) -> dict[str, Any]:
+          memory_limit: str = "6GB", threads: int = 4, tmp_dir: Path | None = None, structure_only: bool = False, trade_end: str | None = None) -> dict[str, Any]:
     """Run the adapter. Returns the stats dict (also written to out_dir/stats.json).
+
+    trade_end (exclusive hour key, default none): the lookahead trade hours past H1 are only loaded below it (the count job passes the end of its allowlist).
 
     structure_only=True (the count job): trade rows are parsed with TRADE_COLS_STRUCT only; ut gets (mid, slot, txi, evi, bt) and bond / mkt / mkt_creates are not
     written; the clock is. The V null refusal on member prints selects `virtual_quote_reserves IS NULL` only. meta, creators, m0.parquet (every completed mint
@@ -273,6 +286,8 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
     extras: list[str] = []
     for k in (1, 2):  # training loaded 2 trade hours past the last graduation hour
         eh = ef.hour_key(ef.hour_dt(h1) + timedelta(hours=k - 1))
+        if trade_end is not None and eh >= trade_end:
+            break
         if eh in sealed or (verify is not None and eh in verify):
             extras.append(eh)
         else:
@@ -346,12 +361,16 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
                     t.block_time, t.pool from t join m_comp c on t.mint=c.mint and t.pool=c.pda
                     where t.venue='pumpswap' and t.slot >= c.mslot and t.slot < c.mslot + {WINDOW_SLOTS}""")
     if structure_only:
-        con.sql("""create table s0t as select mint, slot s0, frn, null::bigint vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn
+        con.sql("""create table s0t as select mint, slot s0, frn, null::bigint vq, false as matched from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn
                    from cand) where rn=1""")
-        for hix, h in enumerate(hours):  # targeted re-read: ONLY the s0 rows' V (matched on frn, same assignment as _load_trades)
+        for hix, h in enumerate(trade_hours):  # targeted re-read over ALL loaded trade hours: ONLY the s0 rows' V (matched on frn, same assignment as _load_trades)
             src = _read_json_sql(files[h]["trades"], {"slot": "BIGINT", "virtual_quote_reserves": "BIGINT"})
-            con.sql(f"""update s0t set vq = x.v from (select frn, sl, v from (select {hix} * 10000000000 + (row_number() over () - 1) as frn, slot sl,
+            con.sql(f"""update s0t set vq = x.v, matched = true from (select frn, sl, v from (select {hix} * 10000000000 + (row_number() over () - 1) as frn, slot sl,
                         virtual_quote_reserves v from {src}) where frn in (select frn from s0t)) x where s0t.frn = x.frn and s0t.s0 = x.sl""")
+        n_unmatched = con.sql("select count(*) from s0t where not matched").fetchone()[0]
+        if n_unmatched:
+            raise LayoutRefused(f"frn_order: {n_unmatched} s0 row(s) found no match (frn, slot) in the V0 re-read")
+        con.sql("alter table s0t drop column matched")
         con.sql("alter table cand drop column frn")
     else:
         con.sql("""create table s0t as select mint, slot s0, vq from (select *, row_number() over (partition by mint order by slot, txi, evi, frn) rn from cand) where rn=1""")

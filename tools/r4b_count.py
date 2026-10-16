@@ -450,7 +450,7 @@ def _run(cfg, through, final, sph_fn, canonical_fn, problems_fn, verify, keep_sc
         try:
             stats = rl.build(Path(cfg.walk_dir), hours[0], ef.hour_key(ef.hour_dt(hours[-1]) + timedelta(hours=1)), scratch, v_source="event",
                              canonical_fn=canonical_fn, problems_fn=problems_fn, verify=verify, memory_limit=memory_limit, threads=threads,
-                             tmp_dir=scratch / "tmp", structure_only=True)
+                             tmp_dir=scratch / "tmp", structure_only=True, trade_end=ef.hour_key(cfg.allow_end()))
             table = verify if verify is not None else ef.verified_hours(Path(cfg.walk_dir), strict_bad_lines=True)
             new_hours = [h for h in hours]
             lines, p2 = structure_hour_lines(scratch, new_hours, table, sph_fn or default_sph, Path(cfg.walk_dir), cfg, stats)
@@ -461,13 +461,17 @@ def _run(cfg, through, final, sph_fn, canonical_fn, problems_fn, verify, keep_sc
         if probs:
             raise CountRefused(probs)
         by_hour_old = {ln["hour"]: ln for ln in existing}
-        pending = hours[len(hours) - EXTRA_HOURS:] if EXTRA_HOURS and hours[-1] != allow[-1] else []
-        if EXTRA_HOURS and hours[-1] == allow[-1]:
-            for ln in lines:
-                ln["extra_hours_loaded"] = min(EXTRA_HOURS, len(hours) - 1 - hours.index(ln["hour"]))
-        elif EXTRA_HOURS:
-            for ln in lines:
-                ln["extra_hours_loaded"] = EXTRA_HOURS
+        # extra_hours_loaded = trade hours ACTUALLY loaded after the hour (the run's own hours plus the layout's lookahead, which is bounded at the allowlist end),
+        # capped at EXTRA_HOURS so the value does not depend on how far the run went. An hour is written when it has min(EXTRA_HOURS, allowlisted hours after it) extras.
+        loaded = list(hours) + list(stats.get("trade_extra_hours", []))
+        pending = []
+        for ln in lines:
+            h = ln["hour"]
+            got = len(loaded) - 1 - loaded.index(h)
+            need = min(EXTRA_HOURS, len(allow) - 1 - allow.index(h))
+            ln["extra_hours_loaded"] = min(EXTRA_HOURS, got)
+            if got < need:
+                pending.append(h)
         lines = [ln for ln in lines if ln["hour"] not in pending]
         drift = [ln["hour"] for ln in lines if ln["hour"] in by_hour_old and stable_json(by_hour_old[ln["hour"]]) != stable_json(ln)]
         if drift:

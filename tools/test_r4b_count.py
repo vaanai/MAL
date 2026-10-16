@@ -404,16 +404,17 @@ def _no_pending_unless_asked(request, monkeypatch):
 def test_pending_tail_not_written_until_later_hours_loaded(tmp_path, loose):
     assert rc.EXTRA_HOURS == 2
     cfg = cfg_for(tmp_path)
-    make_walk(tmp_path / "walk", stream(8))
-    st = run(cfg, hkey(4))
+    make_walk(tmp_path / "walk", stream(8), unsealed=(hkey(5), hkey(6), hkey(7)))
+    st = run(cfg, hkey(4))  # hours 5.. are not sealed: no lookahead, the last two hours are pending
     assert [ln["hour"] for ln in lines(cfg)] == [hkey(0), hkey(1), hkey(2)] and st["pending_hours"] == [hkey(3), hkey(4)]
     assert all(ln["extra_hours_loaded"] == 2 for ln in lines(cfg))
-    st = run(cfg, hkey(6))  # the pending hours are written once two more hours are loaded; nothing earlier changes
-    assert [ln["hour"] for ln in lines(cfg)] == [hkey(i) for i in range(5)] and st["pending_hours"] == [hkey(5), hkey(6)]
-    # a one-shot run to the same hour writes the same lines
-    make_walk(tmp_path / "walk_b", stream(8))
+    make_walk(tmp_path / "walk", stream(8), unsealed=(hkey(7),))  # hours 5 and 6 get sealed: they are the lookahead of hour 4
+    st = run(cfg, hkey(4))
+    assert [ln["hour"] for ln in lines(cfg)] == [hkey(i) for i in range(5)] and st["pending_hours"] == []
+    # a one-shot run gives the same lines
+    make_walk(tmp_path / "walk_b", stream(8), unsealed=(hkey(7),))
     cfgb = rc.Config(tmp_path / "walk_b", tmp_path / "counts_b", hkey(0), n_blocks=1, a_attempts=1)
-    run(cfgb, hkey(6))
+    run(cfgb, hkey(4))
     assert (tmp_path / "counts_b" / rc.COUNTS).read_text() == (tmp_path / "counts" / rc.COUNTS).read_text()
 
 
@@ -512,3 +513,90 @@ def test_no_table_other_than_s0t_m0_m_holds_v(tmp_path):
     # full mode keeps V (the read tool needs it)
     full = rl.build(walk, "2026-10-16T03", "2026-10-16T05", tmp_path / "full", canonical_fn=pda_of)
     assert "v_columns" not in full
+
+
+def test_pending_lookahead_is_bounded_at_the_allowlist_end(tmp_path, loose, monkeypatch):
+    """QP change D: with hours E+1 and E+2 sealed, build must not load them; extra_hours_loaded comes from what was loaded."""
+    make_walk(tmp_path / "walk", stream(28))  # hours 0..27 sealed; E = hour 24
+    seen = {}
+    orig = rl.build
+
+    def spy(*a, **k):
+        st = orig(*a, **k)
+        seen["extras"] = st["trade_extra_hours"]
+        seen["trade_end"] = k.get("trade_end")
+        return st
+
+    monkeypatch.setattr(rc.rl, "build", spy)
+    cfg = cfg_for(tmp_path)
+    run(cfg, hkey(24), keep_scratch=True)
+    assert seen["extras"] == [] and seen["trade_end"] == hkey(25)
+    ls = {ln["hour"]: ln for ln in lines(cfg)}
+    assert ls[hkey(24)]["extra_hours_loaded"] == 0 and ls[hkey(23)]["extra_hours_loaded"] == 1 and ls[hkey(22)]["extra_hours_loaded"] == 2
+    assert not (tmp_path / "counts" / "scratch" / "clock" / f"{hkey(25)}.parquet").exists()
+    # a mid-run call: the lookahead past the requested hour is loaded (2 sealed hours), so the requested hour is written with 2
+    cfg2 = rc.Config(tmp_path / "walk", tmp_path / "counts2", hkey(0), n_blocks=1, a_attempts=1)
+    run(cfg2, hkey(10))
+    assert seen["extras"] == [hkey(11), hkey(12)]
+    assert rc.read_counts(tmp_path / "counts2")[-1]["hour"] == hkey(10)
+
+
+def test_build_trade_end_bounds_extras(tmp_path):
+    walk = make_walk(tmp_path / "w", scenario())
+    st = rl.build(walk, "2026-10-16T03", "2026-10-16T04", tmp_path / "o1", canonical_fn=pda_of)
+    assert st["trade_extra_hours"] == ["2026-10-16T04"]
+    st = rl.build(walk, "2026-10-16T03", "2026-10-16T04", tmp_path / "o2", canonical_fn=pda_of, trade_end="2026-10-16T04")
+    assert st["trade_extra_hours"] == []
+
+
+def s0_extra_walk(root):
+    """QP's repro: MX completes 2 s before hour 05 and its FIRST PDA print (s0) is in hour 05, a lookahead hour of the build range [03, 05)."""
+    H = ["2026-10-16T03", "2026-10-16T04", "2026-10-16T05", "2026-10-16T06"]
+    hours = {h: {"trades": [], "creates": [], "migrations": []} for h in H}
+    hours[H[0]]["migrations"] += [complete("MA", s_of(0) + 100), migration("MA", s_of(0) + 100, pda_of("MA"))]
+    hours[H[0]]["creates"].append(create("MA", "CA"))
+    hours[H[0]]["trades"] += [trade("MA", s_of(0) + 110 + x, 1, 0, vq=17_600_000_001) for x in range(3)]
+    ms = s_of(2) - 4
+    hours[H[1]]["migrations"] += [complete("MX", ms), migration("MX", ms, pda_of("MX"))]
+    hours[H[1]]["creates"].append(create("MX", "CX"))
+    hours[H[2]]["trades"] += [trade("MX", s_of(2) + 10 + x, 1, 0, vq=17_600_000_009) for x in range(3)]
+    for i, h in enumerate(H):
+        if not hours[h]["trades"]:
+            hours[h]["trades"].append(trade("FILL", s_of(i) + 5, 1, 0, pool="OTHER"))
+    return make_walk(root, hours), H
+
+
+def test_s0_in_lookahead_hour_structure_equals_full(tmp_path):
+    """QP change C: V0 of a first print that falls in a lookahead hour is found by the structure re-read (all loaded trade hours)."""
+    walk, H = s0_extra_walk(tmp_path / "w")
+    out = {}
+    for mode in (False, True):
+        d = tmp_path / ("slim" if mode else "full")
+        st = rl.build(walk, H[0], H[2], d, canonical_fn=pda_of, structure_only=mode)
+        assert st["trade_extra_hours"] == [H[2], H[3]]
+        out[mode] = (duckdb.connect().sql(f"select mint, s0, v0 from '{d}/m0.parquet' order by mint").fetchall(), st["members"], st["v0_missing"])
+    assert out[True] == out[False]
+    mx = [r for r in out[True][0] if r[0] == "MX"][0]
+    assert mx[2] == 17_600_000_009 and out[True][2] == 0
+
+
+def test_s0_reread_without_match_refuses_frn_order(tmp_path, monkeypatch):
+    walk, H = s0_extra_walk(tmp_path / "w")
+    orig = rl._read_json_sql
+
+    def empty_for_reread(path, cols):
+        if set(cols) == {"slot", "virtual_quote_reserves"}:
+            return "(select 0::bigint as slot, 0::bigint as virtual_quote_reserves where false)"
+        return orig(path, cols)
+
+    monkeypatch.setattr(rl, "_read_json_sql", empty_for_reread)
+    with pytest.raises(rl.LayoutRefused, match="frn_order"):
+        rl.build(walk, H[0], H[2], tmp_path / "slim", canonical_fn=pda_of, structure_only=True)
+
+
+def test_check_frn_extracts_by_regex_only():
+    line = '{"v":2,"venue":"pumpswap","mint":"M","slot":123,"signature":"abc","event_index":4,"tx_index":null,"x":{"slot":9}}'
+    assert rl._slot_sig_evi(line) == (123, "abc", 4)
+    assert rl._slot_sig_evi('{"slot":5,"signature":"s","event_index":null}') == (5, "s", None)
+    # a line that is not valid JSON anywhere else still yields the three fields: nothing else is parsed
+    assert rl._slot_sig_evi('{"side":"???" "sol_lamports":not-json, "slot":7,"signature":"q","event_index":1}') == (7, "q", 1)
