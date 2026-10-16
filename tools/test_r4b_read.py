@@ -864,3 +864,343 @@ def test_pinned_constants_are_the_exp_values(real):
     assert (rr.STOP_HOURS, rr.MIN_BLOCKS, rr.MIN_ATTEMPTS, rr.GATE_N, rr.GATE_DATES, rr.ALPHA_FAMILY, rr.EXIT_HORIZON_H) == (480, 20, 125, 100, 5, 0.025, 1)
     assert rr.H0 == "2026-10-16T03" == rc.H0 and rr.UNIVERSE_EXITS_AT_MARKS_ONLY is True and rr.EARLIEST_W0 == "2026-10-18T03" and rr.SEND_FEE_160K == 160_000 and FZ.SEND_FEE_DECIDING == 505_000 and FZ.RENT_DECIDING == 0
     assert FZ.K_ROUNDING == "round" and FZ.LATENCIES_S == (1.3, 1.9) and rr.EXTRA_TRADE_HOURS == 2
+
+
+# ======================================================================================================================================================
+# QP / reviewer round 1 on ae0b32d: write order, report-only isolation, deadline, pinned inputs, structure pre-check, A3, mint accounts
+# ======================================================================================================================================================
+import subprocess  # noqa: E402
+
+
+# ---- Rev1 / R2: atomic result, deciding result survives a report-only crash -------------------------------------------------------------------------
+def test_write_once_is_atomic_and_no_overwrite(tmp_path):
+    p = tmp_path / "x.json"
+    with pytest.raises(TypeError):  # serialization happens first: nothing, not even a temp file, is left behind
+        rr.write_once(p, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []
+    rr.write_once(p, {"a": 1})
+    assert json.loads(p.read_text()) == {"a": 1} and (p.stat().st_mode & 0o777) == 0o444
+    with pytest.raises(FileExistsError):
+        rr.write_once(p, {"a": 2})
+    assert json.loads(p.read_text()) == {"a": 1} and [x.name for x in tmp_path.iterdir()] == ["x.json"]  # no temp name left
+
+
+def test_unserializable_result_leaves_no_result_file_and_aborts(tmp_path, world, monkeypatch):
+    real_run = rr.run_deciding
+
+    def run(*a, **k):
+        res, ctx = real_run(*a, **k)
+        res["poison"] = object()
+        return res, ctx
+
+    monkeypatch.setattr(rr, "run_deciding", run)
+    paths = mk(tmp_path, world)
+    with pytest.raises(TypeError):
+        rr.read(paths, mkdeps(world))
+    assert [e["event"] for e in rr.reads_events(paths.out_dir)] == ["started", "aborted"]
+    assert not (paths.out_dir / rr.RESULT).exists() and not [x for x in paths.out_dir.iterdir() if x.name.endswith(".tmp")]
+    assert not (paths.out_dir / "scratch").exists()
+
+
+def test_dual_run_crash_keeps_the_deciding_result_and_completed(tmp_path, world, monkeypatch):
+    def boom(*a, **k):
+        raise MemoryError("dual run out of memory")
+
+    monkeypatch.setattr(rr, "dual_rows", boom)
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world))
+    out = paths.out_dir
+    ev = rr.reads_events(out)
+    assert [e["event"] for e in ev[:2]] == ["started", "completed"] and not any(e["event"] == "aborted" for e in ev)
+    assert (out / rr.RESULT).exists() and ev[1]["result_sha256"] == sha(out / rr.RESULT) and json.loads((out / rr.RESULT).read_text())["verdict"] == res["verdict"]
+    failed = [e for e in ev if e["event"] == "report_failed"]
+    assert [e["step"] for e in failed] == ["asof_vs_frozen"] and "MemoryError" in failed[0]["error"]
+    idx = json.loads((out / "report-only.json").read_text())["report_only"]
+    assert idx["asof_vs_frozen"]["status"] == "failed" and "dual run out of memory" in idx["asof_vs_frozen"]["error"]
+    assert report(out, "asof_vs_frozen")["status"] == "failed"
+    assert all(v["status"] == "ok" for k, v in idx.items() if k != "asof_vs_frozen")  # the other steps are unaffected
+    assert not (out / "scratch").exists()
+
+
+def test_every_report_step_is_isolated(tmp_path, world, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("lp broke")
+
+    monkeypatch.setattr(rr, "lp_discontinuities", boom)
+    orig_price = rr.price_variant
+
+    def price(tr, lat, **kw):
+        if kw.get("rent") == FZ.RENT_REPORT:  # only the report-only rent leg
+            raise ValueError("rent leg broke")
+        return orig_price(tr, lat, **kw)
+
+    monkeypatch.setattr(rr, "price_variant", price)
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world))
+    idx = json.loads((paths.out_dir / "report-only.json").read_text())["report_only"]
+    assert {k for k, v in idx.items() if v["status"] == "failed"} == {"rent", "lp_discontinuities"}
+    assert res["verdict"] == json.loads((paths.out_dir / rr.RESULT).read_text())["verdict"] and "RuntimeError" in idx["lp_discontinuities"]["error"]
+
+
+def test_report_files_are_not_overwritten(tmp_path):
+    idx = rr.run_report_only(tmp_path, None, "tok", steps=[("a", lambda: {"x": 1})])
+    assert idx["a"]["status"] == "ok"
+    idx2 = rr.run_report_only(tmp_path, None, "tok", steps=[("a", lambda: {"x": 2})])  # same name again: O_EXCL refuses, recorded as failed, first file intact
+    assert idx2["a"]["status"] == "failed" and json.loads((tmp_path / "report-a.json").read_text())["data"] == {"x": 1}
+
+
+# ---- R3: deadline --------------------------------------------------------------------------------------------------------------------------
+def test_late_start_is_not_decidable_and_opens_no_outcome_row(tmp_path, world, monkeypatch):
+    e = HOUR0 + timedelta(hours=1 + 4)
+
+    def no(*a, **k):
+        raise AssertionError("an outcome row was opened")
+
+    monkeypatch.setattr(rr, "run_deciding", no)
+    monkeypatch.setattr(rf, "mint_features", no)
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world, now_fn=lambda: e + timedelta(hours=rr.DEADLINE_HOURS)))
+    assert res["verdict"] == "NOT_DECIDABLE" and "deadline" in res["reasons"][0] and res["cells"] == {}
+    assert [x["event"] for x in rr.reads_events(paths.out_dir)] == ["started", "completed"] and (paths.out_dir / rr.RESULT).exists()
+    assert json.loads((paths.out_dir / rr.RESULT).read_text())["verdict"] == "NOT_DECIDABLE"
+
+
+def test_start_just_before_the_deadline_reads_normally(tmp_path, world):
+    e = HOUR0 + timedelta(hours=1 + 4)
+    res = rr.read(mk(tmp_path, world), mkdeps(world, now_fn=lambda: e + timedelta(hours=rr.DEADLINE_HOURS) - timedelta(seconds=1)))
+    assert res["verdict"] in ("PASS", "FAIL") and res["A_attempts"] > 0
+
+
+def test_clock_is_checked_again_when_the_verdict_is_formed(tmp_path, world, monkeypatch):
+    e = HOUR0 + timedelta(hours=1 + 4)
+    state = {"now": e + timedelta(hours=1)}
+    real_decide = rr.decide
+
+    def decide(*a, **k):
+        state["now"] = e + timedelta(hours=rr.DEADLINE_HOURS, seconds=5)  # the deadline passes while the read runs
+        return real_decide(*a, **k)
+
+    monkeypatch.setattr(rr, "decide", decide)
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world, now_fn=lambda: state["now"]))
+    assert res["verdict"] == "NOT_DECIDABLE" and res["reasons"][0].startswith("deadline: the verdict was formed")
+    assert [x["event"] for x in rr.reads_events(paths.out_dir)][:2] == ["started", "completed"]
+
+
+def test_deadline_pin_line_must_say_48h(tmp_path, world):
+    refused(mk(tmp_path, world, EXP027_DEADLINE="E + 72 h"), mkdeps(world), "EXP027_DEADLINE does not state E + 48 h")
+
+
+# ---- R4: the EXP is a tracked, clean repo file; no CLI path flags -------------------------------------------------------------------------------
+def run_git(repo, *a):
+    subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                   env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin", "HOME": str(repo)})
+
+
+def test_exp_must_be_tracked_and_clean(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_git(repo, "init", "-q")
+    (repo / "seed").write_text("x")
+    run_git(repo, "add", "seed")
+    run_git(repo, "commit", "-q", "-m", "seed")
+    exp = repo / "EXP-027.md"
+    assert "does not exist" in rr.exp_clean_against_head(repo / "nope.md", repo)[0]  # missing: git diff alone would say rc 0
+    exp.write_text("EXP027_K: 1\n")
+    assert "not tracked" in rr.exp_clean_against_head(exp, repo)[0]  # untracked: git diff alone would say rc 0
+    run_git(repo, "add", "EXP-027.md")
+    assert "differs from HEAD" in rr.exp_clean_against_head(exp, repo)[0]  # staged, not committed
+    run_git(repo, "commit", "-q", "-m", "exp")
+    assert rr.exp_clean_against_head(exp, repo) == []
+    exp.write_text("EXP027_K: 2\n")
+    assert "differs from HEAD" in rr.exp_clean_against_head(exp, repo)[0]
+
+
+def test_default_clean_fn_is_the_tracked_check():
+    assert rr.Deps().clean_fn is rr.exp_clean_against_head and rr.EXP_FILE == rr.ROOT / "EXP" / "EXP-027-r4b-walk2-prereg.md"
+
+
+# ---- R5: pinned walk dir ---------------------------------------------------------------------------------------------------------------------------
+def test_walk_dir_must_be_the_pinned_dataset(tmp_path, world):
+    other = make_walk(tmp_path / "other", stream(NH))
+    r = refused(mk(tmp_path, {**world, "walk": other}), mkdeps(world), "is not the pinned dataset")  # data fine, directory not the pinned one
+    assert any(str(Path(world["walk"]).resolve()) in x for x in r)
+    refused(mk(tmp_path, world, EXP027_WALK_DIR=str(other)), mkdeps(world), "is not the pinned dataset")  # the EXP line must name the pinned dir too
+    link = tmp_path / "link"
+    link.symlink_to(world["walk"])
+    _, _, reasons = rr.preflight(mk(tmp_path, {**world, "walk": link}), mkdeps(world), rr.now_utc())  # a symlink to the pinned dir resolves to it
+    assert reasons == []
+
+
+# ---- R7: sell builder pin ---------------------------------------------------------------------------------------------------------------------------
+def test_sell_builder_must_be_pinned_and_match(tmp_path, world):
+    rec = world["rec"]
+    refused(mk(tmp_path, world, EXP027_SELL_BUILDER=f"{rec / 'sell.py'}@{'0' * 64}"), mkdeps(world), "sell builder")
+    refused(mk(tmp_path, world, EXP027_SELL_BUILDER=f"{rec / 'absent.py'}@{'0' * 64}"), mkdeps(world), "sell builder", "does not exist")
+    refused(mk(tmp_path, world, EXP027_SELL_BUILDER="TO FILL"), mkdeps(world), "sell builder")
+    refused(mk(tmp_path, world, EXP027_SELL_BUILDER=None), mkdeps(world), "EXP027_SELL_BUILDER: matches 0 times")
+
+
+def test_sell_builder_is_recorded_in_ledger_and_result(tmp_path, world):
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world))
+    sb = res["sell_builder"]
+    assert sb["sha256"] == sha(world["rec"] / "sell.py") and rr.reads_events(paths.out_dir)[0]["sell_builder"] == sb
+
+
+# ---- R8: E1 scale fixed in code ---------------------------------------------------------------------------------------------------------------------
+def test_e1_scale_is_fixed_and_stake_must_match(tmp_path, world):
+    assert rr.E1_SCALE == 5.0 == 250_000_000 / 50_000_000
+    rec = world["rec"]
+    zero = rec / "e1_scale0.json"
+    zero.write_text(json.dumps({"n": 25, "stake_lamports": 50_000_000, "scale_to_stake": 0, "pnl_gap_lamports_live_minus_sim_mean": -100000.0}))
+    probs: list[str] = []
+    e1 = rr.load_e1({"EXP027_E1_RECORD": f"{zero}@{sha(zero)}"}, probs)
+    assert probs == [] and e1["scale"] == 5.0 and e1["penalty_lamports"] == 500000.0  # the record's scale 0 is ignored
+    for name, body in (("nostake", {"n": 25, "pnl_gap_lamports_live_minus_sim_mean": -1.0}), ("wrongstake", {"n": 25, "stake_lamports": 250_000_000, "pnl_gap_lamports_live_minus_sim_mean": -1.0}),
+                       ("boolstake", {"n": 25, "stake_lamports": True, "pnl_gap_lamports_live_minus_sim_mean": -1.0})):
+        f = rec / f"e1_{name}.json"
+        f.write_text(json.dumps(body))
+        refused(mk(tmp_path, world, EXP027_E1_RECORD=f"{f}@{sha(f)}"), mkdeps(world), "E1 record stake_lamports")
+        shutil.rmtree(tmp_path / "out", ignore_errors=True)
+
+
+# ---- R9: structure pre-check before the lock ---------------------------------------------------------------------------------------------------------
+def test_structure_precheck_runs_structure_only_over_the_whole_allowlist(tmp_path, world, monkeypatch):
+    calls = []
+    real_build = rl.build
+
+    def build(walk, h0, h1, out, **k):
+        calls.append((h0, h1, bool(k.get("structure_only")), k.get("trade_end")))
+        return real_build(walk, h0, h1, out, **k)
+
+    monkeypatch.setattr(rl, "build", build)
+    paths = mk(tmp_path, world)
+    rr.read(paths, mkdeps(world))
+    assert calls[0] == (hkey(0), hkey(8), True, hkey(8)) and calls[1][2] is False  # [H0, E + 3h), trade_end E + 3h; then the full build
+    assert [c[2] for c in calls] == [True, False]
+
+
+@pytest.mark.parametrize("what", ["v0", "mixed", "layout"])
+def test_precheck_structure_refusal_refuses_before_the_lock(tmp_path, world, monkeypatch, what):
+    real_build = rl.build
+
+    def build(*a, **k):
+        if what == "layout":
+            raise rl.LayoutRefused("hour x: 2 print(s) of MEMBER pool(s) have a null virtual_quote_reserves")
+        st = real_build(*a, **k)
+        st["v0_missing_days_over" if what == "v0" else "mixed_null_txi_slots"] = ["2026-10-17"] if what == "v0" else 3
+        return st
+
+    monkeypatch.setattr(rl, "build", build)
+    reasons = refused(mk(tmp_path, world), mkdeps(world), "structure pre-check (before the lock)")
+    assert any({"v0": "missing V0", "mixed": "tx_index", "layout": "null virtual_quote_reserves"}[what] in r for r in reasons)
+    assert not (tmp_path / "out" / "scratch").exists()  # the pre-check scratch is removed even on a refusal
+
+
+def test_scratch_left_by_a_killed_run_is_cleaned_before_the_lock(tmp_path, world):
+    paths = mk(tmp_path, world)
+    stale = paths.out_dir / "scratch" / "ut"
+    stale.mkdir(parents=True)
+    (stale / "junk.parquet").write_text("x" * 100)  # an OOM-killed run skipped its `finally`; no READS line exists
+    rr.read(paths, mkdeps(world))
+    assert not (paths.out_dir / "scratch").exists()
+
+
+def test_precheck_never_touches_the_scratch_of_a_started_read(tmp_path, world):
+    paths = mk(tmp_path, world)
+    plan, _, reasons = rr.preflight(paths, mkdeps(world), rr.now_utc())
+    assert reasons == []
+    rr.ledger_event(paths.out_dir, "started", token="t")
+    (paths.out_dir / "scratch").mkdir()
+    with pytest.raises(rr.ReadRefused, match="started line exists"):
+        rr.structure_precheck(paths, plan, mkdeps(world))
+    assert (paths.out_dir / "scratch").exists()
+
+
+# ---- R10: A3 monitor record ---------------------------------------------------------------------------------------------------------------------
+def a3_file(world, name, **d):
+    body = {"schema": "r4b_a3_v1", "checked_from": "2026-10-16T00:00:00Z", "checked_through": "2026-10-16T23:00:00Z", "halts": []}
+    body.update(d)
+    f = world["rec"] / f"a3_{name}.json"
+    f.write_text(json.dumps(body))
+    return {"EXP027_A3_RECORD": f"{f}@{sha(f)}"}
+
+
+# W0 = hkey(1) = 2026-10-16T04, E = hkey(5) = 2026-10-16T08
+@pytest.mark.parametrize("at", ["2026-10-16T04:00:00Z", "2026-10-16T06:30:00Z", "2026-10-16T08:00:00Z"])
+def test_a3_halt_inside_w0_e_is_not_decidable_without_opening_outcome_rows(tmp_path, world, monkeypatch, at):
+    def no(*a, **k):
+        raise AssertionError("an outcome row was opened")
+
+    monkeypatch.setattr(rr, "run_deciding", no)
+    paths = mk(tmp_path, world, **a3_file(world, "in" + at[11:13], halts=[{"at": at, "reason": "structure"}]))
+    res = rr.read(paths, mkdeps(world))
+    assert res["verdict"] == "NOT_DECIDABLE" and res["reasons"][0].startswith("a3_halt") and res["cells"] == {}
+    assert [x["event"] for x in rr.reads_events(paths.out_dir)] == ["started", "completed"]
+
+
+@pytest.mark.parametrize("at", ["2026-10-16T03:59:59Z", "2026-10-16T08:00:01Z"])
+def test_a3_halt_outside_the_window_does_not_matter(tmp_path, world, at):
+    res = rr.read(mk(tmp_path, world, **a3_file(world, "out" + at[11:13] + at[17:19], halts=[{"at": at}])), mkdeps(world))
+    assert res["verdict"] in ("PASS", "FAIL")
+
+
+def test_a3_record_must_cover_the_window_and_parse(tmp_path, world):
+    refused(mk(tmp_path, world, **a3_file(world, "late_from", checked_from="2026-10-16T05:00:00Z")), mkdeps(world), "A3 record covers")
+    refused(mk(tmp_path, world, **a3_file(world, "early_to", checked_through="2026-10-16T07:00:00Z")), mkdeps(world), "A3 record covers")
+    refused(mk(tmp_path, world, **a3_file(world, "badhalt", halts=[{"reason": "no time"}])), mkdeps(world), "halt without a parsable")
+    refused(mk(tmp_path, world, **a3_file(world, "nohalts", halts=None)), mkdeps(world), "A3 record needs")
+    refused(mk(tmp_path, world, EXP027_A3_RECORD=f"{world['rec'] / 'a3.json'}@{'0' * 64}"), mkdeps(world), "A3 record")
+    refused(mk(tmp_path, world, EXP027_A3_RECORD=None), mkdeps(world), "EXP027_A3_RECORD: matches 0 times")
+
+
+# ---- R11: mint accounts, deny by default --------------------------------------------------------------------------------------------------------
+def test_mint_strand_class_deny_by_default():
+    spl, t22 = rr.SPL_TOKEN_PROGRAM, rr.TOKEN_2022_PROGRAM
+    ok = {"fetch_ok": True, "owner_program": spl}
+    assert rr.mint_is_strand_class(ok) is False
+    assert rr.mint_is_strand_class({**ok, "freeze_authority": ""}) is False  # null / empty authority is none
+    assert rr.mint_is_strand_class({**ok, "freeze_authority": "F"}) is True
+    assert rr.mint_is_strand_class({**ok, "fetch_ok": False}) is True and rr.mint_is_strand_class({**ok, "fetch_ok": "yes"}) is True
+    assert rr.mint_is_strand_class({"fetch_ok": True}) is True  # no owner_program
+    assert rr.mint_is_strand_class({"fetch_ok": True, "owner_program": "SomeOtherProgram"}) is True
+    assert rr.mint_is_strand_class(None) is True and rr.mint_is_strand_class("x") is True and rr.mint_is_strand_class({}) is True
+    t = {"fetch_ok": True, "owner_program": t22}
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": []}) is False  # no extensions
+    assert rr.mint_is_strand_class(t) is True  # extensions unknown (field missing)
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": "metadataPointer"}) is True  # malformed
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"]}) is True  # allowlist empty: any extension strands
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"]}, frozenset({"metadataPointer"})) is False
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "transferHook"]}, frozenset({"metadataPointer"})) is True  # EVERY extension must be allowed
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"], "freeze_authority": "F"}, frozenset({"metadataPointer"})) is True
+    assert rr.TOKEN2022_EXT_ALLOWLIST == frozenset()  # filled before W0 from the census, in a change that moves the pinned sha256
+
+
+def test_mint_account_schema_needs_fetch_slot(tmp_path, world):
+    f = world["rec"] / "m_noslot.json"
+    f.write_text(json.dumps({"mints": {}}))
+    refused(mk(tmp_path, world, EXP027_MINT_ACCOUNTS=f"{f}@{sha(f)}"), mkdeps(world), "fetch_slot")
+
+
+def test_missing_mints_are_strand_class_and_counted_in_the_result(tmp_path, world):
+    f = world["rec"] / "m_half.json"
+    d = json.loads((world["rec"] / "mints.json").read_text())
+    d["mints"] = {m: r for m, r in d["mints"].items() if not m.startswith("M2")}  # three mints absent from the record
+    f.write_text(json.dumps(d))
+    res = rr.read(mk(tmp_path, world, EXP027_MINT_ACCOUNTS=f"{f}@{sha(f)}"), mkdeps(world))
+    ma = res["mint_accounts"]
+    assert ma["fetch_slot"] == 1 and ma["mints_in_file"] == len(d["mints"]) and ma["failed_fetch_share"] == pytest.approx(1 / len(d["mints"]))
+    assert 0 < ma["traded_mints_missing_from_record"] <= 3 and ma["traded_trades_on_missing_mints"] > 0
+    assert res["strand_class_trades"] >= ma["traded_trades_on_missing_mints"]
+
+
+# ---- R1 (r4b_book.round_trip entry guard is claude/r4b-entry-guard): read-level test that passes once it lands -------------------------------------
+@pytest.mark.xfail(reason="needs claude/r4b-entry-guard", strict=False)
+def test_non_positive_entry_state_is_a_total_loss_not_a_win():
+    stake = FZ.STAKE_LAMPORTS
+    t = trip()
+    t["ent"] = {1.3: [np.array([-0.9 * 77e9, 0.0, 77e9]), np.array([2.5e14, 2.5e14, -1.0]), np.zeros(3), np.zeros(3)]}
+    pv = rr.price_variant(t, 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
+    full = -stake - 505_000 - FZ.RENT_STRANDED
+    assert pv["filled"].all() and pv["stranded"].all() and (pv["nofail"] == full).all()  # not +97 SOL

@@ -11,6 +11,12 @@
 #   R4B_COUNTS     default /data/mal/r4b   (the count job's counts.jsonl and config.json)
 #   R4B_PYTHON     default /data/mal/venv/bin/python (lightgbm, solders)
 #   R4B_DUCKDB_SP  default /data/mal/audit-1008/venv/lib/python3.12/site-packages (duckdb)
+# systemd-run --user --scope needs a user systemd instance and its session bus (XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS set, `systemctl --user` works) in the job
+# environment, on mal-fast-0 or research-0 alike. Without it systemd-run exits before python starts and nothing is written. Check once with a refusal-only run (no sealed
+# data is opened before the lock): `systemd-run --user --scope -q -p MemoryMax=1G true && echo bus-ok`.
+# The scratch dir is $R4B_OUT/scratch. An OOM-killed run skips its cleanup; the next start removes it before the lock if no `started` line exists in READS.jsonl (a spent read's
+# scratch is left alone).
+# There is no flag for the EXP file, the models dir or any pinned value; the walk dir must be the pinned /data/mal/blocks/forward-1016.
 # Memory: 20 GB hard cap, no swap (the July-October lesson: DuckDB memory_limit is not a cap); DuckDB itself gets 6 GB and 4 threads.
 set -eu
 

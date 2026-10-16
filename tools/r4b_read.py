@@ -11,11 +11,20 @@ Order of events (the order is part of the contract; tests pin it)
        the fee-arm record (sha256 if pinned), the calendar (E = W0 + 480 h has passed), every hour of the allowlist [H0, E + 3h) sealed / strict-verified / sha256- and
        row-count-matched, counts.jsonl covering every counted hour with equal hashes, the count job's aggregate precount refusals (PDA match < 95 %, < 100 marks with >= 10 live,
        a date with graduations and 0 decisions), mixed null tx_index, unmeasurable SPH, no earlier started / completed / aborted line, no lock file.
-  2. LOCK: O_EXCL READ.lock, then a `started` line in READS.jsonl. From here a failure writes an `aborted` line (the read is spent: a second run refuses).
+     Pinned inputs (QP R4-R8, R10): the EXP file and the models dir are repo constants (no CLI flag); the EXP must be tracked by git and equal HEAD; the walk dir must be
+       EXP027_WALK_DIR = /data/mal/blocks/forward-1016; EXP027_SELL_BUILDER and EXP027_A3_RECORD are path@sha256 pins; the E1 scale is 5 in code (the record must carry
+       stake_lamports 50,000,000); the allowlist is [2026-10-16T03, E + 3h) and W0 >= 2026-10-18T03.
+  1b. STRUCTURE PRE-CHECK (R9), still before the lock: the count job's structure-only build over [H0, E + 3h) with trade_end E + 3h; any refusal refuses the read (nothing spent).
+      Scratch left by an OOM-killed run is removed here (the scratch dir is out_dir/scratch; no `started` line exists, else the read refuses).
+  2. LOCK: O_EXCL READ.lock, then a `started` line in READS.jsonl. From here a failure BEFORE `completed` writes an `aborted` line (the read is spent: a second run refuses).
+     A start at or after E + 48 h (R3) or an A3 halt in [W0, E] (R10) writes `completed` with NOT_DECIDABLE and opens no outcome row.
   3. BUILD the intermediates with r4b_layout (event V; null V on a member print and v0-missing share > 2 % refuse), compute forward-mode features
      (grads_rule asof_pda_first_print, forward_order), drop decision rows with T < block_time(s0) + 600 s (count reported), score with the 5 boosters (float64),
      run the xs10 book from W0 marks to the last entry mark <= E - 1h, sell everything at mark E, price the cost stack (section 5), build the 4 cells, gate (section 6).
-  4. VERDICT to stderr, THEN the result file (O_EXCL), THEN the `completed` line. The verdict is never produced after a file write.
+  4. VERDICT to stderr, THEN the result file (serialized first, temp file + fsync + os.link, never half-written), THEN the `completed` line. The verdict is never produced after
+     a file write. The clock is checked again when the verdict is formed (>= E + 48 h gives NOT_DECIDABLE).
+  5. REPORT-ONLY steps (rent leg, no-auto-stranded, 55k, 4.0 s, block sums, LP counts, null block_time, gap table, asof-vs-frozen dual run), AFTER `completed`. Each step is its own
+     try/except, writes report-<step>.json (and a report_completed / report_failed ledger line) and an entry in report-only.json. A crash here cannot change the deciding file.
 
 Universe exits (f): the book is hourly; UNIVERSE_EXITS_AT_MARKS_ONLY = True. A token that leaves the universe between marks (dead, 48 h passed) is not ranked at the next mark and is
 sold there by xs_book's rank rule (or its gap rule), as in harness.book_xs. Unpriced exit (e): a held token whose exit reserve state is <= 0 or missing is a total loss of the stake plus
@@ -23,7 +32,8 @@ the buy send plus RENT_STRANDED (2,039,280; no sell send), exactly as a strand-c
 mint_filters="asof"); the training defaults are frozen. Allowlist (g): [H0 = 2026-10-16T03, E + 1h) for decisions plus the 2 extra trade hours (E + 3h exclusive, as r4b_count's trade_end).
 
 Deciding stack (EXP section 5): 505,000-lamport sends (160,000 and the buy-lag shift only if the pinned fee-arm record says Test A and Test B both PASS), rent 0 per filled trip,
-auto-stranded (simulated proceeds below one send fee), strand-class mints from the pinned mint-account fetch file (a missing or failed fetch is strand-class), VERIFY haircut
+auto-stranded (simulated proceeds below one send fee), strand-class mints from the pinned mint-account fetch file (deny by default: strand-class unless fetch ok, no freeze
+authority and owner SPL Token, or Token-2022 with every extension in the pinned allowlist; a mint missing from the file is strand-class and counted), VERIFY haircut
 or the larger E1 penalty max(0, -5 * rbar) per filled trip, flat 15 % and pressure legs (intercept refit per cell, mean p 0.289), latencies 1.3 s and 1.9 s,
 k = np.round(lat / slot_s [+ delta]), slot_s per UTC date = 3600 / median hourly SPH. Gate: all 4 cells n >= 100, >= 5 dates with a positive majority, trade CI90 lo > 0
 (1,000 draws, seed 1, order (T0, mid)), ex-top-3 > 0, ex-best-24h-block > 0, ex-best-UTC-date > 0, and the t over per-attempt 24 h block means: the larger p of the
