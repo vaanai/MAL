@@ -196,12 +196,82 @@ def check_report(cells) -> tuple[bool, list]:
     return ok, rows
 
 
+L3 = "/data/mal/hunt-1008/l3-laya-v1-postgrad"
+
+
+def states_check(day: str, cache: str) -> dict:
+    """Extra (not part of E-c proper): r4b_book.mint_states against cache/l3/dec and cache/l3/marks for one graduation day, from the l3 ut/ prints.
+    Entry Qe/Be/spot/ssb/nearby at 1.3 and 1.9 s and the mark states must equal the cache (nearby is float32 in the cache: compared at 1 lamport)."""
+    import time
+
+    import duckdb
+    import pandas as pd
+
+    from tools.cap_pick_score import SLOTS_PER_HOUR as SPH
+
+    ckb = np.load(guard_path(f"{L3}/work/clock_bt.npy"))
+    cks = np.load(f"{L3}/work/clock_slot.npy")
+    mcn = pd.read_pickle(f"{L3}/work/mintconst.pkl")
+    c = duckdb.connect()
+    c.sql("SET memory_limit='8GB'; SET threads=4; SET enable_progress_bar=false")
+    d = c.sql(f"select * from read_parquet('{guard_path(cache)}/l3/dec/{day}.parquet')").fetchnumpy()
+    mk = c.sql(f"select * from read_parquet('{cache}/l3/marks/{day}.parquet')").fetchnumpy()
+    d0 = int(pd.Timestamp(day, tz="UTC").timestamp())
+    hrs = [h for h in (time.strftime("%Y-%m-%dT%H", time.gmtime(d0 + 3600 * i)) for i in range(0, 80)) if os.path.exists(f"{L3}/ut/{h}.parquet")]
+    order = ", coalesce(frn,0)" if any(h >= "2026-09-22T00" for h in hrs) else ""
+    fl = ",".join(f"'{L3}/ut/{h}.parquet'" for h in hrs)
+    sub = mcn[mcn.day == day]
+    mlo, mhi = int(sub.mid.min()), int(sub.mid.max())
+    # (mid, slot, txi, evi) is NOT unique in pre-09-22 ut hours (hundreds of duplicate keys per hour), so DuckDB's parallel sort orders them differently
+    # from run to run (prep_l3 and a re-run disagree on those rows). Ties are broken by file and row here, which is deterministic.
+    U = c.sql(f"select mid, slot, isbuy, sol, tok, q, b from read_parquet([{fl}], union_by_name=true, filename=true, file_row_number=true) "
+              f"where mid between {mlo} and {mhi} order by mid, slot, txi, evi{order}, filename, file_row_number").fetchnumpy()
+    U = {k: np.asarray(v) for k, v in U.items()}
+    bnd = np.searchsorted(U["mid"], np.arange(mlo, mhi + 2))
+    mid, T, sd = d["mid"], d["T"], d["sd"]
+    res = {k: 0 for k in ("rows", "Qe13", "Be13", "Qe19", "Be19", "spot", "ssb13", "near13", "ssb19", "near19", "marks", "mark_rows")}
+    mk_idx = {}
+    for i, (m_, t_) in enumerate(zip(mk["mid"], mk["t"])):
+        mk_idx[(int(m_), int(t_))] = i
+    day_of = lambda t: B.utc_dates(np.array([t]))[0]  # noqa: E731
+    for m in np.unique(mid):
+        rows = np.flatnonzero(mid == m)
+        a, e = bnd[m - mlo], bnd[m - mlo + 1]
+        Ts = T[rows]
+        dl = B.utc_dates(Ts)
+        s_dec = np.array([3600.0 / SPH[x] for x in dl])
+        tm = B.mark_grid(Ts.min(), Ts.max())
+        sm = np.array([3600.0 / SPH.get(x, SPH[dl[0]]) for x in B.utc_dates(tm)])
+        r = B.mint_states(U["slot"][a:e], U["isbuy"][a:e], U["sol"][a:e], U["tok"][a:e], U["q"][a:e], U["b"][a:e], float(mcn.loc[int(m)].v), sd[rows], s_dec,
+                          tm, sm, B.clock_slot(tm, ckb, cks), rounding="round")
+        res["rows"] += len(rows)
+        for tag, lat in (("13", 1.3), ("19", 1.9)):
+            res["Qe" + tag] += int((r["Qe"][lat] == d["Qe" + tag][rows]).sum())
+            res["Be" + tag] += int((r["Be"][lat] == d["Be" + tag][rows]).sum())
+            y = "p" if tag == "13" else "b"
+            res["ssb" + tag] += int((r["ssb"][lat] == d[f"y_{y}_ssb"][rows]).sum())
+            res["near" + tag] += int(np.isclose(r["nearby"][lat], d[f"y_{y}_nearby"][rows], rtol=1e-6, atol=1).sum())
+        res["spot"] += int((r["spot"] == d["spot"][rows]).sum())
+        ii = np.array([mk_idx[(int(m), int(t))] for t in tm])
+        res["mark_rows"] += len(tm)
+        res["marks"] += int(((r["Qx"] == mk["Qx"][ii]) & (r["Bx"] == mk["Bx"][ii])).sum())
+    res["ok"] = all(res[k] == res["rows"] for k in ("Qe13", "Be13", "Qe19", "Be19", "spot", "ssb13", "ssb19", "near13", "near19")) and res["marks"] == res["mark_rows"]
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--laya", default=LAYA)
     ap.add_argument("--ref", default="r4-b-rb2", help="results/<ref>/trades.csv.gz to reproduce (rebuilt run; results/r4-b is the unreproducible 10-08 file)")
+    ap.add_argument("--states-day", action="append", default=[], help="extra check: mint_states vs the cache for this graduation day (repeatable)")
     a = ap.parse_args(argv)
     cache = f"{a.laya}/cache"
+    if a.states_day:
+        # informational: the cache was built with an unstable tie order (see states_check), so exact equality is not required; counts are reported
+        for dd in a.states_day:
+            r = states_check(dd, cache)
+            print("STATES (informational)", dd, json.dumps(r))
+        return 0
     P, mk = load_panel(cache)
     print("panel rows", len(P["T"]), "mark rows", len(mk["mid"]), flush=True)
     score = load_score(cache, len(P["T"]))

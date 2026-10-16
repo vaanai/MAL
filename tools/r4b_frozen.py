@@ -66,7 +66,7 @@ EXIT_LAG_S = 0.55
 SLOT_TOL = 1e-9
 MIN_EXIT_LAG_SLOTS = 2          # FROZEN section 4: "at least 2 slots"; ceil(0.55 / 0.2 - 1e-9) = 3 at 200 ms
 # Entry k = lat / slot_s -> whole slots. FROZEN and the harness use "round" (numpy/Python round, half to even: 6.5 -> 6).
-# At 200 ms slots 1.3 s is 6.5 slots, where "round" gives 6 and "ceil" gives 7; EXP-022 used ceil. QP MUST RULE before W0.
+# At 200 ms slots 1.3 s is 6.5 slots, where "round" gives 6 and "ceil" gives 7; EXP-022 used ceil. QP ruled 2026-10-16: np.round (6.5 -> 6 at 200 ms), so "round".
 # The tests cover both values. Do not switch on results.
 K_ROUNDING = "round"
 
