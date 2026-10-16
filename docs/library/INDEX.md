@@ -38,7 +38,7 @@ As of 2026-10-16T19:05:26Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 129 | 75 | 2 |
 
-The file holds 387 rows: the 206 above and 53 rows kept only as duplicates of another row (listed at the end).
+The file holds 390 rows: the 206 above and 53 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
