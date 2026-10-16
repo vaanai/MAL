@@ -486,6 +486,29 @@ class MalformedTests(Base):
         self.assertEqual(json.loads((self.out / layer.SIDECAR).read_text())["files_with_malformed"], [])
 
 
+def rows_md5(out: Path) -> str:
+    """md5 over every output row of the D1 layer (tokens, wallet_mint, bars, trades), files in sorted order."""
+    h = hashlib.md5()
+    for f in [out / "tokens_d1.parquet", out / "wallet_mint_d1.parquet", *sorted((out / "bars_1m").glob("*.parquet")),
+              *sorted((out / "trades_d1").glob("*.parquet"))]:
+        h.update(f.name.encode())
+        for r in pq.read_table(f).to_pylist():
+            h.update(json.dumps(r, sort_keys=True, default=str).encode())
+    return h.hexdigest()
+
+
+# md5 of the output rows of the fixture below, produced by the code at cf73edd (before the QP rule change, no malformed lines).
+EQUIV_MD5 = "16577e35b4e4f2defb28a90127c0121b"
+
+
+class DecisionEquivalenceTests(Base):
+    def test_output_rows_unchanged_vs_cf73edd(self):
+        extra = [trade("D", None, "buy", 520, 0, T0 + 3720), trade("D", "w7", "sell", 521, 0, T0 + 3730, b=CB - 1)]
+        self.build(trades1=[trade("A", "w9", "buy", 500, 0, T0 + 3700), trade("C", "w2", "sell", 501, 0, T0 + 3710)] + extra)
+        self.assertEqual(self.run_layer()[0], 0)
+        self.assertEqual(rows_md5(self.out), EQUIV_MD5)
+
+
 class OctoberRoleTests(unittest.TestCase):
     def test_existing_role_module_still_imports(self):
         self.assertEqual(oc.ROLE_OCT_D1, "oct-pregrad-d1")
