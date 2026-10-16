@@ -470,8 +470,6 @@ def test_exit_tokens_equal_bx_is_invalid():
 @pytest.mark.parametrize("Qx", [1e9, 17.4e9, 0.0, float("nan"), float("inf")])
 def test_exit_qx_below_v_lo_or_nonfinite(Qx):
     pnl, fil, st, ei, xi = _rt(_N, 3e14, Qx, 3e14)
-    if np.isinf(Qx):
-        return  # infinite Qx is not below V_LO; only NaN / Bx non-finite are rejected here
     assert xi and st and pnl == _stranded_pnl()
 
 
@@ -491,3 +489,15 @@ def test_price_cell_and_book_stats_report_both_counts():
     T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800])
     o = B.book_stats(c["nofail"], T0, np.arange(n), w0=1_700_000_000, entry_invalid=c["entry_invalid"], exit_invalid=c["exit_invalid"])
     assert o["entry_invalid"] == 1 and o["exit_invalid"] == 1
+
+
+@pytest.mark.parametrize("Qx,Bx", [(float("inf"), 3e14), (_N, float("inf")), (float("-inf"), 3e14), (_N, float("-inf")), (float("nan"), float("nan"))])
+def test_nonfinite_exit_is_exit_invalid(Qx, Bx):
+    pnl, fil, st, ei, xi = _rt(_N, 3e14, Qx, Bx)
+    assert xi and st and not ei and pnl == _stranded_pnl()
+
+
+@pytest.mark.parametrize("Qe,Be", [(float("inf"), 3e14), (_N, float("inf")), (float("-inf"), 3e14), (_N, float("-inf")), (float("nan"), float("nan"))])
+def test_nonfinite_entry_is_entry_invalid(Qe, Be):
+    pnl, fil, st, ei, xi = _rt(Qe, Be, _N, 3e14)
+    assert ei and st and not xi and pnl == _stranded_pnl()

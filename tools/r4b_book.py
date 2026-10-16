@@ -212,7 +212,7 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
     Invalid entry state (entry_invalid): Qe < V_LO (17.5e9; Q includes V and V >= V_LO for every member pool, so less is a negative real quote
     reserve; this also covers Qe <= 0 and NaN), Be <= 0 or NaN, spot non-finite or <= 0 (a NaN spot would switch the guard off), or tokens <= 0 /
     non-finite after the entry formula. Priced as stranded (stake lost, buy send, rent_stranded, no sell send); the guard does not apply to it.
-    Invalid exit state (exit_invalid, only on a bought, valid-entry trip): tokens >= Bx, Qx < V_LO, or Qx/Bx non-finite. Same stranded price;
+    Invalid exit state (exit_invalid, only on a bought, valid-entry trip): tokens >= Bx, Qx < V_LO, or Qx or Bx non-finite (inf or NaN). Same stranded price;
     there is no max(Bx - tokens, 1) clamp. Flags come back as last return values: return_invalid (entry), then return_exit_invalid."""
     stake = np.asarray(stake, float)
     with np.errstate(all="ignore"):
@@ -220,10 +220,10 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
         f = fee_ppm(Qe, Be)
         net = stake * (1 - f / 1e6)
         tok = Be * net / (Qe + net)
-        bad = ~((Qe_ >= F.V_LO) & (Be_ > 0) & np.isfinite(spot_) & (spot_ > 0) & np.isfinite(tok) & (tok > 0))
+        bad = ~(np.isfinite(Qe_) & np.isfinite(Be_) & (Qe_ >= F.V_LO) & (Be_ > 0) & np.isfinite(spot_) & (spot_ > 0) & np.isfinite(tok) & (tok > 0))
         guard = ((net / tok) / spot > guard_ratio) & ~bad
         Qx_, Bx_ = np.asarray(Qx, float), np.asarray(Bx, float)
-        xbad = ~((Qx_ >= F.V_LO) & np.isfinite(Bx_) & (tok < Bx_)) & ~bad & ~guard
+        xbad = ~(np.isfinite(Qx_) & (Qx_ >= F.V_LO) & np.isfinite(Bx_) & (tok < Bx_)) & ~bad & ~guard
         tokh = tok / (1 + h_in)
         Qa = Qx + net
         Ba = np.where(xbad | bad, 1.0, Bx - tok)
