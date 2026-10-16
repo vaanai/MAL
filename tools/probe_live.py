@@ -366,6 +366,9 @@ class LiveExecutor(pe.Executor):
         self.balance_buffer = max(MIN_BALANCE_BUFFER, int(cfg.get("min_balance_buffer_lamports", MIN_BALANCE_BUFFER)))
         self.slip_codes = frozenset(cfg.get("slippage_error_codes") or SLIPPAGE_ERROR_CODES)
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)
+        if self.fa is not None:  # feearm: the cost cap reserves exactly this many sell attempts per position, so the sell loop may not exceed it
+            self.sell_max_attempts = self.fa["sell_attempts"]
+            self.sell_retries = min(self.sell_retries, self.sell_max_attempts)
         self.bh = BlockhashCache(rpc, self.commitment, self.now_ms)
         self._last_tail = 0
         self._height: int | None = None
@@ -380,15 +383,32 @@ class LiveExecutor(pe.Executor):
         self._log("alert", mint, alert=what, **kw)
         print(f"probe_executor ALERT {what} mint={mint} {json.dumps(kw, default=str)[:300]}", flush=True)
 
-    def _sign(self, msg: Message, ps: tx.PoolState, mint: str) -> tuple[str, str]:
-        validate_message(msg, ps, Pubkey.from_string(mint), self.user, self.limits.priority_lamports, self.limits.size_lamports)
+    def _sign(self, msg: Message, ps: tx.PoolState, mint: str, priority: int | None = None) -> tuple[str, str]:
+        validate_message(msg, ps, Pubkey.from_string(mint), self.user, self._priority(mint) if priority is None else priority,
+                         self.limits.size_lamports)
         t = VersionedTransaction(msg, [self._kp])
         raw = bytes(t)
         if len(raw) > tx.TX_SIZE_LIMIT:
             raise ValueError("tx too large")
         return str(t.signatures[0]), base64.b64encode(raw).decode()
 
+    def _fa_send_blocked(self, p: dict[str, Any], mint: str) -> bool:
+        """feearm, last line of the HARD cap: the FIRST send of a buy is blocked if the committed cost (which already holds this
+        pending buy's worst case) is over the cap. handle_signal checks before the write-ahead; this re-checks at the send."""
+        if self.fa is None or p.get("kind") != "buy" or p.get("sends", 0) > 0:
+            return False
+        if pe.feearm_committed_cost(self.state, self.sell_max_attempts) <= self.limits.spend_cap_lamports:
+            return False
+        if not p.get("cap_alerted"):
+            p["cap_alerted"] = True
+            self._alert("spend_cap_send_blocked", mint, cap=self.limits.spend_cap_lamports)
+        return True
+
     def _send(self, p: dict[str, Any], mint: str) -> None:
+        if self._fa_send_blocked(p, mint):
+            return
+        if self.fa is not None and p.get("sends", 0) == 0:  # count each signed tx once (rebroadcasts are the same tx)
+            self.state.feearm["sends"] = int(self.state.feearm.get("sends", 0)) + 1
         try:
             got = self.rpc("sendTransaction", [p["tx_b64"], {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
             if got != p["signature"]:
@@ -449,6 +469,15 @@ class LiveExecutor(pe.Executor):
         q = pe.entry_quote(snap, spend)
         if q["tokens"] <= 0:
             return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot, drift_vs_seed=drift)
+        arm = None
+        if self.fa is not None:  # arm is drawn from the attempt index (not the mint) and is NOT stored until the write-ahead
+            arm = self._fa_pick()
+            why_fa = pe.feearm_buy_refusal(self.limits, self.state, spend, arm[1], self.sell_max_attempts)
+            if why_fa:
+                return self._skip(sig, f"limit:{why_fa}", pool=pool, would_arm=arm[0], would_arm_index=arm[2],
+                                  committed_cost_lamports=pe.feearm_committed_cost(self.state, self.sell_max_attempts),
+                                  spend_cap_lamports=self.limits.spend_cap_lamports, drift_vs_seed=drift)
+        prio = arm[1] if arm else self.limits.priority_lamports
         bal = self._balance()
         if bal is None:
             return self._skip(sig, "balance_unreadable", pool=pool, drift_vs_seed=drift)
@@ -456,14 +485,17 @@ class LiveExecutor(pe.Executor):
             return self._skip(sig, "balance_guard", pool=pool, balance_lamports=bal, drift_vs_seed=drift)
         try:
             bhash, lvbh = self.bh.get()
-            msg = pe.buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports, bhash)
-            signature, tx_b64 = self._sign(msg, snap.ps, mint)
+            msg = pe.buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], prio, bhash)
+            signature, tx_b64 = self._sign(msg, snap.ps, mint, prio)
         except (Exception, SystemExit) as exc:
             if isinstance(exc, UnsafeTx):
                 self._alert("unsafe_tx_refused", mint, why=exc.label)
             return self._skip(sig, f"build_error:{pe.error_label(exc)}", pool=pool, drift_vs_seed=drift)
         t_built = self.now_ms()
         # Write-ahead: the attempt, the signature and the signed tx are durable BEFORE the first send.
+        committed_before = pe.feearm_committed_cost(self.state, self.sell_max_attempts) if arm else None
+        if arm:
+            self._fa_store(mint, arm)
         self.state.attempts += 1
         self.state.bought.append(mint)
         if self.state.first_attempt_ms is None:
@@ -477,8 +509,14 @@ class LiveExecutor(pe.Executor):
             "seen_ms": sig.get("seen_ms"), "state_ms": t_state, "state_slot": snap.slot, "built_ms": t_built,
             "runner_latency": sig.get("latency"),
         }
+        if arm:
+            self.state.pending[mint]["arm_priority"] = arm[1]
         self.save()
         p = self.state.pending[mint]
+        if arm:  # the arm is durable (state) and logged BEFORE the first send
+            self._log("arm_assigned", mint, arm_draw=arm[0], priority_lamports=arm[1], committed_cost_before_lamports=committed_before,
+                      this_buy_worst_case_lamports=pe.feearm_new_buy_worst_case(spend, arm[1], self.sell_max_attempts),
+                      spend_cap_lamports=self.limits.spend_cap_lamports, sends_so_far=self.state.feearm.get("sends", 0))
         self._send(p, mint)
         self.save()
         try:  # sim_tokens for the "vs simulated buy" column; after the send so it never delays landing
@@ -598,7 +636,7 @@ class LiveExecutor(pe.Executor):
 
     def _fallback_buy_meta(self, p: dict[str, Any], st: dict[str, Any]) -> dict[str, Any] | None:
         """No usable meta for 60 s: book the estimated fee (and spend if tokens arrived), flagged `estimated`."""
-        fee = tx.BASE_FEE_PER_SIGNATURE + self.limits.priority_lamports
+        fee = tx.BASE_FEE_PER_SIGNATURE + p.get("arm_priority", self.limits.priority_lamports)
         base = dict(slot=st.get("slot"), fee=fee, ata_rent_pre=0, ata_rent_post=0, logs=[], estimated=True)
         if st.get("err") is not None:
             return {**base, "err": st["err"], "sol_delta": -fee, "token_delta": 0}
@@ -606,6 +644,11 @@ class LiveExecutor(pe.Executor):
         if bal is None:
             return None
         return {**base, "err": None, "sol_delta": -(p["spend"] + fee), "token_delta": bal}
+
+    def _fa_fees(self, m: dict[str, Any]) -> None:
+        """feearm: running total of base + priority fees actually paid by landed transactions (reporting; the cap reads realized)."""
+        if self.fa is not None:
+            self.state.feearm["fees_paid"] = int(self.state.feearm.get("fees_paid", 0)) + int(m["fee"])
 
     def _fee_split(self, fee: int) -> tuple[int, int]:
         base = tx.BASE_FEE_PER_SIGNATURE
@@ -616,10 +659,11 @@ class LiveExecutor(pe.Executor):
         # The ATA balance read (an RPC call) happens BEFORE pending is deleted, so the position is always in
         # `pending` or `open` whenever state is saved or counted.
         base_fee, prio_fee = self._fee_split(m["fee"])
+        self._fa_fees(m)
         row: dict[str, Any] = dict(
             spend_lamports=p["spend"], expected_tokens=p["q_tokens"], sim_tokens=p.get("sim_tokens"), pool=p["pool"],
             landed_slot=m["slot"], slots_between=(m["slot"] - p["snap_slot"]) if m["slot"] and p.get("snap_slot") else None,
-            fee_lamports=m["fee"], base_fee_lamports=base_fee, priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, v_lamports=p.get("v_lamports"),
+            fee_lamports=m["fee"], base_fee_lamports=base_fee, priority_fee_lamports=prio_fee, priority_lamports=self._priority(mint), v_lamports=p.get("v_lamports"),
             drift_vs_seed=p.get("drift_vs_seed"), pool_slot=p.get("snap_slot"),
             **self._timing(p),
         )
@@ -660,6 +704,8 @@ class LiveExecutor(pe.Executor):
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
                 "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
+            if self.fa is not None:
+                self.state.open[mint]["arm_priority"] = p["arm_priority"]
         # dec020 stops: after all bookkeeping, guarded (never raises). Entry bps counted at landing, not at close.
         pe.dec020_note_buy(self.limits, self.state, True, entry_bps=row.get("entry_vs_quote_bps"), entry_estimated=balance_pending,
                            zero_tokens=tokens <= 0)
@@ -707,7 +753,7 @@ class LiveExecutor(pe.Executor):
             # A retry needs a FRESH blockhash: the same message + hash signs to the same signature, and a failed
             # tx's signature is already in the status cache.
             bhash, lvbh = self.bh.get(fresh=pos.get("sell_attempts", 0) > 0)
-            ixs = [*tx.sell_instructions(snap.ps, self.user, bal, min_out, priority_total_lamports=self.limits.priority_lamports),
+            ixs = [*tx.sell_instructions(snap.ps, self.user, bal, min_out, priority_total_lamports=self._priority(mint)),
                    close_token_account(Pubkey.from_string(pos["base_ata"]), self.user, Pubkey.from_string(pos["base_tp"]))]
             signature, tx_b64 = self._sign(Message.new_with_blockhash(ixs, self.user, bhash), snap.ps, mint)
             if signature in pos.setdefault("sell_sigs", []):
@@ -775,10 +821,11 @@ class LiveExecutor(pe.Executor):
         del self.state.pending[mint]
         pos = self.state.open[mint]
         base_fee, prio_fee = self._fee_split(m["fee"])
+        self._fa_fees(m)
         row: dict[str, Any] = dict(
             pool=pos["pool"], exit_reason=p["reason"], ret=p["ret"], tokens=p["tokens"], quote_sol_out_lamports=p["q_out"],
             min_sol_out_lamports=p["min_out"], landed_slot=m["slot"], fee_lamports=m["fee"], base_fee_lamports=base_fee,
-            priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
+            priority_fee_lamports=prio_fee, priority_lamports=self._priority(mint), hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
             **{k: p[k] for k in ("exit_poll_ms", "exit_commitment", "exit_snapshot", "balance_source") if k in p},
             **{k: pos[k] for k in ("mark_send", "mark", "mark_source", "mark_shift_bps") if k in pos},
             buy_landed_slot=pos.get("buy_slot"), first_exit_snap_slot=pos.get("first_exit_snap_slot"), first_exit_snap_ms=pos.get("first_exit_snap_ms"),
