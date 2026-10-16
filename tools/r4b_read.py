@@ -216,6 +216,28 @@ WINDOW_HEADING_RE = re.compile(rb"^## Window record[ \t]*$", re.M)
 APPEND_LINE_RE = re.compile(r"^(EXP027_[A-Z0-9_]+): (.+) \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
 APPEND_SUFFIX_RE = re.compile(r" \(appended \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)$")
 LEDGER_FILE = ROOT / "docs" / "HOLDOUT_LEDGER.md"
+# Addendum 2 L: a problem that only says "not written yet" (the ledger values before the post-merge ledger commit, EXP027_W0 before it is appended) carries this tag. The read
+# refuses on it like on any problem; `--check-window` lists it separately (exit 0).
+PENDING_TAG = "[pending] "
+SHA_PAIR_RE = re.compile(r"^([^;@\s][^;@]*)@([0-9a-f]{64})$")
+W0_VALUE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
+PATH_SHA_KEYS = frozenset({"EXP027_A3_RECORD", "EXP027_E1_RECORD", "EXP027_MINT_ACCOUNTS"})
+
+
+def window_value_problem(key: str, val: str) -> str | None:
+    """Addendum 2 G: the value format of an appended line. None if fine (keys without a stated format are not judged)."""
+    if key == "EXP027_W0":
+        return None if W0_VALUE_RE.match(val) and parse_hour(val) is not None else "must be exactly YYYY-MM-DDTHH"
+    if key == "EXP027_K":
+        return None if re.fullmatch(r"[1-9][0-9]*", val) else "must be a bare positive integer"
+    if key in PATH_SHA_KEYS:
+        return None if SHA_PAIR_RE.match(val) else "must be exactly path@sha256"
+    if key == "EXP027_INPUT_VIEWS":
+        items = val.split(";")
+        return None if all(SHA_PAIR_RE.match(x.strip()) for x in items) else "must be ';'-separated path@sha256"
+    if key == "EXP027_FEE_ARM":
+        return None if val == "NONE" or SHA_PAIR_RE.match(val) else "must be NONE or path@sha256"
+    return None
 # Addendum 1 C: a ledger token is found anywhere in a line (Status cell, changelog bullet), with optional backticks; at least one occurrence, all must agree.
 LEDGER_REG_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_REG_COMMIT[ :]+`?([0-9a-f]{40})(?![0-9a-f])`?")
 LEDGER_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])EXP027_PREFIX_SHA256[ :]+`?([0-9a-f]{64})(?![0-9a-f])`?")
@@ -283,7 +305,7 @@ def ledger_values(ledger: Path) -> tuple[str | None, str | None, list[str]]:
     for name, rx in (("EXP027_REG_COMMIT", LEDGER_REG_RE), ("EXP027_PREFIX_SHA256", LEDGER_PREFIX_RE)):
         m = set(rx.findall(text))
         if not m:
-            probs.append(f"{Path(ledger).name}: {name} has no occurrence (`{rx.pattern}`)")
+            probs.append(f"{PENDING_TAG}{Path(ledger).name}: {name} has no occurrence (`{rx.pattern}`)")
             vals.append(None)
         elif len(m) > 1:
             probs.append(f"{Path(ledger).name}: {name} occurrences disagree ({sorted(x[:12] for x in m)})")
@@ -294,17 +316,19 @@ def ledger_values(ledger: Path) -> tuple[str | None, str | None, list[str]]:
 
 
 def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: Path = LEDGER_FILE, origin: str = ORIGIN_REF) -> tuple[list[str], dict[str, Any]]:
-    """EXP-027 window-record tamper evidence (spec EXP027-TAMPER-SPEC items 1-6). Returns (problems, info); every failure is a refusal before any sealed byte is opened.
+    """EXP-027 window-record tamper evidence (spec EXP027-TAMPER-SPEC items 1-7 and Addenda 1-2). Returns (problems, info); every problem is a refusal before any sealed byte is
+    opened. Problems tagged PENDING_TAG are "not written yet" (still refusals for the read; `--check-window` lists them apart).
     1 registration commit == ledger EXP027_REG_COMMIT and HEAD descends from it; 2 EXP blob at HEAD == blob at origin/main; 3 sha256 of the body prefix at HEAD == ledger
-    EXP027_PREFIX_SHA256 == prefix at reg; 4 reg..HEAD diff of the EXP has added lines only, all after the heading; 5 each commit touching the EXP adds exactly one line in
-    APPEND_LINE_RE, each key once; 6 each such commit's committer time is earlier than `started`."""
+    EXP027_PREFIX_SHA256 == prefix at reg; W0 recomputed; 4 reg..HEAD diff of the EXP has added lines only, all after the heading, LF only; 5 along main's FIRST-PARENT chain each
+    commit's diff against its first parent adds exactly one line in APPEND_LINE_RE with an allowed key and a valid value, each key once; 6 each such commit's committer time is
+    earlier than `started`; I the text after the heading at reg is only italic placeholder paragraphs."""
     repo = Path(repo)
     try:
         rel = Path(exp_file).resolve().relative_to(repo.resolve()).as_posix()
     except ValueError:
         return [f"{Path(exp_file).name} is not inside the repo {repo}"], {}
     want_reg, want_prefix, probs = ledger_values(ledger)
-    if probs:
+    if not Path(ledger).exists():
         return probs, {}
     if exp_clean_against_head(ledger, repo):
         probs.append(f"{Path(ledger).name} is untracked or differs from HEAD (the registration values must be committed)")
@@ -316,7 +340,7 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
             return probs + [f"no commit on {origin} added {rel} (git log --first-parent --diff-filter=A is empty)"], info
         reg = r[-1]
         info["reg_commit"] = reg
-        if reg != want_reg:
+        if want_reg is not None and reg != want_reg:
             probs.append(f"registration commit {reg} != ledger EXP027_REG_COMMIT {want_reg}")
         anc = _git(repo, "merge-base", "--is-ancestor", reg, "HEAD", ok=(0, 1)).returncode
         if anc != 0:
@@ -330,29 +354,39 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
         head_bytes = _git(repo, "cat-file", "blob", head_blob).stdout
         reg_bytes = _git(repo, "show", f"{reg}:{rel}").stdout
         info["exp_sha256"] = hashlib.sha256(head_bytes).hexdigest()
+        # H: the file ends with LF at every checked point
+        for name, blob in (("HEAD", head_bytes), ("the registration commit", reg_bytes)):
+            if not blob.endswith(b"\n"):
+                probs.append(f"{rel} at {name} does not end with a line feed")
         # 3 body prefix
         ph, pr = body_prefix(head_bytes), body_prefix(reg_bytes)
         if ph is None or pr is None:
             probs.append(f"'{WINDOW_HEADING}' must occur as a line exactly once in {rel} at HEAD and at the registration commit")
             return probs, info
         info["prefix_sha256"] = hashlib.sha256(ph).hexdigest()
-        if info["prefix_sha256"] != want_prefix:
+        if want_prefix is not None and info["prefix_sha256"] != want_prefix:
             probs.append(f"body prefix sha256 at HEAD {info['prefix_sha256']} != ledger EXP027_PREFIX_SHA256 {want_prefix}")
         if ph != pr:
             probs.append("the body prefix at HEAD differs from the body prefix at the registration commit")
+        # I: at reg, the text after the heading is only italic placeholder paragraphs
+        after = reg_bytes[len(pr):].decode("utf-8", "replace").split("\n", 1)[1] if b"\n" in reg_bytes[len(pr):] else ""
+        for para in [x for x in re.split(r"\n\s*\n", after) if x.strip()]:
+            t = para.strip()
+            if not (len(t) >= 2 and t.startswith("*") and t.endswith("*")):
+                probs.append(f"the Window record at the registration commit holds text that is not an italic placeholder (starts and ends with '*'): {t[:60]!r}")
         # B: W0 recomputed from the registration commit's committer time
         reg_ct = int(_git(repo, "show", "-s", "--format=%ct", reg).stdout.decode().strip())
         w0_calc = ef.hour_key(w0_from_commit_time(reg_ct))
         info["w0_recomputed"] = w0_calc
         w0_val = exp_lines(head_bytes.decode("utf-8", "replace"))[0].get("EXP027_W0")
         if w0_val is None:
-            probs.append("EXP027_W0 is absent from the EXP (the Window record must carry it)")
+            probs.append(f"{PENDING_TAG}EXP027_W0 is absent from the EXP (the Window record must carry it)")
         elif w0_val != w0_calc:
             probs.append(f"EXP027_W0 {w0_val!r} != {w0_calc} (first UTC hour at or after the registration commit's committer time, floored at {EARLIEST_W0})")
         # 4 additions only, after the heading
         head_line = ph.count(b"\n") + 1  # 1-based line number of the heading at HEAD
         diff = _git(repo, "diff", "--no-ext-diff", "--no-renames", "--no-color", "--unified=0", reg, "HEAD", "--", rel).stdout.decode("utf-8", "replace")
-        for ln in diff.splitlines():
+        for ln in diff.split("\n"):
             if ln.startswith("@@"):
                 m = re.match(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,\d+)? @@", ln)
                 old_n = (1 if m.group(1) is None else int(m.group(1))) if m else -1
@@ -362,29 +396,41 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
                 probs.append(f"git diff {reg[:12]} HEAD removes or changes a line: {ln[:80]!r}")
             elif ln.startswith("\\"):
                 probs.append("the EXP's end-of-file newline changed between the registration commit and HEAD")
-        # 5 + 6 one line per commit, format, unique keys, commit times
-        rows = _git(repo, "log", "--full-history", "--format=%H %ct %P", f"{reg}..HEAD", "--", rel).stdout.decode().splitlines()
+        # 5 + 6 along main's first-parent chain, each commit judged by its diff against its first parent
+        rows = _git(repo, "log", "--first-parent", "--format=%H %ct %P", f"{reg}..HEAD", "--", rel).stdout.decode().splitlines()
         seen: dict[str, str] = {}
         info["appended"] = []
         for row in rows:
             parts = row.split()
             c, ct, parents = parts[0], int(parts[1]), parts[2:]
-            if len(parents) != 1:
-                probs.append(f"commit {c[:12]} touching {rel} is a merge or root commit ({len(parents)} parents); only single-parent append commits are accepted")
+            if not parents:
+                probs.append(f"commit {c[:12]} touching {rel} is a root commit")
                 continue
-            d = _git(repo, "show", "--format=", "--no-ext-diff", "--no-renames", "--no-color", "--unified=0", c, "--", rel).stdout.decode("utf-8", "replace").splitlines()
+            d = _git(repo, "diff", "--unified=0", "--no-renames", "--no-ext-diff", "--no-color", f"{c}^1", c, "--", rel).stdout.decode("utf-8", "replace").split("\n")
+            d = [x for x in d if x != ""]
+            if not d:
+                continue  # an empty first-parent diff (e.g. a merge that does not change the EXP)
             plus = [x[1:] for x in d if x.startswith("+") and not x.startswith("+++")]
             minus = [x for x in d if x.startswith("-") and not x.startswith("---")]
+            if any(x.startswith("\\") for x in d):
+                probs.append(f"commit {c[:12]} changes the end-of-file newline of {rel}")
+                continue
             if minus or len(plus) != 1 or not plus[0].strip():
                 probs.append(f"commit {c[:12]} touching {rel} must add exactly one non-empty line and remove none (adds {len(plus)}, removes {len(minus)})")
+                continue
+            if "\r" in plus[0]:
+                probs.append(f"commit {c[:12]} appends a line with a carriage return (single LF only)")
                 continue
             mm = APPEND_LINE_RE.match(plus[0])
             if mm is None:
                 probs.append(f"commit {c[:12]} appends a line that is not `KEY: value (appended YYYY-MM-DDTHH:MMZ)`: {plus[0][:80]!r}")
                 continue
-            key = mm.group(1)
+            key, val = mm.group(1), mm.group(2)
             if key not in window_keys_allowed():
                 probs.append(f"commit {c[:12]} appends key {key}, which is not in the closed Window-record key list")
+            bad_val = window_value_problem(key, val)
+            if bad_val:
+                probs.append(f"commit {c[:12]}: {key} value {val[:60]!r} {bad_val}")
             if key in seen:
                 probs.append(f"key {key} is appended more than once (commits {seen[key][:12]} and {c[:12]})")
             seen[key] = c
@@ -394,6 +440,24 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
     except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
         probs.append(f"window-record check could not run: {exc}")
     return probs, info
+
+
+def check_window_cli(exp_file: Path = EXP_FILE, ledger: Path = LEDGER_FILE, repo: Path = ROOT, now: datetime | None = None, out: Callable[[str], None] = print) -> int:
+    """Addendum 2 L: the dry run. window_guard with started = now; opens no sealed data. Exit 1 on any VIOLATION, 0 otherwise (PENDING items are listed)."""
+    probs, info = window_guard(exp_file, now or now_utc(), repo, ledger)
+    pending = [x[len(PENDING_TAG):] for x in probs if x.startswith(PENDING_TAG)]
+    viol = [x for x in probs if not x.startswith(PENDING_TAG)]
+    if viol:
+        out(f"VIOLATIONS ({len(viol)}):")
+        for x in viol:
+            out(f"  - {x}")
+    if pending:
+        out(f"PENDING ({len(pending)}; the read refuses until these are written):")
+        for x in pending:
+            out(f"  - {x}")
+    if not viol and not pending:
+        out(f"OK: reg {info.get('reg_commit')}, {len(info.get('appended', []))} appended line(s)")
+    return 1 if viol else 0
 
 
 def parse_hour(s: str) -> datetime | None:
@@ -549,15 +613,13 @@ def load_a3(v: Mapping[str, str], w0: datetime, e: datetime, probs: list[str]) -
 
 
 def tries_entry_matches(line: str, key: str) -> bool:
-    """Exact key match (no substring): the JSON line's `config.key`, `key` or `data_key` equals `key`."""
+    """Exact key match on `config.key` only (Addendum 2 J), no substring and no other field."""
     try:
         o = json.loads(line)
     except ValueError:
         return False
-    if not isinstance(o, dict):
-        return False
-    cfg = o.get("config")
-    return key in (o.get("key"), o.get("data_key"), cfg.get("key") if isinstance(cfg, dict) else None)
+    cfg = o.get("config") if isinstance(o, dict) else None
+    return isinstance(cfg, dict) and cfg.get("key") == key
 
 
 def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> dict[str, str]:
@@ -571,7 +633,7 @@ def check_inputs(v: Mapping[str, str], tries_path: Path, probs: list[str]) -> di
     key = v["EXP027_TRIES_ENTRY"]
     ok = any(tries_entry_matches(ln, key) for ln in tries_path.read_text(encoding="utf-8").splitlines()) if tries_path.exists() else False
     if not ok:
-        probs.append(f"{tries_path} has no entry whose key is exactly {key!r} (config.key, key or data_key of a JSON line)")
+        probs.append(f"{tries_path} has no entry whose key is exactly {key!r} (`config.key` of a JSON line)")
     return out
 
 
@@ -1654,9 +1716,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--walk-dir", default=PINNED_WALK_DIR, help=f"Forward walk 2 dataset dir; anything but {PINNED_WALK_DIR} is refused")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT), help="READS.jsonl, READ.lock, result file")
     ap.add_argument("--counts-dir", default=str(DEFAULT_OUT), help="the count job's dir (counts.jsonl, config.json)")
+    ap.add_argument("--check-window", action="store_true", help="dry run of the Window-record tamper checks (started = now); opens no sealed data; exit 1 on VIOLATIONS, 0 on OK or PENDING")
     ap.add_argument("--memory-limit", default="6GB")
     ap.add_argument("--threads", type=int, default=4)
-    a = ap.parse_args(argv)  # no flag changes a pinned value; the EXP file and the models dir are repo constants
+    a = ap.parse_args(argv)
+    if a.check_window:
+        return check_window_cli()
+    # no flag changes a pinned value; the EXP file and the models dir are repo constants
     paths = Paths(Path(a.walk_dir), Path(a.out_dir), Path(a.counts_dir))
     deps = Deps(memory_limit=a.memory_limit, threads=a.threads)
     try:
