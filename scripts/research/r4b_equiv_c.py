@@ -113,7 +113,9 @@ def harness_table(bk, Qx, Bx, ent, score_r, keep):
     res = {}
     for tag in ("13", "19"):
         e = ent[tag]
-        pnl, fil = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0, auto_stranded=False)
+        pnl, fil, bad = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0, auto_stranded=False,
+                                     return_invalid=True)
+        print("E-c part A", tag, "entry_invalid", int(bad.sum()), "of", len(bad))
         flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_REPORT)
         res[tag] = dict(pnl=pnl, fil=fil, flat=flat, press=press, c=c, p=p)
     e13, r13 = ent["13"], res["13"]
@@ -175,7 +177,7 @@ def deciding_cells(bk, Qx, Bx, ent, keep, rent, auto_stranded):
             nstr = int(cell["stranded"][km].sum())
             flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_DECIDING)
             for leg, x in (("flat", flat), ("press", press)):
-                s = B.book_stats(x, T0[km], mid[km], S, w0=W0, daylist=daylist)
+                s = B.book_stats(x, T0[km], mid[km], S, w0=W0, daylist=daylist, entry_invalid=cell["entry_invalid"][km])
                 s["intercept"] = c
                 s["mean_p_fills"] = float(p[fil].mean())
                 s["guard_share"] = float(1 - fil.mean())

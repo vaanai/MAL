@@ -360,3 +360,48 @@ def test_caller_stranded_and_guard_never_stranded():
     a[2] = a[2] / 1.2
     pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, stranded=np.array([True]), return_stranded=True)
     assert not fil[0] and not st[0] and pnl[0] == -505_000
+
+
+def _entry_case(Qe, Be, stake=250e6, send=505_000, rent=2_039_280):
+    Qx, Bx, spot = 8e10, 3e15, 8e10 / 3e15
+    return B.round_trip(np.array([stake]), np.array([Qe]), np.array([Be]), np.array([spot]), np.array([Qx]), np.array([Bx]),
+                        send, rent, return_stranded=True, return_invalid=True)
+
+
+@pytest.mark.parametrize("Qe,Be", [(0.0, 3e15), (-1e9, 3e15), (8e10, 0.0), (8e10, -3e15), (float("nan"), 3e15), (8e10, float("nan")),
+                                   (float("inf"), 3e15)])
+def test_invalid_entry_is_stranded(Qe, Be):
+    pnl, fil, st, bad = _entry_case(Qe, Be)
+    assert bad[0] and st[0]
+    assert pnl[0] == -250e6 - 505_000 - B.F.RENT_STRANDED
+
+
+def test_qp_probe_entry_below_net_stake_not_a_win():
+    S = 0.25e9
+    pnl, fil, st, bad = _entry_case(-0.9 * S, 3e15, stake=S, send=55_000, rent=0.0)
+    assert bad[0] and st[0] and pnl[0] == pytest.approx(-S - 55_000 - B.F.RENT_STRANDED)
+    assert pnl[0] < 0
+
+
+def test_valid_entry_unchanged_and_not_flagged():
+    pnl, fil, st, bad = _entry_case(8e10, 3e15)
+    want, wf = hand_round_trip(250e6, 8e10, 3e15, 8e10 / 3e15, 8e10, 3e15, 505_000, 2_039_280, B.F.HAIRCUT_ENTRY, B.F.HAIRCUT_SELL)
+    assert pnl[0] == pytest.approx(want, abs=1e-6)
+    assert not bad[0] and fil[0]
+    assert B.round_trip(np.array([250e6]), np.array([8e10]), np.array([3e15]), np.array([8e10 / 3e15]), np.array([8e10]), np.array([3e15]),
+                        505_000, 2_039_280)[0][0] == pnl[0]
+
+
+def test_guard_on_valid_entry_keeps_rule():
+    spot = np.array([8e10 / 3e15 / 1.2])
+    pnl, fil, st, bad = B.round_trip(np.array([250e6]), np.array([8e10]), np.array([3e15]), spot, np.array([8e10]), np.array([3e15]),
+                                     505_000, 2_039_280, return_stranded=True, return_invalid=True)
+    assert pnl[0] == -505_000 and not fil[0] and not st[0] and not bad[0]
+
+
+def test_book_stats_reports_entry_invalid_count():
+    x = np.array([1e6, -2e6, 3e6])
+    T0 = np.array([1_700_000_000, 1_700_086_400, 1_700_172_800])
+    o = B.book_stats(x, T0, np.array([1, 2, 3]), w0=1_700_000_000, entry_invalid=np.array([False, True, True]))
+    assert o["entry_invalid"] == 2
+    assert "entry_invalid" not in B.book_stats(x, T0, np.array([1, 2, 3]), w0=1_700_000_000)
