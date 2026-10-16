@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T18:15:00Z",
+ "updated_utc": "2026-10-16T19:10:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "push-evening-1016",
+   "kind": "result",
+   "title": "Push 2026-10-16 evening: no exit or tail filter makes H5 certifiable fast; Haiku September walk FAIL; fee-arm probe cannot buy until reinstall (manager's reading)",
+   "detail": "h5-tail: TEST AUC 0.584 for the worst trades; filter q 30% moves n for CI90 lo > 0 from 244.7 to 172.9 trades (1.42x), days 4.59 to 4.64. h5-exit-sd: best V4 (sell half at +30%) days-to-gate 12.09 against 13.68 (1.13x), mean +7.47% against +10.47%; the day-level t binds (sigma_d 20.35 pp). Haiku trader v1 September walk (9 days, 2 blocks): median replicate total without top 3 +0.2539 / +0.2018 SOL (flat / pressure) is below R1 +0.2726 / +0.2172; FAIL, no Stage 2. Fee-arm probe live at db4af222 since about 18:20Z with 0 buys possible (intents carry no migration_slot, 1,388 of 1,388 rows); fix PR #669 merged as d29ae53; reinstall needs the owner's OK. Breach disclosure (low severity, QP ruling): a diagnostic scan read row types and mint counts from walk-2 hours 2026-10-16T01 and T02; no read is compromised; those hours can never be counted. Exploration evidence only; no book has cleared the promotion gate.",
+   "atUtc": "2026-10-16T19:10:00Z"
+  },
   {
    "id": "push-round45-1016",
    "kind": "result",
@@ -806,6 +813,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261016-feearm-reinstall",
+   "from": "claude",
+   "atUtc": "2026-10-16T19:10:00Z",
+   "text": "Needs your OK (question q_RA-Txtw4ncevOA): reinstall the fee-arm probe with the fix from PR #669 (d29ae53). The probe has been live at db4af222 since about 18:20Z but cannot buy, because its intents carry no migration_slot (read-only jobs #1072 and #1073: 1,388 of 1,388 rows). The fix turns the entry-k guard off for the feearm profile. Paper evidence only; nothing here says any book made money; no book has cleared the promotion gate."
+  },
+  {
    "id": "fy-20261016-owner-decisions",
    "from": "claude",
    "atUtc": "2026-10-16T07:18:21Z",
@@ -1143,6 +1156,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-push-evening",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T19:10:00Z",
+   "text": "Evening records: H5 tail filter (17 as-of features, TEST AUC 0.584) cuts n for CI90 lo > 0 by 1.42x (244.7 to 172.9 trades) and leaves days about the same (4.59 to 4.64); no H5 exit structure beats 1.13x on days-to-gate (V4 12.09 against 13.68 days, mean +7.47% against +10.47%); the day-level t binds. The Haiku trader's September walk FAILED (median replicate +0.2539 / +0.2018 SOL ex-top-3, below R1 +0.2726 / +0.2172); no Stage 2. The fee-arm probe is live at db4af222 but cannot buy (intents carry no migration_slot, 1,388 of 1,388 rows); PR #669 merged as d29ae53; a reinstall needs your OK. A low-severity breach (a diagnostic scan read row types and mint counts from two walk-2 hours) is disclosed in the ledger and EXP-025; no read is compromised. Record: ARTIFACTS/lab/push-2026-10-16-evening.md. Nothing here says any book made money; no book has cleared the promotion gate."
+  },
   {
    "id": "s-20261016-push-round45",
    "from": "claude",
