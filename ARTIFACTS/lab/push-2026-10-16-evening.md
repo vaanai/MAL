@@ -45,11 +45,11 @@ Source: `/data/mal/hunt-1008/push-1016/hunt5/launchpad-landscape/REPORT.md` (rea
 
 Quant-proof's analysis, copied from the MiScusi notebook text. It is a synthetic simulation, not a measurement on any tape.
 
-EXP-026's stop E = first hour with ≥100 trades on ≥5 dates (336 h is only the cap, EXP-026:106), so it reads at ~n 100; P(pass), normal / skewed per-trade returns: .03 / .015 at +4%, .05–.06 / .03 at +8%, .07–.10 / .06 at +11%, .14–.18 / .11–.14 at +16% (upper bounds, SD 100 pp; +11% and +16% are winner's-curse figures; E1 and the oracle seal are not modelled); fixed 28 d .05–.09/.13–.24/.21–.42/.42–.74; stop at ≥250 trades on ≥7 dates (cap 35 d) .05–.06/.13–.15/.21–.25/.40–.49; days matter more than trades (day-level t binds); plan on +2 to +5%; a re-file needs a new file and hours, a new slot (DEC-029 amendment with the owner's line, or a fifth-slot DEC) and a new seal exception; QP: propose only if G0 shows unsealed pools and E1 is redefined in the same filing.
+EXP-026's stop E = first hour with ≥100 trades on ≥5 dates (336 h is only the cap, EXP-026:106), so it reads at ~n 100; P(pass), normal / skewed per-trade returns: .03 / .015 at +4%, .05–.06 / .03 at +8%, .07–.10 / .06 at +11%, .14–.18 / .11–.14 at +16% (upper bounds, SD 100 pp; +11% and +16% are winner's-curse figures; E1 and the oracle seal are not modelled); fixed 28 d .05–.09/.13–.24/.21–.42/.42–.74 (normal leg only); stop at ≥250 trades on ≥7 dates (cap 35 d) .05–.06/.13–.15/.21–.25/.40–.49 (normal leg only); days matter more than trades (day-level t binds); plan on +2 to +5%; a re-file needs a new file and hours, a new slot (DEC-029 amendment with the owner's line, or a fifth-slot DEC) and a new seal exception; QP: propose only if G0 shows unsealed pools and E1 is redefined in the same filing.
 
 ## (f) Fee-arm probe: live, but no buy is possible
 
-- The probe has been live at db4af222 since about 18:20Z. It can make 0 buys, because the intents carry no `migration_slot` (read-only jobs #1072 and #1073: 1,388 of 1,388 rows).
+- The probe has been live at db4af222 since about 18:20Z. It can make 0 buys, because the intents carry no `migration_slot` (read-only jobs #1072 and #1073: 1,388 of 1,388 (manager's read-only count; not QP-verified) rows).
 - The fix, PR #669, is merged as d29ae53 (Reviewer OK 6222376763, QP OK 6222380881). The entry-k guard is off for the feearm profile.
 - A reinstall request to the owner is open (question q_RA-Txtw4ncevOA). Nothing is reinstalled until the owner answers.
 - QP's wording nit: "about 12 slots" is measured from the intent write, not from the migration.
