@@ -258,8 +258,11 @@ def test_forward_order_total_and_null_txi_groups():
     evi = np.array([1, 1, 0, 2, 0])
     frn = np.array([40, 30, 20, 10, 50])
     perm = rf.forward_order(slot, txi, evi, frn)
-    # null tx first within the slot, ordered by evi then frn: (evi1,frn30)=idx1,(evi1,frn40)=idx0,(evi2)=idx3, then tx 3
-    assert list(perm) == [4, 1, 0, 3, 2]
+    # slot 4 first; slot 5: non-null tx 3 (idx2) BEFORE the nulls; nulls by evi then frn: (evi1,frn30)=1,(evi1,frn40)=0,(evi2)=3
+    assert list(perm) == [4, 2, 1, 0, 3]
+    assert rf.mixed_null_txi_slots(slot, txi) == 1              # slot 5 mixes null and non-null
+    assert rf.mixed_null_txi_slots(slot, np.array([1, 2, 3, 4, 5.0])) == 0
+    assert rf.mixed_null_txi_slots(np.array([1, 1, 2]), np.array([np.nan, np.nan, 3.0])) == 0
     assert rf.null_txi_tie_groups(slot, txi, evi) == 1          # idx 0 and 1 share (slot 5, evi 1)
     assert rf.null_txi_tie_groups(slot, np.array([1, 2, 3, 4, 5.0]), evi) == 0
     with pytest.raises(ValueError):
@@ -330,3 +333,30 @@ def test_e_a_fixture_reproduction():
     assert info["fixture_rows"] == 617
     assert ok, info
     assert info["X_dtype"] == "float32"
+
+
+def test_forward_order_on_synthetic_mint(prep):
+    """Shuffle a mint's prints (with null / non-null tx_index mixed, slot ties) and restore order via forward_order; features are then
+    identical to the in-order run."""
+    pr = make_prints(n=400, gap=100)
+    n = len(pr["slot"])
+    rng = np.random.default_rng(11)
+    txi = np.where(rng.random(n) < 0.5, np.nan, rng.integers(0, 50, n).astype(float))
+    pr["slot"] = pr["slot"].copy()
+    pr["slot"][1::2] = pr["slot"][0::2][: n // 2]            # tie slot pairs (equal bt too, then bt monotone)
+    pr["bt"] = pr["bt"].copy()
+    pr["bt"][1::2] = pr["bt"][0::2][: n // 2]
+    evi = rng.integers(0, 3, n)
+    frn = np.arange(n)
+    perm = rf.forward_order(pr["slot"], txi, evi, frn)
+    sh = rng.permutation(n)
+    pr_sh = {k: v[sh] for k, v in pr.items()}
+    perm2 = rf.forward_order(pr_sh["slot"], txi[sh], evi[sh], frn[sh])
+    back = {k: v[perm2] for k, v in pr_sh.items()}
+    ref = {k: v[perm] for k, v in pr.items()}
+    for k in ref:
+        assert np.array_equal(ref[k], back[k])
+    res = run(prep, ref, seg_end=None)
+    res2 = run(prep, back, seg_end=None)
+    assert res is not None and res.X.tobytes() == res2.X.tobytes()
+    assert rf.mixed_null_txi_slots(pr["slot"], txi) > 0

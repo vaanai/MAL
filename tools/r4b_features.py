@@ -25,7 +25,7 @@ collide after the 53-bit rounding matched. The frozen models were trained on tho
 cast at the feature boundary (cre_known, cre_sell_post, cre_buy_post) for any ch dtype. FLAG FOR QP: this is a training-fidelity choice,
 not an exactness one; the other uint64 uses (unique traders, bond sums) are exact in training and stay exact here.
 
-Print order in forward mode: (slot, tx_index, event_index, file_row_number) with null tx_index coalesced to -1 (see forward_order,
+Print order in forward mode: (slot, tx_index NULLS LAST, event_index, file_row_number) (see forward_order,
 null_txi_tie_groups).
 
 No tape or network access in this module.
@@ -194,11 +194,12 @@ def bond_constants(bond_isbuy, bond_sol, bond_th, creator_hash, has_creator):
 
 
 def forward_order(slot, tx_index, event_index, frn):
-    """Total print order for forward mode: (slot, tx_index, event_index, file_row_number); null tx_index (None/NaN/negative) -> -1 so it
-    sorts first within the slot and never creates a tie (frn breaks it). Returns the permutation. frn must be non-null and, within equal
+    """Total print order for forward mode: (slot, tx_index, event_index, file_row_number); null tx_index (None/NaN/negative) sorts LAST within
+    the slot (DuckDB NULLS LAST default, per reviewer) and never creates a tie (frn breaks it). Returns the permutation. frn must be non-null and, within equal
     (slot, tx, evi), unique, otherwise ValueError (no silent ties)."""
     slot = np.asarray(slot, np.int64)
     txi = _coalesce_i(tx_index)
+    txi = np.where(txi < 0, np.iinfo(np.int64).max, txi)   # nulls last
     evi = _coalesce_i(event_index)
     if frn is None or np.isnan(np.asarray(frn, float)).any():
         raise ValueError("file_row_number is required for the forward print order")
@@ -208,6 +209,17 @@ def forward_order(slot, tx_index, event_index, frn):
     if len(perm) > 1 and (k[:, 1:] == k[:, :-1]).all(axis=0).any():
         raise ValueError("duplicate (slot, tx_index, event_index, file_row_number): order is not total")
     return perm
+
+
+def mixed_null_txi_slots(slot, tx_index) -> int:
+    """Precount helper: number of slots that mix null and non-null tx_index (where the null placement matters; QP may refuse on > 0).
+    Exploration check 2026-10-16: 0 such slots (per mint) in all 36 l3 ut/ days."""
+    slot = np.asarray(slot, np.int64)
+    a = np.asarray(tx_index, float)
+    null = np.isnan(a) | (a < 0)
+    n_null = np.unique(slot[null])
+    n_good = np.unique(slot[~null])
+    return int(len(np.intersect1d(n_null, n_good)))
 
 
 def _coalesce_i(x):
