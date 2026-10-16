@@ -581,36 +581,31 @@ The forward order key is total (section 3.2). The read reports, per date and rep
 
 ## 13. TO FILL
 
-**Before merge** (revision 3 filled everything except these):
-1. **`TODO-OWNER`: `EXP027_E1_MODE`**, A or B, by the owner's answer to `q_Z3dGvhO1wJ87wg` (decide by 2026-10-18T00Z), with the one-line `E1_MODE` flip PR and, for B, the DEC-021 amendment (section 5.1.1).
+**Before merge** (revisions 3 and 4 filled everything except these):
+1. **`TODO-OWNER`: `EXP027_E1_MODE`**, A or B, by the owner's answer to `q_Z3dGvhO1wJ87wg` (decide by 2026-10-18T00Z), with the one-line `E1_MODE` flip PR and, for B, the DEC-021 amendment and the 1,920,110 provenance of section 5.1.1.
 2. **`TODO-OWNER`: the DEC-030 owner line and route** (`q__jVaqpxB937kEg`); `EXP027_ROUTE` set accordingly (section 0.2). DEC-030 merges with the line before this file.
-3. **`TODO-after-E1-flip`: `EXP027_SHA256_R4B_READ`**, the sha256 of `tools/r4b_read.py` at the head that carries the E1 flip, with QP's delta pass (section 2.2).
+3. **`TODO-after-E1-flip`: `EXP027_SHA256_R4B_READ`**, the sha256 of `tools/r4b_read.py` at the head that carries the E1 flip **and the tamper checks of section 0.5 and the exact tries key**, with QP's delta pass (section 2.2).
 4. The sell builder confirmation (section 5.2 (i)): `tools/probe_live.py` is pinned; the manager confirms or replaces it.
-5. The catalog route: sub-entry support or a pinned allowlist (section 8.2). **TO FILL before merge:** which.
-6. The ledger edit of Appendix A (in this PR, after DEC-030 merges).
-7. rb2 prediction-key sha256s and the rb2 trades sha256 (section 2.2 "rb2 reproduction keys" is a QP §2 item; the E-c md5 `54052f79…` is pinned and these files are not on `origin/main`): record them here if they are to be cited, else state they are not.
-8. Job #1036's extension (due about 2026-10-22T19:21Z) and a walker credit cap that covers to 2026-11-16T01 (PLAN §8 item 10), recorded in the Window record.
-9. The merge instant in `[2026-10-18T02:00:00Z, 2026-10-26T23:59:59Z]`.
+5. The ledger edit of Appendix A (in this PR, after DEC-030 merges).
+6. The merge instant in `[2026-10-18T02:00:00Z, 2026-10-26T23:59:59Z]`, and at the merge the manager records `EXP027_REG_COMMIT` and `EXP027_PREFIX_SHA256` in the ledger sub-entry and a MiScusi notebook entry (section 0.5).
 
-**Done in revision 3:** layout, count, features, frozen, score and book sha256s (section 2.2); E-a..E-d md5s and the E-d record (2.3, 2.3.1); `EXP027_TIERS_SHA256`; `EXP027_WALK_DIR`; `EXP027_SELL_BUILDER`; per-program rent; Token-2022 allowlist and census provenance; H0 / `EARLIEST_W0` / allowlist `[H0, E + 3 h)`; `NO_CREATE_MAX_SHARE`; as-of mint filters; k-tie, C8 / K_TOL, mint 16894 and window-figure disclosures; `book_stats` per-attempt-mean `t_block` (#677, sha256 in 2.2).
+**Not a merge condition (moved out of "before merge", QP-PRE ruling 4):** the walk-2 coverage of section 4.4. Job #1036 was extended on 2026-10-16 ~22:59Z to the 14-day MiScusi maximum (ends ~2026-10-29T19:20Z); credits 217,548 of 11,825,000 used through 2026-10-16T21 (the cap covers to 2026-11-16). A successor walk-2 job resuming from the checkpoint must be running **before ~2026-10-29T19:20Z** to cover `[W0, E + 3 h)`; its job id and ref are recorded in the Window record. If a missing hour results, the read is NOT_DECIDABLE under section 7.1.5 or 8.1.
 
-**Window record (dated, manager, from the merge record and job records only; each as a `KEY: value` line, once):** `EXP027_W0`, `EXP027_K`, `EXP027_DECODER_REF`, `EXP027_INPUT_VIEWS`, `EXP027_TRIES_ENTRY`, `EXP027_MINT_ACCOUNTS` (the post-E `members` run: job id, sha256, RPC credits), `EXP027_FEE_ARM` (`NONE` or `path@sha256`), `EXP027_A3_RECORD` (`path@sha256`, covering `[W0, E]`), and `EXP027_E1_RECORD` only if the tool is in mode `record`; plus the merge instant, E, the cap, and the 160k power rerun if that leg is to be quoted (section 9). The pre-W0 report-only `members` run and its credits are also noted there.
+**Done in revisions 3 and 4:** layout, count, features, frozen, score and book sha256s (section 2.2); E-a..E-d md5s and the E-d record, with the sha256s of the E-d script and wrapper, the tie-mint definition and list sha256, the whole-day md5s and the tie disclosure (2.3, 2.3.1); `EXP027_TIERS_SHA256`; `EXP027_WALK_DIR`; `EXP027_SELL_BUILDER` with the corrected provenance, the live-trial condition and the `pumpswap_tx.py` sha256; `EXP027_DECODER_REF` and `EXP027_TRIES_ENTRY` (the r4-b family line in `data/tries.jsonl`); the rb2 sha256s (2.2); the catalog route (8.2); per-program rent; Token-2022 allowlist and census provenance; H0 / `EARLIEST_W0` / allowlist `[H0, E + 3 h)`; `NO_CREATE_MAX_SHARE`; as-of mint filters and their impact figures; k-tie, C8 / K_TOL, the mint 16894 trip list and the Part C counts; the Mayhem and refusal-binding sentences; k pinned at the first read, not at registration (0.4); the Window-record mechanism (0.5); `book_stats` per-attempt-mean `t_block` (#677, sha256 in 2.2).
 
-**Settled by QP (no longer open):** LP tolerance "none" (section 3.5); slot_s rule (3.3); null ordering and refusals (3.2, 8.1); D3 drop rule (3.4); history NaN (3.4); `f_c_v` (3.6); count-job ranks (4.2, by the calendar stop); E1 ×5 (5.1); lag floor 0 (5.3); strand-class source (5.2); block means (6.2); owner sentence (9).
+**Window record** (the last section of this file; dated, manager, from the merge record and job records only; each line `KEY: value (appended <UTC minute>)`, once, one commit per line; section 0.5): `EXP027_MERGE_INSTANT`, `EXP027_W0`, `EXP027_K` (at the first push-family read, before its lock), `EXP027_INPUT_VIEWS`, `EXP027_MINT_ACCOUNTS` (the post-E `members` run: job id, sha256, RPC credits), `EXP027_FEE_ARM` (`NONE` or `path@sha256`), `EXP027_A3_RECORD` (`path@sha256`, covering `[W0, E]`), and `EXP027_E1_RECORD` only if the tool is in mode `record`; plus the successor walk-2 job (section 4.4), and the 160k power rerun if that leg is to be quoted (section 9). The pre-W0 report-only `members` run and its credits are also noted there.
+
+**Settled by QP (no longer open):** LP tolerance "none" (section 3.5); slot_s rule (3.3); null ordering and refusals (3.2, 8.1); D3 drop rule (3.4); history NaN (3.4); `f_c_v` (3.6); count-job ranks (4.2, by the calendar stop); E1 ×5 (5.1); lag floor 0 (5.3); strand-class source (5.2); block means (6.2); owner sentence (9); catalog route (8.2); sell builder (5.2); window-record mechanism (0.5).
 
 ## Appendix A. Proposed ledger edit (Forward walk 2 Status cell; DEC-030 §2a)
 
 DEC-030 is unmerged, so `docs/HOLDOUT_LEDGER.md` is **not edited in this draft**. Once DEC-030 merges with the owner's line, this text is added to the Forward walk 2 row's Status cell **in this PR**, with the bracketed values filled from the merge record, and this PR does not merge without it.
 
-> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`, not before 2026-10-18T03; never moved); calendar stop E = W0 + 480 h = `<E>` (`EXP027_STOP_RULE`); the read requires at least 20 blocks holding an attempt and at least 125 attempts, else NOT_DECIDABLE with no extension; window cap = E; exit horizon 1 h (the window with its exit horizon ends by `<E + 1 h>`, at or before 2026-11-16T01); k at registration `<k>`; route `<R1 | R2>`. Feature-buffer hours `[2026-10-16T03, W0)` (H0 = 2026-10-16T03) are read for features only and never counted; 2026-10-16T01 and T02 are not opened (2026-10-16 breach disclosure stands). Reads `/data/mal/blocks/forward-1016` only, hours `[2026-10-16T03, E + 3 h)`; universe pools created at or after 2026-10-16T03. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). N and A found at the read: *(added by the read)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k): *(added when it happens)*.
+> **EXP-027 (r4-b, push-family book 1, DEC-030 slot 5), <merge date> ([EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md); counted-window sub-entry under Rules item 5, not an owner):** W0 `<W0>` (the first full UTC hour after the merge at `<merge instant, date -u>`, not before 2026-10-18T03; never moved); calendar stop E = W0 + 480 h = `<E>` (`EXP027_STOP_RULE`); the read requires at least 20 blocks holding an attempt and at least 125 attempts, else NOT_DECIDABLE with no extension; window cap = E; exit horizon 1 h (the window with its exit horizon ends by `<E + 1 h>`, at or before 2026-11-16T01); k at registration `<k>` (ledger information only, not a pinned line; `EXP027_K` is appended once at the first push-family read instant, before that read's lock); route `<R1 | R2>`; `EXP027_REG_COMMIT <sha>` and `EXP027_PREFIX_SHA256 <sha256>` (section 0.5). Feature-buffer hours `[2026-10-16T03, W0)` (H0 = 2026-10-16T03) are read for features only and never counted; 2026-10-16T01 and T02 are not opened (2026-10-16 breach disclosure stands). Reads `/data/mal/blocks/forward-1016` only, hours `[2026-10-16T03, E + 3 h)`; universe pools created at or after 2026-10-16T03. Adds 1 to m (**m >= 16**; 18 on DEC-030 §2's count of 17). N and A found at the read: *(added by the read)*. Section 5.3 fee-arm record: *(added before the read lock, or "none: 505k")*. First push-family read instant (freezes k; `EXP027_K` appended from the ledger's count at that instant): *(added when it happens)*.
 
 Changelog line to add with it:
 
-> - <date> (W = <date -u>; [EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md), DEC-030 slot 5; no row's data was opened): **EXP-027 (r4-b) registered as push-family book 1 on Forward walk 2**, counted-window sub-entry in the Status cell (Rules item 5). W0 `<W0>`, E = cap `<W0 + 480 h>`, exit horizon 1 h, k `<k>`. m +1 (m >= 16). The Owner cell stays reserved.
-
-## Window record
-
-*(empty until merge; the manager appends dated lines from the merge record, the count file and the job records only)*
+> - <date> (W = <date -u>; [EXP-027](../EXP/EXP-027-r4b-walk2-prereg.md), DEC-030 slot 5; no row's data was opened): **EXP-027 (r4-b) registered as push-family book 1 on Forward walk 2**, counted-window sub-entry in the Status cell (Rules item 5). W0 `<W0>`, E = cap `<W0 + 480 h>`, exit horizon 1 h, k at registration `<k>` (information only). `EXP027_REG_COMMIT <sha>`, `EXP027_PREFIX_SHA256 <sha256>`. m +1 (m >= 16). The Owner cell stays reserved.
 
 ## Sources
 
@@ -619,3 +614,7 @@ Changelog line to add with it:
 - PR #672 and PR #673 bodies; `tools/r4b_book.py` and `tools/r4b_frozen.py` at #673's head.
 - EXP-022 (§0, §10, §11 structure), EXP-025 (§4 seal, breach amendment), EXP-026 (§0 structure), DEC-014 (line 70), DEC-019 Amendment 2 (Tests A and B), DEC-021 Amendment 1 §4–§5.
 - No sealed data, walk-2 hour, forward-paper P&L, or canary, shadow or probe outcome record was opened to write this file.
+
+## Window record
+
+*(Empty until registration. The last section of this file; nothing follows it. The manager appends one line per commit, in the form `EXP027_KEY: value (appended YYYY-MM-DDTHH:MMZ)`, dated with `date -u`, from the merge record, the count file and the job records only. Mechanism and read-tool checks: section 0.5.)*
