@@ -16,7 +16,7 @@ Then read, as needed:
 Source: job log lines only. No row, report or forward data file was opened. Numbers and the Log: DEC-016 Log of 2026-10-16.
 
 - **FINAL (A) written** at 2026-10-16T04:18:09Z by job #1038: `VERDICT: FAIL (forward simulated paper, not money made); n_entered=859`. Reported COMPROMISED (Am.2); no live support (Am.6 (g) D). EXP-012 was retired by the 10-08 audit. Not money made; no book has cleared the promotion gate.
-- **Markers.** Marker 4 `/data/mal/exp012-forward/FINAL_WRITTEN` at 04:18:53Z (job #1039); marker 3 at 04:18:58Z (job #1040: h5, c1nf, cap-pick-oracle files). Post-final checks #1047 rc=0 (fresh true, decided_mints 10374).
+- **Markers.** Marker 4 `/data/mal/exp012-forward/FINAL_WRITTEN` at 04:18:53Z (job #1039); markers 1 (h5), 2 (cap-pick-oracle) and 3 (c1nf) at 04:18:58Z (job #1040; marker 3 because `c1nf_held_by: no_live_ok`, QP C7). Post-final checks #1047 rc=0 (fresh true, decided_mints 10374).
 - **F1 in effect.** D0/D1 on forward-1002 and forward-1002ev are released, but no D0/D1 read runs until the two catalog roles and refusal tests merge with quant-proof OK. Owed next.
 - **Walk 2** job #1036 is running (git_ref 578a63e, start 2026-10-16T01); the DEC-016 Log has the gitRef, pins exit 0 and the three blobs. **#382 cancelled** about 04:29:50Z (324 hours, credits_used 4,847,780). **#433 done** (169 hours, credits_used 2,754,540 of 3.6M). Exporter #1034 running (replace after the H5 end_ms, QP C1/Q11).
 - **Checks of the night:** executor seal check #1042 (stop_file=True, live_ok=valid, no halts); H5 day check D=2026-10-15 #1044 no_halt; C1-NF ledger day 2026-10-15 #1043 built; tape archive #1045 mismatched=0.
