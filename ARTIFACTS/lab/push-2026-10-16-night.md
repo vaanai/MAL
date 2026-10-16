@@ -17,7 +17,7 @@ Source: PR #675, the EXP-027 file, `QP-RULING-1016.md`.
 
 - Text quant-proof verdict "TEXT READY" at 3d3406a. Still pending: the owner's E1 answer (MiScusi question q_Z3dGvhO1wJ87wg), the DEC-030 owner line (q__jVaqpxB937kEg), and the sha256 pin of `r4b_read.py`.
 - Merge window 2026-10-18T02:00Z to 2026-10-26T23:59Z.
-- QP power, synthetic: P(full pass) .2535 at the central effect for k = 1, .1660 for k = 2.
+- QP power, synthetic: P(full pass) .2535 for k = 1, .1660 for k = 2, at the 37.9% effect, N = 20, pinned stack (no rent, auto-stranded, 505k sends).
 
 ## (c) Walk 2: job #1036 extended
 
@@ -36,9 +36,9 @@ Source: `/data/mal/hunt-1008/push-1016/hunt4/drain-escape/REPORT.md` (exploratio
 - Universe: 24,007 mints, 23,903 entered, 36 UTC days, 5 blocks. Six exit-on-drain rules, each on a primary (+5 slots) and a fast (+1 slot) leg, flat-15% fail model only; pressure-fail not run.
 - Baseline (no trigger): -24.09% per attempt at 0.25 SOL, total -1,439.7 SOL, ex-top-3 -1,503.3, 0 positive days.
 - Best cell R4 fast: -5.11%, total -305.7 SOL, positive on 3 of 36 days. R4 primary: -7.91%, total -472.7, ex-top-3 -494.3, ex-best-day -476.5. All 12 rule/leg cells are negative in total, ex-top-3 and ex-best-day.
-- Per block, R4 fast: positive only in oracle-insample-0922 (+3.0%, n 2,636); the other four blocks are -4.7% to -7.1%.
-- Drain trades (hindsight label) are 9,809 (41.0%), average -93.3% held. Rules fire on 20-43% of non-drain trades (average +16.9% held); a false exit costs 19.5 to 29.9 points.
-- Ceiling with perfect foresight: +7.66% per attempt. Cost floor alone: about -2.4%.
+- Per block, R4 fast: positive only in oracle-insample-0922 (+3.0%, n 2,636); the other four blocks are -4.7% to -7.1%. This is the best of 12 cells after the fact, one block of five, flat-15 only; it is not evidence of an edge.
+- Drain trades (hindsight label) are 9,809 (41.0%), average -93.3% held. Rules fire on 7.5-42.6% of non-drain trades (R3 7.5%; the other five 20.3-42.6%); non-drain trades average +16.9% held (success-only, hindsight label; median -0.70%); a false exit costs 19.5 to 29.9 points.
+- Ceiling with perfect foresight (hindsight drain label; not a tradable rule): +7.66% per attempt. Cost floor alone: about -2.4%.
 - Not checked: pressure-fail, failed exit sells, entry latency, LP events, tuning.
 
 ### day-sigma (hunt7)
@@ -46,7 +46,7 @@ Source: `/data/mal/hunt-1008/push-1016/hunt4/drain-escape/REPORT.md` (exploratio
 Source: `/data/mal/hunt-1008/push-1016/hunt7/day-sigma/REPORT.md` (exploration tape, frozen DECLARE, 35 UTC days, 5 blocks, 157,011 universe decisions).
 
 - Six rules, flat-15 mean at 0.25 SOL (n; sigma_d; day t; days positive; total SOL; ex-top-3): R1a -7.413% (7,414; 3.048 pp; -14.32; 1/35; -137.399; -143.776), R1b -11.976% (7,374; 5.799; -11.72; 2/35; -220.779; -226.395), R1c -12.873% (5,357; 8.334; -8.63; 1/35; -172.396; -184.737), R2a -5.390% (7,410; 1.618; -19.88; 0/35; -99.844; -102.351), R2b -13.079% (7,188; 5.129; -14.71; 0/35; -235.035; -239.990), R2c -16.025% (7,333; 6.535; -13.87; 1/35; -293.780; -309.723).
-- Control (random 20% of eligible pool-hours, 29,730 trades): -5.187% at 0.25 SOL, SD 99.23, sigma_d 4.291, 1/35 days positive. R2a is +0.2 pp above it and still negative.
+- Control (random 20% of eligible pool-hours, 29,730 trades): -5.187% at 0.25 SOL, SD 99.23, sigma_d 4.291, 1/35 days positive. R2a is 0.2 pp below it (-5.390% vs -5.187%); no selector beats the control.
 - All 30 rule-block cells are negative. The best sensitivity cell for any rule is R2a at -3.904% (flat 0.5% round trip); none crosses zero.
 - Reading: low between-day dispersion appeared only on losing rules; the mean binds, not sigma_d. No second mechanism for the gate.
 - Not checked: other depth, hold or top-N (frozen), non-canonical pools, cheap-fee universe, intra-hour exits, October data, sealed blocks.
