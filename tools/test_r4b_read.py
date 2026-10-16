@@ -223,7 +223,68 @@ def test_forward_features_use_asof_filters_and_asof_grads(tmp_path, world, monke
     monkeypatch.setattr(rf, "mint_features", spy)
     res = rr.read(mk(tmp_path, world), mkdeps(world))
     assert calls and set(calls) == {("asof_pda_first_print", "asof"), ("frozen", "frozen")}  # deciding calls: both asof; the frozen calls are the report-only dual
-    assert calls.count(("asof_pda_first_print", "asof")) == calls.count(("frozen", "frozen")) == res["mints"]
+    assert calls.count(("frozen", "frozen")) == res["mints"] and calls.count(("asof_pda_first_print", "asof")) == 2 * res["mints"]  # deciding pass + the dual run's asof pass
+
+
+def test_verdict_is_printed_before_the_dual_run_starts(tmp_path, world, monkeypatch):
+    frozen_calls = []
+    orig = rf.mint_features
+
+    def spy(*a, **k):
+        if k.get("mint_filters") == "frozen":
+            frozen_calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(rf, "mint_features", spy)
+    paths = mk(tmp_path, world)
+    seen = {}
+    deps = mkdeps(world)
+    deps.stderr = lambda s_: seen.update(frozen_at_verdict=len(frozen_calls), result_file=(paths.out_dir / rr.RESULT).exists())
+    res = rr.read(paths, deps)
+    assert seen == {"frozen_at_verdict": 0, "result_file": False} and len(frozen_calls) > 0
+    assert res["report_only"]["asof_vs_frozen"]["asof_only_rows"] >= 0
+
+
+def test_unpriced_exit_pays_the_rent_like_a_strand_class_mint():
+    assert not hasattr(rr, "UNPRICED_EXIT_RENT_LAMPORTS")
+    stake = FZ.STAKE_LAMPORTS
+    full = -stake - 505_000 - FZ.RENT_STRANDED
+    for kw in (dict(Qx=np.array([np.nan, 77e9, 77e9])), dict(Qx=np.array([0.0, 77e9, 77e9])), dict(Bx=np.array([0.0, 2.5e14, 2.5e14]))):
+        u = rr.price_variant(trip(**kw), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
+        assert u["nofail"][0] == full and u["stranded"][0] and u["filled"][0]
+    sc = rr.price_variant(trip(strand_class=np.array([True, False, False])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
+    assert sc["nofail"][0] == full
+
+
+def test_count_job_refusal_record_refuses_before_the_lock(tmp_path, world):
+    cdir = tmp_path / "counts"
+    shutil.copytree(world["counts"], cdir)
+    (cdir / rc.REFUSED).write_text(rc.stable_json({"refused": True, "through": hkey(3), "reasons": ["day(s) ['2026-10-16'] have a share of candidate PDA pools with a missing V0 above 0.02"]}) + "\n")
+    refused(mk(tmp_path, world, counts=cdir), mkdeps(world), "count job recorded refusal(s)", "missing V0")
+
+
+def test_build_contradicting_counts_is_not_decidable_count_build_divergence(tmp_path, world, monkeypatch):
+    real_build = rl.build
+
+    def build(*a, **k):
+        st = real_build(*a, **k)
+        st["v0_missing_days_over"] = ["2026-10-16"]
+        return st
+
+    monkeypatch.setattr(rl, "build", build)
+    paths = mk(tmp_path, world)
+    res = rr.read(paths, mkdeps(world))
+    assert res["verdict"] == "NOT_DECIDABLE" and res["reasons"][0].startswith("count_build_divergence") and "v0-missing" in res["reasons"][0]
+    assert [e["event"] for e in rr.reads_events(paths.out_dir)] == ["started", "completed"] and (paths.out_dir / rr.RESULT).exists()
+
+
+def test_layout_refusal_in_the_build_is_also_a_divergence(tmp_path, world, monkeypatch):
+    def build(*a, **k):
+        raise rl.LayoutRefused("hour x: 3 print(s) of MEMBER pool(s) have a null virtual_quote_reserves")
+
+    monkeypatch.setattr(rl, "build", build)
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    assert res["verdict"] == "NOT_DECIDABLE" and "count_build_divergence" in res["reasons"][0] and "null virtual_quote_reserves" in res["reasons"][0]
 
 
 def test_report_only_asof_vs_frozen_null_bt_and_gap(tmp_path, world):
@@ -312,20 +373,6 @@ def test_stage_failure_writes_aborted_and_spends_the_read(tmp_path, world, monke
     with pytest.raises(rr.ReadRefused, match="no second run"):
         rr.read(paths, mkdeps(world))
     assert len(rr.reads_events(paths.out_dir)) == 2
-
-
-def test_structure_refusal_after_lock_is_aborted(tmp_path, world, monkeypatch):
-    real_build = rl.build
-
-    def build(*a, **k):
-        st = real_build(*a, **k)
-        st["v0_missing_days_over"] = ["2026-10-16"]
-        return st
-
-    monkeypatch.setattr(rl, "build", build)
-    with pytest.raises(rr.ReadRefused, match="v0-missing"):
-        rr.read(mk(tmp_path, world), mkdeps(world))
-    assert [e["event"] for e in rr.reads_events(tmp_path / "out")] == ["started", "aborted"]
 
 
 # ---- preflight refusals: REFUSED, nothing written -------------------------------------------------------------------------------------------------
@@ -680,12 +727,12 @@ def test_price_variant_strand_unpriced_and_e1_penalty():
     st = rr.price_variant(trip(strand_class=np.array([True, False, False])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
     assert st["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED and st["nofail"][1] == base["nofail"][1]
     un = rr.price_variant(trip(Qx=np.array([np.nan, 77e9, 77e9])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
-    assert un["stranded"].tolist() == [True, False, False] and un["nofail"][0] == -stake - 505_000  # (e) stake + buy send, no sell send, no rent
-    assert rr.UNPRICED_EXIT_RENT_LAMPORTS == 0 and un["filled"].all()  # the trade is never skipped
+    assert un["stranded"].tolist() == [True, False, False] and un["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED  # (e) stake + buy send + rent, no sell send
+    assert un["filled"].all()  # the trade is never skipped
     for kw in (dict(Qx=np.array([0.0, 77e9, 77e9])), dict(Bx=np.array([0.0, 2.5e14, 2.5e14])), dict(Bx=np.array([-5.0, 2.5e14, 2.5e14])), dict(Qx=np.array([-1.0, 77e9, 77e9]))):
         u2 = rr.price_variant(trip(**kw), 1.3, send=505_000, rent=0, auto=True, e1_penalty=5e6)
-        assert u2["stranded"].tolist() == [True, False, False] and u2["nofail"][0] == -stake - 505_000 and len(u2["nofail"]) == 3
-    assert (un["flat"][0] == 0.85 * (-stake - 505_000) - 0.15 * 505_000)  # the fail legs still apply to the unpriced trade
+        assert u2["stranded"].tolist() == [True, False, False] and u2["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED and len(u2["nofail"]) == 3
+    assert (un["flat"][0] == 0.85 * (-stake - 505_000 - FZ.RENT_STRANDED) - 0.15 * 505_000)  # the fail legs still apply to the unpriced trade
     below = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=1.0)  # penalty below the haircut: unchanged
     assert np.allclose(below["nofail"], base["nofail"])
     h0, _ = bk.round_trip(np.full(3, float(stake)), *trip()["ent"][1.3][:2], trip()["spot"], trip()["Qx"], trip()["Bx"], 505_000, 0, h_in=0.0, h_out=0.0)

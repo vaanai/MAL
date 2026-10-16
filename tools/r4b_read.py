@@ -19,7 +19,7 @@ Order of events (the order is part of the contract; tests pin it)
 
 Universe exits (f): the book is hourly; UNIVERSE_EXITS_AT_MARKS_ONLY = True. A token that leaves the universe between marks (dead, 48 h passed) is not ranked at the next mark and is
 sold there by xs_book's rank rule (or its gap rule), as in harness.book_xs. Unpriced exit (e): a held token whose exit reserve state is <= 0 or missing is a total loss of the stake plus
-the buy send (no sell send, UNPRICED_EXIT_RENT_LAMPORTS = 0), marked stranded, and stays in the book. Forward features (a): mint_features(grads_rule="asof_pda_first_print",
+the buy send plus RENT_STRANDED (2,039,280; no sell send), exactly as a strand-class mint (QP ruling iii), marked stranded, and stays in the book. Forward features (a): mint_features(grads_rule="asof_pda_first_print",
 mint_filters="asof"); the training defaults are frozen. Allowlist (g): [H0 = 2026-10-16T03, E + 1h) for decisions plus the 2 extra trade hours (E + 3h exclusive, as r4b_count's trade_end).
 
 Deciding stack (EXP section 5): 505,000-lamport sends (160,000 and the buy-lag shift only if the pinned fee-arm record says Test A and Test B both PASS), rent 0 per filled trip,
@@ -80,7 +80,6 @@ EXTRA_TRADE_HOURS = 2  # hours after E's exit hour that are sealed and read (all
 EXIT_HORIZON_H = 1
 H0 = "2026-10-16T03"  # the count job's creates start (tools/r4b_count.H0); 10-16T01/T02 are never opened by the read
 UNIVERSE_EXITS_AT_MARKS_ONLY = True  # (f) the book is hourly: a token that leaves the universe between marks is sold at the NEXT mark by the rank / gap rule (xs_book), never in between
-UNPRICED_EXIT_RENT_LAMPORTS = 0  # (e) named for QP: an exit whose reserve state is <= 0 (or missing) costs the stake + the buy send; no sell send, no rent; marked stranded; never skipped
 EARLIEST_W0 = "2026-10-18T01"
 BLOCK_S = 86400
 MARK_S = 3600
@@ -105,6 +104,14 @@ REQUIRED_KEYS = (
     "EXP027_FEE_ARM", "EXP027_E_A_MD5", "EXP027_E_B_MD5", "EXP027_E_C_MD5", "EXP027_E_D_MD5",
 ) + tuple(f"EXP027_SHA256_{m.upper()}" for m in CODE_MODULES)
 HEX64, HEX32 = re.compile(r"^[0-9a-f]{64}$"), re.compile(r"^[0-9a-f]{32}$")
+
+
+class CountBuildDivergence(Exception):
+    """The read's own build contradicts counts.jsonl (a structure check the count job passed fails on the same hours): NOT_DECIDABLE, a real anomaly."""
+
+    def __init__(self, reasons: Sequence[str]):
+        self.reasons = list(reasons)
+        super().__init__("count_build_divergence: " + "; ".join(self.reasons))
 
 
 class ReadRefused(Exception):
@@ -501,6 +508,10 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
             probs.append("count config.json pins differ from the EXP's: " + "; ".join(bad_pin))
         count_cfg = rc.Config(Path(paths.walk_dir), cdir, ef.hour_key(w0), n_blocks=int(pin.get("n_blocks", rc.N_BLOCKS)), a_attempts=int(pin.get("a_attempts", rc.A_ATTEMPTS)), h0=H0)
         counts = rc.read_counts(cdir)
+        rpath = cdir / rc.REFUSED
+        if rpath.exists() and rpath.read_text(encoding="utf-8").strip():
+            first = json.loads(rpath.read_text(encoding="utf-8").splitlines()[0])
+            probs.append(f"the count job recorded refusal(s) in {rpath} (first: {'; '.join(first.get('reasons', []))[:300]}); structure checks (v0-missing, null-V member, mixed null tx_index, no-create) did not all pass")
         by_hour = {ln["hour"]: ln for ln in counts}
         need = rl.hour_range(H0, ef.hour_key(e + timedelta(hours=1)))  # [H0, E] inclusive
         miss = [h for h in need if h not in by_hour]
@@ -646,7 +657,7 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
     last_entry = e - MARK_S
     R = Rows()
     R.ent = {lat: [] for lat in (*LATS, LAT_REPORT_LONG)}
-    rep = {"asof_only": [], "frozen_only": [], "d3_keys": set(), "d3_dropped": 0, "d3_kept_pre_filter": 0, "mints": int(len(meta)), "mints_with_rows": 0, "lp": {"pairs": 0, **{f"gt_{t:g}": 0 for t in LP_TOLS}}}
+    rep = {"d3_keys": set(), "d3_dropped": 0, "d3_kept_pre_filter": 0, "mints": int(len(meta)), "mints_with_rows": 0, "lp": {"pairs": 0, **{f"gt_{t:g}": 0 for t in LP_TOLS}}}
     members = set(meta["mid"].tolist())
     dates_s = lambda T: np.array([slot_s[d] for d in bk.utc_dates(T)])  # noqa: E731
     delta = float(fee["delta_slots"])
@@ -670,14 +681,6 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
             lpd = lp_discontinuities(U["isbuy"][a:b], U["tok"][a:b], U["b"][a:b], np.full(b - a, mid))
             for kk in rep["lp"]:
                 rep["lp"][kk] += lpd[kk]
-            # (d) report-only: the same mint under the frozen (training) filters, only to list rows that exist under one rule and not the other
-            resf = rf.mint_features(prep, const, None if pd.isna(r.ch) else r.ch, sl, U["bt"][a:b], U["isbuy"][a:b], U["sol"][a:b], U["tok"][a:b], U["q"][a:b],
-                                    U["b"][a:b], U["th"][a:b], vq=U["vq"][a:b], seg_end=None, grads_rule="frozen", mint_filters="frozen")
-            inwin = lambda T_: set(T_[(T_ % MARK_S == 0) & (T_ >= w0) & (T_ <= last_entry)].tolist())  # noqa: E731
-            Ta_ = inwin(res.I[:, 1]) if res is not None else set()
-            Tf_ = inwin(resf.I[:, 1]) if resf is not None else set()
-            rep["asof_only"] += [(mid, t_) for t_ in sorted(Ta_ - Tf_)]
-            rep["frozen_only"] += [(mid, t_) for t_ in sorted(Tf_ - Ta_)]
             if res is None:
                 continue
             T = res.I[:, 1]
@@ -747,7 +750,7 @@ def price_variant(tr: Mapping[str, np.ndarray], lat: float, *, send: int, rent: 
     stk = np.full(len(Qe), float(stake))
     pnl, filled, st = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, stranded=stranded, auto_stranded=auto, return_stranded=True)
     un = unpriced & filled  # a guarded (unfilled) buy has nothing to sell
-    pnl = np.where(un, -(stk + send) - UNPRICED_EXIT_RENT_LAMPORTS, pnl)  # total loss of the stake plus the buy send; no sell send; the trade stays in the book
+    pnl = np.where(un, -(stk + send) - FZ.RENT_STRANDED, pnl)  # stake + buy send + rent, no sell send (QP ruling iii, same as a strand-class mint); the trade stays in the book
     st = st | un
     if e1_penalty > 0:
         pnl0, _ = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto)
@@ -801,7 +804,74 @@ def decide(cells: Mapping[str, Mapping[str, Any]], N: int, A: int, keys_ok: bool
     return {"verdict": "PASS" if g["pass"] else "FAIL", "reasons": [], "gate": g}
 
 
-def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> dict[str, Any]:
+def diverged_result(plan: Plan, fee: Mapping[str, Any], reasons: Sequence[str]) -> dict[str, Any]:
+    return {"schema": SCHEMA, "verdict": "NOT_DECIDABLE", "reasons": ["count_build_divergence: " + r for r in reasons], "gate": {"pass": False, "decision_p": 1.0}, "N_blocks_with_attempts": 0,
+            "A_attempts": 0, "decision_p": 1.0, "alpha": ALPHA_FAMILY / plan.k, "k": plan.k, "w0": ef.hour_key(plan.w0), "e": ef.hour_key(plan.e), "cells": {}, "fee_arm": dict(fee),
+            "report_only": {}, "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes"}
+
+
+def dual_rows(scratch: Path, plan: Plan, deps: Deps, universe_min_mbt: int) -> tuple[list, list]:
+    """(d) report-only, run AFTER the verdict is computed and printed: rows that exist only under the asof filters and only under the frozen (training) filters,
+    hour marks in [W0, E - 1h]. Cannot alter the verdict (nothing it returns is read by the decision)."""
+    import duckdb
+    import pandas as pd
+
+    work = scratch / "work"
+    con = duckdb.connect()
+    con.sql(f"SET memory_limit='{deps.memory_limit}'; SET threads={int(deps.threads)}; SET enable_progress_bar=false; SET preserve_insertion_order=true")
+    ckb, cks = np.load(work / "clock_bt.npy"), np.load(work / "clock_slot.npy")
+    mk = np.load(work / "mkt.npz")
+    meta = pd.read_parquet(scratch / "meta.parquet")
+    meta = meta[meta["mbt"] >= universe_min_mbt].reset_index(drop=True)
+    mcn = pd.read_pickle(work / "mintconst.pkl").set_index("mid")
+    prep = rf.build_prep(ckb, cks, mk["mnt"], {k: mk[k] for k in ("n_ps", "v_ps", "n_bd", "v_bd", "n_cr")}, meta["mbt"].to_numpy(np.int64), meta["s0"].to_numpy(np.float64))
+    w0, e = int(plan.w0.timestamp()), int(plan.e.timestamp())
+    members = set(meta["mid"].tolist())
+    inwin = lambda T_: set(T_[(T_ % MARK_S == 0) & (T_ >= w0) & (T_ <= e - MARK_S)].tolist())  # noqa: E731
+    ao, fo = [], []
+    for lo, hi in ut_chunks(con, scratch):
+        U = con.sql(f"""select mid, slot, txi, evi, bt, isbuy, sol, tok, q, b, th, vq from read_parquet('{scratch}/ut/*.parquet', filename=true, file_row_number=true)
+                        where mid >= {lo} and mid <= {hi} order by mid, slot, txi, evi, filename, file_row_number""").fetchnumpy()
+        mids = np.asarray(U["mid"], np.int64)
+        U = {k: (np.ma.filled(a.astype(float), np.nan) if np.ma.isMaskedArray(a) and k in ("bt", "q", "b", "tok", "sol", "vq") else a) for k, a in U.items()}
+        bounds = np.flatnonzero(np.diff(mids)) + 1
+        for a, b in zip(np.concatenate([[0], bounds]), np.concatenate([bounds, [len(mids)]])):
+            mid = int(mids[a])
+            if mid not in members:
+                continue
+            r = mcn.loc[mid]
+            const = rf.MintConst(mid=mid, mbt=int(r.mbt), mslot=int(r.mslot), s0=int(r.s0), v=float(r.v), cbt=fnum(r.cbt), has_creator=not pd.isna(r.ch), nb=fnum(r.nb),
+                                 ntr=fnum(r.ntr), bbuy=fnum(r.bbuy), bsell=fnum(r.bsell), cre_sell=fnum(r.cre_sell))
+            args = (prep, const, None if pd.isna(r.ch) else r.ch, U["slot"][a:b], U["bt"][a:b], U["isbuy"][a:b], U["sol"][a:b], U["tok"][a:b], U["q"][a:b], U["b"][a:b], U["th"][a:b])
+            ra = rf.mint_features(*args, vq=U["vq"][a:b], seg_end=None, grads_rule="asof_pda_first_print", mint_filters="asof")
+            rf_ = rf.mint_features(*args, vq=U["vq"][a:b], seg_end=None, grads_rule="frozen", mint_filters="frozen")
+            Ta_ = inwin(ra.I[:, 1]) if ra is not None else set()
+            Tf_ = inwin(rf_.I[:, 1]) if rf_ is not None else set()
+            ao += [(mid, t_) for t_ in sorted(Ta_ - Tf_)]
+            fo += [(mid, t_) for t_ in sorted(Tf_ - Ta_)]
+    con.close()
+    return ao, fo
+
+
+def dual_report(ao: list, fo: list, tr_mid, tr_T0, cell_pnl) -> dict[str, Any]:
+    asof_only = set(ao)
+    entered = np.array([(int(m_), int(t_)) in asof_only for m_, t_ in zip(tr_mid, tr_T0)], bool)
+    dual = {"asof_only_rows": len(ao), "frozen_only_rows": len(fo), "by_mark": {}, "by_date": {}, "asof_only_entered_top10": int(entered.sum()),
+            "pnl_asof_only_trades": {}, "pnl_other_trades": {},
+            "note": "report only, computed after E and after the verdict was printed; asof-only rows are NOT removed from the deciding book"}
+    for key, lst in (("asof_only", ao), ("frozen_only", fo)):
+        for m_, t_ in lst:
+            dual["by_mark"].setdefault(str(t_), {"asof_only": 0, "frozen_only": 0})[key] += 1
+            dual["by_date"].setdefault(str(bk.utc_dates([t_])[0]), {"asof_only": 0, "frozen_only": 0})[key] += 1
+    for lat in LATS:
+        for leg in ("flat", "press"):
+            x = cell_pnl[lat][leg] / 1e9
+            dual["pnl_asof_only_trades"][f"{leg}_{lat}"] = {"n": int(entered.sum()), "total_sol": float(x[entered].sum()), "mean_sol": float(x[entered].mean()) if entered.any() else None}
+            dual["pnl_other_trades"][f"{leg}_{lat}"] = {"n": int((~entered).sum()), "total_sol": float(x[~entered].sum()), "mean_sol": float(x[~entered].mean()) if (~entered).any() else None}
+    return dual
+
+
+def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps, on_verdict: Callable[[dict], None] | None = None) -> dict[str, Any]:
     """Post-lock: build, score, book, price, stats, decision. Returns the result dict (nothing is written here except scratch)."""
     out_dir = Path(paths.out_dir)
     scratch = out_dir / "scratch"
@@ -809,16 +879,19 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
     w0, e = int(plan.w0.timestamp()), int(plan.e.timestamp())
     slot_s = slot_s_by_date(plan.sph)
     try:
-        stats = rl.build(Path(paths.walk_dir), plan.hours[0], ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)), scratch, v_source="event", canonical_fn=deps.canonical_fn,
-                         problems_fn=deps.problems_fn, verify=deps.verify, memory_limit=deps.memory_limit, threads=deps.threads, tmp_dir=scratch / "tmp",
-                         trade_end=ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)))
+        try:
+            stats = rl.build(Path(paths.walk_dir), plan.hours[0], ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)), scratch, v_source="event", canonical_fn=deps.canonical_fn,
+                             problems_fn=deps.problems_fn, verify=deps.verify, memory_limit=deps.memory_limit, threads=deps.threads, tmp_dir=scratch / "tmp",
+                             trade_end=ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)))
+        except rl.LayoutRefused as exc:
+            raise CountBuildDivergence(exc.reasons) from exc
         struct_probs = []
         if stats.get("v0_missing_days_over"):
             struct_probs.append(f"v0-missing share above {rl.V0_MISSING_REFUSE_SHARE} on {stats['v0_missing_days_over']}")
         if stats.get("mixed_null_txi_slots"):
             struct_probs.append(f"{stats['mixed_null_txi_slots']} mixed null / non-null tx_index (mint, slot) pair(s)")
         if struct_probs:
-            raise ReadRefused(struct_probs)
+            raise CountBuildDivergence(struct_probs)
         R, rep, con = build_rows(scratch, plan, fee, slot_s, deps, rc.UNIVERSE_MIN_MBT)
         boosters = deps.boosters_fn(str(paths.models_dir) if paths.models_dir else None)
         mid = concat(R.mid, np.int64)
@@ -878,21 +951,6 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
         pv4 = price_variant(tr, LAT_REPORT_LONG, e1_penalty=e1p, **variants["deciding"])
         for leg in ("flat", "press"):
             rep_cells[f"lat4.0:{leg}_{LAT_REPORT_LONG}"] = cell_stats(pv4[leg], tr_T0, tr_mid, w0)
-        asof_only = set(rep["asof_only"])
-        entered = np.array([(int(m_), int(t_)) in asof_only for m_, t_ in zip(tr_mid, tr_T0)], bool)
-        dual = {"asof_only_rows": len(rep["asof_only"]), "frozen_only_rows": len(rep["frozen_only"]),
-                "by_mark": {}, "by_date": {}, "asof_only_entered_top10": int(entered.sum()),
-                "pnl_asof_only_trades": {}, "pnl_other_trades": {},
-                "note": "report only, computed after E; asof-only rows are NOT removed from the deciding book"}
-        for key, lst in (("asof_only", rep["asof_only"]), ("frozen_only", rep["frozen_only"])):
-            for m_, t_ in lst:
-                dual["by_mark"].setdefault(str(t_), {"asof_only": 0, "frozen_only": 0})[key] += 1
-                dual["by_date"].setdefault(str(bk.utc_dates([t_])[0]), {"asof_only": 0, "frozen_only": 0})[key] += 1
-        for lat in LATS:
-            for leg in ("flat", "press"):
-                x = cell_pnl[lat][leg] / 1e9
-                dual["pnl_asof_only_trades"][f"{leg}_{lat}"] = {"n": int(entered.sum()), "total_sol": float(x[entered].sum()), "mean_sol": float(x[entered].mean()) if entered.any() else None}
-                dual["pnl_other_trades"][f"{leg}_{lat}"] = {"n": int((~entered).sum()), "total_sol": float(x[~entered].sum()), "mean_sol": float(x[~entered].mean()) if (~entered).any() else None}
         blocks_with = int(len(np.unique((tr_T0 - w0) // BLOCK_S))) if len(tr_T0) else 0
         A = int(len(tr_T0))
         alpha = ALPHA_FAMILY / plan.k
@@ -906,10 +964,19 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
             "keys": {"marks": len(marks), "not_subset_marks": len(notsub), "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok, "live_vs_decision_gap_by_mark": gap},
             "d3": {"dropped_rows": rep["d3_dropped"], "kept_pre_filter": rep["d3_kept_pre_filter"]}, "stranded_counts": stranded,
             "strand_class_trades": int(strand_class.sum()), "mints": rep["mints"], "mints_with_rows": rep["mints_with_rows"],
-            "report_only": {"asof_vs_frozen": dual, "null_block_time_prints_by_hour": null_bt, "variants": rep_cells, "lp_discontinuities": rep["lp"], "slot_s_by_date": slot_s,
+            "report_only": {"asof_vs_frozen": None, "null_block_time_prints_by_hour": null_bt, "variants": rep_cells, "lp_discontinuities": rep["lp"], "slot_s_by_date": slot_s,
                             "note": "rent, no-auto-stranded, 55k, 4.0 s, block sums (block_sum_* inside every cell), LP discontinuity counts: report only, never deciding"},
             "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes",
         }
+        if on_verdict is not None:
+            on_verdict(res)  # the verdict is printed BEFORE the report-only dual run starts (and before any result file)
+        ao, fo = dual_rows(scratch, plan, deps, rc.UNIVERSE_MIN_MBT)
+        res["report_only"]["asof_vs_frozen"] = dual_report(ao, fo, tr_mid, tr_T0, cell_pnl)
+        return res
+    except CountBuildDivergence as exc:
+        res = diverged_result(plan, fee, exc.reasons)
+        if on_verdict is not None:
+            on_verdict(res)
         return res
     finally:
         if not deps.keep_scratch:
@@ -947,9 +1014,8 @@ def read(paths: Paths, deps: Deps | None = None) -> dict[str, Any]:
     ledger_event(out_dir, "started", token=token, head=deps.head_fn(), job=os.environ.get("MISCUSI_JOB_ID", ""), w0=ef.hour_key(plan.w0), e=ef.hour_key(plan.e), k=plan.k,
                  send=fee["send"], fee_arm=fee.get("source"), code_sha256=plan.v and {m: plan.v[f"EXP027_SHA256_{m.upper()}"] for m in CODE_MODULES}, inputs=plan.inputs)
     try:
-        res = run_read(paths, plan, fee, deps)
+        res = run_read(paths, plan, fee, deps, on_verdict=lambda r: emit_verdict(r, deps))  # prints the verdict BEFORE any result file and before the dual run
         res["token"] = token
-        emit_verdict(res, deps)  # BEFORE any result file
         rp = write_result(out_dir, res)
         ledger_event(out_dir, "completed", token=token, verdict=res["verdict"], result=str(rp), result_sha256=sha256_file(rp), N=res["N_blocks_with_attempts"], A=res["A_attempts"])
         return res
