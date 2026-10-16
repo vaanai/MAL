@@ -258,11 +258,14 @@ def test_forward_order_total_and_null_txi_groups():
     evi = np.array([1, 1, 0, 2, 0])
     frn = np.array([40, 30, 20, 10, 50])
     perm = rf.forward_order(slot, txi, evi, frn)
-    # slot 4 first; slot 5: non-null tx 3 (idx2) BEFORE the nulls; nulls by evi then frn: (evi1,frn30)=1,(evi1,frn40)=0,(evi2)=3
-    assert list(perm) == [4, 2, 1, 0, 3]
-    assert rf.mixed_null_txi_slots(slot, txi) == 1              # slot 5 mixes null and non-null
-    assert rf.mixed_null_txi_slots(slot, np.array([1, 2, 3, 4, 5.0])) == 0
-    assert rf.mixed_null_txi_slots(np.array([1, 1, 2]), np.array([np.nan, np.nan, 3.0])) == 0
+    # slot 4 first; slot 5: nulls FIRST (as training coalesce(tx,-1)) by evi then frn: idx1(evi1,frn30), idx0(evi1,frn40), idx3(evi2), then tx 3 (idx2)
+    assert list(perm) == [4, 1, 0, 3, 2]
+    mid = np.zeros(5, int)
+    assert rf.mixed_null_txi_slots(mid, slot, txi) == 1         # one mint mixes null and non-null in slot 5
+    assert rf.mixed_null_txi_slots(mid, slot, np.array([1, 2, 3, 4, 5.0])) == 0
+    # two different mints sharing a slot, one null and one non-null -> 0
+    assert rf.mixed_null_txi_slots(np.array([1, 2]), np.array([9, 9]), np.array([np.nan, 3.0])) == 0
+    assert rf.mixed_null_txi_slots(np.array([1, 1, 2]), np.array([9, 9, 9]), np.array([np.nan, 3.0, 3.0])) == 1
     assert rf.null_txi_tie_groups(slot, txi, evi) == 1          # idx 0 and 1 share (slot 5, evi 1)
     assert rf.null_txi_tie_groups(slot, np.array([1, 2, 3, 4, 5.0]), evi) == 0
     with pytest.raises(ValueError):
@@ -359,4 +362,4 @@ def test_forward_order_on_synthetic_mint(prep):
     res = run(prep, ref, seg_end=None)
     res2 = run(prep, back, seg_end=None)
     assert res is not None and res.X.tobytes() == res2.X.tobytes()
-    assert rf.mixed_null_txi_slots(pr["slot"], txi) > 0
+    assert rf.mixed_null_txi_slots(np.zeros(n, int), pr["slot"], txi) > 0
