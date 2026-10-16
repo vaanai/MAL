@@ -28,7 +28,7 @@ Order of events (the order is part of the contract; tests pin it)
 
 Universe exits (f): the book is hourly; UNIVERSE_EXITS_AT_MARKS_ONLY = True. A token that leaves the universe between marks (dead, 48 h passed) is not ranked at the next mark and is
 sold there by xs_book's rank rule (or its gap rule), as in harness.book_xs. Unpriced exit (e): a held token whose exit reserve state is <= 0 or missing is a total loss of the stake plus
-the buy send plus RENT_STRANDED (2,039,280; no sell send), exactly as a strand-class mint (QP ruling iii), marked stranded, and stays in the book. Forward features (a): mint_features(grads_rule="asof_pda_first_print",
+the buy send plus the stranded rent of the mint's token program (RENT_STRANDED_T22 2,074,080 for Token-2022 and unknown mints, RENT_STRANDED_SPL 2,039,280; no sell send), exactly as a strand-class mint (QP ruling iii), marked stranded, and stays in the book. Forward features (a): mint_features(grads_rule="asof_pda_first_print",
 mint_filters="asof"); the training defaults are frozen. Allowlist (g): [H0 = 2026-10-16T03, E + 1h) for decisions plus the 2 extra trade hours (E + 3h exclusive, as r4b_count's trade_end).
 
 Deciding stack (EXP section 5): 505,000-lamport sends (160,000 and the buy-lag shift only if the pinned fee-arm record says Test A and Test B both PASS), rent 0 per filled trip,
@@ -112,6 +112,16 @@ TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 # (tools/mint_account_fetch.py; /data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/mint-census/summary.json): 295 of 300 sampled mints are Token-2022 with exactly
 # metadataPointer + tokenMetadata, the other 5 are classic SPL; 0 have a freeze authority. Any other extension still strands, and so does a freeze authority.
 TOKEN2022_EXT_ALLOWLIST: frozenset = frozenset({"metadataPointer", "tokenMetadata"})
+# Rent by token program (QP ruling on #683). tools/r4b_frozen.py RENT_STRANDED = RENT_REPORT = 2_039_280 is (165 + 128) * 6960, the rent of a 165-byte SPL token
+# account. A Token-2022 ATA carries the ImmutableOwner extension, so it is 170 bytes: (170 + 128) * 6960 = 2_074_080, 34_800 more. Checked on chain 2026-10-16:
+# the largest accounts of a census Token-2022 mint are owned by TokenzQd..., have data length 170 and extensions [immutableOwner] (PR body has mint, account, slot).
+# The frozen constants stay as they are (the frozen E-c replay uses them); this read prices a stranded position and the report-only rent leg by the mint's program.
+# A mint with an unknown program (failed fetch, not in the file) is stranded already and is priced at the higher figure.
+RENT_STRANDED_SPL = FZ.RENT_STRANDED      # 2_039_280, 165-byte SPL Token account
+RENT_STRANDED_T22 = (170 + 128) * 6960    # 2_074_080, 170-byte Token-2022 ATA (ImmutableOwner)
+RENT_REPORT_SPL = FZ.RENT_REPORT          # 2_039_280
+RENT_REPORT_T22 = RENT_STRANDED_T22       # 2_074_080
+assert RENT_STRANDED_T22 == 2_074_080 and RENT_STRANDED_SPL == (165 + 128) * 6960 == 2_039_280
 # E1 mode (owner decision pending; the EXP pins it with EXP027_E1_MODE, which must equal this constant):
 #   "A"      haircut only (no E1 penalty);
 #   "B"      a fixed charge of max(haircut, E1_FIXED_LAMPORTS) per filled, non-stranded trip;
@@ -401,8 +411,14 @@ def mint_is_strand_class(r: Any, allow: frozenset | None = None) -> bool:
     return True
 
 
-def load_mint_accounts(v: Mapping[str, str], probs: list[str]) -> tuple[dict[str, bool], dict[str, Any]] | None:
-    """({mint: strand_class}, info). Schema: {fetch_slot, mints: {mint: {fetch_ok, owner_program, freeze_authority, token2022_extensions}}}. A mint that is not in the file is
+def mint_rent_is_t22(r: Any) -> bool:
+    """Rent class of a mint: SPL Token only if the record says so with a successful fetch; Token-2022 and anything unknown (failed fetch, malformed, other owner) is priced
+    at the higher Token-2022 figure."""
+    return not (isinstance(r, dict) and r.get("fetch_ok") is True and r.get("owner_program") == SPL_TOKEN_PROGRAM)
+
+
+def load_mint_accounts(v: Mapping[str, str], probs: list[str]) -> tuple[dict[str, bool], dict[str, Any], dict[str, bool]] | None:
+    """({mint: strand_class}, info, {mint: rent_t22}). Schema: {fetch_slot, mints: {mint: {fetch_ok, owner_program, freeze_authority, token2022_extensions}}}. A mint that is not in the file is
     strand-class (the read counts those, no silent default). info carries fetch_slot and the failed-fetch share."""
     p = pinned_file(v["EXP027_MINT_ACCOUNTS"], "mint-account file", probs)
     if p is None:
@@ -417,10 +433,12 @@ def load_mint_accounts(v: Mapping[str, str], probs: list[str]) -> tuple[dict[str
         probs.append("mint-account file has no mints object")
         return None
     out = {m: mint_is_strand_class(r) for m, r in mints.items()}
+    t22 = {m: mint_rent_is_t22(r) for m, r in mints.items()}
     failed = sum(1 for r in mints.values() if not isinstance(r, dict) or r.get("fetch_ok") is not True)
     info = {"fetch_slot": slot, "mints_in_file": len(mints), "failed_fetch": failed, "failed_fetch_share": (failed / len(mints)) if mints else None,
-            "strand_class_in_file": int(sum(out.values())), "token2022_ext_allowlist": sorted(TOKEN2022_EXT_ALLOWLIST), "path": str(p), "sha256": split_pair(v["EXP027_MINT_ACCOUNTS"])[1]}
-    return out, info
+            "strand_class_in_file": int(sum(out.values())), "token2022_ext_allowlist": sorted(TOKEN2022_EXT_ALLOWLIST), "path": str(p), "sha256": split_pair(v["EXP027_MINT_ACCOUNTS"])[1],
+            "rent_t22_in_file": int(sum(t22.values())), "rent_stranded_t22": RENT_STRANDED_T22, "rent_stranded_spl": RENT_STRANDED_SPL}
+    return out, info, t22
 
 
 def fee_arm_decision(v: Mapping[str, str], started: datetime, probs: list[str]) -> dict[str, Any]:
@@ -570,6 +588,7 @@ class Plan:
     sell_builder: dict[str, str] = field(default_factory=dict)
     mint_info: dict[str, Any] = field(default_factory=dict)
     a3_halts: list = field(default_factory=list)
+    rent_t22: dict[str, bool] = field(default_factory=dict)
 
 
 # ---- preflight (nothing is written; no outcome row is opened) ---------------------------------------------------------------------------
@@ -599,7 +618,7 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
     e1 = load_e1(v, probs) if E1_MODE == "record" else e1_fixed_mode(v, probs)
     inputs = check_inputs(v, paths.tries, probs)
     mint_loaded = load_mint_accounts(v, probs)
-    strand, mint_info = mint_loaded if mint_loaded is not None else (None, {})
+    strand, mint_info, rent_t22 = mint_loaded if mint_loaded is not None else (None, {}, {})
     sell = load_sell_builder(v, probs)
     fee = fee_arm_decision(v, started, probs)
     if v["EXP027_WALK_DIR"] != deps.walk_pin or Path(paths.walk_dir).resolve() != Path(deps.walk_pin).resolve() or Path(v["EXP027_WALK_DIR"]).resolve() != Path(deps.walk_pin).resolve():
@@ -684,7 +703,7 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
             sph[h] = float(s)
     if probs or e1 is None or strand is None or count_cfg is None or sell is None or a3 is None:
         return None, fee, probs
-    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph, e + timedelta(hours=DEADLINE_HOURS), sell, mint_info, a3), fee, probs
+    return Plan(v, w0, e, P["k"], hours, count_cfg, counts, e1, strand, inputs, sph, e + timedelta(hours=DEADLINE_HOURS), sell, mint_info, a3, rent_t22), fee, probs
 
 
 # ---- the computation -----------------------------------------------------------------------------------------------------------------------
@@ -877,15 +896,23 @@ def mark_lookup(marks: list, mid: np.ndarray, t1: np.ndarray) -> tuple[np.ndarra
 def price_variant(tr: Mapping[str, np.ndarray], lat: float, *, send: int, rent: int, auto: bool, e1_penalty: float, stake: int = FZ.STAKE_LAMPORTS) -> dict[str, Any]:
     """Deciding or report-only variant of one latency cell: no-fail, flat and pressure legs (intercept refit on this cell's fills). r4b_book.round_trip is called with its
     DEFAULT k_tol (C8 on, FZ.K_TOL); an invalid entry state and an invalid exit state (C2 state, C7 real-quote bound, C8 k-fall; a missing exit mark is NaN, so C2)
-    are priced stranded (stake + buy send + RENT_STRANDED, no sell send) and flagged. The E1 charge is the larger of the haircut and `e1_penalty` per filled,
+    are priced stranded (stake + buy send + the stranded rent of the mint's token program, no sell send) and flagged. The E1 charge is the larger of the haircut and `e1_penalty` per filled,
     non-stranded trip (0 = haircut only)."""
     Qe, Be, ssb, nb_ = (tr["ent"][lat][i] for i in range(4))
     stranded = tr["strand_class"]
+    t22 = np.asarray(tr["rent_t22"], bool)
+    rent_str = np.where(t22, RENT_STRANDED_T22, RENT_STRANDED_SPL)  # per trade, by the mint's token program
+    if rent == 0:
+        rent_fill = 0
+    elif rent == FZ.RENT_REPORT:
+        rent_fill = np.where(t22, RENT_REPORT_T22, RENT_REPORT_SPL)
+    else:
+        raise ValueError(f"price_variant: rent {rent} is neither the deciding 0 nor FZ.RENT_REPORT")
     stk = np.full(len(Qe), float(stake))
-    kw = dict(stranded=stranded, auto_stranded=auto, return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
-    pnl, filled, st, bad, xbad, cause = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent, **kw)
+    kw = dict(stranded=stranded, auto_stranded=auto, rent_stranded=rent_str, return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
+    pnl, filled, st, bad, xbad, cause = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent_fill, **kw)
     if e1_penalty > 0:
-        pnl0 = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto)[0]
+        pnl0 = bk.round_trip(stk, Qe, Be, tr["spot"], tr["Qx"], tr["Bx"], send, rent_fill, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto, rent_stranded=rent_str)[0]
         hair = pnl0 - pnl
         extra = np.where(filled & ~st, np.maximum(0.0, e1_penalty - hair), 0.0)
         pnl = pnl - extra
@@ -1137,7 +1164,8 @@ def run_deciding(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -
         traded = [mint_of[int(m)] for m in tr_mid]
         missing = sorted({m for m in traded if m not in plan.strand})  # R11: a mint absent from the record is strand-class, and counted
         strand_class = np.array([plan.strand.get(m, True) for m in traded], bool)
-        tr = {"ent": {lat: [concat([p[i] for p in R.ent[lat]])[row] for i in range(4)] for lat in R.ent}, "spot": concat(R.spot)[row], "Qx": Qx, "Bx": Bx, "strand_class": strand_class}
+        rent_t22 = np.array([plan.rent_t22.get(m, True) for m in traded], bool)  # unknown program: the higher rent
+        tr = {"ent": {lat: [concat([p[i] for p in R.ent[lat]])[row] for i in range(4)] for lat in R.ent}, "spot": concat(R.spot)[row], "Qx": Qx, "Bx": Bx, "strand_class": strand_class, "rent_t22": rent_t22}
         send = int(fee["send"])
         e1p = float(plan.e1["penalty_lamports"])
         dec_kw = dict(send=send, rent=FZ.RENT_DECIDING, auto=True)
