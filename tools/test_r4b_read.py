@@ -153,7 +153,7 @@ def mk(tmp_path, world, *, counts=None, exp_extra="", **over):
 
 def mkdeps(world, **kw):
     log: list[str] = []
-    d = dict(now_fn=lambda: HOUR0 + timedelta(hours=1 + 4 + 24), clean_fn=lambda p: [], window_fn=lambda e, l, st: ([], {"reg_commit": "r" * 40, "exp_sha256": "e" * 64, "prefix_sha256": "p" * 64, "appended": []}), decoder_fn=lambda ref: [], sph_fn=sph_ok, canonical_fn=pda_of,
+    d = dict(now_fn=lambda: HOUR0 + timedelta(hours=1 + 4 + 24), clean_fn=lambda p: [], sync_fn=lambda: [], window_fn=lambda e, l, st: ([], {"reg_commit": "r" * 40, "exp_sha256": "e" * 64, "prefix_sha256": "p" * 64, "appended": []}), decoder_fn=lambda ref: [], sph_fn=sph_ok, canonical_fn=pda_of,
              boosters_fn=lambda md: [FakeBooster()], models_check_fn=lambda md: [], head_fn=lambda: "deadbeef", stderr=log.append, memory_limit="2GB", threads=2,
              walk_pin=str(Path(world["walk"]).resolve()))
     d.update(kw)
@@ -1761,10 +1761,41 @@ def test_window_guard_refuses_non_placeholder_text_at_reg(tmp_path, text):
     must_refuse(build_wrepo(tmp_path, text), "not an italic placeholder")
 
 
-def test_window_guard_accepts_blank_and_multiple_italic_placeholders_at_reg(tmp_path):
-    w = build_wrepo(tmp_path, "\n*(one)*\n\n*(two\nlines)*\n\n")
+REAL_PLACEHOLDER = '*(Empty until registration. The last section of this file; nothing follows it. The manager appends one line per commit, in the form `EXP027_KEY: value (appended YYYY-MM-DDTHH:MMZ)`, dated with `date -u`, from the merge record, the count file and the job records only. Mechanism and read-tool checks: section 0.5.)*\n'  # the one line at the Window record of EXP-027 on claude/exp027-r4b-prereg 3d3406a
+
+
+def test_window_guard_accepts_the_real_exp027_placeholder_line(tmp_path):
+    w = build_wrepo(tmp_path, "\n" + REAL_PLACEHOLDER)
     append_commit(w, app_line("EXP027_W0", W0_OK), T_REG + 100)
     assert guard(w)[0] == []
+
+
+def test_window_guard_accepts_blank_lines_and_one_multi_line_italic_paragraph_at_reg(tmp_path):
+    w = build_wrepo(tmp_path, "\n*(one)*\n*(two)*\n\n")
+    append_commit(w, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    assert guard(w)[0] == []
+
+
+def test_window_guard_refuses_an_inner_key_line_inside_an_italic_paragraph_at_reg(tmp_path):
+    w = build_wrepo(tmp_path, "\n*(prose\nEXP027_K: 7 (appended 2026-10-16T23:00Z)\nmore)*\n")
+    must_refuse(w, "not an italic placeholder line")
+
+
+def test_window_guard_refuses_two_italic_paragraphs_at_reg(tmp_path):
+    w = build_wrepo(tmp_path, "\n*(one)*\n\n*(two)*\n")
+    must_refuse(w, "more than one placeholder paragraph")
+
+
+def test_read_refuses_when_head_is_not_origin_main_but_check_window_does_not(wrepo, tmp_path, world):
+    assert rr.head_matches_origin(wrepo["repo"]) == []
+    _other_commit(wrepo, "later.txt", T_REG + 300)  # HEAD moves past origin/main
+    probs = rr.head_matches_origin(wrepo["repo"])
+    assert probs and "!= origin/main" in probs[0]
+    refused(mk(tmp_path, world), mkdeps(world, sync_fn=lambda: probs), "!= origin/main")
+    assert rr.Deps().sync_fn.__name__ == "<lambda>"
+    lines: list[str] = []
+    assert rr.check_window_cli(wrepo["repo"] / EXP_REL, wrepo["ledger"], wrepo["repo"], W_STARTED, lines.append) in (0, 1)  # the dry run does not apply the HEAD check
+    assert not any("!= origin/main" in x for x in lines)
 
 
 def test_check_window_cli_pending_violations_and_ok(wrepo):

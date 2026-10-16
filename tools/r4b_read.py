@@ -368,12 +368,14 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
             probs.append(f"body prefix sha256 at HEAD {info['prefix_sha256']} != ledger EXP027_PREFIX_SHA256 {want_prefix}")
         if ph != pr:
             probs.append("the body prefix at HEAD differs from the body prefix at the registration commit")
-        # I: at reg, the text after the heading is only italic placeholder paragraphs
+        # I: at reg, the text after the heading is blank lines and at most ONE italic placeholder paragraph, and every non-blank LINE starts and ends with '*'
         after = reg_bytes[len(pr):].decode("utf-8", "replace").split("\n", 1)[1] if b"\n" in reg_bytes[len(pr):] else ""
-        for para in [x for x in re.split(r"\n\s*\n", after) if x.strip()]:
-            t = para.strip()
+        paras = [x for x in re.split(r"\n\s*\n", after) if x.strip()]
+        if len(paras) > 1:
+            probs.append("the Window record at the registration commit holds more than one placeholder paragraph")
+        for t in (ln.strip() for ln in after.split("\n") if ln.strip()):
             if not (len(t) >= 2 and t.startswith("*") and t.endswith("*")):
-                probs.append(f"the Window record at the registration commit holds text that is not an italic placeholder (starts and ends with '*'): {t[:60]!r}")
+                probs.append(f"the Window record at the registration commit holds a line that is not an italic placeholder line (starts and ends with '*'): {t[:60]!r}")
         # B: W0 recomputed from the registration commit's committer time
         reg_ct = int(_git(repo, "show", "-s", "--format=%ct", reg).stdout.decode().strip())
         w0_calc = ef.hour_key(w0_from_commit_time(reg_ct))
@@ -440,6 +442,16 @@ def window_guard(exp_file: Path, started: datetime, repo: Path = ROOT, ledger: P
     except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
         probs.append(f"window-record check could not run: {exc}")
     return probs, info
+
+
+def head_matches_origin(repo: Path = ROOT, origin: str = ORIGIN_REF) -> list[str]:
+    """The read runs from the commit origin/main points at (the job fetches first). Not part of `--check-window`."""
+    try:
+        h = _git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+        o = _git(repo, "rev-parse", origin).stdout.decode().strip()
+    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+        return [f"cannot compare HEAD with {origin}: {exc}"]
+    return [] if h == o else [f"HEAD {h[:12]} != {origin} {o[:12]} (git fetch origin and run from the merged main)"]
 
 
 def check_window_cli(exp_file: Path = EXP_FILE, ledger: Path = LEDGER_FILE, repo: Path = ROOT, now: datetime | None = None, out: Callable[[str], None] = print) -> int:
@@ -781,6 +793,7 @@ class Deps:
 
     now_fn: Callable[[], datetime] = now_utc
     clean_fn: Callable[[Path], list[str]] = exp_clean_against_head
+    sync_fn: Callable[[], list[str]] = lambda: head_matches_origin()
     window_fn: Callable[[Path, Path, datetime], tuple[list[str], dict[str, Any]]] = lambda exp, ledger, started: window_guard(exp, started, ROOT, ledger)
     decoder_fn: Callable[[str], list[str]] = lambda ref: rl.decoder_pin_problems(ref)
     problems_fn: rl.ProblemsFn | None = None
@@ -853,6 +866,7 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
     probs += deps.clean_fn(paths.exp_file)
     wprobs, winfo = deps.window_fn(paths.exp_file, paths.ledger, started)
     probs += wprobs
+    probs += deps.sync_fn()
     if len(v) != len(required_keys()):
         return None, {}, probs
     p2, P = pin_problems(v, deps.code_dir)
