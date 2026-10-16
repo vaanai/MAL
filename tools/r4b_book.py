@@ -198,14 +198,17 @@ def attach_marks(mid, T1, mk_mid, mk_t, mk_Qx, mk_Bx):
 
 # ---------------------------------------------------------------------------------------------------------------- cost stack
 def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING, h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL,
-               guard_ratio=F.GUARD):
-    """One PumpSwap round trip in lamports; returns (pnl, filled).
+               guard_ratio=F.GUARD, stranded=None, auto_stranded=True, rent_stranded=F.RENT_STRANDED, return_stranded=False):
+    """One PumpSwap round trip in lamports; returns (pnl, filled) or (pnl, filled, stranded) with return_stranded.
 
     (Qe, Be): pool state the buy lands on (PRE-trade, Q incl. V); spot: decision-time spot; (Qx, Bx): state the sell lands on.
     net = stake x (1 - fee/1e6); tokens = Be x net / (Qe + net). Guard: (net / tokens) / spot > guard_ratio -> pnl = -send, not filled.
     Exit: pool = (Qx + net, max(Bx - tokens, 1)) (own buy re-injected); sold tokens = tokens / (1 + h_in);
     proceeds = tokens_sold x Qa / (Ba + tokens_sold) x (1 - fee(Qa, Ba)/1e6) x (1 - h_out).
-    pnl = proceeds - stake - 2 x send - rent. With send 55,000, rent 0, h_in = h_out = 0 this is harness hlib.ps_round_trip bit for bit."""
+    pnl = proceeds - stake - 2 x send - rent. With send 55,000, rent 0, h_in = h_out = 0 this is harness hlib.ps_round_trip bit for bit.
+    Stranded (no sell lands): pnl = -stake - send (the buy) - rent_stranded, no sell send. A filled trade is stranded when the caller says so
+    (`stranded`, a per-trade bool: unpriced exit, freeze authority, a Token-2022 extension that blocks close) or, with auto_stranded, when the
+    simulated proceeds are below one send fee (the sell would not pay for itself). A guarded buy is never stranded (nothing was bought)."""
     stake = np.asarray(stake, float)
     f = fee_ppm(Qe, Be)
     net = stake * (1 - f / 1e6)
@@ -216,7 +219,15 @@ def round_trip(stake, Qe, Be, spot, Qx, Bx, send=F.SEND_FEE_DECIDING, rent=F.REN
     Ba = np.maximum(Bx - tok, 1.0)
     gross = tokh * Qa / (Ba + tokh)
     sv = gross * (1 - fee_ppm(Qa, Ba) / 1e6) * (1 - h_out)
-    pnl = np.where(guard, -float(send), sv - stake - 2 * send - rent)
+    st = np.zeros(np.shape(sv), bool)
+    if stranded is not None:
+        st = st | np.asarray(stranded, bool)
+    if auto_stranded:
+        st = st | (sv < send)
+    st = st & ~guard
+    pnl = np.where(guard, -float(send), np.where(st, -stake - send - rent_stranded, sv - stake - 2 * send - rent))
+    if return_stranded:
+        return pnl, ~guard, st
     return pnl, ~guard
 
 
@@ -262,12 +273,12 @@ def fail_legs(pnl, filled, ssb, nearby, send=F.SEND_FEE_DECIDING, intercept=None
 
 
 def price_cell(Qe, Be, spot, Qx, Bx, ssb, nearby, stake=F.STAKE_LAMPORTS, send=F.SEND_FEE_DECIDING, rent=F.RENT_DECIDING,
-               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL):
+               h_in=F.HAIRCUT_ENTRY, h_out=F.HAIRCUT_SELL, stranded=None, auto_stranded=True):
     """One latency cell: no-fail pnl, flat and pressure legs (intercept refit on this cell's fills)."""
     stake = np.broadcast_to(np.asarray(stake, float), np.shape(Qe)).copy()
-    pnl, filled = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out)
+    pnl, filled, st = round_trip(stake, Qe, Be, spot, Qx, Bx, send, rent, h_in, h_out, stranded=stranded, auto_stranded=auto_stranded, return_stranded=True)
     flat, press, c, p = fail_legs(pnl, filled, ssb, nearby, send)
-    return {"nofail": pnl, "filled": filled, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
+    return {"nofail": pnl, "filled": filled, "stranded": st, "flat": flat, "press": press, "intercept": c, "p": p, "stake": stake}
 
 
 # ---------------------------------------------------------------------------------------------------------------- statistics
@@ -328,17 +339,17 @@ def book_stats(pnl_lamports, T0, mid, stake=F.STAKE_LAMPORTS, w0: int | None = N
     n, dates (distinct UTC entry dates), days_pos (dates with total > 0; majority = days_pos * 2 > dates), mean_sol, mean_pct (of stake),
     total_sol, ci90_lo_sol (trade-level bootstrap, 1,000 draws, seed 1, 5th pct), ex_top3_sol (drop the 3 best trades),
     ex_best_block_sol (24 h blocks from w0), ex_best_date_sol (UTC dates), ex_best_mint_sol, and the day-level t over 24 h blocks from w0
-    (empty blocks dropped, df = W - 1; w0 defaults to the UTC midnight at or before the first entry).
+    (empty blocks dropped, df = W - 1). w0 is required: None raises.
     daylist: optional explicit list of UTC dates ('YYYY-MM-DD'); the calendar-date t is then also given as t_dates (empty listed dates count as 0,
     as the VERIFY re-score does)."""
+    if w0 is None:
+        raise ValueError("w0 is required (the read's W0); there is no default")
     x = np.asarray(pnl_lamports, float)
     T0 = np.asarray(T0, np.int64)
     n = len(x)
     o = {"n": int(n)}
     if n == 0:
         return o
-    if w0 is None:
-        w0 = int(T0.min()) // 86400 * 86400
     stake = np.broadcast_to(np.asarray(stake, float), x.shape)
     dates = utc_dates(T0)
     ud, inv = np.unique(dates, return_inverse=True)

@@ -300,8 +300,43 @@ def test_gate_numeric_and_drops():
     t0 = (1_790_035_200 // 86400 * 86400) + rng.integers(0, 7, n) * 86400 + 3600 * rng.integers(0, 24, n)
     x = rng.normal(2e6, 2e7, n)
     mid = rng.integers(0, 400, n)
+    with pytest.raises(ValueError):
+        B.book_stats(x, t0, mid)
     s = B.book_stats(x, t0, mid, w0=1_790_035_200 // 86400 * 86400)
     assert s["n"] == 700 and s["dates"] >= 5
     keep = B.drop_trades(mid, t0, mints=[int(mid[0])], dates=[B.utc_dates(t0[:1])[0]])
     assert not keep[0] and keep.sum() < n and keep.sum() > 0
     assert B.drop_trades(mid, t0).all()
+
+
+# ---- stranded and rent
+def _one(**kw):
+    S = np.array([250e6])
+    a = [np.array([x]) for x in (8e10, 3e15, 8e10 / 3e15, 8e10, 3e15)]
+    return B.round_trip(S, *a, return_stranded=True, **kw)
+
+
+def test_normal_trade_deciding_has_no_rent_and_report_leg_has_rent():
+    p0, f0, s0 = _one(send=505_000, rent=F.RENT_DECIDING, h_in=0.0, h_out=0.0)
+    p1, f1, s1 = _one(send=505_000, rent=F.RENT_REPORT, h_in=0.0, h_out=0.0)
+    assert f0[0] and not s0[0] and not s1[0]
+    assert p0[0] - p1[0] == pytest.approx(2_039_280)
+
+
+def test_auto_stranded_when_proceeds_below_one_send():
+    S = np.array([250e6])
+    a = [np.array([x]) for x in (8e10, 3e15, 8e10 / 3e15, 1e6, 3e17)]     # exit pool has 100x the tokens: the sell returns almost nothing
+    pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, return_stranded=True)
+    assert fil[0] and st[0] and pnl[0] == -250e6 - 505_000 - 2_039_280
+    pnl2, _, st2 = B.round_trip(S, *a, send=505_000, rent=0, auto_stranded=False, return_stranded=True)
+    assert not st2[0] and pnl2[0] != pnl[0]
+
+
+def test_caller_stranded_and_guard_never_stranded():
+    S = np.array([250e6])
+    a = [np.array([x]) for x in (8e10, 3e15, 8e10 / 3e15, 8e10, 3e15)]
+    pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, stranded=np.array([True]), return_stranded=True)
+    assert st[0] and pnl[0] == -250e6 - 505_000 - 2_039_280
+    a[2] = a[2] / 1.2
+    pnl, fil, st = B.round_trip(S, *a, send=505_000, rent=0, stranded=np.array([True]), return_stranded=True)
+    assert not fil[0] and not st[0] and pnl[0] == -505_000

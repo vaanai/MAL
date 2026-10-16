@@ -53,6 +53,7 @@ REPORT_UNDROPPED = {
     ("press", "13"): (1.386384, 10.349354, 0.001354, 7.574164, 8.168312, 2.17575),
     ("press", "19"): (1.431678, 10.687478, 0.001509, 7.906865, 8.515483, 2.267755),
 }
+NORENT_VERIFY = {("flat", "13"): 2.299149, ("flat", "19"): 2.297336, ("press", "13"): 1.79502, ("press", "19"): 1.855474}   # rescore.out, deciding version, norent
 REPORT_N = {"dropped": 2879, "undropped": 2986}
 
 
@@ -112,11 +113,11 @@ def harness_table(bk, Qx, Bx, ent, score_r, keep):
     res = {}
     for tag in ("13", "19"):
         e = ent[tag]
-        pnl, fil = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0)
+        pnl, fil = B.round_trip(np.full(len(Qx), float(S)), e["Qe"], e["Be"], e["spot"], Qx, Bx, send=F.SEND_FEE_REPORT, rent=0.0, h_in=0.0, h_out=0.0, auto_stranded=False)
         flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_REPORT)
         res[tag] = dict(pnl=pnl, fil=fil, flat=flat, press=press, c=c, p=p)
     e13, r13 = ent["13"], res["13"]
-    rent_pnl = np.where(r13["fil"], r13["pnl"] - F.RENT_DECIDING, r13["pnl"])
+    rent_pnl = np.where(r13["fil"], r13["pnl"] - F.RENT_REPORT, r13["pnl"])
     _, rpress, _, _ = B.fail_legs(rent_pnl, r13["fil"], e13["ssb"], e13["nearby"], send=F.SEND_FEE_REPORT, intercept=r13["c"])
     out.update({"stake_sol": np.full(len(Qx), float(S)) / 1e9, "filled13": r13["fil"], "nofail_sol": r13["pnl"] / 1e9, "flat_sol": r13["flat"] / 1e9,
                 "press_sol": r13["press"] / 1e9, "pfail13": np.where(r13["fil"], r13["p"], np.nan), "rent_press_sol": rpress / 1e9,
@@ -152,14 +153,14 @@ def cmp_ref(df, ref_path: str) -> dict:
     return o
 
 
-def deciding_cells(bk, Qx, Bx, ent, keep):
-    """Part B. Returns {version: {(leg, lat): stats}} on the deciding stack."""
+def deciding_cells(bk, Qx, Bx, ent, keep, rent, auto_stranded):
+    """Part B. Returns {version: {(leg, lat): stats}}. rent is passed explicitly: RENT_REPORT reproduces the VERIFY, RENT_DECIDING is the QP stack."""
     S = F.STAKE_LAMPORTS
     T0, mid = bk["T0"][keep], bk["mid"][keep]
     cells = {}
     for tag in ("13", "19"):
         e = {k: v[keep] for k, v in ent[tag].items()}
-        cells[tag] = (B.price_cell(e["Qe"], e["Be"], e["spot"], Qx[keep], Bx[keep], e["ssb"], e["nearby"], stake=S), e)
+        cells[tag] = (B.price_cell(e["Qe"], e["Be"], e["spot"], Qx[keep], Bx[keep], e["ssb"], e["nearby"], stake=S, rent=rent, auto_stranded=auto_stranded), e)
     out = {}
     for ver, (mints, dates) in (("dropped", ((DROP_MINT,), (DROP_DATE,))), ("undropped", ((), ()))):
         km = B.drop_trades(mid, T0, mints, dates)
@@ -171,12 +172,14 @@ def deciding_cells(bk, Qx, Bx, ent, keep):
             e = {k: v[km] for k, v in cells[tag][1].items()}
             pnl = cell["nofail"][km]
             fil = cell["filled"][km]
+            nstr = int(cell["stranded"][km].sum())
             flat, press, c, p = B.fail_legs(pnl, fil, e["ssb"], e["nearby"], send=F.SEND_FEE_DECIDING)
             for leg, x in (("flat", flat), ("press", press)):
                 s = B.book_stats(x, T0[km], mid[km], S, w0=W0, daylist=daylist)
                 s["intercept"] = c
                 s["mean_p_fills"] = float(p[fil].mean())
                 s["guard_share"] = float(1 - fil.mean())
+                s["stranded"] = nstr
                 out[ver][(leg, tag)] = s
     return out
 
@@ -280,14 +283,31 @@ def main(argv=None) -> int:
     df, _ = harness_table(bk, Qx, Bx, ent, score_r, keep)
     A = cmp_ref(df, f"{a.laya}/results/{a.ref}/trades.csv.gz")
     print("PART A (harness stack vs", a.ref, ")", json.dumps(A, indent=1))
-    cells = deciding_cells(bk, Qx, Bx, ent, keep)
+    cells = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_REPORT, auto_stranded=False)
     okB, rows = check_report(cells)
-    print("PART B (deciding stack vs r4b-verify REPORT)")
+    print("PART B (VERIFY stack: send 505,000, rent paid 2,039,280, haircut; vs r4b-verify REPORT)")
     for r in rows:
         print(" ", json.dumps(r))
     print("detail dropped press 1.3:", json.dumps({k: v for k, v in cells["dropped"][("press", "13")].items()}, default=float))
+    nr0 = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_DECIDING, auto_stranded=False)
+    okC = True
+    for cell, want in NORENT_VERIFY.items():     # the VERIFY's no-rent leg (deciding version, out/rescore.out "norent" rows)
+        okC &= round(nr0["dropped"][cell]["mean_pct"], 6) == want
+    print("PART C0 (rent refunded, NO stranded rule; QP expectation flat 2.2991/2.2973 %, pressure 1.7950/1.8555 %); equal6 to VERIFY no-rent:", okC)
+    for cell, st_ in nr0["dropped"].items():
+        print("  C0", "/".join(cell), "n", st_["n"], "mean_pct", round(st_["mean_pct"], 6), "total_sol", round(st_["total_sol"], 6), "ci90_lo", round(st_["ci90_lo_sol"], 6),
+              "ex_top3", round(st_["ex_top3_sol"], 6), "ex_best_date", round(st_["ex_best_date_sol"], 6), "t_dates", round(st_["t_dates"], 6))
+    nr = deciding_cells(bk, Qx, Bx, ent, keep, rent=F.RENT_DECIDING, auto_stranded=True)
+    print("PART C (rent refunded + AUTO-STRANDED rule: proceeds < one send => -stake - buy send - rent; report only, no REPORT to match)")
+    for ver in ("dropped", "undropped"):
+        for cell, st_ in nr[ver].items():
+            print(" ", json.dumps({"version": ver, "cell": "/".join(cell), "n": st_["n"], "stranded": st_["stranded"], "mean_pct": round(st_["mean_pct"], 4),
+                                  "total_sol": round(st_["total_sol"], 6), "ci90_lo_sol": round(st_["ci90_lo_sol"], 6), "ex_top3_sol": round(st_["ex_top3_sol"], 6),
+                                  "ex_best_date_sol": round(st_["ex_best_date_sol"], 6), "ex_best_block_sol": round(st_["ex_best_block_sol"], 6),
+                                  "t_dates": round(st_["t_dates"], 6), "t_block": round(st_["t_block"], 6), "p_block": round(st_["p_block"], 6),
+                                  "gate_numeric": st_["gate_numeric"]}))
     print("E-c trades table md5", A["md5_mine"], "| reference text md5", A["md5_ref_text"], "| identical text", A["text_identical"])
-    ok = bool(A["ok"] and okB)
+    ok = bool(A["ok"] and okB and okC)
     print("E-c", "PASS" if ok else "FAIL", "part A", A["ok"], "part B", okB)
     return 0 if ok else 1
 

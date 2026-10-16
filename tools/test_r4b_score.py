@@ -23,7 +23,7 @@ def test_pins_match_shipped_artifacts():
 
 def test_constants_and_rules():
     assert F.K == 10 and F.STAKE_LAMPORTS == 250_000_000 and F.LATENCIES_S == (1.3, 1.9)
-    assert F.SEND_FEE_DECIDING == 505_000 and F.RENT_DECIDING == 2_039_280 and F.GUARD == 1.15
+    assert F.SEND_FEE_DECIDING == 505_000 and F.RENT_DECIDING == 0 and F.RENT_REPORT == 2_039_280 and F.RENT_STRANDED == 2_039_280 and F.GUARD == 1.15
     assert F.HAIRCUT_ENTRY == 0.002608 and F.HAIRCUT_SELL == 0.0016 and F.FAIL_FLAT == 0.15
     assert (F.PRESS_SLOPE_SLOT, F.PRESS_SLOPE_SOL, F.PRESS_P_TARGET) == (0.8, 0.35, 0.289)
     assert F.K_ROUNDING == "round"
