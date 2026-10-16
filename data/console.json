@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T04:51:17Z",
+ "updated_utc": "2026-10-16T05:35:34Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "push-day1-1016",
+   "kind": "other",
+   "title": "Push day 1: no library book reaches the goal on 1.29 SOL; impact at size halves each line's edge",
+   "detail": "Judge: shortlist about 0.20–0.32 SOL/day after capacity haircut; impact at size halves every line's edge by about 0.1–1.7 SOL per trade; PumpSwap LP fee-minus-IL median negative; diversified wallet copy not higher-capacity. EXP-026 (H5 v2) must open by 2026-10-23T00. Source: ARTIFACTS/lab/push-2026-10-16.md. Nothing here says any book made money.",
+   "atUtc": "2026-10-16T05:35:34Z"
+  },
   {
    "id": "exp025-p5-1016",
    "kind": "other",
@@ -743,6 +750,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261016-push-day1",
+   "from": "claude",
+   "atUtc": "2026-10-16T05:35:34Z",
+   "text": "Push day 1: I scored every live idea in the library against your goal (about $200/day). Honest result: nothing we have can get there on 1.29 SOL. After realistic limits on trade rate and size, the best four lines together come to about 0.2–0.3 SOL a day, and every one of them loses half its edge once a trade is bigger than about 0.1–1.7 SOL, because the pools are thin. Two new ideas checked today (providing liquidity on PumpSwap, copying many wallets instead of one) don't scale either. What it means: the path is several small lines in parallel, getting one or two through the gate fast, and then more capital behind them, plus continuing to hunt for a bigger mechanism. Details: ARTIFACTS/lab/push-2026-10-16.md. Nothing here says any book makes money."
+  },
+  {
    "id": "fy-20261016-exp025-p5",
    "from": "claude",
    "atUtc": "2026-10-16T04:51:17Z",
@@ -1068,6 +1081,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-push-day1",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T05:35:34Z",
+   "text": "Push day 1 recorded: no library book reaches the goal on 1.29 SOL (judge: shortlist about 0.20–0.32 SOL/day after capacity haircut). Record: ARTIFACTS/lab/push-2026-10-16.md. Nothing here says any book made money."
+  },
   {
    "id": "s-20261016-exp025-p5",
    "from": "claude",
