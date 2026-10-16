@@ -495,6 +495,17 @@ def test_migrate_positions_complete_only_means_never_migrated(blocks, tmp_path, 
     assert oc.migrate_positions(blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f]) == {}
 
 
+def test_complete_positions_reads_complete_rows_only_with_event_ts(blocks, tmp_path, monkeypatch):
+    f = _mig_file(tmp_path, monkeypatch, [
+        {"type": "complete", "mint": "M", "slot": 10, "event_index": 1, "event_ts": 55, "virtual_quote_reserves": 9},
+        {"type": "migration", "mint": "M", "slot": 10, "event_index": 1, "event_ts": 55},
+        {"type": "migration", "mint": "N", "slot": 12, "event_index": 3}])
+    ts: dict[str, int] = {}
+    args = (blocks, "forward-1002", "2026-10-09T00", "2026-10-16T01", [f])
+    assert oc.complete_positions(*args, ts) == {"M": (10, 1)} and ts == {"M": 55}
+    assert oc.migrate_positions(*args) == {"M": (10, 1), "N": (12, 3)}
+
+
 def test_migrate_positions_conflicting_migration_rows_refused(blocks, tmp_path, monkeypatch):
     f = _mig_file(tmp_path, monkeypatch, [{"type": "migration", "mint": "M", "slot": 12, "event_index": 3},
                                           {"type": "pool_create", "mint": "M", "slot": 13, "event_index": 0}])

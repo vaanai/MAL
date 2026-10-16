@@ -507,8 +507,20 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
     tracker.check_streams()  # R2 for migrations (R1 already refuses any bad migrations line)
     check_rss(max_rss, "after the migrate map")
     migrate_pos = _Positions(mig_filled)
-    complete_pos = _Positions()
-    complete_info: dict[str, tuple[int, int, int]] = {}  # mint -> (slot, ei, ms)
+    # complete rows of migrations/ (real layout: type "complete", one per curve completion; identity fields only). The
+    # completing buy often shares its (slot, event_index) with the migrate row, so the trade stream cannot show it
+    # (pos >= migrate is dropped); the row is the authoritative position. Trade detection below still runs for the
+    # constant check (C3) and the QA count.
+    comp_ts: dict[str, int] = {}
+    oc._lines = lambda path: tracker.valid_lines(Path(path), "migrations")
+    try:
+        comp_rows = oc.complete_positions(blocks, dataset, start, oc.FORWARD_END_EXCLUSIVE, mig_p, comp_ts)
+    finally:
+        oc._lines = real_lines
+    complete_pos = _Positions(comp_rows)
+    complete_info: dict[str, tuple[int, int, int]] = {  # mint -> (slot, ei, ms)
+        m: (v[0], v[1], comp_ts.get(m, 0) * 1000) for m, v in comp_rows.items()}
+    trade_detected: set[str] = set()  # mints whose complete buy was found on the (guarded) trade stream
     det = {"exact": 0, "below": 0}
 
     skipped: dict[str, int] = {k: 0 for k in SKIP_KEYS}
@@ -559,10 +571,12 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
                 if m not in found or pos[:2] < found[m][:2]:
                     found[m] = pos
         for m, pos in found.items():
-            if m in complete_pos.data:
+            if m in trade_detected:
                 continue
-            complete_pos.data[m] = pos[:2]
-            complete_info[m] = pos[:3]
+            trade_detected.add(m)
+            if m not in complete_pos.data:  # no complete row: the trade is the only evidence
+                complete_pos.data[m] = pos[:2]
+                complete_info[m] = pos[:3]
             det["exact" if pos[3] == COMPLETE_VIRTUAL_TOKEN_RESERVE_RAW else "below"] += 1
 
         def _again() -> Iterator[dict[str, Any]]:  # one dict at a time; mask_row is idempotent on these allowlisted keys
@@ -631,12 +645,18 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
                   schema=pa.schema([("mint", pa.string()), ("complete_slot", pa.int64()),
                                     ("complete_event_index", pa.int64()), ("complete_ms", pa.int64())]))
     con.register("complete_t", cm)
+    con.register("tdet_t", pa.table({"mint": pa.array(list(trade_detected), pa.string())}))
     n_traded_migrated, n_mig_no_complete = 0, 0
     if have_stage and mig_filled:
         con.register("mig_t", pa.table({"mint": list(mig_filled)}))
         n_traded_migrated, n_mig_no_complete = con.execute(
             "SELECT count(DISTINCT s.mint), count(DISTINCT s.mint) FILTER (WHERE s.mint NOT IN (SELECT mint FROM complete_t)) "
             "FROM stage_all s JOIN mig_t USING (mint)").fetchone()
+    n_mig_no_trade_complete = 0
+    if have_stage and mig_filled:
+        n_mig_no_trade_complete = con.execute(
+            "SELECT count(DISTINCT s.mint) FROM stage_all s JOIN mig_t USING (mint) "
+            "WHERE s.mint NOT IN (SELECT mint FROM tdet_t)").fetchone()[0]
     gate = complete_gate_reasons(n_traded_migrated, n_mig_no_complete, det["exact"], det["below"])  # C1-C3 BEFORE the R4 drop
     # creates: earliest (slot, event_index, event_ts) per mint, deduped on disk
     if n_create_files:
@@ -683,6 +703,8 @@ def _run(args: argparse.Namespace, tracker: MalformedTracker) -> dict[str, Any]:
     detection = {"mints_with_complete": len(complete_info), "exact_constant": det["exact"],
                  "strictly_below_constant": det["below"], "traded_mints_with_migrate_pos": n_traded_migrated,
                  "qa_traded_mints_with_migrate_pos_but_no_detected_complete": n_mig_no_complete,
+                 "qa_traded_mints_with_migrate_pos_but_no_trade_detected_complete": n_mig_no_trade_complete,
+                 "complete_rows_in_migrations": len(comp_rows),
                  "rule": {"max_missed_fraction": MAX_MISSED_FRACTION, "min_exact_fraction": MIN_EXACT_FRACTION},
                  "gate_reasons": gate}
     if args.precount or gate or excl_reasons:

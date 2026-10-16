@@ -317,6 +317,34 @@ class LayerTests(Base):
         self.assertFalse((self.out / "tokens_d1.parquet").exists())
         self.assertFalse((self.out / "MANIFEST.json").exists())
 
+    def test_real_layout_migrate_row_shares_position_with_the_completing_buy(self):
+        """Real layout (job #1067): migrations/ holds type "complete" rows, and the "migration" row of a mint has the
+        SAME (slot, event_index) as the completing buy, so the migrate cutoff drops that buy and trade detection alone
+        misses the complete. The complete row supplies the position; C1-C3 thresholds are unchanged."""
+        ev = {"event_ts": T0 + 10}
+        rows = [trade("A", "w1", "buy", 100, 0, T0 + 5),
+                trade("A", "w2", "buy", 150, 0, T0 + 10, b=CB),  # completing buy == migrate position (150, 0)
+                trade("A", "w3", "sell", 151, 0, T0 + 11),
+                trade("B", "w1", "buy", 200, 0, T0 + 12, b=CB)]  # B: complete trade precedes its migrate tx (300, 0)
+        migs = [{"type": "complete", "mint": "A", "slot": 150, "event_index": 0, **ev},
+                {"type": "migration", "mint": "A", "slot": 150, "event_index": 0, **ev},
+                {"type": "complete", "mint": "B", "slot": 200, "event_index": 0, **ev},
+                {"type": "migration", "mint": "B", "slot": 300, "event_index": 0, **ev},
+                {"type": "complete", "mint": "Z", "slot": 900, "event_index": 3, **ev}]  # never traded in the window
+        self.build(trades0=rows, trades1=[], migs=migs)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = layer.main(["--dataset", DS, "--start", H0, "--end", "2026-10-02T17", "--out", str(self.out),
+                             "--precount"])
+        self.assertEqual(rc, 0, err.getvalue())
+        pc = json.loads((self.out / "PRECOUNT.json").read_text())
+        cd = pc["complete_detection"]
+        self.assertEqual(cd["gate_reasons"], [])
+        self.assertEqual(cd["traded_mints_with_migrate_pos"], 2)
+        self.assertEqual(cd["qa_traded_mints_with_migrate_pos_but_no_detected_complete"], 0)
+        self.assertEqual(cd["qa_traded_mints_with_migrate_pos_but_no_trade_detected_complete"], 1)  # A only
+        self.assertEqual(cd["complete_rows_in_migrations"], 3)
+
     def test_gate_stops_when_constant_does_not_fit(self):
         rows = [trade("A", "w1", "buy", 100, 0, T0 + 10, b=CB - 5)]  # below, never exact
         self.build(trades0=rows, trades1=[], migs=[{"type": "migration", "mint": "A", "slot": 150, "event_index": 0}])
