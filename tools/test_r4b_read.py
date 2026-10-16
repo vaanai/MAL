@@ -212,6 +212,73 @@ def test_mints_missing_from_the_fetch_file_are_strand_class(tmp_path, world):
     assert all(c["mean_pct"] < -70 for c in res["cells"].values())  # stake + one send + rent lost on every stranded trip (fail legs keep 71-85 % of it)
 
 
+def test_forward_features_use_asof_filters_and_asof_grads(tmp_path, world, monkeypatch):
+    calls = []
+    orig = rf.mint_features
+
+    def spy(*a, **k):
+        calls.append((k.get("grads_rule", "frozen"), k.get("mint_filters", "frozen")))
+        return orig(*a, **k)
+
+    monkeypatch.setattr(rf, "mint_features", spy)
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    assert calls and set(calls) == {("asof_pda_first_print", "asof"), ("frozen", "frozen")}  # deciding calls: both asof; the frozen calls are the report-only dual
+    assert calls.count(("asof_pda_first_print", "asof")) == calls.count(("frozen", "frozen")) == res["mints"]
+
+
+def test_report_only_asof_vs_frozen_null_bt_and_gap(tmp_path, world):
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    ro = res["report_only"]
+    d = ro["asof_vs_frozen"]
+    assert "NOT removed" in d["note"] or "NOT" in d["note"]
+    assert d["asof_only_entered_top10"] <= res["A_attempts"]
+    for name, c in d["pnl_asof_only_trades"].items():
+        assert c["n"] + d["pnl_other_trades"][name]["n"] == res["A_attempts"]
+    assert set(ro["null_block_time_prints_by_hour"]) <= set(rl.hour_range(rr.H0, hkey(8))) and all(v == 0 for v in ro["null_block_time_prints_by_hour"].values())
+    gap = res["keys"]["live_vs_decision_gap_by_mark"]
+    assert set(gap) == {hkey(1), hkey(2), hkey(3), hkey(4)}  # marks in [W0, E - 1h]
+    for g in gap.values():
+        assert g["gap"] == g["live"] - g["decision_rows"] >= 0 and g["lt3_prints"] + g["d3_drop"] + g["no_feature_row"] == g["gap"]
+
+
+def test_asof_only_rows_stay_in_the_book(tmp_path, world, monkeypatch):
+    # force the frozen rule to lose every row of one mint: those rows become asof-only; they are reported, never removed from the deciding book
+    orig = rf.mint_features
+
+    def spy(prep, c, *a, **k):
+        if k.get("mint_filters") == "frozen" and c.mid == 0:
+            return None
+        return orig(prep, c, *a, **k)
+
+    base = rr.read(mk(tmp_path / "a", world) if (tmp_path / "a").mkdir() is None else None, mkdeps(world))
+    monkeypatch.setattr(rf, "mint_features", spy)
+    (tmp_path / "b").mkdir()
+    res = rr.read(mk(tmp_path / "b", world), mkdeps(world))
+    assert res["report_only"]["asof_vs_frozen"]["asof_only_rows"] >= 1 and res["report_only"]["asof_vs_frozen"]["frozen_only_rows"] == 0
+    assert res["A_attempts"] == base["A_attempts"] and res["cells"]["flat_1.3"]["total_sol"] == base["cells"]["flat_1.3"]["total_sol"]
+
+
+def test_subset_violation_is_not_decidable(tmp_path, world, monkeypatch):
+    orig = rr.live_keys
+
+    def drop_one(*a, **k):
+        out = orig(*a, **k)
+        for t in out:  # remove the mint with the most prints from every mark: its decision rows are now outside the live set
+            if out[t]:
+                out[t].pop(max(out[t], key=out[t].get))
+        return out
+
+    monkeypatch.setattr(rr, "live_keys", drop_one)
+    res = rr.read(mk(tmp_path, world), mkdeps(world))
+    assert res["verdict"] == "NOT_DECIDABLE" and res["keys"]["ok"] is False and (res["keys"]["not_subset_marks"] >= 1 or res["keys"]["live_md5_mismatch_marks"] >= 1)
+
+
+def test_gap_by_cause_unit():
+    live = {"a": 2, "b": 5, "c": 5, "d": 9}
+    g = rr.gap_by_cause(live, {"d"}, {(1, 100)}, {"a": 0, "b": 1, "c": 2, "d": 3}, 100)
+    assert g == {"lt3_prints": 1, "d3_drop": 1, "no_feature_row": 1}
+
+
 def test_window_and_d3_rule(tmp_path, world):
     res = rr.read(mk(tmp_path, world), mkdeps(world))
     assert res["A_attempts"] <= 4 * 10  # entry marks in [W0, E - 1h]: 4 marks, K = 10
@@ -352,6 +419,31 @@ def test_counts_must_cover_every_hour(tmp_path, world):
     write_counts(cdir, ls[:-1])
     refused(mk(tmp_path, world, counts=cdir), mkdeps(world), "counts.jsonl lacks 1 hour")
     refused(mk(tmp_path, world, counts=tmp_path / "nocounts"), mkdeps(world), "the count job has not run")
+
+
+def test_counts_lacking_hour_in_h0_to_e_and_extra_hours_rule(tmp_path, world):
+    cdir = tmp_path / "counts"
+    shutil.copytree(world["counts"], cdir)
+    ls = rc.read_counts(cdir)
+    assert [ln["extra_hours_loaded"] for ln in ls] == [2, 2, 2, 2, 1, 0]  # the count job's own rule: E-1 carries 1, E carries 0
+    write_counts(cdir, [x for x in ls if x["hour"] != hkey(2)])
+    refused(mk(tmp_path, world, counts=cdir), mkdeps(world), "counts.jsonl lacks 1 hour(s) of [H0, E]")
+    for i, bad in ((0, 1), (3, 0), (4, 2), (5, 1)):
+        ls2 = [dict(x) for x in ls]
+        ls2[i]["extra_hours_loaded"] = bad
+        write_counts(cdir, ls2)
+        refused(mk(tmp_path, world, counts=cdir), mkdeps(world), f"hour {ls[i]['hour']}: extra_hours_loaded is {bad}")
+
+
+def test_count_config_pins_must_equal_the_exp(tmp_path, world):
+    for k, val in (("w0", hkey(2)), ("h0", hkey(1)), ("a_attempts", 7), ("n_blocks", 3), ("stop_mode", "attempts"), ("calendar_stop", hkey(6)), ("exit_horizon_h", 2)):
+        cdir = tmp_path / f"c_{k}"
+        shutil.copytree(world["counts"], cdir)
+        pin = json.loads((cdir / rc.CONFIG).read_text())
+        pin[k] = val
+        (cdir / rc.CONFIG).write_text(json.dumps(pin))
+        refused(mk(tmp_path, world, counts=cdir), mkdeps(world), "count config.json pins differ from the EXP's")
+        shutil.rmtree(tmp_path / "out", ignore_errors=True)
 
 
 def test_counts_sha_and_code_pins(tmp_path, world):
@@ -588,7 +680,12 @@ def test_price_variant_strand_unpriced_and_e1_penalty():
     st = rr.price_variant(trip(strand_class=np.array([True, False, False])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
     assert st["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED and st["nofail"][1] == base["nofail"][1]
     un = rr.price_variant(trip(Qx=np.array([np.nan, 77e9, 77e9])), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
-    assert un["stranded"].tolist() == [True, False, False] and un["nofail"][0] == -stake - 505_000 - FZ.RENT_STRANDED
+    assert un["stranded"].tolist() == [True, False, False] and un["nofail"][0] == -stake - 505_000  # (e) stake + buy send, no sell send, no rent
+    assert rr.UNPRICED_EXIT_RENT_LAMPORTS == 0 and un["filled"].all()  # the trade is never skipped
+    for kw in (dict(Qx=np.array([0.0, 77e9, 77e9])), dict(Bx=np.array([0.0, 2.5e14, 2.5e14])), dict(Bx=np.array([-5.0, 2.5e14, 2.5e14])), dict(Qx=np.array([-1.0, 77e9, 77e9]))):
+        u2 = rr.price_variant(trip(**kw), 1.3, send=505_000, rent=0, auto=True, e1_penalty=5e6)
+        assert u2["stranded"].tolist() == [True, False, False] and u2["nofail"][0] == -stake - 505_000 and len(u2["nofail"]) == 3
+    assert (un["flat"][0] == 0.85 * (-stake - 505_000) - 0.15 * 505_000)  # the fail legs still apply to the unpriced trade
     below = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=1.0)  # penalty below the haircut: unchanged
     assert np.allclose(below["nofail"], base["nofail"])
     h0, _ = bk.round_trip(np.full(3, float(stake)), *trip()["ent"][1.3][:2], trip()["spot"], trip()["Qx"], trip()["Bx"], 505_000, 0, h_in=0.0, h_out=0.0)
@@ -679,5 +776,5 @@ def test_not_decidable_comes_before_the_gate(real):
 
 def test_pinned_constants_are_the_exp_values(real):
     assert (rr.STOP_HOURS, rr.MIN_BLOCKS, rr.MIN_ATTEMPTS, rr.GATE_N, rr.GATE_DATES, rr.ALPHA_FAMILY, rr.EXIT_HORIZON_H) == (480, 20, 125, 100, 5, 0.025, 1)
-    assert rr.H0 == "2026-10-16T01" and rr.EARLIEST_W0 == "2026-10-18T01" and rr.SEND_FEE_160K == 160_000 and FZ.SEND_FEE_DECIDING == 505_000 and FZ.RENT_DECIDING == 0
+    assert rr.H0 == "2026-10-16T03" == rc.H0 and rr.UNIVERSE_EXITS_AT_MARKS_ONLY is True and rr.EARLIEST_W0 == "2026-10-18T01" and rr.SEND_FEE_160K == 160_000 and FZ.SEND_FEE_DECIDING == 505_000 and FZ.RENT_DECIDING == 0
     assert FZ.K_ROUNDING == "round" and FZ.LATENCIES_S == (1.3, 1.9) and rr.EXTRA_TRADE_HOURS == 2

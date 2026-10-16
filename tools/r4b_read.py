@@ -17,6 +17,11 @@ Order of events (the order is part of the contract; tests pin it)
      run the xs10 book from W0 marks to the last entry mark <= E - 1h, sell everything at mark E, price the cost stack (section 5), build the 4 cells, gate (section 6).
   4. VERDICT to stderr, THEN the result file (O_EXCL), THEN the `completed` line. The verdict is never produced after a file write.
 
+Universe exits (f): the book is hourly; UNIVERSE_EXITS_AT_MARKS_ONLY = True. A token that leaves the universe between marks (dead, 48 h passed) is not ranked at the next mark and is
+sold there by xs_book's rank rule (or its gap rule), as in harness.book_xs. Unpriced exit (e): a held token whose exit reserve state is <= 0 or missing is a total loss of the stake plus
+the buy send (no sell send, UNPRICED_EXIT_RENT_LAMPORTS = 0), marked stranded, and stays in the book. Forward features (a): mint_features(grads_rule="asof_pda_first_print",
+mint_filters="asof"); the training defaults are frozen. Allowlist (g): [H0 = 2026-10-16T03, E + 1h) for decisions plus the 2 extra trade hours (E + 3h exclusive, as r4b_count's trade_end).
+
 Deciding stack (EXP section 5): 505,000-lamport sends (160,000 and the buy-lag shift only if the pinned fee-arm record says Test A and Test B both PASS), rent 0 per filled trip,
 auto-stranded (simulated proceeds below one send fee), strand-class mints from the pinned mint-account fetch file (a missing or failed fetch is strand-class), VERIFY haircut
 or the larger E1 penalty max(0, -5 * rbar) per filled trip, flat 15 % and pressure legs (intercept refit per cell, mean p 0.289), latencies 1.3 s and 1.9 s,
@@ -73,7 +78,9 @@ MIN_BLOCKS = 20  # N: 24 h blocks from W0 holding an attempt
 MIN_ATTEMPTS = 125  # A
 EXTRA_TRADE_HOURS = 2  # hours after E's exit hour that are sealed and read (allowlist end = E + 3h)
 EXIT_HORIZON_H = 1
-H0 = "2026-10-16T01"
+H0 = "2026-10-16T03"  # the count job's creates start (tools/r4b_count.H0); 10-16T01/T02 are never opened by the read
+UNIVERSE_EXITS_AT_MARKS_ONLY = True  # (f) the book is hourly: a token that leaves the universe between marks is sold at the NEXT mark by the rank / gap rule (xs_book), never in between
+UNPRICED_EXIT_RENT_LAMPORTS = 0  # (e) named for QP: an exit whose reserve state is <= 0 (or missing) costs the stake + the buy send; no sell send, no rent; marked stranded; never skipped
 EARLIEST_W0 = "2026-10-18T01"
 BLOCK_S = 86400
 MARK_S = 3600
@@ -486,14 +493,26 @@ def preflight(paths: Paths, deps: Deps, started: datetime) -> tuple[Plan | None,
         for m in ("r4b_count", "r4b_layout"):
             if (pin.get("code_sha256") or {}).get(f"{m}.py") != P["code_sha256"].get(m):
                 probs.append(f"count job ran {m}.py at {(pin.get('code_sha256') or {}).get(f'{m}.py')}, the read pins {P['code_sha256'].get(m)}")
-        count_cfg = rc.Config(Path(paths.walk_dir), cdir, ef.hour_key(w0), n_blocks=int(pin.get("n_blocks", rc.N_BLOCKS)), a_attempts=int(pin.get("a_attempts", rc.A_ATTEMPTS)),
-                              h0=str(pin.get("h0", rc.H0)))
+        want_pin = {"w0": ef.hour_key(w0), "stop_mode": rc.STOP_MODE, "h0": H0, "a_attempts": MIN_ATTEMPTS, "calendar_stop": ef.hour_key(e), "exit_horizon_h": EXIT_HORIZON_H}
+        bad_pin = [f"{k}: count config {pin.get(k)!r} != EXP/read {v_!r}" for k, v_ in want_pin.items() if pin.get(k) != v_]
+        if int(pin.get("n_blocks", -1)) * rc.BLOCK_S != STOP_HOURS * 3600:
+            bad_pin.append(f"n_blocks: count config {pin.get('n_blocks')!r} blocks != the {STOP_HOURS} h stop")
+        if bad_pin:
+            probs.append("count config.json pins differ from the EXP's: " + "; ".join(bad_pin))
+        count_cfg = rc.Config(Path(paths.walk_dir), cdir, ef.hour_key(w0), n_blocks=int(pin.get("n_blocks", rc.N_BLOCKS)), a_attempts=int(pin.get("a_attempts", rc.A_ATTEMPTS)), h0=H0)
         counts = rc.read_counts(cdir)
         by_hour = {ln["hour"]: ln for ln in counts}
-        need = rl.hour_range(count_cfg.h0, ef.hour_key(e + timedelta(hours=1)))
+        need = rl.hour_range(H0, ef.hour_key(e + timedelta(hours=1)))  # [H0, E] inclusive
         miss = [h for h in need if h not in by_hour]
         if miss:
-            probs.append(f"counts.jsonl lacks {len(miss)} hour(s), first {miss[:3]}")
+            probs.append(f"counts.jsonl lacks {len(miss)} hour(s) of [H0, E], first {miss[:3]}")
+        for h in need:
+            ln = by_hour.get(h)
+            if ln is None:
+                continue
+            want_x = 0 if h == ef.hour_key(e) else (1 if h == ef.hour_key(e - timedelta(hours=1)) else rc.EXTRA_HOURS)
+            if ln.get("extra_hours_loaded") != want_x:
+                probs.append(f"hour {h}: extra_hours_loaded is {ln.get('extra_hours_loaded')!r}, the rule needs {want_x}")
         for h in need:
             ln = by_hour.get(h)
             if ln is None or h not in table:
@@ -543,19 +562,35 @@ def lp_discontinuities(isbuy, tok, b, mid) -> dict[str, int]:
     return out
 
 
-def live_keys(scratch: Path, marks: Sequence[tuple[int, int]], meta_mint: Mapping[int, str], mbt_by_mid: Mapping[int, int], con: Any) -> dict[int, set[tuple[str, int]]]:
-    """The count job's live set per mark, recomputed from the same structure fields (mid, slot, bt): T >= mbt + 600, T <= mbt + 48h, the latest bt of the
-    canonical-pool prints with slot < sd lies in [T - 600, T)."""
+def live_keys(scratch: Path, marks: Sequence[tuple[int, int]], meta_mint: Mapping[int, str], mbt_by_mid: Mapping[int, int], con: Any) -> dict[int, dict[str, int]]:
+    """The count job's live set per mark, recomputed with the same predicate as r4b_count.structure_hour_lines: T >= mbt + 600, T <= mbt + 48h, the latest bt of the
+    canonical-pool prints with slot < sd lies in [T - 600, T). Returns {mark_t: {mint: prints before sd}}. mbt_by_mid holds only mints with mbt >= UNIVERSE_MIN_MBT."""
     out = {}
     con.sql(f"create or replace view utv as select mid, slot, bt from read_parquet('{scratch}/ut/*.parquet')")
     for t, sd in marks:
-        rows = con.sql(f"""select mid from utv where slot < {sd} group by mid having max(bt) >= {t - rc.LIVE_WINDOW_S} and max(bt) < {t}""").fetchall()
-        s = set()
-        for (mid,) in rows:
+        rows = con.sql(f"""select mid, count(*) from utv where slot < {sd} group by mid having max(bt) >= {t - rc.LIVE_WINDOW_S} and max(bt) < {t}""").fetchall()
+        s_ = {}
+        for mid, n in rows:
             mb = mbt_by_mid.get(mid)
             if mb is not None and mb + rc.LIVE_LO_S <= t <= mb + rc.LIVE_HI_S:
-                s.add((meta_mint[mid], t))
-        out[t] = s
+                s_[meta_mint[mid]] = int(n)
+        out[t] = s_
+    return out
+
+
+def gap_by_cause(live: Mapping[str, int], dec: set, d3: set, mint_mid: Mapping[str, int], t: int) -> dict[str, int]:
+    """Live tokens at a mark that have no decision row, by cause: fewer than 3 prints before sd; dropped by the s0 + 600 s rule; no feature row (reserve state <= 0,
+    asof filter, grid)."""
+    out = {"lt3_prints": 0, "d3_drop": 0, "no_feature_row": 0}
+    for m, n in live.items():
+        if m in dec:
+            continue
+        if n < rc.MIN_PRINTS_DECISION:
+            out["lt3_prints"] += 1
+        elif (mint_mid[m], t) in d3:
+            out["d3_drop"] += 1
+        else:
+            out["no_feature_row"] += 1
     return out
 
 
@@ -611,7 +646,7 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
     last_entry = e - MARK_S
     R = Rows()
     R.ent = {lat: [] for lat in (*LATS, LAT_REPORT_LONG)}
-    rep = {"d3_dropped": 0, "d3_kept_pre_filter": 0, "mints": int(len(meta)), "mints_with_rows": 0, "lp": {"pairs": 0, **{f"gt_{t:g}": 0 for t in LP_TOLS}}}
+    rep = {"asof_only": [], "frozen_only": [], "d3_keys": set(), "d3_dropped": 0, "d3_kept_pre_filter": 0, "mints": int(len(meta)), "mints_with_rows": 0, "lp": {"pairs": 0, **{f"gt_{t:g}": 0 for t in LP_TOLS}}}
     members = set(meta["mid"].tolist())
     dates_s = lambda T: np.array([slot_s[d] for d in bk.utc_dates(T)])  # noqa: E731
     delta = float(fee["delta_slots"])
@@ -631,10 +666,18 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
                                  ntr=fnum(r.ntr), bbuy=fnum(r.bbuy), bsell=fnum(r.bsell), cre_sell=fnum(r.cre_sell))
             sl = U["slot"][a:b]
             res = rf.mint_features(prep, const, None if pd.isna(r.ch) else r.ch, sl, U["bt"][a:b], U["isbuy"][a:b], U["sol"][a:b], U["tok"][a:b], U["q"][a:b],
-                                   U["b"][a:b], U["th"][a:b], vq=U["vq"][a:b], seg_end=None, grads_rule="asof_pda_first_print", return_state=True)
+                                   U["b"][a:b], U["th"][a:b], vq=U["vq"][a:b], seg_end=None, grads_rule="asof_pda_first_print", mint_filters="asof", return_state=True)
             lpd = lp_discontinuities(U["isbuy"][a:b], U["tok"][a:b], U["b"][a:b], np.full(b - a, mid))
             for kk in rep["lp"]:
                 rep["lp"][kk] += lpd[kk]
+            # (d) report-only: the same mint under the frozen (training) filters, only to list rows that exist under one rule and not the other
+            resf = rf.mint_features(prep, const, None if pd.isna(r.ch) else r.ch, sl, U["bt"][a:b], U["isbuy"][a:b], U["sol"][a:b], U["tok"][a:b], U["q"][a:b],
+                                    U["b"][a:b], U["th"][a:b], vq=U["vq"][a:b], seg_end=None, grads_rule="frozen", mint_filters="frozen")
+            inwin = lambda T_: set(T_[(T_ % MARK_S == 0) & (T_ >= w0) & (T_ <= last_entry)].tolist())  # noqa: E731
+            Ta_ = inwin(res.I[:, 1]) if res is not None else set()
+            Tf_ = inwin(resf.I[:, 1]) if resf is not None else set()
+            rep["asof_only"] += [(mid, t_) for t_ in sorted(Ta_ - Tf_)]
+            rep["frozen_only"] += [(mid, t_) for t_ in sorted(Tf_ - Ta_)]
             if res is None:
                 continue
             T = res.I[:, 1]
@@ -646,6 +689,7 @@ def build_rows(scratch: Path, plan: Plan, fee: Mapping[str, Any], slot_s: Mappin
             rep["d3_kept_pre_filter"] += int(sel.sum())
             keep = sel & (T >= s0bt + D3_DROP_S)
             rep["d3_dropped"] += int((sel & ~keep).sum())
+            rep["d3_keys"] |= {(mid, int(t_)) for t_ in T[sel & ~keep]}
             if not keep.any():
                 continue
             rep["mints_with_rows"] += 1
@@ -697,13 +741,17 @@ def price_variant(tr: Mapping[str, np.ndarray], lat: float, *, send: int, rent: 
     haircut and max(0, -5 rbar) per filled, non-stranded trip."""
     Qe, Be, ssb, nb_ = (tr["ent"][lat][i] for i in range(4))
     Qx, Bx = tr["Qx"], tr["Bx"]
-    unpriced = ~(np.isfinite(Qx) & np.isfinite(Bx) & (Qx > 0) & (Bx >= 0))
+    unpriced = ~(np.isfinite(Qx) & np.isfinite(Bx) & (Qx > 0) & (Bx > 0))  # (e) reserve state <= 0 or missing
     Qx_, Bx_ = np.where(unpriced, 1.0, Qx), np.where(unpriced, 1.0, Bx)
-    stranded = tr["strand_class"] | unpriced
+    stranded = tr["strand_class"]
     stk = np.full(len(Qe), float(stake))
     pnl, filled, st = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, stranded=stranded, auto_stranded=auto, return_stranded=True)
+    un = unpriced & filled  # a guarded (unfilled) buy has nothing to sell
+    pnl = np.where(un, -(stk + send) - UNPRICED_EXIT_RENT_LAMPORTS, pnl)  # total loss of the stake plus the buy send; no sell send; the trade stays in the book
+    st = st | un
     if e1_penalty > 0:
         pnl0, _ = bk.round_trip(stk, Qe, Be, tr["spot"], Qx_, Bx_, send, rent, h_in=0.0, h_out=0.0, stranded=stranded, auto_stranded=auto)
+        pnl0 = np.where(un, pnl, pnl0)
         hair = pnl0 - pnl
         extra = np.where(filled & ~st, np.maximum(0.0, e1_penalty - hair), 0.0)
         pnl = pnl - extra
@@ -762,7 +810,8 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
     slot_s = slot_s_by_date(plan.sph)
     try:
         stats = rl.build(Path(paths.walk_dir), plan.hours[0], ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)), scratch, v_source="event", canonical_fn=deps.canonical_fn,
-                         problems_fn=deps.problems_fn, verify=deps.verify, memory_limit=deps.memory_limit, threads=deps.threads, tmp_dir=scratch / "tmp")
+                         problems_fn=deps.problems_fn, verify=deps.verify, memory_limit=deps.memory_limit, threads=deps.threads, tmp_dir=scratch / "tmp",
+                         trade_end=ef.hour_key(ef.hour_dt(plan.hours[-1]) + timedelta(hours=1)))
         struct_probs = []
         if stats.get("v0_missing_days_over"):
             struct_probs.append(f"v0-missing share above {rl.V0_MISSING_REFUSE_SHARE} on {stats['v0_missing_days_over']}")
@@ -777,18 +826,30 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
         sd = concat(R.sd, np.int64)
         X = np.vstack(R.X) if R.X else np.zeros((0, FZ.N_FEATURES), np.float32)
         score = rs.bag_score(boosters, X) if len(X) else np.zeros(0)
-        # decision keys vs the count job's live keys, per mark
-        marks = sorted({(int(ln["mark_t"]), int(ln["sd"])) for ln in plan.counts if w0 <= ln["mark_t"] <= e - MARK_S})
-        meta = con.sql(f"select mid, mint, mbt from read_parquet('{scratch}/meta.parquet')").fetchall()
-        lk = live_keys(scratch, marks, {m[0]: m[1] for m in meta}, {m[0]: m[2] for m in meta}, con)
+        # (b) per count mark: recompute the live set exactly as r4b_count does, compare live_md5 / live_tokens / decision_rows, decision keys must be a subset
+        marks = sorted({(int(ln["mark_t"]), int(ln["sd"])) for ln in plan.counts})
+        meta = [m for m in con.sql(f"select mid, mint, mbt from read_parquet('{scratch}/meta.parquet')").fetchall() if m[2] >= rc.UNIVERSE_MIN_MBT]
         mint_of = {m[0]: m[1] for m in meta}
+        mid_of = {m[1]: m[0] for m in meta}
+        lk = live_keys(scratch, marks, mint_of, {m[0]: m[2] for m in meta}, con)
         dkeys: dict[int, set] = {}
         for mi, t in zip(mid.tolist(), T.tolist()):
-            dkeys.setdefault(t, set()).add((mint_of[mi], t))
+            dkeys.setdefault(t, set()).add(mint_of[mi])
         by_hour = {ln["mark_t"]: ln for ln in plan.counts}
-        notsub = sum(1 for t, ks in dkeys.items() if not ks <= lk.get(t, set()))
-        md5_bad = [t for t in lk if t in by_hour and rc.keys_md5(sorted(lk[t])) != by_hour[t]["live_md5"]]
-        keys_ok = notsub == 0 and not md5_bad
+        notsub = sorted(t for t, ks in dkeys.items() if not ks <= set(lk.get(t, {})))
+        md5_bad = [t for t in lk if rc.keys_md5([(m_, t) for m_ in lk[t]]) != by_hour[t]["live_md5"] or len(lk[t]) != by_hour[t]["live_tokens"]
+                   or sum(1 for n_ in lk[t].values() if n_ >= rc.MIN_PRINTS_DECISION) != by_hour[t]["decision_rows"]]
+        keys_ok = not notsub and not md5_bad
+        gap = {}
+        for t in sorted(lk):
+            if w0 <= t <= e - MARK_S:
+                g = gap_by_cause(lk[t], dkeys.get(t, set()), rep["d3_keys"], mid_of, t)
+                gap[ef.hour_key(datetime.fromtimestamp(t, tz=timezone.utc))] = {"live": len(lk[t]), "decision_rows": len(dkeys.get(t, ())), "gap": len(lk[t]) - len(dkeys.get(t, ())), **g}
+        null_bt = {}
+        for h in plan.hours:
+            f = scratch / "ut" / f"{h}.parquet"
+            if f.exists():
+                null_bt[h] = int(con.sql(f"select count(*) from read_parquet('{f}') where bt is null").fetchone()[0])
         # the book
         bkr = bk.xs_book(T, mid, score)
         t1 = np.where(bkr["reason"] == "end", e, bkr["T1"])
@@ -817,6 +878,21 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
         pv4 = price_variant(tr, LAT_REPORT_LONG, e1_penalty=e1p, **variants["deciding"])
         for leg in ("flat", "press"):
             rep_cells[f"lat4.0:{leg}_{LAT_REPORT_LONG}"] = cell_stats(pv4[leg], tr_T0, tr_mid, w0)
+        asof_only = set(rep["asof_only"])
+        entered = np.array([(int(m_), int(t_)) in asof_only for m_, t_ in zip(tr_mid, tr_T0)], bool)
+        dual = {"asof_only_rows": len(rep["asof_only"]), "frozen_only_rows": len(rep["frozen_only"]),
+                "by_mark": {}, "by_date": {}, "asof_only_entered_top10": int(entered.sum()),
+                "pnl_asof_only_trades": {}, "pnl_other_trades": {},
+                "note": "report only, computed after E; asof-only rows are NOT removed from the deciding book"}
+        for key, lst in (("asof_only", rep["asof_only"]), ("frozen_only", rep["frozen_only"])):
+            for m_, t_ in lst:
+                dual["by_mark"].setdefault(str(t_), {"asof_only": 0, "frozen_only": 0})[key] += 1
+                dual["by_date"].setdefault(str(bk.utc_dates([t_])[0]), {"asof_only": 0, "frozen_only": 0})[key] += 1
+        for lat in LATS:
+            for leg in ("flat", "press"):
+                x = cell_pnl[lat][leg] / 1e9
+                dual["pnl_asof_only_trades"][f"{leg}_{lat}"] = {"n": int(entered.sum()), "total_sol": float(x[entered].sum()), "mean_sol": float(x[entered].mean()) if entered.any() else None}
+                dual["pnl_other_trades"][f"{leg}_{lat}"] = {"n": int((~entered).sum()), "total_sol": float(x[~entered].sum()), "mean_sol": float(x[~entered].mean()) if (~entered).any() else None}
         blocks_with = int(len(np.unique((tr_T0 - w0) // BLOCK_S))) if len(tr_T0) else 0
         A = int(len(tr_T0))
         alpha = ALPHA_FAMILY / plan.k
@@ -827,10 +903,10 @@ def run_read(paths: Paths, plan: Plan, fee: Mapping[str, Any], deps: Deps) -> di
             "schema": SCHEMA, "verdict": dec["verdict"], "reasons": dec["reasons"], "gate": dec["gate"], "N_blocks_with_attempts": blocks_with, "A_attempts": A,
             "decision_p": dec["gate"]["decision_p"], "alpha": alpha, "k": plan.k, "w0": ef.hour_key(plan.w0), "e": ef.hour_key(plan.e), "cells": cells,
             "fee_arm": dict(fee), "e1": plan.e1, "stack": {"send": send, "rent": FZ.RENT_DECIDING, "auto_stranded": True, "latencies": list(LATS), "k_rounding": FZ.K_ROUNDING},
-            "keys": {"marks": len(marks), "not_subset_marks": notsub, "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok},
+            "keys": {"marks": len(marks), "not_subset_marks": len(notsub), "live_md5_mismatch_marks": len(md5_bad), "ok": keys_ok, "live_vs_decision_gap_by_mark": gap},
             "d3": {"dropped_rows": rep["d3_dropped"], "kept_pre_filter": rep["d3_kept_pre_filter"]}, "stranded_counts": stranded,
             "strand_class_trades": int(strand_class.sum()), "mints": rep["mints"], "mints_with_rows": rep["mints_with_rows"],
-            "report_only": {"variants": rep_cells, "lp_discontinuities": rep["lp"], "slot_s_by_date": slot_s,
+            "report_only": {"asof_vs_frozen": dual, "null_block_time_prints_by_hour": null_bt, "variants": rep_cells, "lp_discontinuities": rep["lp"], "slot_s_by_date": slot_s,
                             "note": "rent, no-auto-stranded, 55k, 4.0 s, block sums (block_sum_* inside every cell), LP discontinuity counts: report only, never deciding"},
             "claim": "forward simulated paper; not money made; leads only to the DEC-018 path and the owner's yes",
         }
