@@ -1,8 +1,22 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T08:36:00Z",
+ "updated_utc": "2026-10-16T16:40:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "push-round3-1016",
+   "kind": "result",
+   "title": "Push round 3 (2026-10-16): no round-3 strategy line survives the cost floor; pool drains are real",
+   "detail": "second-wave best E1-X1 at 0.25 SOL: mean -7.08% per trade, n 11,724, total -242.998 SOL, gross of all costs still -6.57%; survivors rules all negative (robust R1 -10.52% to R2 -2.66%); tod-regime: E1 0 of 43 and E3 0 of 43 Fresh cells above zero; exit-upgrade: G4 baseline +0.6841% (Sep, 474 entries) is below the 1.5% target and X1 -2.4310%, X2 +0.3667% do not beat it. jump-cause: 39 of 40 sampled >20x jumps are real pool drains, 0 decode artifacts; 21.1% of generic s0+6 min 30-min-hold entries hit a drain at mean -98.33%; the tape decoder does not decode PumpSwap Deposit/Withdraw. Manager's reading: the lever is predicting drains before entry and escaping them after; both running, results not known. Exploration only; nothing here says any strategy makes money. ARTIFACTS/lab/push-2026-10-16-round3.md",
+   "atUtc": "2026-10-16T16:40:00Z"
+  },
+  {
+   "id": "ops-oom-1016",
+   "kind": "other",
+   "title": "Ops 2026-10-16: kernel OOM killed a 110 GB hunt python process; manager12 took over",
+   "detail": "At 16:02:16Z the kernel OOM-killed a 110 GB python process (hunt4 drain-predictor s3_feat.py, DuckDB) in manager11's tmux, which ended that session; manager12 started about 16:20Z. Hunt agents now run python under systemd-run --user --scope -p MemoryMax=20G. 38 GB of dead DuckDB spill files cleared, / from 86% to 82%. Crons recreated from /data/mal/hunt-1008/ops/crons-1016-manager12.json. Fee-arm probe PR #662 open, in review.",
+   "atUtc": "2026-10-16T16:02:16Z"
+  },
   {
    "id": "push-round2-1016",
    "kind": "result",
@@ -1122,6 +1136,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-push-round3",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T16:40:00Z",
+   "text": "Push round 3 recorded: no round-3 line reaches the target at the cost floor (second-wave best E1-X1 -7.08% per trade at 0.25 SOL; G4 baseline +0.6841% is below 1.5%); 39 of 40 sampled jumps are real pool drains. Drain-predictor and drain-escape are running, no result yet. Also the 16:02Z OOM ops note. Record: ARTIFACTS/lab/push-2026-10-16-round3.md. Nothing here says any book made money."
+  },
   {
    "id": "s-20261016-push-day1",
    "from": "claude",
