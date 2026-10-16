@@ -53,12 +53,14 @@ if __package__ in (None, ""):  # `python tools/r4b_layout.py` from the repo root
 
 from tools import exp012_forward as ef  # noqa: E402
 from tools import tape_lines  # noqa: E402
-from tools.latency_curve import _hour_file  # noqa: E402
+from tools.latency_curve import _hour_file, _open_text  # noqa: E402
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
 V0_MISSING_REFUSE_SHARE = 0.02  # the precount refuses if any read day has a larger share of candidate PDA pools with a missing V0 (the EXP pins it)
 WINDOW_SLOTS = 7300  # s0 = first PDA-pool print in [mslot, mslot + 7300)
+S0_WINDOW_NOTE = ("the s0 window of 7,300 slots is about 1,460 s at 200 ms slots, vs about 2,200-2,900 s on the training tape "
+                  "(slot-era difference; frozen value kept)")
 HORIZON_S = 52 * 3600 + 1800  # ut keeps prints with bt <= mbt + 52h + 1800 (l3 01_extract)
 V_SOURCES = ("event", "static_map")
 SUBS = ("trades", "creates", "migrations")
@@ -174,6 +176,37 @@ def _load_trades(con: Any, path: Path, hix: int, label: str) -> None:
         con.sql(f"create or replace temp table t as select {hix} * 10000000000 + (row_number() over () - 1) as frn, * from {src}")
     except Exception as exc:
         raise LayoutRefused(f"{label}: DuckDB could not parse {path.name} ({type(exc).__name__}: {str(exc)[:200]})") from exc
+    _check_frn(con, path, hix, label)
+
+
+FRN_SAMPLE_EVERY = 100_000
+
+
+def _check_frn(con: Any, path: Path, hix: int, label: str) -> None:
+    """Run-time guard: the rows at ordinals 0, last and every 100,000th, re-read from the file in Python, must equal (slot, signature, event_index) of the row
+    DuckDB gave that frn. Any mismatch refuses ("frn_order"): the within-slot order would not be the file order."""
+    base = hix * 10_000_000_000
+    n = con.sql("select count(*) from t").fetchone()[0]
+    if n == 0:
+        return
+    want_ord = {0, n - 1} | set(range(0, n, FRN_SAMPLE_EVERY))
+    seen: dict[int, tuple] = {}
+    i = 0
+    for line in _open_text(path):
+        if not line.strip():
+            continue
+        if i in want_ord:
+            r = json.loads(line, strict=False)
+            seen[i] = (r.get("slot"), r.get("signature"), r.get("event_index"))
+        i += 1
+    if i != n:
+        raise LayoutRefused(f"{label}: frn_order: file has {i} rows but DuckDB loaded {n}")
+    ords = sorted(want_ord)
+    got = {int(f) - base: (sl, sg, ev) for f, sl, sg, ev in con.sql(
+        f"select frn, slot, signature, event_index from t where frn in ({','.join(str(base + o) for o in ords)})").fetchall()}
+    bad = [o for o in ords if got.get(o) != seen.get(o)]
+    if bad:
+        raise LayoutRefused(f"{label}: frn_order: row ordinal(s) {bad[:5]} of {path.name} differ between the file and DuckDB's frn assignment")
 
 
 def _hour_rows(files: Mapping[str, Mapping[str, Path]], verify: Mapping[str, Mapping[str, Any]], h: str, sub: str) -> int:
@@ -224,7 +257,7 @@ def build(walk_dir: Path, h0: str, h1: str, out_dir: Path, *, v_source: str = "e
         (out_dir / sub).mkdir(parents=True, exist_ok=True)
 
     con = duckdb.connect()
-    con.sql(f"SET memory_limit='{memory_limit}'; SET threads={int(threads)}; SET enable_progress_bar=false")
+    con.sql(f"SET memory_limit='{memory_limit}'; SET threads={int(threads)}; SET enable_progress_bar=false; SET preserve_insertion_order=true")
     if tmp_dir is not None:
         Path(tmp_dir).mkdir(parents=True, exist_ok=True)
         con.sql(f"SET temp_directory='{tmp_dir}'")
@@ -366,7 +399,7 @@ def _stats(con: Any, v_source: str, hours: Sequence[str], n_trade_rows: int, n_p
     return {
         "v0_missing_share_by_day": miss, "v0_missing_refuse_share": V0_MISSING_REFUSE_SHARE,
         "v0_missing_days_over": sorted(d for d, r in miss.items() if r["share"] is not None and r["share"] > V0_MISSING_REFUSE_SHARE),
-        "schema": SCHEMA, "v_source": v_source, "hours": [hours[0], hours[-1]], "n_hours": len(hours), "n_trade_rows": n_trade_rows, "duckdb": duckdb_version,
+        "s0_window_note": S0_WINDOW_NOTE, "schema": SCHEMA, "v_source": v_source, "hours": [hours[0], hours[-1]], "n_hours": len(hours), "n_trade_rows": n_trade_rows, "duckdb": duckdb_version,
         "completes": n_comp, "mayhem": n_may, "non_mayhem": n_non, "no_create": q("select count(*) from m0 where not has_create"),
         "pda_errors": n_pda_err, "no_migration_event": n_nomig, "non_wsol_quote": n_nonwsol,
         "pda_match": n_match, "pda_match_share": (n_match / n_non) if n_non else None,
@@ -384,7 +417,7 @@ def prep_work(out_dir: Path, work_dir: Path | None = None, threads: int = 4, mem
     work = Path(work_dir) if work_dir else out_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
     c = duckdb.connect()
-    c.sql(f"SET memory_limit='{memory_limit}'; SET threads={int(threads)}; SET enable_progress_bar=false")
+    c.sql(f"SET memory_limit='{memory_limit}'; SET threads={int(threads)}; SET enable_progress_bar=false; SET preserve_insertion_order=true")
     ck = c.sql(f"select bt, min(smin) smin from '{out_dir}/clock/*.parquet' group by 1 order by 1").fetchnumpy()
     np.save(work / "clock_bt.npy", ck["bt"].astype(np.int64))
     np.save(work / "clock_slot.npy", ck["smin"].astype(np.int64))

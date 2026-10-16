@@ -544,3 +544,44 @@ def test_static_map_does_not_refuse_null_vq(tmp_path):
     walk = make_walk(tmp_path / "w", sc)
     st = build(walk, tmp_path, v_source="static_map", static_map={pda_of("MA"): V})
     assert st["members"] == 1
+
+
+def _big_file(tmp_path, n=120_001):
+    import random
+
+    rnd = random.Random(7)
+    slots = [S + rnd.randrange(0, 5000) for _ in range(n)]  # shuffled slots: the file is NOT slot-sorted
+    p = tmp_path / "big" / "trades-big.jsonl.zst"
+    p.parent.mkdir()
+    zst(p, [json.dumps(trade(f"M{i % 50}", sl, i % 7, i % 3, sig=f"s{i}"), separators=(",", ":")) for i, sl in enumerate(slots)])
+    return p, slots
+
+
+def test_frn_equals_line_ordinal_on_a_big_file_at_4_threads(tmp_path):
+    p, slots = _big_file(tmp_path)
+    con = duckdb.connect()
+    con.sql("SET threads=4; SET preserve_insertion_order=true")
+    rl._load_trades(con, p, 2, "big")  # also runs the frn_order guard
+    base = 2 * 10_000_000_000
+    rows = con.sql("select frn, slot, signature from t order by frn").fetchall()
+    assert [r[0] - base for r in rows] == list(range(len(slots)))
+    assert [r[2] for r in rows] == [f"s{i}" for i in range(len(slots))] and [r[1] for r in rows] == slots
+
+
+def test_tampered_frn_mapping_refuses_frn_order(tmp_path, monkeypatch):
+    p, _ = _big_file(tmp_path, n=2000)
+    real = rl._open_text
+
+    def reversed_lines(path):
+        return iter(list(real(path))[::-1])
+
+    monkeypatch.setattr(rl, "_open_text", reversed_lines)
+    con = duckdb.connect()
+    with pytest.raises(rl.LayoutRefused, match="frn_order"):
+        rl._load_trades(con, p, 0, "big")
+
+
+def test_stats_carry_s0_window_note(walk, tmp_path):
+    st = build(walk, tmp_path)
+    assert st["s0_window_note"] == rl.S0_WINDOW_NOTE and "1,460 s" in st["s0_window_note"]
+    assert json.loads((tmp_path / "out" / "stats.json").read_text())["s0_window_note"] == rl.S0_WINDOW_NOTE
