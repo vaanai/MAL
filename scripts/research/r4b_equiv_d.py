@@ -70,6 +70,12 @@ def hours_of(h0: str, h1: str) -> list[str]:
     return L.hour_range(h0, h1)
 
 
+def hours_plus(h: str, n: int) -> str:
+    from datetime import datetime, timedelta
+
+    return (datetime.strptime(h, "%Y-%m-%dT%H") + timedelta(hours=n)).strftime("%Y-%m-%dT%H")
+
+
 def link_merged(dst: Path, hours: list[str]) -> None:
     """One walker-layout dir over the windows w7..w4: symlinks per hour and kind (the clean-view dirs are never written)."""
     for sub in ("trades", "creates", "migrations"):
@@ -99,8 +105,11 @@ def run_adapter(out: Path, hours: list[str], h0: str, h1: str, memory_limit="6GB
     from tools import r4b_layout as L
 
     merged = out / "merged"
-    link_merged(merged, hours)
-    ver = line_count_verify(merged, hours)
+    from tools import r4b_layout as L2
+
+    ext = L2.hour_range(h1, hours_plus(h1, 2))  # the adapter also loads the 2 trade hours after H1 (as training did)
+    link_merged(merged, hours + ext)
+    ver = line_count_verify(merged, hours + ext)
     smap = L.load_static_map(POOL_V)
     stats = L.build(merged, h0, h1, out / "adapter", v_source="static_map", static_map=smap, problems_fn=lambda *_: [], verify=ver,
                     memory_limit=memory_limit, threads=threads, tmp_dir=out / "tmp")
@@ -158,8 +167,8 @@ def day_features(out: Path, day: str, prep, mcn, sph, use_event_v: bool, duck) -
     d0 = int(pd.Timestamp(day, tz="UTC").timestamp())
     hrs = [h for h in (time.strftime("%Y-%m-%dT%H", time.gmtime(d0 + 3600 * i)) for i in range(0, 80)) if (out / "adapter" / "ut" / f"{h}.parquet").exists()]
     fl = ",".join(f"'{out}/adapter/ut/{h}.parquet'" for h in hrs)
-    U = duck.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th, vq from read_parquet([{fl}], union_by_name=true, filename=true, file_row_number=true) "
-                 f"where mid between {mlo} and {mhi} order by mid, slot, txi, evi, filename, file_row_number").fetchnumpy()
+    U = duck.sql(f"select mid, slot, bt, isbuy, sol, tok, q, b, th, vq, frn from read_parquet([{fl}], union_by_name=true) "
+                 f"where mid between {mlo} and {mhi} order by mid, slot, txi, evi, frn").fetchnumpy()
     U = {k: np.asarray(v) for k, v in U.items()}
     bounds = np.searchsorted(U["mid"], np.arange(mlo, mhi + 2))
     Xs, Is, dec, mk = [], [], [], []
@@ -191,7 +200,9 @@ def day_features(out: Path, day: str, prep, mcn, sph, use_event_v: bool, duck) -
         mk.append(np.column_stack([np.full(len(tm), mid, np.int64), tm, st["Qx"], st["Bx"]]))
     if not Xs:
         return {}
-    return {"X": np.concatenate(Xs), "I": np.concatenate(Is), "dec": np.concatenate(dec), "mk": np.concatenate(mk)}
+    dec = np.concatenate(dec)
+    dec[:, 5:9] = dec[:, 5:9].astype(np.float32).astype(np.float64)  # l3 keeps ssb / nearby in the float32 Y array
+    return {"X": np.concatenate(Xs), "I": np.concatenate(Is), "dec": dec, "mk": np.concatenate(mk)}
 
 
 def _first_diff(a, b):
