@@ -738,8 +738,8 @@ def test_mint_accounts_strand_classes(tmp_path):
                                        "harmless": {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "token2022_extensions": ["metadataPointer"]}, "failed": {"fetch_ok": False}}}))
     probs: list[str] = []
     got, info = rr.load_mint_accounts({"EXP027_MINT_ACCOUNTS": f"{p}@{sha(p)}"}, probs)
-    # the allowlist is empty until the census: every Token-2022 mint with an extension is strand-class
-    assert probs == [] and got == {"ok": False, "freeze": True, "ext": True, "harmless": True, "failed": True}
+    # census allowlist (metadataPointer + tokenMetadata): harmless is not strand-class, transferFeeConfig is
+    assert probs == [] and got == {"ok": False, "freeze": True, "ext": True, "harmless": False, "failed": True}
     assert info["fetch_slot"] == 7 and info["failed_fetch"] == 1 and info["failed_fetch_share"] == pytest.approx(0.2)
 
 
@@ -1170,11 +1170,22 @@ def test_mint_strand_class_deny_by_default():
     assert rr.mint_is_strand_class({**t, "token2022_extensions": []}) is False  # no extensions
     assert rr.mint_is_strand_class(t) is True  # extensions unknown (field missing)
     assert rr.mint_is_strand_class({**t, "token2022_extensions": "metadataPointer"}) is True  # malformed
-    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"]}) is True  # allowlist empty: any extension strands
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"]}) is False  # census allowlist: metadataPointer + tokenMetadata
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"]}, frozenset({"metadataPointer"})) is False
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "transferHook"]}, frozenset({"metadataPointer"})) is True  # EVERY extension must be allowed
     assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer"], "freeze_authority": "F"}, frozenset({"metadataPointer"})) is True
-    assert rr.TOKEN2022_EXT_ALLOWLIST == frozenset()  # filled before W0 from the census, in a change that moves the pinned sha256
+    assert rr.TOKEN2022_EXT_ALLOWLIST == frozenset({"metadataPointer", "tokenMetadata"})  # from the outcome-blind census (295/300 mints)
+
+
+def test_census_allowlist_default_behaviour():
+    t = {"fetch_ok": True, "owner_program": rr.TOKEN_2022_PROGRAM, "freeze_authority": None}
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata"]}) is False  # the census shape
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["tokenMetadata", "metadataPointer"]}) is False
+    for bad in ("transferFeeConfig", "permanentDelegate", "transferHook", "defaultAccountState", "nonTransferable", "pausable"):
+        assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata", bad]}) is True
+    assert rr.mint_is_strand_class({**t, "token2022_extensions": ["metadataPointer", "tokenMetadata"], "freeze_authority": "F"}) is True
+    spl = {"fetch_ok": True, "owner_program": rr.SPL_TOKEN_PROGRAM, "freeze_authority": None, "token2022_extensions": []}
+    assert rr.mint_is_strand_class(spl) is False and rr.mint_is_strand_class({**spl, "freeze_authority": "F"}) is True
 
 
 def test_mint_account_schema_needs_fetch_slot(tmp_path, world):
