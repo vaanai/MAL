@@ -1,8 +1,29 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T07:18:21Z",
+ "updated_utc": "2026-10-16T08:36:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "push-round2-1016",
+   "kind": "result",
+   "title": "Push round 2 (2026-10-16): bonding curve shelved at MAL latency; deep pools gross-negative",
+   "detail": "Every frozen curve rule (runup, flow, bigwin, wallets) negative on the exploration tape; mayhem mints break the curve invariant. Six deep-pool rules (433 pools/day at 300+ SOL, about 1.71% round trip at 1 SOL) gross-negative. Haiku trader v1 fails September; loop fails its null (0.0576816 USD). Exploration only; nothing here says any strategy makes money. ARTIFACTS/lab/push-2026-10-16-round2.md",
+   "atUtc": "2026-10-16T08:36:00Z"
+  },
+  {
+   "id": "ruleb-qp-1016",
+   "kind": "result",
+   "title": "LAYA RULE B pool entries: reproduces, fails at the DEC-021 live haircut; no EXP-027 now",
+   "detail": "Exploration, post-read subset. Rent refunded passes (1.3 s press +0.8334%, lo +0.000555). With the DEC-021 section 1 haircut it fails: 1.3 s press +0.5335%, lo -0.000192, ex-top-3 -0.176 SOL (QP ruling 2026-10-16T08:31:53Z). One-block confirmation power about 1.5%. Revive only with a mechanism adding at least about 0.4% per trade. Not gate evidence.",
+   "atUtc": "2026-10-16T08:31:53Z"
+  },
+  {
+   "id": "exp026-e1-1016",
+   "kind": "result",
+   "title": "EXP-026 E1 (job #1059): faa3192 n 33; QP: EXP-026 decidable, W0 by 2026-10-23T00Z",
+   "detail": "faa3192 n 33, mean pnl gap (live minus sim) +35,993.454545454544 lamports, median 17,852; calibration.json sha256 799d3db58e334719553477e6ee07695047c44f4732c04d7930bbf5ba8bfef065. Arithmetic on 33 live trades, not evidence. QP-DECIDABILITY: not a predetermined NOT_DECIDABLE; W0 by 2026-10-23T00:00:00Z or withdrawn.",
+   "atUtc": "2026-10-16T07:25:46Z"
+  },
   {
    "id": "a3-daily-1016",
    "kind": "other",

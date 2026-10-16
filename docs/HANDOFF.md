@@ -11,6 +11,15 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0d Update 2026-10-16T08:36Z (manager11): push round 2
+
+Source: [ARTIFACTS/lab/push-2026-10-16-round2.md](../ARTIFACTS/lab/push-2026-10-16-round2.md) and the files it names under `/data/mal/hunt-1008/push-1016/`. No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
+
+- Bonding curve: shelved at MAL latency. Deep pools: all six rules gross-negative. LAYA RULE B pool entries: fails at the DEC-021 section 1 haircut (QP ruling 2026-10-16T08:31:53Z); no EXP-027 now. Haiku trader v1 fails September; the loop fails its null.
+- **EXP-026 prep from 2026-10-17 (GAPS.md section 3):** 10-17 12Z the G0 count-only check of the oracle seal and the QP rulings (GAPS section 4); 10-17 the record of 2026-10-16 (owner line, Option A only); 10-18 QP OK on the record and builder spec issued by 12Z; 10-18 to 10-20 builds A, B, C; 10-21 12Z merge and freeze; 10-22 12Z restart of #817 on the merged head (latest 16:00Z); **W0 by 2026-10-23T00:00:00Z or EXP-026 is withdrawn**. E1 (job #1059): faa3192 n 33, so P9's n >= 20 holds for that set; QP-DECIDABILITY.md says EXP-026 is decidable without EXP-022.
+- **D1 layer repair:** job #1061 failed closed on `creates-2026-10-12T04.jsonl.zst: line 308 is not JSON` and hit the 12 GB memory limit. Next: a counted-skip rule under quant-proof and a memory fix, then rerun the precount. The hourly counts printed before the refusal (prints about 108k-234k per hour, creates about 1.2k-2.5k, completes about 26-61, 2026-10-11T00 to 2026-10-12T03) are D1/D0 counts only.
+- The hunt continues capacity-first (lib-b-E3 impact at 0.25 SOL, lib-b-E4 fee leg, lib-c-M1 D0 count). Library rows: section `push-1016-r2`.
+
 ### 1.0c Update 2026-10-16T05:35:34Z (manager11): push day 1
 
 Source: the hunt reports and the judge file named in [ARTIFACTS/lab/push-2026-10-16.md](../ARTIFACTS/lab/push-2026-10-16.md). No sealed, forward, walk, shadow or October outcome row was opened. Nothing here says any book made money.
