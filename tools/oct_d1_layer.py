@@ -28,7 +28,7 @@ Outputs (Parquet, zstd), mirroring /data/mal/hunt-shared minus every column the 
 no V, no pool, no migration column, no fee column, no creator/name/symbol/mayhem (the D1 mask keeps identities only on
 create rows), no `fm_*`. Times are `event_ts * 1000` (whole seconds; `block_time` is not in the D1 mask).
 
-    tokens_d1.parquet, bars_1m/<YYYY-MM-DD>.parquet, wallet_mint_d1.parquet, MANIFEST.json
+    tokens_d1.parquet, bars_1m/<YYYY-MM-DD>.parquet, trades_d1/<YYYY-MM-DD>.parquet (per print), wallet_mint_d1.parquet, MANIFEST.json
 
 Joining these outputs to any D0, D2 or D3 table of the same mint stays forbidden while a seal on that pool holds.
 """
@@ -226,7 +226,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise LayerRefused("check_read refused: " + "; ".join(reasons))
     check_output_columns(["mint", "create_ms", "create_slot", "create_event_index", "has_create", "reached_complete",
                           "complete_ms", "complete_slot", "complete_event_index", "bc_first_ms", "bc_last_ms",
-                          "bc_buy_sol", "bc_sell_sol", "bc_n_trades", "bc_n_traders"])
+                          "bc_buy_sol", "bc_sell_sol", "bc_n_trades", "bc_n_traders", "bc_first_quote_reserve",
+                          "bc_first_base_reserve"])
 
     out.mkdir(parents=True, exist_ok=True)
     stage = out / "tmp" / "stage"
@@ -342,12 +343,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     tokens = con.execute("""
         WITH bc AS (SELECT mint, min(ms) AS bc_first_ms, max(ms) AS bc_last_ms,
                            sum(lam) FILTER (WHERE is_buy) / 1e9 AS bc_buy_sol, sum(lam) FILTER (WHERE NOT is_buy) / 1e9 AS bc_sell_sol,
-                           count(*)::BIGINT AS bc_n_trades, count(DISTINCT trader)::BIGINT AS bc_n_traders
+                           count(*)::BIGINT AS bc_n_trades, count(DISTINCT trader)::BIGINT AS bc_n_traders,
+                           arg_min(q, ord) AS bc_first_quote_reserve, arg_min(b, ord) AS bc_first_base_reserve
                     FROM stage GROUP BY mint),
              allm AS (SELECT mint FROM creates_t UNION SELECT mint FROM bc)
         SELECT a.mint, c.create_ms, c.create_slot, c.create_event_index, (c.mint IS NOT NULL) AS has_create,
                (m.mint IS NOT NULL) AS reached_complete, m.complete_ms, m.complete_slot, m.complete_event_index,
-               b.bc_first_ms, b.bc_last_ms, b.bc_buy_sol, b.bc_sell_sol, coalesce(b.bc_n_trades, 0)::BIGINT AS bc_n_trades,
+               b.bc_first_ms, b.bc_last_ms, b.bc_first_quote_reserve, b.bc_first_base_reserve, b.bc_buy_sol, b.bc_sell_sol, coalesce(b.bc_n_trades, 0)::BIGINT AS bc_n_trades,
                coalesce(b.bc_n_traders, 0)::BIGINT AS bc_n_traders
         FROM allm a LEFT JOIN creates_t c USING (mint) LEFT JOIN complete_t m USING (mint) LEFT JOIN bc b USING (mint)
         ORDER BY a.mint""").fetch_arrow_table()
@@ -383,6 +385,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 FROM b LEFT JOIN n ON n.mint = b.mint AND n.minute_ms = b.minute_ms
                 ORDER BY b.mint, b.minute_ms""").fetch_arrow_table()
             write(bars, out / "bars_1m" / f"{day}.parquet")
+            prints = con.execute("""
+                SELECT mint, slot, ei AS event_index, ms, seq, CASE WHEN is_buy THEN 'buy' ELSE 'sell' END AS side,
+                       lam / 1e9 AS sol, lam AS sol_lamports, tok AS token_raw, q AS quote_reserve, b AS base_reserve,
+                       price, trader
+                FROM d ORDER BY ord, seq""").fetch_arrow_table()
+            write(prints, out / "trades_d1" / f"{day}.parquet")
 
     # wallet_mint_d1 (bonding only; no fee or pnl column: fees are not in the D1 mask)
     wm = con.execute("""
@@ -414,6 +422,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "skipped_rows": skipped, "skipped_bad_reserves": n_bad_reserves, "create_rows_not_type_create": n_create_other,
         "n_migrate_positions": len(mig_filled), "inputs": inputs, "row_counts": {k: v["rows"] for k, v in outputs.items()},
         "outputs": outputs, "coverage_per_hour": coverage,
+        "bonding_prints_per_hour": {c["hour"]: c["bonding_prints"] for c in coverage},
+        "quote_mint": "NOT AVAILABLE: quote_mint/quote_is_wsol are not on the D1 allowlist (mask drops them); "
+                      "tokens_d1.bc_first_quote_reserve/bc_first_base_reserve show the first kept print's post-trade reserves",
     }
     mp = out / "MANIFEST.json"
     mp.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
