@@ -7,7 +7,7 @@
    "id": "exp026-withdrawn-1017",
    "kind": "decision",
    "title": "EXP-026 (H5-BOOSTCLOCK v2) withdrawn before W0 (owner, 2026-10-17)",
-   "detail": "Owner decision ~03:39Z, notebook n__wAwHxj9c9Oc2Q. W0 never occurred; no v2 outcome was computed or read. As written the plan cannot decide (no clean E1 before D2 and D3 open, after the read deadline); quant-proof and the manager recommended withdrawal over the fixed-penalty amendment (expected FAIL, small payoff, build cost), and the owner accepted it. Also decided: EXP-027 E1 = Option B (fixed 1,920,110 lamports, PR #687); DEC-030 route R1 (PR #664). No book has cleared the promotion gate.",
+   "detail": "Owner decision ~03:39Z, notebook n__wAwHxj9c9Oc2Q. W0 never occurred, so no counted v2 outcome exists; pre-W0 report-only outcome_bx10 records exist in shadow #817's clear stream, and this decision chain did not open them. As written the plan cannot decide (no clean E1 before D2 and D3 open, after the read deadline); quant-proof and the manager recommended withdrawal over the fixed-penalty amendment (expected FAIL, small payoff, build cost), and the owner accepted it. Also decided: EXP-027 E1 = Option B (fixed 1,920,110 lamports, PR #687); DEC-030 route: pending the owner's confirmation (MiScusi q_6FkDYV4cPVnknQ; the manager recommends R1; PR #664). No book has cleared the promotion gate.",
    "atUtc": "2026-10-17T03:44:06Z"
   },
   {
