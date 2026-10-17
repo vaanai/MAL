@@ -465,10 +465,10 @@ class Store:
                                separators=(",", ":"))
             chain_lines.append(entry)
             prev = sha256_bytes(entry.encode())
-        atomic_write(self.out / "MANIFEST-2.sha256", man.encode())
-        atomic_write(self.out / "MANIFEST-2.chain", ("\n".join(chain_lines) + "\n").encode())
-        self.last_chain = prev
         self.segment2 = True
+        self._write_manifest_file(self.out / "MANIFEST-2.sha256", man.encode())
+        self._write_manifest_file(self.out / "MANIFEST-2.chain", ("\n".join(chain_lines) + "\n").encode())
+        self.last_chain = prev
         log.info("segment2_started first_hour=%s rehashed=%d", first_hour, len(chain_lines) - 1)
         return True
 
@@ -485,7 +485,7 @@ class Store:
                 add += json.dumps({"hour": hk, "flags": [MULTI_WRITER_FLAG]}, separators=(",", ":"),
                                   ensure_ascii=False) + "\n"
         if add:
-            atomic_write(notes, (have + add).encode())
+            self._write_manifest_file(notes, (have + add).encode())
 
     def creates_path(self, hk: str) -> Path:
         return self.out / "creates" / f"{hk}.jsonl"
@@ -616,26 +616,55 @@ class Store:
             sealed_now.append(hk)
         return sealed_now
 
+    def _write_manifest_file(self, path: Path, data: bytes) -> None:
+        """Segment-2 files are replaced atomically and left mode 0440. Segment-1 files (legacy mode,
+        tests only) are never chmod'ed here."""
+        atomic_write(path, data)
+        if self.segment2 and path.name.startswith("MANIFEST-2"):
+            os.chmod(path, 0o440)
+
+    def _hour_manifest_line(self, line: str, hk: str) -> bool:
+        path = line.split("  ", 1)[-1]
+        return (path.startswith((f"creates/{hk}.", f"meta/{hk}.", f"capture/{hk}.", f"img/{hk}/")))
+
     def seal(self, hk: str) -> None:
-        self.write_capture(hk)
-        files = self.hour_files(hk)
-        lines = "".join(f"{sha256_file(f)}  {f.relative_to(self.out).as_posix()}\n" for f in files)
-        mf = self.out / self.manifest_name
-        prev = mf.read_bytes() if mf.exists() else b""
-        atomic_write(mf, prev + lines.encode())
-        entry = json.dumps({"hour": hk, "manifest_sha256": sha256_bytes(lines.encode()),
-                            "prev": self.last_chain, "n_files": len(files)},
-                           separators=(",", ":"))
+        """Exactly one manifest block and one chain entry per hour, however often it is retried. A
+        failure after the manifest write leaves a block with no chain entry; the retry replaces that
+        block. A failure after the chain write: the retry only finishes chmod and bookkeeping."""
         cf = self.out / self.chain_name
-        prevc = cf.read_bytes() if cf.exists() else b""
-        atomic_write(cf, prevc + (entry + "\n").encode())
-        self.last_chain = sha256_bytes(entry.encode())
+        chain_lines = cf.read_text().splitlines() if cf.exists() else []
+        have_entry = any(self._chain_hour(ln) == hk for ln in chain_lines)
+        files: list[Path]
+        if have_entry:
+            files = self.hour_files(hk)
+            lines = ""
+        else:
+            self.write_capture(hk)
+            files = self.hour_files(hk)
+            lines = "".join(f"{sha256_file(f)}  {f.relative_to(self.out).as_posix()}\n" for f in files)
+            mf = self.out / self.manifest_name
+            prev = mf.read_text() if mf.exists() else ""
+            kept = "".join(ln + "\n" for ln in prev.splitlines() if not self._hour_manifest_line(ln, hk))
+            self._write_manifest_file(mf, (kept + lines).encode())
+            entry = json.dumps({"hour": hk, "manifest_sha256": sha256_bytes(lines.encode()),
+                                "prev": self.last_chain, "n_files": len(files)},
+                               separators=(",", ":"))
+            self._write_manifest_file(cf, ("".join(ln + "\n" for ln in chain_lines) + entry + "\n").encode())
+            self.last_chain = sha256_bytes(entry.encode())
         for f in files:
             os.chmod(f, 0o440)
         self.sealed.add(hk)
         log.info("sealed hour=%s files=%d creates=%d meta=%d manifest_sha256=%s chain=%s",
                  hk, len(files), len(_read_jsonl(self.creates_path(hk))),
                  len(_read_jsonl(self.meta_path(hk))), sha256_bytes(lines.encode()), self.last_chain)
+
+    @staticmethod
+    def _chain_hour(line: str) -> str | None:
+        try:
+            h = json.loads(line).get("hour")
+        except (ValueError, AttributeError):
+            return None
+        return h if isinstance(h, str) else None
 
 
 # ----------------------------------------------------------------- guards
@@ -775,10 +804,27 @@ class Collector:
             name = type(sys.exc_info()[1]).__name__
             log.error("attempt_error type=%s", name)
             self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
+            status = "timeout_cap" if name in ("TimeoutError", "CancelledError") else f"error_{name}"
+            try:
+                # A request may already have gone out: record the attempt so that recover() after a
+                # restart never re-sends it (one request per attempt), and keep the fixed schedule.
+                self._record_failed_attempt(item, status)
+            except Exception:  # noqa: BLE001
+                log.error("attempt_row_write type=%s", type(sys.exc_info()[1]).__name__)
             try:
                 self.store.write_capture(hour_key(self.clock_ms()))
             except Exception:  # noqa: BLE001 - the error path must never raise out of the worker
                 log.error("attempt_error_capture_write type=%s", type(sys.exc_info()[1]).__name__)
+
+    def _record_failed_attempt(self, item: tuple[int, int, int, dict[str, Any]], status: str) -> None:
+        due, _, attempt, row = item
+        stored = self._add_meta(int(row["t_recv_ms"]), {
+            "mint": str(row["mint"]), "attempt": attempt, "scheduled_ms": due,
+            "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
+            "gateway": None, "status": status, "bytes": 0, "sha256": None}, None)
+        self.attempt_counts[status] = self.attempt_counts.get(status, 0) + 1
+        if stored and attempt + 1 < len(SCHEDULE_MS):
+            self._schedule(row, attempt + 1)
 
     async def _fetch(self, uri: str, max_bytes: int,
                      image: bool = False) -> tuple[str, bytes | None, str | None, int, bool]:
@@ -934,6 +980,8 @@ def heartbeat_line(col: Collector) -> str:
 async def monitor(col: Collector, sup: Supervisor, stop: asyncio.Event, flags: dict[str, bool], *,
                   watchdog_s: float = WATCHDOG_S, heartbeat_s: float = HEARTBEAT_S,
                   stall_window_s: float = STALL_WINDOW_S) -> None:
+    """Watchdog + heartbeat. Limit (accepted): it runs on the event loop, so it does not detect a
+    blocked loop; the hourly lag check covers that."""
     next_hb = col.mono() + heartbeat_s
     while not stop.is_set():
         try:

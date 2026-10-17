@@ -1453,5 +1453,123 @@ class Segment2Tests(unittest.TestCase):
             self.assertIn("multi-writer", notes[0])
 
 
+class SealIdempotentAndModeTests(unittest.TestCase):
+    HKS = ("2026-10-17T23", "2026-10-18T00")
+
+    def _store(self, d):
+        st = mc.Store(Path(d), "g")
+        st.init_segment2("2026-10-17T23")
+        for hk in self.HKS:
+            st.creates_path(hk).write_text('{"mint":"m"}\n')
+            st.meta_path(hk).write_text('{"mint":"m","attempt":0}\n')
+        return st
+
+    def _assert_valid(self, out):
+        chain = (out / "MANIFEST-2.chain").read_text().splitlines()
+        hours = [json.loads(x).get("hour") for x in chain[1:]]
+        self.assertEqual(hours, list(self.HKS))  # exactly one entry per hour
+        for i in range(1, len(chain)):
+            self.assertEqual(json.loads(chain[i])["prev"], mc.sha256_bytes(chain[i - 1].encode()))
+        paths = [ln.split("  ", 1)[1] for ln in (out / "MANIFEST-2.sha256").read_text().splitlines()[1:]]
+        self.assertEqual(len(paths), len(set(paths)))  # one manifest line per file
+        for hk in self.HKS:
+            self.assertIn(f"creates/{hk}.jsonl", paths)
+
+    def test_failure_after_manifest_append_then_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = mc.atomic_write
+
+            def fail_chain(path, data):
+                if path.name == "MANIFEST-2.chain":
+                    raise OSError("chain write")
+                real(path, data)
+            with unittest.mock.patch.object(mc, "atomic_write", fail_chain):
+                for _ in range(3):
+                    with self.assertRaises(OSError):
+                        st.seal(self.HKS[0])
+            self.assertNotIn(self.HKS[0], st.sealed)
+            for hk in self.HKS:
+                st.seal(hk)
+            self._assert_valid(Path(d))
+
+    def test_failure_after_chain_append_then_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = os.chmod
+            n = [0]
+
+            def flaky(path, mode):
+                if str(path).endswith("2026-10-17T23.jsonl") and n[0] == 0:
+                    n[0] += 1
+                    raise OSError("chmod")
+                real(path, mode)
+            with unittest.mock.patch.object(os, "chmod", flaky):
+                with self.assertRaises(OSError):
+                    st.seal(self.HKS[0])
+                st.seal(self.HKS[0])
+                st.seal(self.HKS[1])
+            self._assert_valid(Path(d))
+            self.assertEqual(oct(st.creates_path(self.HKS[0]).stat().st_mode & 0o777), "0o440")
+
+    def test_segment2_files_are_0440_and_old_manifest_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            old = mc.Store(out, "g")
+            old.creates_path("2026-10-17T23").write_text('{"mint":"m"}\n')
+            old.seal("2026-10-17T23")
+            old_modes = {n: (out / n).stat().st_mode for n in ("MANIFEST.sha256", "MANIFEST.chain")}
+            st = mc.Store(out, "g")
+            st.init_segment2("2026-10-17T23")
+            st.creates_path("2026-10-18T00").write_text('{"mint":"m"}\n')
+            st.seal("2026-10-18T00")
+            for n in ("MANIFEST-2.sha256", "MANIFEST-2.chain"):
+                self.assertEqual(oct((out / n).stat().st_mode & 0o777), "0o440", n)
+            for n, m in old_modes.items():
+                self.assertEqual((out / n).stat().st_mode, m, n)  # no chmod on the old files
+            st.sealed.add("2026-10-17T21")
+            st.note_flags_for_sealed()
+            self.assertEqual(oct((out / "MANIFEST-2.notes").stat().st_mode & 0o777), "0o440")
+            st.sealed.add("2026-10-17T22")
+            st.note_flags_for_sealed()  # replace over a 0440 file works
+            self.assertEqual(len((out / "MANIFEST-2.notes").read_text().splitlines()), 2)
+
+
+class CapRowRecoverTests(unittest.TestCase):
+    def test_cap_fires_row_written_and_recover_does_not_resend(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            col.attempt_deadline_s = 0.05
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def hang(url, timeout, max_bytes):
+                await asyncio.sleep(60)
+            col.http_get = hang
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"]) for r in rows], [(0, "timeout_cap")])
+            self.assertEqual(set(rows[0]) & {"name", "uri", "image"}, set())
+            self.assertEqual(col.heap[0][2], 1)  # fixed schedule continues with attempt 1
+            # restart: a fresh collector must resume at attempt 1, never re-send attempt 0
+            clock2 = Clock(HOUR0 + 200)
+            col2, _ = make(d, clock=clock2)
+            self.assertEqual(col2.recover(), 1)
+            self.assertEqual([it[2] for it in col2.heap], [1])
+
+    def test_error_after_request_writes_error_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def boom(item):
+                raise ValueError("body text must not leak")
+            col._attempt = boom
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual(rows[0]["status"], "error_ValueError")
+            self.assertNotIn("leak", json.dumps(rows))
+
+
 if __name__ == "__main__":
     unittest.main()
