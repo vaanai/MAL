@@ -68,3 +68,7 @@ The question shown to the owner must state, verbatim: "M1 opens a fourth alpha s
 - DEC-021 §8 (line 73), Amendments 2 and 3; DEC-023 §2; DEC-025 §2; EXP-024 §7 and §9; EXP-026 §5, §10 and §11 (with quant-proof's resampling figures).
 - Quant-proof's CHANGES review of PR #542 at 62cc971, 2026-10-10.
 - No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or canary or shadow outcome record was opened to write this file.
+
+## Note (2026-10-17)
+
+Slot 4 ("EXP-026 only") is unused. EXP-026 was withdrawn before W0 by the owner on 2026-10-17 (notebook n__wAwHxj9c9Oc2Q) and the slot closes with that withdrawal. Any later H5 re-filing needs a new file, new hours and a new alpha slot. See the EXP-026 Withdrawal record. No book has cleared the promotion gate.
