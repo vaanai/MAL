@@ -93,8 +93,10 @@ class Fake:
             lo = int(q.get("min_settled_ts", ["0"])[0])
             hi = int(q.get("max_settled_ts", [str(10 ** 12)])[0])
             items = [m for m in items if lo <= kp.to_unix(m["settlement_ts"]) <= hi]
-            assert q["status"] == ["settled"] and q["mve_filter"] == ["exclude"]
+            assert q["status"] == ["settled"]
             return j(self.page(items, "markets", q))
+        if "mve_filter" in q and any(k in q for k in ("series_ticker", "event_ticker", "tickers")):
+            return 400, b'{"message":"filters are mutually exclusive"}'
         if path == "/historical/markets":
             return j(self.page(self.hist_markets.get(q["series_ticker"][0], []), "markets", q))
         if path in ("/markets/trades", "/historical/trades"):
@@ -247,7 +249,7 @@ def test_pagination_follows_cursor_until_empty():
     fake.live_markets["KXHIGHNY"] = [Fake.mk(f"KXHIGHNY-{i}", "2026-10-01T00:00:00Z") for i in range(7)]
     client, _ = mkclient(fake)
     got = list(kp.paginate(client, "/markets", {"series_ticker": "KXHIGHNY", "status": "settled",
-                                                "mve_filter": "exclude", "limit": 3}, "markets"))
+                                                "limit": 3}, "markets"))
     assert len(got) == 7 and len(fake.calls) == 3
     assert "cursor=3" in fake.calls[1] and "cursor=6" in fake.calls[2]
 
@@ -596,3 +598,26 @@ def test_allow_series_override_recorded_in_manifest(tmp_path):
     fake2 = Fake()
     run(tmp_path / "n", ["markets", "--series", "KXNFLGAME"], fake2)
     assert not any("series_ticker" in c for c in fake2.calls)
+
+
+def test_mve_filter_never_sent_with_series_and_combos_dropped_client_side(tmp_path):
+    fake = Fake()
+    combo = Fake.mk("KXMVECROSS-S1-ABC", "2026-10-02T12:00:00Z")
+    combo["mve_collection_ticker"] = "KXMVECROSS"
+    fake.live_markets["KXHIGHNY"].append(combo)
+    hcombo = Fake.mk("KXHIGHNY-HCOMBO", "2026-05-02T12:00:00Z")
+    hcombo["mve_selected_legs"] = [{"market_ticker": "X"}]
+    fake.hist_markets["KXHIGHNY"].append(hcombo)
+    rc, _ = run(tmp_path, ["markets", "--series", "KXHIGHNY"], fake)
+    assert rc == 0  # the fake answers 400 if both are sent
+    assert not any("mve_filter" in c for c in fake.calls)
+    got = {r["ticker"] for r in read(tmp_path, "markets")}
+    assert got == {"KXHIGHNY-26OCT01-T80", "KXHIGHNY-26OCT02-T80", "KXHIGHNY-26OCT03-T80",
+                   "KXHIGHNY-26MAY01-T80"}
+
+
+def test_client_refuses_mve_filter_with_series():
+    client, _ = mkclient(Fake())
+    for k in ("series_ticker", "event_ticker", "tickers"):
+        with pytest.raises(ValueError):
+            client.get("/markets", {k: "A", "mve_filter": "exclude"})
