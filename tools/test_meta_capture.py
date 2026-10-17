@@ -187,8 +187,17 @@ DOC = json.dumps({"name": "SECRETNAME", "image": "ipfs://img", "twitter": "https
                   "initialBuy": 9, "description": "SECRETDESC"}).encode()
 
 
+def tiny_png() -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (0, 128, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def doc_routes(u):
-    return DOC if "cid1" in u else b"imgbytes"
+    if "cid1" in u:
+        return DOC
+    return tiny_png() if HAVE_PIL else b"imgbytes"
 
 
 class ScheduleTests(unittest.TestCase):
@@ -241,7 +250,7 @@ class ScheduleTests(unittest.TestCase):
             ok = rows[1]
             self.assertEqual(ok["sha256"], hashlib.sha256(DOC).hexdigest())
             self.assertEqual(ok["bytes"], len(DOC))
-            self.assertEqual(ok["img_sha256"], hashlib.sha256(b"imgbytes").hexdigest())
+            self.assertIn("img_sha256", ok)
             self.assertNotIn("initialBuy", ok)
             self.assertEqual(col.heap, [])
 
@@ -298,6 +307,19 @@ class ScheduleTests(unittest.TestCase):
             self.assertEqual(col.dropped, 1)
             self.assertEqual(len(col.heap), 1)
             self.assertEqual(meta_rows(col)[0]["status"], "dropped_backlog")
+
+
+class BadImageTests(unittest.TestCase):
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_undecodable_image_records_bad_image(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d, lambda u: DOC if "cid1" in u else b"not an image")
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            r = meta_rows(col)[0]
+            self.assertEqual((r["status"], r["img_status"]), ("ok", "bad_image"))
+            self.assertFalse(col.store.img_path(HK0, MINT).exists())
+            self.assertEqual(r["img_sha256"], hashlib.sha256(b"not an image").hexdigest())
 
 
 class StatusClassTests(unittest.TestCase):
@@ -385,7 +407,16 @@ class SealTests(unittest.TestCase):
             run(col.step())
             self.assertTrue(col.store.meta_path(HK0).exists())  # keyed by RECEIVE hour
             self.assertFalse(col.store.meta_path(HK1).exists())
-            self.assertTrue(col.store.img_path(HK0, MINT).exists() or not HAVE_PIL)
+            if HAVE_PIL:
+                from PIL import Image
+                png_path = col.store.img_path(HK0, MINT)
+                self.assertEqual(Image.open(png_path).size, (224, 224))
+                row = meta_rows(col)[0]
+                self.assertEqual(row["img_status"], "ok")
+                self.assertEqual(row["img_sha256"], hashlib.sha256(tiny_png()).hexdigest())
+                self.assertEqual(row["img_png_sha256"], hashlib.sha256(png_path.read_bytes()).hexdigest())
+            else:
+                self.assertFalse(col.store.img_path(HK0, MINT).exists())
             clock.t = HOUR0 + 3_600_000 + 899_000
             self.assertEqual(col.store.seal_due(clock.t), [])
             clock.t = HOUR0 + 3_600_000 + 900_000

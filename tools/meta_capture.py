@@ -643,6 +643,8 @@ class Collector:
         png, info = await asyncio.to_thread(process_image, raw)  # off the event loop
         if info.pop("img_too_big", False):
             rec["img_status"] = "too_big"
+        if "img_decode_error" in info:
+            rec["img_status"] = "bad_image"
         rec.update(info)
         return png
 
