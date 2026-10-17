@@ -34,7 +34,7 @@ STATUS = collections.OrderedDict([
     ("explored-no-survivor", "run on exploration data; nothing survived"),
     ("dead-as-frozen", "the frozen version failed its test; a new version would be a new idea"),
 ])
-SECTIONS = ("library", "inbox-2026-10-13", "owner-ideas", "push-1016", "push-1016-r2", "push-1016-r3", "push-1016-r45")
+SECTIONS = ("library", "inbox-2026-10-13", "owner-ideas", "push-1016", "push-1016-r2", "push-1016-r3", "push-1016-r45", "push-1017")
 H5_LABEL = "execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book"
 GATE_SENTENCE = "H5 has not cleared the promotion gate"
 
