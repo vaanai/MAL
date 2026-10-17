@@ -66,16 +66,41 @@ Conventions / caveats:
     append-only log; for a path that appears twice take the last line.
   * The orderbook observer is a forward sampler: each run starts a new set of
     part files; an empty book yields a row in ``orderbook_snaps`` (n levels 0)
-    and no rows in ``orderbook``.  Latency/skew of each sample is the HTTP
-    round trip, which is not recorded beyond ``ts``.
+    and no rows in ``orderbook``.
+  * orderbook-snap --series (rolling markets).  Timestamps: ``ts`` = local UTC clock taken
+    AFTER the response returned (so ts - req_start_ts is the round trip incl. retries and
+    backoff); ``req_start_ts`` = local clock before the first attempt; ``server_date`` = the
+    response Date header (1 s resolution, null if absent).  ``first_seen_this_run`` is when
+    this run first saw the market in an open listing, NOT its open time (use
+    markets.open_time).  Markets whose listed close_time has passed are skipped before
+    snapping; a market that closes between that check and the fetch yields a row in
+    ``orderbook_fetch_errors`` (HTTP status) or an empty-book snap (n levels 0); both are
+    recorded, never inferred.  A listing that fails on ANY page counts as a failed listing for
+    that series (page 1 is discarded, not half-used); the series' previously known markets are
+    carried, and after --max-discover-failures consecutive failures they are dropped and the
+    drop is recorded in ``orderbook_discoveries``.  The series list is resolved once and
+    fixed for the run; a change needs a new run.
+    Coverage tables: orderbook_runs (run_start written before the first listing or snapshot
+    request, after the one /series call that resolves the filter; run_end with stop_reason,
+    complete=true only for a duration stop), orderbook_rounds, orderbook_discoveries,
+    orderbook_fetch_errors.  Sealing: every part file is listed in the append-only
+    ``orderbook-MANIFEST.chain`` (mode 0440, one line per hour, each with prev = sha256 of the
+    previous line); read with read_verified(out, kind), which refuses unsealed or altered
+    parts.  Parts written before these columns existed lack them: read_table_unified() fills
+    nulls against the current schema.  Use a dedicated --out per recorder: --markets parts
+    are never sealed.
 """
 from __future__ import annotations
 
 import argparse
+import email.utils
 import hashlib
 import json
+import os
 import random
 import re
+import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -167,17 +192,18 @@ def check_path(path: str) -> str:
 
 
 def urllib_http(url: str, timeout: float = 30.0):
-    """GET only, no credentials.  Returns (status, body_bytes); status 0 = network error."""
+    """GET only, no credentials.  Returns (status, body_bytes, date_header_or_None); status 0 =
+    network error.  (Test fakes may return just (status, body).)"""
     req = urllib.request.Request(
         url, method="GET",
         headers={"Accept": "application/json", "User-Agent": "mal-kalshi-public/1"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read()
+            return r.status, r.read(), r.headers.get("Date")
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
+        return e.code, e.read(), (e.headers.get("Date") if e.headers else None)
     except (urllib.error.URLError, TimeoutError, OSError):
-        return 0, b""
+        return 0, b"", None
 
 
 class RateLimiter:
@@ -212,8 +238,10 @@ class Client:
         self.jitter, self.rng = jitter, rng
         self.requests_made = 0  # every HTTP attempt, retries included
         self.backoffs = []
+        self.last_date = None  # raw server Date header of the last 200 response (None if absent)
 
     def get(self, path: str, params: dict | None = None) -> dict:
+        self.last_date = None
         path = check_path(path)
         if params and params.get("mve_filter") and any(
                 params.get(k) for k in ("series_ticker", "event_ticker", "tickers")):
@@ -225,8 +253,10 @@ class Client:
                 raise MaxRequestsReached(f"--max-requests {self.max_requests} reached")
             self.limiter.wait()
             self.requests_made += 1
-            status, body = self.http(url)
+            res = self.http(url)
+            status, body = res[0], res[1]
             if status == 200:
+                self.last_date = res[2] if len(res) > 2 else None
                 return json.loads(body)
             retryable = status == 429 or status >= 500 or status == 0
             if not retryable:
@@ -355,6 +385,36 @@ SCHEMAS = {
     "orderbook_snaps": pa.schema([
         ("ts", TS), ("ticker", pa.string()), ("series_ticker", pa.string()),
         ("n_yes_levels", pa.int32()), ("n_no_levels", pa.int32()),
+        # Added with --series mode; parts written before that lack these columns, so read
+        # through read_table_unified()/read_verified(), never a bare dataset read.
+        ("first_seen_this_run", TS),  # --series: when THIS RUN first saw the market in an open
+        #   listing (NOT the market's open time; that is markets.open_time).  null in --markets mode
+        ("req_start_ts", TS),   # local clock just before the first HTTP attempt of this snap
+        ("attempts", pa.int32()),  # HTTP attempts for this snap (1 + retries)
+        ("server_date", TS),    # parsed server Date header of the response (1 s resolution); null if absent
+    ]),
+    "orderbook_runs": pa.schema([
+        ("run_id", pa.string()), ("event", pa.string()), ("ts", TS), ("git_sha", pa.string()),
+        ("series_json", pa.string()), ("every_s", pa.float64()), ("depth", pa.int32()),
+        ("rate", pa.float64()), ("discover_every_s", pa.float64()), ("strict_cadence", pa.bool_()),
+        ("max_discover_failures", pa.int32()),
+        ("stop_reason", pa.string()), ("complete", pa.bool_()), ("note", pa.string()),
+        ("n_rounds", pa.int32()), ("n_snaps", pa.int64()), ("requests", pa.int64()),
+    ]),
+    "orderbook_rounds": pa.schema([
+        ("run_id", pa.string()), ("round", pa.int32()), ("ts", TS), ("n_open", pa.int32()),
+        ("n_snaps_ok", pa.int32()), ("n_errors", pa.int32()), ("errors_json", pa.string()),
+        ("n_skipped_closed", pa.int32()), ("every_eff", pa.float64()), ("stretched", pa.bool_()),
+    ]),
+    "orderbook_discoveries": pa.schema([
+        ("run_id", pa.string()), ("ts", TS), ("series_ticker", pa.string()), ("ok", pa.bool_()),
+        ("n_open", pa.int32()), ("combos_dropped", pa.int32()), ("pages", pa.int32()),
+        ("consecutive_failures", pa.int32()), ("carried_dropped", pa.bool_()),
+        ("n_carried", pa.int32()),
+    ]),
+    "orderbook_fetch_errors": pa.schema([
+        ("run_id", pa.string()), ("ts", TS), ("ticker", pa.string()), ("series_ticker", pa.string()),
+        ("status", pa.int32()), ("attempts", pa.int32()),
     ]),
 }
 
@@ -482,8 +542,10 @@ class Store:
             t = r.get(time_field)
             key = (r.get("series_ticker") or "unknown", t.strftime("%Y-%m-%d") if t else "unknown")
             groups.setdefault(key, []).append(r)
+        paths = []
         for (s, dt), rs in sorted(groups.items()):
-            self.write(kind, rs, part, series=s, date=dt)
+            paths.append(self.write(kind, rs, part, series=s, date=dt))
+        return paths
 
     def run_record(self, client: Client, complete: bool, note: str = "", error: str | None = None):
         self._log({"type": "run", "command": self.command, "query": self.query,
@@ -763,7 +825,32 @@ def cmd_candles(client, store, args, log):
     return True
 
 
-def snapshot_rows(ticker: str, ob: dict, ts):
+def read_table_unified(root, kind: str, files=None) -> pa.Table:
+    """Read every part of ``kind`` under ``root`` against the CURRENT schema: columns missing
+    from older parts become nulls, unknown columns are ignored, types are cast.  (A plain
+    dataset read takes the first file's schema and drops or breaks on mixed generations.)"""
+    sch = SCHEMAS[kind]
+    files = sorted(Path(root, kind).rglob("*.parquet")) if files is None else files
+    tabs = []
+    for f in files:
+        t = pq.read_table(f)
+        tabs.append(pa.table({fld.name: (t[fld.name].cast(fld.type) if fld.name in t.column_names
+                                         else pa.nulls(t.num_rows, fld.type)) for fld in sch}, schema=sch))
+    return pa.concat_tables(tabs) if tabs else sch.empty_table()
+
+
+def parse_server_date(h):
+    try:
+        d = email.utils.parsedate_to_datetime(h) if h else None
+    except (TypeError, ValueError):
+        return None
+    if d is None:
+        return None
+    return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d.astimezone(timezone.utc)
+
+
+def snapshot_rows(ticker: str, ob: dict, ts, first_seen=None, req_start=None, attempts=None,
+                  server_date=None):
     o = ob.get("orderbook_fp") or {}
     rows = []
     for side in ("yes", "no"):
@@ -772,18 +859,358 @@ def snapshot_rows(ticker: str, ob: dict, ts):
                          "side": side, "price": fnum(lvl[0]), "size": fnum(lvl[1])})
     snap = {"ts": ts, "ticker": ticker, "series_ticker": series_of(ticker),
             "n_yes_levels": len(o.get("yes_dollars") or []),
-            "n_no_levels": len(o.get("no_dollars") or [])}
+            "n_no_levels": len(o.get("no_dollars") or []),
+            "first_seen_this_run": first_seen, "req_start_ts": req_start,
+            "attempts": attempts, "server_date": server_date}
     return rows, snap
+
+
+CHAIN_NAME = "orderbook-MANIFEST.chain"
+SEALED_KINDS = ("orderbook", "orderbook_snaps", "orderbook_runs", "orderbook_rounds",
+                "orderbook_discoveries", "orderbook_fetch_errors")
+ZERO_HASH = "0" * 64
+
+
+class SealError(Exception):
+    pass
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """tmp + fsync + os.replace (same approach as meta_capture.atomic_write); pid in the name."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with tmp.open("wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _chain_lines(out: Path) -> list[str]:
+    p = Path(out) / CHAIN_NAME
+    return p.read_text().splitlines() if p.exists() else []
+
+
+def seal_parts(out, hour: str, paths) -> bool:
+    """Append ONE chain line covering the not-yet-covered ``paths`` (closed during ``hour``):
+    path, sha256, rows, bytes, prev = sha256 of the previous chain line.  Atomic replace, then
+    chmod 0440.  Idempotent: paths already covered are skipped; nothing new -> no write (but
+    the mode is still re-applied, so a retry after a failed chmod finishes the job)."""
+    out = Path(out)
+    lines = _chain_lines(out)
+    covered = {f["path"] for ln in lines for f in json.loads(ln)["files"]}
+    files = []
+    for p in sorted({Path(x) for x in paths}):
+        rel = str(p.relative_to(out))
+        if rel in covered:
+            continue
+        files.append({"path": rel, "sha256": sha256_file(p), "rows": pq.read_metadata(p).num_rows,
+                      "bytes": p.stat().st_size})
+    chain = out / CHAIN_NAME
+    if not files:
+        if chain.exists():
+            os.chmod(chain, 0o440)
+        return False
+    prev = hashlib.sha256(lines[-1].encode()).hexdigest() if lines else ZERO_HASH
+    lines.append(jdump({"hour": hour, "files": files, "prev": prev}))
+    _atomic_write(chain, ("\n".join(lines) + "\n").encode())
+    os.chmod(chain, 0o440)
+    return True
+
+
+def verify_parts(out, kinds=SEALED_KINDS) -> dict:
+    """Check the chain links and every part of ``kinds`` on disk: refuses (SealError) a broken
+    prev link, a listed part that is missing or whose sha256 mismatches, and any part the chain
+    does not cover.  Returns {relative_path: chain_entry}."""
+    out = Path(out)
+    lines = _chain_lines(out)
+    if not lines:
+        raise SealError(f"no {CHAIN_NAME} in {out}: nothing is sealed")
+    prev, entries = ZERO_HASH, {}
+    for n, ln in enumerate(lines):
+        rec = json.loads(ln)
+        if rec["prev"] != prev:
+            raise SealError(f"chain line {n}: prev mismatch")
+        prev = hashlib.sha256(ln.encode()).hexdigest()
+        for f in rec["files"]:
+            entries[f["path"]] = f
+    for rel, f in entries.items():
+        p = out / rel
+        if not p.exists():
+            raise SealError(f"sealed part missing: {rel}")
+        if sha256_file(p) != f["sha256"]:
+            raise SealError(f"sha256 mismatch: {rel}")
+    for k in kinds:
+        for p in (out / k).rglob("*.parquet"):
+            if str(p.relative_to(out)) not in entries:
+                raise SealError(f"part not covered by the chain: {p.relative_to(out)}")
+    return entries
+
+
+def read_verified(out, kind: str) -> pa.Table:
+    """verify_parts(), then read ``kind`` against the unified current schema."""
+    entries = verify_parts(out)
+    files = sorted(Path(out, rel) for rel in entries if rel.split("/", 1)[0] == kind)
+    return read_table_unified(out, kind, files)
+
+
+def git_sha() -> str | None:
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent,
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() or None if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def list_open_series(client, s):
+    """All OPEN, non-combo markets of one series.  Any HTTP error on ANY page raises, so a
+    half-read listing is never used (page 1 is discarded)."""
+    found, combos, pages = {}, 0, 0
+    for page in paginate_pages(client, "/markets", {"series_ticker": s, "status": "open"}, "markets"):
+        pages += 1
+        for m in page:
+            t = m.get("ticker")
+            if not t:
+                continue
+            if is_mve(m):
+                combos += 1
+                continue
+            found[t] = {"series": s, "close": to_unix(m.get("close_time"))}
+    return found, combos, pages
+
+
+def discover_open_markets(client, series_list, prev: dict, fails: dict, max_fails: int,
+                          stop=lambda: False):
+    """-> (new_markets, reports) or None if ``stop()`` fired between series.  A failed series
+    keeps its previously known markets (carried) until ``max_fails`` consecutive failures, then
+    they are dropped; either way a report row says so.  ``fails`` is updated in place."""
+    new, reports = {}, []
+    for s in series_list:
+        if stop():
+            return None
+        try:
+            found, combos, pages = list_open_series(client, s)
+        except HttpError:
+            fails[s] = fails.get(s, 0) + 1
+            carried = {t: v for t, v in prev.items() if v["series"] == s}
+            drop = fails[s] >= max_fails
+            if not drop:
+                new.update(carried)
+            reports.append({"series_ticker": s, "ok": False, "n_open": 0, "combos_dropped": 0,
+                            "pages": 0, "consecutive_failures": fails[s],
+                            "carried_dropped": bool(drop and carried), "n_carried": len(carried)})
+            continue
+        fails[s] = 0
+        new.update(found)
+        reports.append({"series_ticker": s, "ok": True, "n_open": len(found), "combos_dropped": combos,
+                        "pages": pages, "consecutive_failures": 0, "carried_dropped": False,
+                        "n_carried": 0})
+    return new, reports
+
+
+def plan_cadence(n_open: int, every_s: float, disc_every_s: float, disc_reqs: float, rate: float):
+    """Return (every_eff, disc_eff, stretched, requested_rps).  Discovery may take at most half
+    of ``rate``; the snapshot cadence is stretched so snaps/s + discovery/s <= rate."""
+    requested = n_open / every_s + disc_reqs / disc_every_s
+    disc_eff = max(disc_every_s, disc_reqs / (0.5 * rate)) if disc_reqs > 0 else disc_every_s
+    avail = rate - (disc_reqs / disc_eff if disc_reqs > 0 else 0.0)
+    every_eff = every_s
+    if n_open > 0 and n_open / every_s > avail:
+        every_eff = n_open / avail
+    stretched = requested > rate * (1 + 1e-9)
+    return every_eff, disc_eff, stretched, requested
+
+
+def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
+    want = [x.strip() for x in args.series.split(",") if x.strip()]
+    series_list = select_series(client, argparse.Namespace(
+        categories=args.categories, allow_series=args.allow_series, series=",".join(want)), log)
+    if not series_list:
+        raise SystemExit("no requested series passed the category/sports filter (see --allow-series)")
+    if args.discover_every_s <= 0:
+        raise SystemExit("--discover-every-s must be > 0")
+    max_fails = max(1, int(getattr(args, "max_discover_failures", 3)))
+    rate = 1.0 / client.limiter.interval
+    run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    t0 = clock()
+    bufs = {k: [] for k in SEALED_KINDS}
+    pending: list[Path] = []
+    n_flush = 0
+    stop = {"flag": False}
+
+    def flush():
+        nonlocal n_flush
+        part = f"{run_id}-{n_flush}"
+        for kind, rows in bufs.items():
+            if not rows:
+                continue
+            if kind in ("orderbook", "orderbook_snaps"):
+                pending.extend(p for p in store.write_partitioned(kind, rows, part, "ts") if p)
+            else:
+                p = store.write(kind, rows, part)
+                if p:
+                    pending.append(p)
+            bufs[kind] = []
+        n_flush += 1
+
+    def seal(hour):
+        if not pending:
+            return
+        try:
+            seal_parts(store.out, hour, list(pending))
+            pending.clear()
+        except OSError as e:  # parts stay pending and are retried at the next seal
+            log(f"seal failed ({type(e).__name__}); will retry")
+
+    def nap(until):
+        while not stop["flag"]:
+            left = until - clock()
+            if left <= 0:
+                return
+            sleep(min(left, 1.0))
+
+    def run_row(event, **kw):
+        base = {"run_id": run_id, "event": event, "ts": utcnow(), "series_json": jdump(series_list),
+                "every_s": float(args.every_s), "depth": int(args.depth), "rate": rate,
+                "discover_every_s": float(args.discover_every_s),
+                "strict_cadence": bool(getattr(args, "strict_cadence", False)),
+                "max_discover_failures": max_fails}
+        base.update(kw)
+        return base
+
+    # run_start is on disk (and queued for sealing) before any listing or snapshot request.
+    bufs["orderbook_runs"].append(run_row("run_start", git_sha=git_sha()))
+    flush()
+
+    old = None
+    try:
+        old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__("flag", True))
+    except ValueError:  # not the main thread
+        pass
+    open_m: dict[str, dict] = {}
+    first_seen: dict[str, object] = {}
+    fails: dict[str, int] = {}
+    disc_reqs, every_eff, disc_eff, stretched = float(len(series_list)), args.every_s, args.discover_every_s, False
+    next_disc, next_snap, i, n_snaps, n_disc = t0, t0, 0, 0, 0
+    cur_hour = utcnow().strftime("%Y-%m-%dT%H")
+    reason, note = "duration", ""
+    try:
+        while not stop["flag"]:
+            now = clock()
+            if now - t0 > args.duration_s:
+                break
+            hk = utcnow().strftime("%Y-%m-%dT%H")
+            if hk != cur_hour:  # hourly seal: files closed in the ended hour (boundary flush included)
+                flush()
+                seal(cur_hour)
+                cur_hour = hk
+            if now >= next_disc:
+                r0 = client.requests_made
+                res = discover_open_markets(client, series_list, open_m, fails, max_fails,
+                                            stop=lambda: stop["flag"])
+                if res is None:
+                    break
+                new, reports = res
+                disc_reqs = float(max(1, client.requests_made - r0))
+                stamp = utcnow()
+                for r in reports:
+                    bufs["orderbook_discoveries"].append({"run_id": run_id, "ts": stamp, **r})
+                added, dropped = len(set(new) - set(open_m)), len(set(open_m) - set(new))
+                for t in new:
+                    first_seen.setdefault(t, stamp)
+                for t in set(first_seen) - set(new):
+                    del first_seen[t]
+                open_m, n_disc = new, n_disc + 1
+                every_eff, disc_eff, stretched, req = plan_cadence(
+                    len(open_m), args.every_s, args.discover_every_s, disc_reqs, rate)
+                if stretched:
+                    msg = (f"request budget: {len(open_m)} open markets, requested {req:.3f} req/s "
+                           f"> --rate {rate:g}")
+                    if getattr(args, "strict_cadence", False):
+                        log(msg + "; refusing (--strict-cadence)")
+                        raise SystemExit(2)
+                    log(msg + f"; stretching --every-s {args.every_s:g} -> {every_eff:.1f}")
+                    if disc_eff > args.discover_every_s:
+                        log(f"stretching discover interval {args.discover_every_s:g} -> {disc_eff:.1f}")
+                log(f"discover: series={len(series_list)} ok={sum(r['ok'] for r in reports)} "
+                    f"failed={sum(not r['ok'] for r in reports)} open={len(open_m)} added={added} "
+                    f"dropped={dropped} requests={int(disc_reqs)}")
+                next_disc = now + disc_eff
+            if now >= next_snap:
+                ok, errs, skipped = 0, {}, 0
+                for t, info in list(open_m.items()):
+                    if stop["flag"] or clock() - t0 > args.duration_s:
+                        break
+                    if info["close"] is not None and utcnow().timestamp() >= info["close"]:
+                        skipped += 1  # listed close_time already passed: do not snap
+                        continue
+                    req_start, r0 = utcnow(), client.requests_made
+                    try:
+                        ob = client.get(f"/markets/{t}/orderbook", {"depth": args.depth})
+                    except HttpError as e:
+                        errs[e.status] = errs.get(e.status, 0) + 1
+                        bufs["orderbook_fetch_errors"].append({
+                            "run_id": run_id, "ts": utcnow(), "ticker": t, "series_ticker": info["series"],
+                            "status": e.status, "attempts": client.requests_made - r0})
+                        continue
+                    ts = utcnow()  # AFTER the response returned
+                    rows, snap = snapshot_rows(t, ob, ts, first_seen.get(t), req_start,
+                                               client.requests_made - r0,
+                                               parse_server_date(client.last_date))
+                    bufs["orderbook"] += rows
+                    bufs["orderbook_snaps"].append(snap)
+                    ok += 1
+                n_snaps += ok
+                i += 1
+                bufs["orderbook_rounds"].append({
+                    "run_id": run_id, "round": i, "ts": utcnow(), "n_open": len(open_m),
+                    "n_snaps_ok": ok, "n_errors": sum(errs.values()),
+                    "errors_json": jdump({str(k): v for k, v in sorted(errs.items())}),
+                    "n_skipped_closed": skipped, "every_eff": float(every_eff), "stretched": stretched})
+                next_snap = max(next_snap + every_eff, clock())
+                log(f"round {i}: open={len(open_m)} ok={ok} errors={dict(sorted(errs.items()))} "
+                    f"skipped_closed={skipped} requests={client.requests_made}")
+                if len(bufs["orderbook_snaps"]) >= 200:
+                    flush()
+            nap(min(next_snap, next_disc, t0 + args.duration_s + 1e-9))
+        if stop["flag"]:
+            reason = "sigterm"
+    except MaxRequestsReached:
+        reason = "max_requests"
+        raise
+    except SystemExit:
+        reason, note = "error", "refused"
+        raise
+    except Exception as e:
+        reason, note = "error", type(e).__name__
+        raise
+    finally:
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
+        flush()
+        bufs["orderbook_runs"].append(run_row(
+            "run_end", stop_reason=reason, complete=(reason == "duration"), note=note,
+            n_rounds=i, n_snaps=n_snaps, requests=client.requests_made))
+        flush()
+        seal(cur_hour)
+    log(f"orderbook rounds: {i}, discoveries: {n_disc}, snaps: {n_snaps}, requests: "
+        f"{client.requests_made}, stop: {reason}")
+    return True
 
 
 def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sleep, utcnow=now_utc):
     if args.every_s <= 0 or args.duration_s <= 0:
         raise SystemExit("--every-s and --duration-s must be > 0")
+    if getattr(args, "series", None):
+        if args.markets:
+            raise SystemExit("--markets and --series are mutually exclusive")
+        return _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow)
     tickers = [m.strip() for m in args.markets.split(",") if m.strip()]
     allowed = set(select_series(client, argparse.Namespace(
         categories=args.categories, allow_series=args.allow_series,
         series=",".join(sorted({series_of(t) for t in tickers}))), log))
-    tickers = [t for t in tickers if series_of(t) in allowed]
+    tickers = [t for t in tickers if series_of(t) in allowed and not is_mve({"ticker": t})]
     run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     t0 = clock()
     ob_rows, snaps, n_flush = [], [], 0
@@ -798,15 +1225,18 @@ def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sle
     i = 0
     try:
         while True:
+            errs: dict = {}
             for t in tickers:
                 try:
                     ob = client.get(f"/markets/{t}/orderbook", {"depth": args.depth})
                 except HttpError as e:
-                    log(f"orderbook {t}: HTTP {e.status}, skipped this round")
+                    errs[e.status] = errs.get(e.status, 0) + 1
                     continue
                 rows, snap = snapshot_rows(t, ob, utcnow())
                 ob_rows += rows
                 snaps.append(snap)
+            if errs:
+                log(f"round {i + 1}: orderbook errors by status {dict(sorted(errs.items()))}")
             i += 1
             if len(snaps) >= 200:
                 flush()
@@ -862,7 +1292,16 @@ def build_parser():
     c.add_argument("--period", type=int, default=60, choices=[1, 60, 1440])
 
     o = sub.add_parser("orderbook-snap", help="forward resting-depth observer")
-    o.add_argument("--markets", required=True)
+    g = o.add_mutually_exclusive_group(required=True)
+    g.add_argument("--markets", help="fixed comma list of market tickers")
+    g.add_argument("--series", help="comma list of series; follows their OPEN markets as they roll")
+    o.add_argument("--discover-every-s", type=float, default=300,
+                   help="--series mode: re-list open markets this often")
+    o.add_argument("--max-discover-failures", type=int, default=3,
+                   help="--series mode: after N consecutive failed listings of a series, drop its "
+                        "carried markets (recorded in orderbook_discoveries)")
+    o.add_argument("--strict-cadence", action="store_true",
+                   help="--series mode: refuse instead of stretching when the request budget exceeds --rate")
     o.add_argument("--every-s", type=float, default=60)
     o.add_argument("--duration-s", type=float, required=True)
     o.add_argument("--depth", type=int, default=0)
@@ -870,7 +1309,8 @@ def build_parser():
 
 
 QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
-              "period", "markets", "every_s", "duration_s", "depth", "raw_json")
+              "period", "markets", "every_s", "duration_s", "depth", "raw_json",
+              "discover_every_s", "strict_cadence", "max_discover_failures")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap}
 

@@ -621,3 +621,476 @@ def test_client_refuses_mve_filter_with_series():
     for k in ("series_ticker", "event_ticker", "tickers"):
         with pytest.raises(ValueError):
             client.get("/markets", {k: "A", "mve_filter": "exclude"})
+
+
+# ---------------------------------------------------------------- orderbook-snap --series (discovery)
+
+class OpenFake(Fake):
+    """Open-market listing per series that tests mutate between discovery intervals."""
+
+    def __init__(self):
+        super().__init__()
+        self.open = {"KXHIGHNY": ["KXHIGHNY-A"], "KXFIN": ["KXFIN-A"]}
+        self.mve = {"KXHIGHNY": [{"ticker": "KXMVECROSS-1", "mve_collection_ticker": "C"}]}
+        self.listed = []
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path.endswith("/markets") and q.get("status") == ["open"]:
+            assert "mve_filter" not in q
+            s = q["series_ticker"][0]
+            self.listed.append(s)
+            items = [{"ticker": t} for t in self.open.get(s, [])] + self.mve.get(s, [])
+            self.calls.append(url)
+            return 200, json.dumps(self.page(items, "markets", q)).encode()
+        return super().__call__(url)
+
+
+def snap_args(tmp_path, *extra):
+    return kp.build_parser().parse_args(["--out", str(tmp_path), "orderbook-snap", *extra])
+
+
+def run_series(tmp_path, fake, argv, on_sleep=None, log=None, rate=1000, globals_=()):
+    clk = Clock()
+    client, _ = mkclient(fake, clock=clk, rate=rate)
+
+    def sleep(s):
+        clk.sleep(s)
+        if on_sleep:
+            on_sleep(clk)
+    args = kp.build_parser().parse_args(["--out", str(tmp_path), *globals_, "orderbook-snap", *argv])
+    kp.cmd_orderbook_snap(client, kp.Store(tmp_path, "orderbook-snap", {}), args,
+                          log or (lambda s: None), clock=clk.now, sleep=sleep,
+                          utcnow=lambda: kp.parse_dt(NOW + clk.t))
+    return client, clk
+
+
+def test_series_discovery_adds_and_drops_markets_and_drops_mve(tmp_path):
+    fake = OpenFake()
+
+    def mutate(clk):
+        if clk.t >= 1100:
+            fake.open["KXHIGHNY"] = ["KXHIGHNY-B"]  # A closed, B opened
+
+    run_series(tmp_path, fake, ["--series", "KXHIGHNY,KXFIN", "--every-s", "60", "--duration-s", "300",
+                                "--discover-every-s", "120"], on_sleep=mutate)
+    by = {}
+    for s in read(tmp_path, "orderbook_snaps"):
+        by.setdefault(s["ticker"], []).append(s)
+    assert set(by) == {"KXHIGHNY-A", "KXHIGHNY-B", "KXFIN-A"}  # combo never snapped
+    assert len(by["KXFIN-A"]) > len(by["KXHIGHNY-A"]) and len(by["KXHIGHNY-B"]) >= 1
+    assert by["KXHIGHNY-B"][0]["first_seen_this_run"] > by["KXHIGHNY-A"][0]["first_seen_this_run"]
+    # A is no longer snapped once B was discovered
+    assert max(s["ts"] for s in by["KXHIGHNY-A"]) < min(s["ts"] for s in by["KXHIGHNY-B"])
+    assert fake.listed.count("KXHIGHNY") >= 3
+    assert not any("mve_filter" in c for c in fake.calls)
+
+
+def test_series_sports_refused_unless_allowed(tmp_path):
+    fake = OpenFake()
+    fake.open["KXNFLGAME"] = ["KXNFLGAME-1"]
+    with pytest.raises(SystemExit):
+        run_series(tmp_path, fake, ["--series", "KXNFLGAME", "--duration-s", "100"])
+    assert fake.listed == [] and not any("/orderbook" in c for c in fake.calls)
+    run_series(tmp_path / "ok", fake, ["--series", "KXNFLGAME", "--duration-s", "10"],
+               globals_=["--allow-series", "KXNFLGAME"])
+    assert {s["ticker"] for s in read(tmp_path / "ok", "orderbook_snaps")} == {"KXNFLGAME-1"}
+
+
+def test_plan_cadence_never_exceeds_rate():
+    e, d, st, req = kp.plan_cadence(10, 60, 300, 2, rate=2.0)
+    assert (e, d, st) == (60, 300, False)
+    e, d, st, req = kp.plan_cadence(600, 60, 300, 2, rate=2.0)
+    assert st and req > 2.0 and 600 / e + 2 / d <= 2.0 + 1e-9
+    e, d, st, req = kp.plan_cadence(50, 10, 1, 40, rate=2.0)  # discovery alone too costly
+    assert st and d > 1 and 50 / e + 40 / d <= 2.0 + 1e-9
+
+
+def test_series_cadence_stretched_and_logged_counts_only(tmp_path):
+    fake = OpenFake()
+    fake.open["KXFIN"] = [f"KXFIN-{i}" for i in range(20)]
+    logs = []
+    client, clk = run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "5",
+                                              "--duration-s", "100", "--discover-every-s", "50"],
+                             log=logs.append, rate=2.0)
+    assert any("stretching" in m for m in logs)
+    assert not any("0.4000" in m or "yes_dollars" in m for m in logs)
+    assert client.requests_made / (clk.t - 1000.0) <= 2.0 + 0.1  # fake-clock request rate
+    ts = sorted(s["ts"] for s in read(tmp_path, "orderbook_snaps") if s["ticker"] == "KXFIN-0")
+    assert (ts[1] - ts[0]).total_seconds() >= 10 - 1e-6  # 20 markets at under 2 req/s
+
+
+def test_series_strict_cadence_refuses(tmp_path):
+    fake = OpenFake()
+    fake.open["KXFIN"] = [f"KXFIN-{i}" for i in range(20)]
+    with pytest.raises(SystemExit):
+        run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "5", "--duration-s", "100",
+                                    "--strict-cadence"], rate=2.0)
+    assert not any("/orderbook" in c for c in fake.calls)
+
+
+def test_series_sigterm_flushes_and_exits_zero(tmp_path):
+    import os
+    import signal
+    fake = OpenFake()
+    sent = []
+
+    def term(clk):
+        if clk.t >= 1070 and not sent:
+            sent.append(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    prev = signal.getsignal(signal.SIGTERM)
+    _, clk = run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "60",
+                                         "--duration-s", "100000"], on_sleep=term)
+    assert sent and clk.t < 1300  # stopped long before the duration
+    assert signal.getsignal(signal.SIGTERM) is prev  # handler restored
+    assert len(read(tmp_path, "orderbook_snaps")) >= 1  # buffered rows were flushed
+
+
+def test_series_main_exit_zero_and_manifest(tmp_path):
+    fake = OpenFake()
+    rc, _ = run(tmp_path, ["orderbook-snap", "--series", "KXFIN", "--every-s", "1",
+                           "--duration-s", "2", "--discover-every-s", "1"], fake)
+    assert rc == 0
+    recs = [json.loads(l) for l in (tmp_path / "manifest.jsonl").read_text().splitlines()]
+    assert recs[-1]["type"] == "run" and recs[-1]["complete"] is True
+    assert recs[-1]["query"]["series"] == "KXFIN" and recs[-1]["query"]["discover_every_s"] == 1
+
+
+def test_series_max_requests_cap_still_applies(tmp_path):
+    fake = OpenFake()
+    rc, client = run(tmp_path, ["orderbook-snap", "--series", "KXFIN", "--every-s", "1",
+                                "--duration-s", "50", "--discover-every-s", "1"], fake, max_requests=6)
+    assert rc == 3 and client.requests_made == 6
+
+
+def test_markets_and_series_mutually_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        snap_args(tmp_path, "--markets", "KXFIN-A", "--series", "KXFIN", "--duration-s", "10")
+    with pytest.raises(SystemExit):
+        snap_args(tmp_path, "--duration-s", "10")  # one of the two is required
+
+
+# ---------------------------------------------------------------- review round: contracts, coverage, seal
+
+import os  # noqa: E402
+import stat  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+DATE_HDR = "Mon, 05 Oct 2026 12:00:00 GMT"
+
+
+def iso(unix):
+    return datetime.fromtimestamp(unix, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class ScriptFake(OpenFake):
+    """Scriptable failures, close times, Date header, round-trip time on the shared clock."""
+
+    def __init__(self, clk=None):
+        super().__init__()
+        self.clk, self.date = clk, DATE_HDR
+        self.fail_series, self.page2_fail, self.page_size = set(), False, None
+        self.ob_status, self.close, self.retry_once = {}, {}, set()
+        self.out, self.runs_files_at_first_listing = None, None
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path.endswith("/markets") and q.get("status") == ["open"]:
+            if self.runs_files_at_first_listing is None and self.out is not None:
+                self.runs_files_at_first_listing = len(list((self.out / "orderbook_runs").rglob("*.parquet")))
+            s = q["series_ticker"][0]
+            self.calls.append(url)
+            self.listed.append(s)
+            if s in self.fail_series:
+                return 404, b"{}"
+            if self.page_size:
+                if "cursor" in q and self.page2_fail:
+                    return 404, b"{}"
+                items = [{"ticker": t} for t in self.open.get(s, [])]
+                off = int(q["cursor"][0]) if "cursor" in q else 0
+                nxt = str(off + self.page_size) if off + self.page_size < len(items) else ""
+                return 200, json.dumps({"markets": items[off:off + self.page_size], "cursor": nxt}).encode()
+            items = [{"ticker": t, **({"close_time": self.close[t]} if t in self.close else {})}
+                     for t in self.open.get(s, [])] + self.mve.get(s, [])
+            return 200, json.dumps({"markets": items, "cursor": ""}).encode()
+        if u.path.endswith("/orderbook"):
+            t = u.path.split("/")[-2]
+            self.calls.append(url)
+            if t in self.retry_once:
+                self.retry_once.discard(t)
+                return 500, b"{}"
+            if t in self.ob_status:
+                return self.ob_status[t], b"{}"
+            if self.clk:
+                self.clk.t += 2  # round trip
+            body = json.dumps({"orderbook_fp": {"yes_dollars": [["0.4000", "10.00"]], "no_dollars": []}}).encode()
+            return (200, body, self.date) if self.date else (200, body)
+        return super().__call__(url)
+
+
+def run2(tmp_path, fake, argv, on_sleep=None, log=None, rate=1000, globals_=(), clk=None, max_requests=None):
+    clk = clk or Clock()
+    fake.clk, fake.out = clk, tmp_path
+    client, _ = mkclient(fake, clock=clk, rate=rate, max_requests=max_requests)
+
+    def sleep(s):
+        clk.sleep(s)
+        if on_sleep:
+            on_sleep(clk)
+    args = kp.build_parser().parse_args(["--out", str(tmp_path), *globals_, "orderbook-snap", *argv])
+    kp.cmd_orderbook_snap(client, kp.Store(tmp_path, "orderbook-snap", {}), args,
+                          log or (lambda s: None), clock=clk.now, sleep=sleep,
+                          utcnow=lambda: kp.parse_dt(NOW + clk.t))
+    return client, clk
+
+
+def tab(out, kind):
+    return kp.read_verified(out, kind).to_pylist()
+
+
+BASE = ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "60"]
+
+
+def test_ts_is_after_response_and_c1_columns(tmp_path):
+    fake = ScriptFake()
+    fake.retry_once = {"KXFIN-A"}
+    run2(tmp_path, fake, BASE + ["--duration-s", "1"])
+    s = tab(tmp_path, "orderbook_snaps")[0]
+    assert (s["ts"] - s["req_start_ts"]).total_seconds() >= 2 - 1e-6  # ts taken after the 2 s response
+    assert s["attempts"] == 2  # one 500 retried
+    assert s["server_date"] == datetime(2026, 10, 5, 12, 0, 0, tzinfo=timezone.utc)
+    assert s["first_seen_this_run"] is not None
+
+
+def test_server_date_null_when_absent(tmp_path):
+    fake = ScriptFake()
+    fake.date = None
+    run2(tmp_path, fake, BASE + ["--duration-s", "1"])
+    s = tab(tmp_path, "orderbook_snaps")[0]
+    assert s["server_date"] is None and s["attempts"] == 1
+    assert kp.parse_server_date("garbage") is None
+
+
+def test_read_table_unified_fills_old_parts(tmp_path):
+    import pyarrow as pa
+    old = tmp_path / "orderbook_snaps" / "series=KXOLD" / "date=2026-10-01"
+    old.mkdir(parents=True)
+    pq.write_table(pa.table({"ts": pa.array([kp.parse_dt(NOW)], type=kp.TS), "ticker": ["KXOLD-1"],
+                             "series_ticker": ["KXOLD"], "n_yes_levels": pa.array([1], pa.int32()),
+                             "n_no_levels": pa.array([0], pa.int32())}), old / "part-old.parquet")
+    run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "1"])
+    t = kp.read_table_unified(tmp_path, "orderbook_snaps")
+    assert t.schema == kp.SCHEMAS["orderbook_snaps"]
+    rows = {r["ticker"]: r for r in t.to_pylist()}
+    assert rows["KXOLD-1"]["req_start_ts"] is None and rows["KXOLD-1"]["attempts"] is None
+    assert rows["KXFIN-A"]["attempts"] == 1
+
+
+def test_failed_listing_page2_discards_page1(tmp_path):
+    fake = ScriptFake()
+    fake.open["KXFIN"] = ["KXFIN-1", "KXFIN-2", "KXFIN-3"]
+    fake.page_size, fake.page2_fail = 2, True
+    run2(tmp_path, fake, BASE + ["--duration-s", "1"])
+    assert not any("/orderbook" in c for c in fake.calls)  # page-1 markets not used
+    d = tab(tmp_path, "orderbook_discoveries")[0]
+    assert d["ok"] is False and d["consecutive_failures"] == 1
+
+
+def test_failed_listing_carries_then_drops_after_n_and_records(tmp_path):
+    fake = ScriptFake()
+
+    def brk(clk):
+        if clk.t >= 1100:
+            fake.fail_series = {"KXFIN"}
+    run2(tmp_path, fake, BASE + ["--duration-s", "400", "--max-discover-failures", "2"], on_sleep=brk)
+    d = tab(tmp_path, "orderbook_discoveries")
+    fails = [r for r in d if not r["ok"]]
+    assert [r["consecutive_failures"] for r in fails][:2] == [1, 2]
+    assert not fails[0]["carried_dropped"] and fails[0]["n_carried"] == 1
+    assert fails[1]["carried_dropped"] and fails[1]["n_carried"] == 1
+    drop_ts = fails[1]["ts"]
+    snaps = [s for s in tab(tmp_path, "orderbook_snaps") if s["ticker"] == "KXFIN-A"]
+    assert len(snaps) >= 2 and max(s["ts"] for s in snaps) <= drop_ts  # nothing snapped after the drop
+    # the carried market WAS snapped after the first failure
+    assert any(s["ts"] > fails[0]["ts"] for s in snaps)
+
+
+def test_failure_counter_resets_on_success():
+    fake = ScriptFake()
+    client, _ = mkclient(fake)
+    fails = {"KXFIN": 1}
+    new, rep = kp.discover_open_markets(client, ["KXFIN"], {}, fails, 3)
+    assert fails["KXFIN"] == 0 and rep[0]["ok"] and "KXFIN-A" in new
+
+
+def test_discovery_stop_between_series():
+    fake = ScriptFake()
+    client, _ = mkclient(fake)
+    n = {"c": 0}
+
+    def stop():
+        n["c"] += 1
+        return n["c"] > 1
+    assert kp.discover_open_markets(client, ["KXHIGHNY", "KXFIN"], {}, {}, 3, stop=stop) is None
+    assert fake.listed == ["KXHIGHNY"]  # second series never requested
+
+
+def test_logs_counts_only_errors_aggregated(tmp_path):
+    fake = ScriptFake()
+    fake.open["KXFIN"] = ["KXFIN-A", "KXFIN-B", "KXFIN-C"]
+    fake.ob_status = {"KXFIN-A": 404, "KXFIN-B": 404}
+    logs = []
+    run2(tmp_path, fake, BASE + ["--duration-s", "1"], log=logs.append)
+    assert logs and not any("KXFIN-" in m for m in logs)
+    assert any("{404: 2}" in m for m in logs)
+    r = tab(tmp_path, "orderbook_rounds")[0]
+    assert r["n_snaps_ok"] == 1 and r["n_errors"] == 2 and json.loads(r["errors_json"]) == {"404": 2}
+    e = tab(tmp_path, "orderbook_fetch_errors")
+    assert {x["ticker"] for x in e} == {"KXFIN-A", "KXFIN-B"} and {x["status"] for x in e} == {404}
+
+
+def test_legacy_markets_log_has_no_tickers_and_drops_mve(tmp_path):
+    fake = ScriptFake()
+    fake.series.append({"ticker": "KXMVEX", "title": "combo", "category": "Financials",
+                        "categories": ["Financials"], "tags": [], "frequency": "daily",
+                        "fee_type": "quadratic", "fee_multiplier": 1.0, "settlement_sources": [],
+                        "contract_url": "u", "contract_terms_url": "t"})
+    fake.ob_status = {"KXFIN-B": 404}
+    logs = []
+    client, clk = mkclient(fake, clock=Clock())
+    args = snap_args(tmp_path, "--markets", "KXFIN-A,KXFIN-B,KXMVEX-1", "--duration-s", "1")
+    kp.cmd_orderbook_snap(client, kp.Store(tmp_path, "orderbook-snap", {}), args, logs.append,
+                          clock=clk.now, sleep=clk.sleep, utcnow=lambda: kp.parse_dt(NOW + clk.t))
+    assert not any("KXMVEX-1" in c for c in fake.calls)
+    assert any("/KXFIN-A/orderbook" in c for c in fake.calls)
+    assert not any("KXFIN-" in m for m in logs) and any("{404: 1}" in m for m in logs)
+
+
+def test_closed_market_skipped_before_snap(tmp_path):
+    fake = ScriptFake()
+    fake.open["KXFIN"] = ["KXFIN-A", "KXFIN-B"]
+    fake.close = {"KXFIN-A": iso(NOW + 1030)}  # closes between round 1 (t=1000) and round 2 (t=1060)
+    run2(tmp_path, fake, BASE + ["--duration-s", "130"])
+    a = [s for s in tab(tmp_path, "orderbook_snaps") if s["ticker"] == "KXFIN-A"]
+    b = [s for s in tab(tmp_path, "orderbook_snaps") if s["ticker"] == "KXFIN-B"]
+    assert len(a) == 1 and len(b) >= 3
+    assert sum(r["n_skipped_closed"] for r in tab(tmp_path, "orderbook_rounds")) >= 1
+    assert sum("/KXFIN-A/orderbook" in c for c in fake.calls) == 1
+
+
+def test_duration_stops_mid_round(tmp_path):
+    fake = ScriptFake()
+    fake.open["KXFIN"] = [f"KXFIN-{i}" for i in range(30)]
+    run2(tmp_path, fake, ["--series", "KXFIN", "--every-s", "100", "--duration-s", "3",
+                          "--discover-every-s", "100"], rate=2.0)
+    snaps = tab(tmp_path, "orderbook_snaps")
+    assert 0 < len(snaps) < 30  # a 30-market round at 2 req/s cannot fit in 3 s
+    end = [r for r in tab(tmp_path, "orderbook_runs") if r["event"] == "run_end"][0]
+    assert end["stop_reason"] == "duration" and end["complete"] is True
+
+
+def test_coverage_tables_run_start_before_first_request_and_run_end(tmp_path):
+    fake = ScriptFake()
+    run2(tmp_path, fake, BASE + ["--duration-s", "130"], rate=7.0)
+    assert fake.runs_files_at_first_listing == 1  # run_start already on disk at the first listing
+    runs = sorted(tab(tmp_path, "orderbook_runs"), key=lambda r: r["event"], reverse=True)
+    start = [r for r in runs if r["event"] == "run_start"][0]
+    end = [r for r in runs if r["event"] == "run_end"][0]
+    assert json.loads(start["series_json"]) == ["KXFIN"]
+    assert (start["every_s"], start["depth"], start["rate"]) == (60.0, 0, pytest.approx(7.0))
+    assert "git_sha" in start and end["run_id"] == start["run_id"]
+    assert end["stop_reason"] == "duration" and end["complete"] is True and end["n_snaps"] >= 2
+    d = tab(tmp_path, "orderbook_discoveries")[0]
+    assert d["ok"] and d["n_open"] == 1 and d["series_ticker"] == "KXFIN"
+    r = tab(tmp_path, "orderbook_rounds")[0]
+    assert r["n_open"] == 1 and r["stretched"] is False and r["every_eff"] == 60.0
+
+
+def test_combos_counted_in_discoveries(tmp_path):
+    fake = ScriptFake()
+    run2(tmp_path, fake, ["--series", "KXHIGHNY", "--duration-s", "1"])
+    d = tab(tmp_path, "orderbook_discoveries")[0]
+    assert d["combos_dropped"] == 1 and d["n_open"] == 1
+
+
+def test_run_end_sigterm_and_max_requests(tmp_path):
+    import signal
+    fake = ScriptFake()
+    sent = []
+
+    def term(clk):
+        if clk.t >= 1070 and not sent:
+            sent.append(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+    run2(tmp_path / "a", fake, BASE + ["--duration-s", "100000"], on_sleep=term)
+    end = [r for r in tab(tmp_path / "a", "orderbook_runs") if r["event"] == "run_end"][0]
+    assert end["stop_reason"] == "sigterm" and end["complete"] is False
+    with pytest.raises(kp.MaxRequestsReached):
+        run2(tmp_path / "b", ScriptFake(), BASE + ["--duration-s", "300"], max_requests=4)
+    end = [r for r in tab(tmp_path / "b", "orderbook_runs") if r["event"] == "run_end"][0]
+    assert end["stop_reason"] == "max_requests" and end["complete"] is False
+
+
+def test_seal_chain_hourly_mode_and_verify(tmp_path):
+    fake = ScriptFake()
+    run2(tmp_path, fake, ["--series", "KXFIN", "--every-s", "600", "--discover-every-s", "600",
+                          "--duration-s", "4000"])
+    chain = tmp_path / kp.CHAIN_NAME
+    assert stat.S_IMODE(chain.stat().st_mode) == 0o440
+    lines = chain.read_text().splitlines()
+    recs = [json.loads(x) for x in lines]
+    assert len(recs) >= 2 and len({r["hour"] for r in recs}) >= 2  # crossed an hour boundary
+    assert recs[0]["prev"] == "0" * 64
+    import hashlib as h
+    assert recs[1]["prev"] == h.sha256(lines[0].encode()).hexdigest()
+    f = recs[0]["files"][0]
+    assert set(f) == {"path", "sha256", "rows", "bytes"}
+    entries = kp.verify_parts(tmp_path)
+    assert all(k in entries for k in [x["path"] for r in recs for x in r["files"]])
+    assert len(kp.read_verified(tmp_path, "orderbook_snaps").to_pylist()) >= 6
+
+
+def test_seal_idempotent_and_chmod_retry(tmp_path):
+    run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "1"])
+    before = (tmp_path / kp.CHAIN_NAME).read_bytes()
+    parts = sorted(tmp_path.rglob("part-*.parquet"))
+    assert kp.seal_parts(tmp_path, "2026-09-21T14", parts) is False
+    os.chmod(tmp_path / kp.CHAIN_NAME, 0o640)
+    assert kp.seal_parts(tmp_path, "2026-09-21T14", parts) is False
+    assert (tmp_path / kp.CHAIN_NAME).read_bytes() == before
+    assert stat.S_IMODE((tmp_path / kp.CHAIN_NAME).stat().st_mode) == 0o440
+
+
+def test_verify_refuses_tampered_uncovered_missing_and_broken_chain(tmp_path):
+    import shutil
+    run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "1"])
+    kp.verify_parts(tmp_path)
+    part = sorted((tmp_path / "orderbook_snaps").rglob("*.parquet"))[0]
+    good = part.read_bytes()
+    part.write_bytes(good + b"x")
+    with pytest.raises(kp.SealError, match="mismatch"):
+        kp.read_verified(tmp_path, "orderbook_snaps")
+    part.write_bytes(good)
+    extra = part.with_name("part-extra.parquet")
+    shutil.copy(part, extra)
+    with pytest.raises(kp.SealError, match="not covered"):
+        kp.verify_parts(tmp_path)
+    extra.unlink()
+    part.rename(part.with_name("moved.bak"))
+    with pytest.raises(kp.SealError, match="missing"):
+        kp.verify_parts(tmp_path)
+    part.with_name("moved.bak").rename(part)
+    chain = tmp_path / kp.CHAIN_NAME
+    chain.chmod(0o640)
+    rec = json.loads(chain.read_text().splitlines()[0])
+    rec["prev"] = "1" * 64
+    chain.write_text(json.dumps(rec) + "\n")
+    with pytest.raises(kp.SealError, match="prev"):
+        kp.verify_parts(tmp_path)
+    chain.unlink()
+    with pytest.raises(kp.SealError, match="nothing is sealed"):
+        kp.verify_parts(tmp_path)
