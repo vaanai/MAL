@@ -14,6 +14,7 @@ sha256(mint) among those that have a create signature (a mint without one cannot
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import logging
@@ -255,8 +256,8 @@ class HttpResult(tuple):
 
 
 def _get_once(url: str, timeout: float, max_bytes: int, ranged: bool, deadline: float,
-              allow_private_hosts: frozenset[str]) -> HttpResult:
-    ipf.check_url(url, ipf.KNOWN_GATEWAY_HOSTS, allow_private_hosts)
+              allow_private_hosts: frozenset[str], local_origin: str | None = None) -> HttpResult:
+    ipf.check_url(url, ipf.KNOWN_GATEWAY_HOSTS, allow_private_hosts, local_origin)
     headers = {"User-Agent": "mal-meta-stage0"}
     if ranged:
         headers["Range"] = f"bytes=0-{max_bytes - 1}"
@@ -266,20 +267,24 @@ def _get_once(url: str, timeout: float, max_bytes: int, ranged: bool, deadline: 
 
 
 def urllib_get(url: str, timeout: float, max_bytes: int, ranged: bool, *,
-               allow_private_hosts: frozenset[str] = frozenset()) -> HttpResult:
+               allow_private_hosts: frozenset[str] = frozenset(),
+               local_origin: str | None = None) -> HttpResult:
     """One GET with a wall-clock deadline over everything. At most ipf.MAX_REDIRECTS redirects, each only
     if ipf.redirect_target accepts it (https, public address, /ipfs/<cid> path or pinned gateway host);
     any other 3xx comes back as its status with an empty body. Every hop passes the SSRF guard."""
-    deadline = time.monotonic() + min(timeout, HTTP_DEADLINE_S)
+    # Public gateways keep the 10 s cap; only a url on the --local-gateway origin may use a longer timeout.
+    is_local = local_origin is not None and ipf.origin_of(url) == local_origin
+    deadline = time.monotonic() + (timeout if is_local else min(timeout, HTTP_DEADLINE_S))
     cur = url
     for hop in range(ipf.MAX_REDIRECTS + 1):
         try:
-            return _get_once(cur, timeout, max_bytes, ranged, deadline, allow_private_hosts)
+            extra = {"local_origin": local_origin} if local_origin else {}
+            return _get_once(cur, timeout, max_bytes, ranged, deadline, allow_private_hosts, **extra)
         except urllib.error.HTTPError as exc:
             if exc.code in ipf.REDIRECT_CODES and hop < ipf.MAX_REDIRECTS:
                 nxt = ipf.redirect_target(
                     cur, exc.headers.get("Location") if exc.headers else None,
-                    lambda u: ipf.check_url(u, frozenset(), allow_private_hosts))
+                    lambda u: ipf.check_url(u, frozenset(), allow_private_hosts, local_origin), local_origin)
                 if nxt:
                     cur = nxt
                     continue
@@ -302,42 +307,67 @@ def candidate_urls(uri: str, gateways: Sequence[str]) -> list[str]:
 def fetch_with_retry(
     uri: str, gateways: Sequence[str], http: HttpGet, max_bytes: int, ranged: bool,
     pool: ipf.GatewayPool | None = None, sleep: Callable[[float], None] = time.sleep,
+    local: ipf.LocalGateway | None = None,
 ) -> tuple[bytes | None, str | None]:
     """Up to ATTEMPTS tries, rotating the starting gateway. Each try takes a token from the per-gateway
     bucket (waiting up to 5 s), skips gateways in 429 cooldown, and makes one request. If no gateway can
-    serve, the error is rate_limited_all and no request is made. Returns (body, error_class)."""
-    pairs = ipf.plan_urls(ipf.classify_uri(uri), gateways)
+    serve, the error is rate_limited_all and no request is made. Returns (body, error_class).
+
+    With ``local`` the local gateway is first. The public gateways are tried only if it is unavailable
+    (cooling / out of tokens) or returned a timeout or 5xx (ipf.local_may_fall_back); a local 404 or any
+    other final answer ends the fetch with no public request. The local gateway uses its own timeout."""
+    pairs = ipf.plan_urls(ipf.classify_uri(uri), gateways, local)
     if not pairs:
         return None, "non_ipfs_uri"
     pool = pool or make_pool(gateways)
+    if local is not None and local.key not in pool.pinned:
+        pool.add_pinned(local.key, local.rps, local.burst)
     urls = dict(pairs)
     keys = [k for k, _ in pairs]
     err = "http"
+    local_failed = False
+    base = 0  # try index at which the local gateway failed: the public rotation starts there, in pinned order
     for i in range(ATTEMPTS):
-        order = keys[i % len(keys):] + keys[: i % len(keys)]
+        cand = [k for k in keys if not (local_failed and local is not None and k == local.key)]
+        rot = (i - base) % len(cand)
+        order = cand[rot:] + cand[:rot]
+        if local is not None and local.key in cand and not local_failed:
+            order = cand  # the local gateway stays first until it fails
         picked = pool.reserve(order)
         if picked is None:
             return None, "rate_limited_all"
         key, wait = picked
+        is_local = local is not None and key == local.key
         if wait > 0:
             sleep(wait)
         try:
-            res = http(urls[key], TIMEOUT_S, max_bytes, ranged)
+            res = http(urls[key], local.timeout_for(ranged) if is_local and local else TIMEOUT_S,
+                       max_bytes, ranged)
             status, body = res[0], res[1]
         except TimeoutError:
             err = "timeout"
+            if is_local and not local_failed:
+                local_failed, base = True, i + 1
             continue
         except ipf.BlockedUrl:
             err = "blocked_url"
             continue
         except Exception as exc:  # class name only; never the URL
             err = "net_" + type(exc).__name__
+            if is_local and not local_failed:
+                local_failed, base = True, i + 1
             continue
         ok = status in (200, 206)
         pool.report(key, "ok" if ok and body else f"http_{status}", getattr(res, "retry_after", None))
         if ok and body:
             return body, None
         err = f"http_{status}" if not ok else "empty"
+        if is_local and status != 429:
+            if ipf.local_may_fall_back(err):
+                if not local_failed:
+                    local_failed, base = True, i + 1
+            else:
+                return None, err  # local 404 (or other final answer): no public fallback
     return None, err
 
 
@@ -439,6 +469,7 @@ def check_mint(
     row: Mapping[str, Any], rpc: RpcFn, http: HttpGet, gateways: Sequence[str],
     pool: ipf.GatewayPool | None = None, uri_cache: Mapping[str, str] | None = None,
     on_uri: Callable[[str, str], None] | None = None, sleep: Callable[[float], None] = time.sleep,
+    local: ipf.LocalGateway | None = None,
 ) -> dict[str, Any]:
     """``uri_cache`` (mint -> decoded uri from an earlier run) skips the RPC call. ``on_uri`` receives each
     freshly decoded uri so the caller can store it; the status row itself never carries the uri."""
@@ -472,7 +503,7 @@ def check_mint(
         on_uri(row["mint"], uri)  # also for cached uris, so this out dir's uris.jsonl is complete
     st["uri_found"] = True
     st.update(ipf.host_fields(ipf.classify_uri(uri)))  # class (https:<hostname> carries the host); never the uri
-    body, err = fetch_with_retry(uri, gateways, http, JSON_BYTES, False, pool, sleep)
+    body, err = fetch_with_retry(uri, gateways, http, JSON_BYTES, False, pool, sleep, local)
     if body is None:
         st["error"] = "json_" + str(err)
         return st
@@ -493,7 +524,7 @@ def check_mint(
     if not isinstance(image, str) or not image:
         st["error"] = "image_missing"
         return st
-    ibody, ierr = fetch_with_retry(image, gateways, http, IMAGE_BYTES, True, pool, sleep)
+    ibody, ierr = fetch_with_retry(image, gateways, http, IMAGE_BYTES, True, pool, sleep, local)
     if ibody is None:
         st["error"] = "image_" + str(ierr)
         return st
@@ -575,6 +606,7 @@ def summarize(
     statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: bool = False,
     sample: Sequence[Mapping[str, Any]] | None = None, deadline_hit: bool = False,
     gateway_counts: Mapping[str, int] | None = None,
+    source_counts: Mapping[str, int] | None = None, local_gateway: str | None = None,
 ) -> dict[str, Any]:
     by_group = {g: _shares([r for r in statuses if r["grp"] == g]) for g in GROUPS}
     blocks = sorted({r.get("block") for r in statuses if r.get("block") is not None})
@@ -606,6 +638,8 @@ def summarize(
         "uri_host_classes": host_class_counts(statuses),
         "rate_limit_mint_errors": rate_limit_counts(statuses),
         "gateway_counts": dict(gateway_counts or {}),
+        "source_counts": dict(source_counts or {}),  # requests: local vs public
+        "local_gateway": local_gateway,  # origin only, not secret
         "note": "metadata present must never be used as a feature",
     }
 
@@ -640,7 +674,7 @@ def run(
     budget: CreditBudget, max_runtime_s: float = MAX_RUNTIME_DEFAULT_S,
     clock: Callable[[], float] = time.monotonic,
     pool: ipf.GatewayPool | None = None, extra_uris: Mapping[str, str] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] = time.sleep, local: ipf.LocalGateway | None = None,
 ) -> dict[str, Any]:
     """Every decoded uri is appended to out/uris.jsonl (the one file that holds uris; status rows and the
     summary never do), so a later re-fetch needs no RPC. Uris from ``extra_uris`` and from an existing
@@ -655,6 +689,8 @@ def run(
     stored = load_uris(uris_path)
     uris.update(stored)
     pool = pool or make_pool(gateways)
+    if local is not None and local.key not in pool.pinned:
+        pool.add_pinned(local.key, local.rps, local.burst)
     cap_hit = deadline_hit = False
     t_end = clock() + max_runtime_s
     fd = os.open(uris_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
@@ -674,7 +710,7 @@ def run(
                 deadline_hit = True
                 break
             try:
-                st = check_mint(row, rpc, http, gateways, pool, uris, on_uri, sleep)
+                st = check_mint(row, rpc, http, gateways, pool, uris, on_uri, sleep, local)
             except CreditBudgetExceeded:
                 cap_hit = True
                 break
@@ -682,7 +718,8 @@ def run(
             fh.flush()
             done.append(st)
             seen.add(row["mint"])
-    summary = summarize(done, budget.used, cap_hit, sample, deadline_hit, pool.counts)
+    summary = summarize(done, budget.used, cap_hit, sample, deadline_hit, pool.counts,
+                        pool.sources, local.origin if local else None)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
@@ -735,6 +772,43 @@ def seed_calls(old: Path, out: Path, cap: int) -> int:
     return used
 
 
+class NoRpc:
+    """RPC stand-in for --uris-from: any call is a bug. Counts attempts so a test can assert zero."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, signature: str) -> dict[str, Any] | None:
+        self.calls += 1
+        raise RuntimeError("no_rpc")
+
+
+class NullBudget:
+    """calls_used stays 0 in --uris-from mode."""
+    used = 0
+
+
+def refetch_from_uris(
+    src: Path, out: Path, http: HttpGet, gateways: Sequence[str] = DEFAULT_GATEWAYS,
+    pool: ipf.GatewayPool | None = None, local: ipf.LocalGateway | None = None,
+    max_runtime_s: float = MAX_RUNTIME_DEFAULT_S,
+    sample_loader: Callable[[Path], list[dict[str, Any]]] | None = None,
+    rpc: RpcFn | None = None, sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Re-fetch a finished stage0b run's metadata with ZERO RPC calls: the sample is adopted from ``src``
+    (sha256 checked) and every uri comes from ``src``/uris.jsonl. A mint without a stored uri is recorded
+    as an error, never looked up. calls_used in the summary is always 0."""
+    out.mkdir(parents=True, exist_ok=True)
+    if not (src / "uris.jsonl").exists():
+        raise SystemExit("--uris-from has no uris.jsonl; refusing to run")
+    if not (out / "sample.parquet").exists():
+        adopt_sample(src, out)
+    sample = (sample_loader or load_reused_sample)(out)
+    return run(sample, out, rpc or NoRpc(), http, list(gateways), NullBudget(), max_runtime_s,
+               pool=pool or make_pool(gateways), extra_uris=load_uris(src / "uris.jsonl"),
+               sleep=sleep, local=local)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage 0 metadata retrieval check (count-only)")
     ap.add_argument("--out", required=True)
@@ -746,11 +820,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="old out dir: reuse its sample.parquet (sha256 checked) and any uris.jsonl in it")
     ap.add_argument("--gateway-rps", type=float, default=ipf.DEFAULT_RPS, help="per-gateway token bucket rate")
     ap.add_argument("--gateway-burst", type=float, default=ipf.DEFAULT_BURST)
+    ap.add_argument("--uris-from", default=None,
+                    help="finished stage0b dir: re-fetch from its sha256-checked sample and uris.jsonl "
+                         "with zero RPC calls (no Helius key is read)")
+    ap.add_argument("--local-gateway", default=None,
+                    help="http://127.0.0.1:<port> (or [::1]) kubo gateway tried first for ipfs uris; "
+                         "the only loopback origin allowed")
+    ap.add_argument("--local-rps", type=float, default=ipf.LOCAL_RPS)
+    ap.add_argument("--local-burst", type=float, default=ipf.LOCAL_BURST)
+    ap.add_argument("--local-json-timeout-s", type=float, default=ipf.LOCAL_JSON_TIMEOUT_S)
+    ap.add_argument("--local-image-timeout-s", type=float, default=ipf.LOCAL_IMAGE_TIMEOUT_S)
     ap.add_argument("--max-runtime-s", type=float, default=MAX_RUNTIME_DEFAULT_S)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    local = None
+    if args.local_gateway:
+        try:
+            local = ipf.parse_local_gateway(args.local_gateway, args.local_rps, args.local_burst,
+                                            args.local_json_timeout_s, args.local_image_timeout_s)
+        except ValueError as exc:
+            raise SystemExit(f"--local-gateway refused: {exc}") from exc
+        log.info("local_gateway origin=%s rps=%s", local.origin, local.rps)
+    http = functools.partial(urllib_get, local_origin=local.origin if local else None)
+    if args.uris_from:
+        if args.resume_from:
+            raise SystemExit("--uris-from and --resume-from are exclusive")
+        if Path(args.uris_from).resolve() == out.resolve():
+            raise SystemExit("--uris-from must be a different directory from --out")
+        pool = make_pool(DEFAULT_GATEWAYS, args.gateway_rps, args.gateway_burst)
+        summary = refetch_from_uris(Path(args.uris_from), out, http, pool=pool, local=local,
+                                    max_runtime_s=args.max_runtime_s)
+        log.info("uris_from calls_used=%d source_counts=%s pass=%s", summary["calls_used"],
+                 json.dumps(summary["source_counts"], sort_keys=True), summary["pass"])
+        return 0
     if args.resume_from and not (out / "sample.parquet").exists():
         adopt_sample(Path(args.resume_from), out)
         seed_calls(Path(args.resume_from), out, min(args.max_calls, MAX_CALLS_DEFAULT))
@@ -767,12 +871,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     extra = load_uris(Path(args.resume_from) / "uris.jsonl") if args.resume_from else {}
     pool = make_pool(DEFAULT_GATEWAYS, args.gateway_rps, args.gateway_burst)
     summary = run(
-        sample, out, make_rpc(url, budget, limiter), urllib_get,
-        list(DEFAULT_GATEWAYS), budget, args.max_runtime_s, pool=pool, extra_uris=extra,
+        sample, out, make_rpc(url, budget, limiter), http,
+        list(DEFAULT_GATEWAYS), budget, args.max_runtime_s, pool=pool, extra_uris=extra, local=local,
     )
     log.info(
-        "calls_used=%d cap_hit=%s deadline_hit=%s pass=%s",
+        "calls_used=%d cap_hit=%s deadline_hit=%s pass=%s source_counts=%s",
         summary["calls_used"], summary["cap_hit"], summary["deadline_hit"], summary["pass"],
+        json.dumps(summary["source_counts"], sort_keys=True),
     )
     return 0
 
