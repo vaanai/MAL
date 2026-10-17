@@ -17,10 +17,12 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import re
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -36,14 +38,26 @@ from tools.pump_history_backfill import (
 log = logging.getLogger("meta_stage0")
 
 TOKENS = "/data/mal/hunt-shared/tokens.parquet"
-CREATES_GLOB = "/data/mal/audit-1008/tape/creates/*.parquet"
+CREATES_DIR = "/data/mal/audit-1008/tape/creates"
+# Pinned (QP ruling 2026-10-17): hash salt, order is sha256(salt + mint); the gateway list below is the
+# same as DEFAULT_GATEWAYS in tools/meta_capture.py on claude/meta-capture.
+HASH_SALT = "MAL-STAGE0-2026-10-17"
+# Exploration HOURS only, [start, end) in UTC. Nothing outside these is listed, opened or retrieved.
+SEGMENTS = (
+    ("2026-08-14T12", "2026-08-28T12"),
+    ("2026-09-03T12", "2026-09-15T12"),
+    ("2026-09-18T23", "2026-09-25T07"),
+)
+CENSOR_WINDOW_H = 24
+WILSON_Z90 = 1.6448536269514722
 DEFAULT_HELIUS_ENV = "/var/lib/mal/fast-listener/helius.env"
-DEFAULT_GATEWAYS = (
+DEFAULT_GATEWAYS = (  # pinned
     "https://ipfs.io/ipfs/",
     "https://cloudflare-ipfs.com/ipfs/",
     "https://gateway.pinata.cloud/ipfs/",
 )
 MAX_RPS = 8.0
+MAX_CALLS_DEFAULT = 3000  # hard cap (QP ruling)
 IMAGE_BYTES = 65536
 JSON_BYTES = 1 << 20
 TIMEOUT_S = 10.0
@@ -57,23 +71,76 @@ _IPFS_RE = re.compile(r"^(?:ipfs://(?:ipfs/)?|https?://[^/]+/ipfs/)(.+)$")
 
 # ---------------------------------------------------------------- sample
 
-def sample_sql(n_per_group: int, tokens: str, creates: str) -> str:
+class RefusedOutOfRange(RuntimeError):
+    """A create outside the exploration hours (or any October signature) was seen."""
+
+
+def _hr(text: str) -> datetime:
+    return datetime.strptime(text, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+
+
+def segment_bounds_ms() -> list[tuple[int, int]]:
+    return [(int(_hr(a).timestamp() * 1000), int(_hr(b).timestamp() * 1000)) for a, b in SEGMENTS]
+
+
+def allowed_hours() -> list[str]:
+    out: list[str] = []
+    for a, b in SEGMENTS:
+        t, end = _hr(a), _hr(b)
+        while t < end:
+            out.append(t.strftime("%Y-%m-%dT%H"))
+            t += timedelta(hours=1)
+    return out
+
+
+def allowed_create_files(creates_dir: str = CREATES_DIR) -> list[str]:
+    """Explicit per-hour paths built from the allowed hours. The directory is never listed, so no file
+    outside the ranges is touched; hours without a file are skipped."""
+    paths = [f"{creates_dir}/{h}.parquet" for h in allowed_hours()]
+    return [p for p in paths if Path(p).exists()]
+
+
+def in_allowed_ms(ms: int) -> bool:
+    return any(lo <= ms < hi for lo, hi in segment_bounds_ms())
+
+
+OCT_START_S = int(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+
+
+def refuse_out_of_range(sample: Sequence[Mapping[str, Any]]) -> None:
+    """Raise before any network call if any sampled create is outside the allowed hours."""
+    for r in sample:
+        bt = r.get("block_time")
+        if bt is None:
+            raise RefusedOutOfRange("sample row without block_time")
+        if int(bt) >= OCT_START_S:
+            raise RefusedOutOfRange("October signature refused")
+        if not in_allowed_ms(int(bt) * 1000):
+            raise RefusedOutOfRange("create outside exploration hours")
+
+
+def _ms_clause(col: str) -> str:
+    return "(" + " OR ".join(f"({col} >= {lo} AND {col} < {hi})" for lo, hi in segment_bounds_ms()) + ")"
+
+
+def sample_sql(n_per_group: int, tokens: str, files: Sequence[str]) -> str:
+    flist = "[" + ", ".join("'" + f.replace("'", "''") + "'" for f in files) + "]"
     return f"""
 WITH tok AS (
   SELECT mint, block, create_ms,
          CASE WHEN grad_ms IS NOT NULL THEN 'G' ELSE 'N' END AS grp
   FROM read_parquet('{tokens}')
-  WHERE has_create IS TRUE AND is_mayhem_mode IS NOT TRUE
+  WHERE has_create IS TRUE AND is_mayhem_mode IS NOT TRUE AND {_ms_clause('create_ms')}
 ),
 cr AS (
   SELECT mint, arg_min(signature, slot) AS signature, min(slot) AS slot, min(block_time) AS block_time
-  FROM read_parquet('{creates}')
-  WHERE signature IS NOT NULL
+  FROM read_parquet({flist})
+  WHERE signature IS NOT NULL AND {_ms_clause('block_time * 1000')}
   GROUP BY mint
 ),
 j AS (
   SELECT tok.mint, tok.grp, tok.block, tok.create_ms, cr.signature, cr.slot, cr.block_time,
-         sha256(tok.mint) AS h
+         sha256('{HASH_SALT}' || tok.mint) AS h
   FROM tok JOIN cr USING (mint)
 ),
 r AS (SELECT *, row_number() OVER (PARTITION BY grp ORDER BY h, mint) AS rn FROM j)
@@ -82,12 +149,19 @@ WHERE rn <= {int(n_per_group)} ORDER BY grp, rn
 """
 
 
-def build_sample(n_per_group: int, tokens: str = TOKENS, creates: str = CREATES_GLOB) -> list[dict[str, Any]]:
+def build_sample(
+    n_per_group: int, tokens: str = TOKENS, creates_dir: str = CREATES_DIR
+) -> list[dict[str, Any]]:
     import duckdb
 
-    cur = duckdb.connect().execute(sample_sql(n_per_group, tokens, creates))
+    files = allowed_create_files(creates_dir)
+    if not files:
+        raise RefusedOutOfRange("no create files for the allowed hours")
+    cur = duckdb.connect().execute(sample_sql(n_per_group, tokens, files))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    refuse_out_of_range(rows)
+    return rows
 
 
 def write_sample(rows: Sequence[Mapping[str, Any]], out: Path) -> str:
@@ -303,6 +377,28 @@ def check_mint(
 
 # ---------------------------------------------------------------- summary
 
+def wilson90(k: int, n: int) -> list[float] | None:
+    if n == 0:
+        return None
+    z, p = WILSON_Z90, k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return [max(0.0, c - h), min(1.0, c + h)]
+
+
+def censoring(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Graduation-label censoring: creates within 24 h before a segment end can graduate after it."""
+    win = CENSOR_WINDOW_H * 3600 * 1000
+    ends = [hi for _, hi in segment_bounds_ms()]
+    out: dict[str, Any] = {"window_h": CENSOR_WINDOW_H}
+    for g in GROUPS:
+        gr = [r for r in rows if r.get("grp") == g and r.get("create_ms") is not None]
+        near = sum(1 for r in gr if any(0 <= e - int(r["create_ms"]) < win for e in ends))
+        out[g] = {"n": len(gr), "near_segment_end": near, "share": (near / len(gr)) if gr else None}
+    return out
+
+
 def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     n = len(rows)
     out: dict[str, Any] = {"n": n}
@@ -310,6 +406,7 @@ def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         c = sum(1 for r in rows if r.get(k))
         out[k] = c
         out[k + "_share"] = (c / n) if n else None
+        out[k + "_wilson90"] = wilson90(c, n)
     errs: dict[str, int] = {}
     for r in rows:
         if r.get("error"):
@@ -318,7 +415,10 @@ def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def summarize(statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: bool = False) -> dict[str, Any]:
+def summarize(
+    statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: bool = False,
+    sample: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     by_group = {g: _shares([r for r in statuses if r["grp"] == g]) for g in GROUPS}
     blocks = sorted({r.get("block") for r in statuses if r.get("block") is not None})
     by_block = {
@@ -341,6 +441,8 @@ def summarize(statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: b
         "pass": bool(passed),
         "calls_used": calls_used,
         "cap_hit": cap_hit,
+        "censoring": censoring(sample or []),
+        "note": "metadata present must never be used as a feature",
     }
 
 
@@ -364,6 +466,7 @@ def run(
     sample: Sequence[Mapping[str, Any]], out: Path, rpc: RpcFn, http: HttpGet, gateways: Sequence[str],
     budget: CreditBudget, keep_json: bool = False,
 ) -> dict[str, Any]:
+    refuse_out_of_range(sample)
     out.mkdir(parents=True, exist_ok=True)
     status_path = out / "status.jsonl"
     done = load_done(status_path)
@@ -383,7 +486,7 @@ def run(
             fh.flush()
             done.append(st)
             seen.add(row["mint"])
-    summary = summarize(done, budget.used, cap_hit)
+    summary = summarize(done, budget.used, cap_hit, sample)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
@@ -393,7 +496,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--n-per-group", type=int, default=1000)
     ap.add_argument("--helius-env", default=DEFAULT_HELIUS_ENV)
-    ap.add_argument("--max-calls", type=int, default=2500)
+    ap.add_argument("--max-calls", type=int, default=MAX_CALLS_DEFAULT)
     ap.add_argument("--rps", type=float, default=MAX_RPS)
     ap.add_argument("--gateway", action="append", help="IPFS gateway base (repeatable)")
     ap.add_argument("--keep-json", action="store_true")
@@ -414,7 +517,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         digest = write_sample(sample, out)
         log.info("sample written n=%d sha256=%s", len(sample), digest)
     url = read_helius_url(args.helius_env)
-    budget = CreditBudget(args.max_calls, 1)
+    budget = CreditBudget(min(args.max_calls, MAX_CALLS_DEFAULT), 1)
     limiter = RateLimiter(min(args.rps, MAX_RPS))
     summary = run(
         sample, out, make_rpc(url, budget, limiter), urllib_get,

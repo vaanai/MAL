@@ -48,8 +48,18 @@ def tx_with_log(uri: str = URI) -> dict:
     return {"meta": {"logMessages": ["Program log: x", f"Program data: {blob}"]}, "transaction": {}}
 
 
+def _ts(text: str) -> int:
+    from datetime import datetime, timezone
+
+    return int(datetime.strptime(text, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
+
+
+T_OK = _ts("2026-08-15T00")
+
+
 def row(i: int, grp: str = "G", block: str = "b1") -> dict:
-    return {"mint": f"M{i}", "grp": grp, "block": block, "signature": f"S{i}"}
+    return {"mint": f"M{i}", "grp": grp, "block": block, "signature": f"S{i}",
+            "block_time": T_OK, "create_ms": T_OK * 1000}
 
 
 class FakeHttp:
@@ -69,46 +79,93 @@ JSON_URL = "https://gw1.invalid/ipfs/QmFakeCid"
 
 
 class SampleTests(unittest.TestCase):
-    def test_deterministic_order_and_filters(self) -> None:
+    def _fixture(self, d: str):
         import duckdb
 
+        tp, cdir = Path(d) / "t.parquet", Path(d) / "creates"
+        cdir.mkdir()
+        con = duckdb.connect()
+        con.execute("create table t(mint varchar, has_create boolean, is_mayhem_mode boolean,"
+                    " grad_ms bigint, block varchar, create_ms bigint)")
+        toks = []
+        for i in range(20):
+            grad = 1 if i % 2 == 0 else None
+            toks.append((f"m{i}", True, False, grad, "blk", T_OK * 1000 + i))
+        toks += [
+            ("mayhem", True, True, None, "blk", T_OK * 1000),
+            ("nocreate", False, False, None, "blk", T_OK * 1000),
+            ("gap_hour", True, False, None, "blk", _ts("2026-09-01T00") * 1000),  # between segments
+            ("oct", True, False, None, "blk", _ts("2026-10-02T00") * 1000),
+        ]
+        con.executemany("insert into t values (?,?,?,?,?,?)", toks)
+        con.execute(f"copy t to '{tp}' (format parquet)")
+
+        def write(hour: str, rows):
+            con.execute("create or replace table c(mint varchar, signature varchar, slot bigint, block_time bigint)")
+            con.executemany("insert into c values (?,?,?,?)", rows)
+            con.execute(f"copy c to '{cdir}/{hour}.parquet' (format parquet)")
+
+        write("2026-08-15T00", [(t[0], "sig_" + t[0], 5, T_OK) for t in toks[:20] if t[0] != "m3"])
+        # files outside the allowed hours: must never be read (garbage content would break the query)
+        for h in ("2026-09-01T00", "2026-10-02T00"):
+            (cdir / f"{h}.parquet").write_bytes(b"not a parquet file")
+        return str(tp), str(cdir), toks
+
+    def test_deterministic_order_and_filters(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            tp, cp = Path(d) / "t.parquet", Path(d) / "c.parquet"
-            con = duckdb.connect()
-            toks = []
-            for i in range(20):
-                toks.append((f"m{i}", True, i % 5 == 0 and False, 1000 + i if i % 2 == 0 else None, "blk"))
-            toks.append(("mayhem", True, True, None, "blk"))
-            toks.append(("nocreate", False, False, None, "blk"))
-            con.execute("create table t(mint varchar, has_create boolean, is_mayhem_mode boolean, grad_ms bigint, block varchar, create_ms bigint default 1)")
-            con.executemany("insert into t(mint,has_create,is_mayhem_mode,grad_ms,block) values (?,?,?,?,?)", toks)
-            con.execute(f"copy t to '{tp}' (format parquet)")
-            con.execute("create table c(mint varchar, signature varchar, slot bigint, block_time bigint)")
-            con.executemany(
-                "insert into c values (?,?,?,?)",
-                [(t[0], "sig_" + t[0], 5, 6) for t in toks if t[0] != "m3"]
-                + [("m0", "sig_dup_later", 9, 7)],
-            )
-            con.execute(f"copy c to '{cp}' (format parquet)")
-            a = m.build_sample(3, str(tp), str(cp))
-            b = m.build_sample(3, str(tp), str(cp))
-            self.assertEqual(a, b)
-            self.assertEqual({r["grp"] for r in a}, {"G", "N"})
+            tp, cdir, toks = self._fixture(d)
+            a = m.build_sample(3, tp, cdir)
+            self.assertEqual(a, m.build_sample(3, tp, cdir))
             self.assertEqual(sum(r["grp"] == "G" for r in a), 3)
             self.assertEqual(sum(r["grp"] == "N" for r in a), 3)
-            ids = {r["mint"] for r in a}
-            self.assertFalse(ids & {"mayhem", "nocreate", "m3"})
+            self.assertFalse({r["mint"] for r in a} & {"mayhem", "nocreate", "m3", "gap_hour", "oct"})
             for g in "GN":
-                mints = [r["mint"] for r in a if r["grp"] == g]
-                everything = [t[0] for t in toks if t[0] not in ("mayhem", "nocreate", "m3")
-                              and ((t[3] is not None) == (g == "G"))]
-                want = sorted(everything, key=lambda s: (hashlib.sha256(s.encode()).digest(), s))[:3]
-                self.assertEqual(mints, want)
-            self.assertEqual([r["signature"] for r in a if r["mint"] == "m0"] or ["sig_m0"], ["sig_m0"])
+                pool = [t[0] for t in toks[:20] if t[0] != "m3" and ((t[3] is not None) == (g == "G"))]
+                want = sorted(pool, key=lambda x: (hashlib.sha256((m.HASH_SALT + x).encode()).hexdigest(), x))[:3]
+                self.assertEqual([r["mint"] for r in a if r["grp"] == g], want)
+
+    def test_salt_pinned(self) -> None:
+        self.assertEqual(m.HASH_SALT, "MAL-STAGE0-2026-10-17")
+        self.assertEqual(m.MAX_CALLS_DEFAULT, 3000)
+        self.assertEqual(
+            m.DEFAULT_GATEWAYS,
+            ("https://ipfs.io/ipfs/", "https://cloudflare-ipfs.com/ipfs/", "https://gateway.pinata.cloud/ipfs/"),
+        )
+
+    def test_hour_filter_builds_only_allowed_paths(self) -> None:
+        hours = m.allowed_hours()
+        self.assertEqual(len(hours), 14 * 24 + 12 * 24 + 152)
+        self.assertEqual(hours[0], "2026-08-14T12")
+        self.assertIn("2026-08-28T11", hours)
+        self.assertNotIn("2026-08-28T12", hours)
+        self.assertNotIn("2026-09-03T11", hours)
+        self.assertIn("2026-09-18T23", hours)
+        self.assertEqual(hours[-1], "2026-09-25T06")
+        self.assertFalse([h for h in hours if h.startswith("2026-10")])
+        with tempfile.TemporaryDirectory() as d:
+            for h in ("2026-08-14T12", "2026-08-28T12", "2026-10-01T00"):
+                (Path(d) / f"{h}.parquet").write_bytes(b"x")
+            self.assertEqual(m.allowed_create_files(d), [f"{d}/2026-08-14T12.parquet"])
+
+    def test_refuses_october_and_out_of_range(self) -> None:
+        oct_row = dict(row(1), block_time=_ts("2026-10-01T00"), create_ms=_ts("2026-10-01T00") * 1000)
+        with self.assertRaises(m.RefusedOutOfRange):
+            m.refuse_out_of_range([row(0), oct_row])
+        gap = dict(row(2), block_time=_ts("2026-09-01T00"))
+        with self.assertRaises(m.RefusedOutOfRange):
+            m.refuse_out_of_range([gap])
+        with self.assertRaises(m.RefusedOutOfRange):
+            m.refuse_out_of_range([dict(row(3), block_time=None)])
+        m.refuse_out_of_range([row(0)])
+        # run() refuses before any rpc call
+        calls = []
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(m.RefusedOutOfRange):
+            m.run([oct_row], Path(d), lambda s: calls.append(s), FakeHttp(), GW, CreditBudget(5, 1))
+        self.assertEqual(calls, [])
 
     def test_write_sample_sha(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            rows = [dict(row(1), create_ms=1, slot=2, block_time=3)]
+            rows = [dict(row(1), create_ms=1, slot=2)]
             digest = m.write_sample(rows, Path(d))
             self.assertEqual(digest, hashlib.sha256((Path(d) / "sample.parquet").read_bytes()).hexdigest())
             self.assertIn(digest, (Path(d) / "sample.parquet.sha256").read_text())
@@ -234,6 +291,36 @@ class RunTests(unittest.TestCase):
             with self.assertRaises(CreditBudgetExceeded):
                 call("S")
         self.assertEqual(budget.used, 2)
+
+
+class WilsonCensorTests(unittest.TestCase):
+    def test_wilson(self) -> None:
+        lo, hi = m.wilson90(97, 100)
+        self.assertAlmostEqual(lo, 0.9273, places=3)
+        self.assertAlmostEqual(hi, 0.9879, places=3)
+        self.assertEqual(m.wilson90(0, 0), None)
+        lo, hi = m.wilson90(100, 100)
+        self.assertEqual(hi, 1.0)
+        s = m.summarize([st("G", True), st("N", False)], 0)
+        self.assertEqual(len(s["by_group"]["G"]["json_ok_wilson90"]), 2)
+        self.assertEqual(len(s["by_block"]["b1"]["N"]["json_ok_wilson90"]), 2)
+
+    def test_censoring_near_segment_end(self) -> None:
+        end = _ts("2026-08-28T12") * 1000
+        h = 3600 * 1000
+        rows = [
+            {"grp": "G", "create_ms": end - 1 * h},
+            {"grp": "G", "create_ms": end - 25 * h},
+            {"grp": "N", "create_ms": end - 23 * h},
+            {"grp": "N", "create_ms": end - 30 * h},
+            {"grp": "N", "create_ms": _ts("2026-09-25T07") * 1000 - h},
+        ]
+        c = m.censoring(rows)
+        self.assertEqual((c["G"]["n"], c["G"]["near_segment_end"]), (2, 1))
+        self.assertEqual((c["N"]["n"], c["N"]["near_segment_end"]), (3, 2))
+        s = m.summarize([], 0, sample=rows)
+        self.assertEqual(s["censoring"]["N"]["near_segment_end"], 2)
+        self.assertIn("never be used as a feature", s["note"])
 
 
 def st(grp, json_ok, block="b1"):
