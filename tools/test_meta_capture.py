@@ -19,9 +19,11 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from tools import ipfs_fetch as ipf
 from tools import meta_capture as mc
 
 try:
@@ -83,7 +85,9 @@ class Clock:
 
 def make(d, routes=lambda u: mc.HttpError(503), clock=None, **kw):
     clock = clock or Clock(HOUR0 + 100)
-    col = mc.Collector(mc.Store(Path(d), git_ref="abc123"), gateways=("https://g1/ipfs/", "https://g2/ipfs/"),
+    gws = ("https://g1/ipfs/", "https://g2/ipfs/")
+    kw.setdefault("pool", ipf.GatewayPool(gws, rps=1e6, burst=1e6))
+    col = mc.Collector(mc.Store(Path(d), git_ref="abc123"), gateways=gws,
                        http_get=FakeHttp(routes), clock_ms=clock, **kw)
     return col, clock
 
@@ -126,8 +130,10 @@ class UriTests(unittest.TestCase):
         self.assertEqual(mc.candidate_urls("https://ipfs.io/ipfs/cid", self.GW)[0],
                          "https://a.example/ipfs/cid")
 
-    def test_plain_https_untouched_and_junk_rejected(self) -> None:
+    def test_other_https_host_direct_and_http_or_junk_rejected(self) -> None:
         self.assertEqual(mc.candidate_urls("https://x.org/m.json", self.GW), ["https://x.org/m.json"])
+        self.assertEqual(mc.candidate_urls("http://x.org/m.json", self.GW), [])
+        self.assertEqual(mc.candidate_urls("ar://" + "B" * 43, self.GW), ["https://arweave.net/" + "B" * 43])
         self.assertEqual(mc.candidate_urls("file:///etc/passwd", self.GW), [])
 
     def test_uri_kind(self) -> None:
@@ -218,7 +224,7 @@ class ScheduleTests(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "http_503")
             self.assertEqual(rows[0]["uri_kind"], "cid")
             self.assertEqual(rows[0]["gateway"], "g1")
-            self.assertEqual(rows[1]["gateway"], "g2")
+            self.assertEqual(rows[1]["gateway"], "g1")  # first non-cooling gateway in pinned order
             self.assertEqual(col.heap, [])
 
     def test_schedule_survives_long_queue(self) -> None:
@@ -430,7 +436,7 @@ class SealTests(unittest.TestCase):
                 self.assertEqual(os.stat(out / rel).st_mode & 0o777, 0o440)
             cap = json.loads((out / "capture" / f"{HK0}.CAPTURE.json").read_text())
             self.assertEqual(cap["git_ref"], "abc123")
-            self.assertEqual(cap["tool_sha256"], hashlib.sha256(Path(mc.__file__).read_bytes()).hexdigest())
+            self.assertEqual(cap["tool_sha256"], [hashlib.sha256(Path(mc.__file__).read_bytes()).hexdigest()])
             chain1 = json.loads((out / "MANIFEST.chain").read_text().splitlines()[0])
             self.assertEqual(chain1["prev"], "0" * 64)
             self.assertEqual(chain1["manifest_sha256"],
@@ -570,7 +576,7 @@ class RunTests(unittest.TestCase):
         self.assertIn('"subscribeNewToken"', fake.sent)
         self.assertEqual(len(list((col.store.out / "creates").glob("*.jsonl"))), 1)  # real recv clock
         gaps = json.loads(col.store.capture_path(HK0).read_text())["gap_log"]
-        self.assertEqual([g["event"] for g in gaps], ["disconnected:OSError", "connected"])
+        self.assertEqual([g["event"] for g in gaps], ["process_start", "disconnected:OSError", "connected"])
 
     def test_backoff_sleep_wakes_on_stop(self) -> None:
         _, rc, dt, fake = self._run("fail")
@@ -638,9 +644,226 @@ class LoggingTests(unittest.TestCase):
 class NoHeliusTests(unittest.TestCase):
     def test_source_has_no_rpc_or_helius(self) -> None:
         text = Path(mc.__file__).read_text()
+        text += Path(ipf.__file__).read_text()
         for needle in ("helius", "api-key", "api_key", "getblock", "rpc"):
             self.assertNotIn(needle, text.lower())
         self.assertEqual(re.findall(r"os\.environ\.get\(\s*\"([A-Z_]+)\"", text), ["MAL_PUMPPORTAL_WS_URL"])
+
+
+class RedirectFollowTests(unittest.TestCase):
+    """_urllib_get follows at most 2 allowed redirects; the single-hop request is faked, DNS is patched."""
+
+    def run_get(self, script):
+        calls = []
+
+        def fake_once(url, timeout, max_bytes, deadline, **k):
+            calls.append(url)
+            step = script[len(calls) - 1]
+            if isinstance(step, bytes):
+                return step
+            raise ipf.HttpError(step[0], location=step[1])
+        with unittest.mock.patch.object(mc, "_urllib_once", fake_once), \
+                unittest.mock.patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]):
+            return calls, mc._urllib_get("https://ipfs.io/ipfs/x", 5, 100)
+
+    def test_follows_allowed_redirects_up_to_two(self) -> None:
+        calls, body = self.run_get([(302, "https://dweb.link/a"), (301, "https://arweave.net/b"), b"doc"])
+        self.assertEqual(body, b"doc")
+        self.assertEqual(calls, ["https://ipfs.io/ipfs/x", "https://dweb.link/a", "https://arweave.net/b"])
+
+    def test_third_redirect_refused_keeps_3xx(self) -> None:
+        with self.assertRaises(ipf.HttpError) as cm:
+            self.run_get([(302, "https://dweb.link/a"), (302, "https://dweb.link/b"), (307, "https://dweb.link/c")])
+        self.assertEqual(cm.exception.status, 307)
+
+    def test_disallowed_target_keeps_status(self) -> None:
+        with self.assertRaises(ipf.HttpError) as cm:
+            self.run_get([(302, "http://dweb.link/x")])  # plain http target
+        self.assertEqual(mc._status_of(cm.exception), "http_302")
+
+    def test_private_target_keeps_status(self) -> None:
+        with unittest.mock.patch.object(
+                mc, "_urllib_once",
+                lambda *a, **k: (_ for _ in ()).throw(ipf.HttpError(302, location="https://arweave.net/x"))), \
+                unittest.mock.patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 443))]):
+            with self.assertRaises(ipf.HttpError) as cm:
+                mc._urllib_get("https://ipfs.io/ipfs/x", 5, 100)
+        self.assertEqual(cm.exception.status, 302)
+
+
+class GatewayChoiceTests(unittest.TestCase):
+    GWS = ("https://g1/ipfs/", "https://g2/ipfs/")
+
+    def test_first_non_cooling_gateway_and_429_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(self.GWS, clock=lambda: 1000.0)
+
+            def routes(u):
+                return ipf.HttpError(429, retry_after=30) if "//g1/" in u else DOC
+            col, ms = make(d, routes, pool=pool)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())                       # attempt 0: g1 answers 429 with Retry-After 30
+            ms.t = HOUR0 + 100 + 30_100
+            run(col.step())                       # attempt 1: g1 is cooling, so g2
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["gateway"], r["status"]) for r in rows],
+                             [(0, "g1", "http_429"), (1, "g2", "ok")])
+            self.assertEqual(rows[0]["uri_host_class"], "ipfs_cid")
+            self.assertNotIn("uri_host", rows[0])
+            self.assertEqual(col.store.gateway_counts["http_429"], 1)
+
+    def test_rate_limited_all_makes_no_request_and_schedule_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(self.GWS, clock=lambda: 1000.0)
+            for g in self.GWS:
+                pool.report(g, "http_429")
+            col, ms = make(d, lambda u: DOC, pool=pool)
+            col.on_message(create_payload(), HOUR0 + 100)
+            for dt in (0, 30_100, 120_100, 600_100):
+                ms.t = HOUR0 + 100 + dt
+                run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([r["status"] for r in rows], ["rate_limited_all"] * 4)
+            self.assertEqual([r["scheduled_ms"] - (HOUR0 + 100) for r in rows], [0, 30_000, 120_000, 600_000])
+            self.assertEqual(col.http_get.calls, [])
+            self.assertIsNone(rows[0]["gateway"])
+
+    def test_token_wait_is_slept_and_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            slept = []
+
+            async def fake_sleep(s):
+                slept.append(s)
+            pool = ipf.GatewayPool(("https://g1/ipfs/",), rps=1.0, burst=1.0, clock=lambda: 1000.0)
+            pool.reserve(["https://g1/ipfs/"])      # drain the only token
+            col, _ = make(d, lambda u: DOC, pool=pool, sleep=fake_sleep)
+            col.gateways = ("https://g1/ipfs/",)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            self.assertEqual(slept[0], 1.0)
+            self.assertEqual(meta_rows(col)[0]["wait_ms"], 1000)
+
+    def test_http_scheme_refused_without_request(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d, lambda u: DOC)
+            for uri in ("http://site.example/m.json", "data:text/plain,hi"):
+                col.on_message(create_payload(uri=uri, mint=uri[:4] + "Z"), HOUR0 + 100)
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["status"], r["uri_host_class"]) for r in rows],
+                             [("non_ipfs_uri", "refused_scheme")] * 2)
+            self.assertEqual(col.http_get.calls, [])
+
+    def test_any_https_host_fetched_directly_with_own_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(("https://g1/ipfs/", "https://g2/ipfs/"), clock=lambda: 1000.0)
+
+            def routes(u):
+                return ipf.HttpError(429, retry_after=20) if "busy.example" in u else DOC
+            col, ms = make(d, routes, pool=pool)
+            col.on_message(create_payload(uri="https://Busy.example/m.json?k=v", mint="MintBusy"), HOUR0 + 100)
+            col.on_message(create_payload(uri="https://meta.example/m.json", mint="MintOk"), HOUR0 + 100)
+            run(col.step())
+            by = {r["mint"]: r for r in meta_rows(col)}
+            self.assertEqual((by["MintBusy"]["status"], by["MintBusy"]["gateway"], by["MintBusy"]["uri_host_class"]),
+                             ("http_429", "busy.example", "https:busy.example"))
+            self.assertEqual((by["MintOk"]["status"], by["MintOk"]["uri_host_class"]), ("ok", "https:meta.example"))
+            self.assertNotIn("k=v", json.dumps(by["MintBusy"]))
+            self.assertNotIn("uri_host", by["MintBusy"])
+            self.assertAlmostEqual(pool.cooldown_left("https://busy.example/"), 20.0)
+            self.assertEqual(pool.cooldown_left("https://meta.example/"), 0.0)  # own bucket, own cooldown
+            self.assertEqual(pool.cooldown_left("https://g1/ipfs/"), 0.0)
+
+    def test_arweave_direct_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d, lambda u: DOC if "cid1" in u or "C" * 43 in u else b"img")
+            col.on_message(create_payload(uri="ar://" + "C" * 43), HOUR0 + 100)
+            run(col.step())
+            r = meta_rows(col)[0]
+            self.assertEqual((r["status"], r["gateway"], r["uri_host_class"]), ("ok", "arweave.net", "arweave"))
+            self.assertEqual(col.http_get.calls[0], "https://arweave.net/" + "C" * 43)
+
+    def test_capture_json_records_ipfs_fetch_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.store.write_capture(HK0)
+            doc = json.loads(col.store.capture_path(HK0).read_text())
+            self.assertEqual(doc["ipfs_fetch_sha256"],
+                             [hashlib.sha256(Path(ipf.__file__).read_bytes()).hexdigest()])
+            self.assertIn("gateway_counts", doc)
+
+    def test_schedule_constants_unchanged(self) -> None:
+        self.assertEqual(mc.SCHEDULE_MS, (0, 30_000, 120_000, 600_000))
+        self.assertEqual(mc.DEFAULT_GATEWAYS, ipf.DEFAULT_GATEWAYS)
+
+
+class RestartCaptureTests(unittest.TestCase):
+    def test_gap_log_and_versions_survive_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d), git_ref="ref1")
+            s1.tool_sha256, s1.ipfs_fetch_sha256 = "a" * 64, "b" * 64
+            s1.process_start(HOUR0 + 1_000)
+            s1.gap_event(HOUR0 + 2_000, "connected")
+            s1.gap_event(HOUR0 + 3_000, "disconnected:OSError")
+            # restart on new code in the same hour
+            s2 = mc.Store(Path(d), git_ref="ref2")
+            s2.tool_sha256, s2.ipfs_fetch_sha256 = "c" * 64, "d" * 64
+            s2.process_start(HOUR0 + 4_000)
+            s2.gap_event(HOUR0 + 5_000, "connected")
+            cap = json.loads(s2.capture_path(HK0).read_text())
+            events = [(g["t_ms"] - HOUR0, g["event"]) for g in cap["gap_log"]]
+            self.assertEqual(events, [(1_000, "process_start"), (2_000, "connected"),
+                                      (3_000, "disconnected:OSError"), (4_000, "process_start"),
+                                      (5_000, "connected")])
+            starts = [g for g in cap["gap_log"] if g["event"] == "process_start"]
+            self.assertEqual([(g["tool_sha256"], g["ipfs_fetch_sha256"]) for g in starts],
+                             [("a" * 64, "b" * 64), ("c" * 64, "d" * 64)])
+            self.assertEqual(cap["tool_sha256"], ["a" * 64, "c" * 64])
+            self.assertEqual(cap["ipfs_fetch_sha256"], ["b" * 64, "d" * 64])
+            self.assertEqual([v["git_ref"] for v in cap["tool_versions"]], ["ref1", "ref2"])
+
+    def test_restart_extends_earlier_unsealed_hour_and_skips_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d), git_ref="r")
+            s1.gap_event(HOUR0 + 10, "connected")
+            s1.gap_event(HOUR0 + 3_600_000 + 10, "connected")
+            s1.add_create({"mint": "M", "t_recv_ms": HOUR0 + 20})
+            s1.seal(HK0)
+            sealed_before = s1.capture_path(HK0).read_bytes()
+            s2 = mc.Store(Path(d), git_ref="r2")
+            s2.process_start(HOUR0 + 3_600_000 + 500)
+            self.assertEqual(s2.capture_path(HK0).read_bytes(), sealed_before)  # sealed hour untouched
+            cap1 = json.loads(s2.capture_path(HK1).read_text())
+            self.assertEqual([g["event"] for g in cap1["gap_log"]], ["connected", "process_start"])
+
+    def test_legacy_single_sha_capture_becomes_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d))
+            atomic = mc.atomic_write
+            atomic(s1.capture_path(HK0), json.dumps({"hour": HK0, "tool_sha256": "e" * 64, "git_ref": "old",
+                                                      "gap_log": [{"t_ms": 1, "event": "connected"}]}).encode())
+            s2 = mc.Store(Path(d), git_ref="new")
+            s2.process_start(HOUR0 + 5)
+            cap = json.loads(s2.capture_path(HK0).read_text())
+            self.assertEqual(cap["tool_sha256"], ["e" * 64, s2.tool_sha256])
+            self.assertEqual(cap["gap_log"][0], {"t_ms": 1, "event": "connected"})
+
+
+class FirstHopTests(unittest.TestCase):
+    def test_odd_port_and_userinfo_never_requested(self) -> None:
+        with unittest.mock.patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]):
+            for url in ("https://h.example:8443/x", "https://u:p@h.example/x"):
+                with self.assertRaises(mc.BlockedUrl, msg=url):
+                    mc._urllib_get(url, 2, 100)
+        for uri in ("https://h.example:8443/x", "https://u:p@h.example/x"):
+            self.assertEqual(mc.candidate_urls(uri, mc.DEFAULT_GATEWAYS), [], uri)
+
+
+class SsrfStillRefusesTests(unittest.TestCase):
+    def test_private_addresses_refused_by_default_get(self) -> None:
+        for url in ("https://10.0.0.1/x", "https://169.254.169.254/latest", "https://127.0.0.1/x"):
+            with self.assertRaises(mc.BlockedUrl, msg=url):
+                mc._urllib_get(url, 2, 100)
 
 
 if __name__ == "__main__":

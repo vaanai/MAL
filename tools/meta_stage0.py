@@ -19,7 +19,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import threading
 import time
@@ -29,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from tools import ipfs_fetch as ipf
 from tools.pump_history_backfill import (
     CreditBudget,
     CreditBudgetExceeded,
@@ -55,11 +55,7 @@ SEGMENTS = (
 CENSOR_WINDOW_H = 24
 WILSON_Z90 = 1.6448536269514722
 DEFAULT_HELIUS_ENV = "/var/lib/mal/fast-listener/helius.env"
-DEFAULT_GATEWAYS = (  # pinned
-    "https://gateway.pinata.cloud/ipfs/",
-    "https://ipfs.io/ipfs/",
-    "https://dweb.link/ipfs/",
-)
+DEFAULT_GATEWAYS = ipf.DEFAULT_GATEWAYS  # pinned, shared with tools/meta_capture.py
 MAX_RPS = 8.0
 MIN_RPS = 0.5
 HTTP_DEADLINE_S = 10.0  # total wall clock per gateway request
@@ -75,7 +71,6 @@ MIN_JSON_SHARE = 0.95
 MAX_GAP = 0.02  # 2 points
 
 GROUPS = ("G", "N")
-_IPFS_RE = re.compile(r"^(?:ipfs://(?:ipfs/)?|https?://[^/]+/ipfs/)([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 
 
 # ---------------------------------------------------------------- sample
@@ -250,58 +245,99 @@ def read_with_deadline(resp: Any, max_bytes: int, deadline: float, clock: Callab
     return b"".join(chunks)
 
 
-def urllib_get(url: str, timeout: float, max_bytes: int, ranged: bool) -> tuple[int, bytes]:
+class HttpResult(tuple):
+    """(status, body) that also carries the server's Retry-After seconds, if any."""
+
+    def __new__(cls, status: int, body: bytes, retry_after: float | None = None) -> "HttpResult":
+        obj = super().__new__(cls, (status, body))
+        obj.retry_after = retry_after
+        return obj
+
+
+def _get_once(url: str, timeout: float, max_bytes: int, ranged: bool, deadline: float,
+              allow_private_hosts: frozenset[str]) -> HttpResult:
+    ipf.check_url(url, ipf.KNOWN_GATEWAY_HOSTS, allow_private_hosts)
+    headers = {"User-Agent": "mal-meta-stage0"}
+    if ranged:
+        headers["Range"] = f"bytes=0-{max_bytes - 1}"
+    req = urllib.request.Request(url, headers=headers)
+    with _OPENER.open(req, timeout=max(0.1, min(timeout, deadline - time.monotonic()))) as resp:
+        return HttpResult(resp.status, read_with_deadline(resp, max_bytes, deadline))
+
+
+def urllib_get(url: str, timeout: float, max_bytes: int, ranged: bool, *,
+               allow_private_hosts: frozenset[str] = frozenset()) -> HttpResult:
+    """One GET with a wall-clock deadline over everything. At most ipf.MAX_REDIRECTS redirects, each only
+    if ipf.redirect_target accepts it (https, public address, /ipfs/<cid> path or pinned gateway host);
+    any other 3xx comes back as its status with an empty body. Every hop passes the SSRF guard."""
     deadline = time.monotonic() + min(timeout, HTTP_DEADLINE_S)
-    try:
-        headers = {"User-Agent": "mal-meta-stage0"}
-        if ranged:
-            headers["Range"] = f"bytes=0-{max_bytes - 1}"
-        req = urllib.request.Request(url, headers=headers)
-        with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.status, read_with_deadline(resp, max_bytes, deadline)
-    except urllib.error.HTTPError as exc:  # includes refused 3xx redirects
-        return exc.code, b""
+    cur = url
+    for hop in range(ipf.MAX_REDIRECTS + 1):
+        try:
+            return _get_once(cur, timeout, max_bytes, ranged, deadline, allow_private_hosts)
+        except urllib.error.HTTPError as exc:
+            if exc.code in ipf.REDIRECT_CODES and hop < ipf.MAX_REDIRECTS:
+                nxt = ipf.redirect_target(
+                    cur, exc.headers.get("Location") if exc.headers else None,
+                    lambda u: ipf.check_url(u, frozenset(), allow_private_hosts))
+                if nxt:
+                    cur = nxt
+                    continue
+            return HttpResult(exc.code, b"", ipf.parse_retry_after(
+                exc.headers.get("Retry-After") if exc.headers else None))
+    return HttpResult(310, b"")  # unreachable
 
 
-def limited_http(http: "HttpGet", limiter: Any) -> "HttpGet":
-    def call(url: str, timeout: float, max_bytes: int, ranged: bool) -> tuple[int, bytes]:
-        limiter.acquire()
-        return http(url, timeout, max_bytes, ranged)
-
-    return call
+def make_pool(gateways: Sequence[str], rps: float = ipf.DEFAULT_RPS, burst: float = ipf.DEFAULT_BURST,
+              clock: Callable[[], float] = time.monotonic) -> ipf.GatewayPool:
+    return ipf.GatewayPool(tuple(gateways), rps, burst, clock)
 
 
 def candidate_urls(uri: str, gateways: Sequence[str]) -> list[str]:
-    """Only ipfs:// or /ipfs/<cid> uris, rewritten onto the pinned gateways. Anything else is refused."""
-    if not isinstance(uri, str):
-        return []
-    m = _IPFS_RE.match(uri.strip())
-    if not m or ".." in m.group(1):
-        return []
-    return [g.rstrip("/") + "/" + m.group(1) for g in gateways]
+    """ipfs:// and /ipfs/<path> urls rewritten onto the pinned gateways (any host's /ipfs/ path, so an
+    arbitrary host is never contacted for those); ar:// and other https uris directly; else refused."""
+    return [u for _, u in ipf.plan_urls(ipf.classify_uri(uri), gateways)]
 
 
 def fetch_with_retry(
-    uri: str, gateways: Sequence[str], http: HttpGet, max_bytes: int, ranged: bool
+    uri: str, gateways: Sequence[str], http: HttpGet, max_bytes: int, ranged: bool,
+    pool: ipf.GatewayPool | None = None, sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[bytes | None, str | None]:
-    """Up to ATTEMPTS tries, rotating gateways. Returns (body, error_class)."""
-    urls = candidate_urls(uri, gateways)
-    if not urls:
+    """Up to ATTEMPTS tries, rotating the starting gateway. Each try takes a token from the per-gateway
+    bucket (waiting up to 5 s), skips gateways in 429 cooldown, and makes one request. If no gateway can
+    serve, the error is rate_limited_all and no request is made. Returns (body, error_class)."""
+    pairs = ipf.plan_urls(ipf.classify_uri(uri), gateways)
+    if not pairs:
         return None, "non_ipfs_uri"
+    pool = pool or make_pool(gateways)
+    urls = dict(pairs)
+    keys = [k for k, _ in pairs]
     err = "http"
     for i in range(ATTEMPTS):
-        url = urls[i % len(urls)]
+        order = keys[i % len(keys):] + keys[: i % len(keys)]
+        picked = pool.reserve(order)
+        if picked is None:
+            return None, "rate_limited_all"
+        key, wait = picked
+        if wait > 0:
+            sleep(wait)
         try:
-            status, body = http(url, TIMEOUT_S, max_bytes, ranged)
+            res = http(urls[key], TIMEOUT_S, max_bytes, ranged)
+            status, body = res[0], res[1]
         except TimeoutError:
             err = "timeout"
+            continue
+        except ipf.BlockedUrl:
+            err = "blocked_url"
             continue
         except Exception as exc:  # class name only; never the URL
             err = "net_" + type(exc).__name__
             continue
-        if status in (200, 206) and body:
+        ok = status in (200, 206)
+        pool.report(key, "ok" if ok and body else f"http_{status}", getattr(res, "retry_after", None))
+        if ok and body:
             return body, None
-        err = f"http_{status}" if status not in (200, 206) else "empty"
+        err = f"http_{status}" if not ok else "empty"
     return None, err
 
 
@@ -400,30 +436,43 @@ class PersistentBudget(CreditBudget):
 # ---------------------------------------------------------------- per mint
 
 def check_mint(
-    row: Mapping[str, Any], rpc: RpcFn, http: HttpGet, gateways: Sequence[str]
+    row: Mapping[str, Any], rpc: RpcFn, http: HttpGet, gateways: Sequence[str],
+    pool: ipf.GatewayPool | None = None, uri_cache: Mapping[str, str] | None = None,
+    on_uri: Callable[[str, str], None] | None = None, sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
+    """``uri_cache`` (mint -> decoded uri from an earlier run) skips the RPC call. ``on_uri`` receives each
+    freshly decoded uri so the caller can store it; the status row itself never carries the uri."""
+    pool = pool or make_pool(gateways)
     st: dict[str, Any] = {
         "mint": row["mint"], "grp": row["grp"], "block": row.get("block"),
         "tx_ok": False, "uri_found": False, "json_ok": False, "has_description": False,
         "has_any_social": False, "image_ok": False, "error": None,
     }
-    try:
-        tx = rpc(row["signature"])
-    except CreditBudgetExceeded:
-        raise
-    except RuntimeError as exc:
-        st["error"] = "tx_" + str(exc)[:30]
-        return st
-    if not tx:
-        st["error"] = "tx_missing"
-        return st
-    st["tx_ok"] = True
-    uri = uri_from_tx(tx, row["mint"])
-    if not uri:
-        st["error"] = "uri_not_found"
-        return st
+    uri = (uri_cache or {}).get(row["mint"])
+    if uri:
+        st["uri_cached"] = True
+        st["tx_ok"] = True
+    else:
+        try:
+            tx = rpc(row["signature"])
+        except CreditBudgetExceeded:
+            raise
+        except RuntimeError as exc:
+            st["error"] = "tx_" + str(exc)[:30]
+            return st
+        if not tx:
+            st["error"] = "tx_missing"
+            return st
+        st["tx_ok"] = True
+        uri = uri_from_tx(tx, row["mint"])
+        if not uri:
+            st["error"] = "uri_not_found"
+            return st
+    if on_uri:
+        on_uri(row["mint"], uri)  # also for cached uris, so this out dir's uris.jsonl is complete
     st["uri_found"] = True
-    body, err = fetch_with_retry(uri, gateways, http, JSON_BYTES, False)
+    st.update(ipf.host_fields(ipf.classify_uri(uri)))  # class (https:<hostname> carries the host); never the uri
+    body, err = fetch_with_retry(uri, gateways, http, JSON_BYTES, False, pool, sleep)
     if body is None:
         st["error"] = "json_" + str(err)
         return st
@@ -444,7 +493,7 @@ def check_mint(
     if not isinstance(image, str) or not image:
         st["error"] = "image_missing"
         return st
-    ibody, ierr = fetch_with_retry(image, gateways, http, IMAGE_BYTES, True)
+    ibody, ierr = fetch_with_retry(image, gateways, http, IMAGE_BYTES, True, pool, sleep)
     if ibody is None:
         st["error"] = "image_" + str(ierr)
         return st
@@ -492,9 +541,40 @@ def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def host_class_counts(statuses: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per uri host class: mints with a decoded uri and how many reached json_ok. Direct https hosts are
+    pooled under 'https' and listed by hostname (an identity, not content), most common first, at most 100."""
+    classes: dict[str, dict[str, int]] = {}
+    hosts: dict[str, int] = {}
+    for r in statuses:
+        if not r.get("uri_found"):
+            continue
+        cls = r.get("uri_host_class") or "unknown"
+        if cls.startswith("https:"):
+            hosts[cls[len("https:"):]] = hosts.get(cls[len("https:"):], 0) + 1
+            cls = "https"
+        c = classes.setdefault(cls, {"n": 0, "json_ok": 0})
+        c["n"] += 1
+        c["json_ok"] += 1 if r.get("json_ok") else 0
+    top = sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:100]
+    return {"classes": dict(sorted(classes.items())), "https_hosts": dict(top)}
+
+
+def rate_limit_counts(statuses: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Mints whose first failing fetch ended on 429 / all gateways limited / refused uri."""
+    out = {"http_429": 0, "rate_limited_all": 0, "non_ipfs_uri": 0}
+    for r in statuses:
+        e = str(r.get("error") or "")
+        for k in out:
+            if e.endswith(k):
+                out[k] += 1
+    return out
+
+
 def summarize(
     statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: bool = False,
     sample: Sequence[Mapping[str, Any]] | None = None, deadline_hit: bool = False,
+    gateway_counts: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     by_group = {g: _shares([r for r in statuses if r["grp"] == g]) for g in GROUPS}
     blocks = sorted({r.get("block") for r in statuses if r.get("block") is not None})
@@ -523,6 +603,9 @@ def summarize(
         "cap_hit": cap_hit,
         "deadline_hit": deadline_hit,
         "censoring": censoring(sample or []),
+        "uri_host_classes": host_class_counts(statuses),
+        "rate_limit_mint_errors": rate_limit_counts(statuses),
+        "gateway_counts": dict(gateway_counts or {}),
         "note": "metadata present must never be used as a feature",
     }
 
@@ -543,19 +626,47 @@ def load_done(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def load_uris(path: Path) -> dict[str, str]:
+    """mint -> decoded uri from a uris.jsonl (torn or foreign lines skipped)."""
+    out: dict[str, str] = {}
+    for rec in load_done(path):
+        if isinstance(rec.get("mint"), str) and isinstance(rec.get("uri"), str):
+            out[rec["mint"]] = rec["uri"]
+    return out
+
+
 def run(
     sample: Sequence[Mapping[str, Any]], out: Path, rpc: RpcFn, http: HttpGet, gateways: Sequence[str],
     budget: CreditBudget, max_runtime_s: float = MAX_RUNTIME_DEFAULT_S,
     clock: Callable[[], float] = time.monotonic,
+    pool: ipf.GatewayPool | None = None, extra_uris: Mapping[str, str] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
+    """Every decoded uri is appended to out/uris.jsonl (the one file that holds uris; status rows and the
+    summary never do), so a later re-fetch needs no RPC. Uris from ``extra_uris`` and from an existing
+    uris.jsonl in ``out`` are reused instead of calling RPC."""
     refuse_out_of_range(sample)
     out.mkdir(parents=True, exist_ok=True)
     status_path = out / "status.jsonl"
+    uris_path = out / "uris.jsonl"
     done = load_done(status_path)
     seen = {r["mint"] for r in done}
+    uris = dict(extra_uris or {})
+    stored = load_uris(uris_path)
+    uris.update(stored)
+    pool = pool or make_pool(gateways)
     cap_hit = deadline_hit = False
     t_end = clock() + max_runtime_s
-    with status_path.open("a", encoding="utf-8") as fh:
+    fd = os.open(uris_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+    os.chmod(uris_path, 0o640)  # umask or an older file must not leave it wider
+    with status_path.open("a", encoding="utf-8") as fh, os.fdopen(fd, "a", encoding="utf-8") as ufh:
+        def on_uri(mint: str, uri: str) -> None:
+            if mint not in stored:
+                ufh.write(json.dumps({"mint": mint, "uri": uri}, sort_keys=True) + "\n")
+                ufh.flush()
+                stored[mint] = uri
+            uris[mint] = uri
+
         for row in sample:
             if row["mint"] in seen:
                 continue
@@ -563,7 +674,7 @@ def run(
                 deadline_hit = True
                 break
             try:
-                st = check_mint(row, rpc, http, gateways)
+                st = check_mint(row, rpc, http, gateways, pool, uris, on_uri, sleep)
             except CreditBudgetExceeded:
                 cap_hit = True
                 break
@@ -571,7 +682,7 @@ def run(
             fh.flush()
             done.append(st)
             seen.add(row["mint"])
-    summary = summarize(done, budget.used, cap_hit, sample, deadline_hit)
+    summary = summarize(done, budget.used, cap_hit, sample, deadline_hit, pool.counts)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
@@ -589,6 +700,41 @@ def load_reused_sample(out: Path) -> list[dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def adopt_sample(old: Path, out: Path) -> None:
+    """Copy a previous run's sample.parquet (+ .sha256) into ``out`` after checking its sha256. The new
+    out dir keeps its own calls.json, so the 3,000 cap applies afresh to this run's RPC calls."""
+    if old.resolve() == out.resolve():
+        raise SystemExit("--resume-from must be a different directory from --out")
+    path, sha = old / "sample.parquet", old / "sample.parquet.sha256"
+    if not path.exists() or not sha.exists():
+        raise SystemExit("--resume-from has no sample.parquet with a recorded sha256; refusing to run")
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != sha.read_text(encoding="utf-8").split()[0]:
+        raise SystemExit("sample.parquet does not match its sha256; refusing to run")
+    (out / "sample.parquet").write_bytes(raw)
+    (out / "sample.parquet.sha256").write_text(f"{digest}  sample.parquet\n", encoding="utf-8")
+
+
+def seed_calls(old: Path, out: Path, cap: int) -> int:
+    """Carry the old dir's RPC call count into the new dir's calls.json so the cap stays cumulative across
+    directories. Refuses if the old count already exceeds the cap. Returns the seeded count."""
+    new_path = out / "calls.json"
+    if new_path.exists():
+        return 0  # already seeded (or running): its own count stands
+    used = 0
+    old_path = old / "calls.json"
+    if old_path.exists():
+        try:
+            used = int(json.loads(old_path.read_text(encoding="utf-8")).get("calls", 0))
+        except (ValueError, OSError):
+            raise SystemExit("old calls.json unreadable; refusing to run")
+    if used > cap:
+        raise SystemExit(f"old run already used {used} calls, over the cap {cap}; refusing to run")
+    new_path.write_text(json.dumps({"calls": used}), encoding="utf-8")
+    return used
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage 0 metadata retrieval check (count-only)")
     ap.add_argument("--out", required=True)
@@ -596,11 +742,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--helius-env", default=DEFAULT_HELIUS_ENV)
     ap.add_argument("--max-calls", type=int, default=MAX_CALLS_DEFAULT, help="cumulative cap across runs, <= 3000")
     ap.add_argument("--rps", type=float, default=MAX_RPS)
+    ap.add_argument("--resume-from", default=None,
+                    help="old out dir: reuse its sample.parquet (sha256 checked) and any uris.jsonl in it")
+    ap.add_argument("--gateway-rps", type=float, default=ipf.DEFAULT_RPS, help="per-gateway token bucket rate")
+    ap.add_argument("--gateway-burst", type=float, default=ipf.DEFAULT_BURST)
     ap.add_argument("--max-runtime-s", type=float, default=MAX_RUNTIME_DEFAULT_S)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if args.resume_from and not (out / "sample.parquet").exists():
+        adopt_sample(Path(args.resume_from), out)
+        seed_calls(Path(args.resume_from), out, min(args.max_calls, MAX_CALLS_DEFAULT))
     if (out / "sample.parquet").exists():
         sample = load_reused_sample(out)
         log.info("sample reused n=%d", len(sample))
@@ -611,9 +764,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     url = read_helius_url(args.helius_env)
     budget = PersistentBudget(out / "calls.json", min(args.max_calls, MAX_CALLS_DEFAULT))
     limiter = RateLimiter(min(max(args.rps, MIN_RPS), MAX_RPS))
+    extra = load_uris(Path(args.resume_from) / "uris.jsonl") if args.resume_from else {}
+    pool = make_pool(DEFAULT_GATEWAYS, args.gateway_rps, args.gateway_burst)
     summary = run(
-        sample, out, make_rpc(url, budget, limiter), limited_http(urllib_get, limiter),
-        list(DEFAULT_GATEWAYS), budget, args.max_runtime_s,
+        sample, out, make_rpc(url, budget, limiter), urllib_get,
+        list(DEFAULT_GATEWAYS), budget, args.max_runtime_s, pool=pool, extra_uris=extra,
     )
     log.info(
         "calls_used=%d cap_hit=%s deadline_hit=%s pass=%s",

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import tools.meta_stage0 as m
+from tools import ipfs_fetch as ipf
 from observe.trade_decode import b58encode
 from tools.pump_history_backfill import CreditBudget, CreditBudgetExceeded
 
@@ -237,8 +238,8 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(st["error"], "image_http_404")
 
     def test_non_ipfs_uri_refused_without_fetch(self) -> None:
-        for bad in ("http://169.254.169.254/latest", "https://example.com/meta.json",
-                    "https://ipfs.io/ipfs/../../etc", "ipfs://", "file:///etc/passwd"):
+        for bad in ("http://169.254.169.254/latest", "http://example.com/meta.json",
+                    "https://ipfs.io/ipfs/../../etc", "ipfs://", "file:///etc/passwd", "ftp://h/x"):
             http = FakeHttp()
             st = self.check(tx_with_log(bad), http)
             self.assertEqual(st["error"], "json_non_ipfs_uri", bad)
@@ -281,7 +282,8 @@ class NoRedirectTests(unittest.TestCase):
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
         try:
-            status, body = m.urllib_get(f"http://127.0.0.1:{srv.server_port}/", 5, 100, False)
+            status, body = m.urllib_get(f"http://127.0.0.1:{srv.server_port}/", 5, 100, False,
+                                        allow_private_hosts=frozenset({"127.0.0.1"}))
         finally:
             srv.shutdown()
         self.assertEqual((status, body), (302, b""))
@@ -294,17 +296,6 @@ class NoRedirectTests(unittest.TestCase):
         t = iter([0.0, 1.0, 2.0, 99.0, 100.0])
         with self.assertRaises(TimeoutError):
             m.read_with_deadline(Slow(), 10**6, 50.0, clock=lambda: next(t))
-
-    def test_limited_http_acquires(self) -> None:
-        n = []
-
-        class Lim:
-            def acquire(self):
-                n.append(1)
-
-        f = m.limited_http(FakeHttp(), Lim())
-        f("u", 1, 1, False)
-        self.assertEqual(n, [1])
 
 
 class BudgetAndDeadlineTests(unittest.TestCase):
@@ -568,6 +559,269 @@ class KeyLogTests(unittest.TestCase):
                     everything += p.read_text(errors="ignore")
             self.assertNotIn(KEY, everything)
             self.assertIn("calls_used", everything)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def fast_pool(gateways=GW) -> ipf.GatewayPool:
+    return ipf.GatewayPool(tuple(gateways), rps=1e6, burst=1e6)
+
+
+class RateLimitFetchTests(unittest.TestCase):
+    def test_429_with_retry_after_cools_gateway_and_next_try_uses_other(self) -> None:
+        clk = FakeClock()
+        pool = ipf.GatewayPool(tuple(GW), clock=clk)
+
+        class Http429(FakeHttp):
+            def __call__(self, url, timeout, max_bytes, ranged):
+                self.calls.append((url, timeout, max_bytes, ranged))
+                if "gw1" in url:
+                    return m.HttpResult(429, b"", 45.0)
+                return (200, b"{}")
+
+        http = Http429()
+        body, err = m.fetch_with_retry(URI, GW, http, 100, False, pool)
+        self.assertEqual((body, err), (b"{}", None))
+        self.assertEqual([c[0].split("/")[2] for c in http.calls], ["gw1.invalid", "gw2.invalid"])
+        self.assertAlmostEqual(pool.cooldown_left(GW[0]), 45.0)
+        self.assertEqual(pool.counts["http_429"], 1)
+
+    def test_all_cooling_is_rate_limited_all_with_no_request(self) -> None:
+        pool = ipf.GatewayPool(tuple(GW), clock=FakeClock())
+        for g in GW:
+            pool.report(g, "http_429")
+        http = FakeHttp()
+        self.assertEqual(m.fetch_with_retry(URI, GW, http, 100, False, pool), (None, "rate_limited_all"))
+        self.assertEqual(http.calls, [])
+        self.assertEqual(pool.counts["rate_limited_all"], 1)
+
+    def test_token_wait_is_slept(self) -> None:
+        pool = ipf.GatewayPool((GW[0],), rps=1.0, burst=1.0, clock=FakeClock())
+        pool.reserve([GW[0]])
+        slept = []
+        body, err = m.fetch_with_retry(URI, [GW[0]], FakeHttp(), 100, False, pool, slept.append)
+        self.assertEqual((body, slept), (b"{}", [1.0]))
+
+    def test_check_mint_error_names(self) -> None:
+        pool = ipf.GatewayPool(tuple(GW), clock=FakeClock())
+        for g in GW:
+            pool.report(g, "http_429")
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(), FakeHttp(), GW, pool)
+        self.assertEqual(st["error"], "json_rate_limited_all")
+        # two 429s cool both gateways; the third try then finds none and makes no request
+        p2 = fast_pool()
+        http = FakeHttp(default=(429, b""))
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(), http, GW, p2)
+        self.assertEqual((st["error"], len(http.calls), p2.counts["http_429"]), ("json_rate_limited_all", 2, 2))
+
+
+class RedirectGetTests(unittest.TestCase):
+    """urllib_get redirect policy with the single hop faked; DNS patched, no sockets."""
+
+    def go(self, script):
+        import socket
+        import urllib.error
+        calls = []
+
+        def fake_once(url, timeout, max_bytes, ranged, deadline, allow):
+            calls.append(url)
+            step = script[len(calls) - 1]
+            if isinstance(step, bytes):
+                return m.HttpResult(200, step)
+            hdrs = {"Location": step[1]}
+            raise urllib.error.HTTPError(url, step[0], "x", hdrs, None)  # type: ignore[arg-type]
+        with patch.object(m, "_get_once", fake_once), \
+                patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]):
+            return calls, m.urllib_get("https://ipfs.io/ipfs/x", 5, 100, False)
+
+    def test_follow_two_then_stop(self) -> None:
+        calls, res = self.go([(302, "https://dweb.link/a"), (301, "https://arweave.net/b"), b"doc"])
+        self.assertEqual((res[0], res[1]), (200, b"doc"))
+        self.assertEqual(len(calls), 3)
+        calls, res = self.go([(302, "https://dweb.link/a"), (302, "https://dweb.link/b"), (307, "https://dweb.link/c")])
+        self.assertEqual((res[0], res[1], len(calls)), (307, b"", 3))
+
+    def test_refused_targets_keep_3xx(self) -> None:
+        for loc in ("http://ipfs.io/ipfs/" + "Qm" + "a" * 44, "file:///etc/passwd", "https://u:p@h.example/x"):
+            calls, res = self.go([(302, loc)])
+            self.assertEqual((res[0], res[1], len(calls)), (302, b"", 1), loc)
+
+    def test_private_target_keeps_3xx(self) -> None:
+        import socket
+        import urllib.error
+
+        def fake_once(url, *a):
+            raise urllib.error.HTTPError(url, 302, "x", {"Location": "https://arweave.net/x"}, None)  # type: ignore[arg-type]
+        with patch.object(m, "_get_once", fake_once), \
+                patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 443))]):
+            res = m.urllib_get("https://ipfs.io/ipfs/x", 5, 100, False)
+        self.assertEqual((res[0], res[1]), (302, b""))
+
+    def test_ssrf_refuses_private_first_hop(self) -> None:
+        with patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 443))]):
+            with self.assertRaises(ipf.BlockedUrl):
+                m.urllib_get("https://arweave.net/x", 5, 100, False)
+
+
+class HostClassAndUrisTests(unittest.TestCase):
+    AR = "ar://" + "D" * 43
+
+    def test_arweave_and_other_host_classes_in_status(self) -> None:
+        ar_url = "https://arweave.net/" + "D" * 43
+        http = FakeHttp({ar_url: (200, b"{}")})
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(self.AR), http, GW, fast_pool())
+        self.assertTrue(st["json_ok"])
+        self.assertEqual(st["uri_host_class"], "arweave")
+        self.assertEqual(http.calls[0][0], ar_url)
+        # any other https host is fetched directly; class carries the hostname, never the path or query
+        evil = "https://Evil.example/p?q=1"
+        http = FakeHttp({"https://evil.example/p?q=1": (200, b"{}")})
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(evil), http, GW, fast_pool())
+        self.assertEqual((st["json_ok"], st["uri_host_class"]), (True, "https:evil.example"))
+        self.assertNotIn("q=1", json.dumps(st))
+        self.assertEqual(len(http.calls), 1)
+        # http and other schemes are refused with no request
+        http = FakeHttp()
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log("http://evil.example/p"), http, GW,
+                          fast_pool())
+        self.assertEqual((st["error"], st["uri_host_class"]), ("json_non_ipfs_uri", "refused_scheme"))
+        self.assertEqual(http.calls, [])
+
+    def test_direct_host_429_cools_only_that_host(self) -> None:
+        pool = fast_pool()
+        http = FakeHttp(default=m.HttpResult(429, b"", 30.0))
+        body, err = m.fetch_with_retry("https://busy.example/m", GW, http, 100, False, pool)
+        self.assertEqual((body, err, len(http.calls)), (None, "rate_limited_all", 1))  # one host, now cooling
+        self.assertAlmostEqual(pool.cooldown_left("https://busy.example/"), 30.0, places=1)
+        self.assertEqual(pool.cooldown_left(GW[0]), 0.0)
+
+    def test_uris_jsonl_round_trip_and_no_rpc_on_refetch(self) -> None:
+        sample = [row(i) for i in range(3)]
+        calls = []
+
+        def rpc(sig):
+            calls.append(sig)
+            return tx_with_log()
+        with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI), tempfile.TemporaryDirectory() as d:
+            old, new = Path(d) / "old", Path(d) / "new"
+            m.run(sample, old, rpc, FakeHttp({JSON_URL: (200, b"{}")}), GW, CreditBudget(10, 1), pool=fast_pool())
+            self.assertEqual(len(calls), 3)
+            stored = m.load_uris(old / "uris.jsonl")
+            self.assertEqual(stored, {f"M{i}": URI for i in range(3)})
+            # status rows and summary never carry the uri
+            for f in ("status.jsonl", "summary.json"):
+                self.assertNotIn("QmFakeCid", (old / f).read_text())
+            # new dir, uris given from the old one: zero rpc, uris copied into the new dir
+            calls.clear()
+            s = m.run(sample, new, rpc, FakeHttp({JSON_URL: (200, b"{}")}), GW, CreditBudget(10, 1),
+                      pool=fast_pool(), extra_uris=stored)
+            self.assertEqual(calls, [])
+            self.assertEqual(m.load_uris(new / "uris.jsonl"), stored)
+            self.assertEqual(s["by_group"]["G"]["json_ok"], 3)
+            self.assertTrue(all(r["uri_cached"] for r in m.load_done(new / "status.jsonl")))
+            # a torn last line is ignored
+            with (new / "uris.jsonl").open("a") as fh:
+                fh.write('{"mint": "x", "ur')
+            self.assertEqual(m.load_uris(new / "uris.jsonl"), stored)
+
+    def test_summary_host_classes_and_rate_limit_counts(self) -> None:
+        sts = [
+            {"grp": "G", "uri_found": True, "json_ok": True, "uri_host_class": "ipfs_cid"},
+            {"grp": "G", "uri_found": True, "json_ok": False, "uri_host_class": "ipfs_cid", "error": "json_http_429"},
+            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "https:a.example",
+             "error": "json_http_404"},
+            {"grp": "N", "uri_found": True, "json_ok": True, "uri_host_class": "https:a.example"},
+            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "refused_scheme",
+             "error": "json_non_ipfs_uri"},
+            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "ipfs_cid",
+             "error": "json_rate_limited_all"},
+            {"grp": "N", "uri_found": False, "json_ok": False, "error": "tx_missing"},
+        ]
+        s = m.summarize(sts, 5, gateway_counts={"http_429": 7, "rate_limited_all": 1})
+        self.assertEqual(s["uri_host_classes"]["classes"]["ipfs_cid"], {"n": 3, "json_ok": 1})
+        self.assertEqual(s["uri_host_classes"]["classes"]["https"], {"n": 2, "json_ok": 1})
+        self.assertEqual(s["uri_host_classes"]["classes"]["refused_scheme"], {"n": 1, "json_ok": 0})
+        self.assertEqual(s["uri_host_classes"]["https_hosts"], {"a.example": 2})
+        self.assertEqual(s["rate_limit_mint_errors"], {"http_429": 1, "rate_limited_all": 1, "non_ipfs_uri": 1})
+        self.assertEqual(s["gateway_counts"]["http_429"], 7)
+
+
+class ResumeFromTests(unittest.TestCase):
+    def test_adopt_sample_checks_sha_and_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            old, new = Path(d) / "old", Path(d) / "new"
+            old.mkdir()
+            new.mkdir()
+            digest = m.write_sample([dict(row(1), slot=1)], old)
+            m.adopt_sample(old, new)
+            self.assertEqual(hashlib.sha256((new / "sample.parquet").read_bytes()).hexdigest(), digest)
+            self.assertIn(digest, (new / "sample.parquet.sha256").read_text())
+            with self.assertRaises(SystemExit):
+                m.adopt_sample(old, old)          # same dir would share the old calls.json
+            (old / "sample.parquet.sha256").write_text("0" * 64 + "  sample.parquet\n")
+            with self.assertRaises(SystemExit):
+                m.adopt_sample(old, Path(d) / "other")
+            with self.assertRaises(SystemExit):
+                m.adopt_sample(Path(d) / "missing", new)
+
+    def test_cap_is_cumulative_across_two_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            old, new = Path(d) / "old", Path(d) / "new"
+            old.mkdir()
+            new.mkdir()
+            (old / "calls.json").write_text('{"calls": 2000}')
+            self.assertEqual(m.seed_calls(old, new, 3000), 2000)
+            b = m.PersistentBudget(new / "calls.json", 3000)
+            self.assertEqual(b.used, 2000)
+            granted = sum(1 for _ in range(1500) if b.reserve())
+            self.assertEqual(granted, 1000)                      # 2000 + 1000 = 3000, never more
+            self.assertEqual(json.loads((new / "calls.json").read_text())["calls"], 3000)
+            self.assertEqual(json.loads((old / "calls.json").read_text())["calls"], 2000)  # old untouched
+            self.assertEqual(m.seed_calls(old, new, 3000), 0)    # an existing new count stands
+            self.assertEqual(m.PersistentBudget(new / "calls.json", 3000).used, 3000)
+
+    def test_seed_refuses_over_cap_unreadable_and_handles_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            old = Path(d) / "old"
+            old.mkdir()
+            (old / "calls.json").write_text('{"calls": 3001}')
+            (Path(d) / "n1").mkdir()
+            with self.assertRaises(SystemExit):
+                m.seed_calls(old, Path(d) / "n1", 3000)
+            self.assertFalse((Path(d) / "n1" / "calls.json").exists())
+            (old / "calls.json").write_text("garbage")
+            with self.assertRaises(SystemExit):
+                m.seed_calls(old, Path(d) / "n1", 3000)
+            (old / "calls.json").unlink()
+            self.assertEqual(m.seed_calls(old, Path(d) / "n1", 3000), 0)
+
+    def test_uris_jsonl_mode_0640(self) -> None:
+        import os
+        import stat
+        with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI), tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            old_umask = os.umask(0o000)
+            try:
+                m.run([row(1)], out, lambda s: tx_with_log(), FakeHttp({JSON_URL: (200, b"{}")}), GW,
+                      CreditBudget(5, 1), pool=fast_pool())
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(stat.S_IMODE((out / "uris.jsonl").stat().st_mode), 0o640)
+            (out / "uris.jsonl").chmod(0o666)                    # a pre-existing wide file is narrowed
+            m.run([row(1)], out, lambda s: tx_with_log(), FakeHttp(), GW, CreditBudget(5, 1), pool=fast_pool())
+            self.assertEqual(stat.S_IMODE((out / "uris.jsonl").stat().st_mode), 0o640)
+
+    def test_gateway_defaults_and_flags(self) -> None:
+        self.assertEqual((ipf.DEFAULT_RPS, ipf.DEFAULT_BURST), (1.0, 2.0))
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                m.main(["--out", "/nonexistent", "--gateway", "https://x"])  # gateways stay pinned
 
 
 if __name__ == "__main__":
