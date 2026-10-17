@@ -570,3 +570,29 @@ def test_sports_keyword_second_signal():
     # explicit opt-in to Sports bypasses the keyword list
     opted = kp.allowed_series([dict(rows[0], category="Sports", categories=["Sports"])], {"sports"}, set())
     assert "KXNBAMVP" in opted
+
+
+def test_inflation_cpi_fed_pass_sports_and_esports_blocked():
+    def r(t, title="x"):
+        return {"ticker": t, "title": title, "category": "Economics", "categories": ["Economics"]}
+    ok = ["KXINFLATION", "KXCPI", "KXFED", "KXFEDDECISION", "KXSUMMARY", "KXINFL", "INFL", "KXHIGHNY"]
+    bad = ["KXNFLGAME", "NFLGAME", "KXNBAMVP", "KXLOLWORLDS", "KXCS2MAJOR", "KXVALORANTMAP",
+           "KXMLSTOTAL", "KXUFCFIGHT", "KXSUPERBOWLWINNER", "KXESPORTSX"]
+    kept = kp.allowed_series([r(t) for t in ok + bad], None, {"sports"})
+    assert set(kept) == set(ok)
+
+
+def test_allow_series_override_recorded_in_manifest(tmp_path):
+    fake = Fake()
+    fake.series.append({"ticker": "KXNFLGAME", "title": "NFL", "category": "Sports",
+                        "categories": ["Sports"], "tags": [], "frequency": "w", "fee_type": "quadratic",
+                        "fee_multiplier": 1.0, "settlement_sources": [], "contract_url": "u",
+                        "contract_terms_url": "t"})
+    fake.live_markets["KXNFLGAME"] = [Fake.mk("KXNFLGAME-26OCT01-A", "2026-10-01T12:00:00Z")]
+    rc, _ = run(tmp_path, ["--allow-series", "KXNFLGAME", "markets", "--series", "KXNFLGAME"], fake)
+    assert rc == 0 and [r["ticker"] for r in read(tmp_path, "markets")] == ["KXNFLGAME-26OCT01-A"]
+    assert all(m["query"]["allow_series"] == "KXNFLGAME" for m in manifest(tmp_path))
+    # without the override it is skipped
+    fake2 = Fake()
+    run(tmp_path / "n", ["markets", "--series", "KXNFLGAME"], fake2)
+    assert not any("series_ticker" in c for c in fake2.calls)

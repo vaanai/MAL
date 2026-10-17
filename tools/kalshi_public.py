@@ -54,7 +54,7 @@ Conventions / caveats:
   * Second sports signal: SPORTS_KEYWORDS (incl. esports) against the series ticker
     (substring) and title (whole word).  Both signals are heuristics: a sports
     series with an unlisted name and a non-sports category label gets through, and
-    some non-sports series are dropped by substring.  Not a guarantee.
+    some non-sports series are dropped when a short keyword starts a ticker token.  Not a guarantee.
   * Candles: per chunk, live tier then historical tier; a unit is done only after
     both were tried, and a unit with no rows is logged as status empty_both_tiers.
   * Trades: taker side is stored as ``taker_outcome_side`` (falls back to the
@@ -107,8 +107,8 @@ ALLOWED_GET = tuple(re.compile(p) for p in (
 
 
 # Second sports signal (the first is the series category).  Pinned list; matched as a
-# case-insensitive substring of the SERIES TICKER and as a whole word in the series
-# title.  False positives are possible and accepted (excluding is the safe direction).
+# case-insensitive prefix (<=4 chars) or substring (longer) of a SERIES TICKER token
+# and as a whole word in the series title.  False positives are possible and accepted (excluding is the safe direction).
 # Explicitly passing --categories Sports opts out of this list.
 SPORTS_KEYWORDS = (
     "nfl", "nba", "wnba", "mlb", "nhl", "ncaa", "mls", "epl", "ufc", "mma", "pga", "atp", "wta",
@@ -121,9 +121,24 @@ SPORTS_KEYWORDS = (
 _KW_TITLE = re.compile(r"\b(" + "|".join(re.escape(k) for k in SPORTS_KEYWORDS) + r")\b", re.I)
 
 
+SHORT_KW = 4  # keywords this long or shorter match only at the START of a ticker token
+
+
+def ticker_keyword_hit(ticker: str) -> bool:
+    """Tokenize on non-alphanumerics, strip a leading KX; short keywords must be a
+    token prefix (so NFLGAME hits 'nfl' but INFLATION and SUMMARY do not); longer
+    keywords match as substrings of the token."""
+    for tok in re.split(r"[^a-z0-9]+", (ticker or "").lower()):
+        if tok.startswith("kx"):
+            tok = tok[2:]
+        for k in SPORTS_KEYWORDS:
+            if (tok.startswith(k) if len(k) <= SHORT_KW else k in tok):
+                return True
+    return False
+
+
 def sports_keyword_hit(ticker: str, title: str | None) -> bool:
-    t = (ticker or "").lower()
-    return any(k in t for k in SPORTS_KEYWORDS) or bool(_KW_TITLE.search(title or ""))
+    return ticker_keyword_hit(ticker) or bool(_KW_TITLE.search(title or ""))
 
 
 class ForbiddenPath(Exception):
@@ -478,10 +493,14 @@ class Store:
 
 # ---------------------------------------------------------------- selection
 
-def allowed_series(series_rows: list[dict], include: set[str] | None, exclude: set[str]) -> dict:
+def allowed_series(series_rows: list[dict], include: set[str] | None, exclude: set[str],
+                   allow: set[str] = frozenset()) -> dict:
     """Map ticker -> series dict for series passing the category filter."""
     out = {}
     for s in series_rows:
+        if s.get("ticker") in allow:  # explicit --allow-series override (recorded in the manifest)
+            out[s["ticker"]] = s
+            continue
         cats = {c.lower() for c in ([s.get("category")] + list(s.get("categories") or [])) if c}
         if not cats:
             continue  # unknown category is never assumed allowed
@@ -502,10 +521,14 @@ def category_sets(args):
     return None, {"sports"}
 
 
+def allow_set(args) -> set[str]:
+    return {x.strip() for x in (getattr(args, "allow_series", None) or "").split(",") if x.strip()}
+
+
 def select_series(client, args, log):
     d = client.get("/series")
     inc, exc = category_sets(args)
-    allowed = allowed_series(d.get("series") or [], inc, exc)
+    allowed = allowed_series(d.get("series") or [], inc, exc, allow_set(args))
     if getattr(args, "series", None):
         want = [s.strip() for s in args.series.split(",") if s.strip()]
         for w in want:
@@ -569,7 +592,7 @@ def cmd_series(client, store, args, log):
     d = client.get("/series")
     inc, exc = category_sets(args)
     rows = [series_row(s, now_utc()) for s in d.get("series") or []]
-    keep = allowed_series(d.get("series") or [], inc, exc) if not args.all_categories else None
+    keep = allowed_series(d.get("series") or [], inc, exc, allow_set(args)) if not args.all_categories else None
     if keep is not None:
         rows = [r for r in rows if r["ticker"] in keep]
     store.write("series", rows, part=now_utc().strftime("%Y-%m-%d"), date=now_utc().strftime("%Y-%m-%d"))
@@ -610,7 +633,8 @@ def cmd_markets(client, store, args, log):
 def _tickers_for_trades(client, store, args, log, cutoff, since, until):
     if args.market:
         allowed = set(select_series(client, argparse.Namespace(
-            categories=args.categories, series=",".join(sorted({series_of(m) for m in args.market.split(",")}))),
+            categories=args.categories, allow_series=args.allow_series,
+            series=",".join(sorted({series_of(m) for m in args.market.split(",")}))),
             log))
         for m in [x.strip() for x in args.market.split(",") if x.strip()]:
             if series_of(m) in allowed:
@@ -740,7 +764,8 @@ def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sle
         raise SystemExit("--every-s and --duration-s must be > 0")
     tickers = [m.strip() for m in args.markets.split(",") if m.strip()]
     allowed = set(select_series(client, argparse.Namespace(
-        categories=args.categories, series=",".join(sorted({series_of(t) for t in tickers}))), log))
+        categories=args.categories, allow_series=args.allow_series,
+        series=",".join(sorted({series_of(t) for t in tickers}))), log))
     tickers = [t for t in tickers if series_of(t) in allowed]
     run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     t0 = clock()
@@ -789,6 +814,9 @@ def build_parser():
                    help="hard cap on HTTP attempts (retries included); checkpoint is kept")
     p.add_argument("--flush-pages", type=int, default=50,
                    help="write parquet every N pages instead of holding a whole unit in RAM")
+    p.add_argument("--allow-series", default=None,
+                   help="comma list of series tickers that bypass the sports category/keyword "
+                        "filters; recorded in the manifest query")
     p.add_argument("--categories", default=None,
                    help="comma list to INCLUDE (case-insensitive). Default: all except Sports")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -824,7 +852,7 @@ def build_parser():
     return p
 
 
-QUERY_KEYS = ("categories", "all_categories", "status", "series", "since", "until", "market",
+QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
               "period", "markets", "every_s", "duration_s", "depth", "raw_json")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap}
