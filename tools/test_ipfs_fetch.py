@@ -285,8 +285,8 @@ LOCAL = "http://127.0.0.1:8080"
 class LocalGatewayTests(unittest.TestCase):
     def test_parse_accepts_only_literal_loopback_with_port(self) -> None:
         g = ipf.parse_local_gateway("http://127.0.0.1:8080")
-        self.assertEqual((g.origin, g.key, g.rps, g.burst, g.json_timeout_s, g.image_timeout_s),
-                         (LOCAL, LOCAL + "/ipfs/", 20.0, 20.0, 30.0, 60.0))
+        self.assertEqual((g.origin, g.key, g.rps, g.burst, g.json_timeout_s, g.image_timeout_s, g.breaker_base_s, g.breaker_max_s),
+                         (LOCAL, LOCAL + "/ipfs/", 20.0, 20.0, 20.0, 30.0, 30.0, 300.0))
         self.assertEqual(ipf.parse_local_gateway("http://[::1]:8080/").origin, "http://[::1]:8080")
         for bad in ("http://localhost:8080", "http://127.0.0.2:8080", "http://127.0.0.1", "https://127.0.0.1:8080",
                     "http://u:p@127.0.0.1:8080", "http://127.0.0.1:8080@evil.example", "http://0127.0.0.1:8080",
@@ -321,6 +321,8 @@ class LocalGatewayTests(unittest.TestCase):
         with patch("socket.getaddrinfo", return_value=PUBLIC):
             self.assertEqual(ipf.redirect_target(base, "/ipfs/" + CID0 + "/", chk, LOCAL),
                              LOCAL + "/ipfs/" + CID0 + "/")
+            for loc in ("/api/v0/id", "/webui", LOCAL + "/api/v0/id", "/ipfs/../api/v0/id"):
+                self.assertIsNone(ipf.redirect_target(base, loc, chk, LOCAL), loc)
             self.assertEqual(ipf.redirect_target(base, "https://ipfs.io/ipfs/" + CID0, chk, LOCAL),
                              "https://ipfs.io/ipfs/" + CID0)
             for loc in ("http://127.0.0.1:8081/ipfs/x", "http://localhost:8080/ipfs/x", "https://evil.example/x",

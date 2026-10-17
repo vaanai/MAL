@@ -64,14 +64,21 @@ MAX_HOST_STATES = 4096  # non-pinned pool keys kept at once
 # Local kubo gateway (client-only node on this host). Narrow SSRF exemption, see parse_local_gateway.
 LOCAL_RPS = 20.0
 LOCAL_BURST = 20.0
-LOCAL_JSON_TIMEOUT_S = 30.0
-LOCAL_IMAGE_TIMEOUT_S = 60.0
+LOCAL_JSON_TIMEOUT_S = 20.0
+LOCAL_IMAGE_TIMEOUT_S = 30.0
+LOCAL_BREAKER_BASE_S = 30.0
+LOCAL_BREAKER_MAX_S = 300.0
+LOCAL_CONCURRENCY = 16
 LOCAL_LABEL = "local"
 _LOCAL_HOSTS = ("127.0.0.1", "::1")
 
 
 class BlockedUrl(Exception):
     pass
+
+
+class ConnectionRefused(Exception):
+    """The connect itself was refused: no request reached the server, nothing was transferred."""
 
 
 class HttpError(Exception):
@@ -92,6 +99,8 @@ class LocalGateway:
     burst: float = LOCAL_BURST
     json_timeout_s: float = LOCAL_JSON_TIMEOUT_S
     image_timeout_s: float = LOCAL_IMAGE_TIMEOUT_S
+    breaker_base_s: float = LOCAL_BREAKER_BASE_S
+    breaker_max_s: float = LOCAL_BREAKER_MAX_S
 
     @property
     def key(self) -> str:
@@ -116,7 +125,9 @@ def origin_of(url: str) -> str | None:
 
 def parse_local_gateway(url: str, rps: float = LOCAL_RPS, burst: float = LOCAL_BURST,
                         json_timeout_s: float = LOCAL_JSON_TIMEOUT_S,
-                        image_timeout_s: float = LOCAL_IMAGE_TIMEOUT_S) -> LocalGateway:
+                        image_timeout_s: float = LOCAL_IMAGE_TIMEOUT_S,
+                        breaker_base_s: float = LOCAL_BREAKER_BASE_S,
+                        breaker_max_s: float = LOCAL_BREAKER_MAX_S) -> LocalGateway:
     """Accept only http://127.0.0.1:<port> or http://[::1]:<port> (path / or empty). Hostnames such as
     localhost are refused so DNS can never decide what is loopback. Raises ValueError otherwise."""
     if not isinstance(url, str) or url != url.strip():
@@ -136,10 +147,23 @@ def parse_local_gateway(url: str, rps: float = LOCAL_RPS, burst: float = LOCAL_B
     netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     if parts.netloc.lower() != netloc:
         raise ValueError("local gateway: non-canonical host or port")
-    if rps <= 0 or burst < 1 or json_timeout_s <= 0 or image_timeout_s <= 0:
-        raise ValueError("local gateway: rps/burst/timeouts must be positive")
+    if rps <= 0 or burst < 1 or json_timeout_s <= 0 or image_timeout_s <= 0 \
+            or breaker_base_s <= 0 or breaker_max_s < breaker_base_s:
+        raise ValueError("local gateway: rps/burst/timeouts/breaker must be positive")
     return LocalGateway("http://" + netloc, float(rps), float(burst), float(json_timeout_s),
-                        float(image_timeout_s))
+                        float(image_timeout_s), float(breaker_base_s), float(breaker_max_s))
+
+
+def is_refused(exc: BaseException | None) -> bool:
+    """True for a refused connect (ConnectionRefusedError, bare or wrapped as a URLError reason)."""
+    seen = 0
+    while exc is not None and seen < 4:
+        if isinstance(exc, (ConnectionRefusedError, ConnectionRefused)):
+            return True
+        exc = getattr(exc, "reason", None) if isinstance(getattr(exc, "reason", None), BaseException) \
+            else exc.__cause__
+        seen += 1
+    return False
 
 
 # ------------------------------------------------------------- classification
@@ -304,6 +328,8 @@ def redirect_target(base_url: str, location: str | None,
         if origin_of(target) == local_origin:
             if parts.username or parts.password:
                 return None
+            if not parts.path.startswith("/ipfs/") or not _ipfs_path_ok(parts.path[len("/ipfs/"):]):
+                return None  # e.g. /api/v0/id: the local origin serves more than content
             return target
         if not parts.path.startswith("/ipfs/") or not _ipfs_path_ok(parts.path[len("/ipfs/"):]):
             return None
@@ -331,12 +357,13 @@ def parse_retry_after(value: str | None, now: Callable[[], float] = time.time) -
 
 # ----------------------------------------------------------------- rate limit
 class _Gw:
-    __slots__ = ("tokens", "stamp", "until", "strikes", "rps", "burst")
+    __slots__ = ("tokens", "stamp", "until", "strikes", "rps", "burst", "bstrikes")
 
     def __init__(self, tokens: float, stamp: float, rps: float = DEFAULT_RPS,
                  burst: float = DEFAULT_BURST) -> None:
         self.tokens, self.stamp, self.until, self.strikes = tokens, stamp, 0.0, 0
         self.rps, self.burst = rps, burst
+        self.bstrikes = 0
 
 
 class GatewayPool:
@@ -359,11 +386,14 @@ class GatewayPool:
                                        "requests": 0}
         self.sources: dict[str, int] = {}  # requests by source: "local" vs "public"
         self.local_key: str | None = None
+        self.breaker = (LOCAL_BREAKER_BASE_S, LOCAL_BREAKER_MAX_S)
+        self.counts["local_breaker_trips"] = 0
         for g in gateways:
             self._state(g, clock())
         self.pinned = frozenset(self.gw)
 
-    def add_pinned(self, key: str, rps: float, burst: float) -> None:
+    def add_pinned(self, key: str, rps: float, burst: float, breaker_base_s: float = LOCAL_BREAKER_BASE_S,
+                   breaker_max_s: float = LOCAL_BREAKER_MAX_S) -> None:
         """Add a gateway with its own bucket (the local one). Never evicted."""
         if rps <= 0 or burst < 1:
             raise ValueError("rps must be > 0 and burst >= 1")
@@ -371,6 +401,7 @@ class GatewayPool:
             self.gw[key] = _Gw(float(burst), self.clock(), float(rps), float(burst))
             self.pinned = frozenset(self.pinned | {key})
             self.local_key = key
+            self.breaker = (float(breaker_base_s), float(breaker_max_s))
 
     def _evict_idle(self, now: float) -> None:
         """Drop non-pinned entries that are not cooling and have a full bucket (nothing to remember)."""
@@ -429,6 +460,19 @@ class GatewayPool:
         with self.lock:
             now = self.clock()
             st = self._state(key, now)
+            if key == self.local_key:
+                if status in LOCAL_FAIL_STATUSES or (status.startswith("http_") and status[5:].isdigit()
+                                                     and int(status[5:]) >= 500) \
+                        or status.startswith("net_"):
+                    # Breaker: connection refused, timeout or 5xx -> capped doubling cooldown.
+                    if now >= st.until:  # concurrent in-flight failures count as one strike
+                        st.bstrikes += 1
+                        self.counts["local_breaker_trips"] += 1
+                    cool = min(self.breaker[0] * (2 ** (st.bstrikes - 1)), self.breaker[1])
+                    st.until = max(st.until, now + cool)
+                    return
+                if status == "ok" or status.startswith("http_4"):
+                    st.bstrikes = 0  # the node answered
             if status == "ok":
                 st.strikes = 0
                 return
@@ -445,12 +489,15 @@ class GatewayPool:
             st.until = max(st.until, now + cool)
 
 
+LOCAL_FAIL_STATUSES = frozenset({"timeout", "conn_refused", "http_0"})
+
+
 def local_may_fall_back(status: str) -> bool:
     """After a request to the local gateway: True when the public gateways may be tried (timeout, any 5xx
     including 504, or the node unreachable / network error). A 404 (kubo gave up after its timeout: not
     found), a blocked url and every other final answer return False. 429 is handled by the pool cooldown
     like any gateway."""
-    if status in ("timeout", "http_0") or status.startswith("net_"):
+    if status in ("timeout", "http_0", "conn_refused") or status.startswith("net_"):
         return True
     if status.startswith("http_") and status[5:].isdigit():
         return int(status[5:]) >= 500

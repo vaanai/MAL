@@ -166,7 +166,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # surfaces as HTTPError 3xx; never followed
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+# Empty ProxyHandler: *_proxy environment variables must never route (or leak) these requests.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def _urllib_once(url: str, timeout: float, max_bytes: int, deadline: float, *,
@@ -197,7 +198,11 @@ def _urllib_once(url: str, timeout: float, max_bytes: int, deadline: float, *,
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, (TimeoutError, socket.timeout)):
             raise FetchTimeout() from exc
+        if ipf.is_refused(exc):
+            raise ipf.ConnectionRefused() from exc
         raise HttpError(0) from exc
+    except ConnectionRefusedError as exc:
+        raise ipf.ConnectionRefused() from exc
     return b"".join(chunks)
 
 
@@ -246,6 +251,8 @@ def _status_of(exc: Exception) -> str:
         return "timeout"
     if isinstance(exc, FetchTooBig):
         return "too_big"
+    if isinstance(exc, ipf.ConnectionRefused):
+        return "conn_refused"
     if isinstance(exc, BlockedUrl):
         return "blocked_url"
     if isinstance(exc, HttpError):
@@ -569,7 +576,7 @@ class Collector:
         self.max_pending = max_pending
         self.pool = pool or ipf.GatewayPool(gateways)
         if local is not None:
-            self.pool.add_pinned(local.key, local.rps, local.burst)
+            self.pool.add_pinned(local.key, local.rps, local.burst, local.breaker_base_s, local.breaker_max_s)
         self.sleep = sleep
         self.source_counts: dict[str, int] = {}
         self.heap: list[tuple[int, int, int, dict[str, Any]]] = []  # due, seq, attempt, row
@@ -664,23 +671,38 @@ class Collector:
         pairs = ipf.plan_urls(ipf.classify_uri(uri), self.gateways, self.local)
         if not pairs:
             return "non_ipfs_uri", None, None, 0
-        picked = self.pool.reserve([k for k, _ in pairs])
-        self.store.gateway_counts = dict(self.pool.counts)
-        if picked is None:
-            return "rate_limited_all", None, None, 0
-        key, wait = picked
-        if wait > 0:
-            await self.sleep(wait)
-        url = dict(pairs)[key]
-        is_local = self.local is not None and key == self.local.key
-        timeout = self.local.timeout_for(image) if is_local and self.local else FETCH_TIMEOUT_S
-        status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes, timeout)
-        self.pool.report(key, status, retry_after)
-        src = ipf.LOCAL_LABEL if is_local else "public"
-        self.source_counts[src] = self.source_counts.get(src, 0) + 1
-        self.store.source_counts = dict(self.source_counts)
-        self.store.gateway_counts = dict(self.pool.counts)
-        return status, body, ipf.LOCAL_LABEL if is_local else urlsplit(url).netloc, int(wait * 1000)
+        keys = [k for k, _ in pairs]
+        urls = dict(pairs)
+        total_wait = 0
+        for _pass in range(2):
+            picked = self.pool.reserve(keys)
+            self.store.gateway_counts = dict(self.pool.counts)
+            if picked is None:
+                return "rate_limited_all", None, None, total_wait
+            key, wait = picked
+            if wait > 0:
+                await self.sleep(wait)
+            total_wait += int(wait * 1000)
+            url = urls[key]
+            is_local = self.local is not None and key == self.local.key
+            timeout = self.local.timeout_for(image) if is_local and self.local else FETCH_TIMEOUT_S
+            status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes, timeout)
+            if status == "conn_refused" and not is_local:
+                status = "http_0"  # keep the public status vocabulary as it was
+            self.pool.report(key, status, retry_after)
+            src = ipf.LOCAL_LABEL if is_local else "public"
+            self.source_counts[src] = self.source_counts.get(src, 0) + 1
+            self.store.source_counts = dict(self.source_counts)
+            self.store.gateway_counts = dict(self.pool.counts)
+            gw = ipf.LOCAL_LABEL if is_local else urlsplit(url).netloc
+            if is_local and status == "conn_refused":
+                # Nothing was transferred, so the same attempt may go to the public gateways (a timeout
+                # or 5xx ends the attempt instead). The breaker now keeps local out of the next picks.
+                keys = [k for k in keys if k != key]
+                if keys:
+                    continue
+            return status, body, gw, total_wait
+        return "http_0", None, None, total_wait
 
     async def _attempt(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         due, _, attempt, row = item
@@ -823,7 +845,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="MAL create-time metadata collector")
     p.add_argument("--ws-url", default=os.environ.get("MAL_PUMPPORTAL_WS_URL", DEFAULT_WS_URL))
     p.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
-    p.add_argument("--concurrency", type=int, default=4)
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="default 4, or 16 when --local-gateway is set")
     p.add_argument("--gateway", action="append", help="ipfs gateway prefix; repeat, tried in order")
     p.add_argument("--gateway-rps", type=float, default=ipf.DEFAULT_RPS,
                    help="per-gateway token bucket rate")
@@ -835,6 +858,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--local-burst", type=float, default=ipf.LOCAL_BURST)
     p.add_argument("--local-json-timeout-s", type=float, default=ipf.LOCAL_JSON_TIMEOUT_S)
     p.add_argument("--local-image-timeout-s", type=float, default=ipf.LOCAL_IMAGE_TIMEOUT_S)
+    p.add_argument("--local-breaker-base-s", type=float, default=ipf.LOCAL_BREAKER_BASE_S)
+    p.add_argument("--local-breaker-max-s", type=float, default=ipf.LOCAL_BREAKER_MAX_S)
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -852,7 +877,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.local_gateway:
         try:
             local = ipf.parse_local_gateway(args.local_gateway, args.local_rps, args.local_burst,
-                                            args.local_json_timeout_s, args.local_image_timeout_s)
+                                            args.local_json_timeout_s, args.local_image_timeout_s,
+                                            args.local_breaker_base_s, args.local_breaker_max_s)
         except ValueError as exc:
             print(f"--local-gateway refused: {exc}", file=sys.stderr)
             return 2
@@ -866,7 +892,7 @@ def main(argv: list[str] | None = None) -> int:
     col = Collector(Store(args.out, ref), gateways,
                     pool=ipf.GatewayPool(gateways, args.gateway_rps, args.gateway_burst),
                     http_get=make_http_get(local.origin if local else None), local=local,
-                    concurrency=args.concurrency, max_rss_mb=args.max_rss_mb,
+                    concurrency=args.concurrency or (ipf.LOCAL_CONCURRENCY if local else 4), max_rss_mb=args.max_rss_mb,
                     min_free_gb=args.min_free_gb)
     try:
         return loop.run_until_complete(run(args.ws_url, col, stop, args.duration_s))

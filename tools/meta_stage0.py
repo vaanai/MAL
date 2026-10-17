@@ -228,7 +228,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+# Empty ProxyHandler: *_proxy environment variables must never route (or leak) these requests.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def read_with_deadline(resp: Any, max_bytes: int, deadline: float, clock: Callable[[], float] = time.monotonic) -> bytes:
@@ -321,7 +322,7 @@ def fetch_with_retry(
         return None, "non_ipfs_uri"
     pool = pool or make_pool(gateways)
     if local is not None and local.key not in pool.pinned:
-        pool.add_pinned(local.key, local.rps, local.burst)
+        pool.add_pinned(local.key, local.rps, local.burst, local.breaker_base_s, local.breaker_max_s)
     urls = dict(pairs)
     keys = [k for k, _ in pairs]
     err = "http"
@@ -346,6 +347,7 @@ def fetch_with_retry(
             status, body = res[0], res[1]
         except TimeoutError:
             err = "timeout"
+            pool.report(key, "timeout")  # a local timeout trips the breaker; public: no effect
             if is_local and not local_failed:
                 local_failed, base = True, i + 1
             continue
@@ -353,7 +355,9 @@ def fetch_with_retry(
             err = "blocked_url"
             continue
         except Exception as exc:  # class name only; never the URL
-            err = "net_" + type(exc).__name__
+            refused = ipf.is_refused(exc)
+            err = "conn_refused" if refused and is_local else "net_" + type(exc).__name__
+            pool.report(key, err if is_local else "http_0")
             if is_local and not local_failed:
                 local_failed, base = True, i + 1
             continue
@@ -690,7 +694,7 @@ def run(
     uris.update(stored)
     pool = pool or make_pool(gateways)
     if local is not None and local.key not in pool.pinned:
-        pool.add_pinned(local.key, local.rps, local.burst)
+        pool.add_pinned(local.key, local.rps, local.burst, local.breaker_base_s, local.breaker_max_s)
     cap_hit = deadline_hit = False
     t_end = clock() + max_runtime_s
     fd = os.open(uris_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
@@ -830,6 +834,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--local-burst", type=float, default=ipf.LOCAL_BURST)
     ap.add_argument("--local-json-timeout-s", type=float, default=ipf.LOCAL_JSON_TIMEOUT_S)
     ap.add_argument("--local-image-timeout-s", type=float, default=ipf.LOCAL_IMAGE_TIMEOUT_S)
+    ap.add_argument("--local-breaker-base-s", type=float, default=ipf.LOCAL_BREAKER_BASE_S)
+    ap.add_argument("--local-breaker-max-s", type=float, default=ipf.LOCAL_BREAKER_MAX_S)
     ap.add_argument("--max-runtime-s", type=float, default=MAX_RUNTIME_DEFAULT_S)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -839,7 +845,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.local_gateway:
         try:
             local = ipf.parse_local_gateway(args.local_gateway, args.local_rps, args.local_burst,
-                                            args.local_json_timeout_s, args.local_image_timeout_s)
+                                            args.local_json_timeout_s, args.local_image_timeout_s,
+                                            args.local_breaker_base_s, args.local_breaker_max_s)
         except ValueError as exc:
             raise SystemExit(f"--local-gateway refused: {exc}") from exc
         log.info("local_gateway origin=%s rps=%s", local.origin, local.rps)
