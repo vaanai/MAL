@@ -25,11 +25,23 @@ def test_docs_example_ceil_6dp():
     assert kf.ceil_to(Decimal("0.00363825"), Decimal("0.000001")) == Decimal("0.003639")
 
 
-def test_maker_is_quarter_of_taker_rate():
-    assert kf.maker_fee(100, 0.5, rounding="micro") == 0.4375
-    assert kf.maker_fee(100, 0.5) == 0.44
-    assert kf.maker_fee(100, 0.5, rounding="micro",
-                        maker_multiplier=kf.COMBO_MAKER_MULTIPLIER) == 0.875
+def test_maker_fee_respects_fee_type():
+    assert kf.maker_fee(100, 0.5, "quadratic") == 0.0
+    assert kf.maker_fee(100, 0.5, "quadratic_with_maker_fees", rounding="micro") == 0.4375
+    assert kf.maker_fee(100, 0.5, "quadratic_with_maker_fees") == 0.44
+    assert kf.maker_fee(100, 0.5, "quadratic_with_combo_maker_fees", rounding="micro") == 0.875
+    with pytest.raises(TypeError):
+        kf.maker_fee(100, 0.5)  # fee_type is required
+    with pytest.raises(ValueError):
+        kf.maker_fee(100, 0.5, "mystery")
+
+
+def test_flat_not_modelled():
+    with pytest.raises(NotImplementedError):
+        kf.maker_fee(1, 0.5, "flat")
+    with pytest.raises(NotImplementedError):
+        kf.taker_fee(1, 0.5, fee_type="flat")
+    assert kf.taker_fee(100, 0.5, fee_type="quadratic") == 1.75
 
 
 def test_multiplier_and_edges():

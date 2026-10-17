@@ -51,6 +51,12 @@ Conventions / caveats:
     series is excluded when its primary category OR any discovery category
     equals an excluded one; series whose category cannot be determined are
     skipped, never assumed allowed).
+  * Second sports signal: SPORTS_KEYWORDS (incl. esports) against the series ticker
+    (substring) and title (whole word).  Both signals are heuristics: a sports
+    series with an unlisted name and a non-sports category label gets through, and
+    some non-sports series are dropped by substring.  Not a guarantee.
+  * Candles: per chunk, live tier then historical tier; a unit is done only after
+    both were tried, and a unit with no rows is logged as status empty_both_tiers.
   * Trades: taker side is stored as ``taker_outcome_side`` (falls back to the
     deprecated ``taker_side``).  Prices are dollars as floats.
   * Resumability is per unit (series for markets, ticker for trades/candles).
@@ -66,12 +72,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -96,6 +104,26 @@ ALLOWED_GET = tuple(re.compile(p) for p in (
     r"^/historical/trades$",
     r"^/historical/markets/[A-Za-z0-9._-]+/candlesticks$",
 ))
+
+
+# Second sports signal (the first is the series category).  Pinned list; matched as a
+# case-insensitive substring of the SERIES TICKER and as a whole word in the series
+# title.  False positives are possible and accepted (excluding is the safe direction).
+# Explicitly passing --categories Sports opts out of this list.
+SPORTS_KEYWORDS = (
+    "nfl", "nba", "wnba", "mlb", "nhl", "ncaa", "mls", "epl", "ufc", "mma", "pga", "atp", "wta",
+    "nascar", "formula1", "f1", "golf", "tennis", "soccer", "football", "basketball", "baseball",
+    "hockey", "boxing", "cricket", "ipl", "olympic", "laliga", "bundesliga", "ligue1", "seriea",
+    "premierleague", "championsleague", "worldcup", "superbowl", "nflgame", "marchmadness",
+    "esport", "lol", "csgo", "cs2", "valorant", "dota", "overwatch", "rocketleague", "fortnite",
+    "starcraft", "leagueoflegends", "counterstrike",
+)
+_KW_TITLE = re.compile(r"\b(" + "|".join(re.escape(k) for k in SPORTS_KEYWORDS) + r")\b", re.I)
+
+
+def sports_keyword_hit(ticker: str, title: str | None) -> bool:
+    t = (ticker or "").lower()
+    return any(k in t for k in SPORTS_KEYWORDS) or bool(_KW_TITLE.search(title or ""))
 
 
 class ForbiddenPath(Exception):
@@ -156,7 +184,7 @@ class RateLimiter:
 class Client:
     def __init__(self, http=None, rate=DEFAULT_RATE, max_requests=None, max_retries=6,
                  backoff_base=1.0, backoff_cap=60.0, sleep=time.sleep, clock=time.monotonic,
-                 base_url=BASE_URL):
+                 base_url=BASE_URL, jitter=0.25, rng=random.random):
         self.http = http or urllib_http
         self.sleep = sleep
         self.limiter = RateLimiter(rate, clock=clock, sleep=sleep)
@@ -164,6 +192,7 @@ class Client:
         self.max_retries = max_retries
         self.backoff_base, self.backoff_cap = backoff_base, backoff_cap
         self.base_url = base_url
+        self.jitter, self.rng = jitter, rng
         self.requests_made = 0  # every HTTP attempt, retries included
         self.backoffs = []
 
@@ -185,24 +214,30 @@ class Client:
             if attempt == self.max_retries:
                 raise HttpError(status, body)
             delay = min(self.backoff_cap, self.backoff_base * (2 ** attempt))
+            delay += delay * self.jitter * self.rng()  # 0..jitter extra, after the cap
             self.backoffs.append(delay)
             self.sleep(delay)
         raise AssertionError("unreachable")
 
 
-def paginate(client: Client, path: str, params: dict, key: str):
-    """Yield items across cursor pages.  Stops on empty/missing cursor or a repeated cursor."""
+def paginate_pages(client: Client, path: str, params: dict, key: str):
+    """Yield one list of items per cursor page.  Stops on empty/missing or repeated cursor."""
     params = dict(params)
     params.setdefault("limit", PAGE_LIMIT)
     seen = set()
     while True:
         d = client.get(path, params)
-        yield from d.get(key) or []
+        yield d.get(key) or []
         cur = d.get("cursor")
         if not cur or cur in seen:
             return
         seen.add(cur)
         params["cursor"] = cur
+
+
+def paginate(client: Client, path: str, params: dict, key: str):
+    for page in paginate_pages(client, path, params, key):
+        yield from page
 
 
 # ---------------------------------------------------------------- helpers
@@ -321,7 +356,7 @@ def series_row(s: dict, fetched_at) -> dict:
     }
 
 
-def market_row(m: dict, source: str, fetched_at) -> dict:
+def market_row(m: dict, source: str, fetched_at, raw: bool = False) -> dict:
     t = m.get("ticker") or ""
     return {
         "ticker": t, "event_ticker": m.get("event_ticker"), "series_ticker": series_of(t),
@@ -339,7 +374,7 @@ def market_row(m: dict, source: str, fetched_at) -> dict:
         "strike_type": m.get("strike_type"), "floor_strike": fnum(m.get("floor_strike")),
         "cap_strike": fnum(m.get("cap_strike")),
         "expiration_value": None if m.get("expiration_value") is None else str(m.get("expiration_value")),
-        "source": source, "fetched_at": fetched_at, "raw_json": jdump(m),
+        "source": source, "fetched_at": fetched_at, "raw_json": jdump(m) if raw else None,
     }
 
 
@@ -430,10 +465,15 @@ class Store:
         for (s, dt), rs in sorted(groups.items()):
             self.write(kind, rs, part, series=s, date=dt)
 
-    def run_record(self, client: Client, complete: bool, note: str = ""):
+    def run_record(self, client: Client, complete: bool, note: str = "", error: str | None = None):
         self._log({"type": "run", "command": self.command, "query": self.query,
                    "requests": client.requests_made, "backoffs": len(client.backoffs),
-                   "complete": complete, "note": note, "at": now_utc().isoformat()})
+                   "complete": complete, "note": note, "error": error,
+                   "at": now_utc().isoformat()})
+
+    def unit_record(self, unit: str, status: str, rows: int):
+        self._log({"type": "unit", "command": self.command, "unit": unit, "status": status,
+                   "rows": rows, "at": now_utc().isoformat()})
 
 
 # ---------------------------------------------------------------- selection
@@ -449,6 +489,8 @@ def allowed_series(series_rows: list[dict], include: set[str] | None, exclude: s
             if not (cats & include):
                 continue
         elif cats & exclude:
+            continue
+        if "sports" not in (include or set()) and sports_keyword_hit(s.get("ticker"), s.get("title")):
             continue
         out[s["ticker"]] = s
     return out
@@ -484,8 +526,8 @@ class Cutoff:
         return self._v
 
 
-def fetch_settled_markets(client, cutoff: Cutoff, series: str, since, until):
-    """Yield (source, market_dict) for settled markets of ``series`` in [since, until)."""
+def fetch_settled_market_pages(client, cutoff: Cutoff, series: str, since, until):
+    """Yield (source, [market_dict, ...]) per page for settled markets of ``series`` in [since, until)."""
     c = cutoff.get()["market_settled_ts"]
     if until is None or until >= c:
         p = {"series_ticker": series, "status": "settled", "mve_filter": "exclude"}
@@ -493,15 +535,24 @@ def fetch_settled_markets(client, cutoff: Cutoff, series: str, since, until):
             p["min_settled_ts"] = since
         if until is not None:
             p["max_settled_ts"] = until
-        for m in paginate(client, "/markets", p, "markets"):
-            yield "live", m
+        for page in paginate_pages(client, "/markets", p, "markets"):
+            yield "live", page
     if since is None or since < c:
-        for m in paginate(client, "/historical/markets",
-                          {"series_ticker": series, "mve_filter": "exclude"}, "markets"):
-            ts = to_unix(m.get("settlement_ts"))
-            if ts is None or (since is not None and ts < since) or (until is not None and ts >= until):
-                continue
-            yield "historical", m
+        for page in paginate_pages(client, "/historical/markets",
+                                   {"series_ticker": series, "mve_filter": "exclude"}, "markets"):
+            keep = []
+            for m in page:
+                ts = to_unix(m.get("settlement_ts"))
+                if ts is None or (since is not None and ts < since) or (until is not None and ts >= until):
+                    continue
+                keep.append(m)
+            yield "historical", keep
+
+
+def fetch_settled_markets(client, cutoff: Cutoff, series: str, since, until):
+    for source, page in fetch_settled_market_pages(client, cutoff, series, since, until):
+        for m in page:
+            yield source, m
 
 
 def window(args):
@@ -532,16 +583,27 @@ def cmd_markets(client, store, args, log):
     for s in select_series(client, args, log):
         if s in store.done:
             continue
-        seen, rows = set(), []
+        seen, rows, n_rows, chunk, pages = set(), [], 0, 0, 0
         fetched = now_utc()
-        for source, m in fetch_settled_markets(client, cutoff, s, since, until):
-            if m["ticker"] in seen:
-                continue
-            seen.add(m["ticker"])
-            rows.append(market_row(m, source, fetched))
-        store.write_partitioned("markets", rows, part=f"markets:{s}", time_field="settlement_ts")
+
+        def flush():
+            nonlocal rows, chunk, n_rows
+            store.write_partitioned("markets", rows, part=f"markets:{s}:{chunk}",
+                                    time_field="settlement_ts")
+            n_rows += len(rows)
+            rows, chunk = [], chunk + 1
+
+        for source, page in fetch_settled_market_pages(client, cutoff, s, since, until):
+            for m in page:
+                if m["ticker"] not in seen:
+                    seen.add(m["ticker"])
+                    rows.append(market_row(m, source, fetched, raw=args.raw_json))
+            pages += 1
+            if pages % args.flush_pages == 0:
+                flush()
+        flush()
         store.mark_done(s)
-        log(f"markets {s}: {len(rows)}")
+        log(f"markets {s}: {n_rows}")
     return True
 
 
@@ -562,27 +624,34 @@ def _tickers_for_trades(client, store, args, log, cutoff, since, until):
             yield m["ticker"]
 
 
-def fetch_trades(client, cutoff: Cutoff, ticker, since, until):
+def iter_trade_batches(client, cutoff: Cutoff, ticker, since, until, flush_pages=50):
+    """Yield lists of trade rows, one list per ``flush_pages`` pages; dedupes by trade_id."""
     c = cutoff.get()["trades_created_ts"]
-    out = []
+    plans = []
     if since is None or since < c:
         hi = c if until is None else min(until, c)
         p = {"ticker": ticker, "max_ts": hi}
         if since is not None:
             p["min_ts"] = since
-        out += [trade_row(t, "historical") for t in paginate(client, "/historical/trades", p, "trades")]
+        plans.append(("/historical/trades", "historical", p))
     if until is None or until > c:
         p = {"ticker": ticker, "min_ts": c if since is None else max(since, c)}
         if until is not None:
             p["max_ts"] = until
-        out += [trade_row(t, "live") for t in paginate(client, "/markets/trades", p, "trades")]
-    seen, uniq = set(), []
-    for r in out:
-        if r["trade_id"] in seen:
-            continue
-        seen.add(r["trade_id"])
-        uniq.append(r)
-    return uniq
+        plans.append(("/markets/trades", "live", p))
+    seen, buf, pages = set(), [], 0
+    for path, source, p in plans:
+        for page in paginate_pages(client, path, p, "trades"):
+            for t in page:
+                if t.get("trade_id") not in seen:
+                    seen.add(t.get("trade_id"))
+                    buf.append(trade_row(t, source))
+            pages += 1
+            if pages % flush_pages == 0:
+                yield buf
+                buf = []
+    if buf:
+        yield buf
 
 
 def cmd_trades(client, store, args, log):
@@ -593,14 +662,21 @@ def cmd_trades(client, store, args, log):
     for t in _tickers_for_trades(client, store, args, log, cutoff, since, until):
         if t in store.done:
             continue
-        rows = fetch_trades(client, cutoff, t, since, until)
-        store.write_partitioned("trades", rows, part=f"trades:{t}", time_field="created_time")
+        n = 0
+        for i, rows in enumerate(iter_trade_batches(client, cutoff, t, since, until, args.flush_pages)):
+            store.write_partitioned("trades", rows, part=f"trades:{t}:{i}", time_field="created_time")
+            n += len(rows)
         store.mark_done(t)
-        log(f"trades {t}: {len(rows)}")
+        log(f"trades {t}: {n}")
     return True
 
 
 def cmd_candles(client, store, args, log):
+    """Per chunk: live tier first, then the historical tier if live is empty/404.
+
+    A unit is marked done only after BOTH tiers were tried for every empty chunk;
+    if nothing came back at all it is recorded as status ``empty_both_tiers``.
+    """
     if not args.market and not args.series:
         raise SystemExit("candles needs --market or --series")
     if not args.since:
@@ -610,39 +686,39 @@ def cmd_candles(client, store, args, log):
     period = args.period
     step = period * 60
     cutoff = Cutoff(client)
+
+    def tier(path, p):
+        try:
+            return client.get(path, p).get("candlesticks") or []
+        except HttpError as e:
+            if e.status != 404:
+                raise
+            return []
+
     for t in _tickers_for_trades(client, store, args, log, cutoff, since, until):
         unit = f"{t}:{period}"
         if unit in store.done:
             continue
-        rows, source = [], "live"
-        lo = since
+        rows, lo, chunks_empty = [], since, 0
         while lo < until:
             hi = min(until, lo + CANDLE_CHUNK * step)
             p = {"start_ts": lo, "end_ts": hi, "period_interval": period}
-            cs = None
-            if source == "live":
-                try:
-                    cs = client.get(f"/series/{series_of(t)}/markets/{t}/candlesticks", p).get("candlesticks")
-                except HttpError as e:
-                    if e.status != 404:
-                        raise
-                if not cs and not rows:
-                    source = "historical"  # archived (or unknown): try the historical tier
-            if source == "historical":
-                try:
-                    cs = client.get(f"/historical/markets/{t}/candlesticks", p).get("candlesticks")
-                except HttpError as e:
-                    if e.status != 404:
-                        raise
-                    cs = []
-            rows += [candle_row(t, period, c, source) for c in cs or []]
+            source = "live"
+            cs = tier(f"/series/{series_of(t)}/markets/{t}/candlesticks", p)
+            if not cs:
+                source = "historical"
+                cs = tier(f"/historical/markets/{t}/candlesticks", p)
+            if not cs:
+                chunks_empty += 1
+            rows += [candle_row(t, period, c, source) for c in cs]
             lo = hi
-        # a candle ending exactly on a chunk edge can appear in two chunks
-        uniq = {r["end_period_ts"]: r for r in rows}
+        uniq = {r["end_period_ts"]: r for r in rows}  # chunk-edge candles can repeat
         rows = [uniq[k] for k in sorted(uniq)]
         store.write_partitioned("candles", rows, part=unit, time_field="end_period_ts")
+        status = "ok" if rows else "empty_both_tiers"
+        store.unit_record(unit, status, len(rows))
         store.mark_done(unit)
-        log(f"candles {unit}: {len(rows)}")
+        log(f"candles {unit}: {len(rows)} ({status}; {chunks_empty} chunks empty in both tiers)")
     return True
 
 
@@ -666,7 +742,7 @@ def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sle
     allowed = set(select_series(client, argparse.Namespace(
         categories=args.categories, series=",".join(sorted({series_of(t) for t in tickers}))), log))
     tickers = [t for t in tickers if series_of(t) in allowed]
-    run_id = utcnow().strftime("%Y%m%dT%H%M%S")
+    run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     t0 = clock()
     ob_rows, snaps, n_flush = [], [], 0
 
@@ -711,6 +787,8 @@ def build_parser():
     p.add_argument("--rate", type=float, default=DEFAULT_RATE, help="client-side requests/second")
     p.add_argument("--max-requests", type=int, default=None,
                    help="hard cap on HTTP attempts (retries included); checkpoint is kept")
+    p.add_argument("--flush-pages", type=int, default=50,
+                   help="write parquet every N pages instead of holding a whole unit in RAM")
     p.add_argument("--categories", default=None,
                    help="comma list to INCLUDE (case-insensitive). Default: all except Sports")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -723,6 +801,7 @@ def build_parser():
     m.add_argument("--series")
     m.add_argument("--since")
     m.add_argument("--until")
+    m.add_argument("--raw-json", action="store_true", help="also store each market's raw JSON (large)")
 
     t = sub.add_parser("trades", help="trade history")
     t.add_argument("--market")
@@ -746,7 +825,7 @@ def build_parser():
 
 
 QUERY_KEYS = ("categories", "all_categories", "status", "series", "since", "until", "market",
-              "period", "markets", "every_s", "duration_s", "depth")
+              "period", "markets", "every_s", "duration_s", "depth", "raw_json")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap}
 
@@ -757,6 +836,8 @@ def main(argv=None, client: Client | None = None) -> int:
     client = client or Client(rate=args.rate, max_requests=args.max_requests)
     query = {k: getattr(args, k) for k in QUERY_KEYS if hasattr(args, k)}
     store = Store(args.out, args.cmd, query)
+    if args.flush_pages < 1:
+        raise SystemExit("--flush-pages must be >= 1")
     try:
         COMMANDS[args.cmd](client, store, args, log)
     except MaxRequestsReached as e:
@@ -764,6 +845,13 @@ def main(argv=None, client: Client | None = None) -> int:
         store.run_record(client, complete=False, note=str(e))
         log(f"stopped: {e}; re-run the same command to resume")
         return 3
+    except Exception as e:  # terminal 4xx / exhausted retries / bug: leave a trace, then fail
+        store.save_checkpoint()
+        store.run_record(client, complete=False, error=f"{type(e).__name__}: {e}")
+        log(f"failed: {type(e).__name__}: {e}; checkpoint kept")
+        if isinstance(e, HttpError):
+            return 4
+        raise
     store.save_checkpoint()
     store.run_record(client, complete=True)
     return 0

@@ -5,9 +5,12 @@ Formula (Kalshi fee schedule, https://kalshi.com/docs/kalshi-fee-schedule.pdf,
 https://docs.kalshi.com/api-reference/market/get-series-list.md):
 
     taker fee = ceil( 0.07 * C * P * (1 - P) )          P in dollars, C contracts
-    maker fee = ceil( 0.0175 * C * P * (1 - P) )        fee_type quadratic_with_maker_fees
-                (maker multiplier 0.25 of the taker rate; the series-list doc
-                 states 0.5 for ``quadratic_with_combo_maker_fees``)
+    maker fee = 0 for fee_type "quadratic" (no maker fee);
+                ceil( 0.0175 * C * P * (1 - P) ) for "quadratic_with_maker_fees"
+                (0.25 of the taker rate); 0.5 of it for
+                "quadratic_with_combo_maker_fees" (series-list doc).
+                "flat" series follow the PDF's Specific Trading Fees Table,
+                which could not be read: raises NotImplementedError.
 
 ``fee_multiplier`` on the series scales the 0.07 rate.
 
@@ -58,16 +61,46 @@ def _fee(rate: Decimal, contracts, price, rounding: str) -> float:
     return float(ceil_to(rate * c * p * (1 - p), _STEP[rounding]))
 
 
-def taker_fee(contracts, price, fee_multiplier=1.0, rounding: str = "cent") -> float:
-    """Taker fee in dollars: ceil(0.07 * fee_multiplier * C * P * (1-P))."""
+MAKER_FEE_MULTIPLIER_BY_TYPE = {
+    "quadratic": None,  # plain quadratic series: makers pay NO fee
+    "quadratic_with_maker_fees": MAKER_MULTIPLIER,
+    "quadratic_with_combo_maker_fees": COMBO_MAKER_MULTIPLIER,
+}
+
+
+def _check_type(fee_type):
+    """``flat`` is defined only by the "Specific Trading Fees Table" in the PDF
+    (get-series-list.md), which is not available here, so it is NOT modelled."""
+    if fee_type is None:
+        return
+    if fee_type == "flat":
+        raise NotImplementedError(
+            "fee_type 'flat' is defined by the Specific Trading Fees Table (PDF); not modelled")
+    if fee_type not in MAKER_FEE_MULTIPLIER_BY_TYPE:
+        raise ValueError(f"unknown fee_type {fee_type!r}")
+
+
+def taker_fee(contracts, price, fee_multiplier=1.0, rounding: str = "cent",
+              fee_type: str | None = None) -> float:
+    """Taker fee in dollars: ceil(0.07 * fee_multiplier * C * P * (1-P)).
+
+    ``fee_type`` (the series field) is optional; the quadratic taker fee is the
+    same for all three quadratic types.  'flat' raises NotImplementedError.
+    """
+    _check_type(fee_type)
     return _fee(TAKER_RATE * _dec(fee_multiplier), contracts, price, rounding)
 
 
-def maker_fee(contracts, price, fee_multiplier=1.0, rounding: str = "cent",
-              maker_multiplier=MAKER_MULTIPLIER) -> float:
-    """Maker fee in dollars (series with maker fees): 0.25 x the taker rate.
+def maker_fee(contracts, price, fee_type: str, fee_multiplier=1.0, rounding: str = "cent") -> float:
+    """Maker fee in dollars, by the series ``fee_type`` (required, no default).
 
-    Pass ``maker_multiplier=COMBO_MAKER_MULTIPLIER`` for combo-maker series.
+    quadratic -> 0.0 (no maker fee); quadratic_with_maker_fees -> 0.25 x the
+    taker rate; quadratic_with_combo_maker_fees -> 0.5 x; flat -> NotImplementedError.
     """
-    return _fee(TAKER_RATE * _dec(fee_multiplier) * _dec(maker_multiplier),
-                contracts, price, rounding)
+    if fee_type is None:
+        raise ValueError("fee_type is required for maker_fee")
+    _check_type(fee_type)
+    mult = MAKER_FEE_MULTIPLIER_BY_TYPE[fee_type]
+    if mult is None:
+        return 0.0
+    return _fee(TAKER_RATE * _dec(fee_multiplier) * mult, contracts, price, rounding)

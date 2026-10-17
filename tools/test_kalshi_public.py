@@ -132,6 +132,7 @@ class Clock:
 def mkclient(fake, clock=None, **kw):
     clock = clock or Clock()
     kw.setdefault("rate", 1000)
+    kw.setdefault("jitter", 0)
     return kp.Client(http=fake, sleep=clock.sleep, clock=clock.now, **kw), clock
 
 
@@ -261,7 +262,7 @@ def test_pagination_stops_on_repeated_cursor():
 
 def test_markets_schema_partitions_routing_and_manifest(tmp_path):
     fake = Fake()
-    rc, _ = run(tmp_path, ["markets", "--series", "KXHIGHNY"], fake)
+    rc, _ = run(tmp_path, ["markets", "--series", "KXHIGHNY", "--raw-json"], fake)
     assert rc == 0
     rows = read(tmp_path, "markets")
     assert {r["ticker"] for r in rows} == {"KXHIGHNY-26OCT01-T80", "KXHIGHNY-26OCT02-T80",
@@ -432,3 +433,140 @@ def test_orderbook_snap_records_depth_only_with_timestamps(tmp_path):
 def test_cli_parser_has_no_trading_subcommands():
     sub = [a for a in kp.build_parser()._actions if a.dest == "cmd"][0]
     assert set(sub.choices) == {"series", "markets", "trades", "candles", "orderbook-snap"}
+
+
+# ------------------------------------------------------------ review round 1
+
+def manifest(tmp_path):
+    return [json.loads(l) for l in (tmp_path / "manifest.jsonl").read_text().splitlines()]
+
+
+def test_raw_json_off_by_default(tmp_path):
+    run(tmp_path, ["markets", "--series", "KXHIGHNY"], Fake())
+    assert all(r["raw_json"] is None for r in read(tmp_path, "markets"))
+
+
+def test_jitter_added_after_cap():
+    fake = Fake()
+    fake.status_script = [429, 429, 429]
+    client, _ = mkclient(fake, jitter=0.5, rng=lambda: 1.0, backoff_base=10, backoff_cap=15)
+    client.get("/series")
+    # min(15,10)=10 -> 15 ; then capped 15 -> 22.5 twice
+    assert client.backoffs == [15.0, 22.5, 22.5]
+
+
+def test_markets_flush_every_n_pages(tmp_path, monkeypatch):
+    fake = Fake()
+    fake.live_markets["KXHIGHNY"] = [Fake.mk(f"KXHIGHNY-X{i}", "2026-10-01T00:00:00Z") for i in range(7)]
+    monkeypatch.setattr(kp, "PAGE_LIMIT", 2)  # 4 live pages
+    rc, _ = run(tmp_path, ["--flush-pages", "2", "markets", "--series", "KXHIGHNY"], fake)
+    assert rc == 0
+    files = [f for f in manifest(tmp_path) if f["type"] == "file"]
+    live = [f for f in files if "date=2026-10-01" in f["path"]]
+    assert len(live) >= 2
+    assert sum(f["rows"] for f in files) == 8  # 7 live + 1 historical
+    assert len({f["path"] for f in files}) == len(files)
+
+
+def test_trades_flush_batches_and_dedupe(tmp_path, monkeypatch):
+    monkeypatch.setattr(kp, "PAGE_LIMIT", 1)
+    run(tmp_path, ["--flush-pages", "2", "trades", "--market", "KXHIGHNY-26OCT01-T80"], Fake())
+    rows = read(tmp_path, "trades")
+    assert len(rows) == 7 and len({r["trade_id"] for r in rows}) == 7
+    assert len([x for x in manifest(tmp_path) if x["type"] == "file"]) >= 3
+
+
+class ChunkFake(Fake):
+    """Candles: live data only for chunks starting at/after live_from; historical 404."""
+
+    def __init__(self, live_from=None):
+        super().__init__()
+        self.live_from = live_from
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        path = u.path.replace("/trade-api/v2", "")
+        if path.endswith("/candlesticks"):
+            self.calls.append(url)
+            lo = int(urllib.parse.parse_qs(u.query)["start_ts"][0])
+            if path.startswith("/series"):
+                if self.live_from is not None and lo >= self.live_from:
+                    return 200, json.dumps({"candlesticks": [{
+                        "end_period_ts": lo + 3600, "yes_bid": {}, "yes_ask": {},
+                        "price": {"mean_dollars": "0.5"},
+                        "volume_fp": "1.00", "open_interest_fp": "1.00"}]}).encode()
+                return 200, b'{"candlesticks": []}'
+            return 404, b"{}"
+        return super().__call__(url)
+
+
+def test_candles_empty_first_chunk_then_live_chunk(tmp_path, monkeypatch):
+    base = 1_790_000_000
+    monkeypatch.setattr(kp, "CANDLE_CHUNK", 1)  # one hourly candle per request
+    fake = ChunkFake(live_from=base + 3600)
+    rc, _ = run(tmp_path, ["candles", "--market", "KXHIGHNY-26OCT01-T80", "--since", str(base),
+                           "--until", str(base + 7200), "--period", "60"], fake)
+    assert rc == 0
+    rows = read(tmp_path, "candles")
+    assert len(rows) == 1 and rows[0]["source"] == "live"  # chunk 2 not lost
+    # chunk 1 was tried on live AND historical before being treated as empty
+    assert any("/historical/markets/" in c and f"start_ts={base}&" in c for c in fake.calls)
+    assert [u for u in manifest(tmp_path) if u["type"] == "unit"][0]["status"] == "ok"
+
+
+def test_candles_empty_in_both_tiers_is_recorded(tmp_path):
+    base = 1_790_000_000
+    fake = ChunkFake(live_from=None)
+    rc, _ = run(tmp_path, ["candles", "--market", "KXHIGHNY-26OCT01-T80", "--since", str(base),
+                           "--until", str(base + 7200)], fake)
+    assert rc == 0
+    u = [r for r in manifest(tmp_path) if r["type"] == "unit"][0]
+    assert u["status"] == "empty_both_tiers" and u["rows"] == 0
+    assert any("/historical/markets/" in c for c in fake.calls)
+
+
+def test_terminal_4xx_writes_run_record_and_checkpoint(tmp_path):
+    fake = Fake()
+    fake.status_script = [400]
+    rc, _ = run(tmp_path, ["series"], fake)
+    assert rc == 4
+    last = manifest(tmp_path)[-1]
+    assert last["type"] == "run" and last["complete"] is False and "HttpError" in last["error"]
+    assert list((tmp_path / "_checkpoints").glob("series-*.json"))
+
+
+def test_exhausted_retries_records_error(tmp_path):
+    fake = Fake()
+    fake.status_script = [503] * 20
+    rc, _ = run(tmp_path, ["series"], fake, max_retries=1)
+    assert rc == 4
+    assert "HTTP 503" in manifest(tmp_path)[-1]["error"]
+
+
+def test_orderbook_parts_unique_across_runs(tmp_path):
+    for _ in range(2):
+        clk = Clock()
+        client, _ = mkclient(Fake(), clock=clk)
+        args = kp.build_parser().parse_args(["--out", str(tmp_path), "orderbook-snap",
+                                             "--markets", "KXHIGHNY-26OCT01-T80",
+                                             "--every-s", "60", "--duration-s", "60"])
+        kp.cmd_orderbook_snap(client, kp.Store(tmp_path, "orderbook-snap", {}), args, lambda s: None,
+                              clock=clk.now, sleep=clk.sleep, utcnow=lambda: kp.parse_dt(NOW))
+    # identical second and inputs: the uuid suffix keeps the files from overwriting each other
+    assert len(list((tmp_path / "orderbook").rglob("*.parquet"))) == 2
+
+
+def test_sports_keyword_second_signal():
+    rows = [
+        {"ticker": "KXNBAMVP", "title": "MVP", "category": "Politics", "categories": ["Politics"]},
+        {"ticker": "KXLOLWORLDS", "title": "Worlds", "category": "Entertainment", "categories": ["Entertainment"]},
+        {"ticker": "KXWHO", "title": "Who wins the NFL draft", "category": "Entertainment", "categories": []},
+        {"ticker": "KXSTUFF", "title": "Summary stuff", "category": "Economics", "categories": ["Economics"]},
+        {"ticker": "KXCPI", "title": "CPI", "category": "Economics", "categories": ["Economics"]},
+    ]
+    kept = kp.allowed_series(rows, None, {"sports"})
+    # NOTE: KXWHO has no category list entry but a primary category; the title says NFL
+    assert set(kept) == {"KXSTUFF", "KXCPI"}  # 'mma' inside 'summary' is not a title hit
+    # explicit opt-in to Sports bypasses the keyword list
+    opted = kp.allowed_series([dict(rows[0], category="Sports", categories=["Sports"])], {"sports"}, set())
+    assert "KXNBAMVP" in opted
