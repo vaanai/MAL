@@ -1399,12 +1399,14 @@ class Segment2Tests(unittest.TestCase):
             self.assertEqual(json.loads(lines[0]), {
                 "segment_start": True, "prev_chain_sha256": mc.sha256_bytes(old_chain),
                 "prev_manifest_sha256": mc.sha256_bytes(old_man),
-                "first_hour": "2026-10-17T23", "reason": "multi-writer"})
+                "first_hour": "2026-10-17T23", "reason": "multi-writer",
+                "flagged_hours": {h: mc.MULTI_WRITER_FLAG for h in
+                                  ("2026-10-17T20", "2026-10-17T21", "2026-10-17T22")}})
             self.assertEqual([json.loads(x).get("hour") for x in lines[1:]], ["2026-10-17T23"])
             self.assertEqual(json.loads(lines[1])["prev"], mc.sha256_bytes(lines[0].encode()))
             man2 = (out / "MANIFEST-2.sha256").read_text()
             self.assertIn("creates/2026-10-17T23.jsonl", man2)
-            self.assertNotIn("2026-10-17T21", man2)
+            self.assertNotIn("creates/2026-10-17T21", man2)
             # later sealing goes to segment 2 only, chained after the rehash entries
             st2.creates_path("2026-10-18T00").write_text('{"mint":"m"}\n')
             st2.seal("2026-10-18T00")
@@ -1450,7 +1452,7 @@ class Segment2Tests(unittest.TestCase):
             notes = (out / "MANIFEST-2.notes").read_text().splitlines()
             self.assertEqual(len(notes), 1)
             self.assertEqual(json.loads(notes[0])["hour"], "2026-10-17T21")
-            self.assertIn("multi-writer", notes[0])
+            self.assertIn("flagged_hours", notes[0])  # pointer into the segment_start entry
 
 
 class SealIdempotentAndModeTests(unittest.TestCase):
@@ -1590,6 +1592,105 @@ class CapRowRecoverTests(unittest.TestCase):
             rows = meta_rows(col)
             self.assertEqual(rows[0]["status"], "error_ValueError")
             self.assertNotIn("leak", json.dumps(rows))
+
+
+class OneRequestPerAttemptTests(unittest.TestCase):
+    """QP condition 2: one request per attempt, never re-fetch, across caps, cancels and restarts."""
+
+    def test_cancel_in_flight_then_restart_sends_nothing_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def hang(url, timeout, max_bytes):
+                calls.append(url)
+                await asyncio.sleep(30)
+            col.http_get = hang
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def go():
+                task = asyncio.ensure_future(col.step())
+                await asyncio.sleep(0.1)
+                task.cancel()  # SIGTERM drain / watchdog exit
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            run(go())
+            self.assertEqual([(r["attempt"], r["status"]) for r in meta_rows(col)],
+                             [(0, "cancelled_in_flight")])
+            col2, _ = make(d, clock=clock)
+            calls2 = []
+
+            async def ok(url, timeout, max_bytes):
+                calls2.append(url)
+                return b'{"name":"n"}'
+            col2.http_get = ok
+            col2.recover()
+            run(col2.step())  # attempt 1 is not due yet at this clock
+            self.assertEqual((len(calls), len(calls2)), (1, 0))
+            self.assertEqual([it[2] for it in col2.heap], [1])
+
+    def test_image_cap_after_ok_json_writes_ok_row_and_no_refetch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def http(url, timeout, max_bytes):
+                calls.append(url)
+                if "img1" in url:
+                    await asyncio.sleep(5)
+                return b'{"name":"n","image":"ipfs://img1"}'
+            col.http_get = http
+            col.attempt_deadline_s = 0.2
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"], r.get("img_status")) for r in rows],
+                             [(0, "ok", "timeout_cap")])
+            self.assertEqual(col.heap, [])  # nothing further for this mint
+            clock.t = HOUR0 + 100 + 600_000
+            col.attempt_deadline_s = 180
+            run(col.step())
+            self.assertEqual(sum(1 for c in calls if "cid1" in c), 1)  # exactly one JSON request
+
+    def test_error_after_row_written_does_not_advance_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def ok(url, timeout, max_bytes):
+                calls.append(url)
+                return b'{"name":"n"}'
+            col.http_get = ok
+            col.on_message(create_payload(), HOUR0 + 100)
+            real = col._schedule
+
+            def boom(row, attempt):
+                raise RuntimeError("late failure")
+            col._schedule = boom
+            # make the attempt non-ok so _attempt reaches _schedule after its row is written
+            col.http_get = FakeHttp(lambda u: mc.HttpError(503))
+            run(col.step())
+            col._schedule = real
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"]) for r in rows], [(0, "http_503")])  # one row
+            self.assertEqual(col.heap, [])  # no attempt+1 from the error handler
+            self.assertEqual(len(col.http_get.calls), 1)
+            clock.t = HOUR0 + 100 + 700_000
+            run(col.step())
+            self.assertEqual(len(col.http_get.calls), 1)  # still no further request
+
+
+class Segment2ArgTests(unittest.TestCase):
+    def test_short_hour_forms_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}):
+            for bad in ("2026-10-17T5", "T5", "2026-10-17", "2026-10-17T23:00", "2026-1-7T23"):
+                self.assertEqual(mc.main(["--out", d, "--segment2-first-hour", bad]), 2, bad)
+            with self.assertRaises(ValueError):
+                mc.Store(Path(d), "g").init_segment2("2026-10-17T5")
 
 
 if __name__ == "__main__":

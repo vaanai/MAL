@@ -83,6 +83,7 @@ MAX_PENDING = 50_000
 MULTI_WRITER_HOURS = ("2026-10-17T20", "2026-10-17T21", "2026-10-17T22")
 MULTI_WRITER_FLAG = "multi-writer 2026-10-17T21:09:01Z\u201322:35:45Z"
 SEG2_REASON = "multi-writer"
+HOUR_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}")
 
 # Exactly the ruled allowlist. output key -> vendor keys tried in order.
 CREATE_ALLOW: dict[str, tuple[str, ...]] = {
@@ -446,12 +447,15 @@ class Store:
         already sealed hours >= first_hour (hash only, no content parsing), and routes all later
         sealing to segment 2. No-op (False) if MANIFEST-2.chain exists. The chain file is written
         last, so a crash before it leaves no segment and the next start redoes this."""
-        hour_start_ms(first_hour)  # ValueError on a malformed hour
+        if not HOUR_RE.fullmatch(first_hour):
+            raise ValueError("first hour must be YYYY-MM-DDTHH")
+        hour_start_ms(first_hour)
         if self.segment2:
             return False
         start = {"segment_start": True, "prev_chain_sha256": sha256_file(self.out / "MANIFEST.chain"),
                  "prev_manifest_sha256": sha256_file(self.out / "MANIFEST.sha256"),
-                 "first_hour": first_hour, "reason": SEG2_REASON}
+                 "first_hour": first_hour, "reason": SEG2_REASON,
+                 "flagged_hours": {hk: MULTI_WRITER_FLAG for hk in MULTI_WRITER_HOURS}}
         start_line = json.dumps(start, separators=(",", ":"))
         chain_lines = [start_line]
         prev = sha256_bytes(start_line.encode())
@@ -482,7 +486,7 @@ class Store:
         add = ""
         for hk in MULTI_WRITER_HOURS:
             if hk in self.sealed and f'"hour":"{hk}"' not in have:
-                add += json.dumps({"hour": hk, "flags": [MULTI_WRITER_FLAG]}, separators=(",", ":"),
+                add += json.dumps({"hour": hk, "pointer": "MANIFEST-2.chain segment_start.flagged_hours"}, separators=(",", ":"),
                                   ensure_ascii=False) + "\n"
         if add:
             self._write_manifest_file(notes, (have + add).encode())
@@ -733,6 +737,8 @@ class Collector:
         self.last_create_mono: float | None = None
         self.last_meta_mono: float | None = None
         self.attempt_counts: dict[str, int] = {}
+        self.recorded: dict[tuple[str, int], float] = {}  # (mint, attempt) with a row written
+        self.inflight_rec: dict[tuple[str, int], dict[str, Any]] = {}
         self.inflight = {"local": 0, "public": 0}
 
     def rss_ok(self) -> bool:
@@ -808,15 +814,34 @@ class Collector:
         self.store.seal_due(self.clock_ms())
         return len(batch)
 
+    @staticmethod
+    def _key(item: tuple[int, int, int, dict[str, Any]]) -> tuple[str, int]:
+        return str(item[3].get("mint")), item[2]
+
+    def _mark_recorded(self, key: tuple[str, int]) -> None:
+        self.recorded[key] = self.mono()
+        self.inflight_rec.pop(key, None)
+        if len(self.recorded) > 200_000:  # attempts older than an hour can never come back
+            cut = self.mono() - 3600
+            self.recorded = {k: v for k, v in self.recorded.items() if v >= cut}
+
     async def _guarded(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         try:
             await asyncio.wait_for(self._attempt(item), timeout=self.attempt_deadline_s)
+        except asyncio.CancelledError:
+            # SIGTERM drain / watchdog exit: the request may be in flight. Record it so that recover()
+            # never re-sends it, then let the cancellation continue.
+            try:
+                self._record_failed_attempt(item, "cancelled_in_flight", schedule=False)
+            except Exception:  # noqa: BLE001
+                log.error("attempt_row_write type=%s", type(sys.exc_info()[1]).__name__)
+            raise
         except Exception:  # noqa: BLE001
             # Type name only: a traceback or message could carry token content.
             name = type(sys.exc_info()[1]).__name__
             log.error("attempt_error type=%s", name)
             self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
-            status = "timeout_cap" if name in ("TimeoutError", "CancelledError") else f"error_{name}"
+            status = "timeout_cap" if name == "TimeoutError" else f"error_{name}"
             try:
                 # A request may already have gone out: record the attempt so that recover() after a
                 # restart never re-sends it (one request per attempt), and keep the fixed schedule.
@@ -828,14 +853,27 @@ class Collector:
             except Exception:  # noqa: BLE001 - the error path must never raise out of the worker
                 log.error("attempt_error_capture_write type=%s", type(sys.exc_info()[1]).__name__)
 
-    def _record_failed_attempt(self, item: tuple[int, int, int, dict[str, Any]], status: str) -> None:
+    def _record_failed_attempt(self, item: tuple[int, int, int, dict[str, Any]], status: str,
+                               schedule: bool = True) -> None:
+        """One row per attempt. If the attempt already has a row, only the caller's log and count
+        remain: no second row, never a schedule advance. If the JSON fetch came back ok, that ok row is
+        written with img_status=status and nothing further is scheduled for the mint."""
         due, _, attempt, row = item
+        key = self._key(item)
+        if key in self.recorded:
+            return
+        rec = self.inflight_rec.get(key)
+        self._mark_recorded(key)
+        self.attempt_counts[status] = self.attempt_counts.get(status, 0) + 1
+        if rec is not None and rec.get("status") == "ok":
+            rec["img_status"] = status
+            self._add_meta(int(row["t_recv_ms"]), rec, None)
+            return
         stored = self._add_meta(int(row["t_recv_ms"]), {
             "mint": str(row["mint"]), "attempt": attempt, "scheduled_ms": due,
             "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
             "gateway": None, "status": status, "bytes": 0, "sha256": None}, None)
-        self.attempt_counts[status] = self.attempt_counts.get(status, 0) + 1
-        if stored and attempt + 1 < len(SCHEDULE_MS):
+        if stored and schedule and attempt + 1 < len(SCHEDULE_MS):
             self._schedule(row, attempt + 1)
 
     async def _fetch(self, uri: str, max_bytes: int,
@@ -899,6 +937,7 @@ class Collector:
                                **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
         png: bytes | None = None
+        self.inflight_rec[(mint, attempt)] = rec
         status, body, gateway, wait_ms, refused = await self._fetch(uri, MAX_JSON_BYTES)
         rec["status"], rec["gateway"] = status, gateway
         rec["local_refused"] = refused
@@ -918,7 +957,11 @@ class Collector:
                 rec.update(extract_meta(doc))
                 png = await self._image(rec)
         self.attempt_counts[str(rec["status"])] = self.attempt_counts.get(str(rec["status"]), 0) + 1
-        stored = self._add_meta(int(row["t_recv_ms"]), rec, png)
+        key = (mint, attempt)
+        try:
+            stored = self._add_meta(int(row["t_recv_ms"]), rec, png)
+        finally:
+            self._mark_recorded(key)  # later errors for this attempt must not advance the schedule
         if rec["status"] != "ok" and stored and attempt + 1 < len(SCHEDULE_MS):
             self._schedule(row, attempt + 1)
 
