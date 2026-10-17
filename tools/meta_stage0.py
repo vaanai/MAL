@@ -18,8 +18,11 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -33,6 +36,7 @@ from tools.pump_history_backfill import (
     _program_data,
     cpi_events_from_tx,
     decode_create_event,
+    helius_http_url,
 )
 
 log = logging.getLogger("meta_stage0")
@@ -57,6 +61,11 @@ DEFAULT_GATEWAYS = (  # pinned
     "https://gateway.pinata.cloud/ipfs/",
 )
 MAX_RPS = 8.0
+MIN_RPS = 0.5
+HTTP_DEADLINE_S = 10.0  # total wall clock per gateway request
+RPC_DEADLINE_S = 30.0
+MAX_RUNTIME_DEFAULT_S = 3000.0
+HELIUS_VAR = "HELIUS_API_KEY"
 MAX_CALLS_DEFAULT = 3000  # hard cap (QP ruling)
 IMAGE_BYTES = 65536
 JSON_BYTES = 1 << 20
@@ -66,7 +75,7 @@ MIN_JSON_SHARE = 0.95
 MAX_GAP = 0.02  # 2 points
 
 GROUPS = ("G", "N")
-_IPFS_RE = re.compile(r"^(?:ipfs://(?:ipfs/)?|https?://[^/]+/ipfs/)(.+)$")
+_IPFS_RE = re.compile(r"^(?:ipfs://(?:ipfs/)?|https?://[^/]+/ipfs/)([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 
 
 # ---------------------------------------------------------------- sample
@@ -216,25 +225,60 @@ def uri_from_tx(tx: Mapping[str, Any], mint: str | None = None) -> str | None:
 HttpGet = Callable[[str, float, int, bool], "tuple[int, bytes]"]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: a gateway must not bounce us to an internal address."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def read_with_deadline(resp: Any, max_bytes: int, deadline: float, clock: Callable[[], float] = time.monotonic) -> bytes:
+    """Read in chunks, enforcing a wall-clock deadline across the whole body (not just per socket read)."""
+    chunks: list[bytes] = []
+    got = 0
+    while got < max_bytes:
+        if clock() > deadline:
+            raise TimeoutError("deadline")
+        chunk = resp.read(min(8192, max_bytes - got))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        got += len(chunk)
+    return b"".join(chunks)
+
+
 def urllib_get(url: str, timeout: float, max_bytes: int, ranged: bool) -> tuple[int, bytes]:
-    headers = {"User-Agent": "mal-meta-stage0"}
-    if ranged:
-        headers["Range"] = f"bytes=0-{max_bytes - 1}"
-    req = urllib.request.Request(url, headers=headers)
+    deadline = time.monotonic() + min(timeout, HTTP_DEADLINE_S)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read(max_bytes)
-    except urllib.error.HTTPError as exc:
+        headers = {"User-Agent": "mal-meta-stage0"}
+        if ranged:
+            headers["Range"] = f"bytes=0-{max_bytes - 1}"
+        req = urllib.request.Request(url, headers=headers)
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return resp.status, read_with_deadline(resp, max_bytes, deadline)
+    except urllib.error.HTTPError as exc:  # includes refused 3xx redirects
         return exc.code, b""
 
 
+def limited_http(http: "HttpGet", limiter: Any) -> "HttpGet":
+    def call(url: str, timeout: float, max_bytes: int, ranged: bool) -> tuple[int, bytes]:
+        limiter.acquire()
+        return http(url, timeout, max_bytes, ranged)
+
+    return call
+
+
 def candidate_urls(uri: str, gateways: Sequence[str]) -> list[str]:
-    m = _IPFS_RE.match(uri)
-    if m:
-        return [g.rstrip("/") + "/" + m.group(1) for g in gateways]
-    if uri.startswith(("http://", "https://")):
-        return [uri]
-    return []
+    """Only ipfs:// or /ipfs/<cid> uris, rewritten onto the pinned gateways. Anything else is refused."""
+    if not isinstance(uri, str):
+        return []
+    m = _IPFS_RE.match(uri.strip())
+    if not m or ".." in m.group(1):
+        return []
+    return [g.rstrip("/") + "/" + m.group(1) for g in gateways]
 
 
 def fetch_with_retry(
@@ -243,7 +287,7 @@ def fetch_with_retry(
     """Up to ATTEMPTS tries, rotating gateways. Returns (body, error_class)."""
     urls = candidate_urls(uri, gateways)
     if not urls:
-        return None, "bad_scheme"
+        return None, "non_ipfs_uri"
     err = "http"
     for i in range(ATTEMPTS):
         url = urls[i % len(urls)]
@@ -266,7 +310,7 @@ def fetch_with_retry(
 RpcFn = Callable[[str], "dict[str, Any] | None"]
 
 
-def make_rpc(url: str, budget: CreditBudget, limiter: RateLimiter) -> RpcFn:
+def make_rpc(url: str, budget: CreditBudget, limiter: Any) -> RpcFn:
     """getTransaction by signature. Every attempt reserves one call; the URL never leaves this closure."""
 
     def call(signature: str) -> dict[str, Any] | None:
@@ -283,10 +327,11 @@ def make_rpc(url: str, budget: CreditBudget, limiter: RateLimiter) -> RpcFn:
             if not budget.reserve():
                 raise CreditBudgetExceeded(budget.used, budget.cap)
             limiter.acquire()
-            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+            deadline = time.monotonic() + RPC_DEADLINE_S
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    payload = json.loads(resp.read())
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+                with _OPENER.open(req, timeout=RPC_DEADLINE_S) as resp:
+                    payload = json.loads(read_with_deadline(resp, 16 << 20, deadline))
             except urllib.error.HTTPError as exc:
                 last = f"http_{exc.code}"
                 continue
@@ -302,25 +347,51 @@ def make_rpc(url: str, budget: CreditBudget, limiter: RateLimiter) -> RpcFn:
     return call
 
 
-def read_helius_url(env_path: str) -> str:
-    """First http URL (or API key value) in the env file. Returned to the caller only; never logged."""
+def read_helius_url(env_path: str, var: str = HELIUS_VAR) -> str:
+    """Value of the one named variable (the repo convention is HELIUS_API_KEY) in the env file, turned into
+    the RPC URL. Returned to the caller only; never logged."""
     for line in Path(env_path).read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if "=" not in line or line.startswith("#"):
             continue
         name, val = line.split("=", 1)
-        val = val.strip().strip("'\"")
-        if val.startswith("http"):
-            return val
-        if val and "KEY" in name.upper():
-            return f"https://mainnet.helius-rpc.com/?api-key={val}"
-    raise SystemExit("no helius url in env file")
+        if name.strip() == var and val.strip().strip("'\""):
+            return helius_http_url(val.strip().strip("'\""))
+    raise SystemExit(f"{var} not set in env file")
+
+
+class PersistentBudget(CreditBudget):
+    """Cumulative hard cap across runs: the count lives in calls.json and is written before each call."""
+
+    def __init__(self, path: Path, cap: int) -> None:
+        used = 0
+        if path.exists():
+            try:
+                used = int(json.loads(path.read_text(encoding="utf-8")).get("calls", 0))
+            except (ValueError, OSError):
+                raise SystemExit("calls.json unreadable; refusing to run")
+        super().__init__(cap, 1, used)
+        self.path = path
+        self._persist()
+
+    def _persist(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"calls": self.used}), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def reserve(self) -> bool:
+        ok = super().reserve()
+        if ok:
+            self._persist()
+        return ok
 
 
 # ---------------------------------------------------------------- per mint
 
 def check_mint(
-    row: Mapping[str, Any], rpc: RpcFn, http: HttpGet, gateways: Sequence[str], keep_dir: Path | None = None
+    row: Mapping[str, Any], rpc: RpcFn, http: HttpGet, gateways: Sequence[str]
 ) -> dict[str, Any]:
     st: dict[str, Any] = {
         "mint": row["mint"], "grp": row["grp"], "block": row.get("block"),
@@ -360,9 +431,6 @@ def check_mint(
     st["has_any_social"] = any(
         isinstance(meta.get(k), str) and bool(meta[k].strip()) for k in ("twitter", "telegram", "website")
     )
-    if keep_dir is not None:
-        keep_dir.mkdir(parents=True, exist_ok=True)
-        (keep_dir / f"{row['mint']}.json").write_bytes(body)
     image = meta.get("image")
     if not isinstance(image, str) or not image:
         st["error"] = "image_missing"
@@ -417,7 +485,7 @@ def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def summarize(
     statuses: Sequence[Mapping[str, Any]], calls_used: int, cap_hit: bool = False,
-    sample: Sequence[Mapping[str, Any]] | None = None,
+    sample: Sequence[Mapping[str, Any]] | None = None, deadline_hit: bool = False,
 ) -> dict[str, Any]:
     by_group = {g: _shares([r for r in statuses if r["grp"] == g]) for g in GROUPS}
     blocks = sorted({r.get("block") for r in statuses if r.get("block") is not None})
@@ -437,10 +505,14 @@ def summarize(
         "by_group": by_group,
         "by_block": by_block,
         "json_ok_gap_G_minus_N": gap,
+        "lower_bounds_json_ok_wilson90": {
+            g: (by_group[g]["json_ok_wilson90"] or [None])[0] for g in GROUPS
+        },
         "bar": {"min_json_ok_share_each_group": MIN_JSON_SHARE, "max_abs_gap": MAX_GAP},
         "pass": bool(passed),
         "calls_used": calls_used,
         "cap_hit": cap_hit,
+        "deadline_hit": deadline_hit,
         "censoring": censoring(sample or []),
         "note": "metadata present must never be used as a feature",
     }
@@ -464,21 +536,25 @@ def load_done(path: Path) -> list[dict[str, Any]]:
 
 def run(
     sample: Sequence[Mapping[str, Any]], out: Path, rpc: RpcFn, http: HttpGet, gateways: Sequence[str],
-    budget: CreditBudget, keep_json: bool = False,
+    budget: CreditBudget, max_runtime_s: float = MAX_RUNTIME_DEFAULT_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     refuse_out_of_range(sample)
     out.mkdir(parents=True, exist_ok=True)
     status_path = out / "status.jsonl"
     done = load_done(status_path)
     seen = {r["mint"] for r in done}
-    cap_hit = False
-    keep_dir = out / "json" if keep_json else None
+    cap_hit = deadline_hit = False
+    t_end = clock() + max_runtime_s
     with status_path.open("a", encoding="utf-8") as fh:
         for row in sample:
             if row["mint"] in seen:
                 continue
+            if clock() >= t_end:
+                deadline_hit = True
+                break
             try:
-                st = check_mint(row, rpc, http, gateways, keep_dir)
+                st = check_mint(row, rpc, http, gateways)
             except CreditBudgetExceeded:
                 cap_hit = True
                 break
@@ -486,9 +562,22 @@ def run(
             fh.flush()
             done.append(st)
             seen.add(row["mint"])
-    summary = summarize(done, budget.used, cap_hit, sample)
+    summary = summarize(done, budget.used, cap_hit, sample, deadline_hit)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
+
+
+def load_reused_sample(out: Path) -> list[dict[str, Any]]:
+    """Reuse sample.parquet only if it matches its recorded sha256."""
+    import duckdb
+
+    path = out / "sample.parquet"
+    want = (out / "sample.parquet.sha256").read_text(encoding="utf-8").split()[0]
+    if hashlib.sha256(path.read_bytes()).hexdigest() != want:
+        raise SystemExit("sample.parquet does not match its sha256; refusing to run")
+    cur = duckdb.connect().execute(f"select * from read_parquet('{path}')")
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -496,34 +585,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--n-per-group", type=int, default=1000)
     ap.add_argument("--helius-env", default=DEFAULT_HELIUS_ENV)
-    ap.add_argument("--max-calls", type=int, default=MAX_CALLS_DEFAULT)
+    ap.add_argument("--max-calls", type=int, default=MAX_CALLS_DEFAULT, help="cumulative cap across runs, <= 3000")
     ap.add_argument("--rps", type=float, default=MAX_RPS)
-    ap.add_argument("--gateway", action="append", help="IPFS gateway base (repeatable)")
-    ap.add_argument("--keep-json", action="store_true")
+    ap.add_argument("--max-runtime-s", type=float, default=MAX_RUNTIME_DEFAULT_S)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    sample_path = out / "sample.parquet"
-    if sample_path.exists():
-        import duckdb
-
-        cur = duckdb.connect().execute(f"select * from read_parquet('{sample_path}')")
-        cols = [d[0] for d in cur.description]
-        sample = [dict(zip(cols, r)) for r in cur.fetchall()]
+    if (out / "sample.parquet").exists():
+        sample = load_reused_sample(out)
         log.info("sample reused n=%d", len(sample))
     else:
         sample = build_sample(args.n_per_group)
         digest = write_sample(sample, out)
         log.info("sample written n=%d sha256=%s", len(sample), digest)
     url = read_helius_url(args.helius_env)
-    budget = CreditBudget(min(args.max_calls, MAX_CALLS_DEFAULT), 1)
-    limiter = RateLimiter(min(args.rps, MAX_RPS))
+    budget = PersistentBudget(out / "calls.json", min(args.max_calls, MAX_CALLS_DEFAULT))
+    limiter = RateLimiter(min(max(args.rps, MIN_RPS), MAX_RPS))
     summary = run(
-        sample, out, make_rpc(url, budget, limiter), urllib_get,
-        args.gateway or list(DEFAULT_GATEWAYS), budget, args.keep_json,
+        sample, out, make_rpc(url, budget, limiter), limited_http(urllib_get, limiter),
+        list(DEFAULT_GATEWAYS), budget, args.max_runtime_s,
     )
-    log.info("calls_used=%d cap_hit=%s pass=%s", summary["calls_used"], summary["cap_hit"], summary["pass"])
+    log.info(
+        "calls_used=%d cap_hit=%s deadline_hit=%s pass=%s",
+        summary["calls_used"], summary["cap_hit"], summary["deadline_hit"], summary["pass"],
+    )
     return 0
 
 

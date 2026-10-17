@@ -18,7 +18,7 @@ from observe.trade_decode import b58encode
 from tools.pump_history_backfill import CreditBudget, CreditBudgetExceeded
 
 URI = "ipfs://QmFakeCid"
-IMG = "https://img.invalid/a.png"
+IMG = "ipfs://QmFakeImg"
 KEY = "SUPERSECRETKEY123456"
 
 
@@ -76,6 +76,7 @@ class FakeHttp:
 
 GW = ["https://gw1.invalid/ipfs/", "https://gw2.invalid/ipfs/"]
 JSON_URL = "https://gw1.invalid/ipfs/QmFakeCid"
+IMG_URL = "https://gw1.invalid/ipfs/QmFakeImg"
 
 
 class SampleTests(unittest.TestCase):
@@ -187,12 +188,12 @@ class StatusTests(unittest.TestCase):
 
     def test_full_ok(self) -> None:
         meta = {"description": "hi", "twitter": "x", "image": IMG}
-        http = FakeHttp({JSON_URL: (200, json.dumps(meta).encode()), IMG: (206, b"png")})
+        http = FakeHttp({JSON_URL: (200, json.dumps(meta).encode()), IMG_URL: (206, b"png")})
         st = self.check(tx_with_log(), http)
         self.assertTrue(all(st[k] for k in ("tx_ok", "uri_found", "json_ok", "has_description", "has_any_social", "image_ok")))
         self.assertIsNone(st["error"])
         self.assertNotIn("hi", json.dumps(st))  # no description text stored
-        img_call = [c for c in http.calls if c[0] == IMG][0]
+        img_call = [c for c in http.calls if c[0] == IMG_URL][0]
         self.assertEqual((img_call[1], img_call[2], img_call[3]), (10.0, 65536, True))
 
     def test_tx_missing_and_uri_missing(self) -> None:
@@ -223,19 +224,148 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(st["error"], "image_missing")
 
     def test_image_fail(self) -> None:
-        http = FakeHttp({JSON_URL: (200, json.dumps({"image": IMG}).encode()), IMG: (404, b"")})
+        http = FakeHttp({JSON_URL: (200, json.dumps({"image": IMG}).encode()), IMG_URL: (404, b"")}, default=(404, b""))
         st = self.check(tx_with_log(), http)
         self.assertTrue(st["json_ok"])
         self.assertFalse(st["image_ok"])
         self.assertEqual(st["error"], "image_http_404")
 
-    def test_keep_json_off_by_default(self) -> None:
-        http = FakeHttp({JSON_URL: (200, b'{"description":"d"}')})
+    def test_non_ipfs_uri_refused_without_fetch(self) -> None:
+        for bad in ("http://169.254.169.254/latest", "https://example.com/meta.json",
+                    "https://ipfs.io/ipfs/../../etc", "ipfs://", "file:///etc/passwd"):
+            http = FakeHttp()
+            st = self.check(tx_with_log(bad), http)
+            self.assertEqual(st["error"], "json_non_ipfs_uri", bad)
+            self.assertEqual(http.calls, [], bad)
+        # a non-ipfs image url is refused too
+        http = FakeHttp({JSON_URL: (200, b'{"image": "http://127.0.0.1/x.png"}')})
+        st = self.check(tx_with_log(), http)
+        self.assertEqual(st["error"], "image_non_ipfs_uri")
+        self.assertEqual(len(http.calls), 1)
+
+    def test_known_gateway_url_rewritten_to_pinned(self) -> None:
+        http = FakeHttp({JSON_URL: (200, b"{}")})
+        self.check(tx_with_log("https://evil.example/ipfs/QmFakeCid"), http)
+        self.assertEqual(http.calls[0][0], JSON_URL)
+
+    def test_no_gateway_or_keep_json_flags(self) -> None:
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                m.main(["--out", "/nonexistent", "--gateway", "https://x"])
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                m.main(["--out", "/nonexistent", "--keep-json"])
+
+
+class NoRedirectTests(unittest.TestCase):
+    def test_redirect_refused(self) -> None:
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:9/")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            status, body = m.urllib_get(f"http://127.0.0.1:{srv.server_port}/", 5, 100, False)
+        finally:
+            srv.shutdown()
+        self.assertEqual((status, body), (302, b""))
+
+    def test_read_deadline(self) -> None:
+        class Slow:
+            def read(self, n):
+                return b"x"
+
+        t = iter([0.0, 1.0, 2.0, 99.0, 100.0])
+        with self.assertRaises(TimeoutError):
+            m.read_with_deadline(Slow(), 10**6, 50.0, clock=lambda: next(t))
+
+    def test_limited_http_acquires(self) -> None:
+        n = []
+
+        class Lim:
+            def acquire(self):
+                n.append(1)
+
+        f = m.limited_http(FakeHttp(), Lim())
+        f("u", 1, 1, False)
+        self.assertEqual(n, [1])
+
+
+class BudgetAndDeadlineTests(unittest.TestCase):
+    def test_cumulative_cap_across_runs(self) -> None:
+        http = FakeHttp({JSON_URL: (200, b"{}")})
+        sample = [row(i) for i in range(10)]
+        with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI), tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            total = 0
+            for _ in range(3):
+                b = m.PersistentBudget(out / "calls.json", 4)
+
+                def rpc(sig, b=b):
+                    if not b.reserve():
+                        raise CreditBudgetExceeded(b.used, b.cap)
+                    return tx_with_log()
+
+                s = m.run(sample, out, rpc, http, GW, b)
+            self.assertEqual(json.loads((out / "calls.json").read_text())["calls"], 4)
+            self.assertEqual(s["calls_used"], 4)
+            self.assertTrue(s["cap_hit"])
+
+    def test_retries_count_and_persist(self) -> None:
+        class Lim:
+            def acquire(self):
+                pass
+
         with tempfile.TemporaryDirectory() as d:
-            m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(), http, GW, None)
-            self.assertEqual(list(Path(d).iterdir()), [])
-            m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(), http, GW, Path(d) / "json")
-            self.assertTrue((Path(d) / "json" / f"{MINT}.json").exists())
+            b = m.PersistentBudget(Path(d) / "calls.json", 10)
+            with patch.object(m._OPENER, "open", side_effect=OSError("x")):
+                with self.assertRaises(RuntimeError):
+                    m.make_rpc("https://h.invalid/", b, Lim())("S")
+            self.assertEqual(json.loads((Path(d) / "calls.json").read_text())["calls"], 3)
+            self.assertEqual(m.PersistentBudget(Path(d) / "calls.json", 10).used, 3)
+
+    def test_job_deadline(self) -> None:
+        ticks = iter([0, 1, 2, 5000, 5001, 5002, 5003])
+        http = FakeHttp({JSON_URL: (200, b"{}")})
+        b = CreditBudget(100, 1)
+        with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI), tempfile.TemporaryDirectory() as d:
+            s = m.run([row(i) for i in range(5)], Path(d), lambda sig: tx_with_log(), http, GW, b,
+                      max_runtime_s=3000, clock=lambda: next(ticks))
+            self.assertTrue(s["deadline_hit"])
+            self.assertEqual(s["by_group"]["G"]["n"], 2)
+
+    def test_reused_sample_sha_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            m.write_sample([dict(row(1), slot=1)], out)
+            self.assertEqual(len(m.load_reused_sample(out)), 1)
+            (out / "sample.parquet.sha256").write_text("0" * 64 + "  sample.parquet\n")
+            with self.assertRaises(SystemExit):
+                m.load_reused_sample(out)
+
+    def test_helius_reads_only_named_var(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / "e"
+            env.write_text("OTHER_KEY=wrong\nexport HELIUS_API_KEY=abc123\n")
+            self.assertTrue(m.read_helius_url(str(env)).endswith("api-key=abc123"))
+            env.write_text("OTHER_KEY=wrong\n")
+            with self.assertRaises(SystemExit):
+                m.read_helius_url(str(env))
+
+    def test_lower_bounds_reported(self) -> None:
+        s = m.summarize([st("G", True), st("N", True)], 0)
+        self.assertEqual(set(s["lower_bounds_json_ok_wilson90"]), {"G", "N"})
+        self.assertLess(s["lower_bounds_json_ok_wilson90"]["G"], 1.0)
 
 
 class RunTests(unittest.TestCase):
@@ -248,7 +378,7 @@ class RunTests(unittest.TestCase):
 
     def test_call_cap(self) -> None:
         budget = CreditBudget(3, 1)
-        http = FakeHttp({JSON_URL: (200, b'{"image":"%s"}' % IMG.encode()), IMG: (200, b"x")})
+        http = FakeHttp({JSON_URL: (200, b'{"image":"%s"}' % IMG.encode()), IMG_URL: (200, b"x")})
         sample = [dict(row(i), mint=MINT) for i in range(10)]
         # same mint repeated would be skipped as seen; use distinct names with the same decodable tx
         with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI):
@@ -260,7 +390,7 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(len(m.load_done(Path(d) / "status.jsonl")), 3)
 
     def test_resume_skips_done(self) -> None:
-        http = FakeHttp({JSON_URL: (200, b'{"image":"%s"}' % IMG.encode()), IMG: (200, b"x")})
+        http = FakeHttp({JSON_URL: (200, b'{"image":"%s"}' % IMG.encode()), IMG_URL: (200, b"x")})
         seen_sigs = []
         budget = CreditBudget(100, 1)
 
