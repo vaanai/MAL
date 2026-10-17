@@ -461,8 +461,10 @@ class GatewayPool:
             now = self.clock()
             st = self._state(key, now)
             if key == self.local_key:
+                # 504 is kubo's own retrieval timeout: the node is alive, the CID was not found. It never
+                # trips the breaker (it counts as an answer).
                 if status in LOCAL_FAIL_STATUSES or (status.startswith("http_") and status[5:].isdigit()
-                                                     and int(status[5:]) >= 500) \
+                                                     and int(status[5:]) >= 500 and status != "http_504") \
                         or status.startswith("net_"):
                     # Breaker: connection refused, timeout or 5xx -> capped doubling cooldown.
                     if now >= st.until:  # concurrent in-flight failures count as one strike
@@ -471,7 +473,7 @@ class GatewayPool:
                     cool = min(self.breaker[0] * (2 ** (st.bstrikes - 1)), self.breaker[1])
                     st.until = max(st.until, now + cool)
                     return
-                if status == "ok" or status.startswith("http_4"):
+                if status == "ok" or status.startswith("http_4") or status == "http_504":
                     st.bstrikes = 0  # the node answered
             if status == "ok":
                 st.strikes = 0

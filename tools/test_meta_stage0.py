@@ -987,6 +987,20 @@ class LocalBreakerStage0Tests(unittest.TestCase):
         m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
         self.assertAlmostEqual(pool.cooldown_left(self.LOC.key), 60.0)
 
+    def test_504_never_trips_but_falls_back_to_public(self) -> None:
+        clk = FakeClock()
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=clk)
+        http = FakeHttp({self.LURL: (504, b"")})
+        for _ in range(4):
+            body, err = m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+            self.assertEqual((body, err), (b"{}", None))
+        self.assertEqual(sum(1 for c in http.calls if c[0].startswith("http://127.0.0.1")), 4)
+        self.assertEqual(pool.counts["local_breaker_trips"], 0)
+        self.assertEqual(pool.cooldown_left(self.LOC.key), 0.0)
+        http.table = {self.LURL: (500, b"")}
+        m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+        self.assertEqual(pool.counts["local_breaker_trips"], 1)
+
     def test_opener_ignores_proxy_env(self) -> None:
         import os
         import urllib.request

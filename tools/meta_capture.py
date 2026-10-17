@@ -660,7 +660,7 @@ class Collector:
             self.store.write_capture(hour_key(self.clock_ms()))
 
     async def _fetch(self, uri: str, max_bytes: int,
-                     image: bool = False) -> tuple[str, bytes | None, str | None, int]:
+                     image: bool = False) -> tuple[str, bytes | None, str | None, int, bool]:
         """One request at most, through the per-gateway bucket. Returns (status, body, gateway, wait_ms).
 
         The attempt's time is fixed by the schedule; only the gateway choice happens here: the first
@@ -670,15 +670,16 @@ class Collector:
         If none can serve, status is rate_limited_all and no request is made."""
         pairs = ipf.plan_urls(ipf.classify_uri(uri), self.gateways, self.local)
         if not pairs:
-            return "non_ipfs_uri", None, None, 0
+            return "non_ipfs_uri", None, None, 0, False
         keys = [k for k, _ in pairs]
         urls = dict(pairs)
         total_wait = 0
+        refused = False  # the local request was connection-refused (nothing transferred)
         for _pass in range(2):
             picked = self.pool.reserve(keys)
             self.store.gateway_counts = dict(self.pool.counts)
             if picked is None:
-                return "rate_limited_all", None, None, total_wait
+                return "rate_limited_all", None, None, total_wait, refused
             key, wait = picked
             if wait > 0:
                 await self.sleep(wait)
@@ -696,13 +697,14 @@ class Collector:
             self.store.gateway_counts = dict(self.pool.counts)
             gw = ipf.LOCAL_LABEL if is_local else urlsplit(url).netloc
             if is_local and status == "conn_refused":
+                refused = True
                 # Nothing was transferred, so the same attempt may go to the public gateways (a timeout
                 # or 5xx ends the attempt instead). The breaker now keeps local out of the next picks.
                 keys = [k for k in keys if k != key]
                 if keys:
                     continue
-            return status, body, gw, total_wait
-        return "http_0", None, None, total_wait
+            return status, body, gw, total_wait, refused
+        return "http_0", None, None, total_wait, refused
 
     async def _attempt(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         due, _, attempt, row = item
@@ -713,8 +715,9 @@ class Collector:
                                **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
         png: bytes | None = None
-        status, body, gateway, wait_ms = await self._fetch(uri, MAX_JSON_BYTES)
+        status, body, gateway, wait_ms, refused = await self._fetch(uri, MAX_JSON_BYTES)
         rec["status"], rec["gateway"] = status, gateway
+        rec["local_refused"] = refused
         if wait_ms:
             rec["wait_ms"] = wait_ms
         if body is not None:
@@ -741,7 +744,7 @@ class Collector:
         if not self.disk_ok():
             rec["img_status"] = "skipped_disk"
             return None
-        ist, raw, _, _ = await self._fetch(image, MAX_IMAGE_BYTES, image=True)
+        ist, raw, _, _, _ = await self._fetch(image, MAX_IMAGE_BYTES, image=True)
         rec["img_status"] = ist
         if raw is None:
             return None

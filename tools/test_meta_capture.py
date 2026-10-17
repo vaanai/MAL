@@ -1077,6 +1077,35 @@ class LocalBreakerTests(unittest.TestCase):
             pool.report(k, "timeout")
             self.assertAlmostEqual(pool.cooldown_left(k), 30.0)
 
+    def test_504_never_trips_500_does_and_record_carries_local_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(504))
+            col.on_message(create_payload(), HOUR0 + 100)
+            for dt in (0, 30_100, 120_100, 600_100):   # every scheduled attempt still runs, all on local
+                clock.t = HOUR0 + 100 + dt
+                run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"], r["gateway"], r["local_refused"]) for r in rows],
+                             [(i, "http_504", "local", False) for i in range(4)])
+            self.assertEqual(len(http.calls), 4)        # no fallthrough within an attempt
+            self.assertEqual(pool.counts["local_breaker_trips"], 0)
+            self.assertEqual(pool.cooldown_left(col.local.key), 0.0)
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(500))
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            self.assertEqual(pool.counts["local_breaker_trips"], 1)
+            self.assertAlmostEqual(pool.cooldown_left(col.local.key), 30.0)
+            self.assertFalse(meta_rows(col)[0]["local_refused"])
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(
+                d, lambda u: ipf.ConnectionRefused() if "127.0.0.1" in u else DOC)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            r = meta_rows(col)[0]
+            self.assertTrue(r["local_refused"])
+            self.assertEqual((r["status"], r["gateway"]), ("ok", "g1"))
+
     def test_404_and_429_do_not_trip_breaker(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(404))
