@@ -616,10 +616,13 @@ class Store:
             sealed_now.append(hk)
         return sealed_now
 
-    def _write_manifest_file(self, path: Path, data: bytes) -> None:
+    def _write_manifest_file(self, path: Path, data: bytes,
+                             on_written: Callable[[], None] | None = None) -> None:
         """Segment-2 files are replaced atomically and left mode 0440. Segment-1 files (legacy mode,
         tests only) are never chmod'ed here."""
         atomic_write(path, data)
+        if on_written is not None:
+            on_written()  # state that must follow the write even if the chmod below fails
         if self.segment2 and path.name.startswith("MANIFEST-2"):
             os.chmod(path, 0o440)
 
@@ -635,9 +638,14 @@ class Store:
         chain_lines = cf.read_text().splitlines() if cf.exists() else []
         have_entry = any(self._chain_hour(ln) == hk for ln in chain_lines)
         files: list[Path]
+        manifest_sha = ""
         if have_entry:
             files = self.hour_files(hk)
-            lines = ""
+            mine = next(json.loads(ln) for ln in chain_lines if self._chain_hour(ln) == hk)
+            manifest_sha = str(mine.get("manifest_sha256"))
+            self.last_chain = sha256_bytes(chain_lines[-1].encode())  # backstop after a failed attempt
+            if self.segment2 and cf.exists():
+                os.chmod(cf, 0o440)
         else:
             self.write_capture(hk)
             files = self.hour_files(hk)
@@ -649,14 +657,18 @@ class Store:
             entry = json.dumps({"hour": hk, "manifest_sha256": sha256_bytes(lines.encode()),
                                 "prev": self.last_chain, "n_files": len(files)},
                                separators=(",", ":"))
-            self._write_manifest_file(cf, ("".join(ln + "\n" for ln in chain_lines) + entry + "\n").encode())
-            self.last_chain = sha256_bytes(entry.encode())
+            manifest_sha = sha256_bytes(lines.encode())
+
+            def advance() -> None:
+                self.last_chain = sha256_bytes(entry.encode())
+            self._write_manifest_file(cf, ("".join(ln + "\n" for ln in chain_lines) + entry + "\n").encode(),
+                                      on_written=advance)
         for f in files:
             os.chmod(f, 0o440)
         self.sealed.add(hk)
         log.info("sealed hour=%s files=%d creates=%d meta=%d manifest_sha256=%s chain=%s",
                  hk, len(files), len(_read_jsonl(self.creates_path(hk))),
-                 len(_read_jsonl(self.meta_path(hk))), sha256_bytes(lines.encode()), self.last_chain)
+                 len(_read_jsonl(self.meta_path(hk))), manifest_sha, self.last_chain)
 
     @staticmethod
     def _chain_hour(line: str) -> str | None:

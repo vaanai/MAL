@@ -1512,6 +1512,27 @@ class SealIdempotentAndModeTests(unittest.TestCase):
             self._assert_valid(Path(d))
             self.assertEqual(oct(st.creates_path(self.HKS[0]).stat().st_mode & 0o777), "0o440")
 
+    def test_chain_chmod_failure_then_retry_keeps_prev_correct(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = os.chmod
+            n = [0]
+
+            def flaky(path, mode):
+                if str(path).endswith("MANIFEST-2.chain") and n[0] == 0:
+                    n[0] += 1
+                    raise OSError("chmod chain")
+                real(path, mode)
+            with unittest.mock.patch.object(os, "chmod", flaky):
+                with self.assertRaises(OSError):
+                    st.seal(self.HKS[0])
+                with self.assertLogs("mal.meta_capture", "INFO") as cm:
+                    st.seal(self.HKS[0])
+                st.seal(self.HKS[1])
+            self._assert_valid(Path(d))
+            self.assertNotIn(mc.sha256_bytes(b""), "\n".join(cm.output))
+            self.assertEqual(oct((Path(d) / "MANIFEST-2.chain").stat().st_mode & 0o777), "0o440")
+
     def test_segment2_files_are_0440_and_old_manifest_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)
