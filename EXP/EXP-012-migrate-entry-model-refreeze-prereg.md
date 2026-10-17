@@ -268,6 +268,10 @@ DEC-014(a) disclosure. No forward outcome was read to make this amendment. The F
 
 Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). This amendment was written without reading any forward outcome. The owner's F1 ledger edit (HOLDOUT_LEDGER changelog, 2026-10-15) releases domains D0 (structure) and D1 (pre-graduation outcomes) of forward-1002 and forward-1002ev for exploration as a non-owner read. The release takes effect only once the EXP-012 FINAL marker is in `/data/mal/exp012-forward/FINAL_READS.jsonl`, and not before 2026-10-16T02:00Z. These reads do not open any file that DEC-016 Amendment 2 keeps closed (`OUT/rows.jsonl`, `OUT/scratch/*.jsonl`, a FINAL `report.json` / `report.md`). They do not open the (B) V-map files or `VBOOK_RUNS.jsonl`. They use no EXP-012 model, threshold, feature set or entered list, and they price no mint after its migrate tx. The FINAL's window, read, verdict, seal and tools, book (B) and the Amendment 3(a) re-score are unchanged. The FINAL remains reported compromised (DEC-016 Am.2). Released hours never confirm.
 
+## Breach disclosure (2026-10-16, job #1059)
+
+**Breach disclosure (2026-10-16, job #1059).** Job #1059 read post-s0 reserves of the probe's 2026-10-04..10-07 pools from the tip tape and wrote per-trip sim P&L for 61 probe trips (ledger changelog 2026-10-16, #1059). This breaches domains D2 and D3. No pool in this read's counted window was touched and no act listed in this file's seal was performed. This read is disclosed, not compromised. Its verdict and terms are unchanged.
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).

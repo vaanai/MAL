@@ -55,8 +55,8 @@
   {
    "id": "exp026-e1-1016",
    "kind": "result",
-   "title": "EXP-026 E1 (job #1059): faa3192 n 33; QP: EXP-026 decidable, W0 by 2026-10-23T00Z",
-   "detail": "faa3192 n 33, mean pnl gap (live minus sim) +35,993.454545454544 lamports, median 17,852; calibration.json sha256 799d3db58e334719553477e6ee07695047c44f4732c04d7930bbf5ba8bfef065. Arithmetic on 33 live trades, not evidence. QP-DECIDABILITY: not a predetermined NOT_DECIDABLE; W0 by 2026-10-23T00:00:00Z or withdrawn.",
+   "title": "EXP-026 E1 (job #1059): faa3192 n 33; QP: EXP-026 decidable, W0 by 2026-10-23T00Z [BREACH: job #1059 void as E1, D2/D3 breach]",
+   "detail": "faa3192 n 33, mean pnl gap (live minus sim) +35,993.454545454544 lamports, median 17,852; calibration.json sha256 799d3db58e334719553477e6ee07695047c44f4732c04d7930bbf5ba8bfef065. Arithmetic on 33 live trades, not evidence. BREACH: job #1059 breached D2 and D3 and is void as E1 (quant-proof ruling; ledger changelog 2026-10-16, #1059). QP-DECIDABILITY: not a predetermined NOT_DECIDABLE; W0 by 2026-10-23T00:00:00Z or withdrawn.",
    "atUtc": "2026-10-16T07:25:46Z"
   },
   {

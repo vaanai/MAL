@@ -828,6 +828,10 @@ This is a record, not an amendment (the model is EXP-024's A3 halt record). Writ
 
 This read's seal end states and the release terms (quant-proof ruling (3a)) are recorded in [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md), Rules, "Clarification, 2026-10-10"; that text changes no rule, data, bar or timing of this read and releases no data.
 
+### Pointer (2026-10-16, job #1059; not an amendment)
+
+**Breach disclosure (2026-10-16, job #1059), pointer only.** This experiment is withdrawn, but job #1059 used its §8 E1 command. See the ledger changelog 2026-10-16, #1059, and the disclosure in EXP-024 and EXP-025. It changes no term of this file.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
