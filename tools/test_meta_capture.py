@@ -1155,8 +1155,542 @@ class ProxyAndConcurrencyTests(unittest.TestCase):
                     unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}), \
                     unittest.mock.patch.object(mc, "Collector", FakeCol), \
                     unittest.mock.patch.object(mc, "run", fake_run):
-                self.assertEqual(mc.main(["--out", d, *argv]), 0)
+                self.assertEqual(mc.main(["--out", d, "--segment2-first-hour", "2026-10-17T23", *argv]), 0)
             self.assertEqual(seen["concurrency"], want, argv)
+
+
+class WorkerStallRegressionTests(unittest.TestCase):
+    """2026-10-17: the only fetch worker task died on an exception raised outside the per-attempt
+    guard; the websocket stayed up, creates kept arriving, no meta row was ever written again."""
+
+    def test_step_exception_does_not_kill_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock = make(d, routes=lambda u: b'{"name":"n"}')
+            col.on_message(create_payload(), HOUR0 + 100)
+            real, calls = col.store.seal_due, []
+
+            def flaky(now_ms):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise OSError("disk")  # raised from step(), outside _guarded
+                return real(now_ms)
+            col.store.seal_due = flaky
+            stop = asyncio.Event()
+
+            async def go():
+                with unittest.mock.patch.object(mc, "STEP_ERROR_SLEEP_S", 0.01):
+                    t = asyncio.ensure_future(mc.worker_loop(col, stop.is_set))
+                    for _ in range(100):
+                        await asyncio.sleep(0.05)
+                        if col.store.meta_path(HK0).exists():
+                            break
+                    stop.set()
+                    await asyncio.wait_for(t, 5)
+            run(go())
+            self.assertEqual(col.store.error_counts.get("OSError"), 1)
+            self.assertTrue(col.store.meta_path(HK0).exists())
+
+    def test_error_path_write_failure_does_not_escape_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+
+            async def boom(item):
+                raise ValueError("x")
+
+            def bad_capture(hk):
+                raise FileNotFoundError("tmp raced")
+            col._attempt = boom
+            col.store.write_capture = bad_capture
+            run(col._guarded((0, 1, 0, {"mint": MINT})))  # must not raise
+            self.assertEqual(col.store.error_counts, {"ValueError": 1})
+
+    def test_hung_attempt_hits_wall_clock_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.attempt_deadline_s = 0.05
+
+            async def hang(item):
+                await asyncio.sleep(60)
+            col._attempt = hang
+            run(col._guarded((0, 1, 0, {"mint": MINT})))
+            self.assertEqual(col.store.error_counts, {"TimeoutError": 1})
+
+    def test_concurrent_atomic_write_same_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            p, errs = Path(d) / "x.json", []
+
+            def w():
+                try:
+                    for i in range(200):
+                        mc.atomic_write(p, b"%d" % i)
+                except Exception as exc:  # noqa: BLE001
+                    errs.append(type(exc).__name__)
+            ts = [threading.Thread(target=w) for _ in range(4)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+            self.assertEqual(errs, [])
+            self.assertEqual([x.name for x in Path(d).iterdir() if x.name.endswith(".tmp")], [])
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_second_holder_refused_and_pid_written(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            fd = mc.acquire_single_instance(Path(d))
+            try:
+                self.assertEqual((Path(d) / ".lock").read_text().strip(), str(os.getpid()))
+                with self.assertRaises(mc.AlreadyRunning):
+                    mc.acquire_single_instance(Path(d))
+            finally:
+                os.close(fd)
+            os.close(mc.acquire_single_instance(Path(d)))  # free again after release
+
+    def test_main_exits_5_when_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}):
+            fd = mc.acquire_single_instance(Path(d))
+            try:
+                self.assertEqual(mc.main(["--out", d, "--segment2-first-hour", "2026-10-17T23"]), 5)
+            finally:
+                os.close(fd)
+            self.assertFalse((Path(d) / "creates").exists())  # refused before touching the store
+
+    def test_main_requires_segment2_first_hour_first_time(self) -> None:
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}):
+            self.assertEqual(mc.main(["--out", d]), 2)
+            self.assertEqual(mc.main(["--out", d, "--segment2-first-hour", "nope"]), 2)
+
+
+class SupervisorWatchdogTests(unittest.TestCase):
+    def test_restart_up_to_n_then_exhausted_logging_type_only(self) -> None:
+        starts = []
+
+        async def bad():
+            starts.append(1)
+            raise KeyError("secret-looking-text")
+
+        async def go():
+            sup = mc.Supervisor(bad, max_restarts=2)
+            for _ in range(5):
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                sup.check()
+            return sup
+        with self.assertLogs("mal.meta_capture", "ERROR") as cm:
+            sup = run(go())
+        self.assertEqual(len(starts), 3)  # first + 2 restarts
+        self.assertTrue(sup.exhausted)
+        text = "\n".join(cm.output)
+        self.assertIn("type=KeyError", text)
+        self.assertNotIn("secret-looking-text", text)
+
+    def test_clean_finish_not_restarted(self) -> None:
+        async def ok():
+            return None
+
+        async def go():
+            sup = mc.Supervisor(ok)
+            await asyncio.sleep(0)
+            sup.check()
+            return sup
+        sup = run(go())
+        self.assertEqual(sup.restarts, 0)
+        self.assertFalse(sup.exhausted)
+
+    def test_stalled_logic(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            t = [1000.0]
+            col, _ = make(d, mono=lambda: t[0])
+            self.assertFalse(mc.stalled(col, 600))  # no creates yet
+            col.on_message(create_payload(), HOUR0 + 100)
+            t[0] += 599
+            self.assertFalse(mc.stalled(col, 600))
+            t[0] += 2
+            self.assertFalse(mc.stalled(col, 600))  # creates stopped 601 s ago: quiet stream
+            col.last_create_mono = t[0] - 1  # creates still arriving
+            self.assertTrue(mc.stalled(col, 600))  # but no meta row for 10 min
+            col.last_meta_mono = t[0]
+            self.assertFalse(mc.stalled(col, 600))
+            t[0] += 700  # quiet stream: creates stopped too -> not a stall
+            col.last_meta_mono = None
+            self.assertFalse(mc.stalled(col, 600))
+
+    def test_monitor_flags_stall_and_sets_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def wedged():
+                await asyncio.sleep(60)
+
+            async def go():
+                stop, flags = asyncio.Event(), {"stalled": False}
+
+                async def creates():  # the websocket keeps delivering creates
+                    while True:
+                        col.last_create_mono = col.mono()
+                        await asyncio.sleep(0.01)
+                ct = asyncio.ensure_future(creates())
+                sup = mc.Supervisor(wedged)
+                await asyncio.wait_for(mc.monitor(col, sup, stop, flags, watchdog_s=0.02,
+                                                  heartbeat_s=60, stall_window_s=0.05), 5)
+                sup.task.cancel()
+                ct.cancel()
+                return stop, flags
+            with self.assertLogs("mal.meta_capture", "ERROR") as cm:
+                stop, flags = run(go())
+        self.assertTrue(stop.is_set() and flags["stalled"])
+        self.assertIn("watchdog_exit reason=no_meta_rows creates=1", "\n".join(cm.output))
+        self.assertEqual(mc.EXIT_STALL, 6)
+
+    def test_heartbeat_counts_only(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d, routes=lambda u: b'{"name":"SECRETNAME"}')
+            col.on_message(create_payload(name="SECRETNAME", uri="ipfs://SECRETCID"), HOUR0 + 100)
+            run(col.step())
+            line = mc.heartbeat_line(col)
+            for bad in ("SECRETNAME", "SECRETCID", MINT, "ipfs", "Creator1"):
+                self.assertNotIn(bad, line)
+            self.assertIn("creates=1", line)
+            self.assertIn('"ok": 1', line)
+            self.assertIn("inflight_local=0 inflight_public=0", line)
+            self.assertIn("breaker=none", line)
+
+    def test_heartbeat_breaker_state_and_inflight_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.local = ipf.parse_local_gateway("http://127.0.0.1:8080")
+            col.pool.add_pinned(col.local.key, 100, 100)
+            self.assertIn("breaker=closed", mc.heartbeat_line(col))
+            col.pool.report(col.local.key, "conn_refused")
+            self.assertIn("breaker=open_", mc.heartbeat_line(col))
+            seen = []
+
+            async def probe(url, timeout, max_bytes):
+                seen.append(dict(col.inflight))
+                return b"{}"
+            col.http_get = probe
+            col.pool = ipf.GatewayPool(col.gateways, rps=1e6, burst=1e6)
+            col.local = None
+            run(col._fetch("ipfs://cid1", 1000))
+            self.assertEqual(seen, [{"local": 0, "public": 1}])
+            self.assertEqual(col.inflight, {"local": 0, "public": 0})
+
+
+class Segment2Tests(unittest.TestCase):
+    def _sealed_store(self, d):
+        """Segment-1 chain with hours T21 and T23 sealed (temp dir only)."""
+        st = mc.Store(Path(d), "g")
+        for hk in ("2026-10-17T21", "2026-10-17T23"):
+            st.creates_path(hk).write_text('{"mint":"m"}\n')
+            st.seal(hk)
+        return st
+
+    def test_start_records_hashes_rehashes_and_routes_sealing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            self._sealed_store(d)
+            old_man, old_chain = (out / "MANIFEST.sha256").read_bytes(), (out / "MANIFEST.chain").read_bytes()
+            st2 = mc.Store(out, "g")
+            self.assertTrue(st2.init_segment2("2026-10-17T23"))
+            self.assertEqual((out / "MANIFEST.sha256").read_bytes(), old_man)  # never edited
+            self.assertEqual((out / "MANIFEST.chain").read_bytes(), old_chain)
+            lines = (out / "MANIFEST-2.chain").read_text().splitlines()
+            self.assertEqual(json.loads(lines[0]), {
+                "segment_start": True, "prev_chain_sha256": mc.sha256_bytes(old_chain),
+                "prev_manifest_sha256": mc.sha256_bytes(old_man),
+                "first_hour": "2026-10-17T23", "reason": "multi-writer",
+                "flagged_hours": {h: mc.MULTI_WRITER_FLAG for h in
+                                  ("2026-10-17T20", "2026-10-17T21", "2026-10-17T22")}})
+            self.assertEqual([json.loads(x).get("hour") for x in lines[1:]], ["2026-10-17T23"])
+            self.assertEqual(json.loads(lines[1])["prev"], mc.sha256_bytes(lines[0].encode()))
+            man2 = (out / "MANIFEST-2.sha256").read_text()
+            self.assertIn("creates/2026-10-17T23.jsonl", man2)
+            self.assertNotIn("creates/2026-10-17T21", man2)
+            # later sealing goes to segment 2 only, chained after the rehash entries
+            st2.creates_path("2026-10-18T00").write_text('{"mint":"m"}\n')
+            st2.seal("2026-10-18T00")
+            self.assertEqual((out / "MANIFEST.chain").read_bytes(), old_chain)
+            last = (out / "MANIFEST-2.chain").read_text().splitlines()
+            self.assertEqual(json.loads(last[-1])["prev"], mc.sha256_bytes(last[-2].encode()))
+            # restart: segment 2 detected, sealed hours known from both chains, init is a no-op
+            st3 = mc.Store(out, "g")
+            self.assertTrue(st3.segment2)
+            self.assertFalse(st3.init_segment2("2026-10-17T23"))
+            self.assertEqual(st3.sealed, {"2026-10-17T21", "2026-10-17T23", "2026-10-18T00"})
+            self.assertEqual(st3.last_chain, mc.sha256_bytes(last[-1].encode()))
+
+    def test_segment2_with_no_prior_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = mc.Store(Path(d), "g")
+            st.init_segment2("2026-10-17T23")
+            first = json.loads((Path(d) / "MANIFEST-2.chain").read_text().splitlines()[0])
+            self.assertIsNone(first["prev_chain_sha256"])
+
+    def test_flag_in_unsealed_capture_json(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = mc.Store(Path(d), "g")
+            st.write_capture("2026-10-17T21")
+            st.write_capture("2026-10-17T19")
+            c21 = json.loads(st.capture_path("2026-10-17T21").read_text())
+            self.assertEqual(c21["flags"], ["multi-writer 2026-10-17T21:09:01Z–22:35:45Z"])
+            self.assertNotIn("flags", json.loads(st.capture_path("2026-10-17T19").read_text()))
+
+    def test_flag_for_sealed_hour_goes_to_segment2_note_not_sealed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            st = mc.Store(out, "g")
+            st.creates_path("2026-10-17T21").write_text('{"mint":"m"}\n')
+            st.seal("2026-10-17T21")
+            cap = st.capture_path("2026-10-17T21")
+            before = cap.read_bytes()
+            st = mc.Store(out, "g")
+            st.init_segment2("2026-10-17T23")
+            st.process_start(HOUR0)
+            st.process_start(HOUR0)  # idempotent
+            self.assertEqual(cap.read_bytes(), before)
+            notes = (out / "MANIFEST-2.notes").read_text().splitlines()
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(json.loads(notes[0])["hour"], "2026-10-17T21")
+            self.assertIn("flagged_hours", notes[0])  # pointer into the segment_start entry
+
+
+class SealIdempotentAndModeTests(unittest.TestCase):
+    HKS = ("2026-10-17T23", "2026-10-18T00")
+
+    def _store(self, d):
+        st = mc.Store(Path(d), "g")
+        st.init_segment2("2026-10-17T23")
+        for hk in self.HKS:
+            st.creates_path(hk).write_text('{"mint":"m"}\n')
+            st.meta_path(hk).write_text('{"mint":"m","attempt":0}\n')
+        return st
+
+    def _assert_valid(self, out):
+        chain = (out / "MANIFEST-2.chain").read_text().splitlines()
+        hours = [json.loads(x).get("hour") for x in chain[1:]]
+        self.assertEqual(hours, list(self.HKS))  # exactly one entry per hour
+        for i in range(1, len(chain)):
+            self.assertEqual(json.loads(chain[i])["prev"], mc.sha256_bytes(chain[i - 1].encode()))
+        paths = [ln.split("  ", 1)[1] for ln in (out / "MANIFEST-2.sha256").read_text().splitlines()[1:]]
+        self.assertEqual(len(paths), len(set(paths)))  # one manifest line per file
+        for hk in self.HKS:
+            self.assertIn(f"creates/{hk}.jsonl", paths)
+
+    def test_failure_after_manifest_append_then_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = mc.atomic_write
+
+            def fail_chain(path, data):
+                if path.name == "MANIFEST-2.chain":
+                    raise OSError("chain write")
+                real(path, data)
+            with unittest.mock.patch.object(mc, "atomic_write", fail_chain):
+                for _ in range(3):
+                    with self.assertRaises(OSError):
+                        st.seal(self.HKS[0])
+            self.assertNotIn(self.HKS[0], st.sealed)
+            for hk in self.HKS:
+                st.seal(hk)
+            self._assert_valid(Path(d))
+
+    def test_failure_after_chain_append_then_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = os.chmod
+            n = [0]
+
+            def flaky(path, mode):
+                if str(path).endswith("2026-10-17T23.jsonl") and n[0] == 0:
+                    n[0] += 1
+                    raise OSError("chmod")
+                real(path, mode)
+            with unittest.mock.patch.object(os, "chmod", flaky):
+                with self.assertRaises(OSError):
+                    st.seal(self.HKS[0])
+                st.seal(self.HKS[0])
+                st.seal(self.HKS[1])
+            self._assert_valid(Path(d))
+            self.assertEqual(oct(st.creates_path(self.HKS[0]).stat().st_mode & 0o777), "0o440")
+
+    def test_chain_chmod_failure_then_retry_keeps_prev_correct(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            st = self._store(d)
+            real = os.chmod
+            n = [0]
+
+            def flaky(path, mode):
+                if str(path).endswith("MANIFEST-2.chain") and n[0] == 0:
+                    n[0] += 1
+                    raise OSError("chmod chain")
+                real(path, mode)
+            with unittest.mock.patch.object(os, "chmod", flaky):
+                with self.assertRaises(OSError):
+                    st.seal(self.HKS[0])
+                with self.assertLogs("mal.meta_capture", "INFO") as cm:
+                    st.seal(self.HKS[0])
+                st.seal(self.HKS[1])
+            self._assert_valid(Path(d))
+            self.assertNotIn(mc.sha256_bytes(b""), "\n".join(cm.output))
+            self.assertEqual(oct((Path(d) / "MANIFEST-2.chain").stat().st_mode & 0o777), "0o440")
+
+    def test_segment2_files_are_0440_and_old_manifest_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            old = mc.Store(out, "g")
+            old.creates_path("2026-10-17T23").write_text('{"mint":"m"}\n')
+            old.seal("2026-10-17T23")
+            old_modes = {n: (out / n).stat().st_mode for n in ("MANIFEST.sha256", "MANIFEST.chain")}
+            st = mc.Store(out, "g")
+            st.init_segment2("2026-10-17T23")
+            st.creates_path("2026-10-18T00").write_text('{"mint":"m"}\n')
+            st.seal("2026-10-18T00")
+            for n in ("MANIFEST-2.sha256", "MANIFEST-2.chain"):
+                self.assertEqual(oct((out / n).stat().st_mode & 0o777), "0o440", n)
+            for n, m in old_modes.items():
+                self.assertEqual((out / n).stat().st_mode, m, n)  # no chmod on the old files
+            st.sealed.add("2026-10-17T21")
+            st.note_flags_for_sealed()
+            self.assertEqual(oct((out / "MANIFEST-2.notes").stat().st_mode & 0o777), "0o440")
+            st.sealed.add("2026-10-17T22")
+            st.note_flags_for_sealed()  # replace over a 0440 file works
+            self.assertEqual(len((out / "MANIFEST-2.notes").read_text().splitlines()), 2)
+
+
+class CapRowRecoverTests(unittest.TestCase):
+    def test_cap_fires_row_written_and_recover_does_not_resend(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            col.attempt_deadline_s = 0.05
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def hang(url, timeout, max_bytes):
+                await asyncio.sleep(60)
+            col.http_get = hang
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"]) for r in rows], [(0, "timeout_cap")])
+            self.assertEqual(set(rows[0]) & {"name", "uri", "image"}, set())
+            self.assertEqual(col.heap[0][2], 1)  # fixed schedule continues with attempt 1
+            # restart: a fresh collector must resume at attempt 1, never re-send attempt 0
+            clock2 = Clock(HOUR0 + 200)
+            col2, _ = make(d, clock=clock2)
+            self.assertEqual(col2.recover(), 1)
+            self.assertEqual([it[2] for it in col2.heap], [1])
+
+    def test_error_after_request_writes_error_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def boom(item):
+                raise ValueError("body text must not leak")
+            col._attempt = boom
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual(rows[0]["status"], "error_ValueError")
+            self.assertNotIn("leak", json.dumps(rows))
+
+
+class OneRequestPerAttemptTests(unittest.TestCase):
+    """QP condition 2: one request per attempt, never re-fetch, across caps, cancels and restarts."""
+
+    def test_cancel_in_flight_then_restart_sends_nothing_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def hang(url, timeout, max_bytes):
+                calls.append(url)
+                await asyncio.sleep(30)
+            col.http_get = hang
+            col.on_message(create_payload(), HOUR0 + 100)
+
+            async def go():
+                task = asyncio.ensure_future(col.step())
+                await asyncio.sleep(0.1)
+                task.cancel()  # SIGTERM drain / watchdog exit
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            run(go())
+            self.assertEqual([(r["attempt"], r["status"]) for r in meta_rows(col)],
+                             [(0, "cancelled_in_flight")])
+            col2, _ = make(d, clock=clock)
+            calls2 = []
+
+            async def ok(url, timeout, max_bytes):
+                calls2.append(url)
+                return b'{"name":"n"}'
+            col2.http_get = ok
+            col2.recover()
+            run(col2.step())  # attempt 1 is not due yet at this clock
+            self.assertEqual((len(calls), len(calls2)), (1, 0))
+            self.assertEqual([it[2] for it in col2.heap], [1])
+
+    def test_image_cap_after_ok_json_writes_ok_row_and_no_refetch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def http(url, timeout, max_bytes):
+                calls.append(url)
+                if "img1" in url:
+                    await asyncio.sleep(5)
+                return b'{"name":"n","image":"ipfs://img1"}'
+            col.http_get = http
+            col.attempt_deadline_s = 0.2
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"], r.get("img_status")) for r in rows],
+                             [(0, "ok", "timeout_cap")])
+            self.assertEqual(col.heap, [])  # nothing further for this mint
+            clock.t = HOUR0 + 100 + 600_000
+            col.attempt_deadline_s = 180
+            run(col.step())
+            self.assertEqual(sum(1 for c in calls if "cid1" in c), 1)  # exactly one JSON request
+
+    def test_error_after_row_written_does_not_advance_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(HOUR0 + 100)
+            col, _ = make(d, clock=clock)
+            calls = []
+
+            async def ok(url, timeout, max_bytes):
+                calls.append(url)
+                return b'{"name":"n"}'
+            col.http_get = ok
+            col.on_message(create_payload(), HOUR0 + 100)
+            real = col._schedule
+
+            def boom(row, attempt):
+                raise RuntimeError("late failure")
+            col._schedule = boom
+            # make the attempt non-ok so _attempt reaches _schedule after its row is written
+            col.http_get = FakeHttp(lambda u: mc.HttpError(503))
+            run(col.step())
+            col._schedule = real
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"]) for r in rows], [(0, "http_503")])  # one row
+            self.assertEqual(col.heap, [])  # no attempt+1 from the error handler
+            self.assertEqual(len(col.http_get.calls), 1)
+            clock.t = HOUR0 + 100 + 700_000
+            run(col.step())
+            self.assertEqual(len(col.http_get.calls), 1)  # still no further request
+
+
+class Segment2ArgTests(unittest.TestCase):
+    def test_short_hour_forms_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}):
+            for bad in ("2026-10-17T5", "T5", "2026-10-17", "2026-10-17T23:00", "2026-1-7T23"):
+                self.assertEqual(mc.main(["--out", d, "--segment2-first-hour", bad]), 2, bad)
+            with self.assertRaises(ValueError):
+                mc.Store(Path(d), "g").init_segment2("2026-10-17T5")
 
 
 if __name__ == "__main__":
