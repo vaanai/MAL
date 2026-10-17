@@ -621,3 +621,153 @@ def test_client_refuses_mve_filter_with_series():
     for k in ("series_ticker", "event_ticker", "tickers"):
         with pytest.raises(ValueError):
             client.get("/markets", {k: "A", "mve_filter": "exclude"})
+
+
+# ---------------------------------------------------------------- orderbook-snap --series (discovery)
+
+class OpenFake(Fake):
+    """Open-market listing per series that tests mutate between discovery intervals."""
+
+    def __init__(self):
+        super().__init__()
+        self.open = {"KXHIGHNY": ["KXHIGHNY-A"], "KXFIN": ["KXFIN-A"]}
+        self.mve = {"KXHIGHNY": [{"ticker": "KXMVECROSS-1", "mve_collection_ticker": "C"}]}
+        self.listed = []
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path.endswith("/markets") and q.get("status") == ["open"]:
+            assert "mve_filter" not in q
+            s = q["series_ticker"][0]
+            self.listed.append(s)
+            items = [{"ticker": t} for t in self.open.get(s, [])] + self.mve.get(s, [])
+            self.calls.append(url)
+            return 200, json.dumps(self.page(items, "markets", q)).encode()
+        return super().__call__(url)
+
+
+def snap_args(tmp_path, *extra):
+    return kp.build_parser().parse_args(["--out", str(tmp_path), "orderbook-snap", *extra])
+
+
+def run_series(tmp_path, fake, argv, on_sleep=None, log=None, rate=1000, globals_=()):
+    clk = Clock()
+    client, _ = mkclient(fake, clock=clk, rate=rate)
+
+    def sleep(s):
+        clk.sleep(s)
+        if on_sleep:
+            on_sleep(clk)
+    args = kp.build_parser().parse_args(["--out", str(tmp_path), *globals_, "orderbook-snap", *argv])
+    kp.cmd_orderbook_snap(client, kp.Store(tmp_path, "orderbook-snap", {}), args,
+                          log or (lambda s: None), clock=clk.now, sleep=sleep,
+                          utcnow=lambda: kp.parse_dt(NOW + clk.t))
+    return client, clk
+
+
+def test_series_discovery_adds_and_drops_markets_and_drops_mve(tmp_path):
+    fake = OpenFake()
+
+    def mutate(clk):
+        if clk.t >= 1100:
+            fake.open["KXHIGHNY"] = ["KXHIGHNY-B"]  # A closed, B opened
+
+    run_series(tmp_path, fake, ["--series", "KXHIGHNY,KXFIN", "--every-s", "60", "--duration-s", "300",
+                                "--discover-every-s", "120"], on_sleep=mutate)
+    by = {}
+    for s in read(tmp_path, "orderbook_snaps"):
+        by.setdefault(s["ticker"], []).append(s)
+    assert set(by) == {"KXHIGHNY-A", "KXHIGHNY-B", "KXFIN-A"}  # combo never snapped
+    assert len(by["KXFIN-A"]) > len(by["KXHIGHNY-A"]) and len(by["KXHIGHNY-B"]) >= 1
+    assert by["KXHIGHNY-B"][0]["discovered_at"] > by["KXHIGHNY-A"][0]["discovered_at"]
+    # A is no longer snapped once B was discovered
+    assert max(s["ts"] for s in by["KXHIGHNY-A"]) < min(s["ts"] for s in by["KXHIGHNY-B"])
+    assert fake.listed.count("KXHIGHNY") >= 3
+    assert not any("mve_filter" in c for c in fake.calls)
+
+
+def test_series_sports_refused_unless_allowed(tmp_path):
+    fake = OpenFake()
+    fake.open["KXNFLGAME"] = ["KXNFLGAME-1"]
+    with pytest.raises(SystemExit):
+        run_series(tmp_path, fake, ["--series", "KXNFLGAME", "--duration-s", "100"])
+    assert fake.listed == [] and not any("/orderbook" in c for c in fake.calls)
+    run_series(tmp_path / "ok", fake, ["--series", "KXNFLGAME", "--duration-s", "10"],
+               globals_=["--allow-series", "KXNFLGAME"])
+    assert {s["ticker"] for s in read(tmp_path / "ok", "orderbook_snaps")} == {"KXNFLGAME-1"}
+
+
+def test_plan_cadence_never_exceeds_rate():
+    e, d, st, req = kp.plan_cadence(10, 60, 300, 2, rate=2.0)
+    assert (e, d, st) == (60, 300, False)
+    e, d, st, req = kp.plan_cadence(600, 60, 300, 2, rate=2.0)
+    assert st and req > 2.0 and 600 / e + 2 / d <= 2.0 + 1e-9
+    e, d, st, req = kp.plan_cadence(50, 10, 1, 40, rate=2.0)  # discovery alone too costly
+    assert st and d > 1 and 50 / e + 40 / d <= 2.0 + 1e-9
+
+
+def test_series_cadence_stretched_and_logged_counts_only(tmp_path):
+    fake = OpenFake()
+    fake.open["KXFIN"] = [f"KXFIN-{i}" for i in range(20)]
+    logs = []
+    client, clk = run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "5",
+                                              "--duration-s", "100", "--discover-every-s", "50"],
+                             log=logs.append, rate=2.0)
+    assert any("stretching" in m for m in logs)
+    assert not any("0.4000" in m or "yes_dollars" in m for m in logs)
+    assert client.requests_made / (clk.t - 1000.0) <= 2.0 + 0.1  # fake-clock request rate
+    ts = sorted(s["ts"] for s in read(tmp_path, "orderbook_snaps") if s["ticker"] == "KXFIN-0")
+    assert (ts[1] - ts[0]).total_seconds() >= 10 - 1e-6  # 20 markets at under 2 req/s
+
+
+def test_series_strict_cadence_refuses(tmp_path):
+    fake = OpenFake()
+    fake.open["KXFIN"] = [f"KXFIN-{i}" for i in range(20)]
+    with pytest.raises(SystemExit):
+        run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "5", "--duration-s", "100",
+                                    "--strict-cadence"], rate=2.0)
+    assert not any("/orderbook" in c for c in fake.calls)
+
+
+def test_series_sigterm_flushes_and_exits_zero(tmp_path):
+    import os
+    import signal
+    fake = OpenFake()
+    sent = []
+
+    def term(clk):
+        if clk.t >= 1070 and not sent:
+            sent.append(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    prev = signal.getsignal(signal.SIGTERM)
+    _, clk = run_series(tmp_path, fake, ["--series", "KXFIN", "--every-s", "60",
+                                         "--duration-s", "100000"], on_sleep=term)
+    assert sent and clk.t < 1300  # stopped long before the duration
+    assert signal.getsignal(signal.SIGTERM) is prev  # handler restored
+    assert len(read(tmp_path, "orderbook_snaps")) >= 1  # buffered rows were flushed
+
+
+def test_series_main_exit_zero_and_manifest(tmp_path):
+    fake = OpenFake()
+    rc, _ = run(tmp_path, ["orderbook-snap", "--series", "KXFIN", "--every-s", "1",
+                           "--duration-s", "2", "--discover-every-s", "1"], fake)
+    assert rc == 0
+    recs = [json.loads(l) for l in (tmp_path / "manifest.jsonl").read_text().splitlines()]
+    assert recs[-1]["type"] == "run" and recs[-1]["complete"] is True
+    assert recs[-1]["query"]["series"] == "KXFIN" and recs[-1]["query"]["discover_every_s"] == 1
+
+
+def test_series_max_requests_cap_still_applies(tmp_path):
+    fake = OpenFake()
+    rc, client = run(tmp_path, ["orderbook-snap", "--series", "KXFIN", "--every-s", "1",
+                                "--duration-s", "50", "--discover-every-s", "1"], fake, max_requests=6)
+    assert rc == 3 and client.requests_made == 6
+
+
+def test_markets_and_series_mutually_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        snap_args(tmp_path, "--markets", "KXFIN-A", "--series", "KXFIN", "--duration-s", "10")
+    with pytest.raises(SystemExit):
+        snap_args(tmp_path, "--duration-s", "10")  # one of the two is required

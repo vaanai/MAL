@@ -76,6 +76,7 @@ import hashlib
 import json
 import random
 import re
+import signal
 import sys
 import time
 import urllib.error
@@ -355,6 +356,7 @@ SCHEMAS = {
     "orderbook_snaps": pa.schema([
         ("ts", TS), ("ticker", pa.string()), ("series_ticker", pa.string()),
         ("n_yes_levels", pa.int32()), ("n_no_levels", pa.int32()),
+        ("discovered_at", TS),  # --series mode: first time this run saw the market open; else null
     ]),
 }
 
@@ -763,7 +765,7 @@ def cmd_candles(client, store, args, log):
     return True
 
 
-def snapshot_rows(ticker: str, ob: dict, ts):
+def snapshot_rows(ticker: str, ob: dict, ts, discovered_at=None):
     o = ob.get("orderbook_fp") or {}
     rows = []
     for side in ("yes", "no"):
@@ -772,13 +774,143 @@ def snapshot_rows(ticker: str, ob: dict, ts):
                          "side": side, "price": fnum(lvl[0]), "size": fnum(lvl[1])})
     snap = {"ts": ts, "ticker": ticker, "series_ticker": series_of(ticker),
             "n_yes_levels": len(o.get("yes_dollars") or []),
-            "n_no_levels": len(o.get("no_dollars") or [])}
+            "n_no_levels": len(o.get("no_dollars") or []),
+            "discovered_at": discovered_at}
     return rows, snap
+
+
+def discover_open_markets(client, series_list, log, prev: dict | None = None) -> dict:
+    """ticker -> series for OPEN, non-combo markets of each series (public /markets, paginated).
+    mve_filter is never sent; combos are dropped client-side.  If a series listing fails
+    (HTTP error) its previously known markets are kept rather than dropped."""
+    out = {}
+    for s in series_list:
+        found = {}
+        try:
+            for page in paginate_pages(client, "/markets", {"series_ticker": s, "status": "open"}, "markets"):
+                for m in page:
+                    if m.get("ticker") and not is_mve(m):
+                        found[m["ticker"]] = s
+        except HttpError as e:
+            log(f"discover {s}: HTTP {e.status}, keeping previous markets for this series")
+            found = {t: v for t, v in (prev or {}).items() if v == s}
+        out.update(found)
+    return out
+
+
+def plan_cadence(n_open: int, every_s: float, disc_every_s: float, disc_reqs: float, rate: float):
+    """Return (every_eff, disc_eff, stretched, requested_rps).  Discovery may take at most half
+    of ``rate``; the snapshot cadence is stretched so snaps/s + discovery/s <= rate."""
+    requested = n_open / every_s + disc_reqs / disc_every_s
+    disc_eff = max(disc_every_s, disc_reqs / (0.5 * rate)) if disc_reqs > 0 else disc_every_s
+    avail = rate - (disc_reqs / disc_eff if disc_reqs > 0 else 0.0)
+    every_eff = every_s
+    if n_open > 0 and n_open / every_s > avail:
+        every_eff = n_open / avail
+    stretched = requested > rate * (1 + 1e-9)
+    return every_eff, disc_eff, stretched, requested
+
+
+def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
+    want = [x.strip() for x in args.series.split(",") if x.strip()]
+    series_list = select_series(client, argparse.Namespace(
+        categories=args.categories, allow_series=args.allow_series, series=",".join(want)), log)
+    if not series_list:
+        raise SystemExit("no requested series passed the category/sports filter (see --allow-series)")
+    if args.discover_every_s <= 0:
+        raise SystemExit("--discover-every-s must be > 0")
+    rate = 1.0 / client.limiter.interval
+    run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    t0 = clock()
+    ob_rows, snaps, n_flush = [], [], 0
+    stop = {"flag": False}
+
+    def flush():
+        nonlocal ob_rows, snaps, n_flush
+        part = f"{run_id}-{n_flush}"
+        store.write_partitioned("orderbook", ob_rows, part, "ts")
+        store.write_partitioned("orderbook_snaps", snaps, part, "ts")
+        ob_rows, snaps, n_flush = [], [], n_flush + 1
+
+    def nap(until):
+        while not stop["flag"]:
+            left = until - clock()
+            if left <= 0:
+                return
+            sleep(min(left, 1.0))
+
+    old = None
+    try:
+        old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__("flag", True))
+    except ValueError:  # not the main thread
+        pass
+    open_m: dict[str, str] = {}
+    first_seen: dict[str, object] = {}
+    disc_reqs, every_eff, disc_eff = float(len(series_list)), args.every_s, args.discover_every_s
+    next_disc, next_snap, i, n_snaps, n_disc = t0, t0, 0, 0, 0
+    try:
+        while not stop["flag"] and clock() - t0 <= args.duration_s:
+            now = clock()
+            if now >= next_disc:
+                r0 = client.requests_made
+                new = discover_open_markets(client, series_list, log, open_m)
+                disc_reqs = float(max(1, client.requests_made - r0))
+                added, dropped = len(set(new) - set(open_m)), len(set(open_m) - set(new))
+                stamp = utcnow()
+                for t in new:
+                    first_seen.setdefault(t, stamp)
+                for t in set(first_seen) - set(new):
+                    del first_seen[t]
+                open_m, n_disc = new, n_disc + 1
+                every_eff, disc_eff, stretched, req = plan_cadence(
+                    len(open_m), args.every_s, args.discover_every_s, disc_reqs, rate)
+                if stretched:
+                    msg = (f"request budget: {len(open_m)} open markets, requested {req:.3f} req/s "
+                           f"> --rate {rate:g}")
+                    if args.strict_cadence:
+                        log(msg + "; refusing (--strict-cadence)")
+                        raise SystemExit(2)
+                    log(msg + f"; stretching --every-s {args.every_s:g} -> {every_eff:.1f}, "
+                        f"discover interval {args.discover_every_s:g} -> {disc_eff:.1f}")
+                log(f"discover: series={len(series_list)} open={len(open_m)} added={added} "
+                    f"dropped={dropped} requests={int(disc_reqs)}")
+                next_disc = now + disc_eff
+            if now >= next_snap:
+                for t in list(open_m):
+                    if stop["flag"]:
+                        break
+                    try:
+                        ob = client.get(f"/markets/{t}/orderbook", {"depth": args.depth})
+                    except HttpError as e:
+                        log(f"orderbook {t}: HTTP {e.status}, skipped this round")
+                        continue
+                    rows, snap = snapshot_rows(t, ob, utcnow(), first_seen.get(t))
+                    ob_rows += rows
+                    snaps.append(snap)
+                    n_snaps += 1
+                i += 1
+                next_snap = max(next_snap + every_eff, clock())
+                log(f"round {i}: open={len(open_m)} snaps_total={n_snaps} requests={client.requests_made}")
+                if len(snaps) >= 200:
+                    flush()
+            nap(min(next_snap, next_disc, t0 + args.duration_s + 1e-9))
+    finally:
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
+        if snaps or ob_rows:
+            flush()
+    log(f"orderbook rounds: {i}, discoveries: {n_disc}, snaps: {n_snaps}, requests: {client.requests_made}"
+        + (", stopped by SIGTERM" if stop["flag"] else ""))
+    return True
 
 
 def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sleep, utcnow=now_utc):
     if args.every_s <= 0 or args.duration_s <= 0:
         raise SystemExit("--every-s and --duration-s must be > 0")
+    if getattr(args, "series", None):
+        if args.markets:
+            raise SystemExit("--markets and --series are mutually exclusive")
+        return _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow)
     tickers = [m.strip() for m in args.markets.split(",") if m.strip()]
     allowed = set(select_series(client, argparse.Namespace(
         categories=args.categories, allow_series=args.allow_series,
@@ -862,7 +994,13 @@ def build_parser():
     c.add_argument("--period", type=int, default=60, choices=[1, 60, 1440])
 
     o = sub.add_parser("orderbook-snap", help="forward resting-depth observer")
-    o.add_argument("--markets", required=True)
+    g = o.add_mutually_exclusive_group(required=True)
+    g.add_argument("--markets", help="fixed comma list of market tickers")
+    g.add_argument("--series", help="comma list of series; follows their OPEN markets as they roll")
+    o.add_argument("--discover-every-s", type=float, default=300,
+                   help="--series mode: re-list open markets this often")
+    o.add_argument("--strict-cadence", action="store_true",
+                   help="--series mode: refuse instead of stretching when the request budget exceeds --rate")
     o.add_argument("--every-s", type=float, default=60)
     o.add_argument("--duration-s", type=float, required=True)
     o.add_argument("--depth", type=int, default=0)
@@ -870,7 +1008,8 @@ def build_parser():
 
 
 QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
-              "period", "markets", "every_s", "duration_s", "depth", "raw_json")
+              "period", "markets", "every_s", "duration_s", "depth", "raw_json",
+              "discover_every_s", "strict_cadence")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap}
 
