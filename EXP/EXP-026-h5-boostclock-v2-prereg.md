@@ -319,3 +319,7 @@ A NOT_DECIDABLE verdict after any outcome is opened spends the window. Before an
 - `docs/HANDOFF.md`, STATE 10-10 ~07:30Z.
 - quant-proof's CHANGES review of #542 at 62cc971 (10-10), including its resampling power check.
 - No sealed data, forward-1002, forward-1002ev, walk 2, forward-paper P&L, or canary or shadow outcome record was opened to write this file or its revision.
+
+## Breach disclosure (2026-10-16, job #1059)
+
+**Breach disclosure (2026-10-16, job #1059).** #1059 is void as E1, and P9 is not met by it. Any EXP-026 record that uses or cites #1059 makes this read compromised, and it then cannot support a live request. Every choice made before W0 after 2026-10-16T07:25:46Z was made with D3 (the H5 domain) exposed for the probe's 10-04..10-07 pools, and says so. No clean E1 exists before D3 opens. EXP026_LAST_W0 2026-10-23T00 stands.

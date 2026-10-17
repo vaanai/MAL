@@ -106,6 +106,7 @@ For CAP-PICK only:
 - **§4 (sim optimism in (c)), with §1's haircut.**
   - **Calibration set.** The named set is build **faa3192's closed round trips, priced by E1**: `tools/probe_sim_calibration.py` at `c745411` (#463). The command, fills sha256, tape dir and output field are pinned in EXP-022 §8.
   - **r̄ and n.** r̄ = `aggregate["faa3192"]["pnl_gap_lamports_live_minus_sim"]["mean"]`. If its n is below 20, (c) is NOT_DECIDABLE and no look runs.
+  - **Breach disclosure (2026-10-16, job #1059).** Job #1059 ran this E1 command and is a breach of domains D2 and D3 (ledger changelog 2026-10-16, #1059). It is void and is not a qualifying calibration for this section.
   - **Correction.** Each filled attempt in every binding cell loses the **larger** of two amounts:
     - (a) §1's live haircut: sell −16 bps of proceeds and entry +26.08 bps (job #175), as `tools/exp012_backcheck.py:495-505` computes it;
     - (b) max(0, −2 × r̄), where the 2 scales r̄ linearly from 0.05 to 0.1 SOL.
