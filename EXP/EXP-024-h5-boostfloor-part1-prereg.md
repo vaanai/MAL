@@ -1152,6 +1152,10 @@ ledger fill, exit or P&L row, no shadow outcome record and no paper twin was rea
 
 Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2026-10-13 A3 halt". The text of this record is quant-proof's, with the write time, the record's `run_utc` and the commit filled in by the manager.
 
+### Breach disclosure (2026-10-16, job #1059)
+
+**Breach disclosure (2026-10-16, job #1059).** Job #1059 read post-s0 reserves of the probe's 2026-10-04..10-07 pools from the tip tape and wrote per-trip sim P&L for 61 probe trips (ledger changelog 2026-10-16, #1059). This breaches domains D2 and D3. No pool in this read's counted window was touched and no act listed in this file's seal was performed. This read is disclosed, not compromised. Its verdict and terms are unchanged.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`

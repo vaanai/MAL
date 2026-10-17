@@ -1,8 +1,22 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-16T19:10:00Z",
+ "updated_utc": "2026-10-17T03:44:06Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "exp026-withdrawn-1017",
+   "kind": "decision",
+   "title": "EXP-026 (H5-BOOSTCLOCK v2) withdrawn before W0 (owner, 2026-10-17)",
+   "detail": "Owner decision ~03:39Z, notebook n__wAwHxj9c9Oc2Q. W0 never occurred, so no counted v2 outcome exists; pre-W0 report-only outcome_bx10 records exist in shadow #817's clear stream, and this decision chain did not open them. As written the plan cannot decide (no clean E1 before D2 and D3 open, after the read deadline); quant-proof and the manager recommended withdrawal over the fixed-penalty amendment (expected FAIL, small payoff, build cost), and the owner accepted it. Also decided: EXP-027 E1 = Option B (fixed 1,920,110 lamports, PR #687); DEC-030 route R1 (owner 2026-10-17T03:52:39Z, MiScusi q_6FkDYV4cPVnknQ; PR #664). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-17T03:44:06Z"
+  },
+  {
+   "id": "push-night-1016",
+   "kind": "result",
+   "title": "Push 2026-10-16 night: r4-b read tool PRs #681/#683/#684/#685 merged; EXP-027 awaiting owner lines; walk 2 extended; drain-escape and day-sigma dead; fee-arm probe watch OK",
+   "detail": "(a) r4-b read tool PRs merged: #681 E-d replay scoped PASS (job #1082 at e504803; non-tie rows 833,253 of 950,729; report sha256 70ded6de33fa96a3ca55410d9b1ccd7567627eb80a006a5bd87bd2f0745c8898), #683 Token-2022 allowlist {metadataPointer, tokenMetadata} (295 Token-2022, 5 SPL, 0 freeze), #684 rent by token program (2,074,080 / 2,039,280; chain minimum 1,513,840 for 170 bytes, 1,488,440 for 165 bytes), #685 EXP-027 window-record tamper guard. (b) EXP-027 (#675, draft): text QP TEXT READY at 3d3406a, pending the owner's E1 answer (q_Z3dGvhO1wJ87wg), the DEC-030 owner line (q__jVaqpxB937kEg) and the r4b_read.py sha256 pin; merge window 2026-10-18T02:00Z to 2026-10-26T23:59Z; QP power P(full pass) .2535 (k = 1), .1660 (k = 2). (c) Walk 2 job #1036 extended to the 14-day maximum, ends about 2026-10-29T19:20Z; credits 217,548 of 11,825,000 through 10-16T21; successor job(s) needed. (d) Dead hunts, exploration tape: drain-escape best cell R4 fast -5.11% per attempt (n 23,903, 36 days, total -305.7 SOL, 3 of 36 days positive), baseline -24.09%; day-sigma six hourly rules -5.390% to -16.025% (0 to 2 of 35 days positive), control -5.187%, sigma_d 1.618 to 8.334 pp. (e) Fee-arm probe watch (job #1083, 23:16Z, read-only): FEEARM_WATCH OK; control 6 of 6 buys landed, test 7 of 7, 0 expired, 0 failed, 0 sells stuck; no alerts. Exploration evidence only; no book has cleared the promotion gate.",
+   "atUtc": "2026-10-16T23:57:00Z"
+  },
   {
    "id": "push-evening-1016",
    "kind": "result",
@@ -48,8 +62,8 @@
   {
    "id": "exp026-e1-1016",
    "kind": "result",
-   "title": "EXP-026 E1 (job #1059): faa3192 n 33; QP: EXP-026 decidable, W0 by 2026-10-23T00Z",
-   "detail": "faa3192 n 33, mean pnl gap (live minus sim) +35,993.454545454544 lamports, median 17,852; calibration.json sha256 799d3db58e334719553477e6ee07695047c44f4732c04d7930bbf5ba8bfef065. Arithmetic on 33 live trades, not evidence. QP-DECIDABILITY: not a predetermined NOT_DECIDABLE; W0 by 2026-10-23T00:00:00Z or withdrawn.",
+   "title": "EXP-026 E1 (job #1059): faa3192 n 33; QP: EXP-026 decidable, W0 by 2026-10-23T00Z [BREACH: job #1059 void as E1, D2/D3 breach]",
+   "detail": "faa3192 n 33, mean pnl gap (live minus sim) +35,993.454545454544 lamports, median 17,852; calibration.json sha256 799d3db58e334719553477e6ee07695047c44f4732c04d7930bbf5ba8bfef065. Arithmetic on 33 live trades, not evidence. BREACH: job #1059 breached D2 and D3 and is void as E1 (quant-proof ruling; ledger changelog 2026-10-16, #1059). QP-DECIDABILITY: not a predetermined NOT_DECIDABLE; W0 by 2026-10-23T00:00:00Z or withdrawn. [P9 TAG 2026-10-17: EXP-026 has no valid E1; build work on hold pending the owner (q_p-l6lP4dr97IYQ) and quant-proof; see the 'EXP-026 prep' bullet.]",
    "atUtc": "2026-10-16T07:25:46Z"
   },
   {
@@ -1156,6 +1170,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261016-push-night",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-16T23:57:00Z",
+   "text": "Night records: r4-b forward read tool merged (#681 E-d replay scoped PASS on 833,253 of 950,729 non-tie rows; #683 Token-2022 allowlist from the 300-mint census; #684 rent by token program, 2,074,080 / 2,039,280; #685 EXP-027 tamper guard). EXP-027 (#675, draft) is TEXT READY at 3d3406a and waits for the owner's E1 answer (q_Z3dGvhO1wJ87wg), the DEC-030 owner line (q__jVaqpxB937kEg) and the r4b_read.py sha256 pin; merge window 2026-10-18T02:00Z to 2026-10-26T23:59Z. Walk 2 (job #1036) extended to the 14-day maximum, ends about 2026-10-29T19:20Z; successor job(s) needed. Two hunts are dead on exploration tape: drain-escape (best cell -5.11% per attempt, total -305.7 SOL) and day-sigma (six rules -5.390% to -16.025%, control -5.187%). Fee-arm probe watch (job #1083) OK: 13 of 13 buys landed, 0 expired, 0 failed, 0 sells stuck. Record: ARTIFACTS/lab/push-2026-10-16-night.md. Nothing here says any book made money; no book has cleared the promotion gate."
+  },
   {
    "id": "s-20261016-push-evening",
    "from": "claude",
