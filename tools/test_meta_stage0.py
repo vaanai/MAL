@@ -362,6 +362,46 @@ class BudgetAndDeadlineTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 m.read_helius_url(str(env))
 
+    def test_helius_both_forms_and_stdin_never_leak(self) -> None:
+        for form, value in (("bare", KEY), ("url", f"https://mainnet.helius-rpc.com/?api-key={KEY}")):
+            with tempfile.TemporaryDirectory() as d:
+                env = Path(d) / "e"
+                env.write_text(f"HELIUS_API_KEY={value}\n")
+                url = m.read_helius_url(str(env))
+                self.assertEqual(url, f"https://mainnet.helius-rpc.com/?api-key={KEY}", form)
+                # stdin form
+                with patch("sys.stdin", io.StringIO(f"HELIUS_API_KEY={value}\n")):
+                    self.assertEqual(m.read_helius_url("-"), url)
+                # full main() run reading the env from stdin; nothing may leak
+                out = Path(d) / "out"
+                buf, err, o = io.StringIO(), io.StringIO(), io.StringIO()
+                handler = logging.StreamHandler(buf)
+                logging.getLogger().addHandler(handler)
+                seen = {}
+                try:
+                    with patch("sys.stdin", io.StringIO(f"HELIUS_API_KEY={value}\n")), \
+                            patch.object(m, "build_sample", lambda n: [row(1), row(2, "N")]), \
+                            patch.object(m, "write_sample", lambda rows, p: "dead"), \
+                            patch.object(m, "make_rpc", lambda u, b, l: seen.setdefault("u", u) and
+                                         (lambda sig: (_ for _ in ()).throw(RuntimeError("http_500")))), \
+                            contextlib.redirect_stderr(err), contextlib.redirect_stdout(o):
+                        m.main(["--out", str(out), "--helius-env", "-"])
+                finally:
+                    logging.getLogger().removeHandler(handler)
+                self.assertIn(KEY, seen["u"])
+                text = buf.getvalue() + err.getvalue() + o.getvalue()
+                for f in out.rglob("*"):
+                    if f.is_file():
+                        text += f.read_text(errors="ignore")
+                self.assertNotIn(KEY, text)
+        # exceptions do not carry the value either
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / "e"
+            env.write_text("HELIUS_API_KEY=bad key&x\n")
+            with self.assertRaises(SystemExit) as cm:
+                m.read_helius_url(str(env))
+            self.assertNotIn("bad key", str(cm.exception))
+
     def test_lower_bounds_reported(self) -> None:
         s = m.summarize([st("G", True), st("N", True)], 0)
         self.assertEqual(set(s["lower_bounds_json_ok_wilson90"]), {"G", "N"})

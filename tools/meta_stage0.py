@@ -348,18 +348,27 @@ def make_rpc(url: str, budget: CreditBudget, limiter: Any) -> RpcFn:
 
 
 def read_helius_url(env_path: str, var: str = HELIUS_VAR) -> str:
-    """Value of the one named variable (the repo convention is HELIUS_API_KEY) in the env file, turned into
-    the RPC URL. Returned to the caller only; never logged."""
-    for line in Path(env_path).read_text(encoding="utf-8").splitlines():
+    """Value of the one named variable (HELIUS_API_KEY) from the env file, or from stdin when env_path is
+    "-". A value starting with https:// is the URL; otherwise it is a bare key and the RPC URL is built here.
+    Returned to the caller only; never logged."""
+    text = sys.stdin.read() if env_path == "-" else Path(env_path).read_text(encoding="utf-8")
+    for line in text.splitlines():
         line = line.strip()
         if line.startswith("export "):
             line = line[len("export "):]
         if "=" not in line or line.startswith("#"):
             continue
         name, val = line.split("=", 1)
-        if name.strip() == var and val.strip().strip("'\""):
-            return helius_http_url(val.strip().strip("'\""))
-    raise SystemExit(f"{var} not set in env file")
+        val = val.strip().strip("'\"")
+        if name.strip() != var or not val:
+            continue
+        if val.startswith("https://"):
+            return val
+        try:
+            return helius_http_url(val)
+        except ValueError:
+            raise SystemExit(f"{var} value unusable") from None
+    raise SystemExit(f"{var} not set in env input")
 
 
 class PersistentBudget(CreditBudget):
