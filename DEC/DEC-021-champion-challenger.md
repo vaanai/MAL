@@ -169,3 +169,55 @@ Drafted 2026-10-16. [DEC-030](DEC-030-walk2-push-slot.md) section 4 carries the 
 - **Amendment 1 (supersession).** Amendment 1's "The walk-2 family is CAP-PICK alone" (section 3) and "no other arm joins it" (section 8) are superseded for walk 2 by this amendment, since EXP-022 was withdrawn before counting on 2026-10-15.
 - **Section 2 and Amendment 5 (route R1, chosen by the owner's line of 2026-10-17).** Push-family books need no backward-block PASS, and Amendment 5's "reaches registration only through section 2" is overridden for push-family books (a candidate built on released forward-1002 D0 or D1 data may register on walk 2 without it; Amendment 5's other terms stand).
 - **Unchanged.** The other four slots, the promotion gate, and section 9 as Amendments 1 to 4 left it.
+
+## Amendment 7 (2026-10-17; owner's line 2026-10-17, Option B): the §4 E1 correction for EXP-027 only
+
+**Status: the owner's line is recorded (below; Option B).** It takes effect on merge, with quant-proof's OK on the final head and a reviewer verdict. This amendment was written before EXP-027's W0, and no walk-2 hour, D2 or D3 hour was read to write it. It was written knowing job #1059's breached result (see the breach note below). It applies to **EXP-027 (r4-b on walk 2, paper only) and to no other experiment**. Every other experiment's §4 E1 is unchanged: EXP-022 (withdrawn 2026-10-15), EXP-024 and EXP-025 keep §4 and Amendments 1 to 5 as written. EXP-026 is withdrawn before W0 (owner, 2026-10-17); this amendment does not apply to it.
+
+**Why §4's E1 cannot run for EXP-027.** §4 prices build faa3192's closed round trips by E1 (`tools/probe_sim_calibration.py`). For EXP-027 that pricing needs post-s0 reserves of pools in `[2026-10-02T15, 2026-10-16T01)`. That is D2, sealed until EXP-025's end state. Running it would breach the D2/D3 seals (quant-proof ruling of 2026-10-16, `r4b-verify/QP-RULING-1016.md`). DEC-021:108 makes n below 20 NOT_DECIDABLE. The owner chose how EXP-027's correction is built without E1 (MiScusi q_p-l6lP4dr97IYQ, which replaced q_Z3dGvhO1wJ87wg). Quant-proof and the manager recommended B (see the breach note below), and the owner's line is B.
+
+**The fork** (per filled, non-stranded trip, in every binding cell of EXP-027):
+
+- **(A) Haircut only.** The correction is §1's live haircut: entry +26.08 bps and sell −16 bps of proceeds (job #175, as `tools/exp012_backcheck.py:495-505` computes it). No E1 term.
+  - Not chosen. Had A been chosen, EXP-027 would be reported compromised (breach note below).
+- **(B) (CHOSEN) The larger of the haircut and a fixed charge.** The correction is max(haircut, 1,920,110 lamports) per filled trip. 1,920,110 = 5 × 384,022. It is the larger, not the sum, for the same reason as Amendment 4: both estimate the same live-minus-sim gap. The fixed charge is a pinned constant, so no E1 record is needed.
+
+**Owner's choice: Option B** (per filled, non-stranded trip, max(haircut, 1,920,110 lamports)).
+
+```
+OWNER_E1_CONFIRMED: 2026-10-17 (owner, in session, asked by manager12). Option: B (item 1); item 2: withdraw EXP-026. MiScusi q_p-l6lP4dr97IYQ, asked 2026-10-17T00:10:43Z, notebook n__wAwHxj9c9Oc2Q.
+Question (verbatim, MiScusi q_p-l6lP4dr97IYQ, asked 2026-10-17T00:10:43Z; its line breaks are shown as " / "): "UPDATED (replaces the 21:14Z version; two decisions, both paper-only). / 1) EXP-027 (r4-b on walk 2): what replaces DEC-021's E1 live-vs-sim correction? E1 itself cannot run without breaching the October seals. / • A: haircut only (entry +26.08 bps, sell −16 bps per filled trip). Power at the 37.9% effect: .2535. / • B: per filled trip, the larger of the haircut and a fixed 1,920,110 lamports (5 × 384,022, the pre-seal n = 8 live-vs-sim figure, DEC-021:54). Power: .1650. / Quant-proof's ruling (2026-10-17): RECOMMEND B. Reason: job #1059 (see 2) produced r̄ = +35,993, which gives a zero correction — numerically the same as A. Choosing A after that breached result was known would make EXP-027 COMPROMISED. B uses only pre-seal data and stays clean. The manager agrees: B. (Either way a FAIL is the more likely result; nothing has passed the gate.) / 2) SEAL BREACH, reported plainly: QP ruled that job #1059 (2026-10-16 07:25Z, the E1 calibration run for EXP-026, authorised by an earlier QP note that missed the domain seals) breached the D2 and D3 seals. It read sealed post-migration prices from the tip tape for the probe's own 10-04..10-07 pools and wrote per-trip sim P&L for 61 trips. No pool in any counted window was touched: EXP-024, EXP-025, EXP-012 and EXP-022 only disclose it; #1059's numbers are void. EXP-026 (H5 re-file) is hit: no clean E1 can exist before D3 opens (EXP-024's end state, 11-14 at latest), but EXP-026's W0 must come by 10-23. Choose: withdraw EXP-026 before W0 (QP: a true reason; the H5 line would need a new filing later), or an owner-approved amendment replacing E1, disclosed as written knowing #1059's result. Manager recommends WITHDRAW — keeps every future H5 read clean. / Reply e.g. "1: B, 2: withdraw". Ledger and EXP disclosures go in a reviewed PR today regardless."
+Options shown (verbatim): "1: B, 2: withdraw EXP-026"; "1: B, 2: amend EXP-026"; "1: A (EXP-027 reported compromised), 2: withdraw EXP-026"; "discuss".
+Answer (owner, Claude Code session, 2026-10-17 about 03:39Z, verbatim): "Go for both my decisions. Keep us pushing to profit. You know the goals. Get us there. Search for new strategies and see if we can make a haiku trading agent work and improve based on its past decisions."
+```
+
+**Context that makes the answer specific.** The answer does not name an option in words. Quant-proof and the manager recommended "1: B, 2: withdraw" on record in the same session, and the owner's "both my decisions" refers to the two open MiScusi questions (q_p-l6lP4dr97IYQ and q__jVaqpxB937kEg, DEC-030). The manager closed q_p-l6lP4dr97IYQ as "1: B, 2: withdraw EXP-026". Item 2 is recorded in EXP-026 by a separate PR (`claude/exp026-withdraw`), not here.
+
+**Provenance of 384,022 (for B).**
+- **Value.** The mean live-minus-sim gap on build faa3192's closed round trips is −384,022 lamports per trade, n = 8 (median −209,670). First stated at DEC-021:54 (commit c229279, "DEC-021 rev 3").
+- **Source file.** `ARTIFACTS/lab/probe-calibration-2026-10-06.md`, section "faa3192, per trade (live pnl vs tape-sim pnl, lamports)", added by commit d30b216 (job #209 update). sha256 of the file at origin/main a8b7c08: `3143869e0e61b4c85053a8b8873c41f5b537098ae057a678a66ba338b94cc12b`. Its table lists the eight gaps: −990,373, −1,299,687, +96,580, +407,184, +73,158, −1,041,476, +174,933, −492,498. They sum to −3,072,179, so the mean is −3,072,179 / 8 = −384,022.375, published as the integer 384,022 (5 × 384,022 = 1,920,110). The mean itself is not printed in that file: it prints the range and the table, and the mean is a recomputation.
+- **Commit.** faa3192 (full `faa319227eee420319eed06e85774f64dd2273b1`, merge of #332) is the probe-executor build whose fills were measured.
+- **Stake.** 0.05 SOL = 50,000,000 lamports ("execution measurements at 0.05 SOL", `ARTIFACTS/lab/probe-calibration-2026-10-05.md`). The factor 5 is the linear scaling from that stake (scale 5 is fixed in code in the E1 record schema).
+- **Not found.** No separate calibration output file (the `aggregate["faa3192"]["pnl_gap_lamports_live_minus_sim"]` JSON) carrying n = 8 and −384,022 exists in the repo, so there is no sha256 for one. Searched: `DEC/`, `ARTIFACTS/`, `docs/`, `EXP/`, `tools/` and `LAB_STATE.md` for 384022, 384,022 and 1920110, plus `git log -S384022`. Hits: DEC-021:54, EXP-022:295, EXP-020:39, tests, and the r4-b core commits.
+- **The other same-build sets do not qualify, and one is void.**
+  - Job #264 (EXP-020:39; n = 28, mean +465,390 lamports) was priced before `c745411`, so it was not priced by E1.
+  - Job #1059 (2026-10-16T07:25:46Z; n = 33, mean +35,993) was priced by E1, but quant-proof ruled on 2026-10-17 that it **breached the D2 and D3 seals**: it read sealed post-s0 tip-tape reserves of the probe's 2026-10-04..10-07 pools. Its output is **void** as E1 for every purpose. Ruling: `/data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/QP-1059-BREACH-RULING.md`, sha256 `de08fe01cf259eb87368f7f9d620150cc4b20c23d96ddfaba78bacee3427de40`. The disclosure is in HOLDOUT_LEDGER.
+- **What the breach does to this fork** (same ruling, item 3).
+  - #1059's r̄ = +35,993 gives max(0, −5·r̄) = 0, which is numerically the same as A.
+  - **If A is chosen, EXP-027 is reported compromised**, because its correction choice would match a breached output that was known when the choice was made.
+  - B uses only the pre-seal n = 8 figure and is the more conservative option. Under B, EXP-027 only discloses the breach.
+  - **Quant-proof recommends B, and so does the manager.**
+- **EXP-027 disclosure text** (to be carried in EXP-027 Part 1, before W0): "E1 choice disclosure: the chooser knew #1059's breached result (faa3192 r̄ +35,993, which gives a zero penalty under (b)). Option B uses only the pre-seal n = 8 figure. If Option A is chosen, this read is reported compromised."
+
+**Power of the read under each** (QP, N = 20 blocks, k = 1, share of the true effect; source: `/data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/TRACKER.md`, entry 2026-10-16 ~21:4xZ, script `scratchpad/qp/e1/power5.py`; the A row matches the pinned-stack table in `r4b-verify/QP-RULING-1016.md`, "QP fourth pass", section 1):
+
+| Option | 100% | 50% | 37.9% | 0% |
+|---|---|---|---|---|
+| A | .6575 | .3245 | .2535 | .0195 |
+| B | .5390 | .2245 | .1650 | .0195 |
+
+**What it does to the code.** `E1_MODE` in `tools/r4b_read.py` is set to `"B"` per the owner's choice (the code flip is a separate one-line PR) (it is `"record"` today, which needs an E1 record of n of at least 20 that cannot be produced under the seals). The EXP-027 line `EXP027_E1_MODE` must equal that constant, and the read tool refuses a mismatch. Under B the penalty is `E1_FIXED_LAMPORTS = 1_920_110`; under A it is 0. The flip is a one-line PR after the owner answers, with a quant-proof delta pass. EXP-027's pre-registration pins mode B; its merge window closes 2026-10-26T23:59Z. Option A is not applied.
+
+**Unchanged.** §1 (the haircut itself), §2, §3, §6 to §8, the promotion gate, every alpha slot, and the seals. A pass leads only to the DEC-018 path and the owner's yes.
+
+Owner: Option B, 2026-10-17 (q_p-l6lP4dr97IYQ).
