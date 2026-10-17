@@ -46,7 +46,9 @@ Live shape check, 2026-10-17, exactly three unauthenticated GETs, no data saved:
 
 Conventions / caveats:
   * The series of a market ticker is the part before the first '-'.
-  * Combo (multivariate) markets are excluded (mve_filter=exclude).
+  * Combo (multivariate) markets are dropped client-side (is_mve); mve_filter is never sent
+    with series_ticker/event_ticker/tickers (mutually exclusive, HTTP 400). A live
+    /markets GET with series_ticker+status+mve_filter returned 200, but we do not rely on it.
   * Sports is excluded by default (``--categories`` to choose another set; a
     series is excluded when its primary category OR any discovery category
     equals an excluded one; series whose category cannot be determined are
@@ -213,6 +215,9 @@ class Client:
 
     def get(self, path: str, params: dict | None = None) -> dict:
         path = check_path(path)
+        if params and params.get("mve_filter") and any(
+                params.get(k) for k in ("series_ticker", "event_ticker", "tickers")):
+            raise ValueError("mve_filter is mutually exclusive with series_ticker/event_ticker/tickers")
         params = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
         url = self.base_url + path + ("?" + urllib.parse.urlencode(params) if params else "")
         for attempt in range(self.max_retries + 1):
@@ -549,23 +554,35 @@ class Cutoff:
         return self._v
 
 
+def is_mve(m: dict) -> bool:
+    """Combo / multivariate market.  Marked by ``mve_collection_ticker`` (documented on
+    the Market object, get-markets.md) or non-empty ``mve_selected_legs``; the
+    KXMVE ticker prefix is a backstop.  Needed because mve_filter cannot be sent
+    together with series_ticker / event_ticker / tickers (HTTP 400 on
+    /historical/markets, job #1124 probe 2026-10-17)."""
+    return bool(m.get("mve_collection_ticker") or m.get("mve_selected_legs")
+                or str(m.get("ticker", "")).upper().startswith("KXMVE"))
+
+
 def fetch_settled_market_pages(client, cutoff: Cutoff, series: str, since, until):
     """Yield (source, [market_dict, ...]) per page for settled markets of ``series`` in [since, until)."""
     c = cutoff.get()["market_settled_ts"]
     if until is None or until >= c:
-        p = {"series_ticker": series, "status": "settled", "mve_filter": "exclude"}
+        p = {"series_ticker": series, "status": "settled"}
         if since is not None:
             p["min_settled_ts"] = since
         if until is not None:
             p["max_settled_ts"] = until
         for page in paginate_pages(client, "/markets", p, "markets"):
-            yield "live", page
+            yield "live", [m for m in page if not is_mve(m)]
     if since is None or since < c:
         for page in paginate_pages(client, "/historical/markets",
-                                   {"series_ticker": series, "mve_filter": "exclude"}, "markets"):
+                                   {"series_ticker": series}, "markets"):
             keep = []
             for m in page:
                 ts = to_unix(m.get("settlement_ts"))
+                if is_mve(m):
+                    continue
                 if ts is None or (since is not None and ts < since) or (until is not None and ts >= until):
                     continue
                 keep.append(m)
