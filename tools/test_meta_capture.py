@@ -130,8 +130,9 @@ class UriTests(unittest.TestCase):
         self.assertEqual(mc.candidate_urls("https://ipfs.io/ipfs/cid", self.GW)[0],
                          "https://a.example/ipfs/cid")
 
-    def test_unlisted_https_host_refused_and_junk_rejected(self) -> None:
-        self.assertEqual(mc.candidate_urls("https://x.org/m.json", self.GW), [])
+    def test_other_https_host_direct_and_http_or_junk_rejected(self) -> None:
+        self.assertEqual(mc.candidate_urls("https://x.org/m.json", self.GW), ["https://x.org/m.json"])
+        self.assertEqual(mc.candidate_urls("http://x.org/m.json", self.GW), [])
         self.assertEqual(mc.candidate_urls("ar://" + "B" * 43, self.GW), ["https://arweave.net/" + "B" * 43])
         self.assertEqual(mc.candidate_urls("file:///etc/passwd", self.GW), [])
 
@@ -677,7 +678,7 @@ class RedirectFollowTests(unittest.TestCase):
 
     def test_disallowed_target_keeps_status(self) -> None:
         with self.assertRaises(ipf.HttpError) as cm:
-            self.run_get([(302, "https://evil.example/x")])
+            self.run_get([(302, "http://dweb.link/x")])  # plain http target
         self.assertEqual(mc._status_of(cm.exception), "http_302")
 
     def test_private_target_keeps_status(self) -> None:
@@ -742,16 +743,36 @@ class GatewayChoiceTests(unittest.TestCase):
             self.assertEqual(slept[0], 1.0)
             self.assertEqual(meta_rows(col)[0]["wait_ms"], 1000)
 
-    def test_other_host_refused_without_request_and_hostname_recorded(self) -> None:
+    def test_http_scheme_refused_without_request(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             col, _ = make(d, lambda u: DOC)
-            col.on_message(create_payload(uri="https://Evil.example/m.json?k=v"), HOUR0 + 100)
+            for uri in ("http://site.example/m.json", "data:text/plain,hi"):
+                col.on_message(create_payload(uri=uri, mint=uri[:4] + "Z"), HOUR0 + 100)
             run(col.step())
-            r = meta_rows(col)[0]
-            self.assertEqual((r["status"], r["uri_host_class"], r["uri_host"]),
-                             ("non_ipfs_uri", "other", "evil.example"))
-            self.assertNotIn("k=v", json.dumps(r))
+            rows = meta_rows(col)
+            self.assertEqual([(r["status"], r["uri_host_class"]) for r in rows],
+                             [("non_ipfs_uri", "refused_scheme")] * 2)
             self.assertEqual(col.http_get.calls, [])
+
+    def test_any_https_host_fetched_directly_with_own_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(("https://g1/ipfs/", "https://g2/ipfs/"), clock=lambda: 1000.0)
+
+            def routes(u):
+                return ipf.HttpError(429, retry_after=20) if "busy.example" in u else DOC
+            col, ms = make(d, routes, pool=pool)
+            col.on_message(create_payload(uri="https://Busy.example/m.json?k=v", mint="MintBusy"), HOUR0 + 100)
+            col.on_message(create_payload(uri="https://meta.example/m.json", mint="MintOk"), HOUR0 + 100)
+            run(col.step())
+            by = {r["mint"]: r for r in meta_rows(col)}
+            self.assertEqual((by["MintBusy"]["status"], by["MintBusy"]["gateway"], by["MintBusy"]["uri_host_class"]),
+                             ("http_429", "busy.example", "https:busy.example"))
+            self.assertEqual((by["MintOk"]["status"], by["MintOk"]["uri_host_class"]), ("ok", "https:meta.example"))
+            self.assertNotIn("k=v", json.dumps(by["MintBusy"]))
+            self.assertNotIn("uri_host", by["MintBusy"])
+            self.assertAlmostEqual(pool.cooldown_left("https://busy.example/"), 20.0)
+            self.assertEqual(pool.cooldown_left("https://meta.example/"), 0.0)  # own bucket, own cooldown
+            self.assertEqual(pool.cooldown_left("https://g1/ipfs/"), 0.0)
 
     def test_arweave_direct_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as d:

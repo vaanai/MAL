@@ -127,8 +127,8 @@ def uri_kind(uri: str) -> str:
 
 
 def candidate_urls(uri: str, gateways: tuple[str, ...] | list[str]) -> list[str]:
-    """ipfs:// and /ipfs/<path> urls become one url per configured gateway; ar:// and the pinned
-    Arweave/metadata hosts become one direct url; any other host yields nothing (non_ipfs_uri)."""
+    """ipfs:// and /ipfs/<path> urls become one url per configured gateway; ar:// and every other https
+    uri become one direct url (SSRF guard applies at fetch); http and other schemes yield nothing."""
     return [u for _, u in ipf.plan_urls(ipf.classify_uri(uri), gateways)]
 
 

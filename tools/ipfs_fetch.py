@@ -2,7 +2,7 @@
 
 No network and no chain-node call lives here. This module holds only:
   * the pinned gateway list and pinned host allowlists;
-  * uri classification (ipfs_cid / arweave / allowlisted:<host> / other) and the rewrite onto gateways;
+  * uri classification (ipfs_cid / arweave / https:<hostname> / refused_scheme) and the rewrite onto gateways;
   * the SSRF guard (https only to gateways, resolved addresses must be public);
   * the redirect rule (at most 2 hops, each target re-checked);
   * a per-gateway token bucket with 429 cooldown (``GatewayPool``).
@@ -39,13 +39,6 @@ ARWEAVE_HOSTS = frozenset(
     {"arweave.net", "www.arweave.net", "ar-io.net", "ardrive.net", "arweave.dev", "g8way.io",
      "gateway.irys.xyz", "node1.irys.xyz", "node2.irys.xyz"}
 )
-# Non-IPFS/Arweave hosts that launchpad token metadata and images commonly point at, fetched directly
-# through the SSRF guard. Everything not listed here (and not IPFS/Arweave) stays refused.
-METADATA_HOSTS = frozenset(
-    {"ipfs.filebase.io", "gateway.lighthouse.storage", "i.imgur.com",
-     "raw.githubusercontent.com", "shdw-drive.genesysgo.net"}
-)
-REDIRECT_GATEWAY_HOSTS = KNOWN_GATEWAY_HOSTS | ARWEAVE_HOSTS
 
 REDIRECT_CODES = (301, 302, 303, 307, 308)
 MAX_REDIRECTS = 2
@@ -61,6 +54,9 @@ _IPFS_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~%/-]*$")
 _AR_ID = re.compile(r"^[A-Za-z0-9_-]{20,}(/[A-Za-z0-9._~%/-]*)?$")
 _CID_V0 = re.compile(r"^Qm[1-9A-HJ-NP-Za-km-z]{44}$")
 _CID_V1 = re.compile(r"^b[a-z2-7]{50,}$")
+
+
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 class BlockedUrl(Exception):
@@ -104,53 +100,54 @@ def _subdomain_cid(host: str) -> bool:
 
 
 def classify_uri(uri: object) -> UriPlan:
-    other = UriPlan("other", None)
+    """ipfs:// and /ipfs/<path> -> pinned gateways; ar:// -> arweave.net; any other https uri -> fetched
+    directly from its own host (class https:<hostname>; the SSRF guard decides at connect time);
+    http and every other scheme -> refused_scheme, never fetched."""
+    refused = UriPlan("refused_scheme", None)
     if not isinstance(uri, str):
-        return other
+        return refused
     uri = uri.strip()
     if uri.startswith("ipfs://"):
         path = uri[len("ipfs://"):].split("?", 1)[0].split("#", 1)[0]
         if path.startswith("ipfs/"):
             path = path[len("ipfs/"):]
-        return UriPlan("ipfs_cid", None, ipfs_path=path) if _ipfs_path_ok(path) else other
+        return UriPlan("ipfs_cid", None, ipfs_path=path) if _ipfs_path_ok(path) else refused
     if uri.startswith("ar://"):
         rest = uri[len("ar://"):].split("?", 1)[0].split("#", 1)[0]
         if _AR_ID.match(rest) and ".." not in rest.split("/"):
             return UriPlan("arweave", None, direct_url="https://arweave.net/" + rest)
-        return other
+        return refused
     if not uri.startswith(("http://", "https://")):
-        return other
+        return refused
     parts = urlsplit(uri)
     try:
         host = (parts.hostname or "").lower()
         port = parts.port
     except ValueError:
-        return other
-    if not host or parts.username or parts.password:
-        return other
-    if parts.path.startswith("/ipfs/") and _ipfs_path_ok(parts.path[len("/ipfs/"):]):
-        return UriPlan("ipfs_cid", None, ipfs_path=parts.path[len("/ipfs/"):])
+        return refused
+    if not host:
+        return refused
+    if parts.path.startswith("/ipfs/"):  # never contacted directly, valid or not
+        sub = parts.path[len("/ipfs/"):]
+        return UriPlan("ipfs_cid", None, ipfs_path=sub) if _ipfs_path_ok(sub) else refused
     if _subdomain_cid(host):
         tail = parts.path.lstrip("/")
-        cid = host.partition(".ipfs.")[0]
-        path = cid + ("/" + tail if tail else "")
+        path = host.partition(".ipfs.")[0] + ("/" + tail if tail else "")
         if _ipfs_path_ok(path):
             return UriPlan("ipfs_cid", None, ipfs_path=path)
-    if host in ARWEAVE_HOSTS or host in METADATA_HOSTS:
-        cls = "arweave" if host in ARWEAVE_HOSTS else f"allowlisted:{host}"
-        if port not in (None, 443) or ".." in parts.path.split("/"):
-            return UriPlan("other", host[:253])
-        url = f"https://{host}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
-        return UriPlan(cls, host if cls != "arweave" else None, direct_url=url)
-    return UriPlan("other", host[:253])
+    if parts.scheme != "https":
+        return refused
+    netloc = f"[{host}]" if ":" in host else host
+    if port not in (None, 443):
+        netloc += f":{port}"
+    url = f"https://{netloc}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
+    cls = "arweave" if host in ARWEAVE_HOSTS else f"https:{host[:253]}"
+    return UriPlan(cls, None if cls == "arweave" else host[:253], direct_url=url)
 
 
 def host_fields(plan: UriPlan) -> dict[str, str]:
-    """Record fields: the class always, the hostname only for ``other`` (allowlisted carries it already)."""
-    out = {"uri_host_class": plan.host_class}
-    if plan.host_class == "other" and plan.host:
-        out["uri_host"] = plan.host
-    return out
+    """Record field: the class only (https:<hostname> carries the hostname; never a path or query)."""
+    return {"uri_host_class": plan.host_class}
 
 
 def plan_urls(plan: UriPlan, gateways: Sequence[str]) -> list[tuple[str, str]]:
@@ -183,8 +180,8 @@ def check_url(url: str, http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
         raise HttpError(0) from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
-                or ip.is_reserved or ip.is_unspecified):
+        if (not ip.is_global or ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+                or ip.is_reserved or ip.is_unspecified or ip in _CGNAT):
             raise BlockedUrl("private_address")
 
 
@@ -192,9 +189,8 @@ def redirect_target(base_url: str, location: str | None,
                     check: Callable[[str], None] = check_url) -> str | None:
     """The absolute redirect target if it may be followed, else None (status stays http_3xx).
 
-    Allowed only when the target is https on the default port, its host resolves to public addresses,
-    and either its path is /ipfs/<valid cid>[/...], or its host is a pinned IPFS/Arweave gateway
-    (including the <cid>.ipfs.<gateway> subdomain form)."""
+    Allowed only when the target is https on the default port with no userinfo and its host resolves to
+    public addresses only (the same guard as the first hop). The caller caps the hops at MAX_REDIRECTS."""
     if not location or len(location) > 2048:
         return None
     target = urljoin(base_url, location)
@@ -205,12 +201,6 @@ def redirect_target(base_url: str, location: str | None,
     except ValueError:
         return None
     if parts.scheme != "https" or not host or parts.username or parts.password or port not in (None, 443):
-        return None
-    ipfs_ok = False
-    if parts.path.startswith("/ipfs/"):
-        first = parts.path[len("/ipfs/"):].split("/", 1)[0]
-        ipfs_ok = is_valid_cid(first) and ".." not in parts.path.split("/")
-    if not (ipfs_ok or host in REDIRECT_GATEWAY_HOSTS or _subdomain_cid(host)):
         return None
     try:
         check(target)

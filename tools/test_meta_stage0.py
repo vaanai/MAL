@@ -238,8 +238,8 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(st["error"], "image_http_404")
 
     def test_non_ipfs_uri_refused_without_fetch(self) -> None:
-        for bad in ("http://169.254.169.254/latest", "https://example.com/meta.json",
-                    "https://ipfs.io/ipfs/../../etc", "ipfs://", "file:///etc/passwd"):
+        for bad in ("http://169.254.169.254/latest", "http://example.com/meta.json",
+                    "https://ipfs.io/ipfs/../../etc", "ipfs://", "file:///etc/passwd", "ftp://h/x"):
             http = FakeHttp()
             st = self.check(tx_with_log(bad), http)
             self.assertEqual(st["error"], "json_non_ipfs_uri", bad)
@@ -648,7 +648,7 @@ class RedirectGetTests(unittest.TestCase):
         self.assertEqual((res[0], res[1], len(calls)), (307, b"", 3))
 
     def test_refused_targets_keep_3xx(self) -> None:
-        for loc in ("https://evil.example/x", "http://ipfs.io/ipfs/" + "Qm" + "a" * 44, "file:///etc/passwd"):
+        for loc in ("http://ipfs.io/ipfs/" + "Qm" + "a" * 44, "file:///etc/passwd", "https://u:p@h.example/x"):
             calls, res = self.go([(302, loc)])
             self.assertEqual((res[0], res[1], len(calls)), (302, b"", 1), loc)
 
@@ -678,16 +678,28 @@ class HostClassAndUrisTests(unittest.TestCase):
         st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(self.AR), http, GW, fast_pool())
         self.assertTrue(st["json_ok"])
         self.assertEqual(st["uri_host_class"], "arweave")
-        self.assertNotIn("uri_host", st)
         self.assertEqual(http.calls[0][0], ar_url)
-        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log("https://Evil.example/p?q=1"),
-                          FakeHttp(), GW, fast_pool())
-        self.assertEqual((st["error"], st["uri_host_class"], st["uri_host"]),
-                         ("json_non_ipfs_uri", "other", "evil.example"))
+        # any other https host is fetched directly; class carries the hostname, never the path or query
+        evil = "https://Evil.example/p?q=1"
+        http = FakeHttp({"https://evil.example/p?q=1": (200, b"{}")})
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log(evil), http, GW, fast_pool())
+        self.assertEqual((st["json_ok"], st["uri_host_class"]), (True, "https:evil.example"))
         self.assertNotIn("q=1", json.dumps(st))
-        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log("https://i.imgur.com/a.json"),
-                          FakeHttp(), GW, fast_pool())
-        self.assertEqual(st["uri_host_class"], "allowlisted:i.imgur.com")
+        self.assertEqual(len(http.calls), 1)
+        # http and other schemes are refused with no request
+        http = FakeHttp()
+        st = m.check_mint(dict(row(1), mint=MINT), lambda s: tx_with_log("http://evil.example/p"), http, GW,
+                          fast_pool())
+        self.assertEqual((st["error"], st["uri_host_class"]), ("json_non_ipfs_uri", "refused_scheme"))
+        self.assertEqual(http.calls, [])
+
+    def test_direct_host_429_cools_only_that_host(self) -> None:
+        pool = fast_pool()
+        http = FakeHttp(default=m.HttpResult(429, b"", 30.0))
+        body, err = m.fetch_with_retry("https://busy.example/m", GW, http, 100, False, pool)
+        self.assertEqual((body, err, len(http.calls)), (None, "rate_limited_all", 1))  # one host, now cooling
+        self.assertAlmostEqual(pool.cooldown_left("https://busy.example/"), 30.0, places=1)
+        self.assertEqual(pool.cooldown_left(GW[0]), 0.0)
 
     def test_uris_jsonl_round_trip_and_no_rpc_on_refetch(self) -> None:
         sample = [row(i) for i in range(3)]
@@ -722,7 +734,10 @@ class HostClassAndUrisTests(unittest.TestCase):
         sts = [
             {"grp": "G", "uri_found": True, "json_ok": True, "uri_host_class": "ipfs_cid"},
             {"grp": "G", "uri_found": True, "json_ok": False, "uri_host_class": "ipfs_cid", "error": "json_http_429"},
-            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "other", "uri_host": "a.example",
+            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "https:a.example",
+             "error": "json_http_404"},
+            {"grp": "N", "uri_found": True, "json_ok": True, "uri_host_class": "https:a.example"},
+            {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "refused_scheme",
              "error": "json_non_ipfs_uri"},
             {"grp": "N", "uri_found": True, "json_ok": False, "uri_host_class": "ipfs_cid",
              "error": "json_rate_limited_all"},
@@ -730,7 +745,9 @@ class HostClassAndUrisTests(unittest.TestCase):
         ]
         s = m.summarize(sts, 5, gateway_counts={"http_429": 7, "rate_limited_all": 1})
         self.assertEqual(s["uri_host_classes"]["classes"]["ipfs_cid"], {"n": 3, "json_ok": 1})
-        self.assertEqual(s["uri_host_classes"]["other_hosts"], {"a.example": 1})
+        self.assertEqual(s["uri_host_classes"]["classes"]["https"], {"n": 2, "json_ok": 1})
+        self.assertEqual(s["uri_host_classes"]["classes"]["refused_scheme"], {"n": 1, "json_ok": 0})
+        self.assertEqual(s["uri_host_classes"]["https_hosts"], {"a.example": 2})
         self.assertEqual(s["rate_limit_mint_errors"], {"http_429": 1, "rate_limited_all": 1, "non_ipfs_uri": 1})
         self.assertEqual(s["gateway_counts"]["http_429"], 7)
 

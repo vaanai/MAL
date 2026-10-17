@@ -295,7 +295,7 @@ def make_pool(gateways: Sequence[str], rps: float = ipf.DEFAULT_RPS, burst: floa
 
 def candidate_urls(uri: str, gateways: Sequence[str]) -> list[str]:
     """ipfs:// and /ipfs/<path> urls rewritten onto the pinned gateways (any host's /ipfs/ path, so an
-    arbitrary host is never contacted); ar:// and the pinned Arweave/metadata hosts directly; else refused."""
+    arbitrary host is never contacted for those); ar:// and other https uris directly; else refused."""
     return [u for _, u in ipf.plan_urls(ipf.classify_uri(uri), gateways)]
 
 
@@ -471,7 +471,7 @@ def check_mint(
     if on_uri:
         on_uri(row["mint"], uri)  # also for cached uris, so this out dir's uris.jsonl is complete
     st["uri_found"] = True
-    st.update(ipf.host_fields(ipf.classify_uri(uri)))  # class (+ hostname for 'other' only); never the uri
+    st.update(ipf.host_fields(ipf.classify_uri(uri)))  # class (https:<hostname> carries the host); never the uri
     body, err = fetch_with_retry(uri, gateways, http, JSON_BYTES, False, pool, sleep)
     if body is None:
         st["error"] = "json_" + str(err)
@@ -542,20 +542,22 @@ def _shares(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def host_class_counts(statuses: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Per uri host class: mints with a decoded uri and how many reached json_ok. Hostnames are listed
-    only for class 'other' (an identity, not content), most common first, at most 100."""
+    """Per uri host class: mints with a decoded uri and how many reached json_ok. Direct https hosts are
+    pooled under 'https' and listed by hostname (an identity, not content), most common first, at most 100."""
     classes: dict[str, dict[str, int]] = {}
-    others: dict[str, int] = {}
+    hosts: dict[str, int] = {}
     for r in statuses:
         if not r.get("uri_found"):
             continue
-        c = classes.setdefault(r.get("uri_host_class") or "unknown", {"n": 0, "json_ok": 0})
+        cls = r.get("uri_host_class") or "unknown"
+        if cls.startswith("https:"):
+            hosts[cls[len("https:"):]] = hosts.get(cls[len("https:"):], 0) + 1
+            cls = "https"
+        c = classes.setdefault(cls, {"n": 0, "json_ok": 0})
         c["n"] += 1
         c["json_ok"] += 1 if r.get("json_ok") else 0
-        if r.get("uri_host_class") == "other" and r.get("uri_host"):
-            others[r["uri_host"]] = others.get(r["uri_host"], 0) + 1
-    top = sorted(others.items(), key=lambda kv: (-kv[1], kv[0]))[:100]
-    return {"classes": dict(sorted(classes.items())), "other_hosts": dict(top)}
+    top = sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:100]
+    return {"classes": dict(sorted(classes.items())), "https_hosts": dict(top)}
 
 
 def rate_limit_counts(statuses: Sequence[Mapping[str, Any]]) -> dict[str, int]:

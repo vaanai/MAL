@@ -136,36 +136,39 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c(f"https://{CID1}.ipfs.dweb.link/m.json").ipfs_path, CID1 + "/m.json")
         self.assertEqual(c("https://arweave.net/" + "A" * 43).host_class, "arweave")
         self.assertEqual(c("https://gateway.irys.xyz/" + "A" * 43).host_class, "arweave")
-        self.assertEqual(c("https://i.imgur.com/x.png").host_class, "allowlisted:i.imgur.com")
+        self.assertEqual(c("https://i.imgur.com/x.png").host_class, "https:i.imgur.com")
         o = c("https://Evil.Example:8443/x?y=1")
-        self.assertEqual((o.host_class, o.host, o.fetchable), ("other", "evil.example", False))
-        self.assertEqual(c("file:///etc/passwd").host_class, "other")
-        self.assertEqual(c(None).host_class, "other")
+        self.assertEqual((o.host_class, o.direct_url, o.fetchable),
+                         ("https:evil.example", "https://evil.example:8443/x?y=1", True))
+        for bad in ("http://example.org/m.json", "file:///etc/passwd", "ftp://x/y", "data:text/plain,hi", None, ""):
+            p = c(bad)
+            self.assertEqual((p.host_class, p.fetchable), ("refused_scheme", False), bad)
 
     def test_arweave_rewrite(self) -> None:
         p = ipf.classify_uri("ar://" + "B" * 43 + "/meta.json")
         self.assertEqual((p.host_class, p.direct_url), ("arweave", "https://arweave.net/" + "B" * 43 + "/meta.json"))
-        self.assertEqual(ipf.classify_uri("ar://x").host_class, "other")  # not an id
-        self.assertEqual(ipf.classify_uri("http://arweave.net/" + "A" * 43).direct_url,
-                         "https://arweave.net/" + "A" * 43)               # pinned host: upgraded to https
+        self.assertEqual(ipf.classify_uri("ar://x").host_class, "refused_scheme")  # not an id
+        self.assertEqual(ipf.classify_uri("http://arweave.net/" + "A" * 43).host_class, "refused_scheme")
 
     def test_host_fields_record_only_what_is_ruled(self) -> None:
         self.assertEqual(ipf.host_fields(ipf.classify_uri("ipfs://c")), {"uri_host_class": "ipfs_cid"})
-        self.assertEqual(ipf.host_fields(ipf.classify_uri("https://i.imgur.com/a.png")),
-                         {"uri_host_class": "allowlisted:i.imgur.com"})
         self.assertEqual(ipf.host_fields(ipf.classify_uri("https://x.org/p?secret=1")),
-                         {"uri_host_class": "other", "uri_host": "x.org"})  # hostname only, no path/query
+                         {"uri_host_class": "https:x.org"})  # hostname only, no path/query
+        self.assertEqual(ipf.host_fields(ipf.classify_uri("http://x.org/p")), {"uri_host_class": "refused_scheme"})
 
     def test_no_traversal_or_userinfo_or_odd_port(self) -> None:
-        self.assertEqual(ipf.classify_uri("ipfs://cid/../../x").host_class, "other")
-        self.assertEqual(ipf.classify_uri("https://user:pw@arweave.net/" + "A" * 43).host_class, "other")
-        self.assertFalse(ipf.classify_uri("https://arweave.net:9000/" + "A" * 43).fetchable)
+        self.assertEqual(ipf.classify_uri("ipfs://cid/../../x").host_class, "refused_scheme")
+        p = ipf.classify_uri("https://user:pw@arweave.net/" + "A" * 43)
+        self.assertEqual(p.direct_url, "https://arweave.net/" + "A" * 43)  # userinfo dropped
+        self.assertEqual(ipf.classify_uri("https://[2001:db8::1]/m").direct_url, "https://[2001:db8::1]/m")
 
     def test_plan_urls(self) -> None:
         gws = ("https://g1/ipfs/", "https://g2/ipfs")
         self.assertEqual(ipf.plan_urls(ipf.classify_uri("ipfs://c/x"), gws),
                          [("https://g1/ipfs/", "https://g1/ipfs/c/x"), ("https://g2/ipfs", "https://g2/ipfs/c/x")])
-        self.assertEqual(ipf.plan_urls(ipf.classify_uri("https://x.org/"), gws), [])
+        self.assertEqual(ipf.plan_urls(ipf.classify_uri("https://x.org/m"), gws),
+                         [("https://x.org/", "https://x.org/m")])  # own pool key per host
+        self.assertEqual(ipf.plan_urls(ipf.classify_uri("http://x.org/m"), gws), [])
 
 
 class RedirectRuleTests(unittest.TestCase):
@@ -181,17 +184,14 @@ class RedirectRuleTests(unittest.TestCase):
                          f"https://example.com/ipfs/{CID0}/a.json")
         self.assertIsNotNone(self.target("https://arweave.net/whatever"))
         self.assertIsNotNone(self.target("https://dweb.link/anything"))
+        self.assertIsNotNone(self.target("https://cdn.example.org/other/path.json"))  # any public https host
         self.assertIsNotNone(self.target(f"https://{CID1}.ipfs.dweb.link/"))
         self.assertEqual(self.target(f"/ipfs/{CID0}"), f"https://ipfs.io/ipfs/{CID0}")  # relative
 
     def test_refused(self) -> None:
         for loc in ("http://ipfs.io/ipfs/" + CID0,        # not https
-                    "https://example.com/ipfs/notacid",   # invalid cid
-                    "https://example.com/other",          # neither path nor gateway host
-                    "https://i.imgur.com/x.png",          # metadata host is not a gateway host
                     f"https://example.com:8443/ipfs/{CID0}",
                     f"https://u:p@example.com/ipfs/{CID0}",
-                    f"https://example.com/ipfs/{CID0}/../x",
                     "", None, "file:///etc/passwd"):
             self.assertIsNone(self.target(loc), loc)
 
@@ -203,12 +203,39 @@ class RedirectRuleTests(unittest.TestCase):
     def test_private_resolution_refused(self) -> None:
         with patch.object(socket, "getaddrinfo", lambda *a, **k: PRIVATE):
             self.assertIsNone(ipf.redirect_target("https://ipfs.io/ipfs/x", "https://arweave.net/x"))
-            for url in ("https://10.0.0.1/x", "https://169.254.169.254/x", "https://127.0.0.1/x",
+            for url in ("https://10.0.0.1/x", "https://100.64.0.1/x", "https://224.0.0.1/x", "https://169.254.169.254/x", "https://127.0.0.1/x",
                         "https://[::1]/x", "http://example.org/x"):
                 with self.assertRaises(ipf.BlockedUrl, msg=url):
                     ipf.check_url(url)
         with patch.object(socket, "getaddrinfo", lambda *a, **k: PUBLIC):
             self.assertIsNotNone(ipf.redirect_target("https://ipfs.io/ipfs/x", "https://arweave.net/x"))
+
+
+class GuardAddressTests(unittest.TestCase):
+    def test_non_public_classes_refused_and_public_allowed(self) -> None:
+        for addr in ("10.1.2.3", "127.0.0.1", "169.254.169.254", "100.64.0.1", "100.127.255.255", "224.0.0.1",
+                     "192.168.1.1", "172.16.0.1", "0.0.0.0", "::1", "fe80::1", "fc00::1", "ff02::1",
+                     "::ffff:10.0.0.1"):
+            fam = 10 if ":" in addr else 2
+            with patch.object(socket, "getaddrinfo", lambda *a, a_=addr, f_=fam, **k: [(f_, 1, 6, "", (a_, 443))]):
+                with self.assertRaises(ipf.BlockedUrl, msg=addr):
+                    ipf.check_url("https://h.example/x")
+        with patch.object(socket, "getaddrinfo", lambda *a, **k: PUBLIC):
+            ipf.check_url("https://h.example/x")
+        # one private address among public ones is enough to refuse
+        mixed = PUBLIC + PRIVATE
+        with patch.object(socket, "getaddrinfo", lambda *a, **k: mixed):
+            with self.assertRaises(ipf.BlockedUrl):
+                ipf.check_url("https://h.example/x")
+
+    def test_per_host_bucket_and_cooldown_for_direct_hosts(self) -> None:
+        pool = ipf.GatewayPool(ipf.DEFAULT_GATEWAYS, clock=Clk())
+        (key, url), = ipf.plan_urls(ipf.classify_uri("https://meta.example/a.json"), ipf.DEFAULT_GATEWAYS)
+        self.assertEqual(pool.reserve([key]), (key, 0.0))
+        pool.report(key, "http_429")
+        self.assertIsNone(pool.reserve([key]))
+        (other, _), = ipf.plan_urls(ipf.classify_uri("https://other.example/a.json"), ipf.DEFAULT_GATEWAYS)
+        self.assertEqual(pool.reserve([other]), (other, 0.0))  # a different host is unaffected
 
 
 if __name__ == "__main__":
