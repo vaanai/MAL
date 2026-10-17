@@ -384,6 +384,7 @@ class Store:
         self.tool_sha256 = sha256_file(Path(__file__))
         self.git_ref = git_ref
         self.gaps: dict[str, list[dict[str, Any]]] = {}
+        self.error_counts: dict[str, int] = {}
         self.sealed: set[str] = set()
         self.last_chain: str = "0" * 64
         chain = out / "MANIFEST.chain"
@@ -443,7 +444,8 @@ class Store:
         if hk in self.sealed:
             return
         doc = {"hour": hk, "tool_file": "meta_capture.py", "tool_sha256": self.tool_sha256,
-               "git_ref": self.git_ref, "gap_log": self.gaps.get(hk, [])}
+               "git_ref": self.git_ref, "gap_log": self.gaps.get(hk, []),
+               "error_counts": dict(self.error_counts)}
         atomic_write(self.capture_path(hk), json.dumps(doc, indent=1).encode())
 
     def hour_files(self, hk: str) -> list[Path]:
@@ -592,7 +594,11 @@ class Collector:
         try:
             await self._attempt(item)
         except Exception:  # noqa: BLE001
-            log.exception("attempt_error")
+            # Type name only: a traceback or message could carry token content.
+            name = type(sys.exc_info()[1]).__name__
+            log.error("attempt_error type=%s", name)
+            self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
+            self.store.write_capture(hour_key(self.clock_ms()))
 
     async def _attempt(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         due, _, attempt, row = item
@@ -650,6 +656,19 @@ class Collector:
 
 
 # ------------------------------------------------------------------ runner
+def configure_logging(level: str) -> None:
+    """Root level from --log-level, but the websockets logger tree is pinned to
+    WARNING: at DEBUG it logs raw vendor frames, including dropped fields."""
+    logging.basicConfig(level=getattr(logging, level),
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stderr)
+    logging.getLogger().setLevel(getattr(logging, level))
+    pin_websockets_logger()
+
+
+def pin_websockets_logger() -> None:
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+
+
 def _normalize_messages(raw: str | bytes) -> list[dict[str, Any]]:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
@@ -664,6 +683,7 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
     import websockets
     from websockets.exceptions import ConnectionClosed, WebSocketException
 
+    pin_websockets_logger()
     deadline = time.monotonic() + duration_s if duration_s else None
 
     def done() -> bool:
@@ -738,8 +758,7 @@ def main(argv: list[str] | None = None) -> int:
         print("websockets missing: pip install -r scripts/mal-core/requirements-fast-create.txt",
               file=sys.stderr)
         return 2
-    logging.basicConfig(level=getattr(logging, args.log_level),
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stderr)
+    configure_logging(args.log_level)
     loop = asyncio.new_event_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):

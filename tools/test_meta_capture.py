@@ -525,6 +525,8 @@ class FakeWs:
                 outer.sent = msg
 
             async def recv(self_):
+                logging.getLogger("websockets.client").debug(
+                    "< TEXT %s", json.dumps(create_payload()))
                 if not getattr(self_, "frame", False):
                     self_.frame = True
                     return json.dumps(create_payload())
@@ -578,6 +580,59 @@ class RunTests(unittest.TestCase):
     def test_rss_exit_code(self) -> None:
         _, rc, _, _ = self._run("reconnect", rss=lambda: 5000.0, max_rss_mb=1500)
         self.assertEqual(rc, 3)
+
+
+class LoggingTests(unittest.TestCase):
+    def test_debug_never_logs_frames_or_dropped_fields(self) -> None:
+        records: list[str] = []
+
+        class H(logging.Handler):
+            def emit(self, r):
+                records.append(r.getMessage())
+        h = H()
+        root = logging.getLogger()
+        old, old_ws = root.level, logging.getLogger("websockets").level
+        root.addHandler(h)
+        try:
+            mc.configure_logging("DEBUG")
+            self.assertEqual(root.level, logging.DEBUG)
+            self.assertEqual(logging.getLogger("websockets.client").getEffectiveLevel(), logging.WARNING)
+            RunTests()._run("reconnect")  # fake ws debug-logs a full vendor frame on every recv
+            logging.getLogger("websockets.client").debug("> TEXT initialBuy marketCapSol")
+        finally:
+            root.removeHandler(h)
+            root.setLevel(old)
+            logging.getLogger("websockets").setLevel(old_ws)
+        joined = " ".join(records)
+        for bad in ("initialBuy", "marketCapSol", "TEXT", "solAmount", "Creator1"):
+            self.assertNotIn(bad, joined)
+
+    def test_attempt_error_logs_type_only_and_counts(self) -> None:
+        records: list[logging.LogRecord] = []
+
+        class H(logging.Handler):
+            def emit(self, r):
+                records.append(r)
+        h = H()
+        logging.getLogger().addHandler(h)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                col, _ = make(d)
+
+                async def boom(item):
+                    raise ValueError("SECRETNAME leaked in message")
+                col._attempt = boom
+                col.on_message(create_payload(), HOUR0 + 100)
+                run(col.step())
+                cap = json.loads(col.store.capture_path(HK0).read_text())
+        finally:
+            logging.getLogger().removeHandler(h)
+        self.assertEqual(cap["error_counts"], {"ValueError": 1})
+        errs = [r for r in records if "attempt_error" in r.getMessage()]
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].getMessage(), "attempt_error type=ValueError")
+        self.assertIsNone(errs[0].exc_info)
+        self.assertNotIn("SECRETNAME", " ".join(r.getMessage() for r in records))
 
 
 class NoHeliusTests(unittest.TestCase):
