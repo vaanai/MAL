@@ -24,6 +24,7 @@ counts and hashes only.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import functools
 import asyncio
 import hashlib
@@ -38,6 +39,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -67,7 +69,20 @@ STR_MAX = 512
 MAX_IMAGE_PIXELS = 4_000_000
 DRAIN_TIMEOUT_S = 20.0
 EXIT_RSS = 3
+EXIT_LOCKED = 5   # another meta_capture holds <out>/.lock
+EXIT_STALL = 6    # watchdog: creates arrive but no meta row written (or worker restarts exhausted)
+LOCK_NAME = ".lock"
+WATCHDOG_S = 60.0
+HEARTBEAT_S = 300.0
+STALL_WINDOW_S = 600.0
+MAX_WORKER_RESTARTS = 5
+STEP_ERROR_SLEEP_S = 1.0
+ATTEMPT_DEADLINE_S = 180.0  # wall-clock cap on one whole attempt (json fetch + image fetch + waits)
 MAX_PENDING = 50_000
+# Hours written while several meta_capture processes shared one --out (incident 2026-10-17).
+MULTI_WRITER_HOURS = ("2026-10-17T20", "2026-10-17T21", "2026-10-17T22")
+MULTI_WRITER_FLAG = "multi-writer 2026-10-17T21:09:01Z\u201322:35:45Z"
+SEG2_REASON = "multi-writer"
 
 # Exactly the ruled allowlist. output key -> vendor keys tried in order.
 CREATE_ALLOW: dict[str, tuple[str, ...]] = {
@@ -334,7 +349,9 @@ def sha256_file(path: Path) -> str | None:
 
 def atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    # pid in the name: two processes on one --out must not share a tmp file (the loser's os.replace
+    # raised FileNotFoundError, which used to kill the worker task silently).
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with tmp.open("wb") as fh:
         fh.write(data)
         fh.flush()
@@ -365,6 +382,26 @@ def git_ref_of(repo_dir: Path) -> str | None:
         return None
 
 
+class AlreadyRunning(Exception):
+    pass
+
+
+def acquire_single_instance(out: Path) -> int:
+    """Exclusive non-blocking flock on <out>/.lock; the pid is written into it. Returns
+    the open fd, which the caller keeps for the life of the process (not inherited by children).
+    Raises AlreadyRunning if another process holds it."""
+    out.mkdir(parents=True, exist_ok=True)
+    fd = os.open(out / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise AlreadyRunning() from exc
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    return fd
+
+
 class Store:
     def __init__(self, out: Path, git_ref: str | None = None) -> None:
         self.out = out
@@ -381,16 +418,74 @@ class Store:
         self.error_counts: dict[str, int] = {}
         self.sealed: set[str] = set()
         self.last_chain: str = "0" * 64
-        chain = out / "MANIFEST.chain"
-        if chain.exists():
+        self.segment2 = (out / "MANIFEST-2.chain").exists()
+        for name in ("MANIFEST.chain", "MANIFEST-2.chain"):
+            chain = out / name
+            if not chain.exists():
+                continue
             lines = chain.read_text().splitlines()
             for ln in lines:
                 try:
                     self.sealed.add(json.loads(ln)["hour"])
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     pass
             if lines:
                 self.last_chain = sha256_bytes(lines[-1].encode())
+
+    @property
+    def manifest_name(self) -> str:
+        return "MANIFEST-2.sha256" if self.segment2 else "MANIFEST.sha256"
+
+    @property
+    def chain_name(self) -> str:
+        return "MANIFEST-2.chain" if self.segment2 else "MANIFEST.chain"
+
+    def init_segment2(self, first_hour: str) -> bool:
+        """First v4 start: open chain segment 2. Hashes (never edits) the old MANIFEST.sha256 and
+        MANIFEST.chain, starts MANIFEST-2.* with a segment_start entry, re-hashes the files of
+        already sealed hours >= first_hour (hash only, no content parsing), and routes all later
+        sealing to segment 2. No-op (False) if MANIFEST-2.chain exists. The chain file is written
+        last, so a crash before it leaves no segment and the next start redoes this."""
+        hour_start_ms(first_hour)  # ValueError on a malformed hour
+        if self.segment2:
+            return False
+        start = {"segment_start": True, "prev_chain_sha256": sha256_file(self.out / "MANIFEST.chain"),
+                 "prev_manifest_sha256": sha256_file(self.out / "MANIFEST.sha256"),
+                 "first_hour": first_hour, "reason": SEG2_REASON}
+        start_line = json.dumps(start, separators=(",", ":"))
+        chain_lines = [start_line]
+        prev = sha256_bytes(start_line.encode())
+        man = start_line + "\n"
+        for hk in sorted(h for h in self.sealed if h >= first_hour):
+            files = self.hour_files(hk)
+            lines = "".join(f"{sha256_file(f)}  {f.relative_to(self.out).as_posix()}\n" for f in files)
+            man += lines
+            entry = json.dumps({"hour": hk, "manifest_sha256": sha256_bytes(lines.encode()),
+                                "prev": prev, "n_files": len(files), "rehash": True},
+                               separators=(",", ":"))
+            chain_lines.append(entry)
+            prev = sha256_bytes(entry.encode())
+        atomic_write(self.out / "MANIFEST-2.sha256", man.encode())
+        atomic_write(self.out / "MANIFEST-2.chain", ("\n".join(chain_lines) + "\n").encode())
+        self.last_chain = prev
+        self.segment2 = True
+        log.info("segment2_started first_hour=%s rehashed=%d", first_hour, len(chain_lines) - 1)
+        return True
+
+    def note_flags_for_sealed(self) -> None:
+        """Flagged hours whose CAPTURE.json is already sealed cannot carry the flag: write one line per
+        hour to MANIFEST-2.notes instead (idempotent). Sealed files are never modified."""
+        if not self.segment2:
+            return
+        notes = self.out / "MANIFEST-2.notes"
+        have = notes.read_text() if notes.exists() else ""
+        add = ""
+        for hk in MULTI_WRITER_HOURS:
+            if hk in self.sealed and f'"hour":"{hk}"' not in have:
+                add += json.dumps({"hour": hk, "flags": [MULTI_WRITER_FLAG]}, separators=(",", ":"),
+                                  ensure_ascii=False) + "\n"
+        if add:
+            atomic_write(notes, (have + add).encode())
 
     def creates_path(self, hk: str) -> Path:
         return self.out / "creates" / f"{hk}.jsonl"
@@ -480,6 +575,10 @@ class Store:
                 continue
             self.gaps.setdefault(hk, []).append(dict(event))
             self.write_capture(hk)
+        for hk in MULTI_WRITER_HOURS:  # flagged hours that are still open get the flag now
+            if hk not in self.sealed and self.capture_path(hk).exists():
+                self.write_capture(hk)
+        self.note_flags_for_sealed()
 
     def write_capture(self, hk: str) -> None:
         if hk in self.sealed:
@@ -495,6 +594,8 @@ class Store:
                "gateway_counts": dict(self.gateway_counts),
                "local_gateway": self.local_gateway,
                "source_counts": dict(self.source_counts)}
+        if hk in MULTI_WRITER_HOURS:
+            doc["flags"] = [MULTI_WRITER_FLAG]
         atomic_write(self.capture_path(hk), json.dumps(doc, indent=1).encode())
 
     def hour_files(self, hk: str) -> list[Path]:
@@ -519,13 +620,13 @@ class Store:
         self.write_capture(hk)
         files = self.hour_files(hk)
         lines = "".join(f"{sha256_file(f)}  {f.relative_to(self.out).as_posix()}\n" for f in files)
-        mf = self.out / "MANIFEST.sha256"
+        mf = self.out / self.manifest_name
         prev = mf.read_bytes() if mf.exists() else b""
         atomic_write(mf, prev + lines.encode())
         entry = json.dumps({"hour": hk, "manifest_sha256": sha256_bytes(lines.encode()),
                             "prev": self.last_chain, "n_files": len(files)},
                            separators=(",", ":"))
-        cf = self.out / "MANIFEST.chain"
+        cf = self.out / self.chain_name
         prevc = cf.read_bytes() if cf.exists() else b""
         atomic_write(cf, prevc + (entry + "\n").encode())
         self.last_chain = sha256_bytes(entry.encode())
@@ -566,6 +667,7 @@ class Collector:
         pool: ipf.GatewayPool | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         local: ipf.LocalGateway | None = None,
+        mono: Callable[[], float] = time.monotonic,
     ) -> None:
         self.store, self.gateways, self.http_get = store, gateways, http_get
         self.local = local
@@ -583,6 +685,14 @@ class Collector:
         self.seq = 0
         self.rss_exceeded = False
         self.dropped = 0
+        self.mono = mono
+        self.attempt_deadline_s = ATTEMPT_DEADLINE_S
+        self.start_mono = mono()
+        self.creates_received = 0
+        self.last_create_mono: float | None = None
+        self.last_meta_mono: float | None = None
+        self.attempt_counts: dict[str, int] = {}
+        self.inflight = {"local": 0, "public": 0}
 
     def rss_ok(self) -> bool:
         if self.rss_fn() > self.max_rss_mb:
@@ -592,10 +702,16 @@ class Collector:
     def disk_ok(self) -> bool:
         return self.free_fn(self.store.out) >= self.min_free_gb
 
+    def _add_meta(self, create_t_recv_ms: int, row: Mapping[str, Any], png: bytes | None) -> bool:
+        stored = self.store.add_meta(create_t_recv_ms, row, png)
+        if stored:
+            self.last_meta_mono = self.mono()
+        return stored
+
     def _schedule(self, row: dict[str, Any], attempt: int) -> None:
         if len(self.heap) >= self.max_pending:
             self.dropped += 1
-            self.store.add_meta(int(row["t_recv_ms"]), {
+            self._add_meta(int(row["t_recv_ms"]), {
                 "mint": str(row["mint"]), "attempt": attempt, "status": "dropped_backlog",
                 "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
                 "gateway": None, "bytes": 0, "sha256": None}, None)
@@ -610,6 +726,8 @@ class Collector:
             return
         if not self.store.add_create(row):
             return
+        self.creates_received += 1
+        self.last_create_mono = self.mono()
         if self.rss_ok():
             self._schedule(row, 0)
 
@@ -651,13 +769,16 @@ class Collector:
 
     async def _guarded(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         try:
-            await self._attempt(item)
+            await asyncio.wait_for(self._attempt(item), timeout=self.attempt_deadline_s)
         except Exception:  # noqa: BLE001
             # Type name only: a traceback or message could carry token content.
             name = type(sys.exc_info()[1]).__name__
             log.error("attempt_error type=%s", name)
             self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
-            self.store.write_capture(hour_key(self.clock_ms()))
+            try:
+                self.store.write_capture(hour_key(self.clock_ms()))
+            except Exception:  # noqa: BLE001 - the error path must never raise out of the worker
+                log.error("attempt_error_capture_write type=%s", type(sys.exc_info()[1]).__name__)
 
     async def _fetch(self, uri: str, max_bytes: int,
                      image: bool = False) -> tuple[str, bytes | None, str | None, int, bool]:
@@ -687,7 +808,12 @@ class Collector:
             url = urls[key]
             is_local = self.local is not None and key == self.local.key
             timeout = self.local.timeout_for(image) if is_local and self.local else FETCH_TIMEOUT_S
-            status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes, timeout)
+            side = "local" if is_local else "public"
+            self.inflight[side] += 1
+            try:
+                status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes, timeout)
+            finally:
+                self.inflight[side] -= 1
             if status == "conn_refused" and not is_local:
                 status = "http_0"  # keep the public status vocabulary as it was
             self.pool.report(key, status, retry_after)
@@ -733,7 +859,8 @@ class Collector:
             if rec["status"] == "ok":
                 rec.update(extract_meta(doc))
                 png = await self._image(rec)
-        stored = self.store.add_meta(int(row["t_recv_ms"]), rec, png)
+        self.attempt_counts[str(rec["status"])] = self.attempt_counts.get(str(rec["status"]), 0) + 1
+        stored = self._add_meta(int(row["t_recv_ms"]), rec, png)
         if rec["status"] != "ok" and stored and attempt + 1 < len(SCHEDULE_MS):
             self._schedule(row, attempt + 1)
 
@@ -755,6 +882,76 @@ class Collector:
             rec["img_status"] = "bad_image"
         rec.update(info)
         return png
+
+
+# ----------------------------------------------------- watchdog + heartbeat
+class Supervisor:
+    """Keeps one worker task alive. A task that ended with an exception is logged (type only) and
+    restarted, at most ``max_restarts`` times; after that ``exhausted`` is True."""
+
+    def __init__(self, factory: Callable[[], Awaitable[None]], max_restarts: int = MAX_WORKER_RESTARTS) -> None:
+        self.factory, self.max_restarts = factory, max_restarts
+        self.restarts = 0
+        self.exhausted = False
+        self.task: asyncio.Future = asyncio.ensure_future(factory())
+
+    def check(self) -> None:
+        if not self.task.done() or self.task.cancelled() or self.exhausted:
+            return
+        exc = self.task.exception()
+        if exc is None:
+            return
+        log.error("worker_died type=%s restarts=%d", type(exc).__name__, self.restarts)
+        if self.restarts >= self.max_restarts:
+            self.exhausted = True
+            return
+        self.restarts += 1
+        self.task = asyncio.ensure_future(self.factory())
+
+
+def stalled(col: Collector, window_s: float = STALL_WINDOW_S) -> bool:
+    """Creates arrived within the window, but no meta row was written for the whole window."""
+    now = col.mono()
+    if col.last_create_mono is None or now - col.last_create_mono > window_s:
+        return False
+    last_meta = col.last_meta_mono if col.last_meta_mono is not None else col.start_mono
+    return now - last_meta >= window_s
+
+
+def heartbeat_line(col: Collector) -> str:
+    """Counts only: never a name, uri or content."""
+    local = col.local
+    breaker = "none"
+    if local is not None:
+        left = col.pool.cooldown_left(local.key)
+        breaker = f"open_{left:.0f}s" if left > 0 else "closed"
+    return ("heartbeat creates=%d attempts=%s queue=%d inflight_local=%d inflight_public=%d breaker=%s "
+            "dropped=%d" % (col.creates_received, json.dumps(col.attempt_counts, sort_keys=True),
+                            len(col.heap), col.inflight["local"], col.inflight["public"], breaker,
+                            col.dropped))
+
+
+async def monitor(col: Collector, sup: Supervisor, stop: asyncio.Event, flags: dict[str, bool], *,
+                  watchdog_s: float = WATCHDOG_S, heartbeat_s: float = HEARTBEAT_S,
+                  stall_window_s: float = STALL_WINDOW_S) -> None:
+    next_hb = col.mono() + heartbeat_s
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=watchdog_s)
+            return
+        except asyncio.TimeoutError:
+            pass
+        sup.check()
+        if sup.exhausted or stalled(col, stall_window_s):
+            log.error("watchdog_exit reason=%s creates=%d attempts=%s queue=%d",
+                      "worker_restarts_exhausted" if sup.exhausted else "no_meta_rows",
+                      col.creates_received, json.dumps(col.attempt_counts, sort_keys=True), len(col.heap))
+            flags["stalled"] = True
+            stop.set()
+            return
+        if col.mono() >= next_hb:
+            next_hb = col.mono() + heartbeat_s
+            log.info(heartbeat_line(col))
 
 
 # ------------------------------------------------------------------ runner
@@ -780,8 +977,26 @@ def _normalize_messages(raw: str | bytes) -> list[dict[str, Any]]:
     return [data] if isinstance(data, dict) else []
 
 
+async def worker_loop(col: Collector, done: Callable[[], bool]) -> None:
+    """The one fetch worker. A step that raises (seal, disk, anything outside the per-attempt guard)
+    is logged by type and retried: this used to end the task silently while the websocket kept
+    delivering creates (2026-10-17 stall)."""
+    while not done():
+        try:
+            n = await col.step()
+        except Exception as exc:  # noqa: BLE001
+            name = type(exc).__name__
+            log.error("worker_step_error type=%s", name)
+            col.store.error_counts[name] = col.store.error_counts.get(name, 0) + 1
+            n = 0
+            await asyncio.sleep(STEP_ERROR_SLEEP_S)
+        if n == 0:
+            await asyncio.sleep(0.5)
+
+
 async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: float | None,
-              drain_timeout_s: float = DRAIN_TIMEOUT_S) -> int:
+              drain_timeout_s: float = DRAIN_TIMEOUT_S, watchdog_s: float = WATCHDOG_S,
+              heartbeat_s: float = HEARTBEAT_S, stall_window_s: float = STALL_WINDOW_S) -> int:
     import websockets
     from websockets.exceptions import ConnectionClosed, WebSocketException
 
@@ -794,17 +1009,15 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
             return True
         return stop.is_set() or (deadline is not None and time.monotonic() >= deadline)
 
-    async def worker() -> None:
-        while not done():
-            if await col.step() == 0:
-                await asyncio.sleep(0.5)
-
     # Earlier unsealed hours get their manifest lines now (supersede), then
     # unfinished schedules are rebuilt from disk.
     col.store.process_start(col.clock_ms())
     col.store.seal_due(col.clock_ms())
     log.info("recovered_attempts n=%d", col.recover())
-    wtask = asyncio.ensure_future(worker())
+    flags = {"stalled": False}
+    sup = Supervisor(lambda: worker_loop(col, done))
+    mtask = asyncio.ensure_future(monitor(col, sup, stop, flags, watchdog_s=watchdog_s,
+                                          heartbeat_s=heartbeat_s, stall_window_s=stall_window_s))
     backoff, max_backoff = 1.0, 60.0
     while not done():
         try:
@@ -836,11 +1049,16 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
             pass
         backoff = min(backoff * 2, max_backoff)
     try:
-        await asyncio.wait_for(wtask, timeout=drain_timeout_s)
+        await asyncio.wait_for(sup.task, timeout=drain_timeout_s)
     except asyncio.TimeoutError:
         log.warning("drain_timeout cancelled in-flight attempts")
+    except Exception:  # noqa: BLE001 - a dead worker is already logged by the supervisor
+        pass
+    mtask.cancel()
     log.info("stopped pending=%d dropped=%d local_gateway=%s source_counts=%s", len(col.heap),
              col.dropped, col.store.local_gateway, json.dumps(col.source_counts, sort_keys=True))
+    if flags["stalled"]:
+        return EXIT_STALL
     return EXIT_RSS if col.rss_exceeded else 0
 
 
@@ -863,6 +1081,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--local-image-timeout-s", type=float, default=ipf.LOCAL_IMAGE_TIMEOUT_S)
     p.add_argument("--local-breaker-base-s", type=float, default=ipf.LOCAL_BREAKER_BASE_S)
     p.add_argument("--local-breaker-max-s", type=float, default=ipf.LOCAL_BREAKER_MAX_S)
+    p.add_argument("--segment2-first-hour", default=None,
+                   help="YYYY-MM-DDTHH; required the first time (no MANIFEST-2.chain yet): opens chain "
+                        "segment 2 and re-hashes sealed hours from this hour onward")
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -876,6 +1097,19 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     configure_logging(args.log_level)
+    try:
+        lock_fd = acquire_single_instance(args.out)  # held until the process exits
+    except AlreadyRunning:
+        print("another meta_capture holds the lock on --out; refusing to start", file=sys.stderr)
+        return EXIT_LOCKED
+    log.info("lock_acquired pid=%d", os.getpid())
+    try:
+        return _main_locked(args)
+    finally:
+        os.close(lock_fd)
+
+
+def _main_locked(args: argparse.Namespace) -> int:
     local = None
     if args.local_gateway:
         try:
@@ -892,7 +1126,17 @@ def main(argv: list[str] | None = None) -> int:
         loop.add_signal_handler(sig, stop.set)
     ref = args.git_ref or git_ref_of(Path(__file__).resolve().parent)
     gateways = tuple(args.gateway or DEFAULT_GATEWAYS)
-    col = Collector(Store(args.out, ref), gateways,
+    store = Store(args.out, ref)
+    if not store.segment2:
+        if not args.segment2_first_hour:
+            print("--segment2-first-hour is required: MANIFEST-2.chain does not exist yet", file=sys.stderr)
+            return 2
+        try:
+            store.init_segment2(args.segment2_first_hour)
+        except ValueError:
+            print("--segment2-first-hour must look like 2026-10-17T23", file=sys.stderr)
+            return 2
+    col = Collector(store, gateways,
                     pool=ipf.GatewayPool(gateways, args.gateway_rps, args.gateway_burst),
                     http_get=make_http_get(local.origin if local else None), local=local,
                     concurrency=args.concurrency or (ipf.LOCAL_CONCURRENCY if local else 4), max_rss_mb=args.max_rss_mb,
