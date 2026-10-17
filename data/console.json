@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-17T04:00:27Z",
+ "updated_utc": "2026-10-17T04:56:49Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "push-records-1017-morning",
+   "kind": "record",
+   "title": "Push record 2026-10-17 morning: owner decisions, merges, Haiku v3 not cleared",
+   "detail": "Owner 03:39:29Z: EXP-027 E1 Option B, EXP-026 withdrawn before W0; DEC-030 route R1 at 03:52:39Z. Merged #689, #690, #664, #687, #691, #692. EXP-027 (#675, head f6ad5b9) has QP OK and Reviewer OK; merge window [2026-10-18T02:00:00Z, 2026-10-26T21:59:59Z]. Haiku v3 (job #1092, 2.116 USD): PASS of its frozen exploration rule, in-sample; QP NOT CLEARED (learning about equal to the shuffled-outcome placebo; dead-pool filter; collides with EXP-027). No second book from second-book, r4b-depth or indep-mech. No book has cleared the promotion gate. Record: ARTIFACTS/lab/push-2026-10-17.md.",
+   "atUtc": "2026-10-17T04:56:49Z"
+  },
   {
    "id": "exp026-withdrawn-1017",
    "kind": "decision",
@@ -1176,6 +1183,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261017-push-morning",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-17T04:56:49Z",
+   "text": "Morning records: owner chose EXP-027 E1 Option B, EXP-026 withdrawn before W0, DEC-030 route R1. EXP-027 (#675, head f6ad5b9) has QP OK and Reviewer OK and merges in the window opening 2026-10-18T02:00Z. Haiku v3 passed its frozen exploration rule in-sample; quant-proof did not clear it (learning about equal to placebo). No second book found. Record: ARTIFACTS/lab/push-2026-10-17.md. No book has cleared the promotion gate; nothing here says any book made money."
+  },
   {
    "id": "s-20261016-push-night",
    "from": "claude",

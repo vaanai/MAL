@@ -38,7 +38,7 @@ As of 2026-10-16T19:05:26Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 129 | 75 | 2 |
 
-The file holds 390 rows: the 206 above and 53 rows kept only as duplicates of another row (listed at the end).
+The file holds 406 rows: the 206 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -398,6 +398,8 @@ Kept for traceability to the source files. Each points at the row to read instea
 | `lp-fees-1` | PumpSwap LP on graduated pools, 1 SOL per pool, 24 h hold | `lib-a-A33` |
 | `lp-fees-2` | LP fee share above 420 SOL market cap | `lib-a-A33` |
 | `lp-fees-3` | Pool-wide LP fee income as capacity limit | `lib-a-A33` |
+| `haiku-v3-4` | Haiku re-ranker of r4-b top-K (web-llm-traders-5) on cached candidates | `web-llm-traders-5` |
+| `second-book-5` | r4-b at 0.5 and 1.0 SOL stake | `r4b-depth-1` |
 
 ## Where the rows came from
 

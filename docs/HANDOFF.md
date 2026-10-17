@@ -11,6 +11,15 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0h Update 2026-10-17T04:56:49Z (manager12): EXP-027 merge timing and post-merge steps
+
+Source: [ARTIFACTS/lab/push-2026-10-17.md](../ARTIFACTS/lab/push-2026-10-17.md). No sealed, forward, walk, shadow, canary or tip-tape outcome file was opened. No book has cleared the promotion gate.
+
+- **EXP-027 (#675):** head `f6ad5b96e23648de4d052bd4d4aa721d4f03bc2c`, QP OK (6229567248) and Reviewer OK (6229566563). Merge window [2026-10-18T02:00:00Z, 2026-10-26T21:59:59Z]; registration cron 2c123002 at 2026-10-18T02:07Z; squash with `--match-head-commit f6ad5b9`. Until then merge nothing that touches `docs/HOLDOUT_LEDGER.md`, `EXP/README.md`, `data/tries.jsonl`.
+- **After the merge:** ledger PR (both occurrences of each token), then the MERGE_INSTANT append and the W0 append, one per commit, each checked with `--check-window`; then the hourly count job from W0.
+- **Walk 2** (job #1036) ends about 2026-10-29T19:20Z; a successor job is owed before then.
+- **Decided 2026-10-17:** EXP-027 E1 = Option B (#687, #691), EXP-026 withdrawn before W0 (#690), DEC-030 route R1 (#664). Haiku v3 not cleared by quant-proof: defer. r4-b v2 overlay ideas (dead-pool veto, large-exit veto) wait for a window after walk 2.
+
 ### 1.0g Update 2026-10-16T19:10Z (manager12): H5 tail and exit results, Haiku September FAIL, fee-probe state, breach record
 
 Source: [ARTIFACTS/lab/push-2026-10-16-evening.md](../ARTIFACTS/lab/push-2026-10-16-evening.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. No book has cleared the promotion gate.
