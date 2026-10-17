@@ -24,6 +24,7 @@ counts and hashes only.
 from __future__ import annotations
 
 import argparse
+import functools
 import asyncio
 import hashlib
 import heapq
@@ -165,12 +166,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # surfaces as HTTPError 3xx; never followed
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+# Empty ProxyHandler: *_proxy environment variables must never route (or leak) these requests.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def _urllib_once(url: str, timeout: float, max_bytes: int, deadline: float, *,
-                 http_hosts: frozenset[str], allow_private_hosts: frozenset[str]) -> bytes:
-    check_url(url, http_hosts, allow_private_hosts)
+                 http_hosts: frozenset[str], allow_private_hosts: frozenset[str],
+                 local_origin: str | None = None) -> bytes:
+    check_url(url, http_hosts, allow_private_hosts, local_origin)
     req = urllib.request.Request(url, headers={"User-Agent": "mal-meta-capture/1"})
     chunks: list[bytes] = []
     total = 0
@@ -195,13 +198,18 @@ def _urllib_once(url: str, timeout: float, max_bytes: int, deadline: float, *,
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, (TimeoutError, socket.timeout)):
             raise FetchTimeout() from exc
+        if ipf.is_refused(exc):
+            raise ipf.ConnectionRefused() from exc
         raise HttpError(0) from exc
+    except ConnectionRefusedError as exc:
+        raise ipf.ConnectionRefused() from exc
     return b"".join(chunks)
 
 
 def _urllib_get(url: str, timeout: float, max_bytes: int, *,
                 http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
-                allow_private_hosts: frozenset[str] = frozenset()) -> bytes:
+                allow_private_hosts: frozenset[str] = frozenset(),
+                local_origin: str | None = None) -> bytes:
     """One GET with a wall-clock cap over the whole body. At most ipf.MAX_REDIRECTS redirects, each
     only if ipf.redirect_target accepts it; any other redirect surfaces as HttpError(3xx)."""
     deadline = time.monotonic() + timeout
@@ -209,11 +217,12 @@ def _urllib_get(url: str, timeout: float, max_bytes: int, *,
     for hop in range(ipf.MAX_REDIRECTS + 1):
         try:
             return _urllib_once(cur, timeout, max_bytes, deadline, http_hosts=http_hosts,
-                                allow_private_hosts=allow_private_hosts)
+                                allow_private_hosts=allow_private_hosts, local_origin=local_origin)
         except HttpError as exc:
             if exc.status in ipf.REDIRECT_CODES and hop < ipf.MAX_REDIRECTS:
-                nxt = ipf.redirect_target(cur, exc.location,
-                                          lambda u: check_url(u, frozenset(), allow_private_hosts))
+                nxt = ipf.redirect_target(
+                    cur, exc.location,
+                    lambda u: check_url(u, frozenset(), allow_private_hosts, local_origin), local_origin)
                 if nxt:
                     cur = nxt
                     continue
@@ -221,13 +230,20 @@ def _urllib_get(url: str, timeout: float, max_bytes: int, *,
     raise HttpError(310)  # unreachable
 
 
-async def default_http_get(url: str, timeout: float, max_bytes: int) -> bytes:
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_urllib_get, url, timeout, max_bytes), timeout + 2
-        )
-    except asyncio.TimeoutError as exc:
-        raise FetchTimeout() from exc
+def make_http_get(local_origin: str | None = None) -> HttpGet:
+    """The default urllib getter; ``local_origin`` is the only loopback origin it may contact."""
+    async def http_get(url: str, timeout: float, max_bytes: int) -> bytes:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(functools.partial(_urllib_get, url, timeout, max_bytes,
+                                                    local_origin=local_origin)), timeout + 2
+            )
+        except asyncio.TimeoutError as exc:
+            raise FetchTimeout() from exc
+    return http_get
+
+
+default_http_get = make_http_get(None)
 
 
 def _status_of(exc: Exception) -> str:
@@ -235,6 +251,8 @@ def _status_of(exc: Exception) -> str:
         return "timeout"
     if isinstance(exc, FetchTooBig):
         return "too_big"
+    if isinstance(exc, ipf.ConnectionRefused):
+        return "conn_refused"
     if isinstance(exc, BlockedUrl):
         return "blocked_url"
     if isinstance(exc, HttpError):
@@ -242,11 +260,11 @@ def _status_of(exc: Exception) -> str:
     return "http_0"
 
 
-async def get_once_ra(url: str, http_get: HttpGet,
-                      max_bytes: int) -> tuple[str, bytes | None, float | None]:
+async def get_once_ra(url: str, http_get: HttpGet, max_bytes: int,
+                      timeout: float = FETCH_TIMEOUT_S) -> tuple[str, bytes | None, float | None]:
     """One GET, no retry. Returns (status, body, retry_after seconds if the server sent one)."""
     try:
-        return "ok", await http_get(url, FETCH_TIMEOUT_S, max_bytes), None
+        return "ok", await http_get(url, timeout, max_bytes), None
     except Exception as exc:  # noqa: BLE001 - classify, never crash worker
         return _status_of(exc), None, getattr(exc, "retry_after", None)
 
@@ -355,6 +373,8 @@ class Store:
         self.tool_sha256 = sha256_file(Path(__file__))
         self.ipfs_fetch_sha256 = sha256_file(Path(ipf.__file__))
         self.gateway_counts: dict[str, int] = {}
+        self.source_counts: dict[str, int] = {}
+        self.local_gateway: str | None = None  # origin only (not secret); None when unused
         self.git_ref = git_ref
         self.gaps: dict[str, list[dict[str, Any]]] = {}
         self.versions: dict[str, list[dict[str, Any]]] = {}
@@ -472,7 +492,9 @@ class Store:
                "tool_versions": vers,
                "git_ref": self.git_ref, "gap_log": self.gaps.get(hk, []),
                "error_counts": dict(self.error_counts),
-               "gateway_counts": dict(self.gateway_counts)}
+               "gateway_counts": dict(self.gateway_counts),
+               "local_gateway": self.local_gateway,
+               "source_counts": dict(self.source_counts)}
         atomic_write(self.capture_path(hk), json.dumps(doc, indent=1).encode())
 
     def hour_files(self, hk: str) -> list[Path]:
@@ -543,14 +565,20 @@ class Collector:
         max_pending: int = MAX_PENDING,
         pool: ipf.GatewayPool | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        local: ipf.LocalGateway | None = None,
     ) -> None:
         self.store, self.gateways, self.http_get = store, gateways, http_get
+        self.local = local
+        store.local_gateway = local.origin if local else None
         self.concurrency = concurrency
         self.max_rss_mb, self.min_free_gb = max_rss_mb, min_free_gb
         self.rss_fn, self.free_fn, self.clock_ms = rss_fn, free_fn, clock_ms
         self.max_pending = max_pending
         self.pool = pool or ipf.GatewayPool(gateways)
+        if local is not None:
+            self.pool.add_pinned(local.key, local.rps, local.burst, local.breaker_base_s, local.breaker_max_s)
         self.sleep = sleep
+        self.source_counts: dict[str, int] = {}
         self.heap: list[tuple[int, int, int, dict[str, Any]]] = []  # due, seq, attempt, row
         self.seq = 0
         self.rss_exceeded = False
@@ -631,27 +659,52 @@ class Collector:
             self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
             self.store.write_capture(hour_key(self.clock_ms()))
 
-    async def _fetch(self, uri: str, max_bytes: int) -> tuple[str, bytes | None, str | None, int]:
+    async def _fetch(self, uri: str, max_bytes: int,
+                     image: bool = False) -> tuple[str, bytes | None, str | None, int, bool]:
         """One request at most, through the per-gateway bucket. Returns (status, body, gateway, wait_ms).
 
         The attempt's time is fixed by the schedule; only the gateway choice happens here: the first
-        gateway in pinned order that is not cooling (waiting up to ipf.MAX_TOKEN_WAIT_S for its token).
+        source in order that is not cooling (the local gateway when set, then the pinned public ones;
+        waiting up to ipf.MAX_TOKEN_WAIT_S for its token). Exactly one request: a local timeout or 5xx
+        ends this attempt and the fixed schedule retries later; a local 404 is final.
         If none can serve, status is rate_limited_all and no request is made."""
-        pairs = ipf.plan_urls(ipf.classify_uri(uri), self.gateways)
+        pairs = ipf.plan_urls(ipf.classify_uri(uri), self.gateways, self.local)
         if not pairs:
-            return "non_ipfs_uri", None, None, 0
-        picked = self.pool.reserve([k for k, _ in pairs])
-        self.store.gateway_counts = dict(self.pool.counts)
-        if picked is None:
-            return "rate_limited_all", None, None, 0
-        key, wait = picked
-        if wait > 0:
-            await self.sleep(wait)
-        url = dict(pairs)[key]
-        status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes)
-        self.pool.report(key, status, retry_after)
-        self.store.gateway_counts = dict(self.pool.counts)
-        return status, body, urlsplit(url).netloc, int(wait * 1000)
+            return "non_ipfs_uri", None, None, 0, False
+        keys = [k for k, _ in pairs]
+        urls = dict(pairs)
+        total_wait = 0
+        refused = False  # the local request was connection-refused (nothing transferred)
+        for _pass in range(2):
+            picked = self.pool.reserve(keys)
+            self.store.gateway_counts = dict(self.pool.counts)
+            if picked is None:
+                return "rate_limited_all", None, None, total_wait, refused
+            key, wait = picked
+            if wait > 0:
+                await self.sleep(wait)
+            total_wait += int(wait * 1000)
+            url = urls[key]
+            is_local = self.local is not None and key == self.local.key
+            timeout = self.local.timeout_for(image) if is_local and self.local else FETCH_TIMEOUT_S
+            status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes, timeout)
+            if status == "conn_refused" and not is_local:
+                status = "http_0"  # keep the public status vocabulary as it was
+            self.pool.report(key, status, retry_after)
+            src = ipf.LOCAL_LABEL if is_local else "public"
+            self.source_counts[src] = self.source_counts.get(src, 0) + 1
+            self.store.source_counts = dict(self.source_counts)
+            self.store.gateway_counts = dict(self.pool.counts)
+            gw = ipf.LOCAL_LABEL if is_local else urlsplit(url).netloc
+            if is_local and status == "conn_refused":
+                refused = True
+                # Nothing was transferred, so the same attempt may go to the public gateways (a timeout
+                # or 5xx ends the attempt instead). The breaker now keeps local out of the next picks.
+                keys = [k for k in keys if k != key]
+                if keys:
+                    continue
+            return status, body, gw, total_wait, refused
+        return "http_0", None, None, total_wait, refused
 
     async def _attempt(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         due, _, attempt, row = item
@@ -662,8 +715,9 @@ class Collector:
                                **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
         png: bytes | None = None
-        status, body, gateway, wait_ms = await self._fetch(uri, MAX_JSON_BYTES)
+        status, body, gateway, wait_ms, refused = await self._fetch(uri, MAX_JSON_BYTES)
         rec["status"], rec["gateway"] = status, gateway
+        rec["local_refused"] = refused
         if wait_ms:
             rec["wait_ms"] = wait_ms
         if body is not None:
@@ -690,7 +744,7 @@ class Collector:
         if not self.disk_ok():
             rec["img_status"] = "skipped_disk"
             return None
-        ist, raw, _, _ = await self._fetch(image, MAX_IMAGE_BYTES)
+        ist, raw, _, _, _ = await self._fetch(image, MAX_IMAGE_BYTES, image=True)
         rec["img_status"] = ist
         if raw is None:
             return None
@@ -785,7 +839,8 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
         await asyncio.wait_for(wtask, timeout=drain_timeout_s)
     except asyncio.TimeoutError:
         log.warning("drain_timeout cancelled in-flight attempts")
-    log.info("stopped pending=%d dropped=%d", len(col.heap), col.dropped)
+    log.info("stopped pending=%d dropped=%d local_gateway=%s source_counts=%s", len(col.heap),
+             col.dropped, col.store.local_gateway, json.dumps(col.source_counts, sort_keys=True))
     return EXIT_RSS if col.rss_exceeded else 0
 
 
@@ -793,11 +848,21 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="MAL create-time metadata collector")
     p.add_argument("--ws-url", default=os.environ.get("MAL_PUMPPORTAL_WS_URL", DEFAULT_WS_URL))
     p.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
-    p.add_argument("--concurrency", type=int, default=4)
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="default 4, or 16 when --local-gateway is set")
     p.add_argument("--gateway", action="append", help="ipfs gateway prefix; repeat, tried in order")
     p.add_argument("--gateway-rps", type=float, default=ipf.DEFAULT_RPS,
                    help="per-gateway token bucket rate")
     p.add_argument("--gateway-burst", type=float, default=ipf.DEFAULT_BURST)
+    p.add_argument("--local-gateway", default=None,
+                   help="http://127.0.0.1:<port> (or [::1]) kubo gateway tried first for ipfs uris; "
+                        "the only loopback origin allowed")
+    p.add_argument("--local-rps", type=float, default=ipf.LOCAL_RPS)
+    p.add_argument("--local-burst", type=float, default=ipf.LOCAL_BURST)
+    p.add_argument("--local-json-timeout-s", type=float, default=ipf.LOCAL_JSON_TIMEOUT_S)
+    p.add_argument("--local-image-timeout-s", type=float, default=ipf.LOCAL_IMAGE_TIMEOUT_S)
+    p.add_argument("--local-breaker-base-s", type=float, default=ipf.LOCAL_BREAKER_BASE_S)
+    p.add_argument("--local-breaker-max-s", type=float, default=ipf.LOCAL_BREAKER_MAX_S)
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -811,6 +876,16 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     configure_logging(args.log_level)
+    local = None
+    if args.local_gateway:
+        try:
+            local = ipf.parse_local_gateway(args.local_gateway, args.local_rps, args.local_burst,
+                                            args.local_json_timeout_s, args.local_image_timeout_s,
+                                            args.local_breaker_base_s, args.local_breaker_max_s)
+        except ValueError as exc:
+            print(f"--local-gateway refused: {exc}", file=sys.stderr)
+            return 2
+        log.info("local_gateway origin=%s rps=%s", local.origin, local.rps)
     loop = asyncio.new_event_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -819,7 +894,8 @@ def main(argv: list[str] | None = None) -> int:
     gateways = tuple(args.gateway or DEFAULT_GATEWAYS)
     col = Collector(Store(args.out, ref), gateways,
                     pool=ipf.GatewayPool(gateways, args.gateway_rps, args.gateway_burst),
-                    concurrency=args.concurrency, max_rss_mb=args.max_rss_mb,
+                    http_get=make_http_get(local.origin if local else None), local=local,
+                    concurrency=args.concurrency or (ipf.LOCAL_CONCURRENCY if local else 4), max_rss_mb=args.max_rss_mb,
                     min_free_gb=args.min_free_gb)
     try:
         return loop.run_until_complete(run(args.ws_url, col, stop, args.duration_s))

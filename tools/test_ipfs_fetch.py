@@ -279,5 +279,86 @@ class GuardAddressTests(unittest.TestCase):
         self.assertEqual(pool.reserve([other]), (other, 0.0))  # a different host is unaffected
 
 
+LOCAL = "http://127.0.0.1:8080"
+
+
+class LocalGatewayTests(unittest.TestCase):
+    def test_parse_accepts_only_literal_loopback_with_port(self) -> None:
+        g = ipf.parse_local_gateway("http://127.0.0.1:8080")
+        self.assertEqual((g.origin, g.key, g.rps, g.burst, g.json_timeout_s, g.image_timeout_s, g.breaker_base_s, g.breaker_max_s),
+                         (LOCAL, LOCAL + "/ipfs/", 20.0, 20.0, 20.0, 30.0, 30.0, 300.0))
+        self.assertEqual(ipf.parse_local_gateway("http://[::1]:8080/").origin, "http://[::1]:8080")
+        for bad in ("http://localhost:8080", "http://127.0.0.2:8080", "http://127.0.0.1", "https://127.0.0.1:8080",
+                    "http://u:p@127.0.0.1:8080", "http://127.0.0.1:8080@evil.example", "http://0127.0.0.1:8080",
+                    "http://127.0.0.1:08080", "http://127.0.0.1:8080/ipfs/x", "http://127.0.0.1:8080?x=1",
+                    "http://10.0.0.5:8080", "http://[::ffff:127.0.0.1]:8080", "http://0.0.0.0:8080",
+                    "http://127.0.0.1:0", "http://127.0.0.1:99999", " http://127.0.0.1:8080"):
+            with self.assertRaises(ValueError, msg=bad):
+                ipf.parse_local_gateway(bad)
+        with self.assertRaises(ValueError):
+            ipf.parse_local_gateway(LOCAL, rps=0)
+
+    def test_only_that_origin_is_exempt(self) -> None:
+        with patch("socket.getaddrinfo", side_effect=AssertionError("no DNS for the exempt origin")):
+            ipf.check_url(LOCAL + "/ipfs/" + CID0, local_origin=LOCAL)
+        with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 8081))]):
+            for url in ("http://127.0.0.1:8081/ipfs/x", "http://localhost/ipfs/x", "http://localhost:8080/ipfs/x",
+                        "https://127.0.0.1:8080/ipfs/x", "http://[::1]:8080/ipfs/x", "http://127.0.0.1/ipfs/x",
+                        "http://127.0.0.1:8080@evil.example/x"):
+                with self.assertRaises(ipf.BlockedUrl, msg=url):
+                    ipf.check_url(url, local_origin=LOCAL)
+            with self.assertRaises(ipf.BlockedUrl):
+                ipf.check_url(LOCAL + "/ipfs/x")  # no exemption configured
+            with self.assertRaises(ipf.BlockedUrl):
+                ipf.check_url("https://example.org/x", local_origin=LOCAL)  # resolves to loopback
+            with self.assertRaises(ipf.BlockedUrl):
+                ipf.check_url("http://u:p@127.0.0.1:8080/x", local_origin=LOCAL)
+
+    def test_redirects_from_local(self) -> None:
+        def chk(u):
+            ipf.check_url(u, frozenset(), frozenset(), LOCAL)
+        base = LOCAL + "/ipfs/" + CID0
+        with patch("socket.getaddrinfo", return_value=PUBLIC):
+            self.assertEqual(ipf.redirect_target(base, "/ipfs/" + CID0 + "/", chk, LOCAL),
+                             LOCAL + "/ipfs/" + CID0 + "/")
+            for loc in ("/api/v0/id", "/webui", LOCAL + "/api/v0/id", "/ipfs/../api/v0/id"):
+                self.assertIsNone(ipf.redirect_target(base, loc, chk, LOCAL), loc)
+            self.assertEqual(ipf.redirect_target(base, "https://ipfs.io/ipfs/" + CID0, chk, LOCAL),
+                             "https://ipfs.io/ipfs/" + CID0)
+            for loc in ("http://127.0.0.1:8081/ipfs/x", "http://localhost:8080/ipfs/x", "https://evil.example/x",
+                        "http://[::1]:8080/ipfs/x", "http://u:p@127.0.0.1:8080/x", "https://ipfs.io/other"):
+                self.assertIsNone(ipf.redirect_target(base, loc, chk, LOCAL), loc)
+            # a public gateway can never bounce us to the local origin
+            self.assertIsNone(ipf.redirect_target("https://ipfs.io/ipfs/x", LOCAL + "/ipfs/x", chk, LOCAL))
+
+    def test_plan_urls_local_first_only_for_ipfs(self) -> None:
+        g = ipf.parse_local_gateway(LOCAL)
+        pairs = ipf.plan_urls(ipf.classify_uri("ipfs://" + CID0), ipf.DEFAULT_GATEWAYS, g)
+        self.assertEqual([k for k, _ in pairs], [g.key, *ipf.DEFAULT_GATEWAYS])
+        self.assertEqual(pairs[0][1], LOCAL + "/ipfs/" + CID0)
+        direct = ipf.plan_urls(ipf.classify_uri("ar://" + "a" * 43), ipf.DEFAULT_GATEWAYS, g)
+        self.assertEqual(len(direct), 1)
+        self.assertNotIn(LOCAL, direct[0][1])
+
+    def test_own_bucket_and_429_cooldown(self) -> None:
+        pool, clk = pool_of("pub")
+        g = ipf.parse_local_gateway(LOCAL, rps=20, burst=20)
+        pool.add_pinned(g.key, g.rps, g.burst)
+        for _ in range(20):
+            self.assertEqual(pool.reserve([g.key, "pub"]), (g.key, 0.0))
+        self.assertEqual(pool.reserve([g.key, "pub"]), ("pub", 0.0))  # local bucket empty, public has tokens
+        clk.t += 0.06                                                  # 20 rps: one token back
+        self.assertEqual(pool.reserve([g.key, "pub"]), (g.key, 0.0))
+        pool.report(g.key, "http_429", 10)
+        self.assertEqual(pool.reserve([g.key, "pub"])[0], "pub")       # cooling local is skipped
+        self.assertEqual(pool.sources, {"local": 21, "public": 2})
+
+    def test_fallback_rule(self) -> None:
+        for st in ("timeout", "http_500", "http_503", "http_504", "http_0", "net_OSError"):
+            self.assertTrue(ipf.local_may_fall_back(st), st)
+        for st in ("http_404", "http_403", "http_400", "http_302", "ok", "blocked_url", "http_429"):
+            self.assertFalse(ipf.local_may_fall_back(st), st)
+
+
 if __name__ == "__main__":
     unittest.main()

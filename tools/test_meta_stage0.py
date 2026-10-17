@@ -824,5 +824,191 @@ class ResumeFromTests(unittest.TestCase):
                 m.main(["--out", "/nonexistent", "--gateway", "https://x"])  # gateways stay pinned
 
 
+class LocalGatewayFetchTests(unittest.TestCase):
+    LOC = ipf.parse_local_gateway("http://127.0.0.1:8080", rps=1e6, burst=1e6)
+    LURL = "http://127.0.0.1:8080/ipfs/QmFakeCid"
+
+    def fetch(self, table, ranged=False):
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=FakeClock())
+        http = FakeHttp(table)
+        out = m.fetch_with_retry(URI, GW, http, 100, ranged, pool, lambda s: None, self.LOC)
+        return out, http, pool
+
+    def test_local_first_with_its_own_timeouts(self) -> None:
+        (body, err), http, pool = self.fetch({self.LURL: (200, b"{}")})
+        self.assertEqual((body, err), (b"{}", None))
+        self.assertEqual(http.calls, [(self.LURL, 20.0, 100, False)])
+        (body, err), http, pool = self.fetch({self.LURL: (206, b"i")}, ranged=True)
+        self.assertEqual(http.calls[0][1], 30.0)
+        self.assertEqual(pool.sources, {"local": 1})
+
+    def test_local_404_is_final_no_public_request(self) -> None:
+        (body, err), http, pool = self.fetch({self.LURL: (404, b"")})
+        self.assertEqual((body, err), (None, "http_404"))
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual(pool.sources, {"local": 1})
+
+    def test_local_timeout_or_5xx_falls_back_to_public_at_10s(self) -> None:
+        for fail in (TimeoutError(), (504, b""), (500, b""), (503, b"")):
+            (body, err), http, pool = self.fetch({self.LURL: fail})
+            self.assertEqual((body, err), (b"{}", None), fail)
+            self.assertEqual([c[0].split("/")[2] for c in http.calls], ["127.0.0.1:8080", "gw1.invalid"])
+            self.assertEqual(http.calls[1][1], m.TIMEOUT_S)
+            self.assertEqual(pool.sources, {"local": 1, "public": 1})
+
+    def test_local_429_cools_then_public(self) -> None:
+        (body, err), http, pool = self.fetch({self.LURL: m.HttpResult(429, b"", 30.0)})
+        self.assertEqual((body, err), (b"{}", None))
+        self.assertGreater(pool.cooldown_left(self.LOC.key), 0)
+        self.assertEqual(pool.counts["http_429"], 1)
+
+    def test_no_local_is_unchanged(self) -> None:
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=FakeClock())
+        http = FakeHttp()
+        m.fetch_with_retry(URI, GW, http, 100, False, pool)
+        self.assertEqual(http.calls[0][:2], (JSON_URL, m.TIMEOUT_S))
+        self.assertEqual(pool.sources, {"public": 1})
+
+    def test_urllib_get_exempts_only_local_origin(self) -> None:
+        with patch.object(m, "_get_once", lambda *a, **k: m.HttpResult(200, b"x")), \
+                patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("127.0.0.1", 8081))]):
+            self.assertEqual(m.urllib_get(self.LURL, 30, 100, False, local_origin=self.LOC.origin)[1], b"x")
+        with patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("127.0.0.1", 8081))]):
+            for url in ("http://127.0.0.1:8081/ipfs/x", "http://localhost/ipfs/x", self.LURL):
+                with self.assertRaises(ipf.BlockedUrl, msg=url):
+                    m.urllib_get(url, 5, 100, False, local_origin="http://127.0.0.1:9999")
+
+    def test_local_redirect_same_origin_only(self) -> None:
+        import urllib.error
+        calls = []
+
+        def fake_once(url, timeout, max_bytes, ranged, deadline, allow, local_origin=None):
+            calls.append(url)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(url, 301, "x", {"Location": "/ipfs/QmFakeCid/"}, None)  # type: ignore[arg-type]
+            raise urllib.error.HTTPError(url, 302, "x", {"Location": "http://127.0.0.1:8081/ipfs/x"}, None)  # type: ignore[arg-type]
+        with patch.object(m, "_get_once", fake_once):
+            res = m.urllib_get(self.LURL, 30, 100, False, local_origin=self.LOC.origin)
+        self.assertEqual(res[0], 302)  # the off-origin hop is refused, status kept
+        self.assertEqual(calls, [self.LURL, self.LURL + "/"])
+
+
+class UrisFromTests(unittest.TestCase):
+    def make_src(self, root, mints):
+        src = Path(root)
+        src.mkdir()
+        raw = b"fake parquet bytes"
+        (src / "sample.parquet").write_bytes(raw)
+        (src / "sample.parquet.sha256").write_text(hashlib.sha256(raw).hexdigest() + "  sample.parquet\n")
+        (src / "uris.jsonl").write_text("".join(json.dumps({"mint": mt, "uri": URI}) + "\n" for mt in mints))
+        (src / "calls.json").write_text('{"calls": 2999}')
+        return src
+
+    def test_refetch_makes_zero_rpc_calls_and_counts_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = self.make_src(Path(d) / "src", ["m1", "m2"])
+            sample = [dict(row(1), mint="m1"), dict(row(2), mint="m2", grp="N"), dict(row(3), mint="m3")]
+            loc = ipf.parse_local_gateway("http://127.0.0.1:8080", rps=1e6, burst=1e6)
+            http = FakeHttp({
+                "http://127.0.0.1:8080/ipfs/QmFakeCid": (200, b'{"image":"%s"}' % IMG.encode()),
+                "http://127.0.0.1:8080/ipfs/QmFakeImg": (206, b"x")})
+            rpc = m.NoRpc()
+            pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=FakeClock())
+            out = Path(d) / "out"
+            s = m.refetch_from_uris(src, out, http, GW, pool, loc, sample_loader=lambda o: sample, rpc=rpc)
+            self.assertEqual(rpc.calls, 1)  # only m3, which has no stored uri: refused, never looked up
+            self.assertEqual(s["calls_used"], 0)
+            self.assertEqual(s["source_counts"], {"local": 4})
+            self.assertEqual(s["local_gateway"], "http://127.0.0.1:8080")
+            rows = {r["mint"]: r for r in m.load_done(out / "status.jsonl")}
+            self.assertTrue(rows["m1"]["image_ok"] and rows["m1"]["uri_cached"])
+            self.assertEqual(rows["m3"]["error"], "tx_no_rpc")
+            self.assertFalse((out / "calls.json").exists())
+            self.assertEqual(json.loads((out / "summary.json").read_text())["calls_used"], 0)
+            self.assertEqual(len(m.load_uris(out / "uris.jsonl")), 2)
+
+    def test_default_rpc_is_never_called(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = self.make_src(Path(d) / "src", ["m1"])
+            sample = [dict(row(1), mint="m1")]
+            with patch.object(m.NoRpc, "__call__", side_effect=AssertionError("rpc called")):
+                s = m.refetch_from_uris(src, Path(d) / "out", FakeHttp(), GW,
+                                        sample_loader=lambda o: sample)
+            self.assertEqual(s["calls_used"], 0)
+
+    def test_refetch_refuses_bad_sha_and_missing_uris(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = self.make_src(Path(d) / "s1", ["m1"])
+            (src / "sample.parquet").write_bytes(b"tampered")
+            with self.assertRaises(SystemExit):
+                m.refetch_from_uris(src, Path(d) / "o1", FakeHttp(), GW, sample_loader=lambda o: [])
+            src2 = self.make_src(Path(d) / "s2", [])
+            (src2 / "uris.jsonl").unlink()
+            with self.assertRaises(SystemExit):
+                m.refetch_from_uris(src2, Path(d) / "o2", FakeHttp(), GW, sample_loader=lambda o: [])
+
+    def test_cli_flags_exclusive_and_local_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit):
+                m.main(["--out", d, "--uris-from", d + "/a", "--resume-from", d + "/b"])
+            with self.assertRaises(SystemExit):
+                m.main(["--out", d, "--local-gateway", "http://localhost:8080"])
+            with self.assertRaises(SystemExit):
+                m.main(["--out", d, "--uris-from", d])
+
+class LocalBreakerStage0Tests(unittest.TestCase):
+    LOC = ipf.parse_local_gateway("http://127.0.0.1:8080", rps=1e6, burst=1e6)
+    LURL = "http://127.0.0.1:8080/ipfs/QmFakeCid"
+
+    def test_breaker_spans_mints(self) -> None:
+        clk = FakeClock()
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=clk)
+        http = FakeHttp({self.LURL: TimeoutError()})
+        for _ in range(3):  # three mints: only the first touches the local gateway
+            body, err = m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+            self.assertEqual((body, err), (b"{}", None))
+        self.assertEqual(sum(1 for c in http.calls if c[0].startswith("http://127.0.0.1")), 1)
+        self.assertAlmostEqual(pool.cooldown_left(self.LOC.key), 30.0)
+        clk.t += 31
+        http.table = {}
+        http.default = (200, b"{}")
+        m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+        self.assertTrue(http.calls[-1][0].startswith("http://127.0.0.1"))  # recovered
+
+    def test_refused_and_5xx_trip_then_double(self) -> None:
+        clk = FakeClock()
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=clk)
+        http = FakeHttp({self.LURL: ConnectionRefusedError()})
+        body, err = m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+        self.assertEqual((body, err), (b"{}", None))
+        self.assertAlmostEqual(pool.cooldown_left(self.LOC.key), 30.0)
+        clk.t += 31
+        http.table = {self.LURL: (503, b"")}
+        m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+        self.assertAlmostEqual(pool.cooldown_left(self.LOC.key), 60.0)
+
+    def test_504_never_trips_but_falls_back_to_public(self) -> None:
+        clk = FakeClock()
+        pool = ipf.GatewayPool(tuple(GW), rps=1e6, burst=1e6, clock=clk)
+        http = FakeHttp({self.LURL: (504, b"")})
+        for _ in range(4):
+            body, err = m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+            self.assertEqual((body, err), (b"{}", None))
+        self.assertEqual(sum(1 for c in http.calls if c[0].startswith("http://127.0.0.1")), 4)
+        self.assertEqual(pool.counts["local_breaker_trips"], 0)
+        self.assertEqual(pool.cooldown_left(self.LOC.key), 0.0)
+        http.table = {self.LURL: (500, b"")}
+        m.fetch_with_retry(URI, GW, http, 100, False, pool, lambda s: None, self.LOC)
+        self.assertEqual(pool.counts["local_breaker_trips"], 1)
+
+    def test_opener_ignores_proxy_env(self) -> None:
+        import os
+        import urllib.request
+        with patch.dict(os.environ, {"http_proxy": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"}):
+            self.assertTrue(any(isinstance(h, urllib.request.ProxyHandler)
+                                for h in urllib.request.build_opener().handlers))
+            self.assertFalse(any(isinstance(h, urllib.request.ProxyHandler) for h in m._OPENER.handlers))
+
+
 if __name__ == "__main__":
     unittest.main()

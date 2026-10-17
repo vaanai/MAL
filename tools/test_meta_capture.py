@@ -866,5 +866,298 @@ class SsrfStillRefusesTests(unittest.TestCase):
                 mc._urllib_get(url, 2, 100)
 
 
+LOCAL_ORIGIN = "http://127.0.0.1:8080"
+
+
+class TimedHttp(FakeHttp):
+    def __init__(self, routes):
+        super().__init__(routes)
+        self.timeouts = []
+
+    async def __call__(self, url, timeout, max_bytes):
+        self.timeouts.append((url, timeout))
+        return await super().__call__(url, timeout, max_bytes)
+
+
+def make_local(d, routes, clock=None, local=None, pool=None, **kw):
+    clock = clock or Clock(HOUR0 + 100)
+    gws = ("https://g1/ipfs/", "https://g2/ipfs/")
+    local = local or ipf.parse_local_gateway(LOCAL_ORIGIN, rps=1e6, burst=1e6)
+    http = TimedHttp(routes)
+    col = mc.Collector(mc.Store(Path(d), git_ref="abc123"), gateways=gws, http_get=http, clock_ms=clock,
+                       local=local, pool=pool or ipf.GatewayPool(gws, rps=1e6, burst=1e6), **kw)
+    return col, clock, http
+
+
+class LocalGatewayCaptureTests(unittest.TestCase):
+    def test_schedule_unchanged_and_source_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http = make_local(d, lambda u: mc.HttpError(404))  # final answer, no breaker
+            col.on_message(create_payload(), HOUR0 + 100)
+            for dt, expect in [(0, 1), (29_999, 0), (30_100, 1), (119_000, 0),
+                               (120_100, 1), (599_000, 0), (600_100, 1), (700_000, 0)]:
+                clock.t = HOUR0 + 100 + dt
+                self.assertEqual(run(col.step()), expect, dt)
+            rows = meta_rows(col)
+            self.assertEqual(mc.SCHEDULE_MS, (0, 30_000, 120_000, 600_000))
+            self.assertEqual([r["attempt"] for r in rows], [0, 1, 2, 3])
+            self.assertEqual([r["scheduled_ms"] - (HOUR0 + 100) for r in rows], [0, 30_000, 120_000, 600_000])
+            self.assertEqual({r["gateway"] for r in rows}, {"local"})
+            self.assertEqual(len(http.calls), 4)  # one request per attempt, local 404 is final, no second
+            self.assertTrue(all(u.startswith(LOCAL_ORIGIN + "/ipfs/") for u in http.calls))
+
+    def test_local_ok_uses_local_timeouts_public_keeps_10s(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http = make_local(d, doc_routes)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual((rows[0]["status"], rows[0]["gateway"]), ("ok", "local"))
+            self.assertEqual([t for _, t in http.timeouts], [20.0, 30.0] if HAVE_PIL else [20.0, 30.0])
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(("https://g1/ipfs/", "https://g2/ipfs/"), rps=1e6, burst=1e6)
+            col, clock, http = make_local(d, doc_routes, pool=pool)
+            pool.add_pinned(col.local.key, 1e6, 1e6)
+            pool.report(col.local.key, "http_429", 300)  # local cooling: public used, 10 s timeout
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            self.assertEqual(meta_rows(col)[0]["gateway"], "g1")
+            self.assertEqual({t for _, t in http.timeouts}, {10.0})
+
+    def test_local_404_is_final_one_request(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http = make_local(d, lambda u: mc.HttpError(404))
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            self.assertEqual(len(http.calls), 1)
+            r = meta_rows(col)[0]
+            self.assertEqual((r["status"], r["gateway"]), ("http_404", "local"))
+
+    def test_local_429_cools_then_public(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            pool = ipf.GatewayPool(("https://g1/ipfs/", "https://g2/ipfs/"), rps=1e6, burst=1e6,
+                                   clock=lambda: 1000.0)
+            col, clock, http = make_local(
+                d, lambda u: mc.HttpError(429, retry_after=60) if "127.0.0.1" in u else DOC, pool=pool)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            clock.t = HOUR0 + 100 + 30_100
+            run(col.step())
+            self.assertEqual([(r["gateway"], r["status"]) for r in meta_rows(col)[:2]],
+                             [("local", "http_429"), ("g1", "ok")])
+
+    def test_capture_json_records_origin_and_source_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http = make_local(d, lambda u: mc.HttpError(503))
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            col.store.write_capture(HK0)
+            doc = json.loads(col.store.capture_path(HK0).read_text())
+            self.assertEqual(doc["local_gateway"], LOCAL_ORIGIN)
+            self.assertEqual(doc["source_counts"], {"local": 1})
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.store.write_capture(HK0)
+            doc = json.loads(col.store.capture_path(HK0).read_text())
+            self.assertIsNone(doc["local_gateway"])
+
+    def test_real_get_exempts_only_the_configured_origin(self) -> None:
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                if self.path.endswith("/redir"):
+                    self.send_response(302)
+                    self.send_header("Location", "http://127.0.0.1:%d/ipfs/x/" % self.server.server_port)
+                    self.end_headers()
+                    return
+                if self.path.endswith("/off"):
+                    self.send_response(302)
+                    self.send_header("Location", "http://127.0.0.1:%d/ipfs/x" % (self.server.server_port + 1))
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"hello")
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            origin = "http://127.0.0.1:%d" % srv.server_port
+            self.assertEqual(mc._urllib_get(origin + "/ipfs/x", 5, 100, local_origin=origin), b"hello")
+            self.assertEqual(mc._urllib_get(origin + "/ipfs/redir", 5, 100, local_origin=origin), b"hello")
+            with self.assertRaises(ipf.HttpError) as cm:  # off-origin redirect is not followed
+                mc._urllib_get(origin + "/ipfs/off", 5, 100, local_origin=origin)
+            self.assertEqual(cm.exception.status, 302)
+            other = "http://127.0.0.1:%d/ipfs/x" % (srv.server_port + 1)
+            with self.assertRaises(mc.BlockedUrl):
+                mc._urllib_get(other, 5, 100, local_origin=origin)
+            with self.assertRaises(mc.BlockedUrl):
+                mc._urllib_get("http://localhost:%d/ipfs/x" % srv.server_port, 5, 100, local_origin=origin)
+            with self.assertRaises(mc.BlockedUrl):  # no exemption configured: loopback refused
+                mc._urllib_get(origin + "/ipfs/x", 5, 100)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_cli_refuses_bad_local_gateway(self) -> None:
+        with unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}):
+            with tempfile.TemporaryDirectory() as d:
+                for bad in ("http://localhost:8080", "http://127.0.0.1", "https://127.0.0.1:8080"):
+                    self.assertEqual(mc.main(["--out", d, "--local-gateway", bad]), 2, bad)
+
+
+class PClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+class LocalBreakerTests(unittest.TestCase):
+    GWS = ("https://g1/ipfs/", "https://g2/ipfs/")
+
+    def setup(self, d, routes):
+        pc = PClock()
+        pool = ipf.GatewayPool(self.GWS, rps=1e6, burst=1e6, clock=pc)
+        col, clock, http = make_local(d, routes, pool=pool)
+        return col, clock, http, pool, pc
+
+    def test_refused_falls_through_to_public_in_same_attempt(self) -> None:
+        def routes(u):
+            return ipf.ConnectionRefused() if "127.0.0.1" in u else DOC
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, routes)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            r = meta_rows(col)[0]
+            self.assertEqual((r["attempt"], r["status"], r["gateway"]), (0, "ok", "g1"))
+            self.assertEqual(http.calls[0], LOCAL_ORIGIN + "/ipfs/cid1")
+            self.assertEqual(http.calls[1], "https://g1/ipfs/cid1")
+            self.assertGreater(pool.cooldown_left(col.local.key), 0)
+            self.assertEqual(col.source_counts["local"], 1)
+
+    def test_timeout_cools_ends_attempt_next_attempt_public_then_recovers(self) -> None:
+        def routes(u):
+            if "127.0.0.1" in u:
+                return mc.FetchTimeout()
+            return DOC
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, routes)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())                                   # attempt 0: local timeout, no fallthrough
+            self.assertEqual(len(http.calls), 1)
+            r0 = meta_rows(col)[0]
+            self.assertEqual((r0["status"], r0["gateway"]), ("timeout", "local"))
+            self.assertAlmostEqual(pool.cooldown_left(col.local.key), 30.0)
+            clock.t = HOUR0 + 100 + 30_100
+            pc.t += 10                                        # still cooling
+            run(col.step())
+            self.assertEqual(meta_rows(col)[1]["gateway"], "g1")
+            self.assertEqual(meta_rows(col)[1]["status"], "ok")
+
+    def test_local_recovers_after_cooldown_and_backoff_doubles_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(503))
+            k = col.local.key
+            pool.report(k, "http_503")
+            self.assertAlmostEqual(pool.cooldown_left(k), 30.0)
+            pc.t += 31
+            self.assertEqual(pool.reserve([k, self.GWS[0]])[0], k)   # recovered
+            pool.report(k, "http_503")
+            self.assertAlmostEqual(pool.cooldown_left(k), 60.0)      # doubled
+            for _ in range(6):
+                pc.t += 400
+                pool.report(k, "timeout")
+            self.assertLessEqual(pool.cooldown_left(k), 300.0)
+            pc.t += 301
+            pool.report(k, "ok")                                      # success resets the backoff
+            pool.report(k, "http_404")
+            pool.report(k, "timeout")
+            self.assertAlmostEqual(pool.cooldown_left(k), 30.0)
+
+    def test_504_never_trips_500_does_and_record_carries_local_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(504))
+            col.on_message(create_payload(), HOUR0 + 100)
+            for dt in (0, 30_100, 120_100, 600_100):   # every scheduled attempt still runs, all on local
+                clock.t = HOUR0 + 100 + dt
+                run(col.step())
+            rows = meta_rows(col)
+            self.assertEqual([(r["attempt"], r["status"], r["gateway"], r["local_refused"]) for r in rows],
+                             [(i, "http_504", "local", False) for i in range(4)])
+            self.assertEqual(len(http.calls), 4)        # no fallthrough within an attempt
+            self.assertEqual(pool.counts["local_breaker_trips"], 0)
+            self.assertEqual(pool.cooldown_left(col.local.key), 0.0)
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(500))
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            self.assertEqual(pool.counts["local_breaker_trips"], 1)
+            self.assertAlmostEqual(pool.cooldown_left(col.local.key), 30.0)
+            self.assertFalse(meta_rows(col)[0]["local_refused"])
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(
+                d, lambda u: ipf.ConnectionRefused() if "127.0.0.1" in u else DOC)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            r = meta_rows(col)[0]
+            self.assertTrue(r["local_refused"])
+            self.assertEqual((r["status"], r["gateway"]), ("ok", "g1"))
+
+    def test_404_and_429_do_not_trip_breaker(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock, http, pool, pc = self.setup(d, lambda u: mc.HttpError(404))
+            pool.report(col.local.key, "http_404")
+            self.assertEqual(pool.cooldown_left(col.local.key), 0.0)
+            self.assertEqual(pool.counts["local_breaker_trips"], 0)
+
+
+class ProxyAndConcurrencyTests(unittest.TestCase):
+    def test_opener_ignores_proxy_env(self) -> None:
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"direct")
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            origin = "http://127.0.0.1:%d" % srv.server_port
+            env = {"http_proxy": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9",
+                   "https_proxy": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9"}
+            with unittest.mock.patch.dict(os.environ, env):
+                self.assertTrue(any(isinstance(h, mc.urllib.request.ProxyHandler)  # the default would proxy
+                                    for h in mc.urllib.request.build_opener().handlers))
+                self.assertFalse(any(isinstance(h, mc.urllib.request.ProxyHandler)
+                                     for h in mc._OPENER.handlers))
+                self.assertEqual(mc._urllib_get(origin + "/ipfs/x", 5, 100, local_origin=origin), b"direct")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_default_concurrency(self) -> None:
+        for argv, want in ((["--local-gateway", LOCAL_ORIGIN], 16), ([], 4),
+                           (["--local-gateway", LOCAL_ORIGIN, "--concurrency", "3"], 3)):
+            seen = {}
+
+            class FakeCol:
+                def __init__(self, *a, **k):
+                    seen.update(k)
+
+            async def fake_run(*a, **k):
+                return 0
+            with tempfile.TemporaryDirectory() as d, \
+                    unittest.mock.patch.dict(sys.modules, {"websockets": types.ModuleType("websockets")}), \
+                    unittest.mock.patch.object(mc, "Collector", FakeCol), \
+                    unittest.mock.patch.object(mc, "run", fake_run):
+                self.assertEqual(mc.main(["--out", d, *argv]), 0)
+            self.assertEqual(seen["concurrency"], want, argv)
+
+
 if __name__ == "__main__":
     unittest.main()
