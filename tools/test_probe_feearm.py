@@ -206,10 +206,41 @@ class ExecTests(unittest.TestCase):
             self.mk(arm_seed=8)
         ex.state.pending.clear()
         ex.state.save(ex.state_path)
-        (self.tmp / "h5").mkdir()
-        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "state-live.json")
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "live" / "state-live.json")
         with self.assertRaises(SystemExit):
             self.mk()
+
+    def _h5_precheck(self):
+        d19 = pe.state_path_for(pe.LIVE_DIR, "live", "dec019")
+        pe.State(mode="live").save(d19)
+        return pe._feearm_precheck({"state_dir": str(self.tmp)}, d19, pe.state_path_for(pe.LIVE_DIR, "live", "dec020"))
+
+    def test_h5_state_path_is_the_real_one(self):
+        with mock.patch.object(pe, "LIVE_DIR", Path("/var/lib/mal-live")):
+            self.assertEqual(pe.LIVE_DIR / pe.H5_DIR_NAME / pe.H5_LIVE_STATE_REL, Path("/var/lib/mal-live/h5/live/state-live.json"))
+
+    def test_h5_open_at_real_path_refuses(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "live" / "state-live.json")
+        with self.assertRaises(SystemExit) as cm:
+            self._h5_precheck()
+        self.assertIn("h5 live state has 1 open", str(cm.exception))
+
+    def test_h5_flat_at_real_path_passes_old_wrong_path_ignored(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        pe.State(mode="live").save(self.tmp / "h5" / "live" / "state-live.json")
+        pe.State(mode="live", open={"M": {}}).save(self.tmp / "h5" / "state-live.json")
+        self.assertEqual(self._h5_precheck(), [])
+
+    def test_h5_dir_exists_but_state_missing_refuses(self):
+        (self.tmp / "h5" / "live").mkdir(parents=True)
+        with self.assertRaises(SystemExit) as cm:
+            self._h5_precheck()
+        self.assertIn("missing", str(cm.exception))
+
+    def test_no_h5_dir_is_not_an_h5_install(self):
+        self.assertEqual(self._h5_precheck(), [])
 
     def test_fill_log_and_stop_files_are_fixed(self):
         with self.assertRaises(SystemExit):
@@ -271,6 +302,34 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(pe.feearm_buy_refusal(ex.limits, ex.state, size, arm1[1], 3), "spend_cap")
         ex.handle_signal(mk_sig(ex, mint="11111111111111111111111111111112", t=clock()))  # an abandoned position halts new buys too
         self.assertEqual(fills(conf)[-1]["reason"], "limit:sell_stuck")
+
+
+class ShippedFeearmConfigTests(unittest.TestCase):
+    """The shipped feearm config: entry-k guard off (the runner's intents carry no migration_slot), staleness still bounded."""
+    CFG = Path(__file__).resolve().parent.parent / "scripts/mal-fast/probe-executor-live-feearm.json"
+
+    def test_guard_off_and_limits_unchanged(self):
+        cfg = json.loads(self.CFG.read_text())
+        self.assertIsNone(pe.validate_max_entry_k(cfg.get("max_entry_k_slots")))
+        self.assertEqual(cfg["max_signal_age_s"], 5)
+        lim = pe.Limits.from_config(cfg)
+        self.assertEqual(lim.spend_cap_lamports, 150_000_000)
+        self.assertEqual((lim.size_lamports, lim.max_attempts, lim.max_open), (5_000_000, 150, 2))
+        self.assertEqual(cfg["arm_seed"], 20261016)
+        self.assertFalse(cfg["third_arm"])
+        self.assertEqual(pe.FEEARM_ARMS, (("control", 500_000), ("test", 155_000)))
+
+    def test_real_shaped_intent_not_refused_by_entry_k_but_stale_is(self):
+        cfg = json.loads(self.CFG.read_text())
+        max_k = pe.validate_max_entry_k(cfg.get("max_entry_k_slots"))
+        now = 1_760_000_000_000
+        sig = {"mint": MINT, "complete_slot": 400_000_000, "complete_ts": now // 1000 - 1, "decision_t_ms": now - 900,
+               "written_ms": now - 800, "lead_ms": 100}
+        self.assertNotIn("migration_slot", sig)
+        self.assertIsNone(pe.entry_k_refusal(sig, 400_000_010, max_k))
+        self.assertIn("entry_k unknown", pe.entry_k_refusal(sig, 400_000_010, 8))  # the old setting refused it
+        self.assertLessEqual(pe.signal_age_ms(sig, now), cfg["max_signal_age_s"] * 1000)
+        self.assertGreater(pe.signal_age_ms(sig, now + 6000), cfg["max_signal_age_s"] * 1000)
 
 
 if __name__ == "__main__":

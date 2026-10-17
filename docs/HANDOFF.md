@@ -11,6 +11,25 @@ Then read, as needed:
 
 ## 1. Where things stand (2026-10-13T09:48:28Z)
 
+### 1.0g Update 2026-10-16T19:10Z (manager12): H5 tail and exit results, Haiku September FAIL, fee-probe state, breach record
+
+Source: [ARTIFACTS/lab/push-2026-10-16-evening.md](../ARTIFACTS/lab/push-2026-10-16-evening.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. No book has cleared the promotion gate.
+
+- **Results:** no H5 tail filter (1.42x on n) and no exit structure (best 1.13x on days-to-gate) makes H5 certifiable fast; the Haiku trader's September walk FAILED (no Stage 2); launchpad-landscape is web-only and shows no venue that makes money. QP's EXP-026 power desk (synthetic): plan on +2 to +5%.
+- **Fee-arm probe:** live at db4af222 since about 18:20Z but 0 buys are possible, because the intents carry no migration_slot (jobs #1072/#1073: 1,388 of 1,388 rows). Fix PR #669 merged as d29ae53. A reinstall needs the owner's OK (q_RA-Txtw4ncevOA, open).
+- **Breach record:** a diagnostic scan for PR #670 read row types and mint counts from forward-1002 migrations hours 2026-10-16T01 and T02 (QP ruling, PR #670 comment 6222506181: low severity, no read compromised, those hours can never be counted). Disclosed in the HOLDOUT_LEDGER changelog (2026-10-16), the Forward walk 2 Status cell and the EXP-025 "Breach disclosure" amendment. Any walk-2 pre-registration must cite it. Diagnostic scans filter by the validated hour range and call `check_read` before opening a file.
+- **D1 layer:** PR #670 merged as 6b3e01d (QP OK 6222655533 and Reviewer OK 6222678801 at 2da1d1e; precount #1074 at the earlier head 1764657 was cancelled). Real-layout precount #1076 runs at 2da1d1e; the full run is a separate job after the manager checks PRECOUNT.json.
+
+### 1.0f Update 2026-10-16T18:20Z (manager12): push rounds 4-5, execution ops
+
+Source: [ARTIFACTS/lab/push-2026-10-16-round45.md](../ARTIFACTS/lab/push-2026-10-16-round45.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money; no book has cleared the promotion gate.
+
+- **Rounds 4-5 result:** every fresh-pool long at MAL latency failed on the exploration tape (drain-escape best -5.11% per attempt at 0.25 SOL, dump-absorb, dev-events, crash-bounce-v2). Speed buys no line near the goal (speed-route). The Mayhem agent's direction is a coin flip unconditionally (pool-state dependence not tested). Manager's reading: the BOOST-floor family (H5) is the lab's strongest exploration line; a few other lines are small positives (LAYA r4-a +0.5335% at the 1.3 s press under haircut, crash-bounce mid fill +0.8270%) that fail the gate or kill rules; the custom-pair extension shrank to 47 tradeable trades (1.31/day) carried by 2 blocks, latest block -9.966%. PUMP buyback study: a continuous buyer, no window; not pursued. Pool sells are reserve-consistent.
+- **Fee-arm probe:** PR #662 merged (db4af222). Helm is installing exactly db4af222 with Gordon's corrected steps; owner go for live after a 1 h keyless dry run; ends by 2026-10-22T00:00Z. It is pending live; Helm confirms. The read-only watch (PR #665, 7c079bd) runs as a read-only job about every 2 h.
+- **Also merged:** H5-path fix #666 (b2fe44e, for a later install only); D1 layer repair #667 (f104cb3), precount job #1067. DEC-030 draft #664: QP OK at 7f5002c on the text, waiting on a candidate and the owner's line.
+- **Running, no result known:** an October D0 count of custom-pair BOOST graduations.
+- Library rows: section `push-1016-r45` (52 rows).
+
 ### 1.0e Update 2026-10-16T16:42Z (manager12): push round 3, OOM, takeover
 
 Source: [ARTIFACTS/lab/push-2026-10-16-round3.md](../ARTIFACTS/lab/push-2026-10-16-round3.md). No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
@@ -27,7 +46,7 @@ Source: [ARTIFACTS/lab/push-2026-10-16-round3.md](../ARTIFACTS/lab/push-2026-10-
 Source: [ARTIFACTS/lab/push-2026-10-16-round2.md](../ARTIFACTS/lab/push-2026-10-16-round2.md) and the files it names under `/data/mal/hunt-1008/push-1016/`. No sealed, forward, walk, shadow, canary or October outcome file was opened. Nothing here says any book made money.
 
 - Bonding curve: shelved at MAL latency. Deep pools: all six rules gross-negative. LAYA RULE B pool entries: fails at the DEC-021 section 1 haircut (QP ruling 2026-10-16T08:31:53Z); no EXP-027 now. Haiku trader v1 fails September; the loop fails its null.
-- **EXP-026 prep from 2026-10-17 (GAPS.md section 3):** 10-17 12Z the G0 count-only check of the oracle seal and the QP rulings (GAPS section 4); 10-17 the record of 2026-10-16 (owner line, Option A only); 10-18 QP OK on the record and builder spec issued by 12Z; 10-18 to 10-20 builds A, B, C; 10-21 12Z merge and freeze; 10-22 12Z restart of #817 on the merged head (latest 16:00Z); **W0 by 2026-10-23T00:00:00Z or EXP-026 is withdrawn**. E1 (job #1059): faa3192 n 33, so P9's n >= 20 holds for that set; QP-DECIDABILITY.md says EXP-026 is decidable without EXP-022.
+- **EXP-026 prep from 2026-10-17 (GAPS.md section 3):** 10-17 12Z the G0 count-only check of the oracle seal and the QP rulings (GAPS section 4); 10-17 the record of 2026-10-16 (owner line, DEC-028 Option A only); 10-18 QP OK on the record and builder spec issued by 12Z; 10-18 to 10-20 builds A, B, C; 10-21 12Z merge and freeze; 10-22 12Z restart of #817 on the merged head (latest 16:00Z); **W0 by 2026-10-23T00:00:00Z or EXP-026 is withdrawn**. E1 (job #1059): faa3192 n 33, so P9's n >= 20 holds for that set; [BREACH TAG: job #1059 breached D2 and D3 and is void as E1; the n >= 20 claim for P9 is withdrawn; quant-proof ruling, ledger changelog 2026-10-16, #1059] QP-DECIDABILITY.md says EXP-026 is decidable without EXP-022. [P9 TAG 2026-10-17 (manager12, from Warden's review of #688 and quant-proof's #1059 ruling): EXP-026 has no valid E1. #1059 is void, and no clean E1 exists before D3 (and D2) open (D3 at EXP-024's end state; its first listed end state is 2026-11-14), after EXP-026's read deadline (~11-08). P9 is a §6.2 before-read item, so W0 can open without E1, and the §7 refusal then spends the window (EXP-026 §7, 'a P7–P11 refusal ... also spends the window'). EXP-026 build work is on hold until the owner decides between withdrawal before W0 and a disclosed pre-W0 amendment (q_p-l6lP4dr97IYQ); quant-proof ruled on 2026-10-17 (/data/mal/hunt-1008/push-1016/hunt6/r4b-readtool/QP-EXP026-PATH.md) that the as-written text must not reach W0, that the fixed-penalty amendment is admissible and disclose-only on that ruling's conditions (owner's dated line first; quant-proof OK on its final head; merged before W0 as a §6.1 item, P12; a ledger line recording EXP-026 as a counted non-owner reader of walk-2 hours through the live shadow), and it recommends withdrawal. #1059 is never cited as E1 or as a basis for any choice (naming it in a breach disclosure is required), and no new E1 runs on sealed hours. Not deleted.]
 - **D1 layer repair:** job #1061 failed closed on `creates-2026-10-12T04.jsonl.zst: line 308 is not JSON` and hit the 12 GB memory limit. Next: a counted-skip rule under quant-proof and a memory fix, then rerun the precount. The hourly counts printed before the refusal (prints about 108k-234k per hour, creates about 1.2k-2.5k, completes about 26-61, 2026-10-11T00 to 2026-10-12T03) are D1/D0 counts only.
 - The hunt continues capacity-first (lib-b-E3 impact at 0.25 SOL, lib-b-E4 fee leg, lib-c-M1 D0 count). Library rows: section `push-1016-r2`.
 
@@ -56,7 +75,7 @@ EXP-024 Look 1: not run. The read ended NOT_DECIDABLE on 2026-10-13 (A3 pins_cha
 
 Scheduled steps (instants):
 - EXP-025 Look 1 R8 run after 2026-10-18T12:00:00Z, and Look 2 R8 run after 2026-10-26T12:00:00Z (commands in the EXP-025 "P5 record (2026-10-16)").
-- EXP-026 W0 by 2026-10-23T00.
+- EXP-026 W0 by 2026-10-23T00. [P9 TAG 2026-10-17: EXP-026 has no valid E1; build work on hold pending the owner (q_p-l6lP4dr97IYQ) and quant-proof; see the 'EXP-026 prep' bullet.]
 - C1-NF jobs #658 / #662 limits about 2026-10-17T22Z.
 - Walk 2 #1036 limit about 2026-10-22T19:21Z (resubmit before).
 - Exporter #1034: replace after H5 end_ms 2026-10-23T19:29:53Z.
