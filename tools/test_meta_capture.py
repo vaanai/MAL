@@ -424,13 +424,28 @@ class SealTests(unittest.TestCase):
             run(col.step())  # attempt 0 fails, attempt 1 queued
             # restart one minute into hour 1
             col2, _ = make(d, clock=Clock(HOUR0 + 3_660_000))
-            self.assertEqual(col2.recover(), 3)
-            self.assertEqual(sorted(a for _, _, a, _ in col2.heap), [1, 2, 3])
+            self.assertEqual(col2.recover(), 1)
+            self.assertEqual([a for _, _, a, _ in col2.heap], [1])
+            # run to completion after the restart: exactly one row per attempt number
+            col2.clock_ms = Clock(HOUR0 + 4_300_000)
+            for _ in range(6):
+                run(col2.step())
+            self.assertEqual(sorted(r["attempt"] for r in meta_rows(col2)), [0, 1, 2, 3])
+            self.assertEqual(len(col2.http_get.calls), 3)
             # restart after the seal delay: earlier unsealed hour gets manifest lines
             col3, _ = make(d, clock=Clock(HOUR0 + 3_600_000 + 900_000))
             col3.store.seal_due(col3.clock_ms())
             self.assertIn(HK0, col3.store.sealed)
             self.assertEqual(col3.recover(), 0)
+
+
+class GatewayTests(unittest.TestCase):
+    def test_pinned_default_gateways(self) -> None:
+        self.assertEqual(mc.DEFAULT_GATEWAYS, ("https://gateway.pinata.cloud/ipfs/",
+                                               "https://ipfs.io/ipfs/", "https://dweb.link/ipfs/"))
+        self.assertIn("pump.mypinata.cloud", mc.KNOWN_GATEWAY_HOSTS)
+        self.assertEqual(mc.candidate_urls("https://pump.mypinata.cloud/ipfs/cid", mc.DEFAULT_GATEWAYS)[0],
+                         "https://gateway.pinata.cloud/ipfs/cid")
 
 
 class GuardTests(unittest.TestCase):

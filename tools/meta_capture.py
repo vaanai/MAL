@@ -52,13 +52,13 @@ DEFAULT_WS_URL = "wss://pumpportal.fun/api/data"
 SUBSCRIBE_METHOD = "subscribeNewToken"
 DEFAULT_OUT = "/data/mal/meta-capture"
 DEFAULT_GATEWAYS = (
-    "https://ipfs.io/ipfs/",
-    "https://cloudflare-ipfs.com/ipfs/",
     "https://gateway.pinata.cloud/ipfs/",
+    "https://ipfs.io/ipfs/",
+    "https://dweb.link/ipfs/",
 )
 KNOWN_GATEWAY_HOSTS = frozenset(
     {"ipfs.io", "www.ipfs.io", "cloudflare-ipfs.com", "gateway.pinata.cloud",
-     "dweb.link", "nftstorage.link", "w3s.link", "cf-ipfs.com"}
+     "dweb.link", "nftstorage.link", "w3s.link", "cf-ipfs.com", "pump.mypinata.cloud"}
 )
 FETCH_TIMEOUT_S = 10.0
 SCHEDULE_MS = (0, 30_000, 120_000, 600_000)  # receive, +30 s, +2 min, +10 min
@@ -569,10 +569,12 @@ class Collector:
                 mint = str(row.get("mint"))
                 if mint in done or int(row["t_recv_ms"]) + SCHEDULE_MS[-1] < now - 60_000:
                     continue
-                for a in range(len(SCHEDULE_MS)):
-                    if a not in attempts.get(mint, set()):
-                        self._schedule(row, a)
-                        n += 1
+                # Only the lowest missing attempt; _attempt chains the rest, so a
+                # restart cannot produce duplicate fetches.
+                missing = [a for a in range(len(SCHEDULE_MS)) if a not in attempts.get(mint, set())]
+                if missing:
+                    self._schedule(row, missing[0])
+                    n += 1
         return n
 
     async def step(self) -> int:
