@@ -31,7 +31,6 @@ import io
 import json
 import logging
 import os
-import ipaddress
 import re
 import shutil
 import signal
@@ -46,20 +45,16 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
+from tools import ipfs_fetch as ipf
+from tools.ipfs_fetch import BlockedUrl, HttpError, check_url
+
 log = logging.getLogger("mal.meta_capture")
 
 DEFAULT_WS_URL = "wss://pumpportal.fun/api/data"
 SUBSCRIBE_METHOD = "subscribeNewToken"
 DEFAULT_OUT = "/data/mal/meta-capture"
-DEFAULT_GATEWAYS = (
-    "https://gateway.pinata.cloud/ipfs/",
-    "https://ipfs.io/ipfs/",
-    "https://dweb.link/ipfs/",
-)
-KNOWN_GATEWAY_HOSTS = frozenset(
-    {"ipfs.io", "www.ipfs.io", "cloudflare-ipfs.com", "gateway.pinata.cloud",
-     "dweb.link", "nftstorage.link", "w3s.link", "cf-ipfs.com", "pump.mypinata.cloud"}
-)
+DEFAULT_GATEWAYS = ipf.DEFAULT_GATEWAYS  # pinned, shared with meta_stage0
+KNOWN_GATEWAY_HOSTS = ipf.KNOWN_GATEWAY_HOSTS
 FETCH_TIMEOUT_S = 10.0
 SCHEDULE_MS = (0, 30_000, 120_000, 600_000)  # receive, +30 s, +2 min, +10 min
 SEAL_DELAY_MS = 3_600_000 + 15 * 60_000  # H + 1h15m
@@ -132,26 +127,9 @@ def uri_kind(uri: str) -> str:
 
 
 def candidate_urls(uri: str, gateways: tuple[str, ...] | list[str]) -> list[str]:
-    """ipfs:// and known gateway urls become one url per configured gateway."""
-    if not isinstance(uri, str):
-        return []
-    uri = uri.strip()
-    path = None
-    if uri.startswith("ipfs://"):
-        path = uri[len("ipfs://"):]
-        if path.startswith("ipfs/"):
-            path = path[len("ipfs/"):]
-    elif uri.startswith(("http://", "https://")):
-        m = re.match(r"https?://([^/]+)/ipfs/(.+)$", uri)
-        if m and m.group(1).lower() in KNOWN_GATEWAY_HOSTS:
-            path = m.group(2)
-        else:
-            return [uri]
-    else:
-        return []
-    if not path:
-        return []
-    return [g.rstrip("/") + "/" + path for g in gateways]
+    """ipfs:// and /ipfs/<path> urls become one url per configured gateway; ar:// and the pinned
+    Arweave/metadata hosts become one direct url; any other host yields nothing (non_ipfs_uri)."""
+    return [u for _, u in ipf.plan_urls(ipf.classify_uri(uri), gateways)]
 
 
 def extract_meta(doc: Any) -> dict[str, Any]:
@@ -179,17 +157,7 @@ class FetchTooBig(Exception):
     pass
 
 
-class HttpError(Exception):
-    def __init__(self, status: int) -> None:
-        super().__init__(f"http_{status}")
-        self.status = status
-
-
 HttpGet = Callable[[str, float, int], Awaitable[bytes]]
-
-
-class BlockedUrl(Exception):
-    pass
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -200,41 +168,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def check_url(url: str, http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
-              allow_private_hosts: frozenset[str] = frozenset()) -> None:
-    """SSRF guard: https only (http only to listed gateways); resolved
-    addresses must be public. DNS can still change between this check and the
-    connect (rebinding); redirects are never followed, which bounds the rest."""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if parts.scheme not in ("https", "http") or not host:
-        raise BlockedUrl("scheme")
-    if parts.scheme == "http" and host not in http_hosts and host not in allow_private_hosts:
-        raise BlockedUrl("plain_http")
-    if host in allow_private_hosts:
-        return
-    try:
-        infos = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
-                                   type=socket.SOCK_STREAM)
-    except OSError as exc:
-        raise HttpError(0) from exc
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
-                or ip.is_reserved or ip.is_unspecified):
-            raise BlockedUrl("private_address")
-
-
-def _urllib_get(url: str, timeout: float, max_bytes: int, *,
-                http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
-                allow_private_hosts: frozenset[str] = frozenset()) -> bytes:
+def _urllib_once(url: str, timeout: float, max_bytes: int, deadline: float, *,
+                 http_hosts: frozenset[str], allow_private_hosts: frozenset[str]) -> bytes:
     check_url(url, http_hosts, allow_private_hosts)
-    deadline = time.monotonic() + timeout  # wall-clock cap on the whole body
     req = urllib.request.Request(url, headers={"User-Agent": "mal-meta-capture/1"})
     chunks: list[bytes] = []
     total = 0
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=max(0.1, min(timeout, deadline - time.monotonic()))) as resp:
             while True:
                 if time.monotonic() > deadline:
                     raise FetchTimeout()
@@ -246,7 +187,9 @@ def _urllib_get(url: str, timeout: float, max_bytes: int, *,
                     raise FetchTooBig()
                 chunks.append(chunk)
     except urllib.error.HTTPError as exc:
-        raise HttpError(exc.code) from exc
+        raise HttpError(exc.code, location=exc.headers.get("Location") if exc.headers else None,
+                        retry_after=ipf.parse_retry_after(
+                            exc.headers.get("Retry-After") if exc.headers else None)) from exc
     except (TimeoutError, socket.timeout) as exc:
         raise FetchTimeout() from exc
     except urllib.error.URLError as exc:
@@ -254,6 +197,28 @@ def _urllib_get(url: str, timeout: float, max_bytes: int, *,
             raise FetchTimeout() from exc
         raise HttpError(0) from exc
     return b"".join(chunks)
+
+
+def _urllib_get(url: str, timeout: float, max_bytes: int, *,
+                http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
+                allow_private_hosts: frozenset[str] = frozenset()) -> bytes:
+    """One GET with a wall-clock cap over the whole body. At most ipf.MAX_REDIRECTS redirects, each
+    only if ipf.redirect_target accepts it; any other redirect surfaces as HttpError(3xx)."""
+    deadline = time.monotonic() + timeout
+    cur = url
+    for hop in range(ipf.MAX_REDIRECTS + 1):
+        try:
+            return _urllib_once(cur, timeout, max_bytes, deadline, http_hosts=http_hosts,
+                                allow_private_hosts=allow_private_hosts)
+        except HttpError as exc:
+            if exc.status in ipf.REDIRECT_CODES and hop < ipf.MAX_REDIRECTS:
+                nxt = ipf.redirect_target(cur, exc.location,
+                                          lambda u: check_url(u, frozenset(), allow_private_hosts))
+                if nxt:
+                    cur = nxt
+                    continue
+            raise
+    raise HttpError(310)  # unreachable
 
 
 async def default_http_get(url: str, timeout: float, max_bytes: int) -> bytes:
@@ -277,12 +242,18 @@ def _status_of(exc: Exception) -> str:
     return "http_0"
 
 
-async def get_once(url: str, http_get: HttpGet, max_bytes: int) -> tuple[str, bytes | None]:
-    """One GET, no retry. Returns (status, body)."""
+async def get_once_ra(url: str, http_get: HttpGet,
+                      max_bytes: int) -> tuple[str, bytes | None, float | None]:
+    """One GET, no retry. Returns (status, body, retry_after seconds if the server sent one)."""
     try:
-        return "ok", await http_get(url, FETCH_TIMEOUT_S, max_bytes)
+        return "ok", await http_get(url, FETCH_TIMEOUT_S, max_bytes), None
     except Exception as exc:  # noqa: BLE001 - classify, never crash worker
-        return _status_of(exc), None
+        return _status_of(exc), None, getattr(exc, "retry_after", None)
+
+
+async def get_once(url: str, http_get: HttpGet, max_bytes: int) -> tuple[str, bytes | None]:
+    status, body, _ = await get_once_ra(url, http_get, max_bytes)
+    return status, body
 
 
 _pillow_warned = False
@@ -382,6 +353,8 @@ class Store:
         for sub in ("creates", "meta", "img", "capture"):
             (out / sub).mkdir(parents=True, exist_ok=True)
         self.tool_sha256 = sha256_file(Path(__file__))
+        self.ipfs_fetch_sha256 = sha256_file(Path(ipf.__file__))
+        self.gateway_counts: dict[str, int] = {}
         self.git_ref = git_ref
         self.gaps: dict[str, list[dict[str, Any]]] = {}
         self.error_counts: dict[str, int] = {}
@@ -445,7 +418,9 @@ class Store:
             return
         doc = {"hour": hk, "tool_file": "meta_capture.py", "tool_sha256": self.tool_sha256,
                "git_ref": self.git_ref, "gap_log": self.gaps.get(hk, []),
-               "error_counts": dict(self.error_counts)}
+               "ipfs_fetch_file": "ipfs_fetch.py", "ipfs_fetch_sha256": self.ipfs_fetch_sha256,
+               "error_counts": dict(self.error_counts),
+               "gateway_counts": dict(self.gateway_counts)}
         atomic_write(self.capture_path(hk), json.dumps(doc, indent=1).encode())
 
     def hour_files(self, hk: str) -> list[Path]:
@@ -514,12 +489,16 @@ class Collector:
         free_fn: Callable[[Path], float] = free_gb,
         clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         max_pending: int = MAX_PENDING,
+        pool: ipf.GatewayPool | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.store, self.gateways, self.http_get = store, gateways, http_get
         self.concurrency = concurrency
         self.max_rss_mb, self.min_free_gb = max_rss_mb, min_free_gb
         self.rss_fn, self.free_fn, self.clock_ms = rss_fn, free_fn, clock_ms
         self.max_pending = max_pending
+        self.pool = pool or ipf.GatewayPool(gateways)
+        self.sleep = sleep
         self.heap: list[tuple[int, int, int, dict[str, Any]]] = []  # due, seq, attempt, row
         self.seq = 0
         self.rss_exceeded = False
@@ -600,49 +579,66 @@ class Collector:
             self.store.error_counts[name] = self.store.error_counts.get(name, 0) + 1
             self.store.write_capture(hour_key(self.clock_ms()))
 
+    async def _fetch(self, uri: str, max_bytes: int) -> tuple[str, bytes | None, str | None, int]:
+        """One request at most, through the per-gateway bucket. Returns (status, body, gateway, wait_ms).
+
+        The attempt's time is fixed by the schedule; only the gateway choice happens here: the first
+        gateway in pinned order that is not cooling (waiting up to ipf.MAX_TOKEN_WAIT_S for its token).
+        If none can serve, status is rate_limited_all and no request is made."""
+        pairs = ipf.plan_urls(ipf.classify_uri(uri), self.gateways)
+        if not pairs:
+            return "non_ipfs_uri", None, None, 0
+        picked = self.pool.reserve([k for k, _ in pairs])
+        self.store.gateway_counts = dict(self.pool.counts)
+        if picked is None:
+            return "rate_limited_all", None, None, 0
+        key, wait = picked
+        if wait > 0:
+            await self.sleep(wait)
+        url = dict(pairs)[key]
+        status, body, retry_after = await get_once_ra(url, self.http_get, max_bytes)
+        self.pool.report(key, status, retry_after)
+        self.store.gateway_counts = dict(self.pool.counts)
+        return status, body, urlsplit(url).netloc, int(wait * 1000)
+
     async def _attempt(self, item: tuple[int, int, int, dict[str, Any]]) -> None:
         due, _, attempt, row = item
         mint = str(row["mint"])
         uri = str(row.get("uri") or "")
-        urls = candidate_urls(uri, self.gateways)
         rec: dict[str, Any] = {"mint": mint, "attempt": attempt, "scheduled_ms": due,
                                "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(uri),
+                               **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
         png: bytes | None = None
-        if urls:
-            url = urls[attempt % len(urls)]
-            rec["gateway"] = urlsplit(url).netloc
-            status, body = await get_once(url, self.http_get, MAX_JSON_BYTES)
-            rec["status"] = status
-            if body is not None:
-                rec["bytes"], rec["sha256"] = len(body), sha256_bytes(body)
-                doc: dict[str, Any] = {}
-                try:
-                    parsed = json.loads(body)
-                    if not isinstance(parsed, dict):
-                        raise ValueError("not an object")
-                    doc = parsed
-                except (ValueError, UnicodeDecodeError, RecursionError):
-                    rec["status"] = "bad_json"
-                if rec["status"] == "ok":
-                    rec.update(extract_meta(doc))
-                    png = await self._image(rec, attempt)
+        status, body, gateway, wait_ms = await self._fetch(uri, MAX_JSON_BYTES)
+        rec["status"], rec["gateway"] = status, gateway
+        if wait_ms:
+            rec["wait_ms"] = wait_ms
+        if body is not None:
+            rec["bytes"], rec["sha256"] = len(body), sha256_bytes(body)
+            doc: dict[str, Any] = {}
+            try:
+                parsed = json.loads(body)
+                if not isinstance(parsed, dict):
+                    raise ValueError("not an object")
+                doc = parsed
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                rec["status"] = "bad_json"
+            if rec["status"] == "ok":
+                rec.update(extract_meta(doc))
+                png = await self._image(rec)
         stored = self.store.add_meta(int(row["t_recv_ms"]), rec, png)
         if rec["status"] != "ok" and stored and attempt + 1 < len(SCHEDULE_MS):
             self._schedule(row, attempt + 1)
 
-    async def _image(self, rec: dict[str, Any], attempt: int) -> bytes | None:
+    async def _image(self, rec: dict[str, Any]) -> bytes | None:
         image = rec.get("image")
         if not isinstance(image, str) or not image:
             return None
         if not self.disk_ok():
             rec["img_status"] = "skipped_disk"
             return None
-        urls = candidate_urls(image, self.gateways)
-        if not urls:
-            rec["img_status"] = "http_0"
-            return None
-        ist, raw = await get_once(urls[attempt % len(urls)], self.http_get, MAX_IMAGE_BYTES)
+        ist, raw, _, _ = await self._fetch(image, MAX_IMAGE_BYTES)
         rec["img_status"] = ist
         if raw is None:
             return None
@@ -746,6 +742,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--gateway", action="append", help="ipfs gateway prefix; repeat, tried in order")
+    p.add_argument("--gateway-rps", type=float, default=ipf.DEFAULT_RPS,
+                   help="per-gateway token bucket rate")
+    p.add_argument("--gateway-burst", type=float, default=ipf.DEFAULT_BURST)
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -764,7 +763,9 @@ def main(argv: list[str] | None = None) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     ref = args.git_ref or git_ref_of(Path(__file__).resolve().parent)
-    col = Collector(Store(args.out, ref), tuple(args.gateway or DEFAULT_GATEWAYS),
+    gateways = tuple(args.gateway or DEFAULT_GATEWAYS)
+    col = Collector(Store(args.out, ref), gateways,
+                    pool=ipf.GatewayPool(gateways, args.gateway_rps, args.gateway_burst),
                     concurrency=args.concurrency, max_rss_mb=args.max_rss_mb,
                     min_free_gb=args.min_free_gb)
     try:
