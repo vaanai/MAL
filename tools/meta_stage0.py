@@ -56,9 +56,9 @@ CENSOR_WINDOW_H = 24
 WILSON_Z90 = 1.6448536269514722
 DEFAULT_HELIUS_ENV = "/var/lib/mal/fast-listener/helius.env"
 DEFAULT_GATEWAYS = (  # pinned
-    "https://ipfs.io/ipfs/",
-    "https://cloudflare-ipfs.com/ipfs/",
     "https://gateway.pinata.cloud/ipfs/",
+    "https://ipfs.io/ipfs/",
+    "https://dweb.link/ipfs/",
 )
 MAX_RPS = 8.0
 MIN_RPS = 0.5

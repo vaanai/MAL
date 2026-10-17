@@ -130,7 +130,13 @@ class SampleTests(unittest.TestCase):
         self.assertEqual(m.MAX_CALLS_DEFAULT, 3000)
         self.assertEqual(
             m.DEFAULT_GATEWAYS,
-            ("https://ipfs.io/ipfs/", "https://cloudflare-ipfs.com/ipfs/", "https://gateway.pinata.cloud/ipfs/"),
+            ("https://gateway.pinata.cloud/ipfs/", "https://ipfs.io/ipfs/", "https://dweb.link/ipfs/"),
+        )
+
+    def test_pump_mypinata_rewritten(self) -> None:
+        self.assertEqual(
+            m.candidate_urls("https://pump.mypinata.cloud/ipfs/QmX", m.DEFAULT_GATEWAYS),
+            [g + "QmX" for g in m.DEFAULT_GATEWAYS],
         )
 
     def test_hour_filter_builds_only_allowed_paths(self) -> None:
