@@ -138,8 +138,11 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c("https://gateway.irys.xyz/" + "A" * 43).host_class, "arweave")
         self.assertEqual(c("https://i.imgur.com/x.png").host_class, "https:i.imgur.com")
         o = c("https://Evil.Example:8443/x?y=1")
+        self.assertEqual((o.host_class, o.fetchable), ("refused_scheme", False))  # odd port: not fetched
+        o = c("https://Evil.Example/x?y=1")
         self.assertEqual((o.host_class, o.direct_url, o.fetchable),
-                         ("https:evil.example", "https://evil.example:8443/x?y=1", True))
+                         ("https:evil.example", "https://evil.example/x?y=1", True))
+        self.assertEqual(c("https://evil.example:443/x").host_class, "https:evil.example")
         for bad in ("http://example.org/m.json", "file:///etc/passwd", "ftp://x/y", "data:text/plain,hi", None, ""):
             p = c(bad)
             self.assertEqual((p.host_class, p.fetchable), ("refused_scheme", False), bad)
@@ -158,8 +161,9 @@ class ClassifyTests(unittest.TestCase):
 
     def test_no_traversal_or_userinfo_or_odd_port(self) -> None:
         self.assertEqual(ipf.classify_uri("ipfs://cid/../../x").host_class, "refused_scheme")
-        p = ipf.classify_uri("https://user:pw@arweave.net/" + "A" * 43)
-        self.assertEqual(p.direct_url, "https://arweave.net/" + "A" * 43)  # userinfo dropped
+        for bad in ("https://user:pw@arweave.net/" + "A" * 43, "https://u@x.org/m", "https://arweave.net:9000/x",
+                    "https://x.org:8443/m"):
+            self.assertEqual(ipf.classify_uri(bad).host_class, "refused_scheme", bad)
         self.assertEqual(ipf.classify_uri("https://[2001:db8::1]/m").direct_url, "https://[2001:db8::1]/m")
 
     def test_plan_urls(self) -> None:
@@ -215,18 +219,55 @@ class GuardAddressTests(unittest.TestCase):
     def test_non_public_classes_refused_and_public_allowed(self) -> None:
         for addr in ("10.1.2.3", "127.0.0.1", "169.254.169.254", "100.64.0.1", "100.127.255.255", "224.0.0.1",
                      "192.168.1.1", "172.16.0.1", "0.0.0.0", "::1", "fe80::1", "fc00::1", "ff02::1",
-                     "::ffff:10.0.0.1"):
+                     "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:100.64.0.1", "::ffff:169.254.169.254",
+                     "64:ff9b::808:808", "64:ff9b::a00:1", "64:ff9b:1::1"):
             fam = 10 if ":" in addr else 2
             with patch.object(socket, "getaddrinfo", lambda *a, a_=addr, f_=fam, **k: [(f_, 1, 6, "", (a_, 443))]):
                 with self.assertRaises(ipf.BlockedUrl, msg=addr):
                     ipf.check_url("https://h.example/x")
         with patch.object(socket, "getaddrinfo", lambda *a, **k: PUBLIC):
             ipf.check_url("https://h.example/x")
+        for addr in ("::ffff:8.8.8.8", "2606:4700:4700::1111"):  # public mapped v4 / public v6 stay allowed
+            with patch.object(socket, "getaddrinfo", lambda *a, a_=addr, **k: [(10, 1, 6, "", (a_, 443))]):
+                ipf.check_url("https://h.example/x")
         # one private address among public ones is enough to refuse
         mixed = PUBLIC + PRIVATE
         with patch.object(socket, "getaddrinfo", lambda *a, **k: mixed):
             with self.assertRaises(ipf.BlockedUrl):
                 ipf.check_url("https://h.example/x")
+
+    def test_first_hop_port_and_userinfo_refused(self) -> None:
+        with patch.object(socket, "getaddrinfo", lambda *a, **k: PUBLIC):
+            for url in ("https://h.example:8443/x", "https://h.example:80/x", "https://u:p@h.example/x",
+                        "https://u@h.example/x"):
+                with self.assertRaises(ipf.BlockedUrl, msg=url):
+                    ipf.check_url(url)
+            ipf.check_url("https://h.example:443/x")
+            ipf.check_url("https://h.example/x")
+        # tests may exempt a loopback server explicitly, port included
+        ipf.check_url("http://127.0.0.1:8123/x", allow_private_hosts=frozenset({"127.0.0.1"}))
+
+    def test_host_state_capped_and_only_idle_evicted(self) -> None:
+        clk = Clk()
+        pool = ipf.GatewayPool(("https://gw/ipfs/",), clock=clk)
+        pool.reserve(["https://gw/ipfs/"])                        # a pinned entry in use
+        keys = [f"https://h{i}.example/" for i in range(ipf.MAX_HOST_STATES)]
+        for k in keys:
+            pool.reserve([k])                                      # each used once: bucket not full yet
+        cooling = keys[0]
+        pool.report(cooling, "http_429")
+        self.assertEqual(len(pool.gw), ipf.MAX_HOST_STATES + 1)
+        # at the cap and nothing idle: a new host is served by an untracked one-off, nothing is evicted
+        self.assertEqual(pool.reserve(["https://new1.example/"]), ("https://new1.example/", 0.0))
+        self.assertEqual(len(pool.gw), ipf.MAX_HOST_STATES + 1)
+        self.assertNotIn("https://new1.example/", pool.gw)
+        clk.t += 10                                                # buckets refill: all idle except the cooler
+        self.assertEqual(pool.reserve(["https://new2.example/"])[0], "https://new2.example/")
+        self.assertIn("https://new2.example/", pool.gw)
+        self.assertIn(cooling, pool.gw)                            # cooling entry kept
+        self.assertIn("https://gw/ipfs/", pool.gw)                 # pinned kept
+        self.assertEqual(len(pool.gw), 3)                          # pinned + cooling + new2
+        self.assertGreater(pool.cooldown_left(cooling), 0)
 
     def test_per_host_bucket_and_cooldown_for_direct_hosts(self) -> None:
         pool = ipf.GatewayPool(ipf.DEFAULT_GATEWAYS, clock=Clk())

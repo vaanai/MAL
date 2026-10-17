@@ -436,7 +436,7 @@ class SealTests(unittest.TestCase):
                 self.assertEqual(os.stat(out / rel).st_mode & 0o777, 0o440)
             cap = json.loads((out / "capture" / f"{HK0}.CAPTURE.json").read_text())
             self.assertEqual(cap["git_ref"], "abc123")
-            self.assertEqual(cap["tool_sha256"], hashlib.sha256(Path(mc.__file__).read_bytes()).hexdigest())
+            self.assertEqual(cap["tool_sha256"], [hashlib.sha256(Path(mc.__file__).read_bytes()).hexdigest()])
             chain1 = json.loads((out / "MANIFEST.chain").read_text().splitlines()[0])
             self.assertEqual(chain1["prev"], "0" * 64)
             self.assertEqual(chain1["manifest_sha256"],
@@ -576,7 +576,7 @@ class RunTests(unittest.TestCase):
         self.assertIn('"subscribeNewToken"', fake.sent)
         self.assertEqual(len(list((col.store.out / "creates").glob("*.jsonl"))), 1)  # real recv clock
         gaps = json.loads(col.store.capture_path(HK0).read_text())["gap_log"]
-        self.assertEqual([g["event"] for g in gaps], ["disconnected:OSError", "connected"])
+        self.assertEqual([g["event"] for g in gaps], ["process_start", "disconnected:OSError", "connected"])
 
     def test_backoff_sleep_wakes_on_stop(self) -> None:
         _, rc, dt, fake = self._run("fail")
@@ -788,12 +788,75 @@ class GatewayChoiceTests(unittest.TestCase):
             col, _ = make(d)
             col.store.write_capture(HK0)
             doc = json.loads(col.store.capture_path(HK0).read_text())
-            self.assertEqual(doc["ipfs_fetch_sha256"], hashlib.sha256(Path(ipf.__file__).read_bytes()).hexdigest())
+            self.assertEqual(doc["ipfs_fetch_sha256"],
+                             [hashlib.sha256(Path(ipf.__file__).read_bytes()).hexdigest()])
             self.assertIn("gateway_counts", doc)
 
     def test_schedule_constants_unchanged(self) -> None:
         self.assertEqual(mc.SCHEDULE_MS, (0, 30_000, 120_000, 600_000))
         self.assertEqual(mc.DEFAULT_GATEWAYS, ipf.DEFAULT_GATEWAYS)
+
+
+class RestartCaptureTests(unittest.TestCase):
+    def test_gap_log_and_versions_survive_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d), git_ref="ref1")
+            s1.tool_sha256, s1.ipfs_fetch_sha256 = "a" * 64, "b" * 64
+            s1.process_start(HOUR0 + 1_000)
+            s1.gap_event(HOUR0 + 2_000, "connected")
+            s1.gap_event(HOUR0 + 3_000, "disconnected:OSError")
+            # restart on new code in the same hour
+            s2 = mc.Store(Path(d), git_ref="ref2")
+            s2.tool_sha256, s2.ipfs_fetch_sha256 = "c" * 64, "d" * 64
+            s2.process_start(HOUR0 + 4_000)
+            s2.gap_event(HOUR0 + 5_000, "connected")
+            cap = json.loads(s2.capture_path(HK0).read_text())
+            events = [(g["t_ms"] - HOUR0, g["event"]) for g in cap["gap_log"]]
+            self.assertEqual(events, [(1_000, "process_start"), (2_000, "connected"),
+                                      (3_000, "disconnected:OSError"), (4_000, "process_start"),
+                                      (5_000, "connected")])
+            starts = [g for g in cap["gap_log"] if g["event"] == "process_start"]
+            self.assertEqual([(g["tool_sha256"], g["ipfs_fetch_sha256"]) for g in starts],
+                             [("a" * 64, "b" * 64), ("c" * 64, "d" * 64)])
+            self.assertEqual(cap["tool_sha256"], ["a" * 64, "c" * 64])
+            self.assertEqual(cap["ipfs_fetch_sha256"], ["b" * 64, "d" * 64])
+            self.assertEqual([v["git_ref"] for v in cap["tool_versions"]], ["ref1", "ref2"])
+
+    def test_restart_extends_earlier_unsealed_hour_and_skips_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d), git_ref="r")
+            s1.gap_event(HOUR0 + 10, "connected")
+            s1.gap_event(HOUR0 + 3_600_000 + 10, "connected")
+            s1.add_create({"mint": "M", "t_recv_ms": HOUR0 + 20})
+            s1.seal(HK0)
+            sealed_before = s1.capture_path(HK0).read_bytes()
+            s2 = mc.Store(Path(d), git_ref="r2")
+            s2.process_start(HOUR0 + 3_600_000 + 500)
+            self.assertEqual(s2.capture_path(HK0).read_bytes(), sealed_before)  # sealed hour untouched
+            cap1 = json.loads(s2.capture_path(HK1).read_text())
+            self.assertEqual([g["event"] for g in cap1["gap_log"]], ["connected", "process_start"])
+
+    def test_legacy_single_sha_capture_becomes_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            s1 = mc.Store(Path(d))
+            atomic = mc.atomic_write
+            atomic(s1.capture_path(HK0), json.dumps({"hour": HK0, "tool_sha256": "e" * 64, "git_ref": "old",
+                                                      "gap_log": [{"t_ms": 1, "event": "connected"}]}).encode())
+            s2 = mc.Store(Path(d), git_ref="new")
+            s2.process_start(HOUR0 + 5)
+            cap = json.loads(s2.capture_path(HK0).read_text())
+            self.assertEqual(cap["tool_sha256"], ["e" * 64, s2.tool_sha256])
+            self.assertEqual(cap["gap_log"][0], {"t_ms": 1, "event": "connected"})
+
+
+class FirstHopTests(unittest.TestCase):
+    def test_odd_port_and_userinfo_never_requested(self) -> None:
+        with unittest.mock.patch("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]):
+            for url in ("https://h.example:8443/x", "https://u:p@h.example/x"):
+                with self.assertRaises(mc.BlockedUrl, msg=url):
+                    mc._urllib_get(url, 2, 100)
+        for uri in ("https://h.example:8443/x", "https://u:p@h.example/x"):
+            self.assertEqual(mc.candidate_urls(uri, mc.DEFAULT_GATEWAYS), [], uri)
 
 
 class SsrfStillRefusesTests(unittest.TestCase):

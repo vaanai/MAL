@@ -1,7 +1,7 @@
 """Shared metadata-fetch rules for tools/meta_capture.py (Job A) and tools/meta_stage0.py (Job B).
 
 No network and no chain-node call lives here. This module holds only:
-  * the pinned gateway list and pinned host allowlists;
+  * the pinned gateway list and the pinned gateway host sets (IPFS gateways, Arweave gateways);
   * uri classification (ipfs_cid / arweave / https:<hostname> / refused_scheme) and the rewrite onto gateways;
   * the SSRF guard (https only to gateways, resolved addresses must be public);
   * the redirect rule (at most 2 hops, each target re-checked);
@@ -57,6 +57,8 @@ _CID_V1 = re.compile(r"^b[a-z2-7]{50,}$")
 
 
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+MAX_HOST_STATES = 4096  # non-pinned pool keys kept at once
 
 
 class BlockedUrl(Exception):
@@ -83,8 +85,8 @@ def _ipfs_path_ok(path: str) -> bool:
 
 @dataclass(frozen=True)
 class UriPlan:
-    host_class: str            # ipfs_cid | arweave | allowlisted:<host> | other
-    host: str | None           # hostname, set for allowlisted and other only
+    host_class: str            # ipfs_cid | arweave | https:<hostname> | refused_scheme
+    host: str | None           # hostname, set for https:<hostname> only
     ipfs_path: str | None = None
     direct_url: str | None = None
 
@@ -135,11 +137,9 @@ def classify_uri(uri: object) -> UriPlan:
         path = host.partition(".ipfs.")[0] + ("/" + tail if tail else "")
         if _ipfs_path_ok(path):
             return UriPlan("ipfs_cid", None, ipfs_path=path)
-    if parts.scheme != "https":
+    if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443):
         return refused
     netloc = f"[{host}]" if ":" in host else host
-    if port not in (None, 443):
-        netloc += f":{port}"
     url = f"https://{netloc}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
     cls = "arweave" if host in ARWEAVE_HOSTS else f"https:{host[:253]}"
     return UriPlan(cls, None if cls == "arweave" else host[:253], direct_url=url)
@@ -162,9 +162,14 @@ def plan_urls(plan: UriPlan, gateways: Sequence[str]) -> list[tuple[str, str]]:
 # ------------------------------------------------------------------ ssrf / redirect
 def check_url(url: str, http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
               allow_private_hosts: frozenset[str] = frozenset()) -> None:
-    """SSRF guard: https only (http only to listed gateways); resolved addresses must be public.
-    DNS can still change between this check and the connect (rebinding); redirects are re-checked
-    hop by hop and capped, which bounds the rest."""
+    """SSRF guard, applied to the first hop and to every redirect hop.
+
+    Scheme https (http only to the pinned gateway hosts), no userinfo, port 443 (80 for http) unless the
+    host is in ``allow_private_hosts`` (tests only), and every resolved address must be public: private,
+    loopback, link-local, CGNAT, multicast, reserved, unspecified and NAT64 are refused, and an IPv4-mapped
+    IPv6 address is judged by its embedded IPv4 address. One non-public answer refuses the url.
+    DNS can still change between this check and the connect (rebinding); redirects are re-checked hop by
+    hop and capped, which bounds the rest."""
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if parts.scheme not in ("https", "http") or not host:
@@ -174,12 +179,24 @@ def check_url(url: str, http_hosts: frozenset[str] = KNOWN_GATEWAY_HOSTS,
     if host in allow_private_hosts:
         return
     try:
+        port = parts.port
+    except ValueError as exc:
+        raise BlockedUrl("port") from exc
+    if parts.username or parts.password:
+        raise BlockedUrl("userinfo")
+    if port not in (None, 443 if parts.scheme == "https" else 80):
+        raise BlockedUrl("port")
+    try:
         infos = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
                                    type=socket.SOCK_STREAM)
     except OSError as exc:
         raise HttpError(0) from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.version == 6 and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if any(ip in net for net in _NAT64 if ip.version == 6):
+            raise BlockedUrl("private_address")
         if (not ip.is_global or ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
                 or ip.is_reserved or ip.is_unspecified or ip in _CGNAT):
             raise BlockedUrl("private_address")
@@ -235,7 +252,9 @@ class GatewayPool:
 
     ``reserve`` picks a gateway and takes its token; the caller sleeps ``wait`` seconds, makes exactly
     one request, then calls ``report``. A gateway in cooldown is skipped. Pinned order decides ties:
-    the first gateway with a token ready now, else the first that can serve within ``max_wait``."""
+    the first gateway with a token ready now, else the first that can serve within ``max_wait``.
+    Direct (non-gateway) hosts get their own entry on first use; at most MAX_HOST_STATES of them are kept,
+    evicting only idle, non-cooling entries and never the pinned gateways."""
 
     def __init__(self, gateways: Sequence[str] = DEFAULT_GATEWAYS, rps: float = DEFAULT_RPS,
                  burst: float = DEFAULT_BURST, clock: Callable[[], float] = time.monotonic) -> None:
@@ -248,10 +267,21 @@ class GatewayPool:
                                        "requests": 0}
         for g in gateways:
             self._state(g, clock())
+        self.pinned = frozenset(self.gw)
+
+    def _evict_idle(self, now: float) -> None:
+        """Drop non-pinned entries that are not cooling and have a full bucket (nothing to remember)."""
+        for key in [k for k, st in self.gw.items() if k not in self.pinned and now >= st.until
+                    and min(self.burst, st.tokens + (now - st.stamp) * self.rps) >= self.burst]:
+            del self.gw[key]
 
     def _state(self, key: str, now: float) -> _Gw:
         st = self.gw.get(key)
         if st is None:
+            if len(self.gw) - len(getattr(self, "pinned", ())) >= MAX_HOST_STATES:
+                self._evict_idle(now)
+                if len(self.gw) - len(self.pinned) >= MAX_HOST_STATES:
+                    return _Gw(self.burst, now)  # all busy or cooling: untracked one-off, nothing evicted
             st = self.gw[key] = _Gw(self.burst, now)
         return st
 

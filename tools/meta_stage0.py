@@ -657,7 +657,9 @@ def run(
     pool = pool or make_pool(gateways)
     cap_hit = deadline_hit = False
     t_end = clock() + max_runtime_s
-    with status_path.open("a", encoding="utf-8") as fh, uris_path.open("a", encoding="utf-8") as ufh:
+    fd = os.open(uris_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+    os.chmod(uris_path, 0o640)  # umask or an older file must not leave it wider
+    with status_path.open("a", encoding="utf-8") as fh, os.fdopen(fd, "a", encoding="utf-8") as ufh:
         def on_uri(mint: str, uri: str) -> None:
             if mint not in stored:
                 ufh.write(json.dumps({"mint": mint, "uri": uri}, sort_keys=True) + "\n")
@@ -714,6 +716,25 @@ def adopt_sample(old: Path, out: Path) -> None:
     (out / "sample.parquet.sha256").write_text(f"{digest}  sample.parquet\n", encoding="utf-8")
 
 
+def seed_calls(old: Path, out: Path, cap: int) -> int:
+    """Carry the old dir's RPC call count into the new dir's calls.json so the cap stays cumulative across
+    directories. Refuses if the old count already exceeds the cap. Returns the seeded count."""
+    new_path = out / "calls.json"
+    if new_path.exists():
+        return 0  # already seeded (or running): its own count stands
+    used = 0
+    old_path = old / "calls.json"
+    if old_path.exists():
+        try:
+            used = int(json.loads(old_path.read_text(encoding="utf-8")).get("calls", 0))
+        except (ValueError, OSError):
+            raise SystemExit("old calls.json unreadable; refusing to run")
+    if used > cap:
+        raise SystemExit(f"old run already used {used} calls, over the cap {cap}; refusing to run")
+    new_path.write_text(json.dumps({"calls": used}), encoding="utf-8")
+    return used
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage 0 metadata retrieval check (count-only)")
     ap.add_argument("--out", required=True)
@@ -732,6 +753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     if args.resume_from and not (out / "sample.parquet").exists():
         adopt_sample(Path(args.resume_from), out)
+        seed_calls(Path(args.resume_from), out, min(args.max_calls, MAX_CALLS_DEFAULT))
     if (out / "sample.parquet").exists():
         sample = load_reused_sample(out)
         log.info("sample reused n=%d", len(sample))

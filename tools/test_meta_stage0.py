@@ -770,16 +770,52 @@ class ResumeFromTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 m.adopt_sample(Path(d) / "missing", new)
 
-    def test_new_dir_has_its_own_rpc_cap(self) -> None:
+    def test_cap_is_cumulative_across_two_directories(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             old, new = Path(d) / "old", Path(d) / "new"
             old.mkdir()
             new.mkdir()
             (old / "calls.json").write_text('{"calls": 2000}')
+            self.assertEqual(m.seed_calls(old, new, 3000), 2000)
             b = m.PersistentBudget(new / "calls.json", 3000)
-            self.assertEqual(b.used, 0)
-            self.assertEqual(m.MAX_CALLS_DEFAULT, 3000)
-            self.assertEqual(m.PersistentBudget(old / "calls.json", 3000).used, 2000)
+            self.assertEqual(b.used, 2000)
+            granted = sum(1 for _ in range(1500) if b.reserve())
+            self.assertEqual(granted, 1000)                      # 2000 + 1000 = 3000, never more
+            self.assertEqual(json.loads((new / "calls.json").read_text())["calls"], 3000)
+            self.assertEqual(json.loads((old / "calls.json").read_text())["calls"], 2000)  # old untouched
+            self.assertEqual(m.seed_calls(old, new, 3000), 0)    # an existing new count stands
+            self.assertEqual(m.PersistentBudget(new / "calls.json", 3000).used, 3000)
+
+    def test_seed_refuses_over_cap_unreadable_and_handles_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            old = Path(d) / "old"
+            old.mkdir()
+            (old / "calls.json").write_text('{"calls": 3001}')
+            (Path(d) / "n1").mkdir()
+            with self.assertRaises(SystemExit):
+                m.seed_calls(old, Path(d) / "n1", 3000)
+            self.assertFalse((Path(d) / "n1" / "calls.json").exists())
+            (old / "calls.json").write_text("garbage")
+            with self.assertRaises(SystemExit):
+                m.seed_calls(old, Path(d) / "n1", 3000)
+            (old / "calls.json").unlink()
+            self.assertEqual(m.seed_calls(old, Path(d) / "n1", 3000), 0)
+
+    def test_uris_jsonl_mode_0640(self) -> None:
+        import os
+        import stat
+        with patch.object(m, "uri_from_tx", lambda tx, mint=None: URI), tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            old_umask = os.umask(0o000)
+            try:
+                m.run([row(1)], out, lambda s: tx_with_log(), FakeHttp({JSON_URL: (200, b"{}")}), GW,
+                      CreditBudget(5, 1), pool=fast_pool())
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(stat.S_IMODE((out / "uris.jsonl").stat().st_mode), 0o640)
+            (out / "uris.jsonl").chmod(0o666)                    # a pre-existing wide file is narrowed
+            m.run([row(1)], out, lambda s: tx_with_log(), FakeHttp(), GW, CreditBudget(5, 1), pool=fast_pool())
+            self.assertEqual(stat.S_IMODE((out / "uris.jsonl").stat().st_mode), 0o640)
 
     def test_gateway_defaults_and_flags(self) -> None:
         self.assertEqual((ipf.DEFAULT_RPS, ipf.DEFAULT_BURST), (1.0, 2.0))

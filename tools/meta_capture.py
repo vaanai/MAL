@@ -357,6 +357,7 @@ class Store:
         self.gateway_counts: dict[str, int] = {}
         self.git_ref = git_ref
         self.gaps: dict[str, list[dict[str, Any]]] = {}
+        self.versions: dict[str, list[dict[str, Any]]] = {}
         self.error_counts: dict[str, int] = {}
         self.sealed: set[str] = set()
         self.last_chain: str = "0" * 64
@@ -413,12 +414,63 @@ class Store:
         self.gaps.setdefault(hk, []).append({"t_ms": t_ms, "event": event})
         self.write_capture(hk)
 
+    def _my_version(self) -> dict[str, Any]:
+        return {"tool_sha256": self.tool_sha256, "ipfs_fetch_sha256": self.ipfs_fetch_sha256,
+                "git_ref": self.git_ref}
+
+    def _note_version(self, hk: str) -> list[dict[str, Any]]:
+        vers = self.versions.setdefault(hk, [])
+        if self._my_version() not in vers:
+            vers.append(self._my_version())
+        return vers
+
+    def load_unsealed_captures(self) -> list[str]:
+        """Reload gap logs and tool versions from every unsealed CAPTURE.json under --out, so a restart
+        extends them instead of overwriting. Returns the hours loaded."""
+        loaded = []
+        for f in sorted((self.out / "capture").glob("*.CAPTURE.json")):
+            hk = f.name[: -len(".CAPTURE.json")]
+            if hk in self.sealed or hk in self.gaps:
+                continue
+            try:
+                doc = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            self.gaps[hk] = [g for g in doc.get("gap_log") or [] if isinstance(g, dict)]
+            vers = [v for v in doc.get("tool_versions") or [] if isinstance(v, dict)]
+            if not vers and doc.get("tool_sha256"):  # file written before versions were a list
+                ts, fs = doc.get("tool_sha256"), doc.get("ipfs_fetch_sha256")
+                vers = [{"tool_sha256": ts if isinstance(ts, str) else None,
+                         "ipfs_fetch_sha256": fs if isinstance(fs, str) else None,
+                         "git_ref": doc.get("git_ref")}]
+            self.versions[hk] = vers
+            loaded.append(hk)
+        return loaded
+
+    def process_start(self, t_ms: int) -> None:
+        """Call once when the process starts: reload unsealed gap logs, then append a process_start event
+        (with this process's tool and ipfs_fetch sha256) to each unsealed hour and the current hour."""
+        self.load_unsealed_captures()
+        event = {"t_ms": t_ms, "event": "process_start", "tool_sha256": self.tool_sha256,
+                 "ipfs_fetch_sha256": self.ipfs_fetch_sha256}
+        for hk in sorted(set(self.gaps) | {hour_key(t_ms)}):
+            if hk in self.sealed:
+                continue
+            self.gaps.setdefault(hk, []).append(dict(event))
+            self.write_capture(hk)
+
     def write_capture(self, hk: str) -> None:
         if hk in self.sealed:
             return
-        doc = {"hour": hk, "tool_file": "meta_capture.py", "tool_sha256": self.tool_sha256,
+        vers = self._note_version(hk)
+        doc = {"hour": hk, "tool_file": "meta_capture.py",
+               "tool_sha256": list(dict.fromkeys(v["tool_sha256"] for v in vers)),
+               "ipfs_fetch_file": "ipfs_fetch.py",
+               "ipfs_fetch_sha256": list(dict.fromkeys(v["ipfs_fetch_sha256"] for v in vers)),
+               "tool_versions": vers,
                "git_ref": self.git_ref, "gap_log": self.gaps.get(hk, []),
-               "ipfs_fetch_file": "ipfs_fetch.py", "ipfs_fetch_sha256": self.ipfs_fetch_sha256,
                "error_counts": dict(self.error_counts),
                "gateway_counts": dict(self.gateway_counts)}
         atomic_write(self.capture_path(hk), json.dumps(doc, indent=1).encode())
@@ -695,6 +747,7 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
 
     # Earlier unsealed hours get their manifest lines now (supersede), then
     # unfinished schedules are rebuilt from disk.
+    col.store.process_start(col.clock_ms())
     col.store.seal_due(col.clock_ms())
     log.info("recovered_attempts n=%d", col.recover())
     wtask = asyncio.ensure_future(worker())
