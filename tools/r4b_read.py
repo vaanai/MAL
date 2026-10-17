@@ -128,11 +128,13 @@ RENT_STRANDED_T22 = (170 + 128) * 6960    # 2_074_080, 170-byte Token-2022 ATA (
 RENT_REPORT_SPL = FZ.RENT_REPORT          # 2_039_280
 RENT_REPORT_T22 = RENT_STRANDED_T22       # 2_074_080
 assert RENT_STRANDED_T22 == 2_074_080 and RENT_STRANDED_SPL == (165 + 128) * 6960 == 2_039_280
-# E1 mode (owner decision pending; the EXP pins it with EXP027_E1_MODE, which must equal this constant):
+# E1 mode. The owner chose "B" on 2026-10-17 (terminal, closing MiScusi q_p-l6lP4dr97IYQ; DEC-021 amendment for EXP-027, PR #687): per filled, non-stranded trip
+# max(haircut, E1_FIXED_LAMPORTS = 5 x 384,022; DEC-021:54, faa3192 n = 8 at 0.05 SOL, pre-seal, job #209). The A and record paths stay (refusal-tested) but are not shipped.
+# The EXP pins the mode with EXP027_E1_MODE, which must equal this constant:
 #   "A"      haircut only (no E1 penalty);
 #   "B"      a fixed charge of max(haircut, E1_FIXED_LAMPORTS) per filled, non-stranded trip;
 #   "record" max(haircut, max(0, -5 * rbar)) from the pinned E1 record (n >= 20, stake 50,000,000).
-E1_MODE = "record"
+E1_MODE = "B"
 E1_FIXED_LAMPORTS = 1_920_110
 K_RATIO_NEAR_LO, K_RATIO_NEAR_HI = 1 - 1e-3, 1 - 1e-6  # report-only: exits whose k ratio sits just inside the C8 tolerance
 CODE_MODULES = ("r4b_frozen", "r4b_score", "r4b_book", "r4b_features", "r4b_layout", "r4b_count", "r4b_read")

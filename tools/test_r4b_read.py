@@ -443,7 +443,13 @@ def test_e_records_missing(tmp_path, world):
         refused(mk(tmp_path, world, **{f"EXP027_E_{e}_MD5": "<TO FILL>"}), mkdeps(world), f"E-{e.lower()} md5 record is missing")
 
 
-def test_e1_record(tmp_path, world):
+@pytest.fixture
+def record_mode(monkeypatch):
+    """The shipped mode is B; the record path is still refusal-tested by switching the constant."""
+    monkeypatch.setattr(rr, "E1_MODE", "record")
+
+
+def test_e1_record(tmp_path, world, record_mode):
     rec = world["rec"]
     smallrec = rec / "e1_small.json"
     smallrec.write_text(json.dumps({"n": 19, "pnl_gap_lamports_live_minus_sim_mean": -1.0}))
@@ -1051,7 +1057,7 @@ def test_sell_builder_is_recorded_in_ledger_and_result(tmp_path, world):
 
 
 # ---- R8: E1 scale fixed in code ---------------------------------------------------------------------------------------------------------------------
-def test_e1_scale_is_fixed_and_stake_must_match(tmp_path, world):
+def test_e1_scale_is_fixed_and_stake_must_match(tmp_path, world, record_mode):
     assert rr.E1_SCALE == 5.0 == 250_000_000 / 50_000_000
     rec = world["rec"]
     zero = rec / "e1_scale0.json"
@@ -1296,8 +1302,12 @@ def test_null_txi_and_tie_report_counts_without_removing_anything(tmp_path, worl
 
 # ---- E1 modes --------------------------------------------------------------------------------------------------------------------------------------
 def test_e1_mode_constant_default_and_exp_line(tmp_path, world):
-    assert rr.E1_MODE == "record" and rr.E1_FIXED_LAMPORTS == 1_920_110
-    refused(mk(tmp_path, world, EXP027_E1_MODE="B"), mkdeps(world), "EXP027_E1_MODE is 'B', the tool is built for 'record'")
+    assert rr.E1_MODE == "B" and rr.E1_FIXED_LAMPORTS == 1_920_110 == 5 * 384_022  # owner 2026-10-17: Option B
+    assert "EXP027_E1_RECORD" not in rr.required_keys() and "EXP027_E1_RECORD" not in rr.window_keys_allowed()
+    refused(mk(tmp_path, world, EXP027_E1_MODE="record"), mkdeps(world), "EXP027_E1_MODE is 'record', the tool is built for 'B'")
+    refused(mk(tmp_path, world, EXP027_E1_MODE="A"), mkdeps(world), "EXP027_E1_MODE is 'A', the tool is built for 'B'")
+    res = rr.read(mk(tmp_path, world, EXP027_E1_RECORD=None), mkdeps(world))
+    assert res["e1"]["mode"] == "B" and res["e1"]["penalty_lamports"] == 1_920_110.0
 
 
 @pytest.mark.parametrize("mode", ["A", "B"])
@@ -1466,7 +1476,7 @@ GOOD_VAL = {"EXP027_K": "3", "EXP027_E1_RECORD": "/x/e1.json@" + "a" * 64}
 @pytest.mark.parametrize("key,ok", [("EXP027_MERGE_INSTANT", True), ("EXP027_K", True), ("EXP027_POWER_160K", True), ("EXP027_DEADLINE_ND", True), ("EXP027_BREACH_1", True), ("EXP027_BREACH_9", True),
                                     ("EXP027_WALK2_JOB_3", True), ("EXP027_MEMBERS_PREW0", True), ("EXP027_BREACH_10", False), ("EXP027_BREACH_0", False), ("EXP027_ROUTE", False),
                                     ("EXP027_SHA256_R4B_READ", False), ("EXP027_WALK2_JOB_4", False), ("EXP027_E1_RECORD", True)])
-def test_window_key_allowlist(wrepo, key, ok):
+def test_window_key_allowlist(wrepo, key, ok, record_mode):
     append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
     append_commit(wrepo, app_line(key, GOOD_VAL.get(key, "x")), T_REG + 200)
     probs = guard(wrepo)[0]
@@ -1729,7 +1739,7 @@ SHA = "a" * 64
     ("EXP027_INPUT_VIEWS", f"/a@{SHA}; /b@{SHA}", True), ("EXP027_INPUT_VIEWS", f"/a@{SHA};", False), ("EXP027_INPUT_VIEWS", f"/a@{SHA}, /b@{SHA}", False),
     ("EXP027_FEE_ARM", "NONE", True), ("EXP027_FEE_ARM", f"/f.json@{SHA}", True), ("EXP027_FEE_ARM", "none", False), ("EXP027_FEE_ARM", "/f.json", False),
 ])
-def test_window_value_formats(wrepo, key, val, ok):
+def test_window_value_formats(wrepo, key, val, ok, record_mode):
     append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
     append_commit(wrepo, app_line(key, val), T_REG + 200)
     probs = guard(wrepo)[0]
@@ -1825,3 +1835,19 @@ def test_check_window_flag_is_wired_and_opens_nothing_else(monkeypatch):
     called = []
     monkeypatch.setattr(rr, "check_window_cli", lambda: called.append(1) or 0)
     assert rr.main(["--check-window"]) == 0 and called == [1]
+
+
+def test_e1_record_key_refused_in_the_shipped_mode_b(wrepo):
+    assert rr.E1_MODE == "B"
+    append_commit(wrepo, app_line("EXP027_W0", W0_OK), T_REG + 100)
+    append_commit(wrepo, app_line("EXP027_E1_RECORD", GOOD_VAL["EXP027_E1_RECORD"]), T_REG + 200)
+    must_refuse(wrepo, "EXP027_E1_RECORD, which is not in the closed")
+
+
+def test_shipped_deciding_charge_is_max_of_haircut_and_fixed_amount():
+    """The constant the deciding read feeds into price_variant is exactly 1,920,110 in the shipped mode B."""
+    pen = float(rr.E1_FIXED_LAMPORTS if rr.E1_MODE == "B" else 0)
+    assert pen == 1_920_110.0
+    base = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=0.0)
+    b = rr.price_variant(trip(), 1.3, send=505_000, rent=0, auto=True, e1_penalty=pen)
+    assert (b["nofail"] <= base["nofail"] + 1e-9).all()  # never cheaper than the haircut alone
