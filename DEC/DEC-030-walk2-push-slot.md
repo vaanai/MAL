@@ -89,7 +89,7 @@ DEC-014 rule 1 allows one owner per block and catalog rule 5 allows no overlappi
 The line below holds the owner's choice. Nothing else fills it. It is filled: route R1, 2026-10-17T03:52:39Z.
 
 ```
-OWNER_PUSH_SLOT_CONFIRMED: 2026-10-17T03:52:39Z (owner, in the Claude Code session, asked by manager12). Route: R1. Answer (verbatim): "R1, your recommendation sounds good". MiScusi notebook n_aJ1bOED5QUs-XQ. It answers q_6FkDYV4cPVnknQ (below), the only open DEC-030 question at that instant.
+OWNER_PUSH_SLOT_CONFIRMED: 2026-10-17T03:52:39Z (owner, in the Claude Code session, asked by manager12). Route: R1. Question: MiScusi q__jVaqpxB937kEg (2026-10-16T19:22:59Z), verbatim in item 1 below, with its R1 / R2 / NO SLOT option texts verbatim. Answer (verbatim): "R1, your recommendation sounds good", given to the confirmation question q_6FkDYV4cPVnknQ (item 3), which restates that decision. MiScusi notebook n_aJ1bOED5QUs-XQ.
 ```
 
 Record, in order, of how the line came about. All times are transcript or MiScusi instants.
@@ -100,11 +100,14 @@ Record, in order, of how the line came about. All times are transcript or MiScus
 
 3. **The confirmation question q_6FkDYV4cPVnknQ, asked 2026-10-17T03:50:38Z.** Verbatim (line breaks of the original are marked " / "): "One-line confirmation for DEC-030 (the fifth test slot), so the record is exact. This replaces my previous version of this question, which wrongly said quant-proof recommends R1. It did not; quant-proof took no position on the route. /  / You said "Go for both my decisions." My message before that asked you to "say yes to DEC-030" but didn't name the route. /  / Which route? / - R1: open slot 5 and skip the old backward-data check. A book starts counting the hour after it registers. This raises the false-promotion bound from 0.10 to 0.125, and each book's winner's-curse risk then rests on the walk-2 read alone. / - R2: open slot 5 but keep the backward-data check first. That adds about 1–2 days and allows at most two books. / - NO SLOT. /  / I recommend R1, as I did on 10-16. EXP-027 (r4-b) can't register until this is settled. Its merge window is 10-18 02:00Z to 10-26." Options shown (verbatim): "R1 (recommended)"; "R2"; "NO SLOT".
 
+   - **What the confirmation left out (disclosed):** q_6FkDYV4cPVnknQ did not mention that R1 also overrides DEC-021 Amendment 5, so a candidate built on released October forward-1002 D0 or D1 data may register without a backward pass. The original question q__jVaqpxB937kEg (item 1) does state it. The merge-time notice (item 6) repeats it.
+   - **When q__jVaqpxB937kEg was closed (disclosed):** the manager closed it as "R1" at 2026-10-17T03:39:58Z, on the 03:39:29Z answer that item 2 says is not the line. So it was closed early. At 03:52:39Z the only open DEC-030 question was q_6FkDYV4cPVnknQ (asked 03:50:38Z; closed 03:52:49Z).
+
 4. **Disclosure.** An earlier version of the confirmation question, q_DOLtD5cxo2m7sw (asked about 03:49Z), wrongly said "Quant-proof and I recommend R1". Quant-proof took no route position. It was replaced by q_6FkDYV4cPVnknQ within about a minute, before any answer, and the replacement says so in its first lines. MiScusi notebook n_IRaSk7q2i5q6MA.
 
 5. **The owner's answer (the line above):** in the Claude Code session at 2026-10-17T03:52:39Z, verbatim: "R1, your recommendation sounds good". Notebook n_aJ1bOED5QUs-XQ. Route: R1. The manager's recommendation of R1 is on record (session messages 2026-10-16 about 19:24Z, 20:29Z, 21:15Z, 22:04Z; 2026-10-17 about 00:14Z; and in the question above). The manager closed q__jVaqpxB937kEg as "R1". Earlier notebook n__wAwHxj9c9Oc2Q records the 03:39Z owner decisions generally.
 
-6. **Duty at merge.** At merge the manager posts a MiScusi notebook entry and a Console for_you item telling the owner that R1 is in force, that it raises the false-promotion bound from 0.10 to 0.125 and waives the backward-block pass (each book's winner's-curse risk rests on the walk-2 read alone), and that DEC-030 can be amended before the first push-family pre-registration merges.
+6. **Duty at merge.** At merge the manager posts a MiScusi notebook entry and a Console for_you item telling the owner that R1 is in force, that it raises the false-promotion bound from 0.10 to 0.125, waives the backward-block pass (each book's winner's-curse risk rests on the walk-2 read alone) and overrides DEC-021 Amendment 5 for push-family books (a candidate built on released October forward-1002 D0 or D1 data may register without a backward pass), and that DEC-030 can be amended before the first push-family pre-registration merges.
 
 The form to fill: `<date> (owner, in session, asked by <manager>). Route: R1 | R2 | NO SLOT. Question: "<verbatim>". Answer: "<verbatim>". Options shown: "<verbatim R1 / R2 / NO SLOT texts>". MiScusi notebook <id>.`
 
