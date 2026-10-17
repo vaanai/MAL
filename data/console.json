@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-17T03:44:06Z",
+ "updated_utc": "2026-10-17T04:00:27Z",
  "review_windows": [],
  "events": [
   {
@@ -826,6 +826,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261017-dec030-r1",
+   "from": "claude",
+   "atUtc": "2026-10-17T04:00:27Z",
+   "text": "For your information (DEC-030 section 4 item 6), no action needed unless this is not what you meant. DEC-030 is merged (fe8586f) with route R1, your answer at 2026-10-17T03:52:39Z (\"R1, your recommendation sounds good\"). R1: (1) raises the bound on a false promotion across October's promotion-eligible families from 0.10 to 0.125; (2) waives the backward-block pass, so each push-family book's winner's-curse risk rests on its walk-2 read alone; (3) overrides DEC-021 Amendment 5 for push-family books (a candidate built on released October forward-1002 D0 or D1 data may register without a backward pass). DEC-030 can still be amended before the first push-family pre-registration (EXP-027, r4-b, merge window from 2026-10-18T02Z) merges. Also merged: DEC-021 Amendment 7 (EXP-027's E1 = Option B, fc8c522), r4b_read E1 mode B (1b93610), EXP-026 withdrawn before W0 (57d9139). Notebook n_3Jx08uY15DxiSw. No book has cleared the promotion gate."
+  },
   {
    "id": "fy-20261016-feearm-reinstall",
    "from": "claude",
