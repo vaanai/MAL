@@ -1,6 +1,9 @@
 """Tests for tools/kalshi_public.py with a fake HTTP layer (no network)."""
 import hashlib
 import json
+import os
+import signal
+import stat
 import sys
 import urllib.parse
 from pathlib import Path
@@ -434,7 +437,8 @@ def test_orderbook_snap_records_depth_only_with_timestamps(tmp_path):
 
 def test_cli_parser_has_no_trading_subcommands():
     sub = [a for a in kp.build_parser()._actions if a.dest == "cmd"][0]
-    assert set(sub.choices) == {"series", "markets", "trades", "candles", "orderbook-snap"}
+    assert set(sub.choices) == {"series", "markets", "trades", "candles", "orderbook-snap",
+                           "quarantine-unsealed"}
 
 
 # ------------------------------------------------------------ review round 1
@@ -849,7 +853,7 @@ def run2(tmp_path, fake, argv, on_sleep=None, log=None, rate=1000, globals_=(), 
 
 
 def tab(out, kind):
-    return kp.read_verified(out, kind).to_pylist()
+    return kp.read_verified(out, kind, require_complete_runs=False).to_pylist()
 
 
 BASE = ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "60"]
@@ -1094,3 +1098,112 @@ def test_verify_refuses_tampered_uncovered_missing_and_broken_chain(tmp_path):
     chain.unlink()
     with pytest.raises(kp.SealError, match="nothing is sealed"):
         kp.verify_parts(tmp_path)
+
+
+# ---------------------------------------------------------------- hardening (#701 reviews)
+
+def test_keyboard_interrupt_writes_interrupt_and_incomplete(tmp_path):
+    def boom(clk):
+        if clk.t >= 1070:
+            raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "100000"], on_sleep=boom)
+    end = [r for r in tab(tmp_path, "orderbook_runs") if r["event"] == "run_end"][0]
+    assert end["stop_reason"] == "interrupt" and end["complete"] is False
+    assert not (tmp_path / ".orderbook.lock").read_text().strip() == ""  # pid file remains
+    kp.acquire_lock(tmp_path).close()  # lock released on the way out
+
+
+def test_exclusive_lock_exit_5_counts_only_and_pid(tmp_path):
+    logs = []
+    held = kp.acquire_lock(tmp_path)
+    try:
+        assert (tmp_path / ".orderbook.lock").read_text().strip() == str(os.getpid())
+        fake = ScriptFake()
+        with pytest.raises(SystemExit) as e:
+            run2(tmp_path, fake, BASE + ["--duration-s", "10"], log=logs.append)
+        assert e.value.code == 5
+        assert fake.calls == [] and not (tmp_path / "orderbook_runs").exists()  # before run_start
+        assert not any(str(tmp_path) in m or "KXFIN" in m for m in logs)
+    finally:
+        held.close()
+    run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "1"])  # free again
+
+
+def test_chain_head_logged_at_every_seal_and_in_run_end(tmp_path):
+    logs = []
+    run2(tmp_path, ScriptFake(), ["--series", "KXFIN", "--every-s", "600", "--discover-every-s", "600",
+                                  "--duration-s", "4000"], log=logs.append)
+    seals = [m for m in logs if m.startswith("seal:")]
+    assert len(seals) >= 2
+    heads = [m.split("chain_head=")[1] for m in seals]
+    assert heads[-1] == kp.chain_head(tmp_path)
+    assert all(len(h) == 64 for h in heads) and all("KXFIN" not in m for m in seals)
+    ends = [r for r in tab(tmp_path, "orderbook_runs") if r["event"] == "run_end"]
+    lines = (tmp_path / kp.CHAIN_NAME).read_text().splitlines()
+    # run_end is sealed in the last line, so its head is the head of the line before it
+    assert ends[0]["chain_head"] == hashlib.sha256(lines[-2].encode()).hexdigest()
+    assert ends[0]["chain_head"] in heads
+
+
+def test_read_verified_requires_complete_runs(tmp_path):
+    def term(clk):
+        if clk.t >= 1070:
+            os.kill(os.getpid(), signal.SIGTERM)
+    run2(tmp_path / "a", ScriptFake(), BASE + ["--duration-s", "100000"], on_sleep=term)
+    with pytest.raises(kp.SealError, match="complete"):
+        kp.read_verified(tmp_path / "a", "orderbook_snaps")
+    assert kp.read_verified(tmp_path / "a", "orderbook_snaps", require_complete_runs=False).num_rows > 0
+    run2(tmp_path / "b", ScriptFake(), BASE + ["--duration-s", "1"])
+    assert kp.read_verified(tmp_path / "b", "orderbook_snaps").num_rows > 0
+
+
+def test_quarantine_unsealed_moves_only_uncovered_and_writes_manifest(tmp_path):
+    import shutil
+    run2(tmp_path, ScriptFake(), BASE + ["--duration-s", "1"])
+    sealed = sorted((tmp_path / "orderbook_snaps").rglob("*.parquet"))[0]
+    extra = sealed.with_name("part-extra.parquet")
+    shutil.copy(sealed, extra)
+    chain_before = (tmp_path / kp.CHAIN_NAME).read_bytes()
+    sealed_before = sealed.read_bytes()
+    want_sha = kp.sha256_file(extra)
+    assert kp.main(["--out", str(tmp_path), "quarantine-unsealed"]) == 0
+    assert not extra.exists() and sealed.read_bytes() == sealed_before
+    assert (tmp_path / kp.CHAIN_NAME).read_bytes() == chain_before
+    kp.verify_parts(tmp_path)  # clean again
+    (qdir,) = (tmp_path / "_quarantine").iterdir()
+    man = qdir / "manifest.json"
+    assert stat.S_IMODE(man.stat().st_mode) == 0o440
+    (f,) = json.loads(man.read_text())["files"]
+    assert f == {"path": str(extra.relative_to(tmp_path)), "sha256": want_sha,
+                 "rows": pq.read_metadata(qdir / f["path"]).num_rows, "bytes": f["bytes"]}
+    assert (qdir / f["path"]).exists()
+    assert kp.main(["--out", str(tmp_path), "quarantine-unsealed"]) == 0  # nothing left: no new dir
+    assert len(list((tmp_path / "_quarantine").iterdir())) == 1
+    held = kp.acquire_lock(tmp_path)
+    try:
+        assert kp.main(["quarantine-unsealed", "--out", str(tmp_path)]) == 5
+    finally:
+        held.close()
+
+
+def test_first_failed_listing_retries_after_min_60_and_keeps_rate_guard(tmp_path):
+    fake = ScriptFake()
+    fake.fail_series = {"KXFIN"}
+
+    def heal(clk):
+        if clk.t >= 1100:
+            fake.fail_series = set()
+    run2(tmp_path, fake, ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "600",
+                          "--duration-s", "200"], on_sleep=heal)
+    d = tab(tmp_path, "orderbook_discoveries")
+    d = sorted(d, key=lambda r: r["ts"])
+    assert d[0]["ok"] is False and (d[1]["ts"] - d[0]["ts"]).total_seconds() == pytest.approx(60, abs=2)
+    assert any(r["ok"] for r in d) and tab(tmp_path, "orderbook_snaps")  # recovered long before 600 s
+    # rate guard: at --rate 0.02 (1 request / 50 s) discovery may use at most half the budget,
+    # i.e. one listing per 100 s, not one per min(60, 600) s
+    fake2 = ScriptFake()
+    fake2.fail_series = {"KXFIN"}
+    run2(tmp_path / "slow", fake2, ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "600",
+                                    "--duration-s", "1000"], rate=0.02)
+    assert 5 <= len(tab(tmp_path / "slow", "orderbook_discoveries")) <= 11

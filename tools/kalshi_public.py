@@ -82,11 +82,18 @@ Conventions / caveats:
     fixed for the run; a change needs a new run.
     Coverage tables: orderbook_runs (run_start written before the first listing or snapshot
     request, after the one /series call that resolves the filter; run_end with stop_reason,
-    complete=true only for a duration stop), orderbook_rounds, orderbook_discoveries,
+    complete=true only for a duration stop; Ctrl-C is stop_reason=interrupt, complete=false;
+    chain_head = sha256 of the last chain line at that moment, i.e. BEFORE the final seal that
+    contains run_end itself), orderbook_rounds, orderbook_discoveries,
     orderbook_fetch_errors.  Sealing: every part file is listed in the append-only
     ``orderbook-MANIFEST.chain`` (mode 0440, one line per hour, each with prev = sha256 of the
     previous line); read with read_verified(out, kind), which refuses unsealed or altered
-    parts.  Parts written before these columns existed lack them: read_table_unified() fills
+    parts, and by default (require_complete_runs=True) also refuses a directory in which any run
+    lacks a run_end with complete=true (a live or crashed run included; diagnostics pass False).
+    One recorder per --out: the run holds an exclusive flock on ``<out>/.orderbook.lock`` (pid
+    inside); a second copy exits 5.  ``quarantine-unsealed`` moves parts not covered by the chain
+    to ``<out>/_quarantine/<utc-stamp>/`` with a 0440 manifest; it never touches sealed parts or
+    the chain.  Parts written before these columns existed lack them: read_table_unified() fills
     nulls against the current schema.  Use a dedicated --out per recorder: --markets parts
     are never sealed.
 """
@@ -94,11 +101,13 @@ from __future__ import annotations
 
 import argparse
 import email.utils
+import fcntl
 import hashlib
 import json
 import os
 import random
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -400,6 +409,7 @@ SCHEMAS = {
         ("max_discover_failures", pa.int32()),
         ("stop_reason", pa.string()), ("complete", pa.bool_()), ("note", pa.string()),
         ("n_rounds", pa.int32()), ("n_snaps", pa.int64()), ("requests", pa.int64()),
+        ("chain_head", pa.string()),  # sha256 of the last chain line when run_end was written
     ]),
     "orderbook_rounds": pa.schema([
         ("run_id", pa.string()), ("round", pa.int32()), ("ts", TS), ("n_open", pa.int32()),
@@ -918,6 +928,74 @@ def seal_parts(out, hour: str, paths) -> bool:
     return True
 
 
+def chain_head(out) -> str | None:
+    """sha256 of the last chain line (what the next line's ``prev`` will be); None if no chain."""
+    lines = _chain_lines(out)
+    return hashlib.sha256(lines[-1].encode()).hexdigest() if lines else None
+
+
+LOCK_NAME = ".orderbook.lock"
+
+
+class LockHeld(Exception):
+    pass
+
+
+def acquire_lock(out):
+    """Exclusive non-blocking flock on <out>/.orderbook.lock for the life of the returned
+    handle (close it to release); writes the pid.  Raises LockHeld if another process has it."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    fh = open(out / LOCK_NAME, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise LockHeld(str(out / LOCK_NAME))
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{os.getpid()}\n")
+    fh.flush()
+    return fh
+
+
+def quarantine_unsealed(out, utcnow=now_utc, kinds=SEALED_KINDS) -> dict:
+    """Move parts of ``kinds`` that the chain does not cover into _quarantine/<utc-stamp>/ (same
+    relative layout) and write manifest.json there at 0440 (path, sha256, rows, bytes).  Sealed
+    parts and the chain are never touched; a broken chain refuses (SealError) before any move."""
+    out = Path(out)
+    lines = _chain_lines(out)
+    covered, prev = set(), ZERO_HASH
+    for n, ln in enumerate(lines):
+        rec = json.loads(ln)
+        if rec["prev"] != prev:
+            raise SealError(f"chain line {n}: prev mismatch; refusing to quarantine")
+        prev = hashlib.sha256(ln.encode()).hexdigest()
+        covered.update(f["path"] for f in rec["files"])
+    todo = [p for k in kinds for p in sorted((out / k).rglob("*.parquet"))
+            if str(p.relative_to(out)) not in covered]
+    if not todo:
+        return {"moved": 0, "dir": None}
+    qdir = out / "_quarantine" / utcnow().strftime("%Y%m%dT%H%M%SZ")
+    qdir.mkdir(parents=True, exist_ok=False)
+    moved = []
+    for p in todo:
+        rel = p.relative_to(out)
+        try:
+            rows = pq.read_metadata(p).num_rows
+        except Exception:  # unreadable part: still moved, rows unknown
+            rows = None
+        rec = {"path": str(rel), "sha256": sha256_file(p), "rows": rows, "bytes": p.stat().st_size}
+        dest = qdir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(p), str(dest))
+        moved.append(rec)
+    man = qdir / "manifest.json"
+    man.write_text(jdump({"moved_at": utcnow().isoformat(), "files": moved}) + "\n")
+    os.chmod(man, 0o440)
+    return {"moved": len(moved), "dir": str(qdir)}
+
+
 def verify_parts(out, kinds=SEALED_KINDS) -> dict:
     """Check the chain links and every part of ``kinds`` on disk: refuses (SealError) a broken
     prev link, a listed part that is missing or whose sha256 mismatches, and any part the chain
@@ -947,9 +1025,20 @@ def verify_parts(out, kinds=SEALED_KINDS) -> dict:
     return entries
 
 
-def read_verified(out, kind: str) -> pa.Table:
-    """verify_parts(), then read ``kind`` against the unified current schema."""
+def read_verified(out, kind: str, require_complete_runs: bool = True) -> pa.Table:
+    """verify_parts(), then read ``kind`` against the unified current schema.  With
+    ``require_complete_runs`` (default) refuse (SealError) when any run in orderbook_runs has no
+    run_end with complete=true (interrupted, crashed, errored or still running); diagnostics
+    pass False."""
     entries = verify_parts(out)
+    if require_complete_runs:
+        runs = read_table_unified(out, "orderbook_runs", sorted(
+            Path(out, rel) for rel in entries if rel.split("/", 1)[0] == "orderbook_runs")).to_pylist()
+        ok = {r["run_id"] for r in runs if r["event"] == "run_end" and r["complete"] is True}
+        bad = sorted({r["run_id"] for r in runs} - ok)
+        if bad:
+            raise SealError(f"{len(bad)} run(s) without run_end complete=true "
+                            f"(first: {bad[0]}); pass require_complete_runs=False for diagnostics")
     files = sorted(Path(out, rel) for rel in entries if rel.split("/", 1)[0] == kind)
     return read_table_unified(out, kind, files)
 
@@ -1023,6 +1112,18 @@ def plan_cadence(n_open: int, every_s: float, disc_every_s: float, disc_reqs: fl
 
 
 def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
+    try:
+        lock = acquire_lock(store.out)
+    except LockHeld:
+        log("orderbook-snap: another recorder holds the lock on this --out; exiting (5)")
+        raise SystemExit(5)
+    try:
+        return _orderbook_snap_series_locked(client, store, args, log, clock, sleep, utcnow)
+    finally:
+        lock.close()
+
+
+def _orderbook_snap_series_locked(client, store, args, log, clock, sleep, utcnow):
     want = [x.strip() for x in args.series.split(",") if x.strip()]
     series_list = select_series(client, argparse.Namespace(
         categories=args.categories, allow_series=args.allow_series, series=",".join(want)), log)
@@ -1058,8 +1159,10 @@ def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
         if not pending:
             return
         try:
-            seal_parts(store.out, hour, list(pending))
+            wrote = seal_parts(store.out, hour, list(pending))
             pending.clear()
+            log(f"seal: hour={hour} wrote={int(wrote)} chain_lines={len(_chain_lines(store.out))} "
+                f"chain_head={chain_head(store.out)}")
         except OSError as e:  # parts stay pending and are retried at the next seal
             log(f"seal failed ({type(e).__name__}); will retry")
 
@@ -1095,6 +1198,7 @@ def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
     next_disc, next_snap, i, n_snaps, n_disc = t0, t0, 0, 0, 0
     cur_hour = utcnow().strftime("%Y-%m-%dT%H")
     reason, note = "duration", ""
+    ever_ok: set[str] = set()
     try:
         while not stop["flag"]:
             now = clock()
@@ -1136,7 +1240,12 @@ def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
                 log(f"discover: series={len(series_list)} ok={sum(r['ok'] for r in reports)} "
                     f"failed={sum(not r['ok'] for r in reports)} open={len(open_m)} added={added} "
                     f"dropped={dropped} requests={int(disc_reqs)}")
+                ever_ok.update(r["series_ticker"] for r in reports if r["ok"])
                 next_disc = now + disc_eff
+                if any(not r["ok"] and r["series_ticker"] not in ever_ok for r in reports):
+                    # a series with no listing yet: retry sooner, never above the discovery rate guard
+                    floor = disc_reqs / (0.5 * rate) if disc_reqs > 0 else 0.0
+                    next_disc = now + max(min(60.0, args.discover_every_s), floor)
             if now >= next_snap:
                 ok, errs, skipped = 0, {}, 0
                 for t, info in list(open_m.items()):
@@ -1179,6 +1288,9 @@ def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
     except MaxRequestsReached:
         reason = "max_requests"
         raise
+    except KeyboardInterrupt:
+        reason = "interrupt"
+        raise
     except SystemExit:
         reason, note = "error", "refused"
         raise
@@ -1191,7 +1303,7 @@ def _cmd_orderbook_snap_series(client, store, args, log, clock, sleep, utcnow):
         flush()
         bufs["orderbook_runs"].append(run_row(
             "run_end", stop_reason=reason, complete=(reason == "duration"), note=note,
-            n_rounds=i, n_snaps=n_snaps, requests=client.requests_made))
+            n_rounds=i, n_snaps=n_snaps, requests=client.requests_made, chain_head=chain_head(store.out)))
         flush()
         seal(cur_hour)
     log(f"orderbook rounds: {i}, discoveries: {n_disc}, snaps: {n_snaps}, requests: "
@@ -1305,6 +1417,9 @@ def build_parser():
     o.add_argument("--every-s", type=float, default=60)
     o.add_argument("--duration-s", type=float, required=True)
     o.add_argument("--depth", type=int, default=0)
+    q = sub.add_parser("quarantine-unsealed",
+                       help="move parts not covered by the chain to <out>/_quarantine/<utc-stamp>/")
+    q.add_argument("--out", default=argparse.SUPPRESS)
     return p
 
 
@@ -1318,6 +1433,21 @@ COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
 def main(argv=None, client: Client | None = None) -> int:
     args = build_parser().parse_args(argv)
     log = lambda s: print(s, file=sys.stderr)
+    if args.cmd == "quarantine-unsealed":
+        try:
+            lock = acquire_lock(args.out)
+        except LockHeld:
+            log("quarantine-unsealed: a recorder holds the lock on this --out; exiting (5)")
+            return 5
+        try:
+            r = quarantine_unsealed(args.out)
+        except SealError as e:
+            log(f"refused: {e}")
+            return 4
+        finally:
+            lock.close()
+        log(f"quarantined {r['moved']} part(s)" + (f" -> {r['dir']}" if r["dir"] else ""))
+        return 0
     client = client or Client(rate=args.rate, max_requests=args.max_requests)
     query = {k: getattr(args, k) for k in QUERY_KEYS if hasattr(args, k)}
     store = Store(args.out, args.cmd, query)
