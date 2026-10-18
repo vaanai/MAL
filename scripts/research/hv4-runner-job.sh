@@ -38,6 +38,11 @@ cd "$REPO"
 # The frozen sha must be what is checked out: a book runs the code it registered.
 HEAD_SHA="$(git rev-parse HEAD)"
 case "$HEAD_SHA" in "$HV4_FROZEN_SHA"*) ;; *) echo "hv4-runner-job: checkout $HEAD_SHA is not the frozen sha $HV4_FROZEN_SHA" >&2; exit 3;; esac
+# ... and it must be clean (no tracked change, no untracked file): the running code is the frozen code, byte for byte.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "hv4-runner-job: the checkout is dirty; the runner runs from a clean checkout at its frozen sha" >&2
+  exit 3
+fi
 
 if [ "$MODE" = "run" ]; then
   if [ ! -r "$KEY_FILE" ]; then

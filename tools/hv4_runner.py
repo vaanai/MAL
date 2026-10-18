@@ -344,7 +344,11 @@ class RunnerConfig:
 
 class Runner:
     def __init__(self, cfg: RunnerConfig, state: ArenaState, engine: ArenaEngine, model: Model, chain: ChainSource, guard: BudgetGuard | None = None,
-                 h5: H5Signal | None = None, now_fn: Callable[[], int] | None = None, playbook_overrides: Mapping[str, Playbook] | None = None) -> None:
+                 h5: H5Signal | None = None, now_fn: Callable[[], int] | None = None, playbook_overrides: Mapping[str, Playbook] | None = None,
+                 binding: Mapping[str, Any] | None = None) -> None:
+        if cfg.live:
+            require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+        self.binding = dict(binding) if binding is not None else None
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard, self.h5 = cfg, state, engine, model, chain, guard, h5
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
         self.log = DecisionLog(cfg.root)
@@ -422,6 +426,8 @@ class Runner:
                 n["rows"] += 1
                 self._replay_row(name, r)
         self.engine.recover()
+        if self.binding is not None:
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha})
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -1044,14 +1050,38 @@ class Runner:
             T += TICK_MS
 
 
-def stack_config(**kw: Any) -> Any:
-    """arena_paper.StackConfig with explicit arguments. feed_delay_slots is passed only when this arena_paper has the field (#708 makes it required)."""
-    import dataclasses
-
+def stack_config(feed_delay_slots: int, **kw: Any) -> Any:
+    """arena_paper.StackConfig with the feed delay d passed explicitly (REQUIRED: StackConfig refuses to price without it). The manager pins d from
+    tools/arena_feed_delay.py; there is no default here."""
     from tools.arena_paper import StackConfig
 
-    names = {f.name for f in dataclasses.fields(StackConfig)}
-    return StackConfig(**{k: v for k, v in kw.items() if k in names})
+    if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0:
+        raise ValueError("feed_delay_slots must be a whole number of slots >= 0")
+    return StackConfig(feed_delay_slots=feed_delay_slots, **kw)
+
+
+def head_binding(repo: str | os.PathLike | None = None) -> dict[str, Any]:
+    """The running code's identity: {"git_sha": HEAD, "dirty": bool} (dirty = any tracked change or untracked file). A follow-up binds this to open rows."""
+    import subprocess
+
+    r = str(repo or Path(__file__).resolve().parent.parent)
+
+    def run_git(*a: str) -> str:
+        p = subprocess.run(["git", "-C", r, *a], capture_output=True, text=True, timeout=60)
+        if p.returncode != 0:
+            raise RuntimeError("git failed")  # no output is echoed: a remote url can carry a credential
+        return p.stdout
+
+    return {"git_sha": run_git("rev-parse", "HEAD").strip(), "dirty": bool(run_git("status", "--porcelain").strip())}
+
+
+def require_frozen_checkout(binding: Mapping[str, Any], frozen_sha: str) -> None:
+    """A live book runs the code it registered: a clean checkout at its frozen sha, or it does not start."""
+    if binding.get("dirty") is not False:
+        raise RuntimeError("the checkout is dirty (or unknown): the runner runs from a clean checkout at its frozen sha")
+    sha = str(binding.get("git_sha") or "")
+    if len(frozen_sha) < 7 or not (sha.startswith(frozen_sha) or frozen_sha.startswith(sha)) or not sha:
+        raise RuntimeError("the checkout is not at the frozen sha")
 
 
 def first_tick_at_or_after(ms: int) -> int:
@@ -1080,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None)
+    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None, binding=head_binding())
     if a.register:
         for k, v in run.register_all(a.registry).items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))

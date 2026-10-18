@@ -19,6 +19,16 @@ from tools.hv4_model import StubModel, default_reply
 from tools.hv4_testkit import buy, reply, skip
 from tools.hv4_validate import final_size
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _arena_test_env():
+    """register_bot's now_ms / verify_sha=False overrides are refused outside tests unless MAL_ARENA_TEST=1 (arena_paper)."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("MAL_ARENA_TEST", "1")
+        yield
+
+FEED_DELAY_SLOTS = 2  # explicit and required by StackConfig; a test value, not the pinned d
+
 SOL = 1_000_000_000
 MIN = 60_000
 H = 3_600_000
@@ -119,7 +129,7 @@ def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None,
     guard = BudgetGuard(root)
     model = StubModel(script if script is not None else script_for(), guard=guard, cost_usd=cost_usd, latency_ms=latency_ms)
     state = ArenaState(tape, start_ms=0)
-    engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", cfg=R.stack_config(feed_delay_slots=0), sps_fn=lambda: 0.4)
+    engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", cfg=R.stack_config(feed_delay_slots=FEED_DELAY_SLOTS), sps_fn=lambda: 0.4)
     cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
     run = R.Runner(cfg, state, engine, model, FakeChain(), guard)
     if not (tmp / "bots.json").exists():
@@ -222,6 +232,9 @@ def test_latency_is_charged_from_the_instant_the_answer_arrived(tmp_path):
     assert call["ms"] == S1 + 700 == e["ms"]  # decision_ms = as_of + the reply's latency (sim clock)
     o = next(r for r in run.engine.ledger.read_bot("hv4-CON-L") if r["kind"] == "open")
     assert o["decision_ms"]["entry"] == S1 + 700 and o["bot_sol_in"] == e["size"]
+    # write-instant semantics (arena_paper): the latency starts at max(stamp, call clock, latest feed row); here all three are the arrival instant
+    assert o["stamp_ms"]["entry"] == S1 + 700 and o["call_ms"]["entry"] == S1 + 700 and o["write_lag_ms"]["entry"] == 0
+    assert o["stack"]["feed_delay_slots"] == FEED_DELAY_SLOTS
     # The 10 s stale rule is the RUNNER's own policy (DESIGN section 3, enforced by hv4_validate): a reply later than that is discarded and nothing is
     # sent to the engine. It does not rely on the engine refusing a stale stamp (quant-proof's ruling on #708 prices a stale stamp at the write instant).
     slow = make(tmp_path / "slow", latency_ms=11_000)
@@ -478,7 +491,6 @@ def test_importing_the_runner_pulls_in_no_r4b_l3_or_laya_module():
     assert out.stdout.strip().endswith("BAD []"), out.stdout
 
 
-@pytest.mark.xfail(reason="arena_paper still imports tools.r4b_* until #708 vendors the stack as tools/arena_stack.py", strict=False)
 def test_the_real_import_chain_is_clean_too():
     import subprocess
     import sys
@@ -488,3 +500,72 @@ def test_the_real_import_chain_is_clean_too():
             "print('BAD', sorted(k for k in sys.modules if any(f in k for f in %r)))\n" % (_FORBIDDEN,))
     out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(Path(R.__file__).parent.parent), capture_output=True, text=True, timeout=120)
     assert out.stdout.strip().endswith("BAD []"), out.stdout
+
+
+# -------------------------------------------------------------------------------------------------------------------------- final arena_paper interfaces
+def test_stack_config_requires_the_feed_delay_and_validates_it():
+    with pytest.raises(TypeError):
+        R.stack_config()
+    for bad in (None, -1, True, 1.5, "2"):
+        with pytest.raises(ValueError):
+            R.stack_config(bad)
+    assert R.stack_config(3).feed_delay_slots == 3 and R.stack_config(0).feed_delay_slots == 0
+
+
+def test_a_stale_stamp_is_priced_at_the_write_instant_not_refused(tmp_path):
+    """The runner stamps the instant the answer arrived. If the stamp is older than the call clock (a slow caller), the engine prices from the write
+    instant and records the lag; the runner's own 10 s discard is a separate rule (hv4_validate)."""
+    run = make(tmp_path)
+    S1 = X + R.SCAN_SECOND_MS
+    run.run(T_START, S1 + 1_000)
+    run.sim_now = S1 + 4_000  # the call clock is 3.5 s after the stamp of a decision stamped at S1 + 500
+    card = next(iter(run.eligible.values()))
+    pid = run.engine.buy("hv4-CON-X", card["id"], 0.25, S1 + 500, run.slot, meta={"test": 1})
+    o = next(r for r in run.engine.ledger.read_bot("hv4-CON-X") if r.get("kind") == "open" and r["position_id"] == pid)
+    assert o["stamp_ms"]["entry"] == S1 + 500 and o["decision_ms"]["entry"] == S1 + 4_000 and o["write_lag_ms"]["entry"] == 3_500
+
+
+def test_production_cannot_override_the_registration_clock_or_skip_the_sha_check(tmp_path, monkeypatch):
+    from tools.arena_paper import ArenaRefused
+
+    run = make(tmp_path)
+    monkeypatch.delenv("MAL_ARENA_TEST")
+    with pytest.raises(ArenaRefused):  # now_ms / verify_sha=False are test-only
+        run.register_all(str(tmp_path / "other.json"), now_ms=T0 - 61 * MIN, verify_sha=False)
+
+
+def test_head_binding_reports_sha_and_dirty_flag_and_a_live_runner_needs_a_clean_frozen_checkout(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"}
+
+    def g(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=env)
+
+    g("init", "-q")
+    (repo / "a.txt").write_text("x")
+    g("add", "a.txt")
+    g("commit", "-q", "-m", "c")
+    b = R.head_binding(repo)
+    assert len(b["git_sha"]) == 40 and b["dirty"] is False
+    R.require_frozen_checkout(b, b["git_sha"])
+    R.require_frozen_checkout(b, b["git_sha"][:12])
+    with pytest.raises(RuntimeError):
+        R.require_frozen_checkout(b, "0" * 12)
+    (repo / "b.txt").write_text("untracked")  # an untracked file is dirty too
+    d = R.head_binding(repo)
+    assert d["dirty"] is True
+    with pytest.raises(RuntimeError):
+        R.require_frozen_checkout(d, d["git_sha"])
+    for bad in ({}, {"git_sha": b["git_sha"]}, {"git_sha": b["git_sha"], "dirty": None}):
+        with pytest.raises(RuntimeError):
+            R.require_frozen_checkout(bad, b["git_sha"])
+    # a live Runner refuses a dirty or unproven checkout before it touches anything
+    base = make(tmp_path / "x")
+    cfg = R.RunnerConfig(root=str(tmp_path / "x" / "hv4"), frozen_sha=d["git_sha"], clock_start_ms=T0, live=True)
+    for bnd in (None, d):
+        with pytest.raises(RuntimeError):
+            R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=bnd)
+    R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=b)
