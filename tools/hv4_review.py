@@ -769,7 +769,8 @@ def build_bundle(arm: str, day: str, state: ArmState, records: Sequence[Mapping]
                     raise BundleTooLarge("bundle_too_large")
                 nt = m
     obj, req, size, text, sha = make(nt, ns, strip)
-    assert size <= limit and worst_case_input_tokens(req.body()) <= MAX_INPUT_TOKENS
+    if size > limit or (limit <= REQUEST_MAX_BYTES and worst_case_input_tokens(req.body()) > MAX_INPUT_TOKENS):
+        raise BundleTooLarge("bundle_too_large")  # not reachable by the fit loop above; kept as a fail-closed guard in front of haiku_caller's own refusal
     close = max([r["close_ms"] for r in ev], default=0)
     return Bundle(obj, text, sha, req, size, tuple(r["id"] for r in trades[:nt]), close, dict(obj["dropped"]), tuple(ev))
 

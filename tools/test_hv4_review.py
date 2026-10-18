@@ -351,8 +351,15 @@ def test_rules_text_over_1200_words_is_rejected_and_paragraph_charset_is_enforce
     long = "EXITS. " + " ".join(["word"] * 400)
     assert verdict([change(type="playbook_edit", target="EXITS", new=long)]).rejected == ((0, "bad_paragraph"),)
     pb = pr.load_playbook("CON")
-    over = pr.playbook_from_text("CON", "v1", pb.text + "\n\nFILLER. " + " ".join(["w"] * 700) + "\n")
-    assert "rules_over_1200_words" in RV.check_playbook_paragraph_rules(over)
+    over = pr.playbook_from_text("CON", "v1", pb.text + "\n\nFILLER. " + " ".join(["w"] * 800) + "\n")
+    assert over.rules_words > 1200 and "rules_over_1200_words" in RV.check_playbook_paragraph_rules(over)
+    # an edit that would push a playbook already near the cap over it is rejected, and the playbook is unchanged
+    near = pr.playbook_from_text("CON", "v3", pb.text + "\n\nFILLER. " + " ".join(["w"] * 690) + "\n")
+    assert 1100 < near.rules_words <= 1200 and RV.check_playbook_paragraph_rules(near, pb) == []
+    st = RV.ArmState("CON", 3, near, dict(state().knobs), ())
+    edit = change(type="playbook_edit", target="PATIENCE", new="PATIENCE. " + " ".join(["wait"] * 120), claim="worse")
+    r = RV.validate_changes(json.dumps([edit]), st, history(40), pb)
+    assert r.rejected == ((0, "rules_over_1200_words"),) and r.state.playbook.sha256 == near.sha256
     for new in ('EXITS. say "hi"', "EXITS. a {{NONCE}} b", "EXITS. one\ntwo", "EXITS. back`tick"):
         assert verdict([change(type="playbook_edit", target="EXITS", new=new)]).rejected[0][1] == "bad_paragraph"
 
@@ -619,9 +626,9 @@ def test_job_script_is_posix_sh_with_no_xtrace_and_no_key_echo():
     src = p.read_text()
     assert src.startswith("#!/bin/sh\n")
     assert subprocess.run(["sh", "-n", str(p)]).returncode == 0
-    assert "[[" not in src and "PIPESTATUS" not in src and "set -x" not in src.replace("`set -x`", "")
-    assert "00:05Z" in src and "REV-<arm>" in src and "tools/hv4_review.py" in src and "ANTHROPIC_API_KEY" in src
     code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("[[" in ln or "PIPESTATUS" in ln or re.search(r"\bset -[a-z]*x", ln) for ln in code)
+    assert "00:05Z" in src and "REV-<arm>" in src and "tools/hv4_review.py" in src and "ANTHROPIC_API_KEY" in src
     assert not any(re.search(r"\becho\b.*(KEY|ANTHROPIC)", ln) for ln in code if "key file" not in ln)
     out = subprocess.run(["sh", "-x", str(p)], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "HV4_FROZEN_SHA": "abc"})
     assert out.returncode == 2 and "xtrace" in out.stderr
