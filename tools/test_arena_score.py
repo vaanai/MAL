@@ -506,3 +506,14 @@ def test_the_read_carries_informational_file_hashes_and_counts_attempts_priced_t
     w = read(sub, rows)["bots"]["botA"]
     assert w["attempts"] == 100 and w["books"]["0.25"]["n_trades"] == 99 and w["status"] == "FAIL"
     assert any("n 99" in m for ms in w["deciding"]["misses"].values() for m in ms)
+
+
+def test_a_book_failing_only_on_n_prints_fail_n_lt_100(tmp_path):
+    rows = [dict(r, kind="excluded", exclusion_reason="feed_gap", legs=None, calc=None) if r["kind"] == "trade" and r["position_id"] == "p0003" else r for r in positions(good_pnls())]
+    res = read(tmp_path, rows)
+    v = res["bots"]["botA"]
+    assert v["status"] == "FAIL" and v["fail_label"] == "FAIL (n < 100)" and "STATUS FAIL (n < 100)" in render(res)
+    sub = tmp_path / "b"
+    sub.mkdir()
+    res = read(sub, positions(np.full(100, -3e6)))  # a real loss: a plain FAIL, no label
+    assert res["bots"]["botA"]["status"] == "FAIL" and "fail_label" not in res["bots"]["botA"] and "STATUS FAIL (n" not in render(res)

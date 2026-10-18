@@ -39,7 +39,14 @@ CASES_SHA256 = "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58
 LEGACY_MD5 = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output lines == md5 of sc.py's / the curve sim's expected lines (bit parity)
 BINDING_MD5 = "af48053427bd2c49089f99a237a1e781"  # same, binding stack (strand class + E1 floor), expected = sc.py + an independent layer
 os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
-SC = functools.partial(StackConfig, feed_delay_slots=0)  # d = 0 unless a test says otherwise; the replays have no feed gaps to detect
+SC = functools.partial(StackConfig, feed_delay_slots=0)
+
+
+def mk_arena(*a, **k):
+    """An engine whose call clock tracks the latest feed row (a bot called inline with on_row, thinking for no time); tests move eng.now_fn to model a slow bot."""
+    eng = ArenaEngine(*a, **k)
+    eng.now_fn = lambda: eng.hw_ms or 0
+    return eng  # d = 0 unless a test says otherwise; the replays have no feed gaps to detect
 
 
 def register_bot(*a, **k):
@@ -191,7 +198,7 @@ def mk_engine(tmp, cfg=None, vmap=None, bots=("botA",), clock=0):
     reg = tmp / "bots.json"
     for b in bots:
         register_bot(b, "abc1234", clock, reg, now_ms=0)
-    return ArenaEngine(tmp / "ledger", reg, cfg or SC(max_past_ms=None, strand_rule="total"), vmap=vmap, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
+    return mk_arena(tmp / "ledger", reg, cfg or SC(strand_rule="total"), vmap=vmap, sps_fn=lambda: 0.4)
 
 
 def _tape(lo=90, hi=215, **kw):
@@ -215,7 +222,7 @@ def trades(eng, kind="trade"):
 
 
 def test_landing_uses_end_bound_pre_trade_state_and_both_strand_rules(tmp_path):
-    eng = mk_engine(tmp_path, SC(max_past_ms=None))  # default strand_rule "both"
+    eng = mk_engine(tmp_path, SC())  # default strand_rule "both"
     rows = _tape()
     run_trade(eng, rows)
     out = trades(eng)
@@ -249,24 +256,48 @@ def test_latency_starts_at_the_decision_instant_not_the_given_slot(tmp_path):
     assert r["calc"]["1p3"]["landing_slot"] == 102 + 4 and r["calc"]["1p9"]["landing_slot"] == 102 + 5
 
 
-def test_hindsight_decisions_are_refused_and_logged(tmp_path):
+def test_a_future_stamp_is_refused_and_a_stale_stamp_is_priced_at_the_write_instant(tmp_path):
     eng = mk_engine(tmp_path)
     for r in _tape(hi=110):
-        eng.on_row(r)
-    with pytest.raises(ArenaRefused, match="stale_decision"):
-        eng.buy("botA", "P1", None, tms(109), 100)  # decision_slot below the high-water slot 109
-    with pytest.raises(ArenaRefused, match="stale_decision"):
-        eng.buy("botA", "P1", None, tms(100), 109)  # decision_ms below the high-water mark
-    refused = trades(eng, "refused")
-    assert len(refused) == 2 and {r["reason"] for r in refused} == {"stale_decision"}
-    early = ArenaEngine(tmp_path / "l2", eng.registry_path, SC(max_past_ms=None), sps_fn=lambda: 0.4, now_fn=lambda: tms(0))
-    early.on_row(_row(0, 100))
+        eng.on_row(r)  # the latest feed row: slot 109 at tms(109)
     with pytest.raises(ArenaRefused, match="future_decision"):
-        early.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 12 s ahead of the wall clock
-    old = ArenaEngine(tmp_path / "l4", eng.registry_path, SC(max_past_ms=60_000), sps_fn=lambda: 0.4, now_fn=lambda: tms(100) + 90_000)
-    old.on_row(_row(0, 100))
-    with pytest.raises(ArenaRefused, match="stale_decision"):
-        old.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 90 s older than the write instant
+        eng.buy("botA", "P1", None, tms(109) + 60_000, 109)
+    assert [r["reason"] for r in trades(eng, "refused")] == ["future_decision"]
+    # an asynchronous bot that stamped the start of its work long ago is never refused: it is priced at the write instant
+    pid = eng.buy("botA", "P1", None, tms(90), 90, {})
+    pos = eng.positions[pid]
+    assert pos.sd == 109 and pos.decision_ms == tms(109) and pos.stamp_ms == tms(90)
+    op = trades(eng, "open")[0]
+    assert op["decision_ms"]["entry"] == tms(109) and op["stamp_ms"]["entry"] == tms(90) and op["call_ms"]["entry"] == tms(109)
+    assert op["write_lag_ms"]["entry"] == tms(109) - tms(90)
+    assert not [r for r in trades(eng, "refused") if r["reason"] == "stale_decision"]
+
+
+def test_an_inline_bot_that_thinks_30_s_with_the_feed_frozen_gets_the_later_landing_slot(tmp_path):
+    res = {}
+    for think in (0, 30_000):
+        sub = tmp_path / str(think)
+        sub.mkdir()
+        eng = mk_engine(sub)
+        pid = None
+        for r in _tape(hi=300):
+            eng.on_row(r)
+            if r["slot"] == 100 and pid is None:
+                eng.now_fn = lambda t=think: tms(100) + t  # the bot stamps the moment it saw the row and writes `think` ms later; the feed has not moved
+                pid = eng.buy("botA", "P1", None, tms(100), 100)
+                eng.now_fn = lambda: eng.hw_ms or 0
+            if r["slot"] == 250 and pid and eng.positions[pid].exit_slot is None:
+                if think:
+                    eng.now_fn = lambda: tms(250) + 10_000  # and it thinks 10 s before the sell too
+                eng.sell("botA", pid, 1.0, tms(250), 250)
+                eng.now_fn = lambda: eng.hw_ms or 0
+        res[think] = trades(eng)[0]
+    fast, slow = res[0], res[30_000]
+    assert fast["effective_slot"] == {"entry": 100, "exit": 250} and fast["calc"]["1p3"]["landing_slot"] == 104 and fast["write_lag_ms"] == {"entry": 0, "exit": 0}
+    assert slow["effective_slot"] == {"entry": 175, "exit": 275}  # 30 s / 0.4 s = 75 slots, 10 s = 25 slots
+    assert slow["calc"]["1p3"]["landing_slot"] == 175 + 4 and slow["calc"]["1p9"]["landing_slot"] == 175 + 5
+    assert slow["stamp_ms"] == {"entry": tms(100), "exit": tms(250)} and slow["call_ms"] == {"entry": tms(100) + 30_000, "exit": tms(250) + 10_000}
+    assert slow["write_lag_ms"] == {"entry": 30_000, "exit": 10_000} and slow["decision_ms"] == {"entry": tms(100) + 30_000, "exit": tms(250) + 10_000}
 
 
 def test_refused_buys_go_in_the_decision_log(tmp_path):
@@ -275,7 +306,7 @@ def test_refused_buys_go_in_the_decision_log(tmp_path):
         eng.on_row(r)
     with pytest.raises(ArenaRefused, match="no_prints"):
         eng.buy("botA", "UNKNOWN", None, tms(109), 109)
-    eng2 = ArenaEngine(tmp_path / "l3", eng.registry_path, SC(max_past_ms=None), sps_fn=lambda: None, now_fn=lambda: 2**62)
+    eng2 = mk_arena(tmp_path / "l3", eng.registry_path, SC(), sps_fn=lambda: None)
     eng2.on_row(_row(0, 100))
     with pytest.raises(ArenaRefused, match="clock_not_ready"):
         eng2.buy("botA", "P1", None, tms(100), 100)
@@ -289,7 +320,7 @@ def test_k_rounding_round_vs_ceil(tmp_path):
     for mode in ("ceil", "round"):
         sub = tmp_path / mode
         sub.mkdir()
-        eng = mk_engine(sub, SC(k_rounding=mode, max_past_ms=None, strand_rule="total"))
+        eng = mk_engine(sub, SC(k_rounding=mode, strand_rule="total"))
         eng.sps_fn = lambda: 0.2
         run_trade(eng, [dict(r, t_recv_ms=T0 + (r["slot"] - 90) * 200) for r in _tape(hi=260)], sell_slot=210, buy_ms=T0 + 10 * 200, sell_ms=T0 + 120 * 200)
         res[mode] = trades(eng)[0]["calc"]["1p3"]["landing_slot"]
@@ -335,12 +366,13 @@ def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
     for gap in (False, True):
         sub = tmp_path / str(gap)
         sub.mkdir()
-        eng = mk_engine(sub, SC(grace_slots=25, max_past_ms=None, strand_rule="total"))
+        eng = mk_engine(sub, SC(grace_slots=25, strand_rule="total"))
         for r in _tape(hi=108):
             eng.on_row(r)
         eng2 = eng
         # buy at the last fed slot 107, sell at 120 decided on the clock only (no pool print at >= 128 will arrive)
         pid = eng2.buy("botA", "P1", None, tms(107), 107)
+        eng2.now_fn = lambda: tms(120)  # the wall clock moves on while the pool prints nothing
         eng2.sell("botA", pid, 1.0, tms(120), 120)
         assert eng2.ledger.read_bot("botA")[-1]["kind"] == "open"
         if gap:
@@ -412,7 +444,7 @@ def test_open_row_is_written_before_pricing_and_a_restart_recovers_open_position
     assert len(op) == 1 and op[0]["position_id"] == pid and op[0]["decision_ms"]["entry"] == tms(100) and trades(eng) == []
     assert "written_ms" in op[0] and op[0]["stack"]["strand_rule"] == "total"
     # restart: a new engine, empty memory
-    eng2 = ArenaEngine(tmp_path / "ledger", eng.registry_path, eng.cfg, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
+    eng2 = mk_arena(tmp_path / "ledger", eng.registry_path, eng.cfg, sps_fn=lambda: 0.4)
     assert eng2.recover() == 1 and eng2.positions[pid].restarted
     for r in rows[11:51]:
         eng2.on_row(r)
@@ -631,7 +663,7 @@ def test_feed_delay_is_required_nothing_is_priced_without_it(tmp_path):
     for d in (None, -1):
         sub = tmp_path / str(d)
         sub.mkdir()
-        eng = mk_engine(sub, StackConfig(max_past_ms=None, feed_delay_slots=d))
+        eng = mk_engine(sub, StackConfig(feed_delay_slots=d))
         for r in _tape(hi=110):
             eng.on_row(r)
         with pytest.raises(ArenaRefused, match="feed_delay_unset"):
@@ -642,7 +674,7 @@ def test_feed_delay_is_required_nothing_is_priced_without_it(tmp_path):
     for r in _tape(hi=110):
         ok.on_row(r)
     pid = ok.buy("botA", "P1", None, tms(109), 109)
-    ok.cfg = StackConfig(max_past_ms=None)  # d lost: the sell is refused too
+    ok.cfg = StackConfig()  # d lost: the sell is refused too
     with pytest.raises(ArenaRefused, match="feed_delay_unset"):
         ok.sell("botA", pid, 1.0, tms(109), 109)
 
@@ -652,7 +684,7 @@ def test_feed_delay_is_added_to_entry_and_exit_and_both_slots_are_recorded(tmp_p
     for d in (0, 3):
         sub = tmp_path / str(d)
         sub.mkdir()
-        eng = mk_engine(sub, StackConfig(max_past_ms=None, strand_rule="total", feed_delay_slots=d))
+        eng = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=d))
         rows = _tape(hi=230)
         run_trade(eng, rows)
         res[d] = (trades(eng)[0], {x["slot"]: x for x in rows})
@@ -669,7 +701,7 @@ def test_feed_delay_is_added_to_entry_and_exit_and_both_slots_are_recorded(tmp_p
 
 
 def test_feed_delay_applies_to_bonding_fills_too(tmp_path):
-    eng = mk_engine(tmp_path, StackConfig(max_past_ms=None, strand_rule="total", feed_delay_slots=2))
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
     rows = [dict(r, quote_reserve=40e9 + i * 1e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=230))]
     run_trade(eng, rows, pool="M1")
     r = trades(eng)[0]
@@ -677,23 +709,11 @@ def test_feed_delay_applies_to_bonding_fills_too(tmp_path):
     assert r["calc"]["1p3"]["Qe"] == by_slot[104 + 2]["quote_reserve"] and r["calc"]["1p3"]["Qx"] == by_slot[202 + 2]["quote_reserve"]
 
 
-def test_decisions_within_the_tolerance_are_clamped_forward_and_beyond_it_are_stale(tmp_path):
-    eng = mk_engine(tmp_path)
-    for r in _tape(hi=110):
-        eng.on_row(r)  # high-water slot 109
-    pid = eng.buy("botA", "P1", None, tms(109) - 600, 108, {})  # 600 ms and 1 slot behind the feed: a race with on_row, accepted
-    assert eng.positions[pid].sd == 109  # clamped forward to the high-water mark, never back
-    for slot, ms in ((106, tms(109)), (109, tms(109) - 1500)):  # 3 slots / 1.5 s behind: stale
-        with pytest.raises(ArenaRefused, match="stale_decision"):
-            eng.buy("botA", "P1", None, ms, slot, {"n": slot})
-    assert [r["reason"] for r in trades(eng, "refused")] == ["stale_decision", "stale_decision"]
-
-
 def _gap_run(tmp_path, name, cfg=None, inject=None):
     """Buy at slot 100, sell decided at slot 118 (priced when a print at slot >= 121 arrives); `inject(row)` yields extra rows just before the slot-120 row."""
     sub = tmp_path / name
     sub.mkdir()
-    eng = mk_engine(sub, cfg or SC(max_past_ms=None, strand_rule="total"))
+    eng = mk_engine(sub, cfg or SC(strand_rule="total"))
     pid = None
     for r in _tape(hi=240):
         if inject and r["slot"] == 120:
@@ -723,7 +743,7 @@ def test_process_downtime_is_a_gap_start_rows_slot_jumps_and_silence(tmp_path):
     e4 = _gap_run(tmp_path, "jump", inject=lambda r: [dict(_row(902, 330, sig="jumped"), t_recv_ms=tms(120) + 1_000)])
     assert len(trades(e4, "excluded")) == 3 and e4.counters.get("gap_engine_slot_jump") == 1
     # detection off (a replay): the same rows are priced
-    off = SC(max_past_ms=None, strand_rule="total", gap_slots=None, gap_silence_ms=None)
+    off = SC(strand_rule="total", gap_slots=None, gap_silence_ms=None)
     e5 = _gap_run(tmp_path, "off", off, inject=lambda r: [dict(_row(903, 330, sig="jumped"), t_recv_ms=tms(120) + 90_000)])
     assert len(trades(e5)) == 3 and not e5.gaps
 

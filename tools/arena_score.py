@@ -22,7 +22,7 @@ STATUS (the first that applies):
                   + data-refused attempts above 5% of the book's attempts (DEC-031 section 1.4). Refused buys count toward the 5% only when the reason is a data
                   issue (no_prints, no_feed_rows, clock_not_ready); stale_decision / future_decision / feed_delay_unset are reported apart.
   REPORT_ONLY     any bonding row in the book (its costs are unmeasured; quant-proof on #708), or the book was not priced under both strand rules
-  PASS / FAIL     the DECIDING CELL only: 1.9 s at the stake pinned in bots.json, flat 15% AND pressure-fail, each under BOTH strand rules ("sc" and the
+  PASS / FAIL     (a book whose only misses are n < 100 prints "FAIL (n < 100)": final, but not a loss) the DECIDING CELL only: 1.9 s at the stake pinned in bots.json, flat 15% AND pressure-fail, each under BOTH strand rules ("sc" and the
                   DEC-031 strand class "total"): four sub-cells, all must pass. A sub-cell passes iff n >= 100, >= 5 UTC days with a strict majority positive,
                   CI90 lower bound of mean SOL / trade > 0 (trade-level bootstrap, 1,000 draws, seed 1, 5th percentile: tools.arena_stack.boot_lo) and total
                   ex top 3 trades > 0. The 1.3 s leg and the other stakes are report-only and never decide. "weakest_cell" is the lowest-CI cell of the
@@ -210,6 +210,8 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms)
     if out.get("pending") and out["status"] not in ("NOT_DECIDABLE", "NOT_READY"):
         out["preview_status"] = out["status"]
+        if "fail_label" in out:
+            out["preview_fail_label"] = out.pop("fail_label")  # a pending book prints PENDING, not a provisional FAIL label
         out["status"] = "PENDING"
         out["reasons"].append(f"{out['pending']} attempt(s) before the boundary are still open and inside the settle window: not a verdict, not recordable")
     return out
@@ -297,6 +299,7 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
     dec = books.get(dk)
     if dec is None or not dec["cells"]:
         out["status"] = "FAIL"
+        out["fail_label"] = "FAIL (n < 100)"
         why.append(f"no priced trades at the deciding stake {dk}")
         return out
     subs = {k: v for k, v in dec["cells"].items() if "_1p9_" in k}
@@ -312,6 +315,9 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
         why.append(f"the deciding cell was not priced under both strand rules (rules present: {dec['rules']})")
     else:
         out["status"] = "PASS" if out["deciding"]["pass"] else "FAIL"
+        misses = [m for ms in out["deciding"]["misses"].values() for m in ms]
+        if out["status"] == "FAIL" and misses and all(m.startswith("n ") for m in misses):
+            out["fail_label"] = "FAIL (n < 100)"  # fewer than 100 priced trades after the exclusions: final, but not a loss
     return out
 
 
@@ -410,7 +416,7 @@ def render(res: Mapping[str, Any]) -> str:
         L.append(f"REFUSED {b}: {why}")
     f = lambda z: "None" if z is None else f"{z:+.6f}"  # noqa: E731
     for b, v in res["bots"].items():
-        L.append(f"\nBOT {b}  STATUS {v['status']}  sha {v['frozen_sha']}  clock {v['clock_start_ms']}  deciding stake {v['deciding_stake']}  models {v['model_ids']}")
+        L.append(f"\nBOT {b}  STATUS {v.get('fail_label') or v['status']}  sha {v['frozen_sha']}  clock {v['clock_start_ms']}  deciding stake {v['deciding_stake']}  models {v['model_ids']}")
         L.append(f"  config {canon(v['config'])}")
         for r in v["reasons"]:
             L.append(f"  reason: {r}")

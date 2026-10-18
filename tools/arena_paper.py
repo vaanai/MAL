@@ -18,9 +18,9 @@ and tools/r4b_frozen.py (blob shas in its header; no arena process may open or u
   * STRAND CLASS: an unpriced or invalid exit (r4b_book entry_invalid / exit_invalid C2, C7, C8), or proceeds below one send, is a TOTAL loss of stake plus the
     buy send plus rent (-stake - 505,000 - 2,039,280) on every leg. It bypasses the fail blend (flat = pressure = the loss) and is never dropped.
   * E1 FLOOR: per filled trip the stack carries max(haircut, 384,022 lamports per 0.05 SOL of stake) (DEC-021:54, Amendment 7 option B), scaled linearly.
-  * LATENCY starts at the DECISION INSTANT: decision_ms is mapped to the tape slot clock (the latest feed row's (slot, t_recv_ms) plus elapsed time / sps) and
-    the fill lands at that slot + k, k = ceil(latency / sps - 1e-9) (`k_rounding="round"` is the EXP-027 QP value). A decision_ms or decision_slot earlier than
-    the engine's high-water mark, or before the book's registered clock, is REFUSED. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
+  * LATENCY starts at the instant the decision is WRITTEN: that instant is mapped to the tape slot clock (the latest feed row's (slot, t_recv_ms) plus elapsed time / sps) and
+    the fill lands at that slot + k, k = ceil(latency / sps - 1e-9) (`k_rounding="round"` is the EXP-027 QP value). The instant is the WRITE instant, max(the bot's decision_ms, the wall clock at the buy()/sell() call, t_recv_ms of the latest feed row
+    the engine has seen): a stale stamp is priced at the write instant, never refused; a stamp in the future is refused; a decision before the book's clock is refused. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
     by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's decision-time spot stays the price the bot saw).
   * FEED GAPS: a trade whose decision-to-exit span holds a logged data_loss gap of its program, or a needed print without V, or a restart of this engine, is
     written as an "excluded" row with the reason. A derived_last exit after a gap falls under the gap rule. The scorer counts them (> 5% of a book -> NOT_DECIDABLE).
@@ -332,15 +332,12 @@ class StackConfig:
     # The whole-slot feed delay d (confirmed-commitment feed behind the chain), measured by tools/arena_feed_delay.py. REQUIRED: None = the engine refuses to
     # price. d is added to the entry decision slot and to the exit decision slot.
     feed_delay_slots: int | None = None
-    # Calling contract: a bot is called inline with on_row. A decision stamped up to ms_tolerance before the latest feed row, or at a slot up to slot_tolerance
-    # below the high-water slot, is a race with the feed and is accepted (its instant is clamped forward to the high-water mark); beyond that it is
-    # stale_decision, which the scorer counts apart from the data refusals and keeps out of the 5% cap.
-    slot_tolerance: int = 2
-    ms_tolerance: int = 1_000
+    # Calling contract: a bot may be called inline with on_row or asynchronously. The latency starts at the WRITE INSTANT, max(the bot's decision_ms, the
+    # wall clock at the buy()/sell() call, t_recv_ms of the latest feed row), so a stale stamp (a bot that stamped the start of its thinking) is priced at
+    # the write instant and never refused; only a stamp in the future (beyond max_future_ms of the call clock) is refused.
     gap_slots: int | None = 150  # a slot jump between consecutive trade rows beyond this is a data_loss gap (about 60 s); None = off (replays)
     gap_silence_ms: int | None = 60_000  # silence between consecutive trade rows beyond this is a data_loss gap; None = off (replays)
     max_future_ms: int = 5_000
-    max_past_ms: int | None = 60_000  # a decision_ms older than this at the write instant is stale (the caller supplies decision_ms)
 
     def as_dict(self) -> dict[str, Any]:
         return {"send": self.send, "rent": self.rent, "h_in": self.h_in, "h_out": self.h_out, "k_rounding": self.k_rounding, "exit_lag_s": F.EXIT_LAG_S,
@@ -506,7 +503,7 @@ class Position:
     pool: str
     mint: str | None
     prog: str
-    decision_ms: int
+    decision_ms: int  # the write instant of the entry decision: max(the bot's stamp, the call clock, the latest feed row's t_recv_ms)
     decision_slot: int  # as given by the bot
     sd: int  # effective entry decision slot = max(decision_slot, slot mapped from decision_ms)
     sps_entry: float
@@ -518,6 +515,10 @@ class Position:
     sps_exit: float | None = None
     reason: str | None = None
     restarted: bool = False  # rebuilt from the ledger after an engine restart: its pool history has a hole
+    stamp_ms: int = 0  # the bot's own decision_ms (decision_ms above is the WRITE instant)
+    call_ms: int = 0  # the wall clock at the buy() call
+    exit_stamp_ms: int | None = None
+    exit_call_ms: int | None = None
 
 
 @dataclass
@@ -682,19 +683,17 @@ class ArenaEngine:
             raise ArenaRefused("feed_delay_unset: StackConfig.feed_delay_slots is required (a whole number of slots from tools/arena_feed_delay.py); nothing is priced without it")
         return d
 
-    def _check_instant(self, decision_ms: int, decision_slot: int) -> None:
+    def _write_instant(self, decision_ms: int) -> tuple[int, int]:
+        """(call_ms, instant_ms). call_ms is the wall clock at this call; the latency starts at instant_ms = max(the bot's decision_ms, call_ms, t_recv_ms of the
+        latest feed row the engine has seen). A bot called inline holds the feed still while it thinks, so its own stamp would give it the thinking time free."""
+        call = int(self.now_fn())
+        return call, max(int(decision_ms), call, self.hw_ms if self.hw_ms is not None else 0)
+
+    def _check_instant(self, decision_ms: int, call_ms: int) -> None:
         if self.hw_ms is None:
             raise ArenaRefused("no_feed_rows: no feed rows seen yet")
-        c = self.cfg
-        if int(decision_ms) < self.hw_ms - c.ms_tolerance:
-            raise ArenaRefused(f"stale_decision: decision_ms {decision_ms} is more than {c.ms_tolerance} ms earlier than the engine's high-water mark {self.hw_ms} (a hindsight decision)")
-        if int(decision_slot) < self.hw_slot - c.slot_tolerance:
-            raise ArenaRefused(f"stale_decision: decision_slot {decision_slot} is more than {c.slot_tolerance} slots below the engine's high-water slot {self.hw_slot}")
-        now = self.now_fn()
-        if int(decision_ms) > now + c.max_future_ms:
+        if int(decision_ms) > call_ms + self.cfg.max_future_ms:
             raise ArenaRefused("future_decision: decision_ms is in the future")
-        if c.max_past_ms is not None and int(decision_ms) < now - c.max_past_ms:
-            raise ArenaRefused("stale_decision: decision_ms is older than max_past_ms at the write instant")
 
     # --- bot API
     def _bot(self, bot_id: str) -> dict[str, Any]:
@@ -704,41 +703,46 @@ class ArenaEngine:
         return reg[bot_id]
 
     def buy(self, bot_id: str, pool: str, sol_in: float | None, decision_ms: int, decision_slot: int, meta: Mapping[str, Any] | None = None) -> str:
-        """Open a paper position decided at the instant decision_ms (the slot the bot saw is decision_slot). Priced at every configured stake (0.25 / 0.5 /
-        1.0 SOL), so `sol_in` is the bot's own nominal size and is only recorded. An "open" row is written to the ledger BEFORE anything is priced.
-        Returns the position_id (deterministic in bot, pool, decision)."""
+        """Open a paper position. The latency starts at the WRITE instant = max(decision_ms, the wall clock at this call, t_recv_ms of the latest feed row): a bot
+        that thinks for 30 s with the feed frozen lands 30 s later; a stale stamp is priced at the write instant, never refused (only a stamp in the future is).
+        Priced at every configured stake (0.25 / 0.5 / 1.0 SOL), so `sol_in` is the bot's own nominal size and is only recorded. An "open" row (stamp, call clock,
+        write instant and write lag) is written to the ledger BEFORE anything is priced. Returns the position_id (deterministic in bot, pool, stamp, slot)."""
         reg = self._bot(bot_id)
-        if int(decision_ms) < reg["clock_start_ms"]:
-            raise ArenaRefused(f"before_clock: decision_ms {decision_ms} is before bot {bot_id}'s clock {reg['clock_start_ms']}")
-        if reg["stopped_at_ms"] is not None and int(decision_ms) >= reg["stopped_at_ms"]:
+        call, instant = self._write_instant(decision_ms)
+        if instant < reg["clock_start_ms"]:
+            raise ArenaRefused(f"before_clock: the write instant {instant} is before bot {bot_id}'s clock {reg['clock_start_ms']}")
+        if reg["stopped_at_ms"] is not None and instant >= reg["stopped_at_ms"]:
             raise ArenaRefused(f"stopped: bot {bot_id} is stopped")
         pid = hashlib.sha256(f"{bot_id}|{pool}|{int(decision_ms)}|{int(decision_slot)}".encode()).hexdigest()[:16]
+        timing = {"stamp_ms": {"entry": int(decision_ms), "exit": None}, "call_ms": {"entry": call, "exit": None},
+                  "write_lag_ms": {"entry": instant - int(decision_ms), "exit": None}}
         try:
             self._check_delay_set()
             h = self.pools.get(pool)
             if h is None or not h.slot:
                 raise ArenaRefused(f"no_prints: no prints seen for pool {pool}")
-            self._check_instant(decision_ms, decision_slot)
+            self._check_instant(decision_ms, call)
             sps = self.sps()
             if sps is None:
                 raise ArenaRefused("clock_not_ready: slot clock not ready (sps unknown)")
         except ArenaRefused as exc:  # a refused buy is still a decision: it goes in the decision log and counts toward the excluded share
-            self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused", "position_id": pid, "bot_id": bot_id,
-                                "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": int(decision_ms), "exit": None},
+            self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused-{instant}", "position_id": pid, "bot_id": bot_id,
+                                "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": instant, "exit": None}, **timing,
                                 "decision_slot": {"entry": int(decision_slot), "exit": None}, "pool": pool, "reason": str(exc).split(":")[0],
-                                "detail": str(exc)[:200], "bot_sol_in": sol_in, "meta": dict(meta or {}), "stack": self.cfg.as_dict(), "written_ms": self.now_fn()})
+                                "detail": str(exc)[:200], "bot_sol_in": sol_in, "meta": dict(meta or {}), "stack": self.cfg.as_dict(), "written_ms": call})
             self._count("refused_" + str(exc).split(":")[0])
             raise
         if pid in self.positions:
             raise ArenaRefused(f"duplicate: position {pid} already open for this decision")
         d = self.cfg.feed_delay_slots
-        sd = max(int(decision_slot), self.slot_at(max(int(decision_ms), self.hw_ms), sps))  # a race-tolerated stamp is clamped forward to the high-water mark
-        pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, int(decision_ms), int(decision_slot), sd, float(sps),
-                       None if sol_in is None else float(sol_in), dict(meta or {}))
+        sd = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant mapped to the tape slot clock; d is added at the landing
+        pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, instant, int(decision_slot), sd, float(sps),
+                       None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call)
         self.ledger.append({"schema": SCHEMA, "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
-                            "decision_ms": {"entry": pos.decision_ms, "exit": None}, "decision_slot": {"entry": pos.decision_slot, "exit": None},
-                            "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool, "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry,
-                            "bot_sol_in": pos.bot_sol_in, "meta": pos.meta, "stack": self.cfg.as_dict(), "written_ms": self.now_fn()})
+                            "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
+                            "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
+                            "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
+                            "stack": self.cfg.as_dict(), "written_ms": call})
         self.positions[pid] = pos
         return pid
 
@@ -754,7 +758,9 @@ class ArenaEngine:
                 if r.get("kind") == "open" and r["position_id"] not in closed and r["position_id"] not in self.positions:
                     self.positions[r["position_id"]] = Position(r["position_id"], bot_id, r["frozen_sha"], r["pool"], r["mint"], r["prog"], r["decision_ms"]["entry"],
                                                                 r["decision_slot"]["entry"], r["effective_slot"]["entry"], r["sps_entry"], r["bot_sol_in"],
-                                                                r["meta"], restarted=True)
+                                                                r["meta"], restarted=True,
+                                                                stamp_ms=(r.get("stamp_ms") or {}).get("entry", r["decision_ms"]["entry"]),
+                                                                call_ms=(r.get("call_ms") or {}).get("entry", 0))
                     n += 1
         return n
 
@@ -770,11 +776,12 @@ class ArenaEngine:
         if frac != 1.0:
             raise ArenaRefused("partial sells are not supported in v1 (frac must be 1.0)")
         self._check_delay_set()
-        self._check_instant(decision_ms, decision_slot)
+        call, instant = self._write_instant(decision_ms)
+        self._check_instant(decision_ms, call)
         sps = self.sps()
         if sps is None:
             raise ArenaRefused("slot clock not ready (sps unknown)")
-        xs = max(int(decision_slot), self.slot_at(max(int(decision_ms), self.hw_ms), sps))
+        xs = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant of the sell, mapped to the tape slot clock
         k_slow = max(self._k(lat, pos.sps_entry) for lat in LATS)
         if xs < pos.sd + k_slow + 1:
             raise ArenaRefused("sell decided before the slower entry leg lands")
@@ -782,7 +789,8 @@ class ArenaEngine:
             F.exit_lag_slots(sps)
         except AssertionError as exc:
             raise ArenaRefused(str(exc)) from None
-        pos.exit_ms, pos.exit_slot, pos.xs, pos.sps_exit, pos.reason = int(decision_ms), int(decision_slot), xs, float(sps), reason
+        pos.exit_ms, pos.exit_slot, pos.xs, pos.sps_exit, pos.reason = instant, int(decision_slot), xs, float(sps), reason
+        pos.exit_stamp_ms, pos.exit_call_ms = int(decision_ms), call
         if pos.restarted:
             self._write_excluded(pos, "engine_restart", None)
             del self.positions[position_id]
@@ -915,6 +923,8 @@ class ArenaEngine:
     def _base_row(self, pos: Position, kind: str, s_sol: float, src: str | None) -> dict[str, Any]:
         return {"schema": SCHEMA, "kind": kind, "trade_id": f"{pos.position_id}-s{int(round(s_sol * 1000))}", "position_id": pos.position_id,
                 "bot_id": pos.bot_id, "frozen_sha": pos.frozen_sha, "decision_ms": {"entry": pos.decision_ms, "exit": pos.exit_ms},
+                "stamp_ms": {"entry": pos.stamp_ms, "exit": pos.exit_stamp_ms}, "call_ms": {"entry": pos.call_ms, "exit": pos.exit_call_ms},
+                "write_lag_ms": {"entry": pos.decision_ms - pos.stamp_ms, "exit": None if pos.exit_ms is None else pos.exit_ms - (pos.exit_stamp_ms or 0)},
                 "decision_slot": {"entry": pos.decision_slot, "exit": pos.exit_slot}, "effective_slot": {"entry": pos.sd, "exit": pos.xs},
                 "corrected_slot": {"entry": pos.sd + (self.cfg.feed_delay_slots or 0), "exit": None if pos.xs is None else pos.xs + (self.cfg.feed_delay_slots or 0)},
                 "feed_delay_slots": self.cfg.feed_delay_slots,

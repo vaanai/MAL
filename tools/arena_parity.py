@@ -136,6 +136,7 @@ def _fire(engine, d, bot, pids) -> None:
     slot, kind, ident, key = d
     n = max(0, slot - engine.hw_ms_slot)
     ms = engine.hw_ms + math.ceil(n * engine.sps() * 1000)  # maps back to exactly `slot` (slot_at floors, +1e-9)
+    engine.now_fn = lambda m=ms: m  # the call clock is the decision stamp: the write instant is the stamp (replay)
     if kind == "buy":
         pids[ident] = engine.buy(bot, key, None, ms, slot, {"case": ident})
     else:
@@ -163,9 +164,9 @@ def build(hour: str) -> dict:
 
     day = hour[:10]
     s_ = 3600.0 / SPH[day]
-    legacy = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="sc", e1_floor_per_005=0, max_past_ms=None)  # the sc.py / VERIFY stack; parity waits for the tape print
-    binding = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="total", max_past_ms=None)  # DEC-031 rev 2: strand class + E1 floor
-    live = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=25, strand_rule="total", max_past_ms=None)  # stress: derive the state after the last print 25 slots past
+    legacy = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="sc", e1_floor_per_005=0)  # the sc.py / VERIFY stack; parity waits for the tape print
+    binding = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="total")  # DEC-031 rev 2: strand class + E1 floor
+    live = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=25, strand_rule="total")  # stress: derive the state after the last print 25 slots past
     vmap = load_vmap(DEFAULT_VMAP)
     c, f, ps, bd = load_hour(hour)
     rng = np.random.default_rng(SEED)
@@ -178,7 +179,7 @@ def build(hour: str) -> dict:
     register_bot("parity-bot", "0123abc", 0, reg, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
 
     def engine(cfg, name):
-        return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_, now_fn=lambda: 2**62)
+        return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_)
 
     # ---- PumpSwap decisions
     cases: list[dict] = []
