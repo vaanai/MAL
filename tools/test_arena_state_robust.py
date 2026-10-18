@@ -27,6 +27,20 @@ def test_a_malformed_row_is_counted_and_the_poll_goes_on(tmp_path: Path) -> None
     assert st.poll() == 2 and st.counters["apply_errors"] == 1 and st.pool(M).n_trades == 2  # the bad row fails at its number conversion, before any state changes
 
 
+def test_evict_idle_min_is_a_knob_and_the_default_is_six_hours(tmp_path: Path) -> None:
+    other = "OTHER" + "1" * 39
+    rows = [curve(T0, "A", "buy", 1.0, 1e-7), curve(T0 + 61 * 60_000, "B", "buy", 1.0, 1e-7, mint=other)]
+    write_tape(tmp_path, rows)
+    short = ArenaState(tmp_path, start_ms=0, evict_idle_min=60)
+    short.poll()
+    short.sweep()
+    assert short.pool(M) is None and short.pool(other) is not None  # idle 61 min > 60
+    default = ArenaState(tmp_path, start_ms=0)
+    default.poll()
+    default.sweep()
+    assert default.evict_idle_ms == 6 * 3600 * 1000 and default.pool(M) is not None
+
+
 def test_pools_wsol_only_returns_verified_wsol_keys(tmp_path: Path) -> None:
     pc = row("pool_create", pool=POOL, mint=M, quote_mint=WSOL)
     info = row("pool_info", pool="USDC" + "1" * 40, mint="X" * 44, quote_mint="USDC" + "2" * 40)

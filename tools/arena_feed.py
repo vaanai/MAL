@@ -28,6 +28,11 @@ hour file opens and at least every 60 s. Below --min-free-pct nothing is written
 carries a flag; when space allows again ONE gap record (kind and reason disk_reserve) says for how long and how many rows were dropped.
 Memory: bounded dedup sets, no per-pool state here; the hb carries VmRSS. Logs are counts only (no signature, mint or wallet is logged).
 
+LOSS IS MARKED. A decode error, a write error (OSError) and an exception while handling a notice each become a data_loss gap row (kind decode_error /
+write_error / consume_error; a burst is one coalesced record, written when the writer works again). A new process writes a process_restart gap for the
+window since the previous run last wrote (a kill leaves no stop row). Every gap row carries a span [from_ms, to_ms]; see tools/arena_tape_schema.md.
+EXIT CODES. 0 clean stop; 2 bad arguments; 3 another instance holds the lock; 4 fatal: writes failing for 120 s, or a core task ended while running.
+
 Run: python -m tools.arena_feed --out-dir /data/mal/arena/tape   (MiScusi job; see the PR body for the command)
 """
 

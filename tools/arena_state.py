@@ -16,6 +16,13 @@ The state clock is `now_ms`: the largest t_recv_ms applied. Nothing reads the wa
 is deterministic. Reserve conventions (tools/arena_tape_schema.md): PumpSwap rows carry PRE-trade reserves with V, so the post-trade
 spot is derived here (the same algebra as tools.h5_shadow.post_state); bonding rows carry POST-trade reserves, used as they are.
 
+MEMORY (measured 2026-10-18 on this code, CPython 3.12, RSS deltas): about 500 live bonding or PumpSwap keys, each trading every minute for 7 h (candles
+full at 360, the 60-min event deque full): 66 MB at 1 trade/min/key (136 KB per key), 122 MB at 6 trades/min/key (249 KB per key). The real smoke tape
+(14,118 rows, 545 keys in 120 s) cost 9.6 KB per key and 372 B per row, because most keys trade a few times and go quiet. The key COUNT is what drives
+memory: about 270 new keys a minute were seen, and a key is kept until it has been idle for `evict_idle_min` (default 360), so a whole-market state
+reaches roughly 270 x 360 x 9.6 KB = 0.9 GB at steady state. A bot that only needs live keys should pass evict_idle_min=60 (about 0.16 GB). Replay speed
+is about 96,000 rows/s untraced (a 365-min live warm-up is about 2.5 million rows, about 26 s).
+
 GAPS. Every gap row becomes a span [from_ms, to_ms] (an open silence / feed-restart record and its closed record are one span). `gap_spans(t0, t1,
 prog)` / `has_gap(t0, t1, prog)` answer "does [decision, exit] hold a gap?" for the last 24 h of state-clock time (feed gaps of that program, process
 restarts, disk-reserve pauses). A snapshot's `gaps_since_first_seen` counts data-loss spans since the key was first seen, from counters that are never
@@ -134,7 +141,8 @@ class Pool:
 
 class ArenaState:
     def __init__(self, tape_dir: str | Path, start_ms: int | None = None, *, warm_min: int = WARM_MIN_DEFAULT,
-                 on_trade: Callable[[Pool, dict], None] | None = None) -> None:
+                 on_trade: Callable[[Pool, dict], None] | None = None, evict_idle_min: int = EVICT_IDLE_MS // MIN_MS) -> None:
+        self.evict_idle_ms = int(evict_idle_min) * MIN_MS  # default 6 h (the spec). Measured: ~10 KB per key on the real tape, ~270 new keys a minute
         self.dir = Path(tape_dir)
         self.start_ms = int(start_ms) if start_ms is not None else int(time.time() * 1000) - warm_min * MIN_MS
         self.on_trade = on_trade
@@ -466,7 +474,7 @@ class ArenaState:
 
     def sweep(self) -> int:
         """Evict keys idle more than 6 h (by the state clock). Returns how many."""
-        cut = self.now_ms - EVICT_IDLE_MS
+        cut = self.now_ms - self.evict_idle_ms
         dead = [k for k, p in self._pools.items() if p.last_ms < cut]
         for k in dead:
             p = self._pools.pop(k)
