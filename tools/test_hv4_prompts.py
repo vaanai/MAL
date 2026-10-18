@@ -67,15 +67,36 @@ def test_creator_sell_sniper_and_concentration_are_neutral_fields_only(name):
 
 
 @pytest.mark.parametrize("name", ["CON", "BIG", "BST", "RISK"])
+def test_holder_count_appears_only_in_the_glossary_and_the_neutral_fields_paragraph(name):
+    """Manager correction: the lab's holder_count AUC (0.815) predicts a DRAIN, 'direction not fixed', measured on fresh pools at
+    T6/T30, not on pools aged 2 h to 7 d. So no playbook may give it a direction."""
+    p = pb(name)
+    for para in paragraphs(p.text):
+        if "holder_count" in para:
+            assert para.startswith("CARDS") or para.startswith("NEUTRAL FIELDS."), para[:80]
+            if para.startswith("NEUTRAL FIELDS."):
+                assert "no fixed direction" in para and "fresh pools" in para and "2 hours to 7 days" in para
+    assert "holder_count" in next(x for x in paragraphs(p.text) if x.startswith("NEUTRAL FIELDS."))
+    assert not re.search(r"0\.815|fewer drains|more drains|wide base|concentrated holder|higher holder_count|lower holder_count|low holder_count",
+                         p.text, re.I)
+    glossary = [x for x in paragraphs(p.header) if "holder_count" in x]
+    assert all(x.startswith("CARDS") and "distinct holders" in x for x in glossary)  # CON and BIG name it as a field; BST and RISK do not
+
+
+@pytest.mark.parametrize("name", ["CON", "BIG", "BST", "RISK"])
 def test_only_measured_directions_are_stated_as_help(name):
     p = pb(name)
     assert "WHAT HELPS" not in p.text and "WHAT IS NOT A WARNING" not in p.text
     if name == "RISK":
         flags = next(x for x in paragraphs(p.rules) if x.startswith("FLAGS."))
-        assert "0.815" in flags and "Mayhem" in flags and "round trip" in flags
+        assert "Mayhem" in flags and "round trip" in flags and "One flag has a measured basis" in flags
+        assert "THIN_EXIT" in flags and "holder_count" not in flags and "0.815" not in flags
+        grading = next(x for x in paragraphs(p.rules) if x.startswith("GRADING."))
+        assert "DRAIN_RISK" not in grading and "holder_count" not in grading and "THIN_EXIT" in grading  # grades rest on THIN_EXIT only
         return
     para = next(x for x in paragraphs(p.rules) if x.startswith("MEASURED DIRECTIONS."))
-    assert "0.815" in para and "higher holder_count meant fewer drains" in para and "Mayhem" in para and "round trip" in para
+    assert "Mayhem" in para and "round trip" in para and "Only these two are lab results" in para
+    assert "holder_count" not in para and "0.815" not in para and "drain" not in para
     assert not UNMEASURED.search(para), UNMEASURED.search(para).group(0)
     if name == "BST":
         assert not UNMEASURED.search(p.rules.replace(para, "")), "BST rules carry no unmeasured field claims"

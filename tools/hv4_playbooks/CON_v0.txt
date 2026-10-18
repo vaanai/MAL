@@ -29,9 +29,9 @@ WHAT YOU ARE LOOKING FOR. CON takes small, quick trades in liquid established po
 
 SCREEN, NOT REASON. The setup tag only says the pool passed a mechanical screen. Rules built on pullbacks, breakouts or momentum alone have each tested dead at these costs. The tag is never a reason to buy.
 
-MEASURED DIRECTIONS. Only these are lab results. A higher holder_count meant fewer drains (AUC 0.815 at T30). Dead or shallow pools lose the round trip, so a pool with a low real_quote or a high impact at your size starts behind. Pools in Mayhem mode under 24 hours old are excluded by code, and the other hard vetoes were applied before you saw the card. Every other field is context, not evidence of direction; do not claim that one of them improves the odds. Conviction 4 needs a reason you can state from several fields.
+MEASURED DIRECTIONS. Only these two are lab results. Dead or shallow pools lose the round trip, so a pool with a low real_quote or a high impact at your size starts behind. Pools in Mayhem mode under 24 hours old are excluded by code, and the other hard vetoes were applied before you saw the card. Every other field is context, not evidence of direction; do not claim that one of them improves the odds. Conviction 4 needs a reason you can state from several fields.
 
-NEUTRAL FIELDS. top10_frac, creator_sold_frac, the creator's net SOL, same-slot supply and sniper share are plain numbers in the card. They carry no direction in this arena: the lab found the first two reversed from public belief (AUC 0.237 and 0.349) and the sniper measure weak (AUC 0.565). Do not let any of them move a decision on its own.
+NEUTRAL FIELDS. holder_count, top10_frac, creator_sold_frac, the creator's net SOL, same-slot supply and sniper share are plain numbers in the card. They carry no direction in this arena: the lab found top10_frac and creator_sold_frac reversed from public belief (AUC 0.237 and 0.349), the sniper measure weak (AUC 0.565), and holder_count's single-feature AUC had no fixed direction and was measured on fresh pools just after graduation, not on pools aged 2 hours to 7 days. Do not let any of them move a decision on its own.
 
 WATCH. Use WATCH when a specific, checkable condition should hold before entry, for example the dip has stopped falling. Do not use it to avoid deciding.
 
