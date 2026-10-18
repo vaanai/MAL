@@ -134,6 +134,12 @@ class World:
         kw.setdefault("n_seeds", N_SEEDS)
         return R.read_book(bot, ledger_root=self.root, registry=self.reg, out_dir=self.out, null_dir=self.null, **kw)
 
+    def mark(self, arm, status):
+        """Stand-in for a recorded book read (only `arena_status` is read by the learning screen rule)."""
+        p = Path(self.out) / "reads" / f"{arm}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(canon({"read": "book", "bot_id": arm, "arena_status": status}) + "\n")
+
     def learning(self, **kw):
         kw.setdefault("now_ms", DAY0 + R.LEARN_LOOK_OFFSET_MS)
         return R.read_learning(ledger_root=self.root, registry=self.reg, out_dir=self.out, **kw)
@@ -403,11 +409,15 @@ def test_seed_reproducibility(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read
-def con_learning_world(tmp_path, l_gain, p_n=10):
+def con_learning_world(tmp_path, l_gain, p_n=10, base=-8e6, status="FAIL"):
+    """Three CON arms over 14 days, 10 positions a day (own instant: day 10, before D14). All arms lose by default, so that their own screens failed; the three
+    book reads are recorded as `status` (the screen rule: only a recorded PASS blocks a later boundary)."""
     w = World(tmp_path)
-    w.add(book_rows("CON-L", [[3e6 + l_gain(d)] * 10 for d in range(14)]))
-    w.add(book_rows("CON-F", const(3e6, 14, 10)))
-    w.add(book_rows("CON-P", const(3e6, 14, p_n)))
+    w.add(book_rows("CON-L", [[base + l_gain(d)] * 10 for d in range(14)]))
+    w.add(book_rows("CON-F", const(base, 14, 10)))
+    w.add(book_rows("CON-P", const(base, 14, p_n)))
+    for a in ("CON-L", "CON-F", "CON-P"):
+        w.mark(a, status)
     return w
 
 
@@ -498,6 +508,59 @@ def test_learning_arm_equals_arena_scores_own_read_at_the_arms_own_instant(tmp_p
     assert R.learning_arm("CON-L", reg, bad, nat["read_boundary_ms"], now)["status"] == "NOT_DECIDABLE"
     # an attempt before the cut with no close inside the settle window is PENDING
     assert R.learning_arm("CON-L", reg, [r for r in rows if r["position_id"] != pids[-1] or r["kind"] == "open"], nat["read_boundary_ms"], DAY0 + 5 * DAY + 3_600_000)["status"] == "PENDING"
+
+
+def test_learning_reads_an_arm_past_its_own_instant_only_if_its_screen_did_not_pass(tmp_path):
+    for i, st in enumerate(("FAIL", "NOT_DECIDABLE", "REPORT_ONLY")):
+        lr = con_learning_world(tmp_path / f"s{i}", lambda d: 1e6 + 2e5 * d, status=st).learning()["learning"]
+        assert lr["status"] == "PASS"
+        for a in ("CON-L", "CON-F", "CON-P"):
+            sc = lr["arm_screens"][a]
+            assert sc["rule"] == "later_allowed" and sc["recorded_status"] == st and sc["own_instant_ms"] == DAY0 + 10 * DAY and sc["cut_ms"] == DAY0 + 14 * DAY
+
+
+def test_learning_is_not_decidable_and_never_loads_the_rows_of_an_arm_that_passed_its_screen(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d, base=3e6)  # L now wins money, so its screen passes
+    (Path(w.out) / "reads" / "CON-L.json").unlink()  # replace the stand-in by the real book read
+    rb = w.book("CON-L")  # recorded in the out dir
+    assert rb["instant_ms"] == DAY0 + 10 * DAY and rb["arena_status"] == "PASS"
+    last = sorted((Path(w.root) / "CON-L").glob("trades-*.jsonl"))[-1]
+    with open(last, "a") as f:
+        f.write('{"kind":"trade", this line is corrupt: it can only be hit if the passed arm\'s rows are loaded\n')
+    lr = w.learning()["learning"]
+    assert lr["arm_screens"]["CON-L"]["rule"] == "passed" and lr["arm_screens"]["CON-L"]["recorded_status"] == "PASS"
+    assert lr["status"] == "NOT_DECIDABLE" and any("CON-L" in x and "PASSED its screen" in x for x in lr["reasons"])
+    assert lr["L_minus_F"]["status"] == "NOT_DECIDABLE" and lr["L_minus_P"]["status"] == "NOT_DECIDABLE" and "nothing is claimed" in lr["statement"]
+    assert not lr["L_minus_F"]["subcells"] and not lr["L_minus_P"]["subcells"]  # no number about L is computed
+
+
+def test_learning_is_refused_while_a_con_arms_book_read_is_not_recorded(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
+    (Path(w.out) / "reads" / "CON-F.json").unlink()
+    with pytest.raises(R.Refused, match="not recorded"):
+        w.learning()
+    assert not list((Path(w.out) / "reads").glob("LEARNING*"))  # nothing written: the one read has not been used
+    w.mark("CON-F", "FAIL")
+    assert w.learning()["learning"]["status"] == "PASS"
+
+
+def test_a_supporting_arm_that_passed_or_is_unrecorded_is_not_decidable_without_stopping_the_read(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
+    w.add(book_rows("BIG-L", const(-1e6, 14, 10)))
+    w.add(book_rows("BIG-F", const(-1e6, 14, 10)))
+    w.mark("BIG-L", "PASS")  # BIG-F has no record
+    lr = w.learning()["learning"]
+    assert lr["status"] == "PASS"
+    assert lr["supporting_only"]["BIG"]["status"] == "NOT_DECIDABLE"
+    assert lr["arm_screens"]["BIG-L"]["rule"] == "passed" and lr["arm_screens"]["BIG-F"]["rule"] == "unrecorded"
+    assert lr["arm_screens"]["BST-L"]["rule"] == "not_later"  # no rows: no instant, so the cut is not later than it
+
+
+def test_arena_score_common_boundary_agrees_with_the_earlier_of_two_instants():
+    if not hasattr(AS, "common_boundary"):
+        pytest.skip("arena_score.common_boundary arrives with PR #716 (v2_read uses min() until then)")
+    a, b = DAY0 + 6 * DAY, DAY0 + 5 * DAY
+    assert AS.common_boundary(a, b) == AS.common_boundary(b, a) == min(a, b)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ disclosure, ex-best-day, as-sized

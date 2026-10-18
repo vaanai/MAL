@@ -35,11 +35,20 @@ V2  daily (book - X) at 0.25 over the calendar days of the window (days with no 
     common boundary min(B of the book, B of X): arena_score refuses a boundary later than a bot's own instant, so both are scored at the earlier of the two.
 LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and L - P with p <= 0.025 (same bootstrap) in each sub-cell, and the mean daily
     L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable (orphans, excluded
-    share above 5%, a bonding row, a strand rule missing), an arm has fewer than 100 priced trades at 0.25, or the window has fewer than 14 days. Its arms are
-    built by `learning_arm`, NOT by a forced arena_score boundary (D14 is later than every arm's own instant, which arena_score refuses): the same refusals
-    (`check_bot_rows`), exclusions and cells (`book_cells`), pinned by a parity test against arena_score's own read.
+    share above 5%, a bonding row, a strand rule missing), an arm has fewer than 100 priced trades at 0.25, or the window has fewer than 14 days.
+  SCREEN RULE (quant-proof's ruling on forced boundaries, #716 comment 6245917937). D14 is later than an arm's own outcome-blind instant B_own whenever the arm
+    reached 100 attempts over 5 dates earlier. Attempts after B_own are the arm's CONFIRMATION window if its screen PASSED, so the learning read never peeks at them:
+      * B_own is None or not before D14: the cut is not later than the arm's own instant; the arm is read.
+      * B_own before D14 and the arm's own book read (`<out-dir>/reads/<arm>.json`) is recorded as FAIL (including "FAIL (n < 100)"), NOT_DECIDABLE or REPORT_ONLY:
+        a later boundary is allowed; the arm is read to D14.
+      * recorded as PASS: the arm is NOT read (its rows are not even loaded) and the learning read is NOT_DECIDABLE. For a supporting arm (BIG, BST) only that
+        supporting entry is NOT_DECIDABLE.
+      * not recorded yet: a CON arm makes the learning read REFUSED, nothing written (record the book reads first; a final NOT_DECIDABLE caused by a missing record
+        would be an operations error, not data); a supporting arm is NOT_DECIDABLE for its entry.
+    The arms' cells are built by `learning_arm`, which mirrors arena_score's exclusions (pinned by a parity test). TODO(#716): once score_bot(boundary_ms=...) accepts
+    the cut under exactly this rule, score the learning arms with `score_at` and DELETE the mirrored logic in `learning_arm` and its parity test.
 
-BOUNDARY (manager ruling on #718): no monkeypatch. `score_at` calls `arena_score.score_bot(..., boundary_ms=...)`, which PR #716 adds (it refuses a boundary later
+BOUNDARY (manager ruling on #718): no monkeypatch. V2's window end is min(book instant, X instant) (TODO(#716): `arena_score.common_boundary(a, b)` once it is on main). `score_at` calls `arena_score.score_bot(..., boundary_ms=...)`, which PR #716 adds (it refuses a boundary later
 than the bot's own instant and records boundary_source "forced"). TODO(#716): until it merges `score_at` raises Refused; the PR stays in draft.
 """
 
@@ -376,7 +385,7 @@ def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Map
         out["status"] = "NOT_DECIDABLE"
         out["reasons"].append(f"{x} has not reached its own outcome-blind instant (100 attempts over 5 UTC dates): no common window")
         return out
-    b2 = min(b, bx)
+    b2 = min(b, bx)  # TODO(#716): AS.common_boundary(b, bx), the same earlier-of-two, once arena_score has it (a test checks that they agree)
     out["window_end_ms"] = b2
     try:
         bres = main if b2 == b else score_at(bot_id, reg, led.read_bot(bot_id), b2, now_ms, settle_ms)
@@ -655,6 +664,30 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read (D14)
+def recorded_status(out_dir: Path, arm: str) -> str | None:
+    """arena_status of the arm's recorded book read in this tool's out-dir (None if it has none)."""
+    p = out_dir / "reads" / f"{arm}.json"
+    return json.loads(p.read_text())["arena_status"] if p.exists() else None
+
+
+def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str, out_dir: Path, cut_ms: int) -> dict[str, Any]:
+    """The SCREEN RULE for one learning arm (module docstring). Uses decision timestamps only (arena_score.load_decisions) and the arm's recorded status."""
+    own = AS.blind_read_instant(AS.load_decisions(ledger_root, arm), reg[arm]["clock_start_ms"])
+    out: dict[str, Any] = {"own_instant_ms": own, "cut_ms": cut_ms, "recorded_status": None, "rule": "not_later", "reason": None}
+    if own is None or own >= cut_ms:
+        return out
+    st = recorded_status(out_dir, arm)
+    out["recorded_status"] = st
+    if st is None:
+        out["rule"], out["reason"] = "unrecorded", f"its own instant {own} is before D14 and its book read is not recorded: a later boundary is refused"
+    elif st == "PASS":
+        out["rule"], out["reason"] = "passed", f"it PASSED its screen at {own}: its attempts after that are its confirmation window and are not read"
+    else:
+        out["rule"] = "later_allowed"
+    return out
+
+
+
 def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
                   command: str = "") -> dict[str, Any]:
     now = _now(now_ms)
@@ -669,11 +702,22 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
         raise Refused(f"learning is read at D14 only: not before {look} (T0 + 14 d + 13:00Z), now {now}: refused, nothing written")
     led = Ledger(ledger_root)
     days = calendar_days(t0, cut)
-    res = {a: learning_arm(a, reg, led.read_bot(a), cut, now, settle_ms) for a in ARMS if ARMS[a].role in ("L", "F", "P")}
+    learn_arms = [a for a in ARMS if ARMS[a].role in ("L", "F", "P")]
+    screens = {a: arm_screen(a, reg, ledger_root, od, cut) for a in learn_arms}
+    missing = [a for a, sc in screens.items() if sc["rule"] == "unrecorded" and a.startswith("CON-")]
+    if missing:
+        raise Refused(f"learning: the book read of {missing} is not recorded, and each reached its own instant before D14: record it first (SCREEN RULE); refused, nothing written")
+    res = {}
+    for a in learn_arms:
+        sc = screens[a]
+        if sc["rule"] in ("passed", "unrecorded"):  # never loaded: a passed arm's later attempts are its confirmation window
+            res[a] = {"bot_id": a, "status": "NOT_DECIDABLE", "books": {}, "pending": 0, "attempts": None, "restart_orphans": 0, "reasons": [sc["reason"]]}
+        else:
+            res[a] = learning_arm(a, reg, led.read_bot(a), cut, now, settle_ms)
     pend = [a for a, r in res.items() if r["status"] == "PENDING"]
     if pend:
         raise Refused(f"learning: {pend} have covered attempts inside the settle window: not recordable, nothing written")
-    out: dict[str, Any] = {"persona": "CON", "reasons": []}
+    out: dict[str, Any] = {"persona": "CON", "reasons": [], "arm_screens": screens}
     arms = ("CON-L", "CON-F", "CON-P")
     for a in arms:
         r = res[a]
