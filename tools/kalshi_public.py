@@ -798,7 +798,7 @@ def cmd_trades(client, store, args, log):
 
 def stored_market_lifetimes(root) -> dict:
     """ticker -> (open_ts, close_ts) unix seconds (either may be None) from the markets table
-    already on disk under ``root``.  Reads three columns only.  A ticker stored twice (live and
+    already on disk under ``root``.  Reads four columns only.  A ticker stored twice (live and
     historical listing) keeps its latest non-null value per field.  No HTTP."""
     tab = read_table_unified(root, "markets", columns=("ticker", "open_time", "close_time", "fetched_at"))
     out: dict = {}
