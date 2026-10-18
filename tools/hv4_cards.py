@@ -21,6 +21,15 @@ before it) and raises LeakageError if any timestamp in its inputs is at or after
 caller, and the card is refused. Rolling windows come from the snapshot (anchored at the state clock `now_ms`); a state clock more than
 STATE_LAG_MAX_MS behind T fails the `state_fresh` filter, so a stalled feed cannot be stamped as T.
 
+Chain contract (tools/hv4_chain.py must honour it; code_vetoes enforces its side). A mint fact reads "renounced" / "none" ONLY when its key is
+present with the value None, and hv4_chain may write that None only after a SUCCESSFUL parse of the account. On any RPC error, timeout, decode
+failure or partial parse it omits the key (or raises); it never writes None, False, 0, "" or an error string as a stand-in. An absent key is a
+veto (`chain_missing:<key>`); a non-None authority of any type, even False or an error string, is a veto (`<key>_set`). Optional blocks are
+different by DESIGN: the holders block (holder_count, top1/top10, creator_sold_frac, holder_count_cover, holders_as_of_ms), quote_sol_peak and
+the sniper facts may be absent and then show as null on the card (they are model facts, not vetoes); but if top1/top10 or holders_as_of_ms is
+given it needs a valid fresh stamp. Whether a failed getTokenLargestAccounts should refuse the card (DESIGN: "an RPC error means no card")
+is the manager's call with hv4-chain; here it is a null block.
+
 Fail closed. A missing or malformed input never passes: a missing chain fact is a veto, a null return is a null field, a null field makes a
 setup condition false and a predicate term false.
 """
@@ -497,7 +506,10 @@ def _covered(snap: SnapshotLike, window_min: int) -> bool:
 
 
 def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms: int) -> dict[str, Any]:
-    """All FEATURE_FIELDS as of `as_of_ms`. A field that cannot be computed from the inputs is None, never a guess: the 240-min return and the
+    """All FEATURE_FIELDS as of `as_of_ms`. Horizons: ret_Nm = price now / the close of minute (M - N) - 1, M the minute of T, so its horizon
+    is (N - 1) minutes plus the seconds into the minute (at the :02 tick ret_1m spans about 2 s); this is the lab's frame (counts/setups.py
+    RANGE 840000 / 3540000 PRECEDING), so the setup thresholds stay comparable to the count run. new_wallet_buy_share_15m counts a wallet as
+    new if the tape (60 min) had not seen it before this print: it is not wallet age. A field that cannot be computed from the inputs is None, never a guess: the 240-min return and the
     6 h fields need candle history the snapshot may not hold (see DEFAULT_CANDLE_RETENTION_MIN); the tape fields need `prints`."""
     pr = _norm_prints(prints)
     assert_as_of(snap, as_of_ms, prints=pr)

@@ -722,6 +722,44 @@ def test_quote_reference_has_its_own_stamp_near_t_minus_15_minutes():
     assert "quote_15m_stamp_bad" in res.reasons and "quote_drop_15m" not in res.reasons
 
 
+# ---- chain contract: an RPC error is never "renounced" (review of PR 710, item 8; manager item 5)
+@pytest.mark.parametrize("key", ["mint_authority", "freeze_authority"])
+@pytest.mark.parametrize("val", [False, 0, 0.0, "", "error", "RPC_ERROR", "null", "None", {}, [], True])
+def test_only_an_explicit_none_means_renounced(key, val):
+    only(vetoes(chain=base_chain(**{key: val})), f"{key}_set")  # a stand-in for "no answer" must not pass veto 1
+    with pytest.raises(hc.CardRefused):
+        card(chain=base_chain(**{key: val}))
+
+
+def fake_chain_after_rpc_error(failed):
+    """What an hv4_chain that honours the contract produces: the failed fact's key is omitted, never defaulted."""
+    ch = base_chain()
+    for k in failed:
+        del ch[k]
+    return ch
+
+
+@pytest.mark.parametrize("failed,reason", [
+    (["mint_authority"], "chain_missing:mint_authority"), (["freeze_authority"], "chain_missing:freeze_authority"),
+    (["extensions"], "chain_missing:extensions"), (["token_program"], "token_program_unknown"),
+    (["mint_authority", "freeze_authority", "token_program", "extensions"], "chain_missing:mint_authority"),
+])
+def test_an_errored_mint_fact_is_a_veto_and_no_card(failed, reason):
+    ch = fake_chain_after_rpc_error(failed)
+    only(vetoes(chain=ch), reason)
+    with pytest.raises(hc.CardRefused) as e:
+        card(chain=ch)
+    assert reason in e.value.reasons
+
+
+def test_the_holders_block_is_optional_and_shows_as_null():
+    ch = fake_chain_after_rpc_error(["holder_count", "holder_count_cover", "top1_frac", "top10_frac", "creator_sold_frac", "holders_as_of_ms",
+                                     "sniper_share", "sniper_still_holding", "same_slot_supply", "quote_sol_peak"])
+    assert vetoes(chain=ch).reasons == ()
+    r = card(chain=ch)["risk"]
+    assert all(r[k] is None for k in ("holder_count", "top1_frac", "top10_frac", "creator_sold_frac", "holder_count_cover", "quote_dd_peak"))
+
+
 def test_veto_result_logs_every_check_value():
     r = vetoes()
     assert set(r.checks) >= {"mint_authority", "freeze_authority", "token", "mayhem", "quote_floor", "vstar", "sell_route", "quote_15m"}
