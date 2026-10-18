@@ -63,7 +63,7 @@ GRACE_SLOTS = 25
 HIST_KEEP_SLOTS = 20_000
 # Provisional pressure intercept stored in the ledger's press_* net_lamports. The AUTHORITATIVE pressure leg is refit per (bot, stake, latency) book by
 # arena_score (the stack refits the intercept per cell so that mean p over the cell's filled sends is 0.289). Fit on the 300-case parity book (1.3 s).
-PRESS_INTERCEPT_PROVISIONAL = -2.5
+PRESS_INTERCEPT_PROVISIONAL = -1.4197242838379789
 
 VENUE_ALIASES = {"pumpswap": "pumpswap", "pump_amm": "pumpswap", "pump_bonding": "pump_bonding", "pump": "pump_bonding", "bonding": "pump_bonding"}
 V_BAND_MAX = 30_000_000_000
