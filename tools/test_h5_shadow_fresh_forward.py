@@ -430,6 +430,32 @@ class FreshRecordTests(unittest.TestCase):
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "research" / "arena-h5.sh"
 
 
+class NoR4bTests(unittest.TestCase):
+    """DEC-031 s3.1: no arena process uses tools/r4b_*.py. tools/fixtures/arena_h5/build_parity.py (dev time only) is the one place that imports r4b_book."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_no_arena_module_imports_r4b_statically_or_at_runtime(self):
+        import ast
+        import subprocess
+        import sys
+
+        mods = ("arena_h5_cost", "arena_h5_score", "arena_ws_probe", "h5_shadow")
+        for m in mods:
+            for node in ast.walk(ast.parse((self.ROOT / "tools" / f"{m}.py").read_text())):
+                names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""] + [a.name for a in node.names] if isinstance(node, ast.ImportFrom) else []
+                self.assertFalse([n for n in names if "r4b" in n], (m, names))
+        code = "import sys; sys.path.insert(0, %r); import tools.arena_h5_cost, tools.arena_h5_score, tools.arena_ws_probe, tools.h5_shadow; print(sorted(m for m in sys.modules if 'r4b' in m))" % str(self.ROOT)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd="/")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "[]"), r.stderr)
+
+    def test_the_wrapper_never_invokes_the_parity_builder_and_the_builder_says_it_is_dev_time_only(self):
+        text = SCRIPT.read_text()
+        for word in ("build_parity", "r4b", "fixtures"):
+            self.assertNotIn(word, text)
+        builder = (self.ROOT / "tools" / "fixtures" / "arena_h5" / "build_parity.py").read_text()
+        self.assertTrue(builder.startswith('"""DEV-TIME ONLY: imports tools.r4b_book to build the parity fixture; never run by any arena process (DEC-031 \u00a73.1)'))
+
 class ArenaScriptTests(unittest.TestCase):
     """scripts/research/arena-h5.sh: POSIX sh, runs on mal-fast-0, refuses anything but $HOME/data/arena/h5-* and /data/mal/arena/h5-*, always passes --fresh-forward ARENA and
     nothing for the seals, and refuses (exit 5 / 7) a checkout whose commit it cannot name or that has tracked-file changes."""
@@ -485,7 +511,10 @@ class ArenaScriptTests(unittest.TestCase):
                     {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow"}, {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow-2026-10-18"}, {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow/h5-x"},
                     {"ARENA_H5_OUT_DIR": "/data/mal/arena/other"}, {"ARENA_H5_SOCKETS": "2"}, {"ARENA_H5_SOCKETS": "x"}, {"ARENA_H5_SYN_SOCKETS": "-1"},
                     {"ARENA_H5_MAX_SECONDS": "1;ls"}, {"ARENA_H5_WS_URLS": "ws://a.example/"}, {"ARENA_H5_WS_URLS": "wss://a.example/?api-key=x"},
-                    {"ARENA_H5_WS_URLS": "wss://u:p@a.example/"}, {"ARENA_H5_WS_URLS": "wss://mainnet.helius-rpc.com/"}, {"ARENA_H5_WS_URLS": "wss://a.example/,http://b/"}):
+                    {"ARENA_H5_WS_URLS": "wss://u:p@a.example/"}, {"ARENA_H5_WS_URLS": "wss://mainnet.helius-rpc.com/"}, {"ARENA_H5_WS_URLS": "wss://a.example/,http://b/"},
+                    {"ARENA_H5_WS_URLS": "wss://a.example/key123"}, {"ARENA_H5_WS_URLS": "wss://a.example/v2/abcdef0123456789"}, {"ARENA_H5_WS_URLS": "wss://a.example/,wss://b.example/x"},
+                    {"ARENA_H5_WS_URLS": "wss://a.example/#frag"}, {"ARENA_H5_WS_URLS": "wss://*.example/"}, {"ARENA_H5_WS_URLS": "wss://a b.example/"},
+                    {"ARENA_H5_WS_URLS": "wss:///"}, {"ARENA_H5_WS_URLS": "wss://a.example//"}, {"ARENA_H5_WS_URLS": "wss://a.example,,wss://b.example"}):
             r = self.sh(**env)
             self.assertEqual(r.returncode, 2, (env, r.stderr))
             self.assertIn("refusing", r.stderr)
@@ -528,7 +557,8 @@ class ArenaScriptTests(unittest.TestCase):
     def test_an_empty_endpoint_list_means_the_tools_single_default_and_a_custom_list_is_passed_through(self):
         argv = lambda r: [ln for ln in r.stdout.splitlines() if ln.startswith("ARGV:")][0][5:]  # noqa: E731
         self.assertNotIn("--ws-url", argv(self.sh(ARENA_H5_WS_URLS="")))
-        self.assertIn("--ws-url wss://a.example/x --ws-url wss://b.example/", argv(self.sh(ARENA_H5_WS_URLS="wss://a.example/x,wss://b.example/")))
+        self.assertIn("--ws-url wss://a.example --ws-url wss://b.example/ --ws-url wss://c.example:8900", argv(self.sh(ARENA_H5_WS_URLS="wss://a.example,wss://b.example/,wss://c.example:8900")))
+        self.assertIn("set -f", SCRIPT.read_text().split("HERE=")[0])  # no pathname expansion while the list is split on commas
 
     def test_a_dirty_checkout_exits_5_a_clean_one_runs_and_names_its_commit(self):
         import subprocess

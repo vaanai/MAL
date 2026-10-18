@@ -1,4 +1,6 @@
-"""Builds the committed parity set of tools/arena_h5_cost.py (DEC-031 s1.4: the cost layer must match the deciding stack to the lamport on a committed set).
+"""DEV-TIME ONLY: imports tools.r4b_book to build the parity fixture; never run by any arena process (DEC-031 §3.1). No arena wrapper, job or test invokes it.
+
+Builds the committed parity set of tools/arena_h5_cost.py (DEC-031 s1.4: the cost layer must match the deciding stack to the lamport on a committed set).
 
     /data/mal/audit-1008/venv/bin/python -m tools.fixtures.arena_h5.build_parity --out tools/fixtures/arena_h5          (numpy, pandas; exploration tape only)
 

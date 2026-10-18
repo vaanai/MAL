@@ -238,16 +238,40 @@ class FeedDelayTests(Base):
         self.assertEqual(res.counts["age_clamped_to_zero"], 1)
         self.assertEqual(sc.summarize(V1, res, 0)["age_clamped_to_zero"], 1)
 
-    def test_without_a_block_time_the_receipt_is_the_clock_and_the_row_and_the_counts_say_so(self):
-        def nobt(recs):
+    def test_a_trigger_without_a_block_time_is_a_counted_exclusion_never_aged_from_the_receipt(self):
+        for missing in (None, 0, "drop"):
+            def nobt(recs, missing=missing):
+                for r in recs:
+                    if r["type"] == "trigger":
+                        r["t_detect_ms"] = r["t_recv_ms"] + 50  # a receipt-based age would be 50 ms: priced, and optimistic
+                        if missing == "drop":
+                            r.pop("block_time")
+                        else:
+                            r["block_time"] = missing
+            res = self.book(records(mutate=nobt), name=f"h5-shadow-nbt-{missing}")
+            self.assertEqual(res.rows, [], missing)
+            self.assertEqual([e["reason"] for e in res.exclusions], ["no_block_time"], missing)
+            self.assertEqual((res.counts["excluded_no_block_time"], len(res.decisions)), (1, 1))  # still an attempt for the read instant
+            s = sc.summarize(V1, res, 0)
+            self.assertEqual((s["no_block_time_exclusions"], s["excluded_by_reason"], s["not_decidable"], s["feed_delay_n"]), (1, {"no_block_time": 1}, True, 0))
+        self.assertIn("no_block_time", sc.EXCLUSION_REASONS)
+
+    def test_the_report_has_feed_delay_percentiles_the_clamp_count_and_the_trigger_age_line(self):
+        ages = [0, 500, 1_000, 2_000, 3_000, 4_000, -300]  # 4,000 ms is over the 3,500 limit; -300 is skew, floored at 0
+
+        def per_pool(recs):
             for r in recs:
-                if r["type"] == "trigger":
-                    r["block_time"] = None
-                    r["t_detect_ms"] = r["t_recv_ms"] + 50
-        res = self.book(records(mutate=nobt))
-        m = res.rows[0]["meta"]
-        self.assertEqual((m["age_clock"], m["feed_delay_ms"]), ("t_recv_ms", 50))
-        self.assertEqual(res.counts["age_no_block_time"], 1)
+                if r["type"] == "trigger" and r["variant"] == "pv":
+                    r["t_detect_ms"] = r["block_time"] * 1000 + ages[int(r["pool"][4:])]
+        res = self.book(records(7, mutate=per_pool))
+        s = sc.summarize(V1, res, 0)
+        self.assertEqual((s["attempts"], s["counted"], s["excluded"]), (7, 6, 1))
+        self.assertEqual(s["trigger_age_exclusions"], 1)
+        self.assertEqual(s["excluded_by_reason"], {"trigger_age": 1})
+        self.assertEqual(s["age_clamped_to_zero"], 1)
+        self.assertEqual((s["feed_delay_n"], s["feed_delay_ms_p50"], s["feed_delay_ms_p90"]), (7, 1_000, 4_000))  # excluded-by-age attempts are in the percentiles
+        self.assertEqual([sc._pct(x, 0.5) for x in ([], [5], [1, 2], [1, 2, 3, 4])], [None, 5, 1, 2])
+        self.assertEqual(sc._pct(list(range(1, 11)), 0.9), 9)
 
     def test_the_trigger_age_limit_uses_the_same_chain_clock(self):
         self.assertEqual(sc.trigger_age_ms({"t_detect_ms": 10_000_000, "block_time": 9_996, "t_recv_ms": 9_999_999}), 4_000)
@@ -603,30 +627,113 @@ class RefitTests(Base):
         self.assertEqual(cells["0.10|1p9"]["n"], 120)
         self.assertLess(cells["0.10|1p9"]["n_filled"], 120)  # guarded rows are not in the mean
 
-    def test_order_of_operations_clock_then_read_boundary_then_exclusions_then_refit(self):
-        # 6 days x 20 attempts: the read instant is the midnight after day 4 (100 attempts, 5 dates); the day-5 rows are after it
-        rows = self.fake_rows(6, 20)
-        bot_dir = self.ledger / V1
-        bot_dir.mkdir(parents=True)
-        by_day = collections.defaultdict(list)
-        for r in rows:
-            by_day[sc.utc_day(r["decision_ms"])].append(r)
-        for day, rs in by_day.items():
-            (bot_dir / f"trades-{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rs))
-        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=1, clock_start_ms=1)
+    D0S = (T0 // 86400) * 86400  # 2027-01-15T00:00Z, seconds
+
+    def bulk(self, days=6, per_day=20, excl_every=10):
+        """days x per_day pools, one pool per minute from 09:00Z of each day; every excl_every-th pool is gap-flagged (a counted exclusion)."""
+        eng, out = fresh_engine(START_MS)
+        tapes = [pool_tape(f"Pool{i:04d}", 1000 + 5000 * i, self.D0S + (i // per_day) * 86400 + 9 * 3600 + (i % per_day) * 60, filler=True) for i in range(days * per_day)]
+        run_pools(eng, *tapes)
+        for r in out:
+            if r["type"] == "trigger" and r["variant"] == "pv":
+                r["t_detect_ms"] = r["block_time"] * 1000 + 1_000
+                if int(r["pool"][4:]) % excl_every == 0:
+                    r["gap"], r["gaps"] = True, []
+        return [{"type": "start", "t_ms": START_MS, "start_ms": START_MS, "code_sha": SHA, "fresh_forward": "ARENA", "dirty": False}] + out
+
+    def score_main(self, now_ms):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(sc.main(["refit", "--arena-root", str(self.arena), "--now-ms", str(ReadGatingTests.D0 + 5 * sc.DAY_MS - 1)]), 0)
-        self.assertIn("read instant not reached", out.getvalue())  # before the boundary: refused
-        self.assertEqual(list(bot_dir.glob("refit-*.json")), [])
+            self.assertEqual(sc.main(["score", "--arena-root", str(self.arena), "--shadow-dir", str(self.arena / "h5-shadow-bulk"), "--now-ms", str(now_ms)]), 0)
+        return json.loads(out.getvalue())
+
+    def refit_main(self, now_ms):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(sc.main(["refit", "--arena-root", str(self.arena), "--now-ms", str(ReadGatingTests.D0 + 6 * sc.DAY_MS)]), 0)
-        (f,) = bot_dir.glob("refit-*.json")
-        doc = json.loads(f.read_text())
-        self.assertEqual(doc["read_instant_ms"], ReadGatingTests.D0 + 5 * sc.DAY_MS)
-        self.assertEqual(doc["cells"]["0.10|1p9"]["n"], 100)  # day 5's 20 attempts decided after the read instant are not in the fit
-        self.assertNotIn("net_lamports", out.getvalue())  # counts only on stdout
+            self.assertEqual(sc.main(["refit", "--arena-root", str(self.arena), "--now-ms", str(now_ms)]), 0)
+        return out.getvalue(), json.loads(out.getvalue())
+
+    def test_the_refit_uses_the_read_instant_score_computed_from_every_attempt_excluded_ones_included(self):
+        self.shadow_dir(self.bulk(), "h5-shadow-bulk")
+        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=START_MS - 1_000, clock_start_ms=START_MS)
+        d0 = self.D0S * 1000
+        boundary = d0 + 5 * sc.DAY_MS  # 100 attempts on 5 dates (days 0..4): the first midnight that qualifies
+        rep = self.score_main(boundary + 3_600_000)
+        book = rep["books"][V1]
+        self.assertEqual((book["attempts"], book["counted"], book["excluded"], book["read_instant_ms"]), (120, 108, 12, boundary))
+        rec = json.loads((self.ledger / V1 / "read-instant.json").read_text())
+        self.assertEqual((rec["read_instant_ms"], rec["attempts_before"], rec["dates"], rec["open_before_read"]), (boundary, 100, 5, 0))
+        # the bug this pins: from the trades file alone (stake 0.10 rows) the instant is LATER, because 10 excluded attempts of days 0..4 are not in it
+        trades = [json.loads(l) for f in sorted((self.ledger / V1).glob("trades-*.jsonl")) for l in f.read_text().splitlines()]
+        only_trades = sc.read_instant([r["decision_ms"] for r in trades if r["stake_sol"] == 0.1], d0 + 99 * sc.DAY_MS)
+        self.assertGreater(only_trades, boundary)
+        text, out = self.refit_main(boundary + 1)
+        self.assertEqual(out[V1], {"read_instant_ms": boundary, "attempts_before": 100, "cells": 6})
+        self.assertEqual(out[V2]["read_instant_ms"], boundary)
+        doc = json.loads(next((self.ledger / V1).glob("refit-*.json")).read_text())
+        self.assertEqual((doc["read_instant_ms"], doc["attempts_before"], doc["trades_pools"]), (boundary, 100, 90))
+        # 90 counted trades decided before the boundary; the 18 counted trades of day 5 (decided after it) are not in any cell
+        self.assertEqual({c: v["n"] for c, v in doc["cells"].items()}, {f"{st}|{lg}": 90 for st in ("0.10", "0.25", "0.30") for lg in ("1p3", "1p9")})
+        self.assertNotIn("net_lamports", text)  # counts only
+
+    def test_the_refit_refuses_before_the_boundary_without_a_record_with_open_attempts_or_a_ledger_missing_attempts(self):
+        self.shadow_dir(self.bulk(), "h5-shadow-bulk")
+        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=START_MS - 1_000, clock_start_ms=START_MS)
+        d0 = self.D0S * 1000
+        boundary = d0 + 5 * sc.DAY_MS
+        self.assertIn("not recorded", self.refit_main(boundary + 1)[0])  # score has not run
+        self.score_main(boundary + 3_600_000)
+        self.assertIn("read instant not reached", self.refit_main(boundary - 1)[0])
+        rec_path = self.ledger / V1 / "read-instant.json"
+        good = rec_path.read_text()
+        rec_path.write_text(json.dumps({**json.loads(good), "open_before_read": 1}))
+        self.assertIn("still open", self.refit_main(boundary + 1)[1][V1]["refused"])
+        rec_path.write_text(good)
+        excl = next((self.ledger / V1).glob("exclusions-*.jsonl"))
+        lines = excl.read_text().splitlines()
+        excl.write_text("\n".join(lines[1:]) + "\n")  # one excluded attempt vanishes from the ledger
+        self.assertIn("does not hold every attempt", self.refit_main(boundary + 1)[1][V1]["refused"])
+        self.assertEqual(list((self.ledger / V1).glob("refit-*.json")), [])
+
+    def test_the_recorded_instant_is_never_changed_by_a_later_score_run(self):
+        self.shadow_dir(self.bulk(), "h5-shadow-bulk")
+        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=START_MS - 1_000, clock_start_ms=START_MS)
+        boundary = self.D0S * 1000 + 5 * sc.DAY_MS
+        self.score_main(boundary + 1)
+        path = self.ledger / V1 / "read-instant.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), "read_instant_ms": boundary - sc.DAY_MS}))  # tampered
+        rep = self.score_main(boundary + 1)
+        self.assertEqual(rep["counts"]["read_instant_conflict"], 1)  # the tampered book only; its recorded instant is kept
+        self.assertEqual(json.loads(path.read_text())["read_instant_ms"], boundary - sc.DAY_MS)
+
+
+    def test_the_refit_is_write_once(self):
+        self.shadow_dir(self.bulk(), "h5-shadow-bulk")
+        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=START_MS - 1_000, clock_start_ms=START_MS)
+        boundary = self.D0S * 1000 + 5 * sc.DAY_MS
+        self.score_main(boundary + 1)
+        self.assertEqual(self.refit_main(boundary + 1)[1][V1]["cells"], 6)
+        f = next((self.ledger / V1).glob("refit-*.json"))
+        before = f.read_bytes()
+        out = self.refit_main(boundary + 1)[1]
+        self.assertIn("write-once", out[V1]["refused"])
+        self.assertEqual(f.read_bytes(), before)
+        with self.assertRaises(FileExistsError):
+            sc._write_once_json(f, {"x": 1})
+        self.assertEqual(f.read_bytes(), before)
+        self.assertEqual([p.name for p in f.parent.iterdir() if ".tmp" in p.name], [])  # no temp file left behind
+
+    def test_the_refit_refuses_while_a_pool_decided_before_the_instant_is_still_open(self):
+        recs = self.bulk()
+        recs = [r for r in recs if not (r.get("pool") == "Pool0003" and r["type"] in ("outcome", "outcome_bx10", "strip", "pool"))]  # decided, no outcome yet
+        self.shadow_dir(recs, "h5-shadow-bulk")
+        sc.register_books(self.arena / "bots.json", frozen_sha=SHA, sockets=3, endpoints=["e"], host="h", now_ms=START_MS - 1_000, clock_start_ms=START_MS)
+        boundary = self.D0S * 1000 + 5 * sc.DAY_MS
+        rep = self.score_main(boundary + 1)
+        self.assertEqual(rep["books"][V1]["open"], 1)
+        self.assertEqual(json.loads((self.ledger / V1 / "read-instant.json").read_text())["open_before_read"], 1)
+        self.assertIn("still open", self.refit_main(boundary + 1)[1][V1]["refused"])
+        self.assertEqual(list((self.ledger / V1).glob("refit-*.json")), [])
 
 
 class CliTests(Base):
@@ -669,6 +776,23 @@ class CliTests(Base):
         rc, out, _ = self.main("--arena-root", str(self.arena), "--shadow-dir", str(d))
         self.assertEqual(json.loads(out)["books"][V1], {"registered": False})
         self.assertFalse(self.ledger.exists())
+
+    def test_arena_root_is_required_off_mal_fast_0_and_defaults_to_home_data_arena_on_it(self):
+        home = self.root / "home"
+        (home / "data" / "arena").mkdir(parents=True)
+        with mock.patch.object(sc.socket, "gethostname", lambda: "mal-research-0"), mock.patch.dict(os.environ, {"HOME": str(home)}):
+            for cmd in ("score", "refit"):
+                rc, _, err = self.main(cmd)
+                self.assertEqual(rc, 2, cmd)
+                self.assertIn("--arena-root is required", err)
+            self.assertIsNone(sc.default_arena_root())
+        with mock.patch.object(sc.socket, "gethostname", lambda: "mal-fast-0"), mock.patch.dict(os.environ, {"HOME": str(home)}):
+            self.assertEqual(sc.default_arena_root(), str(home / "data" / "arena"))
+            rc, out, _ = self.main("score", "--dry-run", "--shadow-dir", str(home / "data" / "arena" / "h5-shadow-x"))
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out)["books"][V1], {"registered": False})
+            rc, out, _ = self.main("refit")
+            self.assertEqual((rc, json.loads(out)), (0, {}))
 
     def test_the_default_dirs_are_the_arena_shadow_dirs_only(self):
         self.shadow_dir(records(), "h5-shadow-2027-01-15")

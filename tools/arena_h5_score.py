@@ -21,14 +21,17 @@ stake pinned in bots.json (0.30 SOL); 1.3 s and the other stakes (0.10, 0.25) ar
 per bot and cell, on the counted 1.9 s set after exclusions (`refit`); the ledger's press_* values carry the frozen exploration intercept and are provisional.
 REPORT-ONLY legs (row.report_only.h5_frozen_55k): the H5 pre-registered stack (55,000 per send, no rent, haircut, floor or guard) at the shadow's own landing and exit states.
 
-EXCLUSIONS (counted, never dropped silently; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool anywhere from its first print to the end of the trade; a gap after the exit landing does not count),
+EXCLUSIONS (counted, never dropped silently; no_block_time = a trigger without a chain timestamp, never aged from the receipt; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool anywhere from its first print to the end of the trade; a gap after the exit landing does not count),
 base_breaks (base_breaks_unresolved_settled not 0, the executor refuses it), trigger_age (decision more than 3,500 ms after the trigger's block time), strip (no strip, a
 truncated strip or a truncated buys list), exit_before_landing (the deciding leg's exit is not after its landing), incomplete (the outcome was cut by a stop or restart).
 If more than 5% of a book's attempts are excluded, the read is NOT_DECIDABLE (`not_decidable`). A bx10 error or a missing bx10 record is PRICED at v1's exit, not skipped.
 
+REPORT beside the counts: feed_delay_ms p50 / p90 over every attempt that has a block time (counted or excluded), age_clamped_to_zero (host-versus-chain skew), and trigger_age_exclusions on
+its own line. The age carries an error of order +-1 s (whole-second chain timestamp, host clock drift); the executor's binding age check uses its own slot clock, so the scorer can exclude
+a late trade the executor would send (true age about 2.5 to 3.5 s): the 5% cap bounds it, and the count is printed.
 READ GATING. One read per bot_id at the outcome-blind instant: the first 00:00Z at which the book has at least 100 attempts (every pv trigger in the window, excluded or not) on
 at least 5 UTC dates, counted from trigger timestamps by `read_instant`, which takes a list of integers and loads no P&L. Until then, and after it, this tool prints counts
-only; the gate itself is tools/arena_score.py's. `refit` writes the per-cell intercepts at the read and refuses before it.
+only; the gate itself is tools/arena_score.py's. `score` records the book's ONE read instant (read-instant.json, computed from every attempt, excluded and open ones included); `refit` reads that instant and never computes its own, refuses before it, while an attempt decided before it is still open, or if trades plus exclusions in the ledger do not add up to the recorded attempts.
 
 BOOST TIMING (EXP-024 s11): the share of counted trades whose BOOST last slice (the pool record's boost_last_slice_s) comes before the 1.9 s leg's exit landing; above 15% the
 book is "not proposed for live".
@@ -59,6 +62,7 @@ import glob
 import json
 import math
 import os
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -84,7 +88,7 @@ READ_MIN_ATTEMPTS, READ_MIN_DATES = 100, 5
 EXIT_LAG_S = 0.55
 PRESSURE_WINDOW_S = 2.0
 FREEZE_SHA256 = "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0"  # FREEZE.md of H5-BOOSTCLOCK-EXIT (v2); not pinned in code before
-EXCLUSION_REASONS = ("gap_flag", "base_breaks", "trigger_age", "strip", "exit_before_landing", "incomplete")
+EXCLUSION_REASONS = ("gap_flag", "base_breaks", "trigger_age", "no_block_time", "strip", "exit_before_landing", "incomplete")
 DAY_MS = 86_400_000
 
 
@@ -92,10 +96,9 @@ DAY_MS = 86_400_000
 def raw_trigger_age_ms(trig: dict) -> int:
     """Decision instant (host wall clock) minus the trigger print's CHAIN time: the print's block_time, the on-chain Clock unix timestamp in whole seconds. This is the feed delay
     (a feed at confirmed commitment lags the chain) plus the host's own detect delay plus the 0 to 1 s the whole-second timestamp rounds down: the age is overstated by 0 to 1 s
-    (about 0.5 s on average), never understated. Without a block time: minus the receipt of the print (then the feed delay is NOT in it: counted as `age_no_block_time`)."""
-    base = trig.get("block_time")
-    base_ms = int(base) * 1000 if base else int(trig["t_recv_ms"])
-    return int(trig["t_detect_ms"]) - base_ms
+    (about 0.5 s on average), never understated. A trigger without a block time has no chain clock: price_trade makes it a counted exclusion (`no_block_time`), it is never
+    aged from the receipt of the print (that would drop the feed delay and favour the book)."""
+    return int(trig["t_detect_ms"]) - int(trig["block_time"]) * 1000
 
 
 def trigger_age_ms(trig: dict) -> int:
@@ -233,6 +236,20 @@ def _atomic_write_json(path: Path, doc: dict) -> None:
     os.replace(tmp, path)
 
 
+def _write_once_json(path: Path, doc: dict) -> None:
+    """Write `path` only if it does not exist (hard link of a fsynced temp file: atomic, and FileExistsError instead of an overwrite)."""
+    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    with open(tmp, "w") as f:
+        json.dump(doc, f, sort_keys=True, indent=1, allow_nan=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.link(tmp, path)
+    finally:
+        os.unlink(tmp)
+
+
 def load_registry(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
@@ -324,6 +341,8 @@ def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict 
     """Rows data of one pv trade for one bot (all stakes, both legs) or raises Excluded(reason). The exclusion order is the module doc's."""
     if not o.get("complete") or not (o.get("legs")):
         raise Excluded("incomplete")
+    if not trig.get("block_time"):
+        raise Excluded("no_block_time")  # no chain clock, no feed delay: excluded and counted under the 5% cap, never aged from t_recv_ms
     if gap_in_span(trig, o, int(o["exit"]["trigger_slot"]) + exit_lag_slots(float(o["sps"]))):
         raise Excluded("gap_flag")
     if trig.get("base_breaks_unresolved_settled") != 0:
@@ -362,7 +381,7 @@ def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict 
                             "state_src": (esrc, xsrc)}
     if not legs[DECIDING_LEG]["ok"]:
         raise Excluded("exit_before_landing")
-    return {"legs": legs, "spot": spot, "age_ms": age, "age_raw_ms": raw_age, "age_clamped": raw_age < 0, "age_no_block_time": not trig.get("block_time"), "sps": sps,
+    return {"legs": legs, "spot": spot, "age_ms": age, "age_raw_ms": raw_age, "age_clamped": raw_age < 0, "sps": sps,
             "bx_priced_v1": bx_priced_v1, "el": el}
 
 
@@ -398,7 +417,7 @@ def ledger_rows(bot: str, o: dict, trig: dict, priced: dict, start: dict, bx: di
             "pool": o["pool"], "mint": o.get("mint"), "prog": "pumpswap", "stake_sol": lam / 1e9, "legs": legs,
             "report_only": {"h5_frozen_55k": _report_only_55k(bot, o, bx, priced, lam)},
             "meta": {"schema": SCHEMA, "stack": STACK, "variant": VARIANT, "start_ms": int(start["start_ms"]), "sps": sps, "age_ms": age, "spot": priced["spot"],
-                     "feed_delay_ms": age, "feed_delay_slots": age / (sps * 1000.0), "age_clock": "block_time_s" if not priced["age_no_block_time"] else "t_recv_ms",
+                     "feed_delay_ms": age, "feed_delay_slots": age / (sps * 1000.0), "age_clock": "block_time_s",
                      "age_raw_ms": priced["age_raw_ms"], "age_clamped": priced["age_clamped"],
                      "landing_slots_uncorrected": {sfx: priced["legs"][sl]["landing_uncorrected"] for sl, sfx, _ in LEGS},
                      "exit_lag_slots": priced["el"], "exit_rule": ("330s" if bot.startswith("h5v1") else ("v1_exit_after_bx10_error" if priced["bx_priced_v1"] else "bx10")),
@@ -454,6 +473,8 @@ class BookResult:
         self.rows: list[dict] = []
         self.exclusions: list[dict] = []
         self.decisions: list[int] = []  # every attempt in the window (pv trigger), excluded or not, for the read instant
+        self.open_decisions: list[int] = []  # the attempts among them with no outcome record yet
+        self.ages: list[int] = []  # feed delay (age, ms, floored at 0) of every attempt that has a block time, counted or excluded
         self.counts: collections.Counter = collections.Counter()
         self.boost_before_exit = 0
         self.boost_known = 0
@@ -491,8 +512,14 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 continue
             seen.add(pool)
             res.decisions.append(decision)
+            if trig.get("block_time"):
+                raw = raw_trigger_age_ms(trig)
+                res.ages.append(max(0, raw))
+                if raw < 0:
+                    res.counts["age_clamped_to_zero"] += 1  # host-versus-chain clock skew: floored at 0, flagged on the row, counted here
             o = d.outcomes.get(pool)
             if o is None:
+                res.open_decisions.append(decision)
                 res.counts["open"] += 1  # decided, no outcome record yet (still open, or cut by a stop: exits are awaited before a read)
                 continue
             bx = d.bx.get(pool)
@@ -503,10 +530,6 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 res.exclusions.append({"exclusion_id": f"{bot}:{pool}", "bot_id": bot, "pool": pool, "mint": trig.get("mint"), "reason": ex.reason, "decision_ms": decision,
                                        "frozen_sha": start.get("code_sha")})
                 continue
-            if priced["age_clamped"]:
-                res.counts["age_clamped_to_zero"] += 1
-            if priced["age_no_block_time"]:
-                res.counts["age_no_block_time"] += 1
             if priced["bx_priced_v1"]:
                 res.counts["bx10_error_priced_v1"] += 1
             dl = priced["legs"][DECIDING_LEG].get("state_src") or ()
@@ -524,6 +547,14 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
     return res
 
 
+def _pct(xs: Sequence[int], q: float) -> int | None:
+    """Nearest-rank percentile of integers (the k-th smallest, k = ceil(q n)); None for an empty list."""
+    if not xs:
+        return None
+    ys = sorted(xs)
+    return ys[max(1, math.ceil(q * len(ys))) - 1]
+
+
 def summarize(bot: str, res: BookResult, now_ms: int) -> dict[str, Any]:
     n_exc = len(res.exclusions)
     attempts = len(res.decisions)
@@ -533,7 +564,9 @@ def summarize(bot: str, res: BookResult, now_ms: int) -> dict[str, Any]:
     bshare = res.boost_before_exit / res.boost_known if res.boost_known else None
     return {"attempts": attempts, "counted": res.counts["counted"], "excluded": n_exc, "excluded_share": share, "not_decidable": share > EXCLUDED_CAP,
             "excluded_by_reason": {r: res.counts[f"excluded_{r}"] for r in EXCLUSION_REASONS if res.counts[f"excluded_{r}"]},
-            "open": res.counts["open"], "age_clamped_to_zero": res.counts["age_clamped_to_zero"], "age_no_block_time": res.counts["age_no_block_time"], "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
+            "open": res.counts["open"], "age_clamped_to_zero": res.counts["age_clamped_to_zero"],
+            "trigger_age_exclusions": res.counts["excluded_trigger_age"], "no_block_time_exclusions": res.counts["excluded_no_block_time"],
+            "feed_delay_ms_p50": _pct(res.ages, 0.5), "feed_delay_ms_p90": _pct(res.ages, 0.9), "feed_delay_n": len(res.ages), "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
             "skipped_after_window": res.counts["skipped_after_window"], "duplicate_pool": res.counts["duplicate_pool"],
             "sealed_decision_only": res.counts["sealed_decision_only"], "refused_dirs": dict(res.refused),
             "restarts": res.restarts, "downtime_ms": res.downtime_ms, "read_instant_ms": ri, "read_reached": ri is not None,
@@ -615,7 +648,16 @@ def refit_cells(rows: Sequence[dict]) -> dict[str, dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------------------------------------------- CLI
-def _arena_root(path: str) -> Path:
+def default_arena_root() -> str | None:
+    """$HOME/data/arena on mal-fast-0 (where the H5 book runs); nowhere else: off mal-fast-0 the flag is required, so a run on research-0 cannot silently read the wrong root."""
+    return os.path.join(os.path.expanduser("~"), *h5.ARENA_HOME_SUBDIR) if socket.gethostname() == "mal-fast-0" else None
+
+
+def _arena_root(path: str | None) -> Path:
+    if not path:
+        path = default_arena_root()
+    if not path:
+        raise ValueError("--arena-root is required (it defaults to $HOME/data/arena only on mal-fast-0)")
     real = os.path.realpath(path)
     if real not in (os.path.realpath(h5.ARENA_ROOT), os.path.realpath(os.path.join(os.path.expanduser("~"), *h5.ARENA_HOME_SUBDIR))):
         raise ValueError(f"--arena-root {path!r} must be {h5.ARENA_ROOT} or $HOME/{'/'.join(h5.ARENA_HOME_SUBDIR)}")
@@ -659,10 +701,48 @@ def cmd_score(a: argparse.Namespace) -> int:
             continue
         res = score_book(bot, entry, loaded)
         write_ledger(bot, res.rows, res.exclusions, ledger_root, counts, dry_run=a.dry_run)
-        report["books"][bot] = {"registered": True, **summarize(bot, res, now_ms), "rows_scored": len(res.rows)}
+        summ = summarize(bot, res, now_ms)
+        if summ["read_instant_ms"] is not None:
+            record_read_instant(bot, summ["read_instant_ms"], res, ledger_root, counts, dry_run=a.dry_run)
+        report["books"][bot] = {"registered": True, **summ, "rows_scored": len(res.rows)}
     report["counts"] = dict(sorted(counts.items()))
     print(json.dumps(report, sort_keys=True))
     return 0
+
+
+READ_INSTANT_FILE = "read-instant.json"
+
+
+def record_read_instant(bot: str, ri: int, res: BookResult, ledger_root: Path, counts: collections.Counter, dry_run: bool = False) -> None:
+    """The ONE read instant of the book, computed by score_book from every attempt (excluded and open ones included, DEC-031 s2) and recorded for `refit`. The instant itself is
+    never changed once written (a different later value is counted as read_instant_conflict and the old one kept); `open_before_read` and `attempts_before` are refreshed
+    on each run, so a refit can tell that every attempt before the boundary has exited and that the ledger holds all of them."""
+    before = [d for d in res.decisions if d < ri]
+    doc = {"bot_id": bot, "read_instant_ms": int(ri), "attempts_before": len(before), "dates": len({d // DAY_MS for d in before}),
+           "open_before_read": sum(1 for d in res.open_decisions if d < ri)}
+    path = ledger_root / bot / READ_INSTANT_FILE
+    if path.exists():
+        old = json.loads(path.read_text())
+        if int(old["read_instant_ms"]) != int(ri):
+            counts["read_instant_conflict"] += 1
+            return
+    if not dry_run:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(path, doc)
+
+
+def ledger_attempts_before(bot_dir: Path, ri: int) -> tuple[list[dict], int]:
+    """(trade rows decided before ri, the number of distinct attempts before ri in trades plus exclusions): one attempt per pool."""
+    rows = [json.loads(l) for f in sorted(bot_dir.glob("trades-????-??-??.jsonl")) for l in f.read_text().splitlines() if l.strip()]
+    rows = [r for r in rows if r["decision_ms"] < ri]
+    pools = {r["pool"] for r in rows}
+    for f in sorted(bot_dir.glob("exclusions-????-??-??.jsonl")):
+        for l in f.read_text().splitlines():
+            if l.strip():
+                e = json.loads(l)
+                if e["decision_ms"] < ri:
+                    pools.add(e["pool"])
+    return rows, len(pools)
 
 
 def cmd_refit(a: argparse.Namespace) -> int:
@@ -674,15 +754,34 @@ def cmd_refit(a: argparse.Namespace) -> int:
     for bot in BOTS:
         if bot not in registry:
             continue
-        rows = [json.loads(l) for f in sorted((ledger_root / bot).glob("trades-????-??-??.jsonl")) for l in f.read_text().splitlines() if l.strip()]
-        ri = read_instant([r["decision_ms"] for r in rows if r["stake_sol"] == 0.1], now_ms)
-        if ri is None:
+        bot_dir = ledger_root / bot
+        rec = bot_dir / READ_INSTANT_FILE
+        if not rec.exists():
+            out[bot] = {"refused": "read instant not recorded (score has not reached it)"}
+            continue
+        doc = json.loads(rec.read_text())
+        ri = int(doc["read_instant_ms"])  # the instant score_book computed, from every attempt: the refit never computes its own
+        if now_ms < ri:
             out[bot] = {"refused": "read instant not reached"}
             continue
-        rows = [r for r in rows if r["decision_ms"] < ri]
+        if doc["open_before_read"]:
+            out[bot] = {"refused": "attempts decided before the read instant are still open"}
+            continue
+        rows, n_attempts = ledger_attempts_before(bot_dir, ri)
+        if n_attempts != doc["attempts_before"]:
+            out[bot] = {"refused": "the ledger does not hold every attempt decided before the read instant (score again)"}
+            continue
+        target = bot_dir / f"refit-{utc_day(ri)}.json"
+        if target.exists():
+            out[bot] = {"refused": f"{target.name} exists: the refit is write-once"}
+            continue
         cells = refit_cells(rows)
-        _atomic_write_json(ledger_root / bot / f"refit-{utc_day(ri)}.json", {"bot_id": bot, "read_instant_ms": ri, "cells": cells})
-        out[bot] = {"read_instant_ms": ri, "cells": len(cells)}
+        try:
+            _write_once_json(target, {"bot_id": bot, "read_instant_ms": ri, "attempts_before": n_attempts, "trades_pools": len({r["pool"] for r in rows}), "cells": cells})
+        except FileExistsError:
+            out[bot] = {"refused": f"{target.name} exists: the refit is write-once"}
+            continue
+        out[bot] = {"read_instant_ms": ri, "attempts_before": n_attempts, "cells": len(cells)}
     print(json.dumps(out, sort_keys=True))
     return 0
 
@@ -702,13 +801,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     h.add_argument("--arena-root", required=True)
     h.add_argument("--at-ms", type=int, required=True)
     s = sub.add_parser("score", help="price the shadow dirs into the ledger (default)")
-    s.add_argument("--arena-root", default=h5.ARENA_ROOT)
+    s.add_argument("--arena-root", default=None, help="required, except on mal-fast-0 where it defaults to $HOME/data/arena")
     s.add_argument("--shadow-dir", action="append", default=None)
     s.add_argument("--ledger-root", default=None)
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--now-ms", type=int, default=None)
     f = sub.add_parser("refit", help="write the per-cell deciding intercepts; refuses before the read instant")
-    f.add_argument("--arena-root", default=h5.ARENA_ROOT)
+    f.add_argument("--arena-root", default=None, help="required, except on mal-fast-0 where it defaults to $HOME/data/arena")
     f.add_argument("--now-ms", type=int, default=None)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in ("register", "halt", "score", "refit", "-h", "--help"):

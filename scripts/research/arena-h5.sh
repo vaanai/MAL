@@ -21,7 +21,8 @@
 #   ARENA_H5_OUT_DIR  output dir; $HOME/data/arena/h5-<something> or /data/mal/arena/h5-<something>, no ".."
 #   ARENA_H5_WS_URLS  comma-separated public websocket URLs; sockets use them in turn. Default: wss://api.mainnet-beta.solana.com,wss://public.rpc.solanavibestation.com
 #                     (two distinct free endpoints that delivered PumpSwap logsSubscribe at "confirmed" in the 2026-10-18 probe: tools/arena_ws_probe.py). Set it EMPTY to use the
-#                     tool's single default endpoint. wss:// only, no query or userinfo, no Helius.
+#                     tool's single default endpoint. Each URL is wss://host[:port] and nothing else: no path (a path is where a key hides; the only allowed paths are "" and "/"),
+#                     no query, no userinfo, no fragment, no glob character, no Helius.
 #   ARENA_H5_SOCKETS  redundant public logsSubscribe sockets (default 3; fewer is refused unless ARENA_H5_ALLOW_FEW_SOCKETS=1)
 #   ARENA_H5_SYN_SOCKETS  pump.fun logsSubscribe sockets for the synthetic-migration class (default 1)
 #   ARENA_H5_RPC_URL  public RPC for the synthetic-class fallback (Helius URLs are refused by the tool)
@@ -30,6 +31,7 @@
 #                     skips the dir.
 #   ARENA_H5_ALLOW_ANY_HOST  set to 1 to run on a host other than mal-fast-0 (smoke tests only; the book runs on mal-fast-0)
 set -eu
+set -f  # no pathname expansion anywhere: the URL list below is split on commas only
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 [ -n "${HOME:-}" ] || { echo "arena-h5: HOME is not set" >&2; exit 2; }
@@ -69,7 +71,12 @@ if [ -n "$WS_URLS" ]; then
       *) echo "arena-h5: refusing websocket URL (wss:// only)" >&2; exit 2 ;;
     esac
     case "$u" in
-      *\?*|*@*|*[Hh][Ee][Ll][Ii][Uu][Ss]*|*[[:space:]]*) echo "arena-h5: refusing websocket URL (no query, userinfo or Helius)" >&2; exit 2 ;;
+      *[Hh][Ee][Ll][Ii][Uu][Ss]*) echo "arena-h5: refusing websocket URL (no Helius)" >&2; exit 2 ;;
+    esac
+    REST="${u#wss://}"
+    REST="${REST%/}"  # the one allowed trailing path is "/"
+    case "$REST" in
+      ''|*/*|*[!A-Za-z0-9.:-]*) echo "arena-h5: refusing websocket URL (only wss://host[:port][/]: no path, query, userinfo, fragment, glob or space)" >&2; exit 2 ;;
     esac
   done
   IFS="$OLDIFS"
