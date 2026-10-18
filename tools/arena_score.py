@@ -1,46 +1,100 @@
-"""Arena gate scorer (hunt20): CLAUDE.md's promotion gate on forward-paper arena ledgers. READ-ONLY on the ledger. PAPER ONLY.
+"""Arena gate scorer (hunt20): CLAUDE.md's promotion gate read per DEC-031 section 2, on forward-paper arena ledgers. READ-ONLY on the ledger. PAPER ONLY.
 
-    python -m tools.arena_score [--bot BOT_ID] [--json out.json] [--ledger-root DIR] [--registry FILE]
+    python -m tools.arena_score [--bot BOT_ID] [--json out.json] [--now-ms MS] [--record] [--ledger-root DIR] [--registry FILE] [--reads-dir DIR]
 
-Per bot, per stake (0.25 / 0.5 / 1.0 SOL), per latency leg (1.3 s, 1.9 s), per fail model (flat 15%, pressure-fail at slope scale 1):
-n, distinct UTC days (entry decision), days positive, mean SOL / trade, total, CI90 lower bound of mean SOL / trade (trade-level bootstrap, 1,000 draws,
-seed 1, 5th percentile: `tools.r4b_book.boot_lo`, the function sc.py / hlib use), total ex top 3 trades, total ex best day, daily table.
+ONE READ PER bot_id, AT AN OUTCOME-BLIND INSTANT. `blind_read_instant` takes decision timestamps only and loads no fill, exit or P&L: it is the first 00:00Z
+boundary B at which the book has at least 100 attempts (every entry decision: open rows and refused buys) over at least 5 UTC dates, counted from the
+registered clock. The read covers the attempts decided before B. Before B the status is NOT_READY. `--record` writes the read once to the reads dir; a second
+record for the same bot_id is refused (a FAIL or NOT_DECIDABLE is final). Without `--record` the output is a PREVIEW, not the read.
 
-A cell PASSES iff n >= 100, >= 5 UTC days with a majority of them positive, CI90 lo > 0 and total ex top 3 > 0. A book PASSES iff all four of its cells
-(flat and pressure, 1.3 s and 1.9 s) pass; the report names the deciding cell (the cell with the lowest CI90 lower bound) and the criteria it misses. The
-per-latency verdicts are printed too. Ex-best-day is reported, not gating (the brief's PASS list does not include it).
+ORDER OF OPERATIONS (fixed, pinned by a test): clock filter -> read boundary -> DEC-031 exclusions -> pressure refit -> statistics.
 
-The pressure leg is REFIT per (bot, stake, latency) book from the ledger's stored ingredients (no-fail pnl, filled, same-slot buys, nearby buy lamports):
-the stack refits the intercept per cell so that the mean fail probability over the cell's filled sends is 0.289 (tools.r4b_book.fail_legs). The ledger's own
-press_* net_lamports use a provisional intercept and are NOT what is scored.
+STATUS (the first that applies):
+  REFUSED         no registry line with deciding_stake and model_ids; a changed frozen_sha; a duplicated trade_id; mixed stack configs inside one bot
+  NOT_READY       the boundary is not reached (or not reached yet by --now-ms)
+  NOT_DECIDABLE   an unresolved restart orphan (an attempt before B with no priced or excluded close; DEC-014 Am.1), or excluded + refused attempts above
+                  5% of the book's attempts (DEC-031 section 1.4)
+  REPORT_ONLY     any bonding row in the book (its costs are unmeasured; quant-proof on #708), or the book was not priced under both strand rules
+  PASS / FAIL     the DECIDING CELL only: 1.9 s at the stake pinned in bots.json, flat 15% AND pressure-fail, each under BOTH strand rules ("sc" and the
+                  DEC-031 strand class "total"): four sub-cells, all must pass. A sub-cell passes iff n >= 100, >= 5 UTC days with a strict majority positive,
+                  CI90 lower bound of mean SOL / trade > 0 (trade-level bootstrap, 1,000 draws, seed 1, 5th percentile: tools.r4b_book.boot_lo) and total
+                  ex top 3 trades > 0. The 1.3 s leg and the other stakes are report-only and never decide. "weakest_cell" is the lowest-CI cell of the
+                  deciding stake (information only).
+A PASS whose total is not positive ex best day prints "not proposed for canary". A PASS is a screen, the best of the books printed in the header
+(winner's curse), not a promotion.
 
-Counted trades: entry decision_ms >= the bot's registered clock_start_ms (/data/mal/arena/bots.json). A bot whose ledger rows carry a frozen_sha other than the
-registered one, or more than one sha, or a duplicated trade_id, is REFUSED (a new version is a new bot_id). The report prints how many bots the arena holds
-(multiplicity) and how many books / cells were read.
+PRESSURE LEG: refit per (bot, stake, latency, strand rule) on exactly the covered, non-excluded attempts so that the mean fail probability over the book's
+non-guarded sends is 0.289 with slopes 0.8 / 0.35 (tools.r4b_book.fail_legs). The fitted intercept is printed per cell. Limitation: the refit fixes each book's
+mean fail rate at 0.289, so a bot that trades only in congested slots is not charged more in absolute terms. A strand (total-loss class) bypasses the blend.
+derived_last rows are counted at their value and printed (count and share per cell); a re-run without them is report-only.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from tools.arena_paper import LEDGER_ROOT, REGISTRY_PATH, Ledger, load_registry, utc_day
+from tools.arena_paper import (
+    LEDGER_ROOT,
+    REGISTRY_PATH,
+    Ledger,
+    book_fail_legs,
+    canon,
+    load_registry,
+    utc_day,
+)
 from tools.r4b_book import boot_lo, fail_legs
 
 LATS = ("1p3", "1p9")
 MODELS = ("flat", "press")
+RULES = ("total", "sc")
+DAY_MS = 86_400_000
 MIN_N, MIN_DAYS = 100, 5
+MAX_EXCLUDED_SHARE = 0.05
+READS_DIR = "/data/mal/arena/reads"
+STEPS = ("clock_filter", "read_boundary", "exclusions", "pressure_refit", "statistics")
+CONFIG_KEYS_IGNORED = ("sps_entry", "sps_exit")
 
 
 class Refused(Exception):
     pass
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ outcome-blind instant
+def load_decisions(ledger_root: str | Path, bot_id: str) -> list[int]:
+    """Entry-decision timestamps of a bot's attempts (open rows and refused buys). Lines of any other kind (fills, exits, P&L) are never parsed."""
+    out: list[int] = []
+    d = Path(ledger_root) / bot_id
+    for p in sorted(d.glob("trades-*.jsonl")) if d.exists() else []:
+        for line in p.read_text().splitlines():
+            if '"kind":"open"' in line or '"kind":"refused"' in line:
+                out.append(int(json.loads(line)["decision_ms"]["entry"]))
+    return out
+
+
+def blind_read_instant(entry_ms: Sequence[int], clock_start_ms: int) -> int | None:
+    """The first 00:00Z boundary B with >= 100 attempts over >= 5 UTC dates among the attempts decided in [clock_start, B). Decision timestamps only."""
+    ms = sorted(int(m) for m in entry_ms if int(m) >= clock_start_ms)
+    if len(ms) < MIN_N:
+        return None
+    b = (ms[0] // DAY_MS + 1) * DAY_MS
+    last = (ms[-1] // DAY_MS + 1) * DAY_MS
+    while b <= last:
+        k = bisect.bisect_left(ms, b)
+        if k >= MIN_N and len({m // DAY_MS for m in ms[:k]}) >= MIN_DAYS:
+            return b
+        b += DAY_MS
+    return None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ statistics
 def cell_stats(x_lamports: Sequence[float], days: Sequence[str]) -> dict[str, Any]:
     """Gate statistics of one cell. x in lamports per trade, days = UTC date of each trade's entry decision."""
     x = np.asarray(x_lamports, float)
@@ -71,60 +125,170 @@ def cell_verdict(s: Mapping[str, Any]) -> dict[str, Any]:
     return {"pass": not miss, "misses": miss}
 
 
-def book_legs(rows: Sequence[Mapping[str, Any]]) -> dict[str, np.ndarray]:
-    """Per-trade lamports for (flat|press)_(1p3|1p9) of one (bot, stake) book. flat: the ledger's net_lamports. press: intercept refit on the book's fills."""
-    out: dict[str, np.ndarray] = {}
-    for lat in LATS:
-        pnl = np.array([r["calc"][lat]["pnl_nofail"] for r in rows], float)
-        fil = np.array([r["calc"][lat]["filled"] for r in rows], bool)
-        ssb = np.array([r["calc"][lat]["ssb"] for r in rows], float)
-        near = np.array([r["calc"][lat]["nearby_lamports"] for r in rows], float)
-        send = float(rows[0]["stack"]["send"])
-        flat, press, _, _ = fail_legs(pnl, fil, ssb, near, send)
-        out["flat_" + lat] = np.array([r["legs"]["flat_" + lat]["net_lamports"] for r in rows], float)
-        assert np.array_equal(out["flat_" + lat], flat), "ledger flat leg differs from the refit flat leg"
-        out["press_" + lat] = press
-    return out
+def book_cells(trades: Sequence[Mapping[str, Any]], rules: Sequence[str]) -> dict[str, Any]:
+    """All cells of one (bot, stake) book: model x latency x strand rule. The pressure intercept is refit here, on exactly these trades."""
+    cells: dict[str, Any] = {}
+    days = [utc_day(r["decision_ms"]["entry"]) for r in trades]
+    derived = np.array([r.get("state_src") == "derived_last" for r in trades], bool)
+    for rule in rules:
+        for lat in LATS:
+            pnl = np.array([r["calc"][lat]["by_rule"][rule]["pnl_nofail"] for r in trades], float)
+            fil = np.array([r["calc"][lat]["by_rule"][rule]["filled"] for r in trades], bool)
+            strand = np.array([r["calc"][lat]["by_rule"][rule]["strand"] for r in trades], bool)
+            ssb = np.array([r["calc"][lat]["ssb"] for r in trades], float)
+            near = np.array([r["calc"][lat]["nearby_lamports"] for r in trades], float)
+            send = float(trades[0]["stack"]["send"])
+            fn = book_fail_legs if rule == "total" else (lambda p, f, s, a, b, c: fail_legs(p, f, a, b, c))
+            flat, press, c, _ = fn(pnl, fil, strand, ssb, near, send)
+            for i, r in enumerate(trades):  # the stored flat leg must equal the recomputed one (it has no book-level parameter)
+                if r["legs"][rule][f"flat_{lat}"]["net_lamports"] != float(flat[i]):
+                    raise Refused(f"trade {r['trade_id']}: stored flat leg differs from the recomputed flat leg ({rule}, {lat})")
+            for model, x in (("flat", flat), ("press", press)):
+                s = cell_stats(x, days)
+                cells[f"{model}_{lat}_{rule}"] = dict(s, **cell_verdict(s), intercept=float(c) if model == "press" else None, derived_last_n=int(derived.sum()),
+                                                      derived_last_share=float(derived.mean()) if len(trades) else None,
+                                                      without_derived_last=dict(cell_stats(x[~derived], [d for d, k in zip(days, derived) if not k]),
+                                                                                report_only=True))
+    return cells
 
 
-def check_bot_rows(bot_id: str, reg: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Refusals, then the counted rows (entry decision >= registered clock start)."""
+# ------------------------------------------------------------------------------------------------------------------------------ one bot
+def _entry(r: Mapping[str, Any]) -> int:
+    return int(r["decision_ms"]["entry"])
+
+
+def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Refusals. Returns the common stack config (without the per-trade slot clock values)."""
     if bot_id not in reg:
         raise Refused(f"{bot_id}: ledger rows but no registry entry")
-    shas = sorted({r["frozen_sha"] for r in rows})
-    if shas and shas != [reg[bot_id]["frozen_sha"]]:
-        raise Refused(f"{bot_id}: frozen_sha in the ledger {shas} != registered {reg[bot_id]['frozen_sha']} (a new version is a new bot_id)")
+    e = reg[bot_id]
+    if e.get("deciding_stake") is None or e.get("model_ids") is None:
+        raise Refused(f"{bot_id}: the registry line lacks deciding_stake / model_ids (DEC-031 section 1.2)")
+    shas = sorted({r["frozen_sha"] for r in rows if "frozen_sha" in r})
+    if shas and shas != [e["frozen_sha"]]:
+        raise Refused(f"{bot_id}: frozen_sha in the ledger {shas} != registered {e['frozen_sha']} (a new version is a new bot_id)")
     ids = [r["trade_id"] for r in rows]
     if len(ids) != len(set(ids)):
         raise Refused(f"{bot_id}: duplicated trade_id in the ledger")
-    return [r for r in rows if r["decision_ms"]["entry"] >= reg[bot_id]["clock_start_ms"]]
+    cfgs = {canon({k: v for k, v in r["stack"].items() if k not in CONFIG_KEYS_IGNORED}) for r in rows if r.get("stack")}
+    if len(cfgs) > 1:
+        raise Refused(f"{bot_id}: mixed stack configs inside one bot ({len(cfgs)} distinct): refused")
+    return json.loads(next(iter(cfgs))) if cfgs else {}
 
 
-def score_book(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    legs = book_legs(rows) if rows else {}
-    days = [utc_day(r["decision_ms"]["entry"]) for r in rows]
-    cells: dict[str, Any] = {}
-    for lat in LATS:
-        for m in MODELS:
-            key = f"{m}_{lat}"
-            s = cell_stats(legs[key] if rows else [], days)
-            cells[key] = dict(s, **cell_verdict(s))
-    deciding = min(cells, key=lambda k: (cells[k]["ci90_lo_sol"] is not None, cells[k]["ci90_lo_sol"] if cells[k]["ci90_lo_sol"] is not None else 0.0))
-    per_lat = {lat: all(cells[f"{m}_{lat}"]["pass"] for m in MODELS) for lat in LATS}
-    return {"n": len(rows), "cells": cells, "pass": all(c["pass"] for c in cells.values()), "per_latency_pass": per_lat, "deciding_cell": deciding,
-            "deciding_misses": cells[deciding]["misses"]}
+def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None) -> dict[str, Any]:
+    tr = trace if trace is not None else []
+    config = check_bot_rows(bot_id, reg, rows)
+    e = reg[bot_id]
+    out: dict[str, Any] = {"bot_id": bot_id, "frozen_sha": e["frozen_sha"], "clock_start_ms": e["clock_start_ms"], "deciding_stake": e["deciding_stake"],
+                           "model_ids": e["model_ids"], "stopped_at_ms": e.get("stopped_at_ms"), "config": config, "rows_total": len(rows), "reasons": []}
+    # 1. clock filter
+    tr.append("clock_filter")
+    counted = [r for r in rows if _entry(r) >= e["clock_start_ms"]]
+    out["rows_before_clock"] = len(rows) - len(counted)
+    # 2. read boundary (outcome-blind: decision timestamps only)
+    tr.append("read_boundary")
+    b = blind_read_instant([_entry(r) for r in counted if r["kind"] in ("open", "refused")], e["clock_start_ms"])
+    out["read_boundary_ms"] = b
+    if b is None or now_ms < b:
+        out["status"] = "NOT_READY"
+        out["reasons"].append("the book has not yet reached 100 attempts over 5 UTC dates at a 00:00Z boundary" if b is None else "now is before the read boundary")
+        return out
+    covered = [r for r in counted if _entry(r) < b]
+    opens = {r["position_id"]: r for r in covered if r["kind"] == "open"}
+    refused = [r for r in covered if r["kind"] == "refused"]
+    closed = {r["position_id"] for r in covered if r["kind"] in ("trade", "excluded")}
+    orphans = sorted(set(opens) - closed)
+    late = [r for r in covered if r["kind"] == "late_print"]
+    out["attempts"] = len(opens) + len(refused)
+    out["refused_buys"] = dict(Counter(r["reason"] for r in refused))
+    out["restart_orphans"] = len(orphans)
+    out["late_prints"] = len(late)
+    # 3. DEC-031 exclusions
+    tr.append("exclusions")
+    late_gap = {r["position_id"] for r in late if r.get("gap_overlap")}
+    by_stake: dict[float, dict[str, list]] = defaultdict(lambda: {"trades": [], "excluded": []})
+    for r in covered:
+        if r["kind"] == "trade":
+            vs = r.get("v_src") or {}
+            if r["position_id"] in late_gap:
+                by_stake[r["stake_sol"]]["excluded"].append(dict(r, exclusion_reason="late_print_gap"))
+            elif "none" in (vs.get("entry"), vs.get("exit")) or "none" in (vs.get("span") or {}):
+                by_stake[r["stake_sol"]]["excluded"].append(dict(r, exclusion_reason="missing_v"))
+            else:
+                by_stake[r["stake_sol"]]["trades"].append(r)
+        elif r["kind"] == "excluded":
+            by_stake[r["stake_sol"]]["excluded"].append(r)
+    books: dict[str, Any] = {}
+    n_attempts = len(opens) + len(refused)
+    for st in sorted(by_stake):
+        ex = Counter(x["exclusion_reason"] for x in by_stake[st]["excluded"])
+        books[str(st)] = {"stake": st, "n_trades": len(by_stake[st]["trades"]), "excluded": dict(ex), "refused": len(refused),
+                          "excluded_share": (sum(ex.values()) + len(refused)) / n_attempts if n_attempts else None}
+    out["books"] = books
+    # 4. pressure refit, 5. statistics (per book, on the post-exclusion trades)
+    tr.append("pressure_refit")
+    tr.append("statistics")
+    has_bonding = False
+    for st, bk in books.items():
+        trades = by_stake[float(st)]["trades"]
+        has_bonding = has_bonding or any(r["prog"] == "pump_bonding" for r in trades + by_stake[float(st)]["excluded"])
+        rules_present = [ru for ru in RULES if trades and ru in trades[0]["legs"]]
+        bk["rules"] = rules_present
+        bk["cells"] = book_cells(trades, rules_present) if trades else {}
+    out["has_bonding"] = has_bonding
+    # status
+    dk = str(e["deciding_stake"])
+    why = out["reasons"]
+    if orphans:
+        why.append(f"{len(orphans)} restart orphan(s): attempts before the boundary never closed (DEC-014 Amendment 1)")
+    over = {st: bk["excluded_share"] for st, bk in books.items() if bk["excluded_share"] is not None and bk["excluded_share"] > MAX_EXCLUDED_SHARE}
+    if over:
+        why.append(f"excluded + refused share above {MAX_EXCLUDED_SHARE:.0%}: " + ", ".join(f"stake {k}: {v:.1%}" for k, v in over.items()))
+    if orphans or over:
+        out["status"] = "NOT_DECIDABLE"
+        return out
+    dec = books.get(dk)
+    if dec is None or not dec["cells"]:
+        out["status"] = "FAIL"
+        why.append(f"no priced trades at the deciding stake {dk}")
+        return out
+    subs = {k: v for k, v in dec["cells"].items() if "_1p9_" in k}
+    out["deciding"] = {"stake": dk, "latency": "1p9", "subcells": sorted(subs), "pass": all(v["pass"] for v in subs.values()) and len(subs) == 4,
+                       "weakest_cell": min((k for k in dec["cells"] if dec["cells"][k]["ci90_lo_sol"] is not None), key=lambda k: dec["cells"][k]["ci90_lo_sol"], default=None),
+                       "misses": {k: v["misses"] for k, v in subs.items() if v["misses"]},
+                       "not_proposed_for_canary": any((v["ex_best_day_sol"] is None or v["ex_best_day_sol"] <= 0) for v in subs.values())}
+    if has_bonding:
+        out["status"] = "REPORT_ONLY"
+        why.append("a bonding row is in the book: its costs are unmeasured (no send / haircut DEC), so no deciding verdict")
+    elif len(subs) != 4:
+        out["status"] = "REPORT_ONLY"
+        why.append(f"the deciding cell was not priced under both strand rules (rules present: {dec['rules']})")
+    else:
+        out["status"] = "PASS" if out["deciding"]["pass"] else "FAIL"
+    return out
 
 
-def score_bot(bot_id: str, reg: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    counted = check_bot_rows(bot_id, reg, rows)
-    by_stake: dict[float, list] = defaultdict(list)
-    for r in counted:
-        by_stake[r["stake_sol"]].append(r)
-    return {"bot_id": bot_id, "frozen_sha": reg[bot_id]["frozen_sha"], "clock_start_ms": reg[bot_id]["clock_start_ms"], "rows_total": len(rows),
-            "rows_before_clock": len(rows) - len(counted), "books": {f"{st}": score_book(rs) for st, rs in sorted(by_stake.items())}}
+def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
+    """Write the one read of a bot_id. A second record for the same bot_id is refused."""
+    d = Path(reads_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{res['bot_id']}.json"
+    if res["status"] == "NOT_READY":
+        raise Refused(f"{res['bot_id']}: not ready, nothing to record")
+    try:
+        with open(p, "x") as f:
+            f.write(canon(res) + "\n")
+    except FileExistsError:
+        raise Refused(f"{res['bot_id']}: its one read is already recorded at {p}") from None
+    return p
 
 
-def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None) -> dict[str, Any]:
+# ------------------------------------------------------------------------------------------------------------------------------ all bots
+def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None, now_ms: int | None = None) -> dict[str, Any]:
+    import time
+
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     reg = load_registry(registry)
     led = Ledger(ledger_root)
     bots: dict[str, Any] = {}
@@ -133,31 +297,53 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
         if only and b != only:
             continue
         try:
-            bots[b] = score_bot(b, reg, led.read_bot(b))
+            bots[b] = score_bot(b, reg, led.read_bot(b), now)
         except Refused as exc:
             refused[b] = str(exc)
-    n_books = sum(len(v["books"]) for v in bots.values())
-    return {"arena_bots_registered": len(reg), "bots_scored": len(bots), "bots_refused": refused, "books_scored": n_books, "cells_scored": n_books * len(LATS) * len(MODELS),
-            "bots": bots}
+    existed_books = sum(1 for e in reg.values() if e["clock_start_ms"] < now)  # every book with a clock before the read, stopped ones included
+    read_books = sum(len(v.get("books", {})) for v in bots.values())
+    n_stakes = 3
+    return {"now_ms": now, "arena_books_with_clock_before_read": existed_books, "arena_books_registered": len(reg), "arena_books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
+            "cells_existed": existed_books * n_stakes * len(MODELS) * len(LATS), "books_read": read_books, "cells_read": read_books * len(MODELS) * len(LATS),
+            "bots_refused": refused, "bots": bots}
 
 
 def render(res: Mapping[str, Any]) -> str:
-    L = [f"ARENA GATE READ  bots in the arena: {res['arena_bots_registered']}  books scored: {res['books_scored']}  cells scored: {res['cells_scored']}",
-         "multiplicity: every PASS below is the best of the books above; winner's curse applies; the gate itself is unchanged."]
+    L = [f"ARENA GATE READ (a PREVIEW unless recorded with --record)  now {res['now_ms']}",
+         f"multiplicity: {res['arena_books_with_clock_before_read']} books in bots.json with a clock before the read ({res['arena_books_registered']} registered, "
+         f"{res['arena_books_stopped']} stopped, stopped ones counted); cells that existed {res['cells_existed']} (books x 3 stakes x 4); "
+         f"books read {res['books_read']} (stake books), cells read {res['cells_read']}.",
+         "A PASS is a SCREEN: the best of the books above, in-sample for selection (winner's curse), not a promotion. The deciding cell is 1.9 s at the pinned stake."]
     for b, why in res["bots_refused"].items():
         L.append(f"REFUSED {b}: {why}")
+    f = lambda z: "None" if z is None else f"{z:+.6f}"  # noqa: E731
     for b, v in res["bots"].items():
-        L.append(f"\nBOT {b}  sha {v['frozen_sha']}  clock_start_ms {v['clock_start_ms']}  rows {v['rows_total']} (before clock, not counted: {v['rows_before_clock']})")
+        L.append(f"\nBOT {b}  STATUS {v['status']}  sha {v['frozen_sha']}  clock {v['clock_start_ms']}  deciding stake {v['deciding_stake']}  models {v['model_ids']}")
+        L.append(f"  config {canon(v['config'])}")
+        for r in v["reasons"]:
+            L.append(f"  reason: {r}")
+        if v["status"] == "NOT_READY":
+            continue
+        L.append(f"  read boundary {v['read_boundary_ms']}  attempts {v['attempts']}  refused buys {v['refused_buys']}  restart orphans {v['restart_orphans']}  "
+                 f"late prints {v['late_prints']}  rows before clock (not counted) {v['rows_before_clock']}")
+        d = v.get("deciding")
+        if d:
+            L.append(f"  DECIDING CELL: 1.9 s, stake {d['stake']}, flat + pressure, strand rules total + sc -> {'pass' if d['pass'] else 'fail'}  weakest cell {d['weakest_cell']}")
+            for k, m in d["misses"].items():
+                L.append(f"    {k}: {'; '.join(m)}")
+            if d["pass"] and d["not_proposed_for_canary"]:
+                L.append("  NOT PROPOSED FOR CANARY: total is not positive ex best day (or ex-best-day is missing) in a deciding sub-cell")
         for st, bk in v["books"].items():
-            L.append(f"  stake {st} SOL  n {bk['n']}  VERDICT {'PASS' if bk['pass'] else 'FAIL'}  per-latency pass {bk['per_latency_pass']}  "
-                     f"deciding cell {bk['deciding_cell']} ({'; '.join(bk['deciding_misses']) or 'passes every criterion'})")
-            for k, c in bk["cells"].items():
-                f = lambda z: "None" if z is None else f"{z:+.6f}"  # noqa: E731
-                L.append(f"    {k:10s} n {c['n']:4d} days {c['days']:2d} pos {c['days_pos']:2d} mean {f(c['mean_sol'])} total {f(c['total_sol'])} "
-                         f"ci90lo {f(c['ci90_lo_sol'])} ex-top3 {f(c['ex_top3_sol'])} ex-best-day {f(c['ex_best_day_sol'])} {'pass' if c['pass'] else 'fail'}")
-            first = next(iter(bk["cells"].values()))
-            L.append("    daily (flat_1p3): " + ", ".join(f"{d} n={x['n']} {x['sol']:+.4f}" for d, x in bk["cells"]["flat_1p3"]["daily"].items()))
-            del first
+            L.append(f"  stake {st}{' (deciding)' if st == str(v['deciding_stake']) else ' (report-only)'}  trades {bk['n_trades']}  excluded {bk['excluded']}  "
+                     f"refused {bk['refused']}  excluded+refused share {f(bk['excluded_share'])}")
+            for k, c in bk.get("cells", {}).items():
+                icpt = "" if c["intercept"] is None else f" icpt {c['intercept']:+.4f}"
+                L.append(f"    {k:16s} n {c['n']:4d} days {c['days']:2d} pos {c['days_pos']:2d} mean {f(c['mean_sol'])} total {f(c['total_sol'])} ci90lo {f(c['ci90_lo_sol'])} "
+                         f"ex-top3 {f(c['ex_top3_sol'])} ex-best-day {f(c['ex_best_day_sol'])} derived_last {c['derived_last_n']} ({f(c['derived_last_share'])}){icpt} "
+                         f"{'pass' if c['pass'] else 'fail'}")
+            first = next(iter(bk.get("cells", {}).values()), None)
+            if first:
+                L.append("    daily (first cell): " + ", ".join(f"{dd} n={x['n']} {x['sol']:+.4f}" for dd, x in first["daily"].items()))
     return "\n".join(L)
 
 
@@ -165,14 +351,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--ledger-root", default=LEDGER_ROOT)
     ap.add_argument("--registry", default=REGISTRY_PATH)
+    ap.add_argument("--reads-dir", default=READS_DIR)
     ap.add_argument("--bot")
     ap.add_argument("--json")
+    ap.add_argument("--now-ms", type=int)
+    ap.add_argument("--record", action="store_true", help="write the one read of --bot (refused if already recorded or not ready)")
     a = ap.parse_args(argv)
-    res = score_all(a.ledger_root, a.registry, a.bot)
+    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms)
     print(render(res))
     if a.json:
-        with open(a.json, "w") as f:
-            json.dump(res, f, indent=1, sort_keys=True, allow_nan=False)
+        with open(a.json, "w") as fh:
+            json.dump(res, fh, indent=1, sort_keys=True, allow_nan=False)
+    if a.record:
+        if not a.bot or a.bot not in res["bots"]:
+            print("--record needs a scored --bot", file=sys.stderr)
+            return 2
+        print("recorded:", record_read(a.reads_dir, res["bots"][a.bot]))
     return 0
 
 
