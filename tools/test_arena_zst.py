@@ -11,6 +11,7 @@ import pytest
 from tools import arena_feed as af
 from tools import arena_zst as az
 from tools.arena_state import ArenaState
+from tools.test_arena_feed import roomy
 from tools.test_arena_state import H, M, MIN, T0, curve, hour_name, write_tape
 
 pytestmark = pytest.mark.skipif(az.zstd_path() is None, reason="zstd CLI not installed")
@@ -142,7 +143,7 @@ def test_feed_needs_zstd_unless_told_not_to(tmp_path: Path, monkeypatch: pytest.
 
 def test_feed_tick_compacts_a_closed_hour_in_the_background(tmp_path: Path) -> None:
     clock = {"t": H0 + 10_000}
-    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: clock["t"], rpc_url=None)
+    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: clock["t"], rpc_url=None, disk_usage=roomy)
     feed.compactor.start()
     try:
         for i in range(50):
@@ -157,7 +158,7 @@ def test_feed_tick_compacts_a_closed_hour_in_the_background(tmp_path: Path) -> N
         feed.writer.close()
     assert (tmp_path / (hour_name(H0) + ".zst")).exists() and not (tmp_path / hour_name(H0)).exists() and (tmp_path / hour_name(H1)).exists()
     assert st["compaction"]["files"] == 1 and st["compaction"]["enabled"] is True and st["compaction"]["bytes_out"] < st["compaction"]["bytes_in"]
-    assert feed.min_free_pct == 15.0 and af.build_parser().parse_args([]).min_free_pct == 15.0
+    assert feed.min_free_pct == 25.0 and af.build_parser().parse_args([]).min_free_pct == 25.0
 
 
 # ---- the reader follows .jsonl and .jsonl.zst --------------------------------------------------------------------------

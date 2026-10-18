@@ -23,7 +23,9 @@ GAPS follow tools/h5_shadow's rules per program: slot jump (> GAP_SLOTS), silenc
 with a data_loss gap or a missing hb is a bad hour. One hb row per program per minute.
 
 SAFETY. flock(LOCK_EX|LOCK_NB) on <out-dir>/.arena-feed.lock: a second instance exits with code 3 (cancelled MiScusi jobs once left a
-duplicate writer alive). Disk guard: below --min-free-pct free space the feed stops writing rows (gap kind disk_pause / disk_resume).
+duplicate writer alive). DISK RESERVE (DEC-031 rev 2 s3.8, default 25): free space is shutil.disk_usage(out-dir).free / total, checked before every
+hour file opens and at least every 60 s. Below --min-free-pct nothing is written (no row of any type, no .zst), only arena-feed-status.json
+carries a flag; when space allows again ONE gap record (kind and reason disk_reserve) says for how long and how many rows were dropped.
 Memory: bounded dedup sets, no per-pool state here; the hb carries VmRSS. Logs are counts only (no signature, mint or wallet is logged).
 
 Run: python -m tools.arena_feed --out-dir /data/mal/arena/tape   (MiScusi job; see the PR body for the command)
@@ -93,8 +95,8 @@ QUEUE_MAX = 50_000
 ERRORS_MAX_BYTES = 2_000_000
 POOL_MINTS_MAX = 50_000
 NAME_MAX, SYMBOL_MAX = 32, 16
-DISK_CHECK_S = 30.0
-MIN_FREE_PCT_DEFAULT = 15.0
+DISK_CHECK_S = 60.0  # free space is measured at least this often, and before every hour file opens
+MIN_FREE_PCT_DEFAULT = 25.0  # DEC-031 rev 2 s3.8: walk 2 keeps its room; no arena write may take the filesystem's free space below this
 COMPACT_GRACE_MS = 120_000  # a closed hour is compacted this long after its end (a row can reach the writer a little late)
 COMPACT_SCAN_S = 30.0
 COMPACT_TRIES = 3
@@ -243,13 +245,15 @@ class Compactor:
     Ingest never waits for it. A leftover *.zst.tmp from a killed run is removed at start; closed hours left by an earlier run are picked up by
     the first scan. A hour is closed once its end plus COMPACT_GRACE_MS is past (the wall clock) and the writer does not hold it."""
 
-    def __init__(self, out_dir: Path, wall: Callable[[], int] = now_ms, *, grace_ms: int = COMPACT_GRACE_MS, compact: Callable[[Path], dict] = compact_file) -> None:
+    def __init__(self, out_dir: Path, wall: Callable[[], int] = now_ms, *, grace_ms: int = COMPACT_GRACE_MS, compact: Callable[[Path], dict] = compact_file,
+                 allow: Callable[[int], bool] | None = None) -> None:
         self.dir, self.wall, self.grace_ms, self._compact = out_dir, wall, grace_ms, compact
+        self.allow = allow  # allow(extra_bytes) False = writing the .zst could take the disk below the reserve: skip this scan, retry at the next
         self.q: queue.Queue = queue.Queue()
         self.queued: set[str] = set()
         self.tries: dict[str, int] = {}
         self.lock = threading.Lock()
-        self.stats: dict[str, Any] = {"enabled": True, "files": 0, "failed": 0, "bytes_in": 0, "bytes_out": 0, "last_ratio": None, "last_error": None}
+        self.stats: dict[str, Any] = {"enabled": True, "files": 0, "failed": 0, "skipped_disk": 0, "bytes_in": 0, "bytes_out": 0, "last_ratio": None, "last_error": None}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_scan = float("-inf")
@@ -287,6 +291,10 @@ class Compactor:
             except queue.Empty:
                 continue
             try:
+                if self.allow is not None and not self.allow(p.stat().st_size // 2):  # the .zst is about a fifth of the source; half is the margin
+                    with self.lock:
+                        self.stats["skipped_disk"] += 1
+                    continue
                 info = self._compact(p)
                 with self.lock:
                     self.stats["files"] += 1
@@ -328,6 +336,7 @@ class TapeWriter:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._fh = None
         self._name: str | None = None
+        self.before_open: Callable[[], bool] | None = None  # set by the Feed: False = below the disk reserve, do not open the file
         self.latest_t = 0
         self.late_to_current = 0
         self.lines = 0
@@ -350,8 +359,8 @@ class TapeWriter:
             self._fh.close()
             self._fh, self._name = None, None
 
-    def write(self, rec: dict[str, Any], *, force: bool = False) -> None:
-        if self.paused and not force:
+    def write(self, rec: dict[str, Any]) -> None:
+        if self.paused:  # below the disk reserve: no row of any type is written (the Feed writes one gap record when space allows again)
             self.dropped += 1
             return
         t = int(rec["t_recv_ms"])
@@ -361,6 +370,9 @@ class TapeWriter:
             name = self.name_for(self.latest_t)  # a row from an hour that is already compacted goes to the newest hour's file
             self.late_to_current += 1
         if self._name != name:
+            if self.before_open is not None and not self.before_open():  # the disk-reserve check, before an hour file is created or reopened
+                self.dropped += 1
+                return
             if self._fh:
                 self._fh.close()
             self._fh = open(self.dir / name, "a", encoding="utf-8")
@@ -496,7 +508,7 @@ class Feed:
     """The arena feed engine: sources in, tape rows out. One instance per process."""
 
     def __init__(self, out_dir: Path, ws_urls: Sequence[str], sockets: dict[str, int], commitment: str = "confirmed", *, min_free_pct: float = MIN_FREE_PCT_DEFAULT,
-                 stagger_s: float = 3.0, wall: Callable[[], int] = now_ms, disk_usage: Callable[[Path], Any] = shutil.disk_usage,
+                 stagger_s: float = 3.0, wall: Callable[[], int] = now_ms, disk_usage: Callable[[Path], Any] | None = None,
                  rpc_url: str | None = DEFAULT_RPC, fetch: Callable[[str, list[str]], dict] = fetch_pool_mints, compress: bool = True,
                  compact: Callable[[Path], dict] = compact_file) -> None:
         if compress and zstd_path() is None:
@@ -505,9 +517,14 @@ class Feed:
         self.rpc_url, self.fetch = (check_rpc_url(rpc_url) if rpc_url else None), fetch  # rpc_url None = pool resolver off
         self.unresolved: collections.OrderedDict[str, list] = collections.OrderedDict()  # pool -> [first_ms, tries]
         self.out_dir, self.ws_urls, self.sockets, self.commitment = out_dir, [check_ws_url(u) for u in ws_urls], dict(sockets), commitment
-        self.min_free_pct, self.stagger_s, self.wall, self.disk_usage = min_free_pct, stagger_s, wall, disk_usage
+        self.min_free_pct, self.stagger_s, self.wall = min_free_pct, stagger_s, wall
+        self.disk_usage = disk_usage or (lambda p: shutil.disk_usage(p))  # looked up at call time: the walker's own measure
+        self.paused_since_ms: int | None = None
+        self.pause_dropped0 = 0
+        self.pauses = 0
         self.writer = TapeWriter(out_dir)
-        self.compactor = Compactor(out_dir, wall, compact=compact)
+        self.writer.before_open = lambda: self.check_disk(self.wall(), force=True)
+        self.compactor = Compactor(out_dir, wall, compact=compact, allow=self.disk_allows)
         self.errlog = ErrorLog(out_dir / ERRORS_NAME)
         self.started_ms = wall()
         self.watch = {p: ProgWatch(p, self.started_ms) for p in PROG_PROGRAM}
@@ -522,8 +539,8 @@ class Feed:
         self.disk_free_pct: float | None = None
 
     # -- rows
-    def emit(self, rec: dict[str, Any], *, force: bool = False) -> None:
-        self.writer.write(rec, force=force)
+    def emit(self, rec: dict[str, Any]) -> None:
+        self.writer.write(rec)
 
     def meta_row(self, type_: str, **body: Any) -> dict[str, Any]:
         return _row(type_, "all", 0, self.wall(), None, None, body)
@@ -531,7 +548,7 @@ class Feed:
     def handle_notice(self, prog: str, note: RawNotice) -> int:
         """One notice from `prog`'s feed: gap watch first (every notice counts as sign of life), then decode once per signature."""
         for g in self.watch[prog].on_notice(note.slot, note.t_recv_ms):
-            self.emit(g, force=True)
+            self.emit(g)
         if not self.seen.add(note.signature):
             self.counters["cross_dedup_dropped"] += 1
             return 0
@@ -560,12 +577,12 @@ class Feed:
     def tick(self, now: int) -> None:
         for prog, w in self.watch.items():
             for g in w.tick(now):
-                self.emit(g, force=True)
+                self.emit(g)
             src = self.sources.get(prog)
             snap = feed_snapshot(src) if src is not None else None
             if snap is not None:
                 for g in w.note_feed_stats(snap, now):
-                    self.emit(g, force=True)
+                    self.emit(g)
         if self.compress:
             self.writer.release_stale(now)
             self.compactor.scan(now, self.writer.current_name)
@@ -574,22 +591,45 @@ class Feed:
             self.last_hb = time.monotonic()
             self.heartbeat(now)
 
-    def check_disk(self, now: int) -> None:
-        if time.monotonic() - self.last_disk < DISK_CHECK_S and self.disk_free_pct is not None:
-            return
-        self.last_disk = time.monotonic()
+    def measure_free_pct(self) -> float | None:
+        """Free space of the out-dir filesystem the way the walker measures it: shutil.disk_usage(path).free / total, in percent. None if unreadable."""
         try:
             du = self.disk_usage(self.out_dir)
-            self.disk_free_pct = round(100.0 * du.free / du.total, 2)
-        except OSError:
-            return
-        low = self.disk_free_pct < self.min_free_pct
+            return 100.0 * du.free / du.total
+        except (OSError, ZeroDivisionError):
+            return None
+
+    def disk_allows(self, extra_bytes: int = 0) -> bool:
+        """True when writing extra_bytes more would still leave the free space at or above the reserve (the compactor asks before it writes a .zst)."""
+        try:
+            du = self.disk_usage(self.out_dir)
+            return 100.0 * (du.free - extra_bytes) / du.total >= self.min_free_pct
+        except (OSError, ZeroDivisionError):
+            return False
+
+    def check_disk(self, now: int, *, force: bool = False) -> bool:
+        """The disk-reserve check (DEC-031 rev 2 s3.8). Returns True when rows may be written. Run at least every DISK_CHECK_S, and (force=True) by the
+        writer before it opens an hour file. Below the reserve: writing stops and NOTHING is written, not even a gap row; only the status file carries
+        a flag. When space allows again, ONE gap record (kind and reason disk_reserve) says how long and how many rows were dropped."""
+        if not force and self.disk_free_pct is not None and time.monotonic() - self.last_disk < DISK_CHECK_S:
+            return not self.writer.paused
+        self.last_disk = time.monotonic()
+        pct = self.measure_free_pct()
+        if pct is None:  # cannot tell: keep the current state
+            return not self.writer.paused
+        self.disk_free_pct = round(pct, 2)
+        low = pct < self.min_free_pct
         if low and not self.writer.paused:
-            self.emit(_row("gap", "all", 0, now, None, None, {"kind": "disk_pause", "data_loss": True, "free_pct": self.disk_free_pct, "min_free_pct": self.min_free_pct}), force=True)
-            self.writer.paused = True
+            self.writer.paused, self.paused_since_ms, self.pause_dropped0 = True, now, self.writer.dropped
+            self.pauses += 1
         elif not low and self.writer.paused:
             self.writer.paused = False
-            self.emit(_row("gap", "all", 0, now, None, None, {"kind": "disk_resume", "data_loss": True, "free_pct": self.disk_free_pct, "rows_dropped": self.writer.dropped}), force=True)
+            self.emit(_row("gap", "all", 0, now, None, None, {"kind": "disk_reserve", "reason": "disk_reserve", "data_loss": True,
+                                                               "paused_since_ms": self.paused_since_ms, "paused_ms": now - (self.paused_since_ms or now),
+                                                               "rows_dropped": self.writer.dropped - self.pause_dropped0, "free_pct": self.disk_free_pct,
+                                                               "min_free_pct": self.min_free_pct}))
+            self.paused_since_ms = None
+        return not low
 
     def socket_rows(self, prog: str) -> list[dict[str, Any]]:
         src = self.sources.get(prog)
@@ -609,6 +649,8 @@ class Feed:
             "sockets": {p: self.socket_rows(p) for p in PROG_PROGRAM},
             "rows_by_prog_type": {f"{p}:{t}": n for (p, t), n in sorted(w.by_prog_type.items(), key=str)},
             "lines_written": w.lines, "rows_dropped_disk": w.dropped, "writing_paused": w.paused, "disk_free_pct": self.disk_free_pct,
+            "disk_reserve": {"min_free_pct": self.min_free_pct, "free_pct": self.disk_free_pct, "paused": w.paused, "paused_since_ms": self.paused_since_ms,
+                             "pauses": self.pauses, "rows_dropped_total": w.dropped},
             "dedup_dropped": {p: s.stats.dedup_dropped for p, s in self.sources.items()}, "cross_dedup_dropped": self.counters["cross_dedup_dropped"],
             "decode_errors": self.counters["decode_errors"], "counters": dict(self.counters), "errors_logged_bytes": self.errlog.bytes,
             "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(), "rows_late_to_current_hour": w.late_to_current,
@@ -620,7 +662,7 @@ class Feed:
             w = self.watch[prog]
             self.emit(_row("hb", prog, w.hw_slot if w.hw_slot is not None else 0, now, None, None,
                            {"rows_last_min": self.writer.rows_last_minute(prog, now), "notices": w.notices, "gaps": w.gaps,
-                            "sockets_up": [bool(s["up"]) for s in self.socket_rows(prog)], "rss_mb": proc_rss_mb()}), force=True)
+                            "sockets_up": [bool(s["up"]) for s in self.socket_rows(prog)], "rss_mb": proc_rss_mb()}))
         write_status(self.out_dir / STATUS_NAME, self.status(now))
 
     # -- tasks
@@ -628,7 +670,7 @@ class Feed:
         backoff, first = 1.0, True
         while not self.stop.is_set():
             if not first:
-                self.emit(self.watch[prog].feed_restart(self.wall(), "source_restart"), force=True)
+                self.emit(self.watch[prog].feed_restart(self.wall(), "source_restart"))
             first = False
             try:
                 src = build_source(prog, self.ws_urls, self.sockets[prog], self.commitment, self.stagger_s)
@@ -742,13 +784,13 @@ async def run_live(args: argparse.Namespace) -> int:
         loop.add_signal_handler(sig, feed.stop.set)
     feed.emit(feed.meta_row("start", schema=SCHEMA, code_sha=code_sha(), argv=redact_argv(sys.argv[1:]), out_dir=str(out_dir), pid=os.getpid(),
                             sockets=feed.sockets, commitment=args.commitment, keys="none", sends="none", gap_slots=GAP_SLOTS, silence_s=SILENCE_S,
-                            min_free_pct=args.min_free_pct, compress=feed.compress), force=True)
+                            min_free_pct=args.min_free_pct, compress=feed.compress))
     try:
         await feed.run(max_seconds=args.max_seconds)
     finally:
         feed.stop.set()
         now = feed.wall()
-        feed.emit(feed.meta_row("stop", **{k: v for k, v in feed.status(now).items() if k in ("rows_by_prog_type", "gaps", "lines_written", "rows_dropped_disk", "decode_errors")}), force=True)
+        feed.emit(feed.meta_row("stop", **{k: v for k, v in feed.status(now).items() if k in ("rows_by_prog_type", "gaps", "lines_written", "rows_dropped_disk", "decode_errors")}))
         write_status(out_dir / STATUS_NAME, feed.status(now))
         feed.writer.close()
         os.close(lock_fd)
@@ -762,7 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sockets-pumpswap", type=int, default=2, help="redundant logsSubscribe sockets on the PumpSwap program (default 2)")
     ap.add_argument("--sockets-pumpfun", type=int, default=2, help="redundant logsSubscribe sockets on the pump.fun bonding-curve program (default 2)")
     ap.add_argument("--commitment", default="confirmed", choices=("processed", "confirmed", "finalized"))
-    ap.add_argument("--min-free-pct", type=float, default=MIN_FREE_PCT_DEFAULT, help="stop writing rows while the out-dir filesystem has less free space than this (percent; default %(default)s)")
+    ap.add_argument("--min-free-pct", type=float, default=MIN_FREE_PCT_DEFAULT, help="DEC-031 rev 2 s3.8: write nothing while the out-dir filesystem has less free space than this, shutil.disk_usage(path).free / total in percent (default %(default)s)")
     ap.add_argument("--no-compress", action="store_true", help="do not compact closed hours to .jsonl.zst (default: compact in a background thread; needs the zstd CLI)")
     ap.add_argument("--rpc-url", default=DEFAULT_RPC, help="public HTTPS RPC for the pool resolver (default %(default)s); Helius URLs are refused")
     ap.add_argument("--no-resolve", action="store_true", help="turn the pool resolver off (then PumpSwap pools whose CreatePool was not seen keep mint null)")

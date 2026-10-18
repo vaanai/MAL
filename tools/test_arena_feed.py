@@ -30,6 +30,12 @@ MINT = b58encode(bytes([9]) * 32)
 CURVE = b58encode(bytes([5]) * 32)
 USER = b58encode(bytes([3]) * 32)
 SIG = "S" * 88
+DU = collections.namedtuple("DU", "total used free")
+
+
+def roomy(_path) -> DU:
+    """A disk with 50% free: the real one on this host is under the 25% reserve, and these tests are not about the reserve."""
+    return DU(10**12, 5 * 10**11, 5 * 10**11)
 
 
 def note(slot: int, sig: str, logs: list[str], t: int = T0, failed: bool = False) -> RawNotice:
@@ -199,7 +205,8 @@ def test_resolver_fills_mint_and_writes_pool_info(tmp_path: Path) -> None:
         calls.append(list(pools))
         return {p: (MINT, WSOL) for p in pools}
 
-    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: T0, rpc_url="https://api.mainnet-beta.solana.com", fetch=fetch)
+    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: T0, rpc_url="https://api.mainnet-beta.solana.com", fetch=fetch,
+                   disk_usage=roomy)
     assert feed.handle_notice("pumpswap", note(101, "a" * 88, [fixture_line("pumpswap_buy_event.b64")])) == 1
     assert len(feed.unresolved) == 1
     assert asyncio.run(feed.resolve_once()) == 1 and not feed.unresolved and len(calls) == 1
@@ -213,7 +220,8 @@ def test_resolver_fills_mint_and_writes_pool_info(tmp_path: Path) -> None:
 
 
 def test_resolver_gives_up_after_three_misses(tmp_path: Path) -> None:
-    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: T0, rpc_url="https://api.mainnet-beta.solana.com", fetch=lambda u, p: {})
+    feed = af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, wall=lambda: T0, rpc_url="https://api.mainnet-beta.solana.com", fetch=lambda u, p: {},
+                   disk_usage=roomy)
     feed.handle_notice("pumpswap", note(101, "a" * 88, [fixture_line("pumpswap_buy_event.b64")]))
     for _ in range(3):
         asyncio.run(feed.resolve_once())
@@ -274,7 +282,7 @@ def test_end_to_end_two_programs_two_sockets_rollover_gap_and_dedup(tmp_path: Pa
 
     async def go() -> af.Feed:
         feed = af.Feed(tmp_path, ["wss://a.test", "wss://b.test"], {"pumpswap": 2, "pumpfun": 2}, wall=lambda: net.now_ms, stagger_s=0.0, rpc_url=None,
-                       compress=False)  # compaction has its own tests (tools/test_arena_zst.py); here the two hour files must stay as written
+                       compress=False, disk_usage=roomy)  # compaction has its own tests (tools/test_arena_zst.py); here the two hour files must stay as written
         with patch.object(trade_source.websockets, "connect", net.connect), patch.object(trade_source, "time_ns_ms", lambda: net.now_ms):
             await feed.run(max_seconds=1.5)
         feed.writer.close()

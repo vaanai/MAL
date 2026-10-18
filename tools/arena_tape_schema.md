@@ -134,7 +134,7 @@ not to a single row. `tools/arena_state.py` does.
 | `silence` | no notice from the program for more than 20 s (once per episode; the process start counts as the last sign of life) | true | `silent_ms` |
 | `socket_reconnect` | the program's socket reconnect counters advanced | true only when EVERY socket of that program was down or silent at a common instant (`observe.link_state`); false when peers covered the drop | `delta_reconnects`, `per_socket_delta`, `delta_closes`, `delta_rejections`, `delta_errors`, `sockets`, `common_down_ms` |
 | `feed_restart` | the program's source was rebuilt | true | `reason` |
-| `disk_pause` / `disk_resume` | free space fell below / recovered above `--min-free-pct` (rows are dropped while paused) | true | `free_pct`, `rows_dropped` |
+| `disk_reserve` | written once, when free space is back at or above `--min-free-pct` (default 25) after a pause; nothing is written during the pause | true | `reason` (`disk_reserve`), `paused_since_ms`, `paused_ms`, `rows_dropped`, `free_pct`, `min_free_pct` |
 
 An hour with a `data_loss` gap, or with fewer than 60 `hb` rows per program, is a bad hour for any consumer that needs a complete tape.
 
@@ -154,6 +154,10 @@ An hour with a `data_loss` gap, or with fewer than 60 `hb` rows per program, is 
   (14,118 rows) uncompressed, 2,162,633 bytes after `compact_file` (zstd -9): ratio 5.31. At that rate that is about 0.34 GB per hour and 8.27 GB per
   day uncompressed in the open hour, and about 1.56 GB per day once compacted (8.27 / 5.31). Level 3 gave 4.74 and level 19 gave 5.66 on the same
   data. The ratio of a full hour is not measured (a longer file may compress a little better).
-- Disk guard: below `--min-free-pct` (default 15) free space on the out-dir filesystem the feed stops writing rows and writes a `disk_pause` gap.
-  Compaction is not paused by it (it frees space once the new file verifies; the `.zst` and the `.jsonl` coexist for the moment of verification, so
-  about one compacted hour of headroom is needed).
+- Disk reserve (DEC-031 rev 2 s3.8, "Walk 2 keeps its room"): no arena write may take the out-dir filesystem's free space below `--min-free-pct`
+  (default 25). Free space is `shutil.disk_usage(out-dir).free / total`, the way the walk-2 walker measures it. It is checked before every hour
+  file opens and at least every 60 s. Below the reserve the feed writes NO row of any type (`hb`, `start`, `stop` and gap rows included) and opens no
+  file; the only trace is a flag in `arena-feed-status.json` (`writing_paused`, `disk_reserve`). When space allows again it writes ONE gap record,
+  `kind` and `reason` `disk_reserve`, with `paused_since_ms`, `paused_ms`, `rows_dropped`, `free_pct`, `min_free_pct`. Compaction is an arena write
+  too: it runs only while the free space, less half the source file's size (the `.zst` is about a fifth of it), stays at or above the reserve;
+  otherwise the closed hour stays a `.jsonl` and the scan is retried (`compaction.skipped_disk` in the status).
