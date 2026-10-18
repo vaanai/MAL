@@ -565,3 +565,49 @@ def test_the_engine_start_record_must_match_the_registered_sha_and_be_clean(tmp_
     sub.mkdir()
     rows = [dict(r, engine_id="eng2") if r["kind"] == "open" and int(r["position_id"][1:]) >= 50 else r for r in base] + [start_row(engine_id="eng2"), start_row(engine_id="eng3", dirty=True)]
     assert status_of(read(sub, rows)) == "PASS"
+
+
+def test_a_forced_boundary_scores_comparators_over_the_same_attempts_and_never_a_later_one(tmp_path):
+    rows = positions(good_pnls())
+    natural_b = DAY0 + 5 * DAY
+    root, reg = setup(tmp_path, rows)
+    now = DAY0 + 30 * DAY
+    default = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    assert default["boundary_source"] == "natural" and default["read_boundary_ms"] == default["natural_boundary_ms"] == natural_b
+    assert score_all(root, reg, now_ms=now, boundary_ms=None)["bots"]["botA"] == default  # default behaviour is unchanged
+    # equal to the natural instant: allowed, same read, labelled forced
+    same = score_all(root, reg, now_ms=now, boundary_ms=natural_b)["bots"]["botA"]
+    assert same["boundary_source"] == "forced" and same["natural_boundary_ms"] == natural_b
+    assert {k: v for k, v in same.items() if k != "boundary_source"} == {k: v for k, v in default.items() if k != "boundary_source"}
+    # earlier: the attempts decided before it only (days 0-3 = 80 attempts), so n < 100
+    early = score_all(root, reg, now_ms=now, boundary_ms=DAY0 + 4 * DAY)["bots"]["botA"]
+    assert early["boundary_source"] == "forced" and early["read_boundary_ms"] == DAY0 + 4 * DAY and early["natural_boundary_ms"] == natural_b
+    assert early["attempts"] == 80 and early["status"] == "FAIL" and any("n 80 < 100" in m for ms in early["deciding"]["misses"].values() for m in ms)
+    # later than the bot's own outcome-blind instant: refused, by score_bot and by score_all
+    from tools.arena_paper import load_registry
+
+    with pytest.raises(Refused, match="later than the bot's own outcome-blind instant"):
+        score_bot("botA", load_registry(reg), Ledger(root).read_bot("botA"), now, None, 24 * 3_600_000, natural_b + DAY)
+    assert "later than" in score_all(root, reg, now_ms=now, boundary_ms=natural_b + DAY)["bots_refused"]["botA"]
+    # not a 00:00Z instant: refused
+    assert "00:00Z" in score_all(root, reg, now_ms=now, boundary_ms=natural_b - 3_600_000)["bots_refused"]["botA"]
+    # a bot with no outcome-blind instant yet cannot be forced
+    sub = tmp_path / "b"
+    sub.mkdir()
+    root2, reg2 = setup(sub, positions(good_pnls(60)))
+    assert "no outcome-blind instant yet" in score_all(root2, reg2, now_ms=now, boundary_ms=natural_b)["bots_refused"]["botA"]
+
+
+def test_a_forced_read_is_a_comparator_score_and_cannot_be_recorded(tmp_path, capsys):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    now = DAY0 + 30 * DAY
+    v = score_all(root, reg, now_ms=now, boundary_ms=DAY0 + 5 * DAY)["bots"]["botA"]
+    with pytest.raises(Refused, match="comparator score"):
+        record_read(tmp_path / "reads", v)
+    args = ["--ledger-root", root, "--registry", reg, "--bot", "botA", "--now-ms", str(now), "--reads-dir", str(tmp_path / "reads")]
+    assert main(args + ["--boundary-ms", str(DAY0 + 4 * DAY)]) == 0
+    assert "(forced; the bot's own is" in capsys.readouterr().out
+    assert main(args + ["--boundary-ms", str(DAY0 + 5 * DAY), "--record"]) == 3 and not (tmp_path / "reads").exists()
+    assert main(args + ["--boundary-ms", str(DAY0 + 9 * DAY)]) == 0  # refused bots are reported, not a crash
+    assert "later than" in capsys.readouterr().out
+    assert main(args + ["--record"]) == 0 and (tmp_path / "reads" / "botA.json").exists()  # the natural read still records

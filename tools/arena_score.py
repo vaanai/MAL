@@ -221,8 +221,12 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
 
 
 def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None,
-              settle_ms: int = SETTLE_MS) -> dict[str, Any]:
-    out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms)
+              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None) -> dict[str, Any]:
+    """Score one bot. `boundary_ms` (optional) FORCES the read boundary so that comparator arms can be scored over the SAME attempt boundary as the book being read:
+    it must be a 00:00Z instant and must not be later than this bot's own outcome-blind instant (a later one is REFUSED: it would count attempts decided after the
+    point at which the bot's own count was reached). The output says boundary_source "forced" (and keeps natural_boundary_ms) or "natural". A forced read is a
+    comparator score, never the bot's one read: record_read refuses it. Default behaviour is unchanged."""
+    out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms, boundary_ms)
     if out.get("pending") and out["status"] not in ("NOT_DECIDABLE", "NOT_READY"):
         out["preview_status"] = out["status"]
         if "fail_label" in out:
@@ -232,7 +236,8 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     return out
 
 
-def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None, settle_ms: int) -> dict[str, Any]:
+def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None, settle_ms: int,
+               boundary_ms: int | None = None) -> dict[str, Any]:
     tr = trace if trace is not None else []
     config = check_bot_rows(bot_id, reg, rows)
     e = reg[bot_id]
@@ -246,7 +251,17 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
     out["rows_before_clock"] = len(rows) - len(counted)
     # 2. read boundary (outcome-blind: decision timestamps only)
     tr.append("read_boundary")
-    b = blind_read_instant([_entry(r) for r in counted if r["kind"] in ("open", "refused")], e["clock_start_ms"])
+    natural = blind_read_instant([_entry(r) for r in counted if r["kind"] in ("open", "refused")], e["clock_start_ms"])
+    b = natural
+    out["boundary_source"], out["natural_boundary_ms"] = "natural", natural
+    if boundary_ms is not None:
+        if int(boundary_ms) % DAY_MS:
+            raise Refused(f"{bot_id}: a forced boundary must be a 00:00Z instant, got {boundary_ms}")
+        if natural is None:
+            raise Refused(f"{bot_id}: cannot force a boundary: the bot has no outcome-blind instant yet (fewer than 100 attempts over 5 UTC dates)")
+        if int(boundary_ms) > natural:
+            raise Refused(f"{bot_id}: the forced boundary {boundary_ms} is later than the bot's own outcome-blind instant {natural}")
+        b, out["boundary_source"] = int(boundary_ms), "forced"
     out["read_boundary_ms"] = b
     if b is None or now_ms < b:
         out["status"] = "NOT_READY"
@@ -344,6 +359,8 @@ def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
     p = d / f"{res['bot_id']}.json"
     if res["status"] == "NOT_READY":
         raise Refused(f"{res['bot_id']}: not ready, nothing to record")
+    if res.get("boundary_source") == "forced":
+        raise Refused(f"{res['bot_id']}: a forced-boundary read is a comparator score, not the bot's one read: refusing to record it")
     if res.get("pending") or res["status"] == "PENDING":
         raise Refused(f"{res['bot_id']}: {res.get('pending')} covered attempt(s) still pending (inside the settle window): refusing to record a read that may change")
     d.mkdir(parents=True, exist_ok=True)
@@ -357,7 +374,7 @@ def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
 
 # ------------------------------------------------------------------------------------------------------------------------------ all bots
 def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None, now_ms: int | None = None,
-              settle_ms: int = SETTLE_MS) -> dict[str, Any]:
+              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None) -> dict[str, Any]:
     import time
 
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
@@ -369,7 +386,7 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
         if only and b != only:
             continue
         try:
-            bots[b] = score_bot(b, reg, led.read_bot(b), now, None, settle_ms)
+            bots[b] = score_bot(b, reg, led.read_bot(b), now, None, settle_ms, boundary_ms)
             bd = bots[b].get("read_boundary_ms")
             if bd is not None and bots[b]["status"] != "NOT_READY":  # informational file hashes of the covered entry days
                 d0 = reg[b]["clock_start_ms"] // DAY_MS * DAY_MS
@@ -441,7 +458,7 @@ def render(res: Mapping[str, Any]) -> str:
             L.append(f"  reason: {r}")
         if v["status"] == "NOT_READY":
             continue
-        L.append(f"  read boundary {v['read_boundary_ms']}  attempts {v['attempts']}  refused buys {v['refused_buys']}  restart orphans {v['restart_orphans']}  "
+        L.append(f"  read boundary {v['read_boundary_ms']} ({v['boundary_source']}{'; the bot' + chr(39) + 's own is ' + str(v['natural_boundary_ms']) if v['boundary_source'] == 'forced' else ''})  attempts {v['attempts']}  refused buys {v['refused_buys']}  restart orphans {v['restart_orphans']}  "
                  f"late prints {v['late_prints']}  rows before clock (not counted) {v['rows_before_clock']}")
         L.append(f"  pending {v['pending']} (settle window {v['settle_ms'] // 3_600_000} h)  refused: data issues {v['refused_data_issues']}, other {v['refused_other']}  "
                  "counting: the boundary counts attempts; the gate's n is priced trades after exclusions (per stake below)")
@@ -480,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--now-ms", type=int)
     ap.add_argument("--daily-digest", action="store_true", help="print, per bot, the sha256 of --day's decision log and ledger file plus counts (no P&L)")
     ap.add_argument("--day", help="UTC day YYYY-MM-DD for --daily-digest")
+    ap.add_argument("--boundary-ms", type=int, help="force the read boundary (a 00:00Z instant not later than each bot's own outcome-blind instant): a comparator score, never recordable")
     ap.add_argument("--settle-hours", type=float, default=SETTLE_MS / 3_600_000, help="an unclosed attempt younger than this is PENDING, older a restart orphan")
     ap.add_argument("--record", action="store_true", help="write the one read of --bot (refused if already recorded or not ready)")
     a = ap.parse_args(argv)
@@ -493,7 +511,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with open(a.json, "w") as fh:
                 json.dump(dg, fh, indent=1, sort_keys=True, allow_nan=False)
         return 0
-    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms, int(a.settle_hours * 3_600_000))
+    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms, int(a.settle_hours * 3_600_000), a.boundary_ms)
     print(render(res))
     if a.json:
         with open(a.json, "w") as fh:
