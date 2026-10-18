@@ -35,6 +35,13 @@ Any later change to these files is disclosed in every read it touches, and needs
   - `PARITY.json` sha256 `753092b6d0eefad141a318ba8a36a9f1769f62699be961ef27f8c062aa253f98`.
   - Result: 2,520 legs per mode, 0 mismatches.
 
+- **Source exploration-pool hours (quant-proof #719, comment 6246254252).** Every source file is pinned as path@sha256 in `ARTIFACTS/lab/arena-records-2026-10-18-parity-sources.txt`. That is 78 lines: the trades, creates and migrations parquet of each hour.
+  - The engine set comes from `/data/mal/audit-1008/tape` hour `2026-09-10T12`, in ledger row "Fast `[2026-09-09T12, 2026-09-15T12)`". Its owner is the exploration pool: a spent confirmation block, prior owner EXP-011, moved 2026-10-06.
+  - The H5 set comes from the same tape, hours `2026-09-20T00` through `2026-09-21T00`, in ledger row "Fast pre-cut" `2026-09-19T01 → 2026-09-22T00`. Its owner is the exploration pool.
+- **Disclosure: both pinned parity sets are state-level.** They are files of extracted pool states (reserves and spot, entry and exit states), not rows in the arena tape's format, so they depart from DEC-031 §1.4's wording.
+  - Engine: extraction from feed rows is tested separately by the `on_row` replay in `tools/arena_parity.py`, which feeds one global slot-ordered stream through the full engine. It showed 0 state mismatches against an independent l3-simlib extraction on all 300 PumpSwap cases.
+  - H5: the case states come from `tools/h5_shadow.py`'s own replay outcome strips over the raw tape, the same decision path the book runs. That extraction is not separately parity-checked against an independent reader. The md5 proof covers its trigger decisions (pv 72/72), not the strip states.
+
 ## 3. Feed delay d (arena engine books only; the H5 books measure delay per trigger on the chain clock)
 - **Input:**
   - the tape from MiScusi job #1147: mal-fast-0, `$HOME/data/arena/tape-delaymeas-20261018T0402`, 75 min of public RPC, 2 endpoints × 2 sockets;
@@ -48,6 +55,8 @@ Any later change to these files is disclosed in every read it touches, and needs
   - The p90 rule is the manager's ruling, implemented in PR #716 and quant-proof OK.
   - The measurement tool version at `7a319e3` printed the median-based d = 5. The p90 figure and seconds-per-slot in the same JSON give 7. The arithmetic is shown here; the tool on main now prints both.
   - block_time has 1 s resolution, so each delay reads up to 1 s high (conservative).
+- **How d is set:** the arena engine's config sets d = 7 explicitly through `StackConfig(feed_delay_slots=7)` (required, no default). Nothing loads the JSON's own `feed_delay_slots` field, which holds the median-based 5.
+- **File hash, quoted from the log of MiScusi job #1156** (mal-fast-0): `14c29643e9206e18d4c8910d3a61d6a1c4e0e4eef3248ed6d3eed0732e4d3a45  /home/claude/data/arena/feed-delay-20261018.json`.
 - **Re-measurement:** each read re-measures the delay on its own window and says so if it exceeds 7.
 - **Gap census of the same tape** (job #1152): 105 PumpSwap gap rows, all `socket_reconnect` with `data_loss` false. There were 0 data-loss gaps in 75 min.
 
