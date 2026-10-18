@@ -104,6 +104,21 @@ are POST-trade: never compare across venues without checking); q_pv_pre_sol / q_
 q_trigger_sol, q_pv_post_sol and q_fv_post_sol are POST-trade. The start record's code_sha is the git sha of the running checkout (null if
 unknown); DEC-024's phase-2 data clock counts from it.
 
+FRESH FORWARD (--fresh-forward ARENA, hunt20; the forward-paper arena). OFF BY DEFAULT: only the exact token ARENA turns it on (the bx10 pattern: any other
+value counts as off, with a warning), and with the flag absent nothing below runs and every record is byte-identical to a build without it. On:
+(a) --out-dir is required and must resolve (symlinks and '..' removed) to a directory under /data/mal/arena/h5-* or $HOME/data/arena/h5-* (mal-fast-0);
+/srv/mal-h5-shadow, /var/lib/mal-live and $HOME/data/h5-shadow* are refused explicitly, so this mode never feeds the live executor; (b) the CAP-PICK oracle seal
+(EXP-022 withdrawn 2026-10-15; no CAP_PICK_* environment is read) and the START of the H5 Look-2 seal (EXP-024 Am.2 covers v1 from 2026-10-16, Am.9 the arena's
+v2) are not applied: every pool whose s0 is at or after the start record's time gets its trigger, outcome and pool records. The END of the Look-2 seal is applied,
+fail closed: a pool with s0 at or after 2026-11-06T00Z gets decision records only (no outcome, strip or ladder). A pool whose s0 is before the start (block time,
+whole seconds, or receipt time) is never tracked and writes nothing (counter fresh_ignored_pre_start); (c) bx10 / outcome_bx10 (the v2 BOOSTCLOCK exit) is always
+computed and written; (d) the tip union is off (--tip-dir is refused); (e) the start record carries fresh_forward "ARENA", code_sha, start_ms (= its t_ms), dirty
+(H5_DIRTY=1, set by the wrapper under ARENA_H5_ALLOW_DIRTY), endpoints, host and the seals as not applied. Two further changes of the records, this mode only: the
+strip of a triggered pool also carries `buys` ([slot, lamports] of every buy from 50 slots before the first trigger print), so an offline scorer can recompute the
+pressure inputs at any landing slot; and the pool record of a pool that is not the literal plain, RPC-classified class (synthetic, unclassified, classified
+elsewhere) carries no min_q_pv_sol / min_q_fv_sol / pv_fv_disagree_sells (DEC-031 s3.5 embargo, until 2026-11-14T00Z). The rule, the synthetic-pool gate and the
+decision logic are those of the default mode. A window that starts at process start is out-of-sample by construction.
+
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
 against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
 
@@ -209,6 +224,7 @@ SPS_MIN_SPAN_S = 8  # bootstrap: ready about 10 s after the first PumpSwap print
 SPS_MIN_POINTS = 8
 VARIANTS = ("pv", "fv")
 STRIP_MAX_ROWS = 20_000  # per triggered pool; a longer strip is cut and flagged
+FRESH_BUYS_BACK_SLOTS = 50  # fresh forward: strip.buys reach this many slots before the first trigger print (the pressure window is 2 s, at most ~14 slots)
 # CAP-PICK seal: the counted walk-2 window starts 2026-10-16T01:00Z. Inside it, a pool's outcome states and price strip are withheld unless a
 # pick oracle says the mint is NOT a pick. Fail closed. Decision-time records (trigger) are unaffected.
 SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
@@ -222,6 +238,14 @@ H5_LOOK2_END_MS = int(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc).timestamp
 H5_LOOK2_AMENDMENT_REF = "EXP-024-Am2"  # the only value --h5-look2-observed accepts
 BX10_ENABLE_REF = "EXP-026"  # the only value that turns the report-only bx10 exit variant on (--bx10-enable / H5_BX10_ENABLE); anything else is off
 H5_LOOK2_SEAL_REASON = "h5_look2_seal"
+# FRESH FORWARD (arena, hunt20). The only value that turns --fresh-forward on; anything else is off (like BX10_ENABLE_REF).
+FRESH_FORWARD_REF = "ARENA"
+ARENA_ROOT = "/data/mal/arena"  # --out-dir must resolve to a directory under ARENA_ROOT/h5-* ...
+ARENA_HOME_SUBDIR = ("data", "arena")  # ... or under $HOME/data/arena/h5-* (mal-fast-0, where the H5 arena book runs)
+ARENA_OUT_PREFIX = "h5-"
+# Never an out dir of a fresh-forward run: the live executor's feed (the bind to the fast-0 shadow dir) and the live ledger. $HOME/data/h5-shadow* is
+# added at call time (check_fresh_out_dir): the default shadow dir of this tool and of scripts/research/h5-shadow.sh.
+FRESH_FORBIDDEN_OUT = ("/srv/mal-h5-shadow", "/var/lib/mal-live")
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
 SETTLE_SLOTS = 2  # a print this close to the high-water slot may still be waiting for a predecessor that is in flight
@@ -1151,6 +1175,7 @@ class Engine:
         h5_look2_observed: bool = False,  # True only with the declared observation of EXP-024 Amendment 2 (run_live validates the reference)
         classifier: Any = None,  # synthetic-migration class source: .lookup(mint, s0) -> (syn, src). None = nothing is classified: every trigger is excluded
         bx10_enabled: bool = False,  # True only with the declared flag (bx10_flag(); EXP-026). Off: no outcome_bx10 record, no bx10 computation, no counter
+        fresh_start_ms: int | None = None,  # fresh forward (--fresh-forward ARENA): a pool whose s0 is before this instant is never tracked. None = off
     ) -> None:
         if boost_mode not in ("auto", "pda", "behavioural"):
             raise ValueError("boost_mode")
@@ -1163,6 +1188,7 @@ class Engine:
         self.suppress_outcome, self.seal_start_ms = suppress_outcome, seal_start_ms
         self.pick_oracle = pick_oracle
         self.bx10_enabled = bx10_enabled is True  # strictly the boolean True: a string or a number never turns it on
+        self.fresh_start_ms = None if fresh_start_ms is None else int(fresh_start_ms)
         self.h5_look2_start_ms, self.h5_look2_observed = h5_look2_start_ms, bool(h5_look2_observed)
         self.pools: dict[str, Pool] = {}
         self.announced: collections.OrderedDict[str, tuple[int, int, str | None, str | None]] = collections.OrderedDict()
@@ -1388,6 +1414,11 @@ class Engine:
                 self.emit({"type": "reject", "reason": "quote_mint", "pool": pool, "slot": slot, "base_mint": ann[2], "quote_mint": ann[3],
                            "wsol_expected": WSOL_MINT, "v": int(v_raw)})
             return None
+        if self.fresh_start_ms is not None:  # fresh forward: only a pool whose s0 is at or after the process start exists; no record of any kind for the others
+            ts0 = row.get("event_ts")
+            if (int(ts0) * 1000 if ts0 else recv_ms) < self.fresh_start_ms or recv_ms < self.fresh_start_ms:  # block time is whole seconds: the start second counts as before
+                self.counters["fresh_ignored_pre_start"] += 1
+                return None
         mint = ann[2] if ann else row.get("mint")
         first = Pr(recv_ms=recv_ms, ts=row.get("event_ts"))
         try:
@@ -2175,9 +2206,14 @@ class Engine:
         rows = [[r.slot, int(round(r.q_pre("pv", p.v0))), int(round(r.q_pre("fv", p.v0))), int(r.b)] for r in prints[:STRIP_MAX_ROWS]]
         last = p.prints[-1]
         self.counters["strips"] += 1
+        extra: dict[str, Any] = {}
+        if self.fresh_start_ms is not None:  # fresh forward only: the buys (slot, lamports) from FRESH_BUYS_BACK_SLOTS before the first trigger print on, so an
+            # offline scorer can recompute the pressure inputs (same-slot buys, buy lamports in the 2 s window) at any landing slot; the default strip is unchanged
+            buys = [[r.slot, int(r.sol)] for r in p.prints if r.buy and r.slot >= start - FRESH_BUYS_BACK_SLOTS]
+            extra = {"buys_cols": ["slot", "sol_lamports"], "buys": buys[:STRIP_MAX_ROWS], "buys_truncated": len(buys) > STRIP_MAX_ROWS}
         self.emit({**base, "sps_path": self._sps_path(p), "sps_trigger": {v: r["sps"] for v, r in real.items()}, "n_prints": len(p.prints),
                    "cols": ["slot", "q_pv_pre", "q_fv_pre", "base_pre"], "rows": rows, "truncated": len(prints) > STRIP_MAX_ROWS,
-                   "post_last": [last.slot, int(round(last.q_post("pv", p.v0))), int(round(last.q_post("fv", p.v0))), int(last.b_post)]})
+                   "post_last": [last.slot, int(round(last.q_post("pv", p.v0))), int(round(last.q_post("fv", p.v0))), int(last.b_post)], **extra})
 
     # ---- pool close -----------------------------------------------------------------------------------------
     def _close_due(self, now_ms_: int) -> None:
@@ -2246,6 +2282,13 @@ class Engine:
             "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
+        if self.fresh_start_ms is not None and not (syn is False and syn_src == "rpc"):
+            # fresh forward, synthetic-class embargo (DEC-031 s3.5, EXP-024 Am.4 A3/D1): the pool record of a pool that is not the literal plain, RPC-classified
+            # class (synthetic, unclassified, or classified by another source) carries no post-s0 price field until the embargo ends (2026-11-14T00Z)
+            rec["min_q_pv_sol"] = None
+            rec["min_q_fv_sol"] = None
+            rec["pv_fv_disagree_sells"] = None
+            rec["price_fields_withheld"] = "synthetic_class_embargo"
         if self.tip is not None and not h5s:  # report-only. Never on a CAP-PICK-sealed pool's record (that branch returned above) and never on an
             rec.update(self._union_close_fields(p))  # H5 Look-2-sealed one (its record stays exactly as without the union: the unmatched lists
             # carry signatures / slots of prints after the trigger). The sealed pool's union is only dropped with the pool.
@@ -3074,6 +3117,39 @@ def bx10_flag(ref: str | None) -> bool:
     return ref == BX10_ENABLE_REF
 
 
+def fresh_forward_flag(ref: str | None) -> bool:
+    """True only for the literal FRESH_FORWARD_REF ("ARENA"). None, an empty string and every other value, "arena" and "1" included, count as off (the
+    bx10 pattern): the fresh-forward arena mode is a declared flag, not a truthy switch, and a wrong value just leaves the default behaviour."""
+    return ref == FRESH_FORWARD_REF
+
+
+def check_fresh_out_dir(path: str, *, home: str | None = None) -> Path:
+    """The out dir of a fresh-forward run. It must resolve (symlinks and '..' removed) to a directory under ARENA_ROOT/h5-*, and the unresolved
+    path must too. Refused first and explicitly: /srv/mal-h5-shadow (the live executor's feed), /var/lib/mal-live and $HOME/data/h5-shadow*, whether
+    spelled directly or reached through a symlink. This mode never feeds the live executor. Raises ValueError."""
+    if not path or ".." in Path(path).parts:
+        raise ValueError(f"--fresh-forward out dir {path!r} is empty or contains '..'")
+    home = home or os.path.expanduser("~")
+    forbidden = [(p, "live shadow / executor path") for p in FRESH_FORBIDDEN_OUT]
+    forbidden.append((os.path.join(home, "data", "h5-shadow"), "$HOME/data/h5-shadow*"))
+    raw, real = os.path.abspath(path), os.path.realpath(path)
+    for cand in (raw, real):
+        for bad, why in forbidden:
+            for b in {bad, os.path.realpath(bad)}:
+                if cand == b or cand.startswith(b + "/") or (b.endswith("h5-shadow") and cand.startswith(b)):  # the last clause: h5-shadow-<anything>
+                    raise ValueError(f"--fresh-forward refuses out dir {path!r} ({why}): this mode never feeds the live executor")
+    roots = [os.path.realpath(ARENA_ROOT), os.path.realpath(os.path.join(home, *ARENA_HOME_SUBDIR))]  # /data/mal/arena (research-0), $HOME/data/arena (mal-fast-0)
+    for cand in (raw, real):
+        ok = False
+        for root in roots:
+            rel = os.path.relpath(cand, root)
+            if rel != "." and not rel.startswith("..") and rel.split(os.sep)[0].startswith(ARENA_OUT_PREFIX):
+                ok = True
+        if not ok:
+            raise ValueError(f"--fresh-forward out dir {path!r} must resolve under {ARENA_ROOT}/{ARENA_OUT_PREFIX}* or {home}/{'/'.join(ARENA_HOME_SUBDIR)}/{ARENA_OUT_PREFIX}* (got {cand!r})")
+    return Path(real)
+
+
 def look2_start_info(look2_ref: str | None) -> dict:
     """The H5 Look-2 seal state, as the `start` record logs it."""
     return {"reason": H5_LOOK2_SEAL_REASON, "start_ms": H5_LOOK2_START_MS, "start": iso_from_ms(H5_LOOK2_START_MS),
@@ -3101,26 +3177,48 @@ def code_sha(environ: dict[str, str] | None = None, *, git_dir: str | Path | Non
 
 
 async def run_live(args: argparse.Namespace) -> int:
-    out_dir = check_out_dir(args.out_dir or DEFAULT_OUT_DIR)
+    fresh_ref = getattr(args, "fresh_forward", None)
+    fresh = fresh_forward_flag(fresh_ref)
+    if fresh_ref and not fresh:
+        log.warning("--fresh-forward %r is not %r: fresh forward stays OFF (default behaviour, seals applied)", fresh_ref, FRESH_FORWARD_REF)
+    if fresh:  # the arena mode: its own out dir, never the live executor's feed; checked before anything is created
+        out_dir = check_fresh_out_dir(args.out_dir or "")
+    else:
+        out_dir = check_out_dir(args.out_dir or DEFAULT_OUT_DIR)
+    tip_dir = getattr(args, "tip_dir", None)
+    if fresh and getattr(args, "h5_look2_observed", None) is not None:
+        raise ValueError("--h5-look2-observed does not apply with --fresh-forward (neither seal is applied)")
+    if fresh and tip_dir:
+        raise ValueError("--tip-dir does not apply with --fresh-forward (the tip union is off)")
     sink = JsonlSink(out_dir)
     errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     look2_ref = check_look2_ref(getattr(args, "h5_look2_observed", None))
     bx10_ref = getattr(args, "bx10_enable", None)
-    bx10_on = bx10_flag(bx10_ref)
-    if bx10_ref and not bx10_on:
+    bx10_on = True if fresh else bx10_flag(bx10_ref)  # fresh forward always writes outcome_bx10
+    if bx10_ref and not bx10_flag(bx10_ref) and not fresh:
         log.warning("--bx10-enable %r is not %r: bx10 stays OFF", bx10_ref, BX10_ENABLE_REF)
     rpc_url = check_rpc_url(getattr(args, "rpc_url", None) or DEFAULT_RPC)
     classifier = SynClassifier()
     fallback = RpcFallback(classifier, rpc_url)
-    pick_oracle, seal_info = cap_pick_oracle_from_env()
-    if pick_oracle is None:
-        log.warning("CAP-PICK pick oracle not configured (%s): every pool with s0 from %s is sealed (fail closed); set CAP_PICK_LIVE and "
-                    "CAP_PICK_FINAL_MARKER", seal_info.get("why"), iso_from_ms(SEAL_START_MS))
-    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, pick_oracle=pick_oracle,
-                    h5_look2_observed=look2_ref is not None, classifier=classifier, bx10_enabled=bx10_on)
+    start_ms: int | None = None
+    if fresh:
+        # The CAP-PICK oracle seal does not apply (EXP-022 was withdrawn 2026-10-15; no pick oracle is read). The H5 Look-2 seal's START does not apply (EXP-024 Am.2
+        # covers v1 from 2026-10-16, and Am.9 the arena's v2), but its END does, fail closed: a pool with s0 at or after H5_LOOK2_END_MS (2026-11-06T00Z) gets its
+        # decision records only, no outcome, strip or ladder, because no declared observation covers it. A fresh window that starts at this instant is out-of-sample
+        # by construction: a pool whose s0 is before it is never tracked.
+        seal_info = {"oracle": "not_applied", "why": "fresh_forward_arena"}
+        start_ms = now_ms()
+        engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=None, pick_oracle=None, seal_start_ms=None, h5_look2_start_ms=H5_LOOK2_END_MS,
+                        h5_look2_observed=False, classifier=classifier, bx10_enabled=True, fresh_start_ms=start_ms)
+    else:
+        pick_oracle, seal_info = cap_pick_oracle_from_env()
+        if pick_oracle is None:
+            log.warning("CAP-PICK pick oracle not configured (%s): every pool with s0 from %s is sealed (fail closed); set CAP_PICK_LIVE and "
+                        "CAP_PICK_FINAL_MARKER", seal_info.get("why"), iso_from_ms(SEAL_START_MS))
+        engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, pick_oracle=pick_oracle,
+                        h5_look2_observed=look2_ref is not None, classifier=classifier, bx10_enabled=bx10_on)
     engine.syn_request = fallback.request
     engine.on_error = errlog.log
-    tip_dir = getattr(args, "tip_dir", None)
     if tip_dir:  # report-only tip union (phase 0); off = byte-identical records
         engine.tip = TipTail(tip_dir, engine.on_tip_row, engine.tip_interested, wall=engine.wall)
     if look2_ref is not None:
@@ -3136,13 +3234,21 @@ async def run_live(args: argparse.Namespace) -> int:
         source_ref["source"] = build_source(args.ws_url or [], args.sockets, args.commitment)
         return source_ref["source"]
 
-    engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "code_sha": code_sha(), "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
+    start_rec = {"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "code_sha": code_sha(), "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, **seal_info},
                  "h5_look2": look2_start_info(look2_ref),
                  "bx10": bx10_on,
                  "synthetic_gate": {"rule": "no buy on a synthetic or unclassified pool (EXP-024 Am.4)", "sources": ["ws", "rpc"], "ws_program": "pump.fun logsSubscribe",
-                                    "syn_sockets": getattr(args, "syn_sockets", 1), "rpc": "public getSignaturesForAddress+getTransaction", "rpc_attempt_delays_s": list(RPC_ATTEMPT_DELAYS_S)}})
+                                    "syn_sockets": getattr(args, "syn_sockets", 1), "rpc": "public getSignaturesForAddress+getTransaction", "rpc_attempt_delays_s": list(RPC_ATTEMPT_DELAYS_S)}}
+    if fresh:  # the only change to the start record, and only in this mode: the flag, the start instant, and the seals as NOT applied
+        start_rec.update({"t_ms": start_ms, "start_ms": start_ms, "fresh_forward": FRESH_FORWARD_REF,
+                          "seal": {"reason": SEAL_REASON, "start_ms": None, "applied": False, **seal_info},
+                          "h5_look2": {"reason": H5_LOOK2_SEAL_REASON, "start_ms": None, "applied": False, "observed": False, "amendment_ref": None,
+                                       "end_only_ms": H5_LOOK2_END_MS, "end_only": iso_from_ms(H5_LOOK2_END_MS)},
+                          "tip_union": "off", "dirty": os.environ.get("H5_DIRTY") == "1",  # the wrapper sets H5_DIRTY=1 under ARENA_H5_ALLOW_DIRTY: code_sha does not name the code
+                          "endpoints": sorted({_strip_url(u) for u in (args.ws_url or [])}) or ["default"], "host": os.uname().nodename})
+    engine.emit(start_rec)
 
     def probe() -> tuple[int, dict] | None:
         src = source_ref.get("source")
@@ -3375,6 +3481,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--bx10-enable", default=None, metavar="EXP-026",
                     help=f"write the report-only bx10 exit variant (outcome_bx10 records). Off by default; only the exact value {BX10_ENABLE_REF} turns it on, "
                          "any other value counts as off. The shell wrapper passes H5_BX10_ENABLE through when it is set.")
+    ap.add_argument("--fresh-forward", default=None, metavar="ARENA",
+                    help=f"live: the forward-paper arena mode (hunt20). Off by default; only the exact value {FRESH_FORWARD_REF} turns it on, any other value counts as off. "
+                         f"On: --out-dir is required and must resolve under {ARENA_ROOT}/{ARENA_OUT_PREFIX}* (/srv/mal-h5-shadow and $HOME/data/h5-shadow* are refused; this mode never "
+                         "feeds the live executor); neither the H5 Look-2 seal nor the CAP-PICK oracle seal is applied; pools with s0 before the process start are ignored, every "
+                         "later pool gets its trigger, outcome, outcome_bx10 and pool records; the tip union is off; the start record carries fresh_forward, code_sha and start_ms.")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--tip-dir", default=None, help="live: REPORT-ONLY tip union (base_breaks_unresolved_settled_union, base_union, "
                     "base_unmatched_*) from this tip-follower dir, e.g. " + TIP_DIR_DEFAULT + "; off when not given (records byte-identical)")
@@ -3392,6 +3503,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
+    if fresh_forward_flag(args.fresh_forward):  # the arena mode: its own checks, before anything else; flag absent = none of this runs
+        if args.replay_tape:
+            ap.error("--fresh-forward applies to the live feed only")
+        if args.h5_look2_observed is not None:
+            ap.error("--h5-look2-observed does not apply with --fresh-forward (neither seal is applied)")
+        if args.tip_dir:
+            ap.error("--tip-dir does not apply with --fresh-forward (the tip union is off)")
+        try:
+            check_fresh_out_dir(args.out_dir or "")
+        except ValueError as e:
+            ap.error(str(e))
     if args.out_dir:
         try:
             check_out_dir(args.out_dir)
