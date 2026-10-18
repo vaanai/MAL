@@ -8,6 +8,11 @@ and gates nothing itself: every cell below is an arena_score cell.
     python -m tools.hv4_read learning                                 (D14 only)
     python -m tools.hv4_read table [--json F]                         (assembles the recorded reads; computes nothing new)
 
+ONE STORE OF RECORDED GATE READS (manager ruling on #718): arena_score's record (`record_read`, `<arena-reads-dir>/<bot_id>.json`, default /data/mal/arena/reads).
+`book` records the gate read THERE through `arena_score.record_read` (or, when `arena_score --record` already ran, verifies that the stored read equals the fresh
+scoring and uses it), and the learning screen rule reads that store. The out-dir holds only comparison outputs (`<ID>.hv4.json`), `<ID>.result.json` and
+`<ID>.console.json`; it never holds a record of a gate read.
+
 READS (each at a pre-declared instant, each written ONCE, a second run is refused, an early run is refused and writes nothing):
   book      one GATE read per bot_id, at the DEC-031 outcome-blind instant B (arena_score.blind_read_instant, decision timestamps only: a corrupt or unreadable
             outcome line cannot block or move it). DEC-031 governs: DESIGN section 8's day-5/7/10/14 looks are superseded for gate purposes. Output: the
@@ -39,7 +44,7 @@ LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and
   SCREEN RULE (quant-proof's ruling on forced boundaries, #716 comment 6245917937). D14 is later than an arm's own outcome-blind instant B_own whenever the arm
     reached 100 attempts over 5 dates earlier. Attempts after B_own are the arm's CONFIRMATION window if its screen PASSED, so the learning read never peeks at them:
       * B_own is None or not before D14: the cut is not later than the arm's own instant; the arm is read.
-      * B_own before D14 and the arm's own book read (`<out-dir>/reads/<arm>.json`) is recorded as FAIL (including "FAIL (n < 100)"), NOT_DECIDABLE or REPORT_ONLY:
+      * B_own before D14 and the arm's own book read (arena_score's record, `<arena-reads-dir>/<arm>.json`) is recorded as FAIL (including "FAIL (n < 100)"), NOT_DECIDABLE or REPORT_ONLY:
         a later boundary is allowed; the arm is read to D14.
       * recorded as PASS: the arm is NOT read (its rows are not even loaded) and the learning read is NOT_DECIDABLE. For a supporting arm (BIG, BST) only that
         supporting entry is NOT_DECIDABLE.
@@ -75,6 +80,7 @@ from tools.hv4_arms import ARMS
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = "hv4_read_v1"
 OUT_DIR = "/data/mal/arena/hv4-reads"
+ARENA_READS_DIR = AS.READS_DIR  # THE store of recorded gate reads (arena_score.record_read); hv4_read keeps no record of its own
 DAY_MS = 86_400_000
 WINDOW_DAYS = 14
 LEARN_LOOK_OFFSET_MS = WINDOW_DAYS * DAY_MS + 13 * 3_600_000  # T0 + 14 d + 13:00Z
@@ -594,19 +600,38 @@ def _write_once(path: Path, obj: Any, pretty: bool = False) -> None:
 
 
 def _guard_unwritten(out_dir: Path, name: str) -> None:
-    for suffix in (".json", ".result.json", ".console.json"):
+    for suffix in (".hv4.json", ".result.json", ".console.json"):
         if (out_dir / "reads" / f"{name}{suffix}").exists():
             raise Refused(f"{name}: already recorded at {out_dir / 'reads' / (name + suffix)}: a second run is refused")
 
 
-def _inputs(registry: str, ledger_root: str) -> dict[str, Any]:
-    return {"registry_sha256": _sha(Path(registry)), "ledger_root": str(ledger_root), "files_sha256": {f: _sha(REPO_ROOT / f) for f in FILES_PINNED},
+def _inputs(registry: str, ledger_root: str, reads_dir: str) -> dict[str, Any]:
+    return {"registry_sha256": _sha(Path(registry)), "ledger_root": str(ledger_root), "arena_reads_dir": str(reads_dir), "files_sha256": {f: _sha(REPO_ROOT / f) for f in FILES_PINNED},
             "note": "the pinned files' sha256 at the read (DEC-031 section 1.4); a difference from the records PR is disclosed, not hidden"}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the book read
-def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, null_dir: str | None = None,
-              now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS, n_seeds: int = NULL_SEEDS, command: str = "") -> dict[str, Any]:
+GATE_KEYS = ("status", "fail_label", "read_boundary_ms", "attempts", "books")
+
+
+def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any]) -> dict[str, Any]:
+    """Put the gate read in arena_score's store: `arena_score.record_read` (write-once). If `arena_score --record` already stored this bot_id, the stored read must equal
+    the fresh scoring on the gate keys (status, label, boundary, attempts, every book and cell), else the read is refused; the stored file is never touched."""
+    p = Path(reads_dir) / f"{res['bot_id']}.json"
+    source = "recorded"
+    if p.exists():
+        old = json.loads(p.read_text())
+        diff = [k for k in GATE_KEYS if canon(old.get(k)) != canon(res.get(k))]
+        if diff:
+            raise Refused(f"{res['bot_id']}: the read already stored at {p} differs from the fresh scoring on {diff}: refused (the ledger changed since it was recorded?)")
+        source = "existing"
+    else:
+        AS.record_read(reads_dir, res)
+    return {"path": str(p), "sha256": _sha(p), "source": source}
+
+
+def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR,
+              null_dir: str | None = None, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS, n_seeds: int = NULL_SEEDS, command: str = "") -> dict[str, Any]:
     now = _now(now_ms)
     reg = load_registry(registry)
     if bot_id not in ARMS:
@@ -651,35 +676,36 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
             "not_proposed_for_canary": bool(main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
             "disclosure": disclosure(reg, now, n_books, cells_read, ebd), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
-            "inputs": _inputs(registry, ledger_root), "arena_score_read": main, "arena_score_as_sized": asz}
+            "inputs": _inputs(registry, ledger_root, reads_dir), "arena_score_read": main, "arena_score_as_sized": asz}
     dec_books = main.get("books", {}).get(PRIMARY_KEY, {}).get("cells", {})
     read["_deciding_cells"] = dec_books
     rv1 = result_v1(read, command=command or f"python -m tools.hv4_read book --bot {bot_id}", created_utc=read["created_utc"], git_sha=_git_sha())
     con = console_rows(read, read["created_utc"])
     del read["_deciding_cells"]
-    _write_once(od / "reads" / f"{bot_id}.json", read)
+    read["arena_record"] = record_gate_read(reads_dir, main)  # the ONE store; everything above is computed first, so a refusal leaves nothing behind
+    _write_once(od / "reads" / f"{bot_id}.hv4.json", {k: v for k, v in read.items() if k != "arena_score_read"})  # a comparison output, not the record
     _write_once(od / "reads" / f"{bot_id}.result.json", rv1, pretty=True)
     _write_once(od / "reads" / f"{bot_id}.console.json", con, pretty=True)
     return read
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read (D14)
-def recorded_status(out_dir: Path, arm: str) -> str | None:
-    """arena_status of the arm's recorded book read in this tool's out-dir (None if it has none)."""
-    p = out_dir / "reads" / f"{arm}.json"
-    return json.loads(p.read_text())["arena_status"] if p.exists() else None
+def recorded_status(reads_dir: str | Path, arm: str) -> str | None:
+    """`status` of the arm's gate read in arena_score's store (None if it has none). The out-dir is never consulted."""
+    p = Path(reads_dir) / f"{arm}.json"
+    return json.loads(p.read_text())["status"] if p.exists() else None
 
 
-def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str, out_dir: Path, cut_ms: int) -> dict[str, Any]:
+def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str, reads_dir: str | Path, cut_ms: int) -> dict[str, Any]:
     """The SCREEN RULE for one learning arm (module docstring). Uses decision timestamps only (arena_score.load_decisions) and the arm's recorded status."""
     own = AS.blind_read_instant(AS.load_decisions(ledger_root, arm), reg[arm]["clock_start_ms"])
     out: dict[str, Any] = {"own_instant_ms": own, "cut_ms": cut_ms, "recorded_status": None, "rule": "not_later", "reason": None}
     if own is None or own >= cut_ms:
         return out
-    st = recorded_status(out_dir, arm)
+    st = recorded_status(reads_dir, arm)
     out["recorded_status"] = st
     if st is None:
-        out["rule"], out["reason"] = "unrecorded", f"its own instant {own} is before D14 and its book read is not recorded: a later boundary is refused"
+        out["rule"], out["reason"] = "unrecorded", f"its own instant {own} is before D14 and its gate read is not in arena_score's store: a later boundary is refused"
     elif st == "PASS":
         out["rule"], out["reason"] = "passed", f"it PASSED its screen at {own}: its attempts after that are its confirmation window and are not read"
     else:
@@ -688,7 +714,7 @@ def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str,
 
 
 
-def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
+def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
                   command: str = "") -> dict[str, Any]:
     now = _now(now_ms)
     reg = load_registry(registry)
@@ -703,10 +729,10 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     led = Ledger(ledger_root)
     days = calendar_days(t0, cut)
     learn_arms = [a for a in ARMS if ARMS[a].role in ("L", "F", "P")]
-    screens = {a: arm_screen(a, reg, ledger_root, od, cut) for a in learn_arms}
+    screens = {a: arm_screen(a, reg, ledger_root, reads_dir, cut) for a in learn_arms}
     missing = [a for a, sc in screens.items() if sc["rule"] == "unrecorded" and a.startswith("CON-")]
     if missing:
-        raise Refused(f"learning: the book read of {missing} is not recorded, and each reached its own instant before D14: record it first (SCREEN RULE); refused, nothing written")
+        raise Refused(f"learning: the gate read of {missing} is not in arena_score's store ({reads_dir}), and each reached its own instant before D14: record it first (SCREEN RULE); refused, nothing written")
     res = {}
     for a in learn_arms:
         sc = screens[a]
@@ -744,35 +770,37 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     read = {"schema": SCHEMA, "read": "learning", "bot_id": None, "instant_ms": cut, "look_ms": look, "now_ms": now, "created_utc": _created(now), "clock_start_ms": t0, "t0_ms": t0,
             "window_days": WINDOW_DAYS, "status": out["status"], "cells": cons, "learning": out, "v1": None, "v2": None,
             "disclosure": disclosure(reg, now, n_books, n_books * len(AS.MODELS) * len(AS.LATS), ebd), "tries": {"variant_n": 1, "of_m": len(reg)},
-            "inputs": _inputs(registry, ledger_root), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
+            "inputs": _inputs(registry, ledger_root, reads_dir), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
     read["_deciding_cells"] = (res["CON-L"].get("books") or {}).get(PRIMARY_KEY, {}).get("cells", {})
     rv1 = result_v1(read, command=command or "python -m tools.hv4_read learning", created_utc=read["created_utc"], git_sha=_git_sha())
     con = console_rows(read, read["created_utc"])
     del read["_deciding_cells"]
-    _write_once(od / "reads" / "LEARNING.json", read)
+    _write_once(od / "reads" / "LEARNING.hv4.json", read)
     _write_once(od / "reads" / "LEARNING.result.json", rv1, pretty=True)
     _write_once(od / "reads" / "LEARNING.console.json", con, pretty=True)
     return read
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the table (assembles recorded reads only)
-def build_table(out_dir: str = OUT_DIR, registry: str = REGISTRY_PATH, now_ms: int | None = None) -> dict[str, Any]:
+def build_table(out_dir: str = OUT_DIR, registry: str = REGISTRY_PATH, now_ms: int | None = None, reads_dir: str = ARENA_READS_DIR) -> dict[str, Any]:
     now = _now(now_ms)
     reg = load_registry(registry)
     rd = Path(out_dir) / "reads"
     recs: dict[str, Any] = {}
     for a in ARMS:
-        p = rd / f"{a}.json"
+        p = rd / f"{a}.hv4.json"
         if p.exists():
             recs[a] = json.loads(p.read_text())
+    store = {a: recorded_status(reads_dir, a) for a in ARMS}  # the gate status of an arm is arena_score's stored one; a disagreement is flagged, not smoothed over
     rows = []
     for arm, stake in gate_cells():
         c = next((x for x in (recs.get(arm) or {}).get("cells", []) if x["arm"] == arm and x["stake"] == stake), None)
-        rows.append({"arm": arm, "stake": stake, "status": c["status"] if c else "NOT_READ_YET", "decides": stake == PRIMARY_STAKE,
-                     "ex_best_day_min_sol": c["ex_best_day_min_sol"] if c else None, "instant_ms": recs[arm]["instant_ms"] if arm in recs else None})
+        bad = arm in recs and store[arm] != recs[arm]["arena_status"]
+        rows.append({"arm": arm, "stake": stake, "status": "STORE_MISMATCH" if bad else (c["status"] if c else "NOT_READ_YET"), "decides": stake == PRIMARY_STAKE,
+                     "store_status": store[arm], "ex_best_day_min_sol": c["ex_best_day_min_sol"] if c else None, "instant_ms": recs[arm]["instant_ms"] if arm in recs else None})
     cells_read = sum(1 for r in rows if r["status"] != "NOT_READ_YET")
     ebd = {f"{r['arm']}@{r['stake']}": r["ex_best_day_min_sol"] for r in rows if r["status"] != "NOT_READ_YET"}
-    learn = (rd / "LEARNING.json")
+    learn = (rd / "LEARNING.hv4.json")
     return {"cells": rows, "cell_count": len(rows), "arms_read": sorted(recs), "arms_not_read": [a for a in ARMS if a not in recs],
             "learning": json.loads(learn.read_text())["learning"]["status"] if learn.exists() else "NOT_READ_YET",
             "disclosure": disclosure(reg, now, len(recs), cells_read, ebd)}
@@ -792,7 +820,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--bot")
     ap.add_argument("--ledger-root", default=LEDGER_ROOT)
     ap.add_argument("--registry", default=REGISTRY_PATH)
-    ap.add_argument("--out-dir", default=OUT_DIR)
+    ap.add_argument("--out-dir", default=OUT_DIR, help="comparison outputs, result.v1 and Console fragments only (no gate record)")
+    ap.add_argument("--arena-reads-dir", default=ARENA_READS_DIR, help="arena_score's store of recorded gate reads (the only one)")
     ap.add_argument("--null-dir", help="directory with <persona>-R/seed-0001.jsonl .. seed-0200.jsonl (the 200-seed R null replays)")
     ap.add_argument("--now-ms", type=int, help="TEST ONLY (needs MAL_ARENA_TEST=1)")
     ap.add_argument("--settle-hours", type=float, default=AS.SETTLE_MS / 3_600_000)
@@ -802,7 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settle = int(a.settle_hours * 3_600_000)
     try:
         if a.what == "table":
-            t = build_table(a.out_dir, a.registry, a.now_ms)
+            t = build_table(a.out_dir, a.registry, a.now_ms, a.arena_reads_dir)
             print(render_table(t))
             if a.json:
                 _write_once(Path(a.json), t)
@@ -811,13 +840,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not a.bot:
                 print("book needs --bot", file=sys.stderr)
                 return 2
-            r = read_book(a.bot, ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
+            r = read_book(a.bot, ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
         else:
-            r = read_learning(ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
+            r = read_learning(ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
     except (Refused, AS.Refused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
-    print(f"recorded {a.what} read {r.get('bot_id') or 'LEARNING'}: {r['status']} (instant {r['instant_ms']})")
+    print(f"{a.what} read {r.get('bot_id') or 'LEARNING'}: {r['status']} (instant {r['instant_ms']})" + (f"; gate read {r['arena_record']['source']} at {r['arena_record']['path']}" if r.get("arena_record") else ""))
     print(r["disclosure"]["screen_not_promotion"])
     return 0
 

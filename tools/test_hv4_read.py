@@ -115,6 +115,7 @@ class World:
 
     def __init__(self, tmp_path):
         self.root, self.reg, self.out, self.null = str(tmp_path / "ledger"), str(tmp_path / "bots.json"), str(tmp_path / "out"), str(tmp_path / "null")
+        self.reads = str(tmp_path / "arena_reads")  # arena_score's store of recorded gate reads (the only one)
         for a in ARMS:
             _register_bot(a, "abc1234", DAY0, self.reg, deciding_stake=0.25, model_ids=["m"] if ARMS[a].llm else [], now_ms=0, verify_sha=False)
         self.led = Ledger(self.root)
@@ -132,17 +133,17 @@ class World:
     def book(self, bot, **kw):
         kw.setdefault("now_ms", DAY0 + 30 * DAY)
         kw.setdefault("n_seeds", N_SEEDS)
-        return R.read_book(bot, ledger_root=self.root, registry=self.reg, out_dir=self.out, null_dir=self.null, **kw)
+        return R.read_book(bot, ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, null_dir=self.null, **kw)
 
     def mark(self, arm, status):
-        """Stand-in for a recorded book read (only `arena_status` is read by the learning screen rule)."""
-        p = Path(self.out) / "reads" / f"{arm}.json"
+        """Stand-in for a gate read recorded in arena_score's store (the learning screen rule reads only its `status`)."""
+        p = Path(self.reads) / f"{arm}.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(canon({"read": "book", "bot_id": arm, "arena_status": status}) + "\n")
+        p.write_text(canon({"bot_id": arm, "status": status}) + "\n")
 
     def learning(self, **kw):
         kw.setdefault("now_ms", DAY0 + R.LEARN_LOOK_OFFSET_MS)
-        return R.read_learning(ledger_root=self.root, registry=self.reg, out_dir=self.out, **kw)
+        return R.read_learning(ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, **kw)
 
 
 def con_world(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0):
@@ -195,7 +196,7 @@ def test_refused_before_the_instant_without_reading_any_outcome(tmp_path):
     b = DAY0 + 5 * DAY
     with pytest.raises(R.Refused, match="pre-declared instant"):
         w.book("CON-L", now_ms=b - 1)
-    assert not (Path(w.out) / "reads").exists()  # nothing written
+    assert not (Path(w.out) / "reads").exists() and not Path(w.reads).exists()  # nothing written, and nothing stored
     w2 = World(tmp_path / "short")
     w2.add(book_rows("CON-L", noisy(4e6, 5, 19, 11)))  # 95 attempts: no boundary at all
     with pytest.raises(R.Refused, match="pre-declared instant"):
@@ -206,12 +207,14 @@ def test_second_run_is_refused_and_the_files_do_not_change(tmp_path):
     w = con_world(tmp_path)
     w.book("CON-L")
     files = sorted((Path(w.out) / "reads").glob("CON-L*"))
-    assert [f.name for f in files] == ["CON-L.console.json", "CON-L.json", "CON-L.result.json"]
+    assert [f.name for f in files] == ["CON-L.console.json", "CON-L.hv4.json", "CON-L.result.json"]  # the out dir holds no gate record
+    stored = Path(w.reads) / "CON-L.json"
+    files.append(stored)
     before = {f.name: f.read_bytes() for f in files}
     with pytest.raises(R.Refused, match="second run"):
         w.book("CON-L", now_ms=DAY0 + 31 * DAY)
     assert {f.name: f.read_bytes() for f in files} == before
-    assert R.main(["book", "--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--out-dir", w.out, "--now-ms", str(DAY0 + 31 * DAY)]) == 3
+    assert R.main(["book", "--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--out-dir", w.out, "--arena-reads-dir", w.reads, "--now-ms", str(DAY0 + 31 * DAY)]) == 3
 
 
 def test_now_ms_override_is_test_only(tmp_path, monkeypatch):
@@ -306,7 +309,7 @@ def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tm
     b = DAY0 + 5 * DAY
     with pytest.raises(R.Refused, match="PENDING|pending"):
         w.book("CON-L", now_ms=b + 3_600_000)  # younger than the 24 h settle window: not a verdict
-    assert not (Path(w.out) / "reads").exists()
+    assert not (Path(w.out) / "reads").exists() and not Path(w.reads).exists()
     r = w.book("CON-L", now_ms=ms + 25 * 3_600_000)  # older: a restart orphan, NOT_DECIDABLE, final
     assert r["arena_status"] == "NOT_DECIDABLE" and r["arena_score_read"]["restart_orphans"] == 1
     assert r["v1"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
@@ -323,6 +326,50 @@ def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
     rec = json.loads((Path(w.out) / "reads" / "CON-L.result.json").read_text())
     assert "Not proposed for canary" in rec["notes"]
     assert "NOT PROPOSED FOR CANARY" in json.loads((Path(w.out) / "reads" / "CON-L.console.json").read_text())["stream"][0]["text"]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the one store of gate reads
+def test_the_gate_read_is_recorded_in_arena_scores_store_and_the_out_dir_keeps_no_record(tmp_path):
+    w = con_world(tmp_path)
+    r = w.book("CON-L")
+    store = Path(w.reads) / "CON-L.json"
+    assert r["arena_record"] == {"path": str(store), "sha256": hashlib.sha256(store.read_bytes()).hexdigest(), "source": "recorded"}
+    fresh = AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY)
+    assert canon(json.loads(store.read_text())) == canon(fresh)  # exactly what arena_score.record_read writes
+    assert sorted(f.name for f in (Path(w.out) / "reads").iterdir()) == ["CON-L.console.json", "CON-L.hv4.json", "CON-L.result.json"]
+    hv4 = json.loads((Path(w.out) / "reads" / "CON-L.hv4.json").read_text())
+    assert "arena_score_read" not in hv4 and hv4["arena_record"]["sha256"] == hashlib.sha256(store.read_bytes()).hexdigest()
+    with pytest.raises(AS.Refused, match="already recorded"):
+        AS.record_read(w.reads, fresh)  # arena_score's own store is write-once
+
+
+def test_a_gate_read_already_stored_by_arena_score_is_used_when_it_matches_and_is_never_rewritten(tmp_path):
+    w = con_world(tmp_path)
+    AS.record_read(w.reads, AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY))  # what `arena_score --record` does
+    store = Path(w.reads) / "CON-L.json"
+    before = store.read_bytes()
+    r = w.book("CON-L")
+    assert r["arena_record"]["source"] == "existing" and store.read_bytes() == before
+    assert (Path(w.out) / "reads" / "CON-L.hv4.json").exists()
+
+
+def test_a_stored_read_that_differs_from_the_fresh_scoring_is_refused_and_nothing_is_written(tmp_path):
+    w = con_world(tmp_path)
+    res = AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY)
+    AS.record_read(w.reads, dict(res, attempts=res["attempts"] + 1))
+    with pytest.raises(R.Refused, match="differs from the fresh scoring"):
+        w.book("CON-L")
+    assert not (Path(w.out) / "reads").exists()
+
+
+def test_the_learning_screen_reads_arena_scores_store_and_never_the_out_dir(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)  # the store says FAIL for the three arms
+    stale = Path(w.out) / "reads" / "CON-L.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(canon({"bot_id": "CON-L", "status": "PASS", "arena_status": "PASS"}) + "\n")  # a stray file in the out dir is not a record
+    lr = w.learning()["learning"]
+    assert lr["status"] == "PASS" and lr["arm_screens"]["CON-L"]["rule"] == "later_allowed" and lr["arm_screens"]["CON-L"]["recorded_status"] == "FAIL"
+    assert R.recorded_status(w.out + "/reads", "CON-L") == "PASS" and R.recorded_status(w.reads, "CON-L") == "FAIL"  # the function only looks where it is told
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ V1 / V2 with known answers
@@ -398,9 +445,16 @@ def test_seed_reproducibility(tmp_path):
     for s in R.SUBCELLS:
         assert n1["p95"][s] == pytest.approx(float(np.percentile(n1["values"][s], 95)))
     a = w.book("CON-L")
-    w.out = str(tmp_path / "out2")
+    first = json.loads((Path(w.out) / "reads" / "CON-L.hv4.json").read_text())
+    stored_a = (Path(w.reads) / "CON-L.json").read_bytes()
+    w.out, w.reads = str(tmp_path / "out2"), str(tmp_path / "reads2")
     b = w.book("CON-L")
-    assert (Path(w.out) / "reads" / "CON-L.json").read_bytes() == (tmp_path / "out" / "reads" / "CON-L.json").read_bytes()
+    second = json.loads((Path(w.out) / "reads" / "CON-L.hv4.json").read_text())
+    assert (Path(w.reads) / "CON-L.json").read_bytes() == stored_a  # the stored gate read is byte-identical
+    for d in (first, second):  # only the two paths and the store file hash's location differ
+        d.pop("arena_record")
+        d["inputs"].pop("arena_reads_dir")
+    assert canon(first) == canon(second)
     assert a["v1"]["null_sha256"] == b["v1"]["null_sha256"]
     # another set of null files gives another null
     w3 = con_world(tmp_path / "other", null_mu=1e6)
@@ -521,8 +575,8 @@ def test_learning_reads_an_arm_past_its_own_instant_only_if_its_screen_did_not_p
 
 def test_learning_is_not_decidable_and_never_loads_the_rows_of_an_arm_that_passed_its_screen(tmp_path):
     w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d, base=3e6)  # L now wins money, so its screen passes
-    (Path(w.out) / "reads" / "CON-L.json").unlink()  # replace the stand-in by the real book read
-    rb = w.book("CON-L")  # recorded in the out dir
+    (Path(w.reads) / "CON-L.json").unlink()  # replace the stand-in by the real book read
+    rb = w.book("CON-L")  # recorded in arena_score's store through record_read
     assert rb["instant_ms"] == DAY0 + 10 * DAY and rb["arena_status"] == "PASS"
     last = sorted((Path(w.root) / "CON-L").glob("trades-*.jsonl"))[-1]
     with open(last, "a") as f:
@@ -536,10 +590,10 @@ def test_learning_is_not_decidable_and_never_loads_the_rows_of_an_arm_that_passe
 
 def test_learning_is_refused_while_a_con_arms_book_read_is_not_recorded(tmp_path):
     w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
-    (Path(w.out) / "reads" / "CON-F.json").unlink()
-    with pytest.raises(R.Refused, match="not recorded"):
+    (Path(w.reads) / "CON-F.json").unlink()
+    with pytest.raises(R.Refused, match="not in arena_score's store"):
         w.learning()
-    assert not list((Path(w.out) / "reads").glob("LEARNING*"))  # nothing written: the one read has not been used
+    assert not (Path(w.out) / "reads").exists()  # nothing written: the one read has not been used
     w.mark("CON-F", "FAIL")
     assert w.learning()["learning"]["status"] == "PASS"
 
@@ -676,17 +730,22 @@ def test_console_rows_are_a_draft_fragment_and_console_json_is_untouched(tmp_pat
 
 def test_table_lists_25_cells_and_only_recorded_reads(tmp_path):
     w = con_world(tmp_path)
-    t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY)
+    t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)
     assert t0["cell_count"] == 25 and all(c["status"] == "NOT_READ_YET" for c in t0["cells"]) and t0["learning"] == "NOT_READ_YET"
     w.book("CON-L")
-    t = R.build_table(w.out, w.reg, DAY0 + 30 * DAY)
+    t = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)
     got = {(c["arm"], c["stake"]): c["status"] for c in t["cells"]}
     assert got[("CON-L", 0.25)] == "PASS" and got[("CON-L", R.AS_SIZED)] in ("PASS", "FAIL") and got[("BIG-L", 0.25)] == "NOT_READ_YET"
     assert t["arms_read"] == ["CON-L"] and len(t["arms_not_read"]) == 12
     assert "SCREEN" in R.render_table(t)
     out = tmp_path / "t.json"
-    assert R.main(["table", "--out-dir", w.out, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 0
-    assert R.main(["table", "--out-dir", w.out, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 3  # never overwrites
+    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 0
+    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 3  # never overwrites
+    # the gate status of an arm is the store's: a disagreement is flagged
+    store = Path(w.reads) / "CON-L.json"
+    store.write_text(canon(dict(json.loads(store.read_text()), status="FAIL")) + "\n")
+    bad = {(c["arm"], c["stake"]): c["status"] for c in R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)["cells"]}
+    assert bad[("CON-L", 0.25)] == "STORE_MISMATCH"
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ isolation
