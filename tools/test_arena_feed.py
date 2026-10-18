@@ -120,7 +120,7 @@ def test_pumpswap_reserves_are_pre_trade() -> None:
     pre_resid = abs(out - b * qin // (q + v + qin)) / out
     # if the row were POST-trade, the pre-trade state would be (q + v - qin_total, b + out): the same formula on it must then fit
     post_resid = abs(out - (b + out) * qin // ((q + v - qin) + qin)) / out
-    assert pre_resid < 2e-4 and post_resid > 5 * pre_resid
+    assert pre_resid < 1e-7 and post_resid > 1e-3  # measured 1.3e-9 vs 1.2e-2
 
 
 def test_bonding_reserves_are_post_trade() -> None:

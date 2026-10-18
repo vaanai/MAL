@@ -88,9 +88,10 @@ def test_top5_net_buyers_sellers_and_creator_net(tmp_path: Path) -> None:
              curve(T0 + 13_000, C, "sell", 4.0, 1e-7)]
     s = state(tmp_path, rows).snapshot(M)
     assert [x["trader"] for x in s["top_net"]["buyers"]] == ["b7", "b6", "b5", "b4", "b3"]
-    assert [x["trader"] for x in s["top_net"]["sellers"]] == ["s1", "s2"]  # the creator sold 4, bought 1: it is net long -3 here
+    # the creator sold 4 and bought 1: net seller of 3 SOL, tied with s1 (ties keep first-seen order); s2 sold 1
+    assert [x["trader"] for x in s["top_net"]["sellers"]] == ["s1", C, "s2"]
     assert s["creator_net_sol"] == 3.0  # took 3 SOL out
-    assert s["top_net"]["sellers"][0]["net_sol"] == -3.0
+    assert [x["net_sol"] for x in s["top_net"]["sellers"]] == [-3.0, -3.0, -1.0]
 
 
 def test_ath_drawdown_and_candles(tmp_path: Path) -> None:

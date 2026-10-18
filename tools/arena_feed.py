@@ -644,6 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.WARNING), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("mal.trade_tape").setLevel(logging.ERROR)  # logs are counts only: the socket library logs slots and signatures; the status file has the counters
     if args.sockets_pumpswap < 1 or args.sockets_pumpfun < 1:
         print("arena_feed: sockets must be >= 1", file=sys.stderr)
         return 2
