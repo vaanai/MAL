@@ -16,6 +16,11 @@ The state clock is `now_ms`: the largest t_recv_ms applied. Nothing reads the wa
 is deterministic. Reserve conventions (tools/arena_tape_schema.md): PumpSwap rows carry PRE-trade reserves with V, so the post-trade
 spot is derived here (the same algebra as tools.h5_shadow.post_state); bonding rows carry POST-trade reserves, used as they are.
 
+GAPS. Every gap row becomes a span [from_ms, to_ms] (an open silence / feed-restart record and its closed record are one span). `gap_spans(t0, t1,
+prog)` / `has_gap(t0, t1, prog)` answer "does [decision, exit] hold a gap?" for the last 24 h of state-clock time (feed gaps of that program, process
+restarts, disk-reserve pauses). A snapshot's `gaps_since_first_seen` counts data-loss spans since the key was first seen, from counters that are never
+pruned. What the state cannot tell: a window just BEFORE a decision that holds a gap is only visible through `gap_spans`; no field of a key says so.
+
 Per key it keeps: last post-trade spot price (SOL/token, V where it applies) and reserves; age since create / pool_create and curve
 progress; rolling 1 / 5 / 15 / 60 min buy and sell SOL and counts, unique signers and net flow; the top 5 net buyers and sellers (since
 the key was first seen); the creator's net SOL; ATH and drawdown from ATH; 1-min OHLCV candles for the last 120 min. Keys idle more than
@@ -53,7 +58,8 @@ EVICT_IDLE_MS = 6 * 3600 * 1000
 SWEEP_EVERY_MS = 60_000
 WARM_MIN_DEFAULT = 125  # live default: enough tape for the 120-min candles
 READ_CHUNK = 8 * 1024 * 1024
-GAP_LOG_MAX = 2000
+GAP_KEEP_MS = 24 * 3600 * 1000  # gap SPANS are kept this long (by the state clock); the per-prog COUNTS are never pruned
+GAP_EXTRA = ("closed", "from_slot", "to_slot", "missed_slots", "silent_ms", "reason", "count", "clean_stop", "torn_tail", "rows_dropped", "free_pct")
 TOP_N = 5
 
 
@@ -139,8 +145,9 @@ class ArenaState:
         self._hours: dict[str, _Hour] = {}  # hour key -> read position
         self._buf: collections.deque = collections.deque()
         self._last_sweep = 0
-        self._gap_log: collections.deque = collections.deque(maxlen=GAP_LOG_MAX)  # (t_ms, prog, kind, data_loss)
-        self.gaps_total = collections.Counter()  # prog -> gap rows applied
+        self._spans: dict[tuple, dict] = {}  # (prog, kind, from_ms) -> span; an open and its closed record (same from_ms) are ONE span
+        self.gaps_total = collections.Counter()  # prog -> distinct gap spans ever seen (any data_loss); never pruned
+        self.loss_spans = collections.Counter()  # prog -> distinct data_loss spans ever seen; never pruned
         self.last_hb: dict[str, dict] = {}
         self.counters: collections.Counter = collections.Counter()
 
@@ -297,9 +304,7 @@ class ArenaState:
             p.quote_mint = row.get("quote_mint") or p.quote_mint
             self._link_mint(p, row.get("mint"))
         elif typ == "gap":
-            prog = row.get("prog")
-            self._gap_log.append((t, prog, row.get("kind"), bool(row.get("data_loss"))))
-            self.gaps_total[prog] += 1
+            self._gap(row, t)
         elif typ == "hb":
             self.last_hb[str(row.get("prog"))] = row
         self.counters["rows"] += 1
@@ -307,8 +312,38 @@ class ArenaState:
             self._last_sweep = t
             self.sweep()
 
+    def _gap(self, row: dict, t: int) -> None:
+        prog, kind = str(row.get("prog") or "all"), row.get("kind")
+        fr = next((row[k] for k in ("from_ms", "paused_since_ms") if isinstance(row.get(k), int)), t)
+        to = row["to_ms"] if isinstance(row.get("to_ms"), int) else t
+        loss = bool(row.get("data_loss"))
+        sp = self._spans.get((prog, kind, fr))
+        if sp is None:
+            self._spans[(prog, kind, fr)] = {"prog": prog, "kind": kind, "from_ms": fr, "to_ms": max(fr, to), "data_loss": loss, **{k: row[k] for k in GAP_EXTRA if k in row}}
+            self.gaps_total[prog] += 1
+            self.loss_spans[prog] += loss
+            return
+        sp["to_ms"] = max(sp["to_ms"], to)
+        sp.update({k: row[k] for k in GAP_EXTRA if k in row})
+        if loss and not sp["data_loss"]:
+            sp["data_loss"] = True
+            self.loss_spans[prog] += 1
+
     def _gaps_before(self, prog: str) -> int:
-        return sum(1 for _t, g, _k, loss in self._gap_log if loss and g in (prog, "all"))
+        """Data-loss gap spans seen so far on `prog`'s feed (and on 'all'): the count a key stores when it is first seen. Never pruned."""
+        return self.loss_spans[prog] + (self.loss_spans["all"] if prog != "all" else 0)
+
+    def gap_spans(self, t0: int | None = None, t1: int | None = None, prog: str | None = None, data_loss_only: bool = True) -> list[dict]:
+        """Gap spans [from_ms, to_ms] (t_recv_ms, inclusive) that overlap [t0, t1], oldest first; spans of `prog` and of 'all' (process restarts, the
+        disk reserve). Spans are kept for GAP_KEEP_MS of state-clock time; older ones are gone (the counts are not)."""
+        out = [dict(s) for s in self._spans.values()
+               if (not data_loss_only or s["data_loss"]) and (prog is None or s["prog"] in (prog, "all"))
+               and (t0 is None or s["to_ms"] >= t0) and (t1 is None or s["from_ms"] <= t1)]
+        return sorted(out, key=lambda s: (s["from_ms"], s["to_ms"], s["kind"]))
+
+    def has_gap(self, t0: int, t1: int, prog: str | None = None) -> bool:
+        """True when a data-loss gap on `prog`'s feed (or a process restart / disk reserve) overlaps [t0, t1]: a decision window that holds one is not clean."""
+        return bool(self.gap_spans(t0, t1, prog))
 
     def _get(self, key: str | None, prog: str, t: int, *, make: bool) -> Pool | None:
         if not key:
@@ -423,6 +458,8 @@ class ArenaState:
                 if not self._by_mint[p.mint]:
                     del self._by_mint[p.mint]
         self.counters["evicted"] += len(dead)
+        for k in [k for k, s in self._spans.items() if s["to_ms"] < self.now_ms - GAP_KEEP_MS]:
+            del self._spans[k]
         return len(dead)
 
     # ---- queries -------------------------------------------------------------------------------------------
@@ -515,7 +552,7 @@ class ArenaState:
             "last_trade": p.last_trade, "n_trades": p.n_trades, "windows": self.windows(p), "top_net": self.top_net(p),
             "creator": p.creator, "creator_net_sol": self.creator_net_sol(p), "creator_net_sol_curve": curve_net,
             "ath": p.ath, "ath_ms": p.ath_ms, "drawdown_from_ath": (1.0 - p.price / p.ath) if (p.price is not None and p.ath) else None,
-            "name": p.name, "symbol": p.symbol, "gaps_since_first_seen": prog_gaps, "unique_traders": len(p.net),
+            "name": p.name, "symbol": p.symbol, "gaps_since_first_seen": prog_gaps, "gap_span_retention_h": GAP_KEEP_MS / 3_600_000, "unique_traders": len(p.net),
         }
         if candles:
             snap["candles"] = self.candles(p)
