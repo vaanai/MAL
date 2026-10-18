@@ -231,13 +231,15 @@ class ArenaState:
             if j is not None and st.gen is None:
                 try:
                     size = j.stat().st_size
-                except OSError:
-                    j = None  # compacted between the listing and now
-                else:
-                    if size > st.off:
+                    data = b""
+                    if size > st.off:  # the open and the read are inside the try too: a compaction can delete the file at any point after the listing
                         with j.open("rb") as fh:
                             fh.seek(st.off)
                             data = fh.read(min(size - st.off, READ_CHUNK))
+                except OSError:
+                    j = None  # compacted (deleted) between the listing and now: continue in the .zst at the same offset
+                else:
+                    if size > st.off:
                         cut = data.rfind(b"\n")
                         if cut >= 0:  # a partial last line is left for the next poll
                             st.off += cut + 1

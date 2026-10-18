@@ -193,6 +193,23 @@ def test_both_files_present_during_verification_are_read_once(tmp_path: Path) ->
     assert st.poll() == 60 and st.pool(M).n_trades == 60
 
 
+def test_a_jsonl_deleted_between_the_listing_and_the_open_falls_through_to_the_zst(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review item 7: compaction deletes the .jsonl after the reader listed it and statted it, before it opened it."""
+    src = jsonl(tmp_path, H0, 40)
+    zst_copy(src)  # the .zst is complete; the .jsonl still shows in the listing
+    real_open = Path.open
+
+    def gone(self, *a, **k):
+        if self.name.endswith(".jsonl"):
+            raise FileNotFoundError(self)
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", gone)
+    st = ArenaState(tmp_path, start_ms=0)
+    assert st.poll() == 40 and st.pool(M).n_trades == 40 and st.counters["zst_errors"] == 0
+    assert st.poll() == 0
+
+
 def test_corrupt_zst_is_counted_not_raised(tmp_path: Path) -> None:
     (tmp_path / (hour_name(H0) + ".zst")).write_bytes(b"this is not zstd")
     write_tape(tmp_path, [curve(H1 + 5, "x", "buy", 1.0, 1e-7)])
