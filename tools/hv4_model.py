@@ -37,6 +37,8 @@ class ModelReply:
     usage: dict = field(default_factory=dict)
     replayed: bool = False
     model: str = DEFAULT_MODEL
+    reservation_id: str | None = None   # haiku_caller's reservation id of the LAST attempt of this call (None: a stub, a replay, or no call was made)
+    reservation_ids: tuple = ()         # every attempt's reservation id, in order
 
     @property
     def refused(self) -> bool:
@@ -81,9 +83,27 @@ class CallerModel:
         except HaikuCallerError as e:
             return ModelReply(error=type(e).__name__)
         stop = res.response.get("stop_reason") if isinstance(res.response, dict) else None
+        rids = self._reservation_ids(pf.ledger_path, res)
         return ModelReply(text=res.text, stop_reason=stop if isinstance(stop, str) and len(stop) <= 64 else None,
                           cost_usd=res.cost_usd, latency_ms=res.latency_ms, request_sha256=res.request_sha256,
-                          response_sha256=res.response_sha256, usage=dict(res.usage), replayed=res.replayed)
+                          response_sha256=res.response_sha256, usage=dict(res.usage), replayed=res.replayed,
+                          reservation_id=rids[-1] if rids else None, reservation_ids=rids)
+
+    @staticmethod
+    def _reservation_ids(ledger_path, res) -> tuple:
+        """The haiku_caller reservation ids of this call's attempts, read back from the arm's ledger (the reserve rows for this request, the last
+        `attempts` of them). A replayed answer made no reservation; a ledger that cannot be read gives no id (the call itself already happened)."""
+        if getattr(res, "replayed", False):
+            return ()
+        try:
+            led = Ledger(ledger_path)
+            with led.locked(exclusive=False):
+                rows = led.rows()
+        except Exception:  # noqa: BLE001 - the id is an audit field; never let it break a paid call
+            return ()
+        mine = [r["reservation_id"] for r in rows if r.get("kind") == "reserve" and r.get("request_sha256") == res.request_sha256]
+        n = max(1, int(getattr(res, "attempts", 1) or 1))
+        return tuple(mine[-n:])
 
 
 # ---------------------------------------------------------------- the stub
