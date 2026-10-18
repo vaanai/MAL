@@ -151,9 +151,21 @@ def test_ws_url_default_accepted() -> None:
     assert af.check_ws_url(trade_source.DEFAULT_PUBLIC_WS) == trade_source.DEFAULT_PUBLIC_WS
 
 
-def test_helius_rpc_url_refused_for_resolver(tmp_path: Path) -> None:
+@pytest.mark.parametrize("url", ["https://mainnet.helius-rpc.com", "https://x.test/v2/KEY", "https://x.test/?api-key=abc", "https://user:pw@x.test", "http://x.test",
+                                 "https://api.mainnet-beta.solana.com/KEYSTRING", "https://x.test/helius", "https://x.test#k", "wss://api.mainnet-beta.solana.com"])
+def test_rpc_url_gets_the_same_strict_rules_as_ws_url(tmp_path: Path, url: str) -> None:
+    """Review item 9: a keyed path used to pass h5_shadow.check_rpc_url (host-only 'helius' test, path allowed)."""
     with pytest.raises(ValueError):
-        af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, rpc_url="https://mainnet.helius-rpc.com")
+        af.check_rpc_url(url)
+    with pytest.raises(ValueError):
+        af.Feed(tmp_path, [], {"pumpswap": 1, "pumpfun": 1}, rpc_url=url)
+
+
+def test_rpc_url_default_and_bad_rpc_url_is_refused_before_anything_is_created(tmp_path: Path) -> None:
+    assert af.check_rpc_url(af.DEFAULT_RPC) == af.DEFAULT_RPC
+    out = tmp_path / "never"
+    assert af.main(["--out-dir", str(out), "--rpc-url", "https://x.test/v2/KEY"]) == 2
+    assert not out.exists()  # not even the directory or the lock file
 
 
 def test_second_instance_is_refused_and_lock_is_released(tmp_path: Path) -> None:

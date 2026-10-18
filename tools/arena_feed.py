@@ -69,7 +69,7 @@ from observe.trade_decode import (
     records_from_logs,
 )
 from observe.trade_source import DEFAULT_PUBLIC_WS, MultiSocketLogsSource, RawNotice, SeenSet
-from tools.h5_shadow import DEFAULT_RPC, GAP_SLOTS, SILENCE_S, check_rpc_url, clean, code_sha, common_down, feed_snapshot, redact_argv, write_status
+from tools.h5_shadow import DEFAULT_RPC, GAP_SLOTS, SILENCE_S, clean, code_sha, common_down, feed_snapshot, redact_argv, write_status
 from tools.arena_zst import compact_file, zstd_path
 from tools.pump_history_backfill import fetch_pool_mints, lifecycle_from_logs
 
@@ -132,6 +132,22 @@ def check_ws_url(url: str) -> str:
         raise ValueError("--ws-url: Helius URLs are refused (the arena feed spends 0 credits)")
     if u.query or u.username or u.password or u.path not in ("", "/") or u.fragment:
         raise ValueError("--ws-url must be a plain public endpoint (no query string, credentials or path)")
+    return url
+
+
+def check_rpc_url(url: str) -> str:
+    """The pool resolver's HTTPS RPC, with the same rules as --ws-url (stricter than tools.h5_shadow.check_rpc_url, which allows a path and looks for
+    'helius' in the host only): https, no 'helius' anywhere in the URL, no userinfo, query, fragment or path (a key can sit in any of them)."""
+    try:
+        u = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError("--rpc-url is not a URL") from exc
+    if u.scheme != "https" or not u.hostname:
+        raise ValueError("--rpc-url must be an https:// URL")
+    if "helius" in url.lower():
+        raise ValueError("--rpc-url: Helius URLs are refused (the arena feed spends 0 credits)")
+    if u.query or u.username or u.password or u.path not in ("", "/") or u.fragment:
+        raise ValueError("--rpc-url must be a plain public endpoint (no query string, credentials or path)")
     return url
 
 
@@ -949,10 +965,10 @@ class Feed:
 async def run_live(args: argparse.Namespace) -> int:
     out_dir = check_out_dir(args.out_dir)
     ws_urls = [check_ws_url(u) for u in (args.ws_url or [DEFAULT_PUBLIC_WS])]
-    lock_fd = acquire_lock(out_dir)  # raises LockHeld
     rpc_url = None if args.no_resolve else args.rpc_url
     if rpc_url:
-        check_rpc_url(rpc_url)
+        check_rpc_url(rpc_url)  # every argument is validated before the lock file or the directory is created
+    lock_fd = acquire_lock(out_dir)  # raises LockHeld
     feed = Feed(out_dir, ws_urls, {"pumpswap": args.sockets_pumpswap, "pumpfun": args.sockets_pumpfun}, args.commitment, min_free_pct=args.min_free_pct,
                 rpc_url=rpc_url, compress=not args.no_compress)
     loop = asyncio.get_running_loop()
