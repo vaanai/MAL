@@ -1,6 +1,6 @@
 {
- "arena_md5_float": "2d18971c56d0be557fcdf45f1da11d26",
- "arena_md5_lamport": "ab3fbaeea7b846c8edb7b050d8e30e13",
+ "arena_md5_float": "8427f106a0078f5c002345957d6a717d",
+ "arena_md5_lamport": "58e6ccb5845e1953f96f54aa412c4711",
  "by_prog": {
   "pump_bonding": {
    "cases": 120,
@@ -8,17 +8,17 @@
   },
   "pumpswap": {
    "cases": 300,
-   "mismatch_lamport": 3
+   "mismatch_lamport": 0
   }
  },
  "cases": 420,
  "cases_sha256": "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58",
  "expected_md5_float": "8427f106a0078f5c002345957d6a717d",
  "expected_md5_lamport": "58e6ccb5845e1953f96f54aa412c4711",
- "float_mismatches": 18,
+ "float_mismatches": 0,
  "hour": "2026-09-10T12",
  "k_rounding": "ceil",
- "lamport_mismatches": 18,
+ "lamport_mismatches": 0,
  "legs_compared": 2520,
  "live_derivation_default_grace_25": {
   "derived_last_rows": 84,
@@ -26,6 +26,48 @@
   "rows": 300,
   "rows_with_diff": 84
  },
- "max_abs_diff_lamports": 412341.01755192876,
+ "max_abs_diff_lamports": 0.0,
+ "r4b_strand_rule_pnl_diffs_vs_sc": {
+  "cases": 3,
+  "detail": [
+   [
+    "ps048-s250",
+    "13",
+    "stranded",
+    412340
+   ],
+   [
+    "ps048-s250",
+    "19",
+    "stranded",
+    412341
+   ],
+   [
+    "ps048-s500",
+    "13",
+    "stranded",
+    317170
+   ],
+   [
+    "ps048-s500",
+    "19",
+    "stranded",
+    317171
+   ],
+   [
+    "ps048-s1000",
+    "13",
+    "stranded",
+    119305
+   ],
+   [
+    "ps048-s1000",
+    "19",
+    "stranded",
+    119308
+   ]
+  ],
+  "legs": 6
+ },
  "sps": 0.31592803861342694
 }

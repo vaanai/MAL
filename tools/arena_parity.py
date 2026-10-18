@@ -237,6 +237,19 @@ def build(hour: str) -> dict:
                 led = rws[n_]["legs"][f"flat_{lat}"]["net_lamports"]
                 assert led == float(flat[n_]), "ledger flat leg differs from refit flat leg"
 
+    # ---- the r4b_book strand rule on the same states (reported, not the parity default)
+    from tools.arena_paper import price_leg
+
+    r4b_cfg = StackConfig(k_rounding=K_ROUNDING, strand_rule="r4b")
+    r4b_diff = []
+    for x in pcases:
+        stt = {"ref": x["spot"], "Qe": {1.3: x["Qe13"], 1.9: x["Qe19"]}, "Be": {1.3: x["Be13"], 1.9: x["Be19"]}, "ssb": {1.3: x["ssb13"], 1.9: x["ssb19"]},
+               "nearby": {1.3: x["near13"], 1.9: x["near19"]}, "Qx": x["Qx"], "Bx": x["Bx"]}
+        for lat, tg in ((1.3, "13"), (1.9, "19")):
+            r = price_leg("pumpswap", x["stake_sol"] * 1e9, stt, lat, r4b_cfg)
+            if round(r["pnl"]) != round(expected[x["case_id"]]["pnl" + tg]):
+                r4b_diff.append([x["case_id"], tg, r["state"], round(r["pnl"] - expected[x["case_id"]]["pnl" + tg])])
+
     # ---- bonding
     bcases, bgot = bonding_parity(c, f, bd, rng, cfg, vmap, tmp, reg, s_, day_ms)
     cases += bcases
@@ -268,16 +281,21 @@ def build(hour: str) -> dict:
         bp["mismatch_lamport"] += bad
         if bad and x["prog"] == "pumpswap":
             rr = arena_rows[f"{eng_pid('parity-bot', x['pool'], x['slot_entry'], day_ms)}-s{int(x['stake_sol'] * 1000)}"]
-            diag = {t: [x[f"{n}{t[-1]}" if n not in ("Qx", "Bx") else n], rr["calc"][t][m]] for t in ("1p3", "1p9") for n, m in
-                    (("Qe", "Qe"), ("Be", "Be"), ("ssb", "ssb"), ("near", "nearby_lamports"), ("Qx", "Qx"), ("Bx", "Bx")) if x[f"{n}{t[-1]}" if n not in ("Qx", "Bx") else n] != rr["calc"][t][m]} if False else {
-                f"{n}{t}": [x[f"{n}{t[-2:].replace('p', '')}"] if n not in ("Qx", "Bx") else x[n], rr["calc"][t][m]] for t in ("1p3", "1p9")
-                for n, m in (("Qe", "Qe"), ("Be", "Be"), ("ssb", "ssb"), ("near", "nearby_lamports"), ("Qx", "Qx"), ("Bx", "Bx"))
-                if (x[f"{n}{t[-2:].replace('p', '')}"] if n not in ("Qx", "Bx") else x[n]) != rr["calc"][t][m]}
+            diag = {}
+            for t in ("1p3", "1p9"):
+                tg = t.replace("p", "")
+                for n, m in (("Qe", "Qe"), ("Be", "Be"), ("ssb", "ssb"), ("near", "nearby_lamports")):
+                    if x[f"{n}{tg}"] != rr["calc"][t][m]:
+                        diag[f"{n}{t}"] = [x[f"{n}{tg}"], rr["calc"][t][m]]
+                for n in ("Qx", "Bx", "spot"):
+                    if x[n] != rr["calc"][t][n if n != "spot" else "spot"]:
+                        diag[f"{n}{t}"] = [x[n], rr["calc"][t][n]]
             print("MISMATCH", x["case_id"], x["slot_entry"], x["slot_exit"], rr["state_src"], diag, e, g)
     summary = {"hour": hour, "cases": len(cases), "by_prog": by_prog, "legs_compared": len(cases) * len(KEYS), "float_mismatches": int(mism["float_exact"]),
                "lamport_mismatches": int(mism["lamport"]), "max_abs_diff_lamports": mism["max_abs_diff"], "cases_sha256": sha256_file(cpath),
                "expected_md5_float": md5_lines(exp_lines), "arena_md5_float": md5_lines(got_lines), "expected_md5_lamport": md5_lines(rnd(exp_lines)),
-               "arena_md5_lamport": md5_lines(rnd(got_lines)), "k_rounding": K_ROUNDING, "sps": s_, "live_derivation_default_grace_25": live_stats}
+               "arena_md5_lamport": md5_lines(rnd(got_lines)), "k_rounding": K_ROUNDING, "sps": s_, "live_derivation_default_grace_25": live_stats,
+               "r4b_strand_rule_pnl_diffs_vs_sc": {"legs": len(r4b_diff), "cases": len({d[0] for d in r4b_diff}), "detail": r4b_diff[:12]}}
     (FIXDIR / "PARITY.json").write_text(json.dumps(summary, indent=1, sort_keys=True) + "\n")
     return summary
 
@@ -358,7 +376,7 @@ def bonding_parity(c, f, bd, rng, cfg: StackConfig, vmap, tmp, reg, s_, day_ms):
                     tokh = int(buy.tokens_raw / (1 + cfg.h_in))
                     sold = lc._sell(s_out, venue="pump_bonding", tokens=tokh, held=buy.tokens_raw, extra_quote=buy.net_in_lamports, portal_ppm=cfg.portal_ppm)
                     fil = True
-                    if sold is None or sold[0] * (1 - cfg.h_out) < cfg.send:
+                    if sold is None:
                         pnl = -size - cfg.send - F.RENT_STRANDED
                     else:
                         pnl = sold[0] * (1 - cfg.h_out) - size - 2 * cfg.send - cfg.rent

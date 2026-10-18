@@ -211,15 +211,19 @@ class StackConfig:
     grace_slots: int = GRACE_SLOTS
     portal_ppm: int = 0  # bonding route fee; 0 = direct, like the PumpSwap stack
     press_intercept: float = PRESS_INTERCEPT_PROVISIONAL
+    # "sc": the stack sc.py / VERIFY priced (bit parity; a sell worth less than one send is a normal, tiny-proceeds sell).
+    # "r4b": tools.r4b_book defaults (EXP-027 QP rulings): auto_stranded (proceeds < one send -> stranded price) and the C8 k-fall check. Harsher by
+    # (send - proceeds + rent differences) on dust sells; 3 of 300 parity cases (one rugged pool) differ by 412,340 lamports each.
+    strand_rule: str = "sc"
 
     def as_dict(self) -> dict[str, Any]:
         return {"send": self.send, "rent": self.rent, "h_in": self.h_in, "h_out": self.h_out, "k_rounding": self.k_rounding,
-                "exit_lag_s": F.EXIT_LAG_S, "guard": F.GUARD, "portal_ppm": self.portal_ppm, "press_intercept_provisional": self.press_intercept}
+                "exit_lag_s": F.EXIT_LAG_S, "guard": F.GUARD, "portal_ppm": self.portal_ppm, "press_intercept_provisional": self.press_intercept, "strand_rule": self.strand_rule}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ bonding curve
 def curve_trip(stake: float, qe: float, be: float, ref: float | None, qx: float, bx: float, *, send: float, rent: float, h_in: float, h_out: float,
-               portal_ppm: int = 0, rent_stranded: float = F.RENT_STRANDED) -> tuple[float, str, bool]:
+               portal_ppm: int = 0, rent_stranded: float = F.RENT_STRANDED, auto_stranded: bool = False) -> tuple[float, str, bool]:
     """One pre-graduation bonding-curve round trip in lamports -> (pnl, state, filled).
 
     (qe, be): POST-trade reserves the buy lands on. ref: decision-time price (SOL per token) for the 15% slippage guard, as latency_curve._try_buy.
@@ -250,7 +254,7 @@ def curve_trip(stake: float, qe: float, be: float, ref: float | None, qx: float,
     if out is None:
         return stranded, "stranded", True
     proceeds = out * (1 - h_out)
-    if proceeds < send:
+    if auto_stranded and proceeds < send:
         return stranded, "stranded", True
     return proceeds - stake - 2 * send - rent, "filled", True
 
@@ -326,12 +330,13 @@ def price_leg(prog: str, stake_lamports: float, st: Mapping[str, Any], lat: floa
     and the flat / provisional-pressure legs (lamports)."""
     if prog == "pumpswap":
         pnl, filled, strand, bad, xbad = round_trip(np.array([stake_lamports]), st["Qe"][lat], st["Be"][lat], st["ref"], st["Qx"], st["Bx"], cfg.send,
-                                                   cfg.rent, cfg.h_in, cfg.h_out, return_stranded=True, return_invalid=True, return_exit_invalid=True)
+                                                   cfg.rent, cfg.h_in, cfg.h_out, return_stranded=True, return_invalid=True, return_exit_invalid=True,
+                                                   auto_stranded=cfg.strand_rule == "r4b", k_tol=F.K_TOL if cfg.strand_rule == "r4b" else None)
         pnl, filled = float(pnl[0]), bool(filled[0])
         state = "guarded" if not filled else "entry_invalid" if bad[0] else "exit_invalid" if xbad[0] else "stranded" if strand[0] else "filled"
     else:
         pnl, state, filled = curve_trip(stake_lamports, st["Qe"][lat], st["Be"][lat], st["ref"], st["Qx"], st["Bx"], send=cfg.send, rent=cfg.rent,
-                                        h_in=cfg.h_in, h_out=cfg.h_out, portal_ppm=cfg.portal_ppm)
+                                        h_in=cfg.h_in, h_out=cfg.h_out, portal_ppm=cfg.portal_ppm, auto_stranded=cfg.strand_rule == "r4b")
     flat, press, _, p = fail_legs(np.array([pnl]), np.array([filled]), np.array([st["ssb"][lat]]), np.array([st["nearby"][lat]]), cfg.send,
                                   intercept=cfg.press_intercept)
     return {"pnl": pnl, "filled": filled, "state": state, "flat": float(flat[0]), "press": float(press[0]), "p": float(p[0])}
