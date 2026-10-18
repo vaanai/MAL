@@ -1,0 +1,345 @@
+"""--fresh-forward ARENA of tools/h5_shadow.py (hunt20, the forward-paper arena). Synthetic fixtures only; no network, no /data/mal reads."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import io
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tools import h5_shadow as h5
+from tools.test_h5_shadow import SOL, Tape, make_engine, types
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def pool_tape(pool: str, slot0: int, ts0: int) -> Tape:
+    """One BOOST pool (the per-pool PDA buys 1 SOL every 25 slots from s0 + 5) that a dump at s0 + 200 drains to Q = 35 SOL: a trigger, with outcomes."""
+    ev = [(slot0, "buy", "A", SOL // 10)] + [(slot0 + 5 + 25 * i, "buy", "PDA_" + pool, SOL) for i in range(18)]
+    ev += [(slot0 + 200, "sell", "DUMP", None), (slot0 + 500, "sell", "Z", SOL // 2), (slot0 + 900, "buy", "W", SOL)]
+    t = Tape(pool=pool, slot0=slot0, ts0=ts0)
+    for slot, side, trader, sol in sorted(ev, key=lambda e: e[0]):
+        if sol is None:
+            sol = int(t.q + t.v - 35 * SOL)
+        t.row(slot, side, trader, sol, mint="Mint" + pool)
+    return t
+
+
+def run_pools(eng, *tapes: Tape) -> None:
+    for t in tapes:
+        eng.on_create_pool(t.pool, "Mint" + t.pool, h5.WSOL_MINT, t.slot0 - 1, 0)
+        for r in t.rows:
+            eng.on_trade(r)
+    eng.close_all("shutdown")
+
+
+def fresh_engine(start_ms, **kw):
+    """The Engine as run_live builds it with --fresh-forward ARENA."""
+    kw.setdefault("seal_start_ms", None)
+    kw.setdefault("h5_look2_start_ms", None)
+    return make_engine(bx10_enabled=True, fresh_start_ms=start_ms, **kw)
+
+
+class FlagTests(unittest.TestCase):
+    def test_only_the_literal_token_turns_it_on(self):
+        self.assertEqual(h5.FRESH_FORWARD_REF, "ARENA")
+        self.assertTrue(h5.fresh_forward_flag("ARENA"))
+        for bad in (None, "", "1", "true", "arena", "Arena", "ARENA ", " ARENA", "ARENAx", "EXP-026", "EXP-024-Am2"):
+            self.assertFalse(h5.fresh_forward_flag(bad), repr(bad))
+
+    def test_the_command_line_parses_any_value_and_defaults_to_absent(self):
+        ap = h5.build_parser()
+        self.assertIsNone(ap.parse_args([]).fresh_forward)
+        for v in ("ARENA", "arena", ""):
+            self.assertEqual(ap.parse_args(["--fresh-forward", v]).fresh_forward, v)  # never refused by the parser: the engine flag is fresh_forward_flag(v)
+
+
+class OutDirTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-root-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.home = self.root / "home"
+        self.p = mock.patch.object(h5, "ARENA_ROOT", str(self.root / "arena"))
+        self.p.start()
+        self.addCleanup(self.p.stop)
+
+    def ok(self, path):
+        return h5.check_fresh_out_dir(str(path), home=str(self.home))
+
+    def refused(self, path, *words):
+        with self.assertRaises(ValueError) as cm:
+            self.ok(path)
+        for w in words:
+            self.assertIn(w, str(cm.exception))
+
+    def test_a_dir_under_the_arena_root_h5_star_is_accepted(self):
+        a = self.root / "arena"
+        self.assertEqual(self.ok(a / "h5-shadow-2026-10-18"), a / "h5-shadow-2026-10-18")
+        self.assertEqual(self.ok(a / "h5-x" / "sub"), a / "h5-x" / "sub")
+        with mock.patch.object(h5, "ARENA_ROOT", "/data/mal/arena"):  # the production root, a path that need not exist yet
+            self.assertEqual(h5.check_fresh_out_dir("/data/mal/arena/h5-shadow-2026-10-18", home=str(self.home)), Path("/data/mal/arena/h5-shadow-2026-10-18"))
+
+    def test_everything_else_is_refused(self):
+        a = self.root / "arena"
+        self.refused(a, "must resolve under")  # the root itself
+        self.refused(a / "other", "must resolve under")  # not h5-*
+        self.refused(a / "h5", "must resolve under")  # the prefix is "h5-"
+        self.refused(self.root / "h5-shadow", "must resolve under")  # outside the root
+        self.refused("/tmp/h5-elsewhere", "must resolve under")
+        self.refused(a / "h5-x" / ".." / "other", "'..'")
+        self.refused("", "empty")
+        with self.assertRaises(ValueError):  # the production root, unpatched
+            with mock.patch.object(h5, "ARENA_ROOT", "/data/mal/arena"):
+                h5.check_fresh_out_dir("/data/mal/arena/other")
+
+    def test_the_live_shadow_dirs_are_refused_explicitly(self):
+        for bad in ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow/x", "/var/lib/mal-live", "/var/lib/mal-live/ledger",
+                    self.home / "data" / "h5-shadow", self.home / "data" / "h5-shadow" / "sub", self.home / "data" / "h5-shadow-test"):
+            self.refused(bad, "never feeds the live executor")
+
+    def test_a_symlink_into_a_live_dir_or_out_of_the_arena_is_refused(self):
+        a = self.root / "arena"
+        a.mkdir()
+        (a / "h5-to-live").symlink_to("/srv/mal-h5-shadow")
+        (a / "h5-to-home").symlink_to(self.home / "data" / "h5-shadow")
+        (a / "h5-to-tmp").symlink_to(self.root)
+        self.refused(a / "h5-to-live", "never feeds the live executor")
+        self.refused(a / "h5-to-live" / "x", "never feeds the live executor")
+        self.refused(a / "h5-to-home", "never feeds the live executor")
+        self.refused(a / "h5-to-tmp", "must resolve under")
+        (self.root / "real").mkdir()
+        (self.root / "link").symlink_to(a)  # a symlinked root: the unresolved path is outside, the resolved one inside
+        self.refused(self.root / "link" / "h5-x", "must resolve under")
+
+
+class MainTests(unittest.TestCase):
+    """h5.main() refuses a bad fresh-forward call before it starts anything; the flag absent is none of this."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-root-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        p = mock.patch.object(h5, "ARENA_ROOT", str(self.root / "arena"))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def main(self, *argv):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch.object(h5, "run_live", side_effect=AssertionError("run_live must not start")), \
+                mock.patch.object(h5, "run_replay", side_effect=AssertionError("replay must not start")):
+            with self.assertRaises(SystemExit) as cm:
+                h5.main(list(argv))
+        self.assertEqual(cm.exception.code, 2)
+        return err.getvalue()
+
+    def test_refusals(self):
+        good = str(self.root / "arena" / "h5-shadow-x")
+        self.assertIn("is empty", self.main("--fresh-forward", "ARENA"))  # --out-dir is required
+        self.assertIn("never feeds the live executor", self.main("--fresh-forward", "ARENA", "--out-dir", "/srv/mal-h5-shadow"))
+        self.assertIn("never feeds the live executor", self.main("--fresh-forward", "ARENA", "--out-dir", os.path.expanduser("~/data/h5-shadow")))
+        self.assertIn("must resolve under", self.main("--fresh-forward", "ARENA", "--out-dir", "/tmp/x"))
+        self.assertIn("--tip-dir", self.main("--fresh-forward", "ARENA", "--out-dir", good, "--tip-dir", "/tmp/tip"))
+        self.assertIn("--h5-look2-observed", self.main("--fresh-forward", "ARENA", "--out-dir", good, "--h5-look2-observed", "EXP-024-Am2"))
+        self.assertIn("live feed only", self.main("--fresh-forward", "ARENA", "--out-dir", good, "--replay-tape", "/x", "--replay-hours", "h"))
+
+    def test_a_good_call_reaches_run_live_and_a_wrong_token_does_not_change_the_checks(self):
+        good = str(self.root / "arena" / "h5-shadow-x")
+        started = []
+
+        async def fake_run_live(args):
+            started.append(args)
+            return 0
+
+        with mock.patch.object(h5, "run_live", fake_run_live):
+            self.assertEqual(h5.main(["--fresh-forward", "ARENA", "--out-dir", good]), 0)
+            # the bx10 pattern: a wrong token is off, so the default checks apply (any out dir the default accepts)
+            self.assertEqual(h5.main(["--fresh-forward", "arena", "--out-dir", "/tmp/h5-fresh-off"]), 0)
+        self.assertEqual([a.fresh_forward for a in started], ["ARENA", "arena"])
+
+
+class EngineTests(unittest.TestCase):
+    T0 = 1_800_000_000  # pool A block time (2027: past every seal)
+    T1 = T0 + 1_600  # pool B's, 1,600 s later (slot0 + 4,000 slots * 0.4 s)
+
+    def tapes(self):
+        return pool_tape("PoolAAAA", 1000, self.T0), pool_tape("PoolBBBB", 5000, self.T1)
+
+    def test_the_seals_withhold_this_pool_without_the_mode_and_the_mode_writes_it_whole(self):
+        a, _ = self.tapes()
+        eng, out = make_engine(seal_start_ms=h5.SEAL_START_MS, suppress_outcome=h5.cap_pick_seal_oracle_stub, bx10_enabled=True)  # run_live's default engine
+        run_pools(eng, a)
+        self.assertEqual((types(out, "trigger"), types(out, "outcome"), types(out, "outcome_bx10")), ([], [], []))
+        eng, out = fresh_engine(self.T0 * 1000 - 5_000)
+        a, _ = self.tapes()
+        run_pools(eng, a)
+        self.assertEqual(sorted(r["variant"] for r in types(out, "trigger")), ["fv", "pv"])
+        self.assertEqual(sorted(r["variant"] for r in types(out, "outcome")), ["fv", "pv"])
+        self.assertEqual(sorted(r["variant"] for r in types(out, "outcome_bx10")), ["fv", "pv"])
+        (pool,) = types(out, "pool")
+        self.assertFalse(pool["sealed"])
+        self.assertNotIn("h5_look2_sealed", pool)
+        self.assertIsNotNone(pool["min_q_pv_sol"])
+        self.assertTrue(types(out, "strip"))
+        self.assertTrue(types(out, "boost_slice"))
+        self.assertFalse([r for r in out if r["type"] == "sealed_hour"])
+        for o in types(out, "outcome"):
+            self.assertIsNotNone(o["legs"]["primary"]["net"])
+        for o in types(out, "outcome_bx10"):
+            self.assertIsNotNone(o["legs"]["binding"]["net"])
+            self.assertNotIn("error", o)
+        self.assertEqual(eng.counters["fresh_ignored_pre_start"], 0)
+
+    def test_the_h5_look2_seal_is_off_also_inside_its_window_and_past_its_end(self):
+        eng, out = fresh_engine(0)  # h5_look2_start_ms None, as run_live builds it; the synthetic tape is in 2027, past H5_LOOK2_END_MS
+        a, _ = self.tapes()
+        run_pools(eng, a)
+        self.assertEqual(eng.counters["h5_look2_sealed_pools"], 0)
+        self.assertEqual(len(types(out, "outcome")), 2)
+
+    def test_a_pool_with_s0_before_the_start_is_ignored_entirely_and_a_later_one_is_written(self):
+        a, b = self.tapes()
+        eng, out = fresh_engine((self.T0 + 800) * 1000)  # between the two pools
+        run_pools(eng, a, b)
+        self.assertEqual({r["pool"] for r in out if "pool" in r and r["type"] != "gap"}, {"PoolBBBB"})
+        self.assertEqual([r["type"] for r in out if r.get("pool") == "PoolAAAA"], [])  # no pool, trigger, outcome, outcome_bx10, strip or boost_slice record
+        self.assertEqual(eng.counters["fresh_ignored_pre_start"], 1)
+        self.assertEqual(eng.counters["pools_tracked"], 1)
+        self.assertEqual(len(types(out, "trigger")), 2)
+        self.assertEqual(len(types(out, "outcome")), 2)
+        self.assertEqual(len(types(out, "outcome_bx10")), 2)
+
+    def test_the_start_instant_boundary(self):
+        a, _ = self.tapes()
+        first = a.rows[0]  # block time T0 s, received at T0 s + 37 ms
+        for start_ms, tracked in ((first["t_recv_ms"] + 1, False),  # received before the start
+                                  (self.T0 * 1000 + 1, False),  # block time is whole seconds: the start's own second counts as before
+                                  (self.T0 * 1000, True)):
+            eng, out = fresh_engine(start_ms)
+            run_pools(eng, pool_tape("PoolAAAA", 1000, self.T0))
+            self.assertEqual(len(types(out, "pool")), 1 if tracked else 0, start_ms)
+            self.assertEqual(eng.counters["fresh_ignored_pre_start"], 0 if tracked else 1, start_ms)
+
+    def test_an_ignored_pool_does_not_come_back_on_a_later_print(self):
+        a, _ = self.tapes()
+        eng, out = fresh_engine((self.T0 + 5_000) * 1000)
+        run_pools(eng, a)  # a pool's every print is checked once (seen), the pool is never tracked
+        self.assertEqual((eng.counters["fresh_ignored_pre_start"], eng.counters["pools_tracked"], out and types(out, "pool")), (1, 0, []))
+
+    def test_records_equal_the_default_engine_with_both_seals_off(self):
+        a, b = self.tapes()
+        eng1, out1 = make_engine(seal_start_ms=None, h5_look2_start_ms=None, bx10_enabled=True)
+        run_pools(eng1, a, b)
+        a, b = self.tapes()
+        eng2, out2 = fresh_engine(0)
+        run_pools(eng2, a, b)
+        self.assertEqual([json.dumps(r, sort_keys=True) for r in out1], [json.dumps(r, sort_keys=True) for r in out2])
+        c1, c2 = dict(eng1.counters), dict(eng2.counters)
+        self.assertEqual(c1, {k: v for k, v in c2.items() if k != "fresh_ignored_pre_start"})
+
+    def test_engine_default_has_no_start_gate(self):
+        eng, _ = make_engine()
+        self.assertIsNone(eng.fresh_start_ms)
+
+
+class RunLiveTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-root-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        p = mock.patch.object(h5, "ARENA_ROOT", str(self.root / "arena"))
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.dict(os.environ, {"H5_CODE_SHA": SHA})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_live(self, argv, out_dir):
+        args = h5.build_parser().parse_args(["--out-dir", str(out_dir), "--sockets", "3", *argv])
+        built, tips = [], []
+        real = h5.Engine
+
+        def spy(*a, **k):
+            built.append(k)
+            return real(*a, **k)
+
+        class NoTip:
+            def __init__(self, *a, **k):
+                tips.append(1)
+
+        async def no_feed(*a, **k):
+            return None
+
+        def no_oracle(*a, **k):
+            raise AssertionError("the CAP-PICK environment is read in fresh-forward mode")
+
+        with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None), mock.patch.object(h5, "Engine", spy), \
+                mock.patch.object(h5, "TipTail", NoTip), mock.patch.object(h5, "cap_pick_oracle_from_env", no_oracle if "--fresh-forward" in argv and "ARENA" in argv
+                                                                                                         else h5.cap_pick_oracle_from_env):
+            before = h5.now_ms()
+            self.assertEqual(asyncio.run(h5.run_live(args)), 0)
+            after = h5.now_ms()
+        rows = [json.loads(line) for f in sorted(Path(out_dir).glob("h5-shadow-*.jsonl")) for line in f.read_text().splitlines()]
+        return [r for r in rows if r["type"] == "start"][0], built, tips, (before, after)
+
+    def test_the_start_record_and_the_engine_of_a_fresh_forward_run(self):
+        out = self.root / "arena" / "h5-shadow-2026-10-18"
+        start, built, tips, (t0, t1) = self.run_live(["--fresh-forward", "ARENA"], out)
+        self.assertEqual(start["fresh_forward"], "ARENA")
+        self.assertEqual(start["code_sha"], SHA)
+        self.assertTrue(t0 <= start["start_ms"] <= t1)
+        self.assertEqual(start["t_ms"], start["start_ms"])  # "the start record's time" is start_ms
+        self.assertIs(start["bx10"], True)
+        self.assertEqual(start["tip_union"], "off")
+        self.assertEqual((start["seal"]["applied"], start["seal"]["start_ms"], start["seal"]["oracle"]), (False, None, "not_applied"))
+        self.assertEqual((start["h5_look2"]["applied"], start["h5_look2"]["observed"], start["h5_look2"]["start_ms"]), (False, False, None))
+        self.assertEqual((start["keys"], start["sends"]), ("none", "none"))
+        self.assertEqual(start["out_dir"], str(out))
+        (k,) = built
+        self.assertIs(k["bx10_enabled"], True)
+        self.assertEqual(k["fresh_start_ms"], start["start_ms"])
+        self.assertIsNone(k["seal_start_ms"])
+        self.assertIsNone(k["h5_look2_start_ms"])
+        self.assertIsNone(k["pick_oracle"])
+        self.assertIsNone(k["suppress_outcome"])
+        self.assertIs(k["h5_look2_observed"], False)
+        self.assertEqual(tips, [])  # no TipTail was built
+
+    def test_bx10_is_on_with_or_without_its_own_flag(self):
+        for extra in ([], ["--bx10-enable", "EXP-026"], ["--bx10-enable", "1"]):
+            out = self.root / "arena" / f"h5-bx-{len(extra)}{extra[-1] if extra else ''}"
+            start, built, _, _ = self.run_live(["--fresh-forward", "ARENA", *extra], out)
+            self.assertIs(start["bx10"], True)
+            self.assertIs(built[0]["bx10_enabled"], True)
+
+    def test_refusals_happen_before_anything_is_created(self):
+        for bad_args, bad_out in ((["--fresh-forward", "ARENA"], "/srv/mal-h5-shadow"),
+                                  (["--fresh-forward", "ARENA"], self.root / "elsewhere"),
+                                  (["--fresh-forward", "ARENA", "--tip-dir", "/tmp"], self.root / "arena" / "h5-x"),
+                                  (["--fresh-forward", "ARENA", "--h5-look2-observed", "EXP-024-Am2"], self.root / "arena" / "h5-y")):
+            with self.assertRaises(ValueError):
+                self.run_live(bad_args, bad_out)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), [])  # no dir was made anywhere under the temp root
+
+    def test_flag_absent_or_wrong_token_leaves_the_default_start_record_unchanged(self):
+        for i, argv in enumerate(([], ["--fresh-forward", "arena"], ["--fresh-forward", "1"])):
+            out = Path(tempfile.mkdtemp(dir="/tmp", prefix="h5-ff-off-"))
+            self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+            if argv:
+                with self.assertLogs("mal.h5_shadow", level="WARNING"):
+                    start, built, _, _ = self.run_live(argv, out)
+            else:
+                start, built, _, _ = self.run_live(argv, out)
+            self.assertNotIn("fresh_forward", start)
+            self.assertNotIn("start_ms", start)
+            self.assertNotIn("tip_union", start)
+            self.assertEqual(start["seal"]["start_ms"], h5.SEAL_START_MS)
+            self.assertIs(start["bx10"], False)
+            self.assertNotIn("fresh_start_ms", built[0])
+            self.assertEqual(built[0]["seal_start_ms"] if "seal_start_ms" in built[0] else h5.SEAL_START_MS, h5.SEAL_START_MS)
+
+
+if __name__ == "__main__":
+    unittest.main()
