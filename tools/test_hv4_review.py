@@ -32,21 +32,22 @@ ARM = "CON-L"
 SHA40 = "a" * 40
 
 
-def rec(i, *, close=None, kind="trade", net=1.0, ret=0.0, reason="target", hold=300, **card):
-    close = CUT - H - i * 1000 if close is None else close
+def rec(i, *, close=None, kind="trade", net=1.0, ret=0.0, reason="target", hold=300, cut=CUT, **card):
+    close = cut - H - i * 1000 if close is None else close
     c = make_card(f"Pool{i:04d}" + "1" * 34, close - hold * 1000, ret_15m=ret, **card)
     if kind == "trade":
         dec = {"conviction": 4, "size": 0.25, "plan": {"stop_pct": -7, "target_pct": 12, "time_min": 45}, "why": "ret_15m is shallow and net_flow_60m is positive"}
         rid, entry = f"t{i:04d}", close - hold * 1000 - RV.EXIT_FILL_MS
     else:
         dec = {"action": "SKIP", "reasons": ["model_skip"]}
-        rid, entry = f"s{i:04d}", PREV + 1000 * i
+        rid, entry = f"s{i:04d}", cut - 86_400_000 + 1000 * i
     return {"id": rid, "kind": kind, "entry_ms": entry, "close_ms": close, "card": c, "decision": dec, "exit_reason": reason, "hold_s": hold, "net_pct": net}
 
 
-def history(n=40):
+def history(n=40, cut=CUT):
     """n trades: the first half dip trades that lost, the rest that won (a planted split the validator can find or refuse)."""
-    return [rec(i, ret=-10.0 if i < n // 2 else 2.0, net=-3.0 if i < n // 2 else 1.0, reason="stop" if i < n // 2 else "target", hold=100 + i) for i in range(n)]
+    return [rec(i, ret=-10.0 if i < n // 2 else 2.0, net=-3.0 if i < n // 2 else 1.0, reason="stop" if i < n // 2 else "target", hold=100 + i, cut=cut)
+            for i in range(n)]
 
 
 @pytest.fixture
@@ -648,3 +649,223 @@ def test_cli_genesis_verify_and_stub_run_end_to_end(tmp_path):
     assert r.returncode == 0, r.stderr[-400:]
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["version"] == 1 and out["accepted"] == 0 and out["review_error"] is None
+
+
+# ---------------------------------------------------------------- the frozen sha, the runner's contract, local-veto equivalence
+
+def test_check_manifest_refuses_any_commit_that_is_not_the_frozen_sha(root):
+    night(root, history(40), "[]")
+    frozen = "a" * 40
+    assert len(RV.verify_chain(root, ARM, frozen_sha=frozen)) == 2
+    assert len(RV.verify_chain(root, ARM, frozen_sha="a" * 7)) == 2            # an abbreviation of the same commit
+    assert len(RV.verify_chain(root, ARM, frozen_sha=frozen.upper())) == 2
+    for other in ("b" * 40, "a" * 12 + "b" * 28, "a" * 6 + "b" * 34, "deadbeef"):
+        with pytest.raises(RV.ManifestRefused) as e:
+            RV.verify_chain(root, ARM, frozen_sha=other)
+        assert str(e.value) == "commit_not_frozen_sha", other
+    with pytest.raises(RV.ManifestRefused) as e:
+        RV.verify_chain(root, ARM, frozen_sha="not hex")
+    assert str(e.value) == "commit_not_frozen_sha"
+
+    def bad_commit(rows):
+        rows[1]["commit"] = "main"
+        reseal(rows[1])
+    tamper(root, ARM, bad_commit)
+    with pytest.raises(RV.ManifestRefused) as e:
+        RV.verify_chain(root, ARM)
+    assert str(e.value) == "commit_format"
+
+
+def test_a_night_will_not_extend_a_chain_written_under_another_commit(root):
+    night(root, history(40), "[]")
+    stub = StubModel(["[]"])
+    with pytest.raises(RV.ManifestRefused) as e:
+        RV.review_night(ARM, "2026-10-23", root=root, ledger_root=root, model=stub, now_ms=RV.day_start_ms("2026-10-23") + 300_000, commit="c" * 40,
+                        records=history(40), open_positions=0)
+    assert str(e.value) == "commit_not_frozen_sha" and stub.calls == []
+
+
+def test_real_active_version_is_what_the_runner_expects(root):
+    from tools import hv4_runner as R
+
+    night(root, history(40), json.dumps([change(), change(type="knob", target="min_conviction", new=5, claim="worse")]))
+    src = R.review_version_source(root, SHA40)
+    av = src(ARM, CUT + 31 * 60_000)
+    assert av.arm == ARM and av.manifest["sha256"] and av.manifest["effective_from_ms"] == CUT + 30 * 60_000
+    st = av.state
+    assert (st.persona, st.version, st.vetoes) == ("CON", 1, ("ret_15m < -5",)) and st.playbook.name == "CON" and st.knobs["min_conviction"] == 5
+    new = R.Runner._check_version(None, ARM, av)                       # the runner's own acceptance check on a real ActiveVersion
+    assert new["version"] == 1 and new["vetoes"] == ("ret_15m < -5",) and new["manifest_sha256"] == av.manifest["sha256"]
+    with pytest.raises(ValueError):                                      # ... and for the wrong arm it refuses
+        R.Runner._check_version(None, "BIG-L", av)
+    with pytest.raises(RV.ManifestRefused):                              # a frozen sha that is not the manifest's commit: the source refuses
+        R.review_version_source(root, "b" * 40)(ARM, CUT + 31 * 60_000)
+    assert src("CON-F", CUT) is None                                      # an arm with no reviewer has no manifest file
+
+
+def test_the_runner_applies_a_real_version_and_halts_the_arm_on_a_refused_chain(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")  # register_bot test overrides, as in test_hv4_runner
+    from tools import test_hv4_runner as TR
+    from tools import hv4_runner as R
+
+    day = RV.utc_day(TR.T0)
+    cut = RV.day_start_ms(day)
+    assert TR.T0 - cut >= 40 * 60_000, "the runner test tape must start 40 minutes into its UTC day for this test"
+    root = tmp_path / "hv4"
+    for a in arms.reviewer_arms():
+        row, _ = RV.genesis_manifest(a, cut - 86_400_000, "abcdef1234567")
+        RV.append_manifest(root, a, row, None, None)
+    RV.review_night(ARM, day, root=root, ledger_root=root / "l", model=StubModel([json.dumps([change()])]), now_ms=cut + 300_000, commit="abcdef1234567",
+                    records=history(40, cut=cut), open_positions=0)
+    run = TR.make(tmp_path, versions=R.review_version_source(root, "abcdef1234567"))
+    run.refresh_versions(TR.T0)
+    assert run.arm_state[ARM]["version"] == 1 and run.arm_state[ARM]["vetoes"] == ("ret_15m < -5",) and not run.arm_halt
+    assert run.arm_state["CON-F"]["version"] == 0 and run.arm_state["CON-F"]["vetoes"] == ()
+    p = root / "manifests" / f"{ARM}.jsonl"
+    rows = RV._jsonl(p)
+    rows[1]["max_input_close_ms"] = cut
+    rows[1]["sha256"] = RV.manifest_hash(rows[1])
+    p.write_text("".join(RV.canon(r) + "\n" for r in rows))
+    run.refresh_versions(TR.T0 + 60_000)
+    assert run.arm_halt.get(ARM) == "input_after_cutoff"                  # fail closed: this arm's entries stop; nothing else does
+    assert not run.arm_halt.get("BIG-L") and not run.arm_halt.get("CON-P")
+
+
+def test_runner_local_veto_and_reviewer_vetoed_are_the_same_rule():
+    from tools import hv4_runner as R
+
+    cards = []
+    for i, (r15, nf, top10) in enumerate([(-9.0, 4.0, 0.2), (-2.0, 0.0, 0.5), (0.0, -3.0, 0.9), (12.5, 8.0, 0.1), (-5.0, 1.0, 0.31)]):
+        c = make_card(f"Eq{i}" + "1" * 38, 1000 + i, ret_15m=r15, net_flow_60m=nf)
+        c["risk"]["top10_frac"] = top10
+        cards.append(c)
+    cards.append({"id": "Bare" + "1" * 36, "as_of_ms": 1})                                     # no numeric fields at all
+    cards.append(make_card("Nul" + "1" * 37, 2, ret_15m=None))                                  # a null field is not a number
+    veto_lists = [(), ("ret_15m < -5",), ("ret_15m <= -5",), ("ret_15m >= 0 AND net_flow_60m > 5",), ("nosuchfield > 1",), ("not a predicate",), ("ret_15m < -5 OR 1",),
+                  ("__import__('os') > 1",), ("ret_15m > 99", "net_flow_60m < 0"), ("risk.top10_frac > 0.3", "ret_15m < 0"), ("top10_frac > 0.3",),
+                  ("a > 1 AND b > 1 AND c > 1 AND d > 1 AND e > 1",), ("ret_15m < -5" + " " * 300,), ("ret_15m < 1e999",), ("ret_15m < nan",), ("",), (None,)]
+    n_fired = 0
+    for vs in veto_lists:
+        for c in cards:
+            a, b = R.local_veto(vs, c), RV.vetoed(vs, c)
+            assert a == b, (vs, c["id"], a, b)
+            n_fired += a is not None
+    assert n_fired >= 8                                                                         # the comparison is not vacuous: vetoes do fire
+
+
+# ---------------------------------------------------------------- skip records and the pricer
+
+class FakePricer:
+    name = "fake"
+
+    def __init__(self, table):
+        self.table, self.calls = table, []
+
+    def price_many(self, items, persona, cutoff_ms):
+        self.calls.append(([k for k, _ in items], persona, cutoff_ms))
+        return {k: self.table.get(k) for k, _ in items}
+
+
+def skip_fixture(tmp_path, n=4, card_day_offset=0):
+    """A decision log with n skip rows on 2026-10-21 and their cards in the runner's card-store format."""
+    dec = tmp_path / "decisions" / ARM
+    dec.mkdir(parents=True)
+    cards = tmp_path / "cards"
+    cards.mkdir()
+    rows, store = [], []
+    for i in range(n):
+        c = make_card(f"Sk{i:02d}" + "1" * 38, PREV + (i + 1) * 300_000, ret_15m=-3.0 - i)
+        sha = pr.card_sha256(c)
+        rows.append({"seq": i, "arm": ARM, "ms": PREV + (i + 1) * 300_000 + 1500, "kind": "skip", "lane": "G", "pool": c["id"], "card_sha256": sha, "reasons": ["model_skip"]})
+        store.append({"sha": sha, "card": c})
+    rows.append({"seq": n, "arm": ARM, "ms": PREV + 5000, "kind": "skip", "lane": "H", "pool": "h", "card_sha256": store[0]["sha"], "reasons": ["x"]})     # lane H: not priced
+    rows.append({"seq": n + 1, "arm": ARM, "ms": PREV + 6000, "kind": "skip", "lane": "G", "pool": "z", "card_sha256": "f" * 64, "reasons": ["x"]})        # card not in the store
+    rows.append({"seq": n + 2, "arm": ARM, "ms": PREV + 7000, "kind": "skip", "lane": "G", "pool": store[1]["card"]["id"], "card_sha256": store[1]["sha"], "reasons": ["watch_cap"]})  # same card again
+    (dec / "2026-10-21.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (cards / f"{RV.utc_day(PREV - card_day_offset * 86_400_000)}.jsonl").write_text("".join(RV.canon(r) + "\n" for r in store))
+    return ["s" + r["card_sha256"][:15] for r in rows[:n]], store
+
+
+def test_skip_records_count_only_replays_that_finished_before_the_cutoff(tmp_path):
+    ids, _ = skip_fixture(tmp_path)
+    out = lambda close, key: {"close_ms": close, "exit_reason": "target", "hold_s": 90, "net_pct": 4.5}  # noqa: E731
+    fp = FakePricer({ids[0]: out(CUT - 1, 0), ids[1]: out(CUT, 1), ids[2]: out(CUT + 1, 2), ids[3]: None})
+    got = RV.load_skip_records(ARM, tmp_path, "2026-10-21", "CON", fp, CUT)
+    assert [r["id"] for r in got] == [ids[0]]                       # a replay closing at exactly the cutoff is out, like a trade
+    assert got[0]["kind"] == "skip" and got[0]["decision"]["reasons"] == ["model_skip"] and got[0]["net_pct"] == 4.5
+    assert len(fp.calls) == 1 and sorted(fp.calls[0][0]) == sorted(ids) and fp.calls[0][1:] == ("CON", CUT)   # one batch; lane H, missing card and the repeat are not priced
+    assert RV.load_skip_records(ARM, tmp_path, "2026-10-21", "CON", None, CUT) == []
+    assert RV.load_skip_records(ARM, tmp_path, "2026-10-21", "BST", fp, CUT) == []
+    b = RV.build_bundle(ARM, DAY, RV.v0_state("CON"), got)
+    assert [s["id"] for s in b.obj["skips"]] == [ids[0]] and b.obj["skips"][0]["replay"]["net_pct"] == 4.5 and b.max_input_close_ms == CUT - 1
+
+
+def test_a_card_shown_just_before_midnight_is_found_in_the_previous_days_store(tmp_path):
+    ids, _ = skip_fixture(tmp_path, card_day_offset=1)
+    fp = FakePricer({i: {"close_ms": CUT - 5, "exit_reason": "time", "hold_s": 5, "net_pct": -1.0} for i in ids})
+    assert len(RV.load_skip_records(ARM, tmp_path, "2026-10-21", "CON", fp, CUT)) == 4
+
+
+def test_a_night_with_a_pricer_records_it_in_the_manifest(root, tmp_path):
+    ids, store = skip_fixture(root)
+    fp = FakePricer({ids[0]: {"close_ms": CUT - 10_000, "exit_reason": "stop", "hold_s": 60, "net_pct": -9.0}})
+    row = RV.review_night(ARM, DAY, root=root, ledger_root=root / "ledger", model=StubModel(["[]"]), now_ms=CUT + 300_000, commit=SHA40, pricer=fp)
+    assert row["skip_pricer"] == "fake"
+    bundle = json.loads((root / "bundles" / ARM / f"{DAY}.json").read_text())
+    assert [x["id"] for x in bundle["skips"]] == [ids[0]] and bundle["skips"][0]["card"]["id"] == store[0]["card"]["id"]
+    assert night(root, [], arm="BIG-L")[0]["skip_pricer"] == "none"
+
+
+def physical_rows(TR):
+    """The runner test's synthetic tape with constant-product reserves: its own reserves keep the quote side fixed, which the strand rule "total" calls an invalid
+    exit. Here the pool moves along x*y=k, so a rise or fall in price changes both reserves, as it does on a real pool."""
+    rows = TR.trade_rows()
+    first: dict[str, float] = {}
+    for r in rows:
+        if r["type"] != "trade":
+            continue
+        price = (r["sol_lamports"] / 1e9) / (r["token_raw"] / 1e6)
+        p0 = first.setdefault(r["pool"], price)
+        q_eff = (60 * TR.SOL + TR.V) / 1e9 * (price / p0) ** 0.5
+        r["quote_reserve"] = int(q_eff * 1e9) - TR.V
+        r["base_reserve"] = int(q_eff / price * 1e6)
+    return rows
+
+
+def test_replay_pricer_prices_the_default_plan_on_the_arena_tape_and_counts_only_exits_before_the_cutoff(tmp_path):
+    from tools import test_hv4_runner as TR
+    from tools.hv4_review_replay import ArenaReplayPricer
+
+    TR.write_tape(tmp_path / "tape", physical_rows(TR))
+    p = ArenaReplayPricer(tmp_path / "tape", TR.FEED_DELAY_SLOTS, sps_fn=lambda: 0.4)
+    t = TR.X + TR.R.SCAN_SECOND_MS
+    cards = [("up", {"id": TR.POOLS[0], "as_of_ms": t, "f": {"age_tier": "established"}, "x": None}),
+             ("down", {"id": TR.POOLS[1], "as_of_ms": t, "f": {"age_tier": "established"}, "x": None})]
+    far = t + 3 * TR.H
+    full = p.price_many(cards, "CON", far)
+    assert p.price_many(cards, "CON", far) == full                                   # deterministic
+    up, down = full["up"], full["down"]
+    assert up["exit_reason"] == "target" and down["exit_reason"] == "stop"            # the v0 default plan: stop -7%, target +12%, time 45 min
+    assert up["net_pct"] > 0 > down["net_pct"] and abs(up["net_pct"]) < 20 and abs(down["net_pct"]) < 20
+    assert down["close_ms"] < up["close_ms"] < far and up["hold_s"] > down["hold_s"] > 0
+    assert RV.STAKE_SOL == 0.25 and "press" not in json.dumps(full)
+    # the cutoff: a replay whose exit fill lands at or after it is None; one millisecond later it counts
+    at_down = p.price_many(cards, "CON", down["close_ms"])
+    assert at_down["down"] is None and at_down["up"] is None
+    just = p.price_many(cards, "CON", down["close_ms"] + 1)
+    assert just["down"] == down and just["up"] is None
+    before_up = p.price_many(cards, "CON", up["close_ms"])
+    assert before_up["up"] is None and before_up["down"] == down
+    assert p.price_many(cards, "CON", up["close_ms"] + 1)["up"] == up
+    assert p.price_many([], "CON", far) == {}
+    with pytest.raises(RV.ReviewError):
+        p.price_many(cards, "BST", far)
+
+
+def test_hv4_review_replay_imports_no_r4b_l3_or_laya_module():
+    code = ("import sys\nsys.path.insert(0, %r)\nimport tools.hv4_review_replay\n"
+            "bad = sorted(k for k in sys.modules if any(f in k for f in ('r4b', 'laya', 'tools.l3', 'models.r4b')))\n"
+            "print('BAD', bad)\n" % str(REPO))
+    out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(REPO), capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-400:]
+    assert out.stdout.strip().endswith("BAD []"), out.stdout

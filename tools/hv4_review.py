@@ -331,36 +331,42 @@ class CardStore:
 
 
 class SkipPricer(Protocol):
-    def price(self, card: Mapping, plan: Mapping, persona: str, cutoff_ms: int) -> Mapping | None:
-        """The v0 default plan's outcome for this card: {"close_ms", "exit_reason", "hold_s", "net_pct"} (net_pct at 0.25 SOL, flat leg), or None when
-        the replayed exit did not finish before cutoff_ms or could not be priced. Replayed in arena_paper; never reads a pressure leg."""
+    name: str
+
+    def price_many(self, items: Sequence[tuple[str, Mapping]], persona: str, cutoff_ms: int) -> Mapping[str, Mapping | None]:
+        """items: (key, card) pairs. For each key the v0 default plan's outcome on that card as an X arm would have run it:
+        {"close_ms", "exit_reason", "hold_s", "net_pct"} (0.25 SOL, flat leg), or None when no exit was DECIDED before cutoff_ms - EXIT_FILL_MS or the
+        trip could not be priced. Implemented by tools.hv4_review_replay.ArenaReplayPricer (an arena_paper replay); never reads a pressure leg."""
 
 
 def load_skip_records(arm: str, root: str | os.PathLike, day: str, persona: str, pricer: SkipPricer | None, cutoff_ms: int) -> list[dict]:
-    """Skipped decisions of `day` (the day before the review day), with the v0 default plan's replayed outcome. Without a pricer: none."""
-    if pricer is None:
+    """Skipped decisions of `day` (the day before the review day), with the v0 default plan's replayed outcome. The cards come from the runner's card
+    store (<root>/cards/<day>.jsonl, looked up by sha256 on `day` and the day before, since a card is stored on the day it was shown). Without a pricer: none.
+    A skip counts only if its replay's exit fill (exit decision + EXIT_FILL_MS) is before the cutoff."""
+    if pricer is None or persona == "BST":
         return []
     store = CardStore(root)
-    plan = dict(arms.PERSONA_SPECS[persona].plan_defaults)
-    out = []
+    prev = utc_day(day_start_ms(day) - 1)
+    found: dict[str, tuple[dict, dict]] = {}
     for row in _jsonl(Path(root) / "decisions" / arm / f"{day}.jsonl"):
         if row.get("kind") != "skip" or not row.get("card_sha256") or row.get("lane") == "H" or not row.get("pool"):
             continue
-        card = store.get(row["card_sha256"], day)
-        if card is None:
+        sid = "s" + row["card_sha256"][:15]
+        if sid in found:
             continue
-        res = pricer.price(card, plan, persona, cutoff_ms)
-        if res is None or not isinstance(res.get("close_ms"), int) or res["close_ms"] >= cutoff_ms:
+        card = store.get(row["card_sha256"], day) or store.get(row["card_sha256"], prev)
+        if card is not None:
+            found[sid] = (row, card)
+    res = pricer.price_many([(sid, card) for sid, (_row, card) in sorted(found.items())], persona, cutoff_ms) if found else {}
+    out = []
+    for sid, (row, card) in found.items():
+        o = res.get(sid)
+        if o is None or not isinstance(o.get("close_ms"), int) or o["close_ms"] >= cutoff_ms:
             continue
-        out.append({"id": "s" + row["card_sha256"][:15], "kind": "skip", "entry_ms": row["ms"], "close_ms": res["close_ms"], "card": card,
-                    "decision": {"action": "SKIP", "reasons": [str(x)[:40] for x in row.get("reasons", [])][:6]}, "exit_reason": str(res["exit_reason"]),
-                    "hold_s": int(res["hold_s"]), "net_pct": _round(res["net_pct"], 4)})
-    seen, uniq = set(), []
-    for r in out:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            uniq.append(r)
-    return sorted(uniq, key=lambda r: (r["close_ms"], r["id"]))
+        out.append({"id": sid, "kind": "skip", "entry_ms": row["ms"], "close_ms": o["close_ms"], "card": card,
+                    "decision": {"action": "SKIP", "reasons": [str(x)[:40] for x in row.get("reasons", [])][:6]}, "exit_reason": str(o["exit_reason"]),
+                    "hold_s": int(o["hold_s"]), "net_pct": _round(o["net_pct"], 4)})
+    return sorted(out, key=lambda r: (r["close_ms"], r["id"]))
 
 
 def before_cutoff(records: Sequence[Mapping], cutoff_ms: int) -> list[dict]:
@@ -778,9 +784,10 @@ def build_bundle(arm: str, day: str, state: ArmState, records: Sequence[Mapping]
 # ---------------------------------------------------------------------------------------------------------------------------------------- manifests
 MANIFEST_FIELDS = ("schema", "seq", "arm", "version", "review_day", "cutoff_ms", "written_ms", "effective_from_ms", "max_input_close_ms", "commit", "model",
                    "reviewer_sha256", "playbook_sha256", "playbook_header_sha256", "knobs", "knobs_sha256", "vetoes", "vetoes_sha256", "bundle_sha256",
-                   "request_sha256", "response_sha256", "changes", "rejected", "reply_error", "review_error", "shown_ids", "truncation",
+                   "request_sha256", "response_sha256", "changes", "rejected", "reply_error", "review_error", "shown_ids", "truncation", "skip_pricer",
                    "prev_manifest_sha256", "sha256")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 
 
 def manifest_hash(row: Mapping) -> str:
@@ -814,7 +821,7 @@ def genesis_manifest(arm: str, clock_start_ms: int, commit: str) -> tuple[dict, 
            "effective_from_ms": clock_start_ms, "max_input_close_ms": 0, "commit": commit, "model": DEFAULT_MODEL, "reviewer_sha256": tsha,
            "playbook_sha256": st.playbook.sha256, "playbook_header_sha256": st.playbook.header_sha256, "knobs": dict(st.knobs), "knobs_sha256": st.knobs_sha256(),
            "vetoes": [], "vetoes_sha256": st.vetoes_sha256(), "bundle_sha256": None, "request_sha256": None, "response_sha256": None, "changes": [], "rejected": [],
-           "reply_error": None, "review_error": None, "shown_ids": [], "truncation": None, "prev_manifest_sha256": GENESIS}
+           "reply_error": None, "review_error": None, "shown_ids": [], "truncation": None, "skip_pricer": None, "prev_manifest_sha256": GENESIS}
     row["sha256"] = manifest_hash(row)
     return row, st
 
@@ -833,8 +840,13 @@ def check_manifest(row: Mapping, prev: Mapping | None, arm: str, *, reviewer_sha
         no("arm_or_model")
     if reviewer_sha256 is not None and row["reviewer_sha256"] != reviewer_sha256:
         no("reviewer_instructions_changed")
-    if frozen_sha is not None and not str(row["commit"]).startswith(frozen_sha[:12]):
-        no("commit_not_frozen_sha")
+    commit = row["commit"]
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        no("commit_format")
+    if frozen_sha is not None:  # the book is the code at ONE commit: every line must name the frozen sha (one may be an abbreviation of the other)
+        f = str(frozen_sha).lower()
+        if not COMMIT_RE.fullmatch(f) or not (commit.startswith(f) or f.startswith(commit)):
+            no("commit_not_frozen_sha")
     want_prev = GENESIS if prev is None else prev["sha256"]
     if row["prev_manifest_sha256"] != want_prev:
         no("chain_broken")
@@ -962,7 +974,7 @@ def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_te
 
 
 def make_manifest(arm: str, day: str, prev: Mapping, state: ArmState, bundle: Bundle, result: ChangeResult, *, written_ms: int, commit: str,
-                  response_sha256: str | None, review_error: str | None) -> dict:
+                  response_sha256: str | None, review_error: str | None, skip_pricer: str | None = None) -> dict:
     cutoff = day_start_ms(day)
     _, tsha = review_system_text()
     row = {"schema": "hv4-manifest-1", "seq": prev["seq"] + 1, "arm": arm, "version": state.version, "review_day": day, "cutoff_ms": cutoff,
@@ -972,7 +984,7 @@ def make_manifest(arm: str, day: str, prev: Mapping, state: ArmState, bundle: Bu
            "vetoes_sha256": state.vetoes_sha256(), "bundle_sha256": bundle.sha256, "request_sha256": bundle.request.request_sha256(),
            "response_sha256": response_sha256, "changes": [dict(c) for c in result.accepted], "rejected": [[i, c] for i, c in result.rejected],
            "reply_error": result.reply_error, "review_error": review_error, "shown_ids": list(bundle.shown_ids),
-           "truncation": {**bundle.dropped, "request_bytes": bundle.request_bytes}, "prev_manifest_sha256": prev["sha256"]}
+           "truncation": {**bundle.dropped, "request_bytes": bundle.request_bytes}, "skip_pricer": skip_pricer, "prev_manifest_sha256": prev["sha256"]}
     row["sha256"] = manifest_hash(row)
     return row
 
@@ -986,7 +998,7 @@ def review_night(arm: str, day: str, *, root: str | os.PathLike, ledger_root: st
     spec = arms.ARMS[arm]
     if not spec.reviewer:
         raise ReviewError("no_reviewer_for_arm")
-    rows = verify_chain(root, arm, reviewer_sha256=review_system_text()[1])
+    rows = verify_chain(root, arm, reviewer_sha256=review_system_text()[1], frozen_sha=commit)
     if not rows:
         raise ManifestRefused("no_genesis_manifest")
     if any(r["review_day"] == day for r in rows):
@@ -1008,7 +1020,8 @@ def review_night(arm: str, day: str, *, root: str | os.PathLike, ledger_root: st
     result = validate_changes("" if err else reply.text, state, bundle.evidence) if not err else ChangeResult((), (), state, None)
     nv = head["version"] + 1
     nxt = ArmState(state.persona, nv, pr.playbook_from_text(state.persona, f"v{nv}", result.state.playbook.text), result.state.knobs, result.state.vetoes)
-    row = make_manifest(arm, day, head, nxt, bundle, result, written_ms=now_ms, commit=commit, response_sha256=reply.response_sha256, review_error=err)
+    row = make_manifest(arm, day, head, nxt, bundle, result, written_ms=now_ms, commit=commit, response_sha256=reply.response_sha256, review_error=err,
+                        skip_pricer=(getattr(pricer, "name", type(pricer).__name__) if pricer is not None else "none"))
     append_manifest(root, arm, row, nxt.playbook.text, bundle.text.encode("utf-8"))
     return row
 
@@ -1024,9 +1037,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--commit", default="")
     ap.add_argument("--clock-start-ms", type=int, default=0)
     ap.add_argument("--now-ms", type=int, default=None)
+    ap.add_argument("--feed-delay-slots", type=int, default=None, help="the feed delay d the stack charges (the manager pins it); with --tape-dir it turns on skip pricing")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, no key read, every reply is []")
     a = ap.parse_args(argv)
     now = a.now_ms if a.now_ms is not None else time.time_ns() // 1_000_000
+    if a.cmd in ("genesis", "run") and not COMMIT_RE.fullmatch(a.commit.lower()):
+        ap.error("--commit must be the frozen git sha (7 to 40 hex chars)")
     if a.cmd == "genesis":
         row, _st = genesis_manifest(a.arm, a.clock_start_ms, a.commit)
         append_manifest(a.root, a.arm, row, None, None)
@@ -1041,7 +1057,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     guard = BudgetGuard(a.root)
     model = StubModel(guard=guard) if a.stub else CallerModel(guard)
-    pricer = None  # the arena_paper replay adapter is not wired in this PR: skipped cards are left out and the manifest says so (truncation.skips = 0)
+    pricer = None
+    if a.feed_delay_slots is not None:
+        from tools.hv4_review_replay import ArenaReplayPricer  # lazy: the arena stack is imported only when skips are priced
+
+        pricer = ArenaReplayPricer(a.tape_dir, a.feed_delay_slots)
     row = review_night(a.arm, a.day or utc_day(now), root=a.root, ledger_root=a.ledger_root, model=model, now_ms=now, commit=a.commit, pricer=pricer)
     print(canon({"arm": a.arm, "day": row["review_day"], "version": row["version"], "accepted": len(row["changes"]), "rejected": row["rejected"],
                  "review_error": row["review_error"], "reply_error": row["reply_error"], "manifest": row["sha256"], "playbook": row["playbook_sha256"]}))
