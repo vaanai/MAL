@@ -51,6 +51,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -65,6 +66,7 @@ from tools.paper_curve_math import market_cap_sol, quote_buy, quote_sell, reserv
 from tools.r4b_book import fail_legs, mint_states, round_trip
 
 SCHEMA = "arena_trade_v1"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 ARENA_ROOT = "/data/mal/arena"
 LEDGER_ROOT = f"{ARENA_ROOT}/ledger"
 REGISTRY_PATH = f"{ARENA_ROOT}/bots.json"
@@ -113,6 +115,34 @@ def utc_day(ms: int) -> str:
     return datetime.fromtimestamp(int(ms) / 1000.0, timezone.utc).strftime("%Y-%m-%d")
 
 
+def line_bytes(row: Mapping[str, Any]) -> bytes:
+    """Canonical ledger line. A row with a top-level "kind" is written with it FIRST, so that `line.startswith(b'{"kind":"open"')` is exact: a bot's own
+    meta (nested) cannot forge a decision row for the outcome-blind count or the daily digest."""
+    if "kind" not in row:
+        return canon(row).encode()
+    rest = {k: v for k, v in row.items() if k != "kind"}
+    head = '{"kind":' + json.dumps(row["kind"], allow_nan=False)
+    return (head + ("," + canon(rest)[1:] if rest else "}")).encode()
+
+
+def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> None:
+    """DEC-031 section 1.2: frozen_sha is a commit on origin. git fetch origin, then `cat-file -e <sha>^{commit}` and a non-empty `branch -r --contains <sha>`.
+    Refuses otherwise. No git output is echoed (a remote URL can carry a credential)."""
+    r = str(repo or REPO_ROOT)
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", r, *args], capture_output=True, text=True, timeout=300)
+
+    f = git("fetch", "--quiet", "origin")
+    if f.returncode != 0:
+        raise ArenaRefused(f"cannot verify frozen_sha: git fetch origin failed (exit {f.returncode})")
+    if git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+        raise ArenaRefused(f"frozen_sha {sha} is not a commit (after fetch)")
+    b = git("branch", "-r", "--contains", sha)
+    if b.returncode != 0 or not b.stdout.strip():
+        raise ArenaRefused(f"frozen_sha {sha} is in no remote branch of origin")
+
+
 def _append_line(path: Path, obj: Mapping[str, Any]) -> None:
     """Append one strict-JSON line (flock, O_APPEND, fsync of the file and, on creation, of the directory)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +177,8 @@ def load_registry(path: str | os.PathLike = REGISTRY_PATH) -> dict[str, dict[str
 
 
 def register_bot(bot_id: str, frozen_sha: str, clock_start_ms: int, path: str | os.PathLike = REGISTRY_PATH, *, deciding_stake: float = 0.25,
-                 model_ids: tuple[str, ...] | list[str] = (), now_ms: int | None = None) -> dict[str, Any]:
+                 model_ids: tuple[str, ...] | list[str] = (), now_ms: int | None = None, verify_sha: bool = True,
+                 repo: str | os.PathLike | None = None) -> dict[str, Any]:
     """Register a book once, before its clock. Records registered_at_ms and REFUSES a clock_start_ms earlier than the registration instant. The same line again
     is a no-op; a different sha, clock, deciding stake or model ids for an existing bot_id is REFUSED (a new version is a new bot_id)."""
     if not bot_id or "/" in bot_id or bot_id.startswith("."):
@@ -171,6 +202,8 @@ def register_bot(bot_id: str, frozen_sha: str, clock_start_ms: int, path: str | 
             if old != entry:
                 raise ArenaRefused(f"bot {bot_id} is registered with {old}; a changed sha, clock, stake or model is a new bot_id, not an edit")
             return bots[bot_id]
+        if verify_sha:
+            verify_sha_on_origin(frozen_sha, repo)
         _append_line(p, dict(entry, kind="register", registered_at_ms=reg_ms))
     return load_registry(p)[bot_id]
 
@@ -217,7 +250,7 @@ class Ledger:
 
     def append(self, row: Mapping[str, Any]) -> bool:
         """True if written, False if the identical row is already there."""
-        line = canon(row).encode()
+        line = line_bytes(row)
         day = utc_day(row["decision_ms"]["entry"])
         p = self.path_for(row["bot_id"], day)
         new_dir = not p.parent.exists()
@@ -864,5 +897,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]

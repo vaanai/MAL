@@ -25,8 +25,10 @@ from tools.arena_paper import (
     curve_trip,
     load_registry,
     price_leg,
-    register_bot,
+    register_bot as _register_bot,
     stop_bot,
+    verify_sha_on_origin,
+    line_bytes,
 )
 from tools.r4b_book import fail_legs
 
@@ -34,6 +36,11 @@ FIX = Path(__file__).resolve().parent / "fixtures" / "arena_paper"
 CASES_SHA256 = "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58"
 LEGACY_MD5 = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output lines == md5 of sc.py's / the curve sim's expected lines (bit parity)
 BINDING_MD5 = "af48053427bd2c49089f99a237a1e781"  # same, binding stack (strand class + E1 floor), expected = sc.py + an independent layer
+def register_bot(*a, **k):
+    k.setdefault("verify_sha", False)  # tests use fake shas; the origin check has its own test
+    return _register_bot(*a, **k)
+
+
 KEYS = ("pnl13", "pnl19", "flat13", "flat19", "press13", "press19")
 V = 17_584_505_288
 T0 = 1_789_000_000_000
@@ -539,3 +546,50 @@ def test_curve_trip_miss_and_guard():
     assert (pnl, state, filled) == (-505_000.0, "guarded", False)  # completed curve: the buy cannot fill
     pnl, state, filled = curve_trip(250e6, 40e9, 7e14, 1e-8, 40e9, 7e14, send=505_000, rent=2_039_280, h_in=0.0, h_out=0.0)
     assert state == "guarded" and not filled and math.isclose(pnl, -505_000)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ frozen_sha on origin, kind-first lines
+def _git(repo, *args):
+    import subprocess
+
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env, check=True).stdout.strip()
+
+
+def test_register_bot_verifies_frozen_sha_is_a_commit_on_origin(tmp_path):
+    import subprocess
+
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(origin)], check=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
+    (clone / "a.txt").write_text("a")
+    _git(clone, "add", "a.txt")
+    _git(clone, "commit", "-q", "-m", "pushed")
+    _git(clone, "push", "-q", "origin", "HEAD:main")
+    pushed = _git(clone, "rev-parse", "HEAD")
+    (clone / "b.txt").write_text("b")
+    _git(clone, "add", "b.txt")
+    _git(clone, "commit", "-q", "-m", "local only")
+    local = _git(clone, "rev-parse", "HEAD")
+    reg = tmp_path / "bots.json"
+    verify_sha_on_origin(pushed, clone)
+    assert _register_bot("good", pushed, 10, reg, now_ms=0, repo=clone)["frozen_sha"] == pushed
+    for bad in (local, "0123abc4567def", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"):  # a local-only commit, an unknown short sha, an unknown full sha
+        with pytest.raises(ArenaRefused):
+            _register_bot("bad", bad, 10, reg, now_ms=0, repo=clone)
+    assert list(load_registry(reg)) == ["good"]  # nothing was appended for a refused sha
+    # a repo with no origin cannot verify: refused, not skipped
+    lone = tmp_path / "lone"
+    subprocess.run(["git", "init", "-q", str(lone)], check=True, capture_output=True)
+    with pytest.raises(ArenaRefused, match="fetch origin failed"):
+        _register_bot("lone", pushed, 10, reg, now_ms=0, repo=lone)
+    # the same registered line again is a no-op and does not need the network
+    assert _register_bot("good", pushed, 10, reg, now_ms=5, repo=lone)["registered_at_ms"] == 0
+
+
+def test_ledger_lines_carry_kind_first_so_meta_cannot_forge_a_decision(tmp_path):
+    row = {"schema": "s", "kind": "trade", "trade_id": "t", "bot_id": "botA", "decision_ms": {"entry": T0, "exit": None}, "meta": {"kind": "open", "x": 1}}
+    line = line_bytes(row)
+    assert line.startswith(b'{"kind":"trade",') and json.loads(line) == row and b'"kind":"open"' in line and not line.startswith(b'{"kind":"open"')
+    assert Ledger(tmp_path).append(row) and Ledger(tmp_path).append(row) is False
+    assert line_bytes({"kind": "x"}) == b'{"kind":"x"}' and line_bytes({"a": 1}) == b'{"a":1}'

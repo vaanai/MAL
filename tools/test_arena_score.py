@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from tools import arena_score as S
-from tools.arena_paper import Ledger, canon, register_bot
+from tools.arena_paper import Ledger, canon, register_bot as _register_bot, utc_day
 from tools.arena_score import (
     STEPS,
     Refused,
@@ -24,6 +24,13 @@ from tools.arena_score import (
 )
 from tools.arena_paper import book_fail_legs
 from tools.r4b_book import boot_lo, fail_legs
+
+
+
+def register_bot(*a, **k):
+    k.setdefault("verify_sha", False)  # tests use fake shas
+    return _register_bot(*a, **k)
+
 
 DAY = 86_400_000
 DAY0 = 1_789_000_000_000 - (1_789_000_000_000 % DAY)  # a UTC midnight
@@ -393,3 +400,47 @@ def test_multiplicity_counts_stopped_books_and_the_cli_prints_it(tmp_path, capsy
 
 def test_refused_is_an_exception_type():
     assert issubclass(Refused, Exception) and S.STEPS[0] == "clock_filter"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ fixed-intercept leg, daily digest
+def test_the_fixed_intercept_pressure_leg_is_printed_beside_the_refit_and_is_report_only(tmp_path):
+    res = read(tmp_path, positions(good_pnls()))
+    v = res["bots"]["botA"]
+    for k, c in v["books"]["0.25"]["cells"].items():
+        if k.startswith("press_"):
+            fx = c["fixed_intercept"]
+            assert fx["report_only"] is True and fx["intercept"] == STACK["press_intercept_provisional"] and fx["mean_p"] is not None
+        else:
+            assert c["fixed_intercept"] is None
+    text = render(res)
+    assert "fixed icpt -1.4200 (REPORT-ONLY, never decides)" in text
+    # it never decides: corrupt the fixed-intercept figure's inputs (the provisional intercept in the stored config) and the verdict is unchanged
+    sub = tmp_path / "b"
+    sub.mkdir()
+    rows = [dict(r, stack=dict(r["stack"], press_intercept_provisional=-30.0)) for r in positions(good_pnls())]
+    assert status_of(read(sub, rows)) == "PASS"
+
+
+def test_daily_digest_has_hashes_and_counts_only_and_parses_no_trade_line(tmp_path, capsys):
+    import hashlib
+
+    rows = positions(good_pnls(10), days=2) + [refused_row(1, 0)]
+    root, reg = setup(tmp_path, rows)
+    register_bot("botB", "bbb2222", DAY0, reg, now_ms=0)
+    day = utc_day(DAY0 + 3_600_000)
+    p = next((tmp_path / "ledger" / "botA").glob(f"trades-{day}.jsonl"))
+    with open(p, "a") as f:
+        f.write('{"kind":"trade", this line would raise if it were parsed\n')
+    assert main(["--ledger-root", root, "--registry", reg, "--daily-digest", "--day", day]) == 0
+    text = capsys.readouterr().out
+    data = p.read_bytes()
+    dec = b"".join(ln + b"\n" for ln in data.split(b"\n") if ln.startswith(b'{"kind":"open"') or ln.startswith(b'{"kind":"refused"'))
+    assert hashlib.sha256(data).hexdigest() in text and hashlib.sha256(dec).hexdigest() in text
+    dg = S.digest_day(root, reg, day)
+    a = dg["bots"]["botA"]
+    assert a["counts"] == {"open": 5, "trade": 6, "refused": 1} and a["lines"] == 12  # 5 positions, their 5 trades, 1 refused buy, and the poisoned line (counted by prefix, never parsed)
+    assert dg["bots"]["botB"] == {"ledger_sha256": None, "decision_log_sha256": None, "lines": 0, "counts": {}}
+    assert "net_lamports" not in text and "total_sol" not in text and "mean" not in text and "ci90" not in text
+    assert main(["--ledger-root", root, "--registry", reg, "--daily-digest"]) == 2  # --day is required
+    with pytest.raises(ValueError):
+        S.digest_day(root, reg, "26-09-2026")

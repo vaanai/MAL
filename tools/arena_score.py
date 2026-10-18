@@ -41,6 +41,9 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+import hashlib
+from datetime import datetime
+
 from tools.arena_paper import (
     LEDGER_ROOT,
     REGISTRY_PATH,
@@ -74,7 +77,7 @@ def load_decisions(ledger_root: str | Path, bot_id: str) -> list[int]:
     d = Path(ledger_root) / bot_id
     for p in sorted(d.glob("trades-*.jsonl")) if d.exists() else []:
         for line in p.read_text().splitlines():
-            if '"kind":"open"' in line or '"kind":"refused"' in line:
+            if line.startswith('{"kind":"open"') or line.startswith('{"kind":"refused"'):
                 out.append(int(json.loads(line)["decision_ms"]["entry"]))
     return out
 
@@ -125,6 +128,12 @@ def cell_verdict(s: Mapping[str, Any]) -> dict[str, Any]:
     return {"pass": not miss, "misses": miss}
 
 
+def _legs(rule: str, pnl, fil, strand, ssb, near, send, intercept=None):
+    if rule == "total":
+        return book_fail_legs(pnl, fil, strand, ssb, near, send, intercept=intercept)
+    return fail_legs(pnl, fil, ssb, near, send, intercept=intercept)
+
+
 def book_cells(trades: Sequence[Mapping[str, Any]], rules: Sequence[str]) -> dict[str, Any]:
     """All cells of one (bot, stake) book: model x latency x strand rule. The pressure intercept is refit here, on exactly these trades."""
     cells: dict[str, Any] = {}
@@ -138,14 +147,21 @@ def book_cells(trades: Sequence[Mapping[str, Any]], rules: Sequence[str]) -> dic
             ssb = np.array([r["calc"][lat]["ssb"] for r in trades], float)
             near = np.array([r["calc"][lat]["nearby_lamports"] for r in trades], float)
             send = float(trades[0]["stack"]["send"])
-            fn = book_fail_legs if rule == "total" else (lambda p, f, s, a, b, c: fail_legs(p, f, a, b, c))
-            flat, press, c, _ = fn(pnl, fil, strand, ssb, near, send)
+            flat, press, c, _ = _legs(rule, pnl, fil, strand, ssb, near, send)
+            c0 = float(trades[0]["stack"]["press_intercept_provisional"])
+            _, press_fx, _, p_fx = _legs(rule, pnl, fil, strand, ssb, near, send, intercept=c0)
             for i, r in enumerate(trades):  # the stored flat leg must equal the recomputed one (it has no book-level parameter)
                 if r["legs"][rule][f"flat_{lat}"]["net_lamports"] != float(flat[i]):
                     raise Refused(f"trade {r['trade_id']}: stored flat leg differs from the recomputed flat leg ({rule}, {lat})")
             for model, x in (("flat", flat), ("press", press)):
                 s = cell_stats(x, days)
-                cells[f"{model}_{lat}_{rule}"] = dict(s, **cell_verdict(s), intercept=float(c) if model == "press" else None, derived_last_n=int(derived.sum()),
+                fx = None
+                if model == "press":  # the fixed-intercept pressure leg, REPORT-ONLY beside the refit: it never decides
+                    sf = cell_stats(press_fx, days)
+                    fx = {"report_only": True, "intercept": c0, "mean_p": float(p_fx[fil].mean()) if fil.any() else None, "mean_sol": sf["mean_sol"],
+                          "total_sol": sf["total_sol"], "ci90_lo_sol": sf["ci90_lo_sol"], "ex_top3_sol": sf["ex_top3_sol"]}
+                cells[f"{model}_{lat}_{rule}"] = dict(s, **cell_verdict(s), intercept=float(c) if model == "press" else None, fixed_intercept=fx,
+                                                      derived_last_n=int(derived.sum()),
                                                       derived_last_share=float(derived.mean()) if len(trades) else None,
                                                       without_derived_last=dict(cell_stats(x[~derived], [d for d, k in zip(days, derived) if not k]),
                                                                                 report_only=True))
@@ -308,6 +324,44 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
             "bots_refused": refused, "bots": bots}
 
 
+KINDS = ("open", "refused", "trade", "excluded", "late_print")
+
+
+def digest_day(ledger_root: str | Path, registry: str, day: str, only: str | None = None) -> dict[str, Any]:
+    """Per bot_id: sha256 of the day's ledger file, sha256 of its decision log (the open and refused lines, in file order, byte for byte) and line counts by
+    kind. Counts only: no row is parsed, so no fill, exit or P&L is read. The manager posts this to the notebook (DEC-031 section 1.2)."""
+    datetime.strptime(day, "%Y-%m-%d")
+    out: dict[str, Any] = {"day": day, "bots": {}}
+    for b in sorted(load_registry(registry)):
+        if only and b != only:
+            continue
+        p = Path(ledger_root) / b / f"trades-{day}.jsonl"
+        if not p.exists():
+            out["bots"][b] = {"ledger_sha256": None, "decision_log_sha256": None, "lines": 0, "counts": {}}
+            continue
+        data = p.read_bytes()
+        dec, counts, n = hashlib.sha256(), Counter(), 0
+        for line in data.split(b"\n"):
+            if not line:
+                continue
+            n += 1
+            for k in KINDS:
+                if line.startswith(b'{"kind":"' + k.encode() + b'"'):
+                    counts[k] += 1
+                    if k in ("open", "refused"):
+                        dec.update(line + b"\n")
+                    break
+        out["bots"][b] = {"ledger_sha256": hashlib.sha256(data).hexdigest(), "decision_log_sha256": dec.hexdigest(), "lines": n, "counts": dict(counts)}
+    return out
+
+
+def render_digest(dg: Mapping[str, Any]) -> str:
+    L = [f"ARENA DAILY DIGEST {dg['day']} (sha256 of the day's files and counts only; no P&L)"]
+    for b, v in dg["bots"].items():
+        L.append(f"{b}  ledger_sha256 {v['ledger_sha256']}  decision_log_sha256 {v['decision_log_sha256']}  lines {v['lines']}  counts {canon(v['counts'])}")
+    return "\n".join(L)
+
+
 def render(res: Mapping[str, Any]) -> str:
     L = [f"ARENA GATE READ (a PREVIEW unless recorded with --record)  now {res['now_ms']}",
          f"multiplicity: {res['arena_books_with_clock_before_read']} books in bots.json with a clock before the read ({res['arena_books_registered']} registered, "
@@ -338,9 +392,13 @@ def render(res: Mapping[str, Any]) -> str:
                      f"refused {bk['refused']}  excluded+refused share {f(bk['excluded_share'])}")
             for k, c in bk.get("cells", {}).items():
                 icpt = "" if c["intercept"] is None else f" icpt {c['intercept']:+.4f}"
+                fx = c.get("fixed_intercept")
                 L.append(f"    {k:16s} n {c['n']:4d} days {c['days']:2d} pos {c['days_pos']:2d} mean {f(c['mean_sol'])} total {f(c['total_sol'])} ci90lo {f(c['ci90_lo_sol'])} "
                          f"ex-top3 {f(c['ex_top3_sol'])} ex-best-day {f(c['ex_best_day_sol'])} derived_last {c['derived_last_n']} ({f(c['derived_last_share'])}){icpt} "
                          f"{'pass' if c['pass'] else 'fail'}")
+                if fx:
+                    L.append(f"      fixed icpt {fx['intercept']:+.4f} (REPORT-ONLY, never decides): mean p {f(fx['mean_p'])} mean {f(fx['mean_sol'])} total {f(fx['total_sol'])} "
+                             f"ci90lo {f(fx['ci90_lo_sol'])} ex-top3 {f(fx['ex_top3_sol'])}")
             first = next(iter(bk.get("cells", {}).values()), None)
             if first:
                 L.append("    daily (first cell): " + ", ".join(f"{dd} n={x['n']} {x['sol']:+.4f}" for dd, x in first["daily"].items()))
@@ -355,8 +413,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--bot")
     ap.add_argument("--json")
     ap.add_argument("--now-ms", type=int)
+    ap.add_argument("--daily-digest", action="store_true", help="print, per bot, the sha256 of --day's decision log and ledger file plus counts (no P&L)")
+    ap.add_argument("--day", help="UTC day YYYY-MM-DD for --daily-digest")
     ap.add_argument("--record", action="store_true", help="write the one read of --bot (refused if already recorded or not ready)")
     a = ap.parse_args(argv)
+    if a.daily_digest:
+        if not a.day:
+            print("--daily-digest needs --day YYYY-MM-DD", file=sys.stderr)
+            return 2
+        dg = digest_day(a.ledger_root, a.registry, a.day, a.bot)
+        print(render_digest(dg))
+        if a.json:
+            with open(a.json, "w") as fh:
+                json.dump(dg, fh, indent=1, sort_keys=True, allow_nan=False)
+        return 0
     res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms)
     print(render(res))
     if a.json:

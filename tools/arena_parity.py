@@ -174,7 +174,7 @@ def build(hour: str) -> dict:
     prow = rows_for(c, f, "pumpswap", pick)
     tmp = tempfile.mkdtemp(prefix="arena_parity_")
     reg = os.path.join(tmp, "bots.json")
-    register_bot("parity-bot", "0123abc", 0, reg, now_ms=0)
+    register_bot("parity-bot", "0123abc", 0, reg, now_ms=0, verify_sha=False)
 
     def engine(cfg, name):
         return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_, now_fn=lambda: 2**62)
