@@ -244,6 +244,49 @@ def hour_start_ms(name: str) -> int | None:
         return None
 
 
+TAIL_BYTES = 256 * 1024
+
+
+def read_previous_run(out_dir: Path) -> dict[str, Any] | None:
+    """What the previous process left behind, for the process_restart gap: {"last_ms", "clean_stop", "torn_tail", "prev_pid"}, or None on a first run.
+    last_ms is the larger of the newest .jsonl's last parseable row time and the status file's updated_ms. A kill (OOM, MiScusi cancel, crash) leaves no
+    stop row, so a missing stop row is the normal sign of an unclean exit; either way the time until this start is a window with no feed."""
+    last_ms: int | None = None
+    clean_stop, torn, prev_pid = False, False, None
+    files = sorted(out_dir.glob("tape-*.jsonl"))
+    if files:
+        p = files[-1]
+        try:
+            size = p.stat().st_size
+            with open(p, "rb") as fh:
+                fh.seek(max(0, size - TAIL_BYTES))
+                data = fh.read()
+            torn = size > 0 and not data.endswith(b"\n")
+            lines = data.split(b"\n")
+            if size > TAIL_BYTES:
+                lines = lines[1:]  # the first piece of a tail read starts mid-line
+            for ln in reversed(lines):
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and isinstance(r.get("t_recv_ms"), int):
+                    last_ms, clean_stop = r["t_recv_ms"], r.get("type") == "stop"
+                    break
+        except OSError:
+            pass
+    try:
+        st = json.loads((out_dir / STATUS_NAME).read_text())
+        prev_pid = st.get("pid")
+        if isinstance(st.get("updated_ms"), int) and (last_ms is None or st["updated_ms"] > last_ms):
+            last_ms, clean_stop = st["updated_ms"], False
+    except (OSError, ValueError):
+        pass
+    if last_ms is None:
+        return None
+    return {"last_ms": last_ms, "clean_stop": clean_stop, "torn_tail": torn, "prev_pid": prev_pid}
+
+
 class Compactor:
     """Background thread: compress each CLOSED hour (tape-<hour>.jsonl -> .jsonl.zst) and delete the source after it verifies (tools.arena_zst).
     Ingest never waits for it. A leftover *.zst.tmp from a killed run is removed at start; closed hours left by an earlier run are picked up by
@@ -343,6 +386,7 @@ class TapeWriter:
         self.before_open: Callable[[], bool] | None = None  # set by the Feed: False = below the disk reserve, do not open the file
         self.latest_t = 0
         self.late_to_current = 0
+        self.torn_lines = 0
         self.lines = 0
         self.paused = False
         self.dropped = 0
@@ -382,8 +426,20 @@ class TapeWriter:
                 return False
             if self._fh:
                 self._fh.close()
+            torn = False
+            try:  # a killed process can leave a half-written last line: end it, so the next row does not fuse with it into one bad line
+                p = self.dir / name
+                if p.stat().st_size > 0:
+                    with open(p, "rb") as fh:
+                        fh.seek(-1, os.SEEK_END)
+                        torn = fh.read(1) != b"\n"
+            except OSError:
+                pass
             self._fh = open(self.dir / name, "a", encoding="utf-8")
             self._name = name
+            if torn:
+                self._fh.write("\n")
+                self.torn_lines += 1
         self._fh.write(json.dumps(clean(rec), separators=(",", ":"), allow_nan=False) + "\n")
         self._fh.flush()
         self.lines += 1
@@ -741,7 +797,7 @@ class Feed:
                              "pauses": self.pauses, "rows_dropped_total": w.dropped},
             "dedup_dropped": {p: s.stats.dedup_dropped for p, s in self.sources.items()}, "cross_dedup_dropped": self.counters["cross_dedup_dropped"],
             "decode_errors": self.counters["decode_errors"], "counters": dict(self.counters), "errors_logged_bytes": self.errlog.bytes,
-            "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(), "rows_late_to_current_hour": w.late_to_current,
+            "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(), "rows_late_to_current_hour": w.late_to_current, "torn_lines_ended": w.torn_lines,
             "compaction": {**self.compactor.snapshot(), "enabled": self.compress},
         }
 
@@ -883,9 +939,15 @@ async def run_live(args: argparse.Namespace) -> int:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, feed.stop.set)
+    prev = read_previous_run(out_dir)  # before anything is written: the window since the last process wrote is a gap, clean stop or not
+    if prev is not None:
+        feed.pending[("all", "process_restart")] = {"count": 1, "from_ms": min(prev["last_ms"], feed.started_ms), "to_ms": feed.started_ms,
+                                                    "from_slot": None, "to_slot": None, "clean_stop": prev["clean_stop"],
+                                                    "torn_tail": prev["torn_tail"], "prev_pid": prev["prev_pid"]}
     feed.emit_safe(feed.meta_row("start", schema=SCHEMA, code_sha=code_sha(), argv=redact_argv(sys.argv[1:]), out_dir=str(out_dir), pid=os.getpid(),
                             sockets=feed.sockets, commitment=args.commitment, keys="none", sends="none", gap_slots=GAP_SLOTS, silence_s=SILENCE_S,
                             min_free_pct=args.min_free_pct, compress=feed.compress))
+    feed.flush_pending(feed.wall())  # the process_restart record goes out now if the writer allows (else at the first tick after it does)
     try:
         await feed.run(max_seconds=args.max_seconds)
     finally:
