@@ -1048,7 +1048,7 @@ def test_real_arena_state_snapshot_feeds_a_card(tmp_path):
     snap = st.snapshot(POOL)
     assert isinstance(snap, hc.SnapshotLike)
     assert set(hc.SNAPSHOT_KEYS) <= set(snap), set(hc.SNAPSHOT_KEYS) - set(snap)  # the protocol still mirrors the real snapshot
-    assert snap["quote_wsol"] is True and "candle_retention_min" not in snap  # absent: the 240-min / 6 h fields stay null
+    assert snap["quote_wsol"] is True and snap["candle_retention_min"] == 360  # CANDLE_MIN since PR 709: the 240-min / 6 h fields are computable
     fr = hc.filters(snap, as_of_ms=scan)
     assert fr.checks["quote_wsol"]["ok"] and fr.checks["age_min"]["ok"] and fr.checks["prints_15m"]["ok"] and fr.checks["state_fresh"]["ok"]
     prints = list(st.pool(POOL).events)
@@ -1060,3 +1060,96 @@ def test_real_arena_state_snapshot_feeds_a_card(tmp_path):
     c = hc.build_card(snap, prints, ch, as_of_ms=scan, as_of_slot=snap["last_slot"] + 5)
     assert c["id"] == POOL and c["f"]["price"] == pytest.approx(snap["price"], rel=1e-5) and c["f"]["vstar"] == 0.0 and len(c["c1"]) == 20
     assert c["f"]["age_known"] is True and c["f"]["ret_60m"] is None  # 20 min of candles only: no 60-min reference yet
+
+
+# ---- BIG setups through the real ArenaState with 360-minute candles (PR 709 raised CANDLE_MIN to 360)
+def _big_state(tmp_path, price_at):
+    """A 7 h old PumpSwap pool, one 0.25 SOL buy a minute at the pre-trade price `price_at(k)` (k = minutes ago), and in the last 15 minutes a
+    0.5 SOL sell then a 1.0 SOL buy each minute. Disjoint buyer and seller wallets, so V* is 0. Returns (state, snapshot, prints, scan)."""
+    ast_mod = pytest.importorskip("tools.arena_state")
+    from datetime import datetime, timezone
+
+    t0, n, v = 1_790_316_000_000, 420, int(17.58 * SOL)  # t0 is an exact UTC hour boundary
+    wsol, mint, b = "So11111111111111111111111111111111111111112", "M" * 44, 10**15
+    rows = [{"v": 1, "type": "pool_create", "prog": "pumpswap", "slot": 900, "t_recv_ms": t0, "pool": POOL, "mint": mint, "quote_mint": wsol,
+             "signature": "pc", "event_index": 0}]
+
+    def trade(i, ms, buy, sol, who, p):
+        q_eff = int(p * 1e18)  # spot = (q_eff / 1e9) / (b / 1e6) = p
+        return {"v": 1, "type": "trade", "prog": "pumpswap", "slot": 2000 + len(rows), "t_recv_ms": ms, "signature": f"s{len(rows)}", "event_index": 0,
+                "venue": "pumpswap", "mint": mint, "pool": POOL, "trader": who.ljust(44, "1"), "side": "buy" if buy else "sell", "sol_lamports": sol,
+                "token_raw": int(sol / 1e9 / p * 1e6), "quote_reserve": q_eff - v, "base_reserve": b, "virtual_quote_reserves": v}
+
+    for i in range(n):
+        k, base = n - 1 - i, t0 + i * 60_000
+        p = price_at(k)
+        if k < 15:
+            rows.append(trade(i, base + 5_000, False, SOL // 2, f"S{i % 6}", p))
+            rows.append(trade(i, base + 10_000, True, SOL, f"B{i % 20}", p))
+        else:
+            rows.append(trade(i, base + 10_000, True, SOL // 4, f"B{i % 20}", p))
+    by: dict[str, list[str]] = {}
+    for r in rows:
+        name = "tape-" + datetime.fromtimestamp(r["t_recv_ms"] // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"
+        by.setdefault(name, []).append(json.dumps(r))
+    for name, lines in by.items():
+        (tmp_path / name).write_text("\n".join(lines) + "\n")
+    st = ast_mod.ArenaState(tmp_path, start_ms=0)
+    st.poll()
+    scan = st.now_ms + 500
+    return st, st.snapshot(POOL), list(st.pool(POOL).events), scan
+
+
+def _big_card(st, snap, prints, scan):
+    ch = base_chain(as_of_ms=scan - 100, holders_as_of_ms=scan - 1000, quote_sol_15m_ago=snap["reserves"]["quote_sol"],
+                    quote_sol_15m_ago_as_of_ms=scan - 15 * MIN)
+    slot = snap["last_slot"] + 5
+    f = hc.features(snap, prints, as_of_ms=scan)
+    fr = hc.filters(snap, as_of_ms=scan)
+    tags = hc.setups(f, pool_id=POOL, as_of_ms=scan)
+    return f, fr, tags, hc.code_vetoes(snap, prints, ch, as_of_ms=scan, as_of_slot=slot), (ch, slot)
+
+
+def test_breakout_fires_through_the_real_state_with_360_minute_candles(tmp_path):
+    st, snap, prints, scan = _big_state(tmp_path, lambda k: 7.0e-8 * (1 - 0.0005 * k))  # rising, so the last buy is the 6 h high
+    assert snap["candle_retention_min"] == 360 and len(snap["candles"]) == 360
+    f, fr, tags, vr, (ch, slot) = _big_card(st, snap, prints, scan)
+    assert fr.passed, fr.failed
+    assert f["hi_6h"] is not None and f["lo_6h"] is not None and f["ret_240m"] is not None and f["vol_6h"] > 0
+    assert f["close_vs_hi_6h"] >= hc.BREAKOUT_HI_FRAC and f["vol_15m"] >= hc.BREAKOUT_VOL_MULT * f["avg_vol_15m_6h"] and f["age_s"] >= hc.BREAKOUT_AGE_MIN_S
+    assert [(t.type, t.persona) for t in tags] == [("BREAKOUT", "BIG")]
+    assert vr.reasons == (), vr.reasons
+    c = hc.build_card(snap, prints, ch, as_of_ms=scan, as_of_slot=slot, setup=tags[0])
+    assert c["setup"]["type"] == "BREAKOUT" and c["f"]["ret_240m"] is not None and c["f"]["hi_6h"] is not None
+    # discriminating: the same snapshot read as a 120-minute one (key removed) has null 6 h fields and fires nothing
+    old = {k: v for k, v in snap.items() if k != "candle_retention_min"}
+    f_old = hc.features(old, prints, as_of_ms=scan)
+    assert f_old["hi_6h"] is None and f_old["ret_240m"] is None and hc.setups(f_old, pool_id=POOL, as_of_ms=scan) == []
+
+
+def test_second_wave_fires_through_the_real_state_with_360_minute_candles(tmp_path):
+    def price(k):  # high 6 h to 5 h ago, a long low, then a rebound ending at 2x the low
+        if k >= 300:
+            return 1.0e-7
+        if k >= 60:
+            return 3.0e-8
+        if k >= 15:
+            return 3.0e-8 + (5.0e-8 - 3.0e-8) * (60 - k) / 45
+        return 5.0e-8 + (6.0e-8 - 5.0e-8) * (15 - k) / 15
+
+    st, snap, prints, scan = _big_state(tmp_path, price)
+    f, fr, tags, vr, (ch, slot) = _big_card(st, snap, prints, scan)
+    assert fr.passed, fr.failed
+    assert f["lo_6h"] <= hc.SECONDWAVE_LO_OVER_HI_MAX * f["hi_6h"] and f["price"] >= hc.SECONDWAVE_CLOSE_OVER_LO_MIN * f["lo_6h"]
+    assert f["ret_15m"] >= hc.SECONDWAVE_RET15_MIN and f["rebound"] > 0.4
+    assert [(t.type, t.persona) for t in tags] == [("SECOND_WAVE", "BIG")]  # not BREAKOUT: the close is far below the 6 h high
+    assert vr.reasons == (), vr.reasons
+    assert hc.build_card(snap, prints, ch, as_of_ms=scan, as_of_slot=slot, setup=tags[0])["setup"]["persona"] == "BIG"
+
+
+def test_flat_pool_has_no_second_wave_through_the_real_state(tmp_path):
+    st, snap, prints, scan = _big_state(tmp_path, lambda k: 6.0e-8)  # flat: no 6 h low far under the high
+    f = hc.features(snap, prints, as_of_ms=scan)
+    assert f["hi_6h"] is not None
+    tags = hc.setups(f, pool_id=POOL, as_of_ms=scan)
+    assert "SECOND_WAVE" not in [t.type for t in tags]  # no 6 h low at or under 0.4 of the high

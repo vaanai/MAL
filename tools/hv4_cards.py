@@ -94,7 +94,7 @@ TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 # s2 veto 2, matched on the extension name with case and punctuation removed. TransferFee and DefaultAccountState are value-checked below.
 BANNED_EXTENSIONS = frozenset({"transferhook", "permanentdelegate", "nontransferable", "pausable", "pausableconfig"})
 
-DEFAULT_CANDLE_RETENTION_MIN = 120  # tools.arena_state.CANDLE_MIN today; 240-min returns and the 6 h fields stay null until it is raised
+DEFAULT_CANDLE_RETENTION_MIN = 120  # used only when a snapshot lacks candle_retention_min (ArenaState sets 360 since PR 709): then the 240-min / 6 h fields stay null
 NAME_MAX = 24
 EPS = 1e-9
 
@@ -118,7 +118,7 @@ class CardRefused(Exception):
 @runtime_checkable
 class SnapshotLike(Protocol):
     """Mirrors tools.arena_state.ArenaState.snapshot(key) at claude/arena-feed (PR 709, head 43d21ff): a read-only mapping. The keys this module
-    reads are SNAPSHOT_KEYS (all others are ignored); candle_retention_min is optional and absent there (ArenaState keeps CANDLE_MIN = 120).
+    reads are SNAPSHOT_KEYS (all others are ignored); candle_retention_min is 360 there (CANDLE_MIN); a snapshot without the key is read as retaining 120 min.
 
     quote_wsol is True | False | None (None = the pool's quote mint was never verified). Every SOL-denominated figure (reserves, window SOL,
     price, impact, candle volume) is in the pool's quote unit, which is SOL only when quote_wsol is True. This module therefore treats a
@@ -133,7 +133,7 @@ class SnapshotLike(Protocol):
 SNAPSHOT_KEYS = (  # every ArenaState.snapshot key this module reads; the contract test checks them against the real snapshot
     "id", "prog", "mint", "now_ms", "quote_wsol", "price", "reserves", "created_ms", "created_known", "age_s", "age_since_first_seen_s", "last_ms",
     "last_slot", "last_trade", "windows", "top_net", "creator", "creator_net_sol", "ath_ms", "complete_ms", "origin_create_ms", "drawdown_from_ath",
-    "name", "symbol", "candles",
+    "name", "symbol", "candles", "candle_retention_min",
 )
 PrintLike = Sequence[Any]  # (t_ms: int, sol_lamports: int, is_buy: bool, trader: str); tools.arena_state.Pool.events items
 
