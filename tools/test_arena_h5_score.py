@@ -195,6 +195,66 @@ def Strip_of(recs):
     return sc.Strip(of(recs, "strip")[0])
 
 
+class FeedDelayTests(Base):
+    """quant-proof (#708): a feed at confirmed commitment lags the chain, so landing must be measured on the CHAIN clock (the trigger print's block_time), not from the receipt
+    of the print: the feed delay is part of the age, recorded per row with the uncorrected and the corrected slots."""
+
+    @staticmethod
+    def detect_at(delta_ms):
+        def m(recs):
+            for r in recs:
+                if r["type"] == "trigger":
+                    r["t_detect_ms"] = r["block_time"] * 1000 + delta_ms
+        return m
+
+    def test_a_feed_two_seconds_behind_the_chain_lands_later_and_both_slots_are_recorded(self):
+        recs = records(mutate=self.detect_at(2_000))
+        o = of(recs, "outcome")[0]
+        t, sps = o["trigger_slot"], o["sps"]
+        m = self.rows(recs)[0]["meta"]
+        self.assertEqual((m["feed_delay_ms"], m["age_raw_ms"], m["age_clamped"], m["age_clock"]), (2_000, 2_000, False, "block_time_s"))
+        self.assertAlmostEqual(m["feed_delay_slots"], 2.0 / sps)  # d = 5 slots at 0.4 s
+        self.assertEqual(m["landing_slots_uncorrected"], {"1p3": t + 4, "1p9": t + 5})  # from the trigger print: ceil(1.3 / 0.4), ceil(1.9 / 0.4)
+        self.assertEqual(m["landing_slots"], {"1p3": t + math.ceil(3_300 / 400 - 1e-9), "1p9": t + math.ceil(3_900 / 400 - 1e-9)})  # 9 and 10: d = 5 slots later, ceil(latency) on top
+        for sfx in ("1p3", "1p9"):
+            self.assertGreaterEqual(m["landing_slots"][sfx] - m["landing_slots_uncorrected"][sfx], int(m["feed_delay_slots"]))
+        # the book does not get the delay for free: the same trade with the print received instantly lands earlier
+        m0 = self.rows(records(mutate=self.detect_at(0)))[0]["meta"]
+        self.assertEqual(m0["landing_slots"], m0["landing_slots_uncorrected"])
+        self.assertTrue(all(m["landing_slots"][k] > m0["landing_slots"][k] for k in m["landing_slots"]))
+
+    def test_the_corrected_landing_is_never_earlier_than_the_uncorrected_one(self):
+        for delta in (0, 1, 399, 400, 1_000, 1_999, 3_500):
+            rows = self.book(records(mutate=self.detect_at(delta)), name=f"h5-shadow-d{delta}").rows
+            m = rows[0]["meta"]
+            for sfx in ("1p3", "1p9"):
+                self.assertGreaterEqual(m["landing_slots"][sfx], m["landing_slots_uncorrected"][sfx], (delta, sfx))
+
+    def test_a_negative_age_is_host_versus_chain_clock_skew_it_is_clamped_flagged_and_counted(self):
+        res = self.book(records(mutate=self.detect_at(-700)))
+        m = res.rows[0]["meta"]
+        self.assertEqual((m["age_raw_ms"], m["feed_delay_ms"], m["age_clamped"]), (-700, 0, True))
+        self.assertEqual(m["landing_slots"], m["landing_slots_uncorrected"])  # floored at the uncorrected slot, never earlier
+        self.assertEqual(res.counts["age_clamped_to_zero"], 1)
+        self.assertEqual(sc.summarize(V1, res, 0)["age_clamped_to_zero"], 1)
+
+    def test_without_a_block_time_the_receipt_is_the_clock_and_the_row_and_the_counts_say_so(self):
+        def nobt(recs):
+            for r in recs:
+                if r["type"] == "trigger":
+                    r["block_time"] = None
+                    r["t_detect_ms"] = r["t_recv_ms"] + 50
+        res = self.book(records(mutate=nobt))
+        m = res.rows[0]["meta"]
+        self.assertEqual((m["age_clock"], m["feed_delay_ms"]), ("t_recv_ms", 50))
+        self.assertEqual(res.counts["age_no_block_time"], 1)
+
+    def test_the_trigger_age_limit_uses_the_same_chain_clock(self):
+        self.assertEqual(sc.trigger_age_ms({"t_detect_ms": 10_000_000, "block_time": 9_996, "t_recv_ms": 9_999_999}), 4_000)
+        self.assertEqual(sc.raw_trigger_age_ms({"t_detect_ms": 10_000_000, "block_time": 10_001, "t_recv_ms": 0}), -1_000)
+        self.assertEqual(sc.trigger_age_ms({"t_detect_ms": 10_000_000, "block_time": 10_001, "t_recv_ms": 0}), 0)
+
+
 class ExclusionTests(Base):
     def excluded(self, mutate, reason, bot=V1):
         res = self.book(records(mutate=mutate), bot)

@@ -12,8 +12,10 @@ A3 RULE: an A3 HALT flag ends both books' counted windows at the flag's instant 
 
 DECIDING STACK (DEC-031 s1.4, rev 2; tools/arena_h5_cost.py): 505,000 lamports per send, rent 2,039,280 per filled trip, the DEC-021 haircut with the E1 floor (the larger
 of the haircut and 384,022 lamports per 0.05 SOL of stake), the 1.15 spot guard, the strand class as a total loss, exit lag ceil(0.55 s / sps) slots and at least 2, flat 15%
-and pressure fail legs, entry latency 1.3 s and 1.9 s. LANDING is measured from the decision instant: age = t_detect_ms - block_time (whole seconds, so the age is overstated
-by 0 to 1 s: conservative), landing slot = trigger slot + ceil((age + latency) / sps). The states, the pressure inputs and the spot are recomputed from the shadow's `strip`
+and pressure fail legs, entry latency 1.3 s and 1.9 s. LANDING is measured from the decision instant on the CHAIN clock, so the feed delay is not free: age = t_detect_ms - block_time*1000, where block_time is the trigger print's
+on-chain Clock timestamp in whole seconds; the age is therefore the feed delay (a feed at confirmed commitment lags the chain) + the host's detect delay + 0 to 1 s of rounding (overstated, never
+understated), and landing slot = trigger slot + ceil((age + latency) / sps) ~ the trigger print's slot + d feed-delay slots + ceil(latency / sps), with d measured on every trade (age / (1000 sps)) instead of
+a configured constant. Each row records feed_delay_ms, feed_delay_slots, the uncorrected landing slots (from the trigger print's slot) and the corrected ones. The states, the pressure inputs and the spot are recomputed from the shadow's `strip`
 (pre-trade reserves from the trigger print to the end of the pool's life; `buys` from 50 slots before it) and `trigger` records. The deciding cell is the 1.9 s leg at the
 stake pinned in bots.json (0.30 SOL); 1.3 s and the other stakes (0.10, 0.25) are reported beside it and never decide. The pressure intercept that DECIDES is refit at the read,
 per bot and cell, on the counted 1.9 s set after exclusions (`refit`); the ledger's press_* values carry the frozen exploration intercept and are provisional.
@@ -87,11 +89,18 @@ DAY_MS = 86_400_000
 
 
 # ---------------------------------------------------------------------------------------------------------------- slots and states
-def trigger_age_ms(trig: dict) -> int:
-    """Decision instant minus the trigger print's block time (whole seconds; the age is overstated by 0 to 1 s). Without a block time: minus the receipt of the print."""
+def raw_trigger_age_ms(trig: dict) -> int:
+    """Decision instant (host wall clock) minus the trigger print's CHAIN time: the print's block_time, the on-chain Clock unix timestamp in whole seconds. This is the feed delay
+    (a feed at confirmed commitment lags the chain) plus the host's own detect delay plus the 0 to 1 s the whole-second timestamp rounds down: the age is overstated by 0 to 1 s
+    (about 0.5 s on average), never understated. Without a block time: minus the receipt of the print (then the feed delay is NOT in it: counted as `age_no_block_time`)."""
     base = trig.get("block_time")
     base_ms = int(base) * 1000 if base else int(trig["t_recv_ms"])
-    return max(0, int(trig["t_detect_ms"]) - base_ms)
+    return int(trig["t_detect_ms"]) - base_ms
+
+
+def trigger_age_ms(trig: dict) -> int:
+    """The raw age, floored at 0 (a negative age is host-versus-chain clock skew; counted as `age_clamped_to_zero` and flagged on the row)."""
+    return max(0, raw_trigger_age_ms(trig))
 
 
 def landing_slot(trigger_slot: int, sps: float, age_ms: int, latency_s: float) -> int:
@@ -319,7 +328,8 @@ def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict 
         raise Excluded("gap_flag")
     if trig.get("base_breaks_unresolved_settled") != 0:
         raise Excluded("base_breaks")
-    age = trigger_age_ms(trig)
+    raw_age = raw_trigger_age_ms(trig)
+    age = max(0, raw_age)
     if age > MAX_TRIGGER_AGE_MS:
         raise Excluded("trigger_age")
     if strip_rec is None:
@@ -336,22 +346,24 @@ def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict 
     legs: dict[str, dict] = {}
     for shadow_leg, sfx, lat in LEGS:
         land = landing_slot(tslot, sps, age, lat)
+        land_uncorrected = landing_slot(tslot, sps, 0, lat)  # measured from the trigger print's slot: what the shadow itself records, with the feed delay for free
         if bot.startswith("h5v2") and not bx_priced_v1:
             xtrig = bx10_exit_trigger(bx, o, land)
         else:
             xtrig = v1_slot
         if xtrig <= land:
-            legs[shadow_leg] = {"ok": False, "landing": land, "exit_trigger": xtrig}
+            legs[shadow_leg] = {"ok": False, "landing": land, "landing_uncorrected": land_uncorrected, "exit_trigger": xtrig}
             continue
         xland = xtrig + el
         qe, be, esrc = strip.state_at(land)
         qx, bx_, xsrc = strip.state_at(xland)
         ssb, nb = strip.pressure_at(land, sps)
-        legs[shadow_leg] = {"ok": True, "landing": land, "exit_trigger": xtrig, "exit_landing": xland, "qe": qe, "be": be, "qx": qx, "bx": bx_, "ssb": ssb, "nb": nb,
+        legs[shadow_leg] = {"ok": True, "landing": land, "landing_uncorrected": land_uncorrected, "exit_trigger": xtrig, "exit_landing": xland, "qe": qe, "be": be, "qx": qx, "bx": bx_, "ssb": ssb, "nb": nb,
                             "state_src": (esrc, xsrc)}
     if not legs[DECIDING_LEG]["ok"]:
         raise Excluded("exit_before_landing")
-    return {"legs": legs, "spot": spot, "age_ms": age, "sps": sps, "bx_priced_v1": bx_priced_v1, "el": el}
+    return {"legs": legs, "spot": spot, "age_ms": age, "age_raw_ms": raw_age, "age_clamped": raw_age < 0, "age_no_block_time": not trig.get("block_time"), "sps": sps,
+            "bx_priced_v1": bx_priced_v1, "el": el}
 
 
 def ledger_rows(bot: str, o: dict, trig: dict, priced: dict, start: dict, bx: dict | None, pool_rec: dict | None) -> list[dict]:
@@ -386,6 +398,9 @@ def ledger_rows(bot: str, o: dict, trig: dict, priced: dict, start: dict, bx: di
             "pool": o["pool"], "mint": o.get("mint"), "prog": "pumpswap", "stake_sol": lam / 1e9, "legs": legs,
             "report_only": {"h5_frozen_55k": _report_only_55k(bot, o, bx, priced, lam)},
             "meta": {"schema": SCHEMA, "stack": STACK, "variant": VARIANT, "start_ms": int(start["start_ms"]), "sps": sps, "age_ms": age, "spot": priced["spot"],
+                     "feed_delay_ms": age, "feed_delay_slots": age / (sps * 1000.0), "age_clock": "block_time_s" if not priced["age_no_block_time"] else "t_recv_ms",
+                     "age_raw_ms": priced["age_raw_ms"], "age_clamped": priced["age_clamped"],
+                     "landing_slots_uncorrected": {sfx: priced["legs"][sl]["landing_uncorrected"] for sl, sfx, _ in LEGS},
                      "exit_lag_slots": priced["el"], "exit_rule": ("330s" if bot.startswith("h5v1") else ("v1_exit_after_bx10_error" if priced["bx_priced_v1"] else "bx10")),
                      "landing_slots": {sfx: priced["legs"][sl]["landing"] for sl, sfx, _ in LEGS},
                      "state_src": {sfx: priced["legs"][sl].get("state_src") for sl, sfx, _ in LEGS},
@@ -488,6 +503,10 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 res.exclusions.append({"exclusion_id": f"{bot}:{pool}", "bot_id": bot, "pool": pool, "mint": trig.get("mint"), "reason": ex.reason, "decision_ms": decision,
                                        "frozen_sha": start.get("code_sha")})
                 continue
+            if priced["age_clamped"]:
+                res.counts["age_clamped_to_zero"] += 1
+            if priced["age_no_block_time"]:
+                res.counts["age_no_block_time"] += 1
             if priced["bx_priced_v1"]:
                 res.counts["bx10_error_priced_v1"] += 1
             dl = priced["legs"][DECIDING_LEG].get("state_src") or ()
@@ -514,7 +533,7 @@ def summarize(bot: str, res: BookResult, now_ms: int) -> dict[str, Any]:
     bshare = res.boost_before_exit / res.boost_known if res.boost_known else None
     return {"attempts": attempts, "counted": res.counts["counted"], "excluded": n_exc, "excluded_share": share, "not_decidable": share > EXCLUDED_CAP,
             "excluded_by_reason": {r: res.counts[f"excluded_{r}"] for r in EXCLUSION_REASONS if res.counts[f"excluded_{r}"]},
-            "open": res.counts["open"], "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
+            "open": res.counts["open"], "age_clamped_to_zero": res.counts["age_clamped_to_zero"], "age_no_block_time": res.counts["age_no_block_time"], "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
             "skipped_after_window": res.counts["skipped_after_window"], "duplicate_pool": res.counts["duplicate_pool"],
             "sealed_decision_only": res.counts["sealed_decision_only"], "refused_dirs": dict(res.refused),
             "restarts": res.restarts, "downtime_ms": res.downtime_ms, "read_instant_ms": ri, "read_reached": ri is not None,
