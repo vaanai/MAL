@@ -561,7 +561,7 @@ class RpcConfig:
             return cls.helius(env, env_files)
         return cls.public()
 
-    def secrets(self) -> list[str]:
+    def private_values(self) -> list[str]:
         return [self._url, self._key] if self.provider != "public" else []
 
 
@@ -586,11 +586,11 @@ class RpcClient:
                  post: Callable[[str, dict[str, Any], float], dict[str, Any]] = _http_post, sleep: Callable[[float], None] = time.sleep,
                  now_ms: Callable[[], int] = _wall_ms, attempts: int = 3, timeout_s: float = 10.0, backoff_s: float = 1.0,
                  daily_call_cap: int = DEFAULT_DAILY_CALL_CAP) -> None:
-        self.config = config or RpcConfig.public()
+        self.config = config if config is not None else RpcConfig.public()
         self.provider = self.config.provider
-        self.bucket = bucket or TokenBucket(DEFAULT_RPS.get(self.provider, 2.0), burst=2.0, clock=time.monotonic, sleep=sleep)
+        self.bucket = bucket if bucket is not None else TokenBucket(DEFAULT_RPS.get(self.provider, 2.0), burst=2.0, clock=time.monotonic, sleep=sleep)
         self.method_buckets = dict(method_buckets or {})
-        self.counter = counter or CreditCounter(self.provider, now_ms=now_ms)
+        self.counter = counter if counter is not None else CreditCounter(self.provider, now_ms=now_ms)
         self._post, self._sleep, self._now_ms = post, sleep, now_ms
         self.attempts, self.timeout_s, self.backoff_s = max(1, attempts), timeout_s, backoff_s
         self.daily_call_cap = daily_call_cap
@@ -609,7 +609,7 @@ class RpcClient:
             self.counter.record_wait(waited)
 
     def call(self, method: str, params: list[Any]) -> Any:
-        secrets = self.config.secrets()
+        private = self.config.private_values()
         last = "rpc_failed"
         for attempt in range(self.attempts):
             if self.counter.calls_today() >= self.daily_call_cap:
@@ -647,12 +647,12 @@ class RpcClient:
                     log.debug("hv4_chain %s ok provider=%s", method, self.provider)
                     return resp["result"]
             self.counter.record_error()
-            log.debug("hv4_chain %s failed provider=%s code=%s", method, self.provider, redact(last, secrets))
+            log.debug("hv4_chain %s failed provider=%s code=%s", method, self.provider, redact(last, private))
             if retry and attempt + 1 < self.attempts:
                 self._sleep(self.backoff_s * (2 ** attempt))
                 continue
             break
-        raise ChainError(redact(last, secrets))
+        raise ChainError(redact(last, private))
 
 
 # ======================================================================================================================
@@ -705,6 +705,8 @@ class Holders:
     top1_frac: float | None = None
     top10_frac: float | None = None
     excluded_frac: float | None = None  # excluded accounts seen in the top 20, as a share of supply
+    top1_float_frac: float | None = None  # same, over supply minus the excluded balances seen (None when that is not positive)
+    top10_float_frac: float | None = None
     n_listed: int = 0
     n_excluded: int = 0
     n_counted: int = 0
@@ -714,7 +716,8 @@ class Holders:
     as_of_ms: int | None = None
 
     def to_card_fields(self) -> dict[str, Any]:
-        return {"top1_frac": self.top1_frac, "top10_frac": self.top10_frac, "holders_excluded_frac": self.excluded_frac,
+        return {"top1_frac": self.top1_frac, "top10_frac": self.top10_frac, "top1_float_frac": self.top1_float_frac,
+                "top10_float_frac": self.top10_float_frac, "holders_excluded_frac": self.excluded_frac,
                 "holders_ok": self.ok, "holders_complete": self.listing_complete, "holders_as_of_slot": self.as_of_slot,
                 "holders_as_of_ms": self.as_of_ms}
 
@@ -794,8 +797,8 @@ class HV4Chain:
 
     def __init__(self, rpc: RpcClient | None = None, cache: TtlCache | None = None, *, commitment: str = "confirmed",
                  now_ms: Callable[[], int] = _wall_ms) -> None:
-        self.rpc = rpc or RpcClient(RpcConfig.from_env(), now_ms=now_ms)
-        self.cache = cache or TtlCache()
+        self.rpc = rpc if rpc is not None else RpcClient(RpcConfig.from_env(), now_ms=now_ms)
+        self.cache = cache if cache is not None else TtlCache()  # not `or`: an empty TtlCache is falsy (__len__)
         self.commitment = commitment
         self._now_ms = now_ms
 
@@ -878,6 +881,7 @@ class HV4Chain:
                         exclude_owners: Iterable[str] = (), exclude_accounts: Iterable[str] = (),
                         max_age_s: float = HOLDERS_MAX_AGE_S) -> Holders:
         """top1 and top10 share of total supply over the token accounts getTokenLargestAccounts lists (at most 20), after exclusion.
+        `*_float_frac` is the same amount over supply minus the excluded balances seen (the lab's normalisation is not in code: both are given).
 
         Shares are per token account, not per owner. `max_age_s` 900 serves the 15-minute refresh from cache; pass 0 at card time.
         `token_program` defaults to the mint's own (one cached getAccountInfo)."""
@@ -938,8 +942,12 @@ class HV4Chain:
             return Holders(mint=mint, ok=False, error="inconsistent_supply", as_of_slot=slot, as_of_ms=now)
         if len(top10) < 10 and not complete:
             return Holders(mint=mint, ok=False, error="top10_incomplete", as_of_slot=slot, as_of_ms=now)
-        return Holders(mint=mint, ok=True, error=None, supply_raw=supply, top1_frac=(top10[0][1] / supply) if top10 else 0.0,
-                       top10_frac=sum(a for _, a in top10) / supply, excluded_frac=out_amt / supply, n_listed=len(rows),
+        top1_amt, top10_amt = (top10[0][1] if top10 else 0), sum(a for _, a in top10)
+        float_supply = supply - out_amt
+        return Holders(mint=mint, ok=True, error=None, supply_raw=supply, top1_frac=top1_amt / supply, top10_frac=top10_amt / supply,
+                       top1_float_frac=(top1_amt / float_supply) if float_supply > 0 else None,
+                       top10_float_frac=(top10_amt / float_supply) if float_supply > 0 else None,
+                       excluded_frac=out_amt / supply, n_listed=len(rows),
                        n_excluded=sum(1 for r in rows if r[0] in excluded), n_counted=len(kept), listing_complete=complete,
                        top10=tuple(top10), as_of_slot=slot, as_of_ms=self._now_ms())
 
