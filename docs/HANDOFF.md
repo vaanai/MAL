@@ -62,6 +62,19 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
    - **Known gaps:**
      - BST is dormant until a synthetic-pool classifier is wired into `H5Signal(classifier=...)`.
      - holder_count is a wallets-net-long approximation and a neutral field.
+**Update 2026-10-18 ~07:45Z (after the hand-off was prepared):**
+- **A3 daily (job #1161, 07:11Z): HALT none.** All six flags were evaluated and clear, and the last slice median was 336.5 s (n 10). The H5 arena windows continue. Notebook n_DrI5e52IaymR4A. The slice watch is job #1162.
+- **Fee-arm watch (job #1163): OK.**
+- **Kalshi weather holdout: DONE, run once, and every tradeable rule FAILS.**
+  - M2 −5.08c, M3 −5.17c; M4's CI lower bound and worst-3 both fail; T1 is negative.
+  - The M1 maker pool is +0.67c, descriptive only: LAX-heavy, and simple quotes are adversely selected.
+  - Report: `/data/mal/hunt-1008/push-1016/hunt17/kalshi-weather-mm/REPORT.md`. Notebook n_e-kK7eslvH63CQ.
+  - Follow-ups:
+    - fix the historical candle parser in `tools/kalshi_public.py` (it reads `close_dollars`/`volume_fp`, but the historical tier returns `close`/`volume`);
+    - a forward book observer for LAX and NY;
+    - an M4-multi forward paper rule, frozen first.
+  - The weather-mm item below is therefore done.
+
 3. **Kalshi.**
    - **#1146 (candles, 7 cities, bounded windows):** when it completes, message the weather-mm agent a0f680d593d71124d to run the holdout once (hunt17/kalshi-weather-mm).
    - **#1145 (markets + fin/pubnum trades continuation):** when done, resume the kalshi-pubnum agent a844210f7b7536009 and the universe agent aafd58ba225514325.
