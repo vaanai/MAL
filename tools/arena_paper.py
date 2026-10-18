@@ -1082,7 +1082,11 @@ class ArenaEngine:
         return None
 
     def _exclusion(self, pos: Position, h: PoolHist, src: str, need: int) -> str | None:
-        """DEC-031 section 1.4: a logged data_loss gap in the decision-to-exit span, or a needed print without V, excludes the trade (counted, never priced)."""
+        """DEC-031 section 1.4: a logged data_loss gap in the decision-to-exit span, or a needed print without V, excludes the trade (counted, never priced).
+        A position whose open row has no call_feed_slot cannot take the 15% guard reference from the engine's own feed slot: it is excluded (guard_ref_missing,
+        counted, never priced) and the guard never falls back to a slot the bot named."""
+        if pos.call_feed_slot is None:
+            return "guard_ref_missing"
         if self._gap_hit(pos.prog, self._span(pos, need, src)) is not None:
             return "feed_gap"
         if pos.prog == "pumpswap":
@@ -1167,9 +1171,11 @@ class ArenaEngine:
         """The 15% guard reference slot: the engine's OWN latest feed slot at the buy() call (call_feed_slot), i.e. what a live executor would quote when it builds the
         transaction. The bot's decision_slot is ignored by the guard entirely (a bot must not pick its own slippage reference: an older slot with a higher earlier
         price would revert fewer buys, a future one would read prices it never saw); decision_slot can only push the LANDING later (sd = max(decision_slot, mapped
-        write instant)). Same convention as the stack: the reference price is the post-trade price of the last print BEFORE this slot. Rows written before the field
-        existed fall back to decision_slot."""
-        return pos.decision_slot if pos.call_feed_slot is None else pos.call_feed_slot
+        write instant)). Same convention as the stack: the reference price is the post-trade price of the last print BEFORE this slot. There is NO fallback: a position
+        without call_feed_slot (an open row from before the field existed) is refused here, and `_exclusion` writes it as an excluded trade (guard_ref_missing) first."""
+        if pos.call_feed_slot is None:
+            raise ArenaRefused(f"guard_ref_missing: position {pos.position_id} has no call_feed_slot: the guard reference is never taken from the bot's decision_slot")
+        return pos.call_feed_slot
 
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
         """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
@@ -1202,7 +1208,7 @@ class ArenaEngine:
                 "write_lag_ms": {"entry": pos.decision_ms - pos.stamp_ms, "exit": None if pos.exit_ms is None else pos.exit_ms - (pos.exit_stamp_ms or 0)},
                 "decision_slot": {"entry": pos.decision_slot, "exit": pos.exit_slot}, "effective_slot": {"entry": pos.sd, "exit": pos.xs},
                 "corrected_slot": {"entry": pos.sd + (self.cfg.feed_delay_slots or 0), "exit": None if pos.xs is None else pos.xs + (self.cfg.feed_delay_slots or 0)},
-                "feed_delay_slots": self.cfg.feed_delay_slots, "guard_ref_slot": self._ref_slot(pos),
+                "feed_delay_slots": self.cfg.feed_delay_slots, "guard_ref_slot": pos.call_feed_slot,
                 "pool": pos.pool, "mint": pos.mint, "prog": pos.prog, "stake_sol": s_sol, "bot_sol_in": pos.bot_sol_in, "exit_reason": pos.reason,
                 "meta": pos.meta, "state_src": src, "stack": dict(self.cfg.as_dict(), sps_entry=pos.sps_entry, sps_exit=pos.sps_exit),
                 "written_ms": self.now_fn()}

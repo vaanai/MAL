@@ -1255,3 +1255,41 @@ def test_a_torn_tail_hit_while_pricing_a_sell_halts_the_bot_once_not_once_per_fe
     with pytest.raises(LedgerCorrupt, match="halted"):
         eng.sell("botA", second, 1.0, tms(250), 250)
     assert _incidents(eng.ledger)[-1]["kind"] == "sell_refused"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the guard has no fallback reference
+def test_the_guard_refuses_a_position_without_call_feed_slot_instead_of_falling_back_to_the_bots_slot(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    pid = None
+    for r in _tape(hi=260):
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(100), 100)
+            eng.positions[pid].call_feed_slot = None  # a position whose open row has no call_feed_slot
+            with pytest.raises(ArenaRefused, match="guard_ref_missing"):
+                ArenaEngine._ref_slot(eng.positions[pid])  # the helper has no fallback to decision_slot
+        if r["slot"] == 200 and eng.positions.get(pid) is not None and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(200), 200)
+    ex = trades(eng, "excluded")
+    assert trades(eng) == [] and len(ex) == 3 and {x["exclusion_reason"] for x in ex} == {"guard_ref_missing"}  # refused, counted, never priced
+    assert eng.counters["excluded_guard_ref_missing"] == 1 and all(x["guard_ref_slot"] is None for x in ex)
+    assert eng.positions == {} and eng.last_error == {}  # a clean exclusion, not a pricing error left open
+
+
+def test_an_open_row_from_before_the_field_existed_recovers_without_a_guard_reference(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    for r in rows[:11]:
+        eng.on_row(r)
+    pid = eng.buy("botA", "P1", None, tms(100), 100)
+    p = eng.ledger.path_for("botA", utc_day(tms(100)))
+    lines = [json.loads(x) for x in p.read_text().splitlines()]
+    for x in lines:
+        x.pop("call_feed_slot", None)
+    p.write_text("".join(line_bytes(x).decode() + "\n" for x in lines))
+    eng2 = mk_arena(tmp_path / "ledger", eng.registry_path, eng.cfg, sps_fn=lambda: 0.4)
+    assert eng2.recover() == 1 and eng2.positions[pid].call_feed_slot is None
+    for r in rows[11:51]:
+        eng2.on_row(r)
+    eng2.sell("botA", pid, 1.0, tms(140), 140)  # the engine_restart exclusion does not need a reference and does not crash on the missing one
+    assert {x["exclusion_reason"] for x in trades(eng2, "excluded")} == {"engine_restart"} and all(x["guard_ref_slot"] is None for x in trades(eng2, "excluded"))
