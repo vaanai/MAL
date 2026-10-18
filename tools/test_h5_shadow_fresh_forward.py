@@ -431,20 +431,42 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "research" / "aren
 
 
 class ArenaScriptTests(unittest.TestCase):
-    """scripts/research/arena-h5.sh: POSIX sh, refuses anything but /data/mal/arena/h5-*, always passes --fresh-forward ARENA and nothing for the seals."""
+    """scripts/research/arena-h5.sh: POSIX sh, runs on mal-fast-0, refuses anything but $HOME/data/arena/h5-* and /data/mal/arena/h5-*, always passes --fresh-forward ARENA and
+    nothing for the seals, and refuses (exit 5 / 7) a checkout whose commit it cannot name or that has tracked-file changes."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-sh-"))
+        self.tmp = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-sh-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.fake = self.tmp / "fakepy"
-        self.fake.write_text('#!/bin/sh\nif [ "$1" = "-I" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\nprintf "SHA:%s\\n" "$H5_CODE_SHA"\n')
+        self.fake.write_text('#!/bin/sh\nif [ "$1" = "-I" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\nprintf "SHA:%s\\n" "$H5_CODE_SHA"\nprintf "DIRTY:%s\\n" "$H5_DIRTY"\n')
         self.fake.chmod(0o755)
-        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.tmp), "ARENA_H5_PYTHON": str(self.fake), "ARENA_H5_ALLOW_DIRTY": "1"}
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "ARENA_H5_PYTHON": str(self.fake), "ARENA_H5_ALLOW_DIRTY": "1", "ARENA_H5_ALLOW_ANY_HOST": "1"}
 
-    def sh(self, **env):
+    def sh(self, script=SCRIPT, **env):
         import subprocess
 
-        return subprocess.run(["sh", str(SCRIPT)], env={**self.env, **env}, capture_output=True, text=True)
+        e = {**self.env, **env}
+        e = {k: v for k, v in e.items() if v is not None}
+        return subprocess.run(["/bin/sh", str(script)], env=e, capture_output=True, text=True)
+
+    def checkout(self, git=True, dirty=False):
+        """A throwaway checkout holding a copy of the script (ROOT is two levels above it): a git repo with one commit, optionally with a modified tracked file."""
+        import subprocess
+
+        root = self.tmp / ("repo" if git else "nogit")
+        (root / "scripts" / "research").mkdir(parents=True)
+        shutil.copy(SCRIPT, root / "scripts" / "research" / "arena-h5.sh")
+        (root / "tracked.txt").write_text("a\n")
+        if git:
+            run = lambda *a: subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *a], check=True, capture_output=True)  # noqa: E731
+            run("init", "-q")
+            run("add", "-A")
+            run("commit", "-q", "-m", "x")
+            if dirty:
+                (root / "tracked.txt").write_text("b\n")
+        return root / "scripts" / "research" / "arena-h5.sh", root
 
     def test_it_is_posix_sh(self):
         import subprocess
@@ -453,43 +475,111 @@ class ArenaScriptTests(unittest.TestCase):
         text = SCRIPT.read_text()
         self.assertTrue(text.startswith("#!/bin/sh\n"))
         code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-        for bashism in ("PIPESTATUS", "[[", "<<<", "local ", "echo -e", "source ", "declare ", "=("):
+        for bashism in ("PIPESTATUS", "[[ ", "<<<", "local ", "echo -e", "source ", "declare ", "=(", "function "):
             self.assertNotIn(bashism, code, bashism)
 
     def test_refusals_come_before_anything_is_created(self):
-        for env in ({"ARENA_H5_OUT_DIR": "/tmp/x"}, {"ARENA_H5_OUT_DIR": "/srv/mal-h5-shadow"}, {"ARENA_H5_OUT_DIR": "/data/mal/arena/h5-a/../x"},
-                    {"ARENA_H5_OUT_DIR": "/data/mal/arena/other"}, {"ARENA_H5_OUT_DIR": str(self.tmp / "data" / "h5-shadow")},
-                    {"ARENA_H5_SOCKETS": "2"}, {"ARENA_H5_SOCKETS": "x"}, {"ARENA_H5_SYN_SOCKETS": "-1"}, {"ARENA_H5_MAX_SECONDS": "1;ls"}):
+        h = self.home
+        for env in ({"ARENA_H5_OUT_DIR": "/tmp/x"}, {"ARENA_H5_OUT_DIR": "/srv/mal-h5-shadow"}, {"ARENA_H5_OUT_DIR": "/srv/mal-h5-shadow/h5-x"},
+                    {"ARENA_H5_OUT_DIR": f"{h}/arena/h5-a/../x"}, {"ARENA_H5_OUT_DIR": f"{h}/data/arena/other"}, {"ARENA_H5_OUT_DIR": f"{h}/data/arena"},
+                    {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow"}, {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow-2026-10-18"}, {"ARENA_H5_OUT_DIR": f"{h}/data/h5-shadow/h5-x"},
+                    {"ARENA_H5_OUT_DIR": "/data/mal/arena/other"}, {"ARENA_H5_SOCKETS": "2"}, {"ARENA_H5_SOCKETS": "x"}, {"ARENA_H5_SYN_SOCKETS": "-1"},
+                    {"ARENA_H5_MAX_SECONDS": "1;ls"}, {"ARENA_H5_WS_URLS": "ws://a.example/"}, {"ARENA_H5_WS_URLS": "wss://a.example/?api-key=x"},
+                    {"ARENA_H5_WS_URLS": "wss://u:p@a.example/"}, {"ARENA_H5_WS_URLS": "wss://mainnet.helius-rpc.com/"}, {"ARENA_H5_WS_URLS": "wss://a.example/,http://b/"}):
             r = self.sh(**env)
             self.assertEqual(r.returncode, 2, (env, r.stderr))
             self.assertIn("refusing", r.stderr)
             self.assertNotIn("ARGV:", r.stdout)
+        self.assertEqual(sorted(p.name for p in h.iterdir()), [])  # the wrapper creates nothing: the Python process makes the dir after its own check
 
-    def test_a_good_run_passes_the_flag_and_no_seal_or_tip_option(self):
-        out = Path("/data/mal/arena") / f"h5-test-{os.getpid()}"
-        try:
-            out.mkdir(parents=True)
-        except OSError as e:
-            self.skipTest(f"/data/mal/arena not writable here: {e}")
-        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
-        r = self.sh(ARENA_H5_OUT_DIR=str(out), ARENA_H5_WS_URLS="wss://a.example/,wss://b.example/", ARENA_H5_MAX_SECONDS="120", ARENA_H5_SOCKETS="3",
-                    H5_TIP_DIR="/var/lib/mal/sealed/fast-trades-tip", H5_LOOK2_OBSERVED="EXP-024-Am2", H5_BX10_ENABLE="EXP-026", CAP_PICK_LIVE="/x")
+    def test_it_runs_on_mal_fast_0_only(self):
+        import socket
+
+        if socket.gethostname() == "mal-fast-0":
+            self.skipTest("this is mal-fast-0")
+        r = self.sh(ARENA_H5_ALLOW_ANY_HOST=None)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertIn("mal-fast-0", r.stderr)
+        self.assertNotIn("ARGV:", r.stdout)
+
+    def test_a_good_run_passes_the_flag_the_home_out_dir_two_endpoints_and_no_seal_or_tip_option(self):
+        out = self.home / "data" / "arena" / "h5-2026-10-19"
+        r = self.sh(ARENA_H5_OUT_DIR=str(out), ARENA_H5_MAX_SECONDS="120", H5_TIP_DIR="/var/lib/mal/sealed/fast-trades-tip", H5_LOOK2_OBSERVED="EXP-024-Am2",
+                    H5_BX10_ENABLE="EXP-026", CAP_PICK_LIVE="/x")
         self.assertEqual(r.returncode, 0, r.stderr)
         argv = [ln for ln in r.stdout.splitlines() if ln.startswith("ARGV:")][0][5:]
         self.assertIn("-m tools.h5_shadow", argv)
         self.assertIn("--fresh-forward ARENA", argv)
         self.assertIn(f"--out-dir {out}", argv)
         self.assertIn("--sockets 3", argv)
-        self.assertIn("--ws-url wss://a.example/ --ws-url wss://b.example/", argv)
+        self.assertIn("--ws-url wss://api.mainnet-beta.solana.com --ws-url wss://public.rpc.solanavibestation.com", argv)  # two distinct endpoints by default
         self.assertIn("--max-seconds 120", argv)
         for absent in ("--tip-dir", "--h5-look2-observed", "--bx10-enable"):
-            self.assertNotIn(absent, argv)  # the arena env of the old shadow is not forwarded
-        self.assertIn("fresh-forward ARENA", r.stdout)
+            self.assertNotIn(absent, argv)  # the old shadow's env is not forwarded
+        self.assertFalse(out.exists())  # the wrapper did not create it
 
-    def test_the_default_out_dir_is_dated_under_the_arena_root(self):
-        text = SCRIPT.read_text()
-        self.assertIn('OUT="${ARENA_H5_OUT_DIR:-/data/mal/arena/h5-shadow-$DAY}"', text)
-        self.assertIn('DAY="$(date -u +%Y-%m-%d)"', text)
+    def test_the_default_out_dir_is_dated_under_home_data_arena(self):
+        import re
+
+        r = self.sh()
+        argv = [ln for ln in r.stdout.splitlines() if ln.startswith("ARGV:")][0][5:]
+        self.assertRegex(argv, re.escape(f"--out-dir {self.home}/data/arena/h5-") + r"\d{4}-\d{2}-\d{2} ")
+
+    def test_an_empty_endpoint_list_means_the_tools_single_default_and_a_custom_list_is_passed_through(self):
+        argv = lambda r: [ln for ln in r.stdout.splitlines() if ln.startswith("ARGV:")][0][5:]  # noqa: E731
+        self.assertNotIn("--ws-url", argv(self.sh(ARENA_H5_WS_URLS="")))
+        self.assertIn("--ws-url wss://a.example/x --ws-url wss://b.example/", argv(self.sh(ARENA_H5_WS_URLS="wss://a.example/x,wss://b.example/")))
+
+    def test_a_dirty_checkout_exits_5_a_clean_one_runs_and_names_its_commit(self):
+        import subprocess
+
+        script, root = self.checkout(dirty=True)
+        r = self.sh(script, ARENA_H5_ALLOW_DIRTY=None)
+        self.assertEqual(r.returncode, 5, r.stderr)
+        self.assertIn("tracked-file changes", r.stderr)
+        self.assertNotIn("ARGV:", r.stdout)
+        r = self.sh(script, ARENA_H5_ALLOW_DIRTY="1")  # allowed: runs, and says so
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("DIRTY:1", r.stdout)
+        clean_script, clean_root = self.checkout_clean()
+        r = self.sh(clean_script, ARENA_H5_ALLOW_DIRTY=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        head = subprocess.run(["git", "-C", str(clean_root), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertIn(f"SHA:{head}", r.stdout)
+        self.assertIn("DIRTY:\n", r.stdout)  # not set when clean
+
+    def checkout_clean(self):
+        import subprocess
+
+        root = self.tmp / "clean"
+        (root / "scripts" / "research").mkdir(parents=True)
+        shutil.copy(SCRIPT, root / "scripts" / "research" / "arena-h5.sh")
+        (root / "tracked.txt").write_text("a\n")
+        g = lambda *a: subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *a], check=True, capture_output=True)  # noqa: E731
+        g("init", "-q")
+        g("add", "-A")
+        g("commit", "-q", "-m", "x")
+        (root / "untracked.txt").write_text("u\n")  # untracked files are not changes
+        return root / "scripts" / "research" / "arena-h5.sh", root
+
+    def test_no_git_or_a_checkout_git_cannot_name_exits_7_unless_dirty_is_allowed(self):
+        script, root = self.checkout(git=False)
+        r = self.sh(script, ARENA_H5_ALLOW_DIRTY=None)
+        self.assertEqual(r.returncode, 7, r.stderr)
+        self.assertIn("cannot name the commit", r.stderr)
+        self.assertNotIn("ARGV:", r.stdout)
+        r = self.sh(script, ARENA_H5_ALLOW_DIRTY="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SHA:\n", r.stdout)  # empty: the start record's code_sha will be null and the scorer skips the dir
+        self.assertIn("DIRTY:1", r.stdout)
+        script, root = self.checkout()  # a real checkout, but git is not on the job's PATH
+        bindir = self.tmp / "bin-without-git"
+        bindir.mkdir()
+        for tool in ("dirname", "date", "env", "hostname"):
+            (bindir / tool).symlink_to(shutil.which(tool))
+        r = self.sh(script, ARENA_H5_ALLOW_DIRTY=None, PATH=str(bindir))
+        self.assertEqual(r.returncode, 7, r.stderr)
+        self.assertNotIn("ARGV:", r.stdout)
 
 
 if __name__ == "__main__":
