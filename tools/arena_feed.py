@@ -506,6 +506,9 @@ class ProgWatch:
         self.hw_slot: int | None = None
         self.last_ms = started_ms  # the start counts as the last sign of life: a feed that never delivers is flagged after SILENCE_S
         self.silence_open = False
+        self.silence_from: int | None = None
+        self.restart_from: int | None = None
+        self.hw_ms: int | None = None  # t_recv_ms of the notice that set hw_slot
         self.gaps = 0
         self.notices = 0
         self.prev: dict | None = None
@@ -517,24 +520,34 @@ class ProgWatch:
         return _row("gap", self.prog, self.hw_slot if self.hw_slot is not None else 0, at_ms, None, None, {"kind": kind, "data_loss": data_loss, **kw})
 
     def on_notice(self, slot: int, recv_ms: int) -> list[dict[str, Any]]:
+        """Every gap row has an explicit span [from_ms, to_ms] in t_recv_ms. A silence or a feed restart is written TWICE: open at detection
+        (closed false, to_ms = detection time) and closed when the feed delivers again (closed true, to_ms = that notice's t_recv_ms)."""
         out: list[dict[str, Any]] = []
         self.notices += 1
-        self.silence_open = False
+        if self.silence_open and self.silence_from is not None:
+            out.append(self._gap("silence", recv_ms, True, from_ms=self.silence_from, to_ms=recv_ms, closed=True, silent_ms=recv_ms - self.silence_from))
+        if self.restart_from is not None:
+            out.append(self._gap("feed_restart", recv_ms, True, from_ms=self.restart_from, to_ms=recv_ms, closed=True, reason="first_notice_after_restart"))
+            self.restart_from = None
+        self.silence_open, self.silence_from = False, None
         self.last_ms = recv_ms
         if self.hw_slot is not None and slot > self.hw_slot + GAP_SLOTS:
-            out.append(self._gap("slot_jump", recv_ms, True, from_slot=self.hw_slot, to_slot=slot, missed_slots=slot - self.hw_slot - 1))
+            out.append(self._gap("slot_jump", recv_ms, True, from_ms=self.hw_ms, to_ms=recv_ms, from_slot=self.hw_slot, to_slot=slot,
+                                 missed_slots=slot - self.hw_slot - 1))
         if self.hw_slot is None or slot > self.hw_slot:
-            self.hw_slot = slot
+            self.hw_slot, self.hw_ms = slot, recv_ms
         return out
 
     def tick(self, now: int) -> list[dict[str, Any]]:
         if not self.silence_open and now - self.last_ms > SILENCE_S * 1000:
-            self.silence_open = True
-            return [self._gap("silence", now, True, silent_ms=now - self.last_ms)]
+            self.silence_open, self.silence_from = True, self.last_ms
+            return [self._gap("silence", now, True, from_ms=self.last_ms, to_ms=now, closed=False, silent_ms=now - self.last_ms)]
         return []
 
     def feed_restart(self, now: int, reason: str) -> dict[str, Any]:
-        rec = self._gap("feed_restart", now, True, reason=reason)
+        """The source was rebuilt. The outage runs from the last notice to the first notice of the new source (a closed record follows then)."""
+        self.restart_from = self.last_ms if self.restart_from is None else self.restart_from
+        rec = self._gap("feed_restart", now, True, from_ms=self.restart_from, to_ms=now, closed=False, reason=reason)
         self.hw_slot = None
         self.prev = None
         return rec
@@ -563,7 +576,8 @@ class ProgWatch:
         def dd(a: dict, b: dict) -> dict:
             return {k: v - b.get(k, 0) for k, v in a.items() if v > b.get(k, 0)}
 
-        return [self._gap("socket_reconnect", now, data_loss, delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
+        span = (min(a for a, _ in pieces), max(b for _, b in pieces)) if pieces else (now, now)  # the common outage when link state knows it
+        return [self._gap("socket_reconnect", now, data_loss, from_ms=span[0], to_ms=span[1], delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
                           per_socket_delta=per_socket, delta_closes=dd(snap["closes"], prev["closes"]),
                           delta_rejections=dd(snap["rejections"], prev["rejections"]), delta_errors=dd(snap["errors"], prev["errors"]),
                           common_down_ms=sum(b - a for a, b in pieces))]
