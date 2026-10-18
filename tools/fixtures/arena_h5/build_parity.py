@@ -8,7 +8,8 @@ and exit states, the decision spot and the pressure inputs of both entry legs, f
 stakes 0.10, 0.25, 0.30 SOL. A fixed set of hand-made edge cases is appended (guard, invalid entry, the three invalid-exit causes, a stranded trip, a tiny stake).
 EXPECTED (parity_expected.jsonl). The reference is tools/r4b_book.py (round_trip, press_intercept, fail_legs) with the DEC-031 parameters: send 505,000, rent 2,039,280, the
 default haircut and guard, auto-stranding and C8 on, then the E1 charge as tools/r4b_read.price_variant does it (the larger of the haircut and 384,022 lamports per 0.05 SOL, linear
-in stake). One line per case: pnl (no-fail, after E1), state, flat, and per CELL (stake, latency) the refit intercept, p and press. PARITY.json records the reference files' sha256.
+in stake). One line per case: pnl (no-fail, after E1), state, flat, and per CELL (stake, latency) the refit intercept, p and press; and the same under the "sc" strand
+rule (no proceeds-below-a-send strand, no C8), the second half of the quant-proof config ruling strand=both. PARITY.json records the reference files' sha256.
 """
 
 from __future__ import annotations
@@ -82,7 +83,7 @@ def edge_cases() -> list[dict]:
     add("exit_c2_nan", Qx=None)
     add("exit_c2_low_q", Qx=17e9)
     add("exit_c2_tokens_ge_base", Bx=1e6)
-    add("exit_c7_real_quote_bound", Qx=17.6e9, Bx=2.0e14)
+    add("exit_c7_real_quote_bound", Qx=17.6e9, Bx=1.3e12)
     add("exit_c8_k_fall", Qx=30e9, Bx=2.0e14)
     add("stranded_proceeds_below_one_send", stake=1000, Qx=17.5e9 + 1e3, Bx=2.0e14)
     add("tiny_stake", stake=10_000)
@@ -93,18 +94,21 @@ def edge_cases() -> list[dict]:
 
 def reference(cases: list[dict]) -> tuple[list[dict], dict]:
     f = lambda x: float("nan") if x is None else float(x)  # noqa: E731
-    exp = []
-    for c in cases:
+
+    def one(c: dict, strand: str) -> dict:
         stake = np.array([float(c["stake"])])
         args = (stake, np.array([f(c["Qe"])]), np.array([f(c["Be"])]), np.array([f(c["spot"])]), np.array([f(c["Qx"])]), np.array([f(c["Bx"])]))
-        kw = dict(stranded=None, auto_stranded=True, return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
+        auto, ktol = (True, bk.F.K_TOL) if strand == "dec031" else (False, None)  # "sc": no proceeds-below-a-send strand, no C8
+        kw = dict(stranded=None, auto_stranded=auto, k_tol=ktol, return_stranded=True, return_invalid=True, return_exit_invalid=True, return_exit_cause=True)
         pnl, filled, st, bad, xbad, cause = bk.round_trip(*args, cost.SEND, cost.RENT, **kw)
         if filled[0] and not st[0]:
-            pnl0 = bk.round_trip(*args, cost.SEND, cost.RENT, h_in=0.0, h_out=0.0, stranded=None, auto_stranded=True)[0]
+            pnl0 = bk.round_trip(*args, cost.SEND, cost.RENT, h_in=0.0, h_out=0.0, stranded=None, auto_stranded=auto, k_tol=ktol)[0]
             extra = max(0.0, 384_022 * float(c["stake"]) / 50_000_000 - float(pnl0[0] - pnl[0]))
             pnl = pnl - extra
         state = "guarded" if not filled[0] else "entry_invalid" if bad[0] else "exit_invalid" if xbad[0] else "stranded" if st[0] else "filled"
-        exp.append({"id": c["id"], "pnl": float(pnl[0]), "state": state, "filled": bool(filled[0]), "cause": int(cause[0]) if state == "exit_invalid" else None})
+        return {"pnl": float(pnl[0]), "state": state, "filled": bool(filled[0]), "cause": int(cause[0]) if state == "exit_invalid" else None}
+
+    exp = [{"id": c["id"], **one(c, "dec031"), "sc": one(c, "sc")} for c in cases]
     cells: dict[str, list[int]] = {}
     for i, c in enumerate(cases):
         cells.setdefault(f"{c['stake']}|{c['lat']}", []).append(i)
@@ -116,8 +120,11 @@ def reference(cases: list[dict]) -> tuple[list[dict], dict]:
         nb = np.array([float(cases[i]["nb"]) for i in ix])
         flat, press, cc, p = bk.fail_legs(pnl, filled, ssb, nb, cost.SEND)
         cell_out[cell] = {"intercept": float(cc), "n": len(ix)}
+        flat_sc = np.array([float(exp[i]["sc"]["pnl"]) for i in ix])
+        flat2, press2, _, _ = bk.fail_legs(flat_sc, filled, ssb, nb, cost.SEND, intercept=cc)
         for j, i in enumerate(ix):
             exp[i].update({"flat": float(flat[j]), "press": float(press[j]), "p": float(p[j]), "cell": cell})
+            exp[i]["sc"].update({"flat": float(flat2[j]), "press": float(press2[j])})
     return exp, cell_out
 
 

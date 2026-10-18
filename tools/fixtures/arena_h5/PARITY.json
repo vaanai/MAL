@@ -1,0 +1,76 @@
+{
+ "ages_ms": [
+  0,
+  1200
+ ],
+ "built_at_git": "8408b21b50bc7479b2f5c4c2cc0b81e7b04970ab",
+ "cases_sha256": "934bd08a1dbcb08248980fe77e53812d1d8ad9225344842f3c22fe6353c43614",
+ "cells": {
+  "100000000|1p3": {
+   "intercept": -1.6703771661740334,
+   "n": 304
+  },
+  "100000000|1p9": {
+   "intercept": -1.7216047721743384,
+   "n": 304
+  },
+  "10000|1p9": {
+   "intercept": -2.393795531620559,
+   "n": 1
+  },
+  "1000|1p9": {
+   "intercept": -2.393795531620559,
+   "n": 1
+  },
+  "250000000|1p3": {
+   "intercept": -1.6633571671320762,
+   "n": 304
+  },
+  "250000000|1p9": {
+   "intercept": -1.7615346912476437,
+   "n": 316
+  },
+  "300000000|1p3": {
+   "intercept": -1.6633571671320762,
+   "n": 304
+  },
+  "300000000|1p9": {
+   "intercept": -1.7216047721743384,
+   "n": 304
+  }
+ },
+ "expected_sha256": "60f6f3ae2af8ac7412e9a031a34f8fb523094b58038390a4c1bd90a3e57ab72a",
+ "hours": [
+  "2026-09-20T00",
+  "2026-09-21T00"
+ ],
+ "n_cases": 1838,
+ "params": {
+  "guard": 1.15,
+  "h_in": 0.002608,
+  "h_out": 0.0016,
+  "k_tol": 0.001,
+  "rent": 2039280,
+  "send": 505000
+ },
+ "reference": {
+  "e1": "tools/r4b_read.py price_variant (max(haircut, 384,022 per 0.05 SOL), linear in stake)",
+  "frozen": "tools/r4b_frozen.py",
+  "frozen_sha256": "07cdb41abef9bd9061b0e9515150cbfd848de014b267b30309c6101c15c63a0b",
+  "module": "tools/r4b_book.py",
+  "sha256": "9c20de4073ea22f6cf61cb9528302fa22edbc64fb16685490284c4e5fb6b7513"
+ },
+ "stack": "DEC-031-rev2",
+ "stakes": [
+  100000000,
+  250000000,
+  300000000
+ ],
+ "states": {
+  "entry_invalid": 3,
+  "exit_invalid": 10,
+  "filled": 1466,
+  "guarded": 359
+ },
+ "tape": "/data/mal/audit-1008/tape"
+}

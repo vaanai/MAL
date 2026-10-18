@@ -14,7 +14,8 @@ THE STACK (DEC-031 s1.4, rev 2)
     loss attributed to live-minus-sim is the LARGER of the haircut and 384,022 lamports per 0.05 SOL of stake (linear in stake: 1,920,110 at 0.25 SOL).
   * Guard: a buy whose execution price is above 1.15 x the decision-time spot reverts and pays one send (not filled).
   * Strand class (a total loss of stake + the buy send + rent, no sell send, never dropped): an invalid entry state; an invalid exit state (C2 state, C7 real-quote bound,
-    C8 k-fall); or proceeds below one send fee.
+    C8 k-fall); or proceeds below one send fee. This is strand "dec031". The quant-proof config ruling (#708) is strand=BOTH: every leg is also priced under strand "sc"
+    (no proceeds-below-a-send test, no C8) and a cell passes only if it passes under both.
   * Fail legs: a filled send fails with probability 0.15 (flat) or p (pressure) and then costs one send fee, else it keeps its P&L. p = sigmoid(c + 0.8 ln(1 + same-slot buys)
     + 0.35 ln(1 + nearby buy SOL)); c is refit PER CELL (bot, stake, latency leg) at the read so that the mean p over the cell's filled sends is 0.289 (press_intercept).
 The H5 pre-registered stack (EXP-024 s6 / EXP-026: 55,000 lamports per send, no rent, no haircut, no E1 floor, no guard, no strand class) is kept as REPORT-ONLY legs:
@@ -65,8 +66,12 @@ def _finite(x: float) -> bool:
     return isinstance(x, (int, float)) and math.isfinite(x)
 
 
-def _trip(stake: float, qe: float, be: float, spot: float, qx: float, bx: float, send: float, rent: float, h_in: float, h_out: float) -> dict[str, Any]:
-    """tools.r4b_book.round_trip for one trip (auto_stranded on, C8 k_tol on): {pnl, state, cause, hair_ok}."""
+STRANDS = ("dec031", "sc")
+
+
+def _trip(stake: float, qe: float, be: float, spot: float, qx: float, bx: float, send: float, rent: float, h_in: float, h_out: float, strand: str = "dec031") -> dict[str, Any]:
+    """tools.r4b_book.round_trip for one trip: {pnl, state, cause}. strand "dec031" = auto_stranded on (proceeds below one send) and C8 (k-fall) on, the DEC-031 strand
+    class; "sc" = both off (arena_paper's strand_rule "sc": only an invalid entry and the C2 / C7 exit causes strand). A cell passes only under both (quant-proof, #708)."""
     stake = float(stake)
     bad = True
     tok = net = 0.0
@@ -90,26 +95,28 @@ def _trip(stake: float, qe: float, be: float, spot: float, qx: float, bx: float,
         gross = tokh * qa / (ba + tokh)
         if not gross <= qa - V_LO:
             cause = 7
-        elif qx * bx < qe * be * (1 - K_TOL):
+        elif strand == "dec031" and qx * bx < qe * be * (1 - K_TOL):
             cause = 8
         else:
             sv = gross * (1 - fee_ppm(qa, ba) / 1e6) * (1 - h_out)
     if cause is not None:
         return {"pnl": -stake - send - RENT_STRANDED, "state": "exit_invalid", "cause": cause}
-    if sv < send:
+    if strand == "dec031" and sv < send:
         return {"pnl": -stake - send - RENT_STRANDED, "state": "stranded", "cause": None}
     return {"pnl": sv - stake - 2 * send - rent, "state": "filled", "cause": None}
 
 
 def deciding_round_trip(stake: float, qe: float, be: float, spot: float, qx: float, bx: float, *, send: float = SEND, rent: float = RENT, h_in: float = H_IN,
-                        h_out: float = H_OUT, e1: bool = True) -> dict[str, Any]:
+                        h_out: float = H_OUT, e1: bool = True, strand: str = "dec031") -> dict[str, Any]:
     """One trip on the DEC-031 stack. (qe, be): the pool state the buy lands on (PRE-trade, Q incl. V); spot: the decision-time spot (lamports per raw token, Q/B);
     (qx, bx): the state the sell lands on. Returns {pnl, state, cause, e1_extra} with state one of filled, guarded, stranded, entry_invalid, exit_invalid. `pnl` is the
     NO-FAIL P&L in lamports after the E1 floor."""
-    t = _trip(stake, qe, be, spot, qx, bx, send, rent, h_in, h_out)
+    if strand not in STRANDS:
+        raise ValueError(f"strand {strand!r}")
+    t = _trip(stake, qe, be, spot, qx, bx, send, rent, h_in, h_out, strand)
     extra = 0.0
     if e1 and t["state"] == "filled":
-        t0 = _trip(stake, qe, be, spot, qx, bx, send, rent, 0.0, 0.0)
+        t0 = _trip(stake, qe, be, spot, qx, bx, send, rent, 0.0, 0.0, strand)
         hair = t0["pnl"] - t["pnl"]
         extra = max(0.0, e1_fixed(stake) - hair)
         t["pnl"] = t["pnl"] - extra

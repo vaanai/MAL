@@ -19,7 +19,7 @@ stake pinned in bots.json (0.30 SOL); 1.3 s and the other stakes (0.10, 0.25) ar
 per bot and cell, on the counted 1.9 s set after exclusions (`refit`); the ledger's press_* values carry the frozen exploration intercept and are provisional.
 REPORT-ONLY legs (row.report_only.h5_frozen_55k): the H5 pre-registered stack (55,000 per send, no rent, haircut, floor or guard) at the shadow's own landing and exit states.
 
-EXCLUSIONS (counted, never dropped silently; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool),
+EXCLUSIONS (counted, never dropped silently; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool anywhere from its first print to the end of the trade; a gap after the exit landing does not count),
 base_breaks (base_breaks_unresolved_settled not 0, the executor refuses it), trigger_age (decision more than 3,500 ms after the trigger's block time), strip (no strip, a
 truncated strip or a truncated buys list), exit_before_landing (the deciding leg's exit is not after its landing), incomplete (the outcome was cut by a stop or restart).
 If more than 5% of a book's attempts are excluded, the read is NOT_DECIDABLE (`not_decidable`). A bx10 error or a missing bx10 record is PRICED at v1's exit, not skipped.
@@ -245,8 +245,6 @@ def register_books(path: Path, *, frozen_sha: str, sockets: int, endpoints: Sequ
         raise ValueError("frozen_sha must be a 40-hex git sha")
     reg_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     clock = int(clock_start_ms) if clock_start_ms is not None else reg_ms
-    if clock < reg_ms:
-        raise ValueError("clock_start_ms is before registered_at_ms")
     out = {}
     for bot, rule in BOTS.items():
         bot_id = bot[:-2] + generation if generation != "a1" else bot
@@ -266,6 +264,8 @@ def register_books(path: Path, *, frozen_sha: str, sockets: int, endpoints: Sequ
                     raise ValueError(f"{bot_id} is registered with a different sha, clock or stake: a change is a new bot_id")
                 out[bot_id] = old
             else:
+                if clock < reg_ms:
+                    raise ValueError("clock_start_ms is before registered_at_ms")
                 bots[bot_id] = entry
         _atomic_write_json(path, {"bots": bots})
         return out
@@ -299,15 +299,23 @@ class Excluded(Exception):
         self.reason = reason
 
 
-def _gap_flagged(*recs: dict | None) -> bool:
-    return any(bool(r.get("gap")) for r in recs if r)
+def gap_in_span(trig: dict, o: dict, span_end_slot: int) -> bool:
+    """True when a feed gap flagged this pool at any point from its first print to the end of the trade (decision to exit landing, `span_end_slot`): DEC-031 s1.4 excludes
+    such a trade by that rule alone. The shadow lists the first 5 gaps in chronological order, each with from_slot when it is a slot jump; a gap without a slot (a socket
+    reconnect, a silence) or a flag without a list counts as inside. A gap that starts after the span (the pool's last seconds, up to s0 + 400 s) does not."""
+    if not (trig.get("gap") or o.get("gap")):
+        return False
+    gaps = list(trig.get("gaps") or []) + list(o.get("gaps") or [])
+    if not gaps:
+        return True
+    return any(g.get("from_slot") is None or int(g["from_slot"]) <= span_end_slot for g in gaps)
 
 
 def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict | None, pool_rec: dict | None, start: dict) -> dict[str, Any]:
     """Rows data of one pv trade for one bot (all stakes, both legs) or raises Excluded(reason). The exclusion order is the module doc's."""
     if not o.get("complete") or not (o.get("legs")):
         raise Excluded("incomplete")
-    if _gap_flagged(trig, o, pool_rec):
+    if gap_in_span(trig, o, int(o["exit"]["trigger_slot"]) + exit_lag_slots(float(o["sps"]))):
         raise Excluded("gap_flag")
     if trig.get("base_breaks_unresolved_settled") != 0:
         raise Excluded("base_breaks")
@@ -365,11 +373,14 @@ def ledger_rows(bot: str, o: dict, trig: dict, priced: dict, start: dict, bx: di
                 legs[f"press_{sfx}"] = {"net_lamports": None, "state": "exit_before_landing"}
                 continue
             t = cost.deciding_round_trip(lam, lg["qe"], lg["be"], priced["spot"], lg["qx"], lg["bx"])
+            t_sc = cost.deciding_round_trip(lam, lg["qe"], lg["be"], priced["spot"], lg["qx"], lg["bx"], strand="sc")
             p = cost.press_p(cost.H5_PRESS_INTERCEPT[shadow_leg], lg["ssb"], lg["nb"])
-            legs[f"flat_{sfx}"] = {"net_lamports": cost.flat_leg(t["pnl"], t["state"]), "nofail_lamports": t["pnl"], "state": t["state"], "p_fail": cost.FAIL_FLAT}
+            sc_flat = {"net_lamports": cost.flat_leg(t_sc["pnl"], t_sc["state"]), "nofail_lamports": t_sc["pnl"], "state": t_sc["state"]}
+            sc_press = {"net_lamports": cost.press_leg(t_sc["pnl"], t_sc["state"], p), "nofail_lamports": t_sc["pnl"], "state": t_sc["state"]}
+            legs[f"flat_{sfx}"] = {"net_lamports": cost.flat_leg(t["pnl"], t["state"]), "nofail_lamports": t["pnl"], "state": t["state"], "p_fail": cost.FAIL_FLAT, "sc": sc_flat}
             legs[f"press_{sfx}"] = {"net_lamports": cost.press_leg(t["pnl"], t["state"], p), "nofail_lamports": t["pnl"], "state": t["state"], "p_fail": p, "ssb": lg["ssb"],
                                     "nb_lamports": lg["nb"], "intercept": cost.H5_PRESS_INTERCEPT[shadow_leg], "intercept_kind": "frozen_report_only",
-                                    "provisional": True, "e1_extra": t["e1_extra"]}
+                                    "provisional": True, "e1_extra": t["e1_extra"], "sc": sc_press}
         rows.append({
             "trade_id": f"{bot}:{o['pool']}:{label}", "bot_id": bot, "frozen_sha": start.get("code_sha"), "decision_ms": decision_ms, "exit_ms": exit_ms,
             "pool": o["pool"], "mint": o.get("mint"), "prog": "pumpswap", "stake_sol": lam / 1e9, "legs": legs,
@@ -377,6 +388,7 @@ def ledger_rows(bot: str, o: dict, trig: dict, priced: dict, start: dict, bx: di
             "meta": {"schema": SCHEMA, "stack": STACK, "variant": VARIANT, "start_ms": int(start["start_ms"]), "sps": sps, "age_ms": age, "spot": priced["spot"],
                      "exit_lag_slots": priced["el"], "exit_rule": ("330s" if bot.startswith("h5v1") else ("v1_exit_after_bx10_error" if priced["bx_priced_v1"] else "bx10")),
                      "landing_slots": {sfx: priced["legs"][sl]["landing"] for sl, sfx, _ in LEGS},
+                     "state_src": {sfx: priced["legs"][sl].get("state_src") for sl, sfx, _ in LEGS},
                      "exit_trigger_slots": {sfx: priced["legs"][sl]["exit_trigger"] for sl, sfx, _ in LEGS},
                      "chain_breaks": o.get("chain_breaks"), "base_breaks": o.get("base_breaks"), "boost_src": trig.get("boost_src"),
                      "boost_last_slice_s": (pool_rec or {}).get("boost_last_slice_s")},
@@ -478,6 +490,9 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 continue
             if priced["bx_priced_v1"]:
                 res.counts["bx10_error_priced_v1"] += 1
+            dl = priced["legs"][DECIDING_LEG].get("state_src") or ()
+            if "post" in dl:
+                res.counts["derived_last_deciding_leg"] += 1  # a state taken after the pool's last print: counted at its value, never excluded (quant-proof, #708)
             res.counts["counted"] += 1
             res.rows.extend(ledger_rows(bot, o, trig, priced, trig["_start"], bx, d.pools.get(pool)))
             pr = d.pools.get(pool) or {}
@@ -499,7 +514,7 @@ def summarize(bot: str, res: BookResult, now_ms: int) -> dict[str, Any]:
     bshare = res.boost_before_exit / res.boost_known if res.boost_known else None
     return {"attempts": attempts, "counted": res.counts["counted"], "excluded": n_exc, "excluded_share": share, "not_decidable": share > EXCLUDED_CAP,
             "excluded_by_reason": {r: res.counts[f"excluded_{r}"] for r in EXCLUSION_REASONS if res.counts[f"excluded_{r}"]},
-            "open": res.counts["open"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
+            "open": res.counts["open"], "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
             "skipped_after_window": res.counts["skipped_after_window"], "duplicate_pool": res.counts["duplicate_pool"],
             "sealed_decision_only": res.counts["sealed_decision_only"], "refused_dirs": dict(res.refused),
             "restarts": res.restarts, "downtime_ms": res.downtime_ms, "read_instant_ms": ri, "read_reached": ri is not None,

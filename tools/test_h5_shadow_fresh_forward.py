@@ -18,10 +18,13 @@ from tools.test_h5_shadow import SOL, Tape, make_engine, types
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-def pool_tape(pool: str, slot0: int, ts0: int) -> Tape:
-    """One BOOST pool (the per-pool PDA buys 1 SOL every 25 slots from s0 + 5) that a dump at s0 + 200 drains to Q = 35 SOL: a trigger, with outcomes."""
+def pool_tape(pool: str, slot0: int, ts0: int, filler: bool = False) -> Tape:
+    """One BOOST pool (the per-pool PDA buys 1 SOL every 25 slots from s0 + 5) that a dump at s0 + 200 drains to Q = 35 SOL: a trigger, with outcomes.
+    `filler`: a 10,000-lamport buy every 25 slots from s0 + 32 on, so that no jump between prints reaches the engine's 30-slot gap threshold (the default tape has two)."""
     ev = [(slot0, "buy", "A", SOL // 10)] + [(slot0 + 5 + 25 * i, "buy", "PDA_" + pool, SOL) for i in range(18)]
     ev += [(slot0 + 200, "sell", "DUMP", None), (slot0 + 500, "sell", "Z", SOL // 2), (slot0 + 900, "buy", "W", SOL)]
+    if filler:
+        ev += [(slot0 + 7 + 25 * k, "buy", "FILL", 10_000) for k in range(1, 37)]
     t = Tape(pool=pool, slot0=slot0, ts0=ts0)
     for slot, side, trader, sol in sorted(ev, key=lambda e: e[0]):
         if sol is None:
@@ -32,7 +35,7 @@ def pool_tape(pool: str, slot0: int, ts0: int) -> Tape:
 
 def run_pools(eng, *tapes: Tape) -> None:
     for t in tapes:
-        eng.on_create_pool(t.pool, "Mint" + t.pool, h5.WSOL_MINT, t.slot0 - 1, 0)
+        eng.on_create_pool(t.pool, "Mint" + t.pool, h5.WSOL_MINT, t.slot0 - 1, t.rows[0]["t_recv_ms"])  # announced with its first print (a slot jump into it is detected on that print)
         for r in t.rows:
             eng.on_trade(r)
     eng.close_all("shutdown")

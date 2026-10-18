@@ -74,6 +74,7 @@ async def run(urls: list[str], seconds: float, commitment: str) -> dict:
         others = set().union(*[o["_sigs"] for o in res if o is not r]) if len(res) > 1 else set()
         r["distinct_signatures"] = len(r["_sigs"])
         r["also_on_other_endpoints"] = len(r["_sigs"] & others)
+    for r in res:
         del r["_sigs"]
     return {"seconds": seconds, "commitment": commitment, "program": "pumpswap", "results": res}
 
