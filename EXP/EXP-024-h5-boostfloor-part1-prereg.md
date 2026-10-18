@@ -1092,9 +1092,83 @@ The sell tier line, line A and line B; the 1,000-print sample, its frame and the
   - (iii) under DEC-028 Option B only, the real-time observation of the v2 canary's own fills, exits, wallet deltas and realized P&L, by the readers of DEC-024 §6.
 
   EXP-024's read tool is excluded from all three, and its inputs are unchanged.
+- **(b) Look 1 and Look 2 as written.** Look 1 and Look 2 are always read and reported as written. They are never skipped, delayed, withdrawn, re-filed, re-scoped or re-thresholded because of anything v2, its shadow, its canary or EXP-026's verdict shows. The guard sentences of section 3.1 and Amendment 2 cover v2. No v2 result may change any EXP-024 parameter (rule, Q\* = 40, 330 s exit, 15% guard, 1.9 s deciding cell, windows, alpha, universe, classifier, kill rules). A v2 canary halt stops the v2 canary only.
+- **(c) Reports.** The Look 2 report states that EXP-026's verdict and v2's book were known before it (EXP-026 is read after the Look 1 report or Look 1's deadline, and usually before Look 2) and could have influenced later choices. Under DEC-028 Option B it also states that the v2 canary's outcomes were watched in real time, and lists the live rule (v1 or v2) per UTC date. The Look 1 report says the same if EXP-026 is read before it.
+- **(d) Section 3's premise.** Section 3 says the canary's sells "fall at s0 + 330 s or later, outside the rule's trigger window [0, 300] s". That premise fails for v2: a v2 sell can land before 300 s when τ\* fires early. **The conclusion still holds:** a v2 sell comes after the pool's only trigger (section 2, line 76: one trade per pool, first qualifying print), so it cannot create a trigger. Under DEC-028 Option B, the canary's 0.02 SOL sell shifts the tape that Look 1 or Look 2 prices at 330 s by the canary's own impact (about 0.05% of a pool with Q of about 40 SOL). Disclosed, not corrected.
+- **(e) The Look 2 flag does not reach v2.** Amendment 2's `--h5-look2-observed EXP-024-Am2` lifts the withholding of v1's records only. v2's outcome-bearing fields (exit-landing state, proceeds, P&L, legs, pressure inputs, the price strip after the v2 exit) go to the withheld store whatever the flag says. Under DEC-028 Option A, v2's decision fields are withheld too. Under Option B they are written in the clear only when the shadow is started with `--h5v2-live-exit DEC-028-B`, and they carry no price. **Joining a v2 exit slot to v1's price strip or exit ladder** before EXP-026's read is a breach of section 3 and of EXP-026 §3.3.
+- **(f) `boost_done` and the v2 slice stream never substitute for the A3 monitor.** The A3 monitor's flags and its last-slice median (sections 10 and 11) stay the only inputs to the halts and to NOT_DECIDABLE.
+- **(g) EXP-026 after W0.** EXP-026 is not withdrawn, re-scoped or delayed after its W0 for any reason other than an EXP-026 §7 NOT_DECIDABLE condition (EXP-026 §3.3). Under Option B, its report gives the share of counted pools the v2 canary traded and labels its verdict "v2 outcomes partly observed before the read".
+
+**A breach.** Computing, opening or printing a v2 outcome outside (a)(i)–(iii) for a pool with s0 in a look's counted window is a breach of section 3: it is recorded here, dated, and that look is reported compromised. A compromised read cannot support a live request.
+
+**Unchanged.** The CAP-PICK seal (EXP-022 section 9, DEC-024 section 6): the pick oracle seals a pool for every `rule_id`, v2 included, and its fail-closed rule stands. D1 (Amendment 4, line 691): no synthetic class is joined to any v2 outcome for a counted-window pool before Look 2 is read. The read tool's inputs and refusals. The rule, parameters, universe, gate statistics, look schedule, futility, kill rules, NOT_DECIDABLE conditions, windows, hours read, α of both looks and m. Nothing is added to EXP-024's family or to m: EXP-026's alpha is DEC-021 §8's fourth slot ([DEC-029](../DEC/DEC-029-exp026-alpha-slot.md), draft) or the owner's M2 line there.
+
+**Relation to G1.** If DEC-027's G1 is written later, it may cite this text. Neither widens the other.
+
+**Provenance.** A manager decision derived from the owner's 10-10 request to "try to make H5 work" (DEC-028 §0, as relayed), drafted 2026-10-10 for PR #542 after quant-proof's CHANGES review of 62cc971. The owner may revoke it before EXP-026's W0. A revocation stops the v2 shadow and the v2 canary, and does not undo the disclosures for anything already observed.
+
+### A3 halt record (2026-10-13): the read ended NOT_DECIDABLE; no look was read
+
+EXP024_READ_ENDED: NOT_DECIDABLE 2026-10-13 (A3 pins_changed inside Look 1's counted window; section 11)
+
+Written 2026-10-13T08:49:05Z (`date -u`). Outcome-blind: to write it, no row of forward-1002, forward-1002ev or walk 2 was opened, no canary
+ledger fill, exit or P&L row, no shadow outcome record and no paper twin was read, and no H5 outcome was computed.
+
+- The run. The daily A3 run, MiScusi job #907, started 2026-10-13T07:11:58Z (record run_utc 2026-10-13T07:11:58Z), at main
+  f231894c79174d0413860e3e3c6a7aa8a35210cc, monitor blob 1ca0a88cecf0853d94336ea046ba1a910b79f198 (the section 10 pin), pins blob
+  7486f57f372e79c7d852f9cb70991d20043d4a8f. Flags read one by one from halt.flags (Amendment 4 C1):
+  pins_changed HALT ("program_fees deploy_slot 454596501 -> 456132171 (2026-10-12T17:40:24Z)"). Evaluated and clear:
+  boost_disabled, boost_share_low (InitBoost on 17/17), boost_last_slice_early (median 332 s, 17 pools),
+  boost_budget_or_slices_changed. synthetic_share_high 3/20, recorded only. The monitor's program_changed watch
+  also fired (fees programdata sha256 4757ce83... -> 3cf9ee9a..., length unchanged); it is not one of the five.
+- The cause. The pump fees program pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ was redeployed at slot 456132171,
+  2026-10-12T17:40:24Z. The run that shows the flag started 13 h 31 min 34 s later.
+- The rule. Section 11: "Inside a counted window: the read ends NOT_DECIDABLE at that point unless it has already
+  passed. There is no later look, no retune, and no resumption if the monitor clears." The run is inside Look 1's
+  counted window [2026-10-10T00, 2026-10-16T00). No look had been read.
+- The point. The halting run (job #907). The deploy instant and the run instant are recorded above. Neither splits
+  the window: no hour before either is read, and no look is computed on part of the window.
+- What ends. Look 1 does not run. Look 2 does not run. Look 1's window and alpha_1 = 0.020 are spent (section 11,
+  Spending). alpha_2 = 0.005 is not used and is not moved to any other look, read or family by this record.
+  H5-BOOSTFLOOR v1 is not re-filed. The outcome is NOT_DECIDABLE: not a pass and not a FAIL.
+- What is not cured. The re-pin (PR #629) and any later clean A3 run do not resume this read (section 11; DEC-024
+  Amendment 7 item 2, "What it does not change").
+- What is not run. P5, the classification pass, P6, P7 and the read tool's look command are not run for this file.
+  /data/mal/exp024/LOOK_READS.jsonl is not edited. This record is the report.
+- The seal. Section 3's seal and Amendment 4 D1 stay in force. HOLDOUT_LEDGER's clarification of 2026-10-10 (3a)
+  does not list an A3 halt among this read's end states; the first listed state that can occur is "Look 2
+  NOT_DECIDABLE at 2026-11-14T00:00Z". No hour is released by this record. DEC-016 Amendment 7 is unchanged.
+- Disclosures a Look 1 report would have carried, recorded here because no such report will exist: the canary's and
+  the shadow detector's outcomes for pools in Look 1's window were observed in real time (section 3.1), and for
+  pools with s0 before 2026-10-10T00 from about 2026-10-08T21:30Z (Amendment 3); BOOST timing split by pool class
+  was observed for Look 1's window from 2026-10-10T00Z, never joined to an outcome (DEC-024 Amendment 5 item 8).
+  The halt was not caused by, and this record was not chosen because of, anything the canary or the shadow showed.
+- The canary. DEC-024 governs it. Its section 5 stop names a Look 1 FAIL; NOT_DECIDABLE is not a FAIL. A resume
+  under DEC-024 Amendment 7 item 2 does not revive this read. Every report labels the canary "execution
+  measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book".
+- Other reads. EXP-022's A3 rules are its own (its P2 reads the last daily run before 2026-10-16T01:00Z). EXP-025
+  has no A3 halt. EXP-026 section 7 has its own A3 line for [W0, E); this record does not rule on it.
+- Status. H5 has not cleared the promotion gate. This read cannot support a live request.
+
+Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2026-10-13 A3 halt". The text of this record is quant-proof's, with the write time, the record's `run_utc` and the commit filled in by the manager.
+
+### Breach disclosure (2026-10-16, job #1059)
+
+**Breach disclosure (2026-10-16, job #1059).** Job #1059 read post-s0 reserves of the probe's 2026-10-04..10-07 pools from the tip tape and wrote per-trip sim P&L for 61 probe trips (ledger changelog 2026-10-16, #1059). This breaches domains D2 and D3. No pool in this read's counted window was touched and no act listed in this file's seal was performed. This read is disclosed, not compromised. Its verdict and terms are unchanged.
+
+### Amendment 9 (2026-10-18; before any arena H5 v2 book's clock and before any arena v2 outcome exists): declared real-time observation of the arena H5 v2 book's outcomes ([DEC-031](../DEC/DEC-031-forward-paper-arena.md) §3.5)
+
+**Gating.** This amendment merges with DEC-031, with quant-proof's OK on its final head, before the `clock_start_ms` of any arena book running H5-BOOSTCLOCK v2. Without it, an arena v2 book counts only pools with s0 at or after 2026-11-06T00 (DEC-031 §3.5).
+
+**What was in view.** The author knew iter-r2 H5-BOOSTCLOCK-EXIT cell C10's exploration result (FREEZE.md and REPORT.md, both September data), EXP-026's text and its withdrawal before W0 on 2026-10-17. The author opened none of these: a canary ledger, a shadow outcome record, a row of forward-1002, forward-1002ev or walk 2, or any forward-paper or runner output. No arena v2 outcome exists on any pool at writing.
+
+- **(a) Scope.** A declared exception to section 3's seal, for `rule_id` `H5-BOOSTCLOCK-v2` only: iter-r2 cell C10, FREEZE.md sha256 `5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0`, computed by `tools/h5_shadow.py` in its fresh-forward mode as merged by PR #707 (not on main at this writing), as the `outcome_bx10` record. The book's `bots.json` line pins the commit, and the git blob sha of `tools/h5_shadow.py` at that commit; a book whose running code does not match that pin is not covered. For arena books only, this lifts Amendment 8 (e)'s withholding of v2's outcome-bearing fields: they are written to the arena output, never to EXP-026's withheld store, which stays closed.
+  - It covers pools with s0 at or after the arena v2 book's `clock_start_ms`, as listed in `/data/mal/arena/bots.json`. Their v2 outcomes are written in real time to the arena output and ledger, may be observed in real time by anyone (as in Amendment 2), and are gate-read once by `tools/arena_score.py` under DEC-031 §2.
+  - Nothing else is covered: no pool with s0 before that clock, and no other rule.
+  - EXP-024's read tool is excluded and its inputs are unchanged.
 - **(b) No revival.** EXP-024's read ended NOT_DECIDABLE on 2026-10-13 (A3 halt record): Look 1 and Look 2 do not run, and nothing here revives, re-files or re-scopes it. No arena result may change any EXP-024 parameter or record.
 - **(c) Disclosure.** No EXP-024 look report will exist; the A3 halt record is the report. This amendment is the dated disclosure that the arena H5 v1 and v2 books' outcomes are observed in real time from their clocks.
-- **(d) Synthetic class.** Amendment 4 D1 and A3 bind the arena v2 book as they bind v1. Before 2026-11-14T00:00Z no arena H5 record carries an outcome for a synthetic pool or splits an outcome by class. Its universe excludes synthetic pools before any outcome exists, as Amendment 4 A2 does.
+- **(d) Synthetic class.** Amendment 4 D1 and A3 bind the arena v2 book as they bind v1. Before 2026-11-14T00:00Z no arena H5 record carries an outcome for a synthetic pool or splits an outcome by class. Its universe excludes synthetic and unclassified pools before any outcome exists, as Amendment 4 A2 and B3 do.
 - **(e) v1.** An arena H5 v1 book stays under Amendment 2's declared observation for pools with s0 in `[2026-10-16T00, 2026-11-06T00)` (DEC-031 §3.5). Amendment 2 ends at 2026-11-06T00, so for pools with s0 at or after that instant this amendment's scope (a) to (d) covers the arena v1 book (`rule_id` `H5-BOOSTFLOOR-v1`, computed by the same command) as it covers v2.
 
 ## Sources
