@@ -161,7 +161,7 @@ def test_thirteen_bots_registered_with_deciding_stake_and_model_ids(full):
     for a, spec in arms.ARMS.items():
         e = reg[R.bot_id(a)]
         assert e["deciding_stake"] == 0.25 and e["frozen_sha"] == "abcdef1234567"
-        assert e["model_ids"] == ([run.model.model] if spec.llm else [])
+        assert e["model_ids"] == ([run.model.model] if (spec.llm or spec.role == "R") else [])  # the R picks depend on risk grades (BST-R on BST-L): registered with the model
 
 
 def test_loop_scans_cards_and_trades_each_arm(full):
@@ -456,7 +456,7 @@ def test_no_sealed_path_and_no_key_in_the_log(full):
     assert "ANTHROPIC" not in Path(R.__file__).read_text().split("def main")[0].replace("ANTHROPIC_API_KEY from the environment", "")
 
 
-GOLDEN_MD5 = "ceb4acee2223f6cb7974fd6ca2165cd1"  # md5 of the decision logs of all arms on the synthetic tape with the stub (a regression pin, not a result)
+GOLDEN_MD5 = "55fb24048d2ac3577c4ab293cae5585a"  # md5 of the decision logs of all arms on the synthetic tape with the stub (a regression pin, not a result)
 
 
 # -------------------------------------------------------------------------------------------------------------------------- isolation (DEC-031 section 3.1)
@@ -694,31 +694,47 @@ def test_a_version_that_does_not_fit_the_arm_is_refused_not_half_applied(tmp_pat
     assert len(rows_of(run, "CON-L", "version_refused")) == 1 and rows_of(run, "CON-L", "version") == []
 
 
-def test_a_refused_manifest_halts_only_that_arm_logs_once_and_recovers(tmp_path):
+@pytest.mark.parametrize("refused", ["CON-L", "CON-P"])
+def test_a_refused_manifest_halts_the_whole_persona_group_logs_once_and_recovers(tmp_path, refused):
     vs = FakeVersions()
-    vs.fail["CON-L"] = "chain_broken"
+    vs.fail[refused] = "chain_broken"
     run = make(tmp_path, versions=vs)
-    run.run(T_START, X + R.SCAN_SECOND_MS + 20_000)
-    assert len(rows_of(run, "CON-L", "version_refused")) == 1 and rows_of(run, "CON-L", "version_refused")[0]["reason"] == "chain_broken"  # once, not every minute
-    assert [r for r in rows_of(run, "CON-L", "llm_call")] == [] and rows_of(run, "CON-L", "entry") == []  # no model call, no entry
-    assert any(r["reason"] == "manifest_refused:chain_broken" for r in rows_of(run, "CON-L", "halt"))
-    assert rows_of(run, "CON-F", "entry") and rows_of(run, "CON-P", "llm_call")  # the other arms of the group carry on
-    del vs.fail["CON-L"]
-    run.refresh_versions(X + 10 * MIN + R.SCAN_SECOND_MS)
-    assert "CON-L" not in run.arm_halt and len(rows_of(run, "CON-L", "version_recovered")) == 1
+    S1 = X + R.SCAN_SECOND_MS
+    run.run(T_START, S1 + 20_000)
+    assert len(rows_of(run, refused, "version_refused")) == 1 and rows_of(run, refused, "version_refused")[0]["reason"] == "chain_broken"  # once, not every minute
+    assert run.persona_halt("CON") == (refused, "chain_broken") and run.persona_halt("BIG") is None and run.persona_halt("BST") is None
+    # EVERY CON arm stops entering (L, F, P, X and R): no entry, no model call; each LLM member and X log why
+    for a in ("CON-L", "CON-F", "CON-P", "CON-X", "CON-R"):
+        assert rows_of(run, a, "entry") == [], a
+    for a in ("CON-L", "CON-F", "CON-P"):
+        assert [r for r in rows_of(run, a, "llm_call") if r["call"] == "entry"] == [], a
+        assert any(r["reason"] == "manifest_refused:chain_broken" and r["by"] == refused for r in rows_of(run, a, "halt")), a
+    assert any(r["reason"] == "manifest_refused:chain_broken" for r in rows_of(run, "CON-X", "halt"))
+    # the other personas are untouched
+    assert all(not rows_of(run, a, "halt") for a in ("BIG-L", "BIG-F", "BIG-X", "BST-L", "BST-F", "BST-X"))
+    # it clears: the whole group may act again
+    del vs.fail[refused]
+    run.refresh_versions(S1 + 10 * MIN)
+    assert run.persona_halt("CON") is None and not run.arm_halt and len(rows_of(run, refused, "version_recovered")) == 1
+    assert run._live_members(arms.group_members("CON"), S1 + 10 * MIN) == arms.group_members("CON")
 
 
-def test_a_halted_arm_keeps_its_code_exits(tmp_path):
+def test_a_refused_manifest_keeps_the_code_exits_of_the_whole_group(tmp_path):
     vs = FakeVersions()
     run = make(tmp_path, versions=vs)
     S1 = X + R.SCAN_SECOND_MS
     run.run(T_START, S1 + 20_000)
-    assert run.books["CON-L"].open
+    assert all(run.books[a].open for a in ("CON-L", "CON-F", "CON-X", "CON-R"))
     vs.fail["CON-L"] = "input_after_cutoff"
     run.run(S1 + 20_000, T_END)
     halted_at = rows_of(run, "CON-L", "version_refused")[0]["ms"]
-    assert all(not b.open for b in run.books.values()) and rows_of(run, "CON-L", "sell")  # closed by code exits
-    assert not [r for r in rows_of(run, "CON-L", "llm_call") if r["ms"] >= halted_at]  # and no model call after the refusal
+    assert all(not b.open for b in run.books.values())  # every position closed by a code exit
+    for a in ("CON-L", "CON-F", "CON-X"):
+        assert rows_of(run, a, "sell"), a
+    for a in ("CON-L", "CON-F", "CON-P", "CON-X", "CON-R"):
+        assert not [r for r in rows_of(run, a, "entry") if r["ms"] >= halted_at], a  # no new entry after the refusal
+    for a in ("CON-L", "CON-F", "CON-P"):
+        assert not [r for r in rows_of(run, a, "llm_call") if r["ms"] >= halted_at], a  # and no model call at all (re-checks included)
 
 
 def test_the_reviewer_module_is_imported_lazily():
@@ -1091,3 +1107,146 @@ def test_resume_reopens_a_sale_the_engine_had_not_priced_so_it_is_not_a_restart_
     assert not any(set(run2.books[a].open) & pids for a, pids in sold.items())
     ex = {r["position_id"] for a in sold for r in run2.engine.ledger.read_bot(R.bot_id(a)) if r.get("kind") == "excluded"}
     assert ex >= set().union(*sold.values())
+
+
+# -------------------------------------------------------------------------------------------------------------------------- reservation ids on llm_call rows
+import dataclasses  # noqa: E402
+import os as _os  # noqa: E402
+
+from tools.haiku_caller import Ledger  # noqa: E402
+from tools.hv4_model import CallerModel  # noqa: E402
+from tools.hv4_testkit import make_card  # noqa: E402
+
+
+def fake_caller(attempts: int = 1, replayed: bool = False):
+    class FakeCaller:
+        """Stands in for HaikuCaller inside CallerModel: writes the reserve and settle rows the real one writes and returns a result with its fields."""
+
+        def __init__(self, ledger_path, budget_usd, *, save_dir=None, replay=True, sleep=None):
+            self.path = ledger_path
+
+        def call(self, *, system, messages, max_tokens):
+            sha = "req-sha-" + str(max_tokens)
+            if not replayed:
+                led = Ledger(self.path)
+                for i in range(1, attempts + 1):
+                    with led.locked():
+                        fd = led.open_append()
+                        try:
+                            rid = f"rsv-{attempts}-{i}"
+                            Ledger.append_row(fd, {"kind": "reserve", "ts": 1, "reservation_id": rid, "model": "m", "request_sha256": sha, "attempt": i, "cost_usd": 0.001})
+                            Ledger.append_row(fd, {"kind": "settle", "ts": 2, "reservation_id": rid, "model": "m", "request_sha256": sha, "response_sha256": "r",
+                                                   "http_status": 200 if i == attempts else 529, "cost_usd": -0.0005})
+                        finally:
+                            _os.close(fd)
+            return SimpleNamespace(response={"stop_reason": "end_turn"}, text="[]", usage={}, cost_usd=0.0, latency_ms=5, request_sha256=sha, response_sha256="r",
+                                   replayed=replayed, attempts=attempts)
+
+    return FakeCaller
+
+
+@pytest.mark.parametrize("attempts,replayed,want", [(1, False, ("rsv-1-1",)), (2, False, ("rsv-2-1", "rsv-2-2")), (1, True, ())])
+def test_caller_model_returns_the_haiku_caller_reservation_ids(tmp_path, attempts, replayed, want):
+    guard = BudgetGuard(tmp_path / "g")
+    req = pr.build_entry_request("CON-L", pr.load_playbook("CON"), [make_card()], 0)
+    out = CallerModel(guard, caller_cls=fake_caller(attempts, replayed)).complete(req, T0)
+    assert out.error is None and out.reservation_ids == want and out.reservation_id == (want[-1] if want else None)  # the LAST attempt's id is the answer's
+
+
+def test_llm_call_rows_carry_the_reservation_id(tmp_path, full):
+    run, _ = full
+    rows = [r for a in ("CON-L", "CON-F", "RISK") for r in rows_of(run, a, "llm_call")]
+    assert rows and all(r["reservation_id"] is None and r["reservation_ids"] == [] for r in rows)  # the stub makes no reservation
+    run2 = make(tmp_path)
+
+    class IdModel(StubModel):
+        def complete(self, req, now_ms):
+            return dataclasses.replace(super().complete(req, now_ms), reservation_id="rsv-last", reservation_ids=("rsv-first", "rsv-last"))
+
+    run2.model = IdModel(script_for(), guard=run2.guard)
+    run2.run(T_START, X + R.SCAN_SECOND_MS + 5_000)
+    got = [r for a in ("CON-L", "CON-F", "RISK") for r in rows_of(run2, a, "llm_call")]
+    assert got and all(r["reservation_id"] == "rsv-last" and r["reservation_ids"] == ["rsv-first", "rsv-last"] for r in got)
+    run2.log.verify("CON-L")
+
+
+# -------------------------------------------------------------------------------------------------------------------------- BIG trail peak survives a restart
+KNOTS[8] = [(-80, 1.0), (0, 1.0), (20, 1.9), (45, 1.1), (90, 1.1)]  # +90% in 20 minutes, then a slow fall: the 30% trail (armed after +50%) fires near minute 38
+BIG_PLAN = {"stop_pct": -25.0, "target_pct": 400.0, "trail_pct": 30.0, "time_min": 360}
+BIG_OPEN = X + 3_000
+T_BIG_K = X + 30 * MIN + 10_000
+T_BIG_N = X + 45 * MIN
+
+
+def big_start(tmp):
+    run = make(tmp, rows=trade_rows(ks=(0, 1, 8)))
+    run.run(T_START, BIG_OPEN)
+    pid = run._open("BIG-L", {"id": POOLS[8], "f": {"age_tier": "established"}}, 0.25, BIG_PLAN, BIG_OPEN, {}, {})
+    assert pid is not None
+    return run, pid
+
+
+def test_resume_equivalence_with_a_big_position_with_a_trail(tmp_path):
+    a, pid = big_start(tmp_path / "a")
+    a.run(BIG_OPEN, T_BIG_N)
+    b1, _ = big_start(tmp_path / "b")
+    b1.run(BIG_OPEN, T_BIG_K)
+    pos = b1.books["BIG-L"].open[pid]
+    assert pos.trail_pct == 30.0 and pos.peak >= 1.5  # open, the trail is armed
+    peaks = [r["peak"] for r in rows_of(b1, "BIG-L", "peak")]
+    assert len(peaks) > 20 and peaks == sorted(peaks) and peaks[-1] == pos.peak  # every new high (1 point steps) was logged
+    live = canon_digest(b1, T_BIG_K)
+    b2 = restart(tmp_path / "b", T_BIG_K)
+    assert b2.books["BIG-L"].open[pid].peak == pos.peak  # restored exactly
+    assert canon_digest(b2, T_BIG_K) == live
+    b2.run(T_BIG_K, T_BIG_N)
+    sells = rows_of(b2, "BIG-L", "sell")
+    assert sells and sells[0]["reason"] == "trail"
+    assert canon_digest(b2, T_BIG_N) == canon_digest(a, T_BIG_N) and b2.log.md5() == a.log.md5()
+    # the restored peak is what makes the trail fire: a peak lost at the restart would be re-armed from the lower current mark and never exit here
+    d1, _ = big_start(tmp_path / "d")
+    d1.run(BIG_OPEN, T_BIG_K)
+    c = restart(tmp_path / "d", T_BIG_K)
+    c.books["BIG-L"].open[pid].peak = 1.0
+    c.run(T_BIG_K, T_BIG_N)
+    assert not [s for s in rows_of(c, "BIG-L", "sell") if s["pid"] == pid and s["reason"] == "trail"]
+
+
+def test_recheck_rows_carry_the_trail_peaks_and_replay_restores_them(tmp_path):
+    a, pid = big_start(tmp_path / "a")
+    a.run(BIG_OPEN, X + 20 * MIN)  # the 15-minute re-check of BIG has run
+    rc = [r for r in rows_of(a, "BIG-L", "llm_call") if r["call"] == "recheck"]
+    assert rc and all(r["peaks"] == {POOLS[8]: r["peaks"][POOLS[8]]} and r["peaks"][POOLS[8]] > 1.0 for r in rc)
+    ent = rows_of(a, "BIG-L", "entry")[0]
+    fresh = make(tmp_path / "c")
+    fresh._replay_row("BIG-L", ent)
+    fresh._replay_row("BIG-L", {"kind": "llm_call", "call": "recheck", "ms": ent["ms"] + 1, "ids": [POOLS[8]], "as_of_ms": ent["ms"] + 1, "error": None, "peaks": {POOLS[8]: 1.77}})
+    assert fresh.books["BIG-L"].open[pid].peak == 1.77
+    fresh._replay_row("BIG-L", {"kind": "peak", "ms": ent["ms"] + 2, "pid": pid, "peak": 1.5})  # a lower peak never lowers it
+    assert fresh.books["BIG-L"].open[pid].peak == 1.77
+    # a position without a trail keeps no peak state and logs no peak rows
+    assert all(p.peak == 1.0 for b in a.books.values() for p in b.open.values() if p.trail_pct is None) and rows_of(a, "CON-L", "peak") == []
+
+
+def test_head_binding_does_not_count_gitignored_files_documented_and_accepted(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"}
+
+    def g(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=env)
+
+    g("init", "-q")
+    (repo / ".gitignore").write_text("local.env\n__pycache__/\n")
+    (repo / "a.txt").write_text("x")
+    g("add", ".gitignore", "a.txt")
+    g("commit", "-q", "-m", "c")
+    (repo / "local.env").write_text("ignored")
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "x.pyc").write_text("ignored")
+    assert R.head_binding(repo)["dirty"] is False  # ignored files are not counted (accepted); see the head_binding docstring
+    assert "gitignore" in R.head_binding.__doc__.lower()
+    (repo / "new.py").write_text("untracked and not ignored")
+    assert R.head_binding(repo)["dirty"] is True

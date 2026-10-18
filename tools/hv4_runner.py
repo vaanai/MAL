@@ -13,8 +13,8 @@ refused order adds an `order_refused` row. Nothing is generated or replayed afte
 and risk grades from it after a restart; a broken chain raises LogChainError and the runner does not start.
 
 CODE-SIDE NUMBERS. The mark (stop, target, trail, day loss stop) is a code-side monitor: the sell quote of the stake at the state's spot and reserves
-(constant product), relative to the stake. It is not the scored P&L; arena_score reads the engine's ledger. After a restart the trail peak restarts from
-the current mark (disclosed). BST exits at s0 + 330 s of the pool's first print (the tick that detects it is the decision instant, within 1 s).
+(constant product), relative to the stake. It is not the scored P&L; arena_score reads the engine's ledger. The BIG trail peak is quantized to 1 point of the stake
+(floor), so every new high can be logged (a `peak` row) and the peak comes back exactly after a restart. BST exits at s0 + 330 s of the pool's first print (the tick that detects it is the decision instant, within 1 s).
 
 NOT HERE: the nightly reviewer, manifests and placebo (hv4-review), the read (hv4-read). `playbook_overrides` is the hook the reviewer's versions use.
 """
@@ -32,6 +32,7 @@ import bisect
 import fcntl
 import hashlib
 import json
+import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
@@ -532,7 +533,9 @@ class Runner:
     def register_all(self, registry_path: str, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, dict]:
         out = {}
         for a, spec in arms.ARMS.items():
-            ids = [self.model.model] if spec.llm else []
+            # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
+            # BST-L's answers. The X arms call no model and read none.
+            ids = [self.model.model] if (spec.llm or spec.role == "R") else []
             out[a] = register_bot(bot_id(a), self.cfg.frozen_sha, self.cfg.clock_start_ms, registry_path, deciding_stake=0.25, model_ids=ids,
                                   now_ms=now_ms, verify_sha=verify_sha)
         return out
@@ -588,6 +591,8 @@ class Runner:
                 for p in self.books[name].open.values():
                     if p.pool in r["ids"]:
                         p.last_recheck_ms = r["as_of_ms"]
+                    if p.pool in (r.get("peaks") or {}):
+                        p.peak = max(p.peak, float(r["peaks"][p.pool]))
         elif k == "risk_grade":
             self.risk[r["pool"]] = dict(r["state"])
         elif k == "version":
@@ -628,6 +633,8 @@ class Runner:
                         b.pool_last_ms[pool] = prev
                     if taken:
                         b.bst_taken -= 1
+            elif k == "peak" and r["pid"] in b.open:
+                b.open[r["pid"]].peak = max(b.open[r["pid"]].peak, float(r["peak"]))
             elif k == "tighten" and r["pid"] in b.open:
                 p = b.open[r["pid"]]
                 p.stop_pct = r.get("stop_pct", p.stop_pct)
@@ -660,7 +667,7 @@ class Runner:
                 return False
         return True
 
-    def _call(self, name: str, req: Any, T: int) -> tuple[ModelReply, int]:
+    def _call(self, name: str, req: Any, T: int, extra: Mapping[str, Any] | None = None) -> tuple[ModelReply, int]:
         reply = self.model.complete(req, self._now(T))
         recv = self._decision_ms(T, reply)
         self.sim_now = max(self.sim_now, recv)
@@ -673,7 +680,8 @@ class Runner:
                                      "template_sha256": req.template_sha256, "playbook_sha256": req.playbook_sha256, "playbook_version": req.playbook_version,
                                      "manifest_sha256": self.manifest_sha(name) if name in self.knobs else None, "nonce": req.nonce, "req_seq": req.seq,
                                      "latency_ms": reply.latency_ms, "cost_usd": reply.cost_usd, "usage": reply.usage, "replayed": reply.replayed,
-                                     "error": reply.error, "stop_reason": reply.stop_reason, "as_of_ms": T})
+                                     "error": reply.error, "stop_reason": reply.stop_reason, "as_of_ms": T,
+                                     "reservation_id": reply.reservation_id, "reservation_ids": list(reply.reservation_ids), **dict(extra or {})})
         return reply, recv
 
     def _next_seq(self, name: str, T: int) -> int:
@@ -905,6 +913,11 @@ class Runner:
 
     def _x_round(self, persona: str, tags: list[C.SetupTag], cards: Mapping, T: int) -> None:
         arm = f"{persona}-X"
+        h = self.persona_halt(persona)
+        if h is not None:
+            if tags:
+                self.log.append(arm, T, {"kind": "halt", "reason": "manifest_refused:" + h[1], "by": h[0]})
+            return
         for t in tags:
             c = cards.get((t.pool_id, persona))
             if c is None:
@@ -918,7 +931,7 @@ class Runner:
 
     def _match_r(self, persona: str, lpos: Pos, dec_ms: int, lcard: Mapping) -> None:
         rarm = f"{persona}-R"
-        if persona not in LANE_G_PERSONAS or rarm not in arms.ARMS:
+        if persona not in LANE_G_PERSONAS or rarm not in arms.ARMS or self.persona_halt(persona) is not None:
             return
         pool = sorted(p for p, c in self.eligible.items() if p != lpos.pool and c.get("f", {}).get("max_stake", 0) >= lpos.size
                       and (c["f"].get("age_tier") == "established" or lpos.size <= C.YOUNG_STAKE_CAP)
@@ -949,12 +962,22 @@ class Runner:
         for i in range(0, len(cards), maxc):
             self._entry_call(persona, live, cards[i:i + maxc], T)
 
+    def persona_halt(self, persona: str) -> tuple[str, str] | None:
+        """(arm, code) when a learning arm of this persona has a refused manifest, else None. A refused manifest stops the entries of the WHOLE persona
+        group (L, F, P, R and X), the same symmetric rule as a budget halt, so the comparisons stay paired. Open positions keep their code exits."""
+        for a in sorted(self.arm_halt):
+            if arms.ARMS[a].persona == persona:
+                return a, self.arm_halt[a]
+        return None
+
     def _live_members(self, members: tuple[str, ...], T: int) -> tuple[str, ...]:
-        """The group members not stopped by a refused manifest; each stopped one logs why. (A refused manifest is a safety stop of that arm alone.)"""
+        """The LLM members that may act: none while the persona group is stopped by a refused manifest (each member logs why)."""
+        h = self.persona_halt(arms.ARMS[members[0]].persona) if members else None
+        if h is None:
+            return members
         for a in members:
-            if a in self.arm_halt:
-                self.log.append(a, T, {"kind": "halt", "reason": "manifest_refused:" + self.arm_halt[a]})
-        return tuple(a for a in members if a not in self.arm_halt)
+            self.log.append(a, T, {"kind": "halt", "reason": "manifest_refused:" + h[1], "by": h[0]})
+        return ()
 
     def _entry_call(self, persona: str, members: tuple[str, ...], chunk: list[dict], T: int) -> None:
         if not self._call_ok(list(members), "entry", None, T):  # symmetric: one member at its cap stops the group
@@ -1019,7 +1042,7 @@ class Runner:
     def watches(self, T: int) -> None:
         for arm in arms.llm_arms():
             b = self.books[arm]
-            if arms.ARMS[arm].persona == "BST" or arm in self.arm_halt:
+            if arms.ARMS[arm].persona == "BST" or self.persona_halt(arms.ARMS[arm].persona) is not None:
                 continue
             for w in list(b.watches):
                 if T >= w["expires_ms"]:
@@ -1055,8 +1078,11 @@ class Runner:
                     continue
                 snap = self.state.snapshot(pos.pool, candles=False)
                 ret = mark_ret(pos, snap) if snap else None
-                if ret is not None:
-                    pos.peak = max(pos.peak, 1.0 + ret)
+                if ret is not None and pos.trail_pct is not None:  # the peak matters only to a trailing exit; every new high (1 point steps) is logged
+                    q = math.floor((1.0 + ret) * 100.0 + 1e-9) / 100.0
+                    if q > pos.peak:
+                        pos.peak = q
+                        self.log.append(pos.arm, T, {"kind": "peak", "pid": pos.pid, "peak": q})
                 if T - pos.entry_ms < ENTRY_SETTLE_MS:
                     continue
                 why = exit_reason(pos, ret, T)
@@ -1106,7 +1132,7 @@ class Runner:
         for arm in arms.llm_arms():
             spec = arms.PERSONA_SPECS[arms.ARMS[arm].persona]
             b = self.books[arm]
-            if spec.recheck_minutes is None or not b.open or arm in self.arm_halt:
+            if spec.recheck_minutes is None or not b.open or self.persona_halt(arms.ARMS[arm].persona) is not None:
                 continue
             mult = 1
             if self.guard is not None:
@@ -1145,7 +1171,9 @@ class Runner:
         for c in cards:
             self.cards.put(c, T)
         req = build_recheck_request(arm, self.playbook_for(arm), poss, cards, self._next_seq(arm, T))
-        reply, recv = self._call(arm, req, T)
+        ids = {c["id"] for c in cards}
+        peaks = {p.pool: p.peak for p, _ in group if p.trail_pct is not None and p.pool in ids}
+        reply, recv = self._call(arm, req, T, {"peaks": peaks} if peaks else None)
         if reply.error in DENIED:
             self.log.append(arm, recv, {"kind": "recheck_denied", "error": reply.error})  # the budget gate said no: the position keeps its code exits
             return
@@ -1235,6 +1263,10 @@ class Runner:
         return "BST-L" in members
 
     def _bst_x(self, card: dict, size: float, extra: Mapping, T: int) -> None:
+        h = self.persona_halt("BST")
+        if h is not None:
+            self.log.append("BST-X", T, {"kind": "halt", "reason": "manifest_refused:" + h[1], "by": h[0]})
+            return
         gates = self._gates("BST-X", card["id"], size, False, T)
         if all(g["ok"] for g in gates.values()):
             self._open("BST-X", card, size, None, T, gates, extra)
@@ -1316,11 +1348,11 @@ class Runner:
                 "effective_from_ms": man.get("effective_from_ms")}
 
     def state_digest(self, T: int) -> dict[str, Any]:
-        """Everything the live code decides on, as a JSON-able dict at instant T (for the resume-equivalence test and for ops). Left out on purpose: the BIG
-        trail peak (restarts from the current mark, disclosed), counters, the card sink's in-process dedupe set."""
+        """Everything the live code decides on, as a JSON-able dict at instant T (for the resume-equivalence test and for ops). Left out on purpose: counters
+        and the card sink's in-process dedupe set."""
         hour = T - 60 * MIN_MS
         return {
-            "books": {a: {"open": {pid: {k: v for k, v in asdict(p).items() if k != "peak"} for pid, p in sorted(b.open.items())},
+            "books": {a: {"open": {pid: asdict(p) for pid, p in sorted(b.open.items())},
                           "entries_h": sorted(t for t in b.entries_ms if t > hour), "pool_last_ms": dict(sorted(b.pool_last_ms.items())),
                           "realized": dict(sorted(b.realized.items())), "watches": sorted((dict(w) for w in b.watches), key=lambda w: w["id"]),
                           "bst": [b.bst_seen, b.bst_taken]} for a, b in self.books.items()},
@@ -1374,7 +1406,9 @@ def stack_config(feed_delay_slots: int, **kw: Any) -> Any:
 
 
 def head_binding(repo: str | os.PathLike | None = None) -> dict[str, Any]:
-    """The running code's identity: {"git_sha": HEAD, "dirty": bool} (dirty = any tracked change or untracked file). A follow-up binds this to open rows."""
+    """The running code's identity: {"git_sha": HEAD, "dirty": bool}. dirty is `git status --porcelain` non-empty: any tracked change or any untracked file
+    that .gitignore does NOT match. A file matched by .gitignore (a __pycache__, a local .env) is not counted; the manager accepts that. A follow-up binds
+    this to open rows."""
     import subprocess
 
     r = str(repo or Path(__file__).resolve().parent.parent)
