@@ -50,10 +50,17 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
    - Shadow job **#1158** on mal-fast-0, 14-day limit, so it ends about 11-01T05:54Z. Before then, extend it or restart at the same sha; a restart on the same day needs a new out dir. The start record was verified by job #1160. Output: `$HOME/data/arena/h5-2026-10-18`.
    - The records copy is in `ARTIFACTS/lab/arena-records-2026-10-18.md` §5.
    - **Daily:**
-     - `/usr/bin/python3 -m tools.arena_h5_score score` on fast-0 at git_ref 1f7a89c. It defaults `--arena-root` to `$HOME/data/arena` there. Counts only: no P&L to any channel before the read.
+     - `/usr/bin/python3 -m tools.arena_h5_score score --shadow-dir "$HOME/data/arena/h5-2026-10-18"` on fast-0 at git_ref 1f7a89c. It defaults `--arena-root` to `$HOME/data/arena` there. Counts only: no P&L to any channel before the read.
+     - **Pass `--shadow-dir`.** Without it the default glob is `h5-shadow-*`, which does not match the shadow's `h5-<date>` dir, so it scores 0 attempts (job #1175).
      - Post the decision-log sha to the notebook.
      - Watch the gap rate. H5 flags pools only on a common-down of all sockets. If 413/429 rejections persist, propose cancelling the old shadow #817.
    - **A3 HALT:** `arena_h5_score halt --at-ms <flag instant>`.
+   - **FIRST PRIORITY (found 2026-10-18 17:06Z, dry run #1176, counts only):** both books are on course for NOT_DECIDABLE.
+     - Each has 13 attempts in about 11 h: 4 counted and 9 excluded, all `base_breaks` (base_breaks_unresolved_settled != 0). excluded_share 0.692 is above DEC-031's 5% cap.
+     - This is the live executor's data-integrity refusal, and it was heavy before the arena too (10-10 canary: 13 refusals against 3 trades in 24 h).
+     - Before more of the window passes, with quant-proof, decide whether base_breaks are executor refusals (not attempts, or their own counted class) or feed-quality exclusions. Change it only by amendment before any read, outcome-blind (only counts seen so far).
+     - Also weigh the Helius-fed listener for the arena shadow: it now uses public websockets.
+     - Notebook n_T59DybutlUqsKg.
    - **Before the first H5 READ** (not the clock), the condition from quant-proof comment 6246275907 on #719: a parity check of H5 entry/exit state selection on the pinned H5 hours against an independent extraction (for example the l3-simlib reader from #708). Timing and states only, 0 mismatches. A fix to `arena_h5_score.py` is a pinned-file change, so disclose it with quant-proof OK.
    - **Read:** at the outcome-blind instant (≥100 attempts over ≥5 UTC dates). At about 16 non-synthetic triggers a day, expect 1–3 weeks. The window ends at 2026-11-06T00Z.
 2. **Haiku v4 shakedown, then start.** Blocked on research-0 disk being at least 25% free.
