@@ -12,6 +12,10 @@ PRICED TRADES at the deciding stake AFTER the exclusions (the cell n). A book th
 fails n >= 100: that is the arrangement of DEC-031, and the read prints attempts, priced trades and exclusions side by side.
 ledger_sha256 in the read and in --daily-digest is informational (later rows are appended to an entry-day file); decision_log_sha256 is the stable commitment.
 
+CLOCK (stated): the freeze-clock filter and the day of a trade use the engine's WRITE instant (decision_ms = max(the bot's stamp, the call clock, the latest feed
+row)), not the bot's stamp. A decision stamped before the clock but written after it is therefore counted (its stamp and write lag are on the row); one written
+before the clock is not. The scorer prints a WARNING when it reads a test_override registry line (possible only with MAL_ARENA_TEST=1).
+
 ORDER OF OPERATIONS (fixed, pinned by a test): clock filter -> read boundary -> DEC-031 exclusions -> pressure refit -> statistics.
 
 STATUS (the first that applies):
@@ -226,7 +230,9 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
     config = check_bot_rows(bot_id, reg, rows)
     e = reg[bot_id]
     out: dict[str, Any] = {"bot_id": bot_id, "frozen_sha": e["frozen_sha"], "clock_start_ms": e["clock_start_ms"], "deciding_stake": e["deciding_stake"],
-                           "model_ids": e["model_ids"], "stopped_at_ms": e.get("stopped_at_ms"), "config": config, "rows_total": len(rows), "reasons": []}
+                           "model_ids": e["model_ids"], "stopped_at_ms": e.get("stopped_at_ms"), "config": config, "rows_total": len(rows), "reasons": [], "warnings": []}
+    if e.get("time_source") != "wall_clock" or not e.get("verified_sha"):
+        out["warnings"].append("the registry line is a test_override (fake clock / unverified sha): read only because MAL_ARENA_TEST=1 is set; this is not a production read")
     # 1. clock filter
     tr.append("clock_filter")
     counted = [r for r in rows if _entry(r) >= e["clock_start_ms"]]
@@ -421,6 +427,8 @@ def render(res: Mapping[str, Any]) -> str:
     f = lambda z: "None" if z is None else f"{z:+.6f}"  # noqa: E731
     for b, v in res["bots"].items():
         L.append(f"\nBOT {b}  STATUS {v.get('fail_label') or v['status']}  sha {v['frozen_sha']}  clock {v['clock_start_ms']}  deciding stake {v['deciding_stake']}  models {v['model_ids']}")
+        for w in v.get("warnings", []):
+            L.append(f"  WARNING: {w}")
         L.append(f"  config {canon(v['config'])}")
         for r in v["reasons"]:
             L.append(f"  reason: {r}")

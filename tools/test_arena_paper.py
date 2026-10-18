@@ -898,3 +898,19 @@ def test_process_code_state_reads_head_and_dirtiness_from_git(tmp_path):
     (repo / "new.py").write_text("y = 1\n")  # an untracked, non-ignored file is code the process could import
     assert process_code_state(repo) == (head, True)
     assert process_code_state(tmp_path) == (None, None)  # not a git checkout: unknown, refused by the scorer
+
+
+def test_a_decision_stamped_before_the_clock_but_written_after_it_counts_under_the_write_instant(tmp_path):
+    eng = mk_engine(tmp_path, clock=tms(150))
+    for r in _tape(hi=161):
+        eng.on_row(r)  # the feed is at slot 160; the clock started at slot 150
+    pid = eng.buy("botA", "P1", None, tms(140), 160)  # stamped 10 slots before the clock, written after it
+    op = trades(eng, "open")[0]
+    assert eng.positions[pid].decision_ms == tms(160) and op["decision_ms"]["entry"] == tms(160) and op["stamp_ms"]["entry"] == tms(140)
+    assert op["write_lag_ms"]["entry"] == tms(160) - tms(140)
+    (tmp_path / "e").mkdir()
+    early = mk_engine(tmp_path / "e", clock=tms(150))
+    for r in _tape(hi=146):
+        early.on_row(r)
+    with pytest.raises(ArenaRefused, match="before_clock"):
+        early.buy("botA", "P1", None, tms(140), 145)  # written before the clock: refused

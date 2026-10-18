@@ -536,3 +536,10 @@ def test_open_rows_must_carry_the_registered_head_and_a_clean_tree(tmp_path):
     sub.mkdir()  # a bad row decided before the clock is not counted, so it does not refuse the book
     rows = base + [dict(open_row("early", 0, -3), code_head="deadbee", code_dirty=True)]
     assert status_of(read(sub, rows)) == "PASS"
+
+
+def test_the_scorer_warns_when_it_reads_a_test_override_registry_line(tmp_path):
+    res = read(tmp_path, positions(good_pnls()))
+    v = res["bots"]["botA"]
+    assert len(v["warnings"]) == 1 and "test_override" in v["warnings"][0]
+    assert "WARNING: the registry line is a test_override" in render(res)
