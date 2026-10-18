@@ -531,6 +531,178 @@ def test_candles_empty_in_both_tiers_is_recorded(tmp_path):
     assert any("/historical/markets/" in c for c in fake.calls)
 
 
+# ---- candles: per-ticker window bounded to the market's own open/close ----
+
+DAY = 86400
+WIN_SINCE = kp.to_unix("2026-07-01T00:00:00Z")
+WIN_UNTIL = WIN_SINCE + 109 * DAY  # 2026-10-18
+LIFE_T = "KXHIGHNY-26SEP12-T80"
+LIFE_OPEN = kp.to_unix("2026-09-10T14:00:00Z")
+LIFE_CLOSE = LIFE_OPEN + 2 * DAY  # a 2-day market
+
+
+class LifeFake(Fake):
+    """Daily-high style markets that live ~2 days inside a 109-day window.  Candles are served
+    on the live tier for every period whose end_period_ts is in [start_ts, end_ts] and inside the
+    market's life (with_data), else both tiers are empty (historical 404).  Counts candle GETs."""
+
+    def __init__(self, markets=((LIFE_T, LIFE_OPEN, LIFE_CLOSE),), with_data=False, period_s=60):
+        super().__init__()
+        self.life = {t: (o, c) for t, o, c in markets}
+        self.live_markets = {"KXHIGHNY": [self.mk_life(t, o, c) for t, o, c in markets]}
+        self.hist_markets = {}
+        self.with_data, self.period_s = with_data, period_s
+        self.live_reqs, self.hist_reqs, self.windows = [], [], []
+
+    @staticmethod
+    def mk_life(t, o, c):
+        m = Fake.mk(t, kp.parse_dt(c + 3600).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        m["open_time"] = kp.parse_dt(o).strftime("%Y-%m-%dT%H:%M:%SZ")
+        m["close_time"] = kp.parse_dt(c).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return m
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        path = u.path.replace("/trade-api/v2", "")
+        if not path.endswith("/candlesticks"):
+            return super().__call__(url)
+        self.calls.append(url)
+        q = urllib.parse.parse_qs(u.query)
+        lo, hi = int(q["start_ts"][0]), int(q["end_ts"][0])
+        t = path.split("/")[-2]
+        if path.startswith("/series"):
+            self.live_reqs.append(t)
+            self.windows.append((lo, hi))
+            if not self.with_data:
+                return 200, b'{"candlesticks": []}'
+            o, c = self.life[t]
+            e0 = (max(lo, o) // self.period_s + 1) * self.period_s
+            ends = range(e0, min(hi, c) + 1, self.period_s)
+            return 200, json.dumps({"candlesticks": [
+                {"end_period_ts": e, "yes_bid": {}, "yes_ask": {}, "price": {"mean_dollars": "0.5"},
+                 "volume_fp": "1.00", "open_interest_fp": "1.00"} for e in ends]}).encode()
+        self.hist_reqs.append(t)
+        return 404, b"{}"
+
+    def candle_gets(self):
+        return len(self.live_reqs) + len(self.hist_reqs)
+
+
+CANDLE_ARGS = ["--since", str(WIN_SINCE), "--until", str(WIN_UNTIL), "--period", "1"]
+
+
+def test_candles_two_day_market_unbounded_when_open_close_unknown(tmp_path, capsys):
+    # --market mode, nothing stored: old behaviour, the whole 109-day window, counted in the log
+    fake = LifeFake()
+    rc, _ = run(tmp_path, ["candles", "--market", LIFE_T, *CANDLE_ARGS], fake)
+    assert rc == 0
+    chunks = -(-(WIN_UNTIL - WIN_SINCE) // (kp.CANDLE_CHUNK * 60))  # 109 d of 1-min candles / 1000
+    assert chunks == 157
+    assert (len(fake.live_reqs), len(fake.hist_reqs)) == (157, 157)  # both tiers, every chunk
+    assert fake.windows[0][0] == WIN_SINCE and fake.windows[-1][1] == WIN_UNTIL
+    u = [r for r in manifest(tmp_path) if r["type"] == "unit"][0]
+    assert u["window"] == "unbounded" and u["chunks"] == 157 and u["status"] == "empty_both_tiers"
+    err = capsys.readouterr().err
+    assert "0 ticker(s) bounded" in err and "1 unbounded" in err
+
+
+def test_candles_two_day_market_bounded_in_series_mode(tmp_path, capsys):
+    # --series mode: open/close come from the settled listing already fetched, no extra request
+    fake = LifeFake()
+    rc, _ = run(tmp_path, ["candles", "--series", "KXHIGHNY", *CANDLE_ARGS], fake)
+    assert rc == 0
+    # 2 days + one period each side = 2882 one-minute candles -> 3 chunks, 2 tiers each
+    assert (len(fake.live_reqs), len(fake.hist_reqs)) == (3, 3)
+    assert fake.windows[0][0] == LIFE_OPEN - 60 and fake.windows[-1][1] == LIFE_CLOSE + 60
+    assert all(b[1] - b[0] <= kp.CANDLE_CHUNK * 60 for b in fake.windows)
+    u = [r for r in manifest(tmp_path) if r["type"] == "unit"][0]
+    assert u["window"] == "bounded" and u["chunks"] == 3 and u["status"] == "empty_both_tiers"
+    assert "1 ticker(s) bounded" in capsys.readouterr().err
+    # besides the 6 candle GETs: one /series, one cutoff, one /markets page
+    assert len(fake.calls) == 3 + 6
+
+
+def test_candles_bounded_and_unbounded_return_the_same_rows(tmp_path):
+    a, b = tmp_path / "bounded", tmp_path / "unbounded"
+    fa, fb = LifeFake(with_data=True), LifeFake(with_data=True)
+    assert run(a, ["candles", "--series", "KXHIGHNY", *CANDLE_ARGS], fa)[0] == 0
+    assert run(b, ["candles", "--market", LIFE_T, *CANDLE_ARGS], fb)[0] == 0
+    ra, rb = read(a, "candles"), read(b, "candles")
+    assert len(ra) == len(rb) == 2 * 24 * 60  # one candle per minute of the 2 days
+    assert {r["end_period_ts"] for r in ra} == {r["end_period_ts"] for r in rb}
+    assert all(r["source"] == "live" for r in ra)
+    # data in every bounded chunk: live answered, historical never needed
+    assert (len(fa.live_reqs), len(fa.hist_reqs)) == (3, 0)
+    assert len(fb.live_reqs) == 157 and len(fb.hist_reqs) == 154
+
+
+def test_candles_market_mode_bounds_from_stored_markets_table(tmp_path):
+    fake = LifeFake()
+    assert run(tmp_path, ["markets", "--series", "KXHIGHNY", "--since", str(WIN_SINCE)], fake)[0] == 0
+    n0 = len(fake.calls)
+    rc, _ = run(tmp_path, ["candles", "--market", LIFE_T, *CANDLE_ARGS], fake)
+    assert rc == 0
+    assert (len(fake.live_reqs), len(fake.hist_reqs)) == (3, 3)
+    # /series for the category check + the 6 candle GETs; the stored table cost no request
+    assert len(fake.calls) - n0 == 1 + 6
+    assert [r for r in manifest(tmp_path) if r["type"] == "unit"][-1]["window"] == "bounded"
+
+
+def test_candle_window_clipping_and_fallbacks():
+    s, h = 30 * DAY, 40 * DAY
+    assert kp.candle_window(0, 100 * DAY, s, h, 60) == (s - 60, h + 60, True)
+    assert kp.candle_window(s, h, s - 5 * DAY, h + 5 * DAY, 60) == (s, h, True)  # market outlives window
+    assert kp.candle_window(0, 100 * DAY, None, h, 60) == (0, 100 * DAY, False)
+    assert kp.candle_window(0, 100 * DAY, s, None, 60) == (0, 100 * DAY, False)
+    assert kp.candle_window(0, 100 * DAY, h, s, 60) == (0, 100 * DAY, False)  # close < open: bad data
+    assert kp.candle_window(0, 100 * DAY, s, h, 3600) == (s - 3600, h + 3600, True)  # one period = 1 h
+
+
+def test_candles_market_outside_window_sends_no_request(tmp_path):
+    late = (LIFE_T, WIN_UNTIL + 5 * DAY, WIN_UNTIL + 7 * DAY)  # opens after --until
+    fake = LifeFake(markets=(late,))
+    rc, _ = run(tmp_path, ["candles", "--series", "KXHIGHNY", *CANDLE_ARGS], fake)
+    assert rc == 0
+    assert fake.candle_gets() == 0
+    u = [r for r in manifest(tmp_path) if r["type"] == "unit"][0]
+    assert u["status"] == "outside_window" and u["rows"] == 0 and u["chunks"] == 0
+    assert u["window"] == "bounded"
+
+
+def test_candles_resume_skips_done_units_and_new_units_use_bounded_window(tmp_path):
+    other = ("KXHIGHNY-26SEP20-T80", LIFE_OPEN + 8 * DAY, LIFE_CLOSE + 8 * DAY)
+    args = ["candles", "--series", "KXHIGHNY", *CANDLE_ARGS]
+    f1 = LifeFake(markets=((LIFE_T, LIFE_OPEN, LIFE_CLOSE), other))
+    # /series + /historical/cutoff + /markets = 3, then 6 candle GETs for the first market; the cap
+    # (checked before each attempt) stops the second one on its first candle GET
+    rc, _ = run(tmp_path, args, f1, max_requests=9)
+    assert rc == 3
+    assert set(f1.live_reqs + f1.hist_reqs) == {LIFE_T}
+    f2 = LifeFake(markets=((LIFE_T, LIFE_OPEN, LIFE_CLOSE), other))
+    rc, _ = run(tmp_path, args, f2)
+    assert rc == 0
+    assert set(f2.live_reqs + f2.hist_reqs) == {other[0]}  # the done unit is not requested again
+    assert (len(f2.live_reqs), len(f2.hist_reqs)) == (3, 3)  # the new unit: bounded
+    assert f2.windows[0][0] == other[1] - 60 and f2.windows[-1][1] == other[2] + 60
+    units = [r for r in manifest(tmp_path) if r["type"] == "unit"]
+    assert [u["unit"] for u in units] == [f"{LIFE_T}:1", f"{other[0]}:1"]
+
+
+def test_stored_market_lifetimes_merges_duplicates_and_nulls(tmp_path):
+    ft = kp.parse_dt
+    rows = [
+        {"ticker": "A-1", "open_time": ft(100), "close_time": None, "fetched_at": ft(10)},
+        {"ticker": "A-1", "open_time": None, "close_time": ft(500), "fetched_at": ft(20)},
+        {"ticker": "A-1", "open_time": ft(150), "close_time": ft(600), "fetched_at": ft(30)},
+        {"ticker": "B-1", "open_time": None, "close_time": None, "fetched_at": ft(10)},
+    ]
+    store = kp.Store(tmp_path, "markets", {})
+    store.write("markets", rows, part="x")
+    got = kp.stored_market_lifetimes(tmp_path)
+    assert got["A-1"] == (150, 600) and got["B-1"] == (None, None)
+    assert kp.stored_market_lifetimes(tmp_path / "nowhere") == {}
+
+
 def test_terminal_4xx_writes_run_record_and_checkpoint(tmp_path):
     fake = Fake()
     fake.status_script = [400]

@@ -58,7 +58,12 @@ Conventions / caveats:
     series with an unlisted name and a non-sports category label gets through, and
     some non-sports series are dropped when a short keyword starts a ticker token.  Not a guarantee.
   * Candles: per chunk, live tier then historical tier; a unit is done only after
-    both were tried, and a unit with no rows is logged as status empty_both_tiers.
+    both were tried, and a unit with no rows is logged as status empty_both_tiers.  Each
+    ticker's chunk loop is bounded to [open_time - 1 period, close_time + 1 period] (clipped to
+    --since/--until) from its settled-market listing entry or the stored markets table; a
+    ticker with no known open/close walks the whole window and is counted (unit record
+    ``window``, closing log line); one whose life misses the window sends no request
+    (status outside_window).  Run ``markets`` into the same --out first for --market mode.
   * Trades: taker side is stored as ``taker_outcome_side`` (falls back to the
     deprecated ``taker_side``).  Prices are dollars as floats.
   * Resumability is per unit (series for markets, ticker for trades/candles).
@@ -563,9 +568,9 @@ class Store:
                    "complete": complete, "note": note, "error": error,
                    "at": now_utc().isoformat()})
 
-    def unit_record(self, unit: str, status: str, rows: int):
+    def unit_record(self, unit: str, status: str, rows: int, **extra):
         self._log({"type": "unit", "command": self.command, "unit": unit, "status": status,
-                   "rows": rows, "at": now_utc().isoformat()})
+                   "rows": rows, "at": now_utc().isoformat(), **extra})
 
 
 # ---------------------------------------------------------------- selection
@@ -719,7 +724,9 @@ def cmd_markets(client, store, args, log):
     return True
 
 
-def _tickers_for_trades(client, store, args, log, cutoff, since, until):
+def _markets_for_trades(client, store, args, log, cutoff, since, until):
+    """Yield ``(ticker, market_dict_or_None)``.  The dict is the settled-market listing entry
+    (``--series`` mode: already fetched, no extra request); ``--market`` mode has none."""
     if args.market:
         allowed = set(select_series(client, argparse.Namespace(
             categories=args.categories, allow_series=args.allow_series,
@@ -727,14 +734,19 @@ def _tickers_for_trades(client, store, args, log, cutoff, since, until):
             log))
         for m in [x.strip() for x in args.market.split(",") if x.strip()]:
             if series_of(m) in allowed:
-                yield m
+                yield m, None
             else:
                 log(f"skip market {m}: series excluded or unknown")
         return
     for s in select_series(client, args, log):
         # markets that settled on/after --since; their trades are then limited to the window
         for _src, m in fetch_settled_markets(client, cutoff, s, since, None):
-            yield m["ticker"]
+            yield m["ticker"], m
+
+
+def _tickers_for_trades(client, store, args, log, cutoff, since, until):
+    for t, _m in _markets_for_trades(client, store, args, log, cutoff, since, until):
+        yield t
 
 
 def iter_trade_batches(client, cutoff: Cutoff, ticker, since, until, flush_pages=50):
@@ -784,11 +796,44 @@ def cmd_trades(client, store, args, log):
     return True
 
 
+def stored_market_lifetimes(root) -> dict:
+    """ticker -> (open_ts, close_ts) unix seconds (either may be None) from the markets table
+    already on disk under ``root``.  Reads four columns only.  A ticker stored twice (live and
+    historical listing) keeps its latest non-null value per field.  No HTTP."""
+    tab = read_table_unified(root, "markets", columns=("ticker", "open_time", "close_time", "fetched_at"))
+    out: dict = {}
+    rows = sorted(tab.to_pylist(), key=lambda r: (r["fetched_at"] is not None, r["fetched_at"] or 0))
+    for r in rows:
+        o, c = out.get(r["ticker"], (None, None))
+        o2, c2 = to_unix(r["open_time"]), to_unix(r["close_time"])
+        out[r["ticker"]] = (o if o2 is None else o2, c if c2 is None else c2)
+    return out
+
+
+def candle_window(since, until, open_ts, close_ts, step):
+    """The [lo, hi) request window for one ticker and whether it is bounded by the market's life.
+
+    Bounded: [max(since, open_ts - step), min(until, close_ts + step)] where ``step`` is one
+    candle period in seconds.  If open or close is unknown (or close < open) the whole
+    [since, until] window is used, i.e. the old behaviour.  hi <= lo means the market's life
+    does not overlap the window."""
+    if open_ts is None or close_ts is None or close_ts < open_ts:
+        return since, until, False
+    return max(since, open_ts - step), min(until, close_ts + step), True
+
+
 def cmd_candles(client, store, args, log):
     """Per chunk: live tier first, then the historical tier if live is empty/404.
 
+    The chunk loop of a ticker is bounded to its own life, [open_time - 1 period,
+    close_time + 1 period] clipped to [--since, --until] (see ``candle_window``); open/close come
+    from the settled-market listing entry (``--series``) or the stored markets table under
+    ``--out`` (``--market``).  A ticker with no known open or close walks the whole window as
+    before and is counted (unit record ``window: unbounded`` and the closing log line).
+
     A unit is marked done only after BOTH tiers were tried for every empty chunk;
-    if nothing came back at all it is recorded as status ``empty_both_tiers``.
+    if nothing came back at all it is recorded as status ``empty_both_tiers``; a ticker whose
+    life does not overlap the window sends no request and is recorded as ``outside_window``.
     """
     if not args.market and not args.series:
         raise SystemExit("candles needs --market or --series")
@@ -799,6 +844,8 @@ def cmd_candles(client, store, args, log):
     period = args.period
     step = period * 60
     cutoff = Cutoff(client)
+    stored = None  # markets table lifetimes, read at most once and only if a ticker needs it
+    n_bounded = n_unbounded = 0
 
     def tier(path, p):
         try:
@@ -808,19 +855,33 @@ def cmd_candles(client, store, args, log):
                 raise
             return []
 
-    for t in _tickers_for_trades(client, store, args, log, cutoff, since, until):
+    for t, m in _markets_for_trades(client, store, args, log, cutoff, since, until):
         unit = f"{t}:{period}"
         if unit in store.done:
             continue
-        rows, lo, chunks_empty = [], since, 0
-        while lo < until:
-            hi = min(until, lo + CANDLE_CHUNK * step)
+        open_ts, close_ts = to_unix((m or {}).get("open_time")), to_unix((m or {}).get("close_time"))
+        if open_ts is None or close_ts is None:
+            if stored is None:
+                stored = stored_market_lifetimes(store.out)
+            s_open, s_close = stored.get(t, (None, None))
+            open_ts = s_open if open_ts is None else open_ts
+            close_ts = s_close if close_ts is None else close_ts
+        win_lo, win_hi, bounded = candle_window(since, until, open_ts, close_ts, step)
+        if bounded:
+            n_bounded += 1
+        else:
+            n_unbounded += 1
+            log(f"candles {unit}: open/close unknown, walking the whole window")
+        rows, lo, chunks, chunks_empty = [], win_lo, 0, 0
+        while lo < win_hi:
+            hi = min(win_hi, lo + CANDLE_CHUNK * step)
             p = {"start_ts": lo, "end_ts": hi, "period_interval": period}
             source = "live"
             cs = tier(f"/series/{series_of(t)}/markets/{t}/candlesticks", p)
             if not cs:
                 source = "historical"
                 cs = tier(f"/historical/markets/{t}/candlesticks", p)
+            chunks += 1
             if not cs:
                 chunks_empty += 1
             rows += [candle_row(t, period, c, source) for c in cs]
@@ -828,22 +889,30 @@ def cmd_candles(client, store, args, log):
         uniq = {r["end_period_ts"]: r for r in rows}  # chunk-edge candles can repeat
         rows = [uniq[k] for k in sorted(uniq)]
         store.write_partitioned("candles", rows, part=unit, time_field="end_period_ts")
-        status = "ok" if rows else "empty_both_tiers"
-        store.unit_record(unit, status, len(rows))
+        status = "ok" if rows else ("empty_both_tiers" if chunks else "outside_window")
+        store.unit_record(unit, status, len(rows), window="bounded" if bounded else "unbounded",
+                          chunks=chunks)
         store.mark_done(unit)
-        log(f"candles {unit}: {len(rows)} ({status}; {chunks_empty} chunks empty in both tiers)")
+        log(f"candles {unit}: {len(rows)} ({status}; {chunks_empty} chunks empty in both tiers; "
+            f"{chunks} chunks; window {'bounded' if bounded else 'unbounded'})")
+    log(f"candles: {n_bounded} ticker(s) bounded to their open/close, "
+        f"{n_unbounded} unbounded (open/close unknown)")
     return True
 
 
-def read_table_unified(root, kind: str, files=None) -> pa.Table:
+def read_table_unified(root, kind: str, files=None, columns=None) -> pa.Table:
     """Read every part of ``kind`` under ``root`` against the CURRENT schema: columns missing
     from older parts become nulls, unknown columns are ignored, types are cast.  (A plain
-    dataset read takes the first file's schema and drops or breaks on mixed generations.)"""
+    dataset read takes the first file's schema and drops or breaks on mixed generations.)
+    ``columns`` limits the result (and the parquet read) to those schema columns."""
     sch = SCHEMAS[kind]
+    if columns is not None:
+        sch = pa.schema([fld for fld in sch if fld.name in set(columns)])
     files = sorted(Path(root, kind).rglob("*.parquet")) if files is None else files
     tabs = []
     for f in files:
-        t = pq.read_table(f)
+        have = set(pq.read_schema(f).names)
+        t = pq.read_table(f, columns=[n for n in sch.names if n in have])
         tabs.append(pa.table({fld.name: (t[fld.name].cast(fld.type) if fld.name in t.column_names
                                          else pa.nulls(t.num_rows, fld.type)) for fld in sch}, schema=sch))
     return pa.concat_tables(tabs) if tabs else sch.empty_table()
