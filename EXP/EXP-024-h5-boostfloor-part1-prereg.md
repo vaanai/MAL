@@ -1169,7 +1169,7 @@ Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2
 - **(b) Look 1 and Look 2 as written.** They are always read and reported as written. They are never skipped, delayed, withdrawn, re-filed, re-scoped or re-thresholded because of anything an arena H5 book shows. No arena result may change any EXP-024 parameter.
 - **(c) Reports.** Any Look 2 report states that the arena H5 v1 and v2 books' outcomes were observed in real time from their clocks, and could have influenced later choices.
 - **(d) Synthetic class.** Amendment 4 D1 and A3 bind the arena v2 book as they bind v1. Before 2026-11-14T00:00Z no arena H5 record carries an outcome for a synthetic pool or splits an outcome by class. Its universe excludes synthetic pools before any outcome exists, as Amendment 4 A2 does.
-- **(e) v1.** An arena H5 v1 book stays under Amendment 2's declared observation (DEC-031 §3.5). This amendment adds nothing for v1.
+- **(e) v1.** An arena H5 v1 book stays under Amendment 2's declared observation for pools with s0 in `[2026-10-16T00, 2026-11-06T00)` (DEC-031 §3.5). Amendment 2 ends at 2026-11-06T00, so for pools with s0 at or after that instant this amendment's scope (a) to (d) covers the arena v1 book (`rule_id` `H5-BOOSTFLOOR-v1`, computed by the same command) as it covers v2.
 
 ## Sources
 
