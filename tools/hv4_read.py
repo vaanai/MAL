@@ -54,7 +54,7 @@ import numpy as np
 
 from tools import arena_score as AS
 from tools.arena_paper import LEDGER_ROOT, REGISTRY_PATH, STAKES_SOL, TEST_ENV, Ledger, canon, load_registry, utc_day
-from tools.hv4_arms import ARMS, PERSONAS
+from tools.hv4_arms import ARMS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = "hv4_read_v1"
@@ -433,8 +433,7 @@ def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sh
            "tries": {"data_key": hashlib.sha256(canon(["hv4", read.get("bot_id"), read["clock_start_ms"]]).encode()).hexdigest()[:16], "variant_n": int(read["tries"]["variant_n"]),
                      "of_m": int(read["tries"]["of_m"])},
            "runtime_s": None, "peak_rss_mb": None, "created_utc": created_utc,
-           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + (" Not proposed for canary: ex-best-day is not positive." if deciding and deciding["status"] == "PASS"
-                                                                                  and not deciding["ex_best_day_positive"] else "")}
+           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
     errs = validate_result(rec)
     if errs:
         raise ValueError("result.v1 record invalid:\n" + "\n".join(errs))
@@ -457,6 +456,8 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
         s = dec["subcells"].get("flat_1p9_total") or next(iter(dec["subcells"].values()))
         parts.append(f"Deciding cell (1.9 s, stake 0.25, flat and pressure, both strand rules; flat and total rule shown): n {s['n']}, total {_f(s['total_sol'])} SOL, "
                      f"ex-top-3 {_f(s['ex_top3_sol'])}, ex-best-day {_f(s['ex_best_day_sol'])}; weakest ex-best-day over the four sub-cells {_f(dec['ex_best_day_min_sol'])}.")
+    if read.get("not_proposed_for_canary"):
+        parts.append("NOT PROPOSED FOR CANARY: the total is not positive ex best day (DEC-031 section 2).")
     for k in ("v1", "v2"):
         if read.get(k):
             parts.append(f"{k.upper()} {read[k]['status']}.")
@@ -540,7 +541,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
         cells.append(cell_record(bot_id, PRIMARY_STAKE, main, decides=True, gate_cell=False))
     # 2. V1 and V2 (LLM books only)
     v1 = v2 = None
-    adds = None
+    adds = v12 = None
     if arm.llm and arm.promotable:
         v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms)
         x = f"{arm.persona}-X"
@@ -551,7 +552,8 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
         v2["comparator_status_at_this_instant"] = status_of(xres)
         v2["note"] = ("V2 fails and the X book's cells pass at this instant: X goes to the canary first (DESIGN section 8), subject to X's own read" if v2["status"] == "FAIL" and
                       xres["status"] == "PASS" else None)
-        adds = bool(main["status"] == "PASS" and v1["status"] == "PASS" and v2["status"] == "PASS")
+        v12 = bool(v1["status"] == "PASS" and v2["status"] == "PASS")
+        adds = bool(main["status"] == "PASS" and v12)  # "adds value" is claimed only for a book that also clears the arena gate
     # 3. disclosure, record
     n_books = len(main.get("books") or {}) + (1 if asz and asz.get("books") else 0)
     cells_read = n_books * len(AS.MODELS) * len(AS.LATS)
@@ -559,7 +561,8 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     order = sorted(reg, key=lambda k: (reg[k]["clock_start_ms"], k))
     read = {"schema": SCHEMA, "read": "book", "bot_id": bot_id, "instant_ms": b, "now_ms": now, "created_utc": _created(now), "clock_start_ms": reg[bot_id]["clock_start_ms"],
             "t0_ms": t0, "window_days": max(1, len(calendar_days(reg[bot_id]["clock_start_ms"], b))), "status": status_of(main), "arena_status": main["status"],
-            "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "adds_value": adds,
+            "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
+            "not_proposed_for_canary": bool(main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
             "disclosure": disclosure(reg, now, n_books, cells_read, ebd), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
             "inputs": _inputs(registry, ledger_root), "arena_score_read": main, "arena_score_as_sized": asz}
     dec_books = main.get("books", {}).get(PRIMARY_KEY, {}).get("cells", {})

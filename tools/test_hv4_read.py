@@ -216,12 +216,41 @@ def test_forced_boundary_reproduces_arena_score_and_restores_it(tmp_path):
     assert AS.blind_read_instant is orig
 
 
+def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tmp_path):
+    w = World(tmp_path)
+    rows = book_rows("CON-L", noisy(4e6, 5, 20, 11))
+    last = max(i for i, r in enumerate(rows) if r["kind"] == "trade")
+    ms = rows[last]["decision_ms"]["entry"]
+    w.add(rows[:last])  # the last position has an open row and no close
+    b = DAY0 + 5 * DAY
+    with pytest.raises(R.Refused, match="PENDING|pending"):
+        w.book("CON-L", now_ms=b + 3_600_000)  # younger than the 24 h settle window: not a verdict
+    assert not (Path(w.out) / "reads").exists()
+    r = w.book("CON-L", now_ms=ms + 25 * 3_600_000)  # older: a restart orphan, NOT_DECIDABLE, final
+    assert r["arena_status"] == "NOT_DECIDABLE" and r["arena_score_read"]["restart_orphans"] == 1
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
+
+
+def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
+    w = World(tmp_path)
+    day = lambda v: [v] * 20  # noqa: E731
+    w.add(book_rows("CON-L", [day(20e6), day(0.5e6), day(0.5e6), day(-2e6), day(-2e6)]))
+    r = w.book("CON-L")
+    dec = next(c for c in r["cells"] if c["decides"])
+    assert r["arena_status"] == "PASS" and dec["ex_best_day_positive"] is False and dec["ex_best_day_min_sol"] < 0
+    assert r["not_proposed_for_canary"] is True
+    rec = json.loads((Path(w.out) / "reads" / "CON-L.result.json").read_text())
+    assert "Not proposed for canary" in rec["notes"]
+    assert "NOT PROPOSED FOR CANARY" in json.loads((Path(w.out) / "reads" / "CON-L.console.json").read_text())["stream"][0]["text"]
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ V1 / V2 with known answers
 def test_book_read_pass_case_v1_v2_pass(tmp_path):
     w = con_world(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0)
     r = w.book("CON-L")
     assert r["instant_ms"] == DAY0 + 5 * DAY and r["arena_status"] == "PASS"
-    assert r["v1"]["status"] == "PASS" and r["v2"]["status"] == "PASS" and r["adds_value"] is True
+    assert r["v1"]["status"] == "PASS" and r["v2"]["status"] == "PASS" and r["v1_and_v2"] is True and r["adds_value"] is True
+    assert r["not_proposed_for_canary"] is False
     assert set(r["v1"]["subcells"]) == set(R.SUBCELLS) == set(r["v2"]["subcells"])
     assert all(v["above"] for v in r["v1"]["subcells"].values())
     assert all(v["p"] == 1 / 2001 and v["p"] <= R.V2_ALPHA for v in r["v2"]["subcells"].values())  # five days, every diff positive: no draw has a mean <= 0
