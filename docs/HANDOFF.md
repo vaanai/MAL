@@ -56,7 +56,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
      - Watch the gap rate. H5 flags pools only on a common-down of all sockets. If 413/429 rejections persist, propose cancelling the old shadow #817.
    - **A3 HALT:** `arena_h5_score halt --at-ms <flag instant>`.
    - **FIRST PRIORITY (found 2026-10-18 17:06Z, dry run #1176, counts only):** both books are on course for NOT_DECIDABLE.
-     - Each has 13 attempts in about 11 h: 4 counted and 9 excluded, all `base_breaks` (base_breaks_unresolved_settled != 0). excluded_share 0.692 is above DEC-031's 5% cap.
+     - Each has 13 attempts in about 11 h: 4 counted and 9 excluded, all `base_breaks` (base_breaks_unresolved_settled != 0). excluded_share 0.692 is above the scorer's 5% cap on all exclusions. Note: DEC-031 sets its 5% NOT_DECIDABLE rule for feed-gap exclusions only and does not mention base_breaks, so the scorer's cap is broader than the DEC (reviewer on #725). Check the DEC/EXP-024 Am.9 text first: this may be a scorer-vs-DEC mismatch rather than a rule change.
      - This is the live executor's data-integrity refusal, and it was heavy before the arena too (10-10 canary: 13 refusals against 3 trades in 24 h).
      - Before more of the window passes, with quant-proof, decide whether base_breaks are executor refusals (not attempts, or their own counted class) or feed-quality exclusions. Change it only by amendment before any read, outcome-blind (only counts seen so far).
      - Also weigh the Helius-fed listener for the arena shadow: it now uses public websockets.
