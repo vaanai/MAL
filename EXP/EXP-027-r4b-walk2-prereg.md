@@ -648,3 +648,4 @@ Changelog line to add with it:
 ## Window record
 
 *(Empty until registration. The last section of this file; nothing follows it. The manager appends one line per commit, in the form `EXP027_KEY: value (appended YYYY-MM-DDTHH:MMZ)`, dated with `date -u`, from the merge record, the count file and the job records only. Mechanism and read-tool checks: section 0.5.)*
+EXP027_MERGE_INSTANT: 2026-10-18T02:07:36Z (appended 2026-10-18T02:14Z)
