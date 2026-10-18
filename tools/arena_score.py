@@ -19,7 +19,8 @@ before the clock is not. The scorer prints a WARNING when it reads a test_overri
 ORDER OF OPERATIONS (fixed, pinned by a test): clock filter -> read boundary -> DEC-031 exclusions -> pressure refit -> statistics.
 
 STATUS (the first that applies):
-  REFUSED         no registry line with deciding_stake, model_ids and the verification record (verified_sha, real-clock registration); a changed frozen_sha; an open row whose code_head is not the registered frozen_sha or whose code_dirty is not false (the frozen code is bound to the process); a duplicated trade_id; mixed stack configs inside one bot
+  REFUSED         no registry line with deciding_stake, model_ids and the verification record (verified_sha, real-clock registration); a changed frozen_sha; an open row whose code_head is not the registered frozen_sha or whose code_dirty is not false (the frozen code is bound to the process), or an open row whose engine start record (code state captured once at engine start) is missing, not the
+                  registered frozen_sha, or dirty; a duplicated trade_id; mixed stack configs inside one bot
   NOT_READY       the boundary is not reached (or not reached yet by --now-ms)
   PENDING         an attempt before B has no close yet and is younger than the settle window (default 24 h): not a verdict, and --record refuses it
   NOT_DECIDABLE   a restart orphan (an attempt before B with no priced or excluded close that is OLDER than the settle window; DEC-014 Am.1), or excluded
@@ -204,6 +205,12 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
     if bad:
         raise Refused(f"{bot_id}: {len(bad)} open row(s) were written by a process whose code is not the registered frozen_sha or whose tree was dirty "
                       f"(first: code_head {bad[0].get('code_head')}, code_dirty {bad[0].get('code_dirty')}, registered {e['frozen_sha']}): the frozen code is bound to the process")
+    starts = {r["engine_id"]: r for r in rows if r.get("kind") == "start" and r.get("engine_id")}
+    bad_start = [r for r in rows if r.get("kind") == "open" and _entry(r) >= e["clock_start_ms"]
+                 and not ((st := starts.get(r.get("engine_id"))) and st.get("code_head") == e["frozen_sha"] and st.get("code_dirty") is False)]
+    if bad_start:
+        raise Refused(f"{bot_id}: {len(bad_start)} open row(s) point at an engine start record that is missing or does not match (the engine must have started clean "
+                      f"on the registered frozen_sha {e['frozen_sha']}; first engine_id {bad_start[0].get('engine_id')})")
     ids = [r["trade_id"] for r in rows]
     if len(ids) != len(set(ids)):
         raise Refused(f"{bot_id}: duplicated trade_id in the ledger")
@@ -378,7 +385,7 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
             "bots_refused": refused, "bots": bots}
 
 
-KINDS = ("open", "refused", "trade", "excluded", "late_print")
+KINDS = ("open", "refused", "trade", "excluded", "late_print", "start")
 
 
 def digest_day(ledger_root: str | Path, registry: str, day: str, only: str | None = None) -> dict[str, Any]:

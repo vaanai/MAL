@@ -55,6 +55,7 @@ import math
 import os
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -547,6 +548,7 @@ class Position:
     call_ms: int = 0  # the wall clock at the buy() call
     exit_stamp_ms: int | None = None
     exit_call_ms: int | None = None
+    call_feed_slot: int | None = None  # the latest feed slot the engine had seen at the buy() call: the most the bot could have seen
 
 
 @dataclass
@@ -572,6 +574,13 @@ class ArenaEngine:
         self.clock = clock or SlotClock()
         self.sps_fn = sps_fn
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
+        # The code state is captured ONCE here, at engine start, and written to every bot's ledger as a `start` record (before its first open row). The scorer refuses
+        # a book whose start record is missing, does not carry the registered frozen_sha, or was a dirty tree: a process started from the wrong code would
+        # otherwise pass if the disk were later reset to the frozen sha while it kept running.
+        self.engine_id = uuid.uuid4().hex[:16]
+        self.start_state = self.code_state_fn()
+        self.started_ms = int(self.now_fn())
+        self._started_bots: set[str] = set()
         self.pools: dict[str, PoolHist] = {}
         self.positions: dict[str, Position] = {}
         self.pending: dict[str, list[str]] = {}  # pool -> position ids with a sell decided and not yet priced
@@ -698,6 +707,23 @@ class ArenaEngine:
                 self._count("late_prints")
         self.priced[pool] = keep
 
+    def start_record(self, bot_id: str) -> bool:
+        """Write this engine's start record into bot_id's ledger (once per engine and bot). Called automatically before the bot's first open row; a runner should
+        call start_all() right after constructing the engine."""
+        if bot_id in self._started_bots:
+            return False
+        reg = self._bot(bot_id)
+        head, dirty = self.start_state
+        wrote = self.ledger.append({"schema": SCHEMA, "kind": "start", "trade_id": f"start-{self.engine_id}-{bot_id}", "engine_id": self.engine_id, "bot_id": bot_id,
+                                    "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": self.started_ms, "exit": None}, "code_head": head, "code_dirty": dirty,
+                                    "pid": os.getpid(), "stack": self.cfg.as_dict(), "written_ms": int(self.now_fn())})
+        self._started_bots.add(bot_id)
+        return wrote
+
+    def start_all(self) -> int:
+        """start_record for every registered book that is not stopped."""
+        return sum(self.start_record(b) for b, e in load_registry(self.registry_path).items() if e["stopped_at_ms"] is None)
+
     def code_state(self) -> tuple[str | None, bool | None]:
         """(HEAD, dirty) of the running checkout, re-read at most once a minute. Every `open` row carries it; the scorer refuses a book whose rows do not run the
         registered frozen_sha, or ran on a dirty tree."""
@@ -775,9 +801,10 @@ class ArenaEngine:
         d = self.cfg.feed_delay_slots
         sd = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant mapped to the tape slot clock; d is added at the landing
         pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, instant, int(decision_slot), sd, float(sps),
-                       None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call)
+                       None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call, call_feed_slot=self.hw_slot)
         head, dirty = self.code_state()
-        self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
+        self.start_record(bot_id)  # the engine's code state, captured once at start, is on the ledger before the first open row that points at it
+        self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "engine_id": self.engine_id, "call_feed_slot": self.hw_slot, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
                             "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
                             "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
                             "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
@@ -799,7 +826,7 @@ class ArenaEngine:
                                                                 r["decision_slot"]["entry"], r["effective_slot"]["entry"], r["sps_entry"], r["bot_sol_in"],
                                                                 r["meta"], restarted=True,
                                                                 stamp_ms=(r.get("stamp_ms") or {}).get("entry", r["decision_ms"]["entry"]),
-                                                                call_ms=(r.get("call_ms") or {}).get("entry", 0))
+                                                                call_ms=(r.get("call_ms") or {}).get("entry", 0), call_feed_slot=r.get("call_feed_slot"))
                     n += 1
         return n
 
@@ -937,6 +964,10 @@ class ArenaEngine:
             del self.pools[k]
         return len(drop)
 
+    @staticmethod
+    def _ref_slot(pos: Position) -> int:
+        return pos.decision_slot if pos.call_feed_slot is None else min(pos.decision_slot, pos.call_feed_slot)
+
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
         """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
         decision-time spot is the price the bot saw (prints before its stamped decision_slot, even when it wrote the decision much later)."""
@@ -950,13 +981,15 @@ class ArenaEngine:
             args = (a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"])
             ms = mint_states(*args, np.array([sdc]), pos.sps_entry, t_marks=np.array([0]), slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([xsc]),
                              lats=LATS, rounding=cfg.k_rounding)
-            ref_slot = pos.decision_slot  # the 15% guard compares against the price the bot SAW: prints before the stamped slot, not the write-instant slot
+            # the 15% guard compares against the price the bot SAW: prints before min(its stamped slot, the latest feed slot at the call). A stamped slot above the
+            # feed's high-water slot is a slot the bot never saw: capping it keeps a future decision_slot from taking the reference from later prints.
+            ref_slot = self._ref_slot(pos)
             spot = ms["spot"][0] if ref_slot == sdc else mint_states(*args, np.array([ref_slot]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
             return {"ref": float(spot), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
                     "ssb": {l: float(ms["ssb"][l][0]) for l in LATS}, "nearby": {l: float(ms["nearby"][l][0]) for l in LATS},
                     "Qx": float(ms["Qx"][0]), "Bx": float(ms["Bx"][0]), "land": {l: sdc + k[l] for l in LATS}}
         x_land = {l: sdc + k[l] for l in LATS}
-        bs = bonding_states(h, pos.decision_slot, x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
+        bs = bonding_states(h, self._ref_slot(pos), x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
         bs["land"] = x_land
         return bs
 

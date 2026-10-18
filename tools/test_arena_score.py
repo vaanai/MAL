@@ -76,7 +76,12 @@ def trade_row(pid, i, day, pnl19, pnl13=None, pnl19_sc=None, pnl13_sc=None, stak
 def open_row(pid, i, day, bot="botA", ms=None):
     ms = DAY0 + day * DAY + 3_600_000 + i * 1000 if ms is None else ms
     return {"schema": "arena_trade_v1", "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot, "frozen_sha": "abc1234",
-            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": "abc1234", "code_dirty": False}
+            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": "abc1234", "code_dirty": False, "engine_id": "eng1"}
+
+
+def start_row(engine_id="eng1", head="abc1234", dirty=False, bot="botA"):
+    return {"schema": "arena_trade_v1", "kind": "start", "trade_id": f"start-{engine_id}-{bot}", "engine_id": engine_id, "bot_id": bot, "frozen_sha": "abc1234",
+            "decision_ms": {"entry": DAY0 + 1000, "exit": None}, "code_head": head, "code_dirty": dirty, "stack": dict(STACK)}
 
 
 def refused_row(i, day, bot="botA", reason="no_prints"):
@@ -87,7 +92,7 @@ def refused_row(i, day, bot="botA", reason="no_prints"):
 
 def positions(pnls19, days=5, stakes=(0.25,), **kw):
     """One open row and one trade row per stake per position; positions spread over `days` UTC dates in order."""
-    rows = []
+    rows = [start_row()]
     per = int(np.ceil(len(pnls19) / days))
     for i, p in enumerate(pnls19):
         pid = f"p{i:04d}"
@@ -207,7 +212,7 @@ def test_the_deciding_cell_is_1p9_at_the_pinned_stake(tmp_path):
     # the reverse: 1.9 s loses, 1.3 s wins
     assert status_of(read(sub, positions(np.full(100, -3e6), pnl13=4e6))) == "FAIL"
     # the pinned stake decides: stake 0.25 loses, stake 0.5 wins, pinned 0.5 -> PASS; pinned 0.25 -> FAIL
-    two = []
+    two = [start_row()]
     for i, p in enumerate(good_pnls()):
         pid = f"p{i:04d}"
         two += [open_row(pid, i, i // 20), trade_row(pid, i, i // 20, -3e6, stake=0.25), trade_row(pid, i, i // 20, p, stake=0.5)]
@@ -444,7 +449,7 @@ def test_daily_digest_has_hashes_and_counts_only_and_parses_no_trade_line(tmp_pa
     assert hashlib.sha256(data).hexdigest() in text and hashlib.sha256(dec).hexdigest() in text
     dg = S.digest_day(root, reg, day)
     a = dg["bots"]["botA"]
-    assert a["counts"] == {"open": 5, "trade": 6, "refused": 1} and a["lines"] == 12  # 5 positions, their 5 trades, 1 refused buy, and the poisoned line (counted by prefix, never parsed)
+    assert a["counts"] == {"open": 5, "trade": 6, "refused": 1, "start": 1} and a["lines"] == 13  # 5 positions, their 5 trades, 1 refused buy, and the poisoned line (counted by prefix, never parsed)
     assert dg["bots"]["botB"] == {"ledger_sha256": None, "decision_log_sha256": None, "lines": 0, "counts": {}}
     assert "net_lamports" not in text and "total_sol" not in text and "mean" not in text and "ci90" not in text
     assert main(["--ledger-root", root, "--registry", reg, "--daily-digest"]) == 2  # --day is required
@@ -543,3 +548,20 @@ def test_the_scorer_warns_when_it_reads_a_test_override_registry_line(tmp_path):
     v = res["bots"]["botA"]
     assert len(v["warnings"]) == 1 and "test_override" in v["warnings"][0]
     assert "WARNING: the registry line is a test_override" in render(res)
+
+
+def test_the_engine_start_record_must_match_the_registered_sha_and_be_clean(tmp_path):
+    base = positions(good_pnls())
+    assert status_of(read(tmp_path, base)) == "PASS"
+    cases = {"wrong_head": [start_row(head="deadbee")] , "dirty": [start_row(dirty=True)], "missing": [], "other_engine": [start_row(engine_id="eng2")]}
+    for name, starts in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        rows = [r for r in base if r["kind"] != "start"] + starts
+        res = read(sub, rows)
+        assert "engine start record" in res["bots_refused"]["botA"] and "botA" not in res["bots"], name
+    # an engine that was restarted: each open row points at its own engine's start record; a bad start of an engine with no counted rows is harmless
+    sub = tmp_path / "restart"
+    sub.mkdir()
+    rows = [dict(r, engine_id="eng2") if r["kind"] == "open" and int(r["position_id"][1:]) >= 50 else r for r in base] + [start_row(engine_id="eng2"), start_row(engine_id="eng3", dirty=True)]
+    assert status_of(read(sub, rows)) == "PASS"

@@ -44,6 +44,7 @@ SC = functools.partial(StackConfig, feed_delay_slots=0)
 
 def mk_arena(*a, **k):
     """An engine whose call clock tracks the latest feed row (a bot called inline with on_row, thinking for no time); tests move eng.now_fn to model a slow bot."""
+    k.setdefault("code_state_fn", lambda: ("abc1234", False))  # the state captured at engine start
     eng = ArenaEngine(*a, **k)
     eng.now_fn = lambda: eng.hw_ms or 0
     eng.code_state_fn = lambda: ("abc1234", False)  # the tests' registered sha; the real process_code_state has its own test
@@ -375,7 +376,7 @@ def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
         pid = eng2.buy("botA", "P1", None, tms(107), 107)
         eng2.now_fn = lambda: tms(120)  # the wall clock moves on while the pool prints nothing
         eng2.sell("botA", pid, 1.0, tms(120), 120)
-        assert eng2.ledger.read_bot("botA")[-1]["kind"] == "open"
+        assert trades(eng2, "open") and not trades(eng2) and not trades(eng2, "excluded")  # the open row is on the ledger; nothing is priced yet
         if gap:
             eng2.on_row({"type": "gap", "prog": "pumpswap", "kind": "silence", "data_loss": True, "slot": 107, "t_recv_ms": tms(125), "silent_ms": 3000})
         for i, slot in enumerate(range(108, 160)):
@@ -914,3 +915,82 @@ def test_a_decision_stamped_before_the_clock_but_written_after_it_counts_under_t
         early.on_row(r)
     with pytest.raises(ArenaRefused, match="before_clock"):
         early.buy("botA", "P1", None, tms(140), 145)  # written before the clock: refused
+
+
+def test_a_future_decision_slot_cannot_take_the_guard_reference_from_prints_the_bot_never_saw(tmp_path):
+    """QP's probe: the feed is at slot 149, the bot stamps slot 400. The reference must be the price at slot 149 (prints before it), not the price at slot 400."""
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = _tape(hi=430)
+    by_slot = {x["slot"]: x for x in rows}
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 149 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(149), 400)  # a slot 251 ahead of the feed
+        if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(420), 420)
+    op = trades(eng, "open")[0]
+    r = trades(eng)[0]
+
+    def post_price(slot):
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    assert op["call_feed_slot"] == 149 and op["decision_slot"]["entry"] == 400  # recorded on the open row
+    assert r["calc"]["1p3"]["spot"] == post_price(148)  # the last print before min(400, 149)
+    assert r["calc"]["1p3"]["spot"] != post_price(399)  # what the uncapped reference took
+    # prices rose about 30% between slot 149 and the landing at 400+: against the price the bot saw this buy is past the 1.15 guard
+    assert r["legs"]["total"]["flat_1p3"]["state"] == "guarded" and r["legs"]["total"]["flat_1p9"]["state"] == "guarded"
+    assert r["calc"]["1p3"]["by_rule"]["total"]["pnl_nofail"] == -505_000.0
+    # a stamped slot BELOW the high-water slot is a price the bot did see: unchanged
+    sub = tmp_path / "b"
+    sub.mkdir()
+    e2 = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+    pid = None
+    for x in rows:
+        e2.on_row(x)
+        if x["slot"] == 149 and pid is None:
+            pid = e2.buy("botA", "P1", None, tms(149), 140)
+        if x["slot"] == 250 and pid and e2.positions[pid].exit_slot is None:
+            e2.sell("botA", pid, 1.0, tms(250), 250)
+    assert trades(e2, "open")[0]["call_feed_slot"] == 149 and trades(e2)[0]["calc"]["1p3"]["spot"] == post_price(139)
+
+
+def test_the_bonding_guard_reference_is_capped_at_the_feed_slot_too(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = [dict(r, quote_reserve=40e9 + i * 3e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=430))]
+    by_slot = {x["slot"]: x for x in rows}
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 149 and pid is None:
+            pid = eng.buy("botA", "M1", None, tms(149), 400)
+        if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(420), 420)
+    ref = by_slot[148]["quote_reserve"] / (by_slot[148]["base_reserve"] * 1000.0)
+    assert trades(eng)[0]["calc"]["1p3"]["spot"] == ref and ref != by_slot[399]["quote_reserve"] / (by_slot[399]["base_reserve"] * 1000.0)
+
+
+def test_the_engine_records_its_code_state_once_at_start_and_open_rows_point_at_it(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    assert trades(eng, "start") == []  # written before the bot's first open row (or by start_all)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    eng.code_state_fn, eng._code_cache = (lambda: ("f" * 40, True)), None  # the checkout changes while the process keeps running
+    eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    st = trades(eng, "start")
+    assert len(st) == 1 and st[0]["engine_id"] == eng.engine_id and st[0]["code_head"] == "abc1234" and st[0]["code_dirty"] is False and st[0]["pid"] == os.getpid()
+    assert st[0]["frozen_sha"] == "abc1234" and st[0]["bot_id"] == "botA"
+    ops = trades(eng, "open")
+    assert {o["engine_id"] for o in ops} == {eng.engine_id} and [o["code_head"] for o in ops] == ["abc1234", "f" * 40]  # the per-call value still differs: the scorer refuses that row
+    # a restarted engine writes its own start record; start_all is idempotent and covers every registered, unstopped book
+    reg = eng.registry_path
+    register_bot("botB", "abc1234", 0, reg, now_ms=0)
+    e2 = mk_arena(eng.ledger.root, reg, SC(strand_rule="total"), sps_fn=lambda: 0.4)
+    assert e2.engine_id != eng.engine_id and e2.start_all() == 2 and e2.start_all() == 0
+    assert sorted(x["engine_id"] for x in trades(e2, "start")) == sorted([eng.engine_id, e2.engine_id])
+    assert [x["engine_id"] for x in e2.ledger.read_bot("botB") if x["kind"] == "start"] == [e2.engine_id]
