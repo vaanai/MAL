@@ -103,7 +103,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 
 3. **Kalshi.**
    - **#1146 (candles, 7 cities, bounded windows):** when it completes, message the weather-mm agent a0f680d593d71124d to run the holdout once (hunt17/kalshi-weather-mm).
-   - **#1145 (markets + fin/pubnum trades continuation):** when done, resume the kalshi-pubnum agent a844210f7b7536009 and the universe agent aafd58ba225514325.
+   - **#1145 (markets + fin/pubnum trades continuation):** when done, resume the kalshi-pubnum agent a844210f7b7536009 and the universe agent aafd58ba225514325. **Superseded by the update below:** start fresh agents; the old ids belong to this session.
    - **Update 2026-10-18 17:2xZ:** #1145, #1164, #1166 and #1169 each hit their request cap.
      - Done so far: gas 65 days, CA gas 55, diesel 64, KXGOLDH 26, KXWTIH 20. KXGOLDH is hourly with about 50 strikes per hour, so it is the request sink.
      - **#1178** now fetches only the 9 DECLARE daily series that still had 0 days.
@@ -139,19 +139,21 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 - aecc5920ec52995e1 (reviewer, #719)
 - ace30284da0c26753 (builder, #718)
 - a0f680d593d71124d (Kalshi weather-mm)
-- a844210f7b7536009 (pubnum)
-- aafd58ba225514325 (universe)
+- a844210f7b7536009 (pubnum; superseded: start a fresh agent after #1178)
+- aafd58ba225514325 (universe; superseded: start a fresh agent after the pubnum agent)
 
 Builders stop at ~40 turns and reviewers at ~20. Agent writes to /data/mal are often refused, so they return text and the manager saves it.
 
 ## 5. Running jobs (MiScusi)
 | Job | What |
 |---|---|
-| #1036 | walk 2 (stalled on disk) |
+| #1036 | walk 2 (resumed 10-18 ~11Z; catching up, trades-2026-10-17T00 at 17:08Z) |
 | #1135 | Job A meta-capture v4 |
 | #1133 | Kalshi recorders |
 | #1145 | Kalshi continuation (queued after #1141, which passed) |
 | #1146 | Kalshi weather candles |
+| #1178 | Kalshi pubnum trades, the 9 empty DECLARE daily series (#1145, #1164, #1166, #1169 hit their caps) |
+| #1158 | arena H5 shadow (both books) |
 | #817, #729, #1034 | old H5 shadow, enforce loop, CAP-PICK exporter |
 | #658, #662 | C1-NF soak and monitor |
 
