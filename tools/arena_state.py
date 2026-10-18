@@ -23,7 +23,7 @@ pruned. What the state cannot tell: a window just BEFORE a decision that holds a
 
 Per key it keeps: last post-trade spot price (SOL/token, V where it applies) and reserves; age since create / pool_create and curve
 progress; rolling 1 / 5 / 15 / 60 min buy and sell SOL and counts, unique signers and net flow; the top 5 net buyers and sellers (since
-the key was first seen); the creator's net SOL; ATH and drawdown from ATH; 1-min OHLCV candles for the last 120 min. Keys idle more than
+the key was first seen); the creator's net SOL; ATH and drawdown from ATH; 1-min OHLCV candles for the last 360 min (CANDLE_MIN, exposed as candle_retention_min). Keys idle more than
 6 h are evicted. Gap rows are kept, and a key's snapshot counts the gaps on its program's feed since the key was first seen.
 """
 
@@ -53,10 +53,10 @@ TOKEN_SCALE = 1_000_000
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 MIN_MS = 60_000
 WINDOWS_MIN = (1, 5, 15, 60)
-CANDLE_MIN = 120
+CANDLE_MIN = 360  # 6 h of 1-min candles (the hv4 BIG persona: ret_240m, hi_6h, lo_6h)
 EVICT_IDLE_MS = 6 * 3600 * 1000
 SWEEP_EVERY_MS = 60_000
-WARM_MIN_DEFAULT = 125  # live default: enough tape for the 120-min candles
+WARM_MIN_DEFAULT = 365  # live default: enough tape to fill the 360-min candles (the 60-min windows need far less)
 READ_CHUNK = 8 * 1024 * 1024
 GAP_KEEP_MS = 24 * 3600 * 1000  # gap SPANS are kept this long (by the state clock); the per-prog COUNTS are never pruned
 GAP_EXTRA = ("closed", "from_slot", "to_slot", "missed_slots", "silent_ms", "reason", "count", "clean_stop", "torn_tail", "rows_dropped", "free_pct")
@@ -456,8 +456,8 @@ class ArenaState:
         c = p.candles.get(m)
         if c is None:
             p.candles[m] = [price, price, price, price, sol, 1, sol if buy else 0, 0 if buy else sol]
-            while len(p.candles) > CANDLE_MIN:
-                p.candles.popitem(last=False)
+            for old in [k for k in p.candles if k <= m - CANDLE_MIN]:  # by age, not by count: a sparse key never holds a candle older than the retention
+                del p.candles[old]
         else:
             c[1], c[2], c[3] = max(c[1], price), min(c[2], price), price
             c[4] += sol
@@ -577,6 +577,7 @@ class ArenaState:
             "ath": p.ath, "ath_ms": p.ath_ms, "drawdown_from_ath": (1.0 - p.price / p.ath) if (p.price is not None and p.ath) else None,
             "name": p.name, "symbol": p.symbol, "gaps_since_first_seen": prog_gaps, "gap_span_retention_h": GAP_KEEP_MS / 3_600_000, "unique_traders": len(p.net),
         }
+        snap["candle_retention_min"] = CANDLE_MIN
         if candles:
             snap["candles"] = self.candles(p)
         return snap
