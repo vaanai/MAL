@@ -4,7 +4,6 @@ Console drafts, isolation. Synthetic ledgers only; no network, no API call."""
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import subprocess
 import sys
@@ -29,35 +28,9 @@ REPO = Path(__file__).resolve().parent.parent
 N_SEEDS = 6  # tests run a short null; the production constant is pinned separately
 
 
-def _emulated_score_bot(real):
-    """TEST SCAFFOLDING until PR #716 merges. Emulates the contract the manager described for `arena_score.score_bot(..., boundary_ms=...)`: a boundary later than the
-    bot's own outcome-blind instant is refused (arena_score.Refused), and the result records boundary_source "forced". It runs the real score_bot with the module's
-    blind_read_instant swapped, inside the test only (hv4_read itself patches nothing). Once #716 is on main, `score_bot` has the parameter and this is not installed."""
-
-    def score_bot(bot_id, reg, rows, now_ms, trace=None, settle_ms=AS.SETTLE_MS, boundary_ms=None):
-        if boundary_ms is None:
-            return real(bot_id, reg, rows, now_ms, trace, settle_ms)
-        clock = reg[bot_id]["clock_start_ms"]
-        own = AS.blind_read_instant([int(r["decision_ms"]["entry"]) for r in rows if r["kind"] in ("open", "refused") and int(r["decision_ms"]["entry"]) >= clock], clock)
-        if own is None or boundary_ms > own:
-            raise AS.Refused(f"{bot_id}: boundary {boundary_ms} is later than the bot's own instant {own}")
-        orig = AS.blind_read_instant
-        AS.blind_read_instant = lambda entry_ms, clock_start_ms: int(boundary_ms)  # noqa: E731
-        try:
-            out = real(bot_id, reg, rows, now_ms, trace, settle_ms)
-        finally:
-            AS.blind_read_instant = orig
-        out["boundary_source"] = "forced"
-        return out
-
-    return score_bot
-
-
 @pytest.fixture(autouse=True)
 def _test_env(monkeypatch):
     monkeypatch.setenv(TEST_ENV, "1")  # the registry's fake clock / sha overrides are honoured inside a test only
-    if "boundary_ms" not in inspect.signature(AS.score_bot).parameters:  # PR #716 not merged yet: emulate its contract (test-only)
-        monkeypatch.setattr(AS, "score_bot", _emulated_score_bot(AS.score_bot))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ synthetic books
@@ -84,13 +57,19 @@ def trade_row(bot, pid, ms, pnl, stake=0.25, sol_in=0.25):
 
 def open_row(bot, pid, ms):
     return {"schema": "arena_trade_v1", "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot, "frozen_sha": "abc1234",
-            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK)}
+            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": "abc1234", "code_dirty": False, "engine_id": "eng1"}  # the frozen code bound to the process
+
+
+def start_row(bot):
+    """The engine's start record (clean, on the registered sha): arena_score refuses open rows whose engine did not start clean on the frozen sha."""
+    return {"schema": "arena_trade_v1", "kind": "start", "trade_id": f"start-eng1-{bot}", "engine_id": "eng1", "bot_id": bot, "frozen_sha": "abc1234",
+            "decision_ms": {"entry": DAY0 + 1000, "exit": None}, "code_head": "abc1234", "code_dirty": False, "stack": dict(STACK)}
 
 
 def book_rows(bot, daily, stakes=(0.25,), sol_in=None, scale=None):
     """daily: list (one per UTC day from T0) of lists of pnl lamports (one per position). One open row and one trade row per stake per position.
     sol_in: a callable (day, i) -> the position's own size (default 0.25). scale: stake -> multiplier of the pnl."""
-    rows, k = [], 0
+    rows, k = [start_row(bot)], 0
     for d, pnls in enumerate(daily):
         for p in pnls:
             pid, ms = f"{bot}-p{k:05d}", DAY0 + d * DAY + 3_600_000 + k * 1000
@@ -118,7 +97,7 @@ class World:
         self.reads = str(tmp_path / "arena_reads")  # arena_score's store of recorded gate reads (the only one)
         for a in ARMS:
             _register_bot(a, "abc1234", DAY0, self.reg, deciding_stake=0.25, model_ids=["m"] if ARMS[a].llm else [], now_ms=0, verify_sha=False)
-        self.led = Ledger(self.root)
+        self.led = Ledger(self.root, min_free_pct=0)  # the free-space floor (DEC-031 3.8) is a production guard; tests may set 0
 
     def add(self, rows):
         for r in rows:
@@ -135,11 +114,11 @@ class World:
         kw.setdefault("n_seeds", N_SEEDS)
         return R.read_book(bot, ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, null_dir=self.null, **kw)
 
-    def mark(self, arm, status):
-        """Stand-in for a gate read recorded in arena_score's store (the learning screen rule reads only its `status`)."""
+    def mark(self, arm, status, boundary=DAY0 + 10 * DAY):
+        """Stand-in for a gate read recorded in arena_score's store: arena_score's late-force check wants the bot_id and the read boundary (the arm's own instant)."""
         p = Path(self.reads) / f"{arm}.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(canon({"bot_id": arm, "status": status}) + "\n")
+        p.write_text(canon({"bot_id": arm, "status": status, "read_boundary_ms": boundary}) + "\n")
 
     def learning(self, **kw):
         kw.setdefault("now_ms", DAY0 + R.LEARN_LOOK_OFFSET_MS)
@@ -236,26 +215,6 @@ def test_learning_is_refused_before_d14_and_run_once(tmp_path):
         w.learning()
 
 
-def test_score_at_passes_boundary_ms_to_arena_score_and_patches_nothing(monkeypatch):
-    seen = {}
-
-    def fake(bot_id, reg, rows, now_ms, trace=None, settle_ms=0, boundary_ms=None):
-        seen.update(bot_id=bot_id, now_ms=now_ms, settle_ms=settle_ms, boundary_ms=boundary_ms, trace=trace)
-        return {"status": "FAIL"}
-
-    monkeypatch.setattr(AS, "score_bot", fake)
-    orig = AS.blind_read_instant
-    assert R.score_at("CON-X", {}, [], 123, 456, 789) == {"status": "FAIL"}
-    assert seen == {"bot_id": "CON-X", "now_ms": 456, "settle_ms": 789, "boundary_ms": 123, "trace": None}
-    assert AS.blind_read_instant is orig
-
-
-def test_score_at_waits_for_716_when_arena_score_has_no_boundary_ms(monkeypatch):
-    monkeypatch.setattr(AS, "score_bot", lambda bot_id, reg, rows, now_ms, trace=None, settle_ms=0: {})
-    with pytest.raises(R.Refused, match="#716"):
-        R.score_at("CON-X", {}, [], 1, 2)
-
-
 def test_hv4_read_assigns_no_attribute_of_another_module_and_never_calls_setattr():
     import ast
 
@@ -266,15 +225,24 @@ def test_hv4_read_assigns_no_attribute_of_another_module_and_never_calls_setattr
         assert not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("setattr", "delattr")), "no monkeypatching"
 
 
-def test_a_comparator_arm_with_an_earlier_own_instant_than_the_boundary_is_refused_by_arena_score(tmp_path):
+def test_a_forced_boundary_is_a_comparator_screen_and_a_later_one_needs_a_recorded_non_pass_read(tmp_path):
     w = con_world(tmp_path)
     reg = load_registry(w.reg)
     rows = w.led.read_bot("CON-L")
-    with pytest.raises(AS.Refused):
-        R.score_at("CON-L", reg, rows, DAY0 + 6 * DAY, DAY0 + 30 * DAY)  # later than the bot's own instant (day 5)
-    ok = R.score_at("CON-L", reg, rows, DAY0 + 5 * DAY, DAY0 + 30 * DAY)
-    assert ok["read_boundary_ms"] == DAY0 + 5 * DAY and ok["boundary_source"] == "forced"
-    assert canon({k: v for k, v in ok.items() if k != "boundary_source"}) == canon(AS.score_bot("CON-L", reg, rows, DAY0 + 30 * DAY))
+    now = DAY0 + 30 * DAY
+    nat = AS.score_bot("CON-L", reg, rows, now)
+    ok = R.score_at("CON-L", reg, rows, DAY0 + 5 * DAY, now)  # at the bot's own instant: always allowed
+    assert ok["read_boundary_ms"] == DAY0 + 5 * DAY and ok["boundary_source"] == "forced" and ok["gate_read"] is False
+    assert ok["status"] == AS.FORCED_PREFIX + nat["status"] and R.base_status(ok) == nat["status"] and R.base_status(nat) == nat["status"]
+    assert canon(ok["books"]) == canon(nat["books"])
+    with pytest.raises(AS.Refused, match="not recorded yet"):
+        R.score_at("CON-L", reg, rows, DAY0 + 6 * DAY, now)  # later than its own instant, and its own read is not recorded
+    with pytest.raises(AS.Refused, match="recorded PASS"):
+        R.score_at("CON-L", reg, rows, DAY0 + 6 * DAY, now, comparator_read={"bot_id": "CON-L", "status": "PASS", "read_boundary_ms": DAY0 + 5 * DAY})
+    late = R.score_at("CON-L", reg, rows, DAY0 + 6 * DAY, now, comparator_read={"bot_id": "CON-L", "status": "FAIL", "read_boundary_ms": DAY0 + 5 * DAY})
+    assert late["past_own_instant"] is True and late["comparator_recorded_status"] == "FAIL"
+    with pytest.raises(AS.Refused, match="comparator score"):
+        AS.record_read(w.reads, ok)  # a forced read is never the bot's one read
 
 
 def test_v1_is_not_decidable_when_an_r_seed_has_an_earlier_own_instant_than_the_book(tmp_path):
@@ -295,7 +263,7 @@ def test_v2_window_ends_at_the_earlier_of_the_two_instants(tmp_path):
     r = w.book("CON-L")
     v2 = r["v2"]
     assert r["instant_ms"] == DAY0 + 6 * DAY and v2["book_instant_ms"] == DAY0 + 6 * DAY and v2["comparator_instant_ms"] == DAY0 + 5 * DAY
-    assert v2["window_end_ms"] == DAY0 + 5 * DAY and v2["days"] == 5 and v2["boundary_source"] == "forced"
+    assert v2["window_end_ms"] == DAY0 + 5 * DAY == AS.common_boundary("CON-L", "CON-X", w.root, w.reg) and v2["days"] == 5 and v2["boundary_source"] == "forced"
     assert v2["status"] == "PASS" and all(v["p"] == 1 / 2001 for v in v2["subcells"].values())
     assert r["v1"]["status"] == "PASS"  # V1 stays on the book's own window (day 6)
 
@@ -313,6 +281,18 @@ def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tm
     r = w.book("CON-L", now_ms=ms + 25 * 3_600_000)  # older: a restart orphan, NOT_DECIDABLE, final
     assert r["arena_status"] == "NOT_DECIDABLE" and r["arena_score_read"]["restart_orphans"] == 1
     assert r["v1"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
+
+
+def test_an_incident_before_the_boundary_makes_the_gate_read_not_decidable_and_it_is_still_the_one_read(tmp_path):
+    w = con_world(tmp_path)
+    inc = Path(w.root) / "CON-L" / "incidents.jsonl"
+    inc.write_text(json.dumps({"kind": "buy_refused", "at_ms": DAY0 + 2 * DAY, "bot_id": "CON-L", "row_decision_ms": DAY0 + 2 * DAY}) + "\n")
+    r = w.book("CON-L")
+    assert r["arena_status"] == "NOT_DECIDABLE" and r["arena_score_read"]["incidents"]["before_boundary"] == 1
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
+    assert json.loads((Path(w.reads) / "CON-L.json").read_text())["status"] == "NOT_DECIDABLE"  # stored: a NOT_DECIDABLE is final for the bot_id
+    with pytest.raises(R.Refused, match="second run"):
+        w.book("CON-L")
 
 
 def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
@@ -334,8 +314,8 @@ def test_the_gate_read_is_recorded_in_arena_scores_store_and_the_out_dir_keeps_n
     r = w.book("CON-L")
     store = Path(w.reads) / "CON-L.json"
     assert r["arena_record"] == {"path": str(store), "sha256": hashlib.sha256(store.read_bytes()).hexdigest(), "source": "recorded"}
-    fresh = AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY)
-    assert canon(json.loads(store.read_text())) == canon(fresh)  # exactly what arena_score.record_read writes
+    fresh = AS.score_all(w.root, w.reg, "CON-L", DAY0 + 30 * DAY)["bots"]["CON-L"]
+    assert canon(json.loads(store.read_text())) == canon(fresh)  # exactly what `arena_score --bot CON-L --record` stores
     assert sorted(f.name for f in (Path(w.out) / "reads").iterdir()) == ["CON-L.console.json", "CON-L.hv4.json", "CON-L.result.json"]
     hv4 = json.loads((Path(w.out) / "reads" / "CON-L.hv4.json").read_text())
     assert "arena_score_read" not in hv4 and hv4["arena_record"]["sha256"] == hashlib.sha256(store.read_bytes()).hexdigest()
@@ -345,7 +325,7 @@ def test_the_gate_read_is_recorded_in_arena_scores_store_and_the_out_dir_keeps_n
 
 def test_a_gate_read_already_stored_by_arena_score_is_used_when_it_matches_and_is_never_rewritten(tmp_path):
     w = con_world(tmp_path)
-    AS.record_read(w.reads, AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY))  # what `arena_score --record` does
+    AS.record_read(w.reads, AS.score_all(w.root, w.reg, "CON-L", DAY0 + 30 * DAY)["bots"]["CON-L"])  # what `arena_score --record` does
     store = Path(w.reads) / "CON-L.json"
     before = store.read_bytes()
     r = w.book("CON-L")
@@ -355,7 +335,7 @@ def test_a_gate_read_already_stored_by_arena_score_is_used_when_it_matches_and_i
 
 def test_a_stored_read_that_differs_from_the_fresh_scoring_is_refused_and_nothing_is_written(tmp_path):
     w = con_world(tmp_path)
-    res = AS.score_bot("CON-L", load_registry(w.reg), w.led.read_bot("CON-L"), DAY0 + 30 * DAY)
+    res = AS.score_all(w.root, w.reg, "CON-L", DAY0 + 30 * DAY)["bots"]["CON-L"]
     AS.record_read(w.reads, dict(res, attempts=res["attempts"] + 1))
     with pytest.raises(R.Refused, match="differs from the fresh scoring"):
         w.book("CON-L")
@@ -463,13 +443,13 @@ def test_seed_reproducibility(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read
-def con_learning_world(tmp_path, l_gain, p_n=10, base=-8e6, status="FAIL"):
+def con_learning_world(tmp_path, l_gain, p_n=10, base=-8e6, status="FAIL", p_days=14):
     """Three CON arms over 14 days, 10 positions a day (own instant: day 10, before D14). All arms lose by default, so that their own screens failed; the three
     book reads are recorded as `status` (the screen rule: only a recorded PASS blocks a later boundary)."""
     w = World(tmp_path)
     w.add(book_rows("CON-L", [[base + l_gain(d)] * 10 for d in range(14)]))
     w.add(book_rows("CON-F", const(base, 14, 10)))
-    w.add(book_rows("CON-P", const(base, 14, p_n)))
+    w.add(book_rows("CON-P", const(base, p_days, p_n)))
     for a in ("CON-L", "CON-F", "CON-P"):
         w.mark(a, status)
     return w
@@ -505,9 +485,24 @@ def test_learning_fail_when_l_equals_f(tmp_path):
 def test_learning_not_decidable_with_too_few_trades_or_a_missing_arm(tmp_path):
     w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d, p_n=5)  # 70 priced trades on the placebo arm
     lr = w.learning()["learning"]
-    assert lr["status"] == "NOT_DECIDABLE" and any("CON-P" in x and "< 100" in x for x in lr["reasons"])
+    assert lr["status"] == "NOT_DECIDABLE" and any("CON-P" in x and "fewer than 100 attempts" in x for x in lr["reasons"])  # arena_score cannot force: no instant
     w2 = World(tmp_path / "empty")
     assert w2.learning()["learning"]["status"] == "NOT_DECIDABLE"
+
+
+def test_a_learning_arm_whose_instant_is_after_d14_is_read_but_needs_100_priced_trades_before_it(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d, p_n=7, p_days=15)  # CON-P: 7 a day for 15 days: 98 attempts before D14, its own instant is day 15
+    lr = w.learning()["learning"]
+    assert lr["arm_screens"]["CON-P"]["rule"] == "not_later" and lr["arm_screens"]["CON-P"]["own_instant_ms"] == DAY0 + 15 * DAY
+    assert lr["status"] == "NOT_DECIDABLE" and any("CON-P" in x and "98 priced trades" in x and "< 100" in x for x in lr["reasons"])
+
+
+def test_learning_is_refused_while_a_con_arm_has_an_attempt_inside_the_settle_window(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
+    w.add([open_row("CON-L", "CON-L-open-only", DAY0 + 14 * DAY - 3_600_000)])  # decided 1 h before D14, never closed; 14 h old at the look
+    with pytest.raises(R.Refused, match="settle window"):
+        w.learning()
+    assert not (Path(w.out) / "reads").exists()
 
 
 def test_learning_is_not_a_gate_read_in_any_output(tmp_path):
@@ -524,44 +519,6 @@ def test_learning_is_not_a_gate_read_in_any_output(tmp_path):
     w2 = con_learning_world(tmp_path / "fail", lambda d: 0.0)
     w2.learning()
     assert json.loads((Path(w2.out) / "reads" / "LEARNING.result.json").read_text())["stage"] == "forward-paper"  # a learning FAIL is not a failed book
-
-
-def test_learning_arm_equals_arena_scores_own_read_at_the_arms_own_instant(tmp_path):
-    w = World(tmp_path)
-    rows = book_rows("CON-L", noisy(4e6, 5, 21, 11))  # 105 positions
-    by_pos = {}
-    for r in rows:
-        by_pos.setdefault(r["position_id"], []).append(r)
-    pids = sorted(by_pos)
-    # position 3: a missing-V trade; 7: a feed-gap exclusion row; 11: a trade with a late print inside a gap; plus a refused buy that is a data issue (4 of 106 < 5%)
-    for r in by_pos[pids[3]]:
-        if r["kind"] == "trade":
-            r["v_src"] = {"entry": "none", "exit": "row", "span": {"row": 5}}
-    for r in by_pos[pids[7]]:
-        if r["kind"] == "trade":
-            r.update(kind="excluded", exclusion_reason="gap", legs=None, calc=None)
-    first = by_pos[pids[11]][0]
-    rows.append({"schema": "arena_trade_v1", "kind": "late_print", "trade_id": f"{pids[11]}-late", "position_id": pids[11], "bot_id": "CON-L", "frozen_sha": "abc1234",
-                 "decision_ms": {"entry": first["decision_ms"]["entry"], "exit": None}, "gap_overlap": True, "stack": dict(STACK)})
-    rows.append({"schema": "arena_trade_v1", "kind": "refused", "trade_id": "ref0-refused", "position_id": "ref0", "bot_id": "CON-L", "frozen_sha": "abc1234",
-                 "decision_ms": {"entry": DAY0 + DAY + 7_200_000, "exit": None}, "reason": "no_prints", "stack": dict(STACK)})
-    w.add(rows)
-    reg = load_registry(w.reg)
-    now = DAY0 + 30 * DAY
-    nat = AS.score_bot("CON-L", reg, w.led.read_bot("CON-L"), now)
-    assert nat["status"] in ("PASS", "FAIL") and nat["read_boundary_ms"] == DAY0 + 5 * DAY
-    mine = R.learning_arm("CON-L", reg, w.led.read_bot("CON-L"), nat["read_boundary_ms"], now)
-    bk = nat["books"]["0.25"]
-    assert mine["status"] == "DECIDABLE" and mine["attempts"] == nat["attempts"] == 106
-    assert mine["books"]["0.25"]["n_trades"] == bk["n_trades"] == 102
-    assert mine["books"]["0.25"]["excluded"] == sum(bk["excluded"].values()) == 3
-    assert mine["books"]["0.25"]["excluded_share"] == bk["excluded_share"]
-    assert canon(mine["books"]["0.25"]["cells"]) == canon(bk["cells"])  # every cell, every statistic, byte for byte
-    # past the 5% cap it is NOT_DECIDABLE, as in arena_score
-    bad = [dict(r, kind="excluded", exclusion_reason="gap", legs=None, calc=None) if r["kind"] == "trade" and r["position_id"] in pids[20:30] else r for r in rows]
-    assert R.learning_arm("CON-L", reg, bad, nat["read_boundary_ms"], now)["status"] == "NOT_DECIDABLE"
-    # an attempt before the cut with no close inside the settle window is PENDING
-    assert R.learning_arm("CON-L", reg, [r for r in rows if r["position_id"] != pids[-1] or r["kind"] == "open"], nat["read_boundary_ms"], DAY0 + 5 * DAY + 3_600_000)["status"] == "PENDING"
 
 
 def test_learning_reads_an_arm_past_its_own_instant_only_if_its_screen_did_not_pass(tmp_path):
@@ -608,13 +565,6 @@ def test_a_supporting_arm_that_passed_or_is_unrecorded_is_not_decidable_without_
     assert lr["supporting_only"]["BIG"]["status"] == "NOT_DECIDABLE"
     assert lr["arm_screens"]["BIG-L"]["rule"] == "passed" and lr["arm_screens"]["BIG-F"]["rule"] == "unrecorded"
     assert lr["arm_screens"]["BST-L"]["rule"] == "not_later"  # no rows: no instant, so the cut is not later than it
-
-
-def test_arena_score_common_boundary_agrees_with_the_earlier_of_two_instants():
-    if not hasattr(AS, "common_boundary"):
-        pytest.skip("arena_score.common_boundary arrives with PR #716 (v2_read uses min() until then)")
-    a, b = DAY0 + 6 * DAY, DAY0 + 5 * DAY
-    assert AS.common_boundary(a, b) == AS.common_boundary(b, a) == min(a, b)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ disclosure, ex-best-day, as-sized

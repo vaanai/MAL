@@ -33,35 +33,35 @@ book by arena_score (pressure refit on exactly those trades). CON-P and the thre
 
 V1  the LLM book's primary ex-top-3 (stake 0.25, 1.9 s) is ABOVE the 95th percentile (numpy linear) of the persona's R arm over a 200-seed null, in each of the four
     sub-cells. The null is 200 replays of the R arm, seeds 1..200, each an arena-ledger file `<null-dir>/<persona>-R/seed-NNNN.jsonl`, each scored by arena_score at
-    the book's own instant B. A missing seed, or a seed whose own instant is earlier than B (arena_score refuses a boundary later than a bot's own instant),
-    makes V1 NOT_DECIDABLE.
+    the book's own instant B (a forced-boundary comparator screen). A missing seed, or a seed whose own instant is earlier than B (arena_score refuses a boundary
+    later than a bot's own instant unless that bot's own read is recorded non-PASS, and a replay seed has none), makes V1 NOT_DECIDABLE.
 V2  daily (book - X) at 0.25 over the calendar days of the window (days with no trade count 0), one-sided day-block bootstrap (resample whole UTC days,
     2,000 draws, seed 1), p = (1 + #{mean <= 0}) / (1 + draws) (the repo's exp017 convention) <= 0.05/6, in each of the four sub-cells. The window ends at the
-    common boundary min(B of the book, B of X): arena_score refuses a boundary later than a bot's own instant, so both are scored at the earlier of the two.
+    `arena_score.common_boundary(book, X)`: the earlier of the two natural instants; both arms are scored there (at or before an arm's own instant is always allowed).
+    If X has no instant yet, V2 is NOT_DECIDABLE.
 LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and L - P with p <= 0.025 (same bootstrap) in each sub-cell, and the mean daily
-    L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable (orphans, excluded
-    share above 5%, a bonding row, a strand rule missing), an arm has fewer than 100 priced trades at 0.25, or the window has fewer than 14 days.
-  SCREEN RULE (quant-proof's ruling on forced boundaries, #716 comment 6245917937). D14 is later than an arm's own outcome-blind instant B_own whenever the arm
-    reached 100 attempts over 5 dates earlier. Attempts after B_own are the arm's CONFIRMATION window if its screen PASSED, so the learning read never peeks at them:
-      * B_own is None or not before D14: the cut is not later than the arm's own instant; the arm is read.
-      * B_own before D14 and the arm's own book read (arena_score's record, `<arena-reads-dir>/<arm>.json`) is recorded as FAIL (including "FAIL (n < 100)"), NOT_DECIDABLE or REPORT_ONLY:
-        a later boundary is allowed; the arm is read to D14.
-      * recorded as PASS: the arm is NOT read (its rows are not even loaded) and the learning read is NOT_DECIDABLE. For a supporting arm (BIG, BST) only that
-        supporting entry is NOT_DECIDABLE.
-      * not recorded yet: a CON arm makes the learning read REFUSED, nothing written (record the book reads first; a final NOT_DECIDABLE caused by a missing record
+    L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable (orphans, incidents,
+    excluded share above 5%, a bonding row, a strand rule missing, no outcome-blind instant yet), an arm has fewer than 100 priced trades at 0.25, or the window has
+    fewer than 14 days. Each arm is scored by `arena_score.score_bot(boundary_ms=D14)`, a comparator screen ("FORCED-SCREEN-ONLY"), with its incidents and ledger problems.
+  SCREEN RULE (quant-proof's ruling on forced boundaries, #716). D14 is later than an arm's own outcome-blind instant B_own whenever the arm reached 100 attempts over
+    5 dates earlier. Attempts after B_own are the arm's CONFIRMATION window if its screen PASSED, so the learning read never peeks at them. arena_score enforces
+    this (`check_late_force`); hv4_read checks first, from decision timestamps and arena_score's store (`<arena-reads-dir>/<arm>.json`), so that a passed arm's
+    rows are not even loaded:
+      * B_own is None or not before D14: the cut is not later than the arm's own instant; the arm is read (no instant at all: arena_score cannot force, the arm is
+        NOT_DECIDABLE, which is also what fewer than 100 attempts means).
+      * B_own before D14 and the arm's stored read is FAIL (including "FAIL (n < 100)"), NOT_DECIDABLE or REPORT_ONLY: a later boundary is allowed; the arm is read to D14.
+      * stored as PASS: the arm is NOT read and the learning read is NOT_DECIDABLE. For a supporting arm (BIG, BST) only that supporting entry is NOT_DECIDABLE.
+      * not stored yet: a CON arm makes the learning read REFUSED, nothing written (record the gate reads first; a final NOT_DECIDABLE caused by a missing record
         would be an operations error, not data); a supporting arm is NOT_DECIDABLE for its entry.
-    The arms' cells are built by `learning_arm`, which mirrors arena_score's exclusions (pinned by a parity test). TODO(#716): once score_bot(boundary_ms=...) accepts
-    the cut under exactly this rule, score the learning arms with `score_at` and DELETE the mirrored logic in `learning_arm` and its parity test.
 
-BOUNDARY (manager ruling on #718): no monkeypatch. V2's window end is min(book instant, X instant) (TODO(#716): `arena_score.common_boundary(a, b)` once it is on main). `score_at` calls `arena_score.score_bot(..., boundary_ms=...)`, which PR #716 adds (it refuses a boundary later
-than the bot's own instant and records boundary_source "forced"). TODO(#716): until it merges `score_at` raises Refused; the PR stays in draft.
+BOUNDARY (manager rulings on #718, now on #716's arena_score): no monkeypatch. `score_at` calls `arena_score.score_bot(..., boundary_ms=...)` and `v2_read` uses
+`arena_score.common_boundary`. A forced read is a comparator screen and is never the bot's one read (arena_score refuses to record it).
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import inspect
 import json
 import os
 import subprocess
@@ -98,7 +98,7 @@ PRIMARY_KEY = str(PRIMARY_STAKE)
 AS_SIZED = "as_sized"
 AS_SIZED_KEY = 0.0  # stake_sol sentinel of the as-sized pseudo book
 SUBCELLS = ("flat_1p9_total", "flat_1p9_sc", "press_1p9_total", "press_1p9_sc")
-DECIDABLE = ("PASS", "FAIL", "DECIDABLE")  # statuses whose cells are valid (arena_score PASS / FAIL; "DECIDABLE" is a readable learning_arm)
+DECIDABLE = ("PASS", "FAIL")  # arena_score statuses (under the FORCED-SCREEN-ONLY prefix too) whose cells are valid
 SLIM_KEYS = ("n", "days", "days_pos", "mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol", "pass", "misses", "intercept")
 FILES_PINNED = ("tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/hv4_read.py")
 
@@ -138,13 +138,33 @@ def window_clock(reg: Mapping[str, Mapping[str, Any]]) -> int:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ scoring through arena_score
-def score_at(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], boundary_ms: int, now_ms: int,
-             settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
-    """arena_score.score_bot with the read boundary given. arena_score refuses a boundary later than the bot's own instant (raising arena_score.Refused).
-    TODO(#716): `boundary_ms` is added to arena_score.score_bot by PR #716. Until it is on main this raises Refused. No monkeypatch, no fallback."""
-    if "boundary_ms" not in inspect.signature(AS.score_bot).parameters:
-        raise Refused("arena_score.score_bot has no boundary_ms yet: waiting for PR #716 (TODO in hv4_read.score_at)")
-    return AS.score_bot(bot_id, reg, rows, now_ms, None, settle_ms, boundary_ms=int(boundary_ms))
+def base_status(res: Mapping[str, Any]) -> str:
+    """The status without arena_score's "FORCED-SCREEN-ONLY: " prefix (a forced-boundary read is a comparator screen; the logic here needs the status under it)."""
+    st = str(res["status"])
+    return st[len(AS.FORCED_PREFIX):] if st.startswith(AS.FORCED_PREFIX) else st
+
+
+def scan(led: Ledger, bot_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """A bot's rows, incident lines and ledger problems, loaded as arena_score.score_all loads them (an incident or a torn line makes the bot NOT_DECIDABLE there)."""
+    rows, problems = led.scan_bot(bot_id)
+    incidents, inc_problems = led.read_incidents(bot_id)
+    return rows, incidents, list(problems) + list(inc_problems)
+
+
+def score_at(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], boundary_ms: int, now_ms: int, settle_ms: int = AS.SETTLE_MS, *,
+             incidents: Sequence[Mapping[str, Any]] = (), problems: Sequence[str] = (), comparator_read: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """arena_score.score_bot with the read boundary given (a comparator SCREEN: the status carries arena_score's "FORCED-SCREEN-ONLY: " prefix). At or before the
+    bot's own instant it is always allowed; later only with `comparator_read` = its recorded non-PASS read; arena_score decides and raises arena_score.Refused."""
+    return AS.score_bot(bot_id, reg, rows, now_ms, None, settle_ms, int(boundary_ms), incidents=incidents, ledger_problems=problems, comparator_read=comparator_read)
+
+
+def score_ledger_at(led: Ledger, bot_id: str, reg: Mapping[str, Mapping[str, Any]], boundary_ms: int, now_ms: int, settle_ms: int, reads_dir: str | Path) -> dict[str, Any]:
+    """score_at on a bot of the ledger, with its incidents and problems and, for a boundary past its own instant, its recorded read from arena_score's store."""
+    try:
+        rows, incidents, problems = scan(led, bot_id)
+        return score_at(bot_id, reg, rows, boundary_ms, now_ms, settle_ms, incidents=incidents, problems=problems, comparator_read=AS.load_recorded_read(reads_dir, bot_id))
+    except (KeyError, TypeError, ValueError, IndexError) as exc:  # a well-formed JSON line the scorer cannot read: refused for this bot, as in arena_score.score_all
+        raise Refused(f"{bot_id}: a ledger row is malformed ({type(exc).__name__}: {str(exc)[:80]}): refused") from None
 
 
 def as_sized_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -165,12 +185,13 @@ def as_sized_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any
     return kept, sorted(every - have)
 
 
-def score_as_sized(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
+def score_as_sized(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, settle_ms: int = AS.SETTLE_MS, *,
+                   incidents: Sequence[Mapping[str, Any]] = (), problems: Sequence[str] = ()) -> dict[str, Any]:
     """The as-sized pseudo book through arena_score's NATURAL read (its open and refused rows are the book's own, so its outcome-blind instant is the book's)."""
     kept, unmatched = as_sized_rows(rows)
     reg2 = dict(reg)
     reg2[bot_id] = dict(reg[bot_id], deciding_stake=AS_SIZED_KEY)
-    res = AS.score_bot(bot_id, reg2, kept, now_ms, None, settle_ms)
+    res = AS.score_bot(bot_id, reg2, kept, now_ms, None, settle_ms, incidents=incidents, ledger_problems=problems)
     res["as_sized_unmatched"] = unmatched
     if unmatched and res["status"] not in ("NOT_READY", "PENDING"):
         res["status"] = "NOT_DECIDABLE"
@@ -198,8 +219,8 @@ def cell_record(arm: str, stake: Any, res: Mapping[str, Any] | None, decides: bo
     cells = (bk or {}).get("cells") or {}
     rec["subcells"] = {k: _slim(cells[k]) for k in SUBCELLS if k in cells}
     rec["report_1p3"] = {k: _slim(c) for k, c in cells.items() if "_1p3_" in k}
-    if res["status"] not in DECIDABLE:
-        rec["status"] = res["status"]
+    if base_status(res) not in DECIDABLE:
+        rec["status"] = base_status(res)
         return rec
     full = len(rec["subcells"]) == len(SUBCELLS)
     rec["status"] = "PASS" if full and all(c["pass"] for c in rec["subcells"].values()) else "FAIL"
@@ -208,58 +229,6 @@ def cell_record(arm: str, stake: Any, res: Mapping[str, Any] | None, decides: bo
         rec["ex_best_day_min_sol"] = min(ebd)
         rec["ex_best_day_positive"] = bool(min(ebd) > 0)
     return rec
-
-
-# ------------------------------------------------------------------------------------------------------------------------------ the learning arm (not a gate read)
-def learning_arm(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], cut_ms: int, now_ms: int, settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
-    """An arm's cells over the attempts decided in [clock, cut_ms), for the D14 learning comparison. D14 is later than the arm's own outcome-blind instant, which
-    arena_score.score_bot(boundary_ms=...) refuses, and the comparison is not a gate read; so the arm is built here from arena_score's own parts: `check_bot_rows`
-    (the refusals), the DEC-031 exclusions as in arena_score._score_bot (late_print_gap, missing_v, excluded rows), and `book_cells` (legs, pressure refit, statistics)
-    at the deciding stake 0.25. A parity test pins this against arena_score's own read when the cut is the arm's own instant. Returns the arena_score result shape
-    that this module reads: status, pending, books["0.25"]["cells"]."""
-    config = AS.check_bot_rows(bot_id, reg, rows)
-    e = reg[bot_id]
-    counted = [r for r in rows if AS._entry(r) >= e["clock_start_ms"]]
-    covered = [r for r in counted if AS._entry(r) < cut_ms]
-    opens = {r["position_id"]: r for r in covered if r["kind"] == "open"}
-    refused = [r for r in covered if r["kind"] == "refused"]
-    closed = {r["position_id"] for r in covered if r["kind"] in ("trade", "excluded")}
-    unclosed = sorted(set(opens) - closed)
-    orphans = [pid for pid in unclosed if now_ms - AS._entry(opens[pid]) >= settle_ms]
-    pending = [pid for pid in unclosed if pid not in orphans]
-    data_refused = [r for r in refused if r["reason"] in AS.DATA_REFUSALS]
-    late_gap = {r["position_id"] for r in covered if r["kind"] == "late_print" and r.get("gap_overlap")}
-    trades, excluded = [], []
-    for r in covered:
-        if r["kind"] == "trade" and r["stake_sol"] == PRIMARY_STAKE:
-            vs = r.get("v_src") or {}
-            if r["position_id"] in late_gap or "none" in (vs.get("entry"), vs.get("exit")) or "none" in (vs.get("span") or {}):
-                excluded.append(r)
-            else:
-                trades.append(r)
-        elif r["kind"] == "excluded" and r["stake_sol"] == PRIMARY_STAKE:
-            excluded.append(r)
-    attempts = len(opens) + len(refused)
-    share = (len(excluded) + len(data_refused)) / attempts if attempts else None
-    out: dict[str, Any] = {"bot_id": bot_id, "config": config, "attempts": attempts, "pending": len(pending), "restart_orphans": len(orphans), "reasons": [], "books": {}}
-    if pending:
-        out["status"] = "PENDING"
-        return out
-    rules = [ru for ru in AS.RULES if trades and ru in trades[0]["legs"]]
-    cells = AS.book_cells(trades, rules) if trades else {}
-    out["books"][PRIMARY_KEY] = {"stake": PRIMARY_STAKE, "n_trades": len(trades), "excluded": len(excluded), "excluded_share": share, "rules": rules, "cells": cells}
-    if orphans:
-        out["reasons"].append(f"{len(orphans)} restart orphan(s)")
-    if share is not None and share > AS.MAX_EXCLUDED_SHARE:
-        out["reasons"].append(f"excluded + refused share {share:.1%} above {AS.MAX_EXCLUDED_SHARE:.0%}")
-    if any(r["prog"] == "pump_bonding" for r in trades + excluded):
-        out["reasons"].append("a bonding row is in the arm: its costs are unmeasured")
-    if trades and len(rules) != len(AS.RULES):
-        out["reasons"].append(f"not priced under both strand rules (present: {rules})")
-    if not cells:
-        out["reasons"].append("no priced trades at 0.25")
-    out["status"] = "NOT_DECIDABLE" if out["reasons"] else "DECIDABLE"  # readable; no gate verdict is computed (not a gate read)
-    return out
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ statistics on the daily series
@@ -290,7 +259,7 @@ def day_block_p(diffs: Sequence[float], draws: int = V2_DRAWS, seed: int = BOOT_
 
 
 def _decidable(res: Mapping[str, Any] | None) -> bool:
-    return res is not None and res["status"] in DECIDABLE and len((res.get("books") or {}).get(PRIMARY_KEY, {}).get("cells") or {}) > 0
+    return res is not None and base_status(res) in DECIDABLE and len((res.get("books") or {}).get(PRIMARY_KEY, {}).get("cells") or {}) > 0
 
 
 def paired(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None, days: Sequence[str], alpha: float, weeks: bool = False) -> dict[str, Any]:
@@ -344,7 +313,7 @@ def r_null(persona: str, reg: Mapping[str, Mapping[str, Any]], null_dir: str | P
             out["unusable"][str(seed)] = str(exc)[:200]
             continue
         cells = ((res.get("books") or {}).get(PRIMARY_KEY) or {}).get("cells") or {}
-        if res["status"] not in DECIDABLE or any(cells.get(s, {}).get("ex_top3_sol") is None for s in SUBCELLS):
+        if base_status(res) not in DECIDABLE or any(cells.get(s, {}).get("ex_top3_sol") is None for s in SUBCELLS):
             out["unusable"][str(seed)] = f"status {res['status']}"
             continue
         for s in SUBCELLS:
@@ -380,31 +349,27 @@ def v1_read(book_res: Mapping[str, Any], persona: str, reg, null_dir, boundary_m
     return out
 
 
-def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Mapping[str, Mapping[str, Any]], led: Ledger, ledger_root: str, now_ms: int,
-            settle_ms: int) -> dict[str, Any]:
-    """V2 over the window ending at the common boundary min(B of the book, B of X): arena_score refuses a boundary later than a bot's own instant, so the book (when X
-    reaches its instant first) and X are both scored at the earlier of the two. Both instants come from decision timestamps only."""
+def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Mapping[str, Mapping[str, Any]], led: Ledger, ledger_root: str, registry: str,
+            reads_dir: str, now_ms: int, settle_ms: int) -> dict[str, Any]:
+    """V2 over the window ending at arena_score.common_boundary(book, X): the earlier of the two natural instants. Both arms are scored there (at or before an arm's
+    own instant is always allowed); the book keeps its natural read when its instant is the earlier one. Both instants come from decision timestamps only."""
     x = f"{persona}-X"
-    bx = AS.blind_read_instant(AS.load_decisions(ledger_root, x), reg[x]["clock_start_ms"])
-    out: dict[str, Any] = {"comparator": x, "book_instant_ms": b, "comparator_instant_ms": bx, "window_end_ms": None, "note": None, "alpha": V2_ALPHA, "reasons": [], "subcells": {}}
-    if bx is None:
-        out["status"] = "NOT_DECIDABLE"
-        out["reasons"].append(f"{x} has not reached its own outcome-blind instant (100 attempts over 5 UTC dates): no common window")
-        return out
-    b2 = min(b, bx)  # TODO(#716): AS.common_boundary(b, bx), the same earlier-of-two, once arena_score has it (a test checks that they agree)
-    out["window_end_ms"] = b2
+    out: dict[str, Any] = {"comparator": x, "book_instant_ms": b, "comparator_instant_ms": None, "window_end_ms": None, "note": None, "alpha": V2_ALPHA, "reasons": [], "subcells": {}}
     try:
-        bres = main if b2 == b else score_at(bot_id, reg, led.read_bot(bot_id), b2, now_ms, settle_ms)
-        xres = score_at(x, reg, led.read_bot(x), b2, now_ms, settle_ms)
-    except AS.Refused as exc:
+        b2 = AS.common_boundary(bot_id, x, ledger_root, registry)
+        out["comparator_instant_ms"] = AS.natural_instant(ledger_root, registry, x)
+        out["window_end_ms"] = b2
+        bres = main if b2 == b else score_ledger_at(led, bot_id, reg, b2, now_ms, settle_ms, reads_dir)
+        xres = score_ledger_at(led, x, reg, b2, now_ms, settle_ms, reads_dir)
+    except (AS.Refused, Refused) as exc:
         out["status"] = "NOT_DECIDABLE"
-        out["reasons"].append(f"arena_score refused the common boundary: {str(exc)[:200]}")
+        out["reasons"].append(f"no common window: {str(exc)[:240]}")
         return out
     v2 = paired(bres, xres, calendar_days(reg[bot_id]["clock_start_ms"], b2), V2_ALPHA)
-    v2.update(comparator=x, book_instant_ms=b, comparator_instant_ms=bx, window_end_ms=b2, boundary_source=xres.get("boundary_source"),
+    v2.update(comparator=x, book_instant_ms=b, comparator_instant_ms=out["comparator_instant_ms"], window_end_ms=b2, boundary_source=xres.get("boundary_source"),
               comparator_status_at_window_end=status_of(xres))
-    v2["note"] = ("V2 fails and the X book's cells pass at this window end: X goes to the canary first (DESIGN section 8), subject to X's own read"
-                  if v2["status"] == "FAIL" and xres["status"] == "PASS" else None)
+    v2["note"] = ("V2 fails and the X book's cells pass at this window end (a comparator screen, not X's own read): X goes to the canary first (DESIGN section 8), "
+                  "subject to X's own read" if v2["status"] == "FAIL" and base_status(xres) == "PASS" else None)
     return v2
 
 
@@ -645,12 +610,15 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
         raise Refused(f"{bot_id}: not at its pre-declared instant (outcome-blind read boundary {b}, now {now}): refused, nothing written")
     arm = ARMS[bot_id]
     led = Ledger(ledger_root)
-    rows = led.read_bot(bot_id)
-    main = AS.score_bot(bot_id, reg, rows, now, None, settle_ms)
+    all_ = AS.score_all(ledger_root, registry, bot_id, now, settle_ms, None, reads_dir)  # exactly what `arena_score --bot X --record` would store
+    if bot_id in all_["bots_refused"]:
+        raise Refused(all_["bots_refused"][bot_id])
+    main = all_["bots"][bot_id]
+    rows, incidents, problems = scan(led, bot_id)
     if main["status"] in ("PENDING", "NOT_READY") or main.get("pending"):
         raise Refused(f"{bot_id}: {main['status']} ({main.get('pending')} covered attempt(s) inside the settle window): not recordable, nothing written")
     assert main["read_boundary_ms"] == b
-    asz = score_as_sized(bot_id, reg, rows, now, settle_ms) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
+    asz = score_as_sized(bot_id, reg, rows, now, settle_ms, incidents=incidents, problems=problems) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
     cells = []
     if arm.promotable:
         for a, stake in gate_cells():
@@ -663,7 +631,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     adds = v12 = None
     if arm.llm and arm.promotable:
         v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms)
-        v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, now, settle_ms)
+        v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, registry, reads_dir, now, settle_ms)
         v12 = bool(v1["status"] == "PASS" and v2["status"] == "PASS")
         adds = bool(main["status"] == "PASS" and v12)  # "adds value" is claimed only for a book that also clears the arena gate
     # 3. disclosure, record
@@ -692,26 +660,31 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read (D14)
 def recorded_status(reads_dir: str | Path, arm: str) -> str | None:
     """`status` of the arm's gate read in arena_score's store (None if it has none). The out-dir is never consulted."""
-    p = Path(reads_dir) / f"{arm}.json"
-    return json.loads(p.read_text())["status"] if p.exists() else None
+    rec = AS.load_recorded_read(reads_dir, arm)
+    return None if rec is None else rec.get("status")
 
 
 def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str, reads_dir: str | Path, cut_ms: int) -> dict[str, Any]:
-    """The SCREEN RULE for one learning arm (module docstring). Uses decision timestamps only (arena_score.load_decisions) and the arm's recorded status."""
+    """The SCREEN RULE for one learning arm (module docstring), from decision timestamps and arena_score's store only. arena_score enforces the same rule when the arm
+    is scored at the cut (`check_late_force`); this runs first so that an arm that passed its screen has its rows never loaded."""
     own = AS.blind_read_instant(AS.load_decisions(ledger_root, arm), reg[arm]["clock_start_ms"])
-    out: dict[str, Any] = {"own_instant_ms": own, "cut_ms": cut_ms, "recorded_status": None, "rule": "not_later", "reason": None}
+    st = recorded_status(reads_dir, arm)
+    out: dict[str, Any] = {"own_instant_ms": own, "cut_ms": cut_ms, "recorded_status": st, "rule": "not_later", "reason": None}
     if own is None or own >= cut_ms:
         return out
-    st = recorded_status(reads_dir, arm)
-    out["recorded_status"] = st
     if st is None:
         out["rule"], out["reason"] = "unrecorded", f"its own instant {own} is before D14 and its gate read is not in arena_score's store: a later boundary is refused"
     elif st == "PASS":
         out["rule"], out["reason"] = "passed", f"it PASSED its screen at {own}: its attempts after that are its confirmation window and are not read"
+    elif st not in AS.LATE_FORCE_OK:
+        out["rule"], out["reason"] = "blocked", f"its stored read has status {st!r}: a later boundary is refused"
     else:
         out["rule"] = "later_allowed"
     return out
 
+
+def nd_arm(arm: str, reason: str) -> dict[str, Any]:
+    return {"bot_id": arm, "status": "NOT_DECIDABLE", "books": {}, "pending": 0, "attempts": None, "restart_orphans": 0, "reasons": [reason]}
 
 
 def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
@@ -736,11 +709,14 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     res = {}
     for a in learn_arms:
         sc = screens[a]
-        if sc["rule"] in ("passed", "unrecorded"):  # never loaded: a passed arm's later attempts are its confirmation window
-            res[a] = {"bot_id": a, "status": "NOT_DECIDABLE", "books": {}, "pending": 0, "attempts": None, "restart_orphans": 0, "reasons": [sc["reason"]]}
-        else:
-            res[a] = learning_arm(a, reg, led.read_bot(a), cut, now, settle_ms)
-    pend = [a for a, r in res.items() if r["status"] == "PENDING"]
+        if sc["rule"] in ("passed", "unrecorded", "blocked"):  # never loaded: a passed arm's later attempts are its confirmation window
+            res[a] = nd_arm(a, sc["reason"])
+            continue
+        try:
+            res[a] = score_ledger_at(led, a, reg, cut, now, settle_ms, reads_dir)  # forced to D14: a comparator screen, arena_score applies the same rule again
+        except (AS.Refused, Refused) as exc:
+            res[a] = nd_arm(a, str(exc)[:240])
+    pend = [a for a, r in res.items() if base_status(r) == "PENDING"]
     if pend:
         raise Refused(f"learning: {pend} have covered attempts inside the settle window: not recordable, nothing written")
     out: dict[str, Any] = {"persona": "CON", "reasons": [], "arm_screens": screens}
@@ -748,7 +724,7 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     for a in arms:
         r = res[a]
         n = ((r.get("books") or {}).get(PRIMARY_KEY) or {}).get("n_trades", 0)
-        if r["status"] not in DECIDABLE:
+        if base_status(r) not in DECIDABLE:
             out["reasons"].append(f"{a}: not decidable ({'; '.join(r['reasons']) or r['status']})")
         elif n < LEARN_MIN_N:
             out["reasons"].append(f"{a}: {n} priced trades at 0.25 < {LEARN_MIN_N}")
