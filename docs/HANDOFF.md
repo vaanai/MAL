@@ -12,6 +12,8 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
    - Walk 2 (job #1036) writes nothing below 20%. Its newest sealed hour is 2026-10-16T13.
    - Arena writes on research-0 need 25% (DEC-031 §3.8).
    - The owner was asked to run the earlier `rm` (~35 GB of finished-hunt tmp dirs) and/or have Helm archive forward-1002, forward-1002ev, exp024 and exp025 (~104 GB). Helm is handling backup via the owner's OneDrive.
+   - **Correction (15:1xZ):** `forward-1002` must STAY, because it is on EXP-025's Look 1/2 allowlist. exp024, exp025 and forward-1002ev were already removed on 10-18 (see the EXP-025 HOLD below). Before naming any dir for archive, grep EXP/DEC/HOLDOUT_LEDGER/HANDOFF/crons for pending reads.
+   - **15:02Z:** 22.42% free, falling about 0.05 points per hour (22.63 at 11:02Z). A straight line reaches 20.00% about 10-20T13Z. Walk 2's newest sealed hour is trades-2026-10-16T21; at about 1.5 sealed h per wall h it catches up to now only about 10-22T03Z, so it needs about 20 GB more freed before 10-20. The owner was told; notebook n_M2ZOqFGxFXWOMQ. The guard cron in `ops/crons-1016-manager12.json` now triggers on "free < 21.5% or the walk-2 hour has not advanced".
    - The manager's own `rm` is denied by the permission check; do not work around it.
 
 ## 1. What the owner asked (2026-10-18 ~03:00Z) and what was built
