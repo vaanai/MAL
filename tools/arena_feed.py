@@ -378,8 +378,9 @@ class Compactor:
 class TapeWriter:
     """Hourly tape-<UTC hour of t_recv_ms>.jsonl, strict JSON, flushed per line. Counts rows by (prog, type)."""
 
-    def __init__(self, out_dir: Path) -> None:
+    def __init__(self, out_dir: Path, clock: Callable[[], int] | None = None) -> None:
         self.dir = out_dir
+        self.clock = clock  # wall clock (ms) for the closed-hour rule; None = the newest row time
         self.dir.mkdir(parents=True, exist_ok=True)
         self._fh = None
         self._name: str | None = None
@@ -417,8 +418,12 @@ class TapeWriter:
         t = int(rec["t_recv_ms"])
         self.latest_t = max(self.latest_t, t)
         name = self.name_for(t)
-        if name != self.name_for(self.latest_t) and (self.dir / (name + ".zst")).exists():
-            name = self.name_for(self.latest_t)  # a row from an hour that is already compacted goes to the newest hour's file
+        now = self.clock() if self.clock is not None else self.latest_t
+        cur = self.name_for(max(self.latest_t, now))
+        hs = hour_start_ms(name)
+        closed = hs is not None and hs + 3_600_000 + COMPACT_GRACE_MS <= now  # the compactor may take this hour at any moment from here on
+        if name != cur and (closed or (self.dir / (name + ".zst")).exists()):
+            name = cur  # a row for an hour that is closed (compacted or about to be) goes to the current hour's file: the compactor never races a writer
             self.late_to_current += 1
         if self._name != name:
             if not resume and self.before_open is not None and not self.before_open():  # the disk-reserve check, before an hour file is created or reopened
@@ -607,7 +612,7 @@ class Feed:
         self.paused_since_ms: int | None = None
         self.pause_dropped0 = 0
         self.pauses = 0
-        self.writer = TapeWriter(out_dir)
+        self.writer = TapeWriter(out_dir, clock=wall)
         self.writer.before_open = lambda: self.check_disk(self.wall(), force=True)
         self.compactor = Compactor(out_dir, wall, compact=compact, allow=self.disk_allows)
         self.errlog = ErrorLog(out_dir / ERRORS_NAME, paused=lambda: self.writer.paused)

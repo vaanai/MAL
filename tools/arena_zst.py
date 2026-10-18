@@ -108,8 +108,11 @@ def compact_file(src: str | Path, level: int = ZSTD_LEVEL) -> dict:
         with open(src, "rb") as fh:
             s = scan_stream(fh.read)
         st1 = src.stat()
-        if z != s or st1.st_size != st0.st_size or st1.st_size != s[0]:
+        if z != s or st1.st_size != st0.st_size or st1.st_size != s[0] or st1.st_mtime_ns != st0.st_mtime_ns:
             raise CompactError(f"verify mismatch: zst={z[:2]} src={s[:2]} size0={st0.st_size} size1={st1.st_size}")
+        st2 = src.stat()  # the last look, right before the delete: a writer appending in the verify window shows here (the feed's writer
+        if st2.st_size != st0.st_size or st2.st_mtime_ns != st0.st_mtime_ns:  # also refuses closed hours, so this is the second guard)
+            raise CompactError("source changed after verify")
     except Exception:
         dst.unlink(missing_ok=True)  # the source stays; a reader keeps using it
         raise

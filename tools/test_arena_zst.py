@@ -125,6 +125,43 @@ def test_writer_sends_a_late_row_of_a_compacted_hour_to_the_current_file(tmp_pat
     assert len((tmp_path / hour_name(H1)).read_text().splitlines()) == 2
 
 
+def test_the_writer_refuses_a_closed_hour_even_before_its_zst_exists(tmp_path: Path) -> None:
+    """Review item 6: the race window is closed at the writer, not only after the .zst appears."""
+    clock = {"t": H0 + 100}
+    w = af.TapeWriter(tmp_path, clock=lambda: clock["t"])
+    row = lambda t: {"v": 1, "type": "hb", "prog": "all", "slot": 0, "t_recv_ms": t, "signature": None, "event_index": None}  # noqa: E731
+    w.write(row(H0 + 5))
+    clock["t"] = H1 + af.COMPACT_GRACE_MS - 1000  # H0 ended, but its grace is not over: a late row may still be appended to it
+    w.write(row(H0 + 6))
+    assert w.late_to_current == 0 and len((tmp_path / hour_name(H0)).read_text().splitlines()) == 2
+    before = (tmp_path / hour_name(H0)).read_text()
+    clock["t"] = H1 + af.COMPACT_GRACE_MS  # the compactor may take H0 from now on; no .zst exists yet
+    assert not (tmp_path / (hour_name(H0) + ".zst")).exists()
+    w.write(row(H0 + 7))
+    w.close()
+    assert w.late_to_current == 1 and (tmp_path / hour_name(H0)).read_text() == before  # the H0 file was not touched
+    assert len((tmp_path / hour_name(H1)).read_text().splitlines()) == 1  # the row went to the current hour's file
+
+
+def test_compact_file_refuses_to_delete_a_source_that_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = jsonl(tmp_path, H0, 50)
+    real = az.scan_stream
+    calls = {"n": 0}
+
+    def appending(read):
+        calls["n"] += 1
+        out = real(read)
+        if calls["n"] == 2:  # after the source pass: a late append lands before the last look
+            with src.open("a") as fh:
+                fh.write(json.dumps(curve(H0 + 999, "late", "buy", 1.0, 1e-7)) + "\n")
+        return out
+
+    monkeypatch.setattr(az, "scan_stream", appending)
+    with pytest.raises(az.CompactError):
+        az.compact_file(src)
+    assert src.exists() and len(src.read_text().splitlines()) == 51 and not (tmp_path / (src.name + ".zst")).exists()
+
+
 def test_release_stale_closes_the_old_handle(tmp_path: Path) -> None:
     w = af.TapeWriter(tmp_path)
     w.write({"v": 1, "type": "hb", "prog": "all", "slot": 0, "t_recv_ms": H0 + 5, "signature": None, "event_index": None})
