@@ -54,6 +54,10 @@ VOL_60M_MIN_SOL = 10.0  # s1: gross SOL volume over 60 min
 IMPACT_RT_CAP = 0.03  # s1: round-trip impact at the intended stake
 STAKES = (0.25, 0.5, 1.0)  # s3: size menu
 STATE_LAG_MAX_MS = 10_000  # not in DESIGN: a state clock further behind T than this is a stalled feed (see module docstring)
+CHAIN_MINT_MAX_AGE_MS = 15 * MIN_MS  # not in DESIGN (manager, review of PR 710): mint facts (chain.as_of_ms) older than this veto
+CHAIN_HOLDERS_MAX_AGE_MS = 5 * MIN_MS  # not in DESIGN (manager): largest-holders facts (chain.holders_as_of_ms) older than this veto
+QUOTE_REF_AGE_MS = 15 * MIN_MS  # s2 veto 7: the reference quote is the one from 15 min before T ...
+QUOTE_REF_TOL_MS = 2 * MIN_MS  # ... observed within this much either side of it (not in DESIGN; the scanner samples each minute)
 
 SETUP_COOLDOWN_MS = 30 * MIN_MS  # s1: at most one setup per pool, per persona, per 30 min
 PULLBACK_RET60_MIN = 0.10  # s1 CON PULLBACK
@@ -246,6 +250,11 @@ def _win(snap: SnapshotLike, label: str) -> Mapping[str, Any]:
     return w if isinstance(w, Mapping) else {}
 
 
+def _stamp(x: Any) -> int | None:
+    """A time or slot stamp: a non-bool int >= 0, else None (strings, floats, bools and negatives are all None)."""
+    return x if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
+
+
 def _norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
     if prints is None:
         return None
@@ -287,6 +296,10 @@ def assert_as_of(snap: SnapshotLike, as_of_ms: int, *, prints: Iterable[PrintLik
     if chain is not None:
         chk("chain.as_of_ms", chain.get("as_of_ms"))
         chk("chain.holders_as_of_ms", chain.get("holders_as_of_ms"))
+        chk("chain.quote_sol_15m_ago_as_of_ms", chain.get("quote_sol_15m_ago_as_of_ms"))
+        cs = chain.get("as_of_slot")
+        if as_of_slot is not None and isinstance(cs, int) and not isinstance(cs, bool) and cs > as_of_slot:
+            raise LeakageError(f"chain as_of_slot={cs} is after as_of_slot={as_of_slot}")
     ls = snap.get("last_slot")
     if as_of_slot is not None and isinstance(ls, int) and not isinstance(ls, bool) and ls > as_of_slot:
         raise LeakageError(f"snapshot last_slot={ls} is after as_of_slot={as_of_slot}")
@@ -691,16 +704,20 @@ class VetoResult:
     checks: Mapping[str, Any]  # every check with its value, for the decision log
 
 
-def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int,
+def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
                 stake: float = STAKES[0], feats: Mapping[str, Any] | None = None) -> VetoResult:
     """DESIGN section 2 hard vetoes 1-7. Every check is evaluated; a missing or malformed fact is a veto, never a pass.
 
     Chain facts (a Mapping from tools/hv4_chain.py; key present with None means "null on chain"; key absent means "not fetched"):
-      as_of_ms, as_of_slot, holders_as_of_ms; mint_authority, freeze_authority (None = renounced); token_program, extensions,
-      transfer_fee_bps, default_account_state; mayhem (True | False | None=unknown); quote_sol_15m_ago; quote_sol_peak;
-      holder_count, holder_count_cover, top1_frac, top10_frac, creator_sold_frac, same_slot_supply, sniper_share, sniper_still_holding."""
+      as_of_ms, as_of_slot (non-bool ints; the mint facts' stamp; as_of_ms older than 15 min before T is a veto, as_of_slot after the
+      `as_of_slot` argument raises LeakageError); holders_as_of_ms (int; required when top1_frac or top10_frac is given; older than 5 min
+      is a veto); mint_authority, freeze_authority (None = renounced); token_program, extensions, transfer_fee_bps, default_account_state;
+      mayhem (True | False | None=unknown); quote_sol_15m_ago with quote_sol_15m_ago_as_of_ms (within 2 min of T - 15 min); quote_sol_peak;
+      holder_count, holder_count_cover, top1_frac, top10_frac, creator_sold_frac, same_slot_supply, sniper_share, sniper_still_holding.
+    `as_of_slot` is the arena's latest slot at T (the caller's, not the pool's last print slot); a non-int is a veto."""
     pr = _norm_prints(prints)
-    assert_as_of(snap, as_of_ms, prints=pr, chain=chain)
+    slot_ok = _stamp(as_of_slot) is not None
+    assert_as_of(snap, as_of_ms, prints=pr, chain=chain, as_of_slot=as_of_slot if slot_ok else None)
     f = dict(feats) if feats is not None else features(snap, pr, as_of_ms=as_of_ms)
     reasons: list[str] = []
     checks: dict[str, Any] = {}
@@ -710,7 +727,24 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
         reasons.extend(f"chain_missing:{k}" for k in gone)
         return bool(gone)
 
-    missing("as_of_ms", "as_of_slot")
+    if not slot_ok:
+        reasons.append("as_of_slot_invalid")
+    st_ms, st_slot = _stamp(chain.get("as_of_ms")), _stamp(chain.get("as_of_slot"))
+    checks["chain_stamp"] = {"as_of_ms": st_ms, "as_of_slot": st_slot, "age_ms": (as_of_ms - st_ms) if st_ms is not None else None,
+                             "max_age_ms": CHAIN_MINT_MAX_AGE_MS}
+    for k, v in (("as_of_ms", st_ms), ("as_of_slot", st_slot)):
+        if v is None:
+            reasons.append(f"chain_stamp_invalid:{k}")  # absent, null, bool, float, string: the mint facts have no usable stamp
+    if st_ms is not None and as_of_ms - st_ms > CHAIN_MINT_MAX_AGE_MS:
+        reasons.append("chain_stale")
+    hs = chain.get("holders_as_of_ms")
+    held = [chain.get(k) is not None for k in ("top1_frac", "top10_frac")]
+    checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": CHAIN_HOLDERS_MAX_AGE_MS}
+    if hs is not None or any(held):  # holder facts, or a stamp for them, must come with a valid fresh stamp
+        if _stamp(hs) is None:
+            reasons.append("holders_stamp_invalid")
+        elif as_of_ms - hs > CHAIN_HOLDERS_MAX_AGE_MS:
+            reasons.append("holders_stale")
     checks["quote_wsol"] = snap.get("quote_wsol")
     if snap.get("quote_wsol") is not True:
         reasons.append("quote_not_wsol")
@@ -751,9 +785,12 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
         reasons.append("sell_route")
     # 7. real quote down >= 30% in 15 min
     ago = _num(chain.get("quote_sol_15m_ago")) if "quote_sol_15m_ago" in chain else None
-    checks["quote_15m"] = {"quote_sol": q, "quote_sol_15m_ago": ago}
+    qs = _stamp(chain.get("quote_sol_15m_ago_as_of_ms"))
+    checks["quote_15m"] = {"quote_sol": q, "quote_sol_15m_ago": ago, "stamp_ms": qs, "ref_age_ms": (as_of_ms - qs) if qs is not None else None}
     if ago is None or ago <= 0 or q is None:
         reasons.append("quote_15m_unknown")
+    elif qs is None or abs((as_of_ms - qs) - QUOTE_REF_AGE_MS) > QUOTE_REF_TOL_MS:
+        reasons.append("quote_15m_stamp_bad")  # the reference quote is not from about T - 15 min
     elif _ge((ago - q) / ago, QUOTE_DROP_VETO):
         reasons.append("quote_drop_15m")
     return VetoResult(bool(reasons), tuple(reasons), checks)
@@ -819,21 +856,21 @@ def numeric_fields(card: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
-def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int | None = None,
+def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
                setup: SetupTag | None = None, stake: float = STAKES[0]) -> dict[str, Any]:
     """The card for one Lane G pool as of `as_of_ms`, or CardRefused (a Lane G filter missed, or a hard veto fired, or a stamp is missing).
     LeakageError if any input is later than the scan instant. Every value on the card is as of `as_of_slot` / `as_of_ms`; the chain facts keep
     their own stamps under `risk`. Name and symbol are sanitized and live only under `untrusted`; the id and wallet handles must look like
     base58 addresses or the card is refused. `x` is null until the Grok feature drop is wired in at a window's registration."""
+    if _stamp(as_of_slot) is None:
+        raise CardRefused(["as_of_slot_missing"])
     pr = _norm_prints(prints)
     assert_as_of(snap, as_of_ms, prints=pr, chain=chain, as_of_slot=as_of_slot)
     fr = filters(snap, as_of_ms=as_of_ms)
     feats = features(snap, pr, as_of_ms=as_of_ms)
-    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, stake=stake, feats=feats)
-    slot = as_of_slot if as_of_slot is not None else snap.get("last_slot")
+    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats)
+    slot = as_of_slot
     reasons = list(fr.failed) + list(vr.reasons)
-    if not (isinstance(slot, int) and not isinstance(slot, bool)):
-        reasons.append("as_of_slot_missing")
     if not is_safe_id(snap.get("id")):
         reasons.append("bad_pool_id")
     if setup is not None and setup.pool_id != snap.get("id"):
@@ -846,7 +883,7 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     f["max_stake"] = max_stake
     f["age_tier"] = fr.age_tier
     f["age_known"] = fr.age_known
-    risk: dict[str, Any] = {"as_of_slot": chain.get("as_of_slot"), "as_of_ms": chain.get("as_of_ms"), "holders_as_of_ms": chain.get("holders_as_of_ms"),
+    risk: dict[str, Any] = {"as_of_slot": _stamp(chain.get("as_of_slot")), "as_of_ms": _stamp(chain.get("as_of_ms")), "holders_as_of_ms": _stamp(chain.get("holders_as_of_ms")),
                             "mint_authority_null": True, "freeze_authority_null": True,
                             "token_program": "token_2022" if chain.get("token_program") == TOKEN_2022_PROGRAM else "spl_token",
                             "extensions": [sanitize_name(e)[:NAME_MAX] for e in list(chain.get("extensions") or [])[:12]],
