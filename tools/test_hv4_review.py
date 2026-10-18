@@ -694,10 +694,15 @@ def test_real_active_version_is_what_the_runner_expects(root):
     assert av.arm == ARM and av.manifest["sha256"] and av.manifest["effective_from_ms"] == CUT + 30 * 60_000
     st = av.state
     assert (st.persona, st.version, st.vetoes) == ("CON", 1, ("ret_15m < -5",)) and st.playbook.name == "CON" and st.knobs["min_conviction"] == 5
-    new = R.Runner._check_version(None, ARM, av)                       # the runner's own acceptance check on a real ActiveVersion
+    import types
+
+    fresh = types.SimpleNamespace(arm_state={a: {"manifest_sha256": None, "version": 0} for a in arms.reviewer_arms()})   # what _check_version reads of the runner
+    new = R.Runner._check_version(fresh, ARM, av)                       # the runner's own acceptance check on a real ActiveVersion
     assert new["version"] == 1 and new["vetoes"] == ("ret_15m < -5",) and new["manifest_sha256"] == av.manifest["sha256"]
     with pytest.raises(ValueError):                                      # ... and for the wrong arm it refuses
-        R.Runner._check_version(None, "BIG-L", av)
+        R.Runner._check_version(fresh, "BIG-L", av)
+    applied = types.SimpleNamespace(arm_state={**fresh.arm_state, ARM: {"manifest_sha256": av.manifest["sha256"], "version": 1}})
+    assert R.Runner._check_version(applied, ARM, av)["version"] == 1       # the same line again is not a replacement
     with pytest.raises(RV.ManifestRefused):                              # a frozen sha that is not the manifest's commit: the source refuses
         R.review_version_source(root, "b" * 40)(ARM, CUT + 31 * 60_000)
     assert src("CON-F", CUT) is None                                      # an arm with no reviewer has no manifest file
@@ -723,12 +728,21 @@ def test_the_runner_applies_a_real_version_and_halts_the_arm_on_a_refused_chain(
     assert run.arm_state["CON-F"]["version"] == 0 and run.arm_state["CON-F"]["vetoes"] == ()
     p = root / "manifests" / f"{ARM}.jsonl"
     rows = RV._jsonl(p)
+    good_close = rows[1]["max_input_close_ms"]
     rows[1]["max_input_close_ms"] = cut
     rows[1]["sha256"] = RV.manifest_hash(rows[1])
     p.write_text("".join(RV.canon(r) + "\n" for r in rows))
     run.refresh_versions(TR.T0 + 60_000)
-    assert run.arm_halt.get(ARM) == "input_after_cutoff"                  # fail closed: this arm's entries stop; nothing else does
-    assert not run.arm_halt.get("BIG-L") and not run.arm_halt.get("CON-P")
+    assert run.arm_halt.get(ARM) == "input_after_cutoff"                  # fail closed on the refused arm ...
+    assert run.persona_halt("CON") == (ARM, "input_after_cutoff")         # ... and the final runner stops the WHOLE persona group (L, F, P, R and X) on it
+    assert run._live_members(arms.group_members("CON"), TR.T0 + 120_000) == ()
+    assert run.persona_halt("BIG") is None and run.persona_halt("BST") is None and not run.arm_halt.get("BIG-L") and not run.arm_halt.get("CON-P")
+    assert run._live_members(arms.group_members("BIG"), TR.T0 + 120_000) == arms.group_members("BIG")
+    rows[1]["max_input_close_ms"] = good_close                             # the chain is repaired to the SAME line the runner applied: the group acts again
+    rows[1]["sha256"] = RV.manifest_hash(rows[1])
+    p.write_text("".join(RV.canon(r) + "\n" for r in rows))
+    run.refresh_versions(TR.T0 + 180_000)
+    assert run.persona_halt("CON") is None and run._live_members(arms.group_members("CON"), TR.T0 + 180_000) == arms.group_members("CON")
 
 
 def test_runner_local_veto_and_reviewer_vetoed_are_the_same_rule():
@@ -869,3 +883,56 @@ def test_hv4_review_replay_imports_no_r4b_l3_or_laya_module():
     out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(REPO), capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-400:]
     assert out.stdout.strip().endswith("BAD []"), out.stdout
+
+
+def test_the_version_is_the_previous_one_plus_one_and_the_runner_refuses_a_replaced_chain(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    from tools import hv4_runner as R
+    from tools import test_hv4_runner as TR
+
+    root = tmp_path / "chain"
+    row, _ = RV.genesis_manifest(ARM, CUT - 86_400_000, SHA40)
+    RV.append_manifest(root, ARM, row, None, None)
+    night(root, history(40), json.dumps([change()]))
+    c2 = RV.day_start_ms("2026-10-23")
+    RV.review_night(ARM, "2026-10-23", root=root, ledger_root=root, model=StubModel(["[]"]), now_ms=c2 + 300_000, commit=SHA40, records=history(40), open_positions=0)
+    assert [r["version"] for r in RV.verify_chain(root, ARM)] == [0, 1, 2]
+
+    def skip_a_version(rows):                                                # version 3 after version 1, every hash made consistent
+        rows[2]["version"] = 3
+        reseal(rows[2])
+    orig = (root / "manifests" / f"{ARM}.jsonl").read_text()
+    tamper(root, ARM, skip_a_version)
+    with pytest.raises(RV.ManifestRefused) as e:
+        RV.verify_chain(root, ARM)
+    assert str(e.value) == "version_gap"
+
+    def repeat_a_version(rows):
+        rows[2]["version"] = 1
+        reseal(rows[2])
+    tamper(root, ARM, repeat_a_version)
+    with pytest.raises(RV.ManifestRefused) as e:
+        RV.verify_chain(root, ARM)
+    assert str(e.value) == "version_gap"
+    (root / "manifests" / f"{ARM}.jsonl").write_text(orig)
+    assert RV.verify_chain(root, ARM)[-1]["version"] == 2
+
+    # the final runner: another valid chain whose line for an applied version differs is a replacement, and halts the whole persona group
+    day = RV.utc_day(TR.T0)
+    cut = RV.day_start_ms(day)
+    r2 = tmp_path / "hv4"
+    for a in arms.reviewer_arms():
+        g, _ = RV.genesis_manifest(a, cut - 86_400_000, "abcdef1234567")
+        RV.append_manifest(r2, a, g, None, None)
+    RV.review_night(ARM, day, root=r2, ledger_root=r2, model=StubModel(["[]"]), now_ms=cut + 300_000, commit="abcdef1234567", records=history(40, cut=cut), open_positions=0)
+    run = TR.make(tmp_path / "run", versions=R.review_version_source(r2, "abcdef1234567"))
+    run.refresh_versions(TR.T0)
+    assert run.arm_state[ARM]["version"] == 1 and run.persona_halt("CON") is None
+    (r2 / "manifests" / f"{ARM}.jsonl").unlink()
+    g, _ = RV.genesis_manifest(ARM, cut - 86_400_000, "abcdef1234567")
+    RV.append_manifest(r2, ARM, g, None, None)
+    knob = json.dumps([change(type="knob", target="min_conviction", new=5, claim="worse")])
+    RV.review_night(ARM, day, root=r2, ledger_root=r2, model=StubModel([knob]), now_ms=cut + 301_000, commit="abcdef1234567", records=history(40, cut=cut), open_positions=0)
+    run.refresh_versions(TR.T0 + 60_000)                                     # version 1 again, another line: the chain was replaced
+    assert run.arm_halt[ARM] == "version_not_forward" and run.arm_state[ARM]["version"] == 1 and run.knobs[ARM].min_conviction == 4
+    assert run.persona_halt("CON")[0] == ARM and run._live_members(arms.group_members("CON"), TR.T0 + 61_000) == ()
