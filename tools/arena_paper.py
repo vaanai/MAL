@@ -912,7 +912,7 @@ class ArenaEngine:
 
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
         """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
-        decision-time spot stays the price the bot saw (prints before the UNCORRECTED decision slot)."""
+        decision-time spot is the price the bot saw (prints before its stamped decision_slot, even when it wrote the decision much later)."""
         cfg = self.cfg
         d = self._check_delay_set()
         a = h.arrays()
@@ -923,12 +923,13 @@ class ArenaEngine:
             args = (a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"])
             ms = mint_states(*args, np.array([sdc]), pos.sps_entry, t_marks=np.array([0]), slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([xsc]),
                              lats=LATS, rounding=cfg.k_rounding)
-            spot = ms["spot"][0] if d == 0 else mint_states(*args, np.array([pos.sd]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
+            ref_slot = pos.decision_slot  # the 15% guard compares against the price the bot SAW: prints before the stamped slot, not the write-instant slot
+            spot = ms["spot"][0] if ref_slot == sdc else mint_states(*args, np.array([ref_slot]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
             return {"ref": float(spot), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
                     "ssb": {l: float(ms["ssb"][l][0]) for l in LATS}, "nearby": {l: float(ms["nearby"][l][0]) for l in LATS},
                     "Qx": float(ms["Qx"][0]), "Bx": float(ms["Bx"][0]), "land": {l: sdc + k[l] for l in LATS}}
         x_land = {l: sdc + k[l] for l in LATS}
-        bs = bonding_states(h, pos.sd, x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
+        bs = bonding_states(h, pos.decision_slot, x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
         bs["land"] = x_land
         return bs
 

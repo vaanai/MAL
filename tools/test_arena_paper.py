@@ -814,3 +814,36 @@ def test_an_append_parses_only_the_new_bytes_not_the_whole_day_file(tmp_path, mo
     # a truncated / replaced file (a new inode or a shorter size) is rescanned from the start
     p.write_text(p.read_text().splitlines()[0] + "\n")
     assert led.append(dict(_fake_row("t5", ms=T0 + 5), pad=pad)) is True
+
+
+def test_the_guard_reference_is_the_price_at_the_slot_the_bot_saw_not_the_write_instant_slot(tmp_path):
+    spots = {}
+    for think in (0, 30_000):
+        sub = tmp_path / str(think)
+        sub.mkdir()
+        eng = mk_engine(sub)
+        rows = _tape(hi=300)
+        pid = None
+        for r in rows:
+            eng.on_row(r)
+            if r["slot"] == 100 and pid is None:
+                eng.now_fn = lambda t=think: tms(100) + t
+                pid = eng.buy("botA", "P1", None, tms(100), 100)
+                eng.now_fn = lambda: eng.hw_ms or 0
+            if r["slot"] == 250 and pid and eng.positions[pid].exit_slot is None:
+                eng.sell("botA", pid, 1.0, tms(250), 250)
+        spots[think] = trades(eng)[0]
+    by_slot = {x["slot"]: x for x in rows}
+
+    def post_price(slot):  # the post-trade price of the print at `slot` (the engine's seed-price convention: 0.99 / 1.01, V added)
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    slow = spots[30_000]
+    assert slow["effective_slot"]["entry"] == 175 and slow["decision_slot"]["entry"] == 100
+    assert slow["calc"]["1p3"]["spot"] == post_price(99)  # the last print before the slot the bot saw
+    assert slow["calc"]["1p3"]["spot"] != post_price(174)  # not the last print before the write-instant slot
+    assert spots[0]["calc"]["1p3"]["spot"] == post_price(99)
