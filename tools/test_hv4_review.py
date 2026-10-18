@@ -1118,3 +1118,11 @@ def test_the_skip_cap_is_applied_before_pricing_and_never_depends_on_an_outcome(
     assert b.calls[0][0] == a.calls[0][0] and 0 < len(got_b) < 60
     bundle = RV.build_bundle(ARM, DAY, RV.v0_state("CON"), got)
     assert len(bundle.obj["skips"]) + bundle.dropped["skips"] == 60 and {s["id"] for s in bundle.obj["skips"]} <= set(all_ids[:60])
+
+
+def test_the_synthetic_day_benchmark_runs_at_small_scale(tmp_path):
+    r = subprocess.run([sys.executable, str(TOOLS / "hv4_review_bench.py"), "--dir", str(tmp_path), "--pools", "4", "--hours", "8", "--skips", "120"],
+                       capture_output=True, text=True, cwd=str(REPO), timeout=300)
+    assert r.returncode == 0, r.stderr[-400:]
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["skip_rows"] == 120 and out["priced_at_most"] == 60 and out["tape_rows"] > 1000 and out["peak_rss_mb"] > 0
