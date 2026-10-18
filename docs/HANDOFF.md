@@ -75,6 +75,17 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
     - an M4-multi forward paper rule, frozen first.
   - The weather-mm item below is therefore done.
 
+**Update 2026-10-18 ~12:15Z: EXP-025 Look 1 R8 run is on HOLD (quant-proof).**
+- **Disk:** free rose to 22.63% at 11:02Z, and walk 2 #1036 RESUMED (sealing 2026-10-16T15+, catching up).
+- **What was removed:** `/data/mal/exp025`, `/data/mal/exp024` and `/data/mal/blocks/forward-1002ev`, presumably by the storage archive the manager asked Helm for. `forward-1002` is still present.
+- **Why it matters:** exp025 held EXP-025's look ledger (`LOOK_READS.jsonl`), `look1/` and the pinned E0 records. The P5 record's stat-only precondition, that `/data/mal/exp025/look1` exists, FAILED at 12:07Z.
+- **Before the R8 run** (`/data/mal/audit-1008/venv/bin/python tools/exp025_look.py run --look 1 --decoder-blobs none`):
+  1. establish what removed it and when (ask the owner or Helm), and confirm from the MiScusi job history that no `exp025_look.py run` or `take_lock` ever ran;
+  2. add a dated disclosure record to EXP-025 using quant-proof's sentence (notebook n_vuyyZ4nehgxh1g has the full text), with quant-proof OK;
+  3. then run the P5 command.
+- **Restore:** if the owner can, restore exp025, at least `LOOK_READS.jsonl` and `e0/`. Look 2's R8 (after 10-26T12:00Z) needs the same.
+- **Lesson:** never list a dir for archive without checking pending steps that read it (memory `feedback-archive-list-check`).
+
 3. **Kalshi.**
    - **#1146 (candles, 7 cities, bounded windows):** when it completes, message the weather-mm agent a0f680d593d71124d to run the holdout once (hunt17/kalshi-weather-mm).
    - **#1145 (markets + fin/pubnum trades continuation):** when done, resume the kalshi-pubnum agent a844210f7b7536009 and the universe agent aafd58ba225514325.
