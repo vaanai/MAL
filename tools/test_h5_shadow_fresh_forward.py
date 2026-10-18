@@ -42,6 +42,7 @@ def fresh_engine(start_ms, **kw):
     """The Engine as run_live builds it with --fresh-forward ARENA."""
     kw.setdefault("seal_start_ms", None)
     kw.setdefault("h5_look2_start_ms", None)
+    kw.setdefault("classifier", h5.StaticClassifier(False, "rpc"))  # a plain pool, classified by the RPC fallback: the class whose pool record keeps its price fields
     return make_engine(bx10_enabled=True, fresh_start_ms=start_ms, **kw)
 
 
@@ -96,6 +97,17 @@ class OutDirTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # the production root, unpatched
             with mock.patch.object(h5, "ARENA_ROOT", "/data/mal/arena"):
                 h5.check_fresh_out_dir("/data/mal/arena/other")
+
+    def test_the_home_arena_root_of_fast_0_is_accepted_and_the_home_shadow_dir_is_not(self):
+        h = self.home / "data"
+        self.assertEqual(self.ok(h / "arena" / "h5-2026-10-18"), h / "arena" / "h5-2026-10-18")
+        self.assertEqual(self.ok(h / "arena" / "h5-x" / "sub"), h / "arena" / "h5-x" / "sub")
+        self.refused(h / "arena", "must resolve under")
+        self.refused(h / "arena" / "other", "must resolve under")
+        self.refused(h / "h5-2026-10-18", "must resolve under")
+        self.refused(h / "h5-shadow", "never feeds the live executor")
+        self.refused(h / "h5-shadow-2026-10-18", "never feeds the live executor")
+        self.refused(h / "arena" / ".." / "h5-shadow", "'..'")
 
     def test_the_live_shadow_dirs_are_refused_explicitly(self):
         for bad in ("/srv/mal-h5-shadow", "/srv/mal-h5-shadow/x", "/var/lib/mal-live", "/var/lib/mal-live/ledger",
@@ -231,11 +243,12 @@ class EngineTests(unittest.TestCase):
 
     def test_records_equal_the_default_engine_with_both_seals_off(self):
         a, b = self.tapes()
-        eng1, out1 = make_engine(seal_start_ms=None, h5_look2_start_ms=None, bx10_enabled=True)
+        eng1, out1 = make_engine(seal_start_ms=None, h5_look2_start_ms=None, bx10_enabled=True, classifier=h5.StaticClassifier(False, "rpc"))
         run_pools(eng1, a, b)
         a, b = self.tapes()
         eng2, out2 = fresh_engine(0)
         run_pools(eng2, a, b)
+        out2 = [{k: v for k, v in r.items() if not k.startswith("buys")} if r["type"] == "strip" else r for r in out2]  # the fresh strip's only addition
         self.assertEqual([json.dumps(r, sort_keys=True) for r in out1], [json.dumps(r, sort_keys=True) for r in out2])
         c1, c2 = dict(eng1.counters), dict(eng2.counters)
         self.assertEqual(c1, {k: v for k, v in c2.items() if k != "fresh_ignored_pre_start"})
@@ -295,17 +308,29 @@ class RunLiveTests(unittest.TestCase):
         self.assertEqual(start["tip_union"], "off")
         self.assertEqual((start["seal"]["applied"], start["seal"]["start_ms"], start["seal"]["oracle"]), (False, None, "not_applied"))
         self.assertEqual((start["h5_look2"]["applied"], start["h5_look2"]["observed"], start["h5_look2"]["start_ms"]), (False, False, None))
+        self.assertEqual(start["h5_look2"]["end_only_ms"], h5.H5_LOOK2_END_MS)
+        self.assertIs(start["dirty"], False)
+        self.assertEqual(start["endpoints"], ["default"])
+        self.assertIn("host", start)
         self.assertEqual((start["keys"], start["sends"]), ("none", "none"))
         self.assertEqual(start["out_dir"], str(out))
         (k,) = built
         self.assertIs(k["bx10_enabled"], True)
         self.assertEqual(k["fresh_start_ms"], start["start_ms"])
         self.assertIsNone(k["seal_start_ms"])
-        self.assertIsNone(k["h5_look2_start_ms"])
+        self.assertEqual(k["h5_look2_start_ms"], h5.H5_LOOK2_END_MS)  # only the END of the Look-2 seal applies (fail closed after 2026-11-06T00Z)
         self.assertIsNone(k["pick_oracle"])
         self.assertIsNone(k["suppress_outcome"])
         self.assertIs(k["h5_look2_observed"], False)
         self.assertEqual(tips, [])  # no TipTail was built
+
+    def test_dirty_and_endpoints_are_recorded_and_no_key_reaches_the_record(self):
+        out = self.root / "arena" / "h5-dirty"
+        with mock.patch.dict(os.environ, {"H5_DIRTY": "1"}):
+            start, _, _, _ = self.run_live(["--fresh-forward", "ARENA", "--ws-url", "wss://b.example/x", "--ws-url", "wss://a.example/?api-key=XYZ"], out)
+        self.assertIs(start["dirty"], True)
+        self.assertEqual(start["endpoints"], ["wss://a.example/?REDACTED", "wss://b.example/x"])
+        self.assertNotIn("XYZ", json.dumps(start))
 
     def test_bx10_is_on_with_or_without_its_own_flag(self):
         for extra in ([], ["--bx10-enable", "EXP-026"], ["--bx10-enable", "1"]):
@@ -339,6 +364,64 @@ class RunLiveTests(unittest.TestCase):
             self.assertIs(start["bx10"], False)
             self.assertNotIn("fresh_start_ms", built[0])
             self.assertEqual(built[0]["seal_start_ms"] if "seal_start_ms" in built[0] else h5.SEAL_START_MS, h5.SEAL_START_MS)
+
+
+class FreshRecordTests(unittest.TestCase):
+    """The three record-level additions of fresh mode: strip.buys, the synthetic-class embargo on pool records, the END of the Look-2 seal."""
+
+    def test_the_strip_carries_the_buys_for_a_pressure_recomputation(self):
+        eng, out = fresh_engine(0)
+        run_pools(eng, pool_tape("PoolAAAA", 1000, 1_800_000_000))
+        (strip,) = types(out, "strip")
+        self.assertEqual(strip["buys_cols"], ["slot", "sol_lamports"])
+        self.assertFalse(strip["buys_truncated"])
+        from_slot = strip["from_slot"]
+        buy_slots = [r[0] for r in strip["buys"]]
+        self.assertTrue(all(s >= from_slot - h5.FRESH_BUYS_BACK_SLOTS for s in buy_slots))
+        # trigger print at slot 1200: buys from slot 1150 on = BOOST slices 1155, 1180, ... 1430 (12 of the 18) and the closing buy at 1900; no sell, no earlier buy
+        self.assertEqual(from_slot, 1200)
+        self.assertEqual(buy_slots, [1155 + 25 * i for i in range(12)] + [1900])
+        self.assertTrue(all(r[1] > 0 for r in strip["buys"]))
+        # default engine: the strip is as before
+        eng, out = make_engine(seal_start_ms=None, h5_look2_start_ms=None)
+        run_pools(eng, pool_tape("PoolAAAA", 1000, 1_800_000_000))
+        self.assertFalse([k for k in types(out, "strip")[0] if k.startswith("buys")])
+
+    def test_pool_records_of_synthetic_unclassified_or_other_source_pools_carry_no_price_field(self):
+        for clf in (h5.StaticClassifier(True, "rpc"), h5.StaticClassifier(None), h5.StaticClassifier(False, "ws"), h5.StaticClassifier(False, "pre_event_binary")):
+            eng, out = fresh_engine(0, classifier=clf)
+            run_pools(eng, pool_tape("PoolAAAA", 1000, 1_800_000_000))
+            (pool,) = types(out, "pool")
+            for k in ("min_q_pv_sol", "min_q_fv_sol", "pv_fv_disagree_sells"):
+                self.assertIsNone(pool[k], (clf.syn, clf.src, k))
+            self.assertEqual(pool["price_fields_withheld"], "synthetic_class_embargo")
+            if clf.syn is not False:  # a synthetic or unclassified pool has no trigger, outcome or strip at all
+                self.assertEqual([r["type"] for r in out if r["type"] in ("trigger", "outcome", "outcome_bx10", "strip")], [])
+        eng, out = fresh_engine(0)  # the literal plain class keeps them
+        run_pools(eng, pool_tape("PoolAAAA", 1000, 1_800_000_000))
+        (pool,) = types(out, "pool")
+        self.assertIsNotNone(pool["min_q_pv_sol"])
+        self.assertNotIn("price_fields_withheld", pool)
+
+    def test_the_default_engine_never_withholds_for_the_class(self):
+        eng, out = make_engine(seal_start_ms=None, h5_look2_start_ms=None, classifier=h5.StaticClassifier(False, "ws"))
+        run_pools(eng, pool_tape("PoolAAAA", 1000, 1_800_000_000))
+        (pool,) = types(out, "pool")
+        self.assertIsNotNone(pool["min_q_pv_sol"])
+        self.assertNotIn("price_fields_withheld", pool)
+
+    def test_a_pool_from_2026_11_06_on_is_decision_only_and_one_before_it_is_whole(self):
+        end_s = h5.H5_LOOK2_END_MS // 1000
+        for ts0, whole in ((end_s - 3_000, True), (end_s + 100, False)):
+            eng, out = fresh_engine(0, h5_look2_start_ms=h5.H5_LOOK2_END_MS)  # as run_live builds it
+            run_pools(eng, pool_tape("PoolAAAA", 1000, ts0))
+            self.assertEqual(len(types(out, "trigger")), 2)  # the decision itself is written either way
+            self.assertEqual(len(types(out, "outcome")), 2 if whole else 0)
+            self.assertEqual(len(types(out, "outcome_bx10")), 2 if whole else 0)
+            self.assertEqual(len(types(out, "strip")), 1 if whole else 0)
+            if not whole:
+                self.assertTrue(all(t["h5_look2_sealed"] for t in types(out, "trigger")))
+                self.assertIsNone(types(out, "pool")[0]["min_q_pv_sol"])
 
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "research" / "arena-h5.sh"
