@@ -9,6 +9,7 @@ import ast
 import base64
 import json
 import logging
+import socket
 import urllib.error
 from email.message import Message
 from pathlib import Path
@@ -218,7 +219,69 @@ def test_mint_facts_fails_closed_on_any_bad_answer(reply):
     f = chain.mint_facts(MINT)
     assert f.ok is False and f.vetoed and f.allows_transfer is False
     assert f.error and f.veto_reasons == (f"{H.CHAIN_ERROR}:{f.error}",)
-    assert f.mint_authority is None and f.extensions == ()
+    assert f.mint_authority == H.AUTHORITY_UNKNOWN and f.freeze_authority == H.AUTHORITY_UNKNOWN and f.extensions == ()
+
+
+# ---- chain contract (#710 review): an error or a timeout never reads as "authority renounced" -----------------------------------
+FAILURES = [
+    ("timeout", TimeoutError("timed out")),
+    ("socket timeout", socket.timeout("timed out")),
+    ("connection refused", ConnectionRefusedError("refused")),
+    ("url error", urllib.error.URLError("unreachable")),
+    ("http 429", http_error(429)),
+    ("http 500", http_error(500)),
+    ("http 403", http_error(403)),
+    ("bad json", json.JSONDecodeError("x", "y", 0)),
+    ("rpc error", rpc_error(-32005)),
+    ("rpc error hard", rpc_error(-32602)),
+    ("empty response", {}),
+    ("not found", {"jsonrpc": "2.0", "id": 1, "result": {"context": {"slot": 5}, "value": None}}),
+    ("garbage account", account_reply(b"\xff" * 82, H.SPL_TOKEN_PROGRAM)),
+    ("unexpected exception", RuntimeError("boom")),
+]
+
+
+@pytest.mark.parametrize("name,reply", FAILURES, ids=[n for n, _ in FAILURES])
+def test_chain_error_never_reads_as_renounced_authority(name, reply):
+    chain, _, _ = make_chain({"getAccountInfo": [reply]}, attempts=1)
+    f = chain.mint_facts(MINT)
+    assert f.ok is False and f.vetoed and f.error
+    assert f.mint_authority is not None and f.freeze_authority is not None  # None would mean renounced
+    assert f.mint_authority == H.AUTHORITY_UNKNOWN and f.freeze_authority == H.AUTHORITY_UNKNOWN
+    card = f.to_card_fields()
+    assert card["mint_authority"] is not None and card["freeze_authority"] is not None and card["mint_facts_ok"] is False
+    assert not H.is_pubkey(f.mint_authority)  # the marker cannot be mistaken for a key
+
+
+def test_daily_cap_failure_never_reads_as_renounced_authority():
+    chain, _, _ = make_chain({"getAccountInfo": [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]}, daily_call_cap=0)
+    f = chain.mint_facts(MINT)
+    assert f.ok is False and f.error == "daily_call_cap" and f.mint_authority is not None and f.freeze_authority is not None
+
+
+def test_bad_address_failure_never_reads_as_renounced_authority():
+    chain, _, _ = make_chain({"getAccountInfo": [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]})
+    f = chain.mint_facts("nope")
+    assert f.ok is False and f.mint_authority is not None and f.freeze_authority is not None
+
+
+def test_a_failed_mintfacts_cannot_be_built_with_a_none_authority():
+    for kw in ({"mint_authority": None}, {"freeze_authority": None}, {"mint_authority": None, "freeze_authority": None}):
+        with pytest.raises(ValueError):
+            H.MintFacts(mint=MINT, ok=False, error="x", **kw)
+    assert H.MintFacts(mint=MINT, ok=False, error="x").mint_authority == H.AUTHORITY_UNKNOWN
+
+
+def test_renounced_authorities_read_none_only_on_a_successful_read():
+    chain, _, _ = make_chain({"getAccountInfo": [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]})
+    f = chain.mint_facts(MINT)
+    assert f.ok and f.mint_authority is None and f.freeze_authority is None and not f.vetoed
+
+
+def test_failed_mint_facts_block_the_holders_path_too():
+    chain, node, _ = make_chain({"getAccountInfo": [TimeoutError("t")]}, attempts=1)
+    h = chain.largest_holders(MINT, pool=POOL)
+    assert h.ok is False and h.error.startswith("mint_facts:") and h.top1_frac is None and node.n("getTokenLargestAccounts") == 0
 
 
 def test_mint_facts_bad_address_makes_no_call():
@@ -488,13 +551,26 @@ def test_holders_explicit_pool_vault_and_extra_exclusions():
     h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool_vault=odd_vault)
     assert h.n_excluded == 1 and h.top1_frac == pytest.approx(0.001)
     chain, _, _ = _holder_chain(entries)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, exclude_accounts=[odd_vault, _wallet(1)])
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool_vault=odd_vault, exclude_accounts=[_wallet(1)])
     assert h.n_excluded == 2 and h.top1_frac == pytest.approx(0.0009)
     owner = _wallet(50)
     ata = H.associated_token_address(owner, H.SPL_TOKEN_PROGRAM, MINT)
     chain, _, _ = _holder_chain([(ata, 700_000), (_wallet(1), 1_000)])
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, exclude_owners=[owner])  # an owner is excluded through its ATA
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL, exclude_owners=(o for o in [owner]))  # excluded via its ATA
     assert h.n_excluded == 1 and h.top1_frac == pytest.approx(0.001)
+
+
+@pytest.mark.parametrize("kw", [{}, {"pool": None, "pool_vault": None}, {"pool": ""}, {"pool_vault": ""},
+                                {"exclude_accounts": [_wallet(77)]}, {"exclude_owners": [POOL]}])
+def test_holders_without_pool_or_vault_is_never_counted_as_a_holder(kw):
+    # the pool vault is usually the biggest account; leaving it in would silently make top1 and top10 wrong
+    vault = H.associated_token_address(POOL, H.SPL_TOKEN_PROGRAM, MINT)
+    chain, node, _ = _holder_chain([(vault, 900_000), (_wallet(1), 1_000)])
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, **kw)
+    assert h.ok is False and h.error == "no_pool_or_vault" and h.top1_frac is None and h.top10_frac is None
+    assert node.calls == []
+    h = chain.largest_holders(MINT, **kw)  # token program left to mint_facts: still no call
+    assert h.ok is False and h.error == "no_pool_or_vault" and node.calls == []
 
 
 def test_holders_token_2022_uses_the_token_2022_ata():
@@ -531,16 +607,16 @@ def test_holders_on_the_recorded_list_exclude_the_pool_vault():
 def test_holders_cache_card_time_bypass_and_supply_cache():
     chain, node, clock = _holder_chain([(_wallet(1), 1_000), (_wallet(2), 900)])
     sp = H.SPL_TOKEN_PROGRAM
-    a = chain.largest_holders(MINT, token_program=sp)
-    assert chain.largest_holders(MINT, token_program=sp) is a and node.n("getTokenLargestAccounts") == 1
+    a = chain.largest_holders(MINT, token_program=sp, pool=POOL)
+    assert chain.largest_holders(MINT, token_program=sp, pool=POOL) is a and node.n("getTokenLargestAccounts") == 1
     clock.t += 899
-    assert chain.largest_holders(MINT, token_program=sp) is a
+    assert chain.largest_holders(MINT, token_program=sp, pool=POOL) is a
     clock.t += 2  # past the 15-minute refresh
-    b = chain.largest_holders(MINT, token_program=sp)
+    b = chain.largest_holders(MINT, token_program=sp, pool=POOL)
     assert b is not a and node.n("getTokenLargestAccounts") == 2 and node.n("getTokenSupply") == 1  # supply is cached for an hour
-    c = chain.largest_holders(MINT, token_program=sp, max_age_s=0)  # card time
+    c = chain.largest_holders(MINT, token_program=sp, pool=POOL, max_age_s=0)  # card time
     assert c is not b and node.n("getTokenLargestAccounts") == 3
-    d = chain.largest_holders(MINT, token_program=sp, pool=POOL)  # a different exclusion set is a different entry
+    d = chain.largest_holders(MINT, token_program=sp, pool=_wallet(60))  # a different exclusion set is a different entry
     assert d is not c and node.n("getTokenLargestAccounts") == 4
 
 
@@ -548,11 +624,11 @@ def test_holders_inconsistent_supply_rereads_supply_once_then_fails_closed():
     entries = [(_wallet(1), 600_000), (_wallet(2), 500_000)]
     script = {"getTokenLargestAccounts": [_holder_rows(entries)], "getTokenSupply": [_supply_reply(1_000_000), _supply_reply(2_000_000)]}
     chain, node, _ = make_chain(script)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok and node.n("getTokenSupply") == 2 and h.top1_frac == pytest.approx(0.3)
     script = {"getTokenLargestAccounts": [_holder_rows(entries)], "getTokenSupply": [_supply_reply(1_000_000)]}
     chain, node, _ = make_chain(script)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok is False and h.error == "inconsistent_supply" and node.n("getTokenSupply") == 2 and h.top10_frac is None
 
 
@@ -564,16 +640,16 @@ def test_holders_top10_incomplete_fails_closed_when_the_list_is_truncated():
     ex = [_wallet(150 + i) for i in range(12)]  # 20 listed but 12 excluded leaves 8 counted with more beyond the list
     entries = [(a, 10_000) for a in ex] + [(_wallet(i), 100 - i) for i in range(1, 9)]
     chain, _, _ = _holder_chain(entries)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, exclude_accounts=ex)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool_vault=ex[0], exclude_accounts=ex)
     assert h.ok is False and h.error == "top10_incomplete"
 
 
 def test_holders_short_complete_list_is_fine_and_empty_list_means_zero():
     chain, _, _ = _holder_chain([(_wallet(1), 5), (_wallet(2), 4)])
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok and h.listing_complete and h.n_counted == 2 and h.top10_frac == pytest.approx(9 / 1_000_000)
     chain, _, _ = _holder_chain([])
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok and h.top1_frac == 0.0 and h.top10_frac == 0.0 and h.n_counted == 0
 
 
@@ -585,7 +661,7 @@ def test_holders_short_complete_list_is_fine_and_empty_list_means_zero():
 ])
 def test_holders_malformed_answers_fail_closed(entries, supply):
     chain, _, _ = _holder_chain(entries, supply=supply)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok is False and h.error and h.top1_frac is None
 
 
@@ -599,13 +675,13 @@ def test_holders_bad_amount_values_fail_closed(amt):
 
 def test_holders_rpc_error_fails_closed():
     chain, _, _ = make_chain({"getTokenLargestAccounts": [rpc_error(-32005)], "getTokenSupply": [_supply_reply(1000)]}, attempts=1)
-    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM)
+    h = chain.largest_holders(MINT, token_program=H.SPL_TOKEN_PROGRAM, pool=POOL)
     assert h.ok is False and h.error == "rpc_-32005"
 
 
 def test_holders_without_mint_facts_fail_closed_and_spend_no_holder_call():
     chain, node, _ = make_chain({"getAccountInfo": [rpc_error(-32602)]}, attempts=1)
-    h = chain.largest_holders(MINT)  # token program unknown because mint_facts failed
+    h = chain.largest_holders(MINT, pool=POOL)  # token program unknown because mint_facts failed
     assert h.ok is False and h.error.startswith("mint_facts:") and node.n("getTokenLargestAccounts") == 0
 
 
@@ -692,8 +768,177 @@ def test_mayhem_veto_by_age():
     day = H.MAYHEM_VETO_AGE_S
     assert H.mayhem_veto(yes, day - 1) and not H.mayhem_veto(yes, day) and H.mayhem_veto(yes, None)
     assert H.mayhem_veto(unknown, 100) and H.mayhem_veto(unknown, None) and not H.mayhem_veto(unknown, day + 1)
-    assert not H.mayhem_veto(no, 0) and not H.mayhem_veto(no, None)
+    assert not H.mayhem_veto(no, 0) and not H.mayhem_veto(no, 1e9)
     assert yes.to_card_fields()["mayhem_counts"] is True
+
+
+@pytest.mark.parametrize("bad_age", [None, float("nan"), float("inf"), float("-inf"), True, False, "100", b"1", [1], (), object()])
+@pytest.mark.parametrize("flag", [H.MayhemFlag(MINT, True, "tape"), H.MayhemFlag(MINT, None, "unknown")], ids=["mayhem", "unknown"])
+def test_mayhem_veto_vetoes_a_none_nan_or_nonnumeric_age(flag, bad_age):
+    # `nan < 86400` is False, so a bare comparison would let a NaN age through (fail open)
+    assert H.mayhem_veto(flag, bad_age) is True
+
+
+def test_mayhem_veto_nan_does_not_pass_a_young_or_old_check_by_accident():
+    nan = float("nan")
+    assert (nan < H.MAYHEM_VETO_AGE_S) is False  # the trap this guards against
+    assert H.mayhem_veto(H.MayhemFlag(MINT, True, "tape"), nan) is True
+    assert H.mayhem_veto(H.MayhemFlag(MINT, True, "tape"), H.MAYHEM_VETO_AGE_S + 1) is False  # a real old age still passes
+    assert H.mayhem_veto(H.MayhemFlag(MINT, True, "tape"), -5) is True  # a negative age is young
+    assert H.mayhem_veto(H.MayhemFlag(MINT, True, "tape"), 3) is True and H.mayhem_veto(H.MayhemFlag(MINT, True, "tape"), 3.5) is True
+    assert H.mayhem_veto(H.MayhemFlag(MINT, False, "tape"), nan) is False  # definitely not Mayhem: age is irrelevant to this veto
+
+
+# ======================================================================================================================
+# run-time method allow-list
+# ======================================================================================================================
+@pytest.mark.parametrize("method", ["sendTransaction", "simulateTransaction", "getProgramAccounts", "requestAirdrop", "getBalance", "",
+                                    "getAccountInfo ", "GETACCOUNTINFO", "getAccountInfo\n"])
+def test_rpc_call_rejects_any_method_off_the_allow_list(method):
+    node = FakeNode({method: [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]})
+    rpc = H.RpcClient(H.RpcConfig.public(), post=node)
+    with pytest.raises(H.ChainError) as ei:
+        rpc.call(method, [MINT])
+    assert str(ei.value) == "method_not_allowed"
+    assert node.calls == [] and rpc.counter.calls == 0 and rpc.counter.errors == 0  # nothing sent, nothing counted, no token spent
+
+
+def test_allow_list_is_exactly_the_three_reads_the_module_makes():
+    assert H.ALLOWED_METHODS == frozenset({"getAccountInfo", "getTokenSupply", "getTokenLargestAccounts"})
+    src = (Path(__file__).parent / "hv4_chain.py").read_text()
+    called = {n.args[0].value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+              and n.func.attr == "call" and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)}
+    assert called == set(H.ALLOWED_METHODS)
+    assert isinstance(H.ALLOWED_METHODS, frozenset)  # not mutable at run time
+
+
+def test_allowed_methods_still_go_through():
+    node = FakeNode({m: [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)] for m in H.ALLOWED_METHODS})
+    rpc = H.RpcClient(H.RpcConfig.public(), post=node)
+    for m in sorted(H.ALLOWED_METHODS):
+        rpc.call(m, [MINT])
+    assert rpc.counter.calls == 3
+
+
+# ======================================================================================================================
+# persisted daily call count
+# ======================================================================================================================
+def _stateful(tmp_path, clock, **kw):
+    return make_chain({"getAccountInfo": [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]}, clock=clock,
+                      state_path=tmp_path / "state" / "chain.json", **kw)
+
+
+def test_daily_count_survives_a_restart_and_the_cap_still_binds(tmp_path):
+    clock = Clock()
+    chain, node, _ = _stateful(tmp_path, clock, daily_call_cap=5)
+    for _ in range(3):
+        assert chain.mint_facts(MINT, force=True).ok
+    # "restart": a new process, new objects, same file, same day
+    chain2, node2, _ = _stateful(tmp_path, clock, daily_call_cap=5)
+    assert chain2.counter.calls_today() == 3 and chain2.counter.calls == 0  # job counters restart, the day count does not
+    assert chain2.mint_facts(MINT, force=True).ok and chain2.mint_facts(MINT, force=True).ok
+    f = chain2.mint_facts(MINT, force=True)
+    assert f.ok is False and f.error == "daily_call_cap" and node2.n("getAccountInfo") == 2
+    # a third process starts already at the cap and sends nothing
+    chain3, node3, _ = _stateful(tmp_path, clock, daily_call_cap=5)
+    assert chain3.mint_facts(MINT, force=True).error == "daily_call_cap" and node3.calls == []
+
+
+def test_a_new_utc_day_starts_from_zero_but_history_is_kept(tmp_path):
+    clock = Clock()
+    chain, _, _ = _stateful(tmp_path, clock, daily_call_cap=2)
+    chain.mint_facts(MINT, force=True)
+    chain.mint_facts(MINT, force=True)
+    assert chain.mint_facts(MINT, force=True).error == "daily_call_cap"
+    clock.t += 86400
+    chain2, _, _ = _stateful(tmp_path, clock, daily_call_cap=2)
+    assert chain2.counter.calls_today() == 0 and chain2.mint_facts(MINT, force=True).ok
+    doc = json.loads((tmp_path / "state" / "chain.json").read_text())
+    assert sorted(doc["by_day"].values()) == [1, 2] and doc["schema"] == H.STATE_SCHEMA
+
+
+def test_state_file_is_written_atomically_and_leaves_no_temp_files(tmp_path):
+    clock = Clock()
+    chain, _, _ = _stateful(tmp_path, clock)
+    for i in range(4):
+        chain.mint_facts(MINT, force=True)
+        doc = json.loads((tmp_path / "state" / "chain.json").read_text())  # whole and parseable after every call
+        assert sum(doc["by_day"].values()) == i + 1
+    assert sorted(p.name for p in (tmp_path / "state").iterdir()) == ["chain.json"]
+    assert oct((tmp_path / "state" / "chain.json").stat().st_mode & 0o777) == "0o600"
+
+
+def test_a_failed_write_keeps_the_old_file_counts_in_memory_and_cleans_up(tmp_path, monkeypatch):
+    clock = Clock()
+    chain, _, _ = _stateful(tmp_path, clock, daily_call_cap=3)
+    chain.mint_facts(MINT, force=True)
+    path = tmp_path / "state" / "chain.json"
+    before = path.read_text()
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(H.os, "replace", boom)
+    chain.mint_facts(MINT, force=True)
+    monkeypatch.undo()
+    assert path.read_text() == before  # the old, complete file is still there
+    assert sorted(p.name for p in path.parent.iterdir()) == ["chain.json"]  # no temp file left behind
+    assert chain.counter.state_write_errors == 1 and chain.counter.calls_today() == 2 and chain.credit_report()["state_write_errors"] == 1
+    chain.mint_facts(MINT, force=True)  # the cap still binds in memory
+    assert chain.mint_facts(MINT, force=True).error == "daily_call_cap"
+
+
+@pytest.mark.parametrize("content", [
+    "", "not json", "[]", "{}", json.dumps({"schema": "other", "by_day": {}, "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": {"2026-10-18": -1}, "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": {"2026-10-18": True}, "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": {"2026-10-18": 1.5}, "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": {"yesterday": 1}, "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": [], "credits_by_day": {}}),
+    json.dumps({"schema": "hv4_chain.state.v1", "by_day": {}}),
+])
+def test_a_corrupt_state_file_fails_loudly_instead_of_resetting_the_cap(tmp_path, content):
+    p = tmp_path / "chain.json"
+    p.write_text(content)
+    with pytest.raises(H.ChainError) as ei:
+        H.CreditCounter("public", state_path=p)
+    assert str(ei.value) == "state_file_corrupt"
+
+
+def test_missing_state_file_is_a_fresh_start_and_an_unreadable_one_raises(tmp_path):
+    c = H.CreditCounter("public", state_path=tmp_path / "nope" / "chain.json")
+    assert c.calls_today() == 0 and not (tmp_path / "nope").exists()  # nothing is created until the first call
+    (tmp_path / "isdir").mkdir()
+    with pytest.raises(H.ChainError) as ei:
+        H.CreditCounter("public", state_path=tmp_path / "isdir")
+    assert str(ei.value) == "state_file_unreadable"
+
+
+def test_state_keeps_only_the_last_eight_days_and_persists_helius_credits(tmp_path):
+    day = {"d": 1_760_000_000_000}
+    c = H.CreditCounter("helius", now_ms=lambda: day["d"], state_path=tmp_path / "s.json")
+    for i in range(12):
+        day["d"] = 1_760_000_000_000 + i * 86_400_000
+        c.record_call("getAccountInfo")
+        c.record_call("getTokenSupply")
+    doc = json.loads((tmp_path / "s.json").read_text())
+    assert len(doc["by_day"]) == H.STATE_KEEP_DAYS and all(v == 2 for v in doc["by_day"].values())
+    assert doc["credits_by_day"] == doc["by_day"]  # weight 1
+    c2 = H.CreditCounter("helius", now_ms=lambda: day["d"], state_path=tmp_path / "s.json")
+    assert c2.calls_today() == 2 and c2.snapshot()["credits_by_day"] == doc["credits_by_day"]
+
+
+def test_state_path_and_a_ready_made_counter_are_not_both_accepted(tmp_path):
+    with pytest.raises(ValueError):
+        H.RpcClient(H.RpcConfig.public(), counter=H.CreditCounter("public"), state_path=tmp_path / "s.json")
+
+
+def test_default_client_takes_its_state_file_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAL_HV4_CHAIN_STATE", str(tmp_path / "env-state.json"))
+    monkeypatch.delenv("MAL_HV4_RPC", raising=False)
+    assert H.HV4Chain().rpc.counter.state_path == tmp_path / "env-state.json"
+    monkeypatch.delenv("MAL_HV4_CHAIN_STATE")
+    assert H.HV4Chain().rpc.counter.state_path is None
 
 
 # ======================================================================================================================

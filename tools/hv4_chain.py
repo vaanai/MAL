@@ -31,9 +31,12 @@ import functools
 import hashlib
 import json
 import logging
+import math
+import numbers
 import os
 import re
 import struct
+import tempfile
 import threading
 import time
 import urllib.error
@@ -448,10 +451,19 @@ HELIUS_CREDITS: dict[str, int] = {}
 HELIUS_DEFAULT_CREDITS = 1
 
 
-class CreditCounter:
-    """Calls (every attempt sent), Helius credits (calls x weight, 0 on a public endpoint), errors and cache hits, per method and UTC day."""
+STATE_SCHEMA = "hv4_chain.state.v1"
+STATE_KEEP_DAYS = 8
 
-    def __init__(self, provider: str, *, now_ms: Callable[[], int] = _wall_ms) -> None:
+
+class CreditCounter:
+    """Calls (every attempt sent), Helius credits (calls x weight, 0 on a public endpoint), errors and cache hits, per method and UTC day.
+
+    With `state_path` the per-day call and credit counts are kept in a small JSON file (written atomically after every call), so a restart
+    does not reset the daily cap. One writer per file. A missing file is a fresh start; an unreadable or malformed one raises ChainError
+    at construction (the cap would otherwise silently reset). A failed write is counted in `state_write_errors` and logged; the
+    in-memory count keeps enforcing the cap for the life of the process."""
+
+    def __init__(self, provider: str, *, now_ms: Callable[[], int] = _wall_ms, state_path: str | os.PathLike[str] | None = None) -> None:
         self.provider = provider
         self._now_ms = now_ms
         self._lock = threading.Lock()
@@ -462,6 +474,62 @@ class CreditCounter:
         self.throttle_wait_s = 0.0
         self.by_method: dict[str, int] = {}
         self.by_day: dict[str, int] = {}
+        self.credits_by_day: dict[str, int] = {}
+        self.state_path = Path(state_path) if state_path else None
+        self.state_write_errors = 0
+        if self.state_path is not None:
+            self._load_state()
+
+    # ---- persisted daily counts ----------------------------------------------------------------------------------------
+    def _load_state(self) -> None:
+        assert self.state_path is not None
+        try:
+            text = self.state_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise ChainError("state_file_unreadable") from None
+        try:
+            doc = json.loads(text)
+            if not isinstance(doc, dict) or doc.get("schema") != STATE_SCHEMA:
+                raise ValueError("schema")
+            for name in ("by_day", "credits_by_day"):
+                m = doc[name]
+                if not isinstance(m, dict) or not all(
+                        isinstance(k, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", k) and isinstance(v, int) and not isinstance(v, bool) and v >= 0
+                        for k, v in m.items()):
+                    raise ValueError(name)
+        except (ValueError, KeyError):
+            raise ChainError("state_file_corrupt") from None
+        self.by_day = dict(doc["by_day"])
+        self.credits_by_day = dict(doc["credits_by_day"])
+
+    def _save_state(self) -> None:
+        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held."""
+        if self.state_path is None:
+            return
+        days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
+        payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
+                   "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": self._now_ms()}
+        tmp = None
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self.state_path.parent, prefix=".hv4-chain-state.", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.state_path)
+            tmp = None
+        except OSError as e:
+            self.state_write_errors += 1
+            log.warning("hv4_chain state write failed: %s", type(e).__name__)
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     def calls_today(self) -> int:
         with self._lock:
@@ -474,7 +542,10 @@ class CreditCounter:
             day = _utc_day(self._now_ms())
             self.by_day[day] = self.by_day.get(day, 0) + 1
             if self.provider == "helius":
-                self.credits += HELIUS_CREDITS.get(method, HELIUS_DEFAULT_CREDITS)
+                w = HELIUS_CREDITS.get(method, HELIUS_DEFAULT_CREDITS)
+                self.credits += w
+                self.credits_by_day[day] = self.credits_by_day.get(day, 0) + w
+            self._save_state()
 
     def record_error(self) -> None:
         with self._lock:
@@ -492,7 +563,8 @@ class CreditCounter:
         with self._lock:
             return {"schema": SCHEMA, "provider": self.provider, "calls": self.calls, "credits": self.credits, "errors": self.errors,
                     "cache_hits": self.cache_hits, "throttle_wait_s": round(self.throttle_wait_s, 3),
-                    "by_method": dict(self.by_method), "by_day": dict(self.by_day)}
+                    "by_method": dict(self.by_method), "by_day": dict(self.by_day), "credits_by_day": dict(self.credits_by_day),
+                    "state_file": self.state_path is not None, "state_write_errors": self.state_write_errors}
 
 
 # ======================================================================================================================
@@ -574,6 +646,7 @@ def _http_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
 # Paced calls per second. DESIGN section 6: about 40k standard calls a day at 2 rps. The public endpoint throttles heavy methods harder.
 DEFAULT_RPS = {"public": 2.0, "helius": 2.0, "custom": 2.0}
 DEFAULT_DAILY_CALL_CAP = 40_000
+ALLOWED_METHODS = frozenset({"getAccountInfo", "getTokenSupply", "getTokenLargestAccounts"})  # every read this module makes
 MAX_RETRY_AFTER_S = 10.0
 RETRY_HTTP = frozenset({429, 500, 502, 503, 504})
 RETRY_RPC_CODES = frozenset({429, -32005})
@@ -586,12 +659,14 @@ class RpcClient:
                  method_buckets: Mapping[str, TokenBucket] | None = None, counter: CreditCounter | None = None,
                  post: Callable[[str, dict[str, Any], float], dict[str, Any]] = _http_post, sleep: Callable[[float], None] = time.sleep,
                  now_ms: Callable[[], int] = _wall_ms, attempts: int = 3, timeout_s: float = 10.0, backoff_s: float = 1.0,
-                 daily_call_cap: int = DEFAULT_DAILY_CALL_CAP) -> None:
+                 daily_call_cap: int = DEFAULT_DAILY_CALL_CAP, state_path: str | os.PathLike[str] | None = None) -> None:
         self.config = config if config is not None else RpcConfig.public()
         self.provider = self.config.provider
         self.bucket = bucket if bucket is not None else TokenBucket(DEFAULT_RPS.get(self.provider, 2.0), burst=2.0, clock=time.monotonic, sleep=sleep)
         self.method_buckets = dict(method_buckets or {})
-        self.counter = counter if counter is not None else CreditCounter(self.provider, now_ms=now_ms)
+        if counter is not None and state_path is not None:
+            raise ValueError("give state_path to the CreditCounter, not both")
+        self.counter = counter if counter is not None else CreditCounter(self.provider, now_ms=now_ms, state_path=state_path)
         self._post, self._sleep, self._now_ms = post, sleep, now_ms
         self.attempts, self.timeout_s, self.backoff_s = max(1, attempts), timeout_s, backoff_s
         self.daily_call_cap = daily_call_cap
@@ -610,6 +685,8 @@ class RpcClient:
             self.counter.record_wait(waited)
 
     def call(self, method: str, params: list[Any]) -> Any:
+        if method not in ALLOWED_METHODS:  # run-time allow-list: this module reads chain state and nothing else
+            raise ChainError("method_not_allowed")
         private = self.config.private_values()
         last = "rpc_failed"
         for attempt in range(self.attempts):
@@ -659,15 +736,23 @@ class RpcClient:
 # ======================================================================================================================
 # results
 # ======================================================================================================================
+# On a failed read the authorities are this marker, never None: None means "renounced", the one value that must not come out of an RPC error
+# or a timeout. It is not valid base58 (O and I are not in the alphabet), so it cannot be a real key.
+AUTHORITY_UNKNOWN = "UNKNOWN"
+
+
 @dataclass(frozen=True)
 class MintFacts:
+    """What the chain says about a mint. `ok` False means nothing is known: every field is a default, both authorities read AUTHORITY_UNKNOWN
+    (never None, which would read as renounced), and `vetoed` is True. Cards must treat ok False as a veto."""
+
     mint: str
     ok: bool
     error: str | None
     token_program_id: str | None = None
     token_program: str | None = None
-    mint_authority: str | None = None
-    freeze_authority: str | None = None
+    mint_authority: str | None = AUTHORITY_UNKNOWN
+    freeze_authority: str | None = AUTHORITY_UNKNOWN
     supply_raw: int | None = None
     decimals: int | None = None
     extensions: tuple[str, ...] = ()
@@ -677,10 +762,14 @@ class MintFacts:
     as_of_slot: int | None = None
     as_of_ms: int | None = None
 
+    def __post_init__(self) -> None:
+        if not self.ok and (self.mint_authority is None or self.freeze_authority is None):
+            raise ValueError("a failed MintFacts must not carry a None authority (None means renounced)")
+
     @property
     def vetoed(self) -> bool:
         """True on any veto reason, and on any chain failure (fail closed)."""
-        return bool(self.veto_reasons)
+        return (not self.ok) or bool(self.veto_reasons)
 
     @property
     def allows_transfer(self) -> bool:
@@ -743,10 +832,15 @@ class MayhemFlag:
 
 
 def mayhem_veto(flag: MayhemFlag, age_s: float | None) -> bool:
-    """DESIGN hard veto 3: Mayhem with age < 24 h. An unknown flag counts as Mayhem; an unknown age counts as young."""
+    """DESIGN hard veto 3: Mayhem with age < 24 h. An unknown flag counts as Mayhem; an unknown age counts as young.
+
+    Unknown means None, NaN, infinite, or not a real number (a bool counts as not a number): all of them veto. `nan < x` is False in Python, so
+    a bare comparison would let a NaN age through; this checks for it first. A flag that is definitely not Mayhem is never vetoed here."""
     if not flag.counts_as_mayhem:
         return False
-    return age_s is None or age_s < MAYHEM_VETO_AGE_S
+    if age_s is None or isinstance(age_s, bool) or not isinstance(age_s, numbers.Real) or not math.isfinite(age_s):
+        return True
+    return age_s < MAYHEM_VETO_AGE_S
 
 
 # ======================================================================================================================
@@ -798,7 +892,9 @@ class HV4Chain:
 
     def __init__(self, rpc: RpcClient | None = None, cache: TtlCache | None = None, *, commitment: str = "confirmed",
                  now_ms: Callable[[], int] = _wall_ms) -> None:
-        self.rpc = rpc if rpc is not None else RpcClient(RpcConfig.from_env(), now_ms=now_ms)
+        # MAL_HV4_CHAIN_STATE names the daily-count state file for the default client (the runner passes its own client)
+        self.rpc = rpc if rpc is not None else RpcClient(RpcConfig.from_env(), now_ms=now_ms,
+                                                         state_path=(os.environ.get("MAL_HV4_CHAIN_STATE") or "").strip() or None)
         self.cache = cache if cache is not None else TtlCache()  # not `or`: an empty TtlCache is falsy (__len__)
         self.commitment = commitment
         self._now_ms = now_ms
@@ -885,10 +981,16 @@ class HV4Chain:
         `*_float_frac` is the same amount over supply minus the excluded balances seen (the lab's normalisation is not in code: both are given).
 
         Shares are per token account, not per owner. `max_age_s` 900 serves the 15-minute refresh from cache; pass 0 at card time.
-        `token_program` defaults to the mint's own (one cached getAccountInfo)."""
+        `token_program` defaults to the mint's own (one cached getAccountInfo).
+
+        The caller must name the pool (`pool`) or its vault (`pool_vault`). Without either, the pool's vault, usually the biggest account, would be
+        counted as a holder and top1/top10 would be wrong, so the result is ok=False with error "no_pool_or_vault" and no call is made."""
         now = self._now_ms()
         if not is_pubkey(mint):
             return Holders(mint=str(mint)[:44], ok=False, error="bad_mint_address", as_of_ms=now)
+        if not pool and not pool_vault:
+            return Holders(mint=mint, ok=False, error="no_pool_or_vault", as_of_ms=now)
+        exclude_owners, exclude_accounts = tuple(exclude_owners), tuple(exclude_accounts)  # iterated more than once below
         try:
             if token_program is None:
                 facts = self.mint_facts(mint)
