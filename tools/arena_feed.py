@@ -97,6 +97,9 @@ POOL_MINTS_MAX = 50_000
 NAME_MAX, SYMBOL_MAX = 32, 16
 DISK_CHECK_S = 60.0  # free space is measured at least this often, and before every hour file opens
 MIN_FREE_PCT_DEFAULT = 25.0  # DEC-031 rev 2 s3.8: walk 2 keeps its room; no arena write may take the filesystem's free space below this
+LOSS_FLUSH_MS = 1_000  # a burst of decode / write errors is coalesced into one gap record once it has been quiet this long
+WRITE_FAIL_EXIT_MS = 120_000  # writes failing for this long without one success: stop the process with FATAL_EXIT so the supervisor restarts it
+FATAL_EXIT = 4
 RESUME_MARGIN_PCT = 2.0  # hysteresis: after a pause the feed resumes only at the reserve plus this (the feed and the walker both write, so free space hovers)
 COMPACT_GRACE_MS = 120_000  # a closed hour is compacted this long after its end (a row can reach the writer a little late)
 COMPACT_SCAN_S = 30.0
@@ -549,6 +552,62 @@ class Feed:
         self.last_hb = 0.0
         self.last_disk = 0.0
         self.disk_free_pct: float | None = None
+        self.pending: dict[tuple[str, str], dict[str, Any]] = {}  # (prog, kind) -> a span of lost rows not yet written as a data_loss gap record
+        self.write_fail_since_ms: int | None = None
+        self.fatal: str | None = None  # set when the process must exit non-zero (run_live returns FATAL_EXIT)
+
+    # -- losses: nothing is dropped without a data_loss gap row
+    def note_loss(self, prog: str, kind: str, ms: int, slot: int | None, n: int = 1, **extra: Any) -> None:
+        """Record n lost rows at time ms. Losses of one (prog, kind) coalesce into one span: count, from_ms, to_ms, from_slot, to_slot."""
+        e = self.pending.get((prog, kind))
+        if e is None:
+            e = self.pending[(prog, kind)] = {"count": 0, "from_ms": ms, "to_ms": ms, "from_slot": slot, "to_slot": slot, **extra}
+        e["count"] += n
+        e["from_ms"], e["to_ms"] = min(e["from_ms"], ms), max(e["to_ms"], ms)
+        if slot is not None:
+            e["from_slot"] = slot if e["from_slot"] is None else min(e["from_slot"], slot)
+            e["to_slot"] = slot if e["to_slot"] is None else max(e["to_slot"], slot)
+
+    def emit_safe(self, rec: dict[str, Any]) -> bool:
+        """emit() that never raises. A row the writer refuses because of the disk reserve is covered by the disk_reserve record. A row lost to a
+        write error is counted, becomes a pending write_error loss (a data_loss gap row once the writer works again), and starts the clock that ends
+        the process after WRITE_FAIL_EXIT_MS of failed writes."""
+        try:
+            ok = self.emit(rec)
+        except Exception as exc:  # noqa: BLE001 - the feed must outlive any one write
+            self.counters["write_errors"] += 1
+            self.errlog.log(exc, {"where": "write", "slot": rec.get("slot")})
+            if self.write_fail_since_ms is None:
+                self.write_fail_since_ms = self.wall()
+            if rec.get("type") != "hb":
+                self.note_loss(str(rec.get("prog") or "all"), "write_error", int(rec["t_recv_ms"]), rec.get("slot"))
+            return False
+        if ok:
+            self.write_fail_since_ms = None
+        return ok
+
+    def flush_pending(self, now: int) -> int:
+        """Write the pending loss spans as data_loss gap records (a span that has been quiet for LOSS_FLUSH_MS, or all of them at shutdown).
+        A record the writer cannot take (failing disk, or paused below the reserve) stays pending. Returns how many were written."""
+        n = 0
+        for key in list(self.pending):
+            e = self.pending[key]
+            if not self.stop.is_set() and key[1] != "process_restart" and now - e["to_ms"] < LOSS_FLUSH_MS:
+                continue
+            rec = _row("gap", key[0], e.get("to_slot") or 0, now, None, None, {"kind": key[1], "data_loss": True, **e})
+            try:
+                ok = self.writer.write(rec)
+            except Exception as exc:  # noqa: BLE001
+                self.counters["write_errors"] += 1
+                self.errlog.log(exc, {"where": "flush_pending"})
+                if self.write_fail_since_ms is None:
+                    self.write_fail_since_ms = now
+                continue
+            if ok:
+                del self.pending[key]
+                self.write_fail_since_ms = None
+                n += 1
+        return n
 
     # -- rows
     def emit(self, rec: dict[str, Any]) -> bool:
@@ -560,7 +619,7 @@ class Feed:
     def handle_notice(self, prog: str, note: RawNotice) -> int:
         """One notice from `prog`'s feed: gap watch first (every notice counts as sign of life), then decode once per signature."""
         for g in self.watch[prog].on_notice(note.slot, note.t_recv_ms):
-            self.emit(g)
+            self.emit_safe(g)
         if not self.seen.add(note.signature):
             self.counters["cross_dedup_dropped"] += 1
             return 0
@@ -569,9 +628,10 @@ class Feed:
         except Exception as exc:  # noqa: BLE001 - one bad blob must not end the feed
             self.counters["decode_errors"] += 1
             self.errlog.log(exc, {"where": "decode", "slot": note.slot})
+            self.note_loss(prog, "decode_error", note.t_recv_ms, note.slot)  # that transaction's rows are gone: a data_loss gap row says so
             return 0
         for r in rows:
-            self.emit(r)
+            self.emit_safe(r)
             if self.rpc_url and r["prog"] == "pumpswap":
                 if r["type"] == "trade" and not r.get("mint") and r.get("pool") not in self.unresolved:
                     self.unresolved[r["pool"]] = [r["t_recv_ms"], 0]
@@ -589,16 +649,20 @@ class Feed:
     def tick(self, now: int) -> None:
         for prog, w in self.watch.items():
             for g in w.tick(now):
-                self.emit(g)
+                self.emit_safe(g)
             src = self.sources.get(prog)
             snap = feed_snapshot(src) if src is not None else None
             if snap is not None:
                 for g in w.note_feed_stats(snap, now):
-                    self.emit(g)
+                    self.emit_safe(g)
         if self.compress:
             self.writer.release_stale(now)
             self.compactor.scan(now, self.writer.current_name)
         self.check_disk(now)
+        self.flush_pending(now)
+        if self.write_fail_since_ms is not None and now - self.write_fail_since_ms >= WRITE_FAIL_EXIT_MS and self.fatal is None:
+            self.fatal = "write_failing"  # no write has succeeded for WRITE_FAIL_EXIT_MS: exit non-zero, the supervisor restarts (a process_restart gap follows)
+            self.stop.set()
         if time.monotonic() - self.last_hb >= HB_S or self.stop.is_set():
             self.last_hb = time.monotonic()
             self.heartbeat(now)
@@ -684,7 +748,7 @@ class Feed:
     def heartbeat(self, now: int) -> None:
         for prog in PROG_PROGRAM:
             w = self.watch[prog]
-            self.emit(_row("hb", prog, w.hw_slot if w.hw_slot is not None else 0, now, None, None,
+            self.emit_safe(_row("hb", prog, w.hw_slot if w.hw_slot is not None else 0, now, None, None,
                            {"rows_last_min": self.writer.rows_last_minute(prog, now), "notices": w.notices, "gaps": w.gaps,
                             "sockets_up": [bool(s["up"]) for s in self.socket_rows(prog)], "rss_mb": proc_rss_mb()}))
         write_status(self.out_dir / STATUS_NAME, self.status(now))
@@ -694,7 +758,7 @@ class Feed:
         backoff, first = 1.0, True
         while not self.stop.is_set():
             if not first:
-                self.emit(self.watch[prog].feed_restart(self.wall(), "source_restart"))
+                self.emit_safe(self.watch[prog].feed_restart(self.wall(), "source_restart"))
             first = False
             try:
                 src = build_source(prog, self.ws_urls, self.sockets[prog], self.commitment, self.stagger_s)
@@ -743,7 +807,7 @@ class Feed:
                 base, quote = found[pool]
                 self.pool_mints[pool] = (base, quote)
                 self.unresolved.pop(pool, None)
-                self.emit(_row("pool_info", "pumpswap", self.watch["pumpswap"].hw_slot or 0, now, None, None,
+                self.emit_safe(_row("pool_info", "pumpswap", self.watch["pumpswap"].hw_slot or 0, now, None, None,
                                {"pool": pool, "mint": base, "quote_mint": quote, "source": "getMultipleAccounts"}))
                 n += 1
             elif pool in self.unresolved:
@@ -771,7 +835,18 @@ class Feed:
                 if self.stop.is_set():
                     return
                 continue
-            self.handle_notice(prog, note)
+            try:  # the last line of defence: nothing a single notice does may end the consumer
+                self.handle_notice(prog, note)
+            except Exception as exc:  # noqa: BLE001
+                self.counters["consume_errors"] += 1
+                self.errlog.log(exc, {"where": "consume", "slot": getattr(note, "slot", None)})
+                self.note_loss(prog, "consume_error", int(getattr(note, "t_recv_ms", self.wall())), getattr(note, "slot", None))
+
+    def _core_task_ended(self, task: "asyncio.Task") -> None:
+        if not self.stop.is_set() and not task.cancelled():
+            self.fatal = self.fatal or "core_task_ended"
+            self.counters["core_task_ended"] += 1
+            self.stop.set()
 
     async def run(self, max_seconds: float | None = None) -> None:
         tasks = [asyncio.create_task(self.pump(p)) for p in PROG_PROGRAM]
@@ -780,6 +855,8 @@ class Feed:
         res = asyncio.create_task(self.resolve_loop()) if self.rpc_url else None
         if self.compress:
             self.compactor.start()
+        for t in (*tasks, hk, cons):  # a core task that ends while the feed is running is fatal: exit non-zero rather than run on blind
+            t.add_done_callback(self._core_task_ended)
         if max_seconds is not None:
             asyncio.get_running_loop().call_later(max_seconds, self.stop.set)
         await self.stop.wait()
@@ -806,7 +883,7 @@ async def run_live(args: argparse.Namespace) -> int:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, feed.stop.set)
-    feed.emit(feed.meta_row("start", schema=SCHEMA, code_sha=code_sha(), argv=redact_argv(sys.argv[1:]), out_dir=str(out_dir), pid=os.getpid(),
+    feed.emit_safe(feed.meta_row("start", schema=SCHEMA, code_sha=code_sha(), argv=redact_argv(sys.argv[1:]), out_dir=str(out_dir), pid=os.getpid(),
                             sockets=feed.sockets, commitment=args.commitment, keys="none", sends="none", gap_slots=GAP_SLOTS, silence_s=SILENCE_S,
                             min_free_pct=args.min_free_pct, compress=feed.compress))
     try:
@@ -814,10 +891,14 @@ async def run_live(args: argparse.Namespace) -> int:
     finally:
         feed.stop.set()
         now = feed.wall()
-        feed.emit(feed.meta_row("stop", **{k: v for k, v in feed.status(now).items() if k in ("rows_by_prog_type", "gaps", "lines_written", "rows_dropped_disk", "decode_errors")}))
+        feed.flush_pending(now)
+        feed.emit_safe(feed.meta_row("stop", **{k: v for k, v in feed.status(now).items() if k in ("rows_by_prog_type", "gaps", "lines_written", "rows_dropped_disk", "decode_errors")}))
         write_status(out_dir / STATUS_NAME, feed.status(now))
         feed.writer.close()
         os.close(lock_fd)
+    if feed.fatal:
+        print(f"arena_feed: exiting non-zero: {feed.fatal}", file=sys.stderr)
+        return FATAL_EXIT
     return 0
 
 
