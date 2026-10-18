@@ -15,24 +15,24 @@ from tools import arena_feed_delay as D
 
 
 def make_tape(d, n_slots=15_100, delay_ms=1_200, hours=("2026-10-18T03",), extra_rows=True):
-    """Trade rows with one slot every 400 ms; t_recv = true slot time + delay. Block time (whole seconds) = floor(0.4 * slot)."""
+    """Trade rows with one slot every 410 ms; t_recv = true slot time + delay. Block time (whole seconds) = floor(0.41 * slot)."""
     d.mkdir(parents=True, exist_ok=True)
     per = n_slots // len(hours)
     s = 0
     for h in hours:
         with open(d / f"tape-{h}.jsonl", "w") as f:
             for _ in range(per):
-                f.write(json.dumps({"v": 1, "type": "trade", "prog": "pumpswap", "slot": 10_000 + s, "t_recv_ms": 1_789_000_000_000 + s * 400 + delay_ms,
+                f.write(json.dumps({"v": 1, "type": "trade", "prog": "pumpswap", "slot": 10_000 + s, "t_recv_ms": 1_789_000_000_000 + s * 410 + delay_ms,
                                     "sol_lamports": 123, "quote_reserve": 5, "trader": "x"}) + "\n")
                 if extra_rows and s % 7 == 0:  # a later duplicate receive of the same slot and a non-trade row: both must be ignored / min-reduced
-                    f.write(json.dumps({"v": 1, "type": "trade", "prog": "pumpfun", "slot": 10_000 + s, "t_recv_ms": 1_789_000_000_000 + s * 400 + delay_ms + 900}) + "\n")
+                    f.write(json.dumps({"v": 1, "type": "trade", "prog": "pumpfun", "slot": 10_000 + s, "t_recv_ms": 1_789_000_000_000 + s * 410 + delay_ms + 900}) + "\n")
                     f.write(json.dumps({"v": 1, "type": "hb", "prog": "pumpswap", "slot": 10_000 + s, "t_recv_ms": 5}) + "\n")
                 s += 1
     return d
 
 
 def fake_block_time(slot):
-    return 1_789_000_000 + ((slot - 10_000) * 2) // 5  # floor(0.4 * slot) seconds after the epoch of the fake chain
+    return 1_789_000_000 + ((slot - 10_000) * 41) // 100  # floor(0.41 * slot) seconds after the epoch of the fake chain
 
 
 class Clock:
@@ -83,9 +83,11 @@ def test_measure_computes_median_p90_seconds_per_slot_and_d(tmp_path):
     delay = np.array([(x["t_recv_ms"] - x["block_time"] * 1000) / 1000 for x in smp])
     assert res["median_delay_s"] == pytest.approx(float(np.median(delay))) and res["p90_delay_s"] == pytest.approx(float(np.percentile(delay, 90)))
     assert 1.2 <= res["median_delay_s"] <= 2.3  # 1.2 s true delay + up to 1 s of block_time truncation
-    assert res["seconds_per_slot"] == pytest.approx(0.4, abs=0.01)
-    assert res["feed_delay_slots"] == math.ceil(res["median_delay_s"] / res["seconds_per_slot"] - 1e-9)
-    assert res["feed_delay_slots"] >= 3
+    assert res["seconds_per_slot"] == pytest.approx(0.41, abs=0.01)
+    # d rests on the 90th percentile (manager ruling); the median figure is kept beside it for information
+    assert res["feed_delay_slots"] == res["d_p90"] == math.ceil(res["p90_delay_s"] / res["seconds_per_slot"] - 1e-9)
+    assert res["d_median"] == math.ceil(res["median_delay_s"] / res["seconds_per_slot"] - 1e-9) and res["d_p90"] >= res["d_median"] >= 3
+    assert res["d_p90"] > res["d_median"]  # on this tape (delays spread over a second) the p90 is a slot or more above the median
     # timing only: a sample carries three numbers and nothing from the trade bodies
     assert set(smp[0]) == {"slot", "t_recv_ms", "block_time"}
     assert "sol_lamports" not in json.dumps(res) and "quote_reserve" not in json.dumps(res)
@@ -108,7 +110,7 @@ def test_json_lists_the_tape_files_as_path_at_sha256(tmp_path, monkeypatch):
     for entry in doc["tapes"]:
         path, sha = entry.rsplit("@", 1)
         assert hashlib.sha256(open(path, "rb").read()).hexdigest() == sha
-    assert doc["rpc_host"] == "api.mainnet-beta.solana.com" and doc["feed_delay_slots"] >= 3 and "generated_ms" in doc
+    assert doc["rpc_host"] == "api.mainnet-beta.solana.com" and doc["feed_delay_slots"] == doc["d_p90"] >= doc["d_median"] >= 3 and "generated_ms" in doc
 
 
 @pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd CLI not installed")

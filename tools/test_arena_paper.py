@@ -3,9 +3,12 @@ registry, ledger. No network, no tape."""
 
 from __future__ import annotations
 
+import collections
+import errno
 import functools
 import hashlib
 import json
+import logging
 import math
 import os
 import stat
@@ -20,6 +23,9 @@ from tools.arena_paper import (
     ArenaRefused,
     Ledger,
     LedgerConflict,
+    LedgerCorrupt,
+    LedgerWriteFailed,
+    MIN_FREE_PCT_DEFAULT,
     TEST_ENV,
     StackConfig,
     book_fail_legs,
@@ -31,6 +37,7 @@ from tools.arena_paper import (
     stop_bot,
     verify_sha_on_origin,
     line_bytes,
+    utc_day,
 )
 from tools.r4b_book import fail_legs
 
@@ -42,10 +49,18 @@ os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake
 SC = functools.partial(StackConfig, feed_delay_slots=0)
 
 
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """The ledger refuses appends below its free-space floor (25% free): no test may depend on how full the host's disk is. The floor tests set their own numbers."""
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
+
+
 def mk_arena(*a, **k):
     """An engine whose call clock tracks the latest feed row (a bot called inline with on_row, thinking for no time); tests move eng.now_fn to model a slow bot."""
+    k.setdefault("code_state_fn", lambda: ("abc1234", False))  # the state captured at engine start
     eng = ArenaEngine(*a, **k)
     eng.now_fn = lambda: eng.hw_ms or 0
+    eng.code_state_fn = lambda: ("abc1234", False)  # the tests' registered sha; the real process_code_state has its own test
     return eng  # d = 0 unless a test says otherwise; the replays have no feed gaps to detect
 
 
@@ -374,7 +389,7 @@ def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
         pid = eng2.buy("botA", "P1", None, tms(107), 107)
         eng2.now_fn = lambda: tms(120)  # the wall clock moves on while the pool prints nothing
         eng2.sell("botA", pid, 1.0, tms(120), 120)
-        assert eng2.ledger.read_bot("botA")[-1]["kind"] == "open"
+        assert trades(eng2, "open") and not trades(eng2) and not trades(eng2, "excluded")  # the open row is on the ledger; nothing is priced yet
         if gap:
             eng2.on_row({"type": "gap", "prog": "pumpswap", "kind": "silence", "data_loss": True, "slot": 107, "t_recv_ms": tms(125), "silent_ms": 3000})
         for i, slot in enumerate(range(108, 160)):
@@ -774,3 +789,688 @@ def test_importing_arena_paper_loads_no_r4b_module():
     code = "import sys, tools.arena_paper, tools.arena_score, tools.arena_feed_delay; print(sorted(m for m in sys.modules if 'r4b' in m))"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent), check=True).stdout.strip()
     assert out == "[]", out
+
+
+def test_an_append_parses_only_the_new_bytes_not_the_whole_day_file(tmp_path, monkeypatch):
+    """3,000 rows of about 3 KB: the parse count is linear in the rows (it was quadratic), and an append stays fast however long the file is."""
+    import time as _time
+
+    import tools.arena_paper as ap
+
+    n, pad = 3000, "x" * 3000
+    parsed = {"n": 0}
+    real = json.loads
+
+    def counting(*a, **k):
+        parsed["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(ap.json, "loads", counting)
+    led = Ledger(tmp_path)
+    lat = []
+    for i in range(n):
+        row = dict(_fake_row(f"t{i}", ms=T0 + i), pad=pad)
+        t0 = _time.perf_counter()
+        assert led.append(row) is True
+        lat.append(_time.perf_counter() - t0)
+    assert parsed["n"] <= n + 5, parsed  # each row parsed once (before: n * (n - 1) / 2)
+    tail = sorted(lat[-200:])[100]  # median of the last 200 appends (before the cache: 276 ms at 3,000 rows)
+    head = sorted(lat[:200])[100]
+    assert tail < max(10 * head, 0.05), (head, tail)
+    # a second Ledger object (another process) is caught up by reading only the new bytes, and still sees every id
+    other = Ledger(tmp_path)
+    assert other.append(dict(_fake_row("t7", ms=T0 + 7), pad=pad)) is False
+    assert other.append(dict(_fake_row("new", ms=T0 + 5), pad=pad)) is True
+    assert led.append(dict(_fake_row("new", ms=T0 + 5), pad=pad)) is False  # the first object catches up with the other's append
+    with pytest.raises(LedgerConflict):
+        led.append(dict(_fake_row("new", ms=T0 + 5, net=9.0), pad=pad))
+    p = next(tmp_path.glob("*/trades-*.jsonl"))
+    assert len(p.read_text().splitlines()) == n + 1
+    # a truncated / replaced file (a new inode or a shorter size) is rescanned from the start
+    p.write_text(p.read_text().splitlines()[0] + "\n")
+    assert led.append(dict(_fake_row("t5", ms=T0 + 5), pad=pad)) is True
+
+
+def test_the_guard_reference_is_the_price_at_the_slot_the_bot_saw_not_the_write_instant_slot(tmp_path):
+    spots = {}
+    for think in (0, 30_000):
+        sub = tmp_path / str(think)
+        sub.mkdir()
+        eng = mk_engine(sub)
+        rows = _tape(hi=300)
+        pid = None
+        for r in rows:
+            eng.on_row(r)
+            if r["slot"] == 100 and pid is None:
+                eng.now_fn = lambda t=think: tms(100) + t
+                pid = eng.buy("botA", "P1", None, tms(100), 100)
+                eng.now_fn = lambda: eng.hw_ms or 0
+            if r["slot"] == 250 and pid and eng.positions[pid].exit_slot is None:
+                eng.sell("botA", pid, 1.0, tms(250), 250)
+        spots[think] = trades(eng)[0]
+    by_slot = {x["slot"]: x for x in rows}
+
+    def post_price(slot):  # the post-trade price of the print at `slot` (the engine's seed-price convention: 0.99 / 1.01, V added)
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    slow = spots[30_000]
+    assert slow["effective_slot"]["entry"] == 175 and slow["decision_slot"]["entry"] == 100
+    assert slow["calc"]["1p3"]["spot"] == post_price(99)  # the last print before the slot the bot saw
+    assert slow["calc"]["1p3"]["spot"] != post_price(174)  # not the last print before the write-instant slot
+    assert spots[0]["calc"]["1p3"]["spot"] == post_price(99)
+
+
+def test_two_identical_refused_buys_at_different_instants_are_two_distinct_rows(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    for call in (tms(109), tms(109) + 5_000):  # the same stamp, slot, pool and reason; the write instants differ
+        eng.now_fn = lambda c=call: c
+        with pytest.raises(ArenaRefused, match="no_prints"):
+            eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    refused = trades(eng, "refused")
+    assert len(refused) == 2 and len({r["trade_id"] for r in refused}) == 2
+    assert [r["decision_ms"]["entry"] for r in refused] == [tms(109), tms(109) + 5_000] and [r["write_lag_ms"]["entry"] for r in refused] == [0, 5_000]
+    # the same call at the same instant stays one row (a retry)
+    eng.now_fn = lambda: tms(109) + 5_000
+    with pytest.raises(ArenaRefused, match="no_prints"):
+        eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    assert len(trades(eng, "refused")) == 2
+
+
+def test_open_rows_carry_the_running_head_and_a_dirty_flag(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    op = trades(eng, "open")[0]
+    assert op["code_head"] == "abc1234" and op["code_dirty"] is False
+    eng.code_state_fn, eng._code_cache = (lambda: ("f" * 40, True)), None
+    eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    assert [(o["code_head"], o["code_dirty"]) for o in trades(eng, "open")][1] == ("f" * 40, True)
+
+
+def test_process_code_state_reads_head_and_dirtiness_from_git(tmp_path):
+    import subprocess
+
+    from tools.arena_paper import process_code_state
+
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "c1")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert process_code_state(repo) == (head, False) and len(head) == 40
+    (repo / "a.py").write_text("x = 2\n")  # a tracked change
+    assert process_code_state(repo) == (head, True)
+    _git(repo, "checkout", "-q", "--", "a.py")
+    (repo / "new.py").write_text("y = 1\n")  # an untracked, non-ignored file is code the process could import
+    assert process_code_state(repo) == (head, True)
+    assert process_code_state(tmp_path) == (None, None)  # not a git checkout: unknown, refused by the scorer
+
+
+def test_a_decision_stamped_before_the_clock_but_written_after_it_counts_under_the_write_instant(tmp_path):
+    eng = mk_engine(tmp_path, clock=tms(150))
+    for r in _tape(hi=161):
+        eng.on_row(r)  # the feed is at slot 160; the clock started at slot 150
+    pid = eng.buy("botA", "P1", None, tms(140), 160)  # stamped 10 slots before the clock, written after it
+    op = trades(eng, "open")[0]
+    assert eng.positions[pid].decision_ms == tms(160) and op["decision_ms"]["entry"] == tms(160) and op["stamp_ms"]["entry"] == tms(140)
+    assert op["write_lag_ms"]["entry"] == tms(160) - tms(140)
+    (tmp_path / "e").mkdir()
+    early = mk_engine(tmp_path / "e", clock=tms(150))
+    for r in _tape(hi=146):
+        early.on_row(r)
+    with pytest.raises(ArenaRefused, match="before_clock"):
+        early.buy("botA", "P1", None, tms(140), 145)  # written before the clock: refused
+
+
+def test_a_future_decision_slot_cannot_take_the_guard_reference_from_prints_the_bot_never_saw(tmp_path):
+    """QP's probe: the feed is at slot 149, the bot stamps slot 400. The reference must be the price at slot 149 (prints before it), not the price at slot 400."""
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = _tape(hi=430)
+    by_slot = {x["slot"]: x for x in rows}
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 149 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(149), 400)  # a slot 251 ahead of the feed
+        if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(420), 420)
+    op = trades(eng, "open")[0]
+    r = trades(eng)[0]
+
+    def post_price(slot):
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    assert op["call_feed_slot"] == 149 and op["decision_slot"]["entry"] == 400  # recorded on the open row
+    assert r["calc"]["1p3"]["spot"] == post_price(148)  # the last print before min(400, 149)
+    assert r["calc"]["1p3"]["spot"] != post_price(399)  # what the uncapped reference took
+    # prices rose about 30% between slot 149 and the landing at 400+: against the price the bot saw this buy is past the 1.15 guard
+    assert r["legs"]["total"]["flat_1p3"]["state"] == "guarded" and r["legs"]["total"]["flat_1p9"]["state"] == "guarded"
+    assert r["calc"]["1p3"]["by_rule"]["total"]["pnl_nofail"] == -505_000.0
+    # a stamped slot BELOW the feed's slot changes nothing either: the guard reference is the engine's own feed slot at the call
+    sub = tmp_path / "b"
+    sub.mkdir()
+    e2 = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+    pid = None
+    for x in rows:
+        e2.on_row(x)
+        if x["slot"] == 149 and pid is None:
+            pid = e2.buy("botA", "P1", None, tms(149), 140)
+        if x["slot"] == 250 and pid and e2.positions[pid].exit_slot is None:
+            e2.sell("botA", pid, 1.0, tms(250), 250)
+    assert trades(e2, "open")[0]["call_feed_slot"] == 149 and trades(e2)[0]["calc"]["1p3"]["spot"] == post_price(148)  # the guard ignores decision_slot 140: the reference is the feed slot at the call
+
+
+def test_the_bonding_guard_reference_is_capped_at_the_feed_slot_too(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = [dict(r, quote_reserve=40e9 + i * 3e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=430))]
+    by_slot = {x["slot"]: x for x in rows}
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 149 and pid is None:
+            pid = eng.buy("botA", "M1", None, tms(149), 400)
+        if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(420), 420)
+    ref = by_slot[148]["quote_reserve"] / (by_slot[148]["base_reserve"] * 1000.0)
+    assert trades(eng)[0]["calc"]["1p3"]["spot"] == ref and ref != by_slot[399]["quote_reserve"] / (by_slot[399]["base_reserve"] * 1000.0)
+
+
+def test_the_engine_records_its_code_state_once_at_start_and_open_rows_point_at_it(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    assert trades(eng, "start") == []  # written before the bot's first open row (or by start_all)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    eng.code_state_fn, eng._code_cache = (lambda: ("f" * 40, True)), None  # the checkout changes while the process keeps running
+    eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    st = trades(eng, "start")
+    assert len(st) == 1 and st[0]["engine_id"] == eng.engine_id and st[0]["code_head"] == "abc1234" and st[0]["code_dirty"] is False and st[0]["pid"] == os.getpid()
+    assert st[0]["frozen_sha"] == "abc1234" and st[0]["bot_id"] == "botA"
+    ops = trades(eng, "open")
+    assert {o["engine_id"] for o in ops} == {eng.engine_id} and [o["code_head"] for o in ops] == ["abc1234", "f" * 40]  # the per-call value still differs: the scorer refuses that row
+    # a restarted engine writes its own start record; start_all is idempotent and covers every registered, unstopped book
+    reg = eng.registry_path
+    register_bot("botB", "abc1234", 0, reg, now_ms=0)
+    e2 = mk_arena(eng.ledger.root, reg, SC(strand_rule="total"), sps_fn=lambda: 0.4)
+    assert e2.engine_id != eng.engine_id and e2.start_all() == 2 and e2.start_all() == 0
+    assert sorted(x["engine_id"] for x in trades(e2, "start")) == sorted([eng.engine_id, e2.engine_id])
+    assert [x["engine_id"] for x in e2.ledger.read_bot("botB") if x["kind"] == "start"] == [e2.engine_id]
+
+
+
+def _forge_run(tmp_path, name, decision_slot):
+    """Prices are high at slots 90-92 and normal after. The feed is at slot 100 when the bot says it decided at `decision_slot`."""
+    sub = tmp_path / name
+    sub.mkdir()
+    eng = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = [dict(r, quote_reserve=250e9) if r["slot"] <= 92 else r for r in _tape(hi=460)]
+    sell_slot = max(250, decision_slot + 20)  # a sell after the (possibly later) landing
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(100), decision_slot)
+        if r["slot"] == sell_slot and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(sell_slot), sell_slot)
+    return trades(eng, "open")[0], trades(eng)[0], {x["slot"]: x for x in rows}
+
+
+def test_the_guard_reference_ignores_decision_slot_an_older_one_cannot_change_it(tmp_path):
+    """The reviewer's probe: decision_slot 92 (a higher, earlier price) with the feed at 100 must not change the reference."""
+    honest_open, honest, by_slot = _forge_run(tmp_path, "honest", 100)
+    forged_open, forged, _ = _forge_run(tmp_path, "forged", 92)
+    older_open, older, _ = _forge_run(tmp_path, "older", 60)
+    future_open, future, _ = _forge_run(tmp_path, "future", 400)
+
+    def post_price(slot):
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    for op in (honest_open, forged_open, older_open, future_open):
+        assert op["call_feed_slot"] == 100
+    for tr in (honest, forged, older, future):
+        assert tr["guard_ref_slot"] == 100 and tr["calc"]["1p3"]["spot"] == post_price(99)  # the last print before the engine's own feed slot
+    assert post_price(91) > 2 * post_price(99)  # what a forged slot 92 would have taken as the reference
+    assert forged["legs"] == honest["legs"] and forged["calc"]["1p3"]["by_rule"] == honest["calc"]["1p3"]["by_rule"]
+    assert older["legs"] == honest["legs"]  # an older slot cannot change the state
+    # decision_slot can only push the landing later
+    assert honest["calc"]["1p3"]["landing_slot"] == 100 + 2 + 4 and forged["calc"]["1p3"]["landing_slot"] == 100 + 2 + 4
+    assert future["calc"]["1p3"]["landing_slot"] == 400 + 2 + 4 and future["effective_slot"]["entry"] == 400
+
+
+def test_the_bonding_guard_reference_ignores_decision_slot_in_both_directions(tmp_path):
+    refs = {}
+    for name, decision_slot in (("honest", 149), ("future", 400), ("older", 60)):
+        sub = tmp_path / name
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+        rows = [dict(r, quote_reserve=40e9 + i * 3e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=430))]
+        by_slot = {x["slot"]: x for x in rows}
+        pid = None
+        for r in rows:
+            eng.on_row(r)
+            if r["slot"] == 149 and pid is None:
+                pid = eng.buy("botA", "M1", None, tms(149), decision_slot)
+            if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+                eng.sell("botA", pid, 1.0, tms(420), 420)
+        refs[name] = trades(eng)[0]["calc"]["1p3"]["spot"]
+    want = by_slot[148]["quote_reserve"] / (by_slot[148]["base_reserve"] * 1000.0)
+    assert refs == {"honest": want, "future": want, "older": want}
+    assert want != by_slot[399]["quote_reserve"] / (by_slot[399]["base_reserve"] * 1000.0)
+
+
+def test_a_torn_ledger_tail_is_refused_counted_and_nothing_is_written(tmp_path):
+    led = Ledger(tmp_path)
+    assert led.append(_fake_row("t1")) is True
+    p = led.path_for("botA", "2026-09-10")
+    good = p.read_bytes()
+    assert good.endswith(b"\n")
+    p.write_bytes(good + b'{"kind":"open","trade_id":"half')  # a crash mid-write: the file does not end in a newline
+    with pytest.raises(LedgerCorrupt, match="newline"):
+        led.append(_fake_row("t2"))
+    assert led.torn_tail_refusals == 1 and p.read_bytes() == good + b'{"kind":"open","trade_id":"half'  # counted, and nothing was written
+    other = Ledger(tmp_path)  # a fresh object (no cache) refuses too
+    with pytest.raises(LedgerCorrupt):
+        other.append(_fake_row("t2"))
+    assert other.torn_tail_refusals == 1
+    with pytest.raises(LedgerCorrupt):
+        led.append(_fake_row("t1"))  # even an idempotent re-append is refused while the tail is torn
+    assert led.torn_tail_refusals == 2
+    p.write_bytes(good)  # a person removes the fragment
+    assert Ledger(tmp_path).append(_fake_row("t2")) is True and len(p.read_text().splitlines()) == 2
+
+
+def test_the_engine_counts_a_torn_tail_and_creates_no_position(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    p = eng.ledger.path_for("botA", utc_day(tms(109)))
+    p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"hal')  # torn after the first open row
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    assert eng.counters["ledger_torn_tail"] == 1 and eng.ledger.torn_tail_refusals == 1 and len(eng.positions) == 1  # no position for the refused write
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "UNKNOWN", None, tms(109) + 2, 109)  # a refused-buy row cannot be written either: loud, not silent
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ incidents (quant-proof ruling on #716)
+def _incidents(led, bot="botA"):
+    p = led.incidents_path(bot)
+    return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_a_torn_tail_refusal_writes_a_fsyncd_incident_line_outside_the_torn_file(tmp_path, monkeypatch):
+    led = Ledger(tmp_path, now_fn=lambda: 1_789_000_123_456)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    torn = p.read_bytes() + b'{"kind":"open","trade_id":"half'
+    p.write_bytes(torn)
+    synced = []
+    real = os.fsync
+
+    def spy(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real(fd)
+
+    monkeypatch.setattr("tools.arena_paper.os.fsync", spy)
+    with pytest.raises(LedgerCorrupt, match="newline"):
+        led.append(_fake_row("t2"))
+    inc = led.incidents_path("botA")
+    assert inc == tmp_path / "botA" / "incidents.jsonl" and str(inc) in synced  # fsync'd, and a different file from the torn one
+    (rec,) = _incidents(led)
+    assert rec["kind"] == "torn_tail" and rec["at_ms"] == 1_789_000_123_456 and rec["bot_id"] == "botA"
+    assert rec["day_file"] == "trades-2026-09-10.jsonl" and rec["bytes"] == len(torn) and "newline" in rec["reason"]
+    assert rec["trade_id"] == "t2" and rec["row_decision_ms"] == 1_789_000_000_000
+    assert p.read_bytes() == torn  # the damaged file was not touched
+    with pytest.raises(LedgerCorrupt):
+        Ledger(tmp_path).append(_fake_row("t3"))  # every refusal is its own incident, even from another process / object
+    assert [r["trade_id"] for r in _incidents(led)] == ["t2", "t3"]
+    p.write_bytes(torn[: torn.rindex(b"\n") + 1])  # a person repairs the file: the incidents stay on record
+    assert Ledger(tmp_path).append(_fake_row("t2")) is True
+    assert len(_incidents(led)) == 2
+
+
+def test_a_complete_line_that_does_not_parse_is_a_ledger_corrupt_incident_too(tmp_path):
+    led = Ledger(tmp_path, now_fn=lambda: 5)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    p.write_bytes(p.read_bytes() + b"this is not json\n")
+    with pytest.raises(LedgerCorrupt, match="does not parse"):
+        led.append(_fake_row("t2"))
+    with pytest.raises(LedgerCorrupt):
+        Ledger(tmp_path).append(_fake_row("t2"))
+    assert [r["kind"] for r in _incidents(led)] == ["ledger_corrupt", "ledger_corrupt"] and led.corrupt_refusals == 1 and led.torn_tail_refusals == 0
+    assert len(p.read_text().splitlines()) == 2  # nothing was written
+
+
+def test_an_incident_never_welds_onto_a_torn_incident_file_and_a_failed_incident_write_still_raises(tmp_path):
+    led = Ledger(tmp_path, now_fn=lambda: 7)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    p.write_bytes(p.read_bytes() + b'{"kind":"x')
+    led.incidents_path("botA").write_bytes(b'{"kind":"torn_tail","at_ms":1,"bot_id":"botA","day_fi')  # a crash while an earlier incident was being written
+    with pytest.raises(LedgerCorrupt):
+        led.append(_fake_row("t2"))
+    lines = led.incidents_path("botA").read_text().splitlines()
+    assert len(lines) == 2 and json.loads(lines[1])["trade_id"] == "t2"  # the new incident stands on its own line; the fragment stays visible
+    recs, probs = led.read_incidents("botA")
+    assert len(recs) == 1 and len(probs) == 1 and "unparseable" in probs[0]
+    # an incident file that cannot be opened: the LedgerCorrupt still surfaces, and says that the incident line is missing
+    led2 = Ledger(tmp_path / "other", now_fn=lambda: 7)
+    led2.append(_fake_row("t1"))
+    q = led2.path_for("botA", "2026-09-10")
+    q.write_bytes(q.read_bytes() + b'{"kind":"x')
+    led2.incidents_path("botA").mkdir()
+    with pytest.raises(LedgerCorrupt, match="could NOT be written") as ei:
+        led2.append(_fake_row("t2"))
+    assert led2.incident_failures == 1 and "newline" in str(ei.value)
+
+
+def test_a_buy_refused_on_a_torn_tail_is_an_incident_for_the_attempt_and_the_row(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    p = eng.ledger.path_for("botA", utc_day(tms(109)))
+    p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"hal')
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)  # an accepted buy: its open row is refused
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "UNKNOWN", None, tms(109) + 2, 109)  # a refused buy: its refused row is refused
+    inc = _incidents(eng.ledger)
+    assert [(i["kind"], i.get("row_kind")) for i in inc] == [("torn_tail", "open"), ("buy_refused", None), ("torn_tail", "refused"), ("buy_refused", None)]
+    lost = [i for i in inc if i["kind"] == "buy_refused"]
+    assert [i["pool"] for i in lost] == ["P1", "UNKNOWN"] and all(i["decision_slot"] == 109 and i["day_file"] == p.name for i in lost)
+    assert lost[0]["decision_ms"] == tms(109) + 1 and all(i["at_ms"] == eng.hw_ms for i in inc)  # the engine's call clock
+    assert eng.counters["ledger_torn_tail"] == 2 and len(eng.positions) == 1
+    assert len(Ledger(tmp_path / "ledger").scan_bot("botA")[1]) == 2  # the torn file is a scorer problem as well (see test_arena_score)
+
+
+def _two_priced_books(tmp_path):
+    """botA and botB both buy P1 at slot 100 and sell at 200; both priced."""
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    for r in _tape(hi=460):
+        eng.on_row(r)
+        if r["slot"] == 100 and not pids:
+            pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+        if r["slot"] == 200 and pids and all(eng.positions[p].exit_slot is None for p in pids.values()):
+            for b, pid in pids.items():
+                eng.sell(b, pid, 1.0, tms(200), 200)
+        if r["slot"] == 215:
+            break
+    assert len([x for x in eng.ledger.read_bot("botA") if x["kind"] == "trade"]) == 3 and len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3
+    return eng
+
+
+def test_a_torn_tail_in_the_late_print_path_halts_that_bot_and_never_raises_out_of_the_feed_loop(tmp_path):
+    eng = _two_priced_books(tmp_path)
+    pa = eng.ledger.path_for("botA", utc_day(tms(100)))
+    pa.write_bytes(pa.read_bytes() + b'{"kind":"late_print","trade_id":"hal')  # the tail of botA's entry-day file is torn
+    hw0 = eng.hw_slot
+    eng.on_row(_row(500, 110, sig="late1"))  # slot 110 < need: a late print for both books. Must not raise
+    assert eng.halted.keys() == {"botA"} and eng.counters["late_prints_lost"] == 1 and eng.counters["ledger_torn_tail"] == 1
+    assert len(eng.pools["P1"].slot) > 0 and eng.pools["P1"].slot.count(110) == 2  # the print was added to the pool history
+    assert [x["position_id"] for x in eng.ledger.read_bot("botB") if x["kind"] == "late_print"] and eng.counters["late_prints"] == 1  # botB's late print was written
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == "torn_tail" and inc[0]["row_kind"] == "late_print" and inc[0]["day_file"] == pa.name and _incidents(eng.ledger, "botB") == []
+    # the feed loop keeps running: later prints are processed, the high-water mark advances, botA's later late prints are dropped (no new incident)
+    eng.on_row(_row(501, 111, sig="late2"))
+    for r in [_row(600 + i, 216 + i) for i in range(30)]:
+        eng.on_row(r)
+    assert eng.hw_slot == 245 > hw0 and eng.counters["late_prints_dropped_halted"] == 1 and len(_incidents(eng.ledger)) == 1
+    assert eng.counters["late_prints"] == 2  # botB took both
+    # a halted bot's next buy is a lost attempt: refused loudly, nothing written, recorded as an incident; botB is unaffected
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.buy("botA", "P1", None, tms(245), 245)
+    assert [i["kind"] for i in _incidents(eng.ledger)] == ["torn_tail", "buy_refused"]
+    assert eng.buy("botB", "P1", None, tms(245), 245)
+
+
+def test_a_torn_tail_hit_while_pricing_a_sell_halts_the_bot_once_not_once_per_feed_row(tmp_path):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    second = None
+    for r in _tape(hi=300):
+        eng.on_row(r)
+        if r["slot"] == 100 and not pids:
+            pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+        if r["slot"] == 101 and second is None:
+            second = eng.buy("botA", "P1", None, tms(101), 101)  # botA's second position, never sold before the halt
+            pa = eng.ledger.path_for("botA", utc_day(tms(100)))
+            pa.write_bytes(pa.read_bytes() + b'{"kind":"trade","trade_id":"hal')  # torn after botA's open rows
+        if r["slot"] == 200 and eng.positions[pids["botA"]].exit_slot is None:
+            for b, pid in pids.items():
+                eng.sell(b, pid, 1.0, tms(200), 200)  # must not raise: pricing happens inside the feed
+    assert eng.halted.keys() == {"botA"} and eng.counters["bot_halted"] == 1 and eng.hw_slot == 299
+    assert len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3  # botB was priced
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == "torn_tail" and inc[0]["row_kind"] == "trade"  # one incident, not one per feed row
+    assert pids["botA"] in eng.positions  # still open: an orphan in the read
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.sell("botA", second, 1.0, tms(250), 250)
+    assert _incidents(eng.ledger)[-1]["kind"] == "sell_refused"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the guard has no fallback reference
+def test_the_guard_refuses_a_position_without_call_feed_slot_instead_of_falling_back_to_the_bots_slot(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(strand_rule="total", feed_delay_slots=2))
+    pid = None
+    for r in _tape(hi=260):
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(100), 100)
+            eng.positions[pid].call_feed_slot = None  # a position whose open row has no call_feed_slot
+            with pytest.raises(ArenaRefused, match="guard_ref_missing"):
+                ArenaEngine._ref_slot(eng.positions[pid])  # the helper has no fallback to decision_slot
+        if r["slot"] == 200 and eng.positions.get(pid) is not None and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(200), 200)
+    ex = trades(eng, "excluded")
+    assert trades(eng) == [] and len(ex) == 3 and {x["exclusion_reason"] for x in ex} == {"guard_ref_missing"}  # refused, counted, never priced
+    assert eng.counters["excluded_guard_ref_missing"] == 1 and all(x["guard_ref_slot"] is None for x in ex)
+    assert eng.positions == {} and eng.last_error == {}  # a clean exclusion, not a pricing error left open
+
+
+def test_an_open_row_from_before_the_field_existed_recovers_without_a_guard_reference(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    for r in rows[:11]:
+        eng.on_row(r)
+    pid = eng.buy("botA", "P1", None, tms(100), 100)
+    p = eng.ledger.path_for("botA", utc_day(tms(100)))
+    lines = [json.loads(x) for x in p.read_text().splitlines()]
+    for x in lines:
+        x.pop("call_feed_slot", None)
+    p.write_text("".join(line_bytes(x).decode() + "\n" for x in lines))
+    eng2 = mk_arena(tmp_path / "ledger", eng.registry_path, eng.cfg, sps_fn=lambda: 0.4)
+    assert eng2.recover() == 1 and eng2.positions[pid].call_feed_slot is None
+    for r in rows[11:51]:
+        eng2.on_row(r)
+    eng2.sell("botA", pid, 1.0, tms(140), 140)  # the engine_restart exclusion does not need a reference and does not crash on the missing one
+    assert {x["exclusion_reason"] for x in trades(eng2, "excluded")} == {"engine_restart"} and all(x["guard_ref_slot"] is None for x in trades(eng2, "excluded"))
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ disk failures and the free-space floor (quant-proof on #716, comment 6246100076)
+Usage = collections.namedtuple("Usage", "total used free")
+
+
+def disk(free_pct):
+    """A shutil.disk_usage stand-in with the given free percentage of a 1,000-byte disk."""
+    return lambda path: Usage(1000, 1000 - round(free_pct * 10), round(free_pct * 10))
+
+
+def _boom(code, text):
+    def f(*a, **k):
+        raise OSError(code, text)
+
+    return f
+
+
+def break_disk(monkeypatch, mode, bot="botA"):
+    """Make the ledger's day-file writes (only the trades-*.jsonl of `bot`; incident files and other bots keep working) fail the given way. Returns the incident kind."""
+    def only(real, bad):
+        def wrapper(fd, *a):
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            return bad(real, fd, *a) if f"/{bot}/trades-" in target else real(fd, *a)
+
+        return wrapper
+
+    if mode == "enospc":
+        monkeypatch.setattr("tools.arena_paper.os.write", only(os.write, lambda real, fd, data: _boom(errno.ENOSPC, "No space left on device")()))
+        return "write_failed"
+    if mode == "short_write":
+        monkeypatch.setattr("tools.arena_paper.os.write", only(os.write, lambda real, fd, data: real(fd, data[: len(data) // 2])))
+        return "short_write"
+    if mode == "fsync_error":
+        monkeypatch.setattr("tools.arena_paper.os.fsync", only(os.fsync, lambda real, fd: _boom(errno.EIO, "Input/output error")()))
+        return "fsync_failed"
+    assert mode == "floor"
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(MIN_FREE_PCT_DEFAULT - 0.1))
+    return "disk_floor"
+
+
+DISK_MODES = ("enospc", "short_write", "fsync_error", "floor")
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_failed_disk_write_is_an_incident_and_never_a_raw_oserror(tmp_path, monkeypatch, mode):
+    led = Ledger(tmp_path, now_fn=lambda: 1_789_000_222_000)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    before = p.read_bytes()
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)
+        with pytest.raises(LedgerWriteFailed) as ei:
+            led.append(_fake_row("t2"))
+    err = ei.value
+    assert isinstance(err, LedgerCorrupt) and not isinstance(err, OSError) and err.kind == kind  # the handlers of the damaged-file case take it; no OSError escapes
+    (rec,) = _incidents(led)
+    assert rec["kind"] == kind and rec["at_ms"] == 1_789_000_222_000 and rec["day_file"] == p.name and rec["trade_id"] == "t2" and rec["row_decision_ms"] == 1_789_000_000_000
+    assert led.write_failures == 1 and led.incident_failures == 0 and "NOT on record" in str(err)
+    if mode == "floor":
+        assert led.floor_refusals == 1 and rec["floor_pct"] == 25.0 and rec["free_pct"] == 24.9 and rec["total_bytes"] == 1000 and p.read_bytes() == before
+        with monkeypatch.context() as m:  # at exactly the floor the append goes through
+            m.setattr("tools.arena_paper.shutil.disk_usage", disk(25.0))
+            assert led.append(_fake_row("t2")) is True
+        return
+    if mode == "enospc":
+        assert p.read_bytes() == before and "ENOSPC" in rec["reason"]
+    if mode == "short_write":
+        assert p.read_bytes().startswith(before) and not p.read_bytes().endswith(b"\n") and "short write" in rec["reason"]  # a fragment: the file is a torn tail now
+        with pytest.raises(LedgerCorrupt, match="newline"):
+            led.append(_fake_row("t3"))  # refused, never welded onto the fragment (its own incident)
+        assert [r["kind"] for r in _incidents(led)] == ["short_write", "torn_tail"]
+    if mode == "fsync_error":
+        assert "EIO" in rec["reason"]
+    if mode == "enospc":
+        assert led.append(_fake_row("t2")) is True  # the cache was dropped; once the disk works again the row goes in
+
+
+def test_a_disk_failure_that_opens_nothing_is_an_io_error_incident_and_an_unwritable_incident_stays_in_memory(tmp_path, caplog):
+    led = Ledger(tmp_path, now_fn=lambda: 42)
+    (tmp_path / "botA").write_text("a file where the bot directory should be")  # mkdir / open fail with an OSError, and so does the incident file
+    with caplog.at_level(logging.ERROR, logger="tools.arena_paper"):
+        with pytest.raises(LedgerWriteFailed, match="could NOT be written either") as ei:
+            led.append(_fake_row("t1"))
+    assert ei.value.kind == "io_error" and led.write_failures == 1 and led.incident_failures == 1
+    assert len(led.unwritten_incidents) == 1 and led.unwritten_incidents[0][0] == "botA"  # the in-memory record
+    assert any("arena ledger incident bot=botA kind=io_error" in r.getMessage() and "incident_line_written=False" in r.getMessage() for r in caplog.records)  # and the log line
+    (tmp_path / "botA").unlink()  # the obstacle goes away: the retry writes the original incident, with its own at_ms
+    assert led.flush_incidents() == 0 and led.unwritten_incidents == []
+    (rec,) = _incidents(led)
+    assert rec["kind"] == "io_error" and rec["at_ms"] == 42 and rec["trade_id"] == "t1"
+
+
+def test_the_free_space_floor_is_a_config_value_default_25_never_below_20(tmp_path, monkeypatch):
+    assert Ledger(tmp_path).min_free_pct == 25.0 == MIN_FREE_PCT_DEFAULT
+    monkeypatch.delenv(TEST_ENV)  # outside tests the floor cannot be lowered
+    for bad in (19.9, 0, -1, 100.1, "25", True, None):
+        with pytest.raises(ValueError, match="min_free_pct"):
+            Ledger(tmp_path, min_free_pct=bad)
+    assert Ledger(tmp_path, min_free_pct=20).min_free_pct == 20.0 and Ledger(tmp_path, min_free_pct=40).min_free_pct == 40.0
+    with pytest.raises(ValueError):
+        ArenaEngine(tmp_path / "l", tmp_path / "bots.json", min_free_pct=10)
+    monkeypatch.setenv(TEST_ENV, "1")  # a temp-dir replay / test harness may lower it (the parity builder does)
+    assert Ledger(tmp_path, min_free_pct=0).min_free_pct == 0.0
+    # a configured 40% floor refuses at 39% and takes the row at 40%; the engine passes the value through
+    strict = Ledger(tmp_path / "strict", min_free_pct=40)
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(39.0))
+    with pytest.raises(LedgerWriteFailed, match="below the floor 40%"):
+        strict.append(_fake_row("t1"))
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(40.0))
+    assert strict.append(_fake_row("t1")) is True
+    assert mk_arena(tmp_path / "eng", tmp_path / "bots.json", SC(), min_free_pct=33).ledger.min_free_pct == 33.0
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(24.0))  # the floor is checked before every append, including an idempotent one
+    with pytest.raises(LedgerWriteFailed):
+        Ledger(tmp_path / "strict").append(_fake_row("t1"))
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_disk_failure_on_a_buy_halts_the_bot_and_leaves_an_incident_for_the_attempt(tmp_path, monkeypatch, mode):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(108), 108)  # a good one first
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)
+        with pytest.raises(LedgerWriteFailed):
+            eng.buy("botA", "P1", None, tms(109), 109)  # the open row cannot be written
+    assert eng.halted.keys() == {"botA"} and kind in eng.halted["botA"] and len(eng.positions) == 1  # no position for the lost attempt
+    assert eng.counters["lost_buys"] == 1 and eng.counters["bot_halted"] == 1 and eng.counters.get("incident_unwritten", 0) == 0
+    inc = _incidents(eng.ledger)
+    assert [i["kind"] for i in inc] == [kind, "buy_refused"] and inc[1]["pool"] == "P1" and inc[1]["decision_ms"] == tms(109) and inc[1]["decision_slot"] == 109
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)  # the halted book takes nothing more; the second attempt is on record as well
+    assert [i["kind"] for i in _incidents(eng.ledger)] == [kind, "buy_refused", "buy_refused"]
+    assert eng.buy("botB", "P1", None, tms(109), 109)  # the other book is unaffected
+
+
+@pytest.mark.parametrize("mode", ("enospc", "short_write", "fsync_error"))
+def test_a_disk_failure_while_pricing_a_sell_halts_that_bot_once_and_the_feed_loop_runs_on(tmp_path, monkeypatch, mode):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    with monkeypatch.context() as m:
+        for r in _tape(hi=300):
+            eng.on_row(r)
+            if r["slot"] == 100 and not pids:
+                pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+                kind = break_disk(m, mode)  # from now on botA's day file cannot be written
+            if r["slot"] == 200 and eng.positions[pids["botA"]].exit_slot is None:
+                for b, pid in pids.items():
+                    eng.sell(b, pid, 1.0, tms(200), 200)  # must not raise: pricing happens inside the feed
+    assert eng.halted.keys() == {"botA"} and eng.counters["bot_halted"] == 1 and eng.hw_slot == 299
+    assert len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3  # botB was priced
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == kind and inc[0]["row_kind"] == "trade"  # one incident, not one per feed row
+    assert pids["botA"] in eng.positions  # still open: an orphan in the read
+
+
+def test_the_engine_counts_a_lost_attempt_in_memory_when_not_even_the_incident_can_be_written(tmp_path, monkeypatch):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(108), 108)
+    with monkeypatch.context() as m:
+        break_disk(m, "enospc")
+        m.setattr("tools.arena_paper.Ledger._write_incident_line", lambda self, bot_id, line: False)  # the full disk takes no incident line either
+        with pytest.raises(LedgerWriteFailed, match="could NOT be written either"):
+            eng.buy("botA", "P1", None, tms(109), 109)
+    assert eng.halted.keys() == {"botA"} and eng.counters["lost_buys"] == 1 and eng.counters["incident_unwritten"] == 1
+    assert len(eng.ledger.unwritten_incidents) == 2 and eng.ledger.incident_failures == 2  # the ledger's incident and the attempt's, both kept in memory
+    assert eng.ledger.flush_incidents() == 0 and [i["kind"] for i in _incidents(eng.ledger)] == ["write_failed", "buy_refused"]  # housekeeping writes them when the disk allows

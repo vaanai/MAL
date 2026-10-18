@@ -20,8 +20,9 @@ and tools/r4b_frozen.py (blob shas in its header; no arena process may open or u
   * E1 FLOOR: per filled trip the stack carries max(haircut, 384,022 lamports per 0.05 SOL of stake) (DEC-021:54, Amendment 7 option B), scaled linearly.
   * LATENCY starts at the instant the decision is WRITTEN: that instant is mapped to the tape slot clock (the latest feed row's (slot, t_recv_ms) plus elapsed time / sps) and
     the fill lands at that slot + k, k = ceil(latency / sps - 1e-9) (`k_rounding="round"` is the EXP-027 QP value). The instant is the WRITE instant, max(the bot's decision_ms, the wall clock at the buy()/sell() call, t_recv_ms of the latest feed row
-    the engine has seen): a stale stamp is priced at the write instant, never refused; a stamp in the future is refused; a decision before the book's clock is refused. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
-    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's decision-time spot stays the price the bot saw).
+    the engine has seen): a stale stamp is priced at the write instant, never refused; a stamp in the future is refused; the clock check uses the WRITE instant too: a decision stamped before the book's clock but WRITTEN after it counts (its stamp is logged in `stamp_ms`,
+    with the write lag), one written before the clock is refused. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
+    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's reference is the price at the engine's own feed slot at the call (call_feed_slot), never at a slot the bot names).
   * FEED GAPS: a trade whose decision-to-exit span holds a logged data_loss gap of its program, or a needed print without V, or a restart of this engine, is
     written as an "excluded" row with the reason. A derived_last exit after a gap falls under the gap rule. The scorer counts them (> 5% of a book -> NOT_DECIDABLE).
     Contract: the feed emits a gap row before the row that revealed it. The engine does not rely on that alone: a feed `start` row, a gap row of kind process_restart / feed_restart, a slot jump (gap_slots) or silence (gap_silence_ms) between consecutive trade rows is a data_loss gap from the last row seen, for open positions.
@@ -47,13 +48,17 @@ Not supported in v1: partial sells (`frac` must be 1.0; refused), sells decided 
 from __future__ import annotations
 
 import bisect
+import errno
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import os
+import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +97,21 @@ V_BAND_MAX = 30_000_000_000
 
 class ArenaRefused(Exception):
     """A request the arena will not price (unregistered bot, no slot clock, unknown pool, partial sell, ...)."""
+
+
+class LedgerCorrupt(Exception):
+    """A ledger file does not end in a newline (a torn write): nothing is appended until a person has looked at it."""
+
+
+class LedgerWriteFailed(LedgerCorrupt):
+    """An append that could not be made durable: an OSError on the write, the fsync or anything else it touches (ENOSPC, EIO, ...), a SHORT write, or the free-space
+    floor (the disk is below the configured free fraction). It is a LedgerCorrupt, so every handler of the damaged-file case takes it, and the engine HALTS the bot
+    (a disk that cannot take a row will not take the next one either). `kind` is the incident kind: write_failed, short_write, fsync_failed, io_error, disk_floor.
+    A raw OSError never escapes `Ledger.append`."""
+
+    def __init__(self, msg: str, kind: str) -> None:
+        super().__init__(msg)
+        self.kind = kind
 
 
 class LedgerConflict(Exception):
@@ -149,6 +169,21 @@ def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> str
     if git("merge-base", "--is-ancestor", full, "origin/main").returncode != 0:
         raise ArenaRefused(f"frozen_sha {full} is not on origin/main: the frozen code must be merged first")
     return full
+
+
+def process_code_state(repo: str | os.PathLike | None = None) -> tuple[str | None, bool | None]:
+    """(HEAD full sha, dirty) of the git checkout this process runs from: the frozen code is bound to the process (DEC-031 section 1.2). dirty = any tracked
+    change or any untracked file that is not ignored (`git status --porcelain`). (None, None) when git cannot say; the scorer refuses such a row."""
+    r = str(repo or REPO_ROOT)
+    try:
+        h = subprocess.run(["git", "-C", r, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60)
+        st = subprocess.run(["git", "-C", r, "status", "--porcelain"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    head = h.stdout.strip()
+    if h.returncode != 0 or st.returncode != 0 or len(head) != 40 or not all(c in "0123456789abcdef" for c in head):
+        return None, None
+    return head, bool(st.stdout.strip())
 
 
 def _append_line(path: Path, obj: Mapping[str, Any]) -> None:
@@ -241,56 +276,218 @@ def stop_bot(bot_id: str, stopped_at_ms: int, path: str | os.PathLike = REGISTRY
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ ledger
+INCIDENTS_FILE = "incidents.jsonl"
+MIN_FREE_PCT_DEFAULT = 25.0  # DEC-031 section 3.8: no append below 25% free on the ledger's filesystem
+MIN_FREE_PCT_FLOOR = 20.0  # the configured floor can be raised, never set below this
+MAX_UNWRITTEN_INCIDENTS = 1000
+log = logging.getLogger("tools.arena_paper")
+
+
 class Ledger:
     """Write-once JSONL ledger: one file per (bot, UTC day of the entry decision). A trade_id is written once; the same bytes again is a no-op,
-    different bytes raise LedgerConflict. Every append is flock'ed, written with O_APPEND and fsync'ed (and the directory on file creation)."""
+    different bytes raise LedgerConflict. Every append is flock'ed, written with O_APPEND and fsync'ed (and the directory on file creation).
 
-    def __init__(self, root: str | os.PathLike = LEDGER_ROOT) -> None:
+    INCIDENTS. Every time `append` refuses because a day file is damaged (it does not end in a newline: a torn write; or a complete line does not parse), it raises
+    LedgerCorrupt AND appends one fsync'd line to a SEPARATE per-bot file, `<root>/<bot_id>/incidents.jsonl`: {kind, at_ms, bot_id, day_file, bytes, reason, row_kind,
+    trade_id, row_decision_ms}. The refusal is no longer only a counter in the engine's memory: a person can repair the day file, and the attempts that were refused
+    in the meantime stay on record. The scorer reads this file and makes the bot's read NOT_DECIDABLE for any incident before the read boundary, repaired or not
+    (lost attempts, DEC-014 Amendment 1). The incident file is never rewritten; an unparseable line in it is itself a reason for NOT_DECIDABLE.
+
+    WRITE FAILURES (quant-proof on #716). Nothing that goes wrong on the disk may lose an attempt silently. `append` never lets a raw OSError out: an OSError on the
+    write, the fsync (or the directory fsync) or any other step, a SHORT write (fewer bytes than the line reached the file), or a free-space floor breach raises
+    LedgerWriteFailed (a LedgerCorrupt) after a best-effort incident line (kinds write_failed, short_write, fsync_failed, io_error, disk_floor). The floor is checked
+    before EVERY append: below `min_free_pct` (default 25, never below 20; DEC-031 section 3.8) free on the ledger's filesystem the append is refused and the incident
+    is written while there is still room for it. If even the incident line cannot be written it is kept in memory (`unwritten_incidents`, retried by `flush_incidents`
+    and before the next incident) and logged at ERROR with the counters `write_failures` / `incident_failures`. A short write leaves a fragment: the file is then
+    a torn tail, refused (and flagged by the scorer) until a person has looked at it."""
+
+    def __init__(self, root: str | os.PathLike = LEDGER_ROOT, now_fn: Callable[[], int] | None = None, min_free_pct: float = MIN_FREE_PCT_DEFAULT) -> None:
+        # never below 20 in production; a replay / test harness (MAL_ARENA_TEST=1, as for the registry overrides) may lower it, since its ledger is a temp dir
+        lowest = 0.0 if os.environ.get(TEST_ENV) == "1" else MIN_FREE_PCT_FLOOR
+        if isinstance(min_free_pct, bool) or not isinstance(min_free_pct, (int, float)) or not lowest <= min_free_pct <= 100:
+            raise ValueError(f"min_free_pct must be between {lowest:g} and 100 (default {MIN_FREE_PCT_DEFAULT:g}, DEC-031 section 3.8; below {MIN_FREE_PCT_FLOOR:g} is "
+                             f"refused outside tests), got {min_free_pct!r}")
+        self.min_free_pct = float(min_free_pct)
+        self.write_failures = 0  # appends that failed on the disk (OSError, short write, fsync) or were refused by the free-space floor
+        self.floor_refusals = 0  # of which: refused by the free-space floor
+        self.unwritten_incidents: list[tuple[str, bytes]] = []  # (bot_id, line) incident lines the disk would not take: the in-memory record
         self.root = Path(root)
+        # path -> (inode, offset consumed, {trade_id: identity}). An append reads only the bytes written since the last look (by this or another process),
+        # so its cost no longer grows with the size of the day file.
+        self._cache: dict[str, tuple[int, int, dict[str, str]]] = {}
+        self.torn_tail_refusals = 0  # appends refused because the file did not end in a newline
+        self.corrupt_refusals = 0  # appends refused because a complete line of the day file does not parse
+        self.incident_failures = 0  # incident lines that could NOT be written (the LedgerCorrupt still surfaces, and says so)
+        self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
 
     def path_for(self, bot_id: str, day: str) -> Path:
         return self.root / bot_id / f"trades-{day}.jsonl"
 
-    @staticmethod
-    def _scan(fd: int) -> dict[str, str]:
-        os.lseek(fd, 0, os.SEEK_SET)
+    def incidents_path(self, bot_id: str) -> Path:
+        return self.root / bot_id / INCIDENTS_FILE
+
+    def incident(self, bot_id: str, kind: str, reason: str, *, path: Path | None = None, **fields: Any) -> bool:
+        """Append one incident line (flock, O_APPEND, fsync of the file and, on creation, of the directories). `path` is the day file concerned: its name and its
+        current byte size go on the line. If the incident file itself ends in a half line (a torn incident write), a newline is written first so that the new
+        incident stands on its own line and the fragment stays visible to the scorer as an unparseable line. Returns False (counts incident_failures, keeps the line in
+        `unwritten_incidents` for a retry) when the line could not be written; it never raises, so that the caller's own error still surfaces."""
+        size = None
+        try:
+            if path is not None and path.exists():
+                size = path.stat().st_size
+        except OSError:
+            pass
+        line = line_bytes({"kind": kind, "at_ms": int(self.now_fn()), "bot_id": bot_id, "day_file": None if path is None else path.name, "bytes": size,
+                           "reason": reason, **fields}) + b"\n"
+        if self.unwritten_incidents:  # earlier incidents that did not reach the disk go first, with their own at_ms
+            self.flush_incidents()
+        ok = self._write_incident_line(bot_id, line)
+        if not ok:
+            self.incident_failures += 1
+            self.unwritten_incidents.append((bot_id, line))
+            del self.unwritten_incidents[:-MAX_UNWRITTEN_INCIDENTS]
+        log.error("arena ledger incident bot=%s kind=%s reason=%s incident_line_written=%s", bot_id, kind, reason, ok)
+        return ok
+
+    def _write_incident_line(self, bot_id: str, line: bytes) -> bool:
+        p = self.incidents_path(bot_id)
+        try:
+            new_dir = not p.parent.exists()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            created = not p.exists()
+            fd = os.open(str(p), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                end = os.fstat(fd).st_size
+                if end > 0 and os.pread(fd, 1, end - 1) != b"\n":
+                    line = b"\n" + line
+                if os.write(fd, line) != len(line):
+                    raise OSError(errno.EIO, "short write of an incident line")
+                os.fsync(fd)
+                if created:
+                    _fsync_dir(p.parent)
+                if new_dir:
+                    _fsync_dir(p.parent.parent)
+            finally:
+                os.close(fd)
+        except OSError:
+            return False
+        return True
+
+    def flush_incidents(self) -> int:
+        """Retry the incident lines that did not reach the disk (oldest first, original at_ms). Returns how many are still unwritten."""
+        keep = []
+        for bot_id, line in self.unwritten_incidents:
+            if keep or not self._write_incident_line(bot_id, line):
+                keep.append((bot_id, line))  # order is kept: once one fails, the rest wait
+        self.unwritten_incidents = keep
+        return len(keep)
+
+    def _ids(self, fd: int, key: str) -> tuple[dict[str, str], int, bool]:
+        """(ids, offset, complete). Reads from the cached offset to the end of the file (the whole file when there is no usable cache: a new inode or a
+        shorter file) and parses only the new whole lines. complete = the scan consumed every byte (no unterminated tail)."""
+        st = os.fstat(fd)
+        c = self._cache.get(key)
+        ids, off = ({}, 0) if (c is None or c[0] != st.st_ino or c[1] > st.st_size) else (c[2], c[1])
+        os.lseek(fd, off, os.SEEK_SET)
         data = b""
         while True:
             chunk = os.read(fd, 1 << 20)
             if not chunk:
                 break
             data += chunk
-        ids: dict[str, str] = {}
-        for line in data.split(b"\n"):
-            if not line:
-                continue
-            r = json.loads(line)
-            ids[r["trade_id"]] = identity(r)
-        return ids
+        cut = data.rfind(b"\n") + 1
+        for line in data[:cut].split(b"\n"):
+            if line:
+                r = json.loads(line)
+                ids[r["trade_id"]] = identity(r)
+        self._cache[key] = (st.st_ino, off + cut, ids)
+        return ids, off + cut, cut == len(data)
+
+    @staticmethod
+    def _oserr(exc: OSError) -> str:
+        return f"{type(exc).__name__} {errno.errorcode.get(exc.errno or 0, '?')} ({exc.strerror or exc})"
+
+    def _free(self) -> tuple[float, int, int]:
+        """(free percent, free bytes, total bytes) of the filesystem the ledger lives on (the nearest existing ancestor of the root)."""
+        d = self.root
+        while not d.exists() and d != d.parent:
+            d = d.parent
+        u = shutil.disk_usage(d)
+        return (100.0 * u.free / u.total if u.total else 100.0), int(u.free), int(u.total)
+
+    def _fail(self, p: Path, row: Mapping[str, Any], kind: str, reason: str, **extra: Any) -> LedgerCorrupt:
+        """Count the failure, write its incident line (outside the damaged / full file) and return the exception for the caller to raise: LedgerCorrupt for a
+        damaged file (torn_tail, ledger_corrupt: nothing was written), LedgerWriteFailed for a disk failure or the free-space floor."""
+        disk = kind not in ("torn_tail", "ledger_corrupt")
+        if kind == "torn_tail":
+            self.torn_tail_refusals += 1
+        elif kind == "ledger_corrupt":
+            self.corrupt_refusals += 1
+        else:
+            self.write_failures += 1
+            self._cache.pop(str(p), None)  # the file's state is no longer known
+            if kind == "disk_floor":
+                self.floor_refusals += 1
+        entry = ((row.get("decision_ms") or {}).get("entry")) if isinstance(row.get("decision_ms"), Mapping) else None
+        wrote = self.incident(str(row["bot_id"]), kind, reason, path=p, row_kind=row.get("kind"), trade_id=row.get("trade_id"),
+                              row_decision_ms=None if entry is None else int(entry), **extra)
+        tail = "" if wrote else " (the incident line could NOT be written either: kept in memory, logged)"
+        if not disk:
+            return LedgerCorrupt(f"{p.name}: {reason}: refusing to append; nothing was written{tail}")
+        return LedgerWriteFailed(f"{p.name}: {reason}: the append failed; this attempt is NOT on record in the ledger (the file may hold a fragment){tail}", kind)
 
     def append(self, row: Mapping[str, Any]) -> bool:
-        """True if written, False if the identical row is already there."""
+        """True if written, False if the identical row is already there. Raises LedgerCorrupt (and writes an incident line, see the class doc) when the day file
+        is damaged: it does not end in a newline, or a complete line of it does not parse. Raises LedgerWriteFailed (a LedgerCorrupt, with an incident line) when
+        the disk fails (any OSError, a short write, an fsync error) or the free-space floor is breached; a raw OSError never escapes."""
         line = line_bytes(row)
         day = utc_day(row["decision_ms"]["entry"])
         p = self.path_for(row["bot_id"], day)
+        try:
+            free_pct, free_b, total_b = self._free()
+            if free_pct < self.min_free_pct:  # refuse while there is still room for the incident line
+                raise self._fail(p, row, "disk_floor", f"free space {free_pct:.1f}% is below the floor {self.min_free_pct:g}% (DEC-031 section 3.8)",
+                                 free_pct=round(free_pct, 3), floor_pct=self.min_free_pct, free_bytes=free_b, total_bytes=total_b)
+            return self._append(p, row, line)
+        except OSError as exc:  # open, mkdir, flock, read, statvfs, ...: anything else the disk or the filesystem throws
+            raise self._fail(p, row, "io_error", f"{self._oserr(exc)}") from None
+
+    def _append(self, p: Path, row: Mapping[str, Any], line: bytes) -> bool:
         new_dir = not p.parent.exists()
         p.parent.mkdir(parents=True, exist_ok=True)
         created = not p.exists()
         fd = os.open(str(p), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            ids = self._scan(fd)
+            try:
+                ids, off, complete = self._ids(fd, str(p))
+            except (ValueError, KeyError, TypeError) as exc:  # json.JSONDecodeError is a ValueError: a complete line that does not parse
+                raise self._fail(p, row, "ledger_corrupt", f"a line of the file does not parse ({type(exc).__name__}: {str(exc)[:80]})") from None
+            if not complete:  # the file ends in a half line: appending would weld the next row onto the fragment
+                raise self._fail(p, row, "torn_tail", "the file does not end in a newline (a torn write)")
             tid = row["trade_id"]
             if tid in ids:
                 if ids[tid] == identity(row):
                     return False
                 raise LedgerConflict(f"trade_id {tid} already written with different content")
-            os.write(fd, line + b"\n")
-            os.fsync(fd)
-            if created:
-                _fsync_dir(p.parent)
-            if new_dir:
-                _fsync_dir(p.parent.parent)
+            data = line + b"\n"
+            try:
+                n = os.write(fd, data)
+            except OSError as exc:
+                raise self._fail(p, row, "write_failed", f"os.write failed: {self._oserr(exc)}") from None
+            if n != len(data):
+                raise self._fail(p, row, "short_write", f"short write: {n} of {len(data)} bytes reached the file")
+            try:
+                os.fsync(fd)
+                ids[tid] = identity(row)
+                self._cache[str(p)] = (os.fstat(fd).st_ino, off + len(data), ids)
+                if created:
+                    _fsync_dir(p.parent)
+                if new_dir:
+                    _fsync_dir(p.parent.parent)
+            except OSError as exc:
+                raise self._fail(p, row, "fsync_failed", f"fsync failed: {self._oserr(exc)}") from None
             return True
         finally:
             os.close(fd)  # releases the flock
@@ -305,6 +502,78 @@ class Ledger:
                 if line.strip():
                     out.append(json.loads(line))
         return out
+
+    @staticmethod
+    def _scan_file(p: Path, valid: Callable[[Any], bool]) -> tuple[list[dict[str, Any]], list[str]]:
+        """(records, problems) of one JSONL file, never raising on its content. The file is read under a SHARED flock, so a write in flight (an appender holds the
+        exclusive lock from write to fsync) is never seen half done: an unterminated tail seen here is a real torn write, not a race. A problem is a line that does
+        not parse or fails `valid`, or an unterminated last line (reported even when it happens to parse, and its record is then still returned)."""
+        recs: list[dict[str, Any]] = []
+        probs: list[str] = []
+        try:
+            fd = os.open(str(p), os.O_RDONLY)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH)
+                chunks = []
+                while True:
+                    c = os.read(fd, 1 << 20)
+                    if not c:
+                        break
+                    chunks.append(c)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            return recs, [f"{p.name}: cannot be read ({type(exc).__name__})"]
+        data = b"".join(chunks)
+        lines = data.split(b"\n")
+        torn = lines.pop() if lines else b""  # the text after the last newline: b"" when the file ends in one
+        if torn:
+            probs.append(f"{p.name}: does not end in a newline (a torn write: {len(torn)} byte(s) after the last complete line)")
+            lines.append(torn)
+        for i, raw in enumerate(lines, 1):
+            if not raw.strip():
+                continue
+            try:
+                r = json.loads(raw)
+            except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+                probs.append(f"{p.name} line {i}: unparseable ({type(exc).__name__}: {str(exc)[:60]})")
+                continue
+            if not valid(r):
+                probs.append(f"{p.name} line {i}: not a well-formed record")
+                continue
+            recs.append(r)
+        return recs, probs
+
+    @staticmethod
+    def _valid_row(r: Any) -> bool:
+        if not isinstance(r, dict):
+            return False
+        d = r.get("decision_ms")
+        return (isinstance(r.get("kind"), str) and isinstance(r.get("trade_id"), str) and isinstance(d, dict) and isinstance(d.get("entry"), (int, float))
+                and not isinstance(d.get("entry"), bool))
+
+    @staticmethod
+    def _valid_incident(r: Any) -> bool:
+        return isinstance(r, dict) and isinstance(r.get("kind"), str) and isinstance(r.get("at_ms"), int) and not isinstance(r.get("at_ms"), bool)
+
+    def scan_bot(self, bot_id: str) -> tuple[list[dict[str, Any]], list[str]]:
+        """Like read_bot but never raises on a damaged file: (rows, problems). Every torn or unparseable line of a bot's day files is a problem string; the scorer
+        makes THAT bot NOT_DECIDABLE with these reasons and still scores every other bot."""
+        d = self.root / bot_id
+        rows: list[dict[str, Any]] = []
+        probs: list[str] = []
+        if not d.exists():
+            return rows, probs
+        for p in sorted(d.glob("trades-*.jsonl")):
+            r, q = self._scan_file(p, self._valid_row)
+            rows += r
+            probs += q
+        return rows, probs
+
+    def read_incidents(self, bot_id: str) -> tuple[list[dict[str, Any]], list[str]]:
+        """(incidents, problems) of `<root>/<bot_id>/incidents.jsonl`; a damaged incident line is itself a problem (an incident may have been lost)."""
+        p = self.incidents_path(bot_id)
+        return self._scan_file(p, self._valid_incident) if p.exists() else ([], [])
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ config
@@ -519,6 +788,7 @@ class Position:
     call_ms: int = 0  # the wall clock at the buy() call
     exit_stamp_ms: int | None = None
     exit_call_ms: int | None = None
+    call_feed_slot: int | None = None  # the latest feed slot the engine had seen at the buy() call: the most the bot could have seen
 
 
 @dataclass
@@ -534,14 +804,25 @@ class Gap:
 class ArenaEngine:
     def __init__(self, ledger_root: str | os.PathLike = LEDGER_ROOT, registry_path: str | os.PathLike = REGISTRY_PATH, cfg: StackConfig | None = None,
                  vmap: Mapping[str, Any] | None = None, clock: SlotClock | None = None, sps_fn: Callable[[], float | None] | None = None,
-                 now_fn: Callable[[], int] | None = None) -> None:
-        self.ledger = Ledger(ledger_root)
+                 now_fn: Callable[[], int] | None = None, code_state_fn: Callable[[], tuple[str | None, bool | None]] | None = None,
+                 min_free_pct: float = MIN_FREE_PCT_DEFAULT) -> None:
+        # min_free_pct: the free-space floor of the ledger's filesystem checked before every append (default 25, DEC-031 section 3.8; never below 20, else ValueError)
+        self.ledger = Ledger(ledger_root, now_fn=lambda: self.now_fn(), min_free_pct=min_free_pct)  # now_fn late-bound: an incident line carries the engine's own call clock
+        self.code_state_fn = code_state_fn or process_code_state
+        self._code_cache: tuple[float, tuple[str | None, bool | None]] | None = None
         self.registry_path = registry_path
         self.cfg = cfg or StackConfig()
         self.vmap = vmap or {}
         self.clock = clock or SlotClock()
         self.sps_fn = sps_fn
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
+        # The code state is captured ONCE here, at engine start, and written to every bot's ledger as a `start` record (before its first open row). The scorer refuses
+        # a book whose start record is missing, does not carry the registered frozen_sha, or was a dirty tree: a process started from the wrong code would
+        # otherwise pass if the disk were later reset to the frozen sha while it kept running.
+        self.engine_id = uuid.uuid4().hex[:16]
+        self.start_state = self.code_state_fn()
+        self.started_ms = int(self.now_fn())
+        self._started_bots: set[str] = set()
         self.pools: dict[str, PoolHist] = {}
         self.positions: dict[str, Position] = {}
         self.pending: dict[str, list[str]] = {}  # pool -> position ids with a sell decided and not yet priced
@@ -552,10 +833,31 @@ class ArenaEngine:
         self.priced: dict[str, list[dict[str, Any]]] = {}  # pool -> positions already written (for late-print detection)
         self.counters: dict[str, int] = {}
         self.last_error: dict[str, str] = {}
+        # bot_id -> why. A bot whose ledger hit a LedgerCorrupt in a path the FEED drives (a late print, or the pricing of a sell) is halted: that bot is no longer
+        # priced and its late prints are dropped, so that every feed row does not retry the torn file and write one more incident; the feed loop and every other
+        # bot carry on. The incident line is already on disk; the book's read is NOT_DECIDABLE. A restarted engine starts clean (its open positions are engine_restart).
+        self.halted: dict[str, str] = {}
 
     # --- feed
     def _count(self, k: str) -> None:
         self.counters[k] = self.counters.get(k, 0) + 1
+
+    def _halt(self, bot_id: str, why: str) -> None:
+        """Stop pricing `bot_id` after a ledger incident in a feed-driven path (see `halted`). The Ledger has already written the incident line."""
+        if bot_id not in self.halted:
+            self.halted[bot_id] = why
+            self._count("bot_halted")
+
+    def _lost(self, bot_id: str, kind: str, exc: Exception, *, pool: str | None, instant: int | None, decision_slot: int | None) -> None:
+        """A buy / sell the ledger could not take is a lost attempt: besides the Ledger's own incident for the refused row, write one incident for the attempt itself
+        (pool, write instant, slot), so that the scorer's NOT_DECIDABLE names what was lost."""
+        self._count("ledger_torn_tail")
+        self._count("lost_" + kind.split("_")[0] + "s")  # lost_buys / lost_sells: the in-memory record, even if no incident line can be written
+        if isinstance(exc, LedgerWriteFailed):  # a disk that cannot take this row will not take the next: stop pricing and trading this book
+            self._halt(bot_id, f"{exc.kind}: {str(exc)[:120]}")
+        path = self.ledger.path_for(bot_id, utc_day(instant)) if instant is not None else None
+        if not self.ledger.incident(bot_id, kind, str(exc)[:200], path=path, pool=pool, decision_ms=instant, decision_slot=decision_slot):
+            self._count("incident_unwritten")
 
     def _v_of(self, h: PoolHist, row: Mapping[str, Any], venue: str) -> tuple[float, str]:
         """(V, source). Source order: this row's event V, an earlier row of the same pool, the static map, none. V outside [0, 30 SOL] is not used."""
@@ -660,13 +962,53 @@ class ArenaEngine:
                 continue
             keep.append(e)
             if slot < e["need"] or (slot == e["need"] and (e["trigger"] is None or key < e["trigger"])):
+                if e["bot_id"] in self.halted:  # its ledger is damaged: the late print is dropped (the incident is on record), the feed carries on
+                    self._count("late_prints_dropped_halted")
+                    continue
                 lid = hashlib.sha256(f"{e['pid']}|{slot}|{row.get('signature')}|{row.get('event_index')}".encode()).hexdigest()[:16]
                 overlap = self._gap_hit(e["prog"], e["span"]) is not None
-                self.ledger.append({"schema": SCHEMA, "kind": "late_print", "trade_id": f"{e['pid']}-late-{lid}", "position_id": e["pid"], "bot_id": e["bot_id"],
-                                    "decision_ms": {"entry": e["entry_ms"], "exit": None}, "slot": slot, "signature": row.get("signature"),
-                                    "t_recv_ms": row.get("t_recv_ms"), "gap_overlap": overlap, "written_ms": self.now_fn()})
+                try:
+                    self.ledger.append({"schema": SCHEMA, "kind": "late_print", "trade_id": f"{e['pid']}-late-{lid}", "position_id": e["pid"], "bot_id": e["bot_id"],
+                                        "decision_ms": {"entry": e["entry_ms"], "exit": None}, "slot": slot, "signature": row.get("signature"),
+                                        "t_recv_ms": row.get("t_recv_ms"), "gap_overlap": overlap, "written_ms": self.now_fn()})
+                except LedgerCorrupt as exc:
+                    # A torn or corrupt day file in the FEED path. This runs after the print was added to the pool history, so raising here would leave the feed state
+                    # half updated and kill the caller's feed loop for every bot. The Ledger has written the incident line; halt this bot and carry on.
+                    self._count("ledger_torn_tail")
+                    self._count("late_prints_lost")
+                    self._halt(e["bot_id"], f"late-print write refused: {str(exc)[:120]}")
+                    continue
                 self._count("late_prints")
         self.priced[pool] = keep
+
+    def start_record(self, bot_id: str) -> bool:
+        """Write this engine's start record into bot_id's ledger (once per engine and bot). Called automatically before the bot's first open row; a runner should
+        call start_all() right after constructing the engine."""
+        if bot_id in self._started_bots:
+            return False
+        reg = self._bot(bot_id)
+        head, dirty = self.start_state
+        try:
+            wrote = self.ledger.append({"schema": SCHEMA, "kind": "start", "trade_id": f"start-{self.engine_id}-{bot_id}", "engine_id": self.engine_id, "bot_id": bot_id,
+                                        "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": self.started_ms, "exit": None}, "code_head": head, "code_dirty": dirty,
+                                        "pid": os.getpid(), "stack": self.cfg.as_dict(), "written_ms": int(self.now_fn())})
+        except LedgerWriteFailed as exc:  # the incident line is already written; the book cannot start on a disk that will not take its start record
+            self._halt(bot_id, f"{exc.kind}: {str(exc)[:120]}")
+            raise
+        self._started_bots.add(bot_id)
+        return wrote
+
+    def start_all(self) -> int:
+        """start_record for every registered book that is not stopped."""
+        return sum(self.start_record(b) for b, e in load_registry(self.registry_path).items() if e["stopped_at_ms"] is None)
+
+    def code_state(self) -> tuple[str | None, bool | None]:
+        """(HEAD, dirty) of the running checkout, re-read at most once a minute. Every `open` row carries it; the scorer refuses a book whose rows do not run the
+        registered frozen_sha, or ran on a dirty tree."""
+        now = time.monotonic()
+        if self._code_cache is None or now - self._code_cache[0] > 60.0:
+            self._code_cache = (now, self.code_state_fn())
+        return self._code_cache[1]
 
     def sps(self) -> float | None:
         s = self.sps_fn() if self.sps_fn else self.clock.sps()
@@ -713,6 +1055,10 @@ class ArenaEngine:
             raise ArenaRefused(f"before_clock: the write instant {instant} is before bot {bot_id}'s clock {reg['clock_start_ms']}")
         if reg["stopped_at_ms"] is not None and instant >= reg["stopped_at_ms"]:
             raise ArenaRefused(f"stopped: bot {bot_id} is stopped")
+        if bot_id in self.halted:  # a lost attempt: no ledger row can be written for it, so the incident file is the only record
+            exc = LedgerCorrupt(f"bot {bot_id} is halted after a ledger incident ({self.halted[bot_id]}): the buy is refused and nothing was written")
+            self._lost(bot_id, "buy_refused", exc, pool=pool, instant=instant, decision_slot=int(decision_slot))
+            raise exc
         pid = hashlib.sha256(f"{bot_id}|{pool}|{int(decision_ms)}|{int(decision_slot)}".encode()).hexdigest()[:16]
         timing = {"stamp_ms": {"entry": int(decision_ms), "exit": None}, "call_ms": {"entry": call, "exit": None},
                   "write_lag_ms": {"entry": instant - int(decision_ms), "exit": None}}
@@ -726,10 +1072,14 @@ class ArenaEngine:
             if sps is None:
                 raise ArenaRefused("clock_not_ready: slot clock not ready (sps unknown)")
         except ArenaRefused as exc:  # a refused buy is still a decision: it goes in the decision log and counts toward the excluded share
-            self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused-{instant}", "position_id": pid, "bot_id": bot_id,
-                                "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": instant, "exit": None}, **timing,
-                                "decision_slot": {"entry": int(decision_slot), "exit": None}, "pool": pool, "reason": str(exc).split(":")[0],
-                                "detail": str(exc)[:200], "bot_sol_in": sol_in, "meta": dict(meta or {}), "stack": self.cfg.as_dict(), "written_ms": call})
+            try:
+                self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused-{instant}", "position_id": pid, "bot_id": bot_id,
+                                    "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": instant, "exit": None}, **timing,
+                                    "decision_slot": {"entry": int(decision_slot), "exit": None}, "pool": pool, "reason": str(exc).split(":")[0],
+                                    "detail": str(exc)[:200], "bot_sol_in": sol_in, "meta": dict(meta or {}), "stack": self.cfg.as_dict(), "written_ms": call})
+            except LedgerCorrupt as lost:  # the refusal itself could not be logged: the attempt would vanish from the decision log
+                self._lost(bot_id, "buy_refused", lost, pool=pool, instant=instant, decision_slot=int(decision_slot))
+                raise
             self._count("refused_" + str(exc).split(":")[0])
             raise
         if pid in self.positions:
@@ -737,12 +1087,18 @@ class ArenaEngine:
         d = self.cfg.feed_delay_slots
         sd = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant mapped to the tape slot clock; d is added at the landing
         pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, instant, int(decision_slot), sd, float(sps),
-                       None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call)
-        self.ledger.append({"schema": SCHEMA, "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
-                            "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
-                            "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
-                            "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
-                            "stack": self.cfg.as_dict(), "written_ms": call})
+                       None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call, call_feed_slot=self.hw_slot)
+        try:
+            head, dirty = self.code_state()
+            self.start_record(bot_id)  # the engine's code state, captured once at start, is on the ledger before the first open row that points at it
+            self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "engine_id": self.engine_id, "call_feed_slot": self.hw_slot, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
+                                "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
+                                "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
+                                "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
+                                "stack": self.cfg.as_dict(), "written_ms": call})
+        except LedgerCorrupt as lost:
+            self._lost(bot_id, "buy_refused", lost, pool=pool, instant=instant, decision_slot=int(decision_slot))
+            raise
         self.positions[pid] = pos
         return pid
 
@@ -760,7 +1116,7 @@ class ArenaEngine:
                                                                 r["decision_slot"]["entry"], r["effective_slot"]["entry"], r["sps_entry"], r["bot_sol_in"],
                                                                 r["meta"], restarted=True,
                                                                 stamp_ms=(r.get("stamp_ms") or {}).get("entry", r["decision_ms"]["entry"]),
-                                                                call_ms=(r.get("call_ms") or {}).get("entry", 0))
+                                                                call_ms=(r.get("call_ms") or {}).get("entry", 0), call_feed_slot=r.get("call_feed_slot"))
                     n += 1
         return n
 
@@ -775,6 +1131,10 @@ class ArenaEngine:
             raise ArenaRefused(f"position {position_id} already has a sell")
         if frac != 1.0:
             raise ArenaRefused("partial sells are not supported in v1 (frac must be 1.0)")
+        if bot_id in self.halted:  # the position stays open (an orphan in the read); the incident file records the lost sell
+            exc = LedgerCorrupt(f"bot {bot_id} is halted after a ledger incident ({self.halted[bot_id]}): the sell is refused and nothing was written")
+            self._lost(bot_id, "sell_refused", exc, pool=pos.pool, instant=int(decision_ms), decision_slot=int(decision_slot))
+            raise exc
         self._check_delay_set()
         call, instant = self._write_instant(decision_ms)
         self._check_instant(decision_ms, call)
@@ -792,7 +1152,12 @@ class ArenaEngine:
         pos.exit_ms, pos.exit_slot, pos.xs, pos.sps_exit, pos.reason = instant, int(decision_slot), xs, float(sps), reason
         pos.exit_stamp_ms, pos.exit_call_ms = int(decision_ms), call
         if pos.restarted:
-            self._write_excluded(pos, "engine_restart", None)
+            try:
+                self._write_excluded(pos, "engine_restart", None)
+            except LedgerCorrupt as lost:  # the exclusion row could not be written: the position stays open (an orphan) and the incident file says why
+                self._lost(bot_id, "sell_refused", lost, pool=pos.pool, instant=instant, decision_slot=int(decision_slot))
+                self._halt(bot_id, f"exclusion write refused: {str(lost)[:120]}")
+                raise
             del self.positions[position_id]
             return
         self.pending.setdefault(pos.pool, []).append(position_id)
@@ -824,7 +1189,11 @@ class ArenaEngine:
         return None
 
     def _exclusion(self, pos: Position, h: PoolHist, src: str, need: int) -> str | None:
-        """DEC-031 section 1.4: a logged data_loss gap in the decision-to-exit span, or a needed print without V, excludes the trade (counted, never priced)."""
+        """DEC-031 section 1.4: a logged data_loss gap in the decision-to-exit span, or a needed print without V, excludes the trade (counted, never priced).
+        A position whose open row has no call_feed_slot cannot take the 15% guard reference from the engine's own feed slot: it is excluded (guard_ref_missing,
+        counted, never priced) and the guard never falls back to a slot the bot named."""
+        if pos.call_feed_slot is None:
+            return "guard_ref_missing"
         if self._gap_hit(pos.prog, self._span(pos, need, src)) is not None:
             return "feed_gap"
         if pos.prog == "pumpswap":
@@ -859,6 +1228,9 @@ class ArenaEngine:
         keep = []
         for pid in ids:
             pos = self.positions[pid]
+            if pos.bot_id in self.halted:  # not priced while its ledger is damaged; stays open (an orphan in the read)
+                keep.append(pid)
+                continue
             need = self._needed_slot(pos)
             ready = h.last_slot >= need or self.hw_slot >= need + self.cfg.grace_slots or final
             if not ready:
@@ -877,6 +1249,9 @@ class ArenaEngine:
             except Exception as exc:  # a pricing failure must not drop the position silently: it stays open (an orphan in the read)
                 self.last_error[pid] = f"{type(exc).__name__}: {exc}"
                 self._count("price_errors")
+                if isinstance(exc, LedgerCorrupt):
+                    self._count("ledger_torn_tail")
+                    self._halt(pos.bot_id, f"pricing write refused: {str(exc)[:120]}")
                 keep.append(pid)
                 continue
             del self.positions[pid]
@@ -889,18 +1264,31 @@ class ArenaEngine:
         """End of a finite tape: price every pending sell on the derived state after the last print (stack behaviour)."""
         for p in list(self.pending):
             self._try_pending(p, final=True)
+        self.ledger.flush_incidents()
 
     def prune(self) -> int:
         """Drop the history of pools with no open position that have been quiet for HIST_KEEP_SLOTS."""
+        self.ledger.flush_incidents()  # housekeeping: retry incident lines the disk would not take earlier
         busy = {p.pool for p in self.positions.values()}
         drop = [k for k, h in self.pools.items() if k not in busy and h.last_slot < self.hw_slot - HIST_KEEP_SLOTS]
         for k in drop:
             del self.pools[k]
         return len(drop)
 
+    @staticmethod
+    def _ref_slot(pos: Position) -> int:
+        """The 15% guard reference slot: the engine's OWN latest feed slot at the buy() call (call_feed_slot), i.e. what a live executor would quote when it builds the
+        transaction. The bot's decision_slot is ignored by the guard entirely (a bot must not pick its own slippage reference: an older slot with a higher earlier
+        price would revert fewer buys, a future one would read prices it never saw); decision_slot can only push the LANDING later (sd = max(decision_slot, mapped
+        write instant)). Same convention as the stack: the reference price is the post-trade price of the last print BEFORE this slot. There is NO fallback: a position
+        without call_feed_slot (an open row from before the field existed) is refused here, and `_exclusion` writes it as an excluded trade (guard_ref_missing) first."""
+        if pos.call_feed_slot is None:
+            raise ArenaRefused(f"guard_ref_missing: position {pos.position_id} has no call_feed_slot: the guard reference is never taken from the bot's decision_slot")
+        return pos.call_feed_slot
+
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
         """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
-        decision-time spot stays the price the bot saw (prints before the UNCORRECTED decision slot)."""
+        decision-time spot is the price at the engine's own latest feed slot at the call (call_feed_slot), never at a slot the bot names."""
         cfg = self.cfg
         d = self._check_delay_set()
         a = h.arrays()
@@ -911,12 +1299,14 @@ class ArenaEngine:
             args = (a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"])
             ms = mint_states(*args, np.array([sdc]), pos.sps_entry, t_marks=np.array([0]), slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([xsc]),
                              lats=LATS, rounding=cfg.k_rounding)
-            spot = ms["spot"][0] if d == 0 else mint_states(*args, np.array([pos.sd]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
+            # the 15% guard compares against the price at the engine's latest feed slot at the call (call_feed_slot): engine-owned, the bot's decision_slot is ignored here
+            ref_slot = self._ref_slot(pos)
+            spot = ms["spot"][0] if ref_slot == sdc else mint_states(*args, np.array([ref_slot]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
             return {"ref": float(spot), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
                     "ssb": {l: float(ms["ssb"][l][0]) for l in LATS}, "nearby": {l: float(ms["nearby"][l][0]) for l in LATS},
                     "Qx": float(ms["Qx"][0]), "Bx": float(ms["Bx"][0]), "land": {l: sdc + k[l] for l in LATS}}
         x_land = {l: sdc + k[l] for l in LATS}
-        bs = bonding_states(h, pos.sd, x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
+        bs = bonding_states(h, self._ref_slot(pos), x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
         bs["land"] = x_land
         return bs
 
@@ -927,7 +1317,7 @@ class ArenaEngine:
                 "write_lag_ms": {"entry": pos.decision_ms - pos.stamp_ms, "exit": None if pos.exit_ms is None else pos.exit_ms - (pos.exit_stamp_ms or 0)},
                 "decision_slot": {"entry": pos.decision_slot, "exit": pos.exit_slot}, "effective_slot": {"entry": pos.sd, "exit": pos.xs},
                 "corrected_slot": {"entry": pos.sd + (self.cfg.feed_delay_slots or 0), "exit": None if pos.xs is None else pos.xs + (self.cfg.feed_delay_slots or 0)},
-                "feed_delay_slots": self.cfg.feed_delay_slots,
+                "feed_delay_slots": self.cfg.feed_delay_slots, "guard_ref_slot": pos.call_feed_slot,
                 "pool": pos.pool, "mint": pos.mint, "prog": pos.prog, "stake_sol": s_sol, "bot_sol_in": pos.bot_sol_in, "exit_reason": pos.reason,
                 "meta": pos.meta, "state_src": src, "stack": dict(self.cfg.as_dict(), sps_entry=pos.sps_entry, sps_exit=pos.sps_exit),
                 "written_ms": self.now_fn()}
@@ -969,5 +1359,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["LedgerCorrupt", "LedgerWriteFailed", "MIN_FREE_PCT_DEFAULT", "MIN_FREE_PCT_FLOOR", "process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]

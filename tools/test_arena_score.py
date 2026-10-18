@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from tools import arena_score as S
-from tools.arena_paper import TEST_ENV, Ledger, canon, register_bot as _register_bot, utc_day
+from tools.arena_paper import TEST_ENV, Ledger, LedgerCorrupt, canon, register_bot as _register_bot, utc_day
 from tools.arena_score import (
     STEPS,
     Refused,
@@ -29,6 +31,12 @@ from tools.r4b_book import boot_lo, fail_legs
 
 
 os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """The ledger refuses appends below its free-space floor (25% free): no test may depend on how full the host's disk is. The floor tests set their own numbers."""
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
 
 
 def register_bot(*a, **k):
@@ -76,7 +84,12 @@ def trade_row(pid, i, day, pnl19, pnl13=None, pnl19_sc=None, pnl13_sc=None, stak
 def open_row(pid, i, day, bot="botA", ms=None):
     ms = DAY0 + day * DAY + 3_600_000 + i * 1000 if ms is None else ms
     return {"schema": "arena_trade_v1", "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot, "frozen_sha": "abc1234",
-            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK)}
+            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": "abc1234", "code_dirty": False, "engine_id": "eng1"}
+
+
+def start_row(engine_id="eng1", head="abc1234", dirty=False, bot="botA"):
+    return {"schema": "arena_trade_v1", "kind": "start", "trade_id": f"start-{engine_id}-{bot}", "engine_id": engine_id, "bot_id": bot, "frozen_sha": "abc1234",
+            "decision_ms": {"entry": DAY0 + 1000, "exit": None}, "code_head": head, "code_dirty": dirty, "stack": dict(STACK)}
 
 
 def refused_row(i, day, bot="botA", reason="no_prints"):
@@ -87,7 +100,7 @@ def refused_row(i, day, bot="botA", reason="no_prints"):
 
 def positions(pnls19, days=5, stakes=(0.25,), **kw):
     """One open row and one trade row per stake per position; positions spread over `days` UTC dates in order."""
-    rows = []
+    rows = [start_row()]
     per = int(np.ceil(len(pnls19) / days))
     for i, p in enumerate(pnls19):
         pid = f"p{i:04d}"
@@ -207,7 +220,7 @@ def test_the_deciding_cell_is_1p9_at_the_pinned_stake(tmp_path):
     # the reverse: 1.9 s loses, 1.3 s wins
     assert status_of(read(sub, positions(np.full(100, -3e6), pnl13=4e6))) == "FAIL"
     # the pinned stake decides: stake 0.25 loses, stake 0.5 wins, pinned 0.5 -> PASS; pinned 0.25 -> FAIL
-    two = []
+    two = [start_row()]
     for i, p in enumerate(good_pnls()):
         pid = f"p{i:04d}"
         two += [open_row(pid, i, i // 20), trade_row(pid, i, i // 20, -3e6, stake=0.25), trade_row(pid, i, i // 20, p, stake=0.5)]
@@ -444,7 +457,7 @@ def test_daily_digest_has_hashes_and_counts_only_and_parses_no_trade_line(tmp_pa
     assert hashlib.sha256(data).hexdigest() in text and hashlib.sha256(dec).hexdigest() in text
     dg = S.digest_day(root, reg, day)
     a = dg["bots"]["botA"]
-    assert a["counts"] == {"open": 5, "trade": 6, "refused": 1} and a["lines"] == 12  # 5 positions, their 5 trades, 1 refused buy, and the poisoned line (counted by prefix, never parsed)
+    assert a["counts"] == {"open": 5, "trade": 6, "refused": 1, "start": 1} and a["lines"] == 13  # 5 positions, their 5 trades, 1 refused buy, and the poisoned line (counted by prefix, never parsed)
     assert dg["bots"]["botB"] == {"ledger_sha256": None, "decision_log_sha256": None, "lines": 0, "counts": {}}
     assert "net_lamports" not in text and "total_sol" not in text and "mean" not in text and "ci90" not in text
     assert main(["--ledger-root", root, "--registry", reg, "--daily-digest"]) == 2  # --day is required
@@ -517,3 +530,401 @@ def test_a_book_failing_only_on_n_prints_fail_n_lt_100(tmp_path):
     sub.mkdir()
     res = read(sub, positions(np.full(100, -3e6)))  # a real loss: a plain FAIL, no label
     assert res["bots"]["botA"]["status"] == "FAIL" and "fail_label" not in res["bots"]["botA"] and "STATUS FAIL (n" not in render(res)
+
+
+def test_open_rows_must_carry_the_registered_head_and_a_clean_tree(tmp_path):
+    base = positions(good_pnls())
+    for name, patch in (("wrong_head", {"code_head": "deadbee"}), ("dirty", {"code_dirty": True}), ("unknown_head", {"code_head": None, "code_dirty": None}),
+                        ("no_fields", None)):
+        sub = tmp_path / name
+        sub.mkdir()
+        rows = []
+        for r in base:
+            if r["kind"] == "open" and r["position_id"] == "p0042":
+                r = {k: v for k, v in r.items() if k not in ("code_head", "code_dirty")} if patch is None else dict(r, **patch)
+            rows.append(r)
+        res = read(sub, rows)
+        assert "bound to the process" in res["bots_refused"]["botA"] and "botA" not in res["bots"], name
+    sub = tmp_path / "before_clock"
+    sub.mkdir()  # a bad row decided before the clock is not counted, so it does not refuse the book
+    rows = base + [dict(open_row("early", 0, -3), code_head="deadbee", code_dirty=True)]
+    assert status_of(read(sub, rows)) == "PASS"
+
+
+def test_the_scorer_warns_when_it_reads_a_test_override_registry_line(tmp_path):
+    res = read(tmp_path, positions(good_pnls()))
+    v = res["bots"]["botA"]
+    assert len(v["warnings"]) == 1 and "test_override" in v["warnings"][0]
+    assert "WARNING: the registry line is a test_override" in render(res)
+
+
+def test_the_engine_start_record_must_match_the_registered_sha_and_be_clean(tmp_path):
+    base = positions(good_pnls())
+    assert status_of(read(tmp_path, base)) == "PASS"
+    cases = {"wrong_head": [start_row(head="deadbee")] , "dirty": [start_row(dirty=True)], "missing": [], "other_engine": [start_row(engine_id="eng2")]}
+    for name, starts in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        rows = [r for r in base if r["kind"] != "start"] + starts
+        res = read(sub, rows)
+        assert "engine start record" in res["bots_refused"]["botA"] and "botA" not in res["bots"], name
+    # an engine that was restarted: each open row points at its own engine's start record; a bad start of an engine with no counted rows is harmless
+    sub = tmp_path / "restart"
+    sub.mkdir()
+    rows = [dict(r, engine_id="eng2") if r["kind"] == "open" and int(r["position_id"][1:]) >= 50 else r for r in base] + [start_row(engine_id="eng2"), start_row(engine_id="eng3", dirty=True)]
+    assert status_of(read(sub, rows)) == "PASS"
+
+
+def test_a_forced_boundary_scores_comparators_over_the_same_attempts_and_never_a_later_one(tmp_path):
+    rows = positions(good_pnls())
+    natural_b = DAY0 + 5 * DAY
+    root, reg = setup(tmp_path, rows)
+    now = DAY0 + 30 * DAY
+    default = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    assert default["boundary_source"] == "natural" and default["read_boundary_ms"] == default["natural_boundary_ms"] == natural_b
+    assert score_all(root, reg, now_ms=now, boundary_ms=None)["bots"]["botA"] == default  # default behaviour is unchanged
+    # equal to the natural instant: allowed, same read, labelled forced
+    same = score_all(root, reg, now_ms=now, boundary_ms=natural_b)["bots"]["botA"]
+    assert same["boundary_source"] == "forced" and same["natural_boundary_ms"] == natural_b
+    assert same["status"] == "FORCED-SCREEN-ONLY: PASS" and same["banner"] == "not a gate read" and same["gate_read"] is False and default["gate_read"] is True
+    forced_keys = ("boundary_source", "status", "banner", "gate_read")
+    assert {k: v for k, v in same.items() if k not in forced_keys} == {k: v for k, v in default.items() if k not in forced_keys}
+    # earlier: the attempts decided before it only (days 0-3 = 80 attempts), so n < 100
+    early = score_all(root, reg, now_ms=now, boundary_ms=DAY0 + 4 * DAY)["bots"]["botA"]
+    assert early["boundary_source"] == "forced" and early["read_boundary_ms"] == DAY0 + 4 * DAY and early["natural_boundary_ms"] == natural_b
+    assert early["attempts"] == 80 and early["status"] == "FORCED-SCREEN-ONLY: FAIL" and any("n 80 < 100" in m for ms in early["deciding"]["misses"].values() for m in ms)
+    assert "fail_label" not in early  # 80 attempts also miss the 5 dates, so this is a plain FAIL
+    # later than the bot's own outcome-blind instant: refused, by score_bot and by score_all
+    from tools.arena_paper import load_registry
+
+    with pytest.raises(Refused, match="later than the bot's own outcome-blind instant"):
+        score_bot("botA", load_registry(reg), Ledger(root).read_bot("botA"), now, None, 24 * 3_600_000, natural_b + DAY)
+    assert "not recorded yet" in score_all(root, reg, now_ms=now, boundary_ms=natural_b + DAY, reads_dir=str(tmp_path / "reads"))["bots_refused"]["botA"]
+    # not a 00:00Z instant: refused
+    assert "00:00Z" in score_all(root, reg, now_ms=now, boundary_ms=natural_b - 3_600_000)["bots_refused"]["botA"]
+    # a bot with no outcome-blind instant yet cannot be forced
+    sub = tmp_path / "b"
+    sub.mkdir()
+    root2, reg2 = setup(sub, positions(good_pnls(60)))
+    assert "no outcome-blind instant yet" in score_all(root2, reg2, now_ms=now, boundary_ms=natural_b)["bots_refused"]["botA"]
+
+
+def test_a_forced_read_is_a_comparator_score_and_cannot_be_recorded(tmp_path, capsys):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    now = DAY0 + 30 * DAY
+    v = score_all(root, reg, now_ms=now, boundary_ms=DAY0 + 5 * DAY)["bots"]["botA"]
+    with pytest.raises(Refused, match="comparator score"):
+        record_read(tmp_path / "reads", v)
+    args = ["--ledger-root", root, "--registry", reg, "--bot", "botA", "--now-ms", str(now), "--reads-dir", str(tmp_path / "reads")]
+    assert main(args + ["--boundary-ms", str(DAY0 + 4 * DAY)]) == 0
+    assert "(forced; the bot's own is" in capsys.readouterr().out
+    assert main(args + ["--boundary-ms", str(DAY0 + 5 * DAY), "--record"]) == 3 and not (tmp_path / "reads").exists()
+    assert main(args + ["--boundary-ms", str(DAY0 + 9 * DAY)]) == 0  # refused bots are reported, not a crash
+    assert "later than" in capsys.readouterr().out
+    assert main(args + ["--record"]) == 0 and (tmp_path / "reads" / "botA.json").exists()  # the natural read still records
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ incidents and damaged files (quant-proof ruling on #716)
+def day_file(root, bot="botA", day=0):
+    return Ledger(root).path_for(bot, utc_day(DAY0 + day * DAY))
+
+
+def as_bot(rows, bot):
+    return [dict(r, bot_id=bot) for r in rows]
+
+
+def two_bots(tmp_path, seed_b=5):
+    """botA and botB, each with a clean 100-attempt book that passes; returns (root, reg)."""
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    register_bot("botB", "abc1234", DAY0, reg, deciding_stake=0.25, model_ids=[], now_ms=0)
+    led = Ledger(root)
+    for r in as_bot(positions(good_pnls(seed=seed_b)), "botB"):
+        led.append(r)
+    return root, reg
+
+
+def test_an_incident_before_the_boundary_makes_the_read_not_decidable_even_after_the_file_was_repaired(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    now = DAY0 + 30 * DAY
+    assert score_all(root, reg, now_ms=now)["bots"]["botA"]["status"] == "PASS"
+    # the real flow: a torn tail, an append that is refused (writes the incident), a repair
+    p = day_file(root)
+    good = p.read_bytes()
+    p.write_bytes(good + b'{"kind":"open","trade_id":"half')
+    refused_at = DAY0 + 2 * DAY
+    with pytest.raises(LedgerCorrupt):
+        Ledger(root, now_fn=lambda: refused_at).append(open_row("lost1", 999, 0))
+    p.write_bytes(good)  # repaired: the day file is clean again
+    assert Ledger(root).scan_bot("botA")[1] == []
+    v = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] == 1 and v["incidents"]["kinds"] == {"torn_tail": 1}
+    assert v["ledger_problems"] == [] and any("ledger incident" in r and "repaired" in r for r in v["reasons"])
+    txt = render(score_all(root, reg, now_ms=now))
+    assert "STATUS NOT_DECIDABLE" in txt and "INCIDENTS: 1 on record" in txt
+    # it is a final read like any NOT_DECIDABLE: recordable at the boundary
+    assert json.loads(record_read(tmp_path / "reads", v).read_text())["status"] == "NOT_DECIDABLE"
+
+
+def test_only_incidents_before_the_boundary_count_and_a_lost_attempt_counts_by_its_decision_instant(tmp_path):
+    boundary = DAY0 + 5 * DAY
+    now = DAY0 + 30 * DAY
+    for name, line, want in (("after", dict(at_ms=boundary + 1, row_decision_ms=boundary + 1), "PASS"),
+                             ("at_the_boundary", dict(at_ms=boundary, decision_ms=boundary), "PASS"),
+                             ("recorded_late_lost_early", dict(at_ms=boundary + DAY, row_decision_ms=DAY0 + 2 * DAY), "NOT_DECIDABLE"),
+                             ("lost_buy", dict(at_ms=DAY0 + 4 * DAY, decision_ms=DAY0 + 4 * DAY, pool="P1"), "NOT_DECIDABLE"),
+                             ("recorded_early", dict(at_ms=DAY0 + 1), "NOT_DECIDABLE")):
+        sub = tmp_path / name
+        sub.mkdir()
+        root, reg = setup(sub, positions(good_pnls()))
+        kind = "buy_refused" if name == "lost_buy" else "torn_tail"
+        at = line.pop("at_ms")
+        Ledger(root, now_fn=lambda: at).incident("botA", kind, "test", **line)
+        v = score_all(root, reg, now_ms=now)["bots"]["botA"]
+        assert v["status"] == want, name
+        assert v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] == (0 if want == "PASS" else 1), name
+        assert v["incidents"]["lost_buys"] == (1 if name == "lost_buy" else 0), name
+
+
+def test_a_not_ready_book_discloses_its_incidents_and_the_read_at_the_boundary_will_be_not_decidable(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls(50)))
+    Ledger(root, now_fn=lambda: DAY0 + DAY).incident("botA", "torn_tail", "test", row_decision_ms=DAY0 + DAY)
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_READY" and v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] is None
+    assert any("NOT_DECIDABLE" in r for r in v["reasons"]) and "INCIDENTS: 1 on record" in render(res)
+    with pytest.raises(Refused, match="not ready"):
+        record_read(tmp_path / "reads", v)
+
+
+DAMAGE = {
+    "torn_tail": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"open","trade_id":"hal'),
+    "unparseable_line": lambda p: p.write_bytes(p.read_bytes() + b"not json at all\n"),
+    "unterminated_but_valid_json_tail": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"x","decision_ms":{"entry":1}}'),
+    "not_a_record": lambda p: p.write_bytes(p.read_bytes() + b"[1,2,3]\n"),
+    "record_without_decision_ms": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"trade","trade_id":"y"}\n'),
+    "binary_garbage": lambda p: p.write_bytes(p.read_bytes() + b"\xff\xfe\x00\n"),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(DAMAGE))
+def test_a_torn_or_unparseable_line_makes_that_bot_not_decidable_and_every_other_bot_is_still_scored(tmp_path, damage, capsys):
+    root, reg = two_bots(tmp_path)
+    now = DAY0 + 30 * DAY
+    assert {b: v["status"] for b, v in score_all(root, reg, now_ms=now)["bots"].items()} == {"botA": "PASS", "botB": "PASS"}
+    DAMAGE[damage](day_file(root, "botA", 2))  # one damaged line in botA's files
+    res = score_all(root, reg, now_ms=now)  # no crash
+    a, b = res["bots"]["botA"], res["bots"]["botB"]
+    assert a["status"] == "NOT_DECIDABLE" and a["ledger_problems"] and "fail_label" not in a
+    assert any("torn or unparseable ledger line" in r for r in a["reasons"]) and "trades-" in a["ledger_problems"][0]
+    assert b["status"] == "PASS" and b["ledger_problems"] == [] and "botB" not in res["bots_refused"]  # the other bot is scored as before
+    txt = render(res)
+    assert "BOT botA  STATUS NOT_DECIDABLE" in txt and "LEDGER PROBLEM: trades-" in txt and "BOT botB  STATUS PASS" in txt
+    assert main(["--ledger-root", root, "--registry", reg, "--now-ms", str(now)]) == 0  # the CLI prints both and does not crash
+    assert "LEDGER PROBLEM" in capsys.readouterr().out
+    # the damaged bot's NOT_DECIDABLE is recordable at the boundary (final, like any NOT_DECIDABLE); the clean bot's read is not affected
+    assert json.loads(record_read(tmp_path / "reads", a).read_text())["status"] == "NOT_DECIDABLE"
+
+
+def test_a_damaged_file_before_the_boundary_prints_not_decidable_but_nothing_is_recorded(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls(50)))
+    DAMAGE["torn_tail"](day_file(root))
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)  # NOT_READY has no 'attempts' / 'books': the renderer and the digest must cope
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["ledger_problems"] and "LEDGER PROBLEM" in render(res)
+    with pytest.raises(Refused, match="boundary is not reached"):
+        record_read(tmp_path / "reads", v)
+
+
+def test_a_torn_incident_line_is_a_ledger_problem_too(tmp_path):
+    root, reg = two_bots(tmp_path)
+    inc = Ledger(root).incidents_path("botA")
+    inc.write_bytes(b'{"kind":"torn_tail","at_ms":1,"bot_id":"botA","day_fi')  # a crash while the incident was written: an incident may have been lost
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)
+    assert res["bots"]["botA"]["status"] == "NOT_DECIDABLE" and "incidents.jsonl" in res["bots"]["botA"]["ledger_problems"][0] and res["bots"]["botB"]["status"] == "PASS"
+
+
+def test_the_ledger_scan_reads_under_a_shared_lock_so_a_write_in_flight_is_never_seen_half_done(tmp_path):
+    import fcntl
+
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    p = day_file(root)
+    fd = os.open(str(p), os.O_RDWR | os.O_APPEND)
+    fcntl.flock(fd, fcntl.LOCK_EX)  # an appender holds the exclusive lock from write to fsync
+    try:
+        import threading
+
+        done = []
+        t = threading.Thread(target=lambda: done.append(Ledger(root).scan_bot("botA")))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive() and not done  # the scan waits for the writer
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    t.join(5)
+    assert done and done[0][1] == []
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ forced boundary later than the own instant; common_boundary (quant-proof ruling on #716)
+NOW = DAY0 + 30 * DAY
+
+
+def late_setup(tmp_path, pnls=None):
+    """botA: 120 attempts over 6 days; its natural instant is DAY0+5 days (100 attempts over 5 dates), so a forced DAY0+6 days is LATER than its own."""
+    root, reg = setup(tmp_path, positions(good_pnls(120) if pnls is None else pnls, days=6))
+    return root, reg, str(tmp_path / "reads")
+
+
+def write_recorded(reads, **fields):
+    Path(reads).mkdir(parents=True, exist_ok=True)
+    Path(reads, "botA.json").write_text(canon(dict({"bot_id": "botA", "read_boundary_ms": DAY0 + 5 * DAY, "boundary_source": "natural"}, **fields)) + "\n")
+
+
+def test_a_forced_boundary_past_the_own_instant_is_refused_when_the_own_read_is_not_recorded(tmp_path):
+    root, reg, reads = late_setup(tmp_path)
+    res = score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)
+    assert "botA" not in res["bots"] and "not recorded yet" in res["bots_refused"]["botA"] and "PASS cannot be excluded" in res["bots_refused"]["botA"]
+    with pytest.raises(Refused, match="not recorded yet"):
+        score_bot("botA", S.load_registry(reg), Ledger(root).read_bot("botA"), NOW, None, 24 * 3_600_000, DAY0 + 6 * DAY)  # no comparator_read passed
+    # the natural read itself previews fine, and earlier / equal forced boundaries still need no recorded read
+    assert score_all(root, reg, now_ms=NOW, reads_dir=reads)["bots"]["botA"]["status"] == "PASS"
+    for b in (DAY0 + 4 * DAY, DAY0 + 5 * DAY):
+        assert score_all(root, reg, now_ms=NOW, boundary_ms=b, reads_dir=reads)["bots"]["botA"]["past_own_instant"] is False
+
+
+def test_a_forced_boundary_past_the_own_instant_is_refused_when_the_own_read_is_a_recorded_pass(tmp_path):
+    root, reg, reads = late_setup(tmp_path)
+    v = score_all(root, reg, now_ms=NOW, reads_dir=reads)["bots"]["botA"]
+    assert v["status"] == "PASS" and v["read_boundary_ms"] == DAY0 + 5 * DAY
+    record_read(reads, v)  # its one read, recorded PASS: its later attempts are its confirmation window
+    res = score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)
+    assert "botA" not in res["bots"] and "recorded PASS" in res["bots_refused"]["botA"] and "confirmation window" in res["bots_refused"]["botA"]
+    # at or before its own instant is still fine after a recorded PASS
+    assert score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 5 * DAY, reads_dir=reads)["bots"]["botA"]["status"] == "FORCED-SCREEN-ONLY: PASS"
+    assert main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--now-ms", str(NOW), "--reads-dir", reads, "--boundary-ms", str(DAY0 + 6 * DAY)]) == 0
+
+
+@pytest.mark.parametrize("recorded,fail_label", [("FAIL", None), ("FAIL", "FAIL (n < 100)"), ("NOT_DECIDABLE", None), ("REPORT_ONLY", None)])
+def test_a_forced_boundary_past_the_own_instant_is_allowed_after_a_recorded_fail_not_decidable_or_report_only(tmp_path, capsys, recorded, fail_label):
+    root, reg, reads = late_setup(tmp_path)
+    write_recorded(reads, status=recorded, **({"fail_label": fail_label} if fail_label else {}))
+    res = score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)
+    v = res["bots"]["botA"]
+    label = fail_label or recorded
+    assert v["past_own_instant"] is True and v["comparator_recorded_status"] == label and v["gate_read"] is False
+    assert v["boundary_source"] == "forced" and v["read_boundary_ms"] == DAY0 + 6 * DAY and v["natural_boundary_ms"] == DAY0 + 5 * DAY and v["attempts"] == 120
+    assert v["status"].startswith("FORCED-SCREEN-ONLY: ") and v["banner"].startswith("comparator, past its own instant: not a gate read")
+    assert f"recorded read: {label}" in v["banner"]
+    txt = render(res)
+    assert "comparator, past its own instant: not a gate read" in txt and label in txt and "STATUS FORCED-SCREEN-ONLY: " in txt
+    with pytest.raises(Refused, match="comparator score"):
+        record_read(tmp_path / "reads2", v)  # never recordable
+    assert main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--now-ms", str(NOW), "--reads-dir", reads, "--boundary-ms", str(DAY0 + 6 * DAY), "--record"]) == 3
+    assert "NOT RECORDED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("fields,why", [
+    ({"status": "PENDING"}, "status 'PENDING'"),
+    ({"status": "NOT_READY"}, "status 'NOT_READY'"),
+    ({"status": "UNREADABLE"}, "status 'UNREADABLE'"),
+    ({"status": "FAIL", "read_boundary_ms": DAY0 + 4 * DAY}, "not this bot's read at that instant"),
+    ({"status": "FAIL", "bot_id": "botZ"}, "not this bot's read at that instant"),
+    ({"status": "FAIL", "boundary_source": "forced"}, "status 'FAIL'"),
+])
+def test_a_forced_boundary_past_the_own_instant_is_refused_for_any_other_recorded_state(tmp_path, fields, why):
+    root, reg, reads = late_setup(tmp_path)
+    write_recorded(reads, **fields)
+    assert why in score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)["bots_refused"]["botA"]
+    Path(reads, "botA.json").write_text("{not json")  # an unreadable recorded read is a recorded read of unknown status
+    assert "status 'UNREADABLE'" in score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)["bots_refused"]["botA"]
+
+
+def test_a_real_recorded_fail_then_a_forced_read_past_it_end_to_end(tmp_path):
+    root, reg, reads = late_setup(tmp_path, pnls=-np.abs(good_pnls(120)))  # a losing book
+    v = score_all(root, reg, now_ms=NOW, reads_dir=reads)["bots"]["botA"]
+    assert v["status"] == "FAIL" and "fail_label" not in v
+    record_read(reads, v)
+    late = score_all(root, reg, now_ms=NOW, boundary_ms=DAY0 + 6 * DAY, reads_dir=reads)["bots"]["botA"]
+    assert late["past_own_instant"] is True and late["comparator_recorded_status"] == "FAIL" and late["attempts"] == 120 and v["attempts"] == 100
+    assert late["status"] == "FORCED-SCREEN-ONLY: FAIL"
+
+
+def test_common_boundary_is_the_earlier_of_the_two_natural_instants_and_scores_both_arms_on_it(tmp_path, capsys):
+    root = tmp_path / "ledger"
+    reg = str(tmp_path / "bots.json")
+    for bot, n, days in (("botA", 120, 6), ("botB", 100, 6)):  # A reaches 100 attempts over 5 dates by day 5; B only by day 6
+        register_bot(bot, "abc1234", DAY0, reg, deciding_stake=0.25, model_ids=[], now_ms=0)
+        for r in as_bot(positions(good_pnls(n), days=days), bot):
+            Ledger(root).append(r)
+    a, b = (S.natural_instant(str(root), reg, x) for x in ("botA", "botB"))
+    assert (a, b) == (DAY0 + 5 * DAY, DAY0 + 6 * DAY)
+    assert S.common_boundary("botA", "botB", str(root), reg) == S.common_boundary("botB", "botA", str(root), reg) == a
+    # the helper agrees with the instant score_bot reports, and the two arms are scored on the same attempts at it with no recorded read needed
+    res = score_all(str(root), reg, now_ms=NOW, boundary_ms=S.common_boundary("botA", "botB", str(root), reg), reads_dir=str(tmp_path / "none"))
+    assert res["bots_refused"] == {} and res["bots"]["botA"]["natural_boundary_ms"] == a and res["bots"]["botB"]["natural_boundary_ms"] == b
+    assert {v["read_boundary_ms"] for v in res["bots"].values()} == {a} and all(v["past_own_instant"] is False for v in res["bots"].values())
+    assert res["bots"]["botA"]["attempts"] == 100 and res["bots"]["botB"]["attempts"] == 85  # the same boundary, each bot's own attempts before it
+    assert all(v["status"].startswith("FORCED-SCREEN-ONLY: ") and v["banner"] == "not a gate read" for v in res["bots"].values())
+    # the CLI prints it
+    assert main(["--ledger-root", str(root), "--registry", reg, "--common-boundary", "botB", "botA"]) == 0
+    assert f"common boundary {a} " in capsys.readouterr().out
+
+
+def test_common_boundary_is_refused_when_an_arm_has_no_natural_instant_or_is_unknown(tmp_path, capsys):
+    root = tmp_path / "ledger"
+    reg = str(tmp_path / "bots.json")
+    for bot, n, days in (("botA", 120, 6), ("botB", 60, 3)):
+        register_bot(bot, "abc1234", DAY0, reg, deciding_stake=0.25, model_ids=[], now_ms=0)
+        for r in as_bot(positions(good_pnls(n), days=days), bot):
+            Ledger(root).append(r)
+    with pytest.raises(Refused, match="botB has not reached"):
+        S.common_boundary("botA", "botB", str(root), reg)  # an unnamed default would silently score the arms on different boundaries
+    with pytest.raises(Refused, match="not in the registry"):
+        S.common_boundary("botA", "nobody", str(root), reg)
+    assert main(["--ledger-root", str(root), "--registry", reg, "--common-boundary", "botA", "botB"]) == 3
+    assert "NOT AVAILABLE" in capsys.readouterr().err
+    # a torn decision line makes the instant uncomputable: Refused, not a JSONDecodeError
+    p = day_file(str(root), "botA", 1)
+    p.write_bytes(p.read_bytes() + b'{"kind":"open","trade_id":"hal')
+    with pytest.raises(Refused, match="torn or unparseable decision line"):
+        S.common_boundary("botA", "botA", str(root), reg)
+
+
+def test_the_forced_status_label_prefixes_pass_fail_and_every_other_status_and_the_banner_is_printed(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    for b, want in ((DAY0 + 5 * DAY, "FORCED-SCREEN-ONLY: PASS"), (DAY0 + 4 * DAY, "FORCED-SCREEN-ONLY: FAIL")):
+        res = score_all(root, reg, now_ms=NOW, boundary_ms=b, reads_dir=str(tmp_path / "r"))
+        assert res["bots"]["botA"]["status"] == want
+        txt = render(res)
+        assert f"STATUS {want}" in txt and "*** not a gate read ***" in txt
+    nr = score_all(root, reg, now_ms=DAY0 + 4 * DAY, boundary_ms=DAY0 + 5 * DAY, reads_dir=str(tmp_path / "r"))["bots"]["botA"]
+    assert nr["status"] == "FORCED-SCREEN-ONLY: NOT_READY" and nr["banner"] == "not a gate read"
+    natural = score_all(root, reg, now_ms=NOW)["bots"]["botA"]
+    assert natural["status"] == "PASS" and "banner" not in natural  # the natural read is untouched
+    # a forced FAIL (n < 100) carries the prefix on its label too
+    sub = tmp_path / "n"
+    sub.mkdir()
+    rows = [dict(r, kind="excluded", exclusion_reason="feed_gap", legs=None, calc=None) if r["kind"] == "trade" and r["position_id"] == "p0003" else r for r in positions(good_pnls())]
+    root2, reg2 = setup(sub, rows)
+    res = score_all(root2, reg2, now_ms=NOW, boundary_ms=DAY0 + 5 * DAY, reads_dir=str(sub / "r"))
+    assert res["bots"]["botA"]["fail_label"] == "FORCED-SCREEN-ONLY: FAIL (n < 100)" and "STATUS FORCED-SCREEN-ONLY: FAIL (n < 100)" in render(res)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ disk failures reach the scorer (quant-proof on #716, comment 6246100076)
+from tools.arena_paper import LedgerWriteFailed  # noqa: E402
+from tools.test_arena_paper import DISK_MODES, break_disk  # noqa: E402
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_disk_failure_on_an_append_makes_the_book_not_decidable_at_the_scorer(tmp_path, monkeypatch, mode):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    assert score_all(root, reg, now_ms=NOW)["bots"]["botA"]["status"] == "PASS"
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)  # ENOSPC on the write, a short write, an fsync error, the free-space floor
+        with pytest.raises(LedgerWriteFailed):
+            Ledger(root, now_fn=lambda: DAY0 + 2 * DAY).append(open_row("lost1", 999, 0))
+    res = score_all(root, reg, now_ms=NOW)
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["incidents"]["kinds"] == {kind: 1} and v["incidents"]["before_boundary"] == 1
+    assert any("ledger incident" in r for r in v["reasons"]) and f"INCIDENTS: 1 on record {{'{kind}': 1}}" in render(res)
+    assert bool(v["ledger_problems"]) == (mode == "short_write")  # a short write also leaves a fragment, which the scan reports on its own

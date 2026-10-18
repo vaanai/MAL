@@ -179,7 +179,7 @@ def build(hour: str) -> dict:
     register_bot("parity-bot", "0123abc", 0, reg, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
 
     def engine(cfg, name):
-        return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_)
+        return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_, min_free_pct=0.0)  # a temp-dir replay: the production free-space floor does not apply
 
     # ---- PumpSwap decisions
     cases: list[dict] = []
