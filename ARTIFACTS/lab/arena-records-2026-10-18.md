@@ -75,5 +75,16 @@ Any later change to these files is disclosed in every read it touches, and needs
   - any A3 HALT flag ends both counted windows.
 - **Disk floor.** On research-0 the arena ledger refuses writes below 25% free (DEC-031 §3.8). The host is at about 19.9% free, so no research-0 book can start until more space is freed.
 
-## 5. bots.json lines
-These are added by a records PR within 24 h of registration (DEC-031 §1.2). Registration happens after this PR merges.
+## 5. bots.json lines (H5 books; registered 2026-10-18T05:54:06Z, job #1157; copied here within 24 h, DEC-031 §1.2)
+- **Registry:** mal-fast-0 `$HOME/data/arena/bots.json`, sha256 `d1bd6ad32842706e57d847862b239e34ad3a7fd45d5a23e6bd53b805843c22e8`. Notebook entry n_e-80oeFe6Ma0zw.
+- **Shared by both books:**
+  - frozen_sha `1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde`;
+  - clock_start_ms `1792303200000` (2026-10-18T06:00:00Z); registered_at_ms `1792302846538`;
+  - deciding_stake_sol 0.30, deciding_cell 1p9, stack DEC-031-rev2;
+  - rule H5-BOOSTFLOOR v1;
+  - sockets 3, endpoints `wss://api.mainnet-beta.solana.com` and `wss://public.rpc.solanavibestation.com`, host mal-fast-0;
+  - scorer `tools/arena_h5_score.py`, cost module `tools/arena_h5_cost.py`;
+  - window_end_ms null and stopped_ms null at registration.
+- **`h5v1-boostfloor-a1`:** exit_rule v1 (330 s).
+- **`h5v2-boostclock-a1`:** exit_rule v2 (bx10), freeze_sha256 `5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0`.
+- **Shadow:** MiScusi job #1158 at git_ref 1f7a89c. Start record start_ms `1792302863694` (05:54:23Z), with fresh_forward ARENA, dirty false, bx10 true and tip_union off (checked by job #1160). Output goes to `$HOME/data/arena/h5-2026-10-18` on mal-fast-0.
