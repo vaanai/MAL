@@ -8,6 +8,10 @@
     st.pool(id) / st.pools(pred) / st.snapshot(id)   # id = pool address (pumpswap) or mint (pumpfun)
     st.on_trade = lambda pool, row: ...              # called after each trade is applied (st.add_on_trade for more)
 
+Files: the open hour is a `tape-<hour>.jsonl` followed by byte offset; a closed hour is a `tape-<hour>.jsonl.zst` (tools/arena_feed compacts it,
+byte-exact), streamed through the zstd CLI. When a .jsonl the reader was following is compacted, it continues in the .zst at the same decompressed
+offset, so every row is applied exactly once. While both files of an hour exist the .jsonl is used. Needs the zstd CLI only for .zst hours.
+
 The state clock is `now_ms`: the largest t_recv_ms applied. Nothing reads the wall clock except the live warm-up default, so a replay
 is deterministic. Reserve conventions (tools/arena_tape_schema.md): PumpSwap rows carry PRE-trade reserves with V, so the post-trade
 spot is derived here (the same algebra as tools.h5_shadow.post_state); bonding rows carry POST-trade reserves, used as they are.

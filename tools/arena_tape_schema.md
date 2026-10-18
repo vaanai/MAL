@@ -7,7 +7,8 @@ Written by `tools/arena_feed.py`, read by `tools/arena_state.py`, the arena pape
 
 | Path (in `--out-dir`, default `/data/mal/arena/tape`) | What |
 | --- | --- |
-| `tape-<YYYY-MM-DDTHH>.jsonl` | Hourly. The hour is the UTC hour of the row's `t_recv_ms`. One strict JSON object per line, flushed per line (`tools/tape_lines.py` counts them clean). Append-only. |
+| `tape-<YYYY-MM-DDTHH>.jsonl` | The OPEN hour (and, for 2 minutes, the hour just closed). The hour is the UTC hour of the row's `t_recv_ms`. One strict JSON object per line, flushed per line (`tools/tape_lines.py` counts them clean). Append-only. |
+| `tape-<YYYY-MM-DDTHH>.jsonl.zst` | A CLOSED hour. 120 s after the hour ends the feed compacts it in a background thread (ingest never waits): `zstd -9` to `<file>.zst.tmp`, fsync, rename, fsync the directory, then a full decompress is compared with the source (bytes, lines, sha256) and ONLY THEN the `.jsonl` is deleted. A mismatch removes the `.zst` and keeps the `.jsonl` (retried on 3 scans). The decompressed bytes are identical to the `.jsonl`. While both exist, readers use the `.jsonl`. A row that reaches the writer after its hour was compacted (more than 120 s late) goes to the current hour's file instead (`rows_late_to_current_hour` in the status). A `*.zst.tmp` left by a killed run is deleted at the next start. Needs the `zstd` CLI (the feed refuses to start without it; `--no-compress` turns compaction off). |
 | `arena-feed-status.json` | Atomic (tmp + rename), rewritten every 60 s and at stop. Rows per minute per program, last slot, socket states, gap count, RSS. |
 | `arena-feed-errors.log` | Exception class, message[:200] and slot only. Capped at 2 MB. |
 | `.arena-feed.lock` | `flock(LOCK_EX\|LOCK_NB)` held for the process life. A second instance exits with code 3. |
@@ -149,5 +150,10 @@ An hour with a `data_loss` gap, or with fewer than 60 `hb` rows per program, is 
 - A failed transaction produces no row (it still counts toward the program's slot clock and silence rule).
 - No block position (`tx_index`) and no `block_time`. Order within a slot is arrival order, not chain order.
 - Rows from the two programs are interleaved by arrival; `t_recv_ms` can go back by a few milliseconds between rows.
-- Size: about 0.34 GB per hour (8 GB per day) uncompressed at the 2026-10-18 03:15Z rate (11.5 MB per 120 s in the smoke). Compression is not
-  measured here.
+- Size, measured on the 120 s smoke tape of 2026-10-18 about 03:15Z (a Sunday morning, one sample; the day's rate varies): 11,482,016 bytes
+  (14,118 rows) uncompressed, 2,162,633 bytes after `compact_file` (zstd -9): ratio 5.31. At that rate that is about 0.34 GB per hour and 8.27 GB per
+  day uncompressed in the open hour, and about 1.56 GB per day once compacted (8.27 / 5.31). Level 3 gave 4.74 and level 19 gave 5.66 on the same
+  data. The ratio of a full hour is not measured (a longer file may compress a little better).
+- Disk guard: below `--min-free-pct` (default 15) free space on the out-dir filesystem the feed stops writing rows and writes a `disk_pause` gap.
+  Compaction is not paused by it (it frees space once the new file verifies; the `.zst` and the `.jsonl` coexist for the moment of verification, so
+  about one compacted hour of headroom is needed).
