@@ -9,10 +9,14 @@ and gates nothing itself: every cell below is an arena_score cell.
     python -m tools.hv4_read table [--json F]                         (assembles the recorded reads; computes nothing new)
 
 READS (each at a pre-declared instant, each written ONCE, a second run is refused, an early run is refused and writes nothing):
-  book      one per bot_id, at the DEC-031 outcome-blind instant B (arena_score.blind_read_instant, decision timestamps only: a corrupt or unreadable
-            outcome line cannot block or move it). Output: the arena_score read, the gate cells of that arm, the disclosure block, a result.v1 record and
-            Console row drafts. For an LLM book (L or F) it also carries V1 and V2.
-  learning  one, at T0 + 14 d + 13:00Z (the D14 look, DESIGN section 8), covering entries before T0 + 14 d. T0 is the common clock_start_ms of the 13 arms in bots.json.
+  book      one GATE read per bot_id, at the DEC-031 outcome-blind instant B (arena_score.blind_read_instant, decision timestamps only: a corrupt or unreadable
+            outcome line cannot block or move it). DEC-031 governs: DESIGN section 8's day-5/7/10/14 looks are superseded for gate purposes. Output: the
+            arena_score read, the gate cells of that arm, the disclosure block, a result.v1 record and Console row drafts. For an LLM book (L or F) it also
+            carries V1 and V2.
+  learning  one, at T0 + 14 d + 13:00Z (D14), covering entries before T0 + 14 d. It is a SEPARATE pre-declared comparison and NOT a gate read: it prints no gate
+            verdict, and its result.v1 gate ticks are false by construction. T0 is the common clock_start_ms of the 13 arms in bots.json.
+
+GATE MULTIPLICITY, disclosed in every read: 25 cells x 1 read each = 25 checks (DEC-031 section 2), beside the arena's own book and cell counts.
 
 THE DECIDING CELL (DEC-031 section 2): 1.9 s at the stake pinned in bots.json (0.25 for all 13 arms; the tool refuses any other), flat 15% AND pressure-fail, each
 under BOTH strand rules ("total" and "sc"): four sub-cells, all must pass. "Both legs" in V1, V2 and learning means all four sub-cells, never one. The 1.3 s
@@ -24,23 +28,26 @@ book by arena_score (pressure refit on exactly those trades). CON-P and the thre
 
 V1  the LLM book's primary ex-top-3 (stake 0.25, 1.9 s) is ABOVE the 95th percentile (numpy linear) of the persona's R arm over a 200-seed null, in each of the four
     sub-cells. The null is 200 replays of the R arm, seeds 1..200, each an arena-ledger file `<null-dir>/<persona>-R/seed-NNNN.jsonl`, each scored by arena_score at
-    the book's own instant B. A missing or unusable seed makes V1 NOT_DECIDABLE.
-V2  daily (book - X) at 0.25 over the calendar days of the read window (days with no trade count 0), one-sided day-block bootstrap (resample whole UTC days,
-    2,000 draws, seed 1), p = (1 + #{mean <= 0}) / (1 + draws) (the repo's exp017 convention) <= 0.05/6, in each of the four sub-cells. X is scored at B.
+    the book's own instant B. A missing seed, or a seed whose own instant is earlier than B (arena_score refuses a boundary later than a bot's own instant),
+    makes V1 NOT_DECIDABLE.
+V2  daily (book - X) at 0.25 over the calendar days of the window (days with no trade count 0), one-sided day-block bootstrap (resample whole UTC days,
+    2,000 draws, seed 1), p = (1 + #{mean <= 0}) / (1 + draws) (the repo's exp017 convention) <= 0.05/6, in each of the four sub-cells. The window ends at the
+    common boundary min(B of the book, B of X): arena_score refuses a boundary later than a bot's own instant, so both are scored at the earlier of the two.
 LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and L - P with p <= 0.025 (same bootstrap) in each sub-cell, and the mean daily
-    L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable under arena_score, an
-    arm has fewer than 100 priced trades at 0.25, or the window has fewer than 14 days.
+    L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable (orphans, excluded
+    share above 5%, a bonding row, a strand rule missing), an arm has fewer than 100 priced trades at 0.25, or the window has fewer than 14 days. Its arms are
+    built by `learning_arm`, NOT by a forced arena_score boundary (D14 is later than every arm's own instant, which arena_score refuses): the same refusals
+    (`check_bot_rows`), exclusions and cells (`book_cells`), pinned by a parity test against arena_score's own read.
 
-The pre-declared instant of a book is NOT the DESIGN's four looks (T0+5/+7/+10/+14). DEC-031 reads each bot_id once; the disclosure states the 25 x 4 = 100 checks
-of the DESIGN beside it. Windows: arena_score is run with its read boundary forced (`forced_boundary`) for X, R and learning arms, so that a paired comparison covers
-the same attempts. The patch is local, restored on exit, and a test pins that it reproduces arena_score's own read when the forced instant is the natural one.
+BOUNDARY (manager ruling on #718): no monkeypatch. `score_at` calls `arena_score.score_bot(..., boundary_ms=...)`, which PR #716 adds (it refuses a boundary later
+than the bot's own instant and records boundary_source "forced"). TODO(#716): until it merges `score_at` raises Refused; the PR stays in draft.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -70,13 +77,13 @@ V2_FAMILY = 6  # CON-L/F, BIG-L/F, BST-L/F (DESIGN section 8)
 V2_ALPHA = 0.05 / V2_FAMILY
 LEARN_ALPHA = 0.025
 LEARN_MIN_N = AS.MIN_N  # the priced-trade floor for a learning arm (this tool's choice, stated in the PR)
-HV4_LOOKS = 4
+GATE_READS_PER_BOT = 1  # DEC-031 section 2; DESIGN section 8's four looks are superseded for gate purposes
 PRIMARY_STAKE = 0.25
 PRIMARY_KEY = str(PRIMARY_STAKE)
 AS_SIZED = "as_sized"
 AS_SIZED_KEY = 0.0  # stake_sol sentinel of the as-sized pseudo book
 SUBCELLS = ("flat_1p9_total", "flat_1p9_sc", "press_1p9_total", "press_1p9_sc")
-DECIDABLE = ("PASS", "FAIL")  # arena_score statuses whose cells are valid
+DECIDABLE = ("PASS", "FAIL", "DECIDABLE")  # statuses whose cells are valid (arena_score PASS / FAIL; "DECIDABLE" is a readable learning_arm)
 SLIM_KEYS = ("n", "days", "days_pos", "mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol", "pass", "misses", "intercept")
 FILES_PINNED = ("tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/hv4_read.py")
 
@@ -116,21 +123,13 @@ def window_clock(reg: Mapping[str, Mapping[str, Any]]) -> int:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ scoring through arena_score
-@contextlib.contextmanager
-def forced_boundary(b_ms: int):
-    """Run arena_score with its read boundary forced to b_ms (restored on exit). Everything else in arena_score runs as written."""
-    orig = AS.blind_read_instant
-    AS.blind_read_instant = lambda entry_ms, clock_start_ms: int(b_ms)  # noqa: E731
-    try:
-        yield
-    finally:
-        AS.blind_read_instant = orig
-
-
 def score_at(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], boundary_ms: int, now_ms: int,
              settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
-    with forced_boundary(boundary_ms):
-        return AS.score_bot(bot_id, reg, rows, now_ms, None, settle_ms)
+    """arena_score.score_bot with the read boundary given. arena_score refuses a boundary later than the bot's own instant (raising arena_score.Refused).
+    TODO(#716): `boundary_ms` is added to arena_score.score_bot by PR #716. Until it is on main this raises Refused. No monkeypatch, no fallback."""
+    if "boundary_ms" not in inspect.signature(AS.score_bot).parameters:
+        raise Refused("arena_score.score_bot has no boundary_ms yet: waiting for PR #716 (TODO in hv4_read.score_at)")
+    return AS.score_bot(bot_id, reg, rows, now_ms, None, settle_ms, boundary_ms=int(boundary_ms))
 
 
 def as_sized_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -151,12 +150,12 @@ def as_sized_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any
     return kept, sorted(every - have)
 
 
-def score_as_sized(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], boundary_ms: int, now_ms: int,
-                   settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
+def score_as_sized(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
+    """The as-sized pseudo book through arena_score's NATURAL read (its open and refused rows are the book's own, so its outcome-blind instant is the book's)."""
     kept, unmatched = as_sized_rows(rows)
     reg2 = dict(reg)
     reg2[bot_id] = dict(reg[bot_id], deciding_stake=AS_SIZED_KEY)
-    res = score_at(bot_id, reg2, kept, boundary_ms, now_ms, settle_ms)
+    res = AS.score_bot(bot_id, reg2, kept, now_ms, None, settle_ms)
     res["as_sized_unmatched"] = unmatched
     if unmatched and res["status"] not in ("NOT_READY", "PENDING"):
         res["status"] = "NOT_DECIDABLE"
@@ -194,6 +193,58 @@ def cell_record(arm: str, stake: Any, res: Mapping[str, Any] | None, decides: bo
         rec["ex_best_day_min_sol"] = min(ebd)
         rec["ex_best_day_positive"] = bool(min(ebd) > 0)
     return rec
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the learning arm (not a gate read)
+def learning_arm(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], cut_ms: int, now_ms: int, settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
+    """An arm's cells over the attempts decided in [clock, cut_ms), for the D14 learning comparison. D14 is later than the arm's own outcome-blind instant, which
+    arena_score.score_bot(boundary_ms=...) refuses, and the comparison is not a gate read; so the arm is built here from arena_score's own parts: `check_bot_rows`
+    (the refusals), the DEC-031 exclusions as in arena_score._score_bot (late_print_gap, missing_v, excluded rows), and `book_cells` (legs, pressure refit, statistics)
+    at the deciding stake 0.25. A parity test pins this against arena_score's own read when the cut is the arm's own instant. Returns the arena_score result shape
+    that this module reads: status, pending, books["0.25"]["cells"]."""
+    config = AS.check_bot_rows(bot_id, reg, rows)
+    e = reg[bot_id]
+    counted = [r for r in rows if AS._entry(r) >= e["clock_start_ms"]]
+    covered = [r for r in counted if AS._entry(r) < cut_ms]
+    opens = {r["position_id"]: r for r in covered if r["kind"] == "open"}
+    refused = [r for r in covered if r["kind"] == "refused"]
+    closed = {r["position_id"] for r in covered if r["kind"] in ("trade", "excluded")}
+    unclosed = sorted(set(opens) - closed)
+    orphans = [pid for pid in unclosed if now_ms - AS._entry(opens[pid]) >= settle_ms]
+    pending = [pid for pid in unclosed if pid not in orphans]
+    data_refused = [r for r in refused if r["reason"] in AS.DATA_REFUSALS]
+    late_gap = {r["position_id"] for r in covered if r["kind"] == "late_print" and r.get("gap_overlap")}
+    trades, excluded = [], []
+    for r in covered:
+        if r["kind"] == "trade" and r["stake_sol"] == PRIMARY_STAKE:
+            vs = r.get("v_src") or {}
+            if r["position_id"] in late_gap or "none" in (vs.get("entry"), vs.get("exit")) or "none" in (vs.get("span") or {}):
+                excluded.append(r)
+            else:
+                trades.append(r)
+        elif r["kind"] == "excluded" and r["stake_sol"] == PRIMARY_STAKE:
+            excluded.append(r)
+    attempts = len(opens) + len(refused)
+    share = (len(excluded) + len(data_refused)) / attempts if attempts else None
+    out: dict[str, Any] = {"bot_id": bot_id, "config": config, "attempts": attempts, "pending": len(pending), "restart_orphans": len(orphans), "reasons": [], "books": {}}
+    if pending:
+        out["status"] = "PENDING"
+        return out
+    rules = [ru for ru in AS.RULES if trades and ru in trades[0]["legs"]]
+    cells = AS.book_cells(trades, rules) if trades else {}
+    out["books"][PRIMARY_KEY] = {"stake": PRIMARY_STAKE, "n_trades": len(trades), "excluded": len(excluded), "excluded_share": share, "rules": rules, "cells": cells}
+    if orphans:
+        out["reasons"].append(f"{len(orphans)} restart orphan(s)")
+    if share is not None and share > AS.MAX_EXCLUDED_SHARE:
+        out["reasons"].append(f"excluded + refused share {share:.1%} above {AS.MAX_EXCLUDED_SHARE:.0%}")
+    if any(r["prog"] == "pump_bonding" for r in trades + excluded):
+        out["reasons"].append("a bonding row is in the arm: its costs are unmeasured")
+    if trades and len(rules) != len(AS.RULES):
+        out["reasons"].append(f"not priced under both strand rules (present: {rules})")
+    if not cells:
+        out["reasons"].append("no priced trades at 0.25")
+    out["status"] = "NOT_DECIDABLE" if out["reasons"] else "DECIDABLE"  # readable; no gate verdict is computed (not a gate read)
+    return out
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ statistics on the daily series
@@ -314,6 +365,34 @@ def v1_read(book_res: Mapping[str, Any], persona: str, reg, null_dir, boundary_m
     return out
 
 
+def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Mapping[str, Mapping[str, Any]], led: Ledger, ledger_root: str, now_ms: int,
+            settle_ms: int) -> dict[str, Any]:
+    """V2 over the window ending at the common boundary min(B of the book, B of X): arena_score refuses a boundary later than a bot's own instant, so the book (when X
+    reaches its instant first) and X are both scored at the earlier of the two. Both instants come from decision timestamps only."""
+    x = f"{persona}-X"
+    bx = AS.blind_read_instant(AS.load_decisions(ledger_root, x), reg[x]["clock_start_ms"])
+    out: dict[str, Any] = {"comparator": x, "book_instant_ms": b, "comparator_instant_ms": bx, "window_end_ms": None, "note": None, "alpha": V2_ALPHA, "reasons": [], "subcells": {}}
+    if bx is None:
+        out["status"] = "NOT_DECIDABLE"
+        out["reasons"].append(f"{x} has not reached its own outcome-blind instant (100 attempts over 5 UTC dates): no common window")
+        return out
+    b2 = min(b, bx)
+    out["window_end_ms"] = b2
+    try:
+        bres = main if b2 == b else score_at(bot_id, reg, led.read_bot(bot_id), b2, now_ms, settle_ms)
+        xres = score_at(x, reg, led.read_bot(x), b2, now_ms, settle_ms)
+    except AS.Refused as exc:
+        out["status"] = "NOT_DECIDABLE"
+        out["reasons"].append(f"arena_score refused the common boundary: {str(exc)[:200]}")
+        return out
+    v2 = paired(bres, xres, calendar_days(reg[bot_id]["clock_start_ms"], b2), V2_ALPHA)
+    v2.update(comparator=x, book_instant_ms=b, comparator_instant_ms=bx, window_end_ms=b2, boundary_source=xres.get("boundary_source"),
+              comparator_status_at_window_end=status_of(xres))
+    v2["note"] = ("V2 fails and the X book's cells pass at this window end: X goes to the canary first (DESIGN section 8), subject to X's own read"
+                  if v2["status"] == "FAIL" and xres["status"] == "PASS" else None)
+    return v2
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ disclosure
 def screen_text(existed: int, cells_existed: int, books_read: int, cells_read: int) -> str:
     return (f"This is a SCREEN, not a promotion. It is the best of {existed} arena books in bots.json with a clock before the read (stopped ones included; "
@@ -329,11 +408,13 @@ def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: in
     n_gate = len(gate_cells())
     cells_existed = existed * len(STAKES_SOL) * len(AS.MODELS) * len(AS.LATS)  # arena_score's own formula
     return {"books_in_bots_json": len(reg), "books_with_clock_before_read": existed, "books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
-            "arena_cells_existed": cells_existed, "hv4_arms": len(ARMS), "hv4_gate_cells": n_gate, "hv4_looks_in_design": HV4_LOOKS, "hv4_checks_disclosed": n_gate * HV4_LOOKS,
+            "arena_cells_existed": cells_existed, "hv4_arms": len(ARMS), "hv4_gate_cells": n_gate, "hv4_reads_per_bot_id": GATE_READS_PER_BOT, "hv4_gate_checks": n_gate * GATE_READS_PER_BOT,
             "books_read": books_read, "cells_read": cells_read, "screen_not_promotion": screen_text(existed, cells_existed, books_read, cells_read),
             "ex_best_day_sol": dict(ex_best_day),
             "v2_alpha": f"0.05/{V2_FAMILY}", "learning_alpha": LEARN_ALPHA,
-            "note": f"One read per bot_id (DEC-031 section 2) at its outcome-blind instant; the DESIGN's {HV4_LOOKS} looks are disclosed as {n_gate} x {HV4_LOOKS} = {n_gate * HV4_LOOKS} checks."}
+            "gate_multiplicity": (f"{n_gate} cells x {GATE_READS_PER_BOT} read each = {n_gate * GATE_READS_PER_BOT} gate checks. DEC-031 section 2 governs: one gate read per bot_id at its "
+                                  "outcome-blind instant; DESIGN section 8's day-5/7/10/14 looks are superseded for gate purposes. The D14 learning read is a separate pre-declared "
+                                  "comparison, not a gate read.")}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ result.v1 (hand-built: tools.mal_result imports tools.laya_v0, which the arena may not)
@@ -419,21 +500,23 @@ def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sh
     deciding = next((c for c in read["cells"] if c["decides"]), None)
     res_cells = read["_deciding_cells"]
     span = int(read["window_days"])
-    gf, gp = _gate_leg(res_cells, "flat"), _gate_leg(res_cells, "press")
+    gate_read = read["read"] == "book"
+    none = {k: False for k in ("n_ge_100", "days_ge_5", "majority_days_positive", "ci90_lo_gt_0", "ex_top3_gt_0", "pass")}
+    gf, gp = (_gate_leg(res_cells, "flat"), _gate_leg(res_cells, "press")) if gate_read else (dict(none), dict(none))
     st = read["status"]
     rec = {"schema_version": "result.v1", "tool": "tools/hv4_read.py", "git_sha": git_sha, "command": command,
            "config": {"read": read["read"], "bot_id": read.get("bot_id"), "instant_ms": read["instant_ms"], "deciding": "1.9 s, stake 0.25, flat and pressure, strand rules total and sc",
-                      "displayed_strand_rule": "total", "status": st, "v1": (read.get("v1") or {}).get("status"), "v2": (read.get("v2") or {}).get("status"),
+                      "displayed_strand_rule": "total", "gate_evaluated": gate_read, "status": st, "v1": (read.get("v1") or {}).get("status"), "v2": (read.get("v2") or {}).get("status"),
                       "learning": (read.get("learning") or {}).get("status"), "screen": "a screen, not a promotion"},
            "role": "exploration", "data_blocks": [{"start_hour": _hour(read["clock_start_ms"]), "end_hour_exclusive": _hour(read["instant_ms"]), "host": "arena tape /data/mal/arena (public RPC)",
                                                     "ledger_owner": "hunt20 arena (DEC-031)"}],
-           "stage": "failed" if st.startswith("FAIL") else "forward-paper",
+           "stage": "failed" if gate_read and st.startswith("FAIL") else "forward-paper",
            "metrics": {"flat": _leg_metrics(res_cells, "flat_1p9_total", span), "pressure_s1": _leg_metrics(res_cells, "press_1p9_total", span)},
            "gate": {"flat": gf, "pressure_s1": gp, "pass_both": bool(gf["pass"] and gp["pass"])},
            "tries": {"data_key": hashlib.sha256(canon(["hv4", read.get("bot_id"), read["clock_start_ms"]]).encode()).hexdigest()[:16], "variant_n": int(read["tries"]["variant_n"]),
                      "of_m": int(read["tries"]["of_m"])},
            "runtime_s": None, "peak_rss_mb": None, "created_utc": created_utc,
-           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
+           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + ("" if gate_read else " NOT A GATE READ: the D14 learning comparison; the gate ticks are false by construction, not evaluated.") + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
     errs = validate_result(rec)
     if errs:
         raise ValueError("result.v1 record invalid:\n" + "\n".join(errs))
@@ -451,7 +534,8 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     day = created_utc[:10].replace("-", "")
     tag = f"hv4-{who.lower().replace(' ', '-')}"
     dec = next((c for c in read["cells"] if c["decides"]), None)
-    parts = [f"Haiku trader v4 {read['read']} read, {who}, instant {read['instant_ms']} ({_hour(read['instant_ms'])}Z): {read['status']}."]
+    gate = read["read"] == "book"
+    parts = [f"Haiku trader v4 {'gate read' if gate else 'D14 learning comparison (NOT a gate read)'}, {who}, instant {read['instant_ms']} ({_hour(read['instant_ms'])}Z): {read['status']}."]
     if dec and dec["subcells"]:
         s = dec["subcells"].get("flat_1p9_total") or next(iter(dec["subcells"].values()))
         parts.append(f"Deciding cell (1.9 s, stake 0.25, flat and pressure, both strand rules; flat and total rule shown): n {s['n']}, total {_f(s['total_sol'])} SOL, "
@@ -465,12 +549,13 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
         lr = read["learning"]
         ps = "; ".join(f"{k} L-F p {_f(v['p'])}, L-P p {_f(lr['L_minus_P']['subcells'].get(k, {}).get('p'))}" for k, v in lr["L_minus_F"]["subcells"].items())
         parts.append(f"Learning (CON, D14) {lr['status']}: {lr['statement']}." + (f" {ps}." if ps else ""))
+    parts.append(read["disclosure"]["gate_multiplicity"])
     parts.append(read["disclosure"]["screen_not_promotion"])
-    stage = "failed" if read["status"].startswith("FAIL") else "forward-paper"
+    stage = "failed" if gate and read["status"].startswith("FAIL") else "forward-paper"
     return {"stream": [{"id": f"s-{day}-{tag}", "from": "claude", "kind": "status", "atUtc": created_utc, "text": " ".join(parts)}],
-            "ladder": [{"id": tag, "title": f"HV4 {who}: {read['read']} read {read['status']}", "stage": stage,
+            "ladder": [{"id": tag, "title": f"HV4 {who}: {'gate read' if gate else 'D14 learning comparison, not a gate read'} {read['status']}", "stage": stage,
                         "note": f"A screen, not a promotion; best of {read['disclosure']['books_with_clock_before_read']} arena books. No book has cleared the promotion gate."}],
-            "events": [{"id": f"e-{day}-{tag}", "kind": "record", "title": f"HV4 {who} {read['read']} read", "detail": parts[0], "atUtc": created_utc}]}
+            "events": [{"id": f"e-{day}-{tag}", "kind": "record", "title": f"HV4 {who} {'gate read' if gate else 'D14 learning comparison'}", "detail": parts[0], "atUtc": created_utc}]}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ write-once
@@ -531,7 +616,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     if main["status"] in ("PENDING", "NOT_READY") or main.get("pending"):
         raise Refused(f"{bot_id}: {main['status']} ({main.get('pending')} covered attempt(s) inside the settle window): not recordable, nothing written")
     assert main["read_boundary_ms"] == b
-    asz = score_as_sized(bot_id, reg, rows, b, now, settle_ms) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
+    asz = score_as_sized(bot_id, reg, rows, now, settle_ms) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
     cells = []
     if arm.promotable:
         for a, stake in gate_cells():
@@ -544,14 +629,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     adds = v12 = None
     if arm.llm and arm.promotable:
         v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms)
-        x = f"{arm.persona}-X"
-        xres = score_at(x, reg, led.read_bot(x), b, now, settle_ms)
-        days = calendar_days(reg[bot_id]["clock_start_ms"], b)
-        v2 = paired(main, xres, days, V2_ALPHA)
-        v2["comparator"] = x
-        v2["comparator_status_at_this_instant"] = status_of(xres)
-        v2["note"] = ("V2 fails and the X book's cells pass at this instant: X goes to the canary first (DESIGN section 8), subject to X's own read" if v2["status"] == "FAIL" and
-                      xres["status"] == "PASS" else None)
+        v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, now, settle_ms)
         v12 = bool(v1["status"] == "PASS" and v2["status"] == "PASS")
         adds = bool(main["status"] == "PASS" and v12)  # "adds value" is claimed only for a book that also clears the arena gate
     # 3. disclosure, record
@@ -591,7 +669,7 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
         raise Refused(f"learning is read at D14 only: not before {look} (T0 + 14 d + 13:00Z), now {now}: refused, nothing written")
     led = Ledger(ledger_root)
     days = calendar_days(t0, cut)
-    res = {a: score_at(a, reg, led.read_bot(a), cut, now, settle_ms) for a in ARMS if ARMS[a].role in ("L", "F", "P")}
+    res = {a: learning_arm(a, reg, led.read_bot(a), cut, now, settle_ms) for a in ARMS if ARMS[a].role in ("L", "F", "P")}
     pend = [a for a, r in res.items() if r["status"] == "PENDING"]
     if pend:
         raise Refused(f"learning: {pend} have covered attempts inside the settle window: not recordable, nothing written")
@@ -601,7 +679,7 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
         r = res[a]
         n = ((r.get("books") or {}).get(PRIMARY_KEY) or {}).get("n_trades", 0)
         if r["status"] not in DECIDABLE:
-            out["reasons"].append(f"{a}: arena_score status {r['status']}")
+            out["reasons"].append(f"{a}: not decidable ({'; '.join(r['reasons']) or r['status']})")
         elif n < LEARN_MIN_N:
             out["reasons"].append(f"{a}: {n} priced trades at 0.25 < {LEARN_MIN_N}")
     lf = paired(res["CON-L"], res["CON-F"], days, LEARN_ALPHA, weeks=True)
@@ -616,13 +694,13 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
         out["status"] = "PASS" if lf["status"] == "PASS" and lp["status"] == "PASS" else "FAIL"
     out["statement"] = ("learning shown" if out["status"] == "PASS" else "learning not shown: the reviewer stays off next window" if out["status"] == "FAIL"
                         else "NOT_DECIDABLE (the expected outcome): nothing is claimed")
-    cons = [cell_record("CON-L", PRIMARY_STAKE, res["CON-L"], decides=False)]
+    cons = [dict(cell_record("CON-L", PRIMARY_STAKE, res["CON-L"], decides=False), status="NOT_A_GATE_READ")]
     ebd = {"CON-L@0.25": cons[0]["ex_best_day_min_sol"]}
     n_books = sum(len((r.get("books") or {})) for r in res.values())
     read = {"schema": SCHEMA, "read": "learning", "bot_id": None, "instant_ms": cut, "look_ms": look, "now_ms": now, "created_utc": _created(now), "clock_start_ms": t0, "t0_ms": t0,
             "window_days": WINDOW_DAYS, "status": out["status"], "cells": cons, "learning": out, "v1": None, "v2": None,
             "disclosure": disclosure(reg, now, n_books, n_books * len(AS.MODELS) * len(AS.LATS), ebd), "tries": {"variant_n": 1, "of_m": len(reg)},
-            "inputs": _inputs(registry, ledger_root), "arena_score_reads": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
+            "inputs": _inputs(registry, ledger_root), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
     read["_deciding_cells"] = (res["CON-L"].get("books") or {}).get(PRIMARY_KEY, {}).get("cells", {})
     rv1 = result_v1(read, command=command or "python -m tools.hv4_read learning", created_utc=read["created_utc"], git_sha=_git_sha())
     con = console_rows(read, read["created_utc"])

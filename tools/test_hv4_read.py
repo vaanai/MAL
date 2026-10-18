@@ -4,6 +4,7 @@ Console drafts, isolation. Synthetic ledgers only; no network, no API call."""
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -28,9 +29,35 @@ REPO = Path(__file__).resolve().parent.parent
 N_SEEDS = 6  # tests run a short null; the production constant is pinned separately
 
 
+def _emulated_score_bot(real):
+    """TEST SCAFFOLDING until PR #716 merges. Emulates the contract the manager described for `arena_score.score_bot(..., boundary_ms=...)`: a boundary later than the
+    bot's own outcome-blind instant is refused (arena_score.Refused), and the result records boundary_source "forced". It runs the real score_bot with the module's
+    blind_read_instant swapped, inside the test only (hv4_read itself patches nothing). Once #716 is on main, `score_bot` has the parameter and this is not installed."""
+
+    def score_bot(bot_id, reg, rows, now_ms, trace=None, settle_ms=AS.SETTLE_MS, boundary_ms=None):
+        if boundary_ms is None:
+            return real(bot_id, reg, rows, now_ms, trace, settle_ms)
+        clock = reg[bot_id]["clock_start_ms"]
+        own = AS.blind_read_instant([int(r["decision_ms"]["entry"]) for r in rows if r["kind"] in ("open", "refused") and int(r["decision_ms"]["entry"]) >= clock], clock)
+        if own is None or boundary_ms > own:
+            raise AS.Refused(f"{bot_id}: boundary {boundary_ms} is later than the bot's own instant {own}")
+        orig = AS.blind_read_instant
+        AS.blind_read_instant = lambda entry_ms, clock_start_ms: int(boundary_ms)  # noqa: E731
+        try:
+            out = real(bot_id, reg, rows, now_ms, trace, settle_ms)
+        finally:
+            AS.blind_read_instant = orig
+        out["boundary_source"] = "forced"
+        return out
+
+    return score_bot
+
+
 @pytest.fixture(autouse=True)
 def _test_env(monkeypatch):
     monkeypatch.setenv(TEST_ENV, "1")  # the registry's fake clock / sha overrides are honoured inside a test only
+    if "boundary_ms" not in inspect.signature(AS.score_bot).parameters:  # PR #716 not merged yet: emulate its contract (test-only)
+        monkeypatch.setattr(AS, "score_bot", _emulated_score_bot(AS.score_bot))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ synthetic books
@@ -200,20 +227,68 @@ def test_learning_is_refused_before_d14_and_run_once(tmp_path):
         w.learning()
 
 
-def test_forced_boundary_reproduces_arena_score_and_restores_it(tmp_path):
+def test_score_at_passes_boundary_ms_to_arena_score_and_patches_nothing(monkeypatch):
+    seen = {}
+
+    def fake(bot_id, reg, rows, now_ms, trace=None, settle_ms=0, boundary_ms=None):
+        seen.update(bot_id=bot_id, now_ms=now_ms, settle_ms=settle_ms, boundary_ms=boundary_ms, trace=trace)
+        return {"status": "FAIL"}
+
+    monkeypatch.setattr(AS, "score_bot", fake)
+    orig = AS.blind_read_instant
+    assert R.score_at("CON-X", {}, [], 123, 456, 789) == {"status": "FAIL"}
+    assert seen == {"bot_id": "CON-X", "now_ms": 456, "settle_ms": 789, "boundary_ms": 123, "trace": None}
+    assert AS.blind_read_instant is orig
+
+
+def test_score_at_waits_for_716_when_arena_score_has_no_boundary_ms(monkeypatch):
+    monkeypatch.setattr(AS, "score_bot", lambda bot_id, reg, rows, now_ms, trace=None, settle_ms=0: {})
+    with pytest.raises(R.Refused, match="#716"):
+        R.score_at("CON-X", {}, [], 1, 2)
+
+
+def test_hv4_read_assigns_no_attribute_of_another_module_and_never_calls_setattr():
+    import ast
+
+    tree = ast.parse((REPO / "tools" / "hv4_read.py").read_text())
+    for n in ast.walk(tree):
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, (ast.AugAssign, ast.AnnAssign)) else []
+        assert not any(isinstance(t, ast.Attribute) for t in targets), ast.dump(n)[:200]
+        assert not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("setattr", "delattr")), "no monkeypatching"
+
+
+def test_a_comparator_arm_with_an_earlier_own_instant_than_the_boundary_is_refused_by_arena_score(tmp_path):
     w = con_world(tmp_path)
     reg = load_registry(w.reg)
     rows = w.led.read_bot("CON-L")
-    now = DAY0 + 30 * DAY
-    orig = AS.blind_read_instant
-    natural = AS.score_bot("CON-L", reg, rows, now)
-    forced = R.score_at("CON-L", reg, rows, natural["read_boundary_ms"], now)
-    assert canon(natural) == canon(forced)
-    assert AS.blind_read_instant is orig
-    with pytest.raises(RuntimeError):
-        with R.forced_boundary(DAY0):
-            raise RuntimeError
-    assert AS.blind_read_instant is orig
+    with pytest.raises(AS.Refused):
+        R.score_at("CON-L", reg, rows, DAY0 + 6 * DAY, DAY0 + 30 * DAY)  # later than the bot's own instant (day 5)
+    ok = R.score_at("CON-L", reg, rows, DAY0 + 5 * DAY, DAY0 + 30 * DAY)
+    assert ok["read_boundary_ms"] == DAY0 + 5 * DAY and ok["boundary_source"] == "forced"
+    assert canon({k: v for k, v in ok.items() if k != "boundary_source"}) == canon(AS.score_bot("CON-L", reg, rows, DAY0 + 30 * DAY))
+
+
+def test_v1_is_not_decidable_when_an_r_seed_has_an_earlier_own_instant_than_the_book(tmp_path):
+    w = World(tmp_path)
+    w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
+    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
+    w.seeds("CON", 0.0, 5, 19)  # 95 attempts: the R seeds never reach their own instant
+    r = w.book("CON-L")
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and len(r["v1"]["null"]["unusable"]) == N_SEEDS
+    assert r["v2"]["status"] == "PASS" and r["adds_value"] is False
+
+
+def test_v2_window_ends_at_the_earlier_of_the_two_instants(tmp_path):
+    w = World(tmp_path)
+    w.add(book_rows("CON-L", noisy(4e6, 6, 17, 11)))  # 102 attempts: its own instant is day 6
+    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))  # 100 attempts: X reaches its instant on day 5
+    w.seeds("CON", 0.0, 6, 17)
+    r = w.book("CON-L")
+    v2 = r["v2"]
+    assert r["instant_ms"] == DAY0 + 6 * DAY and v2["book_instant_ms"] == DAY0 + 6 * DAY and v2["comparator_instant_ms"] == DAY0 + 5 * DAY
+    assert v2["window_end_ms"] == DAY0 + 5 * DAY and v2["days"] == 5 and v2["boundary_source"] == "forced"
+    assert v2["status"] == "PASS" and all(v["p"] == 1 / 2001 for v in v2["subcells"].values())
+    assert r["v1"]["status"] == "PASS"  # V1 stays on the book's own window (day 6)
 
 
 def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tmp_path):
@@ -371,19 +446,77 @@ def test_learning_not_decidable_with_too_few_trades_or_a_missing_arm(tmp_path):
     assert w2.learning()["learning"]["status"] == "NOT_DECIDABLE"
 
 
+def test_learning_is_not_a_gate_read_in_any_output(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
+    r = w.learning()
+    assert r["cells"][0]["status"] == "NOT_A_GATE_READ"
+    rec = json.loads((Path(w.out) / "reads" / "LEARNING.result.json").read_text())
+    assert R.validate_result(rec) == [] and rec["config"]["gate_evaluated"] is False and rec["gate"]["pass_both"] is False
+    assert not any(rec["gate"]["flat"].values()) and not any(rec["gate"]["pressure_s1"].values()) and "NOT A GATE READ" in rec["notes"]
+    assert rec["stage"] == "forward-paper"
+    frag = json.loads((Path(w.out) / "reads" / "LEARNING.console.json").read_text())
+    assert "NOT a gate read" in frag["stream"][0]["text"] and "NOT a gate read" not in frag["ladder"][0]["title"] and "not a gate read" in frag["ladder"][0]["title"]
+    assert "25 cells x 1 read each" in frag["stream"][0]["text"] and "learning shown" in frag["stream"][0]["text"]
+    w2 = con_learning_world(tmp_path / "fail", lambda d: 0.0)
+    w2.learning()
+    assert json.loads((Path(w2.out) / "reads" / "LEARNING.result.json").read_text())["stage"] == "forward-paper"  # a learning FAIL is not a failed book
+
+
+def test_learning_arm_equals_arena_scores_own_read_at_the_arms_own_instant(tmp_path):
+    w = World(tmp_path)
+    rows = book_rows("CON-L", noisy(4e6, 5, 21, 11))  # 105 positions
+    by_pos = {}
+    for r in rows:
+        by_pos.setdefault(r["position_id"], []).append(r)
+    pids = sorted(by_pos)
+    # position 3: a missing-V trade; 7: a feed-gap exclusion row; 11: a trade with a late print inside a gap; plus a refused buy that is a data issue (4 of 106 < 5%)
+    for r in by_pos[pids[3]]:
+        if r["kind"] == "trade":
+            r["v_src"] = {"entry": "none", "exit": "row", "span": {"row": 5}}
+    for r in by_pos[pids[7]]:
+        if r["kind"] == "trade":
+            r.update(kind="excluded", exclusion_reason="gap", legs=None, calc=None)
+    first = by_pos[pids[11]][0]
+    rows.append({"schema": "arena_trade_v1", "kind": "late_print", "trade_id": f"{pids[11]}-late", "position_id": pids[11], "bot_id": "CON-L", "frozen_sha": "abc1234",
+                 "decision_ms": {"entry": first["decision_ms"]["entry"], "exit": None}, "gap_overlap": True, "stack": dict(STACK)})
+    rows.append({"schema": "arena_trade_v1", "kind": "refused", "trade_id": "ref0-refused", "position_id": "ref0", "bot_id": "CON-L", "frozen_sha": "abc1234",
+                 "decision_ms": {"entry": DAY0 + DAY + 7_200_000, "exit": None}, "reason": "no_prints", "stack": dict(STACK)})
+    w.add(rows)
+    reg = load_registry(w.reg)
+    now = DAY0 + 30 * DAY
+    nat = AS.score_bot("CON-L", reg, w.led.read_bot("CON-L"), now)
+    assert nat["status"] in ("PASS", "FAIL") and nat["read_boundary_ms"] == DAY0 + 5 * DAY
+    mine = R.learning_arm("CON-L", reg, w.led.read_bot("CON-L"), nat["read_boundary_ms"], now)
+    bk = nat["books"]["0.25"]
+    assert mine["status"] == "DECIDABLE" and mine["attempts"] == nat["attempts"] == 106
+    assert mine["books"]["0.25"]["n_trades"] == bk["n_trades"] == 102
+    assert mine["books"]["0.25"]["excluded"] == sum(bk["excluded"].values()) == 3
+    assert mine["books"]["0.25"]["excluded_share"] == bk["excluded_share"]
+    assert canon(mine["books"]["0.25"]["cells"]) == canon(bk["cells"])  # every cell, every statistic, byte for byte
+    # past the 5% cap it is NOT_DECIDABLE, as in arena_score
+    bad = [dict(r, kind="excluded", exclusion_reason="gap", legs=None, calc=None) if r["kind"] == "trade" and r["position_id"] in pids[20:30] else r for r in rows]
+    assert R.learning_arm("CON-L", reg, bad, nat["read_boundary_ms"], now)["status"] == "NOT_DECIDABLE"
+    # an attempt before the cut with no close inside the settle window is PENDING
+    assert R.learning_arm("CON-L", reg, [r for r in rows if r["position_id"] != pids[-1] or r["kind"] == "open"], nat["read_boundary_ms"], DAY0 + 5 * DAY + 3_600_000)["status"] == "PENDING"
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ disclosure, ex-best-day, as-sized
 def test_disclosure_block_states_books_cells_read_screen_wording_and_ex_best_day(tmp_path):
     w = con_world(tmp_path)
     r = w.book("CON-L")
     d = r["disclosure"]
     assert d["books_in_bots_json"] == 13 and d["books_with_clock_before_read"] == 13 and d["books_stopped"] == 0
-    assert d["hv4_gate_cells"] == 25 and d["hv4_checks_disclosed"] == 100 and d["hv4_arms"] == 13
+    assert d["hv4_gate_cells"] == 25 and d["hv4_reads_per_bot_id"] == 1 and d["hv4_gate_checks"] == 25 and d["hv4_arms"] == 13
     assert d["arena_cells_existed"] == 13 * 3 * 2 * 2
     assert d["books_read"] == 1 + 1 and d["cells_read"] == d["books_read"] * 4  # the 0.25 stake book and the as-sized book
     t = d["screen_not_promotion"]
     for needle in ("SCREEN", "not a promotion", "best of 13 arena books", "stopped ones included", "winner's curse", "0.05/c", "NOT_DECIDABLE ones included", "canary"):
         assert needle in t
     assert set(d["ex_best_day_sol"]) == {"CON-L@0.25", "CON-L@0.5", "CON-L@1.0", "CON-L@as_sized"}
+    gm = d["gate_multiplicity"]
+    assert "25 cells x 1 read each = 25 gate checks" in gm and "DEC-031 section 2 governs" in gm and "superseded for gate purposes" in gm
+    assert "separate pre-declared comparison, not a gate read" in gm
+    assert "100" not in gm and not {"hv4_looks_in_design", "hv4_checks_disclosed"} & set(d)  # the old 25 x 4 = 100 text is gone
     # a stopped book still counts
     with open(w.reg, "a") as f:
         f.write(json.dumps({"kind": "stop", "bot_id": "BIG-R", "stopped_at_ms": DAY0 + 2 * DAY}) + "\n")
@@ -421,7 +554,7 @@ def test_as_sized_cell_uses_each_positions_own_size(tmp_path):
     # a position whose own size has no priced row cannot be built
     w2 = World(tmp_path / "bad")
     w2.add(book_rows("CON-L", noisy(4e6, 5, 20, 11), stakes=(0.25, 0.5, 1.0), sol_in=lambda d, k: 0.3))
-    asz2 = R.score_as_sized("CON-L", load_registry(w2.reg), w2.led.read_bot("CON-L"), DAY0 + 5 * DAY, DAY0 + 30 * DAY)
+    asz2 = R.score_as_sized("CON-L", load_registry(w2.reg), w2.led.read_bot("CON-L"), DAY0 + 30 * DAY)
     assert asz2["status"] == "NOT_DECIDABLE" and len(asz2["as_sized_unmatched"]) == 100
 
 
