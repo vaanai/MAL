@@ -1156,6 +1156,21 @@ Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2
 
 **Breach disclosure (2026-10-16, job #1059).** Job #1059 read post-s0 reserves of the probe's 2026-10-04..10-07 pools from the tip tape and wrote per-trip sim P&L for 61 probe trips (ledger changelog 2026-10-16, #1059). This breaches domains D2 and D3. No pool in this read's counted window was touched and no act listed in this file's seal was performed. This read is disclosed, not compromised. Its verdict and terms are unchanged.
 
+### Amendment 9 (2026-10-18; before any arena H5 v2 book's clock and before any arena v2 outcome exists): declared real-time observation of the arena H5 v2 book's outcomes ([DEC-031](../DEC/DEC-031-forward-paper-arena.md) §3.5)
+
+**Gating.** This amendment merges with DEC-031, with quant-proof's OK on its final head, before the `clock_start_ms` of any arena book running H5-BOOSTCLOCK v2. Without it, an arena v2 book counts only pools with s0 at or after 2026-11-06T00 (DEC-031 §3.5).
+
+**What was in view.** The author knew iter-r2 H5-BOOSTCLOCK-EXIT cell C10's exploration result (FREEZE.md and REPORT.md, both September data), EXP-026's text and its withdrawal before W0 on 2026-10-17. The author opened none of these: a canary ledger, a shadow outcome record, a row of forward-1002, forward-1002ev or walk 2, or any forward-paper or runner output. No arena v2 outcome exists on any pool at writing.
+
+- **(a) Scope.** A declared exception to section 3's seal, for `rule_id` `H5-BOOSTCLOCK-v2` only: iter-r2 cell C10, FREEZE.md sha256 `5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0`, computed by `tools/h5_shadow.py` in its fresh-forward mode as merged by PR #707 (not on main at this writing), as the `outcome_bx10` record. The book's `bots.json` line pins the commit, and the git blob sha of `tools/h5_shadow.py` at that commit; a book whose running code does not match that pin is not covered. For arena books only, this lifts Amendment 8 (e)'s withholding of v2's outcome-bearing fields: they are written to the arena output, never to EXP-026's withheld store, which stays closed.
+  - It covers pools with s0 at or after the arena v2 book's `clock_start_ms`, as listed in `/data/mal/arena/bots.json`. Their v2 outcomes are written in real time to the arena output and ledger, may be observed in real time by anyone (as in Amendment 2), and are gate-read once by `tools/arena_score.py` under DEC-031 §2.
+  - Nothing else is covered: no pool with s0 before that clock, and no other rule.
+  - EXP-024's read tool is excluded and its inputs are unchanged.
+- **(b) No revival.** EXP-024's read ended NOT_DECIDABLE on 2026-10-13 (A3 halt record): Look 1 and Look 2 do not run, and nothing here revives, re-files or re-scopes it. No arena result may change any EXP-024 parameter or record.
+- **(c) Disclosure.** No EXP-024 look report will exist; the A3 halt record is the report. This amendment is the dated disclosure that the arena H5 v1 and v2 books' outcomes are observed in real time from their clocks.
+- **(d) Synthetic class.** Amendment 4 D1 and A3 bind the arena v2 book as they bind v1. Before 2026-11-14T00:00Z no arena H5 record carries an outcome for a synthetic pool or splits an outcome by class. Its universe excludes synthetic and unclassified pools before any outcome exists, as Amendment 4 A2 and B3 do.
+- **(e) v1.** An arena H5 v1 book stays under Amendment 2's declared observation for pools with s0 in `[2026-10-16T00, 2026-11-06T00)` (DEC-031 §3.5). Amendment 2 ends at 2026-11-06T00, so for pools with s0 at or after that instant this amendment's scope (a) to (d) covers the arena v1 book (`rule_id` `H5-BOOSTFLOOR-v1`, computed by the same command) as it covers v2.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
