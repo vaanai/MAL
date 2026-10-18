@@ -28,6 +28,7 @@ if __package__ in (None, ""):
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
+import bisect
 import fcntl
 import hashlib
 import json
@@ -41,7 +42,7 @@ from tools import hv4_arms as arms
 from tools import hv4_cards as C
 from tools.arena_h5_signal import H5Signal, bst_card, safe_path
 from tools.arena_paper import ArenaEngine, ArenaRefused, canon, register_bot
-from tools.arena_state import ArenaState
+from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
 from tools.hv4_model import Model, ModelReply
@@ -66,6 +67,9 @@ ENTRY_SETTLE_MS = 3_000  # no code exit before the slower entry leg can land (th
 SELL_RETRY_MAX = 5
 R_SEED = 1
 BST_EXIT_MS = 330_000
+# BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
+# BST_R_WARMUP triggers already decided by BST-L, BST-R takes none (a rate of 1 of 1 would make the random control copy the learning arm).
+BST_R_WARMUP = 5
 CALL_CAP_PER_H = {("entry", None): 30, ("risk", None): 150, ("recheck", "CON"): 60, ("recheck", "BIG"): 30}
 DENIED = ("group_halted", "budget_exceeded", "day_cap", "month_guard", "ledger_unreadable")
 LANE_G_PERSONAS = ("CON", "BIG")
@@ -183,6 +187,16 @@ class CardSink:
             os.close(fd)
         return sha
 
+    def get(self, sha: str, day: str) -> dict | None:
+        p = self.dir / f"{day}.jsonl"
+        if p.exists():
+            for line in p.read_bytes().splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    if r.get("sha") == sha:
+                        return r.get("card")
+        return None
+
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
 
@@ -290,27 +304,49 @@ def holder_cover(snap: Mapping[str, Any]) -> bool | None:
 
 
 class QuoteHistory:
-    """Real quote (SOL) of every PumpSwap pool, sampled once a minute, for the 15-min-ago and peak facts of veto 7."""
+    """Real quote (SOL) of every verified-WSOL PumpSwap pool for the 15-min-ago and peak facts of veto 7. It is kept as the (t_recv_ms, quote) of the
+    pool's recent trade rows, fed by the same hook as the engine, and READ at the scanner's minute boundaries (second :02): the sample at boundary b is
+    the quote after the last row with t <= b - 1. Because it is a function of the tape alone, a restart that replays the tape rebuilds it exactly."""
 
     def __init__(self, keep_ms: int = 60 * MIN_MS + 5 * MIN_MS) -> None:
         self.keep_ms = keep_ms
-        self.s: dict[str, list[tuple[int, float]]] = {}
+        self.t: dict[str, list[int]] = {}
+        self.q: dict[str, list[float]] = {}
 
-    def sample(self, state: ArenaState, t_ms: int) -> None:
-        for p in state.pools_wsol(lambda p: p.prog == "pumpswap" and p.q_real is not None):
-            lst = self.s.setdefault(p.id, [])
-            lst.append((t_ms, p.q_real / 1e9))
-            while lst and lst[0][0] < t_ms - self.keep_ms:
-                lst.pop(0)
+    def add(self, pool: str, t_ms: int, q_sol: float) -> None:
+        ts, qs = self.t.setdefault(pool, []), self.q.setdefault(pool, [])
+        ts.append(t_ms)
+        qs.append(q_sol)
+        if len(ts) > 4096 and ts[0] < t_ms - 2 * self.keep_ms:
+            i = bisect.bisect_left(ts, t_ms - 2 * self.keep_ms) - 1  # keep one row before the window as the anchor
+            if i > 0:
+                del ts[:i]
+                del qs[:i]
+
+    def _at(self, pool: str, b: int) -> float | None:
+        ts = self.t.get(pool)
+        if not ts:
+            return None
+        i = bisect.bisect_right(ts, b - 1) - 1
+        return self.q[pool][i] if i >= 0 else None
+
+    @staticmethod
+    def _boundaries(lo: int, hi: int) -> range:
+        first = (lo - SCAN_SECOND_MS + MIN_MS - 1) // MIN_MS * MIN_MS + SCAN_SECOND_MS
+        return range(first, hi, MIN_MS)
 
     def ref(self, pool: str, t_ms: int) -> tuple[float, int] | None:
         want = t_ms - C.QUOTE_REF_AGE_MS
-        best = min(((abs(ts - want), ts, q) for ts, q in self.s.get(pool, ()) if ts < t_ms), default=None)
-        return None if best is None or best[0] > C.QUOTE_REF_TOL_MS else (best[2], best[1])
+        best = None
+        for b in self._boundaries(want - C.QUOTE_REF_TOL_MS, min(want + C.QUOTE_REF_TOL_MS + 1, t_ms)):
+            v = self._at(pool, b)
+            if v is not None and (best is None or abs(b - want) < best[0]):
+                best = (abs(b - want), b, v)
+        return None if best is None else (best[2], best[1])
 
     def peak(self, pool: str, t_ms: int) -> float | None:
-        qs = [q for ts, q in self.s.get(pool, ()) if ts < t_ms]
-        return max(qs) if qs else None
+        vals = [v for b in self._boundaries(t_ms - self.keep_ms, t_ms) if (v := self._at(pool, b)) is not None]
+        return max(vals) if vals else None
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ positions
@@ -425,6 +461,11 @@ class Runner:
         self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
         self._versions_loaded = False
         self.cards = CardSink(cfg.root)
+        self.seen_triggers: set[str] = set()  # H5 triggers already handled (a restart replays the warm-up tape and the signal re-emits them)
+        self._logged_version: dict[str, str] = {}
+        self._replay_pos: dict[str, Pos] = {}
+        self._pend_buy: dict[str, tuple] = {}
+        self._pend_sell: dict[str, tuple] = {}
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
         self.risk: dict[str, dict] = {}
@@ -458,6 +499,10 @@ class Runner:
             if row.get("type") == "trade" and isinstance(s, int) and s > self.slot:
                 self.slot = s
             self.engine.on_row(row)
+            if row.get("type") == "trade" and row.get("prog") == "pumpswap" and row.get("pool"):
+                p = self.state.pool(row["pool"])
+                if p is not None and p.quote_mint == WSOL_MINT and p.q_real is not None:
+                    self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
             if self.h5 is not None:
                 self.trig_q.extend(self.h5.feed(row))
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
@@ -494,17 +539,44 @@ class Runner:
 
     # -- resume
     def resume(self) -> dict[str, int]:
-        n = {"rows": 0, "open": 0}
+        """Verify every chain and rebuild the live state from the log by applying the SAME transitions the live code applied: a refused buy leaves no entry,
+        cooldown or take; a retriable refused sell leaves the position open; the setup limiter, the risk grades, the watches, the last scan's eligible
+        cards and the re-check clocks come back. The quote history is a function of the tape (QuoteHistory), so it needs no replay of the log."""
+        n = {"rows": 0, "open": 0, "reopened": 0}
+        last_scan = None
         for name in (*arms.ARMS, "SCAN", "RISK"):
             self.log.verify(name)
             for r in self.log.rows(name):
                 n["rows"] += 1
                 self._replay_row(name, r)
+                if name == "SCAN" and r.get("kind") == "scan":
+                    last_scan = r
+        self._pend_buy.clear()
+        self._pend_sell.clear()
+        self._restore_eligible(last_scan)
         self.engine.recover()
+        # A sell that the log shows as sent but the engine never priced is, after the restart, an open engine position that nothing will close (a restart
+        # orphan makes the read NOT_DECIDABLE). Put it back in the book so it is sold again: the engine then books it as excluded (engine_restart).
+        for pid, pos in sorted(self._replay_pos.items()):
+            b = self.books[pos.arm]
+            if pid not in b.open and pid in self.engine.positions:
+                b.open[pid] = pos
+                n["reopened"] += 1
+                self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
             self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha})
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
+
+    def _restore_eligible(self, row: Mapping[str, Any] | None) -> None:
+        if not row:
+            return
+        day = utc_day(row["ms"])
+        for e in row.get("eligible", []):
+            c = self.cards.get(e["sha"], day)
+            if c is not None:
+                self.eligible[e["pool"]] = c
+                self.token_of[e["pool"]] = dict(e.get("token") or {})
 
     def _replay_row(self, name: str, r: Mapping[str, Any]) -> None:
         k = r.get("kind")
@@ -512,29 +584,67 @@ class Runner:
         if k == "llm_call":
             self.seq[(name, day)] = self.seq.get((name, day), 0) + 1
             self.calls.setdefault((name, r["call"]), []).append(r["ms"])
+            if r["call"] == "recheck" and name in self.books and r.get("error") not in DENIED:
+                for p in self.books[name].open.values():
+                    if p.pool in r["ids"]:
+                        p.last_recheck_ms = r["as_of_ms"]
         elif k == "risk_grade":
             self.risk[r["pool"]] = dict(r["state"])
+        elif k == "version":
+            self._logged_version[name] = r["manifest_sha256"]
+        elif name == "SCAN":
+            if k == "scan":
+                for pool, persona in r.get("tagged", []):
+                    self.limiter.record(pool, persona, r["ms"])
+            elif k == "trigger":
+                self.seen_triggers.add(r["sha"])
         elif name in self.books:
             b = self.books[name]
+            bst_llm = name in ("BST-L", "BST-F")
             if k == "entry" and r.get("pos"):
                 p = Pos(**r["pos"])
+                self._pend_buy[p.pid] = (r["ms"], b.pool_last_ms.get(p.pool), p.pool, r.get("lane") == "H" and bst_llm)
                 b.open[p.pid] = p
                 b.entries_ms.append(r["ms"])
                 b.pool_last_ms[p.pool] = r["ms"]
-                if r.get("lane") == "H":
+                self._replay_pos[p.pid] = p
+                if r.get("lane") == "H" and bst_llm:
                     b.bst_taken += 1
                     b.bst_seen += 1
-            elif k in ("entry", "skip") and r.get("lane") == "H":
+            elif k == "skip" and r.get("lane") == "H" and bst_llm and not (r.get("fields") or {}).get("vetoed"):
                 b.bst_seen += 1
             elif k == "order_refused" and r.get("side") == "buy":
-                b.open.pop(r["order_id"], None)
+                oid = r["order_id"]
+                b.open.pop(oid, None)
+                self._replay_pos.pop(oid, None)
+                pend = self._pend_buy.pop(oid, None)
+                if pend is not None:  # live, a refused buy leaves no entry, no cooldown and no take
+                    ms, prev, pool, taken = pend
+                    if ms in b.entries_ms:
+                        b.entries_ms.remove(ms)
+                    if prev is None:
+                        b.pool_last_ms.pop(pool, None)
+                    else:
+                        b.pool_last_ms[pool] = prev
+                    if taken:
+                        b.bst_taken -= 1
             elif k == "tighten" and r["pid"] in b.open:
                 p = b.open[r["pid"]]
                 p.stop_pct = r.get("stop_pct", p.stop_pct)
                 p.target_pct = r.get("target_pct", p.target_pct)
             elif k == "sell":
-                b.open.pop(r["pid"], None)
+                self._pend_sell[r["pid"]] = (b.open.pop(r["pid"], None), b.realized.get(day), day)
                 b.realized[day] = b.realized.get(day, 0.0) + float(r.get("est_pnl_sol") or 0.0)
+            elif k == "order_refused" and r.get("side") == "sell":
+                p, prev_realized, d0 = self._pend_sell.pop(r["order_id"], (None, None, day))
+                if prev_realized is None:  # live, a sell the engine refused is not realized
+                    b.realized.pop(d0, None)
+                else:
+                    b.realized[d0] = prev_realized
+                if p is not None:
+                    p.sell_tries += 1
+                    if not ("no open position" in str(r.get("detail", "")) or p.sell_tries >= SELL_RETRY_MAX):
+                        b.open[p.pid] = p  # retriable: still open, as live
             elif k == "watch_add":
                 b.watches.append(dict(r["watch"]))
             elif k == "watch_end":
@@ -655,10 +765,14 @@ class Runner:
             if c is not None:
                 for pr in LANE_G_PERSONAS:
                     cards[(pid, pr)] = c
-        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": slot, "n_filter_pass": len(cand), "n_tags": {pr: len(per_persona[pr]) for pr in LANE_G_PERSONAS},
-                                    "n_board": len(board), "n_cards": len(cards), "card_shas": sorted(card_sha256(c) for c in cards.values())})
         self._risk_round(cards, T)
         self.eligible = {c["id"]: c for (pid, pr), c in sorted(cards.items()) if self._cleared(c["id"], T)}
+        for c in self.eligible.values():
+            self.cards.put(c, T)  # R matching reads these after a restart
+        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": slot, "n_filter_pass": len(cand), "n_tags": {pr: len(per_persona[pr]) for pr in LANE_G_PERSONAS},
+                                    "n_board": len(board), "n_cards": len(cards), "card_shas": sorted(card_sha256(c) for c in cards.values()),
+                                    "tagged": sorted([t.pool_id, pr] for pr in LANE_G_PERSONAS for t in per_persona[pr]),
+                                    "eligible": [{"pool": pid, "sha": card_sha256(c), "token": self.token_of.get(pid, {})} for pid, c in sorted(self.eligible.items())]})
         for pr in LANE_G_PERSONAS:
             pcards = [cards[k] for k in sorted(cards) if k[1] == pr]
             self._x_round(pr, per_persona[pr], cards, T)
@@ -773,7 +887,7 @@ class Runner:
         b.open[pid] = pos
         b.entries_ms.append(dec_ms)
         b.pool_last_ms[card["id"]] = dec_ms
-        if spec.role == "L":
+        if spec.role == "L" and persona in LANE_G_PERSONAS:  # BST-R follows H5 triggers only (see _bst_r), never a lane-G pool
             self._match_r(persona, pos, dec_ms, card)
         return pid
 
@@ -804,7 +918,7 @@ class Runner:
 
     def _match_r(self, persona: str, lpos: Pos, dec_ms: int, lcard: Mapping) -> None:
         rarm = f"{persona}-R"
-        if rarm not in arms.ARMS:
+        if persona not in LANE_G_PERSONAS or rarm not in arms.ARMS:
             return
         pool = sorted(p for p, c in self.eligible.items() if p != lpos.pool and c.get("f", {}).get("max_stake", 0) >= lpos.size
                       and (c["f"].get("age_tier") == "established" or lpos.size <= C.YOUNG_STAKE_CAP)
@@ -1055,43 +1169,52 @@ class Runner:
             if f["t_recv_ms"] >= T:
                 self.trig_q.append(f)  # not yet before the card instant
                 continue
+            sha = sha256_hex(canon(f))
+            if sha in self.seen_triggers:  # a restart replays the warm-up tape and the signal emits the old triggers again
+                self._count("trigger_duplicate")
+                continue
+            self.seen_triggers.add(sha)
+            if T - f["t_recv_ms"] > arms.STALE_MS:
+                self._count("trigger_stale")
+                self.log.append("SCAN", T, {"kind": "trigger", "sha": sha, "pool": f["pool"], "ok": False, "reasons": ["stale_trigger"], "age_ms": T - f["t_recv_ms"]})
+                continue
             gate = self.chain.mint_gate(f.get("mint"), T, self.slot)
             card = bst_card(f, as_of_ms=T, as_of_slot=self.slot)
             reasons = ["chain_unavailable"] if gate is None else list(gate["reasons"])
             ok = gate is not None and gate["ok"]
             token = (gate or {}).get("token") or {}
+            self.log.append("SCAN", T, {"kind": "trigger", "sha": sha, "pool": f["pool"], "ok": ok, "reasons": reasons})
+            if not ok:  # a code veto: no arm decides this trigger, and it is not part of BST-L's take rate
+                for arm in ("BST-L", "BST-F", "BST-X", "BST-R"):
+                    self._skip(arm, card, T, reasons, lane="H", fields={"vetoed": True, "trigger_sha256": sha})
+                continue
             cap = C.max_stake_by_impact(f.get("q_trigger_sol"))
             size = final_size(0.25, arms.SIZES[-1], cap if cap is not None else 0.0, arms.SIZES[-1])
-            extra = {"timer_ms": int(f["s0_t_recv_ms"]) + BST_EXIT_MS, "token": token, "trigger_sha256": sha256_hex(canon(f))}
-            for arm in ("BST-L", "BST-F"):
-                if not ok:
-                    self._skip(arm, card, T, reasons, lane="H")
-                    self.books[arm].bst_seen += 1
-            if not ok:
-                self._skip("BST-X", card, T, reasons, lane="H")
-                self._skip("BST-R", card, T, reasons, lane="H")
-                continue
-            lt = self._bst_llm(card, size, extra, T)
-            if lt is not None:
-                self._bst_x(card, size, extra, T)
-                self._bst_r(card, size, extra, T)
+            extra = {"timer_ms": int(f["s0_t_recv_ms"]) + BST_EXIT_MS, "token": token, "trigger_sha256": sha}
+            lb = self.books["BST-L"]
+            prior = (lb.bst_seen, lb.bst_taken)  # BST-L's record BEFORE it decides this trigger
+            decided = self._bst_llm(card, size, extra, T)
+            self._bst_x(card, size, extra, T)
+            self._bst_r(card, size, extra, T, decided, prior)
 
-    def _bst_llm(self, card: dict, size: float, extra: Mapping, T: int) -> bool | None:
+    def _bst_llm(self, card: dict, size: float, extra: Mapping, T: int) -> bool:
+        """BST-L and BST-F decide the trigger. True when BST-L did decide it (took it or skipped it); False when it did not (halted group, refused
+        manifest, call cap, a symmetric abstain): then BST-R does not take it either."""
         members = self._live_members(arms.group_members("BST"), T)
         if not members:
-            return True
+            return False
         if self.guard is not None and self.guard.policy("BST", self._now(T)).entries_halted:
             for a in members:
                 self.log.append(a, T, {"kind": "halt", "reason": "group_halted"})
-            return True
+            return False
         if not self._call_ok(list(members), "entry", None, T):
-            return True
+            return False
         self.cards.put(card, T)
         replies = {a: self._call(a, build_entry_request(a, self.playbook_for(a), [card], self._next_seq(a, T), max_cards=1), T) for a in members}
         if any(r.error in DENIED for r, _ in replies.values()):
             for a in members:
                 self.log.append(a, replies[a][1], {"kind": "symmetry_abstain", "errors": {m: replies[m][0].error for m in members}})
-            return True
+            return False
         for a in members:
             reply, recv = replies[a]
             v = validate_entry(reply, persona="BST", cards=[card], knobs=self.knobs[a], received_ms=recv)[0]
@@ -1109,7 +1232,7 @@ class Runner:
                 continue
             if self._open(a, card, size, None, recv, gates, {**extra, "conviction": v.fields["conviction"], "why": v.fields["why"]}) is not None:
                 b.bst_taken += 1
-        return True
+        return "BST-L" in members
 
     def _bst_x(self, card: dict, size: float, extra: Mapping, T: int) -> None:
         gates = self._gates("BST-X", card["id"], size, False, T)
@@ -1118,14 +1241,23 @@ class Runner:
         else:
             self._skip("BST-X", card, T, [k for k, g in gates.items() if not g["ok"]], gates, lane="H")
 
-    def _bst_r(self, card: dict, size: float, extra: Mapping, T: int) -> None:
-        lb = self.books["BST-L"]
-        rate = (lb.bst_taken / lb.bst_seen) if lb.bst_seen else 0.0
+    def _bst_r(self, card: dict, size: float, extra: Mapping, T: int, decided: bool, prior: tuple[int, int]) -> None:
+        """BST-R takes an H5 trigger (and nothing else) with probability = BST-L's take rate over the triggers BST-L decided BEFORE this one. Warm-up: with
+        fewer than BST_R_WARMUP prior decisions the rate is 0 (it takes none). If BST-L did not decide this trigger, BST-R does not take it. The coin is a
+        function of the seed and the pool only, so it cannot copy BST-L's choice."""
+        seen, taken = prior
+        if not decided:
+            self._skip("BST-R", card, T, ["l_undecided"], lane="H", fields={"n_prior": seen, "trigger_sha256": extra["trigger_sha256"]})
+            return
+        if seen < BST_R_WARMUP:
+            self._skip("BST-R", card, T, ["warmup"], lane="H", fields={"n_prior": seen, "rate": 0.0, "trigger_sha256": extra["trigger_sha256"]})
+            return
+        rate = taken / seen
         coin = _u01(self.cfg.seed, "BST-R", card["id"])
         if coin < rate:
-            self._open("BST-R", card, size, None, T, {}, {**extra, "r_rate": rate, "r_coin": coin})
+            self._open("BST-R", card, size, None, T, {}, {**extra, "r_rate": rate, "r_coin": coin, "r_prior": seen})
         else:
-            self._skip("BST-R", card, T, ["coin"], lane="H", fields={"rate": rate, "coin": coin})
+            self._skip("BST-R", card, T, ["coin"], lane="H", fields={"rate": rate, "coin": coin, "n_prior": seen, "trigger_sha256": extra["trigger_sha256"]})
 
     # -- reviewer versions (once a minute)
     def refresh_versions(self, T: int) -> None:
@@ -1139,6 +1271,8 @@ class Runner:
         for arm in arms.reviewer_arms():
             try:
                 av = self.version_source(arm, now)
+                if av is None and self.arm_state[arm]["manifest_sha256"] is not None:
+                    raise ValueError("manifest_chain_missing")  # a version was applied and the chain is gone: never keep trading on the old one
                 new = None if av is None else self._check_version(arm, av)
             except Exception as e:  # noqa: BLE001 - any failure of the source is a refusal (fail closed)
                 code = (str(e) or type(e).__name__)[:80]
@@ -1153,8 +1287,10 @@ class Runner:
             if new is not None and new["manifest_sha256"] != self.arm_state[arm]["manifest_sha256"]:
                 self.arm_state[arm] = new
                 self.knobs[arm] = Knobs(arms.ARMS[arm].persona, int(new["knobs"]["min_conviction"]))
-                self.log.append(arm, now, {"kind": "version", "version": new["version"], "manifest_sha256": new["manifest_sha256"], "playbook_sha256": new["playbook"].sha256,
-                                           "knobs": dict(new["knobs"]), "vetoes": list(new["vetoes"]), "effective_from_ms": new["effective_from_ms"]})
+                if self._logged_version.get(arm) != new["manifest_sha256"]:  # not again after a restart
+                    self._logged_version[arm] = new["manifest_sha256"]
+                    self.log.append(arm, now, {"kind": "version", "version": new["version"], "manifest_sha256": new["manifest_sha256"], "playbook_sha256": new["playbook"].sha256,
+                                               "knobs": dict(new["knobs"]), "vetoes": list(new["vetoes"]), "effective_from_ms": new["effective_from_ms"]})
 
     def _check_version(self, arm: str, av: Any) -> dict:
         persona = arms.ARMS[arm].persona
@@ -1173,8 +1309,31 @@ class Runner:
         sha = man.get("sha256")
         if not isinstance(sha, str) or len(sha) != 64:
             raise ValueError("manifest_sha256")
+        cur = self.arm_state[arm]
+        if cur["manifest_sha256"] and sha != cur["manifest_sha256"] and int(st.version) <= cur["version"]:
+            raise ValueError("version_not_forward")  # a different line for a version already applied, or an older one: the chain was replaced
         return {"version": int(st.version), "playbook": st.playbook, "knobs": knobs, "vetoes": tuple(str(v) for v in st.vetoes), "manifest_sha256": sha,
                 "effective_from_ms": man.get("effective_from_ms")}
+
+    def state_digest(self, T: int) -> dict[str, Any]:
+        """Everything the live code decides on, as a JSON-able dict at instant T (for the resume-equivalence test and for ops). Left out on purpose: the BIG
+        trail peak (restarts from the current mark, disclosed), counters, the card sink's in-process dedupe set."""
+        hour = T - 60 * MIN_MS
+        return {
+            "books": {a: {"open": {pid: {k: v for k, v in asdict(p).items() if k != "peak"} for pid, p in sorted(b.open.items())},
+                          "entries_h": sorted(t for t in b.entries_ms if t > hour), "pool_last_ms": dict(sorted(b.pool_last_ms.items())),
+                          "realized": dict(sorted(b.realized.items())), "watches": sorted((dict(w) for w in b.watches), key=lambda w: w["id"]),
+                          "bst": [b.bst_seen, b.bst_taken]} for a, b in self.books.items()},
+            "seq": {f"{n}|{d}": v for (n, d), v in sorted(self.seq.items())},
+            "calls_h": {f"{n}|{k}": sorted(t for t in v if t > hour) for (n, k), v in sorted(self.calls.items()) if any(t > hour for t in v)},
+            "risk": {k: self.risk[k] for k in sorted(self.risk)},
+            "limiter": {f"{pool}|{pr}": t for (pool, pr), t in sorted(self.limiter._last.items())},
+            "eligible": {k: card_sha256(c) for k, c in sorted(self.eligible.items())},
+            "arm_state": {a: [st["version"], st["manifest_sha256"], st["knobs"], list(st["vetoes"]), st["playbook"].sha256] for a, st in sorted(self.arm_state.items())},
+            "min_conviction": {a: k.min_conviction for a, k in sorted(self.knobs.items())},
+            "arm_halt": dict(sorted(self.arm_halt.items())), "seen_triggers": sorted(self.seen_triggers),
+            "quotes": {pool: [self.quotes.ref(pool, T), self.quotes.peak(pool, T)] for pool in sorted(self.quotes.t)},
+        }
 
     # -- the loop
     def step(self, T: int) -> None:
@@ -1184,8 +1343,6 @@ class Runner:
         sec = T % MIN_MS
         if sec == SCAN_SECOND_MS or not self._versions_loaded:
             self.refresh_versions(T)  # before any decision of this tick
-        if sec == SCAN_SECOND_MS:
-            self.quotes.sample(self.state, T)
         self.exits(T)
         self.triggers(T)
         if sec == SCAN_SECOND_MS:
