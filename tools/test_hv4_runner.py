@@ -16,7 +16,7 @@ from tools.arena_paper import ArenaEngine, ArenaRefused, load_registry
 from tools.arena_state import ArenaState
 from tools.hv4_budget import BudgetGuard
 from tools.hv4_model import StubModel, default_reply
-from tools.hv4_testkit import buy, reply
+from tools.hv4_testkit import buy, reply, skip
 from tools.hv4_validate import final_size
 
 SOL = 1_000_000_000
@@ -97,7 +97,16 @@ def script_for(target_f: float = 6.0):
     def script(req):
         if req.kind == "entry" and req.arm in ("CON-L", "CON-F"):
             plan = {"stop_pct": -7, "target_pct": 12 if req.arm == "CON-L" else target_f, "time_min": 45}
-            return reply(*[buy(i, "CON", plan=plan) for i in req.ids])
+            tagged = set()
+            for line in req.user_text.splitlines():
+                if line.startswith("{"):
+                    try:
+                        c = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(c, dict) and c.get("setup"):
+                        tagged.add(c["id"])
+            return reply(*[buy(i, "CON", plan=plan) if i in tagged else skip(i) for i in req.ids])  # only a card with a setup tag is bought
         return default_reply(req)
     return script
 
@@ -110,7 +119,7 @@ def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None,
     guard = BudgetGuard(root)
     model = StubModel(script if script is not None else script_for(), guard=guard, cost_usd=cost_usd, latency_ms=latency_ms)
     state = ArenaState(tape, start_ms=0)
-    engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", sps_fn=lambda: 0.4, now_fn=lambda: 2 ** 62)
+    engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", cfg=R.stack_config(feed_delay_slots=0), sps_fn=lambda: 0.4)
     cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
     run = R.Runner(cfg, state, engine, model, FakeChain(), guard)
     if not (tmp / "bots.json").exists():
@@ -209,7 +218,7 @@ def test_latency_is_charged_from_the_instant_the_answer_arrived(tmp_path):
     S1 = X + R.SCAN_SECOND_MS
     run.run(T_START, S1 + 20_000)
     e = rows_of(run, "CON-L", "entry")[0]
-    call = next(r for r in rows_of(run, "CON-L", "llm_call") if r["call"] == "entry")
+    call = next(r for r in rows_of(run, "CON-L", "llm_call") if r["call"] == "entry" and r["as_of_ms"] == S1)
     assert call["ms"] == S1 + 700 == e["ms"]  # decision_ms = as_of + the reply's latency (sim clock)
     o = next(r for r in run.engine.ledger.read_bot("hv4-CON-L") if r["kind"] == "open")
     assert o["decision_ms"]["entry"] == S1 + 700 and o["bot_sol_in"] == e["size"]
@@ -275,10 +284,10 @@ def test_group_halts_symmetrically_when_a_member_runs_out_of_budget(tmp_path):
     assert run.guard.persisted_level("CON", day)[0] == arms.DEGRADE_STEPS
     spent = {a: run.guard.spent(a, day) for a in arms.group_members("CON")}
     assert max(spent.values()) - min(spent.values()) <= 0.2 + 1e-9  # no member is more than one call ahead
-    ab = {a: len(rows_of(run, a, "symmetry_abstain")) for a in arms.group_members("CON")}
-    assert len(set(ab.values())) == 1 and ab["CON-L"] >= 1  # every member abstains at the same instants
-    last = max(r["ms"] for r in rows_of(run, "CON-L", "entry"))
-    assert all(max([r["ms"] for r in rows_of(run, a, "entry")] or [0]) <= last for a in ("CON-F",))
+    deny = {a: [r["ms"] for r in run.log.rows(a) if r["kind"] in ("halt", "symmetry_abstain", "recheck_denied")] for a in arms.group_members("CON")}
+    assert deny["CON-L"]  # the member that hit the gate logged it; the others are halted by the same persisted group level (checked above)
+    ok_calls = {a: sum(1 for r in rows_of(run, a, "llm_call") if r["error"] is None) for a in arms.group_members("CON")}
+    assert max(ok_calls.values()) - min(ok_calls.values()) <= 1  # the same number of paid calls, to within the instant the cap was hit
     assert all(s["reason"] for a in ("CON-L",) for s in rows_of(run, a, "sell"))  # exits stay code-only and go on
     assert all(not b.open for b in run.books.values())
 
@@ -372,7 +381,7 @@ def test_restart_resumes_positions_counters_and_chain_from_the_log(tmp_path):
     run2.run(t_stop, T_END)  # the exits go on after the restart; the engine books the recovered trades as excluded (engine_restart)
     assert all(not b.open for b in run2.books.values())
     ex = [r for r in run2.engine.ledger.read_bot("hv4-CON-L") if r.get("kind") == "excluded"]
-    assert ex and all(r["reason"] == "engine_restart" for r in ex)
+    assert ex and all(r["exclusion_reason"] == "engine_restart" for r in ex)
     for n in (*arms.ARMS, "SCAN", "RISK"):
         run2.log.verify(n)
 
@@ -426,4 +435,48 @@ def test_no_sealed_path_and_no_key_in_the_log(full):
     assert "ANTHROPIC" not in Path(R.__file__).read_text().split("def main")[0].replace("ANTHROPIC_API_KEY from the environment", "")
 
 
-GOLDEN_MD5 = "PIN_ME"
+GOLDEN_MD5 = "cc43b1925f57613733b1bde1e3817858"  # md5 of the decision logs of all arms on the synthetic tape with the stub (a regression pin, not a result)
+
+
+# -------------------------------------------------------------------------------------------------------------------------- isolation (DEC-031 section 3.1)
+_FORBIDDEN = ("tools.r4b", "tools.l3", "laya", "models.r4b")
+
+
+def test_hv4_modules_do_not_import_r4b_l3_or_laya_in_source():
+    import re
+
+    for name in ("hv4_runner.py", "arena_h5_signal.py"):
+        src = (Path(R.__file__).parent / name).read_text()
+        assert not re.search(r"^\s*(from|import)\s+\S*(r4b|\bl3\b|laya)", src, re.M), name
+
+
+def test_importing_the_runner_pulls_in_no_r4b_l3_or_laya_module():
+    """Run in a clean interpreter with tools.arena_paper replaced by a stub, so this test is independent of how arena_paper is built (#708 vendors the
+    stack as tools/arena_stack.py). Everything else the runner imports must be clean."""
+    import subprocess
+    import sys
+
+    code = ("import sys, types\nsys.path.insert(0, %r)\n" % str(Path(R.__file__).parent.parent) +
+            "m = types.ModuleType('tools.arena_paper')\n"
+            "for n in ('ArenaEngine', 'ArenaRefused', 'canon', 'register_bot'):\n"
+            "    setattr(m, n, (lambda *a, **k: None) if n != 'ArenaRefused' else Exception)\n"
+            "sys.modules['tools.arena_paper'] = m\n"
+            "import tools.hv4_runner, tools.arena_h5_signal\n"
+            "tools.arena_h5_signal.H5Signal()\n"
+            "bad = sorted(k for k in sys.modules if any(k.startswith(f) or f in k for f in %r))\n"
+            "print('BAD', bad)\n" % (_FORBIDDEN,))
+    out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(Path(R.__file__).parent.parent), capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-400:]
+    assert out.stdout.strip().endswith("BAD []"), out.stdout
+
+
+@pytest.mark.xfail(reason="arena_paper still imports tools.r4b_* until #708 vendors the stack as tools/arena_stack.py", strict=False)
+def test_the_real_import_chain_is_clean_too():
+    import subprocess
+    import sys
+
+    code = ("import sys\nsys.path.insert(0, %r)\n" % str(Path(R.__file__).parent.parent) +
+            "import tools.hv4_runner, tools.arena_h5_signal\n"
+            "print('BAD', sorted(k for k in sys.modules if any(f in k for f in %r)))\n" % (_FORBIDDEN,))
+    out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(Path(R.__file__).parent.parent), capture_output=True, text=True, timeout=120)
+    assert out.stdout.strip().endswith("BAD []"), out.stdout

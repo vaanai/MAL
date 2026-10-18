@@ -363,6 +363,9 @@ class Runner:
         self.trig_q: list[dict] = []
         self.counters: dict[str, int] = {}
         self.hook_errors: list[str] = []
+        self.sim_now = 0  # sim mode: the engine's wall clock is the sim instant (its stale / future checks compare decision_ms with it)
+        if not cfg.live:
+            engine.now_fn = lambda: self.sim_now
         self.invalid = {a: [0, 0] for a in arms.ARMS if arms.ARMS[a].llm}  # arm -> [invalid, total] verdicts (the 10% NOT EVALUABLE rule is read later)
         orig = state.apply
 
@@ -469,6 +472,7 @@ class Runner:
     def _call(self, name: str, req: Any, T: int) -> tuple[ModelReply, int]:
         reply = self.model.complete(req, self._now(T))
         recv = self._decision_ms(T, reply)
+        self.sim_now = max(self.sim_now, recv)
         day = utc_day(recv)
         seq = self.seq.get((name, day), 0)
         self.seq[(name, day)] = seq + 1
@@ -922,6 +926,7 @@ class Runner:
         req = build_recheck_request(arm, self.playbooks[persona], poss, cards, self._next_seq(arm, T))
         reply, recv = self._call(arm, req, T)
         if reply.error in DENIED:
+            self.log.append(arm, recv, {"kind": "recheck_denied", "error": reply.error})  # the budget gate said no: the position keeps its code exits
             return
         by_pool = {p.pool: p for p, _ in group}
         for v in validate_recheck(reply, positions=poss, received_ms=recv):
@@ -1014,6 +1019,7 @@ class Runner:
     # -- the loop
     def step(self, T: int) -> None:
         """One tick at instant T (the state is stepped to T-1 first)."""
+        self.sim_now = max(self.sim_now, T)
         self.poll_to(T)
         sec = T % MIN_MS
         if sec == SCAN_SECOND_MS:
@@ -1038,6 +1044,16 @@ class Runner:
             T += TICK_MS
 
 
+def stack_config(**kw: Any) -> Any:
+    """arena_paper.StackConfig with explicit arguments. feed_delay_slots is passed only when this arena_paper has the field (#708 makes it required)."""
+    import dataclasses
+
+    from tools.arena_paper import StackConfig
+
+    names = {f.name for f in dataclasses.fields(StackConfig)}
+    return StackConfig(**{k: v for k, v in kw.items() if k in names})
+
+
 def first_tick_at_or_after(ms: int) -> int:
     """The first scan instant (minute boundary + :02, 5-min aligned) at or after ms."""
     base = (ms - SCAN_SECOND_MS) // SCAN_EVERY_MS * SCAN_EVERY_MS + SCAN_SECOND_MS
@@ -1054,6 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--register", action="store_true", help="append the 13 bots.json lines (before the clock) and exit")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
+    ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
     a = ap.parse_args(argv)
     from tools.hv4_model import CallerModel, StubModel
@@ -1061,7 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     guard = BudgetGuard(a.root)
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
-    engine = ArenaEngine(a.ledger_root, a.registry)
+    engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
     run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None)
     if a.register:
