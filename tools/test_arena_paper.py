@@ -3,6 +3,7 @@ registry, ledger. No network, no tape."""
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -19,6 +20,7 @@ from tools.arena_paper import (
     ArenaRefused,
     Ledger,
     LedgerConflict,
+    TEST_ENV,
     StackConfig,
     book_fail_legs,
     canon,
@@ -36,16 +38,22 @@ FIX = Path(__file__).resolve().parent / "fixtures" / "arena_paper"
 CASES_SHA256 = "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58"
 LEGACY_MD5 = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output lines == md5 of sc.py's / the curve sim's expected lines (bit parity)
 BINDING_MD5 = "af48053427bd2c49089f99a237a1e781"  # same, binding stack (strand class + E1 floor), expected = sc.py + an independent layer
+os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
+SC = functools.partial(StackConfig, feed_delay_slots=0)  # d = 0 unless a test says otherwise; the replays have no feed gaps to detect
+
+
 def register_bot(*a, **k):
     k.setdefault("verify_sha", False)  # tests use fake shas; the origin check has its own test
+    k.setdefault("deciding_stake", 0.25)
+    k.setdefault("model_ids", [])
     return _register_bot(*a, **k)
 
 
 KEYS = ("pnl13", "pnl19", "flat13", "flat19", "press13", "press19")
 V = 17_584_505_288
 T0 = 1_789_000_000_000
-LEGACY = StackConfig(strand_rule="sc", e1_floor_per_005=0)
-BINDING = StackConfig(strand_rule="total")
+LEGACY = SC(strand_rule="sc", e1_floor_per_005=0)
+BINDING = SC(strand_rule="total")
 
 
 def _states(c):
@@ -131,14 +139,14 @@ def test_e1_floor_is_the_larger_of_haircut_and_384022_per_005_sol():
     for stake, floor in ((0.25e9, 1_920_110.0), (0.5e9, 3_840_220.0), (1.0e9, 7_680_440.0)):
         st = _st()
         with_floor = price_leg("pumpswap", stake, st, 1.3, BINDING, "total")
-        no_floor = price_leg("pumpswap", stake, st, 1.3, StackConfig(strand_rule="total", e1_floor_per_005=0), "total")
-        zero_hair = price_leg("pumpswap", stake, st, 1.3, StackConfig(strand_rule="total", e1_floor_per_005=0, h_in=0.0, h_out=0.0), "total")
+        no_floor = price_leg("pumpswap", stake, st, 1.3, SC(strand_rule="total", e1_floor_per_005=0), "total")
+        zero_hair = price_leg("pumpswap", stake, st, 1.3, SC(strand_rule="total", e1_floor_per_005=0, h_in=0.0, h_out=0.0), "total")
         haircut = zero_hair["pnl"] - no_floor["pnl"]
         assert haircut < floor  # the fractional haircut alone is about 0.42% of stake
         assert zero_hair["pnl"] - with_floor["pnl"] == pytest.approx(floor, abs=1e-3)  # the trip carries exactly the floor
         assert with_floor["e1_extra"] == pytest.approx(floor - haircut, abs=1e-3)
     # a haircut above the floor is kept as it is
-    big = price_leg("pumpswap", 0.25e9, _st(), 1.3, StackConfig(strand_rule="total", h_in=0.02, h_out=0.02), "total")
+    big = price_leg("pumpswap", 0.25e9, _st(), 1.3, SC(strand_rule="total", h_in=0.02, h_out=0.02), "total")
     assert big["e1_extra"] == 0.0
 
 
@@ -148,7 +156,7 @@ def test_a_strand_is_a_total_loss_on_every_leg_with_no_fail_blend():
     total = -0.25e9 - 505_000 - 2_039_280
     assert r["state"] == "stranded" and r["strand"] and r["pnl"] == total and r["flat"] == total and r["press"] == total
     # the same trip under the "sc" rule is a normal sell, blended like any fill
-    s = price_leg("pumpswap", 0.25e9, dust, 1.3, StackConfig(strand_rule="sc", e1_floor_per_005=0), "sc")
+    s = price_leg("pumpswap", 0.25e9, dust, 1.3, SC(strand_rule="sc", e1_floor_per_005=0), "sc")
     assert not s["strand"] and s["flat"] != s["pnl"]
     # a guarded buy is not a strand (one send, nothing bought)
     g = price_leg("pumpswap", 0.25e9, _st(spot=1e-9), 1.3, BINDING, "total")
@@ -183,7 +191,7 @@ def mk_engine(tmp, cfg=None, vmap=None, bots=("botA",), clock=0):
     reg = tmp / "bots.json"
     for b in bots:
         register_bot(b, "abc1234", clock, reg, now_ms=0)
-    return ArenaEngine(tmp / "ledger", reg, cfg or StackConfig(max_past_ms=None, strand_rule="total"), vmap=vmap, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
+    return ArenaEngine(tmp / "ledger", reg, cfg or SC(max_past_ms=None, strand_rule="total"), vmap=vmap, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
 
 
 def _tape(lo=90, hi=215, **kw):
@@ -207,7 +215,7 @@ def trades(eng, kind="trade"):
 
 
 def test_landing_uses_end_bound_pre_trade_state_and_both_strand_rules(tmp_path):
-    eng = mk_engine(tmp_path, StackConfig(max_past_ms=None))  # default strand_rule "both"
+    eng = mk_engine(tmp_path, SC(max_past_ms=None))  # default strand_rule "both"
     rows = _tape()
     run_trade(eng, rows)
     out = trades(eng)
@@ -251,11 +259,11 @@ def test_hindsight_decisions_are_refused_and_logged(tmp_path):
         eng.buy("botA", "P1", None, tms(100), 109)  # decision_ms below the high-water mark
     refused = trades(eng, "refused")
     assert len(refused) == 2 and {r["reason"] for r in refused} == {"stale_decision"}
-    early = ArenaEngine(tmp_path / "l2", eng.registry_path, StackConfig(max_past_ms=None), sps_fn=lambda: 0.4, now_fn=lambda: tms(0))
+    early = ArenaEngine(tmp_path / "l2", eng.registry_path, SC(max_past_ms=None), sps_fn=lambda: 0.4, now_fn=lambda: tms(0))
     early.on_row(_row(0, 100))
     with pytest.raises(ArenaRefused, match="future_decision"):
         early.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 12 s ahead of the wall clock
-    old = ArenaEngine(tmp_path / "l4", eng.registry_path, StackConfig(max_past_ms=60_000), sps_fn=lambda: 0.4, now_fn=lambda: tms(100) + 90_000)
+    old = ArenaEngine(tmp_path / "l4", eng.registry_path, SC(max_past_ms=60_000), sps_fn=lambda: 0.4, now_fn=lambda: tms(100) + 90_000)
     old.on_row(_row(0, 100))
     with pytest.raises(ArenaRefused, match="stale_decision"):
         old.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 90 s older than the write instant
@@ -267,7 +275,7 @@ def test_refused_buys_go_in_the_decision_log(tmp_path):
         eng.on_row(r)
     with pytest.raises(ArenaRefused, match="no_prints"):
         eng.buy("botA", "UNKNOWN", None, tms(109), 109)
-    eng2 = ArenaEngine(tmp_path / "l3", eng.registry_path, StackConfig(max_past_ms=None), sps_fn=lambda: None, now_fn=lambda: 2**62)
+    eng2 = ArenaEngine(tmp_path / "l3", eng.registry_path, SC(max_past_ms=None), sps_fn=lambda: None, now_fn=lambda: 2**62)
     eng2.on_row(_row(0, 100))
     with pytest.raises(ArenaRefused, match="clock_not_ready"):
         eng2.buy("botA", "P1", None, tms(100), 100)
@@ -281,7 +289,7 @@ def test_k_rounding_round_vs_ceil(tmp_path):
     for mode in ("ceil", "round"):
         sub = tmp_path / mode
         sub.mkdir()
-        eng = mk_engine(sub, StackConfig(k_rounding=mode, max_past_ms=None, strand_rule="total"))
+        eng = mk_engine(sub, SC(k_rounding=mode, max_past_ms=None, strand_rule="total"))
         eng.sps_fn = lambda: 0.2
         run_trade(eng, [dict(r, t_recv_ms=T0 + (r["slot"] - 90) * 200) for r in _tape(hi=260)], sell_slot=210, buy_ms=T0 + 10 * 200, sell_ms=T0 + 120 * 200)
         res[mode] = trades(eng)[0]["calc"]["1p3"]["landing_slot"]
@@ -327,7 +335,7 @@ def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
     for gap in (False, True):
         sub = tmp_path / str(gap)
         sub.mkdir()
-        eng = mk_engine(sub, StackConfig(grace_slots=25, max_past_ms=None, strand_rule="total"))
+        eng = mk_engine(sub, SC(grace_slots=25, max_past_ms=None, strand_rule="total"))
         for r in _tape(hi=108):
             eng.on_row(r)
         eng2 = eng
@@ -337,8 +345,8 @@ def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
         assert eng2.ledger.read_bot("botA")[-1]["kind"] == "open"
         if gap:
             eng2.on_row({"type": "gap", "prog": "pumpswap", "kind": "silence", "data_loss": True, "slot": 107, "t_recv_ms": tms(125), "silent_ms": 3000})
-        for i, slot in enumerate(range(300, 305)):
-            eng2.on_row(_row(i, slot, pool="P2"))  # another pool moves the global clock far past
+        for i, slot in enumerate(range(108, 160)):
+            eng2.on_row(_row(i, slot, pool="P2"))  # another pool moves the global clock past, slot by slot (a jump would itself be a gap)
         rows = trades(eng2)
         exc = trades(eng2, "excluded")
         if gap:
@@ -556,7 +564,7 @@ def _git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env, check=True).stdout.strip()
 
 
-def test_register_bot_verifies_frozen_sha_is_a_commit_on_origin(tmp_path):
+def test_register_bot_requires_the_frozen_sha_to_be_on_origin_main_and_stores_the_full_sha(tmp_path):
     import subprocess
 
     origin, clone = tmp_path / "origin.git", tmp_path / "clone"
@@ -564,27 +572,50 @@ def test_register_bot_verifies_frozen_sha_is_a_commit_on_origin(tmp_path):
     subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
     (clone / "a.txt").write_text("a")
     _git(clone, "add", "a.txt")
-    _git(clone, "commit", "-q", "-m", "pushed")
+    _git(clone, "commit", "-q", "-m", "on main")
     _git(clone, "push", "-q", "origin", "HEAD:main")
-    pushed = _git(clone, "rev-parse", "HEAD")
+    on_main = _git(clone, "rev-parse", "HEAD")
+    _git(clone, "checkout", "-q", "-b", "claude/feature")
     (clone / "b.txt").write_text("b")
     _git(clone, "add", "b.txt")
+    _git(clone, "commit", "-q", "-m", "pushed to a branch, not merged")
+    _git(clone, "push", "-q", "origin", "claude/feature")
+    on_branch = _git(clone, "rev-parse", "HEAD")
+    (clone / "c.txt").write_text("c")
+    _git(clone, "add", "c.txt")
     _git(clone, "commit", "-q", "-m", "local only")
     local = _git(clone, "rev-parse", "HEAD")
     reg = tmp_path / "bots.json"
-    verify_sha_on_origin(pushed, clone)
-    assert _register_bot("good", pushed, 10, reg, now_ms=0, repo=clone)["frozen_sha"] == pushed
-    for bad in (local, "0123abc4567def", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"):  # a local-only commit, an unknown short sha, an unknown full sha
+    assert verify_sha_on_origin(on_main, clone) == on_main
+    kw = {"deciding_stake": 0.5, "model_ids": ["haiku-5.5@t0.2"], "now_ms": 0, "repo": clone}
+    e = _register_bot("good", on_main[:10], 10, reg, **kw)  # a short sha resolves to the full one, which is what is stored
+    assert e["frozen_sha"] == on_main and e["verified_sha"] == on_main and e["time_source"] == "test_override" and e["registered_at_ms"] == 0
+    for bad in (on_branch, local, "0123abc4567def", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"):  # a branch-only commit, a local one, unknown short and full shas
         with pytest.raises(ArenaRefused):
-            _register_bot("bad", bad, 10, reg, now_ms=0, repo=clone)
+            _register_bot("bad", bad, 10, reg, **kw)
     assert list(load_registry(reg)) == ["good"]  # nothing was appended for a refused sha
-    # a repo with no origin cannot verify: refused, not skipped
+    assert _register_bot("good", on_main, 10, reg, **dict(kw, repo=tmp_path))["frozen_sha"] == on_main  # the same line again: a no-op, no network
     lone = tmp_path / "lone"
     subprocess.run(["git", "init", "-q", str(lone)], check=True, capture_output=True)
-    with pytest.raises(ArenaRefused, match="fetch origin failed"):
-        _register_bot("lone", pushed, 10, reg, now_ms=0, repo=lone)
-    # the same registered line again is a no-op and does not need the network
-    assert _register_bot("good", pushed, 10, reg, now_ms=5, repo=lone)["registered_at_ms"] == 0
+    with pytest.raises(ArenaRefused, match="fetch origin failed"):  # no origin: cannot verify, so refused, not skipped
+        _register_bot("lone", on_main, 10, reg, **dict(kw, repo=lone))
+
+
+def test_registration_needs_stake_and_models_and_overrides_are_test_only(tmp_path, monkeypatch):
+    reg = tmp_path / "bots.json"
+    with pytest.raises(TypeError):
+        _register_bot("b1", "abc1234", 10, reg, now_ms=0, verify_sha=False)  # deciding_stake and model_ids have no defaults
+    with pytest.raises(TypeError):
+        _register_bot("b1", "abc1234", 10, reg, deciding_stake=0.25, now_ms=0, verify_sha=False)
+    monkeypatch.delenv(TEST_ENV)
+    for kw in ({"now_ms": 0}, {"verify_sha": False}):
+        with pytest.raises(ArenaRefused, match="test-only"):
+            _register_bot("b1", "abc1234", 2**62, reg, deciding_stake=0.25, model_ids=[], **kw)
+    with pytest.raises(ArenaRefused, match="fetch origin failed|not a"):  # production path: real clock, sha verification always on (fake sha, a repo with no origin)
+        _register_bot("b1", "abc1234", 2**62, reg, deciding_stake=0.25, model_ids=[], repo=tmp_path)
+    assert not reg.exists()
+    with pytest.raises(ArenaRefused, match="backdated"):  # the real clock: a clock in 1970 is earlier than now
+        _register_bot("b1", "abc1234", 1000, reg, deciding_stake=0.25, model_ids=[], repo=tmp_path)
 
 
 def test_ledger_lines_carry_kind_first_so_meta_cannot_forge_a_decision(tmp_path):
@@ -593,3 +624,133 @@ def test_ledger_lines_carry_kind_first_so_meta_cannot_forge_a_decision(tmp_path)
     assert line.startswith(b'{"kind":"trade",') and json.loads(line) == row and b'"kind":"open"' in line and not line.startswith(b'{"kind":"open"')
     assert Ledger(tmp_path).append(row) and Ledger(tmp_path).append(row) is False
     assert line_bytes({"kind": "x"}) == b'{"kind":"x"}' and line_bytes({"a": 1}) == b'{"a":1}'
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ feed delay, tolerance, gaps, idempotency
+def test_feed_delay_is_required_nothing_is_priced_without_it(tmp_path):
+    for d in (None, -1):
+        sub = tmp_path / str(d)
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(max_past_ms=None, feed_delay_slots=d))
+        for r in _tape(hi=110):
+            eng.on_row(r)
+        with pytest.raises(ArenaRefused, match="feed_delay_unset"):
+            eng.buy("botA", "P1", None, tms(109), 109)
+        assert [r["reason"] for r in trades(eng, "refused")] == ["feed_delay_unset"] and trades(eng, "open") == []
+    (tmp_path / "ok").mkdir()
+    ok = mk_engine(tmp_path / "ok")
+    for r in _tape(hi=110):
+        ok.on_row(r)
+    pid = ok.buy("botA", "P1", None, tms(109), 109)
+    ok.cfg = StackConfig(max_past_ms=None)  # d lost: the sell is refused too
+    with pytest.raises(ArenaRefused, match="feed_delay_unset"):
+        ok.sell("botA", pid, 1.0, tms(109), 109)
+
+
+def test_feed_delay_is_added_to_entry_and_exit_and_both_slots_are_recorded(tmp_path):
+    res = {}
+    for d in (0, 3):
+        sub = tmp_path / str(d)
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(max_past_ms=None, strand_rule="total", feed_delay_slots=d))
+        rows = _tape(hi=230)
+        run_trade(eng, rows)
+        res[d] = (trades(eng)[0], {x["slot"]: x for x in rows})
+    r0, r3 = res[0][0], res[3][0]
+    by_slot = res[3][1]
+    for lat, x in (("1p3", 104), ("1p9", 105)):
+        assert r0["calc"][lat]["landing_slot"] == x and r3["calc"][lat]["landing_slot"] == x + 3
+    assert r3["calc"]["1p3"]["Qe"] == by_slot[105 + 3]["quote_reserve"] + V  # END bound at the corrected landing slot
+    assert r3["calc"]["1p3"]["Qx"] == by_slot[203 + 3]["quote_reserve"] + V  # exit: decision 200 + d + lag 2, first print >= +1
+    assert r3["feed_delay_slots"] == 3 and r3["stack"]["feed_delay_slots"] == 3
+    assert r3["effective_slot"] == {"entry": 100, "exit": 200} and r3["corrected_slot"] == {"entry": 103, "exit": 203}  # uncorrected and corrected
+    assert r0["corrected_slot"] == {"entry": 100, "exit": 200}
+    assert r3["calc"]["1p3"]["spot"] == r0["calc"]["1p3"]["spot"]  # the guard's reference is the price the bot saw
+
+
+def test_feed_delay_applies_to_bonding_fills_too(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(max_past_ms=None, strand_rule="total", feed_delay_slots=2))
+    rows = [dict(r, quote_reserve=40e9 + i * 1e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=230))]
+    run_trade(eng, rows, pool="M1")
+    r = trades(eng)[0]
+    by_slot = {x["slot"]: x for x in rows}
+    assert r["calc"]["1p3"]["Qe"] == by_slot[104 + 2]["quote_reserve"] and r["calc"]["1p3"]["Qx"] == by_slot[202 + 2]["quote_reserve"]
+
+
+def test_decisions_within_the_tolerance_are_clamped_forward_and_beyond_it_are_stale(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)  # high-water slot 109
+    pid = eng.buy("botA", "P1", None, tms(109) - 600, 108, {})  # 600 ms and 1 slot behind the feed: a race with on_row, accepted
+    assert eng.positions[pid].sd == 109  # clamped forward to the high-water mark, never back
+    for slot, ms in ((106, tms(109)), (109, tms(109) - 1500)):  # 3 slots / 1.5 s behind: stale
+        with pytest.raises(ArenaRefused, match="stale_decision"):
+            eng.buy("botA", "P1", None, ms, slot, {"n": slot})
+    assert [r["reason"] for r in trades(eng, "refused")] == ["stale_decision", "stale_decision"]
+
+
+def _gap_run(tmp_path, name, cfg=None, inject=None):
+    """Buy at slot 100, sell decided at slot 118 (priced when a print at slot >= 121 arrives); `inject(row)` yields extra rows just before the slot-120 row."""
+    sub = tmp_path / name
+    sub.mkdir()
+    eng = mk_engine(sub, cfg or SC(max_past_ms=None, strand_rule="total"))
+    pid = None
+    for r in _tape(hi=240):
+        if inject and r["slot"] == 120:
+            for g in inject(r):
+                eng.on_row(g)
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(100), 100)
+        if r["slot"] == 118:
+            eng.sell("botA", pid, 1.0, max(tms(118), eng.hw_ms), 118)
+    return eng
+
+
+def test_process_downtime_is_a_gap_start_rows_slot_jumps_and_silence(tmp_path):
+    clean = _gap_run(tmp_path, "clean")
+    assert len(trades(clean)) == 3 and trades(clean, "excluded") == []
+    # a feed `start` row between two trade rows inside the span
+    e1 = _gap_run(tmp_path, "start", inject=lambda r: [{"type": "start", "prog": None, "slot": 119, "t_recv_ms": tms(120)}])
+    assert trades(e1) == [] and {x["exclusion_reason"] for x in trades(e1, "excluded")} == {"feed_gap"} and len(trades(e1, "excluded")) == 3
+    # a process_restart gap row from the feed (no data_loss flag) is a hard gap
+    e2 = _gap_run(tmp_path, "restart", inject=lambda r: [{"type": "gap", "kind": "process_restart", "prog": "pumpswap", "slot": 119, "t_recv_ms": tms(120)}])
+    assert len(trades(e2, "excluded")) == 3
+    # silence between consecutive trade rows beyond gap_silence_ms (no gap row from the feed at all)
+    e3 = _gap_run(tmp_path, "silence", inject=lambda r: [dict(_row(901, 130, sig="quiet"), t_recv_ms=tms(120) + 90_000)])
+    assert len(trades(e3, "excluded")) == 3 and e3.counters.get("gap_engine_silence") == 1
+    # a slot jump between consecutive trade rows beyond gap_slots
+    e4 = _gap_run(tmp_path, "jump", inject=lambda r: [dict(_row(902, 330, sig="jumped"), t_recv_ms=tms(120) + 1_000)])
+    assert len(trades(e4, "excluded")) == 3 and e4.counters.get("gap_engine_slot_jump") == 1
+    # detection off (a replay): the same rows are priced
+    off = SC(max_past_ms=None, strand_rule="total", gap_slots=None, gap_silence_ms=None)
+    e5 = _gap_run(tmp_path, "off", off, inject=lambda r: [dict(_row(903, 330, sig="jumped"), t_recv_ms=tms(120) + 90_000)])
+    assert len(trades(e5)) == 3 and not e5.gaps
+
+
+def test_a_repeated_identical_write_is_a_noop_because_written_ms_is_not_identity(tmp_path):
+    led = Ledger(tmp_path)
+    row = _fake_row()
+    assert led.append(dict(row, written_ms=1)) is True
+    assert led.append(dict(row, written_ms=2)) is False  # a retry stamped later: the same row
+    with pytest.raises(LedgerConflict):
+        led.append(dict(row, written_ms=3, legs={"flat_1p3": {"net_lamports": 9.0}}))
+    # a refused buy repeated identically is refused again (ArenaRefused), not a LedgerConflict, and is logged once
+    (tmp_path / "e").mkdir()
+    eng = mk_engine(tmp_path / "e")
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    for _ in range(2):
+        with pytest.raises(ArenaRefused, match="no_prints"):
+            eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    assert len(trades(eng, "refused")) == 1
+
+
+def test_importing_arena_paper_loads_no_r4b_module():
+    """DEC-031 section 3.1: no arena process opens or uses tools/r4b_*.py until EXP-027's read. A fresh interpreter, so earlier imports in this process do not count."""
+    import subprocess
+    import sys
+
+    code = "import sys, tools.arena_paper, tools.arena_score, tools.arena_feed_delay; print(sorted(m for m in sys.modules if 'r4b' in m))"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent), check=True).stdout.strip()
+    assert out == "[]", out

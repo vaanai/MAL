@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
-from tools import r4b_frozen as F
-from tools.arena_paper import ArenaEngine, StackConfig, canon, register_bot
+from tools import arena_stack as F
+from tools.arena_paper import TEST_ENV, ArenaEngine, StackConfig, canon, register_bot
 from tools.cap_pick_score import DEFAULT_VMAP, load_vmap
 
 HUNT_H = "/data/mal/hunt-1008/push-1016/hunt8/second-book/h"
@@ -159,13 +159,13 @@ def build(hour: str) -> dict:
     import pandas as pd
 
     from tools.arena_paper import STRAND_STATES, book_fail_legs, price_leg
-    from tools.r4b_book import fail_legs
+    from tools.arena_stack import fail_legs
 
     day = hour[:10]
     s_ = 3600.0 / SPH[day]
-    legacy = StackConfig(k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="sc", e1_floor_per_005=0, max_past_ms=None)  # the sc.py / VERIFY stack; parity waits for the tape print
-    binding = StackConfig(k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="total", max_past_ms=None)  # DEC-031 rev 2: strand class + E1 floor
-    live = StackConfig(k_rounding=K_ROUNDING, grace_slots=25, strand_rule="total", max_past_ms=None)  # stress: derive the state after the last print 25 slots past
+    legacy = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="sc", e1_floor_per_005=0, max_past_ms=None)  # the sc.py / VERIFY stack; parity waits for the tape print
+    binding = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=10**9, strand_rule="total", max_past_ms=None)  # DEC-031 rev 2: strand class + E1 floor
+    live = StackConfig(feed_delay_slots=0, gap_slots=None, gap_silence_ms=None, k_rounding=K_ROUNDING, grace_slots=25, strand_rule="total", max_past_ms=None)  # stress: derive the state after the last print 25 slots past
     vmap = load_vmap(DEFAULT_VMAP)
     c, f, ps, bd = load_hour(hour)
     rng = np.random.default_rng(SEED)
@@ -174,7 +174,8 @@ def build(hour: str) -> dict:
     prow = rows_for(c, f, "pumpswap", pick)
     tmp = tempfile.mkdtemp(prefix="arena_parity_")
     reg = os.path.join(tmp, "bots.json")
-    register_bot("parity-bot", "0123abc", 0, reg, now_ms=0, verify_sha=False)
+    os.environ[TEST_ENV] = "1"  # the builder is a test harness: fake sha, fake clock
+    register_bot("parity-bot", "0123abc", 0, reg, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
 
     def engine(cfg, name):
         return ArenaEngine(os.path.join(tmp, name), reg, cfg, vmap=vmap, sps_fn=lambda: s_, now_fn=lambda: 2**62)
@@ -338,7 +339,7 @@ def bonding_parity(c, f, bd, rng, legacy: StackConfig, binding: StackConfig, vma
     from tools import latency_curve as lc
     from tools.arena_paper import book_fail_legs
     from tools.paper_price_path import TapePrint
-    from tools.r4b_book import fail_legs
+    from tools.arena_stack import fail_legs
     import hlib
 
     mints = [m for m, _ in bd]

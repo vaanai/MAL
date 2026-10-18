@@ -7,24 +7,31 @@ boundary B at which the book has at least 100 attempts (every entry decision: op
 registered clock. The read covers the attempts decided before B. Before B the status is NOT_READY. `--record` writes the read once to the reads dir; a second
 record for the same bot_id is refused (a FAIL or NOT_DECIDABLE is final). Without `--record` the output is a PREVIEW, not the read.
 
+COUNTING (stated, per the re-review): the boundary counts ATTEMPTS (every entry decision, DEC-031 section 2), outcome-blind; the gate's n >= 100 is checked on the
+PRICED TRADES at the deciding stake AFTER the exclusions (the cell n). A book that reaches the boundary on exactly 100 attempts and has any exclusion therefore
+fails n >= 100: that is the arrangement of DEC-031, and the read prints attempts, priced trades and exclusions side by side.
+ledger_sha256 in the read and in --daily-digest is informational (later rows are appended to an entry-day file); decision_log_sha256 is the stable commitment.
+
 ORDER OF OPERATIONS (fixed, pinned by a test): clock filter -> read boundary -> DEC-031 exclusions -> pressure refit -> statistics.
 
 STATUS (the first that applies):
-  REFUSED         no registry line with deciding_stake and model_ids; a changed frozen_sha; a duplicated trade_id; mixed stack configs inside one bot
+  REFUSED         no registry line with deciding_stake, model_ids and the verification record (verified_sha, real-clock registration); a changed frozen_sha; a duplicated trade_id; mixed stack configs inside one bot
   NOT_READY       the boundary is not reached (or not reached yet by --now-ms)
-  NOT_DECIDABLE   an unresolved restart orphan (an attempt before B with no priced or excluded close; DEC-014 Am.1), or excluded + refused attempts above
-                  5% of the book's attempts (DEC-031 section 1.4)
+  PENDING         an attempt before B has no close yet and is younger than the settle window (default 24 h): not a verdict, and --record refuses it
+  NOT_DECIDABLE   a restart orphan (an attempt before B with no priced or excluded close that is OLDER than the settle window; DEC-014 Am.1), or excluded
+                  + data-refused attempts above 5% of the book's attempts (DEC-031 section 1.4). Refused buys count toward the 5% only when the reason is a data
+                  issue (no_prints, no_feed_rows, clock_not_ready); stale_decision / future_decision / feed_delay_unset are reported apart.
   REPORT_ONLY     any bonding row in the book (its costs are unmeasured; quant-proof on #708), or the book was not priced under both strand rules
   PASS / FAIL     the DECIDING CELL only: 1.9 s at the stake pinned in bots.json, flat 15% AND pressure-fail, each under BOTH strand rules ("sc" and the
                   DEC-031 strand class "total"): four sub-cells, all must pass. A sub-cell passes iff n >= 100, >= 5 UTC days with a strict majority positive,
-                  CI90 lower bound of mean SOL / trade > 0 (trade-level bootstrap, 1,000 draws, seed 1, 5th percentile: tools.r4b_book.boot_lo) and total
+                  CI90 lower bound of mean SOL / trade > 0 (trade-level bootstrap, 1,000 draws, seed 1, 5th percentile: tools.arena_stack.boot_lo) and total
                   ex top 3 trades > 0. The 1.3 s leg and the other stakes are report-only and never decide. "weakest_cell" is the lowest-CI cell of the
                   deciding stake (information only).
 A PASS whose total is not positive ex best day prints "not proposed for canary". A PASS is a screen, the best of the books printed in the header
 (winner's curse), not a promotion.
 
 PRESSURE LEG: refit per (bot, stake, latency, strand rule) on exactly the covered, non-excluded attempts so that the mean fail probability over the book's
-non-guarded sends is 0.289 with slopes 0.8 / 0.35 (tools.r4b_book.fail_legs). The fitted intercept is printed per cell. Limitation: the refit fixes each book's
+non-guarded sends is 0.289 with slopes 0.8 / 0.35 (tools.arena_stack.fail_legs). The fitted intercept is printed per cell. Limitation: the refit fixes each book's
 mean fail rate at 0.289, so a bot that trades only in congested slots is not charged more in absolute terms. A strand (total-loss class) bypasses the blend.
 derived_last rows are counted at their value and printed (count and share per cell); a re-run without them is report-only.
 """
@@ -42,18 +49,20 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 import hashlib
+import os
 from datetime import datetime
 
 from tools.arena_paper import (
     LEDGER_ROOT,
     REGISTRY_PATH,
+    TEST_ENV,
     Ledger,
     book_fail_legs,
     canon,
     load_registry,
     utc_day,
 )
-from tools.r4b_book import boot_lo, fail_legs
+from tools.arena_stack import boot_lo, fail_legs
 
 LATS = ("1p3", "1p9")
 MODELS = ("flat", "press")
@@ -62,6 +71,8 @@ DAY_MS = 86_400_000
 MIN_N, MIN_DAYS = 100, 5
 MAX_EXCLUDED_SHARE = 0.05
 READS_DIR = "/data/mal/arena/reads"
+SETTLE_MS = 24 * 3_600_000  # an unclosed attempt younger than this is PENDING, older is a restart orphan
+DATA_REFUSALS = ("no_prints", "no_feed_rows", "clock_not_ready")  # refused buys that are data issues and count toward the 5% cap
 STEPS = ("clock_filter", "read_boundary", "exclusions", "pressure_refit", "statistics")
 CONFIG_KEYS_IGNORED = ("sps_entry", "sps_exit")
 
@@ -180,6 +191,8 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
     e = reg[bot_id]
     if e.get("deciding_stake") is None or e.get("model_ids") is None:
         raise Refused(f"{bot_id}: the registry line lacks deciding_stake / model_ids (DEC-031 section 1.2)")
+    if os.environ.get(TEST_ENV) != "1" and (e.get("time_source") != "wall_clock" or not e.get("verified_sha")):
+        raise Refused(f"{bot_id}: the registry line lacks the verification record (verified_sha, wall-clock registration): refused")
     shas = sorted({r["frozen_sha"] for r in rows if "frozen_sha" in r})
     if shas and shas != [e["frozen_sha"]]:
         raise Refused(f"{bot_id}: frozen_sha in the ledger {shas} != registered {e['frozen_sha']} (a new version is a new bot_id)")
@@ -192,7 +205,17 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
     return json.loads(next(iter(cfgs))) if cfgs else {}
 
 
-def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None) -> dict[str, Any]:
+def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None,
+              settle_ms: int = SETTLE_MS) -> dict[str, Any]:
+    out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms)
+    if out.get("pending") and out["status"] not in ("NOT_DECIDABLE", "NOT_READY"):
+        out["preview_status"] = out["status"]
+        out["status"] = "PENDING"
+        out["reasons"].append(f"{out['pending']} attempt(s) before the boundary are still open and inside the settle window: not a verdict, not recordable")
+    return out
+
+
+def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None, settle_ms: int) -> dict[str, Any]:
     tr = trace if trace is not None else []
     config = check_bot_rows(bot_id, reg, rows)
     e = reg[bot_id]
@@ -214,11 +237,18 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     opens = {r["position_id"]: r for r in covered if r["kind"] == "open"}
     refused = [r for r in covered if r["kind"] == "refused"]
     closed = {r["position_id"] for r in covered if r["kind"] in ("trade", "excluded")}
-    orphans = sorted(set(opens) - closed)
+    unclosed = sorted(set(opens) - closed)
+    orphans = [pid for pid in unclosed if now_ms - _entry(opens[pid]) >= settle_ms]
+    pending = [pid for pid in unclosed if pid not in orphans]
+    data_refused = [r for r in refused if r["reason"] in DATA_REFUSALS]
     late = [r for r in covered if r["kind"] == "late_print"]
     out["attempts"] = len(opens) + len(refused)
     out["refused_buys"] = dict(Counter(r["reason"] for r in refused))
     out["restart_orphans"] = len(orphans)
+    out["pending"] = len(pending)
+    out["settle_ms"] = settle_ms
+    out["refused_data_issues"] = len(data_refused)
+    out["refused_other"] = dict(Counter(r["reason"] for r in refused if r["reason"] not in DATA_REFUSALS))  # tolerance / config: reported, outside the 5%
     out["late_prints"] = len(late)
     # 3. DEC-031 exclusions
     tr.append("exclusions")
@@ -239,8 +269,8 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     n_attempts = len(opens) + len(refused)
     for st in sorted(by_stake):
         ex = Counter(x["exclusion_reason"] for x in by_stake[st]["excluded"])
-        books[str(st)] = {"stake": st, "n_trades": len(by_stake[st]["trades"]), "excluded": dict(ex), "refused": len(refused),
-                          "excluded_share": (sum(ex.values()) + len(refused)) / n_attempts if n_attempts else None}
+        books[str(st)] = {"stake": st, "n_trades": len(by_stake[st]["trades"]), "excluded": dict(ex), "refused": len(data_refused),
+                          "excluded_share": (sum(ex.values()) + len(data_refused)) / n_attempts if n_attempts else None}
     out["books"] = books
     # 4. pressure refit, 5. statistics (per book, on the post-exclusion trades)
     tr.append("pressure_refit")
@@ -257,7 +287,7 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     dk = str(e["deciding_stake"])
     why = out["reasons"]
     if orphans:
-        why.append(f"{len(orphans)} restart orphan(s): attempts before the boundary never closed (DEC-014 Amendment 1)")
+        why.append(f"{len(orphans)} restart orphan(s): attempts before the boundary never closed within the settle window (DEC-014 Amendment 1)")
     over = {st: bk["excluded_share"] for st, bk in books.items() if bk["excluded_share"] is not None and bk["excluded_share"] > MAX_EXCLUDED_SHARE}
     if over:
         why.append(f"excluded + refused share above {MAX_EXCLUDED_SHARE:.0%}: " + ", ".join(f"stake {k}: {v:.1%}" for k, v in over.items()))
@@ -288,10 +318,12 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
 def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
     """Write the one read of a bot_id. A second record for the same bot_id is refused."""
     d = Path(reads_dir)
-    d.mkdir(parents=True, exist_ok=True)
     p = d / f"{res['bot_id']}.json"
     if res["status"] == "NOT_READY":
         raise Refused(f"{res['bot_id']}: not ready, nothing to record")
+    if res.get("pending") or res["status"] == "PENDING":
+        raise Refused(f"{res['bot_id']}: {res.get('pending')} covered attempt(s) still pending (inside the settle window): refusing to record a read that may change")
+    d.mkdir(parents=True, exist_ok=True)
     try:
         with open(p, "x") as f:
             f.write(canon(res) + "\n")
@@ -301,7 +333,8 @@ def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ all bots
-def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None, now_ms: int | None = None) -> dict[str, Any]:
+def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None, now_ms: int | None = None,
+              settle_ms: int = SETTLE_MS) -> dict[str, Any]:
     import time
 
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
@@ -313,7 +346,12 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
         if only and b != only:
             continue
         try:
-            bots[b] = score_bot(b, reg, led.read_bot(b), now)
+            bots[b] = score_bot(b, reg, led.read_bot(b), now, None, settle_ms)
+            bd = bots[b].get("read_boundary_ms")
+            if bd is not None and bots[b]["status"] != "NOT_READY":  # informational file hashes of the covered entry days
+                d0 = reg[b]["clock_start_ms"] // DAY_MS * DAY_MS
+                bots[b]["ledger_files"] = {utc_day(d): digest_day(ledger_root, registry, utc_day(d), b)["bots"][b] for d in range(d0, bd, DAY_MS)}
+                bots[b]["ledger_files_note"] = "ledger_sha256 is informational (rows are appended to an entry-day file later); decision_log_sha256 is the stable commitment"
         except Refused as exc:
             refused[b] = str(exc)
     existed_books = sum(1 for e in reg.values() if e["clock_start_ms"] < now)  # every book with a clock before the read, stopped ones included
@@ -380,6 +418,8 @@ def render(res: Mapping[str, Any]) -> str:
             continue
         L.append(f"  read boundary {v['read_boundary_ms']}  attempts {v['attempts']}  refused buys {v['refused_buys']}  restart orphans {v['restart_orphans']}  "
                  f"late prints {v['late_prints']}  rows before clock (not counted) {v['rows_before_clock']}")
+        L.append(f"  pending {v['pending']} (settle window {v['settle_ms'] // 3_600_000} h)  refused: data issues {v['refused_data_issues']}, other {v['refused_other']}  "
+                 "counting: the boundary counts attempts; the gate's n is priced trades after exclusions (per stake below)")
         d = v.get("deciding")
         if d:
             L.append(f"  DECIDING CELL: 1.9 s, stake {d['stake']}, flat + pressure, strand rules total + sc -> {'pass' if d['pass'] else 'fail'}  weakest cell {d['weakest_cell']}")
@@ -415,6 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--now-ms", type=int)
     ap.add_argument("--daily-digest", action="store_true", help="print, per bot, the sha256 of --day's decision log and ledger file plus counts (no P&L)")
     ap.add_argument("--day", help="UTC day YYYY-MM-DD for --daily-digest")
+    ap.add_argument("--settle-hours", type=float, default=SETTLE_MS / 3_600_000, help="an unclosed attempt younger than this is PENDING, older a restart orphan")
     ap.add_argument("--record", action="store_true", help="write the one read of --bot (refused if already recorded or not ready)")
     a = ap.parse_args(argv)
     if a.daily_digest:
@@ -427,7 +468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with open(a.json, "w") as fh:
                 json.dump(dg, fh, indent=1, sort_keys=True, allow_nan=False)
         return 0
-    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms)
+    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms, int(a.settle_hours * 3_600_000))
     print(render(res))
     if a.json:
         with open(a.json, "w") as fh:
@@ -436,7 +477,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not a.bot or a.bot not in res["bots"]:
             print("--record needs a scored --bot", file=sys.stderr)
             return 2
-        print("recorded:", record_read(a.reads_dir, res["bots"][a.bot]))
+        try:
+            print("recorded:", record_read(a.reads_dir, res["bots"][a.bot]))
+        except Refused as exc:
+            print(f"NOT RECORDED: {exc}", file=sys.stderr)
+            return 3
     return 0
 
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pytest
 
 from tools import arena_score as S
-from tools.arena_paper import Ledger, canon, register_bot as _register_bot, utc_day
+from tools.arena_paper import TEST_ENV, Ledger, canon, register_bot as _register_bot, utc_day
 from tools.arena_score import (
     STEPS,
     Refused,
@@ -27,8 +28,13 @@ from tools.r4b_book import boot_lo, fail_legs
 
 
 
+os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
+
+
 def register_bot(*a, **k):
     k.setdefault("verify_sha", False)  # tests use fake shas
+    k.setdefault("deciding_stake", 0.25)
+    k.setdefault("model_ids", [])
     return _register_bot(*a, **k)
 
 
@@ -444,3 +450,59 @@ def test_daily_digest_has_hashes_and_counts_only_and_parses_no_trade_line(tmp_pa
     assert main(["--ledger-root", root, "--registry", reg, "--daily-digest"]) == 2  # --day is required
     with pytest.raises(ValueError):
         S.digest_day(root, reg, "26-09-2026")
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ pending / orphans, refusals by cause, registry record
+def test_pending_attempts_block_recording_and_become_orphans_after_the_settle_window(tmp_path, capsys):
+    rows = [r for r in positions(good_pnls()) if not (r["kind"] == "trade" and r["position_id"] == "p0099")]  # the last position (day 4) is still open
+    root, reg = setup(tmp_path, rows)
+    boundary = DAY0 + 5 * DAY
+    soon = boundary + 3_600_000  # 1 h after the boundary: p0099 is 24 h - 99 s old
+    v = score_all(root, reg, now_ms=soon)["bots"]["botA"]
+    assert v["status"] == "PENDING" and v["pending"] == 1 and v["restart_orphans"] == 0 and v["preview_status"] in ("PASS", "FAIL")
+    with pytest.raises(Refused, match="pending"):
+        record_read(tmp_path / "reads", v)
+    args = ["--ledger-root", root, "--registry", reg, "--bot", "botA", "--record", "--reads-dir", str(tmp_path / "reads")]
+    assert main(args + ["--now-ms", str(soon)]) == 3 and not (tmp_path / "reads").exists()  # refused, nothing written
+    assert "PENDING" in capsys.readouterr().out
+    later = boundary + 26 * 3_600_000  # past the settle window: now an orphan, the read is NOT_DECIDABLE and may be recorded
+    v = score_all(root, reg, now_ms=later)["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["restart_orphans"] == 1 and v["pending"] == 0
+    assert main(args + ["--now-ms", str(later)]) == 0 and (tmp_path / "reads" / "botA.json").exists()
+    assert main(args + ["--now-ms", str(later)]) == 3  # one read per bot_id
+    # a custom settle window moves the line
+    v = score_all(root, reg, now_ms=soon, settle_ms=3_600_000)["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["restart_orphans"] == 1
+
+
+def test_refusals_by_cause_data_issues_count_toward_the_five_percent_and_tolerance_refusals_do_not(tmp_path):
+    base = positions(good_pnls())
+    other = [refused_row(i, i % 3, reason="stale_decision") for i in range(8)]  # 8 of 108 attempts, 7.4%, but not a data issue
+    v = read(tmp_path, base + other)["bots"]["botA"]
+    assert v["status"] == "PASS" and v["refused_other"] == {"stale_decision": 8} and v["refused_data_issues"] == 0 and v["books"]["0.25"]["excluded_share"] == 0.0
+    sub = tmp_path / "b"
+    sub.mkdir()
+    data = [refused_row(i, i % 3, reason="clock_not_ready") for i in range(6)]
+    v = read(sub, base + data)["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["refused_data_issues"] == 6 and v["books"]["0.25"]["excluded_share"] > 0.05
+
+
+def test_a_registry_line_without_the_verification_record_is_refused_outside_tests(tmp_path, monkeypatch):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    assert status_of(score_all(root, reg, now_ms=DAY0 + 30 * DAY)) == "PASS"  # test mode: a test_override line is accepted
+    monkeypatch.delenv(TEST_ENV)
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)
+    assert "verification record" in res["bots_refused"]["botA"] and "botA" not in res["bots"]
+
+
+def test_the_read_carries_informational_file_hashes_and_counts_attempts_priced_trades_and_exclusions(tmp_path):
+    v = read(tmp_path, positions(good_pnls()))["bots"]["botA"]
+    assert len(v["ledger_files"]) == 5 and all(set(x) == {"ledger_sha256", "decision_log_sha256", "lines", "counts"} for x in v["ledger_files"].values())
+    assert "informational" in v["ledger_files_note"]
+    # the boundary counts attempts, the gate counts priced trades after exclusions: 100 attempts and one exclusion is n = 99, a FAIL on n
+    rows = [dict(r, kind="excluded", exclusion_reason="feed_gap", legs=None, calc=None) if r["kind"] == "trade" and r["position_id"] == "p0003" else r for r in positions(good_pnls())]
+    sub = tmp_path / "b"
+    sub.mkdir()
+    w = read(sub, rows)["bots"]["botA"]
+    assert w["attempts"] == 100 and w["books"]["0.25"]["n_trades"] == 99 and w["status"] == "FAIL"
+    assert any("n 99" in m for ms in w["deciding"]["misses"].values() for m in ms)

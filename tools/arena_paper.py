@@ -7,11 +7,12 @@ under `/data/mal/arena/ledger/<bot_id>/trades-<UTC day of the entry decision>.js
   kind "trade"     one per (position, stake) after the sell is priced
   kind "excluded"  one per (position, stake) that the feed-gap / missing-V / engine-restart rule removes (counted by the scorer, never priced)
 
-BINDING STACK (DEC-031 revision 2, section 1.4). Nothing here re-derives the lab's cost model; it is imported:
-  * `tools.r4b_book.mint_states`   entry / exit pool states, spot, same-slot buys, nearby buy SOL (the prep_l3 extraction behind sc.py's panel)
-  * `tools.r4b_book.round_trip`    PumpSwap round trip: V in Q, fee tiers, own buy re-injected into the exit state, +26.08 bps / -16 bps haircut,
+BINDING STACK (DEC-031 revision 2, section 1.4). Nothing here re-derives the lab's cost model. It is imported from `tools.arena_stack`, a byte-for-byte VENDORED copy of the needed logic of tools/r4b_book.py
+and tools/r4b_frozen.py (blob shas in its header; no arena process may open or use tools/r4b_*.py until EXP-027's read, DEC-031 section 3.1):
+  * `tools.arena_stack.mint_states`   entry / exit pool states, spot, same-slot buys, nearby buy SOL (the prep_l3 extraction behind sc.py's panel)
+  * `tools.arena_stack.round_trip`    PumpSwap round trip: V in Q, fee tiers, own buy re-injected into the exit state, +26.08 bps / -16 bps haircut,
                                    505,000 lamports per send, rent 2,039,280 per filled trip, 1.15 guard (a guarded buy pays one send)
-  * `tools.r4b_book.fail_legs`     flat 15% and pressure-fail (slope scale 1; intercept refit so mean p = 0.289) legs
+  * `tools.arena_stack.fail_legs`     flat 15% and pressure-fail (slope scale 1; intercept refit so mean p = 0.289) legs
   * `tools.h5_shadow.SlotClock`    the rolling slot clock (`--sps rolling`)
   * `tools.paper_curve_math`       the bonding-curve quote_buy / quote_sell / reserves_with_our_buy (the curve sim of tools/latency_curve.py)
   * STRAND CLASS: an unpriced or invalid exit (r4b_book entry_invalid / exit_invalid C2, C7, C8), or proceeds below one send, is a TOTAL loss of stake plus the
@@ -20,10 +21,10 @@ BINDING STACK (DEC-031 revision 2, section 1.4). Nothing here re-derives the lab
   * LATENCY starts at the DECISION INSTANT: decision_ms is mapped to the tape slot clock (the latest feed row's (slot, t_recv_ms) plus elapsed time / sps) and
     the fill lands at that slot + k, k = ceil(latency / sps - 1e-9) (`k_rounding="round"` is the EXP-027 QP value). A decision_ms or decision_slot earlier than
     the engine's high-water mark, or before the book's registered clock, is REFUSED. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
-    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (not corrected; disclosed).
+    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's decision-time spot stays the price the bot saw).
   * FEED GAPS: a trade whose decision-to-exit span holds a logged data_loss gap of its program, or a needed print without V, or a restart of this engine, is
     written as an "excluded" row with the reason. A derived_last exit after a gap falls under the gap rule. The scorer counts them (> 5% of a book -> NOT_DECIDABLE).
-    Contract: the feed emits a gap row before the row that revealed it.
+    Contract: the feed emits a gap row before the row that revealed it. The engine does not rely on that alone: a feed `start` row, a gap row of kind process_restart / feed_restart, a slot jump (gap_slots) or silence (gap_silence_ms) between consecutive trade rows is a data_loss gap from the last row seen, for open positions.
 
 Conventions (confirmed against sc.py / r4b_book):
   * PumpSwap rows carry PRE-trade reserves. A fill lands on END-bound state: the PRE-trade reserves of the FIRST print with slot >= landing slot + 1,
@@ -37,7 +38,7 @@ Conventions (confirmed against sc.py / r4b_book):
   * Bonding fills have no portal fee (direct route); the haircut was measured on PumpSwap and is applied to them as a conservative assumption.
 
 `StackConfig(strand_rule="sc", e1_floor_per_005=0)` is the LEGACY stack of sc.py / VERIFY (no strand class, no floor); it exists only for the bit-parity
-check against sc.py. Defaults are the binding stack: k_rounding ceil, rent charged, strand_rule "total", E1 floor on. A quant-proof config ruling may change
+check against sc.py. Defaults are the binding stack: k_rounding ceil, rent charged, strand_rule "both", E1 floor on, grace_slots 10,000; feed_delay_slots has NO default. A quant-proof config ruling may change
 one of them; they are config and every row records them.
 
 Not supported in v1: partial sells (`frac` must be 1.0; refused), sells decided before the slower entry leg lands (refused).
@@ -56,14 +57,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from tools import r4b_frozen as F
+from tools import arena_stack as F
 from tools.h5_shadow import SlotClock, sps_ok
 from tools.paper_curve_math import market_cap_sol, quote_buy, quote_sell, reserves_with_our_buy
-from tools.r4b_book import fail_legs, mint_states, round_trip
+from tools.arena_stack import fail_legs, mint_states, round_trip
 
 SCHEMA = "arena_trade_v1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -125,9 +126,14 @@ def line_bytes(row: Mapping[str, Any]) -> bytes:
     return (head + ("," + canon(rest)[1:] if rest else "}")).encode()
 
 
-def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> None:
-    """DEC-031 section 1.2: frozen_sha is a commit on origin. git fetch origin, then `cat-file -e <sha>^{commit}` and a non-empty `branch -r --contains <sha>`.
-    Refuses otherwise. No git output is echoed (a remote URL can carry a credential)."""
+def identity(row: Mapping[str, Any]) -> str:
+    """Identity of a ledger row for the write-once rule: everything except written_ms (the instant it was written, which a retry changes)."""
+    return hashlib.sha256(line_bytes({k: v for k, v in row.items() if k != "written_ms"})).hexdigest()
+
+
+def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> str:
+    """DEC-031 section 1.2: frozen_sha is a commit whose code is ON MAIN. git fetch origin, resolve `<sha>^{commit}` to the full 40-hex sha, require
+    `git merge-base --is-ancestor <full> origin/main`. Returns the full sha; refuses otherwise. No git output is echoed (a remote URL can carry a credential)."""
     r = str(repo or REPO_ROOT)
 
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -136,11 +142,13 @@ def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> Non
     f = git("fetch", "--quiet", "origin")
     if f.returncode != 0:
         raise ArenaRefused(f"cannot verify frozen_sha: git fetch origin failed (exit {f.returncode})")
-    if git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
-        raise ArenaRefused(f"frozen_sha {sha} is not a commit (after fetch)")
-    b = git("branch", "-r", "--contains", sha)
-    if b.returncode != 0 or not b.stdout.strip():
-        raise ArenaRefused(f"frozen_sha {sha} is in no remote branch of origin")
+    p = git("rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    full = p.stdout.strip()
+    if p.returncode != 0 or len(full) != 40 or not all(c in "0123456789abcdef" for c in full):
+        raise ArenaRefused(f"frozen_sha {sha} is not a (unique) commit after fetch")
+    if git("merge-base", "--is-ancestor", full, "origin/main").returncode != 0:
+        raise ArenaRefused(f"frozen_sha {full} is not on origin/main: the frozen code must be merged first")
+    return full
 
 
 def _append_line(path: Path, obj: Mapping[str, Any]) -> None:
@@ -176,35 +184,46 @@ def load_registry(path: str | os.PathLike = REGISTRY_PATH) -> dict[str, dict[str
     return out
 
 
-def register_bot(bot_id: str, frozen_sha: str, clock_start_ms: int, path: str | os.PathLike = REGISTRY_PATH, *, deciding_stake: float = 0.25,
-                 model_ids: tuple[str, ...] | list[str] = (), now_ms: int | None = None, verify_sha: bool = True,
-                 repo: str | os.PathLike | None = None) -> dict[str, Any]:
-    """Register a book once, before its clock. Records registered_at_ms and REFUSES a clock_start_ms earlier than the registration instant. The same line again
-    is a no-op; a different sha, clock, deciding stake or model ids for an existing bot_id is REFUSED (a new version is a new bot_id)."""
+TEST_ENV = "MAL_ARENA_TEST"
+
+
+def register_bot(bot_id: str, frozen_sha: str, clock_start_ms: int, path: str | os.PathLike = REGISTRY_PATH, *, deciding_stake: float, model_ids: Sequence[str],
+                 repo: str | os.PathLike | None = None, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, Any]:
+    """Register a book once, before its clock. `deciding_stake` and `model_ids` are REQUIRED (model_ids may be an empty list for a bot that calls no LLM, but
+    must be given). The line records registered_at_ms from the real clock, REFUSES a clock_start_ms earlier than it, resolves frozen_sha against origin/main
+    (verify_sha_on_origin) and stores the full 40-hex sha as frozen_sha and verified_sha. `now_ms` and `verify_sha=False` exist for tests only: they are refused
+    unless MAL_ARENA_TEST=1, and a line written with them says so (time_source test_override, verified_sha null) and is refused by the scorer outside tests.
+    The same line again is a no-op; a different sha, clock, stake or models for an existing bot_id is REFUSED (a new version is a new bot_id)."""
+    if (now_ms is not None or not verify_sha) and os.environ.get(TEST_ENV) != "1":
+        raise ArenaRefused("now_ms / verify_sha=False are test-only overrides: production uses the real clock and always verifies the sha")
     if not bot_id or "/" in bot_id or bot_id.startswith("."):
         raise ArenaRefused(f"bad bot_id {bot_id!r}")
-    if not frozen_sha or not all(c in "0123456789abcdef" for c in frozen_sha.lower()) or len(frozen_sha) < 7:
-        raise ArenaRefused("frozen_sha must be a git hex sha (7+ chars)")
+    sha = str(frozen_sha).lower()
+    if not sha or not all(c in "0123456789abcdef" for c in sha) or not 7 <= len(sha) <= 40:
+        raise ArenaRefused("frozen_sha must be a git hex sha (7 to 40 chars)")
     if deciding_stake not in STAKES_SOL:
         raise ArenaRefused(f"deciding_stake must be one of {STAKES_SOL}")
+    if isinstance(model_ids, str) or not all(isinstance(m, str) and m for m in model_ids):
+        raise ArenaRefused("model_ids must be a list of non-empty strings")
     reg_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     if int(clock_start_ms) < reg_ms:
         raise ArenaRefused(f"clock_start_ms {clock_start_ms} is earlier than the registration instant {reg_ms}: a clock cannot be backdated")
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"bot_id": bot_id, "frozen_sha": frozen_sha, "clock_start_ms": int(clock_start_ms), "deciding_stake": float(deciding_stake),
-             "model_ids": list(model_ids)}
+    entry = {"bot_id": bot_id, "clock_start_ms": int(clock_start_ms), "deciding_stake": float(deciding_stake), "model_ids": list(model_ids)}
     with open(p.with_suffix(p.suffix + ".lock"), "a") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         bots = load_registry(p)
         if bot_id in bots:
-            old = {k: bots[bot_id].get(k) for k in entry}
-            if old != entry:
-                raise ArenaRefused(f"bot {bot_id} is registered with {old}; a changed sha, clock, stake or model is a new bot_id, not an edit")
-            return bots[bot_id]
-        if verify_sha:
-            verify_sha_on_origin(frozen_sha, repo)
-        _append_line(p, dict(entry, kind="register", registered_at_ms=reg_ms))
+            old = bots[bot_id]
+            same_sha = old["frozen_sha"].startswith(sha) or sha.startswith(old["frozen_sha"])
+            old_view = {k: old.get(k) for k in entry}
+            if not same_sha or old_view != entry:
+                raise ArenaRefused(f"bot {bot_id} is registered with {old_view} and sha {old['frozen_sha']}; a changed sha, clock, stake or model is a new bot_id, not an edit")
+            return old
+        full = verify_sha_on_origin(sha, repo) if verify_sha else None
+        _append_line(p, dict(entry, kind="register", frozen_sha=full or sha, verified_sha=full, registered_at_ms=reg_ms,
+                             time_source="wall_clock" if now_ms is None else "test_override"))
     return load_registry(p)[bot_id]
 
 
@@ -245,7 +264,8 @@ class Ledger:
         for line in data.split(b"\n"):
             if not line:
                 continue
-            ids[json.loads(line)["trade_id"]] = hashlib.sha256(line).hexdigest()
+            r = json.loads(line)
+            ids[r["trade_id"]] = identity(r)
         return ids
 
     def append(self, row: Mapping[str, Any]) -> bool:
@@ -262,7 +282,7 @@ class Ledger:
             ids = self._scan(fd)
             tid = row["trade_id"]
             if tid in ids:
-                if ids[tid] == hashlib.sha256(line).hexdigest():
+                if ids[tid] == identity(row):
                     return False
                 raise LedgerConflict(f"trade_id {tid} already written with different content")
             os.write(fd, line + b"\n")
@@ -289,6 +309,7 @@ class Ledger:
 
 # ------------------------------------------------------------------------------------------------------------------------------ config
 STRAND_STATES = ("stranded", "entry_invalid", "exit_invalid")
+HARD_GAP_KINDS = ("process_restart", "feed_restart", "feed_start")
 
 
 @dataclass(frozen=True)
@@ -308,14 +329,23 @@ class StackConfig:
     # Neither is lower on every trade: at the arena's rent "total" is the more lenient on dust sells (+412,340 lamports on the one rugged parity pool).
     strand_rule: str = "both"
     e1_floor_per_005: int = E1_FLOOR_PER_005  # lamports per 0.05 SOL of stake; 0 = off (legacy parity only)
-    slot_tolerance: int = 0  # a decision_slot below the engine's high-water slot by more than this is refused
+    # The whole-slot feed delay d (confirmed-commitment feed behind the chain), measured by tools/arena_feed_delay.py. REQUIRED: None = the engine refuses to
+    # price. d is added to the entry decision slot and to the exit decision slot.
+    feed_delay_slots: int | None = None
+    # Calling contract: a bot is called inline with on_row. A decision stamped up to ms_tolerance before the latest feed row, or at a slot up to slot_tolerance
+    # below the high-water slot, is a race with the feed and is accepted (its instant is clamped forward to the high-water mark); beyond that it is
+    # stale_decision, which the scorer counts apart from the data refusals and keeps out of the 5% cap.
+    slot_tolerance: int = 2
+    ms_tolerance: int = 1_000
+    gap_slots: int | None = 150  # a slot jump between consecutive trade rows beyond this is a data_loss gap (about 60 s); None = off (replays)
+    gap_silence_ms: int | None = 60_000  # silence between consecutive trade rows beyond this is a data_loss gap; None = off (replays)
     max_future_ms: int = 5_000
     max_past_ms: int | None = 60_000  # a decision_ms older than this at the write instant is stale (the caller supplies decision_ms)
 
     def as_dict(self) -> dict[str, Any]:
         return {"send": self.send, "rent": self.rent, "h_in": self.h_in, "h_out": self.h_out, "k_rounding": self.k_rounding, "exit_lag_s": F.EXIT_LAG_S,
                 "guard": F.GUARD, "portal_ppm": self.portal_ppm, "press_intercept_provisional": self.press_intercept, "strand_rule": self.strand_rule,
-                "e1_floor_per_005": self.e1_floor_per_005}
+                "e1_floor_per_005": self.e1_floor_per_005, "feed_delay_slots": self.feed_delay_slots}
 
 
 def rules_of(cfg: StackConfig) -> tuple[str, ...]:
@@ -553,22 +583,27 @@ class ArenaEngine:
         return (slot, 1, t_ms, sig, ev)
 
     def on_gap(self, row: Mapping[str, Any]) -> None:
-        """A feed gap row (type "gap"). Only data_loss gaps exclude trades; the others are counted. The lost interval is from the engine's last row before
-        the gap (and silent_ms / the slot jump when the row gives them) to the gap row's time."""
+        """A feed gap row (type "gap"). A data_loss gap, or a process_restart / feed_restart / feed_start gap, excludes the trades whose span it overlaps; the others
+        are counted. The lost interval runs from the engine's last row before the gap (and silent_ms / down_ms when the row gives them) to the gap row's time."""
         at = int(row["t_recv_ms"])
-        silent = int(row.get("silent_ms") or 0)
-        t_lo = min(self.hw_ms if self.hw_ms is not None else at, at - silent)
-        s_hi = max(int(row.get("to_slot") or row.get("slot") or 0), self.hw_slot)
-        if not row.get("data_loss"):
+        silent = int(row.get("silent_ms") or row.get("down_ms") or 0)
+        kind = str(row.get("kind"))
+        if not (row.get("data_loss") or kind in HARD_GAP_KINDS):
             self._count("gap_soft")
             return
+        t_lo = min(self.hw_ms if self.hw_ms is not None else at, at - silent)
+        s_hi = max(int(row.get("to_slot") or row.get("slot") or 0), self.hw_slot)
         self._count("gap_data_loss")
-        self.gaps.append(Gap(row.get("prog"), t_lo, at, max(self.hw_slot, 0), s_hi, str(row.get("kind"))))
+        self.gaps.append(Gap(row.get("prog"), t_lo, at, max(self.hw_slot, 0), s_hi, kind))
 
     def on_row(self, row: Mapping[str, Any]) -> None:
         typ = row.get("type", "trade")
         if typ == "gap":
             self.on_gap(row)
+            return
+        if typ == "start":  # the feed process (re)started: whatever it missed while down is a data_loss gap from the last row seen
+            if row.get("t_recv_ms") is not None and self.hw_ms is not None:
+                self.on_gap({"type": "gap", "kind": "feed_start", "data_loss": True, "prog": None, "t_recv_ms": row["t_recv_ms"], "slot": row.get("slot") or self.hw_slot})
             return
         venue = VENUE_ALIASES.get(str(row.get("prog") or row.get("venue")))
         if venue is None or typ != "trade":
@@ -589,6 +624,14 @@ class ArenaEngine:
                      float(row["base_reserve"]), v, vsrc):
             self._count("rows_dup")
             return
+        if self.hw_ms is not None:  # process downtime / silence / a slot jump between consecutive rows is a gap from the last row seen
+            c = self.cfg
+            if c.gap_silence_ms is not None and t_ms - self.hw_ms > c.gap_silence_ms:
+                self.gaps.append(Gap(None, self.hw_ms, t_ms, self.hw_slot, slot, "engine_silence"))
+                self._count("gap_engine_silence")
+            elif c.gap_slots is not None and slot - self.hw_slot > c.gap_slots:
+                self.gaps.append(Gap(None, self.hw_ms, t_ms, self.hw_slot, slot, "engine_slot_jump"))
+                self._count("gap_engine_slot_jump")
         self._late_check(pool, slot, key, row)
         if self.hw_ms is None or t_ms > self.hw_ms:
             self.hw_ms, self.hw_ms_slot = t_ms, slot
@@ -633,17 +676,24 @@ class ArenaEngine:
         assert self.hw_ms is not None
         return self.hw_ms_slot + int(math.floor((int(ms) - self.hw_ms) / (sps * 1000.0) + 1e-9))
 
+    def _check_delay_set(self) -> int:
+        d = self.cfg.feed_delay_slots
+        if d is None or not isinstance(d, int) or isinstance(d, bool) or d < 0:
+            raise ArenaRefused("feed_delay_unset: StackConfig.feed_delay_slots is required (a whole number of slots from tools/arena_feed_delay.py); nothing is priced without it")
+        return d
+
     def _check_instant(self, decision_ms: int, decision_slot: int) -> None:
         if self.hw_ms is None:
             raise ArenaRefused("no_feed_rows: no feed rows seen yet")
-        if int(decision_ms) < self.hw_ms:
-            raise ArenaRefused(f"stale_decision: decision_ms {decision_ms} is earlier than the engine's high-water mark {self.hw_ms} (a hindsight decision)")
-        if int(decision_slot) < self.hw_slot - self.cfg.slot_tolerance:
-            raise ArenaRefused(f"stale_decision: decision_slot {decision_slot} is earlier than the engine's high-water slot {self.hw_slot}")
+        c = self.cfg
+        if int(decision_ms) < self.hw_ms - c.ms_tolerance:
+            raise ArenaRefused(f"stale_decision: decision_ms {decision_ms} is more than {c.ms_tolerance} ms earlier than the engine's high-water mark {self.hw_ms} (a hindsight decision)")
+        if int(decision_slot) < self.hw_slot - c.slot_tolerance:
+            raise ArenaRefused(f"stale_decision: decision_slot {decision_slot} is more than {c.slot_tolerance} slots below the engine's high-water slot {self.hw_slot}")
         now = self.now_fn()
-        if int(decision_ms) > now + self.cfg.max_future_ms:
+        if int(decision_ms) > now + c.max_future_ms:
             raise ArenaRefused("future_decision: decision_ms is in the future")
-        if self.cfg.max_past_ms is not None and int(decision_ms) < now - self.cfg.max_past_ms:
+        if c.max_past_ms is not None and int(decision_ms) < now - c.max_past_ms:
             raise ArenaRefused("stale_decision: decision_ms is older than max_past_ms at the write instant")
 
     # --- bot API
@@ -664,6 +714,7 @@ class ArenaEngine:
             raise ArenaRefused(f"stopped: bot {bot_id} is stopped")
         pid = hashlib.sha256(f"{bot_id}|{pool}|{int(decision_ms)}|{int(decision_slot)}".encode()).hexdigest()[:16]
         try:
+            self._check_delay_set()
             h = self.pools.get(pool)
             if h is None or not h.slot:
                 raise ArenaRefused(f"no_prints: no prints seen for pool {pool}")
@@ -680,12 +731,13 @@ class ArenaEngine:
             raise
         if pid in self.positions:
             raise ArenaRefused(f"duplicate: position {pid} already open for this decision")
-        sd = max(int(decision_slot), self.slot_at(decision_ms, sps))
+        d = self.cfg.feed_delay_slots
+        sd = max(int(decision_slot), self.slot_at(max(int(decision_ms), self.hw_ms), sps))  # a race-tolerated stamp is clamped forward to the high-water mark
         pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, int(decision_ms), int(decision_slot), sd, float(sps),
                        None if sol_in is None else float(sol_in), dict(meta or {}))
         self.ledger.append({"schema": SCHEMA, "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
                             "decision_ms": {"entry": pos.decision_ms, "exit": None}, "decision_slot": {"entry": pos.decision_slot, "exit": None},
-                            "effective_slot": {"entry": sd, "exit": None}, "pool": pool, "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry,
+                            "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool, "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry,
                             "bot_sol_in": pos.bot_sol_in, "meta": pos.meta, "stack": self.cfg.as_dict(), "written_ms": self.now_fn()})
         self.positions[pid] = pos
         return pid
@@ -717,11 +769,12 @@ class ArenaEngine:
             raise ArenaRefused(f"position {position_id} already has a sell")
         if frac != 1.0:
             raise ArenaRefused("partial sells are not supported in v1 (frac must be 1.0)")
+        self._check_delay_set()
         self._check_instant(decision_ms, decision_slot)
         sps = self.sps()
         if sps is None:
             raise ArenaRefused("slot clock not ready (sps unknown)")
-        xs = max(int(decision_slot), self.slot_at(decision_ms, sps))
+        xs = max(int(decision_slot), self.slot_at(max(int(decision_ms), self.hw_ms), sps))
         k_slow = max(self._k(lat, pos.sps_entry) for lat in LATS)
         if xs < pos.sd + k_slow + 1:
             raise ArenaRefused("sell decided before the slower entry leg lands")
@@ -739,8 +792,9 @@ class ArenaEngine:
 
     # --- pricing
     def _needed_slot(self, pos: Position) -> int:
-        x_max = pos.sd + max(self._k(lat, pos.sps_entry) for lat in LATS)
-        x_exit = pos.xs + F.exit_lag_slots(pos.sps_exit)  # type: ignore[operator,arg-type]
+        d = self._check_delay_set()
+        x_max = pos.sd + d + max(self._k(lat, pos.sps_entry) for lat in LATS)
+        x_exit = pos.xs + d + F.exit_lag_slots(pos.sps_exit)  # type: ignore[operator,arg-type]
         return max(x_max, x_exit) + 1
 
     def _span(self, pos: Position, need: int, src: str) -> tuple[int, int, int, int]:
@@ -776,13 +830,14 @@ class ArenaEngine:
         """Where V came from for the print that defines the entry state (1.3 s leg), the print that defines the exit state, and every print in the span."""
         if pos.prog != "pumpswap":
             return {"entry": "na", "exit": "na", "span": {}}
+        d = self._check_delay_set()
         a = h.arrays()
         sl = a["sl"]
         n = len(sl)
         k13 = self._k(LATS[0], pos.sps_entry)
-        je = min(int(np.searchsorted(sl, pos.sd + k13 + 1, "left")), n - 1)
-        jx = min(int(np.searchsorted(sl, pos.xs + F.exit_lag_slots(pos.sps_exit) + 1, "left")), n - 1)  # type: ignore[operator,arg-type]
-        lo, hi = int(np.searchsorted(sl, pos.sd, "left")), min(int(np.searchsorted(sl, pos.xs + 1, "right")), n)
+        je = min(int(np.searchsorted(sl, pos.sd + d + k13 + 1, "left")), n - 1)
+        jx = min(int(np.searchsorted(sl, pos.xs + d + F.exit_lag_slots(pos.sps_exit) + 1, "left")), n - 1)  # type: ignore[operator,arg-type]
+        lo, hi = int(np.searchsorted(sl, pos.sd, "left")), min(int(np.searchsorted(sl, pos.xs + d + 1, "right")), n)  # type: ignore[operator]
         span: dict[str, int] = {}
         for x in h.vsrc[lo:hi]:
             span[x] = span.get(x, 0) + 1
@@ -836,19 +891,24 @@ class ArenaEngine:
         return len(drop)
 
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
-        """Entry / exit states for both latencies (no stake yet)."""
+        """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
+        decision-time spot stays the price the bot saw (prints before the UNCORRECTED decision slot)."""
         cfg = self.cfg
+        d = self._check_delay_set()
         a = h.arrays()
         k = {lat: self._k(lat, pos.sps_entry) for lat in LATS}
         lag = F.exit_lag_slots(pos.sps_exit)  # type: ignore[arg-type]
+        sdc, xsc = pos.sd + d, pos.xs + d  # type: ignore[operator]
         if pos.prog == "pumpswap":
-            ms = mint_states(a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"], np.array([pos.sd]), pos.sps_entry, t_marks=np.array([0]),
-                             slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([pos.xs]), lats=LATS, rounding=cfg.k_rounding)
-            return {"ref": float(ms["spot"][0]), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
+            args = (a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"])
+            ms = mint_states(*args, np.array([sdc]), pos.sps_entry, t_marks=np.array([0]), slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([xsc]),
+                             lats=LATS, rounding=cfg.k_rounding)
+            spot = ms["spot"][0] if d == 0 else mint_states(*args, np.array([pos.sd]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
+            return {"ref": float(spot), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
                     "ssb": {l: float(ms["ssb"][l][0]) for l in LATS}, "nearby": {l: float(ms["nearby"][l][0]) for l in LATS},
-                    "Qx": float(ms["Qx"][0]), "Bx": float(ms["Bx"][0]), "land": {l: pos.sd + k[l] for l in LATS}}
-        x_land = {l: pos.sd + k[l] for l in LATS}
-        bs = bonding_states(h, pos.sd, x_land, pos.xs + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
+                    "Qx": float(ms["Qx"][0]), "Bx": float(ms["Bx"][0]), "land": {l: sdc + k[l] for l in LATS}}
+        x_land = {l: sdc + k[l] for l in LATS}
+        bs = bonding_states(h, pos.sd, x_land, xsc + lag, int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))  # type: ignore[operator]
         bs["land"] = x_land
         return bs
 
@@ -856,6 +916,8 @@ class ArenaEngine:
         return {"schema": SCHEMA, "kind": kind, "trade_id": f"{pos.position_id}-s{int(round(s_sol * 1000))}", "position_id": pos.position_id,
                 "bot_id": pos.bot_id, "frozen_sha": pos.frozen_sha, "decision_ms": {"entry": pos.decision_ms, "exit": pos.exit_ms},
                 "decision_slot": {"entry": pos.decision_slot, "exit": pos.exit_slot}, "effective_slot": {"entry": pos.sd, "exit": pos.xs},
+                "corrected_slot": {"entry": pos.sd + (self.cfg.feed_delay_slots or 0), "exit": None if pos.xs is None else pos.xs + (self.cfg.feed_delay_slots or 0)},
+                "feed_delay_slots": self.cfg.feed_delay_slots,
                 "pool": pos.pool, "mint": pos.mint, "prog": pos.prog, "stake_sol": s_sol, "bot_sol_in": pos.bot_sol_in, "exit_reason": pos.reason,
                 "meta": pos.meta, "state_src": src, "stack": dict(self.cfg.as_dict(), sps_entry=pos.sps_entry, sps_exit=pos.sps_exit),
                 "written_ms": self.now_fn()}
@@ -897,5 +959,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]
