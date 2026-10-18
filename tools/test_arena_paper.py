@@ -774,3 +774,43 @@ def test_importing_arena_paper_loads_no_r4b_module():
     code = "import sys, tools.arena_paper, tools.arena_score, tools.arena_feed_delay; print(sorted(m for m in sys.modules if 'r4b' in m))"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent), check=True).stdout.strip()
     assert out == "[]", out
+
+
+def test_an_append_parses_only_the_new_bytes_not_the_whole_day_file(tmp_path, monkeypatch):
+    """3,000 rows of about 3 KB: the parse count is linear in the rows (it was quadratic), and an append stays fast however long the file is."""
+    import time as _time
+
+    import tools.arena_paper as ap
+
+    n, pad = 3000, "x" * 3000
+    parsed = {"n": 0}
+    real = json.loads
+
+    def counting(*a, **k):
+        parsed["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(ap.json, "loads", counting)
+    led = Ledger(tmp_path)
+    lat = []
+    for i in range(n):
+        row = dict(_fake_row(f"t{i}", ms=T0 + i), pad=pad)
+        t0 = _time.perf_counter()
+        assert led.append(row) is True
+        lat.append(_time.perf_counter() - t0)
+    assert parsed["n"] <= n + 5, parsed  # each row parsed once (before: n * (n - 1) / 2)
+    tail = sorted(lat[-200:])[100]  # median of the last 200 appends (before the cache: 276 ms at 3,000 rows)
+    head = sorted(lat[:200])[100]
+    assert tail < max(10 * head, 0.05), (head, tail)
+    # a second Ledger object (another process) is caught up by reading only the new bytes, and still sees every id
+    other = Ledger(tmp_path)
+    assert other.append(dict(_fake_row("t7", ms=T0 + 7), pad=pad)) is False
+    assert other.append(dict(_fake_row("new", ms=T0 + 5), pad=pad)) is True
+    assert led.append(dict(_fake_row("new", ms=T0 + 5), pad=pad)) is False  # the first object catches up with the other's append
+    with pytest.raises(LedgerConflict):
+        led.append(dict(_fake_row("new", ms=T0 + 5, net=9.0), pad=pad))
+    p = next(tmp_path.glob("*/trades-*.jsonl"))
+    assert len(p.read_text().splitlines()) == n + 1
+    # a truncated / replaced file (a new inode or a shorter size) is rescanned from the start
+    p.write_text(p.read_text().splitlines()[0] + "\n")
+    assert led.append(dict(_fake_row("t5", ms=T0 + 5), pad=pad)) is True

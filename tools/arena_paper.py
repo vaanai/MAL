@@ -247,26 +247,33 @@ class Ledger:
 
     def __init__(self, root: str | os.PathLike = LEDGER_ROOT) -> None:
         self.root = Path(root)
+        # path -> (inode, offset consumed, {trade_id: identity}). An append reads only the bytes written since the last look (by this or another process),
+        # so its cost no longer grows with the size of the day file.
+        self._cache: dict[str, tuple[int, int, dict[str, str]]] = {}
 
     def path_for(self, bot_id: str, day: str) -> Path:
         return self.root / bot_id / f"trades-{day}.jsonl"
 
-    @staticmethod
-    def _scan(fd: int) -> dict[str, str]:
-        os.lseek(fd, 0, os.SEEK_SET)
+    def _ids(self, fd: int, key: str) -> tuple[dict[str, str], int, bool]:
+        """(ids, offset, complete). Reads from the cached offset to the end of the file (the whole file when there is no usable cache: a new inode or a
+        shorter file) and parses only the new whole lines. complete = the scan consumed every byte (no unterminated tail)."""
+        st = os.fstat(fd)
+        c = self._cache.get(key)
+        ids, off = ({}, 0) if (c is None or c[0] != st.st_ino or c[1] > st.st_size) else (c[2], c[1])
+        os.lseek(fd, off, os.SEEK_SET)
         data = b""
         while True:
             chunk = os.read(fd, 1 << 20)
             if not chunk:
                 break
             data += chunk
-        ids: dict[str, str] = {}
-        for line in data.split(b"\n"):
-            if not line:
-                continue
-            r = json.loads(line)
-            ids[r["trade_id"]] = identity(r)
-        return ids
+        cut = data.rfind(b"\n") + 1
+        for line in data[:cut].split(b"\n"):
+            if line:
+                r = json.loads(line)
+                ids[r["trade_id"]] = identity(r)
+        self._cache[key] = (st.st_ino, off + cut, ids)
+        return ids, off + cut, cut == len(data)
 
     def append(self, row: Mapping[str, Any]) -> bool:
         """True if written, False if the identical row is already there."""
@@ -279,7 +286,7 @@ class Ledger:
         fd = os.open(str(p), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            ids = self._scan(fd)
+            ids, off, complete = self._ids(fd, str(p))
             tid = row["trade_id"]
             if tid in ids:
                 if ids[tid] == identity(row):
@@ -287,6 +294,11 @@ class Ledger:
                 raise LedgerConflict(f"trade_id {tid} already written with different content")
             os.write(fd, line + b"\n")
             os.fsync(fd)
+            ids[tid] = identity(row)
+            if complete:
+                self._cache[str(p)] = (os.fstat(fd).st_ino, off + len(line) + 1, ids)
+            else:
+                self._cache.pop(str(p), None)
             if created:
                 _fsync_dir(p.parent)
             if new_dir:
