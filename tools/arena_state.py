@@ -281,7 +281,11 @@ class ArenaState:
             if t < self.start_ms:
                 self.counters["rows_before_start"] += 1
                 continue
-            self.apply(row)
+            try:
+                self.apply(row)
+            except Exception:  # noqa: BLE001 - one malformed row must not abort the poll; it is counted
+                self.counters["apply_errors"] += 1
+                continue
             n += 1
         return n
 
@@ -297,14 +301,19 @@ class ArenaState:
             self._create(row, t)
         elif typ == "complete":
             p = self._get(row.get("mint"), "pumpfun", t, make=True)
-            if p is not None:
+            if p is None:
+                self.counters["rows_without_key"] += 1
+            else:
                 p.complete_ms = t
         elif typ == "pool_create":
             self._pool_create(row, t)
         elif typ == "pool_info":  # resolver row: mint / quote mint of a pool whose CreatePool the feed did not see
             p = self._get(row.get("pool"), "pumpswap", t, make=True)
-            p.quote_mint = row.get("quote_mint") or p.quote_mint
-            self._link_mint(p, row.get("mint"))
+            if p is None:
+                self.counters["rows_without_key"] += 1
+            else:
+                p.quote_mint = row.get("quote_mint") or p.quote_mint
+                self._link_mint(p, row.get("mint"))
         elif typ == "gap":
             self._gap(row, t)
         elif typ == "hb":
@@ -357,6 +366,9 @@ class ArenaState:
 
     def _create(self, row: dict, t: int) -> None:
         p = self._get(row.get("mint"), "pumpfun", t, make=True)
+        if p is None:
+            self.counters["rows_without_key"] += 1
+            return
         p.created_ms, p.create_slot, p.created_kind = t, row.get("slot"), "create"
         p.creator = row.get("creator") or row.get("trader") or p.creator
         p.name, p.symbol = row.get("name"), row.get("symbol")
@@ -368,6 +380,9 @@ class ArenaState:
 
     def _pool_create(self, row: dict, t: int) -> None:
         p = self._get(row.get("pool"), "pumpswap", t, make=True)
+        if p is None:
+            self.counters["rows_without_key"] += 1
+            return
         p.created_ms, p.create_slot, p.created_kind = t, row.get("slot"), "pool_create"
         p.last_ms = t
         p.quote_mint = row.get("quote_mint") or p.quote_mint
@@ -469,7 +484,13 @@ class ArenaState:
         return self._pools.get(key)
 
     def pools(self, predicate: Callable[[Pool], bool] | None = None) -> list[Pool]:
+        """Every key, SOL-quoted or not. A PumpSwap pool quoted in another token has sol / price / volume fields in that token's units, and a pool
+        whose quote is not yet verified (`quote_mint` None) may be one: use pools_wsol() for anything priced or summed in SOL."""
         return [p for p in self._pools.values() if predicate is None or predicate(p)]
+
+    def pools_wsol(self, predicate: Callable[[Pool], bool] | None = None) -> list[Pool]:
+        """Only keys whose quote is VERIFIED to be WSOL (every bonding curve; a PumpSwap pool once pool_create, pool_info or a resolved trade said so)."""
+        return [p for p in self._pools.values() if p.quote_mint == WSOL_MINT and (predicate is None or predicate(p))]
 
     def pools_for_mint(self, mint: str) -> list[Pool]:
         out = [self._pools[k] for k in sorted(self._by_mint.get(mint, ())) if k in self._pools]
