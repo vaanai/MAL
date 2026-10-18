@@ -17,7 +17,7 @@ No import of tools.arena_state (or any other repo module): `SnapshotLike` is a s
 library only and a test fixture can stand in for the state.
 
 As-of discipline. Every function that reads a snapshot, a print list or chain facts takes `as_of_ms` (the scan instant T, as of the last slot
-before it) and raises LeakageError if any timestamp in its inputs is later than T. There is no silent filtering: a future print is a bug in the
+before it) and raises LeakageError if any timestamp in its inputs is at or after T (strict: t < T). There is no silent filtering: a future print is a bug in the
 caller, and the card is refused. Rolling windows come from the snapshot (anchored at the state clock `now_ms`); a state clock more than
 STATE_LAG_MAX_MS behind T fails the `state_fresh` filter, so a stalled feed cannot be stamped as T.
 
@@ -293,12 +293,12 @@ def _norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, boo
 # ---------------------------------------------------------------------------------------------------------------------------------------
 def assert_as_of(snap: SnapshotLike, as_of_ms: int, *, prints: Iterable[PrintLike] | None = None, chain: Mapping[str, Any] | None = None,
                  as_of_slot: int | None = None) -> None:
-    """Raise LeakageError if any timestamp in the inputs is later than the scan instant `as_of_ms` (or the snapshot's last slot is after
-    `as_of_slot`). Checks: snapshot now_ms / last_ms / ath_ms / created_ms / complete_ms / last_trade.t_ms, every candle start, every print,
+    """Raise LeakageError if any timestamp in the inputs is at or after the scan instant `as_of_ms` (the cut is strictly t < T; so the runner
+    steps the state with poll(until_ms=T - 1)), or if a slot is after `as_of_slot` (the arena's latest slot at T, inclusive). Checks: snapshot now_ms / last_ms / ath_ms / created_ms / complete_ms / last_trade.t_ms, every candle start, every print,
     and the chain facts' own stamps."""
     def chk(name: str, v: Any) -> None:
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > as_of_ms:
-            raise LeakageError(f"{name}={v} is after as_of_ms={as_of_ms}")
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= as_of_ms:  # strict: DESIGN says "the last slot BEFORE scan instant T"
+            raise LeakageError(f"{name}={v} is not before as_of_ms={as_of_ms}")
 
     for k in ("now_ms", "last_ms", "ath_ms", "created_ms", "complete_ms", "origin_create_ms"):
         chk(k, snap.get(k))

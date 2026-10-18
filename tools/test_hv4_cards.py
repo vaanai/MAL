@@ -745,9 +745,10 @@ def mut_snap(key, value):
     return s
 
 
+@pytest.mark.parametrize("when", [T, FUTURE])  # the cut is strict: a timestamp AT T is already outside it
 @pytest.mark.parametrize("key", ["now_ms", "last_ms", "ath_ms", "created_ms", "complete_ms", "origin_create_ms", "last_trade.t_ms", "candle"])
-def test_future_snapshot_timestamp_raises_leakage(key):
-    s = mut_snap(key, FUTURE)
+def test_future_snapshot_timestamp_raises_leakage(key, when):
+    s = mut_snap(key, when)
     for fn in (lambda: hc.filters(s, as_of_ms=T), lambda: hc.features(s, base_prints(), as_of_ms=T),
                lambda: hc.code_vetoes(s, base_prints(), base_chain(), as_of_ms=T, as_of_slot=SLOT), lambda: hc.build_card(s, base_prints(), base_chain(), as_of_ms=T, as_of_slot=SLOT)):
         with pytest.raises(hc.LeakageError):
@@ -755,27 +756,38 @@ def test_future_snapshot_timestamp_raises_leakage(key):
 
 
 def test_planted_future_print_raises_leakage():
-    for fn in (hc.features, lambda s, p, as_of_ms: hc.code_vetoes(s, p, base_chain(), as_of_ms=as_of_ms, as_of_slot=SLOT),
-               lambda s, p, as_of_ms: hc.build_card(s, p, base_chain(), as_of_ms=as_of_ms, as_of_slot=SLOT)):
-        with pytest.raises(hc.LeakageError):
-            fn(base_snap(), base_prints() + [(FUTURE, SOL, True, "planted")], as_of_ms=T)
+    for when in (T, FUTURE):
+        for fn in (hc.features, lambda s, p, as_of_ms: hc.code_vetoes(s, p, base_chain(), as_of_ms=as_of_ms, as_of_slot=SLOT),
+                   lambda s, p, as_of_ms: hc.build_card(s, p, base_chain(), as_of_ms=as_of_ms, as_of_slot=SLOT)):
+            with pytest.raises(hc.LeakageError):
+                fn(base_snap(), base_prints() + [(when, SOL, True, "planted")], as_of_ms=T)
     with pytest.raises(hc.LeakageError):  # the print list alone is enough, with a clean snapshot and chain
         hc.assert_as_of(base_snap(), T, prints=[(FUTURE, 1, True, "x")])
 
 
 def test_future_chain_stamps_and_slot_raise_leakage():
-    for k in ("as_of_ms", "holders_as_of_ms"):
-        with pytest.raises(hc.LeakageError):
-            hc.build_card(base_snap(), base_prints(), base_chain(**{k: FUTURE}), as_of_ms=T, as_of_slot=SLOT)
+    for k in ("as_of_ms", "holders_as_of_ms", "quote_sol_15m_ago_as_of_ms"):
+        for when in (T, FUTURE):
+            with pytest.raises(hc.LeakageError):
+                hc.build_card(base_snap(), base_prints(), base_chain(**{k: when}), as_of_ms=T, as_of_slot=SLOT)
     with pytest.raises(hc.LeakageError):
         hc.build_card(base_snap(), base_prints(), base_chain(), as_of_ms=T, as_of_slot=999)  # snapshot's last_slot is 1000
 
 
-def test_exactly_at_the_scan_instant_is_allowed():
-    s = mut_snap("last_trade.t_ms", T)
-    s["last_ms"] = T
-    c = hc.build_card(s, base_prints() + [(T, SOL // 4, True, "edge")], base_chain(as_of_ms=T), as_of_ms=T, as_of_slot=1000)
-    assert c["f"]["last_print_s"] == 0.0
+def test_the_cut_is_strictly_before_T():
+    """DESIGN: "as of the last slot before scan instant T". A print at T-1 ms is inside; a print at T is not."""
+    s = mut_snap("last_trade.t_ms", T - 1)
+    s["last_ms"] = T - 1
+    c = hc.build_card(s, base_prints() + [(T - 1, SOL // 4, True, "edge")], base_chain(as_of_ms=T - 1), as_of_ms=T, as_of_slot=SLOT)
+    assert c["f"]["last_print_s"] == 0.001
+    with pytest.raises(hc.LeakageError):
+        hc.build_card(base_snap(), base_prints() + [(T, SOL // 4, True, "edge")], base_chain(), as_of_ms=T, as_of_slot=SLOT)
+    with pytest.raises(hc.LeakageError):
+        hc.build_card(base_snap(now_ms=T), base_prints(), base_chain(), as_of_ms=T, as_of_slot=SLOT)
+    with pytest.raises(hc.LeakageError):
+        hc.build_card(base_snap(), base_prints(), base_chain(as_of_ms=T), as_of_ms=T, as_of_slot=SLOT)
+    f = hc.features(base_snap(), base_prints() + [(T - 1, SOL, True, "edge")], as_of_ms=T)
+    assert f["unique_buyers_15m"] == hc.features(base_snap(), base_prints(), as_of_ms=T)["unique_buyers_15m"] + 1
 
 
 def test_card_is_pure_deterministic_and_does_not_mutate_inputs():
