@@ -162,11 +162,13 @@ def _fmt(n: float) -> str:
     return ("%.12f" % n).rstrip("0").rstrip(".") or "0"
 
 
-def final_size(trader_size: float, *caps: float | None) -> float:
-    """DESIGN section 3: size = min(trader, risk max_size, impact cap, age cap). Caps that are None do not apply."""
-    vals = [trader_size, *(c for c in caps if c is not None)]
-    if not all(_is_num(v) and v > 0 for v in vals):
-        raise ValueError("sizes and caps must be positive numbers")
+def final_size(trader_size, *caps) -> float:
+    """DESIGN section 3: size = min(trader, risk max_size, impact cap, age cap). Fails closed: a cap that is None, missing,
+    NaN, not a number or not positive is a zero stake (0.0), never "no cap", and so is a bad trader size. A cap that does not
+    apply to a pool (the age cap past 24 h) is passed as the largest stake, arms.SIZES[-1], by the caller. 0.0 means no entry."""
+    vals = [trader_size, *caps]
+    if not all(_is_num(x) and x > 0 for x in vals):
+        return 0.0
     return float(min(vals))
 
 

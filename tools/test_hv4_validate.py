@@ -439,7 +439,21 @@ def test_risk_refusal_unknown_id_and_error():
 # ---------------------------------------------------------------- sizing
 
 def test_final_size_is_the_smallest_cap():
-    assert v.final_size(1.0, 0.5, None, 0.25) == 0.25
-    assert v.final_size(0.5, 1.0, 1.0, None) == 0.5
-    with pytest.raises(ValueError):
-        v.final_size(0.25, 0)
+    assert v.final_size(1.0, 0.5, 1.0, 0.25) == 0.25
+    assert v.final_size(0.5, 1.0, 1.0, 1.0) == 0.5
+    assert v.final_size(0.25) == 0.25
+
+
+@pytest.mark.parametrize("trader,caps", [
+    (1.0, (0.5, None, 0.25)),            # a missing cap is a zero stake, not "no cap"
+    (0.5, (1.0, 1.0, None)),
+    (0.25, (None,)),
+    (0.25, (0,)), (0.25, (-0.25,)), (0.25, (float("nan"),)), (0.25, ("0.5",)), (0.25, (True,)), (0.25, (float("inf"), 0)),
+    (None, (0.5,)), (0, (0.5,)), (float("nan"), ()), ("0.25", (1.0,)), (False, ()),
+])
+def test_final_size_fails_closed_to_a_zero_stake(trader, caps):
+    assert v.final_size(trader, *caps) == 0.0
+
+
+def test_a_cap_that_does_not_apply_is_passed_as_the_largest_stake():
+    assert v.final_size(0.5, 1.0, 1.0, arms.SIZES[-1]) == 0.5

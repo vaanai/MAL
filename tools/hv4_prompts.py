@@ -12,8 +12,10 @@ A request has two parts, in this order:
 A restart rebuilds the same bytes from the same (arm, kind, cards, seq), so a replay finds the saved reply.
 
 Cards are plain dicts. The builder refuses a card that is not plain JSON, has no string id or integer as_of_ms, repeats an id,
-carries a name or symbol outside [A-Za-z0-9 ]{0,24}, or carries a non-null x (X features are null in this window). Those are
-guards on the way out; the scanner (hv4_cards) is where the sanitising is done.
+is over MAX_CARD_BYTES, carries a non-null x (X features are null in this window), or holds ANY string that is not in a
+conservative alphabet: keys [A-Za-z0-9_.-]{1,48}, name and symbol [A-Za-z0-9 ]{0,24}, every other string value
+[A-Za-z0-9 _.:/+-]{0,64}. The same check runs on the re-check positions. These are guards on the way out; the scanner (hv4_cards)
+is where the sanitising is done.
 """
 from __future__ import annotations
 
@@ -38,6 +40,9 @@ RULES_WORDS_MAX = 1200         # DESIGN section 4: 2x v0; for the reviewer's cha
 
 CACHE_MARKER = {"type": "ephemeral"}  # the default lifetime is 5 minutes; haiku_caller prices a missing ttl as 5m
 NAME_OK = re.compile(r"[A-Za-z0-9 ]{0,24}")
+KEY_OK = re.compile(r"[A-Za-z0-9_.\-]{1,48}")
+TEXT_OK = re.compile(r"[A-Za-z0-9 _.:/+\-]{0,64}")
+MAX_CARD_BYTES = 16_000        # DESIGN: a card is about 700 tokens; this is a generous bound
 NONCE_CHARS = 24               # hex characters of the nonce shown to the model (96 bits); the full sha256 is logged
 BYTES_PER_TOKEN = 3.6          # ASSUMPTION for the estimate only; not measured. The shakedown measures real counts.
 
@@ -215,22 +220,31 @@ def check_cards(cards, *, max_cards: int) -> list[dict]:
             raise PromptError("every card needs an integer as_of_ms")
         if card.get("x") is not None:
             raise PromptError("x must be null in this window")
-        _check_names(card)
-        canonical_bytes(card)  # plain JSON, finite numbers
+        check_strings(card)
+        if len(canonical_bytes(card)) > MAX_CARD_BYTES:  # also: plain JSON, finite numbers
+            raise PromptError(f"a card is over {MAX_CARD_BYTES} bytes")
     return list(cards)
 
 
-def _check_names(node) -> None:
+def check_strings(node) -> None:
+    """Every string that can reach the prompt, in a card or a position, is checked: every dict key against KEY_OK, name and
+    symbol against NAME_OK, and every other string value against TEXT_OK (ASCII letters, digits, space and _ . : / + -; at most
+    64 characters). No quote, brace, bracket, backtick, angle bracket, backslash or control character gets through, so a field
+    cannot close the JSON line, forge a template placeholder or smuggle a line break. A non-string key is refused."""
     stack = [node]
     while stack:
         cur = stack.pop()
         if isinstance(cur, dict):
             for k, v in cur.items():
+                if not isinstance(k, str) or not KEY_OK.fullmatch(k):
+                    raise PromptError("every key must match [A-Za-z0-9_.-]{1,48}")
                 if k in ("name", "symbol") and isinstance(v, str) and not NAME_OK.fullmatch(v):
                     raise PromptError("name and symbol must match [A-Za-z0-9 ]{0,24}")
                 stack.append(v)
         elif isinstance(cur, list):
             stack.extend(cur)
+        elif isinstance(cur, str) and not TEXT_OK.fullmatch(cur):
+            raise PromptError("a string value must match [A-Za-z0-9 _.:/+-]{0,64}")
 
 
 def _lines(items) -> str:
@@ -279,6 +293,7 @@ def build_recheck_request(arm: str, playbook: Playbook, positions, cards, seq: i
     if not isinstance(positions, (list, tuple)) or [p.get("id") if isinstance(p, dict) else None for p in positions] != [c["id"] for c in cards]:
         raise PromptError("positions and cards must have the same ids in the same order")
     for p in positions:
+        check_strings(p)
         canonical_bytes(p)
     return _build(arm, "recheck", spec.persona, playbook, cards, seq, {"POSITIONS": _lines(positions)}, items=list(positions))
 
