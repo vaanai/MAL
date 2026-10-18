@@ -42,11 +42,12 @@ from tools import hv4_cards as C
 from tools.arena_h5_signal import H5Signal, bst_card, safe_path
 from tools.arena_paper import ArenaEngine, ArenaRefused, canon, register_bot
 from tools.arena_state import ArenaState
+from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
 from tools.hv4_model import Model, ModelReply
 from tools.hv4_prompts import (Playbook, build_entry_request, build_recheck_request, build_risk_request, card_sha256, load_playbook, load_template,
                                sha256_hex)
-from tools.hv4_validate import Knobs, final_size, validate_entry, validate_recheck, validate_risk
+from tools.hv4_validate import Knobs, PredicateError, final_size, parse_watch_predicate, validate_entry, validate_recheck, validate_risk
 from tools.hv4_validate import numeric_fields as card_numeric
 
 HV4_ROOT = "/data/mal/arena/haiku-v4"
@@ -158,6 +159,63 @@ class DecisionLog:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ chain facts
+class CardSink:
+    """Every card shown to an LLM arm, by sha256, one JSONL file per UTC day under <root>/cards/ in the CardStore format of tools/hv4_review (#715):
+    one line {"sha": <card sha256>, "card": <card>} in canonical JSON, appended under flock, deduplicated by sha within the process. The reviewer reads
+    the cards of skipped decisions here, because a skip row in the decision log keeps only the hash. The day is the UTC day of the shown instant."""
+
+    def __init__(self, root: str | os.PathLike) -> None:
+        self.dir = Path(root) / "cards"
+        self._seen: set[str] = set()
+
+    def put(self, card: Mapping[str, Any], ms: int | None = None) -> str:
+        sha = card_sha256(dict(card))
+        if sha in self._seen:
+            return sha
+        self._seen.add(sha)
+        day = utc_day(int(ms if ms is not None else card.get("as_of_ms", 0)))
+        self.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(self.dir / f"{day}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.write(fd, canonical_bytes({"sha": sha, "card": card}) + b"\n")
+        finally:
+            os.close(fd)
+        return sha
+
+
+_OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
+
+
+def local_veto(vetoes: Any, card: Mapping[str, Any]) -> str | None:
+    """The first local veto (a WATCH-grammar predicate the reviewer added; it only blocks) that holds on the card, else None. Same rule as
+    tools.hv4_review.vetoed: a veto that cannot be parsed against this card never fires."""
+    from tools.hv4_validate import numeric_fields
+
+    nums = numeric_fields(card)
+    for v in vetoes or ():
+        try:
+            terms = parse_watch_predicate(v, nums)
+        except PredicateError:
+            continue
+        if all(f in nums and _OPS[op](nums[f], n) for f, op, n in terms):
+            return v
+    return None
+
+
+def review_version_source(root: str | os.PathLike, frozen_sha: str | None = None) -> Callable[[str, int], Any]:
+    """The live version source: tools.hv4_review.active_version, imported on first use (lazily, so this module does not depend on the reviewer module at
+    import time and there is no stack cycle). It verifies the arm's WHOLE manifest chain and raises ManifestRefused on anything wrong; the runner then
+    halts that arm's entries (code exits go on). The manifest's commit must be the frozen sha."""
+    def source(arm: str, now_ms: int) -> Any:
+        from tools import hv4_review
+
+        kw = {"frozen_sha": frozen_sha} if frozen_sha else {}
+        return hv4_review.active_version(root, arm, now_ms, **kw)
+
+    return source
+
+
 class ChainSource(Protocol):
     def chain_part(self, pool_id: str, mint: str | None, now_ms: int, slot: int) -> dict | None: ...
     def mint_gate(self, mint: str | None, now_ms: int, slot: int) -> dict | None: ...
@@ -345,7 +403,7 @@ class RunnerConfig:
 class Runner:
     def __init__(self, cfg: RunnerConfig, state: ArenaState, engine: ArenaEngine, model: Model, chain: ChainSource, guard: BudgetGuard | None = None,
                  h5: H5Signal | None = None, now_fn: Callable[[], int] | None = None, playbook_overrides: Mapping[str, Playbook] | None = None,
-                 binding: Mapping[str, Any] | None = None) -> None:
+                 binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
         self.binding = dict(binding) if binding is not None else None
@@ -356,6 +414,17 @@ class Runner:
         self.playbooks = {n: load_playbook(n) for n in (*arms.PERSONAS, arms.RISK_LEDGER)}
         self.playbooks.update(dict(playbook_overrides or {}))
         self.knobs = {a: Knobs.v0(s.persona) for a, s in arms.ARMS.items() if s.llm}
+        # Per-arm version in force: the L, F and P arms of a persona can differ (the reviewer rewrites a learning arm's playbook, knobs and local vetoes).
+        self.arm_state: dict[str, dict] = {}
+        for a, sp in arms.ARMS.items():
+            if sp.llm:
+                ps = arms.PERSONA_SPECS[sp.persona]
+                self.arm_state[a] = {"version": 0, "playbook": self.playbooks[sp.persona], "knobs": {"min_conviction": ps.min_conviction_v0, **ps.plan_defaults},
+                                     "vetoes": (), "manifest_sha256": None}
+        self.version_source = version_source  # None = no reviewer wiring: every arm stays on its v0 playbook, knobs and no vetoes
+        self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
+        self._versions_loaded = False
+        self.cards = CardSink(cfg.root)
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
         self.risk: dict[str, dict] = {}
@@ -403,8 +472,14 @@ class Runner:
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
 
+    def playbook_for(self, arm: str) -> Playbook:
+        return self.arm_state[arm]["playbook"]
+
     def manifest_sha(self, arm: str) -> str:
-        pb = self.playbooks[arms.ARMS[arm].persona]
+        st = self.arm_state[arm]
+        if st["manifest_sha256"]:
+            return st["manifest_sha256"]  # the reviewer's manifest line, hashed and chained
+        pb = st["playbook"]
         return sha256_hex(canon({"arm": arm, "playbook": pb.sha256, "min_conviction": self.knobs[arm].min_conviction,
                                  "templates": {k: load_template(k).sha256 for k in ("entry", "recheck", "risk")}}))
 
@@ -661,8 +736,11 @@ class Runner:
 
     def _plan_for(self, arm: str, persona: str, plan: Mapping | None) -> dict[str, Any]:
         spec = arms.PERSONA_SPECS[persona]
-        d = dict(spec.plan_defaults)
+        st = self.arm_state.get(arm)  # an LLM arm's defaults are its knobs; the X arms (no LLM) keep the v0 default exit
+        d = dict(spec.plan_defaults) if st is None else {k: st["knobs"][k] for k in spec.plan_keys if k in st["knobs"]}
         d.update(dict(plan or {}))
+        if "time_min" in d:
+            d["time_min"] = int(d["time_min"])
         return d
 
     def _open(self, arm: str, card: Mapping, size: float, plan: Mapping | None, dec_ms: int, gates: dict, extra: Mapping, role_ctx: Mapping | None = None) -> str | None:
@@ -751,16 +829,28 @@ class Runner:
                     self.log.append(a, T, {"kind": "halt", "level": pol.level, "reason": pol.halt_reason})
                 return
             maxc = pol.max_cards_per_call
+        live = self._live_members(members, T)
+        if not live:
+            return
         for i in range(0, len(cards), maxc):
-            self._entry_call(persona, members, cards[i:i + maxc], T)
+            self._entry_call(persona, live, cards[i:i + maxc], T)
+
+    def _live_members(self, members: tuple[str, ...], T: int) -> tuple[str, ...]:
+        """The group members not stopped by a refused manifest; each stopped one logs why. (A refused manifest is a safety stop of that arm alone.)"""
+        for a in members:
+            if a in self.arm_halt:
+                self.log.append(a, T, {"kind": "halt", "reason": "manifest_refused:" + self.arm_halt[a]})
+        return tuple(a for a in members if a not in self.arm_halt)
 
     def _entry_call(self, persona: str, members: tuple[str, ...], chunk: list[dict], T: int) -> None:
         if not self._call_ok(list(members), "entry", None, T):  # symmetric: one member at its cap stops the group
             self._count("entry_call_cap")
             return
         replies: dict[str, tuple[ModelReply, int]] = {}
+        for c in chunk:
+            self.cards.put(c, T)  # shown to every member of the group
         for a in members:
-            req = build_entry_request(a, self.playbooks[persona], chunk, self._next_seq(a, T), max_cards=len(chunk))
+            req = build_entry_request(a, self.playbook_for(a), chunk, self._next_seq(a, T), max_cards=len(chunk))
             replies[a] = self._call(a, req, T)
         if any(r.error in DENIED for r, _ in replies.values()):  # symmetric halt: no member acts on this instant
             for a in members:
@@ -792,10 +882,18 @@ class Runner:
         size = self._caps_trader(card, v.fields["size"], risk_cap)
         gates = self._gates(arm, card["id"], size, card["f"].get("age_tier") != "established", recv)
         gates["risk_cleared"] = {"value": rk["grade"] if rk else None, "need": "pass|caution, not hidden", "ok": self._cleared(card["id"], recv)}
+        self._veto_gate(arm, card, gates)
         if not all(g["ok"] for g in gates.values()):
             self._skip(arm, card, recv, [k for k, g in gates.items() if not g["ok"]], gates)
             return
         self._open(arm, card, size, v.fields.get("plan"), recv, gates, {"conviction": v.fields["conviction"], "why": v.fields["why"], "size_asked": v.fields["size"]})
+
+    def _veto_gate(self, arm: str, card: Mapping, gates: dict) -> None:
+        """The arm's local vetoes (reviewer-added, tighten-only). The gate is present only for an arm that has any, so a v0 arm's rows are unchanged."""
+        vt = self.arm_state[arm]["vetoes"]
+        if vt:
+            hit = local_veto(vt, card)
+            gates["local_veto"] = {"value": hit, "need": "no local veto holds", "ok": hit is None}
 
     def _caps_trader(self, card: Mapping, asked: float, risk_cap: float) -> float:
         qe = card.get("f", {}).get("quote_eff_sol")
@@ -807,7 +905,7 @@ class Runner:
     def watches(self, T: int) -> None:
         for arm in arms.llm_arms():
             b = self.books[arm]
-            if arms.ARMS[arm].persona == "BST":
+            if arms.ARMS[arm].persona == "BST" or arm in self.arm_halt:
                 continue
             for w in list(b.watches):
                 if T >= w["expires_ms"]:
@@ -823,7 +921,8 @@ class Runner:
                     self.log.append(arm, T, {"kind": "watch_end", "id": w["id"], "why": "fired", "card_sha256": card_sha256(card)})
                     if self._cleared(card["id"], T) and self._call_ok([arm], "entry", None, T):
                         persona = arms.ARMS[arm].persona
-                        req = build_entry_request(arm, self.playbooks[persona], [card], self._next_seq(arm, T), max_cards=1)
+                        self.cards.put(card, T)
+                        req = build_entry_request(arm, self.playbook_for(arm), [card], self._next_seq(arm, T), max_cards=1)
                         reply, recv = self._call(arm, req, T)
                         if reply.error not in DENIED:
                             v = validate_entry(reply, persona=persona, cards=[card], knobs=self.knobs[arm], received_ms=recv)[0]
@@ -893,7 +992,7 @@ class Runner:
         for arm in arms.llm_arms():
             spec = arms.PERSONA_SPECS[arms.ARMS[arm].persona]
             b = self.books[arm]
-            if spec.recheck_minutes is None or not b.open:
+            if spec.recheck_minutes is None or not b.open or arm in self.arm_halt:
                 continue
             mult = 1
             if self.guard is not None:
@@ -929,7 +1028,9 @@ class Runner:
             poss.append({"id": pos.pool, "stop_pct": pos.stop_pct, "target_pct": pos.target_pct, "mark_ret_pct": round(pct, 4), "as_of_ms": T})
         if not cards:
             return
-        req = build_recheck_request(arm, self.playbooks[persona], poss, cards, self._next_seq(arm, T))
+        for c in cards:
+            self.cards.put(c, T)
+        req = build_recheck_request(arm, self.playbook_for(arm), poss, cards, self._next_seq(arm, T))
         reply, recv = self._call(arm, req, T)
         if reply.error in DENIED:
             self.log.append(arm, recv, {"kind": "recheck_denied", "error": reply.error})  # the budget gate said no: the position keeps its code exits
@@ -976,14 +1077,17 @@ class Runner:
                 self._bst_r(card, size, extra, T)
 
     def _bst_llm(self, card: dict, size: float, extra: Mapping, T: int) -> bool | None:
-        members = arms.group_members("BST")
+        members = self._live_members(arms.group_members("BST"), T)
+        if not members:
+            return True
         if self.guard is not None and self.guard.policy("BST", self._now(T)).entries_halted:
             for a in members:
                 self.log.append(a, T, {"kind": "halt", "reason": "group_halted"})
             return True
         if not self._call_ok(list(members), "entry", None, T):
             return True
-        replies = {a: self._call(a, build_entry_request(a, self.playbooks["BST"], [card], self._next_seq(a, T), max_cards=1), T) for a in members}
+        self.cards.put(card, T)
+        replies = {a: self._call(a, build_entry_request(a, self.playbook_for(a), [card], self._next_seq(a, T), max_cards=1), T) for a in members}
         if any(r.error in DENIED for r, _ in replies.values()):
             for a in members:
                 self.log.append(a, replies[a][1], {"kind": "symmetry_abstain", "errors": {m: replies[m][0].error for m in members}})
@@ -999,6 +1103,7 @@ class Runner:
                 self._skip(a, card, recv, list(v.reasons), lane="H")
                 continue
             gates = self._gates(a, card["id"], size, False, recv)
+            self._veto_gate(a, card, gates)
             if not all(g["ok"] for g in gates.values()):
                 self._skip(a, card, recv, [k for k, g in gates.items() if not g["ok"]], gates, lane="H")
                 continue
@@ -1022,12 +1127,63 @@ class Runner:
         else:
             self._skip("BST-R", card, T, ["coin"], lane="H", fields={"rate": rate, "coin": coin})
 
+    # -- reviewer versions (once a minute)
+    def refresh_versions(self, T: int) -> None:
+        """Ask the version source for the version in force for each learning arm (L and CON-P). F arms have no reviewer and are never asked. A new
+        manifest line is applied and LOGGED before any decision that uses it; a refused manifest (bad hash, broken chain, input after the cutoff, ...)
+        halts that arm's entries and re-checks until a good chain is back. Nothing is applied half-way."""
+        self._versions_loaded = True
+        if self.version_source is None:
+            return
+        now = self._now(T)
+        for arm in arms.reviewer_arms():
+            try:
+                av = self.version_source(arm, now)
+                new = None if av is None else self._check_version(arm, av)
+            except Exception as e:  # noqa: BLE001 - any failure of the source is a refusal (fail closed)
+                code = (str(e) or type(e).__name__)[:80]
+                self._count("version_refused")
+                if self.arm_halt.get(arm) != code:
+                    self.arm_halt[arm] = code
+                    self.log.append(arm, now, {"kind": "version_refused", "reason": code})
+                continue
+            if arm in self.arm_halt:
+                del self.arm_halt[arm]
+                self.log.append(arm, now, {"kind": "version_recovered"})
+            if new is not None and new["manifest_sha256"] != self.arm_state[arm]["manifest_sha256"]:
+                self.arm_state[arm] = new
+                self.knobs[arm] = Knobs(arms.ARMS[arm].persona, int(new["knobs"]["min_conviction"]))
+                self.log.append(arm, now, {"kind": "version", "version": new["version"], "manifest_sha256": new["manifest_sha256"], "playbook_sha256": new["playbook"].sha256,
+                                           "knobs": dict(new["knobs"]), "vetoes": list(new["vetoes"]), "effective_from_ms": new["effective_from_ms"]})
+
+    def _check_version(self, arm: str, av: Any) -> dict:
+        persona = arms.ARMS[arm].persona
+        st, man = av.state, av.manifest
+        if av.arm != arm or st.persona != persona or st.playbook.name != persona:
+            raise ValueError("version_not_for_this_arm")
+        knobs = dict(st.knobs)
+        Knobs(persona, int(knobs["min_conviction"]))  # raises ValueError outside the persona's bounds
+        spec = arms.PERSONA_SPECS[persona]
+        if set(knobs) != {"min_conviction", *spec.plan_keys}:
+            raise ValueError("knobs_keys")
+        for k in spec.plan_keys:
+            lo, hi = spec.plan_bounds[k]
+            if isinstance(knobs[k], bool) or not isinstance(knobs[k], (int, float)) or not lo <= knobs[k] <= hi:
+                raise ValueError("knob_out_of_bounds")
+        sha = man.get("sha256")
+        if not isinstance(sha, str) or len(sha) != 64:
+            raise ValueError("manifest_sha256")
+        return {"version": int(st.version), "playbook": st.playbook, "knobs": knobs, "vetoes": tuple(str(v) for v in st.vetoes), "manifest_sha256": sha,
+                "effective_from_ms": man.get("effective_from_ms")}
+
     # -- the loop
     def step(self, T: int) -> None:
         """One tick at instant T (the state is stepped to T-1 first)."""
         self.sim_now = max(self.sim_now, T)
         self.poll_to(T)
         sec = T % MIN_MS
+        if sec == SCAN_SECOND_MS or not self._versions_loaded:
+            self.refresh_versions(T)  # before any decision of this tick
         if sec == SCAN_SECOND_MS:
             self.quotes.sample(self.state, T)
         self.exits(T)
@@ -1110,7 +1266,7 @@ def main(argv: list[str] | None = None) -> int:
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None, binding=head_binding())
+    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:
         for k, v in run.register_all(a.registry).items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))

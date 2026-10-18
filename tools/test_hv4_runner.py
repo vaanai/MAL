@@ -121,7 +121,7 @@ def script_for(target_f: float = 6.0):
     return script
 
 
-def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None, rows=None, keep_tape: bool = True):
+def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None, rows=None, keep_tape: bool = True, versions=None):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, rows or trade_rows())
@@ -131,7 +131,7 @@ def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None,
     state = ArenaState(tape, start_ms=0)
     engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", cfg=R.stack_config(feed_delay_slots=FEED_DELAY_SLOTS), sps_fn=lambda: 0.4)
     cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
-    run = R.Runner(cfg, state, engine, model, FakeChain(), guard)
+    run = R.Runner(cfg, state, engine, model, FakeChain(), guard, version_source=versions)
     if not (tmp / "bots.json").exists():
         run.register_all(str(tmp / "bots.json"), now_ms=T0 - 61 * MIN, verify_sha=False)
     return run
@@ -569,3 +569,203 @@ def test_head_binding_reports_sha_and_dirty_flag_and_a_live_runner_needs_a_clean
         with pytest.raises(RuntimeError):
             R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=bnd)
     R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=b)
+
+
+# -------------------------------------------------------------------------------------------------------------------------- reviewer wiring (PR 5 hooks)
+from types import SimpleNamespace  # noqa: E402
+
+from tools import hv4_prompts as pr  # noqa: E402
+from tools.haiku_caller import canonical_bytes  # noqa: E402
+
+
+class ManifestRefused(Exception):
+    """Stands in for tools.hv4_review.ManifestRefused (the runner treats any exception of the version source as a refusal)."""
+
+
+def fake_version(arm: str, version: int = 1, *, min_conviction: int = 4, vetoes=(), knobs=None, effective_from_ms: int = 0, persona: str | None = None):
+    """What hv4_review.active_version returns: an object with .arm, .manifest (sha256, effective_from_ms) and .state (persona, version, playbook, knobs, vetoes)."""
+    persona = persona or arms.ARMS[arm].persona
+    v0 = pr.load_playbook(persona)
+    pb = pr.playbook_from_text(persona, f"v{version}", v0.text.rstrip("\n") + "\n\nKeep the stop tight and wait for the dip to stop falling.\n")
+    k = {"min_conviction": min_conviction, **arms.PERSONA_SPECS[arms.ARMS[arm].persona].plan_defaults}
+    k.update(knobs or {})
+    sha = pr.sha256_hex(f"{arm}|{version}|{pb.sha256}|{k}|{list(vetoes)}")
+    return SimpleNamespace(arm=arm, manifest={"sha256": sha, "effective_from_ms": effective_from_ms},
+                           state=SimpleNamespace(persona=persona, version=version, playbook=pb, knobs=k, vetoes=tuple(vetoes)))
+
+
+class FakeVersions:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self.by_arm: dict = {}
+        self.fail: dict = {}
+
+    def __call__(self, arm: str, now_ms: int):
+        self.calls.append((arm, now_ms))
+        if arm in self.fail:
+            raise ManifestRefused(self.fail[arm])
+        av = self.by_arm.get(arm)
+        return None if av is None or av.manifest["effective_from_ms"] > now_ms else av
+
+
+def test_l_f_and_p_of_a_persona_run_different_playbooks_and_knobs(tmp_path):
+    vs = FakeVersions()
+    vs.by_arm["CON-L"] = fake_version("CON-L", min_conviction=5)
+    run = make(tmp_path, versions=vs)
+    S1 = X + R.SCAN_SECOND_MS
+    run.run(T_START, S1 + 20_000)
+    callL = next(r for r in rows_of(run, "CON-L", "llm_call") if r["call"] == "entry" and r["as_of_ms"] == S1)
+    callF = next(r for r in rows_of(run, "CON-F", "llm_call") if r["call"] == "entry" and r["as_of_ms"] == S1)
+    callP = next(r for r in rows_of(run, "CON-P", "llm_call") if r["call"] == "entry" and r["as_of_ms"] == S1)
+    assert callL["playbook_version"] == "v1" and callL["playbook_sha256"] == vs.by_arm["CON-L"].state.playbook.sha256
+    assert callL["manifest_sha256"] == vs.by_arm["CON-L"].manifest["sha256"]
+    assert callF["playbook_version"] == callP["playbook_version"] == "v0" and callF["playbook_sha256"] == callP["playbook_sha256"] != callL["playbook_sha256"]
+    assert callL["card_shas"] == callF["card_shas"] == callP["card_shas"]  # the cards stay byte-identical; only the prefix differs
+    # min_conviction 5 (L) vs 4 (F): the same conviction-4 answer is a buy for F and a skip for L
+    assert rows_of(run, "CON-L", "entry") == [] and any("below_min_conviction" in s["reasons"] for s in rows_of(run, "CON-L", "skip"))
+    assert rows_of(run, "CON-F", "entry")
+    assert run.knobs["CON-L"].min_conviction == 5 and run.knobs["CON-F"].min_conviction == 4
+    v = rows_of(run, "CON-L", "version")
+    assert len(v) == 1 and v[0]["version"] == 1 and v[0]["manifest_sha256"] == vs.by_arm["CON-L"].manifest["sha256"] and v[0]["knobs"]["min_conviction"] == 5
+    assert rows_of(run, "CON-F", "version") == [] and rows_of(run, "CON-P", "version") == []
+    assert {a for a, _ in vs.calls} == set(arms.reviewer_arms()) and not any(a.endswith("-F") for a, _ in vs.calls)  # F arms are never asked
+
+
+def test_plan_defaults_come_from_the_arms_knobs_and_x_keeps_v0(tmp_path):
+    vs = FakeVersions()
+    vs.by_arm["CON-L"] = fake_version("CON-L", knobs={"stop_pct": -5.0, "target_pct": 9.0, "time_min": 30.0})
+    run = make(tmp_path, versions=vs)
+    run.refresh_versions(T_START)
+    got = run._plan_for("CON-L", "CON", None)
+    assert got == {"stop_pct": -5.0, "target_pct": 9.0, "time_min": 30} and type(got["time_min"]) is int
+    v0 = dict(arms.PERSONA_SPECS["CON"].plan_defaults)
+    assert run._plan_for("CON-F", "CON", None) == v0 and run._plan_for("CON-X", "CON", None) == v0
+    mixed = run._plan_for("CON-L", "CON", {"target_pct": 20.0})
+    assert mixed["target_pct"] == 20.0 and mixed["stop_pct"] == -5.0
+
+
+def test_local_veto_gate_blocks_the_arm_that_has_it_and_no_other(tmp_path):
+    vs = FakeVersions()
+    vs.by_arm["CON-L"] = fake_version("CON-L", vetoes=("ret_15m <= -0.03",))
+    run = make(tmp_path, versions=vs)
+    run.run(T_START, X + R.SCAN_SECOND_MS + 20_000)
+    assert rows_of(run, "CON-L", "entry") == []
+    sk = [s for s in rows_of(run, "CON-L", "skip") if "local_veto" in s["reasons"]]
+    assert sk and all(s["gates"]["local_veto"]["value"] == "ret_15m <= -0.03" and s["gates"]["local_veto"]["ok"] is False for s in sk)
+    assert rows_of(run, "CON-F", "entry") and all("local_veto" not in s["gates"] for s in rows_of(run, "CON-F", "skip"))  # F has no vetoes: no such gate
+
+
+def test_local_veto_rule_matches_the_reviewers_and_never_fires_on_what_it_cannot_parse(full):
+    run, _ = full
+    card = rows_of(run, "CON-L", "entry")[0]["card"]
+    r15 = card["f"]["ret_15m"]
+    assert R.local_veto(("ret_15m <= %s" % (r15 + 0.01),), card) == "ret_15m <= %s" % (r15 + 0.01)
+    assert R.local_veto(("ret_15m > %s" % (r15 + 0.01),), card) is None
+    assert R.local_veto(("not a predicate", "nosuchfield > 1", "ret_15m > 99", "ret_15m <= 1 AND vol_15m >= 0"), card) == "ret_15m <= 1 AND vol_15m >= 0"  # first that holds
+    assert R.local_veto(("ret_15m <= 1 AND vol_15m < 0",), card) is None and R.local_veto((), card) is None and R.local_veto(None, card) is None
+    assert R.local_veto(("__import__('os') > 1",), card) is None  # the closed grammar: code is never evaluated
+
+
+def test_versions_are_refreshed_once_a_minute_and_applied_when_in_force(tmp_path):
+    vs = FakeVersions()
+    eff = T_START + 150_000  # 2.5 minutes in
+    vs.by_arm["CON-L"] = fake_version("CON-L", effective_from_ms=eff)
+    run = make(tmp_path, versions=vs)
+    run.run(T_START, T_START + 5 * MIN)
+    for a in arms.reviewer_arms():
+        assert [t for x, t in vs.calls if x == a] == [T_START + i * MIN for i in range(5)], a  # once per minute tick, nothing in between
+    v = rows_of(run, "CON-L", "version")
+    assert len(v) == 1 and v[0]["ms"] == T_START + 3 * MIN and v[0]["ms"] >= eff  # logged at the first minute tick after it is in force, before any use
+    assert run.arm_state["CON-L"]["version"] == 1 and run.arm_state["CON-P"]["version"] == 0 and run.arm_state["CON-F"]["version"] == 0
+
+
+@pytest.mark.parametrize("bad,why", [
+    (lambda: fake_version("CON-L", min_conviction=9), "min_conviction"),
+    (lambda: fake_version("CON-L", knobs={"stop_pct": -50.0}), "knob_out_of_bounds"),
+    (lambda: fake_version("CON-L", persona="BIG"), "version_not_for_this_arm"),
+    (lambda: SimpleNamespace(arm="CON-L", manifest={"sha256": "x"}, state=fake_version("CON-L").state), "manifest_sha256"),
+])
+def test_a_version_that_does_not_fit_the_arm_is_refused_not_half_applied(tmp_path, bad, why):
+    vs = FakeVersions()
+    vs.by_arm["CON-L"] = bad()
+    run = make(tmp_path, versions=vs)
+    run.refresh_versions(T_START)
+    assert "CON-L" in run.arm_halt and run.arm_state["CON-L"]["version"] == 0 and run.knobs["CON-L"].min_conviction == 4
+    assert len(rows_of(run, "CON-L", "version_refused")) == 1 and rows_of(run, "CON-L", "version") == []
+
+
+def test_a_refused_manifest_halts_only_that_arm_logs_once_and_recovers(tmp_path):
+    vs = FakeVersions()
+    vs.fail["CON-L"] = "chain_broken"
+    run = make(tmp_path, versions=vs)
+    run.run(T_START, X + R.SCAN_SECOND_MS + 20_000)
+    assert len(rows_of(run, "CON-L", "version_refused")) == 1 and rows_of(run, "CON-L", "version_refused")[0]["reason"] == "chain_broken"  # once, not every minute
+    assert [r for r in rows_of(run, "CON-L", "llm_call")] == [] and rows_of(run, "CON-L", "entry") == []  # no model call, no entry
+    assert any(r["reason"] == "manifest_refused:chain_broken" for r in rows_of(run, "CON-L", "halt"))
+    assert rows_of(run, "CON-F", "entry") and rows_of(run, "CON-P", "llm_call")  # the other arms of the group carry on
+    del vs.fail["CON-L"]
+    run.refresh_versions(X + 10 * MIN + R.SCAN_SECOND_MS)
+    assert "CON-L" not in run.arm_halt and len(rows_of(run, "CON-L", "version_recovered")) == 1
+
+
+def test_a_halted_arm_keeps_its_code_exits(tmp_path):
+    vs = FakeVersions()
+    run = make(tmp_path, versions=vs)
+    S1 = X + R.SCAN_SECOND_MS
+    run.run(T_START, S1 + 20_000)
+    assert run.books["CON-L"].open
+    vs.fail["CON-L"] = "input_after_cutoff"
+    run.run(S1 + 20_000, T_END)
+    halted_at = rows_of(run, "CON-L", "version_refused")[0]["ms"]
+    assert all(not b.open for b in run.books.values()) and rows_of(run, "CON-L", "sell")  # closed by code exits
+    assert not [r for r in rows_of(run, "CON-L", "llm_call") if r["ms"] >= halted_at]  # and no model call after the refusal
+
+
+def test_the_reviewer_module_is_imported_lazily():
+    import subprocess
+    import sys
+
+    code = ("import sys\nsys.path.insert(0, %r)\n" % str(Path(R.__file__).parent.parent) +
+            "import tools.hv4_runner as r\n"
+            "f = r.review_version_source('/nonexistent', 'abcdef1')\n"
+            "print('LAZY', callable(f), 'tools.hv4_review' in sys.modules)\n")
+    out = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(Path(R.__file__).parent.parent), capture_output=True, text=True, timeout=120)
+    assert out.stdout.strip() == "LAZY True False", out.stderr[-300:]
+
+
+def _read_sink(root: str, day: str) -> list[dict]:
+    p = Path(root) / "cards" / f"{day}.jsonl"
+    return [json.loads(x) for x in p.read_bytes().splitlines() if x.strip()] if p.exists() else []
+
+
+def test_card_sink_writes_every_shown_card_in_the_cardstore_format(full):
+    run, _ = full
+    files = sorted((Path(run.cfg.root) / "cards").glob("*.jsonl"))
+    assert files
+    lines = [ln for f in files for ln in f.read_bytes().splitlines() if ln.strip()]
+    recs = [json.loads(x) for x in lines]
+    assert all(set(r) == {"sha", "card"} and r["sha"] == pr.card_sha256(r["card"]) for r in recs)
+    assert all(ln == canonical_bytes({"sha": r["sha"], "card": r["card"]}) for ln, r in zip(lines, recs))  # the exact CardStore line bytes
+    assert len({r["sha"] for r in recs}) == len(recs)  # deduplicated by sha
+    sink = {r["sha"] for r in recs}
+    shown = {s for a in ("CON-L", "CON-F", "CON-P") for r in rows_of(run, a, "llm_call") if r["call"] in ("entry", "recheck") for s in r["card_shas"]}
+    assert shown and shown <= sink  # every card shown to an arm (entry and re-check) is in the store
+    # a skipped decision's card can be read back by its hash and day, the way CardStore.get does
+    sk = next(s for a in ("CON-P", "CON-L") for s in rows_of(run, a, "skip") if s.get("card_sha256"))
+    day = None
+    for f in files:
+        for r in _read_sink(run.cfg.root, f.stem):
+            if r["sha"] == sk["card_sha256"]:
+                day = f.stem
+                assert pr.card_sha256(r["card"]) == sk["card_sha256"]
+    assert day is not None  # found under the day file it was shown on
+
+
+def test_card_sink_dedups_and_uses_the_shown_instants_day(tmp_path):
+    sink = R.CardSink(tmp_path)
+    c = {"id": "Pxx", "as_of_ms": T0, "f": {"a": 1.0}}
+    s1 = sink.put(c, T0)
+    assert sink.put(c, T0) == s1 and sink.put(dict(c), T0 + 5) == s1
+    assert [r["sha"] for r in _read_sink(str(tmp_path), R.utc_day(T0))] == [s1]
+    other = sink.put({"id": "Pxx", "as_of_ms": T0 + 86_400_000, "f": {"a": 2.0}})  # no ms: the card's own as_of day
+    assert [r["sha"] for r in _read_sink(str(tmp_path), R.utc_day(T0 + 86_400_000))] == [other]
