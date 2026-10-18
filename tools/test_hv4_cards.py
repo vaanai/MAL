@@ -777,3 +777,45 @@ def test_tape_fields_on_the_card():
     assert fresh["new_wallet_buy_share_15m"] == pytest.approx(2 / 3)  # n1, n2 first seen inside 15 min; "old" was seen 40 min ago
     none_prints = hc.features(base_snap(), None, as_of_ms=T)
     assert none_prints["vstar"] is None and none_prints["unique_buyers_15m"] is None and none_prints["vol_15m"] == 9.0
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# contract with the real ArenaState (the arena-feed branch). hv4_cards never imports it; this test runs only where it exists.
+# ---------------------------------------------------------------------------------------------------------------------------------------
+def test_real_arena_state_snapshot_feeds_a_card(tmp_path):
+    ast_mod = pytest.importorskip("tools.arena_state")
+    from datetime import datetime, timezone
+
+    t0 = 1_790_316_000_000  # an exact UTC hour boundary
+    wsol, mint = "So11111111111111111111111111111111111111112", "M" * 44
+    q, b, v = 50 * SOL, 10**15, int(17.58 * SOL)
+    rows = [{"v": 1, "type": "pool_create", "prog": "pumpswap", "slot": 900, "t_recv_ms": t0, "pool": POOL, "mint": mint, "quote_mint": wsol,
+             "signature": "pc", "event_index": 0}]
+    t = t0 + 3 * 3600 * 1000
+    for i in range(60):  # 60 prints in 20 minutes from 12 wallets, buys and sells, pre-trade reserves with V
+        buy = i % 3 != 0
+        rows.append({"v": 1, "type": "trade", "prog": "pumpswap", "slot": 2000 + i, "t_recv_ms": t + i * 20_000, "signature": f"s{i}", "event_index": 0,
+                     "venue": "pumpswap", "mint": mint, "pool": POOL, "trader": (f"W{i % 12}" if buy else f"S{i % 5}").ljust(44, "1"), "side": "buy" if buy else "sell",
+                     "sol_lamports": 250_000_000, "token_raw": 3_700_000_000_000, "quote_reserve": q, "base_reserve": b, "virtual_quote_reserves": v})
+    by: dict[str, list[str]] = {}
+    for r in rows:
+        name = "tape-" + datetime.fromtimestamp(r["t_recv_ms"] // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"
+        by.setdefault(name, []).append(json.dumps(r))
+    for name, lines in by.items():
+        (tmp_path / name).write_text("\n".join(lines) + "\n")
+    st = ast_mod.ArenaState(tmp_path, start_ms=0)
+    st.poll()
+    scan = st.now_ms + 500
+    snap = st.snapshot(POOL)
+    assert isinstance(snap, hc.SnapshotLike)
+    fr = hc.filters(snap, as_of_ms=scan)
+    assert fr.checks["quote_wsol"]["ok"] and fr.checks["age_min"]["ok"] and fr.checks["prints_15m"]["ok"] and fr.checks["state_fresh"]["ok"]
+    prints = list(st.pool(POOL).events)
+    f = hc.features(snap, prints, as_of_ms=scan)
+    assert f["n_prints_15m"] == snap["windows"]["15m"]["n_buys"] + snap["windows"]["15m"]["n_sells"] and f["vstar"] is not None
+    ch = base_chain(as_of_ms=scan - 100, holders_as_of_ms=scan - 1000, quote_sol_15m_ago=50.0)
+    res = hc.code_vetoes(snap, prints, ch, as_of_ms=scan)
+    assert res.reasons == (), res.reasons
+    c = hc.build_card(snap, prints, ch, as_of_ms=scan)
+    assert c["id"] == POOL and c["f"]["price"] == pytest.approx(snap["price"], rel=1e-5) and c["f"]["vstar"] == 0.0 and len(c["c1"]) == 20
+    assert c["f"]["age_known"] is True and c["f"]["ret_60m"] is None  # 20 min of candles only: no 60-min reference yet
