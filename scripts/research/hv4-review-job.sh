@@ -61,7 +61,7 @@ for ARM in $ARMS; do
   echo "hv4-review-job: mode=$MODE arm=$ARM day=$DAY root=$ROOT frozen_sha=$HV4_FROZEN_SHA"
   case "$MODE" in
     genesis) "$PYTHON" tools/hv4_review.py genesis --root "$ROOT" --arm "$ARM" --commit "$HV4_FROZEN_SHA" --clock-start-ms "${HV4_CLOCK_START_MS:?HV4_CLOCK_START_MS is required for genesis}" || STATUS=1;;
-    verify)  "$PYTHON" tools/hv4_review.py verify --root "$ROOT" --arm "$ARM" || STATUS=1;;
+    verify)  "$PYTHON" tools/hv4_review.py verify --root "$ROOT" --arm "$ARM" --commit "$HV4_FROZEN_SHA" || STATUS=1;;
     stub)    "$PYTHON" tools/hv4_review.py run --root "$ROOT" --ledger-root "$LEDGER" --tape-dir "$TAPE" --arm "$ARM" --day "$DAY" --commit "$HV4_FROZEN_SHA" $FD --stub || STATUS=1;;
     run)     "$PYTHON" tools/hv4_review.py run --root "$ROOT" --ledger-root "$LEDGER" --tape-dir "$TAPE" --arm "$ARM" --day "$DAY" --commit "$HV4_FROZEN_SHA" $FD || STATUS=1;;
   esac

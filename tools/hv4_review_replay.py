@@ -91,7 +91,8 @@ class ArenaReplayPricer:
                 run.exits(T)
                 if not pend and not run.books[arm].open:
                     break
-                T += TICK_MS
+                # idle (nothing open): jump to the next card; poll_to(T) catches the state and engine up in one go. With a position open, tick every second.
+                T = max(T + TICK_MS, pend[0][0]) if (pend and not run.books[arm].open) else T + TICK_MS
             run.poll_to(T + SETTLE_MS)  # price the exits already decided; no exit is decided from these prints
             engine.flush()
             rows = {}

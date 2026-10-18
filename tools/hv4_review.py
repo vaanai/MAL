@@ -3,13 +3,18 @@
 validator, hash-chained manifests, and the 00:05Z job entry (DESIGN sections 4 and 5, build item 5; DEC-031 section 1.3).
 
 PAPER only. The ONLY model path is tools.hv4_model (CallerModel -> tools.haiku_caller; StubModel in tests). This module never reads a key, has no HTTP
-client and imports nothing from tools.r4b_*, l3 or laya. tools.arena_paper (which still imports r4b until #708 vendors the stack) is imported lazily
-and only by the skip-pricing adapter, never at import time.
+client and imports nothing from tools.r4b_*, l3 or laya. The arena stack (tools.arena_paper on the vendored tools.arena_stack, tools.arena_state,
+tools.hv4_runner) is r4b-free since #708; it is used only by tools.hv4_review_replay, the skip pricer, which this module imports lazily and only when
+skips are priced. A test imports both modules in a clean interpreter and checks that no r4b, l3 or laya module is loaded.
 
 WHAT A BUNDLE HOLDS (frozen by code at 00:01Z, review day D, cutoff = D 00:00:00.000Z):
   * trades   the arm's OWN closed trades with close_ms STRICTLY BEFORE the cutoff and not shown in an earlier bundle. close_ms is the exit decision
              instant plus the slower exit fill leg (EXIT_FILL_MS = 1,900 ms), so a trade whose exit fill lands at or after the cutoff is not an input.
              Net percent is the 0.25 SOL stake on the flat 15% leg at 1.9 s under the strand rule "total"; the pressure leg is never read.
+             THE TRUE close_ms AND entry_ms ARE NEVER SENT TO THE MODEL (they stay in the audit file <day>.audit.json, hashed in the manifest): an item
+             carries hold_s, net_pct and exit_reason only, so in the placebo's bundle no field but the shuffled ones says how long a trade really lasted
+             (close_ms - entry_ms would). Items are listed in (entry_ms, id) order, which the card's own as_of_ms shows anyway, never in close order.
+             The L and P bundles have the same schema.
   * skips    up to 60 skipped cards of day D-1 (chosen in sha256(id) order, outcome-blind), each with the v0 default plan's replayed outcome, only if
              that replay's close_ms is before the cutoff.
   * the current rules text, knobs and local vetoes; the open-position COUNT; a 7 day change log with each change's measured effect.
@@ -20,7 +25,7 @@ user text + JSON wrapper) must be at most REQUEST_MAX_BYTES = 99,700 bytes, so t
 cuts in this fixed order, measuring the real request each time (outcome-blind; nothing is chosen by P&L):
   1. strip the candle arrays from every card (they repeat the ret_* fields);
   2. drop skipped cards from the END of their sha256(id) order, as few as needed (down to none);
-  3. drop trades from the END of their (close_ms, id) order, as few as needed (down to none). A dropped trade is NOT marked shown, so it is the
+  3. drop trades from the END of their (entry_ms, id) order, as few as needed (down to none). A dropped trade is NOT marked shown, so it is the
      first item of the next night's bundle.
   If even a bundle with no trades and no skips is over the limit, the night is refused (BundleTooLarge) and no call is made. The manifest records
   how many items were cut (dropped_skips, dropped_trades, candles_stripped) and the request byte size.
@@ -28,6 +33,8 @@ cuts in this fixed order, measuring the real request each time (outcome-blind; n
 PLACEBO (CON-P). The arm's evidence set (all of its records closed before the cutoff) has its (net_pct, exit_reason, hold_s) tuples permuted among
 records of the same kind (trades with trades, skips with skips) by a Fisher-Yates driven by sha256(arm|date): the marginals are kept, the link to the
 card is cut. The SAME shuffled set feeds the bundle AND the change validator, so the placebo goes through the identical procedure on decoupled data.
+Residual, the same for L and P: a trade is in a night's bundle only if it closed before that night's cutoff, so the night it appears on bounds its true
+close to a day.
 
 CHANGE VALIDATOR. At most 3 changes a night (more: the whole reply is refused). Each needs a predicate (the WATCH grammar) matching at least 10
 past trades or skips, a claim ("worse" or "better") whose sign agrees with mean net percent of the matches minus the rest, 1 to 20 known evidence ids,
@@ -55,6 +62,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -270,12 +278,18 @@ def load_trade_records(arm: str, root: str | os.PathLike, ledger_root: str | os.
     dec = Path(root) / "decisions" / arm
     entries: dict[str, dict] = {}
     sells: dict[str, dict] = {}
+    refused: set[str] = set()
     for f in sorted(dec.glob("*.jsonl")) if dec.exists() else []:
         for row in _jsonl(f):
             if row.get("kind") == "entry" and row.get("pos"):
                 entries[row.get("order_id")] = row
             elif row.get("kind") == "sell":
                 sells[row.get("pid")] = row
+            elif row.get("kind") == "order_refused":  # the runner logs the entry row BEFORE the order; a refusal means there is no position
+                if row.get("side") == "buy":
+                    refused.add(row.get("order_id"))
+                else:
+                    sells.pop(row.get("order_id"), None)  # a refused sell leaves the position open
     out: list[dict] = []
     done: set[str] = set()
     led = Path(ledger_root) / f"hv4-{arm}"
@@ -296,7 +310,8 @@ def load_trade_records(arm: str, root: str | os.PathLike, ledger_root: str | os.
             out.append({"id": pid, "kind": "trade", "entry_ms": ms["entry"], "close_ms": close, "card": ent.get("card") or {}, "decision": _decision_of(ent),
                         "exit_reason": str(row.get("exit_reason") or (sells.get(pid) or {}).get("reason") or ""),
                         "hold_s": int(round((ms["exit"] - ms["entry"]) / 1000.0)), "net_pct": _round(100.0 * float(net) / (STAKE_SOL * 1e9), 4)})
-    open_n = sum(1 for pid, e in entries.items() if e["ms"] < cutoff_ms and not (pid in sells and sells[pid]["ms"] < cutoff_ms))
+    open_n = sum(1 for pid, e in entries.items() if pid not in refused and e["ms"] < cutoff_ms
+                 and not (pid in sells and sells[pid]["ms"] + EXIT_FILL_MS < cutoff_ms))
     return sorted(out, key=lambda r: (r["close_ms"], r["id"])), open_n
 
 
@@ -324,10 +339,11 @@ class CardStore:
         return sha
 
     def get(self, sha: str, day: str) -> dict | None:
-        for r in _jsonl(self.dir / f"{day}.jsonl"):
-            if r.get("sha") == sha:
-                return r.get("card")
-        return None
+        return self.load(day).get(sha)
+
+    def load(self, day: str) -> dict[str, dict]:
+        """The whole day file as {sha: card}, read once (a lookup per card would re-read it for every skip)."""
+        return {r["sha"]: r["card"] for r in _jsonl(self.dir / f"{day}.jsonl") if isinstance(r.get("sha"), str) and isinstance(r.get("card"), dict)}
 
 
 class SkipPricer(Protocol):
@@ -345,18 +361,20 @@ def load_skip_records(arm: str, root: str | os.PathLike, day: str, persona: str,
     A skip counts only if its replay's exit fill (exit decision + EXIT_FILL_MS) is before the cutoff."""
     if pricer is None or persona == "BST":
         return []
-    store = CardStore(root)
     prev = utc_day(day_start_ms(day) - 1)
-    found: dict[str, tuple[dict, dict]] = {}
+    cand: dict[str, dict] = {}
     for row in _jsonl(Path(root) / "decisions" / arm / f"{day}.jsonl"):
         if row.get("kind") != "skip" or not row.get("card_sha256") or row.get("lane") == "H" or not row.get("pool"):
             continue
-        sid = "s" + row["card_sha256"][:15]
-        if sid in found:
-            continue
-        card = store.get(row["card_sha256"], day) or store.get(row["card_sha256"], prev)
-        if card is not None:
-            found[sid] = (row, card)
+        cand.setdefault("s" + row["card_sha256"][:15], row)
+    if not cand:
+        return []
+    store = CardStore(root)
+    cards = {**store.load(prev), **store.load(day)}
+    # THE CAP COMES BEFORE PRICING: of the skips whose card is in the store, the first MAX_SKIP_CARDS in sha256(id) order (outcome-blind, the same order the bundle
+    # uses) are priced, and only those. Nothing is replayed that could not be shown, and what is shown never depends on an outcome.
+    chosen = sorted((sid for sid, row in cand.items() if row["card_sha256"] in cards), key=lambda sid: (sha256_hex(sid), sid))[:MAX_SKIP_CARDS]
+    found = {sid: (cand[sid], cards[cand[sid]["card_sha256"]]) for sid in chosen}
     res = pricer.price_many([(sid, card) for sid, (_row, card) in sorted(found.items())], persona, cutoff_ms) if found else {}
     out = []
     for sid, (row, card) in found.items():
@@ -637,6 +655,8 @@ class Bundle:
     max_input_close_ms: int
     dropped: dict
     evidence: tuple[dict, ...]
+    audit_text: str = ""          # id -> true close_ms for every record used, kept on disk beside the bundle; never sent to the model
+    audit_sha256: str = ""
 
 
 def _strip_candles(card: Mapping) -> dict:
@@ -649,14 +669,14 @@ def _clean(s: Any, n: int = 160) -> str:
 
 def _trade_item(r: Mapping, strip: bool) -> dict:
     d = r["decision"]
-    return {"id": r["id"], "entry_ms": r["entry_ms"], "close_ms": r["close_ms"], "card": _strip_candles(r["card"]) if strip else r["card"],
+    return {"id": r["id"], "card": _strip_candles(r["card"]) if strip else r["card"],
             "decision": {"conviction": d.get("conviction"), "size": d.get("size"), "plan": d.get("plan"), "why": _clean(d.get("why", ""))},
             "exit_reason": _clean(r["exit_reason"], 40), "hold_s": r["hold_s"], "net_pct": r["net_pct"]}
 
 
 def _skip_item(r: Mapping, strip: bool) -> dict:
-    return {"id": r["id"], "entry_ms": r["entry_ms"], "card": _strip_candles(r["card"]) if strip else r["card"], "reasons": r["decision"].get("reasons", []),
-            "replay": {"close_ms": r["close_ms"], "exit_reason": _clean(r["exit_reason"], 40), "hold_s": r["hold_s"], "net_pct": r["net_pct"]}}
+    return {"id": r["id"], "card": _strip_candles(r["card"]) if strip else r["card"], "reasons": r["decision"].get("reasons", []),
+            "replay": {"exit_reason": _clean(r["exit_reason"], 40), "hold_s": r["hold_s"], "net_pct": r["net_pct"]}}
 
 
 def review_nonce(arm: str, day: str, bundle_sha: str) -> str:
@@ -741,7 +761,7 @@ def build_bundle(arm: str, day: str, state: ArmState, records: Sequence[Mapping]
     if placebo:
         ev = shuffle_outcomes(ev, arm, day)
     shown = set(shown_before)
-    trades = [r for r in ev if r["kind"] == "trade" and r["id"] not in shown]
+    trades = sorted((r for r in ev if r["kind"] == "trade" and r["id"] not in shown), key=lambda r: (r["entry_ms"], r["id"]))
     skips = skip_order([r for r in ev if r["kind"] == "skip" and r["id"] not in shown and cutoff - DAY_MS <= r["entry_ms"] < cutoff])
     log = change_log(manifests, ev, cutoff)
     for r in (*trades, *skips):
@@ -778,12 +798,13 @@ def build_bundle(arm: str, day: str, state: ArmState, records: Sequence[Mapping]
     if size > limit or (limit <= REQUEST_MAX_BYTES and worst_case_input_tokens(req.body()) > MAX_INPUT_TOKENS):
         raise BundleTooLarge("bundle_too_large")  # not reachable by the fit loop above; kept as a fail-closed guard in front of haiku_caller's own refusal
     close = max([r["close_ms"] for r in ev], default=0)
-    return Bundle(obj, text, sha, req, size, tuple(r["id"] for r in trades[:nt]), close, dict(obj["dropped"]), tuple(ev))
+    audit = canon({"schema": "hv4-review-audit-1", "arm": arm, "review_day": day, "cutoff_ms": cutoff, "closes": {r["id"]: r["close_ms"] for r in ev}})
+    return Bundle(obj, text, sha, req, size, tuple(r["id"] for r in trades[:nt]), close, dict(obj["dropped"]), tuple(ev), audit, sha256_hex(audit))
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------- manifests
 MANIFEST_FIELDS = ("schema", "seq", "arm", "version", "review_day", "cutoff_ms", "written_ms", "effective_from_ms", "max_input_close_ms", "commit", "model",
-                   "reviewer_sha256", "playbook_sha256", "playbook_header_sha256", "knobs", "knobs_sha256", "vetoes", "vetoes_sha256", "bundle_sha256",
+                   "reviewer_sha256", "playbook_sha256", "playbook_header_sha256", "knobs", "knobs_sha256", "vetoes", "vetoes_sha256", "bundle_sha256", "audit_sha256",
                    "request_sha256", "response_sha256", "changes", "rejected", "reply_error", "review_error", "shown_ids", "truncation", "skip_pricer",
                    "prev_manifest_sha256", "sha256")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -820,7 +841,7 @@ def genesis_manifest(arm: str, clock_start_ms: int, commit: str) -> tuple[dict, 
     row = {"schema": "hv4-manifest-1", "seq": 0, "arm": arm, "version": 0, "review_day": None, "cutoff_ms": 0, "written_ms": clock_start_ms,
            "effective_from_ms": clock_start_ms, "max_input_close_ms": 0, "commit": commit, "model": DEFAULT_MODEL, "reviewer_sha256": tsha,
            "playbook_sha256": st.playbook.sha256, "playbook_header_sha256": st.playbook.header_sha256, "knobs": dict(st.knobs), "knobs_sha256": st.knobs_sha256(),
-           "vetoes": [], "vetoes_sha256": st.vetoes_sha256(), "bundle_sha256": None, "request_sha256": None, "response_sha256": None, "changes": [], "rejected": [],
+           "vetoes": [], "vetoes_sha256": st.vetoes_sha256(), "bundle_sha256": None, "audit_sha256": None, "request_sha256": None, "response_sha256": None, "changes": [], "rejected": [],
            "reply_error": None, "review_error": None, "shown_ids": [], "truncation": None, "skip_pricer": None, "prev_manifest_sha256": GENESIS}
     row["sha256"] = manifest_hash(row)
     return row, st
@@ -907,13 +928,19 @@ def load_version(root: str | os.PathLike, arm: str, row: Mapping, *, verify_bund
     if verify_bundle and row["version"] > 0 and row["bundle_sha256"]:
         try:
             data = (bdir / f"{row['review_day']}.json").read_bytes()
+            audit = (bdir / f"{row['review_day']}.audit.json").read_bytes()
         except OSError:
             raise ManifestRefused("bundle_file_missing") from None
         if sha256_hex(data) != row["bundle_sha256"]:
             raise ManifestRefused("bundle_hash")
+        if sha256_hex(audit) != row["audit_sha256"]:
+            raise ManifestRefused("audit_hash")
+        closes = json.loads(audit).get("closes") or {}
         b = json.loads(data)
-        closes = [x["close_ms"] for x in b.get("trades", [])] + [x["replay"]["close_ms"] for x in b.get("skips", [])]
-        if any(c >= row["cutoff_ms"] for c in closes) or (closes and max(closes) > row["max_input_close_ms"]):
+        sent = [x["id"] for x in b.get("trades", [])] + [x["id"] for x in b.get("skips", [])]
+        if any(i not in closes for i in sent):
+            raise ManifestRefused("bundle_item_not_in_audit")
+        if any(not isinstance(c, int) or c >= row["cutoff_ms"] for c in closes.values()) or max(closes.values(), default=0) != row["max_input_close_ms"]:
             raise ManifestRefused("input_after_cutoff")
     return ArmState(persona, row["version"], pb, dict(row["knobs"]), tuple(row["vetoes"]))
 
@@ -950,7 +977,7 @@ def active_version(root: str | os.PathLike, arm: str, now_ms: int, **kw) -> Acti
     return ActiveVersion(arm, row, load_version(root, arm, row, verify_bundle=False))
 
 
-def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_text: str | None, bundle_bytes: bytes | None, **kw) -> None:
+def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_text: str | None, bundle_bytes: bytes | None, audit_bytes: bytes | None = None, **kw) -> None:
     """Write the version's files, then append the line under flock, only if it extends the verified chain. Idempotent for the same line."""
     mpath, pdir, bdir = _paths(root, arm)
     rows = read_manifests(root, arm)
@@ -961,6 +988,8 @@ def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_te
         _write_once(pdir / f"v{row['version']}.txt", playbook_text.encode("utf-8"))
     if bundle_bytes is not None:
         _write_once(bdir / f"{row['review_day']}.json", bundle_bytes)
+    if audit_bytes is not None:
+        _write_once(bdir / f"{row['review_day']}.audit.json", audit_bytes)
     mpath.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(mpath), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -981,7 +1010,7 @@ def make_manifest(arm: str, day: str, prev: Mapping, state: ArmState, bundle: Bu
            "written_ms": written_ms, "effective_from_ms": max(cutoff + EFFECTIVE_OFFSET_MS, written_ms), "max_input_close_ms": bundle.max_input_close_ms,
            "commit": commit, "model": DEFAULT_MODEL, "reviewer_sha256": tsha, "playbook_sha256": state.playbook.sha256,
            "playbook_header_sha256": state.playbook.header_sha256, "knobs": dict(state.knobs), "knobs_sha256": state.knobs_sha256(), "vetoes": list(state.vetoes),
-           "vetoes_sha256": state.vetoes_sha256(), "bundle_sha256": bundle.sha256, "request_sha256": bundle.request.request_sha256(),
+           "vetoes_sha256": state.vetoes_sha256(), "bundle_sha256": bundle.sha256, "audit_sha256": bundle.audit_sha256, "request_sha256": bundle.request.request_sha256(),
            "response_sha256": response_sha256, "changes": [dict(c) for c in result.accepted], "rejected": [[i, c] for i, c in result.rejected],
            "reply_error": result.reply_error, "review_error": review_error, "shown_ids": list(bundle.shown_ids),
            "truncation": {**bundle.dropped, "request_bytes": bundle.request_bytes}, "skip_pricer": skip_pricer, "prev_manifest_sha256": prev["sha256"]}
@@ -998,13 +1027,15 @@ def review_night(arm: str, day: str, *, root: str | os.PathLike, ledger_root: st
     spec = arms.ARMS[arm]
     if not spec.reviewer:
         raise ReviewError("no_reviewer_for_arm")
+    cutoff = day_start_ms(day)
+    if not isinstance(now_ms, int) or now_ms < cutoff:  # a bundle frozen before its cutoff would hold a future that is not over: no call, no line
+        raise ReviewError("review_before_cutoff")
     rows = verify_chain(root, arm, reviewer_sha256=review_system_text()[1], frozen_sha=commit)
     if not rows:
         raise ManifestRefused("no_genesis_manifest")
     if any(r["review_day"] == day for r in rows):
         return next(r for r in rows if r["review_day"] == day)
     head = rows[-1]
-    cutoff = day_start_ms(day)
     state = load_version(root, arm, head, verify_bundle=False)
     if records is None:
         trades, open_n = load_trade_records(arm, root, ledger_root, cutoff)
@@ -1022,11 +1053,19 @@ def review_night(arm: str, day: str, *, root: str | os.PathLike, ledger_root: st
     nxt = ArmState(state.persona, nv, pr.playbook_from_text(state.persona, f"v{nv}", result.state.playbook.text), result.state.knobs, result.state.vetoes)
     row = make_manifest(arm, day, head, nxt, bundle, result, written_ms=now_ms, commit=commit, response_sha256=reply.response_sha256, review_error=err,
                         skip_pricer=(getattr(pricer, "name", type(pricer).__name__) if pricer is not None else "none"))
-    append_manifest(root, arm, row, nxt.playbook.text, bundle.text.encode("utf-8"))
+    append_manifest(root, arm, row, nxt.playbook.text, bundle.text.encode("utf-8"), bundle.audit_text.encode("utf-8"))
     return row
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except ReviewError as e:  # a refusal is a code on stderr and exit 1, never a traceback with paths
+        print(canon({"refused": str(e) or type(e).__name__}), file=sys.stderr)
+        return 1
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="HV4 nightly reviewer: paper only. The API key is read by tools.haiku_caller from the environment; never printed.")
     ap.add_argument("cmd", choices=("genesis", "run", "verify"))
     ap.add_argument("--root", default=HV4_ROOT)
@@ -1041,7 +1080,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, no key read, every reply is []")
     a = ap.parse_args(argv)
     now = a.now_ms if a.now_ms is not None else time.time_ns() // 1_000_000
-    if a.cmd in ("genesis", "run") and not COMMIT_RE.fullmatch(a.commit.lower()):
+    if not COMMIT_RE.fullmatch(a.commit.lower()):
         ap.error("--commit must be the frozen git sha (7 to 40 hex chars)")
     if a.cmd == "genesis":
         row, _st = genesis_manifest(a.arm, a.clock_start_ms, a.commit)
@@ -1049,7 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(canon({"arm": a.arm, "genesis": row["sha256"]}))
         return 0
     if a.cmd == "verify":
-        rows = verify_chain(a.root, a.arm, reviewer_sha256=review_system_text()[1])
+        rows = verify_chain(a.root, a.arm, reviewer_sha256=review_system_text()[1], frozen_sha=a.commit)
         print(canon({"arm": a.arm, "lines": len(rows), "head": rows[-1]["sha256"] if rows else None}))
         return 0
     from tools.hv4_budget import BudgetGuard

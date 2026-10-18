@@ -144,7 +144,7 @@ def test_placebo_keeps_the_marginals_and_cuts_the_link():
         assert Counter(tuple(r[k] for k in RV.OUTCOME_KEYS) for r in a) == Counter(tuple(r[k] for k in RV.OUTCOME_KEYS) for r in b)
     by = {r["id"]: r for r in rs}
     assert any(by[r["id"]]["net_pct"] != r["net_pct"] for r in sh)                      # the link to the card is cut
-    assert all(by[r["id"]]["card"] == r["card"] and by[r["id"]]["close_ms"] == r["close_ms"] for r in sh)  # cards and times stay
+    assert all(by[r["id"]]["card"] == r["card"] for r in sh)   # cards stay; the records keep their TRUE close_ms internally (cutoff test, audit), and that is never sent
     assert RV.shuffle_outcomes(rs, ARM, DAY) == sh                                       # deterministic
     assert RV.shuffle_outcomes(rs, ARM, "2026-10-23") != sh and RV.shuffle_outcomes(rs, "CON-P", DAY) != sh  # seeded by arm and date
     one = [rec(1)]
@@ -212,7 +212,7 @@ def test_when_skips_alone_cannot_help_trades_are_cut_from_the_end_and_stay_unsho
         r["card"]["pad"] = {f"k{j}": float(j) for j in range(40)}
     b = RV.build_bundle(ARM, DAY, state, trades)
     assert b.dropped["trades"] > 0 and len(b.obj["skips"]) == 0 and b.request_bytes <= RV.REQUEST_MAX_BYTES
-    ordered = [r["id"] for r in sorted(trades, key=lambda r: (r["close_ms"], r["id"]))]
+    ordered = [r["id"] for r in sorted(trades, key=lambda r: (r["entry_ms"], r["id"]))]
     assert list(b.shown_ids) == ordered[:len(b.shown_ids)]                     # a prefix in (close_ms, id) order: cut from the end
     nxt = RV.build_bundle(ARM, DAY, state, trades, shown_before=b.shown_ids)
     assert nxt.obj["trades"][0]["id"] == ordered[len(b.shown_ids)]             # the first dropped trade leads the next bundle
@@ -532,21 +532,44 @@ def test_chain_refusal_files_must_hash_and_a_vetoes_list_may_only_grow(root):
     assert str(e.value) == "vetoes_not_tightening"
 
 
-def test_a_bundle_file_holding_an_input_after_the_cutoff_is_refused(root):
+def test_an_audit_file_holding_an_input_after_the_cutoff_is_refused(root):
     row, _ = night(root, history(40), "[]")
-    bpath = root / "bundles" / ARM / f"{DAY}.json"
-    b = json.loads(bpath.read_text())
-    b["trades"][0]["close_ms"] = CUT + 5
-    data = RV.canon(b).encode()
-    bpath.write_bytes(data)
+    bdir = root / "bundles" / ARM
+    assert b"close_ms" not in (bdir / f"{DAY}.json").read_bytes() and b"entry_ms" not in (bdir / f"{DAY}.json").read_bytes()   # the sent bundle has no times
+    apath = bdir / f"{DAY}.audit.json"
+    a = json.loads(apath.read_text())
+    assert len(a["closes"]) == 40 and max(a["closes"].values()) == row["max_input_close_ms"] < CUT
+    a["closes"]["t0000"] = CUT + 5
+    data = RV.canon(a).encode()
+    apath.write_bytes(data)
+    with pytest.raises(RV.ManifestRefused) as e:                       # the file no longer hashes to the line
+        RV.verify_chain(root, ARM)
+    assert str(e.value) == "audit_hash"
 
     def swap(rows):
-        rows[1]["bundle_sha256"] = RV.sha256_hex(data)
+        rows[1]["audit_sha256"] = RV.sha256_hex(data)
+        reseal(rows[1])
+    tamper(root, ARM, swap)
+    with pytest.raises(RV.ManifestRefused) as e:                       # ... or the line is re-sealed to it: the close is at or after the cutoff
+        RV.verify_chain(root, ARM)
+    assert str(e.value) == "input_after_cutoff"
+
+
+def test_a_bundle_item_missing_from_the_audit_file_is_refused(root):
+    night(root, history(40), "[]")
+    bdir = root / "bundles" / ARM
+    a = json.loads((bdir / f"{DAY}.audit.json").read_text())
+    del a["closes"][json.loads((bdir / f"{DAY}.json").read_text())["trades"][0]["id"]]
+    data = RV.canon(a).encode()
+    (bdir / f"{DAY}.audit.json").write_bytes(data)
+
+    def swap(rows):
+        rows[1]["audit_sha256"] = RV.sha256_hex(data)
         reseal(rows[1])
     tamper(root, ARM, swap)
     with pytest.raises(RV.ManifestRefused) as e:
         RV.verify_chain(root, ARM)
-    assert str(e.value) == "input_after_cutoff"
+    assert str(e.value) == "bundle_item_not_in_audit"
 
 
 def test_manifest_from_other_reviewer_instructions_or_model_is_refused(root):
@@ -644,7 +667,11 @@ def test_cli_genesis_verify_and_stub_run_end_to_end(tmp_path):
     run = lambda *a: subprocess.run([*base, *a], capture_output=True, text=True, cwd=str(REPO))  # noqa: E731
     r = run("genesis", "--root", str(tmp_path), "--arm", ARM, "--commit", SHA40, "--clock-start-ms", str(CUT - 86_400_000))
     assert r.returncode == 0, r.stderr[-400:]
-    assert run("verify", "--root", str(tmp_path), "--arm", ARM).returncode == 0
+    assert run("verify", "--root", str(tmp_path), "--arm", ARM, "--commit", SHA40).returncode == 0
+    assert run("verify", "--root", str(tmp_path), "--arm", ARM, "--commit", "a" * 6 + "b" * 34).returncode == 1       # verify checks the frozen sha
+    r = run("verify", "--root", str(tmp_path), "--arm", ARM, "--commit", "b" * 40)
+    assert r.returncode == 1 and json.loads(r.stderr.strip().splitlines()[-1]) == {"refused": "commit_not_frozen_sha"}
+    assert run("verify", "--root", str(tmp_path), "--arm", ARM).returncode == 2                                        # no --commit: refused
     r = run("run", "--root", str(tmp_path), "--ledger-root", str(tmp_path / "l"), "--arm", ARM, "--day", DAY, "--commit", SHA40, "--stub", "--now-ms", str(CUT + 300_000))
     assert r.returncode == 0, r.stderr[-400:]
     out = json.loads(r.stdout.strip().splitlines()[-1])
@@ -787,10 +814,11 @@ def skip_fixture(tmp_path, n=4, card_day_offset=0):
     cards = tmp_path / "cards"
     cards.mkdir()
     rows, store = [], []
+    step = 300_000 if n <= 200 else 40_000  # a big fixture stays inside the one day
     for i in range(n):
-        c = make_card(f"Sk{i:02d}" + "1" * 38, PREV + (i + 1) * 300_000, ret_15m=-3.0 - i)
+        c = make_card(f"Sk{i:02d}" + "1" * 38, PREV + (i + 1) * step, ret_15m=-3.0 - i)
         sha = pr.card_sha256(c)
-        rows.append({"seq": i, "arm": ARM, "ms": PREV + (i + 1) * 300_000 + 1500, "kind": "skip", "lane": "G", "pool": c["id"], "card_sha256": sha, "reasons": ["model_skip"]})
+        rows.append({"seq": i, "arm": ARM, "ms": PREV + (i + 1) * step + 1500, "kind": "skip", "lane": "G", "pool": c["id"], "card_sha256": sha, "reasons": ["model_skip"]})
         store.append({"sha": sha, "card": c})
     rows.append({"seq": n, "arm": ARM, "ms": PREV + 5000, "kind": "skip", "lane": "H", "pool": "h", "card_sha256": store[0]["sha"], "reasons": ["x"]})     # lane H: not priced
     rows.append({"seq": n + 1, "arm": ARM, "ms": PREV + 6000, "kind": "skip", "lane": "G", "pool": "z", "card_sha256": "f" * 64, "reasons": ["x"]})        # card not in the store
@@ -936,3 +964,157 @@ def test_the_version_is_the_previous_one_plus_one_and_the_runner_refuses_a_repla
     run.refresh_versions(TR.T0 + 60_000)                                     # version 1 again, another line: the chain was replaced
     assert run.arm_halt[ARM] == "version_not_forward" and run.arm_state[ARM]["version"] == 1 and run.knobs[ARM].min_conviction == 4
     assert run.persona_halt("CON")[0] == ARM and run._live_members(arms.group_members("CON"), TR.T0 + 61_000) == ()
+
+
+# ---------------------------------------------------------------- the placebo must not leak the true hold (reviewer 6245962504)
+
+def numeric_leaves(x):
+    if isinstance(x, bool):
+        return
+    if isinstance(x, (int, float)):
+        yield float(x)
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from numeric_leaves(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from numeric_leaves(v)
+
+
+def hold_recoverable(item, true_hold_s, skip_keys=("net_pct", "hold_s")):
+    """True when some pair of numbers in the item differs by the true hold (in ms or in s, 2 s of slack): the way close_ms - entry_ms would give it away.
+    The shuffled keys are left out (their value is the shuffle's, tested separately)."""
+    nums = sorted(set(numeric_leaves({k: v for k, v in item.items() if k not in skip_keys})))
+    for i, a in enumerate(nums):
+        for b in nums[i + 1:]:
+            d = b - a
+            if abs(d - true_hold_s * 1000) <= 2000 or abs(d - true_hold_s) <= 2:
+                return True
+    return False
+
+
+def holdy(n=40, cut=CUT):
+    """40 trades with distinct, large holds (7001 s and up) so that a coincidence between a card number and a hold is not plausible."""
+    return [rec(i, ret=-10.0 if i < n // 2 else 2.0, net=float(i % 9) - 4, reason="stop" if i % 2 else "target", hold=7001 + 13 * i, cut=cut) for i in range(n)]
+
+
+def test_the_true_hold_is_not_recoverable_from_any_field_sent_to_the_model():
+    state = RV.v0_state("CON")
+    rs = holdy()
+    true = {r["id"]: r["hold_s"] for r in rs}
+    # positive control: the old item (entry_ms and close_ms sent) gives the hold away for every trade
+    leaky = [dict(RV._trade_item(r, False), entry_ms=r["entry_ms"], close_ms=r["close_ms"]) for r in rs]
+    assert sum(hold_recoverable(i, true[i["id"]]) for i in leaky) == 40
+    for arm, placebo in ((ARM, False), ("CON-P", True)):
+        b = RV.build_bundle(arm, DAY, state, rs, placebo=placebo)
+        items = b.obj["trades"]
+        assert len(items) == 40 and b'"close_ms"' not in b.text.encode() and b'"entry_ms"' not in b.text.encode() and b"close_ms" not in b.text.encode()
+        assert sum(hold_recoverable(i, true[i["id"]]) for i in items) == 0, arm      # 0 of 40 from any field but the shuffled ones
+        sent = {i["id"]: i["hold_s"] for i in items}
+        if placebo:
+            fixed = sum(sent[k] == true[k] for k in true)
+            assert fixed <= 3                                                            # chance level for a permutation of 40 (about 1 expected)
+        else:
+            assert sent == true
+    # across many nights the shuffled hold carries no information on the true one: no correlation
+    rs_corr = []
+    for d in range(1, 29):
+        day = f"2026-11-{d:02d}"
+        cut = RV.day_start_ms(day)
+        recs = holdy(cut=cut)
+        sh = {r["id"]: r["hold_s"] for r in RV.shuffle_outcomes(RV.before_cutoff(recs, cut), "CON-P", day)}
+        xs, ys = [r["hold_s"] for r in recs], [sh[r["id"]] for r in recs]
+        mx, my = sum(xs) / 40, sum(ys) / 40
+        sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        rs_corr.append(sxy / (sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)) ** 0.5)
+    assert abs(sum(rs_corr) / len(rs_corr)) < 0.1 and max(abs(c) for c in rs_corr) < 0.5
+
+
+def test_l_and_p_bundles_have_the_same_schema_and_the_same_item_order():
+    state = RV.v0_state("CON")
+    rs = holdy() + [rec(300 + i, kind="skip", close=CUT - 2 * H - i * 77, net=float(i % 5), hold=3001 + 7 * i) for i in range(12)]
+    L = RV.build_bundle(ARM, DAY, state, rs)
+    P = RV.build_bundle("CON-P", DAY, state, rs, placebo=True)
+
+    def shape(x):
+        if isinstance(x, dict):
+            return {k: shape(v) for k, v in x.items() if k not in ("card", "rules", "why")}
+        if isinstance(x, list):
+            return [shape(v) for v in x[:1]]
+        return type(x).__name__
+    assert shape(L.obj["trades"]) == shape(P.obj["trades"]) and shape(L.obj["skips"]) == shape(P.obj["skips"])
+    assert set(L.obj) == set(P.obj)
+    ids = [t["id"] for t in L.obj["trades"]]
+    assert ids == [t["id"] for t in P.obj["trades"]] == [r["id"] for r in sorted((r for r in rs if r["kind"] == "trade"), key=lambda r: (r["entry_ms"], r["id"]))]
+    assert [s["id"] for s in L.obj["skips"]] == [s["id"] for s in P.obj["skips"]]
+    for s in P.obj["skips"]:
+        assert set(s["replay"]) == {"exit_reason", "hold_s", "net_pct"} and "entry_ms" not in s
+    skip_true = {r["id"]: r["hold_s"] for r in rs if r["kind"] == "skip"}
+    assert sum(hold_recoverable(dict(s, **{}), skip_true[s["id"]], skip_keys=("replay",)) for s in P.obj["skips"]) == 0
+
+
+# ---------------------------------------------------------------- open positions, the review instant, verify
+
+def test_open_positions_do_not_count_refused_orders_and_follow_the_exit_rule(tmp_path):
+    dec = tmp_path / "decisions" / ARM
+    dec.mkdir(parents=True)
+    t = CUT - 6 * H
+    rows = [
+        {"kind": "entry", "order_id": "p1", "ms": t, "pos": {"pid": "p1"}},                      # sold well before the cutoff: closed
+        {"kind": "entry", "order_id": "p2", "ms": t + 1, "pos": {"pid": "p2"}},                  # the engine refused the buy: never a position
+        {"kind": "order_refused", "order_id": "p2", "side": "buy", "ms": t + 1},
+        {"kind": "entry", "order_id": "p3", "ms": t + 2, "pos": {"pid": "p3"}},                  # a sell was tried and refused: still open
+        {"kind": "sell", "pid": "p3", "ms": t + 600_000},
+        {"kind": "order_refused", "order_id": "p3", "side": "sell", "ms": t + 600_000},
+        {"kind": "entry", "order_id": "p4", "ms": t + 3, "pos": {"pid": "p4"}},                  # exit decided 1 s before the cutoff: the fill lands after it, so still open
+        {"kind": "sell", "pid": "p4", "ms": CUT - 1000},
+        {"kind": "entry", "order_id": "p5", "ms": t + 4, "pos": {"pid": "p5"}},                  # open
+        {"kind": "entry", "order_id": "p6", "ms": CUT + 5, "pos": {"pid": "p6"}},                # entered after the cutoff: not counted
+        {"kind": "sell", "pid": "p1", "ms": t + 300_000},
+    ]
+    for i, r in enumerate(rows):
+        r.setdefault("ms", t + i)
+    (dec / "2026-10-21.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    trades, open_n = RV.load_trade_records(ARM, tmp_path, tmp_path / "ledger", CUT)
+    assert trades == [] and open_n == 3                                                           # p3, p4, p5
+
+
+def test_a_review_before_the_cutoff_is_refused_before_any_model_call(root):
+    stub = StubModel(["[]"])
+    for now in (CUT - 1, CUT - 86_400_000, 0):
+        with pytest.raises(RV.ReviewError) as e:
+            RV.review_night(ARM, DAY, root=root, ledger_root=root / "ledger", model=stub, now_ms=now, commit=SHA40, records=history(40), open_positions=0)
+        assert str(e.value) == "review_before_cutoff"
+    assert stub.calls == [] and len(RV.read_manifests(root, ARM)) == 1 and not (root / "bundles").exists()
+    row = RV.review_night(ARM, DAY, root=root, ledger_root=root / "ledger", model=stub, now_ms=CUT, commit=SHA40, records=history(40), open_positions=0)
+    assert len(stub.calls) == 1 and row["written_ms"] == CUT                                       # at the cutoff itself the night may run
+    r = subprocess.run([sys.executable, str(TOOLS / "hv4_review.py"), "run", "--root", str(root), "--ledger-root", str(root / "l"), "--arm", "BIG-L", "--day", DAY,
+                        "--commit", SHA40, "--stub", "--now-ms", str(CUT - 1)], capture_output=True, text=True, cwd=str(REPO))
+    assert r.returncode == 1 and json.loads(r.stderr.strip().splitlines()[-1]) == {"refused": "review_before_cutoff"}
+
+
+def test_job_script_verify_mode_passes_the_frozen_sha():
+    src = (REPO / "scripts" / "research" / "hv4-review-job.sh").read_text()
+    line = next(ln for ln in src.splitlines() if ln.strip().startswith("verify)"))
+    assert '--commit "$HV4_FROZEN_SHA"' in line
+
+
+# ---------------------------------------------------------------- the skip cap comes before pricing
+
+def test_the_skip_cap_is_applied_before_pricing_and_never_depends_on_an_outcome(tmp_path):
+    import time as _time
+
+    ids, store = skip_fixture(tmp_path, n=2000)
+    all_ids = sorted(ids, key=lambda i: (RV.sha256_hex(i), i))
+    first = lambda c: {"close_ms": CUT - 10, "exit_reason": "time", "hold_s": 9, "net_pct": c}  # noqa: E731
+    a = FakePricer({i: first(5.0) for i in ids})
+    t0 = _time.time()
+    got = RV.load_skip_records(ARM, tmp_path, "2026-10-21", "CON", a, CUT)
+    took = _time.time() - t0
+    assert len(a.calls) == 1 and a.calls[0][0] == sorted(all_ids[:RV.MAX_SKIP_CARDS]) and len(a.calls[0][0]) == 60
+    assert len(got) == 60 and took < 20                                                         # one pass over 2,000 rows, not a file re-read per card
+    b = FakePricer({i: (None if k % 2 else first(-9.0)) for k, i in enumerate(all_ids)})         # other outcomes, half unfinished: the same 60 are priced
+    got_b = RV.load_skip_records(ARM, tmp_path, "2026-10-21", "CON", b, CUT)
+    assert b.calls[0][0] == a.calls[0][0] and 0 < len(got_b) < 60
+    bundle = RV.build_bundle(ARM, DAY, RV.v0_state("CON"), got)
+    assert len(bundle.obj["skips"]) + bundle.dropped["skips"] == 60 and {s["id"] for s in bundle.obj["skips"]} <= set(all_ids[:60])
