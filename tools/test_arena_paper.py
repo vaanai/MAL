@@ -1,10 +1,13 @@
-"""arena_paper: parity fixture, landing / state conventions, ledger write-once, registry refusal. No network, no tape."""
+"""arena_paper: parity fixtures (legacy sc.py stack and the DEC-031 binding stack), landing / state conventions, strand class, E1 floor, gaps, durability,
+registry, ledger. No network, no tape."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 import numpy as np
@@ -17,19 +20,25 @@ from tools.arena_paper import (
     Ledger,
     LedgerConflict,
     StackConfig,
+    book_fail_legs,
     canon,
     curve_trip,
     load_registry,
     price_leg,
     register_bot,
+    stop_bot,
 )
 from tools.r4b_book import fail_legs
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "arena_paper"
 CASES_SHA256 = "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58"
-OUT_MD5_FLOAT = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output lines == md5 of sc.py / curve-sim expected lines (bit parity)
+LEGACY_MD5 = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output lines == md5 of sc.py's / the curve sim's expected lines (bit parity)
+BINDING_MD5 = "af48053427bd2c49089f99a237a1e781"  # same, binding stack (strand class + E1 floor), expected = sc.py + an independent layer
 KEYS = ("pnl13", "pnl19", "flat13", "flat19", "press13", "press19")
 V = 17_584_505_288
+T0 = 1_789_000_000_000
+LEGACY = StackConfig(strand_rule="sc", e1_floor_per_005=0)
+BINDING = StackConfig(strand_rule="total")
 
 
 def _states(c):
@@ -37,181 +46,411 @@ def _states(c):
             "nearby": {1.3: c["near13"], 1.9: c["near19"]}, "Qx": c["Qx"], "Bx": c["Bx"]}
 
 
-def test_parity_cases_match_reference_to_the_bit():
-    raw = (FIX / "parity_cases.jsonl").read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == CASES_SHA256
-    cases = [json.loads(x) for x in raw.decode().splitlines()]
-    expected = {json.loads(x)["case_id"]: json.loads(x) for x in (FIX / "parity_expected.jsonl").read_text().splitlines()}
-    assert len(cases) >= 200 and {c["prog"] for c in cases} == {"pumpswap", "pump_bonding"}
-    cfg = StackConfig(k_rounding="ceil")
+def _replay(cases, cfg, rule):
     got: dict[str, dict] = {}
     for prog in ("pumpswap", "pump_bonding"):
         for stake in (0.25, 0.5, 1.0):
             grp = [c for c in cases if c["prog"] == prog and c["stake_sol"] == stake]
             for lat, tg in ((1.3, "13"), (1.9, "19")):
-                r = [price_leg(prog, stake * 1e9, _states(c), lat, cfg) for c in grp]
-                pnl, fil = np.array([x["pnl"] for x in r]), np.array([x["filled"] for x in r])
-                flat, press, _, _ = fail_legs(pnl, fil, np.array([c["ssb" + tg] for c in grp]), np.array([c["near" + tg] for c in grp]), cfg.send)
+                r = [price_leg(prog, stake * 1e9, _states(c), lat, cfg, rule) for c in grp]
+                pnl, fil, strand = np.array([x["pnl"] for x in r]), np.array([x["filled"] for x in r]), np.array([x["strand"] for x in r])
+                ssb, near = np.array([c["ssb" + tg] for c in grp]), np.array([c["near" + tg] for c in grp])
+                flat, press, _, _ = fail_legs(pnl, fil, ssb, near, cfg.send) if rule == "sc" else book_fail_legs(pnl, fil, strand, ssb, near, cfg.send)
                 for i, c in enumerate(grp):
                     got.setdefault(c["case_id"], {}).update({"pnl" + tg: float(pnl[i]), "flat" + tg: float(flat[i]), "press" + tg: float(press[i])})
+    return got
+
+
+@pytest.mark.parametrize("fname,cfg,rule,md5", [("parity_expected.jsonl", LEGACY, "sc", LEGACY_MD5), ("parity_expected_binding.jsonl", BINDING, "total", BINDING_MD5)])
+def test_parity_cases_match_the_references_to_the_bit(fname, cfg, rule, md5):
+    raw = (FIX / "parity_cases.jsonl").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == CASES_SHA256
+    cases = [json.loads(x) for x in raw.decode().splitlines()]
+    expected = {json.loads(x)["case_id"]: json.loads(x) for x in (FIX / fname).read_text().splitlines()}
+    assert len(cases) >= 200 and {c["prog"] for c in cases} == {"pumpswap", "pump_bonding"}
+    got = _replay(cases, cfg, rule)
     lines = [canon({"case_id": c["case_id"], **{k: got[c["case_id"]][k] for k in KEYS}}) for c in cases]
     exp_lines = [canon({"case_id": c["case_id"], **{k: expected[c["case_id"]][k] for k in KEYS}}) for c in cases]
     for c in cases:
         for k in KEYS:
             assert round(got[c["case_id"]][k]) == round(expected[c["case_id"]][k])  # to the lamport
     assert lines == exp_lines  # and to the bit
-    assert hashlib.md5(("\n".join(lines) + "\n").encode()).hexdigest() == OUT_MD5_FLOAT
+    assert hashlib.md5(("\n".join(lines) + "\n").encode()).hexdigest() == md5
 
 
-def test_strand_rule_is_recorded_and_default_matches_sc():
-    assert StackConfig().strand_rule == "sc"
-    assert StackConfig().as_dict()["strand_rule"] == "sc"
-    # a sell worth less than one send fee: sc keeps the normal pnl, r4b prices it stranded (-stake - send - 2,039,280)
-    st = {"ref": 1.0e-6, "Qe": {1.3: 80e9}, "Be": {1.3: 8e14}, "ssb": {1.3: 0.0}, "nearby": {1.3: 0.0}, "Qx": 17.6e9, "Bx": 8.0e14}
-    a = price_leg("pumpswap", 250e6, st, 1.3, StackConfig(strand_rule="sc"))
-    b = price_leg("pumpswap", 250e6, st, 1.3, StackConfig(strand_rule="r4b"))
-    assert a["pnl"] != b["pnl"] or a["state"] == b["state"]
+# ------------------------------------------------------------------------------------------------------------------------------ independent scalar reference
+def ref_fee_ppm(q, b):
+    mcap = q / (b * 1000.0) * 1e9
+    ppm = F.FEE_TIERS[0][1]
+    for th, p in F.FEE_TIERS:
+        if mcap + 1e-9 >= th:
+            ppm = p
+    return ppm
 
 
-# ------------------------------------------------------------------------------------------------------------------------------ synthetic tape
-def _row(i, slot, venue="pumpswap", pool="P1", side="buy", q=None, b=None, sol=1_000_000_000):
-    q = 60e9 + i * 1e8 if q is None else q
-    b = 1e15 - i * 1e11 if b is None else b
-    return {"venue": venue, "pool": pool if venue == "pumpswap" else None, "mint": "M1", "side": side, "sol_lamports": sol, "token_raw": 1e11, "quote_reserve": q,
-            "base_reserve": b, "slot": slot, "tx_index": 0, "event_index": i, "event_ts": None, "signature": f"sig{pool}{i}", "virtual_quote_reserves": V if venue == "pumpswap" else None}
+def ref_trip(stake, qe, be, spot, qx, bx, send=505_000.0, rent=2_039_280.0, h_in=0.002608, h_out=0.0016, floor=True):
+    """Plain-Python PumpSwap trip with the binding layers: guard, own-buy re-injection, haircut, strand (proceeds < one send), E1 floor."""
+    net = stake * (1 - ref_fee_ppm(qe, be) / 1e6)
+    tok = be * net / (qe + net)
+    if (net / tok) / spot > 1.15:
+        return -send, "guarded"
+    qa, ba = qx + net, bx - tok
+    sv = (tok / (1 + h_in)) * qa / (ba + tok / (1 + h_in)) * (1 - ref_fee_ppm(qa, ba) / 1e6) * (1 - h_out)
+    if sv < send:
+        return -stake - send - 2_039_280.0, "stranded"
+    pnl = sv - stake - 2 * send - rent
+    if floor:
+        sv0 = tok * qa / (ba + tok) * (1 - ref_fee_ppm(qa, ba) / 1e6)
+        hair = (sv0 - stake - 2 * send - rent) - pnl
+        pnl -= max(0.0, 384_022 * stake / 5e7 - hair)
+    return pnl, "filled"
 
 
-@pytest.fixture()
-def env(tmp_path):
-    reg = tmp_path / "bots.json"
-    register_bot("botA", "abc1234", 1_000, reg)
-    eng = ArenaEngine(tmp_path / "ledger", reg, StackConfig(), sps_fn=lambda: 0.4)
-    return eng, tmp_path
+def _st(qe=80e9, be=8e14, spot=None, qx=80e9, bx=8e14):
+    spot = spot or (qe / be)
+    return {"ref": spot, "Qe": {1.3: qe, 1.9: qe}, "Be": {1.3: be, 1.9: be}, "ssb": {1.3: 0.0, 1.9: 0.0}, "nearby": {1.3: 0.0, 1.9: 0.0}, "Qx": qx, "Bx": bx}
 
 
-def _feed(eng, venue="pumpswap", lo=90, hi=215):
-    rows = []
-    for i, slot in enumerate(range(lo, hi)):
-        r = _row(i, slot, venue=venue, side="buy" if i % 3 else "sell")
-        rows.append(r)
-    return rows
+@pytest.mark.parametrize("stake", [0.25e9, 0.5e9, 1.0e9])
+def test_binding_stack_matches_an_independent_scalar_reference(stake):
+    for qx, bx in ((80e9, 8e14), (84e9, 7.7e14), (60e9, 1.1e15)):
+        st = _st(qx=qx, bx=bx)
+        r = price_leg("pumpswap", stake, st, 1.3, BINDING, "total")
+        pnl, state = ref_trip(stake, 80e9, 8e14, st["ref"], qx, bx)
+        assert r["state"] == state and r["pnl"] == pytest.approx(pnl, abs=1e-3)
 
 
-def test_pumpswap_landing_uses_end_bound_pre_trade_state(env):
-    eng, tmp = env
-    rows = _feed(eng)
-    for r in rows[:15]:
+def test_e1_floor_is_the_larger_of_haircut_and_384022_per_005_sol():
+    for stake, floor in ((0.25e9, 1_920_110.0), (0.5e9, 3_840_220.0), (1.0e9, 7_680_440.0)):
+        st = _st()
+        with_floor = price_leg("pumpswap", stake, st, 1.3, BINDING, "total")
+        no_floor = price_leg("pumpswap", stake, st, 1.3, StackConfig(strand_rule="total", e1_floor_per_005=0), "total")
+        zero_hair = price_leg("pumpswap", stake, st, 1.3, StackConfig(strand_rule="total", e1_floor_per_005=0, h_in=0.0, h_out=0.0), "total")
+        haircut = zero_hair["pnl"] - no_floor["pnl"]
+        assert haircut < floor  # the fractional haircut alone is about 0.42% of stake
+        assert zero_hair["pnl"] - with_floor["pnl"] == pytest.approx(floor, abs=1e-3)  # the trip carries exactly the floor
+        assert with_floor["e1_extra"] == pytest.approx(floor - haircut, abs=1e-3)
+    # a haircut above the floor is kept as it is
+    big = price_leg("pumpswap", 0.25e9, _st(), 1.3, StackConfig(strand_rule="total", h_in=0.02, h_out=0.02), "total")
+    assert big["e1_extra"] == 0.0
+
+
+def test_a_strand_is_a_total_loss_on_every_leg_with_no_fail_blend():
+    dust = _st(qx=17.6e9, bx=1e18)  # a collapsed pool: our tokens are worth about 43k lamports, less than one send
+    r = price_leg("pumpswap", 0.25e9, dust, 1.3, BINDING, "total")
+    total = -0.25e9 - 505_000 - 2_039_280
+    assert r["state"] == "stranded" and r["strand"] and r["pnl"] == total and r["flat"] == total and r["press"] == total
+    # the same trip under the "sc" rule is a normal sell, blended like any fill
+    s = price_leg("pumpswap", 0.25e9, dust, 1.3, StackConfig(strand_rule="sc", e1_floor_per_005=0), "sc")
+    assert not s["strand"] and s["flat"] != s["pnl"]
+    # a guarded buy is not a strand (one send, nothing bought)
+    g = price_leg("pumpswap", 0.25e9, _st(spot=1e-9), 1.3, BINDING, "total")
+    assert g["state"] == "guarded" and g["pnl"] == -505_000.0 and not g["strand"]
+    # in a book: strands bypass the blend and still count in the intercept fit
+    flat, press, c, p = book_fail_legs(np.array([-1e8, 5e6, 5e6]), np.array([True, True, True]), np.array([True, False, False]), np.zeros(3), np.zeros(3), 505_000)
+    assert flat[0] == press[0] == -1e8 and flat[1] != 5e6 and p[0] == pytest.approx(0.289)
+
+
+def test_invalid_entry_and_exit_states_are_strands():
+    bad_exit = _st(qx=1e9, bx=8e14)  # quote below the pool's real floor (C2): an invalid exit
+    r = price_leg("pumpswap", 0.25e9, bad_exit, 1.3, BINDING, "total")
+    assert r["strand"] and r["state"] in ("exit_invalid", "stranded")
+    r = price_leg("pumpswap", 0.25e9, _st(qe=1e9), 1.3, BINDING, "total")
+    assert r["strand"] and r["state"] == "entry_invalid"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ synthetic tape / engine
+def tms(slot):
+    return T0 + (slot - 90) * 400  # slot 90 is T0; 0.4 s per slot
+
+
+def _row(i, slot, venue="pumpswap", pool="P1", side=None, v=V, tx=None, sig=None, t=None):
+    side = side or ("buy" if i % 3 else "sell")
+    return {"type": "trade", "prog": "pumpswap" if venue == "pumpswap" else "pumpfun", "venue": venue, "pool": pool if venue == "pumpswap" else None, "mint": "M" + pool,
+            "side": side, "sol_lamports": 1_000_000_000, "token_raw": 1e11, "quote_reserve": 60e9 + i * 1e8, "base_reserve": 1e15 - i * 1e11, "slot": slot,
+            "tx_index": tx, "event_index": i, "event_ts": None, "signature": sig or f"sig{pool}{i}", "t_recv_ms": tms(slot) if t is None else t,
+            "virtual_quote_reserves": v if venue == "pumpswap" else None}
+
+
+def mk_engine(tmp, cfg=None, vmap=None, bots=("botA",), clock=0):
+    reg = tmp / "bots.json"
+    for b in bots:
+        register_bot(b, "abc1234", clock, reg, now_ms=0)
+    return ArenaEngine(tmp / "ledger", reg, cfg or StackConfig(max_past_ms=None, strand_rule="total"), vmap=vmap, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
+
+
+def _tape(lo=90, hi=215, **kw):
+    return [_row(i, s, **kw) for i, s in enumerate(range(lo, hi))]
+
+
+def run_trade(eng, rows, buy_slot=100, sell_slot=200, pool="P1", buy_ms=None, sell_ms=None):
+    """Feed rows in order; buy right after the row at buy_slot, sell right after the row at sell_slot."""
+    pid = None
+    for r in rows:
         eng.on_row(r)
-    pid = eng.buy("botA", "P1", 0.25, 5_000, 100, {"why": "t"})
-    for r in rows[15:]:
-        eng.on_row(r)
-    eng.sell("botA", pid, 1.0, 9_000, 200, "t")
-    for r in rows[110:]:
-        eng.on_row(r)
-    out = eng.ledger.read_bot("botA")
+        if r["slot"] == buy_slot and pid is None:
+            pid = eng.buy("botA", pool, 0.25, tms(buy_slot) if buy_ms is None else buy_ms, buy_slot, {"why": "t"})
+        if r["slot"] == sell_slot and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(sell_slot) if sell_ms is None else sell_ms, sell_slot, "t")
+    return pid
+
+
+def trades(eng, kind="trade"):
+    return [r for r in eng.ledger.read_bot("botA") if r["kind"] == kind]
+
+
+def test_landing_uses_end_bound_pre_trade_state_and_both_strand_rules(tmp_path):
+    eng = mk_engine(tmp_path, StackConfig(max_past_ms=None))  # default strand_rule "both"
+    rows = _tape()
+    run_trade(eng, rows)
+    out = trades(eng)
     assert len(out) == 3 and {r["stake_sol"] for r in out} == {0.25, 0.5, 1.0}
     r = out[0]
-    # sps 0.4: 1.3 s -> ceil(3.25) = 4 slots, 1.9 s -> ceil(4.75) = 5; END bound: first print with slot >= landing + 1
-    assert r["calc"]["1p3"]["landing_slot"] == 104 and r["calc"]["1p9"]["landing_slot"] == 105
+    assert r["calc"]["1p3"]["landing_slot"] == 104 and r["calc"]["1p9"]["landing_slot"] == 105  # ceil(3.25), ceil(4.75)
     by_slot = {x["slot"]: x for x in rows}
     assert r["calc"]["1p3"]["Qe"] == by_slot[105]["quote_reserve"] + V and r["calc"]["1p3"]["Be"] == by_slot[105]["base_reserve"]
     assert r["calc"]["1p9"]["Qe"] == by_slot[106]["quote_reserve"] + V
-    # exit: decision 200 + ceil(0.55 / 0.4) = 2 -> first print with slot >= 203
-    assert r["calc"]["1p3"]["Qx"] == by_slot[203]["quote_reserve"] + V
-    assert r["state_src"] == "tape" and r["frozen_sha"] == "abc1234" and r["prog"] == "pumpswap"
-    assert set(r["legs"]) == {"flat_1p3", "flat_1p9", "press_1p3", "press_1p9"}
-    assert all("net_lamports" in v and "state" in v for v in r["legs"].values())
+    assert r["calc"]["1p3"]["Qx"] == by_slot[203]["quote_reserve"] + V  # decision 200 + ceil(0.55 / 0.4) = 2 -> first print >= 203
+    assert r["state_src"] == "tape" and r["frozen_sha"] == "abc1234" and r["prog"] == "pumpswap" and r["kind"] == "trade"
+    assert set(r["legs"]) == {"total", "sc"} and set(r["legs"]["total"]) == {"flat_1p3", "flat_1p9", "press_1p3", "press_1p9"}
+    assert set(r["calc"]["1p3"]["by_rule"]) == {"total", "sc"} and r["stack"]["strand_rule"] == "both" and r["stack"]["e1_floor_per_005"] == 384_022
+    assert r["v_src"]["entry"] == "row" and r["v_src"]["exit"] == "row"
+    assert eng.positions == {}
+
+
+def test_latency_starts_at_the_decision_instant_not_the_given_slot(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            # the bot saw slot 100; it decides 1.0 s (2.5 slots) after the last feed row -> tape slot 102
+            pid = eng.buy("botA", "P1", None, tms(100) + 1000, 100)
+        if r["slot"] == 210:
+            eng.sell("botA", pid, 1.0, tms(210), 210)
+    r = trades(eng)[0]
+    assert r["effective_slot"]["entry"] == 102 and r["decision_slot"]["entry"] == 100
+    assert r["calc"]["1p3"]["landing_slot"] == 102 + 4 and r["calc"]["1p9"]["landing_slot"] == 102 + 5
+
+
+def test_hindsight_decisions_are_refused_and_logged(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    with pytest.raises(ArenaRefused, match="stale_decision"):
+        eng.buy("botA", "P1", None, tms(109), 100)  # decision_slot below the high-water slot 109
+    with pytest.raises(ArenaRefused, match="stale_decision"):
+        eng.buy("botA", "P1", None, tms(100), 109)  # decision_ms below the high-water mark
+    refused = trades(eng, "refused")
+    assert len(refused) == 2 and {r["reason"] for r in refused} == {"stale_decision"}
+    early = ArenaEngine(tmp_path / "l2", eng.registry_path, StackConfig(max_past_ms=None), sps_fn=lambda: 0.4, now_fn=lambda: tms(0))
+    early.on_row(_row(0, 100))
+    with pytest.raises(ArenaRefused, match="future_decision"):
+        early.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 12 s ahead of the wall clock
+    old = ArenaEngine(tmp_path / "l4", eng.registry_path, StackConfig(max_past_ms=60_000), sps_fn=lambda: 0.4, now_fn=lambda: tms(100) + 90_000)
+    old.on_row(_row(0, 100))
+    with pytest.raises(ArenaRefused, match="stale_decision"):
+        old.buy("botA", "P1", None, tms(100), 100)  # decision_ms is 90 s older than the write instant
+
+
+def test_refused_buys_go_in_the_decision_log(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    with pytest.raises(ArenaRefused, match="no_prints"):
+        eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    eng2 = ArenaEngine(tmp_path / "l3", eng.registry_path, StackConfig(max_past_ms=None), sps_fn=lambda: None, now_fn=lambda: 2**62)
+    eng2.on_row(_row(0, 100))
+    with pytest.raises(ArenaRefused, match="clock_not_ready"):
+        eng2.buy("botA", "P1", None, tms(100), 100)
+    assert [r["reason"] for r in trades(eng, "refused")] == ["no_prints"]
+    assert [r["reason"] for r in eng2.ledger.read_bot("botA") if r["kind"] == "refused"] == ["clock_not_ready"]
+    assert eng.counters["refused_no_prints"] == 1
 
 
 def test_k_rounding_round_vs_ceil(tmp_path):
-    reg = tmp_path / "b.json"
-    register_bot("botA", "abc1234", 0, reg)
     res = {}
     for mode in ("ceil", "round"):
-        eng = ArenaEngine(tmp_path / mode, reg, StackConfig(k_rounding=mode), sps_fn=lambda: 0.2)
-        rows = _feed(eng, hi=260)
-        for r in rows[:15]:
-            eng.on_row(r)
-        pid = eng.buy("botA", "P1", None, 1, 100)
-        for r in rows[15:]:
-            eng.on_row(r)
-        eng.sell("botA", pid, 1.0, 2, 200)
-        for r in rows[110:]:
-            eng.on_row(r)
-        res[mode] = eng.ledger.read_bot("botA")[0]["calc"]["1p3"]["landing_slot"]
+        sub = tmp_path / mode
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(k_rounding=mode, max_past_ms=None, strand_rule="total"))
+        eng.sps_fn = lambda: 0.2
+        run_trade(eng, [dict(r, t_recv_ms=T0 + (r["slot"] - 90) * 200) for r in _tape(hi=260)], sell_slot=210, buy_ms=T0 + 10 * 200, sell_ms=T0 + 120 * 200)
+        res[mode] = trades(eng)[0]["calc"]["1p3"]["landing_slot"]
     assert res == {"ceil": 107, "round": 106}  # 1.3 s at 200 ms = 6.5 slots
 
 
-def test_bonding_uses_post_trade_state_of_last_print_at_or_before_landing(env):
-    eng, _ = env
-    rows = [dict(r, venue="pump_bonding", pool=None, virtual_quote_reserves=None, quote_reserve=40e9 + i * 1e8, base_reserve=7e14 - i * 1e10)
-            for i, r in enumerate(_feed(eng))]
-    for r in rows[:15]:
-        eng.on_row(r)
-    pid = eng.buy("botA", "M1", None, 5_000, 100)
-    for r in rows[15:]:
-        eng.on_row(r)
-    eng.sell("botA", pid, 1.0, 9_000, 200)
-    for r in rows[110:]:
-        eng.on_row(r)
-    r = eng.ledger.read_bot("botA")[0]
+def test_bonding_uses_post_trade_state_of_last_print_at_or_before_landing(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = [dict(r, quote_reserve=40e9 + i * 1e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1"))]
+    run_trade(eng, rows, pool="M1")
+    r = trades(eng)[0]
     by_slot = {x["slot"]: x for x in rows}
     assert r["prog"] == "pump_bonding"
     assert r["calc"]["1p3"]["Qe"] == by_slot[104]["quote_reserve"]  # POST-trade of the last print with slot <= 104
     assert r["calc"]["1p9"]["Qe"] == by_slot[105]["quote_reserve"]
     assert r["calc"]["1p3"]["Qx"] == by_slot[202]["quote_reserve"]
+    assert r["v_src"]["entry"] == "na"
 
 
-def test_refusals(env):
-    eng, _ = env
-    rows = _feed(eng)
-    for r in rows[:15]:
+def test_other_refusals(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    for r in rows[:11]:
         eng.on_row(r)
     with pytest.raises(ArenaRefused):
-        eng.buy("nobody", "P1", None, 1, 100)  # unregistered
-    with pytest.raises(ArenaRefused):
-        eng.buy("botA", "UNKNOWN", None, 1, 100)  # no prints
-    pid = eng.buy("botA", "P1", None, 1, 100)
-    with pytest.raises(ArenaRefused):
-        eng.buy("botA", "P1", None, 1, 100)  # same decision twice
-    with pytest.raises(ArenaRefused):
-        eng.sell("botA", pid, 0.5, 2, 200)  # partial
-    with pytest.raises(ArenaRefused):
-        eng.sell("botA", pid, 1.0, 2, 102)  # before the slower entry leg lands
-    with pytest.raises(ArenaRefused):
-        eng.sell("botB", pid, 1.0, 2, 200)
-    eng2 = ArenaEngine(eng.ledger.root, eng.registry_path, StackConfig(), sps_fn=lambda: None)
-    eng2.on_row(rows[0])
-    with pytest.raises(ArenaRefused):
-        eng2.buy("botA", "P1", None, 1, 100)  # slot clock not ready
-
-
-def test_derived_last_state_when_the_global_clock_passes_without_a_pool_print(tmp_path):
-    reg = tmp_path / "b.json"
-    register_bot("botA", "abc1234", 0, reg)
-    eng = ArenaEngine(tmp_path / "l", reg, StackConfig(grace_slots=25), sps_fn=lambda: 0.4)
-    for r in _feed(eng, hi=108):
+        eng.buy("nobody", "P1", None, tms(100), 100)  # unregistered
+    pid = eng.buy("botA", "P1", None, tms(100), 100)
+    with pytest.raises(ArenaRefused, match="duplicate"):
+        eng.buy("botA", "P1", None, tms(100), 100)
+    for r in rows[11:15]:
         eng.on_row(r)
-    pid = eng.buy("botA", "P1", None, 1, 100)
-    eng.sell("botA", pid, 1.0, 2, 106)
-    assert eng.ledger.read_bot("botA") == []  # waiting: no print at slot >= 109 yet
-    for i, slot in enumerate(range(300, 305)):
-        eng.on_row(_row(i, slot, pool="P2", side="buy"))  # another pool moves the global clock far past
-    rows = eng.ledger.read_bot("botA")
-    assert len(rows) == 3 and rows[0]["state_src"] == "derived_last"
+    with pytest.raises(ArenaRefused, match="before the slower"):
+        eng.sell("botA", pid, 1.0, tms(105), 105)  # 5 slots after the buy; the 1.9 s leg needs ceil(4.75) + 1 = 6
+    for r in rows[15:51]:
+        eng.on_row(r)
+    with pytest.raises(ArenaRefused, match="partial"):
+        eng.sell("botA", pid, 0.5, tms(140), 140)
+    with pytest.raises(ArenaRefused):
+        eng.sell("botB", pid, 1.0, tms(140), 140)
 
 
-def test_duplicate_rows_are_dropped_and_out_of_order_rows_sorted(env):
-    eng, _ = env
-    rows = _feed(eng)
+def test_derived_last_is_counted_not_excluded_and_a_gap_excludes_it(tmp_path):
+    for gap in (False, True):
+        sub = tmp_path / str(gap)
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(grace_slots=25, max_past_ms=None, strand_rule="total"))
+        for r in _tape(hi=108):
+            eng.on_row(r)
+        eng2 = eng
+        # buy at the last fed slot 107, sell at 120 decided on the clock only (no pool print at >= 128 will arrive)
+        pid = eng2.buy("botA", "P1", None, tms(107), 107)
+        eng2.sell("botA", pid, 1.0, tms(120), 120)
+        assert eng2.ledger.read_bot("botA")[-1]["kind"] == "open"
+        if gap:
+            eng2.on_row({"type": "gap", "prog": "pumpswap", "kind": "silence", "data_loss": True, "slot": 107, "t_recv_ms": tms(125), "silent_ms": 3000})
+        for i, slot in enumerate(range(300, 305)):
+            eng2.on_row(_row(i, slot, pool="P2"))  # another pool moves the global clock far past
+        rows = trades(eng2)
+        exc = trades(eng2, "excluded")
+        if gap:
+            assert rows == [] and len(exc) == 3 and exc[0]["exclusion_reason"] == "feed_gap" and eng2.counters["excluded_feed_gap"] == 1
+        else:
+            assert len(rows) == 3 and rows[0]["state_src"] == "derived_last" and exc == []
+
+
+def test_data_loss_gap_in_the_span_excludes_and_other_cases_do_not(tmp_path):
+    cases = {"loss": ({"data_loss": True, "prog": "pumpswap"}, 110, "excluded"), "soft": ({"data_loss": False, "prog": "pumpswap"}, 110, "trade"),
+             "other_prog": ({"data_loss": True, "prog": "pumpfun"}, 110, "trade"),
+             "after_pricing": ({"data_loss": True, "prog": "pumpswap"}, 170, "trade")}  # logged after the trade was priced: late prints cover that case
+    for name, (g, gap_slot, want) in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        eng = mk_engine(sub)
+        rows = _tape()
+        pid = None
+        for r in rows:
+            eng.on_row(r)
+            if r["slot"] == 100:
+                pid = eng.buy("botA", "P1", None, tms(100), 100)
+            if r["slot"] == gap_slot:
+                eng.on_row({"type": "gap", "kind": "silence", "slot": gap_slot, "t_recv_ms": tms(gap_slot), "silent_ms": 800, **g})
+            if r["slot"] == 150:
+                eng.sell("botA", pid, 1.0, tms(150), 150)
+        got = trades(eng, want)
+        assert len(got) == 3, name
+        if want == "excluded":
+            assert {x["exclusion_reason"] for x in got} == {"feed_gap"} and trades(eng) == []
+
+
+def test_a_print_without_v_is_excluded_never_priced_as_v_zero(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    rows[16] = dict(rows[16], virtual_quote_reserves=None)  # slot 106: V missing, no earlier row of the pool carries... it does: pool_prev
+    for r in rows[:16]:
+        r["virtual_quote_reserves"] = None  # no V on any earlier row either
+    run_trade(eng, rows)
+    assert trades(eng) == [] and {x["exclusion_reason"] for x in trades(eng, "excluded")} == {"missing_v"}
+    # V from the same pool's earlier row, then from the map
+    sub = tmp_path / "b"
+    sub.mkdir()
+    eng = mk_engine(sub)
+    rows = _tape()
+    rows[16] = dict(rows[16], virtual_quote_reserves=None)
+    run_trade(eng, rows)
+    assert trades(eng)[0]["v_src"]["span"].get("pool_prev") == 1
+    sub = tmp_path / "c"
+    sub.mkdir()
+    eng = mk_engine(sub, vmap={"P1": V})
+    run_trade(eng, [dict(r, virtual_quote_reserves=None) for r in _tape()])
+    assert trades(eng)[0]["v_src"]["entry"] == "vmap"
+
+
+def test_open_row_is_written_before_pricing_and_a_restart_recovers_open_positions(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    for r in rows[:11]:
+        eng.on_row(r)
+    pid = eng.buy("botA", "P1", 0.25, tms(100), 100, {"k": 1})
+    op = trades(eng, "open")
+    assert len(op) == 1 and op[0]["position_id"] == pid and op[0]["decision_ms"]["entry"] == tms(100) and trades(eng) == []
+    assert "written_ms" in op[0] and op[0]["stack"]["strand_rule"] == "total"
+    # restart: a new engine, empty memory
+    eng2 = ArenaEngine(tmp_path / "ledger", eng.registry_path, eng.cfg, sps_fn=lambda: 0.4, now_fn=lambda: 2**62)
+    assert eng2.recover() == 1 and eng2.positions[pid].restarted
+    for r in rows[11:51]:
+        eng2.on_row(r)
+    eng2.sell("botA", pid, 1.0, tms(140), 140)
+    assert {x["exclusion_reason"] for x in trades(eng2, "excluded")} == {"engine_restart"} and len(trades(eng2, "excluded")) == 3
+    assert eng2.recover() == 0  # nothing left open
+    # a position that is never sold stays open in the ledger (the scorer counts it as a restart orphan)
+    (tmp_path / "x").mkdir()
+    eng3 = mk_engine(tmp_path / "x")
+    for r in rows[:11]:
+        eng3.on_row(r)
+    eng3.buy("botA", "P1", None, tms(100), 100)
+    assert len(trades(eng3, "open")) == 1 and trades(eng3) == [] and trades(eng3, "excluded") == []
+
+
+def test_late_prints_are_counted_and_flagged_when_a_gap_overlaps(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
+    run_trade(eng, rows)
+    assert len(trades(eng)) == 3
+    eng.on_row(_row(500, 110, sig="late1"))  # slot 110 < need slot 203: arrives after the position was priced
+    eng.on_row(_row(501, 300, sig="fine"))  # a later print is not late
+    late = trades(eng, "late_print")
+    assert len(late) == 1 and late[0]["gap_overlap"] is False and eng.counters["late_prints"] == 1
+    eng.on_row({"type": "gap", "kind": "silence", "prog": "pumpswap", "data_loss": True, "slot": 300, "t_recv_ms": tms(300), "silent_ms": 200_000})
+    eng.on_row(_row(502, 111, sig="late2"))
+    assert [x["gap_overlap"] for x in trades(eng, "late_print")][-1] is True
+
+
+def test_within_slot_order_uses_tx_index_else_receive_order(tmp_path):
+    eng = mk_engine(tmp_path)
+    a, b, c = _row(1, 100, sig="zzz", t=tms(100) + 5), _row(2, 100, sig="aaa", t=tms(100) + 9), _row(3, 100, sig="mmm", t=tms(100) + 1)
+    for r in (a, b, c):
+        eng.on_row(r)
+    assert [k[2:] for k in eng.pools["P1"].keys] == [(tms(100) + 1, "mmm", 3), (tms(100) + 5, "zzz", 1), (tms(100) + 9, "aaa", 2)]  # (t_recv_ms, signature, event)
+    sub = tmp_path / "tx"
+    sub.mkdir()
+    eng = mk_engine(sub)
+    for r in (dict(a, tx=7), dict(b, tx=2), dict(c, tx=5)):
+        eng.on_row(dict(r, tx_index=r["tx"]))
+    assert [k[2] for k in eng.pools["P1"].keys] == [2, 5, 7]
+
+
+def test_duplicate_rows_are_dropped_and_out_of_order_rows_sorted(tmp_path):
+    eng = mk_engine(tmp_path)
+    rows = _tape()
     for r in rows[:10]:
         eng.on_row(r)
-    eng.on_row(rows[4])  # duplicate
+    eng.on_row(rows[4])
     eng.on_row(rows[10])
-    eng.on_row(rows[9])  # duplicate of an earlier one
+    eng.on_row(rows[9])
     assert eng.counters.get("rows_dup") == 2
-    h = eng.pools["P1"]
-    assert h.slot == sorted(h.slot)
+    assert eng.pools["P1"].slot == sorted(eng.pools["P1"].slot)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ ledger / registry
@@ -219,22 +458,25 @@ def _fake_row(tid="t1", bot="botA", ms=1_789_000_000_000, net=1.5):
     return {"schema": "arena_trade_v1", "trade_id": tid, "bot_id": bot, "decision_ms": {"entry": ms, "exit": ms + 1}, "legs": {"flat_1p3": {"net_lamports": net}}}
 
 
-def test_ledger_is_write_once_per_trade_id_and_fsynced(tmp_path, monkeypatch):
-    calls = []
-    real = __import__("os").fsync
-    monkeypatch.setattr("tools.arena_paper.os.fsync", lambda fd: (calls.append(fd), real(fd))[1])
+def test_ledger_is_write_once_per_trade_id_and_fsyncs_file_and_directory(tmp_path, monkeypatch):
+    kinds = []
+    real = os.fsync
+
+    def spy(fd):
+        kinds.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        return real(fd)
+
+    monkeypatch.setattr("tools.arena_paper.os.fsync", spy)
     led = Ledger(tmp_path)
     assert led.append(_fake_row()) is True
-    assert calls, "no fsync on append"
-    assert led.append(_fake_row()) is False  # identical bytes: no-op
+    assert kinds.count("file") == 1 and kinds.count("dir") >= 1  # the row, and the new directory entries
+    assert led.append(_fake_row()) is False  # identical bytes: no-op, no second write
+    assert kinds.count("file") == 1
     with pytest.raises(LedgerConflict):
         led.append(_fake_row(net=2.5))
     assert led.append(_fake_row("t2")) is True
     p = led.path_for("botA", "2026-09-10")
-    assert p.name == "trades-2026-09-10.jsonl"
-    lines = p.read_text().splitlines()
-    assert len(lines) == 2 and all(json.loads(x) for x in lines)
-    # a second Ledger object (another process) sees the first one's rows
+    assert p.name == "trades-2026-09-10.jsonl" and len(p.read_text().splitlines()) == 2
     assert Ledger(tmp_path).append(_fake_row()) is False
     with pytest.raises(LedgerConflict):
         Ledger(tmp_path).append(_fake_row(net=9.0))
@@ -248,23 +490,52 @@ def test_ledger_rejects_nan_and_inf(tmp_path):
     assert not list(tmp_path.glob("*/*"))
 
 
-def test_registry_refuses_a_changed_sha_or_clock(tmp_path):
+def test_registry_is_append_only_and_refuses_backdating_and_edits(tmp_path):
     reg = tmp_path / "bots.json"
-    register_bot("b1", "abc1234", 100, reg)
-    assert register_bot("b1", "abc1234", 100, reg)["frozen_sha"] == "abc1234"  # same again: no-op
+    e = register_bot("b1", "abc1234", 2_000, reg, deciding_stake=0.5, model_ids=["haiku-5.5@t0.2"], now_ms=1_000)
+    assert e["registered_at_ms"] == 1_000 and e["deciding_stake"] == 0.5 and e["model_ids"] == ["haiku-5.5@t0.2"] and e["stopped_at_ms"] is None
+    first = reg.read_bytes()
+    assert register_bot("b1", "abc1234", 2_000, reg, deciding_stake=0.5, model_ids=["haiku-5.5@t0.2"], now_ms=1_500)["registered_at_ms"] == 1_000  # no-op
+    assert reg.read_bytes() == first
+    for kw in ({"frozen_sha": "def5678"}, {"clock_start_ms": 3_000}, {"deciding_stake": 1.0}, {"model_ids": []}):
+        args = {"frozen_sha": "abc1234", "clock_start_ms": 2_000, "deciding_stake": 0.5, "model_ids": ["haiku-5.5@t0.2"], **kw}
+        with pytest.raises(ArenaRefused):
+            register_bot("b1", args["frozen_sha"], args["clock_start_ms"], reg, deciding_stake=args["deciding_stake"], model_ids=args["model_ids"], now_ms=1_000)
+    with pytest.raises(ArenaRefused, match="backdated"):
+        register_bot("b2", "abc1234", 999, reg, now_ms=1_000)  # clock earlier than the registration instant
     with pytest.raises(ArenaRefused):
-        register_bot("b1", "def5678", 100, reg)
+        register_bot("b3", "not-hex!", 5_000, reg, now_ms=1_000)
     with pytest.raises(ArenaRefused):
-        register_bot("b1", "abc1234", 200, reg)
+        register_bot("b3", "abc1234", 5_000, reg, deciding_stake=0.3, now_ms=1_000)
+    register_bot("b2", "abc1234", 1_000, reg, now_ms=1_000)
+    stop_bot("b1", 9_000, reg)
     with pytest.raises(ArenaRefused):
-        register_bot("b2", "not-hex!", 1, reg)
-    assert list(load_registry(reg)) == ["b1"]
+        stop_bot("b1", 9_500, reg)
+    assert reg.read_bytes().startswith(first)  # append-only: earlier lines are untouched
+    r = load_registry(reg)
+    assert list(r) == ["b1", "b2"] and r["b1"]["stopped_at_ms"] == 9_000 and r["b2"]["stopped_at_ms"] is None
+    assert len(reg.read_text().splitlines()) == 3 and all(json.loads(x) for x in reg.read_text().splitlines())
+
+
+def test_a_stopped_book_takes_no_new_buys(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    stop_bot("botA", tms(105), eng.registry_path)
+    with pytest.raises(ArenaRefused, match="stopped"):
+        eng.buy("botA", "P1", None, tms(109), 109)
+
+
+def test_a_decision_before_the_registered_clock_is_refused(tmp_path):
+    eng = mk_engine(tmp_path, clock=tms(150))
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    with pytest.raises(ArenaRefused, match="before_clock"):
+        eng.buy("botA", "P1", None, tms(109), 109)
 
 
 def test_curve_trip_miss_and_guard():
-    # completed curve (no real tokens left): the buy cannot fill -> one send, not filled
     pnl, state, filled = curve_trip(250e6, 85e9, 2.79e14, None, 85e9, 2.79e14, send=505_000, rent=2_039_280, h_in=0.0, h_out=0.0)
-    assert (pnl, state, filled) == (-505_000.0, "guarded", False)
-    # price 2x the decision reference: slippage guard
+    assert (pnl, state, filled) == (-505_000.0, "guarded", False)  # completed curve: the buy cannot fill
     pnl, state, filled = curve_trip(250e6, 40e9, 7e14, 1e-8, 40e9, 7e14, send=505_000, rent=2_039_280, h_in=0.0, h_out=0.0)
     assert state == "guarded" and not filled and math.isclose(pnl, -505_000)
