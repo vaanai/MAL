@@ -847,3 +847,21 @@ def test_the_guard_reference_is_the_price_at_the_slot_the_bot_saw_not_the_write_
     assert slow["calc"]["1p3"]["spot"] == post_price(99)  # the last print before the slot the bot saw
     assert slow["calc"]["1p3"]["spot"] != post_price(174)  # not the last print before the write-instant slot
     assert spots[0]["calc"]["1p3"]["spot"] == post_price(99)
+
+
+def test_two_identical_refused_buys_at_different_instants_are_two_distinct_rows(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    for call in (tms(109), tms(109) + 5_000):  # the same stamp, slot, pool and reason; the write instants differ
+        eng.now_fn = lambda c=call: c
+        with pytest.raises(ArenaRefused, match="no_prints"):
+            eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    refused = trades(eng, "refused")
+    assert len(refused) == 2 and len({r["trade_id"] for r in refused}) == 2
+    assert [r["decision_ms"]["entry"] for r in refused] == [tms(109), tms(109) + 5_000] and [r["write_lag_ms"]["entry"] for r in refused] == [0, 5_000]
+    # the same call at the same instant stays one row (a retry)
+    eng.now_fn = lambda: tms(109) + 5_000
+    with pytest.raises(ArenaRefused, match="no_prints"):
+        eng.buy("botA", "UNKNOWN", None, tms(109), 109)
+    assert len(trades(eng, "refused")) == 2
