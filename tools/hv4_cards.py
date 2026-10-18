@@ -196,7 +196,7 @@ class Predicate:
         return frozenset(t[0] for t in self.terms)
 
     def canonical(self) -> str:
-        return " AND ".join(f"{n} {o} {v:g}" if v == int(v) and abs(v) < 1e15 else f"{n} {o} {v!r}" for n, o, v in self.terms)
+        return " AND ".join(f"{n} {o} " + (f"{v:.9f}".rstrip("0").rstrip(".") or "0") for n, o, v in self.terms)
 
     def evaluate(self, values: Mapping[str, Any]) -> bool:
         """True iff every term holds on `values` (use numeric_fields(card)). A missing, null, boolean or non-finite value makes the term false."""
