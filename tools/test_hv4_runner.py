@@ -222,10 +222,12 @@ def test_latency_is_charged_from_the_instant_the_answer_arrived(tmp_path):
     assert call["ms"] == S1 + 700 == e["ms"]  # decision_ms = as_of + the reply's latency (sim clock)
     o = next(r for r in run.engine.ledger.read_bot("hv4-CON-L") if r["kind"] == "open")
     assert o["decision_ms"]["entry"] == S1 + 700 and o["bot_sol_in"] == e["size"]
-    # the 10 s stale rule: a reply later than that is discarded, nothing is bought
+    # The 10 s stale rule is the RUNNER's own policy (DESIGN section 3, enforced by hv4_validate): a reply later than that is discarded and nothing is
+    # sent to the engine. It does not rely on the engine refusing a stale stamp (quant-proof's ruling on #708 prices a stale stamp at the write instant).
     slow = make(tmp_path / "slow", latency_ms=11_000)
     slow.run(T_START, S1 + 30_000)
     assert rows_of(slow, "CON-L", "entry") == [] and any("stale" in s["reasons"] for s in rows_of(slow, "CON-L", "skip"))
+    assert not [r for r in slow.engine.ledger.read_bot("hv4-CON-L") if r.get("kind") == "open"]  # no order reached the engine
 
 
 def test_a_code_exit_uses_the_detection_instant(full):
@@ -315,19 +317,25 @@ def test_a_planted_future_print_is_refused_not_carded(tmp_path):
         run._card(POOLS[0], T, None)
 
 
-def test_exit_runs_the_as_of_check_and_logs_a_flag_and_the_engine_refuses_a_stale_sell(tmp_path):
+def test_exit_runs_the_as_of_check_and_logs_a_flag_whatever_the_engine_does_with_the_stamp(tmp_path):
     run = make(tmp_path)
     run.run(T_START, X + 10_000)
     pos = next(iter(run.books["CON-L"].open.values()))
     T = X + 12_000
     run.run(X + 10_000, T)
-    run.state.apply(future_row(0, T + 5))
-    assert run._sell(pos, "test", T, None) is False
+    run.state.apply(future_row(0, T + 5))  # the feed row is after the detection instant T: the as-of check at exit must see it
+    sold = run._sell(pos, "test", T, None)
     s = rows_of(run, "CON-L", "sell")[-1]
-    assert s["sell_route_flag"]["reason"] == "as_of_refused"  # the sell-route check could not be trusted, so it is flagged
-    r = rows_of(run, "CON-L", "order_refused")[-1]
-    assert r["side"] == "sell" and r["reason"] == "stale_decision" and pos.pid in run.books["CON-L"].open  # the position is not forgotten
-    assert run.counters["leakage_refused"] >= 1
+    assert s["sell_route_flag"]["reason"] == "as_of_refused"  # the sell-route check could not be trusted, so it is flagged; the sell is still attempted
+    assert s["ms"] == T and run.counters["leakage_refused"] >= 1
+    # The engine's answer to a stamp older than its feed high-water mark is arena_paper's rule and changes with #708's ruling (refuse today; price at the
+    # write instant after it). Either way the book matches what the engine did: a refused sell keeps the position, an accepted one closes it.
+    # TODO(#708 ruling lands): pin the accepted branch and drop the refused one.
+    if sold:
+        assert pos.pid not in run.books["CON-L"].open
+    else:
+        r = rows_of(run, "CON-L", "order_refused")[-1]
+        assert r["side"] == "sell" and pos.pid in run.books["CON-L"].open
 
 
 def test_a_normal_exit_logs_sell_route_flag_only_when_the_check_fails(full):
