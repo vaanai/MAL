@@ -104,6 +104,12 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 3. **Kalshi.**
    - **#1146 (candles, 7 cities, bounded windows):** when it completes, message the weather-mm agent a0f680d593d71124d to run the holdout once (hunt17/kalshi-weather-mm).
    - **#1145 (markets + fin/pubnum trades continuation):** when done, resume the kalshi-pubnum agent a844210f7b7536009 and the universe agent aafd58ba225514325.
+   - **Update 2026-10-18 17:2xZ:** #1145, #1164, #1166 and #1169 each hit their request cap.
+     - Done so far: gas 65 days, CA gas 55, diesel 64, KXGOLDH 26, KXWTIH 20. KXGOLDH is hourly with about 50 strikes per hour, so it is the request sink.
+     - **#1178** now fetches only the 9 DECLARE daily series that still had 0 days.
+     - When #1178 completes, start a FRESH pubnum agent on `hunt18/kalshi-pubnum` (DECLARE frozen; the old agent id has no context left), then the universe screen.
+     - Resume GOLDH/WTIH only if the agent needs them.
+     - Notebook n_77ZZVLqq7RtrwQ.
    - **Crypto trades continuation:** deferred.
    - **X-observable:** the press-lid and Elon-tweet series have 0 markets. Mention-market data is downloaded (#1141). The Grok prompt is on hold until a dev check of closed-press and cancel flags on mention markets (`hunt20/research/kalshi-x/REPORT.md`, with the manager update at its end).
 4. **EXP-027 (r4-b).**
