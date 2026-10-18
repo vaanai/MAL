@@ -336,6 +336,12 @@ def sim_sell_return(stake_sol: float, quote_eff_sol: Any) -> float | None:
     return x / (x + stake_sol)
 
 
+def _state_lag(snap: SnapshotLike, as_of_ms: int) -> float | None:
+    """T minus the state clock (ArenaState.now_ms, the newest row applied on the whole feed), or None when the snapshot has no usable clock."""
+    now = _num(snap.get("now_ms"))
+    return (as_of_ms - now) if now is not None else None
+
+
 def _age(snap: SnapshotLike) -> tuple[float | None, bool]:
     """(age in seconds, known). Known: the pool's create / pool_create row was on the tape. Otherwise the age is only a lower bound (time since
     the key was first seen), still sound for the 2 h minimum and the 24 h tiers, and the 7 d maximum can only be failed by the bound."""
@@ -366,8 +372,7 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
     add("venue_pumpswap", snap.get("prog"), "pumpswap", snap.get("prog") == "pumpswap")
     add("quote_wsol", snap.get("quote_wsol"), "True (None = unverified fails)", snap.get("quote_wsol") is True)
     wsol = snap.get("quote_wsol") is True  # before any SOL figure: a non-WSOL pool's reserves and volumes are not SOL, so they are never read
-    now = _num(snap.get("now_ms"))
-    lag = (as_of_ms - now) if now is not None else None
+    lag = _state_lag(snap, as_of_ms)
     add("state_fresh", lag, f"state clock within {STATE_LAG_MAX_MS} ms of T", lag is not None and lag <= STATE_LAG_MAX_MS)
     age, known = _age(snap)
     add("age_min", age, f">= {AGE_MIN_S} s", age is not None and _ge(age, AGE_MIN_S))
@@ -686,15 +691,21 @@ def sell_route(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     """Paper simulation of the live sell-route check, run before the buy (a veto) and again at exit (logged as sell_route_flag, fill still
     happens): (a) the token program and extensions allow a transfer; (b) >= 3 distinct non-creator sellers in the last 60 min (all sellers
     when the creator is unknown); (c) a constant-product sell of `stake` returns >= 90% of mark. Check (a) is the mint-fact half only; the
-    on-chain simulation is tools/hv4_chain.py's job."""
+    on-chain simulation is tools/hv4_chain.py's job. The runner calls this directly at exit, with no filters() in front, so it is closed on
+    its own: ok is False when quote_wsol is not True (no SOL figure is read) or the state clock is more than STATE_LAG_MAX_MS behind T."""
     bad, _ = _token_check(chain)
     pr = _norm_prints(prints)
     creator = snap.get("creator") if isinstance(snap.get("creator"), str) else None
     sellers = None if pr is None else len({w for t, _s, b, w in pr if not b and w != creator and t >= as_of_ms - 60 * MIN_MS})
-    res = snap.get("reserves") if isinstance(snap.get("reserves"), Mapping) else {}
+    wsol = snap.get("quote_wsol") is True
+    lag = _state_lag(snap, as_of_ms)
+    fresh = lag is not None and lag <= STATE_LAG_MAX_MS
+    res = snap.get("reserves") if wsol and isinstance(snap.get("reserves"), Mapping) else {}
     ret = sim_sell_return(stake, res.get("quote_eff_sol"))
-    ok = (not bad) and sellers is not None and sellers >= SELL_ROUTE_MIN_SELLERS and ret is not None and _ge(ret, SELL_ROUTE_MIN_RETURN)
-    return {"ok": bool(ok), "transfer_ok": not bad, "noncreator_sellers_60m": sellers, "sim_sell_return": ret, "stake": stake}
+    ok = (wsol and fresh and not bad and sellers is not None and sellers >= SELL_ROUTE_MIN_SELLERS and ret is not None
+          and _ge(ret, SELL_ROUTE_MIN_RETURN))
+    return {"ok": bool(ok), "transfer_ok": not bad, "noncreator_sellers_60m": sellers, "sim_sell_return": ret, "stake": stake,
+            "quote_wsol": wsol, "state_fresh": fresh, "state_lag_ms": lag}
 
 
 @dataclass(frozen=True)
@@ -748,6 +759,10 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
     checks["quote_wsol"] = snap.get("quote_wsol")
     if snap.get("quote_wsol") is not True:
         reasons.append("quote_not_wsol")
+    lag = _state_lag(snap, as_of_ms)
+    checks["state"] = {"lag_ms": lag, "max_ms": STATE_LAG_MAX_MS}
+    if lag is None or lag > STATE_LAG_MAX_MS:
+        reasons.append("state_stale")  # a feed stall is a veto here too, not only a filter: exit-time callers have no filters() in front
     # 1. mint or freeze authority non-null
     for k in ("mint_authority", "freeze_authority"):
         if not missing(k):

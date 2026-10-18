@@ -595,6 +595,32 @@ def test_sell_route_return_boundary():
     assert hc.sim_sell_return(0.25, None) is None
 
 
+def test_stale_state_is_a_veto_not_only_a_filter():
+    assert vetoes(snap=base_snap(now_ms=T - 10_000)).reasons == ()
+    only(vetoes(snap=base_snap(now_ms=T - 10_001)), "state_stale")
+    only(vetoes(snap=base_snap(now_ms=T - 60_000)), "state_stale")
+    s = base_snap()
+    del s["now_ms"]
+    only(vetoes(snap=s), "state_stale")
+    only(vetoes(snap=base_snap(now_ms="x")), "state_stale")
+    assert vetoes().checks["state"] == {"lag_ms": 500, "max_ms": hc.STATE_LAG_MAX_MS}
+
+
+def test_sell_route_is_closed_on_its_own_for_stale_state_and_non_wsol():
+    def sr(**over):
+        return hc.sell_route(base_snap(**over), base_prints(), base_chain(), as_of_ms=T)
+
+    assert sr()["ok"] and sr()["state_fresh"] and sr()["quote_wsol"] and sr(now_ms=T - 10_000)["ok"]
+    for stale in (T - 10_001, T - 60_000, T - 3_600_000, None, "x"):
+        out = sr(now_ms=stale)
+        assert not out["ok"] and not out["state_fresh"], stale
+    for flag in (None, False, 1, "True"):
+        out = sr(quote_wsol=flag)
+        assert not out["ok"] and not out["quote_wsol"] and out["sim_sell_return"] is None, flag  # reserves are not read
+    one_hour_old = base_snap(now_ms=T - 3_600_000, last_ms=T - 3_600_000, last_trade={"slot": 1, "t_ms": T - 3_600_000})
+    assert not hc.sell_route(one_hour_old, base_prints(), base_chain(), as_of_ms=T)["ok"]
+
+
 def test_veto_7_quote_drop_15m():
     snap = lambda q: base_snap(reserves=reserves(q))  # noqa: E731
     only(vetoes(snap=snap(70.0), chain=base_chain(quote_sol_15m_ago=100.0)), "quote_drop_15m")  # down exactly 30%
