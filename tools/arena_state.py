@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from tools.arena_zst import CompactError, open_zst
 from tools.paper_curve_math import curve_progress
 
 LAMPORTS = 1_000_000_000
@@ -73,6 +74,15 @@ def pumpswap_post(q_eff_pre: float, b_pre: float, buy: bool, sol: int, tok: int,
     else:
         dq = 0.0
     return q_eff_pre + dq, b_post
+
+
+class _Hour:
+    """Read position in one hour: bytes taken from its .jsonl (the same offset in the decompressed .jsonl.zst), the zst generator, done flag."""
+
+    __slots__ = ("off", "gen", "done")
+
+    def __init__(self) -> None:
+        self.off, self.gen, self.done = 0, None, False
 
 
 class Pool:
@@ -122,8 +132,7 @@ class ArenaState:
         self.now_ms = 0
         self._pools: dict[str, Pool] = {}
         self._by_mint: dict[str, set[str]] = {}
-        self._offsets: dict[str, int] = {}
-        self._done: set[str] = set()
+        self._hours: dict[str, _Hour] = {}  # hour key -> read position
         self._buf: collections.deque = collections.deque()
         self._last_sweep = 0
         self._gap_log: collections.deque = collections.deque(maxlen=GAP_LOG_MAX)  # (t_ms, prog, kind, data_loss)
@@ -137,56 +146,111 @@ class ArenaState:
 
     # ---- file following ------------------------------------------------------------------------------------
     @staticmethod
-    def _hour_start_ms(path: Path) -> int | None:
+    def _hour_start_ms(key: str) -> int | None:
         try:
-            h = path.name[len("tape-"):-len(".jsonl")]
-            return int(datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+            return int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
         except ValueError:
             return None
 
-    def _files(self) -> list[Path]:
+    def _hour_files(self) -> list[tuple[str, Path | None, Path | None]]:
+        """(hour key, .jsonl or None, .jsonl.zst or None) for every hour that can hold rows at or after start_ms, oldest first."""
+        found: dict[str, list[Path | None]] = {}
+        for p in self.dir.glob("tape-*.jsonl"):
+            found.setdefault(p.name[len("tape-"):-len(".jsonl")], [None, None])[0] = p
+        for p in self.dir.glob("tape-*.jsonl.zst"):
+            found.setdefault(p.name[len("tape-"):-len(".jsonl.zst")], [None, None])[1] = p
         out = []
-        for p in sorted(self.dir.glob("tape-*.jsonl")):
-            h = self._hour_start_ms(p)
+        for key in sorted(found):
+            h = self._hour_start_ms(key)
             if h is not None and h + 3_600_000 > self.start_ms:
-                out.append(p)
+                out.append((key, found[key][0], found[key][1]))
         return out
 
-    def _fill(self) -> None:
-        """Read the next chunk of complete lines from the files (oldest first; the newest two are re-checked every poll for hour rollover)."""
-        files = self._files()
-        for idx, p in enumerate(files):
-            name = p.name
-            if name in self._done:
+    def _ingest(self, data: bytes) -> None:
+        for ln in data.split(b"\n"):
+            if not ln.strip():
                 continue
-            off = self._offsets.get(name, 0)
             try:
-                size = p.stat().st_size
-            except OSError:
+                row = json.loads(ln)
+            except ValueError:
+                self.counters["bad_lines"] += 1
                 continue
-            if size > off:
-                with p.open("rb") as fh:
-                    fh.seek(off)
-                    data = fh.read(min(size - off, READ_CHUNK))
+            if isinstance(row, dict) and isinstance(row.get("t_recv_ms"), int):
+                self._buf.append(row)
+            else:
+                self.counters["bad_lines"] += 1
+
+    @staticmethod
+    def _zst_chunks(path: Path, skip: int) -> Iterator[bytes]:
+        """Complete lines of a .jsonl.zst in chunks of about READ_CHUNK bytes, after skipping the first `skip` decompressed bytes (the bytes a reader
+        already took from the .jsonl before it was compacted; compaction is byte-exact, so the offset carries over)."""
+        r = open_zst(path)
+        try:
+            left = skip
+            while left > 0:
+                b = r.read(min(left, 1 << 20))
+                if not b:
+                    break
+                left -= len(b)
+            carry = b""
+            while True:
+                b = r.read(READ_CHUNK)
+                if not b:
+                    break
+                data = carry + b
                 cut = data.rfind(b"\n")
-                if cut >= 0:  # a partial last line is left for the next poll
-                    self._offsets[name] = off + cut + 1
-                    for ln in data[:cut].split(b"\n"):
-                        if not ln.strip():
-                            continue
-                        try:
-                            row = json.loads(ln)
-                        except ValueError:
-                            self.counters["bad_lines"] += 1
-                            continue
-                        if isinstance(row, dict) and isinstance(row.get("t_recv_ms"), int):
-                            self._buf.append(row)
-                        else:
-                            self.counters["bad_lines"] += 1
+                if cut < 0:
+                    carry = data
+                    continue
+                carry = data[cut + 1:]
+                yield data[:cut]
+            if carry.strip():
+                yield carry
+        finally:
+            r.close()
+
+    def _fill(self) -> None:
+        """Read the next chunk of complete lines: a live .jsonl by byte offset, a compacted .jsonl.zst by streaming decompress. Oldest hour first; the
+        newest two hours are re-checked every poll (rollover, late rows). While both files of an hour exist (compaction verifying) the .jsonl is used."""
+        hours = self._hour_files()
+        for idx, (key, j, z) in enumerate(hours):
+            st = self._hours.setdefault(key, _Hour())
+            if st.done:
+                continue
+            if j is not None and st.gen is None:
+                try:
+                    size = j.stat().st_size
+                except OSError:
+                    j = None  # compacted between the listing and now
+                else:
+                    if size > st.off:
+                        with j.open("rb") as fh:
+                            fh.seek(st.off)
+                            data = fh.read(min(size - st.off, READ_CHUNK))
+                        cut = data.rfind(b"\n")
+                        if cut >= 0:  # a partial last line is left for the next poll
+                            st.off += cut + 1
+                            self._ingest(data[:cut])
+                        if self._buf:
+                            return  # apply this chunk before reading further
+                    elif idx < len(hours) - 2:
+                        st.done = True  # fully read and not one of the two newest hours: finished
+                    continue
+            if z is not None:  # the .jsonl is gone (closed hour, compacted) or never existed
+                try:
+                    if st.gen is None:
+                        st.gen = self._zst_chunks(z, st.off)
+                    data = next(st.gen, None)
+                except (CompactError, OSError):
+                    self.counters["zst_errors"] += 1
+                    st.gen, st.done = None, True
+                    continue
+                if data is None:
+                    st.gen, st.done = None, True
+                    continue
+                self._ingest(data)
                 if self._buf:
-                    return  # apply this chunk before reading further
-            elif idx < len(files) - 2:
-                self._done.add(name)  # fully read and not one of the two newest hours: finished
+                    return
 
     def poll(self, max_rows: int | None = None, until_ms: int | None = None) -> int:
         """Apply new rows; returns how many were applied. until_ms: stop before the first row later than it (that row stays queued)."""

@@ -273,7 +273,8 @@ def test_end_to_end_two_programs_two_sockets_rollover_gap_and_dedup(tmp_path: Pa
     net = ProgNet({af.PUMPSWAP_PROGRAM: swap_script, af.PUMP_BONDING_PROGRAM: fun_script})
 
     async def go() -> af.Feed:
-        feed = af.Feed(tmp_path, ["wss://a.test", "wss://b.test"], {"pumpswap": 2, "pumpfun": 2}, wall=lambda: net.now_ms, stagger_s=0.0, rpc_url=None)
+        feed = af.Feed(tmp_path, ["wss://a.test", "wss://b.test"], {"pumpswap": 2, "pumpfun": 2}, wall=lambda: net.now_ms, stagger_s=0.0, rpc_url=None,
+                       compress=False)  # compaction has its own tests (tools/test_arena_zst.py); here the two hour files must stay as written
         with patch.object(trade_source.websockets, "connect", net.connect), patch.object(trade_source, "time_ns_ms", lambda: net.now_ms):
             await feed.run(max_seconds=1.5)
         feed.writer.close()

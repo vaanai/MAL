@@ -45,8 +45,10 @@ import json
 import logging
 import os
 import shutil
+import queue
 import signal
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -66,6 +68,7 @@ from observe.trade_decode import (
 )
 from observe.trade_source import DEFAULT_PUBLIC_WS, MultiSocketLogsSource, RawNotice, SeenSet
 from tools.h5_shadow import DEFAULT_RPC, GAP_SLOTS, SILENCE_S, check_rpc_url, clean, code_sha, common_down, feed_snapshot, redact_argv, write_status
+from tools.arena_zst import compact_file, zstd_path
 from tools.pump_history_backfill import fetch_pool_mints, lifecycle_from_logs
 
 log = logging.getLogger("mal.arena_feed")
@@ -91,6 +94,10 @@ ERRORS_MAX_BYTES = 2_000_000
 POOL_MINTS_MAX = 50_000
 NAME_MAX, SYMBOL_MAX = 32, 16
 DISK_CHECK_S = 30.0
+MIN_FREE_PCT_DEFAULT = 15.0
+COMPACT_GRACE_MS = 120_000  # a closed hour is compacted this long after its end (a row can reach the writer a little late)
+COMPACT_SCAN_S = 30.0
+COMPACT_TRIES = 3
 RESOLVE_S = 5.0  # pool resolver: one getMultipleAccounts (public RPC) per this many seconds, up to RESOLVE_BATCH pools
 RESOLVE_BATCH = 100
 RESOLVE_TRIES = 3
@@ -221,6 +228,98 @@ def rows_from_notice(note: RawNotice, pool_mints: dict[str, tuple[str, str]], co
 
 
 # ---- output ---------------------------------------------------------------------------------------------------
+def hour_start_ms(name: str) -> int | None:
+    """UTC start (ms) of the hour in a tape file name (tape-<YYYY-MM-DDTHH>.jsonl[.zst]); None for any other name."""
+    if not name.startswith("tape-"):
+        return None
+    try:
+        return int(datetime.strptime(name[5:18], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+class Compactor:
+    """Background thread: compress each CLOSED hour (tape-<hour>.jsonl -> .jsonl.zst) and delete the source after it verifies (tools.arena_zst).
+    Ingest never waits for it. A leftover *.zst.tmp from a killed run is removed at start; closed hours left by an earlier run are picked up by
+    the first scan. A hour is closed once its end plus COMPACT_GRACE_MS is past (the wall clock) and the writer does not hold it."""
+
+    def __init__(self, out_dir: Path, wall: Callable[[], int] = now_ms, *, grace_ms: int = COMPACT_GRACE_MS, compact: Callable[[Path], dict] = compact_file) -> None:
+        self.dir, self.wall, self.grace_ms, self._compact = out_dir, wall, grace_ms, compact
+        self.q: queue.Queue = queue.Queue()
+        self.queued: set[str] = set()
+        self.tries: dict[str, int] = {}
+        self.lock = threading.Lock()
+        self.stats: dict[str, Any] = {"enabled": True, "files": 0, "failed": 0, "bytes_in": 0, "bytes_out": 0, "last_ratio": None, "last_error": None}
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_scan = float("-inf")
+
+    def start(self) -> None:
+        for p in self.dir.glob("tape-*.jsonl.zst.tmp"):
+            p.unlink(missing_ok=True)
+        self._thread = threading.Thread(target=self._run, name="arena-compactor", daemon=True)
+        self._thread.start()
+
+    def eligible(self, now: int, current_name: str | None) -> list[Path]:
+        out = []
+        for p in sorted(self.dir.glob("tape-*.jsonl")):
+            h = hour_start_ms(p.name)
+            if h is None or p.name == current_name or p.name in self.queued or self.tries.get(p.name, 0) >= COMPACT_TRIES:
+                continue
+            if h + 3_600_000 + self.grace_ms <= now:
+                out.append(p)
+        return out
+
+    def scan(self, now: int, current_name: str | None, *, force: bool = False) -> int:
+        if not force and time.monotonic() - self._last_scan < COMPACT_SCAN_S:
+            return 0
+        self._last_scan = time.monotonic()
+        found = self.eligible(now, current_name)
+        for p in found:
+            self.queued.add(p.name)
+            self.q.put(p)
+        return len(found)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                p = self.q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                info = self._compact(p)
+                with self.lock:
+                    self.stats["files"] += 1
+                    self.stats["bytes_in"] += info["bytes_in"]
+                    self.stats["bytes_out"] += info["bytes_out"]
+                    self.stats["last_ratio"] = info["ratio"]
+            except Exception as exc:  # noqa: BLE001 - the source is kept; retried up to COMPACT_TRIES scans
+                self.tries[p.name] = self.tries.get(p.name, 0) + 1
+                with self.lock:
+                    self.stats["failed"] += 1
+                    self.stats["last_error"] = type(exc).__name__
+                log.warning("compact failed class=%s", type(exc).__name__)
+            finally:
+                self.queued.discard(p.name)
+
+    def drain(self, timeout: float = 120.0) -> None:
+        """Wait until the queue is empty and idle (tests, shutdown)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end and (not self.q.empty() or self.queued):
+            time.sleep(0.05)
+
+    def stop(self, timeout: float = 30.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            s = dict(self.stats)
+        s["queued"] = len(self.queued)
+        return s
+
+
 class TapeWriter:
     """Hourly tape-<UTC hour of t_recv_ms>.jsonl, strict JSON, flushed per line. Counts rows by (prog, type)."""
 
@@ -229,6 +328,8 @@ class TapeWriter:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._fh = None
         self._name: str | None = None
+        self.latest_t = 0
+        self.late_to_current = 0
         self.lines = 0
         self.paused = False
         self.dropped = 0
@@ -239,11 +340,26 @@ class TapeWriter:
     def name_for(t_ms: int) -> str:
         return "tape-" + datetime.fromtimestamp(t_ms // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"
 
+    @property
+    def current_name(self) -> str | None:
+        return self._name
+
+    def release_stale(self, now_ms_: int, grace_ms: int = COMPACT_GRACE_MS) -> None:
+        """Close the open file when its hour ended more than grace_ms ago (no row has needed it since), so the compactor may replace it."""
+        if self._fh and self._name and hour_start_ms(self._name) is not None and hour_start_ms(self._name) + 3_600_000 + grace_ms <= now_ms_:
+            self._fh.close()
+            self._fh, self._name = None, None
+
     def write(self, rec: dict[str, Any], *, force: bool = False) -> None:
         if self.paused and not force:
             self.dropped += 1
             return
-        name = self.name_for(int(rec["t_recv_ms"]))
+        t = int(rec["t_recv_ms"])
+        self.latest_t = max(self.latest_t, t)
+        name = self.name_for(t)
+        if name != self.name_for(self.latest_t) and (self.dir / (name + ".zst")).exists():
+            name = self.name_for(self.latest_t)  # a row from an hour that is already compacted goes to the newest hour's file
+            self.late_to_current += 1
         if self._name != name:
             if self._fh:
                 self._fh.close()
@@ -379,14 +495,19 @@ def build_source(prog: str, ws_urls: Sequence[str], sockets: int, commitment: st
 class Feed:
     """The arena feed engine: sources in, tape rows out. One instance per process."""
 
-    def __init__(self, out_dir: Path, ws_urls: Sequence[str], sockets: dict[str, int], commitment: str = "confirmed", *, min_free_pct: float = 10.0,
+    def __init__(self, out_dir: Path, ws_urls: Sequence[str], sockets: dict[str, int], commitment: str = "confirmed", *, min_free_pct: float = MIN_FREE_PCT_DEFAULT,
                  stagger_s: float = 3.0, wall: Callable[[], int] = now_ms, disk_usage: Callable[[Path], Any] = shutil.disk_usage,
-                 rpc_url: str | None = DEFAULT_RPC, fetch: Callable[[str, list[str]], dict] = fetch_pool_mints) -> None:
+                 rpc_url: str | None = DEFAULT_RPC, fetch: Callable[[str, list[str]], dict] = fetch_pool_mints, compress: bool = True,
+                 compact: Callable[[Path], dict] = compact_file) -> None:
+        if compress and zstd_path() is None:
+            raise ValueError("the zstd CLI is not on PATH: the closed hours cannot be compacted (pass --no-compress to run without)")
+        self.compress = compress
         self.rpc_url, self.fetch = (check_rpc_url(rpc_url) if rpc_url else None), fetch  # rpc_url None = pool resolver off
         self.unresolved: collections.OrderedDict[str, list] = collections.OrderedDict()  # pool -> [first_ms, tries]
         self.out_dir, self.ws_urls, self.sockets, self.commitment = out_dir, [check_ws_url(u) for u in ws_urls], dict(sockets), commitment
         self.min_free_pct, self.stagger_s, self.wall, self.disk_usage = min_free_pct, stagger_s, wall, disk_usage
         self.writer = TapeWriter(out_dir)
+        self.compactor = Compactor(out_dir, wall, compact=compact)
         self.errlog = ErrorLog(out_dir / ERRORS_NAME)
         self.started_ms = wall()
         self.watch = {p: ProgWatch(p, self.started_ms) for p in PROG_PROGRAM}
@@ -445,6 +566,9 @@ class Feed:
             if snap is not None:
                 for g in w.note_feed_stats(snap, now):
                     self.emit(g, force=True)
+        if self.compress:
+            self.writer.release_stale(now)
+            self.compactor.scan(now, self.writer.current_name)
         self.check_disk(now)
         if time.monotonic() - self.last_hb >= HB_S or self.stop.is_set():
             self.last_hb = time.monotonic()
@@ -487,7 +611,8 @@ class Feed:
             "lines_written": w.lines, "rows_dropped_disk": w.dropped, "writing_paused": w.paused, "disk_free_pct": self.disk_free_pct,
             "dedup_dropped": {p: s.stats.dedup_dropped for p, s in self.sources.items()}, "cross_dedup_dropped": self.counters["cross_dedup_dropped"],
             "decode_errors": self.counters["decode_errors"], "counters": dict(self.counters), "errors_logged_bytes": self.errlog.bytes,
-            "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(),
+            "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(), "rows_late_to_current_hour": w.late_to_current,
+            "compaction": {**self.compactor.snapshot(), "enabled": self.compress},
         }
 
     def heartbeat(self, now: int) -> None:
@@ -587,6 +712,8 @@ class Feed:
         hk = asyncio.create_task(self.housekeeping())
         cons = asyncio.create_task(self.consume())
         res = asyncio.create_task(self.resolve_loop()) if self.rpc_url else None
+        if self.compress:
+            self.compactor.start()
         if max_seconds is not None:
             asyncio.get_running_loop().call_later(max_seconds, self.stop.set)
         await self.stop.wait()
@@ -597,6 +724,8 @@ class Feed:
         await hk
         if res is not None:
             await res
+        if self.compress:
+            await asyncio.get_running_loop().run_in_executor(None, self.compactor.stop)
 
 
 async def run_live(args: argparse.Namespace) -> int:
@@ -607,13 +736,13 @@ async def run_live(args: argparse.Namespace) -> int:
     if rpc_url:
         check_rpc_url(rpc_url)
     feed = Feed(out_dir, ws_urls, {"pumpswap": args.sockets_pumpswap, "pumpfun": args.sockets_pumpfun}, args.commitment, min_free_pct=args.min_free_pct,
-                rpc_url=rpc_url)
+                rpc_url=rpc_url, compress=not args.no_compress)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, feed.stop.set)
     feed.emit(feed.meta_row("start", schema=SCHEMA, code_sha=code_sha(), argv=redact_argv(sys.argv[1:]), out_dir=str(out_dir), pid=os.getpid(),
                             sockets=feed.sockets, commitment=args.commitment, keys="none", sends="none", gap_slots=GAP_SLOTS, silence_s=SILENCE_S,
-                            min_free_pct=args.min_free_pct), force=True)
+                            min_free_pct=args.min_free_pct, compress=feed.compress), force=True)
     try:
         await feed.run(max_seconds=args.max_seconds)
     finally:
@@ -633,7 +762,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sockets-pumpswap", type=int, default=2, help="redundant logsSubscribe sockets on the PumpSwap program (default 2)")
     ap.add_argument("--sockets-pumpfun", type=int, default=2, help="redundant logsSubscribe sockets on the pump.fun bonding-curve program (default 2)")
     ap.add_argument("--commitment", default="confirmed", choices=("processed", "confirmed", "finalized"))
-    ap.add_argument("--min-free-pct", type=float, default=10.0, help="stop writing rows while the out-dir filesystem has less free space than this (percent)")
+    ap.add_argument("--min-free-pct", type=float, default=MIN_FREE_PCT_DEFAULT, help="stop writing rows while the out-dir filesystem has less free space than this (percent; default %(default)s)")
+    ap.add_argument("--no-compress", action="store_true", help="do not compact closed hours to .jsonl.zst (default: compact in a background thread; needs the zstd CLI)")
     ap.add_argument("--rpc-url", default=DEFAULT_RPC, help="public HTTPS RPC for the pool resolver (default %(default)s); Helius URLs are refused")
     ap.add_argument("--no-resolve", action="store_true", help="turn the pool resolver off (then PumpSwap pools whose CreatePool was not seen keep mint null)")
     ap.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke test)")
