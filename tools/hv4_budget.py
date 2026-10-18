@@ -34,8 +34,8 @@ from tools import hv4_arms as arms
 from tools.haiku_caller import Ledger, LedgerError
 
 DEFAULT_ROOT = Path("/data/mal/arena/haiku-v4")
-# A call that cannot possibly fit is refused before the caller is built. The entry call's worst-case reserve is about 0.003 USD
-# (see test_hv4_prompts); below this much headroom there is no use trying.
+# A call that cannot possibly fit is refused before the caller is built. A one-card entry call reserves about 0.0012 USD at worst
+# case, a four-card call more (the reserve is bytes-based, see test_hv4_prompts); below this much headroom there is no use trying.
 MIN_CALL_USD = 0.002
 _EPS = 1e-9
 

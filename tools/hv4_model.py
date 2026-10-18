@@ -134,14 +134,16 @@ class StubModel:
         if pf is not None and self.cost_usd > 0:
             led = Ledger(pf.ledger_path)
             with led.locked(exclusive=True):
-                if not (led.spent() + self.cost_usd <= pf.budget_usd):
-                    self.guard.record_refusal(pf, now_ms)
-                    return ModelReply(error="budget_exceeded")
-                fd = led.open_append()
-                try:
-                    Ledger.append_row(fd, {"cost_usd": self.cost_usd, "ts_ms": now_ms, "source": "stub", "request_sha256": rsha})
-                finally:
-                    os.close(fd)
+                fits = led.spent() + self.cost_usd <= pf.budget_usd
+                if fits:
+                    fd = led.open_append()
+                    try:
+                        Ledger.append_row(fd, {"cost_usd": self.cost_usd, "ts_ms": now_ms, "source": "stub", "request_sha256": rsha})
+                    finally:
+                        os.close(fd)
+            if not fits:  # outside the lock: the group's spend is read under a shared flock on the same file
+                self.guard.record_refusal(pf, now_ms)
+                return ModelReply(error="budget_exceeded")
         if isinstance(item, ModelReply):
             return item
         text = item if isinstance(item, str) else ""
