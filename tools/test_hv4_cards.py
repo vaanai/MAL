@@ -780,6 +780,35 @@ def test_tape_fields_on_the_card():
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
+# quote_wsol: no SOL figure is read from a pool unless quote_wsol is True (27% of PumpSwap pools are not WSOL-quoted)
+# ---------------------------------------------------------------------------------------------------------------------------------------
+SOL_CHECKS = ("quote_floor", "vol_60m", "impact_025")
+
+
+@pytest.mark.parametrize("flag", [False, None])
+def test_non_wsol_pool_reads_no_sol_figure(flag):
+    s = base_snap(quote_wsol=flag)  # reserves, volumes and price all look like a great SOL pool; none of it may be believed
+    fr = hc.filters(s, as_of_ms=T)
+    assert not fr.passed and not fr.checks["quote_wsol"]["ok"] and fr.max_stake is None
+    for name in SOL_CHECKS:
+        assert fr.checks[name]["value"] is None and not fr.checks[name]["ok"], name
+    f = hc.features(s, base_prints(), as_of_ms=T)
+    assert {k for k, v in f.items() if v is not None} == {"age_s", "last_print_s"}
+    res = vetoes(snap=s)
+    assert res.reasons[0] == "quote_not_wsol" and res.checks["quote_wsol"] is flag
+    with pytest.raises(hc.CardRefused) as e:
+        card(snap=s)
+    assert "quote_wsol" in e.value.reasons and "quote_not_wsol" in e.value.reasons
+    assert not hc.setups(f, pool_id=POOL, as_of_ms=T)
+
+
+def test_wsol_true_is_required_exactly():
+    for truthy in (1, "True", "yes", [1]):
+        assert not hc.filters(base_snap(quote_wsol=truthy), as_of_ms=T).passed
+    assert vetoes(snap=base_snap(quote_wsol=True)).reasons == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
 # contract with the real ArenaState (the arena-feed branch). hv4_cards never imports it; this test runs only where it exists.
 # ---------------------------------------------------------------------------------------------------------------------------------------
 def test_real_arena_state_snapshot_feeds_a_card(tmp_path):
@@ -808,6 +837,8 @@ def test_real_arena_state_snapshot_feeds_a_card(tmp_path):
     scan = st.now_ms + 500
     snap = st.snapshot(POOL)
     assert isinstance(snap, hc.SnapshotLike)
+    assert set(hc.SNAPSHOT_KEYS) <= set(snap), set(hc.SNAPSHOT_KEYS) - set(snap)  # the protocol still mirrors the real snapshot
+    assert snap["quote_wsol"] is True and "candle_retention_min" not in snap  # absent: the 240-min / 6 h fields stay null
     fr = hc.filters(snap, as_of_ms=scan)
     assert fr.checks["quote_wsol"]["ok"] and fr.checks["age_min"]["ok"] and fr.checks["prints_15m"]["ok"] and fr.checks["state_fresh"]["ok"]
     prints = list(st.pool(POOL).events)

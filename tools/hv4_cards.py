@@ -104,17 +104,24 @@ class CardRefused(Exception):
 
 @runtime_checkable
 class SnapshotLike(Protocol):
-    """Mirrors tools.arena_state.ArenaState.snapshot(key): a read-only mapping. Keys this module reads (all others are ignored):
-    id, prog ("pumpswap"), mint, now_ms, quote_wsol (True | False | None), price, reserves{quote_sol, quote_eff_sol, v_sol, base_tokens},
-    created_known, age_s, age_since_first_seen_s, last_ms, last_slot, last_trade{t_ms}, n_trades, windows{"1m","5m","15m","60m"}{buy_sol,
-    sell_sol, n_buys, n_sells, unique_signers, net_flow_sol}, top_net{buyers[], sellers[]}{trader, net_sol}, creator, creator_net_sol, ath_ms,
-    drawdown_from_ath, name, symbol, candles[{t_min_ms, o, h, l, c, vol_sol}], and optionally candle_retention_min (default 120)."""
+    """Mirrors tools.arena_state.ArenaState.snapshot(key) at claude/arena-feed (PR 709, head 43d21ff): a read-only mapping. The keys this module
+    reads are SNAPSHOT_KEYS (all others are ignored); candle_retention_min is optional and absent there (ArenaState keeps CANDLE_MIN = 120).
+
+    quote_wsol is True | False | None (None = the pool's quote mint was never verified). Every SOL-denominated figure (reserves, window SOL,
+    price, impact, candle volume) is in the pool's quote unit, which is SOL only when quote_wsol is True. This module therefore treats a
+    pool as having NO SOL figures unless `quote_wsol is True`: filters() fails it before evaluating any SOL check, features() returns only
+    age and last-print age, and code_vetoes() adds `quote_not_wsol`."""
 
     def get(self, key: str, default: Any = None) -> Any: ...
 
     def __getitem__(self, key: str) -> Any: ...
 
 
+SNAPSHOT_KEYS = (  # every ArenaState.snapshot key this module reads; the contract test checks them against the real snapshot
+    "id", "prog", "mint", "now_ms", "quote_wsol", "price", "reserves", "created_ms", "created_known", "age_s", "age_since_first_seen_s", "last_ms",
+    "last_slot", "last_trade", "windows", "top_net", "creator", "creator_net_sol", "ath_ms", "complete_ms", "origin_create_ms", "drawdown_from_ath",
+    "name", "symbol", "candles",
+)
 PrintLike = Sequence[Any]  # (t_ms: int, sol_lamports: int, is_buy: bool, trader: str); tools.arena_state.Pool.events items
 
 
@@ -345,16 +352,17 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
 
     add("venue_pumpswap", snap.get("prog"), "pumpswap", snap.get("prog") == "pumpswap")
     add("quote_wsol", snap.get("quote_wsol"), "True (None = unverified fails)", snap.get("quote_wsol") is True)
+    wsol = snap.get("quote_wsol") is True  # before any SOL figure: a non-WSOL pool's reserves and volumes are not SOL, so they are never read
     now = _num(snap.get("now_ms"))
     lag = (as_of_ms - now) if now is not None else None
     add("state_fresh", lag, f"state clock within {STATE_LAG_MAX_MS} ms of T", lag is not None and lag <= STATE_LAG_MAX_MS)
     age, known = _age(snap)
     add("age_min", age, f">= {AGE_MIN_S} s", age is not None and _ge(age, AGE_MIN_S))
     add("age_max", age, f"<= {AGE_MAX_S} s", age is not None and _le(age, AGE_MAX_S))
-    res = snap.get("reserves") if isinstance(snap.get("reserves"), Mapping) else {}
+    res = snap.get("reserves") if wsol and isinstance(snap.get("reserves"), Mapping) else {}
     q = _num(res.get("quote_sol"))
     add("quote_floor", q, f">= {QUOTE_FLOOR_SOL} SOL real quote", q is not None and _ge(q, QUOTE_FLOOR_SOL))
-    w15, w60 = _win(snap, "15m"), _win(snap, "60m")
+    w15, w60 = _win(snap, "15m"), (_win(snap, "60m") if wsol else {})
     n15 = ((_num(w15.get("n_buys")) or 0) + (_num(w15.get("n_sells")) or 0)) if w15 else None
     add("prints_15m", n15, f">= {PRINTS_15M_MIN}", n15 is not None and n15 >= PRINTS_15M_MIN)
     sg = _num(w15.get("unique_signers")) if w15 else None
@@ -459,11 +467,13 @@ def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms
     assert_as_of(snap, as_of_ms, prints=pr)
     f: dict[str, Any] = {k: None for k in FEATURE_FIELDS}
     f["age_s"] = _age(snap)[0]
+    last = _num(snap.get("last_ms"))
+    f["last_print_s"] = (as_of_ms - last) / 1000.0 if last is not None else None
+    if snap.get("quote_wsol") is not True:
+        return f  # no SOL figure of a non-WSOL (or unverified) pool is read: every other field stays None
     res = snap.get("reserves") if isinstance(snap.get("reserves"), Mapping) else {}
     qe = _num(res.get("quote_eff_sol"))
     f["quote_sol"], f["quote_eff_sol"], f["price"] = _num(res.get("quote_sol")), qe, _num(snap.get("price"))
-    last = _num(snap.get("last_ms"))
-    f["last_print_s"] = (as_of_ms - last) / 1000.0 if last is not None else None
     for tag, s in (("025", 0.25), ("050", 0.5), ("100", 1.0)):
         f[f"impact_rt_{tag}"] = impact_rt(s, qe)
     f["max_stake_impact"] = max_stake_by_impact(qe)
@@ -701,6 +711,9 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
         return bool(gone)
 
     missing("as_of_ms", "as_of_slot")
+    checks["quote_wsol"] = snap.get("quote_wsol")
+    if snap.get("quote_wsol") is not True:
+        reasons.append("quote_not_wsol")
     # 1. mint or freeze authority non-null
     for k in ("mint_authority", "freeze_authority"):
         if not missing(k):
