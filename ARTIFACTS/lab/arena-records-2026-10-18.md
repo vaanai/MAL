@@ -26,8 +26,10 @@ Any later change to these files is disclosed in every read it touches, and needs
   - Parity set: `tools/fixtures/arena_h5/parity_cases.jsonl` sha256 `934bd08a1dbcb08248980fe77e53812d1d8ad9225344842f3c22fe6353c43614`.
   - Expected: `tools/fixtures/arena_h5/parity_expected.jsonl` sha256 `60f6f3ae2af8ac7412e9a031a34f8fb523094b58038390a4c1bd90a3e57ab72a`.
   - `PARITY.json` sha256 `023acd61db69fd87c7f5841a0850d44bb2346a9bd7c968bd7e41cd3b31a81f82`.
-  - Result: 1,838 replay cases plus 14 edge cases, 0 mismatches under both strand rules (PR #707).
-- **Arena engine** (`tools/arena_paper.py` and `tools/arena_stack.py`). Reference: hunt8 `sc.py` and `tools/latency_curve.py` (PR #708).
+  - Result: 1,838 cases in total (1,824 from the replay and 14 edge cases), 0 mismatches under both strand rules (PR #707).
+- **Arena engine** (`tools/arena_paper.py` and `tools/arena_stack.py`). References (PR #708):
+  - PumpSwap: hunt8 `sc.py`, not in the repo, at host path `/data/mal/hunt-1008/push-1016/hunt8/second-book/h/sc.py` on mal-research-0, sha256 `161ee53576e6feb399f08ae11a599333e82f09dee5169a27a8f3bd0ab3b86b9b`;
+  - bonding curve: `tools/latency_curve.py`, sha256 `129a8dddb8567bfa4cb3f35120b5da702439ff0df930a1bfb9d542ecd6a983db` at c3dc98f.
   - Parity set: `tools/fixtures/arena_paper/parity_cases.jsonl` sha256 `8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58` (420 cases from exploration hour 2026-09-10T12).
   - Expected values:
     - legacy: `parity_expected.jsonl` sha256 `a114480424e2f512f0b5ef3ba3e466d072adc86aeedfd51ab7ef2566f4ee3c51`, md5 of the float lines `8427f106a0078f5c002345957d6a717d`;
@@ -41,6 +43,8 @@ Any later change to these files is disclosed in every read it touches, and needs
 - **Disclosure: both pinned parity sets are state-level.** They are files of extracted pool states (reserves and spot, entry and exit states), not rows in the arena tape's format, so they depart from DEC-031 §1.4's wording.
   - Engine: extraction from feed rows is tested separately by the `on_row` replay in `tools/arena_parity.py`, which feeds one global slot-ordered stream through the full engine. It showed 0 state mismatches against an independent l3-simlib extraction on all 300 PumpSwap cases.
   - H5: the case states come from `tools/h5_shadow.py`'s own replay outcome strips over the raw tape, the same decision path the book runs. That extraction is not separately parity-checked against an independent reader. The md5 proof covers its trigger decisions (pv 72/72), not the strip states.
+
+- **Condition before the H5 books' first gate read (quant-proof, comment 6246275907).** Run a parity check of the H5 entry and exit state selection on the pinned H5 hours against an independent extraction (for example the l3-simlib reader used in #708). Use timing and states only, no outcomes, and record 0 mismatches. Any fix to `tools/arena_h5_score.py` is a change to a pinned file: disclose it in the read, with quant-proof OK. The clock may start before this.
 
 ## 3. Feed delay d (arena engine books only; the H5 books measure delay per trigger on the chain clock)
 - **Input:**
