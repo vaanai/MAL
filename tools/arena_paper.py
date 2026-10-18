@@ -48,11 +48,14 @@ Not supported in v1: partial sells (`frac` must be 1.0; refused), sells decided 
 from __future__ import annotations
 
 import bisect
+import errno
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -98,6 +101,17 @@ class ArenaRefused(Exception):
 
 class LedgerCorrupt(Exception):
     """A ledger file does not end in a newline (a torn write): nothing is appended until a person has looked at it."""
+
+
+class LedgerWriteFailed(LedgerCorrupt):
+    """An append that could not be made durable: an OSError on the write, the fsync or anything else it touches (ENOSPC, EIO, ...), a SHORT write, or the free-space
+    floor (the disk is below the configured free fraction). It is a LedgerCorrupt, so every handler of the damaged-file case takes it, and the engine HALTS the bot
+    (a disk that cannot take a row will not take the next one either). `kind` is the incident kind: write_failed, short_write, fsync_failed, io_error, disk_floor.
+    A raw OSError never escapes `Ledger.append`."""
+
+    def __init__(self, msg: str, kind: str) -> None:
+        super().__init__(msg)
+        self.kind = kind
 
 
 class LedgerConflict(Exception):
@@ -263,6 +277,10 @@ def stop_bot(bot_id: str, stopped_at_ms: int, path: str | os.PathLike = REGISTRY
 
 # ------------------------------------------------------------------------------------------------------------------------------ ledger
 INCIDENTS_FILE = "incidents.jsonl"
+MIN_FREE_PCT_DEFAULT = 25.0  # DEC-031 section 3.8: no append below 25% free on the ledger's filesystem
+MIN_FREE_PCT_FLOOR = 20.0  # the configured floor can be raised, never set below this
+MAX_UNWRITTEN_INCIDENTS = 1000
+log = logging.getLogger("tools.arena_paper")
 
 
 class Ledger:
@@ -273,9 +291,26 @@ class Ledger:
     LedgerCorrupt AND appends one fsync'd line to a SEPARATE per-bot file, `<root>/<bot_id>/incidents.jsonl`: {kind, at_ms, bot_id, day_file, bytes, reason, row_kind,
     trade_id, row_decision_ms}. The refusal is no longer only a counter in the engine's memory: a person can repair the day file, and the attempts that were refused
     in the meantime stay on record. The scorer reads this file and makes the bot's read NOT_DECIDABLE for any incident before the read boundary, repaired or not
-    (lost attempts, DEC-014 Amendment 1). The incident file is never rewritten; an unparseable line in it is itself a reason for NOT_DECIDABLE."""
+    (lost attempts, DEC-014 Amendment 1). The incident file is never rewritten; an unparseable line in it is itself a reason for NOT_DECIDABLE.
 
-    def __init__(self, root: str | os.PathLike = LEDGER_ROOT, now_fn: Callable[[], int] | None = None) -> None:
+    WRITE FAILURES (quant-proof on #716). Nothing that goes wrong on the disk may lose an attempt silently. `append` never lets a raw OSError out: an OSError on the
+    write, the fsync (or the directory fsync) or any other step, a SHORT write (fewer bytes than the line reached the file), or a free-space floor breach raises
+    LedgerWriteFailed (a LedgerCorrupt) after a best-effort incident line (kinds write_failed, short_write, fsync_failed, io_error, disk_floor). The floor is checked
+    before EVERY append: below `min_free_pct` (default 25, never below 20; DEC-031 section 3.8) free on the ledger's filesystem the append is refused and the incident
+    is written while there is still room for it. If even the incident line cannot be written it is kept in memory (`unwritten_incidents`, retried by `flush_incidents`
+    and before the next incident) and logged at ERROR with the counters `write_failures` / `incident_failures`. A short write leaves a fragment: the file is then
+    a torn tail, refused (and flagged by the scorer) until a person has looked at it."""
+
+    def __init__(self, root: str | os.PathLike = LEDGER_ROOT, now_fn: Callable[[], int] | None = None, min_free_pct: float = MIN_FREE_PCT_DEFAULT) -> None:
+        # never below 20 in production; a replay / test harness (MAL_ARENA_TEST=1, as for the registry overrides) may lower it, since its ledger is a temp dir
+        lowest = 0.0 if os.environ.get(TEST_ENV) == "1" else MIN_FREE_PCT_FLOOR
+        if isinstance(min_free_pct, bool) or not isinstance(min_free_pct, (int, float)) or not lowest <= min_free_pct <= 100:
+            raise ValueError(f"min_free_pct must be between {lowest:g} and 100 (default {MIN_FREE_PCT_DEFAULT:g}, DEC-031 section 3.8; below {MIN_FREE_PCT_FLOOR:g} is "
+                             f"refused outside tests), got {min_free_pct!r}")
+        self.min_free_pct = float(min_free_pct)
+        self.write_failures = 0  # appends that failed on the disk (OSError, short write, fsync) or were refused by the free-space floor
+        self.floor_refusals = 0  # of which: refused by the free-space floor
+        self.unwritten_incidents: list[tuple[str, bytes]] = []  # (bot_id, line) incident lines the disk would not take: the in-memory record
         self.root = Path(root)
         # path -> (inode, offset consumed, {trade_id: identity}). An append reads only the bytes written since the last look (by this or another process),
         # so its cost no longer grows with the size of the day file.
@@ -294,8 +329,8 @@ class Ledger:
     def incident(self, bot_id: str, kind: str, reason: str, *, path: Path | None = None, **fields: Any) -> bool:
         """Append one incident line (flock, O_APPEND, fsync of the file and, on creation, of the directories). `path` is the day file concerned: its name and its
         current byte size go on the line. If the incident file itself ends in a half line (a torn incident write), a newline is written first so that the new
-        incident stands on its own line and the fragment stays visible to the scorer as an unparseable line. Returns False (and counts incident_failures) when the
-        line could not be written; it never raises, so that the caller's own error still surfaces."""
+        incident stands on its own line and the fragment stays visible to the scorer as an unparseable line. Returns False (counts incident_failures, keeps the line in
+        `unwritten_incidents` for a retry) when the line could not be written; it never raises, so that the caller's own error still surfaces."""
         size = None
         try:
             if path is not None and path.exists():
@@ -304,6 +339,17 @@ class Ledger:
             pass
         line = line_bytes({"kind": kind, "at_ms": int(self.now_fn()), "bot_id": bot_id, "day_file": None if path is None else path.name, "bytes": size,
                            "reason": reason, **fields}) + b"\n"
+        if self.unwritten_incidents:  # earlier incidents that did not reach the disk go first, with their own at_ms
+            self.flush_incidents()
+        ok = self._write_incident_line(bot_id, line)
+        if not ok:
+            self.incident_failures += 1
+            self.unwritten_incidents.append((bot_id, line))
+            del self.unwritten_incidents[:-MAX_UNWRITTEN_INCIDENTS]
+        log.error("arena ledger incident bot=%s kind=%s reason=%s incident_line_written=%s", bot_id, kind, reason, ok)
+        return ok
+
+    def _write_incident_line(self, bot_id: str, line: bytes) -> bool:
         p = self.incidents_path(bot_id)
         try:
             new_dir = not p.parent.exists()
@@ -315,7 +361,8 @@ class Ledger:
                 end = os.fstat(fd).st_size
                 if end > 0 and os.pread(fd, 1, end - 1) != b"\n":
                     line = b"\n" + line
-                os.write(fd, line)
+                if os.write(fd, line) != len(line):
+                    raise OSError(errno.EIO, "short write of an incident line")
                 os.fsync(fd)
                 if created:
                     _fsync_dir(p.parent)
@@ -324,9 +371,17 @@ class Ledger:
             finally:
                 os.close(fd)
         except OSError:
-            self.incident_failures += 1
             return False
         return True
+
+    def flush_incidents(self) -> int:
+        """Retry the incident lines that did not reach the disk (oldest first, original at_ms). Returns how many are still unwritten."""
+        keep = []
+        for bot_id, line in self.unwritten_incidents:
+            if keep or not self._write_incident_line(bot_id, line):
+                keep.append((bot_id, line))  # order is kept: once one fails, the rest wait
+        self.unwritten_incidents = keep
+        return len(keep)
 
     def _ids(self, fd: int, key: str) -> tuple[dict[str, str], int, bool]:
         """(ids, offset, complete). Reads from the cached offset to the end of the file (the whole file when there is no usable cache: a new inode or a
@@ -349,23 +404,56 @@ class Ledger:
         self._cache[key] = (st.st_ino, off + cut, ids)
         return ids, off + cut, cut == len(data)
 
-    def _refuse(self, p: Path, fd: int, row: Mapping[str, Any], kind: str, reason: str) -> LedgerCorrupt:
-        """Count the refusal, write its incident line (outside the damaged file) and return the LedgerCorrupt for the caller to raise. Nothing was written to p."""
+    @staticmethod
+    def _oserr(exc: OSError) -> str:
+        return f"{type(exc).__name__} {errno.errorcode.get(exc.errno or 0, '?')} ({exc.strerror or exc})"
+
+    def _free(self) -> tuple[float, int, int]:
+        """(free percent, free bytes, total bytes) of the filesystem the ledger lives on (the nearest existing ancestor of the root)."""
+        d = self.root
+        while not d.exists() and d != d.parent:
+            d = d.parent
+        u = shutil.disk_usage(d)
+        return (100.0 * u.free / u.total if u.total else 100.0), int(u.free), int(u.total)
+
+    def _fail(self, p: Path, row: Mapping[str, Any], kind: str, reason: str, **extra: Any) -> LedgerCorrupt:
+        """Count the failure, write its incident line (outside the damaged / full file) and return the exception for the caller to raise: LedgerCorrupt for a
+        damaged file (torn_tail, ledger_corrupt: nothing was written), LedgerWriteFailed for a disk failure or the free-space floor."""
+        disk = kind not in ("torn_tail", "ledger_corrupt")
         if kind == "torn_tail":
             self.torn_tail_refusals += 1
-        else:
+        elif kind == "ledger_corrupt":
             self.corrupt_refusals += 1
+        else:
+            self.write_failures += 1
+            self._cache.pop(str(p), None)  # the file's state is no longer known
+            if kind == "disk_floor":
+                self.floor_refusals += 1
         entry = ((row.get("decision_ms") or {}).get("entry")) if isinstance(row.get("decision_ms"), Mapping) else None
         wrote = self.incident(str(row["bot_id"]), kind, reason, path=p, row_kind=row.get("kind"), trade_id=row.get("trade_id"),
-                              row_decision_ms=None if entry is None else int(entry))
-        return LedgerCorrupt(f"{p.name}: {reason}: refusing to append; nothing was written" + ("" if wrote else " (the incident line could NOT be written either)"))
+                              row_decision_ms=None if entry is None else int(entry), **extra)
+        tail = "" if wrote else " (the incident line could NOT be written either: kept in memory, logged)"
+        if not disk:
+            return LedgerCorrupt(f"{p.name}: {reason}: refusing to append; nothing was written{tail}")
+        return LedgerWriteFailed(f"{p.name}: {reason}: the append failed; this attempt is NOT on record in the ledger (the file may hold a fragment){tail}", kind)
 
     def append(self, row: Mapping[str, Any]) -> bool:
         """True if written, False if the identical row is already there. Raises LedgerCorrupt (and writes an incident line, see the class doc) when the day file
-        is damaged: it does not end in a newline, or a complete line of it does not parse."""
+        is damaged: it does not end in a newline, or a complete line of it does not parse. Raises LedgerWriteFailed (a LedgerCorrupt, with an incident line) when
+        the disk fails (any OSError, a short write, an fsync error) or the free-space floor is breached; a raw OSError never escapes."""
         line = line_bytes(row)
         day = utc_day(row["decision_ms"]["entry"])
         p = self.path_for(row["bot_id"], day)
+        try:
+            free_pct, free_b, total_b = self._free()
+            if free_pct < self.min_free_pct:  # refuse while there is still room for the incident line
+                raise self._fail(p, row, "disk_floor", f"free space {free_pct:.1f}% is below the floor {self.min_free_pct:g}% (DEC-031 section 3.8)",
+                                 free_pct=round(free_pct, 3), floor_pct=self.min_free_pct, free_bytes=free_b, total_bytes=total_b)
+            return self._append(p, row, line)
+        except OSError as exc:  # open, mkdir, flock, read, statvfs, ...: anything else the disk or the filesystem throws
+            raise self._fail(p, row, "io_error", f"{self._oserr(exc)}") from None
+
+    def _append(self, p: Path, row: Mapping[str, Any], line: bytes) -> bool:
         new_dir = not p.parent.exists()
         p.parent.mkdir(parents=True, exist_ok=True)
         created = not p.exists()
@@ -375,22 +463,31 @@ class Ledger:
             try:
                 ids, off, complete = self._ids(fd, str(p))
             except (ValueError, KeyError, TypeError) as exc:  # json.JSONDecodeError is a ValueError: a complete line that does not parse
-                raise self._refuse(p, fd, row, "ledger_corrupt", f"a line of the file does not parse ({type(exc).__name__}: {str(exc)[:80]})") from None
+                raise self._fail(p, row, "ledger_corrupt", f"a line of the file does not parse ({type(exc).__name__}: {str(exc)[:80]})") from None
             if not complete:  # the file ends in a half line: appending would weld the next row onto the fragment
-                raise self._refuse(p, fd, row, "torn_tail", "the file does not end in a newline (a torn write)")
+                raise self._fail(p, row, "torn_tail", "the file does not end in a newline (a torn write)")
             tid = row["trade_id"]
             if tid in ids:
                 if ids[tid] == identity(row):
                     return False
                 raise LedgerConflict(f"trade_id {tid} already written with different content")
-            os.write(fd, line + b"\n")
-            os.fsync(fd)
-            ids[tid] = identity(row)
-            self._cache[str(p)] = (os.fstat(fd).st_ino, off + len(line) + 1, ids)
-            if created:
-                _fsync_dir(p.parent)
-            if new_dir:
-                _fsync_dir(p.parent.parent)
+            data = line + b"\n"
+            try:
+                n = os.write(fd, data)
+            except OSError as exc:
+                raise self._fail(p, row, "write_failed", f"os.write failed: {self._oserr(exc)}") from None
+            if n != len(data):
+                raise self._fail(p, row, "short_write", f"short write: {n} of {len(data)} bytes reached the file")
+            try:
+                os.fsync(fd)
+                ids[tid] = identity(row)
+                self._cache[str(p)] = (os.fstat(fd).st_ino, off + len(data), ids)
+                if created:
+                    _fsync_dir(p.parent)
+                if new_dir:
+                    _fsync_dir(p.parent.parent)
+            except OSError as exc:
+                raise self._fail(p, row, "fsync_failed", f"fsync failed: {self._oserr(exc)}") from None
             return True
         finally:
             os.close(fd)  # releases the flock
@@ -707,8 +804,10 @@ class Gap:
 class ArenaEngine:
     def __init__(self, ledger_root: str | os.PathLike = LEDGER_ROOT, registry_path: str | os.PathLike = REGISTRY_PATH, cfg: StackConfig | None = None,
                  vmap: Mapping[str, Any] | None = None, clock: SlotClock | None = None, sps_fn: Callable[[], float | None] | None = None,
-                 now_fn: Callable[[], int] | None = None, code_state_fn: Callable[[], tuple[str | None, bool | None]] | None = None) -> None:
-        self.ledger = Ledger(ledger_root, now_fn=lambda: self.now_fn())  # late-bound: an incident line carries the engine's own call clock
+                 now_fn: Callable[[], int] | None = None, code_state_fn: Callable[[], tuple[str | None, bool | None]] | None = None,
+                 min_free_pct: float = MIN_FREE_PCT_DEFAULT) -> None:
+        # min_free_pct: the free-space floor of the ledger's filesystem checked before every append (default 25, DEC-031 section 3.8; never below 20, else ValueError)
+        self.ledger = Ledger(ledger_root, now_fn=lambda: self.now_fn(), min_free_pct=min_free_pct)  # now_fn late-bound: an incident line carries the engine's own call clock
         self.code_state_fn = code_state_fn or process_code_state
         self._code_cache: tuple[float, tuple[str | None, bool | None]] | None = None
         self.registry_path = registry_path
@@ -753,8 +852,12 @@ class ArenaEngine:
         """A buy / sell the ledger could not take is a lost attempt: besides the Ledger's own incident for the refused row, write one incident for the attempt itself
         (pool, write instant, slot), so that the scorer's NOT_DECIDABLE names what was lost."""
         self._count("ledger_torn_tail")
+        self._count("lost_" + kind.split("_")[0] + "s")  # lost_buys / lost_sells: the in-memory record, even if no incident line can be written
+        if isinstance(exc, LedgerWriteFailed):  # a disk that cannot take this row will not take the next: stop pricing and trading this book
+            self._halt(bot_id, f"{exc.kind}: {str(exc)[:120]}")
         path = self.ledger.path_for(bot_id, utc_day(instant)) if instant is not None else None
-        self.ledger.incident(bot_id, kind, str(exc)[:200], path=path, pool=pool, decision_ms=instant, decision_slot=decision_slot)
+        if not self.ledger.incident(bot_id, kind, str(exc)[:200], path=path, pool=pool, decision_ms=instant, decision_slot=decision_slot):
+            self._count("incident_unwritten")
 
     def _v_of(self, h: PoolHist, row: Mapping[str, Any], venue: str) -> tuple[float, str]:
         """(V, source). Source order: this row's event V, an earlier row of the same pool, the static map, none. V outside [0, 30 SOL] is not used."""
@@ -885,9 +988,13 @@ class ArenaEngine:
             return False
         reg = self._bot(bot_id)
         head, dirty = self.start_state
-        wrote = self.ledger.append({"schema": SCHEMA, "kind": "start", "trade_id": f"start-{self.engine_id}-{bot_id}", "engine_id": self.engine_id, "bot_id": bot_id,
-                                    "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": self.started_ms, "exit": None}, "code_head": head, "code_dirty": dirty,
-                                    "pid": os.getpid(), "stack": self.cfg.as_dict(), "written_ms": int(self.now_fn())})
+        try:
+            wrote = self.ledger.append({"schema": SCHEMA, "kind": "start", "trade_id": f"start-{self.engine_id}-{bot_id}", "engine_id": self.engine_id, "bot_id": bot_id,
+                                        "frozen_sha": reg["frozen_sha"], "decision_ms": {"entry": self.started_ms, "exit": None}, "code_head": head, "code_dirty": dirty,
+                                        "pid": os.getpid(), "stack": self.cfg.as_dict(), "written_ms": int(self.now_fn())})
+        except LedgerWriteFailed as exc:  # the incident line is already written; the book cannot start on a disk that will not take its start record
+            self._halt(bot_id, f"{exc.kind}: {str(exc)[:120]}")
+            raise
         self._started_bots.add(bot_id)
         return wrote
 
@@ -1157,9 +1264,11 @@ class ArenaEngine:
         """End of a finite tape: price every pending sell on the derived state after the last print (stack behaviour)."""
         for p in list(self.pending):
             self._try_pending(p, final=True)
+        self.ledger.flush_incidents()
 
     def prune(self) -> int:
         """Drop the history of pools with no open position that have been quiet for HIST_KEEP_SLOTS."""
+        self.ledger.flush_incidents()  # housekeeping: retry incident lines the disk would not take earlier
         busy = {p.pool for p in self.positions.values()}
         drop = [k for k, h in self.pools.items() if k not in busy and h.last_slot < self.hw_slot - HIST_KEEP_SLOTS]
         for k in drop:
@@ -1250,5 +1359,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["LedgerCorrupt", "process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["LedgerCorrupt", "LedgerWriteFailed", "MIN_FREE_PCT_DEFAULT", "MIN_FREE_PCT_FLOOR", "process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]

@@ -3,9 +3,12 @@ registry, ledger. No network, no tape."""
 
 from __future__ import annotations
 
+import collections
+import errno
 import functools
 import hashlib
 import json
+import logging
 import math
 import os
 import stat
@@ -21,6 +24,8 @@ from tools.arena_paper import (
     Ledger,
     LedgerConflict,
     LedgerCorrupt,
+    LedgerWriteFailed,
+    MIN_FREE_PCT_DEFAULT,
     TEST_ENV,
     StackConfig,
     book_fail_legs,
@@ -42,6 +47,12 @@ LEGACY_MD5 = "8427f106a0078f5c002345957d6a717d"  # md5 of the canonical output l
 BINDING_MD5 = "af48053427bd2c49089f99a237a1e781"  # same, binding stack (strand class + E1 floor), expected = sc.py + an independent layer
 os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
 SC = functools.partial(StackConfig, feed_delay_slots=0)
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """The ledger refuses appends below its free-space floor (25% free): no test may depend on how full the host's disk is. The floor tests set their own numbers."""
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
 
 
 def mk_arena(*a, **k):
@@ -1293,3 +1304,173 @@ def test_an_open_row_from_before_the_field_existed_recovers_without_a_guard_refe
         eng2.on_row(r)
     eng2.sell("botA", pid, 1.0, tms(140), 140)  # the engine_restart exclusion does not need a reference and does not crash on the missing one
     assert {x["exclusion_reason"] for x in trades(eng2, "excluded")} == {"engine_restart"} and all(x["guard_ref_slot"] is None for x in trades(eng2, "excluded"))
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ disk failures and the free-space floor (quant-proof on #716, comment 6246100076)
+Usage = collections.namedtuple("Usage", "total used free")
+
+
+def disk(free_pct):
+    """A shutil.disk_usage stand-in with the given free percentage of a 1,000-byte disk."""
+    return lambda path: Usage(1000, 1000 - round(free_pct * 10), round(free_pct * 10))
+
+
+def _boom(code, text):
+    def f(*a, **k):
+        raise OSError(code, text)
+
+    return f
+
+
+def break_disk(monkeypatch, mode, bot="botA"):
+    """Make the ledger's day-file writes (only the trades-*.jsonl of `bot`; incident files and other bots keep working) fail the given way. Returns the incident kind."""
+    def only(real, bad):
+        def wrapper(fd, *a):
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            return bad(real, fd, *a) if f"/{bot}/trades-" in target else real(fd, *a)
+
+        return wrapper
+
+    if mode == "enospc":
+        monkeypatch.setattr("tools.arena_paper.os.write", only(os.write, lambda real, fd, data: _boom(errno.ENOSPC, "No space left on device")()))
+        return "write_failed"
+    if mode == "short_write":
+        monkeypatch.setattr("tools.arena_paper.os.write", only(os.write, lambda real, fd, data: real(fd, data[: len(data) // 2])))
+        return "short_write"
+    if mode == "fsync_error":
+        monkeypatch.setattr("tools.arena_paper.os.fsync", only(os.fsync, lambda real, fd: _boom(errno.EIO, "Input/output error")()))
+        return "fsync_failed"
+    assert mode == "floor"
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(MIN_FREE_PCT_DEFAULT - 0.1))
+    return "disk_floor"
+
+
+DISK_MODES = ("enospc", "short_write", "fsync_error", "floor")
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_failed_disk_write_is_an_incident_and_never_a_raw_oserror(tmp_path, monkeypatch, mode):
+    led = Ledger(tmp_path, now_fn=lambda: 1_789_000_222_000)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    before = p.read_bytes()
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)
+        with pytest.raises(LedgerWriteFailed) as ei:
+            led.append(_fake_row("t2"))
+    err = ei.value
+    assert isinstance(err, LedgerCorrupt) and not isinstance(err, OSError) and err.kind == kind  # the handlers of the damaged-file case take it; no OSError escapes
+    (rec,) = _incidents(led)
+    assert rec["kind"] == kind and rec["at_ms"] == 1_789_000_222_000 and rec["day_file"] == p.name and rec["trade_id"] == "t2" and rec["row_decision_ms"] == 1_789_000_000_000
+    assert led.write_failures == 1 and led.incident_failures == 0 and "NOT on record" in str(err)
+    if mode == "floor":
+        assert led.floor_refusals == 1 and rec["floor_pct"] == 25.0 and rec["free_pct"] == 24.9 and rec["total_bytes"] == 1000 and p.read_bytes() == before
+        with monkeypatch.context() as m:  # at exactly the floor the append goes through
+            m.setattr("tools.arena_paper.shutil.disk_usage", disk(25.0))
+            assert led.append(_fake_row("t2")) is True
+        return
+    if mode == "enospc":
+        assert p.read_bytes() == before and "ENOSPC" in rec["reason"]
+    if mode == "short_write":
+        assert p.read_bytes().startswith(before) and not p.read_bytes().endswith(b"\n") and "short write" in rec["reason"]  # a fragment: the file is a torn tail now
+        with pytest.raises(LedgerCorrupt, match="newline"):
+            led.append(_fake_row("t3"))  # refused, never welded onto the fragment (its own incident)
+        assert [r["kind"] for r in _incidents(led)] == ["short_write", "torn_tail"]
+    if mode == "fsync_error":
+        assert "EIO" in rec["reason"]
+    if mode == "enospc":
+        assert led.append(_fake_row("t2")) is True  # the cache was dropped; once the disk works again the row goes in
+
+
+def test_a_disk_failure_that_opens_nothing_is_an_io_error_incident_and_an_unwritable_incident_stays_in_memory(tmp_path, caplog):
+    led = Ledger(tmp_path, now_fn=lambda: 42)
+    (tmp_path / "botA").write_text("a file where the bot directory should be")  # mkdir / open fail with an OSError, and so does the incident file
+    with caplog.at_level(logging.ERROR, logger="tools.arena_paper"):
+        with pytest.raises(LedgerWriteFailed, match="could NOT be written either") as ei:
+            led.append(_fake_row("t1"))
+    assert ei.value.kind == "io_error" and led.write_failures == 1 and led.incident_failures == 1
+    assert len(led.unwritten_incidents) == 1 and led.unwritten_incidents[0][0] == "botA"  # the in-memory record
+    assert any("arena ledger incident bot=botA kind=io_error" in r.getMessage() and "incident_line_written=False" in r.getMessage() for r in caplog.records)  # and the log line
+    (tmp_path / "botA").unlink()  # the obstacle goes away: the retry writes the original incident, with its own at_ms
+    assert led.flush_incidents() == 0 and led.unwritten_incidents == []
+    (rec,) = _incidents(led)
+    assert rec["kind"] == "io_error" and rec["at_ms"] == 42 and rec["trade_id"] == "t1"
+
+
+def test_the_free_space_floor_is_a_config_value_default_25_never_below_20(tmp_path, monkeypatch):
+    assert Ledger(tmp_path).min_free_pct == 25.0 == MIN_FREE_PCT_DEFAULT
+    monkeypatch.delenv(TEST_ENV)  # outside tests the floor cannot be lowered
+    for bad in (19.9, 0, -1, 100.1, "25", True, None):
+        with pytest.raises(ValueError, match="min_free_pct"):
+            Ledger(tmp_path, min_free_pct=bad)
+    assert Ledger(tmp_path, min_free_pct=20).min_free_pct == 20.0 and Ledger(tmp_path, min_free_pct=40).min_free_pct == 40.0
+    with pytest.raises(ValueError):
+        ArenaEngine(tmp_path / "l", tmp_path / "bots.json", min_free_pct=10)
+    monkeypatch.setenv(TEST_ENV, "1")  # a temp-dir replay / test harness may lower it (the parity builder does)
+    assert Ledger(tmp_path, min_free_pct=0).min_free_pct == 0.0
+    # a configured 40% floor refuses at 39% and takes the row at 40%; the engine passes the value through
+    strict = Ledger(tmp_path / "strict", min_free_pct=40)
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(39.0))
+    with pytest.raises(LedgerWriteFailed, match="below the floor 40%"):
+        strict.append(_fake_row("t1"))
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(40.0))
+    assert strict.append(_fake_row("t1")) is True
+    assert mk_arena(tmp_path / "eng", tmp_path / "bots.json", SC(), min_free_pct=33).ledger.min_free_pct == 33.0
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", disk(24.0))  # the floor is checked before every append, including an idempotent one
+    with pytest.raises(LedgerWriteFailed):
+        Ledger(tmp_path / "strict").append(_fake_row("t1"))
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_disk_failure_on_a_buy_halts_the_bot_and_leaves_an_incident_for_the_attempt(tmp_path, monkeypatch, mode):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(108), 108)  # a good one first
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)
+        with pytest.raises(LedgerWriteFailed):
+            eng.buy("botA", "P1", None, tms(109), 109)  # the open row cannot be written
+    assert eng.halted.keys() == {"botA"} and kind in eng.halted["botA"] and len(eng.positions) == 1  # no position for the lost attempt
+    assert eng.counters["lost_buys"] == 1 and eng.counters["bot_halted"] == 1 and eng.counters.get("incident_unwritten", 0) == 0
+    inc = _incidents(eng.ledger)
+    assert [i["kind"] for i in inc] == [kind, "buy_refused"] and inc[1]["pool"] == "P1" and inc[1]["decision_ms"] == tms(109) and inc[1]["decision_slot"] == 109
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)  # the halted book takes nothing more; the second attempt is on record as well
+    assert [i["kind"] for i in _incidents(eng.ledger)] == [kind, "buy_refused", "buy_refused"]
+    assert eng.buy("botB", "P1", None, tms(109), 109)  # the other book is unaffected
+
+
+@pytest.mark.parametrize("mode", ("enospc", "short_write", "fsync_error"))
+def test_a_disk_failure_while_pricing_a_sell_halts_that_bot_once_and_the_feed_loop_runs_on(tmp_path, monkeypatch, mode):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    with monkeypatch.context() as m:
+        for r in _tape(hi=300):
+            eng.on_row(r)
+            if r["slot"] == 100 and not pids:
+                pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+                kind = break_disk(m, mode)  # from now on botA's day file cannot be written
+            if r["slot"] == 200 and eng.positions[pids["botA"]].exit_slot is None:
+                for b, pid in pids.items():
+                    eng.sell(b, pid, 1.0, tms(200), 200)  # must not raise: pricing happens inside the feed
+    assert eng.halted.keys() == {"botA"} and eng.counters["bot_halted"] == 1 and eng.hw_slot == 299
+    assert len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3  # botB was priced
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == kind and inc[0]["row_kind"] == "trade"  # one incident, not one per feed row
+    assert pids["botA"] in eng.positions  # still open: an orphan in the read
+
+
+def test_the_engine_counts_a_lost_attempt_in_memory_when_not_even_the_incident_can_be_written(tmp_path, monkeypatch):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(108), 108)
+    with monkeypatch.context() as m:
+        break_disk(m, "enospc")
+        m.setattr("tools.arena_paper.Ledger._write_incident_line", lambda self, bot_id, line: False)  # the full disk takes no incident line either
+        with pytest.raises(LedgerWriteFailed, match="could NOT be written either"):
+            eng.buy("botA", "P1", None, tms(109), 109)
+    assert eng.halted.keys() == {"botA"} and eng.counters["lost_buys"] == 1 and eng.counters["incident_unwritten"] == 1
+    assert len(eng.ledger.unwritten_incidents) == 2 and eng.ledger.incident_failures == 2  # the ledger's incident and the attempt's, both kept in memory
+    assert eng.ledger.flush_incidents() == 0 and [i["kind"] for i in _incidents(eng.ledger)] == ["write_failed", "buy_refused"]  # housekeeping writes them when the disk allows

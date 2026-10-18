@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,12 @@ from tools.r4b_book import boot_lo, fail_legs
 
 
 os.environ[TEST_ENV] = "1"  # the test-only registry overrides (fake clock, fake sha) are honoured in this process only
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """The ledger refuses appends below its free-space floor (25% free): no test may depend on how full the host's disk is. The floor tests set their own numbers."""
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
 
 
 def register_bot(*a, **k):
@@ -901,3 +908,23 @@ def test_the_forced_status_label_prefixes_pass_fail_and_every_other_status_and_t
     root2, reg2 = setup(sub, rows)
     res = score_all(root2, reg2, now_ms=NOW, boundary_ms=DAY0 + 5 * DAY, reads_dir=str(sub / "r"))
     assert res["bots"]["botA"]["fail_label"] == "FORCED-SCREEN-ONLY: FAIL (n < 100)" and "STATUS FORCED-SCREEN-ONLY: FAIL (n < 100)" in render(res)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ disk failures reach the scorer (quant-proof on #716, comment 6246100076)
+from tools.arena_paper import LedgerWriteFailed  # noqa: E402
+from tools.test_arena_paper import DISK_MODES, break_disk  # noqa: E402
+
+
+@pytest.mark.parametrize("mode", DISK_MODES)
+def test_a_disk_failure_on_an_append_makes_the_book_not_decidable_at_the_scorer(tmp_path, monkeypatch, mode):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    assert score_all(root, reg, now_ms=NOW)["bots"]["botA"]["status"] == "PASS"
+    with monkeypatch.context() as m:
+        kind = break_disk(m, mode)  # ENOSPC on the write, a short write, an fsync error, the free-space floor
+        with pytest.raises(LedgerWriteFailed):
+            Ledger(root, now_fn=lambda: DAY0 + 2 * DAY).append(open_row("lost1", 999, 0))
+    res = score_all(root, reg, now_ms=NOW)
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["incidents"]["kinds"] == {kind: 1} and v["incidents"]["before_boundary"] == 1
+    assert any("ledger incident" in r for r in v["reasons"]) and f"INCIDENTS: 1 on record {{'{kind}': 1}}" in render(res)
+    assert bool(v["ledger_problems"]) == (mode == "short_write")  # a short write also leaves a fragment, which the scan reports on its own
