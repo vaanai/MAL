@@ -713,8 +713,16 @@ class Feed:
         return _row(type_, "all", 0, self.wall(), None, None, body)
 
     def handle_notice(self, prog: str, note: RawNotice) -> int:
-        """One notice from `prog`'s feed: gap watch first (every notice counts as sign of life), then decode once per signature."""
-        for g in self.watch[prog].on_notice(note.slot, note.t_recv_ms):
+        """One notice from `prog`'s feed: gap watch first (every notice counts as sign of life), then decode once per signature.
+        ORDER (the arena engine assumes it): any gap this notice reveals is written BEFORE the notice's own rows, so on the tape a gap row always precedes
+        the first trade row after it. A socket reconnect is therefore checked here, on the first notice after it, not only by the 5 s housekeeping tick."""
+        w, src = self.watch[prog], self.sources.get(prog)
+        if src is not None and src.stats.reconnects != (w.prev["reconnects"] if w.prev else 0):
+            snap = feed_snapshot(src)
+            if snap is not None:
+                for g in w.note_feed_stats(snap, note.t_recv_ms):
+                    self.emit_safe(g)
+        for g in w.on_notice(note.slot, note.t_recv_ms):
             self.emit_safe(g)
         if not self.seen.add(note.signature):
             self.counters["cross_dedup_dropped"] += 1

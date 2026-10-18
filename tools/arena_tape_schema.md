@@ -139,6 +139,12 @@ inclusive. Rules per program, as in `tools/h5_shadow.py` (`GAP_SLOTS = 30`, `SIL
 | `decode_error` / `write_error` / `consume_error` | rows were lost: a notice that did not decode, a row the writer could not write (an `OSError`), or an unexpected exception while handling a notice. A burst is coalesced into ONE record once it has been quiet for 1 s, and written when the writer works again | true | first to last lost row | `count`, `from_slot`, `to_slot` |
 | `disk_reserve` (prog `all`) | written once, when free space is back at or above `--min-free-pct` plus 2 points (default 25 + 2) after a pause; nothing is written during the pause | true | `paused_since_ms` to the resume | `reason` (`disk_reserve`), `paused_since_ms`, `paused_ms`, `rows_dropped`, `free_pct`, `min_free_pct`, `resume_margin_pct` |
 
+**ORDER (the engine assumes it; tested in `tools/test_arena_gap_order.py`).** A gap row is written BEFORE the first trade row after it. Any gap a notice
+reveals (`slot_jump`, a closed `silence` or `feed_restart`, a `socket_reconnect`) is written before that notice's own rows. A reconnect is checked on the
+first notice after it, not by the 5 s housekeeping tick, so no trade can overtake its gap row. As a property of one file: no trade row that sits before
+a gap row has `t_recv_ms >= gap.to_ms`. (An OPEN `silence` / `feed_restart` record is written at detection, by definition before the feed delivers again;
+`process_restart` is written right after the `start` row, before any trade of the new process.)
+
 **Is a decision on the first row after a gap inside the span?** Yes. The span is inclusive and its `to_ms` is the `t_recv_ms` of the first
 notice after the gap (a closed `silence` / `feed_restart`, a `slot_jump`) or of this process's start (`process_restart`), so a row with
 `t_recv_ms == to_ms` is inside it. `tools/arena_state.ArenaState.gap_spans(t0, t1, prog)` / `has_gap(t0, t1, prog)` answer "does [decision, exit] hold a gap?"
