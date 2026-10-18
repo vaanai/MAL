@@ -574,6 +574,7 @@ def _http_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
 # Paced calls per second. DESIGN section 6: about 40k standard calls a day at 2 rps. The public endpoint throttles heavy methods harder.
 DEFAULT_RPS = {"public": 2.0, "helius": 2.0, "custom": 2.0}
 DEFAULT_DAILY_CALL_CAP = 40_000
+MAX_RETRY_AFTER_S = 10.0
 RETRY_HTTP = frozenset({429, 500, 502, 503, 504})
 RETRY_RPC_CODES = frozenset({429, -32005})
 
@@ -627,7 +628,7 @@ class RpcClient:
                 retry = e.code in RETRY_HTTP
                 ra = e.headers.get("Retry-After") if getattr(e, "headers", None) else None
                 if retry and ra and ra.isdigit():
-                    self._sleep(min(float(ra), 30.0))
+                    self._sleep(min(float(ra), MAX_RETRY_AFTER_S))  # bounded: a card is stale after 10 s (DESIGN section 3)
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as e:
                 last = f"network_{type(e).__name__}"
                 retry = not isinstance(e, (json.JSONDecodeError, ValueError))

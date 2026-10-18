@@ -273,6 +273,12 @@ def test_rpc_honours_retry_after_and_gives_up_with_a_short_code():
     assert 7.0 in clock.slept
 
 
+def test_retry_after_is_capped_so_a_card_does_not_go_stale():
+    chain, _, clock = make_chain({"getAccountInfo": [http_error(429, "600")]})
+    chain.mint_facts(MINT)
+    assert max(clock.slept) == H.MAX_RETRY_AFTER_S == 10.0
+
+
 def test_rpc_does_not_retry_a_hard_error():
     chain, node, _ = make_chain({"getAccountInfo": [rpc_error(-32602)]})
     assert chain.mint_facts(MINT).error == "rpc_-32602" and node.n("getAccountInfo") == 1
