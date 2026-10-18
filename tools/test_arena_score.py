@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from tools import arena_score as S
-from tools.arena_paper import TEST_ENV, Ledger, canon, register_bot as _register_bot, utc_day
+from tools.arena_paper import TEST_ENV, Ledger, LedgerCorrupt, canon, register_bot as _register_bot, utc_day
 from tools.arena_score import (
     STEPS,
     Refused,
@@ -611,3 +611,144 @@ def test_a_forced_read_is_a_comparator_score_and_cannot_be_recorded(tmp_path, ca
     assert main(args + ["--boundary-ms", str(DAY0 + 9 * DAY)]) == 0  # refused bots are reported, not a crash
     assert "later than" in capsys.readouterr().out
     assert main(args + ["--record"]) == 0 and (tmp_path / "reads" / "botA.json").exists()  # the natural read still records
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ incidents and damaged files (quant-proof ruling on #716)
+def day_file(root, bot="botA", day=0):
+    return Ledger(root).path_for(bot, utc_day(DAY0 + day * DAY))
+
+
+def as_bot(rows, bot):
+    return [dict(r, bot_id=bot) for r in rows]
+
+
+def two_bots(tmp_path, seed_b=5):
+    """botA and botB, each with a clean 100-attempt book that passes; returns (root, reg)."""
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    register_bot("botB", "abc1234", DAY0, reg, deciding_stake=0.25, model_ids=[], now_ms=0)
+    led = Ledger(root)
+    for r in as_bot(positions(good_pnls(seed=seed_b)), "botB"):
+        led.append(r)
+    return root, reg
+
+
+def test_an_incident_before_the_boundary_makes_the_read_not_decidable_even_after_the_file_was_repaired(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    now = DAY0 + 30 * DAY
+    assert score_all(root, reg, now_ms=now)["bots"]["botA"]["status"] == "PASS"
+    # the real flow: a torn tail, an append that is refused (writes the incident), a repair
+    p = day_file(root)
+    good = p.read_bytes()
+    p.write_bytes(good + b'{"kind":"open","trade_id":"half')
+    refused_at = DAY0 + 2 * DAY
+    with pytest.raises(LedgerCorrupt):
+        Ledger(root, now_fn=lambda: refused_at).append(open_row("lost1", 999, 0))
+    p.write_bytes(good)  # repaired: the day file is clean again
+    assert Ledger(root).scan_bot("botA")[1] == []
+    v = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] == 1 and v["incidents"]["kinds"] == {"torn_tail": 1}
+    assert v["ledger_problems"] == [] and any("ledger incident" in r and "repaired" in r for r in v["reasons"])
+    txt = render(score_all(root, reg, now_ms=now))
+    assert "STATUS NOT_DECIDABLE" in txt and "INCIDENTS: 1 on record" in txt
+    # it is a final read like any NOT_DECIDABLE: recordable at the boundary
+    assert json.loads(record_read(tmp_path / "reads", v).read_text())["status"] == "NOT_DECIDABLE"
+
+
+def test_only_incidents_before_the_boundary_count_and_a_lost_attempt_counts_by_its_decision_instant(tmp_path):
+    boundary = DAY0 + 5 * DAY
+    now = DAY0 + 30 * DAY
+    for name, line, want in (("after", dict(at_ms=boundary + 1, row_decision_ms=boundary + 1), "PASS"),
+                             ("at_the_boundary", dict(at_ms=boundary, decision_ms=boundary), "PASS"),
+                             ("recorded_late_lost_early", dict(at_ms=boundary + DAY, row_decision_ms=DAY0 + 2 * DAY), "NOT_DECIDABLE"),
+                             ("lost_buy", dict(at_ms=DAY0 + 4 * DAY, decision_ms=DAY0 + 4 * DAY, pool="P1"), "NOT_DECIDABLE"),
+                             ("recorded_early", dict(at_ms=DAY0 + 1), "NOT_DECIDABLE")):
+        sub = tmp_path / name
+        sub.mkdir()
+        root, reg = setup(sub, positions(good_pnls()))
+        kind = "buy_refused" if name == "lost_buy" else "torn_tail"
+        at = line.pop("at_ms")
+        Ledger(root, now_fn=lambda: at).incident("botA", kind, "test", **line)
+        v = score_all(root, reg, now_ms=now)["bots"]["botA"]
+        assert v["status"] == want, name
+        assert v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] == (0 if want == "PASS" else 1), name
+        assert v["incidents"]["lost_buys"] == (1 if name == "lost_buy" else 0), name
+
+
+def test_a_not_ready_book_discloses_its_incidents_and_the_read_at_the_boundary_will_be_not_decidable(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls(50)))
+    Ledger(root, now_fn=lambda: DAY0 + DAY).incident("botA", "torn_tail", "test", row_decision_ms=DAY0 + DAY)
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_READY" and v["incidents"]["n"] == 1 and v["incidents"]["before_boundary"] is None
+    assert any("NOT_DECIDABLE" in r for r in v["reasons"]) and "INCIDENTS: 1 on record" in render(res)
+    with pytest.raises(Refused, match="not ready"):
+        record_read(tmp_path / "reads", v)
+
+
+DAMAGE = {
+    "torn_tail": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"open","trade_id":"hal'),
+    "unparseable_line": lambda p: p.write_bytes(p.read_bytes() + b"not json at all\n"),
+    "unterminated_but_valid_json_tail": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"x","decision_ms":{"entry":1}}'),
+    "not_a_record": lambda p: p.write_bytes(p.read_bytes() + b"[1,2,3]\n"),
+    "record_without_decision_ms": lambda p: p.write_bytes(p.read_bytes() + b'{"kind":"trade","trade_id":"y"}\n'),
+    "binary_garbage": lambda p: p.write_bytes(p.read_bytes() + b"\xff\xfe\x00\n"),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(DAMAGE))
+def test_a_torn_or_unparseable_line_makes_that_bot_not_decidable_and_every_other_bot_is_still_scored(tmp_path, damage, capsys):
+    root, reg = two_bots(tmp_path)
+    now = DAY0 + 30 * DAY
+    assert {b: v["status"] for b, v in score_all(root, reg, now_ms=now)["bots"].items()} == {"botA": "PASS", "botB": "PASS"}
+    DAMAGE[damage](day_file(root, "botA", 2))  # one damaged line in botA's files
+    res = score_all(root, reg, now_ms=now)  # no crash
+    a, b = res["bots"]["botA"], res["bots"]["botB"]
+    assert a["status"] == "NOT_DECIDABLE" and a["ledger_problems"] and "fail_label" not in a
+    assert any("torn or unparseable ledger line" in r for r in a["reasons"]) and "trades-" in a["ledger_problems"][0]
+    assert b["status"] == "PASS" and b["ledger_problems"] == [] and "botB" not in res["bots_refused"]  # the other bot is scored as before
+    txt = render(res)
+    assert "BOT botA  STATUS NOT_DECIDABLE" in txt and "LEDGER PROBLEM: trades-" in txt and "BOT botB  STATUS PASS" in txt
+    assert main(["--ledger-root", root, "--registry", reg, "--now-ms", str(now)]) == 0  # the CLI prints both and does not crash
+    assert "LEDGER PROBLEM" in capsys.readouterr().out
+    # the damaged bot's NOT_DECIDABLE is recordable at the boundary (final, like any NOT_DECIDABLE); the clean bot's read is not affected
+    assert json.loads(record_read(tmp_path / "reads", a).read_text())["status"] == "NOT_DECIDABLE"
+
+
+def test_a_damaged_file_before_the_boundary_prints_not_decidable_but_nothing_is_recorded(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls(50)))
+    DAMAGE["torn_tail"](day_file(root))
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)  # NOT_READY has no 'attempts' / 'books': the renderer and the digest must cope
+    v = res["bots"]["botA"]
+    assert v["status"] == "NOT_DECIDABLE" and v["ledger_problems"] and "LEDGER PROBLEM" in render(res)
+    with pytest.raises(Refused, match="boundary is not reached"):
+        record_read(tmp_path / "reads", v)
+
+
+def test_a_torn_incident_line_is_a_ledger_problem_too(tmp_path):
+    root, reg = two_bots(tmp_path)
+    inc = Ledger(root).incidents_path("botA")
+    inc.write_bytes(b'{"kind":"torn_tail","at_ms":1,"bot_id":"botA","day_fi')  # a crash while the incident was written: an incident may have been lost
+    res = score_all(root, reg, now_ms=DAY0 + 30 * DAY)
+    assert res["bots"]["botA"]["status"] == "NOT_DECIDABLE" and "incidents.jsonl" in res["bots"]["botA"]["ledger_problems"][0] and res["bots"]["botB"]["status"] == "PASS"
+
+
+def test_the_ledger_scan_reads_under_a_shared_lock_so_a_write_in_flight_is_never_seen_half_done(tmp_path):
+    import fcntl
+
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    p = day_file(root)
+    fd = os.open(str(p), os.O_RDWR | os.O_APPEND)
+    fcntl.flock(fd, fcntl.LOCK_EX)  # an appender holds the exclusive lock from write to fsync
+    try:
+        import threading
+
+        done = []
+        t = threading.Thread(target=lambda: done.append(Ledger(root).scan_bot("botA")))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive() and not done  # the scan waits for the writer
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    t.join(5)
+    assert done and done[0][1] == []

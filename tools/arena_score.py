@@ -92,9 +92,12 @@ def load_decisions(ledger_root: str | Path, bot_id: str) -> list[int]:
     out: list[int] = []
     d = Path(ledger_root) / bot_id
     for p in sorted(d.glob("trades-*.jsonl")) if d.exists() else []:
-        for line in p.read_text().splitlines():
+        for i, line in enumerate(p.read_text().splitlines(), 1):
             if line.startswith('{"kind":"open"') or line.startswith('{"kind":"refused"'):
-                out.append(int(json.loads(line)["decision_ms"]["entry"]))
+                try:
+                    out.append(int(json.loads(line)["decision_ms"]["entry"]))
+                except (ValueError, KeyError, TypeError):
+                    raise Refused(f"{bot_id}: {p.name} line {i} is a torn or unparseable decision line: the outcome-blind instant cannot be computed") from None
     return out
 
 
@@ -111,6 +114,22 @@ def blind_read_instant(entry_ms: Sequence[int], clock_start_ms: int) -> int | No
             return b
         b += DAY_MS
     return None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ incidents
+def incident_instant(i: Mapping[str, Any]) -> int:
+    """The instant an incident concerns: the earlier of when it was written (at_ms) and the decision instant of the attempt it lost (row_decision_ms /
+    decision_ms), so that an incident that lost an attempt decided before the boundary counts even if it was recorded after it."""
+    ts = [int(i["at_ms"])] + [int(i[k]) for k in ("row_decision_ms", "decision_ms") if isinstance(i.get(k), int) and not isinstance(i.get(k), bool)]
+    return min(ts)
+
+
+def incident_summary(incidents: Sequence[Mapping[str, Any]], b: int | None) -> dict[str, Any]:
+    """What the incident file says, for the read. before_boundary = incidents whose instant is before the read boundary b (None while there is no boundary)."""
+    before = [i for i in incidents if b is not None and incident_instant(i) < b]
+    return {"n": len(incidents), "kinds": dict(Counter(i["kind"] for i in incidents)), "before_boundary": None if b is None else len(before),
+            "first_at_ms": min((int(i["at_ms"]) for i in incidents), default=None), "lost_buys": sum(1 for i in incidents if i["kind"] == "buy_refused"),
+            "files": sorted({str(i.get("day_file")) for i in incidents if i.get("day_file")})}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ statistics
@@ -221,23 +240,39 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
 
 
 def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None,
-              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None) -> dict[str, Any]:
+              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None, *, incidents: Sequence[Mapping[str, Any]] = (),
+              ledger_problems: Sequence[str] = ()) -> dict[str, Any]:
     """Score one bot. `boundary_ms` (optional) FORCES the read boundary so that comparator arms can be scored over the SAME attempt boundary as the book being read:
     it must be a 00:00Z instant and must not be later than this bot's own outcome-blind instant (a later one is REFUSED: it would count attempts decided after the
     point at which the bot's own count was reached). The output says boundary_source "forced" (and keeps natural_boundary_ms) or "natural". A forced read is a
-    comparator score, never the bot's one read: record_read refuses it. Default behaviour is unchanged."""
-    out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms, boundary_ms)
+    comparator score, never the bot's one read: record_read refuses it. Default behaviour is unchanged.
+
+    `incidents` are the lines of the bot's incidents.jsonl (a refused append on a damaged day file, a lost buy): any incident before the read boundary makes the read
+    NOT_DECIDABLE, even after the day file was repaired. `ledger_problems` are the torn / unparseable lines found in the bot's files (and incident file): they make
+    THIS bot NOT_DECIDABLE with those reasons (the caller scored the lines that did parse)."""
+    try:
+        out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms, boundary_ms, incidents)
+    except Refused as exc:
+        if ledger_problems:
+            raise Refused(f"{exc} [also: {len(ledger_problems)} ledger problem(s), first: {ledger_problems[0]}]") from None
+        raise
     if out.get("pending") and out["status"] not in ("NOT_DECIDABLE", "NOT_READY"):
         out["preview_status"] = out["status"]
         if "fail_label" in out:
             out["preview_fail_label"] = out.pop("fail_label")  # a pending book prints PENDING, not a provisional FAIL label
         out["status"] = "PENDING"
         out["reasons"].append(f"{out['pending']} attempt(s) before the boundary are still open and inside the settle window: not a verdict, not recordable")
+    out["ledger_problems"] = list(ledger_problems)
+    if ledger_problems:  # a damaged file: this bot's attempts cannot be accounted for, whatever the lines that parsed say
+        out["status"] = "NOT_DECIDABLE"
+        out.pop("fail_label", None)
+        out["reasons"].append(f"{len(ledger_problems)} torn or unparseable ledger line(s) in this bot's files: attempts may be lost (DEC-014 Amendment 1); "
+                              f"first: {ledger_problems[0]}")
     return out
 
 
 def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None, settle_ms: int,
-               boundary_ms: int | None = None) -> dict[str, Any]:
+               boundary_ms: int | None = None, incidents: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     tr = trace if trace is not None else []
     config = check_bot_rows(bot_id, reg, rows)
     e = reg[bot_id]
@@ -263,9 +298,12 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
             raise Refused(f"{bot_id}: the forced boundary {boundary_ms} is later than the bot's own outcome-blind instant {natural}")
         b, out["boundary_source"] = int(boundary_ms), "forced"
     out["read_boundary_ms"] = b
+    out["incidents"] = incident_summary(incidents, b)
     if b is None or now_ms < b:
         out["status"] = "NOT_READY"
         out["reasons"].append("the book has not yet reached 100 attempts over 5 UTC dates at a 00:00Z boundary" if b is None else "now is before the read boundary")
+        if incidents:
+            out["reasons"].append(f"{len(incidents)} ledger incident(s) on record ({out['incidents']['kinds']}): an incident before the boundary makes the read NOT_DECIDABLE")
         return out
     covered = [r for r in counted if _entry(r) < b]
     opens = {r["position_id"]: r for r in covered if r["kind"] == "open"}
@@ -325,7 +363,11 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
     over = {st: bk["excluded_share"] for st, bk in books.items() if bk["excluded_share"] is not None and bk["excluded_share"] > MAX_EXCLUDED_SHARE}
     if over:
         why.append(f"excluded + refused share above {MAX_EXCLUDED_SHARE:.0%}: " + ", ".join(f"stake {k}: {v:.1%}" for k, v in over.items()))
-    if orphans or over:
+    inc_before = out["incidents"]["before_boundary"]
+    if inc_before:
+        why.append(f"{inc_before} ledger incident(s) before the boundary ({out['incidents']['kinds']}; {out['incidents']['lost_buys']} lost buy(s)): "
+                   "a refused append on a damaged day file or a lost attempt, on record even if the file was repaired afterwards (DEC-014 Amendment 1)")
+    if orphans or over or inc_before:
         out["status"] = "NOT_DECIDABLE"
         return out
     dec = books.get(dk)
@@ -359,6 +401,8 @@ def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
     p = d / f"{res['bot_id']}.json"
     if res["status"] == "NOT_READY":
         raise Refused(f"{res['bot_id']}: not ready, nothing to record")
+    if res.get("read_boundary_ms") is None or "attempts" not in res:  # no boundary, or not reached (a damaged-file preview prints NOT_DECIDABLE before it)
+        raise Refused(f"{res['bot_id']}: the read boundary is not reached (status {res['status']}): the one read is made at the outcome-blind instant, nothing to record")
     if res.get("boundary_source") == "forced":
         raise Refused(f"{res['bot_id']}: a forced-boundary read is a comparator score, not the bot's one read: refusing to record it")
     if res.get("pending") or res["status"] == "PENDING":
@@ -386,7 +430,9 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
         if only and b != only:
             continue
         try:
-            bots[b] = score_bot(b, reg, led.read_bot(b), now, None, settle_ms, boundary_ms)
+            rows, problems = led.scan_bot(b)  # a damaged file makes THIS bot NOT_DECIDABLE (with the reason); it never stops the others
+            incidents, inc_problems = led.read_incidents(b)
+            bots[b] = score_bot(b, reg, rows, now, None, settle_ms, boundary_ms, incidents=incidents, ledger_problems=problems + inc_problems)
             bd = bots[b].get("read_boundary_ms")
             if bd is not None and bots[b]["status"] != "NOT_READY":  # informational file hashes of the covered entry days
                 d0 = reg[b]["clock_start_ms"] // DAY_MS * DAY_MS
@@ -394,6 +440,8 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
                 bots[b]["ledger_files_note"] = "ledger_sha256 is informational (rows are appended to an entry-day file later); decision_log_sha256 is the stable commitment"
         except Refused as exc:
             refused[b] = str(exc)
+        except (KeyError, TypeError, ValueError, IndexError) as exc:  # a well-formed JSON line the scorer cannot read: REFUSED for this bot only (never recordable)
+            refused[b] = f"{b}: a ledger row is malformed ({type(exc).__name__}: {str(exc)[:80]}): refused; the other bots are still scored"
     existed_books = sum(1 for e in reg.values() if e["clock_start_ms"] < now)  # every book with a clock before the read, stopped ones included
     read_books = sum(len(v.get("books", {})) for v in bots.values())
     n_stakes = 3
@@ -456,7 +504,14 @@ def render(res: Mapping[str, Any]) -> str:
         L.append(f"  config {canon(v['config'])}")
         for r in v["reasons"]:
             L.append(f"  reason: {r}")
-        if v["status"] == "NOT_READY":
+        for q in v.get("ledger_problems", [])[:8]:
+            L.append(f"  LEDGER PROBLEM: {q}")
+        if len(v.get("ledger_problems", [])) > 8:
+            L.append(f"  LEDGER PROBLEM: ... and {len(v['ledger_problems']) - 8} more")
+        inc = v.get("incidents")
+        if inc and inc["n"]:
+            L.append(f"  INCIDENTS: {inc['n']} on record {inc['kinds']}  before the boundary {inc['before_boundary']}  lost buys {inc['lost_buys']}  files {inc['files']}")
+        if v["status"] == "NOT_READY" or "attempts" not in v:
             continue
         L.append(f"  read boundary {v['read_boundary_ms']} ({v['boundary_source']}{'; the bot' + chr(39) + 's own is ' + str(v['natural_boundary_ms']) if v['boundary_source'] == 'forced' else ''})  attempts {v['attempts']}  refused buys {v['refused_buys']}  restart orphans {v['restart_orphans']}  "
                  f"late prints {v['late_prints']}  rows before clock (not counted) {v['rows_before_clock']}")

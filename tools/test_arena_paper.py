@@ -1096,3 +1096,162 @@ def test_the_engine_counts_a_torn_tail_and_creates_no_position(tmp_path):
     assert eng.counters["ledger_torn_tail"] == 1 and eng.ledger.torn_tail_refusals == 1 and len(eng.positions) == 1  # no position for the refused write
     with pytest.raises(LedgerCorrupt):
         eng.buy("botA", "UNKNOWN", None, tms(109) + 2, 109)  # a refused-buy row cannot be written either: loud, not silent
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ incidents (quant-proof ruling on #716)
+def _incidents(led, bot="botA"):
+    p = led.incidents_path(bot)
+    return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_a_torn_tail_refusal_writes_a_fsyncd_incident_line_outside_the_torn_file(tmp_path, monkeypatch):
+    led = Ledger(tmp_path, now_fn=lambda: 1_789_000_123_456)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    torn = p.read_bytes() + b'{"kind":"open","trade_id":"half'
+    p.write_bytes(torn)
+    synced = []
+    real = os.fsync
+
+    def spy(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real(fd)
+
+    monkeypatch.setattr("tools.arena_paper.os.fsync", spy)
+    with pytest.raises(LedgerCorrupt, match="newline"):
+        led.append(_fake_row("t2"))
+    inc = led.incidents_path("botA")
+    assert inc == tmp_path / "botA" / "incidents.jsonl" and str(inc) in synced  # fsync'd, and a different file from the torn one
+    (rec,) = _incidents(led)
+    assert rec["kind"] == "torn_tail" and rec["at_ms"] == 1_789_000_123_456 and rec["bot_id"] == "botA"
+    assert rec["day_file"] == "trades-2026-09-10.jsonl" and rec["bytes"] == len(torn) and "newline" in rec["reason"]
+    assert rec["trade_id"] == "t2" and rec["row_decision_ms"] == 1_789_000_000_000
+    assert p.read_bytes() == torn  # the damaged file was not touched
+    with pytest.raises(LedgerCorrupt):
+        Ledger(tmp_path).append(_fake_row("t3"))  # every refusal is its own incident, even from another process / object
+    assert [r["trade_id"] for r in _incidents(led)] == ["t2", "t3"]
+    p.write_bytes(torn[: torn.rindex(b"\n") + 1])  # a person repairs the file: the incidents stay on record
+    assert Ledger(tmp_path).append(_fake_row("t2")) is True
+    assert len(_incidents(led)) == 2
+
+
+def test_a_complete_line_that_does_not_parse_is_a_ledger_corrupt_incident_too(tmp_path):
+    led = Ledger(tmp_path, now_fn=lambda: 5)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    p.write_bytes(p.read_bytes() + b"this is not json\n")
+    with pytest.raises(LedgerCorrupt, match="does not parse"):
+        led.append(_fake_row("t2"))
+    with pytest.raises(LedgerCorrupt):
+        Ledger(tmp_path).append(_fake_row("t2"))
+    assert [r["kind"] for r in _incidents(led)] == ["ledger_corrupt", "ledger_corrupt"] and led.corrupt_refusals == 1 and led.torn_tail_refusals == 0
+    assert len(p.read_text().splitlines()) == 2  # nothing was written
+
+
+def test_an_incident_never_welds_onto_a_torn_incident_file_and_a_failed_incident_write_still_raises(tmp_path):
+    led = Ledger(tmp_path, now_fn=lambda: 7)
+    led.append(_fake_row("t1"))
+    p = led.path_for("botA", "2026-09-10")
+    p.write_bytes(p.read_bytes() + b'{"kind":"x')
+    led.incidents_path("botA").write_bytes(b'{"kind":"torn_tail","at_ms":1,"bot_id":"botA","day_fi')  # a crash while an earlier incident was being written
+    with pytest.raises(LedgerCorrupt):
+        led.append(_fake_row("t2"))
+    lines = led.incidents_path("botA").read_text().splitlines()
+    assert len(lines) == 2 and json.loads(lines[1])["trade_id"] == "t2"  # the new incident stands on its own line; the fragment stays visible
+    recs, probs = led.read_incidents("botA")
+    assert len(recs) == 1 and len(probs) == 1 and "unparseable" in probs[0]
+    # an incident file that cannot be opened: the LedgerCorrupt still surfaces, and says that the incident line is missing
+    led2 = Ledger(tmp_path / "other", now_fn=lambda: 7)
+    led2.append(_fake_row("t1"))
+    q = led2.path_for("botA", "2026-09-10")
+    q.write_bytes(q.read_bytes() + b'{"kind":"x')
+    led2.incidents_path("botA").mkdir()
+    with pytest.raises(LedgerCorrupt, match="could NOT be written") as ei:
+        led2.append(_fake_row("t2"))
+    assert led2.incident_failures == 1 and "newline" in str(ei.value)
+
+
+def test_a_buy_refused_on_a_torn_tail_is_an_incident_for_the_attempt_and_the_row(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    p = eng.ledger.path_for("botA", utc_day(tms(109)))
+    p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"hal')
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)  # an accepted buy: its open row is refused
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "UNKNOWN", None, tms(109) + 2, 109)  # a refused buy: its refused row is refused
+    inc = _incidents(eng.ledger)
+    assert [(i["kind"], i.get("row_kind")) for i in inc] == [("torn_tail", "open"), ("buy_refused", None), ("torn_tail", "refused"), ("buy_refused", None)]
+    lost = [i for i in inc if i["kind"] == "buy_refused"]
+    assert [i["pool"] for i in lost] == ["P1", "UNKNOWN"] and all(i["decision_slot"] == 109 and i["day_file"] == p.name for i in lost)
+    assert lost[0]["decision_ms"] == tms(109) + 1 and all(i["at_ms"] == eng.hw_ms for i in inc)  # the engine's call clock
+    assert eng.counters["ledger_torn_tail"] == 2 and len(eng.positions) == 1
+    assert len(Ledger(tmp_path / "ledger").scan_bot("botA")[1]) == 2  # the torn file is a scorer problem as well (see test_arena_score)
+
+
+def _two_priced_books(tmp_path):
+    """botA and botB both buy P1 at slot 100 and sell at 200; both priced."""
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    for r in _tape(hi=460):
+        eng.on_row(r)
+        if r["slot"] == 100 and not pids:
+            pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+        if r["slot"] == 200 and pids and all(eng.positions[p].exit_slot is None for p in pids.values()):
+            for b, pid in pids.items():
+                eng.sell(b, pid, 1.0, tms(200), 200)
+        if r["slot"] == 215:
+            break
+    assert len([x for x in eng.ledger.read_bot("botA") if x["kind"] == "trade"]) == 3 and len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3
+    return eng
+
+
+def test_a_torn_tail_in_the_late_print_path_halts_that_bot_and_never_raises_out_of_the_feed_loop(tmp_path):
+    eng = _two_priced_books(tmp_path)
+    pa = eng.ledger.path_for("botA", utc_day(tms(100)))
+    pa.write_bytes(pa.read_bytes() + b'{"kind":"late_print","trade_id":"hal')  # the tail of botA's entry-day file is torn
+    hw0 = eng.hw_slot
+    eng.on_row(_row(500, 110, sig="late1"))  # slot 110 < need: a late print for both books. Must not raise
+    assert eng.halted.keys() == {"botA"} and eng.counters["late_prints_lost"] == 1 and eng.counters["ledger_torn_tail"] == 1
+    assert len(eng.pools["P1"].slot) > 0 and eng.pools["P1"].slot.count(110) == 2  # the print was added to the pool history
+    assert [x["position_id"] for x in eng.ledger.read_bot("botB") if x["kind"] == "late_print"] and eng.counters["late_prints"] == 1  # botB's late print was written
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == "torn_tail" and inc[0]["row_kind"] == "late_print" and inc[0]["day_file"] == pa.name and _incidents(eng.ledger, "botB") == []
+    # the feed loop keeps running: later prints are processed, the high-water mark advances, botA's later late prints are dropped (no new incident)
+    eng.on_row(_row(501, 111, sig="late2"))
+    for r in [_row(600 + i, 216 + i) for i in range(30)]:
+        eng.on_row(r)
+    assert eng.hw_slot == 245 > hw0 and eng.counters["late_prints_dropped_halted"] == 1 and len(_incidents(eng.ledger)) == 1
+    assert eng.counters["late_prints"] == 2  # botB took both
+    # a halted bot's next buy is a lost attempt: refused loudly, nothing written, recorded as an incident; botB is unaffected
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.buy("botA", "P1", None, tms(245), 245)
+    assert [i["kind"] for i in _incidents(eng.ledger)] == ["torn_tail", "buy_refused"]
+    assert eng.buy("botB", "P1", None, tms(245), 245)
+
+
+def test_a_torn_tail_hit_while_pricing_a_sell_halts_the_bot_once_not_once_per_feed_row(tmp_path):
+    eng = mk_engine(tmp_path, bots=("botA", "botB"))
+    pids = {}
+    second = None
+    for r in _tape(hi=300):
+        eng.on_row(r)
+        if r["slot"] == 100 and not pids:
+            pids = {b: eng.buy(b, "P1", None, tms(100), 100) for b in ("botA", "botB")}
+        if r["slot"] == 101 and second is None:
+            second = eng.buy("botA", "P1", None, tms(101), 101)  # botA's second position, never sold before the halt
+            pa = eng.ledger.path_for("botA", utc_day(tms(100)))
+            pa.write_bytes(pa.read_bytes() + b'{"kind":"trade","trade_id":"hal')  # torn after botA's open rows
+        if r["slot"] == 200 and eng.positions[pids["botA"]].exit_slot is None:
+            for b, pid in pids.items():
+                eng.sell(b, pid, 1.0, tms(200), 200)  # must not raise: pricing happens inside the feed
+    assert eng.halted.keys() == {"botA"} and eng.counters["bot_halted"] == 1 and eng.hw_slot == 299
+    assert len([x for x in eng.ledger.read_bot("botB") if x["kind"] == "trade"]) == 3  # botB was priced
+    inc = _incidents(eng.ledger)
+    assert len(inc) == 1 and inc[0]["kind"] == "torn_tail" and inc[0]["row_kind"] == "trade"  # one incident, not one per feed row
+    assert pids["botA"] in eng.positions  # still open: an orphan in the read
+    with pytest.raises(LedgerCorrupt, match="halted"):
+        eng.sell("botA", second, 1.0, tms(250), 250)
+    assert _incidents(eng.ledger)[-1]["kind"] == "sell_refused"
