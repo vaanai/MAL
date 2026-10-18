@@ -151,6 +151,21 @@ def verify_sha_on_origin(sha: str, repo: str | os.PathLike | None = None) -> str
     return full
 
 
+def process_code_state(repo: str | os.PathLike | None = None) -> tuple[str | None, bool | None]:
+    """(HEAD full sha, dirty) of the git checkout this process runs from: the frozen code is bound to the process (DEC-031 section 1.2). dirty = any tracked
+    change or any untracked file that is not ignored (`git status --porcelain`). (None, None) when git cannot say; the scorer refuses such a row."""
+    r = str(repo or REPO_ROOT)
+    try:
+        h = subprocess.run(["git", "-C", r, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60)
+        st = subprocess.run(["git", "-C", r, "status", "--porcelain"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    head = h.stdout.strip()
+    if h.returncode != 0 or st.returncode != 0 or len(head) != 40 or not all(c in "0123456789abcdef" for c in head):
+        return None, None
+    return head, bool(st.stdout.strip())
+
+
 def _append_line(path: Path, obj: Mapping[str, Any]) -> None:
     """Append one strict-JSON line (flock, O_APPEND, fsync of the file and, on creation, of the directory)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -546,8 +561,10 @@ class Gap:
 class ArenaEngine:
     def __init__(self, ledger_root: str | os.PathLike = LEDGER_ROOT, registry_path: str | os.PathLike = REGISTRY_PATH, cfg: StackConfig | None = None,
                  vmap: Mapping[str, Any] | None = None, clock: SlotClock | None = None, sps_fn: Callable[[], float | None] | None = None,
-                 now_fn: Callable[[], int] | None = None) -> None:
+                 now_fn: Callable[[], int] | None = None, code_state_fn: Callable[[], tuple[str | None, bool | None]] | None = None) -> None:
         self.ledger = Ledger(ledger_root)
+        self.code_state_fn = code_state_fn or process_code_state
+        self._code_cache: tuple[float, tuple[str | None, bool | None]] | None = None
         self.registry_path = registry_path
         self.cfg = cfg or StackConfig()
         self.vmap = vmap or {}
@@ -680,6 +697,14 @@ class ArenaEngine:
                 self._count("late_prints")
         self.priced[pool] = keep
 
+    def code_state(self) -> tuple[str | None, bool | None]:
+        """(HEAD, dirty) of the running checkout, re-read at most once a minute. Every `open` row carries it; the scorer refuses a book whose rows do not run the
+        registered frozen_sha, or ran on a dirty tree."""
+        now = time.monotonic()
+        if self._code_cache is None or now - self._code_cache[0] > 60.0:
+            self._code_cache = (now, self.code_state_fn())
+        return self._code_cache[1]
+
     def sps(self) -> float | None:
         s = self.sps_fn() if self.sps_fn else self.clock.sps()
         return s if sps_ok(s) else None
@@ -750,7 +775,8 @@ class ArenaEngine:
         sd = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant mapped to the tape slot clock; d is added at the landing
         pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, instant, int(decision_slot), sd, float(sps),
                        None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call)
-        self.ledger.append({"schema": SCHEMA, "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
+        head, dirty = self.code_state()
+        self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
                             "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
                             "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
                             "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
@@ -982,5 +1008,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]

@@ -46,6 +46,7 @@ def mk_arena(*a, **k):
     """An engine whose call clock tracks the latest feed row (a bot called inline with on_row, thinking for no time); tests move eng.now_fn to model a slow bot."""
     eng = ArenaEngine(*a, **k)
     eng.now_fn = lambda: eng.hw_ms or 0
+    eng.code_state_fn = lambda: ("abc1234", False)  # the tests' registered sha; the real process_code_state has its own test
     return eng  # d = 0 unless a test says otherwise; the replays have no feed gaps to detect
 
 
@@ -865,3 +866,35 @@ def test_two_identical_refused_buys_at_different_instants_are_two_distinct_rows(
     with pytest.raises(ArenaRefused, match="no_prints"):
         eng.buy("botA", "UNKNOWN", None, tms(109), 109)
     assert len(trades(eng, "refused")) == 2
+
+
+def test_open_rows_carry_the_running_head_and_a_dirty_flag(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    op = trades(eng, "open")[0]
+    assert op["code_head"] == "abc1234" and op["code_dirty"] is False
+    eng.code_state_fn, eng._code_cache = (lambda: ("f" * 40, True)), None
+    eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    assert [(o["code_head"], o["code_dirty"]) for o in trades(eng, "open")][1] == ("f" * 40, True)
+
+
+def test_process_code_state_reads_head_and_dirtiness_from_git(tmp_path):
+    import subprocess
+
+    from tools.arena_paper import process_code_state
+
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "c1")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert process_code_state(repo) == (head, False) and len(head) == 40
+    (repo / "a.py").write_text("x = 2\n")  # a tracked change
+    assert process_code_state(repo) == (head, True)
+    _git(repo, "checkout", "-q", "--", "a.py")
+    (repo / "new.py").write_text("y = 1\n")  # an untracked, non-ignored file is code the process could import
+    assert process_code_state(repo) == (head, True)
+    assert process_code_state(tmp_path) == (None, None)  # not a git checkout: unknown, refused by the scorer

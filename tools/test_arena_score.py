@@ -76,7 +76,7 @@ def trade_row(pid, i, day, pnl19, pnl13=None, pnl19_sc=None, pnl13_sc=None, stak
 def open_row(pid, i, day, bot="botA", ms=None):
     ms = DAY0 + day * DAY + 3_600_000 + i * 1000 if ms is None else ms
     return {"schema": "arena_trade_v1", "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot, "frozen_sha": "abc1234",
-            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK)}
+            "decision_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": "abc1234", "code_dirty": False}
 
 
 def refused_row(i, day, bot="botA", reason="no_prints"):
@@ -517,3 +517,22 @@ def test_a_book_failing_only_on_n_prints_fail_n_lt_100(tmp_path):
     sub.mkdir()
     res = read(sub, positions(np.full(100, -3e6)))  # a real loss: a plain FAIL, no label
     assert res["bots"]["botA"]["status"] == "FAIL" and "fail_label" not in res["bots"]["botA"] and "STATUS FAIL (n" not in render(res)
+
+
+def test_open_rows_must_carry_the_registered_head_and_a_clean_tree(tmp_path):
+    base = positions(good_pnls())
+    for name, patch in (("wrong_head", {"code_head": "deadbee"}), ("dirty", {"code_dirty": True}), ("unknown_head", {"code_head": None, "code_dirty": None}),
+                        ("no_fields", None)):
+        sub = tmp_path / name
+        sub.mkdir()
+        rows = []
+        for r in base:
+            if r["kind"] == "open" and r["position_id"] == "p0042":
+                r = {k: v for k, v in r.items() if k not in ("code_head", "code_dirty")} if patch is None else dict(r, **patch)
+            rows.append(r)
+        res = read(sub, rows)
+        assert "bound to the process" in res["bots_refused"]["botA"] and "botA" not in res["bots"], name
+    sub = tmp_path / "before_clock"
+    sub.mkdir()  # a bad row decided before the clock is not counted, so it does not refuse the book
+    rows = base + [dict(open_row("early", 0, -3), code_head="deadbee", code_dirty=True)]
+    assert status_of(read(sub, rows)) == "PASS"

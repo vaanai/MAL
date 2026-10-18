@@ -15,7 +15,7 @@ ledger_sha256 in the read and in --daily-digest is informational (later rows are
 ORDER OF OPERATIONS (fixed, pinned by a test): clock filter -> read boundary -> DEC-031 exclusions -> pressure refit -> statistics.
 
 STATUS (the first that applies):
-  REFUSED         no registry line with deciding_stake, model_ids and the verification record (verified_sha, real-clock registration); a changed frozen_sha; a duplicated trade_id; mixed stack configs inside one bot
+  REFUSED         no registry line with deciding_stake, model_ids and the verification record (verified_sha, real-clock registration); a changed frozen_sha; an open row whose code_head is not the registered frozen_sha or whose code_dirty is not false (the frozen code is bound to the process); a duplicated trade_id; mixed stack configs inside one bot
   NOT_READY       the boundary is not reached (or not reached yet by --now-ms)
   PENDING         an attempt before B has no close yet and is younger than the settle window (default 24 h): not a verdict, and --record refuses it
   NOT_DECIDABLE   a restart orphan (an attempt before B with no priced or excluded close that is OLDER than the settle window; DEC-014 Am.1), or excluded
@@ -196,6 +196,10 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
     shas = sorted({r["frozen_sha"] for r in rows if "frozen_sha" in r})
     if shas and shas != [e["frozen_sha"]]:
         raise Refused(f"{bot_id}: frozen_sha in the ledger {shas} != registered {e['frozen_sha']} (a new version is a new bot_id)")
+    bad = [r for r in rows if r.get("kind") == "open" and _entry(r) >= e["clock_start_ms"] and (r.get("code_head") != e["frozen_sha"] or r.get("code_dirty") is not False)]
+    if bad:
+        raise Refused(f"{bot_id}: {len(bad)} open row(s) were written by a process whose code is not the registered frozen_sha or whose tree was dirty "
+                      f"(first: code_head {bad[0].get('code_head')}, code_dirty {bad[0].get('code_dirty')}, registered {e['frozen_sha']}): the frozen code is bound to the process")
     ids = [r["trade_id"] for r in rows]
     if len(ids) != len(set(ids)):
         raise Refused(f"{bot_id}: duplicated trade_id in the ledger")
