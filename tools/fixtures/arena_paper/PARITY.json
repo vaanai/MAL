@@ -1,0 +1,58 @@
+{
+ "arena_strand_legs_pumpswap": 6,
+ "binding": {
+  "arena_md5_float": "af48053427bd2c49089f99a237a1e781",
+  "arena_md5_lamport": "37f23fb75e7f43cf512cee2f6d1cbd9c",
+  "by_prog": {
+   "pump_bonding": {
+    "cases": 120,
+    "mismatch_lamport": 0
+   },
+   "pumpswap": {
+    "cases": 300,
+    "mismatch_lamport": 0
+   }
+  },
+  "expected_md5_float": "af48053427bd2c49089f99a237a1e781",
+  "expected_md5_lamport": "37f23fb75e7f43cf512cee2f6d1cbd9c",
+  "float_mismatches": 0,
+  "lamport_mismatches": 0,
+  "max_abs_diff_lamports": 0.0
+ },
+ "cases": 420,
+ "cases_sha256": "8b4d309b833da29200c7ebece3d4e0d4cc352f47def94560223b6c86026a4f58",
+ "derivation_stress_grace_25": {
+  "derived_last_rows": 84,
+  "excluded_rows": 0,
+  "max_abs_diff_pnl_lamports": 196402.64238381386,
+  "note": "grace 25 stress; the default grace is 10,000 slots",
+  "rows": 300,
+  "rows_with_diff": 84
+ },
+ "hour": "2026-09-10T12",
+ "k_rounding": "ceil",
+ "legacy": {
+  "arena_md5_float": "8427f106a0078f5c002345957d6a717d",
+  "arena_md5_lamport": "58e6ccb5845e1953f96f54aa412c4711",
+  "by_prog": {
+   "pump_bonding": {
+    "cases": 120,
+    "mismatch_lamport": 0
+   },
+   "pumpswap": {
+    "cases": 300,
+    "mismatch_lamport": 0
+   }
+  },
+  "expected_md5_float": "8427f106a0078f5c002345957d6a717d",
+  "expected_md5_lamport": "58e6ccb5845e1953f96f54aa412c4711",
+  "float_mismatches": 0,
+  "lamport_mismatches": 0,
+  "max_abs_diff_lamports": 0.0
+ },
+ "legs_compared_per_mode": 2520,
+ "pumpswap_state_mismatch_detail": [],
+ "pumpswap_state_mismatches": 0,
+ "reference_strand_legs_pumpswap": 6,
+ "sps": 0.31592803861342694
+}
