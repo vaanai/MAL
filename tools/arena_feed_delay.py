@@ -10,10 +10,13 @@ chain, so without a correction every book would get that delay for free. This to
   2. sample every 50th distinct slot, and at least 300 (the stride shrinks to get 300; fewer than 300 distinct slots is refused);
   3. fetch getBlockTime for each sampled slot from a public RPC (https, no key, no userinfo, no query, not Helius; at most 2 requests per second);
   4. delay = t_recv_ms - block_time * 1000 per slot; print the median, the 90th percentile and the seconds per slot (least-squares slope of block time on slot);
-  5. print d = ceil(median delay / seconds per slot): the whole-slot delay to put in StackConfig.feed_delay_slots.
+  5. print d = ceil(p90 delay / seconds per slot): the whole-slot delay to put in StackConfig.feed_delay_slots. MANAGER RULING: the 90th percentile, not the
+     median, because under-correcting the delay favours P&L (a bot would trade ahead of what it could have reached). The median-based figure is printed
+     and written beside it (d_median) for information only.
 
 block_time has a resolution of one second, so each delay carries up to +1 s of quantisation (it overstates the delay by about half a second on average;
-the median is used and d is therefore not understated). The JSON records the tape files read as path@sha256, the sampled (slot, t_recv_ms, block_time) triples
+the first receive of a slot understates the delay (a slot is seen at its earliest row) and the one-second block time overstates it; neither is bounded here, which is
+why d rests on the p90). Re-measure on a schedule and record the date with d. The JSON records the tape files read as path@sha256, the sampled (slot, t_recv_ms, block_time) triples
 and the method. Missing blocks (skipped slots) are counted; more than 10% missing refuses the measurement.
 """
 
@@ -204,10 +207,10 @@ def measure(tape_dir: str | Path, fetch: Callable[[int], int | None], limiter: R
     if not sps_ok(sps):
         raise Refused(f"seconds per slot {sps:.4f} is outside the slot clock's range")
     med, p90 = float(np.median(delay_s)), float(np.percentile(delay_s, 90))
-    return {"method": "delay = t_recv_ms - block_time*1000 per sampled slot (first receive of the slot); d = ceil(median / seconds_per_slot); timing only",
+    return {"method": "delay = t_recv_ms - block_time*1000 per sampled slot (first receive of the slot); d = ceil(p90 / seconds_per_slot) (manager ruling; d_median printed for information); timing only",
             "tapes": [f"{f}@{sha256_file(f)}" for f in files], "distinct_slots": len(first), "stride": st, "sampled": len(sample), "usable": len(rows), "missing": missing,
-            "median_delay_s": med, "p90_delay_s": p90, "seconds_per_slot": sps, "feed_delay_slots": max(0, math.ceil(med / sps - 1e-9)),
-            "note": "block_time has 1 s resolution: each delay carries up to +1 s of quantisation (the median is used)",
+            "median_delay_s": med, "p90_delay_s": p90, "seconds_per_slot": sps, "feed_delay_slots": max(0, math.ceil(p90 / sps - 1e-9)), "d_p90": max(0, math.ceil(p90 / sps - 1e-9)), "d_median": max(0, math.ceil(med / sps - 1e-9)),
+            "note": "block_time has 1 s resolution: each delay carries up to +1 s of quantisation (the p90 is used for d, the median is reported)",
             "samples": [{"slot": int(r[0]), "t_recv_ms": int(r[1]), "block_time": int(r[2])} for r in rows]}
 
 
@@ -232,7 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     out.write_text(json.dumps(res, indent=1, sort_keys=True, allow_nan=False) + "\n")
     print(f"tapes {len(res['tapes'])}  distinct slots {res['distinct_slots']}  sampled {res['sampled']} (stride {res['stride']})  usable {res['usable']}  missing {res['missing']}")
     print(f"median delay {res['median_delay_s']:.3f} s  p90 {res['p90_delay_s']:.3f} s  seconds per slot {res['seconds_per_slot']:.4f}")
-    print(f"feed_delay_slots d = ceil({res['median_delay_s']:.3f} / {res['seconds_per_slot']:.4f}) = {res['feed_delay_slots']}   -> StackConfig(feed_delay_slots={res['feed_delay_slots']})")
+    print(f"d_median = ceil({res['median_delay_s']:.3f} / {res['seconds_per_slot']:.4f}) = {res['d_median']}   (information only)")
+    print(f"feed_delay_slots d = ceil(p90 {res['p90_delay_s']:.3f} / {res['seconds_per_slot']:.4f}) = {res['feed_delay_slots']}   -> StackConfig(feed_delay_slots={res['feed_delay_slots']})")
     print(f"wrote {out}")
     return 0
 
