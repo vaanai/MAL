@@ -67,6 +67,12 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 **Update 2026-10-18 ~07:45Z (after the hand-off was prepared):**
 - **A3 daily (job #1161, 07:11Z): HALT none.** All six flags were evaluated and clear, and the last slice median was 336.5 s (n 10). The H5 arena windows continue. Notebook n_DrI5e52IaymR4A. The slice watch is job #1162.
 - **Fee-arm watch (job #1163): OK.**
+  - **15:17Z (job #1172): still OK, but no new fills since 06:59Z.** Read-only checks #1173/#1174 (counts and mtimes only) show:
+    - the runner is alive (decisions.jsonl written 15:16Z);
+    - the executor's view of intents.jsonl is the same inode as the host file, so this is not the runbook §2c re-created-file case;
+    - 0 intents after 06:58:53Z.
+  - This fits the CEILING ledger's per-UTC-day entry gate (`tools/forward_paper.py:2233`, which resets at the day roll). 10-17 had the same shape. Which condition fired was deliberately not read (probe seal).
+  - Expect intents after 2026-10-19T00:00Z; if none by about 02Z, tell the owner. Notebook n_0gM_cwhvVRpPwA.
 - **Kalshi weather holdout: DONE, run once, and every tradeable rule FAILS.**
   - M2 −5.08c, M3 −5.17c; M4's CI lower bound and worst-3 both fail; T1 is negative.
   - The M1 maker pool is +0.67c, descriptive only: LAX-heavy, and simple quotes are adversely selected.
