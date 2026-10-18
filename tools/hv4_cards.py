@@ -246,13 +246,31 @@ def _r(x: Any, sig: int = 6) -> Any:
 
 
 def _win(snap: SnapshotLike, label: str) -> Mapping[str, Any]:
-    w = (snap.get("windows") or {}).get(label)
+    ws = snap.get("windows")
+    w = ws.get(label) if isinstance(ws, Mapping) else None
     return w if isinstance(w, Mapping) else {}
 
 
 def _stamp(x: Any) -> int | None:
     """A time or slot stamp: a non-bool int >= 0, else None (strings, floats, bools and negatives are all None)."""
     return x if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
+
+
+def _flag(x: Any) -> bool | None:
+    """True, False or None: anything else (a string, a number) is None, so a caller's text can never reach the card as a flag."""
+    return x if isinstance(x, bool) else None
+
+
+def _frac(x: Any) -> float | None:
+    """A finite number in [0, 1], else None."""
+    n = _num(x)
+    return n if n is not None and 0.0 <= n <= 1.0 else None
+
+
+def _count(x: Any) -> float | None:
+    """A finite number >= 0, else None."""
+    n = _num(x)
+    return n if n is not None and n >= 0.0 else None
 
 
 def _norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
@@ -748,6 +766,9 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
             reasons.append(f"chain_stamp_invalid:{k}")  # absent, null, bool, float, string: the mint facts have no usable stamp
     if st_ms is not None and as_of_ms - st_ms > CHAIN_MINT_MAX_AGE_MS:
         reasons.append("chain_stale")
+    for k in ("mayhem", "holder_count_cover"):  # enum fields: only True / False / null; any other value is a veto, never copied to the card
+        if chain.get(k) is not None and not isinstance(chain.get(k), bool):
+            reasons.append(f"chain_invalid:{k}")
     hs = chain.get("holders_as_of_ms")
     held = [chain.get(k) is not None for k in ("top1_frac", "top10_frac")]
     checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": CHAIN_HOLDERS_MAX_AGE_MS}
@@ -890,6 +911,8 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
         reasons.append("bad_pool_id")
     if setup is not None and setup.pool_id != snap.get("id"):
         raise ValueError("setup tag belongs to another pool")
+    if setup is not None and (not isinstance(setup.type, str) or setup.type not in SETUP_PERSONA or setup.persona != SETUP_PERSONA[setup.type]):
+        raise ValueError("setup tag type / persona is outside SETUP_PERSONA")  # an enum in, an enum out: no caller text reaches the card
     if reasons:
         raise CardRefused(reasons)
 
@@ -902,11 +925,13 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
                             "mint_authority_null": True, "freeze_authority_null": True,
                             "token_program": "token_2022" if chain.get("token_program") == TOKEN_2022_PROGRAM else "spl_token",
                             "extensions": [sanitize_name(e)[:NAME_MAX] for e in list(chain.get("extensions") or [])[:12]],
-                            "mayhem": chain.get("mayhem"), "holder_count_cover": chain.get("holder_count_cover"),
+                            "mayhem": _flag(chain.get("mayhem")), "holder_count_cover": _flag(chain.get("holder_count_cover")),
                             "sell_route_ok": vr.checks["sell_route"]["ok"]}
-    for k in RISK_NUMERIC_FIELDS:
-        risk[k] = _r(_num(chain.get(k)))
-    hs = _num(chain.get("holders_as_of_ms"))
+    risk.update({k: None for k in RISK_NUMERIC_FIELDS})  # derived ones (holders_age_s, quote_chg_15m, quote_dd_peak) are set below
+    risk["holder_count"] = _r(_count(chain.get("holder_count")))
+    for k in ("top1_frac", "top10_frac", "creator_sold_frac", "same_slot_supply", "sniper_share", "sniper_still_holding"):
+        risk[k] = _r(_frac(chain.get(k)))  # a fraction in [0, 1] or null; a string, bool, NaN or out-of-range number is null
+    hs = _stamp(chain.get("holders_as_of_ms"))
     risk["holders_age_s"] = _r((as_of_ms - hs) / 1000.0) if hs is not None else None
     ago, q, peak = _num(chain.get("quote_sol_15m_ago")), feats["quote_sol"], _num(chain.get("quote_sol_peak"))
     risk["quote_chg_15m"] = _r(q / ago - 1.0) if ago and q is not None else None
@@ -920,7 +945,7 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
 
     card = {
         "v": CARD_VERSION, "id": snap["id"], "lane": "G", "as_of_slot": slot, "as_of_ms": as_of_ms,
-        "setup": None if setup is None else {"type": setup.type, "persona": setup.persona, "z": _r(setup.z)},
+        "setup": None if setup is None else {"type": setup.type, "persona": SETUP_PERSONA[setup.type], "z": _r(_num(setup.z))},
         "f": f, "risk": risk, "tops": {"buyer": top("buyers"), "seller": top("sellers")},
         "c1": c1, "c5": c5,
         "untrusted": {"name": sanitize_name(snap.get("name")), "symbol": sanitize_name(snap.get("symbol"))},
