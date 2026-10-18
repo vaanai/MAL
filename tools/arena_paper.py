@@ -22,7 +22,7 @@ and tools/r4b_frozen.py (blob shas in its header; no arena process may open or u
     the fill lands at that slot + k, k = ceil(latency / sps - 1e-9) (`k_rounding="round"` is the EXP-027 QP value). The instant is the WRITE instant, max(the bot's decision_ms, the wall clock at the buy()/sell() call, t_recv_ms of the latest feed row
     the engine has seen): a stale stamp is priced at the write instant, never refused; a stamp in the future is refused; the clock check uses the WRITE instant too: a decision stamped before the book's clock but WRITTEN after it counts (its stamp is logged in `stamp_ms`,
     with the write lag), one written before the clock is refused. Exit lag = ceil(0.55 s / sps), at least 2 slots. t_recv_ms lags block time
-    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's decision-time spot stays the price the bot saw).
+    by the feed delay, so the mapped slot is a lower bound of the chain's slot at the decision instant (measured once by tools/arena_feed_delay.py; the whole-slot delay d is `StackConfig.feed_delay_slots`, REQUIRED, no default: the engine refuses to price while it is unset, and adds d to the entry decision slot and to the exit decision slot; rows record the uncorrected and the corrected slots; the guard's reference is the price at the engine's own feed slot at the call (call_feed_slot), never at a slot the bot names).
   * FEED GAPS: a trade whose decision-to-exit span holds a logged data_loss gap of its program, or a needed print without V, or a restart of this engine, is
     written as an "excluded" row with the reason. A derived_last exit after a gap falls under the gap rule. The scorer counts them (> 5% of a book -> NOT_DECIDABLE).
     Contract: the feed emits a gap row before the row that revealed it. The engine does not rely on that alone: a feed `start` row, a gap row of kind process_restart / feed_restart, a slot jump (gap_slots) or silence (gap_silence_ms) between consecutive trade rows is a data_loss gap from the last row seen, for open positions.
@@ -94,6 +94,10 @@ V_BAND_MAX = 30_000_000_000
 
 class ArenaRefused(Exception):
     """A request the arena will not price (unregistered bot, no slot clock, unknown pool, partial sell, ...)."""
+
+
+class LedgerCorrupt(Exception):
+    """A ledger file does not end in a newline (a torn write): nothing is appended until a person has looked at it."""
 
 
 class LedgerConflict(Exception):
@@ -267,6 +271,7 @@ class Ledger:
         # path -> (inode, offset consumed, {trade_id: identity}). An append reads only the bytes written since the last look (by this or another process),
         # so its cost no longer grows with the size of the day file.
         self._cache: dict[str, tuple[int, int, dict[str, str]]] = {}
+        self.torn_tail_refusals = 0  # appends refused because the file did not end in a newline
 
     def path_for(self, bot_id: str, day: str) -> Path:
         return self.root / bot_id / f"trades-{day}.jsonl"
@@ -304,6 +309,9 @@ class Ledger:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             ids, off, complete = self._ids(fd, str(p))
+            if not complete:  # the file ends in a half line: appending would weld the next row onto the fragment
+                self.torn_tail_refusals += 1
+                raise LedgerCorrupt(f"{p.name} does not end in a newline (a torn write): refusing to append; nothing was written")
             tid = row["trade_id"]
             if tid in ids:
                 if ids[tid] == identity(row):
@@ -802,13 +810,17 @@ class ArenaEngine:
         sd = max(int(decision_slot), self.slot_at(instant, sps))  # the write instant mapped to the tape slot clock; d is added at the landing
         pos = Position(pid, bot_id, reg["frozen_sha"], pool, h.mint, h.venue, instant, int(decision_slot), sd, float(sps),
                        None if sol_in is None else float(sol_in), dict(meta or {}), stamp_ms=int(decision_ms), call_ms=call, call_feed_slot=self.hw_slot)
-        head, dirty = self.code_state()
-        self.start_record(bot_id)  # the engine's code state, captured once at start, is on the ledger before the first open row that points at it
-        self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "engine_id": self.engine_id, "call_feed_slot": self.hw_slot, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
-                            "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
-                            "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
-                            "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
-                            "stack": self.cfg.as_dict(), "written_ms": call})
+        try:
+            head, dirty = self.code_state()
+            self.start_record(bot_id)  # the engine's code state, captured once at start, is on the ledger before the first open row that points at it
+            self.ledger.append({"schema": SCHEMA, "kind": "open", "code_head": head, "code_dirty": dirty, "engine_id": self.engine_id, "call_feed_slot": self.hw_slot, "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot_id, "frozen_sha": reg["frozen_sha"],
+                                "decision_ms": {"entry": pos.decision_ms, "exit": None}, **timing, "decision_slot": {"entry": pos.decision_slot, "exit": None},
+                                "effective_slot": {"entry": sd, "exit": None}, "corrected_slot": {"entry": sd + d, "exit": None}, "feed_delay_slots": d, "pool": pool,
+                                "mint": h.mint, "prog": h.venue, "sps_entry": pos.sps_entry, "bot_sol_in": pos.bot_sol_in, "meta": pos.meta,
+                                "stack": self.cfg.as_dict(), "written_ms": call})
+        except LedgerCorrupt:
+            self._count("ledger_torn_tail")
+            raise
         self.positions[pid] = pos
         return pid
 
@@ -943,6 +955,8 @@ class ArenaEngine:
             except Exception as exc:  # a pricing failure must not drop the position silently: it stays open (an orphan in the read)
                 self.last_error[pid] = f"{type(exc).__name__}: {exc}"
                 self._count("price_errors")
+                if isinstance(exc, LedgerCorrupt):
+                    self._count("ledger_torn_tail")
                 keep.append(pid)
                 continue
             del self.positions[pid]
@@ -966,11 +980,16 @@ class ArenaEngine:
 
     @staticmethod
     def _ref_slot(pos: Position) -> int:
-        return pos.decision_slot if pos.call_feed_slot is None else min(pos.decision_slot, pos.call_feed_slot)
+        """The 15% guard reference slot: the engine's OWN latest feed slot at the buy() call (call_feed_slot), i.e. what a live executor would quote when it builds the
+        transaction. The bot's decision_slot is ignored by the guard entirely (a bot must not pick its own slippage reference: an older slot with a higher earlier
+        price would revert fewer buys, a future one would read prices it never saw); decision_slot can only push the LANDING later (sd = max(decision_slot, mapped
+        write instant)). Same convention as the stack: the reference price is the post-trade price of the last print BEFORE this slot. Rows written before the field
+        existed fall back to decision_slot."""
+        return pos.decision_slot if pos.call_feed_slot is None else pos.call_feed_slot
 
     def leg_inputs(self, pos: Position, h: PoolHist) -> dict[str, Any]:
         """Entry / exit states for both latencies (no stake yet). The fill lands d slots (the feed delay) later than the mapped decision slots; the guard's
-        decision-time spot is the price the bot saw (prints before its stamped decision_slot, even when it wrote the decision much later)."""
+        decision-time spot is the price at the engine's own latest feed slot at the call (call_feed_slot), never at a slot the bot names."""
         cfg = self.cfg
         d = self._check_delay_set()
         a = h.arrays()
@@ -981,8 +1000,7 @@ class ArenaEngine:
             args = (a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"])
             ms = mint_states(*args, np.array([sdc]), pos.sps_entry, t_marks=np.array([0]), slot_s_marks=np.array([pos.sps_exit]), clock_slot_marks=np.array([xsc]),
                              lats=LATS, rounding=cfg.k_rounding)
-            # the 15% guard compares against the price the bot SAW: prints before min(its stamped slot, the latest feed slot at the call). A stamped slot above the
-            # feed's high-water slot is a slot the bot never saw: capping it keeps a future decision_slot from taking the reference from later prints.
+            # the 15% guard compares against the price at the engine's latest feed slot at the call (call_feed_slot): engine-owned, the bot's decision_slot is ignored here
             ref_slot = self._ref_slot(pos)
             spot = ms["spot"][0] if ref_slot == sdc else mint_states(*args, np.array([ref_slot]), pos.sps_entry, lats=(LATS[0],), rounding=cfg.k_rounding)["spot"][0]
             return {"ref": float(spot), "Qe": {l: float(ms["Qe"][l][0]) for l in LATS}, "Be": {l: float(ms["Be"][l][0]) for l in LATS},
@@ -1000,7 +1018,7 @@ class ArenaEngine:
                 "write_lag_ms": {"entry": pos.decision_ms - pos.stamp_ms, "exit": None if pos.exit_ms is None else pos.exit_ms - (pos.exit_stamp_ms or 0)},
                 "decision_slot": {"entry": pos.decision_slot, "exit": pos.exit_slot}, "effective_slot": {"entry": pos.sd, "exit": pos.xs},
                 "corrected_slot": {"entry": pos.sd + (self.cfg.feed_delay_slots or 0), "exit": None if pos.xs is None else pos.xs + (self.cfg.feed_delay_slots or 0)},
-                "feed_delay_slots": self.cfg.feed_delay_slots,
+                "feed_delay_slots": self.cfg.feed_delay_slots, "guard_ref_slot": self._ref_slot(pos),
                 "pool": pos.pool, "mint": pos.mint, "prog": pos.prog, "stake_sol": s_sol, "bot_sol_in": pos.bot_sol_in, "exit_reason": pos.reason,
                 "meta": pos.meta, "state_src": src, "stack": dict(self.cfg.as_dict(), sps_entry=pos.sps_entry, sps_exit=pos.sps_exit),
                 "written_ms": self.now_fn()}
@@ -1042,5 +1060,5 @@ def row_digest(rows: list[Mapping[str, Any]]) -> str:
     return hashlib.md5("\n".join(canon(r) for r in rows).encode()).hexdigest()
 
 
-__all__ = ["process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
+__all__ = ["LedgerCorrupt", "process_code_state", "identity", "TEST_ENV", "line_bytes", "verify_sha_on_origin", "ArenaEngine", "ArenaRefused", "Ledger", "LedgerConflict", "StackConfig", "register_bot", "stop_bot", "load_registry", "curve_trip", "price_leg",
            "book_fail_legs", "LEG_KEYS", "STAKES_SOL", "LATS", "SCHEMA", "STRAND_STATES", "canon", "utc_day"]

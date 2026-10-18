@@ -20,6 +20,7 @@ from tools.arena_paper import (
     ArenaRefused,
     Ledger,
     LedgerConflict,
+    LedgerCorrupt,
     TEST_ENV,
     StackConfig,
     book_fail_legs,
@@ -31,6 +32,7 @@ from tools.arena_paper import (
     stop_bot,
     verify_sha_on_origin,
     line_bytes,
+    utc_day,
 )
 from tools.r4b_book import fail_legs
 
@@ -945,7 +947,7 @@ def test_a_future_decision_slot_cannot_take_the_guard_reference_from_prints_the_
     # prices rose about 30% between slot 149 and the landing at 400+: against the price the bot saw this buy is past the 1.15 guard
     assert r["legs"]["total"]["flat_1p3"]["state"] == "guarded" and r["legs"]["total"]["flat_1p9"]["state"] == "guarded"
     assert r["calc"]["1p3"]["by_rule"]["total"]["pnl_nofail"] == -505_000.0
-    # a stamped slot BELOW the high-water slot is a price the bot did see: unchanged
+    # a stamped slot BELOW the feed's slot changes nothing either: the guard reference is the engine's own feed slot at the call
     sub = tmp_path / "b"
     sub.mkdir()
     e2 = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
@@ -956,7 +958,7 @@ def test_a_future_decision_slot_cannot_take_the_guard_reference_from_prints_the_
             pid = e2.buy("botA", "P1", None, tms(149), 140)
         if x["slot"] == 250 and pid and e2.positions[pid].exit_slot is None:
             e2.sell("botA", pid, 1.0, tms(250), 250)
-    assert trades(e2, "open")[0]["call_feed_slot"] == 149 and trades(e2)[0]["calc"]["1p3"]["spot"] == post_price(139)
+    assert trades(e2, "open")[0]["call_feed_slot"] == 149 and trades(e2)[0]["calc"]["1p3"]["spot"] == post_price(148)  # the guard ignores decision_slot 140: the reference is the feed slot at the call
 
 
 def test_the_bonding_guard_reference_is_capped_at_the_feed_slot_too(tmp_path):
@@ -994,3 +996,103 @@ def test_the_engine_records_its_code_state_once_at_start_and_open_rows_point_at_
     assert e2.engine_id != eng.engine_id and e2.start_all() == 2 and e2.start_all() == 0
     assert sorted(x["engine_id"] for x in trades(e2, "start")) == sorted([eng.engine_id, e2.engine_id])
     assert [x["engine_id"] for x in e2.ledger.read_bot("botB") if x["kind"] == "start"] == [e2.engine_id]
+
+
+
+def _forge_run(tmp_path, name, decision_slot):
+    """Prices are high at slots 90-92 and normal after. The feed is at slot 100 when the bot says it decided at `decision_slot`."""
+    sub = tmp_path / name
+    sub.mkdir()
+    eng = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+    rows = [dict(r, quote_reserve=250e9) if r["slot"] <= 92 else r for r in _tape(hi=460)]
+    sell_slot = max(250, decision_slot + 20)  # a sell after the (possibly later) landing
+    pid = None
+    for r in rows:
+        eng.on_row(r)
+        if r["slot"] == 100 and pid is None:
+            pid = eng.buy("botA", "P1", None, tms(100), decision_slot)
+        if r["slot"] == sell_slot and pid and eng.positions[pid].exit_slot is None:
+            eng.sell("botA", pid, 1.0, tms(sell_slot), sell_slot)
+    return trades(eng, "open")[0], trades(eng)[0], {x["slot"]: x for x in rows}
+
+
+def test_the_guard_reference_ignores_decision_slot_an_older_one_cannot_change_it(tmp_path):
+    """The reviewer's probe: decision_slot 92 (a higher, earlier price) with the feed at 100 must not change the reference."""
+    honest_open, honest, by_slot = _forge_run(tmp_path, "honest", 100)
+    forged_open, forged, _ = _forge_run(tmp_path, "forged", 92)
+    older_open, older, _ = _forge_run(tmp_path, "older", 60)
+    future_open, future, _ = _forge_run(tmp_path, "future", 400)
+
+    def post_price(slot):
+        x = by_slot[slot]
+        buy = x["side"] == "buy"
+        q = x["quote_reserve"] + (x["sol_lamports"] * 0.99 if buy else -x["sol_lamports"] * 1.01) + V
+        b = x["base_reserve"] - x["token_raw"] if buy else x["base_reserve"] + x["token_raw"]
+        return q / b
+
+    for op in (honest_open, forged_open, older_open, future_open):
+        assert op["call_feed_slot"] == 100
+    for tr in (honest, forged, older, future):
+        assert tr["guard_ref_slot"] == 100 and tr["calc"]["1p3"]["spot"] == post_price(99)  # the last print before the engine's own feed slot
+    assert post_price(91) > 2 * post_price(99)  # what a forged slot 92 would have taken as the reference
+    assert forged["legs"] == honest["legs"] and forged["calc"]["1p3"]["by_rule"] == honest["calc"]["1p3"]["by_rule"]
+    assert older["legs"] == honest["legs"]  # an older slot cannot change the state
+    # decision_slot can only push the landing later
+    assert honest["calc"]["1p3"]["landing_slot"] == 100 + 2 + 4 and forged["calc"]["1p3"]["landing_slot"] == 100 + 2 + 4
+    assert future["calc"]["1p3"]["landing_slot"] == 400 + 2 + 4 and future["effective_slot"]["entry"] == 400
+
+
+def test_the_bonding_guard_reference_ignores_decision_slot_in_both_directions(tmp_path):
+    refs = {}
+    for name, decision_slot in (("honest", 149), ("future", 400), ("older", 60)):
+        sub = tmp_path / name
+        sub.mkdir()
+        eng = mk_engine(sub, StackConfig(strand_rule="total", feed_delay_slots=2))
+        rows = [dict(r, quote_reserve=40e9 + i * 3e8, base_reserve=7e14 - i * 1e10, pool=None, mint="M1") for i, r in enumerate(_tape(venue="pump_bonding", pool="P1", hi=430))]
+        by_slot = {x["slot"]: x for x in rows}
+        pid = None
+        for r in rows:
+            eng.on_row(r)
+            if r["slot"] == 149 and pid is None:
+                pid = eng.buy("botA", "M1", None, tms(149), decision_slot)
+            if r["slot"] == 420 and pid and eng.positions[pid].exit_slot is None:
+                eng.sell("botA", pid, 1.0, tms(420), 420)
+        refs[name] = trades(eng)[0]["calc"]["1p3"]["spot"]
+    want = by_slot[148]["quote_reserve"] / (by_slot[148]["base_reserve"] * 1000.0)
+    assert refs == {"honest": want, "future": want, "older": want}
+    assert want != by_slot[399]["quote_reserve"] / (by_slot[399]["base_reserve"] * 1000.0)
+
+
+def test_a_torn_ledger_tail_is_refused_counted_and_nothing_is_written(tmp_path):
+    led = Ledger(tmp_path)
+    assert led.append(_fake_row("t1")) is True
+    p = led.path_for("botA", "2026-09-10")
+    good = p.read_bytes()
+    assert good.endswith(b"\n")
+    p.write_bytes(good + b'{"kind":"open","trade_id":"half')  # a crash mid-write: the file does not end in a newline
+    with pytest.raises(LedgerCorrupt, match="newline"):
+        led.append(_fake_row("t2"))
+    assert led.torn_tail_refusals == 1 and p.read_bytes() == good + b'{"kind":"open","trade_id":"half'  # counted, and nothing was written
+    other = Ledger(tmp_path)  # a fresh object (no cache) refuses too
+    with pytest.raises(LedgerCorrupt):
+        other.append(_fake_row("t2"))
+    assert other.torn_tail_refusals == 1
+    with pytest.raises(LedgerCorrupt):
+        led.append(_fake_row("t1"))  # even an idempotent re-append is refused while the tail is torn
+    assert led.torn_tail_refusals == 2
+    p.write_bytes(good)  # a person removes the fragment
+    assert Ledger(tmp_path).append(_fake_row("t2")) is True and len(p.read_text().splitlines()) == 2
+
+
+def test_the_engine_counts_a_torn_tail_and_creates_no_position(tmp_path):
+    eng = mk_engine(tmp_path)
+    for r in _tape(hi=110):
+        eng.on_row(r)
+    eng.buy("botA", "P1", None, tms(109), 109)
+    p = eng.ledger.path_for("botA", utc_day(tms(109)))
+    p.write_bytes(p.read_bytes() + b'{"kind":"refused","trade_id":"hal')  # torn after the first open row
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "P1", None, tms(109) + 1, 109)
+    assert eng.counters["ledger_torn_tail"] == 1 and eng.ledger.torn_tail_refusals == 1 and len(eng.positions) == 1  # no position for the refused write
+    with pytest.raises(LedgerCorrupt):
+        eng.buy("botA", "UNKNOWN", None, tms(109) + 2, 109)  # a refused-buy row cannot be written either: loud, not silent
