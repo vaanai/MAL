@@ -9,11 +9,11 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
    - **Tip-tape archive (`23 3`):** now 1990 MB, because fast-0 refuses jobs of 2 GB or more.
 2. **Disk.** `/data/mal/c1nf-parity-venv/bin/python -c "import shutil;u=shutil.disk_usage('/data/mal/blocks/forward-1016');print(100*u.free/u.total)"`.
    - At 05:02Z it read 19.85%.
-   - Walk 2 (job #1036) writes nothing below 20%. Its newest sealed hour is 2026-10-16T13.
+   - Walk 2 (job #1036) writes nothing below 20%. Its newest sealed hour was 2026-10-16T13 at 05:02Z and 2026-10-16T21 at 15:02Z.
    - Arena writes on research-0 need 25% (DEC-031 §3.8).
    - The owner was asked to run the earlier `rm` (~35 GB of finished-hunt tmp dirs) and/or have Helm archive forward-1002, forward-1002ev, exp024 and exp025 (~104 GB). Helm is handling backup via the owner's OneDrive.
-   - **Correction (15:1xZ):** `forward-1002` must STAY, because it is on EXP-025's Look 1/2 allowlist. exp024, exp025 and forward-1002ev were already removed on 10-18 (see the EXP-025 HOLD below). Before naming any dir for archive, grep EXP/DEC/HOLDOUT_LEDGER/HANDOFF/crons for pending reads.
-   - **15:02Z:** 22.42% free, falling about 0.05 points per hour (22.63 at 11:02Z). A straight line reaches 20.00% about 10-20T13Z. Walk 2's newest sealed hour is trades-2026-10-16T21; at about 1.5 sealed h per wall h it catches up to now only about 10-22T03Z, so it needs about 20 GB more freed before 10-20. The owner was told; notebook n_M2ZOqFGxFXWOMQ. The guard cron in `ops/crons-1016-manager12.json` now triggers on "free < 21.5% or the walk-2 hour has not advanced".
+   - **Correction (2026-10-18 ~15:15Z):** `forward-1002` must STAY, because it is on EXP-025's Look 1/2 allowlist. exp024, exp025 and forward-1002ev were already removed on 10-18 (see the EXP-025 HOLD below). Before naming any dir for archive, grep EXP/DEC/HOLDOUT_LEDGER/HANDOFF/crons for pending reads.
+   - **15:02Z:** 22.42% free, falling about 0.05 points per hour (22.63 at 11:02Z). A straight line reaches 20.00% about 10-20T13Z. Walk 2's newest sealed hour is trades-2026-10-16T21; at about 1.5 sealed h per wall h it catches up to now only about 10-22T03Z, so it needs about 20 GB more freed before 10-20. The owner was told; notebook n_M2ZOqFGxFXWOMQ. The guard cron in `/data/mal/hunt-1008/ops/crons-1016-manager12.json` (host file, not in git) now triggers on "free < 21.5% or the walk-2 hour has not advanced".
    - The manager's own `rm` is denied by the permission check; do not work around it.
 
 ## 1. What the owner asked (2026-10-18 ~03:00Z) and what was built
@@ -85,7 +85,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
   1. establish what removed it and when (ask the owner or Helm), and confirm from the MiScusi job history that no `exp025_look.py run` or `take_lock` ever ran;
   2. add a dated disclosure record to EXP-025 using quant-proof's sentence (notebook n_vuyyZ4nehgxh1g has the full text), with quant-proof OK;
   3. then run the P5 command.
-- **Restore:** if the owner can, restore exp025, at least `LOOK_READS.jsonl` and `e0/`. Look 2's R8 (after 10-26T12:00Z) needs the same.
+- **Restore:** if the owner can, restore exp025, at least `LOOK_READS.jsonl` and `e0/`, **and `blocks/forward-1002ev`**: EXP-025's Look 1 allowlist pins forward-1002ev `[2026-10-09T00, 2026-10-16T01)`, and §10 item 3 reads that week's tape from it directly (forward-1002 is only the cross-check). Look 2's R8 (after 10-26T12:00Z) needs the same.
 - **Lesson:** never list a dir for archive without checking pending steps that read it (memory `feedback-archive-list-check`).
 
 3. **Kalshi.**
