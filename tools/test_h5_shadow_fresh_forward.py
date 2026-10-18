@@ -341,5 +341,70 @@ class RunLiveTests(unittest.TestCase):
             self.assertEqual(built[0]["seal_start_ms"] if "seal_start_ms" in built[0] else h5.SEAL_START_MS, h5.SEAL_START_MS)
 
 
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "research" / "arena-h5.sh"
+
+
+class ArenaScriptTests(unittest.TestCase):
+    """scripts/research/arena-h5.sh: POSIX sh, refuses anything but /data/mal/arena/h5-*, always passes --fresh-forward ARENA and nothing for the seals."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(dir="/tmp", prefix="arena-sh-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.fake = self.tmp / "fakepy"
+        self.fake.write_text('#!/bin/sh\nif [ "$1" = "-I" ]; then exit 0; fi\nprintf "ARGV:%s\\n" "$*"\nprintf "SHA:%s\\n" "$H5_CODE_SHA"\n')
+        self.fake.chmod(0o755)
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.tmp), "ARENA_H5_PYTHON": str(self.fake), "ARENA_H5_ALLOW_DIRTY": "1"}
+
+    def sh(self, **env):
+        import subprocess
+
+        return subprocess.run(["sh", str(SCRIPT)], env={**self.env, **env}, capture_output=True, text=True)
+
+    def test_it_is_posix_sh(self):
+        import subprocess
+
+        self.assertEqual(subprocess.run(["sh", "-n", str(SCRIPT)]).returncode, 0)
+        text = SCRIPT.read_text()
+        self.assertTrue(text.startswith("#!/bin/sh\n"))
+        code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        for bashism in ("PIPESTATUS", "[[", "<<<", "local ", "echo -e", "source ", "declare ", "=("):
+            self.assertNotIn(bashism, code, bashism)
+
+    def test_refusals_come_before_anything_is_created(self):
+        for env in ({"ARENA_H5_OUT_DIR": "/tmp/x"}, {"ARENA_H5_OUT_DIR": "/srv/mal-h5-shadow"}, {"ARENA_H5_OUT_DIR": "/data/mal/arena/h5-a/../x"},
+                    {"ARENA_H5_OUT_DIR": "/data/mal/arena/other"}, {"ARENA_H5_OUT_DIR": str(self.tmp / "data" / "h5-shadow")},
+                    {"ARENA_H5_SOCKETS": "2"}, {"ARENA_H5_SOCKETS": "x"}, {"ARENA_H5_SYN_SOCKETS": "-1"}, {"ARENA_H5_MAX_SECONDS": "1;ls"}):
+            r = self.sh(**env)
+            self.assertEqual(r.returncode, 2, (env, r.stderr))
+            self.assertIn("refusing", r.stderr)
+            self.assertNotIn("ARGV:", r.stdout)
+
+    def test_a_good_run_passes_the_flag_and_no_seal_or_tip_option(self):
+        out = Path("/data/mal/arena") / f"h5-test-{os.getpid()}"
+        try:
+            out.mkdir(parents=True)
+        except OSError as e:
+            self.skipTest(f"/data/mal/arena not writable here: {e}")
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        r = self.sh(ARENA_H5_OUT_DIR=str(out), ARENA_H5_WS_URLS="wss://a.example/,wss://b.example/", ARENA_H5_MAX_SECONDS="120", ARENA_H5_SOCKETS="3",
+                    H5_TIP_DIR="/var/lib/mal/sealed/fast-trades-tip", H5_LOOK2_OBSERVED="EXP-024-Am2", H5_BX10_ENABLE="EXP-026", CAP_PICK_LIVE="/x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = [ln for ln in r.stdout.splitlines() if ln.startswith("ARGV:")][0][5:]
+        self.assertIn("-m tools.h5_shadow", argv)
+        self.assertIn("--fresh-forward ARENA", argv)
+        self.assertIn(f"--out-dir {out}", argv)
+        self.assertIn("--sockets 3", argv)
+        self.assertIn("--ws-url wss://a.example/ --ws-url wss://b.example/", argv)
+        self.assertIn("--max-seconds 120", argv)
+        for absent in ("--tip-dir", "--h5-look2-observed", "--bx10-enable"):
+            self.assertNotIn(absent, argv)  # the arena env of the old shadow is not forwarded
+        self.assertIn("fresh-forward ARENA", r.stdout)
+
+    def test_the_default_out_dir_is_dated_under_the_arena_root(self):
+        text = SCRIPT.read_text()
+        self.assertIn('OUT="${ARENA_H5_OUT_DIR:-/data/mal/arena/h5-shadow-$DAY}"', text)
+        self.assertIn('DAY="$(date -u +%Y-%m-%d)"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
