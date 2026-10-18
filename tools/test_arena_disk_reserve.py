@@ -129,3 +129,79 @@ def test_compaction_is_an_arena_write_too(tmp_path: Path) -> None:
         feed.compactor.stop()
     assert not src.exists() and (tmp_path / (src.name + ".zst")).exists() and feed.compactor.snapshot()["files"] == 1
     assert feed.compactor.snapshot()["failed"] == 0
+
+
+def gaps_on_tape(d: Path) -> list[dict]:
+    return [r for f in tape_files(d) for r in map(json.loads, f.read_text().splitlines()) if r["type"] == "gap"]
+
+
+def test_free_space_hovering_at_the_reserve_keeps_every_pause_record(tmp_path: Path) -> None:
+    """Review item 3: 24 -> 30 -> 24 -> 30. Each pause gets its own correct gap record; none is lost or has a null span."""
+    disk, clock = Disk(24.0), {"t": H0 + 1000}
+    feed = feed_on(tmp_path, disk, clock)
+    feed.emit(row(H0 + 1000, "a"))  # pause 1 (the pre-open check)
+    disk.set_pct(30.0)
+    clock["t"] = H0 + 11_000
+    assert feed.check_disk(clock["t"], force=True) is True and not feed.writer.paused
+    feed.emit(row(H0 + 12_000, "b"))
+    disk.set_pct(24.0)
+    clock["t"] = H0 + 20_000
+    assert feed.check_disk(clock["t"], force=True) is False and feed.writer.paused  # pause 2
+    feed.emit(row(H0 + 21_000, "c"))
+    feed.emit(row(H0 + 22_000, "d"))
+    disk.set_pct(30.0)
+    clock["t"] = H0 + 30_000
+    assert feed.check_disk(clock["t"], force=True) is True
+    feed.writer.close()
+    g = gaps_on_tape(tmp_path)
+    assert [(x["paused_since_ms"], x["paused_ms"], x["rows_dropped"], x["from_ms"], x["to_ms"]) for x in g] == [
+        (H0 + 1000, 10_000, 1, H0 + 1000, H0 + 11_000), (H0 + 20_000, 10_000, 2, H0 + 20_000, H0 + 30_000)]
+    assert feed.pauses == 2 and feed.paused_since_ms is None
+
+
+def test_resume_needs_the_reserve_plus_the_margin(tmp_path: Path) -> None:
+    disk, clock = Disk(24.0), {"t": H0}
+    feed = feed_on(tmp_path, disk, clock)
+    assert feed.check_disk(H0, force=True) is False
+    for pct in (25.0, 26.0, 26.9):  # at and just above the reserve: still paused, nothing written
+        disk.set_pct(pct)
+        assert feed.check_disk(H0 + 1, force=True) is False and feed.writer.paused
+    assert tape_files(tmp_path) == []
+    disk.set_pct(25.0 + af.RESUME_MARGIN_PCT)
+    assert feed.check_disk(H0 + 2, force=True) is True and not feed.writer.paused
+    assert len(gaps_on_tape(tmp_path)) == 1
+
+
+def test_a_failed_resume_write_keeps_the_pause_and_the_span(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    disk, clock = Disk(24.0), {"t": H0 + 1000}
+    feed = feed_on(tmp_path, disk, clock)
+    feed.emit(row(H0 + 1000))
+    disk.set_pct(40.0)
+    real = feed.writer.write
+    calls = {"n": 0}
+
+    def flaky(rec, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        return real(rec, **kw)
+
+    monkeypatch.setattr(feed.writer, "write", flaky)
+    clock["t"] = H0 + 9000
+    assert feed.check_disk(clock["t"], force=True) is False and feed.writer.paused and feed.paused_since_ms == H0 + 1000
+    clock["t"] = H0 + 19_000
+    assert feed.check_disk(clock["t"], force=True) is True
+    g = gaps_on_tape(tmp_path)
+    assert len(g) == 1 and g[0]["paused_since_ms"] == H0 + 1000 and g[0]["to_ms"] == H0 + 19_000 and feed.counters["write_errors"] == 1
+
+
+def test_the_error_log_is_an_arena_write_too(tmp_path: Path) -> None:
+    disk, clock = Disk(24.0), {"t": H0}
+    feed = feed_on(tmp_path, disk, clock)
+    feed.check_disk(H0, force=True)
+    feed.errlog.log(RuntimeError("x"), {"where": "test"})
+    assert not (tmp_path / af.ERRORS_NAME).exists() and feed.errlog.dropped == 1
+    disk.set_pct(40.0)
+    feed.check_disk(H0 + 1, force=True)
+    feed.errlog.log(RuntimeError("y"), {"where": "test"})
+    assert (tmp_path / af.ERRORS_NAME).exists()

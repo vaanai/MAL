@@ -97,6 +97,7 @@ POOL_MINTS_MAX = 50_000
 NAME_MAX, SYMBOL_MAX = 32, 16
 DISK_CHECK_S = 60.0  # free space is measured at least this often, and before every hour file opens
 MIN_FREE_PCT_DEFAULT = 25.0  # DEC-031 rev 2 s3.8: walk 2 keeps its room; no arena write may take the filesystem's free space below this
+RESUME_MARGIN_PCT = 2.0  # hysteresis: after a pause the feed resumes only at the reserve plus this (the feed and the walker both write, so free space hovers)
 COMPACT_GRACE_MS = 120_000  # a closed hour is compacted this long after its end (a row can reach the writer a little late)
 COMPACT_SCAN_S = 30.0
 COMPACT_TRIES = 3
@@ -359,10 +360,13 @@ class TapeWriter:
             self._fh.close()
             self._fh, self._name = None, None
 
-    def write(self, rec: dict[str, Any]) -> None:
-        if self.paused:  # below the disk reserve: no row of any type is written (the Feed writes one gap record when space allows again)
+    def write(self, rec: dict[str, Any], *, resume: bool = False) -> bool:
+        """Append one row; True when it was written. False = dropped: the writer is paused below the disk reserve, or the pre-open check refused.
+        resume=True is for the single disk_reserve gap record the Feed writes right after it measured that space allows again: it skips the pause
+        and the pre-open check (the Feed has just done both), so the record cannot be dropped by a second reading."""
+        if self.paused and not resume:  # below the disk reserve: no row of any type is written (the Feed writes one gap record when space allows again)
             self.dropped += 1
-            return
+            return False
         t = int(rec["t_recv_ms"])
         self.latest_t = max(self.latest_t, t)
         name = self.name_for(t)
@@ -370,9 +374,9 @@ class TapeWriter:
             name = self.name_for(self.latest_t)  # a row from an hour that is already compacted goes to the newest hour's file
             self.late_to_current += 1
         if self._name != name:
-            if self.before_open is not None and not self.before_open():  # the disk-reserve check, before an hour file is created or reopened
+            if not resume and self.before_open is not None and not self.before_open():  # the disk-reserve check, before an hour file is created or reopened
                 self.dropped += 1
-                return
+                return False
             if self._fh:
                 self._fh.close()
             self._fh = open(self.dir / name, "a", encoding="utf-8")
@@ -389,6 +393,7 @@ class TapeWriter:
                 dq[-1][1] += 1
             else:
                 dq.append([m, 1])
+        return True
 
     def rows_last_minute(self, prog: str, now: int) -> int:
         """Data rows of `prog` in the last COMPLETED minute before `now`."""
@@ -402,17 +407,24 @@ class TapeWriter:
 
 
 class ErrorLog:
-    def __init__(self, path: Path, max_bytes: int = ERRORS_MAX_BYTES) -> None:
-        self.path, self.max_bytes, self.bytes, self.dropped = path, max_bytes, 0, 0
+    """Exception class, message[:200] and traceback of decode / write failures. Capped. It is an arena write like any other: while the disk reserve
+    pauses the writer (`paused()` true) nothing is logged, and a failing disk never raises out of it."""
+
+    def __init__(self, path: Path, max_bytes: int = ERRORS_MAX_BYTES, paused: Callable[[], bool] | None = None) -> None:
+        self.path, self.max_bytes, self.bytes, self.dropped, self.paused = path, max_bytes, 0, 0, paused
 
     def log(self, exc: BaseException, ctx: dict | None = None) -> None:
-        if self.bytes >= self.max_bytes:
+        if self.bytes >= self.max_bytes or (self.paused is not None and self.paused()):
             self.dropped += 1
             return
         head = json.dumps(clean({"t_ms": now_ms(), "exc": type(exc).__name__, "msg": str(exc)[:200], **(ctx or {})}), allow_nan=False)
         text = head + "\n" + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) + "\n"
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(text)
+        try:
+            with open(self.path, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError:
+            self.dropped += 1
+            return
         self.bytes += len(text)
 
 
@@ -525,7 +537,7 @@ class Feed:
         self.writer = TapeWriter(out_dir)
         self.writer.before_open = lambda: self.check_disk(self.wall(), force=True)
         self.compactor = Compactor(out_dir, wall, compact=compact, allow=self.disk_allows)
-        self.errlog = ErrorLog(out_dir / ERRORS_NAME)
+        self.errlog = ErrorLog(out_dir / ERRORS_NAME, paused=lambda: self.writer.paused)
         self.started_ms = wall()
         self.watch = {p: ProgWatch(p, self.started_ms) for p in PROG_PROGRAM}
         self.sources: dict[str, MultiSocketLogsSource] = {}
@@ -539,8 +551,8 @@ class Feed:
         self.disk_free_pct: float | None = None
 
     # -- rows
-    def emit(self, rec: dict[str, Any]) -> None:
-        self.writer.write(rec)
+    def emit(self, rec: dict[str, Any]) -> bool:
+        return self.writer.write(rec)
 
     def meta_row(self, type_: str, **body: Any) -> dict[str, Any]:
         return _row(type_, "all", 0, self.wall(), None, None, body)
@@ -618,18 +630,30 @@ class Feed:
         if pct is None:  # cannot tell: keep the current state
             return not self.writer.paused
         self.disk_free_pct = round(pct, 2)
-        low = pct < self.min_free_pct
-        if low and not self.writer.paused:
-            self.writer.paused, self.paused_since_ms, self.pause_dropped0 = True, now, self.writer.dropped
-            self.pauses += 1
-        elif not low and self.writer.paused:
-            self.writer.paused = False
-            self.emit(_row("gap", "all", 0, now, None, None, {"kind": "disk_reserve", "reason": "disk_reserve", "data_loss": True,
-                                                               "paused_since_ms": self.paused_since_ms, "paused_ms": now - (self.paused_since_ms or now),
-                                                               "rows_dropped": self.writer.dropped - self.pause_dropped0, "free_pct": self.disk_free_pct,
-                                                               "min_free_pct": self.min_free_pct}))
-            self.paused_since_ms = None
-        return not low
+        if not self.writer.paused:
+            if pct < self.min_free_pct:
+                self.writer.paused, self.paused_since_ms, self.pause_dropped0 = True, now, self.writer.dropped
+                self.pauses += 1
+                return False
+            return True
+        if pct < self.min_free_pct + RESUME_MARGIN_PCT:  # paused: stay paused until the reserve plus the hysteresis margin is free
+            return False
+        # Resume. The one gap record is written FIRST, directly (resume=True: no pause drop, no second pre-open reading), and the writer
+        # un-pauses only once it is on disk; a failed write keeps the pause and the pause interval for the next check.
+        rec = _row("gap", "all", 0, now, None, None, {"kind": "disk_reserve", "reason": "disk_reserve", "data_loss": True,
+                                                       "from_ms": self.paused_since_ms, "to_ms": now, "paused_since_ms": self.paused_since_ms,
+                                                       "paused_ms": now - (self.paused_since_ms if self.paused_since_ms is not None else now),
+                                                       "rows_dropped": self.writer.dropped - self.pause_dropped0, "free_pct": self.disk_free_pct,
+                                                       "min_free_pct": self.min_free_pct, "resume_margin_pct": RESUME_MARGIN_PCT})
+        try:
+            written = self.writer.write(rec, resume=True)
+        except OSError as exc:
+            self.counters["write_errors"] += 1
+            self.errlog.log(exc, {"where": "disk_reserve_gap"})
+            return False
+        if written:
+            self.writer.paused, self.paused_since_ms = False, None
+        return written
 
     def socket_rows(self, prog: str) -> list[dict[str, Any]]:
         src = self.sources.get(prog)
