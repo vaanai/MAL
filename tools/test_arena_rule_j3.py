@@ -274,28 +274,62 @@ def test_r9b_edges_when_the_parent_create_is_on_the_tape(tmp_path, s0_off, last_
         assert verdict.orders[0].meta["s0_basis"] == "first_print"
 
 
-@pytest.mark.parametrize("t_off,last_off,reason", [
-    (360_000, 360_000, None),  # decision exactly tape start + 360 s, last print exactly at tape start + 360 s
-    (359_999, 359_999, f"{J.R_PARENT_YOUNG}_tape_start"),
-    (400_000, 360_000, None),
-    (400_000, 359_999, f"{J.R_PARENT_SILENT}_tape_start"),
+TS = B  # the tape start the rule is given (the explorer's W_e start, 2026-10-19T08:05:20Z)
+
+
+def fake_parent(first, last=None, created_kind=None):
+    """A parent pool as the state shows it: events (t, sol, is_buy, trader), n_trades, last_trade, created_kind. No tape needed."""
+    ev = collections.deque([(first, 1, True, "t")] + ([(last, 1, False, "t")] if last not in (None, first) else []))
+    return SimpleNamespace(events=ev, n_trades=len(ev), last_trade={"t_ms": last if last is not None else first}, created_kind=created_kind)
+
+
+@pytest.mark.parametrize("created_kind", [None, "pool_create"])
+@pytest.mark.parametrize("first_off,t_off,last_off,reason", [
+    (40_000, 40_000 + 357_000, 40_000 + 357_000, f"{J.R_PARENT_YOUNG}_first_print"),  # QP: first print 08:06:00, tape start 08:05:20: 357 s after the print is too early
+    (40_000, 40_000 + 359_999, 40_000 + 359_999, f"{J.R_PARENT_YOUNG}_first_print"),
+    (40_000, 40_000 + 360_000, 40_000 + 360_000, None),  # exactly 360 s after the first print, last print at the decision instant: both inclusive
+    (5_000, 5_000 + 65_000, 5_000 + 65_000, f"{J.R_PARENT_YOUNG}_first_print"),  # QP (a): first print 08:05:25 must not pass at 08:06:30
+    (5_000, 5_000 + 357_000, 5_000 + 357_000, f"{J.R_PARENT_YOUNG}_first_print"),  # QP (b): first print 08:05:25, decision 08:11:22
+    (5_000, 5_000 + 360_000, 5_000 + 360_000, None),
+    (40_000, 40_000 + 400_000, 40_000 + 360_000, None),  # last print exactly at s0 + 360 s
+    (40_000, 40_000 + 400_000, 40_000 + 359_999, f"{J.R_PARENT_SILENT}_first_print"),
+    (-100_000, 359_999, 359_999, f"{J.R_PARENT_YOUNG}_first_print"),  # a first print before the tape start: the start is a floor on s0 ...
+    (-100_000, 360_000, 360_000, None),  # ... so it ages from the tape start, not from the earlier print
 ])
-def test_r9b_edges_when_the_parent_create_is_not_on_the_tape(tmp_path, t_off, last_off, reason):
-    """No pool_create on the tape: s0 < tape start, so the parent qualifies only at tape start + 360 s (QP R9(b))."""
-    ts = B + 10 * SEC
-    T = ts + t_off
+def test_r9b_s0_is_the_first_print_seen_whatever_the_create_and_the_tape_start_is_only_a_floor(first_off, t_off, last_off, reason, created_kind):
+    ok, why, s0, basis = J.r9b(fake_parent(TS + first_off, TS + last_off, created_kind), TS + t_off, TS)
+    assert (ok, why) == (reason is None, reason) and basis == J.BASIS_FIRST_PRINT
+    assert s0 == max(TS + first_off, TS)  # never the tape start in place of a later first print
+
+
+def test_r9b_aged_out_parent_keeps_the_bound_and_the_floor():
+    p = fake_parent(TS + 3_700_000)
+    p.n_trades = 2  # one event aged out of the deque
+    t = TS + 3_700_000 + 10_000
+    ok, why, s0, basis = J.r9b(p, t, TS)
+    assert (ok, why, basis) == (True, None, J.BASIS_BOUND) and s0 == t - J.EVENTS_KEEP_MS  # earlier than the earliest retained print and than now - 60 min
+    assert J.s0_bound(p, TS + 100_000, TS) == (TS, J.BASIS_BOUND)  # and never below the floor
+
+
+@pytest.mark.parametrize("t_off,reason", [(357_000, f"{J.R_PARENT_YOUNG}_first_print"), (359_999, f"{J.R_PARENT_YOUNG}_first_print"), (360_000, None)])
+@pytest.mark.parametrize("with_create", [False, True])
+def test_a_parent_first_printed_after_the_tape_start_is_aged_from_its_first_print_in_the_real_state(tmp_path, t_off, reason, with_create):
+    """No create on the tape (or a create long before the first print): the parent first prints 5 s after the tape start and may not pass 357 s after that print."""
+    first = TS + 5 * SEC
+    T = first + t_off
     w = World()
-    w.trade(ts + 20 * SEC, POOL["PA"], MINT["PA"], "buy")  # the first print the tape shows: later than the tape start, and not what the rule uses
-    if ts + last_off > ts + 20 * SEC:
-        w.trade(ts + last_off, POOL["PA"], MINT["PA"], "sell")
+    if with_create:
+        w.pool_create(TS - 5 * SEC, POOL["PA"], MINT["PA"])
+    w.trade(first, POOL["PA"], MINT["PA"], "buy")
+    w.trade(T, POOL["PA"], MINT["PA"], "sell")  # the parent's last print is the decision instant
     w.pool_create(T - 5 * SEC, POOL["CA1"], MINT["CA1"], MINT["PA"])
     w.trade(T, POOL["CA1"], MINT["CA1"], "buy", quote=MINT["PA"])
-    rule, sim = make_rule("j3-k1-h30", tape_start_ms=ts), RuleSim(tmp_path)
+    rule, sim = make_rule("j3-k1-h30", tape_start_ms=TS), RuleSim(tmp_path)
     for r in w.ordered:
         v = sim.feed(rule, r)
     assert v.reason == reason and bool(v.orders) is (reason is None)
     if reason is None:
-        assert v.orders[0].meta["s0_basis"] == "tape_start" and v.orders[0].meta["parent_s0_ms"] == ts
+        assert v.orders[0].meta["s0_basis"] == "first_print" and v.orders[0].meta["parent_s0_ms"] == first
 
 
 def test_the_tape_start_defaults_to_the_host_clock_and_a_parent_with_no_print_is_refused(tmp_path):
@@ -385,7 +419,7 @@ def test_hosted_cell_entries_and_exits(run, k, h_s):
 
 def test_hosted_every_s0_basis_and_skip_is_as_scripted(run):
     e1 = {x["meta"]["child_pool"]: x["meta"] for x in entries(run, "j3-k1-h30")}
-    assert e1[POOL["CA1"]]["s0_basis"] == "first_print" and e1[POOL["CE"]]["s0_basis"] == "tape_start" and e1[POOL["CE"]]["parent_s0_ms"] == B
+    assert e1[POOL["CA1"]]["s0_basis"] == "first_print" and e1[POOL["CE"]]["s0_basis"] == "first_print" and e1[POOL["CE"]]["parent_s0_ms"] == B + SEC
     assert e1[POOL["CA1"]]["parent_pool"] == POOL["PA"] and e1[POOL["CA1"]]["parent_mint"] == MINT["PA"] and e1[POOL["CA1"]]["parent_s0_ms"] == B + 10 * SEC
 
 

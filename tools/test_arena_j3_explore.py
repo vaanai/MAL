@@ -15,7 +15,7 @@ import pytest
 from tools import arena_j3_explore as E
 from tools import arena_rule_j3 as J
 from tools import arena_stack as F
-from tools.arena_j3_testkit import B, HOUR, MINT, OTHER, POOL, SEC, V, World, scenario, write_hours
+from tools.arena_j3_testkit import B, HOUR, HOUR0, MINT, OTHER, POOL, SEC, V, World, scenario, write_hours
 from tools.arena_paper import Ledger, book_fail_legs, utc_day
 from tools.arena_rules import stack_config
 
@@ -40,7 +40,7 @@ def fake_hour(d: Path, key: str, suffix: str = ".jsonl.zst") -> Path:
 def test_hours_inside_w_e_are_accepted_and_sorted(tmp_path):
     a, b, c = (fake_hour(tmp_path, k) for k in ("2026-10-19T09", "2026-10-19T08", "2026-10-20T07"))
     got = E.validate_inputs([a, b])
-    assert [h.start_ms for h in got] == [B, B + HOUR]
+    assert [h.start_ms for h in got] == [HOUR0, HOUR0 + HOUR]
     assert E.validate_inputs([c])[0].start_ms == E.W_E_END_MS - HOUR  # the last hour of W_e
 
 
@@ -212,7 +212,7 @@ def test_end_to_end_counts_and_exclusions_by_reason(runs):
             assert (c["attempts"], c["opened"], c["refused_buys"], c["n_priced"], c["n_excluded"], c["triggers"]) == (attempts, attempts, 0, attempts, 0, triggers)
             assert c["attempts_reconcile"] and c["exclusions"]["unsold_at_window_end"] == 0 and c["utc_days"] == ["2026-10-19"]
     assert cells["j3-k1-h30"]["exclusions"]["no_attempt_by_rule"] == {
-        J.R_PARENT_OPEN: 1, J.R_PARENT_V: 1, J.R_PARENT_NO_WSOL: 1, J.R_PARENT_NO_POOL: 1, f"{J.R_PARENT_YOUNG}_first_print": 1, f"{J.R_PARENT_YOUNG}_tape_start": 1,
+        J.R_PARENT_OPEN: 1, J.R_PARENT_V: 1, J.R_PARENT_NO_WSOL: 1, J.R_PARENT_NO_POOL: 1, f"{J.R_PARENT_YOUNG}_first_print": 2,
         f"{J.R_PARENT_SILENT}_first_print": 1, J.R_CHILD_NO_CREATE: 1}
     assert all(c["kill"]["killed"] for c in cells.values())  # a flat synthetic market loses fees: every cell is killed
     assert runs["rep"]["kill_summary"]["alive"] == [] and len(runs["rep"]["kill_summary"]["killed"]) == 12

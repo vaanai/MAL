@@ -25,11 +25,12 @@ READ BEFORE QUOTING ANYTHING FROM THIS RULE (interpretations the spec text leave
   2. PARENT V. "V on the deciding row" is read as the parent pool's stored V (`Pool.v`, the `virtual_quote_reserves` of the parent's latest print, PRE-trade) at the
      instant of the child's trigger row. The child row's own V is never used (it is in the child's quote units, and a coincidental in-band V on a non-WSOL pool is
      never treated as V-range).
-  3. R9(b) AND s0. s0 is the parent pool's first trade print. When the parent's pool_create is on the tape and none of its events has aged out, s0 is exact. When
-     events have aged out, s0 is only known to be earlier than the earliest retained event and earlier than (now - 60 min); the test then uses that upper bound
-     (sufficient, never too lenient). When the parent's pool_create is NOT on the tape, s0 is taken as the tape start (QP R9(b): "s0 < tape start, so it qualifies only for
-     decisions at or after tape start + 360 s"). Risk, disclosed: a pool whose create the feed MISSED inside the window is treated as older than the tape. The entry row
-     records which basis was used (`meta.s0_basis`). Both inequalities are inclusive (s0 <= t - 360 s; last print >= s0 + 360 s).
+  3. R9(b) AND s0 (QP ruling on PR #743, B-QP1). s0 is the parent pool's FIRST PRINT SEEN ON THE TAPE, for every parent, whatever `created_kind` says: `events[0]` when
+     none of its events has aged out (exact), else `min(events[0], now - 60 min)` (the aged-out bound: s0 is earlier than the earliest retained event and earlier than
+     now - 60 min, so the test using it is sufficient, never too lenient). The tape start is only a FLOOR (`max(s0, tape start)`): it never stands in for s0, because s0 is
+     the first PRINT, not the create. A pool created before the tape that first prints after it, or whose create the feed missed, is aged from its first print. A parent with
+     no print has no s0 and is refused. The entry row records the basis (`meta.s0_basis`: first_print or first_print_bound). Both inequalities are inclusive
+     (s0 <= t - 360 s; last print >= s0 + 360 s).
   4. HOLD. H is counted from the landing of the entry at the 1.9 s deciding leg, as h2ps-a1 does: the sell is decided at the first 1 s tick at or after
      decision_ms + 1.9 s + H. The host's tick is 1 s, so an exit can be up to 1 s later than that instant.
   5. MANY CANONICAL POOLS. If a parent has more than one PumpSwap pool passing the canonical test, the one with the latest print is used (ties: smallest address).
@@ -65,9 +66,9 @@ R_PARENT_NO_PRINTS = "parent_no_prints"
 R_PARENT_YOUNG = "parent_r9b_young"  # s0 (or its bound) is less than 360 s before the decision; suffixed with the s0 basis
 R_PARENT_SILENT = "parent_r9b_silent"  # last print before s0 + 360 s; suffixed with the s0 basis
 R_PARENT_OPEN = "parent_position_open"
-BASIS_FIRST_PRINT = "first_print"  # pool_create on the tape, no event aged out: s0 exact
-BASIS_BOUND = "first_print_bound"  # pool_create on the tape, events aged out: s0 only bounded above
-BASIS_TAPE_START = "tape_start"  # pool_create not on the tape: s0 taken as the tape start
+BASIS_FIRST_PRINT = "first_print"  # no event aged out: s0 is the first print seen on the tape
+BASIS_BOUND = "first_print_bound"  # events aged out: s0 only bounded above (never lenient)
+BASIS_TAPE_START = "tape_start"  # only the label of the refusal of a parent with no print
 
 
 class Verdict(NamedTuple):
@@ -119,14 +120,14 @@ def canonical_pool(pools: Iterable[Any]) -> tuple[Any | None, str | None]:
 
 
 def s0_bound(pool: Any, t_ms: int, tape_start_ms: int) -> tuple[int, str]:
-    """(s0 or an upper bound of s0, basis) for the parent pool at instant t_ms (see the module docstring, item 3). `pool` must have at least one trade."""
-    if pool.created_kind != "pool_create":
-        return int(tape_start_ms), BASIS_TAPE_START  # the create is not on the tape: s0 < tape start
+    """(s0 or an upper bound of s0, basis) for the parent pool at instant t_ms (module docstring, item 3). `pool` must have at least one trade event.
+
+    s0 is the first print seen on the tape. The tape start is only a floor on it; it is never used in place of the first print."""
     e0 = int(pool.events[0][0])
     if pool.n_trades == len(pool.events):
-        return e0, BASIS_FIRST_PRINT  # nothing aged out: the first retained event is the first print
+        return max(e0, int(tape_start_ms)), BASIS_FIRST_PRINT  # nothing aged out: the first retained event is the first print
     # events aged out: s0 <= every aged-out event < (the clock when it aged out) - 60 min <= t - 60 min, and s0 < the earliest retained event
-    return min(e0, int(t_ms) - EVENTS_KEEP_MS), BASIS_BOUND
+    return max(min(e0, int(t_ms) - EVENTS_KEEP_MS), int(tape_start_ms)), BASIS_BOUND
 
 
 def r9b(pool: Any, t_ms: int, tape_start_ms: int) -> tuple[bool, str | None, int, str]:

@@ -19,7 +19,8 @@ from tools.arena_state import ArenaState
 SOL = 1_000_000_000
 SEC = 1000
 HOUR = 3_600_000
-B = int(datetime(2026, 10, 19, 8, tzinfo=timezone.utc).timestamp() * 1000)  # 2026-10-19T08:00:00Z, the start of W_e and of the synthetic tape
+B = int(datetime(2026, 10, 19, 8, 5, 20, tzinfo=timezone.utc).timestamp() * 1000)  # 2026-10-19T08:05:20Z, the start of W_e and of the synthetic tape (first receive time)
+HOUR0 = B - 320 * SEC  # 2026-10-19T08:00:00Z, the hour that holds it
 SLOT0 = 400_000_000
 V = 17_584_505_288  # inside the canonical band [17.5e9, 17.7e9]
 V_OUT = 25_000_000_000  # outside the band, inside the engine's own 30 SOL bound
@@ -109,7 +110,7 @@ def scenario() -> tuple[World, dict[str, list[int]]]:
       PB  WSOL, V out of band (25e9)                                          -> child CB (+400 s): parent_v_out_of_band
       PC  mint MC has ONE pool, quoted in OTHER (not WSOL) with V in band     -> child CC (+400 s): parent_no_wsol_pool
       PD  WSOL, create +500 s                                                 -> child CD (+800 s): s0 only 299 s before the decision
-      PE  WSOL, create NOT on the tape, trades from +1 s                      -> child CE (+400 s) enters (tape start + 360 s); CE2 (+200 s) is too early
+      PE  WSOL, create NOT on the tape, first print +1 s                      -> child CE (+400 s) enters (399 s after PE's first print); CE2 (+200 s) is too early
       PS  WSOL, create +5 s, trades only until +300 s                         -> child CS (+500 s): last print before s0 + 360 s
       CF  a child pool whose create is not on the tape (buys from +300 s)    -> child_create_not_on_tape
       PG  an ordinary WSOL pool with buys: not a child, never a trigger
