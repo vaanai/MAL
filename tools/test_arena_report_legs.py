@@ -538,9 +538,10 @@ def test_load_pools_writes_nothing_and_uses_the_engines_own_ordering():
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ refusals and the cli
-@pytest.mark.parametrize("path", ["/data/mal/arena/_shakedown-hv4/ledger", "/x/probe/ledger", "/x/h5-Shadow-1/y", "/x/ok/PROBE_run", "/x/bots_shakedown.json"])
-def test_paths_with_probe_shadow_or_shakedown_are_refused_before_any_filesystem_access(path):
-    with pytest.raises(Refused, match="never reads probe, shadow or shakedown"):
+@pytest.mark.parametrize("path", ["/data/mal/arena/_shakedown-hv4/ledger", "/x/probe/ledger", "/x/h5-Shadow-1/y", "/x/ok/PROBE_run", "/x/bots_shakedown.json", "/x/canary/l", "/x/Canary-1/t",
+                                  "/x/forward-1016/blocks", "/x/walk2/h", "/x/sealed/a", "/x/exp011-a", "/x/exp012-b", "/x/tip-tape-archive", "/x/meta-capture", "/x/fresh-0802", "/x/truth-1"])
+def test_paths_with_a_closed_material_word_are_refused_before_any_filesystem_access(path):
+    with pytest.raises(Refused, match="never reads sealed, forward, walk, probe, shadow, canary, shakedown"):
         R.check_path(path)
     with pytest.raises(Refused):
         R.build_report("botA", path, "/x/ok/bots.json")
@@ -550,9 +551,23 @@ def test_paths_with_probe_shadow_or_shakedown_are_refused_before_any_filesystem_
         R.build_report("botA", "/x/ok/ledger", "/x/ok/bots.json", tape_dir=path)
 
 
-def test_a_bot_id_with_a_forbidden_word_is_refused():
+@pytest.mark.parametrize("bot", ["_shakedown-hv4-1", "canary-h5", "h5-shadow-a", "probe-1"])
+def test_a_bot_id_with_a_forbidden_word_is_refused(bot):
     with pytest.raises(Refused, match="bot_id"):
-        R.build_report("_shakedown-hv4-1", "/x/ok/ledger", "/x/ok/bots.json")
+        R.build_report(bot, "/x/ok/ledger", "/x/ok/bots.json")
+
+
+@pytest.mark.parametrize("flag", ["--close-blocked", "--vmap", "--json", "--tape-dir"])
+def test_every_file_argument_of_the_cli_is_path_checked(flag, capsys):
+    base = ["--bot", "b", "--ledger-root", "/x/ok/l", "--registry", "/x/ok/r.json"]
+    assert R.main(base + [flag, "/x/canary/f"]) == 3 and "REFUSED" in capsys.readouterr().err
+
+
+def test_a_ledger_priced_above_the_rent_the_leg_charges_is_refused_so_the_tool_never_credits_rent():
+    over = [synth_row("q0", 0, 0, 5_000_000, stack=dict(STACK0, rent=RENT + 1))]
+    with pytest.raises(Refused, match="never credits rent"):
+        R.legs_for_book(over, None)
+    assert R.legs_for_book([synth_row("q0", 0, 0, 5_000_000, stack=dict(STACK0, rent=RENT))], None)["rent_delta"] == 0.0  # exactly at the amount is fine
 
 
 def test_the_cli_refuses_forbidden_paths_and_has_no_default_ledger(capsys):

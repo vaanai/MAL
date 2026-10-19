@@ -41,7 +41,9 @@ are POST-trade; such a book is REPORT_ONLY in the scorer anyway) and are refused
 
 The trade set is the scorer's own: the clock filter, the read boundary, the DEC-031 exclusions (late_print_gap, missing_v). The as-scored cells recomputed here must equal
 the scorer's cells (n, mean, total, CI90, ex-top-3) or the report is refused. A leg is printed with the scorer's status beside it, whatever that status is.
-Both paths and the bot_id are refused if they contain "probe", "shadow" or "_shakedown". There is no default for the ledger, registry or tape path.
+The bot_id and every path (ledger, registry, tape, vmap, close-blocked file, json output) are refused if they contain one of FORBIDDEN_PARTS, the list of
+tools/arena_feed_delay.py (sealed, forward, shadow, canary, probe, walk, exp011, exp012, tip-tape, meta-capture, fresh-08, truth-) plus _shakedown. There is no default for
+the ledger, registry or tape path. A ledger priced at a rent above 2,039,280 is refused: the tool never credits rent.
 """
 
 from __future__ import annotations
@@ -67,7 +69,8 @@ from tools.arena_score import LATS, RULES, SETTLE_MS, Refused, _entry, _legs, ce
 
 RENT_CHARGED = F.RENT_REPORT  # 2,039,280 lamports per filled trip: the amount Am.2 item 7 charges
 STRAND_RENT = F.RENT_STRANDED  # 2,039,280: a strand (and a close-blocked trip) loses stake + the buy send + this
-FORBIDDEN_PARTS = ("probe", "shadow", "_shakedown")
+# tools/arena_feed_delay.py FORBIDDEN_PARTS (sealed, forward, shadow, canary, probe, walk, exp011, exp012, tip-tape, meta-capture, fresh-08, truth-) plus _shakedown
+FORBIDDEN_PARTS = ("sealed", "forward", "shadow", "canary", "probe", "walk", "exp011", "exp012", "tip-tape", "meta-capture", "fresh-08", "truth-", "_shakedown")
 TAG_LAT = {v: k for k, v in LAT_TAG.items()}  # "1p3" -> 1.3
 TAPE_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 HOUR_MS = 3_600_000
@@ -82,11 +85,11 @@ def _check_text(text: str, what: str) -> None:
     low = text.lower()
     for part in FORBIDDEN_PARTS:
         if part in low:
-            raise Refused(f"{what} contains {part!r}: this report never reads probe, shadow or shakedown material")
+            raise Refused(f"{what} contains {part!r}: this report never reads sealed, forward, walk, probe, shadow, canary, shakedown or other closed material")
 
 
 def check_path(path: str | os.PathLike, what: str = "path") -> Path:
-    """Refuse a path that contains probe, shadow or _shakedown. The string is checked BEFORE any filesystem access, then again after symlinks are resolved."""
+    """Refuse a path that contains one of FORBIDDEN_PARTS (probe, shadow, canary, _shakedown, sealed, ...). The string is checked BEFORE any filesystem access, then again after symlinks are resolved."""
     _check_text(os.path.abspath(os.fspath(path)), f"{what} {os.fspath(path)!r}")
     _check_text(os.path.realpath(os.fspath(path)), f"{what} {os.fspath(path)!r} (resolved)")
     return Path(path)
@@ -377,6 +380,8 @@ def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolH
     """All legs of one (bot, stake) book: the base figure, the rent-charged leg, and (when pools are given) the worst-in-slot leg, the END-minus-worst gap and the
     two stacked. Close-blocked positions are reclassified in every one of them, before the rent transform."""
     ledger_rent = book_rent(trades)
+    if ledger_rent > RENT_CHARGED:
+        raise Refused(f"the rows were priced at rent {ledger_rent}, above the {RENT_CHARGED} this leg charges: a negative delta would credit rent, and this tool never credits rent")
     delta = float(RENT_CHARGED - ledger_rent)
     out: dict[str, Any] = {"n_trades": len(trades), "ledger_rent": ledger_rent, "rent_delta": delta, "as_scored": cells_of(trades)}
     base = reclassify_close_blocked(trades, close_blocked) if close_blocked else list(trades)
