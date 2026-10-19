@@ -157,6 +157,7 @@ def read(tmp_path, kind):
     "/portfolio/orders/abc", "/historical/fills", "/historical/orders", "/historical/positions",
     "/api-keys", "/account/endpoint_costs", "/markets/X/orders", "/orders", "/markets/../portfolio/orders",
     "/events", "/series/S/markets/T", "https://evil.example/series",
+    "/incentive_programs/abc", "/incentive_programs/abc/claim", "/incentive_programs/../portfolio/orders",
 ])
 def test_allowlist_refuses_trading_and_account_paths(path):
     fake = Fake()
@@ -169,7 +170,7 @@ def test_allowlist_refuses_trading_and_account_paths(path):
 @pytest.mark.parametrize("path", [
     "/series", "/markets", "/markets/trades", "/markets/KX-1/orderbook", "/historical/cutoff",
     "/historical/markets", "/historical/trades", "/series/S/markets/KX-1/candlesticks",
-    "/historical/markets/KX-1/candlesticks"])
+    "/historical/markets/KX-1/candlesticks", "/incentive_programs"])
 def test_allowlist_accepts_public_paths(path):
     assert kp.check_path(path) == path
 
@@ -438,7 +439,7 @@ def test_orderbook_snap_records_depth_only_with_timestamps(tmp_path):
 def test_cli_parser_has_no_trading_subcommands():
     sub = [a for a in kp.build_parser()._actions if a.dest == "cmd"][0]
     assert set(sub.choices) == {"series", "markets", "trades", "candles", "orderbook-snap",
-                           "quarantine-unsealed"}
+                           "incentive-snap", "quarantine-unsealed"}
 
 
 # ------------------------------------------------------------ review round 1
@@ -1379,3 +1380,457 @@ def test_first_failed_listing_retries_after_min_60_and_keeps_rate_guard(tmp_path
     run2(tmp_path / "slow", fake2, ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "600",
                                     "--duration-s", "1000"], rate=0.02)
     assert 5 <= len(tab(tmp_path / "slow", "orderbook_discoveries")) <= 11
+
+
+# ---------------------------------------------------------------- incentive-snap (LIP program list)
+
+# Shape of a live row (GET /incentive_programs, 2026-10-19); note the 4-digit fractional second.
+LIVE_ROW = {
+    "discount_factor_bps": 5000, "end_date": "2026-10-19T23:16:24.0773Z",
+    "id": "651f29d7-c15b-4b49-8394-538d94058e4a", "incentive_description": "series_lip",
+    "incentive_type": "liquidity", "market_id": "9baa8cc2-a5ac-4388-932b-86093ec9ed12",
+    "market_ticker": "KXRT-CLA-60", "paid_out": False, "period_reward": 1000000,
+    "start_date": "2026-10-18T23:16:24.0773Z", "target_size_fp": "1000.00"}
+
+
+def ip_row(i, **kw):
+    r = dict(LIVE_ROW, id=f"id-{i:04d}", market_id=f"mid-{i}", market_ticker=f"KXRT-CLA-{i}")
+    r.update(kw)
+    return r
+
+
+class IncentiveFake(Fake):
+    """Serves /incentive_programs like the live endpoint: list key incentive_programs, cursor key
+    next_cursor (NOT cursor), opaque cursor, no cursor key on the last page's next_cursor."""
+
+    def __init__(self, n=250, clk=None):
+        super().__init__()
+        self.clk, self.programs, self.date = clk, [ip_row(i) for i in range(n)], DATE_HDR
+        self.fail = {}  # 1-based page number within a poll -> HTTP status
+        self.list_key, self.cursor_key, self.same_cursor = "incentive_programs", "next_cursor", False
+        self.out, self.runs_files_at_first_page = None, None
+        self.on_page = None  # callable(page_no) run before the response is built
+        self.ip_calls = []
+
+    def __call__(self, url):
+        u = urllib.parse.urlparse(url)
+        if not u.path.endswith("/incentive_programs"):
+            return super().__call__(url)
+        q = urllib.parse.parse_qs(u.query)
+        self.calls.append(url)
+        self.ip_calls.append(q)
+        if self.runs_files_at_first_page is None and self.out is not None:
+            self.runs_files_at_first_page = len(list((self.out / "incentive_runs").rglob("*.parquet")))
+        if self.status_script:  # same contract as Fake: statuses to emit before behaving normally
+            st = self.status_script.pop(0)
+            if st != 200:
+                return st, b"{}"
+        lim = int(q["limit"][0])
+        cur = q["cursor"][0] if "cursor" in q else None
+        off = 0 if cur is None else (lim if cur == "cur-same" else int(cur.split("-")[1]))
+        page_no = off // lim + 1
+        if self.on_page:
+            self.on_page(page_no)
+        if page_no in self.fail:
+            return self.fail[page_no], b"{}"
+        if self.clk:
+            self.clk.t += 0.5  # round trip
+        nxt = f"cur-{off + lim}" if off + lim < len(self.programs) else ""
+        if self.same_cursor:
+            nxt = "cur-same"
+        body = {self.list_key: self.programs[off:off + lim], self.cursor_key: nxt}
+        raw = json.dumps(body).encode()
+        return (200, raw, self.date) if self.date else (200, raw)
+
+
+IP_BASE = ["incentive-snap", "--every-s", "900", "--page-limit", "100"]
+
+
+def run_ip(tmp_path, fake, argv, on_sleep=None, log=None, rate=1000, globals_=(), clk=None,
+           max_requests=None):
+    clk = clk or Clock()
+    fake.clk, fake.out = clk, tmp_path
+    client, _ = mkclient(fake, clock=clk, rate=rate, max_requests=max_requests)
+
+    def sleep(s):
+        clk.sleep(s)
+        if on_sleep:
+            on_sleep(clk)
+    args = kp.build_parser().parse_args(["--out", str(tmp_path), *globals_, *argv])
+    kp.cmd_incentive_snap(client, kp.Store(tmp_path, "incentive-snap", {}), args,
+                          log or (lambda s: None), clock=clk.now, sleep=sleep,
+                          utcnow=lambda: kp.parse_dt(NOW + clk.t))
+    return client, clk
+
+
+def ip_runs(out, event):
+    return [r for r in tab(out, "incentive_runs") if r["event"] == event]
+
+
+def test_incentive_pagination_follows_next_cursor_until_it_ends(tmp_path):
+    fake = IncentiveFake(n=250)
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    assert len(fake.ip_calls) == 3  # 100 + 100 + 50 rows, then the empty cursor ends the poll
+    assert [("cursor" in q) for q in fake.ip_calls] == [False, True, True]
+    assert all(q["limit"] == ["100"] and q["status"] == ["active"] and q["type"] == ["liquidity"]
+               for q in fake.ip_calls)
+    assert fake.ip_calls[1]["cursor"] == ["cur-100"] and fake.ip_calls[2]["cursor"] == ["cur-200"]
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert (p["ok"], p["end_reason"], p["n_pages"], p["n_rows"], p["n_rows_discarded"], p["requests"]) == \
+        (True, "cursor_end", 3, 250, 0, 3)
+    assert p["status"] is None and p["n_distinct_ids"] == 250 and p["n_missing_id"] == 0
+    assert len(tab(tmp_path, "incentive_programs")) == 250
+
+
+def test_incentive_poll_accepts_plain_cursor_key_as_fallback():
+    fake = IncentiveFake(n=130)
+    fake.cursor_key = "cursor"
+    client, _ = mkclient(fake)
+    res = kp.poll_incentive_programs(client, {"limit": 100}, max_pages=10)
+    assert res["ok"] and res["end_reason"] == "cursor_end" and len(res["pages"]) == 2
+    assert sum(len(rows) for _, _, rows in res["pages"]) == 130
+
+
+def test_incentive_every_row_stored_with_raw_json_and_typed_columns(tmp_path):
+    fake = IncentiveFake(n=203)
+    fake.programs[5] = ip_row(5, paid_out=True, future_field={"a": [1, 2]}, status="paid_out")
+    fake.programs[6] = ip_row(6, target_size_fp="2500.00", discount_factor_bps=4000,
+                              period_reward=6000000, start_date="2026-10-19T03:01:16.824443Z",
+                              end_date="2026-10-24T22:50:00Z", incentive_description="")
+    fake.programs[7] = dict(LIVE_ROW, id="id-0007", market_ticker=None, incentive_type=None)
+    del fake.programs[7]["market_id"]
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    rows = sorted(tab(tmp_path, "incentive_programs"), key=lambda r: r["id"])
+    assert len(rows) == 203 and [r["id"] for r in rows] == [f"id-{i:04d}" for i in range(203)]
+    for r, src in zip(rows, fake.programs):
+        assert json.loads(r["raw_json"]) == src  # raw JSON kept, nothing dropped
+    r0, r5, r6, r7 = rows[0], rows[5], rows[6], rows[7]
+    assert r0["market_ticker"] == "KXRT-CLA-0" and r0["series_ticker"] == "KXRT"
+    assert (r0["period_reward"], r0["target_size_fp"], r0["discount_factor_bps"]) == (1000000.0, 1000.0, 5000.0)
+    assert r0["paid_out"] is False and r0["incentive_type"] == "liquidity" and r0["status"] is None
+    assert r0["incentive_description"] == "series_lip" and r0["market_id"] == "mid-0"
+    assert r0["start_date"] == kp.parse_dt("2026-10-18T23:16:24.077300Z")
+    assert r0["end_date"] == kp.parse_dt("2026-10-19T23:16:24.0773Z")
+    assert r5["paid_out"] is True and r5["status"] == "paid_out"
+    assert json.loads(r5["raw_json"])["future_field"] == {"a": [1, 2]}  # unknown fields survive in raw
+    assert (r6["target_size_fp"], r6["discount_factor_bps"], r6["period_reward"]) == (2500.0, 4000.0, 6000000.0)
+    assert r6["start_date"] == kp.parse_dt("2026-10-19T03:01:16.824443Z") and r6["incentive_description"] == ""
+    assert r7["market_ticker"] is None and r7["series_ticker"] is None and r7["market_id"] is None
+    assert {r["page"] for r in rows} == {1, 2, 3} and {r["page"] for r in rows if r["id"] < "id-0100"} == {1}
+    assert all(r["poll"] == 1 and r["poll_ts"] == rows[0]["poll_ts"] for r in rows)
+
+
+def test_incentive_timestamps_poll_ts_before_request_ts_after_and_server_date(tmp_path):
+    fake = IncentiveFake(n=150)
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    rows = tab(tmp_path, "incentive_programs")
+    p1 = [r for r in rows if r["page"] == 1][0]
+    p2 = [r for r in rows if r["page"] == 2][0]
+    assert (p1["ts"] - p1["poll_ts"]).total_seconds() >= 0.5 - 1e-6  # ts taken AFTER the 0.5 s response
+    assert (p2["ts"] - p1["ts"]).total_seconds() >= 0.5 - 1e-6 and p2["poll_ts"] == p1["poll_ts"]
+    assert p1["server_date"] == kp.parse_dt("2026-10-05T12:00:00Z")
+    fake2 = IncentiveFake(n=10)
+    fake2.date = None
+    run_ip(tmp_path / "nodate", fake2, IP_BASE + ["--duration-s", "1"])
+    assert all(r["server_date"] is None for r in tab(tmp_path / "nodate", "incentive_programs"))
+
+
+def test_incentive_polls_repeat_every_interval_and_track_changes(tmp_path):
+    fake = IncentiveFake(n=120)
+
+    def mutate(clk):
+        if clk.t >= 1000 + 900 and len(fake.programs) == 120:
+            fake.programs.append(ip_row(900))  # a new program appears
+            fake.programs[0] = ip_row(0, paid_out=True)
+        if clk.t >= 1000 + 1800 and len(fake.programs) == 121:
+            del fake.programs[1]  # one ended
+
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "2000"], on_sleep=mutate)
+    polls = sorted(tab(tmp_path, "incentive_polls"), key=lambda r: r["poll"])
+    assert [p["poll"] for p in polls] == [1, 2, 3] and all(p["ok"] for p in polls)
+    assert [p["n_rows"] for p in polls] == [120, 121, 120]
+    gaps = [(b["poll_ts"] - a["poll_ts"]).total_seconds() for a, b in zip(polls, polls[1:])]
+    assert all(900 <= g <= 905 for g in gaps)
+    rows = tab(tmp_path, "incentive_programs")
+    by = {}
+    for r in rows:
+        by.setdefault(r["poll"], {})[r["id"]] = r
+    assert len(rows) == 361 and "id-0900" in by[2] and "id-0900" not in by[1]
+    assert by[1]["id-0000"]["paid_out"] is False and by[2]["id-0000"]["paid_out"] is True
+    assert "id-0001" in by[2] and "id-0001" not in by[3]
+    assert all(len({r["poll_ts"] for r in rows if r["poll"] == k}) == 1 for k in (1, 2, 3))
+
+
+def test_incentive_duplicate_and_missing_ids_stored_as_received_and_counted(tmp_path):
+    fake = IncentiveFake(n=150)
+    fake.programs[120] = dict(fake.programs[3])  # same id on page 1 and page 2
+    del fake.programs[130]["id"]
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert p["n_rows"] == 150 and p["n_distinct_ids"] == 148 and p["n_missing_id"] == 1
+    assert len(tab(tmp_path, "incentive_programs")) == 150
+
+
+def test_incentive_failed_page_discards_the_whole_poll_and_next_poll_recovers(tmp_path):
+    fake = IncentiveFake(n=250)
+    fake.fail = {2: 404}
+
+    def heal(clk):
+        if clk.t >= 1000 + 900:
+            fake.fail = {}
+    logs = []
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1000"], on_sleep=heal, log=logs.append)
+    polls = sorted(tab(tmp_path, "incentive_polls"), key=lambda r: r["poll"])
+    assert [p["ok"] for p in polls] == [False, True]
+    bad = polls[0]
+    assert (bad["end_reason"], bad["status"], bad["n_pages"], bad["n_rows"], bad["n_rows_discarded"]) == \
+        ("http_error", 404, 1, 0, 100)
+    rows = tab(tmp_path, "incentive_programs")
+    assert {r["poll"] for r in rows} == {2} and len(rows) == 250  # page 1 of poll 1 was not half-used
+    assert any("ok=False" in m and "reason=http_error" in m and "status=404" in m for m in logs)
+    assert not any("KXRT" in m or "id-0" in m for m in logs)  # counts only
+    end = ip_runs(tmp_path, "run_end")[0]
+    assert (end["n_polls"], end["n_polls_ok"], end["n_rows"]) == (2, 1, 250)
+
+
+def test_incentive_transient_500_is_retried_by_the_shared_client(tmp_path):
+    fake = IncentiveFake(n=150)
+    fake.status_script = [200, 500, 429]  # page 1 ok, page 2 first try 500 then 429, then ok
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert p["ok"] and p["n_rows"] == 150 and p["requests"] == 4
+
+
+@pytest.mark.parametrize("mode,reason", [("same_cursor", "repeated_cursor"), ("max_pages", "max_pages"),
+                                         ("renamed_key", "bad_shape"), ("not_a_list", "bad_shape")])
+def test_incentive_poll_that_does_not_reach_the_cursor_end_is_not_ok(tmp_path, mode, reason):
+    fake = IncentiveFake(n=500)
+    extra = []
+    if mode == "same_cursor":
+        fake.same_cursor = True
+    elif mode == "max_pages":
+        extra = ["--max-pages", "2"]
+    elif mode == "renamed_key":
+        fake.list_key = "programs"
+    else:
+        fake.programs = [["not", "a", "row"]] * 5
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"] + extra)
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert p["ok"] is False and p["end_reason"] == reason and p["n_rows"] == 0
+    assert not (tmp_path / "incentive_programs").exists()  # nothing half-read was stored
+    if mode == "same_cursor":
+        assert p["n_pages"] == 2 and p["n_rows_discarded"] == 200
+    if mode == "max_pages":
+        assert p["n_pages"] == 2 and p["n_rows_discarded"] == 200 and len(fake.ip_calls) == 2
+    end = ip_runs(tmp_path, "run_end")[0]
+    assert end["stop_reason"] == "duration" and end["complete"] is True  # a bad poll is data, not a crash
+
+
+def test_incentive_explicit_null_list_is_an_empty_page(tmp_path):
+    fake = IncentiveFake(n=0)
+    fake.programs = []
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"])
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert p["ok"] and p["n_rows"] == 0 and p["n_pages"] == 1
+    assert not (tmp_path / "incentive_programs").exists()
+
+
+def test_incentive_status_and_type_flags_are_sent_and_empty_means_omitted(tmp_path):
+    fake = IncentiveFake(n=5)
+    run_ip(tmp_path / "a", fake, IP_BASE + ["--duration-s", "1", "--status", "paid_out"])
+    assert fake.ip_calls[0]["status"] == ["paid_out"] and fake.ip_calls[0]["type"] == ["liquidity"]
+    fake2 = IncentiveFake(n=5)
+    run_ip(tmp_path / "b", fake2, IP_BASE + ["--duration-s", "1", "--status", "", "--type", ""])
+    assert "status" not in fake2.ip_calls[0] and "type" not in fake2.ip_calls[0]
+    start = ip_runs(tmp_path / "b", "run_start")[0]
+    assert json.loads(start["params_json"]) == {"limit": 100}
+    start = ip_runs(tmp_path / "a", "run_start")[0]
+    assert json.loads(start["params_json"]) == {"limit": 100, "status": "paid_out", "type": "liquidity"}
+
+
+def test_incentive_exclusive_lock_exit_5_counts_only_and_pid(tmp_path):
+    logs = []
+    held = kp.acquire_lock(tmp_path)
+    try:
+        assert (tmp_path / ".orderbook.lock").read_text().strip() == str(os.getpid())
+        fake = IncentiveFake(n=5)
+        with pytest.raises(SystemExit) as e:
+            run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "10"], log=logs.append)
+        assert e.value.code == 5
+        assert fake.calls == [] and not (tmp_path / "incentive_runs").exists()  # before run_start
+        assert not any(str(tmp_path) in m for m in logs)
+    finally:
+        held.close()
+    run_ip(tmp_path, IncentiveFake(n=5), IP_BASE + ["--duration-s", "1"])  # free again
+
+
+def test_incentive_lock_blocks_an_orderbook_recorder_on_the_same_out(tmp_path):
+    held = kp.acquire_lock(tmp_path)  # what a running recorder of either kind holds
+    try:
+        with pytest.raises(SystemExit) as e:
+            run_series(tmp_path, OpenFake(), ["--series", "KXFIN", "--duration-s", "10"])
+        assert e.value.code == 5
+    finally:
+        held.close()
+    run_ip(tmp_path, IncentiveFake(n=5), IP_BASE + ["--duration-s", "1"])  # free again
+
+
+def test_incentive_run_start_on_disk_before_first_request_and_run_end_fields(tmp_path):
+    fake = IncentiveFake(n=150)
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "1"], rate=7.0)
+    assert fake.runs_files_at_first_page == 1  # run_start already on disk at the first page
+    (start,) = ip_runs(tmp_path, "run_start")
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert "git_sha" in start and end["run_id"] == start["run_id"]
+    assert (start["every_s"], start["page_limit"], start["max_pages"], start["rate"]) == \
+        (900.0, 100, 1000, pytest.approx(7.0))
+    assert end["stop_reason"] == "duration" and end["complete"] is True and end["note"] == ""
+    assert (end["n_polls"], end["n_polls_ok"], end["n_rows"], end["requests"]) == (1, 1, 150, 2)
+
+
+def test_incentive_run_end_chain_head_and_seal_logging(tmp_path):
+    logs = []
+    run_ip(tmp_path, IncentiveFake(n=120), IP_BASE + ["--duration-s", "4000"], log=logs.append)
+    seals = [m for m in logs if m.startswith("seal:")]
+    assert len(seals) >= 2  # crossed an hour boundary, plus the final seal
+    heads = [m.split("chain_head=")[1] for m in seals]
+    assert heads[-1] == kp.chain_head(tmp_path)
+    assert all(len(h) == 64 for h in heads) and all("KXRT" not in m for m in seals)
+    (end,) = ip_runs(tmp_path, "run_end")
+    lines = (tmp_path / kp.CHAIN_NAME).read_text().splitlines()
+    # run_end is sealed in the last chain line, so its head is the head of the line before it
+    assert end["chain_head"] == hashlib.sha256(lines[-2].encode()).hexdigest()
+    assert end["chain_head"] in heads
+    assert stat.S_IMODE((tmp_path / kp.CHAIN_NAME).stat().st_mode) == 0o440
+    recs = [json.loads(x) for x in lines]
+    assert recs[0]["prev"] == "0" * 64 and len({r["hour"] for r in recs}) >= 2
+    entries = kp.verify_parts(tmp_path)
+    assert {k.split("/")[0] for k in entries} == {"incentive_programs", "incentive_polls", "incentive_runs"}
+    assert kp.read_verified(tmp_path, "incentive_programs").num_rows == 5 * 120
+
+
+def test_incentive_keyboard_interrupt_writes_interrupt_and_incomplete(tmp_path):
+    def boom(clk):
+        if clk.t >= 1070:
+            raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        run_ip(tmp_path, IncentiveFake(n=120), IP_BASE + ["--duration-s", "100000"], on_sleep=boom)
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert end["stop_reason"] == "interrupt" and end["complete"] is False
+    assert end["n_polls"] == 1 and end["n_rows"] == 120  # the finished poll was kept
+    assert (tmp_path / ".orderbook.lock").read_text().strip() != ""  # pid file remains
+    kp.acquire_lock(tmp_path).close()  # lock released on the way out
+    kp.verify_parts(tmp_path)  # everything written was sealed
+    with pytest.raises(kp.SealError, match="complete"):
+        kp.read_verified(tmp_path, "incentive_programs")
+    assert kp.read_verified(tmp_path, "incentive_programs", require_complete_runs=False).num_rows == 120
+
+
+def test_incentive_sigterm_between_polls_is_labelled_and_handler_restored(tmp_path):
+    sent = []
+
+    def term(clk):
+        if clk.t >= 1070 and not sent:
+            sent.append(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+    prev = signal.getsignal(signal.SIGTERM)
+    _, clk = run_ip(tmp_path, IncentiveFake(n=120), IP_BASE + ["--duration-s", "100000"], on_sleep=term)
+    assert sent and clk.t < 1300 and signal.getsignal(signal.SIGTERM) is prev
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert end["stop_reason"] == "sigterm" and end["complete"] is False and end["n_rows"] == 120
+
+
+def test_incentive_sigterm_mid_poll_discards_that_poll_and_records_it(tmp_path):
+    fake = IncentiveFake(n=300)
+    fake.on_page = lambda n: os.kill(os.getpid(), signal.SIGTERM) if n == 2 else None
+    run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "100000"])
+    (p,) = tab(tmp_path, "incentive_polls")
+    assert (p["ok"], p["end_reason"], p["n_pages"], p["n_rows"], p["n_rows_discarded"]) == \
+        (False, "stopped", 2, 0, 200)
+    assert len(fake.ip_calls) == 2 and not (tmp_path / "incentive_programs").exists()
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert end["stop_reason"] == "sigterm" and end["complete"] is False
+
+
+def test_incentive_max_requests_labelled_and_partial_poll_not_stored(tmp_path):
+    with pytest.raises(kp.MaxRequestsReached):
+        run_ip(tmp_path, IncentiveFake(n=500), IP_BASE + ["--duration-s", "100000"], max_requests=3)
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert end["stop_reason"] == "max_requests" and end["complete"] is False
+    assert end["requests"] == 3 and end["n_rows"] == 0
+    assert not (tmp_path / "incentive_programs").exists()
+    kp.verify_parts(tmp_path)
+
+
+def test_incentive_unexpected_error_labelled_error(tmp_path):
+    fake = IncentiveFake(n=120)
+
+    def bad(n):
+        raise RuntimeError("boom")
+    fake.on_page = bad
+    with pytest.raises(RuntimeError):
+        run_ip(tmp_path, fake, IP_BASE + ["--duration-s", "100"])
+    (end,) = ip_runs(tmp_path, "run_end")
+    assert end["stop_reason"] == "error" and end["note"] == "RuntimeError" and end["complete"] is False
+
+
+def test_incentive_verify_and_quarantine_cover_incentive_parts(tmp_path):
+    import shutil
+    run_ip(tmp_path, IncentiveFake(n=120), IP_BASE + ["--duration-s", "1"])
+    kp.verify_parts(tmp_path)
+    part = sorted((tmp_path / "incentive_programs").rglob("*.parquet"))[0]
+    extra = part.with_name("part-extra.parquet")
+    shutil.copy(part, extra)
+    with pytest.raises(kp.SealError, match="not covered"):
+        kp.verify_parts(tmp_path)
+    good = part.read_bytes()
+    part.write_bytes(good + b"x")
+    with pytest.raises(kp.SealError, match="mismatch"):
+        kp.read_verified(tmp_path, "incentive_programs")
+    part.write_bytes(good)
+    chain_before = (tmp_path / kp.CHAIN_NAME).read_bytes()
+    assert kp.main(["--out", str(tmp_path), "quarantine-unsealed"]) == 0
+    assert not extra.exists() and part.read_bytes() == good
+    assert (tmp_path / kp.CHAIN_NAME).read_bytes() == chain_before
+    kp.verify_parts(tmp_path)
+
+
+def test_incentive_main_exit_zero_manifest_and_query_keys(tmp_path):
+    fake = IncentiveFake(n=130)
+    rc, client = run(tmp_path, ["incentive-snap", "--duration-s", "1"], fake)
+    assert rc == 0 and client.requests_made == 2
+    recs = [json.loads(l) for l in (tmp_path / "manifest.jsonl").read_text().splitlines()]
+    assert recs[-1]["type"] == "run" and recs[-1]["complete"] is True
+    q = recs[-1]["query"]
+    assert (q["every_s"], q["duration_s"], q["status"], q["incentive_type"], q["page_limit"],
+            q["max_pages"]) == (900, 1, "active", "liquidity", 100, 1000)
+    assert fake.ip_calls[0]["limit"] == ["100"]
+    # a second copy on the same --out while one holds the lock exits 5 through main()
+    held = kp.acquire_lock(tmp_path)
+    try:
+        with pytest.raises(SystemExit) as e:
+            run(tmp_path, ["incentive-snap", "--duration-s", "1"], IncentiveFake(n=5))
+        assert e.value.code == 5
+    finally:
+        held.close()
+
+
+def test_incentive_refuses_non_positive_arguments(tmp_path):
+    for bad in (["--every-s", "0"], ["--duration-s", "0"], ["--page-limit", "0"], ["--max-pages", "0"]):
+        fake = IncentiveFake(n=5)
+        argv = ["incentive-snap", "--duration-s", "10"] + bad
+        argv = argv if bad[0] != "--duration-s" else ["incentive-snap"] + bad
+        with pytest.raises(SystemExit):
+            run_ip(tmp_path, fake, argv)
+        assert fake.calls == [] and not (tmp_path / "incentive_runs").exists()
+
+
+def test_incentive_never_sends_credentials_or_non_get(tmp_path):
+    seen = []
+
+    def http(url):
+        seen.append(url)
+        return 200, json.dumps({"incentive_programs": [], "next_cursor": ""}).encode()
+    client = kp.Client(http=http, rate=1000)
+    client.get("/incentive_programs", {"status": "active"})
+    assert seen[0].startswith(kp.BASE_URL + "/incentive_programs?") and "key" not in seen[0].lower()
