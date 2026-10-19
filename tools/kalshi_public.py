@@ -18,6 +18,13 @@ Endpoints used (all read 2026-10-17):
   GET /series/{s}/markets/{t}/candlesticks
                                     https://docs.kalshi.com/api-reference/market/get-market-candlesticks.md
        (start_ts, end_ts, period_interval in {1,60,1440})
+  GET /incentive_programs           liquidity incentive (LIP) program list, no credentials.  No
+       API-reference page read: the shape is from hunt18/kalshi-lip samples (2026-10-17) and
+       three live GETs on 2026-10-19 (status=active page 1, page 2 via next_cursor,
+       status=paid_out limit=2, all type=liquidity limit=100|2, all 200).  List key
+       ``incentive_programs``, cursor key ``next_cursor`` (NOT ``cursor``), row keys: id,
+       market_id, market_ticker, incentive_type, incentive_description, start_date, end_date,
+       period_reward, target_size_fp, discount_factor_bps, paid_out.
   GET /markets/{ticker}/orderbook   https://docs.kalshi.com/api-reference/market/get-market-orderbook.md
        (depth 0..100; yes/no BIDS only, [price_dollars, count_fp])
   GET /historical/cutoff            https://docs.kalshi.com/api-reference/historical/get-historical-cutoff-timestamps.md
@@ -117,6 +124,28 @@ Conventions / caveats:
     the chain.  Parts written before these columns existed lack them: read_table_unified() fills
     nulls against the current schema.  Use a dedicated --out per recorder: --markets parts
     are never sealed.
+  * incentive-snap (forward recorder of the LIP program list).  Every --every-s (default 900) one
+    POLL pages through GET /incentive_programs (--status active, --type liquidity, --page-limit
+    100) to the end of the cursor list and stores EVERY row of that poll in ``incentive_programs``
+    (typed columns plus ``raw_json`` = the row exactly as returned), keyed by ``poll_ts`` (local UTC
+    clock before the first page request; same for every row of the poll).  ``ts`` is the clock after
+    the row's page returned, ``server_date`` that response's Date header.  Duplicate ids across
+    pages are stored as received (``incentive_polls.n_distinct_ids`` shows them).  A poll that does
+    not reach the cursor end (HTTP error on any page after the shared client's retries, repeated
+    cursor, --max-pages, response without the list key, SIGTERM mid-poll) is ``ok=false`` in
+    ``incentive_polls`` with its end_reason and ``n_rows_discarded``, and stores NO program rows:
+    a program present in a stored poll is a program the API listed in a complete listing, and a
+    missing poll is a gap, never a partial list.  A consumer must treat a missing poll_ts as a
+    gap.  Same machinery as orderbook-snap: one recorder per --out (same ``.orderbook.lock`` and
+    ``orderbook-MANIFEST.chain`` file names, so it can never share an --out with an orderbook
+    recorder; second copy exits 5), ``incentive_runs`` run_start before the first request and
+    run_end with stop_reason (duration | sigterm | interrupt | max_requests | error),
+    complete=true only for a duration stop, chain_head = sha256 of the last chain line before the
+    final seal; hourly seal; verify_parts / quarantine-unsealed / read_verified(out,
+    "incentive_programs") cover the incentive kinds (the complete-runs check reads incentive_runs).
+    Not measured: the size of the full active list beyond the 1,200+ rows seen on 2026-10-17, the
+    API's behaviour on the last page, and whether it accepts --page-limit > 100.  The first poll's
+    log line (pages, rows, reason=cursor_end) is the check.
 """
 from __future__ import annotations
 
@@ -161,6 +190,7 @@ ALLOWED_GET = tuple(re.compile(p) for p in (
     r"^/historical/markets$",
     r"^/historical/trades$",
     r"^/historical/markets/[A-Za-z0-9._-]+/candlesticks$",
+    r"^/incentive_programs$",
 ))
 
 
@@ -451,6 +481,48 @@ SCHEMAS = {
     "orderbook_fetch_errors": pa.schema([
         ("run_id", pa.string()), ("ts", TS), ("ticker", pa.string()), ("series_ticker", pa.string()),
         ("status", pa.int32()), ("attempts", pa.int32()),
+    ]),
+    # incentive-snap (LIP program list).  One row per program per COMPLETE poll; a poll that did
+    # not reach the end of the cursor list stores no program rows (see incentive_polls).
+    "incentive_programs": pa.schema([
+        ("run_id", pa.string()), ("poll", pa.int32()),
+        ("poll_ts", TS),       # local UTC clock just before the first page request of the poll
+        #                        (identical for every row of the poll: the join key over time)
+        ("ts", TS),            # local UTC clock AFTER the page this row came from returned
+        ("page", pa.int32()),  # 1-based page number within the poll
+        ("server_date", TS),   # Date header of that page's response (1 s resolution); null if absent
+        ("id", pa.string()), ("market_ticker", pa.string()), ("series_ticker", pa.string()),
+        ("market_id", pa.string()), ("incentive_type", pa.string()),
+        ("incentive_description", pa.string()),
+        ("status", pa.string()),  # row field "status" if the API sends one (absent 2026-10-19)
+        ("start_date", TS), ("end_date", TS),
+        # Numbers exactly as published, float64 so a format change cannot drop a row.
+        # period_reward: centi-cents (1,000,000 = $100 by hunt18 REPORT 2.1, not checked
+        # against a payout); target_size_fp: contracts; discount_factor_bps: 5000 = 0.5.
+        ("period_reward", pa.float64()), ("target_size_fp", pa.float64()),
+        ("discount_factor_bps", pa.float64()),
+        ("paid_out", pa.bool_()),
+        ("raw_json", pa.string()),  # the row exactly as returned (sorted keys, compact)
+    ]),
+    "incentive_polls": pa.schema([
+        ("run_id", pa.string()), ("poll", pa.int32()), ("poll_ts", TS), ("ts_end", TS),
+        ("ok", pa.bool_()),
+        # cursor_end | http_error | repeated_cursor | max_pages | bad_shape | stopped
+        ("end_reason", pa.string()),
+        ("status", pa.int32()),  # HTTP status of the failing request (null unless http_error)
+        ("n_pages", pa.int32()),  # pages fetched OK
+        ("n_rows", pa.int32()),  # rows stored (0 when the poll failed)
+        ("n_rows_discarded", pa.int32()),  # rows of a failed poll that were NOT stored
+        ("n_distinct_ids", pa.int32()), ("n_missing_id", pa.int32()), ("requests", pa.int32()),
+    ]),
+    "incentive_runs": pa.schema([
+        ("run_id", pa.string()), ("event", pa.string()), ("ts", TS), ("git_sha", pa.string()),
+        ("every_s", pa.float64()), ("rate", pa.float64()), ("params_json", pa.string()),
+        ("page_limit", pa.int32()), ("max_pages", pa.int32()),
+        ("stop_reason", pa.string()), ("complete", pa.bool_()), ("note", pa.string()),
+        ("n_polls", pa.int32()), ("n_polls_ok", pa.int32()), ("n_rows", pa.int64()),
+        ("requests", pa.int64()),
+        ("chain_head", pa.string()),  # sha256 of the last chain line when run_end was written
     ]),
 }
 
@@ -1049,6 +1121,10 @@ def snapshot_rows(ticker: str, ob: dict, ts, first_seen=None, req_start=None, at
 CHAIN_NAME = "orderbook-MANIFEST.chain"
 SEALED_KINDS = ("orderbook", "orderbook_snaps", "orderbook_runs", "orderbook_rounds",
                 "orderbook_discoveries", "orderbook_fetch_errors")
+# incentive-snap kinds share the chain, the lock and verify/quarantine with the orderbook kinds
+# (one chain and one lock per --out, so the two recorders can never share a directory).
+LIP_KINDS = ("incentive_programs", "incentive_polls", "incentive_runs")
+ALL_SEALED_KINDS = SEALED_KINDS + LIP_KINDS
 ZERO_HASH = "0" * 64
 
 
@@ -1130,7 +1206,7 @@ def acquire_lock(out):
     return fh
 
 
-def quarantine_unsealed(out, utcnow=now_utc, kinds=SEALED_KINDS) -> dict:
+def quarantine_unsealed(out, utcnow=now_utc, kinds=ALL_SEALED_KINDS) -> dict:
     """Move parts of ``kinds`` that the chain does not cover into _quarantine/<utc-stamp>/ (same
     relative layout) and write manifest.json there at 0440 (path, sha256, rows, bytes).  Sealed
     parts and the chain are never touched; a broken chain refuses (SealError) before any move."""
@@ -1167,7 +1243,7 @@ def quarantine_unsealed(out, utcnow=now_utc, kinds=SEALED_KINDS) -> dict:
     return {"moved": len(moved), "dir": str(qdir)}
 
 
-def verify_parts(out, kinds=SEALED_KINDS) -> dict:
+def verify_parts(out, kinds=ALL_SEALED_KINDS) -> dict:
     """Check the chain links and every part of ``kinds`` on disk: refuses (SealError) a broken
     prev link, a listed part that is missing or whose sha256 mismatches, and any part the chain
     does not cover.  Returns {relative_path: chain_entry}."""
@@ -1198,13 +1274,14 @@ def verify_parts(out, kinds=SEALED_KINDS) -> dict:
 
 def read_verified(out, kind: str, require_complete_runs: bool = True) -> pa.Table:
     """verify_parts(), then read ``kind`` against the unified current schema.  With
-    ``require_complete_runs`` (default) refuse (SealError) when any run in orderbook_runs has no
-    run_end with complete=true (interrupted, crashed, errored or still running); diagnostics
-    pass False."""
+    ``require_complete_runs`` (default) refuse (SealError) when any run in orderbook_runs (for the
+    incentive kinds: incentive_runs) has no run_end with complete=true (interrupted, crashed,
+    errored or still running); diagnostics pass False."""
     entries = verify_parts(out)
     if require_complete_runs:
-        runs = read_table_unified(out, "orderbook_runs", sorted(
-            Path(out, rel) for rel in entries if rel.split("/", 1)[0] == "orderbook_runs")).to_pylist()
+        runs_kind = "incentive_runs" if kind in LIP_KINDS else "orderbook_runs"
+        runs = read_table_unified(out, runs_kind, sorted(
+            Path(out, rel) for rel in entries if rel.split("/", 1)[0] == runs_kind)).to_pylist()
         ok = {r["run_id"] for r in runs if r["event"] == "run_end" and r["complete"] is True}
         bad = sorted({r["run_id"] for r in runs} - ok)
         if bad:
@@ -1534,6 +1611,236 @@ def cmd_orderbook_snap(client, store, args, log, clock=time.time, sleep=time.sle
     return True
 
 
+# ---------------------------------------------------------------- incentive-snap (LIP program list)
+
+INCENTIVE_PATH = "/incentive_programs"
+INCENTIVE_KEY = "incentive_programs"
+_MISSING = object()
+
+
+def _safe_dt(v):
+    try:
+        return parse_dt(v)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None  # raw_json keeps the original text
+
+
+def _opt_str(v):
+    return None if v is None else str(v)
+
+
+def _opt_bool(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def incentive_row(r: dict, run_id: str, poll: int, poll_ts, ts, page: int, server_date) -> dict:
+    tk = _opt_str(r.get("market_ticker"))
+    return {
+        "run_id": run_id, "poll": poll, "poll_ts": poll_ts, "ts": ts, "page": page,
+        "server_date": server_date,
+        "id": _opt_str(r.get("id")), "market_ticker": tk,
+        "series_ticker": series_of(tk) if tk else None,
+        "market_id": _opt_str(r.get("market_id")), "incentive_type": _opt_str(r.get("incentive_type")),
+        "incentive_description": _opt_str(r.get("incentive_description")),
+        "status": _opt_str(r.get("status")),
+        "start_date": _safe_dt(r.get("start_date")), "end_date": _safe_dt(r.get("end_date")),
+        "period_reward": fnum(r.get("period_reward")), "target_size_fp": fnum(r.get("target_size_fp")),
+        "discount_factor_bps": fnum(r.get("discount_factor_bps")),
+        "paid_out": _opt_bool(r.get("paid_out")),
+        "raw_json": jdump(r),
+    }
+
+
+def poll_incentive_programs(client: Client, params: dict, max_pages: int, utcnow=now_utc,
+                            stop=lambda: False) -> dict:
+    """Page through GET /incentive_programs until the cursor ends.  The list key is
+    ``incentive_programs`` and the cursor key is ``next_cursor`` (NOT ``cursor`` as on /markets;
+    live check 2026-10-19), ``cursor`` is accepted as a fallback.  Returns
+    {ok, end_reason, status, pages: [(ts, server_date, rows)], requests}.  ok only when the list
+    ended on a missing/empty cursor: an HTTP error on ANY page, a repeated cursor, ``max_pages``,
+    a response without the list key, or ``stop()`` all give ok=False and the caller stores none
+    of the pages (a half-read list would look like programs that ended)."""
+    params = dict(params)
+    r0, pages, seen, status = client.requests_made, [], set(), None
+    while True:
+        if stop():
+            reason = "stopped"
+            break
+        if len(pages) >= max_pages:
+            reason = "max_pages"
+            break
+        try:
+            d = client.get(INCENTIVE_PATH, params)
+        except HttpError as e:
+            reason, status = "http_error", e.status
+            break
+        ts = utcnow()
+        rows = d.get(INCENTIVE_KEY, _MISSING) if isinstance(d, dict) else _MISSING
+        if rows is None:  # an explicit null is an empty page
+            rows = []
+        if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
+            reason = "bad_shape"  # list key absent (renamed?) or not a list of objects
+            break
+        pages.append((ts, parse_server_date(client.last_date), rows))
+        cur = d.get("next_cursor") or d.get("cursor")
+        if not cur:
+            reason = "cursor_end"
+            break
+        if cur in seen:
+            reason = "repeated_cursor"
+            break
+        seen.add(cur)
+        params["cursor"] = cur
+    return {"ok": reason == "cursor_end", "end_reason": reason, "status": status, "pages": pages,
+            "requests": client.requests_made - r0}
+
+
+def cmd_incentive_snap(client, store, args, log, clock=time.time, sleep=time.sleep, utcnow=now_utc):
+    if args.every_s <= 0 or args.duration_s <= 0:
+        raise SystemExit("--every-s and --duration-s must be > 0")
+    if args.page_limit < 1 or args.max_pages < 1:
+        raise SystemExit("--page-limit and --max-pages must be >= 1")
+    try:
+        lock = acquire_lock(store.out)
+    except LockHeld:
+        log("incentive-snap: another recorder holds the lock on this --out; exiting (5)")
+        raise SystemExit(5)
+    try:
+        return _incentive_snap_locked(client, store, args, log, clock, sleep, utcnow)
+    finally:
+        lock.close()
+
+
+def _incentive_snap_locked(client, store, args, log, clock, sleep, utcnow):
+    params = {"status": args.status or None, "type": args.incentive_type or None,
+              "limit": args.page_limit}
+    rate = 1.0 / client.limiter.interval
+    run_id = utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    t0 = clock()
+    bufs = {k: [] for k in LIP_KINDS}
+    pending: list[Path] = []
+    n_flush = 0
+    stop = {"flag": False}
+
+    def flush(date=None):
+        nonlocal n_flush
+        part = f"{run_id}-{n_flush}"
+        for kind, rows in bufs.items():
+            if not rows:
+                continue
+            p = store.write(kind, rows, part, date=date if kind == "incentive_programs" else None)
+            if p:
+                pending.append(p)
+            bufs[kind] = []
+        n_flush += 1
+
+    def seal(hour):
+        if not pending:
+            return
+        try:
+            wrote = seal_parts(store.out, hour, list(pending))
+            pending.clear()
+            log(f"seal: hour={hour} wrote={int(wrote)} chain_lines={len(_chain_lines(store.out))} "
+                f"chain_head={chain_head(store.out)}")
+        except OSError as e:  # parts stay pending and are retried at the next seal
+            log(f"seal failed ({type(e).__name__}); will retry")
+
+    def nap(until):
+        while not stop["flag"]:
+            left = until - clock()
+            if left <= 0:
+                return
+            sleep(min(left, 1.0))
+
+    def run_row(event, **kw):
+        base = {"run_id": run_id, "event": event, "ts": utcnow(), "every_s": float(args.every_s),
+                "rate": rate, "params_json": jdump({k: v for k, v in params.items() if v is not None}),
+                "page_limit": int(args.page_limit), "max_pages": int(args.max_pages)}
+        base.update(kw)
+        return base
+
+    # run_start is on disk (and queued for sealing) before any request.
+    bufs["incentive_runs"].append(run_row("run_start", git_sha=git_sha()))
+    flush()
+
+    old = None
+    try:
+        old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__("flag", True))
+    except ValueError:  # not the main thread
+        pass
+    next_poll, i, n_ok, n_rows_total = t0, 0, 0, 0
+    cur_hour = utcnow().strftime("%Y-%m-%dT%H")
+    reason, note = "duration", ""
+    try:
+        while not stop["flag"]:
+            now = clock()
+            if now - t0 > args.duration_s:
+                break
+            hk = utcnow().strftime("%Y-%m-%dT%H")
+            if hk != cur_hour:  # hourly seal: files closed in the ended hour
+                flush()
+                seal(cur_hour)
+                cur_hour = hk
+            if now >= next_poll:
+                i += 1
+                poll_ts = utcnow()  # before the first page request
+                res = poll_incentive_programs(client, params, args.max_pages, utcnow,
+                                              stop=lambda: stop["flag"])
+                n_pages = len(res["pages"])
+                n_fetched = sum(len(rows) for _, _, rows in res["pages"])
+                ids = [r.get("id") for _, _, rows in res["pages"] for r in rows]
+                n_rows = n_fetched if res["ok"] else 0
+                if res["ok"]:
+                    for pg, (ts, sdate, rows) in enumerate(res["pages"], 1):
+                        bufs["incentive_programs"] += [
+                            incentive_row(r, run_id, i, poll_ts, ts, pg, sdate) for r in rows]
+                    n_ok += 1
+                    n_rows_total += n_rows
+                bufs["incentive_polls"].append({
+                    "run_id": run_id, "poll": i, "poll_ts": poll_ts, "ts_end": utcnow(),
+                    "ok": res["ok"], "end_reason": res["end_reason"], "status": res["status"],
+                    "n_pages": n_pages, "n_rows": n_rows, "n_rows_discarded": n_fetched - n_rows,
+                    "n_distinct_ids": len({x for x in ids if x is not None}),
+                    "n_missing_id": sum(x is None for x in ids), "requests": res["requests"]})
+                next_poll = max(next_poll + args.every_s, clock())
+                log(f"poll {i}: ok={res['ok']} reason={res['end_reason']} status={res['status']} "
+                    f"pages={n_pages} rows={n_rows} discarded={n_fetched - n_rows} "
+                    f"requests={res['requests']} total_requests={client.requests_made}")
+                flush(date=poll_ts.strftime("%Y-%m-%d"))
+            nap(min(next_poll, t0 + args.duration_s + 1e-9))
+        if stop["flag"]:
+            reason = "sigterm"
+    except MaxRequestsReached:
+        reason = "max_requests"
+        raise
+    except KeyboardInterrupt:
+        reason = "interrupt"
+        raise
+    except SystemExit:
+        reason, note = "error", "refused"
+        raise
+    except Exception as e:
+        reason, note = "error", type(e).__name__
+        raise
+    finally:
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
+        flush()
+        bufs["incentive_runs"].append(run_row(
+            "run_end", stop_reason=reason, complete=(reason == "duration"), note=note,
+            n_polls=i, n_polls_ok=n_ok, n_rows=n_rows_total, requests=client.requests_made,
+            chain_head=chain_head(store.out)))
+        flush()
+        seal(cur_hour)
+    log(f"incentive polls: {i} (ok {n_ok}), rows: {n_rows_total}, requests: "
+        f"{client.requests_made}, stop: {reason}")
+    return True
+
+
 # ---------------------------------------------------------------- CLI
 
 def build_parser():
@@ -1591,6 +1898,20 @@ def build_parser():
     o.add_argument("--every-s", type=float, default=60)
     o.add_argument("--duration-s", type=float, required=True)
     o.add_argument("--depth", type=int, default=0)
+    ip = sub.add_parser("incentive-snap",
+                        help="forward recorder of the public LIP program list (GET /incentive_programs)")
+    ip.add_argument("--every-s", type=float, default=900, help="seconds between polls (default 900)")
+    ip.add_argument("--duration-s", type=float, required=True)
+    ip.add_argument("--status", default="active",
+                    help="status filter (active and paid_out answered 200 on 2026-10-19; "
+                         "empty = send none, unverified)")
+    ip.add_argument("--type", dest="incentive_type", default="liquidity",
+                    help="program type filter (liquidity verified; empty = send none, unverified)")
+    ip.add_argument("--page-limit", type=int, default=100,
+                    help="rows per page (100 verified; larger values untested)")
+    ip.add_argument("--max-pages", type=int, default=1000,
+                    help="a poll that has not reached the end of the cursor list after this many "
+                         "pages is a failed poll (no rows stored)")
     q = sub.add_parser("quarantine-unsealed",
                        help="move parts not covered by the chain to <out>/_quarantine/<utc-stamp>/")
     q.add_argument("--out", default=argparse.SUPPRESS)
@@ -1599,9 +1920,11 @@ def build_parser():
 
 QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
               "period", "markets", "every_s", "duration_s", "depth", "raw_json",
-              "discover_every_s", "strict_cadence", "max_discover_failures", "tail_s")
+              "discover_every_s", "strict_cadence", "max_discover_failures",
+              "incentive_type", "page_limit", "max_pages", "tail_s")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
-            "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap}
+            "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap,
+            "incentive-snap": cmd_incentive_snap}
 
 
 def main(argv=None, client: Client | None = None) -> int:
