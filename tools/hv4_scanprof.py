@@ -154,11 +154,39 @@ def run_cmd(a: argparse.Namespace) -> int:
                 n_prof[kind] += 1
 
         run.scan = scan  # type: ignore[method-assign]
+    fs: dict[int, dict[str, float]] = {}
+    if a.time_fsync:  # per scan: how long the process sat in os.fsync (decision-log rows, budget and prefetch files), to split a slow scan into disk wait and compute
+        import os
+
+        acc = {"on": 0, "ms": 0.0, "n": 0}
+        orig_fsync, inner_scan = os.fsync, run.scan
+
+        def timed_fsync(fd: int) -> None:
+            t = time.perf_counter()
+            try:
+                return orig_fsync(fd)
+            finally:
+                if acc["on"]:
+                    acc["ms"] += (time.perf_counter() - t) * 1000.0
+                    acc["n"] += 1
+
+        def timed_scan(T: int) -> None:
+            acc.update(on=1, ms=0.0, n=0)
+            try:
+                inner_scan(T)
+            finally:
+                acc["on"] = 0
+                fs[T] = {"fsync_ms": round(acc["ms"], 1), "n_fsync": acc["n"]}
+
+        os.fsync = timed_fsync  # type: ignore[assignment]
+        run.scan = timed_scan  # type: ignore[method-assign]
     t0 = time.time()
     M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
     wall = round(time.time() - t0)
     run.flush_timing()
     scans = scan_rows(run.cfg.root)
+    for sc in scans:
+        sc.update(fs.get(sc["ms"], {}))
     res: dict[str, Any] = {"hours": a.hours, "start": a.start, "state_start": a.state_start, "wall_s": wall, "n_scans": len(scans), "timing": not a.no_timing,
                            "summary": summarize_scans(scans, a.skip_scans), "summary_all_scans": summarize_scans(scans, 0), "scans": scans,
                            "decision_md5_no_timing": decision_md5_no_timing(run.cfg.root), "counters": dict(run.counters),
@@ -208,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--holders", choices=("on", "off"), default="on", help="on = the Helius run (holders refreshed for hot pools, as the shakedown does); off = public")
     r.add_argument("--sample-min", type=int, default=60)
     r.add_argument("--no-timing", action="store_true")
+    r.add_argument("--time-fsync", action="store_true", help="record per scan the time spent in os.fsync (fsync_ms, n_fsync)")
     r.add_argument("--profile", default=None, help="write cProfile text (cumulative and tottime tables for ordinary and board scans) here; slows the scans")
     r.add_argument("--skip-scans", type=int, default=0, help="leave the first N scans out of the summary")
     r.add_argument("--top", type=int, default=35)
