@@ -1153,3 +1153,87 @@ def test_flat_pool_has_no_second_wave_through_the_real_state(tmp_path):
     assert f["hi_6h"] is not None
     tags = hc.setups(f, pool_id=POOL, as_of_ms=scan)
     assert "SECOND_WAVE" not in [t.type for t in tags]  # no 6 h low at or under 0.4 of the high
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# DEC-031 Amendment 2 item 6: a covered book trades only WSOL-quoted pools with V in [17.5e9, 17.7e9] lamports (inclusive). Missing V is its own reason.
+# ---------------------------------------------------------------------------------------------------------------------------------------
+V_LO_L, V_HI_L = 17_500_000_000, 17_700_000_000
+V_CODES = {"v_band", "v_missing"}
+
+
+def snap_v(lam, **over):
+    """A snapshot whose V is `lam` lamports (the state's snapshot carries v_sol = Pool.v / 1e9); the real quote and every other figure stay as in base_snap."""
+    return base_snap(reserves={"quote_sol": 60.0, "base_tokens": 1e9, "v_sol": lam / 1e9, "quote_eff_sol": 60.0 + lam / 1e9}, **over)
+
+
+def test_the_v_band_constants_are_the_amendment_numbers():
+    assert (hc.V_LO_LAMPORTS, hc.V_HI_LAMPORTS) == (V_LO_L, V_HI_L)
+
+
+@pytest.mark.parametrize("lam,ok", [
+    (V_LO_L, True), (V_LO_L - 1, False), (V_LO_L + 1, True), (V_HI_L, True), (V_HI_L + 1, False), (V_HI_L - 1, True),
+    (17_584_505_288, True), (17_000_000_000, False), (18_000_000_000, False),
+])
+def test_v_band_boundaries_are_inclusive_and_exact_in_lamports(lam, ok):
+    fr = hc.filters(snap_v(lam), as_of_ms=T)
+    assert fr.checks["v_band"]["value"] == lam and fr.checks["v_band"]["ok"] is ok
+    assert "v_missing" not in fr.checks
+    assert fr.passed is ok and fr.failed == (() if ok else ("v_band",))  # every other filter passes on this snapshot, so V alone decides
+    if ok:
+        assert card(snap=snap_v(lam))["id"] == POOL
+    else:
+        with pytest.raises(hc.CardRefused) as e:
+            card(snap=snap_v(lam))
+        assert e.value.reasons == ["v_band"]
+
+
+@pytest.mark.parametrize("flag", [False, None])
+@pytest.mark.parametrize("lam", [V_LO_L, 17_584_505_288, V_HI_L, V_LO_L - 1, None])
+def test_a_non_wsol_pool_is_out_on_quote_wsol_alone_and_its_v_is_not_read(flag, lam):
+    s = snap_v(lam, quote_wsol=flag) if lam is not None else base_snap(quote_wsol=flag, reserves={"quote_sol": 60.0, "base_tokens": 1e9, "quote_eff_sol": 77.58})
+    fr = hc.filters(s, as_of_ms=T)
+    assert not fr.passed and "quote_wsol" in fr.failed and not fr.checks["quote_wsol"]["ok"]
+    assert not (V_CODES & set(fr.checks)) and not (V_CODES & set(fr.failed))  # a non-WSOL pool is never counted as v_missing or v_band
+    with pytest.raises(hc.CardRefused) as e:
+        card(snap=s)
+    assert "quote_wsol" in e.value.reasons and not (V_CODES & set(e.value.reasons))
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param("absent", id="v_sol key absent"), pytest.param(None, id="v_sol None"), pytest.param(0.0, id="v_sol 0.0, the state's no-V sentinel"),
+    pytest.param(0, id="v_sol 0"), pytest.param(-17.58, id="negative"), pytest.param(float("nan"), id="NaN"), pytest.param(float("inf"), id="inf"),
+    pytest.param(True, id="bool"), pytest.param("17.58", id="string"), pytest.param("reserves-absent", id="reserves absent"),
+    pytest.param("reserves-not-a-mapping", id="reserves not a mapping"),
+])
+def test_missing_v_is_ineligible_under_its_own_reason_code(bad):
+    s = base_snap()
+    if bad == "reserves-absent":
+        del s["reserves"]
+    elif bad == "reserves-not-a-mapping":
+        s["reserves"] = [60.0, 17.58]
+    elif bad == "absent":
+        del s["reserves"]["v_sol"]
+    else:
+        s["reserves"]["v_sol"] = bad
+    fr = hc.filters(s, as_of_ms=T)
+    assert not fr.passed and "v_missing" in fr.failed and "v_band" not in fr.failed
+    assert fr.checks["v_missing"]["value"] is None and fr.checks["v_missing"]["ok"] is False and "v_band" not in fr.checks
+    if bad not in ("reserves-absent", "reserves-not-a-mapping"):
+        assert fr.failed == ("v_missing",)  # nothing else about the pool changed
+        with pytest.raises(hc.CardRefused) as e:
+            card(snap=s)
+        assert e.value.reasons == ["v_missing"]
+
+
+def test_every_other_filter_and_card_is_unchanged_for_a_pool_inside_the_band():
+    base = hc.filters(base_snap(), as_of_ms=T)
+    assert base.passed and base.failed == () and base.checks["v_band"]["ok"] and "v_missing" not in base.checks
+    assert set(base.checks) - {"v_band"} == {"venue_pumpswap", "quote_wsol", "state_fresh", "age_min", "age_max", "quote_floor", "prints_15m", "signers_15m",
+                                              "last_print", "vol_60m", "impact_025"}  # the V check is the only new key
+    for lam in (V_LO_L, V_HI_L):  # a V anywhere in the band changes no other check result
+        other = hc.filters(snap_v(lam), as_of_ms=T)
+        assert {k: v["ok"] for k, v in other.checks.items() if k != "v_band"} == {k: v["ok"] for k, v in base.checks.items() if k != "v_band"}
+        assert (other.age_tier, other.age_known) == (base.age_tier, base.age_known)
+    assert hc.filters(snap_v(V_LO_L - 1), as_of_ms=T).failed == ("v_band",)  # an out-of-band V does not touch the other checks either
+    assert card()["id"] == POOL  # the default fixture (V = 17.58 SOL) still builds a card

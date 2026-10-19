@@ -67,6 +67,7 @@ RISK_REFRESH_MS = 30 * MIN_MS
 RISK_HIDE_MS = 60 * MIN_MS
 POOL_COOLDOWN_MS = 30 * MIN_MS
 ENTRY_SETTLE_MS = 3_000  # no code exit before the slower entry leg can land (the engine refuses an earlier sell)
+V_FILTER_CODES = ("v_missing", "v_band")  # hv4_cards.filters check names for the DEC-031 Amendment 2 V universe; scan() counts a pool-scan lost to each as filter_<code>
 SELL_RETRY_MAX = 5  # refusals that are not "the entry has not landed" before a sell is retried slowly (and an alert row is logged); never a reason to drop it
 SELL_EARLY = "slower entry leg"  # the engine's refusal text for a sell decided before the slower entry leg lands (arena_paper.sell)
 SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine does not hold the position (or already holds its sell): the book lets it go
@@ -841,6 +842,9 @@ class Runner:
                 self._leak(T, p.id, e)
                 continue
             if not fr.passed:
+                for code in V_FILTER_CODES:  # DEC-031 Amendment 2 item 6: pool-scans lost to the V universe, counted apart so a shakedown report can show v_missing
+                    if code in fr.failed:
+                        self._count("filter_" + code)
                 continue
             snap = self.state.snapshot(p.id)
             try:
@@ -1562,14 +1566,27 @@ class Runner:
             self.flush_timing()
 
 
-def stack_config(feed_delay_slots: int, **kw: Any) -> Any:
-    """arena_paper.StackConfig with the feed delay d passed explicitly (REQUIRED: StackConfig refuses to price without it). The manager pins d from
-    tools/arena_feed_delay.py; there is no default here."""
+STACK_RENT = 0  # DEC-031 Amendment 2 item 3 (rent refunded): the deciding rent of a covered book on a FILLED trip. Spelled out here, not inherited from arena_paper.RENT_LAMPORTS
+STACK_FIELDS: dict[str, Any] = {  # every StackConfig field except feed_delay_slots, as literals: the priced stack does not move if arena_paper's defaults do (see stack_config)
+    "send": 505_000, "rent": STACK_RENT, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "stakes_sol": (0.25, 0.5, 1.0), "grace_slots": 10_000, "portal_ppm": 0,
+    "press_intercept": -1.4197242838379789, "strand_rule": "both", "e1_floor_per_005": 384_022, "gap_slots": 150, "gap_silence_ms": 60_000, "max_future_ms": 5_000,
+}
+
+
+def stack_config(feed_delay_slots: int) -> Any:
+    """arena_paper.StackConfig with the feed delay d passed explicitly (REQUIRED: StackConfig refuses to price without it) and EVERY other field spelled out in
+    STACK_FIELDS, as tools/arena_rules.py does (DEC-031 Amendment 2 items 2(i), 3 and 8; QP ruling R1 of 2026-10-19). The manager pins d from
+    tools/arena_feed_delay.py; there is no default here. No keyword passes through: no CLI flag, env var or caller can reach rent, the E1 floor, gap_slots or
+    gap_silence_ms (Amendment 2 item 8 (iii)).
+
+    rent = 0: the sell tx closes the token account, so the rent is refunded on a FILLED trip. A STRANDED position still loses 2,039,280 lamports: that is
+    not a StackConfig field, it is `rent_stranded`, the engine's own default (arena_stack.RENT_STRANDED), which this host never overrides. arena_paper's
+    own default (RENT_LAMPORTS, 2,039,280) and its sha256 are untouched (a section 1.4 pin)."""
     from tools.arena_paper import StackConfig
 
     if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0:
         raise ValueError("feed_delay_slots must be a whole number of slots >= 0")
-    return StackConfig(feed_delay_slots=feed_delay_slots, **kw)
+    return StackConfig(**{**STACK_FIELDS, "feed_delay_slots": feed_delay_slots})
 
 
 def head_binding(repo: str | os.PathLike | None = None) -> dict[str, Any]:
