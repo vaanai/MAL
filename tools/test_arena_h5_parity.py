@@ -56,6 +56,7 @@ DAYS = ("2026-09-20", "2026-09-21")
 AGES_MS = tuple(sorted(set(range(0, 3501, 100)) | {1200, 3500}))  # the committed fixture's 0 and 1,200 ms, and the scorer's 3,500 ms age cap
 SWEEP_AFTER_LAST = 3  # the dense sweep runs to the strip's last slot + this
 RUN_ENV = "MAL_H5_PARITY_RUN"
+CONVENTION_REL_BOUND = 1e-3  # a sanity bound on the convention-derived quantities (decision spot, state after the last print); the size actually seen is in the report
 STRIP_Q_TOL = 0.5  # the strip stores int(round(q)); the shadow's own outcome record keeps the float (used only for that comparison)
 MAX_EXAMPLES = 6
 FAMILY = "h5"  # the label of the pinned list's lines for this parity
@@ -123,6 +124,24 @@ class Tally:
 
     def total(self) -> tuple[int, int]:
         return sum(self.n.values()), sum(self.bad.values())
+
+
+class RelDev:
+    """Relative deviations of a quantity that the two sides derive by DIFFERENT conventions (not selected from the tape): reported with their size, never silently allowed."""
+
+    def __init__(self) -> None:
+        self.v: dict[str, list[float]] = collections.defaultdict(list)
+
+    def add(self, key: str, a: float, b: float) -> None:
+        self.v[key].append(abs(float(a) - float(b)) / max(abs(float(b)), 1e-300))
+
+    def table(self) -> dict[str, dict[str, Any]]:
+        out = {}
+        for k, xs in sorted(self.v.items()):
+            ys = sorted(xs)
+            out[k] = {"n": len(ys), "n_nonzero": sum(1 for x in ys if x > 0), "max_rel": ys[-1] if ys else None, "median_rel": ys[len(ys) // 2] if ys else None,
+                      "p90_rel": ys[int(0.9 * (len(ys) - 1))] if ys else None}
+        return out
 
 
 # ---------------------------------------------------------------------------------------------------------------- the independent reader (numpy; test-only imports)
@@ -254,122 +273,140 @@ def scorer_cases(recs: Sequence[dict], excl: collections.Counter) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------------------------------------------- the comparisons
-def compare_pool(pool: str, rec: dict[str, Any], ref: PoolRef, cases: Sequence[dict], T: Tally, v_meta: int | None, v_map: int | None) -> None:
-    """All comparisons for one pool. `rec` holds the pool's trigger, outcome (state fields only) and strip."""
+class Acc:
+    """What one run accumulates: exact-equality tallies, relative deviations of the convention-derived quantities, and diagnostics (counts)."""
+
+    def __init__(self) -> None:
+        self.T = Tally()
+        self.R = RelDev()
+        self.D: collections.Counter = collections.Counter()
+        self.margin: dict[str, int | None] = {"min_slots_from_landing_to_strip_end": None, "min_slots_from_exit_landing_to_strip_end": None}
+
+    def margin_min(self, key: str, v: int) -> None:
+        cur = self.margin[key]
+        self.margin[key] = v if cur is None else min(cur, v)
+
+
+def _src_pair(c: dict) -> tuple[str, str]:
+    s = c["src"]
+    return (s[0], s[1]) if isinstance(s, (tuple, list)) else (s, s)
+
+
+def compare_pool(pool: str, rec: dict[str, Any], ref: PoolRef, cases: Sequence[dict], A: Acc, v_meta: int | None, v_map: int | None) -> None:
+    """All comparisons for one pool. `rec` holds the pool's trigger, outcome (state fields only) and strip. State keys carry the state source (`next_pre`: a recorded pre-trade
+    reserve; `post`: the derived state after the last print, where the shadow and the stack use different fee conventions)."""
     from tools import arena_h5_score as sc
 
+    T, R, D = A.T, A.R, A.D
     strip_rec, trig, out = rec["strip"], rec["trigger"], rec["outcome"]
     strip = sc.Strip(strip_rec)
     sps = ref.sps
     ctx0 = {"pool": pool}
+    last_slot = int(strip_rec["post_last"][0])
 
     # -- V and the print list
     T.cmp("inputs|V (shadow meta vs V map)", v_meta, v_map, ctx0)
-    T.cmp("strip|n_prints", strip_rec["n_prints"], ref.n, ctx0)
+    T.cmp("strip|n_prints (shadow count vs tape prints up to its last slot)", strip_rec["n_prints"], ref.n, ctx0)
     start = strip_rec["from_slot"]
     ix0 = int(ref.np.searchsorted(ref.sl, start, "left"))
     for j, (slot, qpv, _qfv, base) in enumerate(strip_rec["rows"]):
         i = ix0 + j
         ok = i < ref.n
         T.cmp("strip rows|slot", slot, int(ref.sl[i]) if ok else None, {**ctx0, "row": j})
-        T.cmp("strip rows|Q incl. V (pre)", qpv, float(ref.l3.QX[i]) if ok else None, {**ctx0, "row": j, "slot": slot})
-        T.cmp("strip rows|base (pre)", base, float(ref.l3.BX[i]) if ok else None, {**ctx0, "row": j, "slot": slot})
+        T.cmp("strip rows|Q incl. V (pre-trade)", qpv, float(ref.l3.QX[i]) if ok else None, {**ctx0, "row": j, "slot": slot})
+        T.cmp("strip rows|base (pre-trade)", base, float(ref.l3.BX[i]) if ok else None, {**ctx0, "row": j, "slot": slot})
     T.cmp("strip rows|count (rows from the first trigger slot)", len(strip_rec["rows"]), ref.n - ix0, ctx0)
     pq, pb = ref.post_last()
     T.cmp("post_last|slot", strip_rec["post_last"][0], int(ref.sl[-1]), ctx0)
-    T.cmp("post_last|Q incl. V (derived after the last print)", strip_rec["post_last"][1], pq, ctx0)
     T.cmp("post_last|base (derived after the last print)", strip_rec["post_last"][3], pb, ctx0)
+    R.add("post_last Q incl. V (shadow strip vs stack, derived after the last print)", strip_rec["post_last"][1], pq)  # a convention: see the module doc and the report
 
-    # -- spot at the decision: the post-trade price right after the trigger print
+    # -- spot at the decision: the post-trade price right after the trigger print (a convention: the shadow's pool arithmetic vs the stack's 0.99 / 1.01 seed price)
     tslot = int(trig["slot"])
     cand = ref.np.flatnonzero((ref.sl == tslot) & (~ref.ib) & (ref.b == float(trig["base_pre"])) & (ref.tk == float(trig["sell_token_raw"])))
-    T.cmp("spot|trigger print found once", 1, len(cand), ctx0)
+    T.cmp("spot|trigger print located once on the tape (slot, sell, base_pre, token_raw)", 1, len(cand), ctx0)
     if len(cand) >= 1:
-        T.cmp("spot|decision_spot (post-trade Q incl. V over post-trade base)", sc.decision_spot(trig), float(ref.l3.pp[int(cand[0])]), {**ctx0, "slot": tslot})
+        R.add("spot (scorer decision_spot vs L3Mint post-trade price of the trigger print)", sc.decision_spot(trig), float(ref.l3.pp[int(cand[0])]))
 
     # -- case-based: the scorer's own price_trade outputs at every age, leg and bot
     seen_e: set[tuple[int, str]] = set()
-    seen_x: set[int] = set()
     lat_effs = sorted({round(c["lat_s"] + c["age_ms"] / 1000.0, 9) for c in cases})
     bk = ref.bk
-    mint_lands = ref.bk.mint_states(ref.sl, ref.ib, ref.so, ref.tk, ref.q, ref.b, ref.vq, ref.np.asarray([tslot]), sps, lats=tuple(lat_effs), rounding="ceil")
+    mint_lands = bk.mint_states(ref.sl, ref.ib, ref.so, ref.tk, ref.q, ref.b, ref.vq, ref.np.asarray([tslot]), sps, lats=tuple(lat_effs), rounding="ceil") if cases else None
+    lag_ind = int(bk.exit_lag_vec(sps))
     for c in cases:
         le = round(c["lat_s"] + c["age_ms"] / 1000.0, 9)
+        s_e, s_x = _src_pair(c)
+        D[f"cases landing state_src={s_e}"] += 1
+        D[f"cases exit state_src={s_x}"] += 1
+        A.margin_min("min_slots_from_landing_to_strip_end", last_slot - c["land"])
+        A.margin_min("min_slots_from_exit_landing_to_strip_end", last_slot - c["xland"])
         ctx = {**ctx0, "bot": c["bot"][:4], "age_ms": c["age_ms"], "leg": c["leg"]}
-        land_ind = tslot + int(bk.k_slots_vec(le, sps, "ceil"))
-        T.cmp("case landing|slot (scorer landing_slot vs k_slots_vec)", c["land"], land_ind, ctx)
-        T.cmp("case exit|lag slots (scorer vs exit_lag_vec)", c["el"], int(bk.exit_lag_vec(sps)), ctx)
-        T.cmp("case exit|landing slot (exit trigger + lag)", c["xland"], c["xtrig"] + int(bk.exit_lag_vec(sps)), ctx)
-        # entry via mint_states(sd = trigger slot, latency = leg + age)
-        k = (c["land"], c["leg"])
-        e_ctx = {**ctx, "slot": c["land"]}
-        i_q, i_b = float(mint_lands["Qe"][le][0]), float(mint_lands["Be"][le][0])
-        i_ssb, i_nb = float(mint_lands["ssb"][le][0]), float(mint_lands["nearby"][le][0])
-        T.cmp("case landing|Q incl. V vs mint_states", c["qe"], i_q, e_ctx)
-        T.cmp("case landing|base vs mint_states", c["be"], i_b, e_ctx)
-        T.cmp("case landing|ssb vs mint_states", c["ssb"], i_ssb, e_ctx)
-        T.cmp("case landing|nearby lamports vs mint_states", c["nb"], i_nb, e_ctx)
+        T.cmp("case landing|slot (scorer landing_slot vs k_slots_vec)", c["land"], tslot + int(bk.k_slots_vec(le, sps, "ceil")), ctx)
+        T.cmp("case exit|lag slots (scorer vs exit_lag_vec)", c["el"], lag_ind, ctx)
+        T.cmp("case exit|landing slot (exit trigger + lag)", c["xland"], c["xtrig"] + lag_ind, ctx)
+        seen_e.add((c["land"], c["leg"]))
+        e_ctx, x_ctx = {**ctx, "slot": c["land"]}, {**ctx, "slot": c["xland"]}
+        # entry via mint_states(sd = trigger slot, latency = leg + age) and via L3Mint.entry
         l3 = ref.l3.entry(tslot, le, sps)
-        T.cmp("case landing|Q incl. V vs L3Mint", c["qe"], float(l3[0]), e_ctx)
-        T.cmp("case landing|base vs L3Mint", c["be"], float(l3[1]), e_ctx)
-        T.cmp("case landing|ssb vs L3Mint", c["ssb"], float(l3[2]), e_ctx)
-        T.cmp("case landing|nearby lamports vs L3Mint", c["nb"], float(l3[3]), e_ctx)
+        for fld, mine, a1, a2 in (("Q incl. V", c["qe"], mint_lands["Qe"][le][0], l3[0]), ("base", c["be"], mint_lands["Be"][le][0], l3[1]), ("ssb", c["ssb"], mint_lands["ssb"][le][0], l3[2]),
+                                  ("nearby lamports", c["nb"], mint_lands["nearby"][le][0], l3[3])):
+            T.cmp(f"case landing [{s_e}]|{fld} vs mint_states", mine, float(a1), e_ctx)
+            T.cmp(f"case landing [{s_e}]|{fld} vs L3Mint", mine, float(a2), e_ctx)
         # exit via mint_states(clock_slot_marks = exit trigger slot) and L3Mint.exit_state
-        x_ctx = {**ctx, "slot": c["xland"]}
         xo = bk.mint_states(ref.sl, ref.ib, ref.so, ref.tk, ref.q, ref.b, ref.vq, ref.np.asarray([tslot]), sps, lats=(0.0,), rounding="ceil", t_marks=ref.np.asarray([0]),
                             slot_s_marks=ref.np.asarray([sps]), clock_slot_marks=ref.np.asarray([c["xtrig"]]))
-        T.cmp("case exit|Q incl. V vs mint_states", c["qx"], float(xo["Qx"][0]), x_ctx)
-        T.cmp("case exit|base vs mint_states", c["bx"], float(xo["Bx"][0]), x_ctx)
         lx = ref.l3.exit_state(c["xtrig"], sps)
-        T.cmp("case exit|Q incl. V vs L3Mint", c["qx"], float(lx[0]), x_ctx)
-        T.cmp("case exit|base vs L3Mint", c["bx"], float(lx[1]), x_ctx)
-        # state source label
-        T.cmp("case landing|state_src", c["src"][0] if isinstance(c["src"], (tuple, list)) else c["src"], ref.src_at([c["land"]])[0], e_ctx)
-        T.cmp("case exit|state_src", c["src"][1] if isinstance(c["src"], (tuple, list)) else c["src"], ref.src_at([c["xland"]])[0], x_ctx)
-        seen_e.add(k)
-        seen_x.add(c["xland"])
-    T.cmp("coverage|distinct (landing slot, leg) pairs priced", len(seen_e), len(seen_e), ctx0)
+        for fld, mine, a1, a2 in (("Q incl. V", c["qx"], xo["Qx"][0], lx[0]), ("base", c["bx"], xo["Bx"][0], lx[1])):
+            T.cmp(f"case exit [{s_x}]|{fld} vs mint_states", mine, float(a1), x_ctx)
+            T.cmp(f"case exit [{s_x}]|{fld} vs L3Mint", mine, float(a2), x_ctx)
+        T.cmp("case landing|state_src label", s_e, ref.src_at([c["land"]])[0], e_ctx)
+        T.cmp("case exit|state_src label", s_x, ref.src_at([c["xland"]])[0], x_ctx)
+    D["distinct (landing slot, leg) pairs priced"] += len(seen_e)
 
-    # -- the shadow's own recorded landing / exit slots: its outcome-record states against Strip.state_at (state fields only)
-    for leg, lname in (("primary", "1p3"), ("binding", "1p9")):
-        ent = out["legs"][leg]
-        X = int(ent["landing_slot"])
+    # -- the shadow's own recorded landing / exit slots: its outcome-record STATES against Strip.state_at (a complete outcome only; the scorer excludes an incomplete one)
+    if not out.get("complete"):
+        D["outcome records incomplete (skipped here; the scorer excludes them)"] += 1
+    else:
+        for leg, lname in (("primary", "1p3"), ("binding", "1p9")):
+            ent = out["legs"][leg]
+            X = int(ent["landing_slot"])
+            q, b, src = strip.state_at(X)
+            ssb, nb = strip.pressure_at(X, sps)
+            ctx = {**ctx0, "leg": lname, "slot": X}
+            T.cmp(f"shadow outcome landing [{src}]|Q incl. V (+-0.5 lamport: the strip stores an int)", q, float(ent["q_sol"]) * 1e9, ctx, tol=STRIP_Q_TOL)
+            T.cmp(f"shadow outcome landing [{src}]|base", b, float(ent["base"]), ctx)
+            T.cmp(f"shadow outcome landing [{src}]|ssb", ssb, ent["ssb"], ctx)
+            T.cmp(f"shadow outcome landing [{src}]|nearby lamports", nb, ent["nb_lamports"], ctx)
+            T.cmp("shadow outcome landing|state_src label", src, ent["state_src"], ctx)
+            T.cmp("shadow outcome landing|slot (trigger record vs outcome record)", int(trig["landing_slot_" + leg]), X, ctx)
+        ex = out["exit"]
+        X = int(ex["landing_slot"])
         q, b, src = strip.state_at(X)
-        ssb, nb = strip.pressure_at(X, sps)
-        ctx = {**ctx0, "leg": lname, "slot": X}
-        T.cmp("shadow outcome landing|Q incl. V (strip vs shadow, +-0.5 lamport for the int)", q, float(ent["q_sol"]) * 1e9, ctx, tol=STRIP_Q_TOL)
-        T.cmp("shadow outcome landing|base", b, float(ent["base"]), ctx)
-        T.cmp("shadow outcome landing|ssb", ssb, ent["ssb"], ctx)
-        T.cmp("shadow outcome landing|nearby lamports", nb, ent["nb_lamports"], ctx)
-        T.cmp("shadow outcome landing|state_src", src, ent["state_src"], ctx)
-        T.cmp("shadow outcome landing|slot (trigger record vs outcome record)", int(trig["landing_slot_" + leg]), X, ctx)
-    ex = out["exit"]
-    X = int(ex["landing_slot"])
-    q, b, src = strip.state_at(X)
-    ctx = {**ctx0, "slot": X}
-    T.cmp("shadow outcome exit|Q incl. V (strip vs shadow, +-0.5 lamport for the int)", q, float(ex["q_sol"]) * 1e9, ctx, tol=STRIP_Q_TOL)
-    T.cmp("shadow outcome exit|base", b, float(ex["base"]), ctx)
-    T.cmp("shadow outcome exit|state_src", src, ex["state_src"], ctx)
-    T.cmp("shadow outcome exit|slot (trigger record vs outcome record)", int(trig["exit_landing_slot"]), X, ctx)
+        ctx = {**ctx0, "slot": X}
+        T.cmp(f"shadow outcome exit [{src}]|Q incl. V (+-0.5 lamport: the strip stores an int)", q, float(ex["q_sol"]) * 1e9, ctx, tol=STRIP_Q_TOL)
+        T.cmp(f"shadow outcome exit [{src}]|base", b, float(ex["base"]), ctx)
+        T.cmp("shadow outcome exit|state_src label", src, ex["state_src"], ctx)
+        T.cmp("shadow outcome exit|slot (trigger record vs outcome record)", int(trig["exit_landing_slot"]), X, ctx)
 
-    # -- the dense sweep: EVERY slot X from the strip's first slot to its last slot + SWEEP_AFTER_LAST
+    # -- the dense sweep: EVERY slot X from the strip's first slot to its last slot + SWEEP_AFTER_LAST (any landing or exit slot is one of these)
     xs = list(range(int(start), int(ref.last_slot) + SWEEP_AFTER_LAST + 1))
     r4 = ref.r4b_at(xs)
     srcs = ref.src_at(xs)
     for n_, X in enumerate(xs):
         q, b, src = strip.state_at(X)
         ssb, nb = strip.pressure_at(X, sps)
-        ctx = {**ctx0, "slot": X}
-        T.cmp("dense sweep|Q incl. V vs mint_states", q, float(r4["Q"][n_]), ctx)
-        T.cmp("dense sweep|base vs mint_states", b, float(r4["B"][n_]), ctx)
-        T.cmp("dense sweep|ssb vs mint_states", ssb, float(r4["ssb"][n_]), ctx)
-        T.cmp("dense sweep|nearby lamports vs mint_states", nb, float(r4["nb"][n_]), ctx)
-        T.cmp("dense sweep|state_src", src, srcs[n_], ctx)
         l3 = ref.l3.entry(X, 0.0, sps)
-        T.cmp("dense sweep|Q incl. V vs L3Mint", q, float(l3[0]), ctx)
-        T.cmp("dense sweep|base vs L3Mint", b, float(l3[1]), ctx)
-        T.cmp("dense sweep|ssb vs L3Mint", ssb, float(l3[2]), ctx)
-        T.cmp("dense sweep|nearby lamports vs L3Mint", nb, float(l3[3]), ctx)
+        ctx = {**ctx0, "slot": X}
+        D[f"dense sweep slots state_src={src}"] += 1
+        T.cmp("dense sweep|state_src label", src, srcs[n_], ctx)
+        for fld, mine, a1, a2 in (("Q incl. V", q, r4["Q"][n_], l3[0]), ("base", b, r4["B"][n_], l3[1]), ("ssb", ssb, r4["ssb"][n_], l3[2]), ("nearby lamports", nb, r4["nb"][n_], l3[3])):
+            if src == "post" and fld == "Q incl. V":
+                R.add("dense sweep Q incl. V at a `post` slot (shadow strip vs mint_states)", mine, float(a1))
+                R.add("dense sweep Q incl. V at a `post` slot (shadow strip vs L3Mint)", mine, float(a2))
+                continue  # a convention (see RelDev); every other field and the `next_pre` Q are exact comparisons
+            T.cmp(f"dense sweep [{src}]|{fld} vs mint_states", mine, float(a1), ctx)
+            T.cmp(f"dense sweep [{src}]|{fld} vs L3Mint", mine, float(a2), ctx)
 
 
 def fixture_tie(cases: Sequence[dict], T: Tally) -> None:
@@ -418,28 +455,25 @@ def run_parity(tape: str = TAPE_DIR, hours: Sequence[str] = HOURS, log=lambda *_
 
     vmap = json.loads(Path(VMAP_PATH).read_text())["v"]
     df = load_tape_prints(tape, hours, set(pools))
-    T = Tally()
-    fixture_tie(cases, T)
-    diag = {"pools_with_tx_index_nan_prints": 0, "pools_where_feed_order_differs_from_l3_order": 0, "tape_prints_beyond_the_strip_last_slot": 0, "pools_with_beyond_prints": 0,
-            "state_src_counts_dense": collections.Counter()}
+    A = Acc()
+    fixture_tie(cases, A.T)
     for i, pool in enumerate(pools):
         strip_rec = strips[pool]
         arr = pool_arrays(df, pool, "l3")
         feed = pool_arrays(df, pool, "feed")
-        diag["pools_with_tx_index_nan_prints"] += arr["tx_nan"] > 0
-        same = all(bool((arr[k] == feed[k]).all()) for k in ("sl", "ib", "so", "tk", "q", "b"))
-        diag["pools_where_feed_order_differs_from_l3_order"] += not same
+        A.D["pools with tx_index NaN prints"] += arr["tx_nan"] > 0
+        A.D["pools where the shadow's feed order differs from the l3 order"] += not all(bool((arr[k] == feed[k]).all()) for k in ("sl", "ib", "so", "tk", "q", "b"))
         ref = PoolRef(arr, float(vmap[pool]), float(out_[pool]["sps"]), int(strip_rec["post_last"][0]))
-        diag["tape_prints_beyond_the_strip_last_slot"] += ref.n_beyond
-        diag["pools_with_beyond_prints"] += ref.n_beyond > 0
-        compare_pool(pool, {"strip": strip_rec, "trigger": trig[pool], "outcome": out_[pool]}, ref, by_pool.get(pool, []), T, meta[pool]["v"], vmap[pool])
+        A.D["tape prints after the strip's last slot (pool life over; not compared)"] += ref.n_beyond
+        A.D["pools with such prints"] += ref.n_beyond > 0
+        compare_pool(pool, {"strip": strip_rec, "trigger": trig[pool], "outcome": out_[pool]}, ref, by_pool.get(pool, []), A, meta[pool]["v"], vmap[pool])
         if (i + 1) % 10 == 0:
             log("pools compared", i + 1, "of", len(pools))
-    n, bad = T.total()
-    diag["state_src_counts_dense"] = dict(diag["state_src_counts_dense"])
+    n, bad = A.T.total()
     return {"pins": pins, "sources_list_sha256": sha256_file(SOURCES_LIST), "inputs": inputs, "hours": [hours[0], hours[-1]], "n_hours": len(hours),
             "pools_pv_triggered": len(pools), "scorer_cases": len(cases), "scorer_cases_excluded_by_price_trade": dict(excl), "ages_ms": list(AGES_MS),
-            "diagnostics": diag, "comparisons_total": n, "mismatches_total": bad, "by_field": T.table(), "mismatch_examples": {k: v for k, v in T.examples.items()}}
+            "diagnostics": dict(A.D), "margins_slots": A.margin, "exact_comparisons_total": n, "exact_mismatches_total": bad, "by_field": A.T.table(),
+            "convention_derived_quantities": A.R.table(), "mismatch_examples": {k: v for k, v in A.T.examples.items()}}
 
 
 # ---------------------------------------------------------------------------------------------------------------- tests
@@ -561,7 +595,10 @@ class RealTapeParity(unittest.TestCase):
     def test_h5_strip_states_equal_the_independent_extraction(self):
         _need_numpy()
         rep = run_parity()
-        self.assertEqual(rep["mismatches_total"], 0, json.dumps(rep["mismatch_examples"], indent=1, default=str)[:4000])
+        self.assertEqual(rep["exact_mismatches_total"], 0, json.dumps(rep["mismatch_examples"], indent=1, default=str)[:4000])
+        # the quantities the two sides DERIVE by different conventions are reported with their size (see the PR body); a bound only catches a gross change
+        for k, v in rep["convention_derived_quantities"].items():
+            self.assertLess(v["max_rel"], CONVENTION_REL_BOUND, k)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -571,12 +608,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     rep = run_parity(log=lambda *x: print(*x, file=sys.stderr, flush=True))
     if a.json:
         Path(a.json).write_text(json.dumps(rep, indent=1, sort_keys=True, default=str) + "\n")
-    brief = {k: v for k, v in rep.items() if k not in ("by_field", "mismatch_examples")}
+    brief = {k: v for k, v in rep.items() if k not in ("by_field", "mismatch_examples", "convention_derived_quantities")}
     print(json.dumps(brief, indent=1, sort_keys=True, default=str))
     print(json.dumps(rep["by_field"], indent=1, sort_keys=True))
+    print(json.dumps(rep["convention_derived_quantities"], indent=1, sort_keys=True))
     for k, v in rep["mismatch_examples"].items():
         print("EXAMPLES", k, json.dumps(v, default=str))
-    return 0 if rep["mismatches_total"] == 0 else 1
+    return 0 if rep["exact_mismatches_total"] == 0 else 1
 
 
 if __name__ == "__main__":
