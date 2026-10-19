@@ -361,14 +361,17 @@ def v1_read(book_res: Mapping[str, Any], persona: str, reg, null_dir, boundary_m
 
 
 def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Mapping[str, Mapping[str, Any]], led: Ledger, ledger_root: str, registry: str,
-            reads_dir: str, now_ms: int, settle_ms: int) -> dict[str, Any]:
+            reads_dir: str, now_ms: int, settle_ms: int, bv: int | None = None) -> dict[str, Any]:
     """V2 over the window ending at arena_score.common_boundary(book, X): the earlier of the two natural instants. Both arms are scored there (at or before an arm's
-    own instant is always allowed); the book keeps its natural read when its instant is the earlier one. Both instants come from decision timestamps only."""
+    own instant is always allowed); the book keeps its natural read when its instant is the earlier one. Both instants come from decision timestamps only.
+    `bv` = the declared V1/V2 instant: if X has no outcome-blind instant by then, V2 is NOT_DECIDABLE by rule (so the answer does not depend on when the read is run)."""
     x = f"{persona}-X"
     out: dict[str, Any] = {"comparator": x, "book_instant_ms": b, "comparator_instant_ms": None, "window_end_ms": None, "note": None, "alpha": V2_ALPHA, "reasons": [], "subcells": {}}
     try:
-        b2 = AS.common_boundary(bot_id, x, ledger_root, registry)
         out["comparator_instant_ms"] = AS.natural_instant(ledger_root, registry, x)
+        if bv is not None and out["comparator_instant_ms"] is not None and out["comparator_instant_ms"] > bv:
+            raise Refused(f"{x} reached its outcome-blind instant {out['comparator_instant_ms']} only after the declared V1/V2 instant {bv}: V2 is NOT_DECIDABLE by rule")
+        b2 = AS.common_boundary(bot_id, x, ledger_root, registry)
         out["window_end_ms"] = b2
         bres = main if b2 == b else score_ledger_at(led, bot_id, reg, b2, now_ms, settle_ms, reads_dir)
         xres = score_ledger_at(led, x, reg, b2, now_ms, settle_ms, reads_dir)
@@ -611,8 +614,12 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     if read.get("v1") or read.get("v2"):
         if read["status"] != "PASS":  # V1 and V2 are comparisons that can only add to a book that cleared the gate: a book that did not is not given a V verdict here
             parts.append("V1 and V2 are comparison only for a book that did not clear the gate: no V verdict is reported here (see the hv4 json).")
+        elif (read.get("v1") or {}).get("status") == "PENDING":
+            parts.append(f"V1 and V2 pending until {_created(read['v12']['instant_ms'])}: they are decided once, at the book's window end plus the "
+                         f"{read['v12']['settle_ms'] / 3_600_000:g} h settle time, and recorded in the arena store.")
         else:
-            parts.append(" ".join(f"{k.upper()} {read[k]['status']}." for k in ("v1", "v2") if read.get(k)))
+            parts.append(" ".join(f"{k.upper()} {read[k]['status']}." for k in ("v1", "v2") if read.get(k))
+                         + f" (decided once at {_created(read['v12']['instant_ms'])} and recorded in the arena store; they do not change the gate read).")
     if read.get("learning"):
         lr = read["learning"]
         ps = "; ".join(f"{k} L-F p {_f(v['p'])}, L-P p {_f(lr['L_minus_P']['subcells'].get(k, {}).get('p'))}" for k, v in lr["L_minus_F"]["subcells"].items())
@@ -626,6 +633,49 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
                         "note": (f"{REFERENCE_LABEL.capitalize()}; no canary path. No book has cleared the promotion gate." if ref else
                                  f"A screen, not a promotion; best of {read['disclosure']['books_with_clock_before_read']} arena books. No book has cleared the promotion gate.")}],
             "events": [{"id": f"e-{day}-{tag}", "kind": "record", "title": f"HV4 {who} {'reference read' if ref else 'gate read' if gate else 'D14 learning comparison'}", "detail": parts[0], "atUtc": created_utc}]}
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ V1 / V2: decided once, in the arena store
+V12_SCHEMA = "hv4_v12_v1"
+
+
+def v12_instant(b: int, settle_ms: int) -> int:
+    """The ONE declared instant of a book's V1 and V2 (quant-proof B1 on #718): its window end B (the outcome-blind gate instant) plus the declared settle time. It is a
+    function of decision timestamps and a constant; the operator's choice of when to run changes nothing."""
+    return int(b) + int(settle_ms)
+
+
+def v12_path(reads_dir: str | Path, bot_id: str) -> Path:
+    return Path(reads_dir) / f"{bot_id}.v12.json"
+
+
+def load_v12(reads_dir: str | Path, bot_id: str) -> dict[str, Any] | None:
+    """The bot's recorded V1/V2 decision in the same store as its gate read (keyed by bot_id), or None. An unreadable file counts as a record (it blocks a re-run)."""
+    p = v12_path(reads_dir, bot_id)
+    if not p.exists():
+        return None
+    try:
+        r = json.loads(p.read_text())
+        return r if isinstance(r, dict) else {"status": "UNREADABLE"}
+    except (OSError, ValueError):
+        return {"status": "UNREADABLE"}
+
+
+def record_v12(reads_dir: str | Path, rec: Mapping[str, Any]) -> dict[str, Any]:
+    p = v12_path(reads_dir, rec["bot_id"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(p, "x") as f:
+            f.write(canon(rec) + "\n")
+    except FileExistsError:
+        raise Refused(f"{rec['bot_id']}: V1 and V2 are already decided and recorded at {p}: one decision per bot_id, from any out dir; a second run is refused") from None
+    return {"path": str(p), "sha256": _sha(p)}
+
+
+def pending_v(name: str, bv: int, settle_ms: int) -> dict[str, Any]:
+    return {"status": "PENDING", "pending_until_ms": int(bv), "subcells": {},
+            "reasons": [f"{name} is decided once, at {_created(bv)} (the book's window end + the {settle_ms / 3_600_000:g} h settle time), and recorded in the arena store; "
+                        "run `python -m tools.hv4_read v12 --bot <ID>` at or after it"]}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ write-once
@@ -669,7 +719,7 @@ def _inputs(registry: str, ledger_root: str, reads_dir: str, sources: Sequence[M
 GATE_KEYS = ("status", "fail_label", "read_boundary_ms", "attempts", "books")
 
 
-def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any]) -> dict[str, Any]:
+def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any], create: bool = True) -> dict[str, Any]:
     """Put the gate read in arena_score's store: `arena_score.record_read` (write-once). If `arena_score --record` already stored this bot_id, the stored read must equal
     the fresh scoring on the gate keys (status, label, boundary, attempts, every book and cell), else the read is refused; the stored file is never touched."""
     p = Path(reads_dir) / f"{res['bot_id']}.json"
@@ -680,6 +730,8 @@ def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any]) -> dict[str,
         if diff:
             raise Refused(f"{res['bot_id']}: the read already stored at {p} differs from the fresh scoring on {diff}: refused (the ledger changed since it was recorded?)")
         source = "existing"
+    elif not create:
+        raise Refused(f"{res['bot_id']}: its gate read is not in the arena store yet ({p}): run `book` first; the V1/V2 step never records a gate read")
     else:
         AS.record_read(reads_dir, res)
     return {"path": str(p), "sha256": _sha(p), "source": source}
@@ -687,20 +739,36 @@ def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any]) -> dict[str,
 
 def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR,
               null_dir: str | None = None, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS, n_seeds: int = NULL_SEEDS, command: str = "",
-              extra_registries: Sequence[str] = ()) -> dict[str, Any]:
+              extra_registries: Sequence[str] = (), no_null: bool = False, v12_only: bool = False) -> dict[str, Any]:
+    """The book read. V1 and V2 of an L or F book are decided ONCE, at `v12_instant` (B + settle time), and recorded in the arena store next to the gate read
+    (`<reads_dir>/<bot_id>.v12.json`, write-once, any out dir): before that instant this read says "pending until <instant>"; at or after it (here, or later with
+    `v12_only`, the `v12` command) they are decided and recorded; a second decision is refused. `null_dir=None` needs `no_null=True` (an explicit opt-out) when it decides."""
     now = _now(now_ms)
     reg = load_registry(registry)
     books, sources = arena_books(registry, extra_registries)  # the multiplicity count: every registered arena book (refused when the other registry is missing)
     if bot_id not in ARMS:
         raise Refused(f"{bot_id}: not one of the 13 HV4 arms")
+    arm = ARMS[bot_id]
+    llm_book = bool(arm.llm and arm.promotable)
     t0 = window_clock(reg)
     od = Path(out_dir)
-    _guard_unwritten(od, bot_id)
+    name = f"{bot_id}.v12" if v12_only else bot_id
+    _guard_unwritten(od, name)
+    if llm_book and load_v12(reads_dir, bot_id) is not None:
+        raise Refused(f"{bot_id}: V1 and V2 are already decided and recorded at {v12_path(reads_dir, bot_id)}: one decision per bot_id, from any out dir; a second run is refused")
+    if v12_only and not llm_book:
+        raise Refused(f"{bot_id}: V1 and V2 exist for the LLM books L and F only")
     # 1. the pre-declared instant, from decision timestamps only (no fill, exit or P&L is parsed before this passes)
     b = AS.blind_read_instant(AS.load_decisions(ledger_root, bot_id), reg[bot_id]["clock_start_ms"])
     if b is None or now < b:
         raise Refused(f"{bot_id}: not at its pre-declared instant (outcome-blind read boundary {b}, now {now}): refused, nothing written")
-    arm = ARMS[bot_id]
+    bv = v12_instant(b, settle_ms)
+    if v12_only and now < bv:
+        raise Refused(f"{bot_id}: V1 and V2 are decided once, at {bv} ({_created(bv)}) = the window end + the settle time, not before (now {now}): refused, nothing written")
+    decide = llm_book and now >= bv
+    if decide and null_dir is None and not no_null:
+        raise Refused(f"{bot_id}: V1 and V2 are decided now and would be recorded NOT_DECIDABLE for good without the R null: pass --null-dir (or --no-null to record that "
+                      "on purpose); refused, nothing written")
     led = Ledger(ledger_root)
     all_ = AS.score_all(ledger_root, registry, bot_id, now, settle_ms, None, reads_dir)  # exactly what `arena_score --bot X --record` would store
     if bot_id in all_["bots_refused"]:
@@ -709,7 +777,8 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     rows, incidents, problems = scan(led, bot_id)
     if main["status"] in ("PENDING", "NOT_READY") or main.get("pending"):
         raise Refused(f"{bot_id}: {main['status']} ({main.get('pending')} covered attempt(s) inside the settle window): not recordable, nothing written")
-    assert main["read_boundary_ms"] == b
+    if main["read_boundary_ms"] != b:
+        raise Refused(f"{bot_id}: the scored read boundary {main['read_boundary_ms']} is not the pre-declared instant {b}: refused, nothing written")
     asz = score_as_sized(bot_id, reg, rows, now, settle_ms, incidents=incidents, problems=problems) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
     cells = []
     if arm.promotable:
@@ -718,14 +787,16 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
                 cells.append(cell_record(a, stake, asz if stake == AS_SIZED else main, decides=(stake == PRIMARY_STAKE)))
     else:
         cells.append(cell_record(bot_id, PRIMARY_STAKE, main, decides=True, gate_cell=False))
-    # 2. V1 and V2 (LLM books only)
+    # 2. V1 and V2 (LLM books only): decided once at the declared instant, else pending
     v1 = v2 = None
     adds = v12 = None
-    if arm.llm and arm.promotable:
+    if decide:
         v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms)
-        v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, registry, reads_dir, now, settle_ms)
+        v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, registry, reads_dir, now, settle_ms, bv)
         v12 = bool(v1["status"] == "PASS" and v2["status"] == "PASS")
         adds = bool(main["status"] == "PASS" and v12)  # "adds value" is claimed only for a book that also clears the arena gate
+    elif llm_book:
+        v1, v2 = pending_v("V1", bv, settle_ms), pending_v("V2", bv, settle_ms)
     # 3. disclosure, record
     n_books = len(main.get("books") or {}) + (1 if asz and asz.get("books") else 0)
     cells_read = n_books * len(AS.MODELS) * len(AS.LATS)
@@ -735,19 +806,24 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
             "t0_ms": t0, "window_days": max(1, len(calendar_days(reg[bot_id]["clock_start_ms"], b))), "status": status_of(main), "arena_status": main["status"],
             "decidable": base_status(main) in DECIDABLE,
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
+            "v12": ({"instant_ms": bv, "settle_ms": settle_ms, "state": "decided" if decide else "pending", "record": None} if llm_book else None),
             "reference_arm": not arm.promotable,
             "not_proposed_for_canary": bool(arm.promotable and main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
             "disclosure": disclosure(books, now, n_books, cells_read, ebd, reference=not arm.promotable), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
             "inputs": _inputs(registry, ledger_root, reads_dir, sources), "arena_score_read": main, "arena_score_as_sized": asz}
     dec_books = main.get("books", {}).get(PRIMARY_KEY, {}).get("cells", {})
     read["_deciding_cells"] = dec_books
-    rv1 = result_v1(read, command=command or f"python -m tools.hv4_read book --bot {bot_id}", created_utc=read["created_utc"], git_sha=_git_sha())
+    rv1 = result_v1(read, command=command or f"python -m tools.hv4_read {'v12' if v12_only else 'book'} --bot {bot_id}", created_utc=read["created_utc"], git_sha=_git_sha())
     con = console_rows(read, read["created_utc"])
     del read["_deciding_cells"]
-    read["arena_record"] = record_gate_read(reads_dir, main)  # the ONE store; everything above is computed first, so a refusal leaves nothing behind
-    _write_once(od / "reads" / f"{bot_id}.hv4.json", {k: v for k, v in read.items() if k != "arena_score_read"})  # a comparison output, not the record
-    _write_once(od / "reads" / f"{bot_id}.result.json", rv1, pretty=True)
-    _write_once(od / "reads" / f"{bot_id}.console.json", con, pretty=True)
+    read["arena_record"] = record_gate_read(reads_dir, main, create=not v12_only)  # the ONE store of gate reads; everything above is computed first, so a refusal leaves nothing behind
+    if decide:
+        read["v12"]["record"] = record_v12(reads_dir, {"schema": V12_SCHEMA, "bot_id": bot_id, "book_instant_ms": b, "v12_instant_ms": bv, "settle_ms": settle_ms, "decided_at_ms": now,
+                                                       "gate_status": status_of(main), "gate_read_sha256": read["arena_record"]["sha256"], "v1": v1, "v2": v2, "v1_and_v2": v12,
+                                                       "adds_value": adds, "inputs": read["inputs"]})
+    _write_once(od / "reads" / f"{name}.hv4.json", {k: v for k, v in read.items() if k != "arena_score_read"})  # a comparison output, not the record
+    _write_once(od / "reads" / f"{name}.result.json", rv1, pretty=True)
+    _write_once(od / "reads" / f"{name}.console.json", con, pretty=True)
     return read
 
 
@@ -887,7 +963,7 @@ def render_table(t: Mapping[str, Any]) -> str:
 # ------------------------------------------------------------------------------------------------------------------------------ CLI
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("what", choices=("book", "learning", "table"))
+    ap.add_argument("what", choices=("book", "v12", "learning", "table"))
     ap.add_argument("--bot")
     ap.add_argument("--ledger-root", default=LEDGER_ROOT)
     ap.add_argument("--registry", default=REGISTRY_PATH)
@@ -896,6 +972,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--extra-registry", action="append", default=[], metavar="PATH@SHA256",
                     help="another arena registry (the H5 books' bots.json from mal-fast-0), for the multiplicity count; repeatable; the sha256 is verified")
     ap.add_argument("--null-dir", help="directory with <persona>-R/seed-0001.jsonl .. seed-0200.jsonl (the 200-seed R null replays)")
+    ap.add_argument("--no-null", action="store_true", help="record V1 as NOT_DECIDABLE on purpose (no R null); otherwise --null-dir is required when V1/V2 are decided")
     ap.add_argument("--now-ms", type=int, help="TEST ONLY (needs MAL_ARENA_TEST=1)")
     ap.add_argument("--settle-hours", type=float, default=AS.SETTLE_MS / 3_600_000)
     ap.add_argument("--json", help="table only: write the table here (never overwrites)")
@@ -909,11 +986,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if a.json:
                 _write_once(Path(a.json), t)
             return 0
-        if a.what == "book":
+        if a.what in ("book", "v12"):
             if not a.bot:
-                print("book needs --bot", file=sys.stderr)
+                print(f"{a.what} needs --bot", file=sys.stderr)
                 return 2
-            r = read_book(a.bot, ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd, extra_registries=a.extra_registry)
+            r = read_book(a.bot, no_null=a.no_null, v12_only=(a.what == "v12"), ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd, extra_registries=a.extra_registry)
         else:
             r = read_learning(ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd, extra_registries=a.extra_registry)
     except (Refused, AS.Refused) as exc:
