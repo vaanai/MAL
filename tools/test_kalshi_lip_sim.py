@@ -1318,3 +1318,32 @@ def test_the_unmutated_module_passes_every_killer():
 @pytest.mark.parametrize("name", sorted(MUTANTS))
 def test_each_mutation_is_caught_by_a_test(name):
     assert _survivors(MUTANTS[name]), f"mutant survived: {name}"
+
+
+# ===================================================== review round 1 (PR #730): CONDITIONS-2 items, one block each
+def _opened_rec(i, day, fills, x_us=None, e_off=0.0):
+    u = mk_unit(e=1000.0 + e_off, uid=f"w{i}")
+    u.ticker, u.event, u.day, u.day_e, u.gas, u.x_us = f"T-{i}", f"E{i}", day, day, False, x_us
+    core = {"fills": fills, "rew": {"c": 0.0, "lower": 0.0, "upper": 0.0}, "fees_cent": 0.0, "quoted_s": 4000.0,
+            "collateral": 0.0}
+    return {"u": u, "status": "opened", "cores": {c: core for c in sim.CELLS}}
+
+
+def test_b1_a_kill_at_an_earlier_midnight_makes_the_verdict_dead_as_frozen():
+    kw = dict(scan=False, chosen=None, asof_us=None, nd=[], counts_met=True, all_pass=True)
+    assert sim.decide_verdict(dead=False, **kw) == "FORMULA_SCREEN_PASSED"
+    assert sim.decide_verdict(dead=True, **kw) == "DEAD_AS_FROZEN"           # even though every gate later passes
+    assert sim.decide_verdict(dead=True, **dict(kw, nd=["coverage"])) == "DEAD_AS_FROZEN"
+
+
+def test_b1_b_kill_sums_include_worst_case_units_once_48h_past_max_e_x():
+    recs = [_opened_rec(i, f"2026-10-{20 + i % 3}", [("a", "yes", 9999, 25.0, 0)]) for i in range(10)]
+    u0 = recs[0]["u"]
+    worst_at = max(u0.e_us, u0.e_us + sec(86_400)) + 48 * 3600 * US           # X defaults to E + 24 h
+    R = u0.e_us + 30 * 86_400 * US
+    rows, cnt = sim.population_rows(recs, {}, "U0", R)
+    assert cnt == {"worst_case": 10} and all(r["resolved_us"] == worst_at for r in rows)
+    early = sim.kill_checks(rows, 25, [worst_at - 3600 * US])
+    late = sim.kill_checks(rows, 25, [worst_at + 3600 * US])
+    assert early["checks"] == [] and not early["dead_as_frozen"]
+    assert late["checks"][0]["K1"] and late["dead_as_frozen"]                   # -249.97 <= -200

@@ -1450,13 +1450,32 @@ def process_unit(u, cfg, inp, tw, trades_map, results):
     return rec
 
 
+def worst_case_instant(u):
+    """The instant an unresolved unit enters the population at its worst case: 48 h past max(E, X)."""
+    x = u.x_us if u.x_us else u.e_us + DAILY_SLACK_S * US
+    return max(u.e_us, x) + UNRESOLVED_AFTER_S * US
+
+
+def decide_verdict(*, scan, chosen, asof_us, nd, counts_met, all_pass, dead):
+    """The verdict of one run.  A kill (K1/K2) at ANY earlier 00:00Z is DEAD_AS_FROZEN (a FAIL) whatever the
+    later numbers show (CONDITIONS-2 item 2)."""
+    if dead:
+        return "DEAD_AS_FROZEN"
+    if nd:
+        return "NOT_DECIDABLE"
+    if scan:
+        if chosen is not None:
+            return "FORMULA_SCREEN_PASSED" if all_pass else "FAIL"
+        return "NOT_DECIDABLE" if asof_us is not None and asof_us >= iso_to_us(NOT_DECIDABLE_ISO) else "PENDING"
+    return ("FORMULA_SCREEN_PASSED" if all_pass else "FAIL") if counts_met else "COUNTS_NOT_MET"
+
+
 def resolution_at(u, results, R_us):
     """('settled', value, settled_us) | ('worst_case', None, None) | ('young', None, None) at read instant R."""
     res = results.get(u.ticker) if results else None
     if res and res["value"] is not None and (res["settled_us"] is None or res["settled_us"] <= R_us):
         return "settled", res["value"], res["settled_us"]
-    x = u.x_us if u.x_us else u.e_us + DAILY_SLACK_S * US
-    if R_us >= max(u.e_us, x) + UNRESOLVED_AFTER_S * US:
+    if R_us >= worst_case_instant(u):
         return "worst_case", None, None
     return "young", None, None
 
@@ -1499,7 +1518,8 @@ def population_rows(records, results, cell, R_us):
         sc = score_unit_cell(u, core, resn, value)
         row = {"unit_id": u.unit_id, "ticker": u.ticker, "series": u.series, "event": u.event, "day": u.day,
                "day_e": u.day_e, "gas": u.gas, "full": core["quoted_s"] >= FULL_UNIT_S, "resolution": resn,
-               "resolved_us": settled_us, "collateral": core["collateral"], "rew_c": core["rew"]["c"]}
+               "resolved_us": (settled_us if settled_us is not None else u.e_us) if resn == "settled" else worst_case_instant(u),
+               "collateral": core["collateral"], "rew_c": core["rew"]["c"]}
         row.update(sc)
         rows.append(row)
     # day-floor stress: the $1.00 minimum on the sum of central rewards per unit-day
@@ -1880,16 +1900,8 @@ def run_sim(cfg):
     gate["nd_reasons"] = nd
     cm = all(cells[c]["gate"]["counts_met"] for c in CELLS)
     ap = all(cells[c]["gate"]["all_pass"] for c in CELLS)
-    if nd:
-        verdict = "NOT_DECIDABLE"
-    elif cfg.scan:
-        if chosen is not None:
-            verdict = "FORMULA_SCREEN_PASSED" if ap else "FAIL"
-        else:
-            verdict = ("NOT_DECIDABLE" if cfg.asof_us is not None and cfg.asof_us >= iso_to_us(NOT_DECIDABLE_ISO)
-                       else "PENDING")
-    else:
-        verdict = ("FORMULA_SCREEN_PASSED" if ap else "FAIL") if cm else "COUNTS_NOT_MET"
+    verdict = decide_verdict(scan=cfg.scan, chosen=chosen, asof_us=cfg.asof_us, nd=nd, counts_met=cm, all_pass=ap,
+                             dead=bool(gate["kill"].get("dead_as_frozen")))
     gate["verdict"] = verdict if cfg.book == "A" else "REPORT_ONLY_" + verdict
     # ---- files
     if out:
