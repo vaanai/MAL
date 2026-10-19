@@ -910,14 +910,18 @@ def gap_stats(snaps, lo_us, hi_us):
     return med, blind, len(ts)
 
 
-def pick_source(sources, ticker, lo_us, hi_us):
-    """DECLARE 2.1 / CONDITIONS 14: the run with the smaller median ts gap inside the unit window (ties to
-    obrec-1019c); a non-primary run is eligible only without a blind gap.  Returns (source, snaps_all, info)."""
+def choose_source(cands, lo_us, hi_us, force=None):
+    """DECLARE 2.1 / CONDITIONS 14.  ``cands``: [(source, snaps, n_inconsistent)] already loaded for the unit.
+    The run with the smaller median ts gap inside [lo, hi) wins (ties to obrec-1019c); a non-primary run is
+    eligible only with no blind gap (> CAP) in the window, so a 1019d hole falls back to 1019c.
+    Returns (source | None, snaps, info)."""
     best, info = None, []
-    for i, src in enumerate(sources):
-        sn, bad = src.window_snaps(ticker, lo_us, hi_us + HORIZON_S * US)
+    has_primary = any(src.name == PRIMARY_RUN for src, _s, _b in cands)
+    for i, (src, sn, bad) in enumerate(cands):
+        if force and src.name != force:
+            continue
         med, blind, n = gap_stats(sn, lo_us, hi_us)
-        primary = src.name == PRIMARY_RUN or (not any(s.name == PRIMARY_RUN for s in sources) and i == 0)
+        primary = src.name == PRIMARY_RUN or (not has_primary and i == 0)
         eligible = n > 0 and (primary or not blind)
         info.append({"run": src.name, "median_gap_s": None if med == float("inf") else med / US,
                      "blind": blind, "n": n, "eligible": eligible, "inconsistent": bad})
@@ -1235,3 +1239,364 @@ def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
                                     bp_of(t["no_price"][i].as_py()), t["count"][i].as_py(),
                                     t["taker_side"][i].as_py(), t["is_block_trade"][i].as_py()))
     return {k: TradeList(v) for k, v in rows.items()}, skipped, lines
+
+
+# ================================================================================= the pipeline
+class Cfg:
+    """Run configuration (the CLI fills it; tests build it directly)."""
+    def __init__(self, **kw):
+        self.books, self.programs, self.meta, self.trades, self.markets, self.series = [], None, None, None, None, None
+        self.out = None
+        self.size, self.imax = 25.0, None
+        self.freeze_us = FREEZE_US
+        self.read_us = None       # R: the read instant (data written/fetched after it is not read)
+        self.asof_us = None       # --scan: the latest candidate read instant allowed
+        self.scan = False
+        self.dry_run = False
+        self.strict_runs = False
+        self.force_source = None
+        self.mem_cap_mb = 0
+        self.debug_snaps = False
+        self.units_evidence = None
+        self.declare = self.conditions = None
+        self.book = None
+        self.stress = True
+        self.__dict__.update(kw)
+        if self.imax is None:
+            self.imax = 2 * self.size
+        if self.book is None:
+            self.book = {25.0: "A", 100.0: "B"}.get(float(self.size), "X")
+
+    @property
+    def data_us(self):
+        return self.read_us if self.read_us is not None else self.asof_us
+
+
+def load_inputs(cfg):
+    inp = {"sources": [], "hashes": {}, "unsealed": {}}
+    for b in cfg.books:
+        src = BookSource(b, cfg.freeze_us, cfg.strict_runs)
+        probs = check_registry(b, src.entries)
+        if probs:
+            raise InputError(f"recorder registry check failed for {b}: {probs}")
+        inp["sources"].append(src)
+        inp["hashes"][f"books:{src.name}"] = kp.chain_head(b)
+        inp["unsealed"][src.name] = len(src.unsealed)
+    inp["programs"] = read_programs(cfg.programs, cfg.strict_runs)
+    inp["hashes"]["programs"] = inp["programs"].chain
+    inp["meta"] = MetaIndex(cfg.meta, cfg.data_us) if cfg.meta else MetaIndex()
+    inp["hashes"]["meta"] = hashlib.sha256(json.dumps(inp["meta"].files).encode()).hexdigest() if cfg.meta else None
+    inp["series_tab"], lines = ({}, []) if not cfg.series else read_series_table(cfg.series, cfg.data_us)
+    inp["hashes"]["series"] = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    return inp
+
+
+def classify_programs(inp, cfg):
+    """DECLARE 3.1-3.3: units + the early exclusions (decided from program rows only)."""
+    ps, tab = inp["programs"], inp["series_tab"]
+    units, excl = [], []
+    for pid in sorted(ps.by_id):
+        rec = ps.by_id[pid]
+        tk = rec["ticker"] or ""
+        if tk.upper().startswith("KXMVE"):
+            raise InputError(f"combo market {tk} among the programs: the universe excludes mve_*")
+        series = kp.series_of(tk)
+        meta = tab.get(series, {})
+        u = Unit(unit_id=pid, ticker=tk, series=series, s0_us=rec["s0"], e_us=rec["e"],
+                 first_poll_us=rec["first_poll"], drift=rec["drift"], freq=meta.get("frequency"),
+                 fee_type=meta.get("fee_type"), fee_mult=meta.get("fee_multiplier"),
+                 gas=series in GAS_SERIES, event=None, x_us=None, source=None)
+        status = None
+        ok_params = all(pr is not None and pr > 0 and tg is not None and tg > 0 and d is not None and d >= 0
+                        for pr, tg, d in rec["psets"])
+        if rec["type"] != "liquidity":
+            status = "excl_type"
+        elif rec["s0"] is None or rec["e"] is None or rec["e"] <= rec["s0"] or not ok_params:
+            status = "excl_program_fields"
+        elif (rec["e"] - rec["s0"]) / US > MAX_PERIOD_S:
+            status = "excl_long_period"
+        elif rec["first_poll"] < cfg.freeze_us:
+            status = "excl_pre_freeze"
+        elif (rec["first_poll"] - rec["s0"]) / US > FIRST_POLL_MAX_LAG_S:
+            status = "excl_late_poll"
+        if status:
+            u.status = status
+            excl.append(u)
+            continue
+        u.psets = [(pr / 10_000.0, tg, d / 10_000.0) for pr, tg, d in rec["psets"]]
+        u.quote_start_us = max(rec["s0"], rec["first_poll"])
+        u.rew_end_us = program_reward_end(rec, ps.polls)
+        u.e_eff_us = u.e_us
+        units.append(u)
+    units.sort(key=lambda u: (u.series, u.quote_start_us, u.unit_id))
+    return units, excl
+
+
+def structural_scan(u, snaps, S, imax):
+    """Book-structure-only counts for a unit (no fill, no reward): snapshots in the window, those passing
+    Q1-Q4 at zero inventory, and blind gaps."""
+    win = [s for s in snaps if u.quote_start_us <= s.ts < u.e_eff_us]
+    q = sum(1 for s in win if decide_quote(u, s, 0.0, 0.0, S, imax)[0] is not None)
+    gaps = [b.ts - a.ts for a, b in zip(win, win[1:])]
+    blind = [g for g in gaps if g > CAP_US]
+    return {"snaps_window": len(win), "quotable": q, "blind_gaps": len(blind),
+            "blind_s": sum(g - CAP_US for g in blind) / US, "gaps": gaps}
+
+
+def markouts_for(fills, snaps, snap_ts, trades, close_us, settle_value):
+    """DECLARE 7: for each fill and H in (5 min, 60 min): the YES mid of the first two-sided snapshot with ts
+    in [t+H, t+H+450 s]; else the median print price in [t+H, t+H+600 s]; else the settlement value if the
+    market closed first (flagged); else none.  Returns [(m5, src5, m60, src60)] in dollars."""
+    out = []
+    for (_tid, side, pbp, _qty, t) in fills:
+        row = []
+        for H in MARKOUT_H_S:
+            lo = t + H * US
+            mark, src = None, "none"
+            i = bisect.bisect_left(snap_ts, lo)
+            while i < len(snaps) and snaps[i].ts <= lo + CAP_US:
+                s = snaps[i]
+                if s.yes and s.no:
+                    mark, src = (s.yes[0][0] + BP - s.no[0][0]) / 2.0 / BP, "snap"
+                    break
+                i += 1
+            if mark is None:
+                a, b = trades.span(lo - 1, lo + 600 * US)
+                px = [trades.yes_bp[j] for j in range(a, b) if not trades.block[j] and trades.yes_bp[j] is not None]
+                if px:
+                    mark, src = float(np.median(px)) / BP, "trade"
+            if mark is None and close_us is not None and close_us <= lo + CAP_US and settle_value is not None:
+                mark, src = settle_value, "settle"
+            if mark is None:
+                row += [None, src]
+            else:
+                p = pbp / BP
+                row += [(mark - p) if side == "yes" else ((1.0 - mark) - p), src]
+        out.append(tuple(row))
+    return out
+
+
+def process_unit(u, cfg, inp, tw, trades_map, results):
+    """Everything for ONE unit; returns a record dict (never raises on missing data: it is excluded and
+    counted).  Order of exclusion: no book -> no metadata / not daily -> no trades -> never quoted."""
+    S, imax = cfg.size, cfg.imax
+    rec = {"u": u, "status": None, "cores": {}, "snap_info": None}
+    cands = []
+    for src in inp["sources"]:
+        if cfg.force_source and src.name != cfg.force_source:
+            continue
+        sn, bad = src.window_snaps(u.ticker, u.quote_start_us, u.e_us + HORIZON_S * US)
+        cands.append((src, sn, bad))
+    firsts = [sn[0].ts for _s, sn, _b in cands if sn]
+    if not firsts:
+        u.status = rec["status"] = "excl_no_book"
+        return rec
+    first_ts = min(firsts)
+    meta = inp["meta"].usable(u.ticker, first_ts)
+    if meta is not None and kp.is_mve({"ticker": u.ticker}):
+        raise InputError(f"{u.ticker}: combo market")
+    daily = u.freq == "daily"
+    u.meta = meta
+    u.close_us = None if meta is None else meta["close"]
+    u.x_us = None if meta is None else meta["x"]
+    reason = None
+    if not daily:
+        if meta is None or meta["x"] is None:
+            reason = "excl_no_meta"
+        elif meta["x"] > u.e_us + DAILY_SLACK_S * US:
+            reason = "excl_not_daily"
+    u.e_eff_us = min(u.e_us, u.close_us) if u.close_us else u.e_us
+    u.day_e = us_to_date(u.e_us)
+    u.day = u.day_e if daily else us_to_date(min(u.e_us, u.close_us) if u.close_us else u.e_us)
+    res = results.get(u.ticker) if results else None
+    u.event = (res or {}).get("event") or (u.ticker.rsplit("-", 1)[0] if "-" in u.ticker else u.ticker)
+    src, snaps, info = choose_source(cands, u.quote_start_us, u.e_eff_us, cfg.force_source)
+    rec["snap_info"] = info
+    if reason is None and tw is not None and not covers(tw.get(u.ticker), u.quote_start_us, u.e_eff_us):
+        reason = "excl_no_trades"
+    if src is None:
+        u.status = rec["status"] = reason or "not_opened"
+        rec["structural"] = None
+        return rec
+    u.source = src.name
+    if reason is not None:
+        u.status = rec["status"] = reason
+        rec["structural"] = structural_scan(u, snaps, S, imax) if reason in ("excl_no_meta", "excl_no_trades") else None
+        return rec
+    st = structural_scan(u, snaps, S, imax)
+    rec["structural"] = st
+    if cfg.dry_run:
+        u.status = rec["status"] = "opened" if st["quotable"] > 0 else "not_opened"
+        return rec
+    tl = trades_map.get(u.ticker) or TradeList()
+    snap_ts = [s.ts for s in snaps]
+    settle_v = None if not res else res["value"]
+    for cell in CELLS:
+        run = run_unit(u, snaps, tl, cell, S, imax, stress=cfg.stress, keep_decisions=cfg.debug_snaps)
+        rew = finalize_rewards(run, u)
+        fc, fm_, assumed = unit_fees(run.fills, u.fee_type, u.fee_mult)
+        mk = markouts_for(run.fills, snaps, snap_ts, tl, u.close_us, settle_v)
+        rec["cores"][cell] = {
+            "fills": run.fills, "rew": rew, "fees_cent": fc, "fees_micro": fm_, "fee_assumed": assumed,
+            "quoted_s": run.quoted_us / US, "n_quoted": run.n_snaps_quoted, "n_window": run.n_snaps_window,
+            "dropped": run.dropped, "collateral": collateral(run.fills),
+            "fills_yes": sum(f[3] for f in run.fills if f[1] == "yes"),
+            "fills_no": sum(f[3] for f in run.fills if f[1] == "no"),
+            "blind_gaps": run.blind_gaps, "blind_s": run.blind_us / US, "markouts": mk,
+            "decisions": run.decisions, "w_quoted_us": run.w_quoted_us if cell == "U0" else None,
+            "reasons": run.reasons}
+    opened = rec["cores"]["U0"]["n_quoted"] >= 1
+    u.status = rec["status"] = "opened" if opened else "not_opened"
+    return rec
+
+
+def resolution_at(u, results, R_us):
+    """('settled', value, settled_us) | ('worst_case', None, None) | ('young', None, None) at read instant R."""
+    res = results.get(u.ticker) if results else None
+    if res and res["value"] is not None and (res["settled_us"] is None or res["settled_us"] <= R_us):
+        return "settled", res["value"], res["settled_us"]
+    x = u.x_us if u.x_us else u.e_us + DAILY_SLACK_S * US
+    if R_us >= max(u.e_us, x) + UNRESOLVED_AFTER_S * US:
+        return "worst_case", None, None
+    return "young", None, None
+
+
+def score_unit_cell(u, core, resolution, value):
+    """Net of one unit in one cell and all its variants (settlement P&L by the resolution)."""
+    fills = core["fills"]
+    rew, fees = core["rew"], core["fees_cent"]
+    if resolution == "settled":
+        settle = settle_pnl(fills, value)
+    else:
+        settle = settle_worst_case(fills)
+    structural = settle_worst_structural(fills)
+    R = apply_min_payout(rew["c"])
+    out = {"settle": settle, "reward_after_floor": R,
+           "net": R - fees + settle,
+           "net_lower": apply_min_payout(rew["lower"]) - fees + settle,
+           "net_upper": apply_min_payout(rew["upper"]) - fees + settle,
+           "net_nofloor": rew["c"] - fees + settle,
+           "worst_u": R - fees + (min(structural, settle) if resolution != "settled" else structural)}
+    for v in ("r2", "r4", "unc", "xw"):
+        if v in rew:
+            out["net_" + v] = apply_min_payout(rew[v]) - fees + settle
+    return {k: round(x, 6) for k, x in out.items()}
+
+
+def population_rows(records, results, cell, R_us):
+    """Rows of the §8 population for one cell at read instant R: opened units that are settled or (48 h past
+    max(E, X)) unresolved at worst case.  Younger units stay out.  Also returns the counts."""
+    rows, cnt = [], defaultdict(int)
+    for rec in records:
+        u = rec["u"]
+        if rec["status"] != "opened":
+            continue
+        resn, value, settled_us = resolution_at(u, results, R_us)
+        cnt[resn] += 1
+        if resn == "young":
+            continue
+        core = rec["cores"][cell]
+        sc = score_unit_cell(u, core, resn, value)
+        row = {"unit_id": u.unit_id, "ticker": u.ticker, "series": u.series, "event": u.event, "day": u.day,
+               "day_e": u.day_e, "gas": u.gas, "full": core["quoted_s"] >= FULL_UNIT_S, "resolution": resn,
+               "resolved_us": settled_us, "collateral": core["collateral"], "rew_c": core["rew"]["c"]}
+        row.update(sc)
+        rows.append(row)
+    # day-floor stress: the $1.00 minimum on the sum of central rewards per unit-day
+    dsum = defaultdict(float)
+    for r in rows:
+        dsum[r["day"]] += r["rew_c"]
+    for r in rows:
+        keep = dsum[r["day"]] >= MIN_PAYOUT - 1e-9
+        r["net_dayfloor"] = round(r["net_nofloor"] - (0.0 if keep else r["rew_c"]), 6)
+    return rows, dict(cnt)
+
+
+def summarize_variant(rows, key):
+    n = len(rows)
+    if not n:
+        return {"n": 0}
+    nets = sorted((r[key] for r in rows), reverse=True)
+    tot = float(sum(nets))
+    b = cluster_bootstrap(*_cluster_arrays([dict(r, net=r[key]) for r in rows], key_event))
+    return {"n": n, "total": round(tot, 6), "mean": round(tot / n, 6), "p05": b["p05"],
+            "total_ex_top3": round(tot - sum(nets[:3]), 6)}
+
+
+def capacity(rows):
+    if not rows:
+        return {}
+    days = sorted({r["day"] for r in rows})
+    coll = defaultdict(float)
+    for r in rows:
+        coll[r["day"]] += r["collateral"]
+    tot = sum(r["net"] for r in rows)
+    return {"unit_days": len(days), "units_per_day": round(len(rows) / len(days), 3),
+            "mean_net_per_unit": round(tot / len(rows), 6), "dollars_per_day": round(tot / len(days), 6),
+            "collateral_mean_per_day": round(float(np.mean(list(coll.values()))), 4),
+            "collateral_max_per_day": round(max(coll.values()), 4)}
+
+
+def markout_summary(records, cell):
+    out = {}
+    acc = defaultdict(lambda: [0, 0.0, 0.0, 0.0])      # (series,H,source) -> n, sum, wsum, qty
+    for rec in records:
+        if rec["status"] != "opened":
+            continue
+        core = rec["cores"][cell]
+        for f, mk in zip(core["fills"], core["markouts"]):
+            for h, (m, s) in zip(("5m", "60m"), ((mk[0], mk[1]), (mk[2], mk[3]))):
+                if m is None:
+                    continue
+                a = acc[(rec["u"].series, h, s)]
+                a[0] += 1
+                a[1] += m
+                a[2] += m * f[3]
+                a[3] += f[3]
+    for (series, h, s), a in sorted(acc.items()):
+        out[f"{series}|{h}|{s}"] = {"fills": a[0], "mean_per_fill_cents": round(100 * a[1] / a[0], 4),
+                                    "size_weighted_cents": round(100 * a[2] / a[3], 4) if a[3] else None}
+    return out
+
+
+def coverage(inp, cfg, R_us):
+    """DECLARE 10 / CONDITIONS 14.  Day coverage of obrec-1019c rounds (baseline 222.7 s) and lipsnap polls
+    (baseline 900 s) inside [freeze, R); 1019d never triggers the rule."""
+    out = {"baselines_s": BASELINE_GAP_S, "days": {}, "not_decidable": False}
+    lo, hi = cfg.freeze_us, R_us
+    rounds = []
+    for src in inp["sources"]:
+        if src.name != PRIMARY_RUN:
+            continue
+        t = read_sealed(src.root, src.entries, "orderbook_rounds", ("ts", "n_open", "n_snaps_ok"))
+        for ts, no, ok in zip(ts_col_us(t["ts"]).tolist(), t["n_open"].to_pylist(), t["n_snaps_ok"].to_pylist()):
+            if lo <= ts < hi:
+                rounds.append((ts, (ok or 0) / max(no or 0, 1)))
+    polls = [p for p in inp["programs"].polls if lo <= p < hi]
+    d = datetime.fromtimestamp(lo / US, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    prev_bad, bad_pair = False, False
+    while int(d.timestamp() * US) < hi:
+        a = max(int(d.timestamp() * US), lo)
+        b = min(int((d + timedelta(days=1)).timestamp() * US), hi)
+        span_s = (b - a) / US
+        key = d.strftime("%Y-%m-%d")
+        er = sum(w for ts, w in rounds if a <= ts < b) / max(span_s / BASELINE_GAP_S["obrec-1019c"], 1e-9)
+        ep = sum(1 for p in polls if a <= p < b) / max(span_s / BASELINE_GAP_S["lipsnap"], 1e-9)
+        bad = (er < COVERAGE_MIN) or (ep < COVERAGE_MIN)
+        out["days"][key] = {"recorder": round(er, 4), "polls": round(ep, 4), "below_70pct": bool(bad)}
+        bad_pair = bad_pair or (bad and prev_bad)
+        prev_bad = bad
+        d += timedelta(days=1)
+    out["not_decidable"] = bool(bad_pair)
+    return out
+
+
+def exclusion_share(records, early_excl):
+    """CONDITIONS 17: excl_no_trades + excl_no_meta units with a structurally quotable book over the units
+    that would otherwise be opened."""
+    opened = sum(1 for r in records if r["status"] == "opened")
+    ex = sum(1 for r in records if r["status"] in ("excl_no_trades", "excl_no_meta")
+             and r.get("structural") and r["structural"]["quotable"] > 0)
+    den = opened + ex
+    return {"opened_or_would": den, "excluded_would_open": ex, "share": (ex / den) if den else 0.0,
+            "not_decidable": bool(den and ex / den > EXCL_SHARE_LIMIT)}
