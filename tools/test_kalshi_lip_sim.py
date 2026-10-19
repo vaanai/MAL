@@ -909,3 +909,193 @@ def test_source_choice_smaller_median_gap_ties_to_1019c_and_holes_fall_back(tmp_
     assert src.name == "obrec-1019c"                                       # equal medians: ties go to obrec-1019c
     src, _s, _i = pick(two_run_world(tmp_path / "d"), force="obrec-1019c")
     assert src.name == "obrec-1019c"                                       # the 1019c-for-gas sensitivity
+
+
+# ================================================================================ programs (conditions 9, 10)
+def read_cls(w, **kw):
+    cfg = w.cfg(**kw)
+    inp = {"programs": sim.read_programs(w.lip), "series_tab": {"KXAAAGASDNY": {"frequency": "daily", "fee_type": "quadratic",
+                                                                                 "fee_multiplier": 1.0}}}
+    units, early = sim.classify_programs(inp, cfg)
+    return inp, {u.unit_id: u for u in units}, {u.unit_id: u for u in early}
+
+
+def test_pre_freeze_polls_are_read_for_program_ids_only(tmp_path):
+    w = World(tmp_path)
+    pa_, pb_ = prog("pA", GAS_A, S0, E_), prog("pB", GAS_B, S0, E_)
+    w.add_polls([("2026-10-19T03:23:52Z", True, [pa_]),                 # the pre-freeze poll lists pA only
+                 ("2026-10-19T12:05:00Z", True, [pa_, pb_]), ("2026-10-19T12:20:00Z", True, [pa_, pb_])])
+    _inp, units, early = read_cls(w)
+    assert "pA" in early and early["pA"].status == "excl_pre_freeze" and "pB" in units
+    assert units["pB"].first_poll_us == at("2026-10-19T12:05:00Z")
+    assert units["pB"].quote_start_us == at(S0) + 5 * 60 * US
+
+
+def test_incomplete_polls_are_gaps_not_listings(tmp_path):
+    w = World(tmp_path)
+    p = prog("pC", GAS_A, S0, E_)
+    w.add_polls([("2026-10-19T12:05:00Z", False, [p]), ("2026-10-19T12:20:00Z", True, [p])])
+    ps = sim.read_programs(w.lip)
+    assert ps.by_id["pC"]["first_poll"] == at("2026-10-19T12:20:00Z") and ps.polls == [at("2026-10-19T12:20:00Z")]
+
+
+def test_program_parameter_change_takes_the_minimum_reward(tmp_path):
+    w = World(tmp_path)
+    p1, p2 = prog("pA", GAS_A, S0, E_), prog("pA", GAS_A, S0, E_, reward=500_000)
+    w.add_polls([("2026-10-19T12:05:00Z", True, [p1]), ("2026-10-19T12:20:00Z", True, [p2])])
+    _inp, units, _e = read_cls(w)
+    u = units["pA"]
+    assert u.drift is True and u.psets == [(100.0, 1000.0, 0.5), (50.0, 1000.0, 0.5)]
+    u.quote_start_us, u.e_eff_us = at("2026-10-19T12:05:00Z"), at(E_)
+    snaps = ticks("2026-10-19T12:05:30Z", "2026-10-19T13:55:00Z", 100)
+    r = sim.run_unit(u, snaps, sim.TradeList(), "U0", 25, 50)
+    both = sim.finalize_rewards(r, u)["c"]
+    u.psets = [(100.0, 1000.0, 0.5)]
+    one = sim.finalize_rewards(sim.run_unit(u, snaps, sim.TradeList(), "U0", 25, 50), u)["c"]
+    assert both == pytest.approx(one / 2, abs=0.011) and both < one                 # the minimum over the sets seen
+
+
+def test_program_that_drops_out_stops_rewarding_at_the_last_listing_plus_900s(tmp_path):
+    w = World(tmp_path)
+    p = prog("pA", GAS_A, S0, E_)
+    w.add_polls([("2026-10-19T12:05:00Z", True, [p]), ("2026-10-19T12:20:00Z", True, [p]),
+                 ("2026-10-19T12:35:00Z", True, [p]), ("2026-10-19T12:50:00Z", True, []), ("2026-10-19T13:05:00Z", True, [])])
+    ps = sim.read_programs(w.lip)
+    assert sim.program_reward_end(ps.by_id["pA"], ps.polls) == at("2026-10-19T12:35:00Z") + 900 * US
+    w2 = World(tmp_path / "w2")
+    w2.add_polls([("2026-10-19T12:05:00Z", True, [p]), ("2026-10-19T13:50:00Z", True, [p]), ("2026-10-19T14:05:00Z", True, [])])
+    ps2 = sim.read_programs(w2.lip)
+    assert sim.program_reward_end(ps2.by_id["pA"], ps2.polls) is None            # polls at/after E do not count
+    # the pass: weight stops at rew_end, quoting (and fills) continue
+    u = mk_unit(e=1000.0)
+    s0 = bsnap(0, **GOOD)
+    full = run(u, [s0]).acc[0]["c"]
+    u.rew_end_us = u.quote_start_us + sec(102)
+    cut = run(u, [s0]).acc[0]["c"]
+    assert cut == pytest.approx(full * 100 / 450)                  # (2, 102] of the (2, 452] interval
+
+
+# =================================================================================== metadata (condition 8)
+def test_metadata_earliest_capture_before_quoting_never_substituted(tmp_path):
+    d = tmp_path / "meta"
+    d.mkdir()
+    (d / "m-20261019T100000Z.json").write_text(json.dumps({"markets": [
+        {"ticker": GAS_A, "event_ticker": "EV", "close_time": "2026-10-19T14:00:00Z", "expected_expiration_time": "2026-10-19T14:30:00Z"}]}))
+    (d / "m-20261019T110000Z.json").write_text(json.dumps({"fetched_at": "2026-10-19T11:00:00Z", "response": {"markets": [
+        {"ticker": GAS_A, "event_ticker": "EV", "close_time": "2026-10-19T13:00:00Z", "expected_expiration_time": "2026-10-19T13:30:00Z"},
+        {"ticker": GAS_B, "event_ticker": "EV2", "close_time": "2026-10-19T13:00:00Z"}]}}))
+    m = sim.MetaIndex(d)
+    first_quote = at("2026-10-19T12:05:30Z")
+    assert m.usable(GAS_A, first_quote)["close"] == at("2026-10-19T14:00:00Z")       # the earliest, not the later 13:00
+    assert m.usable(GAS_A, at("2026-10-19T09:00:00Z")) is None                       # nothing before quoting: unknown
+    assert m.usable(GAS_B, at("2026-10-19T10:30:00Z")) is None                       # first capture (11:00) is after
+    assert m.usable(GAS_B, first_quote)["close"] == at("2026-10-19T13:00:00Z")
+    assert len(m.files) == 2 and all(len(h) == 64 for _n, h in m.files)
+    (d / "no-stamp.json").write_text(json.dumps({"markets": []}))
+    with pytest.raises(sim.InputError, match="no fetched_at"):
+        sim.MetaIndex(d)
+    (d / "no-stamp.json").write_text(json.dumps({"fetched_at": "2026-10-19T09:00:00Z", "markets": [{"ticker": "KXMVE-1"}]}))
+    assert sim.MetaIndex(d).mve == 1
+
+
+def test_e_eff_comes_from_the_capture_and_never_from_the_settled_close_time(tmp_path, covered):
+    w = basic_world(tmp_path)                                  # capture says GAS_A closes 14:00 == E ; GAS_B has no capture
+    w.add_markets([(GAS_A, "KXAAAGASDNY-26OCT19", "yes", 1.0, "2026-10-19T15:00:00Z", "2026-10-20T04:41:00Z")])
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o")))
+    u = {r["unit_id"]: r for r in pq.read_table(tmp_path / "o" / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert u["pA"]["E_eff"] == "2026-10-19T14:00:00Z" and u["pB"]["E_eff"] == "2026-10-19T14:00:00Z"
+    w2 = basic_world(tmp_path / "early", meta=False)
+    w2.add_meta("20261019T100000Z", [{"ticker": GAS_A, "event_ticker": "X", "close_time": "2026-10-19T13:00:00Z"}])
+    sim.run_sim(w2.cfg(out=str(tmp_path / "o2")))
+    u2 = {r["unit_id"]: r for r in pq.read_table(tmp_path / "o2" / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert u2["pA"]["E_eff"] == "2026-10-19T13:00:00Z" and u2["pA"]["unit_day"] == "2026-10-19"
+    late = World(tmp_path / "late")
+    late.add_meta("20261019T123000Z", [{"ticker": "KXEOWEEK-X", "event_ticker": "X", "expected_expiration_time": "2026-10-19T14:30:00Z"}])
+    assert sim.MetaIndex(late.meta).usable("KXEOWEEK-X", at("2026-10-19T12:05:30Z")) is None    # captured after the first quote
+
+
+# ================================================================================= coverage and exclusions
+def _stamp(us):
+    return sim.us_to_iso(us)
+
+
+def coverage_world(tmp, rounds_day2=1.0, bad_days=()):
+    """Two full UTC days 2026-10-19 and -20 recorded every 222.7 s (1019c) and polled every 900 s."""
+    w = World(tmp)
+    t0, t1 = at("2026-10-19T00:00:00Z"), at("2026-10-21T00:00:00Z")
+    snaps, t = [], t0
+    while t < t1:
+        day = _stamp(t)[:10]
+        keep = 0.4 if day in bad_days else 1.0
+        if (len(snaps) * 7919) % 100 < keep * 100:
+            snaps.append(make_snap(t / US, **GOOD))
+        t += int(222.7 * US)
+    w.add_run("obrec-1019c", {GAS_A: snaps}, ["KXAAAGASDNY"])
+    polls, t = [], t0
+    while t < t1:
+        polls.append((_stamp(t), True, []))
+        t += 900 * US
+    w.add_polls(polls)
+    return w
+
+
+def test_coverage_uses_the_fixed_baselines_and_two_bad_days_make_the_read_not_decidable(tmp_path):
+    kw = dict(freeze_us=at("2026-10-19T00:00:00Z"), series=None)
+    for name, bad, want in (("ok", (), False), ("one", ("2026-10-20",), False), ("two", ("2026-10-19", "2026-10-20"), True)):
+        w = coverage_world(tmp_path / name, bad_days=bad)
+        cfg = w.cfg(**kw)
+        cov = sim.coverage(sim.load_inputs(cfg), cfg, at("2026-10-21T00:00:00Z"))
+        assert cov["not_decidable"] is want, (name, cov)
+        assert cov["baselines_s"] == {"obrec-1019c": 222.7, "lipsnap": 900.0}
+        if name == "ok":
+            assert all(not d["below_70pct"] for d in cov["days"].values()) and set(cov["days"]) == {"2026-10-19", "2026-10-20"}
+
+
+def test_gaps_in_1019d_never_trigger_the_coverage_rule(tmp_path):
+    w = coverage_world(tmp_path)
+    sparse = [make_snap(at("2026-10-19T00:00:00Z") / US + 3600 * i, **GOOD) for i in range(40)]      # a very patchy 1019d
+    w.add_run("obrec-1019d", {GAS_A: sparse}, ["KXAAAGASDNY"])
+    cfg = w.cfg(freeze_us=at("2026-10-19T00:00:00Z"), series=None)
+    assert sim.coverage(sim.load_inputs(cfg), cfg, at("2026-10-21T00:00:00Z"))["not_decidable"] is False
+
+
+def test_excluded_share_over_ten_percent_is_not_decidable():
+    def rec(status, quot=0):
+        return {"status": status, "structural": {"quotable": quot}}
+    ok = [rec("opened")] * 20 + [rec("excl_no_trades", 5)] * 2 + [rec("excl_no_meta", 0)] * 5
+    assert sim.exclusion_share(ok, [])["not_decidable"] is False and sim.exclusion_share(ok, [])["excluded_would_open"] == 2
+    bad = [rec("opened")] * 20 + [rec("excl_no_trades", 5)] * 2 + [rec("excl_no_meta", 1)]
+    s = sim.exclusion_share(bad, [])
+    assert s["not_decidable"] is True and s["share"] == pytest.approx(3 / 23)
+    assert sim.exclusion_share([], [])["not_decidable"] is False
+
+
+# ====================================================================================== markouts, CLI
+def test_markouts_snapshot_then_trades_then_settlement_then_none():
+    f = [("a", "yes", 4800, 25.0, T0 + sec(100)), ("b", "no", 5000, 10.0, T0 + sec(100))]
+    one_sided = make_snap(T0 / US + 400, yes=[(0.50, 100)], no=[])
+    two_sided = make_snap(T0 / US + 450, yes=[(0.60, 100)], no=[(0.30, 100)])               # mid = (0.60 + 1 - 0.30)/2 = 0.65
+    snaps = [one_sided, two_sided]
+    mk = sim.markouts_for(f, snaps, [s.ts for s in snaps], sim.TradeList(), None, None)
+    assert mk[0][1] == "snap" and mk[0][0] == pytest.approx(0.65 - 0.48)
+    assert mk[1][0] == pytest.approx((1 - 0.65) - 0.50)
+    assert mk[0][3] == "none"                                                                # no 60 min info
+    tl = sim.TradeList([make_trade(T0 / US + 100 + 3600 + 10, f"t{i}", p, 1, "yes") for i, p in enumerate((0.40, 0.50, 0.90))])
+    mk = sim.markouts_for(f, [], [], tl, None, None)
+    assert mk[0][2] == pytest.approx(0.50 - 0.48) and mk[0][3] == "trade" and mk[0][1] == "none"   # median print price
+    mk = sim.markouts_for(f, [], [], sim.TradeList(), T0 + sec(200), 1.0)
+    assert mk[0][1] == "settle" and mk[0][0] == pytest.approx(1.0 - 0.48)                    # closed first: settlement, flagged
+
+
+def test_cli_refuses_wrong_freeze_missing_pins_and_runs_a_dry_run(tmp_path, capsys, covered):
+    assert sim.main(["--freeze", "2026-10-19T00:00:00Z", "--dry-run", "--books", "x", "--programs", "y"]) == 2
+    assert sim.main(["--freeze", sim.FREEZE_ISO, "--books", "x", "--programs", "y", "--out", str(tmp_path)]) == 2
+    bogus = tmp_path / "bogus.md"
+    bogus.write_text("not the declare")
+    assert sim.main(["--freeze", sim.FREEZE_ISO, "--books", "x", "--programs", "y", "--declare", str(bogus),
+                     "--conditions", str(bogus), "--out", str(tmp_path)]) == 2
+    w = basic_world(tmp_path / "w")
+    rc = sim.main(["--freeze", sim.FREEZE_ISO, "--dry-run", "--books", *w.books, "--programs", w.lip, "--meta", w.meta,
+                   "--trades", str(w.kal), "--series", str(w.kal)])
+    out = capsys.readouterr().out
+    assert rc == 0 and json.loads(out)["mode"] == "dry_run"
