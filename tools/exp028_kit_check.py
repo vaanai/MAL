@@ -122,7 +122,8 @@ def git_file_sha256(repo: Path, sha: str, path: str) -> str | None:
 
 @contextlib.contextmanager
 def worktree(repo: Path, sha: str, workdir: str | None = None) -> Iterator[Path]:
-    """A detached temp worktree at `sha`, removed on exit."""
+    """A detached temp worktree at `sha`, removed on exit. Only this tool's own path is removed: the repository is shared with other agents' worktrees, so no repo-wide
+    worktree cleanup command is ever run here (a test asserts it)."""
     parent = Path(tempfile.mkdtemp(prefix="exp028_kit_", dir=workdir))
     wt = parent / "kit"
     try:
@@ -131,7 +132,6 @@ def worktree(repo: Path, sha: str, workdir: str | None = None) -> Iterator[Path]
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         shutil.rmtree(parent, ignore_errors=True)
-        subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the fixed synthetic input set

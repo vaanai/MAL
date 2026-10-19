@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import re
 import subprocess
 import tarfile
@@ -245,7 +246,9 @@ def test_check_cli_489fa7e_passes_a_and_b_and_exits_zero(capsys):
 def test_b_a_perturbed_reference_fails(worker_at_ref, ref_doc, how):
     ref = copy.deepcopy(ref_doc)
     if how in ("value", "value_and_checksum"):
-        ref["outputs"]["screen_p_sub"]["right_skewed_300_7"]["p"] += 1e-12
+        p = ref["outputs"]["screen_p_sub"]["right_skewed_300_7"]["p"]
+        ref["outputs"]["screen_p_sub"]["right_skewed_300_7"]["p"] = math.nextafter(p, math.inf)  # ONE ulp: a tolerance of rel 1e-9 in (B) would let this through
+        assert ref["outputs"]["screen_p_sub"]["right_skewed_300_7"]["p"] != p and abs(ref["outputs"]["screen_p_sub"]["right_skewed_300_7"]["p"] / p - 1) < 1e-15
         if how == "value_and_checksum":
             ref["outputs_sha256"] = K.sha256_hex(K.canon(ref["outputs"]))  # the reference now agrees with itself; only the byte comparison can catch it
     elif how == "numpy_version":
@@ -286,6 +289,30 @@ def test_b_a_kit_that_cannot_run_fails_without_crashing(synth, ref_doc):
 def test_b_a_comment_only_change_is_byte_identical(synth, ref_doc):
     b = K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc)
     assert b["verdict"] == "PASS" and b["numpy_version"] == "2.5.3"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the shared repo
+@needs_ref
+def test_the_tool_never_runs_a_repo_wide_worktree_cleanup_and_touches_only_its_own_worktree(monkeypatch):
+    assert "prune" not in Path(K.__file__).read_text()  # not as a command, not in a comment
+    seen: list[list[str]] = []
+    real = subprocess.run
+
+    def rec(argv, *a, **k):
+        seen.append([str(x) for x in argv])
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", rec)
+    with K.worktree(REPO, REF_SHA) as wt:
+        own = str(wt)
+        assert own in _git(REPO, "worktree", "list", "--porcelain")
+    monkeypatch.undo()
+    cmds = [" ".join(c) for c in seen]
+    assert not any("prune" in c for c in cmds)
+    assert any(c.endswith(f"worktree add --detach {own} {REF_SHA}") for c in cmds) and any(c.endswith(f"worktree remove --force {own}") for c in cmds)
+    removes = [c for c in cmds if " worktree remove" in c]
+    assert removes and all(c.endswith(own) for c in removes)  # the only worktree it removes is its own path
+    assert own not in _git(REPO, "worktree", "list", "--porcelain") and not Path(own).exists()
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ reference command
