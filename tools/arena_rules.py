@@ -7,7 +7,9 @@ modelled on `tools/hv4_runner.py` (that module is a frozen book's code and pulls
 
   * `ArenaState` over the tape dir (live: a 365-min warm-up, then tail; replay: from a given start). `state.apply` is wrapped like hv4's Runner: the state applies the
     print, then `engine.on_row(row)`, then the rules see it, so the engine holds the print before any `buy`.
-  * `ArenaEngine` with `stack_config(feed_delay_slots=7)` (a default, overridable). It prices at 0.25 / 0.5 / 1.0 SOL; only the stake pinned in `bots.json` decides.
+  * `ArenaEngine` with `stack_config(feed_delay_slots=7)` (d is a default, overridable). EVERY other StackConfig field is spelled out in `STACK_FIELDS`, not inherited
+    from arena_paper's defaults (rent 0 on a filled trip, the engine's own 2,039,280 on a stranded one, E1 floor 384,022, strand_rule both, gap_slots 150, gap_silence_ms
+    60,000); a test pins them. It prices at 0.25 / 0.5 / 1.0 SOL; only the stake pinned in `bots.json` decides.
   * DECISION LOG FIRST. Per order the host appends the decision row (`kind` entry | exit; flock, fsync, hash chain, `tools.arena_declog`) and only then calls
     `engine.buy` / `engine.sell`. An `ArenaRefused` adds an `order_refused` row. If the log cannot be written the order is NOT sent and the host stops (`HostFatal`).
   * TIMING. Event rules decide inside the row callback; time rules use a 1 s tick. Rows are delivered with `state.poll(until_ms=T - 1)`, so a tick at T never has seen a
@@ -22,8 +24,8 @@ modelled on `tools/hv4_runner.py` (that module is a frozen book's code and pulls
     set of `attempt_key`s of every entry decision (refused ones included: a refusal is still a decision), `ctx.positions` the open positions with their `meta`.
     `resume()` verifies the hash chain, replays the log into that memory, runs `engine.recover()`, and re-opens any engine position the log shows as sold but the engine
     never priced (it is then sold again and booked by the engine as excluded, `engine_restart`, as in hv4).
-  * Several rules can be hosted by one process (the names on the command line). Fast-hold and slow-hold books run in SEPARATE processes, so one crash or restart does not
-    exclude both.
+  * Several rules can be hosted by one process (the names on the command line), but only books registered at ONE frozen sha (the checkout is at one commit): start-up
+    refuses otherwise. Fast-hold and slow-hold books run in SEPARATE processes, so one crash or restart does not exclude both.
 
 Modes (`main`): `--mode register` appends the bots.json lines and exits; `--mode run` is live (MiScusi job, see scripts/research/arena-rules-job.sh); `--mode replay`
 steps a tape slice with the sim clock (refused if any output path is inside /data/mal/arena: a counted decision is never regenerated).
@@ -70,6 +72,10 @@ SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine doe
 SELL_RETRY_MAX = 5  # refusals that are not "the entry has not landed" before the retries slow down (and an alert row is logged)
 SELL_EARLY_CAP_MS = 60_000
 SELL_SLOW_RETRY_MS = 10_000
+STACK_FIELDS: dict[str, Any] = {  # every StackConfig field except feed_delay_slots, as literals (see stack_config)
+    "send": 505_000, "rent": 0, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "stakes_sol": (0.25, 0.5, 1.0), "grace_slots": 10_000, "portal_ppm": 0,
+    "press_intercept": -1.4197242838379789, "strand_rule": "both", "e1_floor_per_005": 384_022, "gap_slots": 150, "gap_silence_ms": 60_000, "max_future_ms": 5_000,
+}
 RULE_MODULES = {"h2ps-a1": "tools.arena_rule_h2ps"}  # rule name -> module with make_rule(); every new rule is a new file and a new line here, in a new host version
 
 
@@ -291,11 +297,16 @@ def in_universe(universe: str, pool: Any) -> bool:
     return universe == "pumpswap_wsol" and pool is not None and pool.prog == "pumpswap" and pool.quote_mint == WSOL_MINT
 
 
-def stack_config(feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS, **kw: Any) -> StackConfig:
-    """arena_paper.StackConfig with the whole-slot feed delay d passed explicitly (StackConfig refuses to price without it). Default 7 (the manager pins it)."""
+def stack_config(feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS) -> StackConfig:
+    """The host's StackConfig with EVERY field spelled out, so the priced stack does not move if arena_paper's defaults do (QP ruling R1 on cohort 2; DEC-031
+    Amendment 2, the rent-refunded stack). Only the whole-slot feed delay d is a parameter (the manager pins it; default 7). No keyword passes through: a caller cannot
+    change rent or the floor by accident. `tools/test_arena_rules_stack.py` pins `STACK_FIELDS` and `as_dict()`.
+
+    rent = 0: the sell tx closes the token account, so the rent is refunded on a FILLED trip (tools/arena_stack.RENT_DECIDING). A STRANDED position still loses 2,039,280
+    lamports of rent: that is not a StackConfig field, it is `rent_stranded=arena_stack.RENT_STRANDED`, the engine's own default, which this host never overrides."""
     if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0:
         raise ValueError("feed_delay_slots must be a whole number of slots >= 0")
-    return StackConfig(feed_delay_slots=feed_delay_slots, **kw)
+    return StackConfig(**{**STACK_FIELDS, "feed_delay_slots": feed_delay_slots})
 
 
 def head_binding(repo: str | os.PathLike | None = None) -> dict[str, Any]:
@@ -409,10 +420,14 @@ class Host:
     def verify_registered(self) -> None:
         """Every hosted rule must be registered, not stopped, with this process's frozen sha, clock and the rule's stake and (empty) model list."""
         reg = load_registry(self.cfg.registry)
+        missing = [r.bot_id for r in self.rules if r.bot_id not in reg]
+        if missing:
+            raise HostError(f"{missing[0]} is not registered in {self.cfg.registry}")
+        shas = {str(reg[r.bot_id]["frozen_sha"]) for r in self.rules}
+        if len(shas) > 1:  # one process = one frozen sha: the checkout it runs from can be at only one commit
+            raise HostError(f"the hosted books are registered at different frozen shas ({sorted(s[:12] for s in shas)}): one process hosts books of one sha")
         for r in self.rules:
-            e = reg.get(r.bot_id)
-            if e is None:
-                raise HostError(f"{r.bot_id} is not registered in {self.cfg.registry}")
+            e = reg[r.bot_id]
             sha = str(e["frozen_sha"])
             if not (sha.startswith(self.cfg.frozen_sha) or self.cfg.frozen_sha.startswith(sha)) or not self.cfg.frozen_sha:
                 raise HostError(f"{r.bot_id} is registered at sha {sha}, this process is at {self.cfg.frozen_sha}")
