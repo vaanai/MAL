@@ -562,7 +562,7 @@ def test_count_only_prints_structure_without_price_fill_or_return(tmp_path, caps
     # window (t, close-60]: M1, M2, M3, M6, M7 have prints there; M4 none
     assert res["markets_with_any_print_in_window"] == {"KXBTC15M": 4, "KXETH15M": 1}
     low = text.lower()
-    for word in ("price", "fill", "net", "return", "p_fav", "p_yes", "bid", "markout", "mean", "pnl", "win_rate"):
+    for word in ("fill", "net", "return", "p_fav", "p_yes", "bid", "markout", "mean", "pnl", "win_rate", "result"):
         assert word not in low, word
     assert (out / "r3_dev_counts.json").exists()
     assert not list(out.glob("*fills*")) and not list(out.glob("*summary*"))
@@ -571,8 +571,7 @@ def test_count_only_prints_structure_without_price_fill_or_return(tmp_path, caps
     assert ledger[-1]["mode"] == "count_only"
 
 
-def test_count_only_never_reads_value_columns_or_result(tmp_path, monkeypatch):
-    w = build_world(tmp_path)
+def _spy_columns(monkeypatch):
     cols_asked = []
 
     class SpyPF(pq.ParquetFile):
@@ -584,9 +583,45 @@ def test_count_only_never_reads_value_columns_or_result(tmp_path, monkeypatch):
             cols_asked.append(tuple(columns or ()))
             return super().read(columns=columns, **kw)
     monkeypatch.setattr(r3.pq, "ParquetFile", SpyPF)
+    return cols_asked
+
+
+def test_count_only_never_reads_result_and_holdout_count_only_reads_ids_only(tmp_path, monkeypatch):
+    w = build_world(tmp_path)
+    cols_asked = _spy_columns(monkeypatch)
     run_dev(w, tmp_path / "out", count_only=True)
     flat = {c for cs in cols_asked for c in cs}
+    assert "result" not in flat and "yes_price" in flat          # dev count-only: tick-grid check reads the price
+    # holdout count-only: ids only (no value column, no result)
+    (tmp_path / "h").mkdir()
+    h = holdout_world(tmp_path / "h")
+    cols_asked.clear()
+    r3.run("holdout", [str(h.s1), str(h.s2)], str(h.markets), str(h.tmp / "candles"), str(tmp_path / "ho"), True,
+           allow_holdout_count_only=True)
+    flat = {c for cs in cols_asked for c in cs}
     assert not flat & {"yes_price", "no_price", "count", "taker_side", "result"}
+    assert "trade_id" in flat
+
+
+def test_count_only_structure_checks_time_unit_grid_share_and_null_counts(tmp_path, capsys):
+    w = build_world(tmp_path)
+    s3 = tmp_path / "store3"
+    rows = [tr("KXBTC15M-M4-00", "2026-10-06T11:58:00Z", y, "no", tid=f"g{i}")
+            for i, y in enumerate([0.50, 0.505, 0.04, 0.045, 0.955, 0.96])]
+    rows.append({**tr("KXBTC15M-M4-00", "2026-10-06T11:58:10Z", 0.5, "no", tid="nullprice"), "yes_price": None})
+    rows.append({**tr("KXBTC15M-M4-00", "2026-10-06T11:58:20Z", 0.5, "no", tid="x"), "trade_id": None})
+    rows.append({**tr("KXBTC15M-M4-00", "2026-10-06T11:58:30Z", 0.5, "no", tid="nulltime"), "created_time": None})
+    write_trades(s3, rows, "part-s3", date="2026-10-06")
+    res = r3.run("dev", [str(s3)], str(w.markets), str(w.tmp / "candles"), str(tmp_path / "o3"), True)
+    sc = res["structure_checks"]
+    assert sc["created_time_min_iso"] == "2026-10-06T11:58:00+00:00"
+    assert sc["created_time_max_iso"] == "2026-10-06T11:58:10+00:00"
+    assert sc["null_counts_per_column"] == {"yes_price": 1, "trade_id": 1, "created_time": 1}
+    g = sc["yes_price_off_grid_share_by_region"]
+    assert g["lt_0.10"] == {"n": 2, "off_0.01_grid_share": 0.5, "off_0.001_grid_share": 0.0}
+    assert g["0.10_to_0.90"] == {"n": 2, "off_0.01_grid_share": 0.5, "off_0.001_grid_share": 0.0}
+    assert g["gt_0.90"] == {"n": 2, "off_0.01_grid_share": 0.5, "off_0.001_grid_share": 0.0}
+    assert res["trade_rows"]["null_trade_id_excluded"] == 1 and res["trade_rows"]["null_created_time_excluded"] == 1
 
 
 def test_cli_run_end_to_end(tmp_path, capsys):
@@ -838,3 +873,126 @@ def test_window_clustered_ci_and_decider_are_the_lower_of_the_two():
     # without windows the decider falls back to the event CI only
     c2 = r3.cell_stats(net, net, price, events, days, win=net > 0)
     assert c2["ci90_lo_decider"] == c2["ci90_event_cent"][0] and c2["ci90_window_cent"] == [None, None]
+
+
+# --------------------------------------------------------------- protocol: preflight, order, null handling
+def _ledger_lines(tmp_path):
+    f = tmp_path / "ledger" / "R3_RUNS.jsonl"
+    return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+
+def test_holdout_preflight_refusals_leave_no_lock_and_no_ledger_line(tmp_path):
+    w = holdout_world(tmp_path)
+    cd = str(w.tmp / "candles")
+    empty = tmp_path / "emptystore"
+    (empty / "trades" / "series=KXBTC15M").mkdir(parents=True)
+    other = tmp_path / "otherseries"
+    write_trades(other, [tr("KXFOO-1", "2026-10-12T10:12:30Z", 0.5, "no", series="KXFOO")], "p", series="KXFOO")
+    cases = [
+        ([str(tmp_path / "nonexistent")], str(w.markets), cd),             # mistyped store
+        ([str(w.s1), str(empty)], str(w.markets), cd),                     # a store without parquet
+        ([str(other)], str(w.markets), cd),                                # parquet outside the universe only
+        ([str(w.s1)], str(w.markets), str(tmp_path / "nocandles")),        # candles dir missing
+        ([str(w.s1)], str(w.markets), str(empty)),                         # candles files missing
+        ([str(w.s1)], str(tmp_path / "nomarkets"), cd),                    # markets root missing
+    ]
+    for stores, mroot, cdir in cases:
+        out = tmp_path / "hout"
+        with pytest.raises(r3.Refusal):
+            r3.run("holdout", stores, mroot, cdir, str(out), False)
+        assert not (out / "HOLDOUT.lock").exists()
+        assert _ledger_lines(tmp_path) == []
+    # a split with 0 markets (the world only has holdout markets; ask for dev)
+    with pytest.raises(r3.Refusal, match="0 markets"):
+        r3.run("dev", [str(w.s1)], str(w.markets), cd, str(tmp_path / "d0"), False)
+    assert _ledger_lines(tmp_path) == []
+    # candles that do not cover the split: no market has model inputs
+    short = tmp_path / "shortcandles"
+    write_candles(short, "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z")
+    with pytest.raises(r3.Refusal, match="model inputs"):
+        r3.run("holdout", [str(w.s1)], str(w.markets), str(short), str(tmp_path / "hout"), False)
+    assert _ledger_lines(tmp_path) == [] and not (tmp_path / "hout" / "HOLDOUT.lock").exists()
+    # and the real run is still available afterwards
+    assert r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), cd, str(tmp_path / "hout"), False)["main"][
+        "n_contracts"] == 1
+
+
+def test_holdout_lock_and_started_line_precede_the_result_column(tmp_path, monkeypatch):
+    w = holdout_world(tmp_path)
+    out = tmp_path / "hout"
+    seen = []
+    real = r3.load_markets
+
+    def spy(markets_root, split, with_outcomes, with_expiration=False):
+        seen.append((with_outcomes, (out / "HOLDOUT.lock").exists(),
+                     [x["status"] for x in _ledger_lines(tmp_path)]))
+        return real(markets_root, split, with_outcomes, with_expiration)
+    monkeypatch.setattr(r3, "load_markets", spy)
+    run_dev(w, out, split="holdout")
+    pre = [x for x in seen if not x[0]]          # preflight: no result column, no lock yet
+    post = [x for x in seen if x[0]]             # the result-reading load: lock and 'started' already there
+    assert pre and all(not lock and led == [] for _o, lock, led in pre)
+    assert post == [(True, True, ["started"])]
+
+
+def test_crash_after_the_lock_is_recorded_as_aborted_and_spends_the_holdout(tmp_path, monkeypatch):
+    w = holdout_world(tmp_path)
+    out = tmp_path / "hout"
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    with monkeypatch.context() as mp:                  # compute_signals also runs in the preflight: pre-lock crash
+        mp.setattr(r3, "compute_signals", boom)
+        with pytest.raises(RuntimeError):
+            run_dev(w, out, split="holdout")
+    assert not (out / "HOLDOUT.lock").exists() and _ledger_lines(tmp_path) == []
+    with monkeypatch.context() as mp:                  # a crash while scanning trades is after the lock
+        mp.setattr(r3.TradeScan, "scan", lambda self, stores: boom())
+        with pytest.raises(RuntimeError):
+            run_dev(w, out, split="holdout")
+    assert [x["status"] for x in _ledger_lines(tmp_path)] == ["started", "aborted"]
+    with pytest.raises(r3.Refusal):                    # the holdout stays spent
+        run_dev(w, tmp_path / "hout2", split="holdout")
+
+
+def test_unparseable_ledger_line_blocks_the_holdout_fail_closed(tmp_path):
+    w = holdout_world(tmp_path)
+    (tmp_path / "ledger" / "R3_RUNS.jsonl").write_text('{"ts": "2026-10-20T00:00:00Z", "split": "hold')
+    with pytest.raises(r3.Refusal, match="unparseable"):
+        run_dev(w, tmp_path / "hout", split="holdout")
+    assert not (tmp_path / "hout" / "HOLDOUT.lock").exists()
+
+
+def test_second_holdout_count_only_is_refused_and_ledger_records_the_tick_rule(tmp_path):
+    w = holdout_world(tmp_path)
+    args = ("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"), str(tmp_path / "o"), True)
+    r3.run(*args, allow_holdout_count_only=True)
+    with pytest.raises(r3.Refusal, match="count-only already taken"):
+        r3.run(*args, allow_holdout_count_only=True)
+    first = _ledger_lines(tmp_path)[0]
+    assert first["tick_rounding"] == "ceil_to_tick" and first["frozen_c"] == r3.FROZEN_C
+    assert [x["status"] for x in _ledger_lines(tmp_path)] == ["started", "finished"]
+
+
+def test_null_price_and_null_trade_id_are_counted_exclusions_not_refusals(tmp_path):
+    w = build_world(tmp_path)
+    extra = [
+        {**tr("KXBTC15M-M1-15", "2026-10-05T10:12:45Z", 0.90, "no", tid="np"), "yes_price": None},
+        {**tr("KXBTC15M-M1-15", "2026-10-05T10:12:46Z", 0.90, "no", tid="np2"), "no_price": None},
+        {**tr("KXBTC15M-M1-15", "2026-10-05T10:13:20Z", 0.90, "no"), "trade_id": None},
+        {**tr("KXBTC15M-M1-15", "2026-10-05T10:13:21Z", 0.90, "no"), "trade_id": None},
+        {**tr("KXBTC15M-M1-15", "2026-10-05T10:13:22Z", 0.90, "no"), "trade_id": None},
+    ]
+    write_trades(w.s1, extra, "part-nulls")
+    s = run_dev(w, tmp_path / "out")
+    assert s["trade_rows"]["null_price_excluded"] == 2
+    assert s["trade_rows"]["null_trade_id_excluded"] == 3          # three distinct prints, none collapsed
+    assert s["trade_rows"]["duplicates"] == 12                     # unchanged: null ids are not duplicates
+    assert s["main"]["n_contracts"] == 7                           # the excluded prints (price 0.90 <= bid) never fill
+
+
+def test_price_outside_unit_interval_still_refuses(tmp_path):
+    w = build_world(tmp_path)
+    write_trades(w.s1, [{**tr("KXBTC15M-M1-15", "2026-10-05T10:12:30Z", 0.5, "no"), "no_price": 95.0}], "part-c")
+    with pytest.raises(r3.Refusal, match="outside"):
+        run_dev(w, tmp_path / "out")

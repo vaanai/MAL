@@ -583,7 +583,15 @@ class TradeScan:
     created_time, is_block_trade): used by --count-only, never touches a price.  values=True keeps, per
     ticker, the last non-block print before t and every non-block print in (t, close]."""
 
-    def __init__(self, wanted, values: bool, forbidden=(), max_rss_mb=MAX_RSS_MB_DEFAULT):
+    def __init__(self, wanted, values: bool, forbidden=(), max_rss_mb=MAX_RSS_MB_DEFAULT, checks: bool = False):
+        """checks=True (dev count-only only): also read the value columns to report null counts and the share of
+        prints off the tick grid by price region; nothing price-like is kept per market."""
+        if checks and values:
+            raise ValueError("checks is a count-only mode")
+        self.checks = checks
+        self.nulls = defaultdict(int)
+        self.grid = {r: [0, 0, 0] for r in ("lt_0.10", "0.10_to_0.90", "gt_0.90")}   # n, off 0.01, off 0.001
+        self.ct_min = self.ct_max = None
         self.wanted, self.values, self.forbidden, self.max_rss_mb = wanted, values, set(forbidden), max_rss_mb
         if self.forbidden & set(wanted):
             raise Refusal("wanted tickers overlap forbidden (out-of-split) tickers")
@@ -627,7 +635,7 @@ class TradeScan:
                         continue
                     ids = ids.filter(mask)
                     vals = None
-                    if self.values:
+                    if self.values or self.checks:
                         vals = pf.read_row_group(i, columns=VAL_COLS).filter(mask)
                         self.rg_value_reads += 1
                     self._ingest(ids, vals)
@@ -638,8 +646,10 @@ class TradeScan:
         tick = ids.column("ticker").to_pylist()
         tid = ids.column("trade_id").to_pylist()
         cu = _ts_us(ids.column("created_time"))
+        cnull = pc.is_null(ids.column("created_time")).to_pylist()
         blk = ids.column("is_block_trade").to_pylist()
-        if self.values:
+        has_vals = vals is not None
+        if has_vals:
             yp = vals.column("yes_price").to_pylist()
             npx = vals.column("no_price").to_pylist()
             cnt = vals.column("count").to_pylist()
@@ -649,15 +659,38 @@ class TradeScan:
             if tkr in self.forbidden or tkr not in self.wanted or tkr.startswith("KXMVE"):
                 raise Refusal(f"row of out-of-split/forbidden ticker {tkr} reached the accumulator")
             self.c["rows_in_split_markets"] += 1
+            for name, v in (("trade_id", tid[j]), ("is_block_trade", blk[j])):
+                if v is None:
+                    self.nulls[name] += 1
+            if cnull[j]:
+                self.nulls["created_time"] += 1
+            if has_vals:
+                for name, v in (("yes_price", yp[j]), ("no_price", npx[j]), ("count", cnt[j]), ("taker_side", tk[j])):
+                    if v is None:
+                        self.nulls[name] += 1
+            if tid[j] is None:                      # never collapsed by the dedupe: a counted exclusion
+                self.c["null_trade_id_excluded"] += 1
+                continue
             if tid[j] in self.seen:
                 self.c["duplicates"] += 1
                 continue
             self.seen.add(tid[j])
+            if cnull[j]:
+                self.c["null_created_time_excluded"] += 1
+                continue
+            c = int(cu[j])
+            self.ct_min = c if self.ct_min is None else min(self.ct_min, c)
+            self.ct_max = c if self.ct_max is None else max(self.ct_max, c)
+            if self.checks and yp[j] is not None and yp[j] == yp[j]:
+                y = yp[j]
+                g = self.grid["lt_0.10" if y < 0.10 else ("gt_0.90" if y > 0.90 else "0.10_to_0.90")]
+                g[0] += 1
+                g[1] += abs(y * 100 - round(y * 100)) > 1e-6
+                g[2] += abs(y * 1000 - round(y * 1000)) > 1e-6
             if blk[j]:
                 self.c["block_trades_excluded"] += 1
                 continue
             t_us, close_us = self.wanted[tkr]
-            c = int(cu[j])
             end_us = close_us - WINDOW_END_BEFORE_CLOSE_S * US
             if not self.values:
                 if c < t_us:
@@ -667,7 +700,10 @@ class TradeScan:
                 continue
             self.value_reads.add(tkr)
             ym, nm = yp[j], npx[j]
-            if ym is None or npx[j] is None or not (0.0 <= ym <= 1.0 and 0.0 <= nm <= 1.0):
+            if ym is None or nm is None or ym != ym or nm != nm:        # null/NaN price: counted, not fatal
+                self.c["null_price_excluded"] += 1
+                continue
+            if not (0.0 <= ym <= 1.0 and 0.0 <= nm <= 1.0):             # a units error is systematic: refuse
                 raise Refusal(f"trade price outside [0,1] (units?) in {tkr}: {ym}, {nm}")
             ym, nm = to_micro(ym), to_micro(nm)
             if abs(ym + nm - US) > 1:
@@ -686,6 +722,16 @@ class TradeScan:
             elif c > t_us:
                 self.rows[tkr].append((c, tid[j], ym, nm, tk[j], cnt[j]))
         return
+
+    def structure_checks(self):
+        iso = lambda v: None if v is None else dt.datetime.fromtimestamp(v / US, dt.timezone.utc).isoformat()
+        out = {"created_time_min_iso": iso(self.ct_min), "created_time_max_iso": iso(self.ct_max),
+               "null_counts_per_column": dict(self.nulls)}
+        if self.checks:
+            out["yes_price_off_grid_share_by_region"] = {
+                r: {"n": g[0], "off_0.01_grid_share": (g[1] / g[0]) if g[0] else None,
+                    "off_0.001_grid_share": (g[2] / g[0]) if g[0] else None} for r, g in self.grid.items()}
+        return out
 
 
 # --------------------------------------------------------------------------------- ledger + holdout lock
@@ -733,7 +779,8 @@ def ledger_lines(path: str):
 
 def ledger_append(path: str, split: str, mode: str, status: str, out_dir: str):
     rec = {"ts": _now(), "split": split, "mode": mode, "status": status, "git_sha": git_sha(),
-           "tool_sha256": sha256_file(__file__), "out": str(out_dir)}
+           "tool_sha256": sha256_file(__file__), "out": str(out_dir), "tick_rounding": "ceil_to_tick",
+           "frozen_c": FROZEN_C, "frozen_e_bps": FROZEN_E_BPS}
     with open(path, "a") as fh:
         fh.write(json.dumps(rec, sort_keys=True) + "\n")
         fh.flush()
@@ -743,10 +790,47 @@ def ledger_append(path: str, split: str, mode: str, status: str, out_dir: str):
 def check_holdout_free(out_dir: str, ledger: str):
     """Side-effect-free precheck: refuse if the global ledger already holds a holdout run line or the lock exists."""
     for rec in ledger_lines(ledger):
+        if "unparseable" in rec:                                  # fail closed: a torn line may be a started run
+            raise Refusal(f"unparseable line in ledger {ledger}: holdout refused until it is resolved")
         if rec.get("split") == "holdout" and rec.get("mode") == "run":
             raise Refusal(f"holdout already run or started (ledger {ledger}: {rec})")
     if os.path.exists(os.path.join(out_dir, "HOLDOUT.lock")):
         raise Refusal(f"{os.path.join(out_dir, 'HOLDOUT.lock')} exists: the holdout is run once")
+
+
+def check_holdout_count_only_free(ledger: str):
+    """The holdout id-only count may be taken once."""
+    for rec in ledger_lines(ledger):
+        if "unparseable" in rec:
+            raise Refusal(f"unparseable line in ledger {ledger}: holdout refused until it is resolved")
+        if rec.get("split") == "holdout" and rec.get("mode") == "count_only":
+            raise Refusal(f"holdout count-only already taken (ledger {ledger}: {rec})")
+
+
+def preflight(split, stores, markets_root, candles_dir):
+    """Everything that can be checked without a trade row or a result: a failure here must cost nothing (no lock,
+    no ledger line).  Stores must exist and hold universe parquet; the candle files must exist; the split must
+    have markets with model inputs."""
+    for st in stores:
+        if not Path(st).is_dir():
+            raise Refusal(f"trades store missing: {st}")
+        if next(iter(_trade_files(st)), None) is None:
+            raise Refusal(f"trades store holds no parquet for the universe: {st}")
+    if not Path(markets_root).is_dir():
+        raise Refusal(f"markets root missing: {markets_root}")
+    cdir = Path(candles_dir)
+    if not cdir.is_dir():
+        raise Refusal(f"candles dir missing: {candles_dir}")
+    for _series, (_asset, prod) in SERIES.items():
+        if not (cdir / f"cb_{prod}.json").is_file():
+            raise Refusal(f"candle file missing: {cdir / f'cb_{prod}.json'}")
+    markets, _excl, _oos = load_markets(markets_root, split, with_outcomes=False)       # no result column
+    if not markets:
+        raise Refusal(f"split {split} has 0 markets in {markets_root}")
+    _sig, skip = compute_signals(markets, load_candles(candles_dir))
+    if skip.get("no_model_inputs", 0) == len(markets):
+        raise Refusal("no market of the split has model inputs: the candle files do not cover it")
+    return len(markets)
 
 
 def acquire_holdout_lock(out_dir: str, ledger: str):
@@ -776,28 +860,34 @@ def _json_default(o):
 
 def run(split, trades_stores, markets_root, candles_dir, out_dir, count_only=False,
         allow_holdout_count_only=False, max_rss_mb=MAX_RSS_MB_DEFAULT):
+    """Order for the holdout run: ledger/lock precheck (no side effect) -> preflight (no trade row, no result) ->
+    lock + ledger 'started' -> only then the markets' result column and the trade files.  Any exception after the
+    lock writes 'aborted' and the holdout stays spent."""
     if split not in SPLITS:
         raise Refusal(f"unknown split {split}")
     ledger = ledger_path()
     if split == "holdout" and count_only and not allow_holdout_count_only:
         raise Refusal("--count-only on the holdout needs --allow-holdout-count-only (reads ids only)")
+    if split == "holdout" and count_only:
+        check_holdout_count_only_free(ledger)
     if split == "holdout" and not count_only:
         check_holdout_free(out_dir, ledger)                      # a repeat run does nothing at all
-    os.makedirs(out_dir, exist_ok=True)
-    markets, excl, out_of_split = load_markets(markets_root, split, with_outcomes=not count_only)
-    candles = load_candles(candles_dir)
-    signals, sig_skip = compute_signals(markets, candles)
-    by_ticker = {m.ticker: m for m in markets}
+    preflight(split, trades_stores, markets_root, candles_dir)   # refusals here leave no lock and no ledger line
     mode = "count_only" if count_only else "run"
-    meta = {"split": split, "dates": list(SPLITS[split]), "mode": mode, "git_sha": git_sha(),
-            "tool_sha256": sha256_file(__file__), "frozen_c": FROZEN_C, "frozen_e_bps": FROZEN_E_BPS,
-            "declare_sha256": sha256_file(DECLARE_PATH) if os.path.exists(DECLARE_PATH) else None,
-            "stores": [str(s) for s in trades_stores]}
-    lock_path = None
+    os.makedirs(out_dir, exist_ok=True)
     if split == "holdout" and not count_only:
-        lock_path = acquire_holdout_lock(out_dir, ledger)       # before the first trade file is opened
+        acquire_holdout_lock(out_dir, ledger)                    # before the result column / any trade file
     ledger_append(ledger, split, mode, "started", out_dir)
     try:
+        markets, excl, out_of_split = load_markets(markets_root, split, with_outcomes=not count_only)
+        candles = load_candles(candles_dir)
+        signals, sig_skip = compute_signals(markets, candles)
+        by_ticker = {m.ticker: m for m in markets}
+        meta = {"split": split, "dates": list(SPLITS[split]), "mode": mode, "git_sha": git_sha(),
+                "tool_sha256": sha256_file(__file__), "frozen_c": FROZEN_C, "frozen_e_bps": FROZEN_E_BPS,
+                "tick_rounding": "ceil_to_tick",
+                "declare_sha256": sha256_file(DECLARE_PATH) if os.path.exists(DECLARE_PATH) else None,
+                "stores": [str(s) for s in trades_stores]}
         if count_only:
             res = _count_only(split, markets, excl, signals, sig_skip, by_ticker, out_of_split,
                               trades_stores, max_rss_mb, meta)
@@ -821,7 +911,8 @@ def _split_counts(markets):
 def _count_only(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, stores, max_rss_mb, meta):
     wanted = {m.ticker: (signals[m.ticker]["t_us"] if m.ticker in signals
                          else m.close_us - DECISION_BEFORE_CLOSE_S * US, m.close_us) for m in markets}
-    scan = TradeScan(wanted, values=False, forbidden=out_of_split, max_rss_mb=max_rss_mb).scan(stores)
+    scan = TradeScan(wanted, values=False, forbidden=out_of_split, max_rss_mb=max_rss_mb,
+                     checks=(split == "dev")).scan(stores)             # holdout: ids only, no value column
     win_by = defaultdict(int)
     for t in scan.has_window:
         win_by[by_ticker[t].series] += 1
@@ -834,6 +925,7 @@ def _count_only(split, markets, excl, signals, sig_skip, by_ticker, out_of_split
            "excluded": excl, "markets_with_any_print_in_window": dict(win_by),
            "signals_by_series": dict(sig_by), "signals_with_a_prior_print_by_series": dict(sig_prior_by),
            "signals_skipped": sig_skip, "trade_rows": {k: v for k, v in scan.c.items()},
+           "structure_checks": scan.structure_checks(),
            "note": "structure counts only"}
     return res
 
