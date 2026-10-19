@@ -73,6 +73,8 @@ SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine doe
 SELL_EARLY_RETRY_MS = 1_000  # retry cadence (wall clock) while the entry leg has not landed
 SELL_EARLY_CAP_MS = 60_000  # after this much wall time without the leg landing: an alert row, then the slow cadence
 SELL_SLOW_RETRY_MS = 10_000
+HOUSEKEEP_EVERY_MS = 5 * MIN_MS  # memory bounds (Runner._housekeep) run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up and live prune alike
+QUOTE_PRUNE_MIN_ROWS = 64  # with bound_memory on, QuoteHistory trims a pool's list once it holds more rows than this (it was 4,096: pools with fewer rows were never trimmed)
 R_SEED = 1
 BST_EXIT_MS = 330_000
 # BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
@@ -352,15 +354,28 @@ class QuoteHistory:
         self.t: dict[str, list[int]] = {}
         self.q: dict[str, list[float]] = {}
 
-    def add(self, pool: str, t_ms: int, q_sol: float) -> None:
+    def add(self, pool: str, t_ms: int, q_sol: float, min_rows: int = 4096) -> None:
+        """Append a row. A pool's list is trimmed to 130 min plus one anchor row once it holds more than `min_rows` rows (4,096 is the pre-2026-10-19 behaviour; the
+        runner passes QUOTE_PRUNE_MIN_ROWS when bound_memory is on)."""
         ts, qs = self.t.setdefault(pool, []), self.q.setdefault(pool, [])
         ts.append(t_ms)
         qs.append(q_sol)
-        if len(ts) > 4096 and ts[0] < t_ms - 2 * self.keep_ms:
+        if len(ts) > min_rows and ts[0] < t_ms - 2 * self.keep_ms:
             i = bisect.bisect_left(ts, t_ms - 2 * self.keep_ms) - 1  # keep one row before the window as the anchor
             if i > 0:
                 del ts[:i]
                 del qs[:i]
+
+    def sweep(self, now_ms: int, idle_ms: int, *, held: Callable[[str], bool]) -> int:
+        """Forget pools whose newest row is more than `idle_ms` old AND that `held(pool)` says the state no longer holds. The second condition is the one that makes
+        this safe: a card reads a pool's quotes only through a state snapshot, so a history the state has dropped can never be read, but ArenaState evicts on its own
+        60 s sweep, and a pool the state still holds can trade again before that sweep runs (it then keeps its old first-seen age and can pass age_min). Returns how many
+        were dropped."""
+        dead = [k for k, ts in self.t.items() if (not ts or ts[-1] < now_ms - idle_ms) and not held(k)]
+        for k in dead:
+            del self.t[k]
+            del self.q[k]
+        return len(dead)
 
     def _at(self, pool: str, b: int) -> float | None:
         ts = self.t.get(pool)
@@ -480,6 +495,9 @@ class RunnerConfig:
     # Timing rows (kind scan_timing, one per scan; kind tick_timing, one per minute) go into the SCAN log. They hold wall-clock counts and timings only, no
     # outcome, and no decision reads them. None = on when live, off in sim (a sim log must stay a pure function of the tape, so the replay md5 holds).
     timing: bool | None = None
+    # Memory bound (Runner._housekeep). On: QuoteHistory trims long pools and forgets pools the state no longer holds. The engine's print history is not bounded here
+    # (see _housekeep). Off only in the tests that prove both settings give the same logs, ledger and engine prints. See tools/hv4_memreplay.py.
+    bound_memory: bool = True
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
@@ -527,6 +545,7 @@ class Runner:
         self._pend_sell: dict[str, tuple] = {}
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
+        self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
         self.risk: dict[str, dict] = {}
         self.seq: dict[tuple[str, str], int] = {}
         self.calls: dict[tuple[str, str], list[int]] = {}
@@ -564,11 +583,27 @@ class Runner:
             if row.get("type") == "trade" and row.get("prog") == "pumpswap" and row.get("pool"):
                 p = self.state.pool(row["pool"])
                 if p is not None and p.quote_mint == WSOL_MINT and p.q_real is not None:
-                    self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
+                    self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9, QUOTE_PRUNE_MIN_ROWS if self.cfg.bound_memory else 4096)
             if self.h5 is not None:
                 self.trig_q.extend(self.h5.feed(row))
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
             self.hook_errors.append(type(e).__name__)
+        t = row.get("t_recv_ms")
+        if self.cfg.bound_memory and isinstance(t, int) and not isinstance(t, bool) and t >= self._housekeep_at:
+            try:  # its own try: a housekeeping failure must never skip this row's engine or H5 feed (reviewer finding on #744)
+                self._housekeep(t)
+            except Exception as e:  # noqa: BLE001
+                self.hook_errors.append("housekeep:" + type(e).__name__)
+
+    def _housekeep(self, t: int) -> None:
+        """Memory bound, driven by the tape clock (the t_recv_ms of the rows), so the 6-hour warm-up of a start is swept as it is read and a replay sweeps at the same
+        row boundaries as the live run. Nothing here reads or writes a decision.
+          * QuoteHistory forgets a pool once it is idle past the state's eviction horizon AND the state no longer holds the key (see QuoteHistory.sweep).
+          * The engine's print history (arena_paper.PoolHist, about 1 KB a print, 880k prints an hour on the 2026-10-19 tape) is NOT touched. ArenaEngine.prune() is
+            deliberately not called: QP 6274522375 showed it is not pricing-equivalent (a re-created pool loses last_v_row, so a revival print with V outside
+            [0, 30 SOL] is priced `none` where the unbounded engine prices it from pool_prev). The engine bound waits for a state-preserving trim in tools/arena_paper.py."""
+        self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
