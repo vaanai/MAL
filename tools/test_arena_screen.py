@@ -2001,7 +2001,7 @@ def test_qp_fixture_peak_picker_through_the_views_private_arrays_cannot_see_the_
 def test_qp_fixture_a_memo_built_in_triggers_never_holds_a_later_hour_and_an_unguarded_foresight_is_caught(tape):
     """QP #760: foresight 'sell at the first print >= landing iff the cap price is lower', memoised outside the view. (1) The memo lives in rule state; at slot s the rule has seen
     triggers() up to the hour before only, so with a cap in a LATER hour it cannot know the cap price (impossible). (2) Within the entry hour the rule has seen the whole hour:
-    the UNGUARDED variant (fires on any view once the memo says so) fails the prefix probe. The guarded in-entry-hour variant is the residual stated in the module doc."""
+    the prefix probe cannot see a foresight that fires at the first slot asked; the entry-hour re-run (test_the_entry_hour_rerun_*) is the check for it."""
     rows, files = tape
 
     class MemoRule(ScriptRule):
@@ -2044,7 +2044,7 @@ def test_qp_fixture_a_memo_built_in_triggers_never_holds_a_later_hour_and_an_ung
             assert consulted and all(last_h <= asked_h for last_h, asked_h in consulted)  # the price it called 'the cap price' was never from after the hour being asked about
             assert any(last_h < ((sds[0] + hold * 5 // 2 - SLOT0) // 9000) for last_h, _ in consulted)  # ...and so it was not the real cap price: no foresight
         else:
-            assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == r["exits"]["event"] > 0 and r["kill"] is True  # the unguarded foresight fires at fire - 1 too
+            assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == 0  # it fires at the FIRST slot asked: the prefix probe has no earlier slot to ask (the entry-hour re-run is the check, below)
 
 
 def test_qp_fixture_a_skipped_fire_when_later_is_higher_is_impossible(tape):
@@ -2109,7 +2109,14 @@ def test_causal_probe_probes_the_exit_too_when_asked(tape):
     assert S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot) and S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)
     always = lambda v: True  # noqa: E731
     assert S.causal_probe(R(always), hr, st, POOLS["A"], slot)  # the entry alone is causal...
-    assert not S.causal_probe(R(always), hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit fires with no print of its own to cause it
+    assert S.causal_probe(R(always), hr, st, POOLS["A"], slot, exit_fire=True)  # ...and a pure always-true exit is a fire at the first slot asked: nothing for the prefix probe or the re-run to object to
+    n = [0]
+
+    def third_ask(v):  # not a pure function of the view: True only on its third call, whatever it is asked
+        n[0] += 1
+        return n[0] == 3
+
+    assert not S.causal_probe(R(third_ask), hr, st, POOLS["A"], slot, exit_fire=True)  # fires on the third slot asked, and the probe's second ask of that slot is False
     assert not S.causal_probe(R(lambda v: 1), hr, st, POOLS["A"], slot, exit_fire=True)  # not a bool: refused, so not causal
     assert S.causal_probe(R(lambda v: False), hr, st, POOLS["A"], slot, exit_fire=True)  # no fire: nothing to probe
 
@@ -2208,7 +2215,7 @@ def test_the_kit_kills_a_cell_whose_event_exits_fail_the_prefix_probe_and_passes
     monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
     cell = S.Cell("c", event_triggered=False, event_exit=True)
     calls = iter(range(10**9))
-    for name, fire in (("fires at fire - 1 too", lambda v: True), ("flaky", lambda v: next(calls) % 3 == 0)):
+    for name, fire in (("flaky", lambda v: next(calls) % 3 == 0), ("state-dependent", lambda v: next(calls) % 7 == 3)):
         bad = kit_exit_cell(tape, cell, fire)
         r = bad.results()["c"]
         assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == bad.counters["exit_probe_failures"] > 0, name
@@ -2438,3 +2445,55 @@ def test_the_ask_counter_is_reported_for_timing(tape):
     scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
     c = scr.counters
     assert c["exit_fire_positions"] > 0 and c["exit_fire_asks"] >= c["exit_fire_positions"] and c["exit_fire_asks"] > c["exit_fire_events"]
+
+
+def test_qp_fixture_an_honest_buy_seen_since_entry_rule_has_zero_probe_failures(tape):
+    """QP #760 at 7f5f3d6 (blocking 1): 'a buy print after sd has been seen' is already true at the FIRST slot asked when a buy came before it. The prefix probe used to ask at fire - 1,
+    a slot the stream never asked, and killed the cell (2 false failures). It now asks at the previous slot the stream actually asked and skips the check when the fire is the first slot asked."""
+    rows, files = tape
+
+    def buy_since_entry(view):
+        r = view.rows()
+        return bool(((r["sl"] > view.sd) & r["ib"]).any())
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), buy_since_entry)
+    tr = S._cat(scr.acc[0])
+    key_of = {zlib.crc32(POOLS[k].encode()): k for k in POOLS}
+    first_asked_fires = before_landing_buy = 0
+    for i in range(len(tr["sd"])):
+        if int(tr["why"][i]) != S.EVENT_CODE:
+            continue
+        key, sd = key_of[int(tr["pool"][i])], int(tr["sd"][i])
+        pool_slots = sorted(r["slot"] for r in rows if r["pool"] == POOLS[key])
+        first_asked = next(x for x in pool_slots if x >= sd + 6)
+        if int(tr["xs"][i]) == first_asked:
+            first_asked_fires += 1
+            # the buy that made it true came BEFORE the fire slot (between the entry and the first print at or above the floor): the case that was falsely killed
+            before_landing_buy += any(r["slot"] > sd and r["slot"] < first_asked and r["side"] == "buy" and r["pool"] == POOLS[key] for r in rows)
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0 and first_asked_fires > 0 and before_landing_buy > 0  # the fixture really contains the case
+    assert r["event_exit"]["probe_failures"] == 0 and scr.counters["exit_probe_failures"] == 0 and not any("exit-causality" in w for w in r["kill_reasons"])
+
+
+def test_the_prefix_probe_asks_only_at_slots_the_stream_asked_and_skips_the_first():
+    a = ev_pool()
+    pp = S.post_price(a)
+    asked: list[int] = []
+
+    def probe(fire, f):
+        pos = S._Pos(S.ExitSpec(120, exit_fire=fire), SD0, RATE, SPS)
+        return S.exit_fire_probe(pos, a, pp, f)
+
+    spy = lambda v: asked.append(v.slot) or v.slot >= 1100  # noqa: E731
+    assert probe(spy, 1100) and asked == [1100, 1099]  # again at the fire slot, then the previous slot the stream asked
+    asked.clear()
+    assert probe(lambda v: asked.append(v.slot) or True, FLOOR) and asked == [FLOOR]  # the first slot asked (the floor): no earlier slot, no early check, however true it was before
+    sparse = {k: v[np.arange(400) % 7 == 0] for k, v in a.items()}  # prints every 7 slots: 1015, 1022, ...
+    pps = S.post_price(sparse)
+    asked.clear()
+    pos = S._Pos(S.ExitSpec(120, exit_fire=lambda v: asked.append(v.slot) or True), SD0, RATE, SPS)
+    first = int(sparse["sl"][sparse["sl"] >= FLOOR][0])
+    assert S.exit_fire_probe(pos, sparse, pps, first) and asked == [first]  # fire - 1 is not a print slot and is never asked
+    asked.clear()
+    second = int(sparse["sl"][sparse["sl"] >= FLOOR][1])
+    assert not S.exit_fire_probe(pos, sparse, pps, second) and asked == [second, first]  # it fires at the previous asked slot too: not a first fire

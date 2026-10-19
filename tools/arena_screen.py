@@ -26,8 +26,8 @@ RULE API (a small Python object)
   slot. The fire slot is the exit DECISION slot; the sell lands by the normal exit-lag rule from it (decision slot + 7 feed slots + the exit lag). The time cap and tp / sl / trail still
   apply, the earliest decides (a tp / sl / trail ON the fire slot keeps its own code; a fire on the cap's own slot is an event exit). Admission (one open position per cell and pool, cooldown after
   the exit) runs as the data arrive, so a cell is all exit_fire or none (a mix is refused, counted refused_exit_fire_mixed_cell). Candidate slots are slots with a print of the pool.
-  PREFIX PROBE on EVERY event exit (a rule can hide foresight outside the view: a memo or a closure built in triggers()): the predicate must fire AGAIN on the rows <= the fire slot and must
-  NOT fire at slot fire - 1 on the rows <= fire - 1 (so the fire needs the fire slot's own prints, and the predicate must be stateless: it is called again). Registration needs >= 200 event
+  PREFIX PROBE on EVERY event exit: the predicate must fire AGAIN on the rows <= the fire slot and must NOT fire at the previous slot the stream actually asked (the last print slot in
+  [landing, fire)) on the rows <= that slot; when the fire is the first slot asked the early check is skipped. It is the purity check (the predicate is called again, so it must be stateless). Registration needs >= 200 event
   exits probed per block, 0 failures; a failure KILLS the cell; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. `causal_probe(..., exit_fire=True)` is the
   author's single-hour sample. Declare the cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is
   grid-based (a cell that carries an exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`,
@@ -692,10 +692,10 @@ class ExitFireError(Refused):
 _VIEW_COLS = ("sl", "ib", "so", "tk", "q", "b", "v")
 
 
-def _cut_rows(a: dict, pp: np.ndarray, n: int) -> dict:
-    """The first n rows of the pool arrays as READ-ONLY slices (the view's whole world: nothing after row n is in the dict)."""
-    out = {k: a[k][:n] for k in _VIEW_COLS}
-    out["pp"] = pp[:n]
+def _cut_rows(a: dict, pp: np.ndarray, n: int, copy: bool = False) -> dict:
+    """The first n rows of the pool arrays as READ-ONLY slices (the view's whole world: nothing after row n is in the dict). copy=True gives COPIES (`.base` is None): the prefix probe's views."""
+    out = {k: (np.array(a[k][:n]) if copy else a[k][:n]) for k in _VIEW_COLS}
+    out["pp"] = np.array(pp[:n]) if copy else pp[:n]
     for v in out.values():
         v.flags.writeable = False
     return out
@@ -781,13 +781,20 @@ class _Pos:
 
 
 def exit_fire_probe(pos: _Pos, a: dict, pp: np.ndarray, fire_slot: int) -> bool:
-    """Prefix probe on one event exit (QP on #760): the predicate must fire AGAIN on the rows <= the fire slot (a pure function of the view), and must NOT fire at slot fire - 1 on the
-    rows <= fire - 1 (it needs the fire slot's own prints; a pre-planned or foresight exit fires there too). A raise is a failure. fire - 1 below the landing floor is asked all the same."""
+    """Prefix probe on one event exit (QP on #760, as corrected at 7f5f3d6): the predicate must fire AGAIN on the rows <= the fire slot (a pure function of the view), and must NOT fire at
+    the PREVIOUS SLOT THE STREAM ACTUALLY ASKED (the last print slot in [landing, fire)) on the rows <= that slot. When the fire is the first slot the stream asked there is no such slot and
+    the early check is skipped: a condition that already holds at the first print slot (a buy seen since entry, a truncated window already full) is an honest fire, not a defect. For a
+    pure predicate the early check is a re-ask, which is the purity check; it does not detect foresight written as a function of the slot (`view.slot >= P`). A raise is a failure. The
+    views are built from COPIES of the rows (a naive `.base` read gets None and raises; a reader with a fallback is not caught: see the ExitView doc)."""
     sl = a["sl"]
     f = int(fire_slot)
+    asked = sl[(sl >= pos.landing) & (sl < f)]
     try:
-        again = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, f, "right"))), f)))
-        early = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, f - 1, "right"))), f - 1)))
+        again = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, f, "right")), copy=True), f)))
+        early = False
+        if asked.size:
+            prev = int(asked[-1])
+            early = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, prev, "right")), copy=True), prev)))
     except Exception:  # noqa: BLE001
         return False
     return again and not early
@@ -1402,7 +1409,7 @@ class Screen:
             self._open[key] = pos
 
     def _resolve(self, pos: "_Pos", a: dict, pp: np.ndarray, bi: int, set_nxt: bool = True) -> None:
-        """A position's exit is decided: free the pool after the cooldown, and probe an event exit (prefix probe: fires again on rows <= the fire slot, does NOT fire at fire - 1)."""
+        """A position's exit is decided: free the pool after the cooldown, and probe an event exit (prefix probe: fires again on rows <= the fire slot, does NOT fire at the previous slot asked)."""
         self._open.pop((pos.ci, pos.pool), None)
         self.counters["exit_fire_asks"] += pos.asks
         if set_nxt:
@@ -1644,7 +1651,7 @@ def load_rule(spec: str, kwargs_json: str | None = None) -> Any:
 def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int, exit_fire: bool = False) -> bool:
     """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot). With exit_fire=True the EXIT is probed too: for every
     spec the rule hands out for (pool, slot) on the whole hour that carries an exit_fire, the predicate is asked at every print slot of the pool's rows (previous hour + this hour, up to
-    the hour's end); on a fire the prefix probe runs (fires again on rows <= the fire slot, does NOT fire at fire - 1: exit_fire_probe). THE ENTRY-HOUR RE-RUN (the manager's decision on #760,
+    the hour's end); on a fire the prefix probe runs (fires again on rows <= the fire slot, does NOT fire at the previous slot asked: exit_fire_probe). THE ENTRY-HOUR RE-RUN (the manager's decision on #760,
     QP's option b): the rule's triggers() is re-run on the hour CUT after `slot`, with a deep copy of `state` (the state as it was at the start of the hour, as for the entry check); the
     ExitSpec that cut run returns for the same (pool, slot, cell) is streamed over the same full rows, and its (exit slot, reason) must equal the full-hour spec's, fire or no fire. A
     rule that keeps the hour's later rows in its state or closure and gates its fire on the exact slot passes the prefix probe and FAILS here. Scope: the sampled triggers, the standard of the
@@ -1784,7 +1791,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
     if ev:
         L += ["", "## 6. Event exits (ExitSpec.exit_fire): share of attempts that exited on the event, and the exit-causality probe", "",
               "An event exit is treated like an event entry for the worst-in-slot kill (section 4: EVENT-EXIT; section 5 is the screen p, which an event-exit cell gets like any cell), whatever the entry. The kit asks the predicate "
-              f"at every print slot on a view cut there, hour by hour before the rule sees the hour. The prefix probe, on EVERY event exit, needs it to fire again on the rows <= the fire slot and NOT at fire - 1: registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. Ties: a tp / sl / trail on the fire "
+              f"at every print slot on a view cut there, hour by hour before the rule sees the hour. The prefix probe, on EVERY event exit, needs it to fire again on the rows <= the fire slot and NOT at the previous slot asked (skipped for the first slot asked): registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. Ties: a tp / sl / trail on the fire "
               "slot keeps its own code. Not a price claim; in-sample.", "",
               "| cell | attempts | event exits | fire share | probe failures | probed per block | probe ok | declared |", "|---|---|---|---|---|---|---|---|"]
         for nm, e in ev.items():
