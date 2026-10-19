@@ -163,10 +163,19 @@ def prepare_scratch(scratch: Path, hours: Sequence[Hour]) -> dict[str, Path]:
             raise ExploreRefused(f"{k} path {p} is not inside the scratch dir")
     scratch.mkdir(parents=True, exist_ok=True)
     for k in ("tape", "rules", "ledger"):
-        dirs[k].mkdir()
-    for h in hours:
-        os.symlink(h.path.resolve(), dirs["tape"] / h.path.name)  # the tape files are read through links; nothing is copied or written next to them
+        dirs[k].mkdir()  # tape/ stays empty: the state reads the given files by path (zstd ignores symlinks, and a directory listing would show other hours)
     return dirs
+
+
+class GivenHoursState(ArenaState):
+    """ArenaState over exactly the given closed hours, read by their own paths. No directory is listed, so no other hour (the open one included) can be read."""
+
+    def __init__(self, tape_dir: Path, hours: Sequence[Hour], start_ms: int) -> None:
+        super().__init__(tape_dir, start_ms=start_ms)
+        self._given = [(h.path.name[len("tape-"):-len(".jsonl.zst")], None, h.path.resolve()) for h in hours]
+
+    def _hour_files(self) -> list:
+        return list(self._given)
 
 
 @contextmanager
@@ -391,7 +400,7 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     rules: list[RecordingJ3] = J.make_rules(t0, rule_cls=RecordingJ3)  # type: ignore[assignment]
     with _scratch_registration_env():
         register_rules(rules, str(dirs["registry"]), head, t0, now_ms=t0 - 1, verify_sha=False)
-    state = ArenaState(dirs["tape"], start_ms=t0)
+    state = GivenHoursState(dirs["tape"], hours, t0)
     engine = ArenaEngine(dirs["ledger"], dirs["registry"], cfg=stack_config(FEED_DELAY_SLOTS), min_free_pct=min_free_pct)
     host = Host(HostConfig(root=str(dirs["rules"]), registry=str(dirs["registry"]), frozen_sha=head, clock_start_ms=t0, live=False), rules, state, engine)
     host.resume()
