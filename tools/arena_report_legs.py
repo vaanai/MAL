@@ -20,7 +20,7 @@ FILLED trips of those positions BEFORE item 7 is applied, in the base figure and
 (pnl_nofail = -stake - send - 2,039,280), state "stranded", `filled` stays True (so p_i and the pressure refit do not change); under "total" the strand flag is set (it
 bypasses the fail blend), under "sc" it is blended like entry_invalid / exit_invalid. A close-blocked trip leaves state `filled`, so it is not charged rent a second time.
 
-LEG 2, WORST-IN-SLOT (QP ruling R7, ARTIFACTS/lab/qp-ruling-1019-cohort2.md lines 161-172, the sentence on line 166: "buy at the highest-price state among the landing
+LEG 2, WORST-IN-SLOT (QP ruling R7, ARTIFACTS/lab/qp-ruling-1019-cohort2.md lines 161-172, the definition is on line 165: "buy at the highest-price state among the landing
 slot's states, sell at the lowest of the exit slot's"). The engine fills END-bound: the PRE-trade state of the first print at or after landing slot + 1, the pool after
 the whole landing slot. Worst-in-slot instead prices each filled entry and exit at the worst state its slot could have shown, with no order needed:
     states of slot x   the PRE-trade state of every print whose slot is x, plus the END state (the pool after the whole slot, i.e. the engine's own fill state);
@@ -291,9 +291,9 @@ def worst_in_slot_rows(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, 
     out: list[dict[str, Any]] = []
     diag = {"trips": 0, "derived_last": 0, "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": 0, "exit_moved": 0, "state_mismatch": [], "pnl_mismatch": []}
     for r in trades:
-        h = pools.get(r["pool"])
+        h = pools.get(r.get("pool"))
         if h is None:
-            raise Refused(f"trade {r['trade_id']}: pool {r['pool']} is not on the tape given (--tape-dir does not hold the tape the engine priced)")
+            raise Refused(f"trade {r['trade_id']}: pool {r.get('pool')} is not on the tape given (--tape-dir does not hold the tape the engine priced)")
         calc, d = worst_trip(r, h)
         out.append(dict(r, calc=calc))
         diag["trips"] += 1
@@ -417,7 +417,7 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os
     by_stake = covered_trades(bot_id, reg, rows, scored["read_boundary_ms"])
     pools = None
     if tape_dir is not None:
-        pids = {r["pool"] for ts in by_stake.values() for r in ts}
+        pids = {r.get("pool") for ts in by_stake.values() for r in ts}
         lo = min((r["decision_ms"]["entry"] for ts in by_stake.values() for r in ts), default=None)
         hi = max((r["decision_ms"]["exit"] or r["decision_ms"]["entry"] for ts in by_stake.values() for r in ts), default=None)
         pad = int(tape_pad_hours * HOUR_MS)
