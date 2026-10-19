@@ -17,7 +17,7 @@
 #
 # Required env: HV4_FROZEN_SHA (a commit on origin), HV4_CLOCK_START_MS, HV4_FEED_DELAY_SLOTS (the manager pins it).
 # Optional env: HV4_MODE = run (default) | register | stub ; HV4_REPO, HV4_ROOT, HV4_TAPE, HV4_LEDGER, HV4_REGISTRY, HV4_END_MS, PYTHON, KEY_FILE.
-# HV4_MODE=stub uses StubModel (no API call, no key read): the count-only shakedown. HV4_MODE=register appends the 13 bots.json lines and exits.
+# HV4_MODE=stub uses StubModel (no API call, no key read): the count-only shakedown. HV4_MODE=register appends the 9 lane-G bots.json lines (13 with --lane-h, which is refused until an H5 source is wired) and exits.
 # Memory: one light process (state + engine). Request about 4 GB from MiScusi; the heavy-replay slice rule of CLAUDE.md does not apply.
 
 set -eu

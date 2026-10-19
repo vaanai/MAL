@@ -145,7 +145,7 @@ class ChainPrefetcher:
             rows = [[int(a), int(b)] for a, b in doc["spent"]]
             if any(b < 0 for _, b in rows):
                 raise ValueError("negative")
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, OverflowError):  # OverflowError: a spent row of Infinity
             log.warning("hv4_prefetch spend state unreadable: treating the hour as fully spent")
             self._n("spend_state_reset")
             self._spent.append([now - now % MIN_MS, self.hourly_budget])

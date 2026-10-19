@@ -223,6 +223,36 @@ def test_a_failed_read_is_not_retried_for_a_minute_and_is_never_invented():
     assert chain.calls == 2 and pf.stats()["mint_errors"] == 2
 
 
+def test_the_mint_read_backoff_doubles_to_the_sixteen_minute_cap_and_one_success_resets_it():
+    clock, chain, pf = mk(T - 3_600_000, fail=("mint",))
+    pf.watch([(POOL, MINT)], [], clock.ms)
+    now, waits = clock.ms, []
+    for _ in range(7):
+        clock.ms = now
+        before = chain.calls
+        pf.run_once(now)
+        assert chain.calls == before + 1  # attempted, and failed
+        due = pf.pools[POOL].next_try_ms["mint"]
+        waits.append(due - now)
+        clock.ms = due - 1
+        pf.run_once(due - 1)
+        assert chain.calls == before + 1  # not tried a millisecond early
+        now = due
+    assert waits == [60_000, 120_000, 240_000, 480_000, 960_000, 960_000, 960_000]  # 1, 2, 4, 8, 16 min, then held at the cap
+    assert P.RETRY_MAX_MS == 16 * MIN
+    chain.fail.clear()  # the chain answers: one success
+    clock.ms = now
+    pf.run_once(now)
+    p = pf.pools[POOL]
+    assert p.mints and p.fails["mint"] == 0
+    chain.fail.add("mint")  # and when the mint is next due (MINT_REFRESH_MS on) and fails, the wait starts again at 60 s, not 16 min
+    now = p.mints[-1].as_of_ms + P.MINT_REFRESH_MS
+    clock.ms = now
+    before = chain.calls
+    pf.run_once(now)
+    assert chain.calls == before + 1 and p.next_try_ms["mint"] - now == 60_000
+
+
 # ----------------------------------------------------------------------------------------------------------------------- steady state: no chain_stale
 def test_hot_and_cold_pools_stay_inside_both_limits_at_every_scan_for_two_hours():
     clock, chain, pf = mk(T - 3 * 3600_000)
@@ -446,6 +476,9 @@ def test_the_hourly_spend_survives_a_restart_and_a_corrupt_file_counts_as_a_spen
     path.write_text("{not json")
     d = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
     assert d._spent_last_hour(clock.ms) == 6 and d.stats()["spend_state_reset"] == 1  # fail closed
+    path.write_text('{"schema": "%s", "spent": [[Infinity, 1]]}' % P.SPEND_SCHEMA)  # json accepts Infinity; int() of it is an OverflowError, not a ValueError
+    e = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    assert e._spent_last_hour(clock.ms) == 6 and e.stats()["spend_state_reset"] == 1
 
 
 def test_the_live_chain_source_keeps_both_bounds_in_files_under_the_runner_root(tmp_path):

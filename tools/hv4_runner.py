@@ -1534,7 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registry", default="/data/mal/arena/bots.json")
     ap.add_argument("--frozen-sha", required=True)
     ap.add_argument("--clock-start-ms", type=int, required=True)
-    ap.add_argument("--register", action="store_true", help="append the 13 bots.json lines (before the clock) and exit")
+    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
     ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
