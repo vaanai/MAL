@@ -1078,33 +1078,57 @@ _MANIFESTS = {}
 
 
 class FileManifest:
-    """``<root>/manifest.jsonl`` written by kalshi_public.Store: type 'file' lines (path, sha256, rows,
-    written_at); the last line of a path wins.  Every file read must be listed with a matching sha256."""
+    """``<root>/manifest.jsonl`` written by kalshi_public.Store: 'file' lines (path, sha256, rows, written_at;
+    the last line of a path wins, every distinct sha256 ever listed for a path is kept in ``shas``) and 'run'
+    lines (command, query, at: written when a run ends).  Every file read must be listed with a matching
+    sha256.  A torn LAST line (an append in progress) is ignored; a bad line elsewhere is refused."""
 
     def __init__(self, root):
         self.root = Path(root)
-        self.files = {}
+        self.files, self.shas, self.runs = {}, defaultdict(set), []
         p = self.root / "manifest.jsonl"
         if not p.exists():
             raise InputError(f"no manifest.jsonl in {self.root}")
-        with open(p) as f:
-            for ln in f:
-                if '"type":"file"' not in ln:
-                    continue
+        lines = p.read_text().splitlines()
+        for i, ln in enumerate(lines):
+            if '"type":"file"' not in ln and '"type":"run"' not in ln:
+                continue
+            try:
                 rec = json.loads(ln)
-                if rec.get("type") == "file":
-                    self.files[rec["path"]] = rec
+            except ValueError:
+                if i == len(lines) - 1:
+                    continue
+                raise InputError(f"{p}: line {i + 1} is not JSON")
+            if rec.get("type") == "file":
+                self.files[rec["path"]] = rec
+                self.shas[rec["path"]].add(rec["sha256"])
+            elif rec.get("type") == "run":
+                try:
+                    self.runs.append((rec.get("command"), kp.jdump(rec.get("query")), iso_to_us(rec["at"])))
+                except (KeyError, ValueError, TypeError):
+                    raise InputError(f"{p}: run record without a usable 'at'")
 
     @classmethod
     def of(cls, root):
-        k = str(Path(root).resolve())
+        p = Path(root) / "manifest.jsonl"
+        st = p.stat() if p.exists() else None
+        k = (str(Path(root).resolve()), None if st is None else (st.st_mtime_ns, st.st_size))
         if k not in _MANIFESTS:
             _MANIFESTS[k] = cls(root)
         return _MANIFESTS[k]
 
+    def run_times(self, command, query):
+        """``at`` (us) of every run record of this command with exactly this query."""
+        q = kp.jdump(query)
+        return [at for c, qq, at in self.runs if c == command and qq == q]
+
+    def overwritten(self, path):
+        return len(self.shas.get(str(Path(path).relative_to(self.root)), ())) > 1
+
     def check(self, paths, asof_us=None):
-        """-> (usable paths, n_skipped_after_asof, digest lines).  Refuses an unlisted or altered file."""
-        ok, skipped, lines = [], 0, []
+        """-> (usable paths, skipped paths written after ``asof_us``, digest lines).  Refuses an unlisted or
+        altered file."""
+        ok, skipped, lines = [], [], []
         for p in paths:
             rel = str(Path(p).relative_to(self.root))
             rec = self.files.get(rel)
@@ -1113,7 +1137,7 @@ class FileManifest:
             if kp.sha256_file(Path(p)) != rec["sha256"]:
                 raise InputError(f"sha256 mismatch (altered): {rel}")
             if asof_us is not None and rec.get("written_at") and iso_to_us(rec["written_at"]) > asof_us:
-                skipped += 1
+                skipped.append(Path(p))
                 continue
             ok.append(Path(p))
             lines.append(f"{rel}:{rec['sha256']}")
@@ -1174,26 +1198,36 @@ def read_results(root, tickers, asof_us=None):
             val = None
         out[t] = {"result": res or None, "value": val, "event": r["event_ticker"],
                   "settled_us": None if r["settlement_ts"] is None else iso_to_us(r["settlement_ts"])}
-    return out, lines, skipped
+    return out, lines, len(skipped)
 
 
-def trades_windows(root):
-    """Per-ticker coverage windows from the FULL (non-tail) trades checkpoints: ticker -> [(since_us|None,
-    until_us|None)].  A ticker is only 'done' after its files were written (kalshi_public.Store)."""
+def trades_windows(root, R_us=None):
+    """Per-ticker coverage windows from the FULL (non-tail) trades checkpoints: ticker -> [(since_us|None, end_us)].
+    CONDITIONS-2 item 3: a checkpoint counts only when the manifest holds a matching ``run`` record (same command
+    and query) and every such record has ``at`` <= R (a re-run after R may have added tickers: unprovable at R);
+    an open-ended checkpoint (until = None) never counts; the window ends at min(until, the earliest run ``at``)
+    because a run cannot have downloaded what did not exist yet."""
     root = Path(root)
     win = defaultdict(list)
     d = root / "_checkpoints"
-    if not d.exists():
+    if not d.exists() or not (root / "manifest.jsonl").exists():
         return win
+    fm = FileManifest.of(root)
     for p in sorted(d.glob("trades-*.json")):
-        ck = json.loads(p.read_text())
+        try:
+            ck = json.loads(p.read_text())
+        except ValueError:
+            raise InputError(f"{p.name}: checkpoint is not JSON")
         q = ck.get("query") or {}
-        if ck.get("command") != "trades" or q.get("tail_s"):
+        if ck.get("command") != "trades" or q.get("tail_s") or not q.get("until"):
+            continue
+        runs = fm.run_times("trades", q)
+        if not runs or (R_us is not None and max(runs) > R_us):
             continue
         since = None if not q.get("since") else kp.to_unix(q["since"]) * US
-        until = None if not q.get("until") else kp.to_unix(q["until"]) * US
+        end = min(kp.to_unix(q["until"]) * US, min(runs))
         for t in ck.get("done", []):
-            win[t].append((since, until))
+            win[t].append((since, end))
     return win
 
 
@@ -1216,7 +1250,10 @@ def covers(windows, lo_us, hi_us, tol_us=US):
 
 def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
     """TradeList per ticker for created_time in [lo, hi], from manifest-verified trades parquet written at or
-    before ``asof_us``.  Only the admitted series' partitions in the date range are opened."""
+    before ``asof_us``.  Only the admitted series' partitions in the date range are opened.  Returns
+    (trade lists, n files skipped as written after R, digest lines, TAINTED tickers): a ticker that appears in a
+    file written after R, or in a path that was overwritten (more than one sha256 listed), cannot be trusted
+    and its units are excl_no_trades (CONDITIONS-2 item 3)."""
     root = Path(root)
     fm = FileManifest.of(root)
     lo_d, hi_d = us_to_date(lo_us), us_to_date(hi_us)
@@ -1226,6 +1263,11 @@ def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
         if d.exists():
             files += [p for p in sorted(d.rglob("*.parquet")) if _date_ok(p, lo_d, hi_d)]
     files, skipped, lines = fm.check(files, asof_us)
+    tset = set(tickers)
+    tainted = set()
+    for f in skipped + [f for f in files if fm.overwritten(f)]:
+        tainted |= set(pq.read_table(f, columns=["ticker"])["ticker"].to_pylist()) & tset
+    files = [f for f in files if not fm.overwritten(f)]
     rows = defaultdict(list)
     tset = set(tickers)
     for f in files:
@@ -1238,7 +1280,7 @@ def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
                 rows[tk[i]].append((int(ts[i]), t["trade_id"][i].as_py(), bp_of(t["yes_price"][i].as_py()),
                                     bp_of(t["no_price"][i].as_py()), t["count"][i].as_py(),
                                     t["taker_side"][i].as_py(), t["is_block_trade"][i].as_py()))
-    return {k: TradeList(v) for k, v in rows.items()}, skipped, lines
+    return {k: TradeList(v) for k, v in rows.items()}, len(skipped), lines, tainted
 
 
 # ================================================================================= the pipeline
@@ -1376,7 +1418,7 @@ def markouts_for(fills, snaps, snap_ts, trades, close_us, settle_value):
     return out
 
 
-def process_unit(u, cfg, inp, tw, trades_map, results):
+def process_unit(u, cfg, inp, tw, trades_map, results, tainted=frozenset()):
     """Everything for ONE unit; returns a record dict (never raises on missing data: it is excluded and
     counted).  Order of exclusion: no book -> no metadata / not daily -> no trades -> never quoted."""
     S, imax = cfg.size, cfg.imax
@@ -1412,7 +1454,7 @@ def process_unit(u, cfg, inp, tw, trades_map, results):
     u.event = (res or {}).get("event") or (u.ticker.rsplit("-", 1)[0] if "-" in u.ticker else u.ticker)
     src, snaps, info = choose_source(cands, u.quote_start_us, u.e_eff_us, cfg.force_source)
     rec["snap_info"] = info
-    if reason is None and tw is not None and not covers(tw.get(u.ticker), u.quote_start_us, u.e_eff_us):
+    if reason is None and tw is not None and (u.ticker in tainted or not covers(tw.get(u.ticker), u.quote_start_us, u.e_eff_us)):
         reason = "excl_no_trades"
     if src is None:
         u.status = rec["status"] = reason or "not_opened"
@@ -1821,8 +1863,8 @@ def run_sim(cfg):
             return gate
     inp = load_inputs(cfg)
     units, early = classify_programs(inp, cfg)
-    tw = trades_windows(cfg.trades) if cfg.trades else None
-    results, trades_map, in_lines = {}, {}, []
+    tw = trades_windows(cfg.trades, cfg.data_us) if cfg.trades else None
+    results, trades_map, in_lines, tainted = {}, {}, [], set()
     if not cfg.dry_run:
         tickers = sorted({u.ticker for u in units})
         if cfg.markets:
@@ -1830,13 +1872,13 @@ def run_sim(cfg):
             in_lines += rl
             gate["results_files_after_R_skipped"] = rskip
         if units:
-            trades_map, tskip, tl = load_trades(cfg.trades, tickers, cfg.freeze_us,
+            trades_map, tskip, tl, tainted = load_trades(cfg.trades, tickers, cfg.freeze_us,
                                                 max(u.e_us for u in units) + HORIZON_S * US, cfg.data_us)
             in_lines += tl
             gate["trades_files_after_R_skipped"] = tskip
     records = []
     for u in units:
-        records.append(process_unit(u, cfg, inp, tw, trades_map, results))
+        records.append(process_unit(u, cfg, inp, tw, trades_map, results, tainted))
         mem.check(u.unit_id)
     if cfg.dry_run:
         return structure_report(cfg, inp, early, records)

@@ -552,6 +552,22 @@ def ticks(t_start_iso, t_end_iso, step, book=None, jitter=0.0, **kw):
     return out
 
 
+import contextlib
+from unittest import mock
+
+WRITE_AT = "2026-10-20T04:30:00Z"      # written_at of every store file the World writes (not the sandbox clock)
+
+
+@contextlib.contextmanager
+def fixed_now(iso):
+    with mock.patch.object(kp, "now_utc", lambda: dt(at(iso))):
+        yield
+
+
+class _Client:
+    requests_made, backoffs = 0, []
+
+
 class World:
     def __init__(self, tmp):
         self.tmp = Path(tmp)
@@ -624,27 +640,36 @@ class World:
         (d / f"markets-{name_stamp}.json").write_text(json.dumps({"markets": markets, "cursor": ""}))
         self.meta = str(d)
 
-    def add_trades(self, rows, done, since="2026-10-19T03:33:16Z", until=None, name="trades"):
+    def add_trades(self, rows, done, since="2026-10-19T03:33:16Z", until="2026-10-20T00:00:00Z", name="trades",
+                   run_at="2026-10-20T04:41:00Z", run_record=True):
+        """A full-history trades download.  ``until`` is explicit (an open-ended one never counts as coverage);
+        the manifest gets the ``run`` record kalshi_public writes at the end of a run, stamped ``run_at``."""
         st = kp.Store(self.kal, "trades", {"series": name, "since": since, "until": until, "market": None})
         rr = [{"trade_id": r[0], "ticker": r[1], "series_ticker": kp.series_of(r[1]), "created_time": dt(at(r[2])),
                "yes_price": r[3], "no_price": round(1 - r[3], 6), "count": r[4], "taker_side": r[5],
                "is_block_trade": False, "source": "live"} for r in rows]
-        if rr:
-            st.write_partitioned("trades", rr, "t-" + name, "created_time")
-        for t in done:
-            st.mark_done(t)
+        with fixed_now(WRITE_AT):
+            if rr:
+                st.write_partitioned("trades", rr, "t-" + name, "created_time")
+            for t in done:
+                st.mark_done(t)
+        if run_record:
+            with fixed_now(run_at):
+                st.run_record(_Client(), complete=True)
 
     def add_markets(self, rows):
         st = kp.Store(self.kal, "markets", {"series": "x"})
         rr = [{"ticker": t, "event_ticker": ev, "series_ticker": kp.series_of(t), "status": "finalized", "result": res,
                "settlement_value_dollars": val, "settlement_ts": dt(at(sts)), "fetched_at": dt(at(fetched))}
               for (t, ev, res, val, sts, fetched) in rows]
-        st.write_partitioned("markets", rr, "m0", "settlement_ts")
+        with fixed_now(WRITE_AT):
+            st.write_partitioned("markets", rr, "m0", "settlement_ts")
 
     def add_series(self, rows):
         st = kp.Store(self.kal, "series", {})
         rr = [{"ticker": t, "frequency": f, "fee_type": ft, "fee_multiplier": 1.0, "fetched_at": dt(FRZ)} for t, f, ft in rows]
-        st.write("series", rr, "s0", date="2026-10-19")
+        with fixed_now(WRITE_AT):
+            st.write("series", rr, "s0", date="2026-10-19")
 
     def cfg(self, **kw):
         base = dict(books=self.books, programs=self.lip, meta=getattr(self, "meta", None), trades=str(self.kal),
@@ -1107,12 +1132,11 @@ def test_trades_completeness_is_the_union_of_full_checkpoint_windows(tmp_path):
     t = "KXAAAGASDNY-26OCT19-T3.5"
     w.add_trades([], [t], since="2026-10-19T03:33:16Z", until="2026-10-19T13:00:00Z", name="a")
     w.add_trades([], [t], since="2026-10-19T13:00:00Z", until="2026-10-20T00:00:00Z", name="b")
-    w.add_trades([], ["OTHER-1"], since="2026-10-19T03:33:16Z", until=None, name="c")
-    kp.Store(w.kal, "trades", {"series": "tail", "since": "2026-10-19T03:33:16Z", "until": None, "tail_s": 600}).mark_done("TAILONLY-1")
-    win = sim.trades_windows(w.kal)
+    kp.Store(w.kal, "trades", {"series": "tail", "since": "2026-10-19T03:33:16Z", "until": "2026-10-20T00:00:00Z",
+                               "tail_s": 600}).mark_done("TAILONLY-1")
+    win = sim.trades_windows(w.kal, at("2026-10-24T00:00:00Z"))
     assert sim.covers(win[t], at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z"))          # a + b
     assert not sim.covers(win[t], at("2026-10-19T12:05:00Z"), at("2026-10-20T01:00:00Z"))      # b ends first
-    assert sim.covers(win["OTHER-1"], at("2026-10-19T12:05:00Z"), at("2030-01-01T00:00:00Z"))   # until None = open ended
     assert "TAILONLY-1" not in win                                                              # tail runs never prove completeness
     assert not sim.covers(win.get("MISSING"), 0, 1)
     assert not sim.covers([(at("2026-10-19T13:00:00Z"), None)], at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z"))
@@ -1124,7 +1148,8 @@ def test_trades_and_results_are_manifest_checked_and_cut_at_the_read_instant(tmp
     assert r[GAS_A]["value"] == 1.0 and r[GAS_B]["value"] == 0.0 and r[GAS_A]["event"] == "KXAAAGASDNY-26OCT19"
     r, _l, _s = sim.read_results(w.kal, [GAS_A], at("2026-10-19T20:00:00Z"))
     assert r == {}                                                    # fetched 10-20T04:41Z, after this read instant
-    m, _s, _l = sim.load_trades(w.kal, [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), at("2026-10-24T00:00:00Z"))
+    m, _s, _l, tainted = sim.load_trades(w.kal, [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), at("2026-10-24T00:00:00Z"))
+    assert tainted == set()
     assert [x for x in m[GAS_A].tid] == ["tA1", "tA2"]
     part = sorted((w.kal / "trades" / "series=KXAAAGASDNY").rglob("*.parquet"))[0]
     part.write_bytes(part.read_bytes() + b"x")
@@ -1347,3 +1372,58 @@ def test_b1_b_kill_sums_include_worst_case_units_once_48h_past_max_e_x():
     late = sim.kill_checks(rows, 25, [worst_at + 3600 * US])
     assert early["checks"] == [] and not early["dead_as_frozen"]
     assert late["checks"][0]["K1"] and late["dead_as_frozen"]                   # -249.97 <= -200
+
+
+def _edit_manifest(root, fn):
+    p = Path(root) / "manifest.jsonl"
+    p.write_text("".join(fn(json.loads(ln)) for ln in p.read_text().splitlines()))
+
+
+def test_b2_a_open_ended_or_unrecorded_or_late_checkpoints_never_count_as_coverage(tmp_path):
+    t = "KXAAAGASDNY-26OCT19-T3.5"
+    R = at("2026-10-24T00:00:00Z")
+    lo, hi = at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z")
+    cases = {"open_ended": dict(until=None), "no_run_record": dict(run_record=False),
+             "run_after_R": dict(run_at="2026-10-25T04:41:00Z"), "ok": {}}
+    got = {}
+    for name, kw in cases.items():
+        w = World(tmp_path / name)
+        w.add_trades([], [t], **kw)
+        got[name] = sim.covers(sim.trades_windows(w.kal, R).get(t), lo, hi)
+    assert got == {"open_ended": False, "no_run_record": False, "run_after_R": False, "ok": True}
+    # a window cannot reach past the run that downloaded it: until in the future is capped at the run's time
+    w = World(tmp_path / "future")
+    w.add_trades([], [t], until="2026-11-30T00:00:00Z", run_at="2026-10-19T13:00:00Z")
+    assert not sim.covers(sim.trades_windows(w.kal, R).get(t), lo, hi)
+    # a second run of the same query after R (more tickers done after R) makes the checkpoint unprovable at R
+    w = World(tmp_path / "rerun")
+    w.add_trades([], [t])
+    with fixed_now("2026-10-25T04:41:00Z"):
+        kp.Store(w.kal, "trades", {"series": "trades", "since": "2026-10-19T03:33:16Z", "until": "2026-10-20T00:00:00Z",
+                                   "market": None}).run_record(_Client(), complete=True)
+    assert not sim.covers(sim.trades_windows(w.kal, R).get(t), lo, hi)
+
+
+def test_b2_b_trades_files_written_after_R_or_overwritten_make_the_unit_excl_no_trades(tmp_path, covered):
+    w = basic_world(tmp_path)
+    g0 = sim.run_sim(w.cfg(out=str(tmp_path / "o0")))
+    assert g0["exclusions"] == {} and g0["population"]["U0"] == {"settled": 2}
+    ga = [p for p in (w.kal / "trades").rglob("*.parquet")]
+    assert len(ga) == 2                                                  # one file per series partition
+    after = [p for p in ga if "KXAAAGASDNY" in str(p)][0]
+    over = [p for p in ga if "KXAAAGASDFL" in str(p)][0]
+
+    def edit(rec):
+        if rec.get("type") == "file" and rec["path"].endswith(after.name) and "KXAAAGASDNY" in rec["path"]:
+            rec["written_at"] = "2026-10-30T00:00:00+00:00"                # downloaded after R
+        line = json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n"
+        if rec.get("type") == "file" and "KXAAAGASDFL" in rec["path"] and rec.get("kind") == "trades":
+            earlier = dict(rec, sha256="0" * 64)                          # an earlier, different file at the same path
+            return json.dumps(earlier, sort_keys=True, separators=(",", ":")) + "\n" + line
+        return line
+    _edit_manifest(w.kal, edit)
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o1")))
+    ex = pq.read_table(tmp_path / "o1" / "units.parquet").to_pylist()
+    status = {r["unit_id"]: r["status"] for r in ex}
+    assert status == {"pA": "excl_no_trades", "pB": "excl_no_trades"}, status
+    assert g["exclusions"] == {"excl_no_trades": 2}
