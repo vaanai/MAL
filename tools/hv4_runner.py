@@ -60,6 +60,7 @@ SCAN_SECOND_MS = 2_000  # the scanner ticks at second :02
 TICK_MS = 1_000
 BOARD_EVERY_MS = 15 * MIN_MS
 BOARD_SIZE = 10
+HOT_TOP_VOL = 25  # the chain prefetch refreshes the 25 pools with the most 60-min volume every 4 min: the board draws from them (hv4_prefetch)
 TOP_K_PER_PERSONA = 8  # cards per persona per scan that go to the LLM arms (two calls of 4)
 RISK_REFRESH_MS = 30 * MIN_MS
 RISK_HIDE_MS = 60 * MIN_MS
@@ -241,13 +242,21 @@ class HV4ChainSource:
     """The real source: tools.hv4_chain over public RPC, or Helius when MAL_HV4_RPC=helius (the public endpoint refuses getTokenLargestAccounts, so the
     holder block needs Helius). A failed mint read gives None (no card, fail closed); a failed holder read leaves the holder keys out (null block)."""
 
-    def __init__(self, chain: Any = None) -> None:
+    def __init__(self, chain: Any = None, prefetch: Any = None) -> None:
         from tools.hv4_chain import HV4Chain  # lazy: keeps this module importable without the RPC stack in tests
 
         self.chain = chain if chain is not None else HV4Chain()
+        # prefetch: a tools.hv4_prefetch.ChainPrefetcher (see its docstring). With it, chain_part only READS facts stamped before T; without it the facts
+        # are fetched at card time, as before (the unit tests and the replay path).
+        self.prefetch = prefetch
 
     def credit_report(self) -> dict:
-        return self.chain.credit_report()
+        rep = self.chain.credit_report()
+        return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
+
+    def watch(self, items: Any, hot: Any, now_ms: int) -> None:
+        if self.prefetch is not None:
+            self.prefetch.watch(items, hot, now_ms)
 
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
@@ -274,20 +283,27 @@ class HV4ChainSource:
         return {"ok": not reasons and mf.mint_authority is None and mf.freeze_authority is None, "reasons": reasons, "token": token,
                 "as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot}
 
+    @classmethod
+    def compose(cls, mf: Any, mh: Any, hd: Any) -> dict[str, Any]:
+        """The card's chain dict from mint facts, the Mayhem flag and (optional) holders. One builder for the card-time path and the prefetch path."""
+        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
+                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
+                                 "mayhem": mh.is_mayhem, **cls._ext_values(mf)}
+        if hd is not None and hd.ok and hd.as_of_ms is not None:
+            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
+        return facts
+
     def chain_part(self, pool_id: str, mint: str | None, now_ms: int, slot: int) -> dict | None:
         if not mint:
             return None
+        if self.prefetch is not None:  # no RPC in the scan: the newest facts stamped before now_ms (= T)
+            return self.prefetch.part_at(pool_id, mint, now_ms, slot)
         mf = self.chain.mint_facts(mint)
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
-                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
-                                 "mayhem": mh.is_mayhem, **self._ext_values(mf)}
         hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=C.CHAIN_HOLDERS_MAX_AGE_MS / 1000.0)
-        if hd.ok and hd.as_of_ms is not None:
-            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
-        return facts
+        return self.compose(mf, mh, hd)
 
 
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
@@ -762,6 +778,10 @@ class Runner:
         if (T // 1000) % (BOARD_EVERY_MS // 1000) == SCAN_SECOND_MS // 1000 and self._board_on(T):
             rest = sorted((p for p in cand if p not in tagged), key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))
             board = rest[:BOARD_SIZE]
+        watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist; the stub sources have none
+        if watch is not None:
+            top = sorted(cand, key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))[:HOT_TOP_VOL]
+            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T))
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
@@ -1457,7 +1477,12 @@ def main(argv: list[str] | None = None) -> int:
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    chain_src = HV4ChainSource()
+    chain_src.prefetch = ChainPrefetcher(chain_src.chain, HV4ChainSource.compose)  # facts are fetched off the scan path, stamped before the scan instant
+    chain_src.prefetch.start()
+    run = Runner(cfg, state, engine, model, chain_src, guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:
         for k, v in run.register_all(a.registry).items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))
