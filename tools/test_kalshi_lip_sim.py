@@ -209,7 +209,7 @@ def test_fill_direction_price_block_edges_and_order():
         trade(10, "a1", 0.48, 10, "no"),        # YES bid fills: taker 'no' at yes_price == b
         trade(11, "a2", 0.49, 10, "no"),        # yes_price above our bid: no
         trade(12, "a3", 0.40, 10, "yes"),       # taker 'yes' does not hit a YES bid (no_price 0.60 > 0.50)
-        trade(13, "a4", 0.30, 10, "yes", block=True),   # block trades ignored
+        trade(13, "a4", 0.48, 10, "no", block=True),    # block trades ignored (it would otherwise fill the YES bid)
         trade(14, "a5", 0.70, 8, "yes"),        # NO bid fills: taker 'yes', no_price 0.30 <= 0.50, at OUR price 0.50
         trade(15, "a6", 0.45, 4, "no"),         # through the YES bid: fills at OUR price 0.48, not 0.45
     ]
@@ -1099,3 +1099,222 @@ def test_cli_refuses_wrong_freeze_missing_pins_and_runs_a_dry_run(tmp_path, caps
                    "--trades", str(w.kal), "--series", str(w.kal)])
     out = capsys.readouterr().out
     assert rc == 0 and json.loads(out)["mode"] == "dry_run"
+
+
+# ============================================================================ trades / results stores
+def test_trades_completeness_is_the_union_of_full_checkpoint_windows(tmp_path):
+    w = World(tmp_path)
+    t = "KXAAAGASDNY-26OCT19-T3.5"
+    w.add_trades([], [t], since="2026-10-19T03:33:16Z", until="2026-10-19T13:00:00Z", name="a")
+    w.add_trades([], [t], since="2026-10-19T13:00:00Z", until="2026-10-20T00:00:00Z", name="b")
+    w.add_trades([], ["OTHER-1"], since="2026-10-19T03:33:16Z", until=None, name="c")
+    kp.Store(w.kal, "trades", {"series": "tail", "since": "2026-10-19T03:33:16Z", "until": None, "tail_s": 600}).mark_done("TAILONLY-1")
+    win = sim.trades_windows(w.kal)
+    assert sim.covers(win[t], at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z"))          # a + b
+    assert not sim.covers(win[t], at("2026-10-19T12:05:00Z"), at("2026-10-20T01:00:00Z"))      # b ends first
+    assert sim.covers(win["OTHER-1"], at("2026-10-19T12:05:00Z"), at("2030-01-01T00:00:00Z"))   # until None = open ended
+    assert "TAILONLY-1" not in win                                                              # tail runs never prove completeness
+    assert not sim.covers(win.get("MISSING"), 0, 1)
+    assert not sim.covers([(at("2026-10-19T13:00:00Z"), None)], at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z"))
+
+
+def test_trades_and_results_are_manifest_checked_and_cut_at_the_read_instant(tmp_path):
+    w = basic_world(tmp_path)
+    r, _l, skipped = sim.read_results(w.kal, [GAS_A, GAS_B], at("2026-10-24T00:00:00Z"))
+    assert r[GAS_A]["value"] == 1.0 and r[GAS_B]["value"] == 0.0 and r[GAS_A]["event"] == "KXAAAGASDNY-26OCT19"
+    r, _l, _s = sim.read_results(w.kal, [GAS_A], at("2026-10-19T20:00:00Z"))
+    assert r == {}                                                    # fetched 10-20T04:41Z, after this read instant
+    m, _s, _l = sim.load_trades(w.kal, [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), at("2026-10-24T00:00:00Z"))
+    assert [x for x in m[GAS_A].tid] == ["tA1", "tA2"]
+    part = sorted((w.kal / "trades" / "series=KXAAAGASDNY").rglob("*.parquet"))[0]
+    part.write_bytes(part.read_bytes() + b"x")
+    with pytest.raises(sim.InputError, match="altered"):
+        sim.load_trades(w.kal, [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), None)
+
+
+def test_unresolved_units_enter_at_the_worst_case_after_48h_and_young_ones_stay_out():
+    u = mk_unit(e=1000.0)
+    u.ticker = "T-1"
+    assert sim.resolution_at(u, {}, u.e_us + 47 * 3600 * US)[0] == "young"
+    assert sim.resolution_at(u, {}, u.e_us + sec(86_400) + 48 * 3600 * US)[0] == "worst_case"     # X = E + 24 h
+    u.x_us = u.e_us + sec(3600)
+    assert sim.resolution_at(u, {}, u.e_us + 3600 * US + 48 * 3600 * US)[0] == "worst_case"
+    res = {"T-1": {"value": 1.0, "settled_us": u.e_us + sec(100), "result": "yes", "event": "E"}}
+    assert sim.resolution_at(u, res, u.e_us + sec(50))[0] == "young"                              # not yet settled at R
+    assert sim.resolution_at(u, res, u.e_us + sec(100))[0] == "settled"
+    core = {"fills": [("a", "yes", 4800, 25.0, 0)], "rew": {"c": 3.0, "lower": 2.0, "upper": 4.0, "r2": 3.0}, "fees_cent": 0.1}
+    sc = sim.score_unit_cell(u, core, "worst_case", None)
+    assert sc["net"] == pytest.approx(3.0 - 0.1 - 12.0) and sc["worst_u"] == pytest.approx(3.0 - 0.1 - 12.0)
+    sc = sim.score_unit_cell(u, core, "settled", 1.0)
+    assert sc["net"] == pytest.approx(3.0 - 0.1 + 13.0) and sc["worst_u"] == pytest.approx(3.0 - 0.1 - 12.0)   # structural worst
+    core["rew"]["c"] = 0.99                                                                       # P1: under $1.00 pays nothing
+    assert sim.score_unit_cell(u, core, "settled", 1.0)["net"] == pytest.approx(-0.1 + 13.0)
+    assert sim.score_unit_cell(u, core, "settled", 1.0)["net_nofloor"] == pytest.approx(0.99 - 0.1 + 13.0)
+
+
+# ==================================================================================== scale / memory
+def _scale_store(tmp, n_markets, n_days, step=222.7, levels=24):
+    """Numpy-built sealed store at obrec-1019c scale (about 23.6 levels per snapshot): no python row dicts."""
+    import pyarrow as pa
+    d = Path(tmp) / "obrec-1019c"
+    paths = []
+    t0 = at("2026-10-19T04:00:00Z")
+    n_snaps = int(n_days * 86_400 / step)
+    ts = (t0 + (np.arange(n_snaps) * step * US).astype(np.int64))
+    tickers = [f"KXRT-26OCT19-M{i:03d}" for i in range(n_markets)]
+    for day in sorted({sim.us_to_date(int(x)) for x in ts}):
+        sel = np.array([sim.us_to_date(int(x)) == day for x in ts])
+        tday = ts[sel]
+        nT, nS = n_markets, len(tday)
+        ob_ts = np.repeat(tday, 2 * levels)
+        for tk in tickers:
+            pass
+        cols = {}
+        rep = nS * 2 * levels
+        tick = np.repeat(np.array(tickers, dtype=object), rep)
+        ts_all = np.tile(ob_ts, nT)
+        side = np.tile(np.repeat(np.array(["yes", "no"], dtype=object), levels), nT * nS)
+        lvl = np.tile(np.arange(levels), nT * nS * 2)
+        price = np.where(side == "yes", 0.48 - 0.01 * (lvl % 12), 0.50 - 0.01 * (lvl % 12)).round(2)
+        ob = pa.table({"ts": pa.array(ts_all, pa.timestamp("us", tz="UTC")), "ticker": pa.array(tick),
+                       "series_ticker": pa.array(["KXRT"] * len(ts_all)), "side": pa.array(side),
+                       "price": pa.array(price), "size": pa.array(np.full(len(ts_all), 120.0))})
+        # 2 x 12 distinct price levels per side would repeat prices: keep `levels` <= 12 per side instead
+        sn_ts = np.tile(tday, nT)
+        sn = pa.table({"ts": pa.array(sn_ts, pa.timestamp("us", tz="UTC")),
+                       "ticker": pa.array(np.repeat(np.array(tickers, dtype=object), nS)),
+                       "series_ticker": pa.array(["KXRT"] * (nT * nS)),
+                       "n_yes_levels": pa.array(np.full(nT * nS, levels, np.int32)),
+                       "n_no_levels": pa.array(np.full(nT * nS, levels, np.int32))})
+        for kind, tab in (("orderbook", ob), ("orderbook_snaps", sn)):
+            p = d / kind / "series=KXRT" / f"date={day}" / "part-scale.parquet"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(tab, p)
+            paths.append(p)
+    runs = kp.table_of("orderbook_runs", [
+        {"run_id": "r1", "event": "run_start", "ts": dt(int(ts[0])), "series_json": json.dumps(["KXRT"])},
+        {"run_id": "r1", "event": "run_end", "ts": dt(int(ts[-1])), "complete": True, "stop_reason": "duration"}])
+    pr = d / "orderbook_runs" / "part-r.parquet"
+    pr.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(runs, pr)
+    kp.seal_parts(d, "2026-10-19T04", paths + [pr])
+    reg = Path(tmp) / "obrec-REGISTRY-1019c.md"
+    reg.write_text("KXRT\n")
+    os.utime(reg, (1_600_000_000, 1_600_000_000))
+    return d, tickers
+
+
+def test_memory_stays_under_the_cap_at_recorder_scale(tmp_path):
+    """Default: 30 markets x 1 day x 24 levels.  LIP_SIM_SCALE_MARKETS=521 LIP_SIM_SCALE_DAYS=7 runs the
+    obrec-1019c scale (about 203k snapshot rows and 4.8M level rows per day) with the same cap."""
+    n_m = int(os.environ.get("LIP_SIM_SCALE_MARKETS", "30"))
+    n_d = float(os.environ.get("LIP_SIM_SCALE_DAYS", "1"))
+    d, tickers = _scale_store(tmp_path, n_m, n_d, levels=12)
+    w = World(tmp_path / "w")
+    w.books.append(str(d))
+    s0, e = "2026-10-19T04:00:00Z", sim.us_to_iso(at("2026-10-19T04:00:00Z") + int(n_d * 86_400 * US) - 3600 * US)
+    w.add_polls([("2026-10-19T04:00:00Z", True, [prog(f"p{i}", t, s0, e) for i, t in enumerate(tickers)])])
+    w.add_series([("KXRT", "custom", "quadratic")])
+    cap = 1500.0
+    rep = sim.run_sim(w.cfg(dry_run=True, read_us=None, mem_cap_mb=cap, meta=None, trades=None))
+    assert rep["units_by_status"].get("excl_no_meta", 0) == len(tickers)       # KXRT is not daily: needs a capture
+    w.add_meta("20261019T030000Z", [{"ticker": t, "event_ticker": t.rsplit("-", 1)[0], "close_time": e,
+                                     "expected_expiration_time": e} for t in tickers])
+    rep = sim.run_sim(w.cfg(dry_run=True, read_us=None, mem_cap_mb=cap, trades=None))
+    assert rep["structurally_opened_units"] == len(tickers) and rep["snapshots_in_window"] > 0
+    assert rss_peak_ok(cap)
+
+
+def rss_peak_ok(cap_mb):
+    return sim.rss_mb() < cap_mb
+
+
+def test_memory_cap_is_enforced():
+    with pytest.raises(MemoryError):
+        sim.MemCap(1.0).check("unit")
+
+
+# ======================================================================================== mutation checks
+def _mut_flip_fill_inequality(mp):
+    mp.setattr(sim, "yes_bid_fills", lambda tk, y, b: tk == "no" and y is not None and y >= b)
+    mp.setattr(sim, "no_bid_fills", lambda tk, n, b: tk == "yes" and n is not None and n >= b)
+
+
+def _mut_drop_delay(mp):
+    mp.setattr(sim, "L_US", 0)
+
+
+def _mut_drop_cap(mp):
+    mp.setattr(sim, "CAP_US", 10 ** 15)
+
+
+def _mut_count_more_than_t(mp):
+    orig = sim.side_phi
+    mp.setattr(sim, "side_phi", lambda *a, **k: orig(*a, **dict(k, capped=False)))
+
+
+def _mut_skip_floor(mp):
+    mp.setattr(sim, "floor_cent", lambda x: x)
+
+
+def _mut_print_price(mp):
+    mp.setattr(sim, "fill_price", lambda b, p: p)
+
+
+def _mut_read_result(mp):
+    orig = sim.decide_quote
+
+    def peek(unit, snap, Y, N, S, imax):
+        q, why = orig(unit, snap, Y, N, S, imax)
+        return (None, "Q4") if getattr(unit, "result", None) == "no" else (q, why)
+    mp.setattr(sim, "decide_quote", peek)
+
+
+def _mut_block_trades_count(mp):
+    orig = sim.TradeList.__init__
+
+    def init(self, rows=()):
+        orig(self, [r[:6] + (False,) for r in rows])
+    mp.setattr(sim.TradeList, "__init__", init)
+
+
+def _mut_no_min_payout(mp):
+    mp.setattr(sim, "apply_min_payout", lambda r: r)
+
+
+MUTANTS = {"flip fill inequality": _mut_flip_fill_inequality, "drop L = 2 s delay": _mut_drop_delay,
+           "drop CAP": _mut_drop_cap, "count more than T": _mut_count_more_than_t, "skip the floor": _mut_skip_floor,
+           "print price instead of ours": _mut_print_price, "read result in Q decisions": _mut_read_result,
+           "count block trades": _mut_block_trades_count, "skip the $1.00 minimum": _mut_no_min_payout}
+
+
+def _killers():
+    return [test_reward_arithmetic_hand_computed, test_help_article_example_16_dollars, test_validity_and_q4_boundary,
+            test_prorata_at_crossing_level_reference_boundary_and_df_ticks, test_gap_cut_at_cap_last_snapshot_at_e_eff_and_floor,
+            test_no_weight_before_quote_start_and_floor_rules, test_fill_direction_price_block_edges_and_order,
+            test_fill_interval_is_open_closed_and_has_the_two_second_delay,
+            test_fill_quantity_is_min_remaining_and_count_consumed_in_time_then_trade_id_order,
+            test_reward_uses_remaining_size_after_a_fill_and_starts_at_ts_plus_l,
+            lambda: test_no_look_ahead_result_and_later_trades_do_not_move_decisions(0),
+            test_unresolved_units_enter_at_the_worst_case_after_48h_and_young_ones_stay_out]
+
+
+def _survivors(patch):
+    with pytest.MonkeyPatch.context() as mp:
+        patch(mp)
+        failed = []
+        for t in _killers():
+            try:
+                t()
+            except AssertionError:
+                failed.append(getattr(t, "__name__", "lambda"))
+        return failed
+
+
+def test_the_unmutated_module_passes_every_killer():
+    assert _survivors(lambda mp: None) == []
+
+
+@pytest.mark.parametrize("name", sorted(MUTANTS))
+def test_each_mutation_is_caught_by_a_test(name):
+    assert _survivors(MUTANTS[name]), f"mutant survived: {name}"
