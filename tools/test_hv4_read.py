@@ -1200,6 +1200,30 @@ def test_the_console_draft_shows_all_four_sub_cells_and_a_failed_book_never_prin
     assert all(label in t2 for label in R.SUBLABEL.values()) and "V1 PASS" in t2 and "V2 PASS" in t2
 
 
+def test_the_read_hashes_the_gate_math_and_the_arm_registry_files_and_labels_cells_read(tmp_path):
+    w = con_world(tmp_path)
+    r = w.book("CON-L")
+    files = r["inputs"]["files_sha256"]
+    assert {"tools/arena_stack.py", "tools/hv4_arms.py", "tools/arena_score.py", "tools/hv4_read.py"} <= set(files)
+    for f, sha in files.items():
+        assert sha == hashlib.sha256((REPO / f).read_bytes()).hexdigest(), f
+    assert r["disclosure"]["cells_read_basis"].startswith("arena cells")
+    assert R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads, w.extra)["disclosure"]["cells_read_basis"].startswith("HV4 gate cells")
+
+
+def test_the_cli_takes_the_production_store_and_the_declared_settle_time_outside_test_mode(tmp_path, monkeypatch, capsys):
+    w = con_world(tmp_path)
+    cli = ["book", "--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--extra-registry", w.extra[0], "--null-dir", w.null, "--out-dir", w.out, "--now-ms", str(DAY0 + 30 * DAY)]
+    monkeypatch.delenv(TEST_ENV)
+    for extra, why in ((["--arena-reads-dir", w.reads], "--arena-reads-dir other than"), (["--settle-hours", "1"], "--settle-hours other than 24")):
+        assert R.main(cli + extra) == 3  # refused: a fresh store would allow a second read, another settle time moves the V1/V2 instant
+        assert why in capsys.readouterr().err
+    assert not Path(w.reads).exists() and not (Path(w.out) / "reads").exists()
+    monkeypatch.setenv(TEST_ENV, "1")
+    assert R.main(cli + ["--arena-reads-dir", w.reads, "--settle-hours", "24"]) == 0  # test mode: the overrides work, and the declared 24 h is the default
+    assert (Path(w.reads) / "CON-L.json").exists()
+
+
 def test_table_lists_25_cells_and_only_recorded_reads(tmp_path):
     w = con_world(tmp_path)
     t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads, w.extra)

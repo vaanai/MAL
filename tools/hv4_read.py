@@ -124,7 +124,7 @@ SUBCELLS = ("flat_1p9_total", "flat_1p9_sc", "press_1p9_total", "press_1p9_sc")
 DECIDABLE = ("PASS", "FAIL")  # arena_score statuses (under the FORCED-SCREEN-ONLY prefix too) whose cells are valid
 SLIM_KEYS = ("n", "days", "days_pos", "mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol", "pass", "misses", "intercept")
 REFERENCE_LABEL = "reference arm, not promotable"  # CON-P and the three R arms (DESIGN section 5): controls, scored and shown, never candidates
-FILES_PINNED = ("tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/hv4_read.py")
+FILES_PINNED = ("tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/arena_stack.py", "tools/hv4_arms.py", "tools/hv4_read.py")
 
 
 class Refused(Exception):
@@ -609,14 +609,15 @@ def reference_text() -> str:
             "it has no canary path and no confirmation, and nothing in it says a book made money. Its cells are shown only so that the LLM arms can be compared with it.")
 
 
-def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: int, cells_read: int, ex_best_day: Mapping[str, Any], reference: bool = False) -> dict[str, Any]:
+def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: int, cells_read: int, ex_best_day: Mapping[str, Any], reference: bool = False,
+               cells_basis: str = "arena cells: stake books x 2 fail models x 2 latencies") -> dict[str, Any]:
     """`reg` = EVERY registered arena book (arena_books: the union of the registries), never one registry's file."""
     existed = sum(1 for e in reg.values() if e["clock_start_ms"] < now_ms)  # a clock before the read, stopped ones included
     n_gate = len(gate_cells())
     cells_existed = existed * len(STAKES_SOL) * len(AS.MODELS) * len(AS.LATS)  # arena_score's own formula
     return {"arena_books_registered": len(reg), "books_with_clock_before_read": existed, "books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
             "arena_cells_existed": cells_existed, "hv4_arms": len(ARMS), "hv4_gate_cells": n_gate, "hv4_reads_per_bot_id": GATE_READS_PER_BOT, "hv4_gate_checks": n_gate * GATE_READS_PER_BOT,
-            "books_read": books_read, "cells_read": cells_read, "reference_arm": bool(reference), "reference_label": REFERENCE_LABEL if reference else None,
+            "books_read": books_read, "cells_read": cells_read, "cells_read_basis": cells_basis, "reference_arm": bool(reference), "reference_label": REFERENCE_LABEL if reference else None,
             "screen_not_promotion": reference_text() if reference else screen_text(existed, cells_existed, books_read, cells_read),
             "ex_best_day_sol": dict(ex_best_day),
             "v2_alpha": f"0.05/{V2_FAMILY}", "learning_alpha": LEARN_ALPHA,
@@ -1133,7 +1134,7 @@ def build_table(out_dir: str = OUT_DIR, registry: str = REGISTRY_PATH, now_ms: i
     learn = (rd / "LEARNING.hv4.json")
     return {"cells": rows, "cell_count": len(rows), "arms_read": sorted(recs), "arms_not_read": [a for a in ARMS if a not in recs],
             "learning": json.loads(learn.read_text())["learning"]["status"] if learn.exists() else "NOT_READ_YET",
-            "disclosure": disclosure(reg, now, len(recs), cells_read, ebd)}
+            "disclosure": disclosure(reg, now, len(recs), cells_read, ebd, cells_basis="HV4 gate cells read (of 25)")}
 
 
 def render_table(t: Mapping[str, Any]) -> str:
