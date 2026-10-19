@@ -27,7 +27,8 @@ RULE API (a small Python object)
   apply, the earliest decides (a tp / sl / trail ON the fire slot keeps its own code; a fire on the cap's own slot is an event exit). Admission (one open position per cell and pool, cooldown after
   the exit) runs as the data arrive, so a cell is all exit_fire or none (a mix is refused, counted refused_exit_fire_mixed_cell). Candidate slots are slots with a print of the pool.
   PREFIX PROBE on EVERY event exit: the predicate must fire AGAIN on the rows <= the fire slot and must NOT fire at the previous slot the stream actually asked (the last print slot in
-  [landing, fire)) on the rows <= that slot; when the fire is the first slot asked the early check is skipped. It is the purity check (the predicate is called again, so it must be stateless). Registration needs >= 200 event
+  [landing, fire)) on the rows <= that slot; when the fire is the first slot asked the early check is skipped. It is the purity check (the predicate is called again, so it must be stateless). It does NOT see reflection (`.base`, frames, gc, ctypes, `__dict__`): that is a SOURCE REVIEW of the rule
+  module by the manager or QP before PHASE 2 GO, and the probe's views are copies only so that a naive `.base` read fails there. Registration needs >= 200 event
   exits probed per block, 0 failures; a failure KILLS the cell; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. `causal_probe(..., exit_fire=True)` is the
   author's single-hour sample. Declare the cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is
   grid-based (a cell that carries an exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`,
@@ -710,7 +711,11 @@ class ExitView:
       view.rows()        dict of read-only arrays (sl, ib, so, tk, q, b, v, pp) of every print with slot <= view.slot, history before the entry included
       view.upto(slot)    the same for a slot <= view.slot; a later slot raises ExitLookAhead
       view.sd, view.landing_slot, view.cap_slot, view.rate, view.sps    the entry decision slot, the kit floor sd + k_slow + 1, the time cap's decision slot, slots per second, seconds per slot
-    The arrays are slices that end at `slot`; reaching past them through numpy internals (`.base`) is deliberate reflection that no Python object can prevent, and the probes below exist for it.
+    The arrays are slices that end at `slot`. REFLECTION IS NOT DETECTABLE BY ANY PROBE: `.base` of a slice (the whole hour's array, at a flush the whole store), frame inspection
+    (`inspect`, `sys._getframe`), `gc`, `ctypes`, `__dict__` / `__slots__` access to the view, or any attribute that reaches the full arrays reads rows after the slot, and the prefix probe,
+    the entry-hour re-run and the byte checks all stream the same function over the same arrays. The prefix probe builds its views from COPIES, so a naive `.base` read gets None there and
+    raises (a failure), but a reader with a fallback is not caught. THE CONTROL IS A SOURCE REVIEW of the rule module by the manager or QP before PHASE 2 GO (grep `.base`, `inspect`,
+    `_getframe`, `gc`, `ctypes`, `__dict__`, `_a`, `__slots__`, `globals`, `sys.modules` in the rule and in everything it imports).
     A predicate must be a PURE function of the view (and constants fixed at the entry): the probe calls it again."""
 
     __slots__ = ("_a", "slot", "sd", "landing_slot", "cap_slot", "rate", "sps")
@@ -1791,7 +1796,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
     if ev:
         L += ["", "## 6. Event exits (ExitSpec.exit_fire): share of attempts that exited on the event, and the exit-causality probe", "",
               "An event exit is treated like an event entry for the worst-in-slot kill (section 4: EVENT-EXIT; section 5 is the screen p, which an event-exit cell gets like any cell), whatever the entry. The kit asks the predicate "
-              f"at every print slot on a view cut there, hour by hour before the rule sees the hour. The prefix probe, on EVERY event exit, needs it to fire again on the rows <= the fire slot and NOT at the previous slot asked (skipped for the first slot asked): registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. Ties: a tp / sl / trail on the fire "
+              f"at every print slot on a view cut there, hour by hour before the rule sees the hour. The prefix probe, on EVERY event exit, needs it to fire again on the rows <= the fire slot and NOT at the previous slot asked (skipped for the first slot asked): registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. Reflection (`.base`, frames, gc) is not detectable by any probe: source review of the rule module before PHASE 2 GO. Ties: a tp / sl / trail on the fire "
               "slot keeps its own code. Not a price claim; in-sample.", "",
               "| cell | attempts | event exits | fire share | probe failures | probed per block | probe ok | declared |", "|---|---|---|---|---|---|---|---|"]
         for nm, e in ev.items():

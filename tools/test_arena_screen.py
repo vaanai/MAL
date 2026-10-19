@@ -2497,3 +2497,28 @@ def test_the_prefix_probe_asks_only_at_slots_the_stream_asked_and_skips_the_firs
     asked.clear()
     second = int(sparse["sl"][sparse["sl"] >= FLOOR][1])
     assert not S.exit_fire_probe(pos, sparse, pps, second) and asked == [second, first]  # it fires at the previous asked slot too: not a first fire
+
+
+def test_a_naive_base_reader_fails_the_prefix_probe_and_the_docs_say_reflection_is_not_detectable(tape, monkeypatch):
+    """QP #760 blocking 2. A predicate that sells at the PEAK of [landing, cap] by reading `rows["pp"].base` reaches the whole hour's array in the stream. The prefix probe's views are
+    copies, so the same read gets None there and raises: counted as a failure, the cell is killed. A reader that falls back to the view is NOT caught: the docs say so, and name the control."""
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+
+    def naive_base_peak(view):
+        r = view.rows()
+        slf, ppf = r["sl"].base, r["pp"].base
+        idx = np.flatnonzero((slf >= view.landing_slot) & (slf <= view.cap_slot))
+        return bool(idx.size and view.slot == int(slf[idx[np.argmax(ppf[idx])]]))
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), naive_base_peak)
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0  # in the stream `.base` really reached past the slot: it found peaks
+    assert r["event_exit"]["probe_failures"] == r["exits"]["event"] and r["kill"] is True and r["registration"] == "KILLED"
+    a = ev_pool()
+    cut = S._cut_rows(a, S.post_price(a), 50)
+    assert cut["sl"].base is not None and S._cut_rows(a, S.post_price(a), 50, copy=True)["sl"].base is None  # the stream's views are slices, the probe's are copies
+    assert not S._cut_rows(a, S.post_price(a), 50, copy=True)["sl"].flags.writeable
+    doc = S.__doc__ + S.ExitView.__doc__ + S.exit_fire_probe.__doc__
+    for needle in ("REFLECTION IS NOT DETECTABLE BY ANY PROBE", "SOURCE REVIEW", "before PHASE 2 GO", "`.base`", "`inspect`", "`ctypes`", "COPIES", "a reader with a fallback is not caught"):
+        assert needle in doc, needle
+    assert "deliberate reflection that no Python object can prevent, and the probes below exist for it" not in doc  # the overclaim is gone
