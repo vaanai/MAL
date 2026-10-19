@@ -367,7 +367,7 @@ def run_unit(unit, snaps, trades, cell, S, imax, *, stress=True, keep_decisions=
     names = list(VARIANTS) if stress else ["c"]
     kws = {n: dict(VARIANTS[n], mode=mode) for n in names}
     psets = unit.psets
-    rew_end = unit.rew_end_us if unit.rew_end_us is not None else unit.e_eff_us
+    rew_end = min(unit.rew_end_us, unit.e_eff_us) if unit.rew_end_us is not None else unit.e_eff_us
     fills, Ytot, Ntot, kptr, Yk, Nk = [], 0.0, 0.0, 0, 0.0, 0.0
     # per quoted snapshot: (w_clip_us, [per pset: (V_c, v0_valid, v0_c)]) ; acc[pi][name] = sum of (len_s * v)
     acc = [dict.fromkeys(names, 0.0) for _ in psets]
@@ -403,17 +403,18 @@ def run_unit(unit, snaps, trades, cell, S, imax, *, stress=True, keep_decisions=
             continue
         n_quoted += 1
         a = ts + L_US
-        end = min(unit.e_eff_us, ts + L_US + min(gap, CAP_US))
-        if end <= a:
+        end = min(unit.e_eff_us, ts + L_US + min(gap, CAP_US))            # reward and quoted time: clipped at E_eff
+        fill_end = min(unit.e_eff_us + L_US, ts + L_US + min(gap, CAP_US))   # the pull lands L after E_eff (CONDITIONS-2 5)
+        if fill_end <= a:
             per_snap.append(None)
             continue
-        quoted_us += end - a
-        w_quoted.append(end - a)
+        quoted_us += max(0, end - a)
+        w_quoted.append(max(0, end - a))
         # ---- prints in (a, end]: fills, and the resting-size pieces for the reward
         ry, rn = q.sy, q.sn
         ahead_y, ahead_n = q.dy, q.dn
         pieces, cur = [], a
-        i0, i1 = trades.span(a, end)
+        i0, i1 = trades.span(a, fill_end)
         for i in range(i0, i1):
             if trades.block[i]:
                 continue
@@ -461,7 +462,7 @@ def run_unit(unit, snaps, trades, cell, S, imax, *, stress=True, keep_decisions=
                 rn -= qty
                 Ntot += qty
             fills.append((trades.tid[i], side, fill_price(q.by if side == "yes" else q.bn, pb), qty, t_us))
-        pieces.append((cur, end, ry, rn))
+        pieces.append((cur, fill_end, ry, rn))
         # ---- reward pieces (clipped at the reward end) under every parameter set and variant
         per_p, cache = [], {}
         for pi, (P, T, df) in enumerate(psets):

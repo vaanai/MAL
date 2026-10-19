@@ -1444,3 +1444,19 @@ def test_b3_scan_is_report_only_and_never_prints_a_deciding_verdict(tmp_path, co
     assert g["verdict"].startswith("SCAN_REPORT_ONLY_") and g["deciding"] is False
     assert "report-only" in g["scan"]["note"]
     assert "SCAN_REPORT_ONLY" in (tmp_path / "o" / "table.txt").read_text()
+
+
+def test_b4_prints_fill_through_e_eff_plus_l_while_reward_stays_clipped_at_e_eff():
+    u = mk_unit(e=100.0)                                   # E_eff = 100
+    s0 = bsnap(0, **GOOD)
+    tr = [trade(99.0, "in", 0.48, 5, "no"), trade(101.5, "late", 0.48, 5, "no"), trade(102.0, "edge", 0.48, 5, "no"),
+          trade(102.5, "after", 0.48, 5, "no")]
+    r = run(u, [s0], tr)
+    assert [f[0] for f in r.fills] == ["in", "late", "edge"]             # the pull lands at E_eff + L, inclusive
+    v = sim.snapshot_value(s0, 4800, 5000, 25.0, 25.0, 1000.0, 0.5)[1]
+    assert r.quoted_us == sec(98) and r.n_snaps_quoted == 1
+    assert r.acc[0]["c"] < 98 * v + 1e-9 and r.acc[0]["c"] > 0           # reward is paid only on (2, 100], on the resting size
+    # a quote decided at 99 s is live (101, ...] : no reward after E_eff but it can still be hit until 102
+    u2 = mk_unit(e=100.0)
+    r2 = run(u2, [bsnap(99, **GOOD)], [trade(101.5, "x", 0.48, 5, "no"), trade(102.5, "y", 0.48, 5, "no")])
+    assert [f[0] for f in r2.fills] == ["x"] and r2.acc[0]["c"] == 0.0 and r2.quoted_us == 0 and r2.n_snaps_quoted == 1
