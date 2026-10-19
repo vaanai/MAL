@@ -23,8 +23,9 @@ RULE API (a small Python object)
   cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is grid-based (a cell that carries an
   exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`, `event_exit.fire_share`).
   --count-only IS A TIME-ONLY BOUND when an exit_fire is present: its overlap rule holds every position for the full time cap (the callable is not run, no price is read), so the figure
-  is an upper bound on the hold and the real attempts are AT LEAST that many (an event exit frees the pool earlier). Never drop a cell under RULES step 2 from it; count with the
-  rule's own structure scan and report the kit's figure beside it (the count-only result carries `attempts_bound_is_time_only` for such a cell).
+  is an upper bound on the hold. FOR AN exit_fire CELL THE TIME-ONLY FIGURE IS A LOWER BOUND ON ATTEMPTS (an event exit frees the pool earlier, so the real attempts are AT LEAST that
+  many), AND THE RULES STEP-2 DROP MUST NOT USE IT: a cell it flags under 20 a day may well be over 20. Count with the rule's own structure scan and report the kit's figure beside it
+  (the count-only result carries `attempts_bound_is_time_only` and `time_only_figure_is: "lower_bound_on_attempts"` for such a cell; the key `attempts_upper_bound` keeps its name).
   The rule gets ONE whole block hour at a time (columns sorted by pool, slot, tx, event) and may look one hour back through state.prev. A rule MUST decide only on rows
   with slot <= its decision slot (the hour is handed over whole for speed; the kit cannot see look-ahead, `causal_probe` re-runs a rule on a truncated hour to catch it).
   AM.2 UNIVERSE (DEC-031 Amendment 2: the rent refund holds only for it): WSOL quote AND V in [17.5e9, 17.7e9] lamports at decision time. The rule enforces it (hour.in_universe /
@@ -1280,7 +1281,8 @@ class Screen:
             for ci, pool, slot, spec in good:
                 self.cnt[ci][day] += 1
                 if self.count_only:
-                    self.exit_used[ci] += getattr(spec, "exit_fire", None) is not None  # the time-only overlap rule below ignores the event exit: see the module doc  # time-only overlap rule: an upper bound, since a take-profit / stop exit can only free the pool earlier
+                    # time-only overlap rule: an upper bound on the hold, since a take-profit / stop exit can only free the pool earlier; it ignores an event exit (see the module doc)
+                    self.exit_used[ci] += getattr(spec, "exit_fire", None) is not None
                     k = (ci, pool)
                     if slot >= nextok.get(k, -1):
                         self.cnt_ub[ci][day] += 1
@@ -1397,7 +1399,8 @@ class Screen:
                                         "days_with_trigger": int(sum(1 for d in self.days if self.cnt[ci][d])),
                                         "explore_0814": self._explore_count(ci)}
                 if self.exit_used[ci]:  # new keys only when an exit_fire is present: a run without one is byte-identical to before
-                    out_cells[cell.name].update(exit_fire_triggers=int(self.exit_used[ci]), attempts_bound_is_time_only=True)
+                    out_cells[cell.name].update(exit_fire_triggers=int(self.exit_used[ci]), attempts_bound_is_time_only=True,
+                                                time_only_figure_is="lower_bound_on_attempts")
                 continue
             out_cells[cell.name] = self._cell_result(ci, names, ndays)
         return out_cells
@@ -1671,12 +1674,12 @@ def counts_md(res: dict, meta: dict) -> str:
         e = r["explore_0814"]
         per = "na" if e["per_day_upper_bound"] is None else f"{e['per_day_upper_bound']:.1f}"
         flag = "na" if e["below_step2_count"] is None else ("DROP (<20)" if e["below_step2_count"] else "ok")
-        flag += " (time-only: exit_fire present)" if r.get("attempts_bound_is_time_only") else ""
+        flag += " (time-only: exit_fire present; LOWER bound on attempts, not for the step-2 drop)" if r.get("attempts_bound_is_time_only") else ""
         L.append(f"| {nm} | {r['triggers']} | {r['attempts_upper_bound']} | {r['days_with_trigger']} | {per} | {flag} | " + " | ".join(str(r["per_day_after_overlap"].get(d, 0)) for d in days) + " |")
     if any(r.get("attempts_bound_is_time_only") for r in res.values()):
         L += ["", "**exit_fire present (cells marked `time-only`):** the overlap rule above holds every position for its full time cap and cannot run the event exit, so the figure is a TIME-ONLY "
-              "bound on the hold. An event exit frees the pool earlier, so the real attempts are at least this many (never fewer). Do not apply the RULES step-2 drop to such a cell from this "
-              "figure; count it with the rule's own structure scan and report the kit's figure beside it."]
+              "bound on the hold. **For an exit_fire cell it is a LOWER bound on attempts** (an event exit frees the pool earlier, so the real attempts are at least this many, never fewer), "
+              "**so the RULES step-2 drop must not use it.** Count such a cell with the rule's own structure scan and report the kit's figure beside it."]
     return "\n".join(L) + "\n"
 
 

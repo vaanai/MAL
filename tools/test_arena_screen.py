@@ -1947,10 +1947,10 @@ def kit_exit_cell(tape, cell: S.Cell, fire=None) -> "S.Screen":
     return scr
 
 
-GOLDEN = {"event": "3f2be283798d39d27b0e5abdecdc315e19c03ea7b3a8348aaf12666775d0c59a", "event_table": "3a8083574803b53cc68dbb1ca164388919e92a47f892c93b78f3341b518e080e",
-          "grid": "0149dc1b999bd85213015c62f4c6d65db57c38fec54c493bfbddf9c2bac15a61", "grid_table": "b7ffbe239ac5faa05b0828ada3ff66f3d5f368cce771cf309884b25e9e6e2319",
+GOLDEN = {"event": "35fce10beb3c9272f263f616070deb7e60006dec9f3429a467a6950f823b2b91", "event_table": "82e170be2df7a893f4306531983d010b367bf2d6c78bc67264e4a9e460a3a6ec",
+          "grid": "47b3a8c746f27801361ce778d7df481889c3058cb1a4dd08330b5ebe2b6126cd", "grid_table": "a9ef5d17440247fe1432b11d4a8a3a42545e94240854735dd27d9f5b64c53b9a",
           "count_only": "45cd2cf604b9ea5698671d4031f2488bbfe9f7fd4997811c71230cb9ba81f8ca", "count_only_md": "7e45a532630b2194b4610c5b7983c2584cba4dfd2485c42c750b097f7bec96e5"}
-BASE_COMMIT = "258ba4f"  # main before this change (arena_screen.py sha256 eabacb55...)
+BASE_COMMIT = "489fa7e"  # main before this change: #758 (screen p) is on top of #756; the golden below is that kit's output, screen_p keys and section 5 included
 
 
 def sha(x: str) -> str:
@@ -1974,7 +1974,7 @@ def old_style_outputs(tape, kit=S) -> dict:
 
 
 def test_without_an_exit_fire_the_results_are_byte_identical_to_the_kit_before_this_change(tape):
-    """results.json (priced, event and grid cell), TABLE.md, counts.json and COUNTS.md of a run with no exit_fire are the very bytes the kit wrote at 258ba4f (pinned sha256 of the
+    """results.json (priced, event and grid cell), TABLE.md, counts.json and COUNTS.md of a run with no exit_fire are the very bytes the kit wrote at 489fa7e (pinned sha256 of the
     json.dumps / text on this fixture): no new key, no new line, `exits` still has only time / tp / sl / trail."""
     got = old_style_outputs(tape)
     assert got == GOLDEN
@@ -2017,7 +2017,7 @@ def test_an_event_exit_cell_reports_its_share_and_probes_every_event_exit(tape, 
     assert scr.counters["exit_fire_events"] == r["exits"]["event"] and scr.counters["exit_fire_calls"] >= r["attempts"]
     assert e["probe_ok"] is False and e["probe_min_per_block"] == 200 and "EXIT-CAUSALITY PROBE NOT SATISFIED" in r["registration"]  # 200 per block are not on a fixture this small
     md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
-    assert "## 5. Event exits" in md and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md
+    assert "## 6. Event exits" in md and md.index("## 5. Screen p") < md.index("## 6. Event exits") and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md
     monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)  # the 200-per-block requirement is a constant: with it met, the survivor carries no probe note
     ok = _lower_leg_swap(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)), "all_win")
     assert ok["event_exit"]["probe_ok"] is True and ok["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)"
@@ -2117,11 +2117,12 @@ def test_count_only_with_an_exit_fire_is_a_time_only_bound_and_never_runs_the_ca
     r = res["c"]
     assert r["triggers"] == 3 and r["attempts_upper_bound"] == 2 and r["exit_fire_triggers"] == 3 and r["attempts_bound_is_time_only"] is True and scr.t_price == 0.0 and not scr.acc[0]
     cm = S.counts_md(res, {"rule": "script", "hours_subset": False})
-    assert "time-only: exit_fire present" in cm and "AT LEAST" not in cm and "at least this many" in cm and "RULES step-2 drop" in cm
+    assert "time-only: exit_fire present" in cm and "LOWER bound on attempts" in cm and "the RULES step-2 drop must not use it" in cm and "at least this many" in cm
+    assert r["time_only_figure_is"] == "lower_bound_on_attempts" and "attempts_upper_bound" in r  # the existing key keeps its name
     plain = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True).results()["c"]
     assert "attempts_bound_is_time_only" not in plain and "exit_fire_triggers" not in plain
     doc = S.__doc__
-    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "AT LEAST that many" in doc and "EXIT CAUSALITY PROBE" in doc
+    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "LOWER BOUND ON ATTEMPTS" in doc and "STEP-2 DROP MUST NOT USE IT" in doc and "EXIT CAUSALITY PROBE" in doc
 
 
 def test_the_time_only_count_is_a_lower_bound_of_the_attempts_an_event_exit_really_makes(tape):
@@ -2147,3 +2148,22 @@ def test_the_kit_refuses_a_bad_exit_fire_and_a_look_ahead_one_stops_the_run(tape
     with pytest.raises(S.ExitLookAhead):  # a Refused: the CLI turns it into exit code 2 and nothing is written as a result
         run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=peek))])
     assert issubclass(S.ExitLookAhead, S.Refused) and issubclass(S.ExitFireError, S.Refused)
+
+
+def test_an_event_exit_cell_gets_the_screen_p_like_any_cell_and_the_p_is_untouched_by_the_event_exit(tape):
+    """#758's report-only screen p: computed after the verdict on the same trips, for a killed or a surviving event-exit cell, and nothing in it reads the event-exit fields."""
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    r = scr.results()["c"]
+    sp = r["screen_p"]
+    assert sp["report_only"] is True and sp["B"] == S.SCREEN_P_B and set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and "event_exit" in r
+    again = S.screen_p_cell(S._cat(scr.acc[0]), scr.cfg[S.RENT_DECIDING], None, B=S.SCREEN_P_B)
+    assert again["cell_p"] == sp["cell_p"] and again["cell_p_date_cluster"] == sp["cell_p_date_cluster"]  # the same function on the same trips
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert md.index("## 5. Screen p") < md.index("## 6. Event exits")
+    off = S.Screen(ScriptRule(with_fire(script_for(tape[0]), whale_fire(1.0e9)), cells=(S.Cell("c", event_triggered=False, event_exit=True),)), screen_p=False)
+    off.run_block(0, "synthetic", S.iter_hours(tape[1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    r_off = off.results()["c"]
+    assert "screen_p" not in r_off and {k: v for k, v in r.items() if k != "screen_p"} == r_off  # nothing else moves with it
+    empty = S.Screen(ScriptRule([], cells=(S.Cell("c", event_triggered=False, event_exit=True),)))
+    r0 = empty.results()["c"]
+    assert r0["screen_p"]["cell_p"] is None and r0["event_exit"]["event_exits"] == 0 and r0["registration"] == "KILLED"  # n = 0: p None, not a pass
