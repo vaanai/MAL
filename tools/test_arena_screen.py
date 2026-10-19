@@ -4,11 +4,13 @@ guard, the Am.2 universe refusal, the exit resolver against a scalar reference, 
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import math
 import os
 import random
 import subprocess
+import sys
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -757,7 +759,8 @@ def test_output_dir_must_be_outside_the_protected_trees(out):
     assert S.check_out_dir("/tmp/some-screen-out").endswith("some-screen-out")
 
 
-def test_d2d3_hours_duplicates_and_arena_file_names_are_refused(tmp_path):
+def test_d2d3_hours_duplicates_and_arena_file_names_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "BLOCK_ROOTS", (str(tmp_path),))
     d = tmp_path / "trades"
     d.mkdir()
     (d / "trades-2026-10-05T00.jsonl.zst").write_bytes(b"")
@@ -781,6 +784,30 @@ def test_d2d3_hours_duplicates_and_arena_file_names_are_refused(tmp_path):
         S.discover(tmp_path / "b" / "w1" / "trades" / "trades-2026-08-20T00.jsonl.zst", "arena")
 
 
+def test_an_hour_file_must_resolve_under_its_own_block_root(tmp_path, monkeypatch):
+    """QP 5a: a symlinked hour file that points out of the block (to another root, the arena tape, anywhere) is refused although its own name is clean."""
+    a, b, outside = tmp_path / "root_a", tmp_path / "root_b", tmp_path / "elsewhere"
+    for d in (a / "trades", b / "trades", outside):
+        d.mkdir(parents=True)
+    monkeypatch.setattr(S, "BLOCK_ROOTS", (str(a), str(b)))
+    (a / "trades" / "trades-2026-08-20T00.jsonl.zst").write_bytes(b"")
+    assert len(S.discover(a, "clean")) == 1
+    (b / "trades" / "trades-2026-08-20T00.jsonl.zst").write_bytes(b"")
+    (a / "trades" / "trades-2026-08-20T01.jsonl.zst").symlink_to(b / "trades" / "trades-2026-08-20T00.jsonl.zst")  # into the OTHER block root
+    with pytest.raises(S.Refused, match="hour_file_outside_block_root"):
+        S.discover(a, "clean")
+    (a / "trades" / "trades-2026-08-20T01.jsonl.zst").unlink()
+    (outside / "trades-2026-08-20T01.jsonl.zst").write_bytes(b"")
+    (a / "trades" / "trades-2026-08-20T01.jsonl.zst").symlink_to(outside / "trades-2026-08-20T01.jsonl.zst")  # out of every block
+    with pytest.raises(S.Refused, match="hour_file_outside_block_root"):
+        S.discover(a, "clean")
+    with pytest.raises(S.Refused, match="hour_file_outside_block_root"):
+        S.discover(a / "trades" / "trades-2026-08-20T01.jsonl.zst", "clean")  # naming the link itself does not help
+    (a / "trades" / "trades-2026-08-20T01.jsonl.zst").unlink()
+    (a / "trades" / "trades-2026-08-20T01.jsonl.zst").symlink_to(a / "trades" / "trades-2026-08-20T00.jsonl.zst")  # inside its own root: fine
+    assert len(S.discover(a, "clean")) == 2
+
+
 def test_cli_refuses_with_exit_code_2_and_reads_nothing(tmp_path, capsys):
     base = ["--rule", "tools.arena_screen:TrivialRule", "--out", str(tmp_path / "o")]
     for extra in (["--block", "/etc"], ["--block", "/data/mal/clean-view/fresh-0802/w1"], ["--block", "/data/mal/arena/tape"], ["--block", "/data/mal/arena/ledger", "--count-only"],
@@ -790,25 +817,225 @@ def test_cli_refuses_with_exit_code_2_and_reads_nothing(tmp_path, capsys):
     assert "REFUSED" in capsys.readouterr().err and not (tmp_path / "o").exists()
 
 
-def test_cli_end_to_end_on_a_synthetic_block_writes_the_files(tape, tmp_path, monkeypatch):
-    """The guards are for the real tree; point them at a temp block to run the CLI body (count-only, then priced)."""
+@pytest.fixture
+def clean_tree(tape, tmp_path, monkeypatch):
+    """The four canonical blocks as a temp tree (hard links of the synthetic tape), with the guards pointed at it."""
     rows, files = tape
     root = tmp_path / "clean"
     monkeypatch.setattr(S, "CLEAN_VIEW", str(root))
-    monkeypatch.setattr(S, "BLOCK_ROOTS", (str(root / "explore-0814"),))
-    blk = root / "explore-0814" / "w1" / "trades"
-    blk.mkdir(parents=True)
-    for _, f in files:
-        os.link(f, blk / Path(f).name)
-    vm = tmp_path / "v.json"
+    monkeypatch.setattr(S, "BLOCK_ROOTS", tuple(str(root / b) for b in S.CANONICAL_BLOCKS))
+    monkeypatch.setattr(S, "VMAP_DIR", str(tmp_path / "virtual"))
+    for b in S.CANONICAL_BLOCKS:
+        blk = root / b / ("w1" if b == "explore-0814" else ".") / "trades"
+        blk.mkdir(parents=True)
+        for _, f in files:
+            os.link(f, blk / Path(f).name)
+    (tmp_path / "virtual").mkdir()
+    vm = tmp_path / "virtual" / "v.json"
     vm.write_text(json.dumps({"v": {POOLS[k]: v for k, v in V_OF.items()}}))
+    return root, vm
+
+
+def cli(root, vm, out, *extra, rule="tools.arena_screen:TrivialRule", blocks=None):
+    bl = blocks if blocks is not None else [str(root / b) for b in S.CANONICAL_BLOCKS]
+    args = ["--rule", rule, "--rule-kwargs", '{"every": 5, "hold_s": 120}', "--out", str(out), "--vmap", str(vm)]
+    for b in bl:
+        args += ["--block", b]
+    return S.main(args + list(extra))
+
+
+def test_cli_end_to_end_on_the_four_synthetic_blocks_writes_files_and_provenance(clean_tree, tmp_path):
+    root, vm = clean_tree
     for extra, outs in ((["--count-only"], ("counts.json", "COUNTS.md")), ([], ("results.json", "TABLE.md"))):
         out = tmp_path / ("o" + ("c" if extra else "p"))
-        rc = S.main(["--rule", "tools.arena_screen:TrivialRule", "--rule-kwargs", '{"every": 5, "hold_s": 120}', "--block", str(root / "explore-0814"), "--out", str(out), "--vmap", str(vm), *extra])
-        assert rc == 0 and all((out / o).exists() for o in outs)
+        assert cli(root, vm, out, *extra) == 0 and all((out / o).exists() for o in outs)
         doc = json.loads((out / outs[0]).read_text())
-        assert doc["meta"]["hours"] == 3 and doc["meta"]["rows_pumpswap_per_s"] > 0 and doc["meta"]["blocks"] == ["explore-0814"]
+        m = doc["meta"]
+        assert m["hours"] == 12 and m["rows_pumpswap_per_s"] > 0 and m["blocks"] == list(S.CANONICAL_BLOCKS)
+        assert m["hours_subset"] is False and m["full_screen_of_record"] is (not extra)
+        pv = m["provenance"]  # QP 5e: the run can be tied to its DECLARE
+        assert pv["kit"]["sha256"] == hashlib.sha256(Path(S.__file__).read_bytes()).hexdigest() and isinstance(pv["kit"]["git_dirty"], bool) and len(pv["kit"]["git_head"]) == 40
+        assert pv["rule"]["source_sha256"] == hashlib.sha256(Path(S.__file__).read_bytes()).hexdigest() and pv["rule"]["kwargs"] == '{"every": 5, "hold_s": 120}'
+        assert pv["vmap"] == [{"path": str(vm.resolve()), "sha256": hashlib.sha256(vm.read_bytes()).hexdigest()}]
+        assert pv["hours"]["explore-0814"] == ["2026-08-20T00", "2026-08-20T01", "2026-08-20T02"] and pv["hours_subset_requested"] is None
     assert doc["cells"]["trivial"]["attempts"] > 0
+
+
+def test_loophole_a_pricing_needs_each_of_the_four_blocks_once_and_whole(clean_tree, tmp_path):
+    root, vm = clean_tree
+    four = [str(root / b) for b in S.CANONICAL_BLOCKS]
+    o = tmp_path / "o"
+    assert cli(root, vm, o, blocks=four[:1]) == 2  # explore alone
+    assert cli(root, vm, o, blocks=four[:3]) == 2 and cli(root, vm, o, blocks=four[1:]) == 2  # three of four
+    assert cli(root, vm, o, blocks=[str(root / "explore-0814" / "w1")] + four[1:]) == 2  # a worker is not the block
+    assert cli(root, vm, o, blocks=four + four[:1]) == 2  # repeated
+    assert cli(root, vm, o, blocks=four + [str(root / "explore-0814" / "w1")]) == 2  # nested
+    assert cli(root, vm, o, "--count-only", blocks=four + [str(root / "explore-0814" / "w1")]) == 2  # nested is refused for counts too
+    assert cli(root, vm, o, "--count-only", blocks=four[:1]) == 0  # a count may be one block
+    assert not (tmp_path / "o" / "results.json").exists()
+    with pytest.raises(S.Refused, match="pricing_needs_the_four_blocks"):
+        S.run(__import__("argparse").Namespace(rule="tools.arena_screen:TrivialRule", rule_kwargs=None, block=four[:2], out=str(tmp_path / "o2"), hours=None, count_only=False, workers=1,
+                                              min_attempts_per_day=20.0, vmap=[str(vm)]))
+    with pytest.raises(S.Refused, match="repeated_or_nested_block"):
+        S.run(__import__("argparse").Namespace(rule="tools.arena_screen:TrivialRule", rule_kwargs=None, block=four[:1] * 2, out=str(tmp_path / "o2"), hours=None, count_only=True, workers=1,
+                                              min_attempts_per_day=20.0, vmap=[str(vm)]))
+
+
+def test_loophole_b_hours_subset_is_refused_when_pricing_and_marked_when_counting(clean_tree, tmp_path):
+    root, vm = clean_tree
+    o = tmp_path / "ob"
+    assert cli(root, vm, o, "--hours", "2026-08-20T01") == 2 and not o.exists()
+    out = tmp_path / "oc"
+    assert cli(root, vm, out, "--count-only", "--hours", "2026-08-20T01") == 0
+    doc = json.loads((out / "counts.json").read_text())
+    assert doc["meta"]["hours_subset"] is True and doc["meta"]["full_screen_of_record"] is False and doc["meta"]["hours"] == 4
+    assert doc["meta"]["provenance"]["hours_subset_requested"] == ["2026-08-20T01"] and doc["meta"]["provenance"]["hours"]["explore-0814"] == ["2026-08-20T01"]
+    assert "SUBSET" in (out / "COUNTS.md").read_text() and "step-2" in (out / "COUNTS.md").read_text()
+
+
+def test_vmap_paths_are_guarded_and_hashed(tmp_path, monkeypatch):
+    good = "/data/mal/pumpswap-virtual/pool_v_0814.json"
+    assert S.check_vmap_paths([good]) == [os.path.realpath(good)]
+    for bad in ("/data/mal/pumpswap-virtual/forward-1002/pool_v.json", "/data/mal/pumpswap-virtual/probe_v.json", "/data/mal/pumpswap-virtual/sealed/v.json"):
+        with pytest.raises(S.Refused, match="vmap_forbidden_word"):
+            S.check_vmap_paths([bad])
+    for bad in ("/tmp/v.json", "/data/mal/pumpswap-virtual/../clean-view/v.json", "relative.json"):
+        with pytest.raises(S.Refused, match="vmap_outside"):
+            S.check_vmap_paths([bad])
+    real = os.path.realpath
+    monkeypatch.setattr(S.os.path, "realpath", lambda p: "/etc/passwd" if str(p).endswith("link.json") else real(p))
+    with pytest.raises(S.Refused, match="vmap_outside"):
+        S.check_vmap_paths(["/data/mal/pumpswap-virtual/link.json"])
+    assert S.file_sha256(Path(S.__file__)) == hashlib.sha256(Path(S.__file__).read_bytes()).hexdigest()
+
+
+def test_a_missing_timestamp_refuses_the_row_and_is_counted():
+    def line(**kw):
+        base = {"venue": "pumpswap", "mint": MINT["A"], "trader": "w", "side": "buy", "sol_lamports": 10**8, "token_raw": 10**11, "quote_reserve": 3 * 10**10, "base_reserve": 10**14,
+                "pool": POOLS["A"], "slot": 500, "event_index": 0, "tx_index": 1, "block_time": 1_787_184_000, "quote_is_wsol": True}
+        return json.dumps({**base, **kw}, separators=(",", ":")).encode()
+
+    lines = [line(), line(block_time=None, slot=501), line(block_time=0, slot=502), line(block_time=None, event_ts=None, slot=503), line(pool=POOLS["B"], block_time=None), line(slot=504, block_time="x")]
+    hr = S.build_hour(lines, block="b", T=1_787_184_000, idx=0, fmt="backfill", vmap=S.VMap([{POOLS["A"]: float(V)}]))
+    assert hr.n == 1 and hr.n_no_ts == 5 and (hr.bt > 0).all() and list(hr.pools) == [POOLS["A"]]  # never stored as 0; a pool with only bad rows is not created
+    hr2 = S.build_hour([line(block_time=None, event_ts=1_787_184_000)], block="b", T=1_787_184_000, idx=0, fmt="backfill", vmap=None)
+    assert hr2.n == 1 and hr2.bt[0] == 1_787_184_000  # event_ts is the fallback
+    arena = {"type": "trade", "prog": "pumpswap", "venue": "pumpswap", "slot": 5, "t_recv_ms": 1000, "event_ts": 1, "signature": "s", "event_index": 0, "pool": POOLS["A"], "mint": MINT["A"], "trader": "w",
+             "side": "buy", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1, "base_reserve": 1, "virtual_quote_reserves": V, "quote_mint": S.WSOL}
+    h3 = S.build_hour([json.dumps(arena).encode(), json.dumps({**arena, "t_recv_ms": None}).encode(), json.dumps({**arena, "event_ts": None}).encode()], block="a", T=0, idx=0, fmt="arena", vmap=None)
+    assert h3.n == 1 and h3.n_no_ts == 2
+
+
+def test_screen_flags_hours_with_missing_timestamps_and_refuses_unknown_pool_age(tape):
+    rows, files = tape
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    slot = own_slots(rows, "A", 0, 1000, 1500)[0]
+    scr = S.Screen(ScriptRule([(POOLS["A"], slot, S.ExitSpec(120))]), count_only=True)
+
+    def zeroed():
+        for hr in S.iter_hours(files[:1], "synthetic", "backfill", vm):
+            hr.bt[:] = 0  # a loader that stored a missing timestamp as 0 would look like this: the seal must refuse, not pass
+            hr.n_no_ts = 7
+            yield hr
+
+    scr.run_block(0, "synthetic", zeroed())
+    assert scr.counters["refused_pool_age_unknown"] == 1 and scr.counters["rows_no_timestamp"] == 7 and scr.flag_hours == ["2026-08-20T00"] and not sum(scr.cnt[0].values())
+
+
+def write_rule(d: Path, name: str, body: str) -> Path:
+    f = d / f"{name}.py"
+    f.write_text(body)
+    return f
+
+
+CLEAN_RULE = """
+import numpy as np
+from tools.arena_screen import Cell, ExitSpec
+
+
+class Factory:
+    name = "clean"
+
+    def __init__(self, **kw):
+        pass
+
+    def cells(self):
+        return [Cell("c")]
+
+    def triggers(self, hour, state):
+        return []
+"""
+
+
+def test_rule_guard_source_text_import_graph_and_runtime(tmp_path):
+    """DEC-031 3.1: a rule may not import or contain the banned model families (text, import graph, modules actually loaded)."""
+    banned = ("r4" + "b", "la" + "ya", "l" + "3", "02_" + "build")
+    ok = write_rule(tmp_path, "okrule", CLEAN_RULE)
+    sha = S.check_rule_source(ok)
+    assert sha == hashlib.sha256(ok.read_bytes()).hexdigest() and S.check_rule_source(S.rule_source_path("tools.arena_screen:TrivialRule"))  # the kit's own TrivialRule passes
+    for i, tok in enumerate(banned):  # text, even in a comment
+        f = write_rule(tmp_path, f"textrule{i}", CLEAN_RULE + f"\n# features from {tok}_model\n")
+        with pytest.raises(S.Refused, match="rule_module_banned"):
+            S.check_rule_source(f)
+    for name in ("tools." + "r4" + "b_book", "models." + "la" + "ya", "tools.l" + "3_features"):  # imports, plain and from-imports
+        for stmt in (f"import {name}", f"from {name.rpartition('.')[0]} import {name.rpartition('.')[2]}", f"from {name} import x"):
+            f = write_rule(tmp_path, "imprule", CLEAN_RULE + f"\n{stmt}\n")
+            with pytest.raises(S.Refused, match="rule_module_banned"):
+                S.check_rule_source(f)
+    # the import graph: a clean rule that imports a sibling helper which imports a banned module
+    (tmp_path / "helpermod.py").write_text("import tools." + "r4" + "b_book\n")
+    f = write_rule(tmp_path, "graphrule", "import helpermod\n" + CLEAN_RULE)
+    sys.path.insert(0, str(tmp_path))
+    try:
+        with pytest.raises(S.Refused, match="rule_module_banned"):
+            S.check_rule_source(f)
+    finally:
+        sys.path.remove(str(tmp_path))
+    # a banned file name
+    with pytest.raises(S.Refused, match="rule_module_banned"):
+        S.check_rule_source(write_rule(tmp_path, "l" + "3_rule", CLEAN_RULE))
+
+
+def test_rule_guard_catches_a_module_imported_at_run_time(tmp_path):
+    (tmp_path / ("l" + "3_helper.py")).write_text("X = 1\n")
+    body = CLEAN_RULE + "\nimport importlib\n\n\ndef make():\n    importlib.import_module('l' + '3_helper')\n    return Factory()\n"
+    f = write_rule(tmp_path, "dynrule", body)
+    assert S.check_rule_source(f)  # the static scan cannot see a name built at run time ...
+    sys.path.insert(0, str(tmp_path))
+    before = set(sys.modules)
+    try:
+        S.load_rule(f"{f}:make")
+        with pytest.raises(S.Refused, match="rule_module_banned"):  # ... the loaded-module check can
+            S.check_loaded_modules(before)
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("l" + "3_helper", None)
+
+
+def test_cli_refuses_a_banned_rule_with_exit_code_2(clean_tree, tmp_path):
+    root, vm = clean_tree
+    bad = write_rule(tmp_path, "badrule", CLEAN_RULE + "\nimport tools." + "r4" + "b_book\n")
+    assert cli(root, vm, tmp_path / "ob", "--count-only", rule=f"{bad}:Factory") == 2 and not (tmp_path / "ob").exists()
+    good = write_rule(tmp_path, "goodrule", CLEAN_RULE)
+    assert cli(root, vm, tmp_path / "og", "--count-only", rule=f"{good}:Factory") == 0
+    pv = json.loads((tmp_path / "og" / "counts.json").read_text())["meta"]["provenance"]["rule"]
+    assert pv["source_sha256"] == hashlib.sha256(good.read_bytes()).hexdigest() and pv["spec"].endswith("goodrule.py:Factory")
+
+
+def test_causal_probe_leaves_the_rule_state_alone(tape):
+    rows, files = tape
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    st = S.RunState("synthetic", scratch={"seen": []}, first_seen={POOLS["A"]: 1})
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][3])
+
+    class Writer:
+        def triggers(self, hour, state):
+            state.scratch["seen"].append(1)
+            state.first_seen["x"] = 2
+            return [(POOLS["A"], slot, S.ExitSpec(120))]
+
+    assert S.causal_probe(Writer(), hr, st, POOLS["A"], slot)
+    assert st.scratch == {"seen": []} and st.first_seen == {POOLS["A"]: 1}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ 7. loaders

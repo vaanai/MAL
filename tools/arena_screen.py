@@ -51,7 +51,10 @@ if __package__ in (None, ""):  # `python tools/arena_screen.py`
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
+import ast
 import collections
+import copy
+import hashlib
 import dataclasses
 import importlib
 import importlib.util
@@ -97,6 +100,7 @@ FAILS = ("flat", "press")
 GRACE = P.GRACE_SLOTS
 RETAIN_EXTRA_S = 5400.0  # a pool's rows are kept this long past the hold: GRACE_SLOTS at up to 0.54 s per slot, plus margin
 MIN_HOLD_S = 3.0
+REPO_ROOT = Path(__file__).resolve().parent.parent
 MIN_POOL_AGE_S = 360  # Amendment 1, 3: EXP-024 Look-2 seal on the Am.2 V-range universe
 SEPTEMBER_BLOCKS = ("oracle-insample-2026-09-22_25", "fast-pool-2026-09-18T23_2026-09-22T00", "oracle-live-2026-09-25_27")
 SUB_CELLS = tuple((rule, fail) for rule in STRAND_RULES for fail in FAILS)  # the four deciding sub-cells (tools/arena_score.py)
@@ -213,14 +217,123 @@ def check_out_dir(out: str | os.PathLike) -> str:
     return real
 
 
+# DEC-031 section 3.1: a rule may not import or use the banned model families or their features. The tokens are spelled in pieces so that this file passes its own scan.
+_BAN_TOKENS = ("r4" + "b", "la" + "ya", "l" + "3")
+_BAN_PATHS = ("02_" + "build", "models/r4" + "b", "/data/mal/r4" + "b", "/data/mal/hunt-1008/la" + "ya-opt")
+_BAN_TEXT = re.compile(r"(?i)(?<![a-z0-9])(?:" + "r4" + "b|la" + "ya|l" + "3" + r")(?![0-9a-z])|02_" + "build")
+
+
+def banned_name(name: str) -> bool:
+    """True if a module name, file name or path names a banned model family (token match on . _ - / separators, or a banned path fragment)."""
+    low = name.lower()
+    return any(t in _BAN_TOKENS or t.startswith(_BAN_TOKENS[0]) or t.startswith(_BAN_TOKENS[1]) for t in re.split(r"[._\-/\s]+", low)) or any(b in low for b in _BAN_PATHS)
+
+
+def _import_names(src: str) -> list[str]:
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            out += [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+    return out
+
+
+def check_rule_source(path: str | os.PathLike, _seen: set | None = None) -> str:
+    """Refuse a rule file whose TEXT mentions a banned model family, or whose IMPORT GRAPH (AST, followed through repo and sibling modules; the pinned tools.arena_* are not
+    entered) names one. Returns the sha256 of the rule source."""
+    seen = _seen if _seen is not None else set()
+    p = Path(path).resolve()
+    if p in seen:
+        return ""
+    seen.add(p)
+    if banned_name(str(p)):
+        raise Refused(f"rule_module_banned (DEC-031 3.1): file name {p}")
+    raw = p.read_bytes()
+    src = raw.decode("utf-8", "replace")
+    m = _BAN_TEXT.search(src)
+    if m:
+        raise Refused(f"rule_module_banned (DEC-031 3.1): {p.name} mentions {m.group(0)!r} (comments and strings count)")
+    for name in _import_names(src):
+        if banned_name(name):
+            raise Refused(f"rule_module_banned (DEC-031 3.1): {p.name} imports {name}")
+        if name.startswith("tools.arena_") or name in ("tools", "numpy") or name.split(".")[0] in sys.stdlib_module_names:
+            continue
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError, AttributeError):
+            continue
+        origin = getattr(spec, "origin", None)
+        if origin and origin.endswith(".py") and (_under(origin, str(REPO_ROOT)) or _under(origin, str(p.parent))):
+            check_rule_source(origin, seen)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def check_loaded_modules(before: set) -> None:
+    """After the rule is loaded (and again after the run): no module imported since `before` may be a banned family."""
+    for n in sorted(set(sys.modules) - before):
+        f = getattr(sys.modules.get(n), "__file__", None) or ""
+        if banned_name(n) or (f and banned_name(f)):
+            raise Refused(f"rule_module_banned (DEC-031 3.1): the run imported {n} {f}")
+
+
+def rule_source_path(spec: str) -> Path:
+    mod = spec.rpartition(":")[0]
+    if not mod:
+        raise Refused("--rule must be module:Factory or file.py:Factory")
+    if mod.endswith(".py"):
+        return Path(mod)
+    fs = importlib.util.find_spec(mod)
+    if fs is None or not fs.origin or not fs.origin.endswith(".py"):
+        raise Refused(f"rule module has no python source: {mod}")
+    return Path(fs.origin)
+
+
+def check_vmap_paths(paths: Sequence[str]) -> list[str]:
+    """V maps: forbidden words refused (raw and resolved) and the file must sit under /data/mal/pumpswap-virtual. Returns the resolved paths."""
+    root = os.path.realpath(VMAP_DIR)
+    out = []
+    for p in paths:
+        real = os.path.realpath(p)
+        for q in (str(p), os.path.abspath(str(p)), real):
+            w = _forbidden_word(q)
+            if w:
+                raise Refused(f"vmap_forbidden_word:{w}: {p}")
+        if not (_under(os.path.abspath(str(p)), root) and _under(real, root)):
+            raise Refused(f"vmap_outside_{VMAP_DIR}: {p}")
+        out.append(real)
+    return out
+
+
+def file_sha256(path: str | os.PathLike) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def kit_provenance() -> dict:
+    kit = Path(__file__).resolve()
+    out: dict[str, Any] = {"path": str(kit), "sha256": file_sha256(kit), "git_head": None, "git_dirty": None}
+    try:
+        out["git_head"] = subprocess.run(["git", "-C", str(kit.parent), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=20, check=True).stdout.strip()
+        out["git_dirty"] = bool(subprocess.run(["git", "-C", str(kit.parent), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, timeout=20, check=True).stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return out
+
+
 def discover(path: str | os.PathLike, kind: str, hours: Sequence[str] | None = None) -> list[tuple[datetime, str]]:
     """The hour files of one block path (a block root, a worker dir, a trades dir, or for the arena tape a dir or one closed-hour file), sorted by hour."""
     p = Path(path)
+    bp = os.path.realpath(p)
+    root = next((os.path.realpath(r) for r in BLOCK_ROOTS if _under(bp, os.path.realpath(r))), None)
     if kind == "arena":
         fs = [p] if p.is_file() else sorted(p.glob("tape-*.jsonl.zst"))
         out = []
         for f in fs:
-            if re.fullmatch(r"tape-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl\.zst", f.name) is None or f.parent.resolve() != Path(ARENA_TAPE):
+            if re.fullmatch(r"tape-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl\.zst", f.name) is None or f.parent.resolve() != Path(ARENA_TAPE) or os.path.realpath(f) != f"{ARENA_TAPE}/{f.name}":
                 raise Refused(f"arena_file_refused: {f} (only tape-<hour>.jsonl.zst directly in {ARENA_TAPE})")
             if f.with_suffix("").exists() or Path(str(f) + ".tmp").exists():
                 raise Refused(f"arena_hour_not_closed: {f}")
@@ -233,6 +346,8 @@ def discover(path: str | os.PathLike, kind: str, hours: Sequence[str] | None = N
                 raise Refused(f"unexpected_file_name: {f}")
             if _forbidden_word(str(f)) or _forbidden_word(os.path.realpath(f)):
                 raise Refused(f"path_forbidden_word: {f}")
+            if not (root and _under(os.path.realpath(f), root) and _under(os.path.realpath(f), bp)):
+                raise Refused(f"hour_file_outside_block_root: {f} resolves to {os.path.realpath(f)} (block root {root})")
             out.append((hour_of_name(f.name), str(f)))
     for t, f in out:
         if SEALED_HOURS[0] <= t < SEALED_HOURS[1]:
@@ -290,6 +405,7 @@ class HourRows:
     n_pumpswap: int = 0
     n_nonwsol: int = 0
     nonwsol_pools: frozenset = frozenset()
+    n_no_ts: int = 0  # rows refused for a missing timestamp
     _index: dict | None = None
 
     @property
@@ -343,7 +459,7 @@ def build_hour(lines: Iterable[bytes | str], *, block: str, T: int, idx: int, fm
     vpool: dict[str, float] = {}
     nonwsol: set = set()
     c = {k: [] for k in ("pid", "sl", "tx", "ev", "ib", "so", "tk", "q", "b", "bt", "tr", "v")}
-    n_ps = n_non = 0
+    n_ps = n_non = n_no_ts = 0
     arena = fmt == "arena"
     for line in lines:
         if not arena and b'"quote_is_wsol":false' in line and b'"venue":"pumpswap"' in line:  # the 58% non-WSOL rows: counted and their pool noted, never parsed
@@ -367,6 +483,10 @@ def build_hour(lines: Iterable[bytes | str], *, block: str, T: int, idx: int, fm
             n_non += 1
             nonwsol.add(pool)
             continue
+        bt_ = r.get("event_ts") if arena else (r.get("block_time") or r.get("event_ts"))
+        if not isinstance(bt_, (int, float)) or bt_ <= 0 or (arena and not r.get("t_recv_ms")):  # a missing timestamp REFUSES the row (counted); it is never stored as 0
+            n_no_ts += 1
+            continue
         i = pid_of.get(pool)
         if i is None:
             i = pid_of[pool] = len(names)
@@ -378,14 +498,14 @@ def build_hour(lines: Iterable[bytes | str], *, block: str, T: int, idx: int, fm
         c["pid"].append(i)
         c["sl"].append(r["slot"])
         if arena:
-            c["tx"].append(int(r["t_recv_ms"] or 0) % 2_000_000_000)
+            c["tx"].append(int(r["t_recv_ms"]) % 2_000_000_000)
             vv = r.get("virtual_quote_reserves")
             c["v"].append(float("nan") if vv is None else float(vv))
-            c["bt"].append(r.get("event_ts") or 0)
+            c["bt"].append(int(bt_))
         else:
             c["tx"].append(r.get("tx_index") or 0)
             c["v"].append(vpool[pool])
-            c["bt"].append(r.get("block_time") or r.get("event_ts") or 0)
+            c["bt"].append(int(bt_))
         c["ev"].append(r.get("event_index") or 0)
         c["ib"].append(r["side"] == "buy")
         c["so"].append(r["sol_lamports"])
@@ -406,7 +526,7 @@ def build_hour(lines: Iterable[bytes | str], *, block: str, T: int, idx: int, fm
     ib = np.array(c["ib"], bool)[o]
     return HourRows(block, datetime.fromtimestamp(T, tz=timezone.utc).strftime("%Y-%m-%dT%H"), T, idx, np.array(names, dtype=str), np.array(mints, dtype=str), ptr, sl, tx[o], ev[o],
                     ib, np.array(c["so"], np.float64)[o], np.array(c["tk"], np.float64)[o], np.array(c["q"], np.float64)[o], np.array(c["b"], np.float64)[o], bt,
-                    np.array(c["tr"], np.int64)[o], np.array(c["v"], np.float64)[o], sps, n_ps, n_non, frozenset(nonwsol))
+                    np.array(c["tr"], np.int64)[o], np.array(c["v"], np.float64)[o], sps, n_ps, n_non, frozenset(nonwsol), n_no_ts)
 
 
 _WORKER: dict[str, Any] = {}
@@ -641,6 +761,7 @@ class Screen:
         self.rows = self.hours = 0
         self.t_load = self.t_rule = self.t_price = 0.0
         n = len(self.cells)
+        self.flag_hours: list[str] = []
         self.excl_cell, self.late_cell, self.derived_cell = collections.Counter(), collections.Counter(), collections.Counter()  # per cell index
         self.gdays: dict[str, set] = {}  # block group -> UTC days run
         self.cnt_ub_expl = [0] * n  # count-only: attempts upper bound inside explore-0814
@@ -664,7 +785,10 @@ class Screen:
             c["refused_no_print_at_or_before_decision"] += 1
             return None
         first = state.first_seen.get(pool)
-        if first is None or int(hr.bt[a + j]) - first < MIN_POOL_AGE_S:
+        if first is None or first <= 0 or int(hr.bt[a + j]) <= 0:
+            c["refused_pool_age_unknown"] += 1
+            return None
+        if int(hr.bt[a + j]) - first < MIN_POOL_AGE_S:
             c["refused_pool_age_lt_360s"] += 1
             return None
         v = float(hr.v[a + j])
@@ -699,6 +823,10 @@ class Screen:
             self.counters["rows_pumpswap"] += hr.n_pumpswap
             self.counters["rows_non_wsol"] += hr.n_nonwsol
             self.counters["rows_wsol_kept"] += hr.n
+            if hr.n_no_ts:
+                self.counters["rows_no_timestamp"] += hr.n_no_ts
+                self.counters["hours_with_missing_timestamp"] += 1
+                self.flag_hours.append(hr.hour)
             if hr.n == 0 or (prev is not None and hr.T != prev.T + 3600):
                 self.counters["empty_hours" if hr.n == 0 else "hour_gaps"] += 1
                 self._flush(stores, bi, seg_end, clk)
@@ -930,6 +1058,7 @@ def load_rule(spec: str, kwargs_json: str | None = None) -> Any:
 
 def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int) -> bool:
     """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot)."""
+    state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # the probe must not change a rule that writes to scratch
     keep = hour.sl <= slot
     pid = np.repeat(np.arange(len(hour.pools)), np.diff(hour.ptr))[keep]
     ptr = np.searchsorted(pid, np.arange(len(hour.pools) + 1), "left").astype(np.int64)
@@ -988,7 +1117,8 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
 
 def counts_md(res: dict, meta: dict) -> str:
     days = sorted({d for r in res.values() for d in r["per_day"]})
-    L = [f"# COUNTS ({meta['rule']}): count-only, no price read", "", "Triggers after the universe refusals; `after overlap` applies the time-only one-open-position rule (an upper bound of attempts).", "",
+    L = [f"# COUNTS ({meta['rule']}): count-only, no price read", "",
+         *(["**SUBSET: --hours " + ", ".join(meta["provenance"]["hours_subset_requested"]) + ". Not a full count; do not use it for the RULES step-2 count.**", ""] if meta.get("hours_subset") else []), "Triggers after the universe refusals; `after overlap` applies the time-only one-open-position rule (an upper bound of attempts).", "",
          "| cell | triggers | after overlap | days>=1 | " + " | ".join(d[5:] for d in days) + " |", "|---|---|---|---|" + "---|" * len(days)]
     for nm, r in res.items():
         L.append(f"| {nm} | {r['triggers']} | {r['attempts_upper_bound']} | {r['days_with_trigger']} | " + " | ".join(str(r["per_day_after_overlap"].get(d, 0)) for d in days) + " |")
@@ -997,27 +1127,45 @@ def counts_md(res: dict, meta: dict) -> str:
 
 def run(args: argparse.Namespace) -> dict:
     out = check_out_dir(args.out)
-    specs = []
+    if args.hours and not args.count_only:
+        raise Refused("hours_subset_refused_when_pricing: --hours is for --count-only; a priced screen runs every hour of the four blocks (a subset is not a screen of record)")
+    specs, reals = [], []
     for b in args.block:
         kind = check_block_path(b, args.count_only)
+        real = os.path.realpath(b)
+        if any(_under(real, o) or _under(o, real) for o in reals):
+            raise Refused(f"repeated_or_nested_block: {b} (each block once; explore-0814 is ONE block, not its workers)")
+        reals.append(real)
         specs.append((b, kind, discover(b, kind, args.hours)))
+    if not args.count_only and sorted(reals) != sorted(os.path.realpath(r) for r in BLOCK_ROOTS):
+        raise Refused("pricing_needs_the_four_blocks: pass each of " + ", ".join(BLOCK_ROOTS) + " once, whole (blocks positive are counted out of these four)")
     kinds = {k for _, k, _ in specs}
-    if "arena" in kinds and not args.count_only:
-        raise Refused("arena_tape_needs_count_only")
+    rule_path = rule_source_path(args.rule)
+    rule_sha = check_rule_source(rule_path)
+    vpaths = check_vmap_paths(args.vmap or VMAP_DEFAULT) if "clean" in kinds else []
+    before = set(sys.modules)
     rule = load_rule(args.rule, args.rule_kwargs)
-    vmap = VMap(args.vmap or VMAP_DEFAULT) if "clean" in kinds else None
+    check_loaded_modules(before)
+    vmap = VMap(vpaths) if vpaths else None
     Path(out).mkdir(parents=True, exist_ok=True)
     scr = Screen(rule, count_only=args.count_only, min_attempts_per_day=args.min_attempts_per_day)
     t0 = time.time()
+    names = []
     for bi, (b, kind, files) in enumerate(specs):
         name = os.path.relpath(os.path.realpath(b), CLEAN_VIEW) if kind == "clean" else "arena-tape"
+        names.append(name)
         scr.run_block(bi, name, iter_hours(files, name, "arena" if kind == "arena" else "backfill", vmap, args.workers))
+    check_loaded_modules(before)
     wall = time.time() - t0
     cells = scr.results()
+    prov = {"kit": kit_provenance(), "rule": {"spec": args.rule, "source_path": str(rule_path.resolve()), "source_sha256": rule_sha, "kwargs": args.rule_kwargs},
+            "vmap": [{"path": v, "sha256": file_sha256(v)} for v in vpaths], "hours_subset_requested": list(args.hours) if args.hours else None,
+            "hours": {n: [t.strftime("%Y-%m-%dT%H") for t, _ in sp[2]] for n, sp in zip(names, specs)}}
     meta = {"schema": SCHEMA, "rule": getattr(rule, "name", args.rule), "count_only": args.count_only, "blocks": scr.blocks, "hours": scr.hours, "rows_kept": scr.rows,
+            "hours_subset": bool(args.hours), "full_screen_of_record": bool(not args.count_only and not args.hours), "hours_with_missing_timestamp": scr.flag_hours, "provenance": prov,
             "counters": dict(scr.counters), "wall_s": wall, "rows_pumpswap_per_s": scr.counters["rows_pumpswap"] / wall if wall else None, "rows_kept_per_s": scr.rows / wall if wall else None,
             "seconds": {"load_wait": scr.t_load, "rule": scr.t_rule, "price": scr.t_price}, "stack": scr.cfg[RENT_DECIDING].as_dict(), "workers": args.workers,
-            "vmap": list(args.vmap or VMAP_DEFAULT) if vmap else None, "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     doc = {"meta": meta, "cells": cells}
     name = "counts" if args.count_only else "results"
     Path(out, f"{name}.json").write_text(json.dumps(doc, indent=1, default=float))
