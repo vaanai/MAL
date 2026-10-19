@@ -188,17 +188,11 @@ def check_sim_pin():
 
 
 def check_inherited():
-    """The simulator values F2 inherits (cadence baseline, bootstrap draws and seed, CAP ...) are the frozen ones, and the
-    hard-coded LIP-F1 text pins agree with the simulator's own."""
+    """The simulator values F2 inherits (cadence baseline, bootstrap draws and seed, CAP ...) are the frozen ones."""
     for n, want in INHERITED.items():
         got = getattr(sim, n)
         if got != want:
             raise F2Refusal(f"the simulator's {n} is {got!r}, not the inherited {want!r}")
-    own = {"declare": sim.DECLARE_SHA256, "conditions": sim.CONDITIONS_SHA256, "conditions2": sim.CONDITIONS2_SHA256,
-           "verify1": sim.VERIFY1_SHA256}
-    for key, _fname, want in LIP_F1_TEXTS:
-        if key in own and own[key] != want:
-            raise F2Refusal(f"pin for {key} differs from the simulator's own pin")
     if F1_CONSTANTS["FREEZE_ISO"] != LIP_F1_FREEZE_ISO:
         raise F2Refusal("the simulator's freeze is not LIP-F1's")
 
@@ -401,7 +395,6 @@ def f2_cohort(freeze_iso, variant=None):
     "A" / "B": also the multiplicity-adjusted bound, and for "A" the side cap.  Not thread-safe; not re-entrant
     (refuses to nest, and refuses to start on a simulator that is not exactly LIP-F1's)."""
     check_sim_pin()
-    check_inherited()
     if variant not in (None,) + VARIANTS:
         raise F2Refusal(f"unknown variant {variant!r}")
     freeze_us = sim.iso_to_us(freeze_iso)
@@ -409,6 +402,7 @@ def f2_cohort(freeze_iso, variant=None):
         raise F2Refusal("the F2 cohort freeze must be after LIP-F1's freeze")
     if not sim_is_lip_f1():
         raise F2Refusal("the simulator is not exactly LIP-F1's (already overridden or mutated?): refusing to nest")
+    check_inherited()
     consts = {"FREEZE_ISO": freeze_iso, "FREEZE_US": freeze_us, "GAS_SERIES": F2_SERIES, "OTHER_SERIES": (),
               "SERIES_ADMITTED": F2_SERIES, "READ_FROM_ISO": READ_FROM_ISO, "NOT_DECIDABLE_ISO": NOT_DECIDABLE_ISO}
     assert set(consts) == set(PATCHED_CONSTANTS)

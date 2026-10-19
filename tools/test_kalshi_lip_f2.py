@@ -1,0 +1,674 @@
+"""Tests for tools/kalshi_lip_f2.py (LIP-F2 cohort wrapper: F2-A side cap, F2-B I_max 25).  Synthetic stores only: no
+network, no real recorder row, trade, program, registry or settled result is read.  The worlds come from the
+simulator's own test helpers (tools/test_kalshi_lip_sim.py), which this file imports and does not modify.  Every
+fixture is hand-built; none is copied or shaped from a post-2026-10-19T03:33:16Z book."""
+import hashlib
+import importlib
+import json
+import random
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # repo root: ``tools`` is a package
+import numpy as np
+import pyarrow.parquet as pq
+import pytest
+
+from tools import kalshi_lip_capacity as cap
+from tools import kalshi_lip_f2 as f2
+from tools import kalshi_lip_sim as sim
+from tools import kalshi_public as kp
+from tools import test_kalshi_lip_sim as st
+
+REPO = Path(__file__).resolve().parent.parent
+REAL_TEXTS = Path("/data/mal/hunt-1008/push-1016/hunt18/kalshi-lip")
+SIM_MD5 = "3dc4134aa575752927bea18db0e6a341"                       # DECLARE-FORWARD-PINS-1
+SIM_TESTS_MD5 = "1f5db2f15043f4f8451c647a863f741a"
+F2_FREEZE = "2026-10-19T11:00:00Z"                                  # a synthetic cohort freeze, after LIP-F1's
+R = "2026-10-26T00:00:00Z"
+T0 = st.T0
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def md5_dir(d):
+    return {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in sorted(Path(d).iterdir())}
+
+
+def sim_state():
+    return {n: getattr(sim, n) for n in f2.PATCHED_CONSTANTS + f2.PATCHED_FUNCTIONS}
+
+
+def sec(x):
+    return int(round(x * sim.US))
+
+
+@pytest.fixture(autouse=True)
+def no_real_default_stores(monkeypatch):
+    """The CLI defaults name real host stores; no test may reach them (every CLI test passes its own stores)."""
+    for n in ("DEFAULT_PROGRAMS", "DEFAULT_META", "DEFAULT_RUNS", "DEFAULT_SERIES", "DEFAULT_LIP_TEXTS_DIR"):
+        monkeypatch.setattr(f2, n, "/nonexistent-f2-test-default/" + n)
+    monkeypatch.setattr(f2, "DEFAULT_BOOKS", ["/nonexistent-f2-test-default/obrec-1019c"])
+
+
+@pytest.fixture
+def covered(monkeypatch):
+    monkeypatch.setattr(sim, "coverage", lambda *a, **k: {"not_decidable": False, "days": {}})
+
+
+# ============================================================================================ fixtures
+def decl_text(freeze=F2_FREEZE):
+    return (f"COHORT FREEZE INSTANT = {freeze} (output of `date -u` run by the one stamping command that wrote this file)\n"
+            "# DECLARE-F2 (synthetic test copy of the lines the parser reads)\n"
+            "F2-A SIDE-CAP and F2-B INV25 are the two gated variants.\n")
+
+
+@pytest.fixture
+def texts(tmp_path, monkeypatch):
+    """Six synthetic stand-ins for the inherited LIP-F1 texts, accepted by the tool for the duration of the test."""
+    d = tmp_path / "lip-texts"
+    d.mkdir()
+    pins = []
+    for key, fname, _want in f2.LIP_F1_TEXTS:
+        body = f"synthetic {key}\n"
+        if key == "verify1":
+            body += "period_reward https://docs.kalshi.com/api-reference/incentive-programs/get-incentives.md VERIFIED\n"
+        (d / fname).write_text(body)
+        pins.append((key, fname, sha(d / fname)))
+    monkeypatch.setattr(f2, "LIP_F1_TEXTS", tuple(pins))
+    return d
+
+
+@pytest.fixture
+def decl(tmp_path):
+    p = tmp_path / "decl" / "DECLARE-F2.md"
+    p.parent.mkdir()
+    p.write_text(decl_text())
+    return p
+
+
+_GATE_N = [0]
+
+
+def lip_gate(tmp, **over):
+    """A hand-written LIP-F1 gate.json (a Book A --read-instant run); ``over`` edits it, Ellipsis drops a key."""
+    d = {"book": "A", "deciding": True, "freeze": "2026-10-19T03:33:16Z", "verdict": "FAIL",
+         "read_instant": "2026-10-24T00:00:00Z"}
+    d.update(over)
+    d = {k: v for k, v in d.items() if v is not Ellipsis}
+    _GATE_N[0] += 1
+    p = Path(tmp) / "gates" / f"lip-f1-{_GATE_N[0]}.json"
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(json.dumps(d))
+    return p
+
+
+def bookc_marker(tmp, content="done\n"):
+    p = Path(tmp) / "bookc-done" / "BOOK-C-RUN-DONE"
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(content)
+    return p
+
+
+@pytest.fixture
+def gates(tmp_path):
+    return {"lip": str(lip_gate(tmp_path)), "bookc": str(bookc_marker(tmp_path))}
+
+
+def f2_world(tmp, monkeypatch, **kw):
+    """A LIP-F1 fixture world (two gas units, obrec-1019c) whose registry the tool's pin accepts."""
+    w = st.basic_world(tmp, **kw)
+    monkeypatch.setattr(f2, "REGISTRY_PINS", {"obrec-1019c": sha(Path(tmp) / "obrec-REGISTRY-1019c.md")})
+    return w
+
+
+def ctx_for(texts_dir, gates, freeze=F2_FREEZE):
+    return {"freeze_iso": freeze, "declare_sha256": "ab" * 32, "texts": {f.name: sha(f) for f in Path(texts_dir).iterdir()},
+            "lip_f1_gate": {"path": gates["lip"]}, "bookc_done": {"path": gates["bookc"]}}
+
+
+def f2_cfg(w, out, variant="A", **kw):
+    base = dict(books=w.books, programs=w.lip, meta=getattr(w, "meta", None), trades=str(w.kal), markets=str(w.kal),
+                series=str(w.kal), read_us=st.at(R), units_evidence=w.evidence(), out=str(out))
+    base.update(kw)
+    return f2.make_cfg(variant, freeze_us=st.at(F2_FREEZE), **base)
+
+
+def cli_argv(w, tmp, texts_dir, decl_path, gates=None, variant="A", out="out", **kw):
+    a = ["--f2-declare", str(decl_path), "--f2-declare-sha256", sha(decl_path), "--freeze", F2_FREEZE,
+         "--lip-texts-dir", str(texts_dir), "--books", *w.books, "--programs", w.lip, "--meta", w.meta,
+         "--trades", str(w.kal), "--markets", str(w.kal), "--series", str(w.kal)]
+    if variant:
+        a += ["--variant", variant]
+    if gates is not None:
+        a += ["--lip-f1-gate", gates["lip"], "--bookc-done", gates["bookc"]]
+    if out:
+        a += ["--out", str(Path(tmp) / out)]
+    return a
+
+
+def snap(ts_s, yes, no):
+    """A snapshot with prices in basis points: yes / no = [(bp, size)] best first."""
+    return sim.Snap(T0 + sec(ts_s), [(p, float(q)) for p, q in yes], [(p, float(q)) for p, q in no])
+
+
+# ================================================================================ (1) pins and restoration
+def test_the_simulator_and_its_tests_are_the_pinned_files_and_the_pin_is_checked_at_run_time(tmp_path, monkeypatch):
+    assert f2.SIM_MD5_PINNED == SIM_MD5 and f2.SIM_TESTS_MD5_PINNED == SIM_TESTS_MD5
+    assert hashlib.md5(Path(sim.__file__).read_bytes()).hexdigest() == SIM_MD5, \
+        "tools/kalshi_lip_sim.py is frozen (DECLARE-FORWARD-PINS-1): this PR must not touch it"
+    assert hashlib.md5(Path(st.__file__).read_bytes()).hexdigest() == SIM_TESTS_MD5, \
+        "tools/test_kalshi_lip_sim.py is frozen (DECLARE-FORWARD-PINS-1): this PR must not touch it"
+    assert f2.check_sim_pin() == SIM_MD5
+    monkeypatch.setattr(f2, "SIM_MD5_PINNED", "0" * 32)
+    with pytest.raises(f2.F2Refusal, match="not the pinned"):
+        f2.check_sim_pin()
+    with pytest.raises(f2.F2Refusal, match="not the pinned"):
+        with f2.f2_cohort(F2_FREEZE, "A"):
+            pytest.fail("the context started on an unpinned simulator")
+    w = st.basic_world(tmp_path / "w")
+    with pytest.raises(f2.F2Refusal, match="not the pinned"):
+        f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", {"freeze_iso": F2_FREEZE})
+    assert not (tmp_path / "out").exists()
+
+
+def test_inherited_pins_agree_with_the_simulator_pins1_and_pins2():
+    assert dict((k, h) for k, _f, h in f2.LIP_F1_TEXTS) == {
+        "declare": sim.DECLARE_SHA256, "conditions": sim.CONDITIONS_SHA256, "conditions2": sim.CONDITIONS2_SHA256,
+        "verify1": sim.VERIFY1_SHA256,
+        "process1": "4cc45c27317560ecf2a08d5d65b73c9f02afd32deb0488ad3ce63f9f62de78f8",
+        "process2": "cf635192e8105632790a0cf5081f662aa8f346fb720391ed3fe9e8573419ddb0"}
+    assert f2.REGISTRY_PINS == {
+        "obrec-1019c": "d6affcff6abcdd5dce07af8d786ad6e33828c0b4a762d7cd85627ab80371da3a",
+        "obrec-1019d": "3984c1c68bf0d51f52d06226771fd08f8ae33a174dcd14a646cd9221e86e5236"}
+    assert f2.ALLOWED_RECORDERS == ("obrec-1019c", "obrec-1019d")        # never Book C's obrec-1019e
+    assert f2.F2_SERIES == sim.GAS_SERIES and len(f2.F2_SERIES) == 8
+    f2.check_inherited()
+    for n, want in f2.INHERITED.items():
+        assert getattr(sim, n) == want, n
+
+
+@pytest.mark.skipif(not (REAL_TEXTS / "DECLARE-FORWARD.md").exists(), reason="host texts not present")
+def test_the_real_inherited_texts_match_pins1():
+    got, verify1 = f2.verify_lip_texts(REAL_TEXTS)
+    assert set(got) == {f for _k, f, _h in f2.LIP_F1_TEXTS} and verify1.endswith("DECLARE-FORWARD-VERIFY-1.md")
+    assert sim.check_units_evidence(verify1)["ok"] is True
+
+
+def test_the_text_pins_refuse_a_missing_or_altered_file(texts):
+    got, verify1 = f2.verify_lip_texts(texts)
+    assert len(got) == 6 and Path(verify1).name == "DECLARE-FORWARD-VERIFY-1.md"
+    (texts / "DECLARE-FORWARD-PROCESS-2.md").write_text("altered\n")
+    with pytest.raises(f2.F2Refusal, match="does not match the pinned"):
+        f2.verify_lip_texts(texts)
+    (texts / "DECLARE-FORWARD-PROCESS-2.md").unlink()
+    with pytest.raises(f2.F2Refusal, match="not found"):
+        f2.verify_lip_texts(texts)
+    with pytest.raises(f2.F2Refusal, match="required"):
+        f2.verify_lip_texts(None)
+
+
+@pytest.mark.parametrize("variant", ["A", "B", None])
+def test_the_context_rebinds_the_f2_attributes_and_restores_the_identical_objects(variant):
+    before = sim_state()
+    assert f2.sim_is_lip_f1() and len(before["SERIES_ADMITTED"]) == 15
+    with f2.f2_cohort(F2_FREEZE, variant):
+        assert sim.FREEZE_ISO == F2_FREEZE and sim.FREEZE_US == st.at(F2_FREEZE)
+        assert sim.GAS_SERIES == sim.SERIES_ADMITTED == f2.F2_SERIES and sim.OTHER_SERIES == ()
+        assert sim.READ_FROM_ISO == "2026-10-26T00:00:00Z" and sim.NOT_DECIDABLE_ISO == "2026-11-02T00:00:00Z"
+        # the coverage run and its baseline are LIP-F1's: obrec-1019c at 222.7 s, polls at 900 s
+        assert sim.PRIMARY_RUN == "obrec-1019c" and sim.BASELINE_GAP_S == {"obrec-1019c": 222.7, "lipsnap": 900.0}
+        patched = {n for n in f2.PATCHED_FUNCTIONS if getattr(sim, n) is not f2.F1_FUNCS[n]}
+        assert patched == {None: set(), "B": {"cluster_bootstrap", "evaluate_gate"},
+                           "A": {"cluster_bootstrap", "evaluate_gate", "decide_quote"}}[variant]
+        assert [r // sim.US for r in sim.read_candidates()][0] == st.at("2026-10-26T00:00:00Z") // sim.US
+    after = sim_state()
+    assert after == before and all(after[n] is before[n] for n in before)
+    assert f2.sim_is_lip_f1()
+    assert hashlib.md5(Path(sim.__file__).read_bytes()).hexdigest() == SIM_MD5
+    assert sim.FREEZE_ISO == "2026-10-19T03:33:16Z" and len(sim.SERIES_ADMITTED) == 15
+    assert sim.READ_FROM_ISO == "2026-10-24T00:00:00Z"
+
+
+def test_the_patch_is_restored_in_finally_even_on_an_exception():
+    before = sim_state()
+    for variant in ("A", "B", None):
+        with pytest.raises(RuntimeError, match="boom"):
+            with f2.f2_cohort(F2_FREEZE, variant):
+                assert sim.FREEZE_ISO == F2_FREEZE
+                raise RuntimeError("boom")
+        after = sim_state()
+        assert all(after[n] is before[n] for n in before), variant
+    # an error raised by the simulator inside run_f2 restores it too
+    assert f2.sim_is_lip_f1()
+
+
+def test_a_simulator_error_inside_the_run_still_restores_the_patch(tmp_path, monkeypatch, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    before = sim_state()
+    seen = {}
+
+    def boom(cfg):
+        seen["inside"] = sim.FREEZE_ISO
+        raise sim.InputError("synthetic")
+    monkeypatch.setattr(sim, "run_sim", boom)
+    with pytest.raises(sim.InputError):
+        f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx_for(texts, gates))
+    assert seen["inside"] == F2_FREEZE
+    after = sim_state()
+    assert all(after[n] is before[n] for n in before)
+
+
+def test_the_context_refuses_to_nest_and_the_failed_nesting_does_not_restore_early():
+    before = sim_state()
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        for variant in ("A", "B", None):
+            with pytest.raises(f2.F2Refusal, match="nest"):
+                with f2.f2_cohort(F2_FREEZE, variant):
+                    pytest.fail("nested")
+        assert sim.FREEZE_ISO == F2_FREEZE and sim.decide_quote is not f2.F1_FUNCS["decide_quote"]
+        with pytest.raises(cap.CapacityRefusal, match="nest"):          # Book C refuses inside F2
+            with cap.book_c_universe():
+                pass
+    assert all(sim_state()[n] is before[n] for n in before)
+    with cap.book_c_universe():                                          # and F2 refuses inside Book C
+        with pytest.raises(f2.F2Refusal, match="nest"):
+            with f2.f2_cohort(F2_FREEZE, "B"):
+                pass
+    assert all(sim_state()[n] is before[n] for n in before)
+
+
+def test_the_context_refuses_on_a_simulator_that_is_not_exactly_lip_f1(monkeypatch):
+    monkeypatch.setattr(sim, "decide_quote", lambda *a: (None, "x"))
+    with pytest.raises(f2.F2Refusal, match="not exactly LIP-F1"):
+        with f2.f2_cohort(F2_FREEZE, "A"):
+            pass
+    monkeypatch.undo()
+    monkeypatch.setattr(sim, "CAP_US", 10 ** 15)
+    with pytest.raises(f2.F2Refusal, match="inherited"):
+        with f2.f2_cohort(F2_FREEZE, "A"):
+            pass
+
+
+def test_the_cohort_freeze_must_be_after_lip_f1s_freeze_and_the_variant_known():
+    for bad in ("2026-10-19T03:33:16Z", "2026-10-19T03:00:00Z"):
+        with pytest.raises(f2.F2Refusal, match="after LIP-F1"):
+            with f2.f2_cohort(bad, "A"):
+                pass
+    with pytest.raises(f2.F2Refusal, match="unknown variant"):
+        with f2.f2_cohort(F2_FREEZE, "C"):
+            pass
+
+
+def test_importing_and_reloading_the_module_does_not_move_a_simulator_attribute():
+    code = textwrap.dedent("""
+        import sys
+        sys.path.insert(0, %r)
+        from tools import kalshi_lip_sim as sim
+        names = ("FREEZE_ISO", "FREEZE_US", "GAS_SERIES", "OTHER_SERIES", "SERIES_ADMITTED", "READ_FROM_ISO",
+                 "NOT_DECIDABLE_ISO", "decide_quote", "cluster_bootstrap", "evaluate_gate", "PRIMARY_RUN", "BASELINE_GAP_S")
+        before = {n: id(getattr(sim, n)) for n in names}
+        from tools import kalshi_lip_f2 as f2
+        import importlib
+        importlib.reload(f2)
+        after = {n: id(getattr(sim, n)) for n in names}
+        assert before == after
+        print("ok")
+    """ % str(REPO))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(REPO))
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
+    before = sim_state()
+    importlib.reload(f2)
+    assert all(sim_state()[n] is before[n] for n in before)
+
+
+# ================================================== (2) LIP-F1 output is byte-identical with the patch absent
+def test_a_lip_f1_run_is_byte_identical_before_and_after_f2_runs_in_the_same_process(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    sim.run_sim(w.cfg(out=str(tmp_path / "f1a")))
+    f1_before = md5_dir(tmp_path / "f1a")
+    for variant in ("A", "B"):
+        f2.run_f2(f2_cfg(w, tmp_path / f"f2{variant}", variant), variant, ctx_for(texts, gates))
+        with pytest.raises(f2.F2Refusal):                                # a failed start leaves nothing behind
+            with f2.f2_cohort("2026-10-19T03:00:00Z", variant):
+                pass
+    sim.run_sim(w.cfg(out=str(tmp_path / "f1b")))
+    assert md5_dir(tmp_path / "f1b") == f1_before
+    gate = json.loads((tmp_path / "f1b" / "gate.json").read_text())
+    assert gate["book"] == "A" and gate["freeze"] == "2026-10-19T03:33:16Z" and gate["deciding"] is True
+    assert "p_adj" not in json.dumps(gate) and "f2_" not in json.dumps(gate)        # no F2 field leaks into LIP-F1
+    assert "LIP-F1 formula screen | Book A" in (tmp_path / "f1b" / "table.txt").read_text()
+
+
+def test_with_the_patch_absent_the_wrappers_are_not_in_the_simulator():
+    assert sim.decide_quote is f2.F1_FUNCS["decide_quote"] and sim.cluster_bootstrap is f2.F1_FUNCS["cluster_bootstrap"]
+    out = sim.cluster_bootstrap([1.0, 2.0, -0.5], [1.0, 1.0, 1.0])
+    assert set(out) == {"p05", "p95", "mean", "clusters"}                  # LIP-F1's dict: no p_adj
+    assert "p_adj" not in sim.evaluate_gate([], boot=False)["G4"]
+
+
+# ======================================================================== (3) F2-A SIDE-CAP, the rule
+def a_rule_checks(decide, frozen=f2.F1_FUNCS["decide_quote"]):
+    """Raises AssertionError unless ``decide`` is the F2-A rule: zero a side whose best bid is ABOVE 7000 bp (exactly 7000
+    is kept), applied with the Q5 sizes, Q4 re-checked with size 0."""
+    u = st.mk_unit()                                                      # T = 1000, DF 0.5
+    deep = 1000.0
+    for by, want in ((6900, 25), (7000, 25), (7001, 0), (7100, 0), (8900, 0)):
+        bn = max(1000, min(2800, 9800 - by))                              # b_y + b_n < 10000 and in the band
+        q, why = decide(u, snap(1, [(by, deep)], [(bn, deep)]), 0.0, 0.0, 25, 50)
+        assert q is not None and why == "ok" and (q.sy, q.sn) == (want, 25), (by, q and (q.sy, q.sn))
+    for bn, want in ((7000, 25), (7001, 0), (7100, 0)):                    # the mirror: the NO side
+        q, why = decide(u, snap(1, [(2800, deep)], [(bn, deep)]), 0.0, 0.0, 25, 50)
+        assert q is not None and (q.sy, q.sn) == (25, want), bn
+    # Q4 is re-checked with size 0: depth 990 passes Q4 with s = 25 (990 >= 975) but not with s = 0 (990 < 1000)
+    near = snap(1, [(7100, 990.0)], [(2800, deep)])
+    assert frozen(u, near, 0.0, 0.0, 25, 50)[0] is not None               # the frozen rule quotes it
+    assert decide(u, near, 0.0, 0.0, 25, 50) == (None, "Q4_SIDECAP")
+    assert decide(u, snap(1, [(7100, 1000.0)], [(2800, deep)]), 0.0, 0.0, 25, 50)[0].sy == 0   # exactly T: valid
+    assert decide(u, snap(1, [(7000, 990.0)], [(2800, deep)]), 0.0, 0.0, 25, 50)[0].sy == 25   # 7000 kept: Q4 as frozen
+    assert decide(u, snap(1, [(2800, deep)], [(7100, 990.0)]), 0.0, 0.0, 25, 50) == (None, "Q4_SIDECAP")
+    # together with the inventory sizes: Q5 says 10, the cap says 0, the minimum is 0; below the cap Q5 stands
+    capped = snap(1, [(7100, deep)], [(2800, deep)])
+    assert decide(u, capped, 40.0, 0.0, 25, 50)[0].sy == 0                # Q5 gave 10
+    assert decide(u, snap(1, [(6000, deep)], [(3900, deep)]), 40.0, 0.0, 25, 50)[0].sy == 10
+    assert decide(u, capped, 50.0, 0.0, 25, 50)[0].sy == 0               # Q5 already 0: unchanged
+    q, _ = decide(u, capped, -30.0, 0.0, 25, 50)                         # net short YES: the cap still zeroes the YES side
+    assert (q.sy, q.sn) == (0, 25) or q.sy == 0
+    # the other tests of the frozen rule are unchanged: crossed / empty / out-of-band books
+    assert decide(u, snap(1, [], [(2800, deep)]), 0.0, 0.0, 25, 50) == (None, "Q2")
+    assert decide(u, snap(1, [(950, deep)], [(2800, deep)]), 0.0, 0.0, 25, 50) == (None, "Q3")
+    assert decide(u, snap(1, [(7100, deep)], [(2900, deep)]), 0.0, 0.0, 25, 50) == (None, "Q2")   # 7100 + 2900 = 10000
+
+
+def test_f2_a_zeroes_a_side_only_above_7000_bp_and_rechecks_q4_with_size_zero():
+    assert f2.SIDE_CAP_BP == 7000
+    a_rule_checks(f2._side_cap(f2.F1_FUNCS["decide_quote"]))
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        a_rule_checks(sim.decide_quote)                                    # the patched simulator function itself
+    with f2.f2_cohort(F2_FREEZE, "B"):                                     # F2-B has no side cap
+        u = st.mk_unit()
+        q, _ = sim.decide_quote(u, snap(1, [(7100, 1000.0)], [(2800, 1000.0)]), 0.0, 0.0, 25, 25)
+        assert (q.sy, q.sn) == (25, 25)
+
+
+def test_both_sides_cannot_exceed_7000_bp_at_once():
+    u = st.mk_unit()
+    for by in range(7001, 9000, 97):
+        for bn in range(7001, 9000, 101):
+            assert sim.decide_quote(u, snap(1, [(by, 1000.0)], [(bn, 1000.0)]), 0.0, 0.0, 25, 50) == (None, "Q2")
+
+
+def test_f2_a_equals_the_frozen_rule_wherever_no_side_is_above_the_cap():
+    rnd = random.Random(11)
+    orig = f2.F1_FUNCS["decide_quote"]
+    decide = f2._side_cap(orig)
+    u = st.mk_unit()
+    n_cap = 0
+    for _ in range(3000):
+        by, bn = rnd.randint(800, 9200), rnd.randint(800, 9200)
+        s = snap(rnd.choice([1, 2, 99999]), [(by, rnd.choice([900.0, 975.0, 990.0, 1000.0, 1200.0]))],
+                 [(bn, rnd.choice([900.0, 975.0, 1000.0]))])
+        Y, N = rnd.choice([0.0, 10.0, 40.0, 50.0]), rnd.choice([0.0, 10.0, 40.0])
+        a, b = decide(u, s, Y, N, 25, 50), orig(u, s, Y, N, 25, 50)
+        if by <= 7000 and bn <= 7000:
+            assert a[1] == b[1] and ((a[0] is None) == (b[0] is None)) and (a[0] is None or
+                                                                         (a[0].sy, a[0].sn) == (b[0].sy, b[0].sn))
+        else:
+            n_cap += 1
+            if a[0] is not None:
+                assert b[0] is not None and (a[0].sy == 0 or by <= 7000) and (a[0].sn == 0 or bn <= 7000)
+                assert (a[0].by, a[0].bn) == (b[0].by, b[0].bn)             # prices unchanged
+    assert n_cap > 100
+
+
+def test_the_reward_of_f2_a_comes_from_the_other_side_only_and_a_zeroed_side_takes_no_fill():
+    deep = dict(yes=[(0.72, 1000)], no=[(0.27, 1000)])
+    u = st.mk_unit(e=3000.0)
+    snaps = [st.bsnap(0, **deep), st.bsnap(220, **deep)]
+    trades = [st.trade(10, "y1", 0.72, 25, "no"),       # would hit our YES bid at 0.72 (taker no, yes_price <= 0.72)
+              st.trade(20, "n1", 0.80, 10, "yes")]       # no_price 0.20 <= 0.27: hits our NO bid
+    f1 = st.run(u, snaps, trades)
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        a = st.run(u, snaps, trades)
+    assert [(f[0], f[1]) for f in f1.fills] == [("y1", "yes"), ("n1", "no")]
+    assert [(f[0], f[1]) for f in a.fills] == [("n1", "no")]                # no YES fill: that side is not posted
+    assert a.decisions[0][2][2] == 0 and a.decisions[0][2][3] == 25
+    # v_k = phi of the side we post: the YES side has size 0 (phi 0) but is valid with rivals alone (1000 >= T)
+    vy, py, _ = sim.side_phi(snaps[0].yes, 1000.0, 0.5, 7200, 0.0)
+    vn, pn, _ = sim.side_phi(snaps[0].no, 1000.0, 0.5, 2700, 25.0)
+    assert vy and vn and py == 0.0 and pn > 0
+    ok, v = sim.snapshot_value(snaps[0], 7200, 2700, 0.0, 25.0, 1000.0, 0.5)
+    assert ok and v == pytest.approx(pn)
+    ok1, v1 = sim.snapshot_value(snaps[0], 7200, 2700, 25.0, 25.0, 1000.0, 0.5)
+    assert ok1 and v1 > v                                                   # F2-A earns less than the frozen rule here
+    # the accumulated reward: the first interval is (2, 222] = 220 s at v (before the n1 fill at 20 s shrinks the NO size)
+    r_ = sim.finalize_rewards(a, u)
+    assert 0 < r_["c"] < sim.finalize_rewards(f1, u)["c"]
+
+def test_whenever_f2_a_quotes_both_sides_are_valid_so_the_posted_side_always_earns():
+    """Q4 with size 0 on the zeroed side (depth >= T) and with s on the posted side (depth + s >= T) is what makes
+    'both sides must still be valid' hold at every quoted snapshot."""
+    rnd = random.Random(5)
+    u = st.mk_unit()
+    decide = f2._side_cap(f2.F1_FUNCS["decide_quote"])
+    quoted = zeroed = 0
+    for _ in range(2000):
+        by, bn = rnd.randint(1000, 8900), rnd.randint(1000, 2900)
+        s = snap(1, [(by, rnd.choice([960.0, 975.0, 990.0, 1000.0, 1500.0]))], [(bn, rnd.choice([960.0, 975.0, 1000.0]))])
+        q, _why = decide(u, s, 0.0, 0.0, 25, 50)
+        if q is None:
+            continue
+        quoted += 1
+        zeroed += q.sy == 0 or q.sn == 0
+        valid, v = sim.snapshot_value(s, q.by, q.bn, q.sy, q.sn, 1000.0, 0.5)
+        assert valid and v > 0
+    assert quoted > 100 and zeroed > 10
+
+
+def test_a_snapshot_with_one_zeroed_side_still_counts_as_quoted_time_for_the_full_unit_test():
+    deep = dict(yes=[(0.72, 1000)], no=[(0.27, 1000)])
+    u = st.mk_unit(e=3000.0)
+    snaps = [st.bsnap(0, **deep), st.bsnap(220, **deep)]
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        a = st.run(u, snaps, [])
+    f1 = st.run(u, snaps, [])
+    assert a.n_snaps_quoted == f1.n_snaps_quoted == 2 and a.quoted_us == f1.quoted_us > 0
+
+
+# ======================================================================== (4) F2-B INV25, the rule
+def test_f2_b_runs_with_i_max_25_and_f2_a_with_the_frozen_i_max_50():
+    assert f2.IMAX == {"A": 50.0, "B": 25.0} and f2.SIZE == 25.0
+    cb, ca = f2.make_cfg("B", freeze_us=st.at(F2_FREEZE)), f2.make_cfg("A", freeze_us=st.at(F2_FREEZE))
+    assert (cb.size, cb.imax, cb.book) == (25.0, 25.0, "A") and (ca.size, ca.imax, ca.book) == (25.0, 50.0, "A")
+    for bad in ({"size": 100.0}, {"imax": 40.0}, {"book": "B"}, {"force_source": "obrec-1019c"}, {"registry_pins": {}},
+                {"stress": False}):
+        with pytest.raises(f2.F2Refusal, match="fixed for F2"):
+            f2.make_cfg("B", freeze_us=st.at(F2_FREEZE), **bad)
+    with pytest.raises(TypeError):                                           # the freeze is a keyword given once
+        f2.make_cfg("B", freeze_us=1, **{"freeze_us": 2})
+
+
+def test_f2_b_stacking_i_max_25_stops_posting_on_the_side_that_adds_inventory():
+    good = st.GOOD
+    u = st.mk_unit(e=3000.0)
+    snaps = [st.bsnap(0, **good), st.bsnap(220, **good), st.bsnap(440, **good), st.bsnap(660, **good)]
+    # three same-direction prints, each hits our YES bid for 25
+    trades = [st.trade(10, "y1", 0.48, 25, "no"), st.trade(230, "y2", 0.48, 25, "no"), st.trade(450, "y3", 0.48, 25, "no")]
+    a = st.run(u, snaps, trades, S=25, imax=50)                             # LIP-F1 rule: stacks to +50
+    b = st.run(u, snaps, trades, S=25, imax=25)                             # F2-B: stops at +25
+    assert [f[0] for f in a.fills] == ["y1", "y2"] and sum(f[3] for f in a.fills) == 50.0
+    assert [f[0] for f in b.fills] == ["y1"] and sum(f[3] for f in b.fills) == 25.0
+    ydecisions = lambda r: [d[2][2] for d in r.decisions]
+    nodecisions = lambda r: [d[2][3] for d in r.decisions]
+    assert ydecisions(a) == [25, 25, 0, 0] and ydecisions(b) == [25, 0, 0, 0]       # YES size after the first fill
+    assert nodecisions(a) == nodecisions(b) == [25, 25, 25, 25]                      # the NO side keeps posting 25
+    # the opposite print then unwinds it: B posts the YES side again once net returns below I_max
+    back = trades[:1] + [st.trade(230, "n1", 0.60, 25, "yes")]
+    r = st.run(u, snaps, back, S=25, imax=25)
+    assert [f[1] for f in r.fills] == ["yes", "no"] and ydecisions(r)[2] == 25
+
+
+def test_f2_b_end_to_end_stacks_less_than_the_frozen_rule(tmp_path, monkeypatch, covered, texts, gates):
+    rows = [("s1", st.GAS_A, "2026-10-19T12:10:00Z", 0.48, 25, "no"), ("s2", st.GAS_A, "2026-10-19T12:20:00Z", 0.48, 25, "no"),
+            ("s3", st.GAS_A, "2026-10-19T12:30:00Z", 0.48, 25, "no")]
+    w = f2_world(tmp_path / "w", monkeypatch)
+    w.add_trades(rows, [st.GAS_A, st.GAS_B], name="trades2", since="2026-10-19T03:33:16Z", until="2026-10-20T00:00:00Z",
+                 run_at="2026-10-20T04:41:00Z")
+    got = {}
+    for variant in ("A", "B"):
+        f2.run_f2(f2_cfg(w, tmp_path / f"o{variant}", variant), variant, ctx_for(texts, gates))
+        units = pq.read_table(tmp_path / f"o{variant}" / "units.parquet").to_pylist()
+        got[variant] = next(u["fills_YES"] for u in units if u["unit_id"] == "pA" and u["cell"] == "U0")
+    assert got["A"] > got["B"] and got["B"] <= 25.0 + 25.0                # I_max 25 can overshoot by one in-flight fill
+    assert got["A"] >= 50.0
+
+
+# =========================================== (5) mutation checks: SIM-SPEC 14 under the F2 context, and F2's own
+@pytest.mark.parametrize("variant", ["A", "B"])
+def test_the_simspec_14_mutation_checks_still_fail_as_they_should_under_the_f2_context(variant):
+    with f2.f2_cohort(F2_FREEZE, variant):
+        assert st._survivors(lambda mp: None) == []                        # the unmutated (patched) module passes every killer
+        for name, mutant in sorted(st.MUTANTS.items()):
+            assert st._survivors(mutant), f"mutant survived under F2-{variant}: {name}"
+    assert f2.sim_is_lip_f1()
+
+
+def _mut_boundary_ge(orig):
+    def d(u, s, Y, N, S, imax):
+        q, why = orig(u, s, Y, N, S, imax)
+        if q is None:
+            return q, why
+        sy = 0.0 if q.by >= f2.SIDE_CAP_BP else q.sy
+        sn = 0.0 if q.bn >= f2.SIDE_CAP_BP else q.sn
+        return sim.Quote(q.by, q.bn, sy, sn, q.dy, q.dn), why
+    return d
+
+
+def _mut_no_q4_recheck(orig):
+    def d(u, s, Y, N, S, imax):
+        q, why = orig(u, s, Y, N, S, imax)
+        if q is None:
+            return q, why
+        return sim.Quote(q.by, q.bn, 0.0 if q.by > 7000 else q.sy, 0.0 if q.bn > 7000 else q.sn, q.dy, q.dn), why
+    return d
+
+
+def _mut_yes_only(orig):
+    def d(u, s, Y, N, S, imax):
+        q, why = orig(u, s, Y, N, S, imax)
+        if q is None or q.by <= 7000:
+            return q, why
+        T = u.pset0[1]
+        if s.depth_y + sim.EPS < T:
+            return None, "Q4_SIDECAP"
+        return sim.Quote(q.by, q.bn, 0.0, q.sn, q.dy, q.dn), why
+    return d
+
+
+def _mut_cap_overrides_q5(orig):
+    def d(u, s, Y, N, S, imax):
+        q, why = orig(u, s, Y, N, S, imax)
+        if q is None:
+            return q, why
+        sy = 0.0 if q.by > 7000 else S
+        sn = 0.0 if q.bn > 7000 else S
+        return sim.Quote(q.by, q.bn, sy, sn, q.dy, q.dn), why
+    return d
+
+
+@pytest.mark.parametrize("mutant", [_mut_boundary_ge, _mut_no_q4_recheck, _mut_yes_only, _mut_cap_overrides_q5])
+def test_each_mutation_of_the_side_cap_is_caught_by_a_rule_test(mutant):
+    a_rule_checks(f2._side_cap(f2.F1_FUNCS["decide_quote"]))               # the real wrapper passes ...
+    with pytest.raises(AssertionError):                                    # ... and the mutated one does not
+        a_rule_checks(mutant(f2.F1_FUNCS["decide_quote"]))
+
+
+@pytest.mark.parametrize("cap_bp", [6999, 7001])
+def test_a_moved_cap_constant_is_caught(monkeypatch, cap_bp):
+    monkeypatch.setattr(f2, "SIDE_CAP_BP", cap_bp)
+    with pytest.raises(AssertionError):
+        a_rule_checks(f2._side_cap(f2.F1_FUNCS["decide_quote"]))
+
+
+# ======================================== (6) the deciding bound: the 1.667th percentile of the same draw matrix
+def test_the_adjusted_percentile_is_5_over_m_with_m_3():
+    assert f2.M_GATED == 3 and f2.ADJ_PCT == pytest.approx(5.0 / 3.0) and round(f2.ADJ_PCT, 3) == 1.667
+
+
+@pytest.mark.parametrize("sums,ns", [([10.0] * 10 + [-20.0], [10.0] * 11), ([3.0, -1.0, 4.0, 1.5, 9.0, 2.6, 5.3], [4, 2, 5, 3, 6, 3, 4]),
+                                     ([1.0, 2.0], [1, 1]), ([5.0], [3])])
+def test_the_adjusted_bound_reproduces_p05_exactly_from_the_same_draw_matrix(sums, ns):
+    idx = np.random.RandomState(1).randint(0, len(sums), size=(1000, len(sums)))       # the simulator's matrix, written here
+    s, n = np.asarray(sums, float), np.asarray(ns, float)
+    stat = s[idx].sum(axis=1) / n[idx].sum(axis=1)
+    frozen = sim.cluster_bootstrap(sums, ns)                                           # LIP-F1's function, unpatched
+    assert frozen["p05"] == float(np.percentile(stat, 5))                               # our matrix IS the simulator's
+    with f2.f2_cohort(F2_FREEZE, "B"):
+        got = sim.cluster_bootstrap(sums, ns)
+    assert got["p05"] == frozen["p05"] and got["p95"] == frozen["p95"] and got["mean"] == frozen["mean"]
+    assert got["p_adj"] == float(np.percentile(stat, 5.0 / 3.0)) and got["adj_pct"] == pytest.approx(5.0 / 3.0)
+    assert got["p_adj"] <= got["p05"]
+    assert f2.bootstrap_stat(sums, ns, 1000, 1).tolist() == stat.tolist()
+
+
+def test_an_empty_cluster_set_has_no_adjusted_bound_and_a_changed_matrix_is_refused(monkeypatch):
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        e = sim.cluster_bootstrap([], [])
+        assert e["p05"] is None and e["p_adj"] is None and e["clusters"] == 0
+    monkeypatch.setattr(f2, "bootstrap_stat", lambda *a: np.arange(1000.0))
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        with pytest.raises(f2.F2Refusal, match="does not reproduce"):
+            sim.cluster_bootstrap([1.0, 2.0, 3.0], [1, 1, 1])
+
+
+def gate_rows(day_nets, per_day=10):
+    """Population rows for evaluate_gate: ``per_day`` gas units a day, each its own event, day net split evenly."""
+    rows = []
+    for d, tot in enumerate(day_nets):
+        day = f"2026-10-{20 + d:02d}"
+        for k in range(per_day):
+            net = tot / per_day
+            rows.append({"unit_id": f"u{d}-{k}", "event": f"E{d}-{k}", "day": day, "day_e": day, "gas": True, "full": True,
+                         "net": net, "net_lower": net, "worst_u": -0.5})
+    return rows
+
+
+def test_g4_and_g4b_decide_at_the_adjusted_bound_and_show_p05_beside_it():
+    rows = gate_rows([10.0] * 10 + [-20.0])                                          # 110 full units, 11 gas days
+    frozen = sim.evaluate_gate(rows)
+    assert frozen["all_pass"] and frozen["G4b"]["pass"] and frozen["G4b"]["p05"] > 0   # LIP-F1's rule: a pass
+    with f2.f2_cohort(F2_FREEZE, "B"):
+        g = sim.evaluate_gate(rows)
+    assert g["G4b"]["clusters"] == 11 and g["G4b"]["p05"] == frozen["G4b"]["p05"] > 0
+    assert g["G4b"]["p_adj"] <= 0 < g["G4b"]["p05"]
+    assert g["G4b"]["pass"] is False and g["G4b"]["pass_unadjusted"] is True       # a pass on p05 only
+    assert g["G4"]["pass"] is True and g["G4"]["pass_unadjusted"] is True          # event-clustered: 110 clusters
+    assert g["all_pass"] is False and g["all_pass_unadjusted"] is True
+    for k in ("G1", "G2", "G3", "G5", "G6", "G7"):
+        assert g[k] == frozen[k]                                                   # every other gate is the simulator's own
+    ok = gate_rows([10.0] * 11)
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        g2 = sim.evaluate_gate(ok)
+    assert g2["all_pass"] and g2["G4b"]["p_adj"] > 0 and g2["G4b"]["pass"] and g2["all_pass_unadjusted"]
+    # counts-only evaluation (no bootstrap) stays a non-pass
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        g3 = sim.evaluate_gate(ok, boot=False)
+    assert g3["G4"]["pass"] is False and g3["G4b"]["pass"] is False and g3["all_pass"] is False
+
+
+def cells_gate(verdict, **unadj):
+    return {"verdict": verdict, "cells": {c: {"gate": {"all_pass_unadjusted": unadj.get(c, True)}} for c in sim.CELLS}}
+
+
+def test_the_verdict_wording_a_p05_only_pass_is_fail_multiplicity_adjusted():
+    assert f2.final_verdict(cells_gate("FORMULA_SCREEN_PASSED")) == "FORMULA_SCREEN_PASSED (multiplicity-adjusted)"
+    assert f2.final_verdict(cells_gate("FAIL")) == "FAIL (multiplicity-adjusted)"                # every cell passes on p05
+    assert f2.final_verdict(cells_gate("FAIL", BQ=False)) == "FAIL"                              # one cell fails on p05 too
+    for v in ("COUNTS_NOT_MET", "NOT_DECIDABLE", "DEAD_AS_FROZEN", "SCAN_REPORT_ONLY_WOULD_FAIL"):
+        assert f2.final_verdict(cells_gate(v)) == v
+    assert f2.final_verdict({"verdict": "NOT_DECIDABLE", "cells": {}}) == "NOT_DECIDABLE"
+    assert f2.final_verdict({"verdict": "FAIL", "cells": {}}) == "FAIL"
