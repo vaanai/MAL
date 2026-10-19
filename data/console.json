@@ -1,8 +1,36 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-17T04:56:49Z",
+ "updated_utc": "2026-10-19T04:06:29Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "arena-h5-729-merged-1019",
+   "kind": "decision",
+   "title": "#729 merged (51c9c0b): the executor parser's refusals are not attempts (DEC-031 Amendment 1)",
+   "detail": "Merged 2026-10-19T03:53:40Z. Quant-proof OK and Reviewer APPROVE at d2fc34a. Dry run #1191, per H5 arena book, counts only: 23 triggers, 12 refused (all base_breaks), 11 counted, 0 excluded, not_decidable false. Expected read about 2026-10-27T00Z. Still owed before the read: counted rows with a nonzero settled break at pool close; a refusal-share comparison against the live shadow; the quant-proof parity check (comment 6246275907 on #719); restart of #1158 at the same sha before about 2026-11-01T05:54Z. No book has cleared the promotion gate; nothing here says any book made money. Record: docs/HANDOFF.md, update 2026-10-19 ~04Z.",
+   "atUtc": "2026-10-19T03:53:40Z"
+  },
+  {
+   "id": "kalshi-lip-f1-frozen-1019",
+   "kind": "decision",
+   "title": "Kalshi LIP lane: rule LIP-F1 frozen 2026-10-19T03:33:16Z, forward paper, earliest read 2026-10-24T00Z",
+   "detail": "Paper only, public data only. Rule LIP-F1 (two-sided resting quote in Kalshi liquidity-incentive markets) is frozen in DECLARE-FORWARD.md (sha256 977fa41c78517cad11359121030c81555d9700aa0f66204afc7bc9333f0af796), with CONDITIONS (35ee7e652d470d03ae5ea0de7274c2da0caf8ab518baa4afa4dadeafc3dee63b) and VERIFY-1 (8ce3e30f88bebd784e87f450bb846b11df334cdfb5f7e94cbad68aa1bc8b8bb3). Only rows recorded at or after the freeze instant count; no reward, fill, markout or P&L was computed on a recorded row before it. Recorders #1185 (obrec-1019c, 15 series) and #1190 (obrec-1019d, 8 gas series at 45 s); program poller #1187 (PR #728); metadata capture #1192 (hourly). Simulator PR #730 is under quant-proof and reviewer. Earliest read 2026-10-24T00Z. No book has cleared the promotion gate; this is a pre-registration, not a result.",
+   "atUtc": "2026-10-19T03:33:16Z"
+  },
+  {
+   "id": "kalshi-pubnum-holdout-1019",
+   "kind": "result",
+   "title": "Kalshi public-number rules (pubnum): holdout FAIL, rules retired",
+   "detail": "Run once on the holdout (event dates 2026-09-20..2026-10-17), after the dev run. ALLRUN taker (cent fee): -0.82c per contract, n 72, CI90 lower bound -4.97c. ALLRUN maker (0.85 weight): +2.35c, n_eff 56.1, CI90 lower bound -1.52c. Both fail the gate. R4 and R5 (ERCOT) were not run: no hourly ERCOT load file. Paper only. Source: /data/mal/hunt-1008/push-1016/hunt18/kalshi-pubnum/results/RESULT.md. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-19T03:16:46Z"
+  },
+  {
+   "id": "kalshi-weather-mm-holdout-1018",
+   "kind": "result",
+   "title": "Kalshi weather market-making holdout: every tradeable rule FAILS",
+   "detail": "Holdout run once on 2026-09-01..10-16, 7 cities. M2 -5.0799c per contract; M3 -5.1723c; M4 fails on its CI90 lower bound (-2.617c) and on the worst-3 total (-190.4223 USD); T1 (taker baseline, cent fee) is negative in all three cells (-2.4039c all, -0.5643c favourites, -0.0766c longshots). The M1 maker pool over all prints is descriptive only: it is not an attainable book, because M2's fills mark out -3.0042c after 60 minutes (adverse selection). Paper only. Report: /data/mal/hunt-1008/push-1016/hunt17/kalshi-weather-mm/REPORT.md. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-18T07:26:21Z"
+  },
   {
    "id": "push-records-1017-morning",
    "kind": "record",
@@ -834,6 +862,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261019-disk-helm",
+   "from": "claude",
+   "atUtc": "2026-10-19T04:06:29Z",
+   "text": "Disk on research-0 is 22.06% free at 03:12Z. Walk 2 writes nothing below 20% free and the arena writes need 25%. Requests for Helm, relayed through you (Helm's work, not mine): (1) archive about 40 GiB that has no pending reads: hunt-1008/bigwin-r12, push-1016/hunt5/big-sell-trace, hunt-shared/wallet_mint, ops/grad-t70, hunt-1008/l2-laya-v1-pregrad and hunt-1008/iter-r1; (2) about 100 GB more by 2026-10-22; (3) restore exp025 and blocks/forward-1002ev (EXP-025's Look 1 and Look 2 reads need them). These must stay: blocks/forward-1002, tip-tape-archive, clean-view/*, audit-1008, hunt-1008/c1nf-verify, push-1016/hunt6/r4b-equiv-d. I grepped EXP, DEC, HOLDOUT_LEDGER, HANDOFF and LAB_STATE for the six names and found no pending read of them. Nothing here says any book made money; no book has cleared the promotion gate."
+  },
+  {
    "id": "fy-20261017-dec030-r1",
    "from": "claude",
    "atUtc": "2026-10-17T04:00:27Z",
@@ -1183,6 +1217,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261019-records-0406",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-19T04:06:29Z",
+   "text": "Records 2026-10-19 ~04Z: #729 merged (51c9c0b; DEC-031 Amendment 1, the executor parser's refusals are not attempts); H5 arena dry run #1191 per book: 23 triggers, 12 refused (all base_breaks), 11 counted, 0 excluded, not_decidable false, expected read about 2026-10-27T00Z. Kalshi pubnum holdout FAIL (ALLRUN taker -0.82c per contract, n 72, CI90 lo -4.97c; maker +2.35c, n_eff 56.1, CI90 lo -1.52c). Kalshi weather-mm holdout FAIL for every tradeable rule (M2 -5.0799c, M3 -5.1723c, M4 CI fail, T1 negative). Kalshi LIP-F1 frozen 2026-10-19T03:33:16Z, forward paper, earliest read 2026-10-24T00Z. Disk asks for Helm are in For you. No book has cleared the promotion gate; nothing here says any book made money."
+  },
   {
    "id": "s-20261017-push-morning",
    "from": "claude",

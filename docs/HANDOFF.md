@@ -1,10 +1,54 @@
 # HANDOFF: manager12 to the next manager (2026-10-18 ~05:55Z)
 
+## Update 2026-10-19 ~04Z (manager12 continues in this session; owner 10-19 ~03Z: "continue here")
+
+Where this update and sections 0 to 5 below disagree, this update wins. The stale lines it replaces are corrected or marked in place. No book has cleared the promotion gate. Paper only. Nothing here says any book made money.
+
+**H5 arena books (both bots, fast-0).**
+- **#729 merged as 51c9c0b** (DEC-031 Amendment 1; quant-proof OK and Reviewer APPROVE at d2fc34a). The executor parser's refusals are not attempts. This answers the "FIRST PRIORITY" base_breaks question in section 2 item 1.
+- **Dry run #1191, per book (counts only):** 23 triggers, 12 refused (all base_breaks), 11 counted, 0 excluded, not_decidable false.
+- **Expected read about 2026-10-27T00Z.**
+- **Daily score command** (replaces the one in section 2 item 1; run on fast-0). `/usr/bin/python3` lacks solders, so use the c1nf-shadow venv:
+  `/home/claude/venvs/c1nf-shadow/bin/python -m tools.arena_h5_score score --dry-run --shadow-dir "$HOME/data/arena/h5-2026-10-18"`
+- **Still owed before the read:**
+  1. counted rows with a nonzero settled break at pool close;
+  2. a refusal-share comparison against the live shadow;
+  3. the quant-proof parity check from comment 6246275907 on #719;
+  4. restart #1158 at the same sha before about 11-01T05:54Z (it is at the 14-day maximum).
+
+**Walk 2 (EXP-027).**
+- **#1036 is at the 14-day maximum and ends about 10-29T19Z.** The old text in section 2 item 4 said 10-22.
+- It needs a successor with the same pinned blobs, plus EXP027_WALK2_JOB_2. A session cron fires 10-29 12:17Z. CLAUDE.md says a fixed-instant step needs a host-side MiScusi job, not a session cron alone; no such job is recorded here.
+
+**Kalshi pubnum: holdout FAIL; the rules are retired.**
+- ALLRUN taker (cent fee): -0.82c per contract, n 72, CI90 lo -4.97c.
+- ALLRUN maker (0.85 weight): +2.35c, n_eff 56.1, CI90 lo -1.52c.
+- Source: `/data/mal/hunt-1008/push-1016/hunt18/kalshi-pubnum/results/RESULT.md`. R4 and R5 (ERCOT) were not run: no hourly ERCOT load file.
+
+**Kalshi LIP lane (hunt18/kalshi-lip).**
+- **Rule LIP-F1 frozen 2026-10-19T03:33:16Z.** Files in `/data/mal/hunt-1008/push-1016/hunt18/kalshi-lip/`, each with its sha256:
+  - `DECLARE-FORWARD.md` 977fa41c78517cad11359121030c81555d9700aa0f66204afc7bc9333f0af796
+  - `DECLARE-FORWARD-CONDITIONS.md` 35ee7e652d470d03ae5ea0de7274c2da0caf8ab518baa4afa4dadeafc3dee63b
+  - `DECLARE-FORWARD-VERIFY-1.md` 8ce3e30f88bebd784e87f450bb846b11df334cdfb5f7e94cbad68aa1bc8b8bb3
+- **Recorders:** #1185 (obrec-1019c, 15 series) and #1190 (obrec-1019d, 8 gas series at 45 s).
+- **Program poller:** #1187 (PR #728). **Metadata capture:** #1192 (`/data/mal/kalshi/meta-1019`, hourly).
+- **Daily trades and markets download:** cron at 04:41Z.
+- **Simulator:** PR #730 is under quant-proof and reviewer. **Earliest read 2026-10-24T00Z.**
+
+**Kalshi crypto.** #727 merged (trades `--tail-s`). Download #1189 is running. Then the frozen R3 dev run plus one holdout run.
+
+**#718 (hv4-read) merged 6a453e7** (QP OK + Reviewer APPROVE at 7f0345e). Haiku v4 DESIGN Amendment A1 written 2026-10-19T04:07:51Z (sign-flip test; V2 >= 7 days; V1/V2 once at B+24 h). Haiku v4 is still blocked on research-0 disk >= 25%.
+
+**Disk (research-0): 22.06% free at 03:12Z.**
+- The owner was asked for Helm to archive about 40 GiB that has no pending reads: `hunt-1008/bigwin-r12`, `push-1016/hunt5/big-sell-trace`, `hunt-shared/wallet_mint`, `ops/grad-t70`, `hunt-1008/l2-laya-v1-pregrad`, `hunt-1008/iter-r1`.
+- Also asked: about 100 GB more by 10-22, and restore exp025 plus `blocks/forward-1002ev`.
+- **Must stay:** `blocks/forward-1002`, tip-tape-archive, `clean-view/*`, `audit-1008`, `hunt-1008/c1nf-verify`, `push-1016/hunt6/r4b-equiv-d`.
+- A grep of EXP, DEC, HOLDOUT_LEDGER, HANDOFF, LAB_STATE and ARTIFACTS/SUMMARY.md for the six archive names found no pending read of them. The two hits are not reads: EXP-025 item 8 names `october-shared/wallet_mint/fast-pool-0918.parquet` (a different path), and EXP-026 line 244 names "iter-r1" as a past exit analysis (EXP-026 was withdrawn before W0). The cron files `/data/mal/hunt-1008/ops/*.json` have no hit either.
+
 Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous HANDOFF (10-12..10-17, H5 canary, seal window) is archived at `ARTIFACTS/lab/handoff-archive-2026-10-18.md`. Its section 6, "Rules that bite", still applies. No book has cleared the promotion gate. Paper only.
 
 ## 0. First 10 minutes
 1. **CronList.** Session crons die with the session. Re-create them from `/data/mal/hunt-1008/ops/crons-1016-manager12.json` (`recurring` keys point at `recurring-crons-1011.json`; plus `oneshot`).
-   - **Next one-shot: 2026-10-18T12:07Z, the EXP-025 Look 1 R8 run.** Run once after 12:00:00Z: the command in EXP-025 section "P5 record (2026-10-16)", as a MiScusi job, then a records PR.
    - **Fee-arm watch (`53 */2`):** exact command in `/data/mal/hunt-1008/ops/feearm-watch-1080.cmd`; stop after 2026-10-22T01:00Z.
    - **Tip-tape archive (`23 3`):** now 1990 MB, because fast-0 refuses jobs of 2 GB or more.
 2. **Disk.** `/data/mal/c1nf-parity-venv/bin/python -c "import shutil;u=shutil.disk_usage('/data/mal/blocks/forward-1016');print(100*u.free/u.total)"`.
@@ -41,7 +85,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 
 ### Open PRs
 - **#719 MERGED as 1f7a89c**, with quant-proof OK and reviewer APPROVE on 7b1a59e. It pins: code sha256 at c3dc98f, parity sets and their 78 source files, the engine references, d = 7, and the deployment conditions.
-- **#718 (hv4-read, head 085d93a, READY, not draft).** Rebased on main and uses the real `boundary_ms` and `common_boundary`; 44 tests. **It still needs a reviewer AND quant-proof** (it reads gate results). Launch both fresh.
+- **#718 (hv4-read; head 085d93a when this was written; MERGED 6a453e7 on 10-19 with QP OK + Reviewer APPROVE at 7f0345e, see the 10-19 update).** Rebased on main and uses the real `boundary_ms` and `common_boundary`; 44 tests. *(Written before the merge: it needed a reviewer AND quant-proof because it reads gate results; both are done, see the 10-19 update.)*
 
 ## 2. Next steps, in order
 1. **H5 books: STARTED.**
@@ -50,7 +94,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
    - Shadow job **#1158** on mal-fast-0, 14-day limit, so it ends about 11-01T05:54Z. Before then, extend it or restart at the same sha; a restart on the same day needs a new out dir. The start record was verified by job #1160. Output: `$HOME/data/arena/h5-2026-10-18`.
    - The records copy is in `ARTIFACTS/lab/arena-records-2026-10-18.md` §5.
    - **Daily:**
-     - `/usr/bin/python3 -m tools.arena_h5_score score --shadow-dir "$HOME/data/arena/h5-2026-10-18"` on fast-0 at git_ref 1f7a89c. It defaults `--arena-root` to `$HOME/data/arena` there. Counts only: no P&L to any channel before the read.
+     - **Superseded by the 10-19 update at the top:** use `/home/claude/venvs/c1nf-shadow/bin/python -m tools.arena_h5_score score --dry-run --shadow-dir "$HOME/data/arena/h5-2026-10-18"` on fast-0 (`/usr/bin/python3` lacks solders). The old line was `/usr/bin/python3 -m tools.arena_h5_score score --shadow-dir "$HOME/data/arena/h5-2026-10-18"` at git_ref 1f7a89c. The scorer defaults `--arena-root` to `$HOME/data/arena` there. Counts only: no P&L to any channel before the read.
      - **Pass `--shadow-dir`.** Without it the default glob is `h5-shadow-*`, which does not match the shadow's `h5-<date>` dir, so it scores 0 attempts (job #1175).
      - Post the decision-log sha to the notebook.
      - Watch the gap rate. H5 flags pools only on a common-down of all sockets. If 413/429 rejections persist, propose cancelling the old shadow #817.
@@ -115,7 +159,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 4. **EXP-027 (r4-b).**
    - W0 2026-10-18T03, E 2026-11-07T03, read about 11-09.
    - It needs walk 2 sealing hours (disk), then the hourly count job (`tools.r4b_count`, audit venv + PYTHONPATH /data/mal/venv site-packages, `--through-hour` = latest contiguous verified hour).
-   - Walk 2 #1036 limit is about 10-22T19:21Z: extend or resubmit with the SAME pinned blobs (EXP027_WALK2_JOB_2).
+   - Walk 2 #1036 is at the 14-day maximum and ends about 10-29T19Z (this line said 10-22T19:21Z, the limit before the extension; see the 10-19 update): resubmit a successor with the SAME pinned blobs (EXP027_WALK2_JOB_2).
    - The 20% reserve is in a pinned blob and cannot be lowered.
 5. **Other clocks.**
    - Job A (#1135) successor before ~10-23T23:20Z; hourly lag check, lock pid = running pid.
@@ -135,6 +179,8 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 - **Budget $4.90/day; BST-R warm-up 5; a manifest refusal halts the whole persona group; the BIG trail peak is quantized to 1 point** (disclosed).
 
 ## 4. Agents that may still notify (resume with SendMessage; their final report is not shown to the owner)
+**Superseded 2026-10-19:** this list is no longer current. The agent ids are from 10-18; the status in the 10-19 update at the top replaces it. Do not assume an id below is still live; start a fresh agent where the work needs one.
+
 - a082e9e337b878bbe (quant-proof, #719)
 - aecc5920ec52995e1 (reviewer, #719)
 - ace30284da0c26753 (builder, #718)
@@ -145,6 +191,8 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 Builders stop at ~40 turns and reviewers at ~20. Agent writes to /data/mal are often refused, so they return text and the manager saves it.
 
 ## 5. Running jobs (MiScusi)
+Jobs started after this table was written (#1185, #1187, #1189, #1190, #1191, #1192) are listed in the 10-19 update at the top.
+
 | Job | What |
 |---|---|
 | #1036 | walk 2 (resumed 10-18 ~11Z; catching up, trades-2026-10-17T00 at 17:08Z) |
