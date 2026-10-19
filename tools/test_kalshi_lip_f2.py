@@ -1291,3 +1291,76 @@ def test_the_cfg_out_is_restored_after_a_run_and_after_a_simulator_error(tmp_pat
     with pytest.raises(sim.InputError):
         f2.run_f2(cfg2, "A", ctx_for(texts, gates))
     assert cfg2.out == str(tmp_path / "out2") and not (tmp_path / "out2").exists()
+
+
+# ===================================== R10: one new --out per variant per candidate R (and per --scan)
+def test_r10_a_later_candidate_r_cannot_overwrite_an_earlier_candidates_gate_json(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    out = tmp_path / "out"
+    r1, r2 = "2026-10-26T00:00:00Z", "2026-10-27T00:00:00Z"
+    g1 = f2.run_f2(f2_cfg(w, out, read_us=st.at(r1)), "A", ctx)
+    assert g1["f2_run"] == {"mode": "read_instant", "read_instant": r1, "asof": None}
+    kept = md5_dir(out)
+    assert json.loads((out / "gate.json").read_text())["f2_run"]["read_instant"] == r1
+    # the 10-27 candidate into the same folder is refused, and the 10-26 record is untouched
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.run_f2(f2_cfg(w, out, read_us=st.at(r2)), "A", ctx)
+    assert md5_dir(out) == kept and not (out / f2.STAGING).exists()
+    # a new folder per candidate is fine, and the 10-26 candidate may be re-run into its own folder (same R, same mode)
+    f2.run_f2(f2_cfg(w, tmp_path / "out2", read_us=st.at(r2)), "A", ctx)
+    f2.run_f2(f2_cfg(w, out, read_us=st.at(r1)), "A", ctx)
+    assert md5_dir(out) == kept
+    # the other variant never shares a folder (existing rule), at any R
+    with pytest.raises(f2.F2Refusal, match="another F2 variant"):
+        f2.run_f2(f2_cfg(w, out, "B", read_us=st.at(r1)), "B", ctx)
+
+
+def test_r10_a_scan_and_a_read_instant_run_never_share_a_folder_and_a_scan_keeps_its_asof(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    a28, a29 = st.at("2026-10-28T00:00:00Z"), st.at("2026-10-29T00:00:00Z")
+    f2.run_f2(f2_cfg(w, tmp_path / "scan", "B", read_us=None, scan=True, asof_us=a28), "B", ctx)
+    kept = md5_dir(tmp_path / "scan")
+    for cfg in (f2_cfg(w, tmp_path / "scan", "B", read_us=st.at("2026-10-26T00:00:00Z")),          # a read-instant run
+                f2_cfg(w, tmp_path / "scan", "B", read_us=None, scan=True, asof_us=a29)):         # another scan horizon
+        with pytest.raises(f2.F2Refusal, match="another candidate"):
+            f2.run_f2(cfg, "B", ctx)
+    f2.run_f2(f2_cfg(w, tmp_path / "scan", "B", read_us=None, scan=True, asof_us=a28), "B", ctx)    # the same scan again
+    assert md5_dir(tmp_path / "scan") == kept
+    f2.run_f2(f2_cfg(w, tmp_path / "ri", "B", read_us=st.at("2026-10-26T00:00:00Z")), "B", ctx)
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.run_f2(f2_cfg(w, tmp_path / "ri", "B", read_us=None, scan=True, asof_us=a28), "B", ctx)
+
+
+def test_r10_a_gate_json_without_a_candidate_identity_is_refused_and_check_out_reports_both_identities(tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / f2.MARKER).write_text(json.dumps({"lip_f2_variant": "F2-A"}))
+    (out / "gate.json").write_text(json.dumps({"lip_f2_variant": "F2-A", "book": "F2-A"}))
+    (out / "units.parquet").write_text("x")
+    run = {"mode": "read_instant", "read_instant": "2026-10-26T00:00:00Z", "asof": None}
+    f2.check_out(out, "A")                                                         # no identity given: the file-level checks only
+    with pytest.raises(f2.F2Refusal, match=r"another candidate \(None\)"):
+        f2.check_out(out, "A", run=run)
+    (out / "gate.json").write_text(json.dumps({"lip_f2_variant": "F2-A", "f2_run": run}))
+    f2.check_out(out, "A", run=run)
+    with pytest.raises(f2.F2Refusal, match="never reused for another R"):
+        f2.check_out(out, "A", run=dict(run, read_instant="2026-10-27T00:00:00Z"))
+    (out / "gate.json").write_text("{not json")
+    with pytest.raises(f2.F2Refusal):
+        f2.check_out(out, "A", run=run)
+
+
+def test_r10_a_failed_rerun_restores_the_marker_it_rewrote(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx)
+    kept = md5_dir(tmp_path / "out")
+    marker = (tmp_path / "out" / f2.MARKER).read_bytes()
+    monkeypatch.setattr(f2, "f2_table", lambda g: (_ for _ in ()).throw(f2.F2Refusal("synthetic crash")))
+    real_labels = f2.labels
+    monkeypatch.setattr(f2, "labels", lambda v, c: dict(real_labels(v, c), f2_notes=["changed so the marker differs"]))
+    with pytest.raises(f2.F2Refusal, match="synthetic crash"):
+        f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx)
+    assert (tmp_path / "out" / f2.MARKER).read_bytes() == marker and md5_dir(tmp_path / "out") == kept

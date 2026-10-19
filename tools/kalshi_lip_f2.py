@@ -619,9 +619,18 @@ def _is_f2_json(path, variant):
     return isinstance(d, dict) and d.get("lip_f2_variant") == LABELS[variant]
 
 
-def check_out(out, variant, inputs=()):
-    """--out may be new, empty, a dir without simulator files, or a previous output of the SAME variant.  It must not hold
-    LIP-F1 / Book C / the other variant's simulator files and must not sit inside an input store."""
+def run_identity(cfg):
+    """What makes two runs 'the same candidate': the mode (``--read-instant`` or ``--scan``), R, and the scan's --asof."""
+    iso = lambda us: None if us is None else sim.us_to_iso(us)
+    return {"mode": "scan" if cfg.scan else "read_instant", "read_instant": iso(cfg.read_us), "asof": iso(cfg.asof_us)}
+
+
+def check_out(out, variant, inputs=(), run=None):
+    """--out may be new, empty, a dir without simulator files, or a previous output of the SAME variant, the SAME mode and
+    the SAME read instant (a re-run of the same R).  It must not hold LIP-F1 / Book C / the other variant's simulator
+    files, must not hold another candidate's gate.json (one new --out per variant per candidate R and per --scan, so the
+    gate.json of every earlier candidate is kept, QP R10) and must not sit inside an input store.  ``run``: the identity
+    of this run (``run_identity``); None skips the candidate check."""
     out = Path(out)
     if out.exists() and not out.is_dir():
         raise F2Refusal(f"--out {out} exists and is not a directory")
@@ -645,6 +654,14 @@ def check_out(out, variant, inputs=()):
     if not mine:
         raise F2Refusal(f"--out {out} already holds simulator files {held} that are not {LABELS[variant]} output; "
                         "each F2 variant writes to its own directory")
+    if run is not None and (out / "gate.json").exists():
+        try:
+            had = json.loads((out / "gate.json").read_text()).get("f2_run")
+        except (OSError, ValueError, AttributeError):
+            had = None
+        if had != run:
+            raise F2Refusal(f"--out {out} already holds the gate.json of another candidate ({had}); use one new --out per "
+                            f"variant per candidate R (and per --scan), never reused for another R (this run: {run})")
 
 
 # ------------------------------------------------------------------------------------------------ the dry run
@@ -698,8 +715,10 @@ def run_f2(cfg, variant, ctx):
             rep = sim.run_sim(cfg)
         return dry_report(rep, ctx)
     lab = labels(variant, ctx)
-    check_out(out, variant, [cfg.books, cfg.programs, cfg.meta, cfg.trades, cfg.markets, cfg.series])
+    lab["f2_run"] = run_identity(cfg)
+    check_out(out, variant, [cfg.books, cfg.programs, cfg.meta, cfg.trades, cfg.markets, cfg.series], lab["f2_run"])
     fresh_dir, had_marker = not out.exists(), (out / MARKER).exists()
+    old_marker = (out / MARKER).read_bytes() if had_marker else None
     stage, orig_out = out / STAGING, cfg.out
     try:
         shutil.rmtree(stage, ignore_errors=True)       # leftovers of a killed run: simulator-labelled, never read
@@ -736,6 +755,8 @@ def run_f2(cfg, variant, ctx):
         # a refused / failed run leaves no simulator-labelled file in --out and no marker-only directory behind
         cfg.out = orig_out
         shutil.rmtree(stage, ignore_errors=True)
+        if had_marker:
+            (out / MARKER).write_bytes(old_marker)       # a failed re-run restores the marker it rewrote
         if not any((out / f).exists() for f in SIM_OUTPUT_FILES):
             if not had_marker:
                 (out / MARKER).unlink(missing_ok=True)
