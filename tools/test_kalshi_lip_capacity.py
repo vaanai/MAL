@@ -76,14 +76,20 @@ def covered(monkeypatch):
     monkeypatch.setattr(sim, "coverage", lambda *a, **k: {"not_decidable": False, "days": {}})
 
 
-def book_c_world(tmp, monkeypatch, with_f1_program=True):
+def book_c_world(tmp, monkeypatch, with_f1_program=True, al_hole=False, filler_step=None):
     """obrec-1019e with four Book C gas units (three with E on 2026-10-19, one on 2026-10-20) and, in the program
-    polls, one program of a LIP-F1 series that must never become a unit."""
+    polls, one program of a LIP-F1 series that must never become a unit.  ``al_hole``: cAL has no snapshot between
+    12:20 and 12:35 (one 960 s gap = 510 s blind beyond CAP).  ``filler_step``: one more market, with no program,
+    recorded every ``filler_step`` s from 2026-10-19T08:30Z to 2026-10-21T01:00Z, so that 2026-10-20 is a complete day."""
     w = st.World(tmp)
     w.meta = str(Path(tmp) / "meta-empty")                 # daily series need no metadata capture
     Path(w.meta).mkdir(parents=True)
     snaps = {t: st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60) for t in (AK, AL, AR)}
     snaps[AZ] = st.ticks("2026-10-20T12:05:30Z", "2026-10-20T15:30:00Z", 60)
+    if al_hole:
+        snaps[AL] = [s for s in snaps[AL] if not (st.at("2026-10-19T12:20:00Z") <= s.ts < st.at("2026-10-19T12:35:00Z"))]
+    if filler_step:
+        snaps["KXAAAGASDWY-26OCT21-T3.5"] = st.ticks("2026-10-19T08:30:00Z", "2026-10-21T01:00:00Z", filler_step)
     w.add_run(cap.BOOK_C_RECORDER, snaps, sorted({kp.series_of(t) for t in snaps}))
     d1 = ("2026-10-19T12:00:00Z", "2026-10-19T14:00:00Z")
     d2 = ("2026-10-20T12:00:00Z", "2026-10-20T14:00:00Z")
@@ -110,7 +116,7 @@ def book_c_world(tmp, monkeypatch, with_f1_program=True):
 
 
 def cap_cfg(w, out, **kw):
-    base = dict(books=w.books, programs=w.lip, meta=w.meta, trades=str(w.kal), markets=str(w.kal), series=str(w.kal),
+    base = dict(books=w.books, programs=w.lip, meta=getattr(w, "meta", None), trades=str(w.kal), markets=str(w.kal), series=str(w.kal),
                 read_us=st.at(R), units_evidence=w.evidence(), out=str(out))
     base.update(kw)
     return cap.make_cfg(**base)
@@ -152,9 +158,13 @@ def test_a_capacity_run_restores_every_sim_constant_and_leaves_the_sim_file_alon
     assert seen["FREEZE_ISO"] == cap.FC_ISO and seen["FREEZE_US"] == sim.iso_to_us(cap.FC_ISO)
     assert seen["GAS_SERIES"] == seen["SERIES_ADMITTED"] == cap.BOOK_C_SERIES and len(seen["GAS_SERIES"]) == 43
     assert seen["OTHER_SERIES"] == () and seen["PRIMARY_RUN"] == "obrec-1019e"
+    # QP ruling (2) on #736: the key coverage() reads carries 350.0 (a new dict); lipsnap stays 900.0
+    assert seen["BASELINE_GAP_S"] == {"obrec-1019c": 350.0, "lipsnap": 900.0}
+    assert seen["BASELINE_GAP_S"] is not before["BASELINE_GAP_S"]
     # ... and afterwards it is LIP-F1's again, identical objects
     after = sim_state()
     assert after == before and all(after[n] is before[n] for n in before)
+    assert sim.BASELINE_GAP_S == {"obrec-1019c": 222.7, "lipsnap": 900.0} and cap.PATCHED[-1] == "BASELINE_GAP_S"
     assert hashlib.md5(Path(sim.__file__).read_bytes()).hexdigest() == md5_before == SIM_MD5
     assert sim.FREEZE_ISO == "2026-10-19T03:33:16Z" and len(sim.SERIES_ADMITTED) == 15
 
@@ -163,9 +173,10 @@ def test_constants_are_restored_after_an_error_and_the_override_does_not_nest():
     before = sim_state()
     with pytest.raises(RuntimeError):
         with cap.book_c_universe():
-            assert sim.FREEZE_ISO == cap.FC_ISO
+            assert sim.FREEZE_ISO == cap.FC_ISO and sim.BASELINE_GAP_S["obrec-1019c"] == 350.0
             raise RuntimeError("boom")
-    assert sim_state() == before
+    assert sim_state() == before and sim.BASELINE_GAP_S is before["BASELINE_GAP_S"]
+    assert sim.BASELINE_GAP_S == {"obrec-1019c": 222.7, "lipsnap": 900.0}
     with cap.book_c_universe():
         with pytest.raises(cap.CapacityRefusal, match="nest"):
             with cap.book_c_universe():
@@ -180,7 +191,7 @@ def test_a_simulator_error_inside_the_run_still_restores_the_constants(tmp_path,
     monkeypatch.setattr(sim, "run_sim", lambda cfg: (_ for _ in ()).throw(sim.InputError("synthetic")))
     with pytest.raises(sim.InputError):
         cap.run_book_c(cap_cfg(w, tmp_path / "out"))
-    assert sim_state() == before
+    assert sim_state() == before and sim.BASELINE_GAP_S is before["BASELINE_GAP_S"]
 
 
 def test_the_coverage_block_reads_the_book_c_recorder_only_inside_the_override(tmp_path, monkeypatch):
@@ -195,10 +206,127 @@ def test_the_coverage_block_reads_the_book_c_recorder_only_inside_the_override(t
     assert all(d["recorder"] == 0.0 for d in outside["days"].values())
 
 
+END = "2026-10-22T00:00:00Z"
+
+
+def cadence_world(tmp, monkeypatch, step, until=END, tickers=(AK,)):
+    """obrec-1019e recording every ``step`` s from FC to ``until``; lipsnap polled every 900 s (so the polls never
+    cause a coverage failure by themselves).  No programs: only coverage / gap statistics are read from it."""
+    w = st.World(tmp)
+    snaps = {t: st.ticks(cap.FC_ISO, until, step) for t in tickers}
+    w.add_run(cap.BOOK_C_RECORDER, snaps, sorted({kp.series_of(t) for t in snaps}))
+    polls, t = [], st.at(cap.FC_ISO)
+    while t < st.at(until):
+        polls.append((sim.us_to_iso(t), True, []))
+        t += 900 * sim.US
+    w.add_polls(polls)
+    monkeypatch.setattr(cap, "REGISTRY_PINS", {cap.BOOK_C_RECORDER: sha(Path(tmp) / "obrec-REGISTRY-1019e.md")})
+    return w
+
+
+def coverage_in_book_c(w, tmp_path):
+    cfg = cap_cfg(w, tmp_path / "unused", meta=None, series=None, read_us=st.at(END))
+    with cap.book_c_universe():
+        return sim.coverage(sim.load_inputs(cfg), cfg, cfg.read_us), cfg
+
+
+def test_a_350s_recorder_reads_about_one_under_the_book_c_baseline(tmp_path, monkeypatch):
+    w = cadence_world(tmp_path / "w", monkeypatch, 350)
+    cov, cfg = coverage_in_book_c(w, tmp_path)
+    assert cov["baselines_s"] == {"obrec-1019c": 350.0, "lipsnap": 900.0}          # the key the simulator reads
+    assert set(cov["days"]) == {"2026-10-19", "2026-10-20", "2026-10-21"} and cov["not_decidable"] is False
+    for day, d in cov["days"].items():
+        assert 0.98 <= d["recorder"] <= 1.02 and 0.98 <= d["polls"] <= 1.02 and not d["below_70pct"], (day, d)
+    # contrast: under LIP-F1's 222.7 s baseline (PRIMARY_RUN alone patched) the same healthy recorder reads 0.64
+    with monkeypatch.context() as m:
+        m.setattr(sim, "PRIMARY_RUN", cap.BOOK_C_RECORDER)
+        old = sim.coverage(sim.load_inputs(cfg), cfg, cfg.read_us)
+    assert old["baselines_s"]["obrec-1019c"] == 222.7 and old["not_decidable"] is True
+    assert all(0.62 < d["recorder"] < 0.65 for d in old["days"].values())
+
+
+def test_a_520s_recorder_trips_the_70_percent_rule_on_two_consecutive_days(tmp_path, monkeypatch):
+    w = cadence_world(tmp_path / "w", monkeypatch, 520)
+    cov, _ = coverage_in_book_c(w, tmp_path)
+    assert cov["not_decidable"] is True
+    for day, d in cov["days"].items():
+        assert 0.66 < d["recorder"] < 0.69 and d["below_70pct"] and d["polls"] > 0.98, (day, d)
+    # one bad day among good ones is not enough: a 520 s first day then 350 s
+    w2 = st.World(tmp_path / "w2")
+    first = st.ticks(cap.FC_ISO, "2026-10-20T00:00:00Z", 520) + st.ticks("2026-10-20T00:00:00Z", END, 350)
+    w2.add_run(cap.BOOK_C_RECORDER, {AK: first}, ["KXAAAGASDAK"])
+    polls, t = [], st.at(cap.FC_ISO)
+    while t < st.at(END):
+        polls.append((sim.us_to_iso(t), True, []))
+        t += 900 * sim.US
+    w2.add_polls(polls)
+    monkeypatch.setattr(cap, "REGISTRY_PINS", {cap.BOOK_C_RECORDER: sha(tmp_path / "w2" / "obrec-REGISTRY-1019e.md")})
+    cov2, _ = coverage_in_book_c(w2, tmp_path)
+    assert cov2["days"]["2026-10-19"]["below_70pct"] and not cov2["days"]["2026-10-20"]["below_70pct"]
+    assert cov2["not_decidable"] is False
+
+
+def test_the_measured_median_gap_is_a_disclosure_beside_the_coverage_block_and_never_the_baseline(tmp_path, monkeypatch):
+    w = cadence_world(tmp_path / "w", monkeypatch, 520, tickers=(AK, AL))
+    d = cap.median_gap_disclosure(w.books[0], st.at(END))
+    assert d["available"] is True and d["timestamps_only"] is True and d["window"] == list(cap.DISCLOSURE_DAY)
+    assert d["n_markets"] == 2 and 320 < d["n_gaps"] < 340
+    assert d["median_gap_s_pooled"] == 520.0 and d["median_of_market_median_gaps_s"] == 520.0
+    # reported when that day is complete in the data, else why not
+    assert cap.median_gap_disclosure(w.books[0], st.at("2026-10-20T12:00:00Z"))["available"] is False
+    assert "before the end of the day" in cap.median_gap_disclosure(w.books[0], st.at("2026-10-20T12:00:00Z"))["reason"]
+    assert cap.median_gap_disclosure(w.books[0], None)["available"] is False
+    # the disclosure is a pure function of timestamps: the baseline in force stays 350.0 whatever it measured
+    cov, _ = coverage_in_book_c(w, tmp_path)
+    assert cov["baselines_s"]["obrec-1019c"] == 350.0 and d["median_gap_s_pooled"] != 350.0
+    gate = cap.relabel_coverage({"coverage": dict(cov)}, d)
+    assert gate["coverage"]["baselines_s"] == {"obrec-1019e": 350.0, "lipsnap": 900.0}
+    assert gate["coverage"]["disclosure_only"]["median_gap_obrec_1019e_2026_10_20"] == d
+    assert "QP ruling (2) on #736" in gate["coverage"]["baseline_ruling"] and "never a baseline" in gate["coverage"]["baseline_ruling"]
+    assert cap.relabel_coverage({"verdict": "x"}) == {"verdict": "x"}                 # no coverage block: untouched
+    short = cadence_world(tmp_path / "short", monkeypatch, 520, until="2026-10-20T12:00:00Z")
+    assert "after the day" in cap.median_gap_disclosure(short.books[0], st.at(END))["reason"]
+
+
+def test_the_gate_says_obrec_1019e_350_cites_the_ruling_and_never_calls_a_gap_an_artifact(tmp_path, monkeypatch):
+    w = book_c_world(tmp_path / "w", monkeypatch, filler_step=520)
+    g = cap.run_book_c(cap_cfg(w, tmp_path / "out"))
+    gate = json.loads((tmp_path / "out" / "gate.json").read_text())
+    cov = gate["coverage"]
+    assert cov["baselines_s"] == {"obrec-1019e": 350.0, "lipsnap": 900.0} and "obrec-1019c" not in json.dumps(cov["baselines_s"])
+    assert "QP ruling (2) on #736" in cov["baseline_ruling"]
+    md = cov["disclosure_only"]["median_gap_obrec_1019e_2026_10_20"]
+    assert md["available"] is True and md["n_markets"] == 2 and md["timestamps_only"] is True
+    assert g["coverage"] == cov                                           # the returned dict carries the same relabel
+    # and without a complete 2026-10-20 the disclosure says why instead of a number
+    w2 = book_c_world(tmp_path / "w2", monkeypatch)
+    cap.run_book_c(cap_cfg(w2, tmp_path / "out2"))
+    md2 = json.loads((tmp_path / "out2" / "gate.json").read_text())["coverage"]["disclosure_only"]["median_gap_obrec_1019e_2026_10_20"]
+    assert md2["available"] is False and "reason" in md2
+    for text in (json.dumps(gate), (tmp_path / "out" / "table.txt").read_text(), Path(cap.__file__).read_text(),
+                 json.dumps(cap.labels())):
+        assert "cadence artifact" not in text.lower()
+    assert any("real data gap" in n for n in gate["capacity_notes"])
+
+
 # ============================================================ (2) capacity path == the sim with that universe
-def test_capacity_path_equals_the_sim_run_with_the_same_universe_and_freeze(tmp_path, monkeypatch, covered):
+def unlabel(gate):
+    """A capacity gate.json dict -> what the simulator wrote: drop the label keys and undo the coverage relabel."""
+    g = {k: v for k, v in gate.items() if k not in cap.LABEL_KEYS or k == "book"}
+    cov = dict(g["coverage"])
+    cov.pop("baseline_ruling")
+    cov.pop("disclosure_only", None)
+    b = dict(cov["baselines_s"])
+    b["obrec-1019c"] = b.pop("obrec-1019e")
+    cov["baselines_s"] = b
+    g["coverage"] = cov
+    return g
+
+
+def test_capacity_path_equals_the_sim_run_with_the_same_universe_and_freeze(tmp_path, monkeypatch):
     w = book_c_world(tmp_path / "w", monkeypatch)
-    # reference: the simulator itself, constants patched by the test (not by the tool), no capacity code on the path
+    # reference: the simulator itself, constants patched by the test (not by the tool), no capacity code on the path;
+    # the real coverage() runs in both (not neutralised)
     with monkeypatch.context() as m:
         m.setattr(sim, "FREEZE_ISO", cap.FC_ISO)
         m.setattr(sim, "FREEZE_US", sim.iso_to_us(cap.FC_ISO))
@@ -206,6 +334,7 @@ def test_capacity_path_equals_the_sim_run_with_the_same_universe_and_freeze(tmp_
         m.setattr(sim, "OTHER_SERIES", ())
         m.setattr(sim, "SERIES_ADMITTED", tuple(cap.BOOK_C_SERIES))
         m.setattr(sim, "PRIMARY_RUN", "obrec-1019e")
+        m.setattr(sim, "BASELINE_GAP_S", {"obrec-1019c": 350.0, "lipsnap": 900.0})
         ref_cfg = sim.Cfg(books=w.books, programs=w.lip, meta=w.meta, trades=str(w.kal), markets=str(w.kal), series=str(w.kal),
                           read_us=st.at(R), units_evidence=w.evidence(), out=str(tmp_path / "ref"), book="C",
                           freeze_us=sim.iso_to_us(cap.FC_ISO), registry_pins=dict(cap.REGISTRY_PINS))
@@ -218,10 +347,17 @@ def test_capacity_path_equals_the_sim_run_with_the_same_universe_and_freeze(tmp_
     ref_gate = json.loads((tmp_path / "ref" / "gate.json").read_text())
     cap_gate = json.loads((tmp_path / "cap" / "gate.json").read_text())
     assert set(cap_gate) - set(ref_gate) == set(cap.LABEL_KEYS) - {"book"} and cap_gate["book"] == ref_gate["book"] == "C"
-    stripped = {k: v for k, v in cap_gate.items() if k not in cap.LABEL_KEYS or k == "book"}
+    stripped = unlabel(cap_gate)
     assert stripped == ref_gate
     assert cap._dump(stripped) == (tmp_path / "ref" / "gate.json").read_text()           # byte-equal apart from labels
-    assert (tmp_path / "cap" / "table.txt").read_text() == cap.banner() + "\n" + (tmp_path / "ref" / "table.txt").read_text()
+    # the coverage block differs from the simulator's only in the key label and the cited ruling
+    assert ref_gate["coverage"]["baselines_s"] == {"obrec-1019c": 350.0, "lipsnap": 900.0}
+    assert cap_gate["coverage"]["baselines_s"] == {"obrec-1019e": 350.0, "lipsnap": 900.0}
+    assert "QP ruling (2) on #736" in cap_gate["coverage"]["baseline_ruling"]
+    cap_table, ref_table = (tmp_path / "cap" / "table.txt").read_text(), (tmp_path / "ref" / "table.txt").read_text()
+    assert cap_table.startswith(cap.table_header())
+    body = cap_table[len(cap.table_header()):]
+    assert body.startswith(ref_table) and body[len(ref_table):] == cap.table_footer(res)
     # the run was real
     assert ref_gate["cells"]["U0"]["gate"]["n_units"] == 4 and ref_gate["freeze"] == cap.FC_ISO
     units = pq.read_table(tmp_path / "cap" / "units.parquet").to_pylist()
@@ -445,6 +581,48 @@ def test_without_the_gas_override_the_same_units_would_be_clustered_per_event(tm
         g = sim.run_sim(cfg)
     gt = g["cells"]["U0"]["gate"]
     assert gt["G4"]["clusters"] == gt["G4b"]["clusters"] == 4
+
+
+# ===================================================================== D1 / D2 disclosures
+def test_d1_and_d2_are_in_gate_json_table_and_marker_and_d1_reports_the_blind_share(tmp_path, monkeypatch, covered):
+    w = book_c_world(tmp_path / "w", monkeypatch, al_hole=True)
+    g = cap.run_book_c(cap_cfg(w, tmp_path / "out"))
+    gate = json.loads((tmp_path / "out" / "gate.json").read_text())
+    dis = gate["capacity_disclosures"]
+    assert "CAP stays 450 s" in dis["D1"]["text"] and "500 s" in dis["D1"]["text"] and "low-confidence" in dis["D1"]["text"]
+    assert dis["D2"].startswith("Book C is outside the promotion gate and is never evidence of profit")
+    table = (tmp_path / "out" / "table.txt").read_text()
+    assert "D1: " + dis["D1"]["text"] in table and "D2: " + dis["D2"] in table
+    marker = json.loads((tmp_path / "out" / cap.MARKER).read_text())
+    assert marker["capacity_disclosures"]["D2"] == dis["D2"] and "measured" not in marker["capacity_disclosures"]["D1"]
+    # measured: one 960 s gap in cAL = 510 s beyond CAP; windows are [12:05, 14:00) = 6900 s for each of 4 units
+    m = dis["D1"]["measured"]
+    assert m["available"] is True and m["cap_s"] == 450.0
+    for cell in ("U0", "U15", "BQ"):
+        assert m[cell]["n_units"] == 4 and m[cell]["blind_gaps"] == 1 and m[cell]["blind_s"] == 510.0
+        assert m[cell]["window_s"] == 27_600.0 and m[cell]["share_of_window"] == round(510 / 27_600, 6)
+        assert m[cell]["quoted_s"] > 0 and m[cell]["share_of_quoted_time"] == round(510.0 / m[cell]["quoted_s"], 6)
+    units = [u for u in pq.read_table(tmp_path / "out" / "units.parquet").to_pylist() if u["cell"] == "U0"]
+    assert sum(u["blind_s"] for u in units) == 510.0 and {u["unit_id"]: u["blind_gaps"] for u in units}["cAL"] == 1
+    # the simulator's own gap report for obrec-1019e rides along
+    assert dis["D1"]["w_above_2x_median_gap"] == gate["w_above_2x_median_gap"]["obrec-1019e"]
+    assert "D1 measured U0: blind 510.0 s of 27600.0 s window" in table and "w_above_2x_median_gap (obrec-1019e)" in table
+    assert g["capacity_disclosures"] == dis
+
+
+def test_d2_is_on_every_labelled_output_including_the_dry_run_and_the_not_decidable_file(tmp_path, monkeypatch, decl, capsys):
+    w = book_c_world(tmp_path / "w", monkeypatch)
+    rc = cap.main(["--freeze", cap.FC_ISO, "--capacity-declare", str(decl), "--dry-run", "--books", *w.books,
+                   "--programs", w.lip, "--meta", w.meta, "--trades", str(w.kal), "--markets", str(w.kal),
+                   "--series", str(w.kal)])
+    rep = json.loads(capsys.readouterr().out)
+    assert rc == 0 and rep["capacity_disclosures"]["D2"] == cap.D2_TEXT and "CAP stays 450 s" in rep["capacity_disclosures"]["D1"]["text"]
+    cap.run_book_c(cap_cfg(w, tmp_path / "out", units_evidence=None))
+    gate = json.loads((tmp_path / "out" / "gate.json").read_text())
+    assert gate["verdict"] == "NOT_DECIDABLE" and gate["capacity_disclosures"]["D2"] == cap.D2_TEXT
+    assert gate["capacity_disclosures"]["D1"]["measured"]["available"] is False
+    assert "D2: " + cap.D2_TEXT in (tmp_path / "out" / "table.txt").read_text()
+    assert "coverage" not in gate                                          # nothing to relabel when nothing was computed
 
 
 # ===================================================================== dry run, full CLI run, structure

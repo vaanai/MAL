@@ -14,11 +14,12 @@ cells U0 / U15 / BQ, same reward model, fills, P&L, stress cells and statistics)
   2. the freeze instant FC = 2026-10-19T08:22:27Z (the first-seen rule uses FC).
 
 How the override works (the only mechanism): ``book_c_universe()`` is a context manager that, for the duration
-of ONE call into the simulator, rebinds six module constants of ``tools.kalshi_lip_sim`` and restores them in a
+of ONE call into the simulator, rebinds seven module constants of ``tools.kalshi_lip_sim`` and restores them in a
 ``finally`` (``FREEZE_ISO``, ``FREEZE_US``, ``GAS_SERIES`` = the 43, ``OTHER_SERIES`` = (), ``SERIES_ADMITTED``
-= the 43, ``PRIMARY_RUN`` = obrec-1019e so the simulator's coverage block reads Book C's own recorder).  The
-simulator's functions read those names at call time, so no simulator code is touched, copied or wrapped.
-Importing this module changes nothing in the simulator.
+= the 43, ``PRIMARY_RUN`` = obrec-1019e so the simulator's coverage block reads Book C's own recorder, and
+``BASELINE_GAP_S``, whose key "obrec-1019c" (the one ``coverage()`` indexes) carries Book C's 350.0 s per round,
+QP ruling (2) on #736; lipsnap stays 900.0).  The simulator's functions read those names at call time, so no
+simulator code is touched, copied or wrapped.  Importing this module changes nothing in the simulator.
 
 What Book C is not: not a gate book, never promotable, no read instant of its own (R is passed in and is
 LIP-F1's R; ``--scan`` is refused), no kill condition.  Every output says so ("book": "C", "report_only": true,
@@ -52,6 +53,18 @@ BOOK_C_SERIES = tuple(f"KXAAAGASD{s}" for s in (
     "MN", "MO", "MS", "MT", "ND", "NE", "NH", "NJ", "NM", "NV", "OK", "OR", "RI", "SC", "SD", "TN", "TX", "UT", "VA",
     "VT", "WA", "WI", "WV", "WY"))
 BOOK_C_RECORDER = "obrec-1019e"
+# QP ruling (2) on #736: the coverage baseline of Book C is the round time stated in the frozen declaration
+# (section 1: "a round takes roughly 350 s"), NOT a median measured on Book C's own rows.
+BOOK_C_BASELINE_S = 350.0
+BASELINE_RULING = (
+    "QP ruling (2) on #736: B_C = 350.0 s per round of obrec-1019e, the round time stated in the frozen "
+    "DECLARE-FORWARD-CAPACITY-1 (section 1, frozen before any obrec-1019e row existed); expected rounds per UTC day "
+    "= 86400 / 350 = 246.9. The 70% rule of DECLARE-FORWARD section 10 (two consecutive UTC days) applies unchanged "
+    "to obrec-1019e rounds (weighted n_snaps_ok / n_open) and to lipsnap-1019 polls (900.0 s, unchanged). 222.7 s is "
+    "LIP-F1's obrec-1019c baseline and is not used for Book C. The measured median gap is a disclosure only, never "
+    "a baseline. During the simulator call the dict key 'obrec-1019c' (the one coverage() reads) carries 350.0; in "
+    "this file it is relabelled obrec-1019e.")
+DISCLOSURE_DAY = ("2026-10-20T00:00:00Z", "2026-10-21T00:00:00Z")
 REGISTRY_PINS = {BOOK_C_RECORDER: REGISTRY_1019E_SHA256}
 SIZE, IMAX = 25.0, 50.0                                       # Book A parameters
 DEFAULT_BOOKS = "/data/mal/kalshi/obrec-1019e"
@@ -65,24 +78,30 @@ FC_US = sim.iso_to_us(FC_ISO)
 
 # The simulator constants the context manager rebinds, and their LIP-F1 values, snapshotted at import (before
 # anything of ours ran).  ``book_c_universe`` refuses to start unless the simulator still holds exactly these.
-PATCHED = ("FREEZE_ISO", "FREEZE_US", "GAS_SERIES", "OTHER_SERIES", "SERIES_ADMITTED", "PRIMARY_RUN")
+PATCHED = ("FREEZE_ISO", "FREEZE_US", "GAS_SERIES", "OTHER_SERIES", "SERIES_ADMITTED", "PRIMARY_RUN",
+           "BASELINE_GAP_S")
 F1_VALUES = {n: getattr(sim, n) for n in PATCHED}
 F1_SERIES = tuple(F1_VALUES["SERIES_ADMITTED"])               # LIP-F1's 15 admitted series
 
 LABEL_KEYS = ("book", "report_only", "promotable", "book_label", "capacity_declare_sha256", "capacity_freeze",
               "capacity_universe", "capacity_recorder", "capacity_registry_pins", "capacity_sim_md5_pinned",
-              "capacity_tool_md5", "capacity_notes")
+              "capacity_tool_md5", "capacity_notes", "capacity_disclosures")
+D1_TEXT = ("CAP stays 450 s (DECLARE 4, unchanged) against a recorder cadence of about 350 s per round. At the 70% "
+           "coverage threshold the mean round is 500 s, which is above CAP, so a Book C that counts as decidable can "
+           "still be blind on most gaps. Book C measures the rule at a different blindness than Book A: it is not a "
+           "clean 'same rule at 6x the markets' read, and any capacity scaling taken from it is low-confidence in "
+           "either direction.")
+D2_TEXT = ("Book C is outside the promotion gate and is never evidence of profit. It is never promotable, and none of "
+           "its numbers, positive or not, may be quoted as LIP-F1 evidence or as profit.")
 NOTES = [
     "Book C is NOT a gate book: never promotable; it cannot rescue, replace or condition LIP-F1's verdict, gates, "
     "kill condition or read instant (DECLARE-FORWARD-CAPACITY-1 section 2).",
-    "Book C has no kill condition and is never stopped early. The 'kill' block and a DEAD_AS_FROZEN part of a "
-    "verdict are the simulator's Book A/B machinery, shown for information only.",
+    "Book C has no kill condition and is never stopped early. The simulator's 'kill' block and a DEAD_AS_FROZEN "
+    "part of a verdict mean K1/K2 would have triggered under LIP-F1's rule; Book C is not stopped by it.",
     "R is LIP-F1's read instant, passed in. Book C has no counts rule of its own (--scan is refused).",
     "The CAP = 450 s pull rule applies unchanged; obrec-1019e takes about 350 s per round (LIP-F1's gas recorder "
-    "about 45 s), so Book C is blinder than Book A. Disclosed in the declaration, not corrected.",
-    "The 'coverage' block compares obrec-1019e rounds with the simulator's fixed 222.7 s baseline (obrec-1019c). "
-    "At about 350 s per round a healthy Book C reads about 0.64 and trips the 70% rule, so a NOT_DECIDABLE for that "
-    "reason is a cadence artifact, not a Book C finding. The G1-G7 values in 'cells' are the report.",
+    "about 45 s), so Book C is blinder than Book A. Disclosed in the declaration, not corrected (D1).",
+    BASELINE_RULING + " A coverage NOT_DECIDABLE here is a real data gap and is reported as one.",
     "All 43 units are gas units: G4b clusters every unit by date(E).",
 ]
 
@@ -156,8 +175,10 @@ def book_c_universe(series=None):
     now = {n: getattr(sim, n) for n in PATCHED}
     if now != F1_VALUES:
         raise CapacityRefusal("the simulator constants are not LIP-F1's (already overridden?): refusing to nest")
+    # a NEW dict: the simulator's own baseline dict is never mutated; coverage() indexes the key "obrec-1019c"
+    baseline = dict(F1_VALUES["BASELINE_GAP_S"], **{"obrec-1019c": BOOK_C_BASELINE_S})
     override = {"FREEZE_ISO": FC_ISO, "FREEZE_US": FC_US, "GAS_SERIES": series, "OTHER_SERIES": (),
-                "SERIES_ADMITTED": series, "PRIMARY_RUN": BOOK_C_RECORDER}
+                "SERIES_ADMITTED": series, "PRIMARY_RUN": BOOK_C_RECORDER, "BASELINE_GAP_S": baseline}
     assert set(override) == set(PATCHED)
     try:
         for n, v in override.items():
@@ -175,13 +196,134 @@ def labels():
             "capacity_declare_sha256": CAPACITY_DECLARE_SHA256, "capacity_freeze": FC_ISO,
             "capacity_universe": list(BOOK_C_SERIES), "capacity_recorder": BOOK_C_RECORDER,
             "capacity_registry_pins": dict(REGISTRY_PINS), "capacity_sim_md5_pinned": SIM_MD5_PINNED,
-            "capacity_tool_md5": sim.file_md5(__file__), "capacity_notes": list(NOTES)}
+            "capacity_tool_md5": sim.file_md5(__file__), "capacity_notes": list(NOTES),
+            "capacity_disclosures": {"D1": {"text": D1_TEXT}, "D2": D2_TEXT}}
 
 
 def banner():
     return (f"REPORT-ONLY CAPACITY BOOK C (DECLARE-FORWARD-CAPACITY-1 sha256 {CAPACITY_DECLARE_SHA256[:8]}): "
             f"{len(BOOK_C_SERIES)} gas daily series, freeze {FC_ISO}; not a gate book, never promotable; "
             "LIP-F1's read, gates, kill condition and verdict are unchanged")
+
+
+def table_header():
+    return "\n".join([banner(), "D1: " + D1_TEXT, "D2: " + D2_TEXT]) + "\n"
+
+
+# ------------------------------------------------------------------------------------------ disclosures
+def blind_share(out):
+    """D1, measured: the blind time of the opened units as the simulator counts it (``blind_s``: the part of each gap
+    between consecutive in-window snapshots that exceeds CAP; the head and the tail of a window are not counted),
+    against the unit windows [quote_start, E_eff) and against the quoted time.  Read back from our own units.parquet."""
+    p = Path(out) / "units.parquet"
+    if not p.exists():
+        return {"available": False, "reason": "no units.parquet in --out"}
+    import pyarrow.parquet as pq
+    cols = ["cell", "status", "S0", "first_poll_ts", "E_eff", "quoted_s", "blind_s", "blind_gaps"]
+    rows = pq.read_table(p, columns=cols).to_pylist()
+    res = {"available": True, "cap_s": sim.CAP_US / sim.US,
+           "note": "blind_s as the simulator counts it; share_of_window = blind_s / (E_eff - quote_start), "
+                   "share_of_quoted_time = blind_s / quoted_s; sums over opened units"}
+    for cell in sim.CELLS:
+        sel = [r for r in rows if r["cell"] == cell and r["status"] == "opened"]
+        win = sum((sim.iso_to_us(r["E_eff"]) - max(sim.iso_to_us(r["S0"]), sim.iso_to_us(r["first_poll_ts"]))) / sim.US
+                  for r in sel)
+        blind, quoted = sum(r["blind_s"] or 0.0 for r in sel), sum(r["quoted_s"] or 0.0 for r in sel)
+        res[cell] = {"n_units": len(sel), "blind_gaps": sum(r["blind_gaps"] or 0 for r in sel), "blind_s": round(blind, 3),
+                     "quoted_s": round(quoted, 3), "window_s": round(win, 3),
+                     "share_of_window": round(blind / win, 6) if win else None,
+                     "share_of_quoted_time": round(blind / quoted, 6) if quoted else None}
+    return res
+
+
+def median_gap_disclosure(root, read_us, strict_runs=False):
+    """DISCLOSURE ONLY, never a baseline (QP ruling (2) on #736): the measured per-market gap between consecutive
+    snapshots of the Book C recorder over 2026-10-20T00:00Z..2026-10-21T00:00Z, from timestamps only, reported
+    when that day is complete in the data: sealed snapshots exist before the day and at/after its end (and
+    before R) and R is not before the end of the day."""
+    import re
+    import numpy as np
+    lo, hi = (sim.iso_to_us(x) for x in DISCLOSURE_DAY)
+    out = {"purpose": "disclosure only; never a baseline", "recorder": BOOK_C_RECORDER, "timestamps_only": True,
+           "window": list(DISCLOSURE_DAY), "available": False}
+    if read_us is None or read_us < hi:
+        out["reason"] = "the read instant is before the end of the day"
+        return out
+    try:
+        entries, _unsealed = sim.sealed_entries(root, strict_runs=strict_runs)
+        by_date = {}
+        for f in sim.sealed_files(root, entries, "orderbook_snaps"):
+            m = re.search(r"date=(\d{4}-\d{2}-\d{2})", str(f))
+            if m:
+                by_date.setdefault(m.group(1), []).append(f)
+        day, nxt = DISCLOSURE_DAY[0][:10], DISCLOSURE_DAY[1][:10]
+        if not any(d < day for d in by_date) or day not in by_date or nxt not in by_date:
+            out["reason"] = "no sealed snapshot partitions before, during and after the day"
+            return out
+        t_nxt = sim.read_sealed(root, entries, "orderbook_snaps", ("ts",), files=by_date[nxt])
+        ts_nxt = sim.ts_col_us(t_nxt["ts"])
+        if not ((ts_nxt >= hi) & (ts_nxt < read_us)).any():
+            out["reason"] = "no sealed snapshot at/after the end of the day before R"
+            return out
+        t = sim.read_sealed(root, entries, "orderbook_snaps", ("ts", "ticker"), files=by_date[day])
+    except (kp.SealError, OSError, ValueError, KeyError) as e:
+        out["reason"] = f"{type(e).__name__}: {e}"
+        return out
+    ts, tk = sim.ts_col_us(t["ts"]), np.asarray(t["ticker"].to_pylist(), dtype=object)
+    keep = (ts >= lo) & (ts < hi) & (ts < read_us)
+    ts, tk = ts[keep], tk[keep]
+    gaps, meds = [], []
+    for name in sorted(set(tk.tolist())):
+        g = np.diff(np.sort(ts[tk == name]))
+        if len(g):
+            gaps.append(g)
+            meds.append(float(np.median(g)))
+    if not gaps:
+        out["reason"] = "no market has two snapshots in the day"
+        return out
+    allg = np.concatenate(gaps)
+    out.update({"available": True, "n_markets": len(gaps), "n_gaps": int(len(allg)),
+                "median_gap_s_pooled": round(float(np.median(allg)) / sim.US, 3),
+                "median_of_market_median_gaps_s": round(float(np.median(meds)) / sim.US, 3)})
+    return out
+
+
+def relabel_coverage(gate, disclosure=None):
+    """In a gate dict: the coverage baselines are Book C's (the simulator's dict key 'obrec-1019c' carried 350.0 during
+    the call): relabel the key obrec-1019e, cite the ruling, and put the median-gap disclosure beside the block."""
+    cov = gate.get("coverage")
+    if not isinstance(cov, dict):
+        return gate
+    b = cov.get("baselines_s")
+    if isinstance(b, dict) and "obrec-1019c" in b:
+        b = dict(b)
+        b[BOOK_C_RECORDER] = b.pop("obrec-1019c")
+        cov["baselines_s"] = b
+    cov["baseline_ruling"] = BASELINE_RULING
+    if disclosure is not None:
+        cov["disclosure_only"] = {"median_gap_obrec_1019e_2026_10_20": disclosure}
+    return gate
+
+
+def table_footer(gate):
+    d1 = (gate.get("capacity_disclosures") or {}).get("D1", {}).get("measured")
+    lines = []
+    if isinstance(d1, dict) and d1.get("available"):
+        for c in sim.CELLS:
+            m = d1[c]
+            lines.append(f"D1 measured {c}: blind {m['blind_s']} s of {m['window_s']} s window "
+                         f"(share {m['share_of_window']}), of {m['quoted_s']} s quoted ({m['share_of_quoted_time']}), "
+                         f"{m['blind_gaps']} blind gaps over {m['n_units']} units")
+    w = (gate.get("capacity_disclosures") or {}).get("D1", {}).get("w_above_2x_median_gap")
+    if w:
+        lines.append(f"D1 w_above_2x_median_gap (obrec-1019e): {w}")
+    cov = gate.get("coverage") or {}
+    if "baselines_s" in cov:
+        lines.append(f"coverage baselines (s per round / poll): {cov['baselines_s']}; {BASELINE_RULING.split('.')[0]}")
+    md = (cov.get("disclosure_only") or {}).get("median_gap_obrec_1019e_2026_10_20")
+    if md:
+        lines.append(f"disclosure only, never a baseline: {md}")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 # ------------------------------------------------------------------------------------------ guards
@@ -203,6 +345,8 @@ def check_cfg(cfg):
         raise CapacityRefusal(f"Book C runs at Book A parameters S={SIZE:g}, I_max={IMAX:g}")
     if not cfg.dry_run and cfg.read_us is None:
         raise CapacityRefusal("--read-instant R (LIP-F1's R) is required without --dry-run")
+    if not cfg.dry_run and not cfg.out:
+        raise CapacityRefusal("--out is required without --dry-run")
     if cfg.read_us is not None and cfg.read_us <= FC_US:
         raise CapacityRefusal("the read instant must be after the freeze FC")
     if not cfg.books or any(Path(b).name != BOOK_C_RECORDER for b in cfg.books):
@@ -277,14 +421,29 @@ def run_book_c(cfg):
             out.mkdir(parents=True, exist_ok=True)
             (out / MARKER).write_text(_dump(dict(lab, files=list(SIM_OUTPUT_FILES))))
         res = sim.run_sim(cfg)
-    if writing:
-        g = out / "gate.json"
-        if g.exists():
-            g.write_text(_dump(dict(json.loads(g.read_text()), **lab)))
-        t = out / "table.txt"
-        if t.exists():
-            t.write_text(banner() + "\n" + t.read_text())
+    if cfg.dry_run:
+        res.update(lab)
+        return res
+    # measured disclosures (full runs only): D1 blind share and the simulator's own gap report; the median-gap
+    # disclosure beside the coverage block
+    disclosure = None
+    if isinstance(res.get("coverage"), dict):
+        disclosure = median_gap_disclosure(cfg.books[0], cfg.read_us, cfg.strict_runs)
+    d1 = lab["capacity_disclosures"]["D1"]
+    d1["measured"] = blind_share(out) if "cells" in res and res["cells"] else {"available": False, "reason": "no cells computed"}
+    d1["w_above_2x_median_gap"] = (res.get("w_above_2x_median_gap") or {}).get(BOOK_C_RECORDER)
+    d1["w_above_2x_median_gap_source"] = ("the simulator's gate.w_above_2x_median_gap report for obrec-1019e "
+                                          "(mapped to the CONDITIONS 13 count named by the QP verdict on #736)")
+    g = out / "gate.json"
+    if g.exists():
+        gate = json.loads(g.read_text())
+        gate.update(lab)
+        g.write_text(_dump(relabel_coverage(gate, disclosure)))
     res.update(lab)
+    relabel_coverage(res, disclosure)
+    t = out / "table.txt"
+    if t.exists():
+        t.write_text(table_header() + t.read_text() + table_footer(res))
     return res
 
 
@@ -352,8 +511,8 @@ def main(argv=None):
     if cfg.dry_run:
         print(json.dumps(res, sort_keys=True, indent=1, default=str))
     else:
-        print(banner())
-        print(sim.format_table(res))
+        print(table_header() + sim.format_table(res))
+        print(table_footer(res), end="")
         print(f"peak RSS {res.get('_peak_rss_mb')} MB", file=sys.stderr)
     return 0
 
