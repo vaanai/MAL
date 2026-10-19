@@ -1496,3 +1496,19 @@ def test_b6_exclusion_share_is_cut_at_r_so_units_live_at_r_enter_neither_side():
     R2 = e + sec(86_400) + 48 * 3600 * US
     late = sim.exclusion_share(records, [], results, R2)
     assert late["excluded_would_open"] == 5 and late["not_decidable"]
+
+
+def test_c2_1_units_quoting_before_the_first_capture_keep_excl_no_meta_with_a_sub_label_and_count_in_the_rule(tmp_path, covered):
+    wk = [prog("pW1", "KXEOWEEK-26OCT19-A", S0, E_), prog("pW2", "KXEOWEEK-26OCT19-B", "2026-10-19T13:00:00Z", E_)]
+    snaps = {p["market_ticker"]: ticks("2026-10-19T12:05:30Z", "2026-10-19T13:55:00Z", 60) for p in wk}
+    w = basic_world(tmp_path, extra_prog=wk, extra_snaps=snaps, meta=False)
+    w.add_meta("20261019T123000Z", [{"ticker": GAS_A, "event_ticker": "E", "close_time": E_,
+                                      "expected_expiration_time": "2026-10-19T14:30:00Z"}])
+    assert sim.MetaIndex(w.meta).first_capture_us == at("2026-10-19T12:30:00Z")
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o")))
+    u = {r["unit_id"]: r for r in pq.read_table(tmp_path / "o" / "units.parquet").to_pylist() if r["cell"] == ""}
+    assert u["pW1"]["status"] == u["pW2"]["status"] == "excl_no_meta"
+    assert u["pW1"]["sub_status"] == "pre_first_capture"              # quote_start 12:05 precedes the first capture 12:30
+    assert u["pW2"]["sub_status"] == "no_capture_for_market"
+    assert g["exclusions_sub"] == {"no_capture_for_market": 1, "pre_first_capture": 1}
+    assert g["exclusion_share"]["excluded_would_open"] == 2 and g["exclusion_share"]["not_decidable"]   # they stay in the 10% rule

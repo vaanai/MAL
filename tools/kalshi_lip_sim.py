@@ -1026,6 +1026,7 @@ class MetaIndex:
         self.files = []
         self.mve = 0
         self.n_captures = 0
+        self.first_capture_us = None
         if root is None:
             return
         root = Path(root)
@@ -1056,6 +1057,7 @@ class MetaIndex:
         if asof_us is not None and fetched > asof_us:
             return
         self.n_captures += 1
+        self.first_capture_us = fetched if self.first_capture_us is None else min(self.first_capture_us, fetched)
         for m in markets:
             tk = m.get("ticker") or ""
             if kp.is_mve(m):
@@ -1448,6 +1450,9 @@ def process_unit(u, cfg, inp, tw, trades_map, results, tainted=frozenset()):
     if not daily:
         if meta is None or meta["x"] is None:
             reason = "excl_no_meta"
+            fc = inp["meta"].first_capture_us
+            # CONDITIONS-2 item 1: still excl_no_meta and still in the 10% rule; only the report label differs
+            rec["sub"] = "pre_first_capture" if (fc is None or u.quote_start_us < fc) else "no_capture_for_market"
         elif meta["x"] > u.e_us + DAILY_SLACK_S * US:
             reason = "excl_not_daily"
     u.e_eff_us = min(u.e_us, u.close_us) if u.close_us else u.e_us
@@ -1681,7 +1686,7 @@ VERIFY1_SHA256 = "8ce3e30f88bebd784e87f450bb846b11df334cdfb5f7e94cbad68aa1bc8b8b
 _F, _S, _I, _B = pa.float64(), pa.string(), pa.int64(), pa.bool_()
 UNITS_SCHEMA = pa.schema([
     ("unit_id", _S), ("cell", _S), ("ticker", _S), ("event", _S), ("series", _S), ("status", _S),
-    ("resolution", _S), ("source", _S), ("S0", _S), ("E", _S), ("E_eff", _S), ("P", _F), ("T", _F), ("DF", _F),
+    ("sub_status", _S), ("resolution", _S), ("source", _S), ("S0", _S), ("E", _S), ("E_eff", _S), ("P", _F), ("T", _F), ("DF", _F),
     ("n_param_sets", _I), ("first_poll_ts", _S), ("unit_day", _S), ("day_E", _S), ("gas", _B),
     ("quoted_s", _F), ("n_snaps_window", _I), ("n_snaps_quoted", _I), ("full", _B),
     ("reward_central", _F), ("reward_lower", _F), ("reward_upper", _F), ("reward_after_floor", _F),
@@ -1711,7 +1716,7 @@ def _iso_or_none(us):
 def unit_row(rec, cell, scored, core):
     u = rec["u"]
     r = {"unit_id": u.unit_id, "cell": cell, "ticker": u.ticker, "event": getattr(u, "event", None),
-         "series": u.series, "status": rec["status"], "resolution": scored.get("resolution") if scored else None,
+         "series": u.series, "status": rec["status"], "sub_status": rec.get("sub"), "resolution": scored.get("resolution") if scored else None,
          "source": getattr(u, "source", None), "S0": _iso_or_none(u.s0_us), "E": _iso_or_none(u.e_us),
          "E_eff": _iso_or_none(getattr(u, "e_eff_us", None)) if getattr(u, "psets", None) else None,
          "first_poll_ts": _iso_or_none(u.first_poll_us), "unit_day": getattr(u, "day", None),
@@ -1809,6 +1814,8 @@ def structure_report(cfg, inp, early, records):
         "programs_admitted_series": len(inp["programs"].by_id),
         "program_rows_not_in_ok_polls": inp["programs"].n_rows_not_ok,
         "units_by_status": dict(sorted(cnt.items())),
+        "excl_no_meta_sub": dict(sorted({k: sum(1 for r in records if r.get("sub") == k)
+                                         for k in ("pre_first_capture", "no_capture_for_market")}.items())),
         "structurally_opened_units": len(so),
         "events": len({r["u"].event for r in so}),
         "unit_days": len({r["u"].day for r in so}),
@@ -1933,6 +1940,11 @@ def run_sim(cfg):
         if r["status"] != "opened":
             ex[r["status"]] += 1
     gate["exclusions"] = dict(sorted(ex.items()))
+    sub = defaultdict(int)
+    for r in records:
+        if r.get("sub"):
+            sub[r["sub"]] += 1
+    gate["exclusions_sub"] = dict(sorted(sub.items()))
     gate["exclusion_share"] = exclusion_share(records, early, results, R_eval)
     gate["kill"] = kill_checks(all_rows["U0"], cfg.size, midnights(cfg.freeze_us, R_eval)) if R_eval else {}
     gate["coverage"] = coverage(inp, cfg, R_eval) if R_eval else {}
