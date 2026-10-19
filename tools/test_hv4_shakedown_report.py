@@ -454,6 +454,8 @@ def test_memory_nonlinear_growth_oom_and_unplanned_start(tmp_path):
     curve = by_id(run(build(tmp_path, rss=lambda h: 500 + (5 * h if h < 6 else 5 * 6 + 80 * (h - 6))), "--host-cap-mb", "100000"))["QP-M1"]["numbers"]["plan"]
     assert curve["nonlinear_segments"] and curve["implied"].startswith("B at 24 h")
     assert by_id(run(build(sub(tmp_path, "o"), oom=1)))["QP-M1"]["status"] == R.FAIL
+    cache = by_id(run(build(sub(tmp_path, "pc"), extra=lambda fx: rewrite_samples(fx, lambda r: r["procs"][0].update(cg_peak_mb=10240.0)))))["QP-M1"]  # a cgroup peak at MemoryMax made of page cache is not an OOM
+    assert cache["status"] == R.PASS and cache["numbers"]["cgroup_peak_mb_incl_page_cache"] == 10240.0
     u = by_id(run(build(sub(tmp_path, "u"), extra=lambda fx: fx["L"].add("SCAN", late(fx), kind="start", binding={"dirty": False, "git_sha": "a" * 40}, frozen_sha="a" * 40, lane_h=False))))["QP-M1"]
     assert u["status"] == R.FAIL
 

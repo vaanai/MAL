@@ -711,12 +711,13 @@ def eval_memory(samples: list[dict], starts: list[dict], windows: list[dict], rs
                 read_hours: float | None, unplanned: bool) -> dict:
     """Hourly RSS, per-process slope over stub hours 2.. outside the startup windows, peak, the read-length projection and the PR #762 memory-plan rule."""
     series: dict[str, list[tuple[int, float, float | None]]] = defaultdict(list)  # key -> (t_ms, rss_mb, cgroup_mb)
-    peaks, cg_max, oom = [], [], []
+    peaks, cg_peaks, cg_max, oom = [], [], [], []
     for s in samples:
         for p in s.get("procs") or []:
             if isinstance(p, dict) and isinstance(p.get("rss_mb"), (int, float)):
                 series[f"pid{p.get('pid')}"].append((s["t_ms"], float(p["rss_mb"]), p.get("cg_current_mb")))
-                peaks += [v for v in (p.get("hwm_mb"), p.get("cg_peak_mb")) if isinstance(v, (int, float))]
+                peaks += [v for v in (p.get("hwm_mb"),) if isinstance(v, (int, float))]
+                cg_peaks += [v for v in (p.get("cg_peak_mb"),) if isinstance(v, (int, float))]  # includes page cache: reported, never compared with MemoryMax
                 if isinstance(p.get("cg_max_mb"), (int, float)):
                     cg_max.append(float(p["cg_max_mb"]))
                 if isinstance(p.get("cg_oom_kill"), (int, float)):
@@ -804,7 +805,7 @@ def eval_memory(samples: list[dict], starts: list[dict], windows: list[dict], rs
         status = UNM
         notes.append("fewer than 20 h of samples")
     out = {"source": source, "segments": segs, "peak_mb": mb(peak), "current_mb": mb(cur), "elapsed_h_since_first_start": round(elapsed_h, 2), "slope_mb_per_h_conservative_max_of_segments": mb(slope),
-           "rss_after_drain_mb": mb(rss0), "oom_kill_max": max(oom) if oom else None, "plan": plan, "hourly": hourly}
+           "rss_after_drain_mb": mb(rss0), "cgroup_peak_mb_incl_page_cache": mb(max(cg_peaks)) if cg_peaks else None, "oom_kill_max": max(oom) if oom else None, "plan": plan, "hourly": hourly}
     return chk("QP-M1", "RSS hourly, slope, peak, read-length projection, memory plan (A)/(B)", status, out, notes)
 
 
