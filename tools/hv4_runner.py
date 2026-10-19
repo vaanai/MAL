@@ -477,6 +477,14 @@ class RunnerConfig:
     # is wired. main() turns it OFF (--lane-h turns it on later and is refused until a source is wired). Off: nine arms are registered and run (CON and BIG),
     # no BST arm, book, ledger or log exists. The default here stays True so the lane-H tests of this module keep running.
     lane_h: bool = True
+    # Timing rows (kind scan_timing, one per scan; kind tick_timing, one per minute) go into the SCAN log. They hold wall-clock counts and timings only, no
+    # outcome, and no decision reads them. None = on when live, off in sim (a sim log must stay a pure function of the tape, so the replay md5 holds).
+    timing: bool | None = None
+
+
+def pct(sorted_vals: list[int], q: float) -> int:
+    """Nearest-rank percentile of an ascending list (q in (0, 1])."""
+    return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
 
 
 class Runner:
@@ -488,6 +496,8 @@ class Runner:
         if not cfg.lane_h and h5 is not None:
             raise ValueError("lane_h is off: an H5 source must not be wired")
         self.lane_h = bool(cfg.lane_h)
+        self.timing = bool(cfg.live) if cfg.timing is None else bool(cfg.timing)
+        self._tm: dict[str, Any] | None = None  # the minute being summarised: {"minute": ms, "delays": [...], "scans": [...]}
         self.arm_names = tuple(a for a in arms.ARMS if self.lane_h or arms.ARMS[a].persona != "BST")  # the arms that exist in this run
         self.llm_arm_names = tuple(a for a in arms.llm_arms() if a in self.arm_names)
         self.binding = dict(binding) if binding is not None else None
@@ -1464,13 +1474,44 @@ class Runner:
         sec = T % MIN_MS
         if sec == SCAN_SECOND_MS or not self._versions_loaded:
             self.refresh_versions(T)  # before any decision of this tick
+        if self.timing:
+            self._tick_timing(T, self.now_fn() - T)  # the delay of this tick's exit check: exits and scans share this thread
         self.exits(T)
         self.triggers(T)
         if sec == SCAN_SECOND_MS:
             self.watches(T)
             self.rechecks(T)
             if T % SCAN_EVERY_MS == SCAN_SECOND_MS:
+                t0 = self.now_fn() if self.timing else 0
                 self.scan(T)
+                if self.timing:
+                    self._scan_timing(T, self.now_fn() - t0)
+
+    # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
+    def _tick_timing(self, T: int, delay_ms: int) -> None:
+        minute = T - T % MIN_MS
+        if self._tm is not None and self._tm["minute"] != minute:
+            self.flush_timing()
+        if self._tm is None:
+            self._tm = {"minute": minute, "delays": [], "scans": []}
+        self._tm["delays"].append(int(delay_ms))
+
+    def _scan_timing(self, T: int, wall_ms: int) -> None:
+        wall = int(wall_ms)
+        if self._tm is not None:
+            self._tm["scans"].append(wall)
+        self.log.append("SCAN", T, {"kind": "scan_timing", "scan_wall_ms": wall})
+
+    def flush_timing(self) -> None:
+        """Write the summary row of the minute in hand, if any: ticks run, the exit-check delay and the scan wall time over that minute."""
+        tm, self._tm = self._tm, None
+        if not tm or not tm["delays"]:
+            return
+        d, sc = sorted(tm["delays"]), sorted(tm["scans"])
+        self.log.append("SCAN", tm["minute"] + MIN_MS - 1,
+                        {"kind": "tick_timing", "minute_ms": tm["minute"], "n_ticks": len(d),
+                         "exit_check_delay_ms": {"p50": pct(d, 0.5), "p99": pct(d, 0.99), "max": d[-1]},
+                         "n_scans": len(sc), "scan_wall_ms": {"p99": pct(sc, 0.99), "max": sc[-1]} if sc else None})
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         """Ticks T = t_from, t_from + 1 s, ... while T < t_to. Live: waits for the wall clock to pass each T."""
@@ -1482,6 +1523,8 @@ class Runner:
                     sleep(lag / 1000.0)
             self.step(T)
             T += TICK_MS
+        if self.timing:
+            self.flush_timing()
 
 
 def stack_config(feed_delay_slots: int, **kw: Any) -> Any:
