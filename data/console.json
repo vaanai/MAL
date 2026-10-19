@@ -1,8 +1,36 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-19T04:06:29Z",
+ "updated_utc": "2026-10-19T12:27:21Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "kalshi-crypto-r3-holdout-1019",
+   "kind": "result",
+   "title": "Kalshi crypto late-lock maker (R3): holdout FAIL, lane retired",
+   "detail": "Run once on the holdout (close dates 2026-10-10..2026-10-16), after the dev run (job #1230). Holdout job #1231, tool #735 (17c8c35), tool sha256 e2a35662f2c52abc013bd8f93e6f8404bd855739214cd17092514e3cfffb1933. maker_15pct_unfilled: 238 events, 434 contracts, total -2,135.0 c, 2 of 7 days positive, CI90 lower bound (decider) -9.94 c, total ex-top-3 events -2,358.0 c. queue_back: 255 events, 491 contracts, total -2,272.4 c, 1 of 7 days positive, CI90 lower bound (decider) -9.49 c. Dev (the cost scale c was fit on dev, so dev is not evidence): main -5,706.4 c over 762 contracts, 1 of 9 days positive. Cause (the manager's reading, not computed by the tool): fills are adverse; the book tracks spot within about 5 s, so the 1-minute Coinbase proxy is too slow. R4 (same mechanism, hourly) was not run. Revive only with a sub-second price source or a non-maker mechanism. Source: /data/mal/hunt-1008/push-1016/hunt18/kalshi-crypto/r3_holdout/r3_holdout_summary.json. Library row kalshi-crypto-1 is dead-as-frozen. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T12:20:45Z"
+  },
+  {
+   "id": "hv4-feed-shakedown-1019",
+   "kind": "job",
+   "title": "Haiku v4: research-0 arena feed live (#1207), feed delay d = 7 slots, 24 h stub shakedown running (#1219), T0 target 2026-10-21T00:00Z",
+   "detail": "The research-0 arena live feed for Haiku v4 is up (job #1207; tape /data/mal/arena/tape; public RPC; 25% disk reserve). Feed delay measured on it: d = 7 slots (median 1.0445 s, p90 1.4523 s) from /data/mal/arena/feed-delay-research0-20261019.json, generated 2026-10-19T09:25:55Z (timing fields only; block_time has 1 s resolution, so each delay reads up to 1 s high). A 24 h stub shakedown (job #1219) is running; this event is stamped with the delay measurement's instant, not the shakedown's start. T0 target 2026-10-21T00:00Z. Timing and counts only; Haiku v4 has no result and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T09:25:55Z"
+  },
+  {
+   "id": "exp025-look1-r8-1019",
+   "kind": "result",
+   "title": "EXP-025 Look 1 R8 run: NOT_DECIDABLE (R8), as ruled; no restore needed",
+   "detail": "The Look 1 R8 run was made once on 2026-10-19, as quant-proof ruled on PR #733 (comment 6262873478). Verdict NOT_DECIDABLE (R8, P5), the expected end. /data/mal/exp025/LOOK_READS.jsonl and the look1 directory were created at 08:43:03Z (file time). The run reads only the clock and LOOK_READS, so exp025/e0 and blocks/forward-1002ev are neither read nor restored. Look 2 runs once, after 2026-10-26T12:00:00Z and only after Look 1's not_decidable event exists in LOOK_READS.jsonl. Record: EXP/EXP-025-c1nf-part1-prereg.md, section \"R8-run record\" (2026-10-19T08:24:25Z). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T08:43:03Z"
+  },
+  {
+   "id": "kalshi-lip-capacity-bookc-frozen-1019",
+   "kind": "decision",
+   "title": "Kalshi LIP lane: capacity Book C frozen 2026-10-19T08:22:27Z (report-only; 43 gas series)",
+   "detail": "Paper only, public data only. DECLARE-FORWARD-CAPACITY-1.md (sha256 a430e040ed1245fba0c0d2de11b8056cb9856ddecf750f7901878b8ac63fd34b) runs LIP-F1's rule unchanged (Book A parameters, cells U0 and U15) on the 43 KXAAAGASD* daily gas series that LIP-F1 does not use. Book C is report-only: never promotable, it cannot rescue, replace or condition LIP-F1's verdict, it has no kill condition, and it is reported once at LIP-F1's read instant R. Its recorder obrec-1019e (job #1216) takes a round in roughly 350 s against about 45 s for LIP-F1's gas recorder, so Book C is blinder than Book A; disclosed, not corrected (CAP stays 450 s). Metadata and downloads: job #1217. Wrapper tools/kalshi_lip_capacity.py, PRs #736 and #737. No Book C number exists yet. No book has cleared the promotion gate; nothing here says any book made money. Library row kalshi-lip-2.",
+   "atUtc": "2026-10-19T08:22:27Z"
+  },
   {
    "id": "arena-h5-729-merged-1019",
    "kind": "decision",
