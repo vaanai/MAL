@@ -762,6 +762,10 @@ def run_f2(cfg, variant, ctx):
         (stage / "table.txt").write_text(f2_table(res))
         _stamp_parquet(stage, lab)
         # ---- only now do the files enter --out, each already carrying the F2 labels
+        old_gate = out / "gate.json"
+        if old_gate.exists() and (stage / "gate.json").exists() and old_gate.read_bytes() != (stage / "gate.json").read_bytes():
+            raise F2Refusal(f"a re-run at the same R would change the existing {old_gate}; the candidate's record is kept "
+                            "(use a new --out only for another candidate)")
         _move_into_place(stage, out)
         shutil.rmtree(stage, ignore_errors=True)
     except BaseException:

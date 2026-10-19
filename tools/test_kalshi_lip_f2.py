@@ -1448,3 +1448,26 @@ def test_without_a_gate_json_the_markers_identity_keeps_another_r_out(tmp_path):
     (out / f2.MARKER).write_text(json.dumps({"lip_f2_variant": "F2-A"}))          # a marker with no identity: refuse
     with pytest.raises(f2.F2Refusal, match="another candidate"):
         f2.check_out(out, "A", run=run)
+
+
+# ======================== optional: a same-R re-run whose new gate.json would differ from the existing one is refused
+def test_a_same_r_rerun_that_would_change_the_existing_gate_json_is_refused_and_leaves_the_record_untouched(
+        tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    out = tmp_path / "out"
+    f2.run_f2(f2_cfg(w, out), "A", ctx)
+    kept = md5_dir(out)
+    f2.run_f2(f2_cfg(w, out), "A", ctx)                                         # an identical re-run is allowed ...
+    assert md5_dir(out) == kept
+    # ... a re-run whose inputs differ (here: another Book C file, so another sha256 in gate.json) is refused
+    other = bookc_marker(tmp_path, json.dumps(dict(BOOKC_GATE, note="a different file, same shape")), name="gate-2.json")
+    with pytest.raises(f2.F2Refusal, match="would change the existing"):
+        f2.run_f2(f2_cfg(w, out), "A", ctx_for(texts, dict(gates, bookc=str(other))))
+    assert md5_dir(out) == kept and not (out / f2.STAGING).exists()
+    # a re-run on changed data is refused the same way: add a trade the first run did not see
+    w.add_trades([("tZ", st.GAS_A, "2026-10-19T12:40:00Z", 0.48, 25, "no")], [st.GAS_A], name="trades-late",
+                 since="2026-10-19T03:33:16Z", until="2026-10-20T00:00:00Z", run_at="2026-10-20T04:41:00Z")
+    with pytest.raises(f2.F2Refusal, match="would change the existing"):
+        f2.run_f2(f2_cfg(w, out), "A", ctx)
+    assert md5_dir(out) == kept
