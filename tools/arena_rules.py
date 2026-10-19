@@ -23,8 +23,9 @@ modelled on `tools/hv4_runner.py` (that module is a frozen book's code and pulls
     scorer would make any book with one REPORT_ONLY (`has_bonding`).
   * MEMORY. A rule keeps no memory. What it needs ("this mint was already attempted", "the wallet that opened this position") comes from the log: `ctx.attempted` is the
     set of `attempt_key`s of every entry decision (refused ones included: a refusal is still a decision), `ctx.positions` the open positions with their `meta`.
-    `resume()` verifies the hash chain, replays the log into that memory, runs `engine.recover()`, and re-opens any engine position the log shows as sold but the engine
-    never priced (it is then sold again and booked by the engine as excluded, `engine_restart`, as in hv4).
+    `resume()` verifies the hash chain, replays the log into that memory, runs `engine.recover()`, and re-opens any engine position the book does not hold (a sell the log shows
+    but the engine never priced, or a buy whose engine call failed after the engine wrote its open row). A re-opened position keeps its logged exit reason (else
+    `resume_reopen`), so the sell goes out at the FIRST tick after the restart and the engine books it as excluded (`engine_restart`), as in hv4.
   * Several rules can be hosted by one process (the names on the command line), but only books registered at ONE frozen sha (the checkout is at one commit): start-up
     refuses otherwise. Fast-hold and slow-hold books run in SEPARATE processes, so one crash or restart does not exclude both.
 
@@ -195,6 +196,7 @@ class BotBook:
         self.bot_id = bot_id
         self.open: dict[str, OpenPos] = {}
         self.attempted: set[str] = set()
+        self.exit_info: dict[str, tuple[str, int]] = {}  # order_id -> (the last logged exit reason, exit decisions logged), kept after the position leaves the book
         self._views: tuple[PositionView, ...] | None = None
         self._att: frozenset[str] | None = None
 
@@ -230,6 +232,7 @@ class BotBook:
             if r.get("attempt_key") is not None:
                 self.attempted.add(r["attempt_key"])
         elif kind == "exit":
+            self.exit_info[pid] = (str(r.get("reason")), max(int(r.get("attempt") or 1), self.exit_info.get(pid, ("", 0))[1]))
             p = self.open.get(pid)
             if p is not None:
                 p.exit_reason, p.sent, p.attempts = r.get("reason"), True, max(p.attempts, int(r.get("attempt") or 1))
@@ -467,8 +470,11 @@ class Host:
             book = self.books[r.bot_id]
             for pid in sorted(live_pids[r.bot_id] - set(book.open)):  # the engine holds it, the log shows it sold or never opened: sell it again (engine_restart)
                 ep = self.engine.positions[pid]
-                book.add(OpenPos(pid, ep.pool, dict(ep.meta), int(getattr(ep, "stamp_ms", ep.decision_ms)), int(ep.decision_slot)))
-                self.log.append(r.bot_id, dec_ms, {"kind": "resume_reopen", "order_id": pid})
+                # It keeps the exit decision the log already holds (else "resume_reopen"), so _retry_sells sends the sell at the FIRST tick after the restart: the trigger
+                # (a followed wallet's sell) is never seen again and the rule's own cap may be hours away. The engine books it as excluded (engine_restart).
+                reason, tries = book.exit_info.get(pid, ("resume_reopen", 0))
+                book.add(OpenPos(pid, ep.pool, dict(ep.meta), int(getattr(ep, "stamp_ms", ep.decision_ms)), int(ep.decision_slot), exit_reason=reason, attempts=tries))
+                self.log.append(r.bot_id, dec_ms, {"kind": "resume_reopen", "order_id": pid, "exit_reason": reason})
                 n["reopened"] += 1
             for pid in sorted(set(book.open) - live_pids[r.bot_id]):  # logged as an entry, never reached the engine (killed between the log and the buy)
                 book.drop(pid)

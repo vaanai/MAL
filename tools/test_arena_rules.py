@@ -98,11 +98,53 @@ def test_resume_rebuilds_memory_from_the_log_and_reopens_engine_orphans(tmp_path
     n = f.resume()
     assert n["reopened"] == 2 and set(f.books[BOT].open) == {"p1", "p9"} and f.books[BOT].attempted == {"m"}
     assert [r["kind"] for r in f.log.rows(BOT)][-2:] == ["resume_reopen", "resume_reopen"]
+    assert f.books[BOT].open["p1"].exit_reason == "wallet_sell" and f.books[BOT].open["p9"].exit_reason == "resume_reopen"  # the logged decision survives; an unlogged one gets a reason
+    f.step(TICK_START)  # the first tick after the restart sends both sells (the exit decision row is written first, as always)
+    assert [(c[0], c[2]) for c in f.engine.calls] == [("sell", "p1"), ("sell", "p9")] and all(c[-1] is True for c in f.engine.calls) and not f.books[BOT].open
+    assert [r["attempt"] for r in f.log.rows(BOT) if r["kind"] == "exit"] == [1, 2, 1]  # p1: the logged attempt 1, then 2 after the restart; p9: its first
     g = make_host(tmp_path / "g", [make_rule()], rows=ROWS, fake=True)  # logged as an entry, never reached the engine (killed between the log and the buy)
     g.log.append(BOT, T0 + 1, {"kind": "entry", "order_id": "p2", "pool": POOL["A"], "meta": {}, "decision_slot": 1, "stake_sol": 0.25, "attempt_key": "m2"})
     n = g.resume()
     assert n["dropped"] == 1 and not g.books[BOT].open and g.books[BOT].attempted == {"m2"}  # still an attempt
     assert g.log.rows(BOT)[-1]["kind"] == "resume_dropped"
+
+
+class Crash(BaseException):
+    """The process dies here (not an Exception: nothing in the host may catch it)."""
+
+
+def tick_at_or_after(ms: int) -> int:
+    return TICK_START + -(-(ms - TICK_START) // 1000) * 1000
+
+
+def test_a_kill_between_the_exit_row_and_engine_sell_is_sold_at_the_first_tick_after_resume(tmp_path):
+    first = make_host(tmp_path, [make_rule()], rows=ROWS)  # the REAL engine
+    first.resume()
+
+    def die(*a, **k):
+        raise Crash()
+
+    first.engine.sell = die  # the exit row is on disk, engine.sell is never reached
+    with pytest.raises(Crash):
+        first.run(TICK_START, T_END)
+    del first
+    t_resume = tick_at_or_after(at("sell_A") + 1)  # the tick whose poll would have covered the wallet's sell
+    second = make_host(tmp_path, [make_rule()], rows=ROWS)
+    n = second.resume()
+    assert n["open"] == 1 and n["reopened"] == 1
+    (reopen,) = [r for r in decision_rows(second, BOT) if r["kind"] == "resume_reopen"]
+    assert reopen["exit_reason"] == "wallet_sell"
+    second.run(t_resume, T_END)
+    rows = decision_rows(second, BOT)
+    pid = next(r["order_id"] for r in rows if r["kind"] == "entry")
+    exits = [r for r in rows if r["kind"] == "exit" and r["order_id"] == pid]
+    assert [(x["attempt"], x["reason"]) for x in exits] == [(1, "wallet_sell"), (2, "wallet_sell")]  # the sell the wallet triggered, not a later time cap
+    assert exits[1]["ms"] == t_resume and exits[1]["ms"] - exits[0]["ms"] < 1000  # sent at the first tick, 0.9 s after the logged decision (not 600 s)
+    assert not any(r["reason"] == "time_cap_600s" and r["order_id"] == pid for r in rows if r["kind"] == "exit")
+    ex = [r for r in ledger_rows(second, BOT) if r["kind"] == "excluded" and r["position_id"] == pid]
+    assert len(ex) == 3 and {r["exclusion_reason"] for r in ex} == {"engine_restart"}  # booked, not left as a restart orphan
+    assert pid not in second.engine.positions and pid not in second.books[BOT].open
+    second.log.verify(BOT)
 
 
 def test_a_broken_chain_stops_the_start(tmp_path):
