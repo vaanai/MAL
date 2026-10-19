@@ -5,6 +5,7 @@ DEC/DEC-031-forward-paper-arena.md section 2. It RE-USES tools.arena_score (the 
 and gates nothing itself: every cell below is an arena_score cell.
 
     python -m tools.hv4_read book --bot CON-L     [--ledger-root D] [--registry F] [--extra-registry PATH@SHA256 ...] [--out-dir D] [--null-dir D]
+    python -m tools.hv4_read v12 --bot CON-L      [same options; at or after B + settle time]
     python -m tools.hv4_read learning             [--extra-registry PATH@SHA256 ...]   (D14 only)
     python -m tools.hv4_read table [--json F]     [--extra-registry PATH@SHA256 ...]   (assembles the recorded reads; computes nothing new)
 
@@ -18,6 +19,12 @@ READS (each at a pre-declared instant, each written ONCE, a second run is refuse
             outcome line cannot block or move it). DEC-031 governs: DESIGN section 8's day-5/7/10/14 looks are superseded for gate purposes. Output: the
             arena_score read, the gate cells of that arm, the disclosure block, a result.v1 record and Console row drafts. For an LLM book (L or F) it also
             carries V1 and V2.
+  V1 / V2   (L and F books) decided ONCE per bot_id, at ONE declared instant = the book's window end B plus the settle time (24 h), whatever the operator's clock: `book`
+            run before it says "V1 and V2 pending until <instant>"; `book` or `v12` run at or after it decides them, and records them write-once in the SAME arena store
+            as the gate read (`<arena-reads-dir>/<bot_id>.v12.json`); a second run is refused from any out dir, and the stored decision is never rewritten. An R null that is
+            absent, incomplete or fails its manifest check at that point records V1 NOT_DECIDABLE for good (`--null-dir` or an explicit `--no-null` is required). The CLI takes
+            the production store only: `--arena-reads-dir` and `--settle-hours` other than the defaults are refused outside MAL_ARENA_TEST=1. Schedule the `v12` step as a
+            host-side MiScusi job at the declared instant (CLAUDE.md: fixed-instant steps are never left to a session cron).
   learning  one, at T0 + 14 d + 13:00Z (D14), covering entries before T0 + 14 d. It is a SEPARATE pre-declared comparison and NOT a gate read: it prints no gate
             verdict, and its result.v1 gate ticks are false by construction. T0 is the common clock_start_ms of the 13 arms in bots.json.
 
@@ -47,11 +54,13 @@ V1  the LLM book's primary ex-top-3 (stake 0.25, 1.9 s) is ABOVE the 95th percen
     replay code sha equals the registered frozen_sha of <persona>-R (the registration records, before T0); exactly seeds 1..200 listed, each file's sha256 equal to the file on
     disk, no two seeds with the same sha256, no unlisted seed-*.jsonl file; and SEED 1 reproduces the live <persona>-R arm: its open and refused rows before the book's
     instant equal the live arm's (kind, position id, entry decision ms, pool, mint). R runs live with seed 1 (DESIGN section 5). The manifest's own sha256 is recorded in V1.
-V2  daily (book - X) at 0.25 over the calendar days of the window (days with no trade count 0), one-sided day-block bootstrap (resample whole UTC days,
-    2,000 draws, seed 1), p = (1 + #{mean <= 0}) / (1 + draws) (the repo's exp017 convention) <= 0.05/6, in each of the four sub-cells. The window ends at the
+V2  daily (book - X) at 0.25 over the calendar days of the window (days with no trade count 0), one-sided SIGN-FLIP test over the UTC-day differences (quant-proof B3
+    on #718: the day-block bootstrap rejected a true null 4 to 8 times too often at 5 to 8 days): p = P(sum of the randomly signed |d| >= the observed sum), EXACT for up to
+    20 non-zero days, else Monte-Carlo with 100,000 flips, seed 1, p = (1 + #{>=}) / (1 + flips); p <= 0.05/6 in each of the four sub-cells. Its smallest possible p is 2^-n,
+    so the window needs at least 7 days (2^-7 = 0.0078 <= 0.0083; learning, alpha 0.025, needs 6): a shorter window is NOT_DECIDABLE by rule. The window ends at the
     `arena_score.common_boundary(book, X)`: the earlier of the two natural instants; both arms are scored there (at or before an arm's own instant is always allowed).
-    If X has no instant yet, V2 is NOT_DECIDABLE.
-LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and L - P with p <= 0.025 (same bootstrap) in each sub-cell, and the mean daily
+    If X has no outcome-blind instant by the declared V1/V2 instant (below), V2 is NOT_DECIDABLE by rule.
+LEARNING (CON; BIG and BST L - F are supporting only): L - F with p <= 0.025 and L - P with p <= 0.025 (same sign-flip test) in each sub-cell, and the mean daily
     L - F over D8..D14 at least the mean over D1..D7. NOT_DECIDABLE is the expected outcome; it is declared when an arm is not decidable (orphans, incidents,
     excluded share above 5%, a bonding row, a strand rule missing, no outcome-blind instant yet), an arm has fewer than 100 priced trades at 0.25, or the window has
     fewer than 14 days. Each arm is scored by `arena_score.score_bot(boundary_ms=D14)`, a comparator screen ("FORCED-SCREEN-ONLY"), with its incidents and ledger problems.
@@ -100,7 +109,8 @@ LEARN_LOOK_OFFSET_MS = WINDOW_DAYS * DAY_MS + 13 * 3_600_000  # T0 + 14 d + 13:0
 NULL_SEEDS = 200
 NULL_PCT = 95
 BOOT_SEED = 1
-V2_DRAWS = 2000
+SIGNFLIP_FLIPS = 100_000  # Monte-Carlo flips (seed BOOT_SEED), used only above SIGNFLIP_EXACT_MAX_N non-zero days
+SIGNFLIP_EXACT_MAX_N = 20
 V2_FAMILY = 6  # CON-L/F, BIG-L/F, BST-L/F (DESIGN section 8)
 V2_ALPHA = 0.05 / V2_FAMILY
 LEARN_ALPHA = 0.025
@@ -267,14 +277,38 @@ def daily_vec(res: Mapping[str, Any], stake_key: str, sub: str, days: Sequence[s
     return np.array([d[x]["sol"] if x in d else 0.0 for x in days], float)
 
 
-def day_block_p(diffs: Sequence[float], draws: int = V2_DRAWS, seed: int = BOOT_SEED) -> float | None:
-    """One-sided day-block bootstrap p for H0: mean daily difference <= 0. Resamples whole UTC days with replacement; p = (1 + #{draw mean <= 0}) / (1 + draws)."""
+def signflip_p(diffs: Sequence[float], flips: int = SIGNFLIP_FLIPS, seed: int = BOOT_SEED, exact_max_n: int = SIGNFLIP_EXACT_MAX_N) -> float | None:
+    """One-sided sign-flip (randomization) p for H0: the daily difference is symmetric about 0 (so its mean is 0), against a positive mean. Statistic: the sum of the
+    differences. p = P(sum of randomly signed |d_i| >= the observed sum). EXACT (all 2^k sign patterns of the k non-zero days) for k <= exact_max_n; above that
+    Monte-Carlo with `flips` random patterns, seed `seed`, p = (1 + #{pattern sum >= observed}) / (1 + flips). Ties count against the book (a relative 1e-9 tolerance
+    on the float sum). A zero day changes no sum, so it does not change p."""
     x = np.asarray(diffs, float)
     if len(x) == 0:
         return None
+    a = np.abs(x[x != 0])
+    if len(a) == 0:
+        return 1.0
+    obs = float(x.sum()) - 1e-9 * float(a.sum())
+    if len(a) <= exact_max_n:
+        sums = np.zeros(1)
+        for v in a:
+            sums = np.concatenate((sums + v, sums - v))
+        return float((sums >= obs).sum() / len(sums))
     rng = np.random.default_rng(seed)
-    m = x[rng.integers(0, len(x), size=(draws, len(x)))].mean(axis=1)
-    return float((1 + int((m <= 0).sum())) / (1 + draws))
+    hits, left = 0, int(flips)
+    while left > 0:
+        n = min(left, 5000)
+        hits += int(((rng.integers(0, 2, size=(n, len(a))) * 2 - 1) @ a >= obs).sum())
+        left -= n
+    return float((1 + hits) / (1 + flips))
+
+
+def min_window_days(alpha: float) -> int:
+    """The fewest days at which the exact sign-flip test can reach `alpha` at all (its smallest p is 2^-days)."""
+    n = 1
+    while 2.0 ** -n > alpha:
+        n += 1
+    return n
 
 
 def _decidable(res: Mapping[str, Any] | None) -> bool:
@@ -283,10 +317,15 @@ def _decidable(res: Mapping[str, Any] | None) -> bool:
 
 def paired(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None, days: Sequence[str], alpha: float, weeks: bool = False) -> dict[str, Any]:
     """a - b daily at stake 0.25 in each of the four sub-cells. status PASS iff every sub-cell has p <= alpha (and, with weeks, week 2 >= week 1)."""
-    out: dict[str, Any] = {"alpha": alpha, "draws": V2_DRAWS, "seed": BOOT_SEED, "days": len(days), "subcells": {}, "reasons": []}
+    out: dict[str, Any] = {"alpha": alpha, "test": "one-sided sign-flip over UTC-day differences (exact up to 20 non-zero days, else 100,000 flips, seed 1)", "days": len(days),
+                           "min_days": min_window_days(alpha), "subcells": {}, "reasons": []}
     if not (_decidable(a) and _decidable(b)):
         out["status"] = "NOT_DECIDABLE"
         out["reasons"].append("an arm is not decidable under arena_score (status " + ", ".join(str(x["status"]) if x else "missing" for x in (a, b)) + ")")
+        return out
+    if len(days) < out["min_days"]:  # data-independent: the test cannot reach alpha on a window this short (smallest p = 2^-days), whatever the numbers
+        out["status"] = "NOT_DECIDABLE"
+        out["reasons"].append(f"the window has {len(days)} day(s): the exact sign-flip test cannot reach alpha {alpha:.4g} below {out['min_days']} days (smallest possible p 2^-{len(days)})")
         return out
     ok = True
     for sub in SUBCELLS:
@@ -296,8 +335,9 @@ def paired(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None, days: Seque
             out["reasons"].append(f"sub-cell {sub} missing")
             return out
         d = va - vb
-        p = day_block_p(d)
-        rec: dict[str, Any] = {"mean_daily_diff_sol": float(d.mean()), "total_diff_sol": float(d.sum()), "p": p, "p_ok": bool(p is not None and p <= alpha)}
+        p = signflip_p(d)
+        rec: dict[str, Any] = {"mean_daily_diff_sol": float(d.mean()), "total_diff_sol": float(d.sum()), "p": p, "p_ok": bool(p is not None and p <= alpha),
+                               "method": "exact" if int((d != 0).sum()) <= SIGNFLIP_EXACT_MAX_N else "monte_carlo", "nonzero_days": int((d != 0).sum())}
         if weeks:
             w1, w2 = float(d[:7].mean()), float(d[7:14].mean())
             rec.update(week1_mean_sol=w1, week2_mean_sol=w2, week2_ge_week1=bool(w2 >= w1), day1_diff_sol=float(d[0]))
@@ -1100,6 +1140,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cmd = "python -m tools.hv4_read " + " ".join(argv if argv is not None else sys.argv[1:])
     settle = int(a.settle_hours * 3_600_000)
     try:
+        if os.environ.get(TEST_ENV) != "1":  # the pre-declared read has no operator knobs: the production store and the declared settle time only
+            if str(a.arena_reads_dir) != str(ARENA_READS_DIR):
+                raise Refused(f"--arena-reads-dir other than {ARENA_READS_DIR} is a test-only override (a fresh store would allow a second read): refused")
+            if settle != AS.SETTLE_MS:
+                raise Refused(f"--settle-hours other than {AS.SETTLE_MS / 3_600_000:g} is a test-only override (it moves the pending/orphan split and the V1/V2 instant): refused")
         if a.what == "table":
             t = build_table(a.out_dir, a.registry, a.now_ms, a.arena_reads_dir, a.extra_registry)
             print(render_table(t))

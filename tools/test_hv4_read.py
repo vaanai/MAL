@@ -139,12 +139,18 @@ class World:
         return R.read_learning(ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, **kw)
 
 
-def con_world(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0):
+def con_world(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0, days=5, per_day=20):
+    """CON-L, CON-X and the R null over `days` x `per_day` positions. 5 x 20: the book's instant is day 5. A V2 that can decide needs a window of 7 days or more
+    (the exact sign-flip test cannot reach 0.05/6 below that): `con_world8` is 8 x 13 (104 attempts, instant day 8)."""
     w = World(tmp_path)
-    w.add(book_rows("CON-L", noisy(l_mu, 5, 20, 11)))
-    w.add(book_rows("CON-X", noisy(x_mu, 5, 20, 12)))
-    w.seeds("CON", null_mu, 5, 20)
+    w.add(book_rows("CON-L", noisy(l_mu, days, per_day, 11)))
+    w.add(book_rows("CON-X", noisy(x_mu, days, per_day, 12)))
+    w.seeds("CON", null_mu, days, per_day)
     return w
+
+
+def con_world8(tmp_path, **kw):
+    return con_world(tmp_path, days=8, per_day=13, **kw)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the cells
@@ -160,7 +166,7 @@ def test_cell_count_is_25_and_matches_the_design():
     assert sorted(by[R.AS_SIZED]) == ["BIG-F", "BIG-L", "CON-F", "CON-L"]
     flat_con_big = [c for c in cells if c[1] in (0.25, 0.5, 1.0) and not c[0].startswith("BST")]
     assert (len(flat_con_big), len([c for c in cells if c[0].startswith("BST")]), len(by[R.AS_SIZED])) == (18, 3, 4)
-    assert R.NULL_SEEDS == 200 and R.V2_ALPHA == 0.05 / 6 and R.LEARN_ALPHA == 0.025 and R.V2_DRAWS == 2000 and R.BOOT_SEED == 1
+    assert R.NULL_SEEDS == 200 and R.V2_ALPHA == 0.05 / 6 and R.LEARN_ALPHA == 0.025 and R.SIGNFLIP_FLIPS == 100_000 and R.SIGNFLIP_EXACT_MAX_N == 20 and R.BOOT_SEED == 1
 
 
 def test_window_clock_refuses_unregistered_arms_other_clocks_and_other_stakes(tmp_path):
@@ -261,9 +267,9 @@ def test_a_forced_boundary_is_a_comparator_screen_and_a_later_one_needs_a_record
 
 def test_v1_is_not_decidable_when_an_r_seed_has_an_earlier_own_instant_than_the_book(tmp_path):
     w = World(tmp_path)
-    w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
-    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
-    w.seeds("CON", 0.0, 5, 19)  # 95 attempts: the R seeds never reach their own instant
+    w.add(book_rows("CON-L", noisy(4e6, 8, 13, 11)))
+    w.add(book_rows("CON-X", noisy(1e6, 8, 13, 12)))
+    w.seeds("CON", 0.0, 8, 12)  # 96 attempts: the R seeds never reach their own instant
     r = w.book("CON-L")
     assert r["v1"]["status"] == "NOT_DECIDABLE" and len(r["v1"]["null"]["unusable"]) == N_SEEDS
     assert r["v2"]["status"] == "PASS" and r["adds_value"] is False
@@ -271,15 +277,15 @@ def test_v1_is_not_decidable_when_an_r_seed_has_an_earlier_own_instant_than_the_
 
 def test_v2_window_ends_at_the_earlier_of_the_two_instants(tmp_path):
     w = World(tmp_path)
-    w.add(book_rows("CON-L", noisy(4e6, 6, 17, 11)))  # 102 attempts: its own instant is day 6
-    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))  # 100 attempts: X reaches its instant on day 5
-    w.seeds("CON", 0.0, 6, 17)
+    w.add(book_rows("CON-L", noisy(4e6, 9, 12, 11)))  # 108 attempts: its own instant is day 9
+    w.add(book_rows("CON-X", noisy(1e6, 8, 13, 12)))  # 104 attempts: X reaches its instant on day 8
+    w.seeds("CON", 0.0, 9, 12)
     r = w.book("CON-L")
     v2 = r["v2"]
-    assert r["instant_ms"] == DAY0 + 6 * DAY and v2["book_instant_ms"] == DAY0 + 6 * DAY and v2["comparator_instant_ms"] == DAY0 + 5 * DAY
-    assert v2["window_end_ms"] == DAY0 + 5 * DAY == AS.common_boundary("CON-L", "CON-X", w.root, w.reg) and v2["days"] == 5 and v2["boundary_source"] == "forced"
-    assert v2["status"] == "PASS" and all(v["p"] == 1 / 2001 for v in v2["subcells"].values())
-    assert r["v1"]["status"] == "PASS"  # V1 stays on the book's own window (day 6)
+    assert r["instant_ms"] == DAY0 + 9 * DAY and v2["book_instant_ms"] == DAY0 + 9 * DAY and v2["comparator_instant_ms"] == DAY0 + 8 * DAY
+    assert v2["window_end_ms"] == DAY0 + 8 * DAY == AS.common_boundary("CON-L", "CON-X", w.root, w.reg) and v2["days"] == 8 and v2["boundary_source"] == "forced"
+    assert v2["status"] == "PASS" and all(v["p"] == 2.0 ** -8 and v["method"] == "exact" for v in v2["subcells"].values())
+    assert r["v1"]["status"] == "PASS"  # V1 stays on the book's own window (day 9)
 
 
 def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tmp_path):
@@ -360,10 +366,10 @@ def test_a_not_decidable_book_whose_cells_would_pass_reports_no_gate_tick_and_no
 
 
 def test_v1_and_v2_are_pending_before_the_declared_instant_and_decided_once_at_it(tmp_path):
-    w = con_world(tmp_path)
-    b = DAY0 + 5 * DAY
+    w = con_world8(tmp_path)
+    b = DAY0 + 8 * DAY
     bv = b + AS.SETTLE_MS  # the window end plus the declared settle time
-    assert R.v12_instant(b, AS.SETTLE_MS) == bv == DAY0 + 6 * DAY
+    assert R.v12_instant(b, AS.SETTLE_MS) == bv == DAY0 + 9 * DAY
     r = w.book("CON-L", now_ms=bv - 1)  # the gate read is made at B; V1 and V2 are not
     assert r["arena_status"] == "PASS" and r["v1"]["status"] == r["v2"]["status"] == "PENDING"
     assert r["v1_and_v2"] is None and r["adds_value"] is None and r["v12"]["state"] == "pending" and r["v12"]["instant_ms"] == bv
@@ -439,16 +445,17 @@ def test_the_v1_v2_decision_needs_a_null_dir_or_an_explicit_no_null_and_writes_n
 
 
 def test_v2_is_not_decidable_by_rule_when_x_has_no_instant_by_the_declared_instant(tmp_path):
-    for per_day, days, decided in ((17, 6, True), (13, 8, False)):  # X reaches 100 attempts on day 6 (= the declared instant: allowed) or on day 8 (after it: not decidable)
+    # the book (8 x 13) has its instant on day 8, so V1/V2 are declared for day 9. X reaches 100 attempts on day 9 (not after it: decided) or on day 10 (after it)
+    for per_day, days, decided in ((12, 9, True), (10, 10, False)):
         w = World(tmp_path / f"x{days}")
-        w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
+        w.add(book_rows("CON-L", noisy(4e6, 8, 13, 11)))
         w.add(book_rows("CON-X", noisy(1e6, days, per_day, 12)))
-        w.seeds("CON", 0.0, 5, 20)
+        w.seeds("CON", 0.0, 8, 13)
         v2 = w.book("CON-L")["v2"]
         if decided:
-            assert v2["status"] in ("PASS", "FAIL") and v2["window_end_ms"] == DAY0 + 5 * DAY and v2["comparator_instant_ms"] == DAY0 + 6 * DAY
+            assert v2["status"] == "PASS" and v2["window_end_ms"] == DAY0 + 8 * DAY and v2["comparator_instant_ms"] == DAY0 + 9 * DAY
         else:
-            assert v2["status"] == "NOT_DECIDABLE" and "after the declared V1/V2 instant" in " ".join(v2["reasons"]) and v2["comparator_instant_ms"] == DAY0 + 8 * DAY
+            assert v2["status"] == "NOT_DECIDABLE" and "after the declared V1/V2 instant" in " ".join(v2["reasons"]) and v2["comparator_instant_ms"] == DAY0 + 10 * DAY
 
 
 def test_test_mode_never_writes_the_production_store_or_out_dir(tmp_path):
@@ -519,14 +526,14 @@ def test_the_learning_screen_reads_arena_scores_store_and_never_the_out_dir(tmp_
 
 # ------------------------------------------------------------------------------------------------------------------------------ V1 / V2 with known answers
 def test_book_read_pass_case_v1_v2_pass(tmp_path):
-    w = con_world(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0)
+    w = con_world8(tmp_path, l_mu=4e6, x_mu=1e6, null_mu=0.0)
     r = w.book("CON-L")
-    assert r["instant_ms"] == DAY0 + 5 * DAY and r["arena_status"] == "PASS"
+    assert r["instant_ms"] == DAY0 + 8 * DAY and r["arena_status"] == "PASS"
     assert r["v1"]["status"] == "PASS" and r["v2"]["status"] == "PASS" and r["v1_and_v2"] is True and r["adds_value"] is True
     assert r["not_proposed_for_canary"] is False
     assert set(r["v1"]["subcells"]) == set(R.SUBCELLS) == set(r["v2"]["subcells"])
     assert all(v["above"] for v in r["v1"]["subcells"].values())
-    assert all(v["p"] == 1 / 2001 and v["p"] <= R.V2_ALPHA for v in r["v2"]["subcells"].values())  # five days, every diff positive: no draw has a mean <= 0
+    assert all(v["p"] == 2.0 ** -8 and v["p"] <= R.V2_ALPHA and v["method"] == "exact" for v in r["v2"]["subcells"].values())  # eight days, every diff positive: 1 of 256 sign patterns
     assert r["v2"]["comparator"] == "CON-X"
     dec = next(c for c in r["cells"] if c["decides"])
     assert dec["arm"] == "CON-L" and dec["stake"] == 0.25 and dec["status"] == "PASS" and len(dec["subcells"]) == 4
@@ -542,10 +549,10 @@ def test_v1_fail_when_the_random_arm_is_better(tmp_path):
 
 def test_v2_fail_when_the_book_equals_the_x_arm(tmp_path):
     w = World(tmp_path)
-    days = noisy(4e6, 5, 20, 11)
+    days = noisy(4e6, 8, 13, 11)
     w.add(book_rows("CON-L", days))
     w.add(book_rows("CON-X", days))  # identical pnl: every daily difference is 0
-    w.seeds("CON", 0.0, 5, 20)
+    w.seeds("CON", 0.0, 8, 13)
     r = w.book("CON-L")
     assert r["v2"]["status"] == "FAIL" and all(v["p"] == 1.0 for v in r["v2"]["subcells"].values())
     assert r["v2"]["note"] and "X goes to the canary first" in r["v2"]["note"]  # X also clears the arena gate at this instant
@@ -558,7 +565,7 @@ def test_v1_v2_not_decidable_when_the_null_or_the_comparator_is_missing(tmp_path
     r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, reads_dir=w.reads, null_dir=None, no_null=True, now_ms=DAY0 + 30 * DAY, n_seeds=N_SEEDS, extra_registries=w.extra)
     assert r["v1"]["status"] == "NOT_DECIDABLE" and "no --null-dir" in " ".join(r["v1"]["reasons"])
     assert r["v2"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
-    w2 = con_world(tmp_path / "two")
+    w2 = con_world8(tmp_path / "two")
     d = Path(w2.null) / "CON-R"
     (d / "seed-0003.jsonl").unlink()  # a missing seed
     r2 = w2.book("CON-L")
@@ -669,11 +676,13 @@ def test_build_null_manifest_hashes_the_files_in_place(tmp_path):
 
 
 def test_seed_reproducibility(tmp_path):
-    # the bootstrap
+    # the sign-flip test: exact, so no seed; the Monte-Carlo branch is seeded
     d = [0.01, -0.02, 0.03, 0.005, 0.0, 0.02]
-    assert R.day_block_p(d) == R.day_block_p(d) == R.day_block_p(d, 2000, 1)
-    assert R.day_block_p(d, 2000, 1) != R.day_block_p(d, 2000, 2) or True  # a different seed may differ; same seed never does
-    assert R.day_block_p([0.1] * 5) == 1 / 2001 and R.day_block_p([0.0] * 5) == 1.0 and R.day_block_p([]) is None
+    assert R.signflip_p(d) == R.signflip_p(d) == R.signflip_p(d, 100_000, 1)
+    assert R.signflip_p([0.1] * 5) == 1 / 32 and R.signflip_p([0.0] * 5) == 1.0 and R.signflip_p([]) is None
+    big = list(np.random.default_rng(3).normal(0.1, 1.0, 24))  # 24 non-zero days: Monte-Carlo, 100,000 flips, seed 1
+    assert R.signflip_p(big) == R.signflip_p(big) == R.signflip_p(big, R.SIGNFLIP_FLIPS, 1)
+    assert R.signflip_p(big, seed=2) != R.signflip_p(big, seed=1) or True  # a different seed may differ; the same seed never does
     # the null and the whole read, from the same inputs, into two out dirs
     w = con_world(tmp_path)
     reg = load_registry(w.reg)
@@ -701,6 +710,78 @@ def test_seed_reproducibility(tmp_path):
     assert n3["p95"] != n1["p95"]
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ the sign-flip test (QP B3)
+def _brute_p(d):
+    """The reference: enumerate every sign pattern of the non-zero days."""
+    d = np.asarray(d, float)
+    a, obs = np.abs(d[d != 0]), float(d.sum())
+    cnt = 0
+    for mask in range(2 ** len(a)):
+        cnt += sum((a[i] if mask >> i & 1 else -a[i]) for i in range(len(a))) >= obs - 1e-9 * float(a.sum())
+    return cnt / 2 ** len(a)
+
+
+def test_signflip_p_is_exact_matches_enumeration_and_has_known_values():
+    rng = np.random.default_rng(7)
+    for n in (1, 2, 3, 5, 8, 10):
+        d = rng.normal(0.2, 1.0, n)
+        assert R.signflip_p(d) == pytest.approx(_brute_p(d), rel=1e-12)
+    assert R.signflip_p([1, 1, 1]) == 1 / 8 and R.signflip_p([1, 1, -1]) == 4 / 8 and R.signflip_p([3, 1, -1]) == 3 / 8  # by hand: sums of +-3 +-1 +-1
+    assert R.signflip_p([1, 1]) == 1 / 4 and R.signflip_p([1, -1]) == 3 / 4  # ties count against the book
+    assert R.signflip_p([0, 0, 1, 2, 3]) == R.signflip_p([1, 2, 3]) == 1 / 8  # a zero day changes no sum
+    assert R.signflip_p([-1, -2, -3]) == 1.0 and R.signflip_p([0.0] * 5) == 1.0 and R.signflip_p([]) is None
+    d = rng.normal(0.3, 1.0, 9)
+    assert R.signflip_p(d * 1e-6) == R.signflip_p(d)  # scale free (lamports or SOL)
+    assert R.signflip_p(d + 1.0) <= R.signflip_p(d)  # a better book never has a larger p
+    assert R.signflip_p([0.1] * 20) == 2.0 ** -20  # the exact branch runs to 20 non-zero days
+
+
+def test_signflip_monte_carlo_agrees_with_the_exact_p_and_is_seeded():
+    rng = np.random.default_rng(11)
+    d = rng.normal(0.5, 1.0, 14)
+    exact = R.signflip_p(d)
+    mc = R.signflip_p(d, exact_max_n=0)  # force the Monte-Carlo branch: 100,000 flips, seed 1
+    assert mc == R.signflip_p(d, exact_max_n=0) == R.signflip_p(d, R.SIGNFLIP_FLIPS, R.BOOT_SEED, 0)
+    assert abs(mc - exact) < 5 * (exact * (1 - exact) / R.SIGNFLIP_FLIPS) ** 0.5 + 2e-5  # within 5 standard errors
+    assert R.SIGNFLIP_FLIPS >= 100_000 and R.signflip_p([0.1] * 24) == 1 / (1 + R.SIGNFLIP_FLIPS)  # smallest Monte-Carlo p
+    # above 20 non-zero days the default is the Monte-Carlo branch
+    big = rng.normal(0.4, 1.0, 24)
+    assert R.signflip_p(big) == R.signflip_p(big, exact_max_n=0)
+
+
+def test_the_window_needs_7_days_for_v2_and_6_for_learning_and_a_shorter_window_is_not_decidable(tmp_path):
+    assert R.min_window_days(R.V2_ALPHA) == 7 and R.min_window_days(R.LEARN_ALPHA) == 6
+    assert 2.0 ** -7 <= R.V2_ALPHA < 2.0 ** -6 and 2.0 ** -6 <= R.LEARN_ALPHA < 2.0 ** -5
+    for days, per_day, ok in ((5, 20, False), (6, 17, False), (7, 15, True)):  # every daily difference is positive in all three
+        w = con_world(tmp_path / f"d{days}", days=days, per_day=per_day)
+        r = w.book("CON-L")
+        assert r["instant_ms"] == DAY0 + days * DAY and r["v2"]["days"] == days
+        if ok:
+            assert r["v2"]["status"] == "PASS" and all(v["p"] == 2.0 ** -7 for v in r["v2"]["subcells"].values())
+        else:
+            assert r["v2"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False and r["v2"]["subcells"] == {}
+            assert f"the window has {days} day(s)" in r["v2"]["reasons"][0] and "cannot reach alpha" in r["v2"]["reasons"][0] and r["v2"]["min_days"] == 7
+
+
+def test_size_of_the_signflip_test_under_a_true_null(tmp_path):
+    """Simulated mean-zero symmetric daily differences (normal and heavy-tailed t3): the rejection rate at the V2 alpha (0.05/6) at 5 to 8 days and at the learning alpha
+    (0.025) at 14 days. QP measured the day-block bootstrap at 4.3x to 7.9x nominal at 5 to 8 days and 1.5x to 1.9x at 14. The exact test is valid by construction; where
+    its smallest p (2^-days) is above alpha (5 and 6 days) it cannot reject at all, which the window rule turns into NOT_DECIDABLE. Where it can reject (7, 8 and 14 days)
+    the rate must be within [0.5, 1.5] x nominal."""
+    rng = np.random.default_rng(20261019)
+    seen = {}
+    for dist in ("normal", "t3"):
+        for n, alpha, sims in ((5, R.V2_ALPHA, 4000), (6, R.V2_ALPHA, 4000), (7, R.V2_ALPHA, 20000), (8, R.V2_ALPHA, 20000), (14, R.LEARN_ALPHA, 6000)):
+            x = rng.standard_normal((sims, n)) if dist == "normal" else rng.standard_t(3, (sims, n))
+            rate = float(np.mean([R.signflip_p(row) <= alpha for row in x]))
+            seen[(dist, n)] = rate / alpha
+            if n < R.min_window_days(alpha):
+                assert rate == 0.0  # cannot reject: NOT_DECIDABLE by rule
+            else:
+                assert 0.5 <= rate / alpha <= 1.5, (dist, n, rate, rate / alpha)
+    assert seen[("normal", 7)] <= 1.0 + 0.2 and seen[("normal", 14)] <= 1.2  # never anywhere near the 4x to 8x of the bootstrap
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ the learning read
 def con_learning_world(tmp_path, l_gain, p_n=10, base=-8e6, status="FAIL", p_days=14):
     """Three CON arms over 14 days, 10 positions a day (own instant: day 10, before D14). All arms lose by default, so that their own screens failed; the three
@@ -720,9 +801,9 @@ def test_learning_pass_when_l_beats_f_and_p_and_the_gain_grows(tmp_path):
     lr = r["learning"]
     assert lr["status"] == "PASS" and "learning shown" in lr["statement"]
     for sub in R.SUBCELLS:
-        assert lr["L_minus_F"]["subcells"][sub]["p"] == 1 / 2001 <= R.LEARN_ALPHA
+        assert lr["L_minus_F"]["subcells"][sub]["p"] == 2.0 ** -14 <= R.LEARN_ALPHA
         assert lr["L_minus_F"]["subcells"][sub]["week2_ge_week1"] is True
-        assert lr["L_minus_P"]["subcells"][sub]["p"] == 1 / 2001
+        assert lr["L_minus_P"]["subcells"][sub]["p"] == 2.0 ** -14
     assert lr["L_minus_F"]["days"] == 14 and r["instant_ms"] == DAY0 + 14 * DAY
     assert lr["supporting_only"]["BIG"]["status"] == "NOT_DECIDABLE"  # supporting arms have no rows; they never decide the CON verdict
 
@@ -1017,7 +1098,7 @@ def test_result_v1_stage_is_failed_for_a_final_fail(tmp_path):
 def test_console_rows_are_a_draft_fragment_and_console_json_is_untouched(tmp_path):
     console = REPO / "data" / "console.json"
     before = hashlib.sha256(console.read_bytes()).hexdigest()
-    w = con_world(tmp_path)
+    w = con_world8(tmp_path)
     w.book("CON-L")
     frag = json.loads((Path(w.out) / "reads" / "CON-L.console.json").read_text())
     assert set(frag) == {"stream", "ladder", "events"}
@@ -1049,7 +1130,7 @@ def test_the_console_draft_shows_all_four_sub_cells_and_a_failed_book_never_prin
     assert "V1 PASS" not in text and "V2 PASS" not in text and "comparison only" in text
     assert re.search(r"V[12] (PASS|FAIL|NOT_DECIDABLE)", text) is None  # no V verdict for a book that did not clear the gate
     # a book that clears everything still shows both legs and its V statuses
-    w2 = con_world(tmp_path / "pass")
+    w2 = con_world8(tmp_path / "pass")
     w2.book("CON-L")
     t2 = outputs(w2)[2]["stream"][0]["text"]
     assert all(label in t2 for label in R.SUBLABEL.values()) and "V1 PASS" in t2 and "V2 PASS" in t2
