@@ -751,7 +751,9 @@ def test_ts_us_normalises_units_and_flat_vol_is_a_missing_input():
         assert got.tolist() == [1_790_000_000 * US, 0, 1_790_000_001 * US], unit
     flat = {60 * i: 100.0 for i in range(0, 200)}
     assert r3.trailing_vol(flat, 60 * 150) == 0.0
-    assert r3.fair_at(flat, "BTC", 99.9, 60 * 160, 60 * 150 + 0) is None            # s1m == 0 -> skipped
+    assert r3.fair_at(flat, "BTC", 99.9, 60 * 160 * US, 60 * 150 * US) is None      # s1m == 0 -> skipped
+    moving = {60 * i: 100.0 + 0.01 * (i % 3) for i in range(0, 200)}
+    assert r3.fair_at(moving, "BTC", 99.9, 60 * 160 * US, 60 * 150 * US) is not None
 
 
 def test_vol_needs_at_least_40_returns():
@@ -870,6 +872,10 @@ def test_window_clustered_ci_and_decider_are_the_lower_of_the_two():
     assert c["ex_best_day"]["total_net_cent"] == pytest.approx(-91.0)
     # fewer clusters than events: the window CI is not the event CI
     assert c["ci90_window_cent"] != c["ci90_event_cent"]
+    # a day with total exactly 0 is not a positive day
+    z = r3.cell_stats([10_000.0, -10_000.0, 5_000.0], [10_000.0, -10_000.0, 5_000.0], [900_000.0] * 3,
+                      ["A", "B", "C"], ["2026-10-05", "2026-10-05", "2026-10-06"], windows=[1, 2, 3])
+    assert z["per_day"]["2026-10-05"]["total_net_cent"] == 0.0 and z["days_positive"] == 1
     # without windows the decider falls back to the event CI only
     c2 = r3.cell_stats(net, net, price, events, days, win=net > 0)
     assert c2["ci90_lo_decider"] == c2["ci90_event_cent"][0] and c2["ci90_window_cent"] == [None, None]
