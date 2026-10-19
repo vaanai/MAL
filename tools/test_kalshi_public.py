@@ -2190,3 +2190,213 @@ def test_tail_cuts_sub_second_edges_to_the_exact_close_window(tmp_path):
         assert rc == 0 and {r["trade_id"] for r in read(d, "trades")} == {"edge_lo", "edge_hi"}
         q = fake.trade_queries[0][1]
         assert (int(q["min_ts"]), int(q["max_ts"])) == (c - 601, c + 2)
+
+
+# ------------------------------------------------------------ trades --tail-s --skip-zero-volume
+
+SKIP_ARGS = [*TAIL_ARGS, "--skip-zero-volume"]
+
+
+def zt(hhmm):
+    return f"KXBTC15M-26OCT01{hhmm}-00"
+
+
+# ticker -> (close_time, listing volume fields); {} = no volume key at all
+ZV_MARKETS = {
+    zt("0100"): ("2026-10-01T01:00:00Z", {"volume_fp": "0.00"}),            # skipped
+    zt("0200"): ("2026-10-01T02:00:00Z", {"volume_fp": 0}),                 # skipped (number)
+    zt("0300"): ("2026-10-01T03:00:00Z", {"volume_fp": "1.00"}),            # kept
+    zt("0400"): ("2026-10-01T04:00:00Z", {}),                               # kept: no volume at all
+    zt("0500"): ("2026-10-01T05:00:00Z", {"volume_fp": "n/a"}),             # kept: unparseable
+    zt("0600"): ("2026-10-01T06:00:00Z", {"volume": 0}),                    # skipped (legacy key)
+    zt("0700"): ("2026-10-01T07:00:00Z", {"volume": "3"}),                  # kept (legacy key)
+    zt("0800"): ("2026-10-01T08:00:00Z", {"volume_fp": ""}),                # kept: empty
+    zt("0900"): ("2026-10-01T09:00:00Z", {"volume_fp": "0.0000"}),          # skipped
+    zt("1000"): ("2026-10-01T10:00:00Z", {"volume_fp": "0.01"}),            # kept: tiny but traded
+    zt("1100"): ("2026-10-01T11:00:00Z", {"volume_fp": True}),              # kept: garbage
+    # outside [since, until): never selected, so never counted as listed, whatever its volume
+    zt("2400"): ("2026-10-02T00:00:00Z", {"volume_fp": "0.00"}),
+    "KXBTC15M-26SEP302345-45": ("2026-09-30T23:45:00Z", {"volume_fp": "0.00"}),
+}
+ZV_SKIPPED = {zt("0100"), zt("0200"), zt("0600"), zt("0900")}
+ZV_KEPT = {zt("0300"), zt("0400"), zt("0500"), zt("0700"), zt("0800"), zt("1000"), zt("1100")}
+
+
+def zv_fake():
+    fake = TailFake({t: (c, "2026-10-02T05:00:00Z") for t, (c, _v) in ZV_MARKETS.items()})
+    for m in fake.live_markets["KXBTC15M"]:
+        m.pop("volume_fp", None)  # Fake.mk sets "123.00"; each market gets exactly its own fields
+        m.update(ZV_MARKETS[m["ticker"]][1])
+    return fake
+
+
+@pytest.mark.parametrize("entry,expect", [
+    ({"volume_fp": "0.00"}, True), ({"volume_fp": "0"}, True), ({"volume_fp": 0}, True),
+    ({"volume_fp": 0.0}, True), ({"volume_fp": "-0.00"}, True), ({"volume": 0}, True),
+    ({"volume": "0.00"}, True), ({"volume_fp": None, "volume": 0}, True),
+    ({"volume_fp": "", "volume": "0"}, True),
+    ({"volume_fp": "1.00"}, False), ({"volume_fp": 7}, False), ({"volume_fp": "0.01"}, False),
+    ({"volume": 5}, False),
+    ({"volume_fp": "0.00", "volume": 5}, True),    # volume_fp wins when it is there
+    ({"volume_fp": "9.00", "volume": 0}, False),
+    ({}, False), ({"volume_fp": None}, False), ({"volume_fp": ""}, False),
+    ({"volume_fp": "abc"}, False), ({"volume_fp": "abc", "volume": 0}, False),  # garbage: fail open
+    ({"volume_fp": "nan"}, False), ({"volume_fp": [0]}, False), ({"volume_fp": {}}, False),
+    ({"volume_fp": False}, False), ({"volume_fp": True}, False),
+])
+def test_zero_volume_only_when_the_volume_parses_to_exactly_zero(entry, expect):
+    assert kp.zero_volume({"ticker": "X", **entry}) is expect
+
+
+def test_skip_zero_volume_skips_zero_keeps_nonzero_and_unknown(tmp_path, capsys):
+    fake = zv_fake()
+    rc, _ = run(tmp_path, SKIP_ARGS, fake)
+    assert rc == 0
+    asked = fake.asked()
+    assert set(asked) == ZV_KEPT and len(asked) == len(ZV_KEPT)  # skipped ones: no request at all
+    assert not any(t in "".join(fake.calls) for t in ZV_SKIPPED)
+    assert {r["ticker"] for r in read(tmp_path, "trades")} == ZV_KEPT
+    # a skipped market is not "done" and has no unit record; kept ones are processed as usual
+    ck = json.loads(next((tmp_path / "_checkpoints").glob("trades-*.json")).read_text())
+    assert set(ck["done"]) == ZV_KEPT
+    units = [m for m in manifest(tmp_path) if m["type"] == "unit" and not m["unit"].startswith("skip_")]
+    assert {m["unit"] for m in units} == ZV_KEPT and all(m["rows"] == 4 for m in units)
+    assert "skip_zero_volume KXBTC15M: 4 skipped of 11 listed" in capsys.readouterr().err
+    # the same listing without the flag fetches every in-window market, zero volume included
+    plain = zv_fake()
+    rc, _ = run(tmp_path / "plain", TAIL_ARGS, plain)
+    assert rc == 0 and set(plain.asked()) == ZV_KEPT | ZV_SKIPPED
+    assert not any("skip_zero_volume" in json.dumps(m) for m in manifest(tmp_path / "plain"))
+
+
+def test_skip_zero_volume_resume_refetches_nothing_done_and_still_skips(tmp_path):
+    rc, _ = run(tmp_path, SKIP_ARGS, zv_fake(), max_requests=6)  # series, cutoff, listing, 3 markets
+    assert rc == 3
+    ck = next((tmp_path / "_checkpoints").glob("trades-*.json"))
+    done1 = set(json.loads(ck.read_text())["done"])
+    assert done1 and done1 < ZV_KEPT
+    f2 = zv_fake()
+    rc, _ = run(tmp_path, SKIP_ARGS, f2)
+    assert rc == 0 and set(f2.asked()) == ZV_KEPT - done1
+    assert set(json.loads(ck.read_text())["done"]) == ZV_KEPT
+
+
+def test_no_flag_query_and_checkpoint_name_are_what_they_were(tmp_path):
+    run(tmp_path / "plain", TAIL_ARGS, zv_fake())
+    legacy = {"allow_series": None, "categories": None, "market": None, "series": "KXBTC15M",
+              "since": TAIL_SINCE, "until": TAIL_UNTIL, "tail_s": 600}  # the pre-flag tail query
+    qh = hashlib.sha256(kp.jdump({"c": "trades", "q": legacy}).encode()).hexdigest()[:16]
+    assert [p.name for p in (tmp_path / "plain" / "_checkpoints").iterdir()] == [f"trades-{qh}.json"]
+    for r in manifest(tmp_path / "plain"):
+        if r["type"] in ("file", "run"):
+            assert r["query"] == legacy and "skip_zero_volume" not in r["query"]
+    # a full-history run (no --tail-s) carries neither key
+    run(tmp_path / "full", FULL_ARGS, zv_fake())
+    assert all("skip_zero_volume" not in r["query"] and "tail_s" not in r["query"]
+               for r in manifest(tmp_path / "full") if r["type"] in ("file", "run"))
+    # the parsed default is plain False
+    assert kp.build_parser().parse_args(TAIL_ARGS).skip_zero_volume is False
+
+
+def test_flag_run_has_its_own_query_and_checkpoint(tmp_path):
+    run(tmp_path, TAIL_ARGS, zv_fake())
+    ckdir = tmp_path / "_checkpoints"
+    (plain_ck,) = list(ckdir.iterdir())
+    plain_text = plain_ck.read_text()
+    f = zv_fake()
+    rc, _ = run(tmp_path, SKIP_ARGS, f)
+    assert rc == 0
+    cks = sorted(ckdir.iterdir())
+    assert len(cks) == 2 and plain_ck in cks
+    assert plain_ck.read_text() == plain_text  # the plain tail checkpoint is untouched
+    (flag_ck,) = [p for p in cks if p != plain_ck]
+    d = json.loads(flag_ck.read_text())
+    assert d["query"]["skip_zero_volume"] is True and d["query"]["tail_s"] == 600
+    qh = hashlib.sha256(kp.jdump({"c": "trades", "q": d["query"]}).encode()).hexdigest()[:16]
+    assert flag_ck.name == f"trades-{qh}.json"
+    # the plain run's done set is not inherited: the flagged run fetched every kept market itself
+    assert set(f.asked()) == ZV_KEPT
+    runs = [m for m in manifest(tmp_path) if m["type"] == "run"]
+    assert "skip_zero_volume" not in runs[0]["query"] and runs[-1]["query"]["skip_zero_volume"] is True
+    # a flagged checkpoint's content under the plain name is refused like any other mismatch
+    plain_ck.write_text(flag_ck.read_text())
+    rc, client = run(tmp_path, TAIL_ARGS, zv_fake())
+    assert rc == 4 and client.requests_made == 0
+
+
+@pytest.mark.parametrize("argv", [
+    ["trades", "--series", "KXBTC15M", "--since", TAIL_SINCE, "--skip-zero-volume"],            # no --tail-s
+    ["trades", "--series", "KXBTC15M", "--skip-zero-volume"],
+    ["trades", "--market", TA, "--skip-zero-volume"],                                          # --market
+    ["trades", "--market", TA, "--tail-s", "600", "--skip-zero-volume"],
+    ["trades", "--skip-zero-volume", "--tail-s", "600"],                                        # neither
+    ["markets", "--series", "KXBTC15M", "--skip-zero-volume"],                                  # not trades
+    ["candles", "--series", "KXBTC15M", "--skip-zero-volume"],
+])
+def test_skip_zero_volume_is_refused_outside_series_tail_mode(tmp_path, capsys, argv):
+    fake = zv_fake()
+    out = tmp_path / "out"
+    client, _ = mkclient(fake)
+    with pytest.raises(SystemExit) as e:
+        kp.main(["--out", str(out), *argv], client=client)
+    assert e.value.code == 2  # argparse usage error, not a run failure
+    err = capsys.readouterr().err
+    assert "usage:" in err and "--skip-zero-volume" in err
+    assert fake.calls == [] and client.requests_made == 0 and not out.exists()
+
+
+def test_skip_zero_volume_refusal_message_names_the_missing_option(tmp_path, capsys):
+    for argv, want in ((["trades", "--series", "KXBTC15M", "--skip-zero-volume"], "needs --tail-s"),
+                       (["trades", "--market", TA, "--tail-s", "600", "--skip-zero-volume"],
+                        "needs --series")):
+        with pytest.raises(SystemExit):
+            kp.main(["--out", str(tmp_path), *argv], client=mkclient(zv_fake())[0])
+        assert want in capsys.readouterr().err
+
+
+def test_cmd_trades_refuses_the_flag_without_tail_for_direct_callers(tmp_path):
+    args = kp.build_parser().parse_args(["trades", "--series", "KXBTC15M", "--skip-zero-volume"])
+    fake = zv_fake()
+    client, _ = mkclient(fake)
+    with pytest.raises(SystemExit, match="needs --tail-s"):
+        kp.cmd_trades(client, kp.Store(tmp_path, "trades", {}), args, lambda s: None)
+    assert fake.calls == []
+
+
+def test_skip_zero_volume_summary_counts_per_series(tmp_path, capsys):
+    fake = zv_fake()
+    fake.series.append({**fake.series[-1], "ticker": "KXETH15M", "title": "ETH 15 min"})
+    eth = {"KXETH15M-26OCT010100-00": ("2026-10-01T01:00:00Z", {"volume_fp": "0.00"}),
+           "KXETH15M-26OCT010200-00": ("2026-10-01T02:00:00Z", {"volume_fp": "0.00"}),
+           "KXETH15M-26OCT010300-00": ("2026-10-01T03:00:00Z", {"volume_fp": "2.00"}),
+           "KXETH15M-26OCT020000-00": ("2026-10-02T00:00:00Z", {"volume_fp": "0.00"})}  # == until
+    fake.live_markets["KXETH15M"] = []
+    for t, (c, v) in eth.items():
+        m = tmk(t, c, "2026-10-02T05:00:00Z")
+        m.pop("volume_fp")
+        m.update(v)
+        fake.live_markets["KXETH15M"].append(m)
+        fake.trades[t] = offsets(t, c)
+    rc, _ = run(tmp_path, ["trades", "--series", "KXBTC15M,KXETH15M", "--since", TAIL_SINCE,
+                           "--until", TAIL_UNTIL, "--tail-s", "600", "--skip-zero-volume"], fake)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert err.count("skip_zero_volume ") == 2  # one line per series
+    assert "skip_zero_volume KXBTC15M: 4 skipped of 11 listed" in err
+    assert "skip_zero_volume KXETH15M: 2 skipped of 3 listed" in err
+    summ = {m["series"]: m for m in manifest(tmp_path)
+            if m["type"] == "unit" and m["unit"].startswith("skip_zero_volume:")}
+    assert {s: (m["skipped"], m["listed"]) for s, m in summ.items()} == {
+        "KXBTC15M": (4, 11), "KXETH15M": (2, 3)}
+    assert all(m["status"] == "zero_volume_summary" and m["rows"] == 0 for m in summ.values())
+    assert set(fake.asked()) == ZV_KEPT | {"KXETH15M-26OCT010300-00"}
+
+
+def test_skip_zero_volume_when_every_market_is_zero_sends_no_trades_request(tmp_path, capsys):
+    fake = TailFake({TA: TAIL_MARKETS[TA], TB: TAIL_MARKETS[TB]})
+    for m in fake.live_markets["KXBTC15M"]:
+        m["volume_fp"] = "0.00"
+    rc, _ = run(tmp_path, SKIP_ARGS, fake)
+    assert rc == 0 and fake.trade_queries == []
+    assert "skip_zero_volume KXBTC15M: 2 skipped of 2 listed" in capsys.readouterr().err
+    assert not (tmp_path / "trades").exists()

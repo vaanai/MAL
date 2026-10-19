@@ -89,6 +89,18 @@ Conventions / caveats:
     whose recorded query differs from the run's is refused (exit 4).  A tail run and a full run
     over the same tickers leave overlapping rows; readers dedupe on trade_id.  A full run's query
     has no ``tail_s`` key at all, so its checkpoint names are unchanged.
+  * Trades ``--skip-zero-volume`` (only with ``--series`` and ``--tail-s``; otherwise an argparse
+    error): do not request the trades of a selected settled market whose listing entry says
+    ``volume_fp`` (or the legacy ``volume``) is exactly 0 -- a market that never traded has no
+    prints, so skipping it cannot change what the tail stores.  A volume that is missing or does not
+    parse as a number is NOT skipped (fail open: the market is fetched).  Per series one summary
+    line is logged (``skip_zero_volume <series>: <n> skipped of <m> listed``, where ``m`` counts the
+    markets selected by the close_time window) and one manifest ``unit`` record
+    (``skip_zero_volume:<series>``, status ``zero_volume_summary``, ``skipped`` / ``listed``) is
+    appended; a resumed run appends a new one.  A skipped market is not marked done.
+    ``skip_zero_volume: true`` is part of the run's query, so the checkpoint is separate from a
+    plain tail run's; without the flag the query has no such key and its checkpoint names are
+    unchanged.
   * Resumability is per unit (series for markets, ticker for trades/candles).
     A unit is marked done only after its files are written.  The manifest is an
     append-only log; for a path that appears twice take the last line.
@@ -854,6 +866,30 @@ def closes_in_window(m: dict, since, until) -> bool:
     return ct is not None and (since is None or ct >= since) and (until is None or ct < until)
 
 
+def zero_volume(m: dict) -> bool:
+    """True only when the listing entry's ``volume_fp`` (else legacy ``volume``) parses to exactly
+    0.  Missing, empty, boolean or unparseable values (and NaN) are False: fail open, the market is
+    fetched."""
+    v = m.get("volume_fp")
+    if v in (None, ""):
+        v = m.get("volume")
+    if isinstance(v, bool):
+        return False
+    f = fnum(v)
+    return f is not None and f == 0
+
+
+def skip_zero_volume_problem(args) -> str | None:
+    """Why ``--skip-zero-volume`` is refused for ``args`` (None if fine or not set)."""
+    if not getattr(args, "skip_zero_volume", False):
+        return None
+    if getattr(args, "market", None) or not getattr(args, "series", None):
+        return "--skip-zero-volume needs --series (the listing carries the volume); --market has none"
+    if getattr(args, "tail_s", None) is None:
+        return "--skip-zero-volume needs --tail-s"
+    return None
+
+
 def _markets_for_trades(client, store, args, log, cutoff, since, until):
     """Yield ``(ticker, market_dict_or_None)``.  The dict is the settled-market listing entry
     (``--series`` mode: already fetched, no extra request); ``--market`` mode has none.
@@ -862,7 +898,11 @@ def _markets_for_trades(client, store, args, log, cutoff, since, until):
     listing with ``min_settled_ts = since`` and no upper bound: a settled market settles after it
     closes, so every market closing at/after ``since`` is listed, and one that closes before
     ``until`` but settles after it is not lost.  The set is then cut client-side to markets whose
-    own ``close_time`` is in [since, until)."""
+    own ``close_time`` is in [since, until).
+
+    With ``--skip-zero-volume`` a selected entry whose listing volume is exactly 0 is counted and
+    not yielded (see ``zero_volume``); one summary line and manifest record per series."""
+    skip_zero = bool(getattr(args, "skip_zero_volume", False))
     if args.market:
         allowed = set(select_series(client, argparse.Namespace(
             categories=args.categories, allow_series=args.allow_series,
@@ -875,13 +915,23 @@ def _markets_for_trades(client, store, args, log, cutoff, since, until):
                 log(f"skip market {m}: series excluded or unknown")
         return
     for s in select_series(client, args, log):
+        listed = skipped = 0
         # markets that settled on/after --since; their trades are then limited to the window
         for _src, m in fetch_settled_markets(client, cutoff, s, since, None):
             if getattr(args, "tail_s", None) and not closes_in_window(m, since, until):
                 if to_unix(m.get("close_time")) is None:
                     log(f"skip {m['ticker']}: no close_time, no tail window")
                 continue
+            if skip_zero:
+                listed += 1
+                if zero_volume(m):
+                    skipped += 1
+                    continue
             yield m["ticker"], m
+        if skip_zero:
+            log(f"skip_zero_volume {s}: {skipped} skipped of {listed} listed")
+            store.unit_record(f"skip_zero_volume:{s}", "zero_volume_summary", 0, series=s,
+                              skipped=skipped, listed=listed)
 
 
 def _tickers_for_trades(client, store, args, log, cutoff, since, until):
@@ -925,6 +975,9 @@ def cmd_trades(client, store, args, log):
     if not args.market and not args.series:
         raise SystemExit("trades needs --market or --series")
     tail_s = getattr(args, "tail_s", None)
+    problem = skip_zero_volume_problem(args)
+    if problem:
+        raise SystemExit(problem)
     if tail_s is not None:
         if tail_s < 1:
             raise SystemExit("--tail-s must be >= 1")
@@ -1876,6 +1929,10 @@ def build_parser():
     t.add_argument("--tail-s", type=int, default=None, metavar="N",
                    help="--series only: per settled market (close_time in [--since, --until)) fetch "
                         "only trades in [close_time - N s, close_time]; recorded in the query")
+    t.add_argument("--skip-zero-volume", action="store_true",
+                   help="with --series and --tail-s only: do not fetch a selected market whose "
+                        "listing volume_fp is exactly 0 (no prints possible); missing or "
+                        "unparseable volume is still fetched; recorded in the query")
 
     c = sub.add_parser("candles", help="candlesticks")
     c.add_argument("--market")
@@ -1921,14 +1978,18 @@ def build_parser():
 QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
               "period", "markets", "every_s", "duration_s", "depth", "raw_json",
               "discover_every_s", "strict_cadence", "max_discover_failures",
-              "incentive_type", "page_limit", "max_pages", "tail_s")
+              "incentive_type", "page_limit", "max_pages", "tail_s", "skip_zero_volume")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap,
             "incentive-snap": cmd_incentive_snap}
 
 
 def main(argv=None, client: Client | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    problem = skip_zero_volume_problem(args)
+    if problem:
+        parser.error(problem)  # exit 2 before any request, directory or manifest
     log = lambda s: print(s, file=sys.stderr)
     if args.cmd == "quarantine-unsealed":
         try:
@@ -1949,6 +2010,8 @@ def main(argv=None, client: Client | None = None) -> int:
     query = {k: getattr(args, k) for k in QUERY_KEYS if hasattr(args, k)}
     if query.get("tail_s") is None:
         query.pop("tail_s", None)  # a full run's query (and so its checkpoint name) is unchanged
+    if not query.get("skip_zero_volume"):
+        query.pop("skip_zero_volume", None)  # likewise for a run without the flag
     try:
         store = Store(args.out, args.cmd, query)
     except CheckpointMismatch as e:
