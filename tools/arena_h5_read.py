@@ -392,6 +392,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
+    if not rep["books"]:  # nothing was readable: say why on stderr, print no verdict
+        for bot, why in rep["refused"].items():
+            print(f"REFUSED {bot}: {why}", file=sys.stderr)
+        return 3
     print(render(rep))
     if a.json:
         h5s._atomic_write_json(Path(a.json), rep)
