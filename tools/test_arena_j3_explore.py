@@ -7,7 +7,9 @@ import collections
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -24,6 +26,10 @@ RENT = 2_039_280
 SHA = "abcdef1234567"
 
 
+def _ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso).replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
 @pytest.fixture(autouse=True)
 def _plenty_of_disk(monkeypatch):
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
@@ -37,46 +43,108 @@ def fake_hour(d: Path, key: str, suffix: str = ".jsonl.zst") -> Path:
 
 
 # -------------------------------------------------------------------------------------------------------------------------- refusals
-def test_hours_inside_w_e_are_accepted_and_sorted(tmp_path):
-    a, b, c = (fake_hour(tmp_path, k) for k in ("2026-10-19T09", "2026-10-19T08", "2026-10-20T07"))
+@pytest.fixture
+def we(tmp_path, monkeypatch):
+    """A temp arena tree (ARENA_ROOT points at tmp/arena, the tape lives in tmp/arena/tape) and a W_e shortened to two hours (08 and 09) so that a test needs two files,
+    not 24. `window(n)` moves the end of W_e to n hours after 08:00."""
+    monkeypatch.setattr(E, "ARENA_ROOT", str(tmp_path / "arena"))
+    monkeypatch.setattr(E, "W_E_END_MS", HOUR0 + 2 * HOUR)
+    return SimpleNamespace(tape=tmp_path / "arena" / "tape", window=lambda n: monkeypatch.setattr(E, "W_E_END_MS", HOUR0 + n * HOUR))
+
+
+def test_the_w_e_of_the_spec():
+    assert E.W_E_START_MS == B == _ms("2026-10-19T08:05:20")  # the tape's first receive time, not the hour start
+    assert E.W_E_END_MS == _ms("2026-10-20T08:00:00")
+    hours = E.w_e_hours()
+    assert len(hours) == 24 and hours[0] == HOUR0 and hours[-1] == _ms("2026-10-20T07:00:00") and all(b - a == HOUR for a, b in zip(hours, hours[1:]))
+
+
+def test_exactly_the_w_e_hours_are_accepted_and_sorted(we):
+    a, b = (fake_hour(we.tape, k) for k in ("2026-10-19T09", "2026-10-19T08"))
     got = E.validate_inputs([a, b])
-    assert [h.start_ms for h in got] == [HOUR0, HOUR0 + HOUR]
-    assert E.validate_inputs([c])[0].start_ms == E.W_E_END_MS - HOUR  # the last hour of W_e
+    assert [h.start_ms for h in got] == [HOUR0, HOUR0 + HOUR] and got[0].path == b
 
 
-@pytest.mark.parametrize("key", ["2026-10-19T07", "2026-10-20T08", "2026-10-18T23", "2026-10-21T00", "2026-09-25T06"])
-def test_an_hour_outside_w_e_is_refused_and_so_is_a_list_that_holds_one(tmp_path, key):
-    bad, good = fake_hour(tmp_path, key), fake_hour(tmp_path, "2026-10-19T08")
+def test_the_full_24_hours_are_accepted_and_any_other_list_is_refused(we):
+    we.window(24)  # the real W_e
+    keys = [E._iso(h)[:13] for h in E.w_e_hours()]
+    files = [fake_hour(we.tape, k) for k in keys]
+    assert [h.start_ms for h in E.validate_inputs(list(reversed(files)))] == E.w_e_hours()
+    with pytest.raises(E.ExploreRefused, match="not exactly the 24 W_e hours"):
+        E.validate_inputs(files[:-1])  # one hour short
+    with pytest.raises(E.ExploreRefused, match="not exactly"):
+        E.validate_inputs(files[:1])  # a partial W_e is a different exploration
+    with pytest.raises(E.ExploreRefused, match="not exactly"):
+        E.validate_inputs(files[:3] + files[4:])  # a hole in the middle: refused, not read as a feed gap
+
+
+@pytest.mark.parametrize("key", ["2026-10-19T07", "2026-10-19T10", "2026-10-18T23", "2026-10-21T00", "2026-09-25T06"])
+def test_an_hour_outside_w_e_is_refused_and_so_is_a_list_that_holds_one(we, key):
+    bad, good = fake_hour(we.tape, key), fake_hour(we.tape, "2026-10-19T08")
     with pytest.raises(E.ExploreRefused, match="outside W_e"):
         E.validate_inputs([bad])
     with pytest.raises(E.ExploreRefused, match="outside W_e"):
         E.validate_inputs([good, bad])
 
 
-def test_the_open_uncompacted_hour_is_refused(tmp_path):
+def test_the_hour_after_w_e_and_the_hour_before_it_are_refused_at_the_real_edges(we):
+    we.window(24)
+    for key in ("2026-10-20T08", "2026-10-19T07"):
+        with pytest.raises(E.ExploreRefused, match="outside W_e"):
+            E.validate_inputs([fake_hour(we.tape, key)])
+
+
+def test_the_open_uncompacted_hour_is_refused(we):
     with pytest.raises(E.ExploreRefused, match="open"):
-        E.validate_inputs([fake_hour(tmp_path, "2026-10-19T08", ".jsonl")])
-    closed = fake_hour(tmp_path / "d", "2026-10-19T08")
-    fake_hour(tmp_path / "d", "2026-10-19T08", ".jsonl")  # compaction not finished: both files exist
+        E.validate_inputs([fake_hour(we.tape, "2026-10-19T08", ".jsonl")])
+    closed = fake_hour(we.tape, "2026-10-19T09")
+    fake_hour(we.tape, "2026-10-19T09", ".jsonl")  # compaction not finished: both files exist
     with pytest.raises(E.ExploreRefused, match="still exists"):
         E.validate_inputs([closed])
     with pytest.raises(E.ExploreRefused, match="unfinished"):
-        E.validate_inputs([fake_hour(tmp_path / "e", "2026-10-19T08", ".jsonl.zst.tmp")])
+        E.validate_inputs([fake_hour(we.tape, "2026-10-19T08", ".jsonl.zst.tmp")])
 
 
-def test_other_bad_lists_are_refused(tmp_path):
-    a, b, c = (fake_hour(tmp_path, k) for k in ("2026-10-19T08", "2026-10-19T10", "2026-10-19T09"))
+def test_other_bad_lists_are_refused(we):
+    a = fake_hour(we.tape, "2026-10-19T08")
     with pytest.raises(E.ExploreRefused, match="no tape hour"):
         E.validate_inputs([])
-    with pytest.raises(E.ExploreRefused, match="not consecutive"):
-        E.validate_inputs([a, b])
-    assert len(E.validate_inputs([a, b, c])) == 3
     with pytest.raises(E.ExploreRefused, match="twice"):
         E.validate_inputs([a, a])
     with pytest.raises(E.ExploreRefused, match="no such file"):
-        E.validate_inputs([tmp_path / "tape-2026-10-19T11.jsonl.zst"])
+        E.validate_inputs([we.tape / "tape-2026-10-19T09.jsonl.zst"])
     with pytest.raises(E.ExploreRefused, match="not a closed tape hour"):
-        E.validate_inputs([tmp_path / "arena-feed-status.json"])
+        E.validate_inputs([we.tape / "arena-feed-status.json"])
+    with pytest.raises(E.ExploreRefused, match="not exactly"):
+        E.validate_inputs([a])
+
+
+def test_only_files_directly_in_the_arena_tape_dir_are_read(we, tmp_path):
+    """R9(d): the input is the arena tape. The same name anywhere else (a shakedown copy, a sub directory, another arena dir) is refused."""
+    ok = [fake_hour(we.tape, "2026-10-19T08"), fake_hour(we.tape, "2026-10-19T09")]
+    assert len(E.validate_inputs(ok)) == 2
+    for other in (tmp_path / "arena" / "_shakedown-x", tmp_path / "arena" / "tape" / "sub", tmp_path / "arena" / "ledger" / "bot", tmp_path / "elsewhere", tmp_path / "arena"):
+        bad = fake_hour(other, "2026-10-19T09")
+        with pytest.raises(E.ExploreRefused, match="not located directly in"):
+            E.validate_inputs([ok[0], bad])
+
+
+def test_a_symlinked_hour_path_is_refused(we, tmp_path):
+    """The state reads the resolved path, so a link named for a W_e hour must not point at another hour or another file."""
+    real9 = fake_hour(we.tape, "2026-10-19T09")
+    link8 = we.tape / "tape-2026-10-19T08.jsonl.zst"
+    link8.symlink_to(real9)  # named for hour 08, really hour 09, in the tape dir
+    with pytest.raises(E.ExploreRefused, match="symlink"):
+        E.validate_inputs([link8, real9])
+    outside = tmp_path / "outside" / "tape-2026-10-19T08.jsonl.zst"
+    outside.parent.mkdir()
+    outside.write_bytes(b"x")
+    link8.unlink()
+    link8.symlink_to(outside)  # right name, wrong place
+    with pytest.raises(E.ExploreRefused, match="symlink"):
+        E.validate_inputs([link8, real9])
+    link8.unlink()
+    assert len(E.validate_inputs([fake_hour(we.tape, "2026-10-19T08"), real9])) == 2
 
 
 def test_scratch_inside_the_arena_root_is_refused_and_nothing_is_created():
@@ -88,16 +156,12 @@ def test_scratch_inside_the_arena_root_is_refused_and_nothing_is_created():
         E.check_scratch("/data/mal")
 
 
-def test_only_the_given_tape_files_may_sit_under_the_arena_root(tmp_path, monkeypatch):
-    """The tape files are read from inside the arena tree; every other path (scratch, registry, ledger, decision logs, report) must be outside it."""
-    arena = tmp_path / "arena"
-    monkeypatch.setattr(E, "ARENA_ROOT", str(arena))
-    tape = fake_hour(arena / "tape", "2026-10-19T08")
-    assert E.validate_inputs([tape])[0].path == tape  # a tape file under the arena root is fine
+def test_scratch_checks_against_a_moved_arena_root(we, tmp_path):
     with pytest.raises(E.ExploreRefused, match="inside"):
-        E.check_scratch(arena / "scratch")
+        E.check_scratch(tmp_path / "arena" / "scratch")
+    (tmp_path / "arena").mkdir(exist_ok=True)
     link = tmp_path / "link"
-    link.symlink_to(arena)
+    link.symlink_to(tmp_path / "arena")
     with pytest.raises(E.ExploreRefused, match="inside"):
         E.check_scratch(link / "scratch")  # a symlink into the tree is resolved
     ok = E.check_scratch(tmp_path / "scratch")
@@ -108,11 +172,11 @@ def test_only_the_given_tape_files_may_sit_under_the_arena_root(tmp_path, monkey
         E.check_scratch(tmp_path / "full")
 
 
-def test_main_returns_2_on_a_refusal_and_writes_nothing(tmp_path, capsys):
-    bad = fake_hour(tmp_path / "t", "2026-10-20T08")
+def test_main_returns_2_on_a_refusal_and_writes_nothing(we, tmp_path, capsys):
+    bad = fake_hour(we.tape, "2026-10-20T08")
     assert E.main(["--hours", str(bad), "--scratch", str(tmp_path / "s")]) == 2
     assert "outside W_e" in capsys.readouterr().err and not (tmp_path / "s").exists()
-    assert E.main(["--hours", str(fake_hour(tmp_path / "t", "2026-10-19T08")), "--scratch", "/data/mal/arena/_never"]) == 2
+    assert E.main(["--hours", str(fake_hour(we.tape, "2026-10-19T08")), "--scratch", "/data/mal/arena/_never"]) == 2
     assert not Path("/data/mal/arena/_never").exists()
 
 
@@ -179,7 +243,9 @@ def runs(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
         base = tmp_path_factory.mktemp("j3e2e")
-        files = write_hours(base / "src", two_hour_rows())
+        mp.setattr(E, "ARENA_ROOT", str(base / "arena"))
+        mp.setattr(E, "W_E_END_MS", HOUR0 + 2 * HOUR)
+        files = write_hours(base / "arena" / "tape", two_hour_rows())
         before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
         rc = E.main(["--hours", *map(str, files), "--scratch", str(base / "s1")])
         rep2 = E.run_exploration(files, base / "s2", sha=SHA)
@@ -191,6 +257,8 @@ def test_end_to_end_report_shape_and_integrity(runs):
     rep = runs["rep"]
     assert runs["rc"] == 0 and rep["valid"] and rep["integrity"]["clean"] and rep["schema"] == E.SCHEMA
     assert rep["window"]["hours"] == ["2026-10-19T08:00:00Z", "2026-10-19T09:00:00Z"] and rep["window"]["end_utc"] == "2026-10-19T10:00:00Z"
+    assert rep["window"]["start_utc"] == "2026-10-19T08:05:20Z" and rep["window"]["start_ms"] == B  # W_e starts at the tape's first receive time, not at the hour
+    assert rep["integrity"]["rows_before_start"] == 0
     assert sorted(rep["cells"]) == sorted(J.bot_id(k, h) for k, h in J.cells()) and [c["bot_id"] for c in rep["spec"]["cells"]] == [J.bot_id(k, h) for k, h in J.cells()]
     assert rep["multiplicity"]["cells_declared"] == 12
     assert [i["sha256"] for i in rep["inputs"]] == [runs["before"][p.name] for p in runs["files"]]
@@ -201,7 +269,7 @@ def test_end_to_end_report_shape_and_integrity(runs):
     md = (runs["s1"] / "REPORT.md").read_text()
     assert all(b in md for b in rep["cells"]) and "IN-SAMPLE" in md and "Rent-charged leg" in md
     assert sorted(p.name for p in runs["s1"].iterdir()) == ["REPORT.json", "REPORT.md", "bots.json", "bots.json.lock", "ledger", "rules", "tape"]
-    assert sorted(p.name for p in runs["base"].iterdir()) == ["s1", "s2", "src"]  # nothing was written outside the scratch dirs
+    assert sorted(p.name for p in runs["base"].iterdir()) == ["arena", "s1", "s2"]  # nothing was written outside the scratch dirs
 
 
 def test_end_to_end_counts_and_exclusions_by_reason(runs):
@@ -340,30 +408,6 @@ def test_rent_charged_leg_transforms_only_trips_in_state_filled():
     assert E.subcells([]) == {}
 
 
-# -------------------------------------------------------------------------------------------------------------------------- N2: symlinked hour paths
-def test_a_symlinked_hour_path_is_refused(tmp_path, monkeypatch):
-    """The state reads the resolved path, so a link named for a W_e hour must not be allowed to point at another hour, another directory or a file outside the tape."""
-    real9 = fake_hour(tmp_path / "real", "2026-10-19T09")
-    link8 = tmp_path / "links" / "tape-2026-10-19T08.jsonl.zst"
-    link8.parent.mkdir()
-    link8.symlink_to(real9)  # named for hour 08, really hour 09
-    with pytest.raises(E.ExploreRefused, match="symlink"):
-        E.validate_inputs([link8])
-    same_name = tmp_path / "links" / "tape-2026-10-19T09.jsonl.zst"
-    same_name.symlink_to(real9)  # same name, still a link
-    with pytest.raises(E.ExploreRefused, match="symlink"):
-        E.validate_inputs([same_name])
-    assert E.validate_inputs([real9])[0].path == real9  # the file itself is fine
-    # under the arena root only <root>/tape holds tape hours
-    arena = tmp_path / "arena"
-    monkeypatch.setattr(E, "ARENA_ROOT", str(arena))
-    ok = fake_hour(arena / "tape", "2026-10-19T08")
-    stray = fake_hour(arena / "ledger" / "bot", "2026-10-19T08")
-    assert E.validate_inputs([ok])[0].path == ok
-    with pytest.raises(E.ExploreRefused, match="only"):
-        E.validate_inputs([stray])
-
-
 # -------------------------------------------------------------------------------------------------------------------------- N3: host counters in the integrity verdict
 def test_integrity_is_not_clean_when_the_host_blocked_or_dropped_an_order():
     base = {"zst_errors": 0, "bad_lines": 0, "apply_errors": 0, "hook_errors": [], "price_errors": 0, "ledger_incidents": 0, "halted_books": [], "blocked_universe": 0,
@@ -378,3 +422,15 @@ def test_integrity_is_not_clean_when_the_host_blocked_or_dropped_an_order():
 def test_end_to_end_integrity_reports_the_host_counters_at_zero(runs):
     i = runs["rep"]["integrity"]
     assert i["clean"] is True and (i["blocked_universe"], i["order_before_clock"], i["order_bad_type"]) == (0, 0, 0)
+
+
+def test_rows_before_the_w_e_start_are_dropped_and_counted(tmp_path, we):
+    """The state starts at W_e's start (08:05:20Z), not at the first hour's start: a row before it is never applied, and the count is in the integrity block (expected 0)."""
+    w = World()
+    w.trade(B - 10 * SEC, POOL["PA"], MINT["PA"], "buy")
+    w.trade(B + 10 * SEC, POOL["PA"], MINT["PA"], "buy")
+    (f,) = write_hours(we.tape, w.rows)
+    h = E.Hour(HOUR0, f)
+    st = E.GivenHoursState(tmp_path, [h], B)
+    st.poll()
+    assert st.counters["rows_before_start"] == 1 and st.pool(POOL["PA"]).n_trades == 1

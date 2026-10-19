@@ -66,7 +66,7 @@ from tools.arena_state import ArenaState
 SCHEMA = "arena_j3_explore_v1"
 ARENA_ROOT = ARENA_OUTPUT_ROOT  # /data/mal/arena: a module global so the tests can point it at a temp tree
 HOUR_MS = 3_600_000
-W_E_START_MS = int(datetime(2026, 10, 19, 8, tzinfo=timezone.utc).timestamp() * 1000)
+W_E_START_MS = int(datetime(2026, 10, 19, 8, 5, 20, tzinfo=timezone.utc).timestamp() * 1000)  # the spec's W_e starts at the tape's first receive time
 W_E_END_MS = int(datetime(2026, 10, 20, 8, tzinfo=timezone.utc).timestamp() * 1000)
 FEED_DELAY_SLOTS = 7
 DECIDING_STAKE = 0.25
@@ -105,6 +105,12 @@ def _iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def w_e_hours() -> list[int]:
+    """Start (ms) of every hour file W_e needs: the hour that holds W_E_START_MS through the hour before W_E_END_MS (24 files). Read at call time, so a test may move the globals."""
+    first = W_E_START_MS - W_E_START_MS % HOUR_MS
+    return list(range(first, W_E_END_MS, HOUR_MS))
+
+
 def _inside(path: Path, root: str | Path) -> bool:
     p, r = Path(path).resolve(), Path(root).resolve()
     return p == r or r in p.parents
@@ -131,20 +137,20 @@ def validate_inputs(files: Sequence[str | Path]) -> list[Hour]:
         real = p.resolve()
         if p.is_symlink() or real.name != name:  # the state reads the resolved path: a link named for a W_e hour could point at another hour or file
             raise ExploreRefused(f"{name}: a symlinked hour path is refused (it resolves to {real.name}); give the tape file itself")
-        if _inside(real, ARENA_ROOT) and real.parent != (Path(ARENA_ROOT) / "tape").resolve():
-            raise ExploreRefused(f"{name}: under {ARENA_ROOT} only {Path(ARENA_ROOT) / 'tape'} holds tape hours; this file is in {real.parent}")
+        if real.parent != (Path(ARENA_ROOT) / "tape").resolve():  # R9(d): the input is the arena tape; a copy anywhere else (a shakedown dir included) is refused
+            raise ExploreRefused(f"{name}: not located directly in {Path(ARENA_ROOT) / 'tape'} (it is in {real.parent}); refused")
         if (p.parent / name[: -len(".zst")]).exists():
             raise ExploreRefused(f"{name}: its .jsonl still exists, so the hour is open or its compaction has not finished; refused")
         start = _hour_start(m.group(1))
-        if not W_E_START_MS <= start < W_E_END_MS:
+        if start not in w_e_hours():
             raise ExploreRefused(f"{name}: outside W_e [{_iso(W_E_START_MS)}, {_iso(W_E_END_MS)}); refused")
         if start in hours:
             raise ExploreRefused(f"{name}: the hour {m.group(1)} is given twice")
         hours[start] = p
     starts = sorted(hours)
-    for a, b in zip(starts, starts[1:]):
-        if b - a != HOUR_MS:
-            raise ExploreRefused(f"the hours are not consecutive: {_iso(a)} is followed by {_iso(b)}; a missing hour would be read as a feed gap")
+    want = w_e_hours()
+    if starts != want:  # the spec fixes W_e: all of it, once; a partial list is a different exploration (and a missing hour would be read as a feed gap)
+        raise ExploreRefused(f"the hour list is not exactly the {len(want)} W_e hours {_iso(want[0])} to {_iso(want[-1])}: missing {[_iso(h) for h in want if h not in hours]}")
     return [Hour(s, hours[s]) for s in starts]
 
 
@@ -410,7 +416,7 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     hours = validate_inputs(files)
     root = check_scratch(scratch)
     dirs = prepare_scratch(root, hours)
-    t0, t1 = hours[0].start_ms, hours[-1].start_ms + HOUR_MS
+    t0, t1 = W_E_START_MS, hours[-1].start_ms + HOUR_MS  # the state start, the clock start and the rule's tape start are all W_e's start, not the first hour's
     git_head, git_dirty = process_code_state()
     head = sha or git_head or "0" * 40
     rules: list[RecordingJ3] = J.make_rules(t0, rule_cls=RecordingJ3)  # type: ignore[assignment]
@@ -431,7 +437,7 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     incidents = sum(len(led.read_incidents(r.bot_id)[0]) for r in rules)
     integrity = {"zst_errors": int(state.counters["zst_errors"]), "bad_lines": int(state.counters["bad_lines"]), "apply_errors": int(state.counters["apply_errors"]),
                  "hook_errors": list(host.hook_errors[:20]), "price_errors": int(engine.counters.get("price_errors", 0)), "ledger_incidents": incidents,
-                 "halted_books": sorted(engine.halted), "engine_last_errors": dict(sorted(engine.last_error.items())[:5]),
+                 "halted_books": sorted(engine.halted), "rows_before_start": int(state.counters["rows_before_start"]), "engine_last_errors": dict(sorted(engine.last_error.items())[:5]),
                  **{k: int(host.counters.get(k, 0)) for k in HOST_ZERO_COUNTERS}}
     integrity["clean"] = integrity_clean(integrity)
     cells = {r.bot_id: cell_report(r, host, rows[r.bot_id]) for r in rules}
