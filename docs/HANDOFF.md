@@ -37,7 +37,7 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
 
 **Kalshi crypto.** #727 merged (trades `--tail-s`). Download #1189 is running. Then the frozen R3 dev run plus one holdout run.
 
-**#718 (hv4-read).** 9 fixes at 7f0345e; re-review pending. The exact sign-flip test needs a 7-day minimum for V2 and a DESIGN amendment before T0.
+**#718 (hv4-read) merged 6a453e7** (QP OK + Reviewer APPROVE at 7f0345e). Haiku v4 DESIGN Amendment A1 written 2026-10-19T04:07:51Z (sign-flip test; V2 >= 7 days; V1/V2 once at B+24 h). Haiku v4 is still blocked on research-0 disk >= 25%.
 
 **Disk (research-0): 22.06% free at 03:12Z.**
 - The owner was asked for Helm to archive about 40 GiB that has no pending reads: `hunt-1008/bigwin-r12`, `push-1016/hunt5/big-sell-trace`, `hunt-shared/wallet_mint`, `ops/grad-t70`, `hunt-1008/l2-laya-v1-pregrad`, `hunt-1008/iter-r1`.
@@ -85,7 +85,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 
 ### Open PRs
 - **#719 MERGED as 1f7a89c**, with quant-proof OK and reviewer APPROVE on 7b1a59e. It pins: code sha256 at c3dc98f, parity sets and their 78 source files, the engine references, d = 7, and the deployment conditions.
-- **#718 (hv4-read; head 085d93a when this was written, now 9 fixes at 7f0345e with re-review pending, see the 10-19 update; READY, not draft).** Rebased on main and uses the real `boundary_ms` and `common_boundary`; 44 tests. **It still needs a reviewer AND quant-proof** (it reads gate results). Launch both fresh.
+- **#718 (hv4-read; head 085d93a when this was written; MERGED 6a453e7 on 10-19 with QP OK + Reviewer APPROVE at 7f0345e, see the 10-19 update).** Rebased on main and uses the real `boundary_ms` and `common_boundary`; 44 tests. *(Written before the merge: it needed a reviewer AND quant-proof because it reads gate results; both are done, see the 10-19 update.)*
 
 ## 2. Next steps, in order
 1. **H5 books: STARTED.**
