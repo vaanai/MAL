@@ -434,3 +434,69 @@ def test_rows_before_the_w_e_start_are_dropped_and_counted(tmp_path, we):
     st = E.GivenHoursState(tmp_path, [h], B)
     st.poll()
     assert st.counters["rows_before_start"] == 1 and st.pool(POOL["PA"]).n_trades == 1
+
+
+# -------------------------------------------------------------------------------------------------------------------------- B2: --count-only, and the disclosure lines
+def test_count_only_counts_rows_by_type_and_builds_no_state_or_engine(we, tmp_path, monkeypatch, capsys):
+    rows = two_hour_rows()
+    files = write_hours(we.tape, rows)
+    for name in ("ArenaState", "GivenHoursState", "ArenaEngine", "Host", "register_rules"):
+        monkeypatch.setattr(E, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("count-only must not build state, engine or host")))
+    listing = sorted(p.name for p in tmp_path.rglob("*"))
+    assert E.main(["--count-only", "--hours", *map(str, files)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    want = collections.Counter(r["type"] for r in rows)
+    assert out["rows_by_type"] == dict(sorted(want.items())) and out["rows_total"] == len(rows) and out["bad_lines"] == 0 and out["rows_before_w_e_start"] == 0
+    assert set(out["per_hour"]) == {"2026-10-19T08:00:00Z", "2026-10-19T09:00:00Z"}
+    assert sum(sum(v.values()) for v in out["per_hour"].values()) == len(rows)
+    m = want["trade"] / 1e6
+    assert out["trade_rows_million"] == round(m, 3) and out["sizing"]["suggested_memory_max_gb"] == round(1.2 * m + 4.0, 1) and out["sizing"]["engine_gb_per_million_trade_rows"] == 0.96
+    assert sorted(p.name for p in tmp_path.rglob("*")) == listing  # nothing written anywhere
+
+
+def test_count_only_counts_rows_before_the_w_e_start_and_bad_lines(we):
+    w = World()
+    w.trade(B - 10 * SEC, POOL["PA"], MINT["PA"], "buy")
+    w.trade(B + 10 * SEC, POOL["PA"], MINT["PA"], "buy")
+    (f,) = write_hours(we.tape, w.rows)
+    f.write_bytes(b"")  # replace with a file that has a torn line and a non-object line
+    import subprocess
+
+    raw = we.tape / "x.jsonl"
+    raw.write_bytes(json.dumps(w.rows[0]).encode() + b"\nnot json\n[1]\n" + json.dumps(w.rows[1]).encode() + b"\n")
+    with open(f, "wb") as fh:
+        subprocess.run(["zstd", "-q", "-c", str(raw)], stdout=fh, check=True)
+    raw.unlink()
+    c = E.count_rows([E.Hour(HOUR0, f)])
+    assert c["rows_by_type"] == {"trade": 2} and c["bad_lines"] == 2 and c["rows_before_w_e_start"] == 1
+
+
+def test_count_only_applies_the_same_refusals_and_refuses_a_truncated_hour(we, capsys, tmp_path):
+    a, b = (fake_hour(we.tape, k) for k in ("2026-10-19T08", "2026-10-19T09"))
+    assert E.main(["--count-only", "--hours", str(a)]) == 2  # not the whole of W_e
+    assert "not exactly" in capsys.readouterr().err
+    assert E.main(["--count-only", "--hours", str(fake_hour(we.tape, "2026-10-20T08"))]) == 2
+    assert E.main(["--count-only", "--hours", str(a), str(b)]) == 2  # the fake files are not zstd: unreadable, refused (not a crash)
+    assert "unreadable or truncated" in capsys.readouterr().err
+    w = World()
+    for i in range(2000):
+        w.trade(B + i * 7, POOL["PA"], MINT["PA"], "buy" if i % 2 else "sell")
+    (good,) = write_hours(tmp_path / "t", w.rows)
+    cut = we.tape / good.name
+    cut.write_bytes(good.read_bytes()[: len(good.read_bytes()) // 2])
+    with pytest.raises(E.ExploreRefused, match="unreadable or truncated"):
+        E.count_rows([E.Hour(HOUR0, cut)])
+
+
+def test_scratch_is_required_unless_count_only(we):
+    with pytest.raises(SystemExit) as e:
+        E.main(["--hours", str(fake_hour(we.tape, "2026-10-19T08"))])
+    assert e.value.code == 2
+
+
+def test_the_report_carries_the_two_disclosure_lines(runs):
+    rep = runs["rep"]
+    assert rep["disclosures"] == ["DEC-031 Am.2 item 6 close-blocking reclassification is not applied in W_e; rent-0 figures are optimistic by that class.",
+                                  "W_e's first hour excludes children created before 08:05:20Z; k = 20 is truncated by the 60-min deque."]
+    md = (runs["s1"] / "REPORT.md").read_text()
+    assert all(x in md for x in rep["disclosures"])

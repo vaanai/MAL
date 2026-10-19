@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """arena_j3_explore: the W_e exploration of the J3 family (QP R9(d)). PAPER only. No key, no wallet, no model, no network.
 
-    python -m tools.arena_j3_explore --scratch DIR --hours /data/mal/arena/tape/tape-2026-10-19T08.jsonl.zst [...]
+    python -m tools.arena_j3_explore --scratch DIR --hours /data/mal/arena/tape/tape-2026-10-19T08.jsonl.zst ... (all 24 W_e hours)
+    python -m tools.arena_j3_explore --count-only --hours <the same 24 files>      # sizing: row counts by type, no state, no engine, writes nothing
 
 It replays a list of CLOSED tape hours through the arena_rules host in replay mode with all 12 J3 cells (tools/arena_rule_j3.py) as books in ONE scratch registry,
 decision-log root and ledger, then prints and writes the per-cell report. The spec is fixed in the MiScusi notebook entry "J3 R9(d) exploration spec FIXED before any
 price"; nothing below is a parameter: the 12 cells (k in 1, 5, 20 x H in 30, 120, 300, 900 s), the stake (0.25 SOL), the stack (the host's pinned `stack_config(7)`,
 rent 0 per DEC-031 Amendment 2, strand rent 2,039,280, gap rules on), the legs (1.9 s; flat 15% and pressure; strand rules total and sc), the kill rule and the bootstrap
-(1,000 draws, seed 1, 5th percentile) are constants. W_e is every hour in [2026-10-19T08, 2026-10-20T08); a list that reaches outside it is refused.
+(1,000 draws, seed 1, 5th percentile) are constants. W_e is [2026-10-19T08:05:20Z (the tape's first receive time), 2026-10-20T08:00:00Z): its 24 hour files, all of them, nothing else.
 
 WHAT IT REFUSES (before anything is read or written)
   * no file, a name that is not `tape-<YYYY-MM-DDTHH>.jsonl.zst`, a file that is missing;
   * the OPEN (uncompacted) hour: a `.jsonl` file, or a `.jsonl.zst` whose `.jsonl` still exists (compaction not finished), or a `.zst.tmp`;
-  * an hour outside [2026-10-19T08, 2026-10-20T08), a duplicate hour, hours that are not consecutive (the replay is one continuous tape, and the engine's own gap rules
-    would count a missing hour as a feed gap);
+  * any list that is not EXACTLY the 24 hour files 2026-10-19T08 to 2026-10-20T07 (an hour outside, a duplicate, a missing hour: the spec fixes W_e, and a missing hour
+    would be read as a feed gap); a symlinked path; a file not located directly in /data/mal/arena/tape (R9(d): the input is the arena tape, a shakedown copy is not);
   * a --scratch that is inside /data/mal/arena (the tape files given are the only paths under it this tool touches, and it only reads them), that contains it, or that
     is not an empty directory. The scratch holds the scratch registry, decision logs and ledger, and the report; the given files are read in place, by path, through a state that lists no directory.
 It never opens the arena ledgers, bots.json, a shakedown directory or any other arena path, and it registers its books with the test-only overrides of
 arena_paper.register_bot (fake registration clock, unverified sha) inside the scratch registry only: those lines are a scratch convenience, not a registration.
 
-REPLAY. The state is an ArenaState over the scratch tape dir from the first hour's start (the tape start the R9(b) rule uses), the clock starts there, ticks run once a
-second from the tape start through the end of the last hour (one tick at the end, so the last second of rows is delivered), and the engine is flushed at the end:
+REPLAY. The state starts at W_e's start 08:05:20Z (rows before it are dropped and counted: `integrity.rows_before_start`, expected 0), and that instant is also the clock start
+and the rule's tape start (a floor on s0; s0 itself is the parent's first print seen). Ticks run once a second from there through the end of the last hour (one tick at the end, so the last second of rows is delivered), and the engine is flushed at the end:
 a sell decided inside the window whose exit state has no print yet is priced on the derived last state (`derived_last`, counted and reported), and a position whose hold
 had not run out when the window ended is NOT priced (`unsold_at_window_end`, reported). A restart never happens inside a run.
 
@@ -62,6 +63,7 @@ from tools.arena_paper import STAKES_SOL, TEST_ENV, ArenaEngine, Ledger, canon, 
 from tools.arena_rules import ARENA_OUTPUT_ROOT, TICK_MS, Host, HostConfig, HostError, HostFatal, register_rules, stack_config
 from tools.arena_score import Refused, _legs, book_cells, cell_stats
 from tools.arena_state import ArenaState
+from tools.arena_zst import CompactError, open_zst
 
 SCHEMA = "arena_j3_explore_v1"
 ARENA_ROOT = ARENA_OUTPUT_ROOT  # /data/mal/arena: a module global so the tests can point it at a temp tree
@@ -78,6 +80,9 @@ RENT_CHARGED = F.RENT_REPORT  # 2,039,280 lamports per filled trip
 BOOT_DRAWS, BOOT_SEED, BOOT_PCT = F.BOOT_DRAWS, F.BOOT_SEED, F.BOOT_PCT
 HOUR_FILE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl\.zst$")
 MIN_FREE_PCT_DEFAULT = 25.0
+COUNT_CHUNK = 8 * 1024 * 1024
+ENGINE_GB_PER_M_TRADE_ROWS = 0.96  # the reviewer's synthetic probe on PR #743: state + engine, before the 12 books
+MEMORY_GB_PER_M_ROWS, MEMORY_GB_BASE = 1.2, 4.0  # suggested MemoryMax = 1.2 GB x (million rows) + 4 GB
 
 
 class ExploreRefused(Exception):
@@ -401,6 +406,11 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+def DISCLOSURES() -> list[str]:  # noqa: N802 - a function so the start time follows W_E_START_MS
+    return ["DEC-031 Am.2 item 6 close-blocking reclassification is not applied in W_e; rent-0 figures are optimistic by that class.",
+            f"W_e's first hour excludes children created before {_iso(W_E_START_MS)[11:]}; k = 20 is truncated by the 60-min deque."]
+
+
 HOST_ZERO_COUNTERS = ("blocked_universe", "order_before_clock", "order_bad_type")  # a non-zero count means the rule and the host disagree about the universe, the clock or the order type
 
 
@@ -446,12 +456,13 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     ledger_digest = hashlib.md5("\n".join(canon({k: v for k, v in row.items() if k not in scrub}) for b in sorted(rows) for row in rows[b] if row["kind"] != "start").encode()).hexdigest()  # a start record holds the process's wall clock and engine id
     report = {
         "schema": SCHEMA, "valid": bool(integrity["clean"]), "provenance": {"git_head": git_head, "git_dirty": git_dirty, "scratch_sha": head},
+        "disclosures": DISCLOSURES(),
         "labels": ["PAPER ONLY", "IN-SAMPLE: W_e figures are in-sample for J3 and every variant (QP R9(d)); never cite them as evidence", "NOT A PROFIT CLAIM; no cell has cleared the gate"],
         "spec": {
             "notebook_entry": "J3 R9(d) exploration spec FIXED before any price", "universe": "PumpSwap only; the PARENT's canonical pool is the only priced pool (children are trigger events)",
             "child": "quote_mint neither WSOL nor null; pool_create on the tape; the k-th BUY print counted from the state's event deque (complete history only)",
             "parent": "the child's quote_mint with a canonical PumpSwap pool: quote_mint == WSOL (first) and V in [17.5e9, 17.7e9] on the deciding row",
-            "r9b": "parent s0 >= 360 s before the decision and last print before the decision >= s0 + 360 s (s0 = tape start when the pool_create is not on the tape)",
+            "r9b": "parent s0 >= 360 s before the decision and last print before the decision >= s0 + 360 s; s0 = the parent's first print seen on the tape (an upper bound when events aged out), the tape start only a floor",
             "order": "buy the parent's canonical pool at 0.25 SOL; one open position per parent; one attempt per (parent, child)",
             "cells": [{"bot_id": J.bot_id(k, h), "k": k, "hold_s": h} for k, h in J.cells()], "hold": "H from the landing of the 1.9 s leg, exit on the 1 s tick at or after",
             "deciding": {"latency": "1.9 s", "stake_sol": DECIDING_STAKE, "fail_models": ["flat 15%", "pressure"], "strand_rules": list(STRAND_RULES), "rent_lamports_filled": 0,
@@ -487,8 +498,10 @@ def _row(cell: str, s: Mapping[str, Any]) -> str:
 
 
 def render_md(rep: Mapping[str, Any]) -> str:
-    L = ["# J3 W_e exploration (QP R9(d))", "", *[f"- {x}" for x in rep["labels"]], "",
+    L = ["# J3 W_e exploration (QP R9(d))", "", *[f"- {x}" for x in rep["labels"]], *[f"- DISCLOSURE: {x}" for x in rep["disclosures"]], "",
          f"Window {rep['window']['start_utc']} to {rep['window']['end_utc']} ({len(rep['window']['hours'])} hours); schema {rep['schema']}; valid {rep['valid']}.", ""]
+    if rep["integrity"]["rows_before_start"]:
+        L += [f"Note: {rep['integrity']['rows_before_start']} rows before the W_e start were dropped (expected 0).", ""]
     if not rep["integrity"]["clean"]:
         L += ["**INTEGRITY NOT CLEAN: do not read these figures.** " + json.dumps(rep["integrity"], sort_keys=True), ""]
     L += [f"Stack: `{canon(rep['stack']['config'])}`; strand rent {rep['stack']['strand_rent_lamports']}; gap rules gap_slots {rep['stack']['fields']['gap_slots']}, "
@@ -522,6 +535,56 @@ def render_md(rep: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
+def count_rows(hours: Sequence[Hour]) -> dict[str, Any]:
+    """Row counts by `type` of the given closed hours, streamed through the zstd CLI. No state, no engine, nothing written: it sizes the job. A truncated .zst is refused."""
+    per_hour: dict[str, Counter] = {}
+    total: Counter = Counter()
+    bad = before = 0
+    for h in hours:
+        c: Counter = Counter()
+
+        def lines(chunk: bytes) -> None:
+            nonlocal bad, before
+            for ln in chunk.split(b"\n"):
+                if not ln.strip():
+                    continue
+                try:
+                    row = json.loads(ln)
+                    c[str(row["type"])] += 1
+                    before += isinstance(row.get("t_recv_ms"), int) and row["t_recv_ms"] < W_E_START_MS
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    bad += 1
+
+        r = open_zst(h.path)
+        try:
+            carry = b""
+            while True:
+                b = r.read(COUNT_CHUNK)
+                if not b:
+                    break
+                data = carry + b
+                cut = data.rfind(b"\n")
+                if cut < 0:
+                    carry = data
+                    continue
+                carry = data[cut + 1:]
+                lines(data[:cut])
+            lines(carry)
+        finally:
+            try:
+                r.close()
+            except CompactError as e:
+                raise ExploreRefused(f"{h.path.name}: unreadable or truncated .zst ({str(e)[:100]})") from None
+        per_hour[_iso(h.start_ms)] = c
+        total.update(c)
+    m = total["trade"] / 1e6
+    return {"rows_by_type": dict(sorted(total.items())), "rows_total": int(sum(total.values())), "bad_lines": bad, "rows_before_w_e_start": before,
+            "per_hour": {k: dict(sorted(v.items())) for k, v in per_hour.items()}, "trade_rows_million": round(m, 3),
+            "sizing": {"engine_gb_per_million_trade_rows": ENGINE_GB_PER_M_TRADE_ROWS, "estimated_rss_gb": round(ENGINE_GB_PER_M_TRADE_ROWS * m, 1),
+                       "suggested_memory_max_gb": round(MEMORY_GB_PER_M_ROWS * m + MEMORY_GB_BASE, 1),
+                       "note": "slope from the reviewer's synthetic probe (state + engine, before the 12 books), not measured on this tape; run alone, never on mal-fast-0"}}
+
+
 def write_report(scratch: Path, rep: Mapping[str, Any]) -> tuple[Path, Path]:
     j, m = scratch / "REPORT.json", scratch / "REPORT.md"
     j.write_text(json.dumps(rep, indent=1, sort_keys=True, allow_nan=False) + "\n")
@@ -531,12 +594,18 @@ def write_report(scratch: Path, rep: Mapping[str, Any]) -> tuple[Path, Path]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="J3 W_e exploration (QP R9(d)): paper only. Reads the given closed tape hours and nothing else under /data/mal/arena.")
-    ap.add_argument("--hours", nargs="+", required=True, help="closed tape hour files (tape-<hour>.jsonl.zst) inside [2026-10-19T08, 2026-10-20T08), consecutive")
-    ap.add_argument("--scratch", required=True, help="an empty directory outside /data/mal/arena: scratch registry, decision logs, ledger and the report")
+    ap.add_argument("--hours", nargs="+", required=True, help="the 24 closed W_e hour files (tape-<hour>.jsonl.zst, 2026-10-19T08 to 2026-10-20T07), directly in /data/mal/arena/tape")
+    ap.add_argument("--scratch", help="an empty directory outside /data/mal/arena: scratch registry, decision logs, ledger and the report (not used by --count-only)")
+    ap.add_argument("--count-only", action="store_true", help="stream the given hours and print the row counts by type and a memory suggestion; no state, no engine, nothing written")
     ap.add_argument("--min-free-pct", type=float, default=MIN_FREE_PCT_DEFAULT, help="the ledger's free-space floor of the scratch filesystem (arena default 25, never below 20)")
     ap.add_argument("--no-hash", action="store_true", help="do not sha256 the input files")
     a = ap.parse_args(argv)
+    if not a.count_only and not a.scratch:
+        ap.error("--scratch is required unless --count-only")
     try:
+        if a.count_only:
+            print(json.dumps(count_rows(validate_inputs(a.hours)), indent=1, sort_keys=True))
+            return 0
         rep = run_exploration(a.hours, a.scratch, min_free_pct=a.min_free_pct, hash_inputs=not a.no_hash)
         j, m = write_report(Path(a.scratch).resolve(), rep)
     except (ExploreRefused, HostError, HostFatal, Refused, ValueError) as e:
