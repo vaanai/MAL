@@ -666,7 +666,7 @@ def test_the_printer_never_emits_a_mean_total_p_or_kill_value(tmp_path, ref_doc,
     monkeypatch.setattr(K, "check_b", lambda *a, **k: {"verdict": "PASS", "kit_screen_p_tests": {"result": "NOT_RUN"}})  # (B) has its own tests; here only the (C) printer
     rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA, "--results", _write(tmp_path, doc))
     text = K.canon(rec)
-    assert rc == 0 and rec["verdicts"] == {"A": "PASS", "B": "PASS", "C": "FAIL"}
+    assert rc == 0 and {k: rec["verdicts"][k] for k in ("A", "B", "C")} == {"A": "PASS", "B": "PASS", "C": "FAIL"} and rec["verdicts"]["item_5_B_complete"] is False
     assert rec["C"]["files"][0]["cells"]["cell_ok_300_7"]["sub_cells"]["sc|flat"] == {"n_equal": True, "k_dates_equal": True, "xbar_equal_mean": False}
     assert not any(v in text for v in secret_values)  # no value of the results file reaches the output
     assert list(_floats(rec)) == []  # and the whole record holds no float at all
