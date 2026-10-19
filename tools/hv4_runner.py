@@ -51,6 +51,7 @@ from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
 from tools.hv4_model import Model, ModelReply
+from tools.hv4_obs import ObsLog, obs_enabled, rss_mb
 from tools.hv4_prompts import (Playbook, build_entry_request, build_recheck_request, build_risk_request, card_sha256, load_playbook, load_template,
                                sha256_hex)
 from tools.hv4_validate import Knobs, PredicateError, final_size, parse_watch_predicate, validate_entry, validate_recheck, validate_risk
@@ -274,6 +275,11 @@ class HV4ChainSource:
     def watch(self, items: Any, hot: Any, now_ms: int) -> None:
         if self.prefetch is not None:
             self.prefetch.watch(items, hot, now_ms)
+
+    def attach_obs(self, obs: Any) -> None:
+        """The runner hands its ObsLog to the prefetcher (first_seen, stale-served, chain_hour rows). No effect without a prefetcher."""
+        if self.prefetch is not None and hasattr(self.prefetch, "set_obs"):
+            self.prefetch.set_obs(obs)
 
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
@@ -513,6 +519,9 @@ class RunnerConfig:
     # appends the engine's trim counters to <root>/engine-trim-counters.jsonl. ArenaEngine.prune() is never called. Off only in the tests and the replay that prove the
     # trim changes no decision and no fill (tools/hv4_memreplay.py --trim-history off).
     trim_engine_history: bool = True
+    # Observability rows (tools/hv4_obs.py): an append-only side file <root>/hv4-obs.jsonl, outside the decision log, the cards, the ledger and Runner.counters. Nothing
+    # reads it back into a decision (the B equivalence replay: decision logs md5-identical with it on and off). Default on; MAL_HV4_OBS=0 turns it off.
+    obs: bool = field(default_factory=obs_enabled)
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
@@ -582,6 +591,13 @@ class Runner:
         self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
         self._versions_loaded = False
         self.cards = CardSink(cfg.root)
+        self.obs = ObsLog(cfg.root, enabled=cfg.obs)  # side rows only (see RunnerConfig.obs); never read by a decision
+        self._obs_hour: int | None = None
+        if self.obs.enabled:
+            self.obs.write("runner_start", pid=os.getpid(), frozen_sha=cfg.frozen_sha, binding=dict(binding) if isinstance(binding, Mapping) else None, live=cfg.live)
+            attach = getattr(self.chain, "attach_obs", None)
+            if attach is not None:
+                attach(self.obs)
         self.seen_triggers: set[str] = set()  # H5 triggers already handled (a restart replays the warm-up tape and the signal re-emits them)
         self._logged_version: dict[str, str] = {}
         self._replay_pos: dict[str, Pos] = {}
@@ -1644,9 +1660,29 @@ class Runner:
             self.rechecks(T)
             if T % SCAN_EVERY_MS == SCAN_SECOND_MS:
                 t0 = self.now_fn() if self.timing else 0
+                self.obs.scan_ms = T  # the scan instant, for the first_seen rows the prefetcher writes during this scan
                 self.scan(T)
                 if self.timing:
                     self._scan_timing(T, self.now_fn() - t0)
+        if self.obs.enabled:
+            self._obs_hour_tick(T)
+
+    def _obs_hour_tick(self, T: int) -> None:
+        """One `runner_hour` row per closed UTC hour of the tick clock, on the runner thread: the error counters that were in memory only (hook_errors, the housekeeping
+        errors), the runner counters, RSS. Read-only on the runner's state; the file is the obs side file."""
+        h = T // 3_600_000
+        if self._obs_hour is None:
+            self._obs_hour = h
+            return
+        if h <= self._obs_hour:
+            return
+        from collections import Counter
+
+        errs = Counter(self.hook_errors)
+        self.obs.write("runner_hour", hour_start_ms=self._obs_hour * 3_600_000, hour_end_ms=h * 3_600_000, pid=os.getpid(), hook_errors=dict(sorted(errs.items())),
+                       n_hook_errors=len(self.hook_errors), n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")),
+                       counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(), obs_write_errors=self.obs.write_errors, obs_rows=self.obs.rows_written)
+        self._obs_hour = h
 
     # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
     def _tick_timing(self, T: int, delay_ms: int) -> None:
