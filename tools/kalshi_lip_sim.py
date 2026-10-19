@@ -657,7 +657,12 @@ def kill_checks(rows, S, boundaries):
     event-clustered bootstrap 95th percentile of the mean < 0."""
     out = []
     for b in boundaries:
-        sub = [r for r in rows if r["resolved_us"] is not None and r["resolved_us"] <= b]
+        sub = []
+        for r in rows:
+            if r["resolved_us"] is not None and r["resolved_us"] <= b:
+                sub.append(r)
+            elif r.get("worst_us") is not None and r["worst_us"] <= b:
+                sub.append(dict(r, net=r["net_worst"]))      # late-settling unit, still at its worst case
         if len({r["day"] for r in sub}) < 3:
             continue
         tot = sum(r["net"] for r in sub)
@@ -1633,6 +1638,11 @@ def population_rows(records, results, cell, R_us):
                "resolved_us": (settled_us if settled_us is not None else u.e_us) if resn == "settled" else worst_case_instant(u),
                "collateral": core["collateral"], "rew_c": core["rew"]["c"]}
         row.update(sc)
+        if resn == "settled" and settled_us is not None and settled_us > worst_case_instant(u):
+            # CONDITIONS-2 item 2: until it settles this unit is at its worst case (reward kept, every filled
+            # contract loses its price) from the worst-case instant on; the kill checks use net_worst in between
+            row["worst_us"] = worst_case_instant(u)
+            row["net_worst"] = score_unit_cell(u, core, "worst_case", None)["net"]
         rows.append(row)
     # day-floor stress: the $1.00 minimum on the sum of central rewards per unit-day
     dsum = defaultdict(float)

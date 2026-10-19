@@ -1658,3 +1658,25 @@ def test_b7_resolution_report_counts_late_settlements_and_missing_settlement_tim
     rep = sim.resolution_report(recs, results, worst + 10 * 86_400 * US)
     assert rep == {"opened": 4, "settled": 3, "worst_case": 1, "young": 0, "settled_after_worst_case_instant": 1,
                    "settled_without_settlement_ts": 1}
+
+
+# ------------------------------------------------------------------------------------------------ B8 (QP at 83efba6)
+def test_b8_a_unit_settling_after_its_worst_case_instant_counts_at_worst_case_until_it_settles():
+    recs = [_opened_rec(i, f"2026-10-{20 + i % 3}", [("a", "yes", 9999, 25.0, 0)]) for i in range(10)]
+    u0 = recs[0]["u"]
+    worst = sim.worst_case_instant(u0)
+    settled = worst + 10 * 86_400 * US
+    results = {f"T-{i}": {"value": 1.0, "settled_us": settled, "result": "yes", "event": "E"} for i in range(10)}
+    R = worst + 20 * 86_400 * US
+    rows, cnt = sim.population_rows(recs, results, "U0", R)
+    assert cnt == {"settled": 10} and all(r["resolved_us"] == settled and r["worst_us"] == worst for r in rows)
+    assert all(r["net"] > 0 and r["net_worst"] < -24 for r in rows)             # won at settlement, lost at the worst case
+    between = sim.kill_checks(rows, 25, [worst - 3600 * US, worst + 3600 * US, settled - 3600 * US])
+    assert [c["boundary"] for c in between["checks"]] == [sim.us_to_iso(worst + 3600 * US), sim.us_to_iso(settled - 3600 * US)]
+    assert all(c["K1"] and c["cum_net"] < -240 for c in between["checks"]) and between["dead_as_frozen"]
+    after = sim.kill_checks(rows, 25, [settled + 3600 * US])
+    assert after["checks"][0]["cum_net"] > 0 and not after["dead_as_frozen"]    # from settlement on: the settled net
+    # a unit settled BEFORE its worst-case instant never shows the worst-case net
+    early = {f"T-{i}": {"value": 1.0, "settled_us": u0.e_us + sec(600), "result": "yes", "event": "E"} for i in range(10)}
+    rows2, _c = sim.population_rows(recs, early, "U0", R)
+    assert all(r.get("worst_us") is None for r in rows2)
