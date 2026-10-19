@@ -40,6 +40,7 @@ import bisect
 import hashlib
 import json
 import math
+import operator
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
@@ -234,8 +235,13 @@ class Predicate:
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # small numeric helpers
 # ---------------------------------------------------------------------------------------------------------------------------------------
+_FIRST = operator.itemgetter(0)
+
+
 def _num(x: Any) -> float | None:
     """A finite float, or None (bools, strings, NaN and inf are all None)."""
+    if type(x) is float:  # speed only (scan perf): an exact float is finite iff x - x == 0.0, and float(x) is x; every other type takes the path below
+        return x if x - x == 0.0 else None
     if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
     return float(x) if math.isfinite(x) else None
@@ -284,11 +290,30 @@ def _count(x: Any) -> float | None:
     return n if n is not None and n >= 0.0 else None
 
 
+class _NormPrints(list):
+    """A print list that `_norm_prints` has already validated and normalised (every item an exact (int t, int sol >= 0, bool buy, str who) tuple). Speed only: a second
+    `_norm_prints` call returns it as is, and `assert_as_of` tests its times with one `max` instead of a Python loop. Callers never mutate it."""
+
+    __slots__ = ()
+
+
+def norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
+    """Public name of `_norm_prints`, for a caller (the runner's scan) that normalises a pool's prints once and hands the result to features() and build_card()."""
+    return _norm_prints(prints)
+
+
 def _norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
     if prints is None:
         return None
-    out = []
+    if type(prints) is _NormPrints:
+        return prints  # already normalised, same values
+    out = _NormPrints()
     for p in prints:
+        if type(p) is tuple and len(p) == 4:  # the exact shape ArenaState keeps: normalising it gives an equal tuple, so it is kept as is
+            t0, s0, b0, w0 = p
+            if type(t0) is int and type(s0) is int and s0 >= 0 and type(b0) is bool and type(w0) is str:
+                out.append(p)
+                continue
         try:
             t, sol, buy, who = p[0], p[1], p[2], p[3]
         except (TypeError, IndexError, KeyError) as exc:
@@ -320,8 +345,9 @@ def assert_as_of(snap: SnapshotLike, as_of_ms: int, *, prints: Iterable[PrintLik
         if isinstance(c, Mapping):
             chk("candle.t_min_ms", c.get("t_min_ms"))
     if prints is not None:
-        for p in prints:
-            chk("print.t_ms", p[0])
+        if type(prints) is not _NormPrints or (prints and max(map(_FIRST, prints)) >= as_of_ms):  # a normalised list: one max; the loop below then names the first offender
+            for p in prints:
+                chk("print.t_ms", p[0])
     if chain is not None:
         chk("chain.as_of_ms", chain.get("as_of_ms"))
         chk("chain.holders_as_of_ms", chain.get("holders_as_of_ms"))
@@ -453,6 +479,48 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
     if cap is not None and tier != "established":
         cap = min(cap, YOUNG_STAKE_CAP)  # unknown age is tiered young unless the lower bound already clears 24 h
     return FilterResult(not failed, failed, checks, tier, known, cap)
+
+
+def v_filter_code(snap: SnapshotLike) -> str | None:
+    """The V check of `filters` for a WSOL PumpSwap pool, alone: "v_missing", "v_band" when that check FAILS, None when V is in the band. Same function of the same
+    `reserves.v_sol` as the V block of `filters` (it calls the same `_v_lamports` and the same band test)."""
+    v = _v_lamports(snap)
+    if v is None:
+        return "v_missing"
+    return None if V_LO_LAMPORTS <= v <= V_HI_LAMPORTS else "v_band"
+
+
+def prescreen_fails(lite: SnapshotLike, *, as_of_ms: int) -> bool:
+    """SCAN SPEED ONLY (hedge branch claude/hv4-scan-perf). True when `filters` on the pool's FULL snapshot is certain to FAIL and certain not to raise LeakageError,
+    judged from `lite`, a snapshot holding only the keys below (the runner builds it from the Pool's attributes without the 60-minute windows, the top-net heap or the
+    candles, which are the expensive part of a snapshot and are needed by no check tested here). False means "not decided": the caller runs the full snapshot and the full
+    `filters`, exactly as before. Never True for a pool the full path would pass or would refuse as a leak.
+
+    lite keys: now_ms, last_ms, ath_ms, created_ms, complete_ms, origin_create_ms, last_trade_ms (last_trade.t_ms or None), created_known, age_s, age_since_first_seen_s,
+    reserves {quote_sol, quote_eff_sol, v_sol}. The pool is PumpSwap with a verified WSOL quote (venue_pumpswap and quote_wsol hold by construction).
+
+    Each test below is the same expression as the check of the same name in `filters`; a pool is rejected as soon as ONE of them fails, because `filters` fails when any
+    check fails. The window checks (prints_15m, signers_15m, vol_60m) are not evaluated here: they can only add failures."""
+    for k in ("now_ms", "last_ms", "ath_ms", "created_ms", "complete_ms", "origin_create_ms", "last_trade_ms"):
+        v = lite.get(k)  # assert_as_of's stamps; anything not a plain int (or None), or at/after T, is left to the full path, which raises as before
+        if v is not None and (type(v) is not int or v >= as_of_ms):
+            return False
+    lag = _state_lag(lite, as_of_ms)
+    if not (lag is not None and lag <= STATE_LAG_MAX_MS):
+        return True
+    last = _num(lite.get("last_ms"))
+    idle = (as_of_ms - last) / 1000.0 if last is not None else None
+    if not (idle is not None and _le(idle, LAST_PRINT_MAX_S)):
+        return True
+    age, _known = _age(lite)
+    if not (age is not None and _ge(age, AGE_MIN_S)) or not (age is not None and _le(age, AGE_MAX_S)):
+        return True
+    res = lite.get("reserves") if isinstance(lite.get("reserves"), Mapping) else {}
+    q = _num(res.get("quote_sol"))
+    if not (q is not None and _ge(q, QUOTE_FLOOR_SOL)):
+        return True
+    i025 = impact_rt(STAKES[0], _num(res.get("quote_eff_sol")))
+    return not (i025 is not None and _le(i025, IMPACT_RT_CAP))
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -930,7 +998,7 @@ def numeric_fields(card: Mapping[str, Any]) -> dict[str, float]:
 
 
 def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
-               setup: SetupTag | None = None, stake: float = STAKES[0]) -> dict[str, Any]:
+               setup: SetupTag | None = None, stake: float = STAKES[0], feats: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The card for one Lane G pool as of `as_of_ms`, or CardRefused (a Lane G filter missed, or a hard veto fired, or a stamp is missing).
     LeakageError if any input is later than the scan instant. Every value on the card is as of `as_of_slot` / `as_of_ms`; the chain facts keep
     their own stamps under `risk`. Name and symbol are sanitized and live only under `untrusted`; the id and wallet handles must look like
@@ -940,7 +1008,8 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     pr = _norm_prints(prints)
     assert_as_of(snap, as_of_ms, prints=pr, chain=chain, as_of_slot=as_of_slot)
     fr = filters(snap, as_of_ms=as_of_ms)
-    feats = features(snap, pr, as_of_ms=as_of_ms)
+    if feats is None:
+        feats = features(snap, pr, as_of_ms=as_of_ms)  # `feats`, when given, must be features() of this very snap, prints and as_of_ms (the runner's scan passes its own); it is only read
     vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats)
     slot = as_of_slot
     reasons = list(fr.failed) + list(vr.reasons)

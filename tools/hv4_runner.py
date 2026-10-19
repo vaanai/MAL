@@ -44,6 +44,7 @@ from tools import hv4_arms as arms
 from tools import hv4_cards as C
 from tools.arena_h5_signal import H5Signal, bst_card, safe_path
 from tools.arena_paper import ArenaEngine, ArenaRefused, canon, register_bot
+from tools.arena_state import LAMPORTS as STATE_LAMPORTS
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
@@ -517,6 +518,18 @@ def pct(sorted_vals: list[int], q: float) -> int:
     return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
 
 
+def lite_snapshot(p: Any, now_ms: int) -> dict[str, Any]:
+    """The window-free keys of `ArenaState.snapshot(p.id, candles=False)` for a PumpSwap pool, built from the Pool's attributes with the same expressions as
+    ArenaState.snapshot (SCAN SPEED ONLY: hv4_cards.prescreen_fails reads it). Leaves out the 60-minute windows, the top-net heap and everything else the
+    prescreen does not test; tools/test_hv4_scan_perf.py pins every key against the real snapshot. `now_ms` is the state clock (ArenaState.now_ms)."""
+    created, q, lt = p.created_ms, p.q_real, p.last_trade
+    return {"now_ms": now_ms, "last_ms": p.last_ms, "ath_ms": p.ath_ms, "created_ms": created, "complete_ms": p.complete_ms, "origin_create_ms": p.origin_create_ms,
+            "last_trade_ms": lt.get("t_ms") if isinstance(lt, Mapping) else None, "created_known": created is not None,
+            "age_s": (now_ms - created) / 1000.0 if created is not None else None, "age_since_first_seen_s": (now_ms - p.first_seen_ms) / 1000.0,
+            "reserves": {"quote_sol": q / STATE_LAMPORTS if q is not None else None, "v_sol": p.v / STATE_LAMPORTS,
+                         "quote_eff_sol": (q + p.v) / STATE_LAMPORTS if q is not None else None}}
+
+
 class Runner:
     def __init__(self, cfg: RunnerConfig, state: ArenaState, engine: ArenaEngine, model: Model, chain: ChainSource, guard: BudgetGuard | None = None,
                  h5: H5Signal | None = None, now_fn: Callable[[], int] | None = None, playbook_overrides: Mapping[str, Playbook] | None = None,
@@ -853,12 +866,16 @@ class Runner:
             facts["quote_sol_peak"] = pk
         return facts
 
-    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None) -> dict | None:
+    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None,
+              prints: list | None = None) -> dict | None:
+        """`feats` and `prints`, when the scan passes them, are the features() and the normalised prints it computed for this very `snap` at this very T (nothing polls the
+        state between that and here); they are read, never changed. Without them (a watch or a re-check) everything is computed here, as before."""
         snap = snap or self.state.snapshot(pool_id)
         if snap is None:
             return None
         p = self.state.pool(pool_id)
-        prints = list(p.events) if p is not None else []
+        if prints is None:
+            prints = list(p.events) if p is not None else []
         part = self.chain.chain_part(pool_id, snap.get("mint"), T, self.slot)
         if part is None:
             self._count("chain_none")
@@ -868,7 +885,7 @@ class Runner:
         self.token_of[pool_id] = {k: part[k] for k in ("token_program", "extensions", "transfer_fee_bps", "default_account_state") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag)
+            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats)
         except C.LeakageError as e:
             self._leak(T, pool_id, e)
         except C.CardRefused as e:
@@ -880,10 +897,23 @@ class Runner:
     def scan(self, T: int) -> None:
         self.poll_to(T)
         slot = self.slot
-        cand, tags, feat_of, snap_of = [], [], {}, {}
+        cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
+        state_now = self.state.now_ms
         for p in self.state.pools_wsol(lambda p: p.prog == "pumpswap"):
+            lite = lite_snapshot(p, state_now)
+            if C.prescreen_fails(lite, as_of_ms=T):
+                # SCAN SPEED: a pool that certainly fails the filters on a check that needs no window, and certainly raises no LeakageError, is not snapshotted. Everything the
+                # full path would have recorded for it is recorded here: it reached the V check (always, the pool is WSOL), and a failed V check is counted.
+                self._v_checked.add(p.id)
+                code = C.v_filter_code(lite)
+                if code is not None:
+                    self._count("filter_" + code)
+                    if code == "v_missing":
+                        self._v_missing_pools.add(p.id)
+                continue
+            snap = self.state.snapshot(p.id, candles=False)
             try:
-                fr = C.filters(self.state.snapshot(p.id, candles=False), as_of_ms=T)
+                fr = C.filters(snap, as_of_ms=T)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
@@ -896,14 +926,15 @@ class Runner:
                         if code == "v_missing":
                             self._v_missing_pools.add(p.id)
                 continue
-            snap = self.state.snapshot(p.id)
+            snap["candles"] = self.state.candles(p)  # = ArenaState.snapshot(p.id) (candles=True): the same snapshot plus its candles, taken at the same state
+            prints = C.norm_prints(list(p.events))
             try:
-                feats = C.features(snap, list(p.events), as_of_ms=T)
+                feats = C.features(snap, prints, as_of_ms=T)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
             cand.append(p.id)
-            feat_of[p.id], snap_of[p.id] = feats, snap
+            feat_of[p.id], snap_of[p.id], prints_of[p.id] = feats, snap, prints
             tags.extend(C.setups(feats, pool_id=p.id, as_of_ms=T, limiter=self.limiter))
         ranked = C.rank_setups(tags)
         per_persona: dict[str, list[C.SetupTag]] = {pr: [t for t in ranked if t.persona == pr][:TOP_K_PER_PERSONA] for pr in LANE_G_PERSONAS}
@@ -922,11 +953,11 @@ class Runner:
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
-                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id])
+                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id], feats=feat_of[t.pool_id], prints=prints_of[t.pool_id])
                 if c is not None:
                     cards[(t.pool_id, pr)] = c
         for pid in board:
-            c = self._card(pid, T, None, snap=snap_of[pid])
+            c = self._card(pid, T, None, snap=snap_of[pid], feats=feat_of[pid], prints=prints_of[pid])
             if c is not None:
                 for pr in LANE_G_PERSONAS:
                     cards[(pid, pr)] = c
