@@ -521,6 +521,10 @@ def _f(x: Any) -> str:
     return "n/a" if x is None else f"{x:+.6f}"
 
 
+SUBLABEL = {"flat_1p9_total": "flat 15% fail, strand rule total", "flat_1p9_sc": "flat 15% fail, strand rule sc",
+            "press_1p9_total": "pressure fail (slope scale 1), strand rule total", "press_1p9_sc": "pressure fail (slope scale 1), strand rule sc"}
+
+
 def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     """A JSON fragment {stream, ladder, events} for the manager to merge into data/console.json. Numbers are copied at 6 decimals, never rounded up. No sentence says a book made money."""
     who = read.get("bot_id") or "CON learning"
@@ -535,14 +539,18 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     if not decidable:
         parts.append(f"Not decidable ({read['status']}): the read is final and claims nothing; no cell number and no gate tick is reported here.")
     elif dec and dec["subcells"]:
-        s = dec["subcells"].get("flat_1p9_total") or next(iter(dec["subcells"].values()))
-        parts.append(f"Deciding cell (1.9 s, stake 0.25, flat and pressure, both strand rules; flat and total rule shown): n {s['n']}, total {_f(s['total_sol'])} SOL, "
-                     f"ex-top-3 {_f(s['ex_top3_sol'])}, ex-best-day {_f(s['ex_best_day_sol'])}; weakest ex-best-day over the four sub-cells {_f(dec['ex_best_day_min_sol'])}.")
+        legs = "; ".join(f"{SUBLABEL[k]}: n {c['n']}, total {_f(c['total_sol'])} SOL, ex-top-3 {_f(c['ex_top3_sol'])}, CI90 lo {_f(c['ci90_lo_sol'])}, "
+                         + ("clears" if c["pass"] else "misses " + "; ".join(str(m) for m in c["misses"])) for k, c in ((k, dec["subcells"][k]) for k in SUBCELLS if k in dec["subcells"]))
+        worst = min((c["total_sol"] for c in dec["subcells"].values() if c["total_sol"] is not None), default=None)
+        parts.append(f"Deciding cell (1.9 s, stake 0.25; the 1.3 s leg and the other stakes never decide; it decides only if all four sub-cells clear): {legs}. "
+                     f"Smallest total over the four sub-cells {_f(worst)} SOL; weakest ex-best-day {_f(dec['ex_best_day_min_sol'])}.")
     if read.get("not_proposed_for_canary"):
         parts.append("NOT PROPOSED FOR CANARY: the total is not positive ex best day (DEC-031 section 2).")
-    for k in ("v1", "v2"):
-        if read.get(k):
-            parts.append(f"{k.upper()} {read[k]['status']}.")
+    if read.get("v1") or read.get("v2"):
+        if read["status"] != "PASS":  # V1 and V2 are comparisons that can only add to a book that cleared the gate: a book that did not is not given a V verdict here
+            parts.append("V1 and V2 are comparison only for a book that did not clear the gate: no V verdict is reported here (see the hv4 json).")
+        else:
+            parts.append(" ".join(f"{k.upper()} {read[k]['status']}." for k in ("v1", "v2") if read.get(k)))
     if read.get("learning"):
         lr = read["learning"]
         ps = "; ".join(f"{k} L-F p {_f(v['p'])}, L-P p {_f(lr['L_minus_P']['subcells'].get(k, {}).get('p'))}" for k, v in lr["L_minus_F"]["subcells"].items())

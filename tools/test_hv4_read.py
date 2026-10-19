@@ -767,6 +767,32 @@ def test_console_rows_are_a_draft_fragment_and_console_json_is_untouched(tmp_pat
     assert hashlib.sha256(console.read_bytes()).hexdigest() == before
 
 
+def test_the_console_draft_shows_all_four_sub_cells_and_a_failed_book_never_prints_v1_pass(tmp_path):
+    # a book that clears the flat legs and misses the pressure legs: QP's probe (CON-F, 6 days x 20, FAIL)
+    w = World(tmp_path)
+    w.add(book_rows("CON-F", noisy(2.0e5, 6, 20, 21, sd=1.0e5)))
+    w.seeds("CON", 0.0, 6, 20)
+    r = w.book("CON-F")
+    assert r["status"] == "FAIL"
+    subs = r["cells"][0]["subcells"]
+    assert subs["flat_1p9_total"]["total_sol"] > 0 > subs["press_1p9_total"]["total_sol"]  # the most favourable leg is positive, the pressure leg is not
+    text = outputs(w, "CON-F")[2]["stream"][0]["text"]
+    for k, label in R.SUBLABEL.items():  # all four sub-cells are shown, each with total, ex-top-3, CI90 lo and its verdict
+        i = text.index(label)
+        seg = text[i:i + 220]
+        assert f"n {subs[k]['n']}" in seg and R._f(subs[k]["total_sol"]) in seg and R._f(subs[k]["ex_top3_sol"]) in seg and R._f(subs[k]["ci90_lo_sol"]) in seg
+        assert ("clears" if subs[k]["pass"] else "misses") in seg
+    assert "pressure fail (slope scale 1)" in text and "decides only if all four sub-cells clear" in text and "Smallest total over the four" in text
+    assert R._f(min(c["total_sol"] for c in subs.values())) in text
+    assert "V1 PASS" not in text and "V2 PASS" not in text and "comparison only" in text
+    assert re.search(r"V[12] (PASS|FAIL|NOT_DECIDABLE)", text) is None  # no V verdict for a book that did not clear the gate
+    # a book that clears everything still shows both legs and its V statuses
+    w2 = con_world(tmp_path / "pass")
+    w2.book("CON-L")
+    t2 = outputs(w2)[2]["stream"][0]["text"]
+    assert all(label in t2 for label in R.SUBLABEL.values()) and "V1 PASS" in t2 and "V2 PASS" in t2
+
+
 def test_table_lists_25_cells_and_only_recorded_reads(tmp_path):
     w = con_world(tmp_path)
     t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)
