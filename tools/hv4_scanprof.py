@@ -155,10 +155,12 @@ def run_cmd(a: argparse.Namespace) -> int:
 
         run.scan = scan  # type: ignore[method-assign]
     fs: dict[int, dict[str, float]] = {}
-    if a.time_fsync:  # per scan: how long the process sat in os.fsync (decision-log rows, budget and prefetch files), to split a slow scan into disk wait and compute
+    gc_total = {"n": [0, 0, 0], "ms": [0.0, 0.0, 0.0]}  # every collection of the run by generation (the warm-up included), when --time-gc
+    if a.time_fsync or a.time_gc:  # per scan: the time spent in os.fsync (decision-log rows, budget and prefetch files) and in the cyclic GC, by generation
+        import gc
         import os
 
-        acc = {"on": 0, "ms": 0.0, "n": 0}
+        acc: dict[str, Any] = {"on": 0, "fsync_ms": 0.0, "n_fsync": 0, "gc_n": [0, 0, 0], "gc_ms": [0.0, 0.0, 0.0], "gc_t0": 0.0}
         orig_fsync, inner_scan = os.fsync, run.scan
 
         def timed_fsync(fd: int) -> None:
@@ -167,21 +169,40 @@ def run_cmd(a: argparse.Namespace) -> int:
                 return orig_fsync(fd)
             finally:
                 if acc["on"]:
-                    acc["ms"] += (time.perf_counter() - t) * 1000.0
-                    acc["n"] += 1
+                    acc["fsync_ms"] += (time.perf_counter() - t) * 1000.0
+                    acc["n_fsync"] += 1
+
+        def gc_cb(phase: str, info: dict) -> None:
+            if phase == "start":
+                acc["gc_t0"] = time.perf_counter()
+                return
+            g, ms = int(info["generation"]), (time.perf_counter() - acc["gc_t0"]) * 1000.0
+            gc_total["n"][g] += 1
+            gc_total["ms"][g] += ms
+            if acc["on"]:
+                acc["gc_n"][g] += 1
+                acc["gc_ms"][g] += ms
 
         def timed_scan(T: int) -> None:
-            acc.update(on=1, ms=0.0, n=0)
+            acc.update(on=1, fsync_ms=0.0, n_fsync=0, gc_n=[0, 0, 0], gc_ms=[0.0, 0.0, 0.0])
             try:
                 inner_scan(T)
             finally:
                 acc["on"] = 0
-                fs[T] = {"fsync_ms": round(acc["ms"], 1), "n_fsync": acc["n"]}
+                rec: dict[str, Any] = {}
+                if a.time_fsync:
+                    rec.update(fsync_ms=round(acc["fsync_ms"], 1), n_fsync=acc["n_fsync"])
+                if a.time_gc:
+                    rec.update(gc_n=list(acc["gc_n"]), gc_ms=[round(x, 1) for x in acc["gc_ms"]], gc2_n=acc["gc_n"][2], gc2_ms=round(acc["gc_ms"][2], 1))
+                fs[T] = rec
 
-        os.fsync = timed_fsync  # type: ignore[assignment]
+        if a.time_fsync:
+            os.fsync = timed_fsync  # type: ignore[assignment]
+        if a.time_gc:
+            gc.callbacks.append(gc_cb)
         run.scan = timed_scan  # type: ignore[method-assign]
     t0 = time.time()
-    M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
+    rows_s = M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
     wall = round(time.time() - t0)
     run.flush_timing()
     scans = scan_rows(run.cfg.root)
@@ -192,6 +213,10 @@ def run_cmd(a: argparse.Namespace) -> int:
                            "decision_md5_no_timing": decision_md5_no_timing(run.cfg.root), "counters": dict(run.counters),
                            "hook_errors": sorted(set(run.hook_errors)), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(),
                            "ledger_digest": M.ledger_digest(scratch / "ledger")}  # the scratch engine ledger of THIS replay, never a live one
+    res["rss"] = {"samples_mb": [[r["sim"], r["rss_mb"]] for r in rows_s], "peak_sampled_mb": max((r["rss_mb"] for r in rows_s), default=None), "hwm_mb": round(M.peak_rss_mb())}
+    res["gc_freeze"] = dict(getattr(run, "gc_freeze_info", {}) or {})
+    if a.time_gc:
+        res["gc_total"] = {"n_by_gen": gc_total["n"], "ms_by_gen": [round(x, 1) for x in gc_total["ms"]]}
     if profs:
         txt = io.StringIO()
         for kind, pr in profs.items():
@@ -237,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--sample-min", type=int, default=60)
     r.add_argument("--no-timing", action="store_true")
     r.add_argument("--time-fsync", action="store_true", help="record per scan the time spent in os.fsync (fsync_ms, n_fsync)")
+    r.add_argument("--time-gc", action="store_true", help="record per scan the cyclic-GC collections by generation (gc_n, gc_ms, gc2_n, gc2_ms) via gc.callbacks, and the run totals")
     r.add_argument("--profile", default=None, help="write cProfile text (cumulative and tottime tables for ordinary and board scans) here; slows the scans")
     r.add_argument("--skip-scans", type=int, default=0, help="leave the first N scans out of the summary")
     r.add_argument("--top", type=int, default=35)
