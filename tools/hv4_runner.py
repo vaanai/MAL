@@ -342,7 +342,8 @@ def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = N
 
     base = Path(root)
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=base / CHAIN_CREDITS_FILE))
-    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE))
+    # policy v2 is pinned here: the run-mode path does not read MAL_HV4_PREFETCH_POLICY (the v1 path is for replay and test harnesses, which build the prefetcher themselves)
+    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE, policy="v2"))
 
 
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
@@ -545,6 +546,9 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+            reason = unpinned_run_mode(None, chain=chain, obs=cfg.obs)  # QP 6279836164 R1: the book's chain facts and obs rows cannot change at a restart
+            if reason:
+                raise RuntimeError(reason)
         if not cfg.lane_h and h5 is not None:
             raise ValueError("lane_h is off: an H5 source must not be wired")
         self.lane_h = bool(cfg.lane_h)
@@ -740,7 +744,11 @@ class Runner:
                 n["reopened"] += 1
                 self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
-            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h})
+            start = {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h}
+            if self.cfg.live:  # run mode only: a replay's start rows (and so its md5) are unchanged
+                start["prefetch_policy"] = getattr(getattr(self.chain, "prefetch", None), "policy", None)
+                start["obs"] = bool(self.cfg.obs)
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, start)
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -1635,12 +1643,16 @@ class Runner:
             return
         if h <= self._obs_hour:
             return
-        from collections import Counter
+        try:  # on the decision thread: a row that cannot be built is counted (obs.build_errors) and never raised (QP R5)
+            from collections import Counter
 
-        errs = Counter(self.hook_errors)
-        self.obs.write("runner_hour", hour_start_ms=self._obs_hour * 3_600_000, hour_end_ms=h * 3_600_000, pid=os.getpid(), hook_errors=dict(sorted(errs.items())),
-                       n_hook_errors=len(self.hook_errors), n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")),
-                       counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(), obs_write_errors=self.obs.write_errors, obs_rows=self.obs.rows_written)
+            errs = Counter(self.hook_errors)
+            self.obs.write("runner_hour", hour_start_ms=self._obs_hour * 3_600_000, hour_end_ms=h * 3_600_000, pid=os.getpid(), hook_errors=dict(sorted(errs.items())),
+                           n_hook_errors=len(self.hook_errors), n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")),
+                           counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(), obs_write_errors=self.obs.write_errors, obs_build_errors=self.obs.build_errors,
+                           obs_rows=self.obs.rows_written)
+        except Exception:  # noqa: BLE001
+            self.obs.build_errors += 1
         self._obs_hour = h
 
     # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
@@ -1732,6 +1744,24 @@ def require_frozen_checkout(binding: Mapping[str, Any], frozen_sha: str) -> None
         raise RuntimeError("the checkout is not at the frozen sha")
 
 
+def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: bool | None = None) -> str | None:
+    """Why a live (or stub) run may not start, or None. A live book runs ONE prefetch policy (v2) with the obs rows on, so a restart with a changed environment cannot
+    change its chain facts under the same sha and the same decision-log bytes (QP 6279836164 R1). With `env`: MAL_HV4_PREFETCH_POLICY, when set, must be "v2", and
+    MAL_HV4_OBS must not be "0". With `chain` / `obs`: the prefetcher in hand must be v2 and the obs flag on. Replay harnesses (Rig, hv4_scanprof) do not come through here."""
+    if env is not None:
+        pol = env.get("MAL_HV4_PREFETCH_POLICY")
+        if pol is not None and pol.strip().lower() != "v2":
+            return f"MAL_HV4_PREFETCH_POLICY={pol!r} refused: a live or stub run uses prefetch policy v2 only (unset the variable)"
+        if not obs_enabled(env):
+            return "MAL_HV4_OBS=0 refused: a live or stub run writes the observability rows (unset the variable)"
+    pf = getattr(chain, "prefetch", None)
+    if pf is not None and getattr(pf, "policy", "v2") != "v2":
+        return f"prefetch policy {getattr(pf, 'policy', None)!r} refused: a live or stub run uses prefetch policy v2 only"
+    if obs is False:
+        return "obs rows off refused: a live or stub run writes the observability rows"
+    return None
+
+
 def first_tick_at_or_after(ms: int) -> int:
     """The first scan instant (minute boundary + :02, 5-min aligned) at or after ms."""
     base = (ms - SCAN_SECOND_MS) // SCAN_EVERY_MS * SCAN_EVERY_MS + SCAN_SECOND_MS
@@ -1752,6 +1782,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
     ap.add_argument("--lane-h", action="store_true", help="also run lane H (the BST arms, H5 triggers). OFF in window 1: refused until an H5Signal source is wired")
     a = ap.parse_args(argv)
+    why = unpinned_run_mode(os.environ)
+    if why:
+        print(f"hv4_runner: {why}", file=sys.stderr)
+        return 2
     h5 = None  # no H5Signal source is wired yet: the H5 classifier's feed is the sealed tip tape on mal-fast-0, not on this host
     if a.lane_h and h5 is None:
         print("hv4_runner: --lane-h needs an H5Signal source and none is wired; lane H stays off", file=sys.stderr)
@@ -1762,7 +1796,7 @@ def main(argv: list[str] | None = None) -> int:
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h)
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h, obs=True)
     chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
     chain_src.prefetch.start()
     run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
