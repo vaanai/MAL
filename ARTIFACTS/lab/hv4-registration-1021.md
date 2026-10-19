@@ -180,3 +180,85 @@ Items QP asked the stub report to carry on #755:
 - Nothing here is an edge claim. `quant-proof` reviews any later sentence that says a book made money.
 
 ## Appendix A. Final-pass checklist
+
+Verbatim from quant-proof, PR #762 comment 6278428501, section 4 (the heading line below is QP's own). The FINAL pass fills this in; nothing in it is filled yet.
+
+## 4. Checklist for the FINAL pass
+Timing: the stub ends 2026-10-20T21:32Z. The `bots.json` lines and the notebook copy go in before 2026-10-21T00:00:00Z.
+
+**A. Head and pins**
+- Re-hash the head. The diff since 2d2284b only fills TBDs and items 2-3 above.
+- The pinned code has an empty diff against d1dbcd6.
+- The /data pins and the repo copies all equal §2.1.
+
+**B. Stub report fields** (from decision logs, cards, status and counter files only, never a ledger). Each line is a pass condition.
+1. 0 as_of_refusal rows and 0 LeakageError.
+2. chain_stale <= 2% of hot-pool cards, CON and BIG separately, as numerator/denominator.
+3. Every chain_unavailable card's pool was first seen <= 10 min before its scan (cards checked / cards passing).
+4. null-holders cards <= 10%, CON and BIG separately.
+5. Chain calls:
+   - max rolling hour <= 1,500, both processes counted;
+   - the 00:00Z-crossing hour and the restart-crossing hour named, with their values;
+   - <= 40,000 per UTC day;
+   - spend_state_reset, spend_write_errors and state_write_errors each 0;
+   - Helius credits as a number.
+6. Timing:
+   - scan_wall_ms p99 <= 2,000 and max <= 5,000;
+   - exit_check_delay_ms p99 <= 2,000 and max <= 10,000 outside the two start windows, trim minutes included;
+   - each window defined by rule (a), each <= 10 min, every excluded minute listed with raw n_ticks/p50/p99/max;
+   - the QP-RULING (a) sentence with every [fill in] filled.
+7. sell_alert = 0, sell_orphan = 0, "already has a sell" drops = 0. X-arm entry and exit counts given; if 0, the report says check 7 is vacuous.
+8. The post-restart start row has lane_h false and frozen_sha `d1dbcd64fc434590275d34a3b65d6ad5d45d86ce`. The chain verifies, there are 0 duplicate rows, and both json counters reload with no reset. The restart job id is given, and the job is host-side.
+9. Feed #1207 wrote throughout; data_loss gaps listed with durations; the disk reserve never paused.
+10. The registration printed `{"lane_h": false, "n_bots": 9}`; 0 BST files and 0 BST bot_ids.
+
+Trim:
+- engine_id count = 2 (a third is an unplanned start and is disclosed);
+- about 434 lines (288 + 2 x 73), monotone per engine_id;
+- `rows_below_trim_floor` = 0 and `refused_history_trimmed` = 0 on every line;
+- final hist_trimmed_prints and rows_dup;
+- trim_ms p50/p99/max per hour, against pools and prints_held; **max trim_ms <= 1,000 on every line**;
+- `housekeep:` hook_errors = 0.
+
+V, per engine_id segment:
+- the ratio v_missing_pools / v_checked_pools on every line (registration is blocked only if it is > 0.5 on every line);
+- filter_v_missing, filter_v_band, and the engine's v_missing and v_out_of_band;
+- the per-hour share and the cause statement, or "not measured";
+- no "lost to V" sentence.
+
+Memory:
+- hourly RSS per segment, RSS after each drain;
+- s per segment and s_max by rule 3(b), with the second-half/first-half slope check;
+- projected hours to 10G;
+- no OOM.
+
+**C. TBDs and where each value comes from**
+- §1 model_ids: from the `--register` output. One exact id on CON-L, CON-F, CON-P, CON-R, BIG-L, BIG-F and BIG-R; `[]` on CON-X and BIG-X.
+- §1 registration lines: the nine lines verbatim. Each has frozen_sha d1dbcd64…, clock_start_ms 1792540800000 and deciding_stake 0.25. Add the notebook entry id and its instant, which must be after 2026-10-19T17:57:08Z and before T0.
+- §1 T0 job:
+  - job id; host mal-research-0;
+  - a clean checkout with HEAD = d1dbcd6;
+  - a command line with feed delay 7, lane H off and MAL_HV4_RPC=helius;
+  - the MemoryMax.
+- §2.1: the repo copy paths.
+- §2.3: the Am.2 merge (3.7) and the full StackConfig pin (3.8).
+- §3: add the C2 membership sentence and D5 (item 2).
+- §4: the chosen plan with s per segment, s_max, R0, H, M and projected hours; restart job ids for (B), or "none planned" for (A); the stub's trim_ms p50/p99/max in the disclosure, labelled as stub figures.
+- §5 C3: a declared target start (within 5 min before T0). The T0 catch-up itself is "to be measured in the forward run"; the stub's two windows go in §7.
+- §6:
+  - DECLARE sha256 and notebook id;
+  - cells declared 25 (22 + 3 controls);
+  - the sibling line (3.5) and the October-hours line (3.6);
+  - N, p, the plain line and the Holm rank stay TBD until the read. That is correct.
+- §7: every row PASS or FAIL, with its number.
+- 3.2 reviewer pins and job ids; 3.3 sampling settings; 3.10 the daily sha job id.
+
+**D. Stop rules.** HV4 does not register at d1dbcd6 if any of these happens; T0 then moves (SHAKEDOWN-CHECKS-2, last line):
+- any pass check fails;
+- any trim_ms > 1,000;
+- the v_missing ratio is > 0.5 on every line;
+- rows_below_trim_floor or refused_history_trimmed > 0;
+- an OOM;
+- an unplanned engine_id;
+- any /data pin hash changes.
+
