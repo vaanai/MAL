@@ -17,7 +17,14 @@ Safety. The tape directory is read through symlinks in a scratch directory. The 
 and every write (decision log, ledger, registry, budget files, chain state) goes there.
 
     python tools/hv4_memreplay.py --tape-dir /data/mal/arena/tape --hours 2026-10-19T08..2026-10-19T16 --scratch /tmp/x/run1 \\
-        --warm-hours 0 --holders on --sample-min 15 --out /tmp/x/run1.tsv [--tracemalloc]
+        --holders on --sample-min 15 --out /tmp/x/run1.tsv [--tracemalloc]
+
+Trim proof (PR claude/hv4-trim-wire; QP's precondition 3 on #745). `--trim-history on|off` sets RunnerConfig.trim_engine_history for one run (default on: the
+runner's own default). `--compare-trim` runs the SAME closed hours twice, trim ON then trim OFF, as two child processes one after the other (so each has its own
+RSS; the caller's `systemd-run --scope -p MemoryMax=...` covers both), and prints one `compare_trim` JSON: decision-log md5, ledger digest (mint included) and
+ledger digest without the mint field, ON vs OFF and equal or not; the engine counters of both (hist_trimmed_prints, rows_dup, rows_below_trim_floor,
+refused_history_trimmed); the per-trim cost; and the hourly RSS and engine print count of both. The path is the runner's own (Runner.step: scan, exits, entries,
+sells, housekeeping), not a stand-in. A run that refuses, errors or differs exits non-zero in --compare-trim mode only when `--fail-on-diff` is given.
 """
 from __future__ import annotations
 
@@ -45,6 +52,7 @@ MIN_MS = 60_000
 HOUR_MS = 3_600_000
 R_HOUSEKEEP = 5 * MIN_MS
 FORBIDDEN_PREFIX = "/data/mal/arena"
+TRIM_COUNTERS = ("hist_trimmed_prints", "rows_below_trim_floor", "refused_history_trimmed", "rows_dup")  # the engine counters QP asked to see (PR #745, comment 6275482286)
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "hv4_chain" / "recorded.json"
 
 
@@ -170,7 +178,8 @@ class Rig:
     """Everything the stub runner owns, wired to a scratch root, a mock RPC and the replay clock."""
 
     def __init__(self, tape_dir: Path, scratch: Path, *, state_start_ms: int, clock_start_ms: int, holders: bool, feed_delay_slots: int = 2,
-                 timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True, shadow: bool = False, engine_prune: bool = False) -> None:
+                 timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True, shadow: bool = False, engine_prune: bool = False,
+                 trim_history: bool = True) -> None:
         os.environ.setdefault("MAL_ARENA_TEST", "1")  # scratch registry only: register_bot's test overrides
         from tools import hv4_prefetch as P
         from tools import hv4_runner as R
@@ -196,7 +205,8 @@ class Rig:
         self.chain = HV4Chain(client, TtlCache(clock=self.clock.seconds), now_ms=self.clock)
         self.prefetch = P.ChainPrefetcher(self.chain, R.HV4ChainSource.compose, clock=self.clock, holders=holders, spend_path=root / R.CHAIN_SPEND_FILE)
         self.source = R.HV4ChainSource(self.chain, prefetch=self.prefetch)
-        cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=clock_start_ms, lane_h=False, timing=timing, bound_memory=bound_memory)
+        cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=clock_start_ms, lane_h=False, timing=timing, bound_memory=bound_memory,
+                          trim_engine_history=trim_history)
         self.run = R.Runner(cfg, self.state, engine, model, self.source, guard)
         self.run.register_all(str(scratch / "bots.json"), now_ms=clock_start_ms - 61 * MIN_MS, verify_sha=False)
         self.engine = engine
@@ -340,6 +350,8 @@ def sample(rig: Rig, T: int, wall0: float, extra: dict[str, Any]) -> dict[str, A
     census(rig.chain.rpc.counter, "counter", c)
     c["engine.hist_rows"] = sum(len(h.slot) for h in run.engine.pools.values())  # PoolHist: one row per print, kept by the engine for pricing
     c["engine.hist_seen"] = sum(len(h.seen) for h in run.engine.pools.values())
+    for k in TRIM_COUNTERS:
+        c[f"engine.n.{k}"] = run.engine.counters.get(k, 0)
     c["prefetch.pools[*].mints"] =sum(len(p.mints) for p in rig.prefetch.pools.values())
     c["prefetch.pools[*].holders"] = sum(len(p.holders) for p in rig.prefetch.pools.values())
     row.update(c)
@@ -453,6 +465,109 @@ def write_md(rows: list[dict[str, Any]], path: Path, title: str, args: str) -> N
     path.write_text("\n".join(out) + "\n")
 
 
+# ---------------------------------------------------------------------------------------------------------------------------------- trim proof
+def peak_rss_mb() -> float:
+    """VmHWM of this process (the high-water mark, which the sampled RSS can miss between two samples)."""
+    with open("/proc/self/status") as f:
+        for line in f:
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) / 1024.0
+    return 0.0
+
+
+def trim_file_stats(root: Path) -> dict[str, Any] | None:
+    """Read back <root>/engine-trim-counters.jsonl of THIS harness's scratch run: line count, per-trim cost, the last line, and whether the cumulative counters only ever
+    grew and the lines were written in tape order (what an append-only file of cumulative counters must look like). None when the runner wrote no file (trim off)."""
+    from tools.hv4_runner import ENGINE_TRIM_FILE
+
+    f = Path(root) / ENGINE_TRIM_FILE
+    if not f.exists():
+        return None
+    lines = [json.loads(x) for x in f.read_bytes().splitlines() if x.strip()]
+    ms = [x["trim_ms"] for x in lines]
+    cum = ("hist_trimmed_prints", "rows_below_trim_floor", "refused_history_trimmed", "rows_dup", "trim_no", "tape_ms")
+    mono = all(lines[i][k] <= lines[i + 1][k] for i in range(len(lines) - 1) for k in cum)
+    return {"lines": len(lines), "trim_ms_sum": round(sum(ms), 1), "trim_ms_max": max(ms) if ms else None, "trim_ms_mean": round(sum(ms) / len(ms), 3) if ms else None,
+            "monotone": mono, "last": lines[-1] if lines else None, "engine_ids": len({x["engine_id"] for x in lines})}
+
+
+def run_result(rig: Rig, rows: list[dict[str, Any]], scratch: Path) -> dict[str, Any]:
+    """Everything a trim ON / OFF comparison needs from one finished run."""
+    run = rig.run
+    errs = collections.Counter(run.hook_errors)
+    return {"done": True, "decision_log_md5": run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "ledger_digest_no_mint": ledger_digest(scratch / "ledger", ("mint",)),
+            "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": run.counters, "engine_counters": dict(run.engine.counters),
+            "hook_errors": dict(errs), "trim_file": trim_file_stats(Path(run.cfg.root)), "trim_engine_history": run.cfg.trim_engine_history,
+            "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None, "hwm_mb": round(peak_rss_mb()),
+            "samples": [{"sim": r["sim"], "rss_mb": r["rss_mb"], "rows": r["rows"], "engine_pools": r.get("engine.pools"), "engine_hist_rows": r.get("engine.hist_rows"),
+                         "engine_hist_seen": r.get("engine.hist_seen"), "wall_s": r["wall_s"]} for r in rows]}
+
+
+def compare_trim(on: dict[str, Any], off: dict[str, Any]) -> dict[str, Any]:
+    """The trim ON vs trim OFF comparison of two `run_result`s over the same closed hours. `identical` is the md5 proof: decision log, ledger (mint included) and ledger
+    without the mint field all equal, no hook error in either run, the engine counters other than the two the trim itself adds equal (rows_dup among them: a row the trim
+    drops below its floor is counted rows_dup, exactly as the unbounded engine's dedupe counts the same row), no buy refused for a trimmed history, and the trim really
+    ran in the ON run and not in the OFF run."""
+    def pair(k: str) -> dict[str, Any]:
+        return {"on": on[k], "off": off[k], "equal": on[k] == off[k]}
+
+    own = ("hist_trimmed_prints", "rows_below_trim_floor")  # counted only when the trim ran
+    ec_on, ec_off = on["engine_counters"], off["engine_counters"]
+    other_on, other_off = {k: v for k, v in ec_on.items() if k not in own}, {k: v for k, v in ec_off.items() if k not in own}
+    hourly = []
+    by_off = {s["sim"]: s for s in off["samples"]}
+    for s in on["samples"]:
+        if s["sim"].endswith(":00") and s["sim"] in by_off:
+            o = by_off[s["sim"]]
+            hourly.append({"sim": s["sim"], "rss_on_mb": s["rss_mb"], "rss_off_mb": o["rss_mb"], "hist_rows_on": s["engine_hist_rows"], "hist_rows_off": o["engine_hist_rows"],
+                           "hist_seen_on": s["engine_hist_seen"], "hist_seen_off": o["engine_hist_seen"], "rows": s["rows"]})
+    ran = bool(on["trim_file"] and on["trim_file"]["lines"] and ec_on.get("hist_trimmed_prints", 0) > 0) and off["trim_file"] is None
+    out: dict[str, Any] = {"decision_log_md5": pair("decision_log_md5"), "ledger_digest": pair("ledger_digest"), "ledger_digest_no_mint": pair("ledger_digest_no_mint"),
+                           "engine_counters": {k: {"on": ec_on.get(k, 0), "off": ec_off.get(k, 0)} for k in TRIM_COUNTERS},
+                           "engine_counters_other_equal": other_on == other_off,
+                           "engine_counters_other_diff": {k: [other_on.get(k), other_off.get(k)] for k in sorted(set(other_on) | set(other_off)) if other_on.get(k) != other_off.get(k)},
+                           "hook_errors": {"on": on["hook_errors"], "off": off["hook_errors"]}, "trim_file_on": on["trim_file"], "trim_file_off": off["trim_file"],
+                           "trim_actually_ran": ran, "peak_rss_mb": {"on": on["peak_rss_mb"], "off": off["peak_rss_mb"]}, "hwm_mb": {"on": on["hwm_mb"], "off": off["hwm_mb"]},
+                           "wall_s": {"on": on["samples"][-1]["wall_s"] if on["samples"] else None, "off": off["samples"][-1]["wall_s"] if off["samples"] else None},
+                           "hourly": hourly}
+    out["identical"] = bool(out["decision_log_md5"]["equal"] and out["ledger_digest"]["equal"] and out["ledger_digest_no_mint"]["equal"] and out["engine_counters_other_equal"]
+                            and not on["hook_errors"] and not off["hook_errors"] and ec_on.get("refused_history_trimmed", 0) == 0 and ran)
+    return out
+
+
+def child_argv(a: argparse.Namespace, arm: str, scratch: Path) -> list[str]:
+    """The command line of one --compare-trim arm: the same hours and options as the parent, trim `arm` (on or off), its own scratch directory and result file."""
+    out = [sys.executable, str(Path(__file__).resolve()), "--tape-dir", a.tape_dir, "--hours", a.hours, "--scratch", str(scratch / arm), "--holders", a.holders,
+           "--sample-min", str(a.sample_min), "--out", str(scratch / f"{arm}.tsv"), "--result-json", str(scratch / f"{arm}-result.json"), "--trim-history", arm]
+    for flag, val in (("--start", a.start), ("--state-start", a.state_start), ("--end", a.end)):
+        if val:
+            out += [flag, val]
+    if a.evict_idle_min is not None:
+        out += ["--evict-idle-min", str(a.evict_idle_min)]
+    if a.no_timing:
+        out.append("--no-timing")
+    return out
+
+
+def compare_trim_main(a: argparse.Namespace) -> int:
+    """Run the same closed hours with trim ON and then OFF, each as its own process (own RSS), one after the other (one heavy replay at a time), and compare."""
+    import subprocess
+
+    scratch = check_scratch(Path(a.scratch))
+    results = {}
+    for arm in ("on", "off"):
+        r = subprocess.run(child_argv(a, arm, scratch), check=False)
+        if r.returncode != 0:
+            print(json.dumps({"compare_trim": None, "failed_arm": arm, "returncode": r.returncode}))
+            return 1
+        results[arm] = json.loads((scratch / f"{arm}-result.json").read_text())
+    cmp = compare_trim(results["on"], results["off"])
+    if a.compare_out:
+        Path(a.compare_out).write_text(json.dumps(cmp, indent=1) + "\n")
+    print(json.dumps({"compare_trim": cmp}))
+    return 0 if (cmp["identical"] or not a.fail_on_diff) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--tape-dir", default="/data/mal/arena/tape", help="read-only: closed .jsonl.zst hours are symlinked into the scratch dir")
@@ -472,7 +587,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--compare-engine", action="store_true", help="feed a second, never-pruned engine and compare (slot, v, vsrc) of every print the primary holds at each sample")
     ap.add_argument("--engine-prune", action="store_true", help="EXPERIMENT: call ArenaEngine.prune() every 5 tape minutes, as #744 at 8ee39dc did (the exposure measurement)")
     ap.add_argument("--no-bound-memory", action="store_true", help="RunnerConfig.bound_memory off: the 2026-10-19 behaviour (for the before curve and the md5 proof)")
+    ap.add_argument("--trim-history", choices=("on", "off"), default="on", help="RunnerConfig.trim_engine_history (default on, the runner's own default); needs bound memory on")
+    ap.add_argument("--result-json", default=None, help="write the final result (md5s, digests, counters, samples) here")
+    ap.add_argument("--compare-trim", action="store_true", help="run the same hours with trim ON then OFF (two processes, one after the other) and print the comparison")
+    ap.add_argument("--compare-out", default=None, help="with --compare-trim: also write the comparison JSON here")
+    ap.add_argument("--fail-on-diff", action="store_true", help="with --compare-trim: exit 1 when the two runs are not identical")
     a = ap.parse_args(argv)
+    if a.compare_trim:
+        return compare_trim_main(a)
 
     keys = hour_keys(a.hours)
     scratch = check_scratch(Path(a.scratch))
@@ -490,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
 
         tracemalloc.start(1)
     rig = Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, evict_idle_min=a.evict_idle_min,
-              bound_memory=not a.no_bound_memory, shadow=a.compare_engine, engine_prune=a.engine_prune)
+              bound_memory=not a.no_bound_memory, shadow=a.compare_engine, engine_prune=a.engine_prune, trim_history=a.trim_history == "on")
     rows = replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=a.tracemalloc, whatif_keep_slots=a.whatif_trim_slots)
     if a.out:
         write_tsv(rows, Path(a.out))
@@ -501,7 +623,10 @@ def main(argv: list[str] | None = None) -> int:
     if rig.shadow is not None:
         print(json.dumps({"engine_compare_final": {k[4:]: v for k, v in rows[-1].items() if k.startswith("cmp.")}, "engine_compare_distinct": summarize_diffs(rig.diffs),
                           "engine_pools_pruned_by_experiment": rig.engine_pruned}))
-    print(json.dumps({"done": True, "decision_log_md5": rig.run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "ledger_digest_no_mint": ledger_digest(scratch / "ledger", ("mint",)), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
+    result = run_result(rig, rows, scratch)
+    if a.result_json:
+        Path(a.result_json).write_text(json.dumps(result))
+    print(json.dumps({k: v for k, v in result.items() if k != "samples"}))
     return 0
 
 
