@@ -19,7 +19,7 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
 **Walk 2 (EXP-027).**
 - **#1036 is at the 14-day maximum and ends about 10-29T19Z.** The old text in section 2 item 4 said 10-22.
 - It needs a successor with the same pinned blobs, plus EXP027_WALK2_JOB_2. A session cron fires 10-29 12:17Z. CLAUDE.md says a fixed-instant step needs a host-side MiScusi job, not a session cron alone; no such job is recorded here.
-- **Superseded 2026-10-19 ~08:50Z (manager12; the sentence above is kept as written):** the host-side successor now exists, as MiScusi jobs #1214 and #1215. See "Jobs and caps" below. The session cron stays only as a check.
+- **Superseded 2026-10-19 ~08:20Z (manager12; the sentence above is kept as written):** the host-side successor now exists, as MiScusi jobs #1214 and #1215. See "Jobs and caps" below. The session cron stays only as a check.
 
 **Kalshi pubnum: holdout FAIL; the rules are retired.**
 - ALLRUN taker (cent fee): -0.82c per contract, n 72, CI90 lo -4.97c.
@@ -50,7 +50,7 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
 - **Job cap:** the owner raised the MiScusi job cap for session MALsession1 from 16 to 24 (~08:03Z).
 - **New jobs today:** #1206 (Kalshi crypto 15M tail-300 trades, ETH and SOL, store `/data/mal/kalshi/crypto-tail300-b`, parallel to #1200, which keeps BTC); #1207 (research-0 arena live feed for Haiku v4, tape `/data/mal/arena/tape`, public RPC, 25% disk reserve); #1208 (LIP-F1 dry run #2, structure counts only: 0 opened units, 13 post-freeze units waiting for trades, 33 excl_not_daily, 22 excl_long_period, 461 excl_pre_freeze).
 - **Walk 2 (#1036) successor:** #1036 hits its 14-day job maximum at 2026-10-29T19:21:21Z (started 2026-10-15T19:21:21Z). Walk 2 must seal and verify every hour through 2026-11-07T05 (that hour ends 2026-11-07T06:00Z), because EXP-027 reads `[2026-10-16T03, E + 3 h)` with E = W0 + 480 h = 2026-11-07T03 (W0 2026-10-18T03).
-  - **Host-side successor (not a session cron):** #1214 (mal-research-0, role ops) sleeps to 2026-10-29T19:22Z and exits 0 only once no walk-2 process (`forward-walk2.sh` or `pump_history_backfill` on forward-1016) is alive; it exits 1, and does not start the successor, if one is still alive 4 h later. #1215 is chained `after` #1214: `bash scripts/research/forward-walk2.sh` at ref 578a63eac199c9175438e1ec651d1537944a89c5, params `{"start":"2026-10-16T01"}`, resumable, 6144 MB, with its 14-day limit counted from its own start (it ends about 2026-11-12T19:2xZ, after 2026-11-07T06:00Z). #1036's limit is 2026-10-29T19:21:21Z (started 2026-10-15T19:21:21Z). Verified by manager12, 2026-10-19 ~08:50Z.
+  - **Host-side successor (not a session cron):** #1214 (mal-research-0, role ops) sleeps to 2026-10-29T19:22Z and exits 0 only once no walk-2 process (`forward-walk2.sh` or `pump_history_backfill` on forward-1016) is alive; it exits 1, and does not start the successor, if one is still alive 4 h later. #1215 is chained `after` #1214: `bash scripts/research/forward-walk2.sh` at ref 578a63eac199c9175438e1ec651d1537944a89c5, params `{"start":"2026-10-16T01"}`, resumable, 6144 MB, with its 14-day limit counted from its own start (it ends about 2026-11-12T19:2xZ, after 2026-11-07T06:00Z). #1036's limit is 2026-10-29T19:21:21Z (started 2026-10-15T19:21:21Z). Verified by manager12, 2026-10-19 ~08:20Z.
   - `EXP027_WALK2_JOB_2` is appended to EXP-027's Window record when #1215 starts (a later records PR, not this one).
   - After any cancel of #1036, confirm with `ps` that no walk-2 process is alive before the successor writes (2026-10-17 triple-writer lesson).
   - The session cron at 2026-10-29T12:17Z stays only as a check.
@@ -176,7 +176,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 4. **EXP-027 (r4-b).**
    - W0 2026-10-18T03, E 2026-11-07T03, read about 11-09.
    - It needs walk 2 sealing hours (disk), then the hourly count job (`tools.r4b_count`, audit venv + PYTHONPATH /data/mal/venv site-packages, `--through-hour` = latest contiguous verified hour).
-   - Walk 2 #1036 is at the 14-day maximum and ends about 10-29T19Z (this line said 10-22T19:21Z, the limit before the extension; see the 10-19 update): resubmit a successor with the SAME pinned blobs (EXP027_WALK2_JOB_2). **Done 2026-10-19 ~08:50Z as host-side jobs #1214 and #1215 (see the 10-19 update); walk 2 must be sealed and verified through 2026-11-07T05.**
+   - Walk 2 #1036 is at the 14-day maximum and ends about 10-29T19Z (this line said 10-22T19:21Z, the limit before the extension; see the 10-19 update): resubmit a successor with the SAME pinned blobs (EXP027_WALK2_JOB_2). **Done 2026-10-19 ~08:20Z as host-side jobs #1214 and #1215 (see the 10-19 update); walk 2 must be sealed and verified through 2026-11-07T05.**
    - The 20% reserve is in a pinned blob and cannot be lowered.
 5. **Other clocks.**
    - Job A (#1135) successor before ~10-23T23:20Z; hourly lag check, lock pid = running pid.
