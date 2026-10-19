@@ -309,7 +309,7 @@ def in_universe(universe: str, pool: Any) -> bool:
 
 def stack_config(feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS) -> StackConfig:
     """The host's StackConfig with EVERY field spelled out, so the priced stack does not move if arena_paper's defaults do (QP ruling R1 on cohort 2; DEC-031
-    Amendment 2, the rent-refunded stack). Only the whole-slot feed delay d is a parameter (the manager pins it; default 7). No keyword passes through: a caller cannot
+    Amendment 2 (PR #740, not yet merged), the rent-refunded stack; no book is registered on this host before that amendment merges). Only the whole-slot feed delay d is a parameter (the manager pins it; default 7). No keyword passes through: a caller cannot
     change rent or the floor by accident. `tools/test_arena_rules_stack.py` pins `STACK_FIELDS` and `as_dict()`.
 
     rent = 0: the sell tx closes the token account, so the rent is refunded on a FILLED trip (tools/arena_stack.RENT_DECIDING). A STRANDED position still loses 2,039,280

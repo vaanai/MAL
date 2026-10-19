@@ -1,4 +1,4 @@
-"""The host's priced stack is spelled out and pinned (QP ruling R1 / R5 on cohort 2; DEC-031 Amendment 2, the rent-refunded stack). No network, no tape."""
+"""The host's priced stack is spelled out and pinned (QP ruling R1 / R5 on cohort 2; DEC-031 Amendment 2 (PR #740, not yet merged), the rent-refunded stack). No network, no tape."""
 
 from __future__ import annotations
 

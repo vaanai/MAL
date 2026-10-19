@@ -18,7 +18,7 @@ WHERE THIS IS NOT H2 BOOK A (read before quoting any H2 number for this bot)
      2026-10-08: flat +2.59%, pressure +2.35% at 1.3 s on Sept data) was for the mixed universe; there is no evidence for this subset, so this is a NEW bot_id with no inherited
      result. The exit signal is a followed wallet's sell of the same mint on a PumpSwap WSOL pool (a curve sell cannot follow a PumpSwap entry).
   2. COSTS are the arena's, not RULE.md's: 505,000 lamports per send (RULE.md: 55,000), rent refunded on a filled trip but lost (2,039,280) on a stranded one (the host's
-     explicit stack, DEC-031 Amendment 2), the E1 floor, +26.08 / -16 bps, flat 15% and pressure legs at
+     explicit stack, DEC-031 Amendment 2, PR #740, not yet merged), the E1 floor, +26.08 / -16 bps, flat 15% and pressure legs at
      1.3 s and 1.9 s from the DECISION instant (the instant the decision row is written), never from the signal print. Only the 1.9 s leg at 0.25 SOL decides.
   3. FOLLOW-SELL LATENCY IS NOT RULE.md'S. RULE.md fills a follow-sell at max(ceil(0.55 s / sps), round(L / sps)) slots after the trigger (their sell is an observed signal: the
      same latency as the entry, 5 slots at L = 1.9 s). The arena engine charges every exit its exit lag, ceil(0.55 s / sps) and at least 2 slots, from the instant the sell
