@@ -66,7 +66,12 @@ RISK_REFRESH_MS = 30 * MIN_MS
 RISK_HIDE_MS = 60 * MIN_MS
 POOL_COOLDOWN_MS = 30 * MIN_MS
 ENTRY_SETTLE_MS = 3_000  # no code exit before the slower entry leg can land (the engine refuses an earlier sell)
-SELL_RETRY_MAX = 5
+SELL_RETRY_MAX = 5  # refusals that are not "the entry has not landed" before a sell is retried slowly (and an alert row is logged); never a reason to drop it
+SELL_EARLY = "slower entry leg"  # the engine's refusal text for a sell decided before the slower entry leg lands (arena_paper.sell)
+SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine does not hold the position (or already holds its sell): the book lets it go
+SELL_EARLY_RETRY_MS = 1_000  # retry cadence (wall clock) while the entry leg has not landed
+SELL_EARLY_CAP_MS = 60_000  # after this much wall time without the leg landing: an alert row, then the slow cadence
+SELL_SLOW_RETRY_MS = 10_000
 R_SEED = 1
 BST_EXIT_MS = 330_000
 # BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
@@ -494,6 +499,9 @@ class Runner:
         self.trig_q: list[dict] = []
         self.counters: dict[str, int] = {}
         self.hook_errors: list[str] = []
+        self._sell_next: dict[str, int] = {}  # pid -> earliest wall-clock ms of the next sell attempt (runtime only; a restart retries at once)
+        self._sell_first: dict[str, int] = {}
+        self._sell_alerted: set[str] = set()
         self.sim_now = 0  # sim mode: the engine's wall clock is the sim instant (its stale / future checks compare decision_ms with it)
         if not cfg.live:
             engine.now_fn = lambda: self.sim_now
@@ -665,9 +673,11 @@ class Runner:
                 else:
                     b.realized[d0] = prev_realized
                 if p is not None:
-                    p.sell_tries += 1
-                    if not ("no open position" in str(r.get("detail", "")) or p.sell_tries >= SELL_RETRY_MAX):
-                        b.open[p.pid] = p  # retriable: still open, as live
+                    detail = str(r.get("detail", ""))
+                    if SELL_EARLY not in detail:
+                        p.sell_tries += 1  # an entry leg that has not landed is waited for, not counted
+                    if not any(k in detail for k in SELL_ENGINE_DROPS):
+                        b.open[p.pid] = p  # retriable: still open, as live (the book never drops a position the engine may still hold)
             elif k == "watch_add":
                 b.watches.append(dict(r["watch"]))
             elif k == "watch_end":
@@ -1114,6 +1124,9 @@ class Runner:
 
     def _sell(self, pos: Pos, why: str, T: int, ret: float | None, dec_ms: int | None = None, follow: bool = False) -> bool:
         b = self.books[pos.arm]
+        now = self._now(T)
+        if self._sell_next.get(pos.pid, 0) > now:
+            return False  # waiting for the engine (wall clock): logical seconds run ahead of it while the loop catches up after a stall
         dec = T if dec_ms is None else dec_ms
         snap = self.state.snapshot(pos.pool)
         flag: dict[str, Any] = {}
@@ -1132,13 +1145,19 @@ class Runner:
         try:
             self.engine.sell(bot_id(pos.arm), pos.pid, 1.0, dec, self.slot, reason=why)
         except ArenaRefused as e:
-            pos.sell_tries += 1
+            early = SELL_EARLY in str(e)
+            if not early:
+                pos.sell_tries += 1
             self._count("sell_refused")
             self.log.append(pos.arm, dec, {"kind": "order_refused", "order_id": pos.pid, "side": "sell", "reason": str(e).split(":")[0], "detail": str(e)[:160]})
-            if "no open position" in str(e) or pos.sell_tries >= SELL_RETRY_MAX:
+            if any(k in str(e) for k in SELL_ENGINE_DROPS):
                 b.open.pop(pos.pid, None)  # an orphan the engine does not know: closed in the book, counted
                 self._count("sell_orphan")
+                self._forget_sell(pos.pid)
+            else:
+                self._defer_sell(pos, early, now, dec, str(e))  # the engine may still hold it: the book keeps it open and retries
             return False
+        self._forget_sell(pos.pid)
         b.open.pop(pos.pid, None)
         day = utc_day(dec)
         b.realized[day] = b.realized.get(day, 0.0) + est
@@ -1146,6 +1165,25 @@ class Runner:
             for rp in [p for p in rb.open.values() if p.partner == pos.pid]:
                 self._sell(rp, "follow_L", T, mark_ret(rp, self.state.snapshot(rp.pool, candles=False) or {}), dec_ms=dec, follow=True)
         return True
+
+    def _forget_sell(self, pid: str) -> None:
+        self._sell_next.pop(pid, None)
+        self._sell_first.pop(pid, None)
+        self._sell_alerted.discard(pid)
+
+    def _defer_sell(self, pos: Pos, early: bool, now: int, dec: int, detail: str) -> None:
+        """A refused sell of a position the engine may still hold. An entry leg that has not landed is retried every SELL_EARLY_RETRY_MS of WALL time
+        (the engine counts slots from its own clock; logical seconds can run far ahead of it after a stall) until the engine accepts. After
+        SELL_EARLY_CAP_MS of wall time, or SELL_RETRY_MAX other refusals, an alert row is logged once and the retries slow to SELL_SLOW_RETRY_MS. The
+        position is never dropped here."""
+        first = self._sell_first.setdefault(pos.pid, now)
+        capped = (now - first >= SELL_EARLY_CAP_MS) if early else pos.sell_tries >= SELL_RETRY_MAX
+        if capped and pos.pid not in self._sell_alerted:
+            self._sell_alerted.add(pos.pid)
+            self._count("sell_alert")
+            self.log.append(pos.arm, dec, {"kind": "sell_alert", "pid": pos.pid, "pool": pos.pool, "waited_ms": now - first, "tries": pos.sell_tries, "detail": detail[:160]})
+        if early or capped:
+            self._sell_next[pos.pid] = now + (SELL_SLOW_RETRY_MS if capped else SELL_EARLY_RETRY_MS)
 
     # -- LLM re-checks (minute ticks)
     def rechecks(self, T: int) -> None:
