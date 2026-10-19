@@ -378,6 +378,13 @@ def a_rule_checks(decide, frozen=f2.F1_FUNCS["decide_quote"]):
     assert decide(u, capped, 50.0, 0.0, 25, 50)[0].sy == 0               # Q5 already 0: unchanged
     q, _ = decide(u, capped, -30.0, 0.0, 25, 50)                         # net short YES: the cap still zeroes the YES side
     assert (q.sy, q.sn) == (0, 25) or q.sy == 0
+    # R2: the cap zeroes one side and Q5 already zeroed the other (|net| at I_max): nothing rests, no quote
+    lop = snap(1, [(7200, deep)], [(2700, deep)])                         # YES 72c / NO 27c
+    assert decide(u, lop, 0.0, 50.0, 25, 50) == (None, "Q_SIDECAP_EMPTY")  # N = 50: Q5 gives sn = 0, the cap gives sy = 0
+    assert decide(u, snap(1, [(2700, deep)], [(7200, deep)]), 50.0, 0.0, 25, 50) == (None, "Q_SIDECAP_EMPTY")   # the mirror
+    assert decide(u, lop, 0.0, 49.0, 25, 50)[0].sn == 1.0 and decide(u, lop, 0.0, 49.0, 25, 50)[0].sy == 0   # sn = 1: quoted
+    q, _ = decide(u, snap(1, [(7000, deep)], [(2900, deep)]), 0.0, 50.0, 25, 50)             # 7000 is kept: Q5's zero is the NO side
+    assert (q.sy, q.sn) == (25, 0)
     # the other tests of the frozen rule are unchanged: crossed / empty / out-of-band books
     assert decide(u, snap(1, [], [(2800, deep)]), 0.0, 0.0, 25, 50) == (None, "Q2")
     assert decide(u, snap(1, [(950, deep)], [(2800, deep)]), 0.0, 0.0, 25, 50) == (None, "Q3")
@@ -463,10 +470,25 @@ def test_whenever_f2_a_quotes_both_sides_are_valid_so_the_posted_side_always_ear
         if q is None:
             continue
         quoted += 1
+        assert q.sy > 0 or q.sn > 0                                        # R2: never a quote that rests nothing
         zeroed += q.sy == 0 or q.sn == 0
         valid, v = sim.snapshot_value(s, q.by, q.bn, q.sy, q.sn, 1000.0, 0.5)
         assert valid and v > 0
     assert quoted > 100 and zeroed > 10
+
+
+def test_r2_a_snapshot_that_would_rest_nothing_adds_no_quoted_time_and_cannot_make_a_full_unit():
+    lop = dict(yes=[(0.72, 1000)], no=[(0.27, 1000)])
+    u = st.mk_unit(e=10_000.0)
+    snaps = [st.bsnap(220 * k, **lop) for k in range(40)]
+    trades = [st.trade(10, "n1", 0.80, 25, "yes"), st.trade(230, "n2", 0.80, 25, "yes")]      # two NO fills: net NO = 50 = I_max
+    f1 = st.run(u, snaps, trades)
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        a = st.run(u, snaps, trades)
+    assert sum(f[3] for f in a.fills) == 50.0 and a.reasons.get("Q_SIDECAP_EMPTY", 0) >= 30
+    assert a.n_snaps_quoted == 2 and a.quoted_us < sec(3600)                  # nothing rests once the NO side is full
+    assert f1.n_snaps_quoted == 40 and f1.quoted_us >= sec(3600)               # the frozen rule keeps quoting the YES side
+    assert all(d[1] == "Q_SIDECAP_EMPTY" for d in a.decisions[2:])
 
 
 def test_a_snapshot_with_one_zeroed_side_still_counts_as_quoted_time_for_the_full_unit_test():
@@ -580,7 +602,21 @@ def _mut_cap_overrides_q5(orig):
     return d
 
 
-@pytest.mark.parametrize("mutant", [_mut_boundary_ge, _mut_no_q4_recheck, _mut_yes_only, _mut_cap_overrides_q5])
+def _mut_allow_empty(orig):
+    def d(u, s, Y, N, S, imax):
+        q, why = orig(u, s, Y, N, S, imax)
+        if q is None:
+            return q, why
+        sy = 0.0 if q.by > 7000 else q.sy
+        sn = 0.0 if q.bn > 7000 else q.sn
+        T = u.pset0[1]
+        if s.depth_y + sim.EPS < T - sy or s.depth_n + sim.EPS < T - sn:
+            return None, "Q4_SIDECAP"
+        return sim.Quote(q.by, q.bn, sy, sn, q.dy, q.dn), why
+    return d
+
+
+@pytest.mark.parametrize("mutant", [_mut_boundary_ge, _mut_no_q4_recheck, _mut_yes_only, _mut_cap_overrides_q5, _mut_allow_empty])
 def test_each_mutation_of_the_side_cap_is_caught_by_a_rule_test(mutant):
     a_rule_checks(f2._side_cap(f2.F1_FUNCS["decide_quote"]))               # the real wrapper passes ...
     with pytest.raises(AssertionError):                                    # ... and the mutated one does not

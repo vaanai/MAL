@@ -9,7 +9,9 @@ TWO gated variants, as quant-proof ruled (QP-REVIEW-F2.md, sha256 965a41bc...):
                  >= T - s on each side) is then re-checked with s = 0 on the zeroed side.  A zeroed side has
                  phi = 0 but both sides must still be valid, so the reward comes from the OTHER side only
                  (v_k = phi of the side we post).  Held inventory is never touched.  Both sides cannot exceed
-                 7000 bp at once (Q2 needs b_y + b_n < 10000).  I_max = 50, S = 25 as in LIP-F1.
+                 7000 bp at once (Q2 needs b_y + b_n < 10000).  If the cap zeroes one side and Q5 has already zeroed
+                 the other (|net| at I_max), nothing would rest and the snapshot is NOT quoted (Q_SIDECAP_EMPTY).
+                 I_max = 50, S = 25 as in LIP-F1.
   F2-B INV25     I_max = 25 (= S) instead of 50.  S = 25.  Nothing else differs from LIP-F1's rule.
 
 What is shared with LIP-F1 (inherited, nothing loosened): the reward model, fills, fees, the $1.00 minimum, cells
@@ -147,7 +149,8 @@ RULE_TEXT = {
     "A": ("F2-A SIDE-CAP: a side is posted with size 0 when that side's best bid is above 7000 bp (exactly 70c is "
           "kept). The zero is applied together with the Q5 inventory sizes and Q4 is re-checked with size 0 on that "
           "side. The reward then comes from the other side only: a zeroed side has phi = 0, both sides must still be "
-          "valid, v_k = phi of the side we post. Held inventory is never touched. S = 25, I_max = 50."),
+          "valid, v_k = phi of the side we post. Held inventory is never touched. If the cap zeroes one side and Q5 "
+          "has already zeroed the other, the snapshot is not quoted (Q_SIDECAP_EMPTY). S = 25, I_max = 50."),
     "B": "F2-B INV25: I_max = 25 (= S) instead of 50. S = 25. Nothing else differs from LIP-F1's rule.",
 }
 NOTES = [
@@ -385,13 +388,18 @@ def _gate_with_adj(orig):
 def _side_cap(orig):
     """F2-A: the frozen Q1-Q5, then a side whose best bid is above SIDE_CAP_BP is posted with size 0 (applied with
     the Q5 sizes: the minimum of the two), and Q4 is re-checked with that size 0 (rival depth >= T on that side).
-    A zeroed side takes no fill and has phi = 0 in the reward (the other side alone earns v_k)."""
+    A zeroed side takes no fill and has phi = 0 in the reward (the other side alone earns v_k).  If both sizes are 0
+    after the cap the snapshot is not quoted: (None, "Q_SIDECAP_EMPTY")."""
     def decide_quote(unit, snap, Y, N, S, imax):
         q, why = orig(unit, snap, Y, N, S, imax)
         if q is None:
             return q, why
         sy = 0.0 if q.by > SIDE_CAP_BP else q.sy
         sn = 0.0 if q.bn > SIDE_CAP_BP else q.sn
+        if sy == 0.0 and sn == 0.0:
+            # the cap zeroed one side and Q5 had already zeroed the other (|net| at I_max): nothing would rest, so the
+            # snapshot is not quoted (the frozen rule cannot do this: Q5 zeroes at most one side) (QP R2)
+            return None, "Q_SIDECAP_EMPTY"
         if sy == q.sy and sn == q.sn:
             return q, why
         T = unit.pset0[1]
