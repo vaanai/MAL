@@ -10,14 +10,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # repo root: ``tools`` is a package
 import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
-import kalshi_lip_sim as sim
-import kalshi_public as kp
-from kalshi_lip_sim import BP, US, make_snap, make_trade
+from tools import kalshi_lip_sim as sim          # the same module objects the simulator imports (one SealError class)
+from tools import kalshi_public as kp
+from tools.kalshi_lip_sim import BP, US, make_snap, make_trade
 
 T0 = sim.iso_to_us("2026-10-19T12:00:00Z")      # a unit period start
 FRZ = sim.FREEZE_US
@@ -556,7 +556,7 @@ class World:
     def __init__(self, tmp):
         self.tmp = Path(tmp)
         self.kal = self.tmp / "kalshi"
-        self.kal.mkdir()
+        self.kal.mkdir(parents=True, exist_ok=True)
         self.books = []
 
     # -- recorders -------------------------------------------------------------------------------
@@ -795,3 +795,117 @@ def test_units_evidence_missing_makes_the_read_not_decidable_and_computes_nothin
     g = sim.run_sim(w.cfg(out=str(tmp_path / "o"), units_evidence=None))
     assert g["verdict"] == "NOT_DECIDABLE" and "units" in g["nd_reasons"][0]
     assert json.loads((tmp_path / "o" / "gate.json").read_text())["cells"] == {}
+
+
+# ============================================================================== sealed / registry / sources
+def test_only_sealed_chain_verified_parts_are_read(tmp_path):
+    late = {GAS_A: ticks("2026-10-19T15:30:00Z", "2026-10-19T15:40:00Z", 60)}
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:15:30Z", 60)}, ["KXAAAGASDNY"],
+                  extra_unsealed=late)
+    src = sim.BookSource(d)
+    assert len(src.unsealed) >= 2                                   # the open hour is listed, never read
+    got, bad = src.window_snaps(GAS_A, at("2026-10-19T00:00:00Z"), at("2026-10-20T00:00:00Z"))
+    assert len(got) == 10 and bad == 0 and max(s.ts for s in got) < at("2026-10-19T12:16:00Z")
+    with pytest.raises(kp.SealError, match="not covered"):
+        kp.verify_parts(d)                                          # the repo's strict check refuses what we tolerate
+    # a fully sealed store: our tolerant check equals the repo's
+    w2 = World(tmp_path / "w2")
+    d2 = w2.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}, ["KXAAAGASDNY"])
+    e, unsealed = sim.sealed_entries(d2)
+    assert e == kp.verify_parts(d2) and unsealed == []
+
+
+def test_altered_or_broken_sealed_parts_are_refused(tmp_path):
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}, ["KXAAAGASDNY"])
+    part = sorted((d / "orderbook_snaps").rglob("*.parquet"))[0]
+    good = part.read_bytes()
+    part.write_bytes(good + b"x")
+    with pytest.raises(kp.SealError, match="mismatch"):
+        sim.sealed_entries(d)
+    part.write_bytes(good)
+    chain = d / kp.CHAIN_NAME
+    os.chmod(chain, 0o640)
+    chain.write_text(chain.read_text().replace('"prev":"' + "0" * 64, '"prev":"' + "1" * 64))
+    with pytest.raises(kp.SealError, match="prev mismatch"):
+        sim.sealed_entries(d)
+
+
+def test_strict_runs_refuses_a_run_without_run_end(tmp_path):
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}, ["KXAAAGASDNY"],
+                  complete=False)
+    assert sim.BookSource(d).entries                                 # default: sealed parts of a live run are readable
+    with pytest.raises(kp.SealError, match="run_end"):
+        sim.BookSource(d, strict_runs=True)
+
+
+def test_rows_before_freeze_ignored_and_inconsistent_snapshots_dropped(tmp_path):
+    pre = [make_snap(FRZ / US - 600 + 60 * i, **GOOD) for i in range(3)]
+    post = ticks("2026-10-19T12:05:30Z", "2026-10-19T12:08:30Z", 60)
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: pre + post}, ["KXAAAGASDNY"])
+    src = sim.BookSource(d)
+    got, _ = src.window_snaps(GAS_A, at("2026-10-19T00:00:00Z"), at("2026-10-20T00:00:00Z"))
+    assert [s.ts for s in got] == [s.ts for s in post] and src.stats["rows_before_freeze_ignored"] > 0
+    # a snapshot whose level rows do not match its recorded level count is a gap, never a guess
+    st = kp.Store(tmp_path / "obrec-bad", "orderbook-snap", {})
+    ob, sn = book_run({GAS_A: post})
+    sn[1]["n_yes_levels"] = 3
+    paths = [p for p in st.write_partitioned("orderbook", ob, "p", "ts") if p]
+    paths += [p for p in st.write_partitioned("orderbook_snaps", sn, "p", "ts") if p]
+    kp.seal_parts(tmp_path / "obrec-bad", "2026-10-19T12", paths)
+    got, bad = sim.BookSource(tmp_path / "obrec-bad").window_snaps(GAS_A, at("2026-10-19T00:00:00Z"), at("2026-10-20T00:00:00Z"))
+    assert bad == 1 and len(got) == len(post) - 1
+
+
+def test_registry_must_precede_the_run_and_list_its_series(tmp_path):
+    w = World(tmp_path)
+    snaps = {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}
+    d = w.add_run("obrec-1019c", snaps, ["KXAAAGASDNY"])
+    ents, _ = sim.sealed_entries(d)
+    assert sim.check_registry(d, ents) == []
+    reg = tmp_path / "obrec-REGISTRY-1019c.md"
+    reg.write_text("nothing relevant\n")
+    os.utime(reg, (1_600_000_000, 1_600_000_000))
+    assert "not in" in sim.check_registry(d, ents)[0]
+    reg.write_text("KXAAAGASDNY\n")                                   # written AFTER the first row
+    os.utime(reg, (2_000_000_000, 2_000_000_000))
+    assert "modified after the first row" in sim.check_registry(d, ents)[0]
+    reg.unlink()
+    assert "missing" in sim.check_registry(d, ents)[0]
+    w2 = World(tmp_path / "x")
+    w2.add_run("obrec-1019d", snaps, ["KXAAAGASDNY"], registry=False)
+    w2.add_polls([("2026-10-19T12:05:00Z", True, [])])
+    with pytest.raises(sim.InputError, match="registry"):
+        sim.load_inputs(w2.cfg())
+
+
+def two_run_world(tmp, gap_d=45.0, hole=False, gap_c=60.0):
+    w = World(tmp)
+    c_snaps = {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T14:00:00Z", gap_c),
+               "KXRT-26OCT19-T3": ticks("2026-10-19T12:05:30Z", "2026-10-19T14:00:00Z", gap_c)}
+    d_snaps = ticks("2026-10-19T12:05:40Z", "2026-10-19T14:00:00Z", gap_d)
+    if hole:
+        d_snaps = [s for s in d_snaps if not (at("2026-10-19T13:00:00Z") < s.ts < at("2026-10-19T13:10:00Z"))]
+    w.add_run("obrec-1019c", c_snaps, ["KXAAAGASDNY", "KXRT"])
+    w.add_run("obrec-1019d", {GAS_A: d_snaps}, ["KXAAAGASDNY"])
+    return w
+
+
+def pick(w, **kw):
+    srcs = [sim.BookSource(b) for b in w.books]
+    cands = [(s, *s.window_snaps(GAS_A, at(S0), at(E_) + 4000 * US)) for s in srcs]
+    return sim.choose_source(cands, at("2026-10-19T12:05:00Z"), at(E_), **kw)
+
+
+def test_source_choice_smaller_median_gap_ties_to_1019c_and_holes_fall_back(tmp_path):
+    src, snaps, info = pick(two_run_world(tmp_path / "a"))
+    assert src.name == "obrec-1019d" and len(snaps) > 100 and info[1]["median_gap_s"] == 45.0
+    src, _s, info = pick(two_run_world(tmp_path / "b", hole=True))
+    assert src.name == "obrec-1019c" and info[1]["blind"] is True          # a 600 s hole in 1019d: fall back
+    src, _s, _i = pick(two_run_world(tmp_path / "c", gap_d=60.0))
+    assert src.name == "obrec-1019c"                                       # equal medians: ties go to obrec-1019c
+    src, _s, _i = pick(two_run_world(tmp_path / "d"), force="obrec-1019c")
+    assert src.name == "obrec-1019c"                                       # the 1019c-for-gas sensitivity
