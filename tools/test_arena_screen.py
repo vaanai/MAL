@@ -269,9 +269,9 @@ def script_for(rows) -> list[tuple[str, int, S.ExitSpec]]:
     return out
 
 
-def run_kit(files, script, count_only=False, vmap=None, min_per_day=0.0):
+def run_kit(files, script, count_only=False, vmap=None, min_per_day=0.0, name="synthetic"):
     scr = S.Screen(ScriptRule(script), count_only=count_only, min_attempts_per_day=min_per_day)
-    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([vmap or {POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    scr.run_block(0, name, S.iter_hours(files, "synthetic", "backfill", S.VMap([vmap or {POOLS[k]: float(v) for k, v in V_OF.items()}])))
     return scr
 
 
@@ -353,6 +353,9 @@ def test_kit_classes_derived_late_and_block_edge_match_the_engine(tape, tmp_path
     script = [(POOLS["D"], d_slot, S.ExitSpec(120)), (POOLS["L"], l_slot, S.ExitSpec(120)), (POOLS["A"], edge, S.ExitSpec(120))]
     scr = run_kit(files, script)
     assert scr.counters["derived_last_state"] == 1 and scr.counters["late_print_derived"] == 1 and scr.counters["excluded_block_edge"] == 1
+    r0 = scr.results()["c"]  # the same classes, per CELL (QP 1c): 1 of 3 attempts excluded
+    assert (r0["excluded_block_edge"], r0["late_print_derived"], r0["derived_last_state"]) == (1, 1, 1) and r0["excluded_share"] == pytest.approx(1 / 3)
+    assert any("not decidable in-sample" in w for w in r0["kill_reasons"])
     st = S._cat(scr.acc[0])
     assert len(st["ref"]) == 2
     trips = [(POOLS["D"], d_slot, int(st["xs"][list(st["sd"]).index(d_slot)])), (POOLS["L"], l_slot, int(st["xs"][list(st["sd"]).index(l_slot)]))]
@@ -437,10 +440,12 @@ def test_causal_probe_catches_a_look_ahead_rule(tape):
 def test_overlap_rule_and_thin_flag_in_a_priced_run(tape):
     rows, files = tape
     sl_ = own_slots(rows, "A", 0, 1000, 3000)
-    scr = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120)), (POOLS["A"], sl_[1], S.ExitSpec(120))], min_per_day=20.0)
+    scr = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120)), (POOLS["A"], sl_[1], S.ExitSpec(120))], min_per_day=20.0, name="explore-0814")
     assert scr.counters["overlap_dropped"] == 1
     r = scr.results()["c"]
-    assert r["attempts"] == 1 and r["thin"] is True and r["kill"] is True
+    assert r["attempts"] == 1 and r["explore_attempts_per_day"] == 1.0 and r["thin"] is True and r["kill"] is True  # RULES step 2 counts on explore-0814 alone
+    assert any("RULES step 2" in w for w in r["kill_reasons"])
+    assert run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], min_per_day=20.0).results()["c"]["thin"] is None  # not an explore block: not measured
 
 
 def test_full_results_and_table_render(tape, tmp_path):
@@ -477,18 +482,21 @@ def test_stat_matches_the_reference_bootstrap_and_exclusions():
     assert s["n"] == 400 and s["days"] == len(days) and sum(v["n"] for v in s["per_block"].values()) == 400
 
 
-def mk(mean=1.0, ex3=1.0, exbest=1.0, blocks=(1, 1, 1, 1), ci=1.0, pos=8, days=10):
-    return {"mean": mean, "mean_pct": mean * 400, "ex_top3": ex3, "ex_best_day": exbest, "ci_lo": ci, "ci_lo_pct": ci * 400, "pos_days": pos, "days": days,
-            "per_block": {f"b{i}": {"n": 5, "total": t} for i, t in enumerate(blocks)}}
+NAMES = list(S.CANONICAL_BLOCKS)
 
 
-NAMES = ["b0", "b1", "b2", "b3"]
+def mk(mean=1.0, ex3=1.0, exbest=1.0, blocks=(1, 1, 1, 1), ci=1.0, cit=1.0, pos=8, days=10, n=500, names=None):
+    names = names or NAMES
+    return {"mean": mean, "mean_pct": mean * 400, "ex_top3": ex3, "ex_best_day": exbest, "ci_lo": ci, "ci_lo_pct": ci * 400, "ci_lo_trade": cit, "ci_lo_trade_pct": cit * 400,
+            "pos_days": pos, "days": days, "n": n, "per_block": {nm: {"n": 5, "total": t} for nm, t in zip(names, blocks)}}
+
+
 GOOD = {k: mk() for k in S.SUB_CELLS}
 GGOOD = {(g, *k): mk() for g in S.GROUPS for k in S.SUB_CELLS}
 
 
-def verdict(subs=None, groups=None, names=NAMES):
-    return S.kill_verdict({**GOOD, **(subs or {})}, names, {**GGOOD, **(groups or {})})
+def verdict(subs=None, groups=None, **kw):
+    return S.kill_verdict({**GOOD, **(subs or {})}, NAMES, {**GGOOD, **(groups or {})}, **kw)
 
 
 def test_kill_logic_all_four_sub_cells():
@@ -499,25 +507,60 @@ def test_kill_logic_all_four_sub_cells():
         for field, kw in (("mean", "mean"), ("ex_top3", "ex3"), ("ex_best_day", "exbest")):
             k, why = verdict({key: mk(**{kw: 0.0})})
             assert k and any(f"{'/'.join(key)}.{field}<=0" in w for w in why), (key, field)
-            k, why = verdict({key: mk(**{kw: -1e-9})})
-            assert k
+            assert verdict({key: mk(**{kw: -1e-9})})[0]
     assert verdict({("sc", "press"): None})[0] and verdict({("total", "flat"): None})[0]
     assert S.kill_verdict({}, NAMES, GGOOD)[0]  # nothing priced
 
 
-def test_kill_logic_blocks_positive_under_all_four_sub_cells():
+def test_kill_logic_the_gate_own_tests_n_dates_and_both_bootstraps():
+    for key in S.SUB_CELLS:
+        tag = "/".join(key)
+        k, why = verdict({key: mk(n=99)})
+        assert k and any(f"{tag}.gate.n 99 < 100" in w for w in why)
+        assert verdict({key: mk(n=100)})[0] is False
+        k, why = verdict({key: mk(days=4, pos=4)})
+        assert k and any(f"{tag}.gate.days 4 < 5" in w for w in why)
+        assert verdict({key: mk(days=5, pos=3)})[0] is False
+        k, why = verdict({key: mk(cit=-1e-9)})  # the trade-level bound (arena_score's) alone kills
+        assert k and any("ci_lo_trade<=0" in w for w in why) and not any("date_clustered" in w for w in why)
+        k, why = verdict({key: mk(ci=-1e-9)})  # the date-clustered bound alone kills
+        assert k and any("ci_lo_date_clustered<=0" in w for w in why) and not any("ci_lo_trade" in w for w in why)
+        k, why = verdict({key: mk(pos=5, days=10)})  # exactly half is not a majority
+        assert k and any("no_majority_of_dates_positive" in w for w in why)
+        assert verdict({key: mk(pos=6, days=10)})[0] is False
+    assert (S.MIN_N, S.MIN_DAYS, S.MAX_EXCLUDED_SHARE) == (100, 5, 0.05)
+
+
+def test_kill_logic_exclusion_cap_and_the_step2_count():
+    assert verdict(excl_share=0.05)[0] is False
+    k, why = verdict(excl_share=0.0501)
+    assert k and any("not decidable in-sample" in w for w in why)
+    k, why = verdict(explore_att_per_day=19.9, min_att_per_day=20.0)
+    assert k and any("RULES step 2" in w for w in why)
+    assert verdict(explore_att_per_day=20.0, min_att_per_day=20.0)[0] is False
+    assert verdict(explore_att_per_day=1.0, min_att_per_day=0.0)[0] is False  # switched off
+
+
+def test_kill_logic_blocks_positive_out_of_the_four_canonical_blocks():
     three = (1, 1, 1, -1)
     assert verdict({k: mk(blocks=three) for k in S.SUB_CELLS})[0] is False  # 3 of 4 blocks is enough
     k, why = verdict({k: mk(blocks=(1, 1, -1, -1)) for k in S.SUB_CELLS})
     assert k and any("blocks_positive 2/4 < 3" in w for w in why)
-    k, why = verdict({("sc", "press"): mk(blocks=(1, 1, -1, -1))})  # one sub-cell positive in only 2 blocks: the block does not count
+    k, why = verdict({("sc", "press"): mk(blocks=(1, 1, 1, -1)), ("total", "flat"): mk(blocks=(-1, 1, 1, 1))})  # a different block fails in each: only 2 pass all four sub-cells
     assert k and any("blocks_positive 2/4 < 3" in w for w in why)
-    k, why = verdict({("sc", "press"): mk(blocks=(1, 1, 1, -1)), ("total", "flat"): mk(blocks=(-1, 1, 1, 1))})  # a different block fails in each: only 2 blocks pass all four
-    assert k and any("blocks_positive 2/4" in w for w in why)
-    assert verdict(names=NAMES[:2])[0]  # fewer than 3 blocks priced can never pass
-    zero = {k: mk(blocks=(1, 1, 1, 1)) for k in S.SUB_CELLS}
-    zero[("total", "flat")]["per_block"]["b3"]["n"] = 0
+    k, why = verdict({k: mk(blocks=(1, 1)) for k in S.SUB_CELLS})  # only two canonical blocks priced: a denominator of 4 never shrinks
+    assert k and any("blocks_positive 2/4 < 3" in w for w in why)
+    # explore split into its seven workers is still ONE block; seven positive "blocks" plus one September block is 2 of 4
+    split = [f"explore-0814/w{i}" for i in range(1, 8)] + [NAMES[1]]
+    k, why = S.kill_verdict({k: mk(blocks=(1,) * 8, names=split) for k in S.SUB_CELLS}, split, GGOOD)
+    assert k and any("blocks_positive 2/4 < 3" in w for w in why)
+    # a canonical block is positive on its pooled total: w1 negative and w2 more positive is positive
+    mixed = {k: mk(blocks=(-1, 3, 1, 1, 1), names=["explore-0814/w1", "explore-0814/w2", *NAMES[1:]]) for k in S.SUB_CELLS}
+    assert S.kill_verdict(mixed, NAMES, GGOOD)[0] is False
+    zero = {k: mk() for k in S.SUB_CELLS}
+    zero[("total", "flat")]["per_block"][NAMES[3]]["n"] = 0
     assert verdict(zero)[0] is False  # 3 blocks still pass
+    assert S.canonical_block("explore-0814/w3") == "explore-0814" and S.canonical_block("oracle-live-2026-09-25_27") == "oracle-live-2026-09-25_27" and S.canonical_block("synthetic") is None
 
 
 def test_kill_logic_explore_alone_and_september_pooled_means():
@@ -534,14 +577,48 @@ def test_kill_logic_explore_alone_and_september_pooled_means():
 
 
 def test_kill_logic_pooled_in_sample_gate_columns():
-    for key in S.SUB_CELLS:
-        k, why = verdict({key: mk(ci=-0.001)})
-        assert k and any(f"{'/'.join(key)}.gate.ci_lo<=0" in w for w in why)
-        k, why = verdict({key: mk(pos=5, days=10)})  # exactly half is not a majority
-        assert k and any("gate.no_majority_of_dates_positive" in w for w in why)
-        assert verdict({key: mk(pos=6, days=10)})[0] is False
-    g = S.gate_row(mk(ci=0.5, pos=3, days=5))
-    assert g["ci_lo_gt0"] and g["majority_dates"] and S.gate_row(None) is None
+    g = S.gate_row(mk(ci=0.5, cit=0.5, pos=3, days=5))
+    assert g["ci_lo_gt0"] and g["ci_lo_trade_gt0"] and g["majority_dates"] and g["trade_gate_pass"] and S.gate_row(None) is None
+    assert not S.gate_row(mk(n=99))["trade_gate_pass"] and not S.gate_row(mk(days=4, pos=4))["trade_gate_pass"] and not S.gate_row(mk(cit=-1))["trade_gate_pass"]
+    assert not S.gate_row(mk(ex3=0.0))["trade_gate_pass"] and not S.gate_row(mk(pos=5, days=10))["trade_gate_pass"]
+
+
+def test_statistics_equal_arena_score_cell_stats_on_the_same_trips(tape):
+    from tools import arena_score as A
+
+    rng = np.random.default_rng(11)
+    passes = set()
+    for n, nd, mu in ((400, 12, 3e6), (150, 6, -1e6), (80, 9, 5e6), (500, 4, 4e6), (300, 10, 2e7), (600, 14, 3e7)):
+        lam = rng.normal(mu, 6e7, n)
+        lam[:5] += 4e8
+        di = rng.integers(0, nd, n)
+        days = [f"2026-08-{14 + d:02d}" for d in di]
+        a = A.cell_stats(lam, days)
+        k = S.stat(lam, (H0 // 86400) + di, np.zeros(n, int), ["explore-0814"])
+        assert (k["n"], k["days"], k["pos_days"]) == (a["n"], a["days"], a["days_pos"])
+        assert k["ci_lo_trade"] == a["ci90_lo_sol"]  # the same bootstrap, to the bit
+        for ka, kb in (("mean", "mean_sol"), ("total", "total_sol"), ("ex_top3", "ex_top3_sol"), ("ex_best_day", "ex_best_day_sol")):
+            assert k[ka] == pytest.approx(a[kb], abs=1e-12), ka
+        v, g = A.cell_verdict(a), S.gate_row(k)
+        assert g["trade_gate_pass"] == v["pass"]
+        assert g["n_ge_min"] == (not any(m.startswith("n ") for m in v["misses"])) and g["days_ge_min"] == (not any(m.startswith("days ") and "positive" not in m for m in v["misses"]))
+        passes.add(v["pass"])
+        _, why = S.kill_verdict({key: k for key in S.SUB_CELLS}, NAMES, None)  # n / dates / CI reasons appear exactly when arena_score names them
+        assert any("gate.n " in w for w in why) == any(m.startswith("n ") for m in v["misses"])
+        assert any("ci_lo_trade<=0" in w for w in why) == any(m.startswith("CI90") for m in v["misses"])
+    assert passes == {True, False}  # the cases cover both verdicts
+    # and on trips the KIT priced: the flat and pressure legs of a priced cell through both statistic layers
+    rows, files = tape
+    scr = run_kit(files, script_for(rows))
+    st = S._cat(scr.acc[0])
+    cfg = S.screen_cfg(S.RENT_DECIDING)
+    days = [datetime.fromtimestamp(int(t), tz=timezone.utc).strftime("%Y-%m-%d") for t in st["T"]]
+    for rule in S.STRAND_RULES:
+        L = S.legs(st, 0.25e9, 1.9, rule, cfg)
+        for fail in S.FAILS:
+            a, k = A.cell_stats(L[fail], days), scr.results()["c"]["stats"][f"1.9|{rule}|rent0|{fail}"]
+            assert k["ci_lo_trade"] == a["ci90_lo_sol"] and k["mean"] == pytest.approx(a["mean_sol"], abs=1e-12) and k["ex_top3"] == pytest.approx(a["ex_top3_sol"], abs=1e-12)
+            assert k["ex_best_day"] == pytest.approx(a["ex_best_day_sol"], abs=1e-12) and (k["n"], k["days"], k["pos_days"]) == (a["n"], a["days"], a["days_pos"])
 
 
 def pool_age_script(rows):

@@ -73,6 +73,7 @@ import numpy as np
 
 from tools import arena_paper as P
 from tools import arena_stack as F
+from tools.arena_score import MAX_EXCLUDED_SHARE, MIN_DAYS, MIN_N  # the gate's own constants (n >= 100, >= 5 UTC dates, 5% exclusion cap)
 
 SCHEMA = "arena_screen_v1"
 CLEAN_VIEW = "/data/mal/clean-view"
@@ -100,11 +101,17 @@ MIN_POOL_AGE_S = 360  # Amendment 1, 3: EXP-024 Look-2 seal on the Am.2 V-range 
 SEPTEMBER_BLOCKS = ("oracle-insample-2026-09-22_25", "fast-pool-2026-09-18T23_2026-09-22T00", "oracle-live-2026-09-25_27")
 SUB_CELLS = tuple((rule, fail) for rule in STRAND_RULES for fail in FAILS)  # the four deciding sub-cells (tools/arena_score.py)
 GROUPS = ("explore-0814", "september")
+CANONICAL_BLOCKS = ("explore-0814",) + SEPTEMBER_BLOCKS  # the four blocks: explore-0814 counts ONCE (its w1..w7 are not blocks), the three September blocks are named
 
 
 def block_group(name: str) -> str | None:
     root = name.split("/")[0]
     return "explore-0814" if root == "explore-0814" else "september" if root in SEPTEMBER_BLOCKS else None
+
+
+def canonical_block(name: str) -> str | None:
+    root = name.split("/")[0]
+    return root if root in CANONICAL_BLOCKS else None
 EXIT_REASONS = ("time", "tp", "sl", "trail")
 
 
@@ -532,25 +539,34 @@ def stat(lam: np.ndarray, day: np.ndarray, blk: np.ndarray, blocks: Sequence[str
     tot, best = float(x.sum()), float(dsum.max())
     top3 = float(np.sort(x)[::-1][:3].sum())
     lo = boot_lo(dsum, dn)
+    lo_t = F.boot_lo(x)  # the gate's own bound: trade-level bootstrap exactly as arena_score.cell_stats calls it (x in SOL)
     pb = {}
     for bi, nm in enumerate(blocks):
         m = blk == bi
         pb[nm] = {"n": int(m.sum()), "total": float(x[m].sum()), "mean_pct": float(x[m].mean() / stake_sol * 100) if m.any() else None}
     return {"n": int(len(x)), "days": int(len(days)), "pos_days": int((dsum > 0).sum()), "mean": float(x.mean()), "mean_pct": float(x.mean() / stake_sol * 100), "ci_lo": lo,
-            "ci_lo_pct": lo / stake_sol * 100, "total": tot, "ex_top3": tot - top3, "ex_best_day": tot - best, "top_day_share": (best / tot if tot > 0 else None), "per_block": pb}
+            "ci_lo_pct": lo / stake_sol * 100, "ci_lo_trade": lo_t, "ci_lo_trade_pct": lo_t / stake_sol * 100, "total": tot, "ex_top3": tot - top3, "ex_best_day": tot - best, "top_day_share": (best / tot if tot > 0 else None), "per_block": pb}
 
 
 def gate_row(s: dict | None) -> dict | None:
-    """The pooled in-sample gate columns of one sub-cell (the promotion gate's own tests, in-sample): CI90 lower bound, majority of dates, ex-top-3, ex-best-day."""
+    """The pooled in-sample gate columns of one sub-cell: n, UTC dates, majority of dates, BOTH CI90 lower bounds (trade-level = arena_score's; UTC-date clustered = the stricter
+    screen of hunt21), ex-top-3, ex-best-day. `trade_gate_pass` is arena_score.cell_verdict's own test (n >= 100, >= 5 dates, majority, trade CI90 > 0, ex-top-3 > 0)."""
     if s is None:
         return None
-    return {"mean_pct": s["mean_pct"], "ci_lo_pct": s["ci_lo_pct"], "ci_lo_gt0": bool(s["ci_lo"] > 0), "days": s["days"], "pos_days": s["pos_days"],
-            "majority_dates": bool(2 * s["pos_days"] > s["days"]), "ex_top3": s["ex_top3"], "ex_best_day": s["ex_best_day"]}
+    maj = bool(2 * s["pos_days"] > s["days"])
+    return {"n": s["n"], "mean_pct": s["mean_pct"], "ci_lo_pct": s["ci_lo_pct"], "ci_lo_gt0": bool(s["ci_lo"] > 0), "ci_lo_trade_pct": s["ci_lo_trade_pct"], "ci_lo_trade_gt0": bool(s["ci_lo_trade"] > 0),
+            "days": s["days"], "pos_days": s["pos_days"], "majority_dates": maj, "ex_top3": s["ex_top3"], "ex_best_day": s["ex_best_day"],
+            "n_ge_min": bool(s["n"] >= MIN_N), "days_ge_min": bool(s["days"] >= MIN_DAYS),
+            "trade_gate_pass": bool(s["n"] >= MIN_N and s["days"] >= MIN_DAYS and maj and s["ci_lo_trade"] > 0 and s["ex_top3"] > 0)}
 
 
-def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, min_blocks_positive: int = 3) -> tuple[bool, list[str]]:
-    """Amendment 1. subs: {(strand rule, fail): stat} at 1.9 s / 0.25 SOL / rent 0, pooled over all blocks; groups: {(group, rule, fail): stat | None} for explore-0814 alone and the
-    September blocks pooled. Returns (kill, reasons)."""
+def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, *, excl_share: float | None = None, explore_att_per_day: float | None = None,
+                 min_att_per_day: float = 0.0, min_blocks_positive: int = 3) -> tuple[bool, list[str]]:
+    """Amendment 1 plus the gate's own tests (QP on #752). subs: {(strand rule, fail): stat} at 1.9 s / 0.25 SOL / rent 0, pooled over all blocks; groups: {(group, rule, fail):
+    stat | None} for explore-0814 alone and the September blocks pooled. Any of these kills: a sub-cell with no trips; mean, ex-top-3 or ex-best-day <= 0; n < 100 or < 5 UTC dates
+    (arena_score MIN_N, MIN_DAYS); the trade-level OR the date-clustered CI90 lower bound <= 0; no majority of dates positive; fewer than 3 of the FOUR canonical blocks positive in
+    all four sub-cells; a group mean <= 0 or a group with no trips; the cell's block-edge exclusions above 5% of its attempts (not decidable in-sample); explore-0814 attempts per
+    day below the RULES step-2 count. Returns (kill, reasons)."""
     why = []
     for key in SUB_CELLS:
         s, tag = subs.get(key), "/".join(key)
@@ -561,15 +577,29 @@ def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, 
             if not s[k] > 0:
                 why.append(f"{tag}.{k}<=0")
         g = gate_row(s)
+        if not g["n_ge_min"]:
+            why.append(f"{tag}.gate.n {s['n']} < {MIN_N}")
+        if not g["days_ge_min"]:
+            why.append(f"{tag}.gate.days {s['days']} < {MIN_DAYS}")
+        if not g["ci_lo_trade_gt0"]:
+            why.append(f"{tag}.gate.ci_lo_trade<=0")
         if not g["ci_lo_gt0"]:
-            why.append(f"{tag}.gate.ci_lo<=0")
+            why.append(f"{tag}.gate.ci_lo_date_clustered<=0")
         if not g["majority_dates"]:
             why.append(f"{tag}.gate.no_majority_of_dates_positive")
     npos = 0
-    for nm in blocks:
-        npos += bool(all(subs.get(k) is not None and subs[k]["per_block"][nm]["n"] > 0 and subs[k]["per_block"][nm]["total"] > 0 for k in SUB_CELLS))
+    for cb in CANONICAL_BLOCKS:
+        ok = True
+        for k in SUB_CELLS:
+            if subs.get(k) is None:
+                ok = False
+                break
+            n_ = sum(v["n"] for nm, v in subs[k]["per_block"].items() if canonical_block(nm) == cb)
+            t_ = sum(v["total"] for nm, v in subs[k]["per_block"].items() if canonical_block(nm) == cb)
+            ok = ok and n_ > 0 and t_ > 0
+        npos += bool(ok)
     if npos < min_blocks_positive:
-        why.append(f"blocks_positive {npos}/{len(blocks)} < {min_blocks_positive}")
+        why.append(f"blocks_positive {npos}/{len(CANONICAL_BLOCKS)} < {min_blocks_positive}")
     for grp in GROUPS:
         for key in SUB_CELLS:
             g = (groups or {}).get((grp, *key))
@@ -578,6 +608,10 @@ def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, 
                 break
             if not g["mean"] > 0:
                 why.append(f"{grp}.{'/'.join(key)}.mean<=0")
+    if excl_share is not None and excl_share > MAX_EXCLUDED_SHARE:
+        why.append(f"excluded share {excl_share:.1%} > {MAX_EXCLUDED_SHARE:.0%}: not decidable in-sample")
+    if min_att_per_day and explore_att_per_day is not None and explore_att_per_day < min_att_per_day:
+        why.append(f"explore-0814 attempts/day {explore_att_per_day:.1f} < {min_att_per_day:g} (RULES step 2)")
     return bool(why), why
 
 
@@ -606,6 +640,10 @@ class Screen:
         self.cfg = {RENT_DECIDING: screen_cfg(RENT_DECIDING), RENT_CHARGED: screen_cfg(RENT_CHARGED)}
         self.rows = self.hours = 0
         self.t_load = self.t_rule = self.t_price = 0.0
+        n = len(self.cells)
+        self.excl_cell, self.late_cell, self.derived_cell = collections.Counter(), collections.Counter(), collections.Counter()  # per cell index
+        self.gdays: dict[str, set] = {}  # block group -> UTC days run
+        self.cnt_ub_expl = [0] * n  # count-only: attempts upper bound inside explore-0814
 
     # --- trigger validation
     def _validate(self, hr: HourRows, tr: Any, state: RunState) -> tuple[int, str, int, ExitSpec] | None:
@@ -681,6 +719,9 @@ class Screen:
             good.sort(key=lambda g: (g[0], g[1], g[2]))
             day = hr.T // 86400
             self.days.add(day)
+            grp = block_group(name)
+            if grp:
+                self.gdays.setdefault(grp, set()).add(day)
             clk["rate"][hr.idx], clk["min"][hr.idx], clk["T"][hr.idx] = hr.slots_per_s, hr.min_slot, hr.T
             seg_end = max(seg_end, hr.max_slot)
             for ci, pool, slot, spec in good:
@@ -689,6 +730,7 @@ class Screen:
                     k = (ci, pool)
                     if slot >= nextok.get(k, -1):
                         self.cnt_ub[ci][day] += 1
+                        self.cnt_ub_expl[ci] += grp == "explore-0814"
                         nextok[k] = slot + int(np.rint((spec.hold_s + self.cells[ci].cooldown_s) * hr.slots_per_s))
                     continue
                 s = stores.get(pool)
@@ -765,6 +807,9 @@ class Screen:
                 else:
                     st[k][i] = v[0]
         keep = ~excl
+        for cnt, mask in ((self.excl_cell, excl), (self.late_cell, late & keep), (self.derived_cell, nop & keep)):
+            for k, m in zip(*np.unique(ci[mask], return_counts=True)):
+                cnt[int(k)] += int(m)
         c["excluded_block_edge"] += int(excl.sum())
         c["derived_last_state"] += int((nop & keep).sum())
         c["late_print_derived"] += int(late.sum())
@@ -784,10 +829,17 @@ class Screen:
             if self.count_only:
                 out_cells[cell.name] = {"triggers": int(sum(self.cnt[ci].values())), "attempts_upper_bound": int(sum(self.cnt_ub[ci].values())),
                                         "per_day": {self._d(d): int(self.cnt[ci][d]) for d in sorted(self.days)}, "per_day_after_overlap": {self._d(d): int(self.cnt_ub[ci][d]) for d in sorted(self.days)},
-                                        "days_with_trigger": int(sum(1 for d in self.days if self.cnt[ci][d]))}
+                                        "days_with_trigger": int(sum(1 for d in self.days if self.cnt[ci][d])),
+                                        "explore_0814": self._explore_count(ci)}
                 continue
             out_cells[cell.name] = self._cell_result(ci, names, ndays)
         return out_cells
+
+    def _explore_count(self, ci: int) -> dict:
+        gd = len(self.gdays.get("explore-0814", ()))
+        per = self.cnt_ub_expl[ci] / gd if gd else None
+        return {"days": gd, "attempts_upper_bound": int(self.cnt_ub_expl[ci]), "per_day_upper_bound": per,
+                "below_step2_count": (per < self.min_per_day) if (per is not None and self.min_per_day) else None}
 
     @staticmethod
     def _d(day: int) -> str:
@@ -796,15 +848,19 @@ class Screen:
     def _cell_result(self, ci: int, names: list[str], ndays: int) -> dict:
         parts = self.acc[ci]
         if not parts:
-            return {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": True}
+            return {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci])}
         st = _cat(parts)
         n = len(st["ref"])
         day = st["T"] // 86400
         r: dict[str, Any] = {"attempts": n, "pools": int(len(np.unique(st["pool"]))), "exits": {EXIT_REASONS[k]: int((st["why"] == k).sum()) for k in range(4)},
                              "attempts_per_day": n / ndays, "days_in_run": ndays}
-        r["thin"] = bool(self.min_per_day and n / ndays < self.min_per_day)
         stats, legsum, press_c, groups = {}, {}, {}, {}
         gmask = {g: np.array([block_group(names[b]) == g for b in range(len(names))])[st["blk"]] for g in GROUPS}
+        gd = len(self.gdays.get("explore-0814", ()))
+        r["explore_attempts_per_day"] = int(gmask["explore-0814"].sum()) / gd if gd else None  # RULES step 2 counts on explore-0814 ALONE
+        r["thin"] = bool(r["explore_attempts_per_day"] < self.min_per_day) if (self.min_per_day and gd) else None
+        ex = int(self.excl_cell[ci])
+        r.update(excluded_block_edge=ex, excluded_share=ex / (n + ex), late_print_derived=int(self.late_cell[ci]), derived_last_state=int(self.derived_cell[ci]))
         for lat in LATS:
             for rule in STRAND_RULES:
                 for rent, tag in ((RENT_DECIDING, "rent0"), (RENT_CHARGED, "rentC")):
@@ -829,7 +885,8 @@ class Screen:
         r.update(stats=stats, legs=legsum, press_intercept=press_c, stake_1_0_total_rent0_1p9=big, impact=imp, groups=groups)
         subs = {(rule, fail): stats[f"{LAT_DECIDING}|{rule}|rent0|{fail}"] for rule, fail in SUB_CELLS}
         r["gate"] = {f"{rule}|{fail}": gate_row(v) for (rule, fail), v in subs.items()}
-        r["kill"], r["kill_reasons"] = kill_verdict(subs, names, {(g.split("|")[0], *g.split("|")[1:]): v for g, v in groups.items()})
+        r["kill"], r["kill_reasons"] = kill_verdict(subs, names, {(g.split("|")[0], *g.split("|")[1:]): v for g, v in groups.items()}, excl_share=r["excluded_share"],
+                                                    explore_att_per_day=r["explore_attempts_per_day"], min_att_per_day=self.min_per_day)
         r["worst_in_slot"] = "not measured: PROVISIONAL (QP R7)"
         return r
 
