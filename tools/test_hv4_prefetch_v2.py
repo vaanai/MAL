@@ -221,3 +221,31 @@ def test_a_failed_obs_write_is_counted_and_never_raised(tmp_path):
 def test_env_switches():
     assert O.obs_enabled({}) is True and O.obs_enabled({"MAL_HV4_OBS": "0"}) is False
     assert P.default_policy({}) == P.POLICY_V2 and P.default_policy({"MAL_HV4_PREFETCH_POLICY": "v1"}) == P.POLICY_V1
+
+
+# ---- B at the runner level: the rows exist, and the decision logs do not move with them
+
+
+def _decision_rows(run):
+    return {name: run.log.rows(name) for name in (*run.arm_names, "SCAN", "RISK")}
+
+
+def test_runner_obs_rows_are_written_and_the_decision_logs_are_identical_with_obs_on_and_off(tmp_path, monkeypatch):
+    from tools.test_hv4_runner import T_END, T_START, make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")  # scratch registry overrides, as the runner tests do
+    monkeypatch.setenv("MAL_HV4_OBS", "1")
+    on = make(tmp_path / "on")
+    on.run(T_START, T_END)
+    monkeypatch.setenv("MAL_HV4_OBS", "0")
+    off = make(tmp_path / "off")
+    off.run(T_START, T_END)
+    assert on.cfg.obs is True and off.cfg.obs is False
+    assert _decision_rows(on) == _decision_rows(off)  # every row of every log, chain fields included: byte-for-byte the same decisions
+    assert on.counters == off.counters and on.hook_errors == off.hook_errors == []
+    rows = O.read_rows(tmp_path / "on" / "hv4" / O.OBS_FILE)
+    kinds = [r["kind"] for r in rows]
+    assert kinds[0] == "runner_start" and "runner_hour" in kinds
+    hour = next(r for r in rows if r["kind"] == "runner_hour")
+    assert hour["hour_end_ms"] - hour["hour_start_ms"] == HOUR and hour["n_hook_errors"] == 0 and hour["obs_write_errors"] == 0
+    assert not (tmp_path / "off" / "hv4" / O.OBS_FILE).exists()
