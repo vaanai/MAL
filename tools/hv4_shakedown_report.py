@@ -615,6 +615,41 @@ def rolling_hours(samples: list[dict], origin_ms: int | None) -> tuple[list[dict
     return out, decreases
 
 
+def early_spend_bounds(samples: list[dict], run_start_ms: int | None) -> tuple[dict[int, int], dict]:
+    """Rolling-hour bounds for the windows that begin before the first sample (QP #764 comment 6279001927 item 9). While the spend file still held the whole run, the
+    chain counter equalled its last-hour spend (|diff| <= 1, a read race): every chain call was a prefetch call, which is also what hv4_prefetch does (the scan only reads
+    the store). Then calls in (t - 1 h, t] <= sum_last_hour(t) + the largest bucket held at the previous sample (the minute bucket that straddles t - 1 h was still in the
+    file). The counter supplies the totals and the spend file only splits them in time, so the bound is not the prefetcher's file alone."""
+    info: dict[str, Any] = {"applies": False, "agreeing_samples": 0, "first_divergence": None, "windows": 0, "max_bound": None}
+    if run_start_ms is None or not samples:
+        return {}, info
+    t_first = samples[0]["t_ms"]
+    agree, div = 0, None
+    for s in samples:
+        c, sp = counter_total(s), s.get("spend")
+        if c is None or not isinstance(sp, dict) or not isinstance(sp.get("sum_last_hour"), (int, float)):
+            break
+        if abs(c - sp["sum_last_hour"]) <= 1:
+            agree += 1
+        else:
+            div = s["t_ms"]
+            break
+    info.update({"agreeing_samples": agree, "first_divergence": iso(div) if div else None})
+    if agree < 2 or t_first - run_start_ms >= HOUR_MS:
+        return {}, info  # the file did not demonstrably hold the whole run at the first samples: no early bound
+    bounds: dict[int, int] = {}
+    for i, s in enumerate(samples):
+        t = s["t_ms"]
+        if t - HOUR_MS >= t_first:
+            break  # a sample exists before this window starts: the counter alone bounds it
+        sp = s.get("spend")
+        prev = samples[i - 1].get("spend") if i else sp
+        if isinstance(sp, dict) and isinstance(prev, dict) and isinstance(sp.get("sum_last_hour"), (int, float)):
+            bounds[t] = int(sp["sum_last_hour"]) + int(prev.get("max_bucket") or 0)
+    info.update({"applies": True, "windows": len(bounds), "max_bound": max(bounds.values(), default=None)})
+    return bounds, info
+
+
 def eval_check_5(root: Path, samples: list[dict], starts: list[dict], inputs: list[dict], job: dict, fresh: bool) -> dict:
     notes: list[str] = []
     numbers: dict[str, Any] = {}
@@ -647,6 +682,11 @@ def eval_check_5(root: Path, samples: list[dict], starts: list[dict], inputs: li
     if samples and counter_total(samples[0]) is not None:
         t_first = samples[0]["t_ms"]
         rh, dec = rolling_hours(samples, starts[0]["ms"] if (starts and fresh) else None)
+        eb, einfo = early_spend_bounds(samples, starts[0]["ms"] if (starts and fresh) else None)
+        for r in rh:
+            if r["end_ms"] in eb:
+                r["hi"] = max(r["lo"], min(r["hi"], eb[r["end_ms"]]))
+        numbers["early_hours_spend_bound"] = einfo
         numbers["samples"] = {"n": len(samples), "first": iso(t_first), "last": iso(samples[-1]["t_ms"]), "max_gap_s": round(max((b["t_ms"] - a["t_ms"] for a, b in zip(samples, samples[1:])), default=0) / 1000),
                               "counter_decreases": dec, "first_sample_s_after_first_start": round((t_first - starts[0]["ms"]) / 1000) if starts else None}
         hi_max = max((r["hi"] for r in rh), default=None)
@@ -813,7 +853,21 @@ def eval_memory(samples: list[dict], starts: list[dict], windows: list[dict], rs
 CUMULATIVE = ("hist_trimmed_prints", "rows_below_trim_floor", "refused_history_trimmed", "rows_dup", "filter_v_missing", "filter_v_band", "v_checked_pools", "v_missing_pools", "trim_no")
 
 
-def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dict]) -> list[dict]:
+def segment_ends(L: Logs) -> list[int]:
+    """The end of each process: for the last start the last decision row; for an earlier one the end of the last tick_timing minute before the next start row."""
+    ticks = sorted(L.tick_timing, key=lambda t: t["minute_ms"])
+    ends = []
+    for i, s in enumerate(L.starts):
+        if i + 1 < len(L.starts):
+            nxt = L.starts[i + 1]["ms"]
+            mine = [t["minute_ms"] + MIN_MS for t in ticks if s["ms"] <= t["minute_ms"] + MIN_MS - 1 and t["minute_ms"] < nxt]
+            ends.append(max(mine) if mine else s["ms"])
+        else:
+            ends.append(L.last_ms)
+    return ends
+
+
+def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dict], seg_ends: list[int] | None = None) -> list[dict]:
     p = root / "engine-trim-counters.jsonl"
     if not p.exists():
         return [chk("QP-T1", "engine-trim-counters.jsonl present", UNM, {}, ["file not found"])]
@@ -838,6 +892,17 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dic
             if g > TRIM_GAP_MAX_MS and not any(w["start_ms"] <= (b.get("tape_ms") or 0) and (a.get("tape_ms") or 0) <= w["end_ms"] for w in feed_gaps):
                 gap_bad.append({"engine_id": eid, "from": iso(a.get("tape_ms")), "to": iso(b.get("tape_ms")), "gap_s": g // 1000})
         gaps[eid] = {"max_gap_s": worst[0] // 1000, "between": [iso(worst[1]), iso(worst[2])]}
+    # the tail: housekeeping that fails for good late in a process leaves no gap between lines, so each engine_id's last line is compared with the end of its process
+    tails, tail_bad = {}, []
+    ends = list(seg_ends or [])
+    ids = list(seg)
+    pairs = list(zip(ids, ends)) if len(ids) == len(ends) else ([(ids[-1], ends[-1])] if ids and ends else [])
+    for eid, end in pairs:
+        last_t = seg[eid][-1].get("tape_ms") or 0
+        tail = max(0, end - last_t)
+        tails[eid] = {"last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000}
+        if tail > TRIM_GAP_MAX_MS and not any(w["start_ms"] <= end and last_t <= w["end_ms"] for w in feed_gaps):
+            tail_bad.append({"engine_id": eid, "last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000})
     tm = sorted(float(r["trim_ms"]) for r in rows if isinstance(r.get("trim_ms"), (int, float)))
     byh: dict[int, list[dict]] = defaultdict(list)
     for r in rows:
@@ -863,12 +928,13 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dic
                     "hist_trimmed_prints_last": {eid: s["hist_trimmed_prints"] for eid, s in segs.items()}, "rows_dup_last": {eid: s["rows_dup"] for eid, s in segs.items()}},
                    ["a violation voids equivalence for every book on that engine for that segment: NOT_DECIDABLE unless an untrimmed lockstep replay of the affected hours byte-matches the book"]))
     n_ids = len(seg)
-    st3 = UNM if not rows else (FAIL if mono_bad or gap_bad or (n_starts and n_ids > n_starts) else PASS)
+    st3 = UNM if not rows or seg_ends is None else (FAIL if mono_bad or gap_bad or tail_bad or (n_starts and n_ids > n_starts) else PASS)
     out.append(chk("QP-T3", "trim file: monotone per engine_id; one engine_id per start; no gap over 10 tape minutes between lines", st3,
                    {"lines": len(rows), "torn_tail_lines": torn, "engine_ids": n_ids, "process_starts_in_scan_log": n_starts, "non_monotone_engine_ids": len(mono_bad),
-                    "largest_gap_between_lines_per_engine_id": gaps, "gaps_over_10_tape_min": gap_bad, "segments": segs},
+                    "largest_gap_between_lines_per_engine_id": gaps, "gaps_over_10_tape_min": gap_bad, "tail_to_process_end_per_engine_id": tails, "tails_over_10_tape_min": tail_bad,
+                    "segments": segs},
                    ["expected about 288 lines per 24 h plus about 73 per start (the warm-up drain); cumulative counters are per engine_id and are never added across a restart",
-                    "hook_errors is held in memory only: a failed housekeeping pass shows up as a missing 5-tape-minute trim line, so a gap over 10 tape minutes FAILs (unless it lies inside a listed feed gap)"]))
+                    "hook_errors is held in memory only: a failed housekeeping pass shows up as a missing 5-tape-minute trim line, so a gap over 10 tape minutes between lines, or between an engine_id's last line and the end of its process, FAILs (unless it lies inside a listed feed gap)"]))
     ratios_over, ratios_n = 0, 0
     hourly_v = []
     for eid, rs in seg.items():
@@ -1094,7 +1160,7 @@ def build_report(args: argparse.Namespace) -> dict:
     checks.append(safe("9", "feed", eval_check_9, L, samples, args))
     checks.append(safe("10", "registration", eval_check_10, root, L, job, inputs))
     checks.sort(key=lambda c: int(c["id"]))
-    trim = safe("QP-T1", "engine trim counters", eval_trim, root, inputs, len(starts), [w for w in windows if w["kind"] == "feed_gap"])
+    trim = safe("QP-T1", "engine trim counters", eval_trim, root, inputs, len(starts), [w for w in windows if w["kind"] == "feed_gap"], segment_ends(L))
     trim = trim if isinstance(trim, list) else [trim]
     unplanned = len(starts) > 2
     mem = safe("QP-M1", "memory", eval_memory, samples, starts, windows, args.rss_point_ms, args.memory_max_mb, args.host_cap_mb, args.read_hours, unplanned)

@@ -566,3 +566,102 @@ def test_canon_and_the_chain_match_the_runners_own_decision_log(tmp_path):
         log.append("SCAN", START + i * 1000, {"kind": "scan_timing", "scan_wall_ms": 10 + i})
     L = R.load_logs(tmp_path / "root", [])
     assert L.arms["SCAN"] == {"rows": 5, "chain_ok": True, "chain_error": None, "head_seq": 4} and len(L.scan_timing) == 5
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP-T3 tail and check 5 early hours (QP #764 comment 6279001927)
+def test_a_trim_file_that_stops_before_the_end_of_its_process_fails_the_tail(tmp_path):
+    ok = by_id(run(build(tmp_path)))["QP-T3"]["numbers"]["tail_to_process_end_per_engine_id"]
+    assert ok["eng1"]["tail_s"] == 300 and ok["eng2"]["tail_s"] <= 300 and ok["eng1"]["process_end"] == R.iso(START + 12 * HOUR)  # an earlier process ends with its last tick minute
+
+    def stop_last(fx):  # housekeeping dies for good 20 tape minutes before the run ends: no gap between lines, only a tail
+        rewrite_trim(fx, lambda rows: [r for r in rows if r["engine_id"] == "eng1"] + [r for r in rows if r["engine_id"] == "eng2"][:-3])
+
+    t = by_id(run(build(sub(tmp_path, "last"), extra=stop_last)))["QP-T3"]
+    assert t["status"] == R.FAIL and t["numbers"]["gaps_over_10_tape_min"] == [] and [x["engine_id"] for x in t["numbers"]["tails_over_10_tape_min"]] == ["eng2"]
+    assert t["numbers"]["tails_over_10_tape_min"][0]["tail_s"] >= 20 * 60 - 1
+
+    def stop_first(fx):  # the same in the earlier process: compared with the last tick minute before the next start row
+        rows = [json.loads(x) for x in (fx["root"] / "engine-trim-counters.jsonl").read_text().splitlines()]
+        e1 = [r for r in rows if r["engine_id"] == "eng1"][:-3]
+        rewrite_trim(fx, lambda _: e1 + [r for r in rows if r["engine_id"] == "eng2"])
+
+    t1 = by_id(run(build(sub(tmp_path, "first"), extra=stop_first)))["QP-T3"]
+    assert t1["status"] == R.FAIL and [x["engine_id"] for x in t1["numbers"]["tails_over_10_tape_min"]] == ["eng1"]
+    gap = f"{R.iso(START + 11 * HOUR)}/{R.iso(START + 12 * HOUR)}@arena tape gap row"
+    assert by_id(run(build(sub(tmp_path, "gap"), extra=stop_first), "--feed-gap", gap))["QP-T3"]["status"] == R.PASS  # a tail inside a listed feed gap is not a housekeeping failure
+
+
+def sp_sample(t, c, s, mb):
+    return {"t_ms": t, "chain_by_day": {"2026-10-19": c}, "spend": {"sum_last_hour": s, "buckets": 60, "max_bucket": mb}, "procs": [], "feed": None}
+
+
+def test_early_spend_bound_uses_the_last_hour_spend_plus_the_previous_samples_largest_bucket():
+    # QP's figures: the counter run total is 1,527 (over the limit) but the last-hour spend is 1,234 and the previous sample held a 260 bucket: 1,234 + 260 = 1,494
+    ss = [sp_sample(START + 30 * MIN, 700, 700, 260), sp_sample(START + 31 * MIN, 720, 720, 260), sp_sample(START + 70 * MIN, 1527, 1234, 81)]
+    bounds, info = R.early_spend_bounds(ss, START)
+    assert bounds[START + 70 * MIN] == 1494 < 1500 and info["applies"] and info["agreeing_samples"] == 2 and info["first_divergence"] == R.iso(START + 70 * MIN)
+    rh, _ = R.rolling_hours(ss, START)
+    assert max(r["hi"] for r in rh) == 1527  # without the spend bound the window is bounded by the run total only
+    # no evidence (the counter and the spend disagree from the first sample), or the first sample is more than an hour after the start: no early bound
+    assert R.early_spend_bounds([sp_sample(START + 30 * MIN, 700, 400, 20), sp_sample(START + 31 * MIN, 720, 420, 20)], START)[0] == {}
+    assert R.early_spend_bounds([sp_sample(START + 61 * MIN, 700, 700, 20), sp_sample(START + 62 * MIN, 720, 720, 20)], START)[0] == {}
+    assert R.early_spend_bounds(ss, None)[0] == {}
+    # a sample that exists before the window starts: the counter alone bounds it, not the spend
+    late_ss = ss + [sp_sample(START + 95 * MIN, 1700, 1100, 81)]
+    assert START + 95 * MIN not in R.early_spend_bounds(late_ss, START)[0]
+
+
+def test_check_5_early_hours_pass_on_the_spend_bound_and_stay_unmeasured_without_it(tmp_path):
+    # 260 calls in minute 3, then 19 a minute: the run total passes 1,500 at about minute 70 while any rolling hour holds about 1,140
+    def at(k):
+        t = START + k * MIN
+        c = sum(260 if m == 3 else (19 if m >= 4 else 0) for m in range(k))
+        file_b = {m: (260 if m == 3 else 19) for m in range(3, k) if START + m * MIN > t - HOUR - MIN}
+        spend = sum(n for m, n in file_b.items() if START + m * MIN > t - HOUR)
+        return sp_sample(t, c, spend, max(file_b.values(), default=0))
+
+    ss = [at(k) for k in range(30, 111)]
+    root = sub(tmp_path, "r")
+    (root / "chain-credits.json").write_text(json.dumps({"by_day": {"2026-10-19": ss[-1]["chain_by_day"]["2026-10-19"]}}))
+    starts = [{"ms": START, "seq": 0, "frozen_sha": "a" * 40, "lane_h": False}]
+    job = {"logs_read": 1, "spend_state_reset": 0, "state_write_failed": 0}
+    c = R.eval_check_5(root, ss, starts, [], job, True)
+    assert c["status"] == R.PASS and c["numbers"]["early_hours_spend_bound"]["applies"] and c["numbers"]["rolling_hour_calls"]["max_upper_bound"] < 1400  # S plus the 260 bucket still in the previous sample: conservative, as QP states
+    assert max(x["chain_by_day"]["2026-10-19"] for x in ss) > 1500  # the run total itself is over the hourly limit
+    no_spend = [{**x, "spend": None} for x in ss]
+    u = R.eval_check_5(root, no_spend, starts, [], job, True)
+    assert u["status"] == R.UNM and u["numbers"]["early_hours_spend_bound"]["applies"] is False and u["numbers"]["rolling_hour_calls"]["max_upper_bound"] > 1500
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ safe(): a check that raises is UNMEASURED for that check only
+@pytest.mark.parametrize("exc", [KeyError("k"), AttributeError("a"), ValueError("v"), OSError("o"), TypeError("t"), RuntimeError("r")])
+def test_a_check_that_raises_is_unmeasured_for_that_check_only_and_the_report_is_not_aborted(tmp_path, monkeypatch, exc):
+    base = run(build(tmp_path))
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(R, "eval_check_7", boom)
+    monkeypatch.setattr(R, "eval_timing", boom)
+    rec = run(build(sub(tmp_path, "again")))
+    c = by_id(rec)
+    for cid in ("6", "7"):
+        assert c[cid]["status"] == R.UNM and c[cid]["numbers"] == {"input_error": type(exc).__name__} and "input error" in c[cid]["notes"][0]
+    assert rec["verdict"] != "ERROR" and rec["schema"] == R.SCHEMA
+    assert {k: v["status"] for k, v in c.items() if k not in ("6", "7")} == {k: v["status"] for k, v in by_id(base).items() if k not in ("6", "7")}  # every other check is untouched
+    assert {"6", "7"} <= set(rec["unmeasured_checks"])
+    # the trim and memory sections run under the same wrapper
+    monkeypatch.setattr(R, "eval_trim", boom)
+    monkeypatch.setattr(R, "eval_memory", boom)
+    t = by_id(run(build(sub(tmp_path, "third"))))
+    assert t["QP-T1"]["status"] == R.UNM and t["QP-M1"]["status"] == R.UNM and t["1"]["status"] == R.PASS
+
+
+def test_safe_lets_a_policy_refusal_through_and_names_only_the_error_class():
+    def refuse():
+        raise R.Refused("path refused by policy")
+
+    with pytest.raises(R.Refused):
+        R.safe("7", "x", refuse)
+    c = R.safe("7", "x", lambda: {}["missing key with detail"])
+    assert c["status"] == R.UNM and c["numbers"] == {"input_error": "KeyError"} and "detail" not in json.dumps(c)
