@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -472,6 +473,10 @@ class RunnerConfig:
     live: bool = False  # live: decision_ms is the wall clock when the answer is in hand; sim: as_of + the reply's latency (deterministic)
     strict_leakage: bool = False
     seed: int = R_SEED
+    # lane H (the BST persona: H5 triggers) is dropped for HV4 window 1: the H5 classifier's feed is the sealed tip tape on mal-fast-0 and no H5Signal source
+    # is wired. main() turns it OFF (--lane-h turns it on later and is refused until a source is wired). Off: nine arms are registered and run (CON and BIG),
+    # no BST arm, book, ledger or log exists. The default here stays True so the lane-H tests of this module keep running.
+    lane_h: bool = True
 
 
 class Runner:
@@ -480,17 +485,23 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+        if not cfg.lane_h and h5 is not None:
+            raise ValueError("lane_h is off: an H5 source must not be wired")
+        self.lane_h = bool(cfg.lane_h)
+        self.arm_names = tuple(a for a in arms.ARMS if self.lane_h or arms.ARMS[a].persona != "BST")  # the arms that exist in this run
+        self.llm_arm_names = tuple(a for a in arms.llm_arms() if a in self.arm_names)
         self.binding = dict(binding) if binding is not None else None
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard, self.h5 = cfg, state, engine, model, chain, guard, h5
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
         self.log = DecisionLog(cfg.root)
-        self.books = {a: Book(a) for a in arms.ARMS}
-        self.playbooks = {n: load_playbook(n) for n in (*arms.PERSONAS, arms.RISK_LEDGER)}
+        self.books = {a: Book(a) for a in self.arm_names}
+        self.playbooks = {n: load_playbook(n) for n in (*(p for p in arms.PERSONAS if self.lane_h or p != "BST"), arms.RISK_LEDGER)}
         self.playbooks.update(dict(playbook_overrides or {}))
-        self.knobs = {a: Knobs.v0(s.persona) for a, s in arms.ARMS.items() if s.llm}
+        self.knobs = {a: Knobs.v0(arms.ARMS[a].persona) for a in self.llm_arm_names}
         # Per-arm version in force: the L, F and P arms of a persona can differ (the reviewer rewrites a learning arm's playbook, knobs and local vetoes).
         self.arm_state: dict[str, dict] = {}
-        for a, sp in arms.ARMS.items():
+        for a in self.llm_arm_names:
+            sp = arms.ARMS[a]
             if sp.llm:
                 ps = arms.PERSONA_SPECS[sp.persona]
                 self.arm_state[a] = {"version": 0, "playbook": self.playbooks[sp.persona], "knobs": {"min_conviction": ps.min_conviction_v0, **ps.plan_defaults},
@@ -521,7 +532,7 @@ class Runner:
         self.sim_now = 0  # sim mode: the engine's wall clock is the sim instant (its stale / future checks compare decision_ms with it)
         if not cfg.live:
             engine.now_fn = lambda: self.sim_now
-        self.invalid = {a: [0, 0] for a in arms.ARMS if arms.ARMS[a].llm}  # arm -> [invalid, total] verdicts (the 10% NOT EVALUABLE rule is read later)
+        self.invalid = {a: [0, 0] for a in self.llm_arm_names}  # arm -> [invalid, total] verdicts (the 10% NOT EVALUABLE rule is read later)
         orig = state.apply
 
         def apply(row: dict) -> None:
@@ -572,7 +583,8 @@ class Runner:
     # -- registration (bots.json lines, before the clock)
     def register_all(self, registry_path: str, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, dict]:
         out = {}
-        for a, spec in arms.ARMS.items():
+        for a in self.arm_names:
+            spec = arms.ARMS[a]
             # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
             # BST-L's answers. The X arms call no model and read none.
             ids = [self.model.model] if (spec.llm or spec.role == "R") else []
@@ -587,7 +599,7 @@ class Runner:
         cards and the re-check clocks come back. The quote history is a function of the tape (QuoteHistory), so it needs no replay of the log."""
         n = {"rows": 0, "open": 0, "reopened": 0}
         last_scan = None
-        for name in (*arms.ARMS, "SCAN", "RISK"):
+        for name in (*self.arm_names, "SCAN", "RISK"):
             self.log.verify(name)
             for r in self.log.rows(name):
                 n["rows"] += 1
@@ -607,7 +619,7 @@ class Runner:
                 n["reopened"] += 1
                 self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
-            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha})
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h})
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -1086,7 +1098,7 @@ class Runner:
 
     # -- watches (minute ticks)
     def watches(self, T: int) -> None:
-        for arm in arms.llm_arms():
+        for arm in self.llm_arm_names:
             b = self.books[arm]
             if arms.ARMS[arm].persona == "BST" or self.persona_halt(arms.ARMS[arm].persona) is not None:
                 continue
@@ -1114,7 +1126,7 @@ class Runner:
 
     # -- exits
     def exits(self, T: int) -> None:
-        for arm in MARKS_ARM_ORDER:
+        for arm in self.arm_names:
             b = self.books[arm]
             for pid in sorted(b.open):
                 pos = b.open.get(pid)
@@ -1203,7 +1215,7 @@ class Runner:
 
     # -- LLM re-checks (minute ticks)
     def rechecks(self, T: int) -> None:
-        for arm in arms.llm_arms():
+        for arm in self.llm_arm_names:
             spec = arms.PERSONA_SPECS[arms.ARMS[arm].persona]
             b = self.books[arm]
             if spec.recheck_minutes is None or not b.open or self.persona_halt(arms.ARMS[arm].persona) is not None:
@@ -1266,6 +1278,9 @@ class Runner:
 
     # -- lane H (BST)
     def triggers(self, T: int) -> None:
+        if not self.lane_h:
+            self.trig_q.clear()  # lane H is off: no trigger is ever decided, no BST arm exists
+            return
         q, self.trig_q = self.trig_q, []
         for f in q:
             if f["t_recv_ms"] >= T:
@@ -1374,7 +1389,7 @@ class Runner:
         if self.version_source is None:
             return
         now = self._now(T)
-        for arm in arms.reviewer_arms():
+        for arm in (a for a in arms.reviewer_arms() if a in self.arm_names):
             try:
                 av = self.version_source(arm, now)
                 if av is None and self.arm_state[arm]["manifest_sha256"] is not None:
@@ -1523,19 +1538,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
     ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
+    ap.add_argument("--lane-h", action="store_true", help="also run lane H (the BST arms, H5 triggers). OFF in window 1: refused until an H5Signal source is wired")
     a = ap.parse_args(argv)
+    h5 = None  # no H5Signal source is wired yet: the H5 classifier's feed is the sealed tip tape on mal-fast-0, not on this host
+    if a.lane_h and h5 is None:
+        print("hv4_runner: --lane-h needs an H5Signal source and none is wired; lane H stays off", file=sys.stderr)
+        return 2
     from tools.hv4_model import CallerModel, StubModel
 
     guard = BudgetGuard(a.root)
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h)
     chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
     chain_src.prefetch.start()
-    run = Runner(cfg, state, engine, model, chain_src, guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
+    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:
-        for k, v in run.register_all(a.registry).items():
+        regs = run.register_all(a.registry)
+        print(canon({"lane_h": run.lane_h, "n_bots": len(regs)}))
+        for k, v in regs.items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))
         return 0
     n = run.resume()
