@@ -60,20 +60,41 @@ class Pair:
         self.a, self.b = mk(tmp, "A"), mk(tmp, "B")
         self.open: list[list] = []  # [due slot, pid-by-engine {name: pid}, pool]
         self.outcomes = {"A": [], "B": []}
+        self.t_event = None  # hw_ms just before the first row below a floor or the first history_trimmed refusal: from there on the engines may differ
+
+    def _events(self):
+        return self.b.counters.get("rows_below_trim_floor", 0) + self.b.counters.get("refused_history_trimmed", 0)
+
+    def _mark(self, pre_ms, n0):
+        if self.t_event is None and self._events() > n0:
+            self.t_event = pre_ms or 0
 
     def feed(self, r):
+        pre, n0 = self.b.hw_ms, self._events()
         for e in (self.a, self.b):
             e.on_row(r)
+        self._mark(pre, n0)
 
     def buy(self, pool, slot):
         pids = {}
+        pre, n0 = self.b.hw_ms, self._events()
         for nm, e in (("A", self.a), ("B", self.b)):
             try:
                 pids[nm] = e.buy(BOT, pool, 0.25, int(e.hw_ms), int(slot), {})
                 self.outcomes[nm].append(("buy", pool, "ok"))
             except ArenaRefused as exc:
                 self.outcomes[nm].append(("buy", pool, str(exc).split(":")[0]))
+        self._mark(pre, n0)
         return pids
+
+    def ledgers_before_event(self):
+        """Both ledgers' rows written before the first below-floor row or history_trimmed refusal (all rows, if none occurred)."""
+        out = []
+        for e in (self.a, self.b):
+            rows = e.ledger.read_bot(BOT)
+            assert all("written_ms" in r for r in rows)
+            out.append([r for r in rows if self.t_event is None or r["written_ms"] < self.t_event])
+        return out
 
     def sell(self, pids, slot):
         for nm, e in (("A", self.a), ("B", self.b)):
@@ -112,7 +133,7 @@ class Pair:
             assert all(hb.slot[i] >= (hb.floor or 0) for i in range(1, len(hb.slot)))  # anchor + everything from the floor on
 
 
-def make_tape(seed, n_slots=2500, venues=("pumpswap", "pumpswap", "pumpswap", "bonding", "bonding")):
+def make_tape(seed, n_slots=2500, venues=("pumpswap", "pumpswap", "pumpswap", "bonding", "bonding"), dup_back=60):
     """Rows of five pools with long silences, V out of band / missing, duplicates of old prints and slot jitter (up to 30 slots, the engine's own order tolerance)."""
     rng = random.Random(seed)
     pools = [f"P{i}" for i in range(len(venues))]
@@ -129,34 +150,62 @@ def make_tape(seed, n_slots=2500, venues=("pumpswap", "pumpswap", "pumpswap", "b
             recent.append((slot, r))
             i += 1
         if recent and rng.random() < 0.03:  # a late duplicate of an older print (same signature, event index and slot), as the real feed emits
-            s0, r0 = rng.choice(recent[-300:])
+            s0, r0 = rng.choice(recent[-dup_back:])  # at most about dup_back / 1.2 slots old
             rows.append(dict(r0, t_recv_ms=tms(slot) + rng.randint(0, 300)))
     return rows
 
 
-@pytest.mark.parametrize("seed", range(6))
-def test_ledger_and_every_held_print_equal_untrimmed_on_a_random_tape(tmp_path, seed):
-    pair = Pair(tmp_path, keep=200)
+def drive(pair, seed, trim_from=0, after_jitter=False, dup_back=60):
+    """Feed make_tape(seed) with random buys (decision_slot = the row's slot) and fixed-hold sells; trim every 60 slots from slot `trim_from`. after_jitter: buy
+    (p = 0.8) right after a row that arrived behind the highest slot, the moment slot_at lags (the regime the guard exists for)."""
     rng = random.Random(1000 + seed)
     pending: list[tuple[int, dict]] = []
-    next_trim = 0
-    for r in make_tape(seed):
+    next_trim = trim_from
+    for r in make_tape(seed, dup_back=dup_back):
+        lag = pair.a.hw_slot - r["slot"]
         pair.feed(r)
         pool = r["pool"] or r["mint"]
         hw = pair.a.hw_slot
         for item in [x for x in pending if x[0] <= hw]:
             pending.remove(item)
             pair.sell(item[1], hw)
-        if rng.random() < 0.04 and pool in pair.a.pools:
+        if (rng.random() < 0.04 or (after_jitter and lag > 5 and rng.random() < 0.8)) and pool in pair.a.pools:
             pids = pair.buy(pool, r["slot"])
             if pids:
                 pending.append((hw + rng.randint(40, 160), pids))
         if hw >= next_trim:
             pair.b.trim_history()
             next_trim = hw + 60
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_ledger_and_every_held_print_equal_untrimmed_on_a_random_tape(tmp_path, seed):
+    pair = Pair(tmp_path, keep=200)
+    drive(pair, seed)
     pair.assert_equivalent(min_trades=5)
     assert pair.b.counters.get("hist_trimmed_prints", 0) > 0  # the trim did work
     assert sum(len(h.slot) for h in pair.b.pools.values()) < sum(len(h.slot) for h in pair.a.pools.values())
+    assert pair.t_event is None and "rows_below_trim_floor" not in pair.b.counters  # this tape never reached the floor: full equality above is the whole claim
+
+
+def test_random_tapes_that_reach_the_floor_count_it_and_are_equal_up_to_the_first_event(tmp_path):
+    """keep = 8 slots against 30 slots of jitter and late duplicates: rows fall below the floor and slot_at lags the floor. Equal wherever no such event has happened;
+    the counters are non-zero when it did; the trimmed engine's extra rows_dup are exactly its floor drops."""
+    refused = 0
+    for seed in range(4):
+        d = tmp_path / f"s{seed}"
+        d.mkdir()
+        pair = Pair(d, keep=8)
+        drive(pair, seed, trim_from=1000, after_jitter=True, dup_back=300)
+        pair.finish()
+        b, a = pair.b.counters, pair.a.counters
+        assert b.get("rows_below_trim_floor", 0) > 0 and pair.t_event is not None and pair.t_event >= tms(1000)
+        la, lb = pair.ledgers_before_event()
+        assert la == lb and sum(1 for r in la if r["kind"] == "trade") >= 3
+        assert 0 <= b["rows_dup"] - a.get("rows_dup", 0) <= b["rows_below_trim_floor"]
+        refused += b.get("refused_history_trimmed", 0)
+        assert b.get("refused_history_trimmed", 0) == sum(1 for r in pair.ledger(pair.b) if r["kind"] == "refused" and "history_trimmed" in r["detail"])
+    assert refused > 0  # the guard fired somewhere on these tapes
 
 
 @pytest.mark.parametrize("venue", ["pumpswap", "bonding"])
@@ -305,6 +354,57 @@ def test_history_is_capped_over_a_long_run_and_the_untrimmed_engine_grows(tmp_pa
     assert held_b <= 20 * per_pool_cap and held_a > 50 * held_b
     assert all(len(h.seen) <= len(h.slot) for h in pair.b.pools.values())  # the dedupe keys are bounded with the prints
     pair.assert_equivalent(min_trades=0)
+
+
+@pytest.mark.parametrize("venue", ["pumpswap", "bonding"])
+def test_the_hv4_calling_pattern_opens_on_a_trimmed_pool_exactly_as_on_an_untrimmed_engine(tmp_path, venue):
+    """HV4 and arena_rules pass the highest trade slot seen as decision_slot: sd ~ hw_slot, far above the floor, even while slot_at lags (a stale newest-received
+    row). The buy opens on both engines and the ledgers are byte-equal. (decision_slot = the stale 700 is the refused case, above.)"""
+    pair = Pair(tmp_path, keep=100)
+    i = 0
+    for s in range(100, 160):
+        pair.feed(row(i, s, "P1", venue))
+        i += 1
+    for s in range(160, 1000, 4):
+        pair.feed(row(i, s, "P9", "pumpswap"))
+        i += 1
+    pair.b.trim_history()
+    key = "P1" if venue == "pumpswap" else "MP1"
+    floor = pair.b.pools[key].floor
+    assert floor is not None and len(pair.b.pools[key].slot) == 1 and pair.a.hw_slot - floor >= 100
+    pair.feed(row(900_001, 700, "P8", "pumpswap", t=pair.a.hw_ms + 1000))  # newest-received row: slot_at is now ~700, below the floor
+    assert pair.b.slot_at(pair.b.hw_ms, 0.4) < floor and pair.b.hw_slot > floor
+    pids = pair.buy(key, pair.b.hw_slot)  # decision_slot = the highest trade slot seen
+    assert pair.outcomes["A"] == pair.outcomes["B"] == [("buy", key, "ok")] and set(pids) == {"A", "B"}
+    for s in range(1001, 1400, 3):
+        pair.feed(row(i, s, "P9", "pumpswap"))
+        i += 1
+        if s == 1202:
+            pair.sell(pids, s)
+    pair.assert_equivalent()
+    assert "refused_history_trimmed" not in pair.b.counters and pair.t_event is None
+
+
+def test_a_new_print_below_the_floor_is_dropped_and_counted_and_the_untrimmed_engine_adds_it(tmp_path):
+    """The residual, pinned: a genuinely new (non-duplicate) print older than the floor. The trimmed engine drops it and counts rows_below_trim_floor; the untrimmed
+    engine adds it, which also moves hw_ms / hw_ms_slot (the clock every bot's slot_at uses). From here the engines are NOT equivalent."""
+    pair = Pair(tmp_path, keep=100)
+    for i, s in enumerate(range(100, 160)):
+        pair.feed(row(i, s, "P1"))
+    for i, s in enumerate(range(160, 1000, 4)):
+        pair.feed(row(500 + i, s, "P9"))
+    pair.b.trim_history()
+    floor = pair.b.pools["P1"].floor
+    assert floor is not None and pair.a.counters.get("rows_dup", 0) == pair.b.counters.get("rows_dup", 0) == 0
+    n_a, n_b = len(pair.a.pools["P1"].slot), len(pair.b.pools["P1"].slot)
+    anchor_a, anchor_b = pair.a.hw_ms_slot, pair.b.hw_ms_slot
+    assert anchor_a == anchor_b > floor
+    pair.feed(row(7000, 130, "P1", sig="new-and-late", t=pair.a.hw_ms + 1000))  # not a repeat of any key, slot 130 << floor, received newest
+    assert pair.b.counters["rows_below_trim_floor"] == 1 and pair.b.counters["rows_dup"] == 1  # dropped, counted
+    assert pair.a.counters.get("rows_dup", 0) == 0 and "rows_below_trim_floor" not in pair.a.counters
+    assert len(pair.a.pools["P1"].slot) == n_a + 1 and len(pair.b.pools["P1"].slot) == n_b  # A holds the print, B does not
+    assert pair.a.hw_ms_slot == 130 and pair.b.hw_ms_slot == anchor_b  # A's slot clock moved back, B's did not
+    assert pair.t_event is not None
 
 
 def test_the_bound_is_derived_from_the_engine_constants():

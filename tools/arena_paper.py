@@ -92,12 +92,14 @@ HIST_KEEP_SLOTS = 20_000
 #     print > x (PumpSwap); ssb is the buys in slot x; nearby is the buy lamports over [x - round(NEARBY_WINDOW_S / sps), x]; the exit state and V sources read
 #     slot >= sd, forward only; GRACE_SLOTS only delays the exit read forward. The deepest look-back below the entry slot is therefore the nearby window,
 #     round(2 s / sps) <= TRIM_LOOKBACK_SLOTS = round(NEARBY_WINDOW_S / SPS_LO) = 13 slots (sps_ok means sps > SPS_LO), and the guard spot needs one print before the cut.
-#   * What the engine does NOT bound is how far sd can sit behind hw_slot: sd >= slot_at(instant) >= hw_ms_slot, the slot of the newest-RECEIVED row, which trails
-#     the highest slot seen by the feed's disorder. Measured on the 9 closed arena hours 2026-10-19T08..T16 (8,095,621 trade rows): at most 928 slots; late
+#   * What the engine does NOT bound is how far sd can sit behind hw_slot: sd = max(decision_slot, slot_at(instant)) and slot_at >= hw_ms_slot, the slot of the
+#     newest-RECEIVED row, which trails the highest slot seen by the feed's disorder (a caller that passes the highest slot seen as decision_slot, as HV4 and
+#     arena_rules do, has sd ~ hw_slot and never comes near the floor). Measured on the 9 closed arena hours 2026-10-19T08..T16 (8,095,621 trade rows): at most 928 slots; late
 #     duplicates arrive up to 898 slots behind. TRIM_KEEP_SLOTS is 5,000: 5.4 times the largest disorder seen, plus the 13-slot window.
-#   * The assumption is checked, not trusted: buy() refuses (as no_prints, counted as refused_history_trimmed) when its nearby window would reach below the pool's
+#   * The assumption is checked, not trusted: buy() refuses (as no_prints, counted as refused_history_trimmed) when sd - nearby would reach below the pool's
 #     trim floor, and a row below the floor is dropped as the duplicate it nearly always is (counted rows_below_trim_floor next to rows_dup). A refused buy is a
-#     counted data refusal; the trim never prices from a hole.
+#     counted data refusal; the trim never prices from a hole. A NONZERO rows_below_trim_floor or any history_trimmed refusal VOIDS the equivalence with an
+#     untrimmed engine for every book on this engine (a dropped new print would have moved hw_ms / hw_ms_slot, the clock, late_print rows and the anchor).
 TRIM_LOOKBACK_SLOTS = int(round(F.NEARBY_WINDOW_S / SPS_LO))
 TRIM_KEEP_SLOTS = 5_000
 LATE_KEEP_SLOTS = 2_000  # a priced position is watched for late prints this many slots past its need slot
@@ -1103,7 +1105,9 @@ class ArenaEngine:
             sps = self.sps()
             if sps is None:
                 raise ArenaRefused("clock_not_ready: slot clock not ready (sps unknown)")
-            if h.floor is not None and self.slot_at(instant, sps) - int(round(F.NEARBY_WINDOW_S / sps)) < h.floor:  # sd >= slot_at, d >= 0, k >= 0: the least this buy reads
+            # Every read of this buy is at or above sd - nearby, sd = max(decision_slot, slot_at) (d >= 0, k >= 0 only push it later); a caller that passes the highest slot
+            # seen as decision_slot (HV4, arena_rules) has sd ~ hw_slot, far above any floor. Refuse only where the trimmed pool lacks prints the buy would read.
+            if h.floor is not None and max(int(decision_slot), self.slot_at(instant, sps)) - int(round(F.NEARBY_WINDOW_S / sps)) < h.floor:
                 self._count("refused_history_trimmed")
                 raise ArenaRefused(f"no_prints: history_trimmed: the nearby window of this buy reaches below slot {h.floor}, where trim_history() cut pool {pool}")
         except ArenaRefused as exc:  # a refused buy is still a decision: it goes in the decision log and counts toward the excluded share
