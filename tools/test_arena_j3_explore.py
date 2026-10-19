@@ -278,3 +278,63 @@ def test_recording_subclass_decides_what_the_plain_rule_decides(tmp_path, monkey
         h.run(B, B + 3_590 * SEC)
         logs[name] = {r.bot_id: decision_files(tmp_path / name / "rules", r.bot_id) for r in h.rules}
     assert logs["plain"] == logs["rec"] and all(logs["plain"].values())
+
+
+# -------------------------------------------------------------------------------------------------------------------------- B1: the rent-charged leg's selector, on hand-built rows
+def _hand_state(qe=80e9, be=8e14, qx=80e9, bx=8e14, ref=None, ssb=0.0, nearby=0.0):
+    return {"ref": qe / be if ref is None else ref, "Qe": {1.3: qe, 1.9: qe}, "Be": {1.3: be, 1.9: be}, "ssb": {1.3: ssb, 1.9: ssb}, "nearby": {1.3: nearby, 1.9: nearby}, "Qx": qx, "Bx": bx}
+
+
+def _hand_row(pid: str, ms: int, st: dict, stake: float = 0.25) -> dict:
+    """A ledger `trade` row in the shape ArenaEngine.build_rows writes, priced by arena_paper.price_leg on a hand-made state."""
+    from tools.arena_paper import LAT_TAG, price_leg
+
+    cfg = stack_config(7)
+    legs: dict = {"total": {}, "sc": {}}
+    calc: dict = {}
+    for lat in F.LATENCIES_S:
+        tag = LAT_TAG[lat]
+        calc[tag] = {"landing_slot": 1, "Qe": st["Qe"][lat], "Be": st["Be"][lat], "spot": st["ref"], "ssb": st["ssb"][lat], "nearby_lamports": st["nearby"][lat], "Qx": st["Qx"], "Bx": st["Bx"],
+                     "by_rule": {}}
+        for rule in ("total", "sc"):
+            r = price_leg("pumpswap", stake * 1e9, st, lat, cfg, rule)
+            legs[rule][f"flat_{tag}"] = {"state": r["state"], "net_lamports": r["flat"]}
+            legs[rule][f"press_{tag}"] = {"state": r["state"], "net_lamports": r["press"]}
+            calc[tag]["by_rule"][rule] = {"pnl_nofail": r["pnl"], "filled": r["filled"], "state": r["state"], "strand": r["strand"], "e1_extra": r["e1_extra"], "p_press_provisional": r["p"]}
+    return {"kind": "trade", "position_id": pid, "trade_id": f"{pid}-s250", "stake_sol": stake, "decision_ms": {"entry": ms, "exit": ms + 60_000}, "legs": legs, "calc": calc,
+            "stack": cfg.as_dict(), "state_src": "tape", "v_src": {"entry": "row", "exit": "row", "span": {"row": 3}}}
+
+
+def test_rent_charged_leg_transforms_only_trips_in_state_filled():
+    """DEC-031 Am.2 item 7: the selector is the leg STATE, not the `filled` flag. An exit_invalid trip has filled True (and strand False under 'sc'), but its pnl already carries
+    the 2,039,280 strand rent, so charging it again would double count; a guarded trip has filled False. Neither may be transformed, under both strand rules."""
+    day2 = B + 24 * HOUR
+    guarded = _hand_state(ref=80e9 / 8e14 / 2)  # the decision-time spot is half the landing price: the 1.15 guard reverts the buy
+    bad_exit = _hand_state(qx=1e9)  # an exit below the pool's real floor: exit_invalid
+    states = [_hand_state(), _hand_state(qe=70e9, ssb=1.0, nearby=2e9), _hand_state(qe=90e9, qx=91e9), _hand_state(qe=75e9, qx=75.2e9, ssb=3.0, nearby=1e9), guarded, bad_exit]
+    msx = [B, B + 5 * SEC, B + 9 * SEC, day2, day2 + 5 * SEC, day2 + 9 * SEC]
+    trades = [_hand_row(f"p{i}", ms, st) for i, (ms, st) in enumerate(zip(msx, states))]
+    subs = E.subcells(trades)
+    assert set(subs) == {f"{m}_1p9_{r}" for m in ("flat", "press") for r in ("total", "sc")}
+    for rule in ("total", "sc"):
+        by = [t["calc"]["1p9"]["by_rule"][rule] for t in trades]
+        assert [b["state"] for b in by] == ["filled"] * 4 + ["guarded", "exit_invalid"]
+        assert [b["filled"] for b in by] == [True] * 4 + [False, True]  # the flag and the state differ on the exit_invalid trip
+        assert by[5]["strand"] is (rule == "total")  # under 'sc' it has filled True and strand False: neither flag selects the state
+        g = lambda key: np.array([b[key] for b in by])  # noqa: E731
+        pnl, fil, strand = g("pnl_nofail").astype(float), g("filled").astype(bool), g("strand").astype(bool)
+        ssb = np.array([t["calc"]["1p9"]["ssb"] for t in trades], float)
+        near = np.array([t["calc"]["1p9"]["nearby_lamports"] for t in trades], float)
+        flat, press, _, p = book_fail_legs(pnl, fil, strand, ssb, near, 505_000) if rule == "total" else F.fail_legs(pnl, fil, ssb, near, 505_000)
+        sel = np.array([b["state"] == "filled" for b in by])
+        assert sel.sum() == 4 and fil.sum() == 5
+        for model, x, rc in (("flat", flat, flat - 0.85 * RENT * sel), ("press", press, press - (1 - p) * RENT * sel)):
+            s = subs[f"{model}_1p9_{rule}"]
+            assert s["n"] == 6 and s["fills"] == 5 and s["states"] == {"filled": 4, "guarded": 1, "exit_invalid": 1}
+            assert s["rent_charged"]["trips_transformed"] == 4 < s["n"]  # the guarded and the exit_invalid trip are not transformed
+            assert s["total_sol"] == pytest.approx(x.sum() / 1e9, abs=1e-12)
+            assert s["rent_charged"]["total_sol"] == pytest.approx(rc.sum() / 1e9, abs=1e-12)
+            assert s["total_sol"] - s["rent_charged"]["total_sol"] == pytest.approx(((0.85 if model == "flat" else (1 - p)) * RENT * sel).sum() / 1e9, abs=1e-12)
+            assert s["rent_charged"]["mean_sol"] == pytest.approx(rc.mean() / 1e9, abs=1e-12)
+            assert s["days"] == 2 and s["ci90_lo_date_cluster_sol"] is not None
+    assert E.subcells([]) == {}
