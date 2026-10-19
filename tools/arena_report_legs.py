@@ -1,10 +1,11 @@
 """Arena report legs (hunt20): the two REPORT-ONLY legs that DEC-031 Amendment 2 item 7 and quant-proof's 2026-10-19 cohort-2 ruling (R1 (f), R7) require beside
-every arena read figure. PAPER ONLY. READ-ONLY on the ledger and the tape. It never changes a deciding figure and writes nothing except an optional --json file.
+every arena read figure. PAPER ONLY. READ-ONLY on the ledger and the tape. It never changes a scorer figure and writes nothing except an optional --json file.
 
     python -m tools.arena_report_legs --bot BOT_ID --ledger-root DIR --registry FILE [--tape-dir DIR] [--close-blocked FILE] [--vmap FILE] [--json OUT]
                                       [--now-ms MS] [--settle-hours H] [--tape-pad-hours H]
 
-Nothing here is a verdict. The deciding cell is fixed by DEC-031 section 2 (1.9 s at the pinned stake, flat + pressure, strand rules sc + total) and is printed by
+The legs are not verdicts and change no figure of the scorer. The one deciding change is the close-blocked reclassification of Am.2 item 6, applied only when
+--close-blocked supplies a list, and printed as "DECIDING (DEC-031 Am.2 item 6)" with the post-reclassification verdict. The deciding cell is fixed by DEC-031 section 2 (1.9 s at the pinned stake, flat + pressure, strand rules sc + total) and is printed by
 tools/arena_score.py. These legs are printed BESIDE it:
 
 LEG 1, RENT-CHARGED (DEC-031 Am.2 item 7; QP R1 (f)). The deciding rent of a covered book is 0 on every trip whose leg state is `filled`. The rent-charged leg
@@ -76,7 +77,8 @@ TAPE_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 HOUR_MS = 3_600_000
 PARITY_RTOL = 1e-12
 PARITY_PNL_ATOL = 1e-3  # lamports
-BANNER = ("REPORT-ONLY LEGS beside the deciding figures (DEC-031 Amendment 2 item 7, QP ruling R1 (f) and R7). They never decide and change no figure. "
+BANNER = ("REPORT-ONLY LEGS beside the deciding figures (DEC-031 Amendment 2 item 7, QP ruling R1 (f) and R7). The legs never decide and change no figure of the scorer. "
+          "The one deciding change is the close-blocked reclassification of Am.2 item 6 when a list is supplied: its cells are labelled DECIDING. "
           "A book that passes only at rent 0 is described in those words. Nothing here is a profit claim.")
 
 
@@ -134,14 +136,26 @@ def reclassify_close_blocked(trades: Sequence[Mapping[str, Any]], position_ids: 
             continue
         r2 = copy.deepcopy(dict(r))
         stake, send = float(round(r["stake_sol"] * 1e9)), float(r["stack"]["send"])
+        changed = False
         for lat in LATS:
             for rule, br in r2["calc"][lat]["by_rule"].items():
                 if br["state"] == "filled":
                     br.update(pnl_nofail=-stake - send - STRAND_RENT, filled=True, state="stranded", strand=(rule == "total"), e1_extra=0.0)
-        r2["reclassified"] = "close_blocked"
-        out.append(r2)
+                    changed = True
+        if changed:  # `reclassified` marks only a trip that actually left state "filled"; a listed position whose trip was guarded or already a strand is not counted
+            r2["reclassified"] = "close_blocked"
+            out.append(r2)
+        else:
+            out.append(dict(r))
     return out
 
+
+def check_close_blocked_ids(ids: Sequence[str], by_stake: Mapping[float, Sequence[Mapping[str, Any]]]) -> None:
+    """Refuse position_ids that are not in the book's covered trade set (an unknown id is a list from another book or a typo; it must not be counted silently)."""
+    known = {r["position_id"] for ts in by_stake.values() for r in ts}
+    unknown = sorted(set(ids) - known)
+    if unknown:
+        raise Refused(f"{len(unknown)} close-blocked position_id(s) are not in this book's covered trade set (first: {unknown[:3]}): refused")
 
 # ------------------------------------------------------------------------------------------------------------------------------ cells
 def leg_values(trades: Sequence[Mapping[str, Any]], rule: str, lat: str, rent_delta: float = 0.0) -> dict[str, Any]:
@@ -376,23 +390,26 @@ def load_pools(rows: Iterator[Mapping[str, Any]] | Sequence[Mapping[str, Any]], 
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ one bot
-def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist] | None, close_blocked: Sequence[str] = ()) -> dict[str, Any]:
+def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist] | None, close_blocked: Sequence[str] | None = None) -> dict[str, Any]:
     """All legs of one (bot, stake) book: the base figure, the rent-charged leg, and (when pools are given) the worst-in-slot leg, the END-minus-worst gap and the
-    two stacked. Close-blocked positions are reclassified in every one of them, before the rent transform."""
+    two stacked. Close-blocked positions are reclassified in every one of them, before the rent transform. close_blocked None = no list supplied (the mint fetch has
+    not been applied); [] = a list was supplied and holds no id."""
+    cb = list(close_blocked or ())
     ledger_rent = book_rent(trades)
     if ledger_rent > RENT_CHARGED:
         raise Refused(f"the rows were priced at rent {ledger_rent}, above the {RENT_CHARGED} this leg charges: a negative delta would credit rent, and this tool never credits rent")
     delta = float(RENT_CHARGED - ledger_rent)
     out: dict[str, Any] = {"n_trades": len(trades), "ledger_rent": ledger_rent, "rent_delta": delta, "as_scored": cells_of(trades)}
-    base = reclassify_close_blocked(trades, close_blocked) if close_blocked else list(trades)
+    base = reclassify_close_blocked(trades, cb) if cb else list(trades)
     out["n_close_blocked"] = sum(1 for r in base if r.get("reclassified"))
-    out["base"] = cells_of(base) if close_blocked else out["as_scored"]
+    out["close_blocked"] = {"supplied": close_blocked is not None, "listed": len(set(cb)), "trips_changed": out["n_close_blocked"]}
+    out["base"] = cells_of(base) if out["n_close_blocked"] else out["as_scored"]
     out["rent_charged"] = cells_of(base, delta)
     if pools is None:
         out["worst_in_slot"] = "worst-in-slot not measured (no --tape-dir)"
         return out
     wrows, diag = worst_in_slot_rows(trades, pools)
-    wbase = reclassify_close_blocked(wrows, close_blocked) if close_blocked else wrows
+    wbase = reclassify_close_blocked(wrows, cb) if cb else wrows
     worst = cells_of(wbase)
     out["worst_in_slot"] = {"cells": worst, "diag": diag, "end_minus_worst": end_minus_worst(out["base"], worst),
                             "rent_charged_stacked": cells_of(wbase, delta)}
@@ -400,7 +417,7 @@ def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolH
 
 
 def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os.PathLike, *, tape_dir: str | os.PathLike | None = None,
-                 close_blocked: Sequence[str] = (), vmap: Mapping[str, Any] | None = None, now_ms: int | None = None, settle_ms: int = SETTLE_MS,
+                 close_blocked: Sequence[str] | None = None, vmap: Mapping[str, Any] | None = None, now_ms: int | None = None, settle_ms: int = SETTLE_MS,
                  tape_pad_hours: float = 2.0) -> dict[str, Any]:
     _check_text(bot_id, "bot_id")
     check_path(ledger_root, "ledger root")
@@ -415,11 +432,12 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os
     scored = score_bot(bot_id, reg, rows, now, None, settle_ms, None, incidents=incidents, ledger_problems=problems + inc_problems)
     rep: dict[str, Any] = {"bot_id": bot_id, "report_only": True, "banner": BANNER, "scorer_status": scored["status"], "scorer_reasons": scored["reasons"],
                            "read_boundary_ms": scored.get("read_boundary_ms"), "deciding_stake": scored["deciding_stake"], "config": scored["config"],
-                           "rent_charged_lamports": RENT_CHARGED, "close_blocked_positions": len(set(close_blocked)), "books": {}}
+                           "rent_charged_lamports": RENT_CHARGED, "close_blocked": {"supplied": close_blocked is not None, "listed": len(set(close_blocked or ()))}, "books": {}}
     if "books" not in scored:
         rep["note"] = "the scorer has not reached the read boundary: no legs"
         return rep
     by_stake = covered_trades(bot_id, reg, rows, scored["read_boundary_ms"])
+    check_close_blocked_ids(close_blocked or (), by_stake)
     pools = None
     if tape_dir is not None:
         pids = {r.get("pool") for ts in by_stake.values() for r in ts}
@@ -434,6 +452,18 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os
         legs = legs_for_book(trades, pools, close_blocked)
         check_parity_with_scorer(st, legs["as_scored"], scored["books"][str(st)]["cells"])
         rep["books"][str(st)] = legs
+    dk = str(scored["deciding_stake"])
+    dec = rep["books"].get(dk)
+    if dec and dec["n_close_blocked"]:  # Am.2 item 6 / QP R1 (e): a close-blocked trip is in the DECIDING cell, so these cells are deciding, not report-only
+        for k, c in dec["base"].items():
+            if "_1p9_" in k:
+                c["gate_check"].update(report_only=False, label="DECIDING (DEC-031 Am.2 item 6)")
+        subs = {k: c["gate_check"] for k, c in dec["base"].items() if "_1p9_" in k}
+        ok = len(subs) == 4 and all(g["criteria_met"] for g in subs.values())
+        before = scored["status"]
+        rep["post_reclassification"] = {"label": "DECIDING (DEC-031 Am.2 item 6)", "deciding_stake": dk, "scorer_status_before_reclassification": before,
+                                        "subcells": {k: {"criteria_met": g["criteria_met"], "misses": g["misses"]} for k, g in sorted(subs.items())},
+                                        "verdict": ("PASS" if ok else "FAIL") if before in ("PASS", "FAIL") else f"{before} (unchanged: not a PASS / FAIL status)"}
     return rep
 
 
@@ -444,7 +474,8 @@ def _f(z: Any) -> str:
 
 def _cell_line(k: str, c: Mapping[str, Any], tag: str = "") -> str:
     return (f"    {tag}{k:16s} n {c['n']:4d} days {c['days']:2d} pos {c['days_pos']:2d} mean {_f(c['mean_sol'])} total {_f(c['total_sol'])} ci90lo {_f(c['ci90_lo_sol'])} "
-            f"ex-top3 {_f(c['ex_top3_sol'])} ex-best-day {_f(c['ex_best_day_sol'])}  [criteria {'met' if c['gate_check']['criteria_met'] else 'missed'}, report-only]")
+            f"ex-top3 {_f(c['ex_top3_sol'])} ex-best-day {_f(c['ex_best_day_sol'])}  [{c['gate_check'].get('label') or 'report-only'}: criteria "
+            f"{'met' if c['gate_check']['criteria_met'] else 'missed'}]")
 
 
 def render(rep: Mapping[str, Any]) -> str:
@@ -453,12 +484,22 @@ def render(rep: Mapping[str, Any]) -> str:
         L.append(f"  scorer reason: {r}")
     if rep.get("note"):
         L.append(f"  {rep['note']}")
+    cbi = rep["close_blocked"]
+    L.append("  close-blocked list: " + ("NOT SUPPLIED (the mint-account fetch of Am.2 item 6 has not been applied; every figure below is as scored)" if not cbi["supplied"]
+                                        else f"supplied, {cbi['listed']} position_id(s)"))
+    pr = rep.get("post_reclassification")
+    if pr:
+        L.append(f"  *** the scorer status above ({pr['scorer_status_before_reclassification']}) is BEFORE the close-blocked reclassification. "
+                 f"{pr['label']} verdict after it, stake {pr['deciding_stake']}: {pr['verdict']} ***")
+        for k, g in pr["subcells"].items():
+            L.append(f"      {k}: {'criteria met' if g['criteria_met'] else '; '.join(g['misses'])}")
     dk = str(rep["deciding_stake"])
     for st, b in rep["books"].items():
         L.append(f"\n  stake {st}{' (deciding)' if st == dk else ' (report-only)'}  trades {b['n_trades']}  ledger rent {b['ledger_rent']}  the leg charges {RENT_CHARGED} "
                  f"(delta {b['rent_delta']:.0f})  close-blocked trips {b['n_close_blocked']}")
         w = b["worst_in_slot"]
-        for title, cells in (("as scored (the scorer's own cells)", b["as_scored"]), ("base after close-blocked reclassification", b["base"] if b["n_close_blocked"] else None),
+        for title, cells in (("as scored (the scorer's own cells)", b["as_scored"]), (("DECIDING (DEC-031 Am.2 item 6) after close-blocked reclassification" if st == dk else "base after close-blocked reclassification (not the deciding stake)"),
+                              b["base"] if b["n_close_blocked"] else None),
                              ("RENT-CHARGED leg", b["rent_charged"]), ("WORST-IN-SLOT leg", None if isinstance(w, str) else w["cells"]),
                              ("WORST-IN-SLOT + RENT-CHARGED (stacked)", None if isinstance(w, str) else w["rent_charged_stacked"])):
             if cells is None:
@@ -508,7 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for what, p in (("close-blocked file", a.close_blocked), ("vmap file", a.vmap), ("json output", a.json)):
             if p:
                 check_path(p, what)
-        cb = load_json_ids(a.close_blocked) if a.close_blocked else []
+        cb = load_json_ids(a.close_blocked) if a.close_blocked else None  # None: no list supplied; [] (an empty file list): supplied, zero blocked
         vmap = json.loads(Path(a.vmap).read_text()) if a.vmap else None
         rep = build_report(a.bot, a.ledger_root, a.registry, tape_dir=a.tape_dir, close_blocked=cb, vmap=vmap, now_ms=a.now_ms, settle_ms=int(a.settle_hours * HOUR_MS),
                            tape_pad_hours=a.tape_pad_hours)

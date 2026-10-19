@@ -276,6 +276,70 @@ def test_build_report_matches_the_scorer_charges_the_filled_trips_and_changes_no
     assert "REPORT-ONLY LEGS" in text and "RENT-CHARGED leg" in text and "worst-in-slot not measured" in text and "ex-best-day" in text
 
 
+NOW = DAY0 + 30 * DAY
+
+
+def clean_book(n=100):
+    """A book of n clean filled trips (pnl about +10 SOL-thousandths each) over 5 UTC dates: the scorer reads PASS."""
+    rng = np.random.default_rng(11)
+    rows = [start_row()]
+    for i, p in enumerate(rng.normal(10e6, 1e6, n)):
+        rows += [open_row(f"p{i:03d}", i, i // (n // 5)), synth_row(f"p{i:03d}", i, i // (n // 5), float(p))]
+    return rows
+
+
+def test_no_list_supplied_is_told_apart_from_a_list_that_blocks_nothing(tmp_path):
+    rows, _, _, _ = hundred_trips()
+    root, reg = write_world(tmp_path, rows)
+    none, zero = R.build_report("botA", root, reg, now_ms=NOW), R.build_report("botA", root, reg, now_ms=NOW, close_blocked=[])
+    assert none["close_blocked"] == {"supplied": False, "listed": 0} and zero["close_blocked"] == {"supplied": True, "listed": 0}
+    assert none["books"]["0.25"]["close_blocked"]["supplied"] is False and zero["books"]["0.25"]["close_blocked"] == {"supplied": True, "listed": 0, "trips_changed": 0}
+    assert "NOT SUPPLIED" in R.render(none) and "NOT SUPPLIED" not in R.render(zero) and "supplied, 0 position_id(s)" in R.render(zero)
+    assert none["books"]["0.25"]["rent_charged"] == zero["books"]["0.25"]["rent_charged"]  # the figures do not differ; the statement of what was applied does
+    assert "post_reclassification" not in none and "post_reclassification" not in zero
+
+
+def test_a_position_id_that_is_not_in_the_covered_trade_set_is_refused(tmp_path):
+    rows, _, _, _ = hundred_trips()
+    root, reg = write_world(tmp_path, rows)
+    with pytest.raises(Refused, match="not in this book's covered trade set"):
+        R.build_report("botA", root, reg, now_ms=NOW, close_blocked=["p096", "not-a-position"])
+
+
+def test_only_trips_that_actually_left_state_filled_are_counted_as_close_blocked(tmp_path):
+    rows, _, _, kinds = hundred_trips()
+    assert kinds[80] == "guarded" and kinds[86] == "exit_invalid" and kinds[92] == "stranded"
+    root, reg = write_world(tmp_path, rows)
+    rep = R.build_report("botA", root, reg, now_ms=NOW, close_blocked=["p080", "p086", "p092"])  # guarded, exit_invalid, stranded: nothing to reclassify
+    b = rep["books"]["0.25"]
+    assert rep["close_blocked"] == {"supplied": True, "listed": 3} and b["n_close_blocked"] == 0 and b["close_blocked"]["trips_changed"] == 0
+    assert b["base"] == b["as_scored"] and "post_reclassification" not in rep and "DECIDING (DEC-031" not in R.render(rep)
+
+
+def test_reclassified_close_blocked_cells_are_labelled_deciding_with_the_post_reclassification_verdict(tmp_path):
+    root, reg = write_world(tmp_path, clean_book())
+    now = NOW
+    plain = R.build_report("botA", root, reg, now_ms=now)
+    assert plain["scorer_status"] == "PASS" and "DECIDING (DEC-031" not in R.render(plain)
+    assert all(c["gate_check"]["criteria_met"] for k, c in plain["books"]["0.25"]["as_scored"].items() if "_1p9_" in k)
+    blocked = [f"p{i:03d}" for i in range(0, 100, 10)]  # 10 of the 100 trips are close-blocked: each becomes a total loss
+    rep = R.build_report("botA", root, reg, now_ms=now, close_blocked=blocked)
+    b = rep["books"]["0.25"]
+    assert rep["scorer_status"] == "PASS"  # the scorer's own status is before the reclassification ...
+    pr = rep["post_reclassification"]
+    assert pr["scorer_status_before_reclassification"] == "PASS" and pr["verdict"] == "FAIL" and pr["label"] == "DECIDING (DEC-031 Am.2 item 6)"  # ... and the verdict after it differs
+    assert set(pr["subcells"]) == {f"{m}_1p9_{r}" for m in ("flat", "press") for r in ("total", "sc")} and not all(g["criteria_met"] for g in pr["subcells"].values())
+    for k, c in b["base"].items():  # the deciding stake's 1.9 s sub-cells are deciding; the 1.3 s cells and the legs stay report-only
+        assert c["gate_check"]["report_only"] is (False if "_1p9_" in k else True)
+        assert (c["gate_check"].get("label") == "DECIDING (DEC-031 Am.2 item 6)") is ("_1p9_" in k)
+    assert all(c["gate_check"]["report_only"] and "label" not in c["gate_check"] for c in b["rent_charged"].values())
+    assert b["as_scored"] == plain["books"]["0.25"]["as_scored"] and b["base"]["flat_1p9_total"]["total_sol"] < b["as_scored"]["flat_1p9_total"]["total_sol"]
+    text = R.render(rep)
+    assert "BEFORE the close-blocked reclassification" in text and "DECIDING (DEC-031 Am.2 item 6) verdict after it, stake 0.25: FAIL" in text
+    assert "DECIDING (DEC-031 Am.2 item 6) after close-blocked reclassification" in text and "[DECIDING (DEC-031 Am.2 item 6): criteria missed]" in text
+    assert "[report-only: criteria" in text  # the rent-charged leg's lines
+
+
 def test_a_trade_set_that_is_not_the_scorers_is_refused(tmp_path, monkeypatch):
     rows, _, _, _ = hundred_trips()
     root, reg = write_world(tmp_path, rows)
@@ -589,7 +653,7 @@ def test_the_cli_prints_the_legs_beside_the_scorer_status_and_writes_json(tmp_pa
     text = capsys.readouterr().out
     assert code == 0 and "ARENA REPORT LEGS" in text and "scorer status" in text and "RENT-CHARGED leg" in text and "close-blocked trips 4" in text
     d = json.loads(out.read_text())
-    assert d["report_only"] is True and d["close_blocked_positions"] == 4 and d["books"]["0.25"]["n_close_blocked"] == 4
+    assert d["report_only"] is True and d["close_blocked"] == {"supplied": True, "listed": 4} and d["books"]["0.25"]["n_close_blocked"] == 4
     bad = tmp_path / "bad.json"
     bad.write_text("{\"x\": 1}")
     assert R.main(["--bot", "botA", "--ledger-root", root, "--registry", reg, "--close-blocked", str(bad), "--now-ms", str(DAY0 + 30 * DAY)]) == 3
@@ -609,7 +673,7 @@ def test_the_cli_exits_4_and_still_prints_when_the_end_state_does_not_match_the_
     trades, _ = world
     thin = R.load_pools([r for r in tape_rows() if not (r["pool"] == "PX" and r["slot"] == 106)])
     rep = {"bot_id": "botA", "report_only": True, "banner": R.BANNER, "scorer_status": "PASS", "scorer_reasons": [], "read_boundary_ms": 1, "deciding_stake": 0.25,
-           "books": {"0.25": R.legs_for_book([r for r in trades if r["stake_sol"] == 0.25], thin)}}
+           "close_blocked": {"supplied": False, "listed": 0}, "books": {"0.25": R.legs_for_book([r for r in trades if r["stake_sol"] == 0.25], thin)}}
     monkeypatch.setattr(R, "build_report", lambda *a, **k: rep)
     code = R.main(["--bot", "botA", "--ledger-root", "/x/ok/l", "--registry", "/x/ok/r.json", "--tape-dir", "/x/ok/t"])
     cap = capsys.readouterr()
