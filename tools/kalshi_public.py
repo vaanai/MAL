@@ -68,9 +68,15 @@ Conventions / caveats:
     deprecated ``taker_side``).  Prices are dollars as floats.
   * Trades ``--tail-s N`` (``--series`` only): for each settled market whose own ``close_time`` is in
     [--since, --until) fetch only the trades created in [close_time - N s, close_time]
-    (``min_ts`` / ``max_ts`` unix seconds, ``ticker=``, cursor pages; live or historical tier by the
-    cutoff as usual).  The window comes from the market record's ``close_time``, never from
-    ``settlement_ts`` (which can lag close by hours) and is NOT clipped to --since/--until.
+    (``ticker=``, ``min_ts`` / ``max_ts`` unix seconds, cursor pages; live or historical tier by the
+    cutoff as usual).  Whether the API's bounds are inclusive or exclusive is NOT verified, so the
+    request is padded by 1 s per side (``floor(close) - N - 1``, ``ceil(close) + 1``) and rows are
+    then cut client-side to created_time in [close - N, close], both ends inclusive; the stored set
+    is the same either way (the unit record has ``fetched`` and ``rows``).  The window comes from
+    the market record's ``close_time``, never from ``settlement_ts`` (which can lag close by hours)
+    and is NOT clipped to --since/--until.  At the historical/live cutoff second the tiers still
+    meet at one shared bound (as in full runs); a print created exactly there is not covered if
+    both bounds are exclusive.
     ``tail_s`` is part of the run's query (checkpoint name, manifest ``query``), part files are
     named ``trades-tail<N>:...`` so they never overwrite a full-history part, and a checkpoint
     whose recorded query differs from the run's is refused (exit 4).  A tail run and a full run
@@ -750,14 +756,23 @@ def cmd_markets(client, store, args, log):
 
 
 def tail_window(close_time, tail_s: int):
-    """(min_ts, max_ts) unix seconds for the trades tail of one market: [close_time - tail_s,
-    close_time], widened to whole seconds (floor / ceil) because the API takes integers, so a
-    fractional close never loses a trade.  None if the market has no usable close_time."""
+    """(min_ts, max_ts) unix seconds REQUESTED for the trades tail of one market:
+    ``floor(close) - tail_s - 1`` and ``ceil(close) + 1``.  The one-second pad on each side makes
+    the fetched set a superset of [close - tail_s, close] whether the API treats ``min_ts`` /
+    ``max_ts`` as inclusive or exclusive (not verified live); ``tail_keep`` then cuts the rows to
+    the exact window.  None if the market has no usable close_time."""
     d = parse_dt(close_time)
     if d is None:
         return None
     c = d.timestamp()
-    return math.floor(c) - tail_s, math.ceil(c)
+    return math.floor(c) - tail_s - 1, math.ceil(c) + 1
+
+
+def tail_keep(close_time, tail_s: int):
+    """(lo, hi) datetimes, both ends inclusive: the exact window [close - tail_s, close] a row's
+    created_time must be in to be stored.  None if there is no usable close_time."""
+    d = parse_dt(close_time)
+    return None if d is None else (d - timedelta(seconds=tail_s), d)
 
 
 def closes_in_window(m: dict, since, until) -> bool:
@@ -862,18 +877,23 @@ def cmd_trades(client, store, args, log):
         if t in store.done:
             continue
         lo, hi = tail_window(m.get("close_time"), tail_s)  # selection guarantees a close_time
-        n, req0 = 0, client.requests_made
+        keep_lo, keep_hi = tail_keep(m.get("close_time"), tail_s)
+        n, fetched, req0 = 0, 0, client.requests_made
         for i, rows in enumerate(iter_trade_batches(client, cutoff, t, lo, hi, args.flush_pages)):
+            fetched += len(rows)
+            # the request is padded by 1 s per side; keep exactly [close - tail_s, close]
+            rows = [r for r in rows
+                    if r["created_time"] is not None and keep_lo <= r["created_time"] <= keep_hi]
             # part name carries tail_s: a tail never overwrites a full-history part of the ticker
             store.write_partitioned("trades", rows, part=f"trades-tail{tail_s}:{t}:{i}",
                                     time_field="created_time")
             n += len(rows)
         store.unit_record(t, "ok" if n else "empty", n, tail_s=tail_s, min_ts=lo, max_ts=hi,
-                          requests=client.requests_made - req0)
+                          fetched=fetched, requests=client.requests_made - req0)
         store.mark_done(t)
         n_markets += 1
         n_rows += n
-        log(f"trades {t}: {n} (tail {tail_s}s, min_ts={lo}, max_ts={hi})")
+        log(f"trades {t}: {n} kept of {fetched} (tail {tail_s}s, request min_ts={lo}, max_ts={hi})")
     log(f"trades tail: {n_markets} market(s), {n_rows} row(s) this run")
     return True
 
