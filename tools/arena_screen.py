@@ -36,7 +36,11 @@ SCOPE (what a kit figure is NOT): exits are resolved by slot arithmetic at each 
 KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any of the FOUR sub-cells {flat, pressure} x {sc, total} with mean, total ex-top-3 or total
   ex-best-day <= 0; fewer than 3 blocks positive (a block is positive when its total is > 0 under ALL FOUR sub-cells); (b) mean <= 0 on explore-0814 ALONE or on the three September
   blocks POOLED (one period) under any sub-cell; (c) the in-sample gate pooled over all blocks on all four sub-cells: CI90 lower bound <= 0, or no majority of UTC dates positive.
-  A cell that is not killed is a SCREEN SURVIVOR only: worst-in-slot (R7) is NOT measured by this kit (PROVISIONAL), at most one survivor per rule group is picked by the rule author's
+  WORST-IN-SLOT (QP R7 ruling on #752/#747): on the SAME trips at the deciding cell the kit also prices the worst-in-slot leg and the "no guard rescue" companion (both from the
+  imported tools.arena_report_legs functions) and takes the LOWER of the two legs' mean per sub-cell. An EVENT-triggered cell (Cell.event_triggered, the default) is KILLED when that
+  lower mean is <= 0 in ANY of the four sub-cells; a time- or grid-triggered cell reports it only. If it cannot be measured (the tape states do not reproduce the kit's END states),
+  nothing is printed for it and an event cell stays PROVISIONAL-BLOCKED.
+  A cell that is not killed is a SCREEN SURVIVOR only: at most one survivor per rule group is picked by the rule author's
   declared statistic, and nothing here is a profit claim. `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
   SEAL (Amendment 1, 3): a pool younger than 360 s at the decision (counted from the pool's first print in the same block; state.first_seen holds EARLIER hours only) is REFUSED and counted
   (refused_pool_age_lt_360s). It is mandatory and not a parameter.
@@ -82,6 +86,7 @@ import numpy as np
 from tools import arena_paper as P
 from tools import arena_stack as F
 from tools.arena_score import MAX_EXCLUDED_SHARE, MIN_DAYS, MIN_N  # the gate's own constants (n >= 100, >= 5 UTC dates, 5% exclusion cap)
+from tools.arena_report_legs import PARITY_RTOL, end_minus_worst, slot_states, state_arrays, worst_index  # QP-approved on #747 (79d051e, sha256 in REPORT_LEGS_PIN): IMPORTED, never copied
 
 SCHEMA = "arena_screen_v1"
 CLEAN_VIEW = "/data/mal/clean-view"
@@ -327,7 +332,8 @@ def file_sha256(path: str | os.PathLike) -> str:
 
 def kit_provenance() -> dict:
     kit = Path(__file__).resolve()
-    out: dict[str, Any] = {"path": str(kit), "sha256": file_sha256(kit), "git_head": None, "git_dirty": None}
+    out: dict[str, Any] = {"path": str(kit), "sha256": file_sha256(kit), "git_head": None, "git_dirty": None,
+                           "report_legs_sha256": file_sha256(kit.parent / "arena_report_legs.py")}  # the imported worst-in-slot functions (R7); REPORT_LEGS_PIN is the QP-approved one
     try:
         out["git_head"] = subprocess.run(["git", "-C", str(kit.parent), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=20, check=True).stdout.strip()
         out["git_dirty"] = bool(subprocess.run(["git", "-C", str(kit.parent), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, timeout=20, check=True).stdout.strip())
@@ -748,15 +754,112 @@ def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, 
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ worst-in-slot (R7)
-# HOOK FOR PR #747 (open; exports slot_states(sa, x) and worst_index(sa, idx, side)). NOT IMPLEMENTED: until #747 merges the worst-in-slot leg "cannot be computed" and every cell is
-# reported as not measured (wave 1 only). When it merges: import them here (never copy), compute the worst-in-slot leg on the SAME trips at the deciding cell (1.9 s, 0.25 SOL, rent 0)
-# for all four sub-cells, return {(strand rule, fail): mean SOL per trade}, set WORST_IN_SLOT_AVAILABLE = True, and pin parity against #747 on the synthetic tape
-# (tools/test_arena_screen.py::test_worst_in_slot_parity_with_747 is the skipped placeholder). _cell_result then kills an event-triggered cell whose worst-in-slot mean is <= 0.
-WORST_IN_SLOT_AVAILABLE = False
+# The worst-in-slot leg is built from the functions QP approved on #747 (tools/arena_report_legs.py, merged 79d051e): state_arrays, slot_states, worst_index and end_minus_worst are
+# IMPORTED above and nothing of them is copied here. The kit hands them its own pool arrays and its own landing / exit slots (the engine's: x = decision + 7 + k, exit = exit decision + 7
+# + lag), computes the states per trip at pricing time (where the pool's prints are still in hand), and re-prices the SAME trips with its own vectorised legs() (equal to
+# arena_paper.price_leg to 0 lamports, and pinned equal to arena_report_legs on a fixture). Selection is by spot price, never by outcome.
+WORST_IN_SLOT_AVAILABLE = True
+REPORT_LEGS_PIN = "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b"  # sha256 of tools/arena_report_legs.py as QP approved it on #747 (the test fails if the file changes)
+
+
+class _ArrHist:
+    """A pool's kit arrays in the shape arena_report_legs.state_arrays reads from a PoolHist (`.pool`, `.arrays()`); `vok` = the print carries a finite V."""
+
+    def __init__(self, pool: str, a: dict) -> None:
+        self.pool = pool
+        self._a = {**a, "vok": np.isfinite(a["v"])}
+
+    def arrays(self) -> dict:
+        return self._a
+
+
+def _same(a: float, b: float) -> bool:
+    return bool(np.isclose(a, b, rtol=PARITY_RTOL, atol=0.0, equal_nan=True))
+
+
+def _no_v(sa: dict, idx: np.ndarray) -> bool:
+    """True if a PRINT among the state indices has no finite V (the derived END index n is not a print)."""
+    pr = idx[idx < len(sa["vok"])]
+    return bool(pr.size and not sa["vok"][pr].all())
+
+
+def worst_in_slot_states(pool: str, a: dict, sd: np.ndarray, sps_d: np.ndarray, xs: np.ndarray, sps_x: np.ndarray, need: np.ndarray, late: np.ndarray, skip: np.ndarray, st: dict) -> dict:
+    """The worst-in-slot state columns of one pool's trips (R7): the entry state of the highest price among the states of the landing slot, per latency, and the exit state of the lowest
+    price among the states of the exit slot. A trip whose END state the engine derived from the rows before `need` (the late-print case) uses that cut history, as arena_report_legs
+    does for a derived_last trip. `st` is the kit's own END pricing of the same trips: the END member of every slot's states must reproduce it (w_mismatch), and a slot state without
+    a finite V (w_vbad) is flagged; either makes the cell's worst-in-slot "not measured". `skip` trips (block-edge exclusions) are left NaN."""
+    n = len(sd)
+    out: dict[str, Any] = {"wQe": {l: np.full(n, np.nan) for l in LATS}, "wBe": {l: np.full(n, np.nan) for l in LATS}, "wQx": np.full(n, np.nan), "wBx": np.full(n, np.nan),
+                           "w_vbad": np.zeros(n, bool), "w_mismatch": np.zeros(n, bool)}
+    h = _ArrHist(pool, a)
+    full = state_arrays(h)
+    land = {l: sd + D + F.k_slots_vec(l, sps_d, "ceil") for l in LATS}
+    xl = xs + D + F.exit_lag_vec(sps_x)
+    for i in np.flatnonzero(~skip):
+        sa = state_arrays(h, int(need[i])) if late[i] else full
+        idx_x, je_x = slot_states(sa, int(xl[i]))
+        wx = worst_index(sa, idx_x, "sell")
+        out["wQx"][i], out["wBx"][i] = sa["QX"][wx], sa["BX"][wx]
+        bad_v = _no_v(sa, idx_x)
+        ok = _same(sa["QX"][je_x], st["Qx"][i]) and _same(sa["BX"][je_x], st["Bx"][i])
+        for l in LATS:
+            idx_e, je_e = slot_states(sa, int(land[l][i]))
+            we = worst_index(sa, idx_e, "buy")
+            out["wQe"][l][i], out["wBe"][l][i] = sa["QX"][we], sa["BX"][we]
+            bad_v = bad_v or _no_v(sa, idx_e)
+            ok = ok and _same(sa["QX"][je_e], st["Qe"][l][i]) and _same(sa["BX"][je_e], st["Be"][l][i])
+        out["w_vbad"][i], out["w_mismatch"][i] = bad_v, not ok
+    return out
+
+
+def _leg_stat(lam: np.ndarray) -> dict:
+    x = np.asarray(lam, float) / 1e9
+    return {"n": int(len(x)), "mean_sol": float(x.mean()), "total_sol": float(x.sum()), "ci90_lo_sol": F.boot_lo(x)}  # F.boot_lo exactly as arena_score.cell_stats calls it
 
 
 def worst_in_slot_legs(st: dict, cfg: P.StackConfig) -> dict:
-    raise NotImplementedError("worst-in-slot needs PR #747 (slot_states, worst_index) to be merged and imported; see the hook comment above")
+    """The worst-in-slot leg and its "no guard rescue" companion at the deciding cell (1.9 s, 0.25 SOL, cfg.rent) for the four sub-cells {sc, total} x {flat, press}, on the SAME trips as
+    the screen. st carries the END states (Qe, Be, Qx, Bx) and the worst-in-slot ones (wQe, wBe, wQx, wBx) from worst_in_slot_states. The pressure intercept is refit on each leg's own
+    filled set (the stack's per-cell refit, as arena_report_legs). The companion keeps the END-priced row of a trip that is filled at END and guarded at its worst entry state, so the
+    1.15 guard cannot revert it (QP on #747: with the guard the worst-in-slot leg alone is not a bound). `lower` = the lower of the two legs' means (R7 canary condition), per sub-cell.
+    Returns {"measured": False, "reason": ...} with NO figure when the tape states do not reproduce the kit's END states or a slot state has no V."""
+    n_mis, n_vbad = int(st["w_mismatch"].sum()), int(st["w_vbad"].sum())
+    if n_mis or n_vbad:
+        return {"measured": False, "reason": f"worst-in-slot not measured: END consistency failed on {n_mis} trips; a slot state has no V on {n_vbad} trips", "sub_cells": None,
+                "diag": {"trips": int(len(st["ref"])), "end_mismatch_trips": n_mis, "no_v_trips": n_vbad}}
+    stake, lat = STAKE_SOL * 1e9, LAT_DECIDING
+    stw = dict(st, Qe=st["wQe"], Be=st["wBe"], Qx=st["wQx"], Bx=st["wBx"])
+    end_c: dict[str, dict] = {}
+    wor_c: dict[str, dict] = {}
+    ng_c: dict[str, dict] = {}
+    flips: dict[str, int] = {}
+    icpt: dict[str, dict] = {}
+    for rule in STRAND_RULES:
+        E, W = legs(st, stake, lat, rule, cfg), legs(stw, stake, lat, rule, cfg)
+        rescue = E["filled"] & ~W["filled"]  # the guard turned a trip that was filled at END away at its worst entry state
+        flips[rule] = int(rescue.sum())
+        flat, press, c, _ = P.book_fail_legs(np.where(rescue, E["pnl"], W["pnl"]), np.where(rescue, E["filled"], W["filled"]), np.where(rescue, E["strand"], W["strand"]),
+                                             st["ssb"][lat], st["nearby"][lat], cfg.send)
+        NG = {"flat": flat, "press": press}
+        icpt[rule] = {"end": E["c"], "worst_in_slot": W["c"], "no_guard_rescue": c}
+        for fail in FAILS:
+            key = f"{rule}|{fail}"
+            end_c[key], wor_c[key], ng_c[key] = _leg_stat(E[fail]), _leg_stat(W[fail]), _leg_stat(NG[fail])
+    gap, gap_ng = end_minus_worst(end_c, wor_c), end_minus_worst(end_c, ng_c)
+    sub = {}
+    for key in end_c:
+        w, g = wor_c[key], ng_c[key]
+        sub[key] = {"end": end_c[key], "worst_in_slot": w, "no_guard_rescue": g,
+                    "lower": {"mean_sol": min(w["mean_sol"], g["mean_sol"]), "ci90_lo_sol": min(w["ci90_lo_sol"], g["ci90_lo_sol"]),
+                              "leg_of_mean": "no_guard_rescue" if g["mean_sol"] < w["mean_sol"] else "worst_in_slot"},
+                    "end_minus_worst": gap[key], "end_minus_no_guard_rescue": gap_ng[key]}
+    with np.errstate(all="ignore"):
+        inval = lambda Q, B: ~np.isfinite(Q / B) | (B <= 0)  # noqa: E731
+        moved = lambda a_, b_: int(((a_ != b_) & ~(np.isnan(a_) & np.isnan(b_))).sum())  # noqa: E731
+        diag = {"trips": int(len(st["ref"])), "guard_flips": flips, "pressure_intercept": icpt,
+                "invalid_pick": int((inval(st["wQe"][lat], st["wBe"][lat]) | inval(st["wQx"], st["wBx"])).sum()),
+                "entry_moved": moved(st["wQe"][lat], st["Qe"][lat]) + moved(st["wBe"][lat], st["Be"][lat]), "exit_moved": moved(st["wQx"], st["Qx"]) + moved(st["wBx"], st["Bx"])}
+    return {"measured": True, "reason": None, "sub_cells": sub, "diag": diag}
 
 
 def registration_status(event_triggered: bool, killed: bool, wis_measured: bool) -> str:
@@ -774,8 +877,8 @@ AUTHOR_NOTES = (
     "**Author's job, not the kit's.** (1) Drop any cell that matches the C1-NF decision grid and exit (EXP-025 section 4, DEC-031 section 3.7) BEFORE pricing. (2) Drop any cell under 20 "
     "attempts/day on explore-0814 WITHOUT pricing (RULES step 2); the kit's explore-0814 attempts/day kill is a backstop, not a substitute. (3) Before ANY registration run `causal_probe` "
     "(on a copy of the state) on a seed-1 sample of at least 200 triggers PER BLOCK with 0 failures, and state the count in REPORT; the kit hands a rule the whole hour and cannot see "
-    "look-ahead. (4) Declare per cell, before pricing, whether it is event-triggered (the default) or grid-triggered; an event cell may not register until worst-in-slot (R7) is measured "
-    "and > 0 on all four sub-cells (PR #747 not merged: PROVISIONAL-BLOCKED). (5) The kit's figures are not the bot's: it resolves exits by slot arithmetic at the hour's slot rate, "
+    "look-ahead. (4) Declare per cell, before pricing, whether it is event-triggered (the default) or grid-triggered; an event cell is KILLED when the lower of its worst-in-slot and no-guard-rescue legs has a mean <= 0 in any of the four sub-cells (R7), and stays PROVISIONAL-BLOCKED if "
+    "worst-in-slot could not be measured; a grid cell reports it only and needs it measured before any canary. (5) The kit's figures are not the bot's: it resolves exits by slot arithmetic at the hour's slot rate, "
     "the arena bot holds in ms on a 1 s tick with the engine's rolling clock, so the frozen bot's md5 decision-equivalence replay is still required at registration. (6) Selection: "
     "every figure is in-sample on blocks that were mined before; a survivor is the best of its declared cells, and the chance of at least one false screen pass is up to 1 - 0.95^N "
     "(QP ruling item 1). A survivor is a candidate for a forward slot and nothing more.",
@@ -982,6 +1085,7 @@ class Screen:
                         st[k][l][i] = v[l][0]
                 else:
                     st[k][i] = v[0]
+        st.update(worst_in_slot_states(pool, a, sd, sps_d, xs, sps_x, need, late, excl, st))  # R7: from the same pool arrays, before the block-edge exclusions are taken out
         keep = ~excl
         for cnt, mask in ((self.excl_cell, excl), (self.late_cell, late & keep), (self.derived_cell, nop & keep)):
             for k, m in zip(*np.unique(ci[mask], return_counts=True)):
@@ -1065,14 +1169,14 @@ class Screen:
         r["kill"], r["kill_reasons"] = kill_verdict(subs, names, {(g.split("|")[0], *g.split("|")[1:]): v for g, v in groups.items()}, excl_share=r["excluded_share"],
                                                     explore_att_per_day=r["explore_attempts_per_day"], min_att_per_day=self.min_per_day)
         cell = self.cells[ci]
-        wis: dict[str, Any] = {"measured": False, "four_sub_cells_mean_sol": None, "hook": "PR #747 (slot_states, worst_index) not merged: not computed"}
+        wis: dict[str, Any] = {"measured": False, "reason": "worst-in-slot not computed (WORST_IN_SLOT_AVAILABLE is False)", "sub_cells": None}
         if WORST_IN_SLOT_AVAILABLE:
-            means = worst_in_slot_legs(st, self.cfg[RENT_DECIDING])
-            wis = {"measured": True, "four_sub_cells_mean_sol": {"|".join(k): float(v) for k, v in means.items()}}
-            bad = [k for k in SUB_CELLS if not means[k] > 0]
-            if cell.event_triggered and bad:
-                r["kill"] = True
-                r["kill_reasons"].append("worst-in-slot mean <= 0 in " + ", ".join("/".join(k) for k in bad))
+            wis = worst_in_slot_legs(st, self.cfg[RENT_DECIDING])
+            if wis["measured"]:
+                bad = [k for k in SUB_CELLS if not wis["sub_cells"]["|".join(k)]["lower"]["mean_sol"] > 0]
+                if cell.event_triggered and bad:
+                    r["kill"] = True
+                    r["kill_reasons"].append("worst-in-slot (lower of the worst-in-slot and no-guard-rescue legs) mean <= 0 in " + ", ".join("/".join(k) for k in bad))
         r["event_triggered"], r["worst_in_slot"] = cell.event_triggered, wis
         r["registration"] = registration_status(cell.event_triggered, r["kill"], wis["measured"])
         return r
@@ -1172,6 +1276,26 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         g = lambda k: f"{_f(r['stats'][k]['mean_pct'])} ({_f(r['stats'][k]['total'], 3)})"  # noqa: E731
         L.append(f"| {nm} | {g('1.3|total|rent0|flat')} / {g('1.3|total|rent0|press')} | {g('1.9|total|rentC|flat')} / "
                  f"{g('1.9|total|rentC|press')} | {g('1.3|sc|rent0|flat')} / {g('1.3|sc|rent0|press')} | {r['legs']['1.9|total']['strands']} | {'; '.join(r['kill_reasons']) or '-'} |")
+    L += ["", "## 4. Worst-in-slot (R7): mean SOL per trade at the deciding cell (1.9 s, 0.25 SOL, rent 0), END / worst-in-slot / no guard rescue / **LOWER of the two**", "",
+          "An EVENT cell is KILLED when the LOWER mean is <= 0 in any sub-cell; a GRID cell reports it only. `not measured` = the tape states did not reproduce the kit's END states "
+          "(no figure is printed and an event cell stays PROVISIONAL-BLOCKED). CIlo = the lower of the two legs' trade-level CI90 bounds (arena_score's bootstrap). In-sample, no profit claim.", "",
+          "| cell | kind | " + " | ".join(f"{rule}/{fail}" for rule, fail in SUB_CELLS) + " | sub-cells with lower mean <= 0 | guard flips sc/total |", "|---|---|" + "---|" * (len(SUB_CELLS) + 2)]
+    for nm, r in res.items():
+        w = r.get("worst_in_slot")
+        if r["attempts"] == 0 or w is None:
+            continue
+        kind = "EVENT" if r["event_triggered"] else "GRID"
+        if not w["measured"]:
+            L.append(f"| {nm} | {kind} | " + " | ".join("not measured" for _ in SUB_CELLS) + " | - | - |")
+            continue
+        cols = []
+        for rule, fail in SUB_CELLS:
+            c = w["sub_cells"][f"{rule}|{fail}"]
+            cols.append(f"{_f(c['end']['mean_sol'], 4)} / {_f(c['worst_in_slot']['mean_sol'], 4)} / {_f(c['no_guard_rescue']['mean_sol'], 4)} / **{_f(c['lower']['mean_sol'], 4)}** "
+                        f"(CIlo {_f(c['lower']['ci90_lo_sol'], 4)}, {c['lower']['leg_of_mean']})")
+        nonpos = [f"{rule}/{fail}" for rule, fail in SUB_CELLS if not w["sub_cells"][f"{rule}|{fail}"]["lower"]["mean_sol"] > 0]
+        fl = w["diag"]["guard_flips"]
+        L.append(f"| {nm} | {kind} | " + " | ".join(cols) + f" | {', '.join(nonpos) or '-'} | {fl['sc']}/{fl['total']} |")
     return "\n".join(L) + "\n"
 
 
