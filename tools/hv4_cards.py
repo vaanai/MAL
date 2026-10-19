@@ -40,7 +40,6 @@ import bisect
 import hashlib
 import json
 import math
-import operator
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
@@ -235,9 +234,6 @@ class Predicate:
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # small numeric helpers
 # ---------------------------------------------------------------------------------------------------------------------------------------
-_FIRST = operator.itemgetter(0)
-
-
 def _num(x: Any) -> float | None:
     """A finite float, or None (bools, strings, NaN and inf are all None)."""
     if type(x) is float:  # speed only (scan perf): an exact float is finite iff x - x == 0.0, and float(x) is x; every other type takes the path below
@@ -345,7 +341,7 @@ def assert_as_of(snap: SnapshotLike, as_of_ms: int, *, prints: Iterable[PrintLik
         if isinstance(c, Mapping):
             chk("candle.t_min_ms", c.get("t_min_ms"))
     if prints is not None:
-        if type(prints) is not _NormPrints or (prints and max(map(_FIRST, prints)) >= as_of_ms):  # a normalised list: one max; the loop below then names the first offender
+        if type(prints) is not _NormPrints or (prints and max(p[0] for p in prints) >= as_of_ms):  # a normalised list: one max; the loop below then names the first offender
             for p in prints:
                 chk("print.t_ms", p[0])
     if chain is not None:
