@@ -679,7 +679,7 @@ def test_the_lip_f1_gate_must_be_a_final_deciding_book_a_read_instant_file(tmp_p
     ok = lip_gate(tmp_path)
     info = f2.check_lip_f1_gate(str(ok))
     assert info == {"path": str(ok), "sha256": sha(ok), "read_instant": "2026-10-24T00:00:00Z"}
-    for v in ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN", "NOT_DECIDABLE"):
+    for v in ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN"):
         assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))["sha256"]
     # a COUNTS_NOT_MET candidate is not final ... except the read at the NOT_DECIDABLE date
     with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
@@ -707,6 +707,33 @@ def test_the_lip_f1_gate_must_be_a_final_deciding_book_a_read_instant_file(tmp_p
     bad.write_text("[1, 2]")
     with pytest.raises(f2.F2Refusal, match="not a JSON object"):
         f2.check_lip_f1_gate(str(bad))
+
+
+def nd_gate(tmp, reasons, counts=(False, False, False), r="2026-10-25T00:00:00Z", **over):
+    cells = {c: {"gate": {"counts_met": m}} for c, m in zip(sim.CELLS, counts)}
+    return lip_gate(tmp, verdict="NOT_DECIDABLE", nd_reasons=reasons, read_instant=r, cells=cells, **over)
+
+
+def test_r1_a_lip_f1_not_decidable_is_final_only_with_counts_met_the_nd_date_or_the_coverage_reason(tmp_path):
+    excl = "excluded units (no trades / no metadata) exceed 10% of the units that would otherwise be opened"
+    cov = "recorder/poller coverage < 70% on two consecutive days"
+    assert cov == f2.COVERAGE_ND_REASON
+    # an exclusion-share NOT_DECIDABLE at 10-25 with the counts not met is a candidate, not a deciding file
+    for counts in ((False, False, False), (True, True, False), (True, False, True)):
+        with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):
+            f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], counts)))
+    with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):            # no cells at all (units-evidence path)
+        f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict="NOT_DECIDABLE", nd_reasons=["units not verified"], read_instant=Ellipsis)))
+    with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):
+        f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], r="2026-11-01T00:00:00Z")))
+    # (a) counts met in all three cells, (b) R >= the NOT_DECIDABLE date, (c) the coverage reason
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], (True, True, True))))["read_instant"] == "2026-10-25T00:00:00Z"
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], r="2026-11-02T00:00:00Z")))
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [cov])))
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl, cov])))
+    # PASS / FAIL / DEAD handling is unchanged
+    for v in ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN"):
+        assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))
 
 
 def test_the_book_c_marker_must_exist_and_must_not_be_the_start_marker(tmp_path):

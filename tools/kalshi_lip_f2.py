@@ -102,7 +102,9 @@ NOT_DECIDABLE_ISO = "2026-11-02T00:00:00Z"
 MARKER = "LIP-F2-VARIANT.json"
 BOOKC_START_MARKER = "BOOK-C-REPORT-ONLY.json"                 # written at the START of a Book C run: not a done marker
 SIM_OUTPUT_FILES = ("units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt", "snaps.parquet")
-FINAL_LIP_F1_VERDICTS = ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN", "NOT_DECIDABLE")
+FINAL_LIP_F1_VERDICTS = ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN")
+# The simulator's own wording of the coverage reason (run_sim): coverage over [freeze, R) is monotone in R.
+COVERAGE_ND_REASON = "recorder/poller coverage < 70% on two consecutive days"
 VERDICT_PASS = "FORMULA_SCREEN_PASSED (multiplicity-adjusted)"
 VERDICT_FAIL_ADJ = "FAIL (multiplicity-adjusted)"
 
@@ -283,8 +285,9 @@ def _read_json_dict(p, what):
 
 def check_lip_f1_gate(path):
     """Process rule (i): an outcome-computing F2 run needs LIP-F1's DECIDING gate.json: Book A, a ``--read-instant`` run
-    (no scan), the LIP-F1 freeze, and a verdict that is final (PASS, FAIL, DEAD_AS_FROZEN, NOT_DECIDABLE; or
-    COUNTS_NOT_MET at the 2026-11-02T00:00Z NOT_DECIDABLE read).  A COUNTS_NOT_MET candidate is not final.  The verdict
+    (no scan), the LIP-F1 freeze, and a verdict that is final: PASS, FAIL, DEAD_AS_FROZEN; NOT_DECIDABLE only if the
+    counts are met in all three cells, or R >= 2026-11-02T00:00Z, or the reason is the coverage rule (an exclusion-share
+    NOT_DECIDABLE at an early candidate is not final); COUNTS_NOT_MET only at the 2026-11-02T00:00Z read.  The verdict
     and every number in it stay unprinted: F2 never conditions on LIP-F1.  -> {path, sha256, read_instant}."""
     if not path:
         raise F2Refusal("skipped: LIP-F1 not final: --lip-f1-gate (LIP-F1's deciding gate.json) is required")
@@ -295,14 +298,24 @@ def check_lip_f1_gate(path):
     if d.get("book") != "A" or d.get("deciding") is not True or "scan" in d or d.get("freeze") != LIP_F1_FREEZE_ISO:
         raise F2Refusal(f"{path} is not a LIP-F1 deciding gate.json (Book A, --read-instant run, LIP-F1 freeze)")
     verdict, r = d.get("verdict"), d.get("read_instant")
-    if verdict == "COUNTS_NOT_MET" and r:
+    at_nd_date = False
+    if r:
         try:
-            nd_read = sim.iso_to_us(r) >= sim.iso_to_us(LIP_F1_NOT_DECIDABLE_ISO)
+            at_nd_date = sim.iso_to_us(r) >= sim.iso_to_us(LIP_F1_NOT_DECIDABLE_ISO)
         except ValueError:
-            nd_read = False
-    else:
-        nd_read = False
-    if verdict not in FINAL_LIP_F1_VERDICTS and not nd_read:
+            at_nd_date = False
+    final = verdict in FINAL_LIP_F1_VERDICTS
+    if verdict == "COUNTS_NOT_MET":
+        final = at_nd_date
+    elif verdict == "NOT_DECIDABLE":
+        # decide_verdict returns NOT_DECIDABLE before it looks at the counts, and the exclusion-share reason is not
+        # monotone in R, so an exclusion-share NOT_DECIDABLE at an early candidate is NOT final (QP R1).  Final only if
+        # (a) the counts are met in all three cells, (b) the read is at/after the NOT_DECIDABLE date, or (c) the reason
+        # is the coverage rule.
+        cells = d.get("cells") or {}
+        counts_met = all(((cells.get(c) or {}).get("gate") or {}).get("counts_met") is True for c in sim.CELLS)
+        final = counts_met or at_nd_date or COVERAGE_ND_REASON in (d.get("nd_reasons") or [])
+    if not final:
         raise F2Refusal(f"skipped: LIP-F1 not final: {path} is not LIP-F1's deciding gate.json (its verdict is not final)")
     return {"path": str(p), "sha256": _sha256_bytes(p.read_bytes()), "read_instant": r}
 
