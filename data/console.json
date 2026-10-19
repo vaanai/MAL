@@ -1,8 +1,57 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-19T12:27:21Z",
+ "updated_utc": "2026-10-19T19:23:43Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "research0-disk-1019",
+   "kind": "other",
+   "title": "Research-0 disk 273.4 GB free (27.68%) at 19:01Z; arena floor 25%",
+   "detail": "At 19:01Z research-0 had 273.4 GB free (27.68%). The arena floor is 25%. This event does not close the three Helm requests in for_you entry fy-20261019-disk-helm (archive, further space, restore); those stay as written there. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:01:00Z"
+  },
+  {
+   "id": "arena-j3-743-merged-1019",
+   "kind": "decision",
+   "title": "J3 (quote-coin sink, parent buy) is arena-only: PR #743 merged (5d03e90); explorer run #1245 scheduled for 2026-10-20",
+   "detail": "The August count gave at most 45 trigger events (upper bound under QP's corrected s0 rule), fewer than 100, so J3 is arena-only (QP R9(d)). PR #743 merged 2026-10-19T18:59:13Z (5d03e90): arena_rule_j3 and the W_e explorer, spec fixed before any price, no real-data run in the PR. MiScusi jobs #1243 and #1245 are scheduled on 2026-10-20 from 08:06Z: #1243 is the count-only precount; #1245 is the explorer run, one in-sample run on the first 24 arena tape hours. A survivor would only be registered for a forward clock no earlier than 10-21. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T18:59:13Z"
+  },
+  {
+   "id": "kalshi-lip-f2-frozen-1019",
+   "kind": "decision",
+   "title": "Kalshi LIP-F2 frozen 2026-10-19T18:29:31Z: kalshi_lip_f2 tool merged (PR #742, b59f30c); no F2 figure exists",
+   "detail": "PR #742 merged 2026-10-19T18:28:07Z (b59f30c): kalshi_lip_f2 tool. LIP-F2 frozen at 2026-10-19T18:29:31Z. No F2 figure exists before LIP-F1's deciding read (earliest 2026-10-24T00Z). This is a freeze, not a result; no book has cleared the promotion gate.",
+   "atUtc": "2026-10-19T18:29:31Z"
+  },
+  {
+   "id": "arena-rules-harness-741-merged-1019",
+   "kind": "other",
+   "title": "PR #741 merged (9fed2e7): arena_rules rule-bot harness; h2ps-a1 fixture NOT registered (dropped per the QP cohort-2 ruling of 2026-10-19 (hunt21/QP-RULING-1019-cohort2.md))",
+   "detail": "PR #741 merged 2026-10-19T17:57:23Z (9fed2e7): arena_rules rule-bot harness. The h2ps-a1 fixture is NOT registered (dropped per the QP cohort-2 ruling of 2026-10-19 (hunt21/QP-RULING-1019-cohort2.md)). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T17:57:23Z"
+  },
+  {
+   "id": "dec031-am2-merged-1019",
+   "kind": "decision",
+   "title": "DEC-031 Amendment 2 merged (PR #740, b2fef92): arena deciding rent refunded; records only; H5 unchanged",
+   "detail": "Merged 2026-10-19T17:57:08Z (PR #740, b2fef92). Arena deciding rent is refunded for books that enforce a WSOL quote and V in [17.5e9, 17.7e9] at decision time; the rent-charged leg is still reported beside every figure. H5 is unchanged. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T17:57:08Z"
+  },
+  {
+   "id": "screen-1019-killed",
+   "kind": "result",
+   "title": "Screen 1019 (I2 fee-tier breadth burst, I3 short-hold floor re-pump, August exploration data): all 11 cells killed",
+   "detail": "All 11 cells killed. Every cell has a negative mean, ex-top-3 and ex-best-day at 1.9 s and 0.25 SOL. The I2 flat mean ranges from -2.78% to -2.88%. The best I3 cell is -1.38%. Exploration data only; not gate evidence. atUtc is the REPORT.md file mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T17:43:39Z"
+  },
+  {
+   "id": "hv4-stub-oom-1019",
+   "kind": "job",
+   "title": "Haiku v4 (arena book): 24 h stub killed out-of-memory (job #1236, exit 137); PR #744 does not fix it; engine trim PR #745 in review",
+   "detail": "The 24 h stub for Haiku v4 (job #1236) was killed with exit 137 at 2026-10-19T17:07:29Z. #744 bounds the runner's quote history but gives no measurable RSS saving and does NOT fix the OOM (growth ~740 MB/h, ~17.8 GB at 24 h). The fix path is the engine trim, PR #745 (open, in review). HV4 registration T0 is expected 2026-10-22T00Z, not fixed. No HV4 result is claimed and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T17:07:29Z"
+  },
   {
    "id": "kalshi-crypto-r3-holdout-1019",
    "kind": "result",
