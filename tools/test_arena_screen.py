@@ -1465,3 +1465,304 @@ def test_arena_tape_format_loader_reads_v_from_the_row_and_orders_by_receive_tim
     ok = dict(zip(hr.pools.tolist(), hr.in_universe.tolist()))
     assert ok == {POOLS["A"]: True, POOLS["C"]: False, POOLS["D"]: False}
     assert math.isnan(hr.v[hr.rows(hr.pool_index()[POOLS["C"]])][0])
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 9. screen p (EXP-028, report only; QP ruling on #756 item 4)
+def ref_means(x: np.ndarray, B: int, seed: int = 1) -> np.ndarray:
+    """arena_stack.boot_lo's own loop, written out in the test."""
+    rng = np.random.default_rng(seed)
+    return np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(B)])
+
+
+def ref_p(x: np.ndarray, B: int, seed: int = 1) -> tuple[int, int, float, float]:
+    m, xbar = ref_means(x, B, seed), float(np.mean(x))
+    c1, c2 = sum(1 for v in m if v <= 0), sum(1 for v in m if v - xbar >= xbar)
+    return c1, c2, (1 + c1) / (1 + B), (1 + c2) / (1 + B)
+
+
+def day_vec(n: int, k: int) -> np.ndarray:
+    return np.arange(n) % k + 20_000
+
+
+def date_sums(x: np.ndarray, day: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    _, inv = np.unique(day, return_inverse=True)
+    return np.bincount(inv, weights=x), np.bincount(inv).astype(float)
+
+
+def skewed(seed: int = 1, n: int = 300, t: float = 2.2) -> np.ndarray:
+    """A right-skewed per-attempt vector (a few large winners) with a positive mean of about t standard errors, in SOL."""
+    x = np.random.default_rng(seed).lognormal(0, 1.5, n)
+    return x - x.mean() + t * x.std(ddof=1) / np.sqrt(n)
+
+
+@pytest.mark.parametrize("B", [1_000, 10_000, 25_000])
+def test_screen_p_first_1000_draws_reproduce_arena_stack_boot_lo_exactly(B):
+    rng = np.random.default_rng(B)
+    lam = rng.normal(1e6, 6e7, 500)
+    day = day_vec(500, 9)
+    x = lam / 1e9
+    m = S._boot_means(x, B)
+    assert np.percentile(m[:1000], F.BOOT_PCT) == F.boot_lo(x)  # bit for bit, no tolerance
+    assert (m[:1000] == ref_means(x, 1000)).all()
+    dsum, dn = date_sums(x, day)
+    r = S.screen_p_sub(lam, day, B=B, ci_lo_trade=F.boot_lo(x), ci_lo_date=S.boot_lo(dsum, dn))
+    assert r["ci90_lo_first1000"] == F.boot_lo(x) and r["ci90_lo_first1000_equals_stat"] is True
+    rr = S._cluster_ratios(dsum, dn, B)
+    assert np.percentile(rr[:1000], F.BOOT_PCT) == S.boot_lo(dsum, dn)  # the kit's date resampler, bit for bit
+    assert r["date_cluster"]["ci90_lo_first1000"] == S.boot_lo(dsum, dn) and r["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+    r2 = S.screen_p_sub(lam, day, B=B, ci_lo_trade=F.boot_lo(x) + 1e-12)
+    assert r2["ci90_lo_first1000_equals_stat"] is False  # the self-check can fail
+
+
+def test_screen_p_each_B_is_a_prefix_of_a_longer_B_with_the_same_seed_and_a_fresh_rng_per_sub_cell():
+    x = np.random.default_rng(2).normal(0.002, 0.05, 200)
+    assert (S._boot_means(x, 3_000)[:1_500] == S._boot_means(x, 1_500)).all()
+    a = S.screen_p_sub(x * 1e9, day_vec(200, 7), B=2_000)
+    S.screen_p_sub(np.random.default_rng(9).normal(0, 1e7, 300), day_vec(300, 6), B=2_000)  # another sub-cell in between: no shared stream
+    assert S.screen_p_sub(x * 1e9, day_vec(200, 7), B=2_000) == a
+
+
+def test_screen_p_all_positive_vector_sits_on_the_1_over_B_plus_1_floor():
+    lam = 1_000_000 + np.random.default_rng(5).integers(0, 1_000, 300)  # every attempt positive, tiny spread
+    r = S.screen_p_sub(lam, day_vec(300, 6), B=10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"]) == (0, 0)
+    assert r["p_pct"] == r["p_null"] == r["p"] == 1 / 10_001
+    d = r["date_cluster"]
+    assert (d["tail_count_pct"], d["tail_count_null"], d["k_dates"]) == (0, 0, 6) and d["p"] == 1 / 10_001
+    r2 = S.screen_p_sub(lam, day_vec(300, 6), B=40_000)
+    assert r2["p"] == 1 / 40_001 and r2["B"] == 40_000 and r2["date_cluster"]["B"] == 40_000  # the floor moves with B
+
+
+def test_screen_p_non_positive_mean_gives_p_near_one():
+    r = S.screen_p_sub(np.random.default_rng(6).normal(-3e6, 1e7, 400), day_vec(400, 8), B=10_000)
+    assert r["xbar"] < 0 and r["p_pct"] == r["p_null"] == r["p"] == 1.0 and r["tail_count_pct"] == r["tail_count_null"] == 10_000
+    assert r["date_cluster"]["p"] == 1.0
+    z = S.screen_p_sub(np.zeros(50), day_vec(50, 5), B=1_000)  # a mean of exactly 0 is H0 itself: p = 1
+    assert z["xbar"] == 0.0 and z["p"] == 1.0 and z["date_cluster"]["p"] == 1.0
+    sym = S.screen_p_sub(np.array([2e7, -2e7] * 100), day_vec(200, 5), B=10_000)  # mean exactly 0, symmetric draws: near one half on both tails
+    assert sym["xbar"] == 0.0 and 0.4 < sym["p_pct"] < 0.65 and 0.4 < sym["p_null"] < 0.65
+
+
+def test_screen_p_skewed_vector_percentile_tail_is_anticonservative_and_the_max_rule_takes_the_null_tail():
+    x = skewed()
+    day = day_vec(300, 8)
+    r = S.screen_p_sub(x * 1e9, day, B=10_000)
+    c1, c2, p1, p2 = ref_p(x, 10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"]) == (c1, c2) == (21, 216)  # pinned: the draws are deterministic at seed 1
+    assert (r["p_pct"], r["p_null"]) == (p1, p2) == (22 / 10_001, 217 / 10_001)
+    assert r["p_pct"] < r["p_null"] and r["p"] == r["p_null"]  # right skew: the percentile tail alone would pass what the null tail does not
+    dsum, dn = date_sums(x, day)
+    rng = np.random.default_rng(1)
+    rr = np.array([dsum[ix].sum() / max(1, dn[ix].sum()) for ix in (rng.integers(0, 8, 8) for _ in range(10_000))])
+    rhat = dsum.sum() / dn.sum()
+    d = r["date_cluster"]
+    assert (d["tail_count_pct"], d["tail_count_null"]) == (int((rr <= 0).sum()), int(((rr - rhat) >= rhat).sum())) and d["rhat"] == rhat
+    assert d["p_pct"] == (1 + d["tail_count_pct"]) / 10_001 and d["p"] == max(d["p_pct"], d["p_null"])
+
+
+def test_screen_p_the_percentile_tail_can_be_the_larger_one_too():
+    x = np.array([-1.0] * 97 + [40.0] * 3)  # discrete right skew where the left tail is the heavier one
+    r = S.screen_p_sub(x * 1e9, day_vec(100, 5), B=10_000)
+    c1, c2, p1, p2 = ref_p(x, 10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"], r["p_pct"], r["p_null"]) == (c1, c2, p1, p2) and p1 > p2 and r["p"] == p1
+
+
+def test_screen_p_tails_count_equality_inclusively_and_use_one_plus_over_one_plus_B(monkeypatch):
+    lam = np.array([5e8, 1.5e9] * 50)  # xbar is exactly 1.0 SOL
+    m = np.full(1_000, 1.0)
+    m[:10] = 0.0  # exactly 0: counted by m_b <= 0
+    m[10:17] = 2.0  # exactly xbar + xbar: counted by m_b - xbar >= xbar
+    m[17:20] = -5.0
+    monkeypatch.setattr(S, "_boot_means", lambda x, B, seed=1: m)
+    r = S.screen_p_sub(lam, day_vec(100, 4), B=1_000)
+    assert r["xbar"] == 1.0 and (r["tail_count_pct"], r["tail_count_null"]) == (13, 7)
+    assert r["p_pct"] == 14 / 1_001 and r["p_null"] == 8 / 1_001 and r["p"] == 14 / 1_001
+
+
+def test_screen_p_no_p_is_none_and_never_a_pass():
+    e = S.screen_p_sub(np.empty(0), np.empty(0), B=1_000)
+    assert e["p"] is None and e["n"] == 0 and e["xbar"] is None and e["date_cluster"]["p"] is None and "not a pass" in e["none_reason"]
+    nan = S.screen_p_sub(np.array([1e7, np.nan, 2e7] * 40), day_vec(120, 5), B=1_000)  # NaN compares False in both tails: it would otherwise read as the floor
+    assert nan["p"] is None and nan["date_cluster"]["p"] is None and "non-finite" in nan["none_reason"]
+    one = S.screen_p_sub(np.array([1e7]), np.array([20_000]), B=1_000)
+    assert one["p"] is None and one["date_cluster"]["p"] is None
+    onedate = S.screen_p_sub(np.random.default_rng(1).normal(1e7, 1e7, 100), np.full(100, 20_000), B=1_000)
+    assert onedate["p"] is not None and onedate["date_cluster"]["p"] is None and onedate["date_cluster"]["k_dates"] == 1
+    assert S._max_p([0.1, None, 0.2]) is None and S._max_p([]) is None and S._max_p([0.1, 0.3, 0.2]) == 0.3
+
+
+def test_screen_p_uses_the_vectors_stat_hands_to_the_two_bootstraps(monkeypatch):
+    rng = np.random.default_rng(8)
+    lam, day, blk = rng.normal(3e6, 4e7, 400), day_vec(400, 7), rng.integers(0, 2, 400)
+    seen = {}
+    real_f, real_k = F.boot_lo, S.boot_lo
+    monkeypatch.setattr(F, "boot_lo", lambda x, *a, **k: (seen.setdefault("x", np.array(x, copy=True)), real_f(x, *a, **k))[1])
+    monkeypatch.setattr(S, "boot_lo", lambda ds, dn, *a, **k: (seen.setdefault("d", (np.array(ds, copy=True), np.array(dn, copy=True))), real_k(ds, dn, *a, **k))[1])
+    st = S.stat(lam, day, blk, ["a", "b"])
+    got = {}
+    real_m, real_c = S._boot_means, S._cluster_ratios
+    monkeypatch.setattr(S, "_boot_means", lambda x, B, seed=1: (got.setdefault("x", np.array(x, copy=True)), real_m(x, B, seed))[1])
+    monkeypatch.setattr(S, "_cluster_ratios", lambda ds, dn, B, seed=1: (got.setdefault("d", (np.array(ds, copy=True), np.array(dn, copy=True))), real_c(ds, dn, B, seed))[1])
+    r = S.screen_p_sub(lam, day, B=1_000, ci_lo_trade=st["ci_lo_trade"], ci_lo_date=st["ci_lo"])
+    assert np.array_equal(seen["x"], got["x"]) and np.array_equal(seen["d"][0], got["d"][0]) and np.array_equal(seen["d"][1], got["d"][1])
+    assert r["xbar"] == st["mean"] and r["n"] == st["n"] and r["date_cluster"]["k_dates"] == st["days"]
+    assert r["ci90_lo_first1000_equals_stat"] is True and r["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+
+
+def test_screen_p_refuses_any_stake_other_than_a_quarter_sol_and_a_B_out_of_range():
+    lam, day = np.random.default_rng(1).normal(1e7, 1e7, 50), day_vec(50, 5)
+    assert S.screen_p_sub(lam, day, B=1_000, stake_sol=0.25)["B"] == 1_000
+    for bad in (1.0, 0.5, 0.2500001, 0.0, -0.25, 250_000_000, True, "0.25"):
+        with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+            S.screen_p_sub(lam, day, B=1_000, stake_sol=bad)
+    with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+        S.screen_p_cell(None, S.screen_cfg(), None, B=1_000, stake_sol=1.0)
+    with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+        S.Screen(ScriptRule([]), declared_stake_sol=0.5)  # refused at construction, before any block is read
+    S.Screen(ScriptRule([]), screen_p=False, declared_stake_sol=0.5)  # p off: no p is computed, nothing to refuse
+    assert S.screen_p_check(0.25, 1_000) == 1_000 and S.screen_p_check(0.25, 1_000_000) == 1_000_000 and S.screen_p_check(0.25, 10_000) == 10_000
+    for bad in (999, 0, -1, 1_000_001, 10_000.5, 10_000.0, True, None, "10000"):
+        with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+            S.screen_p_check(0.25, bad)
+    with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+        S.screen_p_sub(lam, day, B=999)
+    with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+        S.Screen(ScriptRule([]), screen_p_draws=1_000_001)
+
+
+def test_screen_p_cli_refuses_a_declared_stake_other_than_a_quarter_sol_and_reads_nothing(clean_tree, tmp_path, capsys):
+    root, vm = clean_tree
+    for i, extra in enumerate((["--declared-stake-sol", "1.0"], ["--declared-stake-sol", "0.5", "--count-only"], ["--screen-p-draws", "999"], ["--screen-p-draws", "1000001"])):
+        out = tmp_path / f"refused{i}"
+        assert cli(root, vm, out, *extra) == 2
+        assert "REFUSED: screen_p_" in capsys.readouterr().err and not out.exists()  # nothing listed, read or written
+    out = tmp_path / "ok_off"
+    assert cli(root, vm, out, "--no-screen-p", "--declared-stake-sol", "1.0") == 0  # p off: no p is defined, no stake to refuse
+    assert "screen_p" not in json.loads((out / "results.json").read_text())["cells"]["trivial"]
+    out = tmp_path / "ok_on"
+    assert cli(root, vm, out, "--declared-stake-sol", "0.25", "--screen-p-draws", "1500") == 0
+    doc = json.loads((out / "results.json").read_text())
+    assert doc["meta"]["screen_p"] == {"enabled": True, "report_only": True, "B": 1500, "seed": 1, "stake_sol": 0.25, "source": S.SCREEN_P_SOURCE}
+    assert doc["cells"]["trivial"]["screen_p"]["B"] == 1500 and all(c["B"] == 1500 for c in doc["cells"]["trivial"]["screen_p"]["sub_cells"].values())
+
+
+def kit_cell_p(tape, event: bool, **kw) -> "S.Screen":
+    rows, files = tape
+    scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)), **kw)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    return scr
+
+
+def dump(o) -> str:
+    return json.dumps(o, sort_keys=True, default=float)
+
+
+@pytest.mark.parametrize("survive", [False, True])
+@pytest.mark.parametrize("event", [True, False])
+def test_screen_p_changes_no_existing_field_in_results_or_table(tape, monkeypatch, event, survive):
+    if survive:
+        monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # a SCREEN SURVIVOR too, not only killed cells
+    off, on = kit_cell_p(tape, event, screen_p=False), kit_cell_p(tape, event, screen_p=True, screen_p_draws=1_500)
+    r_off, r_on = off.results()["c"], on.results()["c"]
+    assert "screen_p" not in r_off and "screen_p" in r_on and (not r_on["kill"]) is survive
+    assert dump(r_off) == dump({k: v for k, v in r_on.items() if k != "screen_p"})  # every pre-existing field byte-identical
+    assert list(r_off) == [k for k in r_on if k != "screen_p"] and list(r_on)[-1] == "screen_p"  # same keys in the same order, the new key last
+    t_off, t_on = S.table_md({"c": r_off}, off.blocks, {"rule": "script"}), S.table_md({"c": r_on}, on.blocks, {"rule": "script"})
+    assert t_on.startswith(t_off) and t_on[len(t_off):].startswith("\n## 5. Screen p (EXP-028, REPORT ONLY")  # every TABLE line above is unchanged; section 5 is appended
+    assert "## 5." not in t_off and repr(r_on["screen_p"]["cell_p"]) in t_on
+
+
+def test_screen_p_changes_no_existing_field_through_the_cli(clean_tree, tmp_path):
+    root, vm = clean_tree
+    assert cli(root, vm, tmp_path / "off", "--no-screen-p") == 0 and cli(root, vm, tmp_path / "on", "--screen-p-draws", "1500") == 0
+    a, b = (json.loads((tmp_path / d / "results.json").read_text()) for d in ("off", "on"))
+    volatile = ("wall_s", "rows_pumpswap_per_s", "rows_kept_per_s", "seconds", "written_utc", "screen_p")
+    assert dump({k: v for k, v in a["meta"].items() if k not in volatile}) == dump({k: v for k, v in b["meta"].items() if k not in volatile})
+    assert a["meta"]["screen_p"]["enabled"] is False and b["meta"]["screen_p"]["enabled"] is True
+    assert dump(a["cells"]) == dump({nm: {k: v for k, v in c.items() if k != "screen_p"} for nm, c in b["cells"].items()})
+    ta, tb = ((tmp_path / d / "TABLE.md").read_text() for d in ("off", "on"))
+    assert tb.startswith(ta) and tb[len(ta):].startswith("\n## 5. Screen p")
+    assert (tmp_path / "off" / "results.json").read_bytes() != (tmp_path / "on" / "results.json").read_bytes()  # the new keys are really there
+    co = tmp_path / "count"
+    assert cli(root, vm, co, "--count-only") == 0 and "screen_p" not in json.loads((co / "counts.json").read_text())["cells"]["trivial"]  # a count-only run has no p
+
+
+@pytest.mark.parametrize("stub", [1.0, 1 / 10_001, None])
+@pytest.mark.parametrize("survive", [False, True])
+@pytest.mark.parametrize("event", [True, False])
+def test_screen_p_never_kills_or_rescues_a_cell(tape, monkeypatch, event, survive, stub):
+    if survive:
+        monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    base = kit_cell_p(tape, event, screen_p=False).results()["c"]
+    fake = {"report_only": True, "cell_p": stub, "cell_p_date_cluster": stub, "B": 1_000, "seed": 1, "sub_cells": {}}
+    monkeypatch.setattr(S, "screen_p_cell", lambda *a, **k: fake)  # the best and the worst p a cell can carry, and no p at all
+    r = kit_cell_p(tape, event, screen_p=True).results()["c"]
+    assert r["screen_p"] is fake
+    assert (r["kill"], r["kill_reasons"], r["registration"]) == (base["kill"], base["kill_reasons"], base["registration"])
+    assert dump({k: v for k, v in r.items() if k != "screen_p"}) == dump(base)
+
+
+def test_screen_p_is_not_read_by_any_kill_or_registration_function():
+    import inspect
+
+    for fn in (S.kill_verdict, S.registration_status, S.gate_row, S.worst_in_slot_legs, S.stat):
+        assert "screen_p" not in inspect.getsource(fn) and "cell_p" not in inspect.getsource(fn)
+    src = inspect.getsource(S.Screen._cell_result)
+    head, _, tail = src.partition("if self.screen_p:  # REPORT ONLY")
+    assert 'r["registration"] = registration_status' in head and 'r["kill"]' not in tail and "return r" in tail  # computed after the verdict is final
+
+
+def test_screen_p_on_a_real_cell_has_four_sub_cells_n_equal_to_the_gates_and_a_cell_p_that_is_their_max(tape):
+    r = kit_cell_p(tape, True, screen_p_draws=2_000).results()["c"]
+    sp = r["screen_p"]
+    assert sp["report_only"] is True and sp["B"] == 2_000 and sp["seed"] == 1 and sp["stake_sol"] == 0.25 and sp["source"] == S.SCREEN_P_SOURCE
+    assert set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"}
+    for key, c in sp["sub_cells"].items():
+        rule, fail = key.split("|")
+        s_ = r["stats"][f"1.9|{rule}|rent0|{fail}"]
+        assert c["n"] == s_["n"] and c["xbar"] == s_["mean"] and c["date_cluster"]["k_dates"] == s_["days"]  # n is arena_score's n, guarded reverts included
+        assert c["ci90_lo_first1000_equals_stat"] is True  # the draws are the ones the kill used
+        assert c["p"] == max(c["p_pct"], c["p_null"]) and 1 / 2_001 <= c["p"] <= 1.0
+        assert c["date_cluster"]["k_dates"] == 1 and c["date_cluster"]["p"] is None and "fewer than 2 UTC dates" in c["date_cluster"]["none_reason"]  # the synthetic tape is ONE UTC date
+    assert sp["cell_p"] == max(c["p"] for c in sp["sub_cells"].values()) and sp["cell_p_date_cluster"] is None
+    json.dumps(sp)
+
+
+def test_screen_p_cell_with_no_attempts_has_p_none(tape):
+    rows, files = tape
+    scr = S.Screen(ScriptRule([]), screen_p_draws=1_000)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    r = scr.results()["c"]
+    assert r["attempts"] == 0 and r["kill"] is True and r["screen_p"]["cell_p"] is None and r["screen_p"]["cell_p_date_cluster"] is None
+    assert all(c["p"] is None and c["n"] == 0 for c in r["screen_p"]["sub_cells"].values())
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert "## 5. Screen p" in md and "None" in md
+
+
+def test_screen_p_definition_is_stated_in_the_module_doc_and_the_table():
+    for needle in ("SCREEN P", "6276924696", "p_pct = (1 + #{m_b <= 0}) / (1 + B)", "#{m_b - xbar >= xbar}", "0.25 SOL"):
+        assert needle in S.__doc__
+    assert "max(p_pct, p_null)" in S.SCREEN_P_DEFINITION and "fresh" in S.SCREEN_P_DEFINITION and "None" in S.SCREEN_P_DEFINITION
+    assert (S.SCREEN_P_B, S.SCREEN_P_SEED, S.SCREEN_P_B_MIN, S.SCREEN_P_B_MAX) == (10_000, 1, 1_000, 1_000_000)
+
+
+def test_screen_p_leaves_the_pinned_files_alone():
+    here = Path(S.__file__).resolve().parent
+    assert hashlib.sha256((here / "arena_report_legs.py").read_bytes()).hexdigest() == S.REPORT_LEGS_PIN
+
+
+def test_screen_p_cell_over_several_utc_dates_reproduces_both_bounds_the_kill_used():
+    st = random_states(400, seed=21)
+    st["T"] = day_vec(400, 6) * 86400 + 3600  # six UTC dates
+    cfg = S.screen_cfg()
+    day, blk = st["T"] // 86400, np.zeros(400, np.int64)
+    stats = {f"1.9|{rule}|rent0|{fail}": S.stat(S.legs(st, S.STAKE_SOL * 1e9, 1.9, rule, cfg)[fail], day, blk, ["a"]) for rule in S.STRAND_RULES for fail in S.FAILS}
+    sp = S.screen_p_cell(st, cfg, stats, B=2_000)
+    assert sp["B"] == 2_000 and set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"}
+    for key, c in sp["sub_cells"].items():
+        assert c["n"] == 400 and c["date_cluster"]["k_dates"] == 6 and c["p"] is not None and c["date_cluster"]["p"] is not None
+        assert c["ci90_lo_first1000_equals_stat"] is True and c["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+        assert c["date_cluster"]["p"] == max(c["date_cluster"]["p_pct"], c["date_cluster"]["p_null"])
+    assert sp["cell_p"] == max(c["p"] for c in sp["sub_cells"].values()) and sp["cell_p_date_cluster"] == max(c["date_cluster"]["p"] for c in sp["sub_cells"].values())
+    none = S.screen_p_cell(None, cfg, None, B=1_000)
+    assert none["cell_p"] is None and none["cell_p_date_cluster"] is None

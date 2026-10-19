@@ -909,7 +909,7 @@ def screen_p_check(stake_sol: float, draws: int) -> int:
     """Refuse (Refused) a stake other than 0.25 SOL (the kit decides at STAKE_SOL; EXP-028 item 2 says the stake in DECLARE) and a B outside [1,000, 1,000,000]. Returns B."""
     if isinstance(stake_sol, bool) or stake_sol != STAKE_SOL:
         raise Refused(f"screen_p_stake_refused: screen p is defined at {STAKE_SOL} SOL only (the kit's deciding stake), not {stake_sol!r}")
-    if isinstance(draws, bool) or int(draws) != draws or not SCREEN_P_B_MIN <= draws <= SCREEN_P_B_MAX:
+    if isinstance(draws, bool) or not isinstance(draws, (int, np.integer)) or not SCREEN_P_B_MIN <= draws <= SCREEN_P_B_MAX:
         raise Refused(f"screen_p_draws_refused: B must be an integer in [{SCREEN_P_B_MIN}, {SCREEN_P_B_MAX}], not {draws!r}")
     return int(draws)
 
@@ -1464,6 +1464,8 @@ def counts_md(res: dict, meta: dict) -> str:
 
 
 def run(args: argparse.Namespace) -> dict:
+    if not getattr(args, "no_screen_p", False):  # the DECLARE stake and B are checked before anything is listed, read or written
+        screen_p_check(getattr(args, "declared_stake_sol", STAKE_SOL), getattr(args, "screen_p_draws", SCREEN_P_B))
     out = check_out_dir(args.out)
     if args.hours and not args.count_only:
         raise Refused("hours_subset_refused_when_pricing: --hours is for --count-only; a priced screen runs every hour of the four blocks (a subset is not a screen of record)")
