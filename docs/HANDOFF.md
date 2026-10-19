@@ -19,6 +19,7 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
 **Walk 2 (EXP-027).**
 - **#1036 is at the 14-day maximum and ends about 10-29T19Z.** The old text in section 2 item 4 said 10-22.
 - It needs a successor with the same pinned blobs, plus EXP027_WALK2_JOB_2. A session cron fires 10-29 12:17Z. CLAUDE.md says a fixed-instant step needs a host-side MiScusi job, not a session cron alone; no such job is recorded here.
+- **Superseded 2026-10-19 ~08:20Z (manager12; the sentence above is kept as written):** the host-side successor now exists, as MiScusi jobs #1214 and #1215. See "Jobs and caps" below. The session cron stays only as a check.
 
 **Kalshi pubnum: holdout FAIL; the rules are retired.**
 - ALLRUN taker (cent fee): -0.82c per contract, n 72, CI90 lo -4.97c.
@@ -41,9 +42,18 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
 
 **Disk (research-0): 22.06% free at 03:12Z.**
 - The owner was asked for Helm to archive about 40 GiB that has no pending reads: `hunt-1008/bigwin-r12`, `push-1016/hunt5/big-sell-trace`, `hunt-shared/wallet_mint`, `ops/grad-t70`, `hunt-1008/l2-laya-v1-pregrad`, `hunt-1008/iter-r1`.
-- Also asked: about 100 GB more by 10-22, and restore exp025 plus `blocks/forward-1002ev`.
+- Also asked: about 100 GB more by 10-22, and restore exp025 plus `blocks/forward-1002ev`. **Superseded 2026-10-19 (manager12):** no restore is needed for EXP-025 (see the Correction in the EXP-025 HOLD block below); Helm holds both restores until the new SSD.
 - **Must stay:** `blocks/forward-1002`, tip-tape-archive, `clean-view/*`, `audit-1008`, `hunt-1008/c1nf-verify`, `push-1016/hunt6/r4b-equiv-d`.
 - A grep of EXP, DEC, HOLDOUT_LEDGER, HANDOFF, LAB_STATE and ARTIFACTS/SUMMARY.md for the six archive names found no pending read of them. The two hits are not reads: EXP-025 item 8 names `october-shared/wallet_mint/fast-pool-0918.parquet` (a different path), and EXP-026 line 244 names "iter-r1" as a past exit analysis (EXP-026 was withdrawn before W0). The cron files `/data/mal/hunt-1008/ops/*.json` have no hit either.
+
+**Jobs and caps, 2026-10-19 ~08:20Z (manager12).**
+- **Job cap:** the owner raised the MiScusi job cap for session MALsession1 from 16 to 24 (~08:03Z).
+- **New jobs today:** #1206 (Kalshi crypto 15M tail-300 trades, ETH and SOL, store `/data/mal/kalshi/crypto-tail300-b`, parallel to #1200, which keeps BTC); #1207 (research-0 arena live feed for Haiku v4, tape `/data/mal/arena/tape`, public RPC, 25% disk reserve); #1208 (LIP-F1 dry run #2, structure counts only: 0 opened units, 13 post-freeze units waiting for trades, 33 excl_not_daily, 22 excl_long_period, 461 excl_pre_freeze).
+- **Walk 2 (#1036) successor:** #1036 hits its 14-day job maximum at 2026-10-29T19:21:21Z (started 2026-10-15T19:21:21Z). Walk 2 must seal and verify every hour through 2026-11-07T05 (that hour ends 2026-11-07T06:00Z), because EXP-027 reads `[2026-10-16T03, E + 3 h)` with E = W0 + 480 h = 2026-11-07T03 (W0 2026-10-18T03).
+  - **Host-side successor (not a session cron):** #1214 (mal-research-0, role ops) sleeps to 2026-10-29T19:22Z and exits 0 only once no walk-2 process (`forward-walk2.sh` or `pump_history_backfill` on forward-1016) is alive; it exits 1, and does not start the successor, if one is still alive 4 h later. #1215 is chained `after` #1214: `bash scripts/research/forward-walk2.sh` at ref 578a63eac199c9175438e1ec651d1537944a89c5, params `{"start":"2026-10-16T01"}`, resumable, 6144 MB, with its 14-day limit counted from its own start (it ends about 2026-11-12T19:2xZ, after 2026-11-07T06:00Z). #1036's limit is 2026-10-29T19:21:21Z (started 2026-10-15T19:21:21Z). Verified by manager12, 2026-10-19 ~08:20Z.
+  - `EXP027_WALK2_JOB_2` is appended to EXP-027's Window record when #1215 starts (a later records PR, not this one).
+  - After any cancel of #1036, confirm with `ps` that no walk-2 process is alive before the successor writes (2026-10-17 triple-writer lesson).
+  - The session cron at 2026-10-29T12:17Z stays only as a check.
 
 Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous HANDOFF (10-12..10-17, H5 canary, seal window) is archived at `ARTIFACTS/lab/handoff-archive-2026-10-18.md`. Its section 6, "Rules that bite", still applies. No book has cleared the promotion gate. Paper only.
 
@@ -134,7 +144,14 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
     - an M4-multi forward paper rule, frozen first.
   - The weather-mm item below is therefore done.
 
-**Update 2026-10-18 ~12:15Z: EXP-025 Look 1 R8 run is on HOLD (quant-proof).**
+**Update 2026-10-18 ~12:15Z: EXP-025 Look 1 R8 run is on HOLD (quant-proof). Partly superseded 2026-10-19: see the Correction in the first bullet.**
+- **Correction 2026-10-19, manager12 (supersedes the "Why it matters", "Before the R8 run" step 1 and "Restore" bullets below; the old text is kept as written):**
+  - **The claim that exp025 held `LOOK_READS.jsonl` and `look1/` was wrong.** The archive manifest `/data/mal/meta-ops/archive-1018/exp025.sha256` (manifest sha256 fe84de22e635abaad0d5c155d82b4bcb0b63fc86977c7fbec996a35342ac995c) lists 949 files, every one under `exp025/e0/` (17,526,823,708 bytes; README `/data/mal/ARCHIVED-exp025.README`; deleted 2026-10-18T03:52:01Z; approved by the owner 2026-10-17). `LOOK_READS.jsonl` and `look1/` were never in it, and Helm confirmed none exists anywhere in `/data/mal` to 4 levels.
+  - **So no EXP-025 look ledger was lost.** No `exp025_look.py run` had ever run: the tool creates `LOOK_READS` on its first run. This answers step 1 of "Before the R8 run" (nothing ran, nothing was removed that held a look).
+  - **No restore is needed for EXP-025.** Look 1 and Look 2 are both NOT_DECIDABLE (R8, P5; LAB_STATE line ~28 and EXP-025 "P5 record (2026-10-16)"). The R8 runs read only the clock and `LOOK_READS`, so `exp025/e0/` and `blocks/forward-1002ev` are not read. EXP-027 never reads `forward-1002ev` (EXP-027 line ~267). Helm holds both restores until the new SSD; that is fine.
+  - **Ruled 2026-10-19 by quant-proof on PR #733 (comment 6262873478):** do not create `/data/mal/exp025/look1` by hand; the R8 path creates it. The precondition is replaced by three stat-only checks (a dated record, "R8-run record", is at the end of EXP-025). The bullet below is kept as written.
+  - **Open item for quant-proof (not decided here; ruled as above):** the P5 procedure's stat-only precondition "the Look 1 output directory `/data/mal/exp025/look1` exists" can never hold as written, because the directory never existed. Quant-proof must rule how the Look 1 R8 run proceeds (for example, create the empty O directory first) before it runs. Whether step 2 of "Before the R8 run" (the disclosure record in EXP-025) is still needed is part of the same ruling. Look 2's R8 run is after 2026-10-26T12:00Z, after Look 1's event.
+  - Source: manager12 checks of the manifest and README, 2026-10-19 ~08:20Z. Nothing under `/data/mal` was opened by the writer of this PR.
 - **Disk:** free rose to 22.63% at 11:02Z, and walk 2 #1036 RESUMED (sealing 2026-10-16T15+, catching up).
 - **What was removed:** `/data/mal/exp025`, `/data/mal/exp024` and `/data/mal/blocks/forward-1002ev`, presumably by the storage archive the manager asked Helm for. `forward-1002` is still present.
 - **Why it matters:** exp025 held EXP-025's look ledger (`LOOK_READS.jsonl`), `look1/` and the pinned E0 records. The P5 record's stat-only precondition, that `/data/mal/exp025/look1` exists, FAILED at 12:07Z.
@@ -159,7 +176,7 @@ Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous H
 4. **EXP-027 (r4-b).**
    - W0 2026-10-18T03, E 2026-11-07T03, read about 11-09.
    - It needs walk 2 sealing hours (disk), then the hourly count job (`tools.r4b_count`, audit venv + PYTHONPATH /data/mal/venv site-packages, `--through-hour` = latest contiguous verified hour).
-   - Walk 2 #1036 is at the 14-day maximum and ends about 10-29T19Z (this line said 10-22T19:21Z, the limit before the extension; see the 10-19 update): resubmit a successor with the SAME pinned blobs (EXP027_WALK2_JOB_2).
+   - Walk 2 #1036 is at the 14-day maximum and ends about 10-29T19Z (this line said 10-22T19:21Z, the limit before the extension; see the 10-19 update): resubmit a successor with the SAME pinned blobs (EXP027_WALK2_JOB_2). **Done 2026-10-19 ~08:20Z as host-side jobs #1214 and #1215 (see the 10-19 update); walk 2 must be sealed and verified through 2026-11-07T05.**
    - The 20% reserve is in a pinned blob and cannot be lowered.
 5. **Other clocks.**
    - Job A (#1135) successor before ~10-23T23:20Z; hourly lag check, lock pid = running pid.
