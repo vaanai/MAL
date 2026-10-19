@@ -648,14 +648,14 @@ class World:
         self.meta = str(d)
 
     def add_trades(self, rows, done, since="2026-10-19T03:33:16Z", until="2026-10-20T00:00:00Z", name="trades",
-                   run_at="2026-10-20T04:41:00Z", run_record=True):
+                   run_at="2026-10-20T04:41:00Z", run_record=True, write_at=WRITE_AT):
         """A full-history trades download.  ``until`` is explicit (an open-ended one never counts as coverage);
         the manifest gets the ``run`` record kalshi_public writes at the end of a run, stamped ``run_at``."""
         st = kp.Store(self.kal, "trades", {"series": name, "since": since, "until": until, "market": None})
         rr = [{"trade_id": r[0], "ticker": r[1], "series_ticker": kp.series_of(r[1]), "created_time": dt(at(r[2])),
                "yes_price": r[3], "no_price": round(1 - r[3], 6), "count": r[4], "taker_side": r[5],
                "is_block_trade": False, "source": "live"} for r in rows]
-        with fixed_now(WRITE_AT):
+        with fixed_now(write_at):
             if rr:
                 st.write_partitioned("trades", rr, "t-" + name, "created_time")
             for t in done:
@@ -664,13 +664,13 @@ class World:
             with fixed_now(run_at):
                 st.run_record(_Client(), complete=True)
 
-    def add_markets(self, rows):
+    def add_markets(self, rows, write_at=WRITE_AT, part="m0"):
         st = kp.Store(self.kal, "markets", {"series": "x"})
         rr = [{"ticker": t, "event_ticker": ev, "series_ticker": kp.series_of(t), "status": "finalized", "result": res,
                "settlement_value_dollars": val, "settlement_ts": dt(at(sts)), "fetched_at": dt(at(fetched))}
               for (t, ev, res, val, sts, fetched) in rows]
-        with fixed_now(WRITE_AT):
-            st.write_partitioned("markets", rr, "m0", "settlement_ts")
+        with fixed_now(write_at):
+            st.write_partitioned("markets", rr, part, "settlement_ts")
 
     def add_series(self, rows):
         st = kp.Store(self.kal, "series", {})
@@ -1582,7 +1582,7 @@ def test_n_registry_can_be_pinned_by_sha256_and_a_touched_file_still_passes(tmp_
 def test_n_force_source_end_to_end_and_event_cluster_is_ticker_derived(tmp_path, covered):
     w = basic_world(tmp_path)
     w.add_run("obrec-1019d", {GAS_A: ticks("2026-10-19T12:05:40Z", "2026-10-19T15:30:00Z", 45)}, ["KXAAAGASDNY"])
-    w.add_markets([(GAS_A, "A-DIFFERENT-EVENT", "yes", 1.0, "2026-10-19T15:00:00Z", "2026-10-20T04:41:00Z")])
+    w.add_markets([(GAS_A, "A-DIFFERENT-EVENT", "yes", 1.0, "2026-10-19T15:00:00Z", "2026-10-20T05:41:00Z")], part="m1")
     src = {}
     for name, kw in (("auto", {}), ("forced", {"force_source": "obrec-1019c"})):
         g = sim.run_sim(w.cfg(out=str(tmp_path / name), **kw))
@@ -1622,7 +1622,10 @@ def test_b7_polls_after_r_cannot_change_the_reward_or_gate_json(tmp_path, covere
     assert sim.read_programs(wb.lip).by_id["pA"]["drift"]                                     # uncut reads would see it
     sim.run_sim(wa.cfg(out=str(tmp_path / "oa")))
     sim.run_sim(wb.cfg(out=str(tmp_path / "ob")))
-    for f in ("gate.json", "units.parquet", "fills.parquet", "days.parquet", "table.txt"):
+    ga, gb = (json.loads((tmp_path / o / "gate.json").read_text()) for o in ("oa", "ob"))
+    ga.pop("stores"), gb.pop("stores")                       # absolute store paths differ between the two worlds
+    assert ga == gb
+    for f in ("units.parquet", "fills.parquet", "days.parquet", "table.txt"):
         assert (tmp_path / "oa" / f).read_bytes() == (tmp_path / "ob" / f).read_bytes(), f
 
 
@@ -1680,3 +1683,99 @@ def test_b8_a_unit_settling_after_its_worst_case_instant_counts_at_worst_case_un
     early = {f"T-{i}": {"value": 1.0, "settled_us": u0.e_us + sec(600), "result": "yes", "event": "E"} for i in range(10)}
     rows2, _c = sim.population_rows(recs, early, "U0", R)
     assert all(r.get("worst_us") is None for r in rows2)
+
+
+# ------------------------------------------------------------------ P1 support: several run stores (PROCESS-2)
+TA1 = ("tA1", GAS_A, "2026-10-19T12:10:00Z", 0.48, 25, "no")
+R24 = at("2026-10-24T00:00:00Z")
+
+
+def test_p1_store_arguments_take_lists_repeats_and_globs(tmp_path):
+    for n in ("run-20261019T0441Z", "run-20261019T1041Z", "other"):
+        (tmp_path / "lipdl" / n).mkdir(parents=True)
+    got = sim.expand_stores(str(tmp_path / "lipdl" / "run-*"))
+    assert [p.name for p in got] == ["run-20261019T0441Z", "run-20261019T1041Z"]
+    assert sim.expand_stores([str(tmp_path / "lipdl" / "run-*"), str(tmp_path / "lipdl" / "other"),
+                              str(tmp_path / "lipdl" / "run-20261019T0441Z")]) == got + [tmp_path / "lipdl" / "other"]
+    with pytest.raises(sim.InputError, match="matches no store"):
+        sim.expand_stores(str(tmp_path / "nothing-*"))
+    assert sim.expand_stores(str(tmp_path / "nothing-*"), allow_empty=True) == []
+    ns = sim.build_parser().parse_args(["--freeze", sim.FREEZE_ISO, "--trades", "a", "b", "--trades", "c", "--markets", "m*"])
+    assert ns.trades == ["a", "b", "c"] and ns.markets == ["m*"]
+
+
+def test_p1_coverage_is_the_union_of_windows_of_the_verified_stores(tmp_path):
+    s1, s2 = World(tmp_path / "s1"), World(tmp_path / "s2")
+    s1.add_trades([TA1], [GAS_A], since="2026-10-19T03:33:16Z", until="2026-10-19T13:00:00Z", name="r1")
+    s2.add_trades([], [GAS_A], since="2026-10-19T13:00:00Z", until="2026-10-20T00:00:00Z", name="r2")
+    lo, hi = at("2026-10-19T12:05:00Z"), at("2026-10-19T14:00:00Z")
+    one = sim.stores_trades_windows([s1.kal], R24, {})
+    both = sim.stores_trades_windows([s1.kal, s2.kal], R24, {})
+    assert not sim.covers(one.get(GAS_A), lo, hi) and sim.covers(both.get(GAS_A), lo, hi)
+    # each store is verified on its own: a run record after R voids that store's windows only
+    s3 = World(tmp_path / "s3")
+    s3.add_trades([], [GAS_A], since="2026-10-19T13:00:00Z", until="2026-10-20T00:00:00Z", run_at="2026-10-25T04:41:00Z")
+    assert not sim.covers(sim.stores_trades_windows([s1.kal, s3.kal], R24, {}).get(GAS_A), lo, hi)
+    # a tainted (store, ticker) pair loses that store's windows, the other store's still count
+    t = sim.stores_trades_windows([s1.kal, s2.kal], R24, {str(s2.kal): {GAS_A}})
+    assert not sim.covers(t.get(GAS_A), lo, hi) and sim.covers(t.get(GAS_A), lo, at("2026-10-19T12:59:00Z"))
+
+
+def test_p1_trades_are_deduplicated_by_trade_id_across_stores(tmp_path):
+    s1, s2 = World(tmp_path / "s1"), World(tmp_path / "s2")
+    s1.add_trades([TA1, ("tA2", GAS_A, "2026-10-19T12:30:00Z", 0.50, 10, "yes")], [GAS_A], name="r1")
+    s2.add_trades([TA1, ("tA3", GAS_A, "2026-10-19T12:40:00Z", 0.47, 3, "no")], [GAS_A], name="r2")
+    m, skipped, lines, tainted = sim.load_trades_stores([s1.kal, s2.kal], [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), R24)
+    assert m[GAS_A].tid == ["tA1", "tA2", "tA3"] and tainted == {str(s1.kal): set(), str(s2.kal): set()} and len(lines) == 2
+
+
+def test_p1_a_store_written_after_r_is_ignored_entirely(tmp_path, covered):
+    w = basic_world(tmp_path / "main")
+    late = World(tmp_path / "late")
+    late.add_trades([TA1], [GAS_A], write_at="2026-10-30T00:00:00Z", run_at="2026-10-30T04:41:00Z", name="late")
+    late.add_markets([(GAS_A, "KXAAAGASDNY-26OCT19", "no", 0.0, "2026-10-19T15:00:00Z", "2026-10-30T04:41:00Z")],
+                     write_at="2026-10-30T00:00:00Z")
+    act, rep = sim.active_stores([w.kal, late.kal], R24)
+    assert act == [w.kal] and [r["state"] for r in rep] == ["active", "ignored_written_after_R"]
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o"), trades=[str(w.kal), str(late.kal)], markets=[str(w.kal), str(late.kal)]))
+    st = {r["unit_id"]: r["status"] for r in pq.read_table(tmp_path / "o" / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert st == {"pA": "opened", "pB": "opened"}                    # the late store taints nothing and changes no result
+    assert g["population"]["U0"] == {"settled": 2} and g["results_conflicts"]["count"] == 0
+    assert [r["state"] for r in g["stores"]["trades"]] == ["active", "ignored_written_after_R"]
+
+
+def test_p1_conflicting_results_across_stores_are_flagged_and_left_unresolved(tmp_path, covered):
+    w = basic_world(tmp_path / "main")
+    m2 = World(tmp_path / "m2")
+    m2.add_markets([(GAS_A, "KXAAAGASDNY-26OCT19", "no", 0.0, "2026-10-19T15:00:00Z", "2026-10-20T10:00:00Z"),      # disagrees (main: yes)
+                    (GAS_B, "KXAAAGASDFL-26OCT19", "no", 0.0, "2026-10-19T15:00:00Z", "2026-10-20T10:00:00Z")])     # agrees
+    res, _l, _s, conflicts, _t = sim.read_results_stores([w.kal, m2.kal], [GAS_A, GAS_B], R24)
+    assert [c["ticker"] for c in conflicts] == [GAS_A] and res[GAS_A]["value"] is None and res[GAS_B]["value"] == 0.0
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o"), markets=[str(w.kal), str(m2.kal)]))
+    u = {r["unit_id"]: r["resolution"] for r in pq.read_table(tmp_path / "o" / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert u == {"pA": "worst_case", "pB": "settled"}                # the conflicted unit waits for its worst-case instant
+    assert g["results_conflicts"]["count"] == 1 and g["results_conflicts"]["examples"][0]["ticker"] == GAS_A
+
+
+def test_p1_markets_overwrite_check(tmp_path):
+    w = basic_world(tmp_path)
+
+    def edit(rec):
+        line = json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n"
+        if rec.get("type") == "file" and rec.get("kind") == "markets" and "KXAAAGASDNY" in rec["path"]:
+            return json.dumps(dict(rec, sha256="0" * 64), sort_keys=True, separators=(",", ":")) + "\n" + line   # an earlier file at this path
+        return line
+    _edit_manifest(w.kal, edit)
+    res, _l, _s, conflicts, tainted = sim.read_results_stores([w.kal], [GAS_A, GAS_B], R24)
+    assert GAS_A not in res or res[GAS_A]["value"] is None            # the overwritten file's rows are not trusted
+    assert res[GAS_B]["value"] == 0.0 and tainted[str(w.kal)] == {GAS_A} and conflicts == []
+
+
+def test_p1_a_store_that_fails_its_own_verification_is_refused_by_name(tmp_path):
+    s1, s2 = World(tmp_path / "s1"), World(tmp_path / "s2")
+    s1.add_trades([TA1], [GAS_A], name="r1")
+    s2.add_trades([TA1], [GAS_A], name="r2")
+    part = sorted((s2.kal / "trades").rglob("*.parquet"))[0]
+    part.write_bytes(part.read_bytes() + b"x")
+    with pytest.raises(sim.InputError, match="altered"):
+        sim.load_trades_stores([s1.kal, s2.kal], [GAS_A], FRZ, at("2026-10-20T00:00:00Z"), R24)

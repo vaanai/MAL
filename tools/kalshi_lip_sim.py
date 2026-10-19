@@ -1200,8 +1200,16 @@ def read_series_table(root, asof_us=None):
 
 
 def read_results(root, tickers, asof_us=None):
-    """ticker -> {result, value, settled_us, event} from the settled-markets store, rows fetched at or before
-    ``asof_us``.  value = 1/0 for yes/no, settlement_value_dollars for scalar / other results, None if unknown."""
+    """Single-store form of ``read_results_stores``: (results, digest lines, n files skipped as after R)."""
+    out, lines, skipped, _tainted = _results_one(root, tickers, asof_us)
+    return out, lines, skipped
+
+
+def _results_one(root, tickers, asof_us=None):
+    """ticker -> {result, value, settled_us, event} from ONE settled-markets store, rows fetched at or before
+    ``asof_us``.  value = 1/0 for yes/no, settlement_value_dollars for scalar / other results, None if unknown.
+    A markets path with more than one sha256 listed was overwritten: its rows are not read and its tickers are
+    returned as TAINTED (this store's result for them is not trusted)."""
     root = Path(root)
     fm = FileManifest.of(root)
     files = []
@@ -1210,9 +1218,13 @@ def read_results(root, tickers, asof_us=None):
         if d.exists():
             files += sorted(d.rglob("*.parquet"))
     files, skipped, lines = fm.check(files, asof_us)
+    tset = set(tickers)
+    tainted = set()
+    for f in [f for f in files if fm.overwritten(f)]:
+        tainted |= set(pq.read_table(f, columns=["ticker"])["ticker"].to_pylist()) & tset
+    files = [f for f in files if not fm.overwritten(f)]
     tab = kp.read_table_unified(root, "markets", files, ("ticker", "event_ticker", "status", "result",
                                                          "settlement_value_dollars", "settlement_ts", "fetched_at"))
-    tset = set(tickers)
     best = {}
     for r in tab.to_pylist():
         if r["ticker"] not in tset:
@@ -1235,7 +1247,91 @@ def read_results(root, tickers, asof_us=None):
             val = None
         out[t] = {"result": res or None, "value": val, "event": r["event_ticker"],
                   "settled_us": None if r["settlement_ts"] is None else iso_to_us(r["settlement_ts"])}
-    return out, lines, len(skipped)
+    return out, lines, len(skipped), tainted
+
+
+def read_results_stores(roots, tickers, asof_us=None):
+    """Settled results from several run stores, each verified on its own.  One row per ticker: a store's
+    result for a ticker it TAINTED (overwritten markets file) is dropped; two stores that disagree on a ticker's
+    result leave it UNRESOLVED (value None) and are reported in ``conflicts``.
+    -> (results, digest lines, files skipped as after R, conflicts, {str(root): tainted tickers})."""
+    per, lines, skipped, tainted = [], [], 0, {}
+    for r in roots:
+        o, l, sk, t = _results_one(r, tickers, asof_us)
+        for k in t:
+            o.pop(k, None)
+        per.append((r, o))
+        lines += l
+        skipped += sk
+        tainted[str(r)] = t
+    out, conflicts = {}, []
+    for t in sorted({k for _r, o in per for k in o}):
+        rows = [o[t] for _r, o in per if t in o]
+        with_res = [x for x in rows if x["result"]]
+        distinct = {(x["result"], x["value"]) for x in with_res}
+        if len(distinct) > 1:
+            conflicts.append({"ticker": t, "results": sorted(f"{a}:{b}" for a, b in distinct)})
+            out[t] = {"result": None, "value": None, "settled_us": None, "event": rows[0]["event"], "conflict": True}
+        elif with_res:
+            out[t] = min(with_res, key=lambda x: (x["settled_us"] is None, x["settled_us"] or 0))
+        else:
+            out[t] = rows[0]
+    return out, lines, skipped, conflicts, tainted
+
+
+def expand_stores(spec, allow_empty=False):
+    """A store argument (a path, a glob such as /data/mal/kalshi/lipdl/run-*, or a list of either) -> the ordered,
+    de-duplicated list of store directories.  A pattern that matches nothing is refused (unless ``allow_empty``)."""
+    import glob as _glob
+    out = []
+    for item in ([spec] if isinstance(spec, (str, Path)) else list(spec or [])):
+        item = str(item)
+        hits = sorted(_glob.glob(item)) if any(c in item for c in "*?[") else [item]
+        if not hits and not allow_empty:
+            raise InputError(f"store pattern {item!r} matches no store")
+        for h in hits:
+            if Path(h) not in out:
+                out.append(Path(h))
+    return out
+
+
+def store_first_us(root):
+    """Earliest time recorded in a store's manifest (file written_at, run at); None if it holds nothing."""
+    if not (Path(root) / "manifest.jsonl").exists():
+        return None
+    fm = FileManifest.of(root)
+    ts = [iso_to_us(r["written_at"]) for r in fm.files.values() if r.get("written_at")] + [a for _c, _q, a in fm.runs]
+    return min(ts) if ts else None
+
+
+def active_stores(roots, R_us=None):
+    """Stores written after R are ignored ENTIRELY (they taint nothing, change nothing); a store that holds
+    nothing is ignored too.  -> (active roots, report rows)."""
+    act, rep = [], []
+    for r in roots:
+        t = store_first_us(r)
+        if t is None:
+            state = "ignored_empty"
+        elif R_us is not None and t > R_us:
+            state = "ignored_written_after_R"
+        else:
+            state = "active"
+            act.append(Path(r))
+        rep.append({"root": str(r), "state": state, "first_record": None if t is None else us_to_iso(t)})
+    return act, rep
+
+
+def stores_trades_windows(roots, R_us=None, tainted_by_root=None):
+    """Union of the verified windows of several stores: each store through ``trades_windows`` (matching run
+    record <= R, explicit until), minus its own tainted tickers."""
+    win = defaultdict(list)
+    for r in roots:
+        w = trades_windows(r, R_us)
+        for t in (tainted_by_root or {}).get(str(r), ()):
+            w.pop(t, None)
+        for t, v in w.items():
+            win[t] += v
+    return win
 
 
 def trades_windows(root, R_us=None):
@@ -1286,7 +1382,27 @@ def covers(windows, lo_us, hi_us, tol_us=US):
 
 
 def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
-    """TradeList per ticker for created_time in [lo, hi], from manifest-verified trades parquet written at or
+    """Single-store form: (TradeList per ticker, n files skipped as after R, digest lines, tainted tickers)."""
+    rows, skipped, lines, tainted = _trades_rows(root, tickers, lo_us, hi_us, asof_us)
+    return {k: TradeList(v) for k, v in rows.items()}, skipped, lines, tainted
+
+
+def load_trades_stores(roots, tickers, lo_us, hi_us, asof_us=None):
+    """Prints from several run stores, each verified on its own, deduplicated by trade_id across stores.
+    -> (TradeList per ticker, files skipped as after R, digest lines, {str(root): tainted tickers})."""
+    rows, skipped, lines, tainted = defaultdict(list), 0, [], {}
+    for r in roots:
+        rr, sk, ln, t = _trades_rows(r, tickers, lo_us, hi_us, asof_us)
+        for k, v in rr.items():
+            rows[k] += v
+        skipped += sk
+        lines += ln
+        tainted[str(r)] = t
+    return {k: TradeList(v) for k, v in rows.items()}, skipped, lines, tainted
+
+
+def _trades_rows(root, tickers, lo_us, hi_us, asof_us=None):
+    """Raw print rows per ticker of ONE store; TradeList per ticker for created_time in [lo, hi], from manifest-verified trades parquet written at or
     before ``asof_us``.  Only the admitted series' partitions in the date range are opened.  Returns
     (trade lists, n files skipped as written after R, digest lines, TAINTED tickers): a ticker that appears in a
     file written after R, or in a path that was overwritten (more than one sha256 listed), cannot be trusted
@@ -1317,7 +1433,7 @@ def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
                 rows[tk[i]].append((int(ts[i]), t["trade_id"][i].as_py(), bp_of(t["yes_price"][i].as_py()),
                                     bp_of(t["no_price"][i].as_py()), t["count"][i].as_py(),
                                     t["taker_side"][i].as_py(), t["is_block_trade"][i].as_py()))
-    return {k: TradeList(v) for k, v in rows.items()}, len(skipped), lines, tainted
+    return rows, len(skipped), lines, tainted
 
 
 # ================================================================================= the pipeline
@@ -1949,27 +2065,37 @@ def run_sim(cfg):
     inp = load_inputs(cfg)
     mem.check("load_inputs")
     units, early = classify_programs(inp, cfg)
-    tw = trades_windows(cfg.trades, cfg.data_us) if cfg.trades else None
-    results, trades_map, in_lines, tainted = {}, {}, [], set()
+    troots, t_rep = active_stores(expand_stores(cfg.trades, cfg.dry_run), cfg.data_us)
+    mroots, m_rep = active_stores(expand_stores(cfg.markets, cfg.dry_run), cfg.data_us)
+    gate["stores"] = {"trades": t_rep, "markets": m_rep}
+    tw = stores_trades_windows(troots, cfg.data_us) if cfg.trades else None
+    results, trades_map, in_lines, tainted = {}, {}, [], frozenset()
+    gate["results_conflicts"] = {"count": 0, "examples": []}
     if not cfg.dry_run:
         tickers = sorted({u.ticker for u in units})
         if cfg.markets:
-            results, rl, rskip = read_results(cfg.markets, tickers, cfg.data_us)
+            results, rl, rskip, conflicts, _rt = read_results_stores(mroots, tickers, cfg.data_us)
             in_lines += rl
             gate["results_files_after_R_skipped"] = rskip
+            gate["results_conflicts"] = {"count": len(conflicts), "examples": conflicts[:20],
+                                         "note": "stores that disagree on a ticker leave it unresolved"}
+            gate["results_tainted_tickers"] = sorted({t for v in _rt.values() for t in v})
             mem.check("read_results")
         if units:
-            trades_map, tskip, tl, tainted = load_trades(cfg.trades, tickers, cfg.freeze_us,
-                                                max(u.e_us for u in units) + HORIZON_S * US, cfg.data_us)
+            trades_map, tskip, tl, t_taint = load_trades_stores(troots, tickers, cfg.freeze_us,
+                                                                max(u.e_us for u in units) + HORIZON_S * US, cfg.data_us)
             in_lines += tl
             gate["trades_files_after_R_skipped"] = tskip
+            tw = stores_trades_windows(troots, cfg.data_us, t_taint)      # a (store, ticker) taint voids that store's windows
             mem.check("load_trades")
     records = []
     for u in units:
         records.append(process_unit(u, cfg, inp, tw, trades_map, results, tainted))
         mem.check(u.unit_id)
     if cfg.dry_run:
-        return structure_report(cfg, inp, early, records)
+        rep = structure_report(cfg, inp, early, records)
+        rep["stores"] = {k: [{"store": Path(x["root"]).name, "state": x["state"]} for x in v] for k, v in gate["stores"].items()}
+        return rep
     gate["inputs"] = dict(inp["hashes"], stores=hashlib.sha256("\n".join(sorted(in_lines)).encode()).hexdigest())
     gate["_peak_rss_mb"] = round(mem.peak, 1)   # volatile: stripped from gate.json, printed by the CLI
     # ---- the read instant
@@ -2109,8 +2235,11 @@ def build_parser():
     p.add_argument("--books", nargs="+", default=[], help="obrec dir(s); list obrec-1019c first")
     p.add_argument("--programs", help="lipsnap dir")
     p.add_argument("--meta", help="market metadata capture dir")
-    p.add_argument("--trades", help="kalshi root with trades/ and _checkpoints/")
-    p.add_argument("--markets", help="kalshi root with markets/ (settled)")
+    p.add_argument("--trades", nargs="+", action="extend",
+                   help="run store(s) with trades/ and _checkpoints/: several paths, a repeated flag and/or a quoted glob "
+                        "such as '/data/mal/kalshi/lipdl/run-*' (each store is verified on its own; the windows are unioned)")
+    p.add_argument("--markets", nargs="+", action="extend",
+                   help="run store(s) with markets/ (settled results), same forms as --trades")
     p.add_argument("--series", help="kalshi root with series/")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--read-instant", help="the read instant R (ISO); data written after it is not read")
