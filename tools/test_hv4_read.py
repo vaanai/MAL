@@ -109,11 +109,17 @@ class World:
         for r in rows:
             self.led.append(r)
 
-    def seeds(self, persona, mu, days, per_day, n=N_SEEDS, first=1):
+    def seeds(self, persona, mu, days, per_day, n=N_SEEDS, live=True, manifest=True):
+        """The R null: seed files, a manifest that pins them to the registered replay code sha, and (live) the live R arm that seed 1 must reproduce. A second call
+        (another null over the same positions) passes live=False: the live arm exists already."""
         d = Path(self.null) / f"{persona}-R"
         d.mkdir(parents=True, exist_ok=True)
-        for s in range(first, first + n):
+        for s in range(1, n + 1):
             (d / f"seed-{s:04d}.jsonl").write_text("\n".join(json.dumps(r) for r in book_rows(f"{persona}-R", noisy(mu, days, per_day, 1000 + s), )) + "\n")
+        if live:
+            self.add(book_rows(f"{persona}-R", noisy(mu, days, per_day, 1001)))  # R runs live with seed 1
+        if manifest:
+            (d / R.NULL_MANIFEST).write_text(json.dumps(R.build_null_manifest(self.null, persona, "abc1234", n)))
 
     def book(self, bot, **kw):
         kw.setdefault("now_ms", DAY0 + 30 * DAY)
@@ -403,7 +409,7 @@ def test_a_second_run_from_a_new_out_dir_cannot_change_v1_and_v2_the_qp_reroll_p
     assert sorted(store) == ["CON-L.json", "CON-L.v12.json"]
     w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))  # X now has an instant, and a weaker null that V1 would pass
     w.null = str(tmp_path / "null2")
-    w.seeds("CON", 0.0, 5, 20)
+    w.seeds("CON", 0.0, 5, 20, live=False)
     for out in ("out2", "out3"):
         w.out = str(tmp_path / out)
         for kw in ({}, {"v12_only": True}):
@@ -556,7 +562,8 @@ def test_v1_v2_not_decidable_when_the_null_or_the_comparator_is_missing(tmp_path
     d = Path(w2.null) / "CON-R"
     (d / "seed-0003.jsonl").unlink()  # a missing seed
     r2 = w2.book("CON-L")
-    assert r2["v1"]["status"] == "NOT_DECIDABLE" and r2["v1"]["null"]["unusable"].keys() == {"3"}
+    assert r2["v1"]["status"] == "NOT_DECIDABLE" and r2["v1"]["null"]["seeds_used"] == 0  # the manifest lists seed 3, the disk does not have it: refused before any seed is scored
+    assert any("missing or different from the manifest's sha256 (first: seed 3)" in x for x in r2["v1"]["reasons"])
     assert r2["v2"]["status"] == "PASS"  # V2 does not need the null
 
 
@@ -566,7 +573,99 @@ def test_a_null_shorter_than_200_seeds_is_not_decidable_by_default(tmp_path):
     w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
     w.seeds("CON", 0.0, 5, 20, n=2)
     r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, reads_dir=w.reads, null_dir=w.null, now_ms=DAY0 + 30 * DAY, extra_registries=w.extra)  # n_seeds defaults to 200
-    assert r["v1"]["status"] == "NOT_DECIDABLE" and r["v1"]["null"]["n_seeds"] == 200 and len(r["v1"]["null"]["unusable"]) == 198
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and r["v1"]["null"]["n_seeds"] == 200 and r["v1"]["subcells"] == {}
+    why = " ".join(r["v1"]["reasons"])
+    assert "n_seeds 2" in why and "lists seeds 2 of 200" in why and r["v1"]["null"]["seeds_used"] == 0  # refused on the manifest before any seed is scored
+
+
+def test_the_null_manifest_pins_the_replay_code_the_seed_files_and_seed_1_to_the_live_r_arm(tmp_path):
+    w = con_world(tmp_path)
+    reg = load_registry(w.reg)
+    b = DAY0 + 5 * DAY
+    d = Path(w.null) / "CON-R"
+    mp = d / R.NULL_MANIFEST
+    good = R.verify_null(w.null, "CON", reg, w.led, b, N_SEEDS)
+    assert good["reasons"] == [] and good["seed_files"] == N_SEEDS and good["seed1_equals_live"] is True and good["seed1_decisions"] == 100
+    assert good["manifest_sha256"] == hashlib.sha256(mp.read_bytes()).hexdigest() and good["replay_code_sha"] == reg["CON-R"]["frozen_sha"] == "abc1234"
+    v1 = w.book("CON-L")["v1"]
+    assert v1["status"] == "PASS" and v1["null_manifest_sha256"] == good["manifest_sha256"] and v1["null"]["manifest"]["seed1_equals_live"] is True
+    assert "hv4_null_manifest_v1" in R.__doc__ and "MANIFEST.json" in R.__doc__ and "SEED 1 reproduces the live" in R.__doc__  # the format is documented
+    orig = mp.read_text()
+    m0 = json.loads(orig)
+
+    def broken(match, mutate=None, **kw):
+        """Change the manifest (or a file), expect V1's provenance check to name `match`, then restore."""
+        try:
+            if mutate:
+                mutate(m0 := json.loads(orig))
+                mp.write_text(json.dumps(m0))
+            elif kw.get("delete_manifest"):
+                mp.unlink()
+            res = R.verify_null(w.null, "CON", reg, w.led, b, N_SEEDS)
+            assert any(match in x for x in res["reasons"]), (match, res["reasons"])
+            nul = R.r_null("CON", reg, w.null, b, DAY0 + 30 * DAY, N_SEEDS, led=w.led)
+            assert nul["status"] == "NOT_DECIDABLE" and nul["seeds_used"] == 0 and nul["p95"] == {} and any("null provenance" in x for x in nul["reasons"])  # no seed is scored
+        finally:
+            mp.write_text(orig)
+
+    broken("no null manifest", delete_manifest=True)
+    broken("replay code sha", lambda m: m.update(replay_code_sha="deadbee"))  # not the registered frozen_sha of CON-R
+    broken("replay code sha", lambda m: m.pop("replay_code_sha"))
+    broken("not a hv4_null_manifest_v1", lambda m: m.update(persona="BIG"))
+    broken("not a hv4_null_manifest_v1", lambda m: m.update(schema="x"))
+    broken("n_seeds", lambda m: m.update(n_seeds=N_SEEDS + 1))
+    broken("lists seeds", lambda m: m["seeds"].pop("3"))  # a seed missing from the manifest
+    broken("lists seeds", lambda m: m["seeds"].update({"99": m["seeds"]["1"]}))  # a seed that is not wanted
+    broken("manifest entry", lambda m: m["seeds"]["2"].update(file="seed-0003.jsonl"))
+    broken("manifest entry", lambda m: m["seeds"]["2"].update(sha256="xyz"))
+    broken("duplicate seed files", lambda m: m["seeds"]["2"].update(sha256=m["seeds"]["1"]["sha256"]))
+    # a seed file changed after the manifest was written (the null "rebuilt" until V1 gives the wanted answer)
+    s4 = d / "seed-0004.jsonl"
+    keep = s4.read_text()
+    s4.write_text(keep.replace('"pnl_nofail": ', '"pnl_nofail": 1', 1))
+    broken("different from the manifest")
+    s4.write_text(keep)
+    assert R.verify_null(w.null, "CON", reg, w.led, b, N_SEEDS)["reasons"] == []
+    # a seed file deleted, and one that is not listed
+    s5 = d / "seed-0005.jsonl"
+    keep5 = s5.read_text()
+    s5.unlink()
+    broken("missing or different")
+    s5.write_text(keep5)
+    (d / "seed-0007.jsonl").write_text(keep5)
+    broken("not in the manifest")
+    (d / "seed-0007.jsonl").unlink()
+    # seed 1 must reproduce the live arm: another set of decisions in seed 1 (a replay that is not the live R arm) is refused
+    s1 = d / "seed-0001.jsonl"
+    keep1 = s1.read_text()
+    s1.write_text("\n".join(json.dumps(r) for r in book_rows("CON-R", noisy(0.0, 5, 19, 1001))) + "\n")
+    m1 = json.loads(orig)
+    m1["seeds"]["1"]["sha256"] = hashlib.sha256(s1.read_bytes()).hexdigest()
+    mp.write_text(json.dumps(m1))
+    res = R.verify_null(w.null, "CON", reg, w.led, b, N_SEEDS)
+    assert res["seed1_equals_live"] is False and any("does not reproduce the live CON-R arm" in x for x in res["reasons"])
+    s1.write_text(keep1)
+    mp.write_text(orig)
+    # no live R arm at all: nothing for seed 1 to reproduce
+    w2 = World(tmp_path / "nolive")
+    w2.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
+    w2.seeds("CON", 0.0, 5, 20, live=False)
+    res2 = R.verify_null(w2.null, "CON", load_registry(w2.reg), w2.led, b, N_SEEDS)
+    assert res2["seed1_equals_live"] is False and any("does not reproduce" in x for x in res2["reasons"])
+    # the whole read records V1 NOT_DECIDABLE once for a null without a manifest, and says why
+    w3 = con_world(tmp_path / "nomanifest")
+    (Path(w3.null) / "CON-R" / R.NULL_MANIFEST).unlink()
+    r3 = w3.book("CON-L")
+    assert r3["v1"]["status"] == "NOT_DECIDABLE" and any("no null manifest" in x for x in r3["v1"]["reasons"]) and r3["adds_value"] is False
+    assert R.load_v12(w3.reads, "CON-L")["v1"]["status"] == "NOT_DECIDABLE"
+
+
+def test_build_null_manifest_hashes_the_files_in_place(tmp_path):
+    w = con_world(tmp_path)
+    man = R.build_null_manifest(w.null, "CON", "ABC1234", N_SEEDS)
+    assert man["schema"] == R.NULL_MANIFEST_SCHEMA and man["replay_code_sha"] == "abc1234" and sorted(man["seeds"], key=int) == [str(i) for i in range(1, N_SEEDS + 1)]
+    f = Path(w.null) / "CON-R" / "seed-0002.jsonl"
+    assert man["seeds"]["2"] == {"file": "seed-0002.jsonl", "sha256": hashlib.sha256(f.read_bytes()).hexdigest()}
 
 
 def test_seed_reproducibility(tmp_path):
@@ -578,8 +677,8 @@ def test_seed_reproducibility(tmp_path):
     # the null and the whole read, from the same inputs, into two out dirs
     w = con_world(tmp_path)
     reg = load_registry(w.reg)
-    n1 = R.r_null("CON", reg, w.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS)
-    n2 = R.r_null("CON", reg, w.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS)
+    n1 = R.r_null("CON", reg, w.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS, led=w.led)
+    n2 = R.r_null("CON", reg, w.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS, led=w.led)
     assert n1["p95"] == n2["p95"] and n1["values"] == n2["values"] and n1["seeds_used"] == N_SEEDS
     for s in R.SUBCELLS:
         assert n1["p95"][s] == pytest.approx(float(np.percentile(n1["values"][s], 95)))
@@ -598,7 +697,7 @@ def test_seed_reproducibility(tmp_path):
     assert a["v1"]["null_sha256"] == b["v1"]["null_sha256"]
     # another set of null files gives another null
     w3 = con_world(tmp_path / "other", null_mu=1e6)
-    n3 = R.r_null("CON", load_registry(w3.reg), w3.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS)
+    n3 = R.r_null("CON", load_registry(w3.reg), w3.null, DAY0 + 5 * DAY, DAY0 + 30 * DAY, N_SEEDS, led=w3.led)
     assert n3["p95"] != n1["p95"]
 
 

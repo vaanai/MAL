@@ -39,6 +39,14 @@ V1  the LLM book's primary ex-top-3 (stake 0.25, 1.9 s) is ABOVE the 95th percen
     sub-cells. The null is 200 replays of the R arm, seeds 1..200, each an arena-ledger file `<null-dir>/<persona>-R/seed-NNNN.jsonl`, each scored by arena_score at
     the book's own instant B (a forced-boundary comparator screen). A missing seed, or a seed whose own instant is earlier than B (arena_score refuses a boundary
     later than a bot's own instant unless that bot's own read is recorded non-PASS, and a replay seed has none), makes V1 NOT_DECIDABLE.
+    NULL MANIFEST (quant-proof B2 on #718). The null is replayed after the window, so it must be pinned to what existed before it. `<null-dir>/<persona>-R/MANIFEST.json`:
+        {"schema": "hv4_null_manifest_v1", "persona": "CON", "arm": "CON-R",
+         "replay_code_sha": "<the registered frozen_sha of CON-R, exactly>", "n_seeds": 200,
+         "seeds": {"1": {"file": "seed-0001.jsonl", "sha256": "<64 hex>"}, ..., "200": {"file": "seed-0200.jsonl", "sha256": "<64 hex>"}}}
+    (`build_null_manifest` writes it from the finished files.) The read verifies, and V1 is NOT_DECIDABLE (no seed is scored) if any check fails: schema, persona and arm; the
+    replay code sha equals the registered frozen_sha of <persona>-R (the registration records, before T0); exactly seeds 1..200 listed, each file's sha256 equal to the file on
+    disk, no two seeds with the same sha256, no unlisted seed-*.jsonl file; and SEED 1 reproduces the live <persona>-R arm: its open and refused rows before the book's
+    instant equal the live arm's (kind, position id, entry decision ms, pool, mint). R runs live with seed 1 (DESIGN section 5). The manifest's own sha256 is recorded in V1.
 V2  daily (book - X) at 0.25 over the calendar days of the window (days with no trade count 0), one-sided day-block bootstrap (resample whole UTC days,
     2,000 draws, seed 1), p = (1 + #{mean <= 0}) / (1 + draws) (the repo's exp017 convention) <= 0.05/6, in each of the four sub-cells. The window ends at the
     `arena_score.common_boundary(book, X)`: the earlier of the two natural instants; both arms are scored there (at or before an arm's own instant is always allowed).
@@ -301,25 +309,126 @@ def paired(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None, days: Seque
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the R null (V1)
-def load_null_rows(null_dir: str | Path, persona: str, seed: int) -> list[dict[str, Any]]:
+NULL_MANIFEST = "MANIFEST.json"
+NULL_MANIFEST_SCHEMA = "hv4_null_manifest_v1"
+
+
+def load_null_rows(null_dir: str | Path, persona: str, seed: int, expect_sha: str | None = None) -> list[dict[str, Any]]:
     p = Path(null_dir) / f"{persona}-R" / f"seed-{seed:04d}.jsonl"
     if not p.exists():
         raise Refused(f"null seed file missing: {p}")
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    raw = p.read_bytes()
+    if expect_sha is not None and hashlib.sha256(raw).hexdigest() != expect_sha:
+        raise Refused(f"null seed file {p.name} changed since the manifest was verified")
+    return [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
+
+
+def decision_keys(rows: Sequence[Mapping[str, Any]], clock_ms: int, end_ms: int) -> list[tuple[str, ...]]:
+    """What an R arm DECIDED in [clock, end): the open and refused rows as (kind, position id, entry decision ms, pool, mint). No fill, exit or P&L enters."""
+    out = []
+    for r in rows:
+        if r.get("kind") in ("open", "refused"):
+            ms = int(r["decision_ms"]["entry"])
+            if clock_ms <= ms < end_ms:
+                out.append((str(r["kind"]), str(r.get("position_id") or r.get("trade_id")), str(ms), str(r.get("pool")), str(r.get("mint"))))
+    return sorted(out)
+
+
+def build_null_manifest(null_dir: str | Path, persona: str, replay_code_sha: str, n_seeds: int = NULL_SEEDS) -> dict[str, Any]:
+    """The manifest of a finished replay, hashed in place (for the replay job to write as <null-dir>/<persona>-R/MANIFEST.json). The read re-checks every field."""
+    d = Path(null_dir) / f"{persona}-R"
+    seeds = {str(i): {"file": f"seed-{i:04d}.jsonl", "sha256": _sha(d / f"seed-{i:04d}.jsonl")} for i in range(1, n_seeds + 1)}
+    return {"schema": NULL_MANIFEST_SCHEMA, "persona": persona, "arm": f"{persona}-R", "replay_code_sha": str(replay_code_sha).lower(), "n_seeds": n_seeds, "seeds": seeds}
+
+
+def verify_null(null_dir: str | Path, persona: str, reg: Mapping[str, Mapping[str, Any]], led: Ledger, boundary_ms: int, n_seeds: int = NULL_SEEDS) -> dict[str, Any]:
+    """The provenance of the R null (quant-proof B2 on #718): the null is built after outcomes exist, so it must be pinned to something that existed before. Every
+    reason below makes V1 NOT_DECIDABLE; no seed is scored from an unverified null. Checks, in the module docstring's manifest format: schema, persona and arm; the
+    replay code sha equals the registered frozen_sha of <persona>-R; exactly seeds 1..n_seeds, each file named seed-NNNN.jsonl with its sha256, all distinct, all
+    matching the files on disk, no unlisted seed file; and seed 1's decisions before the book's instant equal the live <persona>-R arm's (R runs live with seed 1)."""
+    rid = f"{persona}-R"
+    d = Path(null_dir) / rid
+    out: dict[str, Any] = {"manifest_sha256": None, "replay_code_sha": None, "seed_files": 0, "seed1_decisions": None, "seed1_equals_live": None, "reasons": []}
+    why = out["reasons"]
+    mp = d / NULL_MANIFEST
+    if not mp.exists():
+        why.append(f"no null manifest {mp}: the null's provenance cannot be checked")
+        return out
+    raw = mp.read_bytes()
+    out["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+    try:
+        m = json.loads(raw)
+    except ValueError:
+        m = None
+    if not isinstance(m, dict) or not isinstance(m.get("seeds"), dict):
+        why.append("the null manifest is not a JSON object with a seeds object")
+        return out
+    out["replay_code_sha"] = m.get("replay_code_sha")
+    if m.get("schema") != NULL_MANIFEST_SCHEMA or m.get("persona") != persona or m.get("arm") != rid:
+        why.append(f"the manifest is not a {NULL_MANIFEST_SCHEMA} manifest of persona {persona} / arm {rid} (schema {m.get('schema')!r}, persona {m.get('persona')!r}, arm {m.get('arm')!r})")
+    registered = str((reg.get(rid) or {}).get("frozen_sha") or "").lower()
+    if not registered or str(m.get("replay_code_sha") or "").lower() != registered:
+        why.append(f"the replay code sha {m.get('replay_code_sha')!r} is not the registered {rid} frozen_sha {registered!r}")
+    if m.get("n_seeds") != n_seeds:
+        why.append(f"the manifest says n_seeds {m.get('n_seeds')!r}, the read needs {n_seeds}")
+    seeds = m["seeds"]
+    want = {str(i) for i in range(1, n_seeds + 1)}
+    if set(seeds) != want:
+        why.append(f"the manifest lists seeds {len(set(seeds) & want)} of {n_seeds} wanted and {len(set(seeds) - want)} unwanted")
+    listed: dict[str, str] = {}
+    for k in sorted(set(seeds) & want, key=int):
+        e = seeds[k]
+        sha = e.get("sha256") if isinstance(e, dict) else None
+        if not isinstance(e, dict) or e.get("file") != f"seed-{int(k):04d}.jsonl" or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+            why.append(f"seed {k}: the manifest entry is not {{file: seed-{int(k):04d}.jsonl, sha256: 64 hex}}")
+            continue
+        listed[k] = sha
+    dup = sorted(sha for sha in set(listed.values()) if list(listed.values()).count(sha) > 1)
+    if dup:
+        why.append(f"duplicate seed files: {len(dup)} sha256 value(s) listed for more than one seed (first: seeds {[k for k, v in listed.items() if v == dup[0]][:4]})")
+    changed = [k for k, sha in listed.items() if _sha(d / f"seed-{int(k):04d}.jsonl") != sha]
+    if changed:
+        why.append(f"{len(changed)} seed file(s) missing or different from the manifest's sha256 (first: seed {changed[0]})")
+    unlisted = sorted(f.name for f in d.glob("seed-*.jsonl") if f.name not in {f"seed-{int(k):04d}.jsonl" for k in listed})
+    if unlisted:
+        why.append(f"{len(unlisted)} seed file(s) on disk are not in the manifest (first: {unlisted[0]})")
+    out["seed_files"] = len(listed)
+    if "1" in listed and "1" not in changed:  # seed 1 is the live R arm
+        clock = int(reg[rid]["clock_start_ms"])
+        live, problems = led.scan_bot(rid)
+        s1 = decision_keys(load_null_rows(null_dir, persona, 1, listed["1"]), clock, boundary_ms)
+        lv = decision_keys(live, clock, boundary_ms)
+        out["seed1_decisions"], out["seed1_equals_live"] = len(s1), bool(s1 and s1 == lv and not problems)
+        if problems:
+            why.append(f"the live {rid} ledger has {len(problems)} torn or unparseable line(s): seed 1 cannot be compared with it")
+        elif not s1 or s1 != lv:
+            first = next((i for i, (x, y) in enumerate(zip(s1, lv)) if x != y), min(len(s1), len(lv)))
+            why.append(f"seed 1 does not reproduce the live {rid} arm: {len(s1)} decisions before {boundary_ms} against {len(lv)} live (first difference at decision {first})")
+    return out
 
 
 def r_null(persona: str, reg: Mapping[str, Mapping[str, Any]], null_dir: str | Path | None, boundary_ms: int, now_ms: int, n_seeds: int = NULL_SEEDS,
-           settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
-    """Primary ex-top-3 of the persona's R arm over seeds 1..n_seeds, per sub-cell, with its 95th percentile. Any missing or unusable seed -> NOT_DECIDABLE."""
+           settle_ms: int = AS.SETTLE_MS, led: Ledger | None = None) -> dict[str, Any]:
+    """Primary ex-top-3 of the persona's R arm over seeds 1..n_seeds, per sub-cell, with its 95th percentile. The null is scored only after `verify_null` passed (it
+    needs `led`, the arena ledger holding the live R arm). Any missing or unusable seed, or any failed provenance check -> NOT_DECIDABLE."""
     rid = f"{persona}-R"
-    out: dict[str, Any] = {"arm": rid, "n_seeds": n_seeds, "seeds_used": 0, "pct": NULL_PCT, "p95": {}, "values": {s: [] for s in SUBCELLS}, "unusable": {}, "reasons": []}
+    out: dict[str, Any] = {"arm": rid, "n_seeds": n_seeds, "seeds_used": 0, "pct": NULL_PCT, "p95": {}, "values": {s: [] for s in SUBCELLS}, "unusable": {}, "reasons": [], "manifest": None}
     if null_dir is None:
         out["status"] = "NOT_DECIDABLE"
         out["reasons"].append("no --null-dir: the 200-seed R null is not available")
         return out
+    if led is None:
+        raise Refused("r_null needs the arena ledger (the live R arm) to verify the null's provenance")
+    man = verify_null(null_dir, persona, reg, led, boundary_ms, n_seeds)
+    out["manifest"] = man
+    if man["reasons"]:
+        out["status"] = "NOT_DECIDABLE"
+        out["reasons"] += [f"null provenance: {x}" for x in man["reasons"]]
+        return out
+    sha_of = {int(k): v["sha256"] for k, v in json.loads((Path(null_dir) / rid / NULL_MANIFEST).read_text())["seeds"].items()}
     for seed in range(1, n_seeds + 1):
         try:
-            res = score_at(rid, reg, load_null_rows(null_dir, persona, seed), boundary_ms, now_ms, settle_ms)
+            res = score_at(rid, reg, load_null_rows(null_dir, persona, seed, sha_of[seed]), boundary_ms, now_ms, settle_ms)
         except (Refused, AS.Refused) as exc:
             out["unusable"][str(seed)] = str(exc)[:200]
             continue
@@ -339,15 +448,17 @@ def r_null(persona: str, reg: Mapping[str, Mapping[str, Any]], null_dir: str | P
     return out
 
 
-def v1_read(book_res: Mapping[str, Any], persona: str, reg, null_dir, boundary_ms: int, now_ms: int, n_seeds: int = NULL_SEEDS, settle_ms: int = AS.SETTLE_MS) -> dict[str, Any]:
+def v1_read(book_res: Mapping[str, Any], persona: str, reg, null_dir, boundary_ms: int, now_ms: int, n_seeds: int = NULL_SEEDS, settle_ms: int = AS.SETTLE_MS,
+            led: Ledger | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"rule": f"primary ex-top-3 above the p{NULL_PCT} of the {persona}-R {n_seeds}-seed null, in each of the four sub-cells", "subcells": {}, "reasons": []}
     if not _decidable(book_res):
         out["status"] = "NOT_DECIDABLE"
         out["reasons"].append(f"the book is not decidable under arena_score (status {book_res['status']})")
         return out
-    null = r_null(persona, reg, null_dir, boundary_ms, now_ms, n_seeds, settle_ms)
+    null = r_null(persona, reg, null_dir, boundary_ms, now_ms, n_seeds, settle_ms, led)
     out["null"] = {k: v for k, v in null.items() if k != "values"}
-    out["null_sha256"] = hashlib.sha256(canon(null["values"]).encode()).hexdigest()
+    out["null_sha256"] = hashlib.sha256(canon(null["values"]).encode()).hexdigest()  # the extracted values; the seed FILES are pinned by the manifest below
+    out["null_manifest_sha256"] = (null.get("manifest") or {}).get("manifest_sha256")
     if null["status"] != "OK":
         out["status"] = "NOT_DECIDABLE"
         out["reasons"] += null["reasons"]
@@ -799,7 +910,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     v1 = v2 = None
     adds = v12 = None
     if decide:
-        v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms)
+        v1 = v1_read(main, arm.persona, reg, null_dir, b, now, n_seeds, settle_ms, led)
         v2 = v2_read(bot_id, arm.persona, main, b, reg, led, ledger_root, registry, reads_dir, now, settle_ms, bv)
         v12 = bool(v1["status"] == "PASS" and v2["status"] == "PASS")
         adds = bool(main["status"] == "PASS" and v12)  # "adds value" is claimed only for a book that also clears the arena gate
