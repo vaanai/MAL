@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import errno
 import os
 import subprocess
 import sys
@@ -271,6 +272,83 @@ def test_if_the_log_cannot_be_written_nothing_is_sent_and_the_host_stops(tmp_pat
     with pytest.raises(HostFatal):
         h.run(TICK_START, T_END)
     assert h.engine.calls == [] and not h.books[BOT].open and not h.books[BOT].attempted
+
+
+class EveryPrint(Rule):
+    """Buys pool A on every A print: several orders in ONE poll batch."""
+
+    bot_id = "t-every"
+
+    def on_row(self, ctx, row):
+        return [Buy(POOL["A"], {"sig": row["signature"]})] if row.get("type") == "trade" and row.get("pool") == POOL["A"] else []
+
+
+class PairAtTick(Rule):
+    """Two buys (pools A and E) in one tick's batch."""
+
+    bot_id = "t-pair"
+    uses_ticks = True
+
+    def __init__(self, at_tick: int) -> None:
+        self.at_tick = at_tick
+
+    def on_tick(self, ctx, T):
+        return [Buy(POOL["A"], {"i": 1}), Buy(POOL["E"], {"i": 2})] if T == self.at_tick else []
+
+
+def fail_nth_append(h: Host, nth: int) -> list[int]:
+    """Make the nth call of the host's log.append raise ENOSPC (once; every other call works). Returns the list of call numbers seen."""
+    real, calls = h.log.append, []
+
+    def append(*a, **k):
+        calls.append(len(calls) + 1)
+        if len(calls) == nth:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(*a, **k)
+
+    h.log.append = append
+    return calls
+
+
+def test_a_failed_append_mid_batch_stops_the_host_at_once_row_path(tmp_path):
+    T = T0 + 10_000
+    rows = [swap(T - 4 + i, "A", "FILL0", "buy", i) for i in range(4)]  # four A prints, all in the batch of tick T
+    h = make_host(tmp_path, [EveryPrint()], rows=rows, fake=True, clock=0, register=False)
+    calls = fail_nth_append(h, 2)  # the 1st decision row is written and sent, the 2nd append fails, the 3rd and 4th would have worked
+    h.catch_up(T - 1000)
+    with pytest.raises(HostFatal):
+        h.step(T)
+    assert calls == [1, 2]  # no third append was even attempted
+    assert [r["kind"] for r in h.log.rows("t-every")] == ["entry"] and [c[0] for c in h.engine.calls] == ["buy"]  # nothing after the failed write is logged or sent
+    assert isinstance(h.fatal, OSError) and h.fatal.errno == errno.ENOSPC
+    with pytest.raises(HostFatal):  # a dead host stays dead
+        h.step(T + 1000)
+    assert len(h.log.rows("t-every")) == 1 and len(h.engine.calls) == 1 and calls == [1, 2]
+
+
+def test_a_failed_append_mid_batch_stops_the_host_at_once_tick_path(tmp_path):
+    T = T0 + 10_000
+    rule = PairAtTick(T)
+    h = make_host(tmp_path, [rule], rows=[swap(T - 5, "A", "FILL0", "buy", 1), swap(T - 4, "E", "FILL0", "buy", 2)], fake=True, clock=0, register=False)
+    calls = fail_nth_append(h, 2)
+    h.catch_up(T - 1000)
+    with pytest.raises(HostFatal):
+        h.step(T)
+    assert calls == [1, 2] and [r["pool"] for r in h.log.rows(rule.bot_id)] == [POOL["A"]] and [c[2] for c in h.engine.calls] == [POOL["A"]]
+
+
+def test_a_failed_append_while_retrying_sells_sends_no_sell(tmp_path):
+    h = make_host(tmp_path, [make_rule()], rows=ROWS, fake=True)
+    h.resume()
+    from tools.arena_rules import OpenPos
+
+    for pid in ("p1", "p2"):  # two positions whose exit decision is pending a retry
+        h.engine.positions[pid] = type("P", (), {"bot_id": BOT})()
+        h.books[BOT].add(OpenPos(pid, POOL["A"], {}, T0, 1, exit_reason="wallet_sell"))
+    calls = fail_nth_append(h, 1)
+    with pytest.raises(HostFatal):
+        h.step(TICK_START)
+    assert calls == [1] and h.engine.calls == [] and h.log.rows(BOT) == []
 
 
 def test_a_refused_buy_is_logged_leaves_no_position_and_still_counts_as_the_attempt(tmp_path):

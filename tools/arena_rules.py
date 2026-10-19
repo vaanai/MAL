@@ -11,7 +11,8 @@ modelled on `tools/hv4_runner.py` (that module is a frozen book's code and pulls
     from arena_paper's defaults (rent 0 on a filled trip, the engine's own 2,039,280 on a stranded one, E1 floor 384,022, strand_rule both, gap_slots 150, gap_silence_ms
     60,000); a test pins them. It prices at 0.25 / 0.5 / 1.0 SOL; only the stake pinned in `bots.json` decides.
   * DECISION LOG FIRST. Per order the host appends the decision row (`kind` entry | exit; flock, fsync, hash chain, `tools.arena_declog`) and only then calls
-    `engine.buy` / `engine.sell`. An `ArenaRefused` adds an `order_refused` row. If the log cannot be written the order is NOT sent and the host stops (`HostFatal`).
+    `engine.buy` / `engine.sell`. An `ArenaRefused` adds an `order_refused` row. If the log cannot be written the order is NOT sent and the host stops AT ONCE (`HostFatal`): nothing after the failed append is logged or sent,
+    not the rest of the batch, not another rule's order, not a sell retry.
   * TIMING. Event rules decide inside the row callback; time rules use a 1 s tick. Rows are delivered with `state.poll(until_ms=T - 1)`, so a tick at T never has seen a
     row with t_recv_ms >= T (strict as-of). Live, rows are polled continuously but never past the next tick, and `decision_ms` is the wall clock at the write. Replay, the
     sim clock is the tape's own: `decision_ms` = the triggering row's t_recv_ms (event) or T (tick), so a replay is a pure function of the tape.
@@ -81,6 +82,12 @@ RULE_MODULES = {"h2ps-a1": "tools.arena_rule_h2ps"}  # rule name -> module with 
 
 class HostFatal(RuntimeError):
     """The decision log (or the ledger) cannot take a row: no more orders are sent and the process must stop."""
+
+
+class _Halt(BaseException):
+    """Raised the instant a fatal condition is recorded (a decision row that could not be written, a ledger that cannot take a row). It is a BaseException on purpose:
+    ArenaState.poll swallows every Exception a row callback raises and carries on with the batch, which would let later rows be logged and sent after a failed write. The
+    public entry points (catch_up, step, run) turn it into HostFatal."""
 
 
 class HostError(RuntimeError):
@@ -398,8 +405,11 @@ class Host:
             self.hook_errors.append(f"{where}:{type(e).__name__}")
 
     def _set_fatal(self, e: BaseException) -> None:
+        """Record the first fatal error and stop NOW: nothing after a failed append is logged or sent (the log is walked in order and a torn line in its middle breaks the
+        chain for every book in the process)."""
         if self.fatal is None:
             self.fatal = e
+        raise _Halt()
 
     def _raise_fatal(self) -> None:
         if self.fatal is not None:
@@ -474,6 +484,8 @@ class Host:
 
     # -- the row callback (event rules)
     def _on_row(self, row: dict) -> None:
+        if self.fatal is not None:
+            return  # a failed write already stopped the host: this row is not logged, sent or shown to a rule
         t = row.get("t_recv_ms")
         live = self.cfg.live
         if not live and isinstance(t, int) and t > self.sim_now:
@@ -493,6 +505,8 @@ class Host:
             self._count("stale_rows")
             return
         for rule in self.rules:
+            if self.fatal is not None:
+                return
             ctx = self._ctx[rule.bot_id]
             ctx.now_ms = now
             try:
@@ -506,21 +520,34 @@ class Host:
     # -- the tick (time rules, sell retries)
     def catch_up(self, t_from: int) -> None:
         """Apply every row before t_from to the state and the engine with the rules switched off (the warm-up tape, or the tape a restarted process missed)."""
+        self._raise_fatal()
         self._dispatch = False
         try:
             self.state.poll(until_ms=t_from - 1)
+        except _Halt:
+            self._raise_fatal()
+            raise
         finally:
             self._dispatch = True
         self._raise_fatal()
 
     def step(self, T: int) -> None:
         """One tick at instant T: the state is stepped to T - 1 first (strict as-of), then sell retries, then the rules' on_tick."""
+        self._raise_fatal()
+        try:
+            self._step(T)
+        except _Halt:
+            self._raise_fatal()
+            raise
+
+    def _step(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)  # event decisions inside this poll are stamped with their row's own t_recv_ms (sim) or the wall clock (live)
         if not self.cfg.live:
             self.sim_now = max(self.sim_now, T)
         self._raise_fatal()
         dec = self._now(T)
         for rule in self.rules:
+            self._raise_fatal()
             book = self.books[rule.bot_id]
             self._retry_sells(rule, book, dec)
             if not rule.uses_ticks or T < self.cfg.clock_start_ms:
@@ -544,7 +571,11 @@ class Host:
         while T < t_to:
             if self.cfg.live:
                 while self.now_fn() < T + TICK_LAG_MS:
-                    self.state.poll(until_ms=T - 1)
+                    try:
+                        self.state.poll(until_ms=T - 1)
+                    except _Halt:
+                        self._raise_fatal()
+                        raise
                     self._raise_fatal()
                     sleep(POLL_SLEEP_S)
             self.step(T)
@@ -557,6 +588,8 @@ class Host:
     def _submit(self, rule: Rule, orders: Sequence[Any], dec_ms: int) -> None:
         book = self.books[rule.bot_id]
         for o in orders:
+            if self.fatal is not None:
+                return
             try:
                 if dec_ms < self.cfg.clock_start_ms:
                     self._count("order_before_clock")
@@ -623,6 +656,8 @@ class Host:
 
     def _retry_sells(self, rule: Rule, book: BotBook, dec_ms: int) -> None:
         for pid in sorted(book.open):
+            if self.fatal is not None:
+                return
             pos = book.open.get(pid)
             if pos is not None and pos.exit_reason is not None and dec_ms >= pos.next_try_ms:
                 try:
