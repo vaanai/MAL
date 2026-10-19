@@ -364,10 +364,12 @@ class QuoteHistory:
                 del ts[:i]
                 del qs[:i]
 
-    def sweep(self, now_ms: int, idle_ms: int) -> int:
-        """Forget pools whose newest row is more than `idle_ms` old (the runner passes the state's own eviction horizon: a key the state has dropped has no
-        snapshot, so no card reads its quotes). Returns how many were dropped."""
-        dead = [k for k, ts in self.t.items() if not ts or ts[-1] < now_ms - idle_ms]
+    def sweep(self, now_ms: int, idle_ms: int, *, held: Callable[[str], bool]) -> int:
+        """Forget pools whose newest row is more than `idle_ms` old AND that `held(pool)` says the state no longer holds. The second condition is the one that makes
+        this safe: a card reads a pool's quotes only through a state snapshot, so a history the state has dropped can never be read, but ArenaState evicts on its own
+        60 s sweep, and a pool the state still holds can trade again before that sweep runs (it then keeps its old first-seen age and can pass age_min). Returns how many
+        were dropped."""
+        dead = [k for k, ts in self.t.items() if (not ts or ts[-1] < now_ms - idle_ms) and not held(k)]
         for k in dead:
             del self.t[k]
             del self.q[k]
@@ -594,12 +596,12 @@ class Runner:
           * The engine keeps every print of every pool for pricing (arena_paper.PoolHist, about 1 KB a print, 880k prints an hour on the 2026-10-19 tape) and nothing
             drops one unless ArenaEngine.prune() is called. Nobody called it: the #1236 stub reached 6.27 GB. prune() drops the history of pools with no open position
             that were quiet for HIST_KEEP_SLOTS; it is the engine's own housekeeping, unchanged.
-          * QuoteHistory forgets a pool once the state has evicted it."""
+          * QuoteHistory forgets a pool once it is idle past the state's eviction horizon AND the state no longer holds the key."""
         self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
         prune = getattr(self.engine, "prune", None)
         if prune is not None:
             self._count("engine_pools_pruned", prune())
-        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms))
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T

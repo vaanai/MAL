@@ -146,12 +146,50 @@ def test_quote_history_trims_small_pools_and_keeps_every_answer(tmp_path):
         assert a.ref("P", T) == b.ref("P", T) and a.peak("P", T) == b.peak("P", T)
 
 
-def test_quote_sweep_drops_only_pools_idle_past_the_horizon():
+def test_quote_sweep_drops_only_pools_idle_past_the_horizon_and_not_held_by_the_state():
     q = R.QuoteHistory()
     q.add("old", 1_000, 1.0)
+    q.add("old_held", 1_000, 1.0)
     q.add("new", 9_000_000, 1.0)
-    assert q.sweep(10_000_000, idle_ms=5_000_000) == 1 and list(q.t) == ["new"] and list(q.q) == ["new"]
-    assert q.sweep(10_000_000, idle_ms=5_000_000) == 0
+    held = {"old_held"}
+    assert q.sweep(10_000_000, idle_ms=5_000_000, held=lambda k: k in held) == 1
+    assert sorted(q.t) == ["new", "old_held"] and sorted(q.q) == ["new", "old_held"]
+    held.clear()
+    assert q.sweep(10_000_000, idle_ms=5_000_000, held=lambda k: k in held) == 1 and list(q.t) == ["new"]
+    assert q.sweep(10_000_000, idle_ms=5_000_000, held=lambda k: False) == 0
+
+
+def test_a_pool_the_state_still_holds_keeps_its_quotes_when_it_trades_inside_the_state_sweep_gap(tmp_path):
+    """QP 6274522375 (a): ArenaState evicts on its own 60 s sweep, the runner sweeps quotes at a 5 minute tape boundary, so for up to 60 s a pool can be past the
+    quote horizon while the state still holds it. If it trades then, it keeps its first-seen age and can be carded, and its 15-min-ago quote must be what the unbounded
+    history says. The state sweep is switched off here to hold that gap open for the whole run."""
+    pool, mint = noise_pool(0)
+    other, other_mint = noise_pool(1)
+    base = T0 - 3 * H
+    rows = [print_row(pool, mint, base + j * 30_000 + 7, j, 1) for j in range(20)]  # prints for 10 minutes, then silence
+    rows += [print_row(other, other_mint, base + 10 * MIN + j * 30_000 + 9, j, 2) for j in range(100)]  # keeps the tape clock moving for 50 minutes
+    rows += [print_row(pool, mint, base + 62 * MIN + j * 30_000 + 7, 100 + j, 3) for j in range(10)]  # trades again, past the 30 minute horizon
+    rows.sort(key=lambda r: (r["t_recv_ms"], r["signature"]))
+    T = base + 67 * MIN + R.SCAN_SECOND_MS
+    answers = {}
+    for bound in (True, False):
+        write_tape(tmp_path / str(bound) / "tape", [print_row(POOLS[0], MINTS[0], base + 1, 0)])
+        run = make(tmp_path / str(bound))
+        run.cfg.bound_memory = bound
+        run.state.evict_idle_ms = 30 * MIN
+        run.state.sweep = lambda: 0  # the state keeps every key: the gap between "past the horizon" and "evicted" never closes
+        feed(run, rows)
+        assert run.state.pool(pool) is not None
+        answers[bound] = (run.quotes.ref(pool, T), run.quotes.peak(pool, T), pool in run.quotes.t)
+    assert answers[True] == answers[False] and answers[True][0] is not None and answers[True][2]
+    # and the other half: once the state does drop the key, the sweep forgets it
+    del run.state.sweep  # back to the class method
+    run.state.now_ms += 10 * H
+    run.state.sweep()
+    assert run.state.pool(pool) is None
+    run.cfg.bound_memory = True
+    run._housekeep(run.state.now_ms)
+    assert pool not in run.quotes.t
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ decisions are unchanged
