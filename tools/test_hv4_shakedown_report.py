@@ -599,7 +599,7 @@ def test_early_spend_bound_uses_the_last_hour_spend_plus_the_previous_samples_la
     # QP's figures: the counter run total is 1,527 (over the limit) but the last-hour spend is 1,234 and the previous sample held a 260 bucket: 1,234 + 260 = 1,494
     ss = [sp_sample(START + 30 * MIN, 700, 700, 260), sp_sample(START + 31 * MIN, 720, 720, 260), sp_sample(START + 70 * MIN, 1527, 1234, 81)]
     bounds, info = R.early_spend_bounds(ss, START)
-    assert bounds[START + 70 * MIN] == 1494 < 1500 and info["applies"] and info["agreeing_samples"] == 2 and info["first_divergence"] == R.iso(START + 70 * MIN)
+    assert bounds[START + 70 * MIN] == 1494 < 1500 and info["applies"] and info["first_hour_samples"] == 2 and info["first_divergence"] == R.iso(START + 70 * MIN)
     rh, _ = R.rolling_hours(ss, START)
     assert max(r["hi"] for r in rh) == 1527  # without the spend bound the window is bounded by the run total only
     # no evidence (the counter and the spend disagree from the first sample), or the first sample is more than an hour after the start: no early bound
@@ -665,3 +665,55 @@ def test_safe_lets_a_policy_refusal_through_and_names_only_the_error_class():
         R.safe("7", "x", refuse)
     c = R.safe("7", "x", lambda: {}["missing key with detail"])
     assert c["status"] == R.UNM and c["numbers"] == {"input_error": "KeyError"} and "detail" not in json.dumps(c)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP #764 comment 6279203212: a listed feed gap clears only its own length; the strict early-bound rule
+def test_uncovered_ms_subtracts_merged_gaps_only():
+    G = lambda a, b: {"start_ms": a, "end_ms": b}
+    assert R.uncovered_ms(0, 120 * MIN, [G(10 * MIN, 11 * MIN)]) == 119 * MIN
+    assert R.uncovered_ms(0, 120 * MIN, [G(10 * MIN, 16 * MIN), G(12 * MIN, 18 * MIN)]) == 112 * MIN  # overlapping gaps are merged: 8 min covered, not 12
+    assert R.uncovered_ms(0, 120 * MIN, [G(10 * MIN, 16 * MIN), G(10 * MIN, 16 * MIN)]) == 114 * MIN
+    assert R.uncovered_ms(0, 120 * MIN, [G(-5 * MIN, 200 * MIN)]) == 0 and R.uncovered_ms(0, 120 * MIN, [G(130 * MIN, 140 * MIN)]) == 120 * MIN
+
+
+def test_a_listed_feed_gap_clears_only_its_own_length_between_trim_lines(tmp_path):
+    def hole(fx):  # eng1 lines trim_no 20..43 missing: a 125 tape-minute hole between the lines at 90 and 215 min
+        rewrite_trim(fx, lambda rows: [r for r in rows if not (r["engine_id"] == "eng1" and 20 <= r["trim_no"] < 44)])
+
+    one_min = f"{R.iso(START + 100 * MIN)}/{R.iso(START + 101 * MIN)}@arena tape gap row"
+    t = by_id(run(build(sub(tmp_path, "a"), extra=hole), "--feed-gap", one_min))["QP-T3"]
+    assert t["status"] == R.FAIL and t["numbers"]["gaps_over_10_tape_min"][0]["gap_s"] == 125 * 60 and t["numbers"]["gaps_over_10_tape_min"][0]["uncovered_by_listed_feed_gaps_s"] == 124 * 60
+    whole = f"{R.iso(START + 85 * MIN)}/{R.iso(START + 220 * MIN)}@arena tape gap row"
+    assert by_id(run(build(sub(tmp_path, "b"), extra=hole), "--feed-gap", whole))["QP-T3"]["status"] == R.PASS  # a gap that covers the whole hole explains it
+    part = f"{R.iso(START + 90 * MIN)}/{R.iso(START + 210 * MIN)}@arena tape gap row"  # covers 120 of the 125 min: 5 min remain, within 10
+    assert by_id(run(build(sub(tmp_path, "c"), extra=hole), "--feed-gap", part))["QP-T3"]["status"] == R.PASS
+
+
+def test_a_listed_feed_gap_clears_only_its_own_length_of_a_permanent_tail_failure(tmp_path):
+    end = START + 25 * HOUR
+
+    def stop_last(fx):  # housekeeping dies for good 20 tape minutes before the run ends
+        rewrite_trim(fx, lambda rows: [r for r in rows if r["engine_id"] == "eng1"] + [r for r in rows if r["engine_id"] == "eng2"][:-3])
+
+    g = lambda a, b: f"{R.iso(end - a * MIN)}/{R.iso(end - b * MIN)}@arena tape gap row"
+    one = by_id(run(build(sub(tmp_path, "a"), extra=stop_last), "--feed-gap", g(19, 18)))["QP-T3"]
+    assert one["status"] == R.FAIL and one["numbers"]["tails_over_10_tape_min"][0]["uncovered_by_listed_feed_gaps_s"] >= 19 * 60 - 1
+    twice = by_id(run(build(sub(tmp_path, "b"), extra=stop_last), "--feed-gap", g(19, 13), "--feed-gap", g(19, 13)))["QP-T3"]  # the same 6 min listed twice counts once
+    assert twice["status"] == R.FAIL
+    whole = by_id(run(build(sub(tmp_path, "c"), extra=stop_last), "--feed-gap", g(21, 0)))["QP-T3"]
+    assert whole["status"] == R.PASS
+
+
+def test_early_bound_needs_agreement_at_every_first_hour_sample_and_adds_the_largest_difference():
+    tail = sp_sample(START + 70 * MIN, 1527, 1234, 81)
+    # a diff of 1 in the first hour is a read race: it is added to the bound (1,234 + 260 + 1)
+    b, i = R.early_spend_bounds([sp_sample(START + 30 * MIN, 700, 700, 260), sp_sample(START + 31 * MIN, 721, 720, 260), tail], START)
+    assert b[START + 70 * MIN] == 1495 and i["max_abs_diff_first_hour"] == 1 and i["first_hour_samples"] == 2
+    # a divergence inside the first hour, even between two agreeing samples, disproves 'every call was a prefetch call': no early bound
+    mid = [sp_sample(START + 30 * MIN, 700, 700, 260), sp_sample(START + 45 * MIN, 900, 860, 260), sp_sample(START + 59 * MIN, 1100, 1100, 260), tail]
+    assert R.early_spend_bounds(mid, START)[0] == {} and R.early_spend_bounds(mid, START)[1]["max_abs_diff_first_hour"] == 40
+    # a first-hour sample with no spend data is incomplete evidence
+    gap = [sp_sample(START + 30 * MIN, 700, 700, 260), {**sp_sample(START + 31 * MIN, 720, 720, 260), "spend": None}, sp_sample(START + 32 * MIN, 740, 740, 260), tail]
+    assert R.early_spend_bounds(gap, START)[0] == {}
+    # a divergence after the first hour does not disturb it (the file no longer holds the whole run)
+    assert START + 70 * MIN in R.early_spend_bounds([sp_sample(START + 30 * MIN, 700, 700, 260), sp_sample(START + 31 * MIN, 720, 720, 260), tail], START)[0]

@@ -616,27 +616,30 @@ def rolling_hours(samples: list[dict], origin_ms: int | None) -> tuple[list[dict
 
 
 def early_spend_bounds(samples: list[dict], run_start_ms: int | None) -> tuple[dict[int, int], dict]:
-    """Rolling-hour bounds for the windows that begin before the first sample (QP #764 comment 6279001927 item 9). While the spend file still held the whole run, the
-    chain counter equalled its last-hour spend (|diff| <= 1, a read race): every chain call was a prefetch call, which is also what hv4_prefetch does (the scan only reads
-    the store). Then calls in (t - 1 h, t] <= sum_last_hour(t) + the largest bucket held at the previous sample (the minute bucket that straddles t - 1 h was still in the
-    file). The counter supplies the totals and the spend file only splits them in time, so the bound is not the prefetcher's file alone."""
-    info: dict[str, Any] = {"applies": False, "agreeing_samples": 0, "first_divergence": None, "windows": 0, "max_bound": None}
+    """Rolling-hour bounds for the windows that begin before the first sample (QP #764 comments 6279001927 item 9 and 6279203212 item 3). The evidence: at EVERY sample in the
+    first hour after the start (while the spend file still held the whole run) the chain counter equals its last-hour spend, |diff| <= 1 (a read race). Then every chain call
+    was a prefetch call, which is also what hv4_prefetch does (the scan only reads the store). Calls in (t - 1 h, t] <= sum_last_hour(t) + the largest bucket held at the
+    previous sample (the minute bucket that straddles t - 1 h was still in the file) + the largest |diff| seen in that first hour. The counter supplies the totals and the
+    spend file only splits them in time, so the bound is not the prefetcher's file alone."""
+    info: dict[str, Any] = {"applies": False, "first_hour_samples": 0, "max_abs_diff_first_hour": None, "first_divergence": None, "windows": 0, "max_bound": None}
     if run_start_ms is None or not samples:
         return {}, info
     t_first = samples[0]["t_ms"]
-    agree, div = 0, None
+    div = None
+    diffs, complete = [], True
     for s in samples:
         c, sp = counter_total(s), s.get("spend")
-        if c is None or not isinstance(sp, dict) or not isinstance(sp.get("sum_last_hour"), (int, float)):
-            break
-        if abs(c - sp["sum_last_hour"]) <= 1:
-            agree += 1
-        else:
+        d = abs(c - sp["sum_last_hour"]) if (c is not None and isinstance(sp, dict) and isinstance(sp.get("sum_last_hour"), (int, float))) else None
+        if d is not None and d > 1 and div is None:
             div = s["t_ms"]
-            break
-    info.update({"agreeing_samples": agree, "first_divergence": iso(div) if div else None})
-    if agree < 2 or t_first - run_start_ms >= HOUR_MS:
-        return {}, info  # the file did not demonstrably hold the whole run at the first samples: no early bound
+        if s["t_ms"] < run_start_ms + HOUR_MS:
+            if d is None:
+                complete = False
+            else:
+                diffs.append(d)
+    info.update({"first_hour_samples": len(diffs), "max_abs_diff_first_hour": max(diffs) if diffs else None, "first_divergence": iso(div) if div else None})
+    if not complete or len(diffs) < 2 or max(diffs) > 1 or t_first - run_start_ms >= HOUR_MS:
+        return {}, info  # the file did not demonstrably agree with the counter at every first-hour sample: no early bound
     bounds: dict[int, int] = {}
     for i, s in enumerate(samples):
         t = s["t_ms"]
@@ -645,7 +648,7 @@ def early_spend_bounds(samples: list[dict], run_start_ms: int | None) -> tuple[d
         sp = s.get("spend")
         prev = samples[i - 1].get("spend") if i else sp
         if isinstance(sp, dict) and isinstance(prev, dict) and isinstance(sp.get("sum_last_hour"), (int, float)):
-            bounds[t] = int(sp["sum_last_hour"]) + int(prev.get("max_bucket") or 0)
+            bounds[t] = int(sp["sum_last_hour"]) + int(prev.get("max_bucket") or 0) + max(diffs)
     info.update({"applies": True, "windows": len(bounds), "max_bound": max(bounds.values(), default=None)})
     return bounds, info
 
@@ -853,6 +856,23 @@ def eval_memory(samples: list[dict], starts: list[dict], windows: list[dict], rs
 CUMULATIVE = ("hist_trimmed_prints", "rows_below_trim_floor", "refused_history_trimmed", "rows_dup", "filter_v_missing", "filter_v_band", "v_checked_pools", "v_missing_pools", "trim_no")
 
 
+def uncovered_ms(a: int, b: int, gaps: list[dict]) -> int:
+    """Tape time in [a, b] not covered by the listed feed gaps (overlapping gaps merged first, so none counts twice). The tape clock does not move during a feed gap, so a
+    gap explains a missing trim line only for its own length."""
+    spans = sorted((max(a, g["start_ms"]), min(b, g["end_ms"])) for g in gaps if g["start_ms"] < b and g["end_ms"] > a)
+    covered, cur_s, cur_e = 0, None, None
+    for x, y in spans:
+        if cur_e is None or x > cur_e:
+            if cur_e is not None:
+                covered += cur_e - cur_s
+            cur_s, cur_e = x, y
+        else:
+            cur_e = max(cur_e, y)
+    if cur_e is not None:
+        covered += cur_e - cur_s
+    return max(0, (b - a) - covered)
+
+
 def segment_ends(L: Logs) -> list[int]:
     """The end of each process: for the last start the last decision row; for an earlier one the end of the last tick_timing minute before the next start row."""
     ticks = sorted(L.tick_timing, key=lambda t: t["minute_ms"])
@@ -889,8 +909,9 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dic
             g = (b.get("tape_ms") or 0) - (a.get("tape_ms") or 0)
             if g > worst[0]:
                 worst = (g, a.get("tape_ms"), b.get("tape_ms"))
-            if g > TRIM_GAP_MAX_MS and not any(w["start_ms"] <= (b.get("tape_ms") or 0) and (a.get("tape_ms") or 0) <= w["end_ms"] for w in feed_gaps):
-                gap_bad.append({"engine_id": eid, "from": iso(a.get("tape_ms")), "to": iso(b.get("tape_ms")), "gap_s": g // 1000})
+            rest = uncovered_ms(a.get("tape_ms") or 0, b.get("tape_ms") or 0, feed_gaps)
+            if rest > TRIM_GAP_MAX_MS:
+                gap_bad.append({"engine_id": eid, "from": iso(a.get("tape_ms")), "to": iso(b.get("tape_ms")), "gap_s": g // 1000, "uncovered_by_listed_feed_gaps_s": rest // 1000})
         gaps[eid] = {"max_gap_s": worst[0] // 1000, "between": [iso(worst[1]), iso(worst[2])]}
     # the tail: housekeeping that fails for good late in a process leaves no gap between lines, so each engine_id's last line is compared with the end of its process
     tails, tail_bad = {}, []
@@ -900,9 +921,10 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dic
     for eid, end in pairs:
         last_t = seg[eid][-1].get("tape_ms") or 0
         tail = max(0, end - last_t)
-        tails[eid] = {"last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000}
-        if tail > TRIM_GAP_MAX_MS and not any(w["start_ms"] <= end and last_t <= w["end_ms"] for w in feed_gaps):
-            tail_bad.append({"engine_id": eid, "last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000})
+        rest = uncovered_ms(last_t, end, feed_gaps)
+        tails[eid] = {"last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000, "uncovered_by_listed_feed_gaps_s": rest // 1000}
+        if rest > TRIM_GAP_MAX_MS:
+            tail_bad.append({"engine_id": eid, "last_line_tape": iso(last_t), "process_end": iso(end), "tail_s": tail // 1000, "uncovered_by_listed_feed_gaps_s": rest // 1000})
     tm = sorted(float(r["trim_ms"]) for r in rows if isinstance(r.get("trim_ms"), (int, float)))
     byh: dict[int, list[dict]] = defaultdict(list)
     for r in rows:
@@ -934,7 +956,7 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int, feed_gaps: list[dic
                     "largest_gap_between_lines_per_engine_id": gaps, "gaps_over_10_tape_min": gap_bad, "tail_to_process_end_per_engine_id": tails, "tails_over_10_tape_min": tail_bad,
                     "segments": segs},
                    ["expected about 288 lines per 24 h plus about 73 per start (the warm-up drain); cumulative counters are per engine_id and are never added across a restart",
-                    "hook_errors is held in memory only: a failed housekeeping pass shows up as a missing 5-tape-minute trim line, so a gap over 10 tape minutes between lines, or between an engine_id's last line and the end of its process, FAILs (unless it lies inside a listed feed gap)"]))
+                    "hook_errors is held in memory only: a failed housekeeping pass shows up as a missing 5-tape-minute trim line, so a gap over 10 tape minutes between lines, or between an engine_id's last line and the end of its process, FAILs once the tape time covered by listed feed gaps (merged, each only for its own length) is subtracted and more than 10 tape minutes remain"]))
     ratios_over, ratios_n = 0, 0
     hourly_v = []
     for eid, rs in seg.items():
