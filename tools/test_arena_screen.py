@@ -750,7 +750,7 @@ def test_forbidden_words_are_refused_everywhere(word, tmp_path, monkeypatch):
 def test_priced_results_carry_the_four_sub_cells_groups_and_gate_columns(tape):
     rows, files = tape
     r = run_kit(files, script_for(rows)).results()["c"]
-    assert set(r["gate"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and r["worst_in_slot"]["measured"] is False and r["registration"] == "KILLED"
+    assert set(r["gate"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and r["worst_in_slot"]["measured"] is True and r["registration"] == "KILLED"
     assert all(g["ci_lo_pct"] is not None and "majority_dates" in g for g in r["gate"].values())
     # the synthetic block is neither explore-0814 nor a September block: (b) cannot be shown, so it is not a survivor
     assert all(v is None for v in r["groups"].values()) and any("not measured" in w for w in r["kill_reasons"])
@@ -1141,51 +1141,281 @@ def test_registration_status_event_cells_are_blocked_until_worst_in_slot_is_meas
     assert st(True, False, True).startswith("SCREEN-SURVIVOR") and st(False, False, True).startswith("SCREEN-SURVIVOR")
 
 
-@pytest.mark.parametrize("event, want", [(True, "PROVISIONAL-BLOCKED"), (False, "PROVISIONAL (grid-triggered")])
-def test_a_screen_survivor_carries_the_worst_in_slot_verdict_of_its_declared_kind(tape, monkeypatch, event, want):
+def kit_cell(tape, event: bool) -> "S.Screen":
     rows, files = tape
-    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # force a survivor to read the registration text
     scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)))
     scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
-    r = scr.results()["c"]
-    assert r["event_triggered"] is event and r["registration"].startswith(want)
-    assert r["worst_in_slot"]["measured"] is False and "#747" in r["worst_in_slot"]["hook"]
-    md = S.table_md({"c": r}, scr.blocks, {"rule": "script"})
-    assert want.split(" ")[0] in md and ("EVENT" if event else "GRID") in md
+    return scr
 
 
-def test_worst_in_slot_plumbing_kills_an_event_cell_with_a_non_positive_leg(tape, monkeypatch):
-    """The call site only; the numbers wait for PR #747 (see the skipped parity test)."""
-    rows, files = tape
+@pytest.mark.parametrize("event, want", [(True, "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)"), (False, "SCREEN-SURVIVOR (worst-in-slot measured)")])
+def test_a_measured_survivor_carries_the_worst_in_slot_verdict_of_its_declared_kind(tape, monkeypatch, event, want):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # isolate the worst-in-slot rule from the other kills
+    r = kit_cell(tape, event).results()["c"]
+    w = r["worst_in_slot"]
+    assert r["event_triggered"] is event and r["registration"] == want and not r["kill"]
+    assert w["measured"] is True and set(w["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"}
+    assert all(c["lower"]["mean_sol"] > 0 for c in w["sub_cells"].values())
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert "## 4. Worst-in-slot (R7)" in md and ("EVENT" if event else "GRID") in md and "| not measured |" not in md
+
+
+@pytest.mark.parametrize("event, want", [(True, "PROVISIONAL-BLOCKED"), (False, "PROVISIONAL (grid-triggered")])
+def test_a_tape_that_does_not_reproduce_the_end_states_leaves_worst_in_slot_not_measured(tape, monkeypatch, event, want):
+    """No figure is printed or stored; an event cell stays blocked (not killed, not a survivor), a grid cell stays provisional."""
     monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
-    monkeypatch.setattr(S, "WORST_IN_SLOT_AVAILABLE", True)
+    orig = S.worst_in_slot_states
 
-    def run_with(means, event):
-        monkeypatch.setattr(S, "worst_in_slot_legs", lambda st, cfg: means)
-        scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)))
-        scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
-        return scr.results()["c"]
+    def broken(*a, **k):
+        o = orig(*a, **k)
+        o["w_mismatch"][:] = True
+        return o
 
-    good = {k: 0.001 for k in S.SUB_CELLS}
-    bad = {**good, ("sc", "press"): 0.0}
-    r = run_with(good, True)
-    assert not r["kill"] and r["registration"].startswith("SCREEN-SURVIVOR") and r["worst_in_slot"]["measured"] is True
-    r = run_with(bad, True)
-    assert r["kill"] and any("worst-in-slot mean <= 0 in sc/press" in w for w in r["kill_reasons"]) and r["registration"] == "KILLED"
-    assert not run_with(bad, False)["kill"]  # the kill is for event-triggered cells (QP R7 ruling)
+    monkeypatch.setattr(S, "worst_in_slot_states", broken)
+    r = kit_cell(tape, event).results()["c"]
+    w = r["worst_in_slot"]
+    assert w["measured"] is False and w["sub_cells"] is None and "END consistency failed" in w["reason"] and not r["kill"] and r["registration"].startswith(want)
+    assert "| not measured |" in S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
 
 
-def test_worst_in_slot_hook_is_not_implemented_and_nothing_is_copied_from_747():
-    assert S.WORST_IN_SLOT_AVAILABLE is False
-    with pytest.raises(NotImplementedError, match="747"):
-        S.worst_in_slot_legs({}, S.screen_cfg())
+def test_worst_in_slot_states_flag_an_end_state_the_tape_does_not_reproduce():
+    a = pool_arrays(600, 7)
+    sd = a["sl"][[100, 200, 300]]
+    xs = sd + 60
+    sps = np.full(3, 0.4)
+    st = S.pool_states(a, sd, sps, xs, sps)
+    need = np.maximum(xs + S.D + F.exit_lag_vec(sps) + 1, sd + S.D + F.k_slots_vec(1.9, sps, "ceil") + 1)
+    none = np.zeros(3, bool)
+    ok = S.worst_in_slot_states("P", a, sd, sps, xs, sps, need, none, none, st)
+    assert not ok["w_mismatch"].any() and not ok["w_vbad"].any()
+    for col in ("Qx", "Bx"):
+        assert S.worst_in_slot_states("P", a, sd, sps, xs, sps, need, none, none, dict(st, **{col: st[col] * 1.001}))["w_mismatch"].all()
+    assert S.worst_in_slot_states("P", a, sd, sps, xs, sps, need, none, none, dict(st, Qe={l: v * 1.001 for l, v in st["Qe"].items()}))["w_mismatch"].all()
+    nov = dict(a, v=np.where(np.arange(600) % 3 == 0, np.nan, a["v"]))  # a print without V inside the slots read
+    assert S.worst_in_slot_states("P", nov, sd, sps, xs, sps, need, none, none, st)["w_vbad"].any()
+    assert np.isnan(S.worst_in_slot_states("P", a, sd, sps, xs, sps, need, none, np.array([True, False, False]), st)["wQx"][0])  # a skipped trip is left NaN
+
+
+def lower_leg_st(win: np.ndarray, flip: np.ndarray) -> dict:
+    """Trips with hand-set states. A winner exits 10% up; a loser exits at 0.6 of the entry quote (a C8 strand). `flip` trips are entered at 1.5x the decision spot at their WORST entry
+    state: the 1.15 guard then turns them away (pnl = -send), so the worst-in-slot leg 'rescues' a loser and loses a winner. END states are the entry state itself."""
+    n = len(win)
+    Q0 = V + 20e9
+    B0 = Q0 * 1e6 / 300
+    z = np.zeros(n)
+    st = {"ref": np.full(n, Q0 / B0), "Qe": {l: np.full(n, Q0) for l in S.LATS}, "Be": {l: np.full(n, B0) for l in S.LATS}, "ssb": {l: z.copy() for l in S.LATS},
+          "nearby": {l: z.copy() for l in S.LATS}, "Qx": np.where(win, 1.10 * Q0, 0.6 * Q0), "Bx": np.full(n, B0)}
+    st.update(wQe={l: np.where(flip, 1.5 * Q0, Q0) for l in S.LATS}, wBe={l: np.full(n, B0) for l in S.LATS}, wQx=st["Qx"].copy(), wBx=st["Bx"].copy(),
+              w_vbad=np.zeros(n, bool), w_mismatch=np.zeros(n, bool))
+    return st
+
+
+def lower_leg_case(n: int, case: str) -> dict:
+    idx = np.arange(n)
+    if case == "guard_rescue_flatters_worst":  # the worst-in-slot leg is above the companion: the companion is the lower leg
+        win = idx % 3 != 0
+        return lower_leg_st(win, ~win)
+    win = idx >= 1  # 'worst_in_slot_is_lower': one real loser; the guard turns away 35 of the 39 winners at the worst state, so the worst-in-slot leg loses them and the companion keeps them
+    return lower_leg_st(win, win & (idx >= 5))
+
+
+@pytest.mark.parametrize("case, lower_leg", [("guard_rescue_flatters_worst", "no_guard_rescue"), ("worst_in_slot_is_lower", "worst_in_slot")])
+def test_the_lower_of_the_two_legs_is_what_the_worst_in_slot_rule_reads(case, lower_leg):
+    """Mutation-sensitive: taking only the worst-in-slot leg, only the companion, or the HIGHER of the two fails one of the two cases."""
+    st = lower_leg_case(40, case)
+    k = S.worst_in_slot_legs(st, S.screen_cfg())
+    assert k["measured"] is True
+    for key, c in k["sub_cells"].items():
+        w, g = c["worst_in_slot"]["mean_sol"], c["no_guard_rescue"]["mean_sol"]
+        assert c["lower"]["mean_sol"] == min(w, g) and c["lower"]["leg_of_mean"] == lower_leg, (key, w, g)
+        if lower_leg == "no_guard_rescue":
+            assert w > 0 >= g and c["lower"]["mean_sol"] == g  # the worst-in-slot leg alone would pass; the lower leg does not
+        else:
+            assert g > 0 >= w and c["lower"]["mean_sol"] == w  # the companion alone would pass; the lower leg does not
+        assert c["end_minus_worst"]["mean_sol"] == pytest.approx(c["end"]["mean_sol"] - w) and c["end_minus_no_guard_rescue"]["mean_sol"] == pytest.approx(c["end"]["mean_sol"] - g)
+    assert k["diag"]["guard_flips"]["total"] > 0 and k["diag"]["guard_flips"]["sc"] > 0
+
+
+@pytest.mark.parametrize("case", ["guard_rescue_flatters_worst", "worst_in_slot_is_lower"])
+@pytest.mark.parametrize("event", [True, False])
+def test_an_event_cell_is_killed_by_the_lower_leg_in_any_sub_cell_a_grid_cell_only_reports_it(tape, monkeypatch, case, event):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # isolate the worst-in-slot rule from the other kills
+    scr = kit_cell(tape, event)
+    base = S._cat(scr.acc[0])
+    scr.acc[0] = [dict(base, **lower_leg_case(len(base["ref"]), case))]
+    r = scr.results()["c"]
+    wis = [w for w in r["kill_reasons"] if w.startswith("worst-in-slot")]
+    assert r["worst_in_slot"]["measured"] is True and all(not c["lower"]["mean_sol"] > 0 for c in r["worst_in_slot"]["sub_cells"].values())
+    if event:
+        assert r["kill"] is True and r["registration"] == "KILLED" and len(wis) == 1 and all(t in wis[0] for t in ("total/flat", "total/press", "sc/flat", "sc/press"))
+    else:
+        assert r["kill"] is False and not wis and r["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured)"
+
+
+def test_one_non_positive_sub_cell_is_enough_to_kill_an_event_cell(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    real = S.worst_in_slot_legs
+
+    def one_bad(st, cfg):
+        o = real(st, cfg)
+        o["sub_cells"]["sc|press"]["lower"]["mean_sol"] = 0.0
+        return o
+
+    monkeypatch.setattr(S, "worst_in_slot_legs", one_bad)
+    r = kit_cell(tape, True).results()["c"]
+    assert r["kill"] and any(w.endswith("mean <= 0 in sc/press") for w in r["kill_reasons"]) and r["registration"] == "KILLED"
+    assert not kit_cell(tape, False).results()["c"]["kill"]  # the kill is for event-triggered cells (QP R7 ruling)
+
+
+def test_worst_in_slot_functions_are_imported_from_arena_report_legs_never_copied():
+    from tools import arena_report_legs as RL
+
+    assert (S.slot_states, S.worst_index, S.state_arrays, S.end_minus_worst) == (RL.slot_states, RL.worst_index, RL.state_arrays, RL.end_minus_worst)
     src = Path(S.__file__).read_text()
-    assert "def slot_states" not in src and "def worst_index" not in src  # imported once #747 merges, never copied
+    for name in ("slot_states", "worst_index", "state_arrays", "end_minus_worst"):
+        assert f"def {name}" not in src
+    assert S.WORST_IN_SLOT_AVAILABLE is True
+    # the QP-approved file (#747, QP OK at b204930): if it changes, the imported functions are no longer the approved ones and this fails until QP re-approves
+    assert S.REPORT_LEGS_PIN == "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b" == hashlib.sha256(Path(RL.__file__).read_bytes()).hexdigest()
+    assert S.kit_provenance()["report_legs_sha256"] == S.REPORT_LEGS_PIN
 
 
-@pytest.mark.skip(reason="waits for PR #747 (slot_states, worst_index): import them in tools/arena_screen.py, set WORST_IN_SLOT_AVAILABLE, and pin parity on the synthetic tape here")
-def test_worst_in_slot_parity_with_747():
-    raise AssertionError("placeholder")
+# ------------------------------------------------------------------------------------------------------------------------------ 6c. parity with arena_report_legs
+BURST_TRIGGERS = {"A": [1000 + 210 * j for j in range(10)], "B": [1105 + 210 * j for j in range(10)]}  # offsets in hour 0 (a trip is open 50 slots, so none overlaps)
+
+
+def burst_rows(seed: int = 11) -> list[dict]:
+    """A tape with several prints per slot and big price swings in the slots the trips land in and exit in (so worst != END and the 1.15 guard flips), one WSOL pool F that prints
+    every slot (the feed heartbeat), a derived_last pool D and a late-print pool L."""
+    rnd = random.Random(seed)
+    st = {k: {"q": 20e9 + 1e9 * i, "b": (V + 20e9 + 1e9 * i) * 1e6 / 300} for i, k in enumerate("FABDL")}
+    rows, tx = [], 0
+
+    def trade(k: str, h: int, kk: int, buy: bool | None = None, big: bool | None = None, tok_back: float | None = None) -> float:
+        nonlocal tx
+        s = st[k]
+        slot, ms = slot_ms(h, kk)
+        Q = s["q"] + V_OF[k]
+        buy = rnd.random() < (0.8 if s["q"] < 14e9 else 0.2 if s["q"] > 40e9 else 0.5) if buy is None else buy
+        big = rnd.random() < 0.35 if big is None else big
+        row = {"venue": "pumpswap", "type": "trade", "prog": "pumpswap", "mint": MINT[k], "trader": f"T{rnd.randrange(50)}", "pool": POOLS[k], "slot": slot, "event_index": 0, "tx_index": tx,
+               "signature": f"sig{tx}", "block_time": ms // 1000, "t_recv_ms": None, "quote_is_wsol": True, "quote_mint": S.WSOL, "quote_reserve": int(s["q"]),
+               "base_reserve": int(s["b"]), "side": "buy" if buy else "sell"}
+        tx += 1
+        if buy:
+            sol = int(rnd.uniform(2.0, 6.0) * 1e9) if big else int(rnd.uniform(0.02, 0.4) * 1e9)
+            net = sol * 0.99
+            tok = s["b"] * net / (Q + net)
+            s["q"] += net
+            s["b"] -= tok
+        else:
+            tok = tok_back if tok_back is not None else s["b"] * (rnd.uniform(0.04, 0.11) if big else rnd.uniform(0.0005, 0.01))
+            out = Q * tok / (s["b"] + tok) * 0.99
+            if out > 0.4 * s["q"] and tok_back is None:
+                tok *= 0.4 * s["q"] / out
+                out = Q * tok / (s["b"] + tok) * 0.99
+            sol = int(out)
+            s["q"] -= out
+            s["b"] += tok
+        row.update(sol_lamports=sol, token_raw=int(tok))
+        rows.append(row)
+        return tok
+
+    spikes = {(k, t + 12) for k, ts in BURST_TRIGGERS.items() for j, t in enumerate(ts) if j % 2 == (k == "B")}  # the 1.9 s landing slot of every other trip: a big buy and the sell back
+    for h in range(NHOUR):
+        for kk in range(KMAX + 1):
+            trade("F", h, kk)
+            if h == 0 and kk < 4000:
+                for k in "AB":
+                    if kk in BURST_TRIGGERS[k]:
+                        trade(k, h, kk)  # a print at the decision slot
+                    if (k, kk) in spikes:
+                        trade(k, h, kk, buy=False, big=True, tok_back=trade(k, h, kk, buy=True, big=True))
+                    for _ in range(rnd.choices([0, 1, 2, 3], [3, 4, 2, 1])[0]):
+                        trade(k, h, kk)
+            if h == 0 and kk < 2000 and rnd.random() < 0.2:
+                trade("D", h, kk)
+            if (h == 0 and kk < 2000 and rnd.random() < 0.2) or (h == 1 and kk == 3500):
+                trade("L", h, kk)
+    return rows
+
+
+def burst_script(rows) -> list[tuple[str, int, S.ExitSpec]]:
+    out = []
+    for key in "AB":
+        for t in BURST_TRIGGERS[key]:
+            out.append((POOLS[key], SLOT0 + t, S.ExitSpec(20) if len(out) % 3 else S.ExitSpec(20, tp=1.01, sl=0.99)))
+    out.append((POOLS["D"], own_slots(rows, "D", 0, 1800, 2000)[-1], S.ExitSpec(120)))  # D's last print: no print at or after need, a derived_last state
+    out.append((POOLS["L"], own_slots(rows, "L", 0, 1800, 2000)[-1], S.ExitSpec(120)))  # L prints again at hour 1, later than need + GRACE: derived from the rows before need
+    return out
+
+
+def test_worst_in_slot_parity_with_arena_report_legs_to_the_lamport(tmp_path):
+    """The pin: on the same trips and the same tape the kit's worst-in-slot leg, its no-guard-rescue companion, the lower leg and the END-minus-worst gap equal tools.arena_report_legs's
+    (run on the engine-written ledger rows of those trips), state by state, trip by trip (< 1e-6 lamports) and cell by cell."""
+    from tools import arena_report_legs as RL
+
+    rows = burst_rows()
+    files = write_tape(tmp_path / "trades", rows)
+    scr = run_kit(files, burst_script(rows))
+    st = S._cat(scr.acc[0])
+    n = len(st["ref"])
+    assert scr.counters["derived_last_state"] == 1 and scr.counters["late_print_derived"] == 1 and n >= 20
+    names = {zlib.crc32(p.encode()): p for p in POOLS.values()}
+    trips = [(names[int(p)], int(sd), int(xs)) for p, sd, xs in zip(st["pool"], st["sd"], st["xs"])]
+    assert len(set(trips)) == n
+    got, excluded, eng = replay_engine(rows, trips, tmp_path, S.RENT_DECIDING)
+    assert not excluded and not eng.pending and eng.counters.get("price_errors", 0) == 0
+    trades = [got[(p, sd, 0.25)] for p, sd, _ in trips]  # the kit's order: the bootstrap depends on it
+    assert sum(t["state_src"] == "derived_last" for t in trades) == 2
+    assert not st["w_mismatch"].any() and not st["w_vbad"].any()
+    book = RL.legs_for_book(trades, eng.pools)
+    assert book["end_check"]["ok"] is True
+    ref = book["worst_in_slot"]
+    cfg = S.screen_cfg(S.RENT_DECIDING)
+    k = S.worst_in_slot_legs(st, cfg)
+    assert k["measured"] is True
+    wrows, wng, wdiag = RL.worst_in_slot_both(trades, eng.pools)
+    # the fixture really exercises the worst-in-slot picks: several prints in the slots, picks that moved, guard flips, a derived and a late trip
+    assert wdiag["entry_multi_print"] > 0 and wdiag["exit_multi_print"] > 0 and wdiag["entry_moved"] > 0 and wdiag["exit_moved"] > 0 and sum(wdiag["guard_flips"].values()) > 0
+    assert (k["diag"]["entry_moved"] > 0) and (k["diag"]["exit_moved"] > 0) and sum(k["diag"]["guard_flips"].values()) > 0
+    # 1. the picked states, per trip and latency
+    for i, r in enumerate(wrows):
+        for lat, tag in ((1.3, "1p3"), (1.9, "1p9")):
+            c = r["calc"][tag]
+            assert (st["wQe"][lat][i], st["wBe"][lat][i], st["wQx"][i], st["wBx"][i]) == (c["Qe"], c["Be"], c["Qx"], c["Bx"]), (i, tag)
+    # 2. the re-priced trips, per strand rule, to the lamport (worst-in-slot and the companion)
+    stw = dict(st, Qe=st["wQe"], Be=st["wBe"], Qx=st["wQx"], Bx=st["wBx"])
+    worst_lamports = 0.0
+    for rule in S.STRAND_RULES:
+        Lw, Le = S.legs(stw, 0.25e9, 1.9, rule, cfg), S.legs(st, 0.25e9, 1.9, rule, cfg)
+        rescue = Le["filled"] & ~Lw["filled"]
+        for i in range(n):
+            w_ref, ng_ref = wrows[i]["calc"]["1p9"]["by_rule"][rule], wng[i]["calc"]["1p9"]["by_rule"][rule]
+            ng_pnl = Le["pnl"][i] if rescue[i] else Lw["pnl"][i]
+            worst_lamports = max(worst_lamports, abs(Lw["pnl"][i] - w_ref["pnl_nofail"]), abs(ng_pnl - ng_ref["pnl_nofail"]))
+            assert bool(Lw["filled"][i]) == w_ref["filled"] and bool(Lw["strand"][i]) == w_ref["strand"]
+        assert k["diag"]["guard_flips"][rule] == ref["diag"]["guard_flips"].get(f"1p9_{rule}", 0) == int(rescue.sum())
+    assert worst_lamports < 1e-6
+    # 3. the cells: END, worst-in-slot, no guard rescue, the lower leg, both gaps, the pressure intercepts
+    close = lambda a, b: a == pytest.approx(b, rel=1e-12, abs=1e-15)  # noqa: E731
+    differs = 0
+    for rule in S.STRAND_RULES:
+        for fail in S.FAILS:
+            key, rk = f"{rule}|{fail}", f"{fail}_1p9_{rule}"
+            sub = k["sub_cells"][key]
+            for mine, theirs in ((sub["end"], book["as_scored"][rk]), (sub["worst_in_slot"], ref["cells"][rk]), (sub["no_guard_rescue"], ref["no_guard_rescue"]["cells"][rk])):
+                assert mine["n"] == theirs["n"] == n
+                assert close(mine["mean_sol"], theirs["mean_sol"]) and close(mine["total_sol"], theirs["total_sol"]) and close(mine["ci90_lo_sol"], theirs["ci90_lo_sol"])
+            assert sub["lower"]["leg_of_mean"] == ref["canary_lower"][rk]["leg_of_mean"]
+            assert close(sub["lower"]["mean_sol"], ref["canary_lower"][rk]["mean_sol"]) and close(sub["lower"]["ci90_lo_sol"], ref["canary_lower"][rk]["ci90_lo_sol"])
+            for mine, theirs in ((sub["end_minus_worst"], ref["end_minus_worst"][rk]), (sub["end_minus_no_guard_rescue"], ref["no_guard_rescue"]["end_minus_worst"][rk])):
+                assert close(mine["mean_sol"], theirs["mean_sol"]) and close(mine["total_sol"], theirs["total_sol"])
+            differs += abs(sub["end_minus_worst"]["mean_sol"]) > 1e-6
+        ic = k["diag"]["pressure_intercept"][rule]
+        assert close(ic["end"], book["as_scored"][f"press_1p9_{rule}"]["intercept"]) and close(ic["worst_in_slot"], ref["cells"][f"press_1p9_{rule}"]["intercept"])
+        assert close(ic["no_guard_rescue"], ref["no_guard_rescue"]["cells"][f"press_1p9_{rule}"]["intercept"])
+    assert differs == 4  # worst-in-slot is not END on this tape in any sub-cell: the pin is not vacuous
 
 
 def test_table_and_counts_say_what_the_author_must_do(tape, tmp_path):
