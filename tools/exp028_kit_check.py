@@ -47,6 +47,8 @@ REFERENCE_SHA = "489fa7eb5d0f4abdd18dde6acf3bb4f9da6c7ac6"
 REFERENCE_ARENA_SCREEN_SHA256 = "00dedd1b8620ab059fb9509e1645e2fc63f44c339b0ee16462c90d10a1bea4bb"  # EXP-028 Amendment 1 item 5, "Reference"
 REQUIRED_NUMPY = "2.5.3"
 REFERENCE_REL = "tools/fixtures/exp028/p_reference_489fa7e.json"
+REFERENCE_PATH = REPO_ROOT / REFERENCE_REL
+REFERENCE_FILE_SHA256 = "9c1367c4c9955930899fffb6f03244136574fe94712605b4672bddc04625d605"  # sha256 of the reference file as computed once at 489fa7e under numpy 2.5.3 (to be notebooked)
 SEED = 1
 B_FIXED = 10_000  # B_E, EXP-028 section 3 item 3
 
@@ -351,6 +353,7 @@ def cmd_reference(args: argparse.Namespace) -> int:
     side = out.with_name(out.name + ".sha256")
     side.write_text(f"{sha256_hex(text)}  {out.name}\n")
     print(json.dumps({"written": str(out), "sha256": sha256_hex(text), "numpy_version": w["numpy_version"], "git_head": head, "git_dirty": dirty,
+                      "equals_pinned_reference_file_sha256": sha256_hex(text) == REFERENCE_FILE_SHA256,
                       "arena_screen_sha256": kit_hashes[ARENA_SCREEN], "inputs_sha256": w["inputs_sha256"], "outputs_sha256": doc["outputs_sha256"]}, indent=1))
     return 0
 
@@ -567,7 +570,24 @@ class Closure:
                             todo.append((tgt_mod, attr))
 
 
-def check_a(repo: Path, sha: str, ref_sha: str, strict_pricing: bool = False) -> dict[str, Any]:
+def anchoring(ref_sha: str, reference_path: Path | str) -> dict[str, Any]:
+    """Is the comparison baseline the notebooked one? (a) the reference sha is the pinned 489fa7e; (b) the reference FILE's sha256 is the pinned value. Fields inside the file can all be
+    edited, so only (b) ties the file to what was notebooked."""
+    try:
+        h: str | None = file_sha256(Path(reference_path))
+    except OSError:
+        h = None
+    pinned_sha, pinned_file = ref_sha == REFERENCE_SHA, h is not None and h == REFERENCE_FILE_SHA256
+    return {"ref_sha_is_pinned": pinned_sha, "reference_file_sha256": h, "reference_file_sha256_is_pinned": pinned_file, "anchored": bool(pinned_sha and pinned_file)}
+
+
+def verdict_of(matches: bool, anchor: dict[str, Any]) -> str:
+    """PASS only when the comparison matched AND the baseline is the pinned one. A match against any other baseline is TEST_ONLY (never PASS); a mismatch is FAIL."""
+    return ("PASS" if anchor["anchored"] else "TEST_ONLY") if matches else "FAIL"
+
+
+def check_a(repo: Path, sha: str, ref_sha: str, strict_pricing: bool = False, anchor: dict[str, Any] | None = None) -> dict[str, Any]:
+    anchor = anchor if anchor is not None else anchoring(ref_sha, REFERENCE_PATH)
     cs, cr = Closure(repo, sha, strict_pricing), Closure(repo, ref_sha, strict_pricing)
     keys = sorted(set(cs.compared) | set(cr.compared))
     rows, differs = [], []
@@ -584,7 +604,8 @@ def check_a(repo: Path, sha: str, ref_sha: str, strict_pricing: bool = False) ->
     unresolved = sorted(cs.unresolved | cr.unresolved)
     ok = not differs and not unresolved and not missing_listed
     files = {p: {"sha256_at_sha": git_file_sha256(repo, sha, p), "sha256_at_ref": git_file_sha256(repo, ref_sha, p)} for p in KIT_FILES}
-    return {"verdict": "PASS" if ok else "FAIL", "sha": sha, "ref_sha": ref_sha, "strict_pricing": strict_pricing, "listed_names": len(LISTED_KEYS), "compared_names": len(rows), "kit_files": files,
+    return {"verdict": verdict_of(ok, anchor), "comparison": "MATCH" if ok else "MISMATCH", "anchoring": anchor, "sha": sha, "ref_sha": ref_sha, "strict_pricing": strict_pricing,
+            "listed_names": len(LISTED_KEYS), "compared_names": len(rows), "kit_files": files,
             "unlisted_transitive_names": [f"{r['file']}:{r['name']}" for r in rows if not r["listed"]], "differing": differs, "unresolved_references": unresolved,
             "listed_names_missing": missing_listed, "boundary_not_compared": boundary, "compared": rows}
 
@@ -598,8 +619,8 @@ def reference_problems(ref: dict, repo: Path, ref_sha: str) -> list[str]:
         p.append(f"reference numpy_version is not {REQUIRED_NUMPY}")
     if ref.get("git_dirty") is not False:
         p.append("reference git_dirty is not false")
-    if ref_sha == REFERENCE_SHA and ref.get("git_head") != REFERENCE_SHA:
-        p.append("reference git_head is not the pinned kit sha")
+    if ref.get("git_head") != ref.get("kit_sha"):
+        p.append("reference git_head is not its kit_sha")  # which commit it is (the pinned one) is anchoring()'s job, not a field of the file
     if ref.get("outputs_sha256") != sha256_hex(canon(ref.get("outputs"))):
         p.append("outputs_sha256 does not match the outputs")
     for path in KIT_FILES:
@@ -622,26 +643,27 @@ def _sections_differing(a: Any, b: Any, prefix: str = "") -> list[str]:
     return [prefix.rstrip("/")] if canon(a) != canon(b) else []
 
 
-def compare_b(worker: dict, ref: dict, ref_problems: list[str]) -> dict[str, Any]:
+def compare_b(worker: dict, ref: dict, ref_problems: list[str], anchor: dict[str, Any]) -> dict[str, Any]:
     ref_bytes, got_bytes = canon(ref.get("outputs")).encode(), canon(worker["outputs"]).encode()
     numpy_equal = worker["numpy_version"] == ref.get("numpy_version") == REQUIRED_NUMPY
     inputs_equal = worker["inputs_sha256"] == (ref.get("fixture") or {}).get("inputs_sha256")
     identical = ref_bytes == got_bytes
     ok = identical and numpy_equal and inputs_equal and not ref_problems
-    return {"verdict": "PASS" if ok else "FAIL", "numpy_version": worker["numpy_version"], "reference_numpy_version": ref.get("numpy_version"), "numpy_equal_to_reference_and_required": numpy_equal,
+    return {"verdict": verdict_of(ok, anchor), "comparison": "MATCH" if ok else "MISMATCH", "anchoring": anchor, "numpy_version": worker["numpy_version"], "reference_numpy_version": ref.get("numpy_version"), "numpy_equal_to_reference_and_required": numpy_equal,
             "inputs_sha256_equal": inputs_equal, "outputs_byte_identical": identical, "outputs_sha256_at_sha": sha256_hex(got_bytes), "outputs_sha256_reference": sha256_hex(ref_bytes),
             "differing_sections": [] if identical else _sections_differing(worker["outputs"], ref.get("outputs") or {}), "reference_problems": ref_problems,
             "python_version": worker.get("python_version"), "kit_screen_p_tests": "NOT_RUN_BY_THIS_TOOL"}
 
 
-def check_b(repo: Path, sha: str, ref_sha: str, ref: dict, workdir: str | None = None) -> dict[str, Any]:
+def check_b(repo: Path, sha: str, ref_sha: str, ref: dict, workdir: str | None = None, anchor: dict[str, Any] | None = None) -> dict[str, Any]:
+    anchor = anchor if anchor is not None else anchoring(ref_sha, REFERENCE_PATH)
     problems = reference_problems(ref, repo, ref_sha)
     try:
         with worktree(repo, sha, workdir) as wt:
             w = run_worker(wt)
     except (ToolError, subprocess.TimeoutExpired) as exc:
-        return {"verdict": "FAIL", "error": str(exc)[:400], "reference_problems": problems, "kit_screen_p_tests": "NOT_RUN_BY_THIS_TOOL"}
-    return compare_b(w, ref, problems)
+        return {"verdict": "FAIL", "comparison": "MISMATCH", "anchoring": anchor, "error": str(exc)[:400], "reference_problems": problems, "kit_screen_p_tests": "NOT_RUN_BY_THIS_TOOL"}
+    return compare_b(w, ref, problems, anchor)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ (C) runtime coupling to the kill's vector
@@ -726,10 +748,11 @@ def cmd_check(args: argparse.Namespace) -> int:
         ref = json.loads(ref_path.read_text())
     except (OSError, ValueError) as exc:
         raise ToolError(f"cannot read the reference file {ref_path}: {exc}")
-    a = check_a(repo, sha, ref_sha, args.strict_pricing)
-    b = check_b(repo, sha, ref_sha, ref, args.workdir)
+    anchor = anchoring(ref_sha, ref_path)
+    a = check_a(repo, sha, ref_sha, args.strict_pricing, anchor)
+    b = check_b(repo, sha, ref_sha, ref, args.workdir, anchor)
     c = check_c(args.results, sha, git_file_sha256(repo, sha, ARENA_SCREEN)) if args.results else {"verdict": "NOT_RUN", "reason": "no --results given"}
-    rec = {"schema": SCHEMA_RECORD, "sha": sha, "ref_sha": ref_sha, "ref_sha_is_pinned": ref_sha == REFERENCE_SHA, "reference_file": str(ref_path), "reference_file_sha256": file_sha256(ref_path),
+    rec = {"schema": SCHEMA_RECORD, "sha": sha, "ref_sha": ref_sha, "ref_sha_is_pinned": anchor["ref_sha_is_pinned"], "reference_file": str(ref_path), "anchoring": anchor,
            "verdicts": {"A": a["verdict"], "B": b["verdict"], "C": c["verdict"]}, "numpy_version": b.get("numpy_version"), "A": a, "B": b, "C": c,
            "note": "Synthetic fixture only; no real data was read; nothing here is a measurement of any book or a profit claim. The exit code is 0 whenever a record is produced."}
     print(canon(rec), end="")
@@ -750,7 +773,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--results", action="append", help="a results.json to check (C); repeatable")
     c.add_argument("--reference", default=str(REPO_ROOT / REFERENCE_REL))
     c.add_argument("--repo", default=str(REPO_ROOT))
-    c.add_argument("--ref-sha", default=REFERENCE_SHA, help="TESTS ONLY; the record shows ref_sha_is_pinned")
+    c.add_argument("--ref-sha", default=REFERENCE_SHA, help="TESTS ONLY: any other value (or a reference file that is not the pinned one) makes a match read TEST_ONLY, never PASS")
     c.add_argument("--strict-pricing", action="store_true", help="also follow and compare legs() and what it references in (A)")
     c.add_argument("--workdir", help="parent directory for temp worktrees")
     w = sp.add_parser("worker", help="internal: run the fixed set inside a kit root and print the outputs")

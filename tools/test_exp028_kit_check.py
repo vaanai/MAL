@@ -24,6 +24,7 @@ REF_SHA = K.REFERENCE_SHA
 REF_PATH = REPO / K.REFERENCE_REL
 SIDECAR = REF_PATH.with_name(REF_PATH.name + ".sha256")
 EXP_FILE = REPO / "EXP" / "EXP-028-hunt23-bank-part1-prereg.md"
+PINNED = {"ref_sha_is_pinned": True, "reference_file_sha256": None, "reference_file_sha256_is_pinned": True, "anchored": True}  # a stand-in anchor for synthetic repos
 
 
 def _git(root: Path, *args: str) -> str:
@@ -94,7 +95,7 @@ def synth(tmp_path_factory) -> dict:
 
 
 def _a(synth: dict, name: str, strict: bool = False, ref: str | None = None) -> dict:
-    return K.check_a(synth["root"], synth[name], ref or synth["base"], strict)
+    return K.check_a(synth["root"], synth[name], ref or synth["base"], strict, PINNED)  # PINNED stands in for the real anchor, which only 489fa7e and the committed file have
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the list of 22
@@ -197,7 +198,7 @@ def test_a_a_referenced_name_without_a_binding_fails_closed_even_when_both_shas_
 
 
 def test_a_a_sha_without_the_kit_file_fails_closed(synth):
-    assert K.check_a(synth["root"], synth["base"], synth["base"])["verdict"] == "PASS"
+    assert K.check_a(synth["root"], synth["base"], synth["base"], anchor=PINNED)["verdict"] == "PASS"
     _git(synth["root"], "checkout", "-q", "--detach", synth["base"])
     _git(synth["root"], "rm", "-q", K.ARENA_STACK)
     _git(synth["root"], "commit", "-q", "-m", "no stack")
@@ -223,7 +224,7 @@ def worker_at_ref() -> dict:
 @needs_b
 def test_b_489fa7e_against_itself_is_byte_identical_to_the_committed_reference(worker_at_ref, ref_doc):
     assert worker_at_ref["numpy_version"] == "2.5.3"
-    b = K.compare_b(worker_at_ref, ref_doc, K.reference_problems(ref_doc, REPO, REF_SHA))
+    b = K.compare_b(worker_at_ref, ref_doc, K.reference_problems(ref_doc, REPO, REF_SHA), K.anchoring(REF_SHA, REF_PATH))
     assert b["verdict"] == "PASS" and b["outputs_byte_identical"] and b["numpy_equal_to_reference_and_required"] and b["inputs_sha256_equal"] and b["differing_sections"] == []
     assert K.canon(worker_at_ref["outputs"]) == K.canon(ref_doc["outputs"])
 
@@ -238,7 +239,7 @@ def _main(capsys, *argv: str) -> tuple[int, dict | None, str]:
 def test_check_cli_489fa7e_passes_a_and_b_and_exits_zero(capsys):
     rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA[:12])
     assert rc == 0 and rec["verdicts"] == {"A": "PASS", "B": "PASS", "C": "NOT_RUN"} and rec["numpy_version"] == "2.5.3" and rec["ref_sha_is_pinned"] is True
-    assert rec["sha"] == REF_SHA and rec["reference_file_sha256"] == K.sha256_hex(REF_PATH.read_bytes())
+    assert rec["sha"] == REF_SHA and rec["anchoring"]["reference_file_sha256"] == K.sha256_hex(REF_PATH.read_bytes()) and rec["anchoring"]["anchored"] is True
 
 
 @needs_b
@@ -257,7 +258,7 @@ def test_b_a_perturbed_reference_fails(worker_at_ref, ref_doc, how):
         ref["fixture"]["inputs_sha256"] = "0" * 64
     else:
         ref["outputs"]["screen_p_cell"]["cell_extra"] = {}
-    b = K.compare_b(worker_at_ref, ref, K.reference_problems(ref, REPO, REF_SHA))
+    b = K.compare_b(worker_at_ref, ref, K.reference_problems(ref, REPO, REF_SHA), K.anchoring(REF_SHA, REF_PATH))
     assert b["verdict"] == "FAIL"
     if how == "value_and_checksum":
         assert b["reference_problems"] == [] and b["outputs_byte_identical"] is False and b["differing_sections"] == ["screen_p_sub/right_skewed_300_7"]
@@ -268,7 +269,7 @@ def test_b_a_perturbed_reference_fails(worker_at_ref, ref_doc, how):
 @needs_b
 def test_b_a_different_numpy_at_the_sha_fails_even_with_equal_bytes(worker_at_ref, ref_doc):
     w = dict(worker_at_ref, numpy_version="2.5.2")
-    b = K.compare_b(w, ref_doc, [])
+    b = K.compare_b(w, ref_doc, [], K.anchoring(REF_SHA, REF_PATH))
     assert b["outputs_byte_identical"] is True and b["numpy_equal_to_reference_and_required"] is False and b["verdict"] == "FAIL"
 
 
@@ -287,8 +288,59 @@ def test_b_a_kit_that_cannot_run_fails_without_crashing(synth, ref_doc):
 
 @needs_b
 def test_b_a_comment_only_change_is_byte_identical(synth, ref_doc):
-    b = K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc)
+    b = K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc, anchor=PINNED)
     assert b["verdict"] == "PASS" and b["numpy_version"] == "2.5.3"
+    assert K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc)["verdict"] == "TEST_ONLY"  # the same match against a baseline that is not 489fa7e: never PASS
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ anchoring (#766 comment 6278863654, item 2)
+def test_the_pinned_constants_are_the_notebooked_values():
+    assert K.REFERENCE_SHA == "489fa7eb5d0f4abdd18dde6acf3bb4f9da6c7ac6"
+    assert K.REFERENCE_FILE_SHA256 == "9c1367c4c9955930899fffb6f03244136574fe94712605b4672bddc04625d605" == K.sha256_hex(REF_PATH.read_bytes())
+    assert SIDECAR.read_text().split()[0] == K.REFERENCE_FILE_SHA256
+    a = K.anchoring(REF_SHA, REF_PATH)
+    assert a == {"ref_sha_is_pinned": True, "reference_file_sha256": K.REFERENCE_FILE_SHA256, "reference_file_sha256_is_pinned": True, "anchored": True}
+
+
+@needs_ref
+def test_a_ref_sha_equal_to_the_target_never_reads_pass():
+    head = K.resolve_sha(REPO, "HEAD")  # the target and the baseline are the same commit: nothing can differ
+    a = K.check_a(REPO, head, head)
+    assert a["comparison"] == "MATCH" and a["differing"] == [] and a["verdict"] == "TEST_ONLY" and a["anchoring"]["ref_sha_is_pinned"] is False
+    assert K.check_a(REPO, head, REF_SHA)["verdict"] == "PASS"  # the same target against the pinned baseline (this branch leaves the kit as it was at 489fa7e)
+
+
+def test_a_reference_file_that_is_not_the_notebooked_file_is_never_anchored(tmp_path, ref_doc, monkeypatch):
+    relabelled = copy.deepcopy(ref_doc)
+    relabelled["python_version"] = "3.99.0"  # a label inside the file, outputs untouched: every internal consistency check still holds
+    p = tmp_path / "relabelled.json"
+    p.write_text(K.canon(relabelled))
+    assert K.reference_problems(relabelled, REPO, REF_SHA) == []
+    a = K.anchoring(REF_SHA, p)
+    assert a["ref_sha_is_pinned"] is True and a["reference_file_sha256_is_pinned"] is False and a["anchored"] is False
+    assert K.anchoring(REF_SHA, tmp_path / "missing.json")["anchored"] is False
+    assert K.verdict_of(True, a) == "TEST_ONLY" and K.verdict_of(False, a) == "FAIL" and K.verdict_of(True, K.anchoring(REF_SHA, REF_PATH)) == "PASS"
+    monkeypatch.setattr(K, "REFERENCE_FILE_SHA256", "0" * 64)  # the constant itself is what decides
+    assert K.anchoring(REF_SHA, REF_PATH)["anchored"] is False
+
+
+@needs_b
+def test_b_a_relabelled_reference_that_matches_byte_for_byte_reads_test_only(tmp_path, ref_doc, worker_at_ref, monkeypatch):
+    relabelled = copy.deepcopy(ref_doc)
+    relabelled["python_version"] = "3.99.0"
+    p = tmp_path / "relabelled.json"
+    p.write_text(K.canon(relabelled))
+    monkeypatch.setattr(K, "run_worker", lambda *a, **k: worker_at_ref)
+    real = K.check_b(REPO, REF_SHA, REF_SHA, ref_doc, anchor=K.anchoring(REF_SHA, REF_PATH))
+    fake = K.check_b(REPO, REF_SHA, REF_SHA, relabelled, anchor=K.anchoring(REF_SHA, p))
+    assert real["verdict"] == "PASS" and fake["comparison"] == "MATCH" and fake["verdict"] == "TEST_ONLY"
+
+
+@needs_b
+def test_check_cli_with_ref_sha_equal_to_the_target_reads_test_only_for_a_and_b(capsys):
+    head = K.resolve_sha(REPO, "HEAD")
+    rc, rec, _ = _main(capsys, "check", "--sha", head, "--ref-sha", head)
+    assert rc == 0 and rec["verdicts"]["A"] == "TEST_ONLY" and rec["verdicts"]["B"] == "TEST_ONLY" and rec["ref_sha_is_pinned"] is False and rec["anchoring"]["anchored"] is False
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the shared repo
