@@ -73,6 +73,8 @@ SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine doe
 SELL_EARLY_RETRY_MS = 1_000  # retry cadence (wall clock) while the entry leg has not landed
 SELL_EARLY_CAP_MS = 60_000  # after this much wall time without the leg landing: an alert row, then the slow cadence
 SELL_SLOW_RETRY_MS = 10_000
+HOUSEKEEP_EVERY_MS = 5 * MIN_MS  # memory bounds (Runner._housekeep) run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up and live prune alike
+QUOTE_PRUNE_MIN_ROWS = 64  # QuoteHistory trims a pool's list once it holds this many rows (was 4,096: pools with fewer rows were never trimmed)
 R_SEED = 1
 BST_EXIT_MS = 330_000
 # BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
@@ -356,11 +358,20 @@ class QuoteHistory:
         ts, qs = self.t.setdefault(pool, []), self.q.setdefault(pool, [])
         ts.append(t_ms)
         qs.append(q_sol)
-        if len(ts) > 4096 and ts[0] < t_ms - 2 * self.keep_ms:
+        if len(ts) > QUOTE_PRUNE_MIN_ROWS and ts[0] < t_ms - 2 * self.keep_ms:
             i = bisect.bisect_left(ts, t_ms - 2 * self.keep_ms) - 1  # keep one row before the window as the anchor
             if i > 0:
                 del ts[:i]
                 del qs[:i]
+
+    def sweep(self, now_ms: int, idle_ms: int) -> int:
+        """Forget pools whose newest row is more than `idle_ms` old (the runner passes the state's own eviction horizon: a key the state has dropped has no
+        snapshot, so no card reads its quotes). Returns how many were dropped."""
+        dead = [k for k, ts in self.t.items() if not ts or ts[-1] < now_ms - idle_ms]
+        for k in dead:
+            del self.t[k]
+            del self.q[k]
+        return len(dead)
 
     def _at(self, pool: str, b: int) -> float | None:
         ts = self.t.get(pool)
@@ -480,6 +491,9 @@ class RunnerConfig:
     # Timing rows (kind scan_timing, one per scan; kind tick_timing, one per minute) go into the SCAN log. They hold wall-clock counts and timings only, no
     # outcome, and no decision reads them. None = on when live, off in sim (a sim log must stay a pure function of the tape, so the replay md5 holds).
     timing: bool | None = None
+    # Memory bounds (Runner._housekeep). On: the engine's per-pool print history is pruned with its own ArenaEngine.prune (pools quiet for HIST_KEEP_SLOTS and with
+    # no open position) and QuoteHistory forgets pools the state has evicted. Off only in the tests that prove both settings give the same logs. See tools/hv4_memreplay.py.
+    bound_memory: bool = True
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
@@ -527,6 +541,7 @@ class Runner:
         self._pend_sell: dict[str, tuple] = {}
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
+        self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
         self.risk: dict[str, dict] = {}
         self.seq: dict[tuple[str, str], int] = {}
         self.calls: dict[tuple[str, str], list[int]] = {}
@@ -565,10 +580,26 @@ class Runner:
                 p = self.state.pool(row["pool"])
                 if p is not None and p.quote_mint == WSOL_MINT and p.q_real is not None:
                     self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
+            t = row.get("t_recv_ms")
+            if self.cfg.bound_memory and isinstance(t, int) and not isinstance(t, bool) and t >= self._housekeep_at:
+                self._housekeep(t)
             if self.h5 is not None:
                 self.trig_q.extend(self.h5.feed(row))
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
             self.hook_errors.append(type(e).__name__)
+
+    def _housekeep(self, t: int) -> None:
+        """Memory bounds, driven by the tape clock (the t_recv_ms of the rows), so the 6-hour warm-up of a start is pruned as it is read and a replay prunes at the same
+        row boundaries as the live run. Nothing here reads or writes a decision.
+          * The engine keeps every print of every pool for pricing (arena_paper.PoolHist, about 1 KB a print, 880k prints an hour on the 2026-10-19 tape) and nothing
+            drops one unless ArenaEngine.prune() is called. Nobody called it: the #1236 stub reached 6.27 GB. prune() drops the history of pools with no open position
+            that were quiet for HIST_KEEP_SLOTS; it is the engine's own housekeeping, unchanged.
+          * QuoteHistory forgets a pool once the state has evicted it."""
+        self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
+        prune = getattr(self.engine, "prune", None)
+        if prune is not None:
+            self._count("engine_pools_pruned", prune())
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms))
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
