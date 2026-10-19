@@ -12,8 +12,9 @@ the run.
 
   --mode lockstep  ONE pass over the tape feeds engine A (never trimmed: today's hosts), B (trim_history() every 5 min of tape) and, with --with-prune, C (the
                    existing prune() every 5 min). Every 60 sim-minutes and at the end it compares, for every pool and every print an engine still holds,
-                   (slot, v, vsrc, side, size, reserves) against A's print with the same order key, and the pool's scalars (mint, venue, last_v_row). It reports the
-                   number of differing prints and the ledger digests. Pass criterion for B: 0 differing prints, ledger bytes equal to A's.
+                   (slot, v, vsrc, side, size, reserves) against A's print with the same order key, that its prints are the SUFFIX of A's from its first print
+                   (the anchor) on, field by field, that only the anchor lies below the pool's floor, and the pool's scalars (mint, venue, last_v_row). It reports
+                   the counts and the ledger digests. Pass criterion for B: every count 0, ledger bytes equal to A's, no rows_below_trim_floor, no history_trimmed.
   --mode solo      one engine (--trim off = never trimmed, on = trim_history() every 5 min, prune = prune() every 5 min): RSS and peak RSS of that run alone.
   --compare A B    checks two solo summaries (ledger bytes, counters, order stats).
 
@@ -203,7 +204,7 @@ class Arm:
 def compare_prints(ref: ArenaEngine, x: ArenaEngine) -> dict[str, int]:
     """Every print engine `x` holds against the reference engine's print with the same order key: (slot, v, vsrc, side, size, reserves) must be equal. Also the
     pool scalars. Counts only."""
-    prints = diff = missing = pool_missing = scalar_diff = 0
+    prints = diff = missing = pool_missing = scalar_diff = not_suffix = suffix_diff = floor_viol = 0
     fields = ("slot", "v", "vsrc", "isbuy", "sol", "tok", "q", "b")
     for pool, hx in x.pools.items():
         hr = ref.pools.get(pool)
@@ -217,6 +218,14 @@ def compare_prints(ref: ArenaEngine, x: ArenaEngine) -> dict[str, int]:
         cols_x = [getattr(hx, f) for f in fields]
         cols_r = [getattr(hr, f) for f in fields]
         rk = hr.keys
+        # the same check the unit tests make: x's prints are the SUFFIX of the reference's, from x's first print (the anchor) on, field by field
+        off = len(rk) - len(hx.keys)
+        if off < 0 or hx.keys != rk[off:]:
+            not_suffix += 1
+        else:
+            suffix_diff += sum(1 for cx, cr in zip(cols_x, cols_r) if cx != cr[off:])
+        if hx.floor is not None:  # the anchor is the only print below the floor
+            floor_viol += sum(1 for s in hx.slot[1:] if s < hx.floor)
         for i, key in enumerate(hx.keys):
             j = bisect.bisect_left(rk, key)
             if j >= len(rk) or rk[j] != key:
@@ -225,7 +234,7 @@ def compare_prints(ref: ArenaEngine, x: ArenaEngine) -> dict[str, int]:
             if any(cx[i] != cr[j] for cx, cr in zip(cols_x, cols_r)):
                 diff += 1
     return {"pools": len(x.pools), "prints": prints, "differing_prints": diff, "prints_not_in_reference": missing, "pools_not_in_reference": pool_missing,
-            "pools_with_scalar_diff": scalar_diff}
+            "pools_with_scalar_diff": scalar_diff, "pools_not_a_suffix": not_suffix, "suffix_fields_differing": suffix_diff, "prints_below_floor_after_anchor": floor_viol}
 
 
 def arm_summary(arm: Arm) -> dict[str, Any]:
