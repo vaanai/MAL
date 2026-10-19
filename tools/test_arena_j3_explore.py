@@ -338,3 +338,27 @@ def test_rent_charged_leg_transforms_only_trips_in_state_filled():
             assert s["rent_charged"]["mean_sol"] == pytest.approx(rc.mean() / 1e9, abs=1e-12)
             assert s["days"] == 2 and s["ci90_lo_date_cluster_sol"] is not None
     assert E.subcells([]) == {}
+
+
+# -------------------------------------------------------------------------------------------------------------------------- N2: symlinked hour paths
+def test_a_symlinked_hour_path_is_refused(tmp_path, monkeypatch):
+    """The state reads the resolved path, so a link named for a W_e hour must not be allowed to point at another hour, another directory or a file outside the tape."""
+    real9 = fake_hour(tmp_path / "real", "2026-10-19T09")
+    link8 = tmp_path / "links" / "tape-2026-10-19T08.jsonl.zst"
+    link8.parent.mkdir()
+    link8.symlink_to(real9)  # named for hour 08, really hour 09
+    with pytest.raises(E.ExploreRefused, match="symlink"):
+        E.validate_inputs([link8])
+    same_name = tmp_path / "links" / "tape-2026-10-19T09.jsonl.zst"
+    same_name.symlink_to(real9)  # same name, still a link
+    with pytest.raises(E.ExploreRefused, match="symlink"):
+        E.validate_inputs([same_name])
+    assert E.validate_inputs([real9])[0].path == real9  # the file itself is fine
+    # under the arena root only <root>/tape holds tape hours
+    arena = tmp_path / "arena"
+    monkeypatch.setattr(E, "ARENA_ROOT", str(arena))
+    ok = fake_hour(arena / "tape", "2026-10-19T08")
+    stray = fake_hour(arena / "ledger" / "bot", "2026-10-19T08")
+    assert E.validate_inputs([ok])[0].path == ok
+    with pytest.raises(E.ExploreRefused, match="only"):
+        E.validate_inputs([stray])

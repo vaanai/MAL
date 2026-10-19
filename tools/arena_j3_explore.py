@@ -128,6 +128,11 @@ def validate_inputs(files: Sequence[str | Path]) -> list[Hour]:
             raise ExploreRefused(f"{name}: not a closed tape hour (expected tape-<YYYY-MM-DDTHH>.jsonl.zst)")
         if not p.is_file():
             raise ExploreRefused(f"{name}: no such file")
+        real = p.resolve()
+        if p.is_symlink() or real.name != name:  # the state reads the resolved path: a link named for a W_e hour could point at another hour or file
+            raise ExploreRefused(f"{name}: a symlinked hour path is refused (it resolves to {real.name}); give the tape file itself")
+        if _inside(real, ARENA_ROOT) and real.parent != (Path(ARENA_ROOT) / "tape").resolve():
+            raise ExploreRefused(f"{name}: under {ARENA_ROOT} only {Path(ARENA_ROOT) / 'tape'} holds tape hours; this file is in {real.parent}")
         if (p.parent / name[: -len(".zst")]).exists():
             raise ExploreRefused(f"{name}: its .jsonl still exists, so the hour is open or its compaction has not finished; refused")
         start = _hour_start(m.group(1))
