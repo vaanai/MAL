@@ -4,6 +4,7 @@ The chain is a fake with the three HV4Chain methods the refresher uses, stamping
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -317,3 +318,24 @@ def test_the_runner_never_fetches_in_the_scan_and_the_shakedown_failure_is_gone(
     assert {e["pool"] for e in rows_of(run, "CON-X", "entry")}  # cards were built from prefetched facts and traded
     rep = run.chain.credit_report()["prefetch"]
     assert rep["served_ok"] > 0 and rep["pools"] == 2 and rep["calls_last_hour"] <= rep["hourly_budget"]
+
+
+# ----------------------------------------------------------------------------------------------------------------------- the job script's RPC choice
+JOB = Path(__file__).resolve().parent.parent / "scripts" / "research" / "hv4-runner-job.sh"
+
+
+def rpc_for(mode: str, env: dict[str, str]) -> str:
+    text = JOB.read_text()
+    snippet = text[text.index("# --- chain rpc ---"):text.index("# --- end chain rpc ---")]
+    out = subprocess.run(["sh", "-c", f'MODE={mode}\n{snippet}\nprintf %s "$MAL_HV4_RPC"'], capture_output=True, text=True,
+                         env={"PATH": "/usr/bin:/bin", **env}, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_the_job_script_uses_helius_in_run_mode_public_in_stub_and_honours_an_explicit_override():
+    assert subprocess.run(["sh", "-n", str(JOB)], capture_output=True, timeout=30).returncode == 0
+    assert rpc_for("run", {}) == "helius"
+    assert rpc_for("stub", {}) == "public" and rpc_for("register", {}) == "public"
+    assert rpc_for("run", {"MAL_HV4_RPC": "public"}) == "public"
+    assert rpc_for("stub", {"MAL_HV4_RPC": "helius"}) == "helius"
