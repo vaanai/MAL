@@ -1016,9 +1016,16 @@ def test_rss_limit_without_a_2x_margin_is_refused_before_the_lock(tmp_path):
             r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"),
                    str(tmp_path / "hout"), False, max_rss_mb=limit)
         assert _state(tmp_path, "hout") == ([], False)                   # no ledger line, no lock
+    # a limit between 1x and 2x the RSS already held is refused too (the margin is 2x, not just "above")
+    import resource
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    with pytest.raises(r3.Refusal, match="2x margin"):
+        r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"),
+               str(tmp_path / "hout"), False, max_rss_mb=int(1.5 * peak))
+    assert _state(tmp_path, "hout") == ([], False)
     # a sane limit passes the preflight and the run goes through
     assert r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"),
-                  str(tmp_path / "hout"), False, max_rss_mb=100_000)["main"]["n_contracts"] == 1
+                  str(tmp_path / "hout"), False, max_rss_mb=int(4 * peak) + 100)["main"]["n_contracts"] == 1
 
 
 def test_cli_requires_explicit_max_rss_mb_for_a_holdout_run(tmp_path, capsys):
