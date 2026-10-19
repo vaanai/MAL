@@ -2331,3 +2331,24 @@ def test_an_event_exit_cell_gets_the_screen_p_like_any_cell_and_the_p_is_untouch
     empty = S.Screen(ScriptRule([], cells=(S.Cell("c", event_triggered=False, event_exit=True),)))
     r0 = empty.results()["c"]
     assert r0["screen_p"]["cell_p"] is None and r0["event_exit"]["event_exits"] == 0 and r0["registration"] == "KILLED"  # n = 0: p None, not a pass
+
+
+def test_the_screen_p_path_and_the_stats_it_reads_are_source_identical_to_the_base_commit(tmp_path):
+    """EXP-028 Amendment 1 needs the screen p source identical to 489fa7e (#758): every screen_p_* function and constant, and the stat / boot_lo / legs it reads, are the very text of the base."""
+    import importlib.util as iu
+    import inspect
+
+    repo = Path(S.__file__).resolve().parent.parent
+    p = subprocess.run(["git", "-C", str(repo), "show", f"{BASE_COMMIT}:tools/arena_screen.py"], capture_output=True, text=True)
+    if p.returncode != 0:
+        pytest.skip(f"{BASE_COMMIT} is not in this clone")
+    (tmp_path / "base_screen_p.py").write_text(p.stdout)
+    spec = iu.spec_from_file_location("base_screen_p", tmp_path / "base_screen_p.py")
+    base = iu.module_from_spec(spec)
+    sys.modules["base_screen_p"] = base
+    spec.loader.exec_module(base)
+    funcs = ["screen_p_check", "_boot_means", "_cluster_ratios", "_tails", "screen_p_sub", "_max_p", "screen_p_cell", "screen_p_md", "stat", "boot_lo", "gate_row", "legs", "kill_verdict",
+             "worst_in_slot_legs", "registration_status"]
+    consts = ["SCREEN_P_B", "SCREEN_P_B_MIN", "SCREEN_P_B_MAX", "SCREEN_P_SEED", "SCREEN_P_SOURCE", "SCREEN_P_DEFINITION", "STAKE_SOL", "FAILS", "STRAND_RULES", "SUB_CELLS", "LAT_DECIDING"]
+    assert [f for f in funcs if inspect.getsource(getattr(S, f)) != inspect.getsource(getattr(base, f))] == []
+    assert [c for c in consts if getattr(S, c) != getattr(base, c)] == []
