@@ -59,6 +59,7 @@ HOUR_MS = 60 * MIN_MS
 # NOT decision-neutral: it changes which chain facts a card sees.
 POLICY_V1, POLICY_V2 = "v1", "v2"
 MINT_RESERVE = 800  # v2: calls an hour held back for the mint class (new pools and mint refreshes); the holders class may not spend into it
+HOT_MINT_RESERVE = 400  # v2: calls an hour held back for mint reads of new and hot pools; a cold pool's mint read may not plan into it (about 60 hot pools x 6 an hour)
 SAFETY_MARGIN = 20  # v2: calls under the hourly budget that no refresh may plan to use (an in-flight refresh can retry; the counter counts every attempt)
 MINT_EST = 1  # v2 planning estimate of a mint refresh (plus 1 for the first Mayhem read of a pool); the real count is read back from the counter
 HOLDERS_EST = 3  # v2 planning estimate of a holders refresh (supply once an hour per mint, the largest-accounts read, one re-read on a supply move)
@@ -101,6 +102,7 @@ class ChainPrefetcher:
         assert self.policy in (POLICY_V1, POLICY_V2)
         self.obs = obs  # tools.hv4_obs.ObsLog or None: append-only side rows, never read by a decision
         self._spent_mint: deque[list[int]] = deque()  # v2: [minute bucket ms, calls] of the mint class in the last hour
+        self._spent_hot: deque[list[int]] = deque()  # v2: the part of the mint class spent on new and hot pools
         self._dropped: dict[str, int] = {}  # pool -> last_seen_ms of a pool that left the watch set (a later entry is a re-entry)
         self._obs_hour: int | None = None
         self._obs_start_ms = 0
@@ -140,12 +142,13 @@ class ChainPrefetcher:
         except Exception:  # noqa: BLE001
             return None
 
-    def _book(self, now: int, used: int, mint: bool = False) -> None:
-        """Add `used` calls to the rolling hour (minute buckets, so the persisted file stays small) and save. `mint`: also book them to the mint class (v2)."""
+    def _book(self, now: int, used: int, mint: bool = False, hot: bool = False) -> None:
+        """Add `used` calls to the rolling hour (minute buckets, so the persisted file stays small) and save. `mint`: also book them to the mint class (v2); `hot`: and to
+        its new-and-hot part."""
         used = max(0, int(used))
         b = now - now % MIN_MS
         with self._lock:
-            for dq, on in ((self._spent, True), (self._spent_mint, mint)):
+            for dq, on in ((self._spent, True), (self._spent_mint, mint), (self._spent_hot, hot)):
                 if not on:
                     continue
                 if dq and dq[-1][0] == b:
@@ -158,6 +161,11 @@ class ChainPrefetcher:
         while self._spent_mint and self._spent_mint[0][0] <= now - 60 * MIN_MS:
             self._spent_mint.popleft()
         return sum(n for _, n in self._spent_mint)
+
+    def _hot_spent_last_hour(self, now: int) -> int:
+        while self._spent_hot and self._spent_hot[0][0] <= now - 60 * MIN_MS:
+            self._spent_hot.popleft()
+        return sum(n for _, n in self._spent_hot)
 
     def _hour_calls(self, now: int) -> int:
         """v2: calls in the rolling hour as the CHAIN COUNTER saw them (every attempt sent, by any caller, retries included), or the prefetcher's own booking when that
@@ -195,8 +203,10 @@ class ChainPrefetcher:
         self._spent.extend(r for r in sorted(rows) if r[0] > now - 60 * MIN_MS)
         try:
             self._spent_mint.extend(r for r in sorted([int(a), int(b)] for a, b in doc.get("mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0)
+            self._spent_hot.extend(r for r in sorted([int(a), int(b)] for a, b in doc.get("hot_mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0)
         except (ValueError, TypeError, OverflowError):
-            self._spent_mint.append([now - now % MIN_MS, MINT_RESERVE])  # unreadable: the mint reserve counts as spent (holders get the rest)
+            self._spent_mint.append([now - now % MIN_MS, MINT_RESERVE])  # unreadable: the reserves count as spent (the lower classes get the rest)
+            self._spent_hot.append([now - now % MIN_MS, HOT_MINT_RESERVE])
 
     def _save_spend(self) -> None:
         """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held. A failed write is counted, never raised."""
@@ -212,7 +222,8 @@ class ChainPrefetcher:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 doc = {"schema": SPEND_SCHEMA, "spent": [list(r) for r in self._spent]}
                 if self.policy == POLICY_V2:
-                    doc["mint"] = [list(r) for r in self._spent_mint]  # an extra key: the v1 reader and the report tool read "spent" only
+                    doc["mint"] = [list(r) for r in self._spent_mint]  # extra keys: the v1 reader and the report tool read "spent" only
+                    doc["hot_mint"] = [list(r) for r in self._spent_hot]
                 json.dump(doc, f, sort_keys=True)
                 f.flush()
                 os.fsync(f.fileno())
@@ -374,11 +385,18 @@ class ChainPrefetcher:
                 if kind == "hold" and not p.mints:
                     continue  # no mint fact yet: the holders read needs the token program from it
                 spent = self._hour_calls(now)
+                hot_reserve = int(HOT_MINT_RESERVE * min(1.0, scale))
+                lower = spent - self._hot_spent_last_hour(now)  # everything except new-pool and hot-pool mint reads: cold mint reads and holders reads
                 if kind == "mint":
-                    est, reserve = MINT_EST + (0 if p.mayhems else 1), 0
+                    est = MINT_EST + (0 if p.mayhems else 1)
+                    hot_class = cls == 1 or (cls == 0 and now < p.hot_until_ms)  # a new pool that is not hot yet is a lower-class read
+                    ok = spent + est <= hard and (hot_class or lower + est <= hard - hot_reserve)  # the lower classes together stop HOT_MINT_RESERVE short of the cap
                 else:
-                    est, reserve = HOLDERS_EST, max(0, mint_reserve - self._mint_spent_last_hour(now))
-                if spent + est + reserve > hard:
+                    est = HOLDERS_EST
+                    holders_spent = spent - self._mint_spent_last_hour(now)
+                    hot_class = False
+                    ok = spent + est <= hard and lower + est <= hard - hot_reserve and holders_spent + est <= hard - mint_reserve  # and holders alone leave MINT_RESERVE to the mint class
+                if not ok:
                     self._n("budget_deferred")
                     self._n("deferred_" + kind)
                     continue
@@ -386,7 +404,7 @@ class ChainPrefetcher:
             self._refresh(p, now, kind == "mint", kind == "hold")
             c1 = self._calls_total()
             used = max(0, c1 - c0) if (c0 is not None and c1 is not None) else est
-            self._book(now, used, mint=(kind == "mint"))
+            self._book(now, used, mint=(kind == "mint"), hot=hot_class)
             made += used
         self._n("passes")
         self._n("calls", made)
