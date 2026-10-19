@@ -55,6 +55,8 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
   - After any cancel of #1036, confirm with `ps` that no walk-2 process is alive before the successor writes (2026-10-17 triple-writer lesson).
   - The session cron at 2026-10-29T12:17Z stays only as a check.
 
+**DEC-031 Amendment 2 (written 2026-10-19T17:27:15Z; quant-proof R1, `/data/mal/hunt-1008/push-1016/hunt21/QP-RULING-1019-cohort2.md`):** arena deciding rent is 0 per filled non-strand trip for books whose clock and registration are both after its merge; H5 books keep 2,039,280; HV4 is covered only if registered with T0 after the merge and `hv4_runner.py` passes `rent=0` explicitly (a code change, not in the amendment's PR).
+
 Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous HANDOFF (10-12..10-17, H5 canary, seal window) is archived at `ARTIFACTS/lab/handoff-archive-2026-10-18.md`. Its section 6, "Rules that bite", still applies. No book has cleared the promotion gate. Paper only.
 
 ## 0. First 10 minutes
