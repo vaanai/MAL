@@ -185,13 +185,20 @@ def _ticks(ref_bp: int, p_bp: int) -> int:
     return int(math.floor((ref_bp - p_bp) / 100.0 + 0.5))
 
 
-def side_phi(levels, T, df, our_bp, our_size, *, rival_mult=1.0, mode="prorata", capped=True):
+def side_phi(levels, T, df, our_bp, our_size, *, rival_mult=1.0, mode="prorata", capped=True,
+             cross_full=False):
     """DECLARE 5 steps 1-6 for ONE side.  ``levels``: recorded rival bids ``[(price_bp, size)]``, best first.
     Our order of ``our_size`` is inserted at ``our_bp`` (added to that level).  Returns (valid, phi, info).
 
     mode "prorata": our share inside a counted level is pro rata (deciding for U0/U15).
     mode "back":    rivals at our level are ahead of us, we count last (BQ).
     capped False:   no Target cap on the counted sizes (uncapped stress cell).
+    cross_full:     the level that crosses the Target is counted in full instead of up to T (reported
+                    alternative reading of "every resting order that helps reach the Target Size").
+    The Reference Price is the first level, from the best bid, where cumulative resting size reaches ONE
+    FIFTH of the Target Size; a side whose total is below T qualifies nothing; the score of a counted
+    size is size x DF^(ticks from the Reference Price), normalised over the counted scores of THAT SIDE
+    (DECLARE 5; help article 13823851 as quoted in DECLARE-FORWARD-VERIFY-1).
     """
     ents = [[p, q * rival_mult, 0.0] for p, q in levels]
     if our_size > 0:
@@ -219,6 +226,8 @@ def side_phi(levels, T, df, our_bp, our_size, *, rival_mult=1.0, mode="prorata",
         m = 1.0 if p >= ref else df ** _ticks(ref, p)
         if capped:
             room = max(0.0, T - cum_before)
+            if cross_full and room > 0:
+                room = q                      # the crossing level counts in full
             if mode == "prorata" or oq == 0:
                 c = min(q, room)
                 c_our = c * oq / q if oq > 0 else 0.0
@@ -236,7 +245,7 @@ def side_phi(levels, T, df, our_bp, our_size, *, rival_mult=1.0, mode="prorata",
 
 
 VARIANTS = OrderedDict([("c", {}), ("r2", {"rival_mult": 2.0}), ("r4", {"rival_mult": 4.0}),
-                        ("unc", {"capped": False})])
+                        ("unc", {"capped": False}), ("xw", {"cross_full": True})])
 
 
 def snapshot_value(snap, by, bn, ry, rn, T, df, **kw):
@@ -656,3 +665,573 @@ def kill_checks(rows, S, boundaries):
                     "K2": bool(k2), "p95": None if bs is None else bs["p95"]})
     fired = [o for o in out if o["K1"] or o["K2"]]
     return {"checks": out, "dead_as_frozen": bool(fired), "first_fired": fired[0]["boundary"] if fired else None}
+
+
+# ====================================================================================== readers
+class InputError(Exception):
+    """An input is unsealed, altered, incomplete or malformed: refuse, never guess."""
+
+
+def rss_mb() -> float:
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e6
+    except OSError:  # pragma: no cover
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e3
+
+
+class MemCap:
+    def __init__(self, cap_mb):
+        self.cap_mb, self.peak = cap_mb, 0.0
+
+    def check(self, where=""):
+        r = rss_mb()
+        self.peak = max(self.peak, r)
+        if self.cap_mb and r > self.cap_mb:
+            raise MemoryError(f"RSS {r:.0f} MB over the {self.cap_mb:.0f} MB cap at {where}")
+
+
+def sealed_entries(out, strict_runs=False):
+    """Chain-verify ``out`` like ``kalshi_public.verify_parts`` (prev links, every listed part present with
+    its sha256) but TOLERATE parts the chain does not cover yet (a live recorder's open hour): those are
+    never read and are returned in ``unsealed`` (DECLARE 2.1: unsealed parts are excluded until sealed).
+    ``strict_runs`` defers to ``kalshi_public.verify_parts`` / ``read_verified`` (refuses any uncovered part
+    and any run without run_end complete=true)."""
+    out = Path(out)
+    if strict_runs:
+        entries = kp.verify_parts(out)
+        return entries, []
+    lines = kp._chain_lines(out)
+    if not lines:
+        raise kp.SealError(f"no {kp.CHAIN_NAME} in {out}: nothing is sealed")
+    prev, entries = kp.ZERO_HASH, {}
+    for n, ln in enumerate(lines):
+        rec = json.loads(ln)
+        if rec["prev"] != prev:
+            raise kp.SealError(f"chain line {n}: prev mismatch")
+        prev = hashlib.sha256(ln.encode()).hexdigest()
+        for f in rec["files"]:
+            entries[f["path"]] = f
+    for rel, f in entries.items():
+        p = out / rel
+        if not p.exists():
+            raise kp.SealError(f"sealed part missing: {rel}")
+        if kp.sha256_file(p) != f["sha256"]:
+            raise kp.SealError(f"sha256 mismatch: {rel}")
+    unsealed = sorted(str(p.relative_to(out)) for k in kp.ALL_SEALED_KINDS for p in (out / k).rglob("*.parquet")
+                      if str(p.relative_to(out)) not in entries)
+    return entries, unsealed
+
+
+def sealed_files(out, entries, kind):
+    return sorted(Path(out, rel) for rel in entries if rel.split("/", 1)[0] == kind)
+
+
+def read_sealed(out, entries, kind, columns=None, files=None):
+    files = sealed_files(out, entries, kind) if files is None else files
+    return kp.read_table_unified(out, kind, files, columns)
+
+
+def chain_digest(out):
+    return kp.chain_head(out)
+
+
+def check_registry(root, entries):
+    """DECLARE 2.1: a recorder run counts only if its series list and start were appended to
+    ``obrec-REGISTRY-<suffix>.md`` (next to the run dir) BEFORE its first row.  Returns a list of problems."""
+    root = Path(root)
+    name = root.name
+    suffix = name[len("obrec-"):] if name.startswith("obrec-") else name
+    reg = root.parent / f"obrec-REGISTRY-{suffix}.md"
+    if not reg.exists():
+        return [f"registry file {reg.name} missing"]
+    text = reg.read_text()
+    problems = []
+    runs = read_sealed(root, entries, "orderbook_runs", columns=("run_id", "event", "series_json")).to_pylist()
+    for r in runs:
+        if r["event"] != "run_start":
+            continue
+        for s in json.loads(r["series_json"] or "[]"):
+            if s not in text:
+                problems.append(f"series {s} of run {r['run_id']} not in {reg.name}")
+    snaps = sealed_files(root, entries, "orderbook_snaps")
+    first = None
+    for f in snaps:
+        t = pq.read_table(f, columns=["ts"])["ts"]
+        if len(t):
+            m = pc.min(t).as_py()
+            first = m if first is None or m < first else first
+    if first is not None and reg.stat().st_mtime * US > first.timestamp() * US:
+        problems.append(f"{reg.name} was modified after the first row of {name}")
+    return problems
+
+
+class PartData:
+    """One (series, date) partition of one book source: snapshot index + sorted level arrays."""
+
+    def __init__(self):
+        self.snaps = {}        # ticker -> (ts np.int64[], n_yes np.int32[], n_no np.int32[])
+        self.groups = {}       # (ticker, ts, is_yes) -> (start, end)
+        self.price = self.size = None
+        self.dups = 0
+
+
+class BookSource:
+    """Sealed orderbook / orderbook_snaps of ONE recorder dir, read one (series, date) partition at a time."""
+
+    def __init__(self, root, freeze_us=FREEZE_US, strict_runs=False, lru=4):
+        self.root = Path(root)
+        self.name = self.root.name
+        self.freeze_us = freeze_us
+        self.entries, self.unsealed = sealed_entries(root, strict_runs=strict_runs)
+        if strict_runs:
+            kp.read_verified(root, "orderbook_runs", True)   # refuses runs without a complete run_end
+        self.files = defaultdict(lambda: {"orderbook": [], "orderbook_snaps": []})
+        for rel in self.entries:
+            m = re.match(r"(orderbook|orderbook_snaps)/series=([^/]+)/date=(\d{4}-\d{2}-\d{2})/", rel)
+            if m:
+                self.files[(m.group(2), m.group(3))][m.group(1)].append(self.root / rel)
+        self.cache = OrderedDict()
+        self.lru = lru
+        self.stats = defaultdict(int)
+
+    def has_series(self, series):
+        return any(k[0] == series for k in self.files)
+
+    def _load(self, series, date):
+        key = (series, date)
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        pd = PartData()
+        fl = self.files.get(key)
+        if fl and fl["orderbook_snaps"]:
+            sn = read_sealed(self.root, self.entries, "orderbook_snaps",
+                             ("ts", "ticker", "n_yes_levels", "n_no_levels"), sorted(fl["orderbook_snaps"]))
+            ts = ts_col_us(sn["ts"])
+            keep = ts >= self.freeze_us
+            self.stats["rows_before_freeze_ignored"] += int((~keep).sum())
+            tk = np.array(sn["ticker"].to_pylist(), dtype=object)[keep]
+            ts = ts[keep]
+            ny = sn["n_yes_levels"].fill_null(-1).to_numpy(zero_copy_only=False)[keep]
+            nn = sn["n_no_levels"].fill_null(-1).to_numpy(zero_copy_only=False)[keep]
+            order = sorted(range(len(ts)), key=lambda i: (tk[i], ts[i]))
+            by_t = defaultdict(list)
+            for i in order:
+                by_t[tk[i]].append(i)
+            for t, idx in by_t.items():
+                a = np.array(idx)
+                tt = ts[a]
+                first = np.ones(len(tt), bool)
+                first[1:] = tt[1:] != tt[:-1]
+                pd.dups += int((~first).sum())
+                pd.snaps[t] = (tt[first], ny[a][first], nn[a][first])
+        if fl and fl["orderbook"] and pd.snaps:
+            lv = read_sealed(self.root, self.entries, "orderbook", ("ts", "ticker", "side", "price", "size"),
+                             sorted(fl["orderbook"]))
+            ts = ts_col_us(lv["ts"])
+            keep = ts >= self.freeze_us
+            self.stats["rows_before_freeze_ignored"] += int((~keep).sum())
+            d = lv["ticker"].combine_chunks().dictionary_encode()
+            codes = d.indices.to_numpy(zero_copy_only=False)[keep]
+            names = d.dictionary.to_pylist()
+            ts = ts[keep]
+            is_yes = np.array(pc.equal(lv["side"], "yes").fill_null(False).to_numpy(zero_copy_only=False))[keep]
+            price = np.rint(lv["price"].fill_null(float("nan")).to_numpy(zero_copy_only=False) * BP)
+            price = np.where(np.isnan(price), -1, price).astype(np.int64)[keep]
+            size = lv["size"].fill_null(0.0).to_numpy(zero_copy_only=False)[keep]
+            if len(ts):
+                o = np.lexsort((-price, ~is_yes, ts, codes))
+                codes, ts, is_yes, price, size = codes[o], ts[o], is_yes[o], price[o], size[o]
+                chg = np.ones(len(ts), bool)
+                chg[1:] = (codes[1:] != codes[:-1]) | (ts[1:] != ts[:-1]) | (is_yes[1:] != is_yes[:-1])
+                st = np.flatnonzero(chg)
+                en = np.append(st[1:], len(ts))
+                for s_, e_ in zip(st.tolist(), en.tolist()):
+                    pd.groups[(names[codes[s_]], int(ts[s_]), bool(is_yes[s_]))] = (s_, e_)
+                pd.price, pd.size = price, size
+        self.cache[key] = pd
+        while len(self.cache) > self.lru:
+            self.cache.popitem(last=False)
+        return pd
+
+    def window_snaps(self, ticker, lo_us, hi_us):
+        """Consistent snapshots of ``ticker`` with lo <= ts < hi (and ts >= freeze), ts ascending.  A snapshot
+        whose level rows do not match its recorded level counts, or that repeats a price, is dropped and
+        counted (``inconsistent``): it is a gap, never a guess."""
+        lo_us = max(lo_us, self.freeze_us)
+        out, bad = [], 0
+        series = kp.series_of(ticker)
+        d0, d1 = us_to_date(lo_us), us_to_date(max(lo_us, hi_us - 1))
+        d = datetime.strptime(d0, "%Y-%m-%d")
+        dates = []
+        while d.strftime("%Y-%m-%d") <= d1:
+            dates.append(d.strftime("%Y-%m-%d"))
+            d += timedelta(days=1)
+        for date in dates:
+            pd = self._load(series, date)
+            if ticker not in pd.snaps:
+                continue
+            tt, ny, nn = pd.snaps[ticker]
+            i0, i1 = np.searchsorted(tt, lo_us, "left"), np.searchsorted(tt, hi_us, "left")
+            for j in range(i0, i1):
+                t = int(tt[j])
+                ys, ns = [], []
+                ok = True
+                for is_yes, cnt, acc in ((True, int(ny[j]), ys), (False, int(nn[j]), ns)):
+                    g = pd.groups.get((ticker, t, is_yes))
+                    s_, e_ = g if g else (0, 0)
+                    if e_ - s_ != cnt:
+                        ok = False
+                        break
+                    if cnt:
+                        pr, sz = pd.price[s_:e_].tolist(), pd.size[s_:e_].tolist()
+                        if any(pr[x] <= pr[x + 1] for x in range(len(pr) - 1)) or min(pr) < 0:
+                            ok = False
+                            break
+                        acc.extend((p, q) for p, q in zip(pr, sz) if q > 0)
+                if ok:
+                    out.append(Snap(t, ys, ns))
+                else:
+                    bad += 1
+        self.stats["inconsistent"] += bad
+        return out, bad
+
+
+def gap_stats(snaps, lo_us, hi_us):
+    """Median consecutive gap (us) and whether any blind gap > CAP exists (head and tail included)."""
+    ts = [s.ts for s in snaps if lo_us <= s.ts < hi_us]
+    if not ts:
+        return float("inf"), True, 0
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    edges = [ts[0] - lo_us, hi_us - ts[-1]]
+    med = float(np.median(gaps)) if gaps else float("inf")
+    blind = any(g > CAP_US for g in gaps + edges)
+    return med, blind, len(ts)
+
+
+def pick_source(sources, ticker, lo_us, hi_us):
+    """DECLARE 2.1 / CONDITIONS 14: the run with the smaller median ts gap inside the unit window (ties to
+    obrec-1019c); a non-primary run is eligible only without a blind gap.  Returns (source, snaps_all, info)."""
+    best, info = None, []
+    for i, src in enumerate(sources):
+        sn, bad = src.window_snaps(ticker, lo_us, hi_us + HORIZON_S * US)
+        med, blind, n = gap_stats(sn, lo_us, hi_us)
+        primary = src.name == PRIMARY_RUN or (not any(s.name == PRIMARY_RUN for s in sources) and i == 0)
+        eligible = n > 0 and (primary or not blind)
+        info.append({"run": src.name, "median_gap_s": None if med == float("inf") else med / US,
+                     "blind": blind, "n": n, "eligible": eligible, "inconsistent": bad})
+        if not eligible:
+            continue
+        key = (med, 0 if primary else 1, i)
+        if best is None or key < best[0]:
+            best = (key, src, sn)
+    if best is None:
+        return None, [], info
+    return best[1], best[2], info
+
+
+# ---- programs ---------------------------------------------------------------------------------
+class ProgramSet:
+    def __init__(self):
+        self.by_id = {}
+        self.polls = []            # complete poll_ts (us), sorted
+        self.n_rows_not_ok = 0
+        self.chain = None
+        self.poll_stats = {}
+
+
+def read_programs(lipdir, strict_runs=False):
+    entries, unsealed = sealed_entries(lipdir, strict_runs=strict_runs)
+    ps = ProgramSet()
+    ps.chain = chain_digest(lipdir)
+    polls = read_sealed(lipdir, entries, "incentive_polls", ("run_id", "poll", "poll_ts", "ok"))
+    pts = ts_col_us(polls["poll_ts"])
+    okm = polls["ok"].fill_null(False).to_numpy(zero_copy_only=False)
+    ok_keys = {(r, int(t)) for r, t, o in zip(polls["run_id"].to_pylist(), pts.tolist(), okm.tolist()) if o}
+    ps.polls = sorted({t for _r, t in ok_keys})
+    ps.poll_stats = {"n_polls": int(len(pts)), "n_ok": len(ok_keys), "unsealed_parts": len(unsealed)}
+    cols = ("run_id", "poll_ts", "id", "market_ticker", "series_ticker", "incentive_type", "start_date",
+            "end_date", "period_reward", "target_size_fp", "discount_factor_bps")
+    tab = read_sealed(lipdir, entries, "incentive_programs", cols)
+    series_col = tab["series_ticker"]
+    # keep the admitted series; ids of other series can never become units
+    mask = pc.is_in(series_col, value_set=pa.array(list(SERIES_ADMITTED)))
+    tab = tab.filter(mask)
+    rows = tab.to_pylist()
+    rows.sort(key=lambda r: (r["poll_ts"], r["run_id"] or "", r["id"] or ""))
+    for r in rows:
+        t = int(r["poll_ts"].timestamp() * US) if r["poll_ts"] is not None else None
+        if t is None or (r["run_id"], t) not in ok_keys:
+            ps.n_rows_not_ok += 1
+            continue
+        pid = r["id"]
+        if pid is None:
+            continue
+        rec = ps.by_id.get(pid)
+        pset = (r["period_reward"], r["target_size_fp"], r["discount_factor_bps"])
+        if rec is None:
+            rec = {"id": pid, "ticker": r["market_ticker"], "type": r["incentive_type"],
+                   "s0": None if r["start_date"] is None else iso_to_us(r["start_date"]),
+                   "e": None if r["end_date"] is None else iso_to_us(r["end_date"]),
+                   "psets": [pset], "first_poll": t, "listed": {t}, "drift": False}
+            ps.by_id[pid] = rec
+        else:
+            rec["listed"].add(t)
+            if pset not in rec["psets"]:
+                rec["psets"].append(pset)
+                rec["drift"] = True
+            s0 = None if r["start_date"] is None else iso_to_us(r["start_date"])
+            e = None if r["end_date"] is None else iso_to_us(r["end_date"])
+            if (s0, e, r["market_ticker"]) != (rec["s0"], rec["e"], rec["ticker"]):
+                rec["drift"] = True
+    return ps
+
+
+def program_reward_end(rec, polls):
+    """CONDITIONS 10: if the id is absent from a complete poll (first_poll <= poll < E) after being listed,
+    the reward stops at the last listing poll before that absence + 900 s; else None."""
+    last = None
+    for p in polls:
+        if p < rec["first_poll"]:
+            continue
+        if rec["e"] is not None and p >= rec["e"]:
+            break
+        if p in rec["listed"]:
+            last = p
+        elif last is not None:
+            return last + POLL_REWARD_TAIL_S * US
+    return None
+
+
+# ---- metadata captures -----------------------------------------------------------------------
+_STAMP = re.compile(r"(\d{8}T\d{6}Z|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
+
+
+class MetaIndex:
+    """Raw ``GET /markets?series_ticker=S&status=open`` listings captured by the manager.  Format accepted:
+    a ``*.json`` file holding the response (``{"markets": [...]}``) or an envelope ``{"fetched_at": ISO,
+    "response": {...}}``, or a ``*.jsonl`` with one such object per line.  The fetch time is the envelope's
+    ``fetched_at`` or the UTC stamp in the file name (YYYYMMDDTHHMMSSZ or ISO); a file with neither is refused."""
+
+    def __init__(self, root=None, asof_us=None):
+        self.first = {}
+        self.files = []
+        self.mve = 0
+        self.n_captures = 0
+        if root is None:
+            return
+        root = Path(root)
+        for p in sorted(list(root.rglob("*.json")) + list(root.rglob("*.jsonl"))):
+            self.files.append((str(p.relative_to(root)), kp.sha256_file(p)))
+            txt = p.read_text()
+            objs = [json.loads(ln) for ln in txt.splitlines() if ln.strip()] if p.suffix == ".jsonl" else [json.loads(txt)]
+            for o in objs:
+                self._add(o, p, asof_us)
+
+    def _add(self, o, p, asof_us):
+        fetched = None
+        if isinstance(o, dict) and o.get("fetched_at"):
+            fetched = iso_to_us(o["fetched_at"])
+        else:
+            m = _STAMP.search(p.name)
+            if m:
+                s = m.group(1)
+                if "-" not in s:
+                    s = f"{s[0:4]}-{s[4:6]}-{s[6:8]}T{s[9:11]}:{s[11:13]}:{s[13:15]}Z"
+                fetched = iso_to_us(s)
+        if fetched is None:
+            raise InputError(f"metadata capture {p.name} has no fetched_at and no UTC stamp in its name")
+        body = o.get("response", o) if isinstance(o, dict) else {"markets": o}
+        markets = body.get("markets") if isinstance(body, dict) else None
+        if markets is None:
+            raise InputError(f"metadata capture {p.name}: no 'markets' list")
+        if asof_us is not None and fetched > asof_us:
+            return
+        self.n_captures += 1
+        for m in markets:
+            tk = m.get("ticker") or ""
+            if kp.is_mve(m):
+                self.mve += 1
+                continue
+            rec = {"fetched": fetched, "event": m.get("event_ticker"),
+                   "open": None if not m.get("open_time") else iso_to_us(m["open_time"]),
+                   "close": None if not m.get("close_time") else iso_to_us(m["close_time"]),
+                   "x": None if not m.get("expected_expiration_time") else iso_to_us(m["expected_expiration_time"])}
+            cur = self.first.get(tk)
+            if cur is None or fetched < cur["fetched"]:
+                self.first[tk] = rec
+
+    def usable(self, ticker, first_quote_us):
+        """The EARLIEST capture of ``ticker``, only if taken at or before the first book snapshot of the
+        unit (CONDITIONS 8); later captures are never substituted."""
+        rec = self.first.get(ticker)
+        return rec if rec is not None and rec["fetched"] <= first_quote_us else None
+
+
+# ---- manifest-checked stores (series / markets / trades) --------------------------------------
+_MANIFESTS = {}
+
+
+class FileManifest:
+    """``<root>/manifest.jsonl`` written by kalshi_public.Store: type 'file' lines (path, sha256, rows,
+    written_at); the last line of a path wins.  Every file read must be listed with a matching sha256."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.files = {}
+        p = self.root / "manifest.jsonl"
+        if not p.exists():
+            raise InputError(f"no manifest.jsonl in {self.root}")
+        with open(p) as f:
+            for ln in f:
+                if '"type":"file"' not in ln:
+                    continue
+                rec = json.loads(ln)
+                if rec.get("type") == "file":
+                    self.files[rec["path"]] = rec
+
+    @classmethod
+    def of(cls, root):
+        k = str(Path(root).resolve())
+        if k not in _MANIFESTS:
+            _MANIFESTS[k] = cls(root)
+        return _MANIFESTS[k]
+
+    def check(self, paths, asof_us=None):
+        """-> (usable paths, n_skipped_after_asof, digest lines).  Refuses an unlisted or altered file."""
+        ok, skipped, lines = [], 0, []
+        for p in paths:
+            rel = str(Path(p).relative_to(self.root))
+            rec = self.files.get(rel)
+            if rec is None:
+                raise InputError(f"{rel} is not listed in manifest.jsonl")
+            if kp.sha256_file(Path(p)) != rec["sha256"]:
+                raise InputError(f"sha256 mismatch (altered): {rel}")
+            if asof_us is not None and rec.get("written_at") and iso_to_us(rec["written_at"]) > asof_us:
+                skipped += 1
+                continue
+            ok.append(Path(p))
+            lines.append(f"{rel}:{rec['sha256']}")
+        return ok, skipped, lines
+
+
+def _date_ok(path, lo_date, hi_date):
+    m = re.search(r"date=(\d{4}-\d{2}-\d{2})", str(path))
+    return m is None or (lo_date <= m.group(1) <= hi_date)
+
+
+def read_series_table(root, asof_us=None):
+    """ticker -> {fee_type, fee_multiplier, frequency}, the latest fetched_at row."""
+    root = Path(root)
+    fm = FileManifest.of(root)
+    files = sorted((root / "series").rglob("*.parquet")) if (root / "series").exists() else []
+    files, _skipped, lines = fm.check(files, asof_us)
+    tab = kp.read_table_unified(root, "series", files, ("ticker", "frequency", "fee_type", "fee_multiplier", "fetched_at"))
+    out = {}
+    for r in sorted(tab.to_pylist(), key=lambda r: (r["fetched_at"] is not None, r["fetched_at"] or datetime.min.replace(tzinfo=timezone.utc))):
+        out[r["ticker"]] = {"fee_type": r["fee_type"], "fee_multiplier": r["fee_multiplier"], "frequency": r["frequency"]}
+    return out, lines
+
+
+def read_results(root, tickers, asof_us=None):
+    """ticker -> {result, value, settled_us, event} from the settled-markets store, rows fetched at or before
+    ``asof_us``.  value = 1/0 for yes/no, settlement_value_dollars for scalar / other results, None if unknown."""
+    root = Path(root)
+    fm = FileManifest.of(root)
+    files = []
+    for s in sorted({kp.series_of(t) for t in tickers}):
+        d = root / "markets" / f"series={s}"
+        if d.exists():
+            files += sorted(d.rglob("*.parquet"))
+    files, skipped, lines = fm.check(files, asof_us)
+    tab = kp.read_table_unified(root, "markets", files, ("ticker", "event_ticker", "status", "result",
+                                                         "settlement_value_dollars", "settlement_ts", "fetched_at"))
+    tset = set(tickers)
+    best = {}
+    for r in tab.to_pylist():
+        if r["ticker"] not in tset:
+            continue
+        if asof_us is not None and r["fetched_at"] is not None and iso_to_us(r["fetched_at"]) > asof_us:
+            continue
+        key = (bool(r["result"]), r["fetched_at"] is not None, r["fetched_at"].timestamp() if r["fetched_at"] else 0.0)
+        if r["ticker"] not in best or key > best[r["ticker"]][0]:
+            best[r["ticker"]] = (key, r)
+    out = {}
+    for t, (_k, r) in best.items():
+        res = (r["result"] or "").lower()
+        if res == "yes":
+            val = 1.0
+        elif res == "no":
+            val = 0.0
+        elif res:
+            val = r["settlement_value_dollars"]
+        else:
+            val = None
+        out[t] = {"result": res or None, "value": val, "event": r["event_ticker"],
+                  "settled_us": None if r["settlement_ts"] is None else iso_to_us(r["settlement_ts"])}
+    return out, lines, skipped
+
+
+def trades_windows(root):
+    """Per-ticker coverage windows from the FULL (non-tail) trades checkpoints: ticker -> [(since_us|None,
+    until_us|None)].  A ticker is only 'done' after its files were written (kalshi_public.Store)."""
+    root = Path(root)
+    win = defaultdict(list)
+    d = root / "_checkpoints"
+    if not d.exists():
+        return win
+    for p in sorted(d.glob("trades-*.json")):
+        ck = json.loads(p.read_text())
+        q = ck.get("query") or {}
+        if ck.get("command") != "trades" or q.get("tail_s"):
+            continue
+        since = None if not q.get("since") else kp.to_unix(q["since"]) * US
+        until = None if not q.get("until") else kp.to_unix(q["until"]) * US
+        for t in ck.get("done", []):
+            win[t].append((since, until))
+    return win
+
+
+def covers(windows, lo_us, hi_us, tol_us=US):
+    """Do the union of (since, until) windows cover [lo, hi]?"""
+    if not windows:
+        return False
+    cur = lo_us
+    ws = sorted(windows, key=lambda w: (-math.inf if w[0] is None else w[0]))
+    for s, e in ws:
+        if s is not None and s > cur + tol_us:
+            continue
+        if e is None:
+            return True
+        cur = max(cur, e)
+        if cur >= hi_us:
+            return True
+    return cur >= hi_us
+
+
+def load_trades(root, tickers, lo_us, hi_us, asof_us=None):
+    """TradeList per ticker for created_time in [lo, hi], from manifest-verified trades parquet written at or
+    before ``asof_us``.  Only the admitted series' partitions in the date range are opened."""
+    root = Path(root)
+    fm = FileManifest.of(root)
+    lo_d, hi_d = us_to_date(lo_us), us_to_date(hi_us)
+    files = []
+    for s in sorted({kp.series_of(t) for t in tickers}):
+        d = root / "trades" / f"series={s}"
+        if d.exists():
+            files += [p for p in sorted(d.rglob("*.parquet")) if _date_ok(p, lo_d, hi_d)]
+    files, skipped, lines = fm.check(files, asof_us)
+    rows = defaultdict(list)
+    tset = set(tickers)
+    for f in files:
+        t = kp.read_table_unified(root, "trades", [f], ("trade_id", "ticker", "created_time", "yes_price", "no_price",
+                                                         "count", "taker_side", "is_block_trade"))
+        ts = ts_col_us(t["created_time"])
+        tk = t["ticker"].to_pylist()
+        for i in range(len(tk)):
+            if tk[i] in tset and lo_us <= ts[i] <= hi_us:
+                rows[tk[i]].append((int(ts[i]), t["trade_id"][i].as_py(), bp_of(t["yes_price"][i].as_py()),
+                                    bp_of(t["no_price"][i].as_py()), t["count"][i].as_py(),
+                                    t["taker_side"][i].as_py(), t["is_block_trade"][i].as_py()))
+    return {k: TradeList(v) for k, v in rows.items()}, skipped, lines
