@@ -15,7 +15,7 @@ WHAT IT REFUSES (before anything is read or written)
   * an hour outside [2026-10-19T08, 2026-10-20T08), a duplicate hour, hours that are not consecutive (the replay is one continuous tape, and the engine's own gap rules
     would count a missing hour as a feed gap);
   * a --scratch that is inside /data/mal/arena (the tape files given are the only paths under it this tool touches, and it only reads them), that contains it, or that
-    is not an empty directory. The scratch holds symlinks to the given files, the scratch registry, decision logs and ledger, and the report.
+    is not an empty directory. The scratch holds the scratch registry, decision logs and ledger, and the report; the given files are read in place, by path, through a state that lists no directory.
 It never opens the arena ledgers, bots.json, a shakedown directory or any other arena path, and it registers its books with the test-only overrides of
 arena_paper.register_bot (fake registration clock, unverified sha) inside the scratch registry only: those lines are a scratch convenience, not a registration.
 
@@ -396,7 +396,8 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     root = check_scratch(scratch)
     dirs = prepare_scratch(root, hours)
     t0, t1 = hours[0].start_ms, hours[-1].start_ms + HOUR_MS
-    head = sha or process_code_state()[0] or "0" * 40
+    git_head, git_dirty = process_code_state()
+    head = sha or git_head or "0" * 40
     rules: list[RecordingJ3] = J.make_rules(t0, rule_cls=RecordingJ3)  # type: ignore[assignment]
     with _scratch_registration_env():
         register_rules(rules, str(dirs["registry"]), head, t0, now_ms=t0 - 1, verify_sha=False)
@@ -420,10 +421,10 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
                               or integrity["ledger_incidents"] or integrity["halted_books"])
     cells = {r.bot_id: cell_report(r, host, rows[r.bot_id]) for r in rules}
     alive = [b for b, c in cells.items() if not c["kill"]["killed"]]
-    scrub = ("engine_id", "pid")
-    ledger_digest = hashlib.md5("\n".join(canon({k: v for k, v in row.items() if k not in scrub}) for b in sorted(rows) for row in rows[b]).encode()).hexdigest()
+    scrub = ("engine_id", "pid", "frozen_sha", "code_head", "code_dirty")  # the digest is a function of the tape and the rules, not of the checkout that ran them
+    ledger_digest = hashlib.md5("\n".join(canon({k: v for k, v in row.items() if k not in scrub}) for b in sorted(rows) for row in rows[b] if row["kind"] != "start").encode()).hexdigest()  # a start record holds the process's wall clock and engine id
     report = {
-        "schema": SCHEMA, "valid": bool(integrity["clean"]),
+        "schema": SCHEMA, "valid": bool(integrity["clean"]), "provenance": {"git_head": git_head, "git_dirty": git_dirty, "scratch_sha": head},
         "labels": ["PAPER ONLY", "IN-SAMPLE: W_e figures are in-sample for J3 and every variant (QP R9(d)); never cite them as evidence", "NOT A PROFIT CLAIM; no cell has cleared the gate"],
         "spec": {
             "notebook_entry": "J3 R9(d) exploration spec FIXED before any price", "universe": "PumpSwap only; the PARENT's canonical pool is the only priced pool (children are trigger events)",
