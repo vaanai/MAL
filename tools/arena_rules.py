@@ -441,15 +441,18 @@ class Host:
         """Verify every chain, rebuild each bot's memory from its log, recover the engine, reconcile the two (see the module docstring)."""
         self.verify_registered()
         n = {"rows": 0, "open": 0, "reopened": 0, "dropped": 0}
+        last_ms = 0
         for r in self.rules:
             self.log.verify(r.bot_id)
             for row in self.log.rows(r.bot_id):
                 n["rows"] += 1
+                last_ms = max(last_ms, int(row["ms"]))
                 self.books[r.bot_id].apply_log_row(row)
             self.books[r.bot_id].finish_replay()
         self.engine.recover()
         live_pids = {r.bot_id: {pid for pid, p in self.engine.positions.items() if p.bot_id == r.bot_id} for r in self.rules}
-        dec_ms = self.now_fn() if self.cfg.live else self.sim_now
+        # a marker row is stamped no earlier than the newest row already in the logs: the chain is walked in day-file order, so ms must never go back across a UTC day
+        dec_ms = max(self.now_fn() if self.cfg.live else self.sim_now, last_ms)
         for r in self.rules:
             book = self.books[r.bot_id]
             for pid in sorted(live_pids[r.bot_id] - set(book.open)):  # the engine holds it, the log shows it sold or never opened: sell it again (engine_restart)
@@ -512,9 +515,9 @@ class Host:
 
     def step(self, T: int) -> None:
         """One tick at instant T: the state is stepped to T - 1 first (strict as-of), then sell retries, then the rules' on_tick."""
+        self.state.poll(until_ms=T - 1)  # event decisions inside this poll are stamped with their row's own t_recv_ms (sim) or the wall clock (live)
         if not self.cfg.live:
             self.sim_now = max(self.sim_now, T)
-        self.state.poll(until_ms=T - 1)
         self._raise_fatal()
         dec = self._now(T)
         for rule in self.rules:
