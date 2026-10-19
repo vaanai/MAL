@@ -174,7 +174,8 @@ def build_world(tmp, with_holdout_rows=True):
     ]
     hold = [tr("KXBTC15M-HOLD-00", "2026-10-05T10:12:05Z", 0.95, "no"),
             tr("KXBTC15M-HOLD-00", "2026-10-05T10:13:05Z", 0.95, "no")]
-    btc = m1 + m2 + m3 + m6
+    m4 = [tr("KXBTC15M-M4-00", "2026-10-06T11:59:30Z", 0.5, "no")]                  # after close-60: not a window print
+    btc = m1 + m2 + m3 + m4 + m6
     write_trades(w.s1, btc + (hold if with_holdout_rows else []), "part-a")
     # store2 repeats M1's rows (same trade ids) and holds the ETH market
     write_trades(w.s2, m1, "part-a")
@@ -381,7 +382,7 @@ def test_dedupe_across_stores_keeps_one_and_reports_count(tmp_path):
     w = build_world(tmp_path)
     s = run_dev(w, tmp_path / "out")
     # store2 repeats the 12 M1 rows of store1 (11 are non-holdout rows of a signal market, all counted)
-    assert s["duplicates_removed_across_stores"] == 12
+    assert s["duplicates_removed"] == 12
     # no double fills from the repeated rows
     fills = pq.read_table(tmp_path / "out" / "r3_dev_fills.parquet").to_pylist()
     ids = [f["fill_trade_id"] for f in fills]
@@ -493,6 +494,9 @@ def test_holdout_run_once_lock_and_ledger_line(tmp_path):
         run_dev(w, out, split="holdout")
     with pytest.raises(r3.Refusal):
         run_dev(w, tmp_path / "hout2", split="holdout")
+    # a repeat run is refused before it opens anything (bad markets path would otherwise be a different error)
+    with pytest.raises(r3.Refusal):
+        r3.run("holdout", [str(w.s1)], "/nonexistent/markets", str(tmp_path / "candles"), str(out), False)
     # lock alone also refuses (ledger removed): O_EXCL
     ledger.unlink()
     with pytest.raises(r3.Refusal, match="HOLDOUT.lock"):

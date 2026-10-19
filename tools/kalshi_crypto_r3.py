@@ -599,11 +599,18 @@ def ledger_append(path: str, split: str, mode: str, status: str, out_dir: str):
         os.fsync(fh.fileno())
 
 
-def acquire_holdout_lock(out_dir: str, ledger: str):
-    """Run-once: refuse if the global ledger already holds a holdout run line, then O_EXCL the lock file."""
+def check_holdout_free(out_dir: str, ledger: str):
+    """Side-effect-free precheck: refuse if the global ledger already holds a holdout run line or the lock exists."""
     for rec in ledger_lines(ledger):
         if rec.get("split") == "holdout" and rec.get("mode") == "run":
             raise Refusal(f"holdout already run or started (ledger {ledger}: {rec})")
+    if os.path.exists(os.path.join(out_dir, "HOLDOUT.lock")):
+        raise Refusal(f"{os.path.join(out_dir, 'HOLDOUT.lock')} exists: the holdout is run once")
+
+
+def acquire_holdout_lock(out_dir: str, ledger: str):
+    """Run-once: refuse if the global ledger already holds a holdout run line, then O_EXCL the lock file."""
+    check_holdout_free(out_dir, ledger)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "HOLDOUT.lock")
     try:
@@ -633,6 +640,8 @@ def run(split, trades_stores, markets_root, candles_dir, out_dir, count_only=Fal
     ledger = ledger_path()
     if split == "holdout" and count_only and not allow_holdout_count_only:
         raise Refusal("--count-only on the holdout needs --allow-holdout-count-only (reads ids only)")
+    if split == "holdout" and not count_only:
+        check_holdout_free(out_dir, ledger)                      # a repeat run does nothing at all
     os.makedirs(out_dir, exist_ok=True)
     markets, excl, out_of_split = load_markets(markets_root, split, with_outcomes=not count_only)
     candles = load_candles(candles_dir)
@@ -770,7 +779,7 @@ def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, 
         "meta": meta, "rule": "R3 late-lock maker 15M", "n_markets_in_split": len(markets),
         "excluded_markets": excl, "n_signals": len(signals), "signals_by_series": _by_series(signals, by_ticker),
         "signals_skipped": sig_skip, "signals_without_prior_favoured_print": no_prior,
-        "trade_rows": dict(scan.c), "duplicates_removed_across_stores": scan.c.get("duplicates", 0),
+        "trade_rows": dict(scan.c), "duplicates_removed": scan.c.get("duplicates", 0),
         "peak_rss_mb": scan.c.get("peak_rss_mb", 0),
         "main": cell(fills_rows),
         "maker_15pct_unfilled": {**cell(kept), "n_dropped": int(drop.sum()), "drop_rule":
