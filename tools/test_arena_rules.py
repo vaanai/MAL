@@ -8,6 +8,7 @@ import ast
 import collections
 import errno
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -629,3 +630,14 @@ def test_job_script_refuses_dirty_wrong_sha_xtrace_and_missing_env(tiny_repo):
         assert subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=str(tiny_repo)).returncode != 0
     assert _job(tiny_repo, {"ARENA_RULES_MODE": "bogus"}).returncode == 2
     assert _job(tiny_repo, {"ARENA_RULES_MODE": "replay"}).returncode != 0  # replay needs its window
+
+
+def test_job_script_requires_the_checkout_and_has_no_home_default(tiny_repo, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    shutil.copytree(tiny_repo, home / "MAL")  # a perfectly good clean checkout at the right sha sits exactly where the old default pointed
+    env = {"PATH": os.environ["PATH"], "HOME": str(home), "PYTHON": "echo", "ARENA_RULES": BOT, "ARENA_RULES_CLOCK_START_MS": str(CLOCK),
+           "ARENA_RULES_FROZEN_SHA": _git(tiny_repo, "rev-parse", "HEAD")}
+    p = subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=str(tmp_path))
+    assert p.returncode != 0 and "ARENA_RULES_REPO" in p.stderr and p.stdout == ""  # it did not fall back to $HOME/MAL
+    assert subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env={**env, "ARENA_RULES_REPO": str(home / "MAL")}, cwd=str(tmp_path)).returncode == 0

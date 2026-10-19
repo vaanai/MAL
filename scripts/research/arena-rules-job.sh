@@ -11,16 +11,16 @@
 # Run from a DEDICATED clean checkout at the frozen sha (QP #716 conditions), with output outside the checkout. The job refuses a dirty checkout, a checkout that is not
 # at the frozen sha, and xtrace. There is no key file: this host reads no credential of any kind.
 #
-# Required env: ARENA_RULES_FROZEN_SHA (a commit on origin), ARENA_RULES_CLOCK_START_MS, ARENA_RULES (space-separated rule names, for example "h2ps-a1").
+# Required env: ARENA_RULES_REPO (the dedicated checkout; there is NO default, so a job never runs from the main checkout the manager pulls), ARENA_RULES_FROZEN_SHA (a commit on origin), ARENA_RULES_CLOCK_START_MS, ARENA_RULES (space-separated rule names, for example "h2ps-a1").
 # Optional env: ARENA_RULES_MODE = run (default) | register | replay ; ARENA_RULES_FEED_DELAY_SLOTS (default 7, the manager pins it) ; ARENA_RULES_END_MS (run: stop at this
-# instant) ; ARENA_RULES_FROM_MS and ARENA_RULES_TO_MS (replay) ; ARENA_RULES_REPO, ARENA_RULES_ROOT, ARENA_RULES_TAPE, ARENA_RULES_LEDGER, ARENA_RULES_REGISTRY, PYTHON.
+# instant) ; ARENA_RULES_FROM_MS and ARENA_RULES_TO_MS (replay) ; ARENA_RULES_ROOT, ARENA_RULES_TAPE, ARENA_RULES_LEDGER, ARENA_RULES_REGISTRY, PYTHON.
 # register appends the bots.json lines (before the clock) and exits. replay steps a tape slice with the sim clock and refuses to write inside /data/mal/arena.
 # Memory: one light process (state + engine). Request about 4 GB from MiScusi; the heavy-replay slice rule of CLAUDE.md does not apply.
 
 set -eu
 case "$-" in *x*) echo "arena-rules-job: refusing to run with xtrace on" >&2; exit 2;; esac
 
-REPO="${ARENA_RULES_REPO:-$HOME/MAL}"
+REPO="${ARENA_RULES_REPO:?ARENA_RULES_REPO is required: the dedicated clean checkout at the frozen sha (never the main checkout the manager pulls)}"
 ROOT="${ARENA_RULES_ROOT:-/data/mal/arena/rules}"
 TAPE="${ARENA_RULES_TAPE:-/data/mal/arena/tape}"
 LEDGER="${ARENA_RULES_LEDGER:-/data/mal/arena/ledger}"
