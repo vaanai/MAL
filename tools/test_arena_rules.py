@@ -201,7 +201,7 @@ def test_rows_before_the_clock_still_feed_the_state_and_engine(tmp_path):
 
 
 # -------------------------------------------------------------------------------------------------------------------------- (4) import closure and paths
-BANNED_PARTS = ("r4b", "hv4", "haiku", "laya", "lightgbm", "anthropic", "openrouter")
+BANNED_PARTS = ("r4b", "l3", "hv4", "haiku", "laya", "lightgbm", "anthropic", "openrouter")
 FORBIDDEN_STRINGS = ("/data/mal/blocks", "/var/lib/mal/sealed", "tip-tape", "tip_tape", "tiptape", "forward-1016", "forward-1002", "/data/mal/r4b", "laya-opt", "models/r4b")
 # Pre-existing hits in the engine's own import closure (tools/arena_paper.py imports SlotClock from tools/h5_shadow.py): a default path of the shadow's tip follower and its
 # refusal list. Neither is called by this host; test_replay_opens_no_forbidden_path proves no such path is opened. A NEW hit anywhere fails the test.
