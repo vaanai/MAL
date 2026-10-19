@@ -687,6 +687,13 @@ def _now(now_ms: int | None) -> int:
     return int(time.time() * 1000)
 
 
+def _no_production_paths_in_test(reads_dir: str | Path, out_dir: str | Path) -> None:
+    """Test mode (MAL_ARENA_TEST=1, synthetic registries and fake clocks) must never write the production store or the production out dir: a stray test run once left a
+    synthetic read in /data/mal/arena/reads, where it would refuse (or pass for) the real bot_id."""
+    if os.environ.get(TEST_ENV) == "1" and (Path(reads_dir).resolve() == Path(AS.READS_DIR).resolve() or Path(out_dir).resolve() == Path(OUT_DIR).resolve()):
+        raise Refused(f"{TEST_ENV}=1 with the production store or out dir ({reads_dir}, {out_dir}): a test run never writes there; pass a scratch --arena-reads-dir and --out-dir")
+
+
 def _created(now_ms: int) -> str:
     return datetime.fromtimestamp(now_ms / 1000.0, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -744,6 +751,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     (`<reads_dir>/<bot_id>.v12.json`, write-once, any out dir): before that instant this read says "pending until <instant>"; at or after it (here, or later with
     `v12_only`, the `v12` command) they are decided and recorded; a second decision is refused. `null_dir=None` needs `no_null=True` (an explicit opt-out) when it decides."""
     now = _now(now_ms)
+    _no_production_paths_in_test(reads_dir, out_dir)
     reg = load_registry(registry)
     books, sources = arena_books(registry, extra_registries)  # the multiplicity count: every registered arena book (refused when the other registry is missing)
     if bot_id not in ARMS:
@@ -860,6 +868,7 @@ def nd_arm(arm: str, reason: str) -> dict[str, Any]:
 def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
                   command: str = "", extra_registries: Sequence[str] = ()) -> dict[str, Any]:
     now = _now(now_ms)
+    _no_production_paths_in_test(reads_dir, out_dir)
     reg = load_registry(registry)
     books, sources = arena_books(registry, extra_registries)
     t0 = window_clock(reg)

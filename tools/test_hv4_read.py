@@ -196,7 +196,7 @@ def test_second_run_is_refused_and_the_files_do_not_change(tmp_path):
     files = sorted((Path(w.out) / "reads").glob("CON-L*"))
     assert [f.name for f in files] == ["CON-L.console.json", "CON-L.hv4.json", "CON-L.result.json"]  # the out dir holds no gate record
     stored = Path(w.reads) / "CON-L.json"
-    files.append(stored)
+    files += [stored, Path(w.reads) / "CON-L.v12.json"]  # the gate read and the V1/V2 decision, both in the one arena store
     before = {f.name: f.read_bytes() for f in files}
     with pytest.raises(R.Refused, match="second run"):
         w.book("CON-L", now_ms=DAY0 + 31 * DAY)
@@ -286,7 +286,7 @@ def test_pending_attempt_is_not_recordable_and_an_old_orphan_is_not_decidable(tm
     with pytest.raises(R.Refused, match="PENDING|pending"):
         w.book("CON-L", now_ms=b + 3_600_000)  # younger than the 24 h settle window: not a verdict
     assert not (Path(w.out) / "reads").exists() and not Path(w.reads).exists()
-    r = w.book("CON-L", now_ms=ms + 25 * 3_600_000)  # older: a restart orphan, NOT_DECIDABLE, final
+    r = w.book("CON-L", now_ms=DAY0 + 7 * DAY)  # older than the settle window: a restart orphan, NOT_DECIDABLE, final
     assert r["arena_status"] == "NOT_DECIDABLE" and r["arena_score_read"]["restart_orphans"] == 1
     assert r["v1"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
 
@@ -351,6 +351,107 @@ def test_a_not_decidable_book_whose_cells_would_pass_reports_no_gate_tick_and_no
     w3.add(rows)
     assert w3.book("CON-L")["arena_status"] == "REPORT_ONLY"
     assert_claims_nothing(w3, "REPORT_ONLY")
+
+
+def test_v1_and_v2_are_pending_before_the_declared_instant_and_decided_once_at_it(tmp_path):
+    w = con_world(tmp_path)
+    b = DAY0 + 5 * DAY
+    bv = b + AS.SETTLE_MS  # the window end plus the declared settle time
+    assert R.v12_instant(b, AS.SETTLE_MS) == bv == DAY0 + 6 * DAY
+    r = w.book("CON-L", now_ms=bv - 1)  # the gate read is made at B; V1 and V2 are not
+    assert r["arena_status"] == "PASS" and r["v1"]["status"] == r["v2"]["status"] == "PENDING"
+    assert r["v1_and_v2"] is None and r["adds_value"] is None and r["v12"]["state"] == "pending" and r["v12"]["instant_ms"] == bv
+    assert r["v1"]["pending_until_ms"] == bv and "decided once" in r["v1"]["reasons"][0] and R._created(bv) in r["v1"]["reasons"][0]
+    assert R.load_v12(w.reads, "CON-L") is None and (Path(w.reads) / "CON-L.json").exists()  # nothing of V1/V2 is stored yet
+    hv4, rec, con = outputs(w)
+    assert rec["config"]["v1"] == rec["config"]["v2"] == "PENDING" and R.validate_result(rec) == []
+    assert f"V1 and V2 pending until {R._created(bv)}" in con["stream"][0]["text"] and "V1 PASS" not in con["stream"][0]["text"]
+    # the V1/V2 step is refused before the instant, nothing written
+    with pytest.raises(R.Refused, match="decided once"):
+        w.book("CON-L", now_ms=bv - 1, v12_only=True)
+    assert not list((Path(w.out) / "reads").glob("CON-L.v12.*")) and R.load_v12(w.reads, "CON-L") is None
+    # at the instant: decided and recorded once, in the same store as the gate read
+    gate_before = (Path(w.reads) / "CON-L.json").read_bytes()
+    r2 = w.book("CON-L", now_ms=bv, v12_only=True)
+    assert r2["arena_record"]["source"] == "existing" and (Path(w.reads) / "CON-L.json").read_bytes() == gate_before
+    assert r2["v1"]["status"] == "PASS" and r2["v2"]["status"] == "PASS" and r2["adds_value"] is True and r2["v12"]["state"] == "decided"
+    rec12 = R.load_v12(w.reads, "CON-L")
+    assert rec12["schema"] == R.V12_SCHEMA and rec12["bot_id"] == "CON-L" and rec12["v12_instant_ms"] == bv and rec12["book_instant_ms"] == b and rec12["decided_at_ms"] == bv
+    assert rec12["v1"]["status"] == "PASS" and rec12["v2"]["status"] == "PASS" and rec12["gate_read_sha256"] == hashlib.sha256(Path(w.reads, "CON-L.json").read_bytes()).hexdigest()
+    assert sorted(f.name for f in (Path(w.out) / "reads").iterdir()) == sorted(f"CON-L{x}.json" for x in (".console", ".hv4", ".result", ".v12.console", ".v12.hv4", ".v12.result"))
+    assert "V1 PASS" in outputs(w, "CON-L.v12")[2]["stream"][0]["text"] and R.validate_result(outputs(w, "CON-L.v12")[1]) == []
+    # a second decision is refused, from the same out dir and from any other, by the function and by the CLI, and changes nothing
+    stored = {f.name: f.read_bytes() for f in Path(w.reads).iterdir()}
+    for out in (w.out, str(tmp_path / "elsewhere")):
+        w.out = out
+        for kw in ({"v12_only": True}, {}):
+            with pytest.raises(R.Refused, match="second run"):
+                w.book("CON-L", now_ms=bv + DAY, **kw)
+    cli = ["--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--extra-registry", w.extra[0], "--arena-reads-dir", w.reads, "--null-dir", w.null,
+           "--out-dir", str(tmp_path / "third"), "--now-ms", str(bv + DAY)]
+    assert R.main(["v12"] + cli) == 3 and R.main(["book"] + cli) == 3
+    assert {f.name: f.read_bytes() for f in Path(w.reads).iterdir()} == stored and not (tmp_path / "elsewhere" / "reads").exists() and not (tmp_path / "third" / "reads").exists()
+
+
+def test_a_second_run_from_a_new_out_dir_cannot_change_v1_and_v2_the_qp_reroll_probe(tmp_path):
+    w = World(tmp_path)
+    w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
+    w.seeds("CON", 6e6, 5, 20)  # the R null is better than the book: V1 FAIL; CON-X has no rows: V2 NOT_DECIDABLE
+    r1 = w.book("CON-L")
+    assert r1["arena_status"] == "PASS" and r1["v1"]["status"] == "FAIL" and r1["v2"]["status"] == "NOT_DECIDABLE" and r1["adds_value"] is False
+    store = {f.name: f.read_bytes() for f in Path(w.reads).iterdir()}
+    assert sorted(store) == ["CON-L.json", "CON-L.v12.json"]
+    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))  # X now has an instant, and a weaker null that V1 would pass
+    w.null = str(tmp_path / "null2")
+    w.seeds("CON", 0.0, 5, 20)
+    for out in ("out2", "out3"):
+        w.out = str(tmp_path / out)
+        for kw in ({}, {"v12_only": True}):
+            with pytest.raises(R.Refused, match="V1 and V2 are already decided"):
+                w.book("CON-L", now_ms=DAY0 + 31 * DAY, **kw)
+        assert not (Path(w.out) / "reads").exists()
+    assert {f.name: f.read_bytes() for f in Path(w.reads).iterdir()} == store
+    v12 = R.load_v12(w.reads, "CON-L")
+    assert v12["v1"]["status"] == "FAIL" and v12["v2"]["status"] == "NOT_DECIDABLE" and v12["adds_value"] is False
+
+
+def test_the_v1_v2_decision_needs_a_null_dir_or_an_explicit_no_null_and_writes_nothing_without(tmp_path):
+    w = con_world(tmp_path)
+    kw = dict(ledger_root=w.root, registry=w.reg, out_dir=w.out, reads_dir=w.reads, null_dir=None, extra_registries=w.extra, n_seeds=N_SEEDS)
+    with pytest.raises(R.Refused, match="--no-null"):
+        R.read_book("CON-L", now_ms=DAY0 + 30 * DAY, **kw)
+    assert not (Path(w.out) / "reads").exists() and not Path(w.reads).exists()
+    pend = R.read_book("CON-L", now_ms=DAY0 + 6 * DAY - 1, **kw)  # before the instant nothing is decided, so no null is needed
+    assert pend["v1"]["status"] == "PENDING"
+    r = R.read_book("CON-L", now_ms=DAY0 + 6 * DAY, no_null=True, v12_only=True, **kw)  # on purpose: V1 is recorded NOT_DECIDABLE
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and R.load_v12(w.reads, "CON-L")["v1"]["status"] == "NOT_DECIDABLE"
+    # the v12 step never records a gate read
+    w2 = con_world(tmp_path / "nogate")
+    with pytest.raises(R.Refused, match="run `book` first"):
+        w2.book("CON-L", now_ms=DAY0 + 30 * DAY, v12_only=True)
+    assert not Path(w2.reads).exists() and not (Path(w2.out) / "reads").exists()
+
+
+def test_v2_is_not_decidable_by_rule_when_x_has_no_instant_by_the_declared_instant(tmp_path):
+    for per_day, days, decided in ((17, 6, True), (13, 8, False)):  # X reaches 100 attempts on day 6 (= the declared instant: allowed) or on day 8 (after it: not decidable)
+        w = World(tmp_path / f"x{days}")
+        w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
+        w.add(book_rows("CON-X", noisy(1e6, days, per_day, 12)))
+        w.seeds("CON", 0.0, 5, 20)
+        v2 = w.book("CON-L")["v2"]
+        if decided:
+            assert v2["status"] in ("PASS", "FAIL") and v2["window_end_ms"] == DAY0 + 5 * DAY and v2["comparator_instant_ms"] == DAY0 + 6 * DAY
+        else:
+            assert v2["status"] == "NOT_DECIDABLE" and "after the declared V1/V2 instant" in " ".join(v2["reasons"]) and v2["comparator_instant_ms"] == DAY0 + 8 * DAY
+
+
+def test_test_mode_never_writes_the_production_store_or_out_dir(tmp_path):
+    w = con_world(tmp_path)
+    for kw in ({"reads_dir": R.ARENA_READS_DIR, "out_dir": w.out}, {"reads_dir": w.reads, "out_dir": R.OUT_DIR}):
+        with pytest.raises(R.Refused, match="never writes there"):
+            R.read_book("CON-L", ledger_root=w.root, registry=w.reg, null_dir=w.null, now_ms=DAY0 + 30 * DAY, extra_registries=w.extra, n_seeds=N_SEEDS, **kw)
+    with pytest.raises(R.Refused, match="never writes there"):
+        R.read_learning(ledger_root=w.root, registry=w.reg, now_ms=DAY0 + R.LEARN_LOOK_OFFSET_MS, extra_registries=w.extra, reads_dir=R.ARENA_READS_DIR, out_dir=w.out)
 
 
 def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
@@ -448,7 +549,7 @@ def test_v2_fail_when_the_book_equals_the_x_arm(tmp_path):
 def test_v1_v2_not_decidable_when_the_null_or_the_comparator_is_missing(tmp_path):
     w = World(tmp_path)
     w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))  # no CON-X rows, no null directory
-    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=None, now_ms=DAY0 + 30 * DAY, n_seeds=N_SEEDS, extra_registries=w.extra)
+    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, reads_dir=w.reads, null_dir=None, no_null=True, now_ms=DAY0 + 30 * DAY, n_seeds=N_SEEDS, extra_registries=w.extra)
     assert r["v1"]["status"] == "NOT_DECIDABLE" and "no --null-dir" in " ".join(r["v1"]["reasons"])
     assert r["v2"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
     w2 = con_world(tmp_path / "two")
@@ -464,7 +565,7 @@ def test_a_null_shorter_than_200_seeds_is_not_decidable_by_default(tmp_path):
     w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
     w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
     w.seeds("CON", 0.0, 5, 20, n=2)
-    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=w.null, now_ms=DAY0 + 30 * DAY, extra_registries=w.extra)  # n_seeds defaults to 200
+    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, reads_dir=w.reads, null_dir=w.null, now_ms=DAY0 + 30 * DAY, extra_registries=w.extra)  # n_seeds defaults to 200
     assert r["v1"]["status"] == "NOT_DECIDABLE" and r["v1"]["null"]["n_seeds"] == 200 and len(r["v1"]["null"]["unusable"]) == 198
 
 
@@ -491,6 +592,7 @@ def test_seed_reproducibility(tmp_path):
     assert (Path(w.reads) / "CON-L.json").read_bytes() == stored_a  # the stored gate read is byte-identical
     for d in (first, second):  # only the two paths and the store file hash's location differ
         d.pop("arena_record")
+        d["v12"].pop("record")
         d["inputs"].pop("arena_reads_dir")
     assert canon(first) == canon(second)
     assert a["v1"]["null_sha256"] == b["v1"]["null_sha256"]
