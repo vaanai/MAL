@@ -917,17 +917,29 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
         raise Refused(f"{bot_id}: V1 and V2 are already decided and recorded at {v12_path(reads_dir, bot_id)}: one decision per bot_id, from any out dir; a second run is refused")
     if v12_only and not llm_book:
         raise Refused(f"{bot_id}: V1 and V2 exist for the LLM books L and F only")
-    # 1. the pre-declared instant, from decision timestamps only (no fill, exit or P&L is parsed before this passes)
-    b = AS.blind_read_instant(AS.load_decisions(ledger_root, bot_id), reg[bot_id]["clock_start_ms"])
-    if b is None or now < b:
+    # 1. the pre-declared instant, from decision timestamps only (no fill, exit or P&L is parsed before this passes). A torn or unparseable decision line cannot be
+    #    skipped over silently: the book's read is then NOT_DECIDABLE (arena_score's own rule for a damaged file), recorded once with the reason, not an unrecordable book.
+    torn: str | None = None
+    try:
+        b: int | None = AS.blind_read_instant(AS.load_decisions(ledger_root, bot_id), reg[bot_id]["clock_start_ms"])
+    except AS.Refused as exc:
+        b, torn = None, str(exc)
+    if torn is None and (b is None or now < b):
         raise Refused(f"{bot_id}: not at its pre-declared instant (outcome-blind read boundary {b}, now {now}): refused, nothing written")
-    bv = v12_instant(b, settle_ms)
-    if v12_only and now < bv:
-        raise Refused(f"{bot_id}: V1 and V2 are decided once, at {bv} ({_created(bv)}) = the window end + the settle time, not before (now {now}): refused, nothing written")
-    decide = llm_book and now >= bv
-    if decide and null_dir is None and not no_null:
-        raise Refused(f"{bot_id}: V1 and V2 are decided now and would be recorded NOT_DECIDABLE for good without the R null: pass --null-dir (or --no-null to record that "
-                      "on purpose); refused, nothing written")
+
+    def timing(b_: int) -> tuple[int, bool]:
+        """(the declared V1/V2 instant, whether V1 and V2 are decided in this run); refuses what must not run now, before anything is computed or written."""
+        bv_ = v12_instant(b_, settle_ms)
+        if v12_only and now < bv_:
+            raise Refused(f"{bot_id}: V1 and V2 are decided once, at {bv_} ({_created(bv_)}) = the window end + the settle time, not before (now {now}): refused, nothing written")
+        decide_ = llm_book and now >= bv_
+        if decide_ and null_dir is None and not no_null:
+            raise Refused(f"{bot_id}: V1 and V2 are decided now and would be recorded NOT_DECIDABLE for good without the R null: pass --null-dir (or --no-null to record that "
+                          "on purpose); refused, nothing written")
+        return bv_, decide_
+
+    if torn is None:
+        bv, decide = timing(int(b))  # type: ignore[arg-type]
     led = Ledger(ledger_root)
     all_ = AS.score_all(ledger_root, registry, bot_id, now, settle_ms, None, reads_dir)  # exactly what `arena_score --bot X --record` would store
     if bot_id in all_["bots_refused"]:
@@ -936,6 +948,12 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     rows, incidents, problems = scan(led, bot_id)
     if main["status"] in ("PENDING", "NOT_READY") or main.get("pending"):
         raise Refused(f"{bot_id}: {main['status']} ({main.get('pending')} covered attempt(s) inside the settle window): not recordable, nothing written")
+    if torn is not None:  # the instant of the lines that parse (decision timestamps only); a read that is not ripe on them is not recordable
+        b = main.get("read_boundary_ms")
+        if b is None or now < b:
+            raise Refused(f"{bot_id}: a decision line is torn or unparseable ({torn[:160]}) and the lines that parse have no read boundary reached (boundary {b}, now {now}): "
+                          "refused, nothing written")
+        bv, decide = timing(int(b))
     if main["read_boundary_ms"] != b:
         raise Refused(f"{bot_id}: the scored read boundary {main['read_boundary_ms']} is not the pre-declared instant {b}: refused, nothing written")
     asz = score_as_sized(bot_id, reg, rows, now, settle_ms, incidents=incidents, problems=problems) if arm.promotable and arm.persona != "BST" and arm.role in ("L", "F") else None
@@ -966,7 +984,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
             "decidable": base_status(main) in DECIDABLE,
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
             "v12": ({"instant_ms": bv, "settle_ms": settle_ms, "state": "decided" if decide else "pending", "record": None} if llm_book else None),
-            "reference_arm": not arm.promotable,
+            "reference_arm": not arm.promotable, "torn_decision_line": torn,
             "not_proposed_for_canary": bool(arm.promotable and main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
             "disclosure": disclosure(books, now, n_books, cells_read, ebd, reference=not arm.promotable), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
             "inputs": _inputs(registry, ledger_root, reads_dir, sources), "arena_score_read": main, "arena_score_as_sized": asz}
@@ -996,9 +1014,14 @@ def recorded_status(reads_dir: str | Path, arm: str) -> str | None:
 def arm_screen(arm: str, reg: Mapping[str, Mapping[str, Any]], ledger_root: str, reads_dir: str | Path, cut_ms: int) -> dict[str, Any]:
     """The SCREEN RULE for one learning arm (module docstring), from decision timestamps and arena_score's store only. arena_score enforces the same rule when the arm
     is scored at the cut (`check_late_force`); this runs first so that an arm that passed its screen has its rows never loaded."""
-    own = AS.blind_read_instant(AS.load_decisions(ledger_root, arm), reg[arm]["clock_start_ms"])
     st = recorded_status(reads_dir, arm)
-    out: dict[str, Any] = {"own_instant_ms": own, "cut_ms": cut_ms, "recorded_status": st, "rule": "not_later", "reason": None}
+    out: dict[str, Any] = {"own_instant_ms": None, "cut_ms": cut_ms, "recorded_status": st, "rule": "not_later", "reason": None}
+    try:
+        own = AS.blind_read_instant(AS.load_decisions(ledger_root, arm), reg[arm]["clock_start_ms"])
+    except AS.Refused as exc:  # a torn or unparseable decision line: this arm is NOT_DECIDABLE in the learning read; it neither stops the read nor goes unrecorded
+        out["rule"], out["reason"] = "torn", f"a decision line is torn or unparseable: {str(exc)[:200]}"
+        return out
+    out["own_instant_ms"] = own
     if own is None or own >= cut_ms:
         return out
     if st is None:
@@ -1040,7 +1063,7 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     res = {}
     for a in learn_arms:
         sc = screens[a]
-        if sc["rule"] in ("passed", "unrecorded", "blocked"):  # never loaded: a passed arm's later attempts are its confirmation window
+        if sc["rule"] in ("passed", "unrecorded", "blocked", "torn"):  # never loaded: a passed arm's later attempts are its confirmation window; a torn arm is NOT_DECIDABLE
             res[a] = nd_arm(a, sc["reason"])
             continue
         try:

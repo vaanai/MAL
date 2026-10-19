@@ -467,6 +467,70 @@ def test_test_mode_never_writes_the_production_store_or_out_dir(tmp_path):
         R.read_learning(ledger_root=w.root, registry=w.reg, now_ms=DAY0 + R.LEARN_LOOK_OFFSET_MS, extra_registries=w.extra, reads_dir=R.ARENA_READS_DIR, out_dir=w.out)
 
 
+def tear_a_decision_line(w, bot, which=0):
+    """Replace one `open` decision line of the bot's ledger by a torn (unparseable) line, in place; returns the file."""
+    files = sorted((Path(w.root) / bot).glob("trades-*.jsonl"))
+    n = 0
+    for p in files:
+        lines = p.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith('{"kind":"open"'):
+                if n == which:
+                    lines[i] = line[:60]
+                    p.write_text("\n".join(lines) + "\n")
+                    return p
+                n += 1
+    raise AssertionError("no open line")
+
+
+def test_a_torn_decision_line_makes_the_book_not_decidable_recorded_once_not_unrecordable(tmp_path):
+    w = World(tmp_path)
+    w.add(book_rows("CON-L", noisy(4e6, 5, 21, 11)))  # 105 attempts; one torn line leaves 104 that parse, so the boundary is reached
+    w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
+    w.seeds("CON", 0.0, 5, 20)
+    tear_a_decision_line(w, "CON-L")
+    with pytest.raises(AS.Refused, match="torn or unparseable decision line"):
+        AS.load_decisions(w.root, "CON-L")  # the helper the old code called directly: it refuses, and so did hv4_read, for good
+    r = w.book("CON-L")
+    assert r["arena_status"] == "NOT_DECIDABLE" and "torn or unparseable decision line" in r["torn_decision_line"]
+    assert any("torn or unparseable ledger line" in x for x in r["arena_score_read"]["reasons"]) and r["arena_score_read"]["ledger_problems"]
+    stored = json.loads((Path(w.reads) / "CON-L.json").read_text())  # recorded once in the arena store, exactly what `arena_score --record` stores
+    assert stored["status"] == "NOT_DECIDABLE" and canon(stored) == canon(AS.score_all(w.root, w.reg, "CON-L", DAY0 + 30 * DAY)["bots"]["CON-L"])
+    assert r["v1"]["status"] == "NOT_DECIDABLE" and r["v2"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
+    assert R.load_v12(w.reads, "CON-L")["v1"]["status"] == "NOT_DECIDABLE"
+    assert_claims_nothing(w, "NOT_DECIDABLE")
+    with pytest.raises(R.Refused, match="second run"):
+        w.book("CON-L")
+    # a torn line on a book that has not reached its boundary on the lines that parse is not recordable yet (nothing written), then it is
+    w2 = World(tmp_path / "short")
+    w2.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))  # 100 attempts; one torn line leaves 99
+    tear_a_decision_line(w2, "CON-L")
+    with pytest.raises(R.Refused, match="torn or unparseable"):
+        w2.book("CON-L")
+    assert not (Path(w2.out) / "reads").exists() and not Path(w2.reads).exists()
+
+
+def test_a_torn_decision_line_in_a_learning_arm_is_not_decidable_for_that_arm_and_never_refuses_the_read(tmp_path):
+    w = con_learning_world(tmp_path, lambda d: 1e6 + 2e5 * d)
+    w.add(book_rows("BIG-L", const(-1e6, 14, 10)))
+    w.add(book_rows("BIG-F", const(-1e6, 14, 10)))
+    w.mark("BIG-L", "FAIL")
+    w.mark("BIG-F", "FAIL")
+    tear_a_decision_line(w, "BIG-F")  # a supporting arm: its entry is NOT_DECIDABLE, the CON verdict is untouched
+    lr = w.learning()["learning"]
+    assert lr["status"] == "PASS" and lr["supporting_only"]["BIG"]["status"] == "NOT_DECIDABLE"
+    assert lr["arm_screens"]["BIG-F"]["rule"] == "torn" and "torn or unparseable" in lr["arm_screens"]["BIG-F"]["reason"] and lr["arm_screens"]["BIG-F"]["own_instant_ms"] is None
+    assert lr["arm_screens"]["BIG-L"]["rule"] == "later_allowed"
+    # a torn line in a CON arm: the one learning read is made and is NOT_DECIDABLE, with the reason; it is not left unrecordable
+    w2 = con_learning_world(tmp_path / "con", lambda d: 1e6 + 2e5 * d)
+    tear_a_decision_line(w2, "CON-P")
+    r = w2.learning()
+    assert r["learning"]["status"] == "NOT_DECIDABLE" and any("CON-P" in x and "torn or unparseable" in x for x in r["learning"]["reasons"])
+    assert (Path(w2.out) / "reads" / "LEARNING.hv4.json").exists()
+    with pytest.raises(R.Refused, match="second run|already recorded"):
+        w2.learning()
+
+
 def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
     w = World(tmp_path)
     day = lambda v: [v] * 20  # noqa: E731
