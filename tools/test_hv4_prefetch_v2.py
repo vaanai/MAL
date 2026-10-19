@@ -249,3 +249,166 @@ def test_runner_obs_rows_are_written_and_the_decision_logs_are_identical_with_ob
     hour = next(r for r in rows if r["kind"] == "runner_hour")
     assert hour["hour_end_ms"] - hour["hour_start_ms"] == HOUR and hour["n_hook_errors"] == 0 and hour["obs_write_errors"] == 0
     assert not (tmp_path / "off" / "hv4" / O.OBS_FILE).exists()
+
+
+# ---- QP 6279836164 R1: run mode is pinned (policy v2, obs on); the start row says so
+
+
+def test_run_mode_refuses_any_policy_but_v2_and_obs_off(monkeypatch, capsys):
+    assert R.unpinned_run_mode({}) is None and R.unpinned_run_mode({"MAL_HV4_PREFETCH_POLICY": "v2", "MAL_HV4_OBS": "1"}) is None
+    for bad in ("v1", "V1", " v1 ", "v3", "", "none"):
+        why = R.unpinned_run_mode({"MAL_HV4_PREFETCH_POLICY": bad})
+        assert why and "v2 only" in why, bad
+    assert "MAL_HV4_OBS=0" in R.unpinned_run_mode({"MAL_HV4_OBS": "0"})
+    argv = ["--frozen-sha", "abcdef1234567", "--clock-start-ms", "1", "--feed-delay-slots", "7", "--stub"]
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v1")
+    assert R.main(argv) == 2 and "MAL_HV4_PREFETCH_POLICY" in capsys.readouterr().err  # main() stops before it opens the tape, the engine or the ledger
+    monkeypatch.delenv("MAL_HV4_PREFETCH_POLICY")
+    monkeypatch.setenv("MAL_HV4_OBS", "0")
+    assert R.main(argv) == 2 and "MAL_HV4_OBS" in capsys.readouterr().err
+
+
+def test_the_live_source_ignores_the_policy_variable_and_a_live_runner_refuses_v1_or_obs_off(tmp_path, monkeypatch):
+    import pytest
+    from tools.test_hv4_runner import T0, make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")  # scratch registry overrides, as the runner tests do
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v1")
+    src = R.live_chain_source(tmp_path / "root", {"MAL_HV4_RPC": "public"})
+    assert src.prefetch.policy == P.POLICY_V2  # the run-mode path does not read the variable at all
+    monkeypatch.delenv("MAL_HV4_PREFETCH_POLICY")
+    clock = Clock(T0)
+    bnd = {"git_sha": "a" * 40, "dirty": False}
+    base = make(tmp_path / "x")
+
+    def live_runner(chain, root, obs=True):
+        cfg = R.RunnerConfig(root=str(tmp_path / root), frozen_sha="a" * 40, clock_start_ms=T0, live=True, lane_h=False, obs=obs)
+        return R.Runner(cfg, base.state, base.engine, base.model, chain, base.guard, binding=bnd)
+
+    v1_chain = R.HV4ChainSource(CountingChain(clock), prefetch=P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V1))
+    with pytest.raises(RuntimeError, match="v2 only"):
+        live_runner(v1_chain, "l1")
+    v2_chain = R.HV4ChainSource(CountingChain(clock), prefetch=P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2))
+    with pytest.raises(RuntimeError, match="obs rows off"):
+        live_runner(v2_chain, "l2", obs=False)
+    run = live_runner(v2_chain, "l3")  # v2 and obs on: starts
+    run.resume()
+    start = [r for r in run.log.rows("SCAN") if r["kind"] == "start"]
+    assert len(start) == 1 and start[0]["prefetch_policy"] == "v2" and start[0]["obs"] is True and start[0]["lane_h"] is False and start[0]["frozen_sha"] == "a" * 40
+    # a replay's start row is unchanged: no new key outside run mode
+    sim = R.Runner(R.RunnerConfig(root=str(tmp_path / "sim"), frozen_sha="a" * 40, clock_start_ms=T0, live=False, lane_h=False), base.state, base.engine, base.model,
+                   base.chain, base.guard, binding=bnd)
+    sim.resume()
+    srow = [r for r in sim.log.rows("SCAN") if r["kind"] == "start"][0]
+    assert "prefetch_policy" not in srow and "obs" not in srow
+
+
+# ---- R3: the restart hour is measurable
+
+
+def test_the_state_file_keeps_the_last_61_minutes_and_the_next_process_writes_them_as_prior_minutes(tmp_path):
+    clock = Clock(T0)
+    path = tmp_path / "chain-credits.json"
+    a = H.CreditCounter("helius", now_ms=clock, state_path=path)
+    for k in range(70):  # one call a minute for 70 minutes
+        clock.ms = T0 + k * MIN + 5000
+        a.record_call("getAccountInfo")
+    doc = json.loads(path.read_text())
+    assert len(doc["minutes"]) == 61 and doc["minutes"][0][0] == T0 + 9 * MIN and doc["minutes"][-1] == [T0 + 69 * MIN, 1, 1] and doc["calls_total"] == 70
+    assert set(doc) >= {"schema", "by_day", "credits_by_day", "saved_ms", "minutes", "calls_total"}
+    clock.ms = T0 + 75 * MIN
+    b = H.CreditCounter("helius", now_ms=clock, state_path=path)
+    assert b.prior_calls_total == 70 and b.prior_minutes == doc["minutes"] and b.minute_counts(T0, T0 + 80 * MIN)[-1][1] == 0  # own record starts empty
+    chain = CountingChain(clock)
+    chain.counter = b
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    obs = O.ObsLog(tmp_path)
+    pf.set_obs(obs)
+    row = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "prefetch_start")
+    assert row["prior_minutes"] == doc["minutes"] and row["prior_calls_total"] == 70 and row["prior_minutes_error"] is None
+    b.record_call("getAccountInfo")  # the second process's own call lands in its own record and the file carries both
+    d2 = json.loads(path.read_text())
+    assert d2["calls_total"] == 71 and d2["minutes"][-1] == [T0 + 75 * MIN, 1, 1] and d2["minutes"][-2][0] == T0 + 69 * MIN  # minutes before the window of 61 fall off
+    assert b.calls == 1 and b.minute_counts(T0 + 75 * MIN, T0 + 76 * MIN) == [[T0 + 75 * MIN, 1, 1]]
+
+
+def test_a_state_file_without_the_tail_or_with_a_bad_one_loads_and_keeps_the_daily_cap(tmp_path):
+    clock = Clock(T0)
+    path = tmp_path / "s.json"
+    day = time_day = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime(T0 / 1000))
+    base = {"schema": H.STATE_SCHEMA, "by_day": {day: 7}, "credits_by_day": {day: 7}, "saved_ms": T0}
+    path.write_text(json.dumps(base))  # the d1dbcd6 format
+    a = H.CreditCounter("helius", now_ms=clock, state_path=path)
+    assert a.prior_minutes == [] and a.prior_calls_total == 0 and a.prior_error is None and a.by_day == {day: 7}
+    path.write_text(json.dumps({**base, "minutes": [[1, "x", 3]], "calls_total": 4}))
+    b = H.CreditCounter("helius", now_ms=clock, state_path=path)
+    assert b.prior_minutes == [] and b.prior_error == "minutes_malformed" and b.by_day == {day: 7}  # the cap survives; the tail is reported, not trusted
+
+
+# ---- R4: a v2 refresh is booked at the minute it was made
+
+
+def test_v2_books_each_refresh_at_the_minute_it_really_ran():
+    clock = Clock(T0)
+
+    class Slow(CountingChain):
+        def mint_facts(self, mint, force=False):
+            r = super().mint_facts(mint, force)
+            self.clock.ms += 20_000  # 20 s a read: a start-up pass of 12 new pools runs over four minutes
+            return r
+
+    pf = P.ChainPrefetcher(Slow(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf.watch(pools(12), [], T0)
+    pf.run_once(T0)
+    buckets = [b for b, _ in pf._spent]
+    assert len(buckets) >= 4 and buckets == sorted(buckets) and buckets[-1] >= T0 + 3 * MIN and sum(n for _, n in pf._spent) == pf.chain.counter.calls == 24
+
+
+# ---- R5: a failing obs writer is counted apart and never stops a pass, a scan or a decision
+
+
+class RaisingObs:
+    enabled = True
+    scan_ms = None
+    write_errors = build_errors = rows_written = 0
+
+    def write(self, *a, **k):
+        raise RuntimeError("boom")
+
+    write_many = write
+
+
+def test_prefetcher_obs_failures_are_counted_apart_from_pass_errors():
+    clock = Clock(T0)
+    chain = CountingChain(clock)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf.set_obs(RaisingObs())
+    a = pools(3)
+    pf.watch(a, [a[0][0]], T0)  # first_seen write raises: caught
+    pf.run_once(T0)
+    clock.ms = T0 + 20 * MIN  # the mints are 20 min old: a card read is served a stale fact and its obs row raises too
+    assert pf.part_at(a[0][0], a[0][1], clock.ms, SLOT + 10) is not None
+    clock.ms = T0 + HOUR + MIN  # the hour closes: the hourly row cannot be written
+    pf.run_once(clock.ms)
+    assert pf.stats_.get("obs_errors", 0) >= 3 and "pass_errors" not in pf.stats_
+    pf.obs = O.ObsLog(None)  # and a row that cannot be BUILT (a counter that raises) is caught in the same place
+    chain.counter.minute_counts = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad counter"))
+    pf._obs_hour = pf._obs_hour - 1
+    pf.obs.enabled = True
+    n = pf.stats_["obs_errors"]
+    pf.run_once(clock.ms)
+    assert pf.stats_["obs_errors"] == n + 1 and "pass_errors" not in pf.stats_
+
+
+def test_a_runner_hour_row_that_cannot_be_built_is_counted_and_the_decision_logs_do_not_move(tmp_path, monkeypatch):
+    from tools.test_hv4_runner import T_END, T_START, make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setenv("MAL_HV4_OBS", "1")
+    ok = make(tmp_path / "ok")
+    ok.run(T_START, T_END)
+    monkeypatch.setattr(R, "rss_mb", lambda: (_ for _ in ()).throw(RuntimeError("no /proc")))
+    bad = make(tmp_path / "bad")
+    bad.run(T_START, T_END)  # must not raise
+    assert bad.obs.build_errors >= 1 and ok.obs.build_errors == 0
+    assert _decision_rows(bad) == _decision_rows(ok) and bad.counters == ok.counters and bad.hook_errors == ok.hook_errors == []

@@ -265,9 +265,12 @@ class ChainPrefetcher:
                 self._n("pools_dropped")
         obs = self.obs
         if entered and obs is not None and obs.enabled:  # one append for the scan's new pools, after the lock; the scanner's watch set is its filter-pass set
-            scan_ms = getattr(obs, "scan_ms", None)
-            obs.write_many([{"kind": "first_seen_by_scanner", "scan_ms": scan_ms if scan_ms is not None else now_ms, "now_ms": now_ms, "in_filter_pass": True,
-                             "n_filter_pass": n_pass, **e} for e in entered])
+            try:
+                scan_ms = getattr(obs, "scan_ms", None)
+                obs.write_many([{"kind": "first_seen_by_scanner", "scan_ms": scan_ms if scan_ms is not None else now_ms, "now_ms": now_ms, "in_filter_pass": True,
+                                 "n_filter_pass": n_pass, **e} for e in entered])
+            except Exception:  # noqa: BLE001 - on the scan thread: never let a side row stop the scan
+                self._n("obs_errors")
 
     def part_at(self, pool: str, mint: str | None, T: int, slot: int) -> dict | None:
         """The chain dict for a card at scan instant T: only facts stamped strictly before T, no RPC. None when the pool has no usable mint fact."""
@@ -284,9 +287,12 @@ class ChainPrefetcher:
                 self._n("served_mint_stale")  # still returned: the card refuses it as chain_stale
                 obs = self.obs
                 if obs is not None and obs.enabled:
-                    now = self.clock()
-                    obs.write("chain_stale_served", pool=pool, scan_ms=T, age_ms=T - mf.as_of_ms, hot=now < p.hot_until_ms, n_mints=len(p.mints),
-                              fails_mint=p.fails["mint"], next_try_in_ms=max(0, p.next_try_ms["mint"] - now), pool_age_in_store_ms=now - p.first_ms)
+                    try:
+                        now = self.clock()
+                        obs.write("chain_stale_served", pool=pool, scan_ms=T, age_ms=T - mf.as_of_ms, hot=now < p.hot_until_ms, n_mints=len(p.mints),
+                                  fails_mint=p.fails["mint"], next_try_in_ms=max(0, p.next_try_ms["mint"] - now), pool_age_in_store_ms=now - p.first_ms)
+                    except Exception:  # noqa: BLE001
+                        self._n("obs_errors")
             flag = next(((v, ms) for v, ms in reversed(p.mayhems) if ms < T), None)
             hd = next((h for h in reversed(p.holders) if h.as_of_ms is not None and h.as_of_ms < T and _slot_ok(h.as_of_slot, slot)), None)
             if hd is not None and T - hd.as_of_ms > C.CHAIN_HOLDERS_MAX_AGE_MS:
@@ -308,7 +314,10 @@ class ChainPrefetcher:
         """One pass under the active policy. Returns the calls made."""
         now = self.clock() if now_ms is None else now_ms
         made = self._run_once_v2(now) if self.policy == POLICY_V2 else self._run_once_v1(now)
-        self._obs_tick(now)
+        try:
+            self._obs_tick(now)
+        except Exception:  # noqa: BLE001 - an observability failure is counted apart from pass_errors (which would mask a refresh failure) and never stops the pass
+            self._n("obs_errors")
         return made
 
     def _run_once_v1(self, now: int) -> int:
@@ -404,7 +413,7 @@ class ChainPrefetcher:
             self._refresh(p, now, kind == "mint", kind == "hold")
             c1 = self._calls_total()
             used = max(0, c1 - c0) if (c0 is not None and c1 is not None) else est
-            self._book(now, used, mint=(kind == "mint"), hot=hot_class)
+            self._book(max(now, self.clock()), used, mint=(kind == "mint"), hot=hot_class)  # at the minute the calls were really made (a start-up pass runs minutes)
             made += used
         self._n("passes")
         self._n("calls", made)
@@ -416,12 +425,19 @@ class ChainPrefetcher:
         self.obs = obs
         if obs is None or not obs.enabled:
             return
-        now = self.clock()
-        c = getattr(self.chain, "counter", None)
-        self._obs_start_ms = now
-        obs.write("prefetch_start", pid=os.getpid(), process_start_ms=now, policy=self.policy, hourly_budget=self.hourly_budget,
-                  spent_at_load=self._spent_last_hour(now), spend_state_reset=self.stats_.get("spend_state_reset", 0),
-                  counter_calls_at_start=getattr(c, "calls", None), counter_day_calls_at_start=(c.calls_today() if c is not None and hasattr(c, "calls_today") else None))
+        try:
+            now = self.clock()
+            c = getattr(self.chain, "counter", None)
+            self._obs_start_ms = now
+            obs.write("prefetch_start", pid=os.getpid(), process_start_ms=now, policy=self.policy, hourly_budget=self.hourly_budget,
+                      spent_at_load=self._spent_last_hour(now), spend_state_reset=self.stats_.get("spend_state_reset", 0),
+                      counter_calls_at_start=getattr(c, "calls", None), counter_day_calls_at_start=(c.calls_today() if c is not None and hasattr(c, "calls_today") else None),
+                      # R3: what the previous process left (its last 61 per-minute counts [minute_ms, calls, credits] and the running total of all earlier processes),
+                      # apart from this process's own record; check 5's restart hour is these minutes plus the old process's chain_hour rows
+                      prior_minutes=list(getattr(c, "prior_minutes", None) or []), prior_calls_total=getattr(c, "prior_calls_total", None),
+                      prior_minutes_error=getattr(c, "prior_error", None))
+        except Exception:  # noqa: BLE001
+            self._n("obs_errors")
 
     def _obs_tick(self, now: int) -> None:
         """One `chain_hour` row per CLOSED UTC hour (this process's own counter record: the per-minute calls, so any rolling hour is exact), written by the thread that

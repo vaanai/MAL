@@ -455,6 +455,7 @@ STATE_SCHEMA = "hv4_chain.state.v1"
 STATE_KEEP_DAYS = 8
 
 
+PRIOR_MINUTES = 61  # per-minute buckets persisted in the state file for the next process (a rolling hour plus the minute in hand)
 MINUTE_KEEP = 24 * 60  # minutes of per-minute counts kept in memory (a day: a closed-hour row is written within minutes of the hour ending)
 
 
@@ -483,6 +484,12 @@ class CreditCounter:
         # Per-minute call and credit counts of THIS process (minute start ms -> [calls, credits]); the last MINUTE_KEEP minutes. Read by the observability rows
         # (tools/hv4_obs: the exact closed-hour and rolling-hour call counts of shakedown check 5) and by the v2 prefetch budget. Never persisted, never a decision input.
         self._minutes: dict[int, list[int]] = {}
+        # What the PREVIOUS process left in the state file (QP 6279836164 R3): its last 61 per-minute counts [minute_ms, calls, credits] and the running call total of
+        # all earlier processes. Kept apart from `_minutes` (this process's own record); the prefetch_start obs row writes them as `prior_minutes`, so the hour that
+        # crosses a restart is measurable minute by minute. A state file from before this field has none: empty, no error.
+        self.prior_minutes: list[list[int]] = []
+        self.prior_calls_total = 0
+        self.prior_error: str | None = None
         if self.state_path is not None:
             self._load_state()
 
@@ -509,6 +516,30 @@ class CreditCounter:
             raise ChainError("state_file_corrupt") from None
         self.by_day = dict(doc["by_day"])
         self.credits_by_day = dict(doc["credits_by_day"])
+        try:  # the optional tail is read leniently: a malformed one is reported (prior_error), it never stops the counter or resets the daily cap
+            rows = [[int(a), int(b), int(c)] for a, b, c in doc.get("minutes", [])]
+            if any(a < 0 or b < 0 or c < 0 for a, b, c in rows):
+                raise ValueError("negative")
+            self.prior_minutes = sorted(rows)[-PRIOR_MINUTES:]
+            self.prior_calls_total = int(doc.get("calls_total", 0))
+            if self.prior_calls_total < 0:
+                raise ValueError("negative")
+        except (ValueError, TypeError, OverflowError):
+            self.prior_minutes, self.prior_calls_total, self.prior_error = [], 0, "minutes_malformed"
+
+    def _tail(self, now: int) -> list[list[int]]:
+        """The last PRIOR_MINUTES per-minute buckets (this process's own plus the ones it loaded), summed by minute. Called with the lock held."""
+        lo = now - now % 60_000 - (PRIOR_MINUTES - 1) * 60_000
+        acc: dict[int, list[int]] = {}
+        for t, c, w in self.prior_minutes:
+            if t >= lo:
+                acc[t] = [c, w]
+        for t, (c, w) in self._minutes.items():
+            if t >= lo:
+                a = acc.setdefault(t, [0, 0])
+                a[0] += c
+                a[1] += w
+        return [[t, *acc[t]] for t in sorted(acc)]
 
     def _save_state(self) -> None:
         """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held."""
@@ -516,7 +547,8 @@ class CreditCounter:
             return
         days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
         payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
-                   "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": self._now_ms()}
+                   "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": self._now_ms(),
+                   "minutes": self._tail(int(self._now_ms())), "calls_total": self.prior_calls_total + self.calls}
         tmp = None
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)

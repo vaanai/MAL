@@ -7,7 +7,9 @@ switch is `RunnerConfig.obs`, default from the environment variable MAL_HV4_OBS,
 
 Rows (every row has `schema`, `kind` and `wall_ms`):
   runner_start         pid, frozen_sha, the head binding: one per process start.
-  prefetch_start       the spend file and the chain counter as the process loaded them (check 8: reload with no reset).
+  prefetch_start       the spend file and the chain counter as the process loaded them (check 8: reload with no reset), and `prior_minutes` / `prior_calls_total`: the
+                       previous process's last 61 per-minute counts [minute_ms, calls, credits] and the running total of all earlier processes, read from the counter's
+                       state file, kept apart from this process's own chain_hour record (check 5, the hour that crosses a restart; QP 6279836164 R3).
   first_seen_by_scanner  one row per pool each time it ENTERS the prefetcher's watch set, which at d1dbcd6 is the scanner's filter-pass set (hv4_runner.Runner.scan
                        passes `cand` as the items): pool, scan_ms (T of the scan that saw it), in_filter_pass, entry "first" (never seen by this process) or
                        "re_entry" (it had left the set for DROP_AFTER_MS and was dropped), since_last_seen_ms for a re-entry, n_filter_pass, hot. Check 3.
@@ -50,6 +52,7 @@ class ObsLog:
         self.path = Path(root) / OBS_FILE if root is not None else None
         self.enabled = bool(enabled) and self.path is not None
         self.write_errors = 0
+        self.build_errors = 0  # a row that could not be BUILT (the writers' callers count it here, apart from write_errors)
         self.rows_written = 0
         self.scan_ms: int | None = None
         self._lock = threading.Lock()
