@@ -304,7 +304,7 @@ def _f(z: Any) -> str:
 
 def render_book(r: Mapping[str, Any]) -> str:
     c = r["counts"]
-    L_ = [f"\nBOT {r['bot_id']}  STATUS {r.get('fail_label') or r['status']}  exit rule {r['exit_rule']}  read instant {r['read_instant_ms']}  deciding: {r['deciding_leg']} s-leg at {r['deciding_stake']} SOL, RENT-CHARGED",
+    L_ = [f"\nBOT {r['bot_id']}  STATUS {r.get('fail_label') or r['status']}  exit rule {r['exit_rule']}  read instant {r['read_instant_ms']}  deciding: 1.9 s leg ({r['deciding_leg']}) at {r['deciding_stake']} SOL, RENT-CHARGED",
           f"  attempts {c['n_attempts']} = counted {c['n_counted']} + excluded {c['n_excluded']} ({c['excluded_share']:.2%} of non-refused attempts; cap {r['excluded_cap']:.0%})  excluded by reason {c['excluded_by_reason']}",
           f"  refused (not attempts, DEC-031 Amendment 1) {c['n_refused']}  by reason {c['refused_by_reason']}", f"  {r['attempt_definition']}"]
     L_ += [f"  reason: {x}" for x in r["reasons"]]

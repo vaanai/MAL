@@ -179,6 +179,8 @@ class DecidingCell(Base):
         self.assertTrue(res["subcells"]["flat_1p9_total"]["passes"] and res["subcells"]["flat_1p9_sc"]["passes"])
         self.assertFalse(res["subcells"]["press_1p9_total"]["passes"] or res["subcells"]["press_1p9_sc"]["passes"])
         self.assertEqual(res["status"], "FAIL")
+        self.assertEqual((res["subcells"]["flat_1p9_total"]["p_le_0"], res["subcells"]["press_1p9_total"]["p_le_0"]), (0.0, 1.0))
+        self.assertEqual(res["p"], 1.0)  # the book's p is the largest of its four sub-cells' p
 
     def test_the_refit_intercept_decides_not_the_frozen_one(self):
         """The ledger's own press_1p9 nets carry the FROZEN exploration intercept (provisional). On this book they would pass; at the refit intercept the pressure cells fail."""
