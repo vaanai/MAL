@@ -1250,3 +1250,37 @@ def test_head_binding_does_not_count_gitignored_files_documented_and_accepted(tm
     assert "gitignore" in R.head_binding.__doc__.lower()
     (repo / "new.py").write_text("untracked and not ignored")
     assert R.head_binding(repo)["dirty"] is True
+
+
+# -------------------------------------------------------------------------------------------------------------------------- DEC-031 Amendment 2 item 6: the V universe
+def _rows_with_pool1_v(v):
+    """The recorded tape with pool 1's V replaced on every print (None = the key is dropped, so no print of the pool ever carried V)."""
+    rows = trade_rows()
+    for r in rows:
+        if r.get("pool") == POOLS[1] and r["type"] == "trade":
+            if v is None:
+                del r["virtual_quote_reserves"]
+            else:
+                r["virtual_quote_reserves"] = v
+    return rows
+
+
+@pytest.mark.parametrize("v,counter,other", [
+    (None, "filter_v_missing", "filter_v_band"),
+    (17_499_999_999, "filter_v_band", "filter_v_missing"),
+    (17_700_000_001, "filter_v_band", "filter_v_missing"),
+])
+def test_a_pool_outside_the_v_universe_is_never_traded_and_is_counted_under_its_own_code(tmp_path, v, counter, other):
+    run = make(tmp_path, rows=_rows_with_pool1_v(v))
+    run.run(T_START, X + 30_000)
+    assert not run.hook_errors
+    traded = {e["pool"] for a in ("CON-L", "CON-F", "CON-X") for e in rows_of(run, a, "entry")}
+    assert traded == {POOLS[0]}  # pool 0 (V inside the band) trades as before; pool 1 does not
+    assert run.counters.get(counter, 0) > 0 and run.counters.get(other, 0) == 0
+    assert not any(POOLS[1] in json.dumps(r) for a in ("CON-L", "CON-F", "CON-X") for r in rows_of(run, a, "entry"))
+
+
+def test_pools_inside_the_v_band_are_traded_as_before_and_no_v_counter_moves(full):
+    run, _ = full  # the recorded tape: both pools carry V = 17,584,505,288
+    assert {e["pool"] for a in ("CON-L", "CON-F", "CON-X") for e in rows_of(run, a, "entry")} == {POOLS[0], POOLS[1]}
+    assert run.counters.get("filter_v_missing", 0) == 0 and run.counters.get("filter_v_band", 0) == 0
