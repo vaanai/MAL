@@ -349,9 +349,12 @@ def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(bl
     assert ok, reasons
     ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-09-05T00", "2026-09-05T01", exp_id="EXP-012")
     assert not ok
-    # fresh-0828 stays reserved (EXP-013's confirmation): denied to exploration
+    # fresh-0828 stays reserved: EXP-028 Part 1 is the only eligible claimant, but the Owner cell flips only at its claim record. Denied to exploration and to every id, EXP-028 included.
     ok, _ = _check(blocks, "exploration", "research", "2026-08-30T00", "2026-08-30T01")
     assert not ok
+    for exp in ("EXP-012", "EXP-013", "EXP-021", "EXP-027", "EXP-028"):
+        ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-30T00", "2026-08-30T01", exp_id=exp)
+        assert not ok, exp
     # fresh-0808 is reserved as EXP-015's confirmation target, not owned: every role is denied,
     # including a confirmation-oneshot read by EXP-015 itself, until its Part 1 names it
     ok, _ = _check(blocks, "exploration", "research", "2026-08-10T00", "2026-08-10T01")
