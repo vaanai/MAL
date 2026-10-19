@@ -43,6 +43,7 @@ from typing import Any
 
 MIN_MS = 60_000
 HOUR_MS = 3_600_000
+R_HOUSEKEEP = 5 * MIN_MS
 FORBIDDEN_PREFIX = "/data/mal/arena"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "hv4_chain" / "recorded.json"
 
@@ -201,6 +202,30 @@ class Rig:
         self.engine = engine
 
 
+# ---------------------------------------------------------------------------------------------------------------------------------- what-if (never used by the runner)
+def whatif_trim(engine: Any, keep_slots: int) -> int:
+    """EXPERIMENT, harness only: cut each pool's print history in the engine (arena_paper.PoolHist) to the last `keep_slots` slots, for pools with no engine position.
+    It stands in for a change to ArenaEngine.prune that the manager would have to approve (arena_paper.py is pinned and is not edited by this branch). Returns the
+    number of prints dropped."""
+    import bisect
+
+    busy = {p.pool for p in engine.positions.values()}
+    cut = engine.hw_slot - keep_slots
+    dropped = 0
+    for k, h in engine.pools.items():
+        if k in busy or not h.slot or h.slot[0] >= cut:
+            continue
+        i = bisect.bisect_left(h.slot, cut)  # h.slot is sorted ascending
+        if i <= 0:
+            continue
+        for name in ("keys", "slot", "isbuy", "sol", "tok", "q", "b", "v", "vsrc"):
+            del getattr(h, name)[:i]
+        h.seen = {d for d in h.seen if d[0] >= cut}
+        h._np = None
+        dropped += i
+    return dropped
+
+
 # ---------------------------------------------------------------------------------------------------------------------------------- census
 _SIZED = (dict, list, set, frozenset, collections.deque)
 
@@ -267,7 +292,7 @@ def sample(rig: Rig, T: int, wall0: float, extra: dict[str, Any]) -> dict[str, A
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------- loop
-def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top: int, log=print, on_sample=None) -> list[dict[str, Any]]:
+def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top: int, log=print, on_sample=None, whatif_keep_slots: int = 0) -> list[dict[str, Any]]:
     """Ticks T = t_from, +1 s ... < t_to. After each tick the prefetch pass runs every CYCLE_S of replay time, with the chain clock a little after T so a fact is
     stamped after the scan that asked for it (the live order: the scan at T runs at T + 100 ms, the refresh thread later)."""
     import tracemalloc
@@ -283,6 +308,8 @@ def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top:
     while T < t_to:
         rig.clock.ms = T + 100
         run.step(T)
+        if whatif_keep_slots and T % R_HOUSEKEEP == 0:
+            run.counters["whatif_prints_trimmed"] = run.counters.get("whatif_prints_trimmed", 0) + whatif_trim(run.engine, whatif_keep_slots)
         if (T // 1000) % int(P.CYCLE_S) == 0:
             rig.clock.ms = T + 500
             rig.prefetch.run_once(T + 500)
@@ -313,9 +340,9 @@ def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top:
     return rows
 
 
-def ledger_digest(ledger_dir: Path) -> str:
+def ledger_digest(ledger_dir: Path, drop_keys: tuple[str, ...] = ()) -> str:
     """md5 of the engine ledger rows that are a function of the tape: every file, every row except the process-start record (a fresh uuid and the wall clock),
-    and the engine_id uuid. Used to show two runs priced the same fills."""
+    and the engine_id uuid, plus any top-level key in `drop_keys`. Used to show two runs priced the same fills."""
     import hashlib
 
     from tools.hv4_runner import canon
@@ -328,7 +355,8 @@ def ledger_digest(ledger_dir: Path) -> str:
                 row = json.loads(line)
                 if row.get("kind") == "start":
                     continue
-                row.pop("engine_id", None)
+                for k in ("engine_id", *drop_keys):
+                    row.pop(k, None)
                 h.update(canon(row).encode() + b"\n")
     return h.hexdigest()
 
@@ -378,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--md-out", default=None, help="write the measurement table as markdown")
     ap.add_argument("--evict-idle-min", type=int, default=None, help="ArenaState evict_idle_min (default: the state's own default)")
     ap.add_argument("--no-timing", action="store_true")
+    ap.add_argument("--whatif-trim-slots", type=int, default=0, help="EXPERIMENT: also trim each quiet-of-positions engine pool history to the last N slots (see whatif_trim)")
     ap.add_argument("--no-bound-memory", action="store_true", help="RunnerConfig.bound_memory off: the 2026-10-19 behaviour (for the before curve and the md5 proof)")
     a = ap.parse_args(argv)
 
@@ -398,14 +427,14 @@ def main(argv: list[str] | None = None) -> int:
         tracemalloc.start(1)
     rig = Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, evict_idle_min=a.evict_idle_min,
               bound_memory=not a.no_bound_memory)
-    rows = replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=a.tracemalloc)
+    rows = replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=a.tracemalloc, whatif_keep_slots=a.whatif_trim_slots)
     if a.out:
         write_tsv(rows, Path(a.out))
         if a.tracemalloc:
             Path(str(a.out) + ".tracemalloc.json").write_text(json.dumps([{"sim": r["sim"], "top": r.get("tm_top"), "growth": r.get("tm_growth"), "total_mb": r.get("tm_total_mb")} for r in rows], indent=1))
     if a.md_out:
         write_md(rows, Path(a.md_out), f"HV4 stub replay memory, {a.hours}", " ".join(argv if argv is not None else sys.argv[1:]))
-    print(json.dumps({"done": True, "decision_log_md5": rig.run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
+    print(json.dumps({"done": True, "decision_log_md5": rig.run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "ledger_digest_no_mint": ledger_digest(scratch / "ledger", ("mint",)), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
     return 0
 
 
