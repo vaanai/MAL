@@ -250,15 +250,12 @@ class FeedDelayTests(Base):
         self.assertEqual(sc.summarize(V1, res, 0)["age_clamped_to_zero"], 1)
 
     def test_a_trigger_without_a_block_time_is_a_counted_exclusion_never_aged_from_the_receipt(self):
-        for missing in (None, 0, "drop"):
+        for missing in (None, 0):  # a DROPPED block_time key is a schema fault now (the executor's parser needs the key): SchemaFaultTests
             def nobt(recs, missing=missing):
                 for r in recs:
                     if r["type"] == "trigger":
                         r["t_detect_ms"] = r["t_recv_ms"] + 50  # a receipt-based age would be 50 ms: priced, and optimistic
-                        if missing == "drop":
-                            r.pop("block_time")
-                        else:
-                            r["block_time"] = missing
+                        r["block_time"] = missing
             res = self.book(records(mutate=nobt), name=f"h5-shadow-nbt-{missing}")
             self.assertEqual(res.rows, [], missing)
             self.assertEqual([e["reason"] for e in res.exclusions], ["no_block_time"], missing)
@@ -316,13 +313,20 @@ class ExclusionTests(Base):
         self.assertEqual(len(self.rows(records(mutate=flag(after)))), 3)
         self.assertEqual(len(self.rows(records(mutate=lambda recs: [r.__setitem__("gap", True) for r in recs if r["type"] == "pool"]))), 3)  # a pool-record flag alone is not read
 
-    def test_base_breaks_unresolved_settled_not_zero_is_excluded(self):
-        for v in (1, 3, None):
+    def test_base_breaks_unresolved_settled_not_zero_is_a_refusal_not_an_exclusion(self):
+        # DEC-031 Amendment 1 changes this test's semantics: it used to be an `excluded_base_breaks` exclusion under the 5% cap; the executor's parser refuses it, so it is a refusal
+        # (not an attempt, not priced, not under the cap). The exclusion class is gone.
+        self.assertNotIn("base_breaks", sc.EXCLUSION_REASONS)
+        for v in (1, 3, None, "0", 0.0, True, False):
             def b(recs, v=v):
                 for r in recs:
                     if r["type"] == "trigger":
                         r["base_breaks_unresolved_settled"] = v
-            self.excluded(b, "base_breaks")
+            res = self.book(records(mutate=b), name=f"h5-shadow-bb-{v!r}")
+            self.assertEqual((res.rows, res.exclusions, res.decisions, res.counts["open"]), ([], [], [], 0), v)
+            self.assertEqual([x["reason"] for x in res.refusals], ["bad_intent:base_breaks_unresolved_settled"], v)
+            self.assertEqual(res.counts["excluded_base_breaks"], 0)
+        self.assertEqual(len(self.rows(records(), name="h5-shadow-bb-ok")), 3)  # the integer 0 passes
 
     def test_a_trigger_older_than_3500_ms_is_excluded_at_3501_but_not_at_3500(self):
         def age(ms):
@@ -645,6 +649,7 @@ class RefitTests(Base):
         eng, out = fresh_engine(START_MS)
         tapes = [pool_tape(f"Pool{i:04d}", 1000 + 5000 * i, self.D0S + (i // per_day) * 86400 + 9 * 3600 + (i % per_day) * 60, filler=True) for i in range(days * per_day)]
         run_pools(eng, *tapes)
+        live_like(out)
         for r in out:
             if r["type"] == "trigger" and r["variant"] == "pv":
                 r["t_detect_ms"] = r["block_time"] * 1000 + 1_000
@@ -679,7 +684,8 @@ class RefitTests(Base):
         only_trades = sc.read_instant([r["decision_ms"] for r in trades if r["stake_sol"] == 0.1], d0 + 99 * sc.DAY_MS)
         self.assertGreater(only_trades, boundary)
         text, out = self.refit_main(boundary + 1)
-        self.assertEqual(out[V1], {"read_instant_ms": boundary, "attempts_before": 100, "cells": 6})
+        self.assertEqual({k: out[V1][k] for k in ("read_instant_ms", "attempts_before", "cells", "refused_before", "triggers_before")},
+                         {"read_instant_ms": boundary, "attempts_before": 100, "cells": 6, "refused_before": 0, "triggers_before": 100})  # Amendment 1 adds the refusal counts
         self.assertEqual(out[V2]["read_instant_ms"], boundary)
         doc = json.loads(next((self.ledger / V1).glob("refit-*.json")).read_text())
         self.assertEqual((doc["read_instant_ms"], doc["attempts_before"], doc["trades_pools"]), (boundary, 100, 90))
@@ -845,6 +851,7 @@ class ExplorationReplayTests(Base):
                         seal_start_ms=None, h5_look2_start_ms=None)
         h5.replay(rows_in, meta, eng)
         recs.insert(0, {"type": "start", "t_ms": 0, "start_ms": 0, "code_sha": SHA, "fresh_forward": "ARENA", "dirty": False})
+        live_like(recs)  # DEC-031 Amendment 1: the replay writes a null sps window; the executor's parser would refuse every trigger. Pools it still refuses are refusals, not rows.
         res = self.book(recs, V1, ent=entry(clock_start_ms=0, registered_at_ms=0))
         outcomes = {r["pool"]: r for r in recs if r["type"] == "outcome" and r["variant"] == "pv" and r["complete"]}
         self.assertGreater(len(outcomes), 0)
