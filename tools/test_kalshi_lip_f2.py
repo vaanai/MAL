@@ -107,10 +107,15 @@ def lip_gate(tmp, **over):
     return p
 
 
-def bookc_marker(tmp, content="done\n"):
-    p = Path(tmp) / "bookc-done" / "BOOK-C-RUN-DONE"
+BOOKC_GATE = {"book": "C", "report_only": True, "promotable": False, "verdict": "REPORT_ONLY_FAIL",
+              "read_instant": "2026-10-24T00:00:00Z"}
+
+
+def bookc_marker(tmp, content=None, name="gate.json"):
+    """Book C's gate.json as the Book C wrapper writes it (book C, report_only, not promotable, at LIP-F1's R)."""
+    p = Path(tmp) / "bookc-done" / name
     p.parent.mkdir(exist_ok=True)
-    p.write_text(content)
+    p.write_text(json.dumps(BOOKC_GATE) if content is None else content)
     return p
 
 
@@ -772,22 +777,48 @@ def test_r1_a_lip_f1_not_decidable_is_final_only_with_counts_met_the_nd_date_or_
         assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))
 
 
-def test_the_book_c_marker_must_exist_and_must_not_be_the_start_marker(tmp_path):
+def test_r3_only_book_cs_gate_json_at_lip_f1s_r_counts_as_done(tmp_path):
+    r = "2026-10-24T00:00:00Z"
     ok = bookc_marker(tmp_path)
-    assert f2.check_bookc_done(str(ok)) == {"path": str(ok), "sha256": sha(ok)}
-    done = bookc_marker(tmp_path, json.dumps({"book": "C", "report_only": True, "promotable": False, "verdict": "REPORT_ONLY_FAIL"}))
-    assert f2.check_bookc_done(str(done))["sha256"] == sha(done)             # Book C's own gate.json is accepted
+    assert f2.check_bookc_done(str(ok), r) == {"path": str(ok), "sha256": sha(ok)}
     for arg in (None, str(tmp_path / "missing"), str(tmp_path)):
         with pytest.raises(f2.F2Refusal, match="Book C is not done"):
-            f2.check_bookc_done(arg)
+            f2.check_bookc_done(arg, r)
     start = tmp_path / "bookc-out" / f2.BOOKC_START_MARKER
     start.parent.mkdir()
-    start.write_text(json.dumps({"book": "C", "report_only": True}))
+    start.write_text(json.dumps(dict(BOOKC_GATE)))
     with pytest.raises(f2.F2Refusal, match="written when a Book C run starts"):
-        f2.check_bookc_done(str(start))
-    for body in ({"book": "A", "report_only": True}, {"book": "C", "report_only": False}, {"book": "F2-A"}):
-        with pytest.raises(f2.F2Refusal, match="not a Book C file"):
-            f2.check_bookc_done(str(bookc_marker(tmp_path, json.dumps(body))))
+        f2.check_bookc_done(str(start), r)
+    # any other file is refused: not JSON, not an object, no book key, or a different book / flags / scan
+    arbitrary = tmp_path / "bookc-done" / "done.txt"
+    arbitrary.write_text("done\n")
+    with pytest.raises(f2.F2Refusal, match="not readable JSON"):
+        f2.check_bookc_done(str(arbitrary), r)
+    with pytest.raises(f2.F2Refusal, match="not a JSON object"):
+        f2.check_bookc_done(str(bookc_marker(tmp_path, "[1]")), r)
+    for body in ({}, {"read_instant": r}, dict(BOOKC_GATE, book="A"), dict(BOOKC_GATE, book="F2-A"), dict(BOOKC_GATE, report_only=False),
+                 dict(BOOKC_GATE, promotable=True), {k: v for k, v in BOOKC_GATE.items() if k != "promotable"},
+                 {k: v for k, v in BOOKC_GATE.items() if k != "report_only"}, dict(BOOKC_GATE, scan={"x": 1})):
+        with pytest.raises(f2.F2Refusal, match="is not Book C's gate.json"):
+            f2.check_bookc_done(str(bookc_marker(tmp_path, json.dumps(body))), r)
+    # read at LIP-F1's R: another R, a missing R, or a LIP-F1 gate without an R are refused
+    for body in (dict(BOOKC_GATE, read_instant="2026-10-25T00:00:00Z"), {k: v for k, v in BOOKC_GATE.items() if k != "read_instant"},
+                 dict(BOOKC_GATE, read_instant="junk"), dict(BOOKC_GATE, read_instant=None)):
+        with pytest.raises(f2.F2Refusal, match="was not read at LIP-F1's R"):
+            f2.check_bookc_done(str(bookc_marker(tmp_path, json.dumps(body))), r)
+    with pytest.raises(f2.F2Refusal, match="no read_instant"):
+        f2.check_bookc_done(str(ok), None)
+
+
+def test_r3_a_book_c_gate_read_at_another_r_blocks_the_cli(tmp_path, monkeypatch, capsys, texts, decl, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran"))
+    other = bookc_marker(tmp_path, json.dumps(dict(BOOKC_GATE, read_instant="2026-10-25T00:00:00Z")), name="other-gate.json")
+    argv = cli_argv(w, tmp_path, texts, decl, dict(gates, bookc=str(other))) + ["--read-instant", R]
+    assert f2.main(argv) == 2 and "was not read at LIP-F1's R" in capsys.readouterr().err
+    with pytest.raises(f2.F2Refusal, match="was not read at LIP-F1's R"):
+        f2.run_f2(f2_cfg(w, tmp_path / "o"), "A", ctx_for(texts, dict(gates, bookc=str(other))))
+    assert not (tmp_path / "o").exists()
 
 
 @pytest.mark.parametrize("flags", [["--read-instant", R], ["--scan"], ["--scan", "--asof", R]])

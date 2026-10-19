@@ -305,7 +305,7 @@ def check_lip_f1_gate(path):
     if r:
         try:
             at_nd_date = sim.iso_to_us(r) >= sim.iso_to_us(LIP_F1_NOT_DECIDABLE_ISO)
-        except ValueError:
+        except (ValueError, TypeError, AttributeError):
             at_nd_date = False
     final = verdict in FINAL_LIP_F1_VERDICTS
     if verdict == "COUNTS_NOT_MET":
@@ -323,22 +323,29 @@ def check_lip_f1_gate(path):
     return {"path": str(p), "sha256": _sha256_bytes(p.read_bytes()), "read_instant": r}
 
 
-def check_bookc_done(path):
-    """Process rule (ii): Book C's single run (CAPACITY-2 P2) is done.  The marker is a file that exists: the manager's
-    run-done marker or Book C's gate.json.  BOOK-C-REPORT-ONLY.json is written when a Book C run STARTS and is refused."""
+def check_bookc_done(path, lip_f1_read_instant):
+    """Process rule (ii): Book C's single run (CAPACITY-2 P2, at the R recorded in LIP-F1's deciding gate.json) is done.
+    The only accepted file is Book C's gate.json: a JSON object with book == "C", report_only true, promotable false,
+    no ``scan`` key, and read_instant equal to LIP-F1's R.  BOOK-C-REPORT-ONLY.json (written when a run STARTS), an
+    arbitrary file or any other JSON is refused (QP R3).  -> {path, sha256}."""
     if not path:
-        raise F2Refusal("Book C is not done: --bookc-done (the Book C run-done marker) is required")
+        raise F2Refusal("Book C is not done: --bookc-done (Book C's gate.json) is required")
     p = Path(path)
     if not p.is_file():
         raise F2Refusal(f"Book C is not done: {path} does not exist")
     if p.name == BOOKC_START_MARKER:
-        raise F2Refusal(f"{p.name} is written when a Book C run starts; give the run-done marker or Book C's gate.json")
+        raise F2Refusal(f"{p.name} is written when a Book C run starts; give Book C's gate.json")
+    d = _read_json_dict(p, "--bookc-done")
+    if d.get("book") != "C" or d.get("report_only") is not True or d.get("promotable") is not False or "scan" in d:
+        raise F2Refusal(f"{path} is not Book C's gate.json (book C, report_only, not promotable, no scan)")
+    if not lip_f1_read_instant:
+        raise F2Refusal("Book C cannot be matched to LIP-F1: LIP-F1's gate.json has no read_instant")
     try:
-        d = json.loads(p.read_text())
-    except (OSError, ValueError):
-        d = None
-    if isinstance(d, dict) and "book" in d and (d.get("book") != "C" or d.get("report_only") is not True):
-        raise F2Refusal(f"{path} is not a Book C file (book / report_only)")
+        same = sim.iso_to_us(d.get("read_instant")) == sim.iso_to_us(lip_f1_read_instant)
+    except (ValueError, TypeError, AttributeError):
+        same = False
+    if not same:
+        raise F2Refusal(f"{path} was not read at LIP-F1's R {lip_f1_read_instant} (CAPACITY-2 P2: one Book C run at that R)")
     return {"path": str(p), "sha256": _sha256_bytes(p.read_bytes())}
 
 
@@ -660,8 +667,9 @@ def run_f2(cfg, variant, ctx):
     check_cfg(cfg, variant, sim.iso_to_us(ctx["freeze_iso"]))
     if not cfg.dry_run:
         # the two process gates are checked again here, so no caller can reach the simulator without them
-        ctx = dict(ctx, lip_f1_gate=check_lip_f1_gate((ctx.get("lip_f1_gate") or {}).get("path")),
-                   bookc_done=check_bookc_done((ctx.get("bookc_done") or {}).get("path")))
+        lip = check_lip_f1_gate((ctx.get("lip_f1_gate") or {}).get("path"))
+        ctx = dict(ctx, lip_f1_gate=lip,
+                   bookc_done=check_bookc_done((ctx.get("bookc_done") or {}).get("path"), lip["read_instant"]))
     out = Path(cfg.out) if cfg.out else None
     if cfg.dry_run:
         with f2_cohort(ctx["freeze_iso"], None):
@@ -716,7 +724,7 @@ def build_parser():
     p.add_argument("--lip-texts-dir", default=DEFAULT_LIP_TEXTS_DIR,
                    help="directory holding the six inherited LIP-F1 texts (checked against DECLARE-FORWARD-PINS-1)")
     p.add_argument("--lip-f1-gate", help="LIP-F1's DECIDING gate.json (required unless --dry-run)")
-    p.add_argument("--bookc-done", help="the Book C run-done marker or Book C's gate.json (required unless --dry-run)")
+    p.add_argument("--bookc-done", help="Book C's gate.json, read at LIP-F1's R (required unless --dry-run)")
     p.add_argument("--out", help="output directory, one per variant (required unless --dry-run)")
     p.add_argument("--books", nargs="+", default=None, help="obrec dir(s): obrec-1019c first, optionally obrec-1019d; "
                    "default " + " ".join(DEFAULT_BOOKS))
@@ -758,7 +766,7 @@ def prepare(a):
     else:
         # the process gates: LIP-F1 final, Book C done (QP L1 item 3)
         ctx["lip_f1_gate"] = check_lip_f1_gate(a.lip_f1_gate)
-        ctx["bookc_done"] = check_bookc_done(a.bookc_done)
+        ctx["bookc_done"] = check_bookc_done(a.bookc_done, ctx["lip_f1_gate"]["read_instant"])
         if not (a.read_instant or a.scan):
             raise F2Refusal("give --read-instant R or --scan [--asof T]")
         if a.asof and not a.scan:
