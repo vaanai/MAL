@@ -728,3 +728,19 @@ def test_vol_needs_at_least_40_returns():
     assert r3.trailing_vol(keep40, t) is not None
     keep39 = {k: v for k, v in full.items() if k >= t - 60 * 40}              # 40 candles -> 39 returns: None
     assert r3.trailing_vol(keep39, t) is None
+
+
+def test_frozen_constants_are_pinned_to_the_dev_fit():
+    assert r3.FROZEN_C == {"BTC": 1.00, "ETH": 0.85, "SOL": 0.80}          # fit-c --split dev, 2026-10-19
+    assert r3.FROZEN_E_BPS == {"BTC": 0.831, "ETH": 1.168, "SOL": 1.513}
+    assert r3.FIT_INSTANTS_S == (300, 600, 780) and r3.FIT_GRID[0] == 0.6 and r3.FIT_GRID[-1] == 1.6
+    assert len(r3.FIT_GRID) == 21
+    fit = Path("/data/mal/hunt-1008/push-1016/hunt18/kalshi-crypto/fit_c_dev/fit_c_dev.json")
+    if fit.exists():                                                         # derivation record (dev only)
+        a = json.load(open(fit))["assets"]
+        assert {k: v["c"] for k, v in a.items()} == r3.FROZEN_C
+        assert {k: v["e_bps"] for k, v in a.items()} == r3.FROZEN_E_BPS
+    old = Path("/data/mal/hunt-1008/push-1016/hunt18/kalshi-crypto/proxy_model_out.json")
+    if old.exists():                                                         # e agrees with the earlier fit
+        o = json.load(open(old))
+        assert {k: o[f"{k}_model"]["e_dev_bps"] for k in ("BTC", "ETH", "SOL")} == r3.FROZEN_E_BPS

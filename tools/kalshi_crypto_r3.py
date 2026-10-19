@@ -65,8 +65,12 @@ TEST_ENV = "MAL_R3_TEST"
 
 SPLITS = {"dev": ("2026-10-01", "2026-10-09"), "holdout": ("2026-10-10", "2026-10-16")}
 SERIES = {"KXBTC15M": ("BTC", "BTC-USD"), "KXETH15M": ("ETH", "ETH-USD"), "KXSOL15M": ("SOL", "SOL-USD")}
-# proxy_model_out.json (development-only fits; e = comp_tp dev_sd_bps / 1e4, c = min-Brier grid value)
-FROZEN_C = {"BTC": 0.95, "ETH": 0.80, "SOL": 0.85}
+# c: `fit-c --split dev` (DECLARE recipe: dev markets only, grid 0.6..1.6 step 0.05, min Brier at open+300 s,
+# +600 s, +780 s only, s1m == 0 rows skipped), run 2026-10-19 on 848 dev markets per asset (2,544 rows each):
+# output /data/mal/hunt-1008/push-1016/hunt18/kalshi-crypto/fit_c_dev/fit_c_dev.json.  It REPLACES the earlier
+# 0.95 / 0.80 / 0.85 of proxy_model_out.json, which minimised over four instants including open+720 s.
+# e: comp_tp dev_sd_bps (Coinbase+Bitstamp typical-price proxy error, dev only), identical in both fits.
+FROZEN_C = {"BTC": 1.00, "ETH": 0.85, "SOL": 0.80}
 FROZEN_E_BPS = {"BTC": 0.831, "ETH": 1.168, "SOL": 1.513}
 
 US = 1_000_000
