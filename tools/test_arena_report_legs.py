@@ -375,28 +375,38 @@ def pr(pool, slot, state, side="buy", off=0, sol=1e8, tok=5e9, ev=0):
             "virtual_quote_reserves": V}
 
 
-def tape_rows():
+def tape_rows(d=0):
+    """The engine's feed delay d (slots) shifts the landing and exit slots; the prints that define the states shift with it, so the same states are picked at any d."""
     rows = []
     for pool in ("PX", "PI", "PN"):
         rows += [pr(pool, 99, "S0", "sell", sol=5e8, tok=2.6e10), pr(pool, 100, "S1"), pr(pool, 200, "S1")]
     # PX: slot 104 holds one print (a buy); slot 105 holds three: S2 -> buy -> S3 -> buy -> S5 -> sell -> S4; slot 202 holds three: S3 -> sell -> S1 -> sell -> S0 -> buy -> S2
-    rows += [pr("PX", 104, "S1"), pr("PX", 105, "S2", off=1), pr("PX", 105, "S3", off=2), pr("PX", 105, "S5", "sell", off=3), pr("PX", 106, "S4")]
-    rows += [pr("PX", 202, "S3", "sell", off=1), pr("PX", 202, "S1", "sell", off=2), pr("PX", 202, "S0", "buy", off=3), pr("PX", 203, "S2")]
+    rows += [pr("PX", 104 + d, "S1"), pr("PX", 105 + d, "S2", off=1), pr("PX", 105 + d, "S3", off=2), pr("PX", 105 + d, "S5", "sell", off=3), pr("PX", 106 + d, "S4")]
+    rows += [pr("PX", 202 + d, "S3", "sell", off=1), pr("PX", 202 + d, "S1", "sell", off=2), pr("PX", 202 + d, "S0", "buy", off=3), pr("PX", 203 + d, "S2")]
     # PI: the same entry; its exit slot holds a state whose k fell 2% (LOWK) at the lowest price
-    rows += [pr("PI", 104, "S1"), pr("PI", 105, "S2", off=1), pr("PI", 105, "S3", off=2), pr("PI", 105, "S5", "sell", off=3), pr("PI", 106, "S4")]
-    rows += [pr("PI", 202, "S3", "sell", off=1), pr("PI", 202, "LOWK", "sell", off=2), pr("PI", 202, "S1", "buy", off=3), pr("PI", 203, "S2")]
-    # PN: quiet. No print in slots 104, 105 or 202: every slot has one state, the END state
-    rows += [pr("PN", 106, "S2"), pr("PN", 203, "S2")]
+    rows += [pr("PI", 104 + d, "S1"), pr("PI", 105 + d, "S2", off=1), pr("PI", 105 + d, "S3", off=2), pr("PI", 105 + d, "S5", "sell", off=3), pr("PI", 106 + d, "S4")]
+    rows += [pr("PI", 202 + d, "S3", "sell", off=1), pr("PI", 202 + d, "LOWK", "sell", off=2), pr("PI", 202 + d, "S1", "buy", off=3), pr("PI", 203 + d, "S2")]
+    # PN: quiet. No print in the landing slots or the exit slot: every slot has one state, the END state
+    rows += [pr("PN", 106 + d, "S2"), pr("PN", 203 + d, "S2")]
     return sorted(rows, key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"]))
 
 
-def make_ledger(tmp_path):
+def pd_rows():
+    """PD: its exit slot (202) and everything after the last print (slot 200) is empty when the engine prices it: the exit END state is DERIVED from the slot-200 print."""
+    return sorted([pr("PD", 99, "S0", "sell", sol=5e8, tok=2.6e10), pr("PD", 100, "S1"), pr("PD", 105, "S2", off=1), pr("PD", 105, "S3", "sell", off=2), pr("PD", 200, "S1")],
+                  key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"]))
+
+
+LATE_PD = pr("PD", 300, "S4")  # arrives on the tape after the engine priced PD (flush): the engine never saw it
+
+
+def make_ledger(tmp_path, rows=None, d=0):
     reg = tmp_path / "bots.json"
     register_bot("botA", "abc1234", 0, reg, now_ms=0)
-    eng = ArenaEngine(tmp_path / "ledger", reg, StackConfig(feed_delay_slots=0, rent=0), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+    eng = ArenaEngine(tmp_path / "ledger", reg, StackConfig(feed_delay_slots=d, rent=0), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
     eng.now_fn = lambda: eng.hw_ms or 0
     pids, bought, sold = {}, set(), set()
-    for r in tape_rows():
+    for r in (tape_rows(d) if rows is None else rows):
         eng.on_row(r)
         if r["slot"] == 100 and r["pool"] not in bought:
             bought.add(r["pool"])
@@ -678,3 +688,57 @@ def test_the_cli_exits_4_and_still_prints_when_the_end_state_does_not_match_the_
     code = R.main(["--bot", "botA", "--ledger-root", "/x/ok/l", "--registry", "/x/ok/r.json", "--tape-dir", "/x/ok/t"])
     cap = capsys.readouterr()
     assert code == 4 and "END consistency MISMATCH" in cap.out and "END CONSISTENCY FAILED" in cap.err and "WORST-IN-SLOT leg" in cap.out
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ derived_last, feed delay, ties
+def test_a_derived_last_trip_uses_the_state_the_engine_derived_not_a_later_print_and_is_not_exempt_from_the_end_check(tmp_path):
+    trades = make_ledger(tmp_path, pd_rows())
+    assert len(trades) == 3 and all(r["state_src"] == "derived_last" for r in trades)
+    x = by(trades, "PD", 0.25)
+    assert x["calc"]["1p9"]["Qx"] == pytest.approx(20_098_750_000.0) and x["calc"]["1p9"]["Bx"] == pytest.approx(99_995_000_000_000.0)  # derived from the slot-200 buy (S1 PRE)
+    pools = R.load_pools(pd_rows() + [LATE_PD])  # the tape now holds a print the engine never saw
+    full = R.state_arrays(pools["PD"])
+    assert full["QX"][R.slot_states(full, 202)[1]] == ST["S4"][0]  # without the cut the END member would be the late print ...
+    rows, diag = R.worst_in_slot_rows(trades, pools)
+    assert diag["parity_ok"] and diag["derived_last"] == 3 and diag["state_mismatch"] == [] and diag["pnl_mismatch"] == []  # ... with it, END is the ledger's own and is checked
+    w = by(rows, "PD", 0.25)["calc"]
+    assert (w["1p9"]["Qx"], w["1p9"]["Bx"]) == (x["calc"]["1p9"]["Qx"], x["calc"]["1p9"]["Bx"])  # the empty exit slot has one state: worst = END, no artefact gap
+    assert (w["1p9"]["Qe"], w["1p9"]["Be"]) == ST["S3"] and (w["1p3"]["Qe"], w["1p3"]["Be"]) == (x["calc"]["1p3"]["Qe"], x["calc"]["1p3"]["Be"])  # 1.9 s: S2, S3 and END S1 -> S3
+    # not exempt: a tape that lacks the slot-200 print derives a different END, and that is a mismatch
+    _, bad = R.worst_in_slot_rows(trades, R.load_pools([r for r in pd_rows() if r["slot"] != 200]))
+    assert bad["parity_ok"] is False and bad["derived_last"] == 3 and any(m.startswith(x["trade_id"]) for m in bad["state_mismatch"])
+    # the gap is also printed without the derived_last trips
+    legs = R.legs_for_book([r for r in trades if r["stake_sol"] == 0.25], pools)
+    assert legs["n_derived_last"] == 1 and legs["worst_in_slot"]["end_minus_worst_without_derived_last"] == {}
+    assert legs["worst_in_slot"]["end_minus_worst"]["flat_1p9_total"]["total_sol"] != 0.0  # the 1.9 s entry moved off END (S3 vs S1)
+
+
+def test_the_gap_without_derived_last_trips_equals_the_gap_when_there_are_none(world):
+    trades, pools = world
+    legs = R.legs_for_book([r for r in trades if r["stake_sol"] == 0.25], pools)
+    assert legs["n_derived_last"] == 0
+    assert legs["worst_in_slot"]["end_minus_worst_without_derived_last"] == legs["worst_in_slot"]["end_minus_worst"]
+
+
+def test_a_nonzero_feed_delay_moves_the_landing_and_exit_slots_and_the_same_states_are_picked(tmp_path):
+    trades = make_ledger(tmp_path, d=2)
+    pools = R.load_pools(tape_rows(2))
+    x = by(trades, "PX", 0.25)
+    assert x["feed_delay_slots"] == 2 and x["stack"]["feed_delay_slots"] == 2 and x["effective_slot"]["entry"] == 100
+    assert x["corrected_slot"] == {"entry": 102, "exit": 202} and x["calc"]["1p3"]["landing_slot"] == 106 and x["calc"]["1p9"]["landing_slot"] == 107
+    rows, diag = R.worst_in_slot_rows(trades, pools)
+    assert diag["parity_ok"] and diag["derived_last"] == 0 and (diag["entry_moved"], diag["exit_moved"]) == (6, 6)
+    w = by(rows, "PX", 0.25)["calc"]
+    assert (w["1p9"]["Qe"], w["1p9"]["Be"]) == ST["S5"] and (w["1p9"]["Qx"], w["1p9"]["Bx"]) == ST["S0"] and (w["1p3"]["Qe"], w["1p3"]["Be"]) == ST["S2"]
+    pnl, state = ref_trip(0.25e9, *ST["S5"], SPOT, *ST["S0"])
+    assert state == "filled" and w["1p9"]["by_rule"]["total"]["pnl_nofail"] == pytest.approx(pnl, abs=1e-3)
+    # the delay changes the slots, not the states: the END states of the d = 0 ledger are the same states
+    assert (x["calc"]["1p9"]["Qe"], x["calc"]["1p9"]["Be"]) == ST["S4"] and (x["calc"]["1p9"]["Qx"], x["calc"]["1p9"]["Bx"]) == ST["S2"]
+
+
+def test_a_tie_in_price_takes_the_first_state_in_tape_order():
+    sa = {"QX": np.array([20e9, 40e9, 20e9, 40e9]), "BX": np.array([1e14, 2e14, 1e14, 2e14])}  # four states of the same price 2e-4 and different reserves
+    assert R.worst_index(sa, np.arange(4), "buy") == 0 and R.worst_index(sa, np.arange(4), "sell") == 0
+    assert R.worst_index(sa, np.array([1, 2, 3]), "buy") == 1 and R.worst_index(sa, np.array([3, 2]), "sell") == 3
+    sa2 = {"QX": np.array([20e9, 40e9, 30e9]), "BX": np.array([1e14, 2e14, 1e14])}  # a tie at the top: the first of the two
+    assert R.worst_index(sa2, np.arange(3), "buy") == 2 and R.worst_index(sa2, np.arange(2), "buy") == 0

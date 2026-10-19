@@ -35,8 +35,9 @@ Everything else is the ledger's: the guard reference (calc.spot), ssb, nearby, s
 arena_paper.price_leg on the worst states (the own buy is re-injected into the worst exit state), the pressure intercept is refit on THIS cell's filled set (the scorer's
 refit), and the same cell statistics are printed. The END-minus-worst gap (R7) is the as-scored cell minus the worst-in-slot cell, in SOL per trade and in total.
 Consistency check: for every trip the END state recomputed from the tape and the END-priced pnl must equal the ledger's calc values; a mismatch (a tape that is not the one
-the engine priced, a late print, a different V source) is counted and listed, and the CLI exits 4. `state_src == derived_last` trips are exempt from the state check (the
-engine derived their END state from the last print it had) and are counted. Selection is by spot price, as the ruling says, not by realised outcome.
+the engine priced, a late print, a different V source) is counted and listed, and the CLI exits 4. A `state_src == derived_last` trip is not exempt: the engine derived its END state from the last print it had, so its history is cut
+at the prints before `need` (arena_paper._needed_slot: the max landing slot + 1) and its END member is that derived state, the ledger's own; it is checked like any other. The
+END-minus-worst gap is also printed without the derived_last trips (report-only), as arena_score does for its cells. Selection is by spot price, as the ruling says, not by realised outcome.
 Without --tape-dir the leg prints "worst-in-slot not measured" (R7: no canary is proposed from a book until it is measured). Bonding rows are not supported (their fills
 are POST-trade; such a book is REPORT_ONLY in the scorer anyway) and are refused.
 
@@ -224,16 +225,18 @@ def stack_config_of(row: Mapping[str, Any]) -> StackConfig:
                        e1_floor_per_005=int(s["e1_floor_per_005"]), feed_delay_slots=s.get("feed_delay_slots"))
 
 
-def state_arrays(h: PoolHist) -> dict[str, np.ndarray]:
+def state_arrays(h: PoolHist, max_slot: int | None = None) -> dict[str, np.ndarray]:
     """sl (slot per print), QX / BX (state before print i for i < n, the state derived after the last print at n; Q includes V) and vok, built exactly as
-    arena_stack.mint_states builds them."""
+    arena_stack.mint_states builds them. max_slot keeps only the prints with slot < max_slot: the history the engine had when it priced a `derived_last` trip (it
+    derives the END state from the last print it had only because no print at or after `need` had arrived)."""
     a = h.arrays()
-    sl, ib, so, tk, q, b, v = a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"]
+    n = len(a["sl"]) if max_slot is None else int(np.searchsorted(a["sl"], max_slot, "left"))
+    sl, ib, so, tk, q, b, v = (a[k][:n] for k in ("sl", "ib", "so", "tk", "q", "b", "v"))
     if len(sl) == 0:
         raise Refused(f"pool {h.pool}: no prints")
     qL = q[-1] + so[-1] * (1 - F.FINAL_FEE) if ib[-1] else q[-1] - so[-1] / (1 - F.FINAL_FEE)
     bL = b[-1] - tk[-1] if ib[-1] else b[-1] + tk[-1]
-    return {"sl": sl, "QX": np.append(q, qL) + np.append(v, v[-1]), "BX": np.append(b, bL), "vok": a["vok"]}
+    return {"sl": sl, "QX": np.append(q, qL) + np.append(v, v[-1]), "BX": np.append(b, bL), "vok": a["vok"][:n]}
 
 
 def slot_states(sa: Mapping[str, np.ndarray], x: int) -> tuple[np.ndarray, int]:
@@ -263,14 +266,18 @@ def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dic
     """Re-price one trade row at the worst state of its entry and exit slots, for every latency and strand rule. Returns (calc, diag): the new `calc` and what moved."""
     if row.get("prog") != "pumpswap":
         raise Refused(f"trade {row.get('trade_id')}: prog {row.get('prog')!r}: worst-in-slot is defined for PumpSwap PRE-trade states only")
-    sa = state_arrays(h)
     cfg = stack_config_of(row)
     stake = float(round(row["stake_sol"] * 1e9))
     xl = int(row["corrected_slot"]["exit"]) + F.exit_lag_slots(float(row["stack"]["sps_exit"]))
+    derived = row.get("state_src") == "derived_last"
+    # A derived_last trip was priced before any print at or after `need` (arena_paper._needed_slot) had arrived: its END member is the state derived from the last print the
+    # engine had, never a later print on the tape. Only the prints before `need` are used, and the END check below applies to it like to any other trip.
+    need = max(max(int(row["calc"][t]["landing_slot"]) for t in LATS), xl) + 1
+    sa = state_arrays(h, need if derived else None)
     idx_x, je_x = slot_states(sa, xl)
     wx = worst_index(sa, idx_x, "sell")
     diag: dict[str, Any] = {"state_mismatch": [], "pnl_mismatch": [], "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": int(len(idx_x) > 2),
-                            "exit_moved": int(wx != je_x), "derived_last": row.get("state_src") == "derived_last"}
+                            "exit_moved": int(wx != je_x), "derived_last": derived}
     new_calc: dict[str, Any] = {}
     for tag in LATS:
         c = row["calc"][tag]
@@ -285,15 +292,14 @@ def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dic
                   "Qx": float(sa["QX"][je_x]), "Bx": float(sa["BX"][je_x])}
         st_w = {"ref": c["spot"], "Qe": {lat: float(sa["QX"][we])}, "Be": {lat: float(sa["BX"][we])}, "ssb": {lat: c["ssb"]}, "nearby": {lat: c["nearby_lamports"]},
                 "Qx": float(sa["QX"][wx]), "Bx": float(sa["BX"][wx])}
-        if not diag["derived_last"] and not (_close(st_end["Qe"][lat], c["Qe"]) and _close(st_end["Be"][lat], c["Be"]) and _close(st_end["Qx"], c["Qx"])
-                                             and _close(st_end["Bx"], c["Bx"])):
+        if not (_close(st_end["Qe"][lat], c["Qe"]) and _close(st_end["Be"][lat], c["Be"]) and _close(st_end["Qx"], c["Qx"]) and _close(st_end["Bx"], c["Bx"])):
             diag["state_mismatch"].append(f"{row['trade_id']}:{tag}")
         diag["entry_multi_print"] = max(diag["entry_multi_print"], int(len(idx_e) > 2))
         diag["entry_moved"] = max(diag["entry_moved"], int(we != je_e))
         by_rule: dict[str, Any] = {}
         for rule in c["by_rule"]:
             end = price_leg("pumpswap", stake, st_end, lat, cfg, rule)
-            if not diag["derived_last"] and abs(end["pnl"] - c["by_rule"][rule]["pnl_nofail"]) > PARITY_PNL_ATOL + 1e-9 * abs(end["pnl"]):
+            if abs(end["pnl"] - c["by_rule"][rule]["pnl_nofail"]) > PARITY_PNL_ATOL + 1e-9 * abs(end["pnl"]):
                 diag["pnl_mismatch"].append(f"{row['trade_id']}:{tag}:{rule}")
             w = price_leg("pumpswap", stake, st_w, lat, cfg, rule)
             by_rule[rule] = {"pnl_nofail": w["pnl"], "filled": w["filled"], "state": w["state"], "strand": w["strand"], "e1_extra": w["e1_extra"],
@@ -411,7 +417,11 @@ def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolH
     wrows, diag = worst_in_slot_rows(trades, pools)
     wbase = reclassify_close_blocked(wrows, cb) if cb else wrows
     worst = cells_of(wbase)
+    keep = [r.get("state_src") != "derived_last" for r in trades]  # as arena_score prints a leg without its derived_last rows, report-only
+    nd = lambda rows: [r for r, k in zip(rows, keep) if k]  # noqa: E731
+    out["n_derived_last"] = keep.count(False)
     out["worst_in_slot"] = {"cells": worst, "diag": diag, "end_minus_worst": end_minus_worst(out["base"], worst),
+                            "end_minus_worst_without_derived_last": end_minus_worst(cells_of(nd(base)), cells_of(nd(wbase))),
                             "rent_charged_stacked": cells_of(wbase, delta)}
     return out
 
@@ -516,10 +526,11 @@ def render(rep: Mapping[str, Any]) -> str:
                      f"{d['exit_multi_print']}  exit state moved {d['exit_moved']}  derived_last {d['derived_last']}  END consistency {'ok' if d['parity_ok'] else 'MISMATCH'}")
             for q in (d["state_mismatch"] + d["pnl_mismatch"])[:8]:
                 L.append(f"     END mismatch: {q}")
-            L.append("   END minus worst-in-slot (SOL per trade / SOL total):")
+            L.append("   END minus worst-in-slot (SOL per trade / SOL total), then the same without the derived_last trips (report-only):")
             for k, g in w["end_minus_worst"].items():
                 if "_1p9_" in k or st != dk:
-                    L.append(f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}")
+                    g2 = w["end_minus_worst_without_derived_last"].get(k)
+                    L.append(f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}" + ("" if g2 is None else f"    without derived_last ({b['n_derived_last']} trips): {_f(g2['mean_sol'])} / {_f(g2['total_sol'])}"))
     return "\n".join(L)
 
 
