@@ -1,14 +1,17 @@
 """Memory bounds of the HV4 runner (the #1236 stub OOM, 2026-10-19). Synthetic tapes only: no network, no API call, no key, no real tape.
 
-The runner fed every tape row to ArenaEngine, which keeps every print of every pool (arena_paper.PoolHist) until ArenaEngine.prune() is called, and nothing
-called it; QuoteHistory kept every row of a pool with fewer than 4,096 rows and never forgot a pool. These tests pin:
-  * the bounds hold over a long synthetic run (pools, prints and quote rows stay under explicit caps while the unbounded setting grows without limit);
-  * the bounds do not change a decision: the decision log, the engine ledger and the state digest are byte-identical with bound_memory on and off, on a tape where
-    pools do go quiet for longer than the engine's keep window, one of them holds an open position, and one comes back after the window.
+What is bounded here: QuoteHistory (it kept every row of a pool with fewer than 4,096 rows and never forgot a pool). What is deliberately NOT bounded here: the
+engine's print history (arena_paper.PoolHist). The runner does not call ArenaEngine.prune(): QP 6274522375 showed a pruned pool is re-created with last_v_row None,
+so a revival print with V outside [0, 30 SOL] is priced `none` (a missing_v exclusion) where the unbounded engine prices it from pool_prev. The engine bound waits for
+a state-preserving trim in tools/arena_paper.py (its own branch and review). These tests pin:
+  * QuoteHistory stays under explicit caps over a long synthetic run while the unbounded setting grows without limit;
+  * the quote trim and sweep change no answer, and the sweep never drops a pool the state still holds (the state's own 60 s sweep gap);
+  * the runner leaves the engine alone: every print of every pool, with its (slot, v, vsrc) and last_v_row, is the same with bound_memory on and off, on a tape where
+    a pool goes quiet for longer than the engine's own keep window and comes back with out-of-band V prints; and the decision log, the engine ledger (mint included)
+    and the state digest are byte-identical.
 """
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -28,22 +31,23 @@ def _arena_test_env():
 
 SLOT0 = 400_000_000
 MS_PER_SLOT = 400
-KEEP_MS = HIST_KEEP_SLOTS * MS_PER_SLOT  # 8,000 s: the engine keeps a quiet pool this long (at 0.4 s a slot)
+KEEP_MS = HIST_KEEP_SLOTS * MS_PER_SLOT  # 8,000 s: the engine's own prune() keeps a quiet pool this long (at 0.4 s a slot)
 
 
 def slot_of(t: int) -> int:
     return SLOT0 + (t - (T0 - 3 * H)) // MS_PER_SLOT
 
 
-def print_row(pool: str, mint: str, t: int, n: int, k: int = 0) -> dict:
-    """One PumpSwap WSOL print of a flat 1.0e-6 price pool (the shape of tools/test_hv4_runner.trade_rows)."""
+def print_row(pool: str, mint: str, t: int, n: int, k: int = 0, vq: int | None = None) -> dict:
+    """One PumpSwap WSOL print of a flat 1.0e-6 price pool (the shape of tools/test_hv4_runner.trade_rows). `vq` overrides virtual_quote_reserves."""
     buy_side = n % 4 != 3
     sol = int((0.15 if buy_side else 0.07) * SOL)
     p = 1e-6
     q, b = 60 * SOL, int((60 * SOL + V) / SOL / p * 1_000_000)
     return {"v": 1, "type": "trade", "prog": "pumpswap", "venue": "pumpswap", "slot": slot_of(t), "t_recv_ms": t, "signature": f"m{k}-{n}", "event_index": 0,
             "pool": pool, "mint": mint, "trader": f"B{n % 7}", "side": "buy" if buy_side else "sell", "sol_lamports": sol,
-            "token_raw": int(sol / SOL / p * 1_000_000), "quote_reserve": q, "base_reserve": b, "virtual_quote_reserves": V, "quote_mint": WSOL, "event_ts": t // 1000}
+            "token_raw": int(sol / SOL / p * 1_000_000), "quote_reserve": q, "base_reserve": b, "virtual_quote_reserves": V if vq is None else vq, "quote_mint": WSOL,
+            "event_ts": t // 1000}
 
 
 def noise_pool(i: int) -> tuple[str, str]:
@@ -73,7 +77,12 @@ def feed(run: R.Runner, rows: list[dict], sample_every: int = 500) -> dict[str, 
     return peak
 
 
-# ------------------------------------------------------------------------------------------------------------------------------ the bounds hold
+def hist_prints(run: R.Runner) -> dict[str, tuple]:
+    """Every print the engine holds, per pool: the order keys, slot, V and V source of each, and the pool's last in-band V."""
+    return {k: (tuple(h.keys), tuple(h.slot), tuple(h.v), tuple(h.vsrc), h.last_v_row, h.mint) for k, h in sorted(run.engine.pools.items())}
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the quote bounds hold
 N_POOLS, EVICT_MIN = 720, 30  # 12 hours of tape time, a new pool a minute; the state evicts a key idle for 30 minutes
 
 
@@ -86,36 +95,34 @@ def long_run(tmp: Path, bound: bool) -> tuple[R.Runner, dict[str, int], list[dic
     return run, feed(run, rows), rows
 
 
-def test_long_synthetic_run_stays_under_the_caps(tmp_path):
+def test_long_synthetic_run_keeps_quote_history_under_its_cap(tmp_path):
     run, peak, rows = long_run(tmp_path, True)
-    # a pool is kept by the engine for the keep window after its last print, plus up to one housekeeping interval, plus the 3 minutes it prints for
-    engine_cap = (KEEP_MS + R.HOUSEKEEP_EVERY_MS + 3 * MIN) // MIN + 2
-    assert peak["engine_pools"] <= engine_cap, peak
-    assert peak["engine_rows"] <= engine_cap * 10, peak
     # a quote row list is kept for the state's eviction horizon plus one housekeeping interval, plus the 3 minutes it prints for
     quote_cap = (EVICT_MIN * MIN + R.HOUSEKEEP_EVERY_MS + 3 * MIN) // MIN + 2
     assert peak["quote_pools"] <= quote_cap, peak
     assert peak["quote_rows"] <= quote_cap * 10, peak
-    assert N_POOLS > 3 * engine_cap  # the run is long enough for the bound to bite
-    assert run.counters["engine_pools_pruned"] >= N_POOLS - engine_cap and run.counters["quote_pools_swept"] >= N_POOLS - quote_cap
+    assert N_POOLS > 10 * quote_cap // 2  # the run is long enough for the bound to bite
+    assert run.counters["quote_pools_swept"] >= N_POOLS - quote_cap
     assert not run.hook_errors
+    # the engine is untouched: every pool and every print is still there (its bound is not this module's)
+    assert len(run.engine.pools) == N_POOLS and sum(len(h.slot) for h in run.engine.pools.values()) == len(rows)
+    assert "engine_pools_pruned" not in run.counters
 
 
 def test_the_unbounded_setting_grows_without_limit(tmp_path):
-    """The control: the same run with bound_memory off keeps every pool and every print (the 2026-10-19 behaviour)."""
+    """The control: the same run with bound_memory off keeps every quote row (the 2026-10-19 behaviour)."""
     run, peak, rows = long_run(tmp_path, False)
-    assert len(run.engine.pools) == N_POOLS and peak["engine_pools"] > 3 * ((KEEP_MS + R.HOUSEKEEP_EVERY_MS + 3 * MIN) // MIN)
-    assert sum(len(h.slot) for h in run.engine.pools.values()) == len(rows)
     assert len(run.quotes.t) == N_POOLS and sum(len(v) for v in run.quotes.t.values()) == len(rows)
+    assert peak["quote_pools"] > 3 * ((EVICT_MIN * MIN + R.HOUSEKEEP_EVERY_MS + 3 * MIN) // MIN)
 
 
 def test_housekeeping_runs_on_the_tape_clock_not_the_loop(tmp_path):
-    """Rows applied in one burst (the warm-up of a start) are pruned as they are read; the cadence is the rows' t_recv_ms, 5 minutes apart."""
+    """Rows applied in one burst (the warm-up of a start) are swept as they are read; the cadence is the rows' t_recv_ms, 5 minutes apart."""
     write_tape(tmp_path / "tape", [print_row(POOLS[0], MINTS[0], T0 - 3 * H + 1, 0)])
     run = make(tmp_path)
     calls = []
-    real = run.engine.prune
-    run.engine.prune = lambda: calls.append(run.engine.hw_ms) or real()
+    real = run.quotes.sweep
+    run.quotes.sweep = lambda now_ms, idle_ms, **kw: calls.append(now_ms) or real(now_ms, idle_ms, **kw)
     base = T0 - 3 * H
     for i in range(0, 31 * 60):  # 31 minutes of one row a second
         run.state.apply(print_row(POOLS[0], MINTS[0], base + i * 1000 + 5, i))
@@ -126,20 +133,55 @@ def test_housekeeping_runs_on_the_tape_clock_not_the_loop(tmp_path):
     assert len(calls) == n
 
 
+def test_the_runner_never_calls_the_engines_prune(tmp_path):
+    """QP 6274522375: prune() is not pricing-equivalent (a re-created pool loses last_v_row). It stays out of the runner until the state-preserving trim lands."""
+    write_tape(tmp_path / "tape", [print_row(POOLS[0], MINTS[0], T0 - 3 * H + 1, 0)])
+    run = make(tmp_path)
+
+    def boom(*a, **k):
+        raise AssertionError("the runner must not call ArenaEngine.prune")
+
+    run.engine.prune = boom
+    feed(run, churn_rows(40, T0 - 3 * H + MIN))
+    run.state.apply(print_row(POOLS[0], MINTS[0], T0 + 5 * H, 1))  # five hours on: far past the engine's keep window
+    assert not run.hook_errors and len(run.engine.pools) == 41
+
+
+def test_a_housekeeping_failure_never_skips_the_rows_engine_or_h5_feed(tmp_path):
+    """Reviewer finding on #744: _housekeep has its own try, so an exception in it cannot skip the H5 feed of the same row."""
+
+    class FakeH5:
+        def __init__(self) -> None:
+            self.rows = 0
+
+        def feed(self, row):
+            self.rows += 1
+            return []
+
+    write_tape(tmp_path / "tape", [print_row(POOLS[0], MINTS[0], T0 - 3 * H + 1, 0)])
+    h5 = FakeH5()
+    run = make(tmp_path, h5=h5, lane_h=True)
+
+    def boom(*a, **k):
+        raise RuntimeError("housekeeping failed")
+
+    run.quotes.sweep = boom  # fails after _housekeep has moved its next-run instant, as a real failure would
+    base = T0 - 3 * H
+    for i in range(0, 12 * 60):  # 12 minutes of one row a second: housekeeping fires at the first row and at each 5 minute boundary
+        run.state.apply(print_row(POOLS[0], MINTS[0], base + i * 1000 + 5, i))
+    assert h5.rows == 12 * 60
+    assert run.engine.hw_ms is not None and sum(len(h.slot) for h in run.engine.pools.values()) == 12 * 60
+    assert run.hook_errors and set(run.hook_errors) == {"housekeep:RuntimeError"} and len(run.hook_errors) == 3
+
+
 def test_quote_history_trims_small_pools_and_keeps_every_answer(tmp_path):
     """Trimming a pool of fewer than 4,096 rows (the old gate) changes no ref() or peak() answer for a query at or after the newest row."""
     keep = 65 * MIN
     a, b = R.QuoteHistory(keep), R.QuoteHistory(keep)
-    old_gate = R.QUOTE_PRUNE_MIN_ROWS
     base = 1_790_000_000_000 - 1_790_000_000_000 % MIN
-    try:
-        R.QUOTE_PRUNE_MIN_ROWS = 10 ** 9  # never trims: the reference
-        for i in range(0, 400):
-            a.add("P", base + i * 45_000, 1.0 + 0.001 * (i % 37))
-    finally:
-        R.QUOTE_PRUNE_MIN_ROWS = old_gate
     for i in range(0, 400):
-        b.add("P", base + i * 45_000, 1.0 + 0.001 * (i % 37))
+        a.add("P", base + i * 45_000, 1.0 + 0.001 * (i % 37))  # the old gate (4,096 rows): never trims here
+        b.add("P", base + i * 45_000, 1.0 + 0.001 * (i % 37), R.QUOTE_PRUNE_MIN_ROWS)
     assert len(b.t["P"]) < len(a.t["P"]) == 400
     for k in range(399 * 45_000 // MIN + 1, 399 * 45_000 // MIN + 5):  # queries after the newest row (299.25 minutes in)
         T = base + k * MIN + 2_000
@@ -192,46 +234,42 @@ def test_a_pool_the_state_still_holds_keeps_its_quotes_when_it_trades_inside_the
     assert pool not in run.quotes.t
 
 
-# ------------------------------------------------------------------------------------------------------------------------------ decisions are unchanged
+# ------------------------------------------------------------------------------------------------------------------------------ decisions and pricing are unchanged
 def churn_and_return_rows() -> list[dict]:
-    """The recorded two-pool tape (pullbacks, entries, target and stop exits) plus pools that print early and go quiet for longer than the engine's keep window,
-    and one of them (RET) comes back 3 hours later with a price path of its own."""
+    """The recorded two-pool tape (pullbacks, entries, target and stop exits) plus pools that print early and go quiet for longer than the engine's own keep window,
+    and one of them (RET) comes back 2.5 hours later, first with prints whose V is outside [0, 30 SOL] (they are priced from the pool's earlier V, `pool_prev`)."""
     rows = trade_rows()
     rows += churn_rows(12, X - 100 * MIN, every_ms=2 * MIN)  # quiet for > 8,000 s well before the run ends
     ret_pool, ret_mint = "RetPool" + "1" * 37, "RetMint" + "1" * 37
     rows += [print_row(ret_pool, ret_mint, X - 100 * MIN + j * 30_000, j, 777) for j in range(20)]
-    rows += [print_row(ret_pool, ret_mint, X + 60 * MIN + j * 30_000, j, 778) for j in range(20, 60)]  # back after > the keep window
+    rows += [print_row(ret_pool, ret_mint, X + 60 * MIN + j * 30_000, j, 778, vq=-1_000_000_000 if j < 25 else None) for j in range(20, 60)]  # back, V out of band at first
     return sorted(rows, key=lambda r: (r["t_recv_ms"], r["signature"]))
 
 
-def run_digest(tmp: Path, bound: bool) -> tuple[str, str, str, R.Runner]:
+def run_digest(tmp: Path, bound: bool) -> tuple[str, str, dict, R.Runner]:
     run = make(tmp, rows=churn_and_return_rows(), lane_h=False)
     run.cfg.bound_memory = bound
+    run.state.evict_idle_ms = 120 * MIN  # shorter than the default, so the state evicts the quiet pools (idle 150 to 166 min) and the quote sweep has work; the main pools' 110 min start-up silence is under it
     run.run(T0 - 20 * MIN + R.SCAN_SECOND_MS, T0 + 100 * MIN)
-    ledger = ledger_digest(tmp / "ledger")
-    digest = hashlib.md5(R.canon(run.state_digest(T0 + 100 * MIN)).encode()).hexdigest()
-    return run.log.md5(), ledger, digest, run
+    ledger = ledger_digest(tmp / "ledger")  # strict: the mint field is included
+    return run.log.md5(), ledger, run.state_digest(T0 + 100 * MIN), run
 
 
-def test_decision_log_ledger_and_state_digest_are_identical_with_the_bounds_on_and_off(tmp_path):
+def test_decision_log_ledger_prints_and_state_digest_are_identical_with_the_bounds_on_and_off(tmp_path):
     a = run_digest(tmp_path / "bounded", True)
     b = run_digest(tmp_path / "unbounded", False)
     ra, rb = a[3], b[3]
-    assert a[:3] == b[:3]
-    # the bound did act on this tape, and the run did trade: otherwise the equality above would be vacuous
-    assert ra.counters.get("engine_pools_pruned", 0) >= 12 and "engine_pools_pruned" not in rb.counters
-    assert len(ra.engine.pools) < len(rb.engine.pools)
-    opens = [r for arm in ("CON-X", "BIG-X") for r in ra.log.rows(arm) if r["kind"] == "entry"]
-    assert len({r["pool"] for r in opens}) >= 2
+    assert a[:2] == b[:2]
+    da, db = a[2], b[2]
+    assert {k: v for k, v in da.items() if k != "quotes"} == {k: v for k, v in db.items() if k != "quotes"}
+    assert da["quotes"] and {p: v for p, v in db["quotes"].items() if p in da["quotes"]} == da["quotes"]  # every quote answer the bounded history still gives is the unbounded one
+    assert hist_prints(ra) == hist_prints(rb)  # every print the engine holds: order key, slot, V, V source, last in-band V, mint
+    # the revival really exercised the pool_prev fallback, and the engine kept the old history across the gap
+    ret = rb.engine.pools["RetPool" + "1" * 37]
+    assert ret.vsrc.count("pool_prev") == 5 and ret.vsrc.count("row") == len(ret.vsrc) - 5 and len(ret.slot) == 60
+    # the run did trade, and the quote trim did act: otherwise the equalities above would be vacuous
+    assert len({r["pool"] for arm in ("CON-X", "BIG-X") for r in ra.log.rows(arm) if r["kind"] == "entry"}) >= 2
+    assert sum(len(v) for v in ra.quotes.t.values()) < sum(len(v) for v in rb.quotes.t.values())  # the 64-row trim acted on the two long pools
+    assert ra.counters["quote_pools_swept"] >= 13 and "quote_pools_swept" not in rb.counters  # the sweep acted: 12 noise pools and RET (idle > 120 min, evicted by the state)
+    assert len(ra.quotes.t) < len(rb.quotes.t)
     assert not ra.hook_errors and not rb.hook_errors
-
-
-def test_a_pool_with_an_open_position_is_never_pruned(tmp_path):
-    """ArenaEngine.prune skips pools in positions; the runner's housekeeping must not lose a pool a book holds while the position is unpriced."""
-    run = make(tmp_path, lane_h=False)
-    run.run(T0 - 20 * MIN + R.SCAN_SECOND_MS, X + 12 * MIN)  # ends in the middle of the pullback: entries are open
-    busy = {p.pool for p in run.engine.positions.values()}
-    assert busy, "the tape should leave an engine position open here"
-    run._housekeep_at = 0
-    run.state.apply(print_row(POOLS[0], MINTS[0], X + 12 * MIN + 3 * H, 424242))  # three hours on: far past the keep window for every other pool
-    assert busy <= set(run.engine.pools)
