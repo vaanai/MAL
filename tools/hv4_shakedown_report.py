@@ -477,7 +477,10 @@ def eval_check_5(root: Path, samples: list[dict], starts: list[dict], inputs: li
         numbers["hour_crossing_restart"] = [crossing(s["ms"]) for s in starts[1:]]
         numbers["both_processes_counted"] = "yes, both processes: the chain counter persists its per-UTC-day count in chain-credits.json and the restarted process reloads it"
         measured_cross = all(c["windows"] > 0 for c in numbers["hour_crossing_00_00Z"] + numbers["hour_crossing_restart"])
-        if hi_max is not None and hi_max <= CALLS_PER_HOUR_MAX and dec == 0 and measured_cross:
+        totals = [counter_total(s) for s in samples]
+        slack = 2 * max((b - a for a, b in zip(totals, totals[1:])), default=0)  # a window can end between two samples: it can exceed the sampled windows by at most two inter-sample steps
+        numbers["rolling_hour_calls"]["between_samples_slack"] = slack
+        if hi_max is not None and hi_max + slack <= CALLS_PER_HOUR_MAX and dec == 0 and measured_cross:
             hour_status = PASS
         elif lo_max is not None and lo_max > CALLS_PER_HOUR_MAX:
             hour_status = FAIL
