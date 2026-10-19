@@ -74,6 +74,11 @@ SELL_EARLY_RETRY_MS = 1_000  # retry cadence (wall clock) while the entry leg ha
 SELL_EARLY_CAP_MS = 60_000  # after this much wall time without the leg landing: an alert row, then the slow cadence
 SELL_SLOW_RETRY_MS = 10_000
 HOUSEKEEP_EVERY_MS = 5 * MIN_MS  # memory bounds (Runner._housekeep) run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up and live prune alike
+# The engine trim (ArenaEngine.trim_history, via Runner._trim_engine) runs at EVERY housekeeping, so on the same 5 tape-minute boundary. Why that cadence: a trim keeps
+# arena_paper.TRIM_KEEP_SLOTS (5,000 slots, 33 min at 0.4 s a slot) plus the anchor, so between two trims a pool holds at most 33 + 5 = 38 minutes of prints (15% above
+# the floor; trimming hourly would hold up to 93 minutes, 2.8 times the floor); and one trim is one bisect per pool plus a dedupe-set rebuild only for a pool that
+# dropped prints (measured per trim as trim_ms in the counters file and in tools/hv4_memreplay.py). A boundary of the tape clock, not a row count or the wall clock, so
+# a replay trims at the same rows as the live run and the 6-hour warm-up of a start is bounded as it is read.
 QUOTE_PRUNE_MIN_ROWS = 64  # with bound_memory on, QuoteHistory trims a pool's list once it holds more rows than this (it was 4,096: pools with fewer rows were never trimmed)
 R_SEED = 1
 BST_EXIT_MS = 330_000
@@ -316,6 +321,8 @@ class HV4ChainSource:
 
 CHAIN_CREDITS_FILE = "chain-credits.json"  # <root>/: the chain client's per-UTC-day call counts (the 40k/day cap survives a restart)
 CHAIN_SPEND_FILE = "chain-prefetch-spend.json"  # <root>/: the prefetcher's rolling-hour spend (the 1,500/hour bound survives a restart)
+ENGINE_TRIM_FILE = "engine-trim-counters.jsonl"  # <root>/: one appended line per engine trim (Runner._trim_engine); never rewritten, outside the decision log
+ENGINE_TRIM_SCHEMA = "hv4_engine_trim_v1"
 
 
 def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> HV4ChainSource:
@@ -495,9 +502,13 @@ class RunnerConfig:
     # Timing rows (kind scan_timing, one per scan; kind tick_timing, one per minute) go into the SCAN log. They hold wall-clock counts and timings only, no
     # outcome, and no decision reads them. None = on when live, off in sim (a sim log must stay a pure function of the tape, so the replay md5 holds).
     timing: bool | None = None
-    # Memory bound (Runner._housekeep). On: QuoteHistory trims long pools and forgets pools the state no longer holds. The engine's print history is not bounded here
-    # (see _housekeep). Off only in the tests that prove both settings give the same logs, ledger and engine prints. See tools/hv4_memreplay.py.
+    # Memory bound (Runner._housekeep). On: QuoteHistory trims long pools and forgets pools the state no longer holds. Off only in the tests that prove both settings
+    # give the same logs, ledger and engine prints. See tools/hv4_memreplay.py.
     bound_memory: bool = True
+    # Engine history bound (Runner._trim_engine), part of the memory bound: it runs only with bound_memory on. On: housekeeping calls ArenaEngine.trim_history() and
+    # appends the engine's trim counters to <root>/engine-trim-counters.jsonl. ArenaEngine.prune() is never called. Off only in the tests and the replay that prove the
+    # trim changes no decision and no fill (tools/hv4_memreplay.py --trim-history off).
+    trim_engine_history: bool = True
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
@@ -599,11 +610,39 @@ class Runner:
         """Memory bound, driven by the tape clock (the t_recv_ms of the rows), so the 6-hour warm-up of a start is swept as it is read and a replay sweeps at the same
         row boundaries as the live run. Nothing here reads or writes a decision.
           * QuoteHistory forgets a pool once it is idle past the state's eviction horizon AND the state no longer holds the key (see QuoteHistory.sweep).
-          * The engine's print history (arena_paper.PoolHist, about 1 KB a print, 880k prints an hour on the 2026-10-19 tape) is NOT touched. ArenaEngine.prune() is
-            deliberately not called: QP 6274522375 showed it is not pricing-equivalent (a re-created pool loses last_v_row, so a revival print with V outside
-            [0, 30 SOL] is priced `none` where the unbounded engine prices it from pool_prev). The engine bound waits for a state-preserving trim in tools/arena_paper.py."""
+          * The engine's print history (arena_paper.PoolHist, about 1 KB a print, 880k prints an hour on the 2026-10-19 tape) is cut by ArenaEngine.trim_history()
+            (see _trim_engine). ArenaEngine.prune() is deliberately never called: QP 6274522375 showed it is not pricing-equivalent (a re-created pool loses
+            last_v_row, so a revival print with V outside [0, 30 SOL] is priced `none` where the unbounded engine prices it from pool_prev). trim_history() never
+            drops a pool and never touches a pool's scalar state."""
         self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
         self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
+        if self.cfg.trim_engine_history:
+            self._trim_engine(t)
+
+    def _trim_engine(self, t: int) -> None:
+        """Trim the engine's print history and append its trim counters to <root>/engine-trim-counters.jsonl (QP, PR #745 comment 6275482286, item 4).
+        Thread: this runs inside `_on_row`, i.e. on the thread that applies the tape rows, which is the thread that calls the engine's on_row, buy and sell (the
+        engine is not thread-safe; the prefetch and refresh threads never reach it). The trim runs first and the line is written after it, so a failed write loses
+        no trim; every counter is cumulative since the engine started, so the next line carries what a lost line would have. A restart resets the engine's counters;
+        `engine_id` tells the processes apart. Append-only: one O_APPEND write per line, no rewrite, no truncate, and nothing reads it back into a decision."""
+        eng = self.engine
+        t0 = time.perf_counter()
+        n = eng.trim_history()
+        ms = round((time.perf_counter() - t0) * 1000, 3)
+        self._count("engine_trims")
+        c = eng.counters
+        line = {"schema": ENGINE_TRIM_SCHEMA, "tape_ms": t, "engine_id": eng.engine_id, "trim_no": self.counters["engine_trims"], "dropped": n, "trim_ms": ms,
+                "hist_trimmed_prints": c.get("hist_trimmed_prints", 0), "rows_below_trim_floor": c.get("rows_below_trim_floor", 0),
+                "refused_history_trimmed": c.get("refused_history_trimmed", 0), "rows_dup": c.get("rows_dup", 0),
+                "pools": len(eng.pools), "prints_held": sum(len(h.slot) for h in eng.pools.values()), "hw_slot": eng.hw_slot}
+        path = Path(self.cfg.root) / ENGINE_TRIM_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, canon(line).encode() + b"\n")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
