@@ -9,14 +9,14 @@ called it; QuoteHistory kept every row of a pool with fewer than 4,096 rows and 
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 import pytest
 
 from tools import hv4_runner as R
 from tools.arena_paper import HIST_KEEP_SLOTS
-from tools.test_hv4_runner import (H, MIN, POOLS, SOL, T0, V, WSOL, X, MINTS, hour_name, make, price, trade_rows, write_tape)
+from tools.hv4_memreplay import ledger_digest
+from tools.test_hv4_runner import H, MIN, MINTS, POOLS, SOL, T0, V, WSOL, X, make, trade_rows, write_tape
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -170,18 +170,9 @@ def run_digest(tmp: Path, bound: bool) -> tuple[str, str, str, R.Runner]:
     run = make(tmp, rows=churn_and_return_rows(), lane_h=False)
     run.cfg.bound_memory = bound
     run.run(T0 - 20 * MIN + R.SCAN_SECOND_MS, T0 + 100 * MIN)
-    ledger = hashlib.md5()
-    for f in sorted((tmp / "ledger").rglob("*")):
-        if f.is_file():
-            ledger.update(f.relative_to(tmp / "ledger").as_posix().encode() + b"\0")
-            for line in f.read_bytes().splitlines():
-                row = json.loads(line)
-                if row.get("kind") == "start":
-                    continue  # the engine's process-start record: a fresh uuid and the wall clock, not a function of the tape
-                row.pop("engine_id", None)
-                ledger.update(R.canon(row).encode() + b"\n")
+    ledger = ledger_digest(tmp / "ledger")
     digest = hashlib.md5(R.canon(run.state_digest(T0 + 100 * MIN)).encode()).hexdigest()
-    return run.log.md5(), ledger.hexdigest(), digest, run
+    return run.log.md5(), ledger, digest, run
 
 
 def test_decision_log_ledger_and_state_digest_are_identical_with_the_bounds_on_and_off(tmp_path):

@@ -167,7 +167,7 @@ class Rig:
     """Everything the stub runner owns, wired to a scratch root, a mock RPC and the replay clock."""
 
     def __init__(self, tape_dir: Path, scratch: Path, *, state_start_ms: int, clock_start_ms: int, holders: bool, feed_delay_slots: int = 2,
-                 timing: bool = True, evict_idle_min: int | None = None) -> None:
+                 timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True) -> None:
         os.environ.setdefault("MAL_ARENA_TEST", "1")  # scratch registry only: register_bot's test overrides
         from tools import hv4_prefetch as P
         from tools import hv4_runner as R
@@ -192,7 +192,7 @@ class Rig:
         self.chain = HV4Chain(client, TtlCache(clock=self.clock.seconds), now_ms=self.clock)
         self.prefetch = P.ChainPrefetcher(self.chain, R.HV4ChainSource.compose, clock=self.clock, holders=holders, spend_path=root / R.CHAIN_SPEND_FILE)
         self.source = R.HV4ChainSource(self.chain, prefetch=self.prefetch)
-        cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=clock_start_ms, lane_h=False, timing=timing)
+        cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=clock_start_ms, lane_h=False, timing=timing, bound_memory=bound_memory)
         self.run = R.Runner(cfg, self.state, engine, model, self.source, guard)
         self.run.register_all(str(scratch / "bots.json"), now_ms=clock_start_ms - 61 * MIN_MS, verify_sha=False)
         self.engine = engine
@@ -310,6 +310,26 @@ def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top:
     return rows
 
 
+def ledger_digest(ledger_dir: Path) -> str:
+    """md5 of the engine ledger rows that are a function of the tape: every file, every row except the process-start record (a fresh uuid and the wall clock),
+    and the engine_id uuid. Used to show two runs priced the same fills."""
+    import hashlib
+
+    from tools.hv4_runner import canon
+
+    h = hashlib.md5()
+    for f in sorted(Path(ledger_dir).rglob("*")):
+        if f.is_file():
+            h.update(f.relative_to(ledger_dir).as_posix().encode() + b"\0")
+            for line in f.read_bytes().splitlines():
+                row = json.loads(line)
+                if row.get("kind") == "start":
+                    continue
+                row.pop("engine_id", None)
+                h.update(canon(row).encode() + b"\n")
+    return h.hexdigest()
+
+
 def write_tsv(rows: list[dict[str, Any]], path: Path) -> None:
     cols: list[str] = []
     for r in rows:
@@ -355,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--md-out", default=None, help="write the measurement table as markdown")
     ap.add_argument("--evict-idle-min", type=int, default=None, help="ArenaState evict_idle_min (default: the state's own default)")
     ap.add_argument("--no-timing", action="store_true")
+    ap.add_argument("--no-bound-memory", action="store_true", help="RunnerConfig.bound_memory off: the 2026-10-19 behaviour (for the before curve and the md5 proof)")
     a = ap.parse_args(argv)
 
     keys = hour_keys(a.hours)
@@ -372,7 +393,8 @@ def main(argv: list[str] | None = None) -> int:
         import tracemalloc
 
         tracemalloc.start(1)
-    rig = Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, evict_idle_min=a.evict_idle_min)
+    rig = Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, evict_idle_min=a.evict_idle_min,
+              bound_memory=not a.no_bound_memory)
     rows = replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=a.tracemalloc)
     if a.out:
         write_tsv(rows, Path(a.out))
@@ -380,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(str(a.out) + ".tracemalloc.json").write_text(json.dumps([{"sim": r["sim"], "top": r.get("tm_top"), "growth": r.get("tm_growth"), "total_mb": r.get("tm_total_mb")} for r in rows], indent=1))
     if a.md_out:
         write_md(rows, Path(a.md_out), f"HV4 stub replay memory, {a.hours}", " ".join(argv if argv is not None else sys.argv[1:]))
-    print(json.dumps({"done": True, "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
+    print(json.dumps({"done": True, "decision_log_md5": rig.run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
     return 0
 
 
